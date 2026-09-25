@@ -275,6 +275,21 @@ RustBuffer uniffi_aether_ffi_fn_func_devnet_faucet(RustBuffer to, RustBuffer val
 RustBuffer uniffi_aether_ffi_fn_func_prepare_batch(RustBuffer p256_public_key, RustBuffer payments, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_RECOVERY
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_RECOVERY
+RustBuffer uniffi_aether_ffi_fn_func_prepare_recovery(RustBuffer p256_public_key, RustBuffer lost_account, uint32_t validators, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_RECOVERY_SUBMIT
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_RECOVERY_SUBMIT
+RustBuffer uniffi_aether_ffi_fn_func_prepare_recovery_submit(RustBuffer p256_public_key, RustBuffer request, RustBuffer guardian_signature, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_SET_RECOVERY_KEY
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_SET_RECOVERY_KEY
+RustBuffer uniffi_aether_ffi_fn_func_prepare_set_recovery_key(RustBuffer p256_public_key, RustBuffer recovery_code, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_TRANSFER
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_TRANSFER
 RustBuffer uniffi_aether_ffi_fn_func_prepare_transfer(RustBuffer p256_public_key, RustBuffer to, RustBuffer value_wei, RustCallStatus *_Nonnull out_status
@@ -288,6 +303,11 @@ RustBuffer uniffi_aether_ffi_fn_func_receipt(RustBuffer tx_hash, RustCallStatus 
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_RECENT_BLOCKS
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_RECENT_BLOCKS
 RustBuffer uniffi_aether_ffi_fn_func_recent_blocks(uint32_t n, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_RECOVERY_KEY_CODE
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_RECOVERY_KEY_CODE
+RustBuffer uniffi_aether_ffi_fn_func_recovery_key_code(RustBuffer p256_public_key, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_SET_COMMITTEE_IDENTITY
@@ -601,6 +621,24 @@ uint16_t uniffi_aether_ffi_checksum_func_prepare_batch(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_RECOVERY
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_RECOVERY
+uint16_t uniffi_aether_ffi_checksum_func_prepare_recovery(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_RECOVERY_SUBMIT
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_RECOVERY_SUBMIT
+uint16_t uniffi_aether_ffi_checksum_func_prepare_recovery_submit(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_SET_RECOVERY_KEY
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_SET_RECOVERY_KEY
+uint16_t uniffi_aether_ffi_checksum_func_prepare_set_recovery_key(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_TRANSFER
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_TRANSFER
 uint16_t uniffi_aether_ffi_checksum_func_prepare_transfer(void
@@ -616,6 +654,12 @@ uint16_t uniffi_aether_ffi_checksum_func_receipt(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_RECENT_BLOCKS
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_RECENT_BLOCKS
 uint16_t uniffi_aether_ffi_checksum_func_recent_blocks(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_RECOVERY_KEY_CODE
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_RECOVERY_KEY_CODE
+uint16_t uniffi_aether_ffi_checksum_func_recovery_key_code(void
     
 );
 #endif

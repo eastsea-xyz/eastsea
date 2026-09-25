@@ -106,3 +106,86 @@ fn delegation_codec_round_trip_and_old_encodings_still_decode() {
     assert_eq!(EvmCall::decode(&enc).unwrap(), without);
     assert_eq!(enc.len() + 21, with.encode().len(), "delegation is a pure trailer");
 }
+
+// ---------------- guardian (recovery key on a second device) ----------------
+
+use aether_execution::{encode_guardian_execute, encode_set_guardian, guardian_message};
+
+fn sign_rs(signer: &P256Signer, msg: &[u8]) -> ([u8; 32], [u8; 32]) {
+    let sig = signer.sign(msg).unwrap();
+    (sig[..32].try_into().unwrap(), sig[32..64].try_into().unwrap())
+}
+
+#[test]
+fn guardian_recovers_funds_when_the_main_key_is_lost() {
+    let s = setup();
+    // Second device (e.g. an iPhone's Secure Enclave): only its public key goes on chain.
+    let phone = P256Signer::from_seed(&seed(2)).unwrap();
+    let (gx, gy) = aether_crypto::p256_xy(&phone.public_key().bytes).unwrap();
+
+    // Alice delegates and registers the guardian in one signed tx (a self-call in the batch).
+    let setup_tx = tx(
+        &s,
+        0,
+        EvmCall {
+            to: Some(s.a),
+            value: U256::ZERO,
+            input: encode_execute(&[(s.a, U256::ZERO, encode_set_guardian(gx, gy))]),
+            gas_limit: 300_000,
+            delegate: Some(AETHER_ACCOUNT),
+        },
+    );
+    let st = execute_block(&s.pre, &ctx(1), &[setup_tx]).unwrap();
+    assert!(st.receipts[0].success, "{:?}", st.receipts[0]);
+    let mut st = st.state;
+
+    // Alice's Mac is gone. A relayer (any funded account) submits the phone-signed recovery.
+    let relayer = P256Signer::from_seed(&seed(3)).unwrap();
+    let r_addr = aether_crypto::address_of(&relayer.public_key()).unwrap();
+    st.set_balance(r_addr, U256::from(10u128.pow(20))).unwrap();
+    let safe = Address::repeat_byte(0x5a);
+    let amount = U256::from(10u128.pow(20));
+    let calls = vec![(safe, amount, Bytes::new())];
+    let (r, sg) = sign_rs(&phone, &guardian_message(CHAIN, s.a, 0, &calls));
+    let relay = |nonce, input: Bytes| {
+        sign_call(&relayer, CHAIN, nonce, 1, &EvmCall { to: Some(s.a), value: U256::ZERO, input, gas_limit: 300_000, delegate: None }).unwrap()
+    };
+    let out = execute_block(&st, &ctx(2), &[relay(0, encode_guardian_execute(&calls, r, sg))]).unwrap();
+    assert!(out.receipts[0].success, "guardian signature accepted via P256VERIFY: {:?}", out.receipts[0]);
+    assert_eq!(out.state.balance(&safe), amount, "funds recovered to the safe address");
+
+    // Replay of the same signature fails (nonce advanced).
+    let replay = execute_block(&out.state, &ctx(3), &[relay(1, encode_guardian_execute(&calls, r, sg))]).unwrap();
+    assert!(!replay.receipts[0].success, "replay rejected");
+
+    // A signature by some other key fails; so do tampered calls under the phone's signature.
+    let thief = P256Signer::from_seed(&seed(4)).unwrap();
+    let steal = vec![(r_addr, amount, Bytes::new())];
+    let (tr, ts) = sign_rs(&thief, &guardian_message(CHAIN, s.a, 1, &steal));
+    let bad = execute_block(&out.state, &ctx(3), &[relay(1, encode_guardian_execute(&steal, tr, ts))]).unwrap();
+    assert!(!bad.receipts[0].success, "wrong key rejected");
+    let (pr, ps) = sign_rs(&phone, &guardian_message(CHAIN, s.a, 1, &calls));
+    let tampered = execute_block(&out.state, &ctx(3), &[relay(1, encode_guardian_execute(&steal, pr, ps))]).unwrap();
+    assert!(!tampered.receipts[0].success, "calls not covered by the signature rejected");
+}
+
+#[test]
+fn no_guardian_means_no_recovery_path() {
+    let s = setup();
+    let st = execute_block(&s.pre, &ctx(1), &[tx(&s, 0, batch(s.a, Some(AETHER_ACCOUNT), &[]))]).unwrap().state;
+    let phone = P256Signer::from_seed(&seed(2)).unwrap();
+    let calls = vec![(Address::repeat_byte(0x5a), U256::from(1u64), Bytes::new())];
+    let (r, sg) = sign_rs(&phone, &guardian_message(CHAIN, s.a, 0, &calls));
+    let relayer = P256Signer::from_seed(&seed(3)).unwrap();
+    let mut st = st;
+    st.set_balance(aether_crypto::address_of(&relayer.public_key()).unwrap(), U256::from(10u128.pow(20))).unwrap();
+    let t = sign_call(
+        &relayer,
+        CHAIN,
+        0,
+        1,
+        &EvmCall { to: Some(s.a), value: U256::ZERO, input: encode_guardian_execute(&calls, r, sg), gas_limit: 300_000, delegate: None },
+    )
+    .unwrap();
+    assert!(!execute_block(&st, &ctx(2), &[t]).unwrap().receipts[0].success);
+}

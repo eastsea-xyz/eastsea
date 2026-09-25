@@ -9,6 +9,7 @@ struct ContentView: View {
                 header
                 accountCard
                 sendCard
+                recoveryCard
                 activity
             }
             .frame(minWidth: 460)
@@ -71,6 +72,30 @@ struct ContentView: View {
                 Button("Send") { model.send() }.keyboardShortcut(.return).disabled(model.busy || model.sendTo.isEmpty)
             }
         } label: { Text("Send (signed in the Secure Enclave)") }
+    }
+
+    private var recoveryCard: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("This Mac's recovery-key code").font(.caption).foregroundStyle(.secondary)
+                    Text(model.recoveryCode.isEmpty ? "…" : "\(model.recoveryCode.prefix(16))…").font(.caption.monospaced())
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(model.recoveryCode, forType: .string)
+                        model.note("Recovery-key code copied. Give it to the account owner who wants this Mac as their recovery key.")
+                    } label: { Image(systemName: "doc.on.doc") }.buttonStyle(.borderless).disabled(model.recoveryCode.isEmpty)
+                }
+                HStack {
+                    TextField("Other device's recovery-key code", text: $model.guardianInput).textFieldStyle(.roundedBorder).font(.caption.monospaced())
+                    Button("Make it my recovery key") { model.setRecoveryKey() }.disabled(model.busy || model.guardianInput.isEmpty)
+                }
+                HStack {
+                    TextField("0x lost account (that trusts this Mac)", text: $model.lostInput).textFieldStyle(.roundedBorder).font(.caption.monospaced())
+                    Button("Recover its funds here") { model.recover() }.disabled(model.busy || model.lostInput.isEmpty)
+                }
+            }
+        } label: { Text("Recovery (a second device's Secure Enclave key)") }
     }
 
     private var activity: some View {

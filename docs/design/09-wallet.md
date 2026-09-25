@@ -73,4 +73,11 @@ interface Signer { bytes sign_digest(bytes digest); bytes public_key(); }   // S
 - 지갑: 받는 사람을 쉼표로 여러 개 적으면 `prepare_batch`로 한 tx. 첫 배치에서 위임을 같이 설정하고 이후엔 생략.
 - 상태: 코드 변경(위임 설정·교체·해제)을 트리에 기록(이전 코드 청크 삭제), BAL `code_touched`. 병렬 실행 차등 테스트에 위임·배치 연산 포함.
 - 검증: 위임+배치 한 tx, 이후 배치, 해제, 타인 호출 거부(OnlySelf), 코덱 하위호환, 4검증자 devnet에서 서명 한 번으로 3곳 지급 후 경량 검증.
-- 다음: P256VERIFY(0x100, Osaka 활성)로 세션 키·복구 키(두 번째 기기의 Secure Enclave 키)를 계약에서 검증.
+
+### 복구 키(가디언) — 구현됨
+
+- `AetherAccount.setGuardian(x, y)`: 계정이 두 번째 기기(다른 맥·아이폰) Secure Enclave의 P-256 공개키를 복구 키로 등록(자기 호출만). 저장은 ERC-7201 네임스페이스 슬롯(`aether.account.guardian`) — 7702에서 저장소는 계정 자신의 것이라 충돌 방지.
+- `guardianExecute(calls, r, s)`: 가디언 서명을 **P256VERIFY(0x100)**로 검증해 호출 실행. 서명 대상은 `sha256(abi.encode(chainid, account, nonce, calls))` — Secure Enclave가 SHA-256으로 서명하는 방식과 같다. nonce로 재생 방지, 누구나 중계 가능.
+- 지갑(대칭 설계): "이 맥의 복구 키 코드"(x‖y) 복사 → 상대가 "내 복구 키로 지정". 키를 잃으면 가디언 맥에서 "분실 계정 복구": 잔액과 가디언 nonce를 **확정 인증서 + 저장소 증명으로 검증**한 뒤 가디언으로 서명, 자기 계정에서 중계(Touch ID 두 번).
+- CLI `set-guardian`, `recover`. 검증: 복구 성공, 재생·다른 키·조작된 호출 거부, 가디언 없으면 불가, 4검증자 devnet에서 등록→복구→분실 계정 잔액 0 경량 검증.
+- 다음: 세션 키(한도·기한 있는 위임 서명), 가디언 복수·지연(시간 잠금) 복구.

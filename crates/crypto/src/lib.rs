@@ -83,8 +83,7 @@ pub fn recover_secp256k1(msg: &[u8], sig: &[u8]) -> Result<PublicKey, CryptoErro
     }
     let v = if sig[64] >= 27 { sig[64] - 27 } else { sig[64] };
     let rid = k256::ecdsa::RecoveryId::from_byte(v).ok_or(CryptoError::InvalidSignature)?;
-    let vk = k256::ecdsa::VerifyingKey::recover_from_prehash(keccak256(msg).as_slice(), &s, rid)
-        .map_err(|_| CryptoError::Mismatch)?;
+    let vk = k256::ecdsa::VerifyingKey::recover_from_prehash(keccak256(msg).as_slice(), &s, rid).map_err(|_| CryptoError::Mismatch)?;
     Ok(PublicKey { scheme: SignerScheme::Secp256k1, bytes: vk.to_sec1_point(true).as_bytes().to_vec() })
 }
 
@@ -174,6 +173,19 @@ impl Signer for Ed25519Signer {
     }
 }
 
+/// Affine (x, y) of a P-256 public key given in SEC1 form (compressed or not):
+/// what P256VERIFY and `AetherAccount.setGuardian` take.
+pub fn p256_xy(sec1: &[u8]) -> Result<([u8; 32], [u8; 32]), CryptoError> {
+    use p256::elliptic_curve::sec1::ToSec1Point;
+    let vk = p256::ecdsa::VerifyingKey::from_sec1_bytes(sec1).map_err(|_| CryptoError::InvalidPublicKey)?;
+    let point = vk.as_affine().to_sec1_point(false);
+    let bytes = point.as_bytes();
+    if bytes.len() != 65 {
+        return Err(CryptoError::InvalidPublicKey);
+    }
+    Ok((bytes[1..33].try_into().expect("32"), bytes[33..65].try_into().expect("32")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,11 +195,7 @@ mod tests {
         // Valid for every curve: small big-endian scalar in [1, 255].
         let mut s = [0u8; 32];
         s[31] = seed.max(1);
-        vec![
-            Box::new(P256Signer::from_seed(&s).unwrap()),
-            Box::new(Secp256k1Signer::from_seed(&s).unwrap()),
-            Box::new(Ed25519Signer::from_seed(&s)),
-        ]
+        vec![Box::new(P256Signer::from_seed(&s).unwrap()), Box::new(Secp256k1Signer::from_seed(&s).unwrap()), Box::new(Ed25519Signer::from_seed(&s))]
     }
 
     #[test]
@@ -245,7 +253,11 @@ mod tests {
 
     #[test]
     fn ecdsa_public_keys_are_compressed_sec1() {
-        let seed = { let mut s = [0u8; 32]; s[31] = 3; s };
+        let seed = {
+            let mut s = [0u8; 32];
+            s[31] = 3;
+            s
+        };
         assert_eq!(P256Signer::from_seed(&seed).unwrap().public_key().bytes.len(), 33);
         assert_eq!(Secp256k1Signer::from_seed(&seed).unwrap().public_key().bytes.len(), 33);
     }

@@ -202,6 +202,18 @@ fn four_validators_agree_execute_survive_and_recover() {
     let out = net.cli(&["batch", "--rpc", &net.url(0), "--from-dev", "5", "--to", x, "--value", "1", "--wait"]);
     assert!(out.contains("success=true"), "{out}");
 
+    // Recovery: dev 6 registers dev 7's key as its guardian; dev 6's key is then
+    // "lost" and dev 7 sweeps its balance (P256VERIFY in AetherAccount).
+    let out = net.cli(&["set-guardian", "--rpc", &net.url(0), "--from-dev", "6", "--guardian-dev", "7"]);
+    assert!(out.contains("success=true"), "{out}");
+    let lost = net.cli(&["dev-accounts"]).lines().find(|l| l.split_whitespace().nth(1) == Some("6")).unwrap().split_whitespace().nth(2).unwrap().to_string();
+    net.wait_height(3, net.height(0), 20);
+    let out = net.cli(&["recover", "--rpc", &net.url(3), "--guardian-dev", "7", "--lost", &lost]);
+    assert!(out.contains("success=true"), "{out}");
+    net.wait_height(2, net.height(3), 20);
+    let bal = net.cli(&["balance", &lost, "--rpc", &net.url(2)]);
+    assert!(bal.contains("balance   0 wei") && bal.contains("verified  ✓"), "lost account swept: {bal}");
+
     // Every node has the same chain.
     let h = net.height(0);
     for i in 1..4 {

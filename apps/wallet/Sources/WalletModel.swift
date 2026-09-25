@@ -14,6 +14,9 @@ final class WalletModel: ObservableObject {
     @Published var log: [String] = []
     @Published var sendTo = ""
     @Published var sendAmount = "1"
+    @Published var recoveryCode = ""
+    @Published var guardianInput = ""
+    @Published var lostInput = ""
 
     private var enclave: EnclaveAccount?
     private var timer: Timer?
@@ -24,6 +27,7 @@ final class WalletModel: ObservableObject {
             let acct = try EnclaveAccount.loadOrCreate(requireUserPresence: true)
             enclave = acct
             address = try accountAddress(p256PublicKey: acct.publicKey)
+            recoveryCode = try recoveryKeyCode(p256PublicKey: acct.publicKey)
             note("Secure Enclave key ready. Signing asks for Touch ID or your password.")
         } catch {
             note("Key error: \(error.localizedDescription)")
@@ -48,6 +52,39 @@ final class WalletModel: ObservableObject {
             note("Network: \(validators) validators · committee key \(id.prefix(16))… (network.json)")
         } catch {
             note("network.json rejected: \(error)")
+        }
+    }
+
+    /// Register another device's key as this account's recovery key (one signature).
+    func setRecoveryKey() {
+        guard let enclave else { return }
+        let code = guardianInput.trimmingCharacters(in: .whitespacesAndNewlines), pk = enclave.publicKey
+        busy = true
+        Task.detached {
+            do {
+                let prepared = try prepareSetRecoveryKey(p256PublicKey: pk, recoveryCode: code)
+                let sig = try enclave.sign(prepared.signingMessage)
+                let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
+                await self.track(h, label: "Recovery key set to \(code.prefix(12))…")
+            } catch { await MainActor.run { self.note("Set recovery key failed: \(error)"); self.busy = false } }
+        }
+    }
+
+    /// As the recovery key of `lostInput`: sign the sweep with this Mac's key, then
+    /// submit it from this account (two Secure Enclave signatures).
+    func recover() {
+        guard let enclave else { return }
+        let lost = lostInput.trimmingCharacters(in: .whitespacesAndNewlines), pk = enclave.publicKey, n = validators
+        busy = true
+        Task.detached {
+            do {
+                let request = try prepareRecovery(p256PublicKey: pk, lostAccount: lost, validators: n)
+                let guardianSig = try enclave.sign(request.message)          // authorize as recovery key
+                let prepared = try prepareRecoverySubmit(p256PublicKey: pk, request: request, guardianSignature: guardianSig)
+                let sig = try enclave.sign(prepared.signingMessage)           // relay from this account
+                let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
+                await self.track(h, label: "Recovered \(Wei.format(request.valueWei)) AETH from \(lost.prefix(10))…")
+            } catch { await MainActor.run { self.note("Recovery failed: \(error)"); self.busy = false } }
         }
     }
 

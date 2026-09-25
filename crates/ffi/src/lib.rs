@@ -405,3 +405,105 @@ mod tests {
         }
     }
 }
+
+// ---------------- recovery keys (guardians) ----------------
+
+/// Storage slot of the guardian struct in a delegated account (see AetherAccount.sol).
+const GUARDIAN_SLOT: &str = "814c365e7a9c4fa1d0da41caf4c2bc2af8cb172a9b60ca9932fe088002417e00";
+
+/// This device's recovery-key code: its P-256 public key as x‖y hex. Give it to
+/// someone whose account this device should be able to recover.
+#[uniffi::export]
+pub fn recovery_key_code(p256_public_key: Vec<u8>) -> R<String> {
+    let (x, y) = aether_crypto::p256_xy(&p256_public_key).map_err(|e| WalletError::Invalid(format!("{e:?}")))?;
+    Ok(format!("{}{}", hex_lower(&x), hex_lower(&y)))
+}
+
+fn parse_code(code: &str) -> R<([u8; 32], [u8; 32])> {
+    let b = from_hex(code.trim()).map_err(|e| WalletError::Invalid(format!("recovery key code: {e}")))?;
+    if b.len() != 64 {
+        return Err(WalletError::Invalid("recovery key code must be 64 bytes (x‖y)".into()));
+    }
+    // Reject points not on the curve before putting them on chain.
+    let mut sec1 = vec![4u8];
+    sec1.extend_from_slice(&b);
+    aether_crypto::p256_xy(&sec1).map_err(|_| WalletError::Invalid("recovery key code is not a P-256 public key".into()))?;
+    Ok((b[..32].try_into().expect("32"), b[32..].try_into().expect("32")))
+}
+
+fn designated(from: Address) -> R<bool> {
+    let code = call("eth_getCode", json!([from]))?;
+    Ok(code.as_str().is_some_and(|c| c.eq_ignore_ascii_case(&format!("0xef0100{}", hex_lower(aether_execution::AETHER_ACCOUNT.as_slice())))))
+}
+
+/// Make the device with `recovery_code` able to recover this account (delegates
+/// to AetherAccount first if needed). Sign with the Secure Enclave and submit.
+#[uniffi::export]
+pub fn prepare_set_recovery_key(p256_public_key: Vec<u8>, recovery_code: String) -> R<PreparedTx> {
+    let (x, y) = parse_code(&recovery_code)?;
+    prepare(&p256_public_key, |from| {
+        let delegated = designated(from)?;
+        Ok(EvmCall {
+            to: Some(from),
+            value: U256::ZERO,
+            input: aether_execution::encode_execute(&[(from, U256::ZERO, aether_execution::encode_set_guardian(x, y))]),
+            gas_limit: 200_000,
+            delegate: (!delegated).then_some(aether_execution::AETHER_ACCOUNT),
+        })
+    })
+}
+
+/// A recovery this device (the guardian) must sign: sweep `lost`'s verified balance to us.
+#[derive(uniffi::Record)]
+pub struct RecoveryRequest {
+    pub lost: String,
+    pub to: String,
+    pub value_wei: String,
+    pub guardian_nonce: u64,
+    /// Sign with this device's Secure Enclave key (SHA-256 applied by CryptoKit).
+    pub message: Vec<u8>,
+}
+
+#[uniffi::export]
+pub fn prepare_recovery(p256_public_key: Vec<u8>, lost_account: String, validators: u32) -> R<RecoveryRequest> {
+    let pk = p256_key(&p256_public_key)?;
+    let me = address_of(&pk).map_err(|e| WalletError::Invalid(e.to_string()))?;
+    let lost: Address = lost_account.parse().map_err(|_| WalletError::Invalid("lost account address".into()))?;
+    // Balance and guardian nonce, both proven against a certified state root.
+    let acct = verified_account(lost.to_checksum(None), validators)?;
+    let slot = U256::from_str_radix(GUARDIAN_SLOT, 16).expect("slot") + U256::from(2u64);
+    let v = call("aether_getStorage", json!([lost, slot]))?;
+    let proof: Proof = parse(&v["proof"], "proof")?;
+    let height = v["height"].as_u64().unwrap_or_default();
+    let set = trusted_set(validators)?;
+    let anchor = anchor(height, &set)?;
+    let nonce = aether_light::verify_storage(&anchor, &lost, slot, &proof).map_err(|e| WalletError::Verification(format!("guardian nonce: {e}")))?;
+    let value: U256 = acct.balance_wei.parse().map_err(|_| WalletError::Invalid("balance".into()))?;
+    let chain_id = call("aether_status", json!([]))?["chain_id"].as_u64().unwrap_or_default();
+    let nonce = nonce.to::<u64>();
+    let calls = [(me, value, Bytes::new())];
+    Ok(RecoveryRequest {
+        lost: lost.to_checksum(None),
+        to: me.to_checksum(None),
+        value_wei: value.to_string(),
+        guardian_nonce: nonce,
+        message: aether_execution::guardian_message(chain_id, lost, nonce, &calls),
+    })
+}
+
+/// The tx that submits a signed recovery; this device pays the gas (sign it too).
+#[uniffi::export]
+pub fn prepare_recovery_submit(p256_public_key: Vec<u8>, request: RecoveryRequest, guardian_signature: Vec<u8>) -> R<PreparedTx> {
+    let lost: Address = request.lost.parse().map_err(|_| WalletError::Invalid("lost".into()))?;
+    let to: Address = request.to.parse().map_err(|_| WalletError::Invalid("to".into()))?;
+    let value: U256 = request.value_wei.parse().map_err(|_| WalletError::Invalid("value".into()))?;
+    let sig = normalize_p256(&guardian_signature)?;
+    let (r, s): ([u8; 32], [u8; 32]) = (sig[..32].try_into().expect("32"), sig[32..64].try_into().expect("32"));
+    let input = aether_execution::encode_guardian_execute(&[(to, value, Bytes::new())], r, s);
+    prepare(&p256_public_key, |_| Ok(EvmCall { to: Some(lost), value: U256::ZERO, input, gas_limit: 250_000, delegate: None }))
+}
+
+fn normalize_p256(signature: &[u8]) -> R<Vec<u8>> {
+    let sig = p256::ecdsa::Signature::from_slice(signature).map_err(|_| WalletError::Invalid("signature must be 64-byte r‖s".into()))?;
+    Ok(sig.normalize_s().to_bytes().to_vec())
+}

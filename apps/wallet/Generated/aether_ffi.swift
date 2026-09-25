@@ -846,6 +846,81 @@ public func FfiConverterTypePreparedTx_lower(_ value: PreparedTx) -> RustBuffer 
 }
 
 
+/**
+ * A recovery this device (the guardian) must sign: sweep `lost`'s verified balance to us.
+ */
+public struct RecoveryRequest: Equatable, Hashable {
+    public var lost: String
+    public var to: String
+    public var valueWei: String
+    public var guardianNonce: UInt64
+    /**
+     * Sign with this device's Secure Enclave key (SHA-256 applied by CryptoKit).
+     */
+    public var message: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(lost: String, to: String, valueWei: String, guardianNonce: UInt64, 
+        /**
+         * Sign with this device's Secure Enclave key (SHA-256 applied by CryptoKit).
+         */message: Data) {
+        self.lost = lost
+        self.to = to
+        self.valueWei = valueWei
+        self.guardianNonce = guardianNonce
+        self.message = message
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension RecoveryRequest: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRecoveryRequest: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RecoveryRequest {
+        return
+            try RecoveryRequest(
+                lost: FfiConverterString.read(from: &buf), 
+                to: FfiConverterString.read(from: &buf), 
+                valueWei: FfiConverterString.read(from: &buf), 
+                guardianNonce: FfiConverterUInt64.read(from: &buf), 
+                message: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: RecoveryRequest, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.lost, into: &buf)
+        FfiConverterString.write(value.to, into: &buf)
+        FfiConverterString.write(value.valueWei, into: &buf)
+        FfiConverterUInt64.write(value.guardianNonce, into: &buf)
+        FfiConverterData.write(value.message, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRecoveryRequest_lift(_ buf: RustBuffer) throws -> RecoveryRequest {
+    return try FfiConverterTypeRecoveryRequest.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRecoveryRequest_lower(_ value: RecoveryRequest) -> RustBuffer {
+    return FfiConverterTypeRecoveryRequest.lower(value)
+}
+
+
 public struct TxReceipt: Equatable, Hashable {
     public var height: UInt64
     public var success: Bool
@@ -1227,6 +1302,42 @@ public func prepareBatch(p256PublicKey: Data, payments: [Payment])throws  -> Pre
     )
 })
 }
+public func prepareRecovery(p256PublicKey: Data, lostAccount: String, validators: UInt32)throws  -> RecoveryRequest  {
+    return try  FfiConverterTypeRecoveryRequest_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_prepare_recovery(
+        FfiConverterData.lower(p256PublicKey),
+        FfiConverterString.lower(lostAccount),
+        FfiConverterUInt32.lower(validators),uniffiCallStatus
+    )
+})
+}
+/**
+ * The tx that submits a signed recovery; this device pays the gas (sign it too).
+ */
+public func prepareRecoverySubmit(p256PublicKey: Data, request: RecoveryRequest, guardianSignature: Data)throws  -> PreparedTx  {
+    return try  FfiConverterTypePreparedTx_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_prepare_recovery_submit(
+        FfiConverterData.lower(p256PublicKey),
+        FfiConverterTypeRecoveryRequest_lower(request),
+        FfiConverterData.lower(guardianSignature),uniffiCallStatus
+    )
+})
+}
+/**
+ * Make the device with `recovery_code` able to recover this account (delegates
+ * to AetherAccount first if needed). Sign with the Secure Enclave and submit.
+ */
+public func prepareSetRecoveryKey(p256PublicKey: Data, recoveryCode: String)throws  -> PreparedTx  {
+    return try  FfiConverterTypePreparedTx_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_prepare_set_recovery_key(
+        FfiConverterData.lower(p256PublicKey),
+        FfiConverterString.lower(recoveryCode),uniffiCallStatus
+    )
+})
+}
 /**
  * Build a transfer for the Secure Enclave key to sign.
  */
@@ -1253,6 +1364,18 @@ public func recentBlocks(n: UInt32)throws  -> [BlockInfo]  {
         uniffiCallStatus in
     uniffi_aether_ffi_fn_func_recent_blocks(
         FfiConverterUInt32.lower(n),uniffiCallStatus
+    )
+})
+}
+/**
+ * This device's recovery-key code: its P-256 public key as x‖y hex. Give it to
+ * someone whose account this device should be able to recover.
+ */
+public func recoveryKeyCode(p256PublicKey: Data)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_recovery_key_code(
+        FfiConverterData.lower(p256PublicKey),uniffiCallStatus
     )
 })
 }
@@ -1326,6 +1449,15 @@ private let initializationResult: InitializationResult = {
     if (uniffi_aether_ffi_checksum_func_prepare_batch() != 9304) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_aether_ffi_checksum_func_prepare_recovery() != 11429) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_prepare_recovery_submit() != 11470) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_prepare_set_recovery_key() != 59362) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_aether_ffi_checksum_func_prepare_transfer() != 24792) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -1333,6 +1465,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_recent_blocks() != 16448) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_recovery_key_code() != 45807) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_set_committee_identity() != 9931) {

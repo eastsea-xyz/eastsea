@@ -1,9 +1,14 @@
 //! Light client (docs/design/09-wallet.md): trust only the validator set.
 //!
+//! Consensus certificates are BLS12-381 threshold signatures (design D8): a
+//! quorum of validators jointly produces ONE signature under the committee's
+//! group public key, so a client needs only that key (the "identity") and
+//! verifies one pairing per block, whatever the number of validators.
+//!
 //! Anchoring (order-first, design D3): the state root after block H is carried
 //! as `parent_state_root` in block H+1. A client therefore
-//!   1. verifies the finalization certificate of block H+1 against the known
-//!      validator public keys (a 2f+1 quorum of signatures),
+//!   1. verifies the finalization certificate of block H+1 against the
+//!      committee identity,
 //!   2. checks the certificate commits to exactly that block's digest,
 //!   3. takes `parent_state_root` from the verified block, and
 //!   4. checks the state proof is for the requested key and verifies under it.
@@ -18,11 +23,20 @@ use aether_state::Proof;
 use aether_types::{Address, B256, U256};
 use block::{Block, PublicKey};
 use commonware_codec::Decode;
-use commonware_consensus::simplex::{scheme::ed25519::Scheme, types::Finalization};
+use commonware_consensus::simplex::{
+    elector::{Random, RandomVersion},
+    scheme::bls12381_threshold::vrf,
+    types::Finalization,
+};
 use commonware_consensus::Heightable;
-use commonware_cryptography::{certificate::Verifier as _, ed25519, sha256::Digest, Digestible, Signer as _};
+use commonware_cryptography::bls12381::dkg::feldman_desmedt::deal;
+use commonware_cryptography::bls12381::primitives::group::Share;
+use commonware_cryptography::bls12381::primitives::sharing::{Mode, Sharing};
+use commonware_cryptography::bls12381::primitives::variant::{MinSig, Variant};
+use commonware_cryptography::{ed25519, sha256::Digest, Digestible, Signer as _};
 use commonware_parallel::Sequential;
-use commonware_utils::{ordered::Set, union, TryCollect};
+use commonware_utils::{ordered::Set, union, N3f1, TryCollect};
+use rand_core::SeedableRng;
 
 /// Network namespace; must match the validators' configuration.
 pub const NAMESPACE: &[u8] = b"_AETHER_DEVNET_V1";
@@ -33,9 +47,37 @@ pub fn consensus_namespace() -> Vec<u8> {
     union(NAMESPACE, b"_CONSENSUS")
 }
 
+/// Consensus signing scheme: BLS12-381 threshold (signatures in G1, 48 bytes)
+/// with a per-round threshold VRF seed.
+pub type Scheme = vrf::Scheme<PublicKey, MinSig>;
+/// The committee's group public key; constant across reshares.
+pub type Identity = <MinSig as Variant>::Public;
+/// Leader election from the previous round's VRF seed (unpredictable leaders).
+pub type Elector = Random<commonware_cryptography::Sha256>;
+pub const ELECTOR: Elector = Random::new(RandomVersion::V1);
+
 /// Deterministic devnet validator key `i` (1-based). Public knowledge; devnet only.
 pub fn devnet_validator_key(i: u64) -> ed25519::PrivateKey {
     ed25519::PrivateKey::from_seed(i)
+}
+
+/// Devnet threshold keys for validators `1..=n`, dealt from a fixed seed: the
+/// public polynomial and each validator's share, in participant order.
+/// Devnet only (the dealer knows every share); a real network runs a DKG.
+pub fn devnet_threshold(n: u64) -> (Set<PublicKey>, Sharing<MinSig>, Vec<(PublicKey, Share)>) {
+    let participants: Set<PublicKey> = (1..=n).map(|i| devnet_validator_key(i).public_key()).try_collect().expect("unique devnet keys");
+    let mut seed = [0u8; 32];
+    seed[..24].copy_from_slice(b"aether-devnet-threshold-");
+    seed[24..].copy_from_slice(&n.to_be_bytes());
+    let rng = rand_chacha::ChaCha20Rng::from_seed(seed);
+    let (output, shares) = deal::<MinSig, PublicKey, N3f1>(rng, Mode::NonZeroCounter, participants.clone()).expect("deal devnet shares");
+    let shares = shares.iter_pairs().map(|(pk, share)| (pk.clone(), share.clone())).collect();
+    (participants, output.public().clone(), shares)
+}
+
+/// Devnet committee identity (group public key) for `n` validators.
+pub fn devnet_identity(n: u64) -> Identity {
+    *devnet_threshold(n).1.public()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,26 +97,24 @@ impl core::fmt::Display for LightError {
 }
 impl std::error::Error for LightError {}
 
-/// The validator set a client trusts (fixed at genesis for the devnet).
+/// The committee a client trusts: just its group public key.
 #[derive(Clone)]
 pub struct ValidatorSet {
     scheme: Scheme,
-    size: usize,
+    identity: Identity,
 }
 
 impl ValidatorSet {
-    pub fn new(keys: Vec<PublicKey>) -> Result<Self, LightError> {
-        let size = keys.len();
-        let participants: Set<PublicKey> = keys.into_iter().try_collect().map_err(|_| LightError::BadEncoding("duplicate validator key"))?;
-        Ok(ValidatorSet { scheme: Scheme::verifier(&consensus_namespace(), participants), size })
+    pub fn new(identity: Identity) -> Self {
+        ValidatorSet { scheme: Scheme::certificate_verifier(&consensus_namespace(), identity), identity }
     }
 
     pub fn devnet(n: u64) -> Self {
-        Self::new((1..=n).map(|i| devnet_validator_key(i).public_key()).collect()).expect("unique devnet keys")
+        Self::new(devnet_identity(n))
     }
 
-    pub fn size(&self) -> usize {
-        self.size
+    pub fn identity(&self) -> &Identity {
+        &self.identity
     }
 }
 
@@ -91,8 +131,8 @@ pub struct VerifiedBlock {
 /// Verify `finalization` (codec bytes) certifies `block` (codec bytes).
 pub fn verify_finalized(set: &ValidatorSet, block_bytes: &[u8], finalization_bytes: &[u8]) -> Result<VerifiedBlock, LightError> {
     let block = Block::decode_cfg(block_bytes, &Block::codec_config(MAX_BLOCK_BYTES)).map_err(|_| LightError::BadEncoding("block"))?;
-    let cfg = set.scheme.certificate_codec_config();
-    let fin = Finalization::<Scheme, Digest>::decode_cfg(finalization_bytes, &cfg).map_err(|_| LightError::BadEncoding("finalization"))?;
+    // Threshold certificates have a fixed size: the codec needs no config.
+    let fin = Finalization::<Scheme, Digest>::decode_cfg(finalization_bytes, &()).map_err(|_| LightError::BadEncoding("finalization"))?;
     if !fin.verify(&mut commonware_utils::sys_rng(), &set.scheme, &Sequential) {
         return Err(LightError::CertificateInvalid);
     }
@@ -141,4 +181,3 @@ pub fn from_hex(s: &str) -> Result<Vec<u8>, LightError> {
     }
     (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|_| LightError::BadEncoding("hex"))).collect()
 }
-

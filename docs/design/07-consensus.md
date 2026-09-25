@@ -1,6 +1,15 @@
 # 07. 합의 계층
 
-## 엔진: Commonware simplex (BLS 임계 scheme)
+## 엔진: Commonware simplex (BLS 임계 scheme) — 구현됨 (2026-09-26)
+
+- 인증서: `bls12381_threshold::vrf::Scheme<ed25519::PublicKey, MinSig>`. 정족수(2f+1)의 부분 서명을 모아 **그룹 공개키 하나로 검증되는 서명 하나**를 만든다. 검증자 4명 기준 확정 인증서 237B(ed25519 다중 서명, 검증자당 64B 증가) → 131B(고정).
+- 지갑·경량 클라이언트는 검증자 목록 대신 위원회 identity(G2 공개키 96B)만 신뢰한다(`ValidatorSet::new(identity)`, `certificate_verifier`). 재공유(reshare)해도 identity는 유지된다.
+- 리더 선출: 직전 라운드 VRF 시드(라운드에 대한 임계 서명)로 무작위 선출(`Random` V1). 라운드로빈과 달리 다음 리더를 미리 알 수 없어 표적 DoS가 어렵다.
+- 키: devnet은 고정 시드 딜러(`devnet_threshold`)로 share를 만든다. **딜러가 모든 share를 알므로 devnet 전용**. 실망은 Commonware `feldman_desmedt` DKG로 생성·재공유해야 하며 다음 단계다.
+- 주의(Commonware 문서): 라운드 시드는 같은 라운드 실행에 쓰면 안 된다(리더가 시드를 먼저 알 수 있음). 실행에 난수를 쓸 때는 k라운드 뒤 시드를 약정-공개 방식으로 쓴다.
+- 미완: VRF로 에포크마다 고가동 위원회를 뽑는 D9는 위원회가 바뀔 때마다 재공유(DKG)가 필요해 DKG와 함께 구현한다. 지금은 검증자 전원이 위원회.
+
+### (원 설계)
 
 - `consensus/src/engine_simplex.rs`가 Commonware `Automaton`(propose/verify), `Relay`(broadcast), `Committer`(prepared/finalized)를 구현.
 - 인증서 = BLS 임계 서명 48바이트. 지갑·재귀 회로가 검증하는 유일한 합의 객체.

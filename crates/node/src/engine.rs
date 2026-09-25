@@ -4,6 +4,7 @@
 
 use crate::application::Application;
 use crate::block::{Block, PublicKey, EPOCH};
+use aether_light::Scheme;
 use commonware_broadcast::buffered;
 pub use commonware_consensus::marshal::core::Mailbox as MarshalMailboxOf;
 use commonware_consensus::{
@@ -13,10 +14,10 @@ use commonware_consensus::{
         resolver::handler,
         standard::{Deferred, Standard},
     },
-    simplex::{self, elector::RoundRobin, scheme::ed25519::Scheme, Engine as Consensus},
+    simplex::{self, Engine as Consensus},
     types::{Epoch, FixedEpocher, ViewDelta},
 };
-use commonware_cryptography::{certificate::ConstantProvider, sha256::Digest, Digestible as _, Sha256};
+use commonware_cryptography::{certificate::ConstantProvider, sha256::Digest, Digestible as _};
 use commonware_p2p::{Blocker, Provider, Receiver, Sender};
 use commonware_parallel::Sequential;
 use commonware_resolver::TargetedResolver;
@@ -93,7 +94,7 @@ where
     marshaled: Marshaled<E>,
     /// Handle for reading finalized blocks and certificates (served over RPC).
     pub mailbox: MarshalMailbox<Scheme, Standard<Block>>,
-    consensus: Consensus<E, Scheme, RoundRobin<Sha256>, B, Digest, Marshaled<E>, Marshaled<E>, MarshalMailbox<Scheme, Standard<Block>>, Sequential>,
+    consensus: Consensus<E, Scheme, aether_light::Elector, B, Digest, Marshaled<E>, Marshaled<E>, MarshalMailbox<Scheme, Standard<Block>>, Sequential>,
 }
 
 fn archive_cfg<C>(prefix: &str, name: &str, page_cache: CacheRef, codec_config: C) -> immutable::Config<C> {
@@ -141,12 +142,8 @@ where
         let prefix = cfg.partition_prefix.clone();
         let finalizations = immutable::Archive::init(
             context.child("finalizations_by_height"),
-            archive_cfg(
-                &prefix,
-                "finalizations",
-                page_cache.clone(),
-                <Scheme as commonware_cryptography::certificate::Verifier>::certificate_codec_config_unbounded(),
-            ),
+            // Threshold certificates are fixed-size; their codec config is `()`.
+            archive_cfg(&prefix, "finalizations", page_cache.clone(), ()),
         )
         .await
         .expect("finalizations archive");
@@ -228,7 +225,7 @@ where
                 write_buffer: WRITE_BUFFER,
                 blocker: cfg.blocker,
                 page_cache,
-                elector: RoundRobin::<Sha256>::default(),
+                elector: aether_light::ELECTOR,
                 strategy: Sequential,
             },
         );

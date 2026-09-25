@@ -13,10 +13,7 @@ use serde_json::{json, Value};
 use std::net::SocketAddr;
 use tokio::sync::mpsc;
 
-pub type Marshal = commonware_consensus::marshal::core::Mailbox<
-    commonware_consensus::simplex::scheme::ed25519::Scheme,
-    commonware_consensus::marshal::standard::Standard<crate::block::Block>,
->;
+pub type Marshal = commonware_consensus::marshal::core::Mailbox<aether_light::Scheme, commonware_consensus::marshal::standard::Standard<crate::block::Block>>;
 
 #[derive(Clone)]
 pub struct RpcState {

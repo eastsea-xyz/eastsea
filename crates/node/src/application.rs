@@ -3,10 +3,10 @@
 
 use crate::block::{Block, Context};
 use crate::chain::{build_payload, Chain, Executed};
+use aether_light::Scheme;
 use commonware_actor::Feedback;
 use commonware_consensus::{
     marshal::{ancestry::Ancestry, Update},
-    simplex::scheme::ed25519::Scheme,
     Application as ConsensusApplication, Heightable, Reporter,
 };
 use commonware_cryptography::Digestible;

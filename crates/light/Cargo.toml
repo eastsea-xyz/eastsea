@@ -18,6 +18,8 @@ commonware-cryptography = "=2026.9.0"
 commonware-parallel = "=2026.9.0"
 commonware-utils = "=2026.9.0"
 bytes = "1.7"
+rand_chacha = "0.10"
+rand_core = "0.10"
 
 [dev-dependencies]
 serde_json.workspace = true

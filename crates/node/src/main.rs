@@ -15,7 +15,7 @@ use aether_node::rpc::{self, RpcState};
 use aether_state::Proof;
 use aether_types::{Address, Bytes, GasVector, TxEnvelope, TxHash, U256};
 use clap::{Parser, Subcommand};
-use commonware_consensus::{marshal, simplex::scheme::ed25519::Scheme, types::ViewDelta};
+use commonware_consensus::{marshal, types::ViewDelta};
 use commonware_cryptography::{ed25519, Signer as _};
 use commonware_p2p::{
     authenticated::{self, lookup},
@@ -338,7 +338,12 @@ fn run_node(a: NodeArgs) {
         let (mut tx_out, mut tx_in) = network.register(5, Quota::per_second(NZU32!(1024)));
         let (il_out, il_in) = network.register(6, Quota::per_second(NZU32!(256)));
 
-        let scheme = Scheme::signer(&union(NAMESPACE, b"_CONSENSUS"), validators.clone(), signer.clone()).expect("key is a validator");
+        // BLS threshold certificates (one group signature per block) with a VRF
+        // seed per round for leader election. Devnet shares come from a fixed
+        // dealer seed; a real network derives them with a DKG.
+        let (participants, polynomial, shares) = aether_light::devnet_threshold(n);
+        let share = shares.into_iter().find(|(pk, _)| *pk == signer.public_key()).map(|(_, s)| s).expect("key is a validator");
+        let scheme = aether_light::Scheme::signer(&aether_light::consensus_namespace(), participants, polynomial, share).expect("share matches polynomial");
         let store = aether_node::store::Store::open(&std::path::Path::new(&data).join("state.redb")).expect("open state store");
         let (chain, genesis) = Chain::open(cfg.clone(), store).expect("restore state (delete the data dir to resync)");
         if let Some(a) = dev_censor {

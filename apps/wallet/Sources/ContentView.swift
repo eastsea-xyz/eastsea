@@ -48,7 +48,7 @@ struct ContentView: View {
                     .font(.system(size: 34, weight: .semibold, design: .rounded))
                 if let a = model.account, model.verifyError == nil {
                     Label("Verified by my Mac", systemImage: "checkmark.seal.fill").foregroundStyle(.green).font(.headline)
-                    Text("Finality certificate of block \(a.certifiedBlock) checked against \(a.validators) validator keys · state root \(a.stateRoot.prefix(12))… · EIP-7864 proof for this address")
+                    Text("Block \(a.certifiedBlock) finality: one BLS threshold signature from a \(a.validators)-validator committee, checked against its group key · state root \(a.stateRoot.prefix(12))… · EIP-7864 proof for this address")
                         .font(.caption).foregroundStyle(.secondary)
                 } else if let e = model.verifyError {
                     Label("Not verified", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange).font(.headline)

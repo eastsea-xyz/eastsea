@@ -173,6 +173,20 @@ enum Cmd {
         #[arg(long)]
         wait: bool,
     },
+    /// Pay several addresses in ONE signed tx (EIP-7702 delegation to AetherAccount).
+    Batch {
+        #[arg(long, default_value = "http://127.0.0.1:8545")]
+        rpc: String,
+        #[arg(long)]
+        from_dev: u8,
+        /// Recipients, comma separated; each receives --value.
+        #[arg(long, value_delimiter = ',')]
+        to: Vec<Address>,
+        #[arg(long)]
+        value: U256,
+        #[arg(long)]
+        wait: bool,
+    },
     /// Deploy contract init code (hex).
     Deploy {
         #[arg(long, default_value = "http://127.0.0.1:8545")]
@@ -263,11 +277,27 @@ fn main() {
         Cmd::Status { rpc } => call(&rpc, "aether_status", json!([])).map(|v| println!("{}", pretty(&v))),
         Cmd::Blocks { rpc, n } => call(&rpc, "aether_recentBlocks", json!([n])).map(|v| print_blocks(&v)),
         Cmd::Send { rpc, from_dev, to, value, nonce, wait } => {
-            submit(&rpc, from_dev, nonce, EvmCall { to: Some(to), value, input: Bytes::new(), gas_limit: 21_000 }, wait).map(|_| ())
+            submit(&rpc, from_dev, nonce, EvmCall { to: Some(to), value, input: Bytes::new(), gas_limit: 21_000, delegate: None }, wait).map(|_| ())
         }
+        Cmd::Batch { rpc, from_dev, to, value, wait } => (|| {
+            let signer = P256Signer::from_seed(&dev_seed(from_dev)).map_err(|e| e.to_string())?;
+            let from = aether_crypto::address_of(&signer.public_key()).map_err(|e| e.to_string())?;
+            let code = call(&rpc, "eth_getCode", json!([from]))?;
+            let designator = format!("0xef0100{}", hex::encode(aether_execution::AETHER_ACCOUNT.as_slice()));
+            let delegated = code.as_str().is_some_and(|c| c.eq_ignore_ascii_case(&designator));
+            let calls: Vec<_> = to.iter().map(|a| (*a, value, Bytes::new())).collect();
+            let c = EvmCall {
+                to: Some(from),
+                value: U256::ZERO,
+                input: aether_execution::encode_execute(&calls),
+                gas_limit: 60_000 + 40_000 * calls.len() as u64,
+                delegate: (!delegated).then_some(aether_execution::AETHER_ACCOUNT),
+            };
+            submit(&rpc, from_dev, None, c, wait).map(|_| ())
+        })(),
         Cmd::Deploy { rpc, from_dev, code } => (|| {
             let input = Bytes::from(hex::decode(code.trim_start_matches("0x")).map_err(|e| e.to_string())?);
-            let r = submit(&rpc, from_dev, None, EvmCall { to: None, value: U256::ZERO, input, gas_limit: 3_000_000 }, true)?;
+            let r = submit(&rpc, from_dev, None, EvmCall { to: None, value: U256::ZERO, input, gas_limit: 3_000_000, delegate: None }, true)?;
             if let Some(a) = r.pointer("/receipt/contract_address") {
                 println!("contract: {}", a.as_str().unwrap_or_default());
             }
@@ -275,7 +305,7 @@ fn main() {
         })(),
         Cmd::Call { rpc, from_dev, to, data, wait } => (|| {
             let input = Bytes::from(hex::decode(data.trim_start_matches("0x")).map_err(|e| e.to_string())?);
-            submit(&rpc, from_dev, None, EvmCall { to: Some(to), value: U256::ZERO, input, gas_limit: 1_000_000 }, wait).map(|_| ())
+            submit(&rpc, from_dev, None, EvmCall { to: Some(to), value: U256::ZERO, input, gas_limit: 1_000_000, delegate: None }, wait).map(|_| ())
         })(),
         Cmd::Balance { address, rpc, validators, identity } => trusted(validators, identity).and_then(|set| verified_balance(&rpc, address, &set)),
         Cmd::Storage { address, slot, rpc, validators, identity } => trusted(validators, identity).and_then(|set| verified_storage(&rpc, address, slot, &set)),

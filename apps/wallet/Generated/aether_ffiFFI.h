@@ -270,6 +270,11 @@ RustBuffer uniffi_aether_ffi_fn_func_connection(RustCallStatus *_Nonnull out_sta
 RustBuffer uniffi_aether_ffi_fn_func_devnet_faucet(RustBuffer to, RustBuffer value_wei, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_BATCH
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_BATCH
+RustBuffer uniffi_aether_ffi_fn_func_prepare_batch(RustBuffer p256_public_key, RustBuffer payments, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_TRANSFER
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_TRANSFER
 RustBuffer uniffi_aether_ffi_fn_func_prepare_transfer(RustBuffer p256_public_key, RustBuffer to, RustBuffer value_wei, RustCallStatus *_Nonnull out_status
@@ -587,6 +592,12 @@ uint16_t uniffi_aether_ffi_checksum_func_connection(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_DEVNET_FAUCET
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_DEVNET_FAUCET
 uint16_t uniffi_aether_ffi_checksum_func_devnet_faucet(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_BATCH
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_BATCH
+uint16_t uniffi_aether_ffi_checksum_func_prepare_batch(void
     
 );
 #endif

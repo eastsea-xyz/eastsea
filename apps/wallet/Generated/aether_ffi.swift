@@ -715,6 +715,63 @@ public func FfiConverterTypeChainStatus_lower(_ value: ChainStatus) -> RustBuffe
 }
 
 
+/**
+ * One recipient of a batch.
+ */
+public struct Payment: Equatable, Hashable {
+    public var to: String
+    public var valueWei: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(to: String, valueWei: String) {
+        self.to = to
+        self.valueWei = valueWei
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension Payment: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePayment: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Payment {
+        return
+            try Payment(
+                to: FfiConverterString.read(from: &buf), 
+                valueWei: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: Payment, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.to, into: &buf)
+        FfiConverterString.write(value.valueWei, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePayment_lift(_ buf: RustBuffer) throws -> Payment {
+    return try FfiConverterTypePayment.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePayment_lower(_ value: Payment) -> RustBuffer {
+    return FfiConverterTypePayment.lower(value)
+}
+
+
 public struct PreparedTx: Equatable, Hashable {
     public var from: String
     public var nonce: UInt64
@@ -1079,6 +1136,31 @@ fileprivate struct FfiConverterSequenceTypeBlockInfo: FfiConverterRustBuffer {
         return seq
     }
 }
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypePayment: FfiConverterRustBuffer {
+    typealias SwiftType = [Payment]
+
+    public static func write(_ value: [Payment], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypePayment.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [Payment] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [Payment]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypePayment.read(from: &buf))
+        }
+        return seq
+    }
+}
 /**
  * Account address for a Secure Enclave P-256 public key.
  */
@@ -1128,6 +1210,20 @@ public func devnetFaucet(to: String, valueWei: String)throws  -> String  {
     uniffi_aether_ffi_fn_func_devnet_faucet(
         FfiConverterString.lower(to),
         FfiConverterString.lower(valueWei),uniffiCallStatus
+    )
+})
+}
+/**
+ * Several payments, all or nothing, under ONE signature (one Touch ID).
+ * The account delegates to AetherAccount (EIP-7702) in the same tx the first
+ * time; afterwards it just calls its own `execute`.
+ */
+public func prepareBatch(p256PublicKey: Data, payments: [Payment])throws  -> PreparedTx  {
+    return try  FfiConverterTypePreparedTx_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_prepare_batch(
+        FfiConverterData.lower(p256PublicKey),
+        FfiConverterSequenceTypePayment.lower(payments),uniffiCallStatus
     )
 })
 }
@@ -1225,6 +1321,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_devnet_faucet() != 1822) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_prepare_batch() != 9304) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_prepare_transfer() != 24792) {

@@ -32,6 +32,8 @@ impl ChainConfig {
         for (a, v) in &self.alloc {
             s.set_balance(*a, *v).expect("genesis balance fits u128");
         }
+        // The account contract P-256 accounts delegate to (EIP-7702) for batched calls.
+        s.set_code(aether_execution::AETHER_ACCOUNT, aether_execution::aether_account_code()).expect("predeploy");
         s
     }
 }

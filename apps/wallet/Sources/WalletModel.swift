@@ -92,14 +92,26 @@ final class WalletModel: ObservableObject {
     func send() {
         guard let enclave else { return }
         guard let wei = Wei.from(aeth: sendAmount) else { note("Invalid amount"); return }
-        let to = sendTo.trimmingCharacters(in: .whitespaces), pk = enclave.publicKey
+        // One or more recipients (comma/space separated); each gets the amount.
+        let recipients = sendTo.split(whereSeparator: { $0 == "," || $0.isWhitespace }).map(String.init).filter { !$0.isEmpty }
+        guard !recipients.isEmpty else { return }
+        let pk = enclave.publicKey
         busy = true
         Task.detached {
             do {
-                let prepared = try prepareTransfer(p256PublicKey: pk, to: to, valueWei: wei)
+                let prepared: PreparedTx
+                let label: String
+                if recipients.count == 1 {
+                    prepared = try prepareTransfer(p256PublicKey: pk, to: recipients[0], valueWei: wei)
+                    label = "Sent \(Wei.format(wei)) AETH (nonce \(prepared.nonce))"
+                } else {
+                    // All payments in one tx: one signature, all or nothing (EIP-7702 batch).
+                    prepared = try prepareBatch(p256PublicKey: pk, payments: recipients.map { Payment(to: $0, valueWei: wei) })
+                    label = "Paid \(recipients.count) recipients \(Wei.format(wei)) AETH each with one signature (nonce \(prepared.nonce))"
+                }
                 let sig = try enclave.sign(prepared.signingMessage)   // Secure Enclave, may prompt
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
-                await self.track(h, label: "Sent \(Wei.format(wei)) AETH (nonce \(prepared.nonce))")
+                await self.track(h, label: label)
             } catch { await MainActor.run { self.note("Send failed: \(error)"); self.busy = false } }
         }
     }

@@ -224,14 +224,60 @@ pub fn verified_account(address: String, validators: u32) -> R<VerifiedAccount> 
 /// Build a transfer for the Secure Enclave key to sign.
 #[uniffi::export]
 pub fn prepare_transfer(p256_public_key: Vec<u8>, to: String, value_wei: String) -> R<PreparedTx> {
-    let pk = p256_key(&p256_public_key)?;
-    let from = address_of(&pk).map_err(|e| WalletError::Invalid(e.to_string()))?;
     let to: Address = to.parse().map_err(|_| WalletError::Invalid("recipient address".into()))?;
     let value: U256 = value_wei.parse().map_err(|_| WalletError::Invalid("amount".into()))?;
+    prepare(&p256_public_key, |_| Ok(EvmCall { to: Some(to), value, input: Bytes::new(), gas_limit: 21_000, delegate: None }))
+}
+
+/// One recipient of a batch.
+#[derive(uniffi::Record)]
+pub struct Payment {
+    pub to: String,
+    pub value_wei: String,
+}
+
+/// Several payments, all or nothing, under ONE signature (one Touch ID).
+/// The account delegates to AetherAccount (EIP-7702) in the same tx the first
+/// time; afterwards it just calls its own `execute`.
+#[uniffi::export]
+pub fn prepare_batch(p256_public_key: Vec<u8>, payments: Vec<Payment>) -> R<PreparedTx> {
+    if payments.is_empty() {
+        return Err(WalletError::Invalid("no payments".into()));
+    }
+    let calls = payments
+        .iter()
+        .map(|p| {
+            let to: Address = p.to.parse().map_err(|_| WalletError::Invalid(format!("recipient {}", p.to)))?;
+            let v: U256 = p.value_wei.parse().map_err(|_| WalletError::Invalid(format!("amount {}", p.value_wei)))?;
+            Ok((to, v, Bytes::new()))
+        })
+        .collect::<R<Vec<_>>>()?;
+    prepare(&p256_public_key, |from| {
+        let code = call("eth_getCode", json!([from]))?;
+        let mut designator = String::from("0xef0100");
+        designator.push_str(&hex_lower(aether_execution::AETHER_ACCOUNT.as_slice()));
+        let delegated = code.as_str().is_some_and(|c| c.eq_ignore_ascii_case(&designator));
+        Ok(EvmCall {
+            to: Some(from),
+            value: U256::ZERO,
+            input: aether_execution::encode_execute(&calls),
+            gas_limit: 60_000 + 40_000 * calls.len() as u64,
+            delegate: (!delegated).then_some(aether_execution::AETHER_ACCOUNT),
+        })
+    })
+}
+
+fn hex_lower(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+fn prepare(p256_public_key: &[u8], body: impl FnOnce(Address) -> R<EvmCall>) -> R<PreparedTx> {
+    let pk = p256_key(p256_public_key)?;
+    let from = address_of(&pk).map_err(|e| WalletError::Invalid(e.to_string()))?;
     let chain_id = call("aether_status", json!([]))?["chain_id"].as_u64().unwrap_or_default();
     let nonce_hex = call("eth_getTransactionCount", json!([from]))?;
     let nonce = u64::from_str_radix(nonce_hex.as_str().unwrap_or("0x0").trim_start_matches("0x"), 16).map_err(|e| WalletError::Invalid(e.to_string()))?;
-    let call_body = EvmCall { to: Some(to), value, input: Bytes::new(), gas_limit: 21_000 };
+    let call_body = body(from)?;
     let payload = call_body.encode();
     let header = TxHeader {
         chain_id,
@@ -311,7 +357,7 @@ pub fn devnet_faucet(to: String, value_wei: String) -> R<String> {
     let chain_id = call("aether_status", json!([]))?["chain_id"].as_u64().unwrap_or_default();
     let nonce_hex = call("eth_getTransactionCount", json!([from]))?;
     let nonce = u64::from_str_radix(nonce_hex.as_str().unwrap_or("0x0").trim_start_matches("0x"), 16).unwrap_or(0);
-    let tx = sign_call(&signer, chain_id, nonce, 1, &EvmCall { to: Some(to), value, input: Bytes::new(), gas_limit: 21_000 })
+    let tx = sign_call(&signer, chain_id, nonce, 1, &EvmCall { to: Some(to), value, input: Bytes::new(), gas_limit: 21_000, delegate: None })
         .map_err(|e| WalletError::Invalid(e.to_string()))?;
     let v = call("aether_sendTransaction", json!([tx]))?;
     Ok(v["hash"].as_str().unwrap_or_default().to_string())

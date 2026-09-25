@@ -27,7 +27,7 @@ fn sender(dev: u8) -> Address {
 }
 
 fn transfer(dev: u8, nonce: u64, value: u64) -> TxEnvelope {
-    let call = EvmCall { to: Some(Address::repeat_byte(0xbe)), value: U256::from(value), input: Bytes::new(), gas_limit: 21_000 };
+    let call = EvmCall { to: Some(Address::repeat_byte(0xbe)), value: U256::from(value), input: Bytes::new(), gas_limit: 21_000 , delegate: None};
     sign_call(&signer(dev), CHAIN, nonce, 1, &call).unwrap()
 }
 

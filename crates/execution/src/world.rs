@@ -116,6 +116,21 @@ impl WorldState {
         self.codes.get(&self.code_hash(a)).cloned().unwrap_or_default()
     }
 
+    /// Genesis predeploy: put `code` at `a` (no constructor runs).
+    pub fn set_code(&mut self, a: Address, code: Bytes) -> Result<(), StateError> {
+        let h = self.h().clone();
+        let hash = revm::primitives::keccak256(&code);
+        let d = BasicData { code_size: code.len() as u32, ..self.account(&a).unwrap_or_default() };
+        let mut writes = vec![(basic_data_key(&h, &a), Some(d.encode().map_err(|_| StateError::BalanceOverflow(a))?)), (code_hash_key(&h, &a), Some(hash.0))];
+        for (i, chunk) in chunkify_code(&code).into_iter().enumerate() {
+            writes.push((code_chunk_key(&h, &a, i as u64), Some(chunk)));
+        }
+        self.write(writes);
+        Arc::make_mut(&mut self.codes).insert(hash, code.clone());
+        self.journal.codes.push((hash, code));
+        Ok(())
+    }
+
     /// Genesis / faucet allocation.
     pub fn set_balance(&mut self, a: Address, balance: U256) -> Result<(), StateError> {
         let d = self.account(&a).unwrap_or_default().with_balance(balance).map_err(|_| StateError::BalanceOverflow(a))?;
@@ -172,12 +187,23 @@ impl WorldState {
             .with_balance(acc.info.balance)
             .map_err(|_| StateError::BalanceOverflow(*addr))?;
         writes.push((basic_data_key(h, addr), Some(data.encode().map_err(|_| StateError::BalanceOverflow(*addr))?)));
-        if acc.is_created() && acc.info.code_hash != KECCAK_EMPTY && !code.is_empty() {
-            writes.push((code_hash_key(h, addr), Some(acc.info.code_hash.0)));
-            for (i, chunk) in chunkify_code(&code).into_iter().enumerate() {
-                writes.push((code_chunk_key(h, addr, i as u64), Some(chunk)));
+        // New code: contract creation, or an EIP-7702 delegation being set.
+        let old_hash = self.code_hash(addr);
+        if acc.info.code_hash != old_hash {
+            // Remove the previous code's chunks (a delegation replaced or cleared).
+            let old_len = self.code(addr).len();
+            for i in 0..old_len.div_ceil(31) {
+                writes.push((code_chunk_key(h, addr, i as u64), None));
             }
-            new_codes.push((acc.info.code_hash, code));
+            if acc.info.code_hash == KECCAK_EMPTY || code.is_empty() {
+                writes.push((code_hash_key(h, addr), None));
+            } else {
+                writes.push((code_hash_key(h, addr), Some(acc.info.code_hash.0)));
+                for (i, chunk) in chunkify_code(&code).into_iter().enumerate() {
+                    writes.push((code_chunk_key(h, addr, i as u64), Some(chunk)));
+                }
+                new_codes.push((acc.info.code_hash, code));
+            }
         }
         for (slot, value) in acc.storage.iter() {
             if value.is_changed() {

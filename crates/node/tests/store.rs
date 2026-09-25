@@ -62,8 +62,8 @@ fn committed_state_reloads_with_identical_root() {
     commit(&store, 0, &s);
 
     // Block 1: deploy a contract (code + chunks) and a transfer.
-    let deploy = EvmCall { to: None, value: U256::ZERO, input: Bytes::from(hex::decode(COUNTER_INIT).unwrap()), gas_limit: 3_000_000 };
-    let pay = EvmCall { to: Some(Address::repeat_byte(0xb0)), value: U256::from(5u64), input: Bytes::new(), gas_limit: 21_000 };
+    let deploy = EvmCall { to: None, value: U256::ZERO, input: Bytes::from(hex::decode(COUNTER_INIT).unwrap()), gas_limit: 3_000_000 , delegate: None};
+    let pay = EvmCall { to: Some(Address::repeat_byte(0xb0)), value: U256::from(5u64), input: Bytes::new(), gas_limit: 21_000 , delegate: None};
     let txs = vec![sign_call(&signer(1), CHAIN, 0, 1, &deploy).unwrap(), sign_call(&signer(2), CHAIN, 0, 1, &pay).unwrap()];
     let (included, out) = build_block(&s, &ctx(1), txs);
     assert_eq!(included.len(), 2);
@@ -71,7 +71,7 @@ fn committed_state_reloads_with_identical_root() {
     commit(&store, 1, &out.state);
 
     // Block 2: call the counter (storage write) and drain dev 2 to zero-ish.
-    let call = EvmCall { to: Some(contract), value: U256::ZERO, input: Bytes::new(), gas_limit: 100_000 };
+    let call = EvmCall { to: Some(contract), value: U256::ZERO, input: Bytes::new(), gas_limit: 100_000 , delegate: None};
     let (_, out2) = build_block(&out.state, &ctx(2), vec![sign_call(&signer(1), CHAIN, 1, 1, &call).unwrap()]);
     assert_eq!(out2.state.storage(&contract, U256::ZERO), U256::from(1u64));
     commit(&store, 2, &out2.state);

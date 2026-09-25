@@ -6,9 +6,7 @@
 
 use aether_crypto::{address_of, recover_secp256k1, verify, CryptoError, PublicKey, Signer};
 use aether_hash::{Blake3, Hasher};
-use aether_types::{
-    Address, Bytes, Canonical, FeeVector, GasVector, SignerScheme, TxEnvelope, TxHash, TxHeader, TxPayload, B256, U256,
-};
+use aether_types::{Address, Bytes, Canonical, FeeVector, GasVector, SignerScheme, TxEnvelope, TxHash, TxHeader, TxPayload, B256, U256};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EvmCall {
@@ -17,7 +15,15 @@ pub struct EvmCall {
     pub value: U256,
     pub input: Bytes,
     pub gas_limit: u64,
+    /// EIP-7702-style delegation set by this (self-signed) tx before it runs:
+    /// the sender's code becomes `0xef0100 ‖ delegate`. `Address::ZERO` clears it.
+    /// The tx signature is the authorization, so P-256 accounts can delegate
+    /// without a secp256k1 authorization tuple.
+    pub delegate: Option<Address>,
 }
+
+/// Payload trailer tag for `delegate` (absent = no change, keeps old encodings valid).
+const DELEGATE_TAG: u8 = 0xd7;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TxError {
@@ -44,6 +50,10 @@ impl EvmCall {
         out.extend_from_slice(&self.gas_limit.to_be_bytes());
         out.extend_from_slice(&(self.input.len() as u64).to_be_bytes());
         out.extend_from_slice(&self.input);
+        if let Some(d) = self.delegate {
+            out.push(DELEGATE_TAG);
+            out.extend_from_slice(d.as_slice());
+        }
         out
     }
 
@@ -66,10 +76,12 @@ impl EvmCall {
         let gas_limit = u64::from_be_bytes(take(8)?.try_into().expect("8"));
         let len = u64::from_be_bytes(take(8)?.try_into().expect("8")) as usize;
         let input = Bytes::copy_from_slice(take(len)?);
-        if !rest.is_empty() {
-            return Err(TxError::MalformedPayload);
-        }
-        Ok(EvmCall { to, value, input, gas_limit })
+        let delegate = match rest {
+            [] => None,
+            [DELEGATE_TAG, a @ ..] if a.len() == 20 => Some(Address::from_slice(a)),
+            _ => return Err(TxError::MalformedPayload),
+        };
+        Ok(EvmCall { to, value, input, gas_limit, delegate })
     }
 }
 
@@ -152,7 +164,7 @@ mod tests {
     }
 
     fn call() -> EvmCall {
-        EvmCall { to: Some(Address::repeat_byte(9)), value: U256::from(5), input: Bytes::from_static(b"\x01\x02"), gas_limit: 50_000 }
+        EvmCall { to: Some(Address::repeat_byte(9)), value: U256::from(5), input: Bytes::from_static(b"\x01\x02"), gas_limit: 50_000, delegate: None }
     }
 
     #[test]

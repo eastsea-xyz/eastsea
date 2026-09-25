@@ -14,6 +14,7 @@ use crate::world::{StateError, WorldState};
 use aether_types::{Address, BalBuilder, BlockAccessList, Bytes, GasVector, TxEnvelope, TxHash, B256, U256};
 use revm::context::result::{ExecutionResult, Output};
 use revm::context::TxEnv;
+use revm::context_interface::transaction::{Authorization, RecoveredAuthority, RecoveredAuthorization};
 use revm::database::WrapDatabaseRef;
 use revm::interpreter::interpreter_types::{Jumps, StackTr};
 use revm::interpreter::{CallInputs, CallOutcome, Interpreter, InterpreterTypes};
@@ -109,6 +110,19 @@ pub(crate) struct TxRun {
     pub(crate) touched_beneficiary: bool,
 }
 
+/// A self-delegation as an EIP-7702 authorization whose authority is the tx
+/// sender (already authenticated by its own signature, e.g. P-256). The sender's
+/// nonce is bumped before authorizations are applied, hence `nonce + 1`.
+fn delegation(tx: &TxEnvelope, ctx: &BlockContext, call: &EvmCall) -> Vec<RecoveredAuthorization> {
+    call.delegate
+        .map(|target| {
+            let auth = Authorization { chain_id: U256::from(ctx.chain_id), address: target, nonce: tx.header.nonce + 1 };
+            RecoveredAuthorization::new_unchecked(auth, RecoveredAuthority::Valid(tx.header.sender))
+        })
+        .into_iter()
+        .collect()
+}
+
 pub(crate) fn run_tx(state: &WorldState, ctx: &BlockContext, tx: &TxEnvelope) -> Result<TxRun, String> {
     let call = validate_stateless(tx, ctx.chain_id).map_err(|e| format!("{e:?}"))?;
     run_validated(state, ctx, tx, &call)
@@ -128,6 +142,7 @@ pub(crate) fn run_validated(state: &WorldState, ctx: &BlockContext, tx: &TxEnvel
         })
         .value(call.value)
         .data(call.input.clone())
+        .authorization_list_recovered(delegation(tx, ctx, call))
         .build()
         .map_err(|e| format!("{e:?}"))?;
 
@@ -177,7 +192,7 @@ fn record_bal(bal: &mut BalBuilder, pre: &WorldState, index: u32, changes: &revm
         if acc.info.nonce != pre.nonce(addr) {
             bal.nonce(*addr);
         }
-        if acc.is_created() {
+        if acc.is_created() || acc.info.code_hash != pre.code_hash(addr) {
             bal.code(*addr);
         }
         for (slot, v) in acc.storage.iter() {

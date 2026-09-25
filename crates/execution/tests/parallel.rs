@@ -42,6 +42,7 @@ fn world(n_users: u8) -> World {
         pre.set_balance(addr(u), U256::from(10u128.pow(22))).unwrap();
     }
     pre.set_balance(addr(&proposer), U256::from(10u128.pow(20))).unwrap();
+    pre.set_code(aether_execution::AETHER_ACCOUNT, aether_execution::aether_account_code()).unwrap();
     let ctx = BlockContext {
         chain_id: CHAIN,
         number: 1,
@@ -53,7 +54,7 @@ fn world(n_users: u8) -> World {
 }
 
 fn call(to: Option<Address>, value: u64, input: &[u8], gas: u64) -> EvmCall {
-    EvmCall { to, value: U256::from(value), input: Bytes::copy_from_slice(input), gas_limit: gas }
+    EvmCall { to, value: U256::from(value), input: Bytes::copy_from_slice(input), gas_limit: gas, delegate: None }
 }
 
 fn assert_same(a: &BlockOutcome, b: &BlockOutcome) {
@@ -74,12 +75,34 @@ fn with_contracts(w: &World) -> (WorldState, Address, Address) {
 
 #[derive(Debug, Clone)]
 enum Op {
-    Transfer { from: usize, to: usize, value: u64 },
-    ToProposer { from: usize, value: u64 },
-    Counter { from: usize },
-    Peek { from: usize },
-    FromProposer { to: usize, value: u64 },
-    BadNonce { from: usize },
+    Transfer {
+        from: usize,
+        to: usize,
+        value: u64,
+    },
+    ToProposer {
+        from: usize,
+        value: u64,
+    },
+    Counter {
+        from: usize,
+    },
+    Peek {
+        from: usize,
+    },
+    FromProposer {
+        to: usize,
+        value: u64,
+    },
+    BadNonce {
+        from: usize,
+    },
+    /// Delegate to AetherAccount (first time) and batch-pay two targets.
+    Batch {
+        from: usize,
+        a: usize,
+        b: usize,
+    },
 }
 
 fn op() -> impl Strategy<Value = Op> {
@@ -90,6 +113,7 @@ fn op() -> impl Strategy<Value = Op> {
         1 => (0..6usize).prop_map(|from| Op::Peek { from }),
         1 => (0..9usize, 1..1_000u64).prop_map(|(to, value)| Op::FromProposer { to, value }),
         1 => (0..6usize).prop_map(|from| Op::BadNonce { from }),
+        2 => (0..6usize, 0..9usize, 0..9usize).prop_map(|(from, a, b)| Op::Batch { from, a, b }),
     ]
 }
 
@@ -106,6 +130,21 @@ fn txs(w: &World, pre: &WorldState, counter: Address, peek: Address, ops: &[Op])
             Op::Counter { from } => (&w.users[*from], &mut nonces[*from], call(Some(counter), 0, &[], 100_000)),
             Op::Peek { from } => (&w.users[*from], &mut nonces[*from], call(Some(peek), 0, &[], 100_000)),
             Op::FromProposer { to, value } => (&w.proposer, &mut pn, call(Some(target(*to)), *value, &[], 21_000)),
+            Op::Batch { from, a, b } => {
+                let me = addr(&w.users[*from]);
+                let calls = vec![(target(*a), U256::from(3u64), Bytes::new()), (target(*b), U256::from(4u64), Bytes::new())];
+                let c = EvmCall {
+                    to: Some(me),
+                    value: U256::ZERO,
+                    input: aether_execution::encode_execute(&calls),
+                    gas_limit: 300_000,
+                    delegate: Some(aether_execution::AETHER_ACCOUNT),
+                };
+                out.push(sign_call(&w.users[*from], CHAIN, nonces[*from], 1, &c).unwrap());
+                // A self-delegation also consumes the authorization nonce.
+                nonces[*from] += 2;
+                continue;
+            }
             Op::BadNonce { from } => {
                 let tx = sign_call(&w.users[*from], CHAIN, nonces[*from] + 5, 1, &call(Some(target(0)), 1, &[], 21_000)).unwrap();
                 out.push(tx);

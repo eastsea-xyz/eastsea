@@ -189,6 +189,19 @@ fn four_validators_agree_execute_survive_and_recover() {
     let st = net.cli(&["storage", &contract, "0", "--rpc", &net.url(0)]);
     assert!(st.contains("] = 2") && st.contains("verified  ✓"), "{st}");
 
+    // One P-256 signature pays three addresses (EIP-7702 delegation + batch).
+    let (x, y, z) = ("0x00000000000000000000000000000000000000a1", "0x00000000000000000000000000000000000000a2", "0x00000000000000000000000000000000000000a3");
+    let out = net.cli(&["batch", "--rpc", &net.url(1), "--from-dev", "5", "--to", &format!("{x},{y},{z}"), "--value", "9", "--wait"]);
+    assert!(out.contains("success=true"), "{out}");
+    net.wait_height(2, net.height(1), 20);
+    for a in [x, y, z] {
+        let bal = net.cli(&["balance", a, "--rpc", &net.url(2)]);
+        assert!(bal.contains("balance   9 wei") && bal.contains("verified  ✓"), "{bal}");
+    }
+    // Second batch: already delegated, no delegation field needed.
+    let out = net.cli(&["batch", "--rpc", &net.url(0), "--from-dev", "5", "--to", x, "--value", "1", "--wait"]);
+    assert!(out.contains("success=true"), "{out}");
+
     // Every node has the same chain.
     let h = net.height(0);
     for i in 1..4 {

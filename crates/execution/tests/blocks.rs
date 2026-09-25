@@ -39,7 +39,7 @@ fn funded(signers: &[&dyn Signer]) -> WorldState {
 }
 
 fn transfer(to: Address, wei: u64) -> EvmCall {
-    EvmCall { to: Some(to), value: U256::from(wei), input: Bytes::new(), gas_limit: 21_000 }
+    EvmCall { to: Some(to), value: U256::from(wei), input: Bytes::new(), gas_limit: 21_000, delegate: None }
 }
 
 #[test]
@@ -77,7 +77,9 @@ fn replay_and_bad_nonce_rejected() {
 fn deploy_and_call_contract() {
     let dev = P256Signer::from_seed(&seed(3)).unwrap();
     let mut state = funded(&[&dev]);
-    let deploy = sign_call(&dev, CHAIN, 0, 1, &EvmCall { to: None, value: U256::ZERO, input: Bytes::from_static(COUNTER_INIT), gas_limit: 200_000 }).unwrap();
+    let deploy =
+        sign_call(&dev, CHAIN, 0, 1, &EvmCall { to: None, value: U256::ZERO, input: Bytes::from_static(COUNTER_INIT), gas_limit: 200_000, delegate: None })
+            .unwrap();
     let out = execute_block(&state, &ctx(1), &[deploy]).unwrap();
     let counter = out.receipts[0].contract_address.expect("created");
     assert!(out.receipts[0].success);
@@ -85,7 +87,9 @@ fn deploy_and_call_contract() {
     assert_eq!(state.code(&counter).len(), 10);
 
     let calls: Vec<_> = (1..=2)
-        .map(|n| sign_call(&dev, CHAIN, n, 1, &EvmCall { to: Some(counter), value: U256::ZERO, input: Bytes::new(), gas_limit: 100_000 }).unwrap())
+        .map(|n| {
+            sign_call(&dev, CHAIN, n, 1, &EvmCall { to: Some(counter), value: U256::ZERO, input: Bytes::new(), gas_limit: 100_000, delegate: None }).unwrap()
+        })
         .collect();
     let out = execute_block(&state, &ctx(2), &calls).unwrap();
     assert!(out.receipts.iter().all(|r| r.success && r.prove_gas > 0));

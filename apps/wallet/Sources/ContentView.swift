@@ -66,7 +66,7 @@ struct ContentView: View {
     private var sendCard: some View {
         GroupBox {
             HStack {
-                TextField("0x recipient", text: $model.sendTo).textFieldStyle(.roundedBorder).font(.callout.monospaced())
+                TextField("0x recipient (several: comma-separated, one signature)", text: $model.sendTo).textFieldStyle(.roundedBorder).font(.callout.monospaced())
                 TextField("AETH", text: $model.sendAmount).textFieldStyle(.roundedBorder).frame(width: 80)
                 Button("Send") { model.send() }.keyboardShortcut(.return).disabled(model.busy || model.sendTo.isEmpty)
             }

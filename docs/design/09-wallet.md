@@ -64,3 +64,13 @@ interface Signer { bytes sign_digest(bytes digest); bytes public_key(); }   // S
 ## 접근성·현지화
 
 - 한국어·영어. 시스템 다크 모드. VoiceOver 라벨.
+
+
+## 위임 계정(EIP-7702) — 구현됨 (2026-09-26)
+
+- P-256(Secure Enclave) 계정에는 secp256k1 키가 없어 표준 7702 권한 튜플을 만들 수 없다. 대신 **자기 서명 tx 자체가 권한**이다: `EvmCall.delegate = Some(addr)`면 실행 전에 발신자 코드가 7702 지정자 `0xef0100‖addr`가 된다(`Address::ZERO`면 해제). 구현은 revm의 7702 처리에 발신자를 authority로 넣은 `RecoveredAuthorization`(nonce = tx nonce + 1, 표준 자기 후원 규칙)을 주는 방식이라 가스·nonce·EIP-3607 예외가 표준과 같다. 페이로드에는 선택적 꼬리(태그 0xd7 + 20B)로 붙어 기존 인코딩은 그대로 유효.
+- 위임 대상 `AetherAccount`(`contracts/src/AetherAccount.sol`, 0x…7702에 제네시스 선배포): `execute((address,uint256,bytes)[])` — 여러 호출을 **서명 한 번(Touch ID 한 번)**에 원자적으로. 계정 자신만 호출 가능(`msg.sender == address(this)`).
+- 지갑: 받는 사람을 쉼표로 여러 개 적으면 `prepare_batch`로 한 tx. 첫 배치에서 위임을 같이 설정하고 이후엔 생략.
+- 상태: 코드 변경(위임 설정·교체·해제)을 트리에 기록(이전 코드 청크 삭제), BAL `code_touched`. 병렬 실행 차등 테스트에 위임·배치 연산 포함.
+- 검증: 위임+배치 한 tx, 이후 배치, 해제, 타인 호출 거부(OnlySelf), 코덱 하위호환, 4검증자 devnet에서 서명 한 번으로 3곳 지급 후 경량 검증.
+- 다음: P256VERIFY(0x100, Osaka 활성)로 세션 키·복구 키(두 번째 기기의 Secure Enclave 키)를 계약에서 검증.

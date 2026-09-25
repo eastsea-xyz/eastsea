@@ -1090,22 +1090,30 @@ public func accountAddress(p256PublicKey: Data)throws  -> String  {
     )
 })
 }
-public func chainStatus(rpc: String)throws  -> ChainStatus  {
+public func chainStatus()throws  -> ChainStatus  {
     return try  FfiConverterTypeChainStatus_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
         uniffiCallStatus in
-    uniffi_aether_ffi_fn_func_chain_status(
-        FfiConverterString.lower(rpc),uniffiCallStatus
+    uniffi_aether_ffi_fn_func_chain_status(uniffiCallStatus
+    )
+})
+}
+/**
+ * How the wallet currently reaches the network (for display).
+ */
+public func connection() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_connection(uniffiCallStatus
     )
 })
 }
 /**
  * Devnet faucet: send test coins (zero value) from the public dev account 10.
  */
-public func devnetFaucet(rpc: String, to: String, valueWei: String)throws  -> String  {
+public func devnetFaucet(to: String, valueWei: String)throws  -> String  {
     return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
         uniffiCallStatus in
     uniffi_aether_ffi_fn_func_devnet_faucet(
-        FfiConverterString.lower(rpc),
         FfiConverterString.lower(to),
         FfiConverterString.lower(valueWei),uniffiCallStatus
     )
@@ -1114,31 +1122,28 @@ public func devnetFaucet(rpc: String, to: String, valueWei: String)throws  -> St
 /**
  * Build a transfer for the Secure Enclave key to sign.
  */
-public func prepareTransfer(rpc: String, p256PublicKey: Data, to: String, valueWei: String)throws  -> PreparedTx  {
+public func prepareTransfer(p256PublicKey: Data, to: String, valueWei: String)throws  -> PreparedTx  {
     return try  FfiConverterTypePreparedTx_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
         uniffiCallStatus in
     uniffi_aether_ffi_fn_func_prepare_transfer(
-        FfiConverterString.lower(rpc),
         FfiConverterData.lower(p256PublicKey),
         FfiConverterString.lower(to),
         FfiConverterString.lower(valueWei),uniffiCallStatus
     )
 })
 }
-public func receipt(rpc: String, txHash: String)throws  -> TxReceipt?  {
+public func receipt(txHash: String)throws  -> TxReceipt?  {
     return try  FfiConverterOptionTypeTxReceipt.lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
         uniffiCallStatus in
     uniffi_aether_ffi_fn_func_receipt(
-        FfiConverterString.lower(rpc),
         FfiConverterString.lower(txHash),uniffiCallStatus
     )
 })
 }
-public func recentBlocks(rpc: String, n: UInt32)throws  -> [BlockInfo]  {
+public func recentBlocks(n: UInt32)throws  -> [BlockInfo]  {
     return try  FfiConverterSequenceTypeBlockInfo.lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
         uniffiCallStatus in
     uniffi_aether_ffi_fn_func_recent_blocks(
-        FfiConverterString.lower(rpc),
         FfiConverterUInt32.lower(n),uniffiCallStatus
     )
 })
@@ -1146,11 +1151,10 @@ public func recentBlocks(rpc: String, n: UInt32)throws  -> [BlockInfo]  {
 /**
  * Attach a Secure Enclave signature (raw r‖s, 64 bytes) and submit.
  */
-public func submitSigned(rpc: String, envelopeJson: String, signature: Data, p256PublicKey: Data)throws  -> String  {
+public func submitSigned(envelopeJson: String, signature: Data, p256PublicKey: Data)throws  -> String  {
     return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
         uniffiCallStatus in
     uniffi_aether_ffi_fn_func_submit_signed(
-        FfiConverterString.lower(rpc),
         FfiConverterString.lower(envelopeJson),
         FfiConverterData.lower(signature),
         FfiConverterData.lower(p256PublicKey),uniffiCallStatus
@@ -1160,11 +1164,10 @@ public func submitSigned(rpc: String, envelopeJson: String, signature: Data, p25
 /**
  * Balance and nonce, verified against a validator-signed state root.
  */
-public func verifiedAccount(rpc: String, address: String, validators: UInt32)throws  -> VerifiedAccount  {
+public func verifiedAccount(address: String, validators: UInt32)throws  -> VerifiedAccount  {
     return try  FfiConverterTypeVerifiedAccount_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
         uniffiCallStatus in
     uniffi_aether_ffi_fn_func_verified_account(
-        FfiConverterString.lower(rpc),
         FfiConverterString.lower(address),
         FfiConverterUInt32.lower(validators),uniffiCallStatus
     )
@@ -1189,25 +1192,28 @@ private let initializationResult: InitializationResult = {
     if (uniffi_aether_ffi_checksum_func_account_address() != 24481) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_aether_ffi_checksum_func_chain_status() != 39164) {
+    if (uniffi_aether_ffi_checksum_func_chain_status() != 33626) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_aether_ffi_checksum_func_devnet_faucet() != 17517) {
+    if (uniffi_aether_ffi_checksum_func_connection() != 5408) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_aether_ffi_checksum_func_prepare_transfer() != 65274) {
+    if (uniffi_aether_ffi_checksum_func_devnet_faucet() != 1822) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_aether_ffi_checksum_func_receipt() != 2848) {
+    if (uniffi_aether_ffi_checksum_func_prepare_transfer() != 24792) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_aether_ffi_checksum_func_recent_blocks() != 51710) {
+    if (uniffi_aether_ffi_checksum_func_receipt() != 21333) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_aether_ffi_checksum_func_submit_signed() != 55123) {
+    if (uniffi_aether_ffi_checksum_func_recent_blocks() != 16448) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_aether_ffi_checksum_func_verified_account() != 25620) {
+    if (uniffi_aether_ffi_checksum_func_submit_signed() != 20395) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_verified_account() != 47692) {
         return InitializationResult.apiChecksumMismatch
     }
 

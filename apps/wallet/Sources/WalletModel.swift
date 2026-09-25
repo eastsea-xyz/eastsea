@@ -3,7 +3,7 @@ import SwiftUI
 
 @MainActor
 final class WalletModel: ObservableObject {
-    @Published var rpc = "http://127.0.0.1:8545"
+    @Published var connectionInfo = "Looking up validators on the Mainline DHT…"
     @Published var validators: UInt32 = 4
     @Published var address = ""
     @Published var account: VerifiedAccount?
@@ -40,30 +40,32 @@ final class WalletModel: ObservableObject {
     }
 
     func refresh() {
-        let rpc = rpc, addr = address, n = validators
+        let addr = address, n = validators
         Task.detached {
-            let st = try? chainStatus(rpc: rpc)
-            let bl = (try? recentBlocks(rpc: rpc, n: 8)) ?? []
+            let st = try? chainStatus()
+            let conn = connection()
+            let bl = (try? recentBlocks(n: 8)) ?? []
             var acc: VerifiedAccount?
             var err: String?
             if !addr.isEmpty {
-                do { acc = try verifiedAccount(rpc: rpc, address: addr, validators: n) } catch { err = "\(error)" }
+                do { acc = try verifiedAccount(address: addr, validators: n) } catch { err = "\(error)" }
             }
             await MainActor.run {
                 self.status = st
+                self.connectionInfo = conn
                 self.blocks = bl
                 if let acc { self.account = acc; self.verifyError = nil }
-                if st == nil { self.verifyError = "Node unreachable at \(rpc)" } else if let err { self.verifyError = err }
+                if st == nil { self.verifyError = "No validator reachable yet (\(conn))" } else if let err { self.verifyError = err }
             }
         }
     }
 
     func faucet() {
-        let rpc = rpc, addr = address
+        let addr = address
         busy = true
         Task.detached {
             do {
-                let h = try devnetFaucet(rpc: rpc, to: addr, valueWei: Wei.from(aeth: "10")!)
+                let h = try devnetFaucet(to: addr, valueWei: Wei.from(aeth: "10")!)
                 await self.track(h, label: "Faucet 10 AETH")
             } catch { await MainActor.run { self.note("Faucet failed: \(error)"); self.busy = false } }
         }
@@ -72,13 +74,13 @@ final class WalletModel: ObservableObject {
     func send() {
         guard let enclave else { return }
         guard let wei = Wei.from(aeth: sendAmount) else { note("Invalid amount"); return }
-        let rpc = rpc, to = sendTo.trimmingCharacters(in: .whitespaces), pk = enclave.publicKey
+        let to = sendTo.trimmingCharacters(in: .whitespaces), pk = enclave.publicKey
         busy = true
         Task.detached {
             do {
-                let prepared = try prepareTransfer(rpc: rpc, p256PublicKey: pk, to: to, valueWei: wei)
+                let prepared = try prepareTransfer(p256PublicKey: pk, to: to, valueWei: wei)
                 let sig = try enclave.sign(prepared.signingMessage)   // Secure Enclave, may prompt
-                let h = try submitSigned(rpc: rpc, envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
+                let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
                 await self.track(h, label: "Sent \(Wei.format(wei)) AETH (nonce \(prepared.nonce))")
             } catch { await MainActor.run { self.note("Send failed: \(error)"); self.busy = false } }
         }
@@ -87,7 +89,7 @@ final class WalletModel: ObservableObject {
     private func track(_ hash: String, label: String) async {
         await MainActor.run { self.note("\(label) submitted \(hash.prefix(14))…") }
         for _ in 0..<60 {
-            if let r = try? receipt(rpc: rpc, txHash: hash) {
+            if let r = try? receipt(txHash: hash) {
                 await MainActor.run {
                     self.note("\(label) finalized in block \(r.height) (\(r.success ? "success" : "failed"), gas \(r.gasUsed))")
                     self.busy = false

@@ -287,9 +287,28 @@ fn run_node(index: u64, n: u64, port: u16, rpc_port: u16, data: String, bootstra
             }
         });
 
+        let rpc_state = RpcState { chain, marshal: marshal_mailbox, gossip: gossip_tx };
+
+        // Public access: iroh endpoint published to the BitTorrent Mainline DHT.
+        // Wallets find this node by its id alone and verify everything they get.
+        let _router = match aether_net::bind(Some(aether_net::devnet_node_secret(index)), vec![aether_net::ALPN_RPC.to_vec()]).await {
+            Ok(ep) => {
+                tracing::info!(node_id = %ep.id(), "public rpc on iroh; address published to Mainline DHT");
+                let st = rpc_state.clone();
+                Some(aether_net::serve_rpc(ep, move |req| {
+                    let st = st.clone();
+                    async move { rpc::handle_value(&st, req).await }
+                }))
+            }
+            Err(e) => {
+                tracing::warn!(?e, "public endpoint unavailable; loopback rpc only");
+                None
+            }
+        };
+
         let rpc_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), rpc_port);
         tracing::info!(%rpc_addr, "rpc listening");
-        if let Err(e) = rpc::serve(rpc_addr, RpcState { chain, marshal: marshal_mailbox, gossip: gossip_tx }).await {
+        if let Err(e) = rpc::serve(rpc_addr, rpc_state).await {
             tracing::error!(?e, "rpc server stopped");
         }
     });

@@ -250,37 +250,44 @@ RustBuffer uniffi_aether_ffi_fn_func_account_address(RustBuffer p256_public_key,
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_CHAIN_STATUS
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_CHAIN_STATUS
-RustBuffer uniffi_aether_ffi_fn_func_chain_status(RustBuffer rpc, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_aether_ffi_fn_func_chain_status(RustCallStatus *_Nonnull out_status
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_CONNECTION
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_CONNECTION
+RustBuffer uniffi_aether_ffi_fn_func_connection(RustCallStatus *_Nonnull out_status
+    
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_DEVNET_FAUCET
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_DEVNET_FAUCET
-RustBuffer uniffi_aether_ffi_fn_func_devnet_faucet(RustBuffer rpc, RustBuffer to, RustBuffer value_wei, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_aether_ffi_fn_func_devnet_faucet(RustBuffer to, RustBuffer value_wei, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_TRANSFER
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_TRANSFER
-RustBuffer uniffi_aether_ffi_fn_func_prepare_transfer(RustBuffer rpc, RustBuffer p256_public_key, RustBuffer to, RustBuffer value_wei, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_aether_ffi_fn_func_prepare_transfer(RustBuffer p256_public_key, RustBuffer to, RustBuffer value_wei, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_RECEIPT
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_RECEIPT
-RustBuffer uniffi_aether_ffi_fn_func_receipt(RustBuffer rpc, RustBuffer tx_hash, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_aether_ffi_fn_func_receipt(RustBuffer tx_hash, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_RECENT_BLOCKS
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_RECENT_BLOCKS
-RustBuffer uniffi_aether_ffi_fn_func_recent_blocks(RustBuffer rpc, uint32_t n, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_aether_ffi_fn_func_recent_blocks(uint32_t n, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_SUBMIT_SIGNED
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_SUBMIT_SIGNED
-RustBuffer uniffi_aether_ffi_fn_func_submit_signed(RustBuffer rpc, RustBuffer envelope_json, RustBuffer signature, RustBuffer p256_public_key, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_aether_ffi_fn_func_submit_signed(RustBuffer envelope_json, RustBuffer signature, RustBuffer p256_public_key, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_VERIFIED_ACCOUNT
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_VERIFIED_ACCOUNT
-RustBuffer uniffi_aether_ffi_fn_func_verified_account(RustBuffer rpc, RustBuffer address, uint32_t validators, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_aether_ffi_fn_func_verified_account(RustBuffer address, uint32_t validators, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_FFI_AETHER_FFI_RUSTBUFFER_ALLOC
@@ -552,6 +559,12 @@ uint16_t uniffi_aether_ffi_checksum_func_account_address(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_CHAIN_STATUS
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_CHAIN_STATUS
 uint16_t uniffi_aether_ffi_checksum_func_chain_status(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_CONNECTION
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_CONNECTION
+uint16_t uniffi_aether_ffi_checksum_func_connection(void
     
 );
 #endif

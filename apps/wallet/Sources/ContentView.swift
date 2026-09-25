@@ -32,7 +32,7 @@ struct ContentView: View {
                 }
             }
             Spacer()
-            TextField("RPC", text: $model.rpc).textFieldStyle(.roundedBorder).frame(width: 190).font(.caption.monospaced())
+            Label(model.connectionInfo, systemImage: "network").font(.caption).foregroundStyle(.secondary).lineLimit(1)
         }
     }
 
@@ -87,7 +87,9 @@ struct ContentView: View {
 
     private var blocksPanel: some View {
         GroupBox {
-            List(model.blocks, id: \.height) { b in
+            ScrollView {
+              LazyVStack(alignment: .leading, spacing: 10) {
+                ForEach(model.blocks, id: \.height) { b in
                 VStack(alignment: .leading, spacing: 2) {
                     HStack {
                         Text("#\(b.height)").font(.callout.bold().monospacedDigit())
@@ -96,7 +98,10 @@ struct ContentView: View {
                     }
                     Text("root \(b.stateRoot.prefix(18))…").font(.caption2.monospaced()).foregroundStyle(.secondary)
                     Text("proposer \(b.proposer.prefix(10))…").font(.caption2.monospaced()).foregroundStyle(.secondary)
+                    Divider()
                 }
+                }
+              }.padding(.vertical, 4)
             }
         } label: { Text("Finalized blocks") }
     }

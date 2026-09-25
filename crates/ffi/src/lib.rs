@@ -79,22 +79,45 @@ pub struct BlockInfo {
     pub timestamp_ms: u64,
 }
 
-fn call(rpc: &str, method: &str, params: Value) -> R<Value> {
-    let body = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
-    let resp: Value = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .map_err(|e| WalletError::Network(e.to_string()))?
-        .post(rpc)
-        .json(&body)
-        .send()
-        .map_err(|e| WalletError::Network(e.to_string()))?
-        .json()
-        .map_err(|e| WalletError::Network(e.to_string()))?;
-    if let Some(err) = resp.get("error") {
-        return Err(WalletError::Rejected(err["message"].as_str().unwrap_or("error").to_string()));
+/// Devnet validators the wallet knows by id (their addresses come from the DHT).
+const DEVNET_VALIDATORS: u64 = 4;
+
+struct Net {
+    rt: tokio::runtime::Runtime,
+    client: aether_net::RpcClient,
+}
+
+fn net() -> R<&'static Net> {
+    static NET: std::sync::OnceLock<Result<Net, String>> = std::sync::OnceLock::new();
+    NET.get_or_init(|| {
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(|e| e.to_string())?;
+        let ids = (1..=DEVNET_VALIDATORS).map(aether_net::devnet_node_id).collect();
+        let client = rt.block_on(aether_net::RpcClient::new(ids)).map_err(|e| e.to_string())?;
+        Ok(Net { rt, client })
+    })
+    .as_ref()
+    .map_err(|e| WalletError::Network(e.clone()))
+}
+
+fn call(method: &str, params: Value) -> R<Value> {
+    let n = net()?;
+    n.rt.block_on(n.client.call(method, params)).map_err(|e| {
+        let m = e.to_string();
+        if m.contains("connect") || m.contains("timed out") || m.contains("stream") {
+            WalletError::Network(m)
+        } else {
+            WalletError::Rejected(m)
+        }
+    })
+}
+
+/// How the wallet currently reaches the network (for display).
+#[uniffi::export]
+pub fn connection() -> String {
+    match net() {
+        Ok(n) => format!("Mainline DHT · {}", n.rt.block_on(n.client.describe())),
+        Err(e) => format!("offline: {e}"),
     }
-    Ok(resp.get("result").cloned().unwrap_or(Value::Null))
 }
 
 fn parse<T: serde::de::DeserializeOwned>(v: &Value, what: &str) -> R<T> {
@@ -108,8 +131,8 @@ fn p256_key(compressed: &[u8]) -> R<PublicKey> {
 }
 
 #[uniffi::export]
-pub fn chain_status(rpc: String) -> R<ChainStatus> {
-    let v = call(&rpc, "aether_status", json!([]))?;
+pub fn chain_status() -> R<ChainStatus> {
+    let v = call("aether_status", json!([]))?;
     Ok(ChainStatus {
         chain_id: v["chain_id"].as_u64().unwrap_or_default(),
         height: v["height"].as_u64().unwrap_or_default(),
@@ -125,9 +148,9 @@ pub fn account_address(p256_public_key: Vec<u8>) -> R<String> {
     Ok(address_of(&pk).map_err(|e| WalletError::Invalid(e.to_string()))?.to_checksum(None))
 }
 
-fn anchor(rpc: &str, height: u64, set: &ValidatorSet) -> R<VerifiedBlock> {
+fn anchor(height: u64, set: &ValidatorSet) -> R<VerifiedBlock> {
     for _ in 0..40 {
-        let v = call(rpc, "aether_getFinalized", json!([height + 1]))?;
+        let v = call("aether_getFinalized", json!([height + 1]))?;
         if !v.is_null() {
             let block = from_hex(v["block"].as_str().unwrap_or_default()).map_err(|e| WalletError::Verification(e.to_string()))?;
             let fin = from_hex(v["finalization"].as_str().unwrap_or_default()).map_err(|e| WalletError::Verification(e.to_string()))?;
@@ -140,13 +163,13 @@ fn anchor(rpc: &str, height: u64, set: &ValidatorSet) -> R<VerifiedBlock> {
 
 /// Balance and nonce, verified against a validator-signed state root.
 #[uniffi::export]
-pub fn verified_account(rpc: String, address: String, validators: u32) -> R<VerifiedAccount> {
+pub fn verified_account(address: String, validators: u32) -> R<VerifiedAccount> {
     let a: Address = address.parse().map_err(|_| WalletError::Invalid("address".into()))?;
-    let v = call(&rpc, "aether_getAccount", json!([a]))?;
+    let v = call("aether_getAccount", json!([a]))?;
     let proof: Proof = parse(&v["proof"], "proof")?;
     let height = v["height"].as_u64().unwrap_or_default();
     let set = ValidatorSet::devnet(validators as u64);
-    let anchor = anchor(&rpc, height, &set)?;
+    let anchor = anchor(height, &set)?;
     let data = verify_account(&anchor, &a, &proof).map_err(|e| WalletError::Verification(format!("proof: {e}")))?.unwrap_or_default();
     Ok(VerifiedAccount {
         address: a.to_checksum(None),
@@ -161,13 +184,13 @@ pub fn verified_account(rpc: String, address: String, validators: u32) -> R<Veri
 
 /// Build a transfer for the Secure Enclave key to sign.
 #[uniffi::export]
-pub fn prepare_transfer(rpc: String, p256_public_key: Vec<u8>, to: String, value_wei: String) -> R<PreparedTx> {
+pub fn prepare_transfer(p256_public_key: Vec<u8>, to: String, value_wei: String) -> R<PreparedTx> {
     let pk = p256_key(&p256_public_key)?;
     let from = address_of(&pk).map_err(|e| WalletError::Invalid(e.to_string()))?;
     let to: Address = to.parse().map_err(|_| WalletError::Invalid("recipient address".into()))?;
     let value: U256 = value_wei.parse().map_err(|_| WalletError::Invalid("amount".into()))?;
-    let chain_id = call(&rpc, "aether_status", json!([]))?["chain_id"].as_u64().unwrap_or_default();
-    let nonce_hex = call(&rpc, "eth_getTransactionCount", json!([from]))?;
+    let chain_id = call("aether_status", json!([]))?["chain_id"].as_u64().unwrap_or_default();
+    let nonce_hex = call("eth_getTransactionCount", json!([from]))?;
     let nonce = u64::from_str_radix(nonce_hex.as_str().unwrap_or("0x0").trim_start_matches("0x"), 16).map_err(|e| WalletError::Invalid(e.to_string()))?;
     let call_body = EvmCall { to: Some(to), value, input: Bytes::new(), gas_limit: 21_000 };
     let payload = call_body.encode();
@@ -191,7 +214,7 @@ pub fn prepare_transfer(rpc: String, p256_public_key: Vec<u8>, to: String, value
 
 /// Attach a Secure Enclave signature (raw r‖s, 64 bytes) and submit.
 #[uniffi::export]
-pub fn submit_signed(rpc: String, envelope_json: String, signature: Vec<u8>, p256_public_key: Vec<u8>) -> R<String> {
+pub fn submit_signed(envelope_json: String, signature: Vec<u8>, p256_public_key: Vec<u8>) -> R<String> {
     let mut env: TxEnvelope = serde_json::from_str(&envelope_json).map_err(|e| WalletError::Invalid(e.to_string()))?;
     let pk = p256_key(&p256_public_key)?;
     let sig = p256::ecdsa::Signature::from_slice(&signature).map_err(|_| WalletError::Invalid("signature must be 64-byte r‖s".into()))?;
@@ -200,15 +223,15 @@ pub fn submit_signed(rpc: String, envelope_json: String, signature: Vec<u8>, p25
     aether_crypto::verify(&pk, &env.signing_bytes(), &bytes).map_err(|e| WalletError::Invalid(format!("signature does not match key: {e}")))?;
     bytes.extend_from_slice(&pk.bytes);
     env.signature = Bytes::from(bytes);
-    let v = call(&rpc, "aether_sendTransaction", json!([env]))?;
+    let v = call("aether_sendTransaction", json!([env]))?;
     let h: TxHash = parse(&v["hash"], "hash")?;
     Ok(format!("{h}"))
 }
 
 #[uniffi::export]
-pub fn receipt(rpc: String, tx_hash: String) -> R<Option<TxReceipt>> {
+pub fn receipt(tx_hash: String) -> R<Option<TxReceipt>> {
     let h: TxHash = tx_hash.parse().map_err(|_| WalletError::Invalid("tx hash".into()))?;
-    let v = call(&rpc, "aether_getReceipt", json!([h]))?;
+    let v = call("aether_getReceipt", json!([h]))?;
     if v.get("receipt").is_none() {
         return Ok(None);
     }
@@ -220,8 +243,8 @@ pub fn receipt(rpc: String, tx_hash: String) -> R<Option<TxReceipt>> {
 }
 
 #[uniffi::export]
-pub fn recent_blocks(rpc: String, n: u32) -> R<Vec<BlockInfo>> {
-    let v = call(&rpc, "aether_recentBlocks", json!([n]))?;
+pub fn recent_blocks(n: u32) -> R<Vec<BlockInfo>> {
+    let v = call("aether_recentBlocks", json!([n]))?;
     Ok(v.as_array()
         .into_iter()
         .flatten()
@@ -238,7 +261,7 @@ pub fn recent_blocks(rpc: String, n: u32) -> R<Vec<BlockInfo>> {
 
 /// Devnet faucet: send test coins (zero value) from the public dev account 10.
 #[uniffi::export]
-pub fn devnet_faucet(rpc: String, to: String, value_wei: String) -> R<String> {
+pub fn devnet_faucet(to: String, value_wei: String) -> R<String> {
     let mut seed = [0u8; 32];
     seed[0] = 0xae;
     seed[31] = 10;
@@ -246,12 +269,12 @@ pub fn devnet_faucet(rpc: String, to: String, value_wei: String) -> R<String> {
     let from = address_of(&signer.public_key()).map_err(|e| WalletError::Invalid(e.to_string()))?;
     let to: Address = to.parse().map_err(|_| WalletError::Invalid("address".into()))?;
     let value: U256 = value_wei.parse().map_err(|_| WalletError::Invalid("amount".into()))?;
-    let chain_id = call(&rpc, "aether_status", json!([]))?["chain_id"].as_u64().unwrap_or_default();
-    let nonce_hex = call(&rpc, "eth_getTransactionCount", json!([from]))?;
+    let chain_id = call("aether_status", json!([]))?["chain_id"].as_u64().unwrap_or_default();
+    let nonce_hex = call("eth_getTransactionCount", json!([from]))?;
     let nonce = u64::from_str_radix(nonce_hex.as_str().unwrap_or("0x0").trim_start_matches("0x"), 16).unwrap_or(0);
     let tx = sign_call(&signer, chain_id, nonce, 1, &EvmCall { to: Some(to), value, input: Bytes::new(), gas_limit: 21_000 })
         .map_err(|e| WalletError::Invalid(e.to_string()))?;
-    let v = call(&rpc, "aether_sendTransaction", json!([tx]))?;
+    let v = call("aether_sendTransaction", json!([tx]))?;
     Ok(v["hash"].as_str().unwrap_or_default().to_string())
 }
 

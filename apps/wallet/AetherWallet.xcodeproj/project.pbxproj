@@ -7,16 +7,23 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0087B71D472FCD97109FFF10 /* network.json in Resources */ = {isa = PBXBuildFile; fileRef = AB6E5651AC1948FECDAE69D4 /* network.json */; };
+		16504A4054237817545767F0 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B38A846EB23F0C4A52BF8A78 /* ContentView.swift */; };
 		3A048B1773EDB624E715846E /* AetherWalletApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39176493D3D105EBB072F17C /* AetherWalletApp.swift */; };
 		3C5180BEE4BF629CA69AF4CE /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B38A846EB23F0C4A52BF8A78 /* ContentView.swift */; };
+		3EFB40E8AE60667378C4B952 /* AetherWalletApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39176493D3D105EBB072F17C /* AetherWalletApp.swift */; };
 		576FB72021E6A746C1A7AF9B /* network.json in Resources */ = {isa = PBXBuildFile; fileRef = AB6E5651AC1948FECDAE69D4 /* network.json */; };
+		6911A71C489CFE413F30C9A2 /* EnclaveKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 317D79B15C7F9E75B1A1F4FC /* EnclaveKey.swift */; };
 		8A4A2901B223B0F689036DFB /* EnclaveKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 317D79B15C7F9E75B1A1F4FC /* EnclaveKey.swift */; };
+		95004663796AA4EF45771D37 /* WalletModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 016BCAF9063410C1BBD4052D /* WalletModel.swift */; };
 		BF69C9639B9D7215C5CE0605 /* aether_ffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BC12AF79B32D90A48860251 /* aether_ffi.swift */; };
+		C9839F6819F2F86387CC88B7 /* aether_ffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BC12AF79B32D90A48860251 /* aether_ffi.swift */; };
 		D6DDA80E641E075D1DE236AD /* WalletModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 016BCAF9063410C1BBD4052D /* WalletModel.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		016BCAF9063410C1BBD4052D /* WalletModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletModel.swift; sourceTree = "<group>"; };
+		17F1C13C585683B68AF46003 /* AetherWalletIOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = AetherWalletIOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2A79147942168696D38EE97B /* AetherWallet.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AetherWallet.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		317D79B15C7F9E75B1A1F4FC /* EnclaveKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnclaveKey.swift; sourceTree = "<group>"; };
 		39176493D3D105EBB072F17C /* AetherWalletApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AetherWalletApp.swift; sourceTree = "<group>"; };
@@ -38,6 +45,7 @@
 			isa = PBXGroup;
 			children = (
 				2A79147942168696D38EE97B /* AetherWallet.app */,
+				17F1C13C585683B68AF46003 /* AetherWalletIOS.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -92,6 +100,24 @@
 			productReference = 2A79147942168696D38EE97B /* AetherWallet.app */;
 			productType = "com.apple.product-type.application";
 		};
+		A23F3FD5CBCBA2B1C7A877E0 /* AetherWalletIOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 3557245DEAD8990052AA531C /* Build configuration list for PBXNativeTarget "AetherWalletIOS" */;
+			buildPhases = (
+				25FE09BA6592EC4EAE637339 /* Sources */,
+				AC0E5497FB4DD5088CF43DAE /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = AetherWalletIOS;
+			packageProductDependencies = (
+			);
+			productName = AetherWalletIOS;
+			productReference = 17F1C13C585683B68AF46003 /* AetherWalletIOS.app */;
+			productType = "com.apple.product-type.application";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -104,6 +130,9 @@
 					0C260DD3461928726F171B93 = {
 						DevelopmentTeam = LBKUT88RTX;
 						ProvisioningStyle = Manual;
+					};
+					A23F3FD5CBCBA2B1C7A877E0 = {
+						DevelopmentTeam = LBKUT88RTX;
 					};
 				};
 			};
@@ -122,6 +151,7 @@
 			projectRoot = "";
 			targets = (
 				0C260DD3461928726F171B93 /* AetherWallet */,
+				A23F3FD5CBCBA2B1C7A877E0 /* AetherWalletIOS */,
 			);
 		};
 /* End PBXProject section */
@@ -135,9 +165,29 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AC0E5497FB4DD5088CF43DAE /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0087B71D472FCD97109FFF10 /* network.json in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		25FE09BA6592EC4EAE637339 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3EFB40E8AE60667378C4B952 /* AetherWalletApp.swift in Sources */,
+				16504A4054237817545767F0 /* ContentView.swift in Sources */,
+				6911A71C489CFE413F30C9A2 /* EnclaveKey.swift in Sources */,
+				95004663796AA4EF45771D37 /* WalletModel.swift in Sources */,
+				C9839F6819F2F86387CC88B7 /* aether_ffi.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		9451106D88BAA67BA0C15449 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -204,15 +254,43 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = macosx;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		4DEF754AAC7C6B900EFE0FD5 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = LBKUT88RTX;
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/Generated";
+				INFOPLIST_KEY_CFBundleDisplayName = Aether;
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "Sign transactions with your device's Secure Enclave key.";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"OTHER_LDFLAGS[sdk=iphoneos*]" = "$(SRCROOT)/../../target/aarch64-apple-ios/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework Network";
+				"OTHER_LDFLAGS[sdk=iphonesimulator*]" = "$(SRCROOT)/../../target/aarch64-apple-ios-sim/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework Network";
+				PRODUCT_BUNDLE_IDENTIFIER = com.kjaylee.aether.wallet.ios;
+				PRODUCT_NAME = "Aether Wallet";
+				SDKROOT = iphoneos;
+				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/Generated";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Debug;
 		};
@@ -242,6 +320,34 @@
 				SDKROOT = macosx;
 				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/Generated";
 				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		7EABE61A565A8C66188849F7 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = LBKUT88RTX;
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/Generated";
+				INFOPLIST_KEY_CFBundleDisplayName = Aether;
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "Sign transactions with your device's Secure Enclave key.";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"OTHER_LDFLAGS[sdk=iphoneos*]" = "$(SRCROOT)/../../target/aarch64-apple-ios/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework Network";
+				"OTHER_LDFLAGS[sdk=iphonesimulator*]" = "$(SRCROOT)/../../target/aarch64-apple-ios-sim/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework Network";
+				PRODUCT_BUNDLE_IDENTIFIER = com.kjaylee.aether.wallet.ios;
+				PRODUCT_NAME = "Aether Wallet";
+				SDKROOT = iphoneos;
+				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/Generated";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Release;
 		};
@@ -290,11 +396,11 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = macosx;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 5.0;
@@ -333,6 +439,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		3557245DEAD8990052AA531C /* Build configuration list for PBXNativeTarget "AetherWalletIOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				4DEF754AAC7C6B900EFE0FD5 /* Debug */,
+				7EABE61A565A8C66188849F7 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 		9C2EDE7CE81DC399F8EF75DC /* Build configuration list for PBXProject "AetherWallet" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

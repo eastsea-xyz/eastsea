@@ -4,13 +4,24 @@ import LocalAuthentication
 
 /// The wallet key lives in the Secure Enclave. Only an opaque, device-bound
 /// handle (`dataRepresentation`) is written to disk; the private key never leaves the chip.
+/// The iOS Simulator has no Secure Enclave: there (and only there) a software
+/// P-256 key is used and the UI says so.
 struct EnclaveAccount {
-    let key: SecureEnclave.P256.Signing.PrivateKey
+    private enum Key {
+        case enclave(SecureEnclave.P256.Signing.PrivateKey)
+        case software(P256.Signing.PrivateKey)
+    }
+    private let key: Key
     let requiresUserPresence: Bool
+
+    var isSecureEnclave: Bool {
+        if case .enclave = key { return true }
+        return false
+    }
 
     enum KeyError: LocalizedError {
         case enclaveUnavailable
-        var errorDescription: String? { "Secure Enclave is not available on this Mac" }
+        var errorDescription: String? { "Secure Enclave is not available on this device" }
     }
 
     private static var storeURL: URL {
@@ -21,10 +32,19 @@ struct EnclaveAccount {
     }
 
     static func loadOrCreate(requireUserPresence: Bool) throws -> EnclaveAccount {
+        #if targetEnvironment(simulator)
+        let url = storeURL.deletingLastPathComponent().appendingPathComponent("simulator-software-key.dat")
+        if let data = try? Data(contentsOf: url), let k = try? P256.Signing.PrivateKey(rawRepresentation: data) {
+            return EnclaveAccount(key: .software(k), requiresUserPresence: false)
+        }
+        let k = P256.Signing.PrivateKey()
+        try k.rawRepresentation.write(to: url, options: [.atomic, .completeFileProtection])
+        return EnclaveAccount(key: .software(k), requiresUserPresence: false)
+        #else
         guard SecureEnclave.isAvailable else { throw KeyError.enclaveUnavailable }
         if let data = try? Data(contentsOf: storeURL),
            let key = try? SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: data) {
-            return EnclaveAccount(key: key, requiresUserPresence: requireUserPresence)
+            return EnclaveAccount(key: .enclave(key), requiresUserPresence: requireUserPresence)
         }
         var flags: SecAccessControlCreateFlags = [.privateKeyUsage]
         if requireUserPresence { flags.insert(.userPresence) }
@@ -34,14 +54,23 @@ struct EnclaveAccount {
         }
         let key = try SecureEnclave.P256.Signing.PrivateKey(accessControl: access)
         try key.dataRepresentation.write(to: storeURL, options: [.atomic, .completeFileProtection])
-        return EnclaveAccount(key: key, requiresUserPresence: requireUserPresence)
+        return EnclaveAccount(key: .enclave(key), requiresUserPresence: requireUserPresence)
+        #endif
     }
 
     /// 33-byte compressed SEC1 public key.
-    var publicKey: Data { key.publicKey.compressedRepresentation }
+    var publicKey: Data {
+        switch key {
+        case .enclave(let k): return k.publicKey.compressedRepresentation
+        case .software(let k): return k.publicKey.compressedRepresentation
+        }
+    }
 
-    /// ECDSA over SHA-256(message), raw r‖s (64 bytes). May prompt Touch ID / password.
+    /// ECDSA over SHA-256(message), raw r‖s (64 bytes). May prompt Touch ID / Face ID / password.
     func sign(_ message: Data) throws -> Data {
-        try key.signature(for: message).rawRepresentation
+        switch key {
+        case .enclave(let k): return try k.signature(for: message).rawRepresentation
+        case .software(let k): return try k.signature(for: message).rawRepresentation
+        }
     }
 }

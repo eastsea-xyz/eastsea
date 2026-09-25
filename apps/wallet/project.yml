@@ -3,6 +3,7 @@ options:
   bundleIdPrefix: com.kjaylee.aether
   deploymentTarget:
     macOS: "14.0"
+    iOS: "17.0"
 targets:
   AetherWallet:
     type: application
@@ -30,3 +31,28 @@ targets:
         HEADER_SEARCH_PATHS: $(SRCROOT)/Generated
         OTHER_LDFLAGS: $(SRCROOT)/../../target/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework OpenDirectory -framework IOKit
         ARCHS: arm64
+  AetherWalletIOS:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+      - path: Resources
+        buildPhase: resources
+      - path: Generated/aether_ffi.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.kjaylee.aether.wallet.ios
+        PRODUCT_NAME: Aether Wallet
+        DEVELOPMENT_TEAM: LBKUT88RTX
+        SWIFT_VERSION: "5.0"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Aether
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_NSFaceIDUsageDescription: Sign transactions with your device's Secure Enclave key.
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_INCLUDE_PATHS: $(SRCROOT)/Generated
+        HEADER_SEARCH_PATHS: $(SRCROOT)/Generated
+        "OTHER_LDFLAGS[sdk=iphonesimulator*]": $(SRCROOT)/../../target/aarch64-apple-ios-sim/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework Network
+        "OTHER_LDFLAGS[sdk=iphoneos*]": $(SRCROOT)/../../target/aarch64-apple-ios/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework Network
+        "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64

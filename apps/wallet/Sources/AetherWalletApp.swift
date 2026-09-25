@@ -8,6 +8,8 @@ struct AetherWalletApp: App {
         WindowGroup("Aether Wallet") {
             ContentView().environmentObject(model)
         }
+        #if os(macOS)
         .windowResizability(.contentSize)
+        #endif
     }
 }

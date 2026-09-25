@@ -15,6 +15,7 @@ final class WalletModel: ObservableObject {
     @Published var sendTo = ""
     @Published var sendAmount = "1"
     @Published var recoveryCode = ""
+    @Published var keyLabel = "Key in Secure Enclave"
     @Published var guardianInput = ""
     @Published var lostInput = ""
 
@@ -28,7 +29,8 @@ final class WalletModel: ObservableObject {
             enclave = acct
             address = try accountAddress(p256PublicKey: acct.publicKey)
             recoveryCode = try recoveryKeyCode(p256PublicKey: acct.publicKey)
-            note("Secure Enclave key ready. Signing asks for Touch ID or your password.")
+            keyLabel = acct.isSecureEnclave ? "Key in Secure Enclave" : "Simulator: software key (no Secure Enclave)"
+            note(acct.isSecureEnclave ? "Secure Enclave key ready. Signing asks for Touch ID / Face ID or your passcode." : "Simulator: software key (no Secure Enclave here). Use a real device for hardware-bound keys.")
         } catch {
             note("Key error: \(error.localizedDescription)")
         }

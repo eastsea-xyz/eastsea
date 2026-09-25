@@ -81,3 +81,13 @@ interface Signer { bytes sign_digest(bytes digest); bytes public_key(); }   // S
 - 지갑(대칭 설계): "이 맥의 복구 키 코드"(x‖y) 복사 → 상대가 "내 복구 키로 지정". 키를 잃으면 가디언 맥에서 "분실 계정 복구": 잔액과 가디언 nonce를 **확정 인증서 + 저장소 증명으로 검증**한 뒤 가디언으로 서명, 자기 계정에서 중계(Touch ID 두 번).
 - CLI `set-guardian`, `recover`. 검증: 복구 성공, 재생·다른 키·조작된 호출 거부, 가디언 없으면 불가, 4검증자 devnet에서 등록→복구→분실 계정 잔액 0 경량 검증.
 - 다음: 세션 키(한도·기한 있는 위임 서명), 가디언 복수·지연(시간 잠금) 복구.
+
+
+## iOS 지갑 — 구현됨 (2026-09-26)
+
+- 같은 Rust 코어(UniFFI)를 `aarch64-apple-ios`·`aarch64-apple-ios-sim`으로 빌드, 같은 SwiftUI 소스를 macOS·iOS 공용으로(`#if os(...)`로 배치·클립보드만 분기). iOS 타깃 `AetherWalletIOS`(iOS 17+, 아이폰). iroh의 iOS 경로 모니터 때문에 `Network.framework` 링크 필요.
+- 키: 실기기는 Secure Enclave(Face ID/Touch ID/암호). **시뮬레이터에는 Secure Enclave가 없어** 소프트웨어 P-256 키를 쓰고 화면에 그렇게 표시.
+- 검증: 시뮬레이터(iPhone 16, iOS 26.5)에서 Mainline DHT로 노드를 찾아 확정 인증서(BLS 임계 서명 1개) + EIP-7864 증명으로 잔액을 기기 스스로 검증. 실기기용 빌드(서명 없음) 성공.
+- 이로써 아이폰이 맥 계정의 복구 키(가디언) 기기가 될 수 있다(복구 코드 교환).
+- 빌드: `scripts/build-wallet.sh [macos|ios-sim|ios]`.
+- 남은 것: 실기기 서명·배포(TestFlight는 Apple 계정·기기 등록 필요), App Store/Sparkle 배포.

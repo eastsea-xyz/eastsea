@@ -4,6 +4,7 @@ struct ContentView: View {
     @EnvironmentObject var model: WalletModel
 
     var body: some View {
+        #if os(macOS)
         HStack(alignment: .top, spacing: 16) {
             VStack(alignment: .leading, spacing: 14) {
                 header
@@ -18,6 +19,20 @@ struct ContentView: View {
         .padding(20)
         .frame(minWidth: 800, minHeight: 620)
         .onAppear { model.start() }
+        #else
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                header
+                accountCard
+                sendCard
+                recoveryCard
+                activity
+                blocksPanel.frame(height: 320)
+            }
+            .padding(16)
+        }
+        .onAppear { model.start() }
+        #endif
     }
 
     private var header: some View {
@@ -42,13 +57,13 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text(model.address.isEmpty ? "—" : model.address).font(.callout.monospaced()).textSelection(.enabled)
-                    Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(model.address, forType: .string) }
+                    Button { Clipboard.copy(model.address) }
                         label: { Image(systemName: "doc.on.doc") }.buttonStyle(.borderless)
                 }
                 Text(model.account.map { "\(Wei.format($0.balanceWei)) AETH" } ?? "…")
                     .font(.system(size: 34, weight: .semibold, design: .rounded))
                 if let a = model.account, model.verifyError == nil {
-                    Label("Verified by my Mac", systemImage: "checkmark.seal.fill").foregroundStyle(.green).font(.headline)
+                    Label("Verified by this device", systemImage: "checkmark.seal.fill").foregroundStyle(.green).font(.headline)
                     Text("Block \(a.certifiedBlock) finality: one BLS threshold signature from a \(a.validators)-validator committee, checked against its group key · state root \(a.stateRoot.prefix(12))… · EIP-7864 proof for this address")
                         .font(.caption).foregroundStyle(.secondary)
                 } else if let e = model.verifyError {
@@ -56,7 +71,7 @@ struct ContentView: View {
                     Text(e).font(.caption).foregroundStyle(.secondary).lineLimit(3)
                 }
                 HStack {
-                    Label("Key in Secure Enclave", systemImage: "lock.shield").font(.caption)
+                    Label(model.keyLabel, systemImage: "lock.shield").font(.caption)
                     Spacer()
                     Button("Get 10 test AETH") { model.faucet() }.disabled(model.busy || model.address.isEmpty)
                 }
@@ -78,11 +93,10 @@ struct ContentView: View {
         GroupBox {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("This Mac's recovery-key code").font(.caption).foregroundStyle(.secondary)
+                    Text("This device's recovery-key code").font(.caption).foregroundStyle(.secondary)
                     Text(model.recoveryCode.isEmpty ? "…" : "\(model.recoveryCode.prefix(16))…").font(.caption.monospaced())
                     Button {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(model.recoveryCode, forType: .string)
+                        Clipboard.copy(model.recoveryCode)
                         model.note("Recovery-key code copied. Give it to the account owner who wants this Mac as their recovery key.")
                     } label: { Image(systemName: "doc.on.doc") }.buttonStyle(.borderless).disabled(model.recoveryCode.isEmpty)
                 }
@@ -91,7 +105,7 @@ struct ContentView: View {
                     Button("Make it my recovery key") { model.setRecoveryKey() }.disabled(model.busy || model.guardianInput.isEmpty)
                 }
                 HStack {
-                    TextField("0x lost account (that trusts this Mac)", text: $model.lostInput).textFieldStyle(.roundedBorder).font(.caption.monospaced())
+                    TextField("0x lost account (that trusts this device)", text: $model.lostInput).textFieldStyle(.roundedBorder).font(.caption.monospaced())
                     Button("Recover its funds here") { model.recover() }.disabled(model.busy || model.lostInput.isEmpty)
                 }
             }
@@ -129,5 +143,16 @@ struct ContentView: View {
               }.padding(.vertical, 4)
             }
         } label: { Text("Finalized blocks") }
+    }
+}
+
+enum Clipboard {
+    static func copy(_ s: String) {
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(s, forType: .string)
+        #else
+        UIPasteboard.general.string = s
+        #endif
     }
 }

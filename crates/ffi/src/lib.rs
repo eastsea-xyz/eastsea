@@ -278,7 +278,7 @@ mod tests {
             assert!(aether_crypto::verify(&key, msg, &norm).is_ok());
         }
         let other = p256::ecdsa::SigningKey::from_slice(&[8u8; 32]).unwrap();
-        let other_pk = p256_key(&other.verifying_key().to_sec1_point(true).as_bytes().to_vec()).unwrap();
+        let other_pk = p256_key(other.verifying_key().to_sec1_point(true).as_bytes()).unwrap();
         assert!(aether_crypto::verify(&other_pk, msg, &s.normalize_s().to_bytes()).is_err());
     }
 

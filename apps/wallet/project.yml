@@ -1,0 +1,30 @@
+name: AetherWallet
+options:
+  bundleIdPrefix: com.kjaylee.aether
+  deploymentTarget:
+    macOS: "14.0"
+targets:
+  AetherWallet:
+    type: application
+    platform: macOS
+    sources:
+      - Sources
+      - path: Generated/aether_ffi.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.kjaylee.aether.wallet
+        PRODUCT_NAME: Aether Wallet
+        DEVELOPMENT_TEAM: LBKUT88RTX
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: 44566BD2BD393D704EF546BACE9B87195BAEB741
+        PROVISIONING_PROFILE_SPECIFIER: ""
+        SWIFT_VERSION: "5.0"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Aether Wallet
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.finance
+        INFOPLIST_KEY_NSHumanReadableCopyright: Devnet wallet. Test tokens have no value.
+        ENABLE_HARDENED_RUNTIME: YES
+        SWIFT_INCLUDE_PATHS: $(SRCROOT)/Generated
+        HEADER_SEARCH_PATHS: $(SRCROOT)/Generated
+        OTHER_LDFLAGS: $(SRCROOT)/../../target/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework OpenDirectory -framework IOKit
+        ARCHS: arm64

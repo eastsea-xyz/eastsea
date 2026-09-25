@@ -6,28 +6,27 @@
 //!   aether balance 0x…              # fetches an EIP-7864 proof and verifies it locally
 
 use aether_crypto::{P256Signer, Signer};
-use aether_execution::{EvmCall, sign_call};
+use aether_execution::{sign_call, EvmCall};
 use aether_node::application::Application;
 use aether_node::block::PublicKey;
-use aether_node::chain::{Chain, ChainConfig, dev_accounts, dev_seed};
+use aether_node::chain::{dev_accounts, dev_seed, Chain, ChainConfig};
 use aether_node::engine::{self, MAX_BLOCK_BYTES};
 use aether_node::rpc::{self, RpcState};
 use aether_state::Proof;
 use aether_types::{Address, Bytes, GasVector, TxEnvelope, TxHash, U256};
 use clap::{Parser, Subcommand};
 use commonware_consensus::{marshal, simplex::scheme::ed25519::Scheme, types::ViewDelta};
-use commonware_cryptography::{Signer as _, ed25519};
+use commonware_cryptography::{ed25519, Signer as _};
 use commonware_p2p::{
-    Address as PeerAddress, AddressableManager as _, Receiver as _, Recipients, Sender as _,
     authenticated::{self, lookup},
+    Address as PeerAddress, AddressableManager as _, Receiver as _, Recipients, Sender as _,
 };
-use commonware_runtime::{Quota, Runner as _, Supervisor as _, tokio as cw_tokio};
+use commonware_runtime::{tokio as cw_tokio, Quota, Runner as _, Supervisor as _};
 use commonware_utils::{
-    NZU32, NZUsize, TryCollect,
     ordered::{Map, Set},
-    union,
+    union, NZUsize, TryCollect, NZU32,
 };
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
@@ -71,6 +70,13 @@ enum Cmd {
         offline: bool,
         #[arg(long, default_value_t = 1000)]
         block_time_ms: u64,
+        /// Devnet fault injection: propose blocks without this sender's txs and
+        /// ignore inclusion lists (tests censorship resistance).
+        #[arg(long, hide = true)]
+        dev_censor: Option<Address>,
+        /// Devnet: skip this sender in mempool ordering; its txs land only via inclusion lists.
+        #[arg(long, hide = true)]
+        dev_deprioritize: Option<Address>,
     },
     /// List the public development accounts (funded at genesis; never use for value).
     DevAccounts,
@@ -152,13 +158,13 @@ enum Cmd {
 fn main() {
     let cli = Cli::parse();
     let res = match cli.cmd {
-        Cmd::Node { index, validators, port, rpc_port, data, peers, link_base, offline, block_time_ms } => {
+        Cmd::Node { index, validators, port, rpc_port, data, peers, link_base, offline, block_time_ms, dev_censor, dev_deprioritize } => {
             let transport = if peers.iter().any(|p| !p.is_empty()) {
                 Transport::Tcp(peers)
             } else {
                 Transport::Iroh { link_base: link_base.unwrap_or(20_000 + 100 * index as u16) }
             };
-            run_node(NodeArgs { index, n: validators, port, rpc_port, data, transport, offline, block_time_ms });
+            run_node(NodeArgs { index, n: validators, port, rpc_port, data, transport, offline, block_time_ms, dev_censor, dev_deprioritize });
             Ok(())
         }
         Cmd::DevAccounts => {
@@ -220,6 +226,8 @@ struct NodeArgs {
     transport: Transport,
     offline: bool,
     block_time_ms: u64,
+    dev_censor: Option<Address>,
+    dev_deprioritize: Option<Address>,
 }
 
 fn loopback(port: u16) -> SocketAddr {
@@ -250,7 +258,7 @@ fn peer_addresses(a: &NodeArgs) -> Map<PublicKey, PeerAddress> {
 
 fn run_node(a: NodeArgs) {
     tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,commonware=warn".into())).init();
-    let NodeArgs { index, n, port, rpc_port, block_time_ms, offline, .. } = a;
+    let NodeArgs { index, n, port, rpc_port, block_time_ms, offline, dev_censor, dev_deprioritize, .. } = a;
     assert!(!offline || matches!(a.transport, Transport::Tcp(_)), "--offline needs --peers");
     let signer = validator_key(index);
     let validators: Set<PublicKey> = (1..=n).map(|i| validator_key(i).public_key()).try_collect().expect("unique validator keys");
@@ -328,9 +336,15 @@ fn run_node(a: NodeArgs) {
         let broadcast = network.register(3, quota);
         let backfill = network.register(4, quota);
         let (mut tx_out, mut tx_in) = network.register(5, Quota::per_second(NZU32!(1024)));
+        let (il_out, il_in) = network.register(6, Quota::per_second(NZU32!(256)));
 
         let scheme = Scheme::signer(&union(NAMESPACE, b"_CONSENSUS"), validators.clone(), signer.clone()).expect("key is a validator");
         let (chain, genesis) = Chain::new(cfg.clone());
+        if let Some(a) = dev_censor {
+            tracing::warn!(censored = %a, "DEVNET FAULT INJECTION: this validator censors a sender and ignores inclusion lists");
+            chain.lock().censor = Some(a);
+        }
+        chain.lock().deprioritize = dev_deprioritize;
         tracing::info!(index, genesis_root = %chain.lock().finalized.state.root(), "starting validator");
 
         let marshal_resolver = marshal::resolver::p2p::init(
@@ -390,6 +404,8 @@ fn run_node(a: NodeArgs) {
             }
         });
 
+        spawn_inclusion_lists(chain.clone(), signer.clone(), index, n, cfg.chain_id, Duration::from_millis(block_time_ms), il_out, il_in);
+
         let rpc_state = RpcState { chain, marshal: marshal_mailbox, gossip: gossip_tx };
 
         // Public access: iroh endpoint published to the BitTorrent Mainline DHT.
@@ -413,6 +429,63 @@ fn run_node(a: NodeArgs) {
         tracing::info!(%rpc_addr, "rpc listening");
         if let Err(e) = rpc::serve(rpc_addr, rpc_state).await {
             tracing::error!(?e, "rpc server stopped");
+        }
+    });
+}
+
+/// FOCIL gossip: as a committee member, sign and publish the oldest waiting
+/// mempool txs every block interval; verify, pool and re-gossip (once) lists
+/// from other members.
+#[allow(clippy::too_many_arguments)]
+fn spawn_inclusion_lists<S, R>(chain: Chain, key: ed25519::PrivateKey, index: u64, n: u64, chain_id: u64, period: Duration, mut out: S, mut inbox: R)
+where
+    S: commonware_p2p::Sender<PublicKey = PublicKey> + 'static,
+    R: commonware_p2p::Receiver<PublicKey = PublicKey> + 'static,
+{
+    use aether_node::inclusion::{committee, InclusionList};
+    let validators: Vec<PublicKey> = (1..=n).map(|i| validator_key(i).public_key()).collect();
+    let (send_tx, mut send_rx) = tokio::sync::mpsc::unbounded_channel::<InclusionList>();
+    tokio::spawn(async move {
+        while let Some(il) = send_rx.recv().await {
+            let _ = out.send(Recipients::All, serde_json::to_vec(&il).expect("list serializes"), false);
+        }
+    });
+    let (pub_chain, pub_send) = (chain.clone(), send_tx.clone());
+    tokio::spawn(async move {
+        let mut last = Vec::new();
+        loop {
+            tokio::time::sleep(period).await;
+            let height = pub_chain.lock().finalized.height + 1;
+            if !committee(height, n).contains(&index) || pub_chain.lock().censor.is_some() {
+                continue;
+            }
+            let txs = pub_chain.inclusion_candidates(period, std::time::Instant::now());
+            let hashes: Vec<_> = txs.iter().map(aether_execution::tx_hash).collect();
+            if txs.is_empty() || hashes == last {
+                continue;
+            }
+            last = hashes;
+            let il = InclusionList::sign(&key, index, height, txs);
+            pub_chain.lock().inclusion.accept(&il, std::time::Instant::now());
+            tracing::info!(height, txs = il.txs.len(), "published inclusion list");
+            let _ = pub_send.send(il);
+        }
+    });
+    tokio::spawn(async move {
+        while let Ok((_peer, msg)) = inbox.recv().await {
+            let Ok(il) = serde_json::from_slice::<InclusionList>(msg.as_ref()) else { continue };
+            let fin = chain.lock().finalized.height;
+            if il.height + 16 < fin || il.height > fin + 16 {
+                continue;
+            }
+            if let Err(e) = il.verify(&validators, chain_id) {
+                tracing::debug!(member = il.member, ?e, "rejected inclusion list");
+                continue;
+            }
+            let fresh = chain.lock().inclusion.accept(&il, std::time::Instant::now());
+            if fresh {
+                let _ = send_tx.send(il);
+            }
         }
     });
 }

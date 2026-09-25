@@ -15,9 +15,9 @@
 //! Clients never trust what they receive here: balances are verified by the
 //! light client (finality certificate + state proof).
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use iroh::address_lookup::AddrFilter;
-use iroh::endpoint::{Connection, presets};
+use iroh::endpoint::{presets, Connection};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey, TransportAddr};
 use iroh_mainline_address_lookup::DhtAddressLookup;

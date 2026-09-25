@@ -2,7 +2,7 @@
 //! a client that only knows the server's node id finds it there and calls RPC.
 //! Needs internet access (UDP). Run: cargo test -p aether-net --test dht_rpc -- --ignored
 
-use aether_net::{ALPN_RPC, RpcClient, bind, serve_rpc};
+use aether_net::{bind, serve_rpc, RpcClient, ALPN_RPC};
 use iroh::SecretKey;
 use serde_json::json;
 use std::time::{Duration, Instant};

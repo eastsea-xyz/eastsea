@@ -114,7 +114,16 @@ where
 
         let Some(parent) = self.resolve(parent_block, ancestry).await else { return false };
         match self.chain.execute(&block, &parent) {
-            Ok(_) => true,
+            Ok(exec) => {
+                // FOCIL: refuse to vote for a block that censors listed txs.
+                let ctx = Chain::block_context(&self.chain.cfg(), &block);
+                let missing = self.chain.inclusion_violations(&exec, &ctx, std::time::Instant::now());
+                if !missing.is_empty() {
+                    warn!(height = %block.height(), missing = missing.len(), first = %missing[0], "inclusion list violated; not voting");
+                    return false;
+                }
+                true
+            }
             Err(e) => {
                 warn!(height = %block.height(), ?e, "rejected block");
                 false

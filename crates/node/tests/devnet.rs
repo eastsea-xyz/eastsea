@@ -1,9 +1,10 @@
 //! Multi-process devnet test: 4 validators on loopback.
 //! Checks consensus progress, tx finality through different nodes, identical
 //! block hashes and state roots everywhere, liveness with one validator down,
-//! and restart recovery from the finalized archive.
+//! and restart recovery from the finalized archive. Also: FOCIL inclusion
+//! lists get a censored sender's tx into a block.
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -21,15 +22,22 @@ struct Net {
     p2p: Vec<u16>,
     rpc: Vec<u16>,
     procs: Vec<Option<Child>>,
+    extra: Vec<Vec<String>>,
 }
 
 impl Net {
     fn start(n: usize) -> Net {
-        let dir = std::env::temp_dir().join(format!("aether-devnet-test-{}", std::process::id()));
+        Self::start_with("basic", vec![vec![]; n])
+    }
+
+    /// `extra[i]` = additional CLI args for validator `i`.
+    fn start_with(tag: &str, extra: Vec<Vec<String>>) -> Net {
+        let n = extra.len();
+        let dir = std::env::temp_dir().join(format!("aether-devnet-test-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let p2p: Vec<u16> = (0..n).map(|_| free_port()).collect();
         let rpc: Vec<u16> = (0..n).map(|_| free_port()).collect();
-        let mut net = Net { dir, p2p, rpc, procs: (0..n).map(|_| None).collect() };
+        let mut net = Net { dir, p2p, rpc, procs: (0..n).map(|_| None).collect(), extra };
         for i in 0..n {
             net.spawn(i);
         }
@@ -48,7 +56,7 @@ impl Net {
         // Plain TCP between validators and no public endpoint: offline, and
         // never publishes devnet node ids to the DHT.
         let peers: Vec<String> = (0..self.p2p.len()).filter(|j| *j != i).map(|j| format!("{}@127.0.0.1:{}", j + 1, self.p2p[j])).collect();
-        cmd.args(["--peers", &peers.join(","), "--offline"]);
+        cmd.args(["--peers", &peers.join(","), "--offline"]).args(&self.extra[i]);
         self.procs[i] = Some(cmd.spawn().expect("spawn validator"));
     }
 
@@ -162,4 +170,63 @@ fn four_validators_agree_execute_survive_and_recover() {
         assert_agree(&net, &[0, 3], height);
     }
     assert_agree(&net, &[0, 1, 2, 3], target);
+}
+
+fn dev_address(dev: u8) -> String {
+    let out = Command::new(BIN).arg("dev-accounts").output().expect("dev-accounts");
+    let text = String::from_utf8(out.stdout).unwrap();
+    let line = text.lines().find(|l| l.split_whitespace().nth(1) == Some(&dev.to_string())).expect("dev account");
+    line.split_whitespace().nth(2).unwrap().to_string()
+}
+
+fn wait_receipt(net: &Net, i: usize, hash: &str, secs: u64) -> Value {
+    let end = Instant::now() + Duration::from_secs(secs);
+    while Instant::now() < end {
+        if let Some(r) = net.rpc(i, "aether_getReceipt", json!([hash])) {
+            if r.get("height").is_some() {
+                return r;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    panic!("tx {hash} not finalized within {secs}s");
+}
+
+/// Every validator leaves dev 3 out of its own ordering, and validator 1 also
+/// ignores inclusion lists. Dev 3's tx can then only land through a list:
+/// published by a committee member, gossiped, put first by an honest proposer.
+#[test]
+fn inclusion_lists_get_censored_txs_in() {
+    let censored = dev_address(3);
+    let extra = (0..4)
+        .map(|i| {
+            let mut a = vec!["--dev-deprioritize".to_string(), censored.clone()];
+            if i == 0 {
+                a.extend(["--dev-censor".to_string(), censored.clone()]);
+            }
+            a
+        })
+        .collect();
+    let net = Net::start_with("focil", extra);
+    for i in 0..4 {
+        net.wait_height(i, 3, 60);
+    }
+    let censor_addr = format!("{}", aether_node::chain::leader_address(&commonware_cryptography::Signer::public_key(&aether_light::devnet_validator_key(1))));
+
+    let bob = "0x000000000000000000000000000000000000b0b1";
+    let out = net.cli(&["send", "--rpc", &net.url(1), "--from-dev", "3", "--to", bob, "--value", "42"]);
+    let hash = out.split_whitespace().nth(1).expect("tx hash").to_string();
+    let r = wait_receipt(&net, 2, &hash, 40);
+    assert_eq!(r["receipt"]["success"], true);
+    let b = block(&net, 2, r["height"].as_u64().unwrap());
+    assert!(!b["proposer"].as_str().unwrap().eq_ignore_ascii_case(&censor_addr), "the censoring validator never includes it");
+
+    // Normal senders are unaffected.
+    let out = net.cli(&["send", "--rpc", &net.url(3), "--from-dev", "4", "--to", bob, "--value", "1"]);
+    wait_receipt(&net, 0, out.split_whitespace().nth(1).unwrap(), 20);
+    let h = net.height(0);
+    for i in 1..4 {
+        net.wait_height(i, h, 20);
+    }
+    assert_agree(&net, &[0, 1, 2, 3], h);
 }

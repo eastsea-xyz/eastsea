@@ -4,6 +4,7 @@
 //! competing forks can be validated; the finalized head is what RPC serves.
 
 use crate::block::{Block, Payload, PublicKey};
+use crate::inclusion::{self, InclusionPool};
 use aether_crypto::{address_of, PublicKey as AetherPk};
 use aether_execution::{execute_block, BlockContext, Receipt, WorldState};
 use aether_types::{Address, GasVector, SignerScheme, TxEnvelope, TxHash, B256, U256};
@@ -12,6 +13,7 @@ use commonware_cryptography::{sha256::Digest, Digestible};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 pub const MAX_TXS_PER_BLOCK: usize = 2_000;
 pub const MAX_MEMPOOL: usize = 50_000;
@@ -90,6 +92,16 @@ pub struct Inner {
     pub blocks: BTreeMap<u64, BlockSummary>,
     pub receipts: HashMap<TxHash, (u64, Receipt)>,
     pub mempool: BTreeMap<TxHash, TxEnvelope>,
+    /// When each mempool tx arrived (inclusion lists name the oldest).
+    arrivals: HashMap<TxHash, Instant>,
+    /// Txs named by inclusion lists (FOCIL).
+    pub inclusion: InclusionPool,
+    /// Devnet fault injection: act as a proposer that censors this sender and
+    /// ignores inclusion lists. Used to test censorship resistance.
+    pub censor: Option<Address>,
+    /// Devnet fault injection: leave this sender out of mempool ordering but
+    /// still honour inclusion lists (its txs then land only via lists).
+    pub deprioritize: Option<Address>,
 }
 
 #[derive(Clone)]
@@ -123,7 +135,18 @@ impl Chain {
         executed.insert(genesis.digest(), exec.clone());
         let mut blocks = BTreeMap::new();
         blocks.insert(0, summary(&genesis, &exec, B256::ZERO));
-        let inner = Inner { cfg, executed, finalized: exec, blocks, receipts: HashMap::new(), mempool: BTreeMap::new() };
+        let inner = Inner {
+            cfg,
+            executed,
+            finalized: exec,
+            blocks,
+            receipts: HashMap::new(),
+            mempool: BTreeMap::new(),
+            arrivals: HashMap::new(),
+            inclusion: InclusionPool::default(),
+            censor: None,
+            deprioritize: None,
+        };
         (Chain(Arc::new(Mutex::new(inner))), genesis)
     }
 
@@ -188,13 +211,42 @@ impl Chain {
         exec
     }
 
-    /// Candidate txs for a proposal: lowest nonce first per sender, then by hash.
+    /// Candidate txs for a proposal: inclusion-list txs first, then the mempool
+    /// (lowest nonce first per sender).
     pub fn mempool_candidates(&self) -> Vec<TxEnvelope> {
         let g = self.lock();
-        let mut txs: Vec<TxEnvelope> = g.mempool.values().cloned().collect();
-        txs.sort_by_key(|t| (t.header.nonce, t.header.sender));
+        let censored = |t: &TxEnvelope| g.censor == Some(t.header.sender) || g.deprioritize == Some(t.header.sender);
+        let listed = if g.censor.is_some() { Vec::new() } else { g.inclusion.for_proposal() };
+        let listed_hashes: std::collections::HashSet<TxHash> = listed.iter().map(aether_execution::tx_hash).collect();
+        let mut rest: Vec<TxEnvelope> = g.mempool.iter().filter(|(h, t)| !listed_hashes.contains(*h) && !censored(t)).map(|(_, t)| t.clone()).collect();
+        rest.sort_by_key(|t| (t.header.nonce, t.header.sender));
+        let mut txs = listed;
+        txs.extend(rest);
         txs.truncate(MAX_TXS_PER_BLOCK);
         txs
+    }
+
+    /// The oldest mempool txs waiting at least `min_age`, for this node's inclusion list.
+    pub fn inclusion_candidates(&self, min_age: Duration, now: Instant) -> Vec<TxEnvelope> {
+        let g = self.lock();
+        let mut waiting: Vec<(Instant, TxHash)> =
+            g.arrivals.iter().filter(|(h, t)| now.saturating_duration_since(**t) >= min_age && g.mempool.contains_key(*h)).map(|(h, t)| (*t, *h)).collect();
+        waiting.sort();
+        waiting.into_iter().take(inclusion::MAX_IL_TXS).filter_map(|(_, h)| g.mempool.get(&h).cloned()).collect()
+    }
+
+    /// Listed txs that `exec` (a verified block) wrongly left out. Empty for a
+    /// censoring devnet node, which ignores the lists.
+    pub fn inclusion_violations(&self, exec: &Executed, ctx: &BlockContext, now: Instant) -> Vec<TxHash> {
+        let listed = {
+            let g = self.lock();
+            if g.censor.is_some() {
+                return Vec::new();
+            }
+            g.inclusion.enforceable(now)
+        };
+        let full = exec.tx_hashes.len() >= MAX_TXS_PER_BLOCK;
+        inclusion::violations(&listed, &exec.tx_hashes, full, &exec.state, ctx, exec.gas)
     }
 
     /// Returns false if the pool is full or the tx is already known.
@@ -208,6 +260,7 @@ impl Chain {
             return false;
         }
         g.mempool.insert(h, tx);
+        g.arrivals.insert(h, Instant::now());
         true
     }
 
@@ -235,6 +288,9 @@ impl Chain {
         }
         let state = exec.state.clone();
         g.mempool.retain(|_, tx| tx.header.nonce >= state.nonce(&tx.header.sender));
+        let inner = &mut *g;
+        inner.arrivals.retain(|h, _| inner.mempool.contains_key(h));
+        inner.inclusion.prune(&state, exec.height, Instant::now());
         g.blocks.insert(exec.height, summary(block, &exec, payload.parent_state_root));
         g.finalized = exec.clone();
         let floor = exec.height.saturating_sub(64);

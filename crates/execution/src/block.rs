@@ -178,6 +178,14 @@ pub fn build_block(pre: &WorldState, ctx: &BlockContext, candidates: Vec<TxEnvel
     (included, BlockOutcome { state, bal: bal.build(), receipts, gas: total })
 }
 
+/// FOCIL append check: would `tx` be valid if appended to a block whose
+/// post-state is `post` and that already used `used` gas? Inclusion-list txs
+/// for which this holds must not be left out.
+pub fn can_append(post: &WorldState, ctx: &BlockContext, used: GasVector, tx: &TxEnvelope) -> bool {
+    let Ok(run) = run_tx(post, ctx, tx) else { return false };
+    matches!(used.checked_add(run.gas), Some(t) if t.fits(&ctx.limits))
+}
+
 /// Validator: every tx must be valid and the whole block must fit the limits.
 pub fn execute_block(pre: &WorldState, ctx: &BlockContext, txs: &[TxEnvelope]) -> Result<BlockOutcome, ExecError> {
     let mut state = pre.clone();

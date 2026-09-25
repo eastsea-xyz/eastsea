@@ -133,6 +133,8 @@ fn four_validators_agree_execute_survive_and_recover() {
     let bob = "0x00000000000000000000000000000000000b0b00";
     let out = net.cli(&["send", "--rpc", &net.url(0), "--from-dev", "1", "--to", bob, "--value", "777", "--wait"]);
     assert!(out.contains("success=true"), "{out}");
+    // Finalized on the submitting node; the reading node may be a block behind.
+    net.wait_height(2, net.height(0), 20);
     let bal = net.cli(&["balance", bob, "--rpc", &net.url(2)]);
     assert!(bal.contains("balance   777 wei") && bal.contains("verified  ✓"), "{bal}");
 
@@ -143,6 +145,7 @@ fn four_validators_agree_execute_survive_and_recover() {
         let out = net.cli(&["call", "--rpc", &net.url(3), "--from-dev", "3", "--to", &contract, "--wait"]);
         assert!(out.contains("success=true"), "{out}");
     }
+    net.wait_height(0, net.height(3), 20);
     let st = net.cli(&["storage", &contract, "0", "--rpc", &net.url(0)]);
     assert!(st.contains("] = 2") && st.contains("verified  ✓"), "{st}");
 

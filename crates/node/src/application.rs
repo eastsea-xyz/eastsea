@@ -33,6 +33,11 @@ impl Application {
         Self { chain, delay_ms }
     }
 
+    /// Height of the finalized state this node already holds (restored from disk).
+    pub fn finalized_height(&self) -> u64 {
+        self.chain.finalized_height()
+    }
+
     /// Re-execute an already finalized block during startup recovery.
     pub fn replay(&self, block: &Block) -> Result<(), crate::chain::ChainError> {
         self.chain.finalize(block)

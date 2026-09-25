@@ -163,6 +163,7 @@ fn apply(
 /// Proposer: execute candidates in order, keep the valid ones that fit the limits.
 pub fn build_block(pre: &WorldState, ctx: &BlockContext, candidates: Vec<TxEnvelope>) -> (Vec<TxEnvelope>, BlockOutcome) {
     let mut state = pre.clone();
+    state.clear_journal();
     let (mut bal, mut receipts, mut total, mut included) = (BalBuilder::default(), Vec::new(), GasVector::default(), Vec::new());
     for tx in candidates {
         let Ok(run) = run_tx(&state, ctx, &tx) else { continue };
@@ -189,6 +190,7 @@ pub fn can_append(post: &WorldState, ctx: &BlockContext, used: GasVector, tx: &T
 /// Validator: every tx must be valid and the whole block must fit the limits.
 pub fn execute_block(pre: &WorldState, ctx: &BlockContext, txs: &[TxEnvelope]) -> Result<BlockOutcome, ExecError> {
     let mut state = pre.clone();
+    state.clear_journal();
     let (mut bal, mut receipts, mut total) = (BalBuilder::default(), Vec::new(), GasVector::default());
     for (index, tx) in txs.iter().enumerate() {
         let run = run_tx(&state, ctx, tx).map_err(|reason| ExecError::InvalidTx { index, reason })?;

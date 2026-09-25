@@ -6,4 +6,4 @@ pub mod world;
 
 pub use block::{build_block, can_append, execute_block, BlockContext, BlockOutcome, ExecError, ProveGasMeter, Receipt};
 pub use tx::{sign_call, tx_hash, validate_stateless, EvmCall, TxError};
-pub use world::{ChainHasher, StateError, WorldState};
+pub use world::{ChainHasher, Journal, StateError, WorldState};

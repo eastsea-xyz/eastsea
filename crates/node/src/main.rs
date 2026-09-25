@@ -339,7 +339,8 @@ fn run_node(a: NodeArgs) {
         let (il_out, il_in) = network.register(6, Quota::per_second(NZU32!(256)));
 
         let scheme = Scheme::signer(&union(NAMESPACE, b"_CONSENSUS"), validators.clone(), signer.clone()).expect("key is a validator");
-        let (chain, genesis) = Chain::new(cfg.clone());
+        let store = aether_node::store::Store::open(&std::path::Path::new(&data).join("state.redb")).expect("open state store");
+        let (chain, genesis) = Chain::open(cfg.clone(), store).expect("restore state (delete the data dir to resync)");
         if let Some(a) = dev_censor {
             tracing::warn!(censored = %a, "DEVNET FAULT INJECTION: this validator censors a sender and ignores inclusion lists");
             chain.lock().censor = Some(a);

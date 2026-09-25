@@ -34,15 +34,52 @@ pub struct WorldState {
     /// Bytecode by keccak code hash. The tree holds code chunks for proofs;
     /// this index serves execution.
     codes: Arc<BTreeMap<B256, Bytes>>,
+    /// Tree writes and new code since the last `clear_journal`: one block's diff,
+    /// which the node persists on finalization.
+    journal: Journal,
+}
+
+/// A state diff: tree writes in order (None deletes) and newly deployed code.
+#[derive(Clone, Default, Debug, PartialEq)]
+pub struct Journal {
+    pub writes: Vec<(aether_state::TreeKey, Option<aether_state::Value>)>,
+    pub codes: Vec<(B256, Bytes)>,
 }
 
 impl Default for WorldState {
     fn default() -> Self {
-        WorldState { tree: MemRepo::new(ChainHasher::new()), codes: Arc::new(BTreeMap::new()) }
+        WorldState { tree: MemRepo::new(ChainHasher::new()), codes: Arc::new(BTreeMap::new()), journal: Journal::default() }
     }
 }
 
 impl WorldState {
+    /// Rebuild from persisted tree entries and code (the full state).
+    pub fn from_parts(entries: Vec<(aether_state::TreeKey, aether_state::Value)>, codes: BTreeMap<B256, Bytes>) -> Self {
+        let mut s = WorldState { codes: Arc::new(codes), ..Default::default() };
+        let writes: Vec<_> = entries.into_iter().map(|(k, v)| (k, Some(v))).collect();
+        s.tree.apply(&writes);
+        s
+    }
+
+    /// The diff recorded since the last `clear_journal`.
+    pub fn journal(&self) -> &Journal {
+        &self.journal
+    }
+
+    pub fn clear_journal(&mut self) {
+        self.journal = Journal::default();
+    }
+
+    /// All bytecode by code hash.
+    pub fn codes(&self) -> &BTreeMap<B256, Bytes> {
+        &self.codes
+    }
+
+    fn write(&mut self, writes: Vec<(aether_state::TreeKey, Option<aether_state::Value>)>) {
+        self.tree.apply(&writes);
+        self.journal.writes.extend(writes);
+    }
+
     pub fn root(&self) -> B256 {
         B256::from(self.tree.root())
     }
@@ -68,10 +105,7 @@ impl WorldState {
     }
 
     pub fn storage(&self, a: &Address, slot: U256) -> U256 {
-        self.tree
-            .get(&storage_slot_key(self.h(), a, slot))
-            .map(|v| U256::from_be_bytes(v))
-            .unwrap_or_default()
+        self.tree.get(&storage_slot_key(self.h(), a, slot)).map(|v| U256::from_be_bytes(v)).unwrap_or_default()
     }
 
     pub fn code_hash(&self, a: &Address) -> B256 {
@@ -85,7 +119,8 @@ impl WorldState {
     /// Genesis / faucet allocation.
     pub fn set_balance(&mut self, a: Address, balance: U256) -> Result<(), StateError> {
         let d = self.account(&a).unwrap_or_default().with_balance(balance).map_err(|_| StateError::BalanceOverflow(a))?;
-        self.tree.apply(&[(basic_data_key(self.h(), &a), Some(d.encode().expect("code size unchanged")))]);
+        let key = basic_data_key(self.h(), &a);
+        self.write(vec![(key, Some(d.encode().expect("code size unchanged")))]);
         Ok(())
     }
 
@@ -106,12 +141,13 @@ impl WorldState {
             }
             self.account_writes(&h, addr, acc, &mut writes, &mut new_codes)?;
         }
-        self.tree.apply(&writes);
+        self.write(writes);
         if !new_codes.is_empty() {
             let codes = Arc::make_mut(&mut self.codes);
-            for (hash, code) in new_codes {
-                codes.insert(hash, code);
+            for (hash, code) in &new_codes {
+                codes.insert(*hash, code.clone());
             }
+            self.journal.codes.extend(new_codes);
         }
         Ok(())
     }
@@ -125,7 +161,13 @@ impl WorldState {
         new_codes: &mut Vec<(B256, Bytes)>,
     ) -> Result<(), StateError> {
         let code = acc.info.code.as_ref().map(|c| c.original_bytes()).unwrap_or_default();
-        let code_size = if acc.info.code_hash == KECCAK_EMPTY { 0 } else if code.is_empty() { self.code(addr).len() } else { code.len() };
+        let code_size = if acc.info.code_hash == KECCAK_EMPTY {
+            0
+        } else if code.is_empty() {
+            self.code(addr).len()
+        } else {
+            code.len()
+        };
         let data = BasicData { version: 0, code_size: code_size as u32, nonce: acc.info.nonce, balance: 0 }
             .with_balance(acc.info.balance)
             .map_err(|_| StateError::BalanceOverflow(*addr))?;

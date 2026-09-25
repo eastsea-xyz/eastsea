@@ -141,7 +141,12 @@ where
         let prefix = cfg.partition_prefix.clone();
         let finalizations = immutable::Archive::init(
             context.child("finalizations_by_height"),
-            archive_cfg(&prefix, "finalizations", page_cache.clone(), <Scheme as commonware_cryptography::certificate::Verifier>::certificate_codec_config_unbounded()),
+            archive_cfg(
+                &prefix,
+                "finalizations",
+                page_cache.clone(),
+                <Scheme as commonware_cryptography::certificate::Verifier>::certificate_codec_config_unbounded(),
+            ),
         )
         .await
         .expect("finalizations archive");
@@ -152,11 +157,12 @@ where
         .await
         .expect("blocks archive");
 
-        // Rebuild execution state from blocks this node already finalized, so a
+        // Re-execute finalized blocks newer than the durable state checkpoint, so a
         // restarted validator resumes exactly where marshal's delivery resumes.
+        let restored = cfg.application.finalized_height();
         let mut replayed = 0u64;
         if let Some(last) = blocks.last_index() {
-            for h in 1..=last {
+            for h in restored + 1..=last {
                 match blocks.get(Identifier::Index(h)).await {
                     Ok(Some(block)) => {
                         if let Err(e) = cfg.application.replay(&block) {
@@ -169,9 +175,7 @@ where
                 }
             }
         }
-        if replayed > 0 {
-            tracing::info!(height = replayed, "restored state from finalized block archive");
-        }
+        tracing::info!(checkpoint = restored, replayed_to = replayed.max(restored), "restored finalized state");
 
         let scheme = cfg.scheme;
         let epocher = FixedEpocher::new(EPOCH_LENGTH);
@@ -239,10 +243,7 @@ where
         recovered: (impl Sender<PublicKey = PublicKey>, impl Receiver<PublicKey = PublicKey>),
         resolver: (impl Sender<PublicKey = PublicKey>, impl Receiver<PublicKey = PublicKey>),
         broadcast: (impl Sender<PublicKey = PublicKey>, impl Receiver<PublicKey = PublicKey>),
-        marshal: (
-            handler::Receiver<Digest>,
-            impl TargetedResolver<Key = handler::Key<Digest>, Subscriber = handler::Annotation, PublicKey = PublicKey>,
-        ),
+        marshal: (handler::Receiver<Digest>, impl TargetedResolver<Key = handler::Key<Digest>, Subscriber = handler::Annotation, PublicKey = PublicKey>),
     ) -> Handle<()> {
         spawn_cell!(self.context, self.run(pending, recovered, resolver, broadcast, marshal))
     }
@@ -254,10 +255,7 @@ where
         recovered: (impl Sender<PublicKey = PublicKey>, impl Receiver<PublicKey = PublicKey>),
         resolver: (impl Sender<PublicKey = PublicKey>, impl Receiver<PublicKey = PublicKey>),
         broadcast: (impl Sender<PublicKey = PublicKey>, impl Receiver<PublicKey = PublicKey>),
-        marshal: (
-            handler::Receiver<Digest>,
-            impl TargetedResolver<Key = handler::Key<Digest>, Subscriber = handler::Annotation, PublicKey = PublicKey>,
-        ),
+        marshal: (handler::Receiver<Digest>, impl TargetedResolver<Key = handler::Key<Digest>, Subscriber = handler::Annotation, PublicKey = PublicKey>),
     ) {
         let buffer_handle = self.buffer.start(broadcast);
         let marshal_handle = self.marshal.start(self.marshaled, self.buffer_mailbox, marshal);

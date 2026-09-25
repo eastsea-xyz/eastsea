@@ -5,6 +5,7 @@
 
 use crate::block::{Block, Payload, PublicKey};
 use crate::inclusion::{self, InclusionPool};
+use crate::store::{Commit, Store, StoreError};
 use aether_crypto::{address_of, PublicKey as AetherPk};
 use aether_execution::{execute_block, BlockContext, Receipt, WorldState};
 use aether_types::{Address, GasVector, SignerScheme, TxEnvelope, TxHash, B256, U256};
@@ -70,7 +71,7 @@ pub struct Executed {
     pub proposer: Address,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, serde::Deserialize)]
 pub struct BlockSummary {
     pub height: u64,
     pub hash: String,
@@ -102,6 +103,8 @@ pub struct Inner {
     /// Devnet fault injection: leave this sender out of mempool ordering but
     /// still honour inclusion lists (its txs then land only via lists).
     pub deprioritize: Option<Address>,
+    /// Durable finalized state; None = memory only (tests).
+    store: Option<Arc<Store>>,
 }
 
 #[derive(Clone)]
@@ -115,6 +118,7 @@ pub enum ChainError {
     BalMismatch,
     GasMismatch,
     UnknownParent,
+    Store(String),
 }
 
 impl Chain {
@@ -146,8 +150,60 @@ impl Chain {
             inclusion: InclusionPool::default(),
             censor: None,
             deprioritize: None,
+            store: None,
         };
         (Chain(Arc::new(Mutex::new(inner))), genesis)
+    }
+
+    /// Open with durable state: resume from the stored checkpoint, or start at
+    /// genesis and persist it.
+    pub fn open(cfg: ChainConfig, store: Store) -> Result<(Self, Block), StoreError> {
+        let (chain, genesis) = Self::new(cfg);
+        let store = Arc::new(store);
+        match store.load()? {
+            Some(cp) => {
+                use commonware_codec::DecodeExt;
+                let digest = Digest::decode(cp.digest.as_slice()).map_err(|_| StoreError::Corrupt("digest"))?;
+                let summary = cp.blocks.get(&cp.height).cloned();
+                let mut state = cp.state;
+                state.clear_journal();
+                let exec = Arc::new(Executed {
+                    height: cp.height,
+                    digest,
+                    timestamp: summary.as_ref().map(|b| b.timestamp_ms).unwrap_or_default(),
+                    state,
+                    receipts: vec![],
+                    tx_hashes: summary.as_ref().map(|b| b.txs.clone()).unwrap_or_default(),
+                    gas: GasVector::default(),
+                    proposer: summary.as_ref().map(|b| b.proposer).unwrap_or_default(),
+                });
+                let mut g = chain.lock();
+                g.executed.insert(digest, exec.clone());
+                g.finalized = exec;
+                g.blocks = cp.blocks;
+                g.receipts = cp.receipts;
+                g.store = Some(store);
+            }
+            None => {
+                let mut g = chain.lock();
+                let genesis_exec = g.finalized.clone();
+                let summary = g.blocks.get(&0).cloned().expect("genesis summary");
+                store.commit(Commit {
+                    height: 0,
+                    digest: digest_bytes(&genesis_exec.digest),
+                    root: genesis_exec.state.root(),
+                    diff: genesis_exec.state.journal(),
+                    summary: &summary,
+                    receipts: vec![],
+                })?;
+                g.store = Some(store);
+            }
+        }
+        Ok((chain, genesis))
+    }
+
+    pub fn finalized_height(&self) -> u64 {
+        self.lock().finalized.height
     }
 
     pub fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -264,8 +320,15 @@ impl Chain {
         true
     }
 
-    /// Adopt a finalized block (delivered in order by marshal).
+    /// Adopt a finalized block (delivered in order by marshal) and persist it.
     pub fn finalize(&self, block: &Block) -> Result<(), ChainError> {
+        let height = block.height().get();
+        {
+            let g = self.lock();
+            if height <= g.finalized.height && height != 0 {
+                return Ok(()); // at-least-once delivery, or already restored from disk
+            }
+        }
         let exec = match self.get(&block.digest()) {
             Some(e) => e,
             None => {
@@ -278,10 +341,22 @@ impl Chain {
             }
         };
         let payload = block.payload().ok_or(ChainError::BadPayload)?;
-        let mut g = self.lock();
-        if exec.height <= g.finalized.height && exec.height != 0 {
-            return Ok(()); // at-least-once delivery
+        let summary = summary(block, &exec, payload.parent_state_root);
+        let store = self.lock().store.clone();
+        if let Some(store) = store {
+            // Disk first: the in-memory head never runs ahead of what survives a crash.
+            store
+                .commit(Commit {
+                    height: exec.height,
+                    digest: digest_bytes(&exec.digest),
+                    root: exec.state.root(),
+                    diff: exec.state.journal(),
+                    summary: &summary,
+                    receipts: exec.tx_hashes.iter().copied().zip(exec.receipts.iter()).collect(),
+                })
+                .map_err(|e| ChainError::Store(e.to_string()))?;
         }
+        let mut g = self.lock();
         for (h, r) in exec.tx_hashes.iter().zip(&exec.receipts) {
             g.receipts.insert(*h, (exec.height, r.clone()));
             g.mempool.remove(h);
@@ -291,12 +366,16 @@ impl Chain {
         let inner = &mut *g;
         inner.arrivals.retain(|h, _| inner.mempool.contains_key(h));
         inner.inclusion.prune(&state, exec.height, Instant::now());
-        g.blocks.insert(exec.height, summary(block, &exec, payload.parent_state_root));
+        g.blocks.insert(exec.height, summary);
         g.finalized = exec.clone();
         let floor = exec.height.saturating_sub(64);
         g.executed.retain(|_, e| e.height >= floor);
         Ok(())
     }
+}
+
+fn digest_bytes(d: &Digest) -> [u8; 32] {
+    d.as_ref().try_into().expect("sha256 digest is 32 bytes")
 }
 
 fn summary(block: &Block, e: &Executed, parent_state_root: B256) -> BlockSummary {

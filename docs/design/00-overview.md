@@ -44,7 +44,7 @@ EIP-7864 바이너리 트리, 해시 전용, P-256 계정, FOCIL)를 레거시 �
 | D2 | BAL(EIP-7928)을 블록 유효성 조건으로 | nextgen-execution |
 | D3 | 순서 먼저, 실행·증명 1~2블록 뒤 (Monad식) | nextgen-execution |
 | D4 | prove-gas 3차원, 블록당 상한 | nextgen-execution |
-| D5 | 상태: 바이너리 SMT, EIP-7864 32바이트 키, NOMT | nextgen-state |
+| D5 | 상태: 바이너리 SMT, EIP-7864 32바이트 키. 저장은 redb(NOMT는 해시 MSB 태깅으로 EIP-7864 루트와 불일치, 05장) | nextgen-state |
 | D6 | 해시 trait: Poseidon2⟨KoalaBear,16⟩ 기본, BLAKE3 선택 | nextgen-state |
 | D7 | PCS trait: WHIR 오늘, Akita 감사 후 교체 | nextgen-zk |
 | D8 | 합의: Commonware simplex + BLS 임계 scheme | nextgen-consensus |

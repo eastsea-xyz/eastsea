@@ -21,11 +21,15 @@ key = stem ‖ sub_index(1바이트)
 - 빈 서브트리 해시는 깊이별 사전 계산.
 - multiproof: 키 집합에 대한 형제 노드 최소 집합. 형식은 NOMT의 witness를 그대로 직렬화.
 
-## 저장 엔진: NOMT
+## 저장 엔진 — 변경: NOMT 대신 EIP-7864 트리 + redb 영속화 (2026-09-26)
 
-- `NomtRepo`가 `StateRepository` 구현. NOMT의 hasher를 우리 `Hasher`로 주입.
-- 커밋 단위 = 블록 실행 1회. 각 커밋은 `(height, root)`를 메타 테이블에 기록.
-- macOS에서는 io_uring 대신 표준 I/O fallback (NOMT가 지원). 성능 기준선은 Linux CI에서 잰다.
+**NOMT를 엔진으로 쓰지 않는다.** nomt-core 1.0.5의 `NodeHasher`는 32바이트 해시만 보고 노드 종류를 판별해야 해서(`node_kind`), 리프·내부 노드 해시의 최상위 비트를 태깅한다(`set_msb`/`unset_msb`). 그 결과 루트가 EIP-7864(geth V3/ubt와 교차 검증한 값)와 같아질 수 없다. 지갑 경량 검증과 이더리움 호환 증명이 이 루트에 걸려 있으므로 트리 해시 규칙을 바꾸지 않는다.
+
+지금 구현 (`crates/node/src/store.rs`):
+- 트리 계산은 기존 `BinaryTree`(EIP-7864, Poseidon2) 그대로. `WorldState`가 블록마다 쓰기 저널(트리 쓰기 + 새 바이트코드)을 남긴다.
+- 확정 블록마다 redb 트랜잭션 하나로 `state`(32B 키→32B 값, 삭제 반영) · `code` · `blocks`(요약) · `receipts` · `meta(height, digest, root)`를 커밋. **디스크 먼저, 메모리 헤드는 그다음**이라 크래시 후 디스크가 메모리보다 뒤처지지 않는다.
+- 재시작: 저장된 엔트리로 트리를 다시 만들고 루트가 체크포인트 루트와 같아야 기동(다르면 `RootMismatch`로 중단). 체크포인트 이후 블록만 아카이브에서 재실행.
+- 한계: 상태 전체를 메모리에 올린다(맥 RAM 한도가 상태 크기 한도). 디스크 기반 트리 노드 페이징(스템 서브트리 해시 캐시를 디스크에 두고 필요 시 로드)이 다음 단계이며, 그때도 해시 규칙은 EIP-7864를 유지한다.
 
 ## 스냅샷
 

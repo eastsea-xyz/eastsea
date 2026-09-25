@@ -119,6 +119,11 @@ pub enum ChainError {
     GasMismatch,
     UnknownParent,
     Store(String),
+    /// A different block was finalized at a height we already finalized: a
+    /// safety failure (or this node was pointed at another chain). Never ignored.
+    ConflictingFinality {
+        height: u64,
+    },
 }
 
 impl Chain {
@@ -326,7 +331,12 @@ impl Chain {
         {
             let g = self.lock();
             if height <= g.finalized.height && height != 0 {
-                return Ok(()); // at-least-once delivery, or already restored from disk
+                // At-least-once delivery, or already restored from disk: must be the same block.
+                let ours = g.blocks.get(&height).map(|b| b.hash.clone());
+                if ours.is_some_and(|h| h != format!("{}", block.digest())) {
+                    return Err(ChainError::ConflictingFinality { height });
+                }
+                return Ok(());
             }
         }
         let exec = match self.get(&block.digest()) {

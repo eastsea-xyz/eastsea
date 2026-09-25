@@ -100,6 +100,39 @@ enum Cmd {
         #[arg(long, default_value_t = 0)]
         round: u64,
     },
+    /// Move the committee key to a new validator set (run on every old and new
+    /// validator at once). Identity is unchanged, shares are fresh; departing
+    /// validators end with no share. Needs a quorum of the old validators online.
+    Reshare {
+        /// Current network.json (with identity and output, as written by dkg/reshare).
+        #[arg(long)]
+        from: String,
+        /// The next validator set (network.json without identity).
+        #[arg(long)]
+        to: String,
+        /// Last height the current committee finalized (it stops there); the new
+        /// committee's epoch starts at the next height.
+        #[arg(long)]
+        epoch_end: u64,
+        /// Hash of that block (`aether blocks`), which the new epoch builds on.
+        #[arg(long)]
+        epoch_end_hash: String,
+        #[arg(long)]
+        port: u16,
+        #[arg(long)]
+        data: String,
+        #[arg(long, value_delimiter = ',')]
+        peers: Vec<String>,
+        #[arg(long)]
+        link_base: Option<u16>,
+        #[arg(long)]
+        offline: bool,
+    },
+    /// Last finalized height and block hash in a (stopped) node's data dir.
+    Head {
+        #[arg(long)]
+        data: String,
+    },
     /// Generate this validator's keys in <data> (never overwrites). Prints the public entry.
     Keygen {
         #[arg(long)]
@@ -197,11 +230,29 @@ fn main() {
     let cli = Cli::parse();
     let res = match cli.cmd {
         Cmd::Node { index, validators, network, port, rpc_port, data, peers, link_base, offline, block_time_ms, dev_censor, dev_deprioritize } => {
-            p2p_args(index, validators, network, &data, port, peers, link_base, offline).map(|(p2p, chain_id)| {
-                run_node(NodeArgs { p2p, chain_id, rpc_port, data, block_time_ms, dev_censor, dev_deprioritize });
-            })
+            let with_file = network.is_some();
+            p2p_args(index, validators, network, &data, port, peers, link_base, offline)
+                .and_then(|args| {
+                    if with_file && args.3.is_none() {
+                        return Err("network.json has no committee identity: run the node with the network.json written by dkg/reshare".into());
+                    }
+                    Ok(args)
+                })
+                .map(|(p2p, chain_id, epochs, key_round)| {
+                    run_node(NodeArgs { p2p, chain_id, epochs, key_round, rpc_port, data, block_time_ms, dev_censor, dev_deprioritize });
+                })
         }
         Cmd::Keygen { data } => keygen(&data),
+        Cmd::Head { data } => (|| {
+            let store = aether_node::store::Store::open(&std::path::Path::new(&data).join("state.redb")).map_err(|e| e.to_string())?;
+            let (h, d) = store.head().map_err(|e| e.to_string())?.ok_or("no finalized state")?;
+            println!("{h} {}", hex::encode(d));
+            Ok(())
+        })(),
+        Cmd::Reshare { from, to, epoch_end, epoch_end_hash, port, data, peers, link_base, offline } => {
+            let boundary = aether_node::roster::EpochStart { height: epoch_end + 1, parent: epoch_end_hash };
+            reshare(&from, &to, boundary, port, data, peers, link_base, offline)
+        }
         Cmd::Network { chain_id, members } => assemble_network(chain_id, &members),
         Cmd::DevAccounts => {
             for (i, a) in dev_accounts(DEV_ACCOUNTS) {
@@ -229,7 +280,7 @@ fn main() {
         Cmd::Balance { address, rpc, validators, identity } => trusted(validators, identity).and_then(|set| verified_balance(&rpc, address, &set)),
         Cmd::Storage { address, slot, rpc, validators, identity } => trusted(validators, identity).and_then(|set| verified_storage(&rpc, address, slot, &set)),
         Cmd::Dkg { index, validators, network, port, data, peers, link_base, offline, round } => {
-            p2p_args(index, validators, network, &data, port, peers, link_base, offline).map(|(p2p, chain_id)| run_dkg(p2p, chain_id, data, round))
+            p2p_args(index, validators, network, &data, port, peers, link_base, offline).map(|(p2p, chain_id, _, _)| run_dkg(p2p, chain_id, data, round))
         }
         Cmd::Receipt { hash, rpc } => call(&rpc, "aether_getReceipt", json!([hash])).map(|v| println!("{}", pretty(&v))),
     };
@@ -259,19 +310,21 @@ fn p2p_args(
     peers: Vec<String>,
     link_base: Option<u16>,
     offline: bool,
-) -> Result<(P2pArgs, u64), String> {
+) -> Result<(P2pArgs, u64, Vec<aether_node::roster::EpochStart>, Option<u64>), String> {
     use aether_node::roster::{LocalKeys, NetworkFile, Roster};
-    let (roster, keys, index, chain_id) = match network {
+    let (roster, keys, index, chain_id, epochs, round) = match network {
         Some(path) => {
             let file = NetworkFile::load(std::path::Path::new(&path))?;
             let roster = Roster::from_file(&file)?;
             let keys = LocalKeys::load(std::path::Path::new(data))?;
             let index = roster.index_of(&keys.signer.public_key()).ok_or("this machine's validator key is not in network.json")?;
-            (roster, keys, index, file.chain_id)
+            // A network file with an identity names the key round its shares must be from.
+            let round = file.identity.as_ref().map(|_| file.round);
+            (roster, keys, index, file.chain_id, file.epochs, round)
         }
         None => {
             let (index, n) = (index.ok_or("--index (or --network)")?, n.ok_or("--validators (or --network)")?);
-            (Roster::devnet(n), LocalKeys::devnet(index), index, DEFAULT_CHAIN_ID)
+            (Roster::devnet(n), LocalKeys::devnet(index), index, DEFAULT_CHAIN_ID, vec![], None)
         }
     };
     let transport = if peers.iter().any(|p| !p.is_empty()) {
@@ -280,7 +333,98 @@ fn p2p_args(
         Transport::Iroh { link_base: link_base.unwrap_or(20_000 + 100 * index as u16) }
     };
     let n = roster.len();
-    Ok((P2pArgs { index, n, roster, keys, port, transport, offline, max_message: MAX_BLOCK_BYTES + 1024 * 1024 }, chain_id))
+    Ok((P2pArgs { index, n, roster, keys, port, transport, offline, max_message: MAX_BLOCK_BYTES + 1024 * 1024 }, chain_id, epochs, round))
+}
+
+/// Reshare: p2p over the union of both validator sets; old members deal with
+/// their current share, new members receive.
+#[allow(clippy::too_many_arguments)]
+fn reshare(
+    from: &str,
+    to: &str,
+    boundary: aether_node::roster::EpochStart,
+    port: u16,
+    data: String,
+    peers: Vec<String>,
+    link_base: Option<u16>,
+    offline: bool,
+) -> Result<(), String> {
+    use aether_node::roster::{LocalKeys, NetworkFile, Roster};
+    tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,commonware=warn".into())).init();
+    let old_file = NetworkFile::load(std::path::Path::new(from))?;
+    let new_file = NetworkFile::load(std::path::Path::new(to))?;
+    let (old, new) = (Roster::from_file(&old_file)?, Roster::from_file(&new_file)?);
+    let output_hex = old_file.output.clone().ok_or("--from has no committee output: use the network.json written by dkg/reshare")?;
+    let n_old = old.len() as u32;
+    let previous = aether_node::dkg::KeyFile { round: old_file.round, output: output_hex, identity: String::new(), share: String::new() };
+    let previous = previous.decode_output(n_old)?;
+    let dir = std::path::PathBuf::from(&data);
+    let keys = LocalKeys::load(&dir)?;
+    let share = match std::fs::read(dir.join("threshold.json")) {
+        Ok(b) if old.index_of(&keys.signer.public_key()).is_some() => {
+            let f: aether_node::dkg::KeyFile = serde_json::from_slice(&b).map_err(|e| e.to_string())?;
+            Some(f.decode(n_old)?.1)
+        }
+        _ => None,
+    };
+    let union = old.union(&new);
+    let index = union.index_of(&keys.signer.public_key()).ok_or("this machine's key is in neither validator set")?;
+    let transport = if peers.iter().any(|p| !p.is_empty()) {
+        Transport::Tcp(peers)
+    } else {
+        Transport::Iroh { link_base: link_base.unwrap_or(20_000 + 100 * index as u16) }
+    };
+    let p2p = P2pArgs { index, n: union.len(), roster: union, keys: keys.clone(), port, transport, offline, max_message: MAX_BLOCK_BYTES + 1024 * 1024 };
+    let round = aether_node::dkg::Round::reshare(previous, new.validators(), old_file.round + 1);
+    let next_round = round.round;
+    let executor = cw_tokio::Runner::new(cw_tokio::Config::new().with_storage_directory(dir.join("reshare-runtime")));
+    let result = executor.start(async move |context| {
+        let _router = aether_node::p2p::open_public(&p2p).await.map(|ep| aether_net::serve_p2p(ep, loopback(p2p.port)));
+        let (mut network, mut oracle) = lookup::Network::new(context.child("network"), aether_node::p2p::config(&p2p, b"_DKG"));
+        oracle.track(0, aether_node::p2p::peer_addresses(&p2p));
+        let (sender, receiver) = network.register(0, Quota::per_second(NZU32!(256)));
+        network.start();
+        tracing::info!(index = p2p.index, round = next_round, "reshare: started");
+        aether_node::dkg::run(p2p.keys.signer.clone(), round, share, sender, receiver, Default::default()).await
+    });
+    match result.map_err(|e| format!("reshare failed: {e}"))? {
+        Some((output, share)) => {
+            let file = aether_node::dkg::KeyFile::new(next_round, &output, &share);
+            write_secret(&dir.join("threshold.json"), &serde_json::to_vec_pretty(&file).expect("json"));
+            let mut public = new_file.clone();
+            public.epochs = old_file.epochs.clone();
+            public.epochs.push(boundary);
+            public.identity = Some(file.identity.clone());
+            public.round = next_round;
+            public.output = Some(file.output.clone());
+            std::fs::write(dir.join("network.json"), serde_json::to_vec_pretty(&public).expect("json")).map_err(|e| e.to_string())?;
+            println!("committee identity: {} (unchanged)", file.identity);
+            println!("new share written to {} (mode 600)", dir.join("threshold.json").display());
+        }
+        None => {
+            // A departing validator: its old share is now useless; remove it.
+            let _ = std::fs::remove_file(dir.join("threshold.json"));
+            println!("dealt our share to the new committee; this validator has left it");
+        }
+    }
+    Ok(())
+}
+
+/// Storage partition prefix for this data dir, fixed at first use so it does
+/// not change when the validator's index in a new committee changes. Older
+/// data dirs (named by index) keep their existing prefix.
+fn partition_prefix(data: &str) -> String {
+    let dir = std::path::Path::new(data);
+    let marker = dir.join("partition");
+    if let Ok(p) = std::fs::read_to_string(&marker) {
+        return p.trim().to_string();
+    }
+    let existing = std::fs::read_dir(dir).ok().and_then(|entries| {
+        entries.filter_map(|e| e.ok()?.file_name().into_string().ok()).find_map(|name| name.strip_suffix("-blocks-metadata").map(str::to_string))
+    });
+    let prefix = existing.unwrap_or_else(|| "aether".to_string());
+    let _ = std::fs::write(&marker, &prefix);
+    prefix
 }
 
 fn keygen(data: &str) -> Result<(), String> {
@@ -302,7 +446,7 @@ fn assemble_network(chain_id: u64, members: &[String]) -> Result<(), String> {
         .iter()
         .map(|p| std::fs::read(p).map_err(|e| format!("{p}: {e}")).and_then(|b| serde_json::from_slice(&b).map_err(|e| format!("{p}: {e}"))))
         .collect::<Result<Vec<aether_node::roster::Member>, String>>()?;
-    let file = aether_node::roster::NetworkFile { chain_id, validators, identity: None, round: 0 };
+    let file = aether_node::roster::NetworkFile { chain_id, validators, identity: None, round: 0, output: None, epochs: vec![] };
     aether_node::roster::Roster::from_file(&file)?;
     println!("{}", serde_json::to_string_pretty(&file).expect("json"));
     Ok(())
@@ -311,6 +455,9 @@ fn assemble_network(chain_id: u64, members: &[String]) -> Result<(), String> {
 struct NodeArgs {
     p2p: P2pArgs,
     chain_id: u64,
+    epochs: Vec<aether_node::roster::EpochStart>,
+    /// Key round the network file expects (from its identity), if any.
+    key_round: Option<u64>,
     rpc_port: u16,
     data: String,
     block_time_ms: u64,
@@ -320,7 +467,7 @@ struct NodeArgs {
 
 fn run_node(a: NodeArgs) {
     tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,commonware=warn".into())).init();
-    let NodeArgs { p2p, chain_id, rpc_port, block_time_ms, dev_censor, dev_deprioritize, data } = a;
+    let NodeArgs { p2p, chain_id, epochs, key_round, rpc_port, block_time_ms, dev_censor, dev_deprioritize, data } = a;
     let (index, port) = (p2p.index, p2p.port);
     assert!(!p2p.offline || matches!(p2p.transport, Transport::Tcp(_)), "--offline needs --peers");
     let signer = p2p.keys.signer.clone();
@@ -352,10 +499,26 @@ fn run_node(a: NodeArgs) {
         // BLS threshold certificates (one group signature per block) with a VRF
         // seed per round for leader election. Devnet shares come from a fixed
         // dealer seed; a real network derives them with a DKG.
-        let (participants, polynomial, share) = committee_keys(&data, &validator_set, &signer.public_key());
+        let (participants, polynomial, share) = committee_keys(&data, &validator_set, &signer.public_key(), key_round);
+        let polynomial_identity = &polynomial.public().clone();
         let scheme = aether_light::Scheme::signer(&aether_light::consensus_namespace(), participants, polynomial, share).expect("share matches polynomial");
         let store = aether_node::store::Store::open(&std::path::Path::new(&data).join("state.redb")).expect("open state store");
         let (chain, genesis) = Chain::open(cfg.clone(), store).expect("restore state (delete the data dir to resync)");
+        // A later epoch starts on the old committee's last block; it must be ours too.
+        let epoch_floor = match epochs.last() {
+            None => None,
+            Some(e) => {
+                use commonware_codec::DecodeExt;
+                let d =
+                    hex::decode(&e.parent).ok().and_then(|b| commonware_cryptography::sha256::Digest::decode(b.as_slice()).ok()).expect("epoch parent hash");
+                let g = chain.lock();
+                if let Some(ours) = g.blocks.get(&(e.height - 1)) {
+                    assert_eq!(ours.hash, format!("{d}"), "epoch parent differs from our finalized block {}", e.height - 1);
+                }
+                assert!(g.finalized.height < e.height, "this node finalized past the epoch boundary {}: wrong --epoch-end", e.height - 1);
+                Some(d)
+            }
+        };
         if let Some(a) = dev_censor {
             tracing::warn!(censored = %a, "DEVNET FAULT INJECTION: this validator censors a sender and ignores inclusion lists");
             chain.lock().censor = Some(a);
@@ -382,9 +545,12 @@ fn run_node(a: NodeArgs) {
             engine::Config {
                 blocker: oracle.clone(),
                 provider: oracle.clone(),
-                partition_prefix: format!("aether-{index}"),
+                partition_prefix: partition_prefix(&data),
                 me: signer.public_key(),
                 scheme,
+                identity: *polynomial_identity,
+                epocher: aether_node::epochs::ScheduleEpocher::new(epochs.iter().map(|e| e.height).collect()),
+                epoch_floor,
                 genesis,
                 application: Application::new(chain.clone(), block_time_ms),
                 mailbox_size: 1024,
@@ -464,15 +630,17 @@ fn run_dkg(p2p: P2pArgs, chain_id: u64, data: String, round: u64) {
         let (sender, receiver) = network.register(0, Quota::per_second(NZU32!(256)));
         network.start();
         tracing::info!(index = p2p.index, n = p2p.n, round, "dkg: started");
-        aether_node::dkg::run(p2p.keys.signer.clone(), p2p.validators(), round, sender, receiver, Default::default()).await
+        aether_node::dkg::run(p2p.keys.signer.clone(), aether_node::dkg::Round::dkg(p2p.validators(), round), None, sender, receiver, Default::default()).await
     });
     match result {
-        Ok((output, share)) => {
+        Ok(None) => unreachable!("every DKG participant is a player"),
+        Ok(Some((output, share))) => {
             let file = aether_node::dkg::KeyFile::new(round, &output, &share);
             write_secret(&out_path, &serde_json::to_vec_pretty(&file).expect("key file serializes"));
             // network.json now also carries the committee identity wallets pin.
             public.identity = Some(file.identity.clone());
             public.round = round;
+            public.output = Some(file.output.clone());
             std::fs::write(dir_out.join("network.json"), serde_json::to_vec_pretty(&public).expect("json")).expect("write network.json");
             println!("committee identity: {}", file.identity);
             println!("secret share written to {} (mode 600)", out_path.display());
@@ -490,6 +658,7 @@ fn committee_keys(
     data: &str,
     validators: &commonware_utils::ordered::Set<PublicKey>,
     me: &PublicKey,
+    expected_round: Option<u64>,
 ) -> (
     commonware_utils::ordered::Set<PublicKey>,
     commonware_cryptography::bls12381::primitives::sharing::Sharing<commonware_cryptography::bls12381::primitives::variant::MinSig>,
@@ -498,6 +667,13 @@ fn committee_keys(
     let path = std::path::Path::new(data).join("threshold.json");
     if let Ok(bytes) = std::fs::read(&path) {
         let file: aether_node::dkg::KeyFile = serde_json::from_slice(&bytes).expect("threshold.json");
+        if let Some(r) = expected_round {
+            assert_eq!(
+                file.round, r,
+                "threshold.json is from key round {} but network.json expects {r}: use the network.json written by the last dkg/reshare",
+                file.round
+            );
+        }
         let (output, share) = file.decode(validators.len() as u32).expect("threshold.json decodes");
         assert_eq!(output.players(), validators, "threshold.json is for a different validator set");
         tracing::info!(identity = %file.identity, "committee key from DKG");

@@ -1,7 +1,7 @@
 //! DKG ceremony over a lossy, reordering in-memory network.
 
 use aether_node::block::PublicKey;
-use aether_node::dkg::{Ceremony, KeyFile, Msg, To};
+use aether_node::dkg::{Ceremony, KeyFile, Msg, Round, To};
 use commonware_cryptography::{ed25519, Signer as _};
 use commonware_utils::{ordered::Set, TryCollect};
 use rand::{RngExt, SeedableRng};
@@ -45,7 +45,7 @@ fn run(n: u64, seed: u64, drop_rate: f64, tamper: impl Fn(&mut Net, &[PublicKey]
     let mut net = Net { queue: VecDeque::new(), rng: ChaCha20Rng::seed_from_u64(seed), drop_rate };
     let mut cs = Vec::new();
     for (i, k) in ks.iter().enumerate() {
-        let (c, out) = Ceremony::start(ChaCha20Rng::seed_from_u64(seed * 100 + i as u64), k.clone(), participants.clone(), 0).unwrap();
+        let (c, out) = Ceremony::start(ChaCha20Rng::seed_from_u64(seed * 100 + i as u64), k.clone(), Round::dkg(participants.clone(), 0), None).unwrap();
         net.send(&pks[i], &pks, out);
         cs.push(c);
     }
@@ -115,7 +115,7 @@ fn equivocating_dealer_is_excluded_by_everyone() {
     // and shows it to validator 1 only; relaying spreads it to all.
     let files = run(4, 9, 0.0, |net, pks| {
         let participants: Set<PublicKey> = pks.iter().cloned().try_collect().unwrap();
-        let (mut evil, _) = Ceremony::start(ChaCha20Rng::seed_from_u64(666), keys(4)[3].clone(), participants, 0).unwrap();
+        let (mut evil, _) = Ceremony::start(ChaCha20Rng::seed_from_u64(666), keys(4)[3].clone(), Round::dkg(participants, 0), None).unwrap();
         for (_, msg) in evil.close_dealing() {
             if let Msg::Log { .. } = msg {
                 net.queue.push_back((pks[3].clone(), pks[0].clone(), msg));
@@ -127,4 +127,100 @@ fn equivocating_dealer_is_excluded_by_everyone() {
     let (output, _) = files[0].decode(4).unwrap();
     assert!(!output.dealers().position(&keys(4)[3].public_key()).is_some(), "equivocating dealer excluded");
     assert_eq!(output.dealers().len(), 3);
+}
+
+/// Generic driver: `online` keys run `round` (those not online never start).
+fn run_round(
+    online: &[ed25519::PrivateKey],
+    round: Round,
+    shares: &std::collections::BTreeMap<PublicKey, commonware_cryptography::bls12381::primitives::group::Share>,
+    seed: u64,
+    drop_rate: f64,
+) -> std::collections::BTreeMap<PublicKey, KeyFile> {
+    let pks: Vec<PublicKey> = online.iter().map(|k| k.public_key()).collect();
+    let mut net = Net { queue: VecDeque::new(), rng: ChaCha20Rng::seed_from_u64(seed), drop_rate };
+    let mut cs = Vec::new();
+    for (i, k) in online.iter().enumerate() {
+        let (c, out) = Ceremony::start(ChaCha20Rng::seed_from_u64(seed * 31 + i as u64), k.clone(), round.clone(), shares.get(&pks[i]).cloned()).unwrap();
+        net.send(&pks[i], &pks, out);
+        cs.push(c);
+    }
+    let idx = |p: &PublicKey| pks.iter().position(|x| x == p);
+    let mut files = std::collections::BTreeMap::new();
+    for tick in 0..600 {
+        for _ in 0..net.queue.len() {
+            let Some((from, to, msg)) = net.queue.pop_front() else { break };
+            if let Some(i) = idx(&to) {
+                let out = cs[i].on_message(&from, msg);
+                net.send(&to, &pks, out);
+            }
+        }
+        for i in 0..cs.len() {
+            let mut out = cs[i].pending_deals();
+            if cs[i].all_acked() || tick > 20 {
+                out.extend(cs[i].close_dealing());
+            }
+            let enough = cs[i].have_all_logs() || (tick > 60 && cs[i].have_quorum_logs());
+            if cs[i].is_player() && !files.contains_key(&pks[i]) && enough && tick > 30 {
+                let (o, s) = cs[i].finish(&mut ChaCha20Rng::seed_from_u64(7)).unwrap();
+                files.insert(pks[i].clone(), KeyFile::new(round.round, &o, &s));
+            }
+            out.extend(cs[i].rebroadcast());
+            net.send(&pks[i], &pks, out);
+        }
+        assert!(cs.iter().all(|c| c.agreement() != Some(false)), "identities disagree");
+        if cs.iter().all(|c| c.agreement() == Some(true)) {
+            return files;
+        }
+    }
+    panic!("round did not complete");
+}
+
+fn dkg4() -> (Vec<ed25519::PrivateKey>, std::collections::BTreeMap<PublicKey, KeyFile>) {
+    let ks: Vec<ed25519::PrivateKey> = (1..=5).map(aether_light::devnet_validator_key).collect();
+    let first: Set<PublicKey> = ks[..4].iter().map(|k| k.public_key()).try_collect().unwrap();
+    let files = run_round(&ks[..4], Round::dkg(first, 0), &Default::default(), 11, 0.2);
+    (ks, files)
+}
+
+fn shares_of(
+    files: &std::collections::BTreeMap<PublicKey, KeyFile>,
+    n: u32,
+) -> std::collections::BTreeMap<PublicKey, commonware_cryptography::bls12381::primitives::group::Share> {
+    files.iter().map(|(pk, f)| (pk.clone(), f.decode(n).unwrap().1)).collect()
+}
+
+#[test]
+fn reshare_rotates_a_validator_and_keeps_the_identity() {
+    let (ks, files) = dkg4();
+    let identity = files.values().next().unwrap().identity.clone();
+    let (previous, _) = files.values().next().unwrap().decode(4).unwrap();
+    // Validator 1 leaves, validator 5 joins.
+    let next: Set<PublicKey> = ks[1..5].iter().map(|k| k.public_key()).try_collect().unwrap();
+    let round = Round::reshare(previous, next.clone(), 1);
+    let out = run_round(&ks, round, &shares_of(&files, 4), 12, 0.2);
+    assert_eq!(out.len(), 4, "every new member got a share");
+    assert!(!out.contains_key(&ks[0].public_key()), "the leaving validator gets none");
+    assert!(out.values().all(|f| f.identity == identity), "identity unchanged: wallets keep working");
+    for (pk, f) in &out {
+        let (o, s) = f.decode(4).unwrap();
+        assert_eq!(o.players(), &next);
+        assert!(aether_light::Scheme::signer(&aether_light::consensus_namespace(), o.players().clone(), o.public().clone(), s).is_some(), "{pk:?} can sign");
+        // Fresh shares: the old share of a continuing member no longer matches.
+        if let Some(old) = files.get(pk) {
+            assert_ne!(old.share, f.share, "shares are refreshed");
+        }
+    }
+}
+
+#[test]
+fn reshare_completes_with_an_old_validator_offline() {
+    let (ks, files) = dkg4();
+    let identity = files.values().next().unwrap().identity.clone();
+    let (previous, _) = files.values().next().unwrap().decode(4).unwrap();
+    // Validator 1 is gone for good (never starts); 2..4 reshare among themselves plus 5.
+    let next: Set<PublicKey> = ks[1..5].iter().map(|k| k.public_key()).try_collect().unwrap();
+    let out = run_round(&ks[1..5], Round::reshare(previous, next, 1), &shares_of(&files, 4), 13, 0.0);
+    assert_eq!(out.len(), 4);
+    assert!(out.values().all(|f| f.identity == identity));
 }

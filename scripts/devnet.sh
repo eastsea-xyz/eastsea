@@ -17,6 +17,9 @@ N=${2:-4}
 
 who() { if [ -n "${AETHER_NETWORK:-}" ]; then echo "--network $AETHER_NETWORK"; else echo "--index $1 --validators $N"; fi; }
 
+# Nodes run from the network.json that dkg/reshare wrote into their dir (it has the identity).
+whonode() { if [ -n "${AETHER_NETWORK:-}" ]; then echo "--network $DIR/$1/network.json"; else echo "--index $1 --validators $N"; fi; }
+
 case "${1:-start}" in
   start)
     mkdir -p "$DIR"
@@ -28,7 +31,7 @@ case "${1:-start}" in
       if [ "${AETHER_TRANSPORT:-iroh}" = tcp ]; then
         peers="--peers $(for j in $(seq 1 "$N"); do [ "$j" != "$i" ] && printf '%s@127.0.0.1:%s,' "$j" $((9000 + j)); done | sed 's/,$//')"
       fi
-      "$BIN" node $(who "$i") --port $((9000 + i)) --rpc-port $((8544 + i)) \
+      "$BIN" node $(whonode "$i") --port $((9000 + i)) --rpc-port $((8544 + i)) \
         --data "$DIR/$i" $peers > "$DIR/node$i.log" 2>&1 &
       echo $! > "$DIR/node$i.pid"
       echo "validator $i  p2p 127.0.0.1:$((9000 + i))  rpc http://127.0.0.1:$((8544 + i))  log $DIR/node$i.log"

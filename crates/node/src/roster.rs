@@ -27,6 +27,14 @@ pub struct Member {
     pub node: String,
 }
 
+/// A committee change: the new epoch's first height, and the hash of the
+/// finalized block just before it (the old committee's last block).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EpochStart {
+    pub height: u64,
+    pub parent: String,
+}
+
 /// `network.json`.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NetworkFile {
@@ -37,6 +45,12 @@ pub struct NetworkFile {
     pub identity: Option<String>,
     #[serde(default)]
     pub round: u64,
+    /// Public DKG output (hex): the committee polynomial, which a reshare starts from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    /// Committee changes so far (one per reshare), oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub epochs: Vec<EpochStart>,
 }
 
 impl NetworkFile {
@@ -102,12 +116,26 @@ impl Roster {
         self.nodes[(i - 1) as usize]
     }
 
+    /// Union with `other` (self's order first, then members only in `other`).
+    pub fn union(&self, other: &Roster) -> Roster {
+        let mut r = self.clone();
+        for (k, n) in other.keys.iter().zip(&other.nodes) {
+            if !r.keys.contains(k) {
+                r.keys.push(k.clone());
+                r.nodes.push(*n);
+            }
+        }
+        r
+    }
+
     pub fn to_file(&self, chain_id: u64) -> NetworkFile {
         NetworkFile {
             chain_id,
             validators: self.keys.iter().zip(&self.nodes).map(|(k, n)| Member { key: hex::encode(k.encode()), node: n.to_string() }).collect(),
             identity: None,
             round: 0,
+            output: None,
+            epochs: Vec::new(),
         }
     }
 }

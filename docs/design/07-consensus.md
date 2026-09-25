@@ -10,7 +10,13 @@
   - 제네시스 규칙: 딜러 로그 전부 필요, 로그는 받은 노드가 한 번 중계, 서로 다른 로그 두 개에 서명한 딜러는 모두가 제외, 끝에 각자 계산한 identity를 공지해 **전원 일치할 때만** 성공.
   - 결과: `<data>/threshold.json`(비밀 share, 권한 600) + `network.json`(공개 identity). 노드는 threshold.json이 있으면 그 키로, 없으면 devnet 딜러 키로(경고) 기동. 지갑은 번들된 network.json의 identity를 고정 신뢰.
   - 검증: 메시지 30% 유실·재정렬에서도 합의(시드 3개), 이중 로그 딜러 전원 제외, 4프로세스 DKG→합의→identity로 잔액 검증·딜러 identity 거부(통합 테스트). **실망: 이 맥(검증자 1~3)과 다른 회선의 poc-m3(검증자 4)가 인터넷 너머로 DKG를 마치고 같은 identity로 합의 중.**
-  - 남은 것: 재공유(reshare)로 검증자 교체.
+- 검증자 교체 — **재공유 + 에포크 전환 구현됨** (`aether reshare`, `epochs.rs`):
+  - 옛 위원회 share 보유자가 딜러, 새 검증자 집합이 플레이어(Desmedt 재공유). **identity 불변**, share는 새로 뽑힘, 떠나는 검증자의 share는 삭제. 옛 검증자가 일부 오프라인이어도 딜러 로그 정족수면 완료.
+  - 새 위원회는 새 에포크로 시작: `network.json.epochs`에 (시작 높이, 직전 블록 해시). `ScheduleEpocher`가 에포크 경계를 정하고 Commonware `Deferred`가 직전 에포크 마지막 블록 위에 이어 짓는다. 투표 저널은 에포크별 파티션(옛 위원회 투표를 새 서명자로 재생하지 않음). `RotatingProvider`가 현재 에포크는 서명 scheme, 지난 에포크는 같은 그룹키 검증 scheme을 준다(새로 합류한 검증자가 옛 인증서를 검증하며 따라잡음).
+  - 절차(정지 후 교체): 옛 위원회 정지 → `aether head --data`로 마지막 확정 높이·해시 → 모든 옛·새 검증자가 `aether reshare --from 현재 --to 다음 --epoch-end H --epoch-end-hash X` → 새 위원회가 reshare가 쓴 network.json으로 기동.
+  - 안전장치: 노드는 network.json에 identity가 없거나 threshold.json 라운드가 다르면 기동 거부. 에포크 부모 해시가 자기 확정 블록과 다르거나 경계 너머까지 확정했으면 기동 거부. 이미 확정한 높이에 다른 블록이 오면 `CONFLICTING FINALIZED BLOCK` 오류(예전엔 조용히 무시했음). 저장소 파티션 이름을 인덱스와 분리(`<data>/partition`).
+  - 검증: 상태기계 재공유(교체·오프라인 딜러), 통합 테스트 `validator_rotation_continues_the_chain_under_the_same_identity` — A={1,2,3,4}가 체인 진행 후 정지, B={2,3,4,5}로 재공유, 빈 데이터로 합류한 5번 포함 B가 **같은 체인**을 이어가고(경계 블록 해시 일치), A 시절 잔액을 5번에서 같은 identity로 검증.
+  - 남은 것: 체인 안에서(무정지) 재공유하는 온체인 DKG, VRF 위원회 선출(D9).
 - 검증자 키 — **로컬 생성 구현됨**: `aether keygen --data d`가 합의 ed25519 키와 iroh 노드 키를 만들어 `validator.key`(600, 덮어쓰기 거부)에 두고 공개 절반만 `validator.pub.json`으로 낸다. `aether network a.json b.json …`가 `network.json`(체인 id, 검증자 키·노드 id)을 만든다. 노드·DKG는 `--network`로 자기 키를 찾아 인덱스를 정하고, DKG가 identity를 network.json에 더한다. 지갑은 그 network.json 하나로 노드 id(DHT 조회)와 위원회 키를 받는다. 실망은 이 방식으로 재구성: poc-m3의 비밀키는 poc-m3 밖으로 나간 적 없음. `--network` 없이 띄우면 예전처럼 공개 devnet 키.
 - 주의(Commonware 문서): 라운드 시드는 같은 라운드 실행에 쓰면 안 된다(리더가 시드를 먼저 알 수 있음). 실행에 난수를 쓸 때는 k라운드 뒤 시드를 약정-공개 방식으로 쓴다.
 - 미완: VRF로 에포크마다 고가동 위원회를 뽑는 D9는 위원회가 바뀔 때마다 재공유(DKG)가 필요해 DKG와 함께 구현한다. 지금은 검증자 전원이 위원회.

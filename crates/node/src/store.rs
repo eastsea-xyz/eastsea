@@ -113,6 +113,17 @@ impl Store {
         tx.commit().map_err(dberr)
     }
 
+    /// Height and block hash of the last persisted finalized block (cheap; no state rebuild).
+    pub fn head(&self) -> Result<Option<(u64, [u8; 32])>, StoreError> {
+        let tx = self.db.begin_read().map_err(dberr)?;
+        let meta = tx.open_table(META).map_err(dberr)?;
+        let Some(height) = meta.get("height").map_err(dberr)? else { return Ok(None) };
+        let height = u64::from_be_bytes(height.value().try_into().map_err(|_| StoreError::Corrupt("height"))?);
+        let digest: [u8; 32] =
+            meta.get("digest").map_err(dberr)?.ok_or(StoreError::Corrupt("digest"))?.value().try_into().map_err(|_| StoreError::Corrupt("digest"))?;
+        Ok(Some((height, digest)))
+    }
+
     /// The last checkpoint, with its state rebuilt and its root checked.
     pub fn load(&self) -> Result<Option<Checkpoint>, StoreError> {
         let tx = self.db.begin_read().map_err(dberr)?;

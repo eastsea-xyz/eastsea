@@ -25,7 +25,10 @@ use commonware_cryptography::bls12381::primitives::group::Share;
 use commonware_cryptography::bls12381::primitives::sharing::{Mode, ModeVersion};
 use commonware_cryptography::bls12381::primitives::variant::MinSig;
 use commonware_cryptography::{ed25519, Signer as _};
-use commonware_utils::{ordered::Set, N3f1};
+use commonware_utils::{
+    ordered::{Quorum as _, Set},
+    N3f1,
+};
 use rand::CryptoRng;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -69,11 +72,41 @@ impl std::fmt::Display for DkgError {
 }
 impl std::error::Error for DkgError {}
 
+/// One DKG or reshare round: who deals, who receives shares.
+#[derive(Clone)]
+pub struct Round {
+    pub round: u64,
+    /// For a reshare: the committee's current output (its public polynomial).
+    pub previous: Option<DkgOutput>,
+    pub dealers: Set<PublicKey>,
+    pub players: Set<PublicKey>,
+}
+
+impl Round {
+    /// Fresh key: every participant deals and receives.
+    pub fn dkg(participants: Set<PublicKey>, round: u64) -> Self {
+        Round { round, previous: None, dealers: participants.clone(), players: participants }
+    }
+
+    /// Move the existing key to `players`: the current share holders deal. The
+    /// committee identity (what wallets pin) is unchanged.
+    pub fn reshare(previous: DkgOutput, players: Set<PublicKey>, round: u64) -> Self {
+        Round { round, dealers: previous.players().clone(), previous: Some(previous), players }
+    }
+
+    fn identity(&self) -> Option<Identity> {
+        self.previous.as_ref().map(|o| *o.public().public())
+    }
+}
+
 pub struct Ceremony {
     info: Info<MinSig, PublicKey>,
     me: PublicKey,
     n: NonZeroU32,
-    participants: Set<PublicKey>,
+    dealers: Set<PublicKey>,
+    players: Set<PublicKey>,
+    /// A reshare must reproduce this identity.
+    expected: Option<Identity>,
     dealer: Option<Dealer<MinSig, ed25519::PrivateKey>>,
     player: Option<Player<MinSig, ed25519::PrivateKey>>,
     /// Our deal messages, re-sent until acknowledged.
@@ -89,22 +122,35 @@ pub struct Ceremony {
 }
 
 impl Ceremony {
-    /// Start round `round` as dealer and player. Returns the initial messages.
-    pub fn start(rng: impl CryptoRng, key: ed25519::PrivateKey, participants: Set<PublicKey>, round: u64) -> Result<(Self, Vec<(To, Msg)>), DkgError> {
-        let info = Info::new::<N3f1>(DKG_NAMESPACE, round, None, Mode::NonZeroCounter, Reveal::V1, participants.clone(), participants.clone())
-            .map_err(|e| DkgError::Setup(format!("{e:?}")))?;
-        let n = NonZeroU32::new(participants.len() as u32).ok_or_else(|| DkgError::Setup("no participants".into()))?;
+    /// Start `round` in whatever roles `key` has in it (dealer, player or both).
+    /// `share` is our current share when we deal in a reshare.
+    pub fn start(rng: impl CryptoRng, key: ed25519::PrivateKey, round: Round, share: Option<Share>) -> Result<(Self, Vec<(To, Msg)>), DkgError> {
+        let setup = |e: &dyn std::fmt::Debug| DkgError::Setup(format!("{e:?}"));
+        let expected = round.identity();
+        let info =
+            Info::new::<N3f1>(DKG_NAMESPACE, round.round, round.previous, Mode::NonZeroCounter, Reveal::V1, round.dealers.clone(), round.players.clone())
+                .map_err(|e| setup(&e))?;
+        let n = NonZeroU32::new(round.players.len().max(round.dealers.len()) as u32).ok_or_else(|| DkgError::Setup("no participants".into()))?;
         let me = key.public_key();
-        let player = Player::new(info.clone(), key.clone()).map_err(|e| DkgError::Setup(format!("{e:?}")))?;
-        let (dealer, commitment, dealings) = Dealer::start::<N3f1>(rng, info.clone(), key, None).map_err(|e| DkgError::Setup(format!("{e:?}")))?;
-        let commitment = commitment.encode().to_vec();
+        let is_dealer = round.dealers.position(&me).is_some();
+        let is_player = round.players.position(&me).is_some();
+        if !is_dealer && !is_player {
+            return Err(DkgError::Setup("this key has no role in the round".into()));
+        }
+        if is_dealer && expected.is_some() && share.is_none() {
+            return Err(DkgError::Setup("a resharing dealer needs its current share".into()));
+        }
+        let player = if is_player { Some(Player::new(info.clone(), key.clone()).map_err(|e| setup(&e))?) } else { None };
+        let dealt = if is_dealer { Some(Dealer::start::<N3f1>(rng, info.clone(), key, share).map_err(|e| setup(&e))?) } else { None };
         let mut c = Ceremony {
             info,
             me: me.clone(),
             n,
-            participants,
-            dealer: Some(dealer),
-            player: Some(player),
+            dealers: round.dealers,
+            players: round.players,
+            expected,
+            dealer: None,
+            player,
             deals: BTreeMap::new(),
             acked: BTreeSet::new(),
             acks_sent: BTreeMap::new(),
@@ -114,16 +160,24 @@ impl Ceremony {
             announced: BTreeMap::new(),
         };
         let mut out = Vec::new();
-        for (player, dealing) in dealings {
-            let msg = Msg::Deal { commitment: commitment.clone(), dealing: dealing.encode().to_vec() };
-            if player == me {
-                out.extend(c.on_message(&me, msg));
-            } else {
-                c.deals.insert(player.clone(), msg.clone());
-                out.push((To::One(player), msg));
+        if let Some((dealer, commitment, dealings)) = dealt {
+            c.dealer = Some(dealer);
+            let commitment = commitment.encode().to_vec();
+            for (player, dealing) in dealings {
+                let msg = Msg::Deal { commitment: commitment.clone(), dealing: dealing.encode().to_vec() };
+                if player == me {
+                    out.extend(c.on_message(&me, msg));
+                } else {
+                    c.deals.insert(player.clone(), msg.clone());
+                    out.push((To::One(player), msg));
+                }
             }
         }
         Ok((c, out))
+    }
+
+    pub fn is_player(&self) -> bool {
+        self.players.position(&self.me).is_some()
     }
 
     /// Deals not yet acknowledged (re-send periodically: peers may not be connected yet).
@@ -131,8 +185,9 @@ impl Ceremony {
         self.deals.iter().filter(|(p, _)| !self.acked.contains(*p)).map(|(p, m)| (To::One(p.clone()), m.clone())).collect()
     }
 
+    /// A dealer has every player's ack (or is not a dealer).
     pub fn all_acked(&self) -> bool {
-        self.acked.len() == self.participants.len()
+        self.dealer.is_none() || self.acked.len() == self.players.len()
     }
 
     /// Stop dealing (all acks in, or timed out): sign and broadcast our log.
@@ -155,7 +210,17 @@ impl Ceremony {
     }
 
     pub fn have_all_logs(&self) -> bool {
-        self.logs.len() == self.participants.len()
+        self.logs.len() == self.dealers.len()
+    }
+
+    /// Enough dealer logs to finish (a quorum of dealers), e.g. when one old
+    /// validator is offline during a reshare.
+    pub fn have_quorum_logs(&self) -> bool {
+        self.logs.keys().filter(|d| !self.equivocators.contains(*d)).count() >= self.dealers.quorum::<N3f1>() as usize
+    }
+
+    pub fn log_count(&self) -> usize {
+        self.logs.len()
     }
 
     /// Handle one message from authenticated peer `from`.
@@ -194,7 +259,9 @@ impl Ceremony {
             }
             Msg::Log { dealer, log } => self.on_log(dealer, log),
             Msg::Done(id) => {
-                self.announced.insert(from.clone(), id);
+                if self.players.position(from).is_some() {
+                    self.announced.insert(from.clone(), id);
+                }
                 vec![]
             }
         }
@@ -250,19 +317,23 @@ impl Ceremony {
         let (output, share) =
             player.finalize::<N3f1, ed25519::Batch>(rng, logs, &commonware_parallel::Sequential).map_err(|e| DkgError::Finalize(format!("{e:?}")))?;
         let identity = *output.public().public();
+        if self.expected.is_some_and(|e| e != identity) {
+            return Err(DkgError::Finalize("reshare changed the committee identity".into()));
+        }
         self.identity = Some(identity);
         self.announced.insert(self.me.clone(), identity.encode().to_vec());
         Ok((output, share))
     }
 
-    /// `Some(true)` once every participant announced the same identity as ours,
+    /// `Some(true)` once every player announced the same identity as ours (a
+    /// dealer-only node compares with the committee's existing identity),
     /// `Some(false)` on any mismatch, `None` while waiting.
     pub fn agreement(&self) -> Option<bool> {
-        let mine = self.identity?.encode().to_vec();
+        let mine = self.identity.or(if self.is_player() { None } else { self.expected })?.encode().to_vec();
         if self.announced.values().any(|id| *id != mine) {
             return Some(false);
         }
-        (self.announced.len() == self.participants.len()).then_some(true)
+        (self.announced.len() == self.players.len()).then_some(true)
     }
 }
 
@@ -281,6 +352,13 @@ pub struct KeyFile {
 impl KeyFile {
     pub fn new(round: u64, output: &DkgOutput, share: &Share) -> Self {
         KeyFile { round, output: hex::encode(output.encode()), identity: hex::encode(output.public().public().encode()), share: hex::encode(share.encode()) }
+    }
+
+    /// Only the public output (for validators joining in a reshare).
+    pub fn decode_output(&self, n: u32) -> Result<DkgOutput, String> {
+        let n = NonZeroU32::new(n).ok_or("n = 0")?;
+        let out = hex::decode(&self.output).map_err(|e| e.to_string())?;
+        DkgOutput::decode_cfg(out.as_slice(), &(n, ModeVersion::v0())).map_err(|e| format!("output: {e:?}"))
     }
 
     pub fn decode(&self, n: u32) -> Result<(DkgOutput, Share), String> {
@@ -320,19 +398,19 @@ fn send_all<S: commonware_p2p::Sender<PublicKey = PublicKey>>(sender: &mut S, ou
 /// once every participant announced the same identity.
 pub async fn run<S, R>(
     key: ed25519::PrivateKey,
-    participants: Set<PublicKey>,
-    round: u64,
+    round: Round,
+    share: Option<Share>,
     mut sender: S,
     mut receiver: R,
     timeouts: Timeouts,
-) -> Result<(DkgOutput, Share), DkgError>
+) -> Result<Option<(DkgOutput, Share)>, DkgError>
 where
     S: commonware_p2p::Sender<PublicKey = PublicKey>,
     R: commonware_p2p::Receiver<PublicKey = PublicKey>,
 {
     use std::time::{Duration, Instant};
     let mut rng = commonware_utils::sys_rng();
-    let (mut c, out) = Ceremony::start(commonware_utils::sys_rng(), key, participants, round)?;
+    let (mut c, out) = Ceremony::start(commonware_utils::sys_rng(), key, round, share)?;
     send_all(&mut sender, out);
     let start = Instant::now();
     let mut result = None;
@@ -355,12 +433,14 @@ where
                 if c.all_acked() || elapsed > timeouts.dealing {
                     out.extend(c.close_dealing());
                 }
-                if c.logs.len() != log_count {
-                    log_count = c.logs.len();
+                if c.log_count() != log_count {
+                    log_count = c.log_count();
                     logs_stable_since = Instant::now();
                 }
-                // All logs in and no new version for a moment (equivocation window).
-                if result.is_none() && c.have_all_logs() && logs_stable_since.elapsed() > Duration::from_secs(2) {
+                // All logs in (or, after the dealing window, a quorum of them) and
+                // no new version for a moment (equivocation window).
+                let enough = c.have_all_logs() || (elapsed > timeouts.dealing + Duration::from_secs(10) && c.have_quorum_logs());
+                if result.is_none() && c.is_player() && enough && logs_stable_since.elapsed() > Duration::from_secs(2) {
                     let (o, s) = c.finish(&mut rng)?;
                     tracing::info!(identity = %hex::encode(o.public().public().encode()), "dkg: computed share; waiting for agreement");
                     result = Some((o, s));
@@ -372,7 +452,7 @@ where
                     // Keep announcing briefly so slower peers also see agreement.
                     Some(true) => match agreed_at {
                         None => agreed_at = Some(Instant::now()),
-                        Some(t) if t.elapsed() > Duration::from_secs(5) => return result.ok_or(DkgError::Disagreement),
+                        Some(t) if t.elapsed() > Duration::from_secs(5) => return Ok(result),
                         _ => {}
                     },
                     None => {}
@@ -380,8 +460,8 @@ where
                 if elapsed > timeouts.total {
                     return Err(DkgError::Finalize(format!(
                         "timed out: {} of {} logs, {} acks",
-                        c.logs.len(),
-                        c.participants.len(),
+                        c.log_count(),
+                        c.dealers.len(),
                         c.acked.len()
                     )));
                 }

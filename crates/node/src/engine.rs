@@ -3,7 +3,8 @@
 //! Adapted from alto-chain `engine.rs` (MIT OR Apache-2.0, commonwarexyz/alto).
 
 use crate::application::Application;
-use crate::block::{Block, PublicKey, EPOCH};
+use crate::block::{Block, PublicKey};
+use crate::epochs::{RotatingProvider, ScheduleEpocher};
 use aether_light::Scheme;
 use commonware_broadcast::buffered;
 pub use commonware_consensus::marshal::core::Mailbox as MarshalMailboxOf;
@@ -15,9 +16,9 @@ use commonware_consensus::{
         standard::{Deferred, Standard},
     },
     simplex::{self, Engine as Consensus},
-    types::{Epoch, FixedEpocher, ViewDelta},
+    types::ViewDelta,
 };
-use commonware_cryptography::{certificate::ConstantProvider, sha256::Digest, Digestible as _};
+use commonware_cryptography::{sha256::Digest, Digestible as _};
 use commonware_p2p::{Blocker, Provider, Receiver, Sender};
 use commonware_parallel::Sequential;
 use commonware_resolver::TargetedResolver;
@@ -36,9 +37,8 @@ use tracing::{error, warn};
 
 type Activity = simplex::types::Activity<Scheme, Digest>;
 type Finalization = simplex::types::Finalization<Scheme, Digest>;
-pub type Marshaled<E> = Deferred<E, Scheme, Application, Block, FixedEpocher>;
+pub type Marshaled<E> = Deferred<E, Scheme, Application, Block, ScheduleEpocher>;
 
-const EPOCH_LENGTH: NonZero<u64> = NZU64!(u64::MAX);
 const SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER: u64 = 10;
 const PRUNABLE_ITEMS_PER_SECTION: NonZero<u64> = NZU64!(4_096);
 const IMMUTABLE_ITEMS_PER_SECTION: NonZero<u64> = NZU64!(262_144);
@@ -61,6 +61,13 @@ pub struct Config<B: Blocker<PublicKey = PublicKey>, P: Provider<PublicKey = Pub
     pub partition_prefix: String,
     pub me: PublicKey,
     pub scheme: Scheme,
+    /// Committee identity (verifies certificates of every epoch).
+    pub identity: aether_light::Identity,
+    /// Epoch boundaries; the node runs the latest epoch.
+    pub epocher: ScheduleEpocher,
+    /// Digest consensus starts from in the current epoch: the chain genesis in
+    /// epoch 0, else the last block of the previous epoch.
+    pub epoch_floor: Option<Digest>,
     pub genesis: Block,
     pub application: Application,
     pub mailbox_size: usize,
@@ -85,10 +92,10 @@ where
     marshal: MarshalActor<
         E,
         Standard<Block>,
-        ConstantProvider<Scheme, Epoch>,
+        RotatingProvider,
         immutable::Archive<E, Digest, Finalization>,
         immutable::Archive<E, Digest, Block>,
-        FixedEpocher,
+        ScheduleEpocher,
         Sequential,
     >,
     marshaled: Marshaled<E>,
@@ -175,14 +182,15 @@ where
         tracing::info!(checkpoint = restored, replayed_to = replayed.max(restored), "restored finalized state");
 
         let scheme = cfg.scheme;
-        let epocher = FixedEpocher::new(EPOCH_LENGTH);
-        let genesis_digest = cfg.genesis.digest();
+        let epocher = cfg.epocher;
+        let epoch = epocher.current();
+        let floor_digest = cfg.epoch_floor.unwrap_or_else(|| cfg.genesis.digest());
         let (marshal, marshal_mailbox, _) = MarshalActor::init(
             context.child("marshal"),
             finalizations,
             blocks,
             marshal::Config {
-                provider: ConstantProvider::new(scheme.clone()),
+                provider: RotatingProvider::new(epoch, scheme.clone(), cfg.identity),
                 epocher: epocher.clone(),
                 partition_prefix: prefix.clone(),
                 mailbox_size,
@@ -205,15 +213,16 @@ where
         let consensus = Consensus::new(
             context.child("consensus"),
             simplex::Config {
-                epoch: EPOCH,
+                epoch,
                 scheme,
                 automaton: marshaled.clone(),
                 relay: marshaled.clone(),
                 reporter: marshal_mailbox.clone(),
                 track_historical_votes: false,
-                partition: format!("{prefix}-consensus"),
+                // One vote journal per epoch: a new committee never replays the old one's votes.
+                partition: if epoch.get() == 0 { format!("{prefix}-consensus") } else { format!("{prefix}-consensus-e{}", epoch.get()) },
                 mailbox_size,
-                floor: simplex::Floor::Genesis(genesis_digest),
+                floor: simplex::Floor::Genesis(floor_digest),
                 leader_timeout: cfg.leader_timeout,
                 certification_timeout: cfg.certification_timeout,
                 timeout_retry: cfg.nullify_retry,

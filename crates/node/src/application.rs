@@ -152,6 +152,9 @@ impl Reporter for Application {
                         "finalized"
                     );
                 }
+                Err(e @ crate::chain::ChainError::ConflictingFinality { .. }) => {
+                    tracing::error!(height = %block.height(), ?e, "CONFLICTING FINALIZED BLOCK: this node's chain differs from the network's; stop and investigate")
+                }
                 Err(e) => warn!(height = %block.height(), ?e, "failed to adopt finalized block"),
             }
             ack.acknowledge();

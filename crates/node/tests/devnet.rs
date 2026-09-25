@@ -37,11 +37,20 @@ impl Net {
         let _ = std::fs::remove_dir_all(&dir);
         let p2p: Vec<u16> = (0..n).map(|_| free_port()).collect();
         let rpc: Vec<u16> = (0..n).map(|_| free_port()).collect();
-        let mut net = Net { dir, p2p, rpc, procs: (0..n).map(|_| None).collect(), extra };
+        let mut net = Net::prepared(dir, p2p, rpc, extra);
         for i in 0..n {
             net.spawn(i);
         }
         net
+    }
+
+    fn prepared(dir: PathBuf, p2p: Vec<u16>, rpc: Vec<u16>, extra: Vec<Vec<String>>) -> Net {
+        let n = extra.len();
+        Net { dir, p2p, rpc, procs: (0..n).map(|_| None).collect(), extra }
+    }
+
+    fn peers(&self, i: usize) -> String {
+        (0..self.p2p.len()).filter(|j| *j != i).map(|j| format!("{}@127.0.0.1:{}", j + 1, self.p2p[j])).collect::<Vec<_>>().join(",")
     }
 
     fn spawn(&mut self, i: usize) {
@@ -232,4 +241,54 @@ fn inclusion_lists_get_censored_txs_in() {
         net.wait_height(i, h, 20);
     }
     assert_agree(&net, &[0, 1, 2, 3], h);
+}
+
+/// Genesis ceremony: 4 processes run the DKG over p2p (no dealer), then run
+/// consensus on the resulting shares; a client trusting only the printed
+/// identity verifies a balance, and the devnet dealer's identity is rejected.
+#[test]
+fn dkg_ceremony_then_consensus_under_its_identity() {
+    let n = 4;
+    let dir = std::env::temp_dir().join(format!("aether-devnet-test-{}-dkg", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let p2p: Vec<u16> = (0..n).map(|_| free_port()).collect();
+    let rpc: Vec<u16> = (0..n).map(|_| free_port()).collect();
+    let mut net = Net::prepared(dir.clone(), p2p, rpc, vec![vec![]; n]);
+
+    let dkg: Vec<Child> = (0..n)
+        .map(|i| {
+            Command::new(BIN)
+                .args(["dkg", "--index", &(i + 1).to_string(), "--validators", &n.to_string(), "--port", &net.p2p[i].to_string()])
+                .args(["--data", dir.join((i + 1).to_string()).to_str().unwrap(), "--peers", &net.peers(i), "--offline"])
+                .env("RUST_LOG", "warn")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn dkg")
+        })
+        .collect();
+    let ids: Vec<String> = dkg
+        .into_iter()
+        .map(|c| {
+            let out = c.wait_with_output().expect("dkg exits");
+            assert!(out.status.success(), "dkg failed");
+            let text = String::from_utf8(out.stdout).unwrap();
+            text.lines().find_map(|l| l.strip_prefix("committee identity: ")).expect("identity printed").to_string()
+        })
+        .collect();
+    assert!(ids.iter().all(|id| *id == ids[0]), "every validator derived the same identity");
+
+    for i in 0..n {
+        net.spawn(i);
+    }
+    for i in 0..n {
+        net.wait_height(i, 3, 60);
+    }
+    let bob = "0x000000000000000000000000000000000000d1c9";
+    net.cli(&["send", "--rpc", &net.url(0), "--from-dev", "1", "--to", bob, "--value", "99", "--wait"]);
+    net.wait_height(2, net.height(0), 20);
+    let bal = net.cli(&["balance", bob, "--rpc", &net.url(2), "--identity", &ids[0]]);
+    assert!(bal.contains("balance   99 wei") && bal.contains("verified  ✓"), "{bal}");
+    let out = Command::new(BIN).args(["balance", bob, "--rpc", &net.url(2)]).output().unwrap();
+    assert!(!out.status.success(), "the dealer's devnet identity must not verify DKG certificates");
 }

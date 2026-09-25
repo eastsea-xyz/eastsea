@@ -9,6 +9,8 @@ targets:
     platform: macOS
     sources:
       - Sources
+      - path: Resources
+        buildPhase: resources
       - path: Generated/aether_ffi.swift
     settings:
       base:

@@ -11,26 +11,20 @@ use aether_node::application::Application;
 use aether_node::block::PublicKey;
 use aether_node::chain::{dev_accounts, dev_seed, Chain, ChainConfig};
 use aether_node::engine::{self, MAX_BLOCK_BYTES};
+use aether_node::p2p::{loopback, validator_key, P2pArgs, Transport};
 use aether_node::rpc::{self, RpcState};
 use aether_state::Proof;
 use aether_types::{Address, Bytes, GasVector, TxEnvelope, TxHash, U256};
 use clap::{Parser, Subcommand};
 use commonware_consensus::{marshal, types::ViewDelta};
 use commonware_cryptography::{ed25519, Signer as _};
-use commonware_p2p::{
-    authenticated::{self, lookup},
-    Address as PeerAddress, AddressableManager as _, Receiver as _, Recipients, Sender as _,
-};
+use commonware_p2p::{authenticated::lookup, AddressableManager as _, Receiver as _, Recipients, Sender as _};
 use commonware_runtime::{tokio as cw_tokio, Quota, Runner as _, Supervisor as _};
-use commonware_utils::{
-    ordered::{Map, Set},
-    union, NZUsize, TryCollect, NZU32,
-};
+use commonware_utils::{NZUsize, NZU32};
 use serde_json::{json, Value};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
-use aether_light::NAMESPACE;
 const DEFAULT_CHAIN_ID: u64 = 7_777;
 const DEV_ACCOUNTS: u8 = 10;
 const DEV_BALANCE: u128 = 1_000_000 * 10u128.pow(18);
@@ -77,6 +71,27 @@ enum Cmd {
         /// Devnet: skip this sender in mempool ordering; its txs land only via inclusion lists.
         #[arg(long, hide = true)]
         dev_deprioritize: Option<Address>,
+    },
+    /// Distributed key generation for the committee (run on every validator at
+    /// once). Writes <data>/threshold.json with this validator's secret share
+    /// and prints the committee identity that wallets pin.
+    Dkg {
+        #[arg(long)]
+        index: u64,
+        #[arg(long)]
+        validators: u64,
+        #[arg(long)]
+        port: u16,
+        #[arg(long)]
+        data: String,
+        #[arg(long, value_delimiter = ',')]
+        peers: Vec<String>,
+        #[arg(long)]
+        link_base: Option<u16>,
+        #[arg(long)]
+        offline: bool,
+        #[arg(long, default_value_t = 0)]
+        round: u64,
     },
     /// List the public development accounts (funded at genesis; never use for value).
     DevAccounts,
@@ -137,6 +152,9 @@ enum Cmd {
         /// Size of the trusted devnet validator set.
         #[arg(long, default_value_t = 4)]
         validators: u64,
+        /// Committee identity to trust (hex, from `aether dkg`). Default: the devnet dealer's.
+        #[arg(long)]
+        identity: Option<String>,
     },
     /// Contract storage slot, verified locally with a proof.
     Storage {
@@ -146,6 +164,8 @@ enum Cmd {
         rpc: String,
         #[arg(long, default_value_t = 4)]
         validators: u64,
+        #[arg(long)]
+        identity: Option<String>,
     },
     /// Transaction receipt.
     Receipt {
@@ -159,12 +179,8 @@ fn main() {
     let cli = Cli::parse();
     let res = match cli.cmd {
         Cmd::Node { index, validators, port, rpc_port, data, peers, link_base, offline, block_time_ms, dev_censor, dev_deprioritize } => {
-            let transport = if peers.iter().any(|p| !p.is_empty()) {
-                Transport::Tcp(peers)
-            } else {
-                Transport::Iroh { link_base: link_base.unwrap_or(20_000 + 100 * index as u16) }
-            };
-            run_node(NodeArgs { index, n: validators, port, rpc_port, data, transport, offline, block_time_ms, dev_censor, dev_deprioritize });
+            let p2p = p2p_args(index, validators, port, peers, link_base, offline);
+            run_node(NodeArgs { p2p, rpc_port, data, block_time_ms, dev_censor, dev_deprioritize });
             Ok(())
         }
         Cmd::DevAccounts => {
@@ -190,8 +206,12 @@ fn main() {
             let input = Bytes::from(hex::decode(data.trim_start_matches("0x")).map_err(|e| e.to_string())?);
             submit(&rpc, from_dev, None, EvmCall { to: Some(to), value: U256::ZERO, input, gas_limit: 1_000_000 }, wait).map(|_| ())
         })(),
-        Cmd::Balance { address, rpc, validators } => verified_balance(&rpc, address, validators),
-        Cmd::Storage { address, slot, rpc, validators } => verified_storage(&rpc, address, slot, validators),
+        Cmd::Balance { address, rpc, validators, identity } => trusted(validators, identity).and_then(|set| verified_balance(&rpc, address, &set)),
+        Cmd::Storage { address, slot, rpc, validators, identity } => trusted(validators, identity).and_then(|set| verified_storage(&rpc, address, slot, &set)),
+        Cmd::Dkg { index, validators, port, data, peers, link_base, offline, round } => {
+            run_dkg(p2p_args(index, validators, port, peers, link_base, offline), data, round);
+            Ok(())
+        }
         Cmd::Receipt { hash, rpc } => call(&rpc, "aether_getReceipt", json!([hash])).map(|v| println!("{}", pretty(&v))),
     };
     if let Err(e) = res {
@@ -208,123 +228,41 @@ fn chain_config() -> ChainConfig {
     }
 }
 
-fn validator_key(i: u64) -> ed25519::PrivateKey {
-    aether_light::devnet_validator_key(i)
-}
-
-enum Transport {
-    Tcp(Vec<String>),
-    Iroh { link_base: u16 },
+fn p2p_args(index: u64, n: u64, port: u16, peers: Vec<String>, link_base: Option<u16>, offline: bool) -> P2pArgs {
+    let transport = if peers.iter().any(|p| !p.is_empty()) {
+        Transport::Tcp(peers)
+    } else {
+        Transport::Iroh { link_base: link_base.unwrap_or(20_000 + 100 * index as u16) }
+    };
+    P2pArgs { index, n, port, transport, offline, max_message: MAX_BLOCK_BYTES + 1024 * 1024 }
 }
 
 struct NodeArgs {
-    index: u64,
-    n: u64,
-    port: u16,
+    p2p: P2pArgs,
     rpc_port: u16,
     data: String,
-    transport: Transport,
-    offline: bool,
     block_time_ms: u64,
     dev_censor: Option<Address>,
     dev_deprioritize: Option<Address>,
 }
 
-fn loopback(port: u16) -> SocketAddr {
-    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
-}
-
-/// Socket address Commonware dials for every validator. Over iroh, each remote
-/// validator is a local link port; the link carries the TCP stream over QUIC.
-fn peer_addresses(a: &NodeArgs) -> Map<PublicKey, PeerAddress> {
-    let mut peers: Vec<(PublicKey, PeerAddress)> = vec![(validator_key(a.index).public_key(), PeerAddress::Symmetric(loopback(a.port)))];
-    match &a.transport {
-        Transport::Tcp(list) => {
-            for p in list.iter().filter(|s| !s.is_empty()) {
-                let (i, addr) = p.split_once('@').expect("peer is <index>@<host:port>");
-                let addr: SocketAddr = addr.parse().expect("peer address");
-                peers.push((validator_key(i.parse().expect("peer index")).public_key(), PeerAddress::Symmetric(addr)));
-            }
-        }
-        Transport::Iroh { link_base } => {
-            for j in (1..=a.n).filter(|j| *j != a.index) {
-                let ingress = loopback(link_base + j as u16);
-                peers.push((validator_key(j).public_key(), PeerAddress::Asymmetric { ingress: ingress.into(), egress: loopback(0) }));
-            }
-        }
-    }
-    peers.try_into().expect("unique validators")
-}
-
 fn run_node(a: NodeArgs) {
     tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,commonware=warn".into())).init();
-    let NodeArgs { index, n, port, rpc_port, block_time_ms, offline, dev_censor, dev_deprioritize, .. } = a;
-    assert!(!offline || matches!(a.transport, Transport::Tcp(_)), "--offline needs --peers");
+    let NodeArgs { p2p, rpc_port, block_time_ms, dev_censor, dev_deprioritize, data } = a;
+    let (index, n, port) = (p2p.index, p2p.n, p2p.port);
+    assert!(!p2p.offline || matches!(p2p.transport, Transport::Tcp(_)), "--offline needs --peers");
     let signer = validator_key(index);
-    let validators: Set<PublicKey> = (1..=n).map(|i| validator_key(i).public_key()).try_collect().expect("unique validator keys");
-    let peers = peer_addresses(&a);
-    let max_peers = authenticated::peer_set_limit(&validators, &signer.public_key());
-    // Validators listen on loopback; the outside world reaches them only via iroh
-    // links (or explicitly configured TCP peers).
-    let listen = match a.transport {
-        Transport::Tcp(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port),
-        Transport::Iroh { .. } => loopback(port),
-    };
-    let mut p2p_cfg = lookup::Config::local(signer.clone(), &union(NAMESPACE, b"_P2P"), listen, max_peers, MAX_BLOCK_BYTES + 1024 * 1024);
-    // Link traffic arrives from 127.0.0.1; identity is proven by the handshake.
-    p2p_cfg.bypass_ip_check = true;
-    let links: Vec<u64> = match a.transport {
-        Transport::Iroh { .. } => (1..=n).filter(|j| *j != index).collect(),
-        Transport::Tcp(_) => vec![],
-    };
-    let link_base = match a.transport {
-        Transport::Iroh { link_base } => link_base,
-        Transport::Tcp(_) => 0,
-    };
-    let data = a.data;
+    let peers = aether_node::p2p::peer_addresses(&p2p);
+    let p2p_cfg = aether_node::p2p::config(&p2p, b"_P2P");
+    let links = matches!(p2p.transport, Transport::Iroh { .. });
     let executor = cw_tokio::Runner::new(cw_tokio::Config::new().with_storage_directory(&data));
     let cfg = chain_config();
 
     executor.start(async move |context| {
         // Public endpoint first: validator links and wallet RPC share it.
-        let endpoint = if offline {
-            None
-        } else {
-            match aether_net::bind(Some(aether_net::devnet_node_secret(index)), vec![aether_net::ALPN_RPC.to_vec(), aether_net::ALPN_P2P.to_vec()]).await {
-                Ok(ep) => Some(ep),
-                Err(e) => {
-                    tracing::warn!(?e, "public endpoint unavailable");
-                    None
-                }
-            }
-        };
-        let mut outbound = Vec::new();
-        if let Some(ep) = &endpoint {
-            for j in &links {
-                let link = aether_net::tunnel::Outbound::spawn(ep.clone(), aether_net::devnet_node_id(*j), loopback(link_base + *j as u16))
-                    .await
-                    .expect("bind link port");
-                outbound.push((*j, link));
-            }
-        } else if !links.is_empty() {
+        let endpoint = aether_node::p2p::open_public(&p2p).await;
+        if links && endpoint.is_none() {
             panic!("iroh transport needs the public endpoint");
-        }
-        if !outbound.is_empty() {
-            tokio::spawn(async move {
-                let mut last = String::new();
-                loop {
-                    let mut line = Vec::new();
-                    for (j, l) in &outbound {
-                        line.push(format!("v{j}={}", l.path().await));
-                    }
-                    let line = line.join(" ");
-                    if line != last {
-                        tracing::info!(links = %line, "validator links");
-                        last = line;
-                    }
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                }
-            });
         }
 
         let (mut network, mut oracle) = lookup::Network::new(context.child("network"), p2p_cfg);
@@ -341,8 +279,7 @@ fn run_node(a: NodeArgs) {
         // BLS threshold certificates (one group signature per block) with a VRF
         // seed per round for leader election. Devnet shares come from a fixed
         // dealer seed; a real network derives them with a DKG.
-        let (participants, polynomial, shares) = aether_light::devnet_threshold(n);
-        let share = shares.into_iter().find(|(pk, _)| *pk == signer.public_key()).map(|(_, s)| s).expect("key is a validator");
+        let (participants, polynomial, share) = committee_keys(&data, n, &signer.public_key());
         let scheme = aether_light::Scheme::signer(&aether_light::consensus_namespace(), participants, polynomial, share).expect("share matches polynomial");
         let store = aether_node::store::Store::open(&std::path::Path::new(&data).join("state.redb")).expect("open state store");
         let (chain, genesis) = Chain::open(cfg.clone(), store).expect("restore state (delete the data dir to resync)");
@@ -420,7 +357,7 @@ fn run_node(a: NodeArgs) {
         let _router = endpoint.map(|ep| {
             tracing::info!(node_id = %ep.id(), "public endpoint on iroh; address published to Mainline DHT");
             let st = rpc_state.clone();
-            let p2p_target = (!links.is_empty()).then(|| loopback(port));
+            let p2p_target = links.then(|| loopback(port));
             aether_net::serve(
                 ep,
                 move |req| {
@@ -437,6 +374,71 @@ fn run_node(a: NodeArgs) {
             tracing::error!(?e, "rpc server stopped");
         }
     });
+}
+
+fn run_dkg(p2p: P2pArgs, data: String, round: u64) {
+    tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,commonware=warn".into())).init();
+    let dir = std::path::PathBuf::from(&data);
+    std::fs::create_dir_all(&dir).expect("data dir");
+    let out_path = dir.join("threshold.json");
+    let executor = cw_tokio::Runner::new(cw_tokio::Config::new().with_storage_directory(dir.join("dkg-runtime")));
+    let (p2p_n, dir_out) = (p2p.n, dir.clone());
+    let result = executor.start(async move |context| {
+        // Accept incoming validator links (the node's RPC is not needed here).
+        let _router = aether_node::p2p::open_public(&p2p).await.map(|ep| aether_net::serve_p2p(ep, loopback(p2p.port)));
+        let (mut network, mut oracle) = lookup::Network::new(context.child("network"), aether_node::p2p::config(&p2p, b"_DKG"));
+        oracle.track(0, aether_node::p2p::peer_addresses(&p2p));
+        let (sender, receiver) = network.register(0, Quota::per_second(NZU32!(256)));
+        network.start();
+        tracing::info!(index = p2p.index, n = p2p.n, round, "dkg: started");
+        aether_node::dkg::run(validator_key(p2p.index), aether_node::p2p::validators(p2p.n), round, sender, receiver, Default::default()).await
+    });
+    match result {
+        Ok((output, share)) => {
+            let file = aether_node::dkg::KeyFile::new(round, &output, &share);
+            write_secret(&out_path, &serde_json::to_vec_pretty(&file).expect("key file serializes"));
+            let public = json!({ "validators": p2p_n, "round": round, "identity": file.identity });
+            std::fs::write(dir_out.join("network.json"), serde_json::to_vec_pretty(&public).expect("json")).expect("write network.json");
+            println!("committee identity: {}", file.identity);
+            println!("secret share written to {} (mode 600)", out_path.display());
+        }
+        Err(e) => {
+            eprintln!("dkg failed: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// This validator's threshold share: from `<data>/threshold.json` (DKG) when
+/// present, else the devnet dealer's (insecure: the dealer knows every share).
+fn committee_keys(
+    data: &str,
+    n: u64,
+    me: &PublicKey,
+) -> (
+    commonware_utils::ordered::Set<PublicKey>,
+    commonware_cryptography::bls12381::primitives::sharing::Sharing<commonware_cryptography::bls12381::primitives::variant::MinSig>,
+    commonware_cryptography::bls12381::primitives::group::Share,
+) {
+    let path = std::path::Path::new(data).join("threshold.json");
+    if let Ok(bytes) = std::fs::read(&path) {
+        let file: aether_node::dkg::KeyFile = serde_json::from_slice(&bytes).expect("threshold.json");
+        let (output, share) = file.decode(n as u32).expect("threshold.json decodes");
+        assert_eq!(output.players(), &aether_node::p2p::validators(n), "threshold.json is for a different validator set");
+        tracing::info!(identity = %file.identity, "committee key from DKG");
+        return (output.players().clone(), output.public().clone(), share);
+    }
+    tracing::warn!("no threshold.json: using the devnet dealer's shares (every share is public knowledge)");
+    let (participants, polynomial, shares) = aether_light::devnet_threshold(n);
+    let share = shares.into_iter().find(|(pk, _)| pk == me).map(|(_, s)| s).expect("key is a validator");
+    (participants, polynomial, share)
+}
+
+fn write_secret(path: &std::path::Path, bytes: &[u8]) {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path).expect("open key file");
+    f.write_all(bytes).expect("write key file");
 }
 
 /// FOCIL gossip: as a committee member, sign and publish the oldest waiting
@@ -545,25 +547,31 @@ fn submit(rpc: &str, dev: u8, nonce: Option<u64>, c: EvmCall, wait: bool) -> Res
 
 /// Fetch the finalized child block H+1 that commits to the state root after H,
 /// and verify its certificate against the validator set.
-fn certified_anchor(rpc: &str, height: u64, validators: u64) -> Result<aether_light::VerifiedBlock, String> {
-    let set = aether_light::ValidatorSet::devnet(validators);
+fn trusted(validators: u64, identity: Option<String>) -> Result<aether_light::ValidatorSet, String> {
+    match identity {
+        Some(hex) => aether_light::ValidatorSet::from_hex(&hex).map_err(|e| format!("identity: {e}")),
+        None => Ok(aether_light::ValidatorSet::devnet(validators)),
+    }
+}
+
+fn certified_anchor(rpc: &str, height: u64, set: &aether_light::ValidatorSet) -> Result<aether_light::VerifiedBlock, String> {
     for _ in 0..40 {
         let v = call(rpc, "aether_getFinalized", json!([height + 1]))?;
         if !v.is_null() {
             let block = aether_light::from_hex(v["block"].as_str().unwrap_or_default()).map_err(|e| e.to_string())?;
             let fin = aether_light::from_hex(v["finalization"].as_str().unwrap_or_default()).map_err(|e| e.to_string())?;
-            return aether_light::verify_finalized(&set, &block, &fin).map_err(|e| format!("CERTIFICATE REJECTED: {e} — do not trust this server"));
+            return aether_light::verify_finalized(set, &block, &fin).map_err(|e| format!("CERTIFICATE REJECTED: {e} — do not trust this server"));
         }
         std::thread::sleep(Duration::from_millis(500));
     }
     Err(format!("block {} not finalized yet", height + 1))
 }
 
-fn verified_balance(rpc: &str, a: Address, validators: u64) -> Result<(), String> {
+fn verified_balance(rpc: &str, a: Address, set: &aether_light::ValidatorSet) -> Result<(), String> {
     let v = call(rpc, "aether_getAccount", json!([a]))?;
     let proof: Proof = serde_json::from_value(v["proof"].clone()).map_err(|e| e.to_string())?;
     let height = v["height"].as_u64().unwrap_or_default();
-    let anchor = certified_anchor(rpc, height, validators)?;
+    let anchor = certified_anchor(rpc, height, set)?;
     let data = aether_light::verify_account(&anchor, &a, &proof).map_err(|e| format!("PROOF REJECTED: {e}"))?.unwrap_or_default();
     let claimed: U256 = serde_json::from_value(v["balance"].clone()).map_err(|e| e.to_string())?;
     if U256::from(data.balance) != claimed {
@@ -572,17 +580,17 @@ fn verified_balance(rpc: &str, a: Address, validators: u64) -> Result<(), String
     println!("address   {a}");
     println!("balance   {} wei", data.balance);
     println!("nonce     {}", data.nonce);
-    println!("verified  ✓ finality certificate of block {} checked against {} validator keys", anchor.height, validators);
+    println!("verified  ✓ finality certificate of block {}: one BLS threshold signature under committee key {}…", anchor.height, &set.identity_hex()[..16]);
     println!("          ✓ it commits state root {} (after block {height})", anchor.parent_state_root);
     println!("          ✓ EIP-7864 proof for this address verifies under that root");
     Ok(())
 }
 
-fn verified_storage(rpc: &str, a: Address, slot: U256, validators: u64) -> Result<(), String> {
+fn verified_storage(rpc: &str, a: Address, slot: U256, set: &aether_light::ValidatorSet) -> Result<(), String> {
     let v = call(rpc, "aether_getStorage", json!([a, slot]))?;
     let proof: Proof = serde_json::from_value(v["proof"].clone()).map_err(|e| e.to_string())?;
     let height = v["height"].as_u64().unwrap_or_default();
-    let anchor = certified_anchor(rpc, height, validators)?;
+    let anchor = certified_anchor(rpc, height, set)?;
     let value = aether_light::verify_storage(&anchor, &a, slot, &proof).map_err(|e| format!("PROOF REJECTED: {e}"))?;
     println!("{a}[{slot}] = {value}");
     println!("verified  ✓ finality certificate of block {} + proof under committed root {}", anchor.height, anchor.parent_state_root);

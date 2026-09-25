@@ -19,6 +19,7 @@ final class WalletModel: ObservableObject {
     private var timer: Timer?
 
     func start() {
+        pinCommittee()
         do {
             let acct = try EnclaveAccount.loadOrCreate(requireUserPresence: true)
             enclave = acct
@@ -30,6 +31,23 @@ final class WalletModel: ObservableObject {
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
+        }
+    }
+
+    /// Trust the committee identity shipped in network.json (written by `aether dkg`).
+    func pinCommittee() {
+        guard let url = Bundle.main.url(forResource: "network", withExtension: "json"),
+              let data = try? Data(contentsOf: url),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let id = obj["identity"] as? String else {
+            note("No network.json: trusting the devnet dealer's committee key.")
+            return
+        }
+        do {
+            try setCommitteeIdentity(identityHex: id)
+            note("Trusting committee key \(id.prefix(16))… from network.json")
+        } catch {
+            note("network.json rejected: \(error)")
         }
     }
 

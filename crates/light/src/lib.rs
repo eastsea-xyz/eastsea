@@ -113,8 +113,21 @@ impl ValidatorSet {
         Self::new(devnet_identity(n))
     }
 
+    /// From a committee identity in hex (as printed by `aether dkg`).
+    pub fn from_hex(identity: &str) -> Result<Self, LightError> {
+        use commonware_codec::DecodeExt;
+        let bytes = from_hex(identity)?;
+        let id = Identity::decode(bytes.as_slice()).map_err(|_| LightError::BadEncoding("identity"))?;
+        Ok(Self::new(id))
+    }
+
     pub fn identity(&self) -> &Identity {
         &self.identity
+    }
+
+    pub fn identity_hex(&self) -> String {
+        use commonware_codec::Encode;
+        to_hex(&self.identity.encode())
     }
 }
 

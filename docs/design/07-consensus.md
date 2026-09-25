@@ -5,7 +5,12 @@
 - 인증서: `bls12381_threshold::vrf::Scheme<ed25519::PublicKey, MinSig>`. 정족수(2f+1)의 부분 서명을 모아 **그룹 공개키 하나로 검증되는 서명 하나**를 만든다. 검증자 4명 기준 확정 인증서 237B(ed25519 다중 서명, 검증자당 64B 증가) → 131B(고정).
 - 지갑·경량 클라이언트는 검증자 목록 대신 위원회 identity(G2 공개키 96B)만 신뢰한다(`ValidatorSet::new(identity)`, `certificate_verifier`). 재공유(reshare)해도 identity는 유지된다.
 - 리더 선출: 직전 라운드 VRF 시드(라운드에 대한 임계 서명)로 무작위 선출(`Random` V1). 라운드로빈과 달리 다음 리더를 미리 알 수 없어 표적 DoS가 어렵다.
-- 키: devnet은 고정 시드 딜러(`devnet_threshold`)로 share를 만든다. **딜러가 모든 share를 알므로 devnet 전용**. 실망은 Commonware `feldman_desmedt` DKG로 생성·재공유해야 하며 다음 단계다.
+- 키: **DKG 구현됨** (`aether dkg`, `crates/node/src/dkg.rs`). Joint-Feldman(Commonware `feldman_desmedt`), 검증자 전원이 딜러이자 플레이어. 누구도 그룹 비밀키를 알지 못하고 각자 자기 share만 갖는다.
+  - 메시지는 인증·암호화된 p2p(검증자 링크)로. 딜링은 받을 때까지 재전송, 중복 딜링에는 보냈던 ack를 재전송(ack 유실 대비).
+  - 제네시스 규칙: 딜러 로그 전부 필요, 로그는 받은 노드가 한 번 중계, 서로 다른 로그 두 개에 서명한 딜러는 모두가 제외, 끝에 각자 계산한 identity를 공지해 **전원 일치할 때만** 성공.
+  - 결과: `<data>/threshold.json`(비밀 share, 권한 600) + `network.json`(공개 identity). 노드는 threshold.json이 있으면 그 키로, 없으면 devnet 딜러 키로(경고) 기동. 지갑은 번들된 network.json의 identity를 고정 신뢰.
+  - 검증: 메시지 30% 유실·재정렬에서도 합의(시드 3개), 이중 로그 딜러 전원 제외, 4프로세스 DKG→합의→identity로 잔액 검증·딜러 identity 거부(통합 테스트). **실망: 이 맥(검증자 1~3)과 다른 회선의 poc-m3(검증자 4)가 인터넷 너머로 DKG를 마치고 같은 identity로 합의 중.**
+  - 남은 것: 재공유(reshare)로 검증자 교체, 검증자 ed25519 키도 devnet 공개 키 대신 로컬 생성 키로.
 - 주의(Commonware 문서): 라운드 시드는 같은 라운드 실행에 쓰면 안 된다(리더가 시드를 먼저 알 수 있음). 실행에 난수를 쓸 때는 k라운드 뒤 시드를 약정-공개 방식으로 쓴다.
 - 미완: VRF로 에포크마다 고가동 위원회를 뽑는 D9는 위원회가 바뀔 때마다 재공유(DKG)가 필요해 DKG와 함께 구현한다. 지금은 검증자 전원이 위원회.
 

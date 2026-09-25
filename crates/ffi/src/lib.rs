@@ -161,6 +161,24 @@ fn anchor(height: u64, set: &ValidatorSet) -> R<VerifiedBlock> {
     Err(WalletError::Network(format!("block {} not finalized yet", height + 1)))
 }
 
+static COMMITTEE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Pin the committee identity (hex, printed by `aether dkg`) that finality
+/// certificates must verify under. Without it, the devnet dealer's identity.
+#[uniffi::export]
+pub fn set_committee_identity(identity_hex: String) -> R<()> {
+    ValidatorSet::from_hex(&identity_hex).map_err(|e| WalletError::Invalid(format!("identity: {e}")))?;
+    *COMMITTEE.lock().expect("committee lock") = Some(identity_hex);
+    Ok(())
+}
+
+fn trusted_set(validators: u32) -> R<ValidatorSet> {
+    match COMMITTEE.lock().expect("committee lock").as_deref() {
+        Some(hex) => ValidatorSet::from_hex(hex).map_err(|e| WalletError::Invalid(format!("identity: {e}"))),
+        None => Ok(ValidatorSet::devnet(validators as u64)),
+    }
+}
+
 /// Balance and nonce, verified against a validator-signed state root.
 #[uniffi::export]
 pub fn verified_account(address: String, validators: u32) -> R<VerifiedAccount> {
@@ -168,7 +186,7 @@ pub fn verified_account(address: String, validators: u32) -> R<VerifiedAccount> 
     let v = call("aether_getAccount", json!([a]))?;
     let proof: Proof = parse(&v["proof"], "proof")?;
     let height = v["height"].as_u64().unwrap_or_default();
-    let set = ValidatorSet::devnet(validators as u64);
+    let set = trusted_set(validators)?;
     let anchor = anchor(height, &set)?;
     let data = verify_account(&anchor, &a, &proof).map_err(|e| WalletError::Verification(format!("proof: {e}")))?.unwrap_or_default();
     Ok(VerifiedAccount {

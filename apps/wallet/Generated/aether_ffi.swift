@@ -1149,6 +1149,17 @@ public func recentBlocks(n: UInt32)throws  -> [BlockInfo]  {
 })
 }
 /**
+ * Pin the committee identity (hex, printed by `aether dkg`) that finality
+ * certificates must verify under. Without it, the devnet dealer's identity.
+ */
+public func setCommitteeIdentity(identityHex: String)throws   {try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_set_committee_identity(
+        FfiConverterString.lower(identityHex),uniffiCallStatus
+    )
+}
+}
+/**
  * Attach a Secure Enclave signature (raw r‖s, 64 bytes) and submit.
  */
 public func submitSigned(envelopeJson: String, signature: Data, p256PublicKey: Data)throws  -> String  {
@@ -1208,6 +1219,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_recent_blocks() != 16448) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_set_committee_identity() != 9931) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_submit_signed() != 20395) {

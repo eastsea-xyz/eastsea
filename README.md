@@ -21,7 +21,7 @@ AETHER_LOCAL="1 2 3" scripts/devnet.sh start 4                     # 이 맥: �
 aether node --index 4 --validators 4 --port 9004 --rpc-port 8548 --data ~/aether-v4/data   # 다른 맥
 ```
 
-포트 개방·VPN 없이 노드 ID만으로 서로 찾습니다. 각 검증자 로그의 `validator links`가 경로(`direct <공인IP:포트>` 또는 `relay`)를 보여 줍니다.
+포트 개방·VPN 없이 노드 ID만으로 서로 찾습니다. 위원회 키는 먼저 모든 검증자에서 동시에 `scripts/devnet.sh dkg 4`(다른 맥은 `aether dkg --index 4 --validators 4 --port 9004 --data …`)로 만들고, 출력된 identity(`network.json`)를 지갑 `apps/wallet/Resources/`에 넣습니다. 각 검증자 로그의 `validator links`가 경로(`direct <공인IP:포트>` 또는 `relay`)를 보여 줍니다.
 
 rustup 툴체인 1.98.1이 필요합니다(`rust-toolchain.toml`). Homebrew rustc가 PATH 앞에 있으면 `export PATH="$HOME/.cargo/bin:$PATH"`.
 
@@ -39,7 +39,7 @@ target/debug/aether blocks 10
 
 | 영역 | 지금 동작하는 것 | 아직 아닌 것 |
 |---|---|---|
-| 합의 | Commonware simplex BFT, 검증자 4대, 1초 블록, 1대 장애에도 진행. BLS12-381 임계 서명 인증서(검증자 수와 무관하게 131B, 그룹 공개키 하나로 검증), VRF 시드 기반 무작위 리더 | DKG·재공유(devnet은 고정 딜러), VRF 위원회 선출 |
+| 합의 | Commonware simplex BFT, 검증자 4대, 1초 블록, 1대 장애에도 진행. BLS12-381 임계 서명 인증서(검증자 수와 무관하게 131B, 그룹 공개키 하나로 검증), 키는 딜러 없는 DKG(`aether dkg`)로 생성, VRF 시드 기반 무작위 리더 | 재공유(검증자 교체), VRF 위원회 선출, 검증자 ed25519 키 로컬 생성(현재 devnet 공개 키) |
 | 네트워크 | 검증자 간 연결·지갑 연결 모두 iroh QUIC(홀펀칭, 막히면 공개 릴레이). 주소는 BitTorrent Mainline DHT에서 노드 ID로 찾음. Tailscale/CGNAT·루프백 경로는 게시도 선택도 안 함. 다른 회선의 맥 2대(124.50.x ↔ 14.32.x)로 검증 | 검증자 목록 온체인 관리, 자체 릴레이 |
 | 블록 전파·복구 | marshal: 확정 블록 순차 전달, 누락 보충, 디스크 아카이브, 재시작 시 재실행 복원 | 상태 스냅샷 동기화 |
 | 실행 | revm으로 서명된 트랜잭션 실행(송금·계약 배포·호출), 가스 수수료, 모든 검증자가 재실행해 BAL·가스까지 일치 검사. 낙관적 병렬 실행(서명 검사 병렬, 충돌 시 재실행)으로 순차와 동일 결과 2배 안팎 | 트리 커밋(Poseidon2) 병렬화 |

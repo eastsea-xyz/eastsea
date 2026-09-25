@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		3A048B1773EDB624E715846E /* AetherWalletApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39176493D3D105EBB072F17C /* AetherWalletApp.swift */; };
 		3C5180BEE4BF629CA69AF4CE /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B38A846EB23F0C4A52BF8A78 /* ContentView.swift */; };
+		576FB72021E6A746C1A7AF9B /* network.json in Resources */ = {isa = PBXBuildFile; fileRef = AB6E5651AC1948FECDAE69D4 /* network.json */; };
 		8A4A2901B223B0F689036DFB /* EnclaveKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 317D79B15C7F9E75B1A1F4FC /* EnclaveKey.swift */; };
 		BF69C9639B9D7215C5CE0605 /* aether_ffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BC12AF79B32D90A48860251 /* aether_ffi.swift */; };
 		D6DDA80E641E075D1DE236AD /* WalletModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 016BCAF9063410C1BBD4052D /* WalletModel.swift */; };
@@ -20,6 +21,7 @@
 		317D79B15C7F9E75B1A1F4FC /* EnclaveKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnclaveKey.swift; sourceTree = "<group>"; };
 		39176493D3D105EBB072F17C /* AetherWalletApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AetherWalletApp.swift; sourceTree = "<group>"; };
 		4BC12AF79B32D90A48860251 /* aether_ffi.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = aether_ffi.swift; sourceTree = "<group>"; };
+		AB6E5651AC1948FECDAE69D4 /* network.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = network.json; sourceTree = "<group>"; };
 		B38A846EB23F0C4A52BF8A78 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -44,6 +46,7 @@
 			isa = PBXGroup;
 			children = (
 				20B21676152FAD1CCC533BA7 /* Generated */,
+				5CFCFA34464C0BA0524F5B75 /* Resources */,
 				58892B03383F48BA9FD5EB14 /* Sources */,
 				2E89153E6DC67082E19B5371 /* Products */,
 			);
@@ -60,6 +63,14 @@
 			path = Sources;
 			sourceTree = "<group>";
 		};
+		5CFCFA34464C0BA0524F5B75 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				AB6E5651AC1948FECDAE69D4 /* network.json */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -68,6 +79,7 @@
 			buildConfigurationList = D093627045A2B7DF28397009 /* Build configuration list for PBXNativeTarget "AetherWallet" */;
 			buildPhases = (
 				9451106D88BAA67BA0C15449 /* Sources */,
+				659CDBAF9F96312FD4A76157 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -113,6 +125,17 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		659CDBAF9F96312FD4A76157 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				576FB72021E6A746C1A7AF9B /* network.json in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		9451106D88BAA67BA0C15449 /* Sources */ = {

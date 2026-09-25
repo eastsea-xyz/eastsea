@@ -280,6 +280,11 @@ RustBuffer uniffi_aether_ffi_fn_func_receipt(RustBuffer tx_hash, RustCallStatus 
 RustBuffer uniffi_aether_ffi_fn_func_recent_blocks(uint32_t n, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_SET_COMMITTEE_IDENTITY
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_SET_COMMITTEE_IDENTITY
+void uniffi_aether_ffi_fn_func_set_committee_identity(RustBuffer identity_hex, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_SUBMIT_SIGNED
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_SUBMIT_SIGNED
 RustBuffer uniffi_aether_ffi_fn_func_submit_signed(RustBuffer envelope_json, RustBuffer signature, RustBuffer p256_public_key, RustCallStatus *_Nonnull out_status
@@ -589,6 +594,12 @@ uint16_t uniffi_aether_ffi_checksum_func_receipt(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_RECENT_BLOCKS
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_RECENT_BLOCKS
 uint16_t uniffi_aether_ffi_checksum_func_recent_blocks(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_SET_COMMITTEE_IDENTITY
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_SET_COMMITTEE_IDENTITY
+uint16_t uniffi_aether_ffi_checksum_func_set_committee_identity(void
     
 );
 #endif

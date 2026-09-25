@@ -19,7 +19,8 @@ use anyhow::{anyhow, Context, Result};
 use iroh::address_lookup::AddrFilter;
 use iroh::endpoint::{presets, Connection};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
-use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey, TransportAddr};
+pub use iroh::Endpoint;
+use iroh::{EndpointAddr, EndpointId, SecretKey, TransportAddr};
 use iroh_mainline_address_lookup::DhtAddressLookup;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -154,6 +155,11 @@ where
         r = r.accept(ALPN_P2P, tunnel::Inbound { target });
     }
     r.spawn()
+}
+
+/// Accept validator links only (no RPC), forwarding to the local p2p listener.
+pub fn serve_p2p(endpoint: Endpoint, p2p_target: std::net::SocketAddr) -> Router {
+    Router::builder(endpoint).accept(ALPN_P2P, tunnel::Inbound { target: p2p_target }).spawn()
 }
 
 /// Serve JSON-RPC only.

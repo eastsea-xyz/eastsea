@@ -46,3 +46,6 @@ tokio = { version = "1", features = ["net", "rt-multi-thread", "macros", "time"]
 reqwest = { version = "0.12", default-features = false, features = ["json", "blocking"] }
 hex = "0.4"
 redb = "4.3"
+
+[dev-dependencies]
+rand_chacha = "0.10"

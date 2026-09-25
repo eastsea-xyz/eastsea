@@ -7,10 +7,13 @@ version.workspace = true
 publish = false
 
 [dependencies]
-iroh = "=1.2.0"
+iroh = { version = "=1.2.0", features = ["unstable-custom-transports"] }
 iroh-mainline-address-lookup = "=0.5.0"
 serde_json.workspace = true
 sha2 = "0.11"
-tokio = { version = "1", features = ["rt-multi-thread", "time", "macros", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "macros", "sync", "net", "io-util"] }
 tracing = "0.1"
 anyhow = "1"
+
+[dev-dependencies]
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -6,21 +6,28 @@
 //!   aether balance 0x…              # fetches an EIP-7864 proof and verifies it locally
 
 use aether_crypto::{P256Signer, Signer};
-use aether_execution::{sign_call, EvmCall};
+use aether_execution::{EvmCall, sign_call};
 use aether_node::application::Application;
 use aether_node::block::PublicKey;
-use aether_node::chain::{dev_accounts, dev_seed, Chain, ChainConfig};
+use aether_node::chain::{Chain, ChainConfig, dev_accounts, dev_seed};
 use aether_node::engine::{self, MAX_BLOCK_BYTES};
 use aether_node::rpc::{self, RpcState};
 use aether_state::Proof;
 use aether_types::{Address, Bytes, GasVector, TxEnvelope, TxHash, U256};
 use clap::{Parser, Subcommand};
 use commonware_consensus::{marshal, simplex::scheme::ed25519::Scheme, types::ViewDelta};
-use commonware_cryptography::{ed25519, Signer as _};
-use commonware_p2p::{authenticated::{self, discovery}, Manager as _, Receiver as _, Recipients, Sender as _};
-use commonware_runtime::{tokio as cw_tokio, Quota, Runner as _, Supervisor as _};
-use commonware_utils::{ordered::Set, union, NZUsize, TryCollect, NZU32};
-use serde_json::{json, Value};
+use commonware_cryptography::{Signer as _, ed25519};
+use commonware_p2p::{
+    Address as PeerAddress, AddressableManager as _, Receiver as _, Recipients, Sender as _,
+    authenticated::{self, lookup},
+};
+use commonware_runtime::{Quota, Runner as _, Supervisor as _, tokio as cw_tokio};
+use commonware_utils::{
+    NZU32, NZUsize, TryCollect,
+    ordered::{Map, Set},
+    union,
+};
+use serde_json::{Value, json};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
@@ -50,9 +57,18 @@ enum Cmd {
         rpc_port: u16,
         #[arg(long)]
         data: String,
-        /// Other validators: `<index>@<host:port>`, comma separated.
+        /// Plain-TCP transport (LAN/tests): every other validator as
+        /// `<index>@<host:port>`, comma separated. Without it, validators reach
+        /// each other over iroh (Mainline DHT discovery, hole punching, relays).
         #[arg(long, value_delimiter = ',')]
-        bootstrap: Vec<String>,
+        peers: Vec<String>,
+        /// First loopback port for iroh links (link to validator j = base + j).
+        /// Default: 20000 + 100 * index.
+        #[arg(long)]
+        link_base: Option<u16>,
+        /// No public iroh endpoint (no DHT publishing, no public RPC). TCP peers only.
+        #[arg(long)]
+        offline: bool,
         #[arg(long, default_value_t = 1000)]
         block_time_ms: u64,
     },
@@ -136,8 +152,13 @@ enum Cmd {
 fn main() {
     let cli = Cli::parse();
     let res = match cli.cmd {
-        Cmd::Node { index, validators, port, rpc_port, data, bootstrap, block_time_ms } => {
-            run_node(index, validators, port, rpc_port, data, bootstrap, block_time_ms);
+        Cmd::Node { index, validators, port, rpc_port, data, peers, link_base, offline, block_time_ms } => {
+            let transport = if peers.iter().any(|p| !p.is_empty()) {
+                Transport::Tcp(peers)
+            } else {
+                Transport::Iroh { link_base: link_base.unwrap_or(20_000 + 100 * index as u16) }
+            };
+            run_node(NodeArgs { index, n: validators, port, rpc_port, data, transport, offline, block_time_ms });
             Ok(())
         }
         Cmd::DevAccounts => {
@@ -185,39 +206,121 @@ fn validator_key(i: u64) -> ed25519::PrivateKey {
     aether_light::devnet_validator_key(i)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn run_node(index: u64, n: u64, port: u16, rpc_port: u16, data: String, bootstrap: Vec<String>, block_time_ms: u64) {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,commonware=warn".into()))
-        .init();
+enum Transport {
+    Tcp(Vec<String>),
+    Iroh { link_base: u16 },
+}
+
+struct NodeArgs {
+    index: u64,
+    n: u64,
+    port: u16,
+    rpc_port: u16,
+    data: String,
+    transport: Transport,
+    offline: bool,
+    block_time_ms: u64,
+}
+
+fn loopback(port: u16) -> SocketAddr {
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
+}
+
+/// Socket address Commonware dials for every validator. Over iroh, each remote
+/// validator is a local link port; the link carries the TCP stream over QUIC.
+fn peer_addresses(a: &NodeArgs) -> Map<PublicKey, PeerAddress> {
+    let mut peers: Vec<(PublicKey, PeerAddress)> = vec![(validator_key(a.index).public_key(), PeerAddress::Symmetric(loopback(a.port)))];
+    match &a.transport {
+        Transport::Tcp(list) => {
+            for p in list.iter().filter(|s| !s.is_empty()) {
+                let (i, addr) = p.split_once('@').expect("peer is <index>@<host:port>");
+                let addr: SocketAddr = addr.parse().expect("peer address");
+                peers.push((validator_key(i.parse().expect("peer index")).public_key(), PeerAddress::Symmetric(addr)));
+            }
+        }
+        Transport::Iroh { link_base } => {
+            for j in (1..=a.n).filter(|j| *j != a.index) {
+                let ingress = loopback(link_base + j as u16);
+                peers.push((validator_key(j).public_key(), PeerAddress::Asymmetric { ingress: ingress.into(), egress: loopback(0) }));
+            }
+        }
+    }
+    peers.try_into().expect("unique validators")
+}
+
+fn run_node(a: NodeArgs) {
+    tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,commonware=warn".into())).init();
+    let NodeArgs { index, n, port, rpc_port, block_time_ms, offline, .. } = a;
+    assert!(!offline || matches!(a.transport, Transport::Tcp(_)), "--offline needs --peers");
     let signer = validator_key(index);
     let validators: Set<PublicKey> = (1..=n).map(|i| validator_key(i).public_key()).try_collect().expect("unique validator keys");
-    let bootstrappers: Vec<_> = bootstrap
-        .iter()
-        .filter(|s| !s.is_empty())
-        .map(|b| {
-            let (i, addr) = b.split_once('@').expect("bootstrap is <index>@<host:port>");
-            let addr: SocketAddr = addr.parse().expect("bootstrap address");
-            (validator_key(i.parse().expect("bootstrap index")).public_key(), addr.into())
-        })
-        .collect();
+    let peers = peer_addresses(&a);
     let max_peers = authenticated::peer_set_limit(&validators, &signer.public_key());
-    let listen = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
-    let p2p_cfg = discovery::Config::local(
-        signer.clone(),
-        &union(NAMESPACE, b"_P2P"),
-        listen,
-        listen,
-        bootstrappers,
-        max_peers,
-        MAX_BLOCK_BYTES + 1024 * 1024,
-    );
+    // Validators listen on loopback; the outside world reaches them only via iroh
+    // links (or explicitly configured TCP peers).
+    let listen = match a.transport {
+        Transport::Tcp(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port),
+        Transport::Iroh { .. } => loopback(port),
+    };
+    let mut p2p_cfg = lookup::Config::local(signer.clone(), &union(NAMESPACE, b"_P2P"), listen, max_peers, MAX_BLOCK_BYTES + 1024 * 1024);
+    // Link traffic arrives from 127.0.0.1; identity is proven by the handshake.
+    p2p_cfg.bypass_ip_check = true;
+    let links: Vec<u64> = match a.transport {
+        Transport::Iroh { .. } => (1..=n).filter(|j| *j != index).collect(),
+        Transport::Tcp(_) => vec![],
+    };
+    let link_base = match a.transport {
+        Transport::Iroh { link_base } => link_base,
+        Transport::Tcp(_) => 0,
+    };
+    let data = a.data;
     let executor = cw_tokio::Runner::new(cw_tokio::Config::new().with_storage_directory(&data));
     let cfg = chain_config();
 
     executor.start(async move |context| {
-        let (mut network, mut oracle) = discovery::Network::new(context.child("network"), p2p_cfg);
-        oracle.track(0, validators.clone());
+        // Public endpoint first: validator links and wallet RPC share it.
+        let endpoint = if offline {
+            None
+        } else {
+            match aether_net::bind(Some(aether_net::devnet_node_secret(index)), vec![aether_net::ALPN_RPC.to_vec(), aether_net::ALPN_P2P.to_vec()]).await {
+                Ok(ep) => Some(ep),
+                Err(e) => {
+                    tracing::warn!(?e, "public endpoint unavailable");
+                    None
+                }
+            }
+        };
+        let mut outbound = Vec::new();
+        if let Some(ep) = &endpoint {
+            for j in &links {
+                let link = aether_net::tunnel::Outbound::spawn(ep.clone(), aether_net::devnet_node_id(*j), loopback(link_base + *j as u16))
+                    .await
+                    .expect("bind link port");
+                outbound.push((*j, link));
+            }
+        } else if !links.is_empty() {
+            panic!("iroh transport needs the public endpoint");
+        }
+        if !outbound.is_empty() {
+            tokio::spawn(async move {
+                let mut last = String::new();
+                loop {
+                    let mut line = Vec::new();
+                    for (j, l) in &outbound {
+                        line.push(format!("v{j}={}", l.path().await));
+                    }
+                    let line = line.join(" ");
+                    if line != last {
+                        tracing::info!(links = %line, "validator links");
+                        last = line;
+                    }
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
+            });
+        }
+
+        let (mut network, mut oracle) = lookup::Network::new(context.child("network"), p2p_cfg);
+        oracle.track(0, peers);
         let quota = Quota::per_second(NZU32!(256));
         let pending = network.register(0, quota);
         let recovered = network.register(1, quota);
@@ -290,21 +393,21 @@ fn run_node(index: u64, n: u64, port: u16, rpc_port: u16, data: String, bootstra
         let rpc_state = RpcState { chain, marshal: marshal_mailbox, gossip: gossip_tx };
 
         // Public access: iroh endpoint published to the BitTorrent Mainline DHT.
-        // Wallets find this node by its id alone and verify everything they get.
-        let _router = match aether_net::bind(Some(aether_net::devnet_node_secret(index)), vec![aether_net::ALPN_RPC.to_vec()]).await {
-            Ok(ep) => {
-                tracing::info!(node_id = %ep.id(), "public rpc on iroh; address published to Mainline DHT");
-                let st = rpc_state.clone();
-                Some(aether_net::serve_rpc(ep, move |req| {
+        // Wallets find this node by its id alone and verify everything they get;
+        // validators tunnel consensus traffic over the same endpoint.
+        let _router = endpoint.map(|ep| {
+            tracing::info!(node_id = %ep.id(), "public endpoint on iroh; address published to Mainline DHT");
+            let st = rpc_state.clone();
+            let p2p_target = (!links.is_empty()).then(|| loopback(port));
+            aether_net::serve(
+                ep,
+                move |req| {
                     let st = st.clone();
                     async move { rpc::handle_value(&st, req).await }
-                }))
-            }
-            Err(e) => {
-                tracing::warn!(?e, "public endpoint unavailable; loopback rpc only");
-                None
-            }
-        };
+                },
+                p2p_target,
+            )
+        });
 
         let rpc_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), rpc_port);
         tracing::info!(%rpc_addr, "rpc listening");
@@ -318,13 +421,8 @@ fn run_node(index: u64, n: u64, port: u16, rpc_port: u16, data: String, bootstra
 
 fn call(rpc: &str, method: &str, params: Value) -> Result<Value, String> {
     let body = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
-    let resp: Value = reqwest::blocking::Client::new()
-        .post(rpc)
-        .json(&body)
-        .send()
-        .map_err(|e| format!("rpc {rpc}: {e}"))?
-        .json()
-        .map_err(|e| e.to_string())?;
+    let resp: Value =
+        reqwest::blocking::Client::new().post(rpc).json(&body).send().map_err(|e| format!("rpc {rpc}: {e}"))?.json().map_err(|e| e.to_string())?;
     if let Some(err) = resp.get("error") {
         return Err(err.to_string());
     }
@@ -358,10 +456,7 @@ fn submit(rpc: &str, dev: u8, nonce: Option<u64>, c: EvmCall, wait: bool) -> Res
         let r = call(rpc, "aether_getReceipt", json!([hash]))?;
         if r.get("receipt").is_some() {
             let rc = &r["receipt"];
-            println!(
-                "finalized in block {}  success={}  gas={}  prove_gas={}",
-                r["height"], rc["success"], rc["gas_used"], rc["prove_gas"]
-            );
+            println!("finalized in block {}  success={}  gas={}  prove_gas={}", r["height"], rc["success"], rc["gas_used"], rc["prove_gas"]);
             return Ok(r);
         }
         std::thread::sleep(Duration::from_millis(500));

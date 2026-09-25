@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["legacy", "crates/*"]
+exclude = ["vendor"]
 
 [workspace.package]
 edition = "2021"
@@ -42,3 +43,8 @@ codegen-units = 1
 [profile.bench]
 inherits = "release"
 debug = true
+
+# n0-mainline 0.6.0: get_mutable_most_recent kept the first record instead of the
+# highest seq, so stale DHT records could shadow a moved node. Patched copy.
+[patch.crates-io]
+n0-mainline = { path = "vendor/n0-mainline" }

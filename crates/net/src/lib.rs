@@ -6,24 +6,35 @@
 //!   pkarr record (signed by its node key) with its current addresses; a client
 //!   that knows a node id resolves it from the DHT. No bootstrap server, no DNS.
 //! - Protocol `aether/rpc/1`: one JSON-RPC request per bidirectional stream.
+//! - Protocol `aether/p2p/1`: validator consensus traffic. Each bidirectional
+//!   stream carries one TCP connection of the Commonware p2p stack (see
+//!   [`tunnel`]); Commonware's own ed25519 handshake authenticates end to end.
+//! - Published addresses exclude loopback and Tailscale/CGNAT ranges, so peers
+//!   reach each other only over public internet paths (or public relays).
 //!
 //! Clients never trust what they receive here: balances are verified by the
 //! light client (finality certificate + state proof).
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use iroh::address_lookup::AddrFilter;
-use iroh::endpoint::{presets, Connection};
+use iroh::endpoint::{Connection, presets};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
-use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
+use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey, TransportAddr};
 use iroh_mainline_address_lookup::DhtAddressLookup;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::future::Future;
+use std::net::IpAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+pub mod paths;
+pub mod tunnel;
+
 pub const ALPN_RPC: &[u8] = b"aether/rpc/1";
+pub const ALPN_P2P: &[u8] = b"aether/p2p/1";
 const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 
 /// Deterministic node key for devnet validator `i`. Public knowledge; devnet only.
@@ -36,17 +47,43 @@ pub fn devnet_node_id(i: u64) -> EndpointId {
     devnet_node_secret(i).public()
 }
 
+/// Addresses that are only meaningful inside a private overlay or this host.
+pub fn is_overlay_or_local(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            // 100.64.0.0/10 (CGNAT, used by Tailscale), loopback, link-local.
+            (o[0] == 100 && (o[1] & 0xc0) == 64) || v4.is_loopback() || v4.is_link_local() || v4.is_unspecified()
+        }
+        IpAddr::V6(v6) => {
+            let s = v6.segments();
+            // fd7a:115c:a1e0::/48 (Tailscale ULA), loopback, link-local.
+            (s[0] == 0xfd7a && s[1] == 0x115c && s[2] == 0xa1e0) || v6.is_loopback() || (s[0] & 0xffc0) == 0xfe80 || v6.is_unspecified()
+        }
+    }
+}
+
+/// Publish relay and real network addresses only.
+pub fn public_addr_filter() -> AddrFilter {
+    AddrFilter::new(|addrs| Cow::Owned(addrs.iter().filter(|a| !matches!(a, TransportAddr::Ip(sa) if is_overlay_or_local(sa.ip()))).cloned().collect()))
+}
+
 /// Bind an endpoint that resolves peers through the Mainline DHT. With a
 /// `secret`, it also publishes its own addresses there (direct + relay).
 pub async fn bind(secret: Option<SecretKey>, alpns: Vec<Vec<u8>>) -> Result<Endpoint> {
     let publish = secret.is_some();
-    let mut dht = DhtAddressLookup::builder().addr_filter(AddrFilter::unfiltered());
+    let mut dht = DhtAddressLookup::builder().addr_filter(public_addr_filter());
     if !publish {
         dht = dht.no_publish();
     }
     // Minimal preset: discovery comes only from the Mainline DHT (no n0 DNS);
     // public relays are kept as the NAT fallback.
-    let mut b = Endpoint::builder(presets::Minimal).relay_mode(iroh::RelayMode::Default).alpns(alpns).address_lookup(dht);
+    let mut b = Endpoint::builder(presets::Minimal)
+        .relay_mode(iroh::RelayMode::Default)
+        .alpns(alpns)
+        .addr_filter(public_addr_filter())
+        .path_selector(Arc::new(paths::PublicPathSelector))
+        .address_lookup(dht);
     if let Some(s) = secret {
         b = b.secret_key(s);
     }
@@ -67,13 +104,19 @@ impl std::fmt::Debug for RpcProtocol {
 impl ProtocolHandler for RpcProtocol {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
         loop {
-            let Ok((mut send, mut recv)) = conn.accept_bi().await else { break };
+            let Ok((mut send, mut recv)) = conn.accept_bi().await else {
+                break;
+            };
             let handler = self.0.clone();
             tokio::spawn(async move {
-                let Ok(bytes) = recv.read_to_end(MAX_MESSAGE).await else { return };
+                let Ok(bytes) = recv.read_to_end(MAX_MESSAGE).await else {
+                    return;
+                };
                 let resp = match serde_json::from_slice::<Value>(&bytes) {
                     Ok(req) => handler(req).await,
-                    Err(e) => serde_json::json!({ "jsonrpc": "2.0", "id": null, "error": { "code": -32700, "message": e.to_string() } }),
+                    Err(e) => {
+                        serde_json::json!({ "jsonrpc": "2.0", "id": null, "error": { "code": -32700, "message": e.to_string() } })
+                    }
                 };
                 let _ = send.write_all(&serde_json::to_vec(&resp).unwrap_or_default()).await;
                 let _ = send.finish();
@@ -83,14 +126,29 @@ impl ProtocolHandler for RpcProtocol {
     }
 }
 
-/// Serve JSON-RPC over `aether/rpc/1` on `endpoint`.
-pub fn serve_rpc<F, Fut>(endpoint: Endpoint, handler: F) -> Router
+/// Serve JSON-RPC over `aether/rpc/1` on `endpoint`; with `p2p_target`, also
+/// accept validator tunnels (`aether/p2p/1`) and forward them to that local
+/// Commonware p2p listener.
+pub fn serve<F, Fut>(endpoint: Endpoint, handler: F, p2p_target: Option<std::net::SocketAddr>) -> Router
 where
     F: Fn(Value) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Value> + Send + 'static,
 {
     let h: Handler = Arc::new(move |v| Box::pin(handler(v)));
-    Router::builder(endpoint).accept(ALPN_RPC, RpcProtocol(h)).spawn()
+    let mut r = Router::builder(endpoint).accept(ALPN_RPC, RpcProtocol(h));
+    if let Some(target) = p2p_target {
+        r = r.accept(ALPN_P2P, tunnel::Inbound { target });
+    }
+    r.spawn()
+}
+
+/// Serve JSON-RPC only.
+pub fn serve_rpc<F, Fut>(endpoint: Endpoint, handler: F) -> Router
+where
+    F: Fn(Value) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Value> + Send + 'static,
+{
+    serve(endpoint, handler, None)
 }
 
 /// A client talking to any of a set of known nodes, located via the DHT.
@@ -167,5 +225,12 @@ impl RpcClient {
             }
             None => "not connected".into(),
         }
+    }
+
+    /// The selected path's remote address, for diagnostics.
+    pub async fn remote_path(&self) -> Option<String> {
+        let cur = self.current.lock().await;
+        let (_, c) = cur.as_ref()?;
+        c.paths().iter().find(|p| p.is_selected()).map(|p| format!("{:?}", p.remote_addr()))
     }
 }

@@ -2,7 +2,7 @@
 //! a client that only knows the server's node id finds it there and calls RPC.
 //! Needs internet access (UDP). Run: cargo test -p aether-net --test dht_rpc -- --ignored
 
-use aether_net::{bind, serve_rpc, RpcClient, ALPN_RPC};
+use aether_net::{ALPN_RPC, RpcClient, bind, serve_rpc};
 use iroh::SecretKey;
 use serde_json::json;
 use std::time::{Duration, Instant};
@@ -30,4 +30,17 @@ async fn client_finds_server_through_mainline_dht() {
         tokio::time::sleep(Duration::from_secs(3)).await;
     }
     panic!("not reachable via DHT within 120s: {last}");
+}
+
+/// Against a running devnet: reach validator `AETHER_NODE` (default 4) by node
+/// id only. Run while `scripts/devnet.sh` (or a remote validator) is up.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a running devnet validator"]
+async fn reach_devnet_validator_by_id() {
+    let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).try_init();
+    let i: u64 = std::env::var("AETHER_NODE").ok().and_then(|s| s.parse().ok()).unwrap_or(4);
+    let client = RpcClient::new(vec![aether_net::devnet_node_id(i)]).await.unwrap();
+    let start = Instant::now();
+    let status = client.call("aether_status", json!([])).await.expect("status");
+    println!("validator {i}: height {} after {:?} ({}, {:?})", status["height"], start.elapsed(), client.describe().await, client.remote_path().await);
 }

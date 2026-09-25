@@ -166,6 +166,7 @@ dependencies = [
  "sha2 0.11.0",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -4212,8 +4213,6 @@ dependencies = [
 [[package]]
 name = "n0-mainline"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e1350c6f72a2b3368ebf17779844746f246decd886d610f11b2317148fb9fd4"
 dependencies = [
  "crc",
  "dyn-clone",

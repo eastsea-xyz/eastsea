@@ -3,7 +3,7 @@
 //! block hashes and state roots everywhere, liveness with one validator down,
 //! and restart recovery from the finalized archive.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -45,9 +45,10 @@ impl Net {
             .env("RUST_LOG", "warn")
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        if i > 0 {
-            cmd.args(["--bootstrap", &format!("1@127.0.0.1:{}", self.p2p[0])]);
-        }
+        // Plain TCP between validators and no public endpoint: offline, and
+        // never publishes devnet node ids to the DHT.
+        let peers: Vec<String> = (0..self.p2p.len()).filter(|j| *j != i).map(|j| format!("{}@127.0.0.1:{}", j + 1, self.p2p[j])).collect();
+        cmd.args(["--peers", &peers.join(","), "--offline"]);
         self.procs[i] = Some(cmd.spawn().expect("spawn validator"));
     }
 

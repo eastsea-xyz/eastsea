@@ -4,12 +4,28 @@
 
 | 계층 | 구현 | 대상 |
 |---|---|---|
-| 검증자 간 합의 메시지 | Commonware `p2p` (인증된 검증자 목록) | 위원회 |
+| 검증자 간 합의 메시지 | Commonware `p2p::authenticated::lookup` (인증된 검증자 목록) → 루프백 링크 포트 → iroh `aether/p2p/1` | 위원회 |
 | 블록·인증서·증명 gossip | Commonware `broadcast` → 공개 노드에는 iroh gossip 재전송 | 전체 |
 | 공개 노드 연결 | iroh 1.2 (QUIC, 홀펀칭, 릴레이) | 지갑·검증 노드 |
 | 피어 발견 | Pkarr(서명된 부트노드 목록) → DNS TXT → GitHub raw → Nostr(선택) | 전체 |
 | 공인 주소 | Google·Cloudflare STUN | 전체 |
 | 릴레이 | 개발: n0 공개 릴레이, 운영: 자체 `iroh-relay`(Oracle A1 또는 poc 서버) | 필요 시 |
+
+## 검증자 링크 (구현됨)
+
+```text
+검증자 A                                                   검증자 B
+commonware ─tcp→ 127.0.0.1:<B 링크 포트> ─iroh QUIC(aether/p2p/1)→ Inbound ─tcp→ 127.0.0.1:<B p2p>
+```
+
+- Commonware p2p는 루프백에서만 듣는다. 외부는 iroh 엔드포인트 하나(UDP)로만 들어온다.
+- TCP 연결 하나 = QUIC 양방향 스트림 하나. 인증은 Commonware ed25519 핸드셰이크가 종단 간에 한다(터널은 신뢰하지 않음).
+- 주소 발견: 노드 ID → BitTorrent Mainline DHT(pkarr). n0 DNS 미사용.
+- 게시 필터: 루프백·링크로컬·Tailscale/CGNAT(100.64/10, fd7a:115c:a1e0::/48) 제외.
+- 경로 선택: `PublicPathSelector`가 같은 대역 경로를 절대 고르지 않는다. 직결(공인/LAN) 우선, 없으면 공개 릴레이.
+- `n0-mainline` 0.6.0 `get_mutable_most_recent` 버그(첫 응답을 채택 → 이사한 노드의 옛 레코드가 새 주소를 가림)를 `vendor/`에서 패치.
+- 검증(2026-09-26): 이 맥(공인 124.50.132.71)에 검증자 1~3, poc-m3(공인 14.32.162.195, 다른 회선)에 검증자 4. 양쪽 모두 `direct <상대 공인IP>` 경로. 검증자 3 정지 중에는 정족수에 원격 검증자가 필수인데도 15초에 14블록 확정, 송금 확정 후 원격에서 잔액 일치.
+- 오프라인 테스트용 `--peers <i@host:port,…> --offline`은 평문 TCP.
 
 ## Pkarr 부트노드 목록
 

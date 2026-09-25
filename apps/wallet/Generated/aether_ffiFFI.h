@@ -254,6 +254,11 @@ RustBuffer uniffi_aether_ffi_fn_func_chain_status(RustCallStatus *_Nonnull out_s
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_CONFIGURE_NETWORK
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_CONFIGURE_NETWORK
+uint32_t uniffi_aether_ffi_fn_func_configure_network(RustBuffer network_json, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_CONNECTION
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_CONNECTION
 RustBuffer uniffi_aether_ffi_fn_func_connection(RustCallStatus *_Nonnull out_status
@@ -564,6 +569,12 @@ uint16_t uniffi_aether_ffi_checksum_func_account_address(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_CHAIN_STATUS
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_CHAIN_STATUS
 uint16_t uniffi_aether_ffi_checksum_func_chain_status(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_CONFIGURE_NETWORK
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_CONFIGURE_NETWORK
+uint16_t uniffi_aether_ffi_checksum_func_configure_network(void
     
 );
 #endif

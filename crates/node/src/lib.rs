@@ -5,5 +5,6 @@ pub mod dkg;
 pub mod engine;
 pub mod inclusion;
 pub mod p2p;
+pub mod roster;
 pub mod rpc;
 pub mod store;

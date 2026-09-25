@@ -10,7 +10,8 @@
   - 제네시스 규칙: 딜러 로그 전부 필요, 로그는 받은 노드가 한 번 중계, 서로 다른 로그 두 개에 서명한 딜러는 모두가 제외, 끝에 각자 계산한 identity를 공지해 **전원 일치할 때만** 성공.
   - 결과: `<data>/threshold.json`(비밀 share, 권한 600) + `network.json`(공개 identity). 노드는 threshold.json이 있으면 그 키로, 없으면 devnet 딜러 키로(경고) 기동. 지갑은 번들된 network.json의 identity를 고정 신뢰.
   - 검증: 메시지 30% 유실·재정렬에서도 합의(시드 3개), 이중 로그 딜러 전원 제외, 4프로세스 DKG→합의→identity로 잔액 검증·딜러 identity 거부(통합 테스트). **실망: 이 맥(검증자 1~3)과 다른 회선의 poc-m3(검증자 4)가 인터넷 너머로 DKG를 마치고 같은 identity로 합의 중.**
-  - 남은 것: 재공유(reshare)로 검증자 교체, 검증자 ed25519 키도 devnet 공개 키 대신 로컬 생성 키로.
+  - 남은 것: 재공유(reshare)로 검증자 교체.
+- 검증자 키 — **로컬 생성 구현됨**: `aether keygen --data d`가 합의 ed25519 키와 iroh 노드 키를 만들어 `validator.key`(600, 덮어쓰기 거부)에 두고 공개 절반만 `validator.pub.json`으로 낸다. `aether network a.json b.json …`가 `network.json`(체인 id, 검증자 키·노드 id)을 만든다. 노드·DKG는 `--network`로 자기 키를 찾아 인덱스를 정하고, DKG가 identity를 network.json에 더한다. 지갑은 그 network.json 하나로 노드 id(DHT 조회)와 위원회 키를 받는다. 실망은 이 방식으로 재구성: poc-m3의 비밀키는 poc-m3 밖으로 나간 적 없음. `--network` 없이 띄우면 예전처럼 공개 devnet 키.
 - 주의(Commonware 문서): 라운드 시드는 같은 라운드 실행에 쓰면 안 된다(리더가 시드를 먼저 알 수 있음). 실행에 난수를 쓸 때는 k라운드 뒤 시드를 약정-공개 방식으로 쓴다.
 - 미완: VRF로 에포크마다 고가동 위원회를 뽑는 D9는 위원회가 바뀔 때마다 재공유(DKG)가 필요해 DKG와 함께 구현한다. 지금은 검증자 전원이 위원회.
 

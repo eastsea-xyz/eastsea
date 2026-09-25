@@ -1098,6 +1098,18 @@ public func chainStatus()throws  -> ChainStatus  {
 })
 }
 /**
+ * Configure from network.json: the validators' node ids (looked up in the
+ * Mainline DHT) and the committee identity to pin. Call before anything else.
+ */
+public func configureNetwork(networkJson: String)throws  -> UInt32  {
+    return try  FfiConverterUInt32.lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_configure_network(
+        FfiConverterString.lower(networkJson),uniffiCallStatus
+    )
+})
+}
+/**
  * How the wallet currently reaches the network (for display).
  */
 public func connection() -> String  {
@@ -1204,6 +1216,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_chain_status() != 33626) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_configure_network() != 29290) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_connection() != 5408) {

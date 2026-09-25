@@ -34,18 +34,18 @@ final class WalletModel: ObservableObject {
         }
     }
 
-    /// Trust the committee identity shipped in network.json (written by `aether dkg`).
+    /// Validators' node ids and the committee key, from the bundled network.json
+    /// (written by `aether dkg`).
     func pinCommittee() {
         guard let url = Bundle.main.url(forResource: "network", withExtension: "json"),
-              let data = try? Data(contentsOf: url),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let id = obj["identity"] as? String else {
-            note("No network.json: trusting the devnet dealer's committee key.")
+              let json = try? String(contentsOf: url, encoding: .utf8) else {
+            note("No network.json: using the public devnet validators and key.")
             return
         }
         do {
-            try setCommitteeIdentity(identityHex: id)
-            note("Trusting committee key \(id.prefix(16))… from network.json")
+            validators = try configureNetwork(networkJson: json)
+            let id = (try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])?["identity"] as? String ?? "devnet"
+            note("Network: \(validators) validators · committee key \(id.prefix(16))… (network.json)")
         } catch {
             note("network.json rejected: \(error)")
         }

@@ -69,6 +69,19 @@ impl Net {
         self.procs[i] = Some(cmd.spawn().expect("spawn validator"));
     }
 
+    /// Like `spawn`, but identity comes from --network in `extra` and <data>/validator.key.
+    fn spawn_with_network(&mut self, i: usize) {
+        let mut cmd = Command::new(BIN);
+        cmd.args(["node", "--port", &self.p2p[i].to_string(), "--rpc-port", &self.rpc[i].to_string()])
+            .args(["--data", self.dir.join((i + 1).to_string()).to_str().unwrap()])
+            .args(["--block-time-ms", "500", "--peers", &self.peers(i), "--offline"])
+            .args(&self.extra[i])
+            .env("RUST_LOG", "warn")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        self.procs[i] = Some(cmd.spawn().expect("spawn validator"));
+    }
+
     fn kill(&mut self, i: usize) {
         if let Some(mut c) = self.procs[i].take() {
             let _ = c.kill();
@@ -291,4 +304,69 @@ fn dkg_ceremony_then_consensus_under_its_identity() {
     assert!(bal.contains("balance   99 wei") && bal.contains("verified  ✓"), "{bal}");
     let out = Command::new(BIN).args(["balance", bob, "--rpc", &net.url(2)]).output().unwrap();
     assert!(!out.status.success(), "the dealer's devnet identity must not verify DKG certificates");
+}
+
+/// Real-network setup: every validator generates its own keys, the public
+/// entries become network.json, the DKG runs on those keys, and consensus
+/// starts from the file. Nothing uses the public devnet keys.
+#[test]
+fn locally_generated_keys_network_file_dkg_and_consensus() {
+    let n = 4;
+    let dir = std::env::temp_dir().join(format!("aether-devnet-test-{}-keys", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let data = |i: usize| dir.join((i + 1).to_string());
+
+    // 1. keygen on each machine; secrets are 0600 and never overwritten.
+    for i in 0..n {
+        let out = Command::new(BIN).args(["keygen", "--data", data(i).to_str().unwrap()]).output().unwrap();
+        assert!(out.status.success());
+    }
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(std::fs::metadata(data(0).join("validator.key")).unwrap().permissions().mode() & 0o777, 0o600);
+    assert!(!Command::new(BIN).args(["keygen", "--data", data(0).to_str().unwrap()]).status().unwrap().success(), "keygen must not overwrite");
+
+    // 2. assemble network.json from the public halves.
+    let pubs: Vec<String> = (0..n).map(|i| data(i).join("validator.pub.json").to_str().unwrap().to_string()).collect();
+    let out = Command::new(BIN).arg("network").args(&pubs).output().unwrap();
+    assert!(out.status.success());
+    let network = dir.join("network.json");
+    std::fs::write(&network, &out.stdout).unwrap();
+    let net_arg = network.to_str().unwrap().to_string();
+
+    // 3. DKG on those keys (no --index: each process finds itself by its key).
+    let p2p: Vec<u16> = (0..n).map(|_| free_port()).collect();
+    let rpc: Vec<u16> = (0..n).map(|_| free_port()).collect();
+    let extra = vec![vec!["--network".to_string(), net_arg.clone()]; n];
+    let mut net = Net::prepared(dir.clone(), p2p, rpc, extra);
+    let dkg: Vec<Child> = (0..n)
+        .map(|i| {
+            Command::new(BIN)
+                .args(["dkg", "--network", &net_arg, "--port", &net.p2p[i].to_string(), "--data", data(i).to_str().unwrap()])
+                .args(["--peers", &net.peers(i), "--offline"])
+                .env("RUST_LOG", "warn")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    for c in dkg {
+        assert!(c.wait_with_output().unwrap().status.success(), "dkg failed");
+    }
+    let written: Value = serde_json::from_slice(&std::fs::read(data(0).join("network.json")).unwrap()).unwrap();
+    let identity = written["identity"].as_str().expect("identity in network.json").to_string();
+    assert_eq!(written["validators"].as_array().unwrap().len(), n);
+
+    // 4. consensus from the network file (spawn passes only --network, no --index).
+    for i in 0..n {
+        net.spawn_with_network(i);
+    }
+    for i in 0..n {
+        net.wait_height(i, 3, 60);
+    }
+    let bob = "0x000000000000000000000000000000000000cafe";
+    net.cli(&["send", "--rpc", &net.url(1), "--from-dev", "3", "--to", bob, "--value", "5", "--wait"]);
+    net.wait_height(3, net.height(1), 20);
+    let bal = net.cli(&["balance", bob, "--rpc", &net.url(3), "--identity", &identity]);
+    assert!(bal.contains("balance   5 wei") && bal.contains("verified  ✓"), "{bal}");
 }

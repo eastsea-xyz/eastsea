@@ -11,7 +11,7 @@ use aether_node::application::Application;
 use aether_node::block::PublicKey;
 use aether_node::chain::{dev_accounts, dev_seed, Chain, ChainConfig};
 use aether_node::engine::{self, MAX_BLOCK_BYTES};
-use aether_node::p2p::{loopback, validator_key, P2pArgs, Transport};
+use aether_node::p2p::{loopback, P2pArgs, Transport};
 use aether_node::rpc::{self, RpcState};
 use aether_state::Proof;
 use aether_types::{Address, Bytes, GasVector, TxEnvelope, TxHash, U256};
@@ -40,10 +40,15 @@ struct Cli {
 enum Cmd {
     /// Run a validator.
     Node {
+        /// Devnet: this validator's index (1-based). With --network, derived from the local key.
         #[arg(long)]
-        index: u64,
+        index: Option<u64>,
+        /// Devnet: number of validators. With --network, taken from the file.
         #[arg(long)]
-        validators: u64,
+        validators: Option<u64>,
+        /// network.json (validator keys and node ids). Keys come from <data>/validator.key.
+        #[arg(long)]
+        network: Option<String>,
         #[arg(long)]
         port: u16,
         #[arg(long)]
@@ -77,9 +82,11 @@ enum Cmd {
     /// and prints the committee identity that wallets pin.
     Dkg {
         #[arg(long)]
-        index: u64,
+        index: Option<u64>,
         #[arg(long)]
-        validators: u64,
+        validators: Option<u64>,
+        #[arg(long)]
+        network: Option<String>,
         #[arg(long)]
         port: u16,
         #[arg(long)]
@@ -92,6 +99,17 @@ enum Cmd {
         offline: bool,
         #[arg(long, default_value_t = 0)]
         round: u64,
+    },
+    /// Generate this validator's keys in <data> (never overwrites). Prints the public entry.
+    Keygen {
+        #[arg(long)]
+        data: String,
+    },
+    /// Assemble network.json from validators' validator.pub.json files (in validator order).
+    Network {
+        #[arg(long, default_value_t = DEFAULT_CHAIN_ID)]
+        chain_id: u64,
+        members: Vec<String>,
     },
     /// List the public development accounts (funded at genesis; never use for value).
     DevAccounts,
@@ -178,11 +196,13 @@ enum Cmd {
 fn main() {
     let cli = Cli::parse();
     let res = match cli.cmd {
-        Cmd::Node { index, validators, port, rpc_port, data, peers, link_base, offline, block_time_ms, dev_censor, dev_deprioritize } => {
-            let p2p = p2p_args(index, validators, port, peers, link_base, offline);
-            run_node(NodeArgs { p2p, rpc_port, data, block_time_ms, dev_censor, dev_deprioritize });
-            Ok(())
+        Cmd::Node { index, validators, network, port, rpc_port, data, peers, link_base, offline, block_time_ms, dev_censor, dev_deprioritize } => {
+            p2p_args(index, validators, network, &data, port, peers, link_base, offline).map(|(p2p, chain_id)| {
+                run_node(NodeArgs { p2p, chain_id, rpc_port, data, block_time_ms, dev_censor, dev_deprioritize });
+            })
         }
+        Cmd::Keygen { data } => keygen(&data),
+        Cmd::Network { chain_id, members } => assemble_network(chain_id, &members),
         Cmd::DevAccounts => {
             for (i, a) in dev_accounts(DEV_ACCOUNTS) {
                 println!("dev {i:>2}  {a}");
@@ -208,9 +228,8 @@ fn main() {
         })(),
         Cmd::Balance { address, rpc, validators, identity } => trusted(validators, identity).and_then(|set| verified_balance(&rpc, address, &set)),
         Cmd::Storage { address, slot, rpc, validators, identity } => trusted(validators, identity).and_then(|set| verified_storage(&rpc, address, slot, &set)),
-        Cmd::Dkg { index, validators, port, data, peers, link_base, offline, round } => {
-            run_dkg(p2p_args(index, validators, port, peers, link_base, offline), data, round);
-            Ok(())
+        Cmd::Dkg { index, validators, network, port, data, peers, link_base, offline, round } => {
+            p2p_args(index, validators, network, &data, port, peers, link_base, offline).map(|(p2p, chain_id)| run_dkg(p2p, chain_id, data, round))
         }
         Cmd::Receipt { hash, rpc } => call(&rpc, "aether_getReceipt", json!([hash])).map(|v| println!("{}", pretty(&v))),
     };
@@ -220,25 +239,78 @@ fn main() {
     }
 }
 
-fn chain_config() -> ChainConfig {
+fn chain_config(chain_id: u64) -> ChainConfig {
     ChainConfig {
-        chain_id: DEFAULT_CHAIN_ID,
+        chain_id,
         limits: GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
         alloc: dev_accounts(DEV_ACCOUNTS).into_iter().map(|(_, a)| (a, U256::from(DEV_BALANCE))).collect(),
     }
 }
 
-fn p2p_args(index: u64, n: u64, port: u16, peers: Vec<String>, link_base: Option<u16>, offline: bool) -> P2pArgs {
+/// Who we are and who the others are: from --network + <data>/validator.key,
+/// or the public devnet keys (--index/--validators).
+#[allow(clippy::too_many_arguments)]
+fn p2p_args(
+    index: Option<u64>,
+    n: Option<u64>,
+    network: Option<String>,
+    data: &str,
+    port: u16,
+    peers: Vec<String>,
+    link_base: Option<u16>,
+    offline: bool,
+) -> Result<(P2pArgs, u64), String> {
+    use aether_node::roster::{LocalKeys, NetworkFile, Roster};
+    let (roster, keys, index, chain_id) = match network {
+        Some(path) => {
+            let file = NetworkFile::load(std::path::Path::new(&path))?;
+            let roster = Roster::from_file(&file)?;
+            let keys = LocalKeys::load(std::path::Path::new(data))?;
+            let index = roster.index_of(&keys.signer.public_key()).ok_or("this machine's validator key is not in network.json")?;
+            (roster, keys, index, file.chain_id)
+        }
+        None => {
+            let (index, n) = (index.ok_or("--index (or --network)")?, n.ok_or("--validators (or --network)")?);
+            (Roster::devnet(n), LocalKeys::devnet(index), index, DEFAULT_CHAIN_ID)
+        }
+    };
     let transport = if peers.iter().any(|p| !p.is_empty()) {
         Transport::Tcp(peers)
     } else {
         Transport::Iroh { link_base: link_base.unwrap_or(20_000 + 100 * index as u16) }
     };
-    P2pArgs { index, n, port, transport, offline, max_message: MAX_BLOCK_BYTES + 1024 * 1024 }
+    let n = roster.len();
+    Ok((P2pArgs { index, n, roster, keys, port, transport, offline, max_message: MAX_BLOCK_BYTES + 1024 * 1024 }, chain_id))
+}
+
+fn keygen(data: &str) -> Result<(), String> {
+    let dir = std::path::Path::new(data);
+    let keys = aether_node::roster::LocalKeys::generate();
+    keys.save(dir)?;
+    println!("{}", serde_json::to_string_pretty(&keys.public()).expect("json"));
+    println!(
+        "secret keys in {} (mode 600); share only {}",
+        dir.join(aether_node::roster::KEY_FILE).display(),
+        dir.join(aether_node::roster::PUBLIC_FILE).display()
+    );
+    Ok(())
+}
+
+/// Combine validators' public entries (validator.pub.json files) into network.json on stdout.
+fn assemble_network(chain_id: u64, members: &[String]) -> Result<(), String> {
+    let validators = members
+        .iter()
+        .map(|p| std::fs::read(p).map_err(|e| format!("{p}: {e}")).and_then(|b| serde_json::from_slice(&b).map_err(|e| format!("{p}: {e}"))))
+        .collect::<Result<Vec<aether_node::roster::Member>, String>>()?;
+    let file = aether_node::roster::NetworkFile { chain_id, validators, identity: None, round: 0 };
+    aether_node::roster::Roster::from_file(&file)?;
+    println!("{}", serde_json::to_string_pretty(&file).expect("json"));
+    Ok(())
 }
 
 struct NodeArgs {
     p2p: P2pArgs,
+    chain_id: u64,
     rpc_port: u16,
     data: String,
     block_time_ms: u64,
@@ -248,15 +320,16 @@ struct NodeArgs {
 
 fn run_node(a: NodeArgs) {
     tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,commonware=warn".into())).init();
-    let NodeArgs { p2p, rpc_port, block_time_ms, dev_censor, dev_deprioritize, data } = a;
-    let (index, n, port) = (p2p.index, p2p.n, p2p.port);
+    let NodeArgs { p2p, chain_id, rpc_port, block_time_ms, dev_censor, dev_deprioritize, data } = a;
+    let (index, port) = (p2p.index, p2p.port);
     assert!(!p2p.offline || matches!(p2p.transport, Transport::Tcp(_)), "--offline needs --peers");
-    let signer = validator_key(index);
+    let signer = p2p.keys.signer.clone();
+    let (roster_keys, validator_set) = (p2p.roster.keys.clone(), p2p.validators());
     let peers = aether_node::p2p::peer_addresses(&p2p);
     let p2p_cfg = aether_node::p2p::config(&p2p, b"_P2P");
     let links = matches!(p2p.transport, Transport::Iroh { .. });
     let executor = cw_tokio::Runner::new(cw_tokio::Config::new().with_storage_directory(&data));
-    let cfg = chain_config();
+    let cfg = chain_config(chain_id);
 
     executor.start(async move |context| {
         // Public endpoint first: validator links and wallet RPC share it.
@@ -279,7 +352,7 @@ fn run_node(a: NodeArgs) {
         // BLS threshold certificates (one group signature per block) with a VRF
         // seed per round for leader election. Devnet shares come from a fixed
         // dealer seed; a real network derives them with a DKG.
-        let (participants, polynomial, share) = committee_keys(&data, n, &signer.public_key());
+        let (participants, polynomial, share) = committee_keys(&data, &validator_set, &signer.public_key());
         let scheme = aether_light::Scheme::signer(&aether_light::consensus_namespace(), participants, polynomial, share).expect("share matches polynomial");
         let store = aether_node::store::Store::open(&std::path::Path::new(&data).join("state.redb")).expect("open state store");
         let (chain, genesis) = Chain::open(cfg.clone(), store).expect("restore state (delete the data dir to resync)");
@@ -347,7 +420,7 @@ fn run_node(a: NodeArgs) {
             }
         });
 
-        spawn_inclusion_lists(chain.clone(), signer.clone(), index, n, cfg.chain_id, Duration::from_millis(block_time_ms), il_out, il_in);
+        spawn_inclusion_lists(chain.clone(), signer.clone(), index, roster_keys, cfg.chain_id, Duration::from_millis(block_time_ms), il_out, il_in);
 
         let rpc_state = RpcState { chain, marshal: marshal_mailbox, gossip: gossip_tx };
 
@@ -376,13 +449,13 @@ fn run_node(a: NodeArgs) {
     });
 }
 
-fn run_dkg(p2p: P2pArgs, data: String, round: u64) {
+fn run_dkg(p2p: P2pArgs, chain_id: u64, data: String, round: u64) {
     tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,commonware=warn".into())).init();
     let dir = std::path::PathBuf::from(&data);
     std::fs::create_dir_all(&dir).expect("data dir");
     let out_path = dir.join("threshold.json");
     let executor = cw_tokio::Runner::new(cw_tokio::Config::new().with_storage_directory(dir.join("dkg-runtime")));
-    let (p2p_n, dir_out) = (p2p.n, dir.clone());
+    let (mut public, dir_out) = (p2p.roster.to_file(chain_id), dir.clone());
     let result = executor.start(async move |context| {
         // Accept incoming validator links (the node's RPC is not needed here).
         let _router = aether_node::p2p::open_public(&p2p).await.map(|ep| aether_net::serve_p2p(ep, loopback(p2p.port)));
@@ -391,13 +464,15 @@ fn run_dkg(p2p: P2pArgs, data: String, round: u64) {
         let (sender, receiver) = network.register(0, Quota::per_second(NZU32!(256)));
         network.start();
         tracing::info!(index = p2p.index, n = p2p.n, round, "dkg: started");
-        aether_node::dkg::run(validator_key(p2p.index), aether_node::p2p::validators(p2p.n), round, sender, receiver, Default::default()).await
+        aether_node::dkg::run(p2p.keys.signer.clone(), p2p.validators(), round, sender, receiver, Default::default()).await
     });
     match result {
         Ok((output, share)) => {
             let file = aether_node::dkg::KeyFile::new(round, &output, &share);
             write_secret(&out_path, &serde_json::to_vec_pretty(&file).expect("key file serializes"));
-            let public = json!({ "validators": p2p_n, "round": round, "identity": file.identity });
+            // network.json now also carries the committee identity wallets pin.
+            public.identity = Some(file.identity.clone());
+            public.round = round;
             std::fs::write(dir_out.join("network.json"), serde_json::to_vec_pretty(&public).expect("json")).expect("write network.json");
             println!("committee identity: {}", file.identity);
             println!("secret share written to {} (mode 600)", out_path.display());
@@ -413,7 +488,7 @@ fn run_dkg(p2p: P2pArgs, data: String, round: u64) {
 /// present, else the devnet dealer's (insecure: the dealer knows every share).
 fn committee_keys(
     data: &str,
-    n: u64,
+    validators: &commonware_utils::ordered::Set<PublicKey>,
     me: &PublicKey,
 ) -> (
     commonware_utils::ordered::Set<PublicKey>,
@@ -423,11 +498,13 @@ fn committee_keys(
     let path = std::path::Path::new(data).join("threshold.json");
     if let Ok(bytes) = std::fs::read(&path) {
         let file: aether_node::dkg::KeyFile = serde_json::from_slice(&bytes).expect("threshold.json");
-        let (output, share) = file.decode(n as u32).expect("threshold.json decodes");
-        assert_eq!(output.players(), &aether_node::p2p::validators(n), "threshold.json is for a different validator set");
+        let (output, share) = file.decode(validators.len() as u32).expect("threshold.json decodes");
+        assert_eq!(output.players(), validators, "threshold.json is for a different validator set");
         tracing::info!(identity = %file.identity, "committee key from DKG");
         return (output.players().clone(), output.public().clone(), share);
     }
+    let n = validators.len() as u64;
+    assert_eq!(validators, &aether_node::p2p::validators(n), "no threshold.json for this network: run `aether dkg --network …` first");
     tracing::warn!("no threshold.json: using the devnet dealer's shares (every share is public knowledge)");
     let (participants, polynomial, shares) = aether_light::devnet_threshold(n);
     let share = shares.into_iter().find(|(pk, _)| pk == me).map(|(_, s)| s).expect("key is a validator");
@@ -445,13 +522,21 @@ fn write_secret(path: &std::path::Path, bytes: &[u8]) {
 /// mempool txs every block interval; verify, pool and re-gossip (once) lists
 /// from other members.
 #[allow(clippy::too_many_arguments)]
-fn spawn_inclusion_lists<S, R>(chain: Chain, key: ed25519::PrivateKey, index: u64, n: u64, chain_id: u64, period: Duration, mut out: S, mut inbox: R)
-where
+fn spawn_inclusion_lists<S, R>(
+    chain: Chain,
+    key: ed25519::PrivateKey,
+    index: u64,
+    validators: Vec<PublicKey>,
+    chain_id: u64,
+    period: Duration,
+    mut out: S,
+    mut inbox: R,
+) where
     S: commonware_p2p::Sender<PublicKey = PublicKey> + 'static,
     R: commonware_p2p::Receiver<PublicKey = PublicKey> + 'static,
 {
     use aether_node::inclusion::{committee, InclusionList};
-    let validators: Vec<PublicKey> = (1..=n).map(|i| validator_key(i).public_key()).collect();
+    let n = validators.len() as u64;
     let (send_tx, mut send_rx) = tokio::sync::mpsc::unbounded_channel::<InclusionList>();
     tokio::spawn(async move {
         while let Some(il) = send_rx.recv().await {

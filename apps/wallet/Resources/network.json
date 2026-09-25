@@ -1,5 +1,23 @@
 {
-  "identity": "ab0585f66616911866568d9940c02c46fbfdd3a55c0e23e52fe86fec32f78553472f2202a1775fc13e7e5341c0ee282d07981af9eec0dbfe7b8b3b7c5f5060c61f31f5b42a54cc13cbf5df65c5008d440583f97c6429eb1441cf1a34e6240d64",
-  "round": 0,
-  "validators": 4
+  "chain_id": 7777,
+  "validators": [
+    {
+      "key": "a4e97d52be3871328d8e9ca5993c8e7da2c055ca5a5bf275027e31a45e11e67b",
+      "node": "1802a96baeb902811d641e9429319239cfb839fff99ad7b34fb7f420ecc41c67"
+    },
+    {
+      "key": "629d0a572ff2cde89a87515eb5f59f476624c86f1811b8c42f42ca859fe344af",
+      "node": "8221981440614ec837b6409a0ca07091abf173c92aed838018bcc8401d756f42"
+    },
+    {
+      "key": "5c90a5c288ef27cf8818c49c6b54bb3fdbb323e298e98111a2d738ab8e6958fb",
+      "node": "311f0090904299fb6dfd846f5d10ab137447ca0e54d27e2e80877170aa4ce306"
+    },
+    {
+      "key": "235dcddd9a0a4a29d0a6ee5f9d002aca746b37b7dc324ebd8a4fe3cefd258c26",
+      "node": "6e903e294528fd3ce10edb05ca8b2ba8dd98c5710dd12b4d1b756beda9adee39"
+    }
+  ],
+  "identity": "a8fa951dbcbc0f1f60834aa2ef65a3eaf1b0acbad36feedfb377acfe830537b4cff106f760f028e9e1f9e1f681aaa0a8060bc783524ea22d123d3f8b1572469c7a314a46a048d4f5cff7a465d8a9ac20478d293c0612c89bfeaeb6e3112eba11",
+  "round": 0
 }

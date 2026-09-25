@@ -91,7 +91,8 @@ fn net() -> R<&'static Net> {
     static NET: std::sync::OnceLock<Result<Net, String>> = std::sync::OnceLock::new();
     NET.get_or_init(|| {
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(|e| e.to_string())?;
-        let ids = (1..=DEVNET_VALIDATORS).map(aether_net::devnet_node_id).collect();
+        let configured = NODES.lock().expect("nodes lock").clone();
+        let ids = configured.unwrap_or_else(|| (1..=DEVNET_VALIDATORS).map(aether_net::devnet_node_id).collect());
         let client = rt.block_on(aether_net::RpcClient::new(ids)).map_err(|e| e.to_string())?;
         Ok(Net { rt, client })
     })
@@ -162,6 +163,26 @@ fn anchor(height: u64, set: &ValidatorSet) -> R<VerifiedBlock> {
 }
 
 static COMMITTEE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+static NODES: std::sync::Mutex<Option<Vec<aether_net::EndpointId>>> = std::sync::Mutex::new(None);
+
+/// Configure from network.json: the validators' node ids (looked up in the
+/// Mainline DHT) and the committee identity to pin. Call before anything else.
+#[uniffi::export]
+pub fn configure_network(network_json: String) -> R<u32> {
+    let v: Value = serde_json::from_str(&network_json).map_err(|e| WalletError::Invalid(format!("network.json: {e}")))?;
+    let nodes = v["validators"]
+        .as_array()
+        .ok_or_else(|| WalletError::Invalid("network.json: validators".into()))?
+        .iter()
+        .map(|m| m["node"].as_str().unwrap_or_default().parse::<aether_net::EndpointId>().map_err(|e| WalletError::Invalid(format!("node id: {e}"))))
+        .collect::<R<Vec<_>>>()?;
+    if let Some(id) = v["identity"].as_str() {
+        set_committee_identity(id.to_string())?;
+    }
+    let n = nodes.len() as u32;
+    *NODES.lock().expect("nodes lock") = Some(nodes);
+    Ok(n)
+}
 
 /// Pin the committee identity (hex, printed by `aether dkg`) that finality
 /// certificates must verify under. Without it, the devnet dealer's identity.

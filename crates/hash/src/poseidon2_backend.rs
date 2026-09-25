@@ -85,7 +85,6 @@ impl Hasher for Poseidon2KoalaBear {
     }
 
     fn is_canonical(&self, d: &Digest) -> bool {
-        d.chunks_exact(4)
-            .all(|c| u32::from_le_bytes(c.try_into().expect("4 bytes")) < KOALABEAR_P)
+        d.as_chunks::<4>().0.iter().all(|c| u32::from_le_bytes(*c) < KOALABEAR_P)
     }
 }

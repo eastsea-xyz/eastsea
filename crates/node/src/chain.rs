@@ -1,0 +1,264 @@
+//! Chain state shared by the consensus application, RPC and gossip.
+//!
+//! Every verified or proposed block's post-state is kept by digest so
+//! competing forks can be validated; the finalized head is what RPC serves.
+
+use crate::block::{Block, Payload, PublicKey};
+use aether_crypto::{address_of, PublicKey as AetherPk};
+use aether_execution::{execute_block, BlockContext, Receipt, WorldState};
+use aether_types::{Address, GasVector, SignerScheme, TxEnvelope, TxHash, B256, U256};
+use commonware_consensus::Heightable;
+use commonware_cryptography::{sha256::Digest, Digestible};
+use serde::Serialize;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex};
+
+pub const MAX_TXS_PER_BLOCK: usize = 2_000;
+pub const MAX_MEMPOOL: usize = 50_000;
+
+#[derive(Clone, Debug)]
+pub struct ChainConfig {
+    pub chain_id: u64,
+    pub limits: GasVector,
+    pub alloc: Vec<(Address, U256)>,
+}
+
+impl ChainConfig {
+    pub fn genesis_state(&self) -> WorldState {
+        let mut s = WorldState::default();
+        for (a, v) in &self.alloc {
+            s.set_balance(*a, *v).expect("genesis balance fits u128");
+        }
+        s
+    }
+}
+
+/// Deterministic public development keys (like hardhat/anvil accounts).
+/// NEVER use these for anything of value.
+pub fn dev_seed(i: u8) -> [u8; 32] {
+    let mut s = [0u8; 32];
+    s[0] = 0xae;
+    s[31] = i;
+    s
+}
+
+pub fn dev_accounts(n: u8) -> Vec<(u8, Address)> {
+    (1..=n)
+        .map(|i| {
+            let s = aether_crypto::P256Signer::from_seed(&dev_seed(i)).expect("valid dev seed");
+            (i, address_of(&aether_crypto::Signer::public_key(&s)).expect("address"))
+        })
+        .collect()
+}
+
+pub fn leader_address(leader: &PublicKey) -> Address {
+    let pk = AetherPk { scheme: SignerScheme::Ed25519, bytes: leader.as_ref().to_vec() };
+    address_of(&pk).expect("ed25519 address")
+}
+
+#[derive(Clone)]
+pub struct Executed {
+    pub height: u64,
+    pub digest: Digest,
+    pub timestamp: u64,
+    pub state: WorldState,
+    pub receipts: Vec<Receipt>,
+    pub tx_hashes: Vec<TxHash>,
+    pub gas: GasVector,
+    pub proposer: Address,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct BlockSummary {
+    pub height: u64,
+    pub hash: String,
+    pub parent: String,
+    pub timestamp_ms: u64,
+    pub proposer: Address,
+    /// State root after executing this block (committed in the child header).
+    pub state_root: B256,
+    pub parent_state_root: B256,
+    pub txs: Vec<TxHash>,
+    pub gas_used: u64,
+    pub prove_gas: u64,
+}
+
+pub struct Inner {
+    pub cfg: ChainConfig,
+    executed: HashMap<Digest, Arc<Executed>>,
+    pub finalized: Arc<Executed>,
+    pub blocks: BTreeMap<u64, BlockSummary>,
+    pub receipts: HashMap<TxHash, (u64, Receipt)>,
+    pub mempool: BTreeMap<TxHash, TxEnvelope>,
+}
+
+#[derive(Clone)]
+pub struct Chain(pub Arc<Mutex<Inner>>);
+
+#[derive(Debug)]
+pub enum ChainError {
+    BadPayload,
+    ParentRootMismatch,
+    Exec(String),
+    BalMismatch,
+    GasMismatch,
+    UnknownParent,
+}
+
+impl Chain {
+    pub fn new(cfg: ChainConfig) -> (Self, Block) {
+        let state = cfg.genesis_state();
+        let genesis = Block::genesis(cfg.chain_id, state.root());
+        let exec = Arc::new(Executed {
+            height: 0,
+            digest: genesis.digest(),
+            timestamp: 0,
+            state,
+            receipts: vec![],
+            tx_hashes: vec![],
+            gas: GasVector::default(),
+            proposer: Address::ZERO,
+        });
+        let mut executed = HashMap::new();
+        executed.insert(genesis.digest(), exec.clone());
+        let mut blocks = BTreeMap::new();
+        blocks.insert(0, summary(&genesis, &exec, B256::ZERO));
+        let inner = Inner { cfg, executed, finalized: exec, blocks, receipts: HashMap::new(), mempool: BTreeMap::new() };
+        (Chain(Arc::new(Mutex::new(inner))), genesis)
+    }
+
+    pub fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
+        self.0.lock().expect("chain lock poisoned")
+    }
+
+    pub fn get(&self, d: &Digest) -> Option<Arc<Executed>> {
+        self.lock().executed.get(d).cloned()
+    }
+
+    pub fn cfg(&self) -> ChainConfig {
+        self.lock().cfg.clone()
+    }
+
+    pub fn block_context(cfg: &ChainConfig, block: &Block) -> BlockContext {
+        BlockContext {
+            chain_id: cfg.chain_id,
+            number: block.height().get(),
+            timestamp: block.timestamp / 1000,
+            beneficiary: leader_address(&block.context.leader),
+            limits: cfg.limits,
+        }
+    }
+
+    /// Validate and execute `block` on top of `parent`, remembering the result.
+    pub fn execute(&self, block: &Block, parent: &Executed) -> Result<Arc<Executed>, ChainError> {
+        if let Some(done) = self.get(&block.digest()) {
+            return Ok(done);
+        }
+        let payload = block.payload().ok_or(ChainError::BadPayload)?;
+        if payload.parent_state_root != parent.state.root() {
+            return Err(ChainError::ParentRootMismatch);
+        }
+        if payload.txs.len() > MAX_TXS_PER_BLOCK {
+            return Err(ChainError::BadPayload);
+        }
+        let cfg = self.cfg();
+        let ctx = Self::block_context(&cfg, block);
+        let out = execute_block(&parent.state, &ctx, &payload.txs).map_err(|e| ChainError::Exec(format!("{e:?}")))?;
+        if out.bal != payload.bal {
+            return Err(ChainError::BalMismatch);
+        }
+        if out.gas != payload.gas {
+            return Err(ChainError::GasMismatch);
+        }
+        Ok(self.remember(block, out.state, out.receipts, payload.txs.iter().map(aether_execution::tx_hash).collect(), out.gas))
+    }
+
+    pub fn remember(&self, block: &Block, state: WorldState, receipts: Vec<Receipt>, tx_hashes: Vec<TxHash>, gas: GasVector) -> Arc<Executed> {
+        let exec = Arc::new(Executed {
+            height: block.height().get(),
+            digest: block.digest(),
+            timestamp: block.timestamp,
+            state,
+            receipts,
+            tx_hashes,
+            gas,
+            proposer: leader_address(&block.context.leader),
+        });
+        self.lock().executed.insert(block.digest(), exec.clone());
+        exec
+    }
+
+    /// Candidate txs for a proposal: lowest nonce first per sender, then by hash.
+    pub fn mempool_candidates(&self) -> Vec<TxEnvelope> {
+        let g = self.lock();
+        let mut txs: Vec<TxEnvelope> = g.mempool.values().cloned().collect();
+        txs.sort_by_key(|t| (t.header.nonce, t.header.sender));
+        txs.truncate(MAX_TXS_PER_BLOCK);
+        txs
+    }
+
+    /// Returns false if the pool is full or the tx is already known.
+    pub fn add_to_mempool(&self, tx: TxEnvelope) -> bool {
+        let h = aether_execution::tx_hash(&tx);
+        let mut g = self.lock();
+        if g.mempool.len() >= MAX_MEMPOOL || g.receipts.contains_key(&h) || g.mempool.contains_key(&h) {
+            return false;
+        }
+        if tx.header.nonce < g.finalized.state.nonce(&tx.header.sender) {
+            return false;
+        }
+        g.mempool.insert(h, tx);
+        true
+    }
+
+    /// Adopt a finalized block (delivered in order by marshal).
+    pub fn finalize(&self, block: &Block) -> Result<(), ChainError> {
+        let exec = match self.get(&block.digest()) {
+            Some(e) => e,
+            None => {
+                // Not verified locally (e.g. backfilled): execute on the finalized parent.
+                let parent = self.lock().finalized.clone();
+                if parent.digest != block.parent {
+                    return Err(ChainError::UnknownParent);
+                }
+                self.execute(block, &parent)?
+            }
+        };
+        let payload = block.payload().ok_or(ChainError::BadPayload)?;
+        let mut g = self.lock();
+        if exec.height <= g.finalized.height && exec.height != 0 {
+            return Ok(()); // at-least-once delivery
+        }
+        for (h, r) in exec.tx_hashes.iter().zip(&exec.receipts) {
+            g.receipts.insert(*h, (exec.height, r.clone()));
+            g.mempool.remove(h);
+        }
+        let state = exec.state.clone();
+        g.mempool.retain(|_, tx| tx.header.nonce >= state.nonce(&tx.header.sender));
+        g.blocks.insert(exec.height, summary(block, &exec, payload.parent_state_root));
+        g.finalized = exec.clone();
+        let floor = exec.height.saturating_sub(64);
+        g.executed.retain(|_, e| e.height >= floor);
+        Ok(())
+    }
+}
+
+fn summary(block: &Block, e: &Executed, parent_state_root: B256) -> BlockSummary {
+    BlockSummary {
+        height: e.height,
+        hash: format!("{}", block.digest()),
+        parent: format!("{}", block.parent),
+        timestamp_ms: block.timestamp,
+        proposer: e.proposer,
+        state_root: e.state.root(),
+        parent_state_root,
+        txs: e.tx_hashes.clone(),
+        gas_used: e.gas.exec,
+        prove_gas: e.gas.prove,
+    }
+}
+
+pub fn build_payload(parent: &Executed, ctx: &BlockContext, candidates: Vec<TxEnvelope>) -> (Payload, aether_execution::BlockOutcome) {
+    let (txs, out) = aether_execution::build_block(&parent.state, ctx, candidates);
+    (Payload { parent_state_root: parent.state.root(), txs, bal: out.bal.clone(), gas: out.gas }, out)
+}

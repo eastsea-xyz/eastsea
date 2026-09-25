@@ -1,0 +1,269 @@
+//! Engine wiring: buffered block broadcast + marshal (ordered finalized delivery,
+//! backfill, disk archives) + simplex consensus.
+//! Adapted from alto-chain `engine.rs` (MIT OR Apache-2.0, commonwarexyz/alto).
+
+use crate::application::Application;
+use crate::block::{Block, PublicKey, EPOCH};
+use commonware_broadcast::buffered;
+use commonware_consensus::{
+    marshal::{
+        self,
+        core::{Actor as MarshalActor, Mailbox as MarshalMailbox},
+        resolver::handler,
+        standard::{Deferred, Standard},
+    },
+    simplex::{self, elector::RoundRobin, scheme::ed25519::Scheme, Engine as Consensus},
+    types::{Epoch, FixedEpocher, ViewDelta},
+};
+use commonware_cryptography::{certificate::ConstantProvider, sha256::Digest, Digestible as _, Sha256};
+use commonware_p2p::{Blocker, Provider, Receiver, Sender};
+use commonware_parallel::Sequential;
+use commonware_resolver::TargetedResolver;
+use commonware_runtime::{
+    buffer::paged::{page_size, CacheRef},
+    spawn_cell, BufferPooler, Clock, ContextCell, Handle, Metrics, Spawner, Storage,
+};
+use commonware_storage::archive::{immutable, Archive as _, Identifier};
+use commonware_utils::{NZUsize, NZU64};
+use futures::future::try_join_all;
+use governor::clock::Clock as GClock;
+use rand::{CryptoRng, Rng};
+use std::num::{NonZero, NonZeroUsize};
+use std::time::Duration;
+use tracing::{error, warn};
+
+type Activity = simplex::types::Activity<Scheme, Digest>;
+type Finalization = simplex::types::Finalization<Scheme, Digest>;
+type Marshaled<E> = Deferred<E, Scheme, Application, Block, FixedEpocher>;
+
+const EPOCH_LENGTH: NonZero<u64> = NZU64!(u64::MAX);
+const SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER: u64 = 10;
+const PRUNABLE_ITEMS_PER_SECTION: NonZero<u64> = NZU64!(4_096);
+const IMMUTABLE_ITEMS_PER_SECTION: NonZero<u64> = NZU64!(262_144);
+const FREEZER_TABLE_INITIAL_SIZE: u32 = 2u32.pow(14);
+const FREEZER_TABLE_RESIZE_FREQUENCY: u8 = 4;
+const FREEZER_TABLE_RESIZE_CHUNK_SIZE: u32 = 2u32.pow(16);
+const FREEZER_JOURNAL_TARGET_SIZE: u64 = 1024 * 1024 * 1024;
+const FREEZER_JOURNAL_COMPRESSION: Option<u8> = Some(3);
+const REPLAY_BUFFER: NonZero<usize> = NZUsize!(8 * 1024 * 1024);
+const WRITE_BUFFER: NonZero<usize> = NZUsize!(1024 * 1024);
+const PAGE_CACHE_PAGE_SIZE: NonZero<u16> = page_size(4_096);
+const PAGE_CACHE_CAPACITY: NonZero<usize> = NZUsize!(8_192);
+const MAX_REPAIR: NonZero<usize> = NZUsize!(20);
+const MAX_PENDING_ACKS: NonZero<usize> = NZUsize!(16);
+/// Upper bound on an encoded block (txs + BAL).
+pub const MAX_BLOCK_BYTES: u32 = 8 * 1024 * 1024;
+
+pub struct Config<B: Blocker<PublicKey = PublicKey>, P: Provider<PublicKey = PublicKey>> {
+    pub blocker: B,
+    pub provider: P,
+    pub partition_prefix: String,
+    pub me: PublicKey,
+    pub scheme: Scheme,
+    pub genesis: Block,
+    pub application: Application,
+    pub mailbox_size: usize,
+    pub leader_timeout: Duration,
+    pub certification_timeout: Duration,
+    pub nullify_retry: Duration,
+    pub fetch_timeout: Duration,
+    pub activity_timeout: ViewDelta,
+    pub skip_timeout: Duration,
+}
+
+#[allow(clippy::type_complexity)]
+pub struct Engine<E, B, P>
+where
+    E: BufferPooler + Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics,
+    B: Blocker<PublicKey = PublicKey>,
+    P: Provider<PublicKey = PublicKey>,
+{
+    context: ContextCell<E>,
+    buffer: buffered::Engine<E, PublicKey, Block, P>,
+    buffer_mailbox: buffered::Mailbox<PublicKey, Block>,
+    marshal: MarshalActor<
+        E,
+        Standard<Block>,
+        ConstantProvider<Scheme, Epoch>,
+        immutable::Archive<E, Digest, Finalization>,
+        immutable::Archive<E, Digest, Block>,
+        FixedEpocher,
+        Sequential,
+    >,
+    marshaled: Marshaled<E>,
+    consensus: Consensus<E, Scheme, RoundRobin<Sha256>, B, Digest, Marshaled<E>, Marshaled<E>, MarshalMailbox<Scheme, Standard<Block>>, Sequential>,
+}
+
+fn archive_cfg<C>(prefix: &str, name: &str, page_cache: CacheRef, codec_config: C) -> immutable::Config<C> {
+    immutable::Config {
+        metadata_partition: format!("{prefix}-{name}-metadata"),
+        freezer_table_partition: format!("{prefix}-{name}-freezer-table"),
+        freezer_table_initial_size: FREEZER_TABLE_INITIAL_SIZE,
+        freezer_table_resize_frequency: FREEZER_TABLE_RESIZE_FREQUENCY,
+        freezer_table_resize_chunk_size: FREEZER_TABLE_RESIZE_CHUNK_SIZE,
+        freezer_key_partition: format!("{prefix}-{name}-freezer-key-journal"),
+        freezer_key_page_cache: page_cache,
+        freezer_key_write_buffer: WRITE_BUFFER,
+        freezer_value_partition: format!("{prefix}-{name}-freezer-value-journal"),
+        freezer_value_write_buffer: WRITE_BUFFER,
+        freezer_value_target_size: FREEZER_JOURNAL_TARGET_SIZE,
+        freezer_value_compression: FREEZER_JOURNAL_COMPRESSION,
+        ordinal_partition: format!("{prefix}-{name}-ordinal"),
+        ordinal_write_buffer: WRITE_BUFFER,
+        items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
+        codec_config,
+        replay_buffer: REPLAY_BUFFER,
+    }
+}
+
+impl<E, B, P> Engine<E, B, P>
+where
+    E: BufferPooler + Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics,
+    B: Blocker<PublicKey = PublicKey>,
+    P: Provider<PublicKey = PublicKey>,
+{
+    pub async fn new(context: E, cfg: Config<B, P>) -> Self {
+        let mailbox_size = NonZeroUsize::new(cfg.mailbox_size).expect("mailbox size must be non-zero");
+        let (buffer, buffer_mailbox) = buffered::Engine::new(
+            context.child("buffer"),
+            buffered::Config {
+                public_key: cfg.me,
+                mailbox_size,
+                deque_size: 10,
+                priority: true,
+                codec_config: Block::codec_config(MAX_BLOCK_BYTES),
+                peer_provider: cfg.provider,
+            },
+        );
+        let page_cache = CacheRef::from_pooler(&context, PAGE_CACHE_PAGE_SIZE, PAGE_CACHE_CAPACITY);
+        let prefix = cfg.partition_prefix.clone();
+        let finalizations = immutable::Archive::init(
+            context.child("finalizations_by_height"),
+            archive_cfg(&prefix, "finalizations", page_cache.clone(), <Scheme as commonware_cryptography::certificate::Verifier>::certificate_codec_config_unbounded()),
+        )
+        .await
+        .expect("finalizations archive");
+        let blocks = immutable::Archive::init(
+            context.child("finalized_blocks"),
+            archive_cfg(&prefix, "blocks", page_cache.clone(), Block::codec_config(MAX_BLOCK_BYTES)),
+        )
+        .await
+        .expect("blocks archive");
+
+        // Rebuild execution state from blocks this node already finalized, so a
+        // restarted validator resumes exactly where marshal's delivery resumes.
+        let mut replayed = 0u64;
+        if let Some(last) = blocks.last_index() {
+            for h in 1..=last {
+                match blocks.get(Identifier::Index(h)).await {
+                    Ok(Some(block)) => {
+                        if let Err(e) = cfg.application.replay(&block) {
+                            warn!(height = h, ?e, "replay stopped");
+                            break;
+                        }
+                        replayed = h;
+                    }
+                    _ => break,
+                }
+            }
+        }
+        if replayed > 0 {
+            tracing::info!(height = replayed, "restored state from finalized block archive");
+        }
+
+        let scheme = cfg.scheme;
+        let epocher = FixedEpocher::new(EPOCH_LENGTH);
+        let genesis_digest = cfg.genesis.digest();
+        let (marshal, marshal_mailbox, _) = MarshalActor::init(
+            context.child("marshal"),
+            finalizations,
+            blocks,
+            marshal::Config {
+                provider: ConstantProvider::new(scheme.clone()),
+                epocher: epocher.clone(),
+                partition_prefix: prefix.clone(),
+                mailbox_size,
+                view_retention: ViewDelta::new(cfg.activity_timeout.get().saturating_mul(SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER)),
+                start: marshal::Start::Genesis(cfg.genesis),
+                prunable_items_per_section: PRUNABLE_ITEMS_PER_SECTION,
+                replay_buffer: REPLAY_BUFFER,
+                key_write_buffer: WRITE_BUFFER,
+                value_write_buffer: WRITE_BUFFER,
+                block_codec_config: Block::codec_config(MAX_BLOCK_BYTES),
+                max_repair: MAX_REPAIR,
+                max_pending_acks: MAX_PENDING_ACKS,
+                page_cache: page_cache.clone(),
+                strategy: Sequential,
+            },
+        )
+        .await;
+
+        let marshaled = Marshaled::<E>::new(context.child("marshaled"), cfg.application, marshal_mailbox.clone(), epocher);
+        let consensus = Consensus::new(
+            context.child("consensus"),
+            simplex::Config {
+                epoch: EPOCH,
+                scheme,
+                automaton: marshaled.clone(),
+                relay: marshaled.clone(),
+                reporter: marshal_mailbox.clone(),
+                track_historical_votes: false,
+                partition: format!("{prefix}-consensus"),
+                mailbox_size,
+                floor: simplex::Floor::Genesis(genesis_digest),
+                leader_timeout: cfg.leader_timeout,
+                certification_timeout: cfg.certification_timeout,
+                timeout_retry: cfg.nullify_retry,
+                fetch_timeout: cfg.fetch_timeout,
+                view_retention: cfg.activity_timeout,
+                skip: simplex::SkipPolicy::Enabled { timeout: cfg.skip_timeout, budget: simplex::SkipBudget::Participants },
+                forward: simplex::ForwardPolicy::Disabled,
+                replay_buffer: REPLAY_BUFFER,
+                write_buffer: WRITE_BUFFER,
+                blocker: cfg.blocker,
+                page_cache,
+                elector: RoundRobin::<Sha256>::default(),
+                strategy: Sequential,
+            },
+        );
+        let _ = std::marker::PhantomData::<Activity>;
+        Self { context: ContextCell::new(context), buffer, buffer_mailbox, marshal, marshaled, consensus }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn start(
+        mut self,
+        pending: (impl Sender<PublicKey = PublicKey>, impl Receiver<PublicKey = PublicKey>),
+        recovered: (impl Sender<PublicKey = PublicKey>, impl Receiver<PublicKey = PublicKey>),
+        resolver: (impl Sender<PublicKey = PublicKey>, impl Receiver<PublicKey = PublicKey>),
+        broadcast: (impl Sender<PublicKey = PublicKey>, impl Receiver<PublicKey = PublicKey>),
+        marshal: (
+            handler::Receiver<Digest>,
+            impl TargetedResolver<Key = handler::Key<Digest>, Subscriber = handler::Annotation, PublicKey = PublicKey>,
+        ),
+    ) -> Handle<()> {
+        spawn_cell!(self.context, self.run(pending, recovered, resolver, broadcast, marshal))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run(
+        self,
+        pending: (impl Sender<PublicKey = PublicKey>, impl Receiver<PublicKey = PublicKey>),
+        recovered: (impl Sender<PublicKey = PublicKey>, impl Receiver<PublicKey = PublicKey>),
+        resolver: (impl Sender<PublicKey = PublicKey>, impl Receiver<PublicKey = PublicKey>),
+        broadcast: (impl Sender<PublicKey = PublicKey>, impl Receiver<PublicKey = PublicKey>),
+        marshal: (
+            handler::Receiver<Digest>,
+            impl TargetedResolver<Key = handler::Key<Digest>, Subscriber = handler::Annotation, PublicKey = PublicKey>,
+        ),
+    ) {
+        let buffer_handle = self.buffer.start(broadcast);
+        let marshal_handle = self.marshal.start(self.marshaled, self.buffer_mailbox, marshal);
+        let consensus_handle = self.consensus.start(pending, recovered, resolver);
+        if let Err(e) = try_join_all(vec![buffer_handle, marshal_handle, consensus_handle]).await {
+            error!(?e, "engine failed");
+        } else {
+            warn!("engine stopped");
+        }
+    }
+}

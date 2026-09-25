@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 aether-hash.workspace = true
 alloy-primitives.workspace = true
+serde.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

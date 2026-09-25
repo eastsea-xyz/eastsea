@@ -93,7 +93,7 @@ pub struct BinaryTree<H: Hasher> {
 }
 
 /// Proof that `key` holds `value` (Some) or is absent (None) under a root.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Proof {
     pub key: TreeKey,
     pub value: Option<Value>,
@@ -102,7 +102,7 @@ pub struct Proof {
     pub bottom: Bottom,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Bottom {
     /// The key's stem exists; 8 sibling hashes inside its 256-leaf subtree, leaf up.
     Stem { subtree_siblings: [Digest; SUBTREE_DEPTH] },

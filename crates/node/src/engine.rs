@@ -5,6 +5,7 @@
 use crate::application::Application;
 use crate::block::{Block, PublicKey, EPOCH};
 use commonware_broadcast::buffered;
+pub use commonware_consensus::marshal::core::Mailbox as MarshalMailboxOf;
 use commonware_consensus::{
     marshal::{
         self,
@@ -34,7 +35,7 @@ use tracing::{error, warn};
 
 type Activity = simplex::types::Activity<Scheme, Digest>;
 type Finalization = simplex::types::Finalization<Scheme, Digest>;
-type Marshaled<E> = Deferred<E, Scheme, Application, Block, FixedEpocher>;
+pub type Marshaled<E> = Deferred<E, Scheme, Application, Block, FixedEpocher>;
 
 const EPOCH_LENGTH: NonZero<u64> = NZU64!(u64::MAX);
 const SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER: u64 = 10;
@@ -51,8 +52,7 @@ const PAGE_CACHE_PAGE_SIZE: NonZero<u16> = page_size(4_096);
 const PAGE_CACHE_CAPACITY: NonZero<usize> = NZUsize!(8_192);
 const MAX_REPAIR: NonZero<usize> = NZUsize!(20);
 const MAX_PENDING_ACKS: NonZero<usize> = NZUsize!(16);
-/// Upper bound on an encoded block (txs + BAL).
-pub const MAX_BLOCK_BYTES: u32 = 8 * 1024 * 1024;
+pub use aether_light::MAX_BLOCK_BYTES;
 
 pub struct Config<B: Blocker<PublicKey = PublicKey>, P: Provider<PublicKey = PublicKey>> {
     pub blocker: B,
@@ -91,6 +91,8 @@ where
         Sequential,
     >,
     marshaled: Marshaled<E>,
+    /// Handle for reading finalized blocks and certificates (served over RPC).
+    pub mailbox: MarshalMailbox<Scheme, Standard<Block>>,
     consensus: Consensus<E, Scheme, RoundRobin<Sha256>, B, Digest, Marshaled<E>, Marshaled<E>, MarshalMailbox<Scheme, Standard<Block>>, Sequential>,
 }
 
@@ -227,7 +229,7 @@ where
             },
         );
         let _ = std::marker::PhantomData::<Activity>;
-        Self { context: ContextCell::new(context), buffer, buffer_mailbox, marshal, marshaled, consensus }
+        Self { context: ContextCell::new(context), buffer, buffer_mailbox, marshal, marshaled, mailbox: marshal_mailbox, consensus }
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -84,12 +84,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "aether-light"
+version = "0.2.0"
+dependencies = [
+ "aether-hash",
+ "aether-state",
+ "aether-types",
+ "bytes",
+ "commonware-codec",
+ "commonware-consensus",
+ "commonware-cryptography",
+ "commonware-parallel",
+ "commonware-utils",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "aether-node"
 version = "0.2.0"
 dependencies = [
  "aether-crypto",
  "aether-execution",
  "aether-hash",
+ "aether-light",
  "aether-state",
  "aether-types",
  "alloy-primitives",

@@ -13,9 +13,16 @@ use serde_json::{json, Value};
 use std::net::SocketAddr;
 use tokio::sync::mpsc;
 
+pub type Marshal = commonware_consensus::marshal::core::Mailbox<
+    commonware_consensus::simplex::scheme::ed25519::Scheme,
+    commonware_consensus::marshal::standard::Standard<crate::block::Block>,
+>;
+
 #[derive(Clone)]
 pub struct RpcState {
     pub chain: Chain,
+    /// Source of finalized blocks and certificates for light clients.
+    pub marshal: Marshal,
     /// Accepted txs are forwarded here for p2p gossip.
     pub gossip: mpsc::UnboundedSender<TxEnvelope>,
 }
@@ -30,7 +37,7 @@ async fn handle(State(st): State<RpcState>, Json(req): Json<Value>) -> Json<Valu
     let id = req.get("id").cloned().unwrap_or(Value::Null);
     let method = req.get("method").and_then(Value::as_str).unwrap_or_default().to_string();
     let params = req.get("params").cloned().unwrap_or(Value::Array(vec![]));
-    let result = dispatch(&st, &method, &params);
+    let result = if method == "aether_getFinalized" { finalized(&st, &params).await } else { dispatch(&st, &method, &params) };
     Json(match result {
         Ok(v) => json!({ "jsonrpc": "2.0", "id": id, "result": v }),
         Err((code, msg)) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": msg } }),
@@ -38,6 +45,22 @@ async fn handle(State(st): State<RpcState>, Json(req): Json<Value>) -> Json<Valu
 }
 
 type RpcResult = Result<Value, (i64, String)>;
+
+/// Codec bytes of finalized block `h` and its finalization certificate.
+/// Light clients verify both themselves; nothing here needs to be trusted.
+async fn finalized(st: &RpcState, p: &Value) -> RpcResult {
+    use commonware_codec::Encode;
+    use commonware_consensus::types::Height;
+    let h: u64 = param(p, 0)?;
+    let (Some(block), Some(fin)) = (st.marshal.get_block(Height::new(h)).await, st.marshal.get_finalization(Height::new(h)).await) else {
+        return Ok(Value::Null);
+    };
+    Ok(json!({
+        "height": h,
+        "block": aether_light::to_hex(&block.encode()),
+        "finalization": aether_light::to_hex(&fin.encode()),
+    }))
+}
 
 fn param<T: serde::de::DeserializeOwned>(p: &Value, i: usize) -> Result<T, (i64, String)> {
     let v = p.get(i).cloned().ok_or((-32602, format!("missing param {i}")))?;

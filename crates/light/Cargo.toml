@@ -1,0 +1,23 @@
+[package]
+name = "aether-light"
+description = "Light client: verify finality certificates and state proofs without trusting an RPC server"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+aether-types.workspace = true
+aether-hash.workspace = true
+aether-state.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+commonware-codec = "=2026.9.0"
+commonware-consensus = "=2026.9.0"
+commonware-cryptography = "=2026.9.0"
+commonware-parallel = "=2026.9.0"
+commonware-utils = "=2026.9.0"
+bytes = "1.7"
+
+[dev-dependencies]
+serde_json.workspace = true

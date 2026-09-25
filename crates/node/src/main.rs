@@ -12,9 +12,8 @@ use aether_node::block::PublicKey;
 use aether_node::chain::{dev_accounts, dev_seed, Chain, ChainConfig};
 use aether_node::engine::{self, MAX_BLOCK_BYTES};
 use aether_node::rpc::{self, RpcState};
-use aether_state::layout::BasicData;
 use aether_state::Proof;
-use aether_types::{Address, Bytes, GasVector, TxEnvelope, TxHash, B256, U256};
+use aether_types::{Address, Bytes, GasVector, TxEnvelope, TxHash, U256};
 use clap::{Parser, Subcommand};
 use commonware_consensus::{marshal, simplex::scheme::ed25519::Scheme, types::ViewDelta};
 use commonware_cryptography::{ed25519, Signer as _};
@@ -25,7 +24,7 @@ use serde_json::{json, Value};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
-const NAMESPACE: &[u8] = b"_AETHER_DEVNET_V1";
+use aether_light::NAMESPACE;
 const DEFAULT_CHAIN_ID: u64 = 7_777;
 const DEV_ACCOUNTS: u8 = 10;
 const DEV_BALANCE: u128 = 1_000_000 * 10u128.pow(18);
@@ -113,6 +112,9 @@ enum Cmd {
         address: Address,
         #[arg(long, default_value = "http://127.0.0.1:8545")]
         rpc: String,
+        /// Size of the trusted devnet validator set.
+        #[arg(long, default_value_t = 4)]
+        validators: u64,
     },
     /// Contract storage slot, verified locally with a proof.
     Storage {
@@ -120,6 +122,8 @@ enum Cmd {
         slot: U256,
         #[arg(long, default_value = "http://127.0.0.1:8545")]
         rpc: String,
+        #[arg(long, default_value_t = 4)]
+        validators: u64,
     },
     /// Transaction receipt.
     Receipt {
@@ -159,8 +163,8 @@ fn main() {
             let input = Bytes::from(hex::decode(data.trim_start_matches("0x")).map_err(|e| e.to_string())?);
             submit(&rpc, from_dev, None, EvmCall { to: Some(to), value: U256::ZERO, input, gas_limit: 1_000_000 }, wait).map(|_| ())
         })(),
-        Cmd::Balance { address, rpc } => verified_balance(&rpc, address),
-        Cmd::Storage { address, slot, rpc } => verified_storage(&rpc, address, slot),
+        Cmd::Balance { address, rpc, validators } => verified_balance(&rpc, address, validators),
+        Cmd::Storage { address, slot, rpc, validators } => verified_storage(&rpc, address, slot, validators),
         Cmd::Receipt { hash, rpc } => call(&rpc, "aether_getReceipt", json!([hash])).map(|v| println!("{}", pretty(&v))),
     };
     if let Err(e) = res {
@@ -178,7 +182,7 @@ fn chain_config() -> ChainConfig {
 }
 
 fn validator_key(i: u64) -> ed25519::PrivateKey {
-    ed25519::PrivateKey::from_seed(i)
+    aether_light::devnet_validator_key(i)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -260,6 +264,7 @@ fn run_node(index: u64, n: u64, port: u16, rpc_port: u16, data: String, bootstra
             },
         )
         .await;
+        let marshal_mailbox = engine.mailbox.clone();
         engine.start(pending, recovered, resolver, broadcast, marshal_resolver);
         network.start();
 
@@ -284,7 +289,7 @@ fn run_node(index: u64, n: u64, port: u16, rpc_port: u16, data: String, bootstra
 
         let rpc_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), rpc_port);
         tracing::info!(%rpc_addr, "rpc listening");
-        if let Err(e) = rpc::serve(rpc_addr, RpcState { chain, gossip: gossip_tx }).await {
+        if let Err(e) = rpc::serve(rpc_addr, RpcState { chain, marshal: marshal_mailbox, gossip: gossip_tx }).await {
             tracing::error!(?e, "rpc server stopped");
         }
     });
@@ -345,20 +350,28 @@ fn submit(rpc: &str, dev: u8, nonce: Option<u64>, c: EvmCall, wait: bool) -> Res
     Err("timed out waiting for finalization".into())
 }
 
-fn verify_proof(v: &Value) -> Result<(Proof, B256, u64), String> {
-    let proof: Proof = serde_json::from_value(v["proof"].clone()).map_err(|e| e.to_string())?;
-    let root: B256 = serde_json::from_value(v["state_root"].clone()).map_err(|e| e.to_string())?;
-    let height = v["height"].as_u64().unwrap_or_default();
-    proof
-        .verify(&aether_execution::ChainHasher::new(), &root.0)
-        .map_err(|e| format!("PROOF REJECTED: {e:?} — do not trust this server"))?;
-    Ok((proof, root, height))
+/// Fetch the finalized child block H+1 that commits to the state root after H,
+/// and verify its certificate against the validator set.
+fn certified_anchor(rpc: &str, height: u64, validators: u64) -> Result<aether_light::VerifiedBlock, String> {
+    let set = aether_light::ValidatorSet::devnet(validators);
+    for _ in 0..40 {
+        let v = call(rpc, "aether_getFinalized", json!([height + 1]))?;
+        if !v.is_null() {
+            let block = aether_light::from_hex(v["block"].as_str().unwrap_or_default()).map_err(|e| e.to_string())?;
+            let fin = aether_light::from_hex(v["finalization"].as_str().unwrap_or_default()).map_err(|e| e.to_string())?;
+            return aether_light::verify_finalized(&set, &block, &fin).map_err(|e| format!("CERTIFICATE REJECTED: {e} — do not trust this server"));
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    Err(format!("block {} not finalized yet", height + 1))
 }
 
-fn verified_balance(rpc: &str, a: Address) -> Result<(), String> {
+fn verified_balance(rpc: &str, a: Address, validators: u64) -> Result<(), String> {
     let v = call(rpc, "aether_getAccount", json!([a]))?;
-    let (proof, root, height) = verify_proof(&v)?;
-    let data = proof.value.map(|x| BasicData::decode(&x)).unwrap_or_default();
+    let proof: Proof = serde_json::from_value(v["proof"].clone()).map_err(|e| e.to_string())?;
+    let height = v["height"].as_u64().unwrap_or_default();
+    let anchor = certified_anchor(rpc, height, validators)?;
+    let data = aether_light::verify_account(&anchor, &a, &proof).map_err(|e| format!("PROOF REJECTED: {e}"))?.unwrap_or_default();
     let claimed: U256 = serde_json::from_value(v["balance"].clone()).map_err(|e| e.to_string())?;
     if U256::from(data.balance) != claimed {
         return Err(format!("server claimed {claimed} but the proof says {}", data.balance));
@@ -366,16 +379,20 @@ fn verified_balance(rpc: &str, a: Address) -> Result<(), String> {
     println!("address   {a}");
     println!("balance   {} wei", data.balance);
     println!("nonce     {}", data.nonce);
-    println!("verified  ✓ EIP-7864 proof ({} path nodes) against state root {root} at height {height}", proof.stem_path.len());
+    println!("verified  ✓ finality certificate of block {} checked against {} validator keys", anchor.height, validators);
+    println!("          ✓ it commits state root {} (after block {height})", anchor.parent_state_root);
+    println!("          ✓ EIP-7864 proof for this address verifies under that root");
     Ok(())
 }
 
-fn verified_storage(rpc: &str, a: Address, slot: U256) -> Result<(), String> {
+fn verified_storage(rpc: &str, a: Address, slot: U256, validators: u64) -> Result<(), String> {
     let v = call(rpc, "aether_getStorage", json!([a, slot]))?;
-    let (proof, root, height) = verify_proof(&v)?;
-    let value = proof.value.map(U256::from_be_bytes).unwrap_or_default();
+    let proof: Proof = serde_json::from_value(v["proof"].clone()).map_err(|e| e.to_string())?;
+    let height = v["height"].as_u64().unwrap_or_default();
+    let anchor = certified_anchor(rpc, height, validators)?;
+    let value = aether_light::verify_storage(&anchor, &a, slot, &proof).map_err(|e| format!("PROOF REJECTED: {e}"))?;
     println!("{a}[{slot}] = {value}");
-    println!("verified  ✓ proof against state root {root} at height {height}");
+    println!("verified  ✓ finality certificate of block {} + proof under committed root {}", anchor.height, anchor.parent_state_root);
     Ok(())
 }
 

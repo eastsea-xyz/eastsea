@@ -16,6 +16,7 @@ aether-hash.workspace = true
 aether-crypto.workspace = true
 aether-state.workspace = true
 aether-execution.workspace = true
+aether-light.workspace = true
 alloy-primitives.workspace = true
 serde.workspace = true
 serde_json.workspace = true

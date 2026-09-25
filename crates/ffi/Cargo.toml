@@ -1,0 +1,32 @@
+[package]
+name = "aether-ffi"
+description = "Wallet core exposed to Swift via UniFFI: light-client reads, tx preparation, Secure Enclave signature submission"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["staticlib", "cdylib", "lib"]
+name = "aether_ffi"
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "uniffi-bindgen/main.rs"
+
+[dependencies]
+aether-types.workspace = true
+aether-crypto.workspace = true
+aether-execution.workspace = true
+aether-light.workspace = true
+aether-state.workspace = true
+alloy-primitives.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+p256 = { version = "=0.14.0", features = ["ecdsa"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "blocking"] }
+thiserror.workspace = true
+uniffi = { version = "=0.32.2", features = ["cli"] }
+
+[dev-dependencies]
+sha2 = "0.11"

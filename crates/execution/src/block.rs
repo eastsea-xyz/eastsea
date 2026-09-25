@@ -3,16 +3,20 @@
 //! `build_block` (proposer) executes candidates in order and keeps only valid
 //! ones; `execute_block` (validator) re-executes a proposed block and fails on
 //! any invalid tx. Both produce the canonical BAL from revm's touched state.
-//! Execution is sequential here; the BAL-driven parallel scheduler replaces the
-//! loop without changing outputs (checked by differential tests).
+//! Txs are first executed speculatively in parallel against the pre-state and
+//! then committed in block order; a tx whose reads overlap earlier writes is
+//! re-executed (see `parallel.rs`). Outputs equal sequential execution
+//! (checked by differential tests).
 
+use crate::parallel::Scheduler;
 use crate::tx::{tx_hash, validate_stateless, EvmCall};
 use crate::world::{StateError, WorldState};
 use aether_types::{Address, BalBuilder, BlockAccessList, Bytes, GasVector, TxEnvelope, TxHash, B256, U256};
 use revm::context::result::{ExecutionResult, Output};
 use revm::context::TxEnv;
 use revm::database::WrapDatabaseRef;
-use revm::interpreter::{Interpreter, InterpreterTypes};
+use revm::interpreter::interpreter_types::{Jumps, StackTr};
+use revm::interpreter::{CallInputs, CallOutcome, Interpreter, InterpreterTypes};
 use revm::primitives::TxKind;
 use revm::{Context, InspectEvm, Inspector, MainBuilder, MainContext};
 use serde::{Deserialize, Serialize};
@@ -54,25 +58,64 @@ pub enum ExecError {
 
 /// Proving-cost meter: one unit per interpreted instruction (design D4).
 /// Replaced by per-opcode zkVM cycle weights once measured (spike S5).
+///
+/// Also reports whether execution looked at `watch` (the fee recipient) other
+/// than through the fee credit: then a speculative result is not reusable.
 #[derive(Default)]
 pub struct ProveGasMeter {
     pub steps: u64,
+    pub watch: Option<Address>,
+    pub watched: bool,
 }
 
-impl<CTX, INTR: InterpreterTypes> Inspector<CTX, INTR> for ProveGasMeter {
-    fn step(&mut self, _interp: &mut Interpreter<INTR>, _ctx: &mut CTX) {
+const BALANCE: u8 = 0x31;
+const EXTCODESIZE: u8 = 0x3b;
+const EXTCODECOPY: u8 = 0x3c;
+const EXTCODEHASH: u8 = 0x3f;
+const SELFDESTRUCT: u8 = 0xff;
+
+impl<CTX, INTR: InterpreterTypes> Inspector<CTX, INTR> for ProveGasMeter
+where
+    INTR::Bytecode: Jumps,
+    INTR::Stack: StackTr,
+{
+    fn step(&mut self, interp: &mut Interpreter<INTR>, _ctx: &mut CTX) {
         self.steps += 1;
+        let Some(w) = self.watch else { return };
+        if matches!(interp.bytecode.opcode(), BALANCE | EXTCODESIZE | EXTCODECOPY | EXTCODEHASH | SELFDESTRUCT) {
+            if let Some(top) = interp.stack.data().last() {
+                if Address::from_word(B256::from(top.to_be_bytes::<32>())) == w {
+                    self.watched = true;
+                }
+            }
+        }
+    }
+
+    fn call(&mut self, _ctx: &mut CTX, inputs: &mut CallInputs) -> Option<CallOutcome> {
+        if let Some(w) = self.watch {
+            if inputs.target_address == w || inputs.bytecode_address == w || inputs.caller == w {
+                self.watched = true;
+            }
+        }
+        None
     }
 }
 
-struct TxRun {
-    receipt: Receipt,
-    changes: revm::state::EvmState,
-    gas: GasVector,
+pub(crate) struct TxRun {
+    pub(crate) receipt: Receipt,
+    pub(crate) changes: revm::state::EvmState,
+    pub(crate) gas: GasVector,
+    /// Execution observed the fee recipient beyond the fee credit.
+    pub(crate) touched_beneficiary: bool,
 }
 
-fn run_tx(state: &WorldState, ctx: &BlockContext, tx: &TxEnvelope) -> Result<TxRun, String> {
-    let call: EvmCall = validate_stateless(tx, ctx.chain_id).map_err(|e| format!("{e:?}"))?;
+pub(crate) fn run_tx(state: &WorldState, ctx: &BlockContext, tx: &TxEnvelope) -> Result<TxRun, String> {
+    let call = validate_stateless(tx, ctx.chain_id).map_err(|e| format!("{e:?}"))?;
+    run_validated(state, ctx, tx, &call)
+}
+
+/// Execute a tx whose signature and payload were already checked (`call` is its decoded payload).
+pub(crate) fn run_validated(state: &WorldState, ctx: &BlockContext, tx: &TxEnvelope, call: &EvmCall) -> Result<TxRun, String> {
     let tx_env = TxEnv::builder()
         .caller(tx.header.sender)
         .nonce(tx.header.nonce)
@@ -98,9 +141,10 @@ fn run_tx(state: &WorldState, ctx: &BlockContext, tx: &TxEnvelope) -> Result<TxR
             b.basefee = 0;
             b.gas_limit = ctx.limits.exec;
         })
-        .build_mainnet_with_inspector(ProveGasMeter::default());
+        .build_mainnet_with_inspector(ProveGasMeter { watch: Some(ctx.beneficiary), ..Default::default() });
     let out = evm.inspect_tx(tx_env).map_err(|e| format!("{e:?}"))?;
     let prove_gas = evm.inspector.steps;
+    let touched_beneficiary = evm.inspector.watched || tx.header.sender == ctx.beneficiary || call.to == Some(ctx.beneficiary);
 
     let (success, gas_used, logs, output, contract_address) = match &out.result {
         ExecutionResult::Success { gas, logs, output, .. } => {
@@ -117,6 +161,7 @@ fn run_tx(state: &WorldState, ctx: &BlockContext, tx: &TxEnvelope) -> Result<TxR
         receipt: Receipt { tx_hash: tx_hash(tx), success, gas_used, prove_gas, contract_address, logs, output },
         changes: out.state,
         gas: GasVector { exec: gas_used, state: 0, prove: prove_gas },
+        touched_beneficiary,
     })
 }
 
@@ -146,13 +191,7 @@ fn record_bal(bal: &mut BalBuilder, pre: &WorldState, index: u32, changes: &revm
     }
 }
 
-fn apply(
-    state: &mut WorldState,
-    bal: &mut BalBuilder,
-    receipts: &mut Vec<Receipt>,
-    total: &mut GasVector,
-    run: TxRun,
-) -> Result<(), ExecError> {
+fn apply(state: &mut WorldState, bal: &mut BalBuilder, receipts: &mut Vec<Receipt>, total: &mut GasVector, run: TxRun) -> Result<(), ExecError> {
     record_bal(bal, state, receipts.len() as u32, &run.changes);
     state.commit(&run.changes).map_err(ExecError::State)?;
     *total = total.checked_add(run.gas).expect("gas bounded by limits");
@@ -162,15 +201,26 @@ fn apply(
 
 /// Proposer: execute candidates in order, keep the valid ones that fit the limits.
 pub fn build_block(pre: &WorldState, ctx: &BlockContext, candidates: Vec<TxEnvelope>) -> (Vec<TxEnvelope>, BlockOutcome) {
+    build_block_with(pre, ctx, candidates, true)
+}
+
+/// `build_block` without speculation (reference for differential tests).
+pub fn build_block_sequential(pre: &WorldState, ctx: &BlockContext, candidates: Vec<TxEnvelope>) -> (Vec<TxEnvelope>, BlockOutcome) {
+    build_block_with(pre, ctx, candidates, false)
+}
+
+fn build_block_with(pre: &WorldState, ctx: &BlockContext, candidates: Vec<TxEnvelope>, parallel: bool) -> (Vec<TxEnvelope>, BlockOutcome) {
     let mut state = pre.clone();
     state.clear_journal();
     let (mut bal, mut receipts, mut total, mut included) = (BalBuilder::default(), Vec::new(), GasVector::default(), Vec::new());
-    for tx in candidates {
-        let Ok(run) = run_tx(&state, ctx, &tx) else { continue };
+    let mut sched = Scheduler::new(pre, ctx, &candidates, parallel);
+    for (i, tx) in candidates.into_iter().enumerate() {
+        let Ok(run) = sched.run(i, &state, ctx, &tx) else { continue };
         match total.checked_add(run.gas) {
             Some(t) if t.fits(&ctx.limits) => {}
             _ => continue,
         }
+        sched.committing(&state, &run.changes);
         if apply(&mut state, &mut bal, &mut receipts, &mut total, run).is_err() {
             continue;
         }
@@ -189,15 +239,26 @@ pub fn can_append(post: &WorldState, ctx: &BlockContext, used: GasVector, tx: &T
 
 /// Validator: every tx must be valid and the whole block must fit the limits.
 pub fn execute_block(pre: &WorldState, ctx: &BlockContext, txs: &[TxEnvelope]) -> Result<BlockOutcome, ExecError> {
+    execute_block_with(pre, ctx, txs, true)
+}
+
+/// `execute_block` without speculation (reference for differential tests).
+pub fn execute_block_sequential(pre: &WorldState, ctx: &BlockContext, txs: &[TxEnvelope]) -> Result<BlockOutcome, ExecError> {
+    execute_block_with(pre, ctx, txs, false)
+}
+
+fn execute_block_with(pre: &WorldState, ctx: &BlockContext, txs: &[TxEnvelope], parallel: bool) -> Result<BlockOutcome, ExecError> {
     let mut state = pre.clone();
     state.clear_journal();
     let (mut bal, mut receipts, mut total) = (BalBuilder::default(), Vec::new(), GasVector::default());
+    let mut sched = Scheduler::new(pre, ctx, txs, parallel);
     for (index, tx) in txs.iter().enumerate() {
-        let run = run_tx(&state, ctx, tx).map_err(|reason| ExecError::InvalidTx { index, reason })?;
+        let run = sched.run(index, &state, ctx, tx).map_err(|reason| ExecError::InvalidTx { index, reason })?;
         match total.checked_add(run.gas) {
             Some(t) if t.fits(&ctx.limits) => {}
             _ => return Err(ExecError::LimitExceeded { index }),
         }
+        sched.committing(&state, &run.changes);
         apply(&mut state, &mut bal, &mut receipts, &mut total, run)?;
     }
     Ok(BlockOutcome { state, bal: bal.build(), receipts, gas: total })

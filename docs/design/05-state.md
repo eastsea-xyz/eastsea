@@ -3,17 +3,21 @@
 ## 키 (EIP-7864 통합 32바이트)
 
 ```
-stem(31바이트) = H(address ‖ tree_index)[0..31]
+stem(31바이트) = H(0^12 ‖ address(20) ‖ overflow(1) ‖ tree_index 하위 248비트 BE(31))[0..31]
 key = stem ‖ sub_index(1바이트)
 ```
-- 계정 기본 데이터: `tree_index=0`, sub 0..3 = {version|balance|nonce|code_hash} 압축 ; sub 64.. = 코드 청크
-- 스토리지: `tree_index = slot / 256`, `sub = slot % 256`
-- `H`는 Hasher trait (Poseidon2 또는 BLAKE3). `ubt` 크레이트의 파생 규칙을 따른다.
+- go-ethereum bintrie V3 방식. `ubt` 크레이트와 키·루트가 일치함을 `crates/state/tests/eip7864_compat.rs`가 검증한다(SHA-256/BLAKE3 평문 해시로 교차 확인).
+- 영(0) 규칙: 트리 노드 해시에서 전부 0인 입력은 ZERO. 값 0 쓰기는 삭제와 같다(EVM 미설정 = 0). 키 파생에는 영 규칙을 적용하지 않는다(레퍼런스와 동일).
+- 계정 헤더 stem(`tree_index=0`): sub 0 = 기본 데이터(version | code_size u24 | nonce u64 | balance u128), sub 1 = 코드 해시, sub 64..127 = 스토리지 슬롯 0..63, sub 128..255 = 코드 청크 0..127
+- 그 밖의 스토리지: 위치 = 256^31 + slot → `tree_index = 256^30 + slot >> 8`, `sub = slot % 256` (최상위 바이트가 0xff면 overflow 플래그)
+- 코드 청크 128 이후: 위치 = 128 + chunk_id → `tree_index = pos / 256`, `sub = pos % 256`
+- `H`는 Hasher trait (Poseidon2 또는 BLAKE3).
 
 ## 트리
 
-- 바이너리 sparse Merkle tree, 깊이 256 (키 비트).
-- 리프 = `hash_leaf(key, value)` (항상 선해시, CCS 2026).
+- stem마다 값 256개의 8단 바이너리 서브트리(리프 = H(value), 빈 리프 = ZERO) → stem 노드 = H(stem ‖ 0x00 ‖ 서브트리 루트).
+- stem들 위로는 stem 비트(248비트)에 대한 바이너리 트리. stem 하나만 있는 서브트리는 그 stem 노드로 축약, 빈 서브트리는 ZERO, 내부 노드는 compress(L, R) (둘 다 ZERO면 ZERO).
+- 리프는 항상 해시된 값으로만 압축 함수에 들어간다(선해시, CCS 2026 요건).
 - 빈 서브트리 해시는 깊이별 사전 계산.
 - multiproof: 키 집합에 대한 형제 노드 최소 집합. 형식은 NOMT의 witness를 그대로 직렬화.
 

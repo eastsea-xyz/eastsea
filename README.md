@@ -44,26 +44,24 @@ cargo run --release --bin aether-node -- --public  # LAN/UPnP/DHT 공개 (주의
 ## 테스트
 
 ```bash
-cargo test                     # 단위 + 보안 통합 테스트
-cargo test --test security     # 로컬 API 인가, CORS, gossip, 바인딩, 대시보드 XSS
+cargo test --workspace                          # 전체
+cargo test -p aether-core --test security       # legacy 노드 보안 테스트
+cargo test -p aether-state --test eip7864_compat  # EIP-7864 레퍼런스 교차 검증
 ```
 
 ## 프로젝트 구조
 
 ```
-src/
-├── api_guard.rs      # 로컬 제어 API 인가 (토큰, Host/Origin, loopback)
-├── types.rs          # 트랜잭션, vertex, 계정
-├── crypto.rs         # 임계치 비밀 분산 (교체 예정)
-├── consensus.rs      # DAG (Simplex로 교체 예정)
-├── execution.rs      # Block-STM 시도 (재구현 예정)
-├── storage.rs        # 메모리 상태 + JSON 영속화
-├── vm.rs             # 템플릿 계약 (revm으로 교체 예정)
-├── p2p.rs, dht.rs    # 피어 연결, 발견
-├── bin/node.rs       # HTTP 데몬 + 대시보드
-└── web/dashboard.html
+crates/                 # 차세대 구현 (docs/design 기준)
+├── types/              # 봉투(3차원 가스), 블록(순서-먼저 헤더), BAL, 인증서, 증명, 매니페스트
+├── hash/               # Hasher trait: Poseidon2<KoalaBear>, BLAKE3
+├── crypto/             # 서명: P-256(Secure Enclave 규약), secp256k1, Ed25519
+├── state/              # EIP-7864 바이너리 트리 + 증명 (geth V3 / ubt와 키·루트 일치 검증)
+├── proving/            # Prover / Verifier 경계 (zkVM 백엔드는 스파이크 후 결정)
+├── consensus/          # 합의 경계, 위원회 선출, FOCIL 포함 목록
+└── da/                 # DA 경계 (로컬 구현, Celestia/이더리움 어댑터 예정)
+legacy/                 # 기존 단일 노드 코드 (보안 수정 후 동결, 교체 대상)
 docs/design, docs/research
-tests/security.rs
 ```
 
 ## 라이선스

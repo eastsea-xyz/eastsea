@@ -1,0 +1,17 @@
+[package]
+name = "aether-state"
+description = "EIP-7864 unified binary tree, account layout, proofs, StateRepository (docs/design/05)"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+aether-hash.workspace = true
+alloy-primitives.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+ubt = "=0.5.1"
+blake3.workspace = true
+sha2 = "0.10"

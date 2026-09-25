@@ -1,0 +1,11 @@
+[package]
+name = "aether-proving"
+description = "Prover / Verifier boundary (docs/design/03, 06); backends behind features after the spike"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+aether-types.workspace = true
+aether-state.workspace = true

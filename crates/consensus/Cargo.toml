@@ -1,0 +1,14 @@
+[package]
+name = "aether-consensus"
+description = "Consensus boundaries, committee selection, inclusion lists (docs/design/03, 07)"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+aether-types.workspace = true
+aether-hash.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

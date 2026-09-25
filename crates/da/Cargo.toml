@@ -1,0 +1,11 @@
+[package]
+name = "aether-da"
+description = "Data availability boundary; Celestia (Lumina) and Ethereum blob adapters plug in here"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+aether-types.workspace = true
+aether-hash.workspace = true

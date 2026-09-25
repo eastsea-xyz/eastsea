@@ -1,0 +1,26 @@
+[package]
+name = "aether-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+rayon = "1.10"
+parking_lot = "0.12"
+rand = "0.8"
+sha1 = "0.11.0"
+
+[[bin]]
+name = "aether-bench"
+path = "src/bin/main.rs"
+
+[[bin]]
+name = "aether-node"
+path = "src/bin/node.rs"
+
+[lib]
+name = "aether_core"
+path = "src/lib.rs"

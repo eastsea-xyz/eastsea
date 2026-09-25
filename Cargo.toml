@@ -1,25 +1,38 @@
-[package]
-name = "aether-core"
-version = "0.1.0"
+[workspace]
+resolver = "2"
+members = ["legacy", "crates/*"]
+
+[workspace.package]
 edition = "2021"
+license = "MIT OR Apache-2.0"
+version = "0.2.0"
 
-[dependencies]
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-sha2 = "0.10"
-rayon = "1.10"
-parking_lot = "0.12"
-rand = "0.8"
-sha1 = "0.11.0"
+# Versions pinned per docs/design/01-workspace.md
+[workspace.dependencies]
+aether-types = { path = "crates/types" }
+aether-hash = { path = "crates/hash" }
+aether-crypto = { path = "crates/crypto" }
+aether-state = { path = "crates/state" }
+alloy-primitives = { version = "=1.7.3", default-features = false, features = ["serde"] }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+serde_json = "1"
+thiserror = "2"
+blake3 = "=1.8.7"
+p3-poseidon2 = "=0.8.0"
+p3-koala-bear = "=0.8.0"
+p3-symmetric = "=0.8.0"
+p3-field = "=0.8.0"
+rand = "0.9"
+rand_chacha = "0.9"
+p256 = { version = "=0.14.0", features = ["ecdsa"] }
+k256 = { version = "=0.14.0", features = ["ecdsa"] }
+ed25519-dalek = { version = "=3.0.0" }
+proptest = "1.11"
 
-[[bin]]
-name = "aether-bench"
-path = "src/bin/main.rs"
+[profile.release]
+lto = "fat"
+codegen-units = 1
 
-[[bin]]
-name = "aether-node"
-path = "src/bin/node.rs"
-
-[lib]
-name = "aether_core"
-path = "src/lib.rs"
+[profile.bench]
+inherits = "release"
+debug = true

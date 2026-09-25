@@ -68,6 +68,19 @@ pub fn public_addr_filter() -> AddrFilter {
     AddrFilter::new(|addrs| Cow::Owned(addrs.iter().filter(|a| !matches!(a, TransportAddr::Ip(sa) if is_overlay_or_local(sa.ip()))).cloned().collect()))
 }
 
+/// Detect a dead peer (e.g. a restarted validator) within seconds, not the
+/// default ~30s, so links reconnect quickly. Heartbeats keep healthy idle
+/// links open.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(6);
+const KEEP_ALIVE: Duration = Duration::from_secs(1);
+
+fn transport_config() -> iroh::endpoint::QuicTransportConfig {
+    iroh::endpoint::QuicTransportConfig::builder()
+        .keep_alive_interval(KEEP_ALIVE)
+        .max_idle_timeout(Some(IDLE_TIMEOUT.try_into().expect("idle timeout fits")))
+        .build()
+}
+
 /// Bind an endpoint that resolves peers through the Mainline DHT. With a
 /// `secret`, it also publishes its own addresses there (direct + relay).
 pub async fn bind(secret: Option<SecretKey>, alpns: Vec<Vec<u8>>) -> Result<Endpoint> {
@@ -82,6 +95,7 @@ pub async fn bind(secret: Option<SecretKey>, alpns: Vec<Vec<u8>>) -> Result<Endp
         .relay_mode(iroh::RelayMode::Default)
         .alpns(alpns)
         .addr_filter(public_addr_filter())
+        .transport_config(transport_config())
         .path_selector(Arc::new(paths::PublicPathSelector))
         .address_lookup(dht);
     if let Some(s) = secret {

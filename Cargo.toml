@@ -13,6 +13,10 @@ aether-types = { path = "crates/types" }
 aether-hash = { path = "crates/hash" }
 aether-crypto = { path = "crates/crypto" }
 aether-state = { path = "crates/state" }
+aether-execution = { path = "crates/execution" }
+aether-consensus = { path = "crates/consensus" }
+aether-da = { path = "crates/da" }
+aether-proving = { path = "crates/proving" }
 alloy-primitives = { version = "=1.7.3", default-features = false, features = ["serde"] }
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 serde_json = "1"

@@ -60,6 +60,7 @@ fn stem_node_hash<H: Hasher>(h: &H, stem: &Stem, subtree_root: &Digest) -> Diges
     hash_z(h, &buf)
 }
 
+#[derive(Clone)]
 struct StemNode {
     values: Box<[Option<Value>; 256]>,
     /// Hash of the 256-leaf subtree; recomputed on every write to this stem.
@@ -85,7 +86,8 @@ impl StemNode {
     }
 }
 
-pub struct BinaryTree<H: Hasher> {
+#[derive(Clone)]
+pub struct BinaryTree<H: Hasher + Clone> {
     hasher: H,
     stems: BTreeMap<Stem, StemNode>,
 }
@@ -117,7 +119,7 @@ pub enum ProofError {
     NonCanonicalDigest,
 }
 
-impl<H: Hasher> BinaryTree<H> {
+impl<H: Hasher + Clone> BinaryTree<H> {
     pub fn new(hasher: H) -> Self {
         BinaryTree { hasher, stems: BTreeMap::new() }
     }

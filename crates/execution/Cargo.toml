@@ -1,0 +1,19 @@
+[package]
+name = "aether-execution"
+description = "revm execution over the EIP-7864 state: tx validation, BAL, receipts, prove-gas (docs/design/04)"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+aether-types.workspace = true
+aether-hash.workspace = true
+aether-crypto.workspace = true
+aether-state.workspace = true
+alloy-primitives.workspace = true
+revm = { version = "=43.0.3", default-features = false, features = ["std", "c-kzg", "secp256k1", "portable"] }
+serde.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

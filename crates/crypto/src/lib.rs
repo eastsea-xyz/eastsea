@@ -85,7 +85,7 @@ pub fn recover_secp256k1(msg: &[u8], sig: &[u8]) -> Result<PublicKey, CryptoErro
     let rid = k256::ecdsa::RecoveryId::from_byte(v).ok_or(CryptoError::InvalidSignature)?;
     let vk = k256::ecdsa::VerifyingKey::recover_from_prehash(keccak256(msg).as_slice(), &s, rid)
         .map_err(|_| CryptoError::Mismatch)?;
-    Ok(PublicKey { scheme: SignerScheme::Secp256k1, bytes: vk.to_sec1_bytes().to_vec() })
+    Ok(PublicKey { scheme: SignerScheme::Secp256k1, bytes: vk.to_sec1_point(true).as_bytes().to_vec() })
 }
 
 /// Account address for a public key.
@@ -121,7 +121,7 @@ impl Signer for P256Signer {
         SignerScheme::P256
     }
     fn public_key(&self) -> PublicKey {
-        PublicKey { scheme: SignerScheme::P256, bytes: self.0.verifying_key().to_sec1_bytes().to_vec() }
+        PublicKey { scheme: SignerScheme::P256, bytes: self.0.verifying_key().to_sec1_point(true).as_bytes().to_vec() }
     }
     fn sign(&self, msg: &[u8]) -> Result<Vec<u8>, CryptoError> {
         let s: p256::ecdsa::Signature = self.0.sign_prehash(&Sha256::digest(msg)).map_err(|_| CryptoError::InvalidSignature)?;
@@ -142,7 +142,7 @@ impl Signer for Secp256k1Signer {
         SignerScheme::Secp256k1
     }
     fn public_key(&self) -> PublicKey {
-        PublicKey { scheme: SignerScheme::Secp256k1, bytes: self.0.verifying_key().to_sec1_bytes().to_vec() }
+        PublicKey { scheme: SignerScheme::Secp256k1, bytes: self.0.verifying_key().to_sec1_point(true).as_bytes().to_vec() }
     }
     fn sign(&self, msg: &[u8]) -> Result<Vec<u8>, CryptoError> {
         // k256's recoverable signer already returns a low-s signature with a matching id.
@@ -241,6 +241,13 @@ mod tests {
         let s = Secp256k1Signer::from_seed(&[11; 32]).unwrap();
         let sig = s.sign(b"payload").unwrap();
         assert_eq!(recover_secp256k1(b"payload", &sig).unwrap(), s.public_key());
+    }
+
+    #[test]
+    fn ecdsa_public_keys_are_compressed_sec1() {
+        let seed = { let mut s = [0u8; 32]; s[31] = 3; s };
+        assert_eq!(P256Signer::from_seed(&seed).unwrap().public_key().bytes.len(), 33);
+        assert_eq!(Secp256k1Signer::from_seed(&seed).unwrap().public_key().bytes.len(), 33);
     }
 
     #[test]

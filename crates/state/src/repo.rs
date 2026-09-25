@@ -14,11 +14,12 @@ pub trait StateRepository {
     fn prove(&self, keys: &[TreeKey]) -> Vec<Proof>;
 }
 
-pub struct MemRepo<H: Hasher> {
+#[derive(Clone)]
+pub struct MemRepo<H: Hasher + Clone> {
     tree: BinaryTree<H>,
 }
 
-impl<H: Hasher> MemRepo<H> {
+impl<H: Hasher + Clone> MemRepo<H> {
     pub fn new(hasher: H) -> Self {
         MemRepo { tree: BinaryTree::new(hasher) }
     }
@@ -28,7 +29,7 @@ impl<H: Hasher> MemRepo<H> {
     }
 }
 
-impl<H: Hasher> StateRepository for MemRepo<H> {
+impl<H: Hasher + Clone> StateRepository for MemRepo<H> {
     fn get(&self, key: &TreeKey) -> Option<Value> {
         self.tree.get(key)
     }

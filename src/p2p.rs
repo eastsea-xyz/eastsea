@@ -3,12 +3,16 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::net::{TcpStream, UdpSocket};
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs, UdpSocket};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const BEACON_PORT: u16 = 8085;
+/// Upper bound on any HTTP response we read from a peer.
+const MAX_PEER_RESPONSE: u64 = 4 * 1024 * 1024;
+/// Upper bound on peer endpoints learned from a single handshake.
+const MAX_KNOWN_PEERS_PER_HANDSHAKE: usize = 16;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct HandshakeRequest {
@@ -188,15 +192,13 @@ impl PeerManager {
 
         self.add_or_update(peer_info.clone());
 
-        // Recursive PEX (Peer Exchange): connect to secondary peers introduced by this peer
-        let pm_clone = self.clone();
-        thread::spawn(move || {
-            for ep in extra_peers {
-                if !pm_clone.contains_endpoint(&ep) {
-                    let _ = pm_clone.connect_peer(&ep);
-                }
+        // Peer exchange: remember introduced endpoints, but never dial them automatically.
+        // Auto-dialing attacker-supplied addresses turned every node into a port scanner.
+        for ep in extra_peers.into_iter().take(MAX_KNOWN_PEERS_PER_HANDSHAKE) {
+            if is_public_endpoint(&ep) {
+                save_cached_peer(&ep);
             }
-        });
+        }
 
         Ok(peer_info)
     }
@@ -293,12 +295,42 @@ pub fn start_lan_auto_discovery(peer_mgr: PeerManager, my_port: u16) {
 }
 
 /// Simple lightweight HTTP POST client with timeout
+/// Only globally routable IPv4/IPv6 addresses are accepted as remembered peers.
+fn is_public_endpoint(endpoint: &str) -> bool {
+    match endpoint.parse::<SocketAddr>() {
+        Ok(SocketAddr::V4(a)) => {
+            let ip = a.ip();
+            !(ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_unspecified()
+                || ip.is_broadcast() || ip.is_multicast() || ip.is_documentation())
+        }
+        Ok(SocketAddr::V6(a)) => {
+            let ip = a.ip();
+            !(ip.is_loopback() || ip.is_unspecified() || ip.is_multicast())
+        }
+        Err(_) => false,
+    }
+}
+
+fn connect_with_timeout(endpoint: &str, timeout: Duration) -> Result<TcpStream, String> {
+    let addr = endpoint
+        .to_socket_addrs()
+        .map_err(|e| format!("주소 해석 실패 ({}): {}", endpoint, e))?
+        .next()
+        .ok_or_else(|| format!("주소 없음 ({})", endpoint))?;
+    TcpStream::connect_timeout(&addr, timeout).map_err(|e| format!("피어 연결 실패 ({}): {}", endpoint, e))
+}
+
+fn read_bounded(stream: &mut TcpStream) -> Result<String, String> {
+    let mut response = String::new();
+    stream
+        .take(MAX_PEER_RESPONSE)
+        .read_to_string(&mut response)
+        .map_err(|e| format!("응답 수신 실패: {}", e))?;
+    Ok(response)
+}
+
 pub fn http_post(endpoint: &str, path: &str, body: &str, timeout: Duration) -> Result<String, String> {
-    let stream_res = TcpStream::connect(endpoint);
-    let mut stream = match stream_res {
-        Ok(s) => s,
-        Err(e) => return Err(format!("피어 연결 실패 ({}): {}", endpoint, e)),
-    };
+    let mut stream = connect_with_timeout(endpoint, timeout)?;
     let _ = stream.set_read_timeout(Some(timeout));
     let _ = stream.set_write_timeout(Some(timeout));
 
@@ -314,10 +346,7 @@ pub fn http_post(endpoint: &str, path: &str, body: &str, timeout: Duration) -> R
         .write_all(request.as_bytes())
         .map_err(|e| format!("데이터 송신 실패: {}", e))?;
 
-    let mut response = String::new();
-    stream
-        .read_to_string(&mut response)
-        .map_err(|e| format!("응답 수신 실패: {}", e))?;
+    let response = read_bounded(&mut stream)?;
 
     // Extract HTTP body
     if let Some(idx) = response.find("\r\n\r\n") {
@@ -329,11 +358,7 @@ pub fn http_post(endpoint: &str, path: &str, body: &str, timeout: Duration) -> R
 
 /// Simple lightweight HTTP GET client with timeout
 pub fn http_get(endpoint: &str, path: &str, timeout: Duration) -> Result<String, String> {
-    let stream_res = TcpStream::connect(endpoint);
-    let mut stream = match stream_res {
-        Ok(s) => s,
-        Err(e) => return Err(format!("피어 연결 실패 ({}): {}", endpoint, e)),
-    };
+    let mut stream = connect_with_timeout(endpoint, timeout)?;
     let _ = stream.set_read_timeout(Some(timeout));
     let _ = stream.set_write_timeout(Some(timeout));
 
@@ -346,10 +371,7 @@ pub fn http_get(endpoint: &str, path: &str, timeout: Duration) -> Result<String,
         .write_all(request.as_bytes())
         .map_err(|e| format!("요청 송신 실패: {}", e))?;
 
-    let mut response = String::new();
-    stream
-        .read_to_string(&mut response)
-        .map_err(|e| format!("응답 수신 실패: {}", e))?;
+    let response = read_bounded(&mut stream)?;
 
     if let Some(idx) = response.find("\r\n\r\n") {
         Ok(response[idx + 4..].to_string())
@@ -543,13 +565,10 @@ pub fn start_nat_traversal(peer_mgr: PeerManager, local_ip: String, port: u16) {
     });
 }
 
-/// Primary Bootnode Seed List (Public WAN and LAN fallbacks)
-pub const DEFAULT_BOOTNODES: &[&str] = &[
-    "14.32.162.195:8080", // Jay's Sovereign Seed Node (Public WAN UPnP)
-    "192.168.0.4:8080",   // LAN fallback
-    "127.0.0.1:8080",     // Local fallback
-    "127.0.0.1:8081",
-];
+/// Development bootnodes.
+/// Public seeds come from the signed seed list (peers.json / Pkarr, see
+/// docs/design/08-network.md). Only local-development fallbacks live in source.
+pub const DEFAULT_BOOTNODES: &[&str] = &["127.0.0.1:8080", "127.0.0.1:8081"];
 
 /// Fetch dynamic public seeds from GitHub repository (acting as DNS seed directory)
 pub fn fetch_github_seeds() -> Vec<String> {

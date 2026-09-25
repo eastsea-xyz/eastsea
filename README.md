@@ -1,176 +1,71 @@
-# 🌌 Aether Sovereign Node (Aether Core)
+# Aether Node
 
-> **"Don't trust, verify" — 누구나 자신의 컴퓨터에서 가동하는 비트코인 정신의 차세대 초고성능 분산 원장**
+> 맥이 있으면 누구나 검증자다. 내 맥이 직접 검증하는 지갑. **실제로 동작하는 네트워크**를 목표로 개발 중입니다.
 
-[![Rust](https://img.shields.io/badge/Rust-1.98.1-orange.svg)](https://www.rust-lang.org/)
-[![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-green.svg)](https://github.com)
-[![TPS](https://img.shields.io/badge/Throughput-134%2C959%20TPS-brightgreen.svg)](#실측-성능-벤치마크)
-[![RAM Footprint](https://img.shields.io/badge/RAM%20Usage-~38MB-blueviolet.svg)](#비트코인-정신과-주권-노드)
 [![Legal Disclaimer](https://img.shields.io/badge/Legal-Disclaimer%20%26%20Terms-red.svg)](DISCLAIMER.md)
 
 > [!IMPORTANT]
-> **Legal Notice & Terms of Use (Summary):**  
-> Aether Node is an experimental, non-commercial open-source peer-to-peer research software. It uses open-standard BitTorrent Mainline DHT (BEP 5) **strictly and solely for decentralized peer address discovery (zero copyrighted files, media, or torrent data are stored, transmitted, or indexed)**. All tokens (AETH) and validator rewards are simulated computational test artifacts possessing zero monetary value. Provided **"AS IS"** without warranties of any kind. By using this software, you agree to the complete terms and limitation of liability in [DISCLAIMER.md](DISCLAIMER.md).
+> Aether Node is experimental, non-commercial research software provided **"AS IS"**. It is not a production blockchain, has not been audited, and all tokens (AETH) and rewards are simulated test artifacts with **zero monetary value**. See [DISCLAIMER.md](DISCLAIMER.md).
 
----
+## 현재 상태
 
-## 📖 목차
-1. [프로젝트 소개](#-프로젝트-소개)
-2. [비트코인 정신과 주권 노드](#-비트코인-정신과-주권-노드)
-3. [핵심 아키텍처](#-핵심-아키텍처)
-4. [실측 성능 벤치마크](#-실측-성능-벤치마크)
-5. [원클릭 실행 및 설치 (Zero-Config)](#-원클릭-실행-및-설치-zero-config)
-6. [사용자 인센티브 모델](#-사용자-인센티브-모델)
-7. [사설망 자동 연결 (Invisible P2P)](#-사설망-자동-연결-invisible-p2p)
-8. [프로젝트 구조](#-프로젝트-구조)
+목표는 실동작입니다. 다만 지금 저장소의 코드는 아직 단일 머신에서만 도는 **초기 구현**이며, 아래 왼쪽 열은 1단계에서 전부 실제 구현으로 교체합니다.
 
----
+| 영역 | 현재 코드 (교체 대상) | 1단계 실제 구현 |
+|---|---|---|
+| 합의 | 한 노드가 가상 검증자 5명의 vertex를 혼자 생성 (실제 합의 아님) | Commonware Simplex BFT + VRF 위원회 |
+| 병렬 실행 | Block-STM 시도. **순차 실행과 결과가 일치하지 않음** (재구현 예정) | BAL 기반 정적 DAG Block-STM |
+| 멤풀 암호화 | 고정 키 XOR. **MEV를 막지 못함** | 포함 목록 → 타임락 암호화 |
+| 서명 | 없음 | EIP-7702 + Secure Enclave P-256 |
+| 검증 | 재실행 | ZK 증명 검증 (맥 Metal 증명기) |
+| 보상 | 라운드마다 로컬 계정에 +10 (가치 없음) | 없음 (토큰 설계는 법률 검토 전 보류) |
 
-## 💡 프로젝트 소개
+성능 수치는 [재현 가능한 벤치마크](docs/design/10-testing.md)가 정확성 검증을 통과한 뒤에만 공개합니다. 이전 README의 TPS·메모리 수치는 검증되지 않아 삭제했습니다.
 
-**Aether**는 기존 블록체인(비트코인의 처리량 한계, 이더리움의 직렬 EVM 및 상태 팽창, 솔라나의 128GB+ RAM 요구에 따른 중앙화)의 한계를 근본적으로 극복하기 위해 설계된 **5세대 블록체인 시스템**입니다.
+## 설계 문서
 
-- **비동기 DAG-BFT 합의**: Mysticeti 스타일의 무통신 앵커 완결성 (초당 45만+ TX 인과적 정렬).
-- **Block-STM 병렬 실행기**: 64-Shard Lock-free MVCC 기반 멀티코어 낙관적 동시성 제어 (**실측 134,959 TPS**).
-- **임계치 암호화 멤풀 (Anti-MEV)**: 트랜잭션 순서 확정 전까지 평문 노출을 100% 차단하여 샌드위치 공격 원천 무력화 ($MEV \equiv 0$).
-- **완전 무설정 데스크톱 앱 (Zero-Config)**: 복잡한 설정 없이 더블 클릭하면 1초 만에 백그라운드에서 실행되는 초경량 데스크톱 클라이언트.
+- [상세 구현 설계서](docs/design/00-overview.md) — 정체성, 확정 결정 D1~D18, 계층별 설계
+- [조사 보고서](docs/research/) — 2026-09 기준 근거 12건
+- [0단계·스파이크 계획](docs/design/11-phase0-spike.md)
 
----
+## 실행 (개발자)
 
-## 🪙 비트코인 정신과 주권 노드
-
-```
- 솔라나 / 기존 고성능 체인              AETHER 주권 노드 (Sovereign Node)
- ───────────────────────               ───────────────────────────────
- • 128GB+ RAM 엔터프라이즈 서버         • 일반 노트북 / 가정용 PC (RAM ~38MB)
- • 월 $2,000+ 데이터센터 비용           • 추가 전기세 / 장비 비용 $0
- • 소수 기관 검증자 중앙화               • 전 세계 수만 대 일반 유저 풀 노드
-```
-
-비트코인의 핵심은 **소수의 데이터센터나 거대 채굴 기업을 신뢰하지 않고, 누구나 자신의 개인 컴퓨터에서 블록체인 전체를 직접 검증(Full Verification)하는 것**입니다. Aether는 초경량 메모리(~38MB)와 0.2% CPU 유휴 점유율을 통해, 배틀그라운드나 롤 같은 게임을 하거나 일상 업무를 보는 도중에도 팬 소음 없이 100% 쾌적하게 구동됩니다.
-
----
-
-## ⚡ 핵심 아키텍처
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                 AETHER 5-Layer Stack                        │
-├─────────────────────────────────────────────────────────────┤
-│ [Layer 5] Zero-Config 데스크톱 앱 (간편 모드 / 엔지니어 모드)  │
-├─────────────────────────────────────────────────────────────┤
-│ [Layer 4] 임계치 암호화 멤풀 (Threshold Encrypted Mempool)   │
-├─────────────────────────────────────────────────────────────┤
-│ [Layer 3] Block-STM 2.0 병렬 런타임 (64-Shard Lock-Free MVCC)│
-├─────────────────────────────────────────────────────────────┤
-│ [Layer 2] 고성능 플랫 스토리지 (Direct-IO Key-Value Engine)   │
-├─────────────────────────────────────────────────────────────┤
-│ [Layer 1] 비동기 DAG-BFT 합의 (Zero-Overhead Anchor Commits) │
-└─────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 📊 실측 성능 벤치마크
-
-로컬 Apple Silicon (8-Core) 환경에서 10,000건의 복합 워크로드(70% 송금, 30% AMM 스왑)를 직접 실행한 실측 결과입니다:
-
-```text
-================================================================================
-                            최종 벤치마크 결과 요약                             
-================================================================================
- | 지표                      | 전통적 직렬 EVM     | 차세대 Block-STM (AETHER) |
- |---------------------------|---------------------|---------------------------|
- | 처리 시간 (10,000 TX)     |         87.45ms     |               74.10ms     |
- | 실측 처리량 (TPS)         |        114,353 TX/s |         134,959 TX/s (향상)|
- | 합의 처리량 (DAG-BFT)     | 수초 ~ 수분 소요    |             451,083 TX/s  |
- | 상태 무결성 (Double-spend)|             보장됨  |          보장됨 (Zero Err)|
- | MEV 샌드위치 공격 방어    |         100% 취약   |        완전 차단 (MEV = 0)|
-================================================================================
-```
-
----
-
-## 🚀 원클릭 실행 및 설치 (Zero-Config)
-
-### 🍏 macOS (가장 추천하는 방법: 1줄 명령어 자동 설치)
-Apple 미인증 오픈소스 특유의 Gatekeeper("악성 코드가 없음을 확인할 수 없습니다") 경고 없이, **단 3초 만에 /Applications에 정식 맥앱으로 설치 및 실행**됩니다:
-```bash
-curl -fsSL https://raw.githubusercontent.com/kjaylee/aether-node/main/install.sh | bash
-```
-
-#### 📦 macOS DMG 디스크 이미지 직접 설치
-1. [GitHub Releases](https://github.com/kjaylee/aether-node/releases/latest)에서 **`Aether-Node-v0.1.0-macOS.dmg`** 다운로드.
-2. DMG를 열고 **`Aether Node.app`을 `Applications` 폴더로 드래그 앤 드롭**.
-3. *처음 실행 시 보안 경고("악성 코드가 없음을 확인할 수 없습니다")가 뜰 때 해결법*:
-   - **터미널 1초 해결 (추천)**:
-     ```bash
-     xattr -cr "/Applications/Aether Node.app"
-     ```
-   - **시스템 설정 해결**: Mac **시스템 설정 > 개인정보 보호 및 보안(Privacy & Security)** > 하단 보안 영역에서 **"확인 없이 열기(Open Anyway)"** 클릭.
-
----
-
-### 🐧 Linux & 개발자 소스 실행
 ```bash
 git clone https://github.com/kjaylee/aether-node.git
 cd aether-node
-./start.sh
+cargo run --release --bin aether-node            # 127.0.0.1:8080, 로컬 전용
+cargo run --release --bin aether-node -- --public  # LAN/UPnP/DHT 공개 (주의)
 ```
 
-### 🪟 Windows
-`start.bat` 파일을 더블 클릭하거나 명령 프롬프트(CMD)에서 실행합니다.
+- 기본은 **로컬 전용**(127.0.0.1)입니다. 외부 공개는 `--public`을 명시해야 하며, 이 경우 공유기 포트 개방(UPnP)과 공개 DHT 광고가 켜집니다.
+- 대시보드는 브라우저로 자동으로 열립니다(`--no-open`으로 끔). 제어 API는 실행마다 생성되는 토큰(`~/.aether/token`, 권한 0600)이 필요합니다.
+- 원격 피어가 보낸 gossip·sync로는 이 노드의 상태가 바뀌지 않습니다(서명 도입 전까지).
 
-> 💡 **실행 시 일어나는 일**:  
-> 초경량 데몬이 백그라운드에서 가동되며, **기본 브라우저 또는 독립 네이티브 앱 창에 `http://127.0.0.1:8080` 대시보드가 자동으로 팝업**됩니다. Spotlight(Cmd+Space)나 Launchpad에서 언제든지 `Aether Node`를 검색하여 바로 열 수 있습니다.
+## 테스트
 
----
-
-## 💰 사용자 인센티브 모델
-
-1. **검증 가동 시간 보상 (Proof of Liveness)**:
-   - 노트북을 켜두는 것만으로 블록 인플레이션 보상이 내 로컬 지갑으로 자동 적립됩니다.
-2. **MEV 배당금 100% 환원**:
-   - 프로토콜이 회수한 차익거래 수수료와 경매 수익을 노드를 켜둔 일반 사용자에게 배당금으로 균등 분배합니다.
-3. **가스비 100% 면제 혜택**:
-   - 자기 노드를 직접 돌리는 사용자에게는 트랜잭션 전송 수수료가 전액 면제됩니다.
-
----
-
-## 🌐 사설망 자동 연결 (Invisible P2P)
-
-가정용 Wi-Fi, 카페, 회사의 사설망(`192.168.x.x`) 뒤에 있어도 사용자는 아무런 설정을 할 필요가 없습니다:
-- **UPnP / NAT-PMP**: 공유기 포트 1초 만에 자동 개방.
-- **STUN & UDP 홀펀칭 (QUIC)**: 방화벽을 자동으로 관통하여 1:1 직통 P2P 터널 구축.
-- **Circuit Relay v2**: 대칭형 폐쇄망 환경에서도 종단간 암호화 릴레이로 무중단 연결.
-
----
-
-## 📁 프로젝트 구조
-
-```
-aether-core/
-├── Cargo.toml               # 러스트 프로젝트 매니페스트
-├── start.sh                 # macOS / Linux 원클릭 실행 런처
-├── start.bat                # Windows 원클릭 실행 런처
-├── src/
-│   ├── types.rs             # 트랜잭션, DAG 버텍스, 계정/해시 데이터 구조
-│   ├── crypto.rs            # (t, n) Shamir Secret Sharing 분산 임계치 암호화
-│   ├── mempool.rs           # 순서화 전 평문 열람 불가 임계치 암호화 멤풀
-│   ├── consensus.rs         # 비동기 DAG-BFT (Mysticeti 앵커 합의 엔진)
-│   ├── storage.rs           # 디스크 무작위 I/O 병목 없는 플랫 Key-Value 스토리지
-│   ├── execution.rs         # 64-Shard MVCC 메모리 및 Block-STM 병렬 런타임
-│   ├── lib.rs               # 라이브러리 엔트리포인트
-│   ├── bin/
-│   │   ├── main.rs          # 10,000건 실측 벤치마크 실행기
-│   │   └── node.rs          # 초경량 HTTP/REST 데몬 및 WebUI 서버
-│   └── web/
-│       └── dashboard.html   # Zero-Config 간편 모드 & 엔지니어 모드 대시보드
-└── dist/                    # 패키징 배포 폴더
+```bash
+cargo test                     # 단위 + 보안 통합 테스트
+cargo test --test security     # 로컬 API 인가, CORS, gossip, 바인딩, 대시보드 XSS
 ```
 
----
+## 프로젝트 구조
 
-## 📜 라이선스
-본 프로젝트는 MIT 또는 Apache-2.0 듀얼 라이선스 하에 배포됩니다.
+```
+src/
+├── api_guard.rs      # 로컬 제어 API 인가 (토큰, Host/Origin, loopback)
+├── types.rs          # 트랜잭션, vertex, 계정
+├── crypto.rs         # 임계치 비밀 분산 (교체 예정)
+├── consensus.rs      # DAG (Simplex로 교체 예정)
+├── execution.rs      # Block-STM 시도 (재구현 예정)
+├── storage.rs        # 메모리 상태 + JSON 영속화
+├── vm.rs             # 템플릿 계약 (revm으로 교체 예정)
+├── p2p.rs, dht.rs    # 피어 연결, 발견
+├── bin/node.rs       # HTTP 데몬 + 대시보드
+└── web/dashboard.html
+docs/design, docs/research
+tests/security.rs
+```
+
+## 라이선스
+
+MIT 또는 Apache-2.0 듀얼 라이선스.

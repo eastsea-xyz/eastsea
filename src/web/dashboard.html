@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="aether-token" content="__AETHER_TOKEN__">
   <title>Aether Sovereign Node - 차세대 블록체인 데스크톱 클라이언트</title>
   <style>
     :root {
@@ -686,9 +687,9 @@
         <!-- Reward Counter -->
         <div class="reward-box">
           <div class="reward-item">
-            <span class="reward-title">오늘 누적 검증 & MEV 배당 보상</span>
+            <span class="reward-title">누적 테스트 보상 (가치 없음)</span>
             <span class="reward-num" id="simple-reward">+0 AETH</span>
-            <span class="reward-sub">실시간 블록 앵커 완결 보상 적립 중</span>
+            <span class="reward-sub">초기 구현: 라운드마다 로컬 계정에 +10 (1단계에서 제거)</span>
           </div>
           <div class="reward-item">
             <span class="reward-title">내 지갑 총 잔고</span>
@@ -797,7 +798,7 @@
         </div>
         <div class="stat-card">
           <span class="stat-label">Block-STM 실측 처리량</span>
-          <span class="stat-val" id="val-tps" style="color: var(--accent-green);">134,959 TPS</span>
+          <span class="stat-val" id="val-tps" style="color: var(--accent-green);">— TPS</span>
           <span class="stat-sub" id="val-cores">8 CPU Cores 동시 연산</span>
         </div>
         <div class="stat-card">
@@ -850,12 +851,12 @@
                 <span>🛡️ 임계치 암호화 멤풀 & MEV 방어 인스펙터</span>
               </div>
               <button class="btn btn-danger" id="btn-mev-attack" style="font-size: 0.75rem; padding: 0.3rem 0.6rem;">
-                ⚔️ 샌드위치 봇 공격 모의 테스트
+                ℹ️ 현재 상태 보기
               </button>
             </div>
 
             <p style="font-size: 0.75rem; color: var(--text-muted);">
-              트랜잭션 페이로드는 순서가 DAG에 기록되기 전까지 <b>100% 암호화(Ciphertext)</b>되어 봇이 내용을 읽을 수 없습니다.
+              미구현: 현재 멤풀 암호화는 고정 키라 MEV를 막지 못합니다. 1단계에서 포함 목록, 2단계에서 타임락 암호화로 실제 구현합니다 (docs/design/07-consensus.md).
             </p>
 
             <div class="mempool-box" id="mempool-list">
@@ -866,7 +867,7 @@
             </div>
 
             <div class="mev-result" id="mev-result-panel">
-              <strong>🛡️ MEV 공격 차단 보고서:</strong>
+              <strong>MEV 방어 상태:</strong>
               <p id="mev-result-desc" style="margin-top: 0.25rem;"></p>
             </div>
           </div>
@@ -1161,6 +1162,16 @@
   </div>
 
   <script>
+    // Control-API token injected by the node when serving this page.
+    const AETHER_TOKEN = (document.querySelector('meta[name="aether-token"]') || {}).content || '';
+    function api(path, opts = {}) {
+      const headers = Object.assign({}, opts.headers, { 'X-Aether-Token': AETHER_TOKEN });
+      return fetch(path, Object.assign({}, opts, { headers }));
+    }
+    // Escape any value that did not originate in this page (peers, routers, contracts).
+    function esc(v) {
+      return String(v ?? '').replace(/[&<>"'`]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;', '`': '&#96;' }[c]));
+    }
     // Legal Disclaimer Modal logic
     const legalOverlay = document.getElementById('legal-modal-overlay');
     const btnAcceptLegal = document.getElementById('btn-accept-legal');
@@ -1264,7 +1275,7 @@
     // Fetch and render node state
     async function fetchStatus() {
       try {
-        const res = await fetch('/api/status');
+        const res = await api('/api/status');
         const data = await res.json();
         document.getElementById('val-round').innerText = data.round;
         document.getElementById('val-anchors').innerText = `완결 앵커: ${Math.max(0, data.round - 1)}개`;
@@ -1313,7 +1324,7 @@
           if (statusTitle) statusTitle.innerText = "내 컴퓨터가 단독 주권 노드로 검증 중입니다";
           if (statusSub) {
             if (data.nat && data.nat.is_opened && data.nat.external_ip) {
-              statusSub.innerHTML = `공유기(NAT) 자동 우회 완료 • 공인망(${data.nat.external_ip}) P2P 엔드포인트 활성화됨`;
+              statusSub.innerHTML = `공유기(NAT) 자동 우회 완료 • 공인망(${esc(data.nat.external_ip)}) P2P 엔드포인트 활성화됨`;
             } else {
               statusSub.innerHTML = `로컬 P2P 메시망 가동 중 • 다른 PC나 VM의 Aether Node를 자동 감지하거나 피어 URI를 연결할 수 있습니다.`;
             }
@@ -1401,16 +1412,16 @@
       // Check Core Node
       if (Math.hypot(mx - cx, my - cy) <= 24) {
         const natDesc = (p2pData.nat && p2pData.nat.is_opened && p2pData.nat.external_ip)
-          ? `<div style="color: var(--accent-green); font-size: 0.72rem;">• NAT 우회: ✔ ${p2pData.nat.method} (${p2pData.nat.external_ip}:${p2pData.nat.external_port})</div>`
+          ? `<div style="color: var(--accent-green); font-size: 0.72rem;">• NAT 우회: ✔ ${esc(p2pData.nat.method)} (${esc(p2pData.nat.external_ip)}:${esc(p2pData.nat.external_port)})</div>`
           : (p2pData.nat && p2pData.nat.external_ip)
-          ? `<div style="color: var(--accent-orange); font-size: 0.72rem;">• 공인 IP: ${p2pData.nat.external_ip} (${p2pData.nat.method})</div>`
+          ? `<div style="color: var(--accent-orange); font-size: 0.72rem;">• 공인 IP: ${esc(p2pData.nat.external_ip)} (${esc(p2pData.nat.method)})</div>`
           : `<div style="color: #94a3b8; font-size: 0.72rem;">• 네트워크: LAN 로컬 메시망</div>`;
 
         return {
           type: 'core',
           tooltipHtml: `
             <div style="font-weight: bold; color: var(--accent-cyan); margin-bottom: 4px;">💎 내 주권 노드 (Core Node)</div>
-            <div style="color: #cbd5e1; font-family: monospace; font-size: 0.72rem; word-break: break-all;">URI: aether://${p2pData.myNodeId || 'local'}</div>
+            <div style="color: #cbd5e1; font-family: monospace; font-size: 0.72rem; word-break: break-all;">URI: aether://${esc(p2pData.myNodeId || 'local')}</div>
             <div style="margin-top: 5px; color: #94a3b8; font-size: 0.72rem;">• 역할: 블록 생성 & DAG 합의 완결자</div>
             <div style="color: #94a3b8; font-size: 0.72rem;">• 합의 라운드: <b>Round #${p2pData.round}</b></div>
             ${natDesc}
@@ -1435,9 +1446,9 @@
               index: i,
               tooltipHtml: `
                 <div style="font-weight: bold; color: var(--accent-green); margin-bottom: 4px;">🌐 분산 피어 노드 #${i + 1}</div>
-                <div style="color: #cbd5e1; font-family: monospace; font-size: 0.72rem; word-break: break-all;">URI: aether://${p.node_id}</div>
-                <div style="margin-top: 5px; color: #94a3b8; font-size: 0.72rem;">• 지연 시간(Ping): <b style="color: var(--accent-green);">${p.latency_ms} ms</b></div>
-                <div style="color: #94a3b8; font-size: 0.72rem;">• 합의 동기화: Round #${p.round || p2pData.round} (동기화 완료)</div>
+                <div style="color: #cbd5e1; font-family: monospace; font-size: 0.72rem; word-break: break-all;">URI: aether://${esc(p.node_id)}</div>
+                <div style="margin-top: 5px; color: #94a3b8; font-size: 0.72rem;">• 지연 시간(Ping): <b style="color: var(--accent-green);">${esc(p.latency_ms)} ms</b></div>
+                <div style="color: #94a3b8; font-size: 0.72rem;">• 합의 동기화: Round #${esc(p.round || p2pData.round)}</div>
                 <div style="color: var(--accent-cyan); font-size: 0.72rem;">• 연결망: 양방향 가십(Gossip) 메시 링크 활성</div>
               `
             };
@@ -1747,7 +1758,7 @@
           }
 
           try {
-            const res = await fetch('/api/p2p/connect', {
+            const res = await api('/api/p2p/connect', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ peer })
@@ -1783,7 +1794,7 @@
     // Draw DAG
     async function renderDAG() {
       try {
-        const res = await fetch('/api/dag');
+        const res = await api('/api/dag');
         const data = await res.json();
         const vertices = data.vertices || [];
 
@@ -1862,7 +1873,7 @@
     // Step round
     async function stepRound() {
       updateCoreMeters(true);
-      await fetch('/api/step', { method: 'POST' });
+      await api('/api/step', { method: 'POST' });
       await fetchStatus();
       if (proView.style.display !== 'none') {
         await renderDAG();
@@ -1877,22 +1888,11 @@
     // Auto heartbeat tick in background
     setInterval(stepRound, 1500);
 
-    // MEV Attack Simulation
-    document.getElementById('btn-mev-attack').addEventListener('click', async () => {
-      const panel = document.getElementById('mev-result-panel');
-      const desc = document.getElementById('mev-result-desc');
-      panel.style.display = 'block';
-      desc.innerHTML = '<span style="color: var(--accent-orange);">⚔️ MEV 샌드위치 봇이 멤풀을 스캔 중...</span>';
-
-      const res = await fetch('/api/mev_attack', { method: 'POST' });
-      const data = await res.json();
-
-      setTimeout(() => {
-        desc.innerHTML = `
-          <b>봇 분석 결과:</b> 멤풀의 트랜잭션이 임계치 DKG 암호화 상태 (${data.ciphertext_preview})이므로 대상 풀/슬리피지 파악 100% 실패!<br>
-          <span style="color: var(--accent-green); font-weight: bold;">✔ 공격 차단 성공:</span> DAG 순서화 완료 후 복호화되어 일반 사용자가 <b>$0 미끄러짐 피해</b>로 안전하게 거래되었습니다.
-        `;
-      }, 600);
+    // MEV defense is not implemented yet; say so plainly.
+    document.getElementById('btn-mev-attack').addEventListener('click', () => {
+      document.getElementById('mev-result-panel').style.display = 'block';
+      document.getElementById('mev-result-desc').textContent =
+        '미구현. 1단계: 포함 목록(검열 저항), 2단계: 커밋 후 복호화(타임락). 그 전까지 이 멤풀은 MEV를 막지 못합니다.';
     });
 
     // Send TX
@@ -1901,7 +1901,7 @@
       const amount = parseInt(document.getElementById('tx-amount').value) || 100;
       const recipient = document.getElementById('tx-recipient').value;
 
-      await fetch('/api/tx', {
+      await api('/api/tx', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type, amount, recipient })
@@ -1918,10 +1918,10 @@
       btn.innerText = "⏳ 10,000건 병렬 연산 중...";
       btn.disabled = true;
 
-      const res = await fetch('/api/bench', { method: 'POST' });
+      const res = await api('/api/bench', { method: 'POST' });
       const data = await res.json();
 
-      alert(`🚀 실측 벤치마크 완료!\n- 전통적 직렬 EVM: ${data.seq_tps.toLocaleString()} TPS\n- 차세대 Block-STM: ${data.par_tps.toLocaleString()} TPS (${data.speedup.toFixed(2)}x 가속)\n- 상태 루트 무결성: 100% 일치`);
+      alert(`🚀 실측 벤치마크 완료!\n- 전통적 직렬 EVM: ${data.seq_tps.toLocaleString()} TPS\n- 차세대 Block-STM: ${data.par_tps.toLocaleString()} TPS (${data.speedup.toFixed(2)}x)\n\n주의: 현재 Block-STM은 정확성 검증 전 구현입니다(순차 실행과 결과 불일치). 속도 수치는 참고용입니다.`);
 
       btn.innerText = "🚀 10,000건 병렬 가속 측정";
       btn.disabled = false;
@@ -1993,7 +1993,7 @@
     // 2. Fetch Contracts
     async function fetchContracts() {
       try {
-        const res = await fetch('/api/contracts');
+        const res = await api('/api/contracts');
         const data = await res.json();
         deployedContracts = data.contracts || [];
 
@@ -2034,15 +2034,15 @@
         item.innerHTML = `
           <div>
             <div style="font-weight: 600; font-size: 0.85rem; color: #fff; display: flex; align-items: center; gap: 0.4rem;">
-              <span>${c.name}</span>
-              <span class="contract-tag ${tagClass}">${c.template}</span>
+              <span>${esc(c.name)}</span>
+              <span class="contract-tag ${tagClass}">${esc(c.template)}</span>
             </div>
             <div style="font-family: monospace; font-size: 0.72rem; color: var(--accent-cyan); margin-top: 0.2rem;">
-              ${c.address}
+              ${esc(c.address)}
             </div>
           </div>
           <div style="font-size: 0.7rem; color: var(--text-muted); text-align: right;">
-            Round #${c.created_at_round}
+            Round #${esc(c.created_at_round)}
           </div>
         `;
         contractListEl.appendChild(item);
@@ -2196,10 +2196,10 @@
 
         const tr = document.createElement('tr');
         tr.innerHTML = `
-          <td><span style="color: var(--accent-cyan);">Slot[${k}]</span></td>
-          <td style="color: var(--text-muted); font-size: 0.8rem;">${desc}</td>
+          <td><span style="color: var(--accent-cyan);">Slot[${esc(k)}]</span></td>
+          <td style="color: var(--text-muted); font-size: 0.8rem;">${esc(desc)}</td>
           <td style="text-align: right;">
-            <span class="slot-val-pill ${isChanged ? 'glow' : ''}">${val.toLocaleString()}</span>
+            <span class="slot-val-pill ${isChanged ? 'glow' : ''}">${esc(val.toLocaleString())}</span>
           </td>
         `;
         slotTableBody.appendChild(tr);
@@ -2220,7 +2220,7 @@
       log(`🚀 스마트 계약 배포 트랜잭션 브로드캐스트: ${name} (${template})...`);
 
       try {
-        const res = await fetch('/api/contract/deploy', {
+        const res = await api('/api/contract/deploy', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name, template, params })
@@ -2255,7 +2255,7 @@
       log(`⚡ 계약 함수 호출 실행: ${method}(${args.join(', ')}) -> ${contract.slice(0, 10)}...`);
 
       try {
-        const res = await fetch('/api/contract/call', {
+        const res = await api('/api/contract/call', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ contract, method, args })

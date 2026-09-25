@@ -56,15 +56,20 @@ fi
 cp -R "$MOUNT_DIR/$APP_NAME" "$INSTALL_DIR/"
 hdiutil detach "$MOUNT_DIR" -quiet
 
-echo "🛡️  [3/4] macOS Gatekeeper 보안 검역 속성 해제 (Quarantine Removal)..."
-xattr -cr "$APP_TARGET"
+echo "🛡️  [3/4] macOS Gatekeeper 서명·노터라이즈 확인..."
+# Never strip quarantine blindly: that would run any unsigned binary we downloaded.
+if ! spctl --assess --type execute "$APP_TARGET" 2>/dev/null; then
+    echo "❌ Gatekeeper 검증 실패: 이 빌드는 노터라이즈되지 않았습니다."
+    echo "   설치를 중단합니다. 신뢰하는 경우에만 직접 확인 후 실행하세요:"
+    echo "   시스템 설정 > 개인정보 보호 및 보안 > '확인 없이 열기'"
+    exit 1
+fi
 
 echo "🚀 [4/4] Aether Node 실행..."
 open "$APP_TARGET"
 
 echo "================================================================================"
 echo "  ✔ Aether Node가 /Applications에 성공적으로 설치되었습니다!"
-echo "  ✔ Gatekeeper 보안 경고 없이 즉시 대시보드가 열립니다."
 echo "  ✔ 다음 실행 시: Spotlight(Cmd+Space) 또는 Launchpad에서 'Aether Node' 검색"
 echo "================================================================================"
 echo ""

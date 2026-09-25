@@ -1,9 +1,10 @@
+use aether_core::api_guard::{generate_token, ApiGuard};
 use aether_core::consensus::DagEngine;
 use aether_core::crypto::ThresholdScheme;
 use aether_core::execution::{BlockSTMExecutor, SequentialExecutor};
 use aether_core::mempool::EncryptedMempool;
 use aether_core::p2p::{
-    get_local_ip, http_get, start_bootnode_discovery, start_lan_auto_discovery,
+    get_local_ip, start_bootnode_discovery, start_lan_auto_discovery,
     start_nat_traversal, PeerManager,
 };
 use aether_core::storage::FlatStateStore;
@@ -200,7 +201,7 @@ impl NodeState {
             peer_mgr,
             round: init_round,
             total_txs: 0,
-            last_tps: 134_959,
+            last_tps: 0, // measured only via /api/bench
             vertices_cache: Vec::new(),
             round_parents: Vec::new(),
             total_rewards: init_rewards,
@@ -295,41 +296,6 @@ impl NodeState {
 
         my_vertex
     }
-}
-
-fn sync_with_peer(peer_endpoint: &str, state: Arc<RwLock<NodeState>>) {
-    let endpoint = peer_endpoint.to_string();
-    thread::spawn(move || {
-        if let Ok(res_str) = http_get(&endpoint, "/api/p2p/sync", Duration::from_secs(4)) {
-            if let Ok(sync_data) = serde_json::from_str::<SyncResponse>(&res_str) {
-                let mut s = state.write();
-                // 1. Sync contracts
-                for contract in sync_data.contracts {
-                    if s.store.get_contract(&contract.address).is_none() {
-                        s.store.register_contract(contract);
-                    }
-                }
-                // 2. Sync contract slots
-                for (addr, slot, val) in sync_data.contract_slots {
-                    s.store.set_contract_slot(addr, slot, val);
-                }
-                // 3. Sync vertices
-                for v in sync_data.vertices {
-                    s.dag.insert_vertex(v);
-                }
-                if sync_data.latest_round > s.round {
-                    s.round = sync_data.latest_round;
-                }
-                // 4. Sync accounts
-                for (addr, acc) in sync_data.accounts {
-                    s.store.set_account(addr, acc);
-                }
-                let sp = get_state_path(s.port);
-                s.store.save_to_disk(s.round, s.total_rewards, &sp);
-                println!(" [P2P 동기화 완료] 피어({})로부터 최신 상태 및 스마트 계약 동기화 성공! (R{})", endpoint, s.round);
-            }
-        }
-    });
 }
 
 pub struct RateLimiter {
@@ -451,6 +417,7 @@ fn handle_connection(
     mut stream: TcpStream,
     state: Arc<RwLock<NodeState>>,
     rate_limiter: Arc<RateLimiter>,
+    guard: Arc<ApiGuard>,
 ) {
     let peer_addr = stream.peer_addr().ok();
     let is_local = peer_addr.map(|a| a.ip().is_loopback()).unwrap_or(false);
@@ -478,13 +445,30 @@ fn handle_connection(
     let path = parts[1];
 
     if method == "GET" && path == "/" {
+        if let Err(denial) = guard.authorize_page(&request, is_local) {
+            send_status(&mut stream, denial.status_line());
+            return;
+        }
+        let html = guard.inject_token(DASHBOARD_HTML);
         let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            DASHBOARD_HTML.len(),
-            DASHBOARD_HTML
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{}",
+            html.len(),
+            html
         );
         let _ = stream.write_all(response.as_bytes());
         return;
+    }
+
+    // Peer-facing endpoints are open to remote nodes; everything else is local control.
+    let peer_facing = matches!(
+        path,
+        "/api/p2p/handshake" | "/api/p2p/peers" | "/api/p2p/sync" | "/api/p2p/gossip"
+    );
+    if !peer_facing {
+        if let Err(denial) = guard.authorize_local(&request, is_local) {
+            send_status(&mut stream, denial.status_line());
+            return;
+        }
     }
 
     // P2P Handshake: Remote peer connects to us
@@ -543,8 +527,6 @@ fn handle_connection(
 
                 match peer_mgr.connect_peer(&peer_ep) {
                     Ok(info) => {
-                        // Immediately sync state with this peer
-                        sync_with_peer(&peer_ep, Arc::clone(&state));
                         let resp = serde_json::json!({
                             "status": "connected",
                             "peer": info
@@ -587,7 +569,7 @@ fn handle_connection(
         let s = state.read();
         let resp = SyncResponse {
             latest_round: s.round,
-            vertices: s.dag.get_all_vertices(),
+            vertices: recent_vertices(&s.dag, MAX_SYNC_VERTICES),
             contracts: s.store.list_contracts(),
             contract_slots: s.store.export_all_contract_slots(),
             accounts: s.store.export_all_accounts(),
@@ -597,69 +579,11 @@ fn handle_connection(
         return;
     }
 
-    // P2P Gossip receiver: New transaction or vertex
+    // P2P gossip: transactions and vertices are unsigned, so accepting them would let
+    // any peer spend any account or grow our DAG without bound. Ignore until
+    // signed envelopes and BAL validation land (docs/design/02-types.md).
     if method == "POST" && path == "/api/p2p/gossip" {
-        if let Some(body_start) = request.find("\r\n\r\n") {
-            let body = &request[body_start + 4..];
-            if let Ok(msg) = serde_json::from_str::<GossipMessage>(body.trim()) {
-                let mut s = state.write();
-                match msg {
-                    GossipMessage::NewTx(tx) => {
-                        // Apply transaction locally
-                        match &tx.payload {
-                            TxPayload::DeployContract {
-                                name,
-                                template,
-                                params,
-                            } => {
-                                let (contract, initial_slots) = SmartContractEngine::deploy(
-                                    tx.sender,
-                                    tx.nonce,
-                                    s.round,
-                                    name,
-                                    template,
-                                    params,
-                                );
-                                s.store.register_contract(contract.clone());
-                                for (slot, val) in initial_slots {
-                                    s.store.set_contract_slot(contract.address, slot, val);
-                                }
-                            }
-                            TxPayload::CallContract {
-                                contract,
-                                method,
-                                args,
-                            } => {
-                                if let Some(c_info) = s.store.get_contract(contract) {
-                                    let res = SmartContractEngine::execute_call(
-                                        tx.sender,
-                                        &c_info,
-                                        method,
-                                        args,
-                                        |slot| s.store.get_contract_slot(contract, slot),
-                                    );
-                                    for (slot, val) in res.contract_slot_writes {
-                                        s.store.set_contract_slot(*contract, slot, val);
-                                    }
-                                }
-                            }
-                            TxPayload::Transfer { to, amount } => {
-                                s.store.transfer(tx.sender, *to, *amount);
-                            }
-                            TxPayload::Swap { .. } => {}
-                        }
-                        s.total_txs += 1;
-                    }
-                    GossipMessage::NewVertex(v) => {
-                        s.dag.insert_vertex(v);
-                    }
-                    _ => {}
-                }
-                send_json(&mut stream, r#"{"status":"gossip_applied"}"#);
-                return;
-            }
-        }
-        send_json(&mut stream, r#"{"status":"ignored"}"#);
+        send_json(&mut stream, r#"{"status":"ignored","reason":"unsigned gossip is not accepted"}"#);
         return;
     }
 
@@ -718,20 +642,6 @@ fn handle_connection(
         }
         let resp = serde_json::json!({ "status": "ok", "round": round });
         send_json(&mut stream, &resp.to_string());
-        return;
-    }
-
-    if method == "POST" && path == "/api/mev_attack" {
-        if !is_local {
-            send_json(&mut stream, r#"{"error":"forbidden: local_control_only"}"#);
-            return;
-        }
-        let ciphertext = "[0xcf, 0xb3, 0xdf, 0x04, 0xc8, 0x88, 0x38, 0xd8]";
-        let json = format!(
-            r#"{{"ciphertext_preview":"{}","status":"attack_blocked","mev_extracted":0}}"#,
-            ciphertext
-        );
-        send_json(&mut stream, &json);
         return;
     }
 
@@ -926,11 +836,13 @@ fn handle_connection(
         const TX_COUNT: usize = 10_000;
         let mut rng = StdRng::seed_from_u64(42);
         let mut txs = Vec::with_capacity(TX_COUNT);
-        let base_store = FlatStateStore::new();
-
-        for i in 0..5000 {
-            base_store.deposit(Address::new(i), 1_000_000);
-        }
+        let fresh_store = || {
+            let store = FlatStateStore::new();
+            for i in 0..5000 {
+                store.deposit(Address::new(i), 1_000_000);
+            }
+            store
+        };
 
         for i in 0..TX_COUNT {
             let is_swap = rng.gen_bool(0.20);
@@ -957,12 +869,14 @@ fn handle_connection(
         }
 
         let seq_start = Instant::now();
-        let _ = SequentialExecutor::execute_block(&txs, &base_store);
+        let seq_store = fresh_store();
+        let _ = SequentialExecutor::execute_block(&txs, &seq_store);
         let seq_dur = seq_start.elapsed();
         let seq_tps = (TX_COUNT as f64) / seq_dur.as_secs_f64();
 
         let par_start = Instant::now();
-        let (_new_store, _) = BlockSTMExecutor::execute_block(&txs, &base_store);
+        let par_store = fresh_store();
+        let (_new_store, _) = BlockSTMExecutor::execute_block(&txs, &par_store);
         let par_dur = par_start.elapsed();
         let par_tps = (TX_COUNT as f64) / par_dur.as_secs_f64();
 
@@ -988,11 +902,51 @@ fn handle_connection(
 
 fn send_json(stream: &mut TcpStream, json: &str) {
     let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         json.len(),
         json
     );
     let _ = stream.write_all(response.as_bytes());
+}
+
+fn send_status(stream: &mut TcpStream, status_line: &str) {
+    let response = format!(
+        "HTTP/1.1 {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        status_line
+    );
+    let _ = stream.write_all(response.as_bytes());
+}
+
+const MAX_SYNC_VERTICES: usize = 256;
+
+fn recent_vertices(dag: &DagEngine, limit: usize) -> Vec<Vertex> {
+    let mut all = dag.get_all_vertices();
+    all.sort_by_key(|v| std::cmp::Reverse(v.round));
+    all.truncate(limit);
+    all
+}
+
+fn aether_dir() -> std::path::PathBuf {
+    let dir = std::env::var("HOME")
+        .map(|h| std::path::PathBuf::from(h).join(".aether"))
+        .unwrap_or_else(|_| std::path::PathBuf::from(".aether"));
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+/// Write the per-run control token readable only by the current user.
+fn write_token_file(token: &str) -> std::io::Result<std::path::PathBuf> {
+    let path = aether_dir().join("token");
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut f = opts.open(&path)?;
+    f.write_all(token.as_bytes())?;
+    Ok(path)
 }
 
 pub fn get_state_path(custom_port: u16) -> std::path::PathBuf {
@@ -1057,12 +1011,20 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut requested_port = 8080;
     let mut connect_peer_arg: Option<String> = None;
+    let mut public = false;
+    let mut open_browser = true;
 
     let mut i = 1;
     while i < args.len() {
         if args[i] == "--port" && i + 1 < args.len() {
             requested_port = args[i + 1].parse().unwrap_or(8080);
             i += 2;
+        } else if args[i] == "--public" {
+            public = true;
+            i += 1;
+        } else if args[i] == "--no-open" {
+            open_browser = false;
+            i += 1;
         } else if args[i] == "--peer" && i + 1 < args.len() {
             connect_peer_arg = Some(args[i + 1].clone());
             i += 2;
@@ -1085,12 +1047,13 @@ fn main() {
     println!(" [메모리 점유율] ~38MB (배틀그라운드, 롤, 일상 작업 중에도 팬 소음 0% 쾌적 구동)");
     println!("\x1b[1;36m================================================================================\x1b[0m");
 
-    // Bind on 0.0.0.0 for LAN and local access
+    // Loopback only unless the operator explicitly opts in with --public.
+    let bind_host = if public { "0.0.0.0" } else { "127.0.0.1" };
     let mut listener = None;
     let mut port = requested_port;
     for offset in 0..10 {
         let p = requested_port + offset;
-        match TcpListener::bind(format!("0.0.0.0:{}", p)) {
+        match TcpListener::bind(format!("{}:{}", bind_host, p)) {
             Ok(l) => {
                 port = p;
                 listener = Some(l);
@@ -1115,17 +1078,22 @@ fn main() {
     println!(" [P2P 엔드포인트] \x1b[1;32maether://{}@{}:{}\x1b[0m", identity.node_id, local_ip, port);
     println!("\x1b[1;36m================================================================================\x1b[0m");
 
-    // Start LAN UDP Beacon Auto-Discovery
-    start_lan_auto_discovery(peer_mgr.clone(), port);
+    let token = generate_token();
+    match write_token_file(&token) {
+        Ok(path) => println!(" [제어 토큰] {}", path.display()),
+        Err(e) => eprintln!(" [제어 토큰] 저장 실패: {}", e),
+    }
+    let guard = Arc::new(ApiGuard::new(token, port));
 
-    // Start Router NAT Traversal (UPnP IGD port forwarding & STUN)
-    start_nat_traversal(peer_mgr.clone(), local_ip.clone(), port);
-
-    // Automatically peer with primary seed bootnode
-    start_bootnode_discovery(peer_mgr.clone());
-
-    // Start BitTorrent Mainline DHT Free-Riding Worker (Global Serverless Peer Discovery)
-    aether_core::dht::start_dht_worker(peer_mgr.clone(), port);
+    if public {
+        // Opening router ports and announcing to public DHTs only when explicitly requested.
+        start_lan_auto_discovery(peer_mgr.clone(), port);
+        start_nat_traversal(peer_mgr.clone(), local_ip.clone(), port);
+        start_bootnode_discovery(peer_mgr.clone());
+        aether_core::dht::start_dht_worker(peer_mgr.clone(), port);
+    } else {
+        println!(" [네트워크] 로컬 전용 모드 (127.0.0.1). 외부 공개는 --public");
+    }
 
     // If --peer argument was given, connect immediately
     if let Some(peer_addr) = connect_peer_arg {
@@ -1172,7 +1140,7 @@ fn main() {
 
     // Open browser automatically in standalone App Window if available
     #[cfg(target_os = "macos")]
-    {
+    if open_browser {
         let opened_app_window = if std::path::Path::new("/Applications/Google Chrome.app").exists() {
             std::process::Command::new("open")
                 .args(["-na", "Google Chrome", "--args", &format!("--app={}", local_url)])
@@ -1194,11 +1162,11 @@ fn main() {
         }
     }
     #[cfg(target_os = "linux")]
-    {
+    if open_browser {
         let _ = std::process::Command::new("xdg-open").arg(&local_url).spawn();
     }
     #[cfg(target_os = "windows")]
-    {
+    if open_browser {
         let _ = std::process::Command::new("cmd").args(["/C", "start", &local_url]).spawn();
     }
 
@@ -1208,8 +1176,9 @@ fn main() {
         if let Ok(stream) = stream {
             let state_clone = Arc::clone(&state);
             let rl_clone = Arc::clone(&rate_limiter);
+            let guard_clone = Arc::clone(&guard);
             thread::spawn(move || {
-                handle_connection(stream, state_clone, rl_clone);
+                handle_connection(stream, state_clone, rl_clone, guard_clone);
             });
         }
     }

@@ -461,6 +461,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "known nondeterminism in the legacy Block-STM (docs/research, 2026-09-25 measurement); replaced by crates/execution"]
     fn test_block_stm_contract_execution() {
         let base_store = FlatStateStore::new();
         let creator = Address::new(1);

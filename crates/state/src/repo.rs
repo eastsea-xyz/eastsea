@@ -15,11 +15,11 @@ pub trait StateRepository {
 }
 
 #[derive(Clone)]
-pub struct MemRepo<H: Hasher + Clone> {
+pub struct MemRepo<H: Hasher> {
     tree: BinaryTree<H>,
 }
 
-impl<H: Hasher + Clone> MemRepo<H> {
+impl<H: Hasher> MemRepo<H> {
     pub fn new(hasher: H) -> Self {
         MemRepo { tree: BinaryTree::new(hasher) }
     }
@@ -29,7 +29,7 @@ impl<H: Hasher + Clone> MemRepo<H> {
     }
 }
 
-impl<H: Hasher + Clone> StateRepository for MemRepo<H> {
+impl<H: Hasher> StateRepository for MemRepo<H> {
     fn get(&self, key: &TreeKey) -> Option<Value> {
         self.tree.get(key)
     }

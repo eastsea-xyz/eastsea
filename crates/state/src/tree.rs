@@ -87,7 +87,7 @@ impl StemNode {
 }
 
 #[derive(Clone)]
-pub struct BinaryTree<H: Hasher + Clone> {
+pub struct BinaryTree<H: Hasher> {
     hasher: H,
     stems: BTreeMap<Stem, StemNode>,
 }
@@ -119,7 +119,7 @@ pub enum ProofError {
     NonCanonicalDigest,
 }
 
-impl<H: Hasher + Clone> BinaryTree<H> {
+impl<H: Hasher> BinaryTree<H> {
     pub fn new(hasher: H) -> Self {
         BinaryTree { hasher, stems: BTreeMap::new() }
     }

@@ -20,7 +20,7 @@ pub enum HashId {
     Blake3,
 }
 
-pub trait Hasher: Send + Sync + 'static {
+pub trait Hasher: Clone + Send + Sync + 'static {
     const ID: HashId;
 
     /// Hash arbitrary bytes. Injective encoding: different inputs never share

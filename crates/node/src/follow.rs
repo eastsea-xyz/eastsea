@@ -48,14 +48,33 @@ const MAX_RESPONSE: usize = 4 * MAX_BLOCK_BYTES as usize + (1 << 20);
 /// or over iroh (found by node id on the Mainline DHT).
 pub enum Upstream {
     Http(Vec<String>),
-    Iroh(aether_net::RpcClient),
+    /// The client, and how many answers in a row gave nothing new.
+    Iroh(aether_net::RpcClient, std::sync::atomic::AtomicU32),
 }
 
 impl Upstream {
     /// Ask each source in turn until `accept` takes an answer.
     async fn ask<T>(&self, method: &str, params: Value, accept: impl Fn(Value) -> Result<Option<T>, String>) -> Result<Option<T>, String> {
         match self {
-            Upstream::Iroh(c) => accept(c.call(method, params).await.map_err(|e| e.to_string())?),
+            Upstream::Iroh(c, misses) => {
+                use std::sync::atomic::Ordering::Relaxed;
+                let answer = c.call(method, params).await.map_err(|e| e.to_string()).and_then(&accept);
+                // Switch validators when one serves data that does not verify, or has
+                // had nothing new for a while (it may be lagging behind the others).
+                let stale = match &answer {
+                    Ok(Some(_)) => {
+                        misses.store(0, Relaxed);
+                        false
+                    }
+                    Ok(None) => misses.fetch_add(1, Relaxed) + 1 >= 10,
+                    Err(_) => true,
+                };
+                if stale {
+                    misses.store(0, Relaxed);
+                    c.rotate().await;
+                }
+                answer
+            }
             Upstream::Http(urls) => {
                 let mut last = Err(String::from("no upstream"));
                 for url in urls {
@@ -135,7 +154,8 @@ fn check(set: &ValidatorSet, h: u64, v: Value) -> Result<Option<(Block, String, 
         return Err(format!("asked for block {h}, got a certificate for {}", verified.height));
     }
     let block = Block::decode_cfg(bb.as_slice(), &Block::codec_config(MAX_BLOCK_BYTES)).map_err(|e| format!("block: {e}"))?;
-    Ok(Some((block, bh, fh)))
+    // Keep the canonical encoding, never the upstream's text (which may be padded).
+    Ok(Some((block, aether_light::to_hex(&bb), aether_light::to_hex(&fb))))
 }
 
 /// Forward txs submitted to this follower to the validators, retrying for a

@@ -855,7 +855,7 @@ fn run_follow(network: Option<String>, from_rpc: Vec<String>, data: String, rpc_
         let store = aether_node::store::Store::open(&std::path::Path::new(&data).join("state.redb")).map_err(|e| e.to_string())?;
         let (chain, _) = Chain::open(cfg, store).map_err(|e| format!("restore state (delete the data dir to resync): {e}"))?;
         let upstream = Arc::new(if from_rpc.is_empty() {
-            Upstream::Iroh(aether_net::RpcClient::new(nodes).await.map_err(|e| e.to_string())?)
+            Upstream::Iroh(aether_net::RpcClient::new(nodes).await.map_err(|e| e.to_string())?, Default::default())
         } else {
             Upstream::Http(from_rpc)
         });

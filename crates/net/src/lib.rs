@@ -176,11 +176,20 @@ pub struct RpcClient {
     endpoint: Endpoint,
     nodes: Vec<EndpointId>,
     current: tokio::sync::Mutex<Option<(EndpointId, Connection)>>,
+    /// Where the next connection attempt starts in `nodes` (moved by `rotate`).
+    start: std::sync::atomic::AtomicUsize,
 }
 
 impl RpcClient {
     pub async fn new(nodes: Vec<EndpointId>) -> Result<Self> {
-        Ok(RpcClient { endpoint: bind(None, vec![]).await?, nodes, current: tokio::sync::Mutex::new(None) })
+        Ok(RpcClient { endpoint: bind(None, vec![]).await?, nodes, current: tokio::sync::Mutex::new(None), start: std::sync::atomic::AtomicUsize::new(0) })
+    }
+
+    /// Drop the current node and prefer the next one (e.g. it is answering but
+    /// lagging behind, or answering with data that does not verify).
+    pub async fn rotate(&self) {
+        *self.current.lock().await = None;
+        self.start.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     async fn connection(&self) -> Result<(EndpointId, Connection)> {
@@ -191,7 +200,8 @@ impl RpcClient {
             }
         }
         let mut last = anyhow!("no nodes configured");
-        for id in &self.nodes {
+        let start = self.start.load(std::sync::atomic::Ordering::Relaxed);
+        for id in self.nodes.iter().cycle().skip(start % self.nodes.len().max(1)).take(self.nodes.len()) {
             match tokio::time::timeout(Duration::from_secs(20), self.endpoint.connect(EndpointAddr::from(*id), ALPN_RPC)).await {
                 Ok(Ok(c)) => {
                     *cur = Some((*id, c.clone()));

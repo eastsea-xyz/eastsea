@@ -154,7 +154,9 @@ fn local_call(port: u16, method: &str, params: Value) -> R<Value> {
 }
 
 fn call(method: &str, params: Value) -> R<Value> {
-    if let Some(port) = *LOCAL_NODE.lock().expect("local node lock") {
+    // Copy the setting out first: never hold the lock across a network read.
+    let local = *LOCAL_NODE.lock().expect("local node lock");
+    if let Some(port) = local {
         return local_call(port, method, params);
     }
     let n = net()?;
@@ -171,7 +173,8 @@ fn call(method: &str, params: Value) -> R<Value> {
 /// How the wallet currently reaches the network (for display).
 #[uniffi::export]
 pub fn connection() -> String {
-    if let Some(port) = *LOCAL_NODE.lock().expect("local node lock") {
+    let local = *LOCAL_NODE.lock().expect("local node lock");
+    if let Some(port) = local {
         return format!("This Mac's node (127.0.0.1:{port})");
     }
     match net() {
@@ -215,12 +218,22 @@ fn anchor(height: u64, set: &ValidatorSet) -> R<VerifiedBlock> {
         if !v.is_null() {
             let block = from_hex(v["block"].as_str().unwrap_or_default()).map_err(|e| WalletError::Verification(e.to_string()))?;
             let fin = from_hex(v["finalization"].as_str().unwrap_or_default()).map_err(|e| WalletError::Verification(e.to_string()))?;
-            return verify_finalized(set, &block, &fin).map_err(|e| WalletError::Verification(format!("certificate: {e}")));
+            let vb = verify_finalized(set, &block, &fin).map_err(|e| WalletError::Verification(format!("certificate: {e}")))?;
+            // A valid but old certificate would let a node replay past state (e.g. an
+            // old, looser session that the owner then re-signs): require a recent one.
+            let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(u64::MAX);
+            if now_ms.saturating_sub(vb.timestamp_ms) > MAX_ANCHOR_AGE_MS {
+                return Err(WalletError::Verification(format!("the node served state from {} s ago; refusing stale data", (now_ms - vb.timestamp_ms) / 1000)));
+            }
+            return Ok(vb);
         }
         std::thread::sleep(Duration::from_millis(250));
     }
     Err(WalletError::Network(format!("block {} not finalized yet", height + 1)))
 }
+
+/// Verified state older than this is refused (clock skew and a slow network included).
+const MAX_ANCHOR_AGE_MS: u64 = 10 * 60 * 1000;
 
 static COMMITTEE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 static NODES: std::sync::Mutex<Option<Vec<aether_net::EndpointId>>> = std::sync::Mutex::new(None);
@@ -581,7 +594,7 @@ pub fn prepare_recovery(p256_public_key: Vec<u8>, lost_account: String, validato
     let set = trusted_set(validators)?;
     // Balance, guardian list, threshold and proposal nonce, all proven against certified state roots.
     let account = verified_account(lost.to_checksum(None), validators)?;
-    let count = verified_slot(lost, slots::guardian_count(), &set)?.to::<u64>();
+    let count = verified_slot(lost, slots::guardian_count(), &set)?.to::<u64>().min(8); // the contract allows at most 8
     let (threshold, delay) = slots::unpack_threshold_and_delay(verified_slot(lost, slots::threshold_and_delay(), &set)?);
     if count == 0 {
         return Err(WalletError::Invalid("that account has no recovery devices".into()));
@@ -744,7 +757,8 @@ pub fn prepare_set_session(owner_public_key: Vec<u8>, settings: SessionSettings,
     let mut sec1 = vec![4u8];
     sec1.extend_from_slice(&x);
     sec1.extend_from_slice(&y);
-    let gas_payer = address_of(&PublicKey { scheme: aether_types::SignerScheme::P256, bytes: sec1 }).map_err(|e| WalletError::Invalid(e.to_string()))?;
+    // Addresses are derived from the compressed key, as tx authentication does.
+    let gas_payer = address_of(&p256_key(&sec1)?).map_err(|e| WalletError::Invalid(e.to_string()))?;
     let amount = |v: &str, what: &str| v.parse::<u128>().map_err(|_| WalletError::Invalid(format!("{what}: {v}")));
     let limits = acct::SessionLimits {
         per_payment: amount(&per_payment_wei, "per payment")?,

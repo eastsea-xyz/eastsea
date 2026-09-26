@@ -188,7 +188,7 @@ pub fn to_hex(b: &[u8]) -> String {
 }
 
 pub fn from_hex(s: &str) -> Result<Vec<u8>, LightError> {
-    let s = s.trim_start_matches("0x");
+    let s = s.strip_prefix("0x").unwrap_or(s);
     // Untrusted input: work on bytes, so non-ASCII text is an error, never a panic.
     let b = s.as_bytes();
     if !b.len().is_multiple_of(2) {

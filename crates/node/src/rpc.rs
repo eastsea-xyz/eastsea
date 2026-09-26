@@ -109,8 +109,15 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
             let f = st.faucet.as_ref().ok_or((-32601, "this node does not run the faucet".to_string()))?;
             let tx = f.grant(chain, to, std::time::Instant::now()).map_err(|e| (-32000, e.to_string()))?;
             let hash = aether_execution::tx_hash(&tx);
-            if chain.add_to_mempool(tx.clone()).map_err(|e| (-32000, e))? {
-                let _ = st.gossip.send(tx);
+            match chain.add_to_mempool(tx.clone()) {
+                Ok(true) => {
+                    let _ = st.gossip.send(tx);
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    f.cancel(to, &tx);
+                    return Err((-32000, e));
+                }
             }
             Ok(json!({ "hash": hash, "amount_wei": crate::faucet::GRANT.to_string() }))
         }

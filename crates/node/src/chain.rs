@@ -120,6 +120,8 @@ pub struct Inner {
     pub deprioritize: Option<Address>,
     /// Durable finalized state; None = memory only (tests).
     store: Option<Arc<Store>>,
+    /// Pending txs per sender (bounded by `MAX_PER_SENDER`).
+    pub pending_by_sender: HashMap<Address, usize>,
 }
 
 #[derive(Clone)]
@@ -168,6 +170,7 @@ impl Chain {
             blocks,
             receipts: HashMap::new(),
             mempool: BTreeMap::new(),
+            pending_by_sender: HashMap::new(),
             arrivals: HashMap::new(),
             inclusion: InclusionPool::default(),
             censor: None,
@@ -368,9 +371,10 @@ impl Chain {
         if g.cfg.fees {
             admissible(&tx, state, Self::next_base_fee(&g.cfg, &g.finalized))?;
         }
-        if g.mempool.values().filter(|t| t.header.sender == tx.header.sender).count() >= MAX_PER_SENDER {
+        if g.pending_by_sender.get(&tx.header.sender).copied().unwrap_or(0) >= MAX_PER_SENDER {
             return Err(format!("sender has {MAX_PER_SENDER} pending transactions"));
         }
+        *g.pending_by_sender.entry(tx.header.sender).or_default() += 1;
         g.mempool.insert(h, tx);
         g.arrivals.insert(h, Instant::now());
         Ok(true)
@@ -426,6 +430,10 @@ impl Chain {
         g.mempool.retain(|_, tx| tx.header.nonce >= state.nonce(&tx.header.sender));
         let inner = &mut *g;
         inner.arrivals.retain(|h, _| inner.mempool.contains_key(h));
+        inner.pending_by_sender.clear();
+        for t in inner.mempool.values() {
+            *inner.pending_by_sender.entry(t.header.sender).or_default() += 1;
+        }
         inner.inclusion.prune(&state, exec.height, Instant::now());
         g.blocks.insert(exec.height, summary);
         g.finalized = exec.clone();
@@ -448,8 +456,11 @@ fn admissible(tx: &TxEnvelope, state: &WorldState, base: FeeVector) -> Result<()
     if tx.header.gas.prove < call.gas_limit {
         return Err("prove budget below the gas limit".into());
     }
-    let need = U256::from(call.gas_limit) * U256::from(tx.header.max_fee.exec) + U256::from(tx.header.gas.prove) * U256::from(base.prove) + call.value;
-    if state.balance(&tx.header.sender) < need {
+    let need = U256::from(call.gas_limit)
+        .checked_mul(U256::from(tx.header.max_fee.exec))
+        .and_then(|g| U256::from(tx.header.gas.prove).checked_mul(U256::from(base.prove)).and_then(|p| g.checked_add(p)))
+        .and_then(|n| n.checked_add(call.value));
+    if need.is_none_or(|n| state.balance(&tx.header.sender) < n) {
         return Err("insufficient funds for value, gas and prove budget".into());
     }
     Ok(())

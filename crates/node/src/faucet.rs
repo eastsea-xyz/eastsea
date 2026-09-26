@@ -93,6 +93,16 @@ impl Faucet {
         Ok(Self::from_seed(&seed)?.address)
     }
 
+    /// Undo a grant that never reached the mempool, so its nonce is not skipped.
+    pub fn cancel(&self, to: Address, tx: &TxEnvelope) {
+        let mut st = self.state.lock().expect("faucet lock");
+        if st.next_nonce == tx.header.nonce + 1 {
+            st.next_nonce = tx.header.nonce;
+            st.today = st.today.saturating_sub(1);
+            st.last.remove(&to);
+        }
+    }
+
     /// Sign a grant to `to` if the limits allow it.
     pub fn grant(&self, chain: &Chain, to: Address, now: Instant) -> Result<TxEnvelope, FaucetError> {
         let (cfg, onchain_nonce, base) = {

@@ -12,12 +12,14 @@ targets:
       - Sources
       - path: Resources
         buildPhase: resources
+      - Assets.xcassets
       - path: Generated/aether_ffi.swift
     settings:
       base:
         # Distributed outside the App Store by Pipln: Developer ID signing, notarized.
         PRODUCT_BUNDLE_IDENTIFIER: com.pipln.aether
         PRODUCT_NAME: Aether
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         DEVELOPMENT_TEAM: 45WU468FZE
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "Developer ID Application: Pipln (45WU468FZE)"
@@ -53,11 +55,13 @@ targets:
       - Sources
       - path: Resources
         buildPhase: resources
+      - Assets.xcassets
       - path: Generated/aether_ffi.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.pipln.aether.ios
         PRODUCT_NAME: Aether
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         DEVELOPMENT_TEAM: 45WU468FZE
         SWIFT_VERSION: "5.0"
         GENERATE_INFOPLIST_FILE: YES

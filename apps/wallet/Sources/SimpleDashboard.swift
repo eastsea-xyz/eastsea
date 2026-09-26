@@ -96,6 +96,7 @@ private struct HomePage: View {
 
     var body: some View {
         VStack(spacing: 22) {
+            IncomingRecoveryAlert()
             hero
             HStack(spacing: 28) {
                 RoundAction(title: "Receive", icon: "qrcode") { sheet = .receive }.disabled(model.address.isEmpty)
@@ -188,9 +189,32 @@ private struct NetworkPage: View {
     }
 }
 
+/// Shown when someone started recovering THIS account: cancel it if it was not you.
+private struct IncomingRecoveryAlert: View {
+    @EnvironmentObject var model: WalletModel
+
+    var body: some View {
+        if let r = model.incomingRecovery {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "exclamationmark.shield.fill").font(.title).foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Your recovery devices started moving your funds").font(.headline)
+                    Text("If this was not you, cancel it. It can run after \(Date(timeIntervalSince1970: TimeInterval(r.readyAt)).formatted(date: .abbreviated, time: .shortened)).")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Cancel it") { model.cancelIncomingRecovery() }.buttonStyle(.borderedProminent).tint(.orange).disabled(model.busy)
+            }
+            .padding(16)
+            .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+    }
+}
+
 private struct SecurityPage: View {
     var body: some View {
         VStack(spacing: 16) {
+            IncomingRecoveryAlert()
             Card {
                 HStack(alignment: .top, spacing: 14) {
                     Image(systemName: "lock.shield.fill").font(.system(size: 34)).foregroundStyle(Color.aether)
@@ -589,10 +613,22 @@ private struct RecoveryPanel: View {
                 Button { Clipboard.copy(model.recoveryCode) } label: { Label("Copy", systemImage: "doc.on.doc") }.disabled(model.recoveryCode.isEmpty)
             }
             Divider()
-            step(3, "Recover a lost account", "Only works if that account trusted this device.")
-            HStack {
-                TextField("0x lost account", text: $model.lostInput).textFieldStyle(.roundedBorder).font(.caption.monospaced())
-                Button("Recover") { model.recover() }.disabled(model.busy || model.lostInput.isEmpty)
+            step(3, "Recover a lost account", "Only works if that account trusted this device. The funds move after its safety delay (48 h by default); its owner can stop it meanwhile.")
+            if let p = model.outgoingRecovery {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Recovering \(Short.address(p.request.lost)): \(Wei.format(p.request.valueWei)) AETH").font(.callout.weight(.medium))
+                        Text(p.isReady ? "Ready to finish" : "Can finish \(p.readyAt.formatted(date: .abbreviated, time: .shortened))")
+                            .font(.caption).foregroundStyle(p.isReady ? .green : .secondary)
+                    }
+                    Spacer()
+                    Button("Finish recovery") { model.finishRecovery() }.buttonStyle(.borderedProminent).disabled(model.busy || !p.isReady)
+                }
+            } else {
+                HStack {
+                    TextField("0x lost account", text: $model.lostInput).textFieldStyle(.roundedBorder).font(.caption.monospaced())
+                    Button("Start recovery") { model.recover() }.disabled(model.busy || model.lostInput.isEmpty)
+                }
             }
         }
     }

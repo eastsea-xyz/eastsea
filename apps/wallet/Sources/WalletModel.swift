@@ -22,6 +22,11 @@ final class WalletModel: ObservableObject {
     @Published var history: [BalancePoint] = []
     /// This wallet's own actions, newest first, for the simple-mode feed.
     @Published var activity: [ActivityItem] = []
+    /// A recovery someone started on THIS account (cancel it if it was not you).
+    @Published var incomingRecovery: RecoveryStatus?
+    /// A recovery this device proposed for another account, waiting for its delay.
+    @Published var outgoingRecovery: PendingRecovery?
+    private var refreshes = 0
 
     private var enclave: EnclaveAccount?
     private var timer: Timer?
@@ -34,6 +39,7 @@ final class WalletModel: ObservableObject {
             enclave = acct
             address = try accountAddress(p256PublicKey: acct.publicKey)
             loadSaved()
+            outgoingRecovery = PendingRecovery.load()
             recoveryCode = try recoveryKeyCode(p256PublicKey: acct.publicKey)
             keyLabel = acct.isSecureEnclave ? "Key in Secure Enclave" : "Simulator: software key (no Secure Enclave)"
             note(acct.isSecureEnclave ? "Secure Enclave key ready. Signing asks for Touch ID / Face ID or your passcode." : "Simulator: software key (no Secure Enclave here). Use a real device for hardware-bound keys.")
@@ -78,8 +84,9 @@ final class WalletModel: ObservableObject {
         }
     }
 
-    /// As the recovery key of `lostInput`: sign the sweep with this Mac's key, then
-    /// submit it from this account (two Secure Enclave signatures).
+    /// As a recovery device of `lostInput`: propose moving its funds here (two
+    /// Secure Enclave signatures). They move only after the owner's delay, and
+    /// the owner can cancel meanwhile; then `finishRecovery()`.
     func recover() {
         guard let enclave else { return }
         let lost = lostInput.trimmingCharacters(in: .whitespacesAndNewlines), pk = enclave.publicKey, n = validators
@@ -91,9 +98,45 @@ final class WalletModel: ObservableObject {
                 let prepared = try prepareRecoverySubmit(p256PublicKey: pk, request: request, guardianSignature: guardianSig)
                 let sig = try enclave.sign(prepared.signingMessage)           // relay from this account
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
-                await self.track(h, label: "Recovered \(Wei.format(request.valueWei)) AETH from \(lost.prefix(10))…",
-                                 item: ActivityItem(kind: .received, title: "Recovered from \(Short.address(lost))", amount: Double(Wei.format(request.valueWei))))
+                let pending = PendingRecovery(request: request, readyAt: Date().addingTimeInterval(TimeInterval(request.delaySeconds)))
+                await MainActor.run { self.outgoingRecovery = pending; pending.save() }
+                await self.track(h, label: "Recovery of \(lost.prefix(10))… proposed; funds can move after \(pending.readyAt.formatted())",
+                                 item: ActivityItem(kind: .security, title: "Recovery started for \(Short.address(lost))", amount: nil))
             } catch { await MainActor.run { self.note("Recovery failed: \(error)"); self.busy = false } }
+        }
+    }
+
+    /// After the delay: move the recovered funds (one Secure Enclave signature).
+    func finishRecovery() {
+        guard let enclave, let pending = outgoingRecovery else { return }
+        let pk = enclave.publicKey
+        busy = true
+        Task.detached {
+            do {
+                let prepared = try prepareFinishRecovery(p256PublicKey: pk, request: pending.request)
+                let sig = try enclave.sign(prepared.signingMessage)
+                let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
+                await MainActor.run { self.outgoingRecovery = nil; PendingRecovery.clear() }
+                await self.track(h, label: "Recovered \(Wei.format(pending.request.valueWei)) AETH from \(pending.request.lost.prefix(10))…",
+                                 item: ActivityItem(kind: .received, title: "Recovered from \(Short.address(pending.request.lost))",
+                                                    amount: Double(Wei.format(pending.request.valueWei))))
+            } catch { await MainActor.run { self.note("Finishing recovery failed: \(error)"); self.busy = false } }
+        }
+    }
+
+    /// Stop a recovery of this account that you did not start (one Secure Enclave signature).
+    func cancelIncomingRecovery() {
+        guard let enclave else { return }
+        let pk = enclave.publicKey
+        busy = true
+        Task.detached {
+            do {
+                let prepared = try prepareCancelRecovery(p256PublicKey: pk)
+                let sig = try enclave.sign(prepared.signingMessage)
+                let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
+                await MainActor.run { self.incomingRecovery = nil }
+                await self.track(h, label: "Cancelled a recovery of this account", item: ActivityItem(kind: .security, title: "Recovery cancelled", amount: nil))
+            } catch { await MainActor.run { self.note("Cancel failed: \(error)"); self.busy = false } }
         }
     }
 
@@ -105,7 +148,13 @@ final class WalletModel: ObservableObject {
 
     func refresh() {
         let addr = address, n = validators
+        refreshes += 1
+        // Recovery status needs several proofs; every 30 s is enough to warn within the delay.
+        let checkRecovery = refreshes % 15 == 1 && !addr.isEmpty
         Task.detached {
+            if checkRecovery, let rs = try? recoveryStatus(account: addr, validators: n) {
+                await MainActor.run { self.incomingRecovery = rs.pending ? rs : nil }
+            }
             let st = try? chainStatus()
             let conn = connection()
             let bl = (try? recentBlocks(n: 24)) ?? []
@@ -271,4 +320,32 @@ enum Wei {
         let w = whole.isEmpty ? "0" : String(whole)
         return frac.isEmpty ? w : "\(w).\(frac.prefix(6))"
     }
+}
+
+/// A recovery this device proposed, kept until it is finished (survives restarts).
+struct PendingRecovery {
+    let request: RecoveryRequest
+    let readyAt: Date
+
+    var isReady: Bool { Date() >= readyAt }
+
+    private static let key = "pendingRecovery"
+
+    func save() {
+        let r = request
+        let d: [String: Any] = ["lost": r.lost, "to": r.to, "value": r.valueWei, "nonce": r.guardianNonce, "index": Int(r.guardianIndex),
+                                "delay": r.delaySeconds, "message": r.message.base64EncodedString(), "readyAt": readyAt.timeIntervalSince1970]
+        UserDefaults.standard.set(d, forKey: Self.key)
+    }
+
+    static func load() -> PendingRecovery? {
+        guard let d = UserDefaults.standard.dictionary(forKey: key), let lost = d["lost"] as? String, let to = d["to"] as? String,
+              let value = d["value"] as? String, let nonce = d["nonce"] as? UInt64, let index = d["index"] as? Int,
+              let delay = d["delay"] as? UInt64, let msg = (d["message"] as? String).flatMap({ Data(base64Encoded: $0) }),
+              let ready = d["readyAt"] as? Double else { return nil }
+        let r = RecoveryRequest(lost: lost, to: to, valueWei: value, guardianNonce: nonce, guardianIndex: UInt8(index), delaySeconds: delay, message: msg)
+        return PendingRecovery(request: r, readyAt: Date(timeIntervalSince1970: ready))
+    }
+
+    static func clear() { UserDefaults.standard.removeObject(forKey: key) }
 }

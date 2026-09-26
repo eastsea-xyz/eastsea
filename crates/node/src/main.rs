@@ -206,18 +206,36 @@ enum Cmd {
         rpc: String,
         #[arg(long)]
         from_dev: u8,
-        #[arg(long)]
-        guardian_dev: u8,
+        /// Recovery devices (dev account numbers), comma separated.
+        #[arg(long, value_delimiter = ',')]
+        guardian_dev: Vec<u8>,
+        /// How many of them must sign a recovery.
+        #[arg(long, default_value_t = 1)]
+        threshold: u8,
+        /// Seconds between a proposal and when it may run (the owner can cancel meanwhile).
+        #[arg(long, default_value_t = aether_execution::account::DEFAULT_DELAY)]
+        delay: u64,
     },
-    /// As `guardian_dev`, sweep the lost account's verified balance to itself
-    /// (guardian signs with P-256; it also relays and pays gas).
-    Recover {
+    /// Stop a pending recovery of your account.
+    CancelRecovery {
         #[arg(long, default_value = "http://127.0.0.1:8545")]
         rpc: String,
         #[arg(long)]
-        guardian_dev: u8,
+        from_dev: u8,
+    },
+    /// Guardians propose moving the lost account's verified balance to the first
+    /// guardian's account; it runs after the delay with `--finish`.
+    Recover {
+        #[arg(long, default_value = "http://127.0.0.1:8545")]
+        rpc: String,
+        /// Signing recovery devices (dev account numbers), comma separated; the first relays.
+        #[arg(long, value_delimiter = ',')]
+        guardian_dev: Vec<u8>,
         #[arg(long)]
         lost: Address,
+        /// Run a proposal whose delay has passed: `--finish <to>:<value wei>` as printed by the proposal.
+        #[arg(long)]
+        finish: Option<String>,
         #[arg(long, default_value_t = 4)]
         validators: u64,
         #[arg(long)]
@@ -334,46 +352,76 @@ fn main() {
             };
             submit(&rpc, from_dev, None, c, wait).map(|_| ())
         })(),
-        Cmd::SetGuardian { rpc, from_dev, guardian_dev } => (|| {
-            let guardian = P256Signer::from_seed(&dev_seed(guardian_dev)).map_err(|e| e.to_string())?;
-            let (x, y) = aether_crypto::p256_xy(&guardian.public_key().bytes).map_err(|e| format!("{e:?}"))?;
+        Cmd::SetGuardian { rpc, from_dev, guardian_dev, threshold, delay } => (|| {
+            let keys = guardian_dev
+                .iter()
+                .map(|d| {
+                    let g = P256Signer::from_seed(&dev_seed(*d)).map_err(|e| e.to_string())?;
+                    aether_crypto::p256_xy(&g.public_key().bytes).map_err(|e| format!("{e:?}"))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
             let me = dev_address(from_dev)?;
+            let set = aether_execution::account::encode_set_guardians(&keys, threshold, delay);
             let c = EvmCall {
                 to: Some(me),
                 value: U256::ZERO,
-                input: aether_execution::encode_execute(&[(me, U256::ZERO, aether_execution::encode_set_guardian(x, y))]),
-                gas_limit: 200_000,
+                input: aether_execution::encode_execute(&[(me, U256::ZERO, set)]),
+                gas_limit: 500_000,
                 delegate: (!is_delegated(&rpc, me)?).then_some(aether_execution::AETHER_ACCOUNT),
             };
+            println!("{} recovery device(s), {threshold} must sign, {delay} s delay", keys.len());
             submit(&rpc, from_dev, None, c, true).map(|_| ())
         })(),
-        Cmd::Recover { rpc, guardian_dev, lost, validators, identity } => (|| {
+        Cmd::CancelRecovery { rpc, from_dev } => (|| {
+            let me = dev_address(from_dev)?;
+            let input = aether_execution::encode_execute(&[(me, U256::ZERO, aether_execution::account::encode_cancel_recovery())]);
+            submit(&rpc, from_dev, None, EvmCall { to: Some(me), value: U256::ZERO, input, gas_limit: 200_000, delegate: None }, true).map(|_| ())
+        })(),
+        Cmd::Recover { rpc, guardian_dev, lost, finish, validators, identity } => (|| {
+            use aether_execution::account::{self as acct, slots};
+            let relay = *guardian_dev.first().ok_or("--guardian-dev")?;
+            if let Some(spec) = finish {
+                let (to, value) = spec.split_once(':').ok_or("--finish <to>:<value wei>")?;
+                let calls = [(to.parse::<Address>().map_err(|e| e.to_string())?, value.parse::<U256>().map_err(|e| e.to_string())?, Bytes::new())];
+                let c = EvmCall { to: Some(lost), value: U256::ZERO, input: acct::encode_execute_recovery(&calls), gas_limit: 300_000, delegate: None };
+                return submit(&rpc, relay, None, c, true).map(|_| ());
+            }
             let set = trusted(validators, identity)?;
-            let guardian = P256Signer::from_seed(&dev_seed(guardian_dev)).map_err(|e| e.to_string())?;
-            let me = dev_address(guardian_dev)?;
-            // Balance and guardian nonce, both proven against a certified root.
+            let slot = |slot: U256| -> Result<U256, String> {
+                let v = call(&rpc, "aether_getStorage", json!([lost, slot]))?;
+                let proof: Proof = serde_json::from_value(v["proof"].clone()).map_err(|e| e.to_string())?;
+                let anchor = certified_anchor(&rpc, v["height"].as_u64().unwrap_or_default(), &set)?;
+                aether_light::verify_storage(&anchor, &lost, slot, &proof).map_err(|e| e.to_string())
+            };
+            // Balance, guardian list and proposal nonce, all proven against certified roots.
             let v = call(&rpc, "aether_getAccount", json!([lost]))?;
             let proof: Proof = serde_json::from_value(v["proof"].clone()).map_err(|e| e.to_string())?;
             let anchor = certified_anchor(&rpc, v["height"].as_u64().unwrap_or_default(), &set)?;
             let balance = U256::from(aether_light::verify_account(&anchor, &lost, &proof).map_err(|e| e.to_string())?.unwrap_or_default().balance);
-            let slot = U256::from_str_radix(GUARDIAN_SLOT, 16).expect("slot") + U256::from(2u64);
-            let v = call(&rpc, "aether_getStorage", json!([lost, slot]))?;
-            let proof: Proof = serde_json::from_value(v["proof"].clone()).map_err(|e| e.to_string())?;
-            let anchor = certified_anchor(&rpc, v["height"].as_u64().unwrap_or_default(), &set)?;
-            let nonce = aether_light::verify_storage(&anchor, &lost, slot, &proof).map_err(|e| e.to_string())?.to::<u64>();
+            let count = slot(slots::guardian_count())?.to::<u64>();
+            let mut keys = Vec::new();
+            for i in 0..count {
+                keys.push((slot(slots::guardian(i))?.to_be_bytes::<32>(), slot(slots::guardian(i) + U256::from(1u64))?.to_be_bytes::<32>()));
+            }
+            let nonce = slot(slots::recovery_nonce())?.to::<u64>();
+            let (_, delay) = slots::unpack_threshold_and_delay(slot(slots::threshold_and_delay())?);
             let chain_id = call(&rpc, "aether_status", json!([]))?["chain_id"].as_u64().unwrap_or_default();
+            let me = dev_address(relay)?;
             let calls = [(me, balance, Bytes::new())];
-            let sig = guardian.sign(&aether_execution::guardian_message(chain_id, lost, nonce, &calls)).map_err(|e| format!("{e:?}"))?;
-            let (r, s): ([u8; 32], [u8; 32]) = (sig[..32].try_into().expect("32"), sig[32..64].try_into().expect("32"));
-            println!("recovering {balance} wei from {lost} (guardian nonce {nonce})");
-            let c = EvmCall {
-                to: Some(lost),
-                value: U256::ZERO,
-                input: aether_execution::encode_guardian_execute(&calls, r, s),
-                gas_limit: 250_000,
-                delegate: None,
-            };
-            submit(&rpc, guardian_dev, None, c, true).map(|_| ())
+            let message = acct::recovery_message(chain_id, lost, nonce, &calls);
+            let mut sigs = Vec::new();
+            for d in &guardian_dev {
+                let g = P256Signer::from_seed(&dev_seed(*d)).map_err(|e| e.to_string())?;
+                let k = aether_crypto::p256_xy(&g.public_key().bytes).map_err(|e| format!("{e:?}"))?;
+                let i = keys.iter().position(|x| *x == k).ok_or(format!("dev {d} is not a recovery device of {lost}"))?;
+                let sig = g.sign(&message).map_err(|e| format!("{e:?}"))?;
+                sigs.push((i as u8, sig[..32].try_into().expect("32"), sig[32..64].try_into().expect("32")));
+            }
+            println!("proposing to move {balance} wei from {lost} to {me} (proposal {nonce}, runs after {delay} s unless the owner cancels)");
+            let c = EvmCall { to: Some(lost), value: U256::ZERO, input: acct::encode_propose_recovery(&calls, &sigs), gas_limit: 500_000, delegate: None };
+            submit(&rpc, relay, None, c, true)?;
+            println!("then: aether recover --rpc {rpc} --guardian-dev {relay} --lost {lost} --finish {me}:{balance}");
+            Ok(())
         })(),
         Cmd::Deploy { rpc, from_dev, code } => (|| {
             let input = Bytes::from(hex::decode(code.trim_start_matches("0x")).map_err(|e| e.to_string())?);
@@ -911,9 +959,6 @@ fn call(rpc: &str, method: &str, params: Value) -> Result<Value, String> {
 fn pretty(v: &Value) -> String {
     serde_json::to_string_pretty(v).unwrap_or_default()
 }
-
-/// Guardian storage slot in AetherAccount (ERC-7201 namespace "aether.account.guardian").
-const GUARDIAN_SLOT: &str = "814c365e7a9c4fa1d0da41caf4c2bc2af8cb172a9b60ca9932fe088002417e00";
 
 fn dev_address(dev: u8) -> Result<Address, String> {
     let s = P256Signer::from_seed(&dev_seed(dev)).map_err(|e| e.to_string())?;

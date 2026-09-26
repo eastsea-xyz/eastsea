@@ -465,6 +465,22 @@ fileprivate final class UniffiHandleMap<T>: @unchecked Sendable {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterUInt8: FfiConverterPrimitive {
+    typealias FfiType = UInt8
+    typealias SwiftType = UInt8
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt8 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: UInt8, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterUInt32: FfiConverterPrimitive {
     typealias FfiType = UInt32
     typealias SwiftType = UInt32
@@ -857,13 +873,22 @@ public func FfiConverterTypePreparedTx_lower(_ value: PreparedTx) -> RustBuffer 
 
 
 /**
- * A recovery this device (the guardian) must sign: sweep `lost`'s verified balance to us.
+ * A recovery this device (a guardian) proposes: move `lost`'s verified balance
+ * to this device's account once the delay has passed.
  */
 public struct RecoveryRequest: Equatable, Hashable {
     public var lost: String
     public var to: String
     public var valueWei: String
+    /**
+     * Proposal nonce the signature covers.
+     */
     public var guardianNonce: UInt64
+    /**
+     * This device's position in the account's guardian list.
+     */
+    public var guardianIndex: UInt8
+    public var delaySeconds: UInt64
     /**
      * Sign with this device's Secure Enclave key (SHA-256 applied by CryptoKit).
      */
@@ -871,7 +896,13 @@ public struct RecoveryRequest: Equatable, Hashable {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(lost: String, to: String, valueWei: String, guardianNonce: UInt64, 
+    public init(lost: String, to: String, valueWei: String, 
+        /**
+         * Proposal nonce the signature covers.
+         */guardianNonce: UInt64, 
+        /**
+         * This device's position in the account's guardian list.
+         */guardianIndex: UInt8, delaySeconds: UInt64, 
         /**
          * Sign with this device's Secure Enclave key (SHA-256 applied by CryptoKit).
          */message: Data) {
@@ -879,6 +910,8 @@ public struct RecoveryRequest: Equatable, Hashable {
         self.to = to
         self.valueWei = valueWei
         self.guardianNonce = guardianNonce
+        self.guardianIndex = guardianIndex
+        self.delaySeconds = delaySeconds
         self.message = message
     }
 
@@ -902,6 +935,8 @@ public struct FfiConverterTypeRecoveryRequest: FfiConverterRustBuffer {
                 to: FfiConverterString.read(from: &buf), 
                 valueWei: FfiConverterString.read(from: &buf), 
                 guardianNonce: FfiConverterUInt64.read(from: &buf), 
+                guardianIndex: FfiConverterUInt8.read(from: &buf), 
+                delaySeconds: FfiConverterUInt64.read(from: &buf), 
                 message: FfiConverterData.read(from: &buf)
         )
     }
@@ -911,6 +946,8 @@ public struct FfiConverterTypeRecoveryRequest: FfiConverterRustBuffer {
         FfiConverterString.write(value.to, into: &buf)
         FfiConverterString.write(value.valueWei, into: &buf)
         FfiConverterUInt64.write(value.guardianNonce, into: &buf)
+        FfiConverterUInt8.write(value.guardianIndex, into: &buf)
+        FfiConverterUInt64.write(value.delaySeconds, into: &buf)
         FfiConverterData.write(value.message, into: &buf)
     }
 }
@@ -928,6 +965,87 @@ public func FfiConverterTypeRecoveryRequest_lift(_ buf: RustBuffer) throws -> Re
 #endif
 public func FfiConverterTypeRecoveryRequest_lower(_ value: RecoveryRequest) -> RustBuffer {
     return FfiConverterTypeRecoveryRequest.lower(value)
+}
+
+
+/**
+ * Recovery settings and any pending recovery of an account (all verified).
+ */
+public struct RecoveryStatus: Equatable, Hashable {
+    public var guardians: UInt32
+    public var threshold: UInt8
+    public var delaySeconds: UInt64
+    /**
+     * A recovery was proposed and not yet run or cancelled.
+     */
+    public var pending: Bool
+    /**
+     * Unix time after which the pending recovery may run.
+     */
+    public var readyAt: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(guardians: UInt32, threshold: UInt8, delaySeconds: UInt64, 
+        /**
+         * A recovery was proposed and not yet run or cancelled.
+         */pending: Bool, 
+        /**
+         * Unix time after which the pending recovery may run.
+         */readyAt: UInt64) {
+        self.guardians = guardians
+        self.threshold = threshold
+        self.delaySeconds = delaySeconds
+        self.pending = pending
+        self.readyAt = readyAt
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension RecoveryStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRecoveryStatus: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RecoveryStatus {
+        return
+            try RecoveryStatus(
+                guardians: FfiConverterUInt32.read(from: &buf), 
+                threshold: FfiConverterUInt8.read(from: &buf), 
+                delaySeconds: FfiConverterUInt64.read(from: &buf), 
+                pending: FfiConverterBool.read(from: &buf), 
+                readyAt: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: RecoveryStatus, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.guardians, into: &buf)
+        FfiConverterUInt8.write(value.threshold, into: &buf)
+        FfiConverterUInt64.write(value.delaySeconds, into: &buf)
+        FfiConverterBool.write(value.pending, into: &buf)
+        FfiConverterUInt64.write(value.readyAt, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRecoveryStatus_lift(_ buf: RustBuffer) throws -> RecoveryStatus {
+    return try FfiConverterTypeRecoveryStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRecoveryStatus_lower(_ value: RecoveryStatus) -> RustBuffer {
+    return FfiConverterTypeRecoveryStatus.lower(value)
 }
 
 
@@ -1287,7 +1405,7 @@ public func connection() -> String  {
 })
 }
 /**
- * Devnet faucet: send test coins (zero value) from the public dev account 10.
+ * Test tokens (zero value) from the node's faucet, rate-limited by the node.
  */
 public func devnetFaucet(to: String, valueWei: String)throws  -> String  {
     return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
@@ -1312,6 +1430,29 @@ public func prepareBatch(p256PublicKey: Data, payments: [Payment])throws  -> Pre
     )
 })
 }
+/**
+ * Stop a pending recovery of this account (e.g. one this owner did not ask for).
+ */
+public func prepareCancelRecovery(p256PublicKey: Data)throws  -> PreparedTx  {
+    return try  FfiConverterTypePreparedTx_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_prepare_cancel_recovery(
+        FfiConverterData.lower(p256PublicKey),uniffiCallStatus
+    )
+})
+}
+/**
+ * After the delay: run the proposed recovery (anyone may; this device pays the gas).
+ */
+public func prepareFinishRecovery(p256PublicKey: Data, request: RecoveryRequest)throws  -> PreparedTx  {
+    return try  FfiConverterTypePreparedTx_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_prepare_finish_recovery(
+        FfiConverterData.lower(p256PublicKey),
+        FfiConverterTypeRecoveryRequest_lower(request),uniffiCallStatus
+    )
+})
+}
 public func prepareRecovery(p256PublicKey: Data, lostAccount: String, validators: UInt32)throws  -> RecoveryRequest  {
     return try  FfiConverterTypeRecoveryRequest_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
         uniffiCallStatus in
@@ -1323,7 +1464,8 @@ public func prepareRecovery(p256PublicKey: Data, lostAccount: String, validators
 })
 }
 /**
- * The tx that submits a signed recovery; this device pays the gas (sign it too).
+ * The tx that proposes a signed recovery; this device pays the gas (sign it too).
+ * The funds move only when `prepare_finish_recovery` runs after the delay.
  */
 public func prepareRecoverySubmit(p256PublicKey: Data, request: RecoveryRequest, guardianSignature: Data)throws  -> PreparedTx  {
     return try  FfiConverterTypePreparedTx_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
@@ -1336,8 +1478,9 @@ public func prepareRecoverySubmit(p256PublicKey: Data, request: RecoveryRequest,
 })
 }
 /**
- * Make the device with `recovery_code` able to recover this account (delegates
- * to AetherAccount first if needed). Sign with the Secure Enclave and submit.
+ * Make the device with `recovery_code` able to recover this account after a
+ * 48-hour delay that this account can cancel (delegates to AetherAccount first
+ * if needed). Sign with the Secure Enclave and submit.
  */
 public func prepareSetRecoveryKey(p256PublicKey: Data, recoveryCode: String)throws  -> PreparedTx  {
     return try  FfiConverterTypePreparedTx_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
@@ -1386,6 +1529,15 @@ public func recoveryKeyCode(p256PublicKey: Data)throws  -> String  {
         uniffiCallStatus in
     uniffi_aether_ffi_fn_func_recovery_key_code(
         FfiConverterData.lower(p256PublicKey),uniffiCallStatus
+    )
+})
+}
+public func recoveryStatus(account: String, validators: UInt32)throws  -> RecoveryStatus  {
+    return try  FfiConverterTypeRecoveryStatus_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_recovery_status(
+        FfiConverterString.lower(account),
+        FfiConverterUInt32.lower(validators),uniffiCallStatus
     )
 })
 }
@@ -1453,19 +1605,25 @@ private let initializationResult: InitializationResult = {
     if (uniffi_aether_ffi_checksum_func_connection() != 5408) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_aether_ffi_checksum_func_devnet_faucet() != 1822) {
+    if (uniffi_aether_ffi_checksum_func_devnet_faucet() != 12940) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_prepare_batch() != 9304) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_aether_ffi_checksum_func_prepare_cancel_recovery() != 41022) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_prepare_finish_recovery() != 25152) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_aether_ffi_checksum_func_prepare_recovery() != 11429) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_aether_ffi_checksum_func_prepare_recovery_submit() != 11470) {
+    if (uniffi_aether_ffi_checksum_func_prepare_recovery_submit() != 54585) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_aether_ffi_checksum_func_prepare_set_recovery_key() != 59362) {
+    if (uniffi_aether_ffi_checksum_func_prepare_set_recovery_key() != 4596) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_prepare_transfer() != 24792) {
@@ -1478,6 +1636,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_recovery_key_code() != 45807) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_recovery_status() != 60275) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_set_committee_identity() != 9931) {

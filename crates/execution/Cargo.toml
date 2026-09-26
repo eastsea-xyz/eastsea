@@ -15,6 +15,7 @@ alloy-primitives.workspace = true
 revm = { version = "=43.0.3", default-features = false, features = ["std"] }
 serde.workspace = true
 rayon = "1"
+alloy-sol-types = { version = "=1.7.3", default-features = false }
 
 [features]
 # Native builds use C-backed precompile implementations. A zkVM guest (RISC-V)

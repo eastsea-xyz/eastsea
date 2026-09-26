@@ -202,17 +202,26 @@ fn four_validators_agree_execute_survive_and_recover() {
     let out = net.cli(&["batch", "--rpc", &net.url(0), "--from-dev", "5", "--to", x, "--value", "1", "--wait"]);
     assert!(out.contains("success=true"), "{out}");
 
-    // Recovery: dev 6 registers dev 7's key as its guardian; dev 6's key is then
-    // "lost" and dev 7 sweeps its balance (P256VERIFY in AetherAccount).
-    let out = net.cli(&["set-guardian", "--rpc", &net.url(0), "--from-dev", "6", "--guardian-dev", "7"]);
+    // Recovery: dev 6 names devs 7 and 8 as recovery devices (both must sign,
+    // 10 min delay). They propose moving its funds; nothing moves before the
+    // delay, and dev 6 (not actually lost) cancels. The post-delay run is covered
+    // with virtual time in crates/execution/tests/delegation.rs.
+    let out = net.cli(&["set-guardian", "--rpc", &net.url(0), "--from-dev", "6", "--guardian-dev", "7,8", "--threshold", "2", "--delay", "600"]);
     assert!(out.contains("success=true"), "{out}");
     let lost = net.cli(&["dev-accounts"]).lines().find(|l| l.split_whitespace().nth(1) == Some("6")).unwrap().split_whitespace().nth(2).unwrap().to_string();
     net.wait_height(3, net.height(0), 20);
-    let out = net.cli(&["recover", "--rpc", &net.url(3), "--guardian-dev", "7", "--lost", &lost]);
-    assert!(out.contains("success=true"), "{out}");
-    net.wait_height(2, net.height(3), 20);
-    let bal = net.cli(&["balance", &lost, "--rpc", &net.url(2)]);
-    assert!(bal.contains("balance   0 wei") && bal.contains("verified  ✓"), "lost account swept: {bal}");
+    let before = net.cli(&["balance", &lost, "--rpc", &net.url(3)]);
+    let out = net.cli(&["recover", "--rpc", &net.url(3), "--guardian-dev", "7,8", "--lost", &lost]);
+    assert!(out.contains("success=true"), "two recovery devices propose: {out}");
+    let finish = out.lines().find_map(|l| l.split("--finish ").nth(1)).expect("finish command").trim().to_string();
+    let out = net.cli(&["recover", "--rpc", &net.url(3), "--guardian-dev", "7", "--lost", &lost, "--finish", &finish]);
+    assert!(out.contains("success=false"), "not before the delay: {out}");
+    let out = net.cli(&["cancel-recovery", "--rpc", &net.url(0), "--from-dev", "6"]);
+    assert!(out.contains("success=true"), "the owner cancels: {out}");
+    net.wait_height(2, net.height(0), 20);
+    let after = net.cli(&["balance", &lost, "--rpc", &net.url(2)]);
+    let wei = |s: &str| s.lines().nth(1).and_then(|l| l.split_whitespace().nth(1)).and_then(|v| v.parse::<u128>().ok()).expect("balance");
+    assert!(wei(&before) - wei(&after) < 10u128.pow(15), "funds did not move (only the cancel's gas): {before} -> {after}");
 
     // Every node has the same chain.
     let h = net.height(0);

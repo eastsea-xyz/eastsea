@@ -275,6 +275,16 @@ RustBuffer uniffi_aether_ffi_fn_func_devnet_faucet(RustBuffer to, RustBuffer val
 RustBuffer uniffi_aether_ffi_fn_func_prepare_batch(RustBuffer p256_public_key, RustBuffer payments, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_CANCEL_RECOVERY
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_CANCEL_RECOVERY
+RustBuffer uniffi_aether_ffi_fn_func_prepare_cancel_recovery(RustBuffer p256_public_key, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_FINISH_RECOVERY
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_FINISH_RECOVERY
+RustBuffer uniffi_aether_ffi_fn_func_prepare_finish_recovery(RustBuffer p256_public_key, RustBuffer request, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_RECOVERY
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_RECOVERY
 RustBuffer uniffi_aether_ffi_fn_func_prepare_recovery(RustBuffer p256_public_key, RustBuffer lost_account, uint32_t validators, RustCallStatus *_Nonnull out_status
@@ -308,6 +318,11 @@ RustBuffer uniffi_aether_ffi_fn_func_recent_blocks(uint32_t n, RustCallStatus *_
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_RECOVERY_KEY_CODE
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_RECOVERY_KEY_CODE
 RustBuffer uniffi_aether_ffi_fn_func_recovery_key_code(RustBuffer p256_public_key, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_RECOVERY_STATUS
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_RECOVERY_STATUS
+RustBuffer uniffi_aether_ffi_fn_func_recovery_status(RustBuffer account, uint32_t validators, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_SET_COMMITTEE_IDENTITY
@@ -621,6 +636,18 @@ uint16_t uniffi_aether_ffi_checksum_func_prepare_batch(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_CANCEL_RECOVERY
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_CANCEL_RECOVERY
+uint16_t uniffi_aether_ffi_checksum_func_prepare_cancel_recovery(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_FINISH_RECOVERY
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_FINISH_RECOVERY
+uint16_t uniffi_aether_ffi_checksum_func_prepare_finish_recovery(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_RECOVERY
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_RECOVERY
 uint16_t uniffi_aether_ffi_checksum_func_prepare_recovery(void
@@ -660,6 +687,12 @@ uint16_t uniffi_aether_ffi_checksum_func_recent_blocks(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_RECOVERY_KEY_CODE
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_RECOVERY_KEY_CODE
 uint16_t uniffi_aether_ffi_checksum_func_recovery_key_code(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_RECOVERY_STATUS
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_RECOVERY_STATUS
+uint16_t uniffi_aether_ffi_checksum_func_recovery_status(void
     
 );
 #endif

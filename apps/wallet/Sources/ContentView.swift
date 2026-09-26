@@ -133,10 +133,25 @@ struct DeveloperView: View {
                 }
                 HStack {
                     TextField("0x lost account (that trusts this device)", text: $model.lostInput).textFieldStyle(.roundedBorder).font(.caption.monospaced())
-                    Button("Recover its funds here") { model.recover() }.disabled(model.busy || model.lostInput.isEmpty)
+                    Button("Propose recovery") { model.recover() }.disabled(model.busy || model.lostInput.isEmpty || model.outgoingRecovery != nil)
+                }
+                if let p = model.outgoingRecovery {
+                    HStack {
+                        Text("Pending: \(Wei.format(p.request.valueWei)) AETH from \(p.request.lost.prefix(10))… · ready \(p.readyAt.formatted())").font(.caption)
+                        Spacer()
+                        Button("Finish") { model.finishRecovery() }.disabled(model.busy || !p.isReady)
+                    }
+                }
+                if let r = model.incomingRecovery {
+                    HStack {
+                        Label("A recovery of THIS account is pending (ready \(Date(timeIntervalSince1970: TimeInterval(r.readyAt)).formatted()))", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption).foregroundStyle(.orange)
+                        Spacer()
+                        Button("Cancel it") { model.cancelIncomingRecovery() }.disabled(model.busy)
+                    }
                 }
             }
-        } label: { Text("Recovery (a second device's Secure Enclave key)") }
+        } label: { Text("Recovery (second device's Secure Enclave key · delayed, cancellable)") }
     }
 
     private var activity: some View {

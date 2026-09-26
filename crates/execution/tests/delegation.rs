@@ -108,85 +108,221 @@ fn delegation_codec_round_trip_and_old_encodings_still_decode() {
     assert_eq!(enc.len() + 21, with.encode().len(), "delegation is a pure trailer");
 }
 
-// ---------------- guardian (recovery key on a second device) ----------------
+// ---------------- recovery: k-of-n guardians, delay, cancel, owner keys ----------------
 
-use aether_execution::{encode_guardian_execute, encode_set_guardian, guardian_message};
+use aether_execution::account::{
+    encode_add_owner, encode_cancel_recovery, encode_execute_recovery, encode_owner_execute, encode_propose_recovery, encode_set_guardian,
+    encode_set_guardians, owner_message, recovery_message, AccountCall, MIN_DELAY,
+};
 
 fn sign_rs(signer: &P256Signer, msg: &[u8]) -> ([u8; 32], [u8; 32]) {
     let sig = signer.sign(msg).unwrap();
     (sig[..32].try_into().unwrap(), sig[32..64].try_into().unwrap())
 }
 
-#[test]
-fn guardian_recovers_funds_when_the_main_key_is_lost() {
-    let s = setup();
-    // Second device (e.g. an iPhone's Secure Enclave): only its public key goes on chain.
-    let phone = P256Signer::from_seed(&seed(2)).unwrap();
-    let (gx, gy) = aether_crypto::p256_xy(&phone.public_key().bytes).unwrap();
+fn key(signer: &P256Signer) -> ([u8; 32], [u8; 32]) {
+    aether_crypto::p256_xy(&signer.public_key().bytes).unwrap()
+}
 
-    // Alice delegates and registers the guardian in one signed tx (a self-call in the batch).
-    let setup_tx = tx(
+fn at(number: u64, timestamp: u64) -> BlockContext {
+    BlockContext { timestamp, ..ctx(number) }
+}
+
+/// Alice's account, delegated, with `guardians` set; plus a funded relayer.
+struct Recovery {
+    s: Setup,
+    state: WorldState,
+    relayer: P256Signer,
+    relayer_nonce: std::cell::Cell<u64>,
+}
+
+impl Recovery {
+    fn new(guardians: &[&P256Signer], threshold: u8, delay: u64) -> Self {
+        let s = setup();
+        let keys: Vec<_> = guardians.iter().map(|g| key(g)).collect();
+        let t = tx(
+            &s,
+            0,
+            EvmCall {
+                to: Some(s.a),
+                value: U256::ZERO,
+                input: encode_execute(&[(s.a, U256::ZERO, encode_set_guardians(&keys, threshold, delay))]),
+                gas_limit: 500_000,
+                delegate: Some(AETHER_ACCOUNT),
+            },
+        );
+        let out = execute_block(&s.pre, &at(1, 1_000), &[t]).unwrap();
+        assert!(out.receipts[0].success, "setGuardians: {:?}", out.receipts[0]);
+        let mut state = out.state;
+        let relayer = P256Signer::from_seed(&seed(9)).unwrap();
+        state.set_balance(aether_crypto::address_of(&relayer.public_key()).unwrap(), U256::from(10u128.pow(20))).unwrap();
+        Recovery { s, state, relayer, relayer_nonce: std::cell::Cell::new(0) }
+    }
+
+    /// A relayed call to Alice's account at `timestamp`; applies it and returns success.
+    fn relay(&mut self, input: Bytes, timestamp: u64) -> bool {
+        let n = self.relayer_nonce.get();
+        self.relayer_nonce.set(n + 1);
+        let t = sign_call(&self.relayer, CHAIN, n, 1, &EvmCall { to: Some(self.s.a), value: U256::ZERO, input, gas_limit: 700_000, delegate: None }).unwrap();
+        let out = execute_block(&self.state, &at(2, timestamp), &[t]).unwrap();
+        self.state = out.state;
+        out.receipts[0].success
+    }
+
+    /// Alice herself (main key) runs a self-call through `execute`.
+    fn owner_self_call(&mut self, nonce: u64, data: Bytes, timestamp: u64) -> bool {
+        let t = tx(
+            &self.s,
+            nonce,
+            EvmCall { to: Some(self.s.a), value: U256::ZERO, input: encode_execute(&[(self.s.a, U256::ZERO, data)]), gas_limit: 500_000, delegate: None },
+        );
+        let out = execute_block(&self.state, &at(3, timestamp), &[t]).unwrap();
+        self.state = out.state;
+        out.receipts[0].success
+    }
+
+    fn sigs(&self, who: &[(u8, &P256Signer)], nonce: u64, calls: &[AccountCall]) -> Vec<(u8, [u8; 32], [u8; 32])> {
+        who.iter()
+            .map(|(i, g)| {
+                let (r, s) = sign_rs(g, &recovery_message(CHAIN, self.s.a, nonce, calls));
+                (*i, r, s)
+            })
+            .collect()
+    }
+}
+
+#[test]
+fn two_of_three_guardians_recover_after_the_delay_and_a_new_device_takes_over() {
+    let (phone, ipad, friend) = (P256Signer::from_seed(&seed(2)).unwrap(), P256Signer::from_seed(&seed(3)).unwrap(), P256Signer::from_seed(&seed(4)).unwrap());
+    let mut rc = Recovery::new(&[&phone, &ipad, &friend], 2, MIN_DELAY);
+    // Alice lost her Mac. Her new Mac's Secure Enclave key becomes an owner of the same address.
+    let new_mac = P256Signer::from_seed(&seed(5)).unwrap();
+    let (nx, ny) = key(&new_mac);
+    let calls: Vec<AccountCall> = vec![(rc.s.a, U256::ZERO, encode_add_owner(nx, ny))];
+
+    let one = rc.sigs(&[(0, &phone)], 0, &calls);
+    assert!(!rc.relay(encode_propose_recovery(&calls, &one), 2_000), "one of three is below the threshold");
+    let two = rc.sigs(&[(2, &friend), (0, &phone)], 0, &calls);
+    assert!(rc.relay(encode_propose_recovery(&calls, &two), 2_000), "two guardians propose");
+
+    assert!(!rc.relay(encode_execute_recovery(&calls), 2_000 + MIN_DELAY - 1), "not before the delay");
+    assert!(rc.relay(encode_execute_recovery(&calls), 2_000 + MIN_DELAY), "anyone runs it after the delay");
+    assert!(!rc.relay(encode_execute_recovery(&calls), 2_000 + MIN_DELAY + 1), "runs once");
+
+    // The new Mac now drives the account by signature (relayed; it holds no gas).
+    let bob = Address::repeat_byte(0xb0);
+    let pay: Vec<AccountCall> = vec![(bob, U256::from(10u128.pow(18)), Bytes::new())];
+    let (r, s) = sign_rs(&new_mac, &owner_message(CHAIN, rc.s.a, 0, &pay));
+    assert!(rc.relay(encode_owner_execute(&pay, 0, r, s), 3_000_000));
+    assert_eq!(rc.state.balance(&bob), U256::from(10u128.pow(18)));
+    assert!(!rc.relay(encode_owner_execute(&pay, 0, r, s), 3_000_001), "owner signatures do not replay");
+    let (tr, ts) = sign_rs(&phone, &owner_message(CHAIN, rc.s.a, 1, &pay));
+    assert!(!rc.relay(encode_owner_execute(&pay, 0, tr, ts), 3_000_002), "a guardian is not an owner");
+}
+
+#[test]
+fn the_owner_cancels_a_recovery_it_did_not_ask_for() {
+    let (phone, friend) = (P256Signer::from_seed(&seed(2)).unwrap(), P256Signer::from_seed(&seed(4)).unwrap());
+    let mut rc = Recovery::new(&[&phone, &friend], 2, MIN_DELAY);
+    // Colluding guardians try to sweep the account.
+    let thief = Address::repeat_byte(0x7e);
+    let sweep: Vec<AccountCall> = vec![(thief, U256::from(10u128.pow(20)), Bytes::new())];
+    let sigs = rc.sigs(&[(0, &phone), (1, &friend)], 0, &sweep);
+    assert!(rc.relay(encode_propose_recovery(&sweep, &sigs), 5_000));
+    assert!(!rc.relay(encode_propose_recovery(&sweep, &sigs), 5_001), "one pending proposal at a time");
+    // Alice still has her key and sees the pending recovery: she cancels within the delay.
+    // Nonce 2: the delegating tx used 0 and its authorization 1.
+    assert!(rc.owner_self_call(2, encode_cancel_recovery(), 5_100));
+    assert!(!rc.relay(encode_execute_recovery(&sweep), 5_000 + MIN_DELAY), "cancelled recovery cannot run");
+    assert_eq!(rc.state.balance(&thief), U256::ZERO);
+    // The old signatures are spent (proposal nonce advanced).
+    assert!(!rc.relay(encode_propose_recovery(&sweep, &sigs), 5_200), "no replay of a cancelled proposal");
+}
+
+#[test]
+fn guardian_signatures_must_be_distinct_valid_and_cover_the_calls() {
+    let (phone, friend, stranger) =
+        (P256Signer::from_seed(&seed(2)).unwrap(), P256Signer::from_seed(&seed(4)).unwrap(), P256Signer::from_seed(&seed(6)).unwrap());
+    let mut rc = Recovery::new(&[&phone, &friend], 2, MIN_DELAY);
+    let calls: Vec<AccountCall> = vec![(Address::repeat_byte(0x5a), U256::from(1u64), Bytes::new())];
+    let twice = rc.sigs(&[(0, &phone), (0, &phone)], 0, &calls);
+    assert!(!rc.relay(encode_propose_recovery(&calls, &twice), 1_100), "the same guardian twice");
+    let outsider = rc.sigs(&[(0, &phone), (1, &stranger)], 0, &calls);
+    assert!(!rc.relay(encode_propose_recovery(&calls, &outsider), 1_100), "a key that is not a guardian");
+    let other: Vec<AccountCall> = vec![(Address::repeat_byte(0x7e), U256::from(1u64), Bytes::new())];
+    let for_other = rc.sigs(&[(0, &phone), (1, &friend)], 0, &other);
+    assert!(!rc.relay(encode_propose_recovery(&calls, &for_other), 1_100), "signatures over different calls");
+    let good = rc.sigs(&[(0, &phone), (1, &friend)], 0, &calls);
+    assert!(rc.relay(encode_propose_recovery(&calls, &good), 1_100));
+    assert!(!rc.relay(encode_execute_recovery(&other), 1_100 + MIN_DELAY), "only the proposed calls run");
+}
+
+#[test]
+fn guardian_settings_are_validated() {
+    let phone = P256Signer::from_seed(&seed(2)).unwrap();
+    let s = setup();
+    let set = |keys: &[([u8; 32], [u8; 32])], threshold: u8, delay: u64| {
+        let t = tx(
+            &s,
+            0,
+            EvmCall {
+                to: Some(s.a),
+                value: U256::ZERO,
+                input: encode_execute(&[(s.a, U256::ZERO, encode_set_guardians(keys, threshold, delay))]),
+                gas_limit: 500_000,
+                delegate: Some(AETHER_ACCOUNT),
+            },
+        );
+        execute_block(&s.pre, &at(1, 1), &[t]).unwrap().receipts[0].success
+    };
+    let k = key(&phone);
+    assert!(set(&[k], 1, MIN_DELAY));
+    assert!(!set(&[k], 1, MIN_DELAY - 1), "delay below the minimum");
+    assert!(!set(&[k], 2, MIN_DELAY), "threshold above the guardian count");
+    assert!(!set(&[k], 0, MIN_DELAY), "zero threshold with guardians");
+    assert!(!set(&[k, k], 1, MIN_DELAY), "duplicate guardian");
+    assert!(set(&[], 0, 0), "an empty list turns recovery off");
+}
+
+#[test]
+fn one_recovery_device_uses_the_48_hour_default() {
+    let phone = P256Signer::from_seed(&seed(2)).unwrap();
+    let s = setup();
+    let (gx, gy) = key(&phone);
+    let t = tx(
         &s,
         0,
         EvmCall {
             to: Some(s.a),
             value: U256::ZERO,
             input: encode_execute(&[(s.a, U256::ZERO, encode_set_guardian(gx, gy))]),
-            gas_limit: 300_000,
+            gas_limit: 500_000,
             delegate: Some(AETHER_ACCOUNT),
         },
     );
-    let st = execute_block(&s.pre, &ctx(1), &[setup_tx]).unwrap();
-    assert!(st.receipts[0].success, "{:?}", st.receipts[0]);
-    let mut st = st.state;
-
-    // Alice's Mac is gone. A relayer (any funded account) submits the phone-signed recovery.
-    let relayer = P256Signer::from_seed(&seed(3)).unwrap();
-    let r_addr = aether_crypto::address_of(&relayer.public_key()).unwrap();
-    st.set_balance(r_addr, U256::from(10u128.pow(20))).unwrap();
+    let out = execute_block(&s.pre, &at(1, 1_000), &[t]).unwrap();
+    assert!(out.receipts[0].success, "{:?}", out.receipts[0]);
+    let mut rc = Recovery { state: out.state, relayer: P256Signer::from_seed(&seed(9)).unwrap(), relayer_nonce: std::cell::Cell::new(0), s };
+    let r_addr = aether_crypto::address_of(&rc.relayer.public_key()).unwrap();
+    rc.state.set_balance(r_addr, U256::from(10u128.pow(20))).unwrap();
     let safe = Address::repeat_byte(0x5a);
-    let amount = U256::from(10u128.pow(20));
-    let calls = vec![(safe, amount, Bytes::new())];
-    let (r, sg) = sign_rs(&phone, &guardian_message(CHAIN, s.a, 0, &calls));
-    let relay = |nonce, input: Bytes| {
-        sign_call(&relayer, CHAIN, nonce, 1, &EvmCall { to: Some(s.a), value: U256::ZERO, input, gas_limit: 300_000, delegate: None }).unwrap()
-    };
-    let out = execute_block(&st, &ctx(2), &[relay(0, encode_guardian_execute(&calls, r, sg))]).unwrap();
-    assert!(out.receipts[0].success, "guardian signature accepted via P256VERIFY: {:?}", out.receipts[0]);
-    assert_eq!(out.state.balance(&safe), amount, "funds recovered to the safe address");
-
-    // Replay of the same signature fails (nonce advanced).
-    let replay = execute_block(&out.state, &ctx(3), &[relay(1, encode_guardian_execute(&calls, r, sg))]).unwrap();
-    assert!(!replay.receipts[0].success, "replay rejected");
-
-    // A signature by some other key fails; so do tampered calls under the phone's signature.
-    let thief = P256Signer::from_seed(&seed(4)).unwrap();
-    let steal = vec![(r_addr, amount, Bytes::new())];
-    let (tr, ts) = sign_rs(&thief, &guardian_message(CHAIN, s.a, 1, &steal));
-    let bad = execute_block(&out.state, &ctx(3), &[relay(1, encode_guardian_execute(&steal, tr, ts))]).unwrap();
-    assert!(!bad.receipts[0].success, "wrong key rejected");
-    let (pr, ps) = sign_rs(&phone, &guardian_message(CHAIN, s.a, 1, &calls));
-    let tampered = execute_block(&out.state, &ctx(3), &[relay(1, encode_guardian_execute(&steal, pr, ps))]).unwrap();
-    assert!(!tampered.receipts[0].success, "calls not covered by the signature rejected");
+    let calls: Vec<AccountCall> = vec![(safe, U256::from(10u128.pow(20)), Bytes::new())];
+    let sigs = rc.sigs(&[(0, &phone)], 0, &calls);
+    assert!(rc.relay(encode_propose_recovery(&calls, &sigs), 10_000));
+    assert!(!rc.relay(encode_execute_recovery(&calls), 10_000 + 47 * 3600), "47 h is too early");
+    assert!(rc.relay(encode_execute_recovery(&calls), 10_000 + 48 * 3600));
+    assert_eq!(rc.state.balance(&safe), U256::from(10u128.pow(20)));
 }
 
 #[test]
 fn no_guardian_means_no_recovery_path() {
     let s = setup();
     let st = execute_block(&s.pre, &ctx(1), &[tx(&s, 0, batch(s.a, Some(AETHER_ACCOUNT), &[]))]).unwrap().state;
+    let mut rc = Recovery { s, state: st, relayer: P256Signer::from_seed(&seed(9)).unwrap(), relayer_nonce: std::cell::Cell::new(0) };
+    let r_addr = aether_crypto::address_of(&rc.relayer.public_key()).unwrap();
+    rc.state.set_balance(r_addr, U256::from(10u128.pow(20))).unwrap();
     let phone = P256Signer::from_seed(&seed(2)).unwrap();
-    let calls = vec![(Address::repeat_byte(0x5a), U256::from(1u64), Bytes::new())];
-    let (r, sg) = sign_rs(&phone, &guardian_message(CHAIN, s.a, 0, &calls));
-    let relayer = P256Signer::from_seed(&seed(3)).unwrap();
-    let mut st = st;
-    st.set_balance(aether_crypto::address_of(&relayer.public_key()).unwrap(), U256::from(10u128.pow(20))).unwrap();
-    let t = sign_call(
-        &relayer,
-        CHAIN,
-        0,
-        1,
-        &EvmCall { to: Some(s.a), value: U256::ZERO, input: encode_guardian_execute(&calls, r, sg), gas_limit: 300_000, delegate: None },
-    )
-    .unwrap();
-    assert!(!execute_block(&st, &ctx(2), &[t]).unwrap().receipts[0].success);
+    let calls: Vec<AccountCall> = vec![(Address::repeat_byte(0x5a), U256::from(1u64), Bytes::new())];
+    let sigs = rc.sigs(&[(0, &phone)], 0, &calls);
+    assert!(!rc.relay(encode_propose_recovery(&calls, &sigs), 100));
 }

@@ -419,10 +419,9 @@ mod tests {
     }
 }
 
-// ---------------- recovery keys (guardians) ----------------
+// ---------------- recovery (guardians, delayed and cancellable) ----------------
 
-/// Storage slot of the guardian struct in a delegated account (see AetherAccount.sol).
-const GUARDIAN_SLOT: &str = "814c365e7a9c4fa1d0da41caf4c2bc2af8cb172a9b60ca9932fe088002417e00";
+use aether_execution::account::{self as acct, slots};
 
 /// This device's recovery-key code: its P-256 public key as x‖y hex. Give it to
 /// someone whose account this device should be able to recover.
@@ -449,8 +448,18 @@ fn designated(from: Address) -> R<bool> {
     Ok(code.as_str().is_some_and(|c| c.eq_ignore_ascii_case(&format!("0xef0100{}", hex_lower(aether_execution::AETHER_ACCOUNT.as_slice())))))
 }
 
-/// Make the device with `recovery_code` able to recover this account (delegates
-/// to AetherAccount first if needed). Sign with the Secure Enclave and submit.
+/// A storage slot of `account`, proven against a certified state root.
+fn verified_slot(account: Address, slot: U256, set: &ValidatorSet) -> R<U256> {
+    let v = call("aether_getStorage", json!([account, slot]))?;
+    let proof: Proof = parse(&v["proof"], "proof")?;
+    let height = v["height"].as_u64().unwrap_or_default();
+    let anchor = anchor(height, set)?;
+    aether_light::verify_storage(&anchor, &account, slot, &proof).map_err(|e| WalletError::Verification(format!("account storage: {e}")))
+}
+
+/// Make the device with `recovery_code` able to recover this account after a
+/// 48-hour delay that this account can cancel (delegates to AetherAccount first
+/// if needed). Sign with the Secure Enclave and submit.
 #[uniffi::export]
 pub fn prepare_set_recovery_key(p256_public_key: Vec<u8>, recovery_code: String) -> R<PreparedTx> {
     let (x, y) = parse_code(&recovery_code)?;
@@ -460,19 +469,47 @@ pub fn prepare_set_recovery_key(p256_public_key: Vec<u8>, recovery_code: String)
             to: Some(from),
             value: U256::ZERO,
             input: aether_execution::encode_execute(&[(from, U256::ZERO, aether_execution::encode_set_guardian(x, y))]),
-            gas_limit: 200_000,
+            gas_limit: 300_000,
             delegate: (!delegated).then_some(aether_execution::AETHER_ACCOUNT),
         })
     })
 }
 
-/// A recovery this device (the guardian) must sign: sweep `lost`'s verified balance to us.
+/// Recovery settings and any pending recovery of an account (all verified).
+#[derive(uniffi::Record)]
+pub struct RecoveryStatus {
+    pub guardians: u32,
+    pub threshold: u8,
+    pub delay_seconds: u64,
+    /// A recovery was proposed and not yet run or cancelled.
+    pub pending: bool,
+    /// Unix time after which the pending recovery may run.
+    pub ready_at: u64,
+}
+
+#[uniffi::export]
+pub fn recovery_status(account: String, validators: u32) -> R<RecoveryStatus> {
+    let a: Address = account.parse().map_err(|_| WalletError::Invalid("account address".into()))?;
+    let set = trusted_set(validators)?;
+    let count = verified_slot(a, slots::guardian_count(), &set)?;
+    let (threshold, delay) = slots::unpack_threshold_and_delay(verified_slot(a, slots::threshold_and_delay(), &set)?);
+    let pending = !verified_slot(a, slots::pending(), &set)?.is_zero();
+    let ready_at = verified_slot(a, slots::ready_at(), &set)?;
+    Ok(RecoveryStatus { guardians: count.to::<u32>(), threshold, delay_seconds: delay, pending, ready_at: ready_at.to::<u64>() })
+}
+
+/// A recovery this device (a guardian) proposes: move `lost`'s verified balance
+/// to this device's account once the delay has passed.
 #[derive(uniffi::Record)]
 pub struct RecoveryRequest {
     pub lost: String,
     pub to: String,
     pub value_wei: String,
+    /// Proposal nonce the signature covers.
     pub guardian_nonce: u64,
+    /// This device's position in the account's guardian list.
+    pub guardian_index: u8,
+    pub delay_seconds: u64,
     /// Sign with this device's Secure Enclave key (SHA-256 applied by CryptoKit).
     pub message: Vec<u8>,
 }
@@ -481,39 +518,84 @@ pub struct RecoveryRequest {
 pub fn prepare_recovery(p256_public_key: Vec<u8>, lost_account: String, validators: u32) -> R<RecoveryRequest> {
     let pk = p256_key(&p256_public_key)?;
     let me = address_of(&pk).map_err(|e| WalletError::Invalid(e.to_string()))?;
+    let (mx, my) = aether_crypto::p256_xy(&p256_public_key).map_err(|e| WalletError::Invalid(format!("{e:?}")))?;
     let lost: Address = lost_account.parse().map_err(|_| WalletError::Invalid("lost account address".into()))?;
-    // Balance and guardian nonce, both proven against a certified state root.
-    let acct = verified_account(lost.to_checksum(None), validators)?;
-    let slot = U256::from_str_radix(GUARDIAN_SLOT, 16).expect("slot") + U256::from(2u64);
-    let v = call("aether_getStorage", json!([lost, slot]))?;
-    let proof: Proof = parse(&v["proof"], "proof")?;
-    let height = v["height"].as_u64().unwrap_or_default();
     let set = trusted_set(validators)?;
-    let anchor = anchor(height, &set)?;
-    let nonce = aether_light::verify_storage(&anchor, &lost, slot, &proof).map_err(|e| WalletError::Verification(format!("guardian nonce: {e}")))?;
-    let value: U256 = acct.balance_wei.parse().map_err(|_| WalletError::Invalid("balance".into()))?;
+    // Balance, guardian list, threshold and proposal nonce, all proven against certified state roots.
+    let account = verified_account(lost.to_checksum(None), validators)?;
+    let count = verified_slot(lost, slots::guardian_count(), &set)?.to::<u64>();
+    let (threshold, delay) = slots::unpack_threshold_and_delay(verified_slot(lost, slots::threshold_and_delay(), &set)?);
+    if count == 0 {
+        return Err(WalletError::Invalid("that account has no recovery devices".into()));
+    }
+    let index = (0..count)
+        .find(|&i| {
+            let x = verified_slot(lost, slots::guardian(i), &set).ok().map(|v| v.to_be_bytes::<32>());
+            let y = verified_slot(lost, slots::guardian(i) + U256::from(1u64), &set).ok().map(|v| v.to_be_bytes::<32>());
+            x == Some(mx) && y == Some(my)
+        })
+        .ok_or_else(|| WalletError::Invalid("this device is not a recovery device of that account".into()))?;
+    if threshold > 1 {
+        return Err(WalletError::Invalid(format!(
+            "that account needs {threshold} recovery devices to sign; use `aether recover` with each device's signature"
+        )));
+    }
+    if !verified_slot(lost, slots::pending(), &set)?.is_zero() {
+        return Err(WalletError::Invalid("a recovery of that account is already pending".into()));
+    }
+    let nonce = verified_slot(lost, slots::recovery_nonce(), &set)?.to::<u64>();
+    let value: U256 = account.balance_wei.parse().map_err(|_| WalletError::Invalid("balance".into()))?;
     let chain_id = call("aether_status", json!([]))?["chain_id"].as_u64().unwrap_or_default();
-    let nonce = nonce.to::<u64>();
     let calls = [(me, value, Bytes::new())];
     Ok(RecoveryRequest {
         lost: lost.to_checksum(None),
         to: me.to_checksum(None),
         value_wei: value.to_string(),
         guardian_nonce: nonce,
-        message: aether_execution::guardian_message(chain_id, lost, nonce, &calls),
+        guardian_index: index as u8,
+        delay_seconds: delay,
+        message: acct::recovery_message(chain_id, lost, nonce, &calls),
     })
 }
 
-/// The tx that submits a signed recovery; this device pays the gas (sign it too).
-#[uniffi::export]
-pub fn prepare_recovery_submit(p256_public_key: Vec<u8>, request: RecoveryRequest, guardian_signature: Vec<u8>) -> R<PreparedTx> {
+fn request_calls(request: &RecoveryRequest) -> R<(Address, Vec<aether_execution::AccountCall>)> {
     let lost: Address = request.lost.parse().map_err(|_| WalletError::Invalid("lost".into()))?;
     let to: Address = request.to.parse().map_err(|_| WalletError::Invalid("to".into()))?;
     let value: U256 = request.value_wei.parse().map_err(|_| WalletError::Invalid("value".into()))?;
+    Ok((lost, vec![(to, value, Bytes::new())]))
+}
+
+/// The tx that proposes a signed recovery; this device pays the gas (sign it too).
+/// The funds move only when `prepare_finish_recovery` runs after the delay.
+#[uniffi::export]
+pub fn prepare_recovery_submit(p256_public_key: Vec<u8>, request: RecoveryRequest, guardian_signature: Vec<u8>) -> R<PreparedTx> {
+    let (lost, calls) = request_calls(&request)?;
     let sig = normalize_p256(&guardian_signature)?;
     let (r, s): ([u8; 32], [u8; 32]) = (sig[..32].try_into().expect("32"), sig[32..64].try_into().expect("32"));
-    let input = aether_execution::encode_guardian_execute(&[(to, value, Bytes::new())], r, s);
-    prepare(&p256_public_key, |_| Ok(EvmCall { to: Some(lost), value: U256::ZERO, input, gas_limit: 250_000, delegate: None }))
+    let input = acct::encode_propose_recovery(&calls, &[(request.guardian_index, r, s)]);
+    prepare(&p256_public_key, |_| Ok(EvmCall { to: Some(lost), value: U256::ZERO, input, gas_limit: 400_000, delegate: None }))
+}
+
+/// After the delay: run the proposed recovery (anyone may; this device pays the gas).
+#[uniffi::export]
+pub fn prepare_finish_recovery(p256_public_key: Vec<u8>, request: RecoveryRequest) -> R<PreparedTx> {
+    let (lost, calls) = request_calls(&request)?;
+    let input = acct::encode_execute_recovery(&calls);
+    prepare(&p256_public_key, |_| Ok(EvmCall { to: Some(lost), value: U256::ZERO, input, gas_limit: 300_000, delegate: None }))
+}
+
+/// Stop a pending recovery of this account (e.g. one this owner did not ask for).
+#[uniffi::export]
+pub fn prepare_cancel_recovery(p256_public_key: Vec<u8>) -> R<PreparedTx> {
+    prepare(&p256_public_key, |from| {
+        Ok(EvmCall {
+            to: Some(from),
+            value: U256::ZERO,
+            input: aether_execution::encode_execute(&[(from, U256::ZERO, acct::encode_cancel_recovery())]),
+            gas_limit: 200_000,
+            delegate: None,
+        })
+    })
 }
 
 fn normalize_p256(signature: &[u8]) -> R<Vec<u8>> {

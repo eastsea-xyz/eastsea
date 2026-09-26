@@ -22,6 +22,7 @@
 		BF69C9639B9D7215C5CE0605 /* aether_ffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BC12AF79B32D90A48860251 /* aether_ffi.swift */; };
 		C9839F6819F2F86387CC88B7 /* aether_ffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BC12AF79B32D90A48860251 /* aether_ffi.swift */; };
 		D6DDA80E641E075D1DE236AD /* WalletModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 016BCAF9063410C1BBD4052D /* WalletModel.swift */; };
+		DB0F8AA27789285B80E0C65B /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = C8AFA205B2434D884DE10E98 /* Sparkle */; };
 		F0B3BB5AE45A3595EC6EB117 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 54084C88C38E2484A2641DE4 /* Assets.xcassets */; };
 		F9D2A177F2CFE05346206EDB /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 54084C88C38E2484A2641DE4 /* Assets.xcassets */; };
 		FE6BCD03689259294F5B9945 /* SimpleDashboard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BCD0FCE195D7296CBCA13E9 /* SimpleDashboard.swift */; };
@@ -40,6 +41,17 @@
 		AB6E5651AC1948FECDAE69D4 /* network.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = network.json; sourceTree = "<group>"; };
 		B38A846EB23F0C4A52BF8A78 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		0F71C244D7617089300AB64D /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				DB0F8AA27789285B80E0C65B /* Sparkle in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
 		20B21676152FAD1CCC533BA7 /* Generated */ = {
@@ -100,6 +112,7 @@
 			buildPhases = (
 				9451106D88BAA67BA0C15449 /* Sources */,
 				659CDBAF9F96312FD4A76157 /* Resources */,
+				0F71C244D7617089300AB64D /* Frameworks */,
 				9667990067D06D1C9ADBEADF /* Embed node and agent */,
 			);
 			buildRules = (
@@ -108,6 +121,7 @@
 			);
 			name = AetherWallet;
 			packageProductDependencies = (
+				C8AFA205B2434D884DE10E98 /* Sparkle */,
 			);
 			productName = AetherWallet;
 			productReference = 2A79147942168696D38EE97B /* AetherWallet.app */;
@@ -158,6 +172,9 @@
 			);
 			mainGroup = 37242AD39FAC0B3294315674;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				67A853CB1E407115F5AF96C3 /* XCRemoteSwiftPackageReference "Sparkle" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 2E89153E6DC67082E19B5371 /* Products */;
 			projectDirPath = "";
@@ -343,10 +360,12 @@
 				CODE_SIGN_IDENTITY = "Developer ID Application: Pipln (45WU468FZE)";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 45WU468FZE;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = "$(SRCROOT)/Generated";
+				INFOPLIST_FILE = "Info-mac.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Aether;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.finance";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Aether testnet by Pipln. Test tokens have no value.";
@@ -354,6 +373,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
+				MARKETING_VERSION = 0.2.0;
 				OTHER_LDFLAGS = "$(SRCROOT)/../../target/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework OpenDirectory -framework IOKit";
 				PRODUCT_BUNDLE_IDENTIFIER = com.pipln.aether;
 				PRODUCT_NAME = Aether;
@@ -456,10 +476,12 @@
 				CODE_SIGN_IDENTITY = "Developer ID Application: Pipln (45WU468FZE)";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 45WU468FZE;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = "$(SRCROOT)/Generated";
+				INFOPLIST_FILE = "Info-mac.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Aether;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.finance";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Aether testnet by Pipln. Test tokens have no value.";
@@ -467,6 +489,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
+				MARKETING_VERSION = 0.2.0;
 				OTHER_LDFLAGS = "$(SRCROOT)/../../target/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework OpenDirectory -framework IOKit";
 				PRODUCT_BUNDLE_IDENTIFIER = com.pipln.aether;
 				PRODUCT_NAME = Aether;
@@ -508,6 +531,25 @@
 			defaultConfigurationName = Debug;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		67A853CB1E407115F5AF96C3 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.6.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		C8AFA205B2434D884DE10E98 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 67A853CB1E407115F5AF96C3 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 5F42881F886CB6661FD78F58 /* Project object */;
 }

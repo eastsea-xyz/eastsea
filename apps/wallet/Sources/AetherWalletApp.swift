@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(macOS)
+import Sparkle
+#endif
 
 @main
 struct AetherWalletApp: App {
@@ -25,6 +28,9 @@ struct AetherWalletApp: App {
         #if os(macOS)
         .windowResizability(.contentSize)
         .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") { appDelegate.updater.checkForUpdates(nil) }
+            }
             CommandGroup(after: .appSettings) {
                 Button("Install Command-Line Tools…") { CommandLineTools.install() }
             }
@@ -60,6 +66,8 @@ struct SettingsView: View {
 /// Quitting the app stops its node: nothing keeps running in the background.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var node: NodeController?
+    /// Sparkle: checks the signed appcast on GitHub Releases and installs updates.
+    let updater = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
 
     func applicationWillTerminate(_ notification: Notification) {
         MainActor.assumeIsolated { node?.stop() }

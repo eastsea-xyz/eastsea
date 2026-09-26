@@ -13,7 +13,7 @@
 # Output: dist/Aether-<version>.dmg
 set -euo pipefail
 cd "$(dirname "$0")/.."
-version=$(git describe --tags --always --dirty)
+version=${AETHER_VERSION:-$(git describe --tags --always --dirty)}
 scripts/build-wallet.sh macos >/dev/null
 src="apps/wallet/build/Build/Products/Release/Aether.app"
 [ -d "$src" ] || { echo "build failed: $src missing"; exit 1; }
@@ -24,10 +24,16 @@ app="$stage/Aether.app"
 cp -R "$src" "$app"
 
 if [ -n "${SIGN_IDENTITY:-}" ]; then
-  # Inside out: helpers first, then the app bundle.
+  # Inside out: helpers and Sparkle's nested code first, then the app bundle.
   for h in "$app/Contents/Helpers/"*; do
     codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$h"
   done
+  sp="$app/Contents/Frameworks/Sparkle.framework"
+  if [ -d "$sp" ]; then
+    for x in "$sp"/Versions/B/XPCServices/*.xpc "$sp/Versions/B/Autoupdate" "$sp/Versions/B/Updater.app" "$sp"; do
+      [ -e "$x" ] && codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$x"
+    done
+  fi
   codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$app"
 fi
 codesign --verify --deep --strict "$app"

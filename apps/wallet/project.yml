@@ -4,10 +4,16 @@ options:
   deploymentTarget:
     macOS: "14.0"
     iOS: "17.0"
+packages:
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: 2.6.0
 targets:
   AetherWallet:
     type: application
     platform: macOS
+    dependencies:
+      - package: Sparkle
     sources:
       - Sources
       - path: Resources
@@ -27,6 +33,10 @@ targets:
         SWIFT_VERSION: "5.0"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: Aether
+        MARKETING_VERSION: 0.2.0
+        CURRENT_PROJECT_VERSION: 1
+        # Sparkle keys (feed URL, EdDSA public key) merged into the generated Info.plist.
+        INFOPLIST_FILE: Info-mac.plist
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.finance
         INFOPLIST_KEY_NSHumanReadableCopyright: Aether testnet by Pipln. Test tokens have no value.
         ENABLE_HARDENED_RUNTIME: YES

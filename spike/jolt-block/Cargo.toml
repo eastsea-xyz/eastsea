@@ -1,0 +1,36 @@
+[package]
+name = "aether-jolt-block"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Standalone: not part of the aether-node workspace (see root Cargo.toml exclude).
+[workspace]
+members = ["guest"]
+
+[dependencies]
+jolt-sdk = { path = "/Volumes/workspace/spike/jolt-akita/jolt-sdk", features = ["host"] }
+guest = { package = "aether-jolt-block-guest", path = "./guest" }
+aether-execution = { path = "../../crates/execution" }
+aether-crypto = { path = "../../crates/crypto" }
+aether-types = { path = "../../crates/types" }
+aether-hash = { path = "../../crates/hash" }
+serde_json = "1"
+tracing-subscriber = "0.3"
+tracing = "0.1"
+
+# Same patches as the Jolt workspace (one arkworks and one jolt-field identity).
+[patch.crates-io]
+# Jolt's guest (riscv64 zero-linux) has no clock: skip the time-based seed.
+foldhash = { path = "patches/foldhash-0.2.0" }
+n0-mainline = { path = "../../vendor/n0-mainline" }
+ark-bn254 = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
+ark-ff = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
+ark-ec = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
+ark-serialize = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
+
+[patch."https://github.com/a16z/jolt"]
+jolt-field = { path = "/Volumes/workspace/spike/jolt-akita/crates/jolt-field" }
+
+[profile.release]
+debug = 1

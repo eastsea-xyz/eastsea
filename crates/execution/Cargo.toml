@@ -12,9 +12,16 @@ aether-hash.workspace = true
 aether-crypto.workspace = true
 aether-state.workspace = true
 alloy-primitives.workspace = true
-revm = { version = "=43.0.3", default-features = false, features = ["std", "c-kzg", "secp256k1", "portable"] }
+revm = { version = "=43.0.3", default-features = false, features = ["std"] }
 serde.workspace = true
 rayon = "1"
+
+[features]
+# Native builds use C-backed precompile implementations. A zkVM guest (RISC-V)
+# builds without them: revm falls back to pure-Rust k256 for ecrecover and
+# drops the KZG point-evaluation precompile, which Aether does not use.
+default = ["native"]
+native = ["revm/c-kzg", "revm/secp256k1", "revm/portable"]
 
 [dev-dependencies]
 proptest.workspace = true

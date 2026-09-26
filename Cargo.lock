@@ -177,6 +177,7 @@ dependencies = [
 name = "aether-node"
 version = "0.2.0"
 dependencies = [
+ "aether-consensus",
  "aether-crypto",
  "aether-execution",
  "aether-hash",

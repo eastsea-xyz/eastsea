@@ -90,12 +90,15 @@ enum Cmd {
         devicecheck_key_id: Option<String>,
         #[arg(long, default_value = "45WU468FZE")]
         devicecheck_team: String,
-        /// Local devnet: register every device without Apple (public dev registrar key).
-        #[arg(long, hide = true, conflicts_with = "network")]
+        /// Test chains (no faucet): register every device without Apple (public dev registrar key).
+        #[arg(long, hide = true)]
         dev_registrar: bool,
         /// Local devnet: blocks per voting-node epoch.
         #[arg(long, hide = true, conflicts_with = "network")]
         dev_epoch_blocks: Option<u64>,
+        /// Exit when the launching process does (`aether run`, the Mac app).
+        #[arg(long)]
+        exit_with_parent: bool,
     },
     /// Distributed key generation for the committee (run on every validator at
     /// once). Writes <data>/threshold.json with this validator's secret share
@@ -147,6 +150,8 @@ enum Cmd {
         link_base: Option<u16>,
         #[arg(long)]
         offline: bool,
+        #[arg(long)]
+        exit_with_parent: bool,
     },
     /// Last finalized height and block hash in a (stopped) node's data dir.
     Head {
@@ -184,6 +189,33 @@ enum Cmd {
         /// Local devnet: blocks per voting-node epoch (must match the validators).
         #[arg(long, hide = true, conflicts_with = "network")]
         dev_epoch_blocks: Option<u64>,
+        /// Where the candidate keys are (default: <data>).
+        #[arg(long)]
+        keys: Option<String>,
+    },
+    /// Keep this Mac in the network: validator while in the voting set, verifying
+    /// follower and candidate otherwise; rotations are followed automatically.
+    Run {
+        #[arg(long)]
+        data: String,
+        /// network.json to start from (copied into <data> the first time).
+        #[arg(long)]
+        network: Option<String>,
+        #[arg(long, default_value_t = 9000)]
+        port: u16,
+        #[arg(long, default_value_t = 8545)]
+        rpc_port: u16,
+        /// Extra argument for `aether node` (repeatable), e.g. --node-arg=--faucet-key=…
+        #[arg(long = "node-arg", allow_hyphen_values = true)]
+        node_args: Vec<String>,
+        /// Extra argument for `aether follow` (repeatable).
+        #[arg(long = "follow-arg", allow_hyphen_values = true)]
+        follow_args: Vec<String>,
+        /// Seconds a reshare may take before the running set carries on.
+        #[arg(long, default_value_t = 300)]
+        reshare_timeout: u64,
+        #[arg(long, hide = true)]
+        dev_peer_dir: Option<String>,
     },
     /// Register this Mac's candidate (keys in <data>) with the registrar and the registry.
     CandidateRegister {
@@ -244,6 +276,9 @@ enum Cmd {
         /// Registrar public key (x‖y hex, from `aether registrar-key`): predeploys the voting-node registry.
         #[arg(long)]
         registrar: Option<String>,
+        /// Blocks per voting-node epoch (default 3600: an hour of 1 s blocks).
+        #[arg(long)]
+        epoch_blocks: Option<u64>,
         members: Vec<String>,
     },
     /// List the public development accounts (funded at genesis; never use for value).
@@ -405,12 +440,23 @@ fn main() {
             devicecheck_team,
             dev_registrar,
             dev_epoch_blocks,
+            exit_with_parent,
         } => {
+            if exit_with_parent {
+                exit_with_parent_process();
+            }
             let with_file = network.is_some();
+            let network_file = network.as_ref().and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice::<Value>(&b).ok());
             p2p_args(index, validators, network, &data, port, peers, link_base, offline)
                 .and_then(|args| {
                     if with_file && args.3.is_none() {
                         return Err("network.json has no committee identity: run the node with the network.json written by dkg/reshare".into());
+                    }
+                    Ok(args)
+                })
+                .and_then(|args| {
+                    if dev_registrar && args.4.faucet.is_some() {
+                        return Err("--dev-registrar is only for test chains without a faucet".into());
                     }
                     Ok(args)
                 })
@@ -432,6 +478,7 @@ fn main() {
                         faucet_key,
                         devicecheck: devicecheck_key.zip(devicecheck_key_id).map(|(k, id)| (k, id, devicecheck_team)),
                         dev_registrar,
+                        network_file,
                     });
                 })
         }
@@ -472,11 +519,38 @@ fn main() {
             println!("signed by the committee: protocol {} at height {} on chain {}", s.upgrade.protocol, s.upgrade.activate_at, s.upgrade.chain_id);
             Ok(())
         })(),
-        Cmd::Follow { network, from_rpc, data, rpc_port, validators, exit_with_parent, candidate, dev_epoch_blocks } => {
+        Cmd::Follow { network, from_rpc, data, rpc_port, validators, exit_with_parent, candidate, dev_epoch_blocks, keys } => {
             if exit_with_parent {
                 exit_with_parent_process();
             }
-            run_follow(network, from_rpc, data, rpc_port, validators, candidate, dev_epoch_blocks)
+            let keys = candidate.then(|| keys.unwrap_or_else(|| data.clone()));
+            run_follow(network, from_rpc, data, rpc_port, validators, keys, dev_epoch_blocks)
+        }
+        Cmd::Run { data, network, port, rpc_port, node_args, follow_args, reshare_timeout, dev_peer_dir } => {
+            tracing_subscriber::fmt()
+                .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,commonware=warn".into()))
+                .init();
+            (|| {
+                let dir = std::path::PathBuf::from(&data);
+                std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+                aether_node::candidate::CandidateKeys::load_or_create(&dir)?;
+                let net = dir.join("network.json");
+                if !net.exists() {
+                    let src = network.ok_or("first run: pass --network <network.json>")?;
+                    std::fs::copy(&src, &net).map_err(|e| format!("{src}: {e}"))?;
+                }
+                aether_node::supervisor::Supervisor {
+                    exe: std::env::current_exe().map_err(|e| e.to_string())?,
+                    data: dir,
+                    port,
+                    rpc_port,
+                    node_args,
+                    follow_args,
+                    dev_peer_dir: dev_peer_dir.map(Into::into),
+                    reshare_timeout: Duration::from_secs(reshare_timeout),
+                }
+                .run()
+            })()
         }
         Cmd::CandidateRegister { data, registrar_rpc, rpc, from_dev, device_token } => (|| {
             let keys = aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(&data))?;
@@ -504,11 +578,14 @@ fn main() {
             println!("{h} {}", hex::encode(d));
             Ok(())
         })(),
-        Cmd::Reshare { from, to, epoch_end, epoch_end_hash, port, data, peers, link_base, offline } => {
+        Cmd::Reshare { from, to, epoch_end, epoch_end_hash, port, data, peers, link_base, offline, exit_with_parent } => {
+            if exit_with_parent {
+                exit_with_parent_process();
+            }
             let boundary = aether_node::roster::EpochStart { height: epoch_end + 1, parent: epoch_end_hash };
             reshare(&from, &to, boundary, port, data, peers, link_base, offline)
         }
-        Cmd::Network { chain_id, faucet, registrar, members } => assemble_network(chain_id, faucet, registrar, &members),
+        Cmd::Network { chain_id, faucet, registrar, epoch_blocks, members } => assemble_network(chain_id, faucet, registrar, epoch_blocks, &members),
         Cmd::RegistrarKey { data } => aether_node::faucet::Faucet::generate(&std::path::Path::new(&data).join("registrar.key")).and_then(|_| {
             let k = aether_node::faucet::Faucet::load(&std::path::Path::new(&data).join("registrar.key"))?;
             println!("registrar key {}\nwritten to {data}/registrar.key (put the key in network.json with `aether network --registrar`)", k.public_hex());
@@ -795,6 +872,18 @@ fn partition_prefix(data: &str) -> String {
     prefix
 }
 
+/// `<data>/anchor.json` (block and finalization hex, as `aether_getFinalized`
+/// returns them): where a voting node that was a follower starts.
+fn load_anchor(data: &str) -> Option<(aether_node::block::Block, aether_node::engine::Finalization)> {
+    use commonware_codec::Decode as _;
+    use commonware_codec::DecodeExt as _;
+    let v: Value = serde_json::from_slice(&std::fs::read(std::path::Path::new(data).join(aether_node::rotation::ANCHOR_FILE)).ok()?).ok()?;
+    let hex = |k: &str| aether_light::from_hex(v[k].as_str()?).ok();
+    let block = aether_node::block::Block::decode_cfg(hex("block")?.as_slice(), &aether_node::block::Block::codec_config(MAX_BLOCK_BYTES)).ok()?;
+    let fin = aether_node::engine::Finalization::decode(hex("finalization")?.as_slice()).ok()?;
+    Some((block, fin))
+}
+
 fn keygen(data: &str) -> Result<(), String> {
     let dir = std::path::Path::new(data);
     let keys = aether_node::roster::LocalKeys::generate();
@@ -809,22 +898,13 @@ fn keygen(data: &str) -> Result<(), String> {
 }
 
 /// Combine validators' public entries (validator.pub.json files) into network.json on stdout.
-fn assemble_network(chain_id: u64, faucet: Option<Address>, registrar: Option<String>, members: &[String]) -> Result<(), String> {
+fn assemble_network(chain_id: u64, faucet: Option<Address>, registrar: Option<String>, epoch_blocks: Option<u64>, members: &[String]) -> Result<(), String> {
     let validators = members
         .iter()
         .map(|p| std::fs::read(p).map_err(|e| format!("{p}: {e}")).and_then(|b| serde_json::from_slice(&b).map_err(|e| format!("{p}: {e}"))))
         .collect::<Result<Vec<aether_node::roster::Member>, String>>()?;
-    let file = aether_node::roster::NetworkFile {
-        chain_id,
-        validators,
-        identity: None,
-        round: 0,
-        output: None,
-        epochs: vec![],
-        faucet,
-        registrar,
-        epoch_blocks: None,
-    };
+    let file =
+        aether_node::roster::NetworkFile { chain_id, validators, identity: None, round: 0, output: None, epochs: vec![], faucet, registrar, epoch_blocks };
     aether_node::roster::Roster::from_file(&file)?;
     println!("{}", serde_json::to_string_pretty(&file).expect("json"));
     Ok(())
@@ -847,6 +927,8 @@ struct NodeArgs {
     /// (key path, key id, team) of the DeviceCheck key, if this node registers Macs.
     devicecheck: Option<(String, String, String)>,
     dev_registrar: bool,
+    /// network.json (with the committee output) when run from one: enables rotation.
+    network_file: Option<Value>,
 }
 
 fn run_node(a: NodeArgs) {
@@ -865,6 +947,7 @@ fn run_node(a: NodeArgs) {
         faucet_key,
         devicecheck,
         dev_registrar,
+        network_file,
     } = a;
     let faucet = genesis.faucet;
     let registry = || aether_node::devicecheck::Registry::open(std::path::Path::new(&data).join("registrations.json"));
@@ -947,6 +1030,13 @@ fn run_node(a: NodeArgs) {
             chain.lock().censor = Some(a);
         }
         chain.lock().deprioritize = dev_deprioritize;
+        // A DKG committee rotates to the registry's voting set (a devnet dealer set cannot).
+        if network_file.is_some() {
+            let keys = roster_keys.iter().map(|k| k.as_ref().try_into().expect("ed25519 key is 32 bytes")).collect();
+            let deferred =
+                std::fs::read_to_string(std::path::Path::new(&data).join(aether_node::rotation::DEFERRED_FILE)).ok().and_then(|s| s.trim().parse().ok());
+            chain.lock().committee = aether_node::rotation::Committee { keys, deferred };
+        }
         watch_upgrades(chain.clone(), std::path::Path::new(&data).join("upgrades"), *polynomial_identity, cfg.chain_id);
         tracing::info!(index, genesis_root = %chain.lock().finalized.state.root(), "starting validator");
 
@@ -967,6 +1057,7 @@ fn run_node(a: NodeArgs) {
         let engine = engine::Engine::new(
             context.child("engine"),
             engine::Config {
+                anchor: load_anchor(&data),
                 blocker: oracle.clone(),
                 provider: oracle.clone(),
                 partition_prefix: partition_prefix(&data),
@@ -1015,8 +1106,15 @@ fn run_node(a: NodeArgs) {
         if let Some(f) = &faucet_service {
             tracing::info!(address = %f.address, "faucet enabled (aether_faucet)");
         }
-        let rpc_state =
-            RpcState { chain, finality: aether_node::rpc::Finality::Marshal(marshal_mailbox), gossip: gossip_tx, faucet: faucet_service, registrar };
+        let rpc_state = RpcState {
+            chain,
+            finality: aether_node::rpc::Finality::Marshal(marshal_mailbox),
+            gossip: gossip_tx,
+            faucet: faucet_service,
+            registrar,
+            network: network_file,
+            upstream: None,
+        };
 
         // Public access: iroh endpoint published to the BitTorrent Mainline DHT.
         // Wallets find this node by its id alone and verify everything they get;
@@ -1089,7 +1187,7 @@ fn run_follow(
     data: String,
     rpc_port: u16,
     validators: u64,
-    candidate: bool,
+    candidate_keys: Option<String>,
     dev_epoch_blocks: Option<u64>,
 ) -> Result<(), String> {
     use aether_node::follow::{self, FinalityArchive, Upstream};
@@ -1121,18 +1219,26 @@ fn run_follow(
         } else {
             Upstream::Http(from_rpc)
         });
-        let archive = Arc::new(FinalityArchive::default());
+        let archive = Arc::new(FinalityArchive::new(chain.store()));
         let (gossip, rx) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(follow::forward(upstream.clone(), rx));
         watch_upgrades(chain.clone(), std::path::Path::new(&data).join("upgrades"), *set.identity(), chain_id);
-        if candidate {
-            let keys = aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(&data))?;
+        if let Some(dir) = &candidate_keys {
+            let keys = aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(dir))?;
             tracing::info!(voting_key = %hex::encode(keys.validator_key()), beaconer = %keys.beaconer(), "voting-node candidate: beacons every epoch once registered");
             tokio::spawn(aether_node::candidate::beacon_loop(chain.clone(), upstream.clone(), keys));
         }
-        tokio::spawn(follow::run(chain.clone(), upstream, set, archive.clone()));
+        tokio::spawn(follow::run(chain.clone(), upstream.clone(), set, archive.clone()));
         tracing::info!(height = chain.finalized_height(), rpc_port, "following (not a validator): every block is verified and re-executed here");
-        let st = RpcState { chain, finality: aether_node::rpc::Finality::Archive(archive), gossip, faucet: None, registrar: None };
+        let st = RpcState {
+            chain,
+            finality: aether_node::rpc::Finality::Archive(archive),
+            gossip,
+            faucet: None,
+            registrar: None,
+            network: None,
+            upstream: Some(upstream),
+        };
         rpc::serve(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), rpc_port), st).await.map_err(|e| e.to_string())
     })
 }
@@ -1147,6 +1253,7 @@ fn run_dkg(p2p: P2pArgs, chain_id: u64, data: String, round: u64, genesis: aethe
     // Genesis facts survive the ceremony: the network.json it writes still names the faucet.
     public.faucet = genesis.faucet;
     public.registrar = genesis.registrar.map(|(x, y)| format!("{}{}", hex::encode(x), hex::encode(y)));
+    public.epoch_blocks = (genesis.epoch_blocks != 0).then_some(genesis.epoch_blocks);
     let result = executor.start(async move |context| {
         // Accept incoming validator links (the node's RPC is not needed here).
         let _router = aether_node::p2p::open_public(&p2p).await.map(|ep| aether_net::serve_p2p(ep, loopback(p2p.port)));
@@ -1365,7 +1472,14 @@ fn certified_anchor(rpc: &str, height: u64, set: &aether_light::ValidatorSet) ->
         if !v.is_null() {
             let block = aether_light::from_hex(v["block"].as_str().unwrap_or_default()).map_err(|e| e.to_string())?;
             let fin = aether_light::from_hex(v["finalization"].as_str().unwrap_or_default()).map_err(|e| e.to_string())?;
-            return aether_light::verify_finalized(set, &block, &fin).map_err(|e| format!("CERTIFICATE REJECTED: {e} — do not trust this server"));
+            let links = v["links"]
+                .as_array()
+                .map(|a| a.iter().map(|l| aether_light::from_hex(l.as_str().unwrap_or_default())).collect::<Result<Vec<_>, _>>())
+                .transpose()
+                .map_err(|e| e.to_string())?
+                .unwrap_or_default();
+            return aether_light::verify_finalized_chain(set, &block, &fin, &links)
+                .map_err(|e| format!("CERTIFICATE REJECTED: {e} — do not trust this server"));
         }
         std::thread::sleep(Duration::from_millis(500));
     }

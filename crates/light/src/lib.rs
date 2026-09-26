@@ -88,6 +88,8 @@ pub enum LightError {
     WrongKey,
     ProofInvalid(String),
     RootNotCommitted,
+    /// A block does not build on the one before it in a certified chain.
+    BrokenLink,
 }
 
 impl core::fmt::Display for LightError {
@@ -143,13 +145,36 @@ pub struct VerifiedBlock {
 
 /// Verify `finalization` (codec bytes) certifies `block` (codec bytes).
 pub fn verify_finalized(set: &ValidatorSet, block_bytes: &[u8], finalization_bytes: &[u8]) -> Result<VerifiedBlock, LightError> {
-    let block = Block::decode_cfg(block_bytes, &Block::codec_config(MAX_BLOCK_BYTES)).map_err(|_| LightError::BadEncoding("block"))?;
+    verify_finalized_chain(set, block_bytes, finalization_bytes, &[])
+}
+
+/// Most blocks a certificate may reach back through (`links`).
+pub const MAX_LINKS: usize = 64;
+
+/// Not every height carries its own certificate: finalizing a block finalizes
+/// its ancestors. Verify `block` through `links` (its descendants, in height
+/// order, each building on the previous) up to the last one, which
+/// `finalization` certifies. With no links, the certificate is `block`'s own.
+pub fn verify_finalized_chain(set: &ValidatorSet, block_bytes: &[u8], finalization_bytes: &[u8], links: &[Vec<u8>]) -> Result<VerifiedBlock, LightError> {
+    if links.len() > MAX_LINKS {
+        return Err(LightError::BadEncoding("too many links"));
+    }
+    let decode = |b: &[u8]| Block::decode_cfg(b, &Block::codec_config(MAX_BLOCK_BYTES)).map_err(|_| LightError::BadEncoding("block"));
+    let block = decode(block_bytes)?;
+    let mut tip = block.clone();
+    for l in links {
+        let next = decode(l)?;
+        if next.parent != tip.digest() || next.height.get() != tip.height.get() + 1 {
+            return Err(LightError::BrokenLink);
+        }
+        tip = next;
+    }
     // Threshold certificates have a fixed size: the codec needs no config.
     let fin = Finalization::<Scheme, Digest>::decode_cfg(finalization_bytes, &()).map_err(|_| LightError::BadEncoding("finalization"))?;
     if !fin.verify(&mut commonware_utils::sys_rng(), &set.scheme, &Sequential) {
         return Err(LightError::CertificateInvalid);
     }
-    if fin.proposal.payload != block.digest() {
+    if fin.proposal.payload != tip.digest() {
         return Err(LightError::CertificateForDifferentBlock);
     }
     let payload = block.payload().ok_or(LightError::BadEncoding("payload"))?;

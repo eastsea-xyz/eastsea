@@ -21,6 +21,9 @@ const CODE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("code");
 const BLOCKS: TableDefinition<u64, &[u8]> = TableDefinition::new("blocks");
 const RECEIPTS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("receipts");
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
+/// Finality proofs a follower verified (`aether_getFinalized` JSON by height):
+/// history it keeps serving, also after it becomes a voting node.
+const PROOFS: TableDefinition<u64, &[u8]> = TableDefinition::new("proofs");
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -80,8 +83,21 @@ impl Store {
         }
         tx.open_table(BLOCKS).map_err(dberr)?;
         tx.open_table(META).map_err(dberr)?;
+        tx.open_table(PROOFS).map_err(dberr)?;
         tx.commit().map_err(dberr)?;
         Ok(Store { db })
+    }
+
+    pub fn put_proof(&self, height: u64, proof: &[u8]) -> Result<(), StoreError> {
+        let tx = self.db.begin_write().map_err(dberr)?;
+        tx.open_table(PROOFS).map_err(dberr)?.insert(height, proof).map_err(dberr)?;
+        tx.commit().map_err(dberr)
+    }
+
+    pub fn proof(&self, height: u64) -> Result<Option<Vec<u8>>, StoreError> {
+        let tx = self.db.begin_read().map_err(dberr)?;
+        let t = tx.open_table(PROOFS).map_err(dberr)?;
+        Ok(t.get(height).map_err(dberr)?.map(|v| v.value().to_vec()))
     }
 
     /// Persist one finalized block atomically.

@@ -120,6 +120,7 @@ async fn start_validator(context: &Ctx, oracle: &Oracle<Pk, Ctx>, i: u64, chain:
     let engine = engine::Engine::new(
         context.child("engine").with_attribute("validator", i),
         engine::Config {
+            anchor: None,
             blocker: oracle.control(me.clone()),
             provider: oracle.manager(),
             partition_prefix: format!("v{i}"),

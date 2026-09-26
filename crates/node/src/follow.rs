@@ -10,7 +10,7 @@
 
 use crate::block::Block;
 use crate::chain::Chain;
-use aether_light::{from_hex, verify_finalized, ValidatorSet, MAX_BLOCK_BYTES};
+use aether_light::{from_hex, verify_finalized_chain, ValidatorSet, MAX_BLOCK_BYTES};
 use commonware_codec::Decode as _;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -18,26 +18,43 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tracing::{info, warn};
 
-/// Certified blocks this follower verified, served to wallets as `aether_getFinalized`.
+/// Certified blocks this follower verified, served to wallets and other
+/// followers as `aether_getFinalized` (the same JSON a validator answers with).
+/// Kept in the node's store, so the history survives restarts and stays
+/// served when this Mac becomes a voting node.
 #[derive(Default)]
 pub struct FinalityArchive {
-    inner: Mutex<BTreeMap<u64, (String, String)>>,
+    store: Option<std::sync::Arc<crate::store::Store>>,
+    /// Without a store (tests): the most recent `KEEP` heights in memory.
+    inner: Mutex<BTreeMap<u64, Value>>,
 }
 
-/// Recent heights kept (wallets anchor on the latest ones).
 const KEEP: usize = 8_192;
 
 impl FinalityArchive {
-    pub fn insert(&self, height: u64, block_hex: String, finalization_hex: String) {
+    pub fn new(store: Option<std::sync::Arc<crate::store::Store>>) -> Self {
+        FinalityArchive { store, inner: Default::default() }
+    }
+
+    pub fn insert(&self, height: u64, proof: Value) {
+        if let Some(s) = &self.store {
+            if let Err(e) = s.put_proof(height, proof.to_string().as_bytes()) {
+                warn!(height, %e, "could not keep the finality proof");
+            }
+            return;
+        }
         let mut g = self.inner.lock().expect("archive lock");
-        g.insert(height, (block_hex, finalization_hex));
+        g.insert(height, proof);
         while g.len() > KEEP {
             g.pop_first();
         }
     }
 
-    pub fn get(&self, height: u64) -> Option<(String, String)> {
-        self.inner.lock().expect("archive lock").get(&height).cloned()
+    pub fn get(&self, height: u64) -> Option<Value> {
+        match &self.store {
+            Some(s) => s.proof(height).ok().flatten().and_then(|b| serde_json::from_slice(&b).ok()),
+            None => self.inner.lock().expect("archive lock").get(&height).cloned(),
+        }
     }
 }
 
@@ -88,6 +105,11 @@ impl Upstream {
         }
     }
 
+    /// The first non-null answer (null when every source has none).
+    pub async fn first(&self, method: &str, params: Value) -> Result<Value, String> {
+        self.ask(method, params, |v| Ok((!v.is_null()).then_some(v))).await.map(|v| v.unwrap_or(Value::Null))
+    }
+
     pub async fn call(&self, method: &str, params: Value) -> Result<Value, String> {
         self.ask(method, params, |v| Ok(Some(v))).await.map(|v| v.unwrap_or(Value::Null))
     }
@@ -119,9 +141,9 @@ pub async fn run(chain: Chain, upstream: std::sync::Arc<Upstream>, set: Validato
     loop {
         let next = chain.finalized_height() + 1;
         match fetch(&upstream, &set, next).await {
-            Ok(Some((block, block_hex, fin_hex))) => match chain.finalize(&block) {
+            Ok(Some((block, proof))) => match chain.finalize(&block) {
                 Ok(()) => {
-                    archive.insert(next, block_hex, fin_hex);
+                    archive.insert(next, proof);
                     if next - last_log >= 100 || next.is_multiple_of(10) {
                         info!(height = next, root = %chain.lock().finalized.state.root(), "followed");
                         last_log = next;
@@ -139,23 +161,25 @@ pub async fn run(chain: Chain, upstream: std::sync::Arc<Upstream>, set: Validato
 
 /// Block `h` and its certificate, verified; `None` if no source has it yet.
 /// A source that answers with nothing or with a bad certificate is skipped.
-async fn fetch(upstream: &Upstream, set: &ValidatorSet, h: u64) -> Result<Option<(Block, String, String)>, String> {
+async fn fetch(upstream: &Upstream, set: &ValidatorSet, h: u64) -> Result<Option<(Block, Value)>, String> {
     upstream.ask("aether_getFinalized", json!([h]), |v| check(set, h, v)).await
 }
 
-fn check(set: &ValidatorSet, h: u64, v: Value) -> Result<Option<(Block, String, String)>, String> {
+fn check(set: &ValidatorSet, h: u64, v: Value) -> Result<Option<(Block, Value)>, String> {
     if v.is_null() {
         return Ok(None);
     }
-    let (bh, fh) = (v["block"].as_str().unwrap_or_default().to_string(), v["finalization"].as_str().unwrap_or_default().to_string());
-    let (bb, fb) = (from_hex(&bh).map_err(|e| format!("{e:?}"))?, from_hex(&fh).map_err(|e| format!("{e:?}"))?);
-    let verified = verify_finalized(set, &bb, &fb).map_err(|e| format!("certificate: {e:?}"))?;
+    let hex = |s: &Value| from_hex(s.as_str().unwrap_or_default()).map_err(|e| format!("{e:?}"));
+    let (bb, fb) = (hex(&v["block"])?, hex(&v["finalization"])?);
+    let links = v["links"].as_array().map(|a| a.iter().map(hex).collect::<Result<Vec<_>, _>>()).transpose()?.unwrap_or_default();
+    let verified = verify_finalized_chain(set, &bb, &fb, &links).map_err(|e| format!("certificate: {e:?}"))?;
     if verified.height != h {
         return Err(format!("asked for block {h}, got a certificate for {}", verified.height));
     }
     let block = Block::decode_cfg(bb.as_slice(), &Block::codec_config(MAX_BLOCK_BYTES)).map_err(|e| format!("block: {e}"))?;
     // Keep the canonical encoding, never the upstream's text (which may be padded).
-    Ok(Some((block, aether_light::to_hex(&bb), aether_light::to_hex(&fb))))
+    let links: Vec<String> = links.iter().map(|l| aether_light::to_hex(l)).collect();
+    Ok(Some((block, json!({ "height": h, "block": aether_light::to_hex(&bb), "finalization": aether_light::to_hex(&fb), "links": links }))))
 }
 
 /// Forward txs submitted to this follower to the validators, retrying for a

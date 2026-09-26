@@ -33,6 +33,10 @@ pub struct RpcState {
     pub faucet: Option<std::sync::Arc<crate::faucet::Faucet>>,
     /// Set on nodes run with a DeviceCheck key (one node identity per Mac).
     pub registrar: Option<std::sync::Arc<crate::devicecheck::Registrar>>,
+    /// Validators: their network.json (public), handed to joining voting nodes.
+    pub network: Option<Value>,
+    /// Followers: where rotation questions go (validators know the running set).
+    pub upstream: Option<std::sync::Arc<crate::follow::Upstream>>,
 }
 
 pub async fn serve(addr: SocketAddr, state: RpcState) -> std::io::Result<()> {
@@ -53,6 +57,12 @@ pub async fn handle_value(st: &RpcState, req: Value) -> Value {
     let result = match method.as_str() {
         "aether_getFinalized" => finalized(st, &params).await,
         "aether_registerDevice" => register_device(st, &params).await,
+        // Followers ask validators (one hop: a forwarded question is never forwarded again).
+        "aether_rotation" | "aether_network" if st.upstream.is_some() => match params.get(0) {
+            Some(Value::Bool(true)) => Ok(Value::Null),
+            _ => st.upstream.as_ref().expect("checked").first(&method, json!([true])).await.map_err(|e| (-32000, e)),
+        },
+        "aether_network" => Ok(st.network.clone().unwrap_or(Value::Null)),
         _ => dispatch(st, &method, &params),
     };
     match result {
@@ -71,18 +81,31 @@ async fn finalized(st: &RpcState, p: &Value) -> RpcResult {
     let h: u64 = param(p, 0)?;
     let marshal = match &st.finality {
         Finality::Marshal(m) => m,
-        Finality::Archive(a) => {
-            return Ok(a.get(h).map_or(Value::Null, |(block, fin)| json!({ "height": h, "block": block, "finalization": fin })));
+        Finality::Archive(a) => return Ok(a.get(h).unwrap_or(Value::Null)),
+    };
+    let Some(block) = marshal.get_block(Height::new(h)).await else {
+        // Below a voting node's floor: the history it verified as a follower.
+        let kept = st.chain.store().and_then(|s| s.proof(h).ok().flatten()).and_then(|b| serde_json::from_slice(&b).ok());
+        return Ok(kept.unwrap_or(Value::Null));
+    };
+    // A height finalized as an ancestor has no certificate of its own: prove it
+    // through the blocks built on it up to the next certified one (`links`).
+    let mut links = Vec::new();
+    for k in h..=h + aether_light::MAX_LINKS as u64 {
+        if k > h {
+            let Some(b) = marshal.get_block(Height::new(k)).await else { return Ok(Value::Null) };
+            links.push(aether_light::to_hex(&b.encode()));
         }
-    };
-    let (Some(block), Some(fin)) = (marshal.get_block(Height::new(h)).await, marshal.get_finalization(Height::new(h)).await) else {
-        return Ok(Value::Null);
-    };
-    Ok(json!({
-        "height": h,
-        "block": aether_light::to_hex(&block.encode()),
-        "finalization": aether_light::to_hex(&fin.encode()),
-    }))
+        if let Some(fin) = marshal.get_finalization(Height::new(k)).await {
+            return Ok(json!({
+                "height": h,
+                "block": aether_light::to_hex(&block.encode()),
+                "finalization": aether_light::to_hex(&fin.encode()),
+                "links": links,
+            }));
+        }
+    }
+    Ok(Value::Null)
 }
 
 /// `[device_token (base64), operator, validator_key (hex 32), node_id (hex 32), beaconer]`
@@ -125,6 +148,21 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                 "mempool": g.mempool.len(),
                 "hash_function": "poseidon2-koalabear-16",
             }))
+        }
+        // A pending voting-node rotation: the running set stopped at `end_height`;
+        // `aether run` on old and new members reshares the key to `next`.
+        "aether_rotation" => {
+            let f = chain.lock().finalized.clone();
+            let Some(next) = chain.rotation_due(&f) else { return Ok(Value::Null) };
+            let members: Vec<Value> = next
+                .iter()
+                .map(|c| {
+                    let node = aether_net::EndpointId::from_bytes(&c.node_id).map(|n| n.to_string()).unwrap_or_default();
+                    json!({ "key": hex::encode(c.validator_key), "node": node })
+                })
+                .collect();
+            let epoch = (f.height + 1) / aether_execution::registry::epoch_blocks(&f.state);
+            Ok(json!({ "epoch": epoch, "end_height": f.height, "end_hash": format!("{}", f.digest), "next": members, "network": st.network }))
         }
         // Voting-node candidates (the registry) and the current epoch.
         "aether_candidates" => {

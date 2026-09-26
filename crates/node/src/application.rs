@@ -83,6 +83,10 @@ where
     async fn propose(&mut self, (rt, context): (E, Self::Context), mut ancestry: impl Ancestry<Self::Block>, _input: ()) -> Option<Self::Block> {
         let parent_block = ancestry.next().await?;
         let parent = self.resolve(parent_block.clone(), ancestry).await?;
+        if self.chain.rotation_due(&parent).is_some() {
+            // The next voting set takes over from here (`aether run` reshares).
+            return None;
+        }
 
         // Pace proposals from the parent's timestamp.
         let min_ts = parent_block.timestamp.checked_add(self.delay_ms)?;
@@ -118,6 +122,9 @@ where
         rt.sleep_until(SystemTime::UNIX_EPOCH + Duration::from_millis(block.timestamp.saturating_sub(MAX_FUTURE_SKEW_MS))).await;
 
         let Some(parent) = self.resolve(parent_block, ancestry).await else { return false };
+        if self.chain.rotation_due(&parent).is_some() {
+            return false;
+        }
         match self.chain.execute(&block, &parent) {
             Ok(exec) => {
                 // FOCIL: refuse to vote for a block that censors listed txs.

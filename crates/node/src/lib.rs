@@ -11,6 +11,8 @@ pub mod follow;
 pub mod inclusion;
 pub mod p2p;
 pub mod roster;
+pub mod rotation;
 pub mod rpc;
 pub mod store;
+pub mod supervisor;
 pub mod upgrade;

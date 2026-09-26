@@ -1,6 +1,6 @@
 //! Light-client checks against real artifacts captured from a 4-validator devnet.
 
-use aether_light::{from_hex, verify_account, verify_finalized, LightError, ValidatorSet};
+use aether_light::{from_hex, verify_account, verify_finalized, verify_finalized_chain, LightError, ValidatorSet, MAX_LINKS};
 use aether_state::Proof;
 use aether_types::{Address, B256, U256};
 use serde_json::Value;
@@ -93,4 +93,19 @@ fn proof_under_uncommitted_root_rejects() {
     if later.parent_state_root != fixture_root {
         assert!(matches!(r, Err(LightError::ProofInvalid(_))));
     }
+}
+
+/// A height without its own certificate is proven through its descendants.
+#[test]
+fn a_block_is_proven_through_the_blocks_built_on_it() {
+    let f = fixture();
+    let set = ValidatorSet::devnet(4);
+    let (anchor, next) = (bytes(&f, "anchor_block"), bytes(&f, "next_block"));
+    let vb = verify_finalized_chain(&set, &anchor, &bytes(&f, "next_finalization"), std::slice::from_ref(&next)).unwrap();
+    assert_eq!(vb, verify_finalized(&set, &anchor, &bytes(&f, "anchor_finalization")).unwrap());
+    // The certificate must be for the last link, and every link must build on the one before.
+    assert!(verify_finalized_chain(&set, &anchor, &bytes(&f, "anchor_finalization"), std::slice::from_ref(&next)).is_err());
+    assert_eq!(verify_finalized_chain(&set, &next, &bytes(&f, "next_finalization"), std::slice::from_ref(&next)), Err(LightError::BrokenLink));
+    let too_many = vec![next.clone(); MAX_LINKS + 1];
+    assert!(verify_finalized_chain(&set, &anchor, &bytes(&f, "next_finalization"), &too_many).is_err());
 }

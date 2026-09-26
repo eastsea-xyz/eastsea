@@ -10,7 +10,7 @@ uniffi::setup_scaffolding!();
 
 use aether_crypto::{address_of, PublicKey};
 use aether_execution::EvmCall;
-use aether_light::{from_hex, verify_account, verify_finalized, ValidatorSet, VerifiedBlock};
+use aether_light::{from_hex, verify_account, verify_finalized_chain, ValidatorSet, VerifiedBlock};
 use aether_state::Proof;
 use aether_types::{Address, Bytes, FeeVector, GasVector, SignerScheme, TxEnvelope, TxHash, TxHeader, TxPayload, U256};
 use serde_json::{json, Value};
@@ -218,7 +218,14 @@ fn anchor(height: u64, set: &ValidatorSet) -> R<VerifiedBlock> {
         if !v.is_null() {
             let block = from_hex(v["block"].as_str().unwrap_or_default()).map_err(|e| WalletError::Verification(e.to_string()))?;
             let fin = from_hex(v["finalization"].as_str().unwrap_or_default()).map_err(|e| WalletError::Verification(e.to_string()))?;
-            let vb = verify_finalized(set, &block, &fin).map_err(|e| WalletError::Verification(format!("certificate: {e}")))?;
+            // A height without its own certificate comes with the blocks built on it.
+            let links = v["links"]
+                .as_array()
+                .map(|a| a.iter().map(|l| from_hex(l.as_str().unwrap_or_default())).collect::<Result<Vec<_>, _>>())
+                .transpose()
+                .map_err(|e| WalletError::Verification(e.to_string()))?
+                .unwrap_or_default();
+            let vb = verify_finalized_chain(set, &block, &fin, &links).map_err(|e| WalletError::Verification(format!("certificate: {e}")))?;
             // A valid but old certificate would let a node replay past state (e.g. an
             // old, looser session that the owner then re-signs): require a recent one.
             let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(u64::MAX);

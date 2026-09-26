@@ -130,6 +130,8 @@ pub struct Inner {
     store: Option<Arc<Store>>,
     /// Pending txs per sender (bounded by `MAX_PER_SENDER`).
     pub pending_by_sender: HashMap<Address, usize>,
+    /// The running voting set (validators only): gates blocks at a rotation boundary.
+    pub committee: crate::rotation::Committee,
 }
 
 #[derive(Clone)]
@@ -182,6 +184,7 @@ impl Chain {
             arrivals: HashMap::new(),
             inclusion: InclusionPool::default(),
             censor: None,
+            committee: Default::default(),
             deprioritize: None,
             store: None,
         };
@@ -249,8 +252,20 @@ impl Chain {
         self.lock().executed.get(d).cloned()
     }
 
+    /// The durable store, if any (finality proofs a follower kept).
+    pub fn store(&self) -> Option<Arc<Store>> {
+        self.lock().store.clone()
+    }
+
     pub fn cfg(&self) -> ChainConfig {
         self.lock().cfg.clone()
+    }
+
+    /// The next voting set if the block after `parent` starts a rotation: the
+    /// running set then builds and votes for nothing past `parent`.
+    pub fn rotation_due(&self, parent: &Executed) -> Option<Vec<aether_execution::registry::Candidate>> {
+        let committee = self.lock().committee.clone();
+        crate::rotation::due(&parent.state, parent.height + 1, &committee)
     }
 
     /// Execution context of `block` on top of `parent` (base fees derive from the parent's excess).

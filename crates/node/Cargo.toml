@@ -17,6 +17,7 @@ aether-crypto.workspace = true
 aether-state.workspace = true
 aether-execution.workspace = true
 aether-light.workspace = true
+aether-consensus.workspace = true
 aether-net.workspace = true
 alloy-primitives.workspace = true
 serde.workspace = true

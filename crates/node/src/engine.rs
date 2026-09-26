@@ -36,7 +36,7 @@ use std::time::Duration;
 use tracing::{error, warn};
 
 type Activity = simplex::types::Activity<Scheme, Digest>;
-type Finalization = simplex::types::Finalization<Scheme, Digest>;
+pub type Finalization = simplex::types::Finalization<Scheme, Digest>;
 pub type Marshaled<E> = Deferred<E, Scheme, Application, Block, ScheduleEpocher>;
 
 const SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER: u64 = 10;
@@ -69,6 +69,9 @@ pub struct Config<B: Blocker<PublicKey = PublicKey>, P: Provider<PublicKey = Pub
     /// epoch 0, else the last block of the previous epoch.
     pub epoch_floor: Option<Digest>,
     pub genesis: Block,
+    /// A voting node that joins with no validator history starts from the last
+    /// block it verified as a follower (and its finalization) instead of genesis.
+    pub anchor: Option<(Block, Finalization)>,
     pub application: Application,
     pub mailbox_size: usize,
     pub leader_timeout: Duration,
@@ -154,12 +157,24 @@ where
         )
         .await
         .expect("finalizations archive");
-        let blocks = immutable::Archive::init(
+        let mut blocks = immutable::Archive::init(
             context.child("finalized_blocks"),
             archive_cfg(&prefix, "blocks", page_cache.clone(), Block::codec_config(MAX_BLOCK_BYTES)),
         )
         .await
         .expect("blocks archive");
+        // Fresh archives + an anchor: store the anchor block so marshal installs
+        // the floor locally (nobody in a brand-new voting set has older blocks).
+        let start = match cfg.anchor {
+            Some((block, finalization)) if blocks.last_index().is_none() => {
+                use commonware_consensus::marshal::store::Blocks;
+                tracing::info!(height = block.height.get(), "starting from the verified anchor block");
+                blocks = Blocks::put(blocks, block).await.expect("store anchor block");
+                blocks = Blocks::sync(blocks).await.expect("sync anchor block");
+                marshal::Start::Floor(finalization)
+            }
+            _ => marshal::Start::Genesis(cfg.genesis.clone()),
+        };
 
         // Re-execute finalized blocks newer than the durable state checkpoint, so a
         // restarted validator resumes exactly where marshal's delivery resumes.
@@ -195,7 +210,7 @@ where
                 partition_prefix: prefix.clone(),
                 mailbox_size,
                 view_retention: ViewDelta::new(cfg.activity_timeout.get().saturating_mul(SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER)),
-                start: marshal::Start::Genesis(cfg.genesis),
+                start,
                 prunable_items_per_section: PRUNABLE_ITEMS_PER_SECTION,
                 replay_buffer: REPLAY_BUFFER,
                 key_write_buffer: WRITE_BUFFER,

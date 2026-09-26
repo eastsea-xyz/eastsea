@@ -757,3 +757,120 @@ fn a_candidate_registers_once_and_beacons_every_epoch() {
         std::thread::sleep(Duration::from_millis(500));
     }
 }
+
+/// Open voting nodes, part 3: nobody runs a ceremony by hand. Four Macs run
+/// `aether run` as the genesis voting set, four more as candidates. Once the
+/// candidates are registered and alive, the genesis set stops at the next
+/// registry epoch boundary, all eight reshare the committee key on their own,
+/// and the candidates continue the same chain under the same identity (they
+/// had no validator history: they start from the block they verified last).
+#[test]
+fn open_voting_nodes_take_over_the_chain_by_themselves() {
+    let _serial = serial();
+    let dir = std::env::temp_dir().join(format!("aether-devnet-test-{}-open", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let d = |name: &str| dir.join(name).to_str().unwrap().to_string();
+    let genesis_set = ["g1", "g2", "g3", "g4"];
+    let candidates = ["c1", "c2", "c3", "c4"];
+    for g in genesis_set {
+        run_ok(&["keygen", "--data", &d(g)]);
+    }
+    let mut args = vec!["network".to_string(), "--epoch-blocks".into(), "40".into()];
+    args.extend(genesis_set.iter().map(|g| format!("{}/validator.pub.json", d(g))));
+    std::fs::write(d("A.json"), run_ok(&args.iter().map(String::as_str).collect::<Vec<_>>())).unwrap();
+    let ports: Vec<u16> = (0..4).map(|_| free_port()).collect();
+    let dkg: Vec<Child> = (0..4)
+        .map(|k| {
+            spawn_quiet(&[
+                "dkg".into(),
+                "--network".into(),
+                d("A.json"),
+                "--port".into(),
+                ports[k].to_string(),
+                "--data".into(),
+                d(genesis_set[k]),
+                "--peers".into(),
+                tcp_peers(&ports, k),
+                "--offline".into(),
+            ])
+        })
+        .collect();
+    for c in dkg {
+        assert!(c.wait_with_output().unwrap().status.success());
+    }
+    std::fs::copy(format!("{}/network.json", d("g1")), d("A-final.json")).unwrap();
+    let a_final = serde_json::from_slice::<Value>(&std::fs::read(d("A-final.json")).unwrap()).unwrap();
+    assert_eq!(a_final["epoch_blocks"], json!(40), "the ceremony keeps the genesis epoch length");
+    let identity = a_final["identity"].as_str().unwrap().to_string();
+
+    // Eight Macs, each running only `aether run`.
+    let names: Vec<&str> = genesis_set.iter().chain(candidates.iter()).copied().collect();
+    let p2p: Vec<u16> = (0..8).map(|_| free_port()).collect();
+    let rpc: Vec<u16> = (0..8).map(|_| free_port()).collect();
+    let mut net = Net::prepared(dir.clone(), p2p.clone(), rpc.clone(), vec![vec![]; 8]);
+    for (k, name) in names.iter().enumerate() {
+        let others: Vec<String> = (0..8).filter(|j| *j != k).map(|j| format!("http://127.0.0.1:{}", rpc[j])).collect();
+        let mut a: Vec<String> = vec![
+            "run".into(),
+            "--data".into(),
+            d(name),
+            "--network".into(),
+            d("A-final.json"),
+            "--port".into(),
+            p2p[k].to_string(),
+            "--rpc-port".into(),
+            rpc[k].to_string(),
+            "--dev-peer-dir".into(),
+            d("peers"),
+            "--node-arg=--block-time-ms=500".into(),
+            format!("--follow-arg=--from-rpc={}", others.join(",")),
+            "--reshare-timeout".into(),
+            "120".into(),
+        ];
+        if k == 0 {
+            a.push("--node-arg=--dev-registrar".into());
+        }
+        let log = std::fs::File::create(dir.join(format!("{name}.log"))).unwrap();
+        let child = Command::new(BIN).args(&a).env("RUST_LOG", "info,commonware=warn").stdout(log).stderr(Stdio::null()).spawn().expect("spawn run");
+        net.procs[k] = Some(child);
+    }
+    net.wait_height(0, 3, 90);
+    let aa = "0x00000000000000000000000000000000000000aa";
+    net.cli(&["send", "--rpc", &net.url(0), "--from-dev", "1", "--to", aa, "--value", "11", "--wait"]);
+
+    // Four owners register their Macs (four operators: no one holds a third).
+    for (i, c) in candidates.iter().enumerate() {
+        let out = net.cli(&["candidate-register", "--data", &d(c), "--registrar-rpc", &net.url(0), "--rpc", &net.url(0), "--from-dev", &(i + 2).to_string()]);
+        assert!(out.contains("success=true"), "{out}");
+    }
+    let keys: std::collections::BTreeSet<String> = candidates
+        .iter()
+        .map(|c| serde_json::from_slice::<Value>(&std::fs::read(format!("{}/validator.pub.json", d(c))).unwrap()).unwrap()["key"].as_str().unwrap().to_string())
+        .collect();
+
+    // No one acts from here: the candidates become the voting set.
+    let end = Instant::now() + Duration::from_secs(300);
+    loop {
+        let running: Option<std::collections::BTreeSet<String>> = net
+            .rpc(4, "aether_network", json!([]))
+            .and_then(|v| v["validators"].as_array().map(|a| a.iter().filter_map(|m| m["key"].as_str().map(String::from)).collect()));
+        if running.as_ref() == Some(&keys) && net.rpc(4, "aether_rotation", json!([])).is_some_and(|r| r.is_null()) {
+            break;
+        }
+        assert!(Instant::now() < end, "the candidates did not take over (see {}/*.log)", dir.display());
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    let h = net.height(4);
+    net.wait_height(4, h + 10, 120);
+    for k in 5..8 {
+        net.wait_height(k, h + 10, 60);
+    }
+    assert_agree(&net, &[4, 5, 6, 7], h + 10);
+    // History from the genesis set verifies under the same identity on a new voting node.
+    let bal = net.cli(&["balance", aa, "--rpc", &net.url(4), "--identity", &identity]);
+    assert!(bal.contains("balance   11 wei") && bal.contains("verified  ✓"), "{bal}");
+    // The genesis Macs now follow the chain the candidates build.
+    net.wait_height(0, h + 10, 120);
+    assert_agree(&net, &[0, 4], h + 10);
+}

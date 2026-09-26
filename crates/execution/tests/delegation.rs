@@ -326,3 +326,84 @@ fn no_guardian_means_no_recovery_path() {
     let sigs = rc.sigs(&[(0, &phone)], 0, &calls);
     assert!(!rc.relay(encode_propose_recovery(&calls, &sigs), 100));
 }
+
+// ---------------- session keys (limits enforced on chain) ----------------
+
+use aether_execution::account::{encode_add_session, encode_session_execute, session_message, slots, SessionLimits};
+
+const AETH: u128 = 1_000_000_000_000_000_000;
+
+/// Alice's account with one session key (`agent`) under `limits`, added at t=1000.
+fn with_session(agent: &P256Signer, limits: &SessionLimits) -> Recovery {
+    let mut rc = Recovery::new(&[], 0, 0);
+    let (x, y) = key(agent);
+    // Nonce 2: the delegating tx used 0 and its authorization 1.
+    assert!(rc.owner_self_call(2, encode_add_session(x, y, limits), 1_000), "addSession");
+    rc
+}
+
+fn pay(rc: &mut Recovery, agent: &P256Signer, nonce: u64, calls: &[AccountCall], t: u64) -> bool {
+    let (r, s) = sign_rs(agent, &session_message(CHAIN, rc.s.a, 0, nonce, calls));
+    rc.relay(encode_session_execute(calls, 0, r, s), t)
+}
+
+fn to(addr: Address, aeth: u128) -> AccountCall {
+    (addr, U256::from(aeth), Bytes::new())
+}
+
+#[test]
+fn a_session_key_pays_within_its_limits_only() {
+    let agent = P256Signer::from_seed(&seed(20)).unwrap();
+    let limits = SessionLimits { per_payment: AETH, per_day: 3 * AETH, expires: 0, allow: vec![] };
+    let mut rc = with_session(&agent, &limits);
+    let bob = Address::repeat_byte(0xb0);
+    assert!(pay(&mut rc, &agent, 0, &[to(bob, AETH)], 2_000));
+    assert!(!pay(&mut rc, &agent, 0, &[to(bob, AETH)], 2_001), "no replay");
+    assert!(!pay(&mut rc, &agent, 1, &[to(bob, AETH / 2 + 1), to(bob, AETH / 2)], 2_002), "per-payment limit counts the whole batch");
+    assert!(pay(&mut rc, &agent, 1, &[to(bob, AETH)], 2_003));
+    assert!(pay(&mut rc, &agent, 2, &[to(bob, AETH)], 2_004));
+    assert!(!pay(&mut rc, &agent, 3, &[to(bob, 1)], 2_005), "daily limit reached");
+    assert!(pay(&mut rc, &agent, 3, &[to(bob, AETH)], 2_000 + 86_400), "a new 24 h window");
+    assert_eq!(rc.state.balance(&bob), U256::from(4 * AETH));
+    // The limits and usage are readable from storage (for light-client proofs).
+    let base = slots::session(0);
+    assert_eq!(slots::unpack_limits(rc.state.storage(&rc.s.a, base + U256::from(2u64))), (AETH, 3 * AETH));
+    let (window, spent, expires) = slots::unpack_window(rc.state.storage(&rc.s.a, base + U256::from(3u64)));
+    assert_eq!((window, spent, expires), (2_000 + 86_400, AETH, 0));
+    assert_eq!(rc.state.storage(&rc.s.a, base + U256::from(5u64)), U256::from(4u64), "session nonce");
+    assert_eq!(rc.state.storage(&rc.s.a, slots::session_count()), U256::from(1u64));
+}
+
+#[test]
+fn a_session_key_cannot_call_contracts_or_change_settings() {
+    let agent = P256Signer::from_seed(&seed(21)).unwrap();
+    let mut rc = with_session(&agent, &SessionLimits { per_payment: AETH, per_day: 10 * AETH, expires: 0, allow: vec![] });
+    let (x, y) = key(&agent);
+    let raise = SessionLimits { per_payment: 1_000 * AETH, per_day: 1_000 * AETH, expires: 0, allow: vec![] };
+    let a = rc.s.a;
+    assert!(!pay(&mut rc, &agent, 0, &[(a, U256::ZERO, encode_add_session(x, y, &raise))], 2_000), "no self-calls");
+    assert!(!pay(&mut rc, &agent, 0, &[(Address::repeat_byte(0xc0), U256::from(1u64), Bytes::from_static(&[1, 2, 3, 4]))], 2_001), "no contract calls");
+    let other = P256Signer::from_seed(&seed(22)).unwrap();
+    assert!(!pay(&mut rc, &other, 0, &[to(Address::repeat_byte(0xb0), 1)], 2_002), "another key");
+}
+
+#[test]
+fn session_allowlist_and_expiry_hold() {
+    let agent = P256Signer::from_seed(&seed(23)).unwrap();
+    let shop = Address::repeat_byte(0x5b);
+    let mut rc = with_session(&agent, &SessionLimits { per_payment: AETH, per_day: 10 * AETH, expires: 50_000, allow: vec![shop] });
+    assert!(!pay(&mut rc, &agent, 0, &[to(Address::repeat_byte(0xb0), 1)], 2_000), "recipient not allowed");
+    assert!(pay(&mut rc, &agent, 0, &[to(shop, 1)], 2_001));
+    assert!(!pay(&mut rc, &agent, 1, &[to(shop, 1)], 50_000), "expired");
+}
+
+#[test]
+fn session_settings_are_validated() {
+    let agent = P256Signer::from_seed(&seed(24)).unwrap();
+    let (x, y) = key(&agent);
+    let mut rc = Recovery::new(&[], 0, 0);
+    let bad = SessionLimits { per_payment: 2 * AETH, per_day: AETH, expires: 0, allow: vec![] };
+    assert!(!rc.owner_self_call(2, encode_add_session(x, y, &bad), 1_000), "per payment above per day");
+    let zero = SessionLimits { per_payment: 0, per_day: AETH, expires: 0, allow: vec![] };
+    assert!(!rc.owner_self_call(3, encode_add_session(x, y, &zero), 1_000), "zero per payment (the reverted tx used nonce 2)");
+}

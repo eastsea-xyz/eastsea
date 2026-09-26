@@ -12,6 +12,11 @@ pragma solidity ^0.8.19;
 /// keys added this way drive the account by signature (`ownerExecute`), so a
 /// new device takes over the same address.
 ///
+/// Session keys (e.g. an AI agent's key) pay plain transfers by signature, within
+/// limits this contract enforces: per payment, per rolling day, an optional
+/// recipient list and an expiry. Whoever holds a session key can never exceed
+/// them, whatever code it runs.
+///
 /// Limit: EIP-7702 cannot revoke the account's original key. Recovery is for a
 /// lost key; whoever holds a stolen original key can still move funds.
 contract AetherAccount {
@@ -37,6 +42,12 @@ contract AetherAccount {
     error NotYet(uint64 readyAt);
     error WrongCalls();
     error BadOwnerSignature();
+    error BadSession();
+    error SessionExpired();
+    error NotAPayment(uint256 index);
+    error RecipientNotAllowed(address to);
+    error OverPaymentLimit(uint256 total, uint256 limit);
+    error OverDailyLimit(uint256 spent, uint256 limit);
 
     event Executed(uint256 calls);
     event GuardiansSet(uint256 count, uint8 threshold, uint64 delay);
@@ -46,6 +57,9 @@ contract AetherAccount {
     event OwnerAdded(bytes32 x, bytes32 y);
     event OwnerRemoved(bytes32 x, bytes32 y);
     event OwnerExecuted(uint256 nonce, uint256 calls);
+    event SessionAdded(uint256 index, bytes32 x, bytes32 y, uint128 perPayment, uint128 perDay, uint64 expires);
+    event SessionRemoved(uint256 index);
+    event SessionPaid(uint256 index, uint256 nonce, uint256 total);
 
     /// P256VERIFY (EIP-7951 / RIP-7212): sha256 digest, r, s, x, y -> 1 on success.
     address constant P256VERIFY = address(0x100);
@@ -56,6 +70,10 @@ contract AetherAccount {
     /// Domain tags of the two signed messages (keccak256 of "aether.recovery" / "aether.owner").
     bytes32 constant RECOVERY_TAG = 0x2c233498054fa207221bfd1e68b67c7d7015e57e5a1339c519f2003dc5d79db6;
     bytes32 constant OWNER_TAG = 0x5b1924c9dfca7a9507bcc724f7e21846bad5b98db30fd8c17bb48c142374b010;
+    /// keccak256("aether.session")
+    bytes32 constant SESSION_TAG = 0x2e4a90ade1d79b1a035dc199dd5094be459e7c7e62f5f46349a2f67f0e9cd513;
+    uint256 constant MAX_SESSIONS = 8;
+    uint256 constant MAX_ALLOWED = 16;
 
     /// Storage lives in the delegating account itself, so use a namespaced slot
     /// (ERC-7201) no other code at this address will collide with:
@@ -73,6 +91,21 @@ contract AetherAccount {
         uint64 readyAt;
         Key[] owners;
         uint256 ownerNonce;
+        Session[] sessions;
+    }
+
+    struct Session {
+        Key key;
+        uint128 perPayment;
+        uint128 perDay;
+        /// Start of the current 24 h window and what was paid in it.
+        uint64 windowStart;
+        uint128 spent;
+        /// Unix time after which the key stops working (0 = never).
+        uint64 expires;
+        /// Allowed recipients; empty = anyone.
+        address[] allow;
+        uint256 nonce;
     }
 
     function _state() private pure returns (State storage st) {
@@ -238,6 +271,96 @@ contract AetherAccount {
         st.ownerNonce = nonce + 1;
         _run(calls);
         emit OwnerExecuted(nonce, calls.length);
+    }
+
+    // ---- session keys (limited, e.g. for AI agents) ----
+
+    function addSession(Key calldata key, uint128 perPayment, uint128 perDay, uint64 expires, address[] calldata allow) external onlySelf {
+        State storage st = _state();
+        if (st.sessions.length >= MAX_SESSIONS || (key.x == bytes32(0) && key.y == bytes32(0))) revert BadSession();
+        if (perPayment == 0 || perPayment > perDay || allow.length > MAX_ALLOWED) revert BadSession();
+        Session storage ss = st.sessions.push();
+        ss.key = key;
+        ss.perPayment = perPayment;
+        ss.perDay = perDay;
+        ss.expires = expires;
+        for (uint256 i = 0; i < allow.length; i++) {
+            ss.allow.push(allow[i]);
+        }
+        emit SessionAdded(st.sessions.length - 1, key.x, key.y, perPayment, perDay, expires);
+    }
+
+    /// Remove a session key (the last one takes its index).
+    function removeSession(uint256 index) external onlySelf {
+        State storage st = _state();
+        if (index >= st.sessions.length) revert BadSession();
+        uint256 last = st.sessions.length - 1;
+        if (index != last) {
+            Session storage dst = st.sessions[index];
+            Session storage src = st.sessions[last];
+            dst.key = src.key;
+            dst.perPayment = src.perPayment;
+            dst.perDay = src.perDay;
+            dst.windowStart = src.windowStart;
+            dst.spent = src.spent;
+            dst.expires = src.expires;
+            delete dst.allow;
+            for (uint256 i = 0; i < src.allow.length; i++) {
+                dst.allow.push(src.allow[i]);
+            }
+            dst.nonce = src.nonce;
+        }
+        delete st.sessions[last].allow;
+        st.sessions.pop();
+        emit SessionRemoved(index);
+    }
+
+    function sessionCount() external view returns (uint256) {
+        return _state().sessions.length;
+    }
+
+    function session(uint256 index) external view returns (Session memory) {
+        return _state().sessions[index];
+    }
+
+    /// What a session key signs.
+    function sessionDigest(Call[] calldata calls, uint256 index, uint256 nonce) public view returns (bytes32) {
+        return sha256(abi.encode(block.chainid, address(this), SESSION_TAG, index, nonce, calls));
+    }
+
+    /// Plain payments signed by a session key, within its limits. Anyone may
+    /// relay it (usually the session key's own address, which pays the gas).
+    function sessionExecute(Call[] calldata calls, uint256 index, bytes32 r, bytes32 s) external {
+        State storage st = _state();
+        if (index >= st.sessions.length) revert BadSession();
+        Session storage ss = st.sessions[index];
+        if (ss.expires != 0 && block.timestamp >= ss.expires) revert SessionExpired();
+        uint256 nonce = ss.nonce;
+        if (!_verify(sessionDigest(calls, index, nonce), r, s, ss.key)) revert BadSession();
+        uint256 total = 0;
+        for (uint256 i = 0; i < calls.length; i++) {
+            // Value transfers only: no contract calls, and never into the account's own settings.
+            if (calls[i].data.length != 0 || calls[i].to == address(this)) revert NotAPayment(i);
+            if (ss.allow.length > 0 && !_allowed(ss.allow, calls[i].to)) revert RecipientNotAllowed(calls[i].to);
+            total += calls[i].value;
+        }
+        if (total > ss.perPayment) revert OverPaymentLimit(total, ss.perPayment);
+        if (block.timestamp >= uint256(ss.windowStart) + 1 days) {
+            ss.windowStart = uint64(block.timestamp);
+            ss.spent = 0;
+        }
+        if (uint256(ss.spent) + total > ss.perDay) revert OverDailyLimit(uint256(ss.spent) + total, ss.perDay);
+        ss.spent += uint128(total);
+        ss.nonce = nonce + 1;
+        _run(calls);
+        emit SessionPaid(index, nonce, total);
+    }
+
+    function _allowed(address[] storage allow, address to) private view returns (bool) {
+        for (uint256 i = 0; i < allow.length; i++) {
+            if (allow[i] == to) return true;
+        }
+        return false;
     }
 
     receive() external payable {}

@@ -18,6 +18,9 @@ sol! {
     function addOwner(Key key);
     function removeOwner(uint256 index);
     function ownerExecute(Call[] calls, uint256 keyIndex, bytes32 r, bytes32 s);
+    function addSession(Key key, uint128 perPayment, uint128 perDay, uint64 expires, address[] allow);
+    function removeSession(uint256 index);
+    function sessionExecute(Call[] calls, uint256 index, bytes32 r, bytes32 s);
 }
 
 /// Calls for `AetherAccount`: (to, value, data).
@@ -29,6 +32,7 @@ pub const DEFAULT_DELAY: u64 = 48 * 3600;
 pub const MIN_DELAY: u64 = 600;
 const RECOVERY_TAG: B256 = alloy_primitives::b256!("2c233498054fa207221bfd1e68b67c7d7015e57e5a1339c519f2003dc5d79db6");
 const OWNER_TAG: B256 = alloy_primitives::b256!("5b1924c9dfca7a9507bcc724f7e21846bad5b98db30fd8c17bb48c142374b010");
+const SESSION_TAG: B256 = alloy_primitives::b256!("2e4a90ade1d79b1a035dc199dd5094be459e7c7e62f5f46349a2f67f0e9cd513");
 /// ERC-7201 slot of the account's `State` struct ("aether.account.recovery.v2").
 pub const STATE_SLOT: B256 = alloy_primitives::b256!("adff66301d86ff00bc4d9a197c134a0e89462a08ef2bef88b92f69282c7ee500");
 
@@ -96,6 +100,38 @@ pub fn encode_owner_execute(c: &[AccountCall], key_index: u64, r: [u8; 32], s: [
     ownerExecuteCall { calls: calls(c), keyIndex: U256::from(key_index), r: r.into(), s: s.into() }.abi_encode().into()
 }
 
+/// A session key's limits (amounts in wei; `expires` unix seconds, 0 = never).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionLimits {
+    pub per_payment: u128,
+    pub per_day: u128,
+    pub expires: u64,
+    /// Allowed recipients; empty = anyone.
+    pub allow: Vec<Address>,
+}
+
+/// `addSession(key, perPayment, perDay, expires, allow)`.
+pub fn encode_add_session(x: [u8; 32], y: [u8; 32], l: &SessionLimits) -> Bytes {
+    addSessionCall { key: Key { x: x.into(), y: y.into() }, perPayment: l.per_payment, perDay: l.per_day, expires: l.expires, allow: l.allow.clone() }
+        .abi_encode()
+        .into()
+}
+
+/// `removeSession(index)`.
+pub fn encode_remove_session(index: u64) -> Bytes {
+    removeSessionCall { index: U256::from(index) }.abi_encode().into()
+}
+
+/// The bytes a session key signs for payment `nonce` of session `index`.
+pub fn session_message(chain_id: u64, account: Address, index: u64, nonce: u64, c: &[AccountCall]) -> Vec<u8> {
+    (U256::from(chain_id), account, SESSION_TAG, U256::from(index), U256::from(nonce), calls(c)).abi_encode_params()
+}
+
+/// `sessionExecute(calls, index, r, s)`.
+pub fn encode_session_execute(c: &[AccountCall], index: u64, r: [u8; 32], s: [u8; 32]) -> Bytes {
+    sessionExecuteCall { calls: calls(c), index: U256::from(index), r: r.into(), s: s.into() }.abi_encode().into()
+}
+
 /// Hash the contract stores for a pending proposal (`keccak256(abi.encode(calls))`).
 pub fn calls_hash(c: &[AccountCall]) -> B256 {
     keccak256(calls(c).abi_encode())
@@ -138,6 +174,36 @@ pub mod slots {
     /// Slot of `owners[i].x` (`.y` is the next slot).
     pub fn owner(i: u64) -> U256 {
         U256::from_be_bytes(keccak256(at(5).to_be_bytes::<32>()).0) + U256::from(2 * i)
+    }
+
+    pub fn session_count() -> U256 {
+        at(7)
+    }
+
+    /// Slots of session `i`: key.x, key.y, [perPayment | perDay], [windowStart | spent | expires], allow (length), nonce.
+    pub fn session(i: u64) -> U256 {
+        U256::from_be_bytes(keccak256(at(7).to_be_bytes::<32>()).0) + U256::from(6 * i)
+    }
+
+    /// Slot of `sessions[i].allow[j]`.
+    pub fn session_allow(i: u64, j: u64) -> U256 {
+        U256::from_be_bytes(keccak256((session(i) + U256::from(4u64)).to_be_bytes::<32>()).0) + U256::from(j)
+    }
+
+    /// `(perPayment, perDay)` from the session's third slot.
+    pub fn unpack_limits(v: U256) -> (u128, u128) {
+        let b = v.to_be_bytes::<32>();
+        (u128::from_be_bytes(b[16..32].try_into().expect("16")), u128::from_be_bytes(b[0..16].try_into().expect("16")))
+    }
+
+    /// `(windowStart, spent, expires)` from the session's fourth slot.
+    pub fn unpack_window(v: U256) -> (u64, u128, u64) {
+        let b = v.to_be_bytes::<32>();
+        (
+            u64::from_be_bytes(b[24..32].try_into().expect("8")),
+            u128::from_be_bytes(b[8..24].try_into().expect("16")),
+            u64::from_be_bytes(b[0..8].try_into().expect("8")),
+        )
     }
 
     /// Split the packed `threshold_and_delay` word.

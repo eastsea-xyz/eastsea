@@ -80,7 +80,8 @@ enum Cmd {
         /// devnet (no --network) uses its public dev account 10 instead.
         #[arg(long)]
         faucet_key: Option<String>,
-        /// Register Macs (`aether_registerDevice`) with this Apple DeviceCheck key (.p8).
+        /// Register Macs (`aether_registerDevice`) with this Apple DeviceCheck key (.p8);
+        /// attestations are signed with <data>/registrar.key.
         #[arg(long)]
         devicecheck_key: Option<String>,
         #[arg(long, requires = "devicecheck_key")]
@@ -190,6 +191,11 @@ enum Cmd {
         network: String,
         signed: String,
     },
+    /// Create the DeviceCheck registrar's attestation key at <data>/registrar.key.
+    RegistrarKey {
+        #[arg(long)]
+        data: String,
+    },
     /// Create the testnet faucet key at <data>/faucet.key and print its address
     /// (put it in network.json with `aether network --faucet`).
     FaucetKey {
@@ -203,6 +209,9 @@ enum Cmd {
         /// Faucet address (from `aether faucet-key`): the only account funded at genesis.
         #[arg(long)]
         faucet: Option<Address>,
+        /// Registrar public key (x‖y hex, from `aether registrar-key`): predeploys the voting-node registry.
+        #[arg(long)]
+        registrar: Option<String>,
         members: Vec<String>,
     },
     /// List the public development accounts (funded at genesis; never use for value).
@@ -371,7 +380,7 @@ fn main() {
                     }
                     Ok(args)
                 })
-                .map(|(p2p, chain_id, epochs, key_round, faucet)| {
+                .map(|(p2p, chain_id, epochs, key_round, genesis)| {
                     run_node(NodeArgs {
                         p2p,
                         chain_id,
@@ -382,7 +391,7 @@ fn main() {
                         block_time_ms,
                         dev_censor,
                         dev_deprioritize,
-                        faucet,
+                        genesis,
                         faucet_key,
                         devicecheck: devicecheck_key.zip(devicecheck_key_id).map(|(k, id)| (k, id, devicecheck_team)),
                     });
@@ -444,7 +453,12 @@ fn main() {
             let boundary = aether_node::roster::EpochStart { height: epoch_end + 1, parent: epoch_end_hash };
             reshare(&from, &to, boundary, port, data, peers, link_base, offline)
         }
-        Cmd::Network { chain_id, faucet, members } => assemble_network(chain_id, faucet, &members),
+        Cmd::Network { chain_id, faucet, registrar, members } => assemble_network(chain_id, faucet, registrar, &members),
+        Cmd::RegistrarKey { data } => aether_node::faucet::Faucet::generate(&std::path::Path::new(&data).join("registrar.key")).and_then(|_| {
+            let k = aether_node::faucet::Faucet::load(&std::path::Path::new(&data).join("registrar.key"))?;
+            println!("registrar key {}\nwritten to {data}/registrar.key (put the key in network.json with `aether network --registrar`)", k.public_hex());
+            Ok(())
+        }),
         Cmd::DevAccounts => {
             for (i, a) in dev_accounts(DEV_ACCOUNTS) {
                 println!("dev {i:>2}  {a}");
@@ -559,7 +573,7 @@ fn main() {
         Cmd::Storage { address, slot, rpc, validators, identity } => trusted(validators, identity).and_then(|set| verified_storage(&rpc, address, slot, &set)),
         Cmd::Dkg { index, validators, network, port, data, peers, link_base, offline, round } => {
             p2p_args(index, validators, network, &data, port, peers, link_base, offline)
-                .map(|(p2p, chain_id, _, _, faucet)| run_dkg(p2p, chain_id, data, round, faucet))
+                .map(|(p2p, chain_id, _, _, genesis)| run_dkg(p2p, chain_id, data, round, genesis))
         }
         Cmd::Receipt { hash, rpc } => call(&rpc, "aether_getReceipt", json!([hash])).map(|v| println!("{}", pretty(&v))),
     };
@@ -570,16 +584,16 @@ fn main() {
 }
 
 /// Genesis: a public network funds only its faucet; a local devnet funds the public dev accounts.
-fn chain_config(chain_id: u64, faucet: Option<Address>) -> ChainConfig {
-    let alloc = match faucet {
+fn chain_config(chain_id: u64, genesis: &aether_node::roster::Genesis) -> ChainConfig {
+    let alloc = match genesis.faucet {
         Some(f) => vec![(f, U256::from(aether_node::faucet::SUPPLY))],
         None => dev_accounts(DEV_ACCOUNTS).into_iter().map(|(_, a)| (a, U256::from(DEV_BALANCE))).collect(),
     };
-    ChainConfig { chain_id, limits: GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 }, alloc, fees: true }
+    ChainConfig { chain_id, limits: GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 }, alloc, fees: true, registrar: genesis.registrar }
 }
 
-/// p2p args, chain id, epoch starts, expected key round, genesis faucet.
-type P2pSetup = (P2pArgs, u64, Vec<aether_node::roster::EpochStart>, Option<u64>, Option<Address>);
+/// p2p args, chain id, epoch starts, expected key round, genesis parameters.
+type P2pSetup = (P2pArgs, u64, Vec<aether_node::roster::EpochStart>, Option<u64>, aether_node::roster::Genesis);
 
 /// Who we are and who the others are: from --network + <data>/validator.key,
 /// or the public devnet keys (--index/--validators).
@@ -595,7 +609,7 @@ fn p2p_args(
     offline: bool,
 ) -> Result<P2pSetup, String> {
     use aether_node::roster::{LocalKeys, NetworkFile, Roster};
-    let (roster, keys, index, chain_id, epochs, round, faucet) = match network {
+    let (roster, keys, index, chain_id, epochs, round, genesis) = match network {
         Some(path) => {
             let file = NetworkFile::load(std::path::Path::new(&path))?;
             let roster = Roster::from_file(&file)?;
@@ -603,11 +617,12 @@ fn p2p_args(
             let index = roster.index_of(&keys.signer.public_key()).ok_or("this machine's validator key is not in network.json")?;
             // A network file with an identity names the key round its shares must be from.
             let round = file.identity.as_ref().map(|_| file.round);
-            (roster, keys, index, file.chain_id, file.epochs, round, file.faucet)
+            let genesis = file.genesis()?;
+            (roster, keys, index, file.chain_id, file.epochs, round, genesis)
         }
         None => {
             let (index, n) = (index.ok_or("--index (or --network)")?, n.ok_or("--validators (or --network)")?);
-            (Roster::devnet(n), LocalKeys::devnet(index), index, DEFAULT_CHAIN_ID, vec![], None, None)
+            (Roster::devnet(n), LocalKeys::devnet(index), index, DEFAULT_CHAIN_ID, vec![], None, Default::default())
         }
     };
     let transport = if peers.iter().any(|p| !p.is_empty()) {
@@ -616,7 +631,7 @@ fn p2p_args(
         Transport::Iroh { link_base: link_base.unwrap_or(20_000 + 100 * index as u16) }
     };
     let n = roster.len();
-    Ok((P2pArgs { index, n, roster, keys, port, transport, offline, max_message: MAX_BLOCK_BYTES + 1024 * 1024 }, chain_id, epochs, round, faucet))
+    Ok((P2pArgs { index, n, roster, keys, port, transport, offline, max_message: MAX_BLOCK_BYTES + 1024 * 1024 }, chain_id, epochs, round, genesis))
 }
 
 /// Reshare: p2p over the union of both validator sets; old members deal with
@@ -676,7 +691,7 @@ fn reshare(
             write_secret(&dir.join("threshold.json"), &serde_json::to_vec_pretty(&file).expect("json"));
             let mut public = new_file.clone();
             // Same chain, same genesis: keep its faucet even if the new roster file omits it.
-            public.faucet = old_file.faucet.or(public.faucet);
+            public.keep_genesis(&old_file);
             public.epochs = old_file.epochs.clone();
             public.epochs.push(boundary);
             public.identity = Some(file.identity.clone());
@@ -726,12 +741,12 @@ fn keygen(data: &str) -> Result<(), String> {
 }
 
 /// Combine validators' public entries (validator.pub.json files) into network.json on stdout.
-fn assemble_network(chain_id: u64, faucet: Option<Address>, members: &[String]) -> Result<(), String> {
+fn assemble_network(chain_id: u64, faucet: Option<Address>, registrar: Option<String>, members: &[String]) -> Result<(), String> {
     let validators = members
         .iter()
         .map(|p| std::fs::read(p).map_err(|e| format!("{p}: {e}")).and_then(|b| serde_json::from_slice(&b).map_err(|e| format!("{p}: {e}"))))
         .collect::<Result<Vec<aether_node::roster::Member>, String>>()?;
-    let file = aether_node::roster::NetworkFile { chain_id, validators, identity: None, round: 0, output: None, epochs: vec![], faucet };
+    let file = aether_node::roster::NetworkFile { chain_id, validators, identity: None, round: 0, output: None, epochs: vec![], faucet, registrar };
     aether_node::roster::Roster::from_file(&file)?;
     println!("{}", serde_json::to_string_pretty(&file).expect("json"));
     Ok(())
@@ -748,8 +763,8 @@ struct NodeArgs {
     block_time_ms: u64,
     dev_censor: Option<Address>,
     dev_deprioritize: Option<Address>,
-    /// Genesis faucet account from network.json (None: local devnet).
-    faucet: Option<Address>,
+    /// Genesis parameters from network.json (default: local devnet).
+    genesis: aether_node::roster::Genesis,
     faucet_key: Option<String>,
     /// (key path, key id, team) of the DeviceCheck key, if this node registers Macs.
     devicecheck: Option<(String, String, String)>,
@@ -757,11 +772,14 @@ struct NodeArgs {
 
 fn run_node(a: NodeArgs) {
     tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,commonware=warn".into())).init();
-    let NodeArgs { p2p, chain_id, epochs, key_round, rpc_port, block_time_ms, dev_censor, dev_deprioritize, data, faucet, faucet_key, devicecheck } = a;
+    let NodeArgs { p2p, chain_id, epochs, key_round, rpc_port, block_time_ms, dev_censor, dev_deprioritize, data, genesis, faucet_key, devicecheck } = a;
+    let faucet = genesis.faucet;
     let registrar = devicecheck.map(|(k, id, team)| {
         let apple = aether_node::devicecheck::DeviceCheck::load(std::path::Path::new(&k), &id, &team).expect("load --devicecheck-key");
         let registry = aether_node::devicecheck::Registry::open(std::path::Path::new(&data).join("registrations.json"));
-        std::sync::Arc::new(aether_node::devicecheck::Registrar { apple, registry })
+        let signer =
+            aether_node::faucet::Faucet::load(&std::path::Path::new(&data).join("registrar.key")).expect("<data>/registrar.key (aether registrar-key)");
+        std::sync::Arc::new(aether_node::devicecheck::Registrar { apple, registry, signer, chain_id })
     });
     let faucet_service = match (&faucet_key, faucet) {
         (Some(path), expected) => {
@@ -783,7 +801,7 @@ fn run_node(a: NodeArgs) {
     let p2p_cfg = aether_node::p2p::config(&p2p, b"_P2P");
     let links = matches!(p2p.transport, Transport::Iroh { .. });
     let executor = cw_tokio::Runner::new(cw_tokio::Config::new().with_storage_directory(&data));
-    let cfg = chain_config(chain_id, faucet);
+    let cfg = chain_config(chain_id, &genesis);
 
     executor.start(async move |context| {
         // Public endpoint first: validator links and wallet RPC share it.
@@ -971,17 +989,19 @@ fn run_follow(network: Option<String>, from_rpc: Vec<String>, data: String, rpc_
     use aether_node::follow::{self, FinalityArchive, Upstream};
     use std::sync::Arc;
     tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,commonware=warn".into())).init();
-    let (chain_id, faucet, set, nodes) = match network {
+    let (chain_id, genesis, set, nodes) = match network {
         Some(path) => {
             let file = aether_node::roster::NetworkFile::load(std::path::Path::new(&path))?;
             let identity = file.identity.clone().ok_or("network.json has no committee identity: use the one written by dkg/reshare")?;
             let set = aether_light::ValidatorSet::from_hex(&identity).map_err(|e| format!("identity: {e:?}"))?;
             let nodes = aether_node::roster::Roster::from_file(&file)?.nodes;
-            (file.chain_id, file.faucet, set, nodes)
+            (file.chain_id, file.genesis()?, set, nodes)
         }
-        None => (DEFAULT_CHAIN_ID, None, aether_light::ValidatorSet::devnet(validators), (1..=validators).map(aether_net::devnet_node_id).collect()),
+        None => {
+            (DEFAULT_CHAIN_ID, Default::default(), aether_light::ValidatorSet::devnet(validators), (1..=validators).map(aether_net::devnet_node_id).collect())
+        }
     };
-    let cfg = chain_config(chain_id, faucet);
+    let cfg = chain_config(chain_id, &genesis);
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(|e| e.to_string())?;
     rt.block_on(async move {
         let store = aether_node::store::Store::open(&std::path::Path::new(&data).join("state.redb")).map_err(|e| e.to_string())?;
@@ -1002,7 +1022,7 @@ fn run_follow(network: Option<String>, from_rpc: Vec<String>, data: String, rpc_
     })
 }
 
-fn run_dkg(p2p: P2pArgs, chain_id: u64, data: String, round: u64, faucet: Option<Address>) {
+fn run_dkg(p2p: P2pArgs, chain_id: u64, data: String, round: u64, genesis: aether_node::roster::Genesis) {
     tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,commonware=warn".into())).init();
     let dir = std::path::PathBuf::from(&data);
     std::fs::create_dir_all(&dir).expect("data dir");
@@ -1010,7 +1030,8 @@ fn run_dkg(p2p: P2pArgs, chain_id: u64, data: String, round: u64, faucet: Option
     let executor = cw_tokio::Runner::new(cw_tokio::Config::new().with_storage_directory(dir.join("dkg-runtime")));
     let (mut public, dir_out) = (p2p.roster.to_file(chain_id), dir.clone());
     // Genesis facts survive the ceremony: the network.json it writes still names the faucet.
-    public.faucet = faucet;
+    public.faucet = genesis.faucet;
+    public.registrar = genesis.registrar.map(|(x, y)| format!("{}{}", hex::encode(x), hex::encode(y)));
     let result = executor.start(async move |context| {
         // Accept incoming validator links (the node's RPC is not needed here).
         let _router = aether_node::p2p::open_public(&p2p).await.map(|ep| aether_net::serve_p2p(ep, loopback(p2p.port)));

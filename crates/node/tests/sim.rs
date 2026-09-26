@@ -70,6 +70,7 @@ fn chain_config() -> ChainConfig {
         limits: GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
         alloc: dev_accounts(4).into_iter().map(|(_, a)| (a, U256::from(10u128.pow(24)))).collect(),
         fees: true,
+        registrar: None,
     }
 }
 

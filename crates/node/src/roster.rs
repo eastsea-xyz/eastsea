@@ -54,6 +54,36 @@ pub struct NetworkFile {
     /// The only account funded at genesis on a public network (no public dev keys).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub faucet: Option<aether_types::Address>,
+    /// DeviceCheck registrar's P-256 key (x‖y hex): it attests voting-node candidates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registrar: Option<String>,
+}
+
+/// What a network file fixes about genesis beyond the chain id.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Genesis {
+    pub faucet: Option<aether_types::Address>,
+    pub registrar: Option<([u8; 32], [u8; 32])>,
+}
+
+impl NetworkFile {
+    pub fn genesis(&self) -> Result<Genesis, String> {
+        let registrar = match &self.registrar {
+            None => None,
+            Some(h) => {
+                let b = hex::decode(h.trim_start_matches("0x")).map_err(|e| format!("registrar: {e}"))?;
+                let (x, y) = b.split_at_checked(32).ok_or("registrar must be 64 bytes (x‖y)")?;
+                Some((x.try_into().map_err(|_| "registrar x")?, y.try_into().map_err(|_| "registrar must be 64 bytes (x‖y)")?))
+            }
+        };
+        Ok(Genesis { faucet: self.faucet, registrar })
+    }
+
+    /// Carry genesis facts into a file written by a ceremony (dkg, reshare).
+    pub fn keep_genesis(&mut self, from: &NetworkFile) {
+        self.faucet = from.faucet.or(self.faucet);
+        self.registrar = from.registrar.clone().or(self.registrar.take());
+    }
 }
 
 impl NetworkFile {
@@ -140,6 +170,7 @@ impl Roster {
             output: None,
             epochs: Vec::new(),
             faucet: None,
+            registrar: None,
         }
     }
 }

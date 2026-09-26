@@ -85,13 +85,20 @@ async fn finalized(st: &RpcState, p: &Value) -> RpcResult {
     }))
 }
 
-/// `[device_token (base64), node_key (hex, compressed P-256)]` → registration time.
+/// `[device_token (base64), operator, validator_key (hex 32), node_id (hex 32), beaconer]`
+/// → the registrar's attestation (r, s) to submit to the registry contract.
 async fn register_device(st: &RpcState, p: &Value) -> RpcResult {
     let r = st.registrar.as_ref().ok_or((-32601, "this node does not register devices".to_string()))?;
     let token: String = param(p, 0)?;
-    let key: String = param(p, 1)?;
-    let since = r.register(&token, &key.to_lowercase()).await.map_err(|e| (-32000, e.to_string()))?;
-    Ok(json!({ "node_key": key.to_lowercase(), "registered_at": since }))
+    let operator: Address = param(p, 1)?;
+    let hex32 = |i: usize| -> Result<[u8; 32], (i64, String)> {
+        let s: String = param(p, i)?;
+        hex::decode(s.trim_start_matches("0x")).ok().and_then(|b| b.try_into().ok()).ok_or((-32602, format!("param {i}: 32-byte hex")))
+    };
+    let (key, node) = (hex32(2)?, hex32(3)?);
+    let beaconer: Address = param(p, 4)?;
+    let a = r.register(&token, operator, key, node, beaconer).await.map_err(|e| (-32000, e.to_string()))?;
+    Ok(json!({ "r": hex::encode(a.r), "s": hex::encode(a.s), "registered_at": a.registered_at }))
 }
 
 fn param<T: serde::de::DeserializeOwned>(p: &Value, i: usize) -> Result<T, (i64, String)> {

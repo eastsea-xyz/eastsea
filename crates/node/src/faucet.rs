@@ -103,6 +103,18 @@ impl Faucet {
         }
     }
 
+    /// The key's public half as x‖y hex (for a registrar key).
+    pub fn public_hex(&self) -> String {
+        let (x, y) = aether_crypto::p256_xy(&self.signer.public_key().bytes).expect("P-256 key");
+        format!("{}{}", hex::encode(x), hex::encode(y))
+    }
+
+    /// Sign arbitrary bytes (a registrar attestation): raw r‖s.
+    pub fn sign_bytes(&self, msg: &[u8]) -> Result<([u8; 32], [u8; 32]), String> {
+        let sig = self.signer.sign(msg).map_err(|e| format!("{e:?}"))?;
+        Ok((sig[..32].try_into().expect("32"), sig[32..64].try_into().expect("32")))
+    }
+
     /// Sign a grant to `to` if the limits allow it.
     pub fn grant(&self, chain: &Chain, to: Address, now: Instant) -> Result<TxEnvelope, FaucetError> {
         let (cfg, onchain_nonce, base) = {
@@ -177,6 +189,7 @@ mod tests {
             limits: GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
             alloc: vec![(f.address, U256::from(SUPPLY))],
             fees: true,
+            registrar: None,
         };
         (f, Chain::new(cfg).0)
     }

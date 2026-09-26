@@ -133,20 +133,41 @@ impl Registry {
 pub struct Registrar {
     pub apple: DeviceCheck,
     pub registry: Registry,
+    /// Signs attestations the CommitteeRegistry contract checks (its key is in genesis).
+    pub signer: crate::faucet::Faucet,
+    pub chain_id: u64,
+}
+
+/// What the registrar returns: the attestation the candidate submits on chain.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Attestation {
+    pub r: [u8; 32],
+    pub s: [u8; 32],
+    pub registered_at: u64,
 }
 
 impl Registrar {
-    /// One node key per Mac: a device registers once; a key cannot be re-registered.
-    pub async fn register(&self, device_token: &str, node_key: &str) -> Result<u64, DeviceCheckError> {
-        let key_ok = node_key.len() == 66 && node_key.bytes().all(|c| c.is_ascii_hexdigit());
-        if !key_ok {
-            return Err(DeviceCheckError::InvalidToken("node key must be a 33-byte compressed P-256 key in hex".into()));
-        }
-        if let Some(t) = self.registry.get(node_key) {
-            return Ok(t);
-        }
-        self.apple.register(device_token).await?;
-        Ok(self.registry.insert(node_key))
+    /// One voting key per Mac: the device registers once (DeviceCheck), then the
+    /// registrar attests (operator, voting key, node id, beaconer) for the registry.
+    pub async fn register(
+        &self,
+        device_token: &str,
+        operator: aether_types::Address,
+        validator_key: [u8; 32],
+        node_id: [u8; 32],
+        beaconer: aether_types::Address,
+    ) -> Result<Attestation, DeviceCheckError> {
+        let key_hex = hex::encode(validator_key);
+        let registered_at = match self.registry.get(&key_hex) {
+            Some(t) => t,
+            None => {
+                self.apple.register(device_token).await?;
+                self.registry.insert(&key_hex)
+            }
+        };
+        let msg = aether_execution::registry::attestation_message(self.chain_id, operator, validator_key, node_id, beaconer);
+        let (r, s) = self.signer.sign_bytes(&msg).map_err(DeviceCheckError::Apple)?;
+        Ok(Attestation { r, s, registered_at })
     }
 }
 
@@ -179,13 +200,16 @@ mod tests {
         let path = dir.join("registrations.json");
         let key = SigningKey::from_slice(&[9u8; 32]).unwrap();
         let apple = DeviceCheck { key, key_id: "K".into(), team: "T".into(), base: "http://127.0.0.1:9".into(), http: reqwest::Client::new() };
-        let r = Registrar { apple, registry: Registry::open(path.clone()) };
-        assert!(matches!(r.register("tok", "not-a-key").await, Err(DeviceCheckError::InvalidToken(_))));
-        let node = "02".to_string() + &"ab".repeat(32);
-        // An already registered key answers from the registry without asking Apple.
-        let t = r.registry.insert(&node);
-        assert_eq!(r.register("tok", &node).await, Ok(t));
-        assert_eq!(Registry::open(path).get(&node), Some(t), "survives a restart");
+        let signer = crate::faucet::Faucet::from_seed(&[4u8; 32]).unwrap();
+        let r = Registrar { apple, registry: Registry::open(path.clone()), signer, chain_id: 7 };
+        let key = [0xab; 32];
+        // An already registered key is attested again without asking Apple (unreachable here).
+        let t = r.registry.insert(&hex::encode(key));
+        let a = r.register("tok", aether_types::Address::repeat_byte(1), key, [2; 32], aether_types::Address::repeat_byte(3)).await.unwrap();
+        assert_eq!(a.registered_at, t);
+        assert_eq!(Registry::open(path).get(&hex::encode(key)), Some(t), "survives a restart");
+        // A new key would need Apple: the unreachable endpoint fails closed.
+        assert!(r.register("tok", aether_types::Address::repeat_byte(1), [0xcd; 32], [2; 32], aether_types::Address::repeat_byte(3)).await.is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

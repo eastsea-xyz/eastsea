@@ -1,6 +1,35 @@
 import SwiftUI
 
+/// Simple mode (default): a dashboard for everyday use. Developer mode: the
+/// full view with verification details, raw logs and blocks. The switch sits top-left.
 struct ContentView: View {
+    @EnvironmentObject var model: WalletModel
+    @AppStorage("developerMode") private var developerMode = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Toggle(isOn: $developerMode.animation(.easeInOut(duration: 0.2))) {
+                    Text(developerMode ? "Developer" : "Simple").font(.callout.weight(.medium))
+                }
+                .toggleStyle(.switch)
+                .fixedSize()
+                .help("Switch between Simple and Developer mode")
+                Spacer()
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 12)
+            if developerMode {
+                DeveloperView()
+            } else {
+                SimpleDashboard()
+            }
+        }
+        .onAppear { model.start() }
+    }
+}
+
+struct DeveloperView: View {
     @EnvironmentObject var model: WalletModel
 
     var body: some View {
@@ -18,7 +47,6 @@ struct ContentView: View {
         }
         .padding(20)
         .frame(minWidth: 800, minHeight: 620)
-        .onAppear { model.start() }
         #else
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
@@ -31,7 +59,6 @@ struct ContentView: View {
             }
             .padding(16)
         }
-        .onAppear { model.start() }
         #endif
     }
 

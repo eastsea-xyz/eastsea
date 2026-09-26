@@ -18,16 +18,22 @@ final class WalletModel: ObservableObject {
     @Published var keyLabel = "Key in Secure Enclave"
     @Published var guardianInput = ""
     @Published var lostInput = ""
+    /// Balance over time (this device's observations), for the dashboard chart.
+    @Published var history: [BalancePoint] = []
+    /// This wallet's own actions, newest first, for the simple-mode feed.
+    @Published var activity: [ActivityItem] = []
 
     private var enclave: EnclaveAccount?
     private var timer: Timer?
 
     func start() {
+        guard timer == nil else { return }
         pinCommittee()
         do {
             let acct = try EnclaveAccount.loadOrCreate(requireUserPresence: true)
             enclave = acct
             address = try accountAddress(p256PublicKey: acct.publicKey)
+            loadSaved()
             recoveryCode = try recoveryKeyCode(p256PublicKey: acct.publicKey)
             keyLabel = acct.isSecureEnclave ? "Key in Secure Enclave" : "Simulator: software key (no Secure Enclave)"
             note(acct.isSecureEnclave ? "Secure Enclave key ready. Signing asks for Touch ID / Face ID or your passcode." : "Simulator: software key (no Secure Enclave here). Use a real device for hardware-bound keys.")
@@ -67,7 +73,7 @@ final class WalletModel: ObservableObject {
                 let prepared = try prepareSetRecoveryKey(p256PublicKey: pk, recoveryCode: code)
                 let sig = try enclave.sign(prepared.signingMessage)
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
-                await self.track(h, label: "Recovery key set to \(code.prefix(12))…")
+                await self.track(h, label: "Recovery key set to \(code.prefix(12))…", item: ActivityItem(kind: .security, title: "Recovery device added", amount: nil))
             } catch { await MainActor.run { self.note("Set recovery key failed: \(error)"); self.busy = false } }
         }
     }
@@ -85,7 +91,8 @@ final class WalletModel: ObservableObject {
                 let prepared = try prepareRecoverySubmit(p256PublicKey: pk, request: request, guardianSignature: guardianSig)
                 let sig = try enclave.sign(prepared.signingMessage)           // relay from this account
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
-                await self.track(h, label: "Recovered \(Wei.format(request.valueWei)) AETH from \(lost.prefix(10))…")
+                await self.track(h, label: "Recovered \(Wei.format(request.valueWei)) AETH from \(lost.prefix(10))…",
+                                 item: ActivityItem(kind: .received, title: "Recovered from \(Short.address(lost))", amount: Double(Wei.format(request.valueWei))))
             } catch { await MainActor.run { self.note("Recovery failed: \(error)"); self.busy = false } }
         }
     }
@@ -101,7 +108,7 @@ final class WalletModel: ObservableObject {
         Task.detached {
             let st = try? chainStatus()
             let conn = connection()
-            let bl = (try? recentBlocks(n: 8)) ?? []
+            let bl = (try? recentBlocks(n: 24)) ?? []
             var acc: VerifiedAccount?
             var err: String?
             if !addr.isEmpty {
@@ -111,7 +118,7 @@ final class WalletModel: ObservableObject {
                 self.status = st
                 self.connectionInfo = conn
                 self.blocks = bl
-                if let acc { self.account = acc; self.verifyError = nil }
+                if let acc { self.account = acc; self.verifyError = nil; self.record(balanceWei: acc.balanceWei) }
                 if st == nil { self.verifyError = "No validator reachable yet (\(conn))" } else if let err { self.verifyError = err }
             }
         }
@@ -123,7 +130,7 @@ final class WalletModel: ObservableObject {
         Task.detached {
             do {
                 let h = try devnetFaucet(to: addr, valueWei: Wei.from(aeth: "10")!)
-                await self.track(h, label: "Faucet 10 AETH")
+                await self.track(h, label: "Faucet 10 AETH", item: ActivityItem(kind: .received, title: "Test AETH from faucet", amount: 10))
             } catch { await MainActor.run { self.note("Faucet failed: \(error)"); self.busy = false } }
         }
     }
@@ -140,6 +147,9 @@ final class WalletModel: ObservableObject {
             do {
                 let prepared: PreparedTx
                 let label: String
+                let each = Double(Wei.format(wei)) ?? 0
+                let who = recipients.count == 1 ? Short.address(recipients[0]) : "\(recipients.count) people"
+                let item = ActivityItem(kind: .sent, title: "Sent to \(who)", amount: -each * Double(recipients.count))
                 if recipients.count == 1 {
                     prepared = try prepareTransfer(p256PublicKey: pk, to: recipients[0], valueWei: wei)
                     label = "Sent \(Wei.format(wei)) AETH (nonce \(prepared.nonce))"
@@ -150,16 +160,20 @@ final class WalletModel: ObservableObject {
                 }
                 let sig = try enclave.sign(prepared.signingMessage)   // Secure Enclave, may prompt
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
-                await self.track(h, label: label)
+                await self.track(h, label: label, item: item)
             } catch { await MainActor.run { self.note("Send failed: \(error)"); self.busy = false } }
         }
     }
 
-    private func track(_ hash: String, label: String) async {
-        await MainActor.run { self.note("\(label) submitted \(hash.prefix(14))…") }
+    private func track(_ hash: String, label: String, item: ActivityItem) async {
+        await MainActor.run {
+            self.note("\(label) submitted \(hash.prefix(14))…")
+            self.activity.insert(item.with(state: .pending), at: 0)
+        }
         for _ in 0..<60 {
             if let r = try? receipt(txHash: hash) {
                 await MainActor.run {
+                    self.settle(item.id, state: r.success ? .done : .failed)
                     self.note("\(label) finalized in block \(r.height) (\(r.success ? "success" : "failed"), gas \(r.gasUsed))")
                     self.busy = false
                     self.refresh()
@@ -168,7 +182,71 @@ final class WalletModel: ObservableObject {
             }
             try? await Task.sleep(nanoseconds: 500_000_000)
         }
-        await MainActor.run { self.note("\(label): not finalized after 30s"); self.busy = false }
+        await MainActor.run { self.settle(item.id, state: .failed); self.note("\(label): not finalized after 30s"); self.busy = false }
+    }
+
+    // MARK: dashboard data (kept per account in UserDefaults)
+
+    private var historyKey: String { "balanceHistory.\(address)" }
+    private var activityKey: String { "activity.\(address)" }
+
+    private func loadSaved() {
+        let d = UserDefaults.standard
+        history = d.data(forKey: historyKey).flatMap { try? JSONDecoder().decode([BalancePoint].self, from: $0) } ?? []
+        activity = d.data(forKey: activityKey).flatMap { try? JSONDecoder().decode([ActivityItem].self, from: $0) } ?? []
+    }
+
+    private func save() {
+        let d = UserDefaults.standard
+        d.set(try? JSONEncoder().encode(history), forKey: historyKey)
+        d.set(try? JSONEncoder().encode(Array(activity.prefix(100))), forKey: activityKey)
+    }
+
+    /// Add a chart point when the balance changes, or once a minute otherwise.
+    private func record(balanceWei: String) {
+        let aeth = Double(Wei.format(balanceWei)) ?? 0
+        let now = Date()
+        if let last = history.last, last.aeth == aeth, now.timeIntervalSince(last.date) < 60 { return }
+        history.append(BalancePoint(date: now, aeth: aeth))
+        if history.count > 500 { history.removeFirst(history.count - 500) }
+        save()
+    }
+
+    private func settle(_ id: UUID, state: ActivityItem.State) {
+        if let i = activity.firstIndex(where: { $0.id == id }) {
+            activity[i] = activity[i].with(state: state)
+            save()
+        }
+    }
+}
+
+struct BalancePoint: Codable, Identifiable, Equatable {
+    var id: Date { date }
+    let date: Date
+    let aeth: Double
+}
+
+struct ActivityItem: Codable, Identifiable, Equatable {
+    enum Kind: String, Codable { case sent, received, security }
+    enum State: String, Codable { case pending, done, failed }
+    var id = UUID()
+    var date = Date()
+    let kind: Kind
+    let title: String
+    /// Signed AETH change (nil for non-transfers).
+    let amount: Double?
+    var state: State = .pending
+
+    func with(state: State) -> ActivityItem {
+        var c = self
+        c.state = state
+        return c
+    }
+}
+
+enum Short {
+    static func address(_ a: String) -> String {
+        a.count > 12 ? "\(a.prefix(6))…\(a.suffix(4))" : a
     }
 }
 

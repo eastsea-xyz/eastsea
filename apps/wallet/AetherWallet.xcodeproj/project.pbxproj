@@ -16,13 +16,16 @@
 		6911A71C489CFE413F30C9A2 /* EnclaveKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 317D79B15C7F9E75B1A1F4FC /* EnclaveKey.swift */; };
 		8A4A2901B223B0F689036DFB /* EnclaveKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 317D79B15C7F9E75B1A1F4FC /* EnclaveKey.swift */; };
 		95004663796AA4EF45771D37 /* WalletModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 016BCAF9063410C1BBD4052D /* WalletModel.swift */; };
+		BC44AAFBB810E5183CBF737E /* SimpleDashboard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BCD0FCE195D7296CBCA13E9 /* SimpleDashboard.swift */; };
 		BF69C9639B9D7215C5CE0605 /* aether_ffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BC12AF79B32D90A48860251 /* aether_ffi.swift */; };
 		C9839F6819F2F86387CC88B7 /* aether_ffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BC12AF79B32D90A48860251 /* aether_ffi.swift */; };
 		D6DDA80E641E075D1DE236AD /* WalletModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 016BCAF9063410C1BBD4052D /* WalletModel.swift */; };
+		FE6BCD03689259294F5B9945 /* SimpleDashboard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BCD0FCE195D7296CBCA13E9 /* SimpleDashboard.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		016BCAF9063410C1BBD4052D /* WalletModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletModel.swift; sourceTree = "<group>"; };
+		0BCD0FCE195D7296CBCA13E9 /* SimpleDashboard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimpleDashboard.swift; sourceTree = "<group>"; };
 		17F1C13C585683B68AF46003 /* AetherWalletIOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = AetherWalletIOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2A79147942168696D38EE97B /* AetherWallet.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AetherWallet.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		317D79B15C7F9E75B1A1F4FC /* EnclaveKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnclaveKey.swift; sourceTree = "<group>"; };
@@ -66,6 +69,7 @@
 				39176493D3D105EBB072F17C /* AetherWalletApp.swift */,
 				B38A846EB23F0C4A52BF8A78 /* ContentView.swift */,
 				317D79B15C7F9E75B1A1F4FC /* EnclaveKey.swift */,
+				0BCD0FCE195D7296CBCA13E9 /* SimpleDashboard.swift */,
 				016BCAF9063410C1BBD4052D /* WalletModel.swift */,
 			);
 			path = Sources;
@@ -183,6 +187,7 @@
 				3EFB40E8AE60667378C4B952 /* AetherWalletApp.swift in Sources */,
 				16504A4054237817545767F0 /* ContentView.swift in Sources */,
 				6911A71C489CFE413F30C9A2 /* EnclaveKey.swift in Sources */,
+				FE6BCD03689259294F5B9945 /* SimpleDashboard.swift in Sources */,
 				95004663796AA4EF45771D37 /* WalletModel.swift in Sources */,
 				C9839F6819F2F86387CC88B7 /* aether_ffi.swift in Sources */,
 			);
@@ -195,6 +200,7 @@
 				3A048B1773EDB624E715846E /* AetherWalletApp.swift in Sources */,
 				3C5180BEE4BF629CA69AF4CE /* ContentView.swift in Sources */,
 				8A4A2901B223B0F689036DFB /* EnclaveKey.swift in Sources */,
+				BC44AAFBB810E5183CBF737E /* SimpleDashboard.swift in Sources */,
 				D6DDA80E641E075D1DE236AD /* WalletModel.swift in Sources */,
 				BF69C9639B9D7215C5CE0605 /* aether_ffi.swift in Sources */,
 			);

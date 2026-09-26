@@ -658,14 +658,22 @@ public struct ChainStatus: Equatable, Hashable {
     public var height: UInt64
     public var stateRoot: String
     public var mempool: UInt64
+    /**
+     * Estimated fee (wei) of a plain transfer at the next block's base fee plus the tip.
+     */
+    public var transferFeeWei: String
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(chainId: UInt64, height: UInt64, stateRoot: String, mempool: UInt64) {
+    public init(chainId: UInt64, height: UInt64, stateRoot: String, mempool: UInt64, 
+        /**
+         * Estimated fee (wei) of a plain transfer at the next block's base fee plus the tip.
+         */transferFeeWei: String) {
         self.chainId = chainId
         self.height = height
         self.stateRoot = stateRoot
         self.mempool = mempool
+        self.transferFeeWei = transferFeeWei
     }
 
     
@@ -687,7 +695,8 @@ public struct FfiConverterTypeChainStatus: FfiConverterRustBuffer {
                 chainId: FfiConverterUInt64.read(from: &buf), 
                 height: FfiConverterUInt64.read(from: &buf), 
                 stateRoot: FfiConverterString.read(from: &buf), 
-                mempool: FfiConverterUInt64.read(from: &buf)
+                mempool: FfiConverterUInt64.read(from: &buf), 
+                transferFeeWei: FfiConverterString.read(from: &buf)
         )
     }
 
@@ -696,6 +705,7 @@ public struct FfiConverterTypeChainStatus: FfiConverterRustBuffer {
         FfiConverterUInt64.write(value.height, into: &buf)
         FfiConverterString.write(value.stateRoot, into: &buf)
         FfiConverterUInt64.write(value.mempool, into: &buf)
+        FfiConverterString.write(value.transferFeeWei, into: &buf)
     }
 }
 

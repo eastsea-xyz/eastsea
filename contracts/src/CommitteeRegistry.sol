@@ -23,6 +23,9 @@ contract CommitteeRegistry {
         /// Last epoch a beacon arrived in, and consecutive epochs so far.
         uint64 lastEpoch;
         uint64 streak;
+        /// Epochs missed within the grace period since the streak began: nodes
+        /// draw only Macs up at least 95% of the time (missed * 20 <= streak).
+        uint64 missed;
     }
 
     error NotRegistrar();
@@ -73,7 +76,7 @@ contract CommitteeRegistry {
         (bool ok, bytes memory out) = P256VERIFY.staticcall(abi.encodePacked(digest, r, s, registrarX, registrarY));
         if (!ok || out.length != 32 || abi.decode(out, (uint256)) != 1) revert BadAttestation();
         uint64 e = epoch();
-        candidates.push(Candidate(msg.sender, validatorKey, nodeId, beaconer, e, e, 1));
+        candidates.push(Candidate(msg.sender, validatorKey, nodeId, beaconer, e, e, 1, 0));
         indexOf[validatorKey] = candidates.length;
         emit Registered(candidates.length - 1, msg.sender, validatorKey, nodeId);
     }
@@ -86,7 +89,14 @@ contract CommitteeRegistry {
         if (c.beaconer != msg.sender) revert Unknown();
         uint64 e = epoch();
         if (e == c.lastEpoch) return;
-        c.streak = e - c.lastEpoch <= GRACE_EPOCHS ? c.streak + 1 : 1;
+        uint64 gap = e - c.lastEpoch;
+        if (gap <= GRACE_EPOCHS) {
+            c.streak += 1;
+            c.missed += gap - 1;
+        } else {
+            c.streak = 1;
+            c.missed = 0;
+        }
         c.lastEpoch = e;
         emit Beacon(i - 1, e, c.streak);
     }

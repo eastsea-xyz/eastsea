@@ -77,10 +77,10 @@ fn run(n: u64, seed: u64, drop_rate: f64, tamper: impl Fn(&mut Net, &[PublicKey]
             out.extend(cs[i].rebroadcast());
             net.send(&pks[i], &pks, out);
         }
-        if cs.iter().all(|c| c.agreement() == Some(true)) {
+        if cs.iter().all(|c| c.agreement(false) == Some(true)) {
             return outputs.into_iter().map(Option::unwrap).collect();
         }
-        assert!(cs.iter().all(|c| c.agreement() != Some(false)), "identities disagree");
+        assert!(cs.iter().all(|c| c.agreement(false) != Some(false)), "identities disagree");
     }
     panic!("ceremony did not complete");
 }
@@ -168,8 +168,8 @@ fn run_round(
             out.extend(cs[i].rebroadcast());
             net.send(&pks[i], &pks, out);
         }
-        assert!(cs.iter().all(|c| c.agreement() != Some(false)), "identities disagree");
-        if cs.iter().all(|c| c.agreement() == Some(true)) {
+        assert!(cs.iter().all(|c| c.agreement(false) != Some(false)), "identities disagree");
+        if cs.iter().all(|c| c.agreement(false) == Some(true)) {
             return files;
         }
     }
@@ -260,4 +260,66 @@ fn a_handoff_is_signed_by_the_running_committee() {
     // A share of the new sharing is not a running-committee share.
     let new_share = new_file.decode(4).unwrap().1;
     assert!(check_partial(CHAIN, previous.public(), &h, &sign_partial(CHAIN, &h, &new_share)).is_err());
+}
+
+/// A player drawn into the new set that never shows up does not stop the
+/// reshare: the dealers reveal its share, a quorum of players agrees, and the
+/// others hold working shares of the same identity.
+#[test]
+fn reshare_completes_without_an_unreachable_new_player() {
+    let (ks, files) = dkg4();
+    let identity = files.values().next().unwrap().identity.clone();
+    let (previous, _) = files.values().next().unwrap().decode(4).unwrap();
+    let extra = aether_light::devnet_validator_key(6);
+    // New set: 2, 3, 4, 5 and 6; validator 6 never starts.
+    let next: Set<PublicKey> = ks[1..5].iter().map(|k| k.public_key()).chain([extra.public_key()]).try_collect().unwrap();
+    let round = Round::reshare(previous, next, 1);
+    let online: Vec<ed25519::PrivateKey> = ks.clone();
+    let pks: Vec<PublicKey> = online.iter().map(|k| k.public_key()).collect();
+    let shares = shares_of(&files, 4);
+    let mut net = Net { queue: VecDeque::new(), rng: ChaCha20Rng::seed_from_u64(21), drop_rate: 0.0 };
+    let mut cs = Vec::new();
+    for (i, k) in online.iter().enumerate() {
+        let (c, out) = Ceremony::start(ChaCha20Rng::seed_from_u64(900 + i as u64), k.clone(), round.clone(), shares.get(&pks[i]).cloned()).unwrap();
+        net.send(&pks[i], &pks, out);
+        cs.push(c);
+    }
+    let idx = |p: &PublicKey| pks.iter().position(|x| x == p);
+    let mut files_out = std::collections::BTreeMap::new();
+    for tick in 0..400 {
+        for _ in 0..net.queue.len() {
+            let Some((from, to, msg)) = net.queue.pop_front() else { break };
+            if let Some(i) = idx(&to) {
+                let out = cs[i].on_message(&from, msg);
+                net.send(&to, &pks, out);
+            }
+        }
+        for i in 0..cs.len() {
+            let mut out = cs[i].pending_deals();
+            if cs[i].all_acked() || tick > 20 {
+                out.extend(cs[i].close_dealing());
+            }
+            if cs[i].is_player() && !files_out.contains_key(&pks[i]) && cs[i].have_all_logs() && tick > 30 {
+                let (o, s) = cs[i].finish(&mut ChaCha20Rng::seed_from_u64(7)).unwrap();
+                files_out.insert(pks[i].clone(), KeyFile::new(1, &o, &s));
+            }
+            out.extend(cs[i].rebroadcast());
+            net.send(&pks[i], &pks, out);
+        }
+        let late = tick > 60;
+        assert!(cs.iter().all(|c| c.agreement(late) != Some(false)));
+        if !late {
+            assert!(!cs.iter().all(|c| c.agreement(false) == Some(true)), "cannot fully agree without player 6");
+        }
+        if late && cs.iter().all(|c| c.agreement(true) == Some(true)) {
+            assert_eq!(files_out.len(), 4, "the four reachable new players hold shares");
+            assert!(files_out.values().all(|f| f.identity == identity));
+            for f in files_out.values() {
+                let (o, s) = f.decode(5).unwrap();
+                assert!(aether_light::Scheme::signer(&aether_light::consensus_namespace(), o.players().clone(), o.public().clone(), s).is_some());
+            }
+            return;
+        }
+    }
+    panic!("the reshare did not complete without the unreachable player");
 }

@@ -90,12 +90,17 @@ fn attested_macs_register_once_and_beacon_their_streak() {
     assert!(net.call(&node, encode_beacon(key), 2 * EPOCH_BLOCKS + 6), "a second beacon in the same epoch is a no-op");
     let c = &candidates(&net.state)[0];
     assert_eq!((c.operator, c.beaconer, c.validator_key, c.node_id), (op, beaconer, key, node_id));
-    assert_eq!((c.registered_epoch, c.last_epoch, c.streak), (0, 2, 3));
+    assert_eq!((c.registered_epoch, c.last_epoch, c.streak, c.missed), (0, 2, 3, 0));
 
-    // Gone longer than the grace period: the streak restarts.
-    assert!(net.call(&node, encode_beacon(key), 30 * EPOCH_BLOCKS));
+    // Two epochs asleep (within the grace period): the streak goes on, the misses count.
+    assert!(net.call(&node, encode_beacon(key), 5 * EPOCH_BLOCKS));
     let c = &candidates(&net.state)[0];
-    assert_eq!((c.last_epoch, c.streak), (30, 1));
+    assert_eq!((c.last_epoch, c.streak, c.missed), (5, 4, 2));
+
+    // Gone longer than the grace period: the streak and misses restart.
+    assert!(net.call(&node, encode_beacon(key), 40 * EPOCH_BLOCKS));
+    let c = &candidates(&net.state)[0];
+    assert_eq!((c.last_epoch, c.streak, c.missed), (40, 1, 0));
 }
 
 #[test]

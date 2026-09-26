@@ -91,6 +91,8 @@ pub struct Candidate {
     pub registered_epoch: u64,
     pub last_epoch: u64,
     pub streak: u64,
+    /// Epochs missed within the grace period during the current streak.
+    pub missed: u64,
 }
 
 fn word_u64(w: &[u8; 32], from_end: usize) -> u64 {
@@ -115,6 +117,7 @@ pub fn candidates(state: &WorldState) -> Vec<Candidate> {
                 registered_epoch: word_u64(&s3, 20),
                 last_epoch: word_u64(&s4, 0),
                 streak: word_u64(&s4, 8),
+                missed: word_u64(&s4, 16),
             }
         })
         .collect()

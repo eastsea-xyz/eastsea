@@ -328,12 +328,17 @@ impl Ceremony {
     /// `Some(true)` once every player announced the same identity as ours (a
     /// dealer-only node compares with the committee's existing identity),
     /// `Some(false)` on any mismatch, `None` while waiting.
-    pub fn agreement(&self) -> Option<bool> {
+    /// Whether the players agree on the identity. Every player normally; once
+    /// the round has run past its dealing window (`late`), a quorum of players
+    /// is enough: an unreachable player then holds a seat whose share the
+    /// dealers revealed, and counts as one of the faults the set tolerates.
+    pub fn agreement(&self, late: bool) -> Option<bool> {
         let mine = self.identity.or(if self.is_player() { None } else { self.expected })?.encode().to_vec();
         if self.announced.values().any(|id| *id != mine) {
             return Some(false);
         }
-        (self.announced.len() == self.players.len()).then_some(true)
+        let quorum = self.players.quorum::<N3f1>() as usize;
+        (self.announced.len() == self.players.len() || (late && self.announced.len() >= quorum)).then_some(true)
     }
 }
 
@@ -447,7 +452,7 @@ where
                 }
                 out.extend(c.rebroadcast());
                 send_all(&mut sender, out);
-                match c.agreement() {
+                match c.agreement(elapsed > timeouts.dealing + Duration::from_secs(20)) {
                     Some(false) => return Err(DkgError::Disagreement),
                     // Keep announcing briefly so slower peers also see agreement.
                     Some(true) => match agreed_at {

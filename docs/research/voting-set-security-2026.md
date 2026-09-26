@@ -54,14 +54,24 @@ Rule (implemented in `rotation.rs`):
   to `3f+1`, between 4 and 128. Fewer than a third of the seats change per draw.
 - **Cadence:** one draw per day (resharing costs O(n²) messages).
 
-## 3. Unreachable players: non-interactive DKG
+## 3. Unreachable players
 
-Commonware 2026.9.0 ships `dkg::golden` (ePrint 2025/1924): each dealer posts
-one publicly verifiable, encrypted dealing; anyone derives the output from an
-agreed set of logs, and a player decrypts its share later from the chain.
-Offline players cannot block a reshare. The current `feldman_desmedt` path
-tolerates up to f unreachable players only by revealing their shares. Plan:
-move the background reshare to `golden`, dealings as transactions.
+Done: `feldman_desmedt` dealers reveal the share of a player that never acks
+(at most f per dealer), and the round stays valid. Our agreement step waited
+for every player; after the dealing window it now needs a quorum of players
+announcing the same identity (`dkg.rs`, test
+`reshare_completes_without_an_unreachable_new_player`). The unreachable player
+keeps a seat whose share is public: it counts as one of the f faults until the
+next draw replaces it.
+
+Later: Commonware 2026.9.0 also ships `dkg::golden` (ePrint 2025/1924), a
+non-interactive DKG whose dealings can go in blocks and whose players decrypt
+their shares from the chain later (no revealed shares). It produces a
+`Sharing<MinPk>`; our consensus uses MinSig, so adopting it means moving the
+committee key to MinPk (a new identity format for wallets): a genesis change.
+
+Eligibility also requires 95% uptime during the streak: the registry counts
+epochs missed within the grace period (`missed * 20 <= streak`).
 
 ## 4. Mass outages (≥ 1/3 of the set offline at once)
 

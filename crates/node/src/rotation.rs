@@ -49,7 +49,8 @@ pub fn eligible(state: &WorldState, epoch: u64, min_streak: u64) -> Vec<(String,
     }
     registry::candidates(state)
         .into_iter()
-        .filter(|c| c.last_epoch == epoch - 1 && c.streak >= min_streak)
+        // Up at least 95% of the time during the streak (missed * 20 <= streak).
+        .filter(|c| c.last_epoch == epoch - 1 && c.streak >= min_streak && c.missed.saturating_mul(20) <= c.streak)
         .filter_map(|c| aether_net::EndpointId::from_bytes(&c.node_id).ok().map(|n| (hex::encode(c.validator_key), n.to_string())))
         .collect()
 }
@@ -144,7 +145,8 @@ mod tests {
             let a = address_of(&op.public_key()).unwrap();
             s.set_balance(a, U256::from(10u128.pow(20))).unwrap();
             let sig = registrar.sign(&attestation_message(7, a, [i; 32], node(i), a)).unwrap();
-            s = run(&s, &op, 0, encode_register([i; 32], node(i), a, sig[..32].try_into().unwrap(), sig[32..64].try_into().unwrap()), 1);
+            s = run(&s, &op, 0, encode_register([i; 32], node(i), a, sig[..32].try_into().unwrap(), sig[32..64].try_into().unwrap()), (e - 1) * E + 1);
+            // Registered in epoch e-1, beacon in e: no epoch missed.
             s = run(&s, &op, 1, encode_beacon([i; 32]), e * E + 1);
         }
         s
@@ -161,7 +163,6 @@ mod tests {
     fn running(keys: &[u8]) -> Committee {
         Committee { members: keys.iter().map(|k| (key(*k), format!("node{k}"))).collect() }
     }
-
 
     fn draw_at(s: &WorldState, epoch: u64, seed: &[u8], set: &Committee) -> Option<Vec<(String, String)>> {
         let registered: Vec<String> = registry::candidates(s).iter().map(|c| hex::encode(c.validator_key)).collect();

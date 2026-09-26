@@ -7,10 +7,17 @@ cargo build -q -p aether-node
 A=target/debug/aether
 say() { printf '\n\033[1;36m== %s\033[0m\n' "$*"; }
 
+# A directory of its own, so keys left by other devnet or DKG runs are never picked up.
+export AETHER_DEVNET_DIR=${AETHER_DEVNET_DIR:-/tmp/aether-demo}
 scripts/devnet.sh stop >/dev/null 2>&1 || true
+rm -rf "${AETHER_DEVNET_DIR:?}"
 say "Starting 4 validators (Commonware simplex BFT, revm, EIP-7864 state)"
 scripts/devnet.sh start 4
-until $A status --rpc http://127.0.0.1:8548 2>/dev/null | grep -q '"height": [3-9]'; do sleep 0.5; done
+for _ in $(seq 120); do
+  $A status --rpc http://127.0.0.1:8548 2>/dev/null | grep -q '"height": [3-9]' && break
+  sleep 0.5
+done
+$A status --rpc http://127.0.0.1:8548 2>/dev/null | grep -q '"height": [3-9]' || { tail -5 "$AETHER_DEVNET_DIR"/node*.log; echo "validators did not start"; exit 1; }
 $A status
 
 BOB=0x00000000000000000000000000000000000b0b00

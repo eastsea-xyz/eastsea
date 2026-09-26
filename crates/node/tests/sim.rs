@@ -156,7 +156,7 @@ fn simulate(seed: u64, secs: u64, fault: Fault) -> Outcome {
         let (network, mut oracle) = Network::new_with_peers(
             context.child("network"),
             simulated::Config {
-                max_size: (MAX_BLOCK_BYTES + 1024 * 1024) as u32,
+                max_size: MAX_BLOCK_BYTES + 1024 * 1024,
                 max_peers_per_set: NZUsize!(N as usize),
                 disconnect_on_block: true,
                 tracked_peer_sets: NZUsize!(1),

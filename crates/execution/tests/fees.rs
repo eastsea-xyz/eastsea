@@ -105,7 +105,7 @@ fn underpriced_txs_are_invalid() {
     let c = ctx(base());
     // Exec cap below the base fee.
     let low = sign_call(&s, CHAIN, 0, 2 * GWEI, &call).unwrap();
-    assert!(execute_block(&pre, &c, &[low.clone()]).is_err());
+    assert!(execute_block(&pre, &c, std::slice::from_ref(&low)).is_err());
     assert!(build_block(&pre, &c, vec![low]).0.is_empty());
     // Prove cap below the base prove fee.
     let low_prove = sign_call_with(&s, CHAIN, 0, FeeVector { exec: 5 * GWEI, state: 0, prove: GWEI - 1 }, 2 * GWEI, &call).unwrap();
@@ -114,7 +114,7 @@ fn underpriced_txs_are_invalid() {
     let mut poor = WorldState::default();
     poor.set_balance(a, U256::from(21_000u128 * 5 * GWEI)).unwrap();
     let ok_price = sign_call(&s, CHAIN, 0, 5 * GWEI, &call).unwrap();
-    assert!(execute_block(&poor, &c, &[ok_price.clone()]).is_err());
+    assert!(execute_block(&poor, &c, std::slice::from_ref(&ok_price)).is_err());
     assert!(execute_block(&pre, &c, &[ok_price]).is_ok());
 }
 

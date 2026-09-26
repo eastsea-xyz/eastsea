@@ -22,6 +22,8 @@ rayon = "1"
 # drops the KZG point-evaluation precompile, which Aether does not use.
 default = ["native"]
 native = ["revm/c-kzg", "revm/secp256k1", "revm/portable"]
+# Measurement only: state tree hashed with BLAKE3 instead of Poseidon2.
+hash-blake3 = []
 
 [dev-dependencies]
 proptest.workspace = true

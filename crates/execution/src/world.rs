@@ -1,5 +1,6 @@
 //! World state on the EIP-7864 tree, exposed to revm as a `DatabaseRef`.
 
+#[cfg(not(feature = "hash-blake3"))]
 use aether_hash::Poseidon2KoalaBear;
 use aether_state::layout::{basic_data_key, chunkify_code, code_chunk_key, code_hash_key, storage_slot_key, BasicData};
 use aether_state::{MemRepo, StateRepository};
@@ -12,7 +13,12 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// The chain's state hash (docs/design/00 D6).
+#[cfg(not(feature = "hash-blake3"))]
 pub type ChainHasher = Poseidon2KoalaBear;
+/// Experimental, for proving-cost measurements only (D6 hash-switch plan):
+/// the chain, the light client and every proof use Poseidon2.
+#[cfg(feature = "hash-blake3")]
+pub type ChainHasher = aether_hash::Blake3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StateError {

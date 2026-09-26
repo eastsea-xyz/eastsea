@@ -11,6 +11,8 @@ members = ["guest"]
 [dependencies]
 jolt-sdk = { path = "/Volumes/workspace/spike/jolt-akita/jolt-sdk", features = ["host"] }
 guest = { package = "aether-jolt-block-guest", path = "./guest" }
+# Registers the P-256 inline instructions with the host tracer.
+jolt-inlines-p256 = { path = "/Volumes/workspace/spike/jolt-akita/jolt-inlines/p256", features = ["host"] }
 aether-execution = { path = "../../crates/execution" }
 aether-crypto = { path = "../../crates/crypto" }
 aether-types = { path = "../../crates/types" }

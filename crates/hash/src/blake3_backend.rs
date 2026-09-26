@@ -4,6 +4,12 @@ use crate::{Digest, HashId, Hasher};
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Blake3;
 
+impl Blake3 {
+    pub fn new() -> Self {
+        Blake3
+    }
+}
+
 const BYTES_CTX: &str = "aether 2026-09 hash_bytes v1";
 const NODE_CTX: &str = "aether 2026-09 compress v1";
 

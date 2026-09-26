@@ -44,6 +44,18 @@ pub trait Signer {
     fn sign(&self, msg: &[u8]) -> Result<Vec<u8>, CryptoError>;
 }
 
+/// A replacement for the P-256 curve arithmetic, e.g. a zkVM's accelerated
+/// ECDSA (Jolt's P-256 inline). Gets affine x, y, the SHA-256 digest and r, s,
+/// all big-endian; key decoding and the low-s rule stay here.
+pub type P256Backend = fn(x: &[u8; 32], y: &[u8; 32], digest: &[u8; 32], r: &[u8; 32], s: &[u8; 32]) -> bool;
+
+static P256_BACKEND: std::sync::OnceLock<P256Backend> = std::sync::OnceLock::new();
+
+/// Install a P-256 backend (once per process). Returns false if one was already set.
+pub fn set_p256_backend(f: P256Backend) -> bool {
+    P256_BACKEND.set(f).is_ok()
+}
+
 /// Verify `sig` over `msg` for `pk`. Rejects malleable (high-s) ECDSA signatures.
 pub fn verify(pk: &PublicKey, msg: &[u8], sig: &[u8]) -> Result<(), CryptoError> {
     match pk.scheme {
@@ -52,6 +64,15 @@ pub fn verify(pk: &PublicKey, msg: &[u8], sig: &[u8]) -> Result<(), CryptoError>
             let s = p256::ecdsa::Signature::from_slice(sig).map_err(|_| CryptoError::InvalidSignature)?;
             if s.normalize_s() != s {
                 return Err(CryptoError::HighS);
+            }
+            if let Some(backend) = P256_BACKEND.get() {
+                use p256::elliptic_curve::sec1::ToSec1Point as _;
+                let point = vk.as_affine().to_sec1_point(false);
+                let b = point.as_bytes();
+                let (x, y): ([u8; 32], [u8; 32]) = (b[1..33].try_into().expect("x"), b[33..65].try_into().expect("y"));
+                let digest: [u8; 32] = Sha256::digest(msg).into();
+                let (r, sv): ([u8; 32], [u8; 32]) = (sig[..32].try_into().expect("r"), sig[32..64].try_into().expect("s"));
+                return if backend(&x, &y, &digest, &r, &sv) { Ok(()) } else { Err(CryptoError::Mismatch) };
             }
             vk.verify_prehash(&Sha256::digest(msg), &s).map_err(|_| CryptoError::Mismatch)
         }

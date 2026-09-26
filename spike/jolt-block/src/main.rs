@@ -7,6 +7,7 @@ use aether_execution::{execute_block_sequential, sign_call, BlockContext, EvmCal
 use aether_types::{Address, Bytes, GasVector, U256};
 use guest::Witness;
 use jolt_sdk as jolt;
+use jolt_inlines_p256 as _; // link the inline registrations
 use std::time::Instant;
 
 const CHAIN: u64 = 7777;
@@ -82,6 +83,22 @@ fn main() {
             use aether_hash::Hasher;
             println!("native H(7) {}", hex(&aether_execution::ChainHasher::new().hash_bytes(&x)));
             println!("guest  H(7) {}", hex(&out(guest::analyze_hash_probe(x))));
+        }
+        Some("profile") => {
+            // Per-instruction-address cycle counts of the (symbol-carrying) block_error guest.
+            let n: usize = args[2].parse().unwrap();
+            let (w, _) = witness(n);
+            let summary = guest::analyze_block_error(w);
+            let mut counts: std::collections::HashMap<u64, u64> = Default::default();
+            for row in &summary.trace {
+                *counts.entry(row.address()).or_default() += 1;
+            }
+            let mut out = String::new();
+            for (a, c) in counts {
+                out.push_str(&format!("{a:x} {c}\n"));
+            }
+            std::fs::write("pc_counts.txt", out).unwrap();
+            println!("{} cycles, {} distinct pcs -> pc_counts.txt", summary.trace_len(), summary.trace.len());
         }
         Some("prove") => {
             let n: usize = args[2].parse().unwrap();

@@ -81,7 +81,7 @@ pub async fn run(chain: Chain, upstream: std::sync::Arc<Upstream>, set: Validato
             Ok(Some((block, block_hex, fin_hex))) => match chain.finalize(&block) {
                 Ok(()) => {
                     archive.insert(next, block_hex, fin_hex);
-                    if next - last_log >= 100 || next % 10 == 0 {
+                    if next - last_log >= 100 || next.is_multiple_of(10) {
                         info!(height = next, root = %chain.lock().finalized.state.root(), "followed");
                         last_log = next;
                     }

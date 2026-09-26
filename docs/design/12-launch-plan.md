@@ -16,7 +16,7 @@
 | 1 | **결정론적 시뮬레이션 soak** (`crates/node/tests/sim.rs`): Commonware deterministic runtime과 simulated p2p로 검증자 N대, 패킷 손실·지연·파티션·크래시 재시작·비잔틴(침묵) 주입 | 시드별 재현 가능. 안전성(확정 충돌 0), 활동성(장애 해소 후 진행), 모든 노드 상태 루트 일치. 기본 시드 묶음이 CI에서 통과. 긴 soak(수십만 블록)은 ignored 테스트 | ✅ 기본 4개 시나리오 통과(가상 90초가 약 7초). 긴 soak: `AETHER_SIM_SEEDS`·`AETHER_SIM_SECS` |
 | 2 | **적대 감사 파이프라인** (`scripts/audit.sh`): 변경분을 Claude·Codex 등 여러 모델이 독립 검토 후 교차 검증, 퍼징(cargo-fuzz: 트랜잭션 디코드, BAL, 증명), Quint 모델 체크 | 스크립트 한 번으로 실행. 확인된 결함 0이어야 머지 | ✅ `scripts/audit.sh`, `tests/robustness.rs`. Quint 명세는 아직 없음(설계 문서에만 언급) → 12단계 전에 작성 |
 | 3 | **testnet 제네시스 정리**: 공개 dev 키 제거, faucet 계정 키는 운영자 Mac Secure Enclave, faucet 속도 제한, 체인 ID 확정 | 공개 키로 인출할 수 있는 잔액 0. faucet은 주소·기기당 제한 | ✅ `aether faucet-key`, `network --faucet`, RPC `aether_faucet`(주소당 24시간, 전역 초당 1회). 제네시스는 faucet만 충전. 로컬 devnet만 공개 dev 키. 기기당 제한은 7단계. faucet 키는 파일(0600)이고 Secure Enclave 이전은 8단계 Mac 노드 앱에서 |
-| 4 | **지갑 복구 강화**: 복수 가디언(k-of-n), 48시간 타임락, 주인 취소, 새 소유 키 추가(주소 유지) | 컨트랙트·FFI·앱 테스트. 탈취 시나리오(가디언 단독 즉시 인출 불가) 테스트 | |
+| 4 | **지갑 복구 강화**: 복수 가디언(k-of-n), 48시간 타임락, 주인 취소, 새 소유 키 추가(주소 유지) | 컨트랙트·FFI·앱 테스트. 탈취 시나리오(가디언 단독 즉시 인출 불가) 테스트 | ✅ AetherAccount v2 + 세션 키(에이전트 한도 온체인 강제). 감사 결함 11건 수정 |
 | 5 | **업그레이드 매니페스트**: 버전·활성화 높이·바이너리 해시를 위원회 임계 서명으로 확정, 노드는 서명이 유효할 때만 해당 높이에서 규칙 전환 | 운영자 단독으로 규칙을 바꿀 수 없음. 시뮬레이션에서 무중단 전환 확인 | |
 | 6 | **증명 체인 연결**: D6 해시 결정(BLAKE3 + Jolt Metal), 노드에 Jolt 검증기, R3 에스크로 지급 연결 | 제출된 청크 증명을 검증자가 검증하고 첫 유효 증명에 지급. 증명 지연 지표 노출 | |
 | 7 | **App Attest**: 기기 1대 = 1개 신원(faucet, prover 등록, 포인트) | 시뮬레이터·탈옥 기기 거부, 기기당 제한 동작 | |
@@ -28,9 +28,22 @@
 | 13 | **실제 운영 soak**: 1~2주, 가용성·확정 지연·증명 지연 SLO 측정 | SLO 충족, 리셋 없음 | |
 | 14 | **go/no-go** 🧑: 가치 부여 여부와 법적 검토(증권성, 관할 규제, 스테이블코인 인가) | 🧑 결정 | 🧑 |
 
+## 패키징: 완성된 제품으로 배포 (Transmission 방식)
+
+목표: **Aether.app 하나**를 DMG로 받아 Applications에 끌어다 놓으면 끝. 지갑과 노드가 한 앱이고, 노드는 스위치로 켜고 끈다. 끄면 흔적 없이 멈춘다.
+
+| # | 단계 | 완료 기준 |
+|---|---|---|
+| P1 | **팔로워 노드 모드**: 검증자가 아닌 Mac도 확정 블록과 인증서를 받아 전부 재실행·검증하고, 지갑에 로컬로 응답 | 새 Mac이 제네시스부터 따라잡고, 상태 루트가 검증자와 일치. 지갑이 이 로컬 노드만으로 검증 |
+| P2 | **앱 번들 통합**: 지갑 앱 안에 `aether`(노드)와 `aether-agent`를 Helpers로 포함. 노드 켜기/끄기, 전원 연결 시에만 실행, 로그인 시 시작 옵션, "명령줄 도구 설치" 메뉴 | 앱을 끄면 노드도 정리되어 종료. 데이터는 `~/Library/Application Support/Aether` |
+| P3 | **서명·공증·DMG**: Developer ID 서명, Hardened Runtime, `notarytool` 공증과 staple, 배경 이미지와 Applications 바로가기가 있는 DMG | 다른 Mac에서 Gatekeeper 경고 없이 설치·실행 🧑 인증서 결정 필요 |
+| P4 | **자동 업데이트**: Sparkle 2(EdDSA 서명 appcast, GitHub Releases 호스팅) | 이전 버전이 새 버전을 감지하고 설치 |
+| P5 | **배포 채널**: GitHub Releases, Homebrew cask, iOS는 TestFlight | `brew install --cask aether` 동작 |
+
 ## 사람이 결정·수행할 것 (🧑)
 
 1. testnet 호스트 준비(9번).
 2. `aether-agent init` 실행(Touch ID)과 에이전트 도구 등록 여부.
 3. 외부 검증자 운영자 섭외(11번).
-4. 토큰 가치 부여와 법적 판단(14번). forecast-network처럼 가치 0을 유지하면 14번은 "안 함"으로 끝납니다.
+4. 토큰 가치 부여와 법적 판단(14번).
+5. 앱 서명 주체(P3): 이 Mac에는 Developer ID 인증서가 Pipln(45WU468FZE) 것만 있음. Pipln 명의로 배포할지, 개인 팀(LBKUT88RTX)용 Developer ID를 새로 만들지. forecast-network처럼 가치 0을 유지하면 14번은 "안 함"으로 끝납니다.

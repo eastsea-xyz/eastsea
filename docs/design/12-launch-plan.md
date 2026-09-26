@@ -40,6 +40,24 @@
 | P4 | **자동 업데이트**: Sparkle 2(EdDSA 서명 appcast, GitHub Releases 호스팅) | 이전 버전이 새 버전을 감지하고 설치 |
 | P5 | **배포 채널**: GitHub Releases, Homebrew cask, iOS는 TestFlight | `brew install --cask aether` 동작 |
 
+## 생태계 트랙: 누구나 토큰·컨트랙트·DeFi
+
+| # | 단계 | 완료 기준 |
+|---|---|---|
+| E1 | **이더리움 JSON-RPC 호환**: eth_sendRawTransaction(secp256k1, EIP-1559/7702), eth_call, eth_estimateGas, eth_getTransactionReceipt, eth_getLogs, eth_getBlockByNumber | MetaMask·Foundry·Hardhat·Remix로 배포·호출 |
+| E2 | **토큰 발행**: ERC-20 팩토리 제네시스 배포, 지갑 "토큰 만들기" | 코드 없이 민트, 지갑에 표시 |
+| E3 | **DEX**: 블록 단위 배치 경매(단일 청산가, MEV 차단) + 집중 유동성 AMM, 자체 구현(라이선스) | 스왑·유동성 공급을 지갑에서 |
+| E4 | **익스플로러·TS SDK** (브라우저에서 인증서 검증) | 누구나 조회·개발 |
+
+## 노드 역량 트랙: Mac 전용의 이점
+
+| # | 단계 | 완료 기준 |
+|---|---|---|
+| C1 | **노드 스펙·회선 측정**: 칩, GPU 코어, 통합 메모리, Metal·CPU 벤치, 업·다운 대역폭. App Attest로 기기에 묶어 보고 | 노드 등록에 스펙, 표준 증명 과제로 교차 확인 |
+| C2 | **스펙 기반 배정**: 청크 크기를 Mac 등급별로, prove gas 한도는 가장 느린 위원의 실측으로 | 증명 지연 SLO 충족 |
+| C3 | **느린 회선 대응**: erasure-coded 블록 전파(Commonware coding), 대역폭 기반 검증자 선정, 느린 회선 Mac은 prover·팔로워로 | 업로드가 약한 검증자가 있어도 1초 블록 유지 |
+| C4 | **연속 기여 순위**(토크노믹스 §7): streak, 유예, 최대 2배 | 끊기면 순위 초기화 |
+
 ## 사람이 결정·수행할 것 (🧑)
 
 1. testnet 호스트 준비(9번).

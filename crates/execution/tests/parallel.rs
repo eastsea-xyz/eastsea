@@ -49,6 +49,7 @@ fn world(n_users: u8) -> World {
         timestamp: 1_700_000_001,
         beneficiary: addr(&proposer),
         limits: GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
+        fees: None,
     };
     World { users, proposer, ctx, pre }
 }

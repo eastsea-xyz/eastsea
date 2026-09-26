@@ -57,6 +57,7 @@ fn prove_block(witness: Vec<u8>) -> [u8; 32] {
         timestamp: w.timestamp,
         beneficiary: Address::from(w.beneficiary),
         limits: GasVector { exec: 30_000_000, state: u64::MAX, prove: u64::MAX },
+        fees: None,
     };
     let out = execute_block_sequential(&pre, &ctx, &w.txs).expect("valid block");
     out.state.root().0
@@ -102,6 +103,7 @@ fn block_error(witness: Vec<u8>) -> String {
         timestamp: w.timestamp,
         beneficiary: Address::from(w.beneficiary),
         limits: GasVector { exec: 30_000_000, state: u64::MAX, prove: u64::MAX },
+        fees: None,
     };
     match execute_block_sequential(&pre, &ctx, &w.txs) {
         Ok(_) => "ok".into(),

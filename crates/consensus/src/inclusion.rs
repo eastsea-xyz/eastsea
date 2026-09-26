@@ -17,7 +17,7 @@ impl OrderingPolicy for FifoWithInclusion {
             (Some(x), Some(y)) => x.cmp(&y),
             (Some(_), None) => core::cmp::Ordering::Less,
             (None, Some(_)) => core::cmp::Ordering::Greater,
-            (None, None) => b.header.max_fee.exec.cmp(&a.header.max_fee.exec).then(ha.cmp(hb)),
+            (None, None) => b.header.tip.min(b.header.max_fee.exec).cmp(&a.header.tip.min(a.header.max_fee.exec)).then(ha.cmp(hb)),
         });
         txs.dedup_by(|a, b| a.0 == b.0);
         txs
@@ -50,6 +50,7 @@ mod tests {
                 nonce: 0,
                 gas: GasVector::default(),
                 max_fee: FeeVector { exec: fee, ..Default::default() },
+                tip: fee,
                 payload_commitment: B256::ZERO,
                 scheme: SignerScheme::P256,
             },

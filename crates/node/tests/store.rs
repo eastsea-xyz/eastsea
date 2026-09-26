@@ -24,6 +24,7 @@ fn ctx(n: u64) -> BlockContext {
         timestamp: n,
         beneficiary: Address::repeat_byte(0x77),
         limits: GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
+        fees: None,
     }
 }
 
@@ -39,6 +40,8 @@ fn summary(height: u64, s: &WorldState) -> BlockSummary {
         txs: vec![],
         gas_used: 0,
         prove_gas: 0,
+        base_fee: Default::default(),
+        excess: Default::default(),
     }
 }
 

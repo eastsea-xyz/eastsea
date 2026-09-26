@@ -8,6 +8,7 @@
 //! re-executed (see `parallel.rs`). Outputs equal sequential execution
 //! (checked by differential tests).
 
+use crate::fees::{settle, FeePolicy, Settlement, FEE_COLLECTOR, PROVER_ESCROW};
 use crate::parallel::Scheduler;
 use crate::tx::{tx_hash, validate_stateless, EvmCall};
 use crate::world::{StateError, WorldState};
@@ -27,8 +28,11 @@ pub struct BlockContext {
     pub chain_id: u64,
     pub number: u64,
     pub timestamp: u64,
+    /// Where revm credits priority fees ([`crate::fees::FEE_COLLECTOR`] when `fees` is set).
     pub beneficiary: Address,
     pub limits: GasVector,
+    /// Fee policy (docs/research/tokenomics-2026.md); `None` = no base fee, tips to `beneficiary`.
+    pub fees: Option<FeePolicy>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,6 +52,8 @@ pub struct BlockOutcome {
     pub bal: BlockAccessList,
     pub receipts: Vec<Receipt>,
     pub gas: GasVector,
+    /// Where the fees went (zero without a fee policy).
+    pub settlement: Settlement,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,6 +114,8 @@ pub(crate) struct TxRun {
     pub(crate) gas: GasVector,
     /// Execution observed the fee recipient beyond the fee credit.
     pub(crate) touched_beneficiary: bool,
+    /// Base prove fee debited from the sender (goes to the prover escrow).
+    pub(crate) prove_fee: U256,
 }
 
 /// A self-delegation as an EIP-7702 authorization whose authority is the tx
@@ -130,12 +138,17 @@ pub(crate) fn run_tx(state: &WorldState, ctx: &BlockContext, tx: &TxEnvelope) ->
 
 /// Execute a tx whose signature and payload were already checked (`call` is its decoded payload).
 pub(crate) fn run_validated(state: &WorldState, ctx: &BlockContext, tx: &TxEnvelope, call: &EvmCall) -> Result<TxRun, String> {
+    if let Some(f) = &ctx.fees {
+        check_prove_budget(state, f, tx, call)?;
+    }
     let tx_env = TxEnv::builder()
         .caller(tx.header.sender)
         .nonce(tx.header.nonce)
         .chain_id(Some(ctx.chain_id))
         .gas_limit(call.gas_limit)
         .gas_price(tx.header.max_fee.exec)
+        // EIP-1559 pricing under a fee policy; legacy (price = cap) otherwise.
+        .gas_priority_fee(ctx.fees.map(|_| tx.header.tip))
         .kind(match call.to {
             Some(a) => TxKind::Call(a),
             None => TxKind::Create,
@@ -153,7 +166,7 @@ pub(crate) fn run_validated(state: &WorldState, ctx: &BlockContext, tx: &TxEnvel
             b.number = U256::from(ctx.number);
             b.timestamp = U256::from(ctx.timestamp);
             b.beneficiary = ctx.beneficiary;
-            b.basefee = 0;
+            b.basefee = ctx.fees.map_or(0, |f| u64::try_from(f.base.exec).unwrap_or(u64::MAX));
             b.gas_limit = ctx.limits.exec;
         })
         .build_mainnet_with_inspector(ProveGasMeter { watch: Some(ctx.beneficiary), ..Default::default() });
@@ -172,12 +185,43 @@ pub(crate) fn run_validated(state: &WorldState, ctx: &BlockContext, tx: &TxEnvel
         ExecutionResult::Revert { gas, output, .. } => (false, gas.tx_gas_used(), 0, output.clone(), None),
         ExecutionResult::Halt { gas, .. } => (false, gas.tx_gas_used(), 0, Bytes::new(), None),
     };
+    let mut changes = out.state;
+    let prove_fee = match &ctx.fees {
+        Some(f) => charge_prove(&mut changes, f, tx, prove_gas)?,
+        None => U256::ZERO,
+    };
     Ok(TxRun {
         receipt: Receipt { tx_hash: tx_hash(tx), success, gas_used, prove_gas, contract_address, logs, output },
-        changes: out.state,
+        changes,
         gas: GasVector { exec: gas_used, state: 0, prove: prove_gas },
         touched_beneficiary,
+        prove_fee,
     })
+}
+
+/// The sender must accept the base prove fee and hold value + max exec fee +
+/// max prove fee up front, so a block can never fail to collect it.
+fn check_prove_budget(state: &WorldState, f: &FeePolicy, tx: &TxEnvelope, call: &EvmCall) -> Result<(), String> {
+    if tx.header.max_fee.prove < f.base.prove {
+        return Err(format!("max prove fee {} below base {}", tx.header.max_fee.prove, f.base.prove));
+    }
+    let need = U256::from(call.gas_limit) * U256::from(tx.header.max_fee.exec) + U256::from(tx.header.gas.prove) * U256::from(f.base.prove);
+    match need.checked_add(call.value) {
+        Some(n) if state.balance(&tx.header.sender) >= n => Ok(()),
+        _ => Err("insufficient funds for gas, prove budget and value".into()),
+    }
+}
+
+/// Debit `prove_gas × base_prove` from the sender after execution.
+fn charge_prove(changes: &mut revm::state::EvmState, f: &FeePolicy, tx: &TxEnvelope, prove_gas: u64) -> Result<U256, String> {
+    if prove_gas > tx.header.gas.prove {
+        return Err(format!("prove gas {prove_gas} over limit {}", tx.header.gas.prove));
+    }
+    let fee = U256::from(prove_gas) * U256::from(f.base.prove);
+    let acc = changes.get_mut(&tx.header.sender).ok_or("sender not in state changes")?;
+    acc.info.balance = acc.info.balance.checked_sub(fee).ok_or("sender spent the prove budget")?;
+    acc.mark_touch();
+    Ok(fee)
 }
 
 fn record_bal(bal: &mut BalBuilder, pre: &WorldState, index: u32, changes: &revm::state::EvmState) {
@@ -206,12 +250,42 @@ fn record_bal(bal: &mut BalBuilder, pre: &WorldState, index: u32, changes: &revm
     }
 }
 
-fn apply(state: &mut WorldState, bal: &mut BalBuilder, receipts: &mut Vec<Receipt>, total: &mut GasVector, run: TxRun) -> Result<(), ExecError> {
-    record_bal(bal, state, receipts.len() as u32, &run.changes);
-    state.commit(&run.changes).map_err(ExecError::State)?;
-    *total = total.checked_add(run.gas).expect("gas bounded by limits");
-    receipts.push(run.receipt);
-    Ok(())
+#[derive(Default)]
+struct Acc {
+    bal: BalBuilder,
+    receipts: Vec<Receipt>,
+    total: GasVector,
+    prove_fees: U256,
+}
+
+impl Acc {
+    fn apply(&mut self, state: &mut WorldState, run: TxRun) -> Result<(), ExecError> {
+        record_bal(&mut self.bal, state, self.receipts.len() as u32, &run.changes);
+        state.commit(&run.changes).map_err(ExecError::State)?;
+        self.total = self.total.checked_add(run.gas).expect("gas bounded by limits");
+        self.prove_fees += run.prove_fee;
+        self.receipts.push(run.receipt);
+        Ok(())
+    }
+
+    /// Settle fees (if any) and seal the block.
+    fn finish(mut self, mut state: WorldState, ctx: &BlockContext) -> BlockOutcome {
+        let settlement = match &ctx.fees {
+            Some(f) => {
+                let pre = [FEE_COLLECTOR, f.proposer, PROVER_ESCROW].map(|a| (a, state.balance(&a)));
+                let s = settle(&mut state, f, self.prove_fees);
+                for (a, before) in pre {
+                    if state.balance(&a) != before {
+                        self.bal.touch_account(a);
+                        self.bal.balance(a);
+                    }
+                }
+                s
+            }
+            None => Settlement::default(),
+        };
+        BlockOutcome { state, bal: self.bal.build(), receipts: self.receipts, gas: self.total, settlement }
+    }
 }
 
 /// Proposer: execute candidates in order, keep the valid ones that fit the limits.
@@ -227,21 +301,21 @@ pub fn build_block_sequential(pre: &WorldState, ctx: &BlockContext, candidates: 
 fn build_block_with(pre: &WorldState, ctx: &BlockContext, candidates: Vec<TxEnvelope>, parallel: bool) -> (Vec<TxEnvelope>, BlockOutcome) {
     let mut state = pre.clone();
     state.clear_journal();
-    let (mut bal, mut receipts, mut total, mut included) = (BalBuilder::default(), Vec::new(), GasVector::default(), Vec::new());
+    let (mut acc, mut included) = (Acc::default(), Vec::new());
     let mut sched = Scheduler::new(pre, ctx, &candidates, parallel);
     for (i, tx) in candidates.into_iter().enumerate() {
         let Ok(run) = sched.run(i, &state, ctx, &tx) else { continue };
-        match total.checked_add(run.gas) {
+        match acc.total.checked_add(run.gas) {
             Some(t) if t.fits(&ctx.limits) => {}
             _ => continue,
         }
         sched.committing(&state, &run.changes);
-        if apply(&mut state, &mut bal, &mut receipts, &mut total, run).is_err() {
+        if acc.apply(&mut state, run).is_err() {
             continue;
         }
         included.push(tx);
     }
-    (included, BlockOutcome { state, bal: bal.build(), receipts, gas: total })
+    (included, acc.finish(state, ctx))
 }
 
 /// FOCIL append check: would `tx` be valid if appended to a block whose
@@ -265,16 +339,16 @@ pub fn execute_block_sequential(pre: &WorldState, ctx: &BlockContext, txs: &[TxE
 fn execute_block_with(pre: &WorldState, ctx: &BlockContext, txs: &[TxEnvelope], parallel: bool) -> Result<BlockOutcome, ExecError> {
     let mut state = pre.clone();
     state.clear_journal();
-    let (mut bal, mut receipts, mut total) = (BalBuilder::default(), Vec::new(), GasVector::default());
+    let mut acc = Acc::default();
     let mut sched = Scheduler::new(pre, ctx, txs, parallel);
     for (index, tx) in txs.iter().enumerate() {
         let run = sched.run(index, &state, ctx, tx).map_err(|reason| ExecError::InvalidTx { index, reason })?;
-        match total.checked_add(run.gas) {
+        match acc.total.checked_add(run.gas) {
             Some(t) if t.fits(&ctx.limits) => {}
             _ => return Err(ExecError::LimitExceeded { index }),
         }
         sched.committing(&state, &run.changes);
-        apply(&mut state, &mut bal, &mut receipts, &mut total, run)?;
+        acc.apply(&mut state, run)?;
     }
-    Ok(BlockOutcome { state, bal: bal.build(), receipts, gas: total })
+    Ok(acc.finish(state, ctx))
 }

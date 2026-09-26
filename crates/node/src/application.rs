@@ -99,11 +99,11 @@ where
         let height = parent_block.height.next();
         let cfg = self.chain.cfg();
         let skeleton = Block::new(context.clone(), parent_block.digest(), height, ts, bytes::Bytes::new());
-        let ctx = Chain::block_context(&cfg, &skeleton);
+        let ctx = Chain::block_context(&cfg, &skeleton, &parent);
         let (payload, out) = build_payload(&parent, &ctx, self.chain.mempool_candidates());
         let tx_hashes = payload.txs.iter().map(aether_execution::tx_hash).collect();
         let block = Block::new(context, parent_block.digest(), height, ts, payload.to_bytes());
-        self.chain.remember(&block, out.state, out.receipts, tx_hashes, out.gas);
+        self.chain.remember(&block, &parent, &ctx, out, tx_hashes);
         info!(height = %height, txs = payload.txs.len(), "proposed");
         Some(block)
     }
@@ -121,7 +121,7 @@ where
         match self.chain.execute(&block, &parent) {
             Ok(exec) => {
                 // FOCIL: refuse to vote for a block that censors listed txs.
-                let ctx = Chain::block_context(&self.chain.cfg(), &block);
+                let ctx = Chain::block_context(&self.chain.cfg(), &block, &parent);
                 let missing = self.chain.inclusion_violations(&exec, &ctx, std::time::Instant::now());
                 if !missing.is_empty() {
                     warn!(height = %block.height(), missing = missing.len(), first = %missing[0], "inclusion list violated; not voting");

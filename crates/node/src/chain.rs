@@ -7,8 +7,8 @@ use crate::block::{Block, Payload, PublicKey};
 use crate::inclusion::{self, InclusionPool};
 use crate::store::{Commit, Store, StoreError};
 use aether_crypto::{address_of, PublicKey as AetherPk};
-use aether_execution::{execute_block, BlockContext, Receipt, WorldState};
-use aether_types::{Address, GasVector, SignerScheme, TxEnvelope, TxHash, B256, U256};
+use aether_execution::{execute_block, fees, BlockContext, BlockOutcome, FeePolicy, Receipt, WorldState};
+use aether_types::{Address, FeeVector, GasVector, SignerScheme, TxEnvelope, TxHash, B256, U256};
 use commonware_consensus::Heightable;
 use commonware_cryptography::{sha256::Digest, Digestible};
 use serde::Serialize;
@@ -24,6 +24,9 @@ pub struct ChainConfig {
     pub chain_id: u64,
     pub limits: GasVector,
     pub alloc: Vec<(Address, U256)>,
+    /// Fee policy v0 (docs/research/tokenomics-2026.md): exponential base fees,
+    /// base exec burned, prove fees and 20% of tips to the prover escrow.
+    pub fees: bool,
 }
 
 impl ChainConfig {
@@ -71,6 +74,10 @@ pub struct Executed {
     pub tx_hashes: Vec<TxHash>,
     pub gas: GasVector,
     pub proposer: Address,
+    /// Base fees this block paid.
+    pub base_fee: FeeVector,
+    /// Fee-market excess after this block (its child's base fee derives from it).
+    pub excess: GasVector,
 }
 
 #[derive(Clone, Debug, Serialize, serde::Deserialize)]
@@ -86,6 +93,10 @@ pub struct BlockSummary {
     pub txs: Vec<TxHash>,
     pub gas_used: u64,
     pub prove_gas: u64,
+    #[serde(default)]
+    pub base_fee: FeeVector,
+    #[serde(default)]
+    pub excess: GasVector,
 }
 
 pub struct Inner {
@@ -141,6 +152,8 @@ impl Chain {
             tx_hashes: vec![],
             gas: GasVector::default(),
             proposer: Address::ZERO,
+            base_fee: FeeVector::default(),
+            excess: GasVector::default(),
         });
         let mut executed = HashMap::new();
         executed.insert(genesis.digest(), exec.clone());
@@ -183,6 +196,8 @@ impl Chain {
                     tx_hashes: summary.as_ref().map(|b| b.txs.clone()).unwrap_or_default(),
                     gas: GasVector::default(),
                     proposer: summary.as_ref().map(|b| b.proposer).unwrap_or_default(),
+                    base_fee: summary.as_ref().map(|b| b.base_fee).unwrap_or_default(),
+                    excess: summary.as_ref().map(|b| b.excess).unwrap_or_default(),
                 });
                 let mut g = chain.lock();
                 g.executed.insert(digest, exec.clone());
@@ -225,13 +240,26 @@ impl Chain {
         self.lock().cfg.clone()
     }
 
-    pub fn block_context(cfg: &ChainConfig, block: &Block) -> BlockContext {
+    /// Execution context of `block` on top of `parent` (base fees derive from the parent's excess).
+    pub fn block_context(cfg: &ChainConfig, block: &Block, parent: &Executed) -> BlockContext {
+        let proposer = leader_address(&block.context.leader);
+        let fees = cfg.fees.then(|| FeePolicy { base: fees::base_fee(parent.excess, cfg.limits), proposer });
         BlockContext {
             chain_id: cfg.chain_id,
             number: block.height().get(),
             timestamp: block.timestamp / 1000,
-            beneficiary: leader_address(&block.context.leader),
+            beneficiary: if fees.is_some() { aether_execution::FEE_COLLECTOR } else { proposer },
             limits: cfg.limits,
+            fees,
+        }
+    }
+
+    /// Base fees the child of `parent` pays.
+    pub fn next_base_fee(cfg: &ChainConfig, parent: &Executed) -> FeeVector {
+        if cfg.fees {
+            fees::base_fee(parent.excess, cfg.limits)
+        } else {
+            FeeVector::default()
         }
     }
 
@@ -248,7 +276,7 @@ impl Chain {
             return Err(ChainError::BadPayload);
         }
         let cfg = self.cfg();
-        let ctx = Self::block_context(&cfg, block);
+        let ctx = Self::block_context(&cfg, block, parent);
         let out = execute_block(&parent.state, &ctx, &payload.txs).map_err(|e| ChainError::Exec(format!("{e:?}")))?;
         if out.bal != payload.bal {
             return Err(ChainError::BalMismatch);
@@ -256,19 +284,25 @@ impl Chain {
         if out.gas != payload.gas {
             return Err(ChainError::GasMismatch);
         }
-        Ok(self.remember(block, out.state, out.receipts, payload.txs.iter().map(aether_execution::tx_hash).collect(), out.gas))
+        Ok(self.remember(block, parent, &ctx, out, payload.txs.iter().map(aether_execution::tx_hash).collect()))
     }
 
-    pub fn remember(&self, block: &Block, state: WorldState, receipts: Vec<Receipt>, tx_hashes: Vec<TxHash>, gas: GasVector) -> Arc<Executed> {
+    pub fn remember(&self, block: &Block, parent: &Executed, ctx: &BlockContext, out: BlockOutcome, tx_hashes: Vec<TxHash>) -> Arc<Executed> {
+        let (base_fee, excess) = match &ctx.fees {
+            Some(f) => (f.base, fees::next_excess(parent.excess, out.gas, ctx.limits)),
+            None => (FeeVector::default(), GasVector::default()),
+        };
         let exec = Arc::new(Executed {
             height: block.height().get(),
             digest: block.digest(),
             timestamp: block.timestamp,
-            state,
-            receipts,
+            state: out.state,
+            receipts: out.receipts,
             tx_hashes,
-            gas,
+            gas: out.gas,
             proposer: leader_address(&block.context.leader),
+            base_fee,
+            excess,
         });
         self.lock().executed.insert(block.digest(), exec.clone());
         exec
@@ -402,6 +436,8 @@ fn summary(block: &Block, e: &Executed, parent_state_root: B256) -> BlockSummary
         txs: e.tx_hashes.clone(),
         gas_used: e.gas.exec,
         prove_gas: e.gas.prove,
+        base_fee: e.base_fee,
+        excess: e.excess,
     }
 }
 

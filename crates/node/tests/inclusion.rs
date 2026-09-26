@@ -46,6 +46,7 @@ fn ctx() -> BlockContext {
         timestamp: 1,
         beneficiary: Address::ZERO,
         limits: GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
+        fees: None,
     }
 }
 

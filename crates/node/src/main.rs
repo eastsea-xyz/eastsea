@@ -6,7 +6,7 @@
 //!   aether balance 0x…              # fetches an EIP-7864 proof and verifies it locally
 
 use aether_crypto::{P256Signer, Signer};
-use aether_execution::{sign_call, EvmCall};
+use aether_execution::{sign_call_with, EvmCall};
 use aether_node::application::Application;
 use aether_node::block::PublicKey;
 use aether_node::chain::{dev_accounts, dev_seed, Chain, ChainConfig};
@@ -389,6 +389,7 @@ fn chain_config(chain_id: u64) -> ChainConfig {
         chain_id,
         limits: GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
         alloc: dev_accounts(DEV_ACCOUNTS).into_iter().map(|(_, a)| (a, U256::from(DEV_BALANCE))).collect(),
+        fees: true,
     }
 }
 
@@ -882,6 +883,15 @@ fn is_delegated(rpc: &str, a: Address) -> Result<bool, String> {
     Ok(code.as_str().is_some_and(|c| c.eq_ignore_ascii_case(&format!("0xef0100{}", hex::encode(aether_execution::AETHER_ACCOUNT.as_slice())))))
 }
 
+/// Fee caps from the node's next base fees: 2x headroom (~70 full blocks of
+/// growth) plus a 1 gwei tip; only the actual base + tip is charged.
+const TIP: u128 = 1_000_000_000;
+
+fn fee_caps(status: &Value) -> Result<aether_types::FeeVector, String> {
+    let get = |k: &str| status["base_fee"][k].as_str().and_then(|v| v.parse::<u128>().ok()).ok_or(format!("status has no base_fee.{k}"));
+    Ok(aether_types::FeeVector { exec: get("exec")? * 2 + TIP, state: 0, prove: get("prove")? * 2 })
+}
+
 fn submit(rpc: &str, dev: u8, nonce: Option<u64>, c: EvmCall, wait: bool) -> Result<Value, String> {
     let signer = P256Signer::from_seed(&dev_seed(dev)).map_err(|e| e.to_string())?;
     let from = aether_crypto::address_of(&signer.public_key()).map_err(|e| e.to_string())?;
@@ -894,7 +904,7 @@ fn submit(rpc: &str, dev: u8, nonce: Option<u64>, c: EvmCall, wait: bool) -> Res
             u64::from_str_radix(hex.as_str().unwrap_or("0x0").trim_start_matches("0x"), 16).map_err(|e| e.to_string())?
         }
     };
-    let tx = sign_call(&signer, chain_id, nonce, 1, &c).map_err(|e| e.to_string())?;
+    let tx = sign_call_with(&signer, chain_id, nonce, fee_caps(&status)?, TIP, &c).map_err(|e| e.to_string())?;
     let r = call(rpc, "aether_sendTransaction", json!([tx]))?;
     let hash: TxHash = serde_json::from_value(r["hash"].clone()).map_err(|e| e.to_string())?;
     println!("tx {hash}  from {from}  nonce {nonce}  (signed with P-256)");

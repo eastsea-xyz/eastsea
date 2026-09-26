@@ -37,6 +37,8 @@ pub struct ChainStatus {
     pub height: u64,
     pub state_root: String,
     pub mempool: u64,
+    /// Estimated fee (wei) of a plain transfer at the next block's base fee plus the tip.
+    pub transfer_fee_wei: String,
 }
 
 #[derive(uniffi::Record)]
@@ -100,6 +102,21 @@ fn net() -> R<&'static Net> {
     .map_err(|e| WalletError::Network(e.clone()))
 }
 
+/// Fee caps from the node's next base fees: 2x headroom plus a 1 gwei tip
+/// (only base + tip is charged). Older nodes without `base_fee` get the floor.
+fn fee_caps(status: &Value) -> (FeeVector, u128) {
+    const GWEI: u128 = 1_000_000_000;
+    let get = |k: &str| status["base_fee"][k].as_str().and_then(|v| v.parse::<u128>().ok()).unwrap_or(GWEI);
+    (FeeVector { exec: get("exec") * 2 + GWEI, state: 0, prove: get("prove") * 2 }, GWEI)
+}
+
+/// A 21k-gas transfer runs no bytecode (no prove gas): it pays base + tip per gas.
+fn transfer_fee(status: &Value) -> u128 {
+    const GWEI: u128 = 1_000_000_000;
+    let base = status["base_fee"]["exec"].as_str().and_then(|v| v.parse::<u128>().ok()).unwrap_or(0);
+    21_000 * (base + GWEI)
+}
+
 fn call(method: &str, params: Value) -> R<Value> {
     let n = net()?;
     n.rt.block_on(n.client.call(method, params)).map_err(|e| {
@@ -139,6 +156,7 @@ pub fn chain_status() -> R<ChainStatus> {
         height: v["height"].as_u64().unwrap_or_default(),
         state_root: v["state_root"].as_str().unwrap_or_default().to_string(),
         mempool: v["mempool"].as_u64().unwrap_or_default(),
+        transfer_fee_wei: transfer_fee(&v).to_string(),
     })
 }
 
@@ -274,7 +292,9 @@ fn hex_lower(b: &[u8]) -> String {
 fn prepare(p256_public_key: &[u8], body: impl FnOnce(Address) -> R<EvmCall>) -> R<PreparedTx> {
     let pk = p256_key(p256_public_key)?;
     let from = address_of(&pk).map_err(|e| WalletError::Invalid(e.to_string()))?;
-    let chain_id = call("aether_status", json!([]))?["chain_id"].as_u64().unwrap_or_default();
+    let status = call("aether_status", json!([]))?;
+    let chain_id = status["chain_id"].as_u64().unwrap_or_default();
+    let (max_fee, tip) = fee_caps(&status);
     let nonce_hex = call("eth_getTransactionCount", json!([from]))?;
     let nonce = u64::from_str_radix(nonce_hex.as_str().unwrap_or("0x0").trim_start_matches("0x"), 16).map_err(|e| WalletError::Invalid(e.to_string()))?;
     let call_body = body(from)?;
@@ -283,8 +303,10 @@ fn prepare(p256_public_key: &[u8], body: impl FnOnce(Address) -> R<EvmCall>) -> 
         chain_id,
         sender: from,
         nonce,
-        gas: GasVector { exec: call_body.gas_limit, state: 0, prove: 0 },
-        max_fee: FeeVector { exec: 1, ..Default::default() },
+        // Every interpreted instruction costs at least 1 gas, so prove steps <= gas_limit.
+        gas: GasVector { exec: call_body.gas_limit, state: 0, prove: call_body.gas_limit },
+        max_fee,
+        tip,
         payload_commitment: aether_execution::tx::payload_commitment(&payload),
         scheme: SignerScheme::P256,
     };

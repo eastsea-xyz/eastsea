@@ -93,16 +93,24 @@ pub fn payload_commitment(payload: &[u8]) -> B256 {
     B256::from(Blake3.hash_bytes(payload))
 }
 
-/// Build and sign an envelope for `call`.
+/// Build and sign an envelope for `call`, paying up to `gas_price` per exec and prove unit.
 pub fn sign_call(signer: &dyn Signer, chain_id: u64, nonce: u64, gas_price: u128, call: &EvmCall) -> Result<TxEnvelope, CryptoError> {
+    sign_call_with(signer, chain_id, nonce, FeeVector { exec: gas_price, state: 0, prove: gas_price }, gas_price, call)
+}
+
+/// `sign_call` with per-dimension fee caps and a priority fee per exec gas:
+/// exec pays `min(base + tip, max_fee.exec)` per gas, prove pays its base fee.
+pub fn sign_call_with(signer: &dyn Signer, chain_id: u64, nonce: u64, max_fee: FeeVector, tip: u128, call: &EvmCall) -> Result<TxEnvelope, CryptoError> {
     let pk = signer.public_key();
     let payload = call.encode();
     let header = TxHeader {
         chain_id,
         sender: address_of(&pk)?,
         nonce,
-        gas: GasVector { exec: call.gas_limit, state: 0, prove: 0 },
-        max_fee: FeeVector { exec: gas_price, ..Default::default() },
+        // Every interpreted instruction costs at least 1 gas, so prove steps <= gas_limit.
+        gas: GasVector { exec: call.gas_limit, state: 0, prove: call.gas_limit },
+        max_fee,
+        tip,
         payload_commitment: payload_commitment(&payload),
         scheme: signer.scheme(),
     };

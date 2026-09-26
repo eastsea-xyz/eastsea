@@ -1,6 +1,7 @@
 //! Execution layer (docs/design/04-execution.md): revm over the EIP-7864 state.
 
 pub mod block;
+pub mod fees;
 mod parallel;
 pub mod tx;
 pub mod world;
@@ -8,7 +9,8 @@ pub mod world;
 pub use block::{
     build_block, build_block_sequential, can_append, execute_block, execute_block_sequential, BlockContext, BlockOutcome, ExecError, ProveGasMeter, Receipt,
 };
-pub use tx::{sign_call, tx_hash, validate_stateless, EvmCall, TxError};
+pub use fees::{FeePolicy, Settlement, FEE_COLLECTOR, PROVER_ESCROW};
+pub use tx::{sign_call, sign_call_with, tx_hash, validate_stateless, EvmCall, TxError};
 pub use world::{ChainHasher, Journal, StateError, WorldState};
 
 /// Where the account contract lives (predeployed at genesis). Accounts delegate

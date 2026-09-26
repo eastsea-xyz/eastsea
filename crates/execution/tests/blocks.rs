@@ -26,6 +26,7 @@ fn ctx(n: u64) -> BlockContext {
         timestamp: 1_700_000_000 + n,
         beneficiary: Address::repeat_byte(0xbe),
         limits: GasVector { exec: 30_000_000, state: u64::MAX, prove: 50_000_000 },
+        fees: None,
     }
 }
 

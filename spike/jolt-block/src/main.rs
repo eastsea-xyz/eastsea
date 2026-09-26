@@ -36,7 +36,7 @@ fn witness(n: usize) -> (Vec<u8>, [u8; 32]) {
         })
         .collect();
     let beneficiary = [0xbe; 20];
-    let ctx = BlockContext { chain_id: CHAIN, number: 1, timestamp: 1, beneficiary: Address::from(beneficiary), limits: GasVector { exec: 30_000_000, state: u64::MAX, prove: u64::MAX } };
+    let ctx = BlockContext { chain_id: CHAIN, number: 1, timestamp: 1, beneficiary: Address::from(beneficiary), limits: GasVector { exec: 30_000_000, state: u64::MAX, prove: u64::MAX }, fees: None };
     let native = execute_block_sequential(&WorldState::from_parts(entries.clone(), Default::default()), &ctx, &txs).unwrap().state.root().0;
     let w = Witness { entries, chain_id: CHAIN, number: 1, timestamp: 1, beneficiary, txs };
     (serde_json::to_vec(&w).unwrap(), native)

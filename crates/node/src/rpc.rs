@@ -75,7 +75,11 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
         "aether_status" => {
             let g = chain.lock();
             let f = &g.finalized;
+            let base = Chain::next_base_fee(&g.cfg, f);
             Ok(json!({
+                // Base fees (wei per unit) for the next block: the exec base is burned, prove goes to the prover escrow.
+                "base_fee": { "exec": base.exec.to_string(), "prove": base.prove.to_string() },
+                "prover_escrow": f.state.balance(&aether_execution::PROVER_ESCROW),
                 "chain_id": g.cfg.chain_id,
                 "height": f.height,
                 "hash": format!("{}", f.digest),

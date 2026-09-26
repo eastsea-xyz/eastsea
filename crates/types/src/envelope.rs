@@ -12,11 +12,7 @@ pub struct GasVector {
 
 impl GasVector {
     pub fn checked_add(self, o: GasVector) -> Option<GasVector> {
-        Some(GasVector {
-            exec: self.exec.checked_add(o.exec)?,
-            state: self.state.checked_add(o.state)?,
-            prove: self.prove.checked_add(o.prove)?,
-        })
+        Some(GasVector { exec: self.exec.checked_add(o.exec)?, state: self.state.checked_add(o.state)?, prove: self.prove.checked_add(o.prove)? })
     }
 
     /// True when every dimension fits within `limit`.
@@ -59,6 +55,9 @@ pub struct TxHeader {
     pub nonce: u64,
     pub gas: GasVector,
     pub max_fee: FeeVector,
+    /// Max priority fee per exec gas (EIP-1559 tip), paid on top of the base fee within `max_fee.exec`.
+    #[serde(default)]
+    pub tip: u128,
     /// Commitment to the payload; for encrypted payloads it is checked after decryption.
     pub payload_commitment: Hash,
     pub scheme: SignerScheme,
@@ -97,12 +96,13 @@ impl Canonical for FeeVector {
 
 impl Canonical for TxHeader {
     fn encode_canonical(&self, out: &mut alloc::vec::Vec<u8>) {
-        out.extend_from_slice(b"aether/tx-header/v1");
+        out.extend_from_slice(b"aether/tx-header/v2");
         put_u64(out, self.chain_id);
         out.extend_from_slice(self.sender.as_slice());
         put_u64(out, self.nonce);
         self.gas.encode_canonical(out);
         self.max_fee.encode_canonical(out);
+        out.extend_from_slice(&self.tip.to_be_bytes());
         out.extend_from_slice(self.payload_commitment.as_slice());
         out.push(self.scheme as u8);
     }
@@ -151,6 +151,7 @@ mod tests {
             nonce,
             gas: GasVector { exec: 21_000, state: 0, prove: 100 },
             max_fee: FeeVector::default(),
+            tip: 0,
             payload_commitment: B256::repeat_byte(9),
             scheme: SignerScheme::P256,
         }

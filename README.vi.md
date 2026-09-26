@@ -22,7 +22,7 @@
   - Chúng kết nối qua iroh QUIC với hole punching, và chuyển sang relay khi không thành công.
 - **Cũng được xây dựng cho AI agent.**
   - `aether-agent` cung cấp ví cho Claude Code, Codex, Antigravity, OpenClaw, Hermes hoặc bất kỳ MCP client nào.
-  - Khóa của nó nằm trong Secure Enclave, và hạn mức chi tiêu chỉ bạn mới thay đổi được, bằng Touch ID.
+  - Khóa của nó nằm trong Secure Enclave, và hợp đồng tài khoản thực thi hạn mức chi tiêu ngay trên chuỗi; chỉ bạn mới thay đổi được chúng, bằng Touch ID.
 
 ## Dùng thử
 
@@ -49,13 +49,13 @@ scripts/build-wallet.sh ios-sim   # iOS Simulator
 
 ```bash
 scripts/build-agent.sh --install   # ~/.local/bin/aether-agent
-aether-agent init                  # bạn làm một lần: tạo khóa và hạn mức mặc định (Touch ID)
+aether-agent init                  # bạn làm một lần: tạo khóa; nạp tiền vào tài khoản, rồi đặt hạn mức (Touch ID)
 aether-agent setup all --apply     # đăng ký MCP server "aether" với mọi công cụ agent bạn đã cài
 ```
 
 - **Công cụ:** status, wallet, balance, send, pay_many (một giao dịch), receipt, history.
 - **Hạn mức mặc định:** 1 AETH mỗi lần thanh toán và 10 AETH mỗi 24 giờ. Thay đổi bằng `aether-agent policy set`, lệnh này yêu cầu Touch ID.
-- **Kiểm tra giả mạo:** nếu agent sửa tệp chính sách, việc chi tiêu sẽ dừng lại. Nhật ký chi tiêu được ký và đối chiếu với nonce on-chain.
+- **Thực thi trên chuỗi:** agent thanh toán bằng một session key của tài khoản của nó; hợp đồng kiểm tra mọi khoản thanh toán theo hạn mức, danh sách người nhận được phép và thời hạn hiệu lực. Không tệp hay tiến trình cục bộ nào có thể vượt qua được. Phí gas được lấy từ một khoản số dư nhỏ riêng.
 - Chi tiết: [AGENTS.md](AGENTS.md) và [tệp skill](agents/skills/aether-wallet/SKILL.md).
 
 ### Chạy một mạng thật

@@ -22,7 +22,7 @@
   - Se conectan por iroh QUIC con hole punching y, si eso falla, recurren a un relay.
 - **Hecho también para agentes de IA.**
   - `aether-agent` le da una billetera a Claude Code, Codex, Antigravity, OpenClaw, Hermes o cualquier cliente MCP.
-  - Su clave está en el Secure Enclave, y sus límites de gasto solo los puedes cambiar tú, con Touch ID.
+  - Su clave está en el Secure Enclave, y el contrato de la cuenta aplica sus límites de gasto on-chain; solo tú puedes cambiarlos, con Touch ID.
 
 ## Pruébalo
 
@@ -49,13 +49,13 @@ scripts/build-wallet.sh ios-sim   # simulador de iOS
 
 ```bash
 scripts/build-agent.sh --install   # ~/.local/bin/aether-agent
-aether-agent init                  # tú, una sola vez: crea las claves y los límites predeterminados (Touch ID)
+aether-agent init                  # tú, una sola vez: crea las claves; financia la cuenta y luego fija los límites (Touch ID)
 aether-agent setup all --apply     # registra el servidor MCP "aether" en todas las herramientas de agentes que tengas instaladas
 ```
 
 - **Herramientas:** status, wallet, balance, send, pay_many (una sola transacción), receipt, history.
 - **Límites predeterminados:** 1 AETH por pago y 10 AETH cada 24 horas. Cámbialos con `aether-agent policy set`, que pide Touch ID.
-- **Detección de manipulación:** si un agente edita el archivo de políticas, el gasto se detiene. El registro de gastos está firmado y se contrasta con el nonce on-chain.
+- **Aplicado on-chain:** el agente paga con una clave de sesión de su cuenta; el contrato comprueba cada pago frente a los límites, los destinatarios permitidos y la caducidad. Ningún archivo ni proceso local puede saltárselos. El gas sale de un pequeño saldo aparte.
 - Detalles: [AGENTS.md](AGENTS.md) y [el archivo de skill](agents/skills/aether-wallet/SKILL.md).
 
 ### Ejecutar una red real

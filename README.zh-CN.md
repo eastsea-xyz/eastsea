@@ -22,7 +22,7 @@
   - 它们通过 iroh QUIC 连接并进行打洞，打洞失败时回退到中继。
 - **也为 AI 智能体而设计。**
   - `aether-agent` 为 Claude Code、Codex、Antigravity、OpenClaw、Hermes 或任何 MCP 客户端提供一个钱包。
-  - 它的密钥存放在 Secure Enclave 中，支出限额只有你本人通过 Touch ID 才能修改。
+  - 它的密钥存放在 Secure Enclave 中，支出限额由账户合约在链上强制执行；只有你本人通过 Touch ID 才能修改。
 
 ## 试用
 
@@ -49,13 +49,13 @@ scripts/build-wallet.sh ios-sim   # iOS 模拟器
 
 ```bash
 scripts/build-agent.sh --install   # ~/.local/bin/aether-agent
-aether-agent init                  # 由你本人执行一次：创建密钥和默认限额（Touch ID）
+aether-agent init                  # 由你本人执行一次：创建密钥；为账户充值后再设置限额（Touch ID）
 aether-agent setup all --apply     # 在你已安装的每个智能体工具中注册 MCP 服务器 "aether"
 ```
 
 - **工具：** status、wallet、balance、send、pay_many（单笔交易）、receipt、history。
 - **默认限额：** 每笔支付 1 AETH，每 24 小时 10 AETH。用 `aether-agent policy set` 修改，该命令会要求 Touch ID。
-- **防篡改检查：** 如果智能体修改了策略文件，支出就会停止。支出日志经过签名，并与链上 nonce 交叉核对。
+- **链上强制执行：** 智能体使用其账户的会话密钥付款；合约会根据限额、允许的收款方和有效期检查每一笔支付。任何本地文件或进程都无法绕过这些限制。Gas 费来自一笔单独的小额余额。
 - 详情：[AGENTS.md](AGENTS.md) 和 [技能文件](agents/skills/aether-wallet/SKILL.md)。
 
 ### 运行真实网络

@@ -22,7 +22,7 @@
   - iroh QUIC으로 hole punching을 통해 연결하고, 실패하면 relay로 전환합니다.
 - **AI 에이전트도 고려해 만들었습니다.**
   - `aether-agent`는 Claude Code, Codex, Antigravity, OpenClaw, Hermes 또는 모든 MCP 클라이언트에 지갑을 제공합니다.
-  - 키는 Secure Enclave에 있고, 지출 한도는 사용자만 Touch ID로 변경할 수 있습니다.
+  - 키는 Secure Enclave에 있고, 지출 한도는 계정 컨트랙트가 온체인에서 강제합니다. 한도는 사용자만 Touch ID로 변경할 수 있습니다.
 
 ## 사용해 보기
 
@@ -49,13 +49,13 @@ scripts/build-wallet.sh ios-sim   # iOS 시뮬레이터
 
 ```bash
 scripts/build-agent.sh --install   # ~/.local/bin/aether-agent
-aether-agent init                  # 사용자가 한 번만: 키와 기본 한도를 생성합니다 (Touch ID)
+aether-agent init                  # 사용자가 한 번만: 키를 생성하고, 계정에 자금을 넣은 뒤 한도를 설정합니다 (Touch ID)
 aether-agent setup all --apply     # 설치된 모든 에이전트 도구에 MCP 서버 "aether"를 등록합니다
 ```
 
 - **도구:** status, wallet, balance, send, pay_many(트랜잭션 하나), receipt, history.
 - **기본 한도:** 결제당 1 AETH, 24시간당 10 AETH. `aether-agent policy set`으로 변경할 수 있으며, 이때 Touch ID를 요구합니다.
-- **변조 검사:** 에이전트가 정책 파일을 수정하면 지출이 중단됩니다. 지출 로그는 서명되어 있으며 온체인 nonce와 교차 검증됩니다.
+- **온체인에서 강제:** 에이전트는 자기 계정의 세션 키로 결제합니다. 컨트랙트가 모든 결제를 한도, 허용된 수신자, 만료 시각과 대조해 검사합니다. 어떤 로컬 파일이나 프로세스도 이를 우회할 수 없습니다. 가스비는 별도의 소액 잔액에서 나갑니다.
 - 자세한 내용: [AGENTS.md](AGENTS.md) 및 [skill 파일](agents/skills/aether-wallet/SKILL.md).
 
 ### 실제 네트워크 운영

@@ -22,7 +22,7 @@
   - iroh QUIC でホールパンチングにより接続し、失敗した場合はリレーにフォールバックします。
 - **AI エージェントにも対応。**
   - `aether-agent` は Claude Code、Codex、Antigravity、OpenClaw、Hermes、その他任意の MCP クライアントにウォレットを提供します。
-  - 鍵は Secure Enclave にあり、支出上限は Touch ID を使ってあなただけが変更できます。
+  - 鍵は Secure Enclave にあり、支出上限はアカウントコントラクトがオンチェーンで強制します。上限を変更できるのは、Touch ID を使うあなただけです。
 
 ## 試してみる
 
@@ -49,13 +49,13 @@ scripts/build-wallet.sh ios-sim   # iOS シミュレータ
 
 ```bash
 scripts/build-agent.sh --install   # ~/.local/bin/aether-agent
-aether-agent init                  # あなたが一度だけ実行：鍵とデフォルトの上限を作成する（Touch ID）
+aether-agent init                  # あなたが一度だけ実行：鍵を作成し、アカウントに入金してから上限を設定する（Touch ID）
 aether-agent setup all --apply     # インストール済みのすべてのエージェントツールに MCP サーバー "aether" を登録する
 ```
 
 - **ツール：** status、wallet、balance、send、pay_many（1 トランザクション）、receipt、history。
 - **デフォルトの上限：** 1 回の支払いにつき 1 AETH、24 時間あたり 10 AETH。`aether-agent policy set` で変更でき、その際に Touch ID を求められます。
-- **改ざんチェック：** エージェントがポリシーファイルを編集すると、支出は停止します。支出ログは署名されており、オンチェーンの nonce と突き合わせて検証されます。
+- **オンチェーンで強制：** エージェントは自分のアカウントのセッションキーで支払います。コントラクトがすべての支払いを上限、許可された受取人、有効期限と照合します。ローカルのファイルやプロセスでこれをすり抜けることはできません。ガス代は別枠の少額残高から支払われます。
 - 詳細：[AGENTS.md](AGENTS.md) および [skill ファイル](agents/skills/aether-wallet/SKILL.md)。
 
 ### 実際のネットワークを動かす

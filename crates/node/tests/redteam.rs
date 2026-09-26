@@ -130,7 +130,6 @@ fn attacks_on_a_live_network_are_refused() {
             t.header.tip += 1;
             t
         }),
-        ("below the fee floor", sign(n, &transfer(victim, U256::from(1u64)), FeeVector { exec: 1, state: 0, prove: 1 }, chain_id)),
         ("zero prove budget", {
             let mut t = sign(n, &transfer(victim, U256::from(1u64)), caps, chain_id);
             t.header.gas.prove = 0;
@@ -150,6 +149,14 @@ fn attacks_on_a_live_network_are_refused() {
         ("value overflow", sign(n, &transfer(victim, U256::MAX), caps, chain_id)),
         ("more than the balance", sign(n, &transfer(victim, funded * U256::from(2u64)), caps, chain_id)),
     ];
+    // Under the base fee (only an attack while the network is congested; uncongested
+    // transactions are free by design, R1′).
+    let base = fees(&net);
+    let mut attempts = attempts;
+    if base.exec > GWEI {
+        let under = FeeVector { exec: (base.exec - GWEI) / 4, state: 0, prove: base.prove / 4 };
+        attempts.push(("below the base fee", sign(n, &transfer(victim, U256::from(1u64)), under, chain_id)));
+    }
     for (what, tx) in &attempts {
         let r = net.send(tx);
         assert!(r.is_err(), "{what}: accepted ({r:?})");

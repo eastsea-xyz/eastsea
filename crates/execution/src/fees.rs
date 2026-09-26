@@ -18,9 +18,13 @@ pub const FEE_COLLECTOR: Address = address!("00000000000000000000000000000000000
 /// chunk later (R3; claims come with the proof market).
 pub const PROVER_ESCROW: Address = address!("00000000000000000000000000000000000e5c00");
 
-/// Minimum base fee per unit (R1): 1 gwei.
-pub const FLOOR: FeeVector = FeeVector { exec: 1_000_000_000, state: 0, prove: 1_000_000_000 };
-/// Adjustment quotient: a full block raises the base fee ~1.05%, an empty one lowers it ~1.04%.
+/// Scale of the base fee (R1′, docs/research/tokenomics-2026.md §6):
+/// `base = SCALE · (e^(excess / (target · K)) − 1)`. Zero while blocks stay at or
+/// under target (people without tokens can transact); sustained demand above
+/// target raises it exponentially (spam pays for itself). One full block past
+/// target costs ~1 gwei per unit, twelve ~13 gwei.
+pub const SCALE: FeeVector = FeeVector { exec: 100_000_000_000, state: 0, prove: 100_000_000_000 };
+/// Adjustment quotient (EIP-4844's role for K): how fast excess moves the fee.
 pub const UPDATE_QUOTIENT: u64 = 96;
 /// Tip split in percent: proposer, prover escrow, burn.
 pub const TIP_SPLIT: (u64, u64, u64) = (60, 20, 20);
@@ -55,13 +59,13 @@ pub fn next_excess(excess: GasVector, used: GasVector, limits: GasVector) -> Gas
     GasVector { exec: step(excess.exec, used.exec, limits.exec), state: 0, prove: step(excess.prove, used.prove, limits.prove) }
 }
 
-/// Base fees for a block with accumulated `excess`.
+/// Base fees for a block with accumulated `excess` (0 when there is none).
 pub fn base_fee(excess: GasVector, limits: GasVector) -> FeeVector {
-    let dim = |floor: u128, e: u64, l: u64| {
+    let dim = |scale: u128, e: u64, l: u64| {
         let target = (l / 2).max(1) as u128;
-        fake_exponential(floor, e as u128, target * UPDATE_QUOTIENT as u128).max(floor)
+        fake_exponential(scale, e as u128, target * UPDATE_QUOTIENT as u128).saturating_sub(scale)
     };
-    FeeVector { exec: dim(FLOOR.exec, excess.exec, limits.exec), state: 0, prove: dim(FLOOR.prove, excess.prove, limits.prove) }
+    FeeVector { exec: dim(SCALE.exec, excess.exec, limits.exec), state: 0, prove: dim(SCALE.prove, excess.prove, limits.prove) }
 }
 
 /// Where a block's fees went (for receipts and tests).
@@ -99,25 +103,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn base_fee_moves_like_eip_4844() {
+    fn base_fee_is_zero_until_congested_then_exponential() {
         let limits = GasVector { exec: 30_000_000, state: 0, prove: 200_000_000 };
-        let floor = base_fee(GasVector::default(), limits);
-        assert_eq!(floor, FeeVector { exec: FLOOR.exec, state: 0, prove: FLOOR.prove });
-        // A full block: +~1.05%.
-        let e = next_excess(GasVector::default(), limits, limits);
-        let up = base_fee(e, limits);
-        let ratio = up.exec as f64 / FLOOR.exec as f64;
-        assert!((1.0100..1.0110).contains(&ratio), "{ratio}");
-        // 12 full blocks: ~+13%.
+        assert_eq!(base_fee(GasVector::default(), limits), FeeVector::default(), "free while at or under target");
+        // Blocks at target leave no excess.
+        let half = GasVector { exec: limits.exec / 2, state: 0, prove: limits.prove / 2 };
+        assert_eq!(next_excess(GasVector::default(), half, limits), GasVector::default());
+        // One full block: ~1 gwei; twelve: ~13 gwei; it keeps climbing with demand.
+        let one = base_fee(next_excess(GasVector::default(), limits, limits), limits).exec as f64 / 1e9;
+        assert!((1.0..1.1).contains(&one), "{one}");
         let mut e = GasVector::default();
         for _ in 0..12 {
             e = next_excess(e, limits, limits);
         }
-        let r12 = base_fee(e, limits).exec as f64 / FLOOR.exec as f64;
-        assert!((1.12..1.15).contains(&r12), "{r12}");
-        // Empty blocks pull the excess back down; never below the floor.
-        let down = next_excess(e, GasVector::default(), limits);
-        assert!(base_fee(down, limits).exec < base_fee(e, limits).exec);
-        assert_eq!(base_fee(next_excess(GasVector::default(), GasVector::default(), limits), limits).exec, FLOOR.exec);
+        let twelve = base_fee(e, limits).exec as f64 / 1e9;
+        assert!((12.0..14.0).contains(&twelve), "{twelve}");
+        let mut hot = e;
+        for _ in 0..400 {
+            hot = next_excess(hot, limits, limits);
+        }
+        assert!(base_fee(hot, limits).exec > 100 * base_fee(e, limits).exec, "sustained spam gets expensive");
+        // Empty blocks bring it back to zero.
+        let mut cool = e;
+        for _ in 0..12 {
+            cool = next_excess(cool, GasVector::default(), limits);
+        }
+        assert_eq!(base_fee(cool, limits), FeeVector::default());
     }
 }

@@ -444,13 +444,12 @@ impl Chain {
 }
 
 /// The fee-policy checks a block would reject the tx for, applied at admission:
-/// caps at least the fee floors, a prove budget covering the gas limit, and a
+/// caps at least the current base fees (zero when uncongested), a prove budget covering the gas limit, and a
 /// balance covering value, max exec fee and prove budget.
 fn admissible(tx: &TxEnvelope, state: &WorldState, base: FeeVector) -> Result<(), String> {
     let aether_types::TxPayload::Plain(bytes) = &tx.payload else { return Err("encrypted payloads are not supported yet".into()) };
     let call = aether_execution::EvmCall::decode(bytes).map_err(|e| format!("payload: {e:?}"))?;
-    let floor = fees::FLOOR;
-    if tx.header.max_fee.exec < floor.exec || tx.header.max_fee.prove < floor.prove.max(base.prove) {
+    if tx.header.max_fee.exec < base.exec || tx.header.max_fee.prove < base.prove {
         return Err("fee caps below the base fee".into());
     }
     if tx.header.gas.prove < call.gas_limit {

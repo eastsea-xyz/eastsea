@@ -1473,6 +1473,104 @@ public func FfiConverterTypeVerifiedAccount_lower(_ value: VerifiedAccount) -> R
 }
 
 
+/**
+ * This Mac as a voting node: the registry's view of it (display only; the
+ * numbers are not proven against a certificate).
+ */
+public struct VotingNodeStatus: Equatable, Hashable {
+    /**
+     * Registered in the voting-node registry.
+     */
+    public var registered: Bool
+    /**
+     * Consecutive epochs with a liveness beacon (the contribution rank).
+     */
+    public var streak: UInt64
+    public var lastEpoch: UInt64
+    public var epoch: UInt64
+    /**
+     * In the current voting set (building and signing blocks).
+     */
+    public var voting: Bool
+    /**
+     * Registered candidates on the network.
+     */
+    public var candidates: UInt32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Registered in the voting-node registry.
+         */registered: Bool, 
+        /**
+         * Consecutive epochs with a liveness beacon (the contribution rank).
+         */streak: UInt64, lastEpoch: UInt64, epoch: UInt64, 
+        /**
+         * In the current voting set (building and signing blocks).
+         */voting: Bool, 
+        /**
+         * Registered candidates on the network.
+         */candidates: UInt32) {
+        self.registered = registered
+        self.streak = streak
+        self.lastEpoch = lastEpoch
+        self.epoch = epoch
+        self.voting = voting
+        self.candidates = candidates
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension VotingNodeStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeVotingNodeStatus: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> VotingNodeStatus {
+        return
+            try VotingNodeStatus(
+                registered: FfiConverterBool.read(from: &buf), 
+                streak: FfiConverterUInt64.read(from: &buf), 
+                lastEpoch: FfiConverterUInt64.read(from: &buf), 
+                epoch: FfiConverterUInt64.read(from: &buf), 
+                voting: FfiConverterBool.read(from: &buf), 
+                candidates: FfiConverterUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: VotingNodeStatus, into buf: inout [UInt8]) {
+        FfiConverterBool.write(value.registered, into: &buf)
+        FfiConverterUInt64.write(value.streak, into: &buf)
+        FfiConverterUInt64.write(value.lastEpoch, into: &buf)
+        FfiConverterUInt64.write(value.epoch, into: &buf)
+        FfiConverterBool.write(value.voting, into: &buf)
+        FfiConverterUInt32.write(value.candidates, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVotingNodeStatus_lift(_ buf: RustBuffer) throws -> VotingNodeStatus {
+    return try FfiConverterTypeVotingNodeStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVotingNodeStatus_lower(_ value: VotingNodeStatus) -> RustBuffer {
+    return FfiConverterTypeVotingNodeStatus.lower(value)
+}
+
+
 public 
 enum WalletError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
 
@@ -1841,6 +1939,24 @@ public func prepareRecoverySubmit(p256PublicKey: Data, request: RecoveryRequest,
     )
 })
 }
+/**
+ * Register this Mac as a voting-node candidate, operated by the wallet's account.
+ * `device_token` is Apple's DeviceCheck token (base64): one Mac, one candidate.
+ * The registrar (a validator holding the network's DeviceCheck key) attests;
+ * the returned transaction, signed with the wallet key, puts it on chain.
+ */
+public func prepareRegisterNode(p256PublicKey: Data, deviceToken: String, validatorKey: String, nodeId: String, beaconer: String)throws  -> PreparedTx  {
+    return try  FfiConverterTypePreparedTx_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_prepare_register_node(
+        FfiConverterData.lower(p256PublicKey),
+        FfiConverterString.lower(deviceToken),
+        FfiConverterString.lower(validatorKey),
+        FfiConverterString.lower(nodeId),
+        FfiConverterString.lower(beaconer),uniffiCallStatus
+    )
+})
+}
 public func prepareSessionPayment(account: String, payments: [Payment], validators: UInt32)throws  -> SessionRequest  {
     return try  FfiConverterTypeSessionRequest_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
         uniffiCallStatus in
@@ -1993,6 +2109,14 @@ public func verifiedAccount(address: String, validators: UInt32)throws  -> Verif
     )
 })
 }
+public func votingNodeStatus(validatorKey: String)throws  -> VotingNodeStatus  {
+    return try  FfiConverterTypeVotingNodeStatus_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_voting_node_status(
+        FfiConverterString.lower(validatorKey),uniffiCallStatus
+    )
+})
+}
 
 private enum InitializationResult {
     case ok
@@ -2042,6 +2166,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_aether_ffi_checksum_func_prepare_recovery_submit() != 54585) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_aether_ffi_checksum_func_prepare_register_node() != 29004) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_aether_ffi_checksum_func_prepare_session_payment() != 52994) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -2082,6 +2209,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_verified_account() != 47692) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_voting_node_status() != 63459) {
         return InitializationResult.apiChecksumMismatch
     }
 

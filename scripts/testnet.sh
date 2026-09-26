@@ -12,8 +12,8 @@ case "${1:-status}" in
   start)
     for i in $(seq 1 "$N"); do
       if [ -f "$T/node$i.pid" ] && kill -0 "$(cat "$T/node$i.pid")" 2>/dev/null; then echo "validator $i already running"; continue; fi
-      args=(node --network "$T/$i/network.json" --port $((9100 + i)) --rpc-port $((8600 + i)) --data "$T/$i")
-      [ -f "$T/$i/faucet.key" ] && args+=(--faucet-key "$T/$i/faucet.key")
+      args=(run --network "$T/$i/network.json" --port $((9100 + i)) --rpc-port $((8600 + i)) --data "$T/$i")
+      [ -f "$T/$i/faucet.key" ] && args+=("--node-arg=--faucet-key=$T/$i/faucet.key")
       nohup "$A" "${args[@]}" >> "$T/node$i.log" 2>&1 &
       echo $! > "$T/node$i.pid"
       echo "validator $i  rpc http://127.0.0.1:$((8600 + i))  log $T/node$i.log"

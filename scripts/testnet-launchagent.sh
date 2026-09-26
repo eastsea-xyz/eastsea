@@ -2,7 +2,9 @@
 # Keep this Mac's testnet validators running across logins and crashes (launchd).
 #   scripts/testnet-launchagent.sh install | uninstall
 # One LaunchAgent per validator (KeepAlive): launchd restarts a validator that
-# exits and starts all of them at login. Chain data is never wiped.
+# exits and starts all of them at login. Chain data is never wiped. Each runs
+# `aether run`: a validator while the network keeps it in the voting set, a
+# verifying follower once registered Macs take the seats.
 # The binary is signed with the Developer ID (SIGN_IDENTITY) and the agents name
 # the Aether app, so System Settings ▸ Login Items lists them as Aether (Pipln),
 # not as an unidentified command-line tool.
@@ -18,8 +20,14 @@ case "${1:-}" in
     codesign --force --options runtime --timestamp --sign "${SIGN_IDENTITY:-Developer ID Application: Pipln (45WU468FZE)}" "$A"
     "$(dirname "$0")/testnet.sh" stop >/dev/null 2>&1 || true
     for i in $(seq 1 "$N"); do
-      faucet=""
-      [ -f "$T/$i/faucet.key" ] && faucet="<string>--faucet-key</string><string>$T/$i/faucet.key</string>"
+      extra=""
+      [ -f "$T/$i/faucet.key" ] && extra+="<string>--node-arg=--faucet-key=$T/$i/faucet.key</string>"
+      # The registrar (validator 1) checks each Mac with Apple DeviceCheck.
+      dc=$(ls "$HOME"/.config/aether/devicecheck/AuthKey_*.p8 2>/dev/null | head -1 || true)
+      if [ -f "$T/$i/registrar.key" ] && [ -n "$dc" ]; then
+        kid=$(basename "$dc" .p8); kid=${kid#AuthKey_}
+        extra+="<string>--node-arg=--devicecheck-key=$dc</string><string>--node-arg=--devicecheck-key-id=$kid</string>"
+      fi
       cat > "$LA/$(label "$i").plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -29,12 +37,12 @@ case "${1:-}" in
   <key>AssociatedBundleIdentifiers</key><array><string>com.pipln.aether</string></array>
   <key>ProgramArguments</key>
   <array>
-    <string>$A</string><string>node</string>
+    <string>$A</string><string>run</string>
     <string>--network</string><string>$T/$i/network.json</string>
     <string>--port</string><string>$((9100 + i))</string>
     <string>--rpc-port</string><string>$((8600 + i))</string>
     <string>--data</string><string>$T/$i</string>
-    $faucet
+    $extra
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>

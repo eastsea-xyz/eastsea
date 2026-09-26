@@ -216,6 +216,14 @@ enum Cmd {
         reshare_timeout: u64,
         #[arg(long, hide = true)]
         dev_peer_dir: Option<String>,
+        /// Exit when the launching app does (the Mac app's node switch).
+        #[arg(long)]
+        exit_with_parent: bool,
+    },
+    /// This Mac's voting-node identity in <data> (created the first time), as JSON.
+    CandidateInfo {
+        #[arg(long)]
+        data: String,
     },
     /// Register this Mac's candidate (keys in <data>) with the registrar and the registry.
     CandidateRegister {
@@ -526,7 +534,13 @@ fn main() {
             let keys = candidate.then(|| keys.unwrap_or_else(|| data.clone()));
             run_follow(network, from_rpc, data, rpc_port, validators, keys, dev_epoch_blocks)
         }
-        Cmd::Run { data, network, port, rpc_port, node_args, follow_args, reshare_timeout, dev_peer_dir } => {
+        Cmd::CandidateInfo { data } => aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(&data)).map(|k| {
+            println!("{}", json!({ "validator_key": hex::encode(k.validator_key()), "node_id": hex::encode(k.node_id()), "beaconer": k.beaconer() }));
+        }),
+        Cmd::Run { data, network, port, rpc_port, node_args, follow_args, reshare_timeout, dev_peer_dir, exit_with_parent } => {
+            if exit_with_parent {
+                exit_with_parent_process();
+            }
             tracing_subscriber::fmt()
                 .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,commonware=warn".into()))
                 .init();
@@ -534,11 +548,7 @@ fn main() {
                 let dir = std::path::PathBuf::from(&data);
                 std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
                 aether_node::candidate::CandidateKeys::load_or_create(&dir)?;
-                let net = dir.join("network.json");
-                if !net.exists() {
-                    let src = network.ok_or("first run: pass --network <network.json>")?;
-                    std::fs::copy(&src, &net).map_err(|e| format!("{src}: {e}"))?;
-                }
+                aether_node::supervisor::adopt_network(&dir, network.as_deref().map(std::path::Path::new))?;
                 aether_node::supervisor::Supervisor {
                     exe: std::env::current_exe().map_err(|e| e.to_string())?,
                     data: dir,
@@ -569,9 +579,16 @@ fn main() {
             }
             Ok(())
         })(),
-        Cmd::FaucetKey { data } => aether_node::faucet::Faucet::generate(&std::path::Path::new(&data).join("faucet.key")).map(|a| {
-            println!("faucet address {a}\nkey written to {data}/faucet.key (keep it on this machine; run the node with --faucet-key)");
-        }),
+        Cmd::FaucetKey { data } => (|| {
+            // Idempotent: an existing key is kept (and its address printed).
+            let path = std::path::Path::new(&data).join("faucet.key");
+            if !path.exists() {
+                aether_node::faucet::Faucet::generate(&path)?;
+            }
+            let a = aether_node::faucet::Faucet::load(&path)?.address;
+            println!("faucet address {a}\nkey in {data}/faucet.key (keep it on this machine; run the node with --faucet-key)");
+            Ok(())
+        })(),
         Cmd::Head { data } => (|| {
             let store = aether_node::store::Store::open(&std::path::Path::new(&data).join("state.redb")).map_err(|e| e.to_string())?;
             let (h, d) = store.head().map_err(|e| e.to_string())?.ok_or("no finalized state")?;
@@ -586,11 +603,16 @@ fn main() {
             reshare(&from, &to, boundary, port, data, peers, link_base, offline)
         }
         Cmd::Network { chain_id, faucet, registrar, epoch_blocks, members } => assemble_network(chain_id, faucet, registrar, epoch_blocks, &members),
-        Cmd::RegistrarKey { data } => aether_node::faucet::Faucet::generate(&std::path::Path::new(&data).join("registrar.key")).and_then(|_| {
-            let k = aether_node::faucet::Faucet::load(&std::path::Path::new(&data).join("registrar.key"))?;
-            println!("registrar key {}\nwritten to {data}/registrar.key (put the key in network.json with `aether network --registrar`)", k.public_hex());
+        Cmd::RegistrarKey { data } => (|| {
+            // Idempotent: an existing key is kept (and its public half printed).
+            let path = std::path::Path::new(&data).join("registrar.key");
+            if !path.exists() {
+                aether_node::faucet::Faucet::generate(&path)?;
+            }
+            let k = aether_node::faucet::Faucet::load(&path)?;
+            println!("registrar key {}\nin {data}/registrar.key (put the key in network.json with `aether network --registrar`)", k.public_hex());
             Ok(())
-        }),
+        })(),
         Cmd::DevAccounts => {
             for (i, a) in dev_accounts(DEV_ACCOUNTS) {
                 println!("dev {i:>2}  {a}");

@@ -258,6 +258,39 @@ impl Supervisor {
     }
 }
 
+/// Keys that identify this Mac; everything else in <data> belongs to one network.
+const KEEP_ACROSS_NETWORKS: [&str; 3] = ["validator.key", "validator.pub.json", "node-account.key"];
+
+/// Put `network` in `<data>/network.json`: the first time, or when it is a
+/// different network (a testnet reset: other chain id or committee identity).
+/// The old network's data is moved to `<data>/stale-<time>`, never deleted.
+/// The same network with newer epochs (written by a reshare) is kept.
+pub fn adopt_network(data: &Path, network: Option<&Path>) -> Result<(), String> {
+    let ours = data.join("network.json");
+    let Some(src) = network else {
+        return if ours.exists() { Ok(()) } else { Err("first run: pass --network <network.json>".into()) };
+    };
+    let theirs = NetworkFile::load(src)?;
+    if let Ok(current) = NetworkFile::load(&ours) {
+        if current.chain_id == theirs.chain_id && current.identity == theirs.identity {
+            return Ok(());
+        }
+        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or_default();
+        let aside = data.join(format!("stale-{secs}"));
+        std::fs::create_dir_all(&aside).map_err(|e| e.to_string())?;
+        for e in std::fs::read_dir(data).map_err(|e| e.to_string())?.flatten() {
+            let name = e.file_name();
+            let n = name.to_string_lossy();
+            if KEEP_ACROSS_NETWORKS.contains(&n.as_ref()) || n.starts_with("stale-") {
+                continue;
+            }
+            std::fs::rename(e.path(), aside.join(&name)).map_err(|e| e.to_string())?;
+        }
+        tracing::warn!(moved_to = %aside.display(), "a different network: the previous one's data was moved aside");
+    }
+    std::fs::copy(src, &ours).map(|_| ()).map_err(|e| format!("{}: {e}", src.display()))
+}
+
 enum Watch {
     Exited,
     Rotate(Value),
@@ -280,5 +313,52 @@ fn rpc_call(url: &str, method: &str, params: Value) -> Result<Value, String> {
     match v.get("error") {
         Some(e) => Err(e.to_string()),
         None => Ok(v.get("result").cloned().unwrap_or(Value::Null)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn file(chain_id: u64, identity: &str) -> NetworkFile {
+        NetworkFile {
+            chain_id,
+            validators: vec![],
+            identity: Some(identity.into()),
+            round: 0,
+            output: None,
+            epochs: vec![],
+            faucet: None,
+            registrar: None,
+            epoch_blocks: None,
+        }
+    }
+
+    #[test]
+    fn a_new_network_moves_the_old_data_aside_but_keeps_the_keys() {
+        let dir = std::env::temp_dir().join(format!("aether-adopt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("src.json");
+        let data = dir.join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(&src, serde_json::to_vec(&file(1, "aa")).unwrap()).unwrap();
+        adopt_network(&data, Some(&src)).unwrap();
+        std::fs::write(data.join("state.redb"), b"old chain").unwrap();
+        std::fs::write(data.join("validator.key"), b"key").unwrap();
+
+        // Same network (e.g. with epochs from a reshare): untouched.
+        adopt_network(&data, Some(&src)).unwrap();
+        assert!(data.join("state.redb").exists());
+
+        // A testnet reset: state moves aside, the Mac's keys stay.
+        std::fs::write(&src, serde_json::to_vec(&file(1, "bb")).unwrap()).unwrap();
+        adopt_network(&data, Some(&src)).unwrap();
+        assert!(!data.join("state.redb").exists());
+        assert!(data.join("validator.key").exists());
+        assert_eq!(NetworkFile::load(&data.join("network.json")).unwrap().identity.as_deref(), Some("bb"));
+        let aside = std::fs::read_dir(&data).unwrap().flatten().find(|e| e.file_name().to_string_lossy().starts_with("stale-")).unwrap();
+        assert!(aside.path().join("state.redb").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

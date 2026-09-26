@@ -397,6 +397,77 @@ fn prepare(p256_public_key: &[u8], body: impl FnOnce(Address) -> R<EvmCall>) -> 
     })
 }
 
+/// This Mac as a voting node: the registry's view of it (display only; the
+/// numbers are not proven against a certificate).
+#[derive(uniffi::Record)]
+pub struct VotingNodeStatus {
+    /// Registered in the voting-node registry.
+    pub registered: bool,
+    /// Consecutive epochs with a liveness beacon (the contribution rank).
+    pub streak: u64,
+    pub last_epoch: u64,
+    pub epoch: u64,
+    /// In the current voting set (building and signing blocks).
+    pub voting: bool,
+    /// Registered candidates on the network.
+    pub candidates: u32,
+}
+
+#[uniffi::export]
+pub fn voting_node_status(validator_key: String) -> R<VotingNodeStatus> {
+    let key = validator_key.trim_start_matches("0x").to_lowercase();
+    let v = call("aether_candidates", json!([]))?;
+    let list = v["candidates"].as_array().cloned().unwrap_or_default();
+    let mine = list.iter().find(|c| c["validator_key"].as_str() == Some(key.as_str()));
+    let voting = call("aether_network", json!([]))
+        .ok()
+        .and_then(|n| n["validators"].as_array().map(|a| a.iter().any(|m| m["key"].as_str() == Some(key.as_str()))))
+        .unwrap_or(false);
+    Ok(VotingNodeStatus {
+        registered: mine.is_some(),
+        streak: mine.and_then(|c| c["streak"].as_u64()).unwrap_or(0),
+        last_epoch: mine.and_then(|c| c["last_epoch"].as_u64()).unwrap_or(0),
+        epoch: v["epoch"].as_u64().unwrap_or(0),
+        voting,
+        candidates: list.len() as u32,
+    })
+}
+
+/// Register this Mac as a voting-node candidate, operated by the wallet's account.
+/// `device_token` is Apple's DeviceCheck token (base64): one Mac, one candidate.
+/// The registrar (a validator holding the network's DeviceCheck key) attests;
+/// the returned transaction, signed with the wallet key, puts it on chain.
+#[uniffi::export]
+pub fn prepare_register_node(p256_public_key: Vec<u8>, device_token: String, validator_key: String, node_id: String, beaconer: String) -> R<PreparedTx> {
+    let hex32 = |s: &str, what: &str| -> R<[u8; 32]> {
+        aether_light::from_hex(s).ok().and_then(|b| b.try_into().ok()).ok_or_else(|| WalletError::Invalid(format!("{what}: 32-byte hex")))
+    };
+    let (key, node) = (hex32(&validator_key, "voting key")?, hex32(&node_id, "node id")?);
+    let beaconer: Address = beaconer.parse().map_err(|_| WalletError::Invalid("beaconer address".into()))?;
+    let operator = address_of(&p256_key(&p256_public_key)?).map_err(|e| WalletError::Invalid(e.to_string()))?;
+    let a = registrar_call(json!([device_token, operator, hex_lower(&key), hex_lower(&node), beaconer]))?;
+    let (r, s) = (hex32(a["r"].as_str().unwrap_or_default(), "attestation r")?, hex32(a["s"].as_str().unwrap_or_default(), "attestation s")?);
+    let input = aether_execution::registry::encode_register(key, node, beaconer, r, s);
+    prepare(&p256_public_key, |_| Ok(EvmCall { to: Some(aether_execution::registry::REGISTRY), value: U256::ZERO, input, gas_limit: 400_000, delegate: None }))
+}
+
+/// Ask validators in turn until the one running the registrar answers.
+fn registrar_call(params: Value) -> R<Value> {
+    let n = net()?;
+    let mut last = WalletError::Network("no registrar reachable".into());
+    for _ in 0..8 {
+        match n.rt.block_on(n.client.call("aether_registerDevice", params.clone())) {
+            Ok(v) => return Ok(v),
+            Err(e) if e.to_string().contains("does not register devices") => {
+                n.rt.block_on(n.client.rotate());
+                last = WalletError::Network("no registrar reachable".into());
+            }
+            Err(e) => return Err(WalletError::Rejected(e.to_string())),
+        }
+    }
+    Err(last)
+}
+
 /// Attach a Secure Enclave signature (raw r‖s, 64 bytes) and submit.
 #[uniffi::export]
 pub fn submit_signed(envelope_json: String, signature: Vec<u8>, p256_public_key: Vec<u8>) -> R<String> {

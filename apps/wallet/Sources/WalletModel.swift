@@ -1,5 +1,8 @@
 import Foundation
 import SwiftUI
+#if os(macOS)
+import DeviceCheck
+#endif
 
 @MainActor
 final class WalletModel: ObservableObject {
@@ -148,6 +151,27 @@ final class WalletModel: ObservableObject {
             } catch { await MainActor.run { self.note("Cancel failed: \(error)"); self.busy = false } }
         }
     }
+
+    #if os(macOS)
+    /// Register this Mac as a voting node, operated by this wallet (one Touch ID).
+    /// Apple's DeviceCheck token proves it is a real Mac that never registered
+    /// before: one Mac, one voting node.
+    func registerNode(_ c: NodeController.Candidate) {
+        guard let enclave else { return }
+        let pk = enclave.publicKey
+        busy = true
+        Task.detached {
+            do {
+                guard DCDevice.current.isSupported else { throw NodeRegistrationError.unsupported }
+                let token = try await DCDevice.current.generateToken().base64EncodedString()
+                let prepared = try prepareRegisterNode(p256PublicKey: pk, deviceToken: token, validatorKey: c.validatorKey, nodeId: c.nodeId, beaconer: c.beaconer)
+                let sig = try enclave.sign(prepared.signingMessage)
+                let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
+                await self.track(h, label: "This Mac is registered as a voting node", item: ActivityItem(kind: .security, title: "Mac joined as a voting node", amount: nil))
+            } catch { await MainActor.run { self.note("Voting-node registration failed: \(error)"); self.busy = false } }
+        }
+    }
+    #endif
 
     func note(_ s: String) {
         let t = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
@@ -360,4 +384,9 @@ struct PendingRecovery {
     }
 
     static func clear() { UserDefaults.standard.removeObject(forKey: key) }
+}
+
+enum NodeRegistrationError: LocalizedError {
+    case unsupported
+    var errorDescription: String? { "This Mac cannot create a DeviceCheck token (needs a signed Aether app on a real Mac)." }
 }

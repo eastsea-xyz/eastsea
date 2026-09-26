@@ -234,22 +234,82 @@ private struct SecurityPage: View {
 }
 
 #if os(macOS)
-/// The node switch, explained (Network page).
+/// The node switch, explained (Network page), and joining as a voting node.
 private struct NodeCard: View {
     @EnvironmentObject var node: NodeController
+    @EnvironmentObject var model: WalletModel
 
     var body: some View {
         Card {
-            HStack(alignment: .top, spacing: 14) {
-                Image(systemName: "server.rack").font(.system(size: 30)).foregroundStyle(Color.aether)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Run a node on this Mac").font(.headline)
-                    Text("Your Mac checks every block itself and your wallet asks it instead of the network. It stops when you quit Aether.")
-                        .font(.callout).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top, spacing: 14) {
+                    Image(systemName: "server.rack").font(.system(size: 30)).foregroundStyle(Color.aether)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Run a node on this Mac").font(.headline)
+                        Text("Your Mac checks every block itself and your wallet asks it instead of the network. It stops when you quit Aether.")
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Toggle("", isOn: $node.enabled).toggleStyle(.switch).labelsHidden()
                 }
-                Spacer()
-                Toggle("", isOn: $node.enabled).toggleStyle(.switch).labelsHidden()
+                if node.enabled, let c = node.candidate {
+                    Divider()
+                    VotingNodeRow(candidate: c)
+                }
             }
+        }
+    }
+}
+
+/// Voting node: nobody appoints validators. Registered Macs prove they are
+/// alive every epoch; the network picks the longest-running ones, no owner
+/// holding a third, and they switch over by themselves.
+private struct VotingNodeRow: View {
+    @EnvironmentObject var node: NodeController
+    @EnvironmentObject var model: WalletModel
+    let candidate: NodeController.Candidate
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: icon).font(.system(size: 26)).foregroundStyle(node.voting?.voting == true ? Color.green : Color.aether)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(.headline)
+                Text(detail).font(.callout).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if node.voting?.registered == false {
+                Button("Join") { model.registerNode(candidate) }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(model.busy)
+                    .help("Registers this Mac with Apple DeviceCheck (one Mac, one voting node) and signs with Touch ID.")
+            }
+        }
+    }
+
+    private var icon: String {
+        switch node.voting {
+        case .some(let v) where v.voting: "checkmark.seal.fill"
+        case .some(let v) where v.registered: "clock.badge.checkmark"
+        default: "person.badge.plus"
+        }
+    }
+
+    private var title: String {
+        switch node.voting {
+        case .some(let v) where v.voting: "Voting · this Mac signs blocks"
+        case .some(let v) where v.registered: "Candidate · \(v.streak) epoch streak"
+        case .some: "Become a voting node"
+        case .none: "Voting node"
+        }
+    }
+
+    private var detail: String {
+        switch node.voting {
+        case .some(let v) where v.voting: "Picked by the network for its long uptime. Keep the node on: stopping hands the seat to the next Mac."
+        case .some(let v) where v.registered:
+            "Your Mac proves it is alive every epoch, for free. The longest-running Macs are picked to sign blocks (\(v.candidates) candidates)."
+        case .some: "One Mac, one voting node. Your Mac proves it is alive every epoch; the longest-running Macs are picked to sign blocks, and no owner can hold a third."
+        case .none: "Checking the network…"
         }
     }
 }

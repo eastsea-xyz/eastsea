@@ -300,6 +300,11 @@ RustBuffer uniffi_aether_ffi_fn_func_prepare_recovery(RustBuffer p256_public_key
 RustBuffer uniffi_aether_ffi_fn_func_prepare_recovery_submit(RustBuffer p256_public_key, RustBuffer request, RustBuffer guardian_signature, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_REGISTER_NODE
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_REGISTER_NODE
+RustBuffer uniffi_aether_ffi_fn_func_prepare_register_node(RustBuffer p256_public_key, RustBuffer device_token, RustBuffer validator_key, RustBuffer node_id, RustBuffer beaconer, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_SESSION_PAYMENT
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_SESSION_PAYMENT
 RustBuffer uniffi_aether_ffi_fn_func_prepare_session_payment(RustBuffer account, RustBuffer payments, uint32_t validators, RustCallStatus *_Nonnull out_status
@@ -368,6 +373,11 @@ void uniffi_aether_ffi_fn_func_use_local_node(RustBuffer port, RustCallStatus *_
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_VERIFIED_ACCOUNT
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_VERIFIED_ACCOUNT
 RustBuffer uniffi_aether_ffi_fn_func_verified_account(RustBuffer address, uint32_t validators, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_VOTING_NODE_STATUS
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_VOTING_NODE_STATUS
+RustBuffer uniffi_aether_ffi_fn_func_voting_node_status(RustBuffer validator_key, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_FFI_AETHER_FFI_RUSTBUFFER_ALLOC
@@ -696,6 +706,12 @@ uint16_t uniffi_aether_ffi_checksum_func_prepare_recovery_submit(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_REGISTER_NODE
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_REGISTER_NODE
+uint16_t uniffi_aether_ffi_checksum_func_prepare_register_node(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_SESSION_PAYMENT
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_SESSION_PAYMENT
 uint16_t uniffi_aether_ffi_checksum_func_prepare_session_payment(void
@@ -777,6 +793,12 @@ uint16_t uniffi_aether_ffi_checksum_func_use_local_node(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_VERIFIED_ACCOUNT
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_VERIFIED_ACCOUNT
 uint16_t uniffi_aether_ffi_checksum_func_verified_account(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_VOTING_NODE_STATUS
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_VOTING_NODE_STATUS
+uint16_t uniffi_aether_ffi_checksum_func_voting_node_status(void
     
 );
 #endif

@@ -1,6 +1,7 @@
 pub mod application;
 pub use aether_light::block;
 pub mod chain;
+pub mod devicecheck;
 pub mod dkg;
 pub mod engine;
 pub mod epochs;

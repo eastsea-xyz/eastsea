@@ -31,6 +31,8 @@ pub struct RpcState {
     pub gossip: mpsc::UnboundedSender<TxEnvelope>,
     /// Set on nodes run with the faucet key.
     pub faucet: Option<std::sync::Arc<crate::faucet::Faucet>>,
+    /// Set on nodes run with a DeviceCheck key (one node identity per Mac).
+    pub registrar: Option<std::sync::Arc<crate::devicecheck::Registrar>>,
 }
 
 pub async fn serve(addr: SocketAddr, state: RpcState) -> std::io::Result<()> {
@@ -48,7 +50,11 @@ pub async fn handle_value(st: &RpcState, req: Value) -> Value {
     let id = req.get("id").cloned().unwrap_or(Value::Null);
     let method = req.get("method").and_then(Value::as_str).unwrap_or_default().to_string();
     let params = req.get("params").cloned().unwrap_or(Value::Array(vec![]));
-    let result = if method == "aether_getFinalized" { finalized(st, &params).await } else { dispatch(st, &method, &params) };
+    let result = match method.as_str() {
+        "aether_getFinalized" => finalized(st, &params).await,
+        "aether_registerDevice" => register_device(st, &params).await,
+        _ => dispatch(st, &method, &params),
+    };
     match result {
         Ok(v) => json!({ "jsonrpc": "2.0", "id": id, "result": v }),
         Err((code, msg)) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": msg } }),
@@ -77,6 +83,15 @@ async fn finalized(st: &RpcState, p: &Value) -> RpcResult {
         "block": aether_light::to_hex(&block.encode()),
         "finalization": aether_light::to_hex(&fin.encode()),
     }))
+}
+
+/// `[device_token (base64), node_key (hex, compressed P-256)]` → registration time.
+async fn register_device(st: &RpcState, p: &Value) -> RpcResult {
+    let r = st.registrar.as_ref().ok_or((-32601, "this node does not register devices".to_string()))?;
+    let token: String = param(p, 0)?;
+    let key: String = param(p, 1)?;
+    let since = r.register(&token, &key.to_lowercase()).await.map_err(|e| (-32000, e.to_string()))?;
+    Ok(json!({ "node_key": key.to_lowercase(), "registered_at": since }))
 }
 
 fn param<T: serde::de::DeserializeOwned>(p: &Value, i: usize) -> Result<T, (i64, String)> {

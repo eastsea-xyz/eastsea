@@ -80,6 +80,13 @@ enum Cmd {
         /// devnet (no --network) uses its public dev account 10 instead.
         #[arg(long)]
         faucet_key: Option<String>,
+        /// Register Macs (`aether_registerDevice`) with this Apple DeviceCheck key (.p8).
+        #[arg(long)]
+        devicecheck_key: Option<String>,
+        #[arg(long, requires = "devicecheck_key")]
+        devicecheck_key_id: Option<String>,
+        #[arg(long, default_value = "45WU468FZE")]
+        devicecheck_team: String,
     },
     /// Distributed key generation for the committee (run on every validator at
     /// once). Writes <data>/threshold.json with this validator's secret share
@@ -338,7 +345,24 @@ enum Cmd {
 fn main() {
     let cli = Cli::parse();
     let res = match cli.cmd {
-        Cmd::Node { index, validators, network, port, rpc_port, data, peers, link_base, offline, block_time_ms, dev_censor, dev_deprioritize, faucet_key } => {
+        Cmd::Node {
+            index,
+            validators,
+            network,
+            port,
+            rpc_port,
+            data,
+            peers,
+            link_base,
+            offline,
+            block_time_ms,
+            dev_censor,
+            dev_deprioritize,
+            faucet_key,
+            devicecheck_key,
+            devicecheck_key_id,
+            devicecheck_team,
+        } => {
             let with_file = network.is_some();
             p2p_args(index, validators, network, &data, port, peers, link_base, offline)
                 .and_then(|args| {
@@ -348,7 +372,20 @@ fn main() {
                     Ok(args)
                 })
                 .map(|(p2p, chain_id, epochs, key_round, faucet)| {
-                    run_node(NodeArgs { p2p, chain_id, epochs, key_round, rpc_port, data, block_time_ms, dev_censor, dev_deprioritize, faucet, faucet_key });
+                    run_node(NodeArgs {
+                        p2p,
+                        chain_id,
+                        epochs,
+                        key_round,
+                        rpc_port,
+                        data,
+                        block_time_ms,
+                        dev_censor,
+                        dev_deprioritize,
+                        faucet,
+                        faucet_key,
+                        devicecheck: devicecheck_key.zip(devicecheck_key_id).map(|(k, id)| (k, id, devicecheck_team)),
+                    });
                 })
         }
         Cmd::Keygen { data } => keygen(&data),
@@ -714,11 +751,18 @@ struct NodeArgs {
     /// Genesis faucet account from network.json (None: local devnet).
     faucet: Option<Address>,
     faucet_key: Option<String>,
+    /// (key path, key id, team) of the DeviceCheck key, if this node registers Macs.
+    devicecheck: Option<(String, String, String)>,
 }
 
 fn run_node(a: NodeArgs) {
     tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,commonware=warn".into())).init();
-    let NodeArgs { p2p, chain_id, epochs, key_round, rpc_port, block_time_ms, dev_censor, dev_deprioritize, data, faucet, faucet_key } = a;
+    let NodeArgs { p2p, chain_id, epochs, key_round, rpc_port, block_time_ms, dev_censor, dev_deprioritize, data, faucet, faucet_key, devicecheck } = a;
+    let registrar = devicecheck.map(|(k, id, team)| {
+        let apple = aether_node::devicecheck::DeviceCheck::load(std::path::Path::new(&k), &id, &team).expect("load --devicecheck-key");
+        let registry = aether_node::devicecheck::Registry::open(std::path::Path::new(&data).join("registrations.json"));
+        std::sync::Arc::new(aether_node::devicecheck::Registrar { apple, registry })
+    });
     let faucet_service = match (&faucet_key, faucet) {
         (Some(path), expected) => {
             let f = aether_node::faucet::Faucet::load(std::path::Path::new(path)).expect("load --faucet-key");
@@ -855,7 +899,8 @@ fn run_node(a: NodeArgs) {
         if let Some(f) = &faucet_service {
             tracing::info!(address = %f.address, "faucet enabled (aether_faucet)");
         }
-        let rpc_state = RpcState { chain, finality: aether_node::rpc::Finality::Marshal(marshal_mailbox), gossip: gossip_tx, faucet: faucet_service };
+        let rpc_state =
+            RpcState { chain, finality: aether_node::rpc::Finality::Marshal(marshal_mailbox), gossip: gossip_tx, faucet: faucet_service, registrar };
 
         // Public access: iroh endpoint published to the BitTorrent Mainline DHT.
         // Wallets find this node by its id alone and verify everything they get;
@@ -952,7 +997,7 @@ fn run_follow(network: Option<String>, from_rpc: Vec<String>, data: String, rpc_
         watch_upgrades(chain.clone(), std::path::Path::new(&data).join("upgrades"), *set.identity(), chain_id);
         tokio::spawn(follow::run(chain.clone(), upstream, set, archive.clone()));
         tracing::info!(height = chain.finalized_height(), rpc_port, "following (not a validator): every block is verified and re-executed here");
-        let st = RpcState { chain, finality: aether_node::rpc::Finality::Archive(archive), gossip, faucet: None };
+        let st = RpcState { chain, finality: aether_node::rpc::Finality::Archive(archive), gossip, faucet: None, registrar: None };
         rpc::serve(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), rpc_port), st).await.map_err(|e| e.to_string())
     })
 }

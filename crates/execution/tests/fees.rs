@@ -3,8 +3,8 @@
 
 use aether_crypto::{P256Signer, Signer};
 use aether_execution::{
-    build_block, build_block_sequential, execute_block, execute_block_sequential, sign_call, sign_call_with, BlockContext, EvmCall, FeePolicy, WorldState,
-    FEE_COLLECTOR, PROVER_ESCROW,
+    build_block, build_block_sequential, can_append, execute_block, execute_block_sequential, sign_call, sign_call_with, BlockContext, EvmCall, FeePolicy,
+    WorldState, FEE_COLLECTOR, PROVER_ESCROW,
 };
 use aether_types::{Address, Bytes, FeeVector, GasVector, U256};
 
@@ -132,4 +132,49 @@ fn self_paid_tips_cost_the_proposer() {
     assert!(out.state.balance(&a) < pre.balance(&a));
     let lost = pre.balance(&a) - out.state.balance(&a);
     assert_eq!(lost, U256::from(21_000u128 * 3 * GWEI + 21_000u128 * 100 * GWEI * 40 / 100));
+}
+
+#[test]
+fn the_prove_budget_is_reserved_before_execution() {
+    let s = P256Signer::from_seed(&seed(11)).unwrap();
+    let a = aether_crypto::address_of(&s.public_key()).unwrap();
+    let balance = 10u128.pow(20);
+    let mut pre = WorldState::default();
+    pre.set_balance(a, U256::from(balance)).unwrap();
+    let c = ctx(base());
+    let fee = FeeVector { exec: 5 * GWEI, state: 0, prove: GWEI };
+    let gas = 21_000u64;
+    let reserve = gas as u128 * GWEI;
+    // The most it may send: balance minus max exec fee minus the prove budget.
+    let max_value = balance - gas as u128 * 5 * GWEI - reserve;
+    let send = |v: u128| {
+        let call = EvmCall { to: Some(Address::repeat_byte(1)), value: U256::from(v), input: Bytes::new(), gas_limit: gas, delegate: None };
+        sign_call_with(&s, CHAIN, 0, fee, 2 * GWEI, &call).unwrap()
+    };
+    assert!(execute_block(&pre, &c, &[send(max_value + 1)]).is_err(), "cannot spend into the prove budget");
+    let out = execute_block(&pre, &c, &[send(max_value)]).unwrap();
+    assert!(out.receipts[0].success);
+    // Conservation still holds and the sender kept back exactly what was not spent.
+    let exec_paid = gas as u128 * (3 + 2) * GWEI;
+    let prove_paid = out.receipts[0].prove_gas as u128 * GWEI;
+    assert_eq!(out.state.balance(&a), U256::from(balance - max_value - exec_paid - prove_paid));
+
+    // A prove budget below the gas limit is refused before anything runs.
+    let mut t = send(1);
+    t.header.gas.prove = gas - 1;
+    assert!(execute_block(&pre, &c, &[t]).is_err());
+}
+
+#[test]
+fn inclusion_lists_never_require_txs_from_settled_accounts() {
+    let s = P256Signer::from_seed(&seed(12)).unwrap();
+    let a = aether_crypto::address_of(&s.public_key()).unwrap();
+    let mut pre = WorldState::default();
+    pre.set_balance(a, U256::from(10u128.pow(20))).unwrap();
+    let call = EvmCall { to: Some(Address::repeat_byte(1)), value: U256::from(1u64), input: Bytes::new(), gas_limit: 21_000, delegate: None };
+    let tx = sign_call(&s, CHAIN, 0, 5 * GWEI, &call).unwrap();
+    let mut c = ctx(base());
+    assert!(can_append(&pre, &c, GasVector::default(), &tx));
+    c.fees = Some(FeePolicy { base: base(), proposer: a });
+    assert!(!can_append(&pre, &c, GasVector::default(), &tx), "the proposer's own tx may depend on its fee credit");
 }

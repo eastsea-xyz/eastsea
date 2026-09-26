@@ -138,9 +138,12 @@ pub(crate) fn run_tx(state: &WorldState, ctx: &BlockContext, tx: &TxEnvelope) ->
 
 /// Execute a tx whose signature and payload were already checked (`call` is its decoded payload).
 pub(crate) fn run_validated(state: &WorldState, ctx: &BlockContext, tx: &TxEnvelope, call: &EvmCall) -> Result<TxRun, String> {
-    if let Some(f) = &ctx.fees {
-        check_prove_budget(state, f, tx, call)?;
-    }
+    // Everything that can reject a tx is checked before it runs: a tx that
+    // executes always pays for its execution and proving.
+    let reserve = match &ctx.fees {
+        Some(f) => check_prove_budget(state, f, tx, call)?,
+        None => U256::ZERO,
+    };
     let tx_env = TxEnv::builder()
         .caller(tx.header.sender)
         .nonce(tx.header.nonce)
@@ -160,7 +163,7 @@ pub(crate) fn run_validated(state: &WorldState, ctx: &BlockContext, tx: &TxEnvel
         .map_err(|e| format!("{e:?}"))?;
 
     let mut evm = Context::mainnet()
-        .with_db(WrapDatabaseRef(state))
+        .with_db(WrapDatabaseRef(Reserved { state, who: tx.header.sender, amount: reserve }))
         .modify_cfg_chained(|c| c.chain_id = ctx.chain_id)
         .modify_block_chained(|b| {
             b.number = U256::from(ctx.number);
@@ -187,7 +190,7 @@ pub(crate) fn run_validated(state: &WorldState, ctx: &BlockContext, tx: &TxEnvel
     };
     let mut changes = out.state;
     let prove_fee = match &ctx.fees {
-        Some(f) => charge_prove(&mut changes, f, tx, prove_gas)?,
+        Some(f) => settle_prove(&mut changes, f, tx, prove_gas, reserve),
         None => U256::ZERO,
     };
     Ok(TxRun {
@@ -199,29 +202,67 @@ pub(crate) fn run_validated(state: &WorldState, ctx: &BlockContext, tx: &TxEnvel
     })
 }
 
-/// The sender must accept the base prove fee and hold value + max exec fee +
-/// max prove fee up front, so a block can never fail to collect it.
-fn check_prove_budget(state: &WorldState, f: &FeePolicy, tx: &TxEnvelope, call: &EvmCall) -> Result<(), String> {
+/// The sender must accept the base prove fee, declare a prove budget covering
+/// the gas limit (each interpreted step costs at least one gas, so it cannot run
+/// out), and hold value + max exec fee + that budget. Returns the budget, which
+/// is set aside before execution so the tx cannot spend it.
+fn check_prove_budget(state: &WorldState, f: &FeePolicy, tx: &TxEnvelope, call: &EvmCall) -> Result<U256, String> {
     if tx.header.max_fee.prove < f.base.prove {
         return Err(format!("max prove fee {} below base {}", tx.header.max_fee.prove, f.base.prove));
     }
-    let need = U256::from(call.gas_limit) * U256::from(tx.header.max_fee.exec) + U256::from(tx.header.gas.prove) * U256::from(f.base.prove);
+    if tx.header.gas.prove < call.gas_limit {
+        return Err(format!("prove budget {} below the gas limit {}", tx.header.gas.prove, call.gas_limit));
+    }
+    let reserve = U256::from(tx.header.gas.prove) * U256::from(f.base.prove);
+    let need = U256::from(call.gas_limit) * U256::from(tx.header.max_fee.exec) + reserve;
     match need.checked_add(call.value) {
-        Some(n) if state.balance(&tx.header.sender) >= n => Ok(()),
+        Some(n) if state.balance(&tx.header.sender) >= n => Ok(reserve),
         _ => Err("insufficient funds for gas, prove budget and value".into()),
     }
 }
 
-/// Debit `prove_gas × base_prove` from the sender after execution.
-fn charge_prove(changes: &mut revm::state::EvmState, f: &FeePolicy, tx: &TxEnvelope, prove_gas: u64) -> Result<U256, String> {
-    if prove_gas > tx.header.gas.prove {
-        return Err(format!("prove gas {prove_gas} over limit {}", tx.header.gas.prove));
+/// Return the reserved prove budget to the sender minus what proving costs
+/// (`prove_gas × base_prove`, capped at the budget). Never fails.
+fn settle_prove(changes: &mut revm::state::EvmState, f: &FeePolicy, tx: &TxEnvelope, prove_gas: u64, reserve: U256) -> U256 {
+    let fee = (U256::from(prove_gas) * U256::from(f.base.prove)).min(reserve);
+    if let Some(acc) = changes.get_mut(&tx.header.sender) {
+        acc.info.balance = acc.info.balance + reserve - fee;
+        acc.mark_touch();
     }
-    let fee = U256::from(prove_gas) * U256::from(f.base.prove);
-    let acc = changes.get_mut(&tx.header.sender).ok_or("sender not in state changes")?;
-    acc.info.balance = acc.info.balance.checked_sub(fee).ok_or("sender spent the prove budget")?;
-    acc.mark_touch();
-    Ok(fee)
+    fee
+}
+
+/// The state as the EVM sees it while a tx runs: its prove budget is set aside.
+struct Reserved<'a> {
+    state: &'a WorldState,
+    who: Address,
+    amount: U256,
+}
+
+impl revm::database::DatabaseRef for Reserved<'_> {
+    type Error = StateError;
+
+    fn basic_ref(&self, address: Address) -> Result<Option<revm::state::AccountInfo>, Self::Error> {
+        let mut info = self.state.basic_ref(address)?;
+        if address == self.who {
+            if let Some(i) = info.as_mut() {
+                i.balance = i.balance.saturating_sub(self.amount);
+            }
+        }
+        Ok(info)
+    }
+
+    fn code_by_hash_ref(&self, code_hash: B256) -> Result<revm::state::Bytecode, Self::Error> {
+        self.state.code_by_hash_ref(code_hash)
+    }
+
+    fn storage_ref(&self, address: Address, index: U256) -> Result<U256, Self::Error> {
+        self.state.storage_ref(address, index)
+    }
+
+    fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
+        self.state.block_hash_ref(number)
+    }
 }
 
 fn record_bal(bal: &mut BalBuilder, pre: &WorldState, index: u32, changes: &revm::state::EvmState) {
@@ -322,6 +363,13 @@ fn build_block_with(pre: &WorldState, ctx: &BlockContext, candidates: Vec<TxEnve
 /// post-state is `post` and that already used `used` gas? Inclusion-list txs
 /// for which this holds must not be left out.
 pub fn can_append(post: &WorldState, ctx: &BlockContext, used: GasVector, tx: &TxEnvelope) -> bool {
+    // `post` already includes the end-of-block fee settlement; a tx from an account
+    // it credited may only have become affordable then, so it is never required.
+    if let Some(f) = &ctx.fees {
+        if [f.proposer, PROVER_ESCROW, FEE_COLLECTOR].contains(&tx.header.sender) {
+            return false;
+        }
+    }
     let Ok(run) = run_tx(post, ctx, tx) else { return false };
     matches!(used.checked_add(run.gas), Some(t) if t.fits(&ctx.limits))
 }

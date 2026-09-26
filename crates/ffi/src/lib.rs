@@ -183,6 +183,19 @@ fn anchor(height: u64, set: &ValidatorSet) -> R<VerifiedBlock> {
 static COMMITTEE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 static NODES: std::sync::Mutex<Option<Vec<aether_net::EndpointId>>> = std::sync::Mutex::new(None);
 
+/// The chain every signature is for: from network.json, else the public devnet.
+/// Never taken from a node: a malicious node could otherwise collect signatures
+/// valid on another network where the same account holds funds.
+static CHAIN_ID: std::sync::Mutex<u64> = std::sync::Mutex::new(7_777);
+
+fn expected_chain(status: &Value) -> R<u64> {
+    let want = *CHAIN_ID.lock().expect("chain id lock");
+    match status["chain_id"].as_u64() {
+        Some(c) if c == want => Ok(want),
+        other => Err(WalletError::Verification(format!("the node reports chain {other:?}, but this wallet is for chain {want}"))),
+    }
+}
+
 /// Configure from network.json: the validators' node ids (looked up in the
 /// Mainline DHT) and the committee identity to pin. Call before anything else.
 #[uniffi::export]
@@ -196,6 +209,9 @@ pub fn configure_network(network_json: String) -> R<u32> {
         .collect::<R<Vec<_>>>()?;
     if let Some(id) = v["identity"].as_str() {
         set_committee_identity(id.to_string())?;
+    }
+    if let Some(c) = v["chain_id"].as_u64() {
+        *CHAIN_ID.lock().expect("chain id lock") = c;
     }
     let n = nodes.len() as u32;
     *NODES.lock().expect("nodes lock") = Some(nodes);
@@ -293,7 +309,7 @@ fn prepare(p256_public_key: &[u8], body: impl FnOnce(Address) -> R<EvmCall>) -> 
     let pk = p256_key(p256_public_key)?;
     let from = address_of(&pk).map_err(|e| WalletError::Invalid(e.to_string()))?;
     let status = call("aether_status", json!([]))?;
-    let chain_id = status["chain_id"].as_u64().unwrap_or_default();
+    let chain_id = expected_chain(&status)?;
     let (max_fee, tip) = fee_caps(&status);
     let nonce_hex = call("eth_getTransactionCount", json!([from]))?;
     let nonce = u64::from_str_radix(nonce_hex.as_str().unwrap_or("0x0").trim_start_matches("0x"), 16).map_err(|e| WalletError::Invalid(e.to_string()))?;
@@ -545,7 +561,7 @@ pub fn prepare_recovery(p256_public_key: Vec<u8>, lost_account: String, validato
     }
     let nonce = verified_slot(lost, slots::recovery_nonce(), &set)?.to::<u64>();
     let value: U256 = account.balance_wei.parse().map_err(|_| WalletError::Invalid("balance".into()))?;
-    let chain_id = call("aether_status", json!([]))?["chain_id"].as_u64().unwrap_or_default();
+    let chain_id = expected_chain(&call("aether_status", json!([]))?)?;
     let calls = [(me, value, Bytes::new())];
     Ok(RecoveryRequest {
         lost: lost.to_checksum(None),

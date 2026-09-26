@@ -9,7 +9,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 T=${AETHER_TESTNET:-$HOME/aether-testnet}
-CHAIN=${CHAIN_ID:-7778}
+# A new genesis gets a new chain id: transactions signed for the old chain
+# (same keys, same nonces) must not replay on the new one.
+prev=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['chain_id'])" "$T/network.json" 2>/dev/null || echo 7777)
+CHAIN=${CHAIN_ID:-$((prev + 1))}
+[ "$CHAIN" != "$prev" ] || { echo "CHAIN_ID must differ from the old chain ($prev)"; exit 1; }
 A="$T/bin/aether"
 export PATH="$HOME/.cargo/bin:$PATH"
 N=$(ls -d "$T"/[0-9]* 2>/dev/null | wc -l | tr -d ' ')

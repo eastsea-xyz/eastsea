@@ -156,15 +156,19 @@ final class WalletModel: ObservableObject {
     /// Register this Mac as a voting node, operated by this wallet (one Touch ID).
     /// Apple's DeviceCheck token proves it is a real Mac that never registered
     /// before: one Mac, one voting node.
-    func registerNode(_ c: NodeController.Candidate) {
+    func registerNode(_ c: NodeController.Candidate, node: NodeController) {
         guard let enclave else { return }
+        guard let chainId = status?.chainId, let ownership = node.ownership(operator: address, chainId: chainId) else {
+            note("Voting-node registration: the node's keys are not ready yet")
+            return
+        }
         let pk = enclave.publicKey
         busy = true
         Task.detached {
             do {
                 guard DCDevice.current.isSupported else { throw NodeRegistrationError.unsupported }
                 let token = try await DCDevice.current.generateToken().base64EncodedString()
-                let prepared = try prepareRegisterNode(p256PublicKey: pk, deviceToken: token, validatorKey: c.validatorKey, nodeId: c.nodeId, beaconer: c.beaconer)
+                let prepared = try prepareRegisterNode(p256PublicKey: pk, deviceToken: token, validatorKey: c.validatorKey, nodeId: c.nodeId, beaconer: c.beaconer, ownership: ownership)
                 let sig = try enclave.sign(prepared.signingMessage)
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
                 await self.track(h, label: "This Mac is registered as a voting node", item: ActivityItem(kind: .security, title: "Mac joined as a voting node", amount: nil))

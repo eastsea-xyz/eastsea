@@ -224,3 +224,40 @@ fn reshare_completes_with_an_old_validator_offline() {
     assert_eq!(out.len(), 4);
     assert!(out.values().all(|f| f.identity == identity));
 }
+
+/// The running committee hands the key to a new voting set: its threshold
+/// signature on the handoff verifies under the unchanged identity; a forged
+/// roster, a missing quorum or another committee's output does not.
+#[test]
+fn a_handoff_is_signed_by_the_running_committee() {
+    use aether_node::handoff::{check_partial, combine, sign_partial, verify};
+    use commonware_codec::Encode;
+    let (ks, files) = dkg4();
+    let (previous, _) = files.values().next().unwrap().decode(4).unwrap();
+    let identity = *previous.public().public();
+    let next: Set<PublicKey> = ks[1..5].iter().map(|k| k.public_key()).try_collect().unwrap();
+    let out = run_round(&ks, Round::reshare(previous.clone(), next, 1), &shares_of(&files, 4), 14, 0.0);
+    let new_file = out.values().next().unwrap();
+    let members: Vec<(String, String)> = ks[1..5].iter().map(|k| (hex::encode(k.public_key().encode()), "node".to_string())).collect();
+    let h = aether_light::block::Handoff { round: 1, output: new_file.output.clone(), members: members.clone(), signature: String::new() };
+    const CHAIN: u64 = 7;
+
+    // Old shares sign; any three of four combine.
+    let old = shares_of(&files, 4);
+    let partials: Vec<_> = old.values().map(|s| check_partial(CHAIN, previous.public(), &h, &sign_partial(CHAIN, &h, s)).unwrap()).collect();
+    assert!(combine(previous.public(), &h, &partials[..2]).is_err(), "two of four is not a quorum");
+    let signed = combine(previous.public(), &h, &partials[..3]).unwrap();
+    verify(CHAIN, &identity, &signed).unwrap();
+
+    // Another chain, another roster, or a signature over something else: rejected.
+    assert!(verify(CHAIN + 1, &identity, &signed).is_err());
+    let mut forged = signed.clone();
+    forged.members[0].0 = hex::encode(ks[0].public_key().encode());
+    assert!(verify(CHAIN, &identity, &forged).is_err(), "roster changed after signing");
+    let mut other_nodes = signed.clone();
+    other_nodes.members[0].1 = "elsewhere".into();
+    assert!(verify(CHAIN, &identity, &other_nodes).is_err(), "node ids are signed too");
+    // A share of the new sharing is not a running-committee share.
+    let new_share = new_file.decode(4).unwrap().1;
+    assert!(check_partial(CHAIN, previous.public(), &h, &sign_partial(CHAIN, &h, &new_share)).is_err());
+}

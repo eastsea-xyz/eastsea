@@ -37,6 +37,8 @@ pub struct RpcState {
     pub network: Option<Value>,
     /// Followers: where rotation questions go (validators know the running set).
     pub upstream: Option<std::sync::Arc<crate::follow::Upstream>>,
+    /// Validators of a DKG committee: signs handoffs of their own staged reshare.
+    pub handoff: Option<std::sync::Arc<crate::handoff::Service>>,
 }
 
 pub async fn serve(addr: SocketAddr, state: RpcState) -> std::io::Result<()> {
@@ -108,7 +110,8 @@ async fn finalized(st: &RpcState, p: &Value) -> RpcResult {
     Ok(Value::Null)
 }
 
-/// `[device_token (base64), operator, validator_key (hex 32), node_id (hex 32), beaconer]`
+/// `[device_token (base64), operator, validator_key (hex 32), node_id (hex 32), beaconer, ownership (hex)]`
+/// (`ownership`: the voting key's signature, `aether candidate-info --operator`)
 /// → the registrar's attestation (r, s) to submit to the registry contract.
 async fn register_device(st: &RpcState, p: &Value) -> RpcResult {
     let r = st.registrar.as_ref().ok_or((-32601, "this node does not register devices".to_string()))?;
@@ -120,7 +123,9 @@ async fn register_device(st: &RpcState, p: &Value) -> RpcResult {
     };
     let (key, node) = (hex32(2)?, hex32(3)?);
     let beaconer: Address = param(p, 4)?;
-    let a = r.register(&token, operator, key, node, beaconer).await.map_err(|e| (-32000, e.to_string()))?;
+    let ownership: String = param(p, 5)?;
+    let ownership = hex::decode(ownership.trim_start_matches("0x")).map_err(|_| (-32602, "param 5: ownership signature hex".to_string()))?;
+    let a = r.register(&token, operator, key, node, beaconer, &ownership).await.map_err(|e| (-32000, e.to_string()))?;
     Ok(json!({ "r": hex::encode(a.r), "s": hex::encode(a.s), "registered_at": a.registered_at }))
 }
 
@@ -149,20 +154,33 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                 "hash_function": "poseidon2-koalabear-16",
             }))
         }
-        // A pending voting-node rotation: the running set stopped at `end_height`;
-        // `aether run` on old and new members reshares the key to `next`.
+        // The voting set proposed for this registry epoch (while no handoff is
+        // pending): `aether run` on old and new members reshares to it in the background.
         "aether_rotation" => {
+            let g = chain.lock();
+            let f = g.finalized.clone();
+            let every = aether_execution::registry::epoch_blocks(&f.state);
+            let Some((epoch, members)) = g.proposal.clone() else { return Ok(Value::Null) };
+            let pending = f.handoff.as_ref().is_some_and(|p| f.height < p.switch);
+            if epoch != f.height / every || pending {
+                return Ok(Value::Null);
+            }
+            let next: Vec<Value> = members.iter().map(|(k, n)| json!({ "key": k, "node": n })).collect();
+            Ok(json!({ "epoch": epoch, "next": next, "network": st.network }))
+        }
+        // The latest committee handoff on this node's finalized chain (verified here).
+        "aether_handoff" => {
             let f = chain.lock().finalized.clone();
-            let Some(next) = chain.rotation_due(&f) else { return Ok(Value::Null) };
-            let members: Vec<Value> = next
-                .iter()
-                .map(|c| {
-                    let node = aether_net::EndpointId::from_bytes(&c.node_id).map(|n| n.to_string()).unwrap_or_default();
-                    json!({ "key": hex::encode(c.validator_key), "node": node })
-                })
-                .collect();
-            let epoch = (f.height + 1) / aether_execution::registry::epoch_blocks(&f.state);
-            Ok(json!({ "epoch": epoch, "end_height": f.height, "end_hash": format!("{}", f.digest), "next": members, "network": st.network }))
+            Ok(f.handoff.as_ref().map_or(Value::Null, |p| {
+                json!({ "at": p.at, "switch": p.switch, "round": p.handoff.round, "output": p.handoff.output,
+                        "members": p.handoff.members.iter().map(|(k, n)| json!({ "key": k, "node": n })).collect::<Vec<_>>(),
+                        "finalized": f.height })
+            }))
+        }
+        // Sign the handoff of this validator's own staged reshare (see handoff::Service).
+        "aether_signHandoff" => {
+            let svc = st.handoff.as_ref().ok_or((-32601, "this node does not sign handoffs".to_string()))?;
+            svc.sign_staged().map(|h| json!({ "round": h.round })).map_err(|e| (-32000, e))
         }
         // Voting-node candidates (the registry) and the current epoch.
         "aether_candidates" => {

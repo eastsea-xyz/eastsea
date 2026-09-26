@@ -21,6 +21,8 @@ const CODE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("code");
 const BLOCKS: TableDefinition<u64, &[u8]> = TableDefinition::new("blocks");
 const RECEIPTS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("receipts");
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
+/// The latest committee handoff (JSON), restored with the checkpoint.
+const HANDOFF: &str = "handoff";
 /// Finality proofs a follower verified (`aether_getFinalized` JSON by height):
 /// history it keeps serving, also after it becomes a voting node.
 const PROOFS: TableDefinition<u64, &[u8]> = TableDefinition::new("proofs");
@@ -55,6 +57,7 @@ pub struct Checkpoint {
     pub state: WorldState,
     pub blocks: BTreeMap<u64, BlockSummary>,
     pub receipts: HashMap<TxHash, (u64, Receipt)>,
+    pub handoff: Option<crate::handoff::Pending>,
 }
 
 /// One finalized block's data to persist.
@@ -65,6 +68,8 @@ pub struct Commit<'a> {
     pub diff: &'a Journal,
     pub summary: &'a BlockSummary,
     pub receipts: Vec<(TxHash, &'a Receipt)>,
+    /// Set when this block carries a committee handoff.
+    pub handoff: Option<&'a crate::handoff::Pending>,
 }
 
 pub struct Store {
@@ -125,6 +130,9 @@ impl Store {
             meta.insert("height", c.height.to_be_bytes().as_slice()).map_err(dberr)?;
             meta.insert("digest", c.digest.as_slice()).map_err(dberr)?;
             meta.insert("root", c.root.as_slice()).map_err(dberr)?;
+            if let Some(h) = c.handoff {
+                meta.insert(HANDOFF, serde_json::to_vec(h).map_err(dberr)?.as_slice()).map_err(dberr)?;
+            }
         }
         tx.commit().map_err(dberr)
     }
@@ -151,6 +159,10 @@ impl Store {
         let stored: [u8; 32] =
             meta.get("root").map_err(dberr)?.ok_or(StoreError::Corrupt("root"))?.value().try_into().map_err(|_| StoreError::Corrupt("root"))?;
         let stored = B256::from(stored);
+        let handoff = match meta.get(HANDOFF).map_err(dberr)? {
+            Some(v) => Some(serde_json::from_slice(v.value()).map_err(|_| StoreError::Corrupt("handoff"))?),
+            None => None,
+        };
 
         let mut entries = Vec::new();
         for row in tx.open_table(STATE).map_err(dberr)?.iter().map_err(dberr)? {
@@ -181,6 +193,6 @@ impl Store {
             let k: [u8; 32] = k.value().try_into().map_err(|_| StoreError::Corrupt("receipt key"))?;
             receipts.insert(B256::from(k), serde_json::from_slice(v.value()).map_err(|_| StoreError::Corrupt("receipt"))?);
         }
-        Ok(Some(Checkpoint { height, digest, state, blocks, receipts }))
+        Ok(Some(Checkpoint { height, digest, state, blocks, receipts, handoff }))
     }
 }

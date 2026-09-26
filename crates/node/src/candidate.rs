@@ -53,10 +53,39 @@ impl CandidateKeys {
     pub fn beaconer(&self) -> Address {
         self.account.address
     }
+
+    /// The voting key's signature asking the registrar to register it for `operator`.
+    pub fn ownership(&self, chain_id: u64, operator: Address) -> Vec<u8> {
+        use commonware_codec::Encode as _;
+        let msg = registry::attestation_message(chain_id, operator, self.validator_key(), self.node_id(), self.beaconer());
+        self.keys.signer.sign(crate::devicecheck::OWNERSHIP_NAMESPACE, &msg).encode().to_vec()
+    }
 }
 
-/// Send one beacon per epoch once this candidate is registered. Runs forever.
-pub async fn beacon_loop(chain: Chain, upstream: Arc<Upstream>, keys: CandidateKeys) {
+/// Where beacons go: a follower forwards to validators; a validator gossips its own.
+pub enum Outbox {
+    Upstream(Arc<Upstream>),
+    Local(tokio::sync::mpsc::UnboundedSender<aether_types::TxEnvelope>),
+}
+
+impl Outbox {
+    async fn send(&self, chain: &Chain, tx: aether_types::TxEnvelope) -> Result<(), String> {
+        match self {
+            Outbox::Upstream(u) => u.call("aether_sendTransaction", json!([tx])).await.map(|_| ()),
+            Outbox::Local(gossip) => {
+                if chain.add_to_mempool(tx.clone())? {
+                    let _ = gossip.send(tx);
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Send one beacon per epoch once this candidate is registered. Runs forever,
+/// also while the Mac votes: a voting node that stopped beaconing would drop
+/// out of the next selection.
+pub async fn beacon_loop(chain: Chain, outbox: Outbox, keys: CandidateKeys) {
     let me = keys.validator_key();
     let mut sent_for = u64::MAX;
     loop {
@@ -73,7 +102,7 @@ pub async fn beacon_loop(chain: Chain, upstream: Arc<Upstream>, keys: CandidateK
                 let base = Chain::next_base_fee(&cfg, &chain.lock().finalized);
                 let call = EvmCall { to: Some(REGISTRY), value: U256::ZERO, input: encode_beacon(me), gas_limit: 100_000, delegate: None };
                 match keys.account.sign_tx(cfg.chain_id, nonce, &call, base) {
-                    Ok(tx) => match upstream.call("aether_sendTransaction", json!([tx])).await {
+                    Ok(tx) => match outbox.send(&chain, tx).await {
                         Ok(_) => {
                             sent_for = epoch;
                             info!(epoch, "voting-node beacon sent");

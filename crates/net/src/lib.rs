@@ -18,7 +18,8 @@
 use anyhow::{anyhow, Context, Result};
 use iroh::address_lookup::AddrFilter;
 use iroh::endpoint::{presets, Connection};
-use iroh::protocol::{AcceptError, ProtocolHandler, Router};
+pub use iroh::protocol::Router;
+use iroh::protocol::{AcceptError, ProtocolHandler};
 pub use iroh::{Endpoint, EndpointId, SecretKey};
 use iroh::{EndpointAddr, TransportAddr};
 use iroh_mainline_address_lookup::DhtAddressLookup;
@@ -36,6 +37,9 @@ pub mod tunnel;
 
 pub const ALPN_RPC: &[u8] = b"aether/rpc/1";
 pub const ALPN_P2P: &[u8] = b"aether/p2p/1";
+/// Background committee reshare (`aether run`): a validator's node forwards it
+/// to the reshare running next to it, so both share one public node id.
+pub const ALPN_RESHARE: &[u8] = b"aether/reshare/1";
 const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 
 /// Deterministic node key for devnet validator `i`. Public knowledge; devnet only.
@@ -153,8 +157,16 @@ where
     let mut r = Router::builder(endpoint).accept(ALPN_RPC, RpcProtocol(h));
     if let Some(target) = p2p_target {
         r = r.accept(ALPN_P2P, tunnel::Inbound { target });
+        // The background reshare listens on the next port.
+        let reshare = std::net::SocketAddr::new(target.ip(), target.port() + 1);
+        r = r.accept(ALPN_RESHARE, tunnel::Inbound { target: reshare });
     }
     r.spawn()
+}
+
+/// Accept reshare links only, forwarding to the local reshare listener.
+pub fn serve_reshare(endpoint: Endpoint, target: std::net::SocketAddr) -> Router {
+    Router::builder(endpoint).accept(ALPN_RESHARE, tunnel::Inbound { target }).spawn()
 }
 
 /// Accept validator links only (no RPC), forwarding to the local p2p listener.

@@ -21,6 +21,8 @@ pub enum DeviceCheckError {
     InvalidToken(String),
     /// This device already registered a node.
     AlreadyRegistered,
+    /// The request is not signed by the voting key it registers.
+    Ownership,
     Apple(String),
 }
 
@@ -29,6 +31,7 @@ impl std::fmt::Display for DeviceCheckError {
         match self {
             DeviceCheckError::InvalidToken(m) => write!(f, "device token rejected by Apple: {m}"),
             DeviceCheckError::AlreadyRegistered => write!(f, "this Mac already has a registered node"),
+            DeviceCheckError::Ownership => write!(f, "not signed by the voting key being registered"),
             DeviceCheckError::Apple(m) => write!(f, "DeviceCheck: {m}"),
         }
     }
@@ -102,10 +105,24 @@ impl DeviceCheck {
     }
 }
 
-/// Registered node keys (hex) by registration time, kept in `<data>/registrations.json`.
+/// Namespace of the voting key's proof that it asks to be registered.
+pub const OWNERSHIP_NAMESPACE: &[u8] = b"aether-candidate-ownership";
+
+/// What a registration attests besides the voting key: an existing key is
+/// attested again only for the same operator, node and beacon account.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Binding {
+    pub at: u64,
+    pub operator: aether_types::Address,
+    pub node: String,
+    pub beaconer: aether_types::Address,
+}
+
+/// Registered voting keys (hex), kept in `<data>/registrations.json`. Older
+/// files hold only a registration time per key (no binding yet).
 pub struct Registry {
     path: std::path::PathBuf,
-    entries: std::sync::Mutex<std::collections::BTreeMap<String, u64>>,
+    entries: std::sync::Mutex<std::collections::BTreeMap<String, Value>>,
 }
 
 impl Registry {
@@ -114,18 +131,33 @@ impl Registry {
         Registry { path, entries: std::sync::Mutex::new(entries) }
     }
 
-    pub fn get(&self, node_key: &str) -> Option<u64> {
-        self.entries.lock().expect("registry lock").get(node_key).copied()
+    /// Registration time and, when recorded, what it was bound to.
+    pub fn get(&self, node_key: &str) -> Option<(u64, Option<Binding>)> {
+        let g = self.entries.lock().expect("registry lock");
+        let v = g.get(node_key)?;
+        match v.as_u64() {
+            Some(at) => Some((at, None)),
+            None => serde_json::from_value::<Binding>(v.clone()).ok().map(|b| (b.at, Some(b))),
+        }
     }
 
     pub fn insert(&self, node_key: &str) -> u64 {
+        self.bind(node_key, None)
+    }
+
+    fn bind(&self, node_key: &str, binding: Option<(aether_types::Address, String, aether_types::Address)>) -> u64 {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or_default();
+        let at = self.get(node_key).map(|(t, _)| t).unwrap_or(now);
+        let value = match binding {
+            Some((operator, node, beaconer)) => serde_json::to_value(Binding { at, operator, node, beaconer }).expect("binding serializes"),
+            None => json!(at),
+        };
         let mut g = self.entries.lock().expect("registry lock");
-        g.insert(node_key.to_string(), now);
+        g.insert(node_key.to_string(), value);
         if let Ok(b) = serde_json::to_vec_pretty(&*g) {
             let _ = std::fs::write(&self.path, b);
         }
-        now
+        at
     }
 }
 
@@ -150,6 +182,9 @@ pub struct Attestation {
 impl Registrar {
     /// One voting key per Mac: the device registers once (DeviceCheck), then the
     /// registrar attests (operator, voting key, node id, beaconer) for the registry.
+    /// `ownership` is the voting key's own signature over the same data: nobody
+    /// can register (and so squat) a voting key they do not hold.
+    #[allow(clippy::too_many_arguments)]
     pub async fn register(
         &self,
         device_token: &str,
@@ -157,18 +192,31 @@ impl Registrar {
         validator_key: [u8; 32],
         node_id: [u8; 32],
         beaconer: aether_types::Address,
+        ownership: &[u8],
     ) -> Result<Attestation, DeviceCheckError> {
+        use commonware_codec::DecodeExt as _;
+        use commonware_cryptography::Verifier as _;
+        let msg = aether_execution::registry::attestation_message(self.chain_id, operator, validator_key, node_id, beaconer);
+        let pk = commonware_cryptography::ed25519::PublicKey::decode(validator_key.as_slice()).map_err(|_| DeviceCheckError::Ownership)?;
+        let sig = commonware_cryptography::ed25519::Signature::decode(ownership).map_err(|_| DeviceCheckError::Ownership)?;
+        if !pk.verify(OWNERSHIP_NAMESPACE, &msg, &sig) {
+            return Err(DeviceCheckError::Ownership);
+        }
         let key_hex = hex::encode(validator_key);
+        let node = hex::encode(node_id);
         let registered_at = match self.registry.get(&key_hex) {
-            Some(t) => t,
+            Some((_, Some(b))) if (b.operator, b.node.as_str(), b.beaconer) != (operator, node.as_str(), beaconer) => {
+                return Err(DeviceCheckError::AlreadyRegistered);
+            }
+            Some((at, Some(_))) => at,
+            Some((_, None)) => self.registry.bind(&key_hex, Some((operator, node, beaconer))),
             None => {
                 if let Some(apple) = &self.apple {
                     apple.register(device_token).await?;
                 }
-                self.registry.insert(&key_hex)
+                self.registry.bind(&key_hex, Some((operator, node, beaconer)))
             }
         };
-        let msg = aether_execution::registry::attestation_message(self.chain_id, operator, validator_key, node_id, beaconer);
         let (r, s) = self.signer.sign_bytes(&msg).map_err(DeviceCheckError::Apple)?;
         Ok(Attestation { r, s, registered_at })
     }
@@ -197,7 +245,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn registry_persists_and_rejects_bad_keys_before_calling_apple() {
+    async fn registry_binds_keys_and_requires_the_voting_keys_own_signature() {
+        use commonware_codec::Encode as _;
+        use commonware_cryptography::Signer as _;
         let dir = std::env::temp_dir().join(format!("aether-registry-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("registrations.json");
@@ -205,14 +255,27 @@ mod tests {
         let apple = DeviceCheck { key, key_id: "K".into(), team: "T".into(), base: "http://127.0.0.1:9".into(), http: reqwest::Client::new() };
         let signer = crate::faucet::Faucet::from_seed(&[4u8; 32]).unwrap();
         let r = Registrar { apple: Some(apple), registry: Registry::open(path.clone()), signer, chain_id: 7 };
-        let key = [0xab; 32];
-        // An already registered key is attested again without asking Apple (unreachable here).
-        let t = r.registry.insert(&hex::encode(key));
-        let a = r.register("tok", aether_types::Address::repeat_byte(1), key, [2; 32], aether_types::Address::repeat_byte(3)).await.unwrap();
+        let voting = commonware_cryptography::ed25519::PrivateKey::from_seed(5);
+        let vk: [u8; 32] = voting.public_key().encode().as_ref().try_into().unwrap();
+        let (op, other, beacon) = (aether_types::Address::repeat_byte(1), aether_types::Address::repeat_byte(9), aether_types::Address::repeat_byte(3));
+        let own = |signer: &commonware_cryptography::ed25519::PrivateKey, op| {
+            signer.sign(OWNERSHIP_NAMESPACE, &aether_execution::registry::attestation_message(7, op, vk, [2; 32], beacon)).encode().to_vec()
+        };
+        // A key known before bindings were kept (Apple not asked again: unreachable here).
+        let t = r.registry.insert(&hex::encode(vk));
+        let a = r.register("tok", op, vk, [2; 32], beacon, &own(&voting, op)).await.unwrap();
         assert_eq!(a.registered_at, t);
-        assert_eq!(Registry::open(path).get(&hex::encode(key)), Some(t), "survives a restart");
-        // A new key would need Apple: the unreachable endpoint fails closed.
-        assert!(r.register("tok", aether_types::Address::repeat_byte(1), [0xcd; 32], [2; 32], aether_types::Address::repeat_byte(3)).await.is_err());
+        assert!(Registry::open(path).get(&hex::encode(vk)).is_some_and(|(at, b)| at == t && b.is_some()), "bound and kept across restarts");
+        // Same key, another operator: refused, even with a valid ownership signature.
+        assert_eq!(r.register("tok", other, vk, [2; 32], beacon, &own(&voting, other)).await, Err(DeviceCheckError::AlreadyRegistered));
+        // Not signed by the voting key: refused before anything else.
+        let impostor = commonware_cryptography::ed25519::PrivateKey::from_seed(6);
+        assert_eq!(r.register("tok", op, vk, [2; 32], beacon, &own(&impostor, op)).await, Err(DeviceCheckError::Ownership));
+        // A new key needs Apple: the unreachable endpoint fails closed.
+        let fresh = commonware_cryptography::ed25519::PrivateKey::from_seed(8);
+        let fk: [u8; 32] = fresh.public_key().encode().as_ref().try_into().unwrap();
+        let sig = fresh.sign(OWNERSHIP_NAMESPACE, &aether_execution::registry::attestation_message(7, op, fk, [2; 32], beacon)).encode().to_vec();
+        assert!(r.register("tok", op, fk, [2; 32], beacon, &sig).await.is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

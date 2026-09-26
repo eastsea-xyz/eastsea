@@ -12,17 +12,34 @@ use std::sync::Arc;
 
 /// Epoch `k > 0` starts at `starts[k - 1]`; epoch 0 starts at genesis. The last
 /// epoch is open-ended.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct ScheduleEpocher {
     starts: Arc<Vec<u64>>,
+    /// Last height of the current epoch once a committee handoff is final
+    /// (u64::MAX until then): the running set re-proposes it until final, then stops.
+    end: Arc<std::sync::atomic::AtomicU64>,
 }
+
+impl PartialEq for ScheduleEpocher {
+    fn eq(&self, other: &Self) -> bool {
+        self.starts == other.starts && Arc::ptr_eq(&self.end, &other.end)
+    }
+}
+
+impl Eq for ScheduleEpocher {}
 
 impl ScheduleEpocher {
     /// `starts` must be strictly increasing and > 0.
     pub fn new(starts: Vec<u64>) -> Self {
         assert!(starts.first().is_none_or(|s| *s > 1), "epoch 1 must start after genesis");
         assert!(starts.windows(2).all(|w| w[0] + 1 < w[1]), "epoch starts must increase by more than one");
-        ScheduleEpocher { starts: Arc::new(starts) }
+        ScheduleEpocher { starts: Arc::new(starts), end: Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX)) }
+    }
+
+    /// Share the current epoch's end with the chain (set when a handoff is final).
+    pub fn with_end(mut self, end: Arc<std::sync::atomic::AtomicU64>) -> Self {
+        self.end = end;
+        self
     }
 
     /// The epoch the node runs in: the latest one.
@@ -36,7 +53,8 @@ impl ScheduleEpocher {
             return None;
         }
         let first = if k == 0 { 0 } else { self.starts[k - 1] };
-        let last = self.starts.get(k).map(|next| next - 1).unwrap_or(u64::MAX - 1);
+        let end = self.end.load(std::sync::atomic::Ordering::SeqCst);
+        let last = self.starts.get(k).map(|next| next - 1).unwrap_or(if end == u64::MAX { u64::MAX - 1 } else { end });
         Some((Height::new(first), Height::new(last)))
     }
 }
@@ -46,6 +64,10 @@ impl Epocher for ScheduleEpocher {
         let k = self.starts.iter().take_while(|s| **s <= height.get()).count() as u64;
         let epoch = Epoch::new(k);
         let (first, last) = self.bounds(epoch)?;
+        // Past a handed-over epoch's end: the next set's epoch, unknown here.
+        if height > last {
+            return None;
+        }
         Some(EpochInfo::new(epoch, height, first, last))
     }
 

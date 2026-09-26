@@ -435,17 +435,19 @@ pub fn voting_node_status(validator_key: String) -> R<VotingNodeStatus> {
 
 /// Register this Mac as a voting-node candidate, operated by the wallet's account.
 /// `device_token` is Apple's DeviceCheck token (base64): one Mac, one candidate.
+/// `ownership` is the voting key's own signature (`aether candidate-info
+/// --operator`), so nobody can register a voting key they do not hold.
 /// The registrar (a validator holding the network's DeviceCheck key) attests;
 /// the returned transaction, signed with the wallet key, puts it on chain.
 #[uniffi::export]
-pub fn prepare_register_node(p256_public_key: Vec<u8>, device_token: String, validator_key: String, node_id: String, beaconer: String) -> R<PreparedTx> {
+pub fn prepare_register_node(p256_public_key: Vec<u8>, device_token: String, validator_key: String, node_id: String, beaconer: String, ownership: String) -> R<PreparedTx> {
     let hex32 = |s: &str, what: &str| -> R<[u8; 32]> {
         aether_light::from_hex(s).ok().and_then(|b| b.try_into().ok()).ok_or_else(|| WalletError::Invalid(format!("{what}: 32-byte hex")))
     };
     let (key, node) = (hex32(&validator_key, "voting key")?, hex32(&node_id, "node id")?);
     let beaconer: Address = beaconer.parse().map_err(|_| WalletError::Invalid("beaconer address".into()))?;
     let operator = address_of(&p256_key(&p256_public_key)?).map_err(|e| WalletError::Invalid(e.to_string()))?;
-    let a = registrar_call(json!([device_token, operator, hex_lower(&key), hex_lower(&node), beaconer]))?;
+    let a = registrar_call(json!([device_token, operator, hex_lower(&key), hex_lower(&node), beaconer, ownership]))?;
     let (r, s) = (hex32(a["r"].as_str().unwrap_or_default(), "attestation r")?, hex32(a["s"].as_str().unwrap_or_default(), "attestation s")?);
     let input = aether_execution::registry::encode_register(key, node, beaconer, r, s);
     prepare(&p256_public_key, |_| Ok(EvmCall { to: Some(aether_execution::registry::REGISTRY), value: U256::ZERO, input, gas_limit: 400_000, delegate: None }))

@@ -88,6 +88,8 @@ pub struct Executed {
     pub base_fee: FeeVector,
     /// Fee-market excess after this block (its child's base fee derives from it).
     pub excess: GasVector,
+    /// The latest committee handoff in this block's ancestry (inclusive).
+    pub handoff: Option<Arc<crate::handoff::Pending>>,
 }
 
 #[derive(Clone, Debug, Serialize, serde::Deserialize)]
@@ -130,8 +132,20 @@ pub struct Inner {
     store: Option<Arc<Store>>,
     /// Pending txs per sender (bounded by `MAX_PER_SENDER`).
     pub pending_by_sender: HashMap<Address, usize>,
-    /// The running voting set (validators only): gates blocks at a rotation boundary.
+    /// The running voting set (validators only; empty on followers).
     pub committee: crate::rotation::Committee,
+    /// Committee identity: handoffs must be signed under it (None: devnet dealer keys).
+    pub identity: Option<aether_light::Identity>,
+    /// First height of the epoch this node's voting set runs (0 = genesis).
+    pub epoch_start: u64,
+    /// Last height of the running epoch once a handoff is finalized (MAX = open);
+    /// the consensus epocher reads it, so the running set re-proposes its last
+    /// block until it is final, then stops.
+    pub epoch_end: Arc<std::sync::atomic::AtomicU64>,
+    /// The voting set proposed for the current registry epoch (from its first block).
+    pub proposal: Option<(u64, Vec<(String, String)>)>,
+    /// A committee-signed handoff waiting to be put in a block.
+    pub handoff_ready: Option<aether_light::block::Handoff>,
 }
 
 #[derive(Clone)]
@@ -151,6 +165,7 @@ pub enum ChainError {
     ConflictingFinality {
         height: u64,
     },
+    BadHandoff(String),
 }
 
 impl Chain {
@@ -168,6 +183,7 @@ impl Chain {
             proposer: Address::ZERO,
             base_fee: FeeVector::default(),
             excess: GasVector::default(),
+            handoff: None,
         });
         let mut executed = HashMap::new();
         executed.insert(genesis.digest(), exec.clone());
@@ -185,6 +201,11 @@ impl Chain {
             inclusion: InclusionPool::default(),
             censor: None,
             committee: Default::default(),
+            identity: None,
+            epoch_start: 0,
+            epoch_end: Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX)),
+            proposal: None,
+            handoff_ready: None,
             deprioritize: None,
             store: None,
         };
@@ -214,6 +235,7 @@ impl Chain {
                     proposer: summary.as_ref().map(|b| b.proposer).unwrap_or_default(),
                     base_fee: summary.as_ref().map(|b| b.base_fee).unwrap_or_default(),
                     excess: summary.as_ref().map(|b| b.excess).unwrap_or_default(),
+                    handoff: cp.handoff.map(Arc::new),
                 });
                 let mut g = chain.lock();
                 g.executed.insert(digest, exec.clone());
@@ -233,6 +255,7 @@ impl Chain {
                     diff: genesis_exec.state.journal(),
                     summary: &summary,
                     receipts: vec![],
+                    handoff: None,
                 })?;
                 g.store = Some(store);
             }
@@ -261,11 +284,42 @@ impl Chain {
         self.lock().cfg.clone()
     }
 
-    /// The next voting set if the block after `parent` starts a rotation: the
-    /// running set then builds and votes for nothing past `parent`.
-    pub fn rotation_due(&self, parent: &Executed) -> Option<Vec<aether_execution::registry::Candidate>> {
-        let committee = self.lock().committee.clone();
-        crate::rotation::due(&parent.state, parent.height + 1, &committee)
+    /// Whether this node's voting set has handed over before the block after
+    /// `parent`: it then builds and votes for nothing past the switch.
+    pub fn retired_after(&self, parent: &Executed) -> bool {
+        let start = self.lock().epoch_start;
+        parent.handoff.as_ref().is_some_and(|p| p.switch > start && parent.height + 1 >= p.switch)
+    }
+
+    /// The handoff state after `block`: the parent's, or the one it carries
+    /// (valid only when signed by the committee and no other is still pending).
+    fn next_handoff(
+        &self,
+        height: u64,
+        parent: &Executed,
+        carried: Option<&aether_light::block::Handoff>,
+    ) -> Result<Option<Arc<crate::handoff::Pending>>, ChainError> {
+        let Some(h) = carried else { return Ok(parent.handoff.clone()) };
+        if parent.handoff.as_ref().is_some_and(|p| height < p.switch) {
+            return Err(ChainError::BadHandoff("another handoff is still pending".into()));
+        }
+        let (identity, chain_id) = {
+            let g = self.lock();
+            (g.identity, g.cfg.chain_id)
+        };
+        let identity = identity.ok_or_else(|| ChainError::BadHandoff("no committee identity (devnet dealer keys)".into()))?;
+        crate::handoff::verify(chain_id, &identity, h).map_err(ChainError::BadHandoff)?;
+        Ok(Some(Arc::new(crate::handoff::Pending { at: height, switch: height + crate::handoff::DELAY, handoff: h.clone() })))
+    }
+
+    /// The handoff to put in a block built on `parent`, if one is ready and allowed.
+    pub fn handoff_for(&self, parent: &Executed) -> Option<aether_light::block::Handoff> {
+        let ready = self.lock().handoff_ready.clone()?;
+        let pending = parent.handoff.as_ref();
+        if pending.is_some_and(|p| parent.height + 1 < p.switch || p.handoff == ready) {
+            return None;
+        }
+        Some(ready)
     }
 
     /// Execution context of `block` on top of `parent` (base fees derive from the parent's excess).
@@ -312,10 +366,19 @@ impl Chain {
         if out.gas != payload.gas {
             return Err(ChainError::GasMismatch);
         }
-        Ok(self.remember(block, parent, &ctx, out, payload.txs.iter().map(aether_execution::tx_hash).collect()))
+        let handoff = self.next_handoff(block.height().get(), parent, payload.handoff.as_ref())?;
+        Ok(self.remember(block, parent, &ctx, out, payload.txs.iter().map(aether_execution::tx_hash).collect(), handoff))
     }
 
-    pub fn remember(&self, block: &Block, parent: &Executed, ctx: &BlockContext, out: BlockOutcome, tx_hashes: Vec<TxHash>) -> Arc<Executed> {
+    pub fn remember(
+        &self,
+        block: &Block,
+        parent: &Executed,
+        ctx: &BlockContext,
+        out: BlockOutcome,
+        tx_hashes: Vec<TxHash>,
+        handoff: Option<Arc<crate::handoff::Pending>>,
+    ) -> Arc<Executed> {
         let (base_fee, excess) = match &ctx.fees {
             Some(f) => (f.base, fees::next_excess(parent.excess, out.gas, ctx.limits)),
             None => (FeeVector::default(), GasVector::default()),
@@ -331,6 +394,7 @@ impl Chain {
             proposer: leader_address(&block.context.leader),
             base_fee,
             excess,
+            handoff,
         });
         self.lock().executed.insert(block.digest(), exec.clone());
         exec
@@ -441,6 +505,7 @@ impl Chain {
                     diff: exec.state.journal(),
                     summary: &summary,
                     receipts: exec.tx_hashes.iter().copied().zip(exec.receipts.iter()).collect(),
+                    handoff: exec.handoff.as_deref().filter(|p| p.at == exec.height),
                 })
                 .map_err(|e| ChainError::Store(e.to_string()))?;
         }
@@ -459,7 +524,22 @@ impl Chain {
         }
         inner.inclusion.prune(&state, exec.height, Instant::now());
         g.blocks.insert(exec.height, summary);
-        g.finalized = exec.clone();
+        let previous = std::mem::replace(&mut g.finalized, exec.clone());
+        // A finalized handoff ends the running epoch before its switch height.
+        if let Some(p) = exec.handoff.as_ref().filter(|p| p.at == exec.height) {
+            if p.switch > g.epoch_start {
+                g.epoch_end.store(p.switch - 1, std::sync::atomic::Ordering::SeqCst);
+            }
+            if g.handoff_ready.as_ref() == Some(&p.handoff) {
+                g.handoff_ready = None;
+            }
+        }
+        // The voting set proposed for a registry epoch comes from the state its first block builds on.
+        let every = aether_execution::registry::epoch_blocks(&previous.state);
+        if exec.height > 0 && exec.height.is_multiple_of(every) {
+            let epoch = exec.height / every;
+            g.proposal = crate::rotation::next_set(&previous.state, epoch, &g.committee).map(|m| (epoch, m));
+        }
         let floor = exec.height.saturating_sub(64);
         g.executed.retain(|_, e| e.height >= floor);
         Ok(())
@@ -509,7 +589,12 @@ fn summary(block: &Block, e: &Executed, parent_state_root: B256) -> BlockSummary
     }
 }
 
-pub fn build_payload(parent: &Executed, ctx: &BlockContext, candidates: Vec<TxEnvelope>) -> (Payload, aether_execution::BlockOutcome) {
+pub fn build_payload(
+    parent: &Executed,
+    ctx: &BlockContext,
+    candidates: Vec<TxEnvelope>,
+    handoff: Option<aether_light::block::Handoff>,
+) -> (Payload, aether_execution::BlockOutcome) {
     let (txs, out) = aether_execution::build_block(&parent.state, ctx, candidates);
-    (Payload { parent_state_root: parent.state.root(), txs, bal: out.bal.clone(), gas: out.gas }, out)
+    (Payload { parent_state_root: parent.state.root(), txs, bal: out.bal.clone(), gas: out.gas, handoff }, out)
 }

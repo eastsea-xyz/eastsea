@@ -100,14 +100,20 @@ impl std::fmt::Display for LinkPath {
 pub struct Outbound {
     endpoint: Endpoint,
     remote: EndpointId,
+    alpn: &'static [u8],
     conn: Mutex<Option<Connection>>,
 }
 
 impl Outbound {
     /// Listen on `local` and forward to `remote`. Runs until the endpoint closes.
     pub async fn spawn(endpoint: Endpoint, remote: EndpointId, local: SocketAddr) -> std::io::Result<Arc<Self>> {
+        Self::spawn_alpn(endpoint, remote, local, ALPN_P2P).await
+    }
+
+    /// Like `spawn`, for another tunnelled protocol (e.g. the background reshare).
+    pub async fn spawn_alpn(endpoint: Endpoint, remote: EndpointId, local: SocketAddr, alpn: &'static [u8]) -> std::io::Result<Arc<Self>> {
         let listener = TcpListener::bind(local).await?;
-        let link = Arc::new(Outbound { endpoint, remote, conn: Mutex::new(None) });
+        let link = Arc::new(Outbound { endpoint, remote, alpn, conn: Mutex::new(None) });
         let l = link.clone();
         tokio::spawn(async move {
             loop {
@@ -128,7 +134,7 @@ impl Outbound {
                 return Some(c.clone());
             }
         }
-        match tokio::time::timeout(CONNECT_TIMEOUT, self.endpoint.connect(EndpointAddr::from(self.remote), ALPN_P2P)).await {
+        match tokio::time::timeout(CONNECT_TIMEOUT, self.endpoint.connect(EndpointAddr::from(self.remote), self.alpn)).await {
             Ok(Ok(c)) => {
                 tracing::info!(peer = %self.remote.fmt_short(), "p2p link up");
                 *cur = Some(c.clone());

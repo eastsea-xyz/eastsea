@@ -24,6 +24,24 @@ pub struct Payload {
     pub txs: Vec<TxEnvelope>,
     pub bal: BlockAccessList,
     pub gas: GasVector,
+    /// The running committee hands the key over to a new voting set
+    /// (docs/design/07-consensus.md); the switch happens a fixed distance later.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff: Option<Handoff>,
+}
+
+/// A new voting set and its key sharing (same committee identity), signed by
+/// the running committee's threshold key. Plain data here; nodes verify it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Handoff {
+    /// Key round of the new sharing.
+    pub round: u64,
+    /// Public DKG output (hex codec bytes): the new sharing of the same identity.
+    pub output: String,
+    /// The new voting set, in roster order: (ed25519 key hex, iroh node id).
+    pub members: Vec<(String, String)>,
+    /// BLS12-381 threshold signature (hex) of the running committee.
+    pub signature: String,
 }
 
 impl Payload {

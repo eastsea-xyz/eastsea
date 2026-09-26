@@ -83,8 +83,8 @@ where
     async fn propose(&mut self, (rt, context): (E, Self::Context), mut ancestry: impl Ancestry<Self::Block>, _input: ()) -> Option<Self::Block> {
         let parent_block = ancestry.next().await?;
         let parent = self.resolve(parent_block.clone(), ancestry).await?;
-        if self.chain.rotation_due(&parent).is_some() {
-            // The next voting set takes over from here (`aether run` reshares).
+        if self.chain.retired_after(&parent) {
+            // Handed over: the next voting set builds from the switch height.
             return None;
         }
 
@@ -104,10 +104,17 @@ where
         let cfg = self.chain.cfg();
         let skeleton = Block::new(context.clone(), parent_block.digest(), height, ts, bytes::Bytes::new());
         let ctx = Chain::block_context(&cfg, &skeleton, &parent);
-        let (payload, out) = build_payload(&parent, &ctx, self.chain.mempool_candidates());
+        let handoff = self.chain.handoff_for(&parent);
+        let (payload, out) = build_payload(&parent, &ctx, self.chain.mempool_candidates(), handoff);
         let tx_hashes = payload.txs.iter().map(aether_execution::tx_hash).collect();
         let block = Block::new(context, parent_block.digest(), height, ts, payload.to_bytes());
-        self.chain.remember(&block, &parent, &ctx, out, tx_hashes);
+        let pending = match &payload.handoff {
+            Some(h) => {
+                Some(std::sync::Arc::new(crate::handoff::Pending { at: height.get(), switch: height.get() + crate::handoff::DELAY, handoff: h.clone() }))
+            }
+            None => parent.handoff.clone(),
+        };
+        self.chain.remember(&block, &parent, &ctx, out, tx_hashes, pending);
         info!(height = %height, txs = payload.txs.len(), "proposed");
         Some(block)
     }
@@ -122,7 +129,7 @@ where
         rt.sleep_until(SystemTime::UNIX_EPOCH + Duration::from_millis(block.timestamp.saturating_sub(MAX_FUTURE_SKEW_MS))).await;
 
         let Some(parent) = self.resolve(parent_block, ancestry).await else { return false };
-        if self.chain.rotation_due(&parent).is_some() {
+        if self.chain.retired_after(&parent) {
             return false;
         }
         match self.chain.execute(&block, &parent) {

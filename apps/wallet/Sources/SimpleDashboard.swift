@@ -278,7 +278,7 @@ private struct VotingNodeRow: View {
             }
             Spacer()
             if node.voting?.registered == false {
-                Button("Join") { model.registerNode(candidate) }
+                Button("Join") { model.registerNode(candidate, node: node) }
                     .buttonStyle(.borderedProminent)
                     .disabled(model.busy)
                     .help("Registers this Mac with Apple DeviceCheck (one Mac, one voting node) and signs with Touch ID.")

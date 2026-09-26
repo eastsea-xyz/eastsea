@@ -758,12 +758,13 @@ fn a_candidate_registers_once_and_beacons_every_epoch() {
     }
 }
 
-/// Open voting nodes, part 3: nobody runs a ceremony by hand. Four Macs run
-/// `aether run` as the genesis voting set, four more as candidates. Once the
-/// candidates are registered and alive, the genesis set stops at the next
-/// registry epoch boundary, all eight reshare the committee key on their own,
-/// and the candidates continue the same chain under the same identity (they
-/// had no validator history: they start from the block they verified last).
+/// Open voting nodes: nobody runs a ceremony by hand. Four Macs run `aether
+/// run` as the genesis voting set, four more as candidates. Once candidates are
+/// registered and alive, the chain proposes a new voting set; old and new
+/// members reshare the key in the background while blocks keep coming, the
+/// running committee signs the handoff, and at the switch height a candidate
+/// takes a seat (one per epoch at this size) under the same identity. It had no
+/// validator history: it starts from the block it verified as a follower.
 #[test]
 fn open_voting_nodes_take_over_the_chain_by_themselves() {
     let _serial = serial();
@@ -808,6 +809,7 @@ fn open_voting_nodes_take_over_the_chain_by_themselves() {
     let names: Vec<&str> = genesis_set.iter().chain(candidates.iter()).copied().collect();
     let p2p: Vec<u16> = (0..8).map(|_| free_port()).collect();
     let rpc: Vec<u16> = (0..8).map(|_| free_port()).collect();
+    let reshare: Vec<u16> = (0..8).map(|_| free_port()).collect();
     let mut net = Net::prepared(dir.clone(), p2p.clone(), rpc.clone(), vec![vec![]; 8]);
     for (k, name) in names.iter().enumerate() {
         let others: Vec<String> = (0..8).filter(|j| *j != k).map(|j| format!("http://127.0.0.1:{}", rpc[j])).collect();
@@ -821,6 +823,8 @@ fn open_voting_nodes_take_over_the_chain_by_themselves() {
             p2p[k].to_string(),
             "--rpc-port".into(),
             rpc[k].to_string(),
+            "--reshare-port".into(),
+            reshare[k].to_string(),
             "--dev-peer-dir".into(),
             d("peers"),
             "--node-arg=--block-time-ms=500".into(),
@@ -849,28 +853,48 @@ fn open_voting_nodes_take_over_the_chain_by_themselves() {
         .map(|c| serde_json::from_slice::<Value>(&std::fs::read(format!("{}/validator.pub.json", d(c))).unwrap()).unwrap()["key"].as_str().unwrap().to_string())
         .collect();
 
-    // No one acts from here: the candidates become the voting set.
+    // No one acts from here. The chain never stops: heights keep rising throughout.
+    let c1 = keys_of(&d("c1"));
+    let g1 = keys_of(&d("g1"));
     let end = Instant::now() + Duration::from_secs(300);
-    loop {
-        let running: Option<std::collections::BTreeSet<String>> = net
-            .rpc(4, "aether_network", json!([]))
-            .and_then(|v| v["validators"].as_array().map(|a| a.iter().filter_map(|m| m["key"].as_str().map(String::from)).collect()));
-        if running.as_ref() == Some(&keys) && net.rpc(4, "aether_rotation", json!([])).is_some_and(|r| r.is_null()) {
-            break;
+    let mut last_height = 0;
+    let mut stalled_since = Instant::now();
+    let handoff = loop {
+        let h = net.height(1);
+        if h > last_height {
+            last_height = h;
+            stalled_since = Instant::now();
         }
-        assert!(Instant::now() < end, "the candidates did not take over (see {}/*.log)", dir.display());
-        std::thread::sleep(Duration::from_secs(1));
+        assert!(stalled_since.elapsed() < Duration::from_secs(30), "the chain stopped at {h} (see {}/*.log)", dir.display());
+        if let Some(v) = net.rpc(1, "aether_handoff", json!([])).filter(|v| !v.is_null()) {
+            break v;
+        }
+        assert!(Instant::now() < end, "no handoff (see {}/*.log)", dir.display());
+        std::thread::sleep(Duration::from_millis(500));
+    };
+    let members: Vec<String> = handoff["members"].as_array().unwrap().iter().map(|m| m["key"].as_str().unwrap().to_string()).collect();
+    assert_eq!(members.len(), 4);
+    assert!(members.contains(&c1), "the longest-running candidate takes a seat: {members:?}");
+    assert!(!members.contains(&g1), "a genesis member that never registered leaves first: {members:?}");
+    assert_eq!(members.iter().filter(|k| keys.contains(*k)).count(), 1, "one seat per epoch at four seats");
+    let switch = handoff["switch"].as_u64().unwrap();
+
+    // Past the switch: c1 builds blocks, g1 follows them, everyone agrees.
+    let end = Instant::now() + Duration::from_secs(120);
+    while net.rpc(4, "aether_network", json!([])).and_then(|v| v["round"].as_u64()) != Some(1) {
+        assert!(Instant::now() < end, "c1 did not start voting (see {}/*.log)", dir.display());
+        std::thread::sleep(Duration::from_millis(500));
     }
-    let h = net.height(4);
-    net.wait_height(4, h + 10, 120);
-    for k in 5..8 {
-        net.wait_height(k, h + 10, 60);
+    let target = switch + 10;
+    for k in [1, 2, 3, 4, 0] {
+        net.wait_height(k, target, 120);
     }
-    assert_agree(&net, &[4, 5, 6, 7], h + 10);
-    // History from the genesis set verifies under the same identity on a new voting node.
+    assert_agree(&net, &[1, 2, 3, 4, 0], target);
+    // History from before the handoff verifies under the same identity on the new voting node.
     let bal = net.cli(&["balance", aa, "--rpc", &net.url(4), "--identity", &identity]);
     assert!(bal.contains("balance   11 wei") && bal.contains("verified  ✓"), "{bal}");
-    // The genesis Macs now follow the chain the candidates build.
-    net.wait_height(0, h + 10, 120);
-    assert_agree(&net, &[0, 4], h + 10);
+}
+
+fn keys_of(dir: &str) -> String {
+    serde_json::from_slice::<Value>(&std::fs::read(format!("{dir}/validator.pub.json")).unwrap()).unwrap()["key"].as_str().unwrap().to_string()
 }

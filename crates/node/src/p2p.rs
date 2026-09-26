@@ -91,13 +91,40 @@ pub fn config(a: &P2pArgs, namespace_suffix: &[u8]) -> lookup::Config<ed25519::P
     cfg
 }
 
+/// Endpoint for a background reshare (`aether run`) and links to every other
+/// participant over `aether/reshare/1`. On a running validator (`via_node`) the
+/// node owns this Mac's public node id and forwards incoming reshare links to
+/// us; we only dial out, from an unpublished id. Otherwise (a candidate) we
+/// publish the node id ourselves and accept on `local`. Links are authenticated
+/// by the p2p handshake (validator keys), not by the iroh id.
+pub async fn open_reshare(a: &P2pArgs, via_node: bool, local: SocketAddr) -> Option<(aether_net::Endpoint, Option<aether_net::Router>)> {
+    if a.offline {
+        return None;
+    }
+    let (ep, router) = if via_node {
+        (aether_net::bind(None, vec![]).await.ok()?, None)
+    } else {
+        let ep = aether_net::bind(Some(a.keys.node_secret.clone()), vec![aether_net::ALPN_RESHARE.to_vec()]).await.ok()?;
+        (ep.clone(), Some(aether_net::serve_reshare(ep, local)))
+    };
+    if let Transport::Iroh { link_base } = a.transport {
+        for j in (1..=a.n).filter(|j| *j != a.index) {
+            aether_net::tunnel::Outbound::spawn_alpn(ep.clone(), a.roster.node(j), loopback(link_base + j as u16), aether_net::ALPN_RESHARE)
+                .await
+                .expect("bind reshare link port");
+        }
+    }
+    Some((ep, router))
+}
+
 /// Bind the public iroh endpoint (published to the DHT) and open links to every
 /// other validator. Returns None when offline.
 pub async fn open_public(a: &P2pArgs) -> Option<aether_net::Endpoint> {
     if a.offline {
         return None;
     }
-    let ep = match aether_net::bind(Some(a.keys.node_secret.clone()), vec![aether_net::ALPN_RPC.to_vec(), aether_net::ALPN_P2P.to_vec()]).await {
+    let alpns = vec![aether_net::ALPN_RPC.to_vec(), aether_net::ALPN_P2P.to_vec(), aether_net::ALPN_RESHARE.to_vec()];
+    let ep = match aether_net::bind(Some(a.keys.node_secret.clone()), alpns).await {
         Ok(ep) => ep,
         Err(e) => {
             tracing::warn!(?e, "public endpoint unavailable");

@@ -135,11 +135,20 @@ enum Cmd {
         to: String,
         /// Last height the current committee finalized (it stops there); the new
         /// committee's epoch starts at the next height.
-        #[arg(long)]
-        epoch_end: u64,
+        #[arg(long, required_unless_present = "stage")]
+        epoch_end: Option<u64>,
         /// Hash of that block (`aether blocks`), which the new epoch builds on.
+        #[arg(long, required_unless_present = "stage")]
+        epoch_end_hash: Option<String>,
+        /// Background reshare while the current committee keeps running (`aether
+        /// run`): write threshold-next.json and network-next.json only; the switch
+        /// height comes later from the committee-signed handoff.
         #[arg(long)]
-        epoch_end_hash: String,
+        stage: bool,
+        /// With --stage on a running validator: its node owns this Mac's public
+        /// node id and forwards reshare links here.
+        #[arg(long, requires = "stage")]
+        via_node: bool,
         #[arg(long)]
         port: u16,
         #[arg(long)]
@@ -205,6 +214,10 @@ enum Cmd {
         port: u16,
         #[arg(long, default_value_t = 8545)]
         rpc_port: u16,
+        /// Background reshare port (default: --port + 1, where a running
+        /// validator's node forwards reshare links).
+        #[arg(long)]
+        reshare_port: Option<u16>,
         /// Extra argument for `aether node` (repeatable), e.g. --node-arg=--faucet-key=…
         #[arg(long = "node-arg", allow_hyphen_values = true)]
         node_args: Vec<String>,
@@ -224,6 +237,12 @@ enum Cmd {
     CandidateInfo {
         #[arg(long)]
         data: String,
+        /// Also print the voting key's ownership signature for registering it
+        /// under this operator (the wallet account) on this chain.
+        #[arg(long, requires = "chain_id")]
+        operator: Option<Address>,
+        #[arg(long)]
+        chain_id: Option<u64>,
     },
     /// Register this Mac's candidate (keys in <data>) with the registrar and the registry.
     CandidateRegister {
@@ -534,10 +553,14 @@ fn main() {
             let keys = candidate.then(|| keys.unwrap_or_else(|| data.clone()));
             run_follow(network, from_rpc, data, rpc_port, validators, keys, dev_epoch_blocks)
         }
-        Cmd::CandidateInfo { data } => aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(&data)).map(|k| {
-            println!("{}", json!({ "validator_key": hex::encode(k.validator_key()), "node_id": hex::encode(k.node_id()), "beaconer": k.beaconer() }));
+        Cmd::CandidateInfo { data, operator, chain_id } => aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(&data)).map(|k| {
+            let ownership = operator.zip(chain_id).map(|(op, id)| hex::encode(k.ownership(id, op)));
+            println!(
+                "{}",
+                json!({ "validator_key": hex::encode(k.validator_key()), "node_id": hex::encode(k.node_id()), "beaconer": k.beaconer(), "ownership": ownership })
+            );
         }),
-        Cmd::Run { data, network, port, rpc_port, node_args, follow_args, reshare_timeout, dev_peer_dir, exit_with_parent } => {
+        Cmd::Run { data, network, port, rpc_port, reshare_port, node_args, follow_args, reshare_timeout, dev_peer_dir, exit_with_parent } => {
             if exit_with_parent {
                 exit_with_parent_process();
             }
@@ -554,6 +577,7 @@ fn main() {
                     data: dir,
                     port,
                     rpc_port,
+                    reshare_port: reshare_port.unwrap_or(port + 1),
                     node_args,
                     follow_args,
                     dev_peer_dir: dev_peer_dir.map(Into::into),
@@ -566,7 +590,9 @@ fn main() {
             let keys = aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(&data))?;
             let operator = dev_address(from_dev)?;
             let (vk, nid, beaconer) = (keys.validator_key(), keys.node_id(), keys.beaconer());
-            let a = call(&registrar_rpc, "aether_registerDevice", json!([device_token, operator, hex::encode(vk), hex::encode(nid), beaconer]))?;
+            let chain_id = call(&registrar_rpc, "aether_status", json!([]))?["chain_id"].as_u64().ok_or("registrar has no chain id")?;
+            let ownership = hex::encode(keys.ownership(chain_id, operator));
+            let a = call(&registrar_rpc, "aether_registerDevice", json!([device_token, operator, hex::encode(vk), hex::encode(nid), beaconer, ownership]))?;
             let part = |k: &str| -> Result<[u8; 32], String> {
                 hex::decode(a[k].as_str().unwrap_or_default()).ok().and_then(|b| b.try_into().ok()).ok_or(format!("registrar gave no {k}"))
             };
@@ -595,12 +621,16 @@ fn main() {
             println!("{h} {}", hex::encode(d));
             Ok(())
         })(),
-        Cmd::Reshare { from, to, epoch_end, epoch_end_hash, port, data, peers, link_base, offline, exit_with_parent } => {
+        Cmd::Reshare { from, to, epoch_end, epoch_end_hash, stage, via_node, port, data, peers, link_base, offline, exit_with_parent } => {
             if exit_with_parent {
                 exit_with_parent_process();
             }
-            let boundary = aether_node::roster::EpochStart { height: epoch_end + 1, parent: epoch_end_hash };
-            reshare(&from, &to, boundary, port, data, peers, link_base, offline)
+            let boundary = match (stage, epoch_end, epoch_end_hash) {
+                (true, _, _) => None,
+                (false, Some(h), Some(parent)) => Some(aether_node::roster::EpochStart { height: h + 1, parent }),
+                _ => unreachable!("clap requires --epoch-end and --epoch-end-hash without --stage"),
+            };
+            reshare(&from, &to, boundary, port, data, peers, link_base, offline, via_node)
         }
         Cmd::Network { chain_id, faucet, registrar, epoch_blocks, members } => assemble_network(chain_id, faucet, registrar, epoch_blocks, &members),
         Cmd::RegistrarKey { data } => (|| {
@@ -807,12 +837,13 @@ fn p2p_args(
 fn reshare(
     from: &str,
     to: &str,
-    boundary: aether_node::roster::EpochStart,
+    boundary: Option<aether_node::roster::EpochStart>,
     port: u16,
     data: String,
     peers: Vec<String>,
     link_base: Option<u16>,
     offline: bool,
+    via_node: bool,
 ) -> Result<(), String> {
     use aether_node::roster::{LocalKeys, NetworkFile, Roster};
     tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,commonware=warn".into())).init();
@@ -837,14 +868,23 @@ fn reshare(
     let transport = if peers.iter().any(|p| !p.is_empty()) {
         Transport::Tcp(peers)
     } else {
-        Transport::Iroh { link_base: link_base.unwrap_or(20_000 + 100 * index as u16) }
+        // A staged reshare runs next to this Mac's node: its own link ports.
+        let base = if boundary.is_none() { 30_000 } else { 20_000 };
+        Transport::Iroh { link_base: link_base.unwrap_or(base + 100 * index as u16) }
     };
     let p2p = P2pArgs { index, n: union.len(), roster: union, keys: keys.clone(), port, transport, offline, max_message: MAX_BLOCK_BYTES + 1024 * 1024 };
     let round = aether_node::dkg::Round::reshare(previous, new.validators(), old_file.round + 1);
     let next_round = round.round;
-    let executor = cw_tokio::Runner::new(cw_tokio::Config::new().with_storage_directory(dir.join("reshare-runtime")));
+    // A fresh runtime directory per attempt: a retried round never reads an older one's state.
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or_default();
+    let executor = cw_tokio::Runner::new(cw_tokio::Config::new().with_storage_directory(dir.join("reshare-runtime").join(secs.to_string())));
+    let staged = boundary.is_none();
     let result = executor.start(async move |context| {
-        let _router = aether_node::p2p::open_public(&p2p).await.map(|ep| aether_net::serve_p2p(ep, loopback(p2p.port)));
+        let _public = if staged {
+            aether_node::p2p::open_reshare(&p2p, via_node, loopback(p2p.port)).await.map(|(ep, r)| (ep, r.map(Some).unwrap_or(None)))
+        } else {
+            aether_node::p2p::open_public(&p2p).await.map(|ep| (ep.clone(), Some(aether_net::serve_p2p(ep, loopback(p2p.port)))))
+        };
         let (mut network, mut oracle) = lookup::Network::new(context.child("network"), aether_node::p2p::config(&p2p, b"_DKG"));
         oracle.track(0, aether_node::p2p::peer_addresses(&p2p));
         let (sender, receiver) = network.register(0, Quota::per_second(NZU32!(256)));
@@ -855,18 +895,26 @@ fn reshare(
     match result.map_err(|e| format!("reshare failed: {e}"))? {
         Some((output, share)) => {
             let file = aether_node::dkg::KeyFile::new(next_round, &output, &share);
-            write_secret(&dir.join("threshold.json"), &serde_json::to_vec_pretty(&file).expect("json"));
+            let (threshold, network) = match boundary {
+                Some(_) => ("threshold.json", "network.json"),
+                None => (aether_node::rotation::STAGED_THRESHOLD, aether_node::rotation::STAGED_NETWORK),
+            };
+            write_secret(&dir.join(threshold), &serde_json::to_vec_pretty(&file).expect("json"));
             let mut public = new_file.clone();
             // Same chain, same genesis: keep its faucet even if the new roster file omits it.
             public.keep_genesis(&old_file);
             public.epochs = old_file.epochs.clone();
-            public.epochs.push(boundary);
+            public.epochs.extend(boundary);
             public.identity = Some(file.identity.clone());
             public.round = next_round;
             public.output = Some(file.output.clone());
-            std::fs::write(dir.join("network.json"), serde_json::to_vec_pretty(&public).expect("json")).map_err(|e| e.to_string())?;
+            std::fs::write(dir.join(network), serde_json::to_vec_pretty(&public).expect("json")).map_err(|e| e.to_string())?;
             println!("committee identity: {} (unchanged)", file.identity);
-            println!("new share written to {} (mode 600)", dir.join("threshold.json").display());
+            println!("new share written to {} (mode 600)", dir.join(threshold).display());
+        }
+        None if boundary.is_none() => {
+            // Staged: keep signing with the old share until the switch height.
+            println!("dealt our share to the proposed voting set; this validator leaves it at the switch");
         }
         None => {
             // A departing validator: its old share is now useless; remove it.
@@ -1000,6 +1048,7 @@ fn run_node(a: NodeArgs) {
     assert!(!p2p.offline || matches!(p2p.transport, Transport::Tcp(_)), "--offline needs --peers");
     let signer = p2p.keys.signer.clone();
     let (roster_keys, validator_set) = (p2p.roster.keys.clone(), p2p.validators());
+    let roster_members: Vec<(String, String)> = p2p.roster.keys.iter().zip(&p2p.roster.nodes).map(|(k, n)| (hex::encode(k.as_ref()), n.to_string())).collect();
     let peers = aether_node::p2p::peer_addresses(&p2p);
     let p2p_cfg = aether_node::p2p::config(&p2p, b"_P2P");
     let links = matches!(p2p.transport, Transport::Iroh { .. });
@@ -1023,11 +1072,13 @@ fn run_node(a: NodeArgs) {
         let backfill = network.register(4, quota);
         let (mut tx_out, mut tx_in) = network.register(5, Quota::per_second(NZU32!(1024)));
         let (il_out, il_in) = network.register(6, Quota::per_second(NZU32!(256)));
+        let (mut handoff_out, mut handoff_in) = network.register(7, Quota::per_second(NZU32!(64)));
 
         // BLS threshold certificates (one group signature per block) with a VRF
         // seed per round for leader election. Devnet shares come from a fixed
         // dealer seed; a real network derives them with a DKG.
         let (participants, polynomial, share) = committee_keys(&data, &validator_set, &signer.public_key(), key_round);
+        let (handoff_share, handoff_sharing) = (share.clone(), polynomial.clone());
         let polynomial_identity = &polynomial.public().clone();
         let scheme = aether_light::Scheme::signer(&aether_light::consensus_namespace(), participants, polynomial, share).expect("share matches polynomial");
         let store = aether_node::store::Store::open(&std::path::Path::new(&data).join("state.redb")).expect("open state store");
@@ -1052,12 +1103,39 @@ fn run_node(a: NodeArgs) {
             chain.lock().censor = Some(a);
         }
         chain.lock().deprioritize = dev_deprioritize;
-        // A DKG committee rotates to the registry's voting set (a devnet dealer set cannot).
-        if network_file.is_some() {
-            let keys = roster_keys.iter().map(|k| k.as_ref().try_into().expect("ed25519 key is 32 bytes")).collect();
-            let deferred =
-                std::fs::read_to_string(std::path::Path::new(&data).join(aether_node::rotation::DEFERRED_FILE)).ok().and_then(|s| s.trim().parse().ok());
-            chain.lock().committee = aether_node::rotation::Committee { keys, deferred };
+        // A DKG committee hands over to the registry's voting set (a devnet dealer set cannot).
+        let epoch_end = chain.lock().epoch_end.clone();
+        let handoff_service = network_file.is_some().then(|| {
+            let mut g = chain.lock();
+            g.committee = aether_node::rotation::Committee { members: roster_members.clone() };
+            g.identity = Some(*polynomial_identity);
+            g.epoch_start = epochs.last().map(|e| e.height).unwrap_or(0);
+            drop(g);
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<aether_node::handoff::PartialMsg>();
+            tokio::spawn(async move {
+                while let Some(m) = rx.recv().await {
+                    let _ = handoff_out.send(Recipients::All, serde_json::to_vec(&m).expect("partial serializes"), false);
+                }
+            });
+            std::sync::Arc::new(aether_node::handoff::Service::new(
+                chain.clone(),
+                cfg.chain_id,
+                handoff_share.clone(),
+                handoff_sharing.clone(),
+                std::path::PathBuf::from(&data),
+                tx,
+            ))
+        });
+        if let Some(svc) = handoff_service.clone() {
+            tokio::spawn(async move {
+                while let Ok((_peer, msg)) = handoff_in.recv().await {
+                    if let Ok(m) = serde_json::from_slice::<aether_node::handoff::PartialMsg>(msg.as_ref()) {
+                        if let Err(e) = svc.accept(&m) {
+                            tracing::debug!(%e, "handoff partial rejected");
+                        }
+                    }
+                }
+            });
         }
         watch_upgrades(chain.clone(), std::path::Path::new(&data).join("upgrades"), *polynomial_identity, cfg.chain_id);
         tracing::info!(index, genesis_root = %chain.lock().finalized.state.root(), "starting validator");
@@ -1086,7 +1164,7 @@ fn run_node(a: NodeArgs) {
                 me: signer.public_key(),
                 scheme,
                 identity: *polynomial_identity,
-                epocher: aether_node::epochs::ScheduleEpocher::new(epochs.iter().map(|e| e.height).collect()),
+                epocher: aether_node::epochs::ScheduleEpocher::new(epochs.iter().map(|e| e.height).collect()).with_end(epoch_end),
                 epoch_floor,
                 genesis,
                 application: Application::new(chain.clone(), block_time_ms),
@@ -1125,6 +1203,16 @@ fn run_node(a: NodeArgs) {
 
         spawn_inclusion_lists(chain.clone(), signer.clone(), index, roster_keys, cfg.chain_id, Duration::from_millis(block_time_ms), il_out, il_in);
 
+        // A registered voting node keeps proving it is alive while it votes.
+        if network_file.is_some() {
+            match aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(&data)) {
+                Ok(keys) => {
+                    tokio::spawn(aether_node::candidate::beacon_loop(chain.clone(), aether_node::candidate::Outbox::Local(gossip_tx.clone()), keys));
+                }
+                Err(e) => tracing::warn!(%e, "no node account: this validator sends no liveness beacons"),
+            }
+        }
+
         if let Some(f) = &faucet_service {
             tracing::info!(address = %f.address, "faucet enabled (aether_faucet)");
         }
@@ -1136,6 +1224,7 @@ fn run_node(a: NodeArgs) {
             registrar,
             network: network_file,
             upstream: None,
+            handoff: handoff_service,
         };
 
         // Public access: iroh endpoint published to the BitTorrent Mainline DHT.
@@ -1244,11 +1333,13 @@ fn run_follow(
         let archive = Arc::new(FinalityArchive::new(chain.store()));
         let (gossip, rx) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(follow::forward(upstream.clone(), rx));
+        // Handoffs in blocks are checked against the committee identity, as validators check them.
+        chain.lock().identity = Some(*set.identity());
         watch_upgrades(chain.clone(), std::path::Path::new(&data).join("upgrades"), *set.identity(), chain_id);
         if let Some(dir) = &candidate_keys {
             let keys = aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(dir))?;
             tracing::info!(voting_key = %hex::encode(keys.validator_key()), beaconer = %keys.beaconer(), "voting-node candidate: beacons every epoch once registered");
-            tokio::spawn(aether_node::candidate::beacon_loop(chain.clone(), upstream.clone(), keys));
+            tokio::spawn(aether_node::candidate::beacon_loop(chain.clone(), aether_node::candidate::Outbox::Upstream(upstream.clone()), keys));
         }
         tokio::spawn(follow::run(chain.clone(), upstream.clone(), set, archive.clone()));
         tracing::info!(height = chain.finalized_height(), rpc_port, "following (not a validator): every block is verified and re-executed here");
@@ -1260,6 +1351,7 @@ fn run_follow(
             registrar: None,
             network: None,
             upstream: Some(upstream),
+            handoff: None,
         };
         rpc::serve(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), rpc_port), st).await.map_err(|e| e.to_string())
     })

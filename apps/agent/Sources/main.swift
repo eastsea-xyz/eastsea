@@ -9,11 +9,11 @@ import Foundation
 let usage = """
 aether-agent \(Version.string) — Aether wallet for AI agents (key in this Mac's Secure Enclave)
 
-Owner (asks for Touch ID):
-  init                                   create the agent's keys and default limits (1 AETH/payment, 10 AETH/day)
+Owner (changes ask for Touch ID; limits are enforced by the account contract):
+  init                                   create the keys; with a funded account also set default limits
+                                         (1 AETH per payment, 10 AETH per 24 h) and give the agent 0.2 AETH of gas
   policy show
-  policy set [--per-tx X] [--per-day Y] [--allow 0x..,0x..|anyone]
-  policy reset-ledger                    accept the current on-chain state as the spending log
+  policy set [--per-tx X] [--per-day Y] [--allow 0x..,0x..|anyone] [--expires-days N] [--gas AETH]
 
 Agents (JSON out):
   mcp                                    run as an MCP server on stdio

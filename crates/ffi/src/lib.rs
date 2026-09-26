@@ -618,3 +618,161 @@ fn normalize_p256(signature: &[u8]) -> R<Vec<u8>> {
     let sig = p256::ecdsa::Signature::from_slice(signature).map_err(|_| WalletError::Invalid("signature must be 64-byte r‖s".into()))?;
     Ok(sig.normalize_s().to_bytes().to_vec())
 }
+
+// ---------------- session keys (limited keys, e.g. for AI agents) ----------------
+
+/// Session 0 of an account: its limits and use, proven against certified roots.
+#[derive(uniffi::Record)]
+pub struct SessionStatus {
+    pub exists: bool,
+    /// The session key's recovery-key-style code (x‖y hex), to match against a device key.
+    pub key_code: String,
+    pub per_payment_wei: String,
+    pub per_day_wei: String,
+    /// Paid in the current 24 h window, which started at `window_start` (unix s).
+    pub spent_wei: String,
+    pub window_start: u64,
+    pub expires: u64,
+    pub allow: Vec<String>,
+    pub nonce: u64,
+}
+
+#[uniffi::export]
+pub fn session_status(account: String, validators: u32) -> R<SessionStatus> {
+    let a: Address = account.parse().map_err(|_| WalletError::Invalid("account address".into()))?;
+    let set = trusted_set(validators)?;
+    if verified_slot(a, slots::session_count(), &set)?.is_zero() {
+        return Ok(SessionStatus {
+            exists: false,
+            key_code: String::new(),
+            per_payment_wei: "0".into(),
+            per_day_wei: "0".into(),
+            spent_wei: "0".into(),
+            window_start: 0,
+            expires: 0,
+            allow: vec![],
+            nonce: 0,
+        });
+    }
+    let base = slots::session(0);
+    let word = |o: u64| verified_slot(a, base + U256::from(o), &set);
+    let (x, y) = (word(0)?.to_be_bytes::<32>(), word(1)?.to_be_bytes::<32>());
+    let (per_payment, per_day) = slots::unpack_limits(word(2)?);
+    let (window_start, spent, expires) = slots::unpack_window(word(3)?);
+    let n_allow = word(4)?.to::<u64>().min(16);
+    let allow = (0..n_allow)
+        .map(|j| {
+            verified_slot(a, slots::session_allow(0, j), &set).map(|v| Address::from_word(aether_types::B256::from(v.to_be_bytes::<32>())).to_checksum(None))
+        })
+        .collect::<R<Vec<_>>>()?;
+    Ok(SessionStatus {
+        exists: true,
+        key_code: format!("{}{}", hex_lower(&x), hex_lower(&y)),
+        per_payment_wei: per_payment.to_string(),
+        per_day_wei: per_day.to_string(),
+        spent_wei: spent.to_string(),
+        window_start,
+        expires,
+        allow,
+        nonce: word(5)?.to::<u64>(),
+    })
+}
+
+/// From the account owner's key: replace session 0 with `session_code`'s key
+/// under these limits, and send `gas_wei` to the session key's own address so it
+/// can pay for its transactions (which bounds what it can ever spend on gas).
+/// Limits for a session key (amounts in wei).
+#[derive(uniffi::Record)]
+pub struct SessionSettings {
+    /// The session key as x‖y hex (like a recovery-key code).
+    pub session_code: String,
+    pub per_payment_wei: String,
+    pub per_day_wei: String,
+    /// Unix seconds after which the key stops working (0 = never).
+    pub expires: u64,
+    /// Allowed recipients; empty = anyone.
+    pub allow: Vec<String>,
+    /// Sent to the session key's own address for its gas.
+    pub gas_wei: String,
+}
+
+#[uniffi::export]
+pub fn prepare_set_session(owner_public_key: Vec<u8>, settings: SessionSettings, validators: u32) -> R<PreparedTx> {
+    let SessionSettings { session_code, per_payment_wei, per_day_wei, expires, allow, gas_wei } = settings;
+    let (x, y) = parse_code(&session_code)?;
+    let mut sec1 = vec![4u8];
+    sec1.extend_from_slice(&x);
+    sec1.extend_from_slice(&y);
+    let gas_payer = address_of(&PublicKey { scheme: aether_types::SignerScheme::P256, bytes: sec1 }).map_err(|e| WalletError::Invalid(e.to_string()))?;
+    let amount = |v: &str, what: &str| v.parse::<u128>().map_err(|_| WalletError::Invalid(format!("{what}: {v}")));
+    let limits = acct::SessionLimits {
+        per_payment: amount(&per_payment_wei, "per payment")?,
+        per_day: amount(&per_day_wei, "per day")?,
+        expires,
+        allow: allow.iter().map(|a| a.parse::<Address>().map_err(|_| WalletError::Invalid(format!("allowed recipient {a}")))).collect::<R<_>>()?,
+    };
+    let gas: U256 = gas_wei.parse().map_err(|_| WalletError::Invalid("gas".into()))?;
+    let pk = p256_key(&owner_public_key)?;
+    let owner = address_of(&pk).map_err(|e| WalletError::Invalid(e.to_string()))?;
+    let set = trusted_set(validators)?;
+    let existing = if designated(owner)? { verified_slot(owner, slots::session_count(), &set)?.to::<u64>() } else { 0 };
+    let mut calls: Vec<aether_execution::AccountCall> = (0..existing).map(|_| (owner, U256::ZERO, acct::encode_remove_session(0))).collect();
+    calls.push((owner, U256::ZERO, acct::encode_add_session(x, y, &limits)));
+    if !gas.is_zero() {
+        calls.push((gas_payer, gas, Bytes::new()));
+    }
+    prepare(&owner_public_key, |from| {
+        Ok(EvmCall {
+            to: Some(from),
+            value: U256::ZERO,
+            input: aether_execution::encode_execute(&calls),
+            gas_limit: 400_000 + 60_000 * calls.len() as u64 + 25_000 * limits.allow.len() as u64,
+            delegate: (!designated(from)?).then_some(aether_execution::AETHER_ACCOUNT),
+        })
+    })
+}
+
+/// A payment a session key signs for `account` (then `prepare_session_submit`).
+#[derive(uniffi::Record)]
+pub struct SessionRequest {
+    pub account: String,
+    pub payments: Vec<Payment>,
+    pub nonce: u64,
+    /// Sign with the session key (SHA-256 applied by CryptoKit).
+    pub message: Vec<u8>,
+}
+
+fn session_calls(payments: &[Payment]) -> R<Vec<aether_execution::AccountCall>> {
+    payments
+        .iter()
+        .map(|p| {
+            let to: Address = p.to.parse().map_err(|_| WalletError::Invalid(format!("recipient {}", p.to)))?;
+            let v: U256 = p.value_wei.parse().map_err(|_| WalletError::Invalid(format!("amount {}", p.value_wei)))?;
+            Ok((to, v, Bytes::new()))
+        })
+        .collect()
+}
+
+#[uniffi::export]
+pub fn prepare_session_payment(account: String, payments: Vec<Payment>, validators: u32) -> R<SessionRequest> {
+    if payments.is_empty() {
+        return Err(WalletError::Invalid("no payments".into()));
+    }
+    let a: Address = account.parse().map_err(|_| WalletError::Invalid("account address".into()))?;
+    let calls = session_calls(&payments)?;
+    let set = trusted_set(validators)?;
+    let nonce = verified_slot(a, slots::session(0) + U256::from(5u64), &set)?.to::<u64>();
+    let chain_id = expected_chain(&call("aether_status", json!([]))?)?;
+    Ok(SessionRequest { account: a.to_checksum(None), message: acct::session_message(chain_id, a, 0, nonce, &calls), payments, nonce })
+}
+
+/// The tx the session key's own address sends (it pays the gas).
+#[uniffi::export]
+pub fn prepare_session_submit(session_public_key: Vec<u8>, request: SessionRequest, session_signature: Vec<u8>) -> R<PreparedTx> {
+    let a: Address = request.account.parse().map_err(|_| WalletError::Invalid("account".into()))?;
+    let calls = session_calls(&request.payments)?;
+    let sig = normalize_p256(&session_signature)?;
+    let input = acct::encode_session_execute(&calls, 0, sig[..32].try_into().expect("32"), sig[32..64].try_into().expect("32"));
+    let gas_limit = 120_000 + 40_000 * calls.len() as u64;
+    prepare(&session_public_key, |_| Ok(EvmCall { to: Some(a), value: U256::ZERO, input, gas_limit, delegate: None }))
+}

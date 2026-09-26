@@ -17,11 +17,11 @@ enum Tools {
     static let all: [Spec] = [
         Spec(name: "aether_status", description: "Network status: latest block, validators, the fee of a plain transfer, and how this Mac reaches the network.",
              schema: object([:]), readOnly: true) { _ in try status() },
-        Spec(name: "aether_wallet", description: "The agent's own account: address, balance (verified on this Mac against the validators' signature), spending limits, and how much is left today.",
+        Spec(name: "aether_wallet", description: "The agent's account: address, balance (verified on this Mac against the validators' signature), gas balance, the spending limits the account contract enforces, and how much is left today.",
              schema: object([:]), readOnly: true) { _ in try wallet() },
         Spec(name: "aether_balance", description: "Verified balance and nonce of any address.",
              schema: object(["address": prop("string", "0x address")], required: ["address"]), readOnly: true) { a in try balance(a) },
-        Spec(name: "aether_send", description: "Pay AETH from the agent's account and wait for finality (~seconds). Checked against the owner's spending limits first. Use dry_run to check without paying.",
+        Spec(name: "aether_send", description: "Pay AETH from the agent's account and wait for finality (~seconds). The account contract enforces the owner's limits (per payment, per 24 h, recipients). Use dry_run to check without paying.",
              schema: object(["to": prop("string", "0x recipient"), "amount": prop("string", "AETH, decimal, e.g. \"0.5\""),
                              "dry_run": prop("boolean", "only check limits and fee")], required: ["to", "amount"]), readOnly: false) { a in try send(a) },
         Spec(name: "aether_pay_many", description: "Pay several recipients in ONE transaction (all or nothing). Checked against the spending limits as one total.",
@@ -32,7 +32,7 @@ enum Tools {
              schema: object(["hash": prop("string", "0x tx hash")], required: ["hash"]), readOnly: true) { a in try receiptTool(a) },
         Spec(name: "aether_history", description: "Payments this agent made (newest first).",
              schema: object(["limit": prop("integer", "max entries, default 20")]), readOnly: true) { a in try history(a) },
-        Spec(name: "aether_get_test_tokens", description: "Testnet only: receive 10 test AETH (no value) into the agent's account.",
+        Spec(name: "aether_get_test_tokens", description: "Testnet only: receive 10 test AETH (no value) into the agent's account (rate-limited by the network).",
              schema: object([:]), readOnly: false) { _ in try testTokens() },
     ]
 
@@ -51,9 +51,40 @@ enum Tools {
         }
     }
 
-    private static func agentAddress() throws -> (String, Data) {
-        let pk = Keys.publicKey(try Keys.agent())
-        return (try accountAddress(p256PublicKey: pk), pk)
+    static var validatorCount: UInt32 { configure(); return validators }
+
+    /// The agent's account (owner key's address) and its gas payer (agent key's address).
+    struct Identity {
+        let account: String
+        let gasPayer: String
+        let agentKey: Data
+        let agentCode: String
+    }
+
+    static func identity() throws -> Identity {
+        let owner = Keys.publicKey(try Keys.owner())
+        let agent = Keys.publicKey(try Keys.agent())
+        return Identity(account: try accountAddress(p256PublicKey: owner), gasPayer: try accountAddress(p256PublicKey: agent),
+                        agentKey: agent, agentCode: try recoveryKeyCode(p256PublicKey: agent))
+    }
+
+    private static func aeth(_ wei: String) -> String { Wei(decimal: wei)?.aeth ?? wei }
+
+    /// The on-chain session of the agent's account, if it is this agent's key.
+    static func session(_ id: Identity) throws -> SessionStatus? {
+        let s = try sessionStatus(account: id.account, validators: validators)
+        return s.exists && s.keyCode == id.agentCode ? s : nil
+    }
+
+    static func describe(_ s: SessionStatus) -> [String: Any] {
+        let now = UInt64(Date().timeIntervalSince1970)
+        let spent = now >= s.windowStart + 86_400 ? Wei.zero : (Wei(decimal: s.spentWei) ?? .zero)
+        let day = Wei(decimal: s.perDayWei) ?? .zero
+        return ["per_payment_aeth": aeth(s.perPaymentWei), "per_day_aeth": aeth(s.perDayWei),
+                "left_today_aeth": spent < day ? Wei(value: day.value - spent.value).aeth : "0",
+                "allowed_recipients": s.allow.isEmpty ? ["anyone"] : s.allow,
+                "expires": s.expires == 0 ? "never" : ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: TimeInterval(s.expires))),
+                "enforced_by": "the account contract on chain"]
     }
 
     // MARK: tools
@@ -62,22 +93,21 @@ enum Tools {
         configure()
         let s = try chainStatus()
         return ["chain_id": s.chainId, "height": s.height, "validators": validators, "pending_txs": s.mempool,
-                "transfer_fee_aeth": Wei(decimal: s.transferFeeWei)?.aeth ?? s.transferFeeWei, "connection": connection()]
+                "transfer_fee_aeth": aeth(s.transferFeeWei), "connection": connection()]
     }
 
     static func wallet() throws -> [String: Any] {
         configure()
-        let (addr, _) = try agentAddress()
-        let acc = try verifiedAccount(address: addr, validators: validators)
-        var out: [String: Any] = ["address": addr, "balance_aeth": Wei(decimal: acc.balanceWei)?.aeth ?? acc.balanceWei,
-                                  "verified_at_block": acc.certifiedBlock, "key": "Secure Enclave (cannot be exported)"]
-        if let p = try? PolicyStore.load() {
-            let spent = (try? Ledger.spentLastDay(Ledger.load())) ?? .zero
-            let day = Wei(aeth: p.maxPerDay) ?? .zero
-            out["limits"] = ["per_tx_aeth": p.maxPerTx, "per_day_aeth": p.maxPerDay, "allowed_recipients": p.allow.isEmpty ? ["anyone"] : p.allow]
-            out["left_today_aeth"] = spent < day ? Wei(value: day.value - spent.value).aeth : "0"
+        let id = try identity()
+        let acc = try verifiedAccount(address: id.account, validators: validators)
+        let gas = try verifiedAccount(address: id.gasPayer, validators: validators)
+        var out: [String: Any] = ["address": id.account, "balance_aeth": aeth(acc.balanceWei), "verified_at_block": acc.certifiedBlock,
+                                  "gas_payer": id.gasPayer, "gas_balance_aeth": aeth(gas.balanceWei),
+                                  "keys": "Secure Enclave (cannot be exported); the owner key needs Touch ID"]
+        if let s = try session(id) {
+            out["limits"] = describe(s)
         } else {
-            out["limits"] = "not set: payments are disabled until the owner runs `aether-agent init`"
+            out["limits"] = "not set: payments are disabled until the owner runs `aether-agent policy set` (Touch ID)"
         }
         return out
     }
@@ -86,7 +116,7 @@ enum Tools {
         configure()
         guard let addr = a["address"] as? String else { throw AgentError.input("address") }
         let acc = try verifiedAccount(address: addr, validators: validators)
-        return ["address": acc.address, "balance_aeth": Wei(decimal: acc.balanceWei)?.aeth ?? acc.balanceWei, "nonce": acc.nonce, "verified_at_block": acc.certifiedBlock]
+        return ["address": acc.address, "balance_aeth": aeth(acc.balanceWei), "nonce": acc.nonce, "verified_at_block": acc.certifiedBlock]
     }
 
     static func send(_ a: Args) throws -> [String: Any] {
@@ -103,47 +133,45 @@ enum Tools {
         return try pay(pairs, dryRun: a["dry_run"] as? Bool ?? false)
     }
 
-    /// Policy check, sign in the Secure Enclave, submit, wait for finality, log.
+    /// Check against the on-chain limits (to fail early with a clear message; the
+    /// contract enforces them regardless), sign with the session key, submit from
+    /// the gas payer, wait for finality.
     private static func pay(_ payments: [(String, String)], dryRun: Bool) throws -> [String: Any] {
         configure()
-        let policy = try PolicyStore.load()
-        let ledger = try Ledger.load()
-        let (addr, pk) = try agentAddress()
-        let acc = try verifiedAccount(address: addr, validators: validators)
-        // Only this binary holds the key, so the on-chain nonce counts its payments.
-        guard acc.nonce <= UInt64(ledger.count) else {
-            throw AgentError.policy("ledger.json is missing entries (chain nonce \(acc.nonce), ledger \(ledger.count)); the owner must run `aether-agent policy reset-ledger`")
-        }
+        let id = try identity()
+        guard let s = try session(id) else { throw AgentError.policy("no limits set for this agent; the owner must run `aether-agent policy set`") }
         var total = Wei.zero
-        var parsed: [(String, Wei)] = []
+        var parsed: [Payment] = []
         for (to, amt) in payments {
             guard let w = Wei(aeth: amt), w.value > 0 else { throw AgentError.input("amount \"\(amt)\" is not a positive AETH amount") }
             guard to.hasPrefix("0x"), to.count == 42 else { throw AgentError.input("\(to) is not a 0x address") }
-            guard let perTx = Wei(aeth: policy.maxPerTx), !(perTx < w) else { throw AgentError.policy("\(amt) AETH is over the per-payment limit of \(policy.maxPerTx) AETH") }
-            if !policy.allow.isEmpty && !policy.allow.contains(to.lowercased()) { throw AgentError.policy("\(to) is not on the allowed recipient list") }
-            parsed.append((to, w))
+            if !s.allow.isEmpty && !s.allow.contains(where: { $0.lowercased() == to.lowercased() }) { throw AgentError.policy("\(to) is not an allowed recipient") }
+            parsed.append(Payment(to: to, valueWei: w.description))
             total = total + w
         }
-        let spent = Ledger.spentLastDay(ledger)
-        guard let day = Wei(aeth: policy.maxPerDay), !(day < spent + total) else {
-            throw AgentError.policy("would exceed the daily limit: spent \(spent.aeth) + \(total.aeth) > \(policy.maxPerDay) AETH in 24 h")
-        }
-        guard let bal = Wei(decimal: acc.balanceWei), !(bal < total) else { throw AgentError.policy("balance \(Wei(decimal: acc.balanceWei)?.aeth ?? "?") AETH is less than \(total.aeth)") }
+        let limits = describe(s)
+        let perPayment = Wei(decimal: s.perPaymentWei) ?? .zero
+        if perPayment < total { throw AgentError.policy("\(total.aeth) AETH is over the per-payment limit of \(aeth(s.perPaymentWei)) AETH") }
+        let left = Wei(aeth: limits["left_today_aeth"] as? String ?? "0") ?? .zero
+        if left < total { throw AgentError.policy("only \(left.aeth) AETH left today (limit \(aeth(s.perDayWei)) AETH per 24 h)") }
+        let acc = try verifiedAccount(address: id.account, validators: validators)
+        if (Wei(decimal: acc.balanceWei) ?? .zero) < total { throw AgentError.policy("the account holds \(aeth(acc.balanceWei)) AETH") }
         if dryRun {
-            return ["ok": true, "would_pay_aeth": total.aeth, "left_today_after_aeth": Wei(value: day.value - spent.value - total.value).aeth]
+            return ["ok": true, "would_pay_aeth": total.aeth, "left_today_after_aeth": Wei(value: left.value - total.value).aeth]
         }
-
-        let prepared = parsed.count == 1
-            ? try prepareTransfer(p256PublicKey: pk, to: parsed[0].0, valueWei: parsed[0].1.description)
-            : try prepareBatch(p256PublicKey: pk, payments: parsed.map { Payment(to: $0.0, valueWei: $0.1.description) })
-        let sig = try Keys.agent().signature(for: prepared.signingMessage)
-        let hash = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig.rawRepresentation, p256PublicKey: pk)
-        try Ledger.save([LedgerEntry(date: Date(), to: parsed.map(\.0), totalWei: total.description, hash: hash, nonce: prepared.nonce)] + ledger)
+        let request = try prepareSessionPayment(account: id.account, payments: parsed, validators: validators)
+        let agent = try Keys.agent()
+        let sessionSig = try agent.signature(for: request.message)
+        let prepared = try prepareSessionSubmit(sessionPublicKey: id.agentKey, request: request, sessionSignature: sessionSig.rawRepresentation)
+        let txSig = try agent.signature(for: prepared.signingMessage)
+        let hash = try submitSigned(envelopeJson: prepared.envelopeJson, signature: txSig.rawRepresentation, p256PublicKey: id.agentKey)
+        History.append(HistoryEntry(date: Date(), to: parsed.map(\.to), totalWei: total.description, hash: hash))
         var out: [String: Any] = ["hash": hash, "paid_aeth": total.aeth, "recipients": parsed.count]
         if let r = waitForReceipt(hash) {
             out["final"] = true
             out["success"] = r.success
             out["block"] = r.height
+            if !r.success { out["note"] = "the account contract refused it (limits or recipients changed?); nothing was paid" }
         } else {
             out["final"] = false
             out["note"] = "not final after 30 s; check with aether_receipt"
@@ -169,18 +197,19 @@ enum Tools {
     static func history(_ a: Args) throws -> [String: Any] {
         let limit = (a["limit"] as? Int) ?? Int(a["limit"] as? String ?? "") ?? 20
         let f = ISO8601DateFormatter()
-        let items = try Ledger.load().prefix(max(1, limit)).map { e -> [String: Any] in
-            ["date": f.string(from: e.date), "to": e.to, "total_aeth": Wei(decimal: e.totalWei)?.aeth ?? e.totalWei, "hash": e.hash]
+        let items = History.load().prefix(max(1, limit)).map { e -> [String: Any] in
+            ["date": f.string(from: e.date), "to": e.to, "total_aeth": aeth(e.totalWei), "hash": e.hash]
         }
         return ["payments": Array(items)]
     }
 
     static func testTokens() throws -> [String: Any] {
         configure()
-        let (addr, _) = try agentAddress()
-        let hash = try devnetFaucet(to: addr, valueWei: Wei(aeth: "10")!.description)
+        let id = try identity()
+        let hash = try devnetFaucet(to: id.account, valueWei: "0")
         let r = waitForReceipt(hash)
-        return ["hash": hash, "received_aeth": "10", "final": r != nil]
+        return ["hash": hash, "to": id.account, "received_aeth": "10", "final": r != nil,
+                "next": "Test tokens are in the agent account. Its gas payer needs gas too: the owner's `aether-agent policy set` sends some."]
     }
 
     // MARK: JSON schema helpers

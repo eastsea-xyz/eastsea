@@ -1,6 +1,6 @@
 ---
 name: aether-wallet
-description: Pay and check balances on the Aether network from this Mac. Use when the user asks the agent to send AETH, pay several people, check a balance, confirm a payment, or see what the agent has spent. The key sits in the Secure Enclave, and a spending limit the owner set with Touch ID caps every payment.
+description: Pay and check balances on the Aether network from this Mac. Use when the user asks the agent to send AETH, pay several people, check a balance, confirm a payment, or see what the agent has spent. The key sits in the Secure Enclave, and the account contract enforces the limits the owner set with Touch ID.
 ---
 
 # Aether wallet for agents
@@ -8,7 +8,8 @@ description: Pay and check balances on the Aether network from this Mac. Use whe
 This agent has its own Aether account on this Mac.
 - **Key:** created in the Mac's Secure Enclave. It cannot be exported or copied, even by the agent.
 - **Balances:** checked on this Mac against the validators' threshold signature, not taken from a server.
-- **Limits:** the owner set a per-payment limit, a 24-hour limit and optionally a list of allowed recipients, and signed them with Touch ID. The agent cannot change them.
+- **Limits:** the account contract enforces them on chain: a per-payment limit, a 24-hour limit, and optionally a list of allowed recipients and an expiry. Only the owner can change them, with Touch ID. Nothing the agent runs can get past them.
+- **Gas:** paid from a separate small balance, so gas costs are capped too.
 
 ## When to Use
 

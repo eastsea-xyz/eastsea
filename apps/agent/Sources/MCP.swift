@@ -7,11 +7,12 @@ enum MCPServer {
     static let protocolVersion = "2025-06-18"
 
     static let instructions = """
-    Aether wallet for this agent. The agent has its own account whose key lives in this Mac's Secure Enclave \
-    (it cannot be exported). Balances are verified on this Mac against the validators' threshold signature. \
-    Payments are limited by the owner's Touch ID-signed policy (per payment and per 24 h); if a payment is refused, \
-    tell the human the limit and ask them to change it with `aether-agent policy set` — do not retry around it. \
-    Use aether_send with dry_run first when unsure. Amounts are decimal AETH strings.
+    Aether wallet for this agent. The agent pays from its own account with a key held in this Mac's Secure Enclave \
+    (it cannot be exported). The account contract enforces the owner's limits on chain (per payment, per 24 h, \
+    allowed recipients, expiry); only the owner can change them, with Touch ID. Balances are verified on this Mac \
+    against the validators' threshold signature. If a payment is refused, tell the human the limit and that they can \
+    change it with `aether-agent policy set`; do not retry around it. Use aether_send with dry_run first when unsure. \
+    Amounts are decimal AETH strings.
     """
 
     static func run() {

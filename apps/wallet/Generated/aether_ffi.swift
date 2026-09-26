@@ -1049,6 +1049,274 @@ public func FfiConverterTypeRecoveryStatus_lower(_ value: RecoveryStatus) -> Rus
 }
 
 
+/**
+ * A payment a session key signs for `account` (then `prepare_session_submit`).
+ */
+public struct SessionRequest: Equatable, Hashable {
+    public var account: String
+    public var payments: [Payment]
+    public var nonce: UInt64
+    /**
+     * Sign with the session key (SHA-256 applied by CryptoKit).
+     */
+    public var message: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(account: String, payments: [Payment], nonce: UInt64, 
+        /**
+         * Sign with the session key (SHA-256 applied by CryptoKit).
+         */message: Data) {
+        self.account = account
+        self.payments = payments
+        self.nonce = nonce
+        self.message = message
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension SessionRequest: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSessionRequest: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SessionRequest {
+        return
+            try SessionRequest(
+                account: FfiConverterString.read(from: &buf), 
+                payments: FfiConverterSequenceTypePayment.read(from: &buf), 
+                nonce: FfiConverterUInt64.read(from: &buf), 
+                message: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SessionRequest, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.account, into: &buf)
+        FfiConverterSequenceTypePayment.write(value.payments, into: &buf)
+        FfiConverterUInt64.write(value.nonce, into: &buf)
+        FfiConverterData.write(value.message, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSessionRequest_lift(_ buf: RustBuffer) throws -> SessionRequest {
+    return try FfiConverterTypeSessionRequest.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSessionRequest_lower(_ value: SessionRequest) -> RustBuffer {
+    return FfiConverterTypeSessionRequest.lower(value)
+}
+
+
+/**
+ * From the account owner's key: replace session 0 with `session_code`'s key
+ * under these limits, and send `gas_wei` to the session key's own address so it
+ * can pay for its transactions (which bounds what it can ever spend on gas).
+ * Limits for a session key (amounts in wei).
+ */
+public struct SessionSettings: Equatable, Hashable {
+    /**
+     * The session key as x‖y hex (like a recovery-key code).
+     */
+    public var sessionCode: String
+    public var perPaymentWei: String
+    public var perDayWei: String
+    /**
+     * Unix seconds after which the key stops working (0 = never).
+     */
+    public var expires: UInt64
+    /**
+     * Allowed recipients; empty = anyone.
+     */
+    public var allow: [String]
+    /**
+     * Sent to the session key's own address for its gas.
+     */
+    public var gasWei: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The session key as x‖y hex (like a recovery-key code).
+         */sessionCode: String, perPaymentWei: String, perDayWei: String, 
+        /**
+         * Unix seconds after which the key stops working (0 = never).
+         */expires: UInt64, 
+        /**
+         * Allowed recipients; empty = anyone.
+         */allow: [String], 
+        /**
+         * Sent to the session key's own address for its gas.
+         */gasWei: String) {
+        self.sessionCode = sessionCode
+        self.perPaymentWei = perPaymentWei
+        self.perDayWei = perDayWei
+        self.expires = expires
+        self.allow = allow
+        self.gasWei = gasWei
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension SessionSettings: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSessionSettings: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SessionSettings {
+        return
+            try SessionSettings(
+                sessionCode: FfiConverterString.read(from: &buf), 
+                perPaymentWei: FfiConverterString.read(from: &buf), 
+                perDayWei: FfiConverterString.read(from: &buf), 
+                expires: FfiConverterUInt64.read(from: &buf), 
+                allow: FfiConverterSequenceString.read(from: &buf), 
+                gasWei: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SessionSettings, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.sessionCode, into: &buf)
+        FfiConverterString.write(value.perPaymentWei, into: &buf)
+        FfiConverterString.write(value.perDayWei, into: &buf)
+        FfiConverterUInt64.write(value.expires, into: &buf)
+        FfiConverterSequenceString.write(value.allow, into: &buf)
+        FfiConverterString.write(value.gasWei, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSessionSettings_lift(_ buf: RustBuffer) throws -> SessionSettings {
+    return try FfiConverterTypeSessionSettings.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSessionSettings_lower(_ value: SessionSettings) -> RustBuffer {
+    return FfiConverterTypeSessionSettings.lower(value)
+}
+
+
+/**
+ * Session 0 of an account: its limits and use, proven against certified roots.
+ */
+public struct SessionStatus: Equatable, Hashable {
+    public var exists: Bool
+    /**
+     * The session key's recovery-key-style code (x‖y hex), to match against a device key.
+     */
+    public var keyCode: String
+    public var perPaymentWei: String
+    public var perDayWei: String
+    /**
+     * Paid in the current 24 h window, which started at `window_start` (unix s).
+     */
+    public var spentWei: String
+    public var windowStart: UInt64
+    public var expires: UInt64
+    public var allow: [String]
+    public var nonce: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(exists: Bool, 
+        /**
+         * The session key's recovery-key-style code (x‖y hex), to match against a device key.
+         */keyCode: String, perPaymentWei: String, perDayWei: String, 
+        /**
+         * Paid in the current 24 h window, which started at `window_start` (unix s).
+         */spentWei: String, windowStart: UInt64, expires: UInt64, allow: [String], nonce: UInt64) {
+        self.exists = exists
+        self.keyCode = keyCode
+        self.perPaymentWei = perPaymentWei
+        self.perDayWei = perDayWei
+        self.spentWei = spentWei
+        self.windowStart = windowStart
+        self.expires = expires
+        self.allow = allow
+        self.nonce = nonce
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension SessionStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSessionStatus: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SessionStatus {
+        return
+            try SessionStatus(
+                exists: FfiConverterBool.read(from: &buf), 
+                keyCode: FfiConverterString.read(from: &buf), 
+                perPaymentWei: FfiConverterString.read(from: &buf), 
+                perDayWei: FfiConverterString.read(from: &buf), 
+                spentWei: FfiConverterString.read(from: &buf), 
+                windowStart: FfiConverterUInt64.read(from: &buf), 
+                expires: FfiConverterUInt64.read(from: &buf), 
+                allow: FfiConverterSequenceString.read(from: &buf), 
+                nonce: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SessionStatus, into buf: inout [UInt8]) {
+        FfiConverterBool.write(value.exists, into: &buf)
+        FfiConverterString.write(value.keyCode, into: &buf)
+        FfiConverterString.write(value.perPaymentWei, into: &buf)
+        FfiConverterString.write(value.perDayWei, into: &buf)
+        FfiConverterString.write(value.spentWei, into: &buf)
+        FfiConverterUInt64.write(value.windowStart, into: &buf)
+        FfiConverterUInt64.write(value.expires, into: &buf)
+        FfiConverterSequenceString.write(value.allow, into: &buf)
+        FfiConverterUInt64.write(value.nonce, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSessionStatus_lift(_ buf: RustBuffer) throws -> SessionStatus {
+    return try FfiConverterTypeSessionStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSessionStatus_lower(_ value: SessionStatus) -> RustBuffer {
+    return FfiConverterTypeSessionStatus.lower(value)
+}
+
+
 public struct TxReceipt: Equatable, Hashable {
     public var height: UInt64
     public var success: Bool
@@ -1318,6 +1586,31 @@ fileprivate struct FfiConverterOptionTypeTxReceipt: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
+    typealias SwiftType = [String]
+
+    public static func write(_ value: [String], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterString.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [String] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [String]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterString.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeBlockInfo: FfiConverterRustBuffer {
     typealias SwiftType = [BlockInfo]
 
@@ -1477,6 +1770,29 @@ public func prepareRecoverySubmit(p256PublicKey: Data, request: RecoveryRequest,
     )
 })
 }
+public func prepareSessionPayment(account: String, payments: [Payment], validators: UInt32)throws  -> SessionRequest  {
+    return try  FfiConverterTypeSessionRequest_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_prepare_session_payment(
+        FfiConverterString.lower(account),
+        FfiConverterSequenceTypePayment.lower(payments),
+        FfiConverterUInt32.lower(validators),uniffiCallStatus
+    )
+})
+}
+/**
+ * The tx the session key's own address sends (it pays the gas).
+ */
+public func prepareSessionSubmit(sessionPublicKey: Data, request: SessionRequest, sessionSignature: Data)throws  -> PreparedTx  {
+    return try  FfiConverterTypePreparedTx_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_prepare_session_submit(
+        FfiConverterData.lower(sessionPublicKey),
+        FfiConverterTypeSessionRequest_lower(request),
+        FfiConverterData.lower(sessionSignature),uniffiCallStatus
+    )
+})
+}
 /**
  * Make the device with `recovery_code` able to recover this account after a
  * 48-hour delay that this account can cancel (delegates to AetherAccount first
@@ -1488,6 +1804,16 @@ public func prepareSetRecoveryKey(p256PublicKey: Data, recoveryCode: String)thro
     uniffi_aether_ffi_fn_func_prepare_set_recovery_key(
         FfiConverterData.lower(p256PublicKey),
         FfiConverterString.lower(recoveryCode),uniffiCallStatus
+    )
+})
+}
+public func prepareSetSession(ownerPublicKey: Data, settings: SessionSettings, validators: UInt32)throws  -> PreparedTx  {
+    return try  FfiConverterTypePreparedTx_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_prepare_set_session(
+        FfiConverterData.lower(ownerPublicKey),
+        FfiConverterTypeSessionSettings_lower(settings),
+        FfiConverterUInt32.lower(validators),uniffiCallStatus
     )
 })
 }
@@ -1536,6 +1862,15 @@ public func recoveryStatus(account: String, validators: UInt32)throws  -> Recove
     return try  FfiConverterTypeRecoveryStatus_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
         uniffiCallStatus in
     uniffi_aether_ffi_fn_func_recovery_status(
+        FfiConverterString.lower(account),
+        FfiConverterUInt32.lower(validators),uniffiCallStatus
+    )
+})
+}
+public func sessionStatus(account: String, validators: UInt32)throws  -> SessionStatus  {
+    return try  FfiConverterTypeSessionStatus_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_session_status(
         FfiConverterString.lower(account),
         FfiConverterUInt32.lower(validators),uniffiCallStatus
     )
@@ -1623,7 +1958,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_aether_ffi_checksum_func_prepare_recovery_submit() != 54585) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_aether_ffi_checksum_func_prepare_session_payment() != 52994) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_prepare_session_submit() != 33086) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_aether_ffi_checksum_func_prepare_set_recovery_key() != 4596) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_prepare_set_session() != 28576) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_prepare_transfer() != 24792) {
@@ -1639,6 +1983,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_recovery_status() != 60275) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_session_status() != 62054) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_set_committee_identity() != 9931) {

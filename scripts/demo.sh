@@ -46,4 +46,4 @@ done
 
 say "Recent blocks"
 $A blocks 8
-say "Devnet keeps running. Stop it with: scripts/devnet.sh stop"
+say "Devnet keeps running. Stop it with: AETHER_DEVNET_DIR=$AETHER_DEVNET_DIR scripts/devnet.sh stop"

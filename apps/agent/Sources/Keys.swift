@@ -10,8 +10,7 @@ enum Paths {
     }()
     static let agentKey = dir.appendingPathComponent("agent.key")
     static let ownerKey = dir.appendingPathComponent("owner.key")
-    static let policy = dir.appendingPathComponent("policy.json")
-    static let ledger = dir.appendingPathComponent("ledger.json")
+    static let history = dir.appendingPathComponent("history.json")
     static let network = dir.appendingPathComponent("network.json")
 
     static func ensure() throws {
@@ -25,14 +24,18 @@ enum Paths {
     }
 }
 
-/// Two Secure Enclave keys. The files hold only SE-wrapped blobs: they are
-/// useless on any other Mac and cannot be turned back into a private key, so an
-/// agent that reads its own files still cannot steal them.
+/// Two Secure Enclave keys. The files hold only SE-wrapped blobs: useless on any
+/// other Mac and never exportable.
 ///
-/// - agent key: signs the agent's payments without a prompt (spending is bounded
-///   by the owner-signed policy and by the account balance).
-/// - owner key: requires Touch ID / password for every signature; it signs the
-///   spending policy, so only the human can raise limits.
+/// - owner key: the agent account's own key. Every signature needs Touch ID or
+///   the login password, so only the human can change the account (limits,
+///   recipients, recovery, moving funds out).
+/// - agent key: a session key of that account. It signs payments without a
+///   prompt, and the account contract caps them (per payment, per 24 h,
+///   recipients, expiry). Its own address holds the gas money, which caps gas.
+///
+/// Swapping key files cannot raise the limits: they are on chain, set by a
+/// transaction only the owner key can sign.
 enum Keys {
     static func agent(create: Bool = false) throws -> SecureEnclave.P256.Signing.PrivateKey {
         if let blob = try? Data(contentsOf: Paths.agentKey) {
@@ -72,8 +75,8 @@ enum AgentError: Error, CustomStringConvertible {
 
     var description: String {
         switch self {
-        case .notInitialized: "Agent wallet not set up. A human must run `aether-agent init` once (asks for Touch ID)."
-        case .policy(let m): "Refused by spending policy: \(m)"
+        case .notInitialized: "Agent wallet not set up. A human must run `aether-agent init` once."
+        case .policy(let m): "Refused by the account's spending limits: \(m)"
         case .input(let m): "Invalid input: \(m)"
         case .io(let m): m
         }

@@ -22,7 +22,7 @@
   - They connect over iroh QUIC with hole punching, and fall back to a relay when that fails.
 - **Built for AI agents too.**
   - `aether-agent` gives Claude Code, Codex, Antigravity, OpenClaw, Hermes or any MCP client a wallet.
-  - Its key sits in the Secure Enclave, and its spending limits are ones only you can change, with Touch ID.
+  - Its key sits in the Secure Enclave, and the account contract enforces its spending limits on chain; only you can change them, with Touch ID.
 
 ## Try it
 
@@ -49,13 +49,13 @@ scripts/build-wallet.sh ios-sim   # iOS Simulator
 
 ```bash
 scripts/build-agent.sh --install   # ~/.local/bin/aether-agent
-aether-agent init                  # you, once: create keys and default limits (Touch ID)
+aether-agent init                  # you, once: create keys; fund the account, then set limits (Touch ID)
 aether-agent setup all --apply     # register the MCP server "aether" with every agent tool you have installed
 ```
 
 - **Tools:** status, wallet, balance, send, pay_many (one transaction), receipt, history.
 - **Default limits:** 1 AETH per payment and 10 AETH per 24 hours. Change them with `aether-agent policy set`, which asks for Touch ID.
-- **Tamper checks:** if an agent edits the policy file, spending stops. The spend log is signed and cross-checked with the on-chain nonce.
+- **Enforced on chain:** the agent pays with a session key of its account; the contract checks every payment against the limits, the allowed recipients and the expiry. No local file or process can get past them. Gas comes from a separate small balance.
 - Details: [AGENTS.md](AGENTS.md) and [the skill file](agents/skills/aether-wallet/SKILL.md).
 
 ### Run a real network

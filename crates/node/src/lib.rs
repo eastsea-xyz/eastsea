@@ -4,6 +4,7 @@ pub mod chain;
 pub mod dkg;
 pub mod engine;
 pub mod epochs;
+pub mod faucet;
 pub mod inclusion;
 pub mod p2p;
 pub mod roster;

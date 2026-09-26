@@ -8,8 +8,8 @@
 
 uniffi::setup_scaffolding!();
 
-use aether_crypto::{address_of, P256Signer, PublicKey, Signer};
-use aether_execution::{sign_call, EvmCall};
+use aether_crypto::{address_of, PublicKey};
+use aether_execution::EvmCall;
 use aether_light::{from_hex, verify_account, verify_finalized, ValidatorSet, VerifiedBlock};
 use aether_state::Proof;
 use aether_types::{Address, Bytes, FeeVector, GasVector, SignerScheme, TxEnvelope, TxHash, TxHeader, TxPayload, U256};
@@ -366,22 +366,13 @@ pub fn recent_blocks(n: u32) -> R<Vec<BlockInfo>> {
         .collect())
 }
 
-/// Devnet faucet: send test coins (zero value) from the public dev account 10.
+/// Test tokens (zero value) from the node's faucet, rate-limited by the node.
 #[uniffi::export]
 pub fn devnet_faucet(to: String, value_wei: String) -> R<String> {
-    let mut seed = [0u8; 32];
-    seed[0] = 0xae;
-    seed[31] = 10;
-    let signer = P256Signer::from_seed(&seed).map_err(|e| WalletError::Invalid(e.to_string()))?;
-    let from = address_of(&signer.public_key()).map_err(|e| WalletError::Invalid(e.to_string()))?;
+    // The node's faucet decides the amount and rate limits; `value_wei` is kept for API compatibility.
+    let _ = value_wei;
     let to: Address = to.parse().map_err(|_| WalletError::Invalid("address".into()))?;
-    let value: U256 = value_wei.parse().map_err(|_| WalletError::Invalid("amount".into()))?;
-    let chain_id = call("aether_status", json!([]))?["chain_id"].as_u64().unwrap_or_default();
-    let nonce_hex = call("eth_getTransactionCount", json!([from]))?;
-    let nonce = u64::from_str_radix(nonce_hex.as_str().unwrap_or("0x0").trim_start_matches("0x"), 16).unwrap_or(0);
-    let tx = sign_call(&signer, chain_id, nonce, 1, &EvmCall { to: Some(to), value, input: Bytes::new(), gas_limit: 21_000, delegate: None })
-        .map_err(|e| WalletError::Invalid(e.to_string()))?;
-    let v = call("aether_sendTransaction", json!([tx]))?;
+    let v = call("aether_faucet", json!([to]))?;
     Ok(v["hash"].as_str().unwrap_or_default().to_string())
 }
 

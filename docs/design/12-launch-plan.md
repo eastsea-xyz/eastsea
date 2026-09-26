@@ -14,8 +14,8 @@
 | # | 단계 | 완료 기준 | 상태 |
 |---|---|---|---|
 | 1 | **결정론적 시뮬레이션 soak** (`crates/node/tests/sim.rs`): Commonware deterministic runtime과 simulated p2p로 검증자 N대, 패킷 손실·지연·파티션·크래시 재시작·비잔틴(침묵) 주입 | 시드별 재현 가능. 안전성(확정 충돌 0), 활동성(장애 해소 후 진행), 모든 노드 상태 루트 일치. 기본 시드 묶음이 CI에서 통과. 긴 soak(수십만 블록)은 ignored 테스트 | ✅ 기본 4개 시나리오 통과(가상 90초가 약 7초). 긴 soak: `AETHER_SIM_SEEDS`·`AETHER_SIM_SECS` |
-| 2 | **적대 감사 파이프라인** (`scripts/audit.sh`): 변경분을 Claude·Codex 등 여러 모델이 독립 검토 후 교차 검증, 퍼징(cargo-fuzz: 트랜잭션 디코드, BAL, 증명), Quint 모델 체크 | 스크립트 한 번으로 실행. 확인된 결함 0이어야 머지 | |
-| 3 | **testnet 제네시스 정리**: 공개 dev 키 제거, faucet 계정 키는 운영자 Mac Secure Enclave, faucet 속도 제한, 체인 ID 확정 | 공개 키로 인출할 수 있는 잔액 0. faucet은 주소·기기당 제한 | |
+| 2 | **적대 감사 파이프라인** (`scripts/audit.sh`): 변경분을 Claude·Codex 등 여러 모델이 독립 검토 후 교차 검증, 퍼징(cargo-fuzz: 트랜잭션 디코드, BAL, 증명), Quint 모델 체크 | 스크립트 한 번으로 실행. 확인된 결함 0이어야 머지 | ✅ `scripts/audit.sh`, `tests/robustness.rs`. Quint 명세는 아직 없음(설계 문서에만 언급) → 12단계 전에 작성 |
+| 3 | **testnet 제네시스 정리**: 공개 dev 키 제거, faucet 계정 키는 운영자 Mac Secure Enclave, faucet 속도 제한, 체인 ID 확정 | 공개 키로 인출할 수 있는 잔액 0. faucet은 주소·기기당 제한 | ✅ `aether faucet-key`, `network --faucet`, RPC `aether_faucet`(주소당 24시간, 전역 초당 1회). 제네시스는 faucet만 충전. 로컬 devnet만 공개 dev 키. 기기당 제한은 7단계. faucet 키는 파일(0600)이고 Secure Enclave 이전은 8단계 Mac 노드 앱에서 |
 | 4 | **지갑 복구 강화**: 복수 가디언(k-of-n), 48시간 타임락, 주인 취소, 새 소유 키 추가(주소 유지) | 컨트랙트·FFI·앱 테스트. 탈취 시나리오(가디언 단독 즉시 인출 불가) 테스트 | |
 | 5 | **업그레이드 매니페스트**: 버전·활성화 높이·바이너리 해시를 위원회 임계 서명으로 확정, 노드는 서명이 유효할 때만 해당 높이에서 규칙 전환 | 운영자 단독으로 규칙을 바꿀 수 없음. 시뮬레이션에서 무중단 전환 확인 | |
 | 6 | **증명 체인 연결**: D6 해시 결정(BLAKE3 + Jolt Metal), 노드에 Jolt 검증기, R3 에스크로 지급 연결 | 제출된 청크 증명을 검증자가 검증하고 첫 유효 증명에 지급. 증명 지연 지표 노출 | |

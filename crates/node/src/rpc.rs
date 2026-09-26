@@ -22,6 +22,8 @@ pub struct RpcState {
     pub marshal: Marshal,
     /// Accepted txs are forwarded here for p2p gossip.
     pub gossip: mpsc::UnboundedSender<TxEnvelope>,
+    /// Set on nodes run with the faucet key.
+    pub faucet: Option<std::sync::Arc<crate::faucet::Faucet>>,
 }
 
 pub async fn serve(addr: SocketAddr, state: RpcState) -> std::io::Result<()> {
@@ -88,6 +90,16 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                 "mempool": g.mempool.len(),
                 "hash_function": "poseidon2-koalabear-16",
             }))
+        }
+        "aether_faucet" => {
+            let to: Address = param(p, 0)?;
+            let f = st.faucet.as_ref().ok_or((-32601, "this node does not run the faucet".to_string()))?;
+            let tx = f.grant(chain, to, std::time::Instant::now()).map_err(|e| (-32000, e.to_string()))?;
+            let hash = aether_execution::tx_hash(&tx);
+            if chain.add_to_mempool(tx.clone()) {
+                let _ = st.gossip.send(tx);
+            }
+            Ok(json!({ "hash": hash, "amount_wei": crate::faucet::GRANT.to_string() }))
         }
         "aether_sendTransaction" => {
             let tx: TxEnvelope = param(p, 0)?;

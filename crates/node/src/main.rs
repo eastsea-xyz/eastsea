@@ -76,6 +76,10 @@ enum Cmd {
         /// Devnet: skip this sender in mempool ordering; its txs land only via inclusion lists.
         #[arg(long, hide = true)]
         dev_deprioritize: Option<Address>,
+        /// Answer `aether_faucet` with this key (from `aether faucet-key`). A local
+        /// devnet (no --network) uses its public dev account 10 instead.
+        #[arg(long)]
+        faucet_key: Option<String>,
     },
     /// Distributed key generation for the committee (run on every validator at
     /// once). Writes <data>/threshold.json with this validator's secret share
@@ -138,10 +142,19 @@ enum Cmd {
         #[arg(long)]
         data: String,
     },
+    /// Create the testnet faucet key at <data>/faucet.key and print its address
+    /// (put it in network.json with `aether network --faucet`).
+    FaucetKey {
+        #[arg(long)]
+        data: String,
+    },
     /// Assemble network.json from validators' validator.pub.json files (in validator order).
     Network {
         #[arg(long, default_value_t = DEFAULT_CHAIN_ID)]
         chain_id: u64,
+        /// Faucet address (from `aether faucet-key`): the only account funded at genesis.
+        #[arg(long)]
+        faucet: Option<Address>,
         members: Vec<String>,
     },
     /// List the public development accounts (funded at genesis; never use for value).
@@ -266,7 +279,7 @@ enum Cmd {
 fn main() {
     let cli = Cli::parse();
     let res = match cli.cmd {
-        Cmd::Node { index, validators, network, port, rpc_port, data, peers, link_base, offline, block_time_ms, dev_censor, dev_deprioritize } => {
+        Cmd::Node { index, validators, network, port, rpc_port, data, peers, link_base, offline, block_time_ms, dev_censor, dev_deprioritize, faucet_key } => {
             let with_file = network.is_some();
             p2p_args(index, validators, network, &data, port, peers, link_base, offline)
                 .and_then(|args| {
@@ -275,11 +288,14 @@ fn main() {
                     }
                     Ok(args)
                 })
-                .map(|(p2p, chain_id, epochs, key_round)| {
-                    run_node(NodeArgs { p2p, chain_id, epochs, key_round, rpc_port, data, block_time_ms, dev_censor, dev_deprioritize });
+                .map(|(p2p, chain_id, epochs, key_round, faucet)| {
+                    run_node(NodeArgs { p2p, chain_id, epochs, key_round, rpc_port, data, block_time_ms, dev_censor, dev_deprioritize, faucet, faucet_key });
                 })
         }
         Cmd::Keygen { data } => keygen(&data),
+        Cmd::FaucetKey { data } => aether_node::faucet::Faucet::generate(&std::path::Path::new(&data).join("faucet.key")).map(|a| {
+            println!("faucet address {a}\nkey written to {data}/faucet.key (keep it on this machine; run the node with --faucet-key)");
+        }),
         Cmd::Head { data } => (|| {
             let store = aether_node::store::Store::open(&std::path::Path::new(&data).join("state.redb")).map_err(|e| e.to_string())?;
             let (h, d) = store.head().map_err(|e| e.to_string())?.ok_or("no finalized state")?;
@@ -290,7 +306,7 @@ fn main() {
             let boundary = aether_node::roster::EpochStart { height: epoch_end + 1, parent: epoch_end_hash };
             reshare(&from, &to, boundary, port, data, peers, link_base, offline)
         }
-        Cmd::Network { chain_id, members } => assemble_network(chain_id, &members),
+        Cmd::Network { chain_id, faucet, members } => assemble_network(chain_id, faucet, &members),
         Cmd::DevAccounts => {
             for (i, a) in dev_accounts(DEV_ACCOUNTS) {
                 println!("dev {i:>2}  {a}");
@@ -374,7 +390,8 @@ fn main() {
         Cmd::Balance { address, rpc, validators, identity } => trusted(validators, identity).and_then(|set| verified_balance(&rpc, address, &set)),
         Cmd::Storage { address, slot, rpc, validators, identity } => trusted(validators, identity).and_then(|set| verified_storage(&rpc, address, slot, &set)),
         Cmd::Dkg { index, validators, network, port, data, peers, link_base, offline, round } => {
-            p2p_args(index, validators, network, &data, port, peers, link_base, offline).map(|(p2p, chain_id, _, _)| run_dkg(p2p, chain_id, data, round))
+            p2p_args(index, validators, network, &data, port, peers, link_base, offline)
+                .map(|(p2p, chain_id, _, _, faucet)| run_dkg(p2p, chain_id, data, round, faucet))
         }
         Cmd::Receipt { hash, rpc } => call(&rpc, "aether_getReceipt", json!([hash])).map(|v| println!("{}", pretty(&v))),
     };
@@ -384,14 +401,17 @@ fn main() {
     }
 }
 
-fn chain_config(chain_id: u64) -> ChainConfig {
-    ChainConfig {
-        chain_id,
-        limits: GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
-        alloc: dev_accounts(DEV_ACCOUNTS).into_iter().map(|(_, a)| (a, U256::from(DEV_BALANCE))).collect(),
-        fees: true,
-    }
+/// Genesis: a public network funds only its faucet; a local devnet funds the public dev accounts.
+fn chain_config(chain_id: u64, faucet: Option<Address>) -> ChainConfig {
+    let alloc = match faucet {
+        Some(f) => vec![(f, U256::from(aether_node::faucet::SUPPLY))],
+        None => dev_accounts(DEV_ACCOUNTS).into_iter().map(|(_, a)| (a, U256::from(DEV_BALANCE))).collect(),
+    };
+    ChainConfig { chain_id, limits: GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 }, alloc, fees: true }
 }
+
+/// p2p args, chain id, epoch starts, expected key round, genesis faucet.
+type P2pSetup = (P2pArgs, u64, Vec<aether_node::roster::EpochStart>, Option<u64>, Option<Address>);
 
 /// Who we are and who the others are: from --network + <data>/validator.key,
 /// or the public devnet keys (--index/--validators).
@@ -405,9 +425,9 @@ fn p2p_args(
     peers: Vec<String>,
     link_base: Option<u16>,
     offline: bool,
-) -> Result<(P2pArgs, u64, Vec<aether_node::roster::EpochStart>, Option<u64>), String> {
+) -> Result<P2pSetup, String> {
     use aether_node::roster::{LocalKeys, NetworkFile, Roster};
-    let (roster, keys, index, chain_id, epochs, round) = match network {
+    let (roster, keys, index, chain_id, epochs, round, faucet) = match network {
         Some(path) => {
             let file = NetworkFile::load(std::path::Path::new(&path))?;
             let roster = Roster::from_file(&file)?;
@@ -415,11 +435,11 @@ fn p2p_args(
             let index = roster.index_of(&keys.signer.public_key()).ok_or("this machine's validator key is not in network.json")?;
             // A network file with an identity names the key round its shares must be from.
             let round = file.identity.as_ref().map(|_| file.round);
-            (roster, keys, index, file.chain_id, file.epochs, round)
+            (roster, keys, index, file.chain_id, file.epochs, round, file.faucet)
         }
         None => {
             let (index, n) = (index.ok_or("--index (or --network)")?, n.ok_or("--validators (or --network)")?);
-            (Roster::devnet(n), LocalKeys::devnet(index), index, DEFAULT_CHAIN_ID, vec![], None)
+            (Roster::devnet(n), LocalKeys::devnet(index), index, DEFAULT_CHAIN_ID, vec![], None, None)
         }
     };
     let transport = if peers.iter().any(|p| !p.is_empty()) {
@@ -428,7 +448,7 @@ fn p2p_args(
         Transport::Iroh { link_base: link_base.unwrap_or(20_000 + 100 * index as u16) }
     };
     let n = roster.len();
-    Ok((P2pArgs { index, n, roster, keys, port, transport, offline, max_message: MAX_BLOCK_BYTES + 1024 * 1024 }, chain_id, epochs, round))
+    Ok((P2pArgs { index, n, roster, keys, port, transport, offline, max_message: MAX_BLOCK_BYTES + 1024 * 1024 }, chain_id, epochs, round, faucet))
 }
 
 /// Reshare: p2p over the union of both validator sets; old members deal with
@@ -487,6 +507,8 @@ fn reshare(
             let file = aether_node::dkg::KeyFile::new(next_round, &output, &share);
             write_secret(&dir.join("threshold.json"), &serde_json::to_vec_pretty(&file).expect("json"));
             let mut public = new_file.clone();
+            // Same chain, same genesis: keep its faucet even if the new roster file omits it.
+            public.faucet = old_file.faucet.or(public.faucet);
             public.epochs = old_file.epochs.clone();
             public.epochs.push(boundary);
             public.identity = Some(file.identity.clone());
@@ -536,12 +558,12 @@ fn keygen(data: &str) -> Result<(), String> {
 }
 
 /// Combine validators' public entries (validator.pub.json files) into network.json on stdout.
-fn assemble_network(chain_id: u64, members: &[String]) -> Result<(), String> {
+fn assemble_network(chain_id: u64, faucet: Option<Address>, members: &[String]) -> Result<(), String> {
     let validators = members
         .iter()
         .map(|p| std::fs::read(p).map_err(|e| format!("{p}: {e}")).and_then(|b| serde_json::from_slice(&b).map_err(|e| format!("{p}: {e}"))))
         .collect::<Result<Vec<aether_node::roster::Member>, String>>()?;
-    let file = aether_node::roster::NetworkFile { chain_id, validators, identity: None, round: 0, output: None, epochs: vec![] };
+    let file = aether_node::roster::NetworkFile { chain_id, validators, identity: None, round: 0, output: None, epochs: vec![], faucet };
     aether_node::roster::Roster::from_file(&file)?;
     println!("{}", serde_json::to_string_pretty(&file).expect("json"));
     Ok(())
@@ -558,11 +580,26 @@ struct NodeArgs {
     block_time_ms: u64,
     dev_censor: Option<Address>,
     dev_deprioritize: Option<Address>,
+    /// Genesis faucet account from network.json (None: local devnet).
+    faucet: Option<Address>,
+    faucet_key: Option<String>,
 }
 
 fn run_node(a: NodeArgs) {
     tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,commonware=warn".into())).init();
-    let NodeArgs { p2p, chain_id, epochs, key_round, rpc_port, block_time_ms, dev_censor, dev_deprioritize, data } = a;
+    let NodeArgs { p2p, chain_id, epochs, key_round, rpc_port, block_time_ms, dev_censor, dev_deprioritize, data, faucet, faucet_key } = a;
+    let faucet_service = match (&faucet_key, faucet) {
+        (Some(path), expected) => {
+            let f = aether_node::faucet::Faucet::load(std::path::Path::new(path)).expect("load --faucet-key");
+            if let Some(e) = expected {
+                assert_eq!(f.address, e, "--faucet-key is not the faucet in network.json");
+            }
+            Some(std::sync::Arc::new(f))
+        }
+        // Local devnet: public dev account 10 (funded at genesis) hands out test tokens.
+        (None, None) => Some(std::sync::Arc::new(aether_node::faucet::Faucet::from_seed(&dev_seed(DEV_ACCOUNTS)).expect("dev faucet"))),
+        (None, Some(_)) => None,
+    };
     let (index, port) = (p2p.index, p2p.port);
     assert!(!p2p.offline || matches!(p2p.transport, Transport::Tcp(_)), "--offline needs --peers");
     let signer = p2p.keys.signer.clone();
@@ -571,7 +608,7 @@ fn run_node(a: NodeArgs) {
     let p2p_cfg = aether_node::p2p::config(&p2p, b"_P2P");
     let links = matches!(p2p.transport, Transport::Iroh { .. });
     let executor = cw_tokio::Runner::new(cw_tokio::Config::new().with_storage_directory(&data));
-    let cfg = chain_config(chain_id);
+    let cfg = chain_config(chain_id, faucet);
 
     executor.start(async move |context| {
         // Public endpoint first: validator links and wallet RPC share it.
@@ -683,7 +720,10 @@ fn run_node(a: NodeArgs) {
 
         spawn_inclusion_lists(chain.clone(), signer.clone(), index, roster_keys, cfg.chain_id, Duration::from_millis(block_time_ms), il_out, il_in);
 
-        let rpc_state = RpcState { chain, marshal: marshal_mailbox, gossip: gossip_tx };
+        if let Some(f) = &faucet_service {
+            tracing::info!(address = %f.address, "faucet enabled (aether_faucet)");
+        }
+        let rpc_state = RpcState { chain, marshal: marshal_mailbox, gossip: gossip_tx, faucet: faucet_service };
 
         // Public access: iroh endpoint published to the BitTorrent Mainline DHT.
         // Wallets find this node by its id alone and verify everything they get;
@@ -710,13 +750,15 @@ fn run_node(a: NodeArgs) {
     });
 }
 
-fn run_dkg(p2p: P2pArgs, chain_id: u64, data: String, round: u64) {
+fn run_dkg(p2p: P2pArgs, chain_id: u64, data: String, round: u64, faucet: Option<Address>) {
     tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,commonware=warn".into())).init();
     let dir = std::path::PathBuf::from(&data);
     std::fs::create_dir_all(&dir).expect("data dir");
     let out_path = dir.join("threshold.json");
     let executor = cw_tokio::Runner::new(cw_tokio::Config::new().with_storage_directory(dir.join("dkg-runtime")));
     let (mut public, dir_out) = (p2p.roster.to_file(chain_id), dir.clone());
+    // Genesis facts survive the ceremony: the network.json it writes still names the faucet.
+    public.faucet = faucet;
     let result = executor.start(async move |context| {
         // Accept incoming validator links (the node's RPC is not needed here).
         let _router = aether_node::p2p::open_public(&p2p).await.map(|ep| aether_net::serve_p2p(ep, loopback(p2p.port)));

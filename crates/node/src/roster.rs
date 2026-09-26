@@ -51,6 +51,9 @@ pub struct NetworkFile {
     /// Committee changes so far (one per reshare), oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub epochs: Vec<EpochStart>,
+    /// The only account funded at genesis on a public network (no public dev keys).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub faucet: Option<aether_types::Address>,
 }
 
 impl NetworkFile {
@@ -136,6 +139,7 @@ impl Roster {
             round: 0,
             output: None,
             epochs: Vec::new(),
+            faucet: None,
         }
     }
 }

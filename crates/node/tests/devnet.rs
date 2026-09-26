@@ -371,9 +371,13 @@ fn locally_generated_keys_network_file_dkg_and_consensus() {
     assert_eq!(std::fs::metadata(data(0).join("validator.key")).unwrap().permissions().mode() & 0o777, 0o600);
     assert!(!Command::new(BIN).args(["keygen", "--data", data(0).to_str().unwrap()]).status().unwrap().success(), "keygen must not overwrite");
 
-    // 2. assemble network.json from the public halves.
+    // 2. a faucet key on validator 1's machine, then network.json from the public
+    //    halves: genesis funds only the faucet (no public dev keys).
+    let out = Command::new(BIN).args(["faucet-key", "--data", data(0).to_str().unwrap()]).output().unwrap();
+    assert!(out.status.success());
+    let faucet_addr = String::from_utf8_lossy(&out.stdout).split_whitespace().nth(2).unwrap().to_string();
     let pubs: Vec<String> = (0..n).map(|i| data(i).join("validator.pub.json").to_str().unwrap().to_string()).collect();
-    let out = Command::new(BIN).arg("network").args(&pubs).output().unwrap();
+    let out = Command::new(BIN).args(["network", "--faucet", &faucet_addr]).args(&pubs).output().unwrap();
     assert!(out.status.success());
     let network = dir.join("network.json");
     std::fs::write(&network, &out.stdout).unwrap();
@@ -383,7 +387,15 @@ fn locally_generated_keys_network_file_dkg_and_consensus() {
     let p2p: Vec<u16> = (0..n).map(|_| free_port()).collect();
     let rpc: Vec<u16> = (0..n).map(|_| free_port()).collect();
     // Nodes run from the network.json each DKG wrote (it adds the identity).
-    let extra = (0..n).map(|i| vec!["--network".to_string(), data(i).join("network.json").to_str().unwrap().to_string()]).collect();
+    let extra = (0..n)
+        .map(|i| {
+            let mut a = vec!["--network".to_string(), data(i).join("network.json").to_str().unwrap().to_string()];
+            if i == 0 {
+                a.extend(["--faucet-key".to_string(), data(0).join("faucet.key").to_str().unwrap().to_string()]);
+            }
+            a
+        })
+        .collect();
     let mut net = Net::prepared(dir.clone(), p2p, rpc, extra);
     let dkg: Vec<Child> = (0..n)
         .map(|i| {
@@ -411,11 +423,19 @@ fn locally_generated_keys_network_file_dkg_and_consensus() {
     for i in 0..n {
         net.wait_height(i, 3, 60);
     }
+    // 5. public dev keys hold nothing here; test tokens come only from the faucet.
+    let dev = dev_address(3);
+    let dev_bal = net.cli(&["balance", &dev, "--rpc", &net.url(2), "--identity", &identity]);
+    assert!(dev_bal.contains("balance   0 wei"), "a public dev key is funded on a public network: {dev_bal}");
     let bob = "0x000000000000000000000000000000000000cafe";
-    net.cli(&["send", "--rpc", &net.url(1), "--from-dev", "3", "--to", bob, "--value", "5", "--wait"]);
-    net.wait_height(3, net.height(1), 20);
+    assert!(net.rpc(1, "aether_faucet", json!([bob])).is_none(), "only the node with the faucet key answers");
+    let grant = net.rpc(0, "aether_faucet", json!([bob])).expect("faucet grant");
+    wait_receipt(&net, 0, grant["hash"].as_str().unwrap(), 30);
+    net.wait_height(3, net.height(0), 20);
     let bal = net.cli(&["balance", bob, "--rpc", &net.url(3), "--identity", &identity]);
-    assert!(bal.contains("balance   5 wei") && bal.contains("verified  ✓"), "{bal}");
+    assert!(bal.contains("balance   10000000000000000000 wei") && bal.contains("verified  ✓"), "{bal}");
+    std::thread::sleep(Duration::from_millis(1_100));
+    assert!(net.rpc(0, "aether_faucet", json!([bob])).is_none(), "second grant to the same address within the cooldown");
 }
 
 fn run_ok(args: &[&str]) -> String {

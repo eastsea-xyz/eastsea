@@ -49,7 +49,7 @@ pub struct Witness {
 #[jolt::provable(max_input_size = 1048576, heap_size = 268435456, stack_size = 4194304, max_trace_length = 67108864)]
 fn prove_block(witness: Vec<u8>) -> [u8; 32] {
     accelerate();
-    let w: Witness = serde_json::from_slice(&witness).expect("witness");
+    let w: Witness = postcard::from_bytes(&witness).expect("witness");
     let pre = WorldState::from_parts(w.entries, Default::default());
     let ctx = BlockContext {
         chain_id: w.chain_id,
@@ -67,14 +67,14 @@ fn prove_block(witness: Vec<u8>) -> [u8; 32] {
 #[jolt::provable(max_input_size = 1048576, heap_size = 268435456, stack_size = 4194304, max_trace_length = 67108864)]
 fn verify_signatures(witness: Vec<u8>) -> u32 {
     accelerate();
-    let w: Witness = serde_json::from_slice(&witness).expect("witness");
+    let w: Witness = postcard::from_bytes(&witness).expect("witness");
     w.txs.iter().filter(|t| aether_execution::validate_stateless(t, w.chain_id).is_ok()).count() as u32
 }
 
 /// Debug: root of the pre-state alone (tree + Poseidon2, no execution).
 #[jolt::provable(max_input_size = 1048576, heap_size = 268435456, stack_size = 4194304, max_trace_length = 67108864)]
 fn pre_root(witness: Vec<u8>) -> [u8; 32] {
-    let w: Witness = serde_json::from_slice(&witness).expect("witness");
+    let w: Witness = postcard::from_bytes(&witness).expect("witness");
     WorldState::from_parts(w.entries, Default::default()).root().0
 }
 
@@ -95,7 +95,7 @@ fn aether_hash_probe(h: &aether_execution::ChainHasher, x: &[u8; 32]) -> [u8; 32
 #[jolt::provable(max_input_size = 1048576, heap_size = 268435456, stack_size = 4194304, max_trace_length = 67108864, backtrace = "dwarf")]
 fn block_error(witness: Vec<u8>) -> String {
     accelerate();
-    let w: Witness = serde_json::from_slice(&witness).expect("witness");
+    let w: Witness = postcard::from_bytes(&witness).expect("witness");
     let pre = WorldState::from_parts(w.entries, Default::default());
     let ctx = BlockContext {
         chain_id: w.chain_id,

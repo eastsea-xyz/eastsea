@@ -24,6 +24,7 @@ aether-crypto = { path = "../../crates/crypto" }
 aether-types = { path = "../../crates/types" }
 aether-hash = { path = "../../crates/hash" }
 serde_json = "1"
+postcard = { version = "1", features = ["alloc"] }
 tracing-subscriber = "0.3"
 tracing = "0.1"
 

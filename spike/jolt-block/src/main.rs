@@ -39,7 +39,7 @@ fn witness(n: usize) -> (Vec<u8>, [u8; 32]) {
     let ctx = BlockContext { chain_id: CHAIN, number: 1, timestamp: 1, beneficiary: Address::from(beneficiary), limits: GasVector { exec: 30_000_000, state: u64::MAX, prove: u64::MAX }, fees: None };
     let native = execute_block_sequential(&WorldState::from_parts(entries.clone(), Default::default()), &ctx, &txs).unwrap().state.root().0;
     let w = Witness { entries, chain_id: CHAIN, number: 1, timestamp: 1, beneficiary, txs };
-    (serde_json::to_vec(&w).unwrap(), native)
+    (postcard::to_allocvec(&w).unwrap(), native)
 }
 
 fn main() {
@@ -71,7 +71,7 @@ fn main() {
         }
         Some("debug") => {
             let (w, native) = witness(1);
-            let pw: Witness = serde_json::from_slice(&w).unwrap();
+            let pw: Witness = postcard::from_bytes(&w).unwrap();
             let native_pre = WorldState::from_parts(pw.entries, Default::default()).root().0;
             let out = |s: jolt::host::analyze::ProgramSummary| s.io_device.outputs.clone();
             println!("native pre  {}", hex(&native_pre));

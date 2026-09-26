@@ -306,6 +306,12 @@ enum Cmd {
         /// Blocks per voting-node epoch (default 3600: an hour of 1 s blocks).
         #[arg(long)]
         epoch_blocks: Option<u64>,
+        /// Epochs of unbroken liveness before a Mac can be drawn (default 24).
+        #[arg(long)]
+        min_streak: Option<u64>,
+        /// Epochs between voting-set draws (default 24).
+        #[arg(long)]
+        draw_epochs: Option<u64>,
         members: Vec<String>,
     },
     /// List the public development accounts (funded at genesis; never use for value).
@@ -632,7 +638,9 @@ fn main() {
             };
             reshare(&from, &to, boundary, port, data, peers, link_base, offline, via_node)
         }
-        Cmd::Network { chain_id, faucet, registrar, epoch_blocks, members } => assemble_network(chain_id, faucet, registrar, epoch_blocks, &members),
+        Cmd::Network { chain_id, faucet, registrar, epoch_blocks, min_streak, draw_epochs, members } => {
+            assemble_network(chain_id, faucet, registrar, (epoch_blocks, min_streak, draw_epochs), &members)
+        }
         Cmd::RegistrarKey { data } => (|| {
             // Idempotent: an existing key is kept (and its public half printed).
             let path = std::path::Path::new(&data).join("registrar.key");
@@ -786,6 +794,8 @@ fn chain_config(chain_id: u64, genesis: &aether_node::roster::Genesis) -> ChainC
         fees: true,
         registrar: genesis.registrar.or(dev_registrar),
         epoch_blocks: genesis.epoch_blocks,
+        min_streak: genesis.min_streak,
+        draw_epochs: genesis.draw_epochs,
     }
 }
 
@@ -968,13 +978,28 @@ fn keygen(data: &str) -> Result<(), String> {
 }
 
 /// Combine validators' public entries (validator.pub.json files) into network.json on stdout.
-fn assemble_network(chain_id: u64, faucet: Option<Address>, registrar: Option<String>, epoch_blocks: Option<u64>, members: &[String]) -> Result<(), String> {
+/// (blocks per epoch, minimum streak, epochs per draw); None = the defaults.
+type VotingParams = (Option<u64>, Option<u64>, Option<u64>);
+
+fn assemble_network(chain_id: u64, faucet: Option<Address>, registrar: Option<String>, voting: VotingParams, members: &[String]) -> Result<(), String> {
+    let (epoch_blocks, min_streak, draw_epochs) = voting;
     let validators = members
         .iter()
         .map(|p| std::fs::read(p).map_err(|e| format!("{p}: {e}")).and_then(|b| serde_json::from_slice(&b).map_err(|e| format!("{p}: {e}"))))
         .collect::<Result<Vec<aether_node::roster::Member>, String>>()?;
-    let file =
-        aether_node::roster::NetworkFile { chain_id, validators, identity: None, round: 0, output: None, epochs: vec![], faucet, registrar, epoch_blocks };
+    let file = aether_node::roster::NetworkFile {
+        chain_id,
+        validators,
+        identity: None,
+        round: 0,
+        output: None,
+        epochs: vec![],
+        faucet,
+        registrar,
+        epoch_blocks,
+        min_streak,
+        draw_epochs,
+    };
     aether_node::roster::Roster::from_file(&file)?;
     println!("{}", serde_json::to_string_pretty(&file).expect("json"));
     Ok(())
@@ -1112,7 +1137,7 @@ fn run_node(a: NodeArgs) {
             g.epoch_start = epochs.last().map(|e| e.height).unwrap_or(0);
             drop(g);
             chain.resume();
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<aether_node::handoff::PartialMsg>();
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<aether_node::handoff::CommitteeMsg>();
             tokio::spawn(async move {
                 while let Some(m) = rx.recv().await {
                     let _ = handoff_out.send(Recipients::All, serde_json::to_vec(&m).expect("partial serializes"), false);
@@ -1127,11 +1152,20 @@ fn run_node(a: NodeArgs) {
                 tx,
             ))
         });
+        // Draw seeds: sign while a draw's pool is frozen and its seed is not on chain yet.
+        if let Some(svc) = handoff_service.clone() {
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    svc.tick();
+                }
+            });
+        }
         if let Some(svc) = handoff_service.clone() {
             tokio::spawn(async move {
                 while let Ok((_peer, msg)) = handoff_in.recv().await {
-                    if let Ok(m) = serde_json::from_slice::<aether_node::handoff::PartialMsg>(msg.as_ref()) {
-                        if let Err(e) = svc.accept(&m) {
+                    if let Ok(m) = serde_json::from_slice::<aether_node::handoff::CommitteeMsg>(msg.as_ref()) {
+                        if let Err(e) = svc.receive(&m) {
                             tracing::debug!(%e, "handoff partial rejected");
                         }
                     }
@@ -1373,6 +1407,8 @@ fn run_dkg(p2p: P2pArgs, chain_id: u64, data: String, round: u64, genesis: aethe
     public.faucet = genesis.faucet;
     public.registrar = genesis.registrar.map(|(x, y)| format!("{}{}", hex::encode(x), hex::encode(y)));
     public.epoch_blocks = (genesis.epoch_blocks != 0).then_some(genesis.epoch_blocks);
+    public.min_streak = genesis.min_streak;
+    public.draw_epochs = genesis.draw_epochs;
     let result = executor.start(async move |context| {
         // Accept incoming validator links (the node's RPC is not needed here).
         let _router = aether_node::p2p::open_public(&p2p).await.map(|ep| aether_net::serve_p2p(ep, loopback(p2p.port)));

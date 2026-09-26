@@ -28,6 +28,17 @@ pub struct Payload {
     /// (docs/design/07-consensus.md); the switch happens a fixed distance later.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff: Option<Handoff>,
+    /// The running committee's threshold signature on a draw number: the seed
+    /// the next voting set is drawn with (unique, so it cannot be ground).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<Seed>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Seed {
+    pub draw: u64,
+    /// BLS12-381 threshold signature (hex).
+    pub signature: String,
 }
 
 /// A new voting set and its key sharing (same committee identity), signed by

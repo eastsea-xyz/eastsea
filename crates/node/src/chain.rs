@@ -33,6 +33,9 @@ pub struct ChainConfig {
     pub registrar: Option<([u8; 32], [u8; 32])>,
     /// Blocks per voting-node epoch (0 = the default).
     pub epoch_blocks: u64,
+    /// Voting-set draw parameters (None = the defaults).
+    pub min_streak: Option<u64>,
+    pub draw_epochs: Option<u64>,
 }
 
 impl ChainConfig {
@@ -44,8 +47,13 @@ impl ChainConfig {
         // The account contract P-256 accounts delegate to (EIP-7702) for batched calls.
         s.set_code(aether_execution::AETHER_ACCOUNT, aether_execution::aether_account_code()).expect("predeploy");
         if let Some(key) = self.registrar {
-            let epoch = if self.epoch_blocks == 0 { aether_execution::registry::EPOCH_BLOCKS } else { self.epoch_blocks };
-            aether_execution::registry::predeploy(&mut s, key, epoch).expect("registry predeploy");
+            let d = aether_execution::registry::Params::default();
+            let params = aether_execution::registry::Params {
+                epoch_blocks: if self.epoch_blocks == 0 { d.epoch_blocks } else { self.epoch_blocks },
+                min_streak: self.min_streak.unwrap_or(d.min_streak),
+                draw_epochs: self.draw_epochs.unwrap_or(d.draw_epochs),
+            };
+            aether_execution::registry::predeploy(&mut s, key, params).expect("registry predeploy");
         }
         s
     }
@@ -90,6 +98,8 @@ pub struct Executed {
     pub excess: GasVector,
     /// The latest committee handoff in this block's ancestry (inclusive).
     pub handoff: Option<Arc<crate::handoff::Pending>>,
+    /// The latest draw seed in this block's ancestry (inclusive), with the height that carried it.
+    pub seed: Option<Arc<(u64, aether_light::block::Seed)>>,
 }
 
 #[derive(Clone, Debug, Serialize, serde::Deserialize)]
@@ -146,6 +156,10 @@ pub struct Inner {
     pub proposal: Option<(u64, Vec<(String, String)>)>,
     /// A committee-signed handoff waiting to be put in a block.
     pub handoff_ready: Option<aether_light::block::Handoff>,
+    /// The Macs eligible for the current draw, frozen at its first block: (draw, pool).
+    pub pool: Option<(u64, Vec<(String, String)>)>,
+    /// A committee-signed draw seed waiting to be put in a block.
+    pub seed_ready: Option<aether_light::block::Seed>,
 }
 
 #[derive(Clone)]
@@ -184,6 +198,7 @@ impl Chain {
             base_fee: FeeVector::default(),
             excess: GasVector::default(),
             handoff: None,
+            seed: None,
         });
         let mut executed = HashMap::new();
         executed.insert(genesis.digest(), exec.clone());
@@ -206,6 +221,8 @@ impl Chain {
             epoch_end: Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX)),
             proposal: None,
             handoff_ready: None,
+            pool: None,
+            seed_ready: None,
             deprioritize: None,
             store: None,
         };
@@ -236,6 +253,7 @@ impl Chain {
                     base_fee: summary.as_ref().map(|b| b.base_fee).unwrap_or_default(),
                     excess: summary.as_ref().map(|b| b.excess).unwrap_or_default(),
                     handoff: cp.handoff.map(Arc::new),
+                    seed: store.meta(SEED).ok().flatten().and_then(|b| serde_json::from_slice(&b).ok()).map(Arc::new),
                 });
                 let mut g = chain.lock();
                 g.executed.insert(digest, exec.clone());
@@ -325,13 +343,41 @@ impl Chain {
                 g.epoch_end.store(p.switch - 1, std::sync::atomic::Ordering::SeqCst);
             }
         }
-        let every = aether_execution::registry::epoch_blocks(&g.finalized.state);
-        let current = g.finalized.height / every;
-        let stored =
-            g.store.as_ref().and_then(|s| s.meta(PROPOSAL).ok().flatten()).and_then(|b| serde_json::from_slice::<(u64, Vec<(String, String)>)>(&b).ok());
-        if let Some((epoch, members)) = stored.filter(|(e, _)| *e == current) {
-            g.proposal = Some((epoch, members));
+        let current = current_draw(&g.finalized.state, g.finalized.height);
+        let load = |key: &str| g.store.as_ref().and_then(|s| s.meta(key).ok().flatten());
+        let proposal: Option<(u64, Vec<(String, String)>)> = load(PROPOSAL).and_then(|b| serde_json::from_slice(&b).ok()).flatten();
+        let pool: Option<(u64, Vec<(String, String)>)> = load(POOL).and_then(|b| serde_json::from_slice(&b).ok()).flatten();
+        g.proposal = proposal.filter(|(d, _)| *d == current);
+        g.pool = pool.filter(|(d, _)| *d == current);
+    }
+
+    /// The seed state after a block at `height`: the parent's, or the one it
+    /// carries (only the current draw's, once, signed by the committee).
+    pub fn next_seed(
+        &self,
+        height: u64,
+        parent: &Executed,
+        carried: Option<&aether_light::block::Seed>,
+    ) -> Result<Option<Arc<(u64, aether_light::block::Seed)>>, ChainError> {
+        let Some(s) = carried else { return Ok(parent.seed.clone()) };
+        let draw = current_draw(&parent.state, height);
+        if s.draw != draw || draw == 0 || parent.seed.as_ref().is_some_and(|p| p.1.draw >= draw) {
+            return Err(ChainError::BadHandoff(format!("seed for draw {} in draw {draw}", s.draw)));
         }
+        let (identity, chain_id) = {
+            let g = self.lock();
+            (g.identity, g.cfg.chain_id)
+        };
+        let identity = identity.ok_or_else(|| ChainError::BadHandoff("no committee identity (devnet dealer keys)".into()))?;
+        crate::handoff::verify_seed(chain_id, &identity, s).map_err(ChainError::BadHandoff)?;
+        Ok(Some(Arc::new((height, s.clone()))))
+    }
+
+    /// The draw seed to put in a block built on `parent`, if one is ready and not yet there.
+    pub fn seed_for(&self, parent: &Executed) -> Option<aether_light::block::Seed> {
+        let ready = self.lock().seed_ready.clone()?;
+        let draw = current_draw(&parent.state, parent.height + 1);
+        (ready.draw == draw && parent.seed.as_ref().is_none_or(|p| p.1.draw < draw)).then_some(ready)
     }
 
     /// The handoff to put in a block built on `parent`, if one is ready and allowed.
@@ -392,9 +438,11 @@ impl Chain {
             return Err(ChainError::GasMismatch);
         }
         let handoff = self.next_handoff(block.height().get(), parent, payload.handoff.as_ref())?;
-        Ok(self.remember(block, parent, &ctx, out, payload.txs.iter().map(aether_execution::tx_hash).collect(), handoff))
+        let seed = self.next_seed(block.height().get(), parent, payload.seed.as_ref())?;
+        Ok(self.remember(block, parent, &ctx, out, payload.txs.iter().map(aether_execution::tx_hash).collect(), handoff, seed))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn remember(
         &self,
         block: &Block,
@@ -403,6 +451,7 @@ impl Chain {
         out: BlockOutcome,
         tx_hashes: Vec<TxHash>,
         handoff: Option<Arc<crate::handoff::Pending>>,
+        seed: Option<Arc<(u64, aether_light::block::Seed)>>,
     ) -> Arc<Executed> {
         let (base_fee, excess) = match &ctx.fees {
             Some(f) => (f.base, fees::next_excess(parent.excess, out.gas, ctx.limits)),
@@ -420,6 +469,7 @@ impl Chain {
             base_fee,
             excess,
             handoff,
+            seed,
         });
         self.lock().executed.insert(block.digest(), exec.clone());
         exec
@@ -559,15 +609,26 @@ impl Chain {
                 g.handoff_ready = None;
             }
         }
-        // The voting set proposed for a registry epoch comes from the state its first block builds on.
-        let every = aether_execution::registry::epoch_blocks(&previous.state);
-        if exec.height > 0 && exec.height.is_multiple_of(every) {
-            let epoch = exec.height / every;
-            g.proposal = crate::rotation::next_set(&previous.state, epoch, &g.committee).map(|m| (epoch, m));
-            if let (Some(store), Some(p)) = (g.store.clone(), g.proposal.as_ref()) {
-                if let Err(e) = store.put_meta(PROPOSAL, &serde_json::to_vec(p).expect("proposal serializes")) {
-                    tracing::warn!(%e, "could not keep the proposed voting set");
-                }
+        // A draw's pool is frozen from the state its first block builds on (before its seed exists).
+        let params = aether_execution::registry::params(&previous.state);
+        let span = params.epoch_blocks * params.draw_epochs;
+        if exec.height > 0 && exec.height.is_multiple_of(span) {
+            let pool = crate::rotation::eligible(&previous.state, exec.height / params.epoch_blocks, params.min_streak);
+            g.pool = Some((exec.height / span, pool));
+            g.proposal = None;
+            keep(&g.store, POOL, &g.pool);
+        }
+        // With the draw's seed on chain, everyone draws the same next voting set.
+        if let Some(s) = exec.seed.as_ref().filter(|s| s.0 == exec.height) {
+            keep(&g.store, SEED, &Some(s.as_ref().clone()));
+            if g.seed_ready.as_ref() == Some(&s.1) {
+                g.seed_ready = None;
+            }
+            if let Some((draw, pool)) = g.pool.clone().filter(|(d, _)| *d == s.1.draw) {
+                let seed = hex::decode(&s.1.signature).unwrap_or_default();
+                let registered: Vec<String> = aether_execution::registry::candidates(&exec.state).iter().map(|c| hex::encode(c.validator_key)).collect();
+                g.proposal = crate::rotation::draw(&pool, &seed, |k| registered.iter().any(|r| r == k), &g.committee).map(|m| (draw, m));
+                keep(&g.store, PROPOSAL, &g.proposal);
             }
         }
         let floor = exec.height.saturating_sub(64);
@@ -619,8 +680,24 @@ fn summary(block: &Block, e: &Executed, parent_state_root: B256) -> BlockSummary
     }
 }
 
-/// Store key of the voting set proposed for the current registry epoch.
+/// Store keys: the proposed voting set, the frozen draw pool, the latest seed.
 const PROPOSAL: &str = "proposal";
+const POOL: &str = "pool";
+const SEED: &str = "seed";
+
+/// The draw a block at `height` belongs to (draws start at multiples of epoch_blocks × draw_epochs).
+fn current_draw(state: &WorldState, height: u64) -> u64 {
+    let p = aether_execution::registry::params(state);
+    height / (p.epoch_blocks * p.draw_epochs)
+}
+
+fn keep<T: Serialize>(store: &Option<Arc<Store>>, key: &str, value: &T) {
+    if let Some(store) = store {
+        if let Err(e) = store.put_meta(key, &serde_json::to_vec(value).expect("serializes")) {
+            tracing::warn!(%e, key, "could not keep the voting-set draw state");
+        }
+    }
+}
 
 /// The key round a handoff built on `parent` must carry (the DKG at genesis is round 0).
 fn next_round(parent: &Executed) -> u64 {
@@ -632,7 +709,8 @@ pub fn build_payload(
     ctx: &BlockContext,
     candidates: Vec<TxEnvelope>,
     handoff: Option<aether_light::block::Handoff>,
+    seed: Option<aether_light::block::Seed>,
 ) -> (Payload, aether_execution::BlockOutcome) {
     let (txs, out) = aether_execution::build_block(&parent.state, ctx, candidates);
-    (Payload { parent_state_root: parent.state.root(), txs, bal: out.bal.clone(), gas: out.gas, handoff }, out)
+    (Payload { parent_state_root: parent.state.root(), txs, bal: out.bal.clone(), gas: out.gas, handoff, seed }, out)
 }

@@ -10,6 +10,25 @@ use alloy_sol_types::{sol, SolCall, SolValue};
 pub const REGISTRY: Address = address!("0000000000000000000000000000000000007703");
 /// Blocks per epoch on the testnet (one hour of 1 s blocks); set at genesis.
 pub const EPOCH_BLOCKS: u64 = 3_600;
+/// Epochs of unbroken liveness before a Mac can be drawn into the voting set.
+pub const MIN_STREAK: u64 = 24;
+/// Epochs between voting-set draws (a day of one-hour epochs).
+pub const DRAW_EPOCHS: u64 = 24;
+
+/// Voting-set parameters, fixed at genesis (registry slots 4, 5, 6); nodes
+/// read them from state. Changed only by a committee-signed upgrade.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Params {
+    pub epoch_blocks: u64,
+    pub min_streak: u64,
+    pub draw_epochs: u64,
+}
+
+impl Default for Params {
+    fn default() -> Self {
+        Params { epoch_blocks: EPOCH_BLOCKS, min_streak: MIN_STREAK, draw_epochs: DRAW_EPOCHS }
+    }
+}
 
 sol! {
     function register(bytes32 validatorKey, bytes32 nodeId, address beaconer, bytes32 r, bytes32 s);
@@ -21,19 +40,30 @@ pub fn code() -> Bytes {
     Bytes::from(alloy_primitives::hex::decode(include_str!("committee_registry.bin.hex").trim()).expect("valid hex"))
 }
 
-/// Genesis: the registry with the registrar's P-256 key (x, y) in slots 0 and 1
-/// and the epoch length in slot 4.
-pub fn predeploy(state: &mut WorldState, registrar: ([u8; 32], [u8; 32]), epoch_blocks: u64) -> Result<(), crate::world::StateError> {
+/// Genesis: the registry with the registrar's P-256 key (x, y) in slots 0 and
+/// 1 and the voting-set parameters in slots 4, 5 and 6.
+pub fn predeploy(state: &mut WorldState, registrar: ([u8; 32], [u8; 32]), params: Params) -> Result<(), crate::world::StateError> {
     state.set_code(REGISTRY, code())?;
     state.set_storage(REGISTRY, U256::ZERO, U256::from_be_bytes(registrar.0));
     state.set_storage(REGISTRY, U256::from(1u64), U256::from_be_bytes(registrar.1));
-    state.set_storage(REGISTRY, U256::from(4u64), U256::from(epoch_blocks.max(1)));
+    state.set_storage(REGISTRY, U256::from(4u64), U256::from(params.epoch_blocks.max(1)));
+    state.set_storage(REGISTRY, U256::from(5u64), U256::from(params.min_streak));
+    state.set_storage(REGISTRY, U256::from(6u64), U256::from(params.draw_epochs.max(1)));
     Ok(())
 }
 
 /// Blocks per epoch as set at genesis.
 pub fn epoch_blocks(state: &WorldState) -> u64 {
     state.storage(&REGISTRY, U256::from(4u64)).to::<u64>().max(1)
+}
+
+/// The voting-set parameters as set at genesis.
+pub fn params(state: &WorldState) -> Params {
+    Params {
+        epoch_blocks: epoch_blocks(state),
+        min_streak: state.storage(&REGISTRY, U256::from(5u64)).to::<u64>(),
+        draw_epochs: state.storage(&REGISTRY, U256::from(6u64)).to::<u64>().max(1),
+    }
 }
 
 /// The bytes the registrar signs (the contract checks SHA-256 of them with P256VERIFY).

@@ -46,6 +46,12 @@ contract CommitteeRegistry {
     mapping(bytes32 => uint256) public indexOf; // validatorKey => index + 1
     /// Blocks per epoch, fixed at genesis (slot 4; one hour of 1 s blocks on the testnet).
     uint64 public epochBlocks;
+    /// Epochs of unbroken liveness before a Mac can be drawn into the voting set (slot 5).
+    uint256 public minStreak;
+    /// Epochs between voting-set draws (slot 6). Nodes draw the set from the
+    /// Macs eligible at a draw, in an order fixed by the committee's threshold
+    /// signature on the draw number (docs/research/voting-set-security-2026.md).
+    uint256 public drawEpochs;
 
     function epoch() public view returns (uint64) {
         return uint64(block.number / epochBlocks);

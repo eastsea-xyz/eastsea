@@ -159,14 +159,14 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
         "aether_rotation" => {
             let g = chain.lock();
             let f = g.finalized.clone();
-            let every = aether_execution::registry::epoch_blocks(&f.state);
-            let Some((epoch, members)) = g.proposal.clone() else { return Ok(Value::Null) };
+            let params = aether_execution::registry::params(&f.state);
+            let Some((draw, members)) = g.proposal.clone() else { return Ok(Value::Null) };
             let pending = f.handoff.as_ref().is_some_and(|p| f.height < p.switch);
-            if epoch != f.height / every || pending {
+            if draw != f.height / (params.epoch_blocks * params.draw_epochs) || pending {
                 return Ok(Value::Null);
             }
             let next: Vec<Value> = members.iter().map(|(k, n)| json!({ "key": k, "node": n })).collect();
-            Ok(json!({ "epoch": epoch, "next": next, "network": st.network }))
+            Ok(json!({ "epoch": draw, "next": next, "network": st.network }))
         }
         // The latest committee handoff on this node's finalized chain (verified here).
         "aether_handoff" => {

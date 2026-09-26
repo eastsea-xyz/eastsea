@@ -415,6 +415,8 @@ mod tests {
             faucet: None,
             registrar: None,
             epoch_blocks: None,
+            min_streak: None,
+            draw_epochs: None,
         }
     }
 

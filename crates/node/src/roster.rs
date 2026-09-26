@@ -60,6 +60,12 @@ pub struct NetworkFile {
     /// Blocks per voting-node epoch (default one hour of 1 s blocks).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub epoch_blocks: Option<u64>,
+    /// Epochs of unbroken liveness before a Mac can be drawn (default 24).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_streak: Option<u64>,
+    /// Epochs between voting-set draws (default 24).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draw_epochs: Option<u64>,
 }
 
 /// What a network file fixes about genesis beyond the chain id.
@@ -69,6 +75,8 @@ pub struct Genesis {
     pub registrar: Option<([u8; 32], [u8; 32])>,
     /// Blocks per voting-node epoch (0 = the default).
     pub epoch_blocks: u64,
+    pub min_streak: Option<u64>,
+    pub draw_epochs: Option<u64>,
 }
 
 impl NetworkFile {
@@ -81,7 +89,7 @@ impl NetworkFile {
                 Some((x.try_into().map_err(|_| "registrar x")?, y.try_into().map_err(|_| "registrar must be 64 bytes (x‖y)")?))
             }
         };
-        Ok(Genesis { faucet: self.faucet, registrar, epoch_blocks: self.epoch_blocks.unwrap_or(0) })
+        Ok(Genesis { faucet: self.faucet, registrar, epoch_blocks: self.epoch_blocks.unwrap_or(0), min_streak: self.min_streak, draw_epochs: self.draw_epochs })
     }
 
     /// Carry genesis facts into a file written by a ceremony (dkg, reshare).
@@ -89,6 +97,8 @@ impl NetworkFile {
         self.faucet = from.faucet.or(self.faucet);
         self.registrar = from.registrar.clone().or(self.registrar.take());
         self.epoch_blocks = from.epoch_blocks.or(self.epoch_blocks);
+        self.min_streak = from.min_streak.or(self.min_streak);
+        self.draw_epochs = from.draw_epochs.or(self.draw_epochs);
     }
 }
 
@@ -178,6 +188,8 @@ impl Roster {
             faucet: None,
             registrar: None,
             epoch_blocks: None,
+            min_streak: None,
+            draw_epochs: None,
         }
     }
 }

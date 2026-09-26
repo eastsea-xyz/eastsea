@@ -8,7 +8,7 @@
 //! owner with many Macs and wallets) cannot take the whole set at once: it has
 //! to stay live for several epochs, while the running set keeps a quorum.
 
-use aether_consensus::committee::{select_open_committee, OpenCandidate, MIN_OPEN_COMMITTEE};
+use aether_consensus::committee::MIN_OPEN_COMMITTEE;
 use aether_execution::registry;
 use aether_execution::WorldState;
 
@@ -21,7 +21,7 @@ pub const STAGED_NETWORK: &str = "network-next.json";
 pub const ANCHOR_FILE: &str = "anchor.json";
 
 /// Largest voting set (the DKG cost grows with its square).
-pub const MAX_VOTING_NODES: usize = 32;
+pub const MAX_VOTING_NODES: usize = MAX_DRAWN;
 
 /// The running voting set, in roster order: (ed25519 key hex, iroh node id).
 /// Empty on followers.
@@ -36,45 +36,55 @@ impl Committee {
     }
 }
 
-/// The voting set proposed for registry epoch `epoch`, from `state` (what its
-/// first block builds on), or None when the running set stays.
-pub fn next_set(state: &WorldState, epoch: u64, running: &Committee) -> Option<Vec<(String, String)>> {
-    if running.members.is_empty() || epoch == 0 {
+/// Largest voting set drawn (the DKG cost grows with its square).
+pub const MAX_DRAWN: usize = 128;
+
+/// Macs that can be drawn at registry epoch `epoch` (from the state its first
+/// block builds on): registered with a valid iroh node id, alive in the previous
+/// epoch, with at least `min_streak` epochs of unbroken liveness. One ticket
+/// each: a wallet or owner with many addresses gains nothing, only more Macs.
+pub fn eligible(state: &WorldState, epoch: u64, min_streak: u64) -> Vec<(String, String)> {
+    if epoch == 0 {
+        return vec![];
+    }
+    registry::candidates(state)
+        .into_iter()
+        .filter(|c| c.last_epoch == epoch - 1 && c.streak >= min_streak)
+        .filter_map(|c| aether_net::EndpointId::from_bytes(&c.node_id).ok().map(|n| (hex::encode(c.validator_key), n.to_string())))
+        .collect()
+}
+
+/// A Mac's place in the draw: H(seed ‖ voting key).
+pub fn ticket(seed: &[u8], key: &str) -> Vec<u8> {
+    use commonware_cryptography::Hasher as _;
+    let mut h = commonware_cryptography::Sha256::default();
+    h.update(seed);
+    h.update(key.as_bytes());
+    h.finalize().1.as_ref().to_vec()
+}
+
+/// Voting-set size for a pool: a quarter of it (a sample, not the whole
+/// pool), as 3f+1, between 4 and `MAX_DRAWN`; small pools seat everyone.
+pub fn target_size(pool: usize) -> usize {
+    let n = (pool / 4).clamp(MIN_OPEN_COMMITTEE, MAX_DRAWN).min(pool);
+    3 * ((n.max(1) - 1) / 3) + 1
+}
+
+/// The next voting set: the pool ordered by H(seed ‖ key), the first
+/// `target_size` drawn; fewer than a third of the running seats change per draw
+/// (at least one), members that are not candidates leave first. None when the
+/// pool is too small or nothing changes.
+pub fn draw(pool: &[(String, String)], seed: &[u8], registered: impl Fn(&str) -> bool, running: &Committee) -> Option<Vec<(String, String)>> {
+    if running.members.is_empty() || pool.len() < MIN_OPEN_COMMITTEE {
         return None;
     }
-    // Only candidates reachable at a valid iroh node id can hold a seat.
-    let all: Vec<registry::Candidate> = registry::candidates(state).into_iter().filter(|c| aether_net::EndpointId::from_bytes(&c.node_id).is_ok()).collect();
-    let open: Vec<OpenCandidate> = all
-        .iter()
-        .map(|c| OpenCandidate {
-            index: c.index,
-            operator: c.operator.into_array(),
-            validator_key: c.validator_key,
-            registered_epoch: c.registered_epoch,
-            last_epoch: c.last_epoch,
-            streak: c.streak,
-        })
-        .collect();
-    let picked = select_open_committee(&open, epoch - 1, MAX_VOTING_NODES);
-    // Below four voting nodes BFT tolerates no fault: keep the running set.
-    if picked.len() < MIN_OPEN_COMMITTEE {
-        return None;
-    }
-    let selected: Vec<(String, String)> = picked
-        .iter()
-        .map(|p| {
-            let c = all.iter().find(|c| c.index == p.index).expect("picked from all");
-            let node = aether_net::EndpointId::from_bytes(&c.node_id).map(|n| n.to_string()).unwrap_or_default();
-            (hex::encode(c.validator_key), node)
-        })
-        .collect();
+    let mut order: Vec<&(String, String)> = pool.iter().collect();
+    order.sort_by_cached_key(|(k, _)| ticket(seed, k));
+    let selected: Vec<(String, String)> = order.into_iter().take(target_size(pool.len())).cloned().collect();
     let chosen = |k: &str| selected.iter().any(|(s, _)| s == k);
     let incoming: Vec<&(String, String)> = selected.iter().filter(|(k, _)| !running.has(k)).collect();
-    // Leave first: members that are not candidates at all (e.g. the genesis set), then unselected ones.
-    let registered = |k: &str| all.iter().any(|c| hex::encode(c.validator_key) == k);
     let mut outgoing: Vec<&(String, String)> = running.members.iter().filter(|(k, _)| !chosen(k)).collect();
     outgoing.sort_by_key(|(k, _)| registered(k));
-    // Fewer than a third of the seats change per epoch (at least one).
     let n = running.members.len();
     let budget = (n.saturating_sub(1) / 3).max(1);
     let swaps = budget.min(incoming.len()).min(outgoing.len());
@@ -123,7 +133,12 @@ mod tests {
     fn registry_with(n: u8, e: u64) -> WorldState {
         let registrar = P256Signer::from_seed(&seed(0)).unwrap();
         let mut s = WorldState::default();
-        registry::predeploy(&mut s, aether_crypto::p256_xy(&registrar.public_key().bytes).unwrap(), E).unwrap();
+        registry::predeploy(
+            &mut s,
+            aether_crypto::p256_xy(&registrar.public_key().bytes).unwrap(),
+            registry::Params { epoch_blocks: E, min_streak: 0, draw_epochs: 1 },
+        )
+        .unwrap();
         for i in 1..=n {
             let op = P256Signer::from_seed(&seed(i)).unwrap();
             let a = address_of(&op.public_key()).unwrap();
@@ -147,37 +162,56 @@ mod tests {
         Committee { members: keys.iter().map(|k| (key(*k), format!("node{k}"))).collect() }
     }
 
-    fn keys(set: &[(String, String)]) -> Vec<String> {
-        let mut k: Vec<String> = set.iter().map(|(k, _)| k.clone()).collect();
-        k.sort();
-        k
+
+    fn draw_at(s: &WorldState, epoch: u64, seed: &[u8], set: &Committee) -> Option<Vec<(String, String)>> {
+        let registered: Vec<String> = registry::candidates(s).iter().map(|c| hex::encode(c.validator_key)).collect();
+        draw(&eligible(s, epoch, 0), seed, |k| registered.iter().any(|r| r == k), set)
     }
 
     #[test]
-    fn a_third_of_the_seats_change_per_epoch_starting_with_non_candidates() {
+    fn a_third_of_the_seats_change_per_draw_starting_with_non_candidates() {
         let s = registry_with(5, 3);
         let genesis_set = running(&[0xa1, 0xa2, 0xa3, 0xa4]);
-        // Four seats: one changes per epoch; a genesis (non-candidate) member leaves first.
-        let next = next_set(&s, 4, &genesis_set).expect("live candidates replace the genesis set");
+        let next = draw_at(&s, 4, b"seed", &genesis_set).expect("live candidates replace the genesis set");
         assert_eq!(next.len(), 4);
-        assert_eq!(next.iter().filter(|(k, _)| k.starts_with("a1") || k.starts_with("a2") || k.starts_with("a3") || k.starts_with("a4")).count(), 3);
-        assert!(next_set(&s, 5, &genesis_set).is_none(), "nobody beaconed in epoch 4");
-        let all_candidates = running(&[1, 2, 3, 4, 5]);
-        assert!(next_set(&s, 4, &all_candidates).is_none(), "already running");
-        assert!(next_set(&s, 4, &Committee::default()).is_none(), "followers propose nothing");
-        // Repeated epochs converge on the selected set: four swaps, then one more seat.
+        assert_eq!(next.iter().filter(|(k, _)| k.starts_with("a")).count(), 3, "one seat changes");
+        assert!(draw_at(&s, 5, b"seed", &genesis_set).is_none(), "nobody beaconed in epoch 4");
+        assert!(draw_at(&s, 4, b"seed", &Committee::default()).is_none(), "followers draw nothing");
+        // Repeated draws converge on the drawn set (five eligible: target 4 of them).
         let mut set = genesis_set;
-        for _ in 0..5 {
-            if let Some(n) = next_set(&s, 4, &set) {
+        for _ in 0..6 {
+            if let Some(n) = draw_at(&s, 4, b"seed", &set) {
                 set = Committee { members: n };
             }
         }
-        assert_eq!(keys(&set.members), keys(&all_candidates.members));
+        assert_eq!(set.members.len(), 4);
+        assert!(set.members.iter().all(|(k, _)| !k.starts_with("a")), "only candidates remain");
     }
 
     #[test]
-    fn too_few_candidates_keep_the_running_set() {
+    fn the_seed_decides_who_is_drawn_and_nobody_else_can() {
+        // A large pool: the draw is a sample, and different seeds draw different sets.
+        let pool: Vec<(String, String)> = (0..64u8).map(|i| (hex::encode([i; 32]), format!("n{i}"))).collect();
+        let set = Committee { members: pool[..16].to_vec() };
+        assert_eq!(target_size(64), 16);
+        let sample = |seed: &[u8]| {
+            let mut order: Vec<&(String, String)> = pool.iter().collect();
+            order.sort_by_cached_key(|(k, _)| ticket(seed, k));
+            order.into_iter().take(16).map(|(k, _)| k.clone()).collect::<Vec<_>>()
+        };
+        assert_ne!(sample(b"one"), sample(b"two"));
+        // Wallet addresses play no part: the draw only sees keys (one per Mac).
+        let a = draw(&pool, b"one", |_| true, &set).unwrap();
+        let b = draw(&pool, b"one", |_| true, &set).unwrap();
+        assert_eq!(a, b, "deterministic for everyone");
+        assert!(a.len() == 16 && a.iter().filter(|m| !set.members.contains(m)).count() <= 5, "fewer than a third change");
+        assert_eq!(target_size(4), 4);
+        assert_eq!(target_size(1000), 127);
+    }
+
+    #[test]
+    fn too_few_eligible_keep_the_running_set() {
         let s = registry_with(3, 3);
-        assert!(next_set(&s, 4, &running(&[0xa1, 0xa2, 0xa3, 0xa4])).is_none());
+        assert!(draw_at(&s, 4, b"seed", &running(&[0xa1, 0xa2, 0xa3, 0xa4])).is_none());
     }
 }

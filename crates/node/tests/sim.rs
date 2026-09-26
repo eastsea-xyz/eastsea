@@ -72,6 +72,8 @@ fn chain_config() -> ChainConfig {
         fees: true,
         registrar: None,
         epoch_blocks: 0,
+        min_streak: None,
+        draw_epochs: None,
     }
 }
 

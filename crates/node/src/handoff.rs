@@ -25,6 +25,19 @@ use serde::{Deserialize, Serialize};
 /// catch up to it (about a minute of 1 s blocks).
 pub const DELAY: u64 = 64;
 const NAMESPACE: &[u8] = b"aether-handoff-v1";
+const SEED_NAMESPACE: &[u8] = b"aether-committee-seed-v1";
+
+fn seed_message(chain_id: u64, draw: u64) -> Vec<u8> {
+    [chain_id.to_be_bytes(), draw.to_be_bytes()].concat()
+}
+
+/// The committee's signature on draw `draw`, checked under the identity.
+pub fn verify_seed(chain_id: u64, identity: &Identity, s: &aether_light::block::Seed) -> Result<(), String> {
+    let bytes = hex::decode(&s.signature).map_err(|e| e.to_string())?;
+    let sig = <MinSig as Variant>::Signature::decode(bytes.as_slice()).map_err(|e| format!("seed: {e:?}"))?;
+    ops::verify_message::<MinSig>(identity, SEED_NAMESPACE, &seed_message(chain_id, s.draw), &sig)
+        .map_err(|_| "the committee did not sign this seed".to_string())
+}
 
 /// A handoff the chain accepted: it switches at `switch`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,6 +110,13 @@ pub struct PartialMsg {
     pub partial: String,
 }
 
+/// What running members gossip: handoff partials and draw-seed partials.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum CommitteeMsg {
+    Handoff(PartialMsg),
+    Seed { draw: u64, partial: String },
+}
+
 /// Each signer's latest partial: (signed message, partial).
 type Partials = std::collections::BTreeMap<u32, (Vec<u8>, PartialSignature<MinSig>)>;
 
@@ -109,8 +129,11 @@ pub struct Service {
     share: Share,
     sharing: Sharing<MinSig>,
     data: std::path::PathBuf,
-    out: tokio::sync::mpsc::UnboundedSender<PartialMsg>,
+    out: tokio::sync::mpsc::UnboundedSender<CommitteeMsg>,
     partials: std::sync::Mutex<Partials>,
+    /// Draw-seed partials for the current draw, one per signer.
+    seeds: std::sync::Mutex<(u64, std::collections::BTreeMap<u32, PartialSignature<MinSig>>)>,
+    signed_seed: std::sync::Mutex<Option<(u64, std::time::Instant)>>,
 }
 
 impl Service {
@@ -120,10 +143,82 @@ impl Service {
         share: Share,
         sharing: Sharing<MinSig>,
         data: std::path::PathBuf,
-        out: tokio::sync::mpsc::UnboundedSender<PartialMsg>,
+        out: tokio::sync::mpsc::UnboundedSender<CommitteeMsg>,
     ) -> Self {
         let identity = *sharing.public();
-        Service { chain, chain_id, identity, share, sharing, data, out, partials: Default::default() }
+        Service {
+            chain,
+            chain_id,
+            identity,
+            share,
+            sharing,
+            data,
+            out,
+            partials: Default::default(),
+            seeds: Default::default(),
+            signed_seed: Default::default(),
+        }
+    }
+
+    /// Take a gossiped message.
+    pub fn receive(&self, m: &CommitteeMsg) -> Result<(), String> {
+        match m {
+            CommitteeMsg::Handoff(p) => self.accept(p),
+            CommitteeMsg::Seed { draw, partial } => self.accept_seed(*draw, partial),
+        }
+    }
+
+    /// While a draw's pool is frozen and its seed not yet on chain: sign it
+    /// (again every 10 s, for peers that missed it). Called periodically.
+    pub fn tick(&self) {
+        let draw = {
+            let g = self.chain.lock();
+            match (&g.pool, &g.finalized.seed) {
+                (Some((d, _)), seed) if seed.as_ref().is_none_or(|s| s.1.draw < *d) => *d,
+                _ => return,
+            }
+        };
+        let mut last = self.signed_seed.lock().expect("seed lock");
+        if last.is_some_and(|(d, t)| d == draw && t.elapsed() < std::time::Duration::from_secs(10)) {
+            return;
+        }
+        *last = Some((draw, std::time::Instant::now()));
+        drop(last);
+        let partial = hex::encode(ops::threshold::sign_message::<MinSig>(&self.share, SEED_NAMESPACE, &seed_message(self.chain_id, draw)).encode());
+        if let Err(e) = self.accept_seed(draw, &partial) {
+            tracing::debug!(%e, "own seed partial");
+        }
+        let _ = self.out.send(CommitteeMsg::Seed { draw, partial });
+    }
+
+    fn accept_seed(&self, draw: u64, partial: &str) -> Result<(), String> {
+        let current = self.chain.lock().pool.as_ref().map(|(d, _)| *d);
+        if current != Some(draw) {
+            return Err("seed partial for another draw".into());
+        }
+        let bytes = hex::decode(partial).map_err(|e| e.to_string())?;
+        let p = PartialSignature::<MinSig>::decode(bytes.as_slice()).map_err(|e| format!("partial: {e:?}"))?;
+        let msg = seed_message(self.chain_id, draw);
+        ops::threshold::verify_message::<MinSig>(&self.sharing, SEED_NAMESPACE, &msg, &p).map_err(|_| "invalid seed partial".to_string())?;
+        let ready = {
+            let mut g = self.seeds.lock().expect("seeds lock");
+            if g.0 != draw {
+                *g = (draw, Default::default());
+            }
+            g.1.insert(p.index.get(), p);
+            (g.1.len() as u32 >= self.sharing.required()).then(|| g.1.values().cloned().collect::<Vec<_>>())
+        };
+        if let Some(ps) = ready {
+            let sig = ops::threshold::recover::<MinSig, _>(&self.sharing, &ps, &Sequential).map_err(|e| format!("{e:?}"))?;
+            let seed = aether_light::block::Seed { draw, signature: hex::encode(sig.encode()) };
+            verify_seed(self.chain_id, &self.identity, &seed)?;
+            let mut g = self.chain.lock();
+            if g.seed_ready.as_ref() != Some(&seed) {
+                tracing::info!(draw, "draw seed signed by the committee; next proposer includes it");
+                g.seed_ready = Some(seed);
+            }
+        }
+        Ok(())
     }
 
     /// Sign the handoff this validator's own background reshare produced, if it
@@ -147,7 +242,7 @@ impl Service {
         verify_output(&self.identity, &h)?;
         let partial = sign_partial(self.chain_id, &h, &self.share);
         self.accept(&PartialMsg { handoff: h.clone(), partial: partial.clone() })?;
-        let _ = self.out.send(PartialMsg { handoff: h.clone(), partial });
+        let _ = self.out.send(CommitteeMsg::Handoff(PartialMsg { handoff: h.clone(), partial }));
         Ok(h)
     }
 

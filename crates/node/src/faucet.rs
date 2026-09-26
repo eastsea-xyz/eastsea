@@ -198,6 +198,8 @@ mod tests {
             fees: true,
             registrar: None,
             epoch_blocks: 0,
+            min_streak: None,
+            draw_epochs: None,
         };
         (f, Chain::new(cfg).0)
     }

@@ -105,7 +105,8 @@ where
         let skeleton = Block::new(context.clone(), parent_block.digest(), height, ts, bytes::Bytes::new());
         let ctx = Chain::block_context(&cfg, &skeleton, &parent);
         let handoff = self.chain.handoff_for(&parent);
-        let (payload, out) = build_payload(&parent, &ctx, self.chain.mempool_candidates(), handoff);
+        let seed = self.chain.seed_for(&parent);
+        let (payload, out) = build_payload(&parent, &ctx, self.chain.mempool_candidates(), handoff, seed);
         let tx_hashes = payload.txs.iter().map(aether_execution::tx_hash).collect();
         let block = Block::new(context, parent_block.digest(), height, ts, payload.to_bytes());
         let pending = match &payload.handoff {
@@ -114,7 +115,8 @@ where
             }
             None => parent.handoff.clone(),
         };
-        self.chain.remember(&block, &parent, &ctx, out, tx_hashes, pending);
+        let seed = payload.seed.as_ref().map(|s| std::sync::Arc::new((height.get(), s.clone()))).or_else(|| parent.seed.clone());
+        self.chain.remember(&block, &parent, &ctx, out, tx_hashes, pending, seed);
         info!(height = %height, txs = payload.txs.len(), "proposed");
         Some(block)
     }

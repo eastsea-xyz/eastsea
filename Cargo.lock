@@ -218,6 +218,7 @@ version = "0.2.0"
 dependencies = [
  "aether-state",
  "aether-types",
+ "blake3",
 ]
 
 [[package]]

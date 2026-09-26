@@ -21,7 +21,7 @@
 | 6 | **증명 체인 연결**: D6 해시 결정(BLAKE3 + Jolt Metal), 노드에 Jolt 검증기, R3 에스크로 지급 연결 | 제출된 청크 증명을 검증자가 검증하고 첫 유효 증명에 지급. 증명 지연 지표 노출 | |
 | 7 | **App Attest**: 기기 1대 = 1개 신원(faucet, prover 등록, 포인트) | 시뮬레이터·탈옥 기기 거부, 기기당 제한 동작 | |
 | 8 | **Mac 노드 앱**: 메뉴바 앱으로 검증자·prover 원클릭 참여, 전원·발열 인지, Notarize | 새 Mac에서 설치부터 합의 참여까지 5분 이내 | |
-| 9 | **공개 testnet 출시** 🧑: 호스트 준비(poc-m3 디스크 또는 poc-cuda), 새 제네시스 DKG, 지갑·에이전트 배포 | 외부 경로로 지갑 송금·복구·에이전트 결제 동작 | 🧑 호스트 대기 |
+| 9 | **공개 testnet 출시** 🧑: 호스트 준비(poc-m3 디스크 또는 poc-cuda), 새 제네시스 DKG, 지갑·에이전트 배포 | 외부 경로로 지갑 송금·복구·에이전트 결제 동작 | 🔶 2026-09-26 이 Mac에서 새 제네시스로 가동(체인 7778, 검증자 4, faucet). DHT 발견·faucet·팔로워 검증 확인. 지갑 송금·에이전트 결제는 사용자 Touch ID 필요. 상시 가동은 이 Mac이 켜져 있을 때만 → 외부 검증자 합류 필요(11) |
 | 10 | **레드팀 에이전트 상시 운영**: 이중지불·검열·수수료 조작·복구 탈취·스팸 시나리오를 testnet에 계속 실행 | 발견 결함은 1·2단계 회귀 테스트로 고정 | |
 | 11 | **외부 검증자 온보딩** 🧑: 서로 다른 운영자·ISP 7대 이상 | 한 운영자가 1/3 이상을 갖지 않음 | 🧑 |
 | 12 | **R4·R5**: 참여 기록(threshold 인증서에는 서명자가 드러나지 않으므로 투표 수집 방식 설계 필요), 비양도 작업 영수증 | 영수증으로 기여 조회 가능 | |
@@ -36,7 +36,7 @@
 |---|---|---|
 | P1 | **팔로워 노드 모드**: 검증자가 아닌 Mac도 확정 블록과 인증서를 받아 전부 재실행·검증하고, 지갑에 로컬로 응답 | 새 Mac이 제네시스부터 따라잡고, 상태 루트가 검증자와 일치. 지갑이 이 로컬 노드만으로 검증 ✅ `aether follow` |
 | P2 | **앱 번들 통합**: 지갑 앱 안에 `aether`(노드)와 `aether-agent`를 Helpers로 포함. 노드 켜기/끄기, 전원 연결 시에만 실행, 로그인 시 시작 옵션, "명령줄 도구 설치" 메뉴 | 앱을 끄면 노드도 정리되어 종료. 데이터는 `~/Library/Application Support/Aether` ✅ 노드 스위치, 동기화 후 지갑 전환, 부모 종료 시 노드 종료. 전원·로그인 시작 옵션은 남음 |
-| P3 | **서명·공증·DMG**: Developer ID 서명, Hardened Runtime, `notarytool` 공증과 staple, 배경 이미지와 Applications 바로가기가 있는 DMG | 다른 Mac에서 Gatekeeper 경고 없이 설치·실행 🧑 인증서 결정 필요. `scripts/package-mac.sh`(DMG 생성, Developer ID 서명·공증 경로) 준비됨 |
+| P3 | **서명·공증·DMG**: Developer ID 서명, Hardened Runtime, `notarytool` 공증과 staple, 배경 이미지와 Applications 바로가기가 있는 DMG | 다른 Mac에서 Gatekeeper 경고 없이 설치·실행 ✅ Pipln Developer ID 서명, Apple 공증 Accepted, staple, `spctl`: Notarized Developer ID |
 | P4 | **자동 업데이트**: Sparkle 2(EdDSA 서명 appcast, GitHub Releases 호스팅) | 이전 버전이 새 버전을 감지하고 설치 |
 | P5 | **배포 채널**: GitHub Releases, Homebrew cask, iOS는 TestFlight | `brew install --cask aether` 동작 |
 

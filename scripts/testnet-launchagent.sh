@@ -3,6 +3,9 @@
 #   scripts/testnet-launchagent.sh install | uninstall
 # One LaunchAgent per validator (KeepAlive): launchd restarts a validator that
 # exits and starts all of them at login. Chain data is never wiped.
+# The binary is signed with the Developer ID (SIGN_IDENTITY) and the agents name
+# the Aether app, so System Settings ▸ Login Items lists them as Aether (Pipln),
+# not as an unidentified command-line tool.
 set -euo pipefail
 T=${AETHER_TESTNET:-$HOME/aether-testnet}
 A="$T/bin/aether"
@@ -12,6 +15,7 @@ label() { echo "com.pipln.aether.testnet.v$1"; }
 case "${1:-}" in
   install)
     mkdir -p "$LA"
+    codesign --force --options runtime --timestamp --sign "${SIGN_IDENTITY:-Developer ID Application: Pipln (45WU468FZE)}" "$A"
     "$(dirname "$0")/testnet.sh" stop >/dev/null 2>&1 || true
     for i in $(seq 1 "$N"); do
       faucet=""
@@ -22,6 +26,7 @@ case "${1:-}" in
 <plist version="1.0">
 <dict>
   <key>Label</key><string>$(label "$i")</string>
+  <key>AssociatedBundleIdentifiers</key><array><string>com.pipln.aether</string></array>
   <key>ProgramArguments</key>
   <array>
     <string>$A</string><string>node</string>
@@ -40,7 +45,12 @@ case "${1:-}" in
 </plist>
 PLIST
       launchctl bootout "gui/$(id -u)/$(label "$i")" 2>/dev/null || true
-      launchctl bootstrap "gui/$(id -u)" "$LA/$(label "$i").plist"
+      # bootout finishes asynchronously; retry until the old job is gone.
+      for _ in 1 2 3 4 5 6 7 8 9 10; do
+        launchctl bootstrap "gui/$(id -u)" "$LA/$(label "$i").plist" 2>/dev/null && break
+        sleep 1
+      done
+      launchctl print "gui/$(id -u)/$(label "$i")" >/dev/null
       echo "installed $(label "$i")"
     done ;;
   uninstall)

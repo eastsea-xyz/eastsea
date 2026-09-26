@@ -59,9 +59,7 @@ impl Canonical for ChunkIo {
 
 /// Consecutive chunk proofs must chain state roots and tx ranges exactly.
 pub fn chunks_chain(ios: &[ChunkIo]) -> bool {
-    ios.windows(2).all(|w| {
-        w[0].height == w[1].height && w[0].post_root == w[1].pre_root && w[0].tx_range.1 == w[1].tx_range.0
-    })
+    ios.windows(2).all(|w| w[0].height == w[1].height && w[0].post_root == w[1].pre_root && w[0].tx_range.1 == w[1].tx_range.0)
 }
 
 #[cfg(test)]

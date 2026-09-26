@@ -342,9 +342,14 @@ fn with_session(agent: &P256Signer, limits: &SessionLimits) -> Recovery {
     rc
 }
 
-fn pay(rc: &mut Recovery, agent: &P256Signer, nonce: u64, calls: &[AccountCall], t: u64) -> bool {
-    let (r, s) = sign_rs(agent, &session_message(CHAIN, rc.s.a, 0, nonce, calls));
+/// Pay as the session at index 0, whose id is `id` (1 for the first session ever added).
+fn pay_as(rc: &mut Recovery, agent: &P256Signer, id: u64, nonce: u64, calls: &[AccountCall], t: u64) -> bool {
+    let (r, s) = sign_rs(agent, &session_message(CHAIN, rc.s.a, id, nonce, calls));
     rc.relay(encode_session_execute(calls, 0, r, s), t)
+}
+
+fn pay(rc: &mut Recovery, agent: &P256Signer, nonce: u64, calls: &[AccountCall], t: u64) -> bool {
+    pay_as(rc, agent, 1, nonce, calls, t)
 }
 
 fn to(addr: Address, aeth: u128) -> AccountCall {
@@ -357,21 +362,51 @@ fn a_session_key_pays_within_its_limits_only() {
     let limits = SessionLimits { per_payment: AETH, per_day: 3 * AETH, expires: 0, allow: vec![] };
     let mut rc = with_session(&agent, &limits);
     let bob = Address::repeat_byte(0xb0);
-    assert!(pay(&mut rc, &agent, 0, &[to(bob, AETH)], 2_000));
-    assert!(!pay(&mut rc, &agent, 0, &[to(bob, AETH)], 2_001), "no replay");
-    assert!(!pay(&mut rc, &agent, 1, &[to(bob, AETH / 2 + 1), to(bob, AETH / 2)], 2_002), "per-payment limit counts the whole batch");
-    assert!(pay(&mut rc, &agent, 1, &[to(bob, AETH)], 2_003));
-    assert!(pay(&mut rc, &agent, 2, &[to(bob, AETH)], 2_004));
-    assert!(!pay(&mut rc, &agent, 3, &[to(bob, 1)], 2_005), "daily limit reached");
-    assert!(pay(&mut rc, &agent, 3, &[to(bob, AETH)], 2_000 + 86_400), "a new 24 h window");
+    const DAY: u64 = 86_400;
+    let t0 = 10 * DAY + DAY - 600; // ten minutes before a UTC midnight
+    assert!(pay(&mut rc, &agent, 0, &[to(bob, AETH)], t0));
+    assert!(!pay(&mut rc, &agent, 0, &[to(bob, AETH)], t0 + 1), "no replay");
+    assert!(!pay(&mut rc, &agent, 1, &[to(bob, AETH / 2 + 1), to(bob, AETH / 2)], t0 + 2), "per-payment limit counts the whole batch");
+    assert!(pay(&mut rc, &agent, 1, &[to(bob, AETH)], t0 + 3));
+    assert!(pay(&mut rc, &agent, 2, &[to(bob, AETH)], t0 + 4));
+    assert!(!pay(&mut rc, &agent, 3, &[to(bob, 1)], t0 + 5), "daily limit reached");
+    // Right after midnight a fixed daily window would allow 3 more; any-24-hours does not.
+    assert!(!pay(&mut rc, &agent, 3, &[to(bob, 1)], t0 + 700), "yesterday's payments still count");
+    assert!(pay(&mut rc, &agent, 3, &[to(bob, AETH)], t0 + 600 + DAY), "a full day later");
     assert_eq!(rc.state.balance(&bob), U256::from(4 * AETH));
-    // The limits and usage are readable from storage (for light-client proofs).
+    // Limits and usage are readable from storage (for light-client proofs).
     let base = slots::session(0);
     assert_eq!(slots::unpack_limits(rc.state.storage(&rc.s.a, base + U256::from(2u64))), (AETH, 3 * AETH));
-    let (window, spent, expires) = slots::unpack_window(rc.state.storage(&rc.s.a, base + U256::from(3u64)));
-    assert_eq!((window, spent, expires), (2_000 + 86_400, AETH, 0));
-    assert_eq!(rc.state.storage(&rc.s.a, base + U256::from(5u64)), U256::from(4u64), "session nonce");
+    let (day, expires, spent) = slots::unpack_usage(rc.state.storage(&rc.s.a, base + U256::from(3u64)));
+    assert_eq!((day, expires, spent), (12, 0, AETH));
+    let prev = rc.state.storage(&rc.s.a, base + U256::from(4u64)).to::<u128>();
+    assert_eq!(prev, 0, "day 11 had no payments");
+    assert_eq!(slots::left_now(3 * AETH, day, spent, prev, t0 + 600 + DAY), 2 * AETH);
+    assert_eq!(rc.state.storage(&rc.s.a, base + U256::from(6u64)), U256::from(4u64), "session nonce");
+    assert_eq!(rc.state.storage(&rc.s.a, base + U256::from(7u64)), U256::from(1u64), "session id");
     assert_eq!(rc.state.storage(&rc.s.a, slots::session_count()), U256::from(1u64));
+}
+
+#[test]
+fn a_re_added_session_key_cannot_replay_old_signatures() {
+    let agent = P256Signer::from_seed(&seed(25)).unwrap();
+    let limits = SessionLimits { per_payment: AETH, per_day: 10 * AETH, expires: 0, allow: vec![] };
+    let mut rc = with_session(&agent, &limits);
+    let bob = Address::repeat_byte(0xb0);
+    let calls = [to(bob, AETH)];
+    let (r, s) = sign_rs(&agent, &session_message(CHAIN, rc.s.a, 1, 0, &calls));
+    assert!(rc.relay(encode_session_execute(&calls, 0, r, s), 2_000));
+    // The owner replaces the session with the same key (a routine limit change).
+    let (x, y) = key(&agent);
+    let replace =
+        encode_execute(&[(rc.s.a, U256::ZERO, aether_execution::account::encode_remove_session(0)), (rc.s.a, U256::ZERO, encode_add_session(x, y, &limits))]);
+    let t = tx(&rc.s, 3, EvmCall { to: Some(rc.s.a), value: U256::ZERO, input: replace, gas_limit: 700_000, delegate: None });
+    let out = execute_block(&rc.state, &at(3, 3_000), &[t]).unwrap();
+    assert!(out.receipts[0].success, "{:?}", out.receipts[0]);
+    rc.state = out.state;
+    assert!(!rc.relay(encode_session_execute(&calls, 0, r, s), 4_000), "the published old signature does not replay");
+    assert!(pay_as(&mut rc, &agent, 2, 0, &calls, 4_001), "new signatures use the new session id");
+    assert_eq!(rc.state.balance(&bob), U256::from(2 * AETH));
 }
 
 #[test]

@@ -31,6 +31,20 @@ targets:
         HEADER_SEARCH_PATHS: $(SRCROOT)/Generated
         OTHER_LDFLAGS: $(SRCROOT)/../../target/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework OpenDirectory -framework IOKit
         ARCHS: arm64
+    postBuildScripts:
+      - name: Embed node and agent
+        basedOnDependencyAnalysis: false
+        script: |
+          # The app carries its node (`aether follow`) and the agent CLI in Contents/Helpers,
+          # signed like the app so the bundle verifies and notarizes as one.
+          set -euo pipefail
+          H="$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Helpers"
+          mkdir -p "$H"
+          for t in "$SRCROOT/../../target/release/aether" "$SRCROOT/../../target/agent/aether-agent"; do
+            [ -x "$t" ] || continue
+            cp -f "$t" "$H/"
+            codesign --force --options runtime --timestamp=none --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$H/$(basename "$t")"
+          done
   AetherWalletIOS:
     type: application
     platform: iOS

@@ -16,7 +16,7 @@ enum Owner {
         if (try? Tools.session(id)) != nil {
             out["next"] = "Already set up. Change limits with `aether-agent policy set` (Touch ID)."
         } else if let min = Wei(aeth: "0.5"), !(balance < min) {
-            out["limits"] = try apply(perTx: "1", perDay: "10", allow: [], expiresDays: 0, gas: defaultGas)
+            out["limits"] = try apply(perTx: "1", perDay: "10", allow: [], expires: 0, gas: defaultGas)
             out["next"] = "Ready. Register with your agent tools: `aether-agent setup all --apply`."
         } else {
             out["next"] = "Fund \(id.account) (that balance is the most the agent can ever spend; on the testnet: `aether-agent get-test-tokens`), then run `aether-agent policy set` (Touch ID) to set limits and give the agent gas."
@@ -38,22 +38,23 @@ enum Owner {
             let perTx = f["per_tx"] ?? wei(current?.perPaymentWei) ?? "1"
             let perDay = f["per_day"] ?? wei(current?.perDayWei) ?? "10"
             let allow = f["allow"].map { $0 == "anyone" ? [] : $0.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) } } ?? (current?.allow ?? [])
-            let days = f["expires_days"].flatMap(Double.init) ?? 0
+            // Unspecified settings keep their current values (an expiry is never silently removed).
+            let keepExpiry = current.map { $0.expires } ?? 0
             let gasBalance = (try? verifiedAccount(address: id.gasPayer, validators: Tools.validatorCount)).flatMap { Wei(decimal: $0.balanceWei) } ?? .zero
             let gas = f["gas"] ?? ((Wei(aeth: "0.05").map { gasBalance < $0 } ?? true) ? defaultGas : "0")
-            return try apply(perTx: perTx, perDay: perDay, allow: allow, expiresDays: days, gas: gas)
+            let expires: UInt64 = f["expires_days"].flatMap(Double.init).map { $0 > 0 ? UInt64(Date().timeIntervalSince1970 + $0 * 86_400) : 0 } ?? keepExpiry
+            return try apply(perTx: perTx, perDay: perDay, allow: allow, expires: expires, gas: gas)
         default:
-            throw AgentError.input("policy show | set [--per-tx X] [--per-day Y] [--allow 0x..,0x..|anyone] [--expires-days N] [--gas AETH]")
+            throw AgentError.input("policy show | set [--per-tx X] [--per-day Y] [--allow 0x..,0x..|anyone] [--expires-days N (0 = never)] [--gas AETH]")
         }
     }
 
     /// One owner-signed transaction: replace the agent's session with these limits
     /// and top up its gas payer.
-    private static func apply(perTx: String, perDay: String, allow: [String], expiresDays: Double, gas: String) throws -> [String: Any] {
+    private static func apply(perTx: String, perDay: String, allow: [String], expires: UInt64, gas: String) throws -> [String: Any] {
         guard let p = Wei(aeth: perTx), let d = Wei(aeth: perDay), p.value > 0, !(d < p) else { throw AgentError.input("need 0 < per-tx <= per-day") }
         guard let g = Wei(aeth: gas) else { throw AgentError.input("--gas \(gas)") }
         let id = try Tools.identity()
-        let expires = expiresDays > 0 ? UInt64(Date().timeIntervalSince1970 + expiresDays * 86_400) : 0
         let settings = SessionSettings(sessionCode: id.agentCode, perPaymentWei: p.description, perDayWei: d.description, expires: expires, allow: allow, gasWei: g.description)
         let owner = try Keys.owner()
         let ownerKey = Keys.publicKey(owner)

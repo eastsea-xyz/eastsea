@@ -19,6 +19,8 @@ use std::time::{Duration, Instant};
 pub const GRANT: u128 = 10 * 10u128.pow(18);
 pub const COOLDOWN: Duration = Duration::from_secs(24 * 3600);
 pub const MIN_INTERVAL: Duration = Duration::from_secs(1);
+/// Grants per 24 h in total (fresh addresses cost nothing, so the faucet itself is capped).
+pub const MAX_PER_DAY: u32 = 5_000;
 /// Genesis supply of a faucet account (test tokens, no value).
 pub const SUPPLY: u128 = 1_000_000_000 * 10u128.pow(18);
 const TIP: u128 = 1_000_000_000;
@@ -33,6 +35,8 @@ pub enum FaucetError {
     Cooldown(Duration),
     /// Too many requests overall; retry shortly.
     Busy,
+    /// The faucet gave out its daily total; retry after the given time.
+    DailyLimit(Duration),
     Signing(String),
 }
 
@@ -41,6 +45,7 @@ impl std::fmt::Display for FaucetError {
         match self {
             FaucetError::Cooldown(d) => write!(f, "this address already received test tokens; try again in {} min", d.as_secs().div_ceil(60)),
             FaucetError::Busy => write!(f, "faucet busy; try again in a second"),
+            FaucetError::DailyLimit(d) => write!(f, "the faucet reached its daily limit; try again in {} min", d.as_secs().div_ceil(60)),
             FaucetError::Signing(e) => write!(f, "faucet signing failed: {e}"),
         }
     }
@@ -50,6 +55,8 @@ struct State {
     last: HashMap<Address, Instant>,
     last_any: Option<Instant>,
     next_nonce: u64,
+    day_start: Option<Instant>,
+    today: u32,
 }
 
 pub struct Faucet {
@@ -62,7 +69,7 @@ impl Faucet {
     pub fn from_seed(seed: &[u8; 32]) -> Result<Self, String> {
         let signer = P256Signer::from_seed(seed).map_err(|e| e.to_string())?;
         let address = address_of(&signer.public_key()).map_err(|e| e.to_string())?;
-        Ok(Faucet { signer, address, state: Mutex::new(State { last: HashMap::new(), last_any: None, next_nonce: 0 }) })
+        Ok(Faucet { signer, address, state: Mutex::new(State { last: HashMap::new(), last_any: None, next_nonce: 0, day_start: None, today: 0 }) })
     }
 
     /// Load a key written by `generate` (hex seed).
@@ -99,6 +106,18 @@ impl Faucet {
                 return Err(FaucetError::Busy);
             }
         }
+        let day = Duration::from_secs(24 * 3600);
+        match st.day_start {
+            Some(t) if now.saturating_duration_since(t) < day => {
+                if st.today >= MAX_PER_DAY {
+                    return Err(FaucetError::DailyLimit(day - now.saturating_duration_since(t)));
+                }
+            }
+            _ => {
+                st.day_start = Some(now);
+                st.today = 0;
+            }
+        }
         if let Some(t) = st.last.get(&to) {
             let waited = now.saturating_duration_since(*t);
             if waited < COOLDOWN {
@@ -112,6 +131,7 @@ impl Faucet {
         let caps = FeeVector { exec: base.exec.max(TIP) * 2 + TIP, state: 0, prove: base.prove.max(TIP) * 2 };
         let tx = sign_call_with(&self.signer, cfg.chain_id, st.next_nonce, caps, TIP, &call).map_err(|e| FaucetError::Signing(e.to_string()))?;
         st.next_nonce += 1;
+        st.today += 1;
         st.last_any = Some(now);
         if st.last.len() >= MAX_TRACKED {
             st.last.retain(|_, t| now.saturating_duration_since(*t) < COOLDOWN);
@@ -164,6 +184,20 @@ mod tests {
         assert!(matches!(f.grant(&chain, a, t1), Err(FaucetError::Cooldown(_))), "same address within the cooldown");
         assert_eq!(f.grant(&chain, b, t1).unwrap().header.nonce, 1, "nonces advance while grants are pending");
         assert!(f.grant(&chain, a, t0 + COOLDOWN + Duration::from_secs(1)).is_ok(), "after the cooldown");
+    }
+
+    #[test]
+    fn the_faucet_has_a_daily_total() {
+        let (f, chain) = setup();
+        let t0 = Instant::now();
+        for i in 0..MAX_PER_DAY {
+            let mut a = [0u8; 20];
+            a[..4].copy_from_slice(&i.to_be_bytes());
+            assert!(f.grant(&chain, Address::from(a), t0 + Duration::from_secs(u64::from(i) * 2)).is_ok());
+        }
+        let late = t0 + Duration::from_secs(u64::from(MAX_PER_DAY) * 2);
+        assert!(matches!(f.grant(&chain, Address::repeat_byte(0xee), late), Err(FaucetError::DailyLimit(_))));
+        assert!(f.grant(&chain, Address::repeat_byte(0xee), t0 + Duration::from_secs(24 * 3600 + 1)).is_ok(), "a new day");
     }
 
     #[test]

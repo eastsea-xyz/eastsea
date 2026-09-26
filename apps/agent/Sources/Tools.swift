@@ -77,14 +77,12 @@ enum Tools {
     }
 
     static func describe(_ s: SessionStatus) -> [String: Any] {
-        let now = UInt64(Date().timeIntervalSince1970)
-        let spent = now >= s.windowStart + 86_400 ? Wei.zero : (Wei(decimal: s.spentWei) ?? .zero)
-        let day = Wei(decimal: s.perDayWei) ?? .zero
-        return ["per_payment_aeth": aeth(s.perPaymentWei), "per_day_aeth": aeth(s.perDayWei),
-                "left_today_aeth": spent < day ? Wei(value: day.value - spent.value).aeth : "0",
-                "allowed_recipients": s.allow.isEmpty ? ["anyone"] : s.allow,
-                "expires": s.expires == 0 ? "never" : ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: TimeInterval(s.expires))),
-                "enforced_by": "the account contract on chain"]
+        ["per_payment_aeth": aeth(s.perPaymentWei), "per_day_aeth": aeth(s.perDayWei),
+         "left_now_aeth": aeth(s.leftWei),
+         "daily_rule": "at most per_day in any 24 hours (today plus yesterday, UTC)",
+         "allowed_recipients": s.allow.isEmpty ? ["anyone"] : s.allow,
+         "expires": s.expires == 0 ? "never" : ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: TimeInterval(s.expires))),
+         "enforced_by": "the account contract on chain"]
     }
 
     // MARK: tools
@@ -147,17 +145,17 @@ enum Tools {
             guard to.hasPrefix("0x"), to.count == 42 else { throw AgentError.input("\(to) is not a 0x address") }
             if !s.allow.isEmpty && !s.allow.contains(where: { $0.lowercased() == to.lowercased() }) { throw AgentError.policy("\(to) is not an allowed recipient") }
             parsed.append(Payment(to: to, valueWei: w.description))
-            total = total + w
+            guard let t = total.adding(w) else { throw AgentError.input("the amounts add up to more than any balance") }
+            total = t
         }
-        let limits = describe(s)
         let perPayment = Wei(decimal: s.perPaymentWei) ?? .zero
         if perPayment < total { throw AgentError.policy("\(total.aeth) AETH is over the per-payment limit of \(aeth(s.perPaymentWei)) AETH") }
-        let left = Wei(aeth: limits["left_today_aeth"] as? String ?? "0") ?? .zero
-        if left < total { throw AgentError.policy("only \(left.aeth) AETH left today (limit \(aeth(s.perDayWei)) AETH per 24 h)") }
+        let left = Wei(decimal: s.leftWei) ?? .zero
+        if left < total { throw AgentError.policy("only \(left.aeth) AETH may be paid now (limit \(aeth(s.perDayWei)) AETH in any 24 h)") }
         let acc = try verifiedAccount(address: id.account, validators: validators)
         if (Wei(decimal: acc.balanceWei) ?? .zero) < total { throw AgentError.policy("the account holds \(aeth(acc.balanceWei)) AETH") }
         if dryRun {
-            return ["ok": true, "would_pay_aeth": total.aeth, "left_today_after_aeth": Wei(value: left.value - total.value).aeth]
+            return ["ok": true, "would_pay_aeth": total.aeth, "left_after_aeth": Wei(value: left.value - total.value).aeth]
         }
         let request = try prepareSessionPayment(account: id.account, payments: parsed, validators: validators)
         let agent = try Keys.agent()

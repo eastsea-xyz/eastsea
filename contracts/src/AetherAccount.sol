@@ -13,8 +13,8 @@ pragma solidity ^0.8.19;
 /// new device takes over the same address.
 ///
 /// Session keys (e.g. an AI agent's key) pay plain transfers by signature, within
-/// limits this contract enforces: per payment, per rolling day, an optional
-/// recipient list and an expiry. Whoever holds a session key can never exceed
+/// limits this contract enforces: per payment, at most `perDay` in ANY 24 hours,
+/// an optional recipient list and an expiry. Whoever holds a session key can never exceed
 /// them, whatever code it runs.
 ///
 /// Limit: EIP-7702 cannot revoke the account's original key. Recovery is for a
@@ -92,20 +92,26 @@ contract AetherAccount {
         Key[] owners;
         uint256 ownerNonce;
         Session[] sessions;
+        /// Every session ever added gets a new id, which its signatures cover.
+        uint256 sessionSerial;
     }
 
     struct Session {
         Key key;
         uint128 perPayment;
         uint128 perDay;
-        /// Start of the current 24 h window and what was paid in it.
-        uint64 windowStart;
-        uint128 spent;
+        /// Paid in UTC day `day` (unix time / 1 day) and in the day before it.
+        uint64 day;
         /// Unix time after which the key stops working (0 = never).
         uint64 expires;
+        uint128 spent;
+        uint128 prevSpent;
         /// Allowed recipients; empty = anyone.
         address[] allow;
         uint256 nonce;
+        /// Unique per account and never reused: a removed and re-added key starts
+        /// a new signature domain, so its old signatures cannot replay.
+        uint256 id;
     }
 
     function _state() private pure returns (State storage st) {
@@ -280,6 +286,7 @@ contract AetherAccount {
         if (st.sessions.length >= MAX_SESSIONS || (key.x == bytes32(0) && key.y == bytes32(0))) revert BadSession();
         if (perPayment == 0 || perPayment > perDay || allow.length > MAX_ALLOWED) revert BadSession();
         Session storage ss = st.sessions.push();
+        ss.id = ++st.sessionSerial;
         ss.key = key;
         ss.perPayment = perPayment;
         ss.perDay = perDay;
@@ -301,14 +308,16 @@ contract AetherAccount {
             dst.key = src.key;
             dst.perPayment = src.perPayment;
             dst.perDay = src.perDay;
-            dst.windowStart = src.windowStart;
+            dst.day = src.day;
             dst.spent = src.spent;
+            dst.prevSpent = src.prevSpent;
             dst.expires = src.expires;
             delete dst.allow;
             for (uint256 i = 0; i < src.allow.length; i++) {
                 dst.allow.push(src.allow[i]);
             }
             dst.nonce = src.nonce;
+            dst.id = src.id;
         }
         delete st.sessions[last].allow;
         st.sessions.pop();
@@ -323,9 +332,9 @@ contract AetherAccount {
         return _state().sessions[index];
     }
 
-    /// What a session key signs.
-    function sessionDigest(Call[] calldata calls, uint256 index, uint256 nonce) public view returns (bytes32) {
-        return sha256(abi.encode(block.chainid, address(this), SESSION_TAG, index, nonce, calls));
+    /// What a session key signs: bound to the session's id, not its index.
+    function sessionDigest(Call[] calldata calls, uint256 id, uint256 nonce) public view returns (bytes32) {
+        return sha256(abi.encode(block.chainid, address(this), SESSION_TAG, id, nonce, calls));
     }
 
     /// Plain payments signed by a session key, within its limits. Anyone may
@@ -336,7 +345,7 @@ contract AetherAccount {
         Session storage ss = st.sessions[index];
         if (ss.expires != 0 && block.timestamp >= ss.expires) revert SessionExpired();
         uint256 nonce = ss.nonce;
-        if (!_verify(sessionDigest(calls, index, nonce), r, s, ss.key)) revert BadSession();
+        if (!_verify(sessionDigest(calls, ss.id, nonce), r, s, ss.key)) revert BadSession();
         uint256 total = 0;
         for (uint256 i = 0; i < calls.length; i++) {
             // Value transfers only: no contract calls, and never into the account's own settings.
@@ -345,11 +354,16 @@ contract AetherAccount {
             total += calls[i].value;
         }
         if (total > ss.perPayment) revert OverPaymentLimit(total, ss.perPayment);
-        if (block.timestamp >= uint256(ss.windowStart) + 1 days) {
-            ss.windowStart = uint64(block.timestamp);
+        // Any 24 hours overlap at most two consecutive UTC days, so capping each
+        // day plus the day before caps every 24-hour span at perDay.
+        uint64 today = uint64(block.timestamp / 1 days);
+        if (today != ss.day) {
+            ss.prevSpent = today == ss.day + 1 ? ss.spent : 0;
             ss.spent = 0;
+            ss.day = today;
         }
-        if (uint256(ss.spent) + total > ss.perDay) revert OverDailyLimit(uint256(ss.spent) + total, ss.perDay);
+        uint256 used = uint256(ss.prevSpent) + ss.spent + total;
+        if (used > ss.perDay) revert OverDailyLimit(used, ss.perDay);
         ss.spent += uint128(total);
         ss.nonce = nonce + 1;
         _run(calls);

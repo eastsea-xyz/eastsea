@@ -109,7 +109,7 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
             let f = st.faucet.as_ref().ok_or((-32601, "this node does not run the faucet".to_string()))?;
             let tx = f.grant(chain, to, std::time::Instant::now()).map_err(|e| (-32000, e.to_string()))?;
             let hash = aether_execution::tx_hash(&tx);
-            if chain.add_to_mempool(tx.clone()) {
+            if chain.add_to_mempool(tx.clone()).map_err(|e| (-32000, e))? {
                 let _ = st.gossip.send(tx);
             }
             Ok(json!({ "hash": hash, "amount_wei": crate::faucet::GRANT.to_string() }))
@@ -119,7 +119,7 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
             let cfg = chain.cfg();
             validate_stateless(&tx, cfg.chain_id).map_err(|e| (-32000, format!("invalid transaction: {e:?}")))?;
             let hash = aether_execution::tx_hash(&tx);
-            if chain.add_to_mempool(tx.clone()) {
+            if chain.add_to_mempool(tx.clone()).map_err(|e| (-32000, format!("rejected: {e}")))? {
                 let _ = st.gossip.send(tx);
             }
             Ok(json!({ "hash": hash }))

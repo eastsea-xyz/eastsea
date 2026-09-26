@@ -199,7 +199,7 @@ fn simulate(seed: u64, secs: u64, fault: Fault) -> Outcome {
                     *n = (*n).max(committed);
                     let tx = transfer(from, *n, bob);
                     for c in &chains {
-                        c.add_to_mempool(tx.clone());
+                        let _ = c.add_to_mempool(tx.clone());
                     }
                     *n += 1;
                     sent += 1;

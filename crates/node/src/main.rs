@@ -158,6 +158,9 @@ enum Cmd {
         /// Devnet validator count (without --network).
         #[arg(long, default_value_t = 4)]
         validators: u64,
+        /// Exit when the launching app does (the Mac app's node switch).
+        #[arg(long)]
+        exit_with_parent: bool,
     },
     /// Create the testnet faucet key at <data>/faucet.key and print its address
     /// (put it in network.json with `aether network --faucet`).
@@ -328,7 +331,12 @@ fn main() {
                 })
         }
         Cmd::Keygen { data } => keygen(&data),
-        Cmd::Follow { network, from_rpc, data, rpc_port, validators } => run_follow(network, from_rpc, data, rpc_port, validators),
+        Cmd::Follow { network, from_rpc, data, rpc_port, validators, exit_with_parent } => {
+            if exit_with_parent {
+                exit_with_parent_process();
+            }
+            run_follow(network, from_rpc, data, rpc_port, validators)
+        }
         Cmd::FaucetKey { data } => aether_node::faucet::Faucet::generate(&std::path::Path::new(&data).join("faucet.key")).map(|a| {
             println!("faucet address {a}\nkey written to {data}/faucet.key (keep it on this machine; run the node with --faucet-key)");
         }),
@@ -779,7 +787,7 @@ fn run_node(a: NodeArgs) {
             while let Ok((_peer, msg)) = tx_in.recv().await {
                 let Ok(tx) = serde_json::from_slice::<TxEnvelope>(msg.as_ref()) else { continue };
                 if aether_execution::validate_stateless(&tx, chain_id).is_ok() {
-                    gossip_chain.add_to_mempool(tx);
+                    let _ = gossip_chain.add_to_mempool(tx);
                 }
             }
         });
@@ -812,6 +820,17 @@ fn run_node(a: NodeArgs) {
         tracing::info!(%rpc_addr, "rpc listening");
         if let Err(e) = rpc::serve(rpc_addr, rpc_state).await {
             tracing::error!(?e, "rpc server stopped");
+        }
+    });
+}
+
+/// Leave no orphan: stop when the parent process is gone (reparented to launchd).
+fn exit_with_parent_process() {
+    let parent = std::os::unix::process::parent_id();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(1));
+        if std::os::unix::process::parent_id() != parent {
+            std::process::exit(0);
         }
     });
 }

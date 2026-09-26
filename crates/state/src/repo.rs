@@ -58,10 +58,7 @@ mod tests {
         let alice = Address::repeat_byte(0xa1);
         let acct = BasicData { nonce: 3, balance: 1_000, ..Default::default() };
         let slot = storage_slot_key(&h, &alice, U256::from(1234));
-        repo.apply(&[
-            (basic_data_key(&h, &alice), Some(acct.encode().unwrap())),
-            (slot, Some([7u8; 32])),
-        ]);
+        repo.apply(&[(basic_data_key(&h, &alice), Some(acct.encode().unwrap())), (slot, Some([7u8; 32]))]);
         let root = repo.root();
         let proofs = repo.prove(&[basic_data_key(&h, &alice), slot, basic_data_key(&h, &Address::repeat_byte(0xb0))]);
         assert_eq!(BasicData::decode(&proofs[0].value.unwrap()), acct);

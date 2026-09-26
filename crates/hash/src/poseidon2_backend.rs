@@ -34,10 +34,7 @@ impl Default for Poseidon2KoalaBear {
 impl Poseidon2KoalaBear {
     pub fn new() -> Self {
         let perm = default_koalabear_poseidon2_16();
-        Poseidon2KoalaBear {
-            sponge: Pad10Sponge::new(perm.clone(), Increment::new(KoalaBear::ONE)),
-            compress: TruncatedPermutation::new(perm),
-        }
+        Poseidon2KoalaBear { sponge: Pad10Sponge::new(perm.clone(), Increment::new(KoalaBear::ONE)), compress: TruncatedPermutation::new(perm) }
     }
 
     /// Length-prefixed 24-bit packing: [len limbs (3)] ++ [3-byte chunks].

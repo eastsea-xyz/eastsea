@@ -122,9 +122,10 @@ pub fn encode_remove_session(index: u64) -> Bytes {
     removeSessionCall { index: U256::from(index) }.abi_encode().into()
 }
 
-/// The bytes a session key signs for payment `nonce` of session `index`.
-pub fn session_message(chain_id: u64, account: Address, index: u64, nonce: u64, c: &[AccountCall]) -> Vec<u8> {
-    (U256::from(chain_id), account, SESSION_TAG, U256::from(index), U256::from(nonce), calls(c)).abi_encode_params()
+/// The bytes a session key signs for payment `nonce` of the session with `id`
+/// (its unique id, not its index, so a re-added key cannot replay old signatures).
+pub fn session_message(chain_id: u64, account: Address, id: u64, nonce: u64, c: &[AccountCall]) -> Vec<u8> {
+    (U256::from(chain_id), account, SESSION_TAG, U256::from(id), U256::from(nonce), calls(c)).abi_encode_params()
 }
 
 /// `sessionExecute(calls, index, r, s)`.
@@ -180,14 +181,15 @@ pub mod slots {
         at(7)
     }
 
-    /// Slots of session `i`: key.x, key.y, [perPayment | perDay], [windowStart | spent | expires], allow (length), nonce.
+    /// Slots of session `i` (8 per session): key.x, key.y, [perPayment | perDay],
+    /// [day | expires | spent], prevSpent, allow (length), nonce, id.
     pub fn session(i: u64) -> U256 {
-        U256::from_be_bytes(keccak256(at(7).to_be_bytes::<32>()).0) + U256::from(6 * i)
+        U256::from_be_bytes(keccak256(at(7).to_be_bytes::<32>()).0) + U256::from(8 * i)
     }
 
     /// Slot of `sessions[i].allow[j]`.
     pub fn session_allow(i: u64, j: u64) -> U256 {
-        U256::from_be_bytes(keccak256((session(i) + U256::from(4u64)).to_be_bytes::<32>()).0) + U256::from(j)
+        U256::from_be_bytes(keccak256((session(i) + U256::from(5u64)).to_be_bytes::<32>()).0) + U256::from(j)
     }
 
     /// `(perPayment, perDay)` from the session's third slot.
@@ -196,14 +198,28 @@ pub mod slots {
         (u128::from_be_bytes(b[16..32].try_into().expect("16")), u128::from_be_bytes(b[0..16].try_into().expect("16")))
     }
 
-    /// `(windowStart, spent, expires)` from the session's fourth slot.
-    pub fn unpack_window(v: U256) -> (u64, u128, u64) {
+    /// `(day, expires, spent)` from the session's fourth slot.
+    pub fn unpack_usage(v: U256) -> (u64, u64, u128) {
         let b = v.to_be_bytes::<32>();
         (
             u64::from_be_bytes(b[24..32].try_into().expect("8")),
-            u128::from_be_bytes(b[8..24].try_into().expect("16")),
-            u64::from_be_bytes(b[0..8].try_into().expect("8")),
+            u64::from_be_bytes(b[16..24].try_into().expect("8")),
+            u128::from_be_bytes(b[0..16].try_into().expect("16")),
         )
+    }
+
+    /// What a session may still pay now (at `now`, unix seconds): perDay minus what
+    /// it paid today and yesterday (UTC), as the contract counts it.
+    pub fn left_now(per_day: u128, day: u64, spent: u128, prev_spent: u128, now: u64) -> u128 {
+        let today = now / 86_400;
+        let used = if day == today {
+            spent + prev_spent
+        } else if day + 1 == today {
+            spent
+        } else {
+            0
+        };
+        per_day.saturating_sub(used)
     }
 
     /// Split the packed `threshold_and_delay` word.

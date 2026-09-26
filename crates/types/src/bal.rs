@@ -138,8 +138,6 @@ impl Canonical for BlockAccessList {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;

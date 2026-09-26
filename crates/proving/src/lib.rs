@@ -62,12 +62,7 @@ pub fn check_block<V: Verifier + ?Sized>(v: &V, proof: &BlockProof, expected: &P
     if !proof.within_budget() {
         return Err(ProvingError::OverBudget(proof.proof_bytes.len()));
     }
-    let io = ProofIo {
-        height: proof.height,
-        pre_state_root: proof.pre_state_root,
-        post_state_root: proof.post_state_root,
-        bal_root: proof.bal_root,
-    };
+    let io = ProofIo { height: proof.height, pre_state_root: proof.pre_state_root, post_state_root: proof.post_state_root, bal_root: proof.bal_root };
     if io != *expected {
         return Err(ProvingError::IoMismatch);
     }

@@ -189,8 +189,23 @@ pub fn to_hex(b: &[u8]) -> String {
 
 pub fn from_hex(s: &str) -> Result<Vec<u8>, LightError> {
     let s = s.trim_start_matches("0x");
-    if !s.len().is_multiple_of(2) {
+    // Untrusted input: work on bytes, so non-ASCII text is an error, never a panic.
+    let b = s.as_bytes();
+    if !b.len().is_multiple_of(2) {
         return Err(LightError::BadEncoding("hex"));
     }
-    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|_| LightError::BadEncoding("hex"))).collect()
+    let nibble = |c: u8| (c as char).to_digit(16).map(|d| d as u8).ok_or(LightError::BadEncoding("hex"));
+    b.as_chunks::<2>().0.iter().map(|[hi, lo]| Ok(nibble(*hi)? << 4 | nibble(*lo)?)).collect()
+}
+
+#[cfg(test)]
+mod hex_tests {
+    use super::*;
+
+    #[test]
+    fn hex_rejects_non_ascii_without_panicking() {
+        assert!(from_hex("€a").is_err());
+        assert!(from_hex("0xzz").is_err());
+        assert_eq!(from_hex("0x0aFf").unwrap(), vec![0x0a, 0xff]);
+    }
 }

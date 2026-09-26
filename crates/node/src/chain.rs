@@ -18,6 +18,8 @@ use std::time::{Duration, Instant};
 
 pub const MAX_TXS_PER_BLOCK: usize = 2_000;
 pub const MAX_MEMPOOL: usize = 50_000;
+/// Pending txs one sender may have (spam from one key cannot fill the pool).
+pub const MAX_PER_SENDER: usize = 64;
 
 #[derive(Clone, Debug)]
 pub struct ChainConfig {
@@ -347,18 +349,31 @@ impl Chain {
     }
 
     /// Returns false if the pool is full or the tx is already known.
-    pub fn add_to_mempool(&self, tx: TxEnvelope) -> bool {
+    /// Admit a (signature-checked) tx: `Ok(true)` if new, `Ok(false)` if already
+    /// known, `Err` if it could never execute or the pool is full, so txs that
+    /// would only ever be skipped cannot pile up for free.
+    pub fn add_to_mempool(&self, tx: TxEnvelope) -> Result<bool, String> {
         let h = aether_execution::tx_hash(&tx);
         let mut g = self.lock();
-        if g.mempool.len() >= MAX_MEMPOOL || g.receipts.contains_key(&h) || g.mempool.contains_key(&h) {
-            return false;
+        if g.receipts.contains_key(&h) || g.mempool.contains_key(&h) {
+            return Ok(false);
         }
-        if tx.header.nonce < g.finalized.state.nonce(&tx.header.sender) {
-            return false;
+        if g.mempool.len() >= MAX_MEMPOOL {
+            return Err("mempool full".into());
+        }
+        let state = &g.finalized.state;
+        if tx.header.nonce < state.nonce(&tx.header.sender) {
+            return Err("nonce already used".into());
+        }
+        if g.cfg.fees {
+            admissible(&tx, state, Self::next_base_fee(&g.cfg, &g.finalized))?;
+        }
+        if g.mempool.values().filter(|t| t.header.sender == tx.header.sender).count() >= MAX_PER_SENDER {
+            return Err(format!("sender has {MAX_PER_SENDER} pending transactions"));
         }
         g.mempool.insert(h, tx);
         g.arrivals.insert(h, Instant::now());
-        true
+        Ok(true)
     }
 
     /// Adopt a finalized block (delivered in order by marshal) and persist it.
@@ -418,6 +433,26 @@ impl Chain {
         g.executed.retain(|_, e| e.height >= floor);
         Ok(())
     }
+}
+
+/// The fee-policy checks a block would reject the tx for, applied at admission:
+/// caps at least the fee floors, a prove budget covering the gas limit, and a
+/// balance covering value, max exec fee and prove budget.
+fn admissible(tx: &TxEnvelope, state: &WorldState, base: FeeVector) -> Result<(), String> {
+    let aether_types::TxPayload::Plain(bytes) = &tx.payload else { return Err("encrypted payloads are not supported yet".into()) };
+    let call = aether_execution::EvmCall::decode(bytes).map_err(|e| format!("payload: {e:?}"))?;
+    let floor = fees::FLOOR;
+    if tx.header.max_fee.exec < floor.exec || tx.header.max_fee.prove < floor.prove.max(base.prove) {
+        return Err("fee caps below the base fee".into());
+    }
+    if tx.header.gas.prove < call.gas_limit {
+        return Err("prove budget below the gas limit".into());
+    }
+    let need = U256::from(call.gas_limit) * U256::from(tx.header.max_fee.exec) + U256::from(tx.header.gas.prove) * U256::from(base.prove) + call.value;
+    if state.balance(&tx.header.sender) < need {
+        return Err("insufficient funds for value, gas and prove budget".into());
+    }
+    Ok(())
 }
 
 fn digest_bytes(d: &Digest) -> [u8; 32] {

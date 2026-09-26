@@ -116,10 +116,19 @@ final class WalletModel: ObservableObject {
                 let prepared = try prepareFinishRecovery(p256PublicKey: pk, request: pending.request)
                 let sig = try enclave.sign(prepared.signingMessage)
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
-                await MainActor.run { self.outgoingRecovery = nil; PendingRecovery.clear() }
-                await self.track(h, label: "Recovered \(Wei.format(pending.request.valueWei)) AETH from \(pending.request.lost.prefix(10))…",
+                // Keep the request until the chain confirms it ran: a revert (e.g. the
+                // delay counted from inclusion, not from submission) can be retried.
+                let ok = await self.track(h, label: "Recovered \(Wei.format(pending.request.valueWei)) AETH from \(pending.request.lost.prefix(10))…",
                                  item: ActivityItem(kind: .received, title: "Recovered from \(Short.address(pending.request.lost))",
                                                     amount: Double(Wei.format(pending.request.valueWei))))
+                await MainActor.run {
+                    if ok {
+                        self.outgoingRecovery = nil
+                        PendingRecovery.clear()
+                    } else {
+                        self.note("The recovery did not run yet (still inside its delay, or cancelled by the owner). You can try again.")
+                    }
+                }
             } catch { await MainActor.run { self.note("Finishing recovery failed: \(error)"); self.busy = false } }
         }
     }
@@ -214,7 +223,9 @@ final class WalletModel: ObservableObject {
         }
     }
 
-    private func track(_ hash: String, label: String, item: ActivityItem) async {
+    /// Wait for finality; returns whether the tx succeeded.
+    @discardableResult
+    private func track(_ hash: String, label: String, item: ActivityItem) async -> Bool {
         await MainActor.run {
             self.note("\(label) submitted \(hash.prefix(14))…")
             self.activity.insert(item.with(state: .pending), at: 0)
@@ -227,11 +238,12 @@ final class WalletModel: ObservableObject {
                     self.busy = false
                     self.refresh()
                 }
-                return
+                return r.success
             }
             try? await Task.sleep(nanoseconds: 500_000_000)
         }
         await MainActor.run { self.settle(item.id, state: .failed); self.note("\(label): not finalized after 30s"); self.busy = false }
+        return false
     }
 
     // MARK: dashboard data (kept per account in UserDefaults)

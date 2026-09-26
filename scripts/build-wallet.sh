@@ -8,7 +8,7 @@ cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:$PATH"
 target=${1:-macos}
 case "$target" in
-  macos)  MACOSX_DEPLOYMENT_TARGET=14.0 cargo build -p aether-ffi --release ;;
+  macos)  MACOSX_DEPLOYMENT_TARGET=14.0 cargo build -p aether-ffi -p aether-node --release ;;
   ios-sim) IPHONEOS_DEPLOYMENT_TARGET=17.0 cargo build -p aether-ffi --release --target aarch64-apple-ios-sim ;;
   ios)    IPHONEOS_DEPLOYMENT_TARGET=17.0 cargo build -p aether-ffi --release --target aarch64-apple-ios ;;
   *) echo "usage: $0 [macos|ios-sim|ios]"; exit 1 ;;
@@ -17,6 +17,8 @@ esac
 [ -f target/release/libaether_ffi.dylib ] || MACOSX_DEPLOYMENT_TARGET=14.0 cargo build -p aether-ffi --release
 cargo run -q -p aether-ffi --bin uniffi-bindgen -- generate --library target/release/libaether_ffi.dylib --language swift --out-dir apps/wallet/Generated
 mv -f apps/wallet/Generated/aether_ffiFFI.modulemap apps/wallet/Generated/module.modulemap
+# The macOS app embeds the node and the agent CLI (Contents/Helpers).
+[ "$target" = macos ] && scripts/build-agent.sh >/dev/null
 cd apps/wallet && xcodegen generate >/dev/null
 case "$target" in
   macos)  xcodebuild -project AetherWallet.xcodeproj -scheme AetherWallet -configuration Release -derivedDataPath build build | grep -E "BUILD|error:" ;;

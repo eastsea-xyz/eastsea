@@ -270,6 +270,11 @@ RustBuffer uniffi_aether_ffi_fn_func_connection(RustCallStatus *_Nonnull out_sta
 RustBuffer uniffi_aether_ffi_fn_func_devnet_faucet(RustBuffer to, RustBuffer value_wei, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_LOCAL_NODE_HEIGHT
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_LOCAL_NODE_HEIGHT
+RustBuffer uniffi_aether_ffi_fn_func_local_node_height(uint16_t port, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_BATCH
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_BATCH
 RustBuffer uniffi_aether_ffi_fn_func_prepare_batch(RustBuffer p256_public_key, RustBuffer payments, RustCallStatus *_Nonnull out_status
@@ -353,6 +358,11 @@ void uniffi_aether_ffi_fn_func_set_committee_identity(RustBuffer identity_hex, R
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_SUBMIT_SIGNED
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_SUBMIT_SIGNED
 RustBuffer uniffi_aether_ffi_fn_func_submit_signed(RustBuffer envelope_json, RustBuffer signature, RustBuffer p256_public_key, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_USE_LOCAL_NODE
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_USE_LOCAL_NODE
+void uniffi_aether_ffi_fn_func_use_local_node(RustBuffer port, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_VERIFIED_ACCOUNT
@@ -650,6 +660,12 @@ uint16_t uniffi_aether_ffi_checksum_func_devnet_faucet(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_LOCAL_NODE_HEIGHT
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_LOCAL_NODE_HEIGHT
+uint16_t uniffi_aether_ffi_checksum_func_local_node_height(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_BATCH
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_BATCH
 uint16_t uniffi_aether_ffi_checksum_func_prepare_batch(void
@@ -749,6 +765,12 @@ uint16_t uniffi_aether_ffi_checksum_func_set_committee_identity(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_SUBMIT_SIGNED
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_SUBMIT_SIGNED
 uint16_t uniffi_aether_ffi_checksum_func_submit_signed(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_USE_LOCAL_NODE
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_USE_LOCAL_NODE
+uint16_t uniffi_aether_ffi_checksum_func_use_local_node(void
     
 );
 #endif

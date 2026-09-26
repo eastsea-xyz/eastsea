@@ -50,11 +50,8 @@ pub struct Block {
 
 impl Block {
     pub fn genesis(chain_id: u64, genesis_root: B256) -> Self {
-        let context = Context {
-            round: Round::new(EPOCH, View::zero()),
-            leader: ed25519::PrivateKey::from_seed(0).public_key(),
-            parent: (View::zero(), Digest::EMPTY),
-        };
+        let context =
+            Context { round: Round::new(EPOCH, View::zero()), leader: ed25519::PrivateKey::from_seed(0).public_key(), parent: (View::zero(), Digest::EMPTY) };
         let payload = Payload { parent_state_root: genesis_root, ..Default::default() };
         let tag = Sha256::hash(&[b"aether-genesis".as_slice(), &chain_id.to_be_bytes()]);
         Self::new(context, tag, Height::zero(), 0, payload.to_bytes())
@@ -62,11 +59,7 @@ impl Block {
 
     fn compute_digest(context: &Context, parent: &Digest, height: Height, timestamp: u64, data: &[u8]) -> Digest {
         let mut h = Sha256::default();
-        h.update(&context.encode())
-            .update(parent)
-            .update(&height.get().to_be_bytes())
-            .update(&timestamp.to_be_bytes())
-            .update(data);
+        h.update(&context.encode()).update(parent).update(&height.get().to_be_bytes()).update(&timestamp.to_be_bytes()).update(data);
         h.finalize().1
     }
 

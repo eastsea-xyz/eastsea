@@ -43,6 +43,12 @@ struct Wei: Comparable, CustomStringConvertible {
     var description: String { String(value) }
 
     static func + (a: Wei, b: Wei) -> Wei { Wei(value: a.value + b.value) }
+
+    /// Sum that reports overflow instead of trapping (amounts come from agents).
+    func adding(_ o: Wei) -> Wei? {
+        let (v, overflow) = value.addingReportingOverflow(o.value)
+        return overflow ? nil : Wei(value: v)
+    }
     static func * (a: Wei, n: Int) -> Wei { Wei(value: a.value * UInt128(n)) }
     static func < (a: Wei, b: Wei) -> Bool { a.value < b.value }
 }

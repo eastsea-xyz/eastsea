@@ -41,6 +41,9 @@ impl FinalityArchive {
     }
 }
 
+/// Largest upstream response accepted (a block and its certificate, hex encoded).
+const MAX_RESPONSE: usize = 4 * MAX_BLOCK_BYTES as usize + (1 << 20);
+
 /// Where certified blocks come from: validators' RPC over HTTP (local networks)
 /// or over iroh (found by node id on the Mainline DHT).
 pub enum Upstream {
@@ -49,26 +52,45 @@ pub enum Upstream {
 }
 
 impl Upstream {
-    pub async fn call(&self, method: &str, params: Value) -> Result<Value, String> {
+    /// Ask each source in turn until `accept` takes an answer.
+    async fn ask<T>(&self, method: &str, params: Value, accept: impl Fn(Value) -> Result<Option<T>, String>) -> Result<Option<T>, String> {
         match self {
-            Upstream::Iroh(c) => c.call(method, params).await.map_err(|e| e.to_string()),
+            Upstream::Iroh(c) => accept(c.call(method, params).await.map_err(|e| e.to_string())?),
             Upstream::Http(urls) => {
-                let body = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
-                let client = reqwest::Client::new();
-                let mut last = String::from("no upstream");
+                let mut last = Err(String::from("no upstream"));
                 for url in urls {
-                    match client.post(url).json(&body).timeout(Duration::from_secs(5)).send().await {
-                        Ok(r) => match r.json::<Value>().await {
-                            Ok(v) if v.get("error").is_some() => last = v["error"].to_string(),
-                            Ok(v) => return Ok(v.get("result").cloned().unwrap_or(Value::Null)),
-                            Err(e) => last = e.to_string(),
-                        },
-                        Err(e) => last = e.to_string(),
+                    match http_call(url, method, &params).await.and_then(&accept) {
+                        Ok(Some(v)) => return Ok(Some(v)),
+                        other => last = other,
                     }
                 }
-                Err(last)
+                last
             }
         }
+    }
+
+    pub async fn call(&self, method: &str, params: Value) -> Result<Value, String> {
+        self.ask(method, params, |v| Ok(Some(v))).await.map(|v| v.unwrap_or(Value::Null))
+    }
+}
+
+async fn http_call(url: &str, method: &str, params: &Value) -> Result<Value, String> {
+    let body = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
+    let mut r = reqwest::Client::new().post(url).json(&body).timeout(Duration::from_secs(10)).send().await.map_err(|e| e.to_string())?;
+    if r.content_length().is_some_and(|n| n as usize > MAX_RESPONSE) {
+        return Err("response too large".into());
+    }
+    let mut buf = Vec::new();
+    while let Some(chunk) = r.chunk().await.map_err(|e| e.to_string())? {
+        if buf.len() + chunk.len() > MAX_RESPONSE {
+            return Err("response too large".into());
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    let v: Value = serde_json::from_slice(&buf).map_err(|e| e.to_string())?;
+    match v.get("error") {
+        Some(e) => Err(e.to_string()),
+        None => Ok(v.get("result").cloned().unwrap_or(Value::Null)),
     }
 }
 
@@ -96,14 +118,18 @@ pub async fn run(chain: Chain, upstream: std::sync::Arc<Upstream>, set: Validato
     }
 }
 
-/// Block `h` and its certificate, verified; `None` if not finalized yet.
+/// Block `h` and its certificate, verified; `None` if no source has it yet.
+/// A source that answers with nothing or with a bad certificate is skipped.
 async fn fetch(upstream: &Upstream, set: &ValidatorSet, h: u64) -> Result<Option<(Block, String, String)>, String> {
-    let v = upstream.call("aether_getFinalized", json!([h])).await?;
+    upstream.ask("aether_getFinalized", json!([h]), |v| check(set, h, v)).await
+}
+
+fn check(set: &ValidatorSet, h: u64, v: Value) -> Result<Option<(Block, String, String)>, String> {
     if v.is_null() {
         return Ok(None);
     }
     let (bh, fh) = (v["block"].as_str().unwrap_or_default().to_string(), v["finalization"].as_str().unwrap_or_default().to_string());
-    let (bb, fb) = (from_hex(&bh).map_err(|e| e.to_string())?, from_hex(&fh).map_err(|e| e.to_string())?);
+    let (bb, fb) = (from_hex(&bh).map_err(|e| format!("{e:?}"))?, from_hex(&fh).map_err(|e| format!("{e:?}"))?);
     let verified = verify_finalized(set, &bb, &fb).map_err(|e| format!("certificate: {e:?}"))?;
     if verified.height != h {
         return Err(format!("asked for block {h}, got a certificate for {}", verified.height));
@@ -112,11 +138,22 @@ async fn fetch(upstream: &Upstream, set: &ValidatorSet, h: u64) -> Result<Option
     Ok(Some((block, bh, fh)))
 }
 
-/// Forward txs submitted to this follower to the validators.
+/// Forward txs submitted to this follower to the validators, retrying for a
+/// while so a brief outage does not lose them.
 pub async fn forward(upstream: std::sync::Arc<Upstream>, mut rx: tokio::sync::mpsc::UnboundedReceiver<aether_types::TxEnvelope>) {
     while let Some(tx) = rx.recv().await {
-        if let Err(e) = upstream.call("aether_sendTransaction", json!([tx])).await {
-            warn!(%e, "could not forward a transaction upstream");
-        }
+        let up = upstream.clone();
+        tokio::spawn(async move {
+            let mut wait = Duration::from_secs(1);
+            for attempt in 1..=6 {
+                match up.call("aether_sendTransaction", json!([tx])).await {
+                    Ok(_) => return,
+                    Err(e) if attempt == 6 => warn!(%e, "gave up forwarding a transaction upstream"),
+                    Err(_) => {}
+                }
+                tokio::time::sleep(wait).await;
+                wait *= 2;
+            }
+        });
     }
 }

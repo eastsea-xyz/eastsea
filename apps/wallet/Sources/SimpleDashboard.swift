@@ -185,6 +185,9 @@ private struct NetworkPage: View {
                 Tile(value: model.status.map { "\($0.mempool)" } ?? "—", label: "Waiting txs", icon: "tray.full")
             }
             NetworkCard()
+            #if os(macOS)
+            NodeCard()
+            #endif
         }
     }
 }
@@ -230,21 +233,70 @@ private struct SecurityPage: View {
     }
 }
 
+#if os(macOS)
+/// The node switch, explained (Network page).
+private struct NodeCard: View {
+    @EnvironmentObject var node: NodeController
+
+    var body: some View {
+        Card {
+            HStack(alignment: .top, spacing: 14) {
+                Image(systemName: "server.rack").font(.system(size: 30)).foregroundStyle(Color.aether)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Run a node on this Mac").font(.headline)
+                    Text("Your Mac checks every block itself and your wallet asks it instead of the network. It stops when you quit Aether.")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Toggle("", isOn: $node.enabled).toggleStyle(.switch).labelsHidden()
+            }
+        }
+    }
+}
+#endif
+
 // MARK: - Sidebar status (IPFS Desktop style)
 
 private struct SidebarStatus: View {
     @EnvironmentObject var model: WalletModel
+    #if os(macOS)
+    @EnvironmentObject var node: NodeController
+    #endif
 
     var body: some View {
-        HStack(spacing: 8) {
-            Circle().fill(model.status == nil ? Color.orange : Color.green).frame(width: 8, height: 8)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(model.status == nil ? "Connecting" : "Connected").font(.caption.weight(.semibold))
-                Text(model.status.map { "Block #\($0.height)" } ?? "Searching DHT…").font(.caption2).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 10) {
+            #if os(macOS)
+            Toggle(isOn: $node.enabled) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Node on this Mac").font(.caption.weight(.semibold))
+                    Text(nodeLine).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                }
             }
-            Spacer()
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .help("Verify every block on this Mac and let the wallet use it. Off when the app quits.")
+            #endif
+            HStack(spacing: 8) {
+                Circle().fill(model.status == nil ? Color.orange : Color.green).frame(width: 8, height: 8)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(model.status == nil ? "Connecting" : "Connected").font(.caption.weight(.semibold))
+                    Text(model.status.map { "Block #\($0.height)" } ?? "Searching DHT…").font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
         }
     }
+
+    #if os(macOS)
+    private var nodeLine: String {
+        switch node.state {
+        case .off: "Off"
+        case .starting: node.height > 0 ? "Catching up · block #\(node.height)" : "Starting…"
+        case .running: "Verifying · block #\(node.height)"
+        case .failed(let m): m
+        }
+    }
+    #endif
 }
 
 // MARK: - Cards

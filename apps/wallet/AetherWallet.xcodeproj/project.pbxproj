@@ -14,7 +14,9 @@
 		3EFB40E8AE60667378C4B952 /* AetherWalletApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39176493D3D105EBB072F17C /* AetherWalletApp.swift */; };
 		576FB72021E6A746C1A7AF9B /* network.json in Resources */ = {isa = PBXBuildFile; fileRef = AB6E5651AC1948FECDAE69D4 /* network.json */; };
 		6911A71C489CFE413F30C9A2 /* EnclaveKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 317D79B15C7F9E75B1A1F4FC /* EnclaveKey.swift */; };
+		6B328300B9C16A284BC72EDD /* NodeController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64A5EE5BA6294827128D61F5 /* NodeController.swift */; };
 		8A4A2901B223B0F689036DFB /* EnclaveKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 317D79B15C7F9E75B1A1F4FC /* EnclaveKey.swift */; };
+		8C21512BBE06AA542E27EBA1 /* NodeController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64A5EE5BA6294827128D61F5 /* NodeController.swift */; };
 		95004663796AA4EF45771D37 /* WalletModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 016BCAF9063410C1BBD4052D /* WalletModel.swift */; };
 		BC44AAFBB810E5183CBF737E /* SimpleDashboard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BCD0FCE195D7296CBCA13E9 /* SimpleDashboard.swift */; };
 		BF69C9639B9D7215C5CE0605 /* aether_ffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BC12AF79B32D90A48860251 /* aether_ffi.swift */; };
@@ -31,6 +33,7 @@
 		317D79B15C7F9E75B1A1F4FC /* EnclaveKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnclaveKey.swift; sourceTree = "<group>"; };
 		39176493D3D105EBB072F17C /* AetherWalletApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AetherWalletApp.swift; sourceTree = "<group>"; };
 		4BC12AF79B32D90A48860251 /* aether_ffi.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = aether_ffi.swift; sourceTree = "<group>"; };
+		64A5EE5BA6294827128D61F5 /* NodeController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeController.swift; sourceTree = "<group>"; };
 		AB6E5651AC1948FECDAE69D4 /* network.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = network.json; sourceTree = "<group>"; };
 		B38A846EB23F0C4A52BF8A78 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -69,6 +72,7 @@
 				39176493D3D105EBB072F17C /* AetherWalletApp.swift */,
 				B38A846EB23F0C4A52BF8A78 /* ContentView.swift */,
 				317D79B15C7F9E75B1A1F4FC /* EnclaveKey.swift */,
+				64A5EE5BA6294827128D61F5 /* NodeController.swift */,
 				0BCD0FCE195D7296CBCA13E9 /* SimpleDashboard.swift */,
 				016BCAF9063410C1BBD4052D /* WalletModel.swift */,
 			);
@@ -92,6 +96,7 @@
 			buildPhases = (
 				9451106D88BAA67BA0C15449 /* Sources */,
 				659CDBAF9F96312FD4A76157 /* Resources */,
+				9667990067D06D1C9ADBEADF /* Embed node and agent */,
 			);
 			buildRules = (
 			);
@@ -179,6 +184,28 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		9667990067D06D1C9ADBEADF /* Embed node and agent */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Embed node and agent";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# The app carries its node (`aether follow`) and the agent CLI in Contents/Helpers,\n# signed like the app so the bundle verifies and notarizes as one.\nset -euo pipefail\nH=\"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Helpers\"\nmkdir -p \"$H\"\nfor t in \"$SRCROOT/../../target/release/aether\" \"$SRCROOT/../../target/agent/aether-agent\"; do\n  [ -x \"$t\" ] || continue\n  cp -f \"$t\" \"$H/\"\n  codesign --force --options runtime --timestamp=none --sign \"${EXPANDED_CODE_SIGN_IDENTITY:--}\" \"$H/$(basename \"$t\")\"\ndone\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		25FE09BA6592EC4EAE637339 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -187,6 +214,7 @@
 				3EFB40E8AE60667378C4B952 /* AetherWalletApp.swift in Sources */,
 				16504A4054237817545767F0 /* ContentView.swift in Sources */,
 				6911A71C489CFE413F30C9A2 /* EnclaveKey.swift in Sources */,
+				6B328300B9C16A284BC72EDD /* NodeController.swift in Sources */,
 				FE6BCD03689259294F5B9945 /* SimpleDashboard.swift in Sources */,
 				95004663796AA4EF45771D37 /* WalletModel.swift in Sources */,
 				C9839F6819F2F86387CC88B7 /* aether_ffi.swift in Sources */,
@@ -200,6 +228,7 @@
 				3A048B1773EDB624E715846E /* AetherWalletApp.swift in Sources */,
 				3C5180BEE4BF629CA69AF4CE /* ContentView.swift in Sources */,
 				8A4A2901B223B0F689036DFB /* EnclaveKey.swift in Sources */,
+				8C21512BBE06AA542E27EBA1 /* NodeController.swift in Sources */,
 				BC44AAFBB810E5183CBF737E /* SimpleDashboard.swift in Sources */,
 				D6DDA80E641E075D1DE236AD /* WalletModel.swift in Sources */,
 				BF69C9639B9D7215C5CE0605 /* aether_ffi.swift in Sources */,

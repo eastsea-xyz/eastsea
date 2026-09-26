@@ -481,6 +481,22 @@ fileprivate struct FfiConverterUInt8: FfiConverterPrimitive {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterUInt16: FfiConverterPrimitive {
+    typealias FfiType = UInt16
+    typealias SwiftType = UInt16
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt16 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterUInt32: FfiConverterPrimitive {
     typealias FfiType = UInt32
     typealias SwiftType = UInt32
@@ -1232,10 +1248,9 @@ public struct SessionStatus: Equatable, Hashable {
     public var perPaymentWei: String
     public var perDayWei: String
     /**
-     * Paid in the current 24 h window, which started at `window_start` (unix s).
+     * What it may still pay right now (per-day limit minus today's and yesterday's payments, UTC).
      */
-    public var spentWei: String
-    public var windowStart: UInt64
+    public var leftWei: String
     public var expires: UInt64
     public var allow: [String]
     public var nonce: UInt64
@@ -1247,14 +1262,13 @@ public struct SessionStatus: Equatable, Hashable {
          * The session key's recovery-key-style code (x‖y hex), to match against a device key.
          */keyCode: String, perPaymentWei: String, perDayWei: String, 
         /**
-         * Paid in the current 24 h window, which started at `window_start` (unix s).
-         */spentWei: String, windowStart: UInt64, expires: UInt64, allow: [String], nonce: UInt64) {
+         * What it may still pay right now (per-day limit minus today's and yesterday's payments, UTC).
+         */leftWei: String, expires: UInt64, allow: [String], nonce: UInt64) {
         self.exists = exists
         self.keyCode = keyCode
         self.perPaymentWei = perPaymentWei
         self.perDayWei = perDayWei
-        self.spentWei = spentWei
-        self.windowStart = windowStart
+        self.leftWei = leftWei
         self.expires = expires
         self.allow = allow
         self.nonce = nonce
@@ -1280,8 +1294,7 @@ public struct FfiConverterTypeSessionStatus: FfiConverterRustBuffer {
                 keyCode: FfiConverterString.read(from: &buf), 
                 perPaymentWei: FfiConverterString.read(from: &buf), 
                 perDayWei: FfiConverterString.read(from: &buf), 
-                spentWei: FfiConverterString.read(from: &buf), 
-                windowStart: FfiConverterUInt64.read(from: &buf), 
+                leftWei: FfiConverterString.read(from: &buf), 
                 expires: FfiConverterUInt64.read(from: &buf), 
                 allow: FfiConverterSequenceString.read(from: &buf), 
                 nonce: FfiConverterUInt64.read(from: &buf)
@@ -1293,8 +1306,7 @@ public struct FfiConverterTypeSessionStatus: FfiConverterRustBuffer {
         FfiConverterString.write(value.keyCode, into: &buf)
         FfiConverterString.write(value.perPaymentWei, into: &buf)
         FfiConverterString.write(value.perDayWei, into: &buf)
-        FfiConverterString.write(value.spentWei, into: &buf)
-        FfiConverterUInt64.write(value.windowStart, into: &buf)
+        FfiConverterString.write(value.leftWei, into: &buf)
         FfiConverterUInt64.write(value.expires, into: &buf)
         FfiConverterSequenceString.write(value.allow, into: &buf)
         FfiConverterUInt64.write(value.nonce, into: &buf)
@@ -1562,6 +1574,54 @@ public func FfiConverterTypeWalletError_lower(_ value: WalletError) -> RustBuffe
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionUInt16: FfiConverterRustBuffer {
+    typealias SwiftType = UInt16?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterUInt16.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterUInt16.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionUInt64: FfiConverterRustBuffer {
+    typealias SwiftType = UInt64?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterUInt64.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterUInt64.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeTxReceipt: FfiConverterRustBuffer {
     typealias SwiftType = TxReceipt?
 
@@ -1706,6 +1766,17 @@ public func devnetFaucet(to: String, valueWei: String)throws  -> String  {
     uniffi_aether_ffi_fn_func_devnet_faucet(
         FfiConverterString.lower(to),
         FfiConverterString.lower(valueWei),uniffiCallStatus
+    )
+})
+}
+/**
+ * Finalized height of the node at 127.0.0.1:`port`, if it answers.
+ */
+public func localNodeHeight(port: UInt16) -> UInt64?  {
+    return try!  FfiConverterOptionUInt64.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_local_node_height(
+        FfiConverterUInt16.lower(port),uniffiCallStatus
     )
 })
 }
@@ -1901,6 +1972,16 @@ public func submitSigned(envelopeJson: String, signature: Data, p256PublicKey: D
 })
 }
 /**
+ * Use the node at 127.0.0.1:`port` (Some) or the validators over the network (None).
+ */
+public func useLocalNode(port: UInt16?)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_use_local_node(
+        FfiConverterOptionUInt16.lower(port),uniffiCallStatus
+    )
+}
+}
+/**
  * Balance and nonce, verified against a validator-signed state root.
  */
 public func verifiedAccount(address: String, validators: UInt32)throws  -> VerifiedAccount  {
@@ -1941,6 +2022,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_devnet_faucet() != 12940) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_local_node_height() != 10285) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_prepare_batch() != 9304) {
@@ -1992,6 +2076,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_submit_signed() != 20395) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_use_local_node() != 24358) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_verified_account() != 47692) {

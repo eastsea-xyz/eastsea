@@ -117,7 +117,46 @@ fn transfer_fee(status: &Value) -> u128 {
     21_000 * (base + GWEI)
 }
 
+/// The node running on this Mac (the app's node switch), if on. Wallet reads then
+/// go to it; it verifies every block itself, and the wallet still checks every
+/// certificate and proof, so nothing about it has to be trusted either.
+static LOCAL_NODE: std::sync::Mutex<Option<u16>> = std::sync::Mutex::new(None);
+
+/// Use the node at 127.0.0.1:`port` (Some) or the validators over the network (None).
+#[uniffi::export]
+pub fn use_local_node(port: Option<u16>) {
+    *LOCAL_NODE.lock().expect("local node lock") = port;
+}
+
+/// Finalized height of the node at 127.0.0.1:`port`, if it answers.
+#[uniffi::export]
+pub fn local_node_height(port: u16) -> Option<u64> {
+    local_call(port, "aether_status", json!([])).ok().and_then(|v| v["height"].as_u64())
+}
+
+/// JSON-RPC over plain HTTP/1.1 to the local node (loopback only).
+fn local_call(port: u16, method: &str, params: Value) -> R<Value> {
+    use std::io::{Read, Write};
+    let body = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params }).to_string();
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let mut s = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)).map_err(|e| WalletError::Network(format!("local node: {e}")))?;
+    s.set_read_timeout(Some(Duration::from_secs(30))).ok();
+    write!(s, "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+        .map_err(|e| WalletError::Network(format!("local node: {e}")))?;
+    let mut resp = Vec::new();
+    s.take(64 * 1024 * 1024).read_to_end(&mut resp).map_err(|e| WalletError::Network(format!("local node: {e}")))?;
+    let split = resp.windows(4).position(|w| w == b"\r\n\r\n").ok_or_else(|| WalletError::Network("local node: bad response".into()))?;
+    let v: Value = serde_json::from_slice(&resp[split + 4..]).map_err(|e| WalletError::Network(format!("local node: {e}")))?;
+    match v.get("error") {
+        Some(e) => Err(WalletError::Rejected(e["message"].as_str().unwrap_or("error").to_string())),
+        None => Ok(v.get("result").cloned().unwrap_or(Value::Null)),
+    }
+}
+
 fn call(method: &str, params: Value) -> R<Value> {
+    if let Some(port) = *LOCAL_NODE.lock().expect("local node lock") {
+        return local_call(port, method, params);
+    }
     let n = net()?;
     n.rt.block_on(n.client.call(method, params)).map_err(|e| {
         let m = e.to_string();
@@ -132,6 +171,9 @@ fn call(method: &str, params: Value) -> R<Value> {
 /// How the wallet currently reaches the network (for display).
 #[uniffi::export]
 pub fn connection() -> String {
+    if let Some(port) = *LOCAL_NODE.lock().expect("local node lock") {
+        return format!("This Mac's node (127.0.0.1:{port})");
+    }
     match net() {
         Ok(n) => format!("Mainline DHT · {}", n.rt.block_on(n.client.describe())),
         Err(e) => format!("offline: {e}"),
@@ -629,9 +671,8 @@ pub struct SessionStatus {
     pub key_code: String,
     pub per_payment_wei: String,
     pub per_day_wei: String,
-    /// Paid in the current 24 h window, which started at `window_start` (unix s).
-    pub spent_wei: String,
-    pub window_start: u64,
+    /// What it may still pay right now (per-day limit minus today's and yesterday's payments, UTC).
+    pub left_wei: String,
     pub expires: u64,
     pub allow: Vec<String>,
     pub nonce: u64,
@@ -647,8 +688,7 @@ pub fn session_status(account: String, validators: u32) -> R<SessionStatus> {
             key_code: String::new(),
             per_payment_wei: "0".into(),
             per_day_wei: "0".into(),
-            spent_wei: "0".into(),
-            window_start: 0,
+            left_wei: "0".into(),
             expires: 0,
             allow: vec![],
             nonce: 0,
@@ -658,8 +698,10 @@ pub fn session_status(account: String, validators: u32) -> R<SessionStatus> {
     let word = |o: u64| verified_slot(a, base + U256::from(o), &set);
     let (x, y) = (word(0)?.to_be_bytes::<32>(), word(1)?.to_be_bytes::<32>());
     let (per_payment, per_day) = slots::unpack_limits(word(2)?);
-    let (window_start, spent, expires) = slots::unpack_window(word(3)?);
-    let n_allow = word(4)?.to::<u64>().min(16);
+    let (day, expires, spent) = slots::unpack_usage(word(3)?);
+    let prev = word(4)?.to::<u128>();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or_default();
+    let n_allow = word(5)?.to::<u64>().min(16);
     let allow = (0..n_allow)
         .map(|j| {
             verified_slot(a, slots::session_allow(0, j), &set).map(|v| Address::from_word(aether_types::B256::from(v.to_be_bytes::<32>())).to_checksum(None))
@@ -670,11 +712,10 @@ pub fn session_status(account: String, validators: u32) -> R<SessionStatus> {
         key_code: format!("{}{}", hex_lower(&x), hex_lower(&y)),
         per_payment_wei: per_payment.to_string(),
         per_day_wei: per_day.to_string(),
-        spent_wei: spent.to_string(),
-        window_start,
+        left_wei: slots::left_now(per_day, day, spent, prev, now).to_string(),
         expires,
         allow,
-        nonce: word(5)?.to::<u64>(),
+        nonce: word(6)?.to::<u64>(),
     })
 }
 
@@ -761,9 +802,10 @@ pub fn prepare_session_payment(account: String, payments: Vec<Payment>, validato
     let a: Address = account.parse().map_err(|_| WalletError::Invalid("account address".into()))?;
     let calls = session_calls(&payments)?;
     let set = trusted_set(validators)?;
-    let nonce = verified_slot(a, slots::session(0) + U256::from(5u64), &set)?.to::<u64>();
+    let nonce = verified_slot(a, slots::session(0) + U256::from(6u64), &set)?.to::<u64>();
+    let id = verified_slot(a, slots::session(0) + U256::from(7u64), &set)?.to::<u64>();
     let chain_id = expected_chain(&call("aether_status", json!([]))?)?;
-    Ok(SessionRequest { account: a.to_checksum(None), message: acct::session_message(chain_id, a, 0, nonce, &calls), payments, nonce })
+    Ok(SessionRequest { account: a.to_checksum(None), message: acct::session_message(chain_id, a, id, nonce, &calls), payments, nonce })
 }
 
 /// The tx the session key's own address sends (it pays the gas).

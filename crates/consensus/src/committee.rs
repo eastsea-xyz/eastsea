@@ -103,3 +103,109 @@ mod tests {
         assert!(hi * 100 / total >= 75, "high-uptime share {hi}/{total}");
     }
 }
+
+// ---------------- open committee (07-consensus.md "open committee") ----------------
+
+/// A registered candidate, as read from the CommitteeRegistry contract.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenCandidate {
+    /// Registration order (contract index).
+    pub index: u64,
+    /// Account that registered it; seats are capped per operator.
+    pub operator: [u8; 20],
+    pub validator_key: [u8; 32],
+    pub registered_epoch: u64,
+    pub last_epoch: u64,
+    pub streak: u64,
+}
+
+/// Smallest committee the open selection builds when enough operators exist.
+pub const MIN_OPEN_COMMITTEE: usize = 4;
+
+/// Committee for the epoch after `epoch`: candidates that sent a beacon in
+/// `epoch`, by longest streak, then earliest registration. With at least four
+/// distinct operators, no operator holds a third or more of the seats (the
+/// committee shrinks rather than break the cap); with fewer, the cap cannot be
+/// met and the committee is simply the top candidates (bootstrap).
+/// Deterministic: every node computes the same list from the same state.
+pub fn select_open_committee(candidates: &[OpenCandidate], epoch: u64, max_size: usize) -> Vec<OpenCandidate> {
+    let mut live: Vec<&OpenCandidate> = candidates.iter().filter(|c| c.last_epoch == epoch).collect();
+    live.sort_by(|a, b| b.streak.cmp(&a.streak).then(a.registered_epoch.cmp(&b.registered_epoch)).then(a.index.cmp(&b.index)));
+    let operators: std::collections::BTreeSet<[u8; 20]> = live.iter().map(|c| c.operator).collect();
+    let target = live.len().min(max_size);
+    if operators.len() < MIN_OPEN_COMMITTEE {
+        return live.into_iter().take(target).cloned().collect();
+    }
+    if target < MIN_OPEN_COMMITTEE {
+        // Too few seats for the cap to bind: one seat per operator, by rank.
+        let mut seen = std::collections::BTreeSet::new();
+        return live.into_iter().filter(|c| seen.insert(c.operator)).take(target).cloned().collect();
+    }
+    for n in (MIN_OPEN_COMMITTEE..=target).rev() {
+        let cap = (n - 1) / 3; // strictly below n / 3
+        let mut seats: std::collections::BTreeMap<[u8; 20], usize> = Default::default();
+        let mut picked = Vec::with_capacity(n);
+        for c in &live {
+            let s = seats.entry(c.operator).or_default();
+            if *s < cap {
+                *s += 1;
+                picked.push((*c).clone());
+                if picked.len() == n {
+                    return picked;
+                }
+            }
+        }
+    }
+    // Four operators exist, so n = 4 with one seat each always fills.
+    unreachable!("four distinct operators always fill a committee of four")
+}
+
+#[cfg(test)]
+mod open_tests {
+    use super::*;
+
+    fn cand(index: u64, op: u8, streak: u64, last: u64) -> OpenCandidate {
+        OpenCandidate { index, operator: [op; 20], validator_key: [index as u8; 32], registered_epoch: index, last_epoch: last, streak }
+    }
+
+    fn share(c: &[OpenCandidate], op: u8) -> usize {
+        c.iter().filter(|x| x.operator == [op; 20]).count()
+    }
+
+    #[test]
+    fn no_operator_reaches_a_third_once_four_operators_exist() {
+        // The founder (op 1) has 8 long-running Macs; three others have one each.
+        let mut cs: Vec<_> = (0..8).map(|i| cand(i, 1, 1_000, 10)).collect();
+        cs.extend([cand(8, 2, 5, 10), cand(9, 3, 3, 10), cand(10, 4, 1, 10)]);
+        let c = select_open_committee(&cs, 10, 16);
+        assert!(share(&c, 1) * 3 < c.len(), "founder holds {} of {}", share(&c, 1), c.len());
+        assert_eq!(c.len(), 4, "only as many seats as the cap allows: 1 founder + 3 others");
+        // More independent operators grow the committee, the founder still under a third.
+        cs.extend((11..20).map(|i| cand(i, i as u8, 2, 10)));
+        let c = select_open_committee(&cs, 10, 16);
+        assert_eq!(c.len(), 16);
+        assert!(share(&c, 1) * 3 < c.len());
+    }
+
+    #[test]
+    fn only_live_candidates_by_streak_then_seniority() {
+        let cs = vec![cand(0, 1, 50, 9), cand(1, 2, 10, 10), cand(2, 3, 30, 10), cand(3, 4, 30, 10), cand(4, 5, 1, 10)];
+        let c = select_open_committee(&cs, 10, 3);
+        assert_eq!(c.iter().map(|x| x.index).collect::<Vec<_>>(), vec![2, 3, 1], "0 missed the epoch; ties go to earlier registration");
+    }
+
+    #[test]
+    fn bootstrap_without_enough_operators_takes_the_top() {
+        let cs: Vec<_> = (0..4).map(|i| cand(i, 1, 10, 10)).collect();
+        assert_eq!(select_open_committee(&cs, 10, 16).len(), 4, "a lone founder still runs the chain until others join");
+        assert!(select_open_committee(&cs, 11, 16).is_empty(), "no beacons this epoch, no committee");
+    }
+
+    #[test]
+    fn deterministic_regardless_of_input_order() {
+        let mut cs: Vec<_> = (0..12).map(|i| cand(i, (i % 5) as u8, i * 7 % 11, 10)).collect();
+        let a = select_open_committee(&cs, 10, 8);
+        cs.reverse();
+        assert_eq!(a, select_open_committee(&cs, 10, 8));
+    }
+}

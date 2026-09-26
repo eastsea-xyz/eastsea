@@ -137,6 +137,12 @@ impl WorldState {
         Ok(())
     }
 
+    /// Genesis predeploy: a contract storage slot (zero removes it).
+    pub fn set_storage(&mut self, a: Address, slot: U256, value: U256) {
+        let key = storage_slot_key(self.h(), &a, slot);
+        self.write(vec![(key, (!value.is_zero()).then(|| value.to_be_bytes::<32>()))]);
+    }
+
     /// Genesis / faucet allocation.
     pub fn set_balance(&mut self, a: Address, balance: U256) -> Result<(), StateError> {
         let d = self.account(&a).unwrap_or_default().with_balance(balance).map_err(|_| StateError::BalanceOverflow(a))?;

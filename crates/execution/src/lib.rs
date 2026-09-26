@@ -3,6 +3,7 @@
 pub mod account;
 pub mod block;
 pub mod fees;
+pub mod registry;
 mod parallel;
 pub mod tx;
 pub mod world;

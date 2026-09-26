@@ -41,6 +41,8 @@ notes="Aether $version for macOS (Apple silicon), signed by Pipln and notarized 
 
 Drag Aether to Applications. The app is a wallet and, with the switch on, a node that verifies every block on this Mac. It connects to the Aether testnet (test tokens have no value).
 
-Updates arrive automatically (Aether ▸ Check for Updates…)."
+Updates arrive automatically (Aether ▸ Check for Updates…).${RELEASE_NOTES:+
+
+$RELEASE_NOTES}"
 gh release create "$tag" "$dmg" dist/appcast.xml --repo "$repo" --target main --title "Aether $version (testnet)" --notes "$notes" --latest ${1:-}
 echo "released $tag"

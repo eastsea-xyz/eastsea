@@ -293,6 +293,7 @@ private struct SidebarStatus: View {
         case .off: "Off"
         case .starting: node.height > 0 ? "Catching up · block #\(node.height)" : "Starting…"
         case .running: "Verifying · block #\(node.height)"
+        case .waitingForPower: "Paused on battery"
         case .failed(let m): m
         }
     }

@@ -1,5 +1,7 @@
 #if os(macOS)
 import Foundation
+import IOKit.ps
+import ServiceManagement
 import SwiftUI
 
 /// The node inside the app (Transmission-style on/off). On: the bundled `aether`
@@ -12,13 +14,57 @@ final class NodeController: ObservableObject {
         case off
         case starting
         case running
+        /// On, but waiting for the power adapter (see `onlyOnPower`).
+        case waitingForPower
         case failed(String)
     }
 
     @Published private(set) var state: State = .off
     @Published private(set) var height: UInt64 = 0
     @AppStorage("nodeEnabled") var enabled = false {
-        didSet { enabled ? start() : stop() }
+        didSet { enabled ? startIfAllowed() : stop() }
+    }
+    /// Run the node only while the Mac is on its power adapter (laptops).
+    @AppStorage("nodeOnlyOnPower") var onlyOnPower = true {
+        didSet { if enabled { applyPower() } }
+    }
+    /// Open Aether at login (the node then resumes if it was on).
+    var startAtLogin: Bool {
+        get { SMAppService.mainApp.status == .enabled }
+        set {
+            do {
+                if newValue { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+            } catch {
+                state = .failed("Login item: \(error.localizedDescription)")
+            }
+            objectWillChange.send()
+        }
+    }
+    private var powerTimer: Timer?
+
+    static var onBattery: Bool {
+        guard let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let type = IOPSGetProvidingPowerSourceType(info)?.takeUnretainedValue() as String? else { return false }
+        return type == kIOPSBatteryPowerValue
+    }
+
+    private func startIfAllowed() {
+        powerTimer?.invalidate()
+        powerTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.applyPower() }
+        }
+        applyPower()
+    }
+
+    /// Start or pause for the power source; called every 30 s while the switch is on.
+    private func applyPower() {
+        guard enabled else { return }
+        if onlyOnPower && Self.onBattery {
+            if process != nil { stop(keepSwitch: true) }
+            state = .waitingForPower
+        } else if process == nil {
+            start()
+        }
     }
 
     static let port: UInt16 = 18_545
@@ -36,7 +82,7 @@ final class NodeController: ObservableObject {
 
     /// Resume the user's choice at launch.
     func restore() {
-        if enabled { start() }
+        if enabled { startIfAllowed() }
     }
 
     func start() {
@@ -80,7 +126,11 @@ final class NodeController: ObservableObject {
         }
     }
 
-    func stop() {
+    func stop(keepSwitch: Bool = false) {
+        if !keepSwitch {
+            powerTimer?.invalidate()
+            powerTimer = nil
+        }
         poll?.invalidate()
         poll = nil
         switched = false

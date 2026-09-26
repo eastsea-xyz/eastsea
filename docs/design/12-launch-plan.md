@@ -19,7 +19,7 @@
 | 4 | **지갑 복구 강화**: 복수 가디언(k-of-n), 48시간 타임락, 주인 취소, 새 소유 키 추가(주소 유지) | 컨트랙트·FFI·앱 테스트. 탈취 시나리오(가디언 단독 즉시 인출 불가) 테스트 | ✅ AetherAccount v2 + 세션 키(에이전트 한도 온체인 강제). 감사 결함 11건 수정 |
 | 5 | **업그레이드 매니페스트**: 버전·활성화 높이·바이너리 해시를 위원회 임계 서명으로 확정, 노드는 서명이 유효할 때만 해당 높이에서 규칙 전환 | 운영자 단독으로 규칙을 바꿀 수 없음. 시뮬레이션에서 무중단 전환 확인 | ✅ `upgrade-sign/combine/verify`, 노드·팔로워가 서명된 업그레이드를 읽고 구버전이면 활성 전에 정지. 무중단 전환(새 바이너리가 높이에서 규칙 전환)은 첫 실제 업그레이드 때 |
 | 6 | **증명 체인 연결**: D6 해시 결정(BLAKE3 + Jolt Metal), 노드에 Jolt 검증기, R3 에스크로 지급 연결 | 제출된 청크 증명을 검증자가 검증하고 첫 유효 증명에 지급. 증명 지연 지표 노출 | |
-| 7 | **App Attest**: 기기 1대 = 1개 신원(faucet, prover 등록, 포인트) | 시뮬레이터·탈옥 기기 거부, 기기당 제한 동작 | |
+| 7 | **App Attest**: 기기 1대 = 1개 신원(faucet, prover 등록, 포인트) | 시뮬레이터·탈옥 기기 거부, 기기당 제한 동작 | 🧑 조사: 서명 없는 도구에서는 App Attest 미지원, DeviceCheck는 지원. 앱에 App Attest 권한 + Developer ID 프로비저닝 프로파일(또는 DeviceCheck 키) 필요 → Pipln 개발자 계정 설정 |
 | 8 | **Mac 노드 앱**: 메뉴바 앱으로 검증자·prover 원클릭 참여, 전원·발열 인지, Notarize | 새 Mac에서 설치부터 합의 참여까지 5분 이내 | |
 | 9 | **공개 testnet 출시** 🧑: 호스트 준비(poc-m3 디스크 또는 poc-cuda), 새 제네시스 DKG, 지갑·에이전트 배포 | 외부 경로로 지갑 송금·복구·에이전트 결제 동작 | 🔶 2026-09-26 이 Mac에서 새 제네시스로 가동(체인 7778, 검증자 4, faucet). DHT 발견·faucet·팔로워 검증 확인. 지갑 송금·에이전트 결제는 사용자 Touch ID 필요. 상시 가동은 이 Mac이 켜져 있을 때만 → 외부 검증자 합류 필요(11) |
 | 10 | **레드팀 에이전트 상시 운영**: 이중지불·검열·수수료 조작·복구 탈취·스팸 시나리오를 testnet에 계속 실행 | 발견 결함은 1·2단계 회귀 테스트로 고정 | |
@@ -35,7 +35,7 @@
 | # | 단계 | 완료 기준 |
 |---|---|---|
 | P1 | **팔로워 노드 모드**: 검증자가 아닌 Mac도 확정 블록과 인증서를 받아 전부 재실행·검증하고, 지갑에 로컬로 응답 | 새 Mac이 제네시스부터 따라잡고, 상태 루트가 검증자와 일치. 지갑이 이 로컬 노드만으로 검증 ✅ `aether follow` |
-| P2 | **앱 번들 통합**: 지갑 앱 안에 `aether`(노드)와 `aether-agent`를 Helpers로 포함. 노드 켜기/끄기, 전원 연결 시에만 실행, 로그인 시 시작 옵션, "명령줄 도구 설치" 메뉴 | 앱을 끄면 노드도 정리되어 종료. 데이터는 `~/Library/Application Support/Aether` ✅ 노드 스위치, 동기화 후 지갑 전환, 부모 종료 시 노드 종료. 전원·로그인 시작 옵션은 남음 |
+| P2 | **앱 번들 통합**: 지갑 앱 안에 `aether`(노드)와 `aether-agent`를 Helpers로 포함. 노드 켜기/끄기, 전원 연결 시에만 실행, 로그인 시 시작 옵션, "명령줄 도구 설치" 메뉴 | 앱을 끄면 노드도 정리되어 종료. 데이터는 `~/Library/Application Support/Aether` ✅ 노드 스위치, 동기화 후 지갑 전환, 부모 종료 시 노드 종료, 설정: 전원 연결 시만 실행(배터리에서 일시정지), 로그인 시 열기 |
 | P3 | **서명·공증·DMG**: Developer ID 서명, Hardened Runtime, `notarytool` 공증과 staple, 배경 이미지와 Applications 바로가기가 있는 DMG | 다른 Mac에서 Gatekeeper 경고 없이 설치·실행 ✅ Pipln Developer ID 서명, Apple 공증 Accepted, staple, `spctl`: Notarized Developer ID |
 | P4 | **자동 업데이트**: Sparkle 2(EdDSA 서명 appcast, GitHub Releases 호스팅) | 이전 버전이 새 버전을 감지하고 설치 |
 | P5 | **배포 채널**: GitHub Releases, Homebrew cask, iOS는 TestFlight | `brew install --cask aether` 동작 |

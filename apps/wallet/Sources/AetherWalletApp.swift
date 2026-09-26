@@ -30,10 +30,33 @@ struct AetherWalletApp: App {
             }
         }
         #endif
+        #if os(macOS)
+        Settings {
+            SettingsView().environmentObject(node)
+        }
+        #endif
     }
 }
 
 #if os(macOS)
+/// Aether ▸ Settings: how the node runs on this Mac.
+struct SettingsView: View {
+    @EnvironmentObject var node: NodeController
+
+    var body: some View {
+        Form {
+            Toggle("Run a node on this Mac", isOn: $node.enabled)
+            Toggle("Only while on the power adapter", isOn: $node.onlyOnPower)
+                .help("On a laptop, pause the node on battery and resume on power.")
+            Toggle("Open Aether at login", isOn: Binding(get: { node.startAtLogin }, set: { node.startAtLogin = $0 }))
+            Text("Your node verifies every block itself and your wallet asks it instead of the network. Quitting Aether stops it.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(20)
+        .frame(width: 420)
+    }
+}
+
 /// Quitting the app stops its node: nothing keeps running in the background.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var node: NodeController?

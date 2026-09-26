@@ -7,14 +7,15 @@
 #       Release: re-sign the helpers, app and DMG with Developer ID (hardened runtime,
 #       secure timestamp). Notarization then needs either
 #         NOTARY_PROFILE=<name>                 (xcrun notarytool store-credentials), or
-#         APP_STORE_CONNECT_API_KEY_ID / _ISSUER_ID / _KEY_PATH  (an App Store Connect API key)
+#         APP_STORE_CONNECT_API_KEY_ID / _ISSUER_ID / _PATH  (an App Store Connect API key;
+#                                                `source ~/.config/app-store-release/env.sh`)
 #       and the ticket is stapled to the DMG.
 # Output: dist/Aether-<version>.dmg
 set -euo pipefail
 cd "$(dirname "$0")/.."
 version=$(git describe --tags --always --dirty)
 scripts/build-wallet.sh macos >/dev/null
-src="apps/wallet/build/Build/Products/Release/Aether Wallet.app"
+src="apps/wallet/build/Build/Products/Release/Aether.app"
 [ -d "$src" ] || { echo "build failed: $src missing"; exit 1; }
 
 stage=$(mktemp -d)
@@ -42,7 +43,7 @@ if [ -n "${SIGN_IDENTITY:-}" ]; then
   if [ -n "${NOTARY_PROFILE:-}" ]; then
     xcrun notarytool submit "$dmg" --keychain-profile "$NOTARY_PROFILE" --wait
   elif [ -n "${APP_STORE_CONNECT_API_KEY_ID:-}" ]; then
-    xcrun notarytool submit "$dmg" --key "$APP_STORE_CONNECT_API_KEY_KEY_PATH" --key-id "$APP_STORE_CONNECT_API_KEY_ID" \
+    xcrun notarytool submit "$dmg" --key "$APP_STORE_CONNECT_API_KEY_PATH" --key-id "$APP_STORE_CONNECT_API_KEY_ID" \
       --issuer "$APP_STORE_CONNECT_API_KEY_ISSUER_ID" --wait
   else
     echo "not notarized (set NOTARY_PROFILE or APP_STORE_CONNECT_API_KEY_*)"

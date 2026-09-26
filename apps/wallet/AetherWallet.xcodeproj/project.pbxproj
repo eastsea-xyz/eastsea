@@ -137,11 +137,11 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					0C260DD3461928726F171B93 = {
-						DevelopmentTeam = LBKUT88RTX;
+						DevelopmentTeam = 45WU468FZE;
 						ProvisioningStyle = Manual;
 					};
 					A23F3FD5CBCBA2B1C7A877E0 = {
-						DevelopmentTeam = LBKUT88RTX;
+						DevelopmentTeam = 45WU468FZE;
 					};
 				};
 			};
@@ -306,7 +306,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				DEVELOPMENT_TEAM = LBKUT88RTX;
+				DEVELOPMENT_TEAM = 45WU468FZE;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = "$(SRCROOT)/Generated";
@@ -320,8 +320,8 @@
 				);
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = "$(SRCROOT)/../../target/aarch64-apple-ios/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework Network";
 				"OTHER_LDFLAGS[sdk=iphonesimulator*]" = "$(SRCROOT)/../../target/aarch64-apple-ios-sim/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework Network";
-				PRODUCT_BUNDLE_IDENTIFIER = com.kjaylee.aether.wallet.ios;
-				PRODUCT_NAME = "Aether Wallet";
+				PRODUCT_BUNDLE_IDENTIFIER = com.pipln.aether.ios;
+				PRODUCT_NAME = Aether;
 				SDKROOT = iphoneos;
 				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/Generated";
 				SWIFT_VERSION = 5.0;
@@ -334,14 +334,14 @@
 			buildSettings = {
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_IDENTITY = 44566BD2BD393D704EF546BACE9B87195BAEB741;
+				CODE_SIGN_IDENTITY = "Developer ID Application: Pipln (45WU468FZE)";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				DEVELOPMENT_TEAM = LBKUT88RTX;
+				DEVELOPMENT_TEAM = 45WU468FZE;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = "$(SRCROOT)/Generated";
-				INFOPLIST_KEY_CFBundleDisplayName = "Aether Wallet";
+				INFOPLIST_KEY_CFBundleDisplayName = Aether;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.finance";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Devnet wallet. Test tokens have no value.";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -349,8 +349,8 @@
 					"@executable_path/../Frameworks",
 				);
 				OTHER_LDFLAGS = "$(SRCROOT)/../../target/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework OpenDirectory -framework IOKit";
-				PRODUCT_BUNDLE_IDENTIFIER = com.kjaylee.aether.wallet;
-				PRODUCT_NAME = "Aether Wallet";
+				PRODUCT_BUNDLE_IDENTIFIER = com.pipln.aether;
+				PRODUCT_NAME = Aether;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SDKROOT = macosx;
 				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/Generated";
@@ -363,7 +363,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				DEVELOPMENT_TEAM = LBKUT88RTX;
+				DEVELOPMENT_TEAM = 45WU468FZE;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = "$(SRCROOT)/Generated";
@@ -377,8 +377,8 @@
 				);
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = "$(SRCROOT)/../../target/aarch64-apple-ios/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework Network";
 				"OTHER_LDFLAGS[sdk=iphonesimulator*]" = "$(SRCROOT)/../../target/aarch64-apple-ios-sim/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework Network";
-				PRODUCT_BUNDLE_IDENTIFIER = com.kjaylee.aether.wallet.ios;
-				PRODUCT_NAME = "Aether Wallet";
+				PRODUCT_BUNDLE_IDENTIFIER = com.pipln.aether.ios;
+				PRODUCT_NAME = Aether;
 				SDKROOT = iphoneos;
 				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/Generated";
 				SWIFT_VERSION = 5.0;
@@ -447,14 +447,14 @@
 			buildSettings = {
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_IDENTITY = 44566BD2BD393D704EF546BACE9B87195BAEB741;
+				CODE_SIGN_IDENTITY = "Developer ID Application: Pipln (45WU468FZE)";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				DEVELOPMENT_TEAM = LBKUT88RTX;
+				DEVELOPMENT_TEAM = 45WU468FZE;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = "$(SRCROOT)/Generated";
-				INFOPLIST_KEY_CFBundleDisplayName = "Aether Wallet";
+				INFOPLIST_KEY_CFBundleDisplayName = Aether;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.finance";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Devnet wallet. Test tokens have no value.";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -462,8 +462,8 @@
 					"@executable_path/../Frameworks",
 				);
 				OTHER_LDFLAGS = "$(SRCROOT)/../../target/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework OpenDirectory -framework IOKit";
-				PRODUCT_BUNDLE_IDENTIFIER = com.kjaylee.aether.wallet;
-				PRODUCT_NAME = "Aether Wallet";
+				PRODUCT_BUNDLE_IDENTIFIER = com.pipln.aether;
+				PRODUCT_NAME = Aether;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SDKROOT = macosx;
 				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/Generated";

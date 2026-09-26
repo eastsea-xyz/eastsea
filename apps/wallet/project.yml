@@ -1,6 +1,6 @@
 name: AetherWallet
 options:
-  bundleIdPrefix: com.kjaylee.aether
+  bundleIdPrefix: com.pipln.aether
   deploymentTarget:
     macOS: "14.0"
     iOS: "17.0"
@@ -15,15 +15,16 @@ targets:
       - path: Generated/aether_ffi.swift
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.kjaylee.aether.wallet
-        PRODUCT_NAME: Aether Wallet
-        DEVELOPMENT_TEAM: LBKUT88RTX
+        # Distributed outside the App Store by Pipln: Developer ID signing, notarized.
+        PRODUCT_BUNDLE_IDENTIFIER: com.pipln.aether
+        PRODUCT_NAME: Aether
+        DEVELOPMENT_TEAM: 45WU468FZE
         CODE_SIGN_STYLE: Manual
-        CODE_SIGN_IDENTITY: 44566BD2BD393D704EF546BACE9B87195BAEB741
+        CODE_SIGN_IDENTITY: "Developer ID Application: Pipln (45WU468FZE)"
         PROVISIONING_PROFILE_SPECIFIER: ""
         SWIFT_VERSION: "5.0"
         GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_CFBundleDisplayName: Aether Wallet
+        INFOPLIST_KEY_CFBundleDisplayName: Aether
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.finance
         INFOPLIST_KEY_NSHumanReadableCopyright: Devnet wallet. Test tokens have no value.
         ENABLE_HARDENED_RUNTIME: YES
@@ -55,9 +56,9 @@ targets:
       - path: Generated/aether_ffi.swift
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.kjaylee.aether.wallet.ios
-        PRODUCT_NAME: Aether Wallet
-        DEVELOPMENT_TEAM: LBKUT88RTX
+        PRODUCT_BUNDLE_IDENTIFIER: com.pipln.aether.ios
+        PRODUCT_NAME: Aether
+        DEVELOPMENT_TEAM: 45WU468FZE
         SWIFT_VERSION: "5.0"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: Aether

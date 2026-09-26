@@ -180,12 +180,12 @@ final class NodeController: ObservableObject {
         candidate = Candidate(validatorKey: key, nodeId: node, beaconer: beaconer)
     }
 
-    /// The voting key's signature asking to be registered under `operator` (the wallet account).
-    func ownership(operator: String, chainId: UInt64) -> String? {
+    /// The voting key's signature asking to be registered under `account` (the wallet, as operator).
+    func ownership(account: String, chainId: UInt64) -> String? {
         guard let binary else { return nil }
         let p = Process(), out = Pipe()
         p.executableURL = binary
-        p.arguments = ["candidate-info", "--data", Self.dataDir.path, "--operator", operator, "--chain-id", String(chainId)]
+        p.arguments = ["candidate-info", "--data", Self.dataDir.path, "--operator", account, "--chain-id", String(chainId)]
         p.standardOutput = out
         guard (try? p.run()) != nil else { return nil }
         p.waitUntilExit()

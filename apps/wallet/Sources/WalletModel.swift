@@ -158,7 +158,7 @@ final class WalletModel: ObservableObject {
     /// before: one Mac, one voting node.
     func registerNode(_ c: NodeController.Candidate, node: NodeController) {
         guard let enclave else { return }
-        guard let chainId = status?.chainId, let ownership = node.ownership(operator: address, chainId: chainId) else {
+        guard let chainId = status?.chainId, let ownership = node.ownership(account: address, chainId: chainId) else {
             note("Voting-node registration: the node's keys are not ready yet")
             return
         }

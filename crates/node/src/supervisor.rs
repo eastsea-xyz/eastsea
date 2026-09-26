@@ -283,7 +283,12 @@ impl Supervisor {
                 write_secret(&self.data.join("threshold.json"), &serde_json::to_vec_pretty(&key).expect("json"))?;
                 tracing::info!(switch, "aether run: this Mac votes from the switch height");
             }
-            (true, None) => tracing::warn!("aether run: in the new voting set without its share (the reshare did not finish here); following"),
+            (true, None) => {
+                // Seated, but the reshare did not finish here: the old share is for
+                // the old round and useless now. Follow until a later draw.
+                erase(&self.data.join("threshold.json"))?;
+                tracing::warn!("aether run: in the new voting set without its share (the reshare did not finish here); following");
+            }
             (false, _) => {
                 // Erase the old share: the new sharing has the same secret, so a
                 // quorum of old shares kept anywhere could still sign. Safety

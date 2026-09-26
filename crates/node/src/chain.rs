@@ -253,7 +253,7 @@ impl Chain {
                     base_fee: summary.as_ref().map(|b| b.base_fee).unwrap_or_default(),
                     excess: summary.as_ref().map(|b| b.excess).unwrap_or_default(),
                     handoff: cp.handoff.map(Arc::new),
-                    seed: store.meta(SEED).ok().flatten().and_then(|b| serde_json::from_slice(&b).ok()).map(Arc::new),
+                    seed: cp.seed.map(Arc::new),
                 });
                 let mut g = chain.lock();
                 g.executed.insert(digest, exec.clone());
@@ -274,6 +274,7 @@ impl Chain {
                     summary: &summary,
                     receipts: vec![],
                     handoff: None,
+                    seed: None,
                 })?;
                 g.store = Some(store);
             }
@@ -302,6 +303,12 @@ impl Chain {
         self.lock().cfg.clone()
     }
 
+    /// Key rounds only go up: a handoff built on `parent` must carry a round
+    /// above the last handoff's in its ancestry (so none is accepted twice).
+    fn round_floor(parent: &Executed) -> u64 {
+        parent.handoff.as_ref().map(|p| p.handoff.round).unwrap_or(0)
+    }
+
     /// Whether this node's voting set has handed over before the block after
     /// `parent`: it then builds and votes for nothing past the switch.
     pub fn retired_after(&self, parent: &Executed) -> bool {
@@ -321,9 +328,9 @@ impl Chain {
         if parent.handoff.as_ref().is_some_and(|p| height < p.switch) {
             return Err(ChainError::BadHandoff("another handoff is still pending".into()));
         }
-        // Rounds advance one at a time: a signed handoff cannot be replayed later.
-        if h.round != next_round(parent) {
-            return Err(ChainError::BadHandoff(format!("handoff round {} is not the next round {}", h.round, next_round(parent))));
+        // Rounds only go up: a signed handoff cannot be replayed later.
+        if h.round <= Self::round_floor(parent) {
+            return Err(ChainError::BadHandoff(format!("handoff round {} is not above {}", h.round, Self::round_floor(parent))));
         }
         let (identity, chain_id) = {
             let g = self.lock();
@@ -383,7 +390,7 @@ impl Chain {
     /// The handoff to put in a block built on `parent`, if one is ready and allowed.
     pub fn handoff_for(&self, parent: &Executed) -> Option<aether_light::block::Handoff> {
         let ready = self.lock().handoff_ready.clone()?;
-        if ready.round != next_round(parent) {
+        if ready.round <= Self::round_floor(parent) {
             return None;
         }
         let pending = parent.handoff.as_ref();
@@ -581,6 +588,7 @@ impl Chain {
                     summary: &summary,
                     receipts: exec.tx_hashes.iter().copied().zip(exec.receipts.iter()).collect(),
                     handoff: exec.handoff.as_deref().filter(|p| p.at == exec.height),
+                    seed: exec.seed.as_deref().filter(|s| s.0 == exec.height),
                 })
                 .map_err(|e| ChainError::Store(e.to_string()))?;
         }
@@ -608,6 +616,9 @@ impl Chain {
             if g.handoff_ready.as_ref() == Some(&p.handoff) {
                 g.handoff_ready = None;
             }
+            // This draw's voting set is on its way in: nobody reshares to it again.
+            g.proposal = None;
+            keep(&g.store, PROPOSAL, &g.proposal);
         }
         // A draw's pool is frozen from the state its first block builds on (before its seed exists).
         let params = aether_execution::registry::params(&previous.state);
@@ -620,7 +631,6 @@ impl Chain {
         }
         // With the draw's seed on chain, everyone draws the same next voting set.
         if let Some(s) = exec.seed.as_ref().filter(|s| s.0 == exec.height) {
-            keep(&g.store, SEED, &Some(s.as_ref().clone()));
             if g.seed_ready.as_ref() == Some(&s.1) {
                 g.seed_ready = None;
             }
@@ -680,10 +690,9 @@ fn summary(block: &Block, e: &Executed, parent_state_root: B256) -> BlockSummary
     }
 }
 
-/// Store keys: the proposed voting set, the frozen draw pool, the latest seed.
+/// Store keys: the proposed voting set and the frozen draw pool.
 const PROPOSAL: &str = "proposal";
 const POOL: &str = "pool";
-const SEED: &str = "seed";
 
 /// The draw a block at `height` belongs to (draws start at multiples of epoch_blocks × draw_epochs).
 fn current_draw(state: &WorldState, height: u64) -> u64 {
@@ -697,11 +706,6 @@ fn keep<T: Serialize>(store: &Option<Arc<Store>>, key: &str, value: &T) {
             tracing::warn!(%e, key, "could not keep the voting-set draw state");
         }
     }
-}
-
-/// The key round a handoff built on `parent` must carry (the DKG at genesis is round 0).
-fn next_round(parent: &Executed) -> u64 {
-    parent.handoff.as_ref().map(|p| p.handoff.round).unwrap_or(0) + 1
 }
 
 pub fn build_payload(

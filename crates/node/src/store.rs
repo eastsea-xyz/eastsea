@@ -93,6 +93,18 @@ impl Store {
         Ok(Store { db })
     }
 
+    pub fn put_meta(&self, key: &str, value: &[u8]) -> Result<(), StoreError> {
+        let tx = self.db.begin_write().map_err(dberr)?;
+        tx.open_table(META).map_err(dberr)?.insert(key, value).map_err(dberr)?;
+        tx.commit().map_err(dberr)
+    }
+
+    pub fn meta(&self, key: &str) -> Result<Option<Vec<u8>>, StoreError> {
+        let tx = self.db.begin_read().map_err(dberr)?;
+        let t = tx.open_table(META).map_err(dberr)?;
+        Ok(t.get(key).map_err(dberr)?.map(|v| v.value().to_vec()))
+    }
+
     pub fn put_proof(&self, height: u64, proof: &[u8]) -> Result<(), StoreError> {
         let tx = self.db.begin_write().map_err(dberr)?;
         tx.open_table(PROOFS).map_err(dberr)?.insert(height, proof).map_err(dberr)?;

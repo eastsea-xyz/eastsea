@@ -1111,6 +1111,7 @@ fn run_node(a: NodeArgs) {
             g.identity = Some(*polynomial_identity);
             g.epoch_start = epochs.last().map(|e| e.height).unwrap_or(0);
             drop(g);
+            chain.resume();
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<aether_node::handoff::PartialMsg>();
             tokio::spawn(async move {
                 while let Some(m) = rx.recv().await {
@@ -1341,7 +1342,11 @@ fn run_follow(
             tracing::info!(voting_key = %hex::encode(keys.validator_key()), beaconer = %keys.beaconer(), "voting-node candidate: beacons every epoch once registered");
             tokio::spawn(aether_node::candidate::beacon_loop(chain.clone(), aether_node::candidate::Outbox::Upstream(upstream.clone()), keys));
         }
-        tokio::spawn(follow::run(chain.clone(), upstream.clone(), set, archive.clone()));
+        let joining = candidate_keys
+            .as_ref()
+            .and_then(|dir| aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(dir)).ok())
+            .map(|k| hex::encode(k.validator_key()));
+        tokio::spawn(follow::run(chain.clone(), upstream.clone(), set, archive.clone(), joining));
         tracing::info!(height = chain.finalized_height(), rpc_port, "following (not a validator): every block is verified and re-executed here");
         let st = RpcState {
             chain,

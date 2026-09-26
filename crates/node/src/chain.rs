@@ -303,6 +303,10 @@ impl Chain {
         if parent.handoff.as_ref().is_some_and(|p| height < p.switch) {
             return Err(ChainError::BadHandoff("another handoff is still pending".into()));
         }
+        // Rounds advance one at a time: a signed handoff cannot be replayed later.
+        if h.round != next_round(parent) {
+            return Err(ChainError::BadHandoff(format!("handoff round {} is not the next round {}", h.round, next_round(parent))));
+        }
         let (identity, chain_id) = {
             let g = self.lock();
             (g.identity, g.cfg.chain_id)
@@ -312,9 +316,30 @@ impl Chain {
         Ok(Some(Arc::new(crate::handoff::Pending { at: height, switch: height + crate::handoff::DELAY, handoff: h.clone() })))
     }
 
+    /// After a restart: a finalized handoff still ends this node's epoch at its
+    /// switch, and the voting set proposed for this registry epoch still stands.
+    pub fn resume(&self) {
+        let mut g = self.lock();
+        if let Some(p) = g.finalized.handoff.clone() {
+            if p.switch > g.epoch_start {
+                g.epoch_end.store(p.switch - 1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let every = aether_execution::registry::epoch_blocks(&g.finalized.state);
+        let current = g.finalized.height / every;
+        let stored =
+            g.store.as_ref().and_then(|s| s.meta(PROPOSAL).ok().flatten()).and_then(|b| serde_json::from_slice::<(u64, Vec<(String, String)>)>(&b).ok());
+        if let Some((epoch, members)) = stored.filter(|(e, _)| *e == current) {
+            g.proposal = Some((epoch, members));
+        }
+    }
+
     /// The handoff to put in a block built on `parent`, if one is ready and allowed.
     pub fn handoff_for(&self, parent: &Executed) -> Option<aether_light::block::Handoff> {
         let ready = self.lock().handoff_ready.clone()?;
+        if ready.round != next_round(parent) {
+            return None;
+        }
         let pending = parent.handoff.as_ref();
         if pending.is_some_and(|p| parent.height + 1 < p.switch || p.handoff == ready) {
             return None;
@@ -539,6 +564,11 @@ impl Chain {
         if exec.height > 0 && exec.height.is_multiple_of(every) {
             let epoch = exec.height / every;
             g.proposal = crate::rotation::next_set(&previous.state, epoch, &g.committee).map(|m| (epoch, m));
+            if let (Some(store), Some(p)) = (g.store.clone(), g.proposal.as_ref()) {
+                if let Err(e) = store.put_meta(PROPOSAL, &serde_json::to_vec(p).expect("proposal serializes")) {
+                    tracing::warn!(%e, "could not keep the proposed voting set");
+                }
+            }
         }
         let floor = exec.height.saturating_sub(64);
         g.executed.retain(|_, e| e.height >= floor);
@@ -587,6 +617,14 @@ fn summary(block: &Block, e: &Executed, parent_state_root: B256) -> BlockSummary
         base_fee: e.base_fee,
         excess: e.excess,
     }
+}
+
+/// Store key of the voting set proposed for the current registry epoch.
+const PROPOSAL: &str = "proposal";
+
+/// The key round a handoff built on `parent` must carry (the DKG at genesis is round 0).
+fn next_round(parent: &Executed) -> u64 {
+    parent.handoff.as_ref().map(|p| p.handoff.round).unwrap_or(0) + 1
 }
 
 pub fn build_payload(

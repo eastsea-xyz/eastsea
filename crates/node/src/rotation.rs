@@ -42,7 +42,8 @@ pub fn next_set(state: &WorldState, epoch: u64, running: &Committee) -> Option<V
     if running.members.is_empty() || epoch == 0 {
         return None;
     }
-    let all = registry::candidates(state);
+    // Only candidates reachable at a valid iroh node id can hold a seat.
+    let all: Vec<registry::Candidate> = registry::candidates(state).into_iter().filter(|c| aether_net::EndpointId::from_bytes(&c.node_id).is_ok()).collect();
     let open: Vec<OpenCandidate> = all
         .iter()
         .map(|c| OpenCandidate {
@@ -62,7 +63,7 @@ pub fn next_set(state: &WorldState, epoch: u64, running: &Committee) -> Option<V
     let selected: Vec<(String, String)> = picked
         .iter()
         .map(|p| {
-            let c = &all[p.index as usize];
+            let c = all.iter().find(|c| c.index == p.index).expect("picked from all");
             let node = aether_net::EndpointId::from_bytes(&c.node_id).map(|n| n.to_string()).unwrap_or_default();
             (hex::encode(c.validator_key), node)
         })
@@ -127,11 +128,15 @@ mod tests {
             let op = P256Signer::from_seed(&seed(i)).unwrap();
             let a = address_of(&op.public_key()).unwrap();
             s.set_balance(a, U256::from(10u128.pow(20))).unwrap();
-            let sig = registrar.sign(&attestation_message(7, a, [i; 32], [i; 32], a)).unwrap();
-            s = run(&s, &op, 0, encode_register([i; 32], [i; 32], a, sig[..32].try_into().unwrap(), sig[32..64].try_into().unwrap()), 1);
+            let sig = registrar.sign(&attestation_message(7, a, [i; 32], node(i), a)).unwrap();
+            s = run(&s, &op, 0, encode_register([i; 32], node(i), a, sig[..32].try_into().unwrap(), sig[32..64].try_into().unwrap()), 1);
             s = run(&s, &op, 1, encode_beacon([i; 32]), e * E + 1);
         }
         s
+    }
+
+    fn node(i: u8) -> [u8; 32] {
+        *aether_net::SecretKey::from_bytes(&[i; 32]).public().as_bytes()
     }
 
     fn key(i: u8) -> String {

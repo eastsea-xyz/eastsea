@@ -136,10 +136,25 @@ async fn http_call(url: &str, method: &str, params: &Value) -> Result<Value, Str
 }
 
 /// Follow the chain forever: verify, execute and persist each next block.
-pub async fn run(chain: Chain, upstream: std::sync::Arc<Upstream>, set: ValidatorSet, archive: std::sync::Arc<FinalityArchive>) {
+/// `joining`: this Mac's voting key when it is a candidate. When a finalized
+/// handoff seats it, the follower stops before the switch height (for up to
+/// `HOLD`), so `aether run` can start it as a voting node from that block.
+pub async fn run(chain: Chain, upstream: std::sync::Arc<Upstream>, set: ValidatorSet, archive: std::sync::Arc<FinalityArchive>, joining: Option<String>) {
+    const HOLD: Duration = Duration::from_secs(120);
     let mut last_log = 0;
+    let mut held_since: Option<std::time::Instant> = None;
     loop {
         let next = chain.finalized_height() + 1;
+        let seated = chain
+            .lock()
+            .finalized
+            .handoff
+            .as_ref()
+            .is_some_and(|p| next >= p.switch && joining.as_ref().is_some_and(|k| p.handoff.members.iter().any(|(m, _)| m == k)));
+        if seated && held_since.get_or_insert_with(std::time::Instant::now).elapsed() < HOLD {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            continue;
+        }
         match fetch(&upstream, &set, next).await {
             Ok(Some((block, proof))) => match chain.finalize(&block) {
                 Ok(()) => {

@@ -97,8 +97,8 @@ pub struct PartialMsg {
     pub partial: String,
 }
 
-/// Partial signatures for one handoff, by signer.
-type Partials = std::collections::BTreeMap<u32, PartialSignature<MinSig>>;
+/// Each signer's latest partial: (signed message, partial).
+type Partials = std::collections::BTreeMap<u32, (Vec<u8>, PartialSignature<MinSig>)>;
 
 /// Collects the running committee's partial signatures and, at the threshold,
 /// puts the signed handoff up for the next proposer (`Chain::handoff_ready`).
@@ -110,7 +110,7 @@ pub struct Service {
     sharing: Sharing<MinSig>,
     data: std::path::PathBuf,
     out: tokio::sync::mpsc::UnboundedSender<PartialMsg>,
-    partials: std::sync::Mutex<std::collections::HashMap<Vec<u8>, Partials>>,
+    partials: std::sync::Mutex<Partials>,
 }
 
 impl Service {
@@ -152,15 +152,22 @@ impl Service {
     }
 
     /// Take a partial (ours or a peer's); at the threshold, the handoff is ready.
+    /// Only partials for the voting set this node computed, with a valid output,
+    /// are kept, one per signer: memory stays bounded by the committee size.
     pub fn accept(&self, m: &PartialMsg) -> Result<(), String> {
         let h = Handoff { signature: String::new(), ..m.handoff.clone() };
+        let proposal = self.chain.lock().proposal.clone().ok_or("no voting set is proposed now")?;
+        if proposal.1 != h.members {
+            return Err("partial for another voting set".into());
+        }
+        verify_output(&self.identity, &h)?;
         let p = check_partial(self.chain_id, &self.sharing, &h, &m.partial)?;
         let key = message(self.chain_id, &h);
         let ready = {
             let mut g = self.partials.lock().expect("partials lock");
-            let entry = g.entry(key).or_default();
-            entry.insert(p.index.get(), p);
-            (entry.len() as u32 >= self.sharing.required()).then(|| entry.values().cloned().collect::<Vec<_>>())
+            g.insert(p.index.get(), (key.clone(), p));
+            let agreeing: Vec<PartialSignature<MinSig>> = g.values().filter(|(k, _)| *k == key).map(|(_, p)| p.clone()).collect();
+            (agreeing.len() as u32 >= self.sharing.required()).then_some(agreeing)
         };
         if let Some(ps) = ready {
             let signed = combine(&self.sharing, &h, &ps)?;

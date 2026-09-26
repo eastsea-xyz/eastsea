@@ -285,10 +285,10 @@ impl Supervisor {
             }
             (true, None) => tracing::warn!("aether run: in the new voting set without its share (the reshare did not finish here); following"),
             (false, _) => {
-                if self.data.join("threshold.json").exists() {
-                    let aside = self.data.join(format!("threshold-round{}.json", ours.round));
-                    std::fs::rename(self.data.join("threshold.json"), aside).map_err(|e| e.to_string())?;
-                }
+                // Erase the old share: the new sharing has the same secret, so a
+                // quorum of old shares kept anywhere could still sign. Safety
+                // rests on honest members deleting theirs when they leave.
+                erase(&self.data.join("threshold.json"))?;
                 tracing::info!(switch, "aether run: left the voting set; following");
             }
         }
@@ -330,6 +330,13 @@ fn stop(reshare: &mut Option<Reshare>) {
         let _ = r.child.kill();
         let _ = r.child.wait();
     }
+}
+
+/// Overwrite a secret file, then remove it.
+fn erase(path: &Path) -> Result<(), String> {
+    let Ok(len) = std::fs::metadata(path).map(|m| m.len()) else { return Ok(()) };
+    write_secret(path, &vec![0u8; len as usize])?;
+    std::fs::remove_file(path).map_err(|e| e.to_string())
 }
 
 /// Secret files are written 0600.

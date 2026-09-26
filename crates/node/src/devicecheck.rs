@@ -202,6 +202,9 @@ impl Registrar {
         if !pk.verify(OWNERSHIP_NAMESPACE, &msg, &sig) {
             return Err(DeviceCheckError::Ownership);
         }
+        if aether_net::EndpointId::from_bytes(&node_id).is_err() {
+            return Err(DeviceCheckError::InvalidToken("node id is not a valid iroh id".into()));
+        }
         let key_hex = hex::encode(validator_key);
         let node = hex::encode(node_id);
         let registered_at = match self.registry.get(&key_hex) {
@@ -255,27 +258,28 @@ mod tests {
         let apple = DeviceCheck { key, key_id: "K".into(), team: "T".into(), base: "http://127.0.0.1:9".into(), http: reqwest::Client::new() };
         let signer = crate::faucet::Faucet::from_seed(&[4u8; 32]).unwrap();
         let r = Registrar { apple: Some(apple), registry: Registry::open(path.clone()), signer, chain_id: 7 };
+        let node: [u8; 32] = *aether_net::SecretKey::from_bytes(&[2; 32]).public().as_bytes();
         let voting = commonware_cryptography::ed25519::PrivateKey::from_seed(5);
         let vk: [u8; 32] = voting.public_key().encode().as_ref().try_into().unwrap();
         let (op, other, beacon) = (aether_types::Address::repeat_byte(1), aether_types::Address::repeat_byte(9), aether_types::Address::repeat_byte(3));
         let own = |signer: &commonware_cryptography::ed25519::PrivateKey, op| {
-            signer.sign(OWNERSHIP_NAMESPACE, &aether_execution::registry::attestation_message(7, op, vk, [2; 32], beacon)).encode().to_vec()
+            signer.sign(OWNERSHIP_NAMESPACE, &aether_execution::registry::attestation_message(7, op, vk, node, beacon)).encode().to_vec()
         };
         // A key known before bindings were kept (Apple not asked again: unreachable here).
         let t = r.registry.insert(&hex::encode(vk));
-        let a = r.register("tok", op, vk, [2; 32], beacon, &own(&voting, op)).await.unwrap();
+        let a = r.register("tok", op, vk, node, beacon, &own(&voting, op)).await.unwrap();
         assert_eq!(a.registered_at, t);
         assert!(Registry::open(path).get(&hex::encode(vk)).is_some_and(|(at, b)| at == t && b.is_some()), "bound and kept across restarts");
         // Same key, another operator: refused, even with a valid ownership signature.
-        assert_eq!(r.register("tok", other, vk, [2; 32], beacon, &own(&voting, other)).await, Err(DeviceCheckError::AlreadyRegistered));
+        assert_eq!(r.register("tok", other, vk, node, beacon, &own(&voting, other)).await, Err(DeviceCheckError::AlreadyRegistered));
         // Not signed by the voting key: refused before anything else.
         let impostor = commonware_cryptography::ed25519::PrivateKey::from_seed(6);
-        assert_eq!(r.register("tok", op, vk, [2; 32], beacon, &own(&impostor, op)).await, Err(DeviceCheckError::Ownership));
+        assert_eq!(r.register("tok", op, vk, node, beacon, &own(&impostor, op)).await, Err(DeviceCheckError::Ownership));
         // A new key needs Apple: the unreachable endpoint fails closed.
         let fresh = commonware_cryptography::ed25519::PrivateKey::from_seed(8);
         let fk: [u8; 32] = fresh.public_key().encode().as_ref().try_into().unwrap();
-        let sig = fresh.sign(OWNERSHIP_NAMESPACE, &aether_execution::registry::attestation_message(7, op, fk, [2; 32], beacon)).encode().to_vec();
-        assert!(r.register("tok", op, fk, [2; 32], beacon, &sig).await.is_err());
+        let sig = fresh.sign(OWNERSHIP_NAMESPACE, &aether_execution::registry::attestation_message(7, op, fk, node, beacon)).encode().to_vec();
+        assert!(r.register("tok", op, fk, node, beacon, &sig).await.is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

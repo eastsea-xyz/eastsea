@@ -600,3 +600,38 @@ fn validator_rotation_continues_the_chain_under_the_same_identity() {
     let old = block(&b, 3, boundary);
     assert_eq!(old["hash"].as_str().unwrap(), end_hash, "B built on A's last block");
 }
+
+#[test]
+fn a_follower_verifies_everything_and_serves_a_wallet() {
+    let _serial = serial();
+    let mut net = Net::start(4);
+    for i in 0..4 {
+        net.wait_height(i, 3, 60);
+    }
+    let bob = "0x00000000000000000000000000000000000f0110";
+    let out = net.cli(&["send", "--rpc", &net.url(0), "--from-dev", "2", "--to", bob, "--value", "777", "--wait"]);
+    assert!(out.contains("success=true"), "{out}");
+
+    // A Mac that is not a validator follows from genesis, pulling from two validators.
+    let port = free_port();
+    let data = net.dir.join("follower");
+    let from = format!("{},{}", net.url(1), net.url(2));
+    let log = std::fs::File::create(net.dir.join("follower.log")).unwrap();
+    let child =
+        spawn_logged(log, &["follow".into(), "--from-rpc".into(), from, "--data".into(), data.to_str().unwrap().into(), "--rpc-port".into(), port.to_string()]);
+    net.rpc.push(port);
+    net.procs.push(Some(child));
+    let f = net.rpc.len() - 1;
+    let target = net.height(0) + 2;
+    net.wait_height(f, target, 60);
+    for h in (1..=target).step_by(3) {
+        assert_agree(&net, &[0, f], h);
+    }
+
+    // A wallet talking only to the follower verifies balances with its certificates.
+    let bal = net.cli(&["balance", bob, "--rpc", &net.url(f)]);
+    assert!(bal.contains("balance   777 wei") && bal.contains("verified  ✓"), "{bal}");
+    // Transactions sent to the follower reach the validators.
+    let out = net.cli(&["send", "--rpc", &net.url(f), "--from-dev", "3", "--to", bob, "--value", "1", "--wait"]);
+    assert!(out.contains("success=true"), "{out}");
+}

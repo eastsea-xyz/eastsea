@@ -142,6 +142,23 @@ enum Cmd {
         #[arg(long)]
         data: String,
     },
+    /// Follow the chain without being a validator: verify every certificate,
+    /// re-execute every block, and serve wallets on this machine.
+    Follow {
+        /// network.json of the network to follow (default: the public devnet keys).
+        #[arg(long)]
+        network: Option<String>,
+        /// Validators' RPC URLs to pull from (default: find them on the Mainline DHT).
+        #[arg(long, value_delimiter = ',')]
+        from_rpc: Vec<String>,
+        #[arg(long)]
+        data: String,
+        #[arg(long, default_value_t = 8545)]
+        rpc_port: u16,
+        /// Devnet validator count (without --network).
+        #[arg(long, default_value_t = 4)]
+        validators: u64,
+    },
     /// Create the testnet faucet key at <data>/faucet.key and print its address
     /// (put it in network.json with `aether network --faucet`).
     FaucetKey {
@@ -311,6 +328,7 @@ fn main() {
                 })
         }
         Cmd::Keygen { data } => keygen(&data),
+        Cmd::Follow { network, from_rpc, data, rpc_port, validators } => run_follow(network, from_rpc, data, rpc_port, validators),
         Cmd::FaucetKey { data } => aether_node::faucet::Faucet::generate(&std::path::Path::new(&data).join("faucet.key")).map(|a| {
             println!("faucet address {a}\nkey written to {data}/faucet.key (keep it on this machine; run the node with --faucet-key)");
         }),
@@ -771,7 +789,7 @@ fn run_node(a: NodeArgs) {
         if let Some(f) = &faucet_service {
             tracing::info!(address = %f.address, "faucet enabled (aether_faucet)");
         }
-        let rpc_state = RpcState { chain, marshal: marshal_mailbox, gossip: gossip_tx, faucet: faucet_service };
+        let rpc_state = RpcState { chain, finality: aether_node::rpc::Finality::Marshal(marshal_mailbox), gossip: gossip_tx, faucet: faucet_service };
 
         // Public access: iroh endpoint published to the BitTorrent Mainline DHT.
         // Wallets find this node by its id alone and verify everything they get;
@@ -796,6 +814,40 @@ fn run_node(a: NodeArgs) {
             tracing::error!(?e, "rpc server stopped");
         }
     });
+}
+
+fn run_follow(network: Option<String>, from_rpc: Vec<String>, data: String, rpc_port: u16, validators: u64) -> Result<(), String> {
+    use aether_node::follow::{self, FinalityArchive, Upstream};
+    use std::sync::Arc;
+    tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,commonware=warn".into())).init();
+    let (chain_id, faucet, set, nodes) = match network {
+        Some(path) => {
+            let file = aether_node::roster::NetworkFile::load(std::path::Path::new(&path))?;
+            let identity = file.identity.clone().ok_or("network.json has no committee identity: use the one written by dkg/reshare")?;
+            let set = aether_light::ValidatorSet::from_hex(&identity).map_err(|e| format!("identity: {e:?}"))?;
+            let nodes = aether_node::roster::Roster::from_file(&file)?.nodes;
+            (file.chain_id, file.faucet, set, nodes)
+        }
+        None => (DEFAULT_CHAIN_ID, None, aether_light::ValidatorSet::devnet(validators), (1..=validators).map(aether_net::devnet_node_id).collect()),
+    };
+    let cfg = chain_config(chain_id, faucet);
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(|e| e.to_string())?;
+    rt.block_on(async move {
+        let store = aether_node::store::Store::open(&std::path::Path::new(&data).join("state.redb")).map_err(|e| e.to_string())?;
+        let (chain, _) = Chain::open(cfg, store).map_err(|e| format!("restore state (delete the data dir to resync): {e}"))?;
+        let upstream = Arc::new(if from_rpc.is_empty() {
+            Upstream::Iroh(aether_net::RpcClient::new(nodes).await.map_err(|e| e.to_string())?)
+        } else {
+            Upstream::Http(from_rpc)
+        });
+        let archive = Arc::new(FinalityArchive::default());
+        let (gossip, rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(follow::forward(upstream.clone(), rx));
+        tokio::spawn(follow::run(chain.clone(), upstream, set, archive.clone()));
+        tracing::info!(height = chain.finalized_height(), rpc_port, "following (not a validator): every block is verified and re-executed here");
+        let st = RpcState { chain, finality: aether_node::rpc::Finality::Archive(archive), gossip, faucet: None };
+        rpc::serve(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), rpc_port), st).await.map_err(|e| e.to_string())
+    })
 }
 
 fn run_dkg(p2p: P2pArgs, chain_id: u64, data: String, round: u64, faucet: Option<Address>) {

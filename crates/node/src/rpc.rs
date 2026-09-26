@@ -13,13 +13,20 @@ use serde_json::{json, Value};
 use std::net::SocketAddr;
 use tokio::sync::mpsc;
 
+/// Validators serve certified blocks from marshal; a follower from what it verified.
+#[derive(Clone)]
+pub enum Finality {
+    Marshal(Marshal),
+    Archive(std::sync::Arc<crate::follow::FinalityArchive>),
+}
+
 pub type Marshal = commonware_consensus::marshal::core::Mailbox<aether_light::Scheme, commonware_consensus::marshal::standard::Standard<crate::block::Block>>;
 
 #[derive(Clone)]
 pub struct RpcState {
     pub chain: Chain,
     /// Source of finalized blocks and certificates for light clients.
-    pub marshal: Marshal,
+    pub finality: Finality,
     /// Accepted txs are forwarded here for p2p gossip.
     pub gossip: mpsc::UnboundedSender<TxEnvelope>,
     /// Set on nodes run with the faucet key.
@@ -56,7 +63,13 @@ async fn finalized(st: &RpcState, p: &Value) -> RpcResult {
     use commonware_codec::Encode;
     use commonware_consensus::types::Height;
     let h: u64 = param(p, 0)?;
-    let (Some(block), Some(fin)) = (st.marshal.get_block(Height::new(h)).await, st.marshal.get_finalization(Height::new(h)).await) else {
+    let marshal = match &st.finality {
+        Finality::Marshal(m) => m,
+        Finality::Archive(a) => {
+            return Ok(a.get(h).map_or(Value::Null, |(block, fin)| json!({ "height": h, "block": block, "finalization": fin })));
+        }
+    };
+    let (Some(block), Some(fin)) = (marshal.get_block(Height::new(h)).await, marshal.get_finalization(Height::new(h)).await) else {
         return Ok(Value::Null);
     };
     Ok(json!({

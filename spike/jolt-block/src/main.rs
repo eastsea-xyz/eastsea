@@ -43,7 +43,9 @@ fn witness(n: usize) -> (Vec<u8>, [u8; 32]) {
 }
 
 fn main() {
-    tracing_subscriber::fmt().with_env_filter("warn").init();
+    // RUST_LOG=jolt_prover=info (etc.) prints span timings on close.
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into());
+    tracing_subscriber::fmt().with_env_filter(filter).with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE).init();
     let args: Vec<String> = std::env::args().collect();
     let target_dir = "/tmp/jolt-guest-targets";
     match args.get(1).map(String::as_str) {
@@ -104,19 +106,27 @@ fn main() {
             let n: usize = args[2].parse().unwrap();
             let (w, native) = witness(n);
             let mut program = guest::compile_prove_block(target_dir);
+            let t = Instant::now();
             let shared = guest::preprocess_shared_prove_block(&mut program).unwrap();
             let prover_pp = guest::preprocess_prover_prove_block(shared.clone());
             let verifier_pp = guest::verifier_preprocessing_from_prover_prove_block(&prover_pp);
             let prove = guest::build_prover_prove_block(program, prover_pp);
             let verify = guest::build_verifier_prove_block(verifier_pp);
-            let t = Instant::now();
-            let (root, proof, io) = prove(w.clone());
-            let prove_s = t.elapsed().as_secs_f64();
-            let t = Instant::now();
-            let ok = verify(w, root, io.panic, proof);
-            println!("block {n} tx: proved in {prove_s:.1}s, verified={ok} in {:.0}ms, root matches native: {}", t.elapsed().as_secs_f64() * 1e3, root == native);
+            println!("preprocessed in {:.1}s", t.elapsed().as_secs_f64());
+            // `prove N R`: R proofs in one process; later runs reuse warm setup/GPU state.
+            let reps: usize = args.get(3).map_or(1, |r| r.parse().unwrap());
+            for rep in 0..reps {
+                let t = Instant::now();
+                let (root, proof, io) = prove(w.clone());
+                let prove_s = t.elapsed().as_secs_f64();
+                let proof_bytes = jolt::serialize_verifier_object(&proof).map(|b| b.len()).unwrap_or(0);
+                println!("proof size: {:.1} kB, padded trace 2^{}", proof_bytes as f64 / 1024.0, proof.trace_length.ilog2());
+                let t = Instant::now();
+                let ok = verify(w.clone(), root, io.panic, proof);
+                println!("block {n} tx (run {rep}): proved in {prove_s:.1}s, verified={ok} in {:.0}ms, root matches native: {}", t.elapsed().as_secs_f64() * 1e3, root == native);
+            }
         }
-        _ => eprintln!("usage: analyze N... | prove N"),
+        _ => eprintln!("usage: analyze N... | prove N [reps]"),
     }
 }
 

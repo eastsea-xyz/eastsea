@@ -1,13 +1,24 @@
 # S3 spike: an Aether block proved in Jolt
 
-Needs the Jolt checkout used by `benches/spike/jolt.sh` at
-`/Volumes/workspace/spike/jolt-akita` (a16z/jolt `feat/akita-metal`) and the
-rustup toolchain on PATH (`export PATH=$HOME/.cargo/bin:$PATH`).
+Needs the Jolt checkout at `/Volumes/workspace/aether-jolt/jolt` (a16z/jolt
+`feat/akita-metal`, branch `aether`, whose jolt-sdk has the `akita`/`metal`
+features) with our akita fork next to it at `/Volumes/workspace/aether-jolt/akita`,
+and the rustup toolchain on PATH (`export PATH=$HOME/.cargo/bin:$PATH`).
 
     cargo build --release
     ./target/release/aether-jolt-block analyze 1 10 50   # cycles, split by signature cost
     ./target/release/aether-jolt-block prove 1           # prove + verify, root checked vs native
     ./target/release/aether-jolt-block debug             # guest vs native roots, Poseidon2 probe
+
+PCS / backend (Dory is the default):
+
+    cargo build --release --features akita --target-dir target-akita   # Akita, CPU
+    cargo build --release --features metal --target-dir target-metal   # Akita, Metal
+    ./target-metal/release/aether-jolt-block prove 10 [reps]
+
+The block guest's bytecode (2^21 padded) exceeds the Metal PIOP ABI (14-bit
+pc), so `metal` runs Metal commitment + CPU PIOP; `JOLT_AKITA_METAL=full|hybrid|commit|cpu`
+overrides. `RUST_LOG=jolt_prover=info` prints span timings.
 
 `patches/foldhash-0.2.0`: skips foldhash's clock-based seed on riscv64 (the
 guest has no clock; upstream only exempts `target_os = "zkvm"`).

@@ -8,13 +8,13 @@ publish = false
 guest = []
 
 [dependencies]
-jolt = { package = "jolt-sdk", path = "/Volumes/workspace/spike/jolt-akita/jolt-sdk", features = ["guest-std", "stdout", "random", "thread"] }
+jolt = { package = "jolt-sdk", path = "/Volumes/workspace/aether-jolt/jolt/jolt-sdk", features = ["guest-std", "stdout", "random", "thread"] }
 aether-execution = { path = "../../../crates/execution", default-features = false }
 aether-crypto = { path = "../../../crates/crypto" }
 aether-types = { path = "../../../crates/types" }
 aether-hash = { path = "../../../crates/hash" }
 serde = { version = "1", features = ["derive"] }
-jolt-inlines-p256 = { path = "/Volumes/workspace/spike/jolt-akita/jolt-inlines/p256" }
+jolt-inlines-p256 = { path = "/Volumes/workspace/aether-jolt/jolt/jolt-inlines/p256" }
 serde_json = "1"
 
 [lib]

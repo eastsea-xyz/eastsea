@@ -8,11 +8,17 @@ publish = false
 [workspace]
 members = ["guest"]
 
+[features]
+# Prove with Akita (lattice PCS) on the optimized CPU backend instead of Dory.
+akita = ["jolt-sdk/akita"]
+# Akita with the Apple GPU (Metal) commitment and PIOP kernels.
+metal = ["jolt-sdk/metal"]
+
 [dependencies]
-jolt-sdk = { path = "/Volumes/workspace/spike/jolt-akita/jolt-sdk", features = ["host"] }
+jolt-sdk = { path = "/Volumes/workspace/aether-jolt/jolt/jolt-sdk", features = ["host"] }
 guest = { package = "aether-jolt-block-guest", path = "./guest" }
 # Registers the P-256 inline instructions with the host tracer.
-jolt-inlines-p256 = { path = "/Volumes/workspace/spike/jolt-akita/jolt-inlines/p256", features = ["host"] }
+jolt-inlines-p256 = { path = "/Volumes/workspace/aether-jolt/jolt/jolt-inlines/p256", features = ["host"] }
 aether-execution = { path = "../../crates/execution" }
 aether-crypto = { path = "../../crates/crypto" }
 aether-types = { path = "../../crates/types" }
@@ -32,7 +38,21 @@ ark-ec = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist
 ark-serialize = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
 
 [patch."https://github.com/a16z/jolt"]
-jolt-field = { path = "/Volumes/workspace/spike/jolt-akita/crates/jolt-field" }
+jolt-field = { path = "/Volumes/workspace/aether-jolt/jolt/crates/jolt-field" }
+
+# Our akita branch (Metal commit kernels fixed for M1 Max), as in the Jolt workspace.
+[patch."https://github.com/markosg04/akita"]
+akita-algebra = { path = "/Volumes/workspace/aether-jolt/akita/crates/akita-algebra" }
+akita-config = { path = "/Volumes/workspace/aether-jolt/akita/crates/akita-config" }
+akita-error = { path = "/Volumes/workspace/aether-jolt/akita/crates/akita-error" }
+akita-metal = { path = "/Volumes/workspace/aether-jolt/akita/crates/akita-metal" }
+akita-pcs = { path = "/Volumes/workspace/aether-jolt/akita/crates/akita-pcs" }
+akita-prover = { path = "/Volumes/workspace/aether-jolt/akita/crates/akita-prover" }
+akita-planner = { path = "/Volumes/workspace/aether-jolt/akita/crates/akita-planner" }
+akita-schedules = { path = "/Volumes/workspace/aether-jolt/akita/crates/akita-schedules" }
+akita-challenges = { path = "/Volumes/workspace/aether-jolt/akita/crates/akita-challenges" }
+akita-transcript = { path = "/Volumes/workspace/aether-jolt/akita/crates/akita-transcript" }
+akita-types = { path = "/Volumes/workspace/aether-jolt/akita/crates/akita-types" }
 
 [profile.release]
 debug = 1

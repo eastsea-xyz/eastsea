@@ -37,7 +37,7 @@
 | P1 | **팔로워 노드 모드**: 검증자가 아닌 Mac도 확정 블록과 인증서를 받아 전부 재실행·검증하고, 지갑에 로컬로 응답 | 새 Mac이 제네시스부터 따라잡고, 상태 루트가 검증자와 일치. 지갑이 이 로컬 노드만으로 검증 ✅ `aether follow` |
 | P2 | **앱 번들 통합**: 지갑 앱 안에 `aether`(노드)와 `aether-agent`를 Helpers로 포함. 노드 켜기/끄기, 전원 연결 시에만 실행, 로그인 시 시작 옵션, "명령줄 도구 설치" 메뉴 | 앱을 끄면 노드도 정리되어 종료. 데이터는 `~/Library/Application Support/Aether` ✅ 노드 스위치, 동기화 후 지갑 전환, 부모 종료 시 노드 종료, 설정: 전원 연결 시만 실행(배터리에서 일시정지), 로그인 시 열기 |
 | P3 | **서명·공증·DMG**: Developer ID 서명, Hardened Runtime, `notarytool` 공증과 staple, 배경 이미지와 Applications 바로가기가 있는 DMG | 다른 Mac에서 Gatekeeper 경고 없이 설치·실행 ✅ Pipln Developer ID 서명, Apple 공증 Accepted, staple, `spctl`: Notarized Developer ID |
-| P4 | **자동 업데이트**: Sparkle 2(EdDSA 서명 appcast, GitHub Releases 호스팅) | 이전 버전이 새 버전을 감지하고 설치 |
+| P4 | **자동 업데이트**: Sparkle 2(EdDSA 서명 appcast, GitHub Releases 호스팅) | 이전 버전이 새 버전을 감지하고 설치 | ✅ Sparkle 2(EdDSA), `scripts/release-mac.sh`, 2026-09-26 `app-v0.2.0` 게시(공증 DMG + appcast) |
 | P5 | **배포 채널**: GitHub Releases, Homebrew cask, iOS는 TestFlight | `brew install --cask aether` 동작 |
 
 ## 생태계 트랙: 누구나 토큰·컨트랙트·DeFi

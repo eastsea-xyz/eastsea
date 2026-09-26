@@ -122,6 +122,21 @@ impl Net {
         panic!("node {i} did not reach height {h} (at {})", self.height(i));
     }
 
+    /// Run the CLI expecting failure; returns stderr.
+    fn cli_fails(&self, args: &[&str]) -> String {
+        let out = Command::new(BIN).args(args).output().expect("run cli");
+        assert!(!out.status.success(), "cli {:?} should have failed", args);
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    }
+
+    /// Whether validator `i`'s process is still running.
+    fn alive(&mut self, i: usize) -> bool {
+        match self.procs[i].as_mut() {
+            Some(c) => c.try_wait().ok().flatten().is_none(),
+            None => false,
+        }
+    }
+
     fn cli(&self, args: &[&str]) -> String {
         let out = Command::new(BIN).args(args).output().expect("run cli");
         assert!(out.status.success(), "cli {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
@@ -445,6 +460,52 @@ fn locally_generated_keys_network_file_dkg_and_consensus() {
     assert!(bal.contains("balance   10000000000000000000 wei") && bal.contains("verified  ✓"), "{bal}");
     std::thread::sleep(Duration::from_millis(1_100));
     assert!(net.rpc(0, "aether_faucet", json!([bob])).is_none(), "second grant to the same address within the cooldown");
+    // 6. A protocol upgrade signed by 3 of the 4 validators' key shares. Nodes
+    //    running protocol 1 stop before it activates instead of forking.
+    let target = net.height(0) + 12;
+    let upgrade = json!({ "chain_id": written["chain_id"], "protocol": 2, "activate_at": target, "releases": [], "notes": "test" });
+    let up_path = dir.join("upgrade.json");
+    std::fs::write(&up_path, upgrade.to_string()).unwrap();
+    let net_file = data(0).join("network.json");
+    let partials: Vec<String> = (0..3)
+        .map(|i| {
+            let out = net.cli(&["upgrade-sign", "--data", data(i).to_str().unwrap(), "--network", net_file.to_str().unwrap(), up_path.to_str().unwrap()]);
+            let p = dir.join(format!("partial{i}.json"));
+            std::fs::write(&p, out).unwrap();
+            p.to_str().unwrap().to_string()
+        })
+        .collect();
+    let two = net.cli_fails(&["upgrade-combine", "--network", net_file.to_str().unwrap(), &partials[0], &partials[1]]);
+    assert!(two.contains("need 3"), "two validators alone cannot sign: {two}");
+    let mut args = vec!["upgrade-combine", "--network", net_file.to_str().unwrap()];
+    args.extend(partials.iter().map(String::as_str));
+    let signed = net.cli(&args);
+    let signed_path = dir.join("signed.json");
+    std::fs::write(&signed_path, &signed).unwrap();
+    assert!(net.cli(&["upgrade-verify", "--network", net_file.to_str().unwrap(), signed_path.to_str().unwrap()]).contains("signed by the committee"));
+    // A forged copy (protocol changed) is ignored; the signed one stops the nodes.
+    let mut forged: Value = serde_json::from_str(&signed).unwrap();
+    forged["upgrade"]["protocol"] = json!(1);
+    forged["upgrade"]["activate_at"] = json!(1);
+    for i in 0..n {
+        let d = data(i).join("upgrades");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("forged.json"), forged.to_string()).unwrap();
+        std::fs::write(d.join("v2.json"), &signed).unwrap();
+    }
+    let end = Instant::now() + Duration::from_secs(60);
+    while Instant::now() < end && (0..n).any(|i| net.alive(i)) {
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    assert!((0..n).all(|i| !net.alive(i)), "protocol-1 nodes must stop before the upgrade activates");
+    let last: u64 = (0..n)
+        .map(|i| {
+            let out = Command::new(BIN).args(["head", "--data", data(i).to_str().unwrap()]).output().unwrap();
+            String::from_utf8_lossy(&out.stdout).split_whitespace().next().and_then(|h| h.parse().ok()).unwrap_or(0)
+        })
+        .max()
+        .unwrap();
+    assert!(last < target, "finalized {last}, but the upgrade activates at {target}");
 }
 
 fn run_ok(args: &[&str]) -> String {

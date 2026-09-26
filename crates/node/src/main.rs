@@ -162,6 +162,27 @@ enum Cmd {
         #[arg(long)]
         exit_with_parent: bool,
     },
+    /// Validator: sign a protocol upgrade with this validator's key share (prints a partial).
+    UpgradeSign {
+        #[arg(long)]
+        data: String,
+        #[arg(long)]
+        network: String,
+        /// Upgrade JSON: {chain_id, protocol, activate_at, releases: [{platform, version, blake3, url}], notes}.
+        upgrade: String,
+    },
+    /// Combine at least a threshold of partials into the committee-signed upgrade.
+    UpgradeCombine {
+        #[arg(long)]
+        network: String,
+        partials: Vec<String>,
+    },
+    /// Check a signed upgrade against the committee identity in network.json.
+    UpgradeVerify {
+        #[arg(long)]
+        network: String,
+        signed: String,
+    },
     /// Create the testnet faucet key at <data>/faucet.key and print its address
     /// (put it in network.json with `aether network --faucet`).
     FaucetKey {
@@ -331,6 +352,42 @@ fn main() {
                 })
         }
         Cmd::Keygen { data } => keygen(&data),
+        Cmd::UpgradeSign { data, network, upgrade } => (|| {
+            use aether_node::upgrade::{sign_partial, Upgrade};
+            let file = aether_node::roster::NetworkFile::load(std::path::Path::new(&network))?;
+            let key: aether_node::dkg::KeyFile =
+                serde_json::from_slice(&std::fs::read(std::path::Path::new(&data).join("threshold.json")).map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())?;
+            let (_, share) = key.decode(file.validators.len() as u32)?;
+            let u: Upgrade = serde_json::from_slice(&std::fs::read(&upgrade).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+            if u.chain_id != file.chain_id {
+                return Err(format!("upgrade is for chain {}, network.json for {}", u.chain_id, file.chain_id));
+            }
+            println!("{}", serde_json::to_string_pretty(&sign_partial(&u, &share)).expect("json"));
+            Ok(())
+        })(),
+        Cmd::UpgradeCombine { network, partials } => (|| {
+            let file = aether_node::roster::NetworkFile::load(std::path::Path::new(&network))?;
+            let output = file.output.clone().ok_or("network.json has no committee output")?;
+            let key = aether_node::dkg::KeyFile { round: file.round, output, identity: String::new(), share: String::new() };
+            let dkg = key.decode_output(file.validators.len() as u32)?;
+            let parts = partials
+                .iter()
+                .map(|p| std::fs::read(p).map_err(|e| format!("{p}: {e}")).and_then(|b| serde_json::from_slice(&b).map_err(|e| format!("{p}: {e}"))))
+                .collect::<Result<Vec<aether_node::upgrade::PartialUpgrade>, String>>()?;
+            let signed = aether_node::upgrade::combine(dkg.public(), &parts)?;
+            println!("{}", serde_json::to_string_pretty(&signed).expect("json"));
+            Ok(())
+        })(),
+        Cmd::UpgradeVerify { network, signed } => (|| {
+            let file = aether_node::roster::NetworkFile::load(std::path::Path::new(&network))?;
+            let set = aether_light::ValidatorSet::from_hex(file.identity.as_deref().ok_or("network.json has no identity")?).map_err(|e| format!("{e:?}"))?;
+            let s: aether_node::upgrade::SignedUpgrade =
+                serde_json::from_slice(&std::fs::read(&signed).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+            aether_node::upgrade::verify(set.identity(), &s)?;
+            println!("signed by the committee: protocol {} at height {} on chain {}", s.upgrade.protocol, s.upgrade.activate_at, s.upgrade.chain_id);
+            Ok(())
+        })(),
         Cmd::Follow { network, from_rpc, data, rpc_port, validators, exit_with_parent } => {
             if exit_with_parent {
                 exit_with_parent_process();
@@ -730,6 +787,7 @@ fn run_node(a: NodeArgs) {
             chain.lock().censor = Some(a);
         }
         chain.lock().deprioritize = dev_deprioritize;
+        watch_upgrades(chain.clone(), std::path::Path::new(&data).join("upgrades"), *polynomial_identity, cfg.chain_id);
         tracing::info!(index, genesis_root = %chain.lock().finalized.state.root(), "starting validator");
 
         let marshal_resolver = marshal::resolver::p2p::init(
@@ -824,6 +882,35 @@ fn run_node(a: NodeArgs) {
     });
 }
 
+/// Stop (rather than fork off with old rules) one block before a committee-signed
+/// upgrade this binary does not implement activates. Signed upgrades are read from
+/// `<data>/upgrades/*.json`; unsigned or foreign files are ignored.
+fn watch_upgrades(chain: Chain, dir: std::path::PathBuf, identity: aether_light::Identity, chain_id: u64) {
+    use aether_node::upgrade::{load, required_protocol, PROTOCOL};
+    std::thread::spawn(move || {
+        let mut reported = 0;
+        loop {
+            let (ups, skipped) = load(&dir, &identity, chain_id);
+            for s in &skipped {
+                tracing::warn!(%s, "ignoring upgrade file");
+            }
+            if ups.len() != reported {
+                reported = ups.len();
+                for u in &ups {
+                    tracing::info!(protocol = u.upgrade.protocol, activate_at = u.upgrade.activate_at, "committee-signed upgrade");
+                }
+            }
+            let next = chain.finalized_height() + 2;
+            let need = required_protocol(&ups, next);
+            if need > PROTOCOL {
+                tracing::error!(need, have = PROTOCOL, height = next, "UPGRADE REQUIRED: this binary runs protocol {PROTOCOL} but the committee activated {need}; stopping before the new rules apply. Install the signed release.");
+                std::process::exit(3);
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    });
+}
+
 /// Leave no orphan: stop when the parent process is gone (reparented to launchd).
 fn exit_with_parent_process() {
     let parent = std::os::unix::process::parent_id();
@@ -862,6 +949,7 @@ fn run_follow(network: Option<String>, from_rpc: Vec<String>, data: String, rpc_
         let archive = Arc::new(FinalityArchive::default());
         let (gossip, rx) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(follow::forward(upstream.clone(), rx));
+        watch_upgrades(chain.clone(), std::path::Path::new(&data).join("upgrades"), *set.identity(), chain_id);
         tokio::spawn(follow::run(chain.clone(), upstream, set, archive.clone()));
         tracing::info!(height = chain.finalized_height(), rpc_port, "following (not a validator): every block is verified and re-executed here");
         let st = RpcState { chain, finality: aether_node::rpc::Finality::Archive(archive), gossip, faucet: None };

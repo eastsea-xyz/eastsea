@@ -131,7 +131,8 @@ impl Registry {
 
 /// Registrar: DeviceCheck plus the registry.
 pub struct Registrar {
-    pub apple: DeviceCheck,
+    /// Apple DeviceCheck; `None` only on a local devnet (every device is new).
+    pub apple: Option<DeviceCheck>,
     pub registry: Registry,
     /// Signs attestations the CommitteeRegistry contract checks (its key is in genesis).
     pub signer: crate::faucet::Faucet,
@@ -161,7 +162,9 @@ impl Registrar {
         let registered_at = match self.registry.get(&key_hex) {
             Some(t) => t,
             None => {
-                self.apple.register(device_token).await?;
+                if let Some(apple) = &self.apple {
+                    apple.register(device_token).await?;
+                }
                 self.registry.insert(&key_hex)
             }
         };
@@ -201,7 +204,7 @@ mod tests {
         let key = SigningKey::from_slice(&[9u8; 32]).unwrap();
         let apple = DeviceCheck { key, key_id: "K".into(), team: "T".into(), base: "http://127.0.0.1:9".into(), http: reqwest::Client::new() };
         let signer = crate::faucet::Faucet::from_seed(&[4u8; 32]).unwrap();
-        let r = Registrar { apple, registry: Registry::open(path.clone()), signer, chain_id: 7 };
+        let r = Registrar { apple: Some(apple), registry: Registry::open(path.clone()), signer, chain_id: 7 };
         let key = [0xab; 32];
         // An already registered key is attested again without asking Apple (unreachable here).
         let t = r.registry.insert(&hex::encode(key));

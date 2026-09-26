@@ -57,6 +57,9 @@ pub struct NetworkFile {
     /// DeviceCheck registrar's P-256 key (x‖y hex): it attests voting-node candidates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registrar: Option<String>,
+    /// Blocks per voting-node epoch (default one hour of 1 s blocks).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epoch_blocks: Option<u64>,
 }
 
 /// What a network file fixes about genesis beyond the chain id.
@@ -64,6 +67,8 @@ pub struct NetworkFile {
 pub struct Genesis {
     pub faucet: Option<aether_types::Address>,
     pub registrar: Option<([u8; 32], [u8; 32])>,
+    /// Blocks per voting-node epoch (0 = the default).
+    pub epoch_blocks: u64,
 }
 
 impl NetworkFile {
@@ -76,13 +81,14 @@ impl NetworkFile {
                 Some((x.try_into().map_err(|_| "registrar x")?, y.try_into().map_err(|_| "registrar must be 64 bytes (x‖y)")?))
             }
         };
-        Ok(Genesis { faucet: self.faucet, registrar })
+        Ok(Genesis { faucet: self.faucet, registrar, epoch_blocks: self.epoch_blocks.unwrap_or(0) })
     }
 
     /// Carry genesis facts into a file written by a ceremony (dkg, reshare).
     pub fn keep_genesis(&mut self, from: &NetworkFile) {
         self.faucet = from.faucet.or(self.faucet);
         self.registrar = from.registrar.clone().or(self.registrar.take());
+        self.epoch_blocks = from.epoch_blocks.or(self.epoch_blocks);
     }
 }
 
@@ -171,6 +177,7 @@ impl Roster {
             epochs: Vec::new(),
             faucet: None,
             registrar: None,
+            epoch_blocks: None,
         }
     }
 }

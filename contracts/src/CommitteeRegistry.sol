@@ -34,8 +34,6 @@ contract CommitteeRegistry {
     event Beacon(uint256 index, uint64 epoch, uint64 streak);
 
     address constant P256VERIFY = address(0x100);
-    /// Blocks per epoch (1 s blocks: one hour).
-    uint64 public constant EPOCH_BLOCKS = 3600;
     /// Epochs a candidate may miss before its streak restarts (24 h).
     uint64 public constant GRACE_EPOCHS = 24;
 
@@ -46,9 +44,11 @@ contract CommitteeRegistry {
 
     Candidate[] public candidates;
     mapping(bytes32 => uint256) public indexOf; // validatorKey => index + 1
+    /// Blocks per epoch, fixed at genesis (slot 4; one hour of 1 s blocks on the testnet).
+    uint64 public epochBlocks;
 
     function epoch() public view returns (uint64) {
-        return uint64(block.number / EPOCH_BLOCKS);
+        return uint64(block.number / epochBlocks);
     }
 
     function count() external view returns (uint256) {

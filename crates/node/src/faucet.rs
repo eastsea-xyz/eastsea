@@ -115,6 +115,13 @@ impl Faucet {
         Ok((sig[..32].try_into().expect("32"), sig[32..64].try_into().expect("32")))
     }
 
+    /// Sign a call from this key's account with no tip, caps at 2x `base`: free
+    /// while the network is uncongested (R1′), so a new node account needs no funds.
+    pub fn sign_tx(&self, chain_id: u64, nonce: u64, call: &EvmCall, base: FeeVector) -> Result<TxEnvelope, String> {
+        let caps = FeeVector { exec: base.exec.saturating_mul(2), state: 0, prove: base.prove.saturating_mul(2) };
+        sign_call_with(&self.signer, chain_id, nonce, caps, 0, call).map_err(|e| format!("{e:?}"))
+    }
+
     /// Sign a grant to `to` if the limits allow it.
     pub fn grant(&self, chain: &Chain, to: Address, now: Instant) -> Result<TxEnvelope, FaucetError> {
         let (cfg, onchain_nonce, base) = {
@@ -190,6 +197,7 @@ mod tests {
             alloc: vec![(f.address, U256::from(SUPPLY))],
             fees: true,
             registrar: None,
+            epoch_blocks: 0,
         };
         (f, Chain::new(cfg).0)
     }

@@ -126,6 +126,28 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                 "hash_function": "poseidon2-koalabear-16",
             }))
         }
+        // Voting-node candidates (the registry) and the current epoch.
+        "aether_candidates" => {
+            let g = chain.lock();
+            let state = &g.finalized.state;
+            let epoch = g.finalized.height / aether_execution::registry::epoch_blocks(state);
+            let list: Vec<Value> = aether_execution::registry::candidates(state)
+                .into_iter()
+                .map(|c| {
+                    json!({
+                        "index": c.index,
+                        "operator": c.operator,
+                        "validator_key": hex::encode(c.validator_key),
+                        "node_id": hex::encode(c.node_id),
+                        "beaconer": c.beaconer,
+                        "registered_epoch": c.registered_epoch,
+                        "last_epoch": c.last_epoch,
+                        "streak": c.streak,
+                    })
+                })
+                .collect();
+            Ok(json!({ "epoch": epoch, "candidates": list }))
+        }
         "aether_faucet" => {
             let to: Address = param(p, 0)?;
             let f = st.faucet.as_ref().ok_or((-32601, "this node does not run the faucet".to_string()))?;

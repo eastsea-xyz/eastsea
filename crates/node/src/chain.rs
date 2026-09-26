@@ -31,6 +31,8 @@ pub struct ChainConfig {
     pub fees: bool,
     /// DeviceCheck registrar key: predeploys the voting-node registry at genesis.
     pub registrar: Option<([u8; 32], [u8; 32])>,
+    /// Blocks per voting-node epoch (0 = the default).
+    pub epoch_blocks: u64,
 }
 
 impl ChainConfig {
@@ -42,7 +44,8 @@ impl ChainConfig {
         // The account contract P-256 accounts delegate to (EIP-7702) for batched calls.
         s.set_code(aether_execution::AETHER_ACCOUNT, aether_execution::aether_account_code()).expect("predeploy");
         if let Some(key) = self.registrar {
-            aether_execution::registry::predeploy(&mut s, key).expect("registry predeploy");
+            let epoch = if self.epoch_blocks == 0 { aether_execution::registry::EPOCH_BLOCKS } else { self.epoch_blocks };
+            aether_execution::registry::predeploy(&mut s, key, epoch).expect("registry predeploy");
         }
         s
     }

@@ -27,6 +27,8 @@ use std::time::Duration;
 
 const DEFAULT_CHAIN_ID: u64 = 7_777;
 const DEV_ACCOUNTS: u8 = 10;
+/// Seed index of the public devnet registrar key (local devnets only).
+const DEV_REGISTRAR: u8 = 11;
 const DEV_BALANCE: u128 = 1_000_000 * 10u128.pow(18);
 
 #[derive(Parser)]
@@ -88,6 +90,12 @@ enum Cmd {
         devicecheck_key_id: Option<String>,
         #[arg(long, default_value = "45WU468FZE")]
         devicecheck_team: String,
+        /// Local devnet: register every device without Apple (public dev registrar key).
+        #[arg(long, hide = true, conflicts_with = "network")]
+        dev_registrar: bool,
+        /// Local devnet: blocks per voting-node epoch.
+        #[arg(long, hide = true, conflicts_with = "network")]
+        dev_epoch_blocks: Option<u64>,
     },
     /// Distributed key generation for the committee (run on every validator at
     /// once). Writes <data>/threshold.json with this validator's secret share
@@ -169,6 +177,30 @@ enum Cmd {
         /// Exit when the launching app does (the Mac app's node switch).
         #[arg(long)]
         exit_with_parent: bool,
+        /// Also be a voting-node candidate: keep keys in <data> and send a liveness
+        /// beacon every epoch once registered (`aether candidate-register`).
+        #[arg(long)]
+        candidate: bool,
+        /// Local devnet: blocks per voting-node epoch (must match the validators).
+        #[arg(long, hide = true, conflicts_with = "network")]
+        dev_epoch_blocks: Option<u64>,
+    },
+    /// Register this Mac's candidate (keys in <data>) with the registrar and the registry.
+    CandidateRegister {
+        #[arg(long)]
+        data: String,
+        /// The registrar node's RPC.
+        #[arg(long)]
+        registrar_rpc: String,
+        /// Where to submit the registration.
+        #[arg(long, default_value = "http://127.0.0.1:8545")]
+        rpc: String,
+        /// Operator (the owner's account): a dev account number on a devnet.
+        #[arg(long)]
+        from_dev: u8,
+        /// DeviceCheck token (base64) from the Mac app; any text on a dev registrar.
+        #[arg(long, default_value = "dev")]
+        device_token: String,
     },
     /// Validator: sign a protocol upgrade with this validator's key share (prints a partial).
     UpgradeSign {
@@ -371,6 +403,8 @@ fn main() {
             devicecheck_key,
             devicecheck_key_id,
             devicecheck_team,
+            dev_registrar,
+            dev_epoch_blocks,
         } => {
             let with_file = network.is_some();
             p2p_args(index, validators, network, &data, port, peers, link_base, offline)
@@ -380,7 +414,10 @@ fn main() {
                     }
                     Ok(args)
                 })
-                .map(|(p2p, chain_id, epochs, key_round, genesis)| {
+                .map(|(p2p, chain_id, epochs, key_round, mut genesis)| {
+                    if let Some(e) = dev_epoch_blocks {
+                        genesis.epoch_blocks = e;
+                    }
                     run_node(NodeArgs {
                         p2p,
                         chain_id,
@@ -394,6 +431,7 @@ fn main() {
                         genesis,
                         faucet_key,
                         devicecheck: devicecheck_key.zip(devicecheck_key_id).map(|(k, id)| (k, id, devicecheck_team)),
+                        dev_registrar,
                     });
                 })
         }
@@ -434,12 +472,29 @@ fn main() {
             println!("signed by the committee: protocol {} at height {} on chain {}", s.upgrade.protocol, s.upgrade.activate_at, s.upgrade.chain_id);
             Ok(())
         })(),
-        Cmd::Follow { network, from_rpc, data, rpc_port, validators, exit_with_parent } => {
+        Cmd::Follow { network, from_rpc, data, rpc_port, validators, exit_with_parent, candidate, dev_epoch_blocks } => {
             if exit_with_parent {
                 exit_with_parent_process();
             }
-            run_follow(network, from_rpc, data, rpc_port, validators)
+            run_follow(network, from_rpc, data, rpc_port, validators, candidate, dev_epoch_blocks)
         }
+        Cmd::CandidateRegister { data, registrar_rpc, rpc, from_dev, device_token } => (|| {
+            let keys = aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(&data))?;
+            let operator = dev_address(from_dev)?;
+            let (vk, nid, beaconer) = (keys.validator_key(), keys.node_id(), keys.beaconer());
+            let a = call(&registrar_rpc, "aether_registerDevice", json!([device_token, operator, hex::encode(vk), hex::encode(nid), beaconer]))?;
+            let part = |k: &str| -> Result<[u8; 32], String> {
+                hex::decode(a[k].as_str().unwrap_or_default()).ok().and_then(|b| b.try_into().ok()).ok_or(format!("registrar gave no {k}"))
+            };
+            let input = aether_execution::registry::encode_register(vk, nid, beaconer, part("r")?, part("s")?);
+            println!("candidate {}  node {}  beacons from {beaconer}", hex::encode(vk), hex::encode(nid));
+            let c = EvmCall { to: Some(aether_execution::registry::REGISTRY), value: U256::ZERO, input, gas_limit: 400_000, delegate: None };
+            let r = submit(&rpc, from_dev, None, c, true)?;
+            if r["receipt"]["success"] != json!(true) {
+                return Err("registration reverted (this Mac or voting key is already registered?)".into());
+            }
+            Ok(())
+        })(),
         Cmd::FaucetKey { data } => aether_node::faucet::Faucet::generate(&std::path::Path::new(&data).join("faucet.key")).map(|a| {
             println!("faucet address {a}\nkey written to {data}/faucet.key (keep it on this machine; run the node with --faucet-key)");
         }),
@@ -585,11 +640,24 @@ fn main() {
 
 /// Genesis: a public network funds only its faucet; a local devnet funds the public dev accounts.
 fn chain_config(chain_id: u64, genesis: &aether_node::roster::Genesis) -> ChainConfig {
+    // A local devnet also gets the voting-node registry, with the public dev registrar key.
+    let dev_registrar = genesis.faucet.is_none().then(|| {
+        let k = aether_node::faucet::Faucet::from_seed(&dev_seed(DEV_REGISTRAR)).expect("dev registrar");
+        let h = hex::decode(k.public_hex()).expect("hex");
+        (h[..32].try_into().expect("32"), h[32..].try_into().expect("32"))
+    });
     let alloc = match genesis.faucet {
         Some(f) => vec![(f, U256::from(aether_node::faucet::SUPPLY))],
         None => dev_accounts(DEV_ACCOUNTS).into_iter().map(|(_, a)| (a, U256::from(DEV_BALANCE))).collect(),
     };
-    ChainConfig { chain_id, limits: GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 }, alloc, fees: true, registrar: genesis.registrar }
+    ChainConfig {
+        chain_id,
+        limits: GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
+        alloc,
+        fees: true,
+        registrar: genesis.registrar.or(dev_registrar),
+        epoch_blocks: genesis.epoch_blocks,
+    }
 }
 
 /// p2p args, chain id, epoch starts, expected key round, genesis parameters.
@@ -746,7 +814,17 @@ fn assemble_network(chain_id: u64, faucet: Option<Address>, registrar: Option<St
         .iter()
         .map(|p| std::fs::read(p).map_err(|e| format!("{p}: {e}")).and_then(|b| serde_json::from_slice(&b).map_err(|e| format!("{p}: {e}"))))
         .collect::<Result<Vec<aether_node::roster::Member>, String>>()?;
-    let file = aether_node::roster::NetworkFile { chain_id, validators, identity: None, round: 0, output: None, epochs: vec![], faucet, registrar };
+    let file = aether_node::roster::NetworkFile {
+        chain_id,
+        validators,
+        identity: None,
+        round: 0,
+        output: None,
+        epochs: vec![],
+        faucet,
+        registrar,
+        epoch_blocks: None,
+    };
     aether_node::roster::Roster::from_file(&file)?;
     println!("{}", serde_json::to_string_pretty(&file).expect("json"));
     Ok(())
@@ -768,19 +846,39 @@ struct NodeArgs {
     faucet_key: Option<String>,
     /// (key path, key id, team) of the DeviceCheck key, if this node registers Macs.
     devicecheck: Option<(String, String, String)>,
+    dev_registrar: bool,
 }
 
 fn run_node(a: NodeArgs) {
     tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,commonware=warn".into())).init();
-    let NodeArgs { p2p, chain_id, epochs, key_round, rpc_port, block_time_ms, dev_censor, dev_deprioritize, data, genesis, faucet_key, devicecheck } = a;
+    let NodeArgs {
+        p2p,
+        chain_id,
+        epochs,
+        key_round,
+        rpc_port,
+        block_time_ms,
+        dev_censor,
+        dev_deprioritize,
+        data,
+        genesis,
+        faucet_key,
+        devicecheck,
+        dev_registrar,
+    } = a;
     let faucet = genesis.faucet;
-    let registrar = devicecheck.map(|(k, id, team)| {
-        let apple = aether_node::devicecheck::DeviceCheck::load(std::path::Path::new(&k), &id, &team).expect("load --devicecheck-key");
-        let registry = aether_node::devicecheck::Registry::open(std::path::Path::new(&data).join("registrations.json"));
-        let signer =
-            aether_node::faucet::Faucet::load(&std::path::Path::new(&data).join("registrar.key")).expect("<data>/registrar.key (aether registrar-key)");
-        std::sync::Arc::new(aether_node::devicecheck::Registrar { apple, registry, signer, chain_id })
-    });
+    let registry = || aether_node::devicecheck::Registry::open(std::path::Path::new(&data).join("registrations.json"));
+    let registrar = if dev_registrar {
+        let signer = aether_node::faucet::Faucet::from_seed(&dev_seed(DEV_REGISTRAR)).expect("dev registrar");
+        Some(std::sync::Arc::new(aether_node::devicecheck::Registrar { apple: None, registry: registry(), signer, chain_id }))
+    } else {
+        devicecheck.map(|(k, id, team)| {
+            let apple = aether_node::devicecheck::DeviceCheck::load(std::path::Path::new(&k), &id, &team).expect("load --devicecheck-key");
+            let signer =
+                aether_node::faucet::Faucet::load(&std::path::Path::new(&data).join("registrar.key")).expect("<data>/registrar.key (aether registrar-key)");
+            std::sync::Arc::new(aether_node::devicecheck::Registrar { apple: Some(apple), registry: registry(), signer, chain_id })
+        })
+    };
     let faucet_service = match (&faucet_key, faucet) {
         (Some(path), expected) => {
             let f = aether_node::faucet::Faucet::load(std::path::Path::new(path)).expect("load --faucet-key");
@@ -985,7 +1083,15 @@ fn exit_with_parent_process() {
     });
 }
 
-fn run_follow(network: Option<String>, from_rpc: Vec<String>, data: String, rpc_port: u16, validators: u64) -> Result<(), String> {
+fn run_follow(
+    network: Option<String>,
+    from_rpc: Vec<String>,
+    data: String,
+    rpc_port: u16,
+    validators: u64,
+    candidate: bool,
+    dev_epoch_blocks: Option<u64>,
+) -> Result<(), String> {
     use aether_node::follow::{self, FinalityArchive, Upstream};
     use std::sync::Arc;
     tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,commonware=warn".into())).init();
@@ -998,7 +1104,11 @@ fn run_follow(network: Option<String>, from_rpc: Vec<String>, data: String, rpc_
             (file.chain_id, file.genesis()?, set, nodes)
         }
         None => {
-            (DEFAULT_CHAIN_ID, Default::default(), aether_light::ValidatorSet::devnet(validators), (1..=validators).map(aether_net::devnet_node_id).collect())
+            let mut genesis = aether_node::roster::Genesis::default();
+            if let Some(e) = dev_epoch_blocks {
+                genesis.epoch_blocks = e;
+            }
+            (DEFAULT_CHAIN_ID, genesis, aether_light::ValidatorSet::devnet(validators), (1..=validators).map(aether_net::devnet_node_id).collect())
         }
     };
     let cfg = chain_config(chain_id, &genesis);
@@ -1015,6 +1125,11 @@ fn run_follow(network: Option<String>, from_rpc: Vec<String>, data: String, rpc_
         let (gossip, rx) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(follow::forward(upstream.clone(), rx));
         watch_upgrades(chain.clone(), std::path::Path::new(&data).join("upgrades"), *set.identity(), chain_id);
+        if candidate {
+            let keys = aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(&data))?;
+            tracing::info!(voting_key = %hex::encode(keys.validator_key()), beaconer = %keys.beaconer(), "voting-node candidate: beacons every epoch once registered");
+            tokio::spawn(aether_node::candidate::beacon_loop(chain.clone(), upstream.clone(), keys));
+        }
         tokio::spawn(follow::run(chain.clone(), upstream, set, archive.clone()));
         tracing::info!(height = chain.finalized_height(), rpc_port, "following (not a validator): every block is verified and re-executed here");
         let st = RpcState { chain, finality: aether_node::rpc::Finality::Archive(archive), gossip, faucet: None, registrar: None };

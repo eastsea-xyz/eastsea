@@ -8,7 +8,7 @@ use alloy_sol_types::{sol, SolCall, SolValue};
 
 /// Where the registry lives (genesis predeploy).
 pub const REGISTRY: Address = address!("0000000000000000000000000000000000007703");
-/// Blocks per epoch (must match the contract's EPOCH_BLOCKS).
+/// Blocks per epoch on the testnet (one hour of 1 s blocks); set at genesis.
 pub const EPOCH_BLOCKS: u64 = 3_600;
 
 sol! {
@@ -21,12 +21,19 @@ pub fn code() -> Bytes {
     Bytes::from(alloy_primitives::hex::decode(include_str!("committee_registry.bin.hex").trim()).expect("valid hex"))
 }
 
-/// Genesis: the registry with the registrar's P-256 key (x, y) in slots 0 and 1.
-pub fn predeploy(state: &mut WorldState, registrar: ([u8; 32], [u8; 32])) -> Result<(), crate::world::StateError> {
+/// Genesis: the registry with the registrar's P-256 key (x, y) in slots 0 and 1
+/// and the epoch length in slot 4.
+pub fn predeploy(state: &mut WorldState, registrar: ([u8; 32], [u8; 32]), epoch_blocks: u64) -> Result<(), crate::world::StateError> {
     state.set_code(REGISTRY, code())?;
     state.set_storage(REGISTRY, U256::ZERO, U256::from_be_bytes(registrar.0));
     state.set_storage(REGISTRY, U256::from(1u64), U256::from_be_bytes(registrar.1));
+    state.set_storage(REGISTRY, U256::from(4u64), U256::from(epoch_blocks.max(1)));
     Ok(())
+}
+
+/// Blocks per epoch as set at genesis.
+pub fn epoch_blocks(state: &WorldState) -> u64 {
+    state.storage(&REGISTRY, U256::from(4u64)).to::<u64>().max(1)
 }
 
 /// The bytes the registrar signs (the contract checks SHA-256 of them with P256VERIFY).

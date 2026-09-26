@@ -1,4 +1,5 @@
 pub mod application;
+pub mod candidate;
 pub use aether_light::block;
 pub mod chain;
 pub mod devicecheck;

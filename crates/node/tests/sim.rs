@@ -71,6 +71,7 @@ fn chain_config() -> ChainConfig {
         alloc: dev_accounts(4).into_iter().map(|(_, a)| (a, U256::from(10u128.pow(24)))).collect(),
         fees: true,
         registrar: None,
+        epoch_blocks: 0,
     }
 }
 

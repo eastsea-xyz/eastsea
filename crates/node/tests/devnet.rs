@@ -696,3 +696,64 @@ fn a_follower_verifies_everything_and_serves_a_wallet() {
     let out = net.cli(&["send", "--rpc", &net.url(f), "--from-dev", "3", "--to", bob, "--value", "1", "--wait"]);
     assert!(out.contains("success=true"), "{out}");
 }
+
+/// Open voting nodes, part 2: a follower Mac becomes a candidate. Its owner
+/// registers it once (registrar attestation → registry); from then on the node
+/// sends a liveness beacon every epoch by itself and its streak grows.
+#[test]
+fn a_candidate_registers_once_and_beacons_every_epoch() {
+    let _serial = serial();
+    let epoch = ["--dev-epoch-blocks".to_string(), "20".to_string()];
+    let mut extra: Vec<Vec<String>> = (0..4).map(|_| epoch.to_vec()).collect();
+    extra[0].push("--dev-registrar".into());
+    let mut net = Net::start_with("candidate", extra);
+    for i in 0..4 {
+        net.wait_height(i, 3, 60);
+    }
+    let port = free_port();
+    let data = net.dir.join("candidate");
+    let log = std::fs::File::create(net.dir.join("candidate.log")).unwrap();
+    let args: Vec<String> = vec![
+        "follow".into(),
+        "--from-rpc".into(),
+        net.url(1),
+        "--data".into(),
+        data.to_str().unwrap().into(),
+        "--rpc-port".into(),
+        port.to_string(),
+        "--candidate".into(),
+        epoch[0].clone(),
+        epoch[1].clone(),
+    ];
+    net.procs.push(Some(spawn_logged(log, &args)));
+    net.rpc.push(port);
+    let f = net.rpc.len() - 1;
+    net.wait_height(f, 3, 60);
+
+    // The node account needs gas money only when fees are above zero (free when uncongested).
+    let out = net.cli(&["candidate-register", "--data", data.to_str().unwrap(), "--registrar-rpc", &net.url(0), "--rpc", &net.url(0), "--from-dev", "4"]);
+    assert!(out.contains("candidate") && out.contains("success=true"), "{out}");
+    let mine = |net: &Net| net.rpc(0, "aether_candidates", json!([])).expect("candidates");
+    let c = mine(&net);
+    assert_eq!(c["candidates"].as_array().unwrap().len(), 1, "{c}");
+    assert_eq!(c["candidates"][0]["operator"].as_str().unwrap().to_lowercase(), dev_address(4).to_lowercase());
+    // Registering the same Mac again is refused by the registry.
+    assert!(!net
+        .cli_fails(&["candidate-register", "--data", data.to_str().unwrap(), "--registrar-rpc", &net.url(0), "--rpc", &net.url(0), "--from-dev", "4"])
+        .is_empty());
+
+    // Two more epochs pass: the node beacons by itself and the streak grows.
+    let start = c["candidates"][0]["streak"].as_u64().unwrap();
+    let e0 = c["epoch"].as_u64().unwrap();
+    net.wait_height(0, (e0 + 3) * 20 + 3, 120);
+    let end = Instant::now() + Duration::from_secs(30);
+    loop {
+        let c = mine(&net);
+        let cand = &c["candidates"][0];
+        if cand["streak"].as_u64().unwrap() >= start + 2 && cand["last_epoch"].as_u64() >= Some(e0 + 2) {
+            break;
+        }
+        assert!(Instant::now() < end, "no beacons: {c}");
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}

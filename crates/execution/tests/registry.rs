@@ -36,7 +36,7 @@ impl Net {
     fn new() -> Self {
         let registrar = P256Signer::from_seed(&seed(1)).unwrap();
         let mut state = WorldState::default();
-        registry::predeploy(&mut state, aether_crypto::p256_xy(&registrar.public_key().bytes).unwrap()).unwrap();
+        registry::predeploy(&mut state, aether_crypto::p256_xy(&registrar.public_key().bytes).unwrap(), EPOCH_BLOCKS).unwrap();
         Net { state, registrar, nonces: Default::default() }
     }
 

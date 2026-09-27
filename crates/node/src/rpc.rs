@@ -183,6 +183,11 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                 "timestamp_ms": f.timestamp,
                 "mempool": g.mempool.len(),
                 "hash_function": "blake3",
+                // Protocol upgrades on chain: an app whose node runs an older
+                // protocol than one scheduled looks for its update right away.
+                "protocol": f.next_protocol(),
+                "node_protocol": crate::upgrade::PROTOCOL,
+                "newest_scheduled": f.schedule.iter().map(|a| a.protocol).max().unwrap_or(1),
             }))
         }
         // The voting set proposed for this registry epoch (while no handoff is

@@ -19,6 +19,7 @@ struct AetherWalletApp: App {
                 .environmentObject(node)
                 .onAppear {
                     appDelegate.node = node
+                    node.onUpgradeNeeded = { appDelegate.updater.updater.checkForUpdatesInBackground() }
                     node.restore()
                 }
             #else

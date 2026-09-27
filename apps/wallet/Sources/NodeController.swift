@@ -44,6 +44,10 @@ final class NodeController: ObservableObject {
     @AppStorage("proveAddress") var proveAddress = ""
     /// What the prover did last (from the node's `aether_proverStatus`).
     @Published private(set) var prover: ProverStatus?
+    /// Called when the chain schedules a protocol this app's node does not run
+    /// (or the node stopped for it): look for the signed update right away.
+    var onUpgradeNeeded: (() -> Void)?
+    private var upgradeAsked = false
 
     struct ProverStatus: Decodable, Equatable, Sendable {
         let running: Bool
@@ -182,6 +186,7 @@ final class NodeController: ObservableObject {
 
     private func exited(status: Int32) {
         guard process != nil else { return }  // stopped on purpose
+        if status == 3 { onUpgradeNeeded?() }  // UPGRADE REQUIRED (see `watch_upgrades`)
         process = nil
         poll?.invalidate()
         switched = false
@@ -265,9 +270,24 @@ final class NodeController: ObservableObject {
         return csv
     }
 
+    private func refreshUpgrade() {
+        guard !upgradeAsked else { return }
+        let port = Self.port
+        Task.detached {
+            guard let s = await LocalRPC.call(port: port, method: "aether_status", params: []) as? [String: Any],
+                  let newest = (s["newest_scheduled"] as? NSNumber)?.intValue,
+                  let mine = (s["node_protocol"] as? NSNumber)?.intValue, newest > mine else { return }
+            await MainActor.run {
+                self.upgradeAsked = true
+                self.onUpgradeNeeded?()
+            }
+        }
+    }
+
     private func check() {
         refreshVoting()
         refreshProver()
+        refreshUpgrade()
         let port = Self.port, switched = self.switched
         Task.detached {
             let local = localNodeHeight(port: port)

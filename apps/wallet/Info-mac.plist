@@ -9,5 +9,10 @@
 	<string>owZzXbcYSAs74399TEZ7qMetNlTCsZqgj7rNYO9ny6E=</string>
 	<key>SUEnableAutomaticChecks</key>
 	<true/>
+	<!-- Hourly checks (Sparkle's minimum); updates install in the background and apply on the next launch. -->
+	<key>SUScheduledCheckInterval</key>
+	<integer>3600</integer>
+	<key>SUAutomaticallyUpdate</key>
+	<true/>
 </dict>
 </plist>

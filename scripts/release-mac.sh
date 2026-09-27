@@ -44,5 +44,30 @@ Drag Aether to Applications. The app is a wallet and, with the switch on, a node
 Updates arrive automatically (Aether ▸ Check for Updates…).${RELEASE_NOTES:+
 
 $RELEASE_NOTES}"
-gh release create "$tag" "$dmg" dist/appcast.xml --repo "$repo" --target main --title "Aether $version (testnet)" --notes "$notes" --latest ${1:-}
+# The browser extension ships with each app release.
+scripts/build-extension.sh --zip >/dev/null
+ext_version=$(python3 -c 'import json; print(json.load(open("apps/extension/manifest.json"))["version"])')
+ext="dist/aether-extension-$ext_version.zip"
+
+# Each release gets its own commit on top of the public main: the main tree
+# plus releases/<tag>.md, dated now, so GitHub lists releases newest first
+# (it orders them by the tagged commit's date). Only the tag is pushed; no
+# branch moves and no source beyond the public main goes out.
+git fetch -q origin main
+if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+  echo "tag $tag already exists on origin"; exit 1
+fi
+notes_file=$(mktemp)
+printf '# Aether %s (testnet)\n\n%s\n' "$version" "$notes" > "$notes_file"
+idx=$(mktemp -u)
+GIT_INDEX_FILE="$idx" git read-tree origin/main
+blob=$(git hash-object -w "$notes_file")
+GIT_INDEX_FILE="$idx" git update-index --add --cacheinfo "100644,$blob,releases/$tag.md"
+tree=$(GIT_INDEX_FILE="$idx" git write-tree)
+rm -f "$idx" "$notes_file"
+commit=$(git commit-tree "$tree" -p origin/main -m "release: Aether $version (testnet)")
+git tag -f "$tag" "$commit" >/dev/null
+git push -q origin "refs/tags/$tag"
+
+gh release create "$tag" "$dmg" dist/appcast.xml "$ext" --repo "$repo" --verify-tag --title "Aether $version (testnet)" --notes "$notes" --latest ${1:-}
 echo "released $tag"

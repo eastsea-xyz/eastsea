@@ -310,7 +310,8 @@ final class WalletModel: ObservableObject {
     /// (no extension needed): the payment is shown for approval, never sent by itself.
     func open(url: URL) {
         guard url.scheme == "aether", let c = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
-        let q = Dictionary(uniqueKeysWithValues: (c.queryItems ?? []).compactMap { i in i.value.map { (i.name, $0) } })
+        // A repeated parameter keeps its first value (never a crash on odd links).
+        let q = Dictionary((c.queryItems ?? []).compactMap { i in i.value.map { (i.name, $0) } }, uniquingKeysWith: { first, _ in first })
         guard (c.host ?? c.path) == "pay" || c.path == "pay", let to = q["to"], Wei.from(aeth: q["amount"] ?? "") != nil else {
             note("Ignored a payment link that is not complete")
             return

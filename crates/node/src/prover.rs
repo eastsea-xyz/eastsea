@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 /// SHA-256 of the guest ELF the protocol proves with, set by the release build
@@ -35,10 +35,15 @@ pub fn find_binary() -> Option<PathBuf> {
 }
 
 struct Io {
-    _child: Child,
+    child: Child,
     stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    /// Reply lines, read by a thread so a request can give up waiting.
+    lines: std::sync::mpsc::Receiver<String>,
 }
+
+/// How long a request may take before the sidecar is presumed hung and killed.
+const VERIFY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const PROVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
 
 /// One `aether-prover serve` process.
 pub struct Sidecar {
@@ -67,17 +72,30 @@ impl Sidecar {
         if let Some(pinned) = PROGRAM.filter(|p| *p != program) {
             return Err(format!("the sidecar proves program {program}, the protocol pins {pinned}"));
         }
-        Ok(Sidecar { io: Mutex::new(Io { _child: child, stdin, stdout }), dir: dir.to_path_buf(), program })
+        let (tx, lines) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in stdout.lines() {
+                let Ok(line) = line else { break };
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(Sidecar { io: Mutex::new(Io { child, stdin, lines }), dir: dir.to_path_buf(), program })
     }
 
-    fn request(&self, req: Value) -> Result<Value, String> {
+    fn request(&self, req: Value, timeout: std::time::Duration) -> Result<Value, String> {
         let mut io = self.io.lock().map_err(|_| "sidecar lock poisoned")?;
         writeln!(io.stdin, "{req}").and_then(|_| io.stdin.flush()).map_err(|e| format!("sidecar: {e}"))?;
-        let mut line = String::new();
-        io.stdout.read_line(&mut line).map_err(|e| format!("sidecar: {e}"))?;
-        if line.is_empty() {
-            return Err("the sidecar exited".into());
-        }
+        let line = match io.lines.recv_timeout(timeout) {
+            Ok(line) => line,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                // Hung: stop it so the next request starts a fresh one.
+                let _ = io.child.kill();
+                return Err("the sidecar exited (no answer in time)".into());
+            }
+            Err(_) => return Err("the sidecar exited".into()),
+        };
         let v: Value = serde_json::from_str(&line).map_err(|e| format!("sidecar reply: {e}"))?;
         if v["ok"].as_bool() == Some(true) {
             Ok(v)
@@ -91,7 +109,7 @@ impl Sidecar {
         let tag = unique();
         let (inp, out) = (self.dir.join(format!("{tag}.input")), self.dir.join(format!("{tag}.proof")));
         std::fs::write(&inp, input).map_err(|e| e.to_string())?;
-        let reply = self.request(json!({"cmd": "prove", "input": inp, "out": out}));
+        let reply = self.request(json!({"cmd": "prove", "input": inp, "out": out}), PROVE_TIMEOUT);
         let _ = std::fs::remove_file(&inp);
         let reply = reply?;
         let proof = std::fs::read(&out).map_err(|e| e.to_string())?;
@@ -103,7 +121,7 @@ impl Sidecar {
     pub fn verify(&self, proof: &[u8], commitment: [u8; 32]) -> Result<bool, String> {
         let path = self.dir.join(format!("{}.verify", unique()));
         std::fs::write(&path, proof).map_err(|e| e.to_string())?;
-        let reply = self.request(json!({"cmd": "verify", "proof": path, "commitment": hex::encode(commitment)}));
+        let reply = self.request(json!({"cmd": "verify", "proof": path, "commitment": hex::encode(commitment)}), VERIFY_TIMEOUT);
         let _ = std::fs::remove_file(&path);
         match reply {
             Ok(v) => Ok(v["verified"].as_bool() == Some(true)),
@@ -254,7 +272,7 @@ pub fn spawn_service(chain: Chain, sidecar: Sidecar, prover: Address, status: Sh
 fn next_job(chain: &Chain, prover: Address) -> Option<(u64, usize, aether_proving::block::BlockInput)> {
     let (exec, parent, block) = chain.provable()?;
     let payload = block.payload()?;
-    let (pre, _) = chain.pre_state(&parent, payload.version, &payload.proofs).ok()?;
+    let (pre, _) = chain.pre_state(&parent, payload.version, &payload.proofs, true).ok()?;
     let ctx = Chain::block_context(&chain.cfg(), &block, &parent);
     let input = aether_proving::block::input(&pre, &ctx, &payload.txs, &[], prover).ok()?;
     debug_assert_eq!(aether_proving::block::execute(&input).ok()?.commitment(), exec.statement.commitment);

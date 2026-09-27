@@ -77,7 +77,7 @@ fn propose_with(chain: &Chain, parent: &Executed, parent_block: &Block, upgrade:
     let ts = height.get() * 1_000;
     let skeleton = Block::new(context.clone(), parent_block.digest(), height, ts, bytes::Bytes::new());
     let ctx = Chain::block_context(&chain.cfg(), &skeleton, parent);
-    let (pre, _) = chain.pre_state(parent, parent.next_protocol(), &proofs).unwrap();
+    let (pre, _) = chain.pre_state(parent, parent.next_protocol(), &proofs, false).unwrap();
     let (payload, _) = build_payload(parent, &pre, &ctx, vec![], Extras { upgrade, proofs, ..Default::default() });
     Block::new(context, parent_block.digest(), height, ts, payload.to_bytes())
 }
@@ -308,7 +308,7 @@ fn the_recorded_statement_is_what_the_prover_proves() {
     for _ in 2..=22 {
         let b = propose(&chain, &parent, &last, None);
         // The prover's input for this block: its pre-state (after the block's system writes), context, txs.
-        let (pre, _) = chain.pre_state(&parent, parent.next_protocol(), &[]).unwrap();
+        let (pre, _) = chain.pre_state(&parent, parent.next_protocol(), &[], false).unwrap();
         let ctx = Chain::block_context(&chain.cfg(), &b, &parent);
         let input = aether_proving::block::input(&pre, &ctx, &b.payload().unwrap().txs, &[], Address::repeat_byte(1)).unwrap();
         let proved = aether_proving::block::execute(&input).unwrap().commitment();
@@ -366,4 +366,34 @@ fn a_snapshot_with_a_schedule_round_trips() {
     assert_eq!(back.schedule, snap.schedule);
     assert_eq!(back.statement, snap.statement);
     assert_ne!(back.statement, Default::default());
+}
+
+#[test]
+fn a_finalized_block_with_proofs_is_applied_even_without_a_local_verifier() {
+    use aether_execution::proofs;
+    let (a, genesis) = node(2);
+    let (b, _) = node(2);
+    a.lock().verifier = Some(Arc::new(EchoVerifier));
+    let mut pa = a.lock().finalized.clone();
+    let mut pb = b.lock().finalized.clone();
+    let mut head = genesis.clone();
+    let mut next = propose(&a, &pa, &genesis, Some(signed(2, 20)));
+    for _ in 1..=21 {
+        pa = advance(&a, pa, &next);
+        pb = advance(&b, pb, &next);
+        head = next;
+        next = propose(&a, &pa, &head, None);
+    }
+    let _ = next;
+    let prover = Address::repeat_byte(0x77);
+    let c = proofs::commitment(&pa.state, 20).unwrap();
+    let claim = ProofClaim { height: 20, prover, proof: hex::encode(aether_proving::block::claim(c, prover)) };
+    let with_proof = propose_with(&a, &pa, &head, None, vec![claim]);
+    // B has no verifier: it would not vote for this block...
+    assert!(b.execute(&with_proof, &pb).is_err());
+    // ...but once the committee finalized it, B applies it (the quorum verified the proof).
+    b.finalize(&with_proof).unwrap();
+    let applied = b.lock().finalized.clone();
+    assert_eq!(applied.height, pb.height + 1);
+    assert_eq!(applied.state.balance(&prover), proofs::issuance(20));
 }

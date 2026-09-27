@@ -564,6 +564,18 @@ impl Chain {
 
     /// Validate and execute `block` on top of `parent`, remembering the result.
     pub fn execute(&self, block: &Block, parent: &Executed) -> Result<Arc<Executed>, ChainError> {
+        self.execute_as(block, parent, false)
+    }
+
+    /// Execute a block the committee already finalized: its proofs were
+    /// verified by the quorum that certified it, so this node applies them
+    /// without asking its own verifier (whose local failure must never stop it
+    /// from following the chain).
+    fn execute_certified(&self, block: &Block, parent: &Executed) -> Result<Arc<Executed>, ChainError> {
+        self.execute_as(block, parent, true)
+    }
+
+    fn execute_as(&self, block: &Block, parent: &Executed, certified: bool) -> Result<Arc<Executed>, ChainError> {
         if let Some(done) = self.get(&block.digest()) {
             return Ok(done);
         }
@@ -584,7 +596,7 @@ impl Chain {
         if payload.txs.len() > MAX_TXS_PER_BLOCK {
             return Err(ChainError::BadPayload);
         }
-        let (pre, payouts) = self.pre_state(parent, payload.version, &payload.proofs)?;
+        let (pre, payouts) = self.pre_state(parent, payload.version, &payload.proofs, certified)?;
         let schedule = self.next_schedule(block.height().get(), parent, payload.upgrade.as_ref())?;
         let cfg = self.cfg();
         let ctx = Self::block_context(&cfg, block, parent);
@@ -613,6 +625,7 @@ impl Chain {
         parent: &'a Executed,
         version: u32,
         proofs: &[aether_light::block::ProofClaim],
+        certified: bool,
     ) -> Result<(std::borrow::Cow<'a, WorldState>, Vec<(u64, Address, U256)>), ChainError> {
         let (running, migrate, verifier) = {
             let g = self.lock();
@@ -647,7 +660,14 @@ impl Chain {
         if records {
             aether_execution::proofs::record(&mut state, parent.height, parent.statement.commitment, parent.statement.escrow);
         }
-        let payouts = pay_proofs(&mut state, parent.height + 1, proofs, verifier.as_deref())?;
+        struct Certified;
+        impl ProofVerifier for Certified {
+            fn verify(&self, _: &[u8], _: [u8; 32]) -> bool {
+                true
+            }
+        }
+        let verifier: Option<&dyn ProofVerifier> = if certified { Some(&Certified) } else { verifier.as_deref() };
+        let payouts = pay_proofs(&mut state, parent.height + 1, proofs, verifier)?;
         Ok((std::borrow::Cow::Owned(state), payouts))
     }
 
@@ -688,6 +708,10 @@ impl Chain {
             // Cheap refusals first: a block already covered, or verifying too often (this is a public RPC).
             if g.proof_pool.iter().any(|c| c.height == claim.height) {
                 return Err("a proof of this block is already waiting".into());
+            }
+            // Malformed submissions never take a verification slot.
+            if claim.proof.len() > 2 * MAX_PROOF_BYTES || !claim.proof.len().is_multiple_of(2) || !claim.proof.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err("the proof is not a hex string of an allowed size".into());
             }
             let now = Instant::now();
             if g.last_proof_check.is_some_and(|t| now.duration_since(t) < PROOF_CHECK_INTERVAL) {
@@ -936,7 +960,7 @@ impl Chain {
                 if parent.digest != block.parent {
                     return Err(ChainError::UnknownParent);
                 }
-                self.execute(block, &parent)?
+                self.execute_certified(block, &parent)?
             }
         };
         let payload = block.payload().ok_or(ChainError::BadPayload)?;

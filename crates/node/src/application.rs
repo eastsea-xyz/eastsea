@@ -111,7 +111,7 @@ where
             proofs: self.chain.proofs_for(&parent),
         };
         // Under the parent's next protocol, with its one-time changes if it activates here.
-        let attempt = self.chain.pre_state(&parent, parent.next_protocol(), &extras.proofs);
+        let attempt = self.chain.pre_state(&parent, parent.next_protocol(), &extras.proofs, false);
         let mut extras = extras;
         let (pre, payouts) = match attempt {
             Ok(pre) => pre,
@@ -120,7 +120,7 @@ where
                 warn!(?e, "dropping pooled proofs");
                 self.chain.drop_proofs(&extras.proofs.iter().map(|c| c.height).collect::<Vec<_>>());
                 extras.proofs.clear();
-                match self.chain.pre_state(&parent, parent.next_protocol(), &[]) {
+                match self.chain.pre_state(&parent, parent.next_protocol(), &[], false) {
                     Ok(pre) => pre,
                     Err(e) => {
                         warn!(?e, "not proposing");

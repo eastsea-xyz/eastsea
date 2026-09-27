@@ -23,7 +23,7 @@ use revm::primitives::TxKind;
 use revm::{Context, InspectEvm, Inspector, MainBuilder, MainContext};
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockContext {
     pub chain_id: u64,
     pub number: u64,

@@ -4,8 +4,8 @@ pub mod account;
 pub mod block;
 pub mod fees;
 pub mod forks;
-pub mod registry;
 mod parallel;
+pub mod registry;
 pub mod tx;
 pub mod world;
 
@@ -15,7 +15,7 @@ pub use block::{
 };
 pub use fees::{FeePolicy, Settlement, FEE_COLLECTOR, PROVER_ESCROW};
 pub use tx::{sign_call, sign_call_with, tx_hash, validate_stateless, EvmCall, TxError};
-pub use world::{ChainHasher, Journal, StateError, WorldState};
+pub use world::{ChainHasher, Journal, StateError, StateWitness, WorldState};
 
 /// Where the account contract lives (predeployed at genesis). Accounts delegate
 /// to it with EIP-7702 to get batched calls (`contracts/src/AetherAccount.sol`).

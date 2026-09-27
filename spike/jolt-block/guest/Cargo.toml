@@ -13,7 +13,7 @@ aether-execution = { path = "../../../crates/execution", default-features = fals
 aether-crypto = { path = "../../../crates/crypto" }
 aether-types = { path = "../../../crates/types" }
 aether-hash = { path = "../../../crates/hash" }
-serde = { version = "1", features = ["derive"] }
+aether-proving = { path = "../../../crates/proving" }
 jolt-inlines-p256 = { path = "/Volumes/workspace/aether-jolt/jolt/jolt-inlines/p256" }
 jolt-inlines-blake3 = { path = "/Volumes/workspace/aether-jolt/jolt/jolt-inlines/blake3" }
 postcard = { version = "1", default-features = false, features = ["alloc"] }

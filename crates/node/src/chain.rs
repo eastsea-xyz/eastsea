@@ -520,7 +520,8 @@ impl Chain {
         let schedule = self.next_schedule(block.height().get(), parent, payload.upgrade.as_ref())?;
         let cfg = self.cfg();
         let ctx = Self::block_context(&cfg, block, parent);
-        let out = execute_block(&pre, &ctx, &payload.txs).map_err(|e| ChainError::Exec(format!("{e:?}")))?;
+        let mut out = execute_block(&pre, &ctx, &payload.txs).map_err(|e| ChainError::Exec(format!("{e:?}")))?;
+        with_activation(&pre, &mut out);
         if out.bal != payload.bal {
             return Err(ChainError::BalMismatch);
         }
@@ -552,6 +553,8 @@ impl Chain {
             return Ok(std::borrow::Cow::Borrowed(&parent.state));
         }
         let mut state = parent.state.clone();
+        // Its journal then holds only the activation's writes (see `with_activation`).
+        state.clear_journal();
         for p in before + 1..=version {
             migrate(p, &mut state).map_err(|e| ChainError::Protocol(format!("activating protocol {p}: {e}")))?;
         }
@@ -581,7 +584,10 @@ impl Chain {
             return Err(format!("activation at {} gives less than {} blocks of notice", u.activate_at, Self::notice(&parent.state)));
         }
         let long = |s: &String| s.len() > MAX_FIELD;
-        if u.releases.len() > MAX_RELEASES || long(&u.notes) || u.releases.iter().any(|r| long(&r.platform) || long(&r.version) || long(&r.blake3) || long(&r.url)) {
+        if u.releases.len() > MAX_RELEASES
+            || long(&u.notes)
+            || u.releases.iter().any(|r| long(&r.platform) || long(&r.version) || long(&r.blake3) || long(&r.url))
+        {
             return Err("upgrade too large".into());
         }
         Ok(())
@@ -892,7 +898,13 @@ pub struct Extras {
 }
 
 /// Build a payload on `parent`; `pre` is `Chain::pre_state` for the parent's next protocol.
-pub fn build_payload(parent: &Executed, pre: &WorldState, ctx: &BlockContext, candidates: Vec<TxEnvelope>, extras: Extras) -> (Payload, aether_execution::BlockOutcome) {
+pub fn build_payload(
+    parent: &Executed,
+    pre: &WorldState,
+    ctx: &BlockContext,
+    candidates: Vec<TxEnvelope>,
+    extras: Extras,
+) -> (Payload, aether_execution::BlockOutcome) {
     let (txs, out) = aether_execution::build_block(pre, ctx, candidates);
     let history_root = B256::from(parent.history.root(&ChainHasher::new()));
     let parent_meta = parent.meta_digest();
@@ -910,6 +922,15 @@ pub fn build_payload(parent: &Executed, pre: &WorldState, ctx: &BlockContext, ca
         upgrade,
     };
     (payload, out)
+}
+
+/// An activation block's persisted diff starts with the activation's writes
+/// (execution clears the journal it starts from).
+#[allow(clippy::ptr_arg)] // Owned (migrated) vs Borrowed (untouched) is what matters here
+pub fn with_activation(pre: &std::borrow::Cow<'_, WorldState>, out: &mut BlockOutcome) {
+    if let std::borrow::Cow::Owned(migrated) = pre {
+        out.state.prepend_journal(migrated.journal());
+    }
 }
 
 /// `schedule` with `u`'s activation appended.

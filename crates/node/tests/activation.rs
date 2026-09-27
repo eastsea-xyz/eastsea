@@ -203,3 +203,38 @@ fn a_store_never_mixes_two_geneses() {
     assert!(matches!(Chain::open(other, Store::open(&path).unwrap()), Err(StoreError::OtherGenesis)));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn an_activation_block_survives_a_restart() {
+    use aether_node::store::Store;
+    let dir = std::env::temp_dir().join(format!("aether-activation-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("chain.redb");
+    let (chain, genesis) = Chain::open(config(), Store::open(&path).unwrap()).unwrap();
+    {
+        let (_, sharing, _) = aether_light::devnet_threshold(4);
+        let mut g = chain.lock();
+        g.identity = Some(*sharing.public());
+        g.protocol = 2;
+        g.migrate = migrate;
+    }
+    let mut parent = chain.lock().finalized.clone();
+    let mut last = propose(&chain, &parent, &genesis, Some(signed(2, 20)));
+    parent = advance(&chain, parent, &last);
+    for _ in 2..=21 {
+        let b = propose(&chain, &parent, &last, None);
+        parent = advance(&chain, parent, &b);
+        last = b;
+    }
+    assert_eq!(parent.state.balance(&MARKER), U256::from(7u64));
+    let root = parent.state.root();
+    drop((chain, parent));
+    // The activation's write is on disk with the block: the store reopens to the same root.
+    let (again, _) = Chain::open(config(), Store::open(&path).unwrap()).unwrap();
+    let f = again.lock().finalized.clone();
+    assert_eq!((f.height, f.state.root()), (21, root));
+    assert_eq!(f.state.balance(&MARKER), U256::from(7u64));
+    assert_eq!(*f.schedule, vec![(2, 20)]);
+    let _ = std::fs::remove_dir_all(&dir);
+}

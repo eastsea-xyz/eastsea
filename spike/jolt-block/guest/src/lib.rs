@@ -1,10 +1,8 @@
-//! Jolt guest: execute an Aether block and return the post-state root.
-//! The pre-state is given as tree entries (only what the block touches); the
-//! host checks the returned root against native execution.
+//! Jolt guest: re-execute an Aether block on its stateless witness and output
+//! the block statement's commitment (pre-state root checked, post-state root,
+//! context, txs, gas); the host checks it against native execution.
 
-use aether_execution::{execute_block_sequential, BlockContext, WorldState};
-use aether_types::{Address, GasVector, TxEnvelope};
-use serde::{Deserialize, Serialize};
+use aether_proving::block::{execute, BlockInput};
 
 /// P-256 ECDSA through Jolt's inline (accelerated curve arithmetic).
 fn jolt_p256(x: &[u8; 32], y: &[u8; 32], digest: &[u8; 32], r: &[u8; 32], s: &[u8; 32]) -> bool {
@@ -46,47 +44,30 @@ fn accelerate() {
     let _ = aether_hash::set_blake3_backend(jolt_keyed64);
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct Witness {
-    pub entries: Vec<([u8; 32], [u8; 32])>,
-    pub chain_id: u64,
-    pub number: u64,
-    pub timestamp: u64,
-    pub beneficiary: [u8; 20],
-    pub txs: Vec<TxEnvelope>,
-}
-
-#[jolt::provable(max_input_size = 1048576, heap_size = 268435456, stack_size = 4194304, max_trace_length = 67108864)]
-fn prove_block(witness: Vec<u8>) -> [u8; 32] {
+/// The block's statement commitment: the witness proves the pre-state root, the
+/// block re-executes on it, and the output binds context, txs and both roots
+/// (aether_proving::block).
+#[jolt::provable(max_input_size = 4194304, heap_size = 268435456, stack_size = 4194304, max_trace_length = 67108864)]
+fn prove_block(input: Vec<u8>) -> [u8; 32] {
     accelerate();
-    let w: Witness = postcard::from_bytes(&witness).expect("witness");
-    let pre = WorldState::from_parts(w.entries, Default::default());
-    let ctx = BlockContext {
-        chain_id: w.chain_id,
-        number: w.number,
-        timestamp: w.timestamp,
-        beneficiary: Address::from(w.beneficiary),
-        limits: GasVector { exec: 30_000_000, state: u64::MAX, prove: u64::MAX },
-        fees: None,
-    };
-    let out = execute_block_sequential(&pre, &ctx, &w.txs).expect("valid block");
-    out.state.root().0
+    let input: BlockInput = postcard::from_bytes(&input).expect("input");
+    execute(&input).expect("valid block").commitment()
 }
 
 /// Signature cost alone: verify every tx's P-256 signature.
-#[jolt::provable(max_input_size = 1048576, heap_size = 268435456, stack_size = 4194304, max_trace_length = 67108864)]
-fn verify_signatures(witness: Vec<u8>) -> u32 {
+#[jolt::provable(max_input_size = 4194304, heap_size = 268435456, stack_size = 4194304, max_trace_length = 67108864)]
+fn verify_signatures(input: Vec<u8>) -> u32 {
     accelerate();
-    let w: Witness = postcard::from_bytes(&witness).expect("witness");
-    w.txs.iter().filter(|t| aether_execution::validate_stateless(t, w.chain_id).is_ok()).count() as u32
+    let input: BlockInput = postcard::from_bytes(&input).expect("input");
+    input.txs.iter().filter(|t| aether_execution::validate_stateless(t, input.ctx.chain_id).is_ok()).count() as u32
 }
 
-/// Debug: root of the pre-state alone (tree + Poseidon2, no execution).
-#[jolt::provable(max_input_size = 1048576, heap_size = 268435456, stack_size = 4194304, max_trace_length = 67108864)]
-fn pre_root(witness: Vec<u8>) -> [u8; 32] {
+/// Witness cost alone: rebuild the partial pre-state and its root.
+#[jolt::provable(max_input_size = 4194304, heap_size = 268435456, stack_size = 4194304, max_trace_length = 67108864)]
+fn pre_root(input: Vec<u8>) -> [u8; 32] {
     accelerate();
-    let w: Witness = postcard::from_bytes(&witness).expect("witness");
-    WorldState::from_parts(w.entries, Default::default()).root().0
+    let input: BlockInput = postcard::from_bytes(&input).expect("input");
+    aether_execution::WorldState::from_witness(&input.witness).expect("witness").root().0
 }
 
 /// Debug: Poseidon2 of a fixed input.
@@ -103,20 +84,11 @@ fn aether_hash_probe(h: &aether_execution::ChainHasher, x: &[u8; 32]) -> [u8; 32
 }
 
 /// Debug: the execution error, if any, as text.
-#[jolt::provable(max_input_size = 1048576, heap_size = 268435456, stack_size = 4194304, max_trace_length = 67108864, backtrace = "dwarf")]
-fn block_error(witness: Vec<u8>) -> String {
+#[jolt::provable(max_input_size = 4194304, heap_size = 268435456, stack_size = 4194304, max_trace_length = 67108864, backtrace = "dwarf")]
+fn block_error(input: Vec<u8>) -> String {
     accelerate();
-    let w: Witness = postcard::from_bytes(&witness).expect("witness");
-    let pre = WorldState::from_parts(w.entries, Default::default());
-    let ctx = BlockContext {
-        chain_id: w.chain_id,
-        number: w.number,
-        timestamp: w.timestamp,
-        beneficiary: Address::from(w.beneficiary),
-        limits: GasVector { exec: 30_000_000, state: u64::MAX, prove: u64::MAX },
-        fees: None,
-    };
-    match execute_block_sequential(&pre, &ctx, &w.txs) {
+    let input: BlockInput = postcard::from_bytes(&input).expect("input");
+    match execute(&input) {
         Ok(_) => "ok".into(),
         Err(e) => format!("{e:?}"),
     }

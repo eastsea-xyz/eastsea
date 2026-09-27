@@ -5,7 +5,6 @@
 use aether_crypto::{P256Signer, Signer};
 use aether_execution::{execute_block_sequential, sign_call, BlockContext, EvmCall, WorldState};
 use aether_types::{Address, Bytes, GasVector, U256};
-use guest::Witness;
 use jolt_sdk as jolt;
 use jolt_inlines_blake3 as _; // link the inline registrations (state hash)
 use jolt_inlines_p256 as _; // link the inline registrations
@@ -13,6 +12,8 @@ use std::time::Instant;
 
 const CHAIN: u64 = 7777;
 
+/// A block of `n` payments on a state with other accounts too: the prover's
+/// input (stateless witness) and the statement commitment native execution gives.
 fn witness(n: usize) -> (Vec<u8>, [u8; 32]) {
     let signers: Vec<P256Signer> = (0..n)
         .map(|i| {
@@ -27,7 +28,12 @@ fn witness(n: usize) -> (Vec<u8>, [u8; 32]) {
     for s in &signers {
         pre.set_balance(aether_crypto::address_of(&s.public_key()).unwrap(), U256::from(10u128.pow(21))).unwrap();
     }
-    let entries: Vec<([u8; 32], [u8; 32])> = pre.journal().writes.iter().map(|(k, v)| (*k, v.expect("set"))).collect();
+    for i in 0..1000u32 {
+        let mut a = [0u8; 20];
+        a[..4].copy_from_slice(&i.to_be_bytes());
+        a[19] = 0xee;
+        pre.set_balance(Address::from(a), U256::from(1u64)).unwrap();
+    }
     let txs: Vec<_> = signers
         .iter()
         .enumerate()
@@ -36,11 +42,13 @@ fn witness(n: usize) -> (Vec<u8>, [u8; 32]) {
             sign_call(s, CHAIN, 0, 1, &call).unwrap()
         })
         .collect();
-    let beneficiary = [0xbe; 20];
-    let ctx = BlockContext { chain_id: CHAIN, number: 1, timestamp: 1, beneficiary: Address::from(beneficiary), limits: GasVector { exec: 30_000_000, state: u64::MAX, prove: u64::MAX }, fees: None };
-    let native = execute_block_sequential(&WorldState::from_parts(entries.clone(), Default::default()), &ctx, &txs).unwrap().state.root().0;
-    let w = Witness { entries, chain_id: CHAIN, number: 1, timestamp: 1, beneficiary, txs };
-    (postcard::to_allocvec(&w).unwrap(), native)
+    let ctx = BlockContext { chain_id: CHAIN, number: 1, timestamp: 1, beneficiary: Address::repeat_byte(0xbe), limits: GasVector { exec: 30_000_000, state: u64::MAX, prove: u64::MAX }, fees: None };
+    let input = aether_proving::block::input(&pre, &ctx, &txs, &[]).unwrap();
+    let statement = aether_proving::block::execute(&input).unwrap();
+    assert_eq!(statement.post_state_root, execute_block_sequential(&pre, &ctx, &txs).unwrap().state.root());
+    let bytes = postcard::to_allocvec(&input).unwrap();
+    eprintln!("input: {} bytes ({} stems, {} opaque nodes)", bytes.len(), input.witness.tree.stems.len(), input.witness.tree.opaque.len());
+    (bytes, statement.commitment())
 }
 
 fn main() {
@@ -60,9 +68,9 @@ fn main() {
                 drop(summary);
                 let tree = guest::analyze_pre_root(w.clone()).trace_len();
                 let sig = guest::analyze_verify_signatures(w).trace_len();
-                println!("  parse+pre-state tree (2 accounts/tx): {tree} cycles ({} per tx)", tree / n);
+                println!("  witness -> pre-state root: {tree} cycles ({} per tx)", tree / n);
                 println!(
-                    "block {n:>4} tx: {cycles:>11} cycles total ({:>8} per tx), signatures {sig:>11} ({:>8} per tx, {:.0}%), root matches native: {root_ok}  [{:.1}s]",
+                    "block {n:>4} tx: {cycles:>11} cycles total ({:>8} per tx), signatures {sig:>11} ({:>8} per tx, {:.0}%), statement matches native: {root_ok}  [{:.1}s]",
                     cycles / n,
                     sig / n,
                     100.0 * sig as f64 / cycles as f64,
@@ -72,20 +80,11 @@ fn main() {
         }
         Some("debug") => {
             let (w, native) = witness(1);
-            let pw: Witness = postcard::from_bytes(&w).unwrap();
-            let native_pre = WorldState::from_parts(pw.entries, Default::default()).root().0;
-            let out = |s: jolt::host::analyze::ProgramSummary| s.io_device.outputs.clone();
-            println!("native pre  {}", hex(&native_pre));
-            println!("guest  pre  {}", hex(&out(guest::analyze_pre_root(w.clone()))));
-            println!("native post {}", hex(&native));
+            println!("native statement {}", hex(&native));
             let s = guest::analyze_prove_block(w.clone());
-            println!("guest  post {} (panic={})", hex(&s.io_device.outputs), s.io_device.panic);
+            println!("guest  statement {} (panic={})", hex(&s.io_device.outputs), s.io_device.panic);
             let e = guest::analyze_block_error(w);
             println!("guest  error: {}", String::from_utf8_lossy(&e.io_device.outputs));
-            let x = [7u8; 32];
-            use aether_hash::Hasher;
-            println!("native H(7) {}", hex(&aether_execution::ChainHasher::new().hash_bytes(&x)));
-            println!("guest  H(7) {}", hex(&out(guest::analyze_hash_probe(x))));
         }
         Some("profile") => {
             // Per-instruction-address cycle counts of the (symbol-carrying) block_error guest.
@@ -124,7 +123,7 @@ fn main() {
                 println!("proof size: {:.1} kB, padded trace 2^{}", proof_bytes as f64 / 1024.0, proof.trace_length.ilog2());
                 let t = Instant::now();
                 let ok = verify(w.clone(), root, io.panic, proof);
-                println!("block {n} tx (run {rep}): proved in {prove_s:.1}s, verified={ok} in {:.0}ms, root matches native: {}", t.elapsed().as_secs_f64() * 1e3, root == native);
+                println!("block {n} tx (run {rep}): proved in {prove_s:.1}s, verified={ok} in {:.0}ms, statement matches native: {}", t.elapsed().as_secs_f64() * 1e3, root == native);
             }
         }
         _ => eprintln!("usage: analyze N... | prove N [reps]"),

@@ -65,12 +65,13 @@ pub struct PartialTree<H: Hasher> {
     opaque: Vec<Opaque>,
 }
 
+/// The first `depth` bits of `stem`, the rest zero.
 fn masked(stem: &Stem, depth: usize) -> Stem {
     let mut out = [0u8; 31];
-    for d in 0..depth {
-        if stem_bit(stem, d) {
-            out[d / 8] |= 1 << (7 - d % 8);
-        }
+    let full = depth / 8;
+    out[..full].copy_from_slice(&stem[..full]);
+    if !depth.is_multiple_of(8) {
+        out[full] = stem[full] & (0xffu8 << (8 - depth % 8));
     }
     out
 }
@@ -116,13 +117,8 @@ impl<H: Hasher> PartialTree<H> {
             if (o.left == ZERO && o.right == ZERO) || !hasher.is_canonical(&o.left) || !hasher.is_canonical(&o.right) {
                 return Err(bad("opaque children"));
             }
-            if stems.keys().any(|s| covers(o, s)) {
-                return Err(bad("known stem inside an opaque node"));
-            }
         }
-        if opaque.windows(2).any(|p| covers(&p[0], &p[1].prefix) && p[0].depth <= p[1].depth) {
-            return Err(bad("nested opaque nodes"));
-        }
+        // The root computation rejects nested opaque nodes and known stems inside one.
         let t = PartialTree { hasher, stems, opaque };
         t.try_root()?;
         Ok(t)
@@ -138,7 +134,7 @@ impl<H: Hasher> PartialTree<H> {
         match self.stems.get(&stem) {
             Some(Known::Values(n)) => n.values.get(&sub).copied(),
             Some(Known::Root(_)) => missing(key),
-            None if self.opaque.iter().any(|o| covers(o, &stem)) => missing(key),
+            None if self.in_opaque(&stem) => missing(key),
             None => None,
         }
     }
@@ -148,7 +144,7 @@ impl<H: Hasher> PartialTree<H> {
         let mut touched = std::collections::BTreeSet::new();
         for (k, v) in writes {
             let (stem, sub) = split_key(k);
-            if !self.stems.contains_key(&stem) && self.opaque.iter().any(|o| covers(o, &stem)) {
+            if !self.stems.contains_key(&stem) && self.in_opaque(&stem) {
                 missing(k);
             }
             let node = match self.stems.entry(stem).or_insert_with(|| Known::Values(StemNode::empty())) {
@@ -174,6 +170,13 @@ impl<H: Hasher> PartialTree<H> {
 
     pub fn root(&self) -> Digest {
         self.try_root().expect("validated witness")
+    }
+
+    /// Whether `stem` lies under an opaque node. They never overlap, so only
+    /// the last one at or before it (by prefix) can hold it.
+    fn in_opaque(&self, stem: &Stem) -> bool {
+        let i = self.opaque.partition_point(|o| o.prefix <= *stem);
+        i > 0 && covers(&self.opaque[i - 1], stem)
     }
 
     fn try_root(&self) -> Result<Digest, WitnessError> {

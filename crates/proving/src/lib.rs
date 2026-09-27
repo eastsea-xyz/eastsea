@@ -4,6 +4,7 @@
 //! choice is made from the phase-0.5 spike measurements. `Verifier` must stay
 //! `no_std`-portable because the wallet ships it on macOS, iOS and wasm.
 
+pub mod block;
 pub mod market;
 
 use aether_state::Proof as StateProof;

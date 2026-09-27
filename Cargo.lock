@@ -100,6 +100,7 @@ dependencies = [
  "aether-types",
  "alloy-primitives",
  "alloy-sol-types",
+ "postcard",
  "proptest",
  "rayon",
  "revm",
@@ -223,9 +224,13 @@ dependencies = [
 name = "aether-proving"
 version = "0.2.0"
 dependencies = [
+ "aether-crypto",
+ "aether-execution",
  "aether-state",
  "aether-types",
  "blake3",
+ "postcard",
+ "serde",
 ]
 
 [[package]]

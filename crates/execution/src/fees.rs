@@ -30,7 +30,7 @@ pub const UPDATE_QUOTIENT: u64 = 96;
 pub const TIP_SPLIT: (u64, u64, u64) = (60, 20, 20);
 
 /// What a block's fees follow.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FeePolicy {
     pub base: FeeVector,
     /// Receives the proposer share of tips.

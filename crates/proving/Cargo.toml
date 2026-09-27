@@ -10,3 +10,10 @@ publish = false
 aether-types.workspace = true
 aether-state.workspace = true
 blake3.workspace = true
+# Stateless re-execution of a block (the guest program's logic, shared with the node).
+aether-execution = { path = "../execution", default-features = false }
+serde.workspace = true
+postcard = { version = "1", default-features = false, features = ["alloc"] }
+
+[dev-dependencies]
+aether-crypto.workspace = true

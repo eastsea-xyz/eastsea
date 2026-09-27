@@ -165,6 +165,15 @@ impl WorldState {
         self.journal = Journal::default();
     }
 
+    /// Put `earlier` (e.g. a protocol activation's writes, made before the
+    /// block's transactions) in front of this state's journal.
+    pub fn prepend_journal(&mut self, earlier: &Journal) {
+        let mut j = earlier.clone();
+        j.writes.append(&mut self.journal.writes);
+        j.codes.append(&mut self.journal.codes);
+        self.journal = j;
+    }
+
     /// All bytecode by code hash.
     pub fn codes(&self) -> &BTreeMap<B256, Bytes> {
         &self.codes

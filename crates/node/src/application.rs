@@ -113,7 +113,8 @@ where
                 return None;
             }
         };
-        let (payload, out) = build_payload(&parent, &pre, &ctx, self.chain.mempool_candidates(), extras);
+        let (payload, mut out) = build_payload(&parent, &pre, &ctx, self.chain.mempool_candidates(), extras);
+        crate::chain::with_activation(&pre, &mut out);
         drop(pre);
         let tx_hashes = payload.txs.iter().map(aether_execution::tx_hash).collect();
         let block = Block::new(context, parent_block.digest(), height, ts, payload.to_bytes());

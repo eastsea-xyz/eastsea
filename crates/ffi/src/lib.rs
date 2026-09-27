@@ -9,12 +9,12 @@
 uniffi::setup_scaffolding!();
 
 mod paper;
-pub use paper::*;
 use aether_crypto::{address_of, PublicKey};
 use aether_execution::EvmCall;
 use aether_light::{from_hex, verify_account, verify_finalized_chain, ValidatorSet, VerifiedBlock};
 use aether_state::Proof;
 use aether_types::{Address, Bytes, FeeVector, GasVector, SignerScheme, TxEnvelope, TxHash, TxHeader, TxPayload, U256};
+pub use paper::*;
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -442,7 +442,14 @@ pub fn voting_node_status(validator_key: String) -> R<VotingNodeStatus> {
 /// The registrar (a validator holding the network's DeviceCheck key) attests;
 /// the returned transaction, signed with the wallet key, puts it on chain.
 #[uniffi::export]
-pub fn prepare_register_node(p256_public_key: Vec<u8>, device_token: String, validator_key: String, node_id: String, beaconer: String, ownership: String) -> R<PreparedTx> {
+pub fn prepare_register_node(
+    p256_public_key: Vec<u8>,
+    device_token: String,
+    validator_key: String,
+    node_id: String,
+    beaconer: String,
+    ownership: String,
+) -> R<PreparedTx> {
     let hex32 = |s: &str, what: &str| -> R<[u8; 32]> {
         aether_light::from_hex(s).ok().and_then(|b| b.try_into().ok()).ok_or_else(|| WalletError::Invalid(format!("{what}: 32-byte hex")))
     };
@@ -638,6 +645,44 @@ pub struct RecoveryStatus {
     pub pending: bool,
     /// Unix time after which the pending recovery may run.
     pub ready_at: u64,
+}
+
+/// Add a recovery key (another device's code, or recovery words) without
+/// touching the account's other recovery keys, threshold or delay: a k-of-n
+/// setup stays k-of-(n+1). With none yet: 1-of-1 with the default 48 h delay.
+#[uniffi::export]
+pub fn prepare_add_recovery_key(p256_public_key: Vec<u8>, recovery_code: String, validators: u32) -> R<PreparedTx> {
+    const DEFAULT_DELAY: u64 = 48 * 3600;
+    let new = parse_code(&recovery_code)?;
+    let me = address_of(&p256_key(&p256_public_key)?).map_err(|e| WalletError::Invalid(e.to_string()))?;
+    let set = trusted_set(validators)?;
+    let count = verified_slot(me, slots::guardian_count(), &set)?.to::<u64>().min(8);
+    let (threshold, delay) = slots::unpack_threshold_and_delay(verified_slot(me, slots::threshold_and_delay(), &set)?);
+    let mut keys = Vec::with_capacity(count as usize + 1);
+    for i in 0..count {
+        let x = verified_slot(me, slots::guardian(i), &set)?.to_be_bytes::<32>();
+        let y = verified_slot(me, slots::guardian(i) + U256::from(1u64), &set)?.to_be_bytes::<32>();
+        keys.push((x, y));
+    }
+    if keys.contains(&new) {
+        return Err(WalletError::Invalid("that recovery key is already registered".into()));
+    }
+    if keys.len() >= 8 {
+        return Err(WalletError::Invalid("an account has at most 8 recovery keys".into()));
+    }
+    keys.push(new);
+    let (threshold, delay) = if count == 0 { (1, DEFAULT_DELAY) } else { (threshold.max(1), delay) };
+    let input = aether_execution::account::encode_set_guardians(&keys, threshold, delay);
+    prepare(&p256_public_key, |from| {
+        let delegated = designated(from)?;
+        Ok(EvmCall {
+            to: Some(from),
+            value: U256::ZERO,
+            input: aether_execution::encode_execute(&[(from, U256::ZERO, input)]),
+            gas_limit: 300_000 + 60_000 * keys.len() as u64,
+            delegate: (!delegated).then_some(aether_execution::AETHER_ACCOUNT),
+        })
+    })
 }
 
 #[uniffi::export]

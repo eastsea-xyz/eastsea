@@ -79,11 +79,12 @@ final class WalletModel: ObservableObject {
     /// Register another device's key as this account's recovery key (one signature).
     func setRecoveryKey() {
         guard let enclave else { return }
-        let code = guardianInput.trimmingCharacters(in: .whitespacesAndNewlines), pk = enclave.publicKey
+        let code = guardianInput.trimmingCharacters(in: .whitespacesAndNewlines), pk = enclave.publicKey, n = validators
         busy = true
         Task.detached {
             do {
-                let prepared = try prepareSetRecoveryKey(p256PublicKey: pk, recoveryCode: code)
+                // Added next to any existing recovery keys (their threshold and delay stay).
+                let prepared = try prepareAddRecoveryKey(p256PublicKey: pk, recoveryCode: code, validators: n)
                 let sig = try enclave.sign(prepared.signingMessage)
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
                 await self.track(h, label: "Recovery key set to \(code.prefix(12))…", item: ActivityItem(kind: .security, title: "Recovery device added", amount: nil))
@@ -100,12 +101,12 @@ final class WalletModel: ObservableObject {
     /// Register the shown words as this account's recovery key (one Touch ID).
     func registerPaperKey() {
         guard let enclave, let words = paperWords else { return }
-        let pk = enclave.publicKey
+        let pk = enclave.publicKey, n = validators
         busy = true
         Task.detached {
             do {
                 let code = try recoveryKeyCode(p256PublicKey: try paperKeyPublic(words: words))
-                let prepared = try prepareSetRecoveryKey(p256PublicKey: pk, recoveryCode: code)
+                let prepared = try prepareAddRecoveryKey(p256PublicKey: pk, recoveryCode: code, validators: n)
                 let sig = try enclave.sign(prepared.signingMessage)
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
                 await MainActor.run { self.paperWords = nil }

@@ -1879,6 +1879,21 @@ public func localNodeHeight(port: UInt16) -> UInt64?  {
 })
 }
 /**
+ * Add a recovery key (another device's code, or recovery words) without
+ * touching the account's other recovery keys, threshold or delay: a k-of-n
+ * setup stays k-of-(n+1). With none yet: 1-of-1 with the default 48 h delay.
+ */
+public func prepareAddRecoveryKey(p256PublicKey: Data, recoveryCode: String, validators: UInt32)throws  -> PreparedTx  {
+    return try  FfiConverterTypePreparedTx_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_prepare_add_recovery_key(
+        FfiConverterData.lower(p256PublicKey),
+        FfiConverterString.lower(recoveryCode),
+        FfiConverterUInt32.lower(validators),uniffiCallStatus
+    )
+})
+}
+/**
  * Several payments, all or nothing, under ONE signature (one Touch ID).
  * The account delegates to AetherAccount (EIP-7702) in the same tx the first
  * time; afterwards it just calls its own `execute`.
@@ -2200,6 +2215,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_local_node_height() != 10285) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_prepare_add_recovery_key() != 23881) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_prepare_batch() != 9304) {

@@ -92,7 +92,23 @@ impl Snapshot {
     }
 
     /// Write the checked snapshot as the store's checkpoint; `Chain::open` then resumes from it.
+    /// Only certified facts are kept of block H's summary (hash, state root, fee
+    /// excess); the rest is left empty rather than served unverified.
     pub fn install(&self, store: &Store, state: &WorldState) -> Result<(), String> {
+        let summary = BlockSummary {
+            height: self.summary.height,
+            hash: self.summary.hash.clone(),
+            parent: String::new(),
+            timestamp_ms: 0,
+            proposer: Default::default(),
+            state_root: self.summary.state_root,
+            parent_state_root: Default::default(),
+            txs: vec![],
+            gas_used: 0,
+            prove_gas: 0,
+            base_fee: Default::default(),
+            excess: self.summary.excess,
+        };
         if store.head().map_err(|e| e.to_string())?.is_some() {
             return Err("the store already holds a chain".into());
         }
@@ -104,7 +120,7 @@ impl Snapshot {
                 digest,
                 root: state.root(),
                 diff: &diff,
-                summary: &self.summary,
+                summary: &summary,
                 receipts: vec![],
                 handoff: self.handoff.as_ref(),
                 seed: self.seed.as_ref(),

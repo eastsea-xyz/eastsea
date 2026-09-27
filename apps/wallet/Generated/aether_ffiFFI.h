@@ -275,6 +275,11 @@ RustBuffer uniffi_aether_ffi_fn_func_devnet_faucet(RustBuffer to, RustBuffer val
 RustBuffer uniffi_aether_ffi_fn_func_local_node_height(uint16_t port, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_ADD_RECOVERY_KEY
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_ADD_RECOVERY_KEY
+RustBuffer uniffi_aether_ffi_fn_func_prepare_add_recovery_key(RustBuffer p256_public_key, RustBuffer recovery_code, uint32_t validators, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_BATCH
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_BATCH
 RustBuffer uniffi_aether_ffi_fn_func_prepare_batch(RustBuffer p256_public_key, RustBuffer payments, RustCallStatus *_Nonnull out_status
@@ -694,6 +699,12 @@ uint16_t uniffi_aether_ffi_checksum_func_devnet_faucet(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_LOCAL_NODE_HEIGHT
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_LOCAL_NODE_HEIGHT
 uint16_t uniffi_aether_ffi_checksum_func_local_node_height(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_ADD_RECOVERY_KEY
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_ADD_RECOVERY_KEY
+uint16_t uniffi_aether_ffi_checksum_func_prepare_add_recovery_key(void
     
 );
 #endif

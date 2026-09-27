@@ -1374,7 +1374,8 @@ fn run_follow(
         // A new Mac starts from a certified snapshot instead of replaying history.
         if checkpoint && store.head().map_err(|e| e.to_string())?.is_none() {
             // Without a usable snapshot, replay from genesis instead of failing to start.
-            if let Err(e) = follow::checkpoint(&upstream, &set, &cfg, &store).await {
+            let attempt = tokio::time::timeout(Duration::from_secs(900), follow::checkpoint(&upstream, &set, &cfg, &store)).await;
+            if let Err(e) = attempt.map_err(|_| "timed out".to_string()).and_then(|r| r) {
                 tracing::warn!(%e, "checkpoint sync failed; replaying history from genesis");
             }
         }

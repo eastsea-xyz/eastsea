@@ -60,6 +60,8 @@ impl FinalityArchive {
 
 /// Largest snapshot a new Mac downloads.
 const MAX_SNAPSHOT: usize = 4 << 30;
+/// Smallest chunk accepted (bounds the number of requests).
+const MIN_SNAPSHOT_CHUNK: usize = 64 << 10;
 
 /// Largest upstream response accepted (a block and its certificate, hex encoded).
 const MAX_RESPONSE: usize = 4 * MAX_BLOCK_BYTES as usize + (1 << 20);
@@ -149,13 +151,18 @@ pub async fn checkpoint(upstream: &Upstream, set: &ValidatorSet, cfg: &crate::ch
         v["blake3"].as_str().unwrap_or_default().to_string(),
     );
     let chunk = v["chunk"].as_u64().ok_or("no snapshot chunk size")? as usize;
-    if size > MAX_SNAPSHOT || chunk == 0 {
-        return Err(format!("snapshot of {size} bytes is over the limit"));
+    if size > MAX_SNAPSHOT || !(MIN_SNAPSHOT_CHUNK..=MAX_RESPONSE / 2).contains(&chunk) {
+        return Err(format!("snapshot of {size} bytes in chunks of {chunk} is outside the limits"));
     }
-    let mut bytes = Vec::with_capacity(size);
+    let mut bytes = Vec::with_capacity(size.min(64 << 20));
     for index in 0..size.div_ceil(chunk) {
         let c = upstream.first("aether_snapshotChunk", json!([height, index])).await?;
-        bytes.extend(hex::decode(c["data"].as_str().ok_or("no chunk data")?).map_err(|e| e.to_string())?);
+        let data = hex::decode(c["data"].as_str().ok_or("no chunk data")?).map_err(|e| e.to_string())?;
+        // Every chunk full-size except the last; never more than advertised.
+        if data.len() != chunk.min(size - bytes.len()) {
+            return Err("snapshot chunk of the wrong size".into());
+        }
+        bytes.extend(data);
     }
     // Integrity of the download; authenticity comes from the certified block below.
     if bytes.len() != size || crate::rpc::blake3_hex(&bytes) != want {

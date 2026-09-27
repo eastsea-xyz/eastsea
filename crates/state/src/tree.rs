@@ -60,29 +60,46 @@ fn stem_node_hash<H: Hasher>(h: &H, stem: &Stem, subtree_root: &Digest) -> Diges
     hash_z(h, &buf)
 }
 
+/// A stem's values, sparse: only present sub-indices are stored. Its 256-leaf
+/// subtree hashes empty ranges to ZERO (compress(ZERO, ZERO) = ZERO), so the
+/// root is computed over the present leaves only: O(values × 8), not 511
+/// hashes per write, and a copy moves only what is there.
 #[derive(Clone)]
 struct StemNode {
-    values: Box<[Option<Value>; 256]>,
+    values: BTreeMap<u8, Value>,
     /// Hash of the 256-leaf subtree; recomputed on every write to this stem.
     subtree_root: Digest,
 }
 
 impl StemNode {
     fn empty() -> Self {
-        StemNode { values: Box::new([None; 256]), subtree_root: ZERO }
+        StemNode { values: BTreeMap::new(), subtree_root: ZERO }
     }
 
-    fn levels<H: Hasher>(&self, h: &H) -> Vec<Vec<Digest>> {
-        let mut levels = vec![self.values.iter().map(|v| leaf_hash(h, v)).collect::<Vec<_>>()];
-        while levels.last().expect("non-empty").len() > 1 {
-            let prev = levels.last().expect("non-empty");
-            levels.push(prev.chunks(2).map(|p| compress_z(h, &p[0], &p[1])).collect());
+    /// Hash of the aligned leaf range [lo, lo + size) (size a power of two).
+    fn range_hash<H: Hasher>(&self, h: &H, lo: usize, size: usize) -> Digest {
+        let mut present = self.values.range(lo as u8..=(lo + size - 1) as u8);
+        if size == 1 {
+            return leaf_hash(h, &present.next().map(|(_, v)| *v));
         }
-        levels
+        if present.next().is_none() {
+            return ZERO;
+        }
+        let half = size / 2;
+        compress_z(h, &self.range_hash(h, lo, half), &self.range_hash(h, lo + half, half))
+    }
+
+    fn root<H: Hasher>(&self, h: &H) -> Digest {
+        self.range_hash(h, 0, 256)
+    }
+
+    /// Siblings of leaf `sub` in the 256-leaf subtree, leaf level up.
+    fn siblings<H: Hasher>(&self, h: &H, sub: u8) -> [Digest; SUBTREE_DEPTH] {
+        core::array::from_fn(|lvl| self.range_hash(h, ((sub as usize >> lvl) ^ 1) << lvl, 1 << lvl))
     }
 
     fn is_empty(&self) -> bool {
-        self.values.iter().all(Option::is_none)
+        self.values.is_empty()
     }
 }
 
@@ -130,7 +147,7 @@ impl<H: Hasher> BinaryTree<H> {
 
     pub fn get(&self, key: &TreeKey) -> Option<Value> {
         let (stem, sub) = split_key(key);
-        self.stems.get(&stem).and_then(|n| n.values[sub as usize])
+        self.stems.get(&stem).and_then(|n| n.values.get(&sub).copied())
     }
 
     /// Apply writes. `None` and the all-zero value both delete (EVM semantics:
@@ -139,8 +156,11 @@ impl<H: Hasher> BinaryTree<H> {
         let mut touched = std::collections::BTreeSet::new();
         for (k, v) in writes {
             let (stem, sub) = split_key(k);
-            let v = v.filter(|v| *v != [0u8; 32]);
-            self.stems.entry(stem).or_insert_with(StemNode::empty).values[sub as usize] = v;
+            let node = self.stems.entry(stem).or_insert_with(StemNode::empty);
+            match v.filter(|v| *v != [0u8; 32]) {
+                Some(v) => node.values.insert(sub, v),
+                None => node.values.remove(&sub),
+            };
             touched.insert(stem);
         }
         for stem in touched {
@@ -149,7 +169,7 @@ impl<H: Hasher> BinaryTree<H> {
                 self.stems.remove(&stem);
                 continue;
             }
-            let root = *node.levels(&self.hasher).last().expect("root level").first().expect("root");
+            let root = node.root(&self.hasher);
             self.stems.get_mut(&stem).expect("present").subtree_root = root;
         }
     }
@@ -192,16 +212,7 @@ impl<H: Hasher> BinaryTree<H> {
         }
         let bottom = match slice {
             [] => Bottom::Empty,
-            [(s, n)] if **s == stem => {
-                let levels = n.levels(&self.hasher);
-                let mut idx = sub as usize;
-                let subtree_siblings = core::array::from_fn(|lvl| {
-                    let sib = levels[lvl][idx ^ 1];
-                    idx >>= 1;
-                    sib
-                });
-                Bottom::Stem { subtree_siblings }
-            }
+            [(s, n)] if **s == stem => Bottom::Stem { subtree_siblings: n.siblings(&self.hasher, sub) },
             [(s, n)] => Bottom::OtherStem { stem: **s, subtree_root: n.subtree_root },
             _ => unreachable!("loop ends with at most one stem"),
         };

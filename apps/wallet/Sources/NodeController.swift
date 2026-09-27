@@ -37,6 +37,24 @@ final class NodeController: ObservableObject {
     @AppStorage("nodeEnabled") var enabled = false {
         didSet { enabled ? startIfAllowed() : stop() }
     }
+    /// Prove blocks on this Mac's GPU for rewards (protocol 2); paid to `proveAddress`.
+    @AppStorage("proveBlocks") var prove = false {
+        didSet { restartIfRunning() }
+    }
+    @AppStorage("proveAddress") var proveAddress = ""
+    /// What the prover did last (from the node's `aether_proverStatus`).
+    @Published private(set) var prover: ProverStatus?
+
+    struct ProverStatus: Decodable, Equatable, Sendable {
+        let running: Bool
+        let proving: UInt64?
+        let last_height: UInt64?
+        let last_txs: Int?
+        let last_seconds: Double?
+        let proofs: UInt64?
+        let error: String?
+    }
+
     /// Run the node only while the Mac is on its power adapter (laptops).
     @AppStorage("nodeOnlyOnPower") var onlyOnPower = true {
         didSet { if enabled { applyPower() } }
@@ -120,6 +138,12 @@ final class NodeController: ObservableObject {
         let p = Process()
         p.executableURL = binary
         p.arguments = args
+        if prove, !proveAddress.isEmpty {
+            // The node proves blocks with the bundled aether-prover and pays this address.
+            var env = ProcessInfo.processInfo.environment
+            env["AETHER_PROVE"] = proveAddress
+            p.environment = env
+        }
         let log = Self.dataDir.appendingPathComponent("node.log")
         FileManager.default.createFile(atPath: log.path, contents: nil)
         if let h = try? FileHandle(forWritingTo: log) {
@@ -208,8 +232,42 @@ final class NodeController: ObservableObject {
     /// Switch the wallet to the local node once it has caught up with the network.
     private var switched = false
 
+    private func restartIfRunning() {
+        guard process != nil else { return }
+        stop(keepSwitch: true)
+        start()
+    }
+
+    private func refreshProver() {
+        guard prove else {
+            prover = nil
+            return
+        }
+        let port = Self.port
+        Task.detached {
+            let v = await LocalRPC.call(port: port, method: "aether_proverStatus", params: [])
+            let status = v.flatMap { try? JSONSerialization.data(withJSONObject: $0) }.flatMap { try? JSONDecoder().decode(ProverStatus.self, from: $0) }
+            await MainActor.run { self.prover = status }
+        }
+    }
+
+    /// Rewards this Mac's proofs earned, as CSV (for tax records).
+    func rewardsCSV() async -> String? {
+        guard !proveAddress.isEmpty,
+              let list = await LocalRPC.call(port: Self.port, method: "aether_rewards", params: [proveAddress]) as? [[String: Any]] else { return nil }
+        var csv = "proven_block,amount_aeth,paid_in_block,time_utc\n"
+        let iso = ISO8601DateFormatter()
+        for r in list {
+            let amount = Wei.exact(LocalRPC.decimal(r["amount"]))
+            let ms = (r["timestamp_ms"] as? NSNumber)?.doubleValue ?? 0
+            csv += "\(r["proven"] ?? ""),\(amount),\(r["height"] ?? ""),\(iso.string(from: Date(timeIntervalSince1970: ms / 1000)))\n"
+        }
+        return csv
+    }
+
     private func check() {
         refreshVoting()
+        refreshProver()
         let port = Self.port, switched = self.switched
         Task.detached {
             let local = localNodeHeight(port: port)
@@ -226,6 +284,42 @@ final class NodeController: ObservableObject {
                 }
             }
         }
+    }
+}
+/// JSON-RPC to the local node (loopback only).
+enum LocalRPC {
+    static func call(port: UInt16, method: String, params: [Any]) async -> Any? {
+        guard let url = URL(string: "http://127.0.0.1:\(port)/") else { return nil }
+        var req = URLRequest(url: url, timeoutInterval: 5)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": 1, "method": method, "params": params])
+        guard let (data, _) = try? await URLSession.shared.data(for: req),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return obj["result"]
+    }
+
+    /// A U256 from JSON ("0x…" hex or a number) as a decimal string of wei.
+    static func decimal(_ v: Any?) -> String {
+        if let n = v as? NSNumber { return n.stringValue }
+        guard var hex = v as? String else { return "0" }
+        if hex.hasPrefix("0x") { hex.removeFirst(2) }
+        var digits: [UInt8] = [0]  // little-endian base 10
+        for c in hex {
+            guard let d = c.hexDigitValue else { return "0" }
+            var carry = d
+            for i in digits.indices {
+                let x = Int(digits[i]) * 16 + carry
+                digits[i] = UInt8(x % 10)
+                carry = x / 10
+            }
+            while carry > 0 {
+                digits.append(UInt8(carry % 10))
+                carry /= 10
+            }
+        }
+        let s = digits.reversed().map(String.init).joined().drop(while: { $0 == "0" })
+        return s.isEmpty ? "0" : String(s)
     }
 }
 #endif

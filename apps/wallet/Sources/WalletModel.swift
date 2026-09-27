@@ -428,6 +428,13 @@ enum Wei {
         let w = whole.isEmpty ? "0" : String(whole)
         return frac.isEmpty ? w : "\(w).\(frac.prefix(6))"
     }
+
+    /// All 18 decimals (records, exports).
+    static func exact(_ wei: String) -> String {
+        let padded = String(repeating: "0", count: max(0, 19 - wei.count)) + wei
+        let whole = padded.dropLast(18).drop(while: { $0 == "0" })
+        return "\(whole.isEmpty ? "0" : String(whole)).\(padded.suffix(18))"
+    }
 }
 
 /// A recovery this device proposed, kept until it is finished (survives restarts).

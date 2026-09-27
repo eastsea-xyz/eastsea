@@ -53,7 +53,7 @@ targets:
           set -euo pipefail
           H="$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Helpers"
           mkdir -p "$H"
-          for t in "$SRCROOT/../../target/release/aether" "$SRCROOT/../../target/agent/aether-agent"; do
+          for t in "$SRCROOT/../../target/release/aether" "$SRCROOT/../../target/agent/aether-agent" "$SRCROOT/../../apps/prover/target/release/aether-prover"; do
             [ -x "$t" ] || continue
             cp -f "$t" "$H/"
             codesign --force --options runtime --timestamp=none --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$H/$(basename "$t")"

@@ -104,9 +104,14 @@ where
         let cfg = self.chain.cfg();
         let skeleton = Block::new(context.clone(), parent_block.digest(), height, ts, bytes::Bytes::new());
         let ctx = Chain::block_context(&cfg, &skeleton, &parent);
-        let extras = Extras { handoff: self.chain.handoff_for(&parent), seed: self.chain.seed_for(&parent), upgrade: self.chain.upgrade_for(&parent) };
+        let extras = Extras {
+            handoff: self.chain.handoff_for(&parent),
+            seed: self.chain.seed_for(&parent),
+            upgrade: self.chain.upgrade_for(&parent),
+            proofs: self.chain.proofs_for(&parent),
+        };
         // Under the parent's next protocol, with its one-time changes if it activates here.
-        let pre = match self.chain.pre_state(&parent, parent.next_protocol()) {
+        let (pre, payouts) = match self.chain.pre_state(&parent, parent.next_protocol(), &extras.proofs) {
             Ok(pre) => pre,
             Err(e) => {
                 warn!(?e, "not proposing");
@@ -114,6 +119,7 @@ where
             }
         };
         let (payload, mut out) = build_payload(&parent, &pre, &ctx, self.chain.mempool_candidates(), extras);
+        let statement = crate::chain::statement(&ctx, &payload.txs, &pre, &out);
         crate::chain::with_activation(&pre, &mut out);
         drop(pre);
         let tx_hashes = payload.txs.iter().map(aether_execution::tx_hash).collect();
@@ -126,7 +132,7 @@ where
         };
         let seed = payload.seed.as_ref().map(|s| std::sync::Arc::new((height.get(), s.clone()))).or_else(|| parent.seed.clone());
         let schedule = payload.upgrade.as_ref().map(|u| crate::chain::scheduled(&parent.schedule, &u.upgrade)).unwrap_or_else(|| parent.schedule.clone());
-        self.chain.remember(&block, &parent, &ctx, out, tx_hashes, pending, seed, schedule);
+        self.chain.remember(&block, &parent, &ctx, out, tx_hashes, pending, seed, schedule, statement, payouts);
         info!(height = %height, txs = payload.txs.len(), "proposed");
         Some(block)
     }

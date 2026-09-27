@@ -14,7 +14,9 @@ pub type Migration = fn(u32, &mut WorldState) -> Result<(), StateError>;
 
 /// The changes protocol `protocol` makes when it activates. Protocol 1 is the genesis.
 pub fn activate(protocol: u32, state: &mut WorldState) -> Result<(), StateError> {
-    // No protocol after 1 yet.
-    let _ = (protocol, state);
-    Ok(())
+    match protocol {
+        // Proof market (state rules in `crate::proofs`) and a bounded registrar.
+        2 => crate::registry::upgrade_to_v2(state),
+        _ => Ok(()),
+    }
 }

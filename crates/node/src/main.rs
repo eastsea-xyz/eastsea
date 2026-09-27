@@ -1252,6 +1252,7 @@ fn run_node(a: NodeArgs) {
         if let Some(f) = &faucet_service {
             tracing::info!(address = %f.address, "faucet enabled (aether_faucet)");
         }
+        let prover = attach_proofs(&chain, &data, None);
         let rpc_state = RpcState {
             chain,
             finality: aether_node::rpc::Finality::Marshal(marshal_mailbox),
@@ -1262,6 +1263,7 @@ fn run_node(a: NodeArgs) {
             upstream: None,
             handoff: handoff_service,
             snapshot: Default::default(),
+            prover,
         };
 
         // Public access: iroh endpoint published to the BitTorrent Mainline DHT.
@@ -1323,6 +1325,67 @@ fn watch_upgrades(chain: Chain, dir: std::path::PathBuf, identity: aether_light:
             std::thread::sleep(Duration::from_millis(500));
         }
     });
+}
+
+/// Block proofs (protocol 2). Validators verify proofs with the pinned sidecar;
+/// followers execute only certified blocks, whose proofs the committee checked.
+/// With `AETHER_PROVE=<payout address>` this node also proves blocks and hands
+/// the proofs to its proposals (validator) or to a validator (follower).
+fn attach_proofs(chain: &Chain, data: &str, upstream: Option<std::sync::Arc<aether_node::follow::Upstream>>) -> Option<aether_node::prover::SharedStatus> {
+    use aether_node::prover::{find_binary, spawn_service, Sidecar, Verifier};
+    struct Certified;
+    impl aether_node::chain::ProofVerifier for Certified {
+        fn verify(&self, _: &[u8], _: [u8; 32]) -> bool {
+            true
+        }
+    }
+    let dir = std::path::Path::new(data).join("prover");
+    let bin = find_binary();
+    if upstream.is_some() {
+        chain.lock().verifier = Some(std::sync::Arc::new(Certified));
+    } else if let Some(bin) = &bin {
+        match Sidecar::spawn(bin, &dir.join("verify")) {
+            Ok(sc) => {
+                tracing::info!(program = %sc.program, "proof verifier ready");
+                chain.lock().verifier = Some(std::sync::Arc::new(Verifier::new(sc)));
+            }
+            Err(e) => tracing::warn!(%e, "no proof verifier: this validator will not vote for blocks carrying proofs"),
+        }
+    } else {
+        tracing::warn!("aether-prover not found: this validator will not vote for blocks carrying proofs");
+    }
+    let payout: Address = std::env::var("AETHER_PROVE").ok()?.parse().map_err(|_| tracing::warn!("AETHER_PROVE is not an address")).ok()?;
+    let sidecar = match bin.as_ref().map(|b| Sidecar::spawn(b, &dir.join("prove"))) {
+        Some(Ok(sc)) => sc,
+        Some(Err(e)) => {
+            tracing::warn!(%e, "cannot start the prover");
+            return None;
+        }
+        None => {
+            tracing::warn!("AETHER_PROVE is set but aether-prover was not found");
+            return None;
+        }
+    };
+    let status = aether_node::prover::SharedStatus::default();
+    let handle = tokio::runtime::Handle::current();
+    let target = chain.clone();
+    spawn_service(chain.clone(), sidecar, payout, status.clone(), move |claim| match &upstream {
+        Some(up) => {
+            let up = up.clone();
+            handle.spawn(async move {
+                if let Err(e) = up.first("aether_submitProof", json!([claim])).await {
+                    tracing::warn!(%e, "proof not accepted upstream");
+                }
+            });
+        }
+        None => {
+            if let Err(e) = target.add_proof(claim) {
+                tracing::warn!(%e, "own proof not accepted");
+            }
+        }
+    });
+    tracing::info!(%payout, "proving blocks (rewards to this address)");
+    Some(status)
 }
 
 /// Leave no orphan: stop when the parent process is gone (reparented to launchd).
@@ -1401,6 +1464,7 @@ fn run_follow(
             .map(|k| hex::encode(k.validator_key()));
         tokio::spawn(follow::run(chain.clone(), upstream.clone(), set, archive.clone(), joining));
         tracing::info!(height = chain.finalized_height(), rpc_port, "following (not a validator): every block is verified and re-executed here");
+        let prover = attach_proofs(&chain, &data, Some(upstream.clone()));
         let st = RpcState {
             chain,
             finality: aether_node::rpc::Finality::Archive(archive),
@@ -1411,6 +1475,7 @@ fn run_follow(
             upstream: Some(upstream),
             handoff: None,
             snapshot: Default::default(),
+            prover,
         };
         rpc::serve(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), rpc_port), st).await.map_err(|e| e.to_string())
     })

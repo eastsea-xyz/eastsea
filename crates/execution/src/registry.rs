@@ -52,6 +52,31 @@ pub fn predeploy(state: &mut WorldState, registrar: ([u8; 32], [u8; 32]), params
     Ok(())
 }
 
+/// Runtime bytecode of `CommitteeRegistry` v2 (protocol 2: registrations per
+/// epoch bounded; same storage layout, new slots 7-9).
+pub fn code_v2() -> Bytes {
+    Bytes::from(alloy_primitives::hex::decode(include_str!("committee_registry_v2.bin.hex").trim()).expect("valid hex"))
+}
+
+/// New candidates per epoch from protocol 2 (slot 7).
+pub const MAX_PER_EPOCH: u64 = 16;
+
+/// Protocol 2: the registry's code becomes v2 with the per-epoch bound (no-op without a registry).
+pub fn upgrade_to_v2(state: &mut WorldState) -> Result<(), crate::world::StateError> {
+    if state.code(&REGISTRY).is_empty() {
+        return Ok(());
+    }
+    state.set_code(REGISTRY, code_v2())?;
+    state.set_storage(REGISTRY, U256::from(7u64), U256::from(MAX_PER_EPOCH));
+    Ok(())
+}
+
+/// Replace the registrar key (a committee-signed upgrade); zeros stop registrations.
+pub fn set_registrar(state: &mut WorldState, registrar: ([u8; 32], [u8; 32])) {
+    state.set_storage(REGISTRY, U256::ZERO, U256::from_be_bytes(registrar.0));
+    state.set_storage(REGISTRY, U256::from(1u64), U256::from_be_bytes(registrar.1));
+}
+
 /// Blocks per epoch as set at genesis.
 pub fn epoch_blocks(state: &WorldState) -> u64 {
     state.storage(&REGISTRY, U256::from(4u64)).to::<u64>().max(1)

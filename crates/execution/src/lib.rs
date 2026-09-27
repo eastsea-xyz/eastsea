@@ -5,6 +5,7 @@ pub mod block;
 pub mod fees;
 pub mod forks;
 mod parallel;
+pub mod proofs;
 pub mod registry;
 pub mod tx;
 pub mod world;

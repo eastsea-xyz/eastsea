@@ -32,6 +32,7 @@ contract CommitteeRegistry {
     error Known();
     error Unknown();
     error BadAttestation();
+    error TooManyThisEpoch();
 
     event Registered(uint256 index, address operator, bytes32 validatorKey, bytes32 nodeId);
     event Beacon(uint256 index, uint64 epoch, uint64 streak);
@@ -55,6 +56,12 @@ contract CommitteeRegistry {
     /// Macs eligible at a draw, in an order fixed by the committee's threshold
     /// signature on the draw number (docs/research/voting-set-security-2026.md).
     uint256 public drawEpochs;
+    /// Protocol 2: at most this many new candidates per epoch (slot 7; 0 = no limit),
+    /// so even a stolen registrar key cannot flood the pool.
+    uint256 public maxPerEpoch;
+    /// The epoch and count of registrations so far (slots 8 and 9).
+    uint256 public regEpoch;
+    uint256 public regCount;
 
     function epoch() public view returns (uint64) {
         return uint64(block.number / epochBlocks);
@@ -76,6 +83,14 @@ contract CommitteeRegistry {
         (bool ok, bytes memory out) = P256VERIFY.staticcall(abi.encodePacked(digest, r, s, registrarX, registrarY));
         if (!ok || out.length != 32 || abi.decode(out, (uint256)) != 1) revert BadAttestation();
         uint64 e = epoch();
+        if (maxPerEpoch != 0) {
+            if (regEpoch != e) {
+                regEpoch = e;
+                regCount = 0;
+            }
+            if (regCount >= maxPerEpoch) revert TooManyThisEpoch();
+            regCount += 1;
+        }
         candidates.push(Candidate(msg.sender, validatorKey, nodeId, beaconer, e, e, 1, 0));
         indexOf[validatorKey] = candidates.length;
         emit Registered(candidates.length - 1, msg.sender, validatorKey, nodeId);

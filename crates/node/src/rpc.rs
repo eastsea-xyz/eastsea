@@ -41,6 +41,8 @@ pub struct RpcState {
     pub handoff: Option<std::sync::Arc<crate::handoff::Service>>,
     /// The last snapshot served, by height (built once, served in chunks).
     pub snapshot: SnapshotCache,
+    /// Set when this node proves blocks (protocol 2).
+    pub prover: Option<crate::prover::SharedStatus>,
 }
 
 /// The snapshot being served: (height, serialized bytes).
@@ -93,6 +95,7 @@ pub async fn handle_value(st: &RpcState, req: Value) -> Value {
             _ => st.upstream.as_ref().expect("checked").first(&method, json!([true])).await.map_err(|e| (-32000, e)),
         },
         "aether_network" => Ok(st.network.clone().unwrap_or(Value::Null)),
+        "aether_submitProof" => submit_proof(st, &params).await,
         _ => dispatch(st, &method, &params),
     };
     match result {
@@ -285,6 +288,14 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
             }
             Ok(json!({ "hash": hash, "amount_wei": crate::faucet::GRANT.to_string() }))
         }
+        "aether_proverStatus" => Ok(match &st.prover {
+            Some(s) => serde_json::to_value(&*s.lock().map_err(|_| (-32000, "status lock".to_string()))?).unwrap_or_default(),
+            None => json!({ "running": false }),
+        }),
+        "aether_rewards" => {
+            let a: Address = param(p, 0)?;
+            Ok(json!(chain.rewards(&a)))
+        }
         "aether_sendTransaction" => {
             let tx: TxEnvelope = param(p, 0)?;
             let cfg = chain.cfg();
@@ -356,4 +367,17 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
         }
         _ => Err((-32601, format!("method not found: {method}"))),
     }
+}
+
+/// A block proof: validators verify it and keep it for their proposals;
+/// followers pass it on to a validator.
+async fn submit_proof(st: &RpcState, p: &Value) -> Result<Value, (i64, String)> {
+    let claim: aether_light::block::ProofClaim = serde_json::from_value(p.get(0).cloned().unwrap_or_default()).map_err(|e| (-32602, format!("proof: {e}")))?;
+    if let Some(up) = &st.upstream {
+        return up.first("aether_submitProof", json!([claim])).await.map_err(|e| (-32000, e));
+    }
+    let chain = st.chain.clone();
+    let height = claim.height;
+    tokio::task::spawn_blocking(move || chain.add_proof(claim)).await.map_err(|e| (-32000, e.to_string()))?.map_err(|e| (-32000, e))?;
+    Ok(json!({ "accepted": height }))
 }

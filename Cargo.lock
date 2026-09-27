@@ -185,6 +185,7 @@ dependencies = [
  "aether-hash",
  "aether-light",
  "aether-net",
+ "aether-proving",
  "aether-state",
  "aether-types",
  "alloy-primitives",

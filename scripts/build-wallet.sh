@@ -7,6 +7,14 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:$PATH"
 target=${1:-macos}
+# The macOS node pins the proving program (the sidecar's embedded guest ELF), so
+# a node only verifies proofs of the program the protocol names.
+if [ "$target" = macos ] && [ -d apps/prover ] && [ -d "${AETHER_JOLT:-/Volumes/workspace/aether-jolt}/jolt" ]; then
+  (cd apps/prover && MACOSX_DEPLOYMENT_TARGET=14.0 cargo build -q --release)
+  AETHER_PROVER_PROGRAM=$(apps/prover/target/release/aether-prover info | python3 -c 'import json,sys; print(json.load(sys.stdin)["guest_elf_sha256"])')
+  export AETHER_PROVER_PROGRAM
+  echo "proving program $AETHER_PROVER_PROGRAM"
+fi
 case "$target" in
   macos)  MACOSX_DEPLOYMENT_TARGET=14.0 cargo build -p aether-ffi -p aether-node --release ;;
   ios-sim) IPHONEOS_DEPLOYMENT_TARGET=17.0 cargo build -p aether-ffi --release --target aarch64-apple-ios-sim ;;

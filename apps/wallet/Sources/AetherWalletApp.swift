@@ -38,7 +38,13 @@ struct AetherWalletApp: App {
         #endif
         #if os(macOS)
         Settings {
-            SettingsView().environmentObject(node)
+            SettingsView().environmentObject(node).environmentObject(model)
+        }
+        // While the node runs: what this Mac is proving, right in the menu bar.
+        MenuBarExtra(isInserted: Binding(get: { node.enabled && node.prove }, set: { _ in })) {
+            ProverMenu().environmentObject(node)
+        } label: {
+            Image(systemName: node.prover?.proving != nil ? "cpu.fill" : "cpu")
         }
         #endif
     }
@@ -48,6 +54,7 @@ struct AetherWalletApp: App {
 /// Aether ▸ Settings: how the node runs on this Mac.
 struct SettingsView: View {
     @EnvironmentObject var node: NodeController
+    @EnvironmentObject var model: WalletModel
 
     var body: some View {
         Form {
@@ -55,6 +62,12 @@ struct SettingsView: View {
             Toggle("Only while on the power adapter", isOn: $node.onlyOnPower)
                 .help("On a laptop, pause the node on battery and resume on power.")
             Toggle("Open Aether at login", isOn: Binding(get: { node.startAtLogin }, set: { node.startAtLogin = $0 }))
+            Toggle("Prove blocks on this Mac's GPU", isOn: Binding(get: { node.prove }, set: {
+                if $0 { node.proveAddress = model.address }
+                node.prove = $0
+            }))
+            .disabled(model.address.isEmpty)
+            .help("Your node proves recent blocks with Metal. The first valid proof of a block is paid to this wallet. Uses the GPU and power while on.")
             Text("Your node verifies every block itself and your wallet asks it instead of the network. Quitting Aether stops it.")
                 .font(.caption).foregroundStyle(.secondary)
         }

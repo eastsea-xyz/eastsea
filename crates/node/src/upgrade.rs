@@ -22,17 +22,27 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// The protocol this binary implements.
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 const NAMESPACE: &[u8] = b"aether-upgrade-v1";
 
 pub use aether_light::block::{Release, SignedUpgrade, Upgrade};
 
-/// Activation schedule on chain: (protocol, first height), ascending in both.
-pub type Schedule = Vec<(u32, u64)>;
+/// A protocol activation on chain: from height `at`, protocol `protocol`
+/// (and a new registrar key, if the upgrade names one).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Activation {
+    pub protocol: u32,
+    pub at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registrar: Option<(aether_types::B256, aether_types::B256)>,
+}
+
+/// Activation schedule on chain, ascending in protocol and height.
+pub type Schedule = Vec<Activation>;
 
 /// The protocol whose rules apply at `height`.
-pub fn protocol_at(schedule: &[(u32, u64)], height: u64) -> u32 {
-    schedule.iter().filter(|(_, at)| *at <= height).map(|(p, _)| *p).max().unwrap_or(1)
+pub fn protocol_at(schedule: &[Activation], height: u64) -> u32 {
+    schedule.iter().filter(|a| a.at <= height).map(|a| a.protocol).max().unwrap_or(1)
 }
 
 /// Size bounds of an upgrade carried in a block.
@@ -117,6 +127,7 @@ mod tests {
             activate_at: at,
             releases: vec![Release { platform: "macos-arm64-dmg".into(), version: "0.2.0".into(), blake3: "ab".repeat(32), url: "https://x".into() }],
             notes: "test".into(),
+            registrar: None,
         }
     }
 

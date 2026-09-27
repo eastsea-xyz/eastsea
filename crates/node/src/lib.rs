@@ -11,6 +11,7 @@ pub mod follow;
 pub mod handoff;
 pub mod inclusion;
 pub mod p2p;
+pub mod prover;
 pub mod roster;
 pub mod rotation;
 pub mod rpc;

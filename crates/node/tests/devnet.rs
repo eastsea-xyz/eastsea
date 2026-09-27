@@ -401,7 +401,7 @@ fn locally_generated_keys_network_file_dkg_and_consensus() {
     assert!(out.status.success());
     let faucet_addr = String::from_utf8_lossy(&out.stdout).split_whitespace().nth(2).unwrap().to_string();
     let pubs: Vec<String> = (0..n).map(|i| data(i).join("validator.pub.json").to_str().unwrap().to_string()).collect();
-    let out = Command::new(BIN).args(["network", "--faucet", &faucet_addr]).args(&pubs).output().unwrap();
+    let out = Command::new(BIN).args(["network", "--faucet", &faucet_addr, "--epoch-blocks", "10"]).args(&pubs).output().unwrap();
     assert!(out.status.success());
     let network = dir.join("network.json");
     std::fs::write(&network, &out.stdout).unwrap();
@@ -460,10 +460,12 @@ fn locally_generated_keys_network_file_dkg_and_consensus() {
     assert!(bal.contains("balance   10000000000000000000 wei") && bal.contains("verified  ✓"), "{bal}");
     std::thread::sleep(Duration::from_millis(1_100));
     assert!(net.rpc(0, "aether_faucet", json!([bob])).is_none(), "second grant to the same address within the cooldown");
-    // 6. A protocol upgrade signed by 3 of the 4 validators' key shares. Nodes
-    //    running protocol 1 stop before it activates instead of forking.
-    let target = net.height(0) + 12;
-    let upgrade = json!({ "chain_id": written["chain_id"], "protocol": 2, "activate_at": target, "releases": [], "notes": "test" });
+    // 6. A protocol upgrade signed by 3 of the 4 validators' key shares goes on
+    //    chain (at least one epoch of notice); nodes that do not run the new
+    //    protocol stop before it activates instead of forking.
+    let target = net.height(0) + 40;
+    let next = aether_node::upgrade::PROTOCOL + 1;
+    let upgrade = json!({ "chain_id": written["chain_id"], "protocol": next, "activate_at": target, "releases": [], "notes": "test" });
     let up_path = dir.join("upgrade.json");
     std::fs::write(&up_path, upgrade.to_string()).unwrap();
     let net_file = data(0).join("network.json");
@@ -493,11 +495,11 @@ fn locally_generated_keys_network_file_dkg_and_consensus() {
         std::fs::write(d.join("forged.json"), forged.to_string()).unwrap();
         std::fs::write(d.join("v2.json"), &signed).unwrap();
     }
-    let end = Instant::now() + Duration::from_secs(60);
+    let end = Instant::now() + Duration::from_secs(120);
     while Instant::now() < end && (0..n).any(|i| net.alive(i)) {
         std::thread::sleep(Duration::from_millis(250));
     }
-    assert!((0..n).all(|i| !net.alive(i)), "protocol-1 nodes must stop before the upgrade activates");
+    assert!((0..n).all(|i| !net.alive(i)), "nodes without the new protocol must stop before the upgrade activates");
     let last: u64 = (0..n)
         .map(|i| {
             let out = Command::new(BIN).args(["head", "--data", data(i).to_str().unwrap()]).output().unwrap();
@@ -989,8 +991,16 @@ fn a_late_mac_starts_from_a_certified_snapshot() {
     let data = net.dir.join("late");
     let log = std::fs::File::create(net.dir.join("late.log")).unwrap();
     let from = format!("{},{}", net.url(1), net.url(2));
-    let args: Vec<String> =
-        vec!["follow".into(), "--checkpoint".into(), "--from-rpc".into(), from, "--data".into(), data.to_str().unwrap().into(), "--rpc-port".into(), port.to_string()];
+    let args: Vec<String> = vec![
+        "follow".into(),
+        "--checkpoint".into(),
+        "--from-rpc".into(),
+        from,
+        "--data".into(),
+        data.to_str().unwrap().into(),
+        "--rpc-port".into(),
+        port.to_string(),
+    ];
     net.procs.push(Some(spawn_logged(log, &args)));
     net.rpc.push(port);
     let f = net.rpc.len() - 1;

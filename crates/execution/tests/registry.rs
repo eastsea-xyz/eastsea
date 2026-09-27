@@ -114,3 +114,33 @@ fn only_the_registrar_can_attest() {
     assert!(!net.call(&owner, encode_register([1; 32], [2; 32], op, r, s), 5));
     assert!(candidates(&net.state).is_empty());
 }
+
+#[test]
+fn protocol_2_bounds_registrations_per_epoch_and_keeps_candidates() {
+    let mut net = Net::new();
+    let owner = P256Signer::from_seed(&seed(2)).unwrap();
+    let node = P256Signer::from_seed(&seed(3)).unwrap();
+    let op = net.fund(&owner);
+    let beaconer = net.fund(&node);
+    let reg = |net: &mut Net, k: u8, block: u64| {
+        let (key, id) = ([k; 32], [k.wrapping_add(100); 32]);
+        let (r, s) = net.attest(op, key, id, beaconer);
+        net.call(&owner, encode_register(key, id, beaconer, r, s), block)
+    };
+    assert!(reg(&mut net, 1, 10), "registered under v1");
+
+    // Protocol 2 swaps in v2 (as its activation block does); a limit of 2 per epoch for the test.
+    aether_execution::forks::activate(2, &mut net.state).unwrap();
+    net.state.set_storage(REGISTRY, U256::from(7u64), U256::from(2u64));
+    assert_eq!(candidates(&net.state).len(), 1, "existing candidates stay");
+    assert!(net.call(&node, encode_beacon([1; 32]), EPOCH_BLOCKS + 1), "and keep beaconing");
+    assert!(reg(&mut net, 2, EPOCH_BLOCKS + 2));
+    assert!(reg(&mut net, 3, EPOCH_BLOCKS + 3));
+    assert!(!reg(&mut net, 4, EPOCH_BLOCKS + 4), "a third in one epoch is refused");
+    assert!(reg(&mut net, 4, 2 * EPOCH_BLOCKS), "the next epoch has room again");
+    assert_eq!(candidates(&net.state).len(), 4);
+
+    // A committee-signed upgrade can replace the registrar (zeros stop registrations).
+    registry::set_registrar(&mut net.state, ([0; 32], [0; 32]));
+    assert!(!reg(&mut net, 5, 3 * EPOCH_BLOCKS), "no registrar, no new candidates");
+}

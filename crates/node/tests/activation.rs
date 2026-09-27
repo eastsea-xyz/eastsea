@@ -4,6 +4,7 @@
 //! and a node that does not run the new protocol stops there.
 
 use aether_execution::{StateError, WorldState};
+use aether_light::block::ProofClaim;
 use aether_node::block::{Block, Context, EPOCH};
 use aether_node::chain::{build_payload, Chain, ChainConfig, ChainError, Executed, Extras};
 use aether_node::snapshot::Snapshot;
@@ -58,6 +59,7 @@ fn signed(protocol: u32, activate_at: u64) -> SignedUpgrade {
         activate_at,
         releases: vec![Release { platform: "macos-arm64-dmg".into(), version: "0.6.0".into(), blake3: "ab".repeat(32), url: "https://x".into() }],
         notes: String::new(),
+        registrar: None,
     };
     let partials: Vec<_> = shares.iter().take(3).map(|(_, s)| sign_partial(&u, s)).collect();
     combine(&sharing, &partials).unwrap()
@@ -65,14 +67,18 @@ fn signed(protocol: u32, activate_at: u64) -> SignedUpgrade {
 
 /// A block on `parent` built the way a proposer builds it.
 fn propose(chain: &Chain, parent: &Executed, parent_block: &Block, upgrade: Option<SignedUpgrade>) -> Block {
+    propose_with(chain, parent, parent_block, upgrade, vec![])
+}
+
+fn propose_with(chain: &Chain, parent: &Executed, parent_block: &Block, upgrade: Option<SignedUpgrade>, proofs: Vec<ProofClaim>) -> Block {
     let height = parent_block.height.next();
     let leader = ed25519::PrivateKey::from_seed(1).public_key();
     let context = Context { round: Round::new(EPOCH, View::new(height.get())), leader, parent: (View::new(height.get() - 1), parent_block.digest()) };
     let ts = height.get() * 1_000;
     let skeleton = Block::new(context.clone(), parent_block.digest(), height, ts, bytes::Bytes::new());
     let ctx = Chain::block_context(&chain.cfg(), &skeleton, parent);
-    let pre = chain.pre_state(parent, parent.next_protocol()).unwrap();
-    let (payload, _) = build_payload(parent, &pre, &ctx, vec![], Extras { upgrade, ..Default::default() });
+    let (pre, _) = chain.pre_state(parent, parent.next_protocol(), &proofs).unwrap();
+    let (payload, _) = build_payload(parent, &pre, &ctx, vec![], Extras { upgrade, proofs, ..Default::default() });
     Block::new(context, parent_block.digest(), height, ts, payload.to_bytes())
 }
 
@@ -98,7 +104,7 @@ fn a_signed_upgrade_activates_at_its_height_and_old_nodes_stop_there() {
     // Block 1 puts the upgrade on chain: protocol 2 from height 20.
     let b1 = propose(&chain, &parent, &genesis, Some(signed(2, 20)));
     parent = advance(&chain, parent, &b1);
-    assert_eq!(*parent.schedule, vec![(2, 20)]);
+    assert_eq!(*parent.schedule, vec![aether_node::upgrade::Activation { protocol: 2, at: 20, registrar: None }]);
     blocks.push(b1);
     for _ in 2..20 {
         let b = propose(&chain, &parent, blocks.last().unwrap(), None);
@@ -235,6 +241,104 @@ fn an_activation_block_survives_a_restart() {
     let f = again.lock().finalized.clone();
     assert_eq!((f.height, f.state.root()), (21, root));
     assert_eq!(f.state.balance(&MARKER), U256::from(7u64));
-    assert_eq!(*f.schedule, vec![(2, 20)]);
+    assert_eq!(*f.schedule, vec![aether_node::upgrade::Activation { protocol: 2, at: 20, registrar: None }]);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Accepts a "proof" that is the commitment itself (tests only).
+struct EchoVerifier;
+impl aether_node::chain::ProofVerifier for EchoVerifier {
+    fn verify(&self, proof: &[u8], commitment: [u8; 32]) -> bool {
+        proof == commitment
+    }
+}
+
+#[test]
+fn protocol_2_records_statements_and_pays_the_first_valid_proof() {
+    use aether_execution::proofs;
+    let (chain, genesis) = node(2);
+    chain.lock().verifier = Some(Arc::new(EchoVerifier));
+    let mut parent = chain.lock().finalized.clone();
+    let mut last = propose(&chain, &parent, &genesis, Some(signed(2, 20)));
+    parent = advance(&chain, parent, &last);
+    for _ in 2..=21 {
+        let b = propose(&chain, &parent, &last, None);
+        parent = advance(&chain, parent, &b);
+        last = b;
+    }
+    // From activation on, each block records its parent's statement: block 20 (the first
+    // protocol-2 block) recorded block 19's, block 21 block 20's; nothing earlier.
+    assert!(proofs::commitment(&parent.state, 20).is_some());
+    assert!(proofs::commitment(&parent.state, 19).is_some());
+    assert_eq!(proofs::commitment(&parent.state, 18), None);
+
+    let prover = Address::repeat_byte(0x77);
+    let claim = |h: u64, proof: [u8; 32]| ProofClaim { height: h, prover, proof: hex::encode(proof) };
+    let c20 = proofs::commitment(&parent.state, 20).unwrap();
+    // A wrong proof, a proof of an unrecorded block, and two claims of one block are refused.
+    for bad in [vec![claim(20, [1; 32])], vec![claim(5, [0; 32])], vec![claim(20, c20), claim(20, c20)]] {
+        let b = with_payload(&propose(&chain, &parent, &last, None), |p| p.proofs = bad.clone());
+        assert!(matches!(chain.execute(&b, &parent), Err(ChainError::Protocol(_))), "{bad:?}");
+    }
+    // The first valid proof is paid the block's issuance; block 21 (recorded by this block) can be proven here too.
+    let c21 = parent.statement.commitment;
+    let b = propose_with(&chain, &parent, &last, None, vec![claim(20, c20), claim(21, c21)]);
+    let p22 = advance(&chain, parent.clone(), &b);
+    assert_eq!(p22.state.balance(&prover), proofs::issuance(20) + proofs::issuance(21));
+    assert_eq!(p22.payouts.len(), 2);
+    assert_eq!(proofs::prover(&p22.state, 20), Some(prover));
+    // Proven once only.
+    let again = propose_with(&chain, &p22, &b, None, vec![]);
+    let again = with_payload(&again, |p| p.proofs = vec![claim(20, c20)]);
+    assert!(matches!(chain.execute(&again, &p22), Err(ChainError::Protocol(_))));
+    // A node without a verifier refuses blocks with proofs.
+    chain.lock().verifier = None;
+    let fresh = with_payload(&propose(&chain, &parent, &last, None), |p| p.proofs = vec![claim(20, c20)]);
+    assert!(matches!(chain.execute(&fresh, &parent), Err(ChainError::Protocol(_))));
+}
+
+#[test]
+fn the_recorded_statement_is_what_the_prover_proves() {
+    let (chain, genesis) = node(2);
+    let mut parent = chain.lock().finalized.clone();
+    let mut last = propose(&chain, &parent, &genesis, Some(signed(2, 20)));
+    parent = advance(&chain, parent, &last);
+    for _ in 2..=22 {
+        let b = propose(&chain, &parent, &last, None);
+        // The prover's input for this block: its pre-state (after the block's system writes), context, txs.
+        let (pre, _) = chain.pre_state(&parent, parent.next_protocol(), &[]).unwrap();
+        let ctx = Chain::block_context(&chain.cfg(), &b, &parent);
+        let input = aether_proving::block::input(&pre, &ctx, &b.payload().unwrap().txs, &[]).unwrap();
+        let proved = aether_proving::block::execute(&input).unwrap().commitment();
+        drop(pre);
+        parent = advance(&chain, parent, &b);
+        assert_eq!(proved, parent.statement.commitment, "block {}", parent.height);
+        last = b;
+    }
+}
+
+#[test]
+fn a_signed_upgrade_replaces_the_registrar_when_it_activates() {
+    use aether_execution::registry::REGISTRY;
+    use aether_types::B256;
+    let (chain, genesis) = node(2);
+    let (_, sharing, shares) = aether_light::devnet_threshold(4);
+    let mut u = signed(2, 20).upgrade;
+    u.registrar = Some((B256::repeat_byte(5), B256::repeat_byte(6)));
+    let partials: Vec<_> = shares.iter().take(3).map(|(_, s)| sign_partial(&u, s)).collect();
+    let up = combine(&sharing, &partials).unwrap();
+    let mut parent = chain.lock().finalized.clone();
+    let mut last = propose(&chain, &parent, &genesis, Some(up));
+    parent = advance(&chain, parent, &last);
+    let before = parent.state.storage(&REGISTRY, U256::ZERO);
+    for _ in 2..=20 {
+        let b = propose(&chain, &parent, &last, None);
+        parent = advance(&chain, parent, &b);
+        last = b;
+        if parent.height == 19 {
+            assert_eq!(parent.state.storage(&REGISTRY, U256::ZERO), before, "unchanged until activation");
+        }
+    }
+    assert_eq!(parent.state.storage(&REGISTRY, U256::ZERO), U256::from_be_bytes([5; 32]));
+    assert_eq!(parent.state.storage(&REGISTRY, U256::from(1u64)), U256::from_be_bytes([6; 32]));
 }

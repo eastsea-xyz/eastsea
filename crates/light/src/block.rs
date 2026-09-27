@@ -1,7 +1,7 @@
 //! Consensus block: Commonware's certifiable block envelope around an Aether payload.
 //! Structure adapted from alto-types (MIT OR Apache-2.0, commonwarexyz/alto).
 
-use aether_types::{BlockAccessList, GasVector, TxEnvelope, B256};
+use aether_types::{Address, BlockAccessList, GasVector, TxEnvelope, B256};
 use bytes::{Buf, BufMut, Bytes};
 use commonware_codec::{varint::UInt, BufsMut, Encode, EncodeSize, Error, RangeCfg, Read, ReadExt, Write};
 use commonware_consensus::{
@@ -52,6 +52,20 @@ pub struct Payload {
     /// every checkpoint learns its activation height the same way.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upgrade: Option<SignedUpgrade>,
+    /// Proofs of earlier blocks (protocol 2): the first valid one of a block
+    /// is paid its escrow share and issuance.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub proofs: Vec<ProofClaim>,
+}
+
+/// A proof that block `height` executed as its recorded statement says.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProofClaim {
+    pub height: u64,
+    /// Paid on inclusion.
+    pub prover: Address,
+    /// The serialized proof (hex).
+    pub proof: String,
 }
 
 /// A release implementing a protocol version.
@@ -76,6 +90,10 @@ pub struct Upgrade {
     pub releases: Vec<Release>,
     #[serde(default)]
     pub notes: String,
+    /// A new registrar P-256 key (x, y), in effect from `activate_at`; all
+    /// zeros stops registrations. Only the committee can change it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registrar: Option<(B256, B256)>,
 }
 
 /// An upgrade with the committee's threshold signature (nodes verify it).

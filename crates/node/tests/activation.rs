@@ -327,21 +327,29 @@ fn the_recorded_statement_is_what_the_prover_proves() {
 fn a_signed_upgrade_replaces_the_registrar_when_it_activates() {
     use aether_execution::registry::REGISTRY;
     use aether_types::B256;
-    let (chain, genesis) = node(2);
+    let (chain, genesis) = node(3);
     let (_, sharing, shares) = aether_light::devnet_threshold(4);
-    let mut u = signed(2, 20).upgrade;
-    u.registrar = Some((B256::repeat_byte(5), B256::repeat_byte(6)));
-    let partials: Vec<_> = shares.iter().take(3).map(|(_, s)| sign_partial(&u, s)).collect();
-    let up = combine(&sharing, &partials).unwrap();
-    let mut parent = chain.lock().finalized.clone();
-    let mut last = propose(&chain, &parent, &genesis, Some(up));
+    let sign = |u: &Upgrade| combine(&sharing, &shares.iter().take(3).map(|(_, s)| sign_partial(u, s)).collect::<Vec<_>>()).unwrap();
+    // A registrar change cannot be announced before protocol 2 (protocol-1 nodes cannot read it).
+    let mut early = signed(2, 20).upgrade;
+    early.registrar = Some((B256::repeat_byte(5), B256::repeat_byte(6)));
+    let parent = chain.lock().finalized.clone();
+    let b = with_payload(&propose(&chain, &parent, &genesis, None), |p| p.upgrade = Some(sign(&early)));
+    assert!(matches!(chain.execute(&b, &parent), Err(ChainError::Protocol(_))));
+
+    // Protocol 2 at 20; then protocol 3 at 40 carrying the new registrar key.
+    let mut parent = parent;
+    let mut last = propose(&chain, &parent, &genesis, Some(signed(2, 20)));
     parent = advance(&chain, parent, &last);
+    let mut later = signed(3, 40).upgrade;
+    later.registrar = Some((B256::repeat_byte(5), B256::repeat_byte(6)));
     let before = parent.state.storage(&REGISTRY, U256::ZERO);
-    for _ in 2..=20 {
-        let b = propose(&chain, &parent, &last, None);
+    for _ in 2..=40 {
+        let up = (parent.height == 25).then(|| sign(&later));
+        let b = propose(&chain, &parent, &last, up);
         parent = advance(&chain, parent, &b);
         last = b;
-        if parent.height == 19 {
+        if parent.height == 39 {
             assert_eq!(parent.state.storage(&REGISTRY, U256::ZERO), before, "unchanged until activation");
         }
     }

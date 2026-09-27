@@ -697,6 +697,15 @@ impl Chain {
 
     /// Keep a proof (verified by this node's verifier) for this node's next proposals.
     pub fn add_proof(&self, claim: aether_light::block::ProofClaim) -> Result<(), String> {
+        self.add_proof_from(claim, false)
+    }
+
+    /// A proof this node's own prover made: no rate limit (nobody else can use this path).
+    pub fn add_own_proof(&self, claim: aether_light::block::ProofClaim) -> Result<(), String> {
+        self.add_proof_from(claim, true)
+    }
+
+    fn add_proof_from(&self, claim: aether_light::block::ProofClaim, own: bool) -> Result<(), String> {
         let open = |g: &Inner, h: u64| {
             let f = &g.finalized;
             aether_execution::proofs::claimable(&f.state, h, f.height + 1)
@@ -714,11 +723,13 @@ impl Chain {
                 return Err("the proof is not a hex string of an allowed size".into());
             }
             let now = Instant::now();
-            if g.last_proof_check.is_some_and(|t| now.duration_since(t) < PROOF_CHECK_INTERVAL) {
+            if !own && g.last_proof_check.is_some_and(|t| now.duration_since(t) < PROOF_CHECK_INTERVAL) {
                 return Err("busy; try again shortly".into());
             }
             let c = open(&g, claim.height)?;
-            g.last_proof_check = Some(now);
+            if !own {
+                g.last_proof_check = Some(now);
+            }
             (g.verifier.clone().ok_or("this node does not verify proofs")?, c)
         };
         let bytes = hex::decode(&claim.proof).map_err(|_| "proof is not hex")?;
@@ -760,6 +771,14 @@ impl Chain {
         self.lock().proof_proposal = Some((height, digest));
     }
 
+    /// Whether block `height` can still be proven (recorded or the head, not proven, not expired).
+    pub fn proof_open(&self, height: u64) -> bool {
+        let g = self.lock();
+        let f = &g.finalized;
+        aether_execution::proofs::prover(&f.state, height).is_none()
+            && (height == f.height || aether_execution::proofs::claimable(&f.state, height, f.height + 1).is_ok())
+    }
+
     /// Drop these proofs from the pool (they no longer verify here).
     pub fn drop_proofs(&self, heights: &[u64]) {
         self.lock().proof_pool.retain(|c| !heights.contains(&c.height));
@@ -779,6 +798,10 @@ impl Chain {
     /// chain, a newer protocol than any scheduled, activating after the last one
     /// and at least `notice` blocks later, and of bounded size.
     fn admissible_upgrade(parent: &Executed, cfg: &ChainConfig, u: &crate::upgrade::Upgrade) -> Result<(), String> {
+        // Protocol-1 nodes cannot read a registrar change: it may only be announced under protocol 2.
+        if u.registrar.is_some() && parent.next_protocol() < 2 {
+            return Err("a registrar change needs protocol 2".into());
+        }
         let chain_id = cfg.chain_id;
         let notice = Self::notice(&parent.state, cfg.epoch_blocks);
         use crate::upgrade::{MAX_FIELD, MAX_RELEASES};
@@ -1032,8 +1055,11 @@ impl Chain {
             }
             if let Some((draw, pool)) = g.pool.clone().filter(|(d, _)| *d == s.1.draw) {
                 let seed = hex::decode(&s.1.signature).unwrap_or_default();
+                // The per-operator seat cap is a protocol-2 rule: before it, every key is its own operator.
                 let ops = crate::rotation::operators(&exec.state);
-                g.proposal = crate::rotation::draw(&pool, &seed, |k| ops.get(k).cloned(), &g.committee).map(|m| (draw, m));
+                let capped = exec.next_protocol() >= 2;
+                g.proposal = crate::rotation::draw(&pool, &seed, |k| ops.get(k).map(|o| if capped { o.clone() } else { k.to_string() }), &g.committee)
+                    .map(|m| (draw, m));
                 keep(&g.store, PROPOSAL, &g.proposal);
             }
         }

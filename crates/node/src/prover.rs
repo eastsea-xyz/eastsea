@@ -44,6 +44,7 @@ struct Io {
 /// How long a request may take before the sidecar is presumed hung and killed.
 const VERIFY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const PROVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
+const SPAWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// One `aether-prover serve` process.
 pub struct Sidecar {
@@ -64,14 +65,7 @@ impl Sidecar {
             .spawn()
             .map_err(|e| format!("start {}: {e}", bin.display()))?;
         let stdin = child.stdin.take().ok_or("no sidecar stdin")?;
-        let mut stdout = BufReader::new(child.stdout.take().ok_or("no sidecar stdout")?);
-        let mut first = String::new();
-        stdout.read_line(&mut first).map_err(|e| e.to_string())?;
-        let info: Value = serde_json::from_str(&first).map_err(|e| format!("sidecar info: {e}"))?;
-        let program = info["guest_elf_sha256"].as_str().ok_or("sidecar did not report its program")?.to_string();
-        if let Some(pinned) = PROGRAM.filter(|p| *p != program) {
-            return Err(format!("the sidecar proves program {program}, the protocol pins {pinned}"));
-        }
+        let stdout = BufReader::new(child.stdout.take().ok_or("no sidecar stdout")?);
         let (tx, lines) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             for line in stdout.lines() {
@@ -81,6 +75,19 @@ impl Sidecar {
                 }
             }
         });
+        // Its first line reports the program; a sidecar that says nothing in time is not used.
+        let first = match lines.recv_timeout(SPAWN_TIMEOUT) {
+            Ok(line) => line,
+            Err(_) => {
+                let _ = child.kill();
+                return Err("the sidecar did not start in time".into());
+            }
+        };
+        let info: Value = serde_json::from_str(&first).map_err(|e| format!("sidecar info: {e}"))?;
+        let program = info["guest_elf_sha256"].as_str().ok_or("sidecar did not report its program")?.to_string();
+        if let Some(pinned) = PROGRAM.filter(|p| *p != program) {
+            return Err(format!("the sidecar proves program {program}, the protocol pins {pinned}"));
+        }
         Ok(Sidecar { io: Mutex::new(Io { child, stdin, lines }), dir: dir.to_path_buf(), program })
     }
 
@@ -227,7 +234,15 @@ pub type SharedStatus = Arc<Mutex<Status>>;
 
 /// Prove the newest finalized block nobody has proven yet, again and again,
 /// and hand each proof to `submit` (this node's proof pool, or its upstream).
-pub fn spawn_service(chain: Chain, sidecar: Sidecar, prover: Address, status: SharedStatus, submit: impl Fn(ProofClaim) + Send + 'static) {
+pub fn spawn_service(
+    chain: Chain,
+    bin: PathBuf,
+    dir: PathBuf,
+    sidecar: Sidecar,
+    prover: Address,
+    status: SharedStatus,
+    submit: impl Fn(ProofClaim) -> Result<(), String> + Send + 'static,
+) {
     status
         .lock()
         .map(|mut s| {
@@ -236,16 +251,24 @@ pub fn spawn_service(chain: Chain, sidecar: Sidecar, prover: Address, status: Sh
             s.payout = Some(prover);
         })
         .ok();
+    let mut sidecar = sidecar;
+    // Proofs not yet accepted, retried until they are or their block is no longer open.
+    let mut unsent: Vec<ProofClaim> = Vec::new();
     std::thread::spawn(move || loop {
+        unsent.retain(|c| chain.proof_open(c.height) && submit(c.clone()).is_err());
         let Some((height, txs, input)) = next_job(&chain, prover) else {
-            std::thread::sleep(std::time::Duration::from_secs(1));
+            std::thread::sleep(std::time::Duration::from_secs(if unsent.is_empty() { 1 } else { 5 }));
             continue;
         };
         status.lock().map(|mut s| s.proving = Some(height)).ok();
         let bytes = postcard::to_allocvec(&input).expect("input encodes");
         match sidecar.prove(&bytes) {
             Ok((proof, _, seconds)) => {
-                submit(ProofClaim { height, prover, proof: hex::encode(proof) });
+                let claim = ProofClaim { height, prover, proof: hex::encode(proof) };
+                if let Err(e) = submit(claim.clone()) {
+                    tracing::warn!(height, %e, "proof not accepted yet; will retry");
+                    unsent.push(claim);
+                }
                 status
                     .lock()
                     .map(|mut s| {
@@ -262,6 +285,12 @@ pub fn spawn_service(chain: Chain, sidecar: Sidecar, prover: Address, status: Sh
             Err(e) => {
                 status.lock().map(|mut s| (s.proving, s.error) = (None, Some(e.clone()))).ok();
                 tracing::warn!(height, %e, "proving failed");
+                if e.contains("exited") {
+                    match Sidecar::spawn(&bin, &dir) {
+                        Ok(fresh) => sidecar = fresh,
+                        Err(e) => tracing::warn!(%e, "prover restart failed"),
+                    }
+                }
                 std::thread::sleep(std::time::Duration::from_secs(5));
             }
         }

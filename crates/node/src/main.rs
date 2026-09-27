@@ -1343,16 +1343,20 @@ fn install_verifier(chain: &Chain, data: &str, follower: bool) {
         chain.lock().verifier = Some(std::sync::Arc::new(Certified));
         return;
     }
-    let Some(bin) = find_binary() else {
-        tracing::error!("aether-prover not found: this validator cannot vote for blocks carrying proofs");
-        return;
-    };
-    match Verifier::start(&bin, &std::path::Path::new(data).join("prover").join("verify")) {
-        Ok(v) => {
+    match find_binary().map(|bin| Verifier::start(&bin, &std::path::Path::new(data).join("prover").join("verify"))) {
+        Some(Ok(v)) => {
             tracing::info!(program = %v.program(), "proof verifier ready");
             chain.lock().verifier = Some(std::sync::Arc::new(v));
         }
-        Err(e) => tracing::error!(%e, "no proof verifier: this validator cannot vote for blocks carrying proofs"),
+        Some(Err(e)) => tracing::error!(%e, "no proof verifier: this validator cannot vote for blocks carrying proofs"),
+        None => tracing::error!("aether-prover not found: this validator cannot vote for blocks carrying proofs"),
+    }
+    // Under protocol 2 a validator that cannot verify proofs would vote against
+    // every block carrying one: refuse to run as one until it is fixed.
+    let g = chain.lock();
+    if g.verifier.is_none() && g.finalized.schedule.iter().any(|a| a.protocol >= 2) {
+        tracing::error!("protocol 2 is scheduled and this validator has no working proof verifier (aether-prover): stopping");
+        std::process::exit(4);
     }
 }
 
@@ -1362,7 +1366,8 @@ fn start_prover(chain: &Chain, data: &str, upstream: Option<std::sync::Arc<aethe
     use aether_node::prover::{find_binary, spawn_service, Sidecar};
     let payout: Address = std::env::var("AETHER_PROVE").ok()?.parse().map_err(|_| tracing::warn!("AETHER_PROVE is not an address")).ok()?;
     let dir = std::path::Path::new(data).join("prover");
-    let sidecar = match find_binary().map(|b| Sidecar::spawn(&b, &dir.join("prove"))) {
+    let bin_path = find_binary()?;
+    let sidecar = match Some(Sidecar::spawn(&bin_path, &dir.join("prove"))) {
         Some(Ok(sc)) => sc,
         Some(Err(e)) => {
             tracing::warn!(%e, "cannot start the prover");
@@ -1376,20 +1381,10 @@ fn start_prover(chain: &Chain, data: &str, upstream: Option<std::sync::Arc<aethe
     let status = aether_node::prover::SharedStatus::default();
     let handle = tokio::runtime::Handle::current();
     let target = chain.clone();
-    spawn_service(chain.clone(), sidecar, payout, status.clone(), move |claim| match &upstream {
-        Some(up) => {
-            let up = up.clone();
-            handle.spawn(async move {
-                if let Err(e) = up.first("aether_submitProof", json!([claim])).await {
-                    tracing::warn!(%e, "proof not accepted upstream");
-                }
-            });
-        }
-        None => {
-            if let Err(e) = target.add_proof(claim) {
-                tracing::warn!(%e, "own proof not accepted");
-            }
-        }
+    spawn_service(chain.clone(), bin_path, dir.join("prove"), sidecar, payout, status.clone(), move |claim| match &upstream {
+        // The prover thread waits for the validator's answer (and retries on refusal).
+        Some(up) => handle.block_on(up.first("aether_submitProof", json!([claim]))).map(|_| ()),
+        None => target.add_own_proof(claim),
     });
     tracing::info!(%payout, "proving blocks (rewards to this address)");
     Some(status)

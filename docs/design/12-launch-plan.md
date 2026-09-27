@@ -46,8 +46,16 @@
 |---|---|---|
 | E1 | **이더리움 JSON-RPC 호환**: eth_sendRawTransaction(secp256k1, EIP-1559/7702), eth_call, eth_estimateGas, eth_getTransactionReceipt, eth_getLogs, eth_getBlockByNumber | MetaMask·Foundry·Hardhat·Remix로 배포·호출 |
 | E2 | **토큰 발행**: ERC-20 팩토리 제네시스 배포, 지갑 "토큰 만들기" | 코드 없이 민트, 지갑에 표시 |
-| E3 | **DEX**: 블록 단위 배치 경매(단일 청산가, MEV 차단) + 집중 유동성 AMM, 자체 구현(라이선스) | 스왑·유동성 공급을 지갑에서 |
+| E3 | **DEX 컨트랙트**: 블록 단위 배치 경매(단일 청산가, MEV 차단) + 집중 유동성 AMM, 자체 구현(라이선스). **관리자 키·운영자 수수료 없는 중립 컨트랙트**로 배포하고, 지갑은 다른 dApp과 똑같이 연결만 합니다(지갑 내 수수료 스왑 없음) | 누구나 스왑·유동성 공급 |
 | E4 | **익스플로러·TS SDK** (브라우저에서 인증서 검증) | 누구나 조회·개발 |
+| E5 | **dApp 연결(앱)**: EIP-1193 요청 처리부. `eth_sendTransaction`을 Aether 트랜잭션으로 바꿔 Secure Enclave·Touch ID로 서명, 읽을 수 있는 서명 화면 + 모의 실행 | 웹 dApp이 앱 지갑으로 서명 |
+| E6 | **Safari 확장**: 앱 번들에 포함(Developer ID·공증). `window.ethereum` 주입 + EIP-6963 알림, native messaging으로 앱에 전달. 확장은 키를 갖지 않음 | Safari에서 Uniswap류 dApp 연결 |
+| E7 | **ERC-1271**: 계정 컨트랙트 `isValidSignature`(P-256). 새 주소 배포 + 재위임으로 교체 | permit·로그인 서명 dApp 호환 |
+| E8 | **Chrome 계열 확장**: 같은 코드로 Chrome 웹 스토어(Arc·Brave·Edge), 앱이 native messaging 호스트 등록 | Chrome 계열에서 연결 |
+| E9 | **SDK**: TS(viem/ethers 어댑터, P-256 계정, ERC-1271 검증 헬퍼, 경량 인증서 검증), Swift(macOS·iOS 앱이 Aether 결제·검증을 넣는 패키지, 기존 FFI 기반), Rust(노드 크레이트 정리) | 외부 개발자가 문서만 보고 결제 연동 |
+| E10 | **토큰 목록**: ERC-20 잔액·전송 표시(E2와 함께) | 지갑에 토큰 표시 |
+
+원칙: 누구의 DEX·런치패드든 **연결은 되게 하고, 우리가 운영·홍보하거나 수수료를 받지 않습니다**(`docs/research/legal-review-2026*.md`). 순서: 프로토콜 2 → E5 → E6 → E7 → E9(TS) → E8 → E2·E10 → E3 → E9(Swift) → E4.
 
 ## 노드 역량 트랙: Mac 전용의 이점
 

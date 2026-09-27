@@ -212,9 +212,10 @@ impl Store {
             Some(v) => serde_json::from_slice(v.value()).map_err(|_| StoreError::Corrupt("schedule"))?,
             None => return Err(StoreError::Corrupt("schedule")),
         };
+        // Written from protocol 2 on; a store from before has none (a protocol-1 head).
         let statement = match meta.get(STATEMENT).map_err(dberr)? {
             Some(v) => serde_json::from_slice(v.value()).map_err(|_| StoreError::Corrupt("statement"))?,
-            None => return Err(StoreError::Corrupt("statement")),
+            None => Default::default(),
         };
         let seed = match meta.get(SEED).map_err(dberr)? {
             Some(v) => Some(serde_json::from_slice(v.value()).map_err(|_| StoreError::Corrupt("seed"))?),

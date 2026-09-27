@@ -266,17 +266,19 @@ fn protocol_2_records_statements_and_pays_the_first_valid_proof() {
         parent = advance(&chain, parent, &b);
         last = b;
     }
-    // From activation on, each block records its parent's statement: block 20 (the first
-    // protocol-2 block) recorded block 19's, block 21 block 20's; nothing earlier.
+    // From activation on, each block records its parent's statement: block 21 recorded
+    // block 20's (the first protocol-2 block); protocol-1 blocks have none.
     assert!(proofs::commitment(&parent.state, 20).is_some());
-    assert!(proofs::commitment(&parent.state, 19).is_some());
-    assert_eq!(proofs::commitment(&parent.state, 18), None);
+    assert_eq!(proofs::commitment(&parent.state, 19), None);
 
     let prover = Address::repeat_byte(0x77);
-    let claim = |h: u64, proof: [u8; 32]| ProofClaim { height: h, prover, proof: hex::encode(proof) };
+    // The echo "proof" is the claim output (statement commitment bound to the prover).
+    let claim = |h: u64, c: [u8; 32]| ProofClaim { height: h, prover, proof: hex::encode(aether_proving::block::claim(c, prover)) };
     let c20 = proofs::commitment(&parent.state, 20).unwrap();
     // A wrong proof, a proof of an unrecorded block, and two claims of one block are refused.
-    for bad in [vec![claim(20, [1; 32])], vec![claim(5, [0; 32])], vec![claim(20, c20), claim(20, c20)]] {
+    // The same proof rerouted to another address does not verify.
+    let stolen = ProofClaim { prover: Address::repeat_byte(0x66), ..claim(20, c20) };
+    for bad in [vec![claim(20, [1; 32])], vec![claim(5, [0; 32])], vec![claim(20, c20), claim(20, c20)], vec![stolen]] {
         let b = with_payload(&propose(&chain, &parent, &last, None), |p| p.proofs = bad.clone());
         assert!(matches!(chain.execute(&b, &parent), Err(ChainError::Protocol(_))), "{bad:?}");
     }
@@ -308,11 +310,15 @@ fn the_recorded_statement_is_what_the_prover_proves() {
         // The prover's input for this block: its pre-state (after the block's system writes), context, txs.
         let (pre, _) = chain.pre_state(&parent, parent.next_protocol(), &[]).unwrap();
         let ctx = Chain::block_context(&chain.cfg(), &b, &parent);
-        let input = aether_proving::block::input(&pre, &ctx, &b.payload().unwrap().txs, &[]).unwrap();
+        let input = aether_proving::block::input(&pre, &ctx, &b.payload().unwrap().txs, &[], Address::repeat_byte(1)).unwrap();
         let proved = aether_proving::block::execute(&input).unwrap().commitment();
         drop(pre);
         parent = advance(&chain, parent, &b);
-        assert_eq!(proved, parent.statement.commitment, "block {}", parent.height);
+        if parent.height >= 20 {
+            assert_eq!(proved, parent.statement.commitment, "block {}", parent.height);
+        } else {
+            assert_eq!(parent.statement, Default::default(), "protocol-1 blocks keep no statement");
+        }
         last = b;
     }
 }
@@ -341,4 +347,23 @@ fn a_signed_upgrade_replaces_the_registrar_when_it_activates() {
     }
     assert_eq!(parent.state.storage(&REGISTRY, U256::ZERO), U256::from_be_bytes([5; 32]));
     assert_eq!(parent.state.storage(&REGISTRY, U256::from(1u64)), U256::from_be_bytes([6; 32]));
+}
+
+#[test]
+fn a_snapshot_with_a_schedule_round_trips() {
+    let (chain, genesis) = node(2);
+    chain.lock().verifier = Some(Arc::new(EchoVerifier));
+    let mut parent = chain.lock().finalized.clone();
+    let mut last = propose(&chain, &parent, &genesis, Some(signed(2, 20)));
+    parent = advance(&chain, parent, &last);
+    for _ in 2..=21 {
+        let b = propose(&chain, &parent, &last, None);
+        parent = advance(&chain, parent, &b);
+        last = b;
+    }
+    let snap = Snapshot::of(&chain);
+    let back = Snapshot::from_bytes(&snap.to_bytes()).unwrap();
+    assert_eq!(back.schedule, snap.schedule);
+    assert_eq!(back.statement, snap.statement);
+    assert_ne!(back.statement, Default::default());
 }

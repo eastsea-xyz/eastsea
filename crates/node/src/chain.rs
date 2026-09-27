@@ -122,6 +122,10 @@ pub struct Statement {
 /// Proofs per block, and the largest proof accepted (protocol 2).
 pub const MAX_PROOFS_PER_BLOCK: usize = 2;
 pub const MAX_PROOF_BYTES: usize = 256 << 10;
+/// Proof RPC: at most one verification started per interval (it is public).
+const PROOF_CHECK_INTERVAL: Duration = Duration::from_millis(500);
+/// Blocks without proofs in this node's proposals after one with proofs lost.
+const PROOF_BACKOFF: u64 = 100;
 
 /// Checks a block proof against a statement commitment (the pinned sidecar in a node).
 pub trait ProofVerifier: Send + Sync {
@@ -136,7 +140,21 @@ pub fn meta_digest(
     schedule: &[crate::upgrade::Activation],
     statement: &Statement,
 ) -> B256 {
-    let bytes = serde_json::to_vec(&(excess, handoff, seed, schedule, statement)).expect("metadata serializes");
+    // Protocol-1 encoding until an activation carries a registrar or a statement
+    // is recorded: binaries of either protocol agree on protocol-1 blocks.
+    let schedule: Vec<Value> = schedule
+        .iter()
+        .map(|a| match a.registrar {
+            None => serde_json::json!([a.protocol, a.at]),
+            Some(r) => serde_json::json!([a.protocol, a.at, r]),
+        })
+        .collect();
+    let bytes = if *statement == Statement::default() {
+        serde_json::to_vec(&(excess, handoff, seed, schedule))
+    } else {
+        serde_json::to_vec(&(excess, handoff, seed, schedule, statement))
+    }
+    .expect("metadata serializes");
     B256::from(aether_hash::Hasher::hash_bytes(&ChainHasher::new(), &bytes))
 }
 
@@ -228,6 +246,12 @@ pub struct Inner {
     recent: std::collections::VecDeque<Block>,
     /// Heights this node's prover already took up.
     attempted: std::collections::BTreeSet<u64>,
+    /// When the proof RPC last started a verification (rate limit).
+    last_proof_check: Option<Instant>,
+    /// This node's last proposal carrying proofs: (height, block).
+    proof_proposal: Option<(u64, Digest)>,
+    /// No proofs in this node's proposals before this height.
+    proof_backoff_until: u64,
 }
 
 #[derive(Clone)]
@@ -309,6 +333,9 @@ impl Chain {
             proof_pool: Vec::new(),
             recent: Default::default(),
             attempted: Default::default(),
+            last_proof_check: None,
+            proof_proposal: None,
+            proof_backoff_until: 0,
         };
         (Chain(Arc::new(Mutex::new(inner))), genesis)
     }
@@ -562,7 +589,8 @@ impl Chain {
         let cfg = self.cfg();
         let ctx = Self::block_context(&cfg, block, parent);
         let mut out = execute_block(&pre, &ctx, &payload.txs).map_err(|e| ChainError::Exec(format!("{e:?}")))?;
-        let statement = statement(&ctx, &payload.txs, &pre, &out);
+        // Protocol-1 blocks keep no statement (their metadata stays protocol-1).
+        let statement = if payload.version >= 2 { statement(&ctx, &payload.txs, &pre, &out) } else { [0; 32] };
         with_activation(&pre, &mut out);
         if out.bal != payload.bal {
             return Err(ChainError::BalMismatch);
@@ -647,37 +675,68 @@ impl Chain {
 
     /// Keep a proof (verified by this node's verifier) for this node's next proposals.
     pub fn add_proof(&self, claim: aether_light::block::ProofClaim) -> Result<(), String> {
-        let (verifier, commitment) = {
-            let g = self.lock();
+        let open = |g: &Inner, h: u64| {
             let f = &g.finalized;
-            let c = aether_execution::proofs::claimable(&f.state, claim.height, f.height + 1)
-                .or_else(|e| if claim.height == f.height { Ok(f.statement.commitment) } else { Err(e) })
-                .map_err(|e| format!("{e:?}"))?;
+            aether_execution::proofs::claimable(&f.state, h, f.height + 1)
+                .or_else(|e| if h == f.height && aether_execution::proofs::prover(&f.state, h).is_none() { Ok(f.statement.commitment) } else { Err(e) })
+                .map_err(|e| format!("{e:?}"))
+        };
+        let (verifier, commitment) = {
+            let mut g = self.lock();
+            // Cheap refusals first: a block already covered, or verifying too often (this is a public RPC).
+            if g.proof_pool.iter().any(|c| c.height == claim.height) {
+                return Err("a proof of this block is already waiting".into());
+            }
+            let now = Instant::now();
+            if g.last_proof_check.is_some_and(|t| now.duration_since(t) < PROOF_CHECK_INTERVAL) {
+                return Err("busy; try again shortly".into());
+            }
+            let c = open(&g, claim.height)?;
+            g.last_proof_check = Some(now);
             (g.verifier.clone().ok_or("this node does not verify proofs")?, c)
         };
         let bytes = hex::decode(&claim.proof).map_err(|_| "proof is not hex")?;
-        if bytes.len() > MAX_PROOF_BYTES || !verifier.verify(&bytes, commitment) {
+        if bytes.len() > MAX_PROOF_BYTES || !verifier.verify(&bytes, aether_proving::block::claim(commitment, claim.prover)) {
             return Err("the proof does not verify".into());
         }
         let mut g = self.lock();
+        // Still open after the (slow) check: not proven or expired meanwhile.
+        open(&g, claim.height)?;
         if !g.proof_pool.iter().any(|c| c.height == claim.height) {
             g.proof_pool.push(claim);
         }
         Ok(())
     }
 
-    /// Verified proofs this node may put in the block after `parent` (first come, at most two).
+    /// Verified proofs this node may put in the block after `parent` (first come,
+    /// at most two, still claimable there), unless its recent proposals with
+    /// proofs did not make it (some validators could not verify them).
     pub fn proofs_for(&self, parent: &Executed) -> Vec<aether_light::block::ProofClaim> {
         if parent.next_protocol() < 2 {
             return vec![];
         }
         let g = self.lock();
+        if g.proof_backoff_until > parent.height {
+            return vec![];
+        }
+        let next = parent.height + 1;
         let open = |h: u64| {
             aether_execution::proofs::prover(&parent.state, h).is_none()
-                && (h == parent.height || aether_execution::proofs::commitment(&parent.state, h).is_some())
+                && (h == parent.height || aether_execution::proofs::claimable(&parent.state, h, next).is_ok())
         };
         let mut seen = std::collections::BTreeSet::new();
         g.proof_pool.iter().filter(|c| open(c.height) && seen.insert(c.height)).take(MAX_PROOFS_PER_BLOCK).cloned().collect()
+    }
+
+    /// A proposal carrying proofs at `height` was built; if a different block
+    /// is finalized there, stop proposing proofs for a while.
+    pub fn proposed_with_proofs(&self, height: u64, digest: Digest) {
+        self.lock().proof_proposal = Some((height, digest));
+    }
+
+    /// Drop these proofs from the pool (they no longer verify here).
+    pub fn drop_proofs(&self, heights: &[u64]) {
+        self.lock().proof_pool.retain(|c| !heights.contains(&c.height));
     }
 
     /// Blocks' notice between an upgrade landing on chain and its activation:
@@ -779,7 +838,7 @@ impl Chain {
             seed,
             history: Arc::new(parent.history.append(&ChainHasher::new(), block.height().get(), &digest_bytes(&block.digest()))),
             schedule,
-            statement: Statement { commitment: statement, escrow },
+            statement: if statement == [0; 32] { Statement::default() } else { Statement { commitment: statement, escrow } },
             payouts,
         });
         self.lock().executed.insert(block.digest(), exec.clone());
@@ -962,6 +1021,11 @@ impl Chain {
             let skip = list.len().saturating_sub(10_000);
             keep(&g.store, &key, &list[skip..]);
         }
+        // Our proposal with proofs lost at this height: others may not verify them.
+        if g.proof_proposal.is_some_and(|(h, d)| h == exec.height && d != exec.digest) {
+            g.proof_backoff_until = exec.height + PROOF_BACKOFF;
+            g.proof_proposal = None;
+        }
         g.recent.push_back(block.clone());
         while g.recent.len() > 32 {
             g.recent.pop_front();
@@ -1123,7 +1187,8 @@ fn pay_proofs(
         }
         let bytes = hex::decode(&c.proof).map_err(|_| bad("proof is not hex".into()))?;
         let commitment = aether_execution::proofs::claimable(state, c.height, height).map_err(|e| bad(format!("proof of block {}: {e:?}", c.height)))?;
-        if !verifier.verify(&bytes, commitment) {
+        // The proof's output binds the payout address: nobody can reroute it.
+        if !verifier.verify(&bytes, aether_proving::block::claim(commitment, c.prover)) {
             return Err(bad(format!("proof of block {} does not verify", c.height)));
         }
         let amount = aether_execution::proofs::pay(state, c.height, height, c.prover).map_err(|e| bad(format!("{e:?}")))?;

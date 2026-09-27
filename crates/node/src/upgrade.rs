@@ -33,7 +33,8 @@ pub use aether_light::block::{Release, SignedUpgrade, Upgrade};
 pub struct Activation {
     pub protocol: u32,
     pub at: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Always serialized: snapshots use postcard, which cannot skip fields.
+    #[serde(default)]
     pub registrar: Option<(aether_types::B256, aether_types::B256)>,
 }
 

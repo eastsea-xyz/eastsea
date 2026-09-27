@@ -88,7 +88,7 @@ impl Sidecar {
 
     /// Prove a postcard `BlockInput`: (proof bytes, commitment, seconds).
     pub fn prove(&self, input: &[u8]) -> Result<(Vec<u8>, [u8; 32], f64), String> {
-        let tag = hex::encode(&blake3::hash(input).as_bytes()[..8]);
+        let tag = unique();
         let (inp, out) = (self.dir.join(format!("{tag}.input")), self.dir.join(format!("{tag}.proof")));
         std::fs::write(&inp, input).map_err(|e| e.to_string())?;
         let reply = self.request(json!({"cmd": "prove", "input": inp, "out": out}));
@@ -101,7 +101,7 @@ impl Sidecar {
     }
 
     pub fn verify(&self, proof: &[u8], commitment: [u8; 32]) -> Result<bool, String> {
-        let path = self.dir.join(format!("{}.verify", hex::encode(&blake3::hash(proof).as_bytes()[..8])));
+        let path = self.dir.join(format!("{}.verify", unique()));
         std::fs::write(&path, proof).map_err(|e| e.to_string())?;
         let reply = self.request(json!({"cmd": "verify", "proof": path, "commitment": hex::encode(commitment)}));
         let _ = std::fs::remove_file(&path);
@@ -112,6 +112,12 @@ impl Sidecar {
             Err(_) => Ok(false),
         }
     }
+}
+
+/// A file name no other request uses (requests on one sidecar may overlap).
+fn unique() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    format!("{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
 }
 
 fn from_hex32(s: &str) -> Result<[u8; 32], String> {
@@ -140,15 +146,18 @@ impl ProofVerifier for Verifier {
             return v;
         }
         match self.sidecar.verify(proof, commitment) {
-            Ok(v) => {
+            // Only a verified proof is remembered: a refusal may have been a
+            // transient failure, and caching it would split this node from the rest.
+            Ok(true) => {
                 if let Ok(mut s) = self.seen.lock() {
                     if s.len() > 4096 {
                         s.clear();
                     }
-                    s.insert(key, v);
+                    s.insert(key, true);
                 }
-                v
+                true
             }
+            Ok(false) => false,
             Err(e) => {
                 tracing::error!(%e, "proof verifier unavailable; refusing blocks with proofs");
                 false
@@ -184,7 +193,7 @@ pub fn spawn_service(chain: Chain, sidecar: Sidecar, prover: Address, status: Sh
         })
         .ok();
     std::thread::spawn(move || loop {
-        let Some((height, txs, input)) = next_job(&chain) else {
+        let Some((height, txs, input)) = next_job(&chain, prover) else {
             std::thread::sleep(std::time::Duration::from_secs(1));
             continue;
         };
@@ -216,12 +225,12 @@ pub fn spawn_service(chain: Chain, sidecar: Sidecar, prover: Address, status: Sh
 }
 
 /// The newest finalized block still unproven whose parent state this node holds.
-fn next_job(chain: &Chain) -> Option<(u64, usize, aether_proving::block::BlockInput)> {
+fn next_job(chain: &Chain, prover: Address) -> Option<(u64, usize, aether_proving::block::BlockInput)> {
     let (exec, parent, block) = chain.provable()?;
     let payload = block.payload()?;
     let (pre, _) = chain.pre_state(&parent, payload.version, &payload.proofs).ok()?;
     let ctx = Chain::block_context(&chain.cfg(), &block, &parent);
-    let input = aether_proving::block::input(&pre, &ctx, &payload.txs, &[]).ok()?;
+    let input = aether_proving::block::input(&pre, &ctx, &payload.txs, &[], prover).ok()?;
     debug_assert_eq!(aether_proving::block::execute(&input).ok()?.commitment(), exec.statement.commitment);
     Some((exec.height, payload.txs.len(), input))
 }

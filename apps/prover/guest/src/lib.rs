@@ -3,7 +3,7 @@
 //! root, context, txs, gas). The host embeds this crate's prebuilt ELF; any change
 //! here (or in the crates it depends on) changes the program the verifier checks.
 
-use aether_proving::block::{execute, BlockInput};
+use aether_proving::block::{execute, output, BlockInput};
 
 /// P-256 ECDSA through Jolt's inline (accelerated curve arithmetic).
 fn jolt_p256(x: &[u8; 32], y: &[u8; 32], digest: &[u8; 32], r: &[u8; 32], s: &[u8; 32]) -> bool {
@@ -56,5 +56,5 @@ fn accelerate() {
 fn prove_block(input: jolt::UntrustedAdvice<Vec<u8>>) -> [u8; 32] {
     accelerate();
     let input: BlockInput = postcard::from_bytes(&input).expect("input");
-    execute(&input).expect("valid block").commitment()
+    output(&input).expect("valid block")
 }

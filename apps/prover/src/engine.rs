@@ -135,9 +135,8 @@ fn guarded<T>(f: impl FnOnce() -> Result<T, BoxError>) -> Result<T, BoxError> {
 fn native_commitment(input: &[u8]) -> Result<[u8; 32], BoxError> {
     let input: aether_proving::block::BlockInput = postcard::from_bytes(input)
         .map_err(|e| format!("input is not a postcard BlockInput: {e}"))?;
-    let statement = aether_proving::block::execute(&input)
-        .map_err(|e| format!("block does not execute: {e:?}"))?;
-    Ok(statement.commitment())
+    // The guest's output: the statement commitment bound to the payout address.
+    aether_proving::block::output(&input).map_err(|e| format!("block does not execute: {e:?}").into())
 }
 
 pub fn write_atomic(path: &str, bytes: &[u8]) -> Result<(), BoxError> {

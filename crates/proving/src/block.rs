@@ -10,7 +10,7 @@
 //! same function runs natively, so node and guest cannot disagree on it.
 
 use aether_execution::{execute_block_sequential, BlockContext, StateWitness, WorldState};
-use aether_types::{GasVector, TxEnvelope, B256};
+use aether_types::{Address, GasVector, TxEnvelope, B256};
 use serde::{Deserialize, Serialize};
 
 /// The prover's private input for one block.
@@ -24,6 +24,9 @@ pub struct BlockInput {
     /// The state root the block builds on (its parent's post-state).
     pub pre_state_root: B256,
     pub witness: StateWitness,
+    /// Who is paid for this proof: part of what is proven, so nobody who
+    /// sees the proof can claim it for another address.
+    pub prover: Address,
 }
 
 /// The public claim: this block, on this pre-state, gives this post-state.
@@ -43,6 +46,18 @@ impl BlockStatement {
     pub fn commitment(&self) -> [u8; 32] {
         *blake3::hash(&postcard::to_allocvec(self).expect("statement encodes")).as_bytes()
     }
+}
+
+/// What a proof outputs: the statement commitment bound to the payout address.
+pub fn claim(commitment: [u8; 32], prover: Address) -> [u8; 32] {
+    let mut h = blake3::Hasher::new();
+    h.update(b"aether/proof-claim/v1").update(&commitment).update(prover.as_slice());
+    *h.finalize().as_bytes()
+}
+
+/// The guest program's output for `input` (the same function runs natively).
+pub fn output(input: &BlockInput) -> Result<[u8; 32], BlockProofError> {
+    Ok(claim(execute(input)?.commitment(), input.prover))
 }
 
 pub fn txs_hash(txs: &[TxEnvelope]) -> [u8; 32] {
@@ -79,14 +94,21 @@ pub fn execute(input: &BlockInput) -> Result<BlockStatement, BlockProofError> {
 }
 
 /// The prover's input for a block, from the full pre-state (a node that holds it).
-pub fn input(pre: &WorldState, ctx: &BlockContext, txs: &[TxEnvelope], activate: &[u32]) -> Result<BlockInput, BlockProofError> {
+pub fn input(pre: &WorldState, ctx: &BlockContext, txs: &[TxEnvelope], activate: &[u32], prover: Address) -> Result<BlockInput, BlockProofError> {
     let mut recording = pre.clone();
     recording.record_access();
     for p in activate {
         aether_execution::forks::activate(*p, &mut recording).map_err(|e| BlockProofError::Activation(e.to_string()))?;
     }
     let out = aether_execution::execute_block(&recording, ctx, txs).map_err(|e| BlockProofError::Execution(format!("{e:?}")))?;
-    Ok(BlockInput { ctx: ctx.clone(), txs: txs.to_vec(), activate: activate.to_vec(), pre_state_root: pre.root(), witness: pre.witness_for(&out.state) })
+    Ok(BlockInput {
+        ctx: ctx.clone(),
+        txs: txs.to_vec(),
+        activate: activate.to_vec(),
+        pre_state_root: pre.root(),
+        witness: pre.witness_for(&out.state),
+        prover,
+    })
 }
 
 #[cfg(test)]
@@ -133,7 +155,7 @@ mod tests {
     #[test]
     fn the_statement_matches_full_execution_and_binds_everything() {
         let (pre, ctx, txs) = setup();
-        let input = input(&pre, &ctx, &txs, &[]).unwrap();
+        let input = input(&pre, &ctx, &txs, &[], Address::repeat_byte(7)).unwrap();
         let st = execute(&input).unwrap();
         let full = aether_execution::execute_block(&pre, &ctx, &txs).unwrap();
         assert_eq!(st.post_state_root, full.state.root());
@@ -150,5 +172,10 @@ mod tests {
         let mut later = input.clone();
         later.ctx.timestamp += 1;
         assert_ne!(execute(&later).unwrap().commitment(), st.commitment());
+        // The output binds the payout address.
+        let mut other = input.clone();
+        other.prover = Address::repeat_byte(8);
+        assert_ne!(output(&other).unwrap(), output(&input).unwrap());
+        assert_eq!(output(&input).unwrap(), claim(st.commitment(), input.prover));
     }
 }

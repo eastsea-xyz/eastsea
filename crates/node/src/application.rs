@@ -111,19 +111,37 @@ where
             proofs: self.chain.proofs_for(&parent),
         };
         // Under the parent's next protocol, with its one-time changes if it activates here.
-        let (pre, payouts) = match self.chain.pre_state(&parent, parent.next_protocol(), &extras.proofs) {
+        let attempt = self.chain.pre_state(&parent, parent.next_protocol(), &extras.proofs);
+        let mut extras = extras;
+        let (pre, payouts) = match attempt {
             Ok(pre) => pre,
+            // Pooled proofs that no longer verify here: drop them and propose without.
+            Err(e) if !extras.proofs.is_empty() => {
+                warn!(?e, "dropping pooled proofs");
+                self.chain.drop_proofs(&extras.proofs.iter().map(|c| c.height).collect::<Vec<_>>());
+                extras.proofs.clear();
+                match self.chain.pre_state(&parent, parent.next_protocol(), &[]) {
+                    Ok(pre) => pre,
+                    Err(e) => {
+                        warn!(?e, "not proposing");
+                        return None;
+                    }
+                }
+            }
             Err(e) => {
                 warn!(?e, "not proposing");
                 return None;
             }
         };
         let (payload, mut out) = build_payload(&parent, &pre, &ctx, self.chain.mempool_candidates(), extras);
-        let statement = crate::chain::statement(&ctx, &payload.txs, &pre, &out);
+        let statement = if payload.version >= 2 { crate::chain::statement(&ctx, &payload.txs, &pre, &out) } else { [0; 32] };
         crate::chain::with_activation(&pre, &mut out);
         drop(pre);
         let tx_hashes = payload.txs.iter().map(aether_execution::tx_hash).collect();
         let block = Block::new(context, parent_block.digest(), height, ts, payload.to_bytes());
+        if !payload.proofs.is_empty() {
+            self.chain.proposed_with_proofs(height.get(), block.digest());
+        }
         let pending = match &payload.handoff {
             Some(h) => {
                 Some(std::sync::Arc::new(crate::handoff::Pending { at: height.get(), switch: height.get() + crate::handoff::DELAY, handoff: h.clone() }))

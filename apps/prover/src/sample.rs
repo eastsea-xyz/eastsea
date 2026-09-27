@@ -52,11 +52,11 @@ pub fn block(n: usize) -> Result<(Vec<u8>, [u8; 32]), BoxError> {
         limits: GasVector { exec: 30_000_000, state: u64::MAX, prove: u64::MAX },
         fees: None,
     };
-    let input = aether_proving::block::input(&pre, &ctx, &txs, &[]).map_err(|e| format!("{e:?}"))?;
+    let input = aether_proving::block::input(&pre, &ctx, &txs, &[], Address::repeat_byte(0x9a)).map_err(|e| format!("{e:?}"))?;
     let statement = aether_proving::block::execute(&input).map_err(|e| format!("{e:?}"))?;
     let native_root = execute_block_sequential(&pre, &ctx, &txs).map_err(|e| format!("{e:?}"))?.state.root();
     if statement.post_state_root != native_root {
         return Err("sample block: statement post-state root differs from native execution".into());
     }
-    Ok((postcard::to_allocvec(&input)?, statement.commitment()))
+    Ok((postcard::to_allocvec(&input)?, aether_proving::block::claim(statement.commitment(), input.prover)))
 }

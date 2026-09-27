@@ -228,7 +228,38 @@ private struct SecurityPage: View {
                     }
                 }
             }
+            Card { PaperKeyPanel() }
             Card { RecoveryPanel() }
+        }
+    }
+}
+
+/// Recovery words: 24 words that stand in for a recovery device.
+private struct PaperKeyPanel: View {
+    @EnvironmentObject var model: WalletModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Recovery words").font(.title3.bold())
+            Text("Your key never leaves this device, so there is no seed phrase to back up. Instead, write down 24 recovery words: if you lose every device, they move your funds to a new Mac after a 48-hour safety delay. If someone else finds them, they can only start that delay, and any of your devices can cancel it.")
+                .font(.callout).foregroundStyle(.secondary)
+            if let words = model.paperWords {
+                let list = words.split(separator: " ").map(String.init)
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: 4), alignment: .leading, spacing: 6) {
+                    ForEach(Array(list.enumerated()), id: \.offset) { i, w in
+                        Text("\(i + 1). \(w)").font(.callout.monospaced())
+                    }
+                }
+                .padding(12)
+                .background(.background.tertiary, in: RoundedRectangle(cornerRadius: 10))
+                Text("Write them on paper, in order. Do not photograph or store them on this Mac.").font(.caption).foregroundStyle(.orange)
+                HStack {
+                    Button("I wrote them down: register") { model.registerPaperKey() }.buttonStyle(.borderedProminent).disabled(model.busy)
+                    Button("Cancel") { model.paperWords = nil }
+                }
+            } else {
+                Button("Create recovery words") { model.createPaperKey() }.disabled(model.busy)
+            }
         }
     }
 }
@@ -741,6 +772,12 @@ private struct RecoveryPanel: View {
                 HStack {
                     TextField("0x lost account", text: $model.lostInput).textFieldStyle(.roundedBorder).font(.caption.monospaced())
                     Button("Start recovery") { model.recover() }.disabled(model.busy || model.lostInput.isEmpty)
+                }
+                Text("Lost every device? Use your 24 recovery words instead (with the lost account above).").font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    SecureField("24 recovery words", text: $model.paperWordsInput).textFieldStyle(.roundedBorder).font(.caption.monospaced())
+                    Button("Recover with words") { model.recoverWithWords() }
+                        .disabled(model.busy || model.lostInput.isEmpty || model.paperWordsInput.split(separator: " ").count != 24)
                 }
             }
         }

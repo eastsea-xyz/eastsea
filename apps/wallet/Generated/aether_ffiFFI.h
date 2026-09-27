@@ -300,9 +300,14 @@ RustBuffer uniffi_aether_ffi_fn_func_prepare_recovery(RustBuffer p256_public_key
 RustBuffer uniffi_aether_ffi_fn_func_prepare_recovery_submit(RustBuffer p256_public_key, RustBuffer request, RustBuffer guardian_signature, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_RECOVERY_TO
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_RECOVERY_TO
+RustBuffer uniffi_aether_ffi_fn_func_prepare_recovery_to(RustBuffer p256_public_key, RustBuffer lost_account, RustBuffer to, uint32_t validators, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_REGISTER_NODE
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_REGISTER_NODE
-RustBuffer uniffi_aether_ffi_fn_func_prepare_register_node(RustBuffer p256_public_key, RustBuffer device_token, RustBuffer validator_key, RustBuffer node_id, RustBuffer beaconer, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_aether_ffi_fn_func_prepare_register_node(RustBuffer p256_public_key, RustBuffer device_token, RustBuffer validator_key, RustBuffer node_id, RustBuffer beaconer, RustBuffer ownership, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_SESSION_PAYMENT
@@ -378,6 +383,22 @@ RustBuffer uniffi_aether_ffi_fn_func_verified_account(RustBuffer address, uint32
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_VOTING_NODE_STATUS
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_VOTING_NODE_STATUS
 RustBuffer uniffi_aether_ffi_fn_func_voting_node_status(RustBuffer validator_key, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PAPER_KEY_NEW
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PAPER_KEY_NEW
+RustBuffer uniffi_aether_ffi_fn_func_paper_key_new(RustCallStatus *_Nonnull out_status
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PAPER_KEY_PUBLIC
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PAPER_KEY_PUBLIC
+RustBuffer uniffi_aether_ffi_fn_func_paper_key_public(RustBuffer words, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PAPER_KEY_SIGN
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PAPER_KEY_SIGN
+RustBuffer uniffi_aether_ffi_fn_func_paper_key_sign(RustBuffer words, RustBuffer message, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_FFI_AETHER_FFI_RUSTBUFFER_ALLOC
@@ -706,6 +727,12 @@ uint16_t uniffi_aether_ffi_checksum_func_prepare_recovery_submit(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_RECOVERY_TO
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_RECOVERY_TO
+uint16_t uniffi_aether_ffi_checksum_func_prepare_recovery_to(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_REGISTER_NODE
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_REGISTER_NODE
 uint16_t uniffi_aether_ffi_checksum_func_prepare_register_node(void
@@ -799,6 +826,24 @@ uint16_t uniffi_aether_ffi_checksum_func_verified_account(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_VOTING_NODE_STATUS
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_VOTING_NODE_STATUS
 uint16_t uniffi_aether_ffi_checksum_func_voting_node_status(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PAPER_KEY_NEW
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PAPER_KEY_NEW
+uint16_t uniffi_aether_ffi_checksum_func_paper_key_new(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PAPER_KEY_PUBLIC
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PAPER_KEY_PUBLIC
+uint16_t uniffi_aether_ffi_checksum_func_paper_key_public(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PAPER_KEY_SIGN
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PAPER_KEY_SIGN
+uint16_t uniffi_aether_ffi_checksum_func_paper_key_sign(void
     
 );
 #endif

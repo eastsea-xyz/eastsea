@@ -8,6 +8,8 @@
 
 uniffi::setup_scaffolding!();
 
+mod paper;
+pub use paper::*;
 use aether_crypto::{address_of, PublicKey};
 use aether_execution::EvmCall;
 use aether_light::{from_hex, verify_account, verify_finalized_chain, ValidatorSet, VerifiedBlock};
@@ -667,8 +669,15 @@ pub struct RecoveryRequest {
 
 #[uniffi::export]
 pub fn prepare_recovery(p256_public_key: Vec<u8>, lost_account: String, validators: u32) -> R<RecoveryRequest> {
-    let pk = p256_key(&p256_public_key)?;
-    let me = address_of(&pk).map_err(|e| WalletError::Invalid(e.to_string()))?;
+    let me = address_of(&p256_key(&p256_public_key)?).map_err(|e| WalletError::Invalid(e.to_string()))?;
+    prepare_recovery_to(p256_public_key, lost_account, me.to_checksum(None), validators)
+}
+
+/// Like `prepare_recovery`, with the funds going to `to` (a paper recovery key
+/// recovers to the new Mac's account, not to an account of its own).
+#[uniffi::export]
+pub fn prepare_recovery_to(p256_public_key: Vec<u8>, lost_account: String, to: String, validators: u32) -> R<RecoveryRequest> {
+    let me: Address = to.parse().map_err(|_| WalletError::Invalid("destination address".into()))?;
     let (mx, my) = aether_crypto::p256_xy(&p256_public_key).map_err(|e| WalletError::Invalid(format!("{e:?}")))?;
     let lost: Address = lost_account.parse().map_err(|_| WalletError::Invalid("lost account address".into()))?;
     let set = trusted_set(validators)?;

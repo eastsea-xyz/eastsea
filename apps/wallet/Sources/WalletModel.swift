@@ -21,6 +21,10 @@ final class WalletModel: ObservableObject {
     @Published var keyLabel = "Key in Secure Enclave"
     @Published var guardianInput = ""
     @Published var lostInput = ""
+    /// Freshly generated recovery words, shown once until registered or dismissed.
+    @Published var paperWords: String?
+    /// Recovery words typed in to recover a lost account.
+    @Published var paperWordsInput = ""
     /// Balance over time (this device's observations), for the dashboard chart.
     @Published var history: [BalancePoint] = []
     /// This wallet's own actions, newest first, for the simple-mode feed.
@@ -84,6 +88,51 @@ final class WalletModel: ObservableObject {
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
                 await self.track(h, label: "Recovery key set to \(code.prefix(12))…", item: ActivityItem(kind: .security, title: "Recovery device added", amount: nil))
             } catch { await MainActor.run { self.note("Set recovery key failed: \(error)"); self.busy = false } }
+        }
+    }
+
+    /// 24 recovery words that stand in for a recovery device (the key in the
+    /// Secure Enclave itself can never be written down).
+    func createPaperKey() {
+        paperWords = paperKeyNew()
+    }
+
+    /// Register the shown words as this account's recovery key (one Touch ID).
+    func registerPaperKey() {
+        guard let enclave, let words = paperWords else { return }
+        let pk = enclave.publicKey
+        busy = true
+        Task.detached {
+            do {
+                let code = try recoveryKeyCode(p256PublicKey: try paperKeyPublic(words: words))
+                let prepared = try prepareSetRecoveryKey(p256PublicKey: pk, recoveryCode: code)
+                let sig = try enclave.sign(prepared.signingMessage)
+                let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
+                await MainActor.run { self.paperWords = nil }
+                await self.track(h, label: "Recovery words registered as a recovery key", item: ActivityItem(kind: .security, title: "Recovery words added", amount: nil))
+            } catch { await MainActor.run { self.note("Registering recovery words failed: \(error)"); self.busy = false } }
+        }
+    }
+
+    /// With every device lost: the recovery words propose moving `lostInput`'s
+    /// funds to this Mac's account; they move after the account's delay.
+    func recoverWithWords() {
+        guard let enclave else { return }
+        let words = paperWordsInput.trimmingCharacters(in: .whitespacesAndNewlines), lost = lostInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pk = enclave.publicKey, me = address, n = validators
+        busy = true
+        Task.detached {
+            do {
+                let request = try prepareRecoveryTo(p256PublicKey: try paperKeyPublic(words: words), lostAccount: lost, to: me, validators: n)
+                let guardianSig = try paperKeySign(words: words, message: request.message)      // the words authorize
+                let prepared = try prepareRecoverySubmit(p256PublicKey: pk, request: request, guardianSignature: guardianSig)
+                let sig = try enclave.sign(prepared.signingMessage)                              // this Mac relays
+                let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
+                let pending = PendingRecovery(request: request, readyAt: Date().addingTimeInterval(TimeInterval(request.delaySeconds)))
+                await MainActor.run { self.outgoingRecovery = pending; pending.save(); self.paperWordsInput = "" }
+                await self.track(h, label: "Recovery of \(lost.prefix(10))… proposed with recovery words; funds can move after \(pending.readyAt.formatted())",
+                                 item: ActivityItem(kind: .security, title: "Recovery started for \(Short.address(lost))", amount: nil))
+            } catch { await MainActor.run { self.note("Recovery with words failed: \(error)"); self.busy = false } }
         }
     }
 

@@ -1940,12 +1940,29 @@ public func prepareRecoverySubmit(p256PublicKey: Data, request: RecoveryRequest,
 })
 }
 /**
+ * Like `prepare_recovery`, with the funds going to `to` (a paper recovery key
+ * recovers to the new Mac's account, not to an account of its own).
+ */
+public func prepareRecoveryTo(p256PublicKey: Data, lostAccount: String, to: String, validators: UInt32)throws  -> RecoveryRequest  {
+    return try  FfiConverterTypeRecoveryRequest_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_prepare_recovery_to(
+        FfiConverterData.lower(p256PublicKey),
+        FfiConverterString.lower(lostAccount),
+        FfiConverterString.lower(to),
+        FfiConverterUInt32.lower(validators),uniffiCallStatus
+    )
+})
+}
+/**
  * Register this Mac as a voting-node candidate, operated by the wallet's account.
  * `device_token` is Apple's DeviceCheck token (base64): one Mac, one candidate.
+ * `ownership` is the voting key's own signature (`aether candidate-info
+ * --operator`), so nobody can register a voting key they do not hold.
  * The registrar (a validator holding the network's DeviceCheck key) attests;
  * the returned transaction, signed with the wallet key, puts it on chain.
  */
-public func prepareRegisterNode(p256PublicKey: Data, deviceToken: String, validatorKey: String, nodeId: String, beaconer: String)throws  -> PreparedTx  {
+public func prepareRegisterNode(p256PublicKey: Data, deviceToken: String, validatorKey: String, nodeId: String, beaconer: String, ownership: String)throws  -> PreparedTx  {
     return try  FfiConverterTypePreparedTx_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
         uniffiCallStatus in
     uniffi_aether_ffi_fn_func_prepare_register_node(
@@ -1953,7 +1970,8 @@ public func prepareRegisterNode(p256PublicKey: Data, deviceToken: String, valida
         FfiConverterString.lower(deviceToken),
         FfiConverterString.lower(validatorKey),
         FfiConverterString.lower(nodeId),
-        FfiConverterString.lower(beaconer),uniffiCallStatus
+        FfiConverterString.lower(beaconer),
+        FfiConverterString.lower(ownership),uniffiCallStatus
     )
 })
 }
@@ -2117,6 +2135,39 @@ public func votingNodeStatus(validatorKey: String)throws  -> VotingNodeStatus  {
     )
 })
 }
+/**
+ * New paper recovery key: 24 words (256 bits of entropy).
+ */
+public func paperKeyNew() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_paper_key_new(uniffiCallStatus
+    )
+})
+}
+/**
+ * The paper key's public key (SEC1 compressed), for registering it as a recovery key.
+ */
+public func paperKeyPublic(words: String)throws  -> Data  {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_paper_key_public(
+        FfiConverterString.lower(words),uniffiCallStatus
+    )
+})
+}
+/**
+ * Sign `message` with the paper key (raw r‖s, low-s), as a recovery device signs.
+ */
+public func paperKeySign(words: String, message: Data)throws  -> Data  {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_paper_key_sign(
+        FfiConverterString.lower(words),
+        FfiConverterData.lower(message),uniffiCallStatus
+    )
+})
+}
 
 private enum InitializationResult {
     case ok
@@ -2166,7 +2217,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_aether_ffi_checksum_func_prepare_recovery_submit() != 54585) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_aether_ffi_checksum_func_prepare_register_node() != 29004) {
+    if (uniffi_aether_ffi_checksum_func_prepare_recovery_to() != 8634) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_prepare_register_node() != 54988) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_prepare_session_payment() != 52994) {
@@ -2212,6 +2266,15 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_voting_node_status() != 63459) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_paper_key_new() != 36008) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_paper_key_public() != 18852) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_paper_key_sign() != 17714) {
         return InitializationResult.apiChecksumMismatch
     }
 

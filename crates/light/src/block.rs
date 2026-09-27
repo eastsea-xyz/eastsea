@@ -21,6 +21,10 @@ pub const EPOCH: Epoch = Epoch::zero();
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Payload {
     pub parent_state_root: B256,
+    /// Merkle Mountain Range root of every earlier block's hash: a certificate
+    /// on this block proves all history before it (aether_state::mmr).
+    #[serde(default)]
+    pub history_root: B256,
     pub txs: Vec<TxEnvelope>,
     pub bal: BlockAccessList,
     pub gas: GasVector,

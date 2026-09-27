@@ -182,6 +182,25 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
             let svc = st.handoff.as_ref().ok_or((-32601, "this node does not sign handoffs".to_string()))?;
             svc.sign_staged().map(|h| json!({ "round": h.round })).map_err(|e| (-32000, e))
         }
+        // Inclusion of block `height` in the history under block `anchor`'s
+        // history root (`aether_light::verify_history`).
+        "aether_historyProof" => {
+            let height: u64 = param(p, 0)?;
+            let anchor: u64 = param(p, 1)?;
+            let g = chain.lock();
+            if anchor == 0 || height >= anchor || anchor > g.finalized.height {
+                return Err((-32602, "need height < anchor <= finalized height".into()));
+            }
+            let h = aether_hash::ChainHasher::new();
+            let mut leaves = Vec::with_capacity(anchor as usize);
+            for k in 0..anchor {
+                let b = g.blocks.get(&k).ok_or((-32000, format!("block {k} not kept here")))?;
+                let d: [u8; 32] = hex::decode(&b.hash).ok().and_then(|v| v.try_into().ok()).ok_or((-32000, "bad hash".to_string()))?;
+                leaves.push(aether_state::mmr::leaf(&h, k, &d));
+            }
+            let proof = aether_state::mmr::prove(&h, &leaves, height).ok_or((-32000, "no proof".to_string()))?;
+            Ok(json!({ "height": height, "hash": g.blocks[&height].hash, "anchor": anchor, "proof": proof }))
+        }
         // Voting-node candidates (the registry) and the current epoch.
         "aether_candidates" => {
             let g = chain.lock();

@@ -4,10 +4,12 @@
 //!            stem subtrees, generic over the `Hasher`; inclusion and absence proofs.
 //! `layout` — EIP-7864 key derivation and account encoding (basic data, code
 //!            hash, storage slots, code chunks).
+//! `mmr`    — Merkle Mountain Range over block hashes (history root in every block).
 //! `repo`   — `StateRepository` trait and the in-memory reference implementation
 //!            that differential tests compare persistent engines against.
 
 pub mod layout;
+pub mod mmr;
 pub mod repo;
 pub mod tree;
 

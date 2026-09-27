@@ -48,7 +48,17 @@ fn summary(height: u64, s: &WorldState) -> BlockSummary {
 fn commit(store: &Store, height: u64, s: &WorldState) {
     let sm = summary(height, s);
     store
-        .commit(Commit { height, digest: [height as u8; 32], root: s.root(), diff: s.journal(), summary: &sm, receipts: vec![], handoff: None, seed: None })
+        .commit(Commit {
+            height,
+            digest: [height as u8; 32],
+            root: s.root(),
+            diff: s.journal(),
+            summary: &sm,
+            receipts: vec![],
+            handoff: None,
+            seed: None,
+            history: &Default::default(),
+        })
         .unwrap();
 }
 
@@ -109,7 +119,17 @@ fn tampered_state_is_detected() {
     forged.set_balance(sender(1), U256::from(999_999u64)).unwrap();
     let sm = summary(1, &s);
     store
-        .commit(Commit { height: 1, digest: [1; 32], root: s.root(), diff: forged.journal(), summary: &sm, receipts: vec![], handoff: None, seed: None })
+        .commit(Commit {
+            height: 1,
+            digest: [1; 32],
+            root: s.root(),
+            diff: forged.journal(),
+            summary: &sm,
+            receipts: vec![],
+            handoff: None,
+            seed: None,
+            history: &Default::default(),
+        })
         .unwrap();
 
     match store.load() {

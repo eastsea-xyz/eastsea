@@ -141,6 +141,8 @@ pub struct VerifiedBlock {
     pub timestamp_ms: u64,
     /// State root after executing the parent (height - 1).
     pub parent_state_root: B256,
+    /// MMR root of blocks 0..height (aether_state::mmr): inclusion proofs of any earlier block.
+    pub history_root: B256,
 }
 
 /// Verify `finalization` (codec bytes) certifies `block` (codec bytes).
@@ -183,6 +185,7 @@ pub fn verify_finalized_chain(set: &ValidatorSet, block_bytes: &[u8], finalizati
         digest: format!("{}", block.digest()),
         timestamp_ms: block.timestamp,
         parent_state_root: payload.parent_state_root,
+        history_root: payload.history_root,
     })
 }
 
@@ -205,6 +208,21 @@ pub fn verify_storage(anchor: &VerifiedBlock, address: &Address, slot: U256, pro
     let h = ChainHasher::new();
     check_proof(proof, storage_slot_key(&h, address, slot), &anchor.parent_state_root)?;
     Ok(proof.value.map(U256::from_be_bytes).unwrap_or_default())
+}
+
+/// Block `height` with hash `block_hash` is in the history certified by
+/// `anchor` (whose payload commits to the MMR of blocks 0..anchor.height).
+pub fn verify_history(anchor: &VerifiedBlock, height: u64, block_hash: &B256, proof: &aether_state::mmr::MmrProof) -> Result<(), LightError> {
+    let h = ChainHasher::new();
+    if proof.leaves != anchor.height || proof.index != height {
+        return Err(LightError::WrongKey);
+    }
+    let leaf = aether_state::mmr::leaf(&h, height, &block_hash.0);
+    if proof.verify(&h, &leaf, &anchor.history_root.0) {
+        Ok(())
+    } else {
+        Err(LightError::ProofInvalid("history inclusion".into()))
+    }
 }
 
 /// Hex helpers for transporting codec bytes over JSON.

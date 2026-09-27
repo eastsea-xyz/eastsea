@@ -695,6 +695,19 @@ fn a_follower_verifies_everything_and_serves_a_wallet() {
     // Transactions sent to the follower reach the validators.
     let out = net.cli(&["send", "--rpc", &net.url(f), "--from-dev", "3", "--to", bob, "--value", "1", "--wait"]);
     assert!(out.contains("success=true"), "{out}");
+
+    // History: a certified block proves an old block through its MMR history root.
+    let anchor_h = net.height(0);
+    let fin = net.rpc(0, "aether_getFinalized", json!([anchor_h])).expect("anchor");
+    let hex = |v: &Value| aether_light::from_hex(v.as_str().unwrap()).unwrap();
+    let links: Vec<Vec<u8>> = fin["links"].as_array().map(|a| a.iter().map(hex).collect()).unwrap_or_default();
+    let anchor = aether_light::verify_finalized_chain(&aether_light::ValidatorSet::devnet(4), &hex(&fin["block"]), &hex(&fin["finalization"]), &links).unwrap();
+    let hp = net.rpc(0, "aether_historyProof", json!([2, anchor_h])).expect("history proof");
+    let proof: aether_state::mmr::MmrProof = serde_json::from_value(hp["proof"].clone()).unwrap();
+    let hash: aether_types::B256 = format!("0x{}", hp["hash"].as_str().unwrap()).parse().unwrap();
+    aether_light::verify_history(&anchor, 2, &hash, &proof).expect("block 2 is in the certified history");
+    let wrong: aether_types::B256 = [7u8; 32].into();
+    assert!(aether_light::verify_history(&anchor, 2, &wrong, &proof).is_err(), "another hash at height 2");
 }
 
 /// Open voting nodes, part 2: a follower Mac becomes a candidate. Its owner
@@ -928,7 +941,9 @@ fn regenerate_light_fixture() {
             continue;
         }
         net.wait_height(0, h + 3, 60);
-        let (Some(anchor), Some(next)) = (net.rpc(0, "aether_getFinalized", json!([h + 1])), net.rpc(0, "aether_getFinalized", json!([h + 2]))) else { continue };
+        let (Some(anchor), Some(next)) = (net.rpc(0, "aether_getFinalized", json!([h + 1])), net.rpc(0, "aether_getFinalized", json!([h + 2]))) else {
+            continue;
+        };
         // The fixture uses blocks with their own certificates (no links).
         let direct = |v: &Value| v["links"].as_array().is_none_or(|l| l.is_empty());
         if !direct(&anchor) || !direct(&next) {

@@ -8,6 +8,7 @@ use crate::inclusion::{self, InclusionPool};
 use crate::store::{Commit, Store, StoreError};
 use aether_crypto::{address_of, PublicKey as AetherPk};
 use aether_execution::{execute_block, fees, BlockContext, BlockOutcome, FeePolicy, Receipt, WorldState};
+use aether_hash::ChainHasher;
 use aether_types::{Address, FeeVector, GasVector, SignerScheme, TxEnvelope, TxHash, B256, U256};
 use commonware_consensus::Heightable;
 use commonware_cryptography::{sha256::Digest, Digestible};
@@ -100,6 +101,8 @@ pub struct Executed {
     pub handoff: Option<Arc<crate::handoff::Pending>>,
     /// The latest draw seed in this block's ancestry (inclusive), with the height that carried it.
     pub seed: Option<Arc<(u64, aether_light::block::Seed)>>,
+    /// Peaks of the MMR over blocks 0..=height; its root goes in the child's payload.
+    pub history: Arc<aether_state::mmr::Mmr>,
 }
 
 #[derive(Clone, Debug, Serialize, serde::Deserialize)]
@@ -180,6 +183,8 @@ pub enum ChainError {
         height: u64,
     },
     BadHandoff(String),
+    /// The payload's history root is not the MMR root of the chain before it.
+    HistoryMismatch,
 }
 
 impl Chain {
@@ -199,6 +204,7 @@ impl Chain {
             excess: GasVector::default(),
             handoff: None,
             seed: None,
+            history: Arc::new(aether_state::mmr::Mmr::default().append(&ChainHasher::new(), 0, &digest_bytes(&genesis.digest()))),
         });
         let mut executed = HashMap::new();
         executed.insert(genesis.digest(), exec.clone());
@@ -254,6 +260,7 @@ impl Chain {
                     excess: summary.as_ref().map(|b| b.excess).unwrap_or_default(),
                     handoff: cp.handoff.map(Arc::new),
                     seed: cp.seed.map(Arc::new),
+                    history: Arc::new(cp.history),
                 });
                 let mut g = chain.lock();
                 g.executed.insert(digest, exec.clone());
@@ -275,6 +282,7 @@ impl Chain {
                     receipts: vec![],
                     handoff: None,
                     seed: None,
+                    history: &genesis_exec.history,
                 })?;
                 g.store = Some(store);
             }
@@ -432,6 +440,9 @@ impl Chain {
         if payload.parent_state_root != parent.state.root() {
             return Err(ChainError::ParentRootMismatch);
         }
+        if payload.history_root != B256::from(parent.history.root(&ChainHasher::new())) {
+            return Err(ChainError::HistoryMismatch);
+        }
         if payload.txs.len() > MAX_TXS_PER_BLOCK {
             return Err(ChainError::BadPayload);
         }
@@ -477,6 +488,7 @@ impl Chain {
             excess,
             handoff,
             seed,
+            history: Arc::new(parent.history.append(&ChainHasher::new(), block.height().get(), &digest_bytes(&block.digest()))),
         });
         self.lock().executed.insert(block.digest(), exec.clone());
         exec
@@ -589,6 +601,7 @@ impl Chain {
                     receipts: exec.tx_hashes.iter().copied().zip(exec.receipts.iter()).collect(),
                     handoff: exec.handoff.as_deref().filter(|p| p.at == exec.height),
                     seed: exec.seed.as_deref().filter(|s| s.0 == exec.height),
+                    history: &exec.history,
                 })
                 .map_err(|e| ChainError::Store(e.to_string()))?;
         }
@@ -716,5 +729,6 @@ pub fn build_payload(
     seed: Option<aether_light::block::Seed>,
 ) -> (Payload, aether_execution::BlockOutcome) {
     let (txs, out) = aether_execution::build_block(&parent.state, ctx, candidates);
-    (Payload { parent_state_root: parent.state.root(), txs, bal: out.bal.clone(), gas: out.gas, handoff, seed }, out)
+    let history_root = B256::from(parent.history.root(&ChainHasher::new()));
+    (Payload { parent_state_root: parent.state.root(), history_root, txs, bal: out.bal.clone(), gas: out.gas, handoff, seed }, out)
 }

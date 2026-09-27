@@ -19,6 +19,8 @@ jolt-sdk = { path = "/Volumes/workspace/aether-jolt/jolt/jolt-sdk", features = [
 guest = { package = "aether-jolt-block-guest", path = "./guest" }
 # Registers the P-256 inline instructions with the host tracer.
 jolt-inlines-p256 = { path = "/Volumes/workspace/aether-jolt/jolt/jolt-inlines/p256", features = ["host"] }
+# Registers the BLAKE3 inline (the state tree hash) with the host tracer.
+jolt-inlines-blake3 = { path = "/Volumes/workspace/aether-jolt/jolt/jolt-inlines/blake3", features = ["host"] }
 aether-execution = { path = "../../crates/execution" }
 aether-crypto = { path = "../../crates/crypto" }
 aether-types = { path = "../../crates/types" }

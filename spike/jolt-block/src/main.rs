@@ -7,6 +7,7 @@ use aether_execution::{execute_block_sequential, sign_call, BlockContext, EvmCal
 use aether_types::{Address, Bytes, GasVector, U256};
 use guest::Witness;
 use jolt_sdk as jolt;
+use jolt_inlines_blake3 as _; // link the inline registrations (state hash)
 use jolt_inlines_p256 as _; // link the inline registrations
 use std::time::Instant;
 

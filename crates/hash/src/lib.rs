@@ -8,7 +8,7 @@
 mod blake3_backend;
 mod poseidon2_backend;
 
-pub use blake3_backend::Blake3;
+pub use blake3_backend::{set_blake3_backend, Blake3, Keyed64};
 pub use poseidon2_backend::Poseidon2KoalaBear;
 
 /// The chain's state hash (docs/design/00 D6, decided 2026-09-27): BLAKE3.

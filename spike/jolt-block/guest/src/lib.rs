@@ -32,8 +32,18 @@ fn jolt_p256(x: &[u8; 32], y: &[u8; 32], digest: &[u8; 32], r: &[u8; 32], s: &[u
     ecdsa_verify(z, r, s, q).is_ok()
 }
 
+/// The state hash's 64-byte keyed BLAKE3 through Jolt's inline (one per tree hash).
+fn jolt_keyed64(key: &[u8; 32], left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
+    use jolt_inlines_blake3::{blake3_keyed64, AlignedHash32};
+    let (l, r) = (AlignedHash32::new(*left), AlignedHash32::new(*right));
+    let mut k = AlignedHash32::new(*key);
+    blake3_keyed64(&l, &r, &mut k);
+    *k.as_bytes()
+}
+
 fn accelerate() {
     let _ = aether_crypto::set_p256_backend(jolt_p256);
+    let _ = aether_hash::set_blake3_backend(jolt_keyed64);
 }
 
 #[derive(Serialize, Deserialize)]
@@ -74,6 +84,7 @@ fn verify_signatures(witness: Vec<u8>) -> u32 {
 /// Debug: root of the pre-state alone (tree + Poseidon2, no execution).
 #[jolt::provable(max_input_size = 1048576, heap_size = 268435456, stack_size = 4194304, max_trace_length = 67108864)]
 fn pre_root(witness: Vec<u8>) -> [u8; 32] {
+    accelerate();
     let w: Witness = postcard::from_bytes(&witness).expect("witness");
     WorldState::from_parts(w.entries, Default::default()).root().0
 }

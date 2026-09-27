@@ -15,6 +15,7 @@ aether-types = { path = "../../../crates/types" }
 aether-hash = { path = "../../../crates/hash" }
 serde = { version = "1", features = ["derive"] }
 jolt-inlines-p256 = { path = "/Volumes/workspace/aether-jolt/jolt/jolt-inlines/p256" }
+jolt-inlines-blake3 = { path = "/Volumes/workspace/aether-jolt/jolt/jolt-inlines/blake3" }
 postcard = { version = "1", default-features = false, features = ["alloc"] }
 
 [lib]

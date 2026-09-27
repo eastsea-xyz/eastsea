@@ -44,6 +44,61 @@ pub struct Receipt {
     pub contract_address: Option<Address>,
     pub logs: u32,
     pub output: Bytes,
+    /// The events the tx emitted (for apps: trades, transfers).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<Event>,
+}
+
+/// An EVM log.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Event {
+    pub address: Address,
+    pub topics: Vec<aether_types::B256>,
+    pub data: Bytes,
+}
+
+/// Result of a read-only call.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallResult {
+    pub success: bool,
+    pub output: Bytes,
+    pub gas_used: u64,
+}
+
+/// Run a call against `state` without changing it (eth_call): no fees, the
+/// caller's current nonce, nothing committed.
+pub fn call(state: &WorldState, ctx: &BlockContext, from: Address, to: Option<Address>, data: Bytes, value: U256, gas: u64) -> Result<CallResult, String> {
+    let tx_env = TxEnv::builder()
+        .caller(from)
+        .nonce(state.nonce(&from))
+        .chain_id(Some(ctx.chain_id))
+        .gas_limit(gas)
+        .gas_price(0)
+        .kind(match to {
+            Some(a) => TxKind::Call(a),
+            None => TxKind::Create,
+        })
+        .value(value)
+        .data(data)
+        .build()
+        .map_err(|e| format!("{e:?}"))?;
+    let mut evm = Context::mainnet()
+        .with_db(WrapDatabaseRef(state))
+        .modify_cfg_chained(|c| c.chain_id = ctx.chain_id)
+        .modify_block_chained(|b| {
+            b.number = U256::from(ctx.number);
+            b.timestamp = U256::from(ctx.timestamp);
+            b.beneficiary = ctx.beneficiary;
+            b.basefee = 0;
+            b.gas_limit = ctx.limits.exec;
+        })
+        .build_mainnet_with_inspector(ProveGasMeter::default());
+    let out = evm.inspect_tx(tx_env).map_err(|e| format!("{e:?}"))?;
+    Ok(match out.result {
+        ExecutionResult::Success { gas, output, .. } => CallResult { success: true, output: output.data().clone(), gas_used: gas.tx_gas_used() },
+        ExecutionResult::Revert { gas, output, .. } => CallResult { success: false, output, gas_used: gas.tx_gas_used() },
+        ExecutionResult::Halt { gas, .. } => CallResult { success: false, output: Bytes::new(), gas_used: gas.tx_gas_used() },
+    })
 }
 
 #[derive(Clone)]
@@ -177,16 +232,17 @@ pub(crate) fn run_validated(state: &WorldState, ctx: &BlockContext, tx: &TxEnvel
     let prove_gas = evm.inspector.steps;
     let touched_beneficiary = evm.inspector.watched || tx.header.sender == ctx.beneficiary || call.to == Some(ctx.beneficiary);
 
-    let (success, gas_used, logs, output, contract_address) = match &out.result {
+    let (success, gas_used, logs, output, contract_address, events) = match &out.result {
         ExecutionResult::Success { gas, logs, output, .. } => {
             let (bytes, created) = match output {
                 Output::Call(b) => (b.clone(), None),
                 Output::Create(b, a) => (b.clone(), *a),
             };
-            (true, gas.tx_gas_used(), logs.len() as u32, bytes, created)
+            let events = logs.iter().map(|l| Event { address: l.address, topics: l.data.topics().to_vec(), data: l.data.data.clone() }).collect();
+            (true, gas.tx_gas_used(), logs.len() as u32, bytes, created, events)
         }
-        ExecutionResult::Revert { gas, output, .. } => (false, gas.tx_gas_used(), 0, output.clone(), None),
-        ExecutionResult::Halt { gas, .. } => (false, gas.tx_gas_used(), 0, Bytes::new(), None),
+        ExecutionResult::Revert { gas, output, .. } => (false, gas.tx_gas_used(), 0, output.clone(), None, vec![]),
+        ExecutionResult::Halt { gas, .. } => (false, gas.tx_gas_used(), 0, Bytes::new(), None, vec![]),
     };
     let mut changes = out.state;
     let prove_fee = match &ctx.fees {
@@ -194,7 +250,7 @@ pub(crate) fn run_validated(state: &WorldState, ctx: &BlockContext, tx: &TxEnvel
         None => U256::ZERO,
     };
     Ok(TxRun {
-        receipt: Receipt { tx_hash: tx_hash(tx), success, gas_used, prove_gas, contract_address, logs, output },
+        receipt: Receipt { tx_hash: tx_hash(tx), success, gas_used, prove_gas, contract_address, logs, output, events },
         changes,
         gas: GasVector { exec: gas_used, state: 0, prove: prove_gas },
         touched_beneficiary,

@@ -42,6 +42,16 @@ pub fn record(state: &mut WorldState, height: u64, commitment: [u8; 32], escrow:
     state.set_storage(PROVER_ESCROW, slot(height, ESCROW), escrow);
 }
 
+/// Forget block `height`'s record once nobody can claim it any more (state
+/// does not grow with every block forever).
+pub fn prune(state: &mut WorldState, height: u64) {
+    for field in [COMMITMENT, ESCROW, PROVER] {
+        if !state.storage(&PROVER_ESCROW, slot(height, field)).is_zero() {
+            state.set_storage(PROVER_ESCROW, slot(height, field), U256::ZERO);
+        }
+    }
+}
+
 /// Block `height`'s recorded statement commitment, if any.
 pub fn commitment(state: &WorldState, height: u64) -> Option<[u8; 32]> {
     let c = state.storage(&PROVER_ESCROW, slot(height, COMMITMENT));
@@ -114,5 +124,9 @@ mod tests {
         record(&mut s, 10, [2; 32], U256::ZERO);
         pay(&mut s, 10, 11, Address::ZERO).unwrap();
         assert_eq!(pay(&mut s, 10, 11, p), Err(ClaimError::AlreadyProven));
+        // Past the claim window the record is dropped (state stays bounded).
+        prune(&mut s, 10);
+        assert_eq!(commitment(&s, 10), None);
+        assert_eq!(prover(&s, 10), None);
     }
 }

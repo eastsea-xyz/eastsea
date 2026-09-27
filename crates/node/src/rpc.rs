@@ -72,7 +72,13 @@ pub fn blake3_hex(b: &[u8]) -> String {
 }
 
 pub async fn serve(addr: SocketAddr, state: RpcState) -> std::io::Result<()> {
-    let app = Router::new().route("/", post(handle)).with_state(state);
+    // Loopback only; any origin may ask (web pages and dApps read through this
+    // node; every write still needs the user's signature in the wallet).
+    let cors = tower_http::cors::CorsLayer::new()
+        .allow_origin(tower_http::cors::Any)
+        .allow_methods([axum::http::Method::POST, axum::http::Method::OPTIONS])
+        .allow_headers([axum::http::header::CONTENT_TYPE]);
+    let app = Router::new().route("/", post(handle)).layer(cors).with_state(state);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await
 }
@@ -305,9 +311,11 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
             }
             None => json!({ "running": false }),
         }),
+        // The newest rewards (at most 10,000 per call; the app asks for all of them for tax records).
         "aether_rewards" => {
             let a: Address = param(p, 0)?;
-            Ok(json!(chain.rewards(&a)))
+            let limit = p.get(1).and_then(Value::as_u64).unwrap_or(1_000).min(10_000) as usize;
+            Ok(json!(chain.recent_rewards(&a, limit)))
         }
         "aether_sendTransaction" => {
             let tx: TxEnvelope = param(p, 0)?;
@@ -365,6 +373,8 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
         }
         // Minimal Ethereum-compatible reads.
         "eth_chainId" => Ok(json!(format!("0x{:x}", chain.cfg().chain_id))),
+        "eth_call" => eth_call(chain, p),
+        "eth_getLogs" => eth_get_logs(chain, p),
         "eth_blockNumber" => Ok(json!(format!("0x{:x}", chain.lock().finalized.height))),
         "eth_getBalance" => {
             let a: Address = param(p, 0)?;
@@ -385,6 +395,10 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
 /// A block proof: validators verify it and keep it for their proposals;
 /// followers pass it on to a validator.
 async fn submit_proof(st: &RpcState, p: &Value) -> Result<Value, (i64, String)> {
+    // Size first, before copying anything.
+    if p.pointer("/0/proof").and_then(Value::as_str).is_none_or(|s| s.len() > 2 * crate::chain::MAX_PROOF_BYTES) {
+        return Err((-32602, "proof missing or too large".into()));
+    }
     let claim: aether_light::block::ProofClaim = serde_json::from_value(p.get(0).cloned().unwrap_or_default()).map_err(|e| (-32602, format!("proof: {e}")))?;
     if let Some(up) = &st.upstream {
         return up.first("aether_submitProof", json!([claim])).await.map_err(|e| (-32000, e));
@@ -393,4 +407,110 @@ async fn submit_proof(st: &RpcState, p: &Value) -> Result<Value, (i64, String)> 
     let height = claim.height;
     tokio::task::spawn_blocking(move || chain.add_proof(claim)).await.map_err(|e| (-32000, e.to_string()))?.map_err(|e| (-32000, e))?;
     Ok(json!({ "accepted": height }))
+}
+
+fn hex_arg(v: &Value, k: &str) -> Result<Option<Vec<u8>>, (i64, String)> {
+    match v.get(k).and_then(Value::as_str) {
+        None => Ok(None),
+        Some(s) => hex::decode(s.trim_start_matches("0x")).map(Some).map_err(|_| (-32602, format!("{k} is not hex"))),
+    }
+}
+
+/// eth_call on the finalized state (no fees, nothing committed).
+fn eth_call(chain: &Chain, p: &Value) -> RpcResult {
+    let c = p.get(0).ok_or((-32602, "missing call object".to_string()))?;
+    let addr = |k: &str| -> Result<Option<Address>, (i64, String)> {
+        c.get(k).and_then(Value::as_str).map(|s| s.parse().map_err(|_| (-32602, format!("{k} is not an address")))).transpose()
+    };
+    let to = addr("to")?;
+    let from = addr("from")?.unwrap_or(Address::ZERO);
+    let data = hex_arg(c, "data")?.or(hex_arg(c, "input")?).unwrap_or_default();
+    let value = match c.get("value").and_then(Value::as_str) {
+        Some(v) => U256::from_str_radix(v.trim_start_matches("0x"), 16).map_err(|_| (-32602, "value".to_string()))?,
+        None => U256::ZERO,
+    };
+    let (state, ctx) = {
+        let g = chain.lock();
+        let f = &g.finalized;
+        let ctx = aether_execution::BlockContext {
+            chain_id: g.cfg.chain_id,
+            number: f.height + 1,
+            timestamp: f.timestamp / 1000,
+            beneficiary: Address::ZERO,
+            limits: g.cfg.limits,
+            fees: None,
+        };
+        (f.state.clone(), ctx)
+    };
+    let r = aether_execution::call(&state, &ctx, from, to, data.into(), value, 30_000_000).map_err(|e| (-32000, e))?;
+    if r.success {
+        Ok(json!(format!("0x{}", hex::encode(&r.output))))
+    } else {
+        Err((3, format!("execution reverted: 0x{}", hex::encode(&r.output))))
+    }
+}
+
+/// eth_getLogs over at most 2,000 finalized blocks (address and topic filters).
+fn eth_get_logs(chain: &Chain, p: &Value) -> RpcResult {
+    let f = p.get(0).cloned().unwrap_or_default();
+    let g = chain.lock();
+    let head = g.finalized.height;
+    let num = |k: &str, d: u64| -> u64 {
+        match f.get(k).and_then(Value::as_str) {
+            Some("latest") | None => d,
+            Some("earliest") => 0,
+            Some(s) => u64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap_or(d),
+        }
+    };
+    let to = num("toBlock", head).min(head);
+    let from = num("fromBlock", head).max(to.saturating_sub(1999));
+    let addrs: Vec<String> = match f.get("address") {
+        Some(Value::String(a)) => vec![a.to_lowercase()],
+        Some(Value::Array(v)) => v.iter().filter_map(Value::as_str).map(str::to_lowercase).collect(),
+        _ => vec![],
+    };
+    let topics: Vec<Vec<String>> = f
+        .get("topics")
+        .and_then(Value::as_array)
+        .map(|t| {
+            t.iter()
+                .map(|x| match x {
+                    Value::String(s) => vec![s.to_lowercase()],
+                    Value::Array(v) => v.iter().filter_map(Value::as_str).map(str::to_lowercase).collect(),
+                    _ => vec![],
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    for (height, b) in g.blocks.range(from..=to) {
+        let mut index = 0u64;
+        for (ti, h) in b.txs.iter().enumerate() {
+            let Some((_, r)) = g.receipts.get(h) else { continue };
+            for e in &r.events {
+                let log_index = index;
+                index += 1;
+                let address = format!("{:#x}", e.address);
+                if !addrs.is_empty() && !addrs.contains(&address) {
+                    continue;
+                }
+                let topic_ok = topics.iter().enumerate().all(|(i, want)| want.is_empty() || e.topics.get(i).is_some_and(|t| want.contains(&format!("{t:#x}"))));
+                if !topic_ok {
+                    continue;
+                }
+                out.push(json!({
+                    "address": address,
+                    "topics": e.topics.iter().map(|t| format!("{t:#x}")).collect::<Vec<_>>(),
+                    "data": format!("0x{}", hex::encode(&e.data)),
+                    "blockNumber": format!("0x{height:x}"),
+                    "blockHash": format!("0x{}", b.hash),
+                    "transactionHash": format!("{h:#x}"),
+                    "transactionIndex": format!("0x{ti:x}"),
+                    "logIndex": format!("0x{log_index:x}"),
+                    "removed": false,
+                }));
+            }
+        }
+    }
+    Ok(json!(out))
 }

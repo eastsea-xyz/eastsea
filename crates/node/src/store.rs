@@ -143,15 +143,17 @@ impl Store {
     }
 
     /// Every reward recorded for `prover`, oldest first.
-    pub fn rewards(&self, prover: &[u8; 20]) -> Result<Vec<Vec<u8>>, StoreError> {
+    /// The newest `limit` rewards of `prover`, oldest first.
+    pub fn rewards(&self, prover: &[u8; 20], limit: usize) -> Result<Vec<Vec<u8>>, StoreError> {
         let tx = self.db.begin_read().map_err(dberr)?;
         let t = tx.open_table(REWARDS).map_err(dberr)?;
         let mut end = prover.to_vec();
         end.extend_from_slice(&[0xff; 16]);
         let mut out = Vec::new();
-        for row in t.range(prover.as_slice()..=end.as_slice()).map_err(dberr)? {
+        for row in t.range(prover.as_slice()..=end.as_slice()).map_err(dberr)?.rev().take(limit) {
             out.push(row.map_err(dberr)?.1.value().to_vec());
         }
+        out.reverse();
         Ok(out)
     }
 

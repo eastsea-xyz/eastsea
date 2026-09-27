@@ -327,6 +327,18 @@ pub fn prepare_transfer(p256_public_key: Vec<u8>, to: String, value_wei: String)
     prepare(&p256_public_key, |_| Ok(EvmCall { to: Some(to), value, input: Bytes::new(), gas_limit: 21_000, delegate: None }))
 }
 
+/// A contract call or deployment a web page asked for (`aether://call`),
+/// signed by the Secure Enclave key. `to` empty deploys `data` as init code.
+#[uniffi::export]
+pub fn prepare_call(p256_public_key: Vec<u8>, to: String, value_wei: String, data_hex: String, gas_limit: u64) -> R<PreparedTx> {
+    const MAX_GAS: u64 = 10_000_000;
+    let to: Option<Address> = if to.is_empty() { None } else { Some(to.parse().map_err(|_| WalletError::Invalid("contract address".into()))?) };
+    let value: U256 = if value_wei.is_empty() { U256::ZERO } else { value_wei.parse().map_err(|_| WalletError::Invalid("value".into()))? };
+    let input = alloy_primitives::hex::decode(data_hex.trim_start_matches("0x")).map_err(|_| WalletError::Invalid("call data is not hex".into()))?;
+    let gas_limit = if gas_limit == 0 { 3_000_000 } else { gas_limit.min(MAX_GAS) };
+    prepare(&p256_public_key, |_| Ok(EvmCall { to, value, input: input.clone().into(), gas_limit, delegate: None }))
+}
+
 /// One recipient of a batch.
 #[derive(uniffi::Record)]
 pub struct Payment {

@@ -68,8 +68,14 @@ fn block_txs() -> Vec<TxEnvelope> {
         sign_call(&carol, CHAIN, 0, 1, &call(Some(created), Bytes::new(), None)).unwrap(),
         sign_call(&carol, CHAIN, 1, 1, &call(Some(created), Bytes::new(), None)).unwrap(),
         // A plain payment to an existing account.
-        sign_call(&bob, CHAIN, 0, 1, &EvmCall { to: Some(Address::repeat_byte(3)), value: U256::from(1u64), input: Bytes::new(), gas_limit: 21_000, delegate: None })
-            .unwrap(),
+        sign_call(
+            &bob,
+            CHAIN,
+            0,
+            1,
+            &EvmCall { to: Some(Address::repeat_byte(3)), value: U256::from(1u64), input: Bytes::new(), gas_limit: 21_000, delegate: None },
+        )
+        .unwrap(),
     ]
 }
 
@@ -85,7 +91,13 @@ fn a_block_on_its_witness_matches_the_full_state() {
     let witness = pre.witness_for(&full.state);
     let bytes = postcard::to_allocvec(&witness).unwrap();
     let entries = pre.repo().entries().count();
-    eprintln!("witness: {} stems, {} opaque nodes, {} codes, {} bytes (full state: {entries} entries)", witness.tree.stems.len(), witness.tree.opaque.len(), witness.codes.len(), bytes.len());
+    eprintln!(
+        "witness: {} stems, {} opaque nodes, {} codes, {} bytes (full state: {entries} entries)",
+        witness.tree.stems.len(),
+        witness.tree.opaque.len(),
+        witness.codes.len(),
+        bytes.len()
+    );
     assert!(witness.tree.stems.len() < entries / 4, "the witness is a small part of the state");
 
     let stateless = WorldState::from_witness(&postcard::from_bytes(&bytes).unwrap()).unwrap();
@@ -118,4 +130,39 @@ fn a_witness_missing_what_the_block_reads_gives_no_result() {
     if let Ok(s) = WorldState::from_witness(&witness) {
         assert_ne!(s.root(), pre.root());
     }
+}
+
+#[test]
+fn read_only_calls_and_events() {
+    use aether_execution::call;
+    // A contract that emits LOG1(topic 7) and returns 42 on any call:
+    // PUSH1 7 PUSH1 0 PUSH1 0 LOG1 PUSH1 42 PUSH1 0 MSTORE PUSH1 32 PUSH1 0 RETURN
+    let runtime = "6007600060".to_string() + "00a1602a60005260206000f3";
+    let init = format!("{}{}", "6011600c60003960116000f3", runtime); // copy the 17-byte runtime and return it
+    let mut s = state(1);
+    let alice = signer(1);
+    let deploy = sign_call(
+        &alice,
+        CHAIN,
+        0,
+        1,
+        &EvmCall { to: None, value: U256::ZERO, input: alloy_primitives::hex::decode(init).unwrap().into(), gas_limit: 200_000, delegate: None },
+    )
+    .unwrap();
+    let out = execute_block(&s, &ctx(1), &[deploy]).unwrap();
+    let c = out.receipts[0].contract_address.expect("deployed");
+    s = out.state;
+    // A read-only call returns 42 and changes nothing.
+    let root = s.root();
+    let r = call(&s, &ctx(2), Address::ZERO, Some(c), Bytes::new(), U256::ZERO, 100_000).unwrap();
+    assert!(r.success);
+    assert_eq!(U256::from_be_slice(&r.output), U256::from(42u64));
+    assert_eq!(s.root(), root);
+    // A real call keeps its event in the receipt.
+    let tx = sign_call(&alice, CHAIN, 1, 1, &EvmCall { to: Some(c), value: U256::ZERO, input: Bytes::new(), gas_limit: 100_000, delegate: None }).unwrap();
+    let out = execute_block(&s, &ctx(2), &[tx]).unwrap();
+    let ev = &out.receipts[0].events;
+    assert_eq!(ev.len(), 1);
+    assert_eq!(ev[0].address, c);
+    assert_eq!(ev[0].topics[0], aether_types::B256::from(U256::from(7u64)));
 }

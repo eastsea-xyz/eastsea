@@ -200,12 +200,12 @@ impl Verifier {
 }
 
 impl ProofVerifier for Verifier {
-    fn verify(&self, proof: &[u8], commitment: [u8; 32]) -> bool {
+    fn decide(&self, proof: &[u8], commitment: [u8; 32]) -> Option<bool> {
         let mut h = blake3::Hasher::new();
         h.update(&commitment).update(proof);
         let key = *h.finalize().as_bytes();
         if let Some(v) = self.seen.lock().ok().and_then(|s| s.get(&key).copied()) {
-            return v;
+            return Some(v);
         }
         match self.ask(proof, commitment) {
             // Only a verified proof is remembered: a refusal may have been a
@@ -217,14 +217,18 @@ impl ProofVerifier for Verifier {
                     }
                     s.insert(key, true);
                 }
-                true
+                Some(true)
             }
-            Ok(false) => false,
+            Ok(false) => Some(false),
             Err(e) => {
                 tracing::error!(%e, "proof verifier unavailable; refusing blocks with proofs");
-                false
+                None
             }
         }
+    }
+
+    fn verify(&self, proof: &[u8], commitment: [u8; 32]) -> bool {
+        self.decide(proof, commitment).unwrap_or(false)
     }
 }
 

@@ -24,6 +24,10 @@ final class WalletModel: ObservableObject {
     var onOutdated: (() -> Void)?
     /// A payment a web page or another app asked for (`aether://pay?...`), shown for approval.
     @Published var paymentRequest: PaymentRequest?
+    /// A contract call or deployment a page asked for (`aether://call?...`).
+    @Published var callRequest: CallRequest?
+    /// A page asking for this wallet's address (`aether://connect?...`).
+    @Published var connectRequest: ConnectRequest?
     @Published var busy = false
     @Published var log: [String] = []
     @Published var sendTo = ""
@@ -312,18 +316,69 @@ final class WalletModel: ObservableObject {
         guard url.scheme == "aether", let c = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
         // A repeated parameter keeps its first value (never a crash on odd links).
         let q = Dictionary((c.queryItems ?? []).compactMap { i in i.value.map { (i.name, $0) } }, uniquingKeysWith: { first, _ in first })
-        guard (c.host ?? c.path) == "pay" || c.path == "pay", let to = q["to"], Wei.from(aeth: q["amount"] ?? "") != nil else {
-            note("Ignored a payment link that is not complete")
+        let action = c.host ?? c.path
+        // One request at a time, never written into what the user is typing.
+        guard paymentRequest == nil, callRequest == nil, connectRequest == nil else {
+            note("Ignored a link while another request is waiting for approval")
             return
         }
-        // One request at a time, and never written into what the user is typing:
-        // the request is shown on its own and sent exactly as asked.
-        guard paymentRequest == nil else {
-            note("Ignored a second payment link while one is waiting for approval")
-            return
+        let callback = q["callback"].flatMap(URL.init(string:)).flatMap(Self.allowedCallback)
+        switch action {
+        case "pay":
+            guard let to = q["to"], Wei.from(aeth: q["amount"] ?? "") != nil else { return note("Ignored a payment link that is not complete") }
+            paymentRequest = PaymentRequest(to: to, amount: q["amount"] ?? "", memo: q["memo"], callback: callback)
+        case "call":
+            let value = q["value"] ?? "0"
+            guard Wei.from(aeth: value) != nil, (q["data"] ?? "").hasPrefix("0x"), (q["data"] ?? "").count >= 10 || q["to"] == nil else {
+                return note("Ignored a contract call link that is not complete")
+            }
+            callRequest = CallRequest(to: q["to"] ?? "", value: value, data: q["data"] ?? "0x", gas: UInt64(q["gas"] ?? "") ?? 0, memo: q["memo"], origin: q["origin"], callback: callback)
+        case "connect":
+            guard let callback else { return note("Ignored a connect link without a callback") }
+            connectRequest = ConnectRequest(origin: q["origin"] ?? callback.host ?? "a page", callback: callback)
+        default:
+            note("Ignored an unknown aether:// link")
         }
-        let callback = q["callback"].flatMap(URL.init(string:)).flatMap { $0.scheme == "https" ? $0 : nil }
-        paymentRequest = PaymentRequest(to: to, amount: q["amount"] ?? "", memo: q["memo"], callback: callback)
+    }
+
+    /// Results go back only to https pages (or a page served from this Mac).
+    static func allowedCallback(_ u: URL) -> URL? {
+        if u.scheme == "https" { return u }
+        if u.scheme == "http", ["localhost", "127.0.0.1"].contains(u.host ?? "") { return u }
+        return nil
+    }
+
+    /// Tell the page this wallet's address (after the user approved).
+    func approveConnect() {
+        guard let r = connectRequest else { return }
+        connectRequest = nil
+        reply(r.callback, ["address": address, "chain_id": String(status?.chainId ?? 0)])
+    }
+
+    /// Sign and send a contract call a page asked for (Touch ID), then tell the page.
+    func approveCall() {
+        guard let enclave, let r = callRequest, let wei = Wei.from(aeth: r.value) else { return }
+        callRequest = nil
+        let pk = enclave.publicKey
+        busy = true
+        Task.detached {
+            do {
+                let prepared = try prepareCall(p256PublicKey: pk, to: r.to, valueWei: wei, dataHex: r.data, gasLimit: r.gas)
+                let sig = try enclave.sign(prepared.signingMessage)
+                let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
+                let title = r.to.isEmpty ? "Deployed a contract" : "Called \(Short.address(r.to))"
+                let ok = await self.track(h, label: title, item: ActivityItem(kind: .sent, title: title, amount: nil))
+                await MainActor.run { if let cb = r.callback { self.reply(cb, ["tx": h, "status": ok ? "success" : "failed"]) } }
+            } catch { await MainActor.run { self.note("Call failed: \(error)"); self.busy = false } }
+        }
+    }
+
+    private func reply(_ back: URL, _ items: [String: String]) {
+        guard var c = URLComponents(url: back, resolvingAgainstBaseURL: false) else { return }
+        c.queryItems = (c.queryItems ?? []) + items.sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) }
+        #if os(macOS)
+        if let u = c.url { NSWorkspace.shared.open(u) }
+        #endif
     }
 
     func faucet() {
@@ -535,4 +590,31 @@ struct PaymentRequest: Equatable {
     let amount: String
     let memo: String?
     let callback: URL?
+}
+
+/// A contract call asked for by a link; shown decoded for approval.
+struct CallRequest: Equatable {
+    let to: String
+    let value: String
+    let data: String
+    let gas: UInt64
+    let memo: String?
+    let origin: String?
+    let callback: URL?
+
+    /// What the call does, when its 4-byte selector is a well-known one.
+    var method: String {
+        if to.isEmpty { return "Deploy a contract (\((data.count - 2) / 2) bytes)" }
+        let known: [String: String] = [
+            "0xa9059cbb": "Token transfer", "0x095ea7b3": "Token approval (allows spending)", "0x23b872dd": "Token transfer from",
+            "0x38ed1739": "Swap tokens", "0xe8e33700": "Add liquidity", "0xbaa2abde": "Remove liquidity",
+        ]
+        return known[String(data.prefix(10)).lowercased()] ?? "Contract call \(data.prefix(10))"
+    }
+}
+
+/// A page asking to know this wallet's address.
+struct ConnectRequest: Equatable {
+    let origin: String
+    let callback: URL
 }

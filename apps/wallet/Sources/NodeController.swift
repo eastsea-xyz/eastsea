@@ -265,7 +265,7 @@ final class NodeController: ObservableObject {
     /// Rewards this Mac's proofs earned, as CSV (for tax records).
     func rewardsCSV() async -> String? {
         guard !proveAddress.isEmpty,
-              let list = await LocalRPC.call(port: Self.port, method: "aether_rewards", params: [proveAddress]) as? [[String: Any]] else { return nil }
+              let list = await LocalRPC.call(port: Self.port, method: "aether_rewards", params: [proveAddress, 10_000]) as? [[String: Any]] else { return nil }
         var csv = "proven_block,amount_aeth,paid_in_block,time_utc\n"
         let iso = ISO8601DateFormatter()
         for r in list {

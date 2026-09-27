@@ -25,7 +25,7 @@ struct SimpleDashboard: View {
     }
 
     enum Sheet: String, Identifiable {
-        case send, receive
+        case send, receive, call, connect
         var id: String { rawValue }
     }
 
@@ -36,8 +36,12 @@ struct SimpleDashboard: View {
                 switch s {
                 case .send: SendSheet()
                 case .receive: ReceiveSheet()
+                case .call: CallSheet()
+                case .connect: ConnectSheet()
                 }
             }
+            .onChange(of: model.callRequest) { _, r in if r != nil { sheet = .call } }
+            .onChange(of: model.connectRequest) { _, r in if r != nil { sheet = .connect } }
             // A payment link (aether://pay?...) opens the send sheet, filled in, for approval.
             .onChange(of: model.paymentRequest) { _, r in if r != nil { sheet = .send } }
     }
@@ -784,6 +788,81 @@ private struct SendSheet: View {
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
                     .disabled(!valid || model.busy)
+            }
+        }
+        .padding(24)
+        .frame(minWidth: 420)
+    }
+}
+
+/// A page asks to sign a contract call: what it does, where to, how much; Touch ID to approve.
+private struct CallSheet: View {
+    @EnvironmentObject var model: WalletModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Approve a request").font(.title2.bold())
+            if let r = model.callRequest {
+                Label("\(r.origin ?? "A page") asks you to sign this. Check it before you approve.", systemImage: "link")
+                    .font(.callout).foregroundStyle(.orange)
+                    .padding(10).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
+                row("Action", r.method)
+                if !r.to.isEmpty { row("Contract", r.to, mono: true) }
+                row("Sends", "\(r.value) AETH")
+                if let m = r.memo { row("Note", m) }
+                DisclosureGroup("Call data (\((r.data.count - 2) / 2) bytes)") {
+                    ScrollView { Text(r.data).font(.caption.monospaced()).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+                        .frame(maxHeight: 120)
+                }.font(.caption)
+            }
+            HStack {
+                Button("Reject") {
+                    model.callRequest = nil
+                    dismiss()
+                }.keyboardShortcut(.cancelAction)
+                Spacer()
+                Button {
+                    model.approveCall()
+                    dismiss()
+                } label: { Label("Approve", systemImage: "touchid").frame(minWidth: 100) }
+                    .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                    .disabled(model.busy || model.callRequest == nil)
+            }
+        }
+        .padding(24)
+        .frame(minWidth: 460)
+    }
+
+    private func row(_ k: String, _ v: String, mono: Bool = false) -> some View {
+        HStack(alignment: .top) {
+            Text(k).foregroundStyle(.secondary).frame(width: 80, alignment: .leading)
+            Text(v).font(mono ? .body.monospaced() : .body).textSelection(.enabled)
+        }.font(.callout)
+    }
+}
+
+/// A page asks for this wallet's address.
+private struct ConnectSheet: View {
+    @EnvironmentObject var model: WalletModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Connect").font(.title2.bold())
+            Text("\(model.connectRequest?.origin ?? "A page") wants to see your address \(Short.address(model.address)). It cannot move funds: every payment or call still asks you here.")
+                .font(.callout).foregroundStyle(.secondary)
+            HStack {
+                Button("Cancel") {
+                    model.connectRequest = nil
+                    dismiss()
+                }.keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Connect") {
+                    model.approveConnect()
+                    dismiss()
+                }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
             }
         }
         .padding(24)

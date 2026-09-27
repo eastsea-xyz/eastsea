@@ -285,6 +285,11 @@ RustBuffer uniffi_aether_ffi_fn_func_prepare_add_recovery_key(RustBuffer p256_pu
 RustBuffer uniffi_aether_ffi_fn_func_prepare_batch(RustBuffer p256_public_key, RustBuffer payments, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_CALL
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_CALL
+RustBuffer uniffi_aether_ffi_fn_func_prepare_call(RustBuffer p256_public_key, RustBuffer to, RustBuffer value_wei, RustBuffer data_hex, uint64_t gas_limit, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_CANCEL_RECOVERY
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_CANCEL_RECOVERY
 RustBuffer uniffi_aether_ffi_fn_func_prepare_cancel_recovery(RustBuffer p256_public_key, RustCallStatus *_Nonnull out_status
@@ -716,6 +721,12 @@ uint16_t uniffi_aether_ffi_checksum_func_prepare_add_recovery_key(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_BATCH
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_BATCH
 uint16_t uniffi_aether_ffi_checksum_func_prepare_batch(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_CALL
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_CALL
+uint16_t uniffi_aether_ffi_checksum_func_prepare_call(void
     
 );
 #endif

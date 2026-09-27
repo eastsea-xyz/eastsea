@@ -132,6 +132,11 @@ const PROOF_BACKOFF: u64 = 100;
 /// Checks a block proof against a statement commitment (the pinned sidecar in a node).
 pub trait ProofVerifier: Send + Sync {
     fn verify(&self, proof: &[u8], commitment: [u8; 32]) -> bool;
+    /// Some(answer) when the verifier actually decided; None when it could not
+    /// (a transient failure, never to be remembered as a rejection).
+    fn decide(&self, proof: &[u8], commitment: [u8; 32]) -> Option<bool> {
+        Some(self.verify(proof, commitment))
+    }
 }
 
 /// Hash of the chain metadata a block leaves outside the state tree.
@@ -254,6 +259,8 @@ pub struct Inner {
     proof_proposal: Option<(u64, Digest)>,
     /// No proofs in this node's proposals before this height.
     proof_backoff_until: u64,
+    /// Proof submissions (claim output + proof) this node's RPC already refused.
+    rejected: std::collections::HashSet<[u8; 32]>,
 }
 
 #[derive(Clone)]
@@ -338,6 +345,7 @@ impl Chain {
             last_proof_check: None,
             proof_proposal: None,
             proof_backoff_until: 0,
+            rejected: Default::default(),
         };
         (Chain(Arc::new(Mutex::new(inner))), genesis)
     }
@@ -661,6 +669,10 @@ impl Chain {
         }
         if records {
             aether_execution::proofs::record(&mut state, parent.height, parent.statement.commitment, parent.statement.escrow);
+            // The record of the block that just left the claim window goes (one per block, so state stays bounded).
+            if let Some(old) = (parent.height + 1).checked_sub(aether_execution::proofs::EXPIRY + 1) {
+                aether_execution::proofs::prune(&mut state, old);
+            }
         }
         struct Certified;
         impl ProofVerifier for Certified {
@@ -692,9 +704,14 @@ impl Chain {
 
     /// Rewards `prover` received for proofs (this node's record since it started keeping one).
     pub fn rewards(&self, prover: &Address) -> Vec<Value> {
+        self.recent_rewards(prover, usize::MAX)
+    }
+
+    /// The newest `limit` rewards of `prover`, oldest first.
+    pub fn recent_rewards(&self, prover: &Address, limit: usize) -> Vec<Value> {
         // Read the store without holding the chain lock (a long history must not stall consensus).
         let store = self.lock().store.clone();
-        let rows = store.and_then(|s| s.rewards(&prover.0 .0).ok()).unwrap_or_default();
+        let rows = store.and_then(|s| s.rewards(&prover.0 .0, limit).ok()).unwrap_or_default();
         rows.iter().filter_map(|r| serde_json::from_slice(r).ok()).collect()
     }
 
@@ -739,8 +756,23 @@ impl Chain {
             (g.verifier.clone().ok_or("this node does not verify proofs")?, c)
         };
         let bytes = hex::decode(&claim.proof).map_err(|_| "proof is not hex")?;
-        if bytes.len() > MAX_PROOF_BYTES || !verifier.verify(&bytes, aether_proving::block::claim(commitment, claim.prover)) {
-            return Err("the proof does not verify".into());
+        let output = aether_proving::block::claim(commitment, claim.prover);
+        let key = *blake3::Hasher::new().update(&output).update(&bytes).finalize().as_bytes();
+        if self.lock().rejected.contains(&key) {
+            return Err("this proof was already refused".into());
+        }
+        match (bytes.len() <= MAX_PROOF_BYTES).then(|| verifier.decide(&bytes, output)).flatten() {
+            Some(true) => {}
+            Some(false) => {
+                // A definite refusal is remembered for the public RPC only (block proofs are always checked afresh).
+                let mut g = self.lock();
+                if g.rejected.len() > 4096 {
+                    g.rejected.clear();
+                }
+                g.rejected.insert(key);
+                return Err("the proof does not verify".into());
+            }
+            None => return Err("the proof could not be checked now; try again".into()),
         }
         let mut g = self.lock();
         // Still open after the (slow) check: not proven or expired meanwhile.

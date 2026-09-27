@@ -1908,6 +1908,22 @@ public func prepareBatch(p256PublicKey: Data, payments: [Payment])throws  -> Pre
 })
 }
 /**
+ * A contract call or deployment a web page asked for (`aether://call`),
+ * signed by the Secure Enclave key. `to` empty deploys `data` as init code.
+ */
+public func prepareCall(p256PublicKey: Data, to: String, valueWei: String, dataHex: String, gasLimit: UInt64)throws  -> PreparedTx  {
+    return try  FfiConverterTypePreparedTx_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_prepare_call(
+        FfiConverterData.lower(p256PublicKey),
+        FfiConverterString.lower(to),
+        FfiConverterString.lower(valueWei),
+        FfiConverterString.lower(dataHex),
+        FfiConverterUInt64.lower(gasLimit),uniffiCallStatus
+    )
+})
+}
+/**
  * Stop a pending recovery of this account (e.g. one this owner did not ask for).
  */
 public func prepareCancelRecovery(p256PublicKey: Data)throws  -> PreparedTx  {
@@ -2233,6 +2249,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_prepare_batch() != 9304) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_prepare_call() != 61515) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_prepare_cancel_recovery() != 41022) {

@@ -12,7 +12,8 @@ pub mod world;
 
 pub use account::{encode_execute, encode_set_guardian, AccountCall};
 pub use block::{
-    build_block, build_block_sequential, can_append, execute_block, execute_block_sequential, BlockContext, BlockOutcome, ExecError, ProveGasMeter, Receipt,
+    build_block, build_block_sequential, call, can_append, execute_block, execute_block_sequential, BlockContext, BlockOutcome, CallResult, Event, ExecError,
+    ProveGasMeter, Receipt,
 };
 pub use fees::{FeePolicy, Settlement, FEE_COLLECTOR, PROVER_ESCROW};
 pub use tx::{sign_call, sign_call_with, tx_hash, validate_stateless, EvmCall, TxError};

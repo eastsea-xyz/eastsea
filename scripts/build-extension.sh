@@ -8,7 +8,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:$PATH"
 rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
-RUSTFLAGS='--cfg getrandom_backend="wasm_js"' CARGO_TARGET_DIR=target/wasm \
+# Paths in panic messages name crates, not this machine (no home or checkout path).
+remap="--remap-path-prefix=$HOME/.cargo/registry/src=crates --remap-path-prefix=$HOME/.rustup=rustup --remap-path-prefix=$PWD=aether-node"
+RUSTFLAGS="--cfg getrandom_backend=\"wasm_js\" $remap" CARGO_TARGET_DIR=target/wasm \
   wasm-pack build crates/wasm --release --target web --out-dir ../../target/wasm-pkg --no-typescript --no-pack >/dev/null
 mkdir -p apps/extension/wasm
 cp -f target/wasm-pkg/aether_wasm.js target/wasm-pkg/aether_wasm_bg.wasm apps/extension/wasm/

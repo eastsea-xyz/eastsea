@@ -1879,17 +1879,17 @@ public func localNodeHeight(port: UInt16) -> UInt64?  {
 })
 }
 /**
- * Add a recovery key (another device's code, or recovery words) without
- * touching the account's other recovery keys, threshold or delay: a k-of-n
- * setup stays k-of-(n+1). With none yet: 1-of-1 with the default 48 h delay.
+ * Add a recovery key (another device's code, or recovery words) next to the
+ * account's other recovery keys. The contract appends on chain and keeps the
+ * threshold and delay (the first key: 1-of-1, 48 h), so nothing is rewritten
+ * from a possibly stale copy of the list.
  */
-public func prepareAddRecoveryKey(p256PublicKey: Data, recoveryCode: String, validators: UInt32)throws  -> PreparedTx  {
+public func prepareAddRecoveryKey(p256PublicKey: Data, recoveryCode: String)throws  -> PreparedTx  {
     return try  FfiConverterTypePreparedTx_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
         uniffiCallStatus in
     uniffi_aether_ffi_fn_func_prepare_add_recovery_key(
         FfiConverterData.lower(p256PublicKey),
-        FfiConverterString.lower(recoveryCode),
-        FfiConverterUInt32.lower(validators),uniffiCallStatus
+        FfiConverterString.lower(recoveryCode),uniffiCallStatus
     )
 })
 }
@@ -2217,7 +2217,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_aether_ffi_checksum_func_local_node_height() != 10285) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_aether_ffi_checksum_func_prepare_add_recovery_key() != 23881) {
+    if (uniffi_aether_ffi_checksum_func_prepare_add_recovery_key() != 5161) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_prepare_batch() != 9304) {

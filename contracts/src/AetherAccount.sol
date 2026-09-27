@@ -179,6 +179,24 @@ contract AetherAccount {
         this.setGuardians(keys, uint8(keys.length), DEFAULT_DELAY);
     }
 
+    /// Add one recovery device next to the current ones, keeping the threshold
+    /// and delay (the first device: 1-of-1, default delay). It reads the list on
+    /// chain, so a wallet never rewrites guardians from a possibly stale copy.
+    function addGuardian(bytes32 x, bytes32 y) external onlySelf {
+        State storage st = _state();
+        if (x == bytes32(0) && y == bytes32(0)) revert BadGuardians();
+        if (st.guardians.length >= MAX_GUARDIANS) revert BadGuardians();
+        for (uint256 i = 0; i < st.guardians.length; i++) {
+            if (st.guardians[i].x == x && st.guardians[i].y == y) revert BadGuardians();
+        }
+        if (st.guardians.length == 0) {
+            st.threshold = 1;
+            st.delay = DEFAULT_DELAY;
+        }
+        st.guardians.push(Key(x, y));
+        emit GuardiansSet(st.guardians.length, st.threshold, st.delay);
+    }
+
     function guardians()
         external
         view

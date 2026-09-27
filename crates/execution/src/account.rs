@@ -12,6 +12,7 @@ sol! {
     function execute(Call[] calls);
     function setGuardian(bytes32 x, bytes32 y);
     function setGuardians(Key[] keys, uint8 threshold, uint64 delay);
+    function addGuardian(bytes32 x, bytes32 y);
     function proposeRecovery(Call[] calls, uint8[] idx, bytes32[] r, bytes32[] s);
     function executeRecovery(Call[] calls);
     function cancelRecovery();
@@ -48,6 +49,11 @@ pub fn encode_execute(c: &[AccountCall]) -> Bytes {
 /// `setGuardian(x, y)`: one recovery device, default delay (zeros turn recovery off).
 pub fn encode_set_guardian(x: [u8; 32], y: [u8; 32]) -> Bytes {
     setGuardianCall { x: x.into(), y: y.into() }.abi_encode().into()
+}
+
+/// `addGuardian(x, y)`: one more recovery device; the others, threshold and delay stay.
+pub fn encode_add_guardian(x: [u8; 32], y: [u8; 32]) -> Bytes {
+    addGuardianCall { x: x.into(), y: y.into() }.abi_encode().into()
 }
 
 /// `setGuardians(keys, threshold, delay)`.

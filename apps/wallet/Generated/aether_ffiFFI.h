@@ -277,7 +277,7 @@ RustBuffer uniffi_aether_ffi_fn_func_local_node_height(uint16_t port, RustCallSt
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_ADD_RECOVERY_KEY
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_ADD_RECOVERY_KEY
-RustBuffer uniffi_aether_ffi_fn_func_prepare_add_recovery_key(RustBuffer p256_public_key, RustBuffer recovery_code, uint32_t validators, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_aether_ffi_fn_func_prepare_add_recovery_key(RustBuffer p256_public_key, RustBuffer recovery_code, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_BATCH

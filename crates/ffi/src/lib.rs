@@ -647,39 +647,20 @@ pub struct RecoveryStatus {
     pub ready_at: u64,
 }
 
-/// Add a recovery key (another device's code, or recovery words) without
-/// touching the account's other recovery keys, threshold or delay: a k-of-n
-/// setup stays k-of-(n+1). With none yet: 1-of-1 with the default 48 h delay.
+/// Add a recovery key (another device's code, or recovery words) next to the
+/// account's other recovery keys. The contract appends on chain and keeps the
+/// threshold and delay (the first key: 1-of-1, 48 h), so nothing is rewritten
+/// from a possibly stale copy of the list.
 #[uniffi::export]
-pub fn prepare_add_recovery_key(p256_public_key: Vec<u8>, recovery_code: String, validators: u32) -> R<PreparedTx> {
-    const DEFAULT_DELAY: u64 = 48 * 3600;
-    let new = parse_code(&recovery_code)?;
-    let me = address_of(&p256_key(&p256_public_key)?).map_err(|e| WalletError::Invalid(e.to_string()))?;
-    let set = trusted_set(validators)?;
-    let count = verified_slot(me, slots::guardian_count(), &set)?.to::<u64>().min(8);
-    let (threshold, delay) = slots::unpack_threshold_and_delay(verified_slot(me, slots::threshold_and_delay(), &set)?);
-    let mut keys = Vec::with_capacity(count as usize + 1);
-    for i in 0..count {
-        let x = verified_slot(me, slots::guardian(i), &set)?.to_be_bytes::<32>();
-        let y = verified_slot(me, slots::guardian(i) + U256::from(1u64), &set)?.to_be_bytes::<32>();
-        keys.push((x, y));
-    }
-    if keys.contains(&new) {
-        return Err(WalletError::Invalid("that recovery key is already registered".into()));
-    }
-    if keys.len() >= 8 {
-        return Err(WalletError::Invalid("an account has at most 8 recovery keys".into()));
-    }
-    keys.push(new);
-    let (threshold, delay) = if count == 0 { (1, DEFAULT_DELAY) } else { (threshold.max(1), delay) };
-    let input = aether_execution::account::encode_set_guardians(&keys, threshold, delay);
+pub fn prepare_add_recovery_key(p256_public_key: Vec<u8>, recovery_code: String) -> R<PreparedTx> {
+    let (x, y) = parse_code(&recovery_code)?;
     prepare(&p256_public_key, |from| {
         let delegated = designated(from)?;
         Ok(EvmCall {
             to: Some(from),
             value: U256::ZERO,
-            input: aether_execution::encode_execute(&[(from, U256::ZERO, input)]),
-            gas_limit: 300_000 + 60_000 * keys.len() as u64,
+            input: aether_execution::encode_execute(&[(from, U256::ZERO, aether_execution::account::encode_add_guardian(x, y))]),
+            gas_limit: 300_000,
             delegate: (!delegated).then_some(aether_execution::AETHER_ACCOUNT),
         })
     })

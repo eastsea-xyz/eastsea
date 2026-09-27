@@ -442,3 +442,29 @@ fn session_settings_are_validated() {
     let zero = SessionLimits { per_payment: 0, per_day: AETH, expires: 0, allow: vec![] };
     assert!(!rc.owner_self_call(3, encode_add_session(x, y, &zero), 1_000), "zero per payment (the reverted tx used nonce 2)");
 }
+
+#[test]
+fn add_guardian_appends_and_keeps_threshold_and_delay() {
+    use aether_execution::account::encode_add_guardian;
+    let s = setup();
+    let (k1, k2, k3) =
+        (key(&P256Signer::from_seed(&seed(2)).unwrap()), key(&P256Signer::from_seed(&seed(3)).unwrap()), key(&P256Signer::from_seed(&seed(4)).unwrap()));
+    let call =
+        |input: Bytes, delegate| EvmCall { to: Some(s.a), value: U256::ZERO, input: encode_execute(&[(s.a, U256::ZERO, input)]), gas_limit: 500_000, delegate };
+    // The first key: 1-of-1 with the 48 h default.
+    let st = execute_block(&s.pre, &ctx(1), &[tx(&s, 0, call(encode_add_guardian(k1.0, k1.1), Some(AETHER_ACCOUNT)))]).unwrap();
+    assert!(st.receipts[0].success, "{:?}", st.receipts[0]);
+    assert_eq!(st.state.storage(&s.a, slots::guardian_count()), U256::from(1u64));
+    assert_eq!(slots::unpack_threshold_and_delay(st.state.storage(&s.a, slots::threshold_and_delay())), (1, 48 * 3600));
+    // A 2-of-2 with a short delay stays 2-of-3 with that delay when a key is added.
+    let st = execute_block(&st.state, &ctx(2), &[tx(&s, 2, call(encode_set_guardians(&[k1, k2], 2, MIN_DELAY), None))]).unwrap();
+    assert!(st.receipts[0].success);
+    let st = execute_block(&st.state, &ctx(3), &[tx(&s, 3, call(encode_add_guardian(k3.0, k3.1), None))]).unwrap();
+    assert!(st.receipts[0].success);
+    assert_eq!(st.state.storage(&s.a, slots::guardian_count()), U256::from(3u64));
+    assert_eq!(slots::unpack_threshold_and_delay(st.state.storage(&s.a, slots::threshold_and_delay())), (2, MIN_DELAY));
+    assert_eq!(st.state.storage(&s.a, slots::guardian(2)), U256::from_be_bytes(k3.0));
+    // The same key twice is refused.
+    let again = execute_block(&st.state, &ctx(4), &[tx(&s, 4, call(encode_add_guardian(k3.0, k3.1), None))]).unwrap();
+    assert!(!again.receipts[0].success, "duplicate guardian");
+}

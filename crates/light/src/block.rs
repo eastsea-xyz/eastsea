@@ -18,8 +18,15 @@ pub const EPOCH: Epoch = Epoch::zero();
 
 /// Aether block contents. Order-first (design D3): `parent_state_root` is the
 /// state after executing the parent; this block's own result appears in its child.
+/// Light clients read payloads leniently (a later protocol may add fields they
+/// do not need); nodes accept only the canonical encoding of the fields they
+/// know, so a node behind a newer protocol stops instead of misreading it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Payload {
+    /// Protocol version whose rules this block follows: 1 until a
+    /// committee-signed upgrade on chain activates a later one.
+    #[serde(default)]
+    pub version: u32,
     pub parent_state_root: B256,
     /// Merkle Mountain Range root of every earlier block's hash: a certificate
     /// on this block proves all history before it (aether_state::mmr).
@@ -41,6 +48,42 @@ pub struct Payload {
     /// the next voting set is drawn with (unique, so it cannot be ground).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<Seed>,
+    /// A committee-signed protocol upgrade, put on chain so that every node and
+    /// every checkpoint learns its activation height the same way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upgrade: Option<SignedUpgrade>,
+}
+
+/// A release implementing a protocol version.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Release {
+    /// e.g. "macos-arm64-dmg", "linux-x86_64".
+    pub platform: String,
+    pub version: String,
+    /// BLAKE3 of the artifact, hex.
+    pub blake3: String,
+    pub url: String,
+}
+
+/// A protocol upgrade: the version, the first height its rules apply to, and
+/// the releases that implement it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Upgrade {
+    pub chain_id: u64,
+    pub protocol: u32,
+    /// First height the new rules apply to.
+    pub activate_at: u64,
+    pub releases: Vec<Release>,
+    #[serde(default)]
+    pub notes: String,
+}
+
+/// An upgrade with the committee's threshold signature (nodes verify it).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignedUpgrade {
+    pub upgrade: Upgrade,
+    /// Codec bytes (hex) of the BLS12-381 (MinSig) signature.
+    pub signature: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,7 +133,7 @@ impl Block {
     pub fn genesis(chain_id: u64, genesis_root: B256) -> Self {
         let context =
             Context { round: Round::new(EPOCH, View::zero()), leader: ed25519::PrivateKey::from_seed(0).public_key(), parent: (View::zero(), Digest::EMPTY) };
-        let payload = Payload { parent_state_root: genesis_root, ..Default::default() };
+        let payload = Payload { version: 1, parent_state_root: genesis_root, ..Default::default() };
         let tag = Sha256::hash(&[b"aether-genesis".as_slice(), &chain_id.to_be_bytes()]);
         Self::new(context, tag, Height::zero(), 0, payload.to_bytes())
     }

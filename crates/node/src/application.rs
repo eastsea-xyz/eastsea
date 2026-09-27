@@ -2,7 +2,7 @@
 //! Pacing and timestamp rules adapted from alto-chain (MIT OR Apache-2.0).
 
 use crate::block::{Block, Context};
-use crate::chain::{build_payload, Chain, Executed};
+use crate::chain::{build_payload, Chain, Executed, Extras};
 use aether_light::Scheme;
 use commonware_actor::Feedback;
 use commonware_consensus::{
@@ -104,9 +104,17 @@ where
         let cfg = self.chain.cfg();
         let skeleton = Block::new(context.clone(), parent_block.digest(), height, ts, bytes::Bytes::new());
         let ctx = Chain::block_context(&cfg, &skeleton, &parent);
-        let handoff = self.chain.handoff_for(&parent);
-        let seed = self.chain.seed_for(&parent);
-        let (payload, out) = build_payload(&parent, &ctx, self.chain.mempool_candidates(), handoff, seed);
+        let extras = Extras { handoff: self.chain.handoff_for(&parent), seed: self.chain.seed_for(&parent), upgrade: self.chain.upgrade_for(&parent) };
+        // Under the parent's next protocol, with its one-time changes if it activates here.
+        let pre = match self.chain.pre_state(&parent, parent.next_protocol()) {
+            Ok(pre) => pre,
+            Err(e) => {
+                warn!(?e, "not proposing");
+                return None;
+            }
+        };
+        let (payload, out) = build_payload(&parent, &pre, &ctx, self.chain.mempool_candidates(), extras);
+        drop(pre);
         let tx_hashes = payload.txs.iter().map(aether_execution::tx_hash).collect();
         let block = Block::new(context, parent_block.digest(), height, ts, payload.to_bytes());
         let pending = match &payload.handoff {
@@ -116,7 +124,8 @@ where
             None => parent.handoff.clone(),
         };
         let seed = payload.seed.as_ref().map(|s| std::sync::Arc::new((height.get(), s.clone()))).or_else(|| parent.seed.clone());
-        self.chain.remember(&block, &parent, &ctx, out, tx_hashes, pending, seed);
+        let schedule = payload.upgrade.as_ref().map(|u| crate::chain::scheduled(&parent.schedule, &u.upgrade)).unwrap_or_else(|| parent.schedule.clone());
+        self.chain.remember(&block, &parent, &ctx, out, tx_hashes, pending, seed, schedule);
         info!(height = %height, txs = payload.txs.len(), "proposed");
         Some(block)
     }

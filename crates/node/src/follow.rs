@@ -58,8 +58,10 @@ impl FinalityArchive {
     }
 }
 
-/// Largest snapshot a new Mac downloads.
-const MAX_SNAPSHOT: usize = 4 << 30;
+/// Largest snapshot a new Mac downloads. It is held in memory (twice, while
+/// decoding) before the certified block checks it, so it stays well under the
+/// smallest Mac's memory; replaying from genesis remains the fallback.
+const MAX_SNAPSHOT: usize = 1 << 30;
 /// Smallest chunk accepted (bounds the number of requests).
 const MIN_SNAPSHOT_CHUNK: usize = 64 << 10;
 
@@ -169,6 +171,7 @@ pub async fn checkpoint(upstream: &Upstream, set: &ValidatorSet, cfg: &crate::ch
         return Err("snapshot download does not match its BLAKE3".into());
     }
     let snap = crate::snapshot::Snapshot::from_bytes(&bytes)?;
+    drop(bytes);
     if snap.summary.height != height {
         return Err("snapshot height does not match".into());
     }

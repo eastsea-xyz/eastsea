@@ -25,31 +25,22 @@ use std::path::Path;
 pub const PROTOCOL: u32 = 1;
 const NAMESPACE: &[u8] = b"aether-upgrade-v1";
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Release {
-    /// e.g. "macos-arm64-dmg", "linux-x86_64".
-    pub platform: String,
-    pub version: String,
-    /// BLAKE3 of the artifact, hex.
-    pub blake3: String,
-    pub url: String,
+pub use aether_light::block::{Release, SignedUpgrade, Upgrade};
+
+/// Activation schedule on chain: (protocol, first height), ascending in both.
+pub type Schedule = Vec<(u32, u64)>;
+
+/// The protocol whose rules apply at `height`.
+pub fn protocol_at(schedule: &[(u32, u64)], height: u64) -> u32 {
+    schedule.iter().filter(|(_, at)| *at <= height).map(|(p, _)| *p).max().unwrap_or(1)
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Upgrade {
-    pub chain_id: u64,
-    pub protocol: u32,
-    /// First height the new rules apply to.
-    pub activate_at: u64,
-    pub releases: Vec<Release>,
-    #[serde(default)]
-    pub notes: String,
-}
+/// Size bounds of an upgrade carried in a block.
+pub const MAX_RELEASES: usize = 16;
+pub const MAX_FIELD: usize = 512;
 
-impl Upgrade {
-    fn message(&self) -> Vec<u8> {
-        serde_json::to_vec(self).expect("upgrade serializes")
-    }
+fn message(upgrade: &Upgrade) -> Vec<u8> {
+    serde_json::to_vec(upgrade).expect("upgrade serializes")
 }
 
 /// One validator's share of the signature.
@@ -60,23 +51,15 @@ pub struct PartialUpgrade {
     pub partial: String,
 }
 
-/// An upgrade with the committee's threshold signature.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SignedUpgrade {
-    pub upgrade: Upgrade,
-    /// Codec bytes (hex) of the BLS12-381 (MinSig) signature.
-    pub signature: String,
-}
-
 pub fn sign_partial(upgrade: &Upgrade, share: &Share) -> PartialUpgrade {
-    let p = ops::threshold::sign_message::<MinSig>(share, NAMESPACE, &upgrade.message());
+    let p = ops::threshold::sign_message::<MinSig>(share, NAMESPACE, &message(upgrade));
     PartialUpgrade { upgrade: upgrade.clone(), partial: hex::encode(p.encode()) }
 }
 
 /// Combine partials (all for the same upgrade, each checked) into the committee signature.
 pub fn combine(sharing: &Sharing<MinSig>, partials: &[PartialUpgrade]) -> Result<SignedUpgrade, String> {
     let first = partials.first().ok_or("no partial signatures")?;
-    let msg = first.upgrade.message();
+    let msg = message(&first.upgrade);
     let mut decoded = Vec::new();
     for p in partials {
         if p.upgrade != first.upgrade {
@@ -95,7 +78,7 @@ pub fn combine(sharing: &Sharing<MinSig>, partials: &[PartialUpgrade]) -> Result
 pub fn verify(identity: &Identity, s: &SignedUpgrade) -> Result<(), String> {
     let bytes = hex::decode(&s.signature).map_err(|e| e.to_string())?;
     let sig = <MinSig as Variant>::Signature::decode(bytes.as_slice()).map_err(|e| format!("signature: {e:?}"))?;
-    ops::verify_message::<MinSig>(identity, NAMESPACE, &s.upgrade.message(), &sig).map_err(|_| "the committee did not sign this upgrade".to_string())
+    ops::verify_message::<MinSig>(identity, NAMESPACE, &message(&s.upgrade), &sig).map_err(|_| "the committee did not sign this upgrade".to_string())
 }
 
 /// Verified upgrades for `chain_id` from `dir/*.json` (unsigned or foreign files are skipped, with a reason).

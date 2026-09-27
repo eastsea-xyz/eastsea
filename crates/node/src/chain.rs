@@ -103,17 +103,29 @@ pub struct Executed {
     pub seed: Option<Arc<(u64, aether_light::block::Seed)>>,
     /// Peaks of the MMR over blocks 0..=height; its root goes in the child's payload.
     pub history: Arc<aether_state::mmr::Mmr>,
+    /// Protocol activations put on chain up to this block (committee-signed upgrades).
+    pub schedule: Arc<crate::upgrade::Schedule>,
 }
 
 /// Hash of the chain metadata a block leaves outside the state tree.
-pub fn meta_digest(excess: &GasVector, handoff: Option<&crate::handoff::Pending>, seed: Option<&(u64, aether_light::block::Seed)>) -> B256 {
-    let bytes = serde_json::to_vec(&(excess, handoff, seed)).expect("metadata serializes");
+pub fn meta_digest(
+    excess: &GasVector,
+    handoff: Option<&crate::handoff::Pending>,
+    seed: Option<&(u64, aether_light::block::Seed)>,
+    schedule: &[(u32, u64)],
+) -> B256 {
+    let bytes = serde_json::to_vec(&(excess, handoff, seed, schedule)).expect("metadata serializes");
     B256::from(aether_hash::Hasher::hash_bytes(&ChainHasher::new(), &bytes))
 }
 
 impl Executed {
     pub fn meta_digest(&self) -> B256 {
-        meta_digest(&self.excess, self.handoff.as_deref(), self.seed.as_deref())
+        meta_digest(&self.excess, self.handoff.as_deref(), self.seed.as_deref(), &self.schedule)
+    }
+
+    /// The protocol whose rules the block after this one follows.
+    pub fn next_protocol(&self) -> u32 {
+        crate::upgrade::protocol_at(&self.schedule, self.height + 1)
     }
 }
 
@@ -179,6 +191,13 @@ pub struct Inner {
     /// shared so proofs are built without holding the chain lock. None when
     /// this node started from a checkpoint (it does not have early blocks).
     pub history_leaves: Option<Arc<Vec<[u8; 32]>>>,
+    /// The newest protocol this node runs; blocks under a later one are refused.
+    pub protocol: u32,
+    /// One-time state changes of each protocol at its activation block.
+    pub migrate: aether_execution::forks::Migration,
+    /// Committee-signed upgrades this node knows of (from its upgrades folder),
+    /// put on chain by its proposals until they are there.
+    pub upgrades_known: Vec<crate::upgrade::SignedUpgrade>,
 }
 
 #[derive(Clone)]
@@ -199,6 +218,8 @@ pub enum ChainError {
         height: u64,
     },
     BadHandoff(String),
+    /// Wrong protocol version, an invalid upgrade, or one this node does not run.
+    Protocol(String),
     /// The payload's history root or parent metadata hash does not match the chain before it.
     HistoryMismatch,
 }
@@ -221,6 +242,7 @@ impl Chain {
             handoff: None,
             seed: None,
             history: Arc::new(aether_state::mmr::Mmr::default().append(&ChainHasher::new(), 0, &digest_bytes(&genesis.digest()))),
+            schedule: Arc::new(Vec::new()),
         });
         let mut executed = HashMap::new();
         executed.insert(genesis.digest(), exec.clone());
@@ -248,6 +270,9 @@ impl Chain {
             seed_ready: None,
             deprioritize: None,
             store: None,
+            protocol: crate::upgrade::PROTOCOL,
+            migrate: aether_execution::forks::activate,
+            upgrades_known: Vec::new(),
         };
         (Chain(Arc::new(Mutex::new(inner))), genesis)
     }
@@ -256,6 +281,13 @@ impl Chain {
     /// genesis and persist it.
     pub fn open(cfg: ChainConfig, store: Store) -> Result<(Self, Block), StoreError> {
         let (chain, genesis) = Self::new(cfg);
+        // The store belongs to one genesis: refuse data of another instead of diverging from it.
+        let ours = digest_bytes(&genesis.digest());
+        match store.meta(GENESIS)? {
+            Some(d) if d.as_slice() != ours.as_slice() => return Err(StoreError::OtherGenesis),
+            Some(_) => {}
+            None => store.put_meta(GENESIS, &ours)?,
+        }
         let store = Arc::new(store);
         match store.load()? {
             Some(cp) => {
@@ -278,6 +310,7 @@ impl Chain {
                     handoff: cp.handoff.map(Arc::new),
                     seed: cp.seed.map(Arc::new),
                     history: Arc::new(cp.history),
+                    schedule: Arc::new(cp.schedule),
                 });
                 let mut g = chain.lock();
                 g.executed.insert(digest, exec.clone());
@@ -312,6 +345,7 @@ impl Chain {
                     handoff: None,
                     seed: None,
                     history: &genesis_exec.history,
+                    schedule: &genesis_exec.schedule,
                 })?;
                 g.store = Some(store);
             }
@@ -466,6 +500,10 @@ impl Chain {
             return Ok(done);
         }
         let payload = block.payload().ok_or(ChainError::BadPayload)?;
+        // Canonical bytes only: no unknown fields, no second encoding of the same block.
+        if payload.to_bytes() != block.data {
+            return Err(ChainError::BadPayload);
+        }
         if payload.parent_state_root != parent.state.root() {
             return Err(ChainError::ParentRootMismatch);
         }
@@ -478,9 +516,11 @@ impl Chain {
         if payload.txs.len() > MAX_TXS_PER_BLOCK {
             return Err(ChainError::BadPayload);
         }
+        let pre = self.pre_state(parent, payload.version)?;
+        let schedule = self.next_schedule(block.height().get(), parent, payload.upgrade.as_ref())?;
         let cfg = self.cfg();
         let ctx = Self::block_context(&cfg, block, parent);
-        let out = execute_block(&parent.state, &ctx, &payload.txs).map_err(|e| ChainError::Exec(format!("{e:?}")))?;
+        let out = execute_block(&pre, &ctx, &payload.txs).map_err(|e| ChainError::Exec(format!("{e:?}")))?;
         if out.bal != payload.bal {
             return Err(ChainError::BalMismatch);
         }
@@ -489,7 +529,89 @@ impl Chain {
         }
         let handoff = self.next_handoff(block.height().get(), parent, payload.handoff.as_ref())?;
         let seed = self.next_seed(block.height().get(), parent, payload.seed.as_ref())?;
-        Ok(self.remember(block, parent, &ctx, out, payload.txs.iter().map(aether_execution::tx_hash).collect(), handoff, seed))
+        Ok(self.remember(block, parent, &ctx, out, payload.txs.iter().map(aether_execution::tx_hash).collect(), handoff, seed, schedule))
+    }
+
+    /// The state the block after `parent` executes on: the parent's, plus the
+    /// one-time changes of each protocol that activates at that block. Refuses
+    /// a block whose version is not the scheduled one, or is newer than this node runs.
+    pub fn pre_state<'a>(&self, parent: &'a Executed, version: u32) -> Result<std::borrow::Cow<'a, WorldState>, ChainError> {
+        let (running, migrate) = {
+            let g = self.lock();
+            (g.protocol, g.migrate)
+        };
+        let want = parent.next_protocol();
+        if version != want {
+            return Err(ChainError::Protocol(format!("block under protocol {version}, scheduled {want}")));
+        }
+        if version > running {
+            return Err(ChainError::Protocol(format!("UPGRADE REQUIRED: the chain runs protocol {version}, this node {running}")));
+        }
+        let before = crate::upgrade::protocol_at(&parent.schedule, parent.height);
+        if version == before {
+            return Ok(std::borrow::Cow::Borrowed(&parent.state));
+        }
+        let mut state = parent.state.clone();
+        for p in before + 1..=version {
+            migrate(p, &mut state).map_err(|e| ChainError::Protocol(format!("activating protocol {p}: {e}")))?;
+        }
+        Ok(std::borrow::Cow::Owned(state))
+    }
+
+    /// Blocks' notice between an upgrade landing on chain and its activation:
+    /// one voting-node epoch, so every running Mac sees it well before.
+    fn notice(state: &WorldState) -> u64 {
+        aether_execution::registry::params(state).epoch_blocks
+    }
+
+    /// Whether `u` may go on chain in the block after `parent`: signed for this
+    /// chain, a newer protocol than any scheduled, activating after the last one
+    /// and at least `notice` blocks later, and of bounded size.
+    fn admissible_upgrade(parent: &Executed, chain_id: u64, u: &crate::upgrade::Upgrade) -> Result<(), String> {
+        use crate::upgrade::{MAX_FIELD, MAX_RELEASES};
+        let height = parent.height + 1;
+        let (last_protocol, last_at) = parent.schedule.last().copied().unwrap_or((1, 0));
+        if u.chain_id != chain_id {
+            return Err("upgrade for another chain".into());
+        }
+        if u.protocol <= last_protocol || u.activate_at <= last_at {
+            return Err(format!("protocol {} at {} is not after {last_protocol} at {last_at}", u.protocol, u.activate_at));
+        }
+        if u.activate_at < height.saturating_add(Self::notice(&parent.state)) {
+            return Err(format!("activation at {} gives less than {} blocks of notice", u.activate_at, Self::notice(&parent.state)));
+        }
+        let long = |s: &String| s.len() > MAX_FIELD;
+        if u.releases.len() > MAX_RELEASES || long(&u.notes) || u.releases.iter().any(|r| long(&r.platform) || long(&r.version) || long(&r.blake3) || long(&r.url)) {
+            return Err("upgrade too large".into());
+        }
+        Ok(())
+    }
+
+    /// The activation schedule after a block at `height`: the parent's, plus the
+    /// upgrade it carries (checked and verified under the committee identity).
+    fn next_schedule(
+        &self,
+        height: u64,
+        parent: &Executed,
+        carried: Option<&crate::upgrade::SignedUpgrade>,
+    ) -> Result<Arc<crate::upgrade::Schedule>, ChainError> {
+        let Some(s) = carried else { return Ok(parent.schedule.clone()) };
+        debug_assert_eq!(height, parent.height + 1);
+        let (identity, chain_id) = {
+            let g = self.lock();
+            (g.identity, g.cfg.chain_id)
+        };
+        Self::admissible_upgrade(parent, chain_id, &s.upgrade).map_err(ChainError::Protocol)?;
+        let identity = identity.ok_or_else(|| ChainError::Protocol("no committee identity (devnet dealer keys)".into()))?;
+        crate::upgrade::verify(&identity, s).map_err(ChainError::Protocol)?;
+        Ok(scheduled(&parent.schedule, &s.upgrade))
+    }
+
+    /// The upgrade to put in a block built on `parent`: the first known one not
+    /// yet on chain that may go there now.
+    pub fn upgrade_for(&self, parent: &Executed) -> Option<crate::upgrade::SignedUpgrade> {
+        let g = self.lock();
+        g.upgrades_known.iter().find(|s| Self::admissible_upgrade(parent, g.cfg.chain_id, &s.upgrade).is_ok()).cloned()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -502,6 +624,7 @@ impl Chain {
         tx_hashes: Vec<TxHash>,
         handoff: Option<Arc<crate::handoff::Pending>>,
         seed: Option<Arc<(u64, aether_light::block::Seed)>>,
+        schedule: Arc<crate::upgrade::Schedule>,
     ) -> Arc<Executed> {
         let (base_fee, excess) = match &ctx.fees {
             Some(f) => (f.base, fees::next_excess(parent.excess, out.gas, ctx.limits)),
@@ -521,6 +644,7 @@ impl Chain {
             handoff,
             seed,
             history: Arc::new(parent.history.append(&ChainHasher::new(), block.height().get(), &digest_bytes(&block.digest()))),
+            schedule,
         });
         self.lock().executed.insert(block.digest(), exec.clone());
         exec
@@ -634,6 +758,7 @@ impl Chain {
                     handoff: exec.handoff.as_deref().filter(|p| p.at == exec.height),
                     seed: exec.seed.as_deref().filter(|s| s.0 == exec.height),
                     history: &exec.history,
+                    schedule: &exec.schedule,
                 })
                 .map_err(|e| ChainError::Store(e.to_string()))?;
         }
@@ -739,8 +864,9 @@ fn summary(block: &Block, e: &Executed, parent_state_root: B256) -> BlockSummary
     }
 }
 
-/// Store keys: the proposed voting set and the frozen draw pool.
+/// Store keys: the proposed voting set, the frozen draw pool, and the genesis the data belongs to.
 const PROPOSAL: &str = "proposal";
+const GENESIS: &str = "genesis";
 const POOL: &str = "pool";
 
 /// The draw a block at `height` belongs to (draws start at multiples of epoch_blocks × draw_epochs).
@@ -757,15 +883,38 @@ fn keep<T: Serialize>(store: &Option<Arc<Store>>, key: &str, value: &T) {
     }
 }
 
-pub fn build_payload(
-    parent: &Executed,
-    ctx: &BlockContext,
-    candidates: Vec<TxEnvelope>,
-    handoff: Option<aether_light::block::Handoff>,
-    seed: Option<aether_light::block::Seed>,
-) -> (Payload, aether_execution::BlockOutcome) {
-    let (txs, out) = aether_execution::build_block(&parent.state, ctx, candidates);
+/// What a proposal carries besides transactions.
+#[derive(Default)]
+pub struct Extras {
+    pub handoff: Option<aether_light::block::Handoff>,
+    pub seed: Option<aether_light::block::Seed>,
+    pub upgrade: Option<crate::upgrade::SignedUpgrade>,
+}
+
+/// Build a payload on `parent`; `pre` is `Chain::pre_state` for the parent's next protocol.
+pub fn build_payload(parent: &Executed, pre: &WorldState, ctx: &BlockContext, candidates: Vec<TxEnvelope>, extras: Extras) -> (Payload, aether_execution::BlockOutcome) {
+    let (txs, out) = aether_execution::build_block(pre, ctx, candidates);
     let history_root = B256::from(parent.history.root(&ChainHasher::new()));
     let parent_meta = parent.meta_digest();
-    (Payload { parent_state_root: parent.state.root(), history_root, parent_meta, txs, bal: out.bal.clone(), gas: out.gas, handoff, seed }, out)
+    let Extras { handoff, seed, upgrade } = extras;
+    let payload = Payload {
+        version: parent.next_protocol(),
+        parent_state_root: parent.state.root(),
+        history_root,
+        parent_meta,
+        txs,
+        bal: out.bal.clone(),
+        gas: out.gas,
+        handoff,
+        seed,
+        upgrade,
+    };
+    (payload, out)
+}
+
+/// `schedule` with `u`'s activation appended.
+pub fn scheduled(schedule: &[(u32, u64)], u: &crate::upgrade::Upgrade) -> Arc<crate::upgrade::Schedule> {
+    let mut next = schedule.to_vec();
+    next.push((u.protocol, u.activate_at));
+    Arc::new(next)
 }

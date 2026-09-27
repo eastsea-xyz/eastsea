@@ -1290,10 +1290,12 @@ fn run_node(a: NodeArgs) {
 }
 
 /// Stop (rather than fork off with old rules) one block before a committee-signed
-/// upgrade this binary does not implement activates. Signed upgrades are read from
-/// `<data>/upgrades/*.json`; unsigned or foreign files are ignored.
+/// upgrade this binary does not implement activates. The chain is the authority
+/// (every node learns an activation the same way); signed upgrades in
+/// `<data>/upgrades/*.json` (verified; unsigned or foreign files are ignored) are
+/// put on chain by this node's proposals.
 fn watch_upgrades(chain: Chain, dir: std::path::PathBuf, identity: aether_light::Identity, chain_id: u64) {
-    use aether_node::upgrade::{load, required_protocol, PROTOCOL};
+    use aether_node::upgrade::{load, protocol_at, PROTOCOL};
     std::thread::spawn(move || {
         let mut reported = 0;
         loop {
@@ -1307,8 +1309,13 @@ fn watch_upgrades(chain: Chain, dir: std::path::PathBuf, identity: aether_light:
                     tracing::info!(protocol = u.upgrade.protocol, activate_at = u.upgrade.activate_at, "committee-signed upgrade");
                 }
             }
-            let next = chain.finalized_height() + 2;
-            let need = required_protocol(&ups, next);
+            let (next, on_chain) = {
+                let mut g = chain.lock();
+                g.upgrades_known = ups.clone();
+                (g.finalized.height + 2, g.finalized.schedule.clone())
+            };
+            // The chain is the authority: an upgrade counts once it is on chain.
+            let need = protocol_at(&on_chain, next);
             if need > PROTOCOL {
                 tracing::error!(need, have = PROTOCOL, height = next, "UPGRADE REQUIRED: this binary runs protocol {PROTOCOL} but the committee activated {need}; stopping before the new rules apply. Install the signed release.");
                 std::process::exit(3);

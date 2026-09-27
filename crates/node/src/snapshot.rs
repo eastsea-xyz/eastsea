@@ -27,6 +27,7 @@ pub struct Snapshot {
     pub history: aether_state::mmr::Mmr,
     pub handoff: Option<crate::handoff::Pending>,
     pub seed: Option<(u64, aether_light::block::Seed)>,
+    pub schedule: crate::upgrade::Schedule,
 }
 
 impl Snapshot {
@@ -41,6 +42,7 @@ impl Snapshot {
             history: (*f.history).clone(),
             handoff: f.handoff.as_deref().cloned(),
             seed: f.seed.as_deref().cloned(),
+            schedule: (*f.schedule).clone(),
         }
     }
 
@@ -72,8 +74,8 @@ impl Snapshot {
         if B256::from(self.history.root(&h)) != payload.history_root || self.history.leaves != self.summary.height + 1 {
             return Err("snapshot history does not match the certified history root".into());
         }
-        // Everything outside the tree: fee excess, pending handoff, seed, certified by the next block.
-        if crate::chain::meta_digest(&self.summary.excess, self.handoff.as_ref(), self.seed.as_ref()) != payload.parent_meta {
+        // Everything outside the tree: fee excess, pending handoff, seed, protocol schedule, certified by the next block.
+        if crate::chain::meta_digest(&self.summary.excess, self.handoff.as_ref(), self.seed.as_ref(), &self.schedule) != payload.parent_meta {
             return Err("snapshot metadata does not match the certified block".into());
         }
         // Code bytes are named by their keccak hash in the tree: check each.
@@ -125,6 +127,7 @@ impl Snapshot {
                 handoff: self.handoff.as_ref(),
                 seed: self.seed.as_ref(),
                 history: &self.history,
+                schedule: &self.schedule,
             })
             .map_err(|e| e.to_string())
     }

@@ -27,6 +27,8 @@ const HANDOFF: &str = "handoff";
 const SEED: &str = "seed";
 /// MMR peaks of the history (JSON), committed with each block.
 const HISTORY: &str = "history";
+/// Protocol activation schedule (JSON), committed with each block.
+const SCHEDULE: &str = "schedule";
 /// Finality proofs a follower verified (`aether_getFinalized` JSON by height):
 /// history it keeps serving, also after it becomes a voting node.
 const PROOFS: TableDefinition<u64, &[u8]> = TableDefinition::new("proofs");
@@ -41,6 +43,9 @@ pub enum StoreError {
         stored: B256,
         rebuilt: B256,
     },
+    /// The data was written for another genesis (another network or an older
+    /// genesis): it is never mixed with this one.
+    OtherGenesis,
 }
 
 impl std::fmt::Display for StoreError {
@@ -64,6 +69,7 @@ pub struct Checkpoint {
     pub handoff: Option<crate::handoff::Pending>,
     pub seed: Option<(u64, aether_light::block::Seed)>,
     pub history: aether_state::mmr::Mmr,
+    pub schedule: crate::upgrade::Schedule,
 }
 
 /// One finalized block's data to persist.
@@ -80,6 +86,8 @@ pub struct Commit<'a> {
     pub seed: Option<&'a (u64, aether_light::block::Seed)>,
     /// MMR peaks over blocks 0..=height.
     pub history: &'a aether_state::mmr::Mmr,
+    /// Protocol activations on chain up to this block.
+    pub schedule: &'a crate::upgrade::Schedule,
 }
 
 pub struct Store {
@@ -159,6 +167,7 @@ impl Store {
                 meta.insert(SEED, serde_json::to_vec(s).map_err(dberr)?.as_slice()).map_err(dberr)?;
             }
             meta.insert(HISTORY, serde_json::to_vec(c.history).map_err(dberr)?.as_slice()).map_err(dberr)?;
+            meta.insert(SCHEDULE, serde_json::to_vec(c.schedule).map_err(dberr)?.as_slice()).map_err(dberr)?;
         }
         tx.commit().map_err(dberr)
     }
@@ -192,6 +201,10 @@ impl Store {
         let history = match meta.get(HISTORY).map_err(dberr)? {
             Some(v) => serde_json::from_slice(v.value()).map_err(|_| StoreError::Corrupt("history"))?,
             None => return Err(StoreError::Corrupt("history")),
+        };
+        let schedule = match meta.get(SCHEDULE).map_err(dberr)? {
+            Some(v) => serde_json::from_slice(v.value()).map_err(|_| StoreError::Corrupt("schedule"))?,
+            None => return Err(StoreError::Corrupt("schedule")),
         };
         let seed = match meta.get(SEED).map_err(dberr)? {
             Some(v) => Some(serde_json::from_slice(v.value()).map_err(|_| StoreError::Corrupt("seed"))?),
@@ -227,6 +240,6 @@ impl Store {
             let k: [u8; 32] = k.value().try_into().map_err(|_| StoreError::Corrupt("receipt key"))?;
             receipts.insert(B256::from(k), serde_json::from_slice(v.value()).map_err(|_| StoreError::Corrupt("receipt"))?);
         }
-        Ok(Some(Checkpoint { height, digest, state, blocks, receipts, handoff, seed, history }))
+        Ok(Some(Checkpoint { height, digest, state, blocks, receipts, handoff, seed, history, schedule }))
     }
 }

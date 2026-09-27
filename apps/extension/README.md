@@ -36,6 +36,7 @@ Reads (`eth_call`, `eth_getBalance`, `eth_getLogs`, `aether_status`, …) go to 
 cd apps/extension && npm test                  # units, vault, wasm signing (no browser)
 node apps/extension/test/live.mjs              # a real faucet, send and WAETH deposit on the testnet
 node apps/extension/test/e2e.mjs               # the extension in Chromium (needs playwright)
+node apps/extension/test/dapps-e2e.mjs         # DEX and launchpad UIs through the extension
 ```
 
 ## Not yet

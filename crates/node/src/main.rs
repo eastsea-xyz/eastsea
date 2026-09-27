@@ -1264,6 +1264,7 @@ fn run_node(a: NodeArgs) {
             network: network_file,
             upstream: None,
             handoff: handoff_service,
+            snapshot: Default::default(),
         };
 
         // Public access: iroh endpoint published to the BitTorrent Mainline DHT.
@@ -1372,7 +1373,10 @@ fn run_follow(
         });
         // A new Mac starts from a certified snapshot instead of replaying history.
         if checkpoint && store.head().map_err(|e| e.to_string())?.is_none() {
-            follow::checkpoint(&upstream, &set, &cfg, &store).await?;
+            // Without a usable snapshot, replay from genesis instead of failing to start.
+            if let Err(e) = follow::checkpoint(&upstream, &set, &cfg, &store).await {
+                tracing::warn!(%e, "checkpoint sync failed; replaying history from genesis");
+            }
         }
         let (chain, _) = Chain::open(cfg, store).map_err(|e| format!("restore state (delete the data dir to resync): {e}"))?;
         let archive = Arc::new(FinalityArchive::new(chain.store()));
@@ -1401,6 +1405,7 @@ fn run_follow(
             network: None,
             upstream: Some(upstream),
             handoff: None,
+            snapshot: Default::default(),
         };
         rpc::serve(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), rpc_port), st).await.map_err(|e| e.to_string())
     })

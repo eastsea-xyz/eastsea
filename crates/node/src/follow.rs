@@ -58,6 +58,9 @@ impl FinalityArchive {
     }
 }
 
+/// Largest snapshot a new Mac downloads.
+const MAX_SNAPSHOT: usize = 4 << 30;
+
 /// Largest upstream response accepted (a block and its certificate, hex encoded).
 const MAX_RESPONSE: usize = 4 * MAX_BLOCK_BYTES as usize + (1 << 20);
 
@@ -140,8 +143,28 @@ async fn http_call(url: &str, method: &str, params: &Value) -> Result<Value, Str
 /// Returns the snapshot height.
 pub async fn checkpoint(upstream: &Upstream, set: &ValidatorSet, cfg: &crate::chain::ChainConfig, store: &crate::store::Store) -> Result<u64, String> {
     let v = upstream.first("aether_snapshot", json!([])).await?;
-    let bytes = hex::decode(v["snapshot"].as_str().ok_or("upstream has no snapshot")?).map_err(|e| e.to_string())?;
+    let (height, size, want) = (
+        v["height"].as_u64().ok_or("no snapshot height")?,
+        v["size"].as_u64().ok_or("no snapshot size")? as usize,
+        v["blake3"].as_str().unwrap_or_default().to_string(),
+    );
+    let chunk = v["chunk"].as_u64().ok_or("no snapshot chunk size")? as usize;
+    if size > MAX_SNAPSHOT || chunk == 0 {
+        return Err(format!("snapshot of {size} bytes is over the limit"));
+    }
+    let mut bytes = Vec::with_capacity(size);
+    for index in 0..size.div_ceil(chunk) {
+        let c = upstream.first("aether_snapshotChunk", json!([height, index])).await?;
+        bytes.extend(hex::decode(c["data"].as_str().ok_or("no chunk data")?).map_err(|e| e.to_string())?);
+    }
+    // Integrity of the download; authenticity comes from the certified block below.
+    if bytes.len() != size || crate::rpc::blake3_hex(&bytes) != want {
+        return Err("snapshot download does not match its BLAKE3".into());
+    }
     let snap = crate::snapshot::Snapshot::from_bytes(&bytes)?;
+    if snap.summary.height != height {
+        return Err("snapshot height does not match".into());
+    }
     let h = snap.summary.height;
     // The block after it, certified under the pinned identity (wait for it if needed).
     let mut next = None;

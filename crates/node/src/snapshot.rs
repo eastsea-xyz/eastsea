@@ -64,8 +64,23 @@ impl Snapshot {
             return Err("snapshot state does not match the certified state root".into());
         }
         let h = aether_hash::ChainHasher::new();
+        // Peak heights follow from the leaf count (they drive later appends).
+        let heights: Vec<u8> = (0..64u8).rev().filter(|b| self.history.leaves >> b & 1 == 1).collect();
+        if self.history.peaks.iter().map(|(ht, _)| *ht).collect::<Vec<_>>() != heights {
+            return Err("snapshot history peaks do not fit its size".into());
+        }
         if B256::from(self.history.root(&h)) != payload.history_root || self.history.leaves != self.summary.height + 1 {
             return Err("snapshot history does not match the certified history root".into());
+        }
+        // Everything outside the tree: fee excess, pending handoff, seed, certified by the next block.
+        if crate::chain::meta_digest(&self.summary.excess, self.handoff.as_ref(), self.seed.as_ref()) != payload.parent_meta {
+            return Err("snapshot metadata does not match the certified block".into());
+        }
+        // Code bytes are named by their keccak hash in the tree: check each.
+        for (hash, code) in &self.codes {
+            if alloy_primitives::keccak256(code) != *hash {
+                return Err("snapshot code does not match its hash".into());
+            }
         }
         if let Some(p) = &self.handoff {
             crate::handoff::verify(cfg.chain_id, identity, &p.handoff)?;

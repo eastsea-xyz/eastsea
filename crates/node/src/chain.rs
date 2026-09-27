@@ -105,6 +105,18 @@ pub struct Executed {
     pub history: Arc<aether_state::mmr::Mmr>,
 }
 
+/// Hash of the chain metadata a block leaves outside the state tree.
+pub fn meta_digest(excess: &GasVector, handoff: Option<&crate::handoff::Pending>, seed: Option<&(u64, aether_light::block::Seed)>) -> B256 {
+    let bytes = serde_json::to_vec(&(excess, handoff, seed)).expect("metadata serializes");
+    B256::from(aether_hash::Hasher::hash_bytes(&ChainHasher::new(), &bytes))
+}
+
+impl Executed {
+    pub fn meta_digest(&self) -> B256 {
+        meta_digest(&self.excess, self.handoff.as_deref(), self.seed.as_deref())
+    }
+}
+
 #[derive(Clone, Debug, Serialize, serde::Deserialize)]
 pub struct BlockSummary {
     pub height: u64,
@@ -163,6 +175,10 @@ pub struct Inner {
     pub pool: Option<(u64, Vec<(String, String)>)>,
     /// A committee-signed draw seed waiting to be put in a block.
     pub seed_ready: Option<aether_light::block::Seed>,
+    /// MMR leaves of every finalized block from genesis (for history proofs),
+    /// shared so proofs are built without holding the chain lock. None when
+    /// this node started from a checkpoint (it does not have early blocks).
+    pub history_leaves: Option<Arc<Vec<[u8; 32]>>>,
 }
 
 #[derive(Clone)]
@@ -183,7 +199,7 @@ pub enum ChainError {
         height: u64,
     },
     BadHandoff(String),
-    /// The payload's history root is not the MMR root of the chain before it.
+    /// The payload's history root or parent metadata hash does not match the chain before it.
     HistoryMismatch,
 }
 
@@ -226,6 +242,7 @@ impl Chain {
             epoch_start: 0,
             epoch_end: Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX)),
             proposal: None,
+            history_leaves: Some(Arc::new(vec![aether_state::mmr::leaf(&ChainHasher::new(), 0, &digest_bytes(&genesis.digest()))])),
             handoff_ready: None,
             pool: None,
             seed_ready: None,
@@ -264,6 +281,18 @@ impl Chain {
                 });
                 let mut g = chain.lock();
                 g.executed.insert(digest, exec.clone());
+                // History proofs need every block from genesis; a checkpoint-started node has none before it.
+                let h = ChainHasher::new();
+                g.history_leaves = (0..=exec.height)
+                    .map(|k| {
+                        cp.blocks
+                            .get(&k)
+                            .and_then(|b| hex::decode(&b.hash).ok())
+                            .and_then(|d| <[u8; 32]>::try_from(d).ok())
+                            .map(|d| aether_state::mmr::leaf(&h, k, &d))
+                    })
+                    .collect::<Option<Vec<_>>>()
+                    .map(Arc::new);
                 g.finalized = exec;
                 g.blocks = cp.blocks;
                 g.receipts = cp.receipts;
@@ -443,6 +472,9 @@ impl Chain {
         if payload.history_root != B256::from(parent.history.root(&ChainHasher::new())) {
             return Err(ChainError::HistoryMismatch);
         }
+        if payload.parent_meta != parent.meta_digest() {
+            return Err(ChainError::HistoryMismatch);
+        }
         if payload.txs.len() > MAX_TXS_PER_BLOCK {
             return Err(ChainError::BadPayload);
         }
@@ -619,6 +651,10 @@ impl Chain {
             *inner.pending_by_sender.entry(t.header.sender).or_default() += 1;
         }
         inner.inclusion.prune(&state, exec.height, Instant::now());
+        // One leaf per height, in order (genesis is delivered again at start-up).
+        if let Some(leaves) = g.history_leaves.as_mut().filter(|l| l.len() as u64 == exec.height) {
+            Arc::make_mut(leaves).push(aether_state::mmr::leaf(&ChainHasher::new(), exec.height, &digest_bytes(&exec.digest)));
+        }
         g.blocks.insert(exec.height, summary);
         let previous = std::mem::replace(&mut g.finalized, exec.clone());
         // A finalized handoff ends the running epoch before its switch height.
@@ -730,5 +766,6 @@ pub fn build_payload(
 ) -> (Payload, aether_execution::BlockOutcome) {
     let (txs, out) = aether_execution::build_block(&parent.state, ctx, candidates);
     let history_root = B256::from(parent.history.root(&ChainHasher::new()));
-    (Payload { parent_state_root: parent.state.root(), history_root, txs, bal: out.bal.clone(), gas: out.gas, handoff, seed }, out)
+    let parent_meta = parent.meta_digest();
+    (Payload { parent_state_root: parent.state.root(), history_root, parent_meta, txs, bal: out.bal.clone(), gas: out.gas, handoff, seed }, out)
 }

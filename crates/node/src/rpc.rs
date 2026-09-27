@@ -39,6 +39,34 @@ pub struct RpcState {
     pub upstream: Option<std::sync::Arc<crate::follow::Upstream>>,
     /// Validators of a DKG committee: signs handoffs of their own staged reshare.
     pub handoff: Option<std::sync::Arc<crate::handoff::Service>>,
+    /// The last snapshot served, by height (built once, served in chunks).
+    pub snapshot: SnapshotCache,
+}
+
+/// The snapshot being served: (height, serialized bytes).
+pub type SnapshotCache = std::sync::Arc<std::sync::Mutex<Option<(u64, std::sync::Arc<Vec<u8>>)>>>;
+
+/// Bytes per snapshot chunk (well under transport message limits).
+pub const SNAPSHOT_CHUNK: usize = 1 << 20;
+
+/// The snapshot of the finalized state, rebuilt at most once per height.
+fn cached_snapshot(st: &RpcState) -> (u64, std::sync::Arc<Vec<u8>>) {
+    let height = st.chain.finalized_height();
+    let mut cache = st.snapshot.lock().expect("snapshot cache");
+    if let Some((h, b)) = cache.as_ref() {
+        // Keep serving one snapshot for a while so a download can finish.
+        if *h + 120 >= height {
+            return (*h, b.clone());
+        }
+    }
+    let s = crate::snapshot::Snapshot::of(&st.chain);
+    let fresh = (s.summary.height, std::sync::Arc::new(s.to_bytes()));
+    *cache = Some(fresh.clone());
+    fresh
+}
+
+pub fn blake3_hex(b: &[u8]) -> String {
+    blake3::hash(b).to_hex().to_string()
 }
 
 pub async fn serve(addr: SocketAddr, state: RpcState) -> std::io::Result<()> {
@@ -185,27 +213,38 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
         // The finalized state as a checkpoint snapshot (hex postcard, `snapshot::Snapshot`):
         // a new Mac checks it against the next certified block instead of replaying history.
         "aether_snapshot" => {
-            let s = crate::snapshot::Snapshot::of(chain);
-            Ok(json!({ "height": s.summary.height, "snapshot": hex::encode(s.to_bytes()) }))
+            let (height, bytes) = cached_snapshot(st);
+            Ok(json!({ "height": height, "size": bytes.len(), "blake3": blake3_hex(&bytes), "chunk": SNAPSHOT_CHUNK }))
+        }
+        // One chunk of the cached snapshot at `height` (hex); the whole is checked by its BLAKE3.
+        "aether_snapshotChunk" => {
+            let height: u64 = param(p, 0)?;
+            let index: usize = param(p, 1)?;
+            let (h, bytes) = cached_snapshot(st);
+            if h != height {
+                return Err((-32000, format!("snapshot moved on to height {h}")));
+            }
+            let start = index.saturating_mul(SNAPSHOT_CHUNK).min(bytes.len());
+            let end = (start + SNAPSHOT_CHUNK).min(bytes.len());
+            Ok(json!({ "data": hex::encode(&bytes[start..end]) }))
         }
         // Inclusion of block `height` in the history under block `anchor`'s
         // history root (`aether_light::verify_history`).
         "aether_historyProof" => {
             let height: u64 = param(p, 0)?;
             let anchor: u64 = param(p, 1)?;
-            let g = chain.lock();
-            if anchor == 0 || height >= anchor || anchor > g.finalized.height {
-                return Err((-32602, "need height < anchor <= finalized height".into()));
-            }
-            let h = aether_hash::ChainHasher::new();
-            let mut leaves = Vec::with_capacity(anchor as usize);
-            for k in 0..anchor {
-                let b = g.blocks.get(&k).ok_or((-32000, format!("block {k} not kept here")))?;
-                let d: [u8; 32] = hex::decode(&b.hash).ok().and_then(|v| v.try_into().ok()).ok_or((-32000, "bad hash".to_string()))?;
-                leaves.push(aether_state::mmr::leaf(&h, k, &d));
-            }
-            let proof = aether_state::mmr::prove(&h, &leaves, height).ok_or((-32000, "no proof".to_string()))?;
-            Ok(json!({ "height": height, "hash": g.blocks[&height].hash, "anchor": anchor, "proof": proof }))
+            // Take the shared leaves and the block hash under the lock; build the proof outside it.
+            let (leaves, hash) = {
+                let g = chain.lock();
+                if anchor == 0 || height >= anchor || anchor > g.finalized.height {
+                    return Err((-32602, "need height < anchor <= finalized height".into()));
+                }
+                let leaves = g.history_leaves.clone().ok_or((-32000, "this node started from a checkpoint and keeps no early history".to_string()))?;
+                (leaves, g.blocks.get(&height).map(|b| b.hash.clone()).ok_or((-32000, "block not kept here".to_string()))?)
+            };
+            let proof =
+                aether_state::mmr::prove(&aether_hash::ChainHasher::new(), &leaves[..anchor as usize], height).ok_or((-32000, "no proof".to_string()))?;
+            Ok(json!({ "height": height, "hash": hash, "anchor": anchor, "proof": proof }))
         }
         // Voting-node candidates (the registry) and the current epoch.
         "aether_candidates" => {

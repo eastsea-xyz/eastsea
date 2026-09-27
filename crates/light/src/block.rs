@@ -25,6 +25,11 @@ pub struct Payload {
     /// on this block proves all history before it (aether_state::mmr).
     #[serde(default)]
     pub history_root: B256,
+    /// Hash of the parent's chain metadata outside the state tree (fee-market
+    /// excess, pending committee handoff, latest draw seed): a checkpoint
+    /// snapshot carrying them is authenticated by this block's certificate.
+    #[serde(default)]
+    pub parent_meta: B256,
     pub txs: Vec<TxEnvelope>,
     pub bal: BlockAccessList,
     pub gas: GasVector,

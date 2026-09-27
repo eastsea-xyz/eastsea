@@ -93,8 +93,12 @@ struct SettingsView: View {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var node: NodeController?
     /// Sparkle: checks the signed appcast on GitHub Releases and installs updates.
-    let updater = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+    lazy var updater = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: self, userDriverDelegate: nil)
     private var started = false
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        _ = updater  // start checking right away (hourly, and when the chain schedules a newer protocol)
+    }
 
     /// Once per launch, from whichever appears first (window or menu-bar panel).
     @MainActor func start(node: NodeController, model: WalletModel) {
@@ -142,6 +146,16 @@ enum CommandLineTools {
         alert.messageText = done.isEmpty ? "No command-line tools in this build" : "Command-line tools installed"
         alert.informativeText = done.joined(separator: "\n") + "\n\nMake sure ~/.local/bin is on your PATH."
         alert.runModal()
+    }
+}
+extension AppDelegate: SPUUpdaterDelegate {
+    /// Sparkle installs a downloaded update when the app quits, but Aether stays
+    /// in the menu bar with its node for days. Install now instead: the app
+    /// relaunches on the new version and the node restarts with it, so a Mac
+    /// that never quits still follows protocol upgrades.
+    func updater(_ updater: SPUUpdater, willInstallUpdateOnQuit item: SUAppcastItem, immediateInstallationBlock: @escaping () -> Void) -> Bool {
+        immediateInstallationBlock()
+        return true
     }
 }
 #endif

@@ -28,6 +28,8 @@ final class WalletModel: ObservableObject {
     @Published var callRequest: CallRequest?
     /// A page asking for this wallet's address (`aether://connect?...`).
     @Published var connectRequest: ConnectRequest?
+    /// Voting-node registration in progress or failed (nil: idle or done).
+    @Published var registration: RegistrationState?
     @Published var busy = false
     @Published var log: [String] = []
     @Published var sendTo = ""
@@ -243,10 +245,12 @@ final class WalletModel: ObservableObject {
         guard let enclave else { return }
         guard let chainId = status?.chainId, let ownership = node.ownership(account: address, chainId: chainId) else {
             note("Voting-node registration: the node's keys are not ready yet")
+            registration = .failed("The node is still starting. Try again in a minute.")
             return
         }
         let pk = enclave.publicKey
         busy = true
+        registration = .working
         Task.detached {
             do {
                 guard DCDevice.current.isSupported else { throw NodeRegistrationError.unsupported }
@@ -254,8 +258,16 @@ final class WalletModel: ObservableObject {
                 let prepared = try prepareRegisterNode(p256PublicKey: pk, deviceToken: token, validatorKey: c.validatorKey, nodeId: c.nodeId, beaconer: c.beaconer, ownership: ownership)
                 let sig = try enclave.sign(prepared.signingMessage)
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
-                await self.track(h, label: "This Mac is registered as a voting node", item: ActivityItem(kind: .security, title: "Mac joined as a voting node", amount: nil))
-            } catch { await MainActor.run { self.note("Voting-node registration failed: \(error)"); self.busy = false } }
+                let ok = await self.track(h, label: "This Mac is registered as a voting node", item: ActivityItem(kind: .security, title: "Mac joined as a voting node", amount: nil))
+                await MainActor.run { self.registration = ok ? nil : .failed("The registration transaction did not go through. Try again.") }
+            } catch {
+                let reason = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+                await MainActor.run {
+                    self.note("Voting-node registration failed: \(error)")
+                    self.registration = .failed(reason)
+                    self.busy = false
+                }
+            }
         }
     }
     #endif
@@ -582,6 +594,12 @@ struct PendingRecovery {
 enum NodeRegistrationError: LocalizedError {
     case unsupported
     var errorDescription: String? { "This Mac cannot create a DeviceCheck token (needs a signed Aether app on a real Mac)." }
+}
+
+/// Where a voting-node registration stands, for the Network page.
+enum RegistrationState: Equatable {
+    case working
+    case failed(String)
 }
 
 /// A payment asked for by a link; shown in the send sheet for approval.

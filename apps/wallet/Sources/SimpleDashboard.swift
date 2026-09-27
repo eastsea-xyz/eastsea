@@ -10,6 +10,12 @@ struct SimpleDashboard: View {
     @EnvironmentObject var model: WalletModel
     @State private var page: Page? = .home
     @State private var sheet: Sheet?
+    @AppStorage("acceptedTerms") private var acceptedTerms = 0
+    #if os(macOS)
+    @EnvironmentObject var node: NodeController
+    /// Asked once whether this Mac should become a voting node.
+    @AppStorage("votingInviteAnswered") private var inviteAnswered = false
+    #endif
     #if os(macOS)
     /// Narrow window (iPhone-like): the sidebar folds away and a toolbar picker switches pages.
     @State private var compact = false
@@ -30,7 +36,7 @@ struct SimpleDashboard: View {
     }
 
     enum Sheet: String, Identifiable {
-        case send, receive, call, connect
+        case send, receive, call, connect, votingInvite
         var id: String { rawValue }
     }
 
@@ -43,15 +49,39 @@ struct SimpleDashboard: View {
                 case .receive: ReceiveSheet()
                 case .call: CallSheet()
                 case .connect: ConnectSheet()
+                case .votingInvite:
+                    #if os(macOS)
+                    VotingNodeInvite(join: {
+                        inviteAnswered = true
+                        sheet = nil
+                        if let c = node.candidate { model.registerNode(c, node: node) }
+                    }, later: {
+                        inviteAnswered = true
+                        sheet = nil
+                    })
+                    #else
+                    EmptyView()
+                    #endif
                 }
             }
             .onChange(of: model.callRequest) { _, r in if r != nil { sheet = .call } }
             .onChange(of: model.connectRequest) { _, r in if r != nil { sheet = .connect } }
             // A payment link (aether://pay?...) opens the send sheet, filled in, for approval.
             .onChange(of: model.paymentRequest) { _, r in if r != nil { sheet = .send } }
+            #if os(macOS)
+            // Once the node has caught up and this Mac is not registered, ask once.
+            .onChange(of: node.voting) { _, _ in inviteIfReady() }
+            .onChange(of: node.state) { _, _ in inviteIfReady() }
+            #endif
     }
 
     #if os(macOS)
+    private func inviteIfReady() {
+        guard !inviteAnswered, acceptedTerms >= Terms.version, sheet == nil, node.state == .running,
+              node.candidate != nil, node.voting?.registered == false, model.registration == nil else { return }
+        sheet = .votingInvite
+    }
+
     private var shell: some View {
         NavigationSplitView(columnVisibility: $columns) {
             List(Page.allCases, selection: $page) { p in
@@ -372,10 +402,19 @@ private struct VotingNodeRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(title).font(.headline)
                 Text(detail).font(.callout).foregroundStyle(.secondary)
+                switch model.registration {
+                case .working?:
+                    HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Registering… confirm with Touch ID.") }.font(.callout)
+                case .failed(let why)?:
+                    Label(why, systemImage: "exclamationmark.triangle.fill").font(.callout).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                case nil:
+                    EmptyView()
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            if node.voting?.registered == false {
-                Button("Join") { model.registerNode(candidate, node: node) }
+            if node.voting?.registered == false, model.registration != .working {
+                Button(model.registration == nil ? "Join" : "Try again") { model.registerNode(candidate, node: node) }
                     .buttonStyle(.borderedProminent)
                     .disabled(model.busy)
                     .help("Registers this Mac with Apple DeviceCheck (one Mac, one voting node) and signs with Touch ID.")
@@ -394,7 +433,7 @@ private struct VotingNodeRow: View {
     private var title: String {
         switch node.voting {
         case .some(let v) where v.voting: "Voting · this Mac signs blocks"
-        case .some(let v) where v.registered: "Candidate · \(v.streak) epoch streak"
+        case .some(let v) where v.registered: "Candidate · \(min(v.streak, VotingRules.minStreakEpochs)) of \(VotingRules.minStreakEpochs) hours online"
         case .some: "Become a voting node"
         case .none: "Voting node"
         }
@@ -404,7 +443,9 @@ private struct VotingNodeRow: View {
         switch node.voting {
         case .some(let v) where v.voting: "Picked by the network for its long uptime. Keep the node on: stopping hands the seat to the next Mac."
         case .some(let v) where v.registered:
-            "Your Mac proves it is alive every epoch, for free. The longest-running Macs are picked to sign blocks (\(v.candidates) candidates)."
+            v.candidates < VotingRules.minCandidates
+                ? "Your Mac proves it is online every hour, for free. The network starts drawing voting Macs once \(VotingRules.minCandidates) Macs are registered (\(v.candidates) so far) and each has been online \(VotingRules.minStreakEpochs) hours in a row."
+                : "Your Mac proves it is online every hour, for free. After \(VotingRules.minStreakEpochs) hours in a row it enters the daily draw of voting Macs (\(v.candidates) registered)."
         case .some: "One Mac, one voting node. Your Mac proves it is alive every epoch; the longest-running Macs are picked to sign blocks, and no owner can hold a third."
         case .none: "Checking the network…"
         }

@@ -1,31 +1,60 @@
 import SwiftUI
 
 /// Simple mode (default): a dashboard for everyday use. Developer mode: the
-/// full view with verification details, raw logs and blocks. The switch sits top-left.
+/// full view with verification details, raw logs and blocks. The switch sits in
+/// the Mac window's toolbar, and at the top trailing corner on iPhone.
 struct ContentView: View {
     @EnvironmentObject var model: WalletModel
     @AppStorage("developerMode") private var developerMode = false
+    /// The terms version this user accepted (0: none yet).
+    @AppStorage("acceptedTerms") private var acceptedTerms = 0
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
-                Toggle(isOn: $developerMode.animation(.easeInOut(duration: 0.2))) {
-                    Text(developerMode ? "Developer" : "Simple").font(.callout.weight(.medium))
-                }
-                .toggleStyle(.switch)
-                .fixedSize()
-                .help("Switch between Simple and Developer mode")
+        content
+            #if os(macOS)
+            // In the window's toolbar, at the trailing edge, beside the page controls.
+            .toolbar { ToolbarItem(placement: .primaryAction) { modeSwitch } }
+            #endif
+            .onAppear { model.start() }
+            .sheet(isPresented: Binding(get: { acceptedTerms < Terms.version }, set: { _ in })) {
+                TermsSheet { acceptedTerms = Terms.version }
+            }
+    }
+
+    @ViewBuilder private var content: some View {
+        #if os(macOS)
+        page
+        #else
+        // iPhone: a small switch at the top trailing corner, clear of the page titles.
+        VStack(spacing: 0) {
+            HStack {
                 Spacer()
+                modeSwitch
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 12)
-            if developerMode {
-                DeveloperView()
-            } else {
-                SimpleDashboard()
-            }
+            .padding(.horizontal, 16)
+            .padding(.top, 6)
+            .padding(.bottom, 2)
+            page
         }
-        .onAppear { model.start() }
+        #endif
+    }
+
+    @ViewBuilder private var page: some View {
+        if developerMode {
+            DeveloperView()
+        } else {
+            SimpleDashboard()
+        }
+    }
+
+    private var modeSwitch: some View {
+        Toggle(isOn: $developerMode.animation(.easeInOut(duration: 0.2))) {
+            Text("Developer").font(.callout)
+        }
+        .toggleStyle(.switch)
+        .controlSize(.small)
+        .fixedSize()
+        .help("Developer mode: proofs, state roots, raw logs and blocks")
     }
 }
 

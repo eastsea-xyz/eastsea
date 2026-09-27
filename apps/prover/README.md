@@ -1,0 +1,72 @@
+# aether-prover
+
+블록 증명 사이드카. 노드(`aether run`)가 서브프로세스로 띄운다. Jolt 스파이크
+(`spike/jolt-block`)의 `prove_block` 게스트를 그대로 옮겼고(P-256·BLAKE3 inline 포함),
+게스트 ELF를 **빌드 시점에 미리 컴파일해 바이너리에 내장**한다. 실행 시 cargo, jolt CLI,
+riscv 툴체인, jolt/akita 체크아웃 어느 것도 필요 없다.
+
+## 빌드
+
+필요: `/Volumes/workspace/aether-jolt/jolt`(브랜치 `aether`)와 옆의 `akita` 체크아웃,
+`jolt` CLI, rustup (`export PATH=$HOME/.cargo/bin:$PATH`).
+
+    cd apps/prover
+    cargo build --release                                   # Metal (기본, Apple Silicon)
+    cargo build --release --no-default-features --features akita --target-dir target-akita   # CPU
+
+`build.rs`가 `build-guest.sh`로 게스트 ELF를 만들어 `include_bytes!` 한다. 게스트나
+`crates/` 가 바뀌면 다시 빌드된다. 미리 만든 ELF를 쓰려면
+`AETHER_PROVER_GUEST_ELF=/path/prove_block.elf cargo build --release`.
+
+## 사용
+
+    aether-prover prove <input.postcard> <proof.out>
+      → {"commitment":"<hex>","proof_bytes":N,"seconds":S}      실패 시 exit 1
+    aether-prover verify <proof> <commitment-hex>
+      → exit 0: 증명이 내장 ELF에 대해 검증되고, 게스트가 panic 하지 않았고, 출력 = commitment
+    aether-prover serve          # stdin 한 줄 = JSON 요청, stdout 한 줄 = JSON 응답
+      {"cmd":"prove","input":"a.postcard","out":"a.proof"}
+      {"cmd":"verify","proof":"a.proof","commitment":"<hex>"}
+      {"cmd":"info"}
+    aether-prover self-test [n]  # n-tx 샘플 블록 증명 + 검증 + 오답/변조/절단 증명 거부
+    aether-prover sample-input <n> <out.postcard>
+    aether-prover info           # 내장 ELF SHA-256 (= 증명 대상 프로그램 ID)
+
+입력은 postcard `aether_proving::block::BlockInput`. 게스트에는 **untrusted advice**로
+들어가므로 검증자는 입력 없이 commitment 만으로 검증한다(명제: "어떤 입력에 대해 이
+프로그램이 panic 없이 C를 출력했다"). `prove`는 먼저 네이티브 실행으로 입력을 검사하고,
+증명 후 게스트 출력과 네이티브 결과를 대조한다. 진단은 stderr, stdout은 JSON 한 줄.
+
+## 측정 (M1 Max, Metal, 2026-09-27, 머신 부하 load avg 25~65 상태)
+
+| | 10 tx (2^24) | 50 tx (2^26) |
+|---|---|---|
+| 증명, 콜드 프로세스 | 28.6~31.7 s | 71.0~81.2 s |
+| 증명, `serve` 두 번째부터 | – | 47.2 s |
+| 증명 크기 | 97.9 kB | 98.0 kB |
+| 검증, 콜드 프로세스 (`verify`) | 1.6~2.8 s | 26.7 s, RSS 16 GB |
+| 검증, `serve`/웜 | 0.23 s | 0.33 s |
+| 프로그램 전처리 (ELF→바이트코드) | 0.7 s | 0.7 s |
+
+바이너리 60 MB (strip 시 44 MB), 내장 ELF 3.6 MB. 같은 입력 → 같은 증명 바이트(결정적).
+
+재현:
+
+    ./target/release/aether-prover self-test 10
+    ./target/release/aether-prover sample-input 50 /tmp/b50.postcard
+    ./target/release/aether-prover prove /tmp/b50.postcard /tmp/b50.proof
+    ./target/release/aether-prover verify /tmp/b50.proof <commitment>
+
+## 알아둘 점
+
+- **콜드 검증이 비싸다.** Akita 셋업은 증명 모양(trace 길이, ram_K)마다 투명하게
+  유도되는데, 현재 검증 키 유도가 prover 셋업(공개 행렬 전체)을 만든 뒤 잘라내는
+  방식이라 2^26 에서 ~27 s·16 GB. 노드는 `serve`로 한 번 띄워 두고 재사용해야 한다
+  (모양당 한 번만 지불). 근본 해결은 akita 쪽 verifier 전용 셋업.
+- 증명이 선언한 `ram_K`는 메모리 레이아웃 상한으로 검사한 뒤 셋업을 만든다(DoS 방지).
+- ELF가 곧 프로그램 ID다: prover 와 verifier 는 같은 ELF 를 내장해야 한다.
+  `build-guest.sh`는 `--remap-path-prefix`로 경로를 지워 체크아웃·툴체인 위치와 무관한
+  ELF를 만든다. 릴리스에서는 한 번 빌드한 ELF를 `AETHER_PROVER_GUEST_ELF`로 고정하고
+  `info`의 SHA-256 을 기록할 것.
+- Akita 스케줄 카탈로그(`*.aks`)는 jolt 포크의 `embedded-schedules` 기능으로 바이너리에
+  들어간다(없으면 jolt 체크아웃 경로에서 런타임에 읽는다).

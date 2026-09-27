@@ -1,0 +1,71 @@
+[package]
+name = "aether-prover"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Aether block prover sidecar: proves and verifies block statements in Jolt"
+
+# Standalone: not part of the aether-node workspace (see root Cargo.toml exclude).
+# `guest` is built for riscv64 by build-guest.sh (called from build.rs) and its
+# ELF is embedded; as a host dependency it only supplies the generated
+# preprocess/prove/verify functions for prove_block.
+[workspace]
+members = ["guest"]
+
+[[bin]]
+name = "aether-prover"
+path = "src/main.rs"
+
+[features]
+default = ["metal"]
+# Akita (lattice PCS) on the optimized CPU backend.
+akita = ["jolt-sdk/akita"]
+# Akita with the Apple GPU (Metal) commitment and PIOP kernels. Same proofs as `akita`.
+metal = ["akita", "jolt-sdk/metal"]
+
+[dependencies]
+jolt-sdk = { path = "/Volumes/workspace/aether-jolt/jolt/jolt-sdk", features = ["host"] }
+# Compile the Akita schedule catalogs into the binary (our fork's feature);
+# otherwise they are read at runtime from the jolt checkout's path.
+jolt-akita = { path = "/Volumes/workspace/aether-jolt/jolt/crates/jolt-akita", features = ["embedded-schedules"] }
+guest = { package = "aether-prover-guest", path = "./guest" }
+# Register the P-256 and BLAKE3 inline instructions with the host tracer.
+jolt-inlines-p256 = { path = "/Volumes/workspace/aether-jolt/jolt/jolt-inlines/p256", features = ["host"] }
+jolt-inlines-blake3 = { path = "/Volumes/workspace/aether-jolt/jolt/jolt-inlines/blake3", features = ["host"] }
+aether-execution = { path = "../../crates/execution" }
+aether-crypto = { path = "../../crates/crypto" }
+aether-types = { path = "../../crates/types" }
+aether-proving = { path = "../../crates/proving" }
+postcard = { version = "1", features = ["alloc"] }
+serde_json = "1"
+sha2 = "0.10"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Same patches as the Jolt workspace (one arkworks and one jolt-field identity).
+[patch.crates-io]
+# Jolt's guest (riscv64 zero-linux) has no clock: skip the time-based seed.
+foldhash = { path = "patches/foldhash-0.2.0" }
+ark-bn254 = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
+ark-ff = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
+ark-ec = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
+ark-serialize = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
+
+[patch."https://github.com/a16z/jolt"]
+jolt-field = { path = "/Volumes/workspace/aether-jolt/jolt/crates/jolt-field" }
+
+# Our akita branch (Metal commit kernels fixed for M1 Max), as in the Jolt workspace.
+[patch."https://github.com/markosg04/akita"]
+akita-algebra = { path = "/Volumes/workspace/aether-jolt/akita/crates/akita-algebra" }
+akita-config = { path = "/Volumes/workspace/aether-jolt/akita/crates/akita-config" }
+akita-error = { path = "/Volumes/workspace/aether-jolt/akita/crates/akita-error" }
+akita-metal = { path = "/Volumes/workspace/aether-jolt/akita/crates/akita-metal" }
+akita-pcs = { path = "/Volumes/workspace/aether-jolt/akita/crates/akita-pcs" }
+akita-prover = { path = "/Volumes/workspace/aether-jolt/akita/crates/akita-prover" }
+akita-planner = { path = "/Volumes/workspace/aether-jolt/akita/crates/akita-planner" }
+akita-schedules = { path = "/Volumes/workspace/aether-jolt/akita/crates/akita-schedules" }
+akita-challenges = { path = "/Volumes/workspace/aether-jolt/akita/crates/akita-challenges" }
+akita-transcript = { path = "/Volumes/workspace/aether-jolt/akita/crates/akita-transcript" }
+akita-types = { path = "/Volumes/workspace/aether-jolt/akita/crates/akita-types" }
+
+[profile.release]
+debug = false

@@ -1,0 +1,32 @@
+[package]
+name = "aether-prover-guest"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[features]
+guest = []
+
+[dependencies]
+jolt = { package = "jolt-sdk", path = "/Volumes/workspace/aether-jolt/jolt/jolt-sdk", features = ["guest-std", "stdout", "random", "thread"] }
+aether-crypto = { path = "../../../crates/crypto" }
+aether-hash = { path = "../../../crates/hash" }
+aether-proving = { path = "../../../crates/proving" }
+jolt-inlines-p256 = { path = "/Volumes/workspace/aether-jolt/jolt/jolt-inlines/p256" }
+jolt-inlines-blake3 = { path = "/Volumes/workspace/aether-jolt/jolt/jolt-inlines/blake3" }
+postcard = { version = "1", default-features = false, features = ["alloc"] }
+
+[lib]
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "aether-prover-guest"
+path = "src/main.rs"
+test = false
+bench = false
+
+[lints.rust]
+# cfgs emitted by #[jolt::provable] for jolt-sdk features this guest does not use.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("field-inline"))'] }

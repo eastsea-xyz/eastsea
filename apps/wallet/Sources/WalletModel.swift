@@ -1,6 +1,9 @@
 import Foundation
 import SwiftUI
 #if os(macOS)
+import AppKit
+#endif
+#if os(macOS)
 import DeviceCheck
 #endif
 
@@ -13,6 +16,14 @@ final class WalletModel: ObservableObject {
     @Published var status: ChainStatus?
     @Published var blocks: [BlockInfo] = []
     @Published var verifyError: String?
+    /// Since when verification has been failing (nil while it works).
+    @Published var verifyFailingSince: Date?
+    /// The network this app knows no longer matches the chain (reset or upgrade): update.
+    @Published var networkOutdated = false
+    /// Called once when the network looks outdated (the app checks for its update).
+    var onOutdated: (() -> Void)?
+    /// A payment a web page or another app asked for (`aether://pay?...`), shown for approval.
+    @Published var paymentRequest: PaymentRequest?
     @Published var busy = false
     @Published var log: [String] = []
     @Published var sendTo = ""
@@ -274,8 +285,40 @@ final class WalletModel: ObservableObject {
                 self.blocks = bl
                 if let acc { self.account = acc; self.verifyError = nil; self.record(balanceWei: acc.balanceWei) }
                 if st == nil { self.verifyError = "No validator reachable yet (\(conn))" } else if let err { self.verifyError = err }
+                self.trackVerification()
             }
         }
+    }
+
+    /// Verification that keeps failing on certificates means the chain moved on
+    /// (a new genesis or protocol) and this app is outdated: say so and update.
+    private func trackVerification() {
+        guard account == nil || verifyError != nil, let err = verifyError else {
+            verifyFailingSince = nil
+            return
+        }
+        let since = verifyFailingSince ?? Date()
+        verifyFailingSince = since
+        let certificate = err.localizedCaseInsensitiveContains("certificate") || err.localizedCaseInsensitiveContains("chain id")
+        if certificate, Date().timeIntervalSince(since) > 30, !networkOutdated {
+            networkOutdated = true
+            onOutdated?()
+        }
+    }
+
+    /// `aether://pay?to=0x…&amount=1.5&memo=…&callback=https://…` from a web page
+    /// (no extension needed): the payment is shown for approval, never sent by itself.
+    func open(url: URL) {
+        guard url.scheme == "aether", let c = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
+        let q = Dictionary(uniqueKeysWithValues: (c.queryItems ?? []).compactMap { i in i.value.map { (i.name, $0) } })
+        guard (c.host ?? c.path) == "pay" || c.path == "pay", let to = q["to"], Wei.from(aeth: q["amount"] ?? "") != nil else {
+            note("Ignored a payment link that is not complete")
+            return
+        }
+        let callback = q["callback"].flatMap(URL.init(string:)).flatMap { $0.scheme == "https" ? $0 : nil }
+        sendTo = to
+        sendAmount = q["amount"] ?? ""
+        paymentRequest = PaymentRequest(to: to, amount: sendAmount, memo: q["memo"], callback: callback)
     }
 
     func faucet() {
@@ -296,6 +339,8 @@ final class WalletModel: ObservableObject {
         let recipients = sendTo.split(whereSeparator: { $0 == "," || $0.isWhitespace }).map(String.init).filter { !$0.isEmpty }
         guard !recipients.isEmpty else { return }
         let pk = enclave.publicKey
+        let callback = paymentRequest?.callback
+        paymentRequest = nil
         busy = true
         Task.detached {
             do {
@@ -314,7 +359,14 @@ final class WalletModel: ObservableObject {
                 }
                 let sig = try enclave.sign(prepared.signingMessage)   // Secure Enclave, may prompt
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
-                await self.track(h, label: label, item: item)
+                let ok = await self.track(h, label: label, item: item)
+                // A web page that asked for this payment hears back (https only).
+                if let back = callback, var c = URLComponents(url: back, resolvingAgainstBaseURL: false) {
+                    c.queryItems = (c.queryItems ?? []) + [URLQueryItem(name: "tx", value: h), URLQueryItem(name: "status", value: ok ? "success" : "failed")]
+                    #if os(macOS)
+                    if let u = c.url { await MainActor.run { _ = NSWorkspace.shared.open(u) } }
+                    #endif
+                }
             } catch { await MainActor.run { self.note("Send failed: \(error)"); self.busy = false } }
         }
     }
@@ -468,4 +520,12 @@ struct PendingRecovery {
 enum NodeRegistrationError: LocalizedError {
     case unsupported
     var errorDescription: String? { "This Mac cannot create a DeviceCheck token (needs a signed Aether app on a real Mac)." }
+}
+
+/// A payment asked for by a link; shown in the send sheet for approval.
+struct PaymentRequest: Equatable {
+    let to: String
+    let amount: String
+    let memo: String?
+    let callback: URL?
 }

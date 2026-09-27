@@ -1109,6 +1109,7 @@ fn run_node(a: NodeArgs) {
         let scheme = aether_light::Scheme::signer(&aether_light::consensus_namespace(), participants, polynomial, share).expect("share matches polynomial");
         let store = aether_node::store::Store::open(&std::path::Path::new(&data).join("state.redb")).expect("open state store");
         let (chain, genesis) = Chain::open(cfg.clone(), store).expect("restore state (delete the data dir to resync)");
+        install_verifier(&chain, &data, false);
         // A later epoch starts on the old committee's last block; it must be ours too.
         let epoch_floor = match epochs.last() {
             None => None,
@@ -1252,7 +1253,7 @@ fn run_node(a: NodeArgs) {
         if let Some(f) = &faucet_service {
             tracing::info!(address = %f.address, "faucet enabled (aether_faucet)");
         }
-        let prover = attach_proofs(&chain, &data, None);
+        let prover = start_prover(&chain, &data, None);
         let rpc_state = RpcState {
             chain,
             finality: aether_node::rpc::Finality::Marshal(marshal_mailbox),
@@ -1327,35 +1328,41 @@ fn watch_upgrades(chain: Chain, dir: std::path::PathBuf, identity: aether_light:
     });
 }
 
-/// Block proofs (protocol 2). Validators verify proofs with the pinned sidecar;
+/// Proof verification (protocol 2), installed before consensus or replay
+/// starts. Validators verify with the pinned sidecar (restarted if it dies);
 /// followers execute only certified blocks, whose proofs the committee checked.
-/// With `AETHER_PROVE=<payout address>` this node also proves blocks and hands
-/// the proofs to its proposals (validator) or to a validator (follower).
-fn attach_proofs(chain: &Chain, data: &str, upstream: Option<std::sync::Arc<aether_node::follow::Upstream>>) -> Option<aether_node::prover::SharedStatus> {
-    use aether_node::prover::{find_binary, spawn_service, Sidecar, Verifier};
+fn install_verifier(chain: &Chain, data: &str, follower: bool) {
+    use aether_node::prover::{find_binary, Verifier};
     struct Certified;
     impl aether_node::chain::ProofVerifier for Certified {
         fn verify(&self, _: &[u8], _: [u8; 32]) -> bool {
             true
         }
     }
-    let dir = std::path::Path::new(data).join("prover");
-    let bin = find_binary();
-    if upstream.is_some() {
+    if follower {
         chain.lock().verifier = Some(std::sync::Arc::new(Certified));
-    } else if let Some(bin) = &bin {
-        match Sidecar::spawn(bin, &dir.join("verify")) {
-            Ok(sc) => {
-                tracing::info!(program = %sc.program, "proof verifier ready");
-                chain.lock().verifier = Some(std::sync::Arc::new(Verifier::new(sc)));
-            }
-            Err(e) => tracing::warn!(%e, "no proof verifier: this validator will not vote for blocks carrying proofs"),
-        }
-    } else {
-        tracing::warn!("aether-prover not found: this validator will not vote for blocks carrying proofs");
+        return;
     }
+    let Some(bin) = find_binary() else {
+        tracing::error!("aether-prover not found: this validator cannot vote for blocks carrying proofs");
+        return;
+    };
+    match Verifier::start(&bin, &std::path::Path::new(data).join("prover").join("verify")) {
+        Ok(v) => {
+            tracing::info!(program = %v.program(), "proof verifier ready");
+            chain.lock().verifier = Some(std::sync::Arc::new(v));
+        }
+        Err(e) => tracing::error!(%e, "no proof verifier: this validator cannot vote for blocks carrying proofs"),
+    }
+}
+
+/// With `AETHER_PROVE=<payout address>` this node also proves blocks and hands
+/// the proofs to its proposals (validator) or to a validator (follower).
+fn start_prover(chain: &Chain, data: &str, upstream: Option<std::sync::Arc<aether_node::follow::Upstream>>) -> Option<aether_node::prover::SharedStatus> {
+    use aether_node::prover::{find_binary, spawn_service, Sidecar};
     let payout: Address = std::env::var("AETHER_PROVE").ok()?.parse().map_err(|_| tracing::warn!("AETHER_PROVE is not an address")).ok()?;
-    let sidecar = match bin.as_ref().map(|b| Sidecar::spawn(b, &dir.join("prove"))) {
+    let dir = std::path::Path::new(data).join("prover");
+    let sidecar = match find_binary().map(|b| Sidecar::spawn(&b, &dir.join("prove"))) {
         Some(Ok(sc)) => sc,
         Some(Err(e)) => {
             tracing::warn!(%e, "cannot start the prover");
@@ -1447,6 +1454,7 @@ fn run_follow(
             }
         }
         let (chain, _) = Chain::open(cfg, store).map_err(|e| format!("restore state (delete the data dir to resync): {e}"))?;
+        install_verifier(&chain, &data, true);
         let archive = Arc::new(FinalityArchive::new(chain.store()));
         let (gossip, rx) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(follow::forward(upstream.clone(), rx));
@@ -1464,7 +1472,7 @@ fn run_follow(
             .map(|k| hex::encode(k.validator_key()));
         tokio::spawn(follow::run(chain.clone(), upstream.clone(), set, archive.clone(), joining));
         tracing::info!(height = chain.finalized_height(), rpc_port, "following (not a validator): every block is verified and re-executed here");
-        let prover = attach_proofs(&chain, &data, Some(upstream.clone()));
+        let prover = start_prover(&chain, &data, Some(upstream.clone()));
         let st = RpcState {
             chain,
             finality: aether_node::rpc::Finality::Archive(archive),

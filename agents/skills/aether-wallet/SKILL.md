@@ -24,7 +24,7 @@ Prefer the MCP tools (server `aether`). Without MCP, run the same commands with 
 | Goal | MCP tool | CLI |
 |---|---|---|
 | Network, fee | `aether_status` | `aether-agent status` |
-| Own address, balance, limits left today | `aether_wallet` | `aether-agent wallet` |
+| Own address, balance, how much the limits still allow now (24-hour window) | `aether_wallet` | `aether-agent wallet` |
 | Any address's balance | `aether_balance` | `aether-agent balance --address 0x…` |
 | Check a payment without sending | `aether_send` with `dry_run: true` | `aether-agent send --to 0x… --amount 1 --dry-run` |
 | Pay one recipient | `aether_send` | `aether-agent send --to 0x… --amount 1` |
@@ -44,4 +44,4 @@ Rules:
 
 - "Send 0.5 AETH to 0x1234…": call `aether_send {to, amount: "0.5"}`, then report the block and hash.
 - "Pay Alice and Bob 1 AETH each": call `aether_pay_many {payments: [{to: A, amount: "1"}, {to: B, amount: "1"}]}`. It is one transaction: both succeed or neither does.
-- "How much can you still spend today?": call `aether_wallet` and read `left_today_aeth`.
+- "How much can you still spend today?": call `aether_wallet` and read `left_now_aeth`.

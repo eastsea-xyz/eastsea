@@ -57,6 +57,10 @@ final class NodeController: ObservableObject {
         let last_seconds: Double?
         let proofs: UInt64?
         let error: String?
+        /// Blocks between the chain head and the last block proven here.
+        let lag: UInt64?
+        /// The last reward received (wei, hex).
+        let last_reward: String?
     }
 
     /// Run the node only while the Mac is on its power adapter (laptops).
@@ -155,7 +159,7 @@ final class NodeController: ObservableObject {
             p.standardError = h
         }
         p.terminationHandler = { [weak self] proc in
-            Task { @MainActor in self?.exited(status: proc.terminationStatus) }
+            Task { @MainActor in self?.exited(proc) }
         }
         do {
             try p.run()
@@ -184,8 +188,10 @@ final class NodeController: ObservableObject {
         state = .off
     }
 
-    private func exited(status: Int32) {
-        guard process != nil else { return }  // stopped on purpose
+    private func exited(_ proc: Process) {
+        // Stopped on purpose, or an older process (after a restart) finishing late.
+        guard let current = process, current === proc else { return }
+        let status = proc.terminationStatus
         if status == 3 { onUpgradeNeeded?() }  // UPGRADE REQUIRED (see `watch_upgrades`)
         process = nil
         poll?.invalidate()

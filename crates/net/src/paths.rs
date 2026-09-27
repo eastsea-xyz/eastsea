@@ -62,9 +62,9 @@ mod tests {
     fn overlay_and_loopback_paths_are_never_ranked() {
         let rtt = Duration::from_millis(3);
         let ts = FourTuple::Ip { remote: "100.86.13.70:1".parse().unwrap(), local: None };
-        let via_ts = FourTuple::Ip { remote: "14.32.162.195:1".parse().unwrap(), local: Some("100.101.1.2".parse().unwrap()) };
+        let via_ts = FourTuple::Ip { remote: "203.0.113.20:1".parse().unwrap(), local: Some("100.101.1.2".parse().unwrap()) };
         let lo = FourTuple::Ip { remote: "127.0.0.1:1".parse().unwrap(), local: None };
-        let public = FourTuple::Ip { remote: "14.32.162.195:1".parse().unwrap(), local: Some("192.168.0.10".parse().unwrap()) };
+        let public = FourTuple::Ip { remote: "203.0.113.20:1".parse().unwrap(), local: Some("192.168.0.10".parse().unwrap()) };
         assert_eq!(rank(&ts, rtt), None);
         assert_eq!(rank(&via_ts, rtt), None);
         assert_eq!(rank(&lo, rtt), None);
@@ -76,7 +76,7 @@ mod tests {
         for ip in ["100.64.0.1", "100.127.255.254", "fd7a:115c:a1e0::1", "127.0.0.1", "fe80::1"] {
             assert!(is_overlay_or_local(ip.parse().unwrap()), "{ip}");
         }
-        for ip in ["100.63.255.255", "100.128.0.1", "14.32.162.195", "192.168.0.1", "2001:db8::1"] {
+        for ip in ["100.63.255.255", "100.128.0.1", "203.0.113.20", "192.168.0.1", "2001:db8::1"] {
             assert!(!is_overlay_or_local(ip.parse().unwrap()), "{ip}");
         }
     }

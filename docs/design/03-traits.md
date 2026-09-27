@@ -76,7 +76,7 @@ pub trait DaLayer: Send + Sync {
 }
 ```
 
-- 구현: `CelestiaDa` (Lumina), `EthBlobDa` (EIP-4844), `NullDa` (로컬 테스트).
+- 구현(설계): `CelestiaDa` (Lumina), `EthBlobDa` (EIP-4844), `NullDa` (로컬 테스트). 지금 코드에는 `LocalDa`만 있고 노드가 쓰지 않는다(D11 보류).
 
 ## Signer / SignatureVerifier (`crypto/`)
 

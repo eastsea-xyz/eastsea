@@ -154,7 +154,7 @@ payout(C) = Σ_{h∈C} ProverEscrow[h] · prove_gas(C∩h) / prove_gas(h)
 2. **C당 첫 번째 유효 증명만 지급합니다**(Aztec #24, Taiko 계열). 이미 증명된 C를 포함하는 aggregate/checkpoint 증명은 **미청구 chunk만** 받습니다. 기존 청구를 무효화(supersede)하지 않습니다. aggregator에게는 별도 5% 수수료를 주며 escrow에서 선공제합니다.
 3. `Claimable[prover_id] += payout(C)`로 쌓고, pull 방식 `ClaimProverRewards()`로 인출합니다. 언제든 나중에 인출할 수 있습니다(Boundless의 미청구 누적 인출, #43).
 4. **예약(선택):** `ReserveChunk(C)`는 예약 창 `W = 2h` 동안 해당 prover만 지급 대상이 되게 합니다. 동시 예약 상한은 `1 + floor(proven_chunks_90d / 50)`, 최대 16입니다(#8 집중 억제, #43 상한의 reputation판). 창이 만료되면 개방되며 누구나 첫 유효 증명을 제출할 수 있습니다. 미이행은 `ChunkMissed` receipt로 기록됩니다(평판 penalty, 토큰 slash 없음, #18).
-5. **만료:** `EXPIRY = 2,592,000 blocks (~30일)` 동안 증명되지 않은 escrow는 **소각**합니다. proposer 환급은 금지합니다. 환급하면 proposer에게 증명을 방해할 유인이 생깁니다.
+5. **만료:** `EXPIRY = 2,592,000 blocks (~30일)` 동안 증명되지 않은 escrow는 **소각**합니다. proposer 환급은 금지합니다. 환급하면 proposer에게 증명을 방해할 유인이 생깁니다. (구현, 13-protocol-2.md §3: 만료분은 `PROVER_ESCROW` 잔고에 그대로 남고 누구에게도 가지 않습니다. 사실상 소각이며, 따로 소각 처리를 하지 않습니다.)
 - 체크포인트만 증명하는 초기 단계에서도 체크포인트 증명이 구간 전체의 escrow를 받습니다. 규칙 2에 따라 먼저 증명된 chunk는 제외합니다.
 - **v1 확장:** `excess_prove`에 **미증명 backlog**(= 확정된 prove_gas − 증명된 prove_gas, 온체인에서 결정적으로 계산 가능)를 반영합니다. 허용 지연 `B0 = 1h·target`을 넘으면 `base_prove`가 오르게 하는 backlog 제어입니다.
 
@@ -182,7 +182,10 @@ payout(C) = Σ_{h∈C} ProverEscrow[h] · prove_gas(C∩h) / prove_gas(h)
 - 점수 함수(가중, 감쇠, 상한)는 **오프체인 표시용**입니다. 프로토콜 내 용도는 R3-4의 예약 상한과 향후 committee 선발 가중치뿐입니다.
 - 근거: #43(작업 증명 기반 계량), #8(Sybil-proof 조달), #9·#10(명시적 약속 금지, 무대가 배포), 9월 보고서의 Helium/Filecoin 교훈.
 
-### R6. DA fee hook
+### R6. DA fee hook — 보류
+
+미구현. `fees.rs`는 exec·prove 차원만 처리하고 `da` 차원과 `DA_RESERVE`는 없습니다. 외부 DA(00-overview D11)와 함께 보류합니다.
+
 - 차원 `da`의 사용량은 `used_da = Σ tx 직렬화 바이트`입니다. `base_da`는 R1 규칙을 따르고 reserve는 `base_da ≥ 16·base_exec`입니다(EIP-7918 일반화, #29).
 - 수입은 `DA_RESERVE` 시스템 계정으로 보냅니다. 외부 DA(Celestia) 게시가 켜지기 전에는 **매 블록 소각**하고, 켜진 뒤에는 게시 비용 정산에 씁니다. 이는 DA saturation 공격(#16)에 대한 가격 방어도 겸합니다.
 
@@ -232,7 +235,7 @@ base_d = FLOOR_d · (e^(excess_d / (target_d · K)) − 1)      # 기존: max(FL
 
 ### R7′(1). 증명 발행 (A)
 - **제네시스 잔액 0.** faucet은 testnet에만 둡니다(mainnet 제네시스에 없음).
-- 새 토큰은 **유효한 블록 증명**이 확정될 때만 발행되고, 그 블록 구간을 처음 증명한 prover에게 R3 에스크로와 같은 규칙(prove gas 비례, 첫 유효 증명, 30일 만료)으로 지급됩니다.
+- 새 토큰은 **유효한 블록 증명**이 확정될 때만 발행되고, 그 블록을 처음 증명한 prover에게 지급됩니다(첫 유효 증명, 30일 만료). 구현은 블록 단위 정액이고, prove gas 비례는 보류입니다(아래 구현 상태).
 - 블록당 발행량은 `ISSUE_0 · 2^(−h / HALVING)`입니다. 반감기마다 절반이 되고 결국 0에 가까워집니다(꼬리 발행 없음).
   - 초기값: `ISSUE_0 = 1 AETH/block`, `HALVING = 31,536,000 blocks`(1초 블록 기준 약 1년). 총발행 상한은 약 `2 · ISSUE_0 · HALVING` ≈ 6,300만 AETH입니다.
 - 검증자(합의) 몫은 없습니다. 제안자는 tip의 60%를 받고, 운영 비용은 원래 켜 두는 Mac이라 작습니다. 같은 Mac이 prover로 발행을 받는 구조입니다.
@@ -240,13 +243,15 @@ base_d = FLOOR_d · (e^(excess_d / (target_d · K)) − 1)      # 기존: max(FL
 
 ### 구현 상태
 - R1′: `crates/execution/src/fees.rs` (base_fee 공식, 수수료 상한 검사, 멤풀 입장 검사).
-- R7′: `crates/proving/src/market.rs`에 발행 일정과 지급 계산. 노드 연결은 증명 검증기(출시 계획 6단계)와 함께.
+- R7′: `crates/execution/src/proofs.rs` (발행 일정 `ISSUE_0`·`HALVING`, 만료 `EXPIRY`, 블록별 기록과 지급). 프로토콜 2로 testnet에서 높이 기반 활성화(13-protocol-2.md).
+- 실제 지급 모델은 위 R3의 청크·prove gas 비례가 아니라 **블록 단위**입니다(13-protocol-2.md §3): 블록 h+1이 C(h)와 에스크로 몫 E(h)를 상태에 기록하고, 블록 h의 첫 유효 증명을 담은 블록에서 증명자 주소에 E(h) + 발행(h)을 한 번에 지급합니다. 청구·인출(pull)·예약·aggregator 수수료는 없습니다. 증명되지 않은 블록의 발행분은 생기지 않고, 에스크로는 30일 뒤에도 남아 사실상 소각됩니다.
+- `crates/proving/src/market.rs`의 청크 시장 코드(prove gas 비례, pull 청구)는 노드에 연결되어 있지 않습니다.
 
 ## 7. 개정 (2026-09-26): 기여자만 받는다, 작업량 × 연속 기여 순위
 
 사용자 결정:
 - **faucet 없음(본 네트워크):** R1′로 비혼잡 시 수수료가 0이므로 사용에 토큰이 필요 없습니다. 토큰은 기여한 노드에게만 갑니다. faucet은 testnet 전용입니다.
-- **작업량 비례:** 보상은 증명한 prove gas에 비례합니다(R3/R7′). 큰 Mac이 큰 청크를 증명해 더 받습니다. 청크는 Mac 등급(칩, GPU 코어, 통합 메모리, 측정한 Metal 성능)에 맞춰 배정합니다.
-- **연속 기여 순위:** 노드별 연속 기여 기간 `streak`(에포크 수)를 온체인에 기록합니다. 가중치는 `work × (1 + min(streak / S, 1))`, 곧 최대 2배입니다. 유예 `G`(초기 24시간)를 넘겨 기여가 끊기면 `streak = 0`입니다. 일찍 참여한 노드는 반감기 일정으로 높은 발행을 받고, 오래 유지하면 순위 보너스를 받습니다.
-- **신원:** 순위는 App Attest로 증명한 기기 키에 묶어, 양도·복제·Sybil을 막습니다.
-- 초기값: `S = 90일`, `G = 24시간`. 모두 위원회 서명 업그레이드로만 바꿉니다.
+- **작업량 비례 — 보류(프로토콜 3 후보):** 보상은 증명한 prove gas에 비례합니다(R3/R7′). 큰 Mac이 큰 청크를 증명해 더 받습니다. 청크는 Mac 등급(칩, GPU 코어, 통합 메모리, 측정한 Metal 성능)에 맞춰 배정합니다. 프로토콜 2는 블록 단위로 증명하고 블록마다 정액(E(h) + 발행)을 지급합니다.
+- **연속 기여 순위 — 가중은 보류(프로토콜 3 후보):** 노드별 연속 기여 기간 `streak`(에포크 수)를 온체인에 기록합니다(구현: CommitteeRegistry, 투표 후보의 생존 신호. 지금은 추첨 자격에만 씀). 가중치는 `work × (1 + min(streak / S, 1))`, 곧 최대 2배입니다. 증명자 주소가 등록 후보와 연결되어 있지 않아 아직 적용하지 않습니다. 유예 `G`(초기 24시간)를 넘겨 기여가 끊기면 `streak = 0`입니다. 일찍 참여한 노드는 반감기 일정으로 높은 발행을 받고, 오래 유지하면 순위 보너스를 받습니다.
+- **신원:** 순위는 등록된 기기에 묶어, 양도·복제·Sybil을 막습니다. macOS는 App Attest를 쓸 수 없어(Developer ID 배포) DeviceCheck로 기기 1대 = 투표 키 1개를 확인합니다(14-registration.md). iPhone 앱은 App Attest.
+- 초기값: `S = 90일`(보류, 코드에 없음), `G = 24시간`(구현: `GRACE_EPOCHS = 24`). 모두 위원회 서명 업그레이드로만 바꿉니다.

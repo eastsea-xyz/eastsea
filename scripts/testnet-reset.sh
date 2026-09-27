@@ -19,6 +19,8 @@ export PATH="$HOME/.cargo/bin:$PATH"
 N=$(ls -d "$T"/[0-9]* 2>/dev/null | wc -l | tr -d ' ')
 [ "$N" -ge 4 ] || { echo "need at least 4 validator dirs in $T"; exit 1; }
 
+AETHER_PROVER_PROGRAM=$(scripts/prover-program.sh)
+export AETHER_PROVER_PROGRAM
 cargo build -q --release -p aether-node
 scripts/testnet-launchagent.sh uninstall >/dev/null 2>&1 || true
 scripts/testnet.sh stop >/dev/null 2>&1 || true
@@ -36,6 +38,8 @@ for f in "$T"/*.log "$T"/*.pid "$T"/*.json; do [ -e "$f" ] && mv "$f" "$aside/";
 echo "old chain data moved to $aside"
 
 cp target/release/aether "$A"
+# The proving sidecar next to the node (validators verify proofs with it).
+cp apps/prover/target/release/aether-prover "$T/bin/aether-prover"
 faucet=$("$A" faucet-key --data "$T/1" | awk '/faucet address/ {print $3}')
 registrar=$("$A" registrar-key --data "$T/1" | awk '/registrar key/ {print $3}')
 pubs=()

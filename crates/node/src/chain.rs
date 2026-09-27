@@ -121,7 +121,7 @@ pub struct Statement {
 
 /// Proofs per block, and the largest proof accepted (protocol 2).
 pub const MAX_PROOFS_PER_BLOCK: usize = 2;
-pub const MAX_PROOF_BYTES: usize = 256 << 10;
+pub const MAX_PROOF_BYTES: usize = 128 << 10;
 /// Proof RPC: at most one verification started per interval (it is public).
 const PROOF_CHECK_INTERVAL: Duration = Duration::from_millis(500);
 /// Blocks without proofs in this node's proposals after one with proofs lost.
@@ -656,7 +656,8 @@ impl Chain {
     pub fn provable(&self) -> Option<(Arc<Executed>, Arc<Executed>, Block)> {
         let mut g = self.lock();
         let head = g.finalized.clone();
-        let pick = g.recent.iter().rev().find_map(|b| {
+        // Oldest first among the recent blocks: none left behind to expire.
+        let pick = g.recent.iter().find_map(|b| {
             let h = b.height().get();
             if g.attempted.contains(&h) || aether_execution::proofs::prover(&head.state, h).is_some() || b.payload()?.version < 2 {
                 return None;
@@ -670,7 +671,8 @@ impl Chain {
     /// Rewards `prover` received for proofs (this node's record since it started keeping one).
     pub fn rewards(&self, prover: &Address) -> Vec<Value> {
         let g = self.lock();
-        g.store.as_ref().and_then(|s| s.meta(&format!("rewards:{prover:#x}")).ok().flatten()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+        let rows = g.store.as_ref().and_then(|s| s.rewards(&prover.0 .0).ok()).unwrap_or_default();
+        rows.iter().filter_map(|r| serde_json::from_slice(r).ok()).collect()
     }
 
     /// Keep a proof (verified by this node's verifier) for this node's next proposals.
@@ -1006,20 +1008,18 @@ impl Chain {
             }
             if let Some((draw, pool)) = g.pool.clone().filter(|(d, _)| *d == s.1.draw) {
                 let seed = hex::decode(&s.1.signature).unwrap_or_default();
-                let registered: Vec<String> = aether_execution::registry::candidates(&exec.state).iter().map(|c| hex::encode(c.validator_key)).collect();
-                g.proposal = crate::rotation::draw(&pool, &seed, |k| registered.iter().any(|r| r == k), &g.committee).map(|m| (draw, m));
+                let ops = crate::rotation::operators(&exec.state);
+                g.proposal = crate::rotation::draw(&pool, &seed, |k| ops.get(k).cloned(), &g.committee).map(|m| (draw, m));
                 keep(&g.store, PROPOSAL, &g.proposal);
             }
         }
         let floor = exec.height.saturating_sub(64);
         g.executed.retain(|_, e| e.height >= floor);
         for (proven, prover, amount) in &exec.payouts {
-            let key = format!("rewards:{prover:#x}");
-            let mut list: Vec<Value> =
-                g.store.as_ref().and_then(|s| s.meta(&key).ok().flatten()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-            list.push(serde_json::json!({ "proven": proven, "amount": amount, "height": exec.height, "timestamp_ms": exec.timestamp }));
-            let skip = list.len().saturating_sub(10_000);
-            keep(&g.store, &key, &list[skip..]);
+            let record = serde_json::json!({ "proven": proven, "amount": amount, "height": exec.height, "timestamp_ms": exec.timestamp });
+            if let Some(Err(e)) = g.store.as_ref().map(|s| s.put_reward(&prover.0 .0, exec.height, *proven, record.to_string().as_bytes())) {
+                tracing::warn!(%e, "could not keep a reward record");
+            }
         }
         // Our proposal with proofs lost at this height: others may not verify them.
         if g.proof_proposal.is_some_and(|(h, d)| h == exec.height && d != exec.digest) {

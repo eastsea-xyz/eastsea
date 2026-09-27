@@ -1,6 +1,7 @@
 //! Data availability boundary (docs/design/03-traits.md, 08-network.md).
-//! `LocalDa` is a complete in-process implementation used by tests and
-//! single-machine nets; `CelestiaDa` (Lumina) and `EthBlobDa` implement the same trait.
+//! Deferred (00-overview D11): only `LocalDa`, a complete in-process
+//! implementation, exists, and the node does not use this crate yet.
+//! `CelestiaDa` (Lumina) and `EthBlobDa` are designed, not written.
 
 use aether_hash::{Blake3, Hasher};
 use aether_types::{DaRef, B256};

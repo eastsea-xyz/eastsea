@@ -2,12 +2,18 @@
 //!
 //! The prover (a Jolt guest on a Mac's GPU) runs [`execute`] on a
 //! [`BlockInput`]: it rebuilds the pre-state from the stateless witness, checks
-//! its root, applies the block's protocol activations, re-executes the
-//! transactions and outputs the [`BlockStatement`]'s commitment. A verifier
-//! recomputes the statement from the certified chain (this block's context and
-//! transactions, its parent state root, the post-state root its child commits
-//! to, its gas) and accepts the proof only if the commitments are equal. The
+//! its root, applies `activate` (the node always passes none), re-executes the
+//! transactions and outputs [`claim`] of the [`BlockStatement`]'s commitment
+//! and the prover's address. A verifier recomputes the statement from the
+//! certified chain and accepts the proof only if the claims are equal. The
 //! same function runs natively, so node and guest cannot disagree on it.
+//!
+//! Scope: the pre-state is the state after the block's system writes
+//! (protocol activation, registrar change, recording the previous block's
+//! statement and escrow, proof payouts and issuance). A proof covers the
+//! transactions' execution from that state; the system writes are checked by
+//! the committee re-executing the block, not by the proof
+//! (docs/design/13-protocol-2.md §1).
 
 use aether_execution::{execute_block_sequential, BlockContext, StateWitness, WorldState};
 use aether_types::{Address, GasVector, TxEnvelope, B256};

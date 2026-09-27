@@ -9,9 +9,9 @@ export PATH="$HOME/.cargo/bin:$PATH"
 target=${1:-macos}
 # The macOS node pins the proving program (the sidecar's embedded guest ELF), so
 # a node only verifies proofs of the program the protocol names.
-if [ "$target" = macos ] && [ -d apps/prover ] && [ -d "${AETHER_JOLT:-/Volumes/workspace/aether-jolt}/jolt" ]; then
-  (cd apps/prover && MACOSX_DEPLOYMENT_TARGET=14.0 cargo build -q --release)
-  AETHER_PROVER_PROGRAM=$(apps/prover/target/release/aether-prover info | python3 -c 'import json,sys; print(json.load(sys.stdin)["guest_elf_sha256"])')
+# A macOS build without it would verify any program: refuse.
+if [ "$target" = macos ]; then
+  AETHER_PROVER_PROGRAM=$(scripts/prover-program.sh)
   export AETHER_PROVER_PROGRAM
   echo "proving program $AETHER_PROVER_PROGRAM"
 fi

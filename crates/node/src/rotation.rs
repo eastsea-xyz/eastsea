@@ -55,6 +55,11 @@ pub fn eligible(state: &WorldState, epoch: u64, min_streak: u64) -> Vec<(String,
         .collect()
 }
 
+/// Registered voting keys (hex) and their operators (the address that registered them).
+pub fn operators(state: &WorldState) -> std::collections::HashMap<String, String> {
+    registry::candidates(state).iter().map(|c| (hex::encode(c.validator_key), format!("{:#x}", c.operator))).collect()
+}
+
 /// A Mac's place in the draw: H(seed ‖ voting key).
 pub fn ticket(seed: &[u8], key: &str) -> Vec<u8> {
     use commonware_cryptography::Hasher as _;
@@ -72,20 +77,34 @@ pub fn target_size(pool: usize) -> usize {
 }
 
 /// The next voting set: the pool ordered by H(seed ‖ key), the first
-/// `target_size` drawn; fewer than a third of the running seats change per draw
-/// (at least one), members that are not candidates leave first. None when the
-/// pool is too small or nothing changes.
-pub fn draw(pool: &[(String, String)], seed: &[u8], registered: impl Fn(&str) -> bool, running: &Committee) -> Option<Vec<(String, String)>> {
+/// `target_size` drawn with at most f of 3f+1 seats per operator (one owner
+/// never holds a third); fewer than a third of the running seats change per
+/// draw (at least one), members that are not candidates leave first. None when
+/// the pool is too small or nothing changes. `candidate(key)` is the operator
+/// of a registered voting key (None: not registered).
+pub fn draw(pool: &[(String, String)], seed: &[u8], candidate: impl Fn(&str) -> Option<String>, running: &Committee) -> Option<Vec<(String, String)>> {
     if running.members.is_empty() || pool.len() < MIN_OPEN_COMMITTEE {
         return None;
     }
     let mut order: Vec<&(String, String)> = pool.iter().collect();
     order.sort_by_cached_key(|(k, _)| ticket(seed, k));
-    let selected: Vec<(String, String)> = order.into_iter().take(target_size(pool.len())).cloned().collect();
+    let target = target_size(pool.len());
+    let cap = ((target - 1) / 3).max(1);
+    let mut seats: std::collections::HashMap<String, usize> = Default::default();
+    let selected: Vec<(String, String)> = order
+        .into_iter()
+        .filter(|(k, _)| {
+            let taken = seats.entry(candidate(k).unwrap_or_else(|| k.clone())).or_default();
+            *taken += 1;
+            *taken <= cap
+        })
+        .take(target)
+        .cloned()
+        .collect();
     let chosen = |k: &str| selected.iter().any(|(s, _)| s == k);
     let incoming: Vec<&(String, String)> = selected.iter().filter(|(k, _)| !running.has(k)).collect();
     let mut outgoing: Vec<&(String, String)> = running.members.iter().filter(|(k, _)| !chosen(k)).collect();
-    outgoing.sort_by_key(|(k, _)| registered(k));
+    outgoing.sort_by_key(|(k, _)| candidate(k).is_some());
     let n = running.members.len();
     let budget = (n.saturating_sub(1) / 3).max(1);
     let swaps = budget.min(incoming.len()).min(outgoing.len());
@@ -165,8 +184,21 @@ mod tests {
     }
 
     fn draw_at(s: &WorldState, epoch: u64, seed: &[u8], set: &Committee) -> Option<Vec<(String, String)>> {
-        let registered: Vec<String> = registry::candidates(s).iter().map(|c| hex::encode(c.validator_key)).collect();
-        draw(&eligible(s, epoch, 0), seed, |k| registered.iter().any(|r| r == k), set)
+        let ops = operators(s);
+        draw(&eligible(s, epoch, 0), seed, |k| ops.get(k).cloned(), set)
+    }
+
+    #[test]
+    fn one_operator_never_holds_a_third_of_the_drawn_seats() {
+        // 16 eligible Macs, 12 of one owner: a 4-seat draw takes at most one of theirs.
+        let pool: Vec<(String, String)> = (1..=16u8).map(|i| (key(i), format!("node{i}"))).collect();
+        let op = |k: &str| Some(if k < key(13).as_str() { "0xwhale".to_string() } else { k.to_string() });
+        let set = running(&[100, 101, 102, 103]);
+        for seed in [b"a".as_slice(), b"b", b"c", b"d", b"e"] {
+            let drawn = draw(&pool, seed, op, &set).unwrap();
+            let whale = drawn.iter().filter(|(k, _)| op(k).as_deref() == Some("0xwhale")).count();
+            assert!(whale <= 1, "{whale} whale seats of {}", drawn.len());
+        }
     }
 
     #[test]
@@ -202,8 +234,8 @@ mod tests {
         };
         assert_ne!(sample(b"one"), sample(b"two"));
         // Wallet addresses play no part: the draw only sees keys (one per Mac).
-        let a = draw(&pool, b"one", |_| true, &set).unwrap();
-        let b = draw(&pool, b"one", |_| true, &set).unwrap();
+        let a = draw(&pool, b"one", |k| Some(k.to_string()), &set).unwrap();
+        let b = draw(&pool, b"one", |k| Some(k.to_string()), &set).unwrap();
         assert_eq!(a, b, "deterministic for everyone");
         assert!(a.len() == 16 && a.iter().filter(|m| !set.members.contains(m)).count() <= 5, "fewer than a third change");
         assert_eq!(target_size(4), 4);

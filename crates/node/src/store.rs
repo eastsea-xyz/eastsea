@@ -34,6 +34,9 @@ const STATEMENT: &str = "statement";
 /// Finality proofs a follower verified (`aether_getFinalized` JSON by height):
 /// history it keeps serving, also after it becomes a voting node.
 const PROOFS: TableDefinition<u64, &[u8]> = TableDefinition::new("proofs");
+/// Rewards paid to provers, kept by this node for tax records: (prover ‖ paid-in
+/// height) -> JSON. Not consensus data; nothing is ever dropped.
+const REWARDS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("rewards");
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -112,6 +115,7 @@ impl Store {
         tx.open_table(BLOCKS).map_err(dberr)?;
         tx.open_table(META).map_err(dberr)?;
         tx.open_table(PROOFS).map_err(dberr)?;
+        tx.open_table(REWARDS).map_err(dberr)?;
         tx.commit().map_err(dberr)?;
         Ok(Store { db })
     }
@@ -126,6 +130,29 @@ impl Store {
         let tx = self.db.begin_read().map_err(dberr)?;
         let t = tx.open_table(META).map_err(dberr)?;
         Ok(t.get(key).map_err(dberr)?.map(|v| v.value().to_vec()))
+    }
+
+    /// Record a reward paid to `prover` in block `height` (one per proven block: `proven`).
+    pub fn put_reward(&self, prover: &[u8; 20], height: u64, proven: u64, record: &[u8]) -> Result<(), StoreError> {
+        let mut key = prover.to_vec();
+        key.extend_from_slice(&height.to_be_bytes());
+        key.extend_from_slice(&proven.to_be_bytes());
+        let tx = self.db.begin_write().map_err(dberr)?;
+        tx.open_table(REWARDS).map_err(dberr)?.insert(key.as_slice(), record).map_err(dberr)?;
+        tx.commit().map_err(dberr)
+    }
+
+    /// Every reward recorded for `prover`, oldest first.
+    pub fn rewards(&self, prover: &[u8; 20]) -> Result<Vec<Vec<u8>>, StoreError> {
+        let tx = self.db.begin_read().map_err(dberr)?;
+        let t = tx.open_table(REWARDS).map_err(dberr)?;
+        let mut end = prover.to_vec();
+        end.extend_from_slice(&[0xff; 16]);
+        let mut out = Vec::new();
+        for row in t.range(prover.as_slice()..=end.as_slice()).map_err(dberr)? {
+            out.push(row.map_err(dberr)?.1.value().to_vec());
+        }
+        Ok(out)
     }
 
     pub fn put_proof(&self, height: u64, proof: &[u8]) -> Result<(), StoreError> {

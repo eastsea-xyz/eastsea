@@ -38,6 +38,8 @@ struct SimpleDashboard: View {
                 case .receive: ReceiveSheet()
                 }
             }
+            // A payment link (aether://pay?...) opens the send sheet, filled in, for approval.
+            .onChange(of: model.paymentRequest) { _, r in if r != nil { sheet = .send } }
     }
 
     #if os(macOS)
@@ -139,9 +141,14 @@ private struct HomePage: View {
             }
             .buttonStyle(.plain)
             .help("Copy address")
-            Text(model.account == nil ? "—" : "\(Amount.text(balance)) AETH")
-                .font(.system(size: 52, weight: .bold, design: .rounded))
-                .contentTransition(.numericText())
+            if model.account == nil {
+                // Loading: a soft shimmer where the balance will appear.
+                ShimmerBar().frame(width: 220, height: 52)
+            } else {
+                Text("\(Amount.text(balance)) AETH")
+                    .font(.system(size: 52, weight: .bold, design: .rounded))
+                    .contentTransition(.numericText())
+            }
             VerifiedBadge()
         }
         .padding(.top, 8)
@@ -504,12 +511,60 @@ private struct VerifiedBadge: View {
                 .padding(.horizontal, 10).padding(.vertical, 4)
                 .background(.green.opacity(0.12), in: Capsule())
                 .help("This device checked the balance itself against the validators' signature. No server was trusted.")
-        } else {
-            Label(model.status == nil ? "Connecting" : "Checking", systemImage: "hourglass")
+        } else if model.networkOutdated {
+            Label("This app is out of date · updating", systemImage: "arrow.down.circle.fill")
                 .font(.caption.weight(.semibold)).foregroundStyle(.orange)
                 .padding(.horizontal, 10).padding(.vertical, 4)
                 .background(.orange.opacity(0.12), in: Capsule())
+                .help("The network moved to a new version. The update is being fetched; it applies on the next launch.")
+        } else {
+            let slow = model.verifyFailingSince.map { Date().timeIntervalSince($0) > 20 } ?? false
+            HStack(spacing: 7) {
+                OrbitSpinner().frame(width: 13, height: 13)
+                Text(model.status == nil ? "Connecting" : slow ? "Still verifying" : "Verifying")
+            }
+            .font(.caption.weight(.semibold)).foregroundStyle(Color.aether)
+            .padding(.horizontal, 11).padding(.vertical, 5)
+            .background(Color.aether.opacity(0.10), in: Capsule())
+            .help(model.verifyError ?? "Checking the balance against the validators' signature on this device.")
         }
+    }
+}
+
+/// A small comet orbiting a faint ring: calm, continuous, in the brand colors.
+struct OrbitSpinner: View {
+    @State private var spin = false
+
+    var body: some View {
+        ZStack {
+            Circle().stroke(Color.aether.opacity(0.15), lineWidth: 2)
+            Circle()
+                .trim(from: 0, to: 0.32)
+                .stroke(AngularGradient(colors: [Color.aether.opacity(0), .aether, .pink], center: .center, startAngle: .degrees(0), endAngle: .degrees(115)),
+                        style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                .rotationEffect(.degrees(spin ? 360 : 0))
+        }
+        .onAppear { withAnimation(.linear(duration: 1.1).repeatForever(autoreverses: false)) { spin = true } }
+    }
+}
+
+/// A placeholder that breathes while data loads (no dash, no jumpy text).
+struct ShimmerBar: View {
+    @State private var phase: CGFloat = -1
+
+    var body: some View {
+        GeometryReader { g in
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(.quaternary.opacity(0.6))
+                .overlay(
+                    LinearGradient(colors: [.clear, .white.opacity(0.55), .clear], startPoint: .leading, endPoint: .trailing)
+                        .frame(width: g.size.width * 0.45)
+                        .offset(x: phase * g.size.width)
+                        .blendMode(.plusLighter)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+        .onAppear { withAnimation(.easeInOut(duration: 1.4).repeatForever(autoreverses: false)) { phase = 1.2 } }
     }
 }
 
@@ -674,6 +729,12 @@ private struct SendSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Send AETH").font(.title2.bold())
+            if let r = model.paymentRequest {
+                Label(r.memo.map { "A page asked for this payment: \($0)" } ?? "A page asked for this payment. Check the address and amount.", systemImage: "link")
+                    .font(.callout).foregroundStyle(.orange)
+                    .padding(10).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
+            }
             VStack(alignment: .leading, spacing: 6) {
                 Text("To").font(.caption).foregroundStyle(.secondary)
                 TextField("0x… (several: separate with commas)", text: $model.sendTo)
@@ -700,7 +761,10 @@ private struct SendSheet: View {
                 }.font(.callout)
             }
             HStack {
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Cancel") {
+                    model.paymentRequest = nil
+                    dismiss()
+                }.keyboardShortcut(.cancelAction)
                 Spacer()
                 Button {
                     model.send()

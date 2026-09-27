@@ -127,13 +127,36 @@ fn from_hex32(s: &str) -> Result<[u8; 32], String> {
 /// The consensus verifier: the verifying sidecar, with answers cached (a block's
 /// proofs are checked when proposed, verified and finalized).
 pub struct Verifier {
-    sidecar: Sidecar,
+    sidecar: Mutex<Arc<Sidecar>>,
+    bin: PathBuf,
+    dir: PathBuf,
     seen: Mutex<HashMap<[u8; 32], bool>>,
 }
 
 impl Verifier {
-    pub fn new(sidecar: Sidecar) -> Self {
-        Verifier { sidecar, seen: Mutex::new(HashMap::new()) }
+    /// Start the verifying sidecar (before consensus starts: blocks replayed or
+    /// delivered at start-up may carry proofs).
+    pub fn start(bin: &Path, dir: &Path) -> Result<Self, String> {
+        let sidecar = Arc::new(Sidecar::spawn(bin, dir)?);
+        Ok(Verifier { sidecar: Mutex::new(sidecar), bin: bin.to_path_buf(), dir: dir.to_path_buf(), seen: Mutex::new(HashMap::new()) })
+    }
+
+    pub fn program(&self) -> String {
+        self.sidecar.lock().map(|s| s.program.clone()).unwrap_or_default()
+    }
+
+    /// Ask the sidecar; if it died, start a new one and ask again once.
+    fn ask(&self, proof: &[u8], commitment: [u8; 32]) -> Result<bool, String> {
+        let current = self.sidecar.lock().map_err(|_| "verifier lock poisoned")?.clone();
+        match current.verify(proof, commitment) {
+            Err(e) => {
+                tracing::warn!(%e, "proof verifier stopped; starting a new one");
+                let fresh = Arc::new(Sidecar::spawn(&self.bin, &self.dir)?);
+                *self.sidecar.lock().map_err(|_| "verifier lock poisoned")? = fresh.clone();
+                fresh.verify(proof, commitment)
+            }
+            ok => ok,
+        }
     }
 }
 
@@ -145,7 +168,7 @@ impl ProofVerifier for Verifier {
         if let Some(v) = self.seen.lock().ok().and_then(|s| s.get(&key).copied()) {
             return v;
         }
-        match self.sidecar.verify(proof, commitment) {
+        match self.ask(proof, commitment) {
             // Only a verified proof is remembered: a refusal may have been a
             // transient failure, and caching it would split this node from the rest.
             Ok(true) => {
@@ -178,6 +201,8 @@ pub struct Status {
     pub last_seconds: f64,
     pub proofs: u64,
     pub error: Option<String>,
+    /// Where rewards go.
+    pub payout: Option<Address>,
 }
 
 pub type SharedStatus = Arc<Mutex<Status>>;
@@ -190,6 +215,7 @@ pub fn spawn_service(chain: Chain, sidecar: Sidecar, prover: Address, status: Sh
         .map(|mut s| {
             s.running = true;
             s.program = sidecar.program.clone();
+            s.payout = Some(prover);
         })
         .ok();
     std::thread::spawn(move || loop {

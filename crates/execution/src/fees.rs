@@ -6,7 +6,8 @@
 //! - Priority fees (tips) collect at `FEE_COLLECTOR` during the block and are
 //!   split at the end: 60% proposer, 20% prover escrow, 20% burned (the burn
 //!   floor makes self-paid fake tips cost the proposer).
-//! - No issuance, no fee-proportional rewards (R7).
+//! - No fee-proportional rewards (R7). Issuance exists only for proven blocks
+//!   (R7′, protocol 2) and lives in `proofs.rs`, not here.
 
 use crate::world::WorldState;
 use aether_types::{Address, FeeVector, GasVector, U256};
@@ -14,8 +15,8 @@ use alloy_primitives::address;
 
 /// Where revm credits tips during a block (settled to zero at block end).
 pub const FEE_COLLECTOR: Address = address!("00000000000000000000000000000000000fee00");
-/// Prover escrow: base prove fees + the prover share of tips, paid per proven
-/// chunk later (R3; claims come with the proof market).
+/// Prover escrow: base prove fees + the prover share of tips, paid to the
+/// first valid proof of each block (R3, protocol 2: `proofs.rs`).
 pub const PROVER_ESCROW: Address = address!("00000000000000000000000000000000000e5c00");
 
 /// Scale of the base fee (R1′, docs/research/tokenomics-2026.md §6):

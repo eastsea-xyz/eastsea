@@ -294,7 +294,15 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
             Ok(json!({ "hash": hash, "amount_wei": crate::faucet::GRANT.to_string() }))
         }
         "aether_proverStatus" => Ok(match &st.prover {
-            Some(s) => serde_json::to_value(&*s.lock().map_err(|_| (-32000, "status lock".to_string()))?).unwrap_or_default(),
+            Some(s) => {
+                let status = s.lock().map_err(|_| (-32000, "status lock".to_string()))?.clone();
+                let mut v = serde_json::to_value(&status).unwrap_or_default();
+                // How far proving trails the chain, and the last reward received.
+                let head = chain.finalized_height();
+                v["lag"] = json!(status.last_height.map(|h| head.saturating_sub(h)));
+                v["last_reward"] = status.payout.and_then(|a| chain.rewards(&a).last().and_then(|r| r.get("amount").cloned())).unwrap_or(Value::Null);
+                v
+            }
             None => json!({ "running": false }),
         }),
         "aether_rewards" => {

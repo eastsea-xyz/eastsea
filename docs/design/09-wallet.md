@@ -8,27 +8,25 @@ Aether.app (SwiftUI)
   ├─ UI: 잔액·송금·계약·상태 배지 / 설정(참여·증명 토글) / 엔지니어 모드(웹뷰 dashboard)
   ├─ Power: 전원·열·유휴 감시 → 역할 스위치
   └─ AetherCore.xcframework (UniFFI)
-        └─ crates/ffi → node(검증 노드 모드) + proving::verifier + history downloader + rpc client
+        └─ crates/ffi → aether-light(인증서·상태 증명 검증) + rpc client   (설계에 있던 proving::verifier, history downloader는 없음)
+  Helpers: aether(노드, 별도 프로세스), aether-agent
 ```
 
-## UniFFI 인터페이스 (`crates/ffi/src/aether.udl` 요지)
+## UniFFI 인터페이스 (실제: `crates/ffi`, proc-macro)
 
-```
-namespace aether {
-  Node start(NodeConfig cfg);
-};
-interface Node {
-  Status status();                       // height, finalized, proven, da_sampled, peers
-  Balance balance(string address);       // (value, proof_state: Proven|Certified|Proposed)
-  TxHash submit(bytes signed_envelope);
-  void set_role(Role r);                 // Verify | Validate | Prove
-  Stream<Event> events();
-};
-interface Signer { bytes sign_digest(bytes digest); bytes public_key(); }   // Swift가 구현, SE 호출
-```
+처음 설계한 `.udl` 파일과 `Node` 객체(`start`, `set_role`, `events`, `proof_state` 세 단계)는 만들지 않았다. 지금 FFI는 `uniffi::setup_scaffolding!()`과 `#[uniffi::export]` 함수, `#[derive(uniffi::Record)]` 구조체로 된 상태 없는 함수 모음이다. 노드는 FFI 안에서 돌지 않고, 앱이 번들한 `aether`를 별도 프로세스로 띄운다.
 
-- 서명은 Swift 쪽에서 한다(SE 키는 Rust로 나오지 않음). Rust는 다이제스트를 만들고 서명을 받아 봉투를 조립.
-- `proof_state` 세 단계가 UI 배지의 근거.
+| 묶음 | 함수 (요지) |
+|---|---|
+| 연결·설정 | `configure_network`, `set_committee_identity`, `use_local_node`, `local_node_height`, `connection`, `chain_status` |
+| 계정·잔액 | `account_address`, `verified_account`(확정 인증서 + EIP-7864 증명으로 검증, `aether-light`) |
+| 송금 | `prepare_transfer`, `prepare_batch`, `submit_signed`, `receipt`, `recent_blocks`, `devnet_faucet` |
+| 복구 | `recovery_key_code`, `prepare_set_recovery_key`, `prepare_add_recovery_key`, `recovery_status`, `prepare_recovery(_to)`, `prepare_recovery_submit`, `prepare_finish_recovery`, `prepare_cancel_recovery`, `prepare_remove_recovery_keys`, 복구 단어 `paper_key_new`·`paper_key_public`·`paper_key_sign` |
+| 에이전트 세션 키 | `session_status`, `prepare_set_session`, `prepare_session_payment`, `prepare_session_submit` |
+| 투표 노드 | `voting_node_status`, `prepare_register_node` |
+
+- 서명은 Swift 쪽에서 한다(SE 키는 Rust로 나오지 않음). Rust는 서명할 바이트(`PreparedTx.signing_message`)를 만들고, Swift가 서명하면 low-s로 정규화해 제출한다.
+- 없는 것: ZK 증명 검증(`verify_block`)과 "증명됨" 상태. 잔액 표시는 확정 인증서 검증 하나뿐이다(06-proving.md). 여러 가디언(k-of-n) 서명 수집과 `addOwner`도 FFI에 없다(12-launch-plan.md 4단계).
 
 ## 계정 모델
 
@@ -82,6 +80,14 @@ interface Signer { bytes sign_digest(bytes digest); bytes public_key(); }   // S
 - CLI `set-guardian`, `recover`. 검증: 복구 성공, 재생·다른 키·조작된 호출 거부, 가디언 없으면 불가, 4검증자 devnet에서 등록→복구→분실 계정 잔액 0 경량 검증.
 - 다음: 세션 키(한도·기한 있는 위임 서명), 가디언 복수·지연(시간 잠금) 복구.
 
+
+## Mac 앱 동작 — 구현됨 (2026-09-27)
+
+- 첫 실행 때 버튼 없이 Secure Enclave 키를 만들고 바로 대시보드를 연다.
+- 메뉴 막대에 산다. 창을 닫아도 앱과 노드는 계속 돈다. 메뉴 막대에 증명기 상태(마지막 증명, 밀린 블록 수 `lag`, 마지막 보상)가 보인다.
+- 로그인 시 열기가 기본으로 켜져 있다(`SMAppService`). 설정에서 끌 수 있다.
+- 업데이트(Sparkle)는 백그라운드에서 매시간 확인한다. 체인이 더 새 프로토콜을 예약하면 바로 확인한다.
+- 결제 링크 `aether://pay?to=0x…&amount=1.5&memo=…&callback=https://…`: 웹 페이지가 확장 없이 결제를 요청한다. 앱은 송금 화면을 채워 보여 주고, 사람이 Touch ID로 승인해야 보낸다. 저절로 보내지 않는다. 결과(`tx`, `status`)는 콜백이 https일 때만 그 주소로 돌려준다. 빠진 값이 있는 링크는 무시한다.
 
 ## iOS 지갑 — 구현됨 (2026-09-26)
 

@@ -24,7 +24,7 @@ commonware ─tcp→ 127.0.0.1:<B 링크 포트> ─iroh QUIC(aether/p2p/1)→ I
 - 게시 필터: 루프백·링크로컬·Tailscale/CGNAT(100.64/10, fd7a:115c:a1e0::/48) 제외.
 - 경로 선택: `PublicPathSelector`가 같은 대역 경로를 절대 고르지 않는다. 직결(공인/LAN) 우선, 없으면 공개 릴레이.
 - `n0-mainline` 0.6.0 `get_mutable_most_recent` 버그(첫 응답을 채택 → 이사한 노드의 옛 레코드가 새 주소를 가림)를 `vendor/`에서 패치.
-- 검증(2026-09-26): 이 맥(공인 124.50.132.71)에 검증자 1~3, poc-m3(공인 14.32.162.195, 다른 회선)에 검증자 4. 양쪽 모두 `direct <상대 공인IP>` 경로. 검증자 3 정지 중에는 정족수에 원격 검증자가 필수인데도 15초에 14블록 확정, 송금 확정 후 원격에서 잔액 일치.
+- 검증(2026-09-26): 이 맥(공인 198.51.100.10)에 검증자 1~3, poc-m3(공인 203.0.113.20, 다른 회선)에 검증자 4. 양쪽 모두 `direct <상대 공인IP>` 경로. 검증자 3 정지 중에는 정족수에 원격 검증자가 필수인데도 15초에 14블록 확정, 송금 확정 후 원격에서 잔액 일치.
 - 오프라인 테스트용 `--peers <i@host:port,…> --offline`은 평문 TCP.
 
 ## Pkarr 부트노드 목록
@@ -33,7 +33,9 @@ commonware ─tcp→ 127.0.0.1:<B 링크 포트> ─iroh QUIC(aether/p2p/1)→ I
 - 갱신 주기 12시간(Mainline 만료 대비). 지갑은 Pkarr → DNS → GitHub 순으로 시도.
 - 기존 `peers.json`·하드코딩 IP는 제거.
 
-## DA 어댑터
+## DA 어댑터 — 보류 (00-overview D11)
+
+지금 코드: `crates/da`에 트레이트와 `LocalDa`(프로세스 안 구현)만 있고 노드가 쓰지 않는다. 아래는 설계.
 
 - `CelestiaDa`: Lumina 라이트 노드 내장. 블록 body(txs+BAL) 직렬화 → blob → `DaRef{height, commitment, namespace}`.
 - 지갑 검증 노드: Lumina로 DAS 샘플링 → "데이터 존재 확인" 상태 표시. 이것이 검증자를 믿지 않는 두 번째 근거(첫째는 ZK 증명).

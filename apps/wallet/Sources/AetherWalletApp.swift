@@ -12,16 +12,18 @@ struct AetherWalletApp: App {
     #endif
 
     var body: some Scene {
-        WindowGroup("Aether") {
+        WindowGroup("Aether", id: "main") {
             #if os(macOS)
             ContentView()
                 .environmentObject(model)
                 .environmentObject(node)
                 .onAppear {
-                    appDelegate.node = node
-                    node.onUpgradeNeeded = { appDelegate.updater.updater.checkForUpdatesInBackground() }
-                    node.restore()
+                    appDelegate.start(node: node, model: model)
+                    NSApp.setActivationPolicy(.regular)
                 }
+                // Closing the window keeps Aether in the menu bar (the node keeps running).
+                .onDisappear { NSApp.setActivationPolicy(.accessory) }
+                .onOpenURL { model.open(url: $0) }
             #else
             ContentView().environmentObject(model)
             #endif
@@ -41,12 +43,14 @@ struct AetherWalletApp: App {
         Settings {
             SettingsView().environmentObject(node).environmentObject(model)
         }
-        // While the node runs: what this Mac is proving, right in the menu bar.
-        MenuBarExtra(isInserted: Binding(get: { node.enabled && node.prove }, set: { _ in })) {
-            ProverMenu().environmentObject(node)
+        // Always in the menu bar: balance, node and prover at a glance; the window opens from here.
+        MenuBarExtra {
+            MenuBarPanel().environmentObject(model).environmentObject(node)
+                .onAppear { appDelegate.start(node: node, model: model) }
         } label: {
-            Image(systemName: node.prover?.proving != nil ? "cpu.fill" : "cpu")
+            Image(systemName: node.prover?.proving != nil ? "cube.transparent.fill" : "cube.transparent")
         }
+        .menuBarExtraStyle(.window)
         #endif
     }
 }
@@ -77,17 +81,35 @@ struct SettingsView: View {
     }
 }
 
-/// Quitting the app stops its node: nothing keeps running in the background.
+/// Aether lives in the menu bar: closing the window keeps it (and its node)
+/// running; Quit stops both.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var node: NodeController?
     /// Sparkle: checks the signed appcast on GitHub Releases and installs updates.
     let updater = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+    private var started = false
+
+    /// Once per launch, from whichever appears first (window or menu-bar panel).
+    @MainActor func start(node: NodeController, model: WalletModel) {
+        guard !started else { return }
+        started = true
+        self.node = node
+        let check: () -> Void = { [weak self] in self?.updater.updater.checkForUpdatesInBackground() }
+        node.onUpgradeNeeded = check
+        model.onOutdated = check
+        // Open at login by default (Settings can turn it off).
+        if !UserDefaults.standard.bool(forKey: "loginItemDefaultApplied") {
+            UserDefaults.standard.set(true, forKey: "loginItemDefaultApplied")
+            node.startAtLogin = true
+        }
+        node.restore()
+    }
 
     func applicationWillTerminate(_ notification: Notification) {
         MainActor.assumeIsolated { node?.stop() }
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 }
 
 /// Link the bundled `aether` and `aether-agent` into ~/.local/bin.

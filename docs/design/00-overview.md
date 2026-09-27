@@ -14,11 +14,14 @@
 | `04-execution.md` | 순서-먼저 파이프라인, BAL 정적 DAG Block-STM, prove-gas |
 | `05-state.md` | 바이너리 SMT, EIP-7864 키, NOMT, 스냅샷 |
 | `06-proving.md` | zkVM 게스트, 청크 분담, 재귀 집계, 증명 검증기 |
-| `07-consensus.md` | Simplex 통합, VRF 위원회, ebb-and-flow, Quint 명세 |
+| `07-consensus.md` | Simplex 통합, DKG·재공유, 열린 위원회(등록·추첨·무정지 인계), 포함 목록 |
 | `08-network.md` | iroh, Pkarr, Celestia DA 어댑터, 이력 배포 |
 | `09-wallet.md` | UniFFI 경계, Secure Enclave 계정, 앱 3단 구조 |
 | `10-testing.md` | 차등 테스트, 결정적 시뮬레이션, 벤치 게이트 |
 | `11-phase0-spike.md` | 0단계 보안 정리와 0.5단계 스파이크 작업 목록 |
+| `12-launch-plan.md` | 출시 계획, 단계별 상태, 결정 기록 |
+| `13-protocol-2.md` | 프로토콜 2: 증명 제출·지급·발행, 레지스트라 상한 |
+| `14-registration.md` | 투표 노드 등록 기준(레지스트라가 확인·거부하는 것) |
 
 ## 정체성
 
@@ -48,9 +51,9 @@ EIP-7864 바이너리 트리, 해시 전용, P-256 계정, FOCIL)를 레거시 �
 | D6 | 해시 trait. **확정(2026-09-27): 상태 해시 BLAKE3** (`aether_hash::ChainHasher`). 우리 증명 경로(Jolt RISC-V + Akita, Metal)에서 Poseidon2보다 약 11배 싸서 tx당 사이클이 약 2.2배 준다. Poseidon2는 비교 측정용 기능(`poseidon2-state`)으로만 남긴다 | nextgen-state, spike-2026-10 |
 | D7 | PCS trait: WHIR 오늘, Akita 감사 후 교체 | nextgen-zk |
 | D8 | 합의: Commonware simplex + BLS 임계 scheme | nextgen-consensus |
-| D9 | 검증자 전원 아님. VRF 고가동 위원회 + ebb-and-flow | nextgen-consensus |
+| D9 | 검증자 전원 아님. **변경(2026-09-27):** VRF 가중 선출 대신 DeviceCheck 등록 Mac 중 위원회 서명 시드 추첨(운영자당 f석 상한, 교체 1/3 미만, 무정지 인계, 07장). ebb-and-flow는 미구현 | nextgen-consensus, voting-set-security-2026 |
 | D10 | 계정: EIP-7702 위임 EOA + P-256 Secure Enclave, P256VERIFY | nextgen-wallet |
-| D11 | DA: Celestia 소버린, 이더리움 blob은 trait 뒤 | nextgen-da-mev-ai |
+| D11 | DA: Celestia 소버린, 이더리움 blob은 trait 뒤. **보류:** `crates/da`에는 `LocalDa`만 있고 노드가 쓰지 않는다. DA 요금(토크노믹스 R6)도 보류 | nextgen-da-mev-ai |
 | D12 | MEV: FOCIL 포함 목록(1단계) → tle(2단계) | nextgen-da-mev-ai |
 | D13 | 네트워크: iroh 1.2, Pkarr, STUN | network-infra |
 | D14 | 이력: 매니페스트 + HTTP/iroh-blobs 다중 미러 | ipfs-alternatives |

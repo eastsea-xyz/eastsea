@@ -722,9 +722,10 @@ private struct SendSheet: View {
     @EnvironmentObject var model: WalletModel
     @Environment(\.dismiss) private var dismiss
 
-    private var amount: Double? { Double(model.sendAmount) }
+    private var amount: Double? { Double(model.paymentRequest?.amount ?? model.sendAmount) }
     private var balance: Double { model.account.flatMap { Double(Wei.format($0.balanceWei)) } ?? 0 }
-    private var valid: Bool { !model.sendTo.isEmpty && (amount ?? 0) > 0 && (amount ?? 0) <= balance }
+    private var recipient: String { model.paymentRequest?.to ?? model.sendTo }
+    private var valid: Bool { !recipient.isEmpty && (amount ?? 0) > 0 && (amount ?? 0) <= balance }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -735,17 +736,27 @@ private struct SendSheet: View {
                     .padding(10).frame(maxWidth: .infinity, alignment: .leading)
                     .background(.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
             }
-            VStack(alignment: .leading, spacing: 6) {
-                Text("To").font(.caption).foregroundStyle(.secondary)
-                TextField("0x… (several: separate with commas)", text: $model.sendTo)
-                    .textFieldStyle(.roundedBorder).font(.body.monospaced())
-            }
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Amount (each)").font(.caption).foregroundStyle(.secondary)
-                HStack {
-                    TextField("0", text: $model.sendAmount).textFieldStyle(.roundedBorder).font(.title3.monospacedDigit())
-                    Text("AETH").foregroundStyle(.secondary)
-                    Button("Max") { model.sendAmount = Amount.text(max(0, balance - 0.001)) }.buttonStyle(.borderless)
+            if let r = model.paymentRequest {
+                // A requested payment is shown as asked and cannot be edited here.
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("To").font(.caption).foregroundStyle(.secondary)
+                    Text(r.to).font(.body.monospaced()).textSelection(.enabled)
+                    Text("Amount").font(.caption).foregroundStyle(.secondary).padding(.top, 6)
+                    Text("\(r.amount) AETH").font(.title3.weight(.semibold).monospacedDigit())
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("To").font(.caption).foregroundStyle(.secondary)
+                    TextField("0x… (several: separate with commas)", text: $model.sendTo)
+                        .textFieldStyle(.roundedBorder).font(.body.monospaced())
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Amount (each)").font(.caption).foregroundStyle(.secondary)
+                    HStack {
+                        TextField("0", text: $model.sendAmount).textFieldStyle(.roundedBorder).font(.title3.monospacedDigit())
+                        Text("AETH").foregroundStyle(.secondary)
+                        Button("Max") { model.sendAmount = Amount.text(max(0, balance - 0.001)) }.buttonStyle(.borderless)
+                    }
                 }
             }
             HStack {

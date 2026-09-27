@@ -316,10 +316,14 @@ final class WalletModel: ObservableObject {
             note("Ignored a payment link that is not complete")
             return
         }
+        // One request at a time, and never written into what the user is typing:
+        // the request is shown on its own and sent exactly as asked.
+        guard paymentRequest == nil else {
+            note("Ignored a second payment link while one is waiting for approval")
+            return
+        }
         let callback = q["callback"].flatMap(URL.init(string:)).flatMap { $0.scheme == "https" ? $0 : nil }
-        sendTo = to
-        sendAmount = q["amount"] ?? ""
-        paymentRequest = PaymentRequest(to: to, amount: sendAmount, memo: q["memo"], callback: callback)
+        paymentRequest = PaymentRequest(to: to, amount: q["amount"] ?? "", memo: q["memo"], callback: callback)
     }
 
     func faucet() {
@@ -335,9 +339,11 @@ final class WalletModel: ObservableObject {
 
     func send() {
         guard let enclave else { return }
-        guard let wei = Wei.from(aeth: sendAmount) else { note("Invalid amount"); return }
+        // A payment link is sent exactly as it asked; otherwise the form's values.
+        let (toText, amountText) = paymentRequest.map { ($0.to, $0.amount) } ?? (sendTo, sendAmount)
+        guard let wei = Wei.from(aeth: amountText) else { note("Invalid amount"); return }
         // One or more recipients (comma/space separated); each gets the amount.
-        let recipients = sendTo.split(whereSeparator: { $0 == "," || $0.isWhitespace }).map(String.init).filter { !$0.isEmpty }
+        let recipients = toText.split(whereSeparator: { $0 == "," || $0.isWhitespace }).map(String.init).filter { !$0.isEmpty }
         guard !recipients.isEmpty else { return }
         let pk = enclave.publicKey
         let callback = paymentRequest?.callback

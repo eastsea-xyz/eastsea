@@ -168,7 +168,17 @@ where
         if self.chain.retired_after(&parent) {
             return false;
         }
-        match self.chain.execute(&block, &parent) {
+        // Execution (and any proof verification it calls) runs on its own thread,
+        // so a slow proof verifier never stalls the consensus executor.
+        let (chain, b, p) = (self.chain.clone(), block.clone(), parent.clone());
+        let executed = match rt.child("execute").dedicated().spawn(move |_| async move { chain.execute(&b, &p) }).await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!(height = %block.height(), ?e, "execution task failed");
+                return false;
+            }
+        };
+        match executed {
             Ok(exec) => {
                 // FOCIL: refuse to vote for a block that censors listed txs.
                 let ctx = Chain::block_context(&self.chain.cfg(), &block, &parent);

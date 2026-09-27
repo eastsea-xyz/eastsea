@@ -122,6 +122,8 @@ pub struct Statement {
 /// Proofs per block, and the largest proof accepted (protocol 2).
 pub const MAX_PROOFS_PER_BLOCK: usize = 2;
 pub const MAX_PROOF_BYTES: usize = 128 << 10;
+/// Real proofs are ~98 KB; anything much smaller is refused before any work.
+const MIN_PROOF_BYTES: usize = 32 << 10;
 /// Proof RPC: at most one verification started per interval (it is public).
 const PROOF_CHECK_INTERVAL: Duration = Duration::from_millis(500);
 /// Blocks without proofs in this node's proposals after one with proofs lost.
@@ -690,8 +692,9 @@ impl Chain {
 
     /// Rewards `prover` received for proofs (this node's record since it started keeping one).
     pub fn rewards(&self, prover: &Address) -> Vec<Value> {
-        let g = self.lock();
-        let rows = g.store.as_ref().and_then(|s| s.rewards(&prover.0 .0).ok()).unwrap_or_default();
+        // Read the store without holding the chain lock (a long history must not stall consensus).
+        let store = self.lock().store.clone();
+        let rows = store.and_then(|s| s.rewards(&prover.0 .0).ok()).unwrap_or_default();
         rows.iter().filter_map(|r| serde_json::from_slice(r).ok()).collect()
     }
 
@@ -719,7 +722,10 @@ impl Chain {
                 return Err("a proof of this block is already waiting".into());
             }
             // Malformed submissions never take a verification slot.
-            if claim.proof.len() > 2 * MAX_PROOF_BYTES || !claim.proof.len().is_multiple_of(2) || !claim.proof.bytes().all(|b| b.is_ascii_hexdigit()) {
+            if !(2 * MIN_PROOF_BYTES..=2 * MAX_PROOF_BYTES).contains(&claim.proof.len())
+                || !claim.proof.len().is_multiple_of(2)
+                || !claim.proof.bytes().all(|b| b.is_ascii_hexdigit())
+            {
                 return Err("the proof is not a hex string of an allowed size".into());
             }
             let now = Instant::now();

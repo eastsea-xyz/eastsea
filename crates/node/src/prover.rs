@@ -80,12 +80,15 @@ impl Sidecar {
             Ok(line) => line,
             Err(_) => {
                 let _ = child.kill();
+                let _ = child.wait();
                 return Err("the sidecar did not start in time".into());
             }
         };
         let info: Value = serde_json::from_str(&first).map_err(|e| format!("sidecar info: {e}"))?;
         let program = info["guest_elf_sha256"].as_str().ok_or("sidecar did not report its program")?.to_string();
         if let Some(pinned) = PROGRAM.filter(|p| *p != program) {
+            let _ = child.kill();
+            let _ = child.wait();
             return Err(format!("the sidecar proves program {program}, the protocol pins {pinned}"));
         }
         Ok(Sidecar { io: Mutex::new(Io { child, stdin, lines }), dir: dir.to_path_buf(), program })
@@ -99,6 +102,7 @@ impl Sidecar {
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 // Hung: stop it so the next request starts a fresh one.
                 let _ = io.child.kill();
+                let _ = io.child.wait();
                 return Err("the sidecar exited (no answer in time)".into());
             }
             Err(_) => return Err("the sidecar exited".into()),
@@ -143,6 +147,16 @@ impl Sidecar {
 fn unique() -> String {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     format!("{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+}
+
+impl Drop for Sidecar {
+    /// A replaced or dropped sidecar is stopped and reaped (no stray processes).
+    fn drop(&mut self) {
+        if let Ok(io) = self.io.get_mut() {
+            let _ = io.child.kill();
+            let _ = io.child.wait();
+        }
+    }
 }
 
 fn from_hex32(s: &str) -> Result<[u8; 32], String> {

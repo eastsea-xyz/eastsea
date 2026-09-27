@@ -82,6 +82,11 @@ pub fn target_size(pool: usize) -> usize {
 /// draw (at least one), members that are not candidates leave first. None when
 /// the pool is too small or nothing changes. `candidate(key)` is the operator
 /// of a registered voting key (None: not registered).
+///
+/// The operator is the address that registered the key, so the cap binds an
+/// account, not a person: one owner using many addresses is limited only by
+/// what makes each voting key cost something (one per Mac via DeviceCheck, at
+/// most 16 new per epoch, a day of unbroken liveness before being drawn).
 pub fn draw(pool: &[(String, String)], seed: &[u8], candidate: impl Fn(&str) -> Option<String>, running: &Committee) -> Option<Vec<(String, String)>> {
     if running.members.is_empty() || pool.len() < MIN_OPEN_COMMITTEE {
         return None;
@@ -112,7 +117,20 @@ pub fn draw(pool: &[(String, String)], seed: &[u8], candidate: impl Fn(&str) -> 
     let shrink = budget.saturating_sub(swaps).min(outgoing.len() - swaps).min(n.saturating_sub(selected.len().max(MIN_OPEN_COMMITTEE)));
     let leaving: Vec<&String> = outgoing.iter().take(swaps + shrink).map(|(k, _)| k).collect();
     let mut next: Vec<(String, String)> = running.members.iter().filter(|(k, _)| !leaving.contains(&k)).cloned().collect();
-    next.extend(incoming.iter().take(swaps + grow).map(|m| (*m).clone()));
+    // The cap counts the seats an operator keeps too: an incoming key is added
+    // only while its operator holds fewer than `cap` seats in the new set.
+    let op = |k: &str| candidate(k).unwrap_or_else(|| k.to_string());
+    let mut held: std::collections::HashMap<String, usize> = Default::default();
+    for (k, _) in &next {
+        *held.entry(op(k)).or_default() += 1;
+    }
+    for m in incoming.iter().take(swaps + grow) {
+        let n = held.entry(op(&m.0)).or_default();
+        if *n < cap {
+            *n += 1;
+            next.push((*m).clone());
+        }
+    }
     let changed = next.len() != n || next.iter().any(|(k, _)| !running.has(k));
     (next.len() >= MIN_OPEN_COMMITTEE && changed).then_some(next)
 }
@@ -186,6 +204,20 @@ mod tests {
     fn draw_at(s: &WorldState, epoch: u64, seed: &[u8], set: &Committee) -> Option<Vec<(String, String)>> {
         let ops = operators(s);
         draw(&eligible(s, epoch, 0), seed, |k| ops.get(k).cloned(), set)
+    }
+
+    #[test]
+    fn the_cap_counts_the_seats_an_operator_already_holds() {
+        // Running {1(whale), 100, 101, 102}; the pool is mostly the whale's: it may not gain a second seat.
+        let pool: Vec<(String, String)> = (1..=16u8).map(|i| (key(i), format!("node{i}"))).collect();
+        let op = |k: &str| Some(if k <= key(12).as_str() { "0xwhale".to_string() } else { k.to_string() });
+        let set = running(&[1, 100, 101, 102]);
+        for seed in [b"a".as_slice(), b"b", b"c", b"d", b"e", b"f", b"g"] {
+            if let Some(next) = draw(&pool, seed, op, &set) {
+                let whale = next.iter().filter(|(k, _)| op(k).as_deref() == Some("0xwhale")).count();
+                assert!(whale <= 1, "{whale} whale seats of {}", next.len());
+            }
+        }
     }
 
     #[test]

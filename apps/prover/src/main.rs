@@ -102,9 +102,11 @@ fn serve() -> Result<Value, BoxError> {
         if line.trim().is_empty() {
             continue;
         }
-        let reply = match handle(&engine, &line) {
-            Ok(v) => with_ok(v),
-            Err(e) => json!({ "ok": false, "error": e.to_string() }),
+        // One bad request never takes the long-lived sidecar down.
+        let reply = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handle(&engine, &line))) {
+            Ok(Ok(v)) => with_ok(v),
+            Ok(Err(e)) => json!({ "ok": false, "error": e.to_string() }),
+            Err(_) => json!({ "ok": false, "error": "request panicked" }),
         };
         println!("{reply}");
     }

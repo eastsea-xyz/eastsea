@@ -30,7 +30,7 @@ impl Engine {
         let input = std::fs::read(input_path).map_err(|e| format!("read {input_path}: {e}"))?;
         // Native pre-check: reject a bad input in milliseconds instead of after
         // a full proof, and cross-check the guest's answer afterwards.
-        let native = native_commitment(&input)?;
+        let native = guarded(|| native_commitment(&input))?;
         let proved = guarded(|| program::prove(&self.pp, input))?;
         if proved.commitment != native {
             return Err(format!(

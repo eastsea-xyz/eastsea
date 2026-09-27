@@ -67,7 +67,7 @@ struct SettingsView: View {
             Toggle("Only while on the power adapter", isOn: $node.onlyOnPower)
                 .help("On a laptop, pause the node on battery and resume on power.")
             Toggle("Open Aether at login", isOn: Binding(get: { node.startAtLogin }, set: { node.startAtLogin = $0 }))
-            Toggle("Prove blocks on this Mac's GPU", isOn: Binding(get: { node.prove }, set: {
+            Toggle("Prove blocks with Metal on this Mac's GPU", isOn: Binding(get: { node.prove }, set: {
                 if $0 { node.proveAddress = model.address }
                 node.prove = $0
             }))

@@ -14,6 +14,10 @@ enum VotingRules {
     static let minStreakEpochs: UInt64 = 24
     /// Registered Macs needed before the network draws a voting set from them.
     static let minCandidates: UInt32 = 4
+    /// Mainnet: block rewards stay off until this many different operators vote.
+    static let mainnetIssuanceOperators = 16
+    /// Said the same way everywhere an early participant looks.
+    static let mainnetRewardsRule = "On the future mainnet there is no token sale and no founder share. Block rewards stay off until \(mainnetIssuanceOperators) different operators are voting: until then nobody, the founder included, earns anything. Joining early only puts your Mac ahead in the draw."
 }
 
 private struct Bullet: View {
@@ -41,6 +45,7 @@ struct TermsSheet: View {
                 Bullet(icon: "flask", text: "Aether is experimental research software running on a test network. It is provided as is, without any warranty, and has not been audited.")
                 Bullet(icon: "drop", text: "AETH on this testnet comes free from the faucet and does not carry over to any future network. Nothing here promises a price, a return or a way to cash out.")
                 Bullet(icon: "person.fill.checkmark", text: "You use Aether, and run its node, at your own risk and responsibility, including following the laws where you live.")
+                Bullet(icon: "person.3.fill", text: VotingRules.mainnetRewardsRule)
                 Bullet(icon: "key.fill", text: "Your key stays on this device. If you lose the device and have not set up a recovery key, nobody can restore the account.")
                 Link("Read the full terms and disclaimer", destination: Terms.disclaimerURL).font(.callout)
                 HStack {
@@ -72,6 +77,7 @@ struct VotingNodeInvite: View {
             Bullet(icon: "clock", text: "Your Mac proves it is online every hour. After \(VotingRules.minStreakEpochs) hours in a row it can be drawn to sign blocks.")
             Bullet(icon: "bolt", text: "Keep Aether running. A signing Mac that goes offline hands its seat to the next one. It uses some network, CPU and power.")
             Bullet(icon: "iphone.and.arrow.forward", text: "Registration uses Apple DeviceCheck: one Mac, one voting node. Touch ID signs it.")
+            Bullet(icon: "person.3.fill", text: VotingRules.mainnetRewardsRule)
             Bullet(icon: "person.fill.checkmark", text: "Running a voting node is your choice and your responsibility. You can turn the node off anytime.")
             HStack {
                 Button("Not now", action: later)

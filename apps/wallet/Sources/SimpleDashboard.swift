@@ -411,6 +411,8 @@ private struct VotingNodeRow: View {
                 case nil:
                     EmptyView()
                 }
+                Text("Mainnet: no block rewards until \(VotingRules.mainnetIssuanceOperators) different operators vote. No sale, no founder share.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             if node.voting?.registered == false, model.registration != .working {

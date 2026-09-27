@@ -1,0 +1,26 @@
+[package]
+name = "aether-wasm"
+description = "Transaction building for browsers (the Aether extension wallet): addresses, envelopes, low-s P-256 signatures"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+aether-types.workspace = true
+aether-crypto.workspace = true
+aether-execution = { path = "../execution", default-features = false }
+alloy-primitives.workspace = true
+serde_json.workspace = true
+p256.workspace = true
+wasm-bindgen = "0.2"
+
+# Randomness is never used for signing here (the browser's WebCrypto signs), but
+# dependencies link getrandom; in a browser it comes from crypto.getRandomValues.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
+getrandom03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
+getrandom04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }

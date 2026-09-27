@@ -351,16 +351,12 @@ pub fn prepare_batch(p256_public_key: Vec<u8>, payments: Vec<Payment>) -> R<Prep
         })
         .collect::<R<Vec<_>>>()?;
     prepare(&p256_public_key, |from| {
-        let code = call("eth_getCode", json!([from]))?;
-        let mut designator = String::from("0xef0100");
-        designator.push_str(&hex_lower(aether_execution::AETHER_ACCOUNT.as_slice()));
-        let delegated = code.as_str().is_some_and(|c| c.eq_ignore_ascii_case(&designator));
         Ok(EvmCall {
             to: Some(from),
             value: U256::ZERO,
             input: aether_execution::encode_execute(&calls),
             gas_limit: 60_000 + 40_000 * calls.len() as u64,
-            delegate: (!delegated).then_some(aether_execution::AETHER_ACCOUNT),
+            delegate: Some(aether_execution::AETHER_ACCOUNT),
         })
     })
 }
@@ -603,11 +599,6 @@ fn parse_code(code: &str) -> R<([u8; 32], [u8; 32])> {
     Ok((b[..32].try_into().expect("32"), b[32..].try_into().expect("32")))
 }
 
-fn designated(from: Address) -> R<bool> {
-    let code = call("eth_getCode", json!([from]))?;
-    Ok(code.as_str().is_some_and(|c| c.eq_ignore_ascii_case(&format!("0xef0100{}", hex_lower(aether_execution::AETHER_ACCOUNT.as_slice())))))
-}
-
 /// A storage slot of `account`, proven against a certified state root.
 fn verified_slot(account: Address, slot: U256, set: &ValidatorSet) -> R<U256> {
     let v = call("aether_getStorage", json!([account, slot]))?;
@@ -624,13 +615,12 @@ fn verified_slot(account: Address, slot: U256, set: &ValidatorSet) -> R<U256> {
 pub fn prepare_set_recovery_key(p256_public_key: Vec<u8>, recovery_code: String) -> R<PreparedTx> {
     let (x, y) = parse_code(&recovery_code)?;
     prepare(&p256_public_key, |from| {
-        let delegated = designated(from)?;
         Ok(EvmCall {
             to: Some(from),
             value: U256::ZERO,
             input: aether_execution::encode_execute(&[(from, U256::ZERO, aether_execution::encode_set_guardian(x, y))]),
             gas_limit: 300_000,
-            delegate: (!delegated).then_some(aether_execution::AETHER_ACCOUNT),
+            delegate: Some(aether_execution::AETHER_ACCOUNT),
         })
     })
 }
@@ -655,13 +645,12 @@ pub struct RecoveryStatus {
 pub fn prepare_add_recovery_key(p256_public_key: Vec<u8>, recovery_code: String) -> R<PreparedTx> {
     let (x, y) = parse_code(&recovery_code)?;
     prepare(&p256_public_key, |from| {
-        let delegated = designated(from)?;
         Ok(EvmCall {
             to: Some(from),
             value: U256::ZERO,
             input: aether_execution::encode_execute(&[(from, U256::ZERO, aether_execution::account::encode_add_guardian(x, y))]),
             gas_limit: 300_000,
-            delegate: (!delegated).then_some(aether_execution::AETHER_ACCOUNT),
+            delegate: Some(aether_execution::AETHER_ACCOUNT),
         })
     })
 }
@@ -779,7 +768,7 @@ pub fn prepare_cancel_recovery(p256_public_key: Vec<u8>) -> R<PreparedTx> {
             value: U256::ZERO,
             input: aether_execution::encode_execute(&[(from, U256::ZERO, acct::encode_cancel_recovery())]),
             gas_limit: 200_000,
-            delegate: None,
+            delegate: Some(aether_execution::AETHER_ACCOUNT),
         })
     })
 }
@@ -794,7 +783,7 @@ pub fn prepare_remove_recovery_keys(p256_public_key: Vec<u8>) -> R<PreparedTx> {
             value: U256::ZERO,
             input: aether_execution::encode_execute(&[(from, U256::ZERO, aether_execution::encode_set_guardian([0; 32], [0; 32]))]),
             gas_limit: 300_000,
-            delegate: None,
+            delegate: Some(aether_execution::AETHER_ACCOUNT),
         })
     })
 }
@@ -900,7 +889,7 @@ pub fn prepare_set_session(owner_public_key: Vec<u8>, settings: SessionSettings,
     let pk = p256_key(&owner_public_key)?;
     let owner = address_of(&pk).map_err(|e| WalletError::Invalid(e.to_string()))?;
     let set = trusted_set(validators)?;
-    let existing = if designated(owner)? { verified_slot(owner, slots::session_count(), &set)?.to::<u64>() } else { 0 };
+    let existing = verified_slot(owner, slots::session_count(), &set)?.to::<u64>();
     let mut calls: Vec<aether_execution::AccountCall> = (0..existing).map(|_| (owner, U256::ZERO, acct::encode_remove_session(0))).collect();
     calls.push((owner, U256::ZERO, acct::encode_add_session(x, y, &limits)));
     if !gas.is_zero() {
@@ -912,7 +901,7 @@ pub fn prepare_set_session(owner_public_key: Vec<u8>, settings: SessionSettings,
             value: U256::ZERO,
             input: aether_execution::encode_execute(&calls),
             gas_limit: 400_000 + 60_000 * calls.len() as u64 + 25_000 * limits.allow.len() as u64,
-            delegate: (!designated(from)?).then_some(aether_execution::AETHER_ACCOUNT),
+            delegate: Some(aether_execution::AETHER_ACCOUNT),
         })
     })
 }

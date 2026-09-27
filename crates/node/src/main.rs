@@ -669,16 +669,13 @@ fn main() {
         Cmd::Batch { rpc, from_dev, to, value, wait } => (|| {
             let signer = P256Signer::from_seed(&dev_seed(from_dev)).map_err(|e| e.to_string())?;
             let from = aether_crypto::address_of(&signer.public_key()).map_err(|e| e.to_string())?;
-            let code = call(&rpc, "eth_getCode", json!([from]))?;
-            let designator = format!("0xef0100{}", hex::encode(aether_execution::AETHER_ACCOUNT.as_slice()));
-            let delegated = code.as_str().is_some_and(|c| c.eq_ignore_ascii_case(&designator));
             let calls: Vec<_> = to.iter().map(|a| (*a, value, Bytes::new())).collect();
             let c = EvmCall {
                 to: Some(from),
                 value: U256::ZERO,
                 input: aether_execution::encode_execute(&calls),
                 gas_limit: 60_000 + 40_000 * calls.len() as u64,
-                delegate: (!delegated).then_some(aether_execution::AETHER_ACCOUNT),
+                delegate: Some(aether_execution::AETHER_ACCOUNT),
             };
             submit(&rpc, from_dev, None, c, wait).map(|_| ())
         })(),
@@ -697,7 +694,7 @@ fn main() {
                 value: U256::ZERO,
                 input: aether_execution::encode_execute(&[(me, U256::ZERO, set)]),
                 gas_limit: 500_000,
-                delegate: (!is_delegated(&rpc, me)?).then_some(aether_execution::AETHER_ACCOUNT),
+                delegate: Some(aether_execution::AETHER_ACCOUNT),
             };
             println!("{} recovery device(s), {threshold} must sign, {delay} s delay", keys.len());
             submit(&rpc, from_dev, None, c, true).map(|_| ())
@@ -1581,11 +1578,6 @@ fn pretty(v: &Value) -> String {
 fn dev_address(dev: u8) -> Result<Address, String> {
     let s = P256Signer::from_seed(&dev_seed(dev)).map_err(|e| e.to_string())?;
     aether_crypto::address_of(&s.public_key()).map_err(|e| e.to_string())
-}
-
-fn is_delegated(rpc: &str, a: Address) -> Result<bool, String> {
-    let code = call(rpc, "eth_getCode", json!([a]))?;
-    Ok(code.as_str().is_some_and(|c| c.eq_ignore_ascii_case(&format!("0xef0100{}", hex::encode(aether_execution::AETHER_ACCOUNT.as_slice())))))
 }
 
 /// Fee caps from the node's next base fees: 2x headroom (~70 full blocks of

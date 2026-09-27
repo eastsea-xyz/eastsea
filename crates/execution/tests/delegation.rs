@@ -496,3 +496,15 @@ fn removing_every_recovery_key_also_drops_a_pending_recovery() {
     assert_eq!(rc.state.storage(&rc.s.a, slots::guardian_count()), U256::ZERO);
     assert!(!rc.relay(encode_execute_recovery(&calls), 1_100 + MIN_DELAY), "it can no longer run");
 }
+
+#[test]
+fn delegating_again_to_the_same_account_code_is_harmless() {
+    // Wallets always attach the delegation (they cannot trust an RPC's eth_getCode).
+    let s = setup();
+    let bob = Address::repeat_byte(0xb0);
+    let first = execute_block(&s.pre, &ctx(1), &[tx(&s, 0, batch(s.a, Some(AETHER_ACCOUNT), &[(bob, 5)]))]).unwrap();
+    assert!(first.receipts[0].success);
+    let again = execute_block(&first.state, &ctx(2), &[tx(&s, 2, batch(s.a, Some(AETHER_ACCOUNT), &[(bob, 7)]))]).unwrap();
+    assert!(again.receipts[0].success, "{:?}", again.receipts[0]);
+    assert_eq!(again.state.balance(&bob), U256::from(12u64));
+}

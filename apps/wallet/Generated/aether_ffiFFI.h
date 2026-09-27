@@ -315,6 +315,11 @@ RustBuffer uniffi_aether_ffi_fn_func_prepare_recovery_to(RustBuffer p256_public_
 RustBuffer uniffi_aether_ffi_fn_func_prepare_register_node(RustBuffer p256_public_key, RustBuffer device_token, RustBuffer validator_key, RustBuffer node_id, RustBuffer beaconer, RustBuffer ownership, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_REMOVE_RECOVERY_KEYS
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_REMOVE_RECOVERY_KEYS
+RustBuffer uniffi_aether_ffi_fn_func_prepare_remove_recovery_keys(RustBuffer p256_public_key, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_SESSION_PAYMENT
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_SESSION_PAYMENT
 RustBuffer uniffi_aether_ffi_fn_func_prepare_session_payment(RustBuffer account, RustBuffer payments, uint32_t validators, RustCallStatus *_Nonnull out_status
@@ -747,6 +752,12 @@ uint16_t uniffi_aether_ffi_checksum_func_prepare_recovery_to(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_REGISTER_NODE
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_REGISTER_NODE
 uint16_t uniffi_aether_ffi_checksum_func_prepare_register_node(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_REMOVE_RECOVERY_KEYS
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_REMOVE_RECOVERY_KEYS
+uint16_t uniffi_aether_ffi_checksum_func_prepare_remove_recovery_keys(void
     
 );
 #endif

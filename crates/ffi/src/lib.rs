@@ -784,6 +784,21 @@ pub fn prepare_cancel_recovery(p256_public_key: Vec<u8>) -> R<PreparedTx> {
     })
 }
 
+/// Remove every recovery key and any pending recovery with them (e.g. a
+/// recovery device was lost or stolen). Trusted keys are then added again.
+#[uniffi::export]
+pub fn prepare_remove_recovery_keys(p256_public_key: Vec<u8>) -> R<PreparedTx> {
+    prepare(&p256_public_key, |from| {
+        Ok(EvmCall {
+            to: Some(from),
+            value: U256::ZERO,
+            input: aether_execution::encode_execute(&[(from, U256::ZERO, aether_execution::encode_set_guardian([0; 32], [0; 32]))]),
+            gas_limit: 300_000,
+            delegate: None,
+        })
+    })
+}
+
 fn normalize_p256(signature: &[u8]) -> R<Vec<u8>> {
     let sig = p256::ecdsa::Signature::from_slice(signature).map_err(|_| WalletError::Invalid("signature must be 64-byte r‖s".into()))?;
     Ok(sig.normalize_s().to_bytes().to_vec())

@@ -206,7 +206,11 @@ private struct IncomingRecoveryAlert: View {
                         .font(.callout).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Cancel it") { model.cancelIncomingRecovery() }.buttonStyle(.borderedProminent).tint(.orange).disabled(model.busy)
+                VStack(alignment: .trailing, spacing: 6) {
+                    Button("Cancel it") { model.cancelIncomingRecovery() }.buttonStyle(.borderedProminent).tint(.orange).disabled(model.busy)
+                    // A recovery you did not start means a recovery key is in other hands.
+                    Button("Cancel and remove all recovery keys") { model.removeRecoveryKeys() }.font(.caption).disabled(model.busy)
+                }
             }
             .padding(16)
             .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -749,6 +753,9 @@ private struct RecoveryPanel: View {
                 TextField("Paste the other device's code", text: $model.guardianInput).textFieldStyle(.roundedBorder).font(.caption.monospaced())
                 Button("Trust it") { model.setRecoveryKey() }.buttonStyle(.borderedProminent).disabled(model.busy || model.guardianInput.isEmpty)
             }
+            Button("Remove all my recovery devices and words") { model.removeRecoveryKeys() }
+                .font(.caption).disabled(model.busy)
+                .help("Use this if a recovery device or your recovery words may be in someone else's hands, then add trusted ones again.")
             Divider()
             step(2, "This device's code", "Give it to someone who wants this device as their recovery device.")
             HStack {

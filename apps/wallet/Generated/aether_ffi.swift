@@ -1990,6 +1990,18 @@ public func prepareRegisterNode(p256PublicKey: Data, deviceToken: String, valida
     )
 })
 }
+/**
+ * Remove every recovery key and any pending recovery with them (e.g. a
+ * recovery device was lost or stolen). Trusted keys are then added again.
+ */
+public func prepareRemoveRecoveryKeys(p256PublicKey: Data)throws  -> PreparedTx  {
+    return try  FfiConverterTypePreparedTx_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_prepare_remove_recovery_keys(
+        FfiConverterData.lower(p256PublicKey),uniffiCallStatus
+    )
+})
+}
 public func prepareSessionPayment(account: String, payments: [Payment], validators: UInt32)throws  -> SessionRequest  {
     return try  FfiConverterTypeSessionRequest_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
         uniffiCallStatus in
@@ -2239,6 +2251,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_prepare_register_node() != 54988) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_prepare_remove_recovery_keys() != 27224) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_prepare_session_payment() != 52994) {

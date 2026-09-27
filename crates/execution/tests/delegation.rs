@@ -468,3 +468,31 @@ fn add_guardian_appends_and_keeps_threshold_and_delay() {
     let again = execute_block(&st.state, &ctx(4), &[tx(&s, 4, call(encode_add_guardian(k3.0, k3.1), None))]).unwrap();
     assert!(!again.receipts[0].success, "duplicate guardian");
 }
+
+#[test]
+fn removing_every_recovery_key_also_drops_a_pending_recovery() {
+    let phone = P256Signer::from_seed(&seed(2)).unwrap();
+    let mut rc = Recovery::new(&[&phone], 1, MIN_DELAY);
+    let calls: Vec<AccountCall> = vec![(Address::repeat_byte(0x5a), U256::from(1u64), Bytes::new())];
+    let sigs = rc.sigs(&[(0, &phone)], 0, &calls);
+    assert!(rc.relay(encode_propose_recovery(&calls, &sigs), 1_100));
+    assert!(!rc.state.storage(&rc.s.a, slots::pending()).is_zero());
+    // The owner removes every recovery key (what the wallet's "remove all" sends).
+    let t = tx(
+        &rc.s,
+        2,
+        EvmCall {
+            to: Some(rc.s.a),
+            value: U256::ZERO,
+            input: encode_execute(&[(rc.s.a, U256::ZERO, encode_set_guardian([0; 32], [0; 32]))]),
+            gas_limit: 300_000,
+            delegate: None,
+        },
+    );
+    let out = execute_block(&rc.state, &at(3, 1_200), &[t]).unwrap();
+    assert!(out.receipts[0].success, "{:?}", out.receipts[0]);
+    rc.state = out.state;
+    assert!(rc.state.storage(&rc.s.a, slots::pending()).is_zero(), "the pending recovery is gone");
+    assert_eq!(rc.state.storage(&rc.s.a, slots::guardian_count()), U256::ZERO);
+    assert!(!rc.relay(encode_execute_recovery(&calls), 1_100 + MIN_DELAY), "it can no longer run");
+}

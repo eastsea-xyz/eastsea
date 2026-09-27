@@ -202,6 +202,24 @@ final class WalletModel: ObservableObject {
         }
     }
 
+    /// Remove every recovery key (and any pending recovery with them), e.g. when a
+    /// recovery device or the recovery words may be in someone else's hands.
+    /// Trusted devices or new words are then added again.
+    func removeRecoveryKeys() {
+        guard let enclave else { return }
+        let pk = enclave.publicKey
+        busy = true
+        Task.detached {
+            do {
+                let prepared = try prepareRemoveRecoveryKeys(p256PublicKey: pk)
+                let sig = try enclave.sign(prepared.signingMessage)
+                let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
+                await MainActor.run { self.incomingRecovery = nil }
+                await self.track(h, label: "Removed every recovery key", item: ActivityItem(kind: .security, title: "Recovery keys removed", amount: nil))
+            } catch { await MainActor.run { self.note("Remove recovery keys failed: \(error)"); self.busy = false } }
+        }
+    }
+
     #if os(macOS)
     /// Register this Mac as a voting node, operated by this wallet (one Touch ID).
     /// Apple's DeviceCheck token proves it is a real Mac that never registered

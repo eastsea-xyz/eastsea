@@ -148,6 +148,7 @@ struct DeveloperView: View {
                             .font(.caption).foregroundStyle(.orange)
                         Spacer()
                         Button("Cancel it") { model.cancelIncomingRecovery() }.disabled(model.busy)
+                        Button("Cancel and remove all recovery keys") { model.removeRecoveryKeys() }.disabled(model.busy)
                     }
                 }
             }

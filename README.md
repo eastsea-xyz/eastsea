@@ -32,6 +32,15 @@ Get the latest build from [Releases](https://github.com/kjaylee/aether-node/rele
   - `aether-agent` gives Claude Code, Codex and any MCP client a wallet with spending limits enforced on chain. Only you can change the limits, with Touch ID.
   - In the app: Aether ▸ Install Command-Line Tools…, then `aether-agent init` and `aether-agent setup all --apply`.
 
+## How mainnet will launch
+
+Read this before you join. It is the same in the app.
+
+- **No token sale, no premine, no founder share.** Every AETH on mainnet comes from block rewards, under the same rules for everyone.
+- **Block rewards stay off until 16 different operators are voting.** Until then nobody, the founder included, earns anything. The chain turns rewards on by itself; nobody signs for it.
+- **Joining early only puts your Mac ahead in the draw.** Voting Macs are drawn by how long they have been online without a break. There are no airdrops or referral rewards.
+- **Mainnet is a new network.** Testnet AETH does not carry over.
+
 ## Source code
 
 This repository used to hold an early prototype. It has been retired and does not describe Aether today.

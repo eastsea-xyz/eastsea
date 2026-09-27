@@ -96,7 +96,7 @@ impl Snapshot {
     /// Write the checked snapshot as the store's checkpoint; `Chain::open` then resumes from it.
     /// Only certified facts are kept of block H's summary (hash, state root, fee
     /// excess); the rest is left empty rather than served unverified.
-    pub fn install(&self, store: &Store, state: &WorldState) -> Result<(), String> {
+    pub fn install(&self, store: &Store, state: &WorldState, cfg: &ChainConfig) -> Result<(), String> {
         let summary = BlockSummary {
             height: self.summary.height,
             hash: self.summary.hash.clone(),
@@ -114,6 +114,9 @@ impl Snapshot {
         if store.head().map_err(|e| e.to_string())?.is_some() {
             return Err("the store already holds a chain".into());
         }
+        // The data belongs to this network's genesis (Chain::open checks it).
+        let genesis = crate::block::Block::genesis(cfg.chain_id, cfg.genesis_state().root());
+        store.put_meta(crate::chain::GENESIS, &crate::chain::genesis_digest(&genesis)).map_err(|e| e.to_string())?;
         let digest: [u8; 32] = hex::decode(&self.summary.hash).ok().and_then(|b| b.try_into().ok()).ok_or("snapshot block hash")?;
         let diff = Journal { writes: self.entries.iter().map(|(k, v)| (*k, Some(*v))).collect(), codes: self.codes.clone() };
         store

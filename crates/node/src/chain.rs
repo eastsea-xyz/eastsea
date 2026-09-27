@@ -282,11 +282,13 @@ impl Chain {
     pub fn open(cfg: ChainConfig, store: Store) -> Result<(Self, Block), StoreError> {
         let (chain, genesis) = Self::new(cfg);
         // The store belongs to one genesis: refuse data of another instead of diverging from it.
-        let ours = digest_bytes(&genesis.digest());
+        let ours = genesis_digest(&genesis);
         match store.meta(GENESIS)? {
             Some(d) if d.as_slice() != ours.as_slice() => return Err(StoreError::OtherGenesis),
             Some(_) => {}
-            None => store.put_meta(GENESIS, &ours)?,
+            // Only a new store takes this genesis; an unmarked one with a chain is of unknown origin.
+            None if store.head()?.is_none() => store.put_meta(GENESIS, &ours)?,
+            None => return Err(StoreError::OtherGenesis),
         }
         let store = Arc::new(store);
         match store.load()? {
@@ -872,7 +874,12 @@ fn summary(block: &Block, e: &Executed, parent_state_root: B256) -> BlockSummary
 
 /// Store keys: the proposed voting set, the frozen draw pool, and the genesis the data belongs to.
 const PROPOSAL: &str = "proposal";
-const GENESIS: &str = "genesis";
+pub const GENESIS: &str = "genesis";
+
+/// The genesis block hash a store is marked with.
+pub fn genesis_digest(genesis: &Block) -> [u8; 32] {
+    digest_bytes(&genesis.digest())
+}
 const POOL: &str = "pool";
 
 /// The draw a block at `height` belongs to (draws start at multiples of epoch_blocks × draw_epochs).

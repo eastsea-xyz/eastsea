@@ -111,7 +111,7 @@ fn a_witness_missing_what_the_block_reads_gives_no_result() {
     no_code.codes.clear();
     let s = WorldState::from_witness(&no_code).unwrap();
     let out = std::panic::catch_unwind(|| execute_block_sequential(&s, &ctx(1), &txs).map(|o| o.state.root()));
-    assert!(!matches!(out, Ok(Ok(r)) if r == full.state.root()), "missing code cannot give the real post-state");
+    assert!(out.is_err(), "missing code stops execution instead of reading as empty");
 
     // A dropped stem changes the pre-state root (or is refused when read).
     witness.tree.stems.remove(0);

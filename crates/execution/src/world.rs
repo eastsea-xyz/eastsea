@@ -153,7 +153,13 @@ impl WorldState {
         if let Some(a) = &self.access {
             a.lock().expect("access log").codes.insert(*hash);
         }
-        self.codes.get(hash)
+        let code = self.codes.get(hash);
+        // A stateless state must hold every code the tree names that execution
+        // touches: missing code would silently read as empty (wrong post-state).
+        if code.is_none() && *hash != KECCAK_EMPTY && matches!(self.tree, Tree::Partial(_)) {
+            panic!("stateless witness does not include code {hash}");
+        }
+        code
     }
 
     /// The diff recorded since the last `clear_journal`.

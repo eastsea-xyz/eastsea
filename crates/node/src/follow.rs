@@ -187,7 +187,7 @@ pub async fn checkpoint(upstream: &Upstream, set: &ValidatorSet, cfg: &crate::ch
     }
     let next = next.ok_or(format!("no certified block {} after the snapshot", h + 1))?;
     let state = snap.check(&next, cfg, set.identity())?;
-    snap.install(store, &state)?;
+    snap.install(store, &state, cfg)?;
     info!(height = h, entries = snap.entries.len(), "checkpoint: started from a certified snapshot (history not replayed)");
     Ok(h)
 }

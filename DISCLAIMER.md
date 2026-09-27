@@ -1,6 +1,6 @@
 # Aether Node: Legal Disclaimer, Terms of Use, and Limitation of Liability
 
-**Last Updated:** September 16, 2026  
+**Last Updated:** September 28, 2026  
 **Primary Language:** English (Authoritative Version)  
 *(한국어 번역본은 본 문서 하단에 첨부되어 있습니다)*
 
@@ -8,7 +8,7 @@
 
 ## 1. Experimental Open-Source Software & Research Notice
 
-**Aether Node** (the "Software") is an open-source, decentralized, experimental peer-to-peer (P2P) research implementation of a distributed ledger architecture (incorporating Asynchronous DAG-BFT consensus, optimistic Block-STM execution, and cryptographic privacy primitives). 
+**Aether Node** (the "Software") is an open-source, decentralized, experimental peer-to-peer (P2P) research implementation of a distributed ledger architecture (a validator committee with BLS threshold finality, EVM-compatible execution, and on-device verification of balances). 
 
 The Software is distributed under the MIT / Apache 2.0 open-source licenses for scientific research, educational exploration, and software engineering development purposes. By downloading, compiling, executing, distributing, or interacting with the Software, you explicitly acknowledge and agree to all terms, disclaimers, and liability waivers set forth in this document. If you do not agree with these terms, do not install, run, or use the Software.
 
@@ -79,7 +79,7 @@ The regulatory status of peer-to-peer networking, cryptographic software, and di
 *(본 국문 번역본은 이용자의 이해를 돕기 위한 참고용이며, 법적 분쟁이나 해석의 불일치가 발생할 경우 상단의 영문 공식 원본이 법적으로 우선합니다.)*
 
 ### 1. 연구 및 오픈소스 목적 명시
-Aether Node는 분산 원장, 비동기 DAG-BFT 합의 및 병렬 실행 엔진을 연구·실증하기 위한 **비상업적 오픈소스 실험 소프트웨어**입니다. 본 소프트웨어를 다운로드, 설치, 실행하는 모든 이용자는 본 약관 및 면책 조항에 전적으로 동의한 것으로 간주됩니다.
+Aether Node는 분산 원장, 검증자 위원회의 BLS 임계 서명 확정과 기기 내 잔액 검증을 연구·실증하기 위한 **비상업적 오픈소스 실험 소프트웨어**입니다. 본 소프트웨어를 다운로드, 설치, 실행하는 모든 이용자는 본 약관 및 면책 조항에 전적으로 동의한 것으로 간주됩니다.
 
 ### 2. 가상자산 / 금융 투자 상품 비인가 고지
 * 본 소프트웨어 내에서 표시되는 "AETH", 검증 보상, 잔고 및 스마트 계약 상태는 합의 처리량과 트랜잭션 동시성을 측정하기 위한 **컴퓨팅 테스트 데이터에 불과하며, 어떠한 금전적·재산적 가치도 가지지 않습니다**.

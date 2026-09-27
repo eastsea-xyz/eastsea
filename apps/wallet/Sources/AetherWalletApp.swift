@@ -24,12 +24,19 @@ struct AetherWalletApp: App {
                 // Closing the window keeps Aether in the menu bar (the node keeps running).
                 .onDisappear { NSApp.setActivationPolicy(.accessory) }
                 .onOpenURL { model.open(url: $0) }
+                // aether:// links go to the open window instead of opening another one.
+                .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
             #else
-            ContentView().environmentObject(model)
+            ContentView()
+                .environmentObject(model)
+                .onOpenURL { model.open(url: $0) }
             #endif
         }
         #if os(macOS)
-        .windowResizability(.contentSize)
+        // Resizable from an iPhone-wide window up; the content sets the minimum.
+        .defaultSize(width: 1000, height: 720)
+        .windowResizability(.contentMinSize)
+        .handlesExternalEvents(matching: ["*"])
         .commands {
             CommandGroup(after: .appInfo) {
                 Button("Check for Updates…") { appDelegate.updater.checkForUpdates(nil) }

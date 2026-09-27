@@ -77,6 +77,8 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: Aether
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        # The aether:// URL scheme, merged into the generated Info.plist.
+        INFOPLIST_FILE: Info-ios.plist
         INFOPLIST_KEY_NSFaceIDUsageDescription: Sign transactions with your device's Secure Enclave key.
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
         TARGETED_DEVICE_FAMILY: "1"

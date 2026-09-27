@@ -10,6 +10,11 @@ struct SimpleDashboard: View {
     @EnvironmentObject var model: WalletModel
     @State private var page: Page? = .home
     @State private var sheet: Sheet?
+    #if os(macOS)
+    /// Narrow window (iPhone-like): the sidebar folds away and a toolbar picker switches pages.
+    @State private var compact = false
+    @State private var columns: NavigationSplitViewVisibility = .all
+    #endif
 
     enum Page: String, CaseIterable, Identifiable {
         case home = "Home", activity = "Activity", network = "Network", security = "Security"
@@ -48,26 +53,54 @@ struct SimpleDashboard: View {
 
     #if os(macOS)
     private var shell: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columns) {
             List(Page.allCases, selection: $page) { p in
                 Label(p.rawValue, systemImage: p.icon).tag(p)
             }
             .navigationSplitViewColumnWidth(min: 170, ideal: 190)
             .safeAreaInset(edge: .bottom) { SidebarStatus().padding(12) }
+            .toolbar(removing: compact ? .sidebarToggle : nil)
         } detail: {
             ScrollView {
-                pageView(page ?? .home).padding(28).frame(maxWidth: 820).frame(maxWidth: .infinity)
+                pageView(page ?? .home)
+                    .padding(compact ? 16 : 28)
+                    .frame(maxWidth: 820)
+                    .frame(maxWidth: .infinity)
             }
+            .measuringNarrowLayout()
             .navigationTitle(page?.rawValue ?? "Home")
+            .toolbar {
+                if compact {
+                    ToolbarItem(placement: .principal) { pagePicker }
+                }
+            }
         }
-        .frame(minWidth: 900, minHeight: 660)
+        .frame(minWidth: 380, minHeight: 520)
+        .onGeometryChange(for: Bool.self) { $0.size.width < LayoutWidth.compactWindow } action: { narrow in
+            compact = narrow
+            columns = narrow ? .detailOnly : .all
+        }
+    }
+
+    /// The sidebar's pages as a compact segmented control (narrow windows only).
+    private var pagePicker: some View {
+        Picker("Page", selection: Binding(get: { page ?? .home }, set: { page = $0 })) {
+            ForEach(Page.allCases) { p in
+                Image(systemName: p.icon).help(p.rawValue).tag(p)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize()
     }
     #else
     private var shell: some View {
         TabView(selection: Binding(get: { page ?? .home }, set: { page = $0 })) {
             ForEach(Page.allCases) { p in
                 NavigationStack {
-                    ScrollView { pageView(p).padding(16) }.navigationTitle(p == .home ? "" : p.rawValue)
+                    ScrollView { pageView(p).padding(16) }
+                        .measuringNarrowLayout()
+                        .navigationTitle(p == .home ? "" : p.rawValue)
                 }
                 .tabItem { Label(p.rawValue, systemImage: p.icon) }
                 .tag(p)
@@ -97,6 +130,7 @@ private struct HomePage: View {
     @EnvironmentObject var model: WalletModel
     @Binding var sheet: SimpleDashboard.Sheet?
     let showActivity: () -> Void
+    @Environment(\.narrowLayout) private var narrow
 
     private var balance: Double { model.account.flatMap { Double(Wei.format($0.balanceWei)) } ?? 0 }
 
@@ -104,7 +138,7 @@ private struct HomePage: View {
         VStack(spacing: 22) {
             IncomingRecoveryAlert()
             hero
-            HStack(spacing: 28) {
+            HStack(spacing: narrow ? 20 : 28) {
                 RoundAction(title: "Receive", icon: "qrcode") { sheet = .receive }.disabled(model.address.isEmpty)
                 RoundAction(title: "Send", icon: "paperplane.fill") { sheet = .send }.disabled(model.busy || model.account == nil)
                 RoundAction(title: "Get AETH", icon: "drop.fill") { model.faucet() }.disabled(model.busy || model.address.isEmpty)
@@ -136,8 +170,9 @@ private struct HomePage: View {
             } label: {
                 HStack(spacing: 6) {
                     Circle().fill(LinearGradient(colors: [.aether, .pink], startPoint: .topLeading, endPoint: .bottomTrailing)).frame(width: 20, height: 20)
-                    Text("Account 1").font(.callout.weight(.semibold))
+                    Text("Account 1").font(.callout.weight(.semibold)).lineLimit(1)
                     Text(Short.address(model.address)).font(.callout.monospaced()).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.middle)
                     Image(systemName: "doc.on.doc").font(.caption).foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 12).padding(.vertical, 6)
@@ -147,10 +182,12 @@ private struct HomePage: View {
             .help("Copy address")
             if model.account == nil {
                 // Loading: a soft shimmer where the balance will appear.
-                ShimmerBar().frame(width: 220, height: 52)
+                ShimmerBar().frame(maxWidth: 220).frame(height: 52)
             } else {
                 Text("\(Amount.text(balance)) AETH")
                     .font(.system(size: 52, weight: .bold, design: .rounded))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.4)
                     .contentTransition(.numericText())
             }
             VerifiedBadge()
@@ -168,6 +205,8 @@ private struct ActivityPage: View {
 private struct NetworkPage: View {
     @EnvironmentObject var model: WalletModel
 
+    @Environment(\.narrowLayout) private var narrow
+
     private var blockTime: String {
         let b = model.blocks.sorted { $0.height < $1.height }
         guard b.count > 1, let first = b.first, let last = b.last, last.timestampMs > first.timestampMs else { return "—" }
@@ -180,15 +219,16 @@ private struct NetworkPage: View {
             Card {
                 HStack(spacing: 16) {
                     Image(systemName: model.status == nil ? "antenna.radiowaves.left.and.right.slash" : "checkmark.circle.fill")
-                        .font(.system(size: 40)).foregroundStyle(model.status == nil ? Color.orange : Color.green)
+                        .font(.system(size: narrow ? 30 : 40)).foregroundStyle(model.status == nil ? Color.orange : Color.green)
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(model.status == nil ? "Connecting to Aether…" : "Connected to Aether").font(.title2.bold())
+                        Text(model.status == nil ? "Connecting to Aether…" : "Connected to Aether")
+                            .font(narrow ? .title3.bold() : .title2.bold())
                         Text("Found the validators on the public DHT. Your balance is checked on this device against their group signature.")
                             .font(.callout).foregroundStyle(.secondary)
                     }
                 }
             }
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 12)], spacing: 12) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: narrow ? 130 : 150), spacing: 12)], spacing: 12) {
                 Tile(value: model.status.map { "#\($0.height)" } ?? "—", label: "Latest block", icon: "cube")
                 Tile(value: "\(model.validators)", label: "Validators", icon: "person.3.fill")
                 Tile(value: blockTime, label: "Block time", icon: "timer")
@@ -206,22 +246,26 @@ private struct NetworkPage: View {
 /// Shown when someone started recovering THIS account: cancel it if it was not you.
 private struct IncomingRecoveryAlert: View {
     @EnvironmentObject var model: WalletModel
+    @Environment(\.narrowLayout) private var narrow
 
     var body: some View {
         if let r = model.incomingRecovery {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: "exclamationmark.shield.fill").font(.title).foregroundStyle(.orange)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Your recovery devices started moving your funds").font(.headline)
-                    Text("If this was not you, cancel it. It can run after \(Date(timeIntervalSince1970: TimeInterval(r.readyAt)).formatted(date: .abbreviated, time: .shortened)).")
-                        .font(.callout).foregroundStyle(.secondary)
+            AdaptiveStack(spacing: 12) {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: "exclamationmark.shield.fill").font(.title).foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Your recovery devices started moving your funds").font(.headline)
+                        Text("If this was not you, cancel it. It can run after \(Date(timeIntervalSince1970: TimeInterval(r.readyAt)).formatted(date: .abbreviated, time: .shortened)).")
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                Spacer()
-                VStack(alignment: .trailing, spacing: 6) {
+                VStack(alignment: narrow ? .leading : .trailing, spacing: 6) {
                     Button("Cancel it") { model.cancelIncomingRecovery() }.buttonStyle(.borderedProminent).tint(.orange).disabled(model.busy)
                     // A recovery you did not start means a recovery key is in other hands.
                     Button("Cancel and remove all recovery keys") { model.removeRecoveryKeys() }.font(.caption).disabled(model.busy)
                 }
+                .padding(.leading, narrow ? 40 : 0)
             }
             .padding(16)
             .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -252,6 +296,7 @@ private struct SecurityPage: View {
 /// Recovery words: 24 words that stand in for a recovery device.
 private struct PaperKeyPanel: View {
     @EnvironmentObject var model: WalletModel
+    @Environment(\.narrowLayout) private var narrow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -260,17 +305,23 @@ private struct PaperKeyPanel: View {
                 .font(.callout).foregroundStyle(.secondary)
             if let words = model.paperWords {
                 let list = words.split(separator: " ").map(String.init)
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: 4), alignment: .leading, spacing: 6) {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: narrow ? 2 : 4), alignment: .leading, spacing: 6) {
                     ForEach(Array(list.enumerated()), id: \.offset) { i, w in
-                        Text("\(i + 1). \(w)").font(.callout.monospaced())
+                        Text("\(i + 1). \(w)").font(.callout.monospaced()).lineLimit(1).minimumScaleFactor(0.7)
                     }
                 }
                 .padding(12)
                 .background(.background.tertiary, in: RoundedRectangle(cornerRadius: 10))
-                Text("Write them on paper, in order. Do not photograph or store them on this Mac.").font(.caption).foregroundStyle(.orange)
-                HStack {
-                    Button("I wrote them down: register") { model.registerPaperKey() }.buttonStyle(.borderedProminent).disabled(model.busy)
-                    Button("Cancel") { model.paperWords = nil }
+                Text("Write them on paper, in order. Do not photograph or store them on this device.").font(.caption).foregroundStyle(.orange)
+                ViewThatFits(in: .horizontal) {
+                    HStack {
+                        Button("I wrote them down: register") { model.registerPaperKey() }.buttonStyle(.borderedProminent).disabled(model.busy)
+                        Button("Cancel") { model.paperWords = nil }
+                    }
+                    VStack(alignment: .leading) {
+                        Button("I wrote them down: register") { model.registerPaperKey() }.buttonStyle(.borderedProminent).disabled(model.busy)
+                        Button("Cancel") { model.paperWords = nil }
+                    }
                 }
             } else {
                 Button("Create recovery words") { model.createPaperKey() }.disabled(model.busy)
@@ -322,7 +373,7 @@ private struct VotingNodeRow: View {
                 Text(title).font(.headline)
                 Text(detail).font(.callout).foregroundStyle(.secondary)
             }
-            Spacer()
+            .frame(maxWidth: .infinity, alignment: .leading)
             if node.voting?.registered == false {
                 Button("Join") { model.registerNode(candidate, node: node) }
                     .buttonStyle(.borderedProminent)
@@ -422,6 +473,7 @@ private struct Card<Content: View>: View {
 
 private struct BalanceCard: View {
     @EnvironmentObject var model: WalletModel
+    @Environment(\.narrowLayout) private var narrow
     @State private var range: Range = .day
 
     enum Range: String, CaseIterable, Identifiable {
@@ -458,19 +510,30 @@ private struct BalanceCard: View {
     var body: some View {
         Card {
             VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    change
-                    Spacer()
-                    Picker("Range", selection: $range) {
-                        ForEach(Range.allCases) { Text($0.rawValue).tag($0) }
+                if narrow {
+                    VStack(alignment: .leading, spacing: 10) {
+                        change
+                        rangePicker
                     }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .fixedSize()
+                } else {
+                    HStack {
+                        change
+                        Spacer()
+                        rangePicker
+                    }
                 }
-                chart.frame(height: 170)
+                chart.frame(height: narrow ? 140 : 170)
             }
         }
+    }
+
+    private var rangePicker: some View {
+        Picker("Range", selection: $range) {
+            ForEach(Range.allCases) { Text($0.rawValue).tag($0) }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize()
     }
 
     @ViewBuilder private var change: some View {
@@ -618,11 +681,11 @@ private struct ActivityRow: View {
         HStack(spacing: 12) {
             Image(systemName: icon.0).font(.title2).foregroundStyle(icon.1)
             VStack(alignment: .leading, spacing: 2) {
-                Text(item.title).font(.callout.weight(.medium))
+                Text(item.title).font(.callout.weight(.medium)).lineLimit(2)
                 Text(item.date, style: .relative).font(.caption).foregroundStyle(.secondary)
                     + Text(" ago").font(.caption).foregroundStyle(.secondary)
             }
-            Spacer()
+            Spacer(minLength: 8)
             VStack(alignment: .trailing, spacing: 2) {
                 if let a = item.amount {
                     Text("\(a >= 0 ? "+" : "")\(Amount.text(a))").font(.callout.weight(.semibold).monospacedDigit())
@@ -745,6 +808,7 @@ private struct SendSheet: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("To").font(.caption).foregroundStyle(.secondary)
                     Text(r.to).font(.body.monospaced()).textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
                     Text("Amount").font(.caption).foregroundStyle(.secondary).padding(.top, 6)
                     Text("\(r.amount) AETH").font(.title3.weight(.semibold).monospacedDigit())
                 }
@@ -791,7 +855,8 @@ private struct SendSheet: View {
             }
         }
         .padding(24)
-        .frame(minWidth: 420)
+        .macMinSize(width: 420)
+        .sheetScroll()
     }
 }
 
@@ -832,13 +897,16 @@ private struct CallSheet: View {
             }
         }
         .padding(24)
-        .frame(minWidth: 460)
+        .macMinSize(width: 460)
+        .sheetScroll()
     }
 
     private func row(_ k: String, _ v: String, mono: Bool = false) -> some View {
         HStack(alignment: .top) {
-            Text(k).foregroundStyle(.secondary).frame(width: 80, alignment: .leading)
+            Text(k).foregroundStyle(.secondary).frame(width: 72, alignment: .leading)
             Text(v).font(mono ? .body.monospaced() : .body).textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
         }.font(.callout)
     }
 }
@@ -866,7 +934,8 @@ private struct ConnectSheet: View {
             }
         }
         .padding(24)
-        .frame(minWidth: 420)
+        .macMinSize(width: 420)
+        .sheetScroll()
     }
 }
 
@@ -878,8 +947,9 @@ private struct ReceiveSheet: View {
     var body: some View {
         VStack(spacing: 16) {
             Text("Receive AETH").font(.title2.bold())
-            QRCode(text: model.address).frame(width: 200, height: 200)
+            QRCode(text: model.address).frame(maxWidth: 200, maxHeight: 200).aspectRatio(1, contentMode: .fit)
             Text(model.address).font(.callout.monospaced()).multilineTextAlignment(.center).textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
             HStack {
                 Button {
                     Clipboard.copy(model.address)
@@ -890,7 +960,8 @@ private struct ReceiveSheet: View {
             }
         }
         .padding(24)
-        .frame(minWidth: 380)
+        .macMinSize(width: 380)
+        .sheetScroll()
     }
 }
 
@@ -914,6 +985,7 @@ private struct RecoveryPanel: View {
             step(2, "This device's code", "Give it to someone who wants this device as their recovery device.")
             HStack {
                 Text(model.recoveryCode.isEmpty ? "…" : "\(model.recoveryCode.prefix(24))…").font(.caption.monospaced())
+                    .lineLimit(1).truncationMode(.middle)
                 Spacer()
                 Button { Clipboard.copy(model.recoveryCode) } label: { Label("Copy", systemImage: "doc.on.doc") }.disabled(model.recoveryCode.isEmpty)
             }

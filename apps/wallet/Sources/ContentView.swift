@@ -32,22 +32,40 @@ struct ContentView: View {
 struct DeveloperView: View {
     @EnvironmentObject var model: WalletModel
 
+    #if os(macOS)
+    /// Below this width the blocks panel moves under the wallet and the page scrolls.
+    @State private var stacked = false
+    #endif
+
     var body: some View {
         #if os(macOS)
-        HStack(alignment: .top, spacing: 16) {
-            VStack(alignment: .leading, spacing: 14) {
-                header
-                accountCard
-                sendCard
-                recoveryCard
-                activity
+        Group {
+            if stacked {
+                stackedLayout
+            } else {
+                HStack(alignment: .top, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        header
+                        accountCard
+                        sendCard
+                        recoveryCard
+                        activity
+                    }
+                    .frame(minWidth: 400)
+                    blocksPanel.frame(width: 300)
+                }
+                .padding(20)
             }
-            .frame(minWidth: 460)
-            blocksPanel.frame(width: 300)
         }
-        .padding(20)
-        .frame(minWidth: 800, minHeight: 620)
+        .frame(minWidth: 380, minHeight: 520)
+        .onGeometryChange(for: Bool.self) { $0.size.width < 760 } action: { stacked = $0 }
         #else
+        stackedLayout
+        #endif
+    }
+
+    /// One column: iPhone and narrow Mac windows.
+    private var stackedLayout: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 header
@@ -59,7 +77,6 @@ struct DeveloperView: View {
             }
             .padding(16)
         }
-        #endif
     }
 
     private var header: some View {
@@ -73,9 +90,11 @@ struct DeveloperView: View {
                 } else {
                     Text("connecting…").font(.caption).foregroundStyle(.secondary)
                 }
+                // Under the title (not beside it) so it stays readable in a narrow window.
+                Label(model.connectionInfo, systemImage: "network").font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle)
             }
-            Spacer()
-            Label(model.connectionInfo, systemImage: "network").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            Spacer(minLength: 0)
         }
     }
 
@@ -84,6 +103,7 @@ struct DeveloperView: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text(model.address.isEmpty ? "—" : model.address).font(.callout.monospaced()).textSelection(.enabled)
+                        .lineLimit(1).truncationMode(.middle)
                     Button { Clipboard.copy(model.address) }
                         label: { Image(systemName: "doc.on.doc") }.buttonStyle(.borderless)
                 }
@@ -122,6 +142,7 @@ struct DeveloperView: View {
                 HStack {
                     Text("This device's recovery-key code").font(.caption).foregroundStyle(.secondary)
                     Text(model.recoveryCode.isEmpty ? "…" : "\(model.recoveryCode.prefix(16))…").font(.caption.monospaced())
+                        .lineLimit(1).truncationMode(.middle)
                     Button {
                         Clipboard.copy(model.recoveryCode)
                         model.note("Recovery-key code copied. Give it to the account owner who wants this Mac as their recovery key.")

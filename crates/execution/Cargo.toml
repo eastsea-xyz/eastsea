@@ -29,3 +29,4 @@ hash-poseidon2 = ["aether-hash/poseidon2-state"]
 
 [dev-dependencies]
 proptest.workspace = true
+postcard = { version = "1", features = ["alloc"] }

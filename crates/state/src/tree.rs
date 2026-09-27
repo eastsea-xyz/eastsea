@@ -16,7 +16,7 @@ pub type Stem = [u8; 31];
 pub type TreeKey = [u8; 32];
 pub type Value = [u8; 32];
 
-const STEM_BITS: usize = 248;
+pub(crate) const STEM_BITS: usize = 248;
 const SUBTREE_DEPTH: usize = 8;
 
 pub fn split_key(k: &TreeKey) -> (Stem, u8) {
@@ -25,11 +25,11 @@ pub fn split_key(k: &TreeKey) -> (Stem, u8) {
     (stem, k[31])
 }
 
-fn stem_bit(stem: &Stem, depth: usize) -> bool {
+pub(crate) fn stem_bit(stem: &Stem, depth: usize) -> bool {
     (stem[depth / 8] >> (7 - depth % 8)) & 1 == 1
 }
 
-fn compress_z<H: Hasher>(h: &H, l: &Digest, r: &Digest) -> Digest {
+pub(crate) fn compress_z<H: Hasher>(h: &H, l: &Digest, r: &Digest) -> Digest {
     if *l == ZERO && *r == ZERO {
         ZERO
     } else {
@@ -53,7 +53,7 @@ fn leaf_hash<H: Hasher>(h: &H, v: &Option<Value>) -> Digest {
     }
 }
 
-fn stem_node_hash<H: Hasher>(h: &H, stem: &Stem, subtree_root: &Digest) -> Digest {
+pub(crate) fn stem_node_hash<H: Hasher>(h: &H, stem: &Stem, subtree_root: &Digest) -> Digest {
     let mut buf = [0u8; 31 + 1 + 32];
     buf[..31].copy_from_slice(stem);
     buf[32..].copy_from_slice(subtree_root);
@@ -65,14 +65,14 @@ fn stem_node_hash<H: Hasher>(h: &H, stem: &Stem, subtree_root: &Digest) -> Diges
 /// root is computed over the present leaves only: O(values × 8), not 511
 /// hashes per write, and a copy moves only what is there.
 #[derive(Clone)]
-struct StemNode {
-    values: BTreeMap<u8, Value>,
+pub(crate) struct StemNode {
+    pub(crate) values: BTreeMap<u8, Value>,
     /// Hash of the 256-leaf subtree; recomputed on every write to this stem.
-    subtree_root: Digest,
+    pub(crate) subtree_root: Digest,
 }
 
 impl StemNode {
-    fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         StemNode { values: BTreeMap::new(), subtree_root: ZERO }
     }
 
@@ -89,7 +89,7 @@ impl StemNode {
         compress_z(h, &self.range_hash(h, lo, half), &self.range_hash(h, lo + half, half))
     }
 
-    fn root<H: Hasher>(&self, h: &H) -> Digest {
+    pub(crate) fn root<H: Hasher>(&self, h: &H) -> Digest {
         self.range_hash(h, 0, 256)
     }
 
@@ -106,7 +106,7 @@ impl StemNode {
 #[derive(Clone)]
 pub struct BinaryTree<H: Hasher> {
     hasher: H,
-    stems: BTreeMap<Stem, StemNode>,
+    pub(crate) stems: BTreeMap<Stem, StemNode>,
 }
 
 /// Proof that `key` holds `value` (Some) or is absent (None) under a root.
@@ -191,7 +191,7 @@ impl<H: Hasher> BinaryTree<H> {
         self.subtree(&stems, 0)
     }
 
-    fn subtree(&self, stems: &[(&Stem, &StemNode)], depth: usize) -> Digest {
+    pub(crate) fn subtree(&self, stems: &[(&Stem, &StemNode)], depth: usize) -> Digest {
         match stems {
             [] => ZERO,
             [(s, n)] => stem_node_hash(&self.hasher, s, &n.subtree_root),

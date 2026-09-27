@@ -5,6 +5,8 @@
 //! `layout` — EIP-7864 key derivation and account encoding (basic data, code
 //!            hash, storage slots, code chunks).
 //! `mmr`    — Merkle Mountain Range over block hashes (history root in every block).
+//! `witness` — stateless witness: the part of the tree a block touches, enough
+//!            to check the pre-state root and compute the post-state root.
 //! `repo`   — `StateRepository` trait and the in-memory reference implementation
 //!            that differential tests compare persistent engines against.
 
@@ -12,6 +14,8 @@ pub mod layout;
 pub mod mmr;
 pub mod repo;
 pub mod tree;
+pub mod witness;
 
 pub use repo::{MemRepo, StateRepository};
 pub use tree::{BinaryTree, Proof, ProofError, Stem, TreeKey, Value};
+pub use witness::{PartialTree, Witness, WitnessError};

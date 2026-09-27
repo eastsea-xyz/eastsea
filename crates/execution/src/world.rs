@@ -1,14 +1,14 @@
 //! World state on the EIP-7864 tree, exposed to revm as a `DatabaseRef`.
 
 use aether_state::layout::{basic_data_key, chunkify_code, code_chunk_key, code_hash_key, storage_slot_key, BasicData};
-use aether_state::{MemRepo, StateRepository};
+use aether_state::{MemRepo, PartialTree, StateRepository, TreeKey, Value};
 use aether_types::{Address, Bytes, B256, U256};
 use revm::bytecode::Bytecode;
 use revm::database_interface::{DBErrorMarker, DatabaseRef};
 use revm::primitives::KECCAK_EMPTY;
 use revm::state::{Account, AccountInfo};
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex};
 
 /// The chain's state hash (docs/design/00 D6): BLAKE3.
 pub use aether_hash::ChainHasher;
@@ -27,9 +27,61 @@ impl core::fmt::Display for StateError {
 impl std::error::Error for StateError {}
 impl DBErrorMarker for StateError {}
 
+/// The full tree (nodes), or only a stateless witness's part of it (provers).
+#[derive(Clone)]
+enum Tree {
+    Full(MemRepo<ChainHasher>),
+    Partial(PartialTree<ChainHasher>),
+}
+
+impl Tree {
+    fn get(&self, key: &TreeKey) -> Option<Value> {
+        match self {
+            Tree::Full(r) => r.get(key),
+            Tree::Partial(p) => p.get(key),
+        }
+    }
+    fn apply(&mut self, writes: &[(TreeKey, Option<Value>)]) {
+        match self {
+            Tree::Full(r) => r.apply(writes),
+            Tree::Partial(p) => p.apply(writes),
+        }
+    }
+    fn root(&self) -> aether_hash::Digest {
+        match self {
+            Tree::Full(r) => r.root(),
+            Tree::Partial(p) => p.root(),
+        }
+    }
+    fn hasher(&self) -> &ChainHasher {
+        match self {
+            Tree::Full(r) => r.hasher(),
+            Tree::Partial(p) => p.hasher(),
+        }
+    }
+}
+
+/// What execution touched: tree keys (reads and writes) and code by hash.
+#[derive(Default)]
+struct Access {
+    keys: BTreeSet<TreeKey>,
+    codes: BTreeSet<B256>,
+}
+
+/// Everything a prover needs of the pre-state to re-execute a block: the
+/// touched part of the tree and the code it runs (checked against the tree's
+/// code hashes when used).
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct StateWitness {
+    pub tree: aether_state::Witness,
+    pub codes: Vec<Bytes>,
+}
+
 #[derive(Clone)]
 pub struct WorldState {
-    tree: MemRepo<ChainHasher>,
+    tree: Tree,
+    /// Set while recording what execution touches (to build a stateless witness).
+    access: Option<Arc<Mutex<Access>>>,
     /// Bytecode by keccak code hash. The tree holds code chunks for proofs;
     /// this index serves execution.
     codes: Arc<BTreeMap<B256, Bytes>>,
@@ -47,7 +99,7 @@ pub struct Journal {
 
 impl Default for WorldState {
     fn default() -> Self {
-        WorldState { tree: MemRepo::new(ChainHasher::new()), codes: Arc::new(BTreeMap::new()), journal: Journal::default() }
+        WorldState { tree: Tree::Full(MemRepo::new(ChainHasher::new())), access: None, codes: Arc::new(BTreeMap::new()), journal: Journal::default() }
     }
 }
 
@@ -58,6 +110,50 @@ impl WorldState {
         let writes: Vec<_> = entries.into_iter().map(|(k, v)| (k, Some(v))).collect();
         s.tree.apply(&writes);
         s
+    }
+
+    /// A prover's pre-state: only the witness's part of the tree. Its root equals
+    /// the full state's root if the witness is genuine; reading or writing
+    /// outside it panics. Code is indexed by its own keccak hash.
+    pub fn from_witness(w: &StateWitness) -> Result<Self, aether_state::WitnessError> {
+        let tree = Tree::Partial(PartialTree::new(ChainHasher::new(), &w.tree)?);
+        let codes = w.codes.iter().map(|c| (revm::primitives::keccak256(c), c.clone())).collect();
+        Ok(WorldState { tree, access: None, codes: Arc::new(codes), journal: Journal::default() })
+    }
+
+    /// Start recording every tree key and code hash that execution on this
+    /// state (and its copies) touches.
+    pub fn record_access(&mut self) {
+        self.access = Some(Arc::new(Mutex::new(Access::default())));
+    }
+
+    /// The stateless witness of this (full) state for what `touched` recorded.
+    pub fn witness_for(&self, touched: &WorldState) -> StateWitness {
+        let Tree::Full(repo) = &self.tree else { panic!("a stateless state cannot build witnesses") };
+        let (keys, hashes) = touched
+            .access
+            .as_ref()
+            .map(|a| {
+                let a = a.lock().expect("access log");
+                (a.keys.iter().copied().collect::<Vec<_>>(), a.codes.clone())
+            })
+            .unwrap_or_default();
+        let codes = hashes.iter().filter_map(|h| self.codes.get(h).cloned()).collect();
+        StateWitness { tree: repo.witness(&keys), codes }
+    }
+
+    fn get(&self, key: &TreeKey) -> Option<Value> {
+        if let Some(a) = &self.access {
+            a.lock().expect("access log").keys.insert(*key);
+        }
+        self.tree.get(key)
+    }
+
+    fn code_by_hash(&self, hash: &B256) -> Option<&Bytes> {
+        if let Some(a) = &self.access {
+            a.lock().expect("access log").codes.insert(*hash);
+        }
+        self.codes.get(hash)
     }
 
     /// The diff recorded since the last `clear_journal`.
@@ -75,6 +171,9 @@ impl WorldState {
     }
 
     fn write(&mut self, writes: Vec<(aether_state::TreeKey, Option<aether_state::Value>)>) {
+        if let Some(a) = &self.access {
+            a.lock().expect("access log").keys.extend(writes.iter().map(|(k, _)| *k));
+        }
         self.tree.apply(&writes);
         self.journal.writes.extend(writes);
     }
@@ -83,8 +182,12 @@ impl WorldState {
         B256::from(self.tree.root())
     }
 
+    /// The full tree. Panics on a prover's stateless state.
     pub fn repo(&self) -> &MemRepo<ChainHasher> {
-        &self.tree
+        match &self.tree {
+            Tree::Full(r) => r,
+            Tree::Partial(_) => panic!("a stateless state has no full repository"),
+        }
     }
 
     fn h(&self) -> &ChainHasher {
@@ -92,7 +195,7 @@ impl WorldState {
     }
 
     pub fn account(&self, a: &Address) -> Option<BasicData> {
-        self.tree.get(&basic_data_key(self.h(), a)).map(|v| BasicData::decode(&v))
+        self.get(&basic_data_key(self.h(), a)).map(|v| BasicData::decode(&v))
     }
 
     pub fn balance(&self, a: &Address) -> U256 {
@@ -104,15 +207,15 @@ impl WorldState {
     }
 
     pub fn storage(&self, a: &Address, slot: U256) -> U256 {
-        self.tree.get(&storage_slot_key(self.h(), a, slot)).map(|v| U256::from_be_bytes(v)).unwrap_or_default()
+        self.get(&storage_slot_key(self.h(), a, slot)).map(|v| U256::from_be_bytes(v)).unwrap_or_default()
     }
 
     pub fn code_hash(&self, a: &Address) -> B256 {
-        self.tree.get(&code_hash_key(self.h(), a)).map(B256::from).unwrap_or(KECCAK_EMPTY)
+        self.get(&code_hash_key(self.h(), a)).map(B256::from).unwrap_or(KECCAK_EMPTY)
     }
 
     pub fn code(&self, a: &Address) -> Bytes {
-        self.codes.get(&self.code_hash(a)).cloned().unwrap_or_default()
+        self.code_by_hash(&self.code_hash(a)).cloned().unwrap_or_default()
     }
 
     /// Genesis predeploy: put `code` at `a` (no constructor runs).
@@ -228,7 +331,7 @@ impl DatabaseRef for WorldState {
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
         let Some(d) = self.account(&address) else { return Ok(None) };
         let code_hash = self.code_hash(&address);
-        let code = self.codes.get(&code_hash).map(|b| Bytecode::new_raw(b.clone()));
+        let code = self.code_by_hash(&code_hash).map(|b| Bytecode::new_raw(b.clone()));
         Ok(Some(AccountInfo { balance: U256::from(d.balance), nonce: d.nonce, code_hash, code, ..Default::default() }))
     }
 
@@ -236,7 +339,7 @@ impl DatabaseRef for WorldState {
         if code_hash == KECCAK_EMPTY {
             return Ok(Bytecode::default());
         }
-        self.codes.get(&code_hash).map(|b| Bytecode::new_raw(b.clone())).ok_or(StateError::MissingCode(code_hash))
+        self.code_by_hash(&code_hash).map(|b| Bytecode::new_raw(b.clone())).ok_or(StateError::MissingCode(code_hash))
     }
 
     fn storage_ref(&self, address: Address, index: U256) -> Result<U256, Self::Error> {

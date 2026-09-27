@@ -32,6 +32,11 @@ impl<H: Hasher> MemRepo<H> {
     pub fn hasher(&self) -> &H {
         self.tree.hasher()
     }
+
+    /// Stateless witness for a block touching `keys` (crate::witness).
+    pub fn witness(&self, keys: &[TreeKey]) -> crate::Witness {
+        self.tree.witness(keys)
+    }
 }
 
 impl<H: Hasher> StateRepository for MemRepo<H> {

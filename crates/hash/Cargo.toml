@@ -6,6 +6,10 @@ license.workspace = true
 version.workspace = true
 publish = false
 
+[features]
+# Measurement only: Poseidon2 as the state hash (D6 decided BLAKE3).
+poseidon2-state = []
+
 [dependencies]
 blake3.workspace = true
 p3-poseidon2.workspace = true

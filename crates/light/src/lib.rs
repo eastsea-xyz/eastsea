@@ -17,7 +17,7 @@
 
 pub mod block;
 
-use aether_hash::Poseidon2KoalaBear;
+use aether_hash::ChainHasher;
 use aether_state::layout::{basic_data_key, storage_slot_key, BasicData};
 use aether_state::Proof;
 use aether_types::{Address, B256, U256};
@@ -190,19 +190,19 @@ fn check_proof(proof: &Proof, expected_key: [u8; 32], root: &B256) -> Result<(),
     if proof.key != expected_key {
         return Err(LightError::WrongKey);
     }
-    proof.verify(&Poseidon2KoalaBear::new(), &root.0).map_err(|e| LightError::ProofInvalid(format!("{e:?}")))
+    proof.verify(&ChainHasher::new(), &root.0).map_err(|e| LightError::ProofInvalid(format!("{e:?}")))
 }
 
 /// Account state proven against a certified root. `None` = provably absent.
 pub fn verify_account(anchor: &VerifiedBlock, address: &Address, proof: &Proof) -> Result<Option<BasicData>, LightError> {
-    let h = Poseidon2KoalaBear::new();
+    let h = ChainHasher::new();
     check_proof(proof, basic_data_key(&h, address), &anchor.parent_state_root)?;
     Ok(proof.value.map(|v| BasicData::decode(&v)))
 }
 
 /// Storage slot proven against a certified root.
 pub fn verify_storage(anchor: &VerifiedBlock, address: &Address, slot: U256, proof: &Proof) -> Result<U256, LightError> {
-    let h = Poseidon2KoalaBear::new();
+    let h = ChainHasher::new();
     check_proof(proof, storage_slot_key(&h, address, slot), &anchor.parent_state_root)?;
     Ok(proof.value.map(U256::from_be_bytes).unwrap_or_default())
 }

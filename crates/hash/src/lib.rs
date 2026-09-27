@@ -11,6 +11,16 @@ mod poseidon2_backend;
 pub use blake3_backend::Blake3;
 pub use poseidon2_backend::Poseidon2KoalaBear;
 
+/// The chain's state hash (docs/design/00 D6, decided 2026-09-27): BLAKE3.
+/// On the proving path we use (Jolt RISC-V + Akita, Metal), BLAKE3 costs about
+/// an eleventh of Poseidon2 (a 32-bit field emulated on 64-bit RISC-V):
+/// 2.2x fewer cycles per transaction (docs/research/spike-2026-10.md).
+/// `poseidon2-state` keeps Poseidon2 for proving-cost comparisons only.
+#[cfg(not(feature = "poseidon2-state"))]
+pub type ChainHasher = Blake3;
+#[cfg(feature = "poseidon2-state")]
+pub type ChainHasher = Poseidon2KoalaBear;
+
 pub type Digest = [u8; 32];
 pub const ZERO: Digest = [0u8; 32];
 

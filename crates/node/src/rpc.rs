@@ -151,7 +151,7 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                 "state_root": f.state.root(),
                 "timestamp_ms": f.timestamp,
                 "mempool": g.mempool.len(),
-                "hash_function": "poseidon2-koalabear-16",
+                "hash_function": "blake3",
             }))
         }
         // The voting set proposed for this registry epoch (while no handoff is

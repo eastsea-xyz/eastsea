@@ -1,7 +1,5 @@
 //! World state on the EIP-7864 tree, exposed to revm as a `DatabaseRef`.
 
-#[cfg(not(feature = "hash-blake3"))]
-use aether_hash::Poseidon2KoalaBear;
 use aether_state::layout::{basic_data_key, chunkify_code, code_chunk_key, code_hash_key, storage_slot_key, BasicData};
 use aether_state::{MemRepo, StateRepository};
 use aether_types::{Address, Bytes, B256, U256};
@@ -12,13 +10,8 @@ use revm::state::{Account, AccountInfo};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-/// The chain's state hash (docs/design/00 D6).
-#[cfg(not(feature = "hash-blake3"))]
-pub type ChainHasher = Poseidon2KoalaBear;
-/// Experimental, for proving-cost measurements only (D6 hash-switch plan):
-/// the chain, the light client and every proof use Poseidon2.
-#[cfg(feature = "hash-blake3")]
-pub type ChainHasher = aether_hash::Blake3;
+/// The chain's state hash (docs/design/00 D6): BLAKE3.
+pub use aether_hash::ChainHasher;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StateError {
@@ -124,6 +117,7 @@ impl WorldState {
 
     /// Genesis predeploy: put `code` at `a` (no constructor runs).
     pub fn set_code(&mut self, a: Address, code: Bytes) -> Result<(), StateError> {
+        #[allow(clippy::clone_on_copy)] // Copy for BLAKE3, not for Poseidon2 (measurement feature)
         let h = self.h().clone();
         let hash = revm::primitives::keccak256(&code);
         let d = BasicData { code_size: code.len() as u32, ..self.account(&a).unwrap_or_default() };
@@ -153,6 +147,7 @@ impl WorldState {
 
     /// Apply revm's post-transaction account changes to the tree.
     pub(crate) fn commit(&mut self, changes: &revm::state::EvmState) -> Result<(), StateError> {
+        #[allow(clippy::clone_on_copy)] // Copy for BLAKE3, not for Poseidon2 (measurement feature)
         let h = self.h().clone();
         let mut writes = Vec::new();
         let mut new_codes: Vec<(B256, Bytes)> = Vec::new();

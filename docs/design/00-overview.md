@@ -45,7 +45,7 @@ EIP-7864 바이너리 트리, 해시 전용, P-256 계정, FOCIL)를 레거시 �
 | D3 | 순서 먼저, 실행·증명 1~2블록 뒤 (Monad식) | nextgen-execution |
 | D4 | prove-gas 3차원, 블록당 상한 | nextgen-execution |
 | D5 | 상태: 바이너리 SMT, EIP-7864 32바이트 키. 저장은 redb(NOMT는 해시 MSB 태깅으로 EIP-7864 루트와 불일치, 05장) | nextgen-state |
-| D6 | 해시 trait: Poseidon2⟨KoalaBear,16⟩ 기본, BLAKE3 선택 | nextgen-state |
+| D6 | 해시 trait. **확정(2026-09-27): 상태 해시 BLAKE3** (`aether_hash::ChainHasher`). 우리 증명 경로(Jolt RISC-V + Akita, Metal)에서 Poseidon2보다 약 11배 싸서 tx당 사이클이 약 2.2배 준다. Poseidon2는 비교 측정용 기능(`poseidon2-state`)으로만 남긴다 | nextgen-state, spike-2026-10 |
 | D7 | PCS trait: WHIR 오늘, Akita 감사 후 교체 | nextgen-zk |
 | D8 | 합의: Commonware simplex + BLS 임계 scheme | nextgen-consensus |
 | D9 | 검증자 전원 아님. VRF 고가동 위원회 + ebb-and-flow | nextgen-consensus |

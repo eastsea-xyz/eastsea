@@ -24,7 +24,8 @@ alloy-sol-types = { version = "=1.7.3", default-features = false }
 default = ["native"]
 native = ["revm/c-kzg", "revm/secp256k1", "revm/portable"]
 # Measurement only: state tree hashed with BLAKE3 instead of Poseidon2.
-hash-blake3 = []
+# Measurement only: Poseidon2 as the state hash (D6 decided BLAKE3).
+hash-poseidon2 = ["aether-hash/poseidon2-state"]
 
 [dev-dependencies]
 proptest.workspace = true

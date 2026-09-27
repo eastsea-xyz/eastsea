@@ -900,3 +900,57 @@ fn open_voting_nodes_take_over_the_chain_by_themselves() {
 fn keys_of(dir: &str) -> String {
     serde_json::from_slice::<Value>(&std::fs::read(format!("{dir}/validator.pub.json")).unwrap()).unwrap()["key"].as_str().unwrap().to_string()
 }
+
+/// Regenerates `crates/light/tests/fixtures/devnet4.json` (run when the state
+/// hash or block format changes):
+///   cargo test -p aether-node --test devnet regenerate_light_fixture -- --ignored
+/// A 4-validator devnet pays 4242 wei to 0x…b0b00; the fixture keeps its
+/// account proof, another account's proof, and the two certified blocks that
+/// follow (the first commits to the proven state root).
+#[test]
+#[ignore]
+fn regenerate_light_fixture() {
+    let _serial = serial();
+    let net = Net::start(4);
+    for i in 0..4 {
+        net.wait_height(i, 3, 60);
+    }
+    let bob = "0x00000000000000000000000000000000000b0b00";
+    let out = net.cli(&["send", "--rpc", &net.url(0), "--from-dev", "2", "--to", bob, "--value", "4242", "--wait"]);
+    assert!(out.contains("success=true"), "{out}");
+    let other = dev_address(1);
+    let end = Instant::now() + Duration::from_secs(120);
+    loop {
+        assert!(Instant::now() < end, "no height with directly certified successors");
+        let (Some(a), Some(b)) = (net.rpc(0, "aether_getAccount", json!([bob])), net.rpc(0, "aether_getAccount", json!([other]))) else { continue };
+        let h = a["height"].as_u64().unwrap();
+        if b["height"].as_u64() != Some(h) {
+            continue;
+        }
+        net.wait_height(0, h + 3, 60);
+        let (Some(anchor), Some(next)) = (net.rpc(0, "aether_getFinalized", json!([h + 1])), net.rpc(0, "aether_getFinalized", json!([h + 2]))) else { continue };
+        // The fixture uses blocks with their own certificates (no links).
+        let direct = |v: &Value| v["links"].as_array().is_none_or(|l| l.is_empty());
+        if !direct(&anchor) || !direct(&next) {
+            continue;
+        }
+        let fixture = json!({
+            "validators": 4,
+            "address": bob,
+            "balance": a["balance"],
+            "height": h,
+            "state_root": a["state_root"],
+            "proof": a["proof"],
+            "other_address": other,
+            "other_proof": b["proof"],
+            "anchor_block": anchor["block"],
+            "anchor_finalization": anchor["finalization"],
+            "next_block": next["block"],
+            "next_finalization": next["finalization"],
+        });
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../light/tests/fixtures/devnet4.json");
+        std::fs::write(&path, serde_json::to_string_pretty(&fixture).unwrap() + "\n").unwrap();
+        eprintln!("wrote {} (height {h})", path.display());
+        return;
+    }
+}

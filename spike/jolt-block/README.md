@@ -16,9 +16,9 @@ PCS / backend (Dory is the default):
     cargo build --release --features metal --target-dir target-metal   # Akita, Metal
     ./target-metal/release/aether-jolt-block prove 10 [reps]
 
-The block guest's bytecode (2^21 padded) exceeds the Metal PIOP ABI (14-bit
-pc), so `metal` runs Metal commitment + CPU PIOP; `JOLT_AKITA_METAL=full|hybrid|commit|cpu`
-overrides. `RUST_LOG=jolt_prover=info` prints span timings.
+The Metal PIOP now carries the pc in its own column (our jolt branch), so
+`metal` runs the full Metal backend for this guest (2^21-entry bytecode);
+`JOLT_AKITA_METAL=full|hybrid|commit|cpu` overrides the choice.
 
 `patches/foldhash-0.2.0`: skips foldhash's clock-based seed on riscv64 (the
 guest has no clock; upstream only exempts `target_os = "zkvm"`).

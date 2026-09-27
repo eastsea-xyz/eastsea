@@ -442,7 +442,7 @@ fn eth_call(chain: &Chain, p: &Value) -> RpcResult {
         };
         (f.state.clone(), ctx)
     };
-    let r = aether_execution::call(&state, &ctx, from, to, data.into(), value, 30_000_000).map_err(|e| (-32000, e))?;
+    let r = aether_execution::call(&state, &ctx, from, to, data.into(), value, 1 << 24).map_err(|e| (-32000, e))?;
     if r.success {
         Ok(json!(format!("0x{}", hex::encode(&r.output))))
     } else {

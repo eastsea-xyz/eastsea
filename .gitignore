@@ -11,3 +11,5 @@
 *.swp
 *.log
 /dist
+.omx/
+.gstack/

@@ -182,6 +182,12 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
             let svc = st.handoff.as_ref().ok_or((-32601, "this node does not sign handoffs".to_string()))?;
             svc.sign_staged().map(|h| json!({ "round": h.round })).map_err(|e| (-32000, e))
         }
+        // The finalized state as a checkpoint snapshot (hex postcard, `snapshot::Snapshot`):
+        // a new Mac checks it against the next certified block instead of replaying history.
+        "aether_snapshot" => {
+            let s = crate::snapshot::Snapshot::of(chain);
+            Ok(json!({ "height": s.summary.height, "snapshot": hex::encode(s.to_bytes()) }))
+        }
         // Inclusion of block `height` in the history under block `anchor`'s
         // history root (`aether_light::verify_history`).
         "aether_historyProof" => {

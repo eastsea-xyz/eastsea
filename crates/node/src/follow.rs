@@ -135,6 +135,30 @@ async fn http_call(url: &str, method: &str, params: &Value) -> Result<Value, Str
     }
 }
 
+/// Checkpoint sync: fetch the upstream's snapshot and the certified block
+/// after it, check both, and write the snapshot as `store`'s checkpoint.
+/// Returns the snapshot height.
+pub async fn checkpoint(upstream: &Upstream, set: &ValidatorSet, cfg: &crate::chain::ChainConfig, store: &crate::store::Store) -> Result<u64, String> {
+    let v = upstream.first("aether_snapshot", json!([])).await?;
+    let bytes = hex::decode(v["snapshot"].as_str().ok_or("upstream has no snapshot")?).map_err(|e| e.to_string())?;
+    let snap = crate::snapshot::Snapshot::from_bytes(&bytes)?;
+    let h = snap.summary.height;
+    // The block after it, certified under the pinned identity (wait for it if needed).
+    let mut next = None;
+    for _ in 0..60 {
+        if let Some((block, _)) = fetch(upstream, set, h + 1).await? {
+            next = Some(block);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    let next = next.ok_or(format!("no certified block {} after the snapshot", h + 1))?;
+    let state = snap.check(&next, cfg, set.identity())?;
+    snap.install(store, &state)?;
+    info!(height = h, entries = snap.entries.len(), "checkpoint: started from a certified snapshot (history not replayed)");
+    Ok(h)
+}
+
 /// Follow the chain forever: verify, execute and persist each next block.
 /// `joining`: this Mac's voting key when it is a candidate. When a finalized
 /// handoff seats it, the follower stops before the switch height (for up to
@@ -176,7 +200,7 @@ pub async fn run(chain: Chain, upstream: std::sync::Arc<Upstream>, set: Validato
 
 /// Block `h` and its certificate, verified; `None` if no source has it yet.
 /// A source that answers with nothing or with a bad certificate is skipped.
-async fn fetch(upstream: &Upstream, set: &ValidatorSet, h: u64) -> Result<Option<(Block, Value)>, String> {
+pub async fn fetch(upstream: &Upstream, set: &ValidatorSet, h: u64) -> Result<Option<(Block, Value)>, String> {
     upstream.ask("aether_getFinalized", json!([h]), |v| check(set, h, v)).await
 }
 

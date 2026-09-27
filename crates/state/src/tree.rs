@@ -145,6 +145,18 @@ impl<H: Hasher> BinaryTree<H> {
         &self.hasher
     }
 
+    /// Every (key, value) in key order (snapshots).
+    pub fn entries(&self) -> impl Iterator<Item = (TreeKey, Value)> + '_ {
+        self.stems.iter().flat_map(|(stem, node)| {
+            node.values.iter().map(move |(sub, v)| {
+                let mut k = [0u8; 32];
+                k[..31].copy_from_slice(stem);
+                k[31] = *sub;
+                (k, *v)
+            })
+        })
+    }
+
     pub fn get(&self, key: &TreeKey) -> Option<Value> {
         let (stem, sub) = split_key(key);
         self.stems.get(&stem).and_then(|n| n.values.get(&sub).copied())

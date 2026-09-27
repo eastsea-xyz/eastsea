@@ -201,6 +201,10 @@ enum Cmd {
         /// Where the candidate keys are (default: <data>).
         #[arg(long)]
         keys: Option<String>,
+        /// Start from a certified state snapshot (checked against the next
+        /// certified block) instead of replaying history from genesis.
+        #[arg(long)]
+        checkpoint: bool,
     },
     /// Keep this Mac in the network: validator while in the voting set, verifying
     /// follower and candidate otherwise; rotations are followed automatically.
@@ -552,12 +556,12 @@ fn main() {
             println!("signed by the committee: protocol {} at height {} on chain {}", s.upgrade.protocol, s.upgrade.activate_at, s.upgrade.chain_id);
             Ok(())
         })(),
-        Cmd::Follow { network, from_rpc, data, rpc_port, validators, exit_with_parent, candidate, dev_epoch_blocks, keys } => {
+        Cmd::Follow { network, from_rpc, data, rpc_port, validators, exit_with_parent, candidate, dev_epoch_blocks, keys, checkpoint } => {
             if exit_with_parent {
                 exit_with_parent_process();
             }
             let keys = candidate.then(|| keys.unwrap_or_else(|| data.clone()));
-            run_follow(network, from_rpc, data, rpc_port, validators, keys, dev_epoch_blocks)
+            run_follow(network, from_rpc, data, rpc_port, validators, keys, dev_epoch_blocks, checkpoint)
         }
         Cmd::CandidateInfo { data, operator, chain_id } => aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(&data)).map(|k| {
             let ownership = operator.zip(chain_id).map(|(op, id)| hex::encode(k.ownership(id, op)));
@@ -1327,6 +1331,7 @@ fn exit_with_parent_process() {
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_follow(
     network: Option<String>,
     from_rpc: Vec<String>,
@@ -1335,6 +1340,7 @@ fn run_follow(
     validators: u64,
     candidate_keys: Option<String>,
     dev_epoch_blocks: Option<u64>,
+    checkpoint: bool,
 ) -> Result<(), String> {
     use aether_node::follow::{self, FinalityArchive, Upstream};
     use std::sync::Arc;
@@ -1359,12 +1365,16 @@ fn run_follow(
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(|e| e.to_string())?;
     rt.block_on(async move {
         let store = aether_node::store::Store::open(&std::path::Path::new(&data).join("state.redb")).map_err(|e| e.to_string())?;
-        let (chain, _) = Chain::open(cfg, store).map_err(|e| format!("restore state (delete the data dir to resync): {e}"))?;
         let upstream = Arc::new(if from_rpc.is_empty() {
             Upstream::Iroh(aether_net::RpcClient::new(nodes).await.map_err(|e| e.to_string())?, Default::default())
         } else {
             Upstream::Http(from_rpc)
         });
+        // A new Mac starts from a certified snapshot instead of replaying history.
+        if checkpoint && store.head().map_err(|e| e.to_string())?.is_none() {
+            follow::checkpoint(&upstream, &set, &cfg, &store).await?;
+        }
+        let (chain, _) = Chain::open(cfg, store).map_err(|e| format!("restore state (delete the data dir to resync): {e}"))?;
         let archive = Arc::new(FinalityArchive::new(chain.store()));
         let (gossip, rx) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(follow::forward(upstream.clone(), rx));

@@ -20,6 +20,11 @@ pub struct MemRepo<H: Hasher> {
 }
 
 impl<H: Hasher> MemRepo<H> {
+    /// Every (key, value) in key order.
+    pub fn entries(&self) -> impl Iterator<Item = (TreeKey, Value)> + '_ {
+        self.tree.entries()
+    }
+
     pub fn new(hasher: H) -> Self {
         MemRepo { tree: BinaryTree::new(hasher) }
     }

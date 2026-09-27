@@ -117,7 +117,7 @@ impl Supervisor {
             }
             Role::Candidate => {
                 cmd.args(["follow", "--exit-with-parent", "--network", &path_str(&net), "--data", &path_str(&self.data.join("follow"))])
-                    .args(["--keys", &path_str(&self.data), "--rpc-port", &self.rpc_port.to_string(), "--candidate"])
+                    .args(["--keys", &path_str(&self.data), "--rpc-port", &self.rpc_port.to_string(), "--candidate", "--checkpoint"])
                     .args(&self.follow_args);
             }
         }

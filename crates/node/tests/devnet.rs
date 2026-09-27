@@ -969,3 +969,35 @@ fn regenerate_light_fixture() {
         return;
     }
 }
+
+/// Checkpoint sync: a Mac joining late takes a certified snapshot (checked
+/// against the next certified block) and follows from there, without
+/// replaying history; balances still verify against certified roots.
+#[test]
+fn a_late_mac_starts_from_a_certified_snapshot() {
+    let _serial = serial();
+    let mut net = Net::start(4);
+    for i in 0..4 {
+        net.wait_height(i, 3, 60);
+    }
+    let bob = "0x00000000000000000000000000000000000c0c00";
+    let out = net.cli(&["send", "--rpc", &net.url(0), "--from-dev", "2", "--to", bob, "--value", "321", "--wait"]);
+    assert!(out.contains("success=true"), "{out}");
+    let joined_at = net.height(0);
+
+    let port = free_port();
+    let data = net.dir.join("late");
+    let log = std::fs::File::create(net.dir.join("late.log")).unwrap();
+    let from = format!("{},{}", net.url(1), net.url(2));
+    let args: Vec<String> =
+        vec!["follow".into(), "--checkpoint".into(), "--from-rpc".into(), from, "--data".into(), data.to_str().unwrap().into(), "--rpc-port".into(), port.to_string()];
+    net.procs.push(Some(spawn_logged(log, &args)));
+    net.rpc.push(port);
+    let f = net.rpc.len() - 1;
+    net.wait_height(f, joined_at + 5, 60);
+    assert_agree(&net, &[0, f], joined_at + 5);
+    // It did not replay: early blocks are not on this Mac.
+    assert!(net.rpc(f, "aether_getBlock", json!([1])).is_none_or(|b| b.is_null()), "the late Mac replayed history");
+    let bal = net.cli(&["balance", bob, "--rpc", &net.url(f)]);
+    assert!(bal.contains("balance   321 wei") && bal.contains("verified  ✓"), "{bal}");
+}

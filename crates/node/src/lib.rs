@@ -14,6 +14,7 @@ pub mod p2p;
 pub mod roster;
 pub mod rotation;
 pub mod rpc;
+pub mod snapshot;
 pub mod store;
 pub mod supervisor;
 pub mod upgrade;

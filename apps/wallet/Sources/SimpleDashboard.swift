@@ -268,6 +268,7 @@ private struct NetworkPage: View {
             NetworkCard()
             #if os(macOS)
             NodeCard()
+            UpdateCard()
             #endif
         }
     }
@@ -385,6 +386,35 @@ private struct NodeCard: View {
                 }
             }
         }
+    }
+}
+
+/// The installed version, when updates were last checked, and a Check button.
+/// Updates also arrive by themselves (hourly, and when the chain schedules one).
+private struct UpdateCard: View {
+    @EnvironmentObject var updates: Updates
+
+    var body: some View {
+        Card {
+            HStack(alignment: .center, spacing: 14) {
+                Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 26)).foregroundStyle(Color.aether)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Aether \(updates.version)").font(.headline)
+                    // Re-read every half minute so "checked 1 hour ago" stays true.
+                    TimelineView(.periodic(from: .now, by: 30)) { context in
+                        Text(checked(at: context.date)).font(.callout).foregroundStyle(.secondary)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Button("Check for Updates") { updates.check() }
+            }
+        }
+    }
+
+    private func checked(at now: Date) -> String {
+        guard let last = updates.lastCheck else { return "Updates install by themselves. Not checked yet." }
+        let ago = RelativeDateTimeFormatter().localizedString(for: last, relativeTo: now)
+        return "Updates install by themselves. Last checked \(ago)."
     }
 }
 

@@ -17,6 +17,7 @@ struct AetherWalletApp: App {
             ContentView()
                 .environmentObject(model)
                 .environmentObject(node)
+                .environmentObject(appDelegate.updates)
                 .onAppear {
                     appDelegate.start(node: node, model: model)
                     NSApp.setActivationPolicy(.regular)
@@ -94,6 +95,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var node: NodeController?
     /// Sparkle: checks the signed appcast on GitHub Releases and installs updates.
     lazy var updater = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: self, userDriverDelegate: nil)
+    /// What the Network page shows: when updates were last checked, and a Check button.
+    @MainActor lazy var updates = Updates(updater)
     private var started = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -148,6 +151,28 @@ enum CommandLineTools {
         alert.runModal()
     }
 }
+/// The app's update state for the UI (Sparkle does the checking and installing).
+@MainActor
+final class Updates: ObservableObject {
+    private let controller: SPUStandardUpdaterController
+
+    init(_ controller: SPUStandardUpdaterController) {
+        self.controller = controller
+    }
+
+    var lastCheck: Date? { controller.updater.lastUpdateCheckDate }
+    var version: String {
+        let info = Bundle.main.infoDictionary
+        return "\(info?["CFBundleShortVersionString"] as? String ?? "?") (\(info?["CFBundleVersion"] as? String ?? "?"))"
+    }
+
+    /// Check now, showing Sparkle's window (up to date, or the new version).
+    func check() {
+        controller.checkForUpdates(nil)
+        objectWillChange.send()
+    }
+}
+
 extension AppDelegate: SPUUpdaterDelegate {
     /// Sparkle installs a downloaded update when the app quits, but Aether stays
     /// in the menu bar with its node for days. Install now instead: the app

@@ -17,7 +17,7 @@ use commonware_consensus::{
         standard::{Inline, Standard},
     },
     simplex::{self, Engine as Consensus},
-    types::ViewDelta,
+    types::{Epoch, ViewDelta},
 };
 use commonware_consensus::{Epochable as _, Viewable as _};
 use commonware_cryptography::{sha256::Digest, Digestible as _};
@@ -133,6 +133,68 @@ fn archive_cfg<C>(prefix: &str, name: &str, page_cache: CacheRef, codec_config: 
     }
 }
 
+/// The finalization `AETHER_RECOVER_CONSENSUS=<view>@<height>` names, or Err
+/// with why that value cannot start this node. The runbook
+/// (docs/ops/consensus-recovery.md) is enforced in this order:
+///
+/// 1. `<view>@<height>` parses (a bare `<view>` means the last stored
+///    finalization, so it names a height that exists).
+/// 2. A finalization is stored at `<height>`, and it is at `<view>`.
+/// 3. It is for the current committee epoch; an earlier epoch is ignored
+///    (Ok(None)) rather than refused, so a value left set after an epoch change
+///    never bricks the node.
+/// 4. A first recovery (no vote journal for the view exists yet) must name the
+///    last stored finalization: starting lower forks the node away from
+///    finalizations other validators keep. Restarts after the recovery find the
+///    journal and start wherever the value says, as before.
+pub async fn recover<E: BufferPooler + Clock + Metrics + Storage>(
+    context: &E,
+    finalizations: &FinalizedCerts<E>,
+    prefix: &str,
+    epoch: Epoch,
+    value: &str,
+) -> Result<Option<Finalization>, String> {
+    let last = Certificates::last_index(finalizations).map(|h| h.get());
+    let (view, height) = match value.split_once('@') {
+        Some((a, b)) => (a.parse::<u64>().ok(), b.parse::<u64>().ok()),
+        None => (value.parse::<u64>().ok(), last),
+    };
+    let (Some(view), Some(height)) = (view, height) else {
+        return Err(format!("{value}: expected <view>@<height>"));
+    };
+    let Some(f) = Certificates::get(finalizations, Identifier::<Digest>::Index(height)).await.ok().flatten() else {
+        return Err(format!("{value}, but no finalization is stored at height {height}"));
+    };
+    if f.view().get() != view {
+        return Err(format!("{value}, but the finalization at height {height} is at view {}: refusing", f.view().get()));
+    }
+    if f.epoch() != epoch {
+        tracing::info!(view, "AETHER_RECOVER_CONSENSUS is for an earlier epoch; ignored");
+        return Ok(None);
+    }
+    let partition = format!("{prefix}-consensus-r{view}");
+    let journal_exists = partition_exists(context, &partition)
+        .await
+        .map_err(|e| format!("{value}, but could not look for the {partition} vote journal: {e}"))?;
+    if Some(height) != last && !journal_exists {
+        return Err(format!(
+            "{value}, but the first recovery (the {partition} vote journal does not exist yet) must name the last stored finalization, height {}",
+            last.unwrap_or_default()
+        ));
+    }
+    tracing::warn!(view, height, "recovering consensus from a stored finalization with a vote journal of its own");
+    Ok(Some(f))
+}
+
+/// Whether a storage partition exists (any blob was ever created in it).
+async fn partition_exists<E: Storage>(context: &E, partition: &str) -> Result<bool, commonware_runtime::Error> {
+    match context.scan(partition).await {
+        Ok(_) => Ok(true),
+        Err(commonware_runtime::Error::PartitionMissing(_)) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
 impl<E, B, P> Engine<E, B, P>
 where
     E: BufferPooler + Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics,
@@ -239,28 +301,10 @@ where
         // cannot extend it); votes above that finalization are dropped, and nothing
         // finalized changes. A bare <view> means the last stored finalization.
         let recovered = match std::env::var("AETHER_RECOVER_CONSENSUS").ok() {
-            Some(v) => {
-                let (view, height) = match v.split_once('@') {
-                    Some((a, b)) => (a.parse::<u64>().ok(), b.parse::<u64>().ok()),
-                    None => (v.parse::<u64>().ok(), Certificates::last_index(&finalizations).map(|h| h.get())),
-                };
-                let (Some(view), Some(height)) = (view, height) else {
-                    panic!("AETHER_RECOVER_CONSENSUS={v}: expected <view>@<height>")
-                };
-                match Certificates::get(&finalizations, Identifier::<Digest>::Index(height)).await.ok().flatten() {
-                    Some(f) if f.view().get() == view => {
-                        if f.epoch() == cfg.epocher.current() {
-                            tracing::warn!(view, height, "recovering consensus from a stored finalization with a vote journal of its own");
-                            Some(f)
-                        } else {
-                            tracing::info!(view, "AETHER_RECOVER_CONSENSUS is for an earlier epoch; ignored");
-                            None
-                        }
-                    }
-                    Some(f) => panic!("AETHER_RECOVER_CONSENSUS={v}, but the finalization at height {height} is at view {}: refusing", f.view().get()),
-                    None => panic!("AETHER_RECOVER_CONSENSUS={v}, but no finalization is stored at height {height}"),
-                }
-            }
+            Some(v) => match recover(&context, &finalizations, &prefix, cfg.epocher.current(), &v).await {
+                Ok(f) => f,
+                Err(e) => panic!("AETHER_RECOVER_CONSENSUS {e}"),
+            },
             None => None,
         };
 

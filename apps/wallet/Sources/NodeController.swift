@@ -311,16 +311,19 @@ final class NodeController: ObservableObject {
         }
     }
 
-    /// Rewards this Mac's proofs earned, as CSV (for tax records).
+    /// Rewards this Mac's proofs earned, as CSV (for tax records). The records
+    /// the node keeps name no transaction hash — a reward is paid by the block
+    /// that first used the proof, not by a transaction — so the block stands in
+    /// for it (docs/research/node-reward-tax-2026.md).
     func rewardsCSV() async -> String? {
         guard !proveAddress.isEmpty,
               let list = await LocalRPC.call(port: Self.port, method: "aether_rewards", params: [proveAddress, 10_000]) as? [[String: Any]] else { return nil }
-        var csv = "proven_block,amount_aeth,paid_in_block,time_utc\n"
+        var csv = "time_utc,kind,proven_block,paid_in_block,amount_aeth\n"
         let iso = ISO8601DateFormatter()
         for r in list {
             let amount = Wei.exact(LocalRPC.decimal(r["amount"]))
             let ms = (r["timestamp_ms"] as? NSNumber)?.doubleValue ?? 0
-            csv += "\(r["proven"] ?? ""),\(amount),\(r["height"] ?? ""),\(iso.string(from: Date(timeIntervalSince1970: ms / 1000)))\n"
+            csv += "\(iso.string(from: Date(timeIntervalSince1970: ms / 1000))),\(r["kind"] ?? ""),\(r["proven"] ?? ""),\(r["height"] ?? ""),\(amount)\n"
         }
         return csv
     }

@@ -7,6 +7,38 @@ import SwiftUI
 enum DesignPreview {
     static var on: Bool { ProcessInfo.processInfo.arguments.contains("-designPreview") }
     static var variant: String { UserDefaults.standard.string(forKey: "designPreview") ?? "rewards" }
+    /// `-rewardStatus 1`: the Network page's node-rewards standing card (the
+    /// testnet would answer enabled:false and show nothing).
+    static var rewardStatus: Bool { UserDefaults.standard.string(forKey: "rewardStatus") == "1" }
+
+    /// One `aether_rewardStatus [operator]` answer: 9 operators, this Mac at
+    /// warm-up level 4 ((14+4)/28 → 64%), a capped share of the last hour.
+    static let sampleRewardStatus: [String: Any] = [
+        "enabled": true,
+        "height": 184_210,
+        "epoch": 7_675,
+        "epoch_blocks": 24,
+        "operators_online_last_epoch": 9,
+        "max_share": 16,
+        "node_pool_last_epoch": "1600000000000000000",
+        "issuance_per_block_now": "1000000000000000000",
+        "operator": [
+            "address": "0x5397a1c0De4b1b8F6A3cB2d1E0f9C7a6B5d4E502",
+            "macs": [[
+                "index": 1,
+                "answered_slots_this_epoch": 48,
+                "answered_slots_last_epoch": 44,
+                "warmup_level": 4,
+                "warmup_percent": 64,
+                "attested_period": 7_676,
+                "reattest_ok": true,
+            ]],
+            "weight_last_epoch": 792,
+            "expected_share_last_epoch": "140000000000000000",
+            "received_last_distribution": "140000000000000000",
+            "capped": true,
+        ],
+    ]
 }
 
 extension WalletModel {

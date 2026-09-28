@@ -26,7 +26,7 @@ struct AetherWalletApp: App {
                 .environmentObject(earnings)
                 .onAppear {
                     appDelegate.start(node: node, model: model)
-                    earnings.attach(node)
+                    earnings.attach(node, operatorAddress: { model.address })
                     NSApp.setActivationPolicy(.regular)
                     #if DEBUG
                     if ResizeBenchmark.on { ResizeBenchmark.run() }
@@ -85,7 +85,7 @@ struct AetherWalletApp: App {
             MenuBarPanel().environmentObject(model).environmentObject(node).environmentObject(earnings)
                 .onAppear {
                     appDelegate.start(node: node, model: model)
-                    earnings.attach(node)
+                    earnings.attach(node, operatorAddress: { model.address })
                 }
         } label: {
             Image(systemName: node.prover?.proving != nil ? "cube.transparent.fill" : "cube.transparent")
@@ -117,6 +117,11 @@ struct SettingsView: View {
             .disabled(model.address.isEmpty)
             .help("Your node proves recent blocks with Metal. The first valid proof of a block gets a test AETH reward in this wallet. Uses the GPU and power while on, at your cost.")
             Text("Your node verifies every block itself and your wallet asks it instead of the network. Quitting Aether stops it.")
+                .font(.caption).foregroundStyle(.secondary)
+            // Honest power ranges (docs/research/mac-power-cost-2026.md): the node is
+            // cheap; GPU proving is the costly part. No won figure — electricity
+            // prices vary, and the range is the honest statement.
+            Text("Power: roughly 5–6 W while only verifying (about 4 kWh a month); proving on the GPU adds roughly 28–50 W (about 20–36 kWh a month).")
                 .font(.caption).foregroundStyle(.secondary)
             Divider()
             Toggle("Developer mode (proofs, state roots, raw logs)", isOn: $developerMode)
@@ -154,10 +159,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if DesignPreview.on {
             node.loadPreview()
             let w = UserDefaults.standard.double(forKey: "previewWidth")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            let target = w > 0 ? w : 1000
+            // The window may appear well after launch (shared saved state decides),
+            // so keep trying briefly: size it once it exists.
+            var tries = 0
+            Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { t in
+                tries += 1
                 if let win = NSApp.windows.first(where: { $0.isVisible && $0.canBecomeMain }) {
-                    win.setContentSize(NSSize(width: w > 0 ? w : 1000, height: 780))
+                    win.setContentSize(NSSize(width: target, height: 780))
                     win.center()
+                    t.invalidate()
+                } else if tries > 24 {
+                    t.invalidate()
                 }
             }
             return

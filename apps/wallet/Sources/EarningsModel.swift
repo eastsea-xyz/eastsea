@@ -38,6 +38,45 @@ struct RewardEntry: Equatable, Sendable {
     }
 }
 
+/// The chain's node-rewards standing, from `aether_rewardStatus [operator]`
+/// (docs/design/15-node-rewards.md "상태 조회 RPC"). A testnet without node
+/// rewards answers `{"enabled": false}` — the card then shows nothing new.
+struct RewardStatus: Equatable, Sendable {
+    var enabled = false
+    /// N: the operators that shared the last epoch's pool.
+    var operatorsOnline = 0
+    /// The per-operator cap: one operator gets at most 1/max_share.
+    var maxShare = 16
+    /// This operator's best Mac's warm-up, as the chain reports it: "정상 몫의 %".
+    var warmupPercent: Int?
+    /// Whole days of warm-up left at one level a day (nil: no Mac of ours listed).
+    var warmupDaysLeft: Int?
+    /// This operator's share of the last epoch's pool (wei).
+    var expectedShareWei: String?
+    var capped = false
+
+    /// One `aether_rewardStatus` answer. Numbers arrive as NSNumber or string.
+    init(json: [String: Any]) {
+        enabled = (json["enabled"] as? Bool) ?? false
+        operatorsOnline = Self.int(json["operators_online_last_epoch"]) ?? 0
+        maxShare = Self.int(json["max_share"]) ?? 16
+        if let op = json["operator"] as? [String: Any] {
+            let macs = (op["macs"] as? [[String: Any]]) ?? []
+            warmupPercent = macs.compactMap { Self.int($0["warmup_percent"]) }.max()
+            if let level = macs.compactMap({ Self.int($0["warmup_level"]) }).max() {
+                warmupDaysLeft = max(0, 14 - min(level, 14))
+            }
+            expectedShareWei = op["expected_share_last_epoch"] as? String
+            capped = (op["capped"] as? Bool) ?? false
+        }
+    }
+
+    private static func int(_ v: Any?) -> Int? {
+        if let n = v as? NSNumber { return n.intValue }
+        return (v as? String).flatMap(Int.init)
+    }
+}
+
 /// Totals over the rewards actually received. Never a projection.
 struct EarningsSummary: Equatable, Sendable {
     var totalWei = "0"

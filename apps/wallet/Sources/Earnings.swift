@@ -198,7 +198,7 @@ struct EarningsHero: View {
             Text(footerText).fixedSize(horizontal: false, vertical: true)
         }
         .font(.aeBody.weight(.medium))
-        .foregroundStyle(.white.opacity(0.88))
+        .foregroundStyle(.white.opacity(0.92))
     }
 
     /// " · 57 proofs this session" (nothing before the first one).
@@ -239,7 +239,7 @@ private struct EarnedBlock: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Received so far").font(.aeFootnote.weight(.semibold)).foregroundStyle(.white.opacity(0.78))
+            Text("Received so far").font(.aeFootnote.weight(.semibold)).foregroundStyle(.white.opacity(0.85))
             BigNumber(value: WeiMath.aeth(summary.totalWei), decimals: EarningsText.decimals(summary.totalWei),
                       unit: EarningsText.unit, glow: EarnInk.gold)
                 // An overlay, so the label's width never shifts the number.
@@ -257,7 +257,7 @@ private struct VerifiedBlock: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Blocks verified this session").font(.aeFootnote.weight(.semibold)).foregroundStyle(.white.opacity(0.78))
+            Text("Blocks verified this session").font(.aeFootnote.weight(.semibold)).foregroundStyle(.white.opacity(0.85))
             BigNumber(value: Double(work.blocksVerified), decimals: 0, unit: work.blocksVerified == 1 ? "block" : "blocks", glow: EarnInk.sky)
         }
     }
@@ -342,13 +342,13 @@ private struct StatTile: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(label).font(.aeCaption.weight(.semibold)).foregroundStyle(.white.opacity(0.72))
+            Text(label).font(.aeCaption.weight(.semibold)).foregroundStyle(.white.opacity(0.82))
                 .lineLimit(1).minimumScaleFactor(0.7)
             Text(value).font(narrow ? .aeHeadline : .aeTitle).monospacedDigit()
                 .lineLimit(1).minimumScaleFactor(0.55)
                 .contentTransition(.numericText())
             if let unit {
-                Text(unit).font(.aeCaption).foregroundStyle(.white.opacity(0.72)).lineLimit(1).minimumScaleFactor(0.7)
+                Text(unit).font(.aeCaption).foregroundStyle(.white.opacity(0.82)).lineLimit(1).minimumScaleFactor(0.7)
             }
         }
         .padding(.horizontal, narrow ? 10 : 14).padding(.vertical, narrow ? 9 : 12)
@@ -663,7 +663,7 @@ struct ConfettiBurst: View {
 
 // MARK: - Compact indicators
 
-/// A small gradient capsule: "● Proving · +1.5 test AETH today" or "● Working · 42 blocks".
+/// A small gradient capsule: "● Proving · +1.5 today" or "● Working · 42 blocks".
 struct EarningsBadge: View {
     let summary: EarningsSummary
     let work: NodeWork
@@ -688,10 +688,11 @@ struct EarningsBadge: View {
         .shadow(color: EarnInk.pink.opacity(work.isLive ? 0.35 : 0), radius: 6, y: 2)
     }
 
+    /// Fits the sidebar (170–190 pt) without an ellipsis; the cards keep the full wording.
     private var line: String {
         switch work.phase {
-        case .proving: "Proving · +\(EarningsText.aeth(summary.todayWei)) \(EarningsText.unit) today"
-        case .verifying: "Working · \(work.blocksVerified) blocks verified"
+        case .proving: "Proving · +\(EarningsText.aeth(summary.todayWei)) today"
+        case .verifying: "Working · \(work.blocksVerified) blocks"
         case .starting: "Starting…"
         case .paused: "Paused"
         }
@@ -708,30 +709,37 @@ final class Earnings: ObservableObject {
     @Published private(set) var celebration: RewardCelebration?
     @Published private(set) var runningSince: Date?
     @Published private(set) var firstHeight: UInt64?
+    /// The chain's node-rewards standing (`aether_rewardStatus`), for the Network page.
+    @Published private(set) var status: RewardStatus?
 
     static let pollSeconds: TimeInterval = 20
     /// The node returns at most this many (the newest).
     static let limit = 10_000
 
     private weak var node: NodeController?
+    private var operatorAddress: () -> String = { "" }
     private var timer: Timer?
     private var subscriptions = Set<AnyCancellable>()
     /// Rewards were read once for `address`; only later arrivals are celebrated.
     private var loaded = false
     private var address = ""
     private var fetching = false
+    private var statusFetching = false
 
-    /// Start following `node` (once; later calls do nothing).
-    func attach(_ node: NodeController) {
+    /// Start following `node` (once; later calls do nothing). `operatorAddress`
+    /// is the wallet address rewards would be paid to (it can change).
+    func attach(_ node: NodeController, operatorAddress: @escaping () -> String) {
         guard self.node == nil else { return }
         #if DEBUG
         if DesignPreview.on {
             if DesignPreview.variant != "verifying" { summary = EarningsPreviewHarness.sample(count: 24) }
+            if DesignPreview.rewardStatus { status = RewardStatus(json: DesignPreview.sampleRewardStatus) }
             runningSince = Date().addingTimeInterval(-11_520)
             firstHeight = 182_926
             return
         }
         #endif
+        self.operatorAddress = operatorAddress
         self.node = node
         node.$state.sink { [weak self] in self?.stateChanged($0) }.store(in: &subscriptions)
         node.$height.sink { [weak self] in self?.heightChanged($0) }.store(in: &subscriptions)
@@ -795,6 +803,7 @@ final class Earnings: ObservableObject {
     }
 
     func refresh() {
+        refreshStatus()
         guard let node, node.state == .running, !node.proveAddress.isEmpty, !fetching else { return }
         if node.proveAddress != address {
             address = node.proveAddress
@@ -811,6 +820,22 @@ final class Earnings: ObservableObject {
         }
     }
 
+    /// The standing behind the rewards (Network page). Asked without an operator
+    /// when this Mac has no address to name: N and the cap are still the chain's.
+    private func refreshStatus() {
+        guard let node, node.state == .running, !statusFetching else { return }
+        let op = node.proveAddress.isEmpty ? operatorAddress() : node.proveAddress
+        guard !op.isEmpty else { return }
+        statusFetching = true
+        Task { @MainActor in
+            defer { statusFetching = false }
+            if let json = await LocalRPC.call(port: NodeController.port, method: "aether_rewardStatus", params: [op]) as? [String: Any] {
+                let fresh = RewardStatus(json: json)
+                if fresh != status { status = fresh }
+            }
+        }
+    }
+
     private func apply(_ new: EarningsSummary) {
         if loaded, let amount = new.arrived(since: summary) {
             celebration = RewardCelebration(id: (celebration?.id ?? 0) + 1, amountWei: amount)
@@ -820,7 +845,9 @@ final class Earnings: ObservableObject {
     }
 }
 
-/// The hero card on Home, while the node switch is on.
+/// The hero card on the Network page, while the node switch is on, with what the
+/// chain says about node rewards underneath (`aether_rewardStatus`; nothing on a
+/// chain without them, like the testnet).
 struct NodeEarningsCard: View {
     @EnvironmentObject var node: NodeController
     @EnvironmentObject var earnings: Earnings
@@ -828,8 +855,11 @@ struct NodeEarningsCard: View {
 
     var body: some View {
         if node.enabled {
-            EarningsHero(summary: earnings.summary, work: earnings.work(node, canProve: !model.address.isEmpty),
-                         celebration: earnings.celebration, onProve: proveOn)
+            VStack(spacing: 12) {
+                EarningsHero(summary: earnings.summary, work: earnings.work(node, canProve: !model.address.isEmpty),
+                             celebration: earnings.celebration, onProve: proveOn)
+                RewardStandingCard(status: earnings.status)
+            }
         }
     }
 
@@ -839,8 +869,37 @@ struct NodeEarningsCard: View {
     }
 }
 
-/// Home, under the balance and the actions: the full earnings card once a reward has
-/// arrived; before that, one quiet line about what the node is doing (no zeros).
+/// What the chain itself counts (docs/design/15-node-rewards.md): operators
+/// online, the 1/16 cap, this Mac's warm-up and its share of the last hour.
+/// Testnet answers `enabled: false`, and then nothing is shown here.
+struct RewardStandingCard: View {
+    let status: RewardStatus?
+
+    var body: some View {
+        if let s = status, s.enabled {
+            Card {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Node rewards").font(.aeHeadline)
+                    Text("Operators online: \(s.operatorsOnline) · one operator gets at most 1/\(s.maxShare) of the rewards")
+                        .font(.aeBody).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let pct = s.warmupPercent, let days = s.warmupDaysLeft, days > 0 {
+                        Text("Warm-up: \(pct)% of a full share · full in \(days) days")
+                            .font(.aeBody).foregroundStyle(.secondary)
+                    }
+                    if let share = s.expectedShareWei, share != "0" {
+                        Text("Last hour: +\(EarningsText.aeth(share)) \(EarningsText.unit)\(s.capped ? " · capped at 1/\(s.maxShare)" : "")")
+                            .font(.aeBody).foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Home, under the balance and the actions: once a reward has arrived, the number
+/// in a compact card (160–180 pt — the balance above stays the headline, the
+/// reward stays vivid); before that, one quiet line (no zeros).
 struct HomeEarnings: View {
     @EnvironmentObject var node: NodeController
     @EnvironmentObject var earnings: Earnings
@@ -851,11 +910,10 @@ struct HomeEarnings: View {
     var body: some View {
         if node.enabled {
             let work = earnings.work(node, canProve: !model.address.isEmpty)
-            let prove = model.address.isEmpty ? nil : proveOn
             if earnings.summary.count > 0, earnings.summary.totalWei != "0" {
-                EarningsHero(summary: earnings.summary, work: work, celebration: earnings.celebration, onProve: prove)
+                HomeEarningsCard(summary: earnings.summary, work: work, celebration: earnings.celebration, open: open)
             } else {
-                NodeStatusLine(work: work, action: open, onProve: node.prove ? nil : prove)
+                NodeStatusLine(work: work, action: open, onProve: node.prove || model.address.isEmpty ? nil : proveOn)
             }
         }
     }
@@ -864,6 +922,85 @@ struct HomeEarnings: View {
     private func proveOn() {
         node.proveAddress = model.address
         node.prove = true
+    }
+}
+
+/// The compact earnings card for Home: the aurora and the one reward number at
+/// 40 pt (never the 48 pt balance's rival), a delta for the last hour, and a
+/// line of facts. Tapping opens the Network page, where the full hero lives.
+private struct HomeEarningsCard: View {
+    let summary: EarningsSummary
+    let work: NodeWork
+    var celebration: RewardCelebration?
+    let open: () -> Void
+    @Environment(\.narrowLayout) private var narrow
+    /// On screen (scrolled into view); the aurora only moves while it is.
+    @State private var visible = true
+
+    private var pillText: String {
+        switch work.phase {
+        case .proving: "PROVING"
+        case .verifying: "WORKING"
+        case .starting: "STARTING"
+        case .paused: "PAUSED"
+        }
+    }
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+        Button(action: open) {
+            VStack(alignment: .leading, spacing: narrow ? 10 : 12) {
+                HStack {
+                    Text("Received so far").font(.aeFootnote.weight(.semibold)).foregroundStyle(.white.opacity(0.85))
+                    Spacer(minLength: 8)
+                    LivePill(text: pillText, live: work.isLive, beat: work.height, ring: false)
+                }
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    CountingText(value: WeiMath.aeth(summary.totalWei), decimals: EarningsText.decimals(summary.totalWei))
+                        .font(.heroNumberNarrow)
+                        .monospacedDigit().lineLimit(1).minimumScaleFactor(0.5)
+                        .shadow(color: EarnInk.gold.opacity(0.75), radius: 12)
+                        .shadow(color: .black.opacity(0.18), radius: 2, y: 2)
+                        .overlay(alignment: .topLeading) {
+                            // An overlay, so the label's width never shifts the number.
+                            FloatingReward(celebration: celebration).fixedSize().offset(x: narrow ? 40 : 60, y: -28)
+                        }
+                    Text(EarningsText.unit).font(.aeHeadline).foregroundStyle(.white.opacity(0.9))
+                    Spacer(minLength: 8)
+                    if summary.lastHourWei != "0" { HourDelta(wei: summary.lastHourWei).fixedSize() }
+                }
+                Text(facts)
+                    .font(.aeFootnote.weight(.medium)).foregroundStyle(.white.opacity(0.85))
+                    .lineLimit(1).truncationMode(.tail)
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, narrow ? CardPadding.narrow : CardPadding.wide)
+            .padding(.vertical, narrow ? 20 : 22)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            // Same rule as the hero: one moving thing per screen, and only while
+            // proving and on screen; a live resize holds the last frame.
+            .background { AuroraBackground(hot: true, live: work.isProving && visible) }
+            .overlay { ConfettiBurst(trigger: celebration?.id ?? 0) }
+            .clipShape(shape)
+            .overlay(shape.strokeBorder(.white.opacity(0.28), lineWidth: 1))
+            .shadow(color: EarnInk.pink.opacity(0.30), radius: 10, y: 4)
+            .contentShape(shape)
+        }
+        .buttonStyle(.plain)
+        .help("Open the Network page: the node and the full earnings card")
+        .accessibilityElement(children: .combine)
+        .onAppear { visible = true }
+        .onDisappear { visible = false }
+        .trackingScrollVisibility($visible)
+    }
+
+    /// "+12 today · 24 rewards · last one 3m ago" — what the number is made of.
+    private var facts: String {
+        var parts: [String] = []
+        if summary.todayWei != "0" { parts.append("+\(EarningsText.aeth(summary.todayWei)) today") }
+        parts.append("\(summary.count) \(summary.count == 1 ? "reward" : "rewards")")
+        if let at = summary.lastRewardAt { parts.append("last one \(EarningsText.ago(at, now: Date()))") }
+        return parts.joined(separator: " · ")
     }
 }
 
@@ -901,7 +1038,7 @@ struct NodeStatusLine: View {
     private var line: some View {
         Button(action: action) {
             HStack(spacing: 8) {
-                Circle().fill(work.isLive ? Color.aether : .orange).frame(width: 8, height: 8)
+                Circle().fill(work.isLive ? Color.aether : Color.warn).frame(width: 8, height: 8)
                 Text(text).lineLimit(2)
                 Spacer(minLength: 4)
                 Image(systemName: "chevron.right").foregroundStyle(.tertiary)

@@ -28,8 +28,12 @@ enum ResizeBenchmark {
     /// Run once the window is up (design preview sizes it at 0.5 s; start after that).
     /// A warm-up pass first: the first resize at each size pays cold layout caches,
     /// which would otherwise make whichever pass runs first look worse.
+    /// The app activates and holds a power assertion first: launched from a script
+    /// it stays in the background, and App Nap would suspend its timers mid-storm.
     @MainActor
     static func run() {
+        NSApp.activate(ignoringOtherApps: true)
+        let awake = ProcessInfo.processInfo.beginActivity(options: .userInitiated, reason: "Aether resize benchmark")
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
             guard let win = NSApp.windows.first(where: { $0.isVisible && $0.canBecomeMain }) else {
                 print("resize-benchmark: no window")
@@ -38,7 +42,7 @@ enum ResizeBenchmark {
             storm(win, paused: false, name: "warmup") {
                 storm(win, paused: false, name: "raw") {
                     storm(win, paused: true, name: "paused") {
-                        storm(win, paused: false, name: "raw2") { exit(0) }
+                        storm(win, paused: false, name: "raw2") { _ = awake; exit(0) }
                     }
                 }
             }
@@ -92,8 +96,25 @@ enum ResizeBenchmark {
         let ms = steps.sorted()
         func p(_ q: Double) -> Double { ms[min(ms.count - 1, Int(Double(ms.count - 1) * q))] }
         // A step over one display period means a dropped frame in a real drag.
-        print(String(format: "resize-benchmark %@: steps=%d p50=%.2fms p95=%.2fms max=%.2fms over16.7ms=%d over34ms=%d cpu=%.2fs",
-                     name, ms.count, p(0.5), p(0.95), ms.last!, ms.filter { $0 > 16.7 }.count, ms.filter { $0 > 34 }.count, cpu))
+        let line = String(format: "resize-benchmark %@: steps=%d p50=%.2fms p95=%.2fms max=%.2fms over16.7ms=%d over34ms=%d cpu=%.2fs",
+                          name, ms.count, p(0.5), p(0.95), ms.last!, ms.filter { $0 > 16.7 }.count, ms.filter { $0 > 34 }.count, cpu)
+        print(line)
+        // Launched through `open`, stdout is lost: `-benchmarkReport <path>` also
+        // appends each line to a file, so scripted runs can collect the numbers.
+        if let i = ProcessInfo.processInfo.arguments.firstIndex(of: "-benchmarkReport"),
+           i + 1 < ProcessInfo.processInfo.arguments.count {
+            let path = ProcessInfo.processInfo.arguments[i + 1]
+            // FileHandle(forWritingAtPath:) needs the file to exist; create it on
+            // first use so a fresh run does not silently drop every line.
+            if !FileManager.default.fileExists(atPath: path) {
+                FileManager.default.createFile(atPath: path, contents: nil)
+            }
+            if let h = FileHandle(forWritingAtPath: path) {
+                _ = try? h.seekToEnd()
+                try? h.write(contentsOf: Data((line + "\n").utf8))
+                try? h.close()
+            }
+        }
     }
 }
 #endif

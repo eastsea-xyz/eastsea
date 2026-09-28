@@ -43,6 +43,9 @@ pub struct RpcState {
     pub snapshot: SnapshotCache,
     /// Set when this node proves blocks (protocol 2).
     pub prover: Option<crate::prover::SharedStatus>,
+    /// Set on history v2 networks: the era shards this node holds and checks
+    /// (roadmap B5 phase 1).
+    pub shards: Option<std::sync::Arc<crate::shards::Shards>>,
 }
 
 /// The snapshot being served: (height, serialized bytes).
@@ -382,6 +385,26 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
             let proof = chain.era_proof(era, anchor).map_err(|e| (if e.starts_with("need") { -32602 } else { -32000 }, e))?;
             Ok(json!({ "era": era, "anchor": anchor, "proof": proof }))
         }
+        // This node's shard of an era (roadmap B5 phase 1): the shard bytes,
+        // their commitment and the candidate answering. A peer checks the
+        // Merkle path against the commitment it holds for the era.
+        "aether_shard" => {
+            let era: u64 = param(p, 0)?;
+            let index: u16 = param(p, 1)?;
+            st.shards
+                .as_ref()
+                .ok_or((-32601, "this network keeps no era shards (history v2 only)".to_string()))?
+                .serve(era, index)
+                .map(|held| held.unwrap_or(Value::Null))
+                .map_err(|e| (-32000, e))
+        }
+        // Era shard holding and challenge results (last 7 days), per candidate:
+        // the public statistic of phase 1. No reward weight anywhere in it.
+        "aether_shardStats" => st
+            .shards
+            .as_ref()
+            .map(|s| s.stats(chain))
+            .ok_or((-32601, "this network keeps no era shards (history v2 only)".to_string())),
         // Voting-node candidates (the registry) and the current epoch.
         "aether_candidates" => {
             let g = chain.lock();

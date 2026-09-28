@@ -54,6 +54,10 @@ struct HistoryArgs {
     /// Also delete the era files of pruned eras (keep only their roots).
     #[arg(long)]
     drop_era_files: bool,
+    /// Era shards this Mac holds at most (roadmap B5 phase 1; the disk budget,
+    /// 64 shards ≈ the default 50 GB setting of docs/design/15-node-rewards.md).
+    #[arg(long, default_value_t = aether_node::shards::DEFAULT_MAX_SHARDS)]
+    max_shards: usize,
 }
 
 impl HistoryArgs {
@@ -523,6 +527,7 @@ fn main() {
             }
             let with_file = network.is_some();
             let network_file = network.as_ref().and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+            let max_shards = history.max_shards;
             p2p_args(index, validators, network, &data, port, peers, link_base, offline)
                 .and_then(|args| {
                     if with_file && args.3.is_none() {
@@ -546,6 +551,7 @@ fn main() {
                     }
                     run_node(NodeArgs {
                         history,
+                        max_shards,
                         p2p,
                         chain_id,
                         epochs,
@@ -1235,6 +1241,8 @@ struct NodeArgs {
     network_file: Option<Value>,
     /// Archive or prune (roadmap B4).
     history: aether_node::prune::HistoryMode,
+    /// Era shards this Mac holds at most (roadmap B5 phase 1).
+    max_shards: usize,
 }
 
 fn run_node(a: NodeArgs) {
@@ -1260,6 +1268,7 @@ fn run_node(a: NodeArgs) {
         dev_registrar,
         network_file,
         history,
+        max_shards,
     } = a;
     let faucet = genesis.faucet;
     let registry = || {
@@ -1518,15 +1527,25 @@ fn run_node(a: NodeArgs) {
         spawn_inclusion_lists(chain.clone(), signer.clone(), index, roster_keys, cfg.chain_id, Duration::from_millis(block_time_ms), il_out, il_in);
 
         // A registered voting node keeps proving it is alive while it votes.
+        let mut shard_me = None;
         if network_file.is_some() {
             match aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(&data)) {
                 Ok(keys) => {
+                    shard_me = Some(keys.node_id());
                     tokio::spawn(aether_node::candidate::beacon_loop(chain.clone(), aether_node::candidate::Outbox::Local(gossip_tx.clone()), keys));
                 }
                 Err(e) => tracing::warn!(%e, "no node account: this validator sends no liveness beacons"),
             }
         }
 
+        // Era shards (roadmap B5 phase 1): hold what the draw assigns and
+        // check peers. History v2 networks only; a validator encodes from the
+        // era files it seals itself.
+        let shards = cfg.history_v2.then(|| {
+            let s = std::sync::Arc::new(aether_node::shards::Shards::new(std::path::Path::new(&data), shard_me, max_shards));
+            tokio::spawn(aether_node::shards::run(chain.clone(), None, s.clone()));
+            s
+        });
         if let Some(f) = &faucet_service {
             tracing::info!(address = %f.address, "faucet enabled (aether_faucet)");
         }
@@ -1542,6 +1561,7 @@ fn run_node(a: NodeArgs) {
             handoff: handoff_service,
             snapshot: Default::default(),
             prover,
+            shards,
         };
 
         // Public access: iroh endpoint published to the BitTorrent Mainline DHT.
@@ -1760,6 +1780,8 @@ fn run_follow(
     };
     let cfg = chain_config(chain_id, &genesis);
     // Followers run at the network's 1 s block time.
+    let max_shards = history.max_shards;
+    let history_v2 = cfg.history_v2;
     let history = history.mode(cfg.history_v2, 1000)?;
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -1788,9 +1810,11 @@ fn run_follow(
         // Handoffs in blocks are checked against the committee identity, as validators check them.
         chain.lock().identity = Some(*set.identity());
         watch_upgrades(chain.clone(), std::path::Path::new(&data).join("upgrades"), *set.identity(), chain_id);
+        let mut shard_me = None;
         if let Some(dir) = &candidate_keys {
             let keys = aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(dir))?;
             tracing::info!(voting_key = %hex::encode(keys.validator_key()), beaconer = %keys.beaconer(), "voting-node candidate: beacons every epoch once registered");
+            shard_me = Some(keys.node_id());
             tokio::spawn(aether_node::candidate::beacon_loop(chain.clone(), aether_node::candidate::Outbox::Upstream(upstream.clone()), keys));
         }
         let joining = candidate_keys
@@ -1801,6 +1825,13 @@ fn run_follow(
         if let aether_node::prune::HistoryMode::Prune(r) = &history {
             tokio::spawn(aether_node::prune::run(chain.clone(), r.clone(), None));
         }
+        // Era shards (roadmap B5 phase 1): a follower fetches the eras it is
+        // owed shards of over the B4 path when it no longer keeps their files.
+        let shards = history_v2.then(|| {
+            let s = std::sync::Arc::new(aether_node::shards::Shards::new(std::path::Path::new(&data), shard_me, max_shards));
+            tokio::spawn(aether_node::shards::run(chain.clone(), Some(upstream.clone()), s.clone()));
+            s
+        });
         tracing::info!(height = chain.finalized_height(), rpc_port, "following (not a validator): every block is verified and re-executed here");
         let prover = start_prover(&chain, &data, Some(upstream.clone()));
         let st = RpcState {
@@ -1814,6 +1845,7 @@ fn run_follow(
             handoff: None,
             snapshot: Default::default(),
             prover,
+            shards,
         };
         rpc::serve(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), rpc_port), st).await.map_err(|e| e.to_string())
     })

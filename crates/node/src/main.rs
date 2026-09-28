@@ -28,6 +28,10 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 const DEFAULT_CHAIN_ID: u64 = 7_777;
+/// The public testnet: the one chain with a faucet that must never run the
+/// dev registrar (its genesis registrar key is what actually decides on chain;
+/// local test networks may combine a faucet with the dev registrar).
+const TESTNET_CHAIN_ID: u64 = 7_780;
 const DEV_ACCOUNTS: u8 = 10;
 /// Seed index of the public devnet registrar key (local devnets only).
 const DEV_REGISTRAR: u8 = 11;
@@ -543,6 +547,17 @@ fn main() {
                 .and_then(|args| {
                     if with_file && args.3.is_none() {
                         return Err("network.json has no committee identity: run the node with the network.json written by dkg/reshare".into());
+                    }
+                    Ok(args)
+                })
+                .and_then(|args| {
+                    if dev_registrar && args.4.faucet.is_some() {
+                        if args.1 == TESTNET_CHAIN_ID {
+                            return Err("--dev-registrar is only for test chains without a faucet".into());
+                        }
+                        // A local network that funds through a faucet (devnet tests):
+                        // allowed, but say it — the dev registrar registers any device.
+                        eprintln!("--dev-registrar on a chain with a faucet ({})", args.1);
                     }
                     Ok(args)
                 })

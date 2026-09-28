@@ -88,34 +88,490 @@ const DEVNET_VALIDATORS: u64 = 4;
 
 struct Net {
     rt: tokio::runtime::Runtime,
-    client: aether_net::RpcClient,
+    /// The validators: the fallback, and where writes go.
+    client: std::sync::Arc<aether_net::RpcClient>,
+    /// Follower Macs wallet reads spread over.
+    spread: std::sync::Arc<Spread>,
 }
 
 fn net() -> R<&'static Net> {
     static NET: std::sync::OnceLock<Result<Net, String>> = std::sync::OnceLock::new();
     NET.get_or_init(|| {
-        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(|e| e.to_string())?;
-        let configured = NODES.lock().expect("nodes lock").clone();
-        let ids = configured.unwrap_or_else(|| (1..=DEVNET_VALIDATORS).map(aether_net::devnet_node_id).collect());
-        let client = rt.block_on(aether_net::RpcClient::new(ids)).map_err(|e| e.to_string())?;
-        Ok(Net { rt, client })
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| e.to_string())?;
+        let pinned = PINNED_SERVERS.lock().expect("pinned servers lock").clone();
+        let built: std::result::Result<_, String> = rt.block_on(async {
+            let client = match &pinned {
+                Some((_, validators)) => {
+                    aether_net::RpcClient::with_addrs(validators.clone()).await
+                }
+                None => {
+                    let ids = NODES
+                        .lock()
+                        .expect("nodes lock")
+                        .clone()
+                        .unwrap_or_else(|| {
+                            (1..=DEVNET_VALIDATORS)
+                                .map(aether_net::devnet_node_id)
+                                .collect()
+                        });
+                    aether_net::RpcClient::new(ids).await
+                }
+            };
+            let client = client.map_err(|e| e.to_string())?;
+            let pinned_followers = pinned.as_ref().map(|(f, _)| f.clone()).unwrap_or_default();
+            let endpoint = client.endpoint().clone();
+            Ok((client, Spread::on(endpoint, pinned_followers)))
+        });
+        let (client, spread) = built?;
+        let (client, spread) = (std::sync::Arc::new(client), std::sync::Arc::new(spread));
+        // Ask the validators every few minutes which follower Macs serve
+        // wallets (nothing to ask when the servers were pinned: tests).
+        if pinned.is_none() {
+            let (spread, client) = (spread.clone(), client.clone());
+            rt.spawn(async move {
+                loop {
+                    spread.discover(&client).await;
+                    tokio::time::sleep(Duration::from_secs(5 * 60)).await;
+                }
+            });
+        }
+        Ok(Net { rt, client, spread })
     })
     .as_ref()
     .map_err(|e| WalletError::Network(e.clone()))
+}
+
+// ---------------- wallet reads spread over follower Macs ----------------
+//
+// Capacity review 2026-09-29: iPhone wallets (and any wallet without its own
+// node) poll every 2 s, and asking the validators directly is ~500k req/s on
+// 16 validators at a million phones. Follower Macs — any Mac running
+// `aether run` — announce themselves as wallet servers, and this wallet keeps
+// a few of them active, rotates away from trouble, and falls back to the
+// validators only when no follower answers. Nothing about verification
+// changes: every answer still passes the same certificate, proof and chain
+// checks, so a follower cannot lie — it can only be slow or stale, and the
+// monotonic-height rule already rejects stale.
+
+/// Followers one wallet reads from at once: the connection footprint of a phone.
+const ACTIVE_FOLLOWERS: usize = 3;
+/// Followers remembered at all (discovery merges into this pool).
+const FOLLOWER_POOL: usize = 12;
+/// How long connecting to one follower may take before the next is tried.
+const CONNECT_FOLLOWER: Duration = Duration::from_secs(12);
+
+/// Why a follower is passed over for a while.
+#[derive(Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum Parked {
+    /// It answered "server busy" (its DoS limits): back off, politely.
+    Busy,
+    /// It broke (connect, stream, timeout): rotate away.
+    Error,
+    /// Its answers verify but lag the chain: try a fresher follower.
+    Stale,
+    /// It served something that failed verification: demoted.
+    Lying,
+}
+
+impl Parked {
+    fn as_str(self) -> &'static str {
+        match self {
+            Parked::Busy => "busy",
+            Parked::Error => "error",
+            Parked::Stale => "stale",
+            Parked::Lying => "lying",
+        }
+    }
+
+    /// The first park of its kind, and the longest it can grow to by doubling.
+    fn base(self) -> Duration {
+        match self {
+            Parked::Busy => Duration::from_secs(1),
+            Parked::Error => Duration::from_secs(2),
+            Parked::Stale => Duration::from_secs(5),
+            Parked::Lying => Duration::from_secs(10 * 60),
+        }
+    }
+
+    fn cap(self) -> Duration {
+        match self {
+            Parked::Busy => Duration::from_secs(30),
+            Parked::Error => Duration::from_secs(5 * 60),
+            Parked::Stale => Duration::from_secs(60),
+            Parked::Lying => Duration::from_secs(6 * 60 * 60),
+        }
+    }
+}
+
+/// One follower this wallet may read from, and how it has been behaving.
+struct Follower {
+    addr: aether_net::EndpointAddr,
+    conn: Option<aether_net::Connection>,
+    /// Moving average of call latency (ms); none until the first answer.
+    latency_ms: Option<f64>,
+    /// Passed over until this instant.
+    parked: Option<(Parked, std::time::Instant)>,
+    /// Parks in a row of the same kind (each doubles the next one).
+    strikes: u32,
+}
+
+impl Follower {
+    fn healthy(&self, now: std::time::Instant) -> bool {
+        self.parked.is_none_or(|(_, until)| now >= until)
+    }
+}
+
+/// Reads spread over follower Macs: round-robin over a few active ones,
+/// preferring low latency when (re)filling, rotating away from trouble.
+struct Spread {
+    endpoint: aether_net::Endpoint,
+    inner: std::sync::Mutex<Inner>,
+}
+
+struct Inner {
+    followers: Vec<Follower>,
+    /// The `ACTIVE_FOLLOWERS` ids requests rotate over.
+    active: Vec<aether_net::EndpointId>,
+    /// Next position in the rotation.
+    rr: usize,
+}
+
+/// A fresh active follower: the lowest-latency of a small random sample of
+/// the healthy pool (unmeasured servers win, so new blood is always tried).
+fn choose(
+    followers: &[Follower],
+    active: &[aether_net::EndpointId],
+    now: std::time::Instant,
+) -> Option<aether_net::EndpointId> {
+    use rand::seq::IndexedRandom as _;
+    let candidates: Vec<usize> = followers
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| !active.contains(&f.addr.id) && f.healthy(now))
+        .map(|(i, _)| i)
+        .collect();
+    (0..3)
+        .filter_map(|_| candidates.choose(&mut rand::rng()).copied())
+        .min_by_key(|&i| followers[i].latency_ms.map(|l| l as u64).unwrap_or(0))
+        .map(|i| followers[i].addr.id)
+}
+
+impl Spread {
+    /// On `endpoint` (shared with the validator client), with `pinned`
+    /// followers that are never re-discovered (tests and previews).
+    fn on(endpoint: aether_net::Endpoint, pinned: Vec<aether_net::EndpointAddr>) -> Spread {
+        Spread {
+            endpoint,
+            inner: std::sync::Mutex::new(Inner {
+                followers: pinned
+                    .into_iter()
+                    .map(|addr| Follower {
+                        addr,
+                        conn: None,
+                        latency_ms: None,
+                        parked: None,
+                        strikes: 0,
+                    })
+                    .collect(),
+                active: Vec::new(),
+                rr: 0,
+            }),
+        }
+    }
+
+    /// Ask the validators which follower Macs serve wallets, and merge them
+    /// into the pool (a healthy server is never dropped for a new one; the
+    /// longest-parked inactive one makes room).
+    async fn discover(&self, validators: &aether_net::RpcClient) {
+        let Ok(list) = validators.call("aether_walletServers", json!([])).await else {
+            return;
+        };
+        let ids = list.as_array().map(|a| {
+            a.iter()
+                .filter_map(|s| s.as_str().and_then(|s| s.parse().ok()))
+                .collect::<Vec<aether_net::EndpointId>>()
+        });
+        let Some(ids) = ids else { return };
+        let mut g = self.inner.lock().expect("spread lock");
+        for id in ids {
+            if g.followers.iter().any(|f| f.addr.id == id) {
+                continue;
+            }
+            if g.followers.len() >= FOLLOWER_POOL {
+                let room = (0..g.followers.len())
+                    .filter(|&i| {
+                        !g.active.contains(&g.followers[i].addr.id)
+                            && g.followers[i].parked.is_some()
+                    })
+                    .max_by_key(|&i| g.followers[i].parked.expect("checked").1);
+                match room {
+                    Some(victim) => {
+                        g.followers.remove(victim);
+                    }
+                    None => return, // full of healthy servers: nothing to add
+                }
+            }
+            g.followers.push(Follower {
+                addr: aether_net::EndpointAddr::from(id),
+                conn: None,
+                latency_ms: None,
+                parked: None,
+                strikes: 0,
+            });
+        }
+    }
+
+    /// The next follower to ask, refilling the rotation first: round-robin
+    /// over up to `ACTIVE_FOLLOWERS` healthy ones.
+    fn pick(&self) -> Option<(aether_net::EndpointId, aether_net::EndpointAddr)> {
+        let mut g = self.inner.lock().expect("spread lock");
+        let now = std::time::Instant::now();
+        let mut active: Vec<aether_net::EndpointId> = Vec::new();
+        for id in g.active.iter() {
+            if g.followers
+                .iter()
+                .any(|f| &f.addr.id == id && f.healthy(now))
+            {
+                active.push(*id);
+            }
+        }
+        while active.len() < ACTIVE_FOLLOWERS {
+            let Some(id) = choose(&g.followers, &active, now) else {
+                break;
+            };
+            active.push(id);
+        }
+        g.active = active;
+        g.rr = g.rr.wrapping_add(1);
+        let id = *g.active.get(g.rr % g.active.len().max(1))?;
+        let addr = g.followers.iter().find(|f| f.addr.id == id)?.addr.clone();
+        Some((id, addr))
+    }
+
+    /// A healthy cached connection to `id`, or a fresh one.
+    async fn conn_to(
+        &self,
+        id: &aether_net::EndpointId,
+        addr: &aether_net::EndpointAddr,
+    ) -> Result<aether_net::Connection, aether_net::RpcError> {
+        if let Some(c) = self
+            .inner
+            .lock()
+            .expect("spread lock")
+            .followers
+            .iter()
+            .find(|f| &f.addr.id == id)
+            .and_then(|f| {
+                f.conn
+                    .as_ref()
+                    .filter(|c| c.close_reason().is_none())
+                    .cloned()
+            })
+        {
+            return Ok(c);
+        }
+        let c = aether_net::connect_rpc(&self.endpoint, addr, CONNECT_FOLLOWER)
+            .await
+            .map_err(aether_net::RpcError::Transport)?;
+        if let Some(f) = self
+            .inner
+            .lock()
+            .expect("spread lock")
+            .followers
+            .iter_mut()
+            .find(|f| &f.addr.id == id)
+        {
+            f.conn = Some(c.clone());
+        }
+        Ok(c)
+    }
+
+    /// Record that `id` answered in `took` (a healthy server again).
+    fn answered(&self, id: &aether_net::EndpointId, took: Duration) {
+        let mut g = self.inner.lock().expect("spread lock");
+        let Some(f) = g.followers.iter_mut().find(|f| &f.addr.id == id) else {
+            return;
+        };
+        let ms = took.as_secs_f64() * 1000.0;
+        f.latency_ms = Some(match f.latency_ms {
+            Some(ema) => ema * 0.7 + ms * 0.3,
+            None => ms,
+        });
+        f.strikes = 0;
+        f.parked = None;
+    }
+
+    /// Pass `id` over for a while, longer every time in a row.
+    fn park(&self, id: &aether_net::EndpointId, why: Parked) {
+        let mut g = self.inner.lock().expect("spread lock");
+        let Some(f) = g.followers.iter_mut().find(|f| &f.addr.id == id) else {
+            return;
+        };
+        f.strikes = if f.parked.is_some_and(|(w, _)| w == why) {
+            f.strikes + 1
+        } else {
+            1
+        };
+        let mut for_how_long = why.base();
+        for _ in 1..f.strikes {
+            for_how_long = (for_how_long * 2).min(why.cap());
+        }
+        f.parked = Some((why, std::time::Instant::now() + for_how_long));
+        if matches!(why, Parked::Error | Parked::Lying) {
+            f.conn = None;
+        }
+        g.active.retain(|a| a != id);
+    }
+
+    /// Healthy followers right now (display and diagnostics).
+    fn healthy(&self) -> usize {
+        let g = self.inner.lock().expect("spread lock");
+        let now = std::time::Instant::now();
+        g.followers.iter().filter(|f| f.healthy(now)).count()
+    }
+
+    /// The pool as it stands (diagnostics; tests).
+    fn describe(&self) -> Vec<WalletServerInfo> {
+        let g = self.inner.lock().expect("spread lock");
+        let now = std::time::Instant::now();
+        g.followers
+            .iter()
+            .map(|f| WalletServerInfo {
+                node: f.addr.id.to_string(),
+                active: g.active.contains(&f.addr.id),
+                latency_ms: f.latency_ms.map(|l| l as u32),
+                parked: f.parked.map(|(w, _)| w.as_str().to_string()),
+                parked_for_ms: f
+                    .parked
+                    .map(|(_, until)| until.saturating_duration_since(now).as_millis() as u64),
+            })
+            .collect()
+    }
+}
+
+impl Net {
+    /// One read: follower Macs first, rotating over the active ones on
+    /// trouble, the validators as the fallback when no follower answers.
+    /// A "server busy" follower is answer enough — the load is not moved to
+    /// the validators, the caller simply tries again (it polls anyway).
+    async fn read(&self, method: &str, params: Value) -> anyhow::Result<Value> {
+        let mut busy: Option<String> = None;
+        for _ in 0..=ACTIVE_FOLLOWERS {
+            let Some((id, addr)) = self.spread.pick() else {
+                break;
+            };
+            let conn = match self.spread.conn_to(&id, &addr).await {
+                Ok(c) => c,
+                Err(_) => {
+                    self.spread.park(&id, Parked::Error);
+                    continue;
+                }
+            };
+            let started = std::time::Instant::now();
+            match aether_net::rpc_call(&conn, method, params.clone()).await {
+                Ok(v) => {
+                    self.spread.answered(&id, started.elapsed());
+                    note_served(id);
+                    return Ok(v);
+                }
+                Err(aether_net::RpcError::Server { message, .. })
+                    if message.contains("server busy") =>
+                {
+                    self.spread.park(&id, Parked::Busy);
+                    busy = Some(message);
+                    continue;
+                }
+                Err(aether_net::RpcError::Server { message, .. }) => {
+                    // The follower's own answer (e.g. a pruned height): pass it on.
+                    self.spread.answered(&id, started.elapsed());
+                    note_served(id);
+                    return Err(anyhow::anyhow!(message));
+                }
+                Err(aether_net::RpcError::Transport(_)) => {
+                    self.spread.park(&id, Parked::Error);
+                    continue;
+                }
+            }
+        }
+        match busy {
+            Some(m) => Err(anyhow::anyhow!(m)),
+            None => self.client.call(method, params).await,
+        }
+    }
+}
+
+thread_local! {
+    /// The followers that served the current verified read (this thread): a
+    /// verification failure parks exactly these.
+    static SERVED_BY: std::cell::RefCell<Vec<aether_net::EndpointId>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn note_served(id: aether_net::EndpointId) {
+    SERVED_BY.with_borrow_mut(|v| {
+        if !v.contains(&id) {
+            v.push(id);
+        }
+        while v.len() > 4 {
+            v.remove(0);
+        }
+    });
+}
+
+/// Wrap a verified read so its failures demote whoever served them: stale
+/// answers (a follower behind the chain, or a block not finalized yet) only
+/// rotate away briefly, while anything that failed the certificate, proof or
+/// chain checks is demoted for a long while — and the validator that served
+/// it is rotated past. Nothing about the checks themselves changes.
+fn demote_on_failure<T>(read: impl FnOnce() -> R<T>) -> R<T> {
+    SERVED_BY.with_borrow_mut(Vec::clear);
+    let r = read();
+    if r.is_err() && LOCAL_NODE.lock().expect("local node lock").is_none() {
+        if let Ok(n) = net() {
+            let lying = !matches!(&r, Err(e) if e.to_string().contains("stale") || e.to_string().contains("never go back") || e.to_string().contains("not finalized yet"));
+            SERVED_BY.with_borrow(|served| {
+                for id in served {
+                    n.spread
+                        .park(id, if lying { Parked::Lying } else { Parked::Stale });
+                }
+            });
+            if lying {
+                n.rt.block_on(n.client.rotate());
+            }
+        }
+    }
+    r
 }
 
 /// Fee caps from the node's next base fees: 2x headroom plus a 1 gwei tip
 /// (only base + tip is charged). Older nodes without `base_fee` get the floor.
 fn fee_caps(status: &Value) -> (FeeVector, u128) {
     const GWEI: u128 = 1_000_000_000;
-    let get = |k: &str| status["base_fee"][k].as_str().and_then(|v| v.parse::<u128>().ok()).unwrap_or(GWEI);
-    (FeeVector { exec: get("exec") * 2 + GWEI, state: 0, prove: get("prove") * 2 }, GWEI)
+    let get = |k: &str| {
+        status["base_fee"][k]
+            .as_str()
+            .and_then(|v| v.parse::<u128>().ok())
+            .unwrap_or(GWEI)
+    };
+    (
+        FeeVector {
+            exec: get("exec") * 2 + GWEI,
+            state: 0,
+            prove: get("prove") * 2,
+        },
+        GWEI,
+    )
 }
 
 /// A 21k-gas transfer runs no bytecode (no prove gas): it pays base + tip per gas.
 fn transfer_fee(status: &Value) -> u128 {
     const GWEI: u128 = 1_000_000_000;
-    let base = status["base_fee"]["exec"].as_str().and_then(|v| v.parse::<u128>().ok()).unwrap_or(0);
+    let base = status["base_fee"]["exec"]
+        .as_str()
+        .and_then(|v| v.parse::<u128>().ok())
+        .unwrap_or(0);
     21_000 * (base + GWEI)
 }
 
@@ -155,6 +611,21 @@ fn local_call(port: u16, method: &str, params: Value) -> R<Value> {
     }
 }
 
+/// Methods only a validator serves: writes, and the registrar's attestation.
+/// Everything else a follower Mac can answer, and reads spread over those.
+fn needs_a_validator(method: &str) -> bool {
+    matches!(
+        method,
+        "aether_sendTransaction"
+            | "aether_faucet"
+            | "aether_registerDevice"
+            | "aether_sendBeacon"
+            | "aether_reattest"
+            | "aether_submitProof"
+            | "aether_signHandoff"
+    )
+}
+
 fn call(method: &str, params: Value) -> R<Value> {
     // Copy the setting out first: never hold the lock across a network read.
     let local = *LOCAL_NODE.lock().expect("local node lock");
@@ -162,9 +633,18 @@ fn call(method: &str, params: Value) -> R<Value> {
         return local_call(port, method, params);
     }
     let n = net()?;
-    n.rt.block_on(n.client.call(method, params)).map_err(|e| {
+    let v = if needs_a_validator(method) {
+        n.rt.block_on(n.client.call(method, params))
+    } else {
+        n.rt.block_on(n.read(method, params))
+    };
+    v.map_err(|e| {
         let m = e.to_string();
-        if m.contains("connect") || m.contains("timed out") || m.contains("stream") {
+        if m.contains("connect")
+            || m.contains("timed out")
+            || m.contains("stream")
+            || m.contains("server busy")
+        {
             WalletError::Network(m)
         } else {
             WalletError::Rejected(m)
@@ -180,8 +660,70 @@ pub fn connection() -> String {
         return format!("This Mac's node (127.0.0.1:{port})");
     }
     match net() {
-        Ok(n) => format!("Mainline DHT · {}", n.rt.block_on(n.client.describe())),
+        Ok(n) => {
+            let validators = n.rt.block_on(n.client.describe());
+            match n.spread.healthy() {
+                0 => format!("Mainline DHT · {validators}"),
+                followers => format!("{followers} follower Macs · {validators}"),
+            }
+        }
         Err(e) => format!("offline: {e}"),
+    }
+}
+
+/// A server by node id and one socket address, for pinning (tests, previews).
+#[derive(uniffi::Record)]
+pub struct PinnedServer {
+    pub node: String,
+    pub socket: String,
+}
+
+/// Pin the follower Macs and validators to fixed addresses, bypassing
+/// discovery (tests and previews). Call before anything else.
+#[doc(hidden)]
+#[uniffi::export]
+pub fn pin_servers(followers: Vec<PinnedServer>, validators: Vec<PinnedServer>) -> R<()> {
+    let parse = |s: &PinnedServer| -> R<aether_net::EndpointAddr> {
+        let id: aether_net::EndpointId = s
+            .node
+            .parse()
+            .map_err(|e| WalletError::Invalid(format!("node id: {e}")))?;
+        let sa: std::net::SocketAddr = s
+            .socket
+            .parse()
+            .map_err(|e| WalletError::Invalid(format!("socket: {e}")))?;
+        Ok(aether_net::EndpointAddr::from_parts(
+            id,
+            [aether_net::TransportAddr::Ip(sa)],
+        ))
+    };
+    let (f, v) = (
+        followers.iter().map(&parse).collect::<R<Vec<_>>>()?,
+        validators.iter().map(&parse).collect::<R<Vec<_>>>()?,
+    );
+    *PINNED_SERVERS.lock().expect("pinned servers lock") = Some((f, v));
+    Ok(())
+}
+
+/// One follower Mac in the wallet's read pool (diagnostics; tests).
+#[derive(Debug, uniffi::Record)]
+pub struct WalletServerInfo {
+    pub node: String,
+    /// Requests rotate over it right now.
+    pub active: bool,
+    /// Moving average of its call latency.
+    pub latency_ms: Option<u32>,
+    /// Why it is passed over, when it is.
+    pub parked: Option<String>,
+    pub parked_for_ms: Option<u64>,
+}
+
+/// The follower Macs this wallet's reads spread over (diagnostics; tests).
+#[uniffi::export]
+pub fn wallet_servers() -> Vec<WalletServerInfo> {
+    match net() {
+        Ok(n) => n.spread.describe(),
+        Err(_) => Vec::new(),
     }
 }
 
@@ -191,8 +733,12 @@ fn parse<T: serde::de::DeserializeOwned>(v: &Value, what: &str) -> R<T> {
 
 fn p256_key(compressed: &[u8]) -> R<PublicKey> {
     // Accept compressed (33) or X9.63 uncompressed (65) SEC1 and normalize to compressed.
-    let vk = p256::ecdsa::VerifyingKey::from_sec1_bytes(compressed).map_err(|_| WalletError::Invalid("P-256 public key".into()))?;
-    Ok(PublicKey { scheme: SignerScheme::P256, bytes: vk.to_sec1_point(true).as_bytes().to_vec() })
+    let vk = p256::ecdsa::VerifyingKey::from_sec1_bytes(compressed)
+        .map_err(|_| WalletError::Invalid("P-256 public key".into()))?;
+    Ok(PublicKey {
+        scheme: SignerScheme::P256,
+        bytes: vk.to_sec1_point(true).as_bytes().to_vec(),
+    })
 }
 
 #[uniffi::export]
@@ -337,6 +883,10 @@ fn check_anchor_chain(block: &[u8], links: &[Vec<u8>], chain_id: u64) -> R<()> {
 static COMMITTEE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 static NODES: std::sync::Mutex<Option<Vec<aether_net::EndpointId>>> = std::sync::Mutex::new(None);
 
+/// Fixed follower and validator addresses, when discovery must not run
+/// (tests pin fake servers on both sides). Set by `pin_servers`.
+static PINNED_SERVERS: std::sync::Mutex<Option<(Vec<aether_net::EndpointAddr>, Vec<aether_net::EndpointAddr>)>> = std::sync::Mutex::new(None);
+
 /// Dev mode, on only if someone asked for it (`use_devnet_keys`, or
 /// `"devnet": true` in network.json): the public devnet committee key may then
 /// stand in for a pinned identity. Never the silent default.
@@ -435,6 +985,10 @@ fn trusted_set(validators: u32) -> R<ValidatorSet> {
 /// Balance and nonce, verified against a validator-signed state root.
 #[uniffi::export]
 pub fn verified_account(address: String, validators: u32) -> R<VerifiedAccount> {
+    demote_on_failure(|| verified_account_at(address, validators))
+}
+
+fn verified_account_at(address: String, validators: u32) -> R<VerifiedAccount> {
     let a: Address = address.parse().map_err(|_| WalletError::Invalid("address".into()))?;
     let set = trusted_set(validators)?;
     let v = call("aether_getAccount", json!([a]))?;
@@ -890,6 +1444,10 @@ fn parse_code(code: &str) -> R<([u8; 32], [u8; 32])> {
 
 /// A storage slot of `account`, proven against a certified state root.
 fn verified_slot(account: Address, slot: U256, set: &ValidatorSet) -> R<U256> {
+    demote_on_failure(|| verified_slot_at(account, slot, set))
+}
+
+fn verified_slot_at(account: Address, slot: U256, set: &ValidatorSet) -> R<U256> {
     let v = call("aether_getStorage", json!([account, slot]))?;
     let proof: Proof = parse(&v["proof"], "proof")?;
     let height = v["height"].as_u64().unwrap_or_default();

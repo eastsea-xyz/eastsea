@@ -8,6 +8,10 @@
 //! - Protocol `aether/rpc/1`: one JSON-RPC request per bidirectional stream,
 //!   bounded by a global and a per-peer concurrency limit plus a per-peer
 //!   token bucket (see [`RpcGate`]); over-limit requests get a JSON-RPC error.
+//! - Wallet-server discovery (`aether_announceWalletServer` /
+//!   `aether_walletServers`) rides the same protocol (see [`WalletServers`]):
+//!   follower Macs announce where they serve reads, so phones need not ask
+//!   the validators directly.
 //! - Protocol `aether/p2p/1`: validator consensus traffic. Each bidirectional
 //!   stream carries one TCP connection of the Commonware p2p stack (see
 //!   [`tunnel`]); Commonware's own ed25519 handshake authenticates end to end.
@@ -19,12 +23,13 @@
 
 use anyhow::{anyhow, Context, Result};
 use iroh::address_lookup::AddrFilter;
-use iroh::endpoint::{presets, Connection};
+use iroh::endpoint::presets;
+pub use iroh::endpoint::Connection;
 pub use iroh::protocol::Router;
 use iroh::protocol::{AcceptError, ProtocolHandler};
-pub use iroh::{Endpoint, EndpointId, SecretKey};
-use iroh::{EndpointAddr, TransportAddr};
+pub use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey, TransportAddr};
 use iroh_mainline_address_lookup::DhtAddressLookup;
+use rand::seq::SliceRandom as _;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::borrow::Cow;
@@ -60,6 +65,68 @@ const MAX_RPC_PEERS: usize = 1024;
 /// peer that stalls its stream cannot squat on its permits. Generous for a
 /// 16 MiB message over a relayed path.
 const RPC_IO: Duration = Duration::from_secs(30);
+
+/// Follower Macs that announced themselves as wallet servers (capacity review
+/// 2026-09-29): the list light clients spread their reads over, so ~1M phones
+/// polling every 2 s do not land on the validators. An announcement is the
+/// connection it arrives on, so nobody can announce a node they do not run —
+/// and a node here proves nothing anyway: every answer a wallet gets is
+/// verified against the committee certificate, so a wallet server can only be
+/// slow or stale, never lie.
+pub struct WalletServers {
+    announced: Mutex<HashMap<EndpointId, Instant>>,
+}
+
+/// How long an announcement counts (followers re-announce every minute).
+const WALLET_SERVER_TTL: Duration = Duration::from_secs(15 * 60);
+/// Announcers remembered: the bound on a flood of announcements.
+const WALLET_SERVERS_KEPT: usize = 4_096;
+/// How many one `aether_walletServers` answer carries. A random sample, so
+/// the clients of one validator do not all land on the same few Macs.
+const WALLET_SERVERS_SAMPLED: usize = 64;
+
+impl Default for WalletServers {
+    fn default() -> Self {
+        WalletServers {
+            announced: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl WalletServers {
+    /// Record that `id` announced just now.
+    pub fn announce(&self, id: EndpointId) {
+        self.announce_at(id, Instant::now());
+    }
+
+    fn announce_at(&self, id: EndpointId, now: Instant) {
+        let mut g = self.announced.lock().expect("wallet servers lock");
+        if g.len() >= WALLET_SERVERS_KEPT && !g.contains_key(&id) {
+            // Full: forget the one that announced longest ago.
+            if let Some(oldest) = g.iter().min_by_key(|(_, t)| **t).map(|(k, _)| *k) {
+                g.remove(&oldest);
+            }
+        }
+        g.insert(id, now);
+    }
+
+    /// A random sample of the ids that announced recently (hex-free: the ids).
+    pub fn sample(&self) -> Vec<EndpointId> {
+        self.live_at(Instant::now())
+    }
+
+    fn live_at(&self, now: Instant) -> Vec<EndpointId> {
+        let g = self.announced.lock().expect("wallet servers lock");
+        let mut ids: Vec<_> = g
+            .iter()
+            .filter(|(_, t)| now.saturating_duration_since(**t) < WALLET_SERVER_TTL)
+            .map(|(k, _)| *k)
+            .collect();
+        ids.shuffle(&mut rand::rng());
+        ids.truncate(WALLET_SERVERS_SAMPLED);
+        ids
+    }
+}
 
 /// Write `resp` and close our side, or give up when the peer will not read.
 async fn answer(send: &mut iroh::endpoint::SendStream, resp: &Value) {
@@ -244,6 +311,9 @@ impl RpcGate {
 struct RpcProtocol {
     handler: Handler,
     gate: Arc<RpcGate>,
+    /// Wallet-server discovery, when this endpoint is a place followers
+    /// announce to (any node serving `aether/rpc/1`).
+    wallets: Option<Arc<WalletServers>>,
 }
 
 impl std::fmt::Debug for RpcProtocol {
@@ -252,9 +322,15 @@ impl std::fmt::Debug for RpcProtocol {
     }
 }
 
+/// A successful JSON-RPC answer to `req`.
+fn rpc_ok(req: &Value, result: Value) -> Value {
+    serde_json::json!({ "jsonrpc": "2.0", "id": req.get("id").cloned().unwrap_or(Value::Null), "result": result })
+}
+
 impl ProtocolHandler for RpcProtocol {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
-        let peer = self.gate.peer(conn.remote_id());
+        let remote = conn.remote_id();
+        let peer = self.gate.peer(remote);
         loop {
             let Ok((mut send, mut recv)) = conn.accept_bi().await else {
                 break;
@@ -280,7 +356,24 @@ impl ProtocolHandler for RpcProtocol {
                     _ => return,
                 };
                 let resp = match serde_json::from_slice::<Value>(&bytes) {
-                    Ok(req) => (this.handler)(req).await,
+                    Ok(req) => match (req["method"].as_str(), this.wallets.as_ref()) {
+                        // Wallet-server discovery rides the transport, inside
+                        // the DoS limits, so an announcement is bound to the
+                        // connection it arrived on (see [`WalletServers`]).
+                        (Some("aether_announceWalletServer"), Some(w)) => {
+                            w.announce(remote);
+                            rpc_ok(&req, serde_json::json!({ "ok": true }))
+                        }
+                        (Some("aether_walletServers"), Some(w)) => rpc_ok(
+                            &req,
+                            serde_json::json!(w
+                                .sample()
+                                .iter()
+                                .map(|i| i.to_string())
+                                .collect::<Vec<_>>()),
+                        ),
+                        _ => (this.handler)(req).await,
+                    },
                     Err(e) => {
                         serde_json::json!({ "jsonrpc": "2.0", "id": null, "error": { "code": -32700, "message": e.to_string() } })
                     }
@@ -302,7 +395,14 @@ where
 {
     let h: Handler = Arc::new(move |v| Box::pin(handler(v)));
     let gate = Arc::new(RpcGate::new(MAX_RPC_STREAMS, RPC_STREAMS_PER_PEER, RPC_BURST, RPC_RATE_PER_SEC));
-    let mut r = Router::builder(endpoint).accept(ALPN_RPC, RpcProtocol { handler: h, gate });
+    let mut r = Router::builder(endpoint).accept(
+        ALPN_RPC,
+        RpcProtocol {
+            handler: h,
+            gate,
+            wallets: Some(Arc::new(WalletServers::default())),
+        },
+    );
     if let Some(target) = p2p_target {
         r = r.accept(ALPN_P2P, tunnel::Inbound { target });
         // The background reshare listens on the next port.
@@ -331,10 +431,76 @@ where
     serve(endpoint, handler, None)
 }
 
+/// How one JSON-RPC roundtrip failed.
+#[derive(Debug)]
+pub enum RpcError {
+    /// The server answered, but refused (a JSON-RPC error object).
+    Server { code: i64, message: String },
+    /// The request never completed (connect, stream, timeout, framing).
+    Transport(anyhow::Error),
+}
+
+impl std::fmt::Display for RpcError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RpcError::Server { message, .. } => f.write_str(message),
+            RpcError::Transport(e) => write!(f, "{e:#}"),
+        }
+    }
+}
+
+/// How long one request may take once connected (both for `RpcClient` and for
+/// the wallet read spread, which shares this framing).
+const RPC_CALL: Duration = Duration::from_secs(15);
+
+/// Connect to `addr` for one JSON-RPC conversation, within `within`.
+pub async fn connect_rpc(
+    endpoint: &Endpoint,
+    addr: &EndpointAddr,
+    within: Duration,
+) -> Result<Connection> {
+    match tokio::time::timeout(within, endpoint.connect(addr.clone(), ALPN_RPC)).await {
+        Ok(c) => c.with_context(|| format!("connect {}: ", addr.id.fmt_short())),
+        Err(_) => Err(anyhow!("connect {}: timed out", addr.id.fmt_short())),
+    }
+}
+
+/// One JSON-RPC request over one bidirectional stream of `conn`, ending in
+/// the answer (a JSON-RPC error object included, as `RpcError::Server`).
+pub async fn rpc_call(
+    conn: &Connection,
+    method: &str,
+    params: Value,
+) -> std::result::Result<Value, RpcError> {
+    let req = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
+    let fut = async {
+        let (mut send, mut recv) = conn.open_bi().await.context("open stream")?;
+        send.write_all(&serde_json::to_vec(&req)?).await?;
+        // A server over its limits stops reading and answers with an
+        // error; that answer is still worth reading, so a failed finish
+        // (the stream was reset) is not a failure of the call.
+        let _ = send.finish();
+        let bytes = recv.read_to_end(MAX_MESSAGE).await?;
+        anyhow::Ok(serde_json::from_slice::<Value>(&bytes)?)
+    };
+    let resp = match tokio::time::timeout(RPC_CALL, fut).await {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => return Err(RpcError::Transport(e)),
+        Err(_) => return Err(RpcError::Transport(anyhow!("rpc timed out"))),
+    };
+    match resp.get("error") {
+        Some(e) => Err(RpcError::Server {
+            code: e["code"].as_i64().unwrap_or_default(),
+            message: e["message"].as_str().unwrap_or("rpc error").to_string(),
+        }),
+        None => Ok(resp.get("result").cloned().unwrap_or(Value::Null)),
+    }
+}
+
 /// A client talking to any of a set of known nodes, located via the DHT.
 pub struct RpcClient {
     endpoint: Endpoint,
-    nodes: Vec<EndpointId>,
+    nodes: Vec<EndpointAddr>,
     current: tokio::sync::Mutex<Option<(EndpointId, Connection)>>,
     /// Where the next connection attempt starts in `nodes` (moved by `rotate`).
     start: std::sync::atomic::AtomicUsize,
@@ -342,7 +508,39 @@ pub struct RpcClient {
 
 impl RpcClient {
     pub async fn new(nodes: Vec<EndpointId>) -> Result<Self> {
-        Ok(RpcClient { endpoint: bind(None, vec![]).await?, nodes, current: tokio::sync::Mutex::new(None), start: std::sync::atomic::AtomicUsize::new(0) })
+        Ok(Self::with_endpoint(bind(None, vec![]).await?, nodes))
+    }
+
+    /// A client on an endpoint someone else owns, asking `nodes` by id: a
+    /// follower's public endpoint, so the validators it asks (and announces
+    /// its wallet serving to) see its published node id.
+    pub fn with_endpoint(endpoint: Endpoint, nodes: Vec<EndpointId>) -> Self {
+        RpcClient {
+            endpoint,
+            nodes: nodes.into_iter().map(EndpointAddr::from).collect(),
+            current: tokio::sync::Mutex::new(None),
+            start: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    /// A client on its own endpoint, at explicit addresses (tests, previews).
+    pub async fn with_addrs(addrs: Vec<EndpointAddr>) -> Result<Self> {
+        Ok(RpcClient {
+            endpoint: bind(None, vec![]).await?,
+            nodes: addrs,
+            current: tokio::sync::Mutex::new(None),
+            start: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+
+    /// The endpoint all calls go out on (shared with the wallet read spread).
+    pub fn endpoint(&self) -> &Endpoint {
+        &self.endpoint
+    }
+
+    /// This client's node id: what the servers it asks see.
+    pub fn id(&self) -> EndpointId {
+        self.endpoint.id()
     }
 
     /// Drop the current node and prefer the next one (e.g. it is answering but
@@ -361,14 +559,14 @@ impl RpcClient {
         }
         let mut last = anyhow!("no nodes configured");
         let start = self.start.load(std::sync::atomic::Ordering::Relaxed);
-        for id in self.nodes.iter().cycle().skip(start % self.nodes.len().max(1)).take(self.nodes.len()) {
-            match tokio::time::timeout(Duration::from_secs(20), self.endpoint.connect(EndpointAddr::from(*id), ALPN_RPC)).await {
+        for addr in self.nodes.iter().cycle().skip(start % self.nodes.len().max(1)).take(self.nodes.len()) {
+            match tokio::time::timeout(Duration::from_secs(20), self.endpoint.connect(addr.clone(), ALPN_RPC)).await {
                 Ok(Ok(c)) => {
-                    *cur = Some((*id, c.clone()));
-                    return Ok((*id, c));
+                    *cur = Some((addr.id, c.clone()));
+                    return Ok((addr.id, c));
                 }
-                Ok(Err(e)) => last = anyhow!("connect {}: {e}", id.fmt_short()),
-                Err(_) => last = anyhow!("connect {}: timed out", id.fmt_short()),
+                Ok(Err(e)) => last = anyhow!("connect {}: {e}", addr.id.fmt_short()),
+                Err(_) => last = anyhow!("connect {}: timed out", addr.id.fmt_short()),
             }
         }
         Err(last)
@@ -376,32 +574,14 @@ impl RpcClient {
 
     pub async fn call(&self, method: &str, params: Value) -> Result<Value> {
         let (_, conn) = self.connection().await?;
-        let req = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
-        let fut = async {
-            let (mut send, mut recv) = conn.open_bi().await.context("open stream")?;
-            send.write_all(&serde_json::to_vec(&req)?).await?;
-            // A server over its limits stops reading and answers with an
-            // error; that answer is still worth reading, so a failed finish
-            // (the stream was reset) is not a failure of the call.
-            let _ = send.finish();
-            let bytes = recv.read_to_end(MAX_MESSAGE).await?;
-            anyhow::Ok(serde_json::from_slice::<Value>(&bytes)?)
-        };
-        let resp = match tokio::time::timeout(Duration::from_secs(15), fut).await {
-            Ok(Ok(v)) => v,
-            Ok(Err(e)) => {
+        match rpc_call(&conn, method, params).await {
+            Ok(v) => Ok(v),
+            Err(RpcError::Server { message, .. }) => Err(anyhow!(message)),
+            Err(RpcError::Transport(e)) => {
                 *self.current.lock().await = None;
-                return Err(e);
+                Err(e)
             }
-            Err(_) => {
-                *self.current.lock().await = None;
-                return Err(anyhow!("rpc timed out"));
-            }
-        };
-        if let Some(err) = resp.get("error") {
-            return Err(anyhow!("{}", err["message"].as_str().unwrap_or("rpc error")));
         }
-        Ok(resp.get("result").cloned().unwrap_or(Value::Null))
     }
 
     /// Human-readable description of the current path (for UIs).
@@ -483,13 +663,59 @@ mod tests {
         assert!(len <= MAX_RPC_PEERS, "{len} peers remembered");
     }
 
+    #[test]
+    fn wallet_servers_expire_and_stay_bounded() {
+        let id = |i| {
+            SecretKey::from_bytes(&{
+                let mut s = [0u8; 32];
+                s[0] = i;
+                s
+            })
+            .public()
+        };
+        let w = WalletServers::default();
+        let t = Instant::now();
+        w.announce_at(id(1), t);
+        assert_eq!(w.live_at(t).len(), 1, "a fresh announcement is live");
+        assert!(w
+            .live_at(t + WALLET_SERVER_TTL - Duration::from_secs(1))
+            .iter()
+            .all(|i| *i == id(1)));
+        assert!(
+            w.live_at(t + WALLET_SERVER_TTL + Duration::from_secs(1))
+                .is_empty(),
+            "an announcement expires"
+        );
+        // The registry is bounded, however many announce.
+        for i in 0..=(WALLET_SERVERS_KEPT as u8) + 1 {
+            w.announce_at(id((i % 254) as u8 + 2), t + Duration::from_secs(i as u64));
+        }
+        let kept = w.live_at(t + Duration::from_secs(1)).len();
+        assert!(
+            kept <= WALLET_SERVERS_KEPT,
+            "{kept} wallet servers remembered"
+        );
+        // A sample is a bounded, live-only subset.
+        let sample = w.sample();
+        assert!(
+            sample.len() <= WALLET_SERVERS_SAMPLED,
+            "{:?} sampled",
+            sample.len()
+        );
+    }
+
     /// One JSON-RPC call over one fresh bidirectional stream, ending in the
     /// response (an error object included), like `RpcClient` does.
     async fn rpc(conn: &Connection, method: &str) -> Value {
         let (mut send, mut recv) = conn.open_bi().await.unwrap();
-        send.write_all(&serde_json::to_vec(&serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": [] })).unwrap())
-            .await
-            .unwrap();
+        send.write_all(
+            &serde_json::to_vec(
+                &serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": [] }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
         let _ = send.finish();
         let bytes = recv.read_to_end(MAX_MESSAGE).await.unwrap();
         serde_json::from_slice(&bytes).unwrap()
@@ -526,27 +752,112 @@ mod tests {
         });
         // One concurrent stream per peer, a bucket that never runs dry.
         let router = Router::builder(server)
-            .accept(ALPN_RPC, RpcProtocol { handler, gate: Arc::new(RpcGate::new(4, 1, u32::MAX, u32::MAX)) })
+            .accept(
+                ALPN_RPC,
+                RpcProtocol {
+                    handler,
+                    gate: Arc::new(RpcGate::new(4, 1, u32::MAX, u32::MAX)),
+                    wallets: None,
+                },
+            )
             .spawn();
 
-        let client = Endpoint::builder(presets::Minimal).relay_mode(iroh::RelayMode::Disabled).bind().await.unwrap();
-        let addr = EndpointAddr::from_parts(id, [TransportAddr::Ip(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port))]);
+        let client = Endpoint::builder(presets::Minimal)
+            .relay_mode(iroh::RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let addr = EndpointAddr::from_parts(
+            id,
+            [TransportAddr::Ip(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                port,
+            ))],
+        );
         let conn = client.connect(addr, ALPN_RPC).await.unwrap();
 
-        let holding = tokio::spawn({ let c = conn.clone(); async move { rpc(&c, "hold").await } });
-        tokio::time::timeout(Duration::from_secs(10), held.notified()).await.expect("the handler started");
+        let holding = tokio::spawn({
+            let c = conn.clone();
+            async move { rpc(&c, "hold").await }
+        });
+        tokio::time::timeout(Duration::from_secs(10), held.notified())
+            .await
+            .expect("the handler started");
 
-        let busy = tokio::time::timeout(Duration::from_secs(10), rpc(&conn, "ping")).await.expect("answered, not hung");
-        let err = busy["error"]["message"].as_str().expect("a busy error, not a result");
+        let busy = tokio::time::timeout(Duration::from_secs(10), rpc(&conn, "ping"))
+            .await
+            .expect("answered, not hung");
+        let err = busy["error"]["message"]
+            .as_str()
+            .expect("a busy error, not a result");
         assert!(err.contains("server busy"), "{err}");
 
         release.notify_one();
-        let held_answer = tokio::time::timeout(Duration::from_secs(10), holding).await.expect("the held call finished").unwrap();
+        let held_answer = tokio::time::timeout(Duration::from_secs(10), holding)
+            .await
+            .expect("the held call finished")
+            .unwrap();
         assert_eq!(held_answer["result"], "held");
 
-        let again = tokio::time::timeout(Duration::from_secs(10), rpc(&conn, "ping")).await.expect("the limit was released");
+        let again = tokio::time::timeout(Duration::from_secs(10), rpc(&conn, "ping"))
+            .await
+            .expect("the limit was released");
         assert_eq!(again["result"], "pong");
         client.close().await;
+        let _ = router.shutdown().await;
+    }
+
+    /// Wallet-server discovery over a real `aether/rpc/1` connection: a
+    /// follower announces, and another client learns its node id from the
+    /// same server. Localhost only: no relay, no DHT.
+    #[tokio::test]
+    async fn wallet_server_discovery_rides_the_rpc_transport() {
+        let secret = SecretKey::generate();
+        let id = secret.public();
+        let server = Endpoint::builder(presets::Minimal)
+            .relay_mode(iroh::RelayMode::Disabled)
+            .alpns(vec![ALPN_RPC.to_vec()])
+            .secret_key(secret.clone())
+            .bind()
+            .await
+            .unwrap();
+        let port = server
+            .bound_sockets()
+            .into_iter()
+            .find(|a| a.is_ipv4())
+            .expect("an IPv4 socket")
+            .port();
+        // The interception answers before the handler, which never runs here.
+        let router = serve_rpc(server, |_req| async move {
+            unreachable!("discovery is answered by the transport")
+        });
+        let addr = EndpointAddr::from_parts(
+            id,
+            [TransportAddr::Ip(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                port,
+            ))],
+        );
+
+        let announcer = RpcClient::with_addrs(vec![addr.clone()]).await.unwrap();
+        announcer
+            .call("aether_announceWalletServer", serde_json::json!([]))
+            .await
+            .expect("announced");
+        let reader = RpcClient::with_addrs(vec![addr]).await.unwrap();
+        let listed = reader
+            .call("aether_walletServers", serde_json::json!([]))
+            .await
+            .expect("listed");
+        let mine = announcer.id().to_string();
+        assert!(
+            listed
+                .as_array()
+                .is_some_and(|a| a.iter().any(|s| s.as_str() == Some(mine.as_str()))),
+            "the announcer's own node id {mine} is listed: {listed}"
+        );
+        announcer.endpoint().close().await;
+        reader.endpoint().close().await;
         let _ = router.shutdown().await;
     }
 }

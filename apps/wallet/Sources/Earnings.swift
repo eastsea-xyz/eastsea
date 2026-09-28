@@ -149,7 +149,7 @@ struct EarningsHero: View {
 
     private var pillText: String {
         switch work.phase {
-        case .proving: summary.count > 0 ? "EARNING" : "PROVING"
+        case .proving: "PROVING"
         case .verifying: "WORKING"
         case .starting: "STARTING"
         case .paused: "PAUSED"
@@ -220,9 +220,9 @@ struct EarningsHero: View {
         case .proving where summary.count > 0:
             "This Mac's GPU is proving blocks\(proofsText). Every amount here was paid on chain."
         case .proving:
-            "This Mac's GPU is proving blocks\(proofsText). The first valid proof of a block gets paid."
+            "This Mac's GPU is proving blocks\(proofsText). The first valid proof of a block gets a reward."
         case .verifying:
-            "Your Mac checks every block itself. Checking alone earns nothing yet on testnet."
+            "Your Mac checks every block itself. Checking alone is not rewarded on testnet."
         case .starting:
             work.height > 0 ? "Catching up with the network · block #\(work.height)" : "Starting the node…"
         case .paused(let why):
@@ -239,7 +239,7 @@ private struct EarnedBlock: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Earned so far").font(.aeFootnote.weight(.semibold)).foregroundStyle(.white.opacity(0.78))
+            Text("Received so far").font(.aeFootnote.weight(.semibold)).foregroundStyle(.white.opacity(0.78))
             BigNumber(value: WeiMath.aeth(summary.totalWei), decimals: EarningsText.decimals(summary.totalWei),
                       unit: EarningsText.unit, glow: EarnInk.gold)
                 // An overlay, so the label's width never shifts the number.
@@ -358,7 +358,7 @@ private struct StatTile: View {
     }
 }
 
-/// "● EARNING", with a ring that keeps pulsing and a heartbeat on every new block.
+/// "● PROVING", with a ring that keeps pulsing and a heartbeat on every new block.
 struct LivePill: View {
     let text: String
     let live: Bool
@@ -411,7 +411,7 @@ private struct ProveCallToAction: View {
                 Image(systemName: "bolt.fill").font(.aeHeadline)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Prove blocks on this Mac's GPU").font(.aeHeadline)
-                    Text("to earn test AETH").font(.aeCaption.weight(.semibold)).opacity(0.8)
+                    Text("for test AETH rewards").font(.aeCaption.weight(.semibold)).opacity(0.8)
                 }
                 Spacer(minLength: 4)
                 Image(systemName: "chevron.right").font(.aeHeadline)
@@ -422,7 +422,7 @@ private struct ProveCallToAction: View {
             .shadow(color: .black.opacity(0.2), radius: 8, y: 4)
         }
         .buttonStyle(.plain)
-        .help("Uses the GPU and power while on. The first valid proof of a block is paid to this wallet.")
+        .help("Uses the GPU and power while on, at your cost. The first valid proof of a block gets a test AETH reward in this wallet.")
     }
 }
 
@@ -658,7 +658,7 @@ struct ConfettiBurst: View {
 
 // MARK: - Compact indicators
 
-/// A small gradient capsule: "● Earning · +1.5 test AETH today" or "● Working · 42 blocks".
+/// A small gradient capsule: "● Proving · +1.5 test AETH today" or "● Working · 42 blocks".
 struct EarningsBadge: View {
     let summary: EarningsSummary
     let work: NodeWork
@@ -685,7 +685,7 @@ struct EarningsBadge: View {
 
     private var line: String {
         switch work.phase {
-        case .proving: "Earning · +\(EarningsText.aeth(summary.todayWei)) \(EarningsText.unit) today"
+        case .proving: "Proving · +\(EarningsText.aeth(summary.todayWei)) \(EarningsText.unit) today"
         case .verifying: "Working · \(work.blocksVerified) blocks verified"
         case .starting: "Starting…"
         case .paused: "Paused"
@@ -887,7 +887,7 @@ struct NodeStatusLine: View {
             Spacer(minLength: 4)
             Button(action: prove) { Label("Prove blocks", systemImage: "bolt.fill") }
                 .buttonStyle(.borderedProminent)
-                .help("Uses the GPU and power while on. The first valid proof of a block is paid to this wallet.")
+                .help("Uses the GPU and power while on, at your cost. The first valid proof of a block gets a test AETH reward in this wallet.")
         }
         .padding(.horizontal, 16).padding(.vertical, 12)
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))

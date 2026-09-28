@@ -2,21 +2,22 @@
 
 **English** · [한국어](README.ko.md) · [中文](README.zh-CN.md) · [日本語](README.ja.md) · [Tiếng Việt](README.vi.md) · [Español](README.es.md)
 
-> Any Mac can be a validator, and your Mac verifies your wallet itself. Today, validators on different home internet lines reach consensus over public paths, and the Mac and iPhone wallet apps work against that network.
+> Apple silicon Macs can register as voting nodes, and your Mac verifies your wallet itself. Today, validators on different home internet lines reach consensus over public paths, and the Mac and iPhone wallet apps work against that network.
 
 [![Legal Disclaimer](https://img.shields.io/badge/Legal-Disclaimer%20%26%20Terms-red.svg)](DISCLAIMER.md)
 
 > [!IMPORTANT]
-> Aether Node is experimental, non-commercial research software provided **"AS IS"**. It is not a production blockchain and has not been audited. All tokens (AETH) and rewards are test artifacts with **zero monetary value**. See [DISCLAIMER.md](DISCLAIMER.md).
+> Aether Node is experimental, non-commercial research software provided **"AS IS"**. It is not a production blockchain and has not had an independent security audit. On the testnet, AETH and all rewards are test tokens with **zero monetary value**, and they do not carry over to any mainnet. Nothing here is investment, legal or tax advice. See [DISCLAIMER.md](DISCLAIMER.md).
 
 ## What it is
 
 - **Mac-first.**
   - Wallet keys live in the Secure Enclave and every payment asks for Touch ID. There is no seed phrase.
+  - If you lose the device and have not set up a recovery key, nobody can restore the account.
   - A second Apple device can be registered as the recovery key.
 - **Verify, don't trust.**
   - The wallet checks each balance on the device: one BLS threshold signature from the validator committee, plus an EIP-7864 state proof.
-  - It never takes a server's word for it.
+  - It trusts the committee key it ships with, not a server's word.
 - **No ports, no VPN.**
   - Validators and wallets find each other by node ID on the BitTorrent Mainline DHT.
   - They connect over iroh QUIC with hole punching, and fall back to a relay when that fails.
@@ -66,7 +67,7 @@ aether-agent setup all --apply     # register the MCP server "aether" with every
 
 - **Tools:** status, wallet, balance, send, pay_many (one transaction), receipt, history.
 - **Default limits:** 1 AETH per payment and 10 AETH per 24 hours. Change them with `aether-agent policy set`, which asks for Touch ID.
-- **Enforced on chain:** the agent pays with a session key of its account; the contract checks every payment against the limits, the allowed recipients and the expiry. No local file or process can get past them. Gas comes from a separate small balance.
+- **Enforced on chain:** the agent pays with a session key of its account; the contract checks every payment against the limits, the allowed recipients and the expiry. Editing local files or processes does not lift them; only the owner can change them, with Touch ID. Gas comes from a separate small balance.
 - Details: [AGENTS.md](AGENTS.md) and [the skill file](agents/skills/aether-wallet/SKILL.md).
 
 ### Run a real network
@@ -92,6 +93,16 @@ target/debug/aether balance 0x… --rpc http://127.0.0.1:8547   # verified local
 target/debug/aether batch --from-dev 1 --to 0xA,0xB --value 1  # several payments, one signature
 target/debug/aether blocks 10
 ```
+
+## Planned mainnet rules
+
+The app shows the same text (`VotingRules.mainnetRewardsRule`):
+
+> Planned for the future mainnet, which is not live: the rules may change before launch, and after it only by a committee-signed upgrade. No token sale, no premine and no founder allocation; the founder's Macs follow the same rules as everyone's. Half of each block's reward goes to registered Macs that stay online, shared every hour, and half to registered Macs that prove blocks. One operator gets at most 1/16 of each half, and the rest is never issued; once 16 operators are online, all of it is shared. The reward starts at 1 AETH a block and shrinks 15% a year, down to a floor of 0.1 AETH a block. Testnet AETH does not carry over. Nothing here promises a price, a return or a way to cash out.
+
+- **Registration:** a Mac joins through a registration service, currently run by Pipln, that checks an Apple DeviceCheck token with Apple. Apple does not sponsor or endorse Aether.
+- **Founder reserve keys:** the founder's only special permission is that one Mac may run up to 3 reserve validator keys, and only while fewer than 4 independent operators qualify to vote. Reserve keys get no rewards.
+- **What 1/16 does not do:** it is counted per wallet address. Someone with several wallets and several real Macs gets several shares.
 
 ## Status (2026-09-26)
 

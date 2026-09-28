@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Said the same way wherever the verification state shows (Home, menu bar).
 enum NetworkPausedText {
-    static let help = "The network has not made a new block for a while, so there is nothing new to verify. The balance shown is the last one this device verified, and nothing is lost. It updates by itself when blocks resume."
+    static let help = "The network has not made a new block for a while, so there is nothing new to verify. The balance shown is the last one this device verified; a pause by itself does not move funds. It updates by itself when blocks resume."
 
     /// "Network paused · last block 3 min ago".
     static func line(since: Date, now: Date) -> String {

@@ -369,7 +369,7 @@ private struct SecurityPage: View {
                     Image(systemName: "lock.shield.fill").font(.system(size: 34)).foregroundStyle(Color.aether)
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Protected by this device").font(.aeHeadline)
-                        Text("Your key was created inside the Secure Enclave and can never be copied out. Every payment asks for Touch ID or your password. There is no seed phrase to lose.")
+                        Text("Your key was created inside the Secure Enclave and can never be copied out. Every payment asks for Touch ID or your password. If you lose every device and have no recovery set up, nobody can restore the funds.")
                             .font(.aeBody).foregroundStyle(.secondary)
                     }
                 }
@@ -497,8 +497,8 @@ private struct VotingNodeRow: View {
                 case nil:
                     EmptyView()
                 }
-                DisclosureGroup("Mainnet reward rules") {
-                    Text(VotingRules.mainnetRewardsRule).font(.aeFootnote).foregroundStyle(.secondary)
+                DisclosureGroup("Planned mainnet rules") {
+                    Text(VotingRules.mainnetRewardsRule + " " + VotingRules.founderReserveRule).font(.aeFootnote).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .font(.aeFootnote)
@@ -537,7 +537,7 @@ private struct VotingNodeRow: View {
             v.candidates < VotingRules.minCandidates
                 ? "Your Mac proves it is online every hour, for free. The network starts drawing voting Macs once \(VotingRules.minCandidates) Macs are registered (\(v.candidates) so far) and each has been online \(VotingRules.minStreakEpochs) hours in a row."
                 : "Your Mac proves it is online every hour, for free. After \(VotingRules.minStreakEpochs) hours in a row it enters the daily draw of voting Macs (\(v.candidates) registered)."
-        case .some: "One Mac, one voting node. Your Mac proves it is alive every epoch; the longest-running Macs are picked to sign blocks, and no owner can hold a third."
+        case .some: "One Mac, one voting node. Your Mac proves it is alive every epoch; the longest-running Macs are picked to sign blocks, and no single operator address can hold a third of the seats."
         case .none: "Checking the network…"
         }
     }
@@ -719,7 +719,7 @@ private struct VerifiedBadge: View {
             Label("Verified", systemImage: "checkmark.shield.fill")
                 .font(.aeCaption.weight(.semibold)).foregroundStyle(.secondary)
                 .padding(.horizontal, 10).padding(.vertical, 4)
-                .help("This device checked the balance itself against the validators' signature. No server was trusted.")
+                .help("This device checked the balance itself against the validators' signature, using the committee key shipped with the app instead of a server's word.")
         } else if model.networkOutdated {
             Label("This app is out of date · updating", systemImage: "arrow.down.circle.fill")
                 .font(.aeCaption.weight(.semibold)).foregroundStyle(.orange)

@@ -106,7 +106,7 @@ struct SettingsView: View {
                 node.prove = $0
             }))
             .disabled(model.address.isEmpty)
-            .help("Your node proves recent blocks with Metal. The first valid proof of a block is paid to this wallet. Uses the GPU and power while on.")
+            .help("Your node proves recent blocks with Metal. The first valid proof of a block gets a test AETH reward in this wallet. Uses the GPU and power while on, at your cost.")
             Text("Your node verifies every block itself and your wallet asks it instead of the network. Quitting Aether stops it.")
                 .font(.caption).foregroundStyle(.secondary)
             Divider()

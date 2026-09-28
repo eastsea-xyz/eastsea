@@ -3,12 +3,18 @@
 // (origins, call data) is only ever set as text, never as HTML.
 
 import { aethToWei, formatAeth, shortAddress, weiToAeth } from '../src/lib/units.js';
+import { formatTokenAmount } from '../src/lib/tokens.js';
+import { nextPauseState, pausedLine, PAUSE_HELP } from '../src/lib/pause.js';
+import { TERMS_VERSION, DISCLAIMER_URL, NOTICE_POINTS } from '../src/lib/terms.js';
 
 const params = new URLSearchParams(location.search);
 const approveId = params.get('approve');
 if (approveId) document.body.classList.add('window');
 const app = document.getElementById('app');
 let tab = 'home';
+let pauseState = null; // the network-pause tracker, for as long as this popup is open
+let updaters = []; // what the 15 s poll re-runs while the popup is open
+setInterval(() => { for (const u of updaters) Promise.resolve().then(u).catch(() => {}); }, 15_000);
 
 async function op(name, args) {
   const r = await chrome.runtime.sendMessage({ op: name, args });
@@ -59,6 +65,19 @@ function render(...nodes) {
 
 // ---- onboarding ----
 
+/** The one-time notice, with the same risk points as the app's terms. */
+function noticeView() {
+  const out = h('div');
+  const btn = h('button', { class: 'primary' }, 'I understand');
+  btn.addEventListener('click', action(btn, out, async () => { await op('acceptTerms'); refresh(); }));
+  render(header(), h('div', { class: 'card notice' },
+    h('h2', {}, 'Before you use Aether'),
+    ...NOTICE_POINTS.map((p) => h('p', { class: 'small' }, p)),
+    h('a', { class: 'small', href: DISCLAIMER_URL, target: '_blank', rel: 'noreferrer' }, 'Read the full terms and disclaimer'),
+    btn,
+    out));
+}
+
 function onboarding() {
   const out = h('div');
   const pw = h('input', { type: 'password', autocomplete: 'new-password', placeholder: 'At least 8 characters', required: true });
@@ -71,7 +90,7 @@ function onboarding() {
   };
   const form = h('form', { class: 'card' },
     h('h2', {}, 'Create a wallet'),
-    h('p', { class: 'muted small' }, 'A new key is made in this browser and encrypted with your password. It works without the Aether app. This is the testnet: test AETH has no value.'),
+    h('p', { class: 'muted small' }, 'A new key is made in this browser and encrypted with your password. It works without the Aether app. This is the testnet: test AETH has no value. Experimental software, provided as is and not independently audited.'),
     h('label', {}, 'Password', pw),
     h('label', {}, 'Password again', pw2),
     create,
@@ -139,16 +158,36 @@ async function approvalView(s) {
 
 function nav() {
   const b = (id, label) => h('button', { 'aria-current': tab === id ? 'page' : null, onclick: () => { tab = id; refresh(); } }, label);
-  return h('nav', { 'aria-label': 'Sections' }, b('home', 'Home'), b('activity', 'Activity'), b('sites', 'Sites'), b('settings', 'Settings'));
+  return h('nav', { 'aria-label': 'Sections' }, b('home', 'Home'), b('assets', 'Assets'), b('activity', 'Activity'), b('sites', 'Sites'), b('settings', 'Settings'));
+}
+
+/** The balance pill: "Block N", or the paused state when no block for 60 s. */
+function nodePill() {
+  const node = h('span', { class: 'pill' }, 'Connecting…');
+  const show = (a) => {
+    pauseState = nextPauseState(pauseState, { now: Date.now(), height: a.height, blockAt: a.blockAt });
+    if (pauseState.pausedSince != null) {
+      node.textContent = pausedLine(pauseState.pausedSince, Date.now());
+      node.className = 'pill paused';
+      node.title = PAUSE_HELP;
+    } else {
+      node.textContent = `Block ${a.height}`;
+      node.className = 'pill good';
+      node.removeAttribute('title');
+    }
+  };
+  return { node, show };
 }
 
 async function home(s) {
   const out = h('div');
   const bal = h('div', { class: 'balance' }, '…');
-  const node = h('span', { class: 'pill' }, 'Connecting…');
+  const { node, show } = nodePill();
   const addr = h('button', { class: 'link mono', title: 'Copy address', onclick: async () => { await navigator.clipboard.writeText(s.address); addr.textContent = 'Copied'; setTimeout(() => { addr.textContent = shortAddress(s.address); }, 900); } }, shortAddress(s.address));
-  op('account').then((a) => { bal.textContent = `${formatAeth(a.balance)} AETH`; node.textContent = `Block ${a.height}`; node.classList.add('good'); })
-    .catch((e) => { bal.textContent = '—'; node.textContent = 'No node'; out.replaceChildren(message('error', e.message)); });
+  const load = () => op('account').then((a) => { bal.textContent = `${formatAeth(a.balance)} AETH`; show(a); })
+    .catch((e) => { bal.textContent = '—'; node.textContent = 'No node'; node.className = 'pill'; out.replaceChildren(message('error', e.message)); });
+  load();
+  updaters = [load];
 
   const to = h('input', { placeholder: '0x… recipient', spellcheck: 'false' });
   const amount = h('input', { placeholder: 'Amount in AETH', inputmode: 'decimal' });
@@ -168,8 +207,60 @@ async function home(s) {
   }));
   const receive = h('button', { onclick: () => navigator.clipboard.writeText(s.address).then(() => out.replaceChildren(message('ok', 'Address copied.'))) }, h('span', { class: 'ico' }, '⬇'), 'Receive');
   const send = h('button', { onclick: () => { sendForm.hidden = !sendForm.hidden; if (!sendForm.hidden) to.focus(); } }, h('span', { class: 'ico' }, '↗'), 'Send');
-  return [h('div', { class: 'card hero' }, h('div', { class: 'row', style: 'justify-content:center' }, addr, node), bal, h('div', { class: 'small muted' }, 'Aether testnet')),
+  return [h('div', { class: 'card hero' }, h('div', { class: 'row', style: 'justify-content:center' }, addr, node), bal,
+    h('div', { class: 'small muted' }, 'Aether testnet'),
+    h('div', { class: 'small muted' }, 'Read from the node · not verified in the browser')),
     h('div', { class: 'actions' }, receive, send, faucet), sendForm, out];
+}
+
+// ---- assets ----
+
+function agoLine(ts, now = Date.now()) {
+  const s = Math.max(0, Math.floor((now - ts) / 1000));
+  if (s < 45) return 'Updated just now';
+  const m = Math.max(1, Math.floor(s / 60));
+  return m < 120 ? `Updated ${m} min ago` : `Updated ${Math.floor(m / 60)} h ago`;
+}
+
+function holdingRow({ symbol, name, address, amount }) {
+  return h('div', { class: 'item', title: address }, h('span', { class: 'avatar', 'aria-hidden': 'true' }, (symbol[0] || '?').toUpperCase()),
+    h('div', { class: 'grow' }, h('div', {}, name || symbol), h('div', { class: 'small muted mono' }, shortAddress(address))),
+    amount, ' ', h('span', { class: 'muted' }, symbol));
+}
+
+async function assetsView(s) {
+  const aethAmt = h('strong', {}, '…');
+  const rows = h('div', { class: 'list' });
+  const note = h('div', { class: 'small muted' }, 'Looking for tokens…');
+  const updated = h('div', { class: 'small muted' });
+  const load = async (force) => {
+    const [acct, assets] = await Promise.allSettled([op('account'), op('assets', { force })]);
+    if (acct.status === 'fulfilled') aethAmt.replaceChildren(`${formatAeth(acct.value.balance)} AETH`);
+    else aethAmt.replaceChildren('—');
+    if (assets.status === 'rejected') {
+      note.textContent = 'Could not read tokens from the node. It tries again shortly.';
+      return;
+    }
+    const t = assets.value;
+    rows.replaceChildren(...t.tokens.map((x) => holdingRow({
+      symbol: x.token.symbol,
+      name: x.token.name,
+      address: x.token.address,
+      amount: h('strong', { class: 'nowrap' }, formatTokenAmount(x.balance, x.token.decimals)),
+    })));
+    note.replaceChildren(t.tokens.length ? '' : t.error ? 'Could not read tokens from the node. It tries again shortly.' : t.updated != null ? 'No other tokens in this wallet.' : 'Looking for tokens…');
+    updated.textContent = t.updated != null ? agoLine(t.updated) : '';
+  };
+  load(true);
+  updaters = [() => load(false)];
+  // One card like the app's Assets sheet; nothing in this popup is verified here,
+  // so the one label covers the AETH balance and the tokens alike.
+  return [h('div', { class: 'card' },
+    h('div', { class: 'row' }, h('h2', { class: 'grow' }, 'Assets'), h('span', { class: 'small muted nowrap' }, 'Aether testnet')),
+    h('div', { class: 'small muted' }, 'Read from the node · not verified in the browser'),
+    holdingRow({ symbol: 'AETH', name: 'Aether', address: s.address, amount: aethAmt }),
+    h('h2', {}, 'Tokens'),
+    rows, note, updated)];
 }
 
 async function activity() {
@@ -223,6 +314,7 @@ function settingsView(s) {
 }
 
 async function refresh() {
+  updaters = [];
   let s;
   try {
     s = await op('state');
@@ -230,12 +322,13 @@ async function refresh() {
     render(header(), message('error', e.message));
     return;
   }
+  if (s.terms < TERMS_VERSION) return noticeView();
   if (!s.exists) return onboarding();
   if (!s.unlocked) return unlockView(s.address);
   if (approveId) return approvalView(s);
   const lock = h('button', { class: 'link small', onclick: async () => { await op('lock'); refresh(); } }, 'Lock');
   const pendingNote = s.approvals.length ? h('div', { class: 'warn' }, `${s.approvals.length} request(s) waiting in their approval window.`) : null;
-  const views = { home, activity, sites: sitesView, settings: settingsView };
+  const views = { home, assets: assetsView, activity, sites: sitesView, settings: settingsView };
   render(header(lock), nav(), pendingNote, ...(await views[tab](s)));
 }
 

@@ -33,6 +33,8 @@ try {
   const id = new URL(sw.url()).host;
   const popup = await ctx.newPage();
   await popup.goto(`chrome-extension://${id}/ui/popup.html`);
+  // First run: accept the one-time notice, then create the wallet.
+  await popup.getByRole('button', { name: 'I understand' }).click();
   const pws = popup.locator('input[type=password]');
   await pws.nth(0).fill('e2e-password-1'); await pws.nth(1).fill('e2e-password-1');
   await popup.getByRole('button', { name: 'Create wallet' }).click();

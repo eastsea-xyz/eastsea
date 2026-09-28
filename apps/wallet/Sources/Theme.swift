@@ -36,6 +36,27 @@ extension Font {
     static let heroNumberNarrow = Font.system(size: 40, weight: .heavy, design: .rounded)
 }
 
+extension Color {
+    /// Warning text and dots. System orange is 2.6:1 on white, so light mode gets
+    /// a dark amber (4.7:1) and dark mode a bright one — both over 4.5:1 on the
+    /// card backgrounds (docs/research/design-critique-2026-09.md).
+    static let warn: Color = {
+        #if os(macOS)
+        Color(NSColor(name: nil, dynamicProvider: { appearance in
+            appearance.bestMatch(from: [.darkAqua, .vibrantDark]) == nil
+                ? NSColor(red: 0.68, green: 0.38, blue: 0.0, alpha: 1)
+                : NSColor(red: 1.0, green: 0.72, blue: 0.34, alpha: 1)
+        }))
+        #else
+        Color(UIColor { trait in
+            trait.userInterfaceStyle == .dark
+                ? UIColor(red: 1.0, green: 0.72, blue: 0.34, alpha: 1)
+                : UIColor(red: 0.68, green: 0.38, blue: 0.0, alpha: 1)
+        })
+        #endif
+    }()
+}
+
 /// Inside every card, the same padding.
 enum CardPadding {
     static let narrow: CGFloat = 16

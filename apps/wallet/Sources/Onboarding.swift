@@ -43,7 +43,7 @@ struct TermsSheet: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Image(systemName: "exclamationmark.shield.fill").font(.system(size: 34)).foregroundStyle(.orange)
+                Image(systemName: "exclamationmark.shield.fill").font(.system(size: 34)).foregroundStyle(Color.warn)
                 Text("Before you use Aether").font(.title2.bold())
                 Bullet(icon: "flask", text: "Aether is experimental research software running on a test network. It is provided as is, without any warranty, has not had an independent security audit, and may have bugs.")
                 Bullet(icon: "drop", text: "AETH on this testnet comes free from the faucet and does not carry over to any future network. Nothing here promises a price, a return or a way to cash out.")

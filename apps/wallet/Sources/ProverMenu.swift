@@ -24,7 +24,7 @@ struct MenuBarPanel: View {
             HStack(spacing: 6) {
                 if let since = model.chainPausedSince {
                     // The balance above is the last verified one; nothing is lost.
-                    Image(systemName: "pause.circle.fill").foregroundStyle(.orange)
+                    Image(systemName: "pause.circle.fill").foregroundStyle(Color.warn)
                     TimelineView(.periodic(from: .now, by: 30)) { tl in
                         Text(NetworkPausedText.line(since: since, now: tl.date))
                     }

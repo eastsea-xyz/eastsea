@@ -21,9 +21,9 @@ struct NetworkPausedBadge: View {
         TimelineView(.periodic(from: .now, by: 30)) { tl in
             Label(NetworkPausedText.line(since: since, now: tl.date), systemImage: "pause.circle.fill")
         }
-        .font(.aeCaption.weight(.semibold)).foregroundStyle(.orange)
+        .font(.aeCaption.weight(.semibold)).foregroundStyle(Color.warn)
         .padding(.horizontal, 10).padding(.vertical, 4)
-        .background(.orange.opacity(0.12), in: Capsule())
+        .background(Color.warn.opacity(0.14), in: Capsule())
         .help(NetworkPausedText.help)
         .accessibilityHint(NetworkPausedText.help)
     }

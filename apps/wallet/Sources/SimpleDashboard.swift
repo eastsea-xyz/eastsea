@@ -181,10 +181,18 @@ private struct HomePage: View {
     /// The balance chart earns its place only once the balance has actually changed.
     private var hasHistory: Bool { Set(model.history.map(\.aeth)).count >= 2 }
 
+    /// One flat list of sections, the balance first and largest; no card inside
+    /// a card, and nothing measures its own geometry (the page-wide
+    /// `narrowLayout` environment switches layouts instead).
     var body: some View {
         VStack(spacing: 24) {
             IncomingRecoveryAlert()
-            hero
+            VStack(spacing: 8) {
+                accountButton
+                balanceText
+                VerifiedBadge()
+            }
+            .padding(.top, 8)
             HStack(spacing: narrow ? 20 : 28) {
                 RoundAction(title: "Receive", icon: "qrcode") { sheet = .receive }.disabled(model.address.isEmpty)
                 RoundAction(title: "Send", icon: "paperplane.fill") { sheet = .send }.disabled(model.busy || model.account == nil)
@@ -194,63 +202,150 @@ private struct HomePage: View {
             if model.account != nil, balance == 0 { FaucetButton() }
             #if os(macOS)
             HomeEarnings(open: showNetwork)
+            #else
+            // No node on iPhone: when the wallet has received node rewards, one
+            // line — never a card that competes with the balance above it.
+            NodeRewardsLine(showActivity: showActivity)
             #endif
             if hasHistory { BalanceCard() }
-            Card {
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Text("Recent activity").font(.aeHeadline)
-                        Spacer()
-                        if !model.activity.isEmpty { Button("See all", action: showActivity).buttonStyle(.borderless) }
-                    }
-                    ActivityList(limit: 3)
-                }
-            }
+            recentActivity
         }
     }
 
-    private var hero: some View {
-        VStack(spacing: 8) {
-            Button {
-                Clipboard.copy(model.address)
-            } label: {
-                HStack(spacing: 6) {
-                    Circle().fill(LinearGradient(colors: [.aether, .pink], startPoint: .topLeading, endPoint: .bottomTrailing)).frame(width: 20, height: 20)
-                    Text("Account 1").font(.aeFootnote.weight(.semibold)).lineLimit(1)
-                    Text(Short.address(model.address)).font(.aeFootnote.monospaced()).foregroundStyle(.secondary)
-                        .lineLimit(1).truncationMode(.middle)
-                    Image(systemName: "doc.on.doc").font(.aeCaption).foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 12).padding(.vertical, 6)
-                .background(.background.secondary, in: Capsule())
+    private var accountButton: some View {
+        Button {
+            Clipboard.copy(model.address)
+        } label: {
+            HStack(spacing: 6) {
+                Circle().fill(LinearGradient(colors: [.aether, .pink], startPoint: .topLeading, endPoint: .bottomTrailing)).frame(width: 20, height: 20)
+                Text("Account 1").font(.aeFootnote.weight(.semibold)).lineLimit(1)
+                Text(Short.address(model.address)).font(.aeFootnote.monospaced()).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle)
+                Image(systemName: "doc.on.doc").font(.aeCaption).foregroundStyle(.secondary)
             }
-            .buttonStyle(.plain)
-            .help("Copy address")
-            if model.account == nil, model.chainPausedSince != nil {
-                // Paused before anything could be verified: nothing to show yet.
-                Text("– AETH").font(.display).foregroundStyle(.secondary)
-            } else if model.account == nil {
-                // Loading: a soft shimmer where the balance will appear.
-                ShimmerBar().frame(maxWidth: 220).frame(height: 52)
-            } else {
-                Text("\(Amount.text(balance)) AETH")
-                    .font(.display)
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.4)
-                    .contentTransition(.numericText())
-            }
-            VerifiedBadge()
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .background(.background.secondary, in: Capsule())
         }
-        .padding(.top, 8)
+        .buttonStyle(.plain)
+        .help("Copy address")
+    }
+
+    @ViewBuilder private var balanceText: some View {
+        if model.account == nil, model.chainPausedSince != nil {
+            // Paused before anything could be verified: nothing to show yet.
+            Text("– AETH").font(.display).foregroundStyle(.secondary)
+        } else if model.account == nil {
+            // Loading: a soft shimmer where the balance will appear.
+            ShimmerBar().frame(maxWidth: 220).frame(height: 52)
+        } else {
+            Text("\(Amount.text(balance)) AETH")
+                .font(.display)
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.4)
+                .contentTransition(.numericText())
+        }
+    }
+
+    /// Directly on the page (Phantom-style), not boxed in another card: Home
+    /// already has the balance card above it.
+    private var recentActivity: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Recent activity").font(.aeHeadline)
+                Spacer()
+                if !model.activity.isEmpty { Button("See all", action: showActivity).buttonStyle(.borderless) }
+            }
+            ActivityList(limit: 3)
+        }
     }
 }
+
+#if os(iOS)
+/// "● Node rewards · +0.5 AETH ›" — the one line iPhone Home gives rewards,
+/// only once the wallet has received some (they come from a Mac's node).
+private struct NodeRewardsLine: View {
+    @EnvironmentObject var model: WalletModel
+    let showActivity: () -> Void
+
+    private var rewardTotal: Double? {
+        let rewards = model.activity.filter(\.isNodeReward)
+        guard !rewards.isEmpty else { return nil }
+        return rewards.compactMap(\.amount).reduce(0, +)
+    }
+
+    var body: some View {
+        if let total = rewardTotal {
+            Button(action: showActivity) {
+                HStack(spacing: 8) {
+                    Circle().fill(Color.aether).frame(width: 8, height: 8)
+                    Text("Node rewards · +\(Amount.text(total)) AETH")
+                    Spacer(minLength: 4)
+                    Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                }
+                .font(.aeBody).foregroundStyle(.secondary)
+                .padding(.horizontal, 16).padding(.vertical, 12)
+                .background(.background.secondary, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+    }
+}
+#endif
 
 private struct ActivityPage: View {
     var body: some View {
-        Card { ActivityList(limit: 100) }
+        VStack(spacing: 12) {
+            Card { ActivityList(limit: 100) }
+            #if os(macOS)
+            RewardsExportCard()
+            #endif
+        }
     }
 }
+
+#if os(macOS)
+/// Every reward this Mac earned, as a CSV for the user's own records, and the
+/// one line that keeps Aether honest: it is not a tax adviser
+/// (docs/research/node-reward-tax-2026.md).
+private struct RewardsExportCard: View {
+    @EnvironmentObject var node: NodeController
+    @State private var working = false
+
+    var body: some View {
+        Card {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "square.and.arrow.down").font(.aeTitle).foregroundStyle(Color.aether)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Reward records").font(.aeHeadline)
+                    Text("Every reward this Mac's proofs earned — time, block, amount and kind — as a CSV for your own records. Aether does not give tax advice.")
+                        .font(.aeBody).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Button(working ? "Exporting…" : "Export CSV…") { export() }
+                    .disabled(working || node.proveAddress.isEmpty)
+                    .help("Saves aether-rewards.csv. The node keeps the records; nothing leaves this Mac.")
+            }
+        }
+    }
+
+    private func export() {
+        working = true
+        Task { @MainActor in
+            defer { working = false }
+            guard let csv = await node.rewardsCSV() else { return }
+            let panel = NSSavePanel()
+            panel.nameFieldStringValue = "aether-rewards.csv"
+            panel.allowedContentTypes = [.commaSeparatedText]
+            if panel.runModal() == .OK, let url = panel.url {
+                try? csv.write(to: url, atomically: true, encoding: .utf8)
+            }
+        }
+    }
+}
+#endif
 
 private struct NetworkPage: View {
     @EnvironmentObject var model: WalletModel
@@ -271,7 +366,7 @@ private struct NetworkPage: View {
             Card {
                 HStack(spacing: 16) {
                     Image(systemName: model.status == nil ? "antenna.radiowaves.left.and.right.slash" : model.chainPausedSince != nil ? "pause.circle.fill" : "checkmark.circle.fill")
-                        .font(.system(size: narrow ? 30 : 40)).foregroundStyle(model.status == nil || model.chainPausedSince != nil ? Color.orange : Color.aether)
+                        .font(.system(size: narrow ? 30 : 40)).foregroundStyle(model.status == nil || model.chainPausedSince != nil ? Color.warn : Color.aether)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(model.status == nil ? "Connecting to Aether…" : model.chainPausedSince != nil ? "Network paused" : "Connected to Aether")
                             .font(.aeTitle)
@@ -341,7 +436,7 @@ private struct IncomingRecoveryAlert: View {
         if let r = model.incomingRecovery {
             AdaptiveStack(spacing: 12) {
                 HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: "exclamationmark.shield.fill").font(.title).foregroundStyle(.orange)
+                    Image(systemName: "exclamationmark.shield.fill").font(.title).foregroundStyle(Color.warn)
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Your recovery devices started moving your funds").font(.aeHeadline)
                         Text("If this was not you, cancel it. It can run after \(Date(timeIntervalSince1970: TimeInterval(r.readyAt)).formatted(date: .abbreviated, time: .shortened)).")
@@ -350,14 +445,14 @@ private struct IncomingRecoveryAlert: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 VStack(alignment: narrow ? .leading : .trailing, spacing: 6) {
-                    Button("Cancel it") { model.cancelIncomingRecovery() }.buttonStyle(.borderedProminent).tint(.orange).disabled(model.busy)
+                    Button("Cancel it") { model.cancelIncomingRecovery() }.buttonStyle(.borderedProminent).tint(Color.warn).disabled(model.busy)
                     // A recovery you did not start means a recovery key is in other hands.
                     Button("Cancel and remove all recovery keys") { model.removeRecoveryKeys() }.font(.aeFootnote).disabled(model.busy)
                 }
                 .padding(.leading, narrow ? 40 : 0)
             }
             .padding(16)
-            .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+            .background(Color.warn.opacity(0.12), in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
         }
     }
 }
@@ -400,8 +495,8 @@ private struct PaperKeyPanel: View {
                     }
                 }
                 .padding(12)
-                .background(.background.tertiary, in: RoundedRectangle(cornerRadius: 10))
-                Text("Write them on paper, in order. Do not photograph or store them on this device.").font(.aeFootnote).foregroundStyle(.orange)
+                .background(.background.tertiary, in: RoundedRectangle(cornerRadius: Radius.inner))
+                Text("Write them on paper, in order. Do not photograph or store them on this device.").font(.aeFootnote).foregroundStyle(Color.warn)
                 ViewThatFits(in: .horizontal) {
                     HStack {
                         Button("I wrote them down: register") { model.registerPaperKey() }.buttonStyle(.borderedProminent).disabled(model.busy)
@@ -494,7 +589,7 @@ private struct VotingNodeRow: View {
                 case .working?:
                     HStack(spacing: 7) { OrbitSpinner().frame(width: 14, height: 14); Text("Registering… confirm with Touch ID.") }.font(.aeBody)
                 case .failed(let why)?:
-                    Label(why, systemImage: "exclamationmark.triangle.fill").font(.aeBody).foregroundStyle(.orange)
+                    Label(why, systemImage: "exclamationmark.triangle.fill").font(.aeBody).foregroundStyle(Color.warn)
                         .fixedSize(horizontal: false, vertical: true)
                 case nil:
                     EmptyView()
@@ -569,7 +664,7 @@ private struct SidebarStatus: View {
             EarningsSidebarBadge()
             #endif
             HStack(spacing: 8) {
-                Circle().fill(model.status == nil || model.chainPausedSince != nil ? Color.orange : Color.aether).frame(width: 8, height: 8)
+                Circle().fill(model.status == nil || model.chainPausedSince != nil ? Color.warn : Color.aether).frame(width: 8, height: 8)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(model.status == nil ? "Connecting" : model.chainPausedSince != nil ? "Network paused" : "Connected").font(.aeCaption.weight(.semibold))
                     Text(model.status.map { "Block #\($0.height)" } ?? "Searching DHT…").font(.aeCaption).foregroundStyle(.secondary)
@@ -580,11 +675,13 @@ private struct SidebarStatus: View {
     }
 
     #if os(macOS)
+    /// Short on purpose: the sidebar is 170–190 pt, and the block number (which
+    /// the "Connected" line below already shows) is what got truncated here.
     private var nodeLine: String {
         switch node.state {
         case .off: "Off"
-        case .starting: node.height > 0 ? "Catching up · block #\(node.height)" : "Starting…"
-        case .running: "Verifying · block #\(node.height)"
+        case .starting: node.height > 0 ? "Catching up" : "Starting…"
+        case .running: "Verifying blocks"
         case .waitingForPower: "Paused on battery"
         case .failed(let m): m
         }
@@ -594,7 +691,7 @@ private struct SidebarStatus: View {
 
 // MARK: - Cards
 
-private struct Card<Content: View>: View {
+struct Card<Content: View>: View {
     let content: Content
     @Environment(\.narrowLayout) private var narrow
     init(@ViewBuilder _ content: () -> Content) { self.content = content() }
@@ -695,10 +792,24 @@ private struct BalanceCard: View {
                     .foregroundStyle(Color.aether)
             }
             .chartYScale(domain: .automatic(includesZero: true))
-            .chartXAxis { AxisMarks(values: .automatic(desiredCount: 4)) }
+            .chartXAxis {
+                // Short labels ("10:00", "9/27"), and fewer of them when narrow:
+                // the default formatter ran out of width and cut to "Sep 24…".
+                AxisMarks(values: .automatic(desiredCount: narrow ? 3 : 5)) { _ in
+                    AxisValueLabel(format: axisFormat)
+                }
+            }
         } else {
-            RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.5))
+            RoundedRectangle(cornerRadius: Radius.inner).fill(.quaternary.opacity(0.5))
                 .overlay(Image(systemName: "chart.xyaxis.line").font(.largeTitle).foregroundStyle(.tertiary))
+        }
+    }
+
+    /// Time of day inside a day, month and day over longer windows.
+    private var axisFormat: Date.FormatStyle {
+        switch range {
+        case .hour, .day: .dateTime.hour().minute()
+        case .week, .all: .dateTime.month(.defaultDigits).day()
         }
     }
 }
@@ -709,7 +820,7 @@ private struct VerifiedBadge: View {
     var body: some View {
         if let keyError = model.keyError {
             Label(keyError, systemImage: "lock.fill")
-                .font(.aeCaption.weight(.semibold)).foregroundStyle(.orange)
+                .font(.aeCaption.weight(.semibold)).foregroundStyle(Color.warn)
                 .padding(.horizontal, 10).padding(.vertical, 4)
                 .help("The wallet key lives in this device's Secure Enclave, which only creates keys while the device is unlocked. Aether retries by itself.")
         } else if let since = model.chainPausedSince {
@@ -721,9 +832,9 @@ private struct VerifiedBadge: View {
                 .help("This device checked the balance itself against the validators' signature, using the committee key shipped with the app instead of a server's word.")
         } else if model.networkOutdated {
             Label("This app is out of date · updating", systemImage: "arrow.down.circle.fill")
-                .font(.aeCaption.weight(.semibold)).foregroundStyle(.orange)
+                .font(.aeCaption.weight(.semibold)).foregroundStyle(Color.warn)
                 .padding(.horizontal, 10).padding(.vertical, 4)
-                .background(.orange.opacity(0.12), in: Capsule())
+                .background(Color.warn.opacity(0.14), in: Capsule())
                 .help("The network moved to a new version. The update is being fetched; it applies on the next launch.")
         } else {
             let slow = model.verifyFailingSince.map { Date().timeIntervalSince($0) > 20 } ?? false
@@ -763,7 +874,7 @@ private struct NetworkCard: View {
                     .chartYAxis { AxisMarks(values: .automatic(desiredCount: 3)) }
                     .frame(height: 140)
                     if busiest == 0 {
-                        Text("Quiet: no transactions right now.").font(.aeCaption).foregroundStyle(.tertiary)
+                        Text("Quiet: no transactions right now.").font(.aeCaption).foregroundStyle(.secondary)
                     }
                 }
             }
@@ -807,7 +918,7 @@ private struct ActivityRow: View {
                         .foregroundStyle(a > 0 ? .green : .primary)
                 }
                 switch item.state {
-                case .pending: Text("Confirming…").font(.aeFootnote).foregroundStyle(.orange)
+                case .pending: Text("Confirming…").font(.aeFootnote).foregroundStyle(Color.warn)
                 case .done: Text("Done").font(.aeFootnote).foregroundStyle(.secondary)
                 case .failed: Text("Failed").font(.aeFootnote).foregroundStyle(.red)
                 }
@@ -914,9 +1025,9 @@ private struct SendSheet: View {
             Text("Send AETH").font(.aeTitle)
             if let r = model.paymentRequest {
                 Label(r.memo.map { "A page asked for this payment: \($0)" } ?? "A page asked for this payment. Check the address and amount.", systemImage: "link")
-                    .font(.aeBody).foregroundStyle(.orange)
+                    .font(.aeBody).foregroundStyle(Color.warn)
                     .padding(10).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
+                    .background(Color.warn.opacity(0.14), in: RoundedRectangle(cornerRadius: Radius.inner))
             }
             if let r = model.paymentRequest {
                 // A requested payment is shown as asked and cannot be edited here.
@@ -985,9 +1096,9 @@ private struct CallSheet: View {
             Text("Approve a request").font(.aeTitle)
             if let r = model.callRequest {
                 Label("\(r.origin ?? "A page") asks you to sign this. Check it before you approve.", systemImage: "link")
-                    .font(.aeBody).foregroundStyle(.orange)
+                    .font(.aeBody).foregroundStyle(Color.warn)
                     .padding(10).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
+                    .background(Color.warn.opacity(0.14), in: RoundedRectangle(cornerRadius: Radius.inner))
                 row("Action", r.method)
                 if !r.to.isEmpty { row("Contract", r.to, mono: true) }
                 row("Sends", "\(r.value) AETH")

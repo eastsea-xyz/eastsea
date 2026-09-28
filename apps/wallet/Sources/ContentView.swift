@@ -13,9 +13,18 @@ struct ContentView: View {
     var body: some View {
         page
             .onAppear { model.start() }
-            .sheet(isPresented: Binding(get: { acceptedTerms < Terms.version }, set: { _ in })) {
+            .sheet(isPresented: Binding(get: { Self.needsTerms(acceptedTerms) }, set: { _ in })) {
                 TermsSheet { acceptedTerms = Terms.version }
             }
+    }
+
+    /// Design previews skip the gate: screenshots need the dashboard, not terms.
+    private static func needsTerms(_ accepted: Int) -> Bool {
+        guard accepted < Terms.version else { return false }
+        #if DEBUG
+        if DesignPreview.on { return false }
+        #endif
+        return true
     }
 
     @ViewBuilder private var page: some View {

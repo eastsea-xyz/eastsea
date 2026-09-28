@@ -633,6 +633,9 @@ struct ActivityItem: Codable, Identifiable, Equatable {
         c.state = state
         return c
     }
+
+    /// A node reward this wallet received (iPhone Home shows those as one line).
+    var isNodeReward: Bool { kind == .received && title.hasPrefix("Proof reward") }
 }
 
 enum Short {

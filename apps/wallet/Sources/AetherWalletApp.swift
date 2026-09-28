@@ -10,6 +10,8 @@ struct AetherWalletApp: App {
     #if os(macOS)
     @StateObject private var node = NodeController()
     @StateObject private var earnings = Earnings()
+    /// Views pause their continuous animations while a window is live-resizing.
+    @StateObject private var resizeMonitor = WindowResizeMonitor()
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @AppStorage("developerMode") private var developerMode = false
     #endif
@@ -26,7 +28,11 @@ struct AetherWalletApp: App {
                     appDelegate.start(node: node, model: model)
                     earnings.attach(node)
                     NSApp.setActivationPolicy(.regular)
+                    #if DEBUG
+                    if ResizeBenchmark.on { ResizeBenchmark.run() }
+                    #endif
                 }
+                .environment(\.liveResize, resizeMonitor.active)
                 // Closing the window keeps Aether in the menu bar (the node keeps running).
                 .onDisappear { NSApp.setActivationPolicy(.accessory) }
                 .onOpenURL { model.open(url: $0) }

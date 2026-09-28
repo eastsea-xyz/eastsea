@@ -258,9 +258,11 @@ private struct NetworkPage: View {
     @Environment(\.narrowLayout) private var narrow
 
     private var blockTime: String {
-        let b = model.blocks.sorted { $0.height < $1.height }
-        guard b.count > 1, let first = b.first, let last = b.last, last.timestampMs > first.timestampMs else { return "—" }
-        let s = Double(last.timestampMs - first.timestampMs) / 1000 / Double(b.count - 1)
+        // The oldest and newest of what is kept (no sort: this runs on every layout pass).
+        guard let first = model.blocks.min(by: { $0.height < $1.height }),
+              let last = model.blocks.max(by: { $0.height < $1.height }),
+              model.blocks.count > 1, last.timestampMs > first.timestampMs else { return "—" }
+        let s = Double(last.timestampMs - first.timestampMs) / 1000 / Double(model.blocks.count - 1)
         return String(format: "%.1f s", s)
     }
 
@@ -609,6 +611,10 @@ private struct BalanceCard: View {
     @EnvironmentObject var model: WalletModel
     @Environment(\.narrowLayout) private var narrow
     @State private var range: Range = .day
+    /// The series to draw, kept out of `body`: a window resize re-layouts the chart
+    /// many times a second, and recomputing points there (with a fresh `Date()`)
+    /// re-fed Swift Charts new data on every pass, re-scaling it each time.
+    @State private var points: [BalancePoint] = []
 
     enum Range: String, CaseIterable, Identifiable {
         case hour = "1H", day = "1D", week = "1W", all = "All"
@@ -623,20 +629,10 @@ private struct BalanceCard: View {
         }
     }
 
-    private var points: [BalancePoint] {
-        guard let s = range.seconds else { return model.history }
-        let from = Date().addingTimeInterval(-s)
-        let inRange = model.history.filter { $0.date >= from }
-        // Carry the last earlier value in so the line starts at the left edge.
-        var pts = inRange
-        if let before = model.history.last(where: { $0.date < from }) {
-            pts.insert(BalancePoint(date: from, aeth: before.aeth), at: 0)
-        }
-        // Extend the last known balance to now, so even one observation draws a line.
-        if let last = pts.last, Date().timeIntervalSince(last.date) > 1 {
-            pts.append(BalancePoint(date: Date(), aeth: last.aeth))
-        }
-        return pts
+    /// Rebuild the series when the history or the range changed (and once on
+    /// appear). Between those, layout passes — resizing included — reuse it.
+    private func rebuildPoints() {
+        points = BalanceHistory.points(model.history, range: range.seconds, now: Date())
     }
 
     private var balance: Double { model.account.flatMap { Double(Wei.format($0.balanceWei)) } ?? 0 }
@@ -659,6 +655,9 @@ private struct BalanceCard: View {
                 chart.frame(height: narrow ? 140 : 170)
             }
         }
+        .onAppear { rebuildPoints() }
+        .onChange(of: model.history) { _, _ in rebuildPoints() }
+        .onChange(of: range) { _, _ in rebuildPoints() }
     }
 
     private var rangePicker: some View {
@@ -742,15 +741,16 @@ private struct VerifiedBadge: View {
 
 private struct NetworkCard: View {
     @EnvironmentObject var model: WalletModel
-
-    private var blocks: [BlockInfo] { model.blocks.sorted { $0.height < $1.height } }
+    /// Sorted (and the busiest block's txs) kept out of `body`, so a window resize
+    /// re-layouts the chart without re-sorting and re-feeding it data.
+    @State private var blocks: [BlockInfo] = []
+    @State private var busiest: UInt32 = 0
 
     var body: some View {
         Card {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Activity on the network").font(.aeHeadline)
                 if !blocks.isEmpty {
-                    let busiest = blocks.map(\.txs).max() ?? 0
                     Text("Transactions in the last \(blocks.count) blocks").font(.aeFootnote).foregroundStyle(.secondary)
                     Chart(blocks, id: \.height) { b in
                         // Empty blocks show as a short stub so the rhythm of blocks stays visible.
@@ -767,6 +767,16 @@ private struct NetworkCard: View {
                     }
                 }
             }
+        }
+        .onAppear { sync(model.blocks) }
+        .onChange(of: model.blocks) { _, fresh in sync(fresh) }
+    }
+
+    private func sync(_ fresh: [BlockInfo]) {
+        let sorted = fresh.sorted { $0.height < $1.height }
+        if sorted != blocks {
+            blocks = sorted
+            busiest = sorted.map(\.txs).max() ?? 0
         }
     }
 }

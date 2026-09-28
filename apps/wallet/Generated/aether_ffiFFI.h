@@ -259,6 +259,12 @@ RustBuffer uniffi_aether_ffi_fn_func_chain_status(RustCallStatus *_Nonnull out_s
 uint32_t uniffi_aether_ffi_fn_func_configure_network(RustBuffer network_json, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_CONFIGURED_CHAIN_ID
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_CONFIGURED_CHAIN_ID
+uint64_t uniffi_aether_ffi_fn_func_configured_chain_id(RustCallStatus *_Nonnull out_status
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_CONNECTION
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_CONNECTION
 RustBuffer uniffi_aether_ffi_fn_func_connection(RustCallStatus *_Nonnull out_status
@@ -268,6 +274,11 @@ RustBuffer uniffi_aether_ffi_fn_func_connection(RustCallStatus *_Nonnull out_sta
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_DEVNET_FAUCET
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_DEVNET_FAUCET
 RustBuffer uniffi_aether_ffi_fn_func_devnet_faucet(RustBuffer to, RustBuffer value_wei, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_ETH_CALL
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_ETH_CALL
+RustBuffer uniffi_aether_ffi_fn_func_eth_call(RustBuffer to, RustBuffer data_hex, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_LOCAL_NODE_HEIGHT
@@ -694,6 +705,12 @@ uint16_t uniffi_aether_ffi_checksum_func_configure_network(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_CONFIGURED_CHAIN_ID
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_CONFIGURED_CHAIN_ID
+uint16_t uniffi_aether_ffi_checksum_func_configured_chain_id(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_CONNECTION
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_CONNECTION
 uint16_t uniffi_aether_ffi_checksum_func_connection(void
@@ -703,6 +720,12 @@ uint16_t uniffi_aether_ffi_checksum_func_connection(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_DEVNET_FAUCET
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_DEVNET_FAUCET
 uint16_t uniffi_aether_ffi_checksum_func_devnet_faucet(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_ETH_CALL
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_ETH_CALL
+uint16_t uniffi_aether_ffi_checksum_func_eth_call(void
     
 );
 #endif

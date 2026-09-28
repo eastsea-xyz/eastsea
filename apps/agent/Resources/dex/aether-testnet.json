@@ -1,0 +1,23 @@
+{
+  "network": "aether-testnet",
+  "chainId": 7780,
+  "publicRpcs": [],
+  "deployer": "0xf7F3faFCb3a47571B55d6d4991a9F22B4c3920e1",
+  "startBlock": 21594,
+  "deployedAt": "2026-09-27T13:14:16.196Z",
+  "contracts": {
+    "WAETH": "0xa2521982a17474cb2f8741c85de653b5282d72b0",
+    "TokenFactory": "0x5137f55b90989311f450a3a7c3015e0dc4a014dd",
+    "PairFactory": "0x8997a65cce24fb0ec0f5d1b728b8bab26b5548c5",
+    "Router": "0xc6bb9eeee1aa186562f6b6d14f7df6bcbac19981",
+    "Quoter": "0xead807ec986dab237d992ffad306f0dbffbcf2be"
+  },
+  "seed": {
+    "tokens": {
+      "NEB": "0x6bc5ded76ccbdc8df35e7cd28b68fed245a74416",
+      "ORB": "0x961f8add5ae93ff0700be8abd5f9f8ec69ba4347",
+      "CMT": "0xc91367bac92c6de822de8afd0f34ff19fd8f7670"
+    },
+    "by": "0xf7F3faFCb3a47571B55d6d4991a9F22B4c3920e1"
+  }
+}

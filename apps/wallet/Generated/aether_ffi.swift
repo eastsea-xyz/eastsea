@@ -1846,6 +1846,17 @@ public func configureNetwork(networkJson: String)throws  -> UInt32  {
 })
 }
 /**
+ * The chain id this wallet is configured for (network.json; the devnet otherwise).
+ * Never taken from a node (see `CHAIN_ID`).
+ */
+public func configuredChainId() -> UInt64  {
+    return try!  FfiConverterUInt64.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_configured_chain_id(uniffiCallStatus
+    )
+})
+}
+/**
  * How the wallet currently reaches the network (for display).
  */
 public func connection() -> String  {
@@ -1864,6 +1875,20 @@ public func devnetFaucet(to: String, valueWei: String)throws  -> String  {
     uniffi_aether_ffi_fn_func_devnet_faucet(
         FfiConverterString.lower(to),
         FfiConverterString.lower(valueWei),uniffiCallStatus
+    )
+})
+}
+/**
+ * Read-only contract call (`eth_call` at the latest block) through the node the
+ * wallet uses. Returns the 0x-hex return data. Signs nothing; the answer is the
+ * node's, not light-client verified.
+ */
+public func ethCall(to: String, dataHex: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_eth_call(
+        FfiConverterString.lower(to),
+        FfiConverterString.lower(dataHex),uniffiCallStatus
     )
 })
 }
@@ -2236,10 +2261,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_aether_ffi_checksum_func_configure_network() != 29290) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_aether_ffi_checksum_func_configured_chain_id() != 13367) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_aether_ffi_checksum_func_connection() != 5408) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_devnet_faucet() != 12940) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_eth_call() != 6018) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_local_node_height() != 10285) {

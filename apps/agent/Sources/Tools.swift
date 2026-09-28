@@ -34,7 +34,7 @@ enum Tools {
              schema: object(["limit": prop("integer", "max entries, default 20")]), readOnly: true) { a in try history(a) },
         Spec(name: "aether_get_test_tokens", description: "Testnet only: receive 10 test AETH (no value) into the agent's account (rate-limited by the network).",
              schema: object([:]), readOnly: false) { _ in try testTokens() },
-    ]
+    ] + Dex.specs
 
     // MARK: setup shared by every tool
 
@@ -53,9 +53,13 @@ enum Tools {
                 break
             }
         }
-        // Like the wallet: ask the node on this Mac when it runs (it verifies every
-        // block itself; the certificates and proofs are still checked here).
-        if ProcessInfo.processInfo.environment["AETHER_NO_LOCAL_NODE"] == nil, localNodeHeight(port: appNodePort) != nil {
+        // AETHER_LOCAL_NODE=<port> reads through that node on 127.0.0.1. Otherwise, like
+        // the wallet, ask the app's node when it runs (it verifies every block itself;
+        // the certificates and proofs are still checked here).
+        let env = ProcessInfo.processInfo.environment
+        if let p = env["AETHER_LOCAL_NODE"], let port = UInt16(p) {
+            useLocalNode(port: port)
+        } else if env["AETHER_NO_LOCAL_NODE"] == nil, localNodeHeight(port: appNodePort) != nil {
             useLocalNode(port: appNodePort)
         }
     }

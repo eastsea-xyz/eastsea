@@ -12,7 +12,8 @@ enum MCPServer {
     allowed recipients, expiry); only the owner can change them, with Touch ID. Balances are verified on this Mac \
     against the validators' threshold signature. If a payment is refused, tell the human the limit and that they can \
     change it with `aether-agent policy set`; do not retry around it. Use aether_send with dry_run first when unsure. \
-    Amounts are decimal AETH strings.
+    Amounts are decimal AETH strings. The dex_* tools only read the Aether DEX (pools, tokens, quotes); a quote is an \
+    estimate, and agents cannot swap yet.
     """
 
     static func run() {

@@ -3,6 +3,7 @@
 AI agents (Claude Code, Codex, Antigravity, OpenClaw, Hermes, or any MCP client) pay and check balances on Aether through `aether-agent`.
 - **Key:** in the Mac's Secure Enclave. It cannot be exported.
 - **Limits:** the owner sets them with Touch ID, and the account contract enforces them on chain.
+- **DEX:** agents can read the Aether DEX (`dex_pools`, `dex_token_info`, `dex_quote`). These tools sign nothing, and agents cannot swap yet.
 
 ```bash
 scripts/build-agent.sh --install   # builds ~/.local/bin/aether-agent

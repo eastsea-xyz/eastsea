@@ -207,6 +207,33 @@ pub fn chain_status() -> R<ChainStatus> {
     })
 }
 
+/// The chain id this wallet is configured for (network.json; the devnet otherwise).
+/// Never taken from a node (see `CHAIN_ID`).
+#[uniffi::export]
+pub fn configured_chain_id() -> u64 {
+    *CHAIN_ID.lock().expect("chain id lock")
+}
+
+/// Params for a read-only `eth_call` at the latest block, after checking the inputs.
+fn eth_call_params(to: &str, data_hex: &str) -> R<Value> {
+    let addr: Address = to.trim().parse().map_err(|_| WalletError::Invalid(format!("{to} is not a 0x address")))?;
+    let data = data_hex.trim();
+    let body = data.strip_prefix("0x").unwrap_or(data);
+    if body.len() % 2 != 0 || !body.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(WalletError::Invalid("call data must be hex".into()));
+    }
+    Ok(json!([{ "to": format!("{addr:#x}"), "data": format!("0x{body}") }, "latest"]))
+}
+
+/// Read-only contract call (`eth_call` at the latest block) through the node the
+/// wallet uses. Returns the 0x-hex return data. Signs nothing; the answer is the
+/// node's, not light-client verified.
+#[uniffi::export]
+pub fn eth_call(to: String, data_hex: String) -> R<String> {
+    let v = call("eth_call", eth_call_params(&to, &data_hex)?)?;
+    v.as_str().map(str::to_string).ok_or_else(|| WalletError::Rejected(format!("eth_call returned {v}")))
+}
+
 /// Account address for a Secure Enclave P-256 public key.
 #[uniffi::export]
 pub fn account_address(p256_public_key: Vec<u8>) -> R<String> {
@@ -569,6 +596,18 @@ mod tests {
         let other = p256::ecdsa::SigningKey::from_slice(&[8u8; 32]).unwrap();
         let other_pk = p256_key(other.verifying_key().to_sec1_point(true).as_bytes()).unwrap();
         assert!(aether_crypto::verify(&other_pk, msg, &s.normalize_s().to_bytes()).is_err());
+    }
+
+    #[test]
+    fn eth_call_params_check_inputs() {
+        let p = eth_call_params("0x6BC5DED76CCBDC8DF35E7CD28B68FED245A74416", "0x70a08231").unwrap();
+        assert_eq!(p[0]["to"], "0x6bc5ded76ccbdc8df35e7cd28b68fed245a74416");
+        assert_eq!(p[0]["data"], "0x70a08231");
+        assert_eq!(p[1], "latest");
+        assert_eq!(eth_call_params("0x6bc5ded76ccbdc8df35e7cd28b68fed245a74416", "dbb80e42").unwrap()[0]["data"], "0xdbb80e42");
+        assert!(eth_call_params("0x1234", "0x").is_err());
+        assert!(eth_call_params("0x6bc5ded76ccbdc8df35e7cd28b68fed245a74416", "0xabc").is_err());
+        assert!(eth_call_params("0x6bc5ded76ccbdc8df35e7cd28b68fed245a74416", "0xzz").is_err());
     }
 
     #[test]

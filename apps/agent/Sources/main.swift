@@ -24,6 +24,13 @@ Agents (JSON out):
   receipt --hash 0x..
   get-test-tokens
 
+DEX (read-only; nothing is signed):
+  dex-pools
+  dex-token-info --token NEB|0x..|AETH [--holder 0x..]
+  dex-quote --from AETH --to NEB --amount 1 [--slippage-percent 0.5]
+
+Environment: AETHER_NETWORK=<network.json>  AETHER_LOCAL_NODE=<port> (read through 127.0.0.1:<port>)
+
 Register with agent tools:
   setup [claude|codex|antigravity|openclaw|hermes|all] [--apply]
 """
@@ -74,6 +81,8 @@ case "mcp":
     MCPServer.run()
 case "status", "wallet", "balance", "send", "pay-many", "receipt", "history", "get-test-tokens":
     runTool("aether_" + cmd.replacingOccurrences(of: "-", with: "_"), flags(rest))
+case "dex-pools", "dex-token-info", "dex-quote":
+    runTool(cmd.replacingOccurrences(of: "-", with: "_"), flags(rest))
 case "init":
     do { printJSON(try Owner.initialize()) } catch { fail(error) }
 case "policy":

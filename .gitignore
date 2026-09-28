@@ -14,3 +14,7 @@
 .omx/
 .gstack/
 /crates/*/target
+
+# Local only: PDCA snapshots; the secret-scan rules hold our hosts IPs.
+docs/.pdca-snapshots/
+.gitleaks.toml

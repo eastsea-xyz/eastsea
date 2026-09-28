@@ -119,7 +119,7 @@ final class WalletModel: ObservableObject {
     func pinCommittee() {
         guard let url = Bundle.main.url(forResource: "network", withExtension: "json"),
               let json = try? String(contentsOf: url, encoding: .utf8) else {
-            note("No network.json: using the public devnet validators and key.")
+            note("No network.json: nothing is verified without the committee key it names.")
             return
         }
         do {

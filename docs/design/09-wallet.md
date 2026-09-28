@@ -18,7 +18,7 @@ Aether.app (SwiftUI)
 
 | 묶음 | 함수 (요지) |
 |---|---|
-| 연결·설정 | `configure_network`, `set_committee_identity`, `use_local_node`, `local_node_height`, `connection`, `chain_status` |
+| 연결·설정 | `configure_network`, `set_committee_identity`, `use_devnet_keys`, `use_local_node`, `local_node_height`, `connection`, `chain_status`, `verified_height` |
 | 계정·잔액 | `account_address`, `verified_account`(확정 인증서 + EIP-7864 증명으로 검증, `aether-light`) |
 | 송금 | `prepare_transfer`, `prepare_batch`, `submit_signed`, `receipt`, `recent_blocks`, `devnet_faucet` |
 | 복구 | `recovery_key_code`, `prepare_set_recovery_key`, `prepare_add_recovery_key`, `recovery_status`, `prepare_recovery(_to)`, `prepare_recovery_submit`, `prepare_finish_recovery`, `prepare_cancel_recovery`, `prepare_remove_recovery_keys`, 복구 단어 `paper_key_new`·`paper_key_public`·`paper_key_sign` |
@@ -26,6 +26,7 @@ Aether.app (SwiftUI)
 | 투표 노드 | `voting_node_status`, `prepare_register_node` |
 
 - 서명은 Swift 쪽에서 한다(SE 키는 Rust로 나오지 않음). Rust는 서명할 바이트(`PreparedTx.signing_message`)를 만들고, Swift가 서명하면 low-s로 정규화해 제출한다.
+- 검증 실패 닫힘(fail closed): 위원회 identity가 고정되지 않으면 모든 검증 API가 실패한다(`configure_network`도 오류). 공개 devnet 키는 명시적 개발 모드(`use_devnet_keys` 호출 또는 network.json의 `"devnet": true`)에서만 대신 쓸 수 있다. 검증된 앵커는 노드가 보고한 chain id와 블록이 담은 트랜잭션의 chain id 모두 지갑 설정값과 대조되고, 프로세스마다 "가장 높게 검증된 높이"(`verified_height`)를 넘지 못한다(되돌아가는 앵커 = 오래 된 상태의 재생). 10분 최신성 검사는 그 위에 추가로 유지된다.
 - 없는 것: ZK 증명 검증(`verify_block`)과 "증명됨" 상태. 잔액 표시는 확정 인증서 검증 하나뿐이다(06-proving.md). 여러 가디언(k-of-n) 서명 수집과 `addOwner`도 FFI에 없다(12-launch-plan.md 4단계).
 
 ## 계정 모델

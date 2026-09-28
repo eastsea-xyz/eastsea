@@ -119,6 +119,7 @@ dependencies = [
  "aether-types",
  "alloy-primitives",
  "bip39",
+ "commonware-codec",
  "p256 0.14.0",
  "serde",
  "serde_json",

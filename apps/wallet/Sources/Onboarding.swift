@@ -17,7 +17,7 @@ enum VotingRules {
     /// Mainnet: one operator gets at most 1/this of each hour's block rewards.
     static let mainnetIssuanceOperators = 16
     /// Said the same way everywhere an early participant looks.
-    static let mainnetRewardsRule = "On the future mainnet there is no token sale and no founder share. Block rewards go to the Macs that are online, every hour. One operator gets at most 1/\(mainnetIssuanceOperators) of them, and the rest is never issued; once \(mainnetIssuanceOperators) operators are online, all of it is shared. Nothing here promises a price or a return."
+    static let mainnetRewardsRule = "On the future mainnet there is no token sale and no founder share. Block rewards go to the Macs that are online, every hour. One operator gets at most 1/\(mainnetIssuanceOperators) of them, and the rest is never issued; once \(mainnetIssuanceOperators) operators are online, all of it is shared. The reward starts at 1 AETH a block and shrinks 15% a year, down to a floor of 0.1 AETH a block. Nothing here promises a price or a return."
 }
 
 private struct Bullet: View {

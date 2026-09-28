@@ -60,20 +60,48 @@ fn full_weight(n: u64) -> (WorldState, Distribution) {
 
 #[test]
 fn issuance_splits_into_a_node_and_a_proof_share() {
-    for h in [1, proofs::HALVING - 1, proofs::HALVING, 18 * proofs::HALVING + 3] {
-        assert_eq!(node_share(h) + proof_share(h), proofs::issuance(h));
+    const YEAR: u64 = 365 * DAY_BLOCKS;
+    for h in [1, DAY_BLOCKS - 1, DAY_BLOCKS, YEAR, 18 * YEAR + 3] {
+        assert_eq!(node_share(h) + proof_share(h), issuance(h));
     }
     assert_eq!(node_share(1), U256::from(proofs::ISSUE_0 / 2));
     // Epoch 0 starts at the genesis, which issues nothing.
     assert_eq!(node_pool(0, EB), node_share(1) * U256::from(EB - 1));
     assert_eq!(node_pool(3, EB), node_share(1) * U256::from(EB));
-    // An epoch across a halving sums both halves.
-    // 7-block epochs: one of them straddles the first halving.
-    let e = proofs::HALVING / EB;
-    let straddle = proofs::HALVING / 7;
+    // 7-block epochs: one of them straddles the first daily step.
+    let straddle = DAY_BLOCKS / 7;
     let expect = (straddle * 7..straddle * 7 + 7).map(node_share).sum::<U256>();
     assert_eq!(node_pool(straddle, 7), expect);
-    assert_eq!(node_pool(e, EB), node_share(proofs::HALVING) * U256::from(EB));
+    assert!(node_share(DAY_BLOCKS) < node_share(DAY_BLOCKS - 1));
+}
+
+#[test]
+fn issuance_falls_15_percent_a_year_to_a_floor_of_a_tenth() {
+    const YEAR: u64 = 365 * DAY_BLOCKS;
+    let aeth = |h: u64| issuance(h).to::<u128>() as f64 / 1e18;
+    assert_eq!(issuance(1), U256::from(proofs::ISSUE_0));
+    // Constant within a day, lower the next.
+    assert_eq!(issuance(DAY_BLOCKS - 1), issuance(1));
+    assert!(issuance(DAY_BLOCKS) < issuance(DAY_BLOCKS - 1));
+    for (years, expect) in [(1, 0.85), (2, 0.7225), (4, 0.522), (10, 0.1969)] {
+        let got = aeth(years * YEAR);
+        assert!((got - expect).abs() < 0.001, "year {years}: {got} vs {expect}");
+    }
+    // Never below the floor, and it stays there.
+    assert_eq!(issuance(15 * YEAR), U256::from(TAIL));
+    assert_eq!(issuance(100 * YEAR), U256::from(TAIL));
+    assert_eq!(issuance(u64::MAX), U256::from(TAIL));
+    // Monotone, including where the exact power meets the floor and the shortcut.
+    let mut last = issuance(1);
+    for day in (0..6_000).step_by(7) {
+        let now = issuance(day * DAY_BLOCKS);
+        assert!(now <= last, "day {day}");
+        last = now;
+    }
+    // Whole schedule before the floor: ~31.5M × (1 − 0.1) / 0.1625 ≈ 175M AETH,
+    // the first year about 29M of it.
+    let first_year: f64 = (0..365).map(|d| aeth(d * DAY_BLOCKS + 1) * DAY_BLOCKS as f64).sum();
+    assert!((28.0e6..30.0e6).contains(&first_year), "{first_year}");
 }
 
 #[test]
@@ -310,6 +338,24 @@ fn proof_issuance_is_capped_at_a_sixteenth_of_the_epoch_per_operator() {
     proofs::record(&mut s, 330, [7; 32], U256::ZERO);
     assert_eq!(pay_proof(&mut s, 330, 331, operator(0)).unwrap().1, proof_share(330));
     assert_eq!(proof_paid(&s, operator(0), 1), U256::ZERO);
+}
+
+#[test]
+fn after_the_first_year_a_proof_mints_this_networks_issuance_not_the_halving() {
+    // Year 3: the testnet's halving pays 0.25 AETH, the decay about 0.61.
+    let mut s = WorldState::default();
+    registry::predeploy(&mut s, ([1; 32], [2; 32]), Params { epoch_blocks: 160, min_streak: 0, draw_epochs: 1 }).unwrap();
+    enable(&mut s);
+    register(&mut s, 0, operator(0), 0);
+    s.set_balance(PROVER_ESCROW, U256::from(1_000_000u64)).unwrap();
+    let h = 3 * 365 * DAY_BLOCKS + 5;
+    assert!(proof_share(h) > proofs::issuance(h), "the decay pays more than the halving here");
+    proofs::record(&mut s, h, [9; 32], U256::from(10u64));
+    let before = s.balance(&operator(0));
+    let (paid, issued) = pay_proof(&mut s, h, h + 1, operator(0)).unwrap();
+    assert_eq!(issued, proof_share(h));
+    assert_eq!(paid, U256::from(10u64) + issued);
+    assert_eq!(s.balance(&operator(0)), before + paid);
 }
 
 #[test]

@@ -10,6 +10,15 @@
 //!
 //! Whatever a cap or a missing operator leaves is never minted.
 //!
+//! Issuance (these networks only; 7780 keeps the yearly halving of
+//! `proofs::issuance`): 1 AETH per block, lowered a little every day so that it
+//! falls 15% a year (about half every 4.3 years, no halving cliff), down to a
+//! floor of 0.1 AETH per block that stays (reached after about 14.2 years).
+//!
+//! ```text
+//! issuance(h) = max(ISSUE_0 × DAILY^(h / DAY_BLOCKS), TAIL)     DAILY = 0.85^(1/365)
+//! ```
+//!
 //! Node share of operator i for epoch e (integer arithmetic, rounded down):
 //!
 //! ```text
@@ -53,6 +62,14 @@ pub const GOOD_DAY_PERCENT: u64 = 90;
 /// Below this network-wide response, a day is neutral.
 pub const NEUTRAL_BELOW_PERCENT: u64 = 70;
 
+/// Blocks per issuance step (one day of 1 s blocks).
+pub const DAY_BLOCKS: u64 = 86_400;
+/// 0.85^(1/365) in 1e18 fixed point (rounded down): 15% less issuance a year.
+pub const DAILY: u128 = 999_554_841_771_249_391;
+/// The floor: 0.1 AETH per block, forever.
+pub const TAIL: u128 = proofs::ISSUE_0 / 10;
+const WAD: u128 = 1_000_000_000_000_000_000;
+
 const ENABLED: u64 = 0;
 const TAG_MAC: u64 = 1;
 const TAG_OPERATOR: u64 = 2;
@@ -71,25 +88,52 @@ pub fn enabled(state: &WorldState) -> bool {
     !state.storage(&REWARDS, U256::from(ENABLED)).is_zero()
 }
 
+/// `DAILY^n` in 1e18 fixed point, rounded down at every multiplication
+/// (square-and-multiply, so every node gets the same bits).
+fn daily_pow(mut n: u64) -> U256 {
+    let wad = U256::from(WAD);
+    let mut result = wad;
+    let mut base = U256::from(DAILY);
+    while n > 0 {
+        if n & 1 == 1 {
+            result = result * base / wad;
+        }
+        base = base * base / wad;
+        n >>= 1;
+    }
+    result
+}
+
+/// New tokens of block `height` on a network with node rewards.
+pub fn issuance(height: u64) -> U256 {
+    // Past ~14.2 years the decay is below the floor for good; skip the power.
+    const FLOOR_DAYS: u64 = 5_200;
+    let day = height / DAY_BLOCKS;
+    if day >= FLOOR_DAYS {
+        return U256::from(TAIL);
+    }
+    (U256::from(proofs::ISSUE_0) * daily_pow(day) / U256::from(WAD)).max(U256::from(TAIL))
+}
+
 /// Node share of block `height`'s issuance.
 pub fn node_share(height: u64) -> U256 {
-    proofs::issuance(height) / U256::from(2u8)
+    issuance(height) / U256::from(2u8)
 }
 
 /// Proof share of block `height`'s issuance (the rest).
 pub fn proof_share(height: u64) -> U256 {
-    proofs::issuance(height) - node_share(height)
+    issuance(height) - node_share(height)
 }
 
 /// Σ f(h) over blocks h in epoch `epoch` (height 0 is the genesis: no issuance).
-/// Constant within a halving period, so summed per period.
+/// Constant within a day, so summed per day.
 fn epoch_sum(epoch: u64, epoch_blocks: u64, f: fn(u64) -> U256) -> U256 {
     let start = epoch.saturating_mul(epoch_blocks).max(1);
     let end = epoch.saturating_add(1).saturating_mul(epoch_blocks);
     let mut total = U256::ZERO;
     let mut h = start;
     while h < end {
-        let next = ((h / proofs::HALVING).saturating_add(1)).saturating_mul(proofs::HALVING).min(end);
+        let next = ((h / DAY_BLOCKS).saturating_add(1)).saturating_mul(DAY_BLOCKS).min(end);
         total += f(h) * U256::from(next - h);
         h = next;
     }
@@ -270,13 +314,15 @@ pub fn pay_proof(state: &mut WorldState, height: u64, now: u64, prover: Address)
     } else {
         U256::ZERO
     };
-    // `proofs::pay` credits the full issuance; what the rules withhold is taken
-    // back in the same system write, so it is never minted. (`proofs.rs` stays
-    // byte-identical: the pinned proving program is built from this crate.)
+    // `proofs::pay` credits the testnet's halving issuance; this network's own
+    // issuance replaces it in the same system write: what the rules withhold is
+    // never minted, and after the first year (when the decay pays more than the
+    // halving would) the difference is added. (`proofs.rs` stays byte-identical:
+    // the pinned proving program is built from this crate.)
     let paid = proofs::pay(state, height, now, prover)?;
-    let withheld = proofs::issuance(height) - issued;
-    state.set_balance(prover, state.balance(&prover) - withheld).map_err(ClaimError::State)?;
-    Ok((paid - withheld, issued))
+    let credited = proofs::issuance(height);
+    state.set_balance(prover, state.balance(&prover) - credited + issued).map_err(ClaimError::State)?;
+    Ok((paid - credited + issued, issued))
 }
 
 /// Write `c` as registry candidate `c.index` in the contract's storage layout

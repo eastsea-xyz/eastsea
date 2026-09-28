@@ -314,7 +314,7 @@ fn operators_whose_macs_beacon_are_paid_each_epoch_and_proofs_are_capped() {
     minted += node_pool(2, EPOCH_BLOCKS) / U256::from(32u8) * U256::from(3u8);
     assert_eq!(net.supply(&others), start + minted);
     // Far less than the issuance so far: few operators, warm-up, caps.
-    let issued: U256 = (1..=net.parent.height).map(proofs::issuance).sum();
+    let issued: U256 = (1..=net.parent.height).map(rewards::issuance).sum();
     assert!(minted * U256::from(4u8) < issued);
 }
 

@@ -59,3 +59,11 @@ commonware ─tcp→ 127.0.0.1:<B 링크 포트> ─iroh QUIC(aether/p2p/1)→ I
 - 기본 바인딩 127.0.0.1. 외부 노출은 `--public` + iroh 경유만.
 - 로컬 HTTP API: 시작 시 생성한 토큰(`~/.aether/token`) 필수, `Origin`/`Host` 검사, CORS 없음.
 - 원격 입력(gossip/sync)으로 상태를 직접 쓰는 경로는 존재하지 않는다. 상태는 실행 결과로만 바뀐다.
+
+## 공개 RPC·멤풀 DoS 한도 (2026-09 감사 §5)
+
+공개 `aether/rpc/1`은 누구나 열 수 있으므로, 요청 하나의 비용이 커도 한 사람이 노드를 못 쓰게 만들 수 없어야 한다.
+
+- **RPC 동시성·속도** (`aether-net`): 요청(QUIC 양방향 스트림)마다 작업을 spawn하기 전에 ① 전역 동시성 상한(256), ② 피어(노드 id)당 동시성 상한(16), ③ 피어당 토큰 버킷(한 번에 64건, 이후 32건/초)을 지난다. 못 넘는 요청은 본문을 읽지 않고 JSON-RPC 오류(-32000 "server busy")로 즉시 답한다. 메시지 상한 16 MiB는 그대로.
+- **Era 파일 제공** (`crates/node/src/era_net.rs`): `aether_eraChunk`는 요청한 범위만 seek + `read_exact`로 읽고(청크 ≤ 1 MiB), `aether_eraInfo`의 BLAKE3는 스트리밍으로 한 번만 계산해 파일(길이·mtime)별로 캐시한다(≤16개 LRU). era 파일 전체를 메모리에 올리는 호출은 없다. 제공 파일 크기도 `MAX_ERA_FILE`(256 MiB) 이하로 제한.
+- **멤풀 바이트 예산** (`crates/node/src/chain.rs`): tx 하나의 정규 인코딩이 128 KiB(`MAX_TX_BYTES`, 컨트랙트 배포 initcode는 EIP-3860으로 49 KiB 이하라 여유 있음)보다 크면 입장 거부, 풀 전체는 64 MiB(`MAX_MEMPOOL_BYTES`)까지 — 건수 상한 50,000건과 같은 정책으로 넘치면 새 tx를 거부한다. 블록에 들어가거나 퇴장하면 바이트도 함께 돌아온다. 합의 규칙이 아니라 로컬 입장 정책이라 테스트넷 호환이다.

@@ -18,3 +18,6 @@
 # Local only: PDCA snapshots; the secret-scan rules hold our hosts IPs.
 docs/.pdca-snapshots/
 .gitleaks.toml
+
+# Tool state folders (never app resources)
+.omc/

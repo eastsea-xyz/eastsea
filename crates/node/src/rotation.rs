@@ -88,12 +88,23 @@ pub fn target_size(pool: usize) -> usize {
 /// what makes each voting key cost something (one per Mac via DeviceCheck, at
 /// most 16 new per epoch, a day of unbroken liveness before being drawn).
 pub fn draw(pool: &[(String, String)], seed: &[u8], candidate: impl Fn(&str) -> Option<String>, running: &Committee) -> Option<Vec<(String, String)>> {
+    draw_sized(pool, seed, candidate, running, target_size(pool.len()), MIN_OPEN_COMMITTEE)
+}
+
+/// `draw` with its target size and the size it never shrinks below given.
+fn draw_sized(
+    pool: &[(String, String)],
+    seed: &[u8],
+    candidate: impl Fn(&str) -> Option<String>,
+    running: &Committee,
+    target: usize,
+    floor: usize,
+) -> Option<Vec<(String, String)>> {
     if running.members.is_empty() || pool.len() < MIN_OPEN_COMMITTEE {
         return None;
     }
     let mut order: Vec<&(String, String)> = pool.iter().collect();
     order.sort_by_cached_key(|(k, _)| ticket(seed, k));
-    let target = target_size(pool.len());
     let cap = ((target - 1) / 3).max(1);
     let mut seats: std::collections::HashMap<String, usize> = Default::default();
     let selected: Vec<(String, String)> = order
@@ -114,7 +125,7 @@ pub fn draw(pool: &[(String, String)], seed: &[u8], candidate: impl Fn(&str) -> 
     let budget = (n.saturating_sub(1) / 3).max(1);
     let swaps = budget.min(incoming.len()).min(outgoing.len());
     let grow = budget.saturating_sub(swaps).min(incoming.len() - swaps).min(selected.len().saturating_sub(n)).min(MAX_VOTING_NODES.saturating_sub(n));
-    let shrink = budget.saturating_sub(swaps).min(outgoing.len() - swaps).min(n.saturating_sub(selected.len().max(MIN_OPEN_COMMITTEE)));
+    let shrink = budget.saturating_sub(swaps).min(outgoing.len() - swaps).min(n.saturating_sub(selected.len().max(floor)));
     let leaving: Vec<&String> = outgoing.iter().take(swaps + shrink).map(|(k, _)| k).collect();
     let mut next: Vec<(String, String)> = running.members.iter().filter(|(k, _)| !leaving.contains(&k)).cloned().collect();
     // The cap counts the seats an operator keeps too: an incoming key is added
@@ -133,6 +144,52 @@ pub fn draw(pool: &[(String, String)], seed: &[u8], candidate: impl Fn(&str) -> 
     }
     let changed = next.len() != n || next.iter().any(|(k, _)| !running.has(k));
     (next.len() >= MIN_OPEN_COMMITTEE && changed).then_some(next)
+}
+
+/// Protocol 3: up to this many seats, a Mac that qualifies joins the voting set
+/// instead of replacing a member (the same count that later turns mainnet
+/// issuance on). From here on, draws swap seats as in `draw`.
+pub const GROW_UNTIL: usize = 16;
+
+/// Protocol-3 draw. Below `GROW_UNTIL` seats, qualifying Macs are added (in
+/// ticket order, fewer than a third of the running seats per draw, at least
+/// one) and nobody leaves, so every Mac that keeps a day of unbroken uptime
+/// becomes a voter; one operator still never holds a third of the new set.
+/// At `GROW_UNTIL` seats and above it is `draw`.
+pub fn draw_v3(pool: &[(String, String)], seed: &[u8], candidate: impl Fn(&str) -> Option<String>, running: &Committee) -> Option<Vec<(String, String)>> {
+    let n = running.members.len();
+    if n >= GROW_UNTIL {
+        // Swap seats from here on, but never below sixteen.
+        let target = target_size(pool.len()).max(GROW_UNTIL);
+        return draw_sized(pool, seed, candidate, running, target, GROW_UNTIL);
+    }
+    if n == 0 {
+        return None;
+    }
+    let mut incoming: Vec<&(String, String)> = pool.iter().filter(|(k, _)| !running.has(k)).collect();
+    incoming.sort_by_cached_key(|(k, _)| ticket(seed, k));
+    let budget = (n.saturating_sub(1) / 3).max(1).min(GROW_UNTIL - n).min(incoming.len());
+    if budget == 0 {
+        return None;
+    }
+    let cap = ((n + budget - 1) / 3).max(1);
+    let op = |k: &str| candidate(k).unwrap_or_else(|| k.to_string());
+    let mut held: std::collections::HashMap<String, usize> = Default::default();
+    for (k, _) in &running.members {
+        *held.entry(op(k)).or_default() += 1;
+    }
+    let mut next = running.members.clone();
+    for m in incoming {
+        if next.len() - n == budget {
+            break;
+        }
+        let h = held.entry(op(&m.0)).or_default();
+        if *h < cap {
+            *h += 1;
+            next.push(m.clone());
+        }
+    }
+    (next.len() > n).then_some(next)
 }
 
 #[cfg(test)]
@@ -272,6 +329,52 @@ mod tests {
         assert!(a.len() == 16 && a.iter().filter(|m| !set.members.contains(m)).count() <= 5, "fewer than a third change");
         assert_eq!(target_size(4), 4);
         assert_eq!(target_size(1000), 127);
+    }
+
+    fn committee(n: u8) -> Committee {
+        Committee { members: (0..n).map(|i| (format!("g{i}"), format!("gn{i}"))).collect() }
+    }
+
+    fn mac(i: u8) -> (String, String) {
+        (format!("m{i}"), format!("mn{i}"))
+    }
+
+    #[test]
+    fn v3_one_qualifying_mac_joins_four_genesis_seats() {
+        let next = draw_v3(&[mac(1)], &seed(1), |k| k.starts_with('m').then(|| format!("op-{k}")), &committee(4)).expect("grows");
+        assert_eq!(next.len(), 5);
+        assert!(next.iter().any(|(k, _)| k == "m1"));
+        assert!(committee(4).members.iter().all(|m| next.contains(m)), "nobody leaves while growing");
+    }
+
+    #[test]
+    fn v3_grows_by_less_than_a_third_per_draw_and_stops_at_sixteen() {
+        let pool: Vec<_> = (1..=20).map(mac).collect();
+        let ops = |k: &str| k.starts_with('m').then(|| format!("op-{k}"));
+        assert_eq!(draw_v3(&pool, &seed(2), ops, &committee(4)).unwrap().len(), 5, "4 seats: one more");
+        assert_eq!(draw_v3(&pool, &seed(2), ops, &committee(10)).unwrap().len(), 13, "10 seats: three more");
+        assert_eq!(draw_v3(&pool, &seed(2), ops, &committee(15)).unwrap().len(), 16, "never past sixteen by growing");
+        let at_cap = draw_v3(&pool, &seed(2), ops, &committee(16)).unwrap();
+        assert_eq!(at_cap.len(), 16, "at sixteen, draws swap seats instead");
+    }
+
+    #[test]
+    fn v3_one_operator_never_holds_a_third_of_the_grown_set() {
+        // Two Macs of one operator; four genesis seats are each their own operator.
+        let pool = vec![mac(1), mac(2)];
+        let next = draw_v3(&pool, &seed(3), |k| k.starts_with('m').then(|| "same-owner".to_string()), &committee(4)).unwrap();
+        assert_eq!(next.len(), 5, "one seat per draw at this size");
+        let ten = draw_v3(&pool, &seed(3), |k| k.starts_with('m').then(|| "same-owner".to_string()), &committee(10)).unwrap();
+        let theirs = ten.iter().filter(|(k, _)| k.starts_with('m')).count();
+        assert!(theirs * 3 < ten.len(), "{theirs} of {} seats", ten.len());
+    }
+
+    #[test]
+    fn v3_nothing_to_add_keeps_the_set() {
+        assert!(draw_v3(&[], &seed(4), |_| None, &committee(4)).is_none());
+        let running = committee(4);
+        let already: Vec<_> = running.members.clone();
+        assert!(draw_v3(&already, &seed(4), |_| None, &running).is_none());
     }
 
     #[test]

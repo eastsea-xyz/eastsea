@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// The protocol this binary implements.
-pub const PROTOCOL: u32 = 2;
+pub const PROTOCOL: u32 = 3;
 const NAMESPACE: &[u8] = b"aether-upgrade-v1";
 
 pub use aether_light::block::{Release, SignedUpgrade, Upgrade};

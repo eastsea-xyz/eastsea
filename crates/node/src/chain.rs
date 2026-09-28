@@ -1108,8 +1108,14 @@ impl Chain {
                 // The per-operator seat cap is a protocol-2 rule: before it, every key is its own operator.
                 let ops = crate::rotation::operators(&exec.state);
                 let capped = exec.next_protocol() >= 2;
-                g.proposal = crate::rotation::draw(&pool, &seed, |k| ops.get(k).map(|o| if capped { o.clone() } else { k.to_string() }), &g.committee)
-                    .map(|m| (draw, m));
+                let operator = |k: &str| ops.get(k).map(|o| if capped { o.clone() } else { k.to_string() });
+                // Protocol 3: qualifying Macs join (up to 16 seats) instead of replacing members.
+                g.proposal = if exec.next_protocol() >= 3 {
+                    crate::rotation::draw_v3(&pool, &seed, operator, &g.committee)
+                } else {
+                    crate::rotation::draw(&pool, &seed, operator, &g.committee)
+                }
+                .map(|m| (draw, m));
                 keep(&g.store, PROPOSAL, &g.proposal);
             }
         }

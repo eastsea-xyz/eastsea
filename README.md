@@ -37,9 +37,10 @@ Get the latest build from [Releases](https://github.com/kjaylee/aether-node/rele
 Read this before you join. It is the same in the app.
 
 - **No token sale, no premine, no founder share.** Every AETH on mainnet comes from block rewards, under the same rules for everyone.
-- **Block rewards stay off until 16 different operators are voting.** Until then nobody, the founder included, earns anything. The chain turns rewards on by itself; nobody signs for it.
-- **Joining early only puts your Mac ahead in the draw.** Voting Macs are drawn by how long they have been online without a break. There are no airdrops or referral rewards.
-- **Mainnet is a new network.** Testnet AETH does not carry over.
+- **Online Macs share the block rewards, every hour.** Half of each block's reward goes to the operators whose Macs were online that hour, and half to the Macs that proved blocks.
+- **One operator gets at most 1/16.** Whatever is left over is never issued. Once 16 operators are online, all of it is shared. The chain counts this from the public registry; nobody signs for it.
+- **One Mac, one registration.** Registering uses Apple DeviceCheck, so more shares need more real Macs.
+- **Mainnet is a new network.** Testnet AETH does not carry over. Nothing here promises a price or a return.
 
 ## Source code
 

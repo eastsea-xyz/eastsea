@@ -433,6 +433,32 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
             }
             None => json!({ "running": false }),
         }),
+        // Node rewards at a glance (docs/design/15-node-rewards.md): how many
+        // operators shared the last epoch's pool, and with `[operator]` that
+        // operator's Macs, expected share, and what the last distribution paid.
+        "aether_rewardStatus" => {
+            let operator: Option<Address> =
+                p.get(0).map(|v| serde_json::from_value(v.clone())).transpose().map_err(|e| (-32602, format!("param 0: {e}")))?;
+            let (chain_id, f, dist, root, epoch_blocks) = {
+                let g = chain.lock();
+                let f = g.finalized.clone();
+                let epoch_blocks = aether_execution::registry::epoch_blocks(&f.state);
+                // The first block of this epoch distributed the last one's pool.
+                let dist = f.height / epoch_blocks * epoch_blocks;
+                (g.cfg.chain_id, f, dist, g.blocks.get(&dist).map(|b| b.state_root), epoch_blocks)
+            };
+            // What that distribution actually paid the operator: its node record
+            // is within this epoch's worth of newest rewards (every block since
+            // distributed at most one more). Skipped whole on networks without
+            // node rewards, which answer `{"enabled": false}` and nothing else.
+            let received = operator
+                .filter(|_| aether_rewards::enabled(&f.state))
+                .and_then(|op| {
+                    let records = chain.recent_rewards(&op, epoch_blocks.min(10_000) as usize);
+                    crate::rewards_view::received_from_records(&records, dist)
+                });
+            Ok(crate::rewards_view::status(chain_id, &f.state, f.height, root, operator, received))
+        }
         // The newest rewards (at most 10,000 per call; the app asks for all of them for tax records).
         "aether_rewards" => {
             let a: Address = param(p, 0)?;

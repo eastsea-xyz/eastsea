@@ -710,6 +710,10 @@ fn a_follower_verifies_everything_and_serves_a_wallet() {
     aether_light::verify_history(&anchor, 2, &hash, &proof).expect("block 2 is in the certified history");
     let wrong: aether_types::B256 = [7u8; 32].into();
     assert!(aether_light::verify_history(&anchor, 2, &wrong, &proof).is_err(), "another hash at height 2");
+    // Its full contents too, from bytes any archive could serve.
+    let old = net.rpc(0, "aether_getFinalized", json!([2])).expect("block 2");
+    let (b2, _) = aether_light::verify_old_block(&anchor, &hex(&old["block"]), &proof).expect("block 2's bytes are certified");
+    assert_eq!(b2.height, 2);
 }
 
 /// Open voting nodes, part 2: a follower Mac becomes a candidate. Its owner

@@ -121,6 +121,14 @@ final class NodeController: ObservableObject {
         return FileManager.default.isExecutableFile(atPath: helper.path) ? helper : nil
     }
 
+    #if DEBUG
+    /// Design preview: looks like a running node, runs nothing.
+    func loadPreview() {
+        state = .running
+        height = 184_210
+    }
+    #endif
+
     /// Resume the user's choice at launch.
     func restore() {
         if enabled { startIfAllowed() }

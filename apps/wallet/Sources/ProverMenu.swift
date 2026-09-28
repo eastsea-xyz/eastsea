@@ -20,20 +20,28 @@ struct MenuBarPanel: View {
                 Spacer()
                 Text(Short.address(model.address)).font(.caption.monospaced()).foregroundStyle(.secondary)
             }
-            Text(balance).font(.system(size: 28, weight: .bold, design: .rounded)).monospacedDigit()
+            Text(balance).font(.aeTitle).monospacedDigit()
             HStack(spacing: 6) {
-                if model.account != nil && model.verifyError == nil {
-                    Image(systemName: "checkmark.shield.fill").foregroundStyle(.green)
+                if let since = model.chainPausedSince {
+                    // The balance above is the last verified one; nothing is lost.
+                    Image(systemName: "pause.circle.fill").foregroundStyle(.orange)
+                    TimelineView(.periodic(from: .now, by: 30)) { tl in
+                        Text(NetworkPausedText.line(since: since, now: tl.date))
+                    }
+                } else if model.account != nil && model.verifyError == nil {
+                    Image(systemName: "checkmark.shield.fill")
                     Text("Verified on this Mac")
                 } else {
                     OrbitSpinner().frame(width: 12, height: 12)
                     Text(model.networkOutdated ? "Updating the app…" : "Verifying…")
                 }
-            }.font(.caption)
+            }
+            .font(.aeCaption).foregroundStyle(.secondary)
+            .help(model.chainPausedSince != nil ? NetworkPausedText.help : "")
             Divider()
-            Toggle("Node on this Mac", isOn: $node.enabled).toggleStyle(.switch).font(.callout)
+            Toggle("Node on this Mac", isOn: $node.enabled).toggleStyle(.switch).font(.aeBody)
             if node.enabled {
-                Text(nodeLine).font(.caption).foregroundStyle(.secondary)
+                Text(nodeLine).font(.aeCaption).foregroundStyle(.secondary)
                 EarningsMenuLine()
             }
             if node.prove, let p = node.prover {
@@ -47,7 +55,7 @@ struct MenuBarPanel: View {
                         Text("Last reward \(Wei.format(LocalRPC.decimal(r))) AETH").foregroundStyle(.green)
                     }
                     if let e = p.error { Text(e).foregroundStyle(.red).lineLimit(2) }
-                }.font(.caption)
+                }.font(.aeCaption)
             }
             Divider()
             HStack {

@@ -10,6 +10,7 @@ struct AetherWalletApp: App {
     @StateObject private var node = NodeController()
     @StateObject private var earnings = Earnings()
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @AppStorage("developerMode") private var developerMode = false
     #endif
 
     var body: some Scene {
@@ -62,6 +63,10 @@ struct AetherWalletApp: App {
             CommandGroup(after: .appSettings) {
                 Button("Install Command-Line Tools…") { CommandLineTools.install() }
             }
+            CommandGroup(after: .sidebar) {
+                Toggle("Developer Mode", isOn: $developerMode)
+                    .keyboardShortcut("d", modifiers: [.command, .shift])
+            }
         }
         #endif
         #if os(macOS)
@@ -88,6 +93,7 @@ struct AetherWalletApp: App {
 struct SettingsView: View {
     @EnvironmentObject var node: NodeController
     @EnvironmentObject var model: WalletModel
+    @AppStorage("developerMode") private var developerMode = false
 
     var body: some View {
         Form {
@@ -103,6 +109,9 @@ struct SettingsView: View {
             .help("Your node proves recent blocks with Metal. The first valid proof of a block is paid to this wallet. Uses the GPU and power while on.")
             Text("Your node verifies every block itself and your wallet asks it instead of the network. Quitting Aether stops it.")
                 .font(.caption).foregroundStyle(.secondary)
+            Divider()
+            Toggle("Developer mode (proofs, state roots, raw logs)", isOn: $developerMode)
+                .help("Also in View ▸ Developer Mode (⇧⌘D)")
         }
         .padding(20)
         .frame(width: 420)
@@ -120,6 +129,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var started = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        #if DEBUG
+        if DesignPreview.on { return }
+        #endif
         _ = updater  // start checking right away (hourly, and when the chain schedules a newer protocol)
     }
 
@@ -127,6 +139,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor func start(node: NodeController, model: WalletModel) {
         guard !started else { return }
         started = true
+        #if DEBUG
+        if DesignPreview.on {
+            node.loadPreview()
+            let w = UserDefaults.standard.double(forKey: "previewWidth")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                if let win = NSApp.windows.first(where: { $0.isVisible && $0.canBecomeMain }) {
+                    win.setContentSize(NSSize(width: w > 0 ? w : 1000, height: 780))
+                    win.center()
+                }
+            }
+            return
+        }
+        #endif
         self.node = node
         let check: () -> Void = { [weak self] in self?.updater.updater.checkForUpdatesInBackground() }
         node.onUpgradeNeeded = check

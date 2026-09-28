@@ -50,13 +50,33 @@ final class WalletModel: ObservableObject {
     @Published var incomingRecovery: RecoveryStatus?
     /// A recovery this device proposed for another account, waiting for its delay.
     @Published var outgoingRecovery: PendingRecovery?
+    /// ERC-20 tokens with a non-zero balance (read from the node, not light-client verified).
+    @Published var tokens: [TokenHolding] = []
+    /// When `tokens` was last read (nil: never, for this account).
+    @Published var tokensUpdated: Date?
+    @Published var tokensError: String?
+    /// Since when the chain has made no new block (nil while it moves). Light
+    /// verification needs the next block and a recent certificate, so a paused chain
+    /// cannot verify: the last verified balance stays on screen meanwhile.
+    @Published var chainPausedSince: Date?
     private var refreshes = 0
+    private var lastHeight: UInt64?
+    private var heightChangedAt: Date?
+    private var tokenScanRunning = false
+
+    /// No new block for this long means the network is paused.
+    static let pauseAfter: TimeInterval = 60
+    /// Token balances are read at most this often (they are not on the 2 s cadence).
+    static let tokenRefreshSeconds: TimeInterval = 30
 
     private var enclave: EnclaveAccount?
     private var timer: Timer?
 
     func start() {
         guard timer == nil else { return }
+        #if DEBUG
+        if DesignPreview.on { return loadPreview() }
+        #endif
         pinCommittee()
         do {
             let acct = try EnclaveAccount.loadOrCreate(requireUserPresence: true)
@@ -64,6 +84,7 @@ final class WalletModel: ObservableObject {
             address = try accountAddress(p256PublicKey: acct.publicKey)
             loadSaved()
             outgoingRecovery = PendingRecovery.load()
+            loadTokens()
             recoveryCode = try recoveryKeyCode(p256PublicKey: acct.publicKey)
             keyLabel = acct.isSecureEnclave ? "Key in Secure Enclave" : "Simulator: software key (no Secure Enclave)"
             note(acct.isSecureEnclave ? "Secure Enclave key ready. Signing asks for Touch ID / Face ID or your passcode." : "Simulator: software key (no Secure Enclave here). Use a real device for hardware-bound keys.")
@@ -301,9 +322,76 @@ final class WalletModel: ObservableObject {
                 self.blocks = bl
                 if let acc { self.account = acc; self.verifyError = nil; self.record(balanceWei: acc.balanceWei) }
                 if st == nil { self.verifyError = "No validator reachable yet (\(conn))" } else if let err { self.verifyError = err }
+                self.trackChainProgress(st, blocks: bl)
                 self.trackVerification()
+                self.refreshTokens()
             }
         }
+    }
+
+    /// The chain is paused when its height has not moved for `pauseAfter`, or its
+    /// newest block is that old (while the height is not moving here either, so a
+    /// wrong clock on this device alone never looks like a pause).
+    private func trackChainProgress(_ st: ChainStatus?, blocks: [BlockInfo]) {
+        guard let st else { return }
+        let now = Date()
+        if st.height != lastHeight {
+            lastHeight = st.height
+            heightChangedAt = now
+        }
+        let newest = blocks.max(by: { $0.height < $1.height }).map { Date(timeIntervalSince1970: TimeInterval($0.timestampMs) / 1000) }
+        let still = heightChangedAt.map { now.timeIntervalSince($0) } ?? 0
+        let oldBlock = newest.map { now.timeIntervalSince($0) > Self.pauseAfter } ?? false
+        let paused = still > Self.pauseAfter || (oldBlock && still > 20)
+        let since = paused ? min(newest ?? heightChangedAt ?? now, heightChangedAt ?? now) : nil
+        if since != chainPausedSince { chainPausedSince = since }
+    }
+
+    // MARK: tokens
+
+    /// Read token balances again if the last read is older than `tokenRefreshSeconds`
+    /// (`force`: a few seconds, e.g. when the Assets sheet opens).
+    func refreshTokens(force: Bool = false) {
+        let minAge = force ? 5 : Self.tokenRefreshSeconds
+        #if DEBUG
+        if DesignPreview.on { return }
+        #endif
+        guard !tokenScanRunning, !address.isEmpty, let chain = status?.chainId,
+              tokensUpdated.map({ Date().timeIntervalSince($0) >= minAge }) ?? true else { return }
+        guard let sources = TokenSources.bundled(chainId: chain) else {
+            tokensError = nil
+            tokensUpdated = Date()
+            return
+        }
+        tokenScanRunning = true
+        let owner = address, catalogKey = "tokenCatalog.\(chain)"
+        let catalog = UserDefaults.standard.data(forKey: catalogKey).flatMap { try? JSONDecoder().decode(TokenCatalog.self, from: $0) } ?? TokenCatalog()
+        Task.detached {
+            let result = Result { try TokenScanner.scan(owner: owner, sources: sources, catalog: catalog, read: { try ethCall(to: $0, dataHex: $1) }) }
+            await MainActor.run {
+                self.tokenScanRunning = false
+                guard owner == self.address else { return }
+                switch result {
+                case .success(let (cat, held)):
+                    UserDefaults.standard.set(try? JSONEncoder().encode(cat), forKey: catalogKey)
+                    self.tokens = held
+                    self.tokensError = nil
+                    self.tokensUpdated = Date()
+                    UserDefaults.standard.set(try? JSONEncoder().encode(held), forKey: self.tokensKey)
+                case .failure(let e):
+                    self.tokensError = "\(e)"
+                    // Try again on the normal cadence, not every 2 s.
+                    self.tokensUpdated = Date()
+                }
+            }
+        }
+    }
+
+    private var tokensKey: String { "tokenHoldings.\(address)" }
+
+    /// The last token balances read for this account, shown until the next read.
+    private func loadTokens() {
+        tokens = UserDefaults.standard.data(forKey: tokensKey).flatMap { try? JSONDecoder().decode([TokenHolding].self, from: $0) } ?? []
     }
 
     /// Verification that keeps failing on certificates means the chain moved on
@@ -316,7 +404,8 @@ final class WalletModel: ObservableObject {
         let since = verifyFailingSince ?? Date()
         verifyFailingSince = since
         let certificate = err.localizedCaseInsensitiveContains("certificate") || err.localizedCaseInsensitiveContains("chain id")
-        if certificate, Date().timeIntervalSince(since) > 30, !networkOutdated {
+        // A paused chain fails verification too, but updating the app would not help.
+        if certificate, chainPausedSince == nil, Date().timeIntervalSince(since) > 30, !networkOutdated {
             networkOutdated = true
             onOutdated?()
         }

@@ -36,7 +36,7 @@ struct SimpleDashboard: View {
     }
 
     enum Sheet: String, Identifiable {
-        case send, receive, call, connect, votingInvite
+        case send, receive, assets, call, connect, votingInvite
         var id: String { rawValue }
     }
 
@@ -47,6 +47,7 @@ struct SimpleDashboard: View {
                 switch s {
                 case .send: SendSheet()
                 case .receive: ReceiveSheet()
+                case .assets: AssetsSheet()
                 case .call: CallSheet()
                 case .connect: ConnectSheet()
                 case .votingInvite:
@@ -64,6 +65,14 @@ struct SimpleDashboard: View {
                     #endif
                 }
             }
+            #if DEBUG
+            // `-previewSheet assets` / `-previewPage network` (with -designPreview) for screenshots.
+            .onAppear {
+                guard DesignPreview.on else { return }
+                if let p = UserDefaults.standard.string(forKey: "previewPage").flatMap({ Page(rawValue: $0.capitalized) }) { page = p }
+                if let s = UserDefaults.standard.string(forKey: "previewSheet").flatMap(Sheet.init(rawValue:)) { sheet = s }
+            }
+            #endif
             .onChange(of: model.callRequest) { _, r in if r != nil { sheet = .call } }
             .onChange(of: model.connectRequest) { _, r in if r != nil { sheet = .connect } }
             // A payment link (aether://pay?...) opens the send sheet, filled in, for approval.
@@ -92,11 +101,15 @@ struct SimpleDashboard: View {
             .toolbar(removing: compact ? .sidebarToggle : nil)
         } detail: {
             ScrollView {
+                // Same gutter left and right, content kept to a readable width.
                 pageView(page ?? .home)
-                    .padding(compact ? 16 : 28)
-                    .frame(maxWidth: 820)
+                    .frame(maxWidth: 760)
+                    .padding(.horizontal, compact ? 16 : 24)
+                    .padding(.vertical, 24)
                     .frame(maxWidth: .infinity)
             }
+            // The scroller never sits on top of a card.
+            .scrollIndicators(.hidden)
             .measuringNarrowLayout()
             .navigationTitle(page?.rawValue ?? "Home")
             .toolbar {
@@ -141,7 +154,7 @@ struct SimpleDashboard: View {
 
     @ViewBuilder private func pageView(_ p: Page) -> some View {
         switch p {
-        case .home: HomePage(sheet: $sheet) { page = .activity }
+        case .home: HomePage(sheet: $sheet, showActivity: { page = .activity }, showNetwork: { page = .network })
         case .activity: ActivityPage()
         case .network: NetworkPage()
         case .security: SecurityPage()
@@ -160,33 +173,33 @@ private struct HomePage: View {
     @EnvironmentObject var model: WalletModel
     @Binding var sheet: SimpleDashboard.Sheet?
     let showActivity: () -> Void
+    let showNetwork: () -> Void
     @Environment(\.narrowLayout) private var narrow
 
     private var balance: Double { model.account.flatMap { Double(Wei.format($0.balanceWei)) } ?? 0 }
 
+    /// The balance chart earns its place only once the balance has actually changed.
+    private var hasHistory: Bool { Set(model.history.map(\.aeth)).count >= 2 }
+
     var body: some View {
-        VStack(spacing: 22) {
+        VStack(spacing: 24) {
             IncomingRecoveryAlert()
-            #if os(macOS)
-            NodeEarningsCard()
-            #endif
             hero
             HStack(spacing: narrow ? 20 : 28) {
                 RoundAction(title: "Receive", icon: "qrcode") { sheet = .receive }.disabled(model.address.isEmpty)
                 RoundAction(title: "Send", icon: "paperplane.fill") { sheet = .send }.disabled(model.busy || model.account == nil)
-                RoundAction(title: "Get AETH", icon: "drop.fill") { model.faucet() }.disabled(model.busy || model.address.isEmpty)
+                RoundAction(title: "Assets", icon: "square.stack.3d.up.fill") { sheet = .assets }.disabled(model.address.isEmpty)
             }
-            BalanceCard()
+            // Empty wallet: the testnet faucet, once, instead of a permanent action.
+            if model.account != nil, balance == 0 { FaucetButton() }
+            #if os(macOS)
+            HomeEarnings(open: showNetwork)
+            #endif
+            if hasHistory { BalanceCard() }
             Card {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Tokens").font(.headline)
-                    TokenRow(symbol: "AETH", name: "Aether", amount: model.account == nil ? nil : balance, verified: model.verifyError == nil && model.account != nil)
-                }
-            }
-            Card {
-                VStack(alignment: .leading, spacing: 10) {
                     HStack {
-                        Text("Recent activity").font(.headline)
+                        Text("Recent activity").font(.aeHeadline)
                         Spacer()
                         if !model.activity.isEmpty { Button("See all", action: showActivity).buttonStyle(.borderless) }
                     }
@@ -203,22 +216,26 @@ private struct HomePage: View {
             } label: {
                 HStack(spacing: 6) {
                     Circle().fill(LinearGradient(colors: [.aether, .pink], startPoint: .topLeading, endPoint: .bottomTrailing)).frame(width: 20, height: 20)
-                    Text("Account 1").font(.callout.weight(.semibold)).lineLimit(1)
-                    Text(Short.address(model.address)).font(.callout.monospaced()).foregroundStyle(.secondary)
+                    Text("Account 1").font(.aeFootnote.weight(.semibold)).lineLimit(1)
+                    Text(Short.address(model.address)).font(.aeFootnote.monospaced()).foregroundStyle(.secondary)
                         .lineLimit(1).truncationMode(.middle)
-                    Image(systemName: "doc.on.doc").font(.caption).foregroundStyle(.secondary)
+                    Image(systemName: "doc.on.doc").font(.aeCaption).foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 12).padding(.vertical, 6)
                 .background(.background.secondary, in: Capsule())
             }
             .buttonStyle(.plain)
             .help("Copy address")
-            if model.account == nil {
+            if model.account == nil, model.chainPausedSince != nil {
+                // Paused before anything could be verified: nothing to show yet.
+                Text("– AETH").font(.display).foregroundStyle(.secondary)
+            } else if model.account == nil {
                 // Loading: a soft shimmer where the balance will appear.
                 ShimmerBar().frame(maxWidth: 220).frame(height: 52)
             } else {
                 Text("\(Amount.text(balance)) AETH")
-                    .font(.system(size: 52, weight: .bold, design: .rounded))
+                    .font(.display)
+                    .monospacedDigit()
                     .lineLimit(1)
                     .minimumScaleFactor(0.4)
                     .contentTransition(.numericText())
@@ -251,13 +268,13 @@ private struct NetworkPage: View {
         VStack(spacing: 16) {
             Card {
                 HStack(spacing: 16) {
-                    Image(systemName: model.status == nil ? "antenna.radiowaves.left.and.right.slash" : "checkmark.circle.fill")
-                        .font(.system(size: narrow ? 30 : 40)).foregroundStyle(model.status == nil ? Color.orange : Color.green)
+                    Image(systemName: model.status == nil ? "antenna.radiowaves.left.and.right.slash" : model.chainPausedSince != nil ? "pause.circle.fill" : "checkmark.circle.fill")
+                        .font(.system(size: narrow ? 30 : 40)).foregroundStyle(model.status == nil || model.chainPausedSince != nil ? Color.orange : Color.aether)
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(model.status == nil ? "Connecting to Aether…" : "Connected to Aether")
-                            .font(narrow ? .title3.bold() : .title2.bold())
+                        Text(model.status == nil ? "Connecting to Aether…" : model.chainPausedSince != nil ? "Network paused" : "Connected to Aether")
+                            .font(.aeTitle)
                         Text("Found the validators on the public DHT. Your balance is checked on this device against their group signature.")
-                            .font(.callout).foregroundStyle(.secondary)
+                            .font(.aeBody).foregroundStyle(.secondary)
                     }
                 }
             }
@@ -270,9 +287,45 @@ private struct NetworkPage: View {
             }
             NetworkCard()
             #if os(macOS)
+            // The full earnings card lives here; Home shows it only once there is a reward.
+            NodeEarningsCard()
             NodeCard()
             UpdateCard()
+            #else
+            DeveloperModeCard()
             #endif
+        }
+    }
+}
+
+#if os(iOS)
+/// Developer mode (proofs, roots, raw logs), out of the way at the bottom of Network.
+private struct DeveloperModeCard: View {
+    @AppStorage("developerMode") private var developerMode = false
+
+    var body: some View {
+        Card {
+            Toggle(isOn: $developerMode.animation(.easeInOut(duration: 0.2))) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Developer mode").font(.aeHeadline)
+                    Text("Proofs, state roots, raw logs and blocks.").font(.aeFootnote).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+}
+#endif
+
+/// The testnet faucet, offered while the wallet is empty (and in Receive).
+private struct FaucetButton: View {
+    @EnvironmentObject var model: WalletModel
+
+    var body: some View {
+        VStack(spacing: 4) {
+            Button { model.faucet() } label: { Label("Get test AETH", systemImage: "drop.fill") }
+                .buttonStyle(.bordered)
+                .disabled(model.busy || model.address.isEmpty)
+            Text("Free from the testnet faucet. Test AETH has no value.").font(.aeCaption).foregroundStyle(.secondary)
         }
     }
 }
@@ -288,21 +341,21 @@ private struct IncomingRecoveryAlert: View {
                 HStack(alignment: .top, spacing: 12) {
                     Image(systemName: "exclamationmark.shield.fill").font(.title).foregroundStyle(.orange)
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Your recovery devices started moving your funds").font(.headline)
+                        Text("Your recovery devices started moving your funds").font(.aeHeadline)
                         Text("If this was not you, cancel it. It can run after \(Date(timeIntervalSince1970: TimeInterval(r.readyAt)).formatted(date: .abbreviated, time: .shortened)).")
-                            .font(.callout).foregroundStyle(.secondary)
+                            .font(.aeBody).foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 VStack(alignment: narrow ? .leading : .trailing, spacing: 6) {
                     Button("Cancel it") { model.cancelIncomingRecovery() }.buttonStyle(.borderedProminent).tint(.orange).disabled(model.busy)
                     // A recovery you did not start means a recovery key is in other hands.
-                    Button("Cancel and remove all recovery keys") { model.removeRecoveryKeys() }.font(.caption).disabled(model.busy)
+                    Button("Cancel and remove all recovery keys") { model.removeRecoveryKeys() }.font(.aeFootnote).disabled(model.busy)
                 }
                 .padding(.leading, narrow ? 40 : 0)
             }
             .padding(16)
-            .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
         }
     }
 }
@@ -315,9 +368,9 @@ private struct SecurityPage: View {
                 HStack(alignment: .top, spacing: 14) {
                     Image(systemName: "lock.shield.fill").font(.system(size: 34)).foregroundStyle(Color.aether)
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Protected by this device").font(.title3.bold())
+                        Text("Protected by this device").font(.aeHeadline)
                         Text("Your key was created inside the Secure Enclave and can never be copied out. Every payment asks for Touch ID or your password. There is no seed phrase to lose.")
-                            .font(.callout).foregroundStyle(.secondary)
+                            .font(.aeBody).foregroundStyle(.secondary)
                     }
                 }
             }
@@ -334,19 +387,19 @@ private struct PaperKeyPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Recovery words").font(.title3.bold())
+            Text("Recovery words").font(.aeHeadline)
             Text("Your key never leaves this device, so there is no seed phrase to back up. Instead, write down 24 recovery words: if you lose every device, they move your funds to a new Mac after a 48-hour safety delay. If someone else finds them, they can only start that delay, and any of your devices can cancel it.")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(.aeBody).foregroundStyle(.secondary)
             if let words = model.paperWords {
                 let list = words.split(separator: " ").map(String.init)
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: narrow ? 2 : 4), alignment: .leading, spacing: 6) {
                     ForEach(Array(list.enumerated()), id: \.offset) { i, w in
-                        Text("\(i + 1). \(w)").font(.callout.monospaced()).lineLimit(1).minimumScaleFactor(0.7)
+                        Text("\(i + 1). \(w)").font(.aeBody.monospaced()).lineLimit(1).minimumScaleFactor(0.7)
                     }
                 }
                 .padding(12)
                 .background(.background.tertiary, in: RoundedRectangle(cornerRadius: 10))
-                Text("Write them on paper, in order. Do not photograph or store them on this device.").font(.caption).foregroundStyle(.orange)
+                Text("Write them on paper, in order. Do not photograph or store them on this device.").font(.aeFootnote).foregroundStyle(.orange)
                 ViewThatFits(in: .horizontal) {
                     HStack {
                         Button("I wrote them down: register") { model.registerPaperKey() }.buttonStyle(.borderedProminent).disabled(model.busy)
@@ -376,9 +429,9 @@ private struct NodeCard: View {
                 HStack(alignment: .top, spacing: 14) {
                     Image(systemName: "server.rack").font(.system(size: 30)).foregroundStyle(Color.aether)
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Run a node on this Mac").font(.headline)
+                        Text("Run a node on this Mac").font(.aeHeadline)
                         Text("Your Mac checks every block itself and your wallet asks it instead of the network. It stops when you quit Aether.")
-                            .font(.callout).foregroundStyle(.secondary)
+                            .font(.aeBody).foregroundStyle(.secondary)
                     }
                     Spacer()
                     Toggle("", isOn: $node.enabled).toggleStyle(.switch).labelsHidden()
@@ -402,10 +455,10 @@ private struct UpdateCard: View {
             HStack(alignment: .center, spacing: 14) {
                 Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 26)).foregroundStyle(Color.aether)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Aether \(updates.version)").font(.headline)
+                    Text("Aether \(updates.version)").font(.aeHeadline)
                     // Re-read every half minute so "checked 1 hour ago" stays true.
                     TimelineView(.periodic(from: .now, by: 30)) { context in
-                        Text(checked(at: context.date)).font(.callout).foregroundStyle(.secondary)
+                        Text(checked(at: context.date)).font(.aeBody).foregroundStyle(.secondary)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -431,21 +484,24 @@ private struct VotingNodeRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
-            Image(systemName: icon).font(.system(size: 26)).foregroundStyle(node.voting?.voting == true ? Color.green : Color.aether)
+            Image(systemName: icon).font(.system(size: 26)).foregroundStyle(Color.aether)
             VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(.headline)
-                Text(detail).font(.callout).foregroundStyle(.secondary)
+                Text(title).font(.aeHeadline)
+                Text(detail).font(.aeBody).foregroundStyle(.secondary)
                 switch model.registration {
                 case .working?:
-                    HStack(spacing: 7) { OrbitSpinner().frame(width: 14, height: 14); Text("Registering… confirm with Touch ID.") }.font(.callout)
+                    HStack(spacing: 7) { OrbitSpinner().frame(width: 14, height: 14); Text("Registering… confirm with Touch ID.") }.font(.aeBody)
                 case .failed(let why)?:
-                    Label(why, systemImage: "exclamationmark.triangle.fill").font(.callout).foregroundStyle(.orange)
+                    Label(why, systemImage: "exclamationmark.triangle.fill").font(.aeBody).foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                 case nil:
                     EmptyView()
                 }
-                Text("Mainnet: online Macs share the block rewards every hour, at most 1/\(VotingRules.mainnetIssuanceOperators) per operator. No sale, no founder share.")
-                    .font(.caption).foregroundStyle(.secondary)
+                DisclosureGroup("Mainnet reward rules") {
+                    Text(VotingRules.mainnetRewardsRule).font(.aeFootnote).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .font(.aeFootnote)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             if node.voting?.registered == false, model.registration != .working {
@@ -501,8 +557,8 @@ private struct SidebarStatus: View {
             #if os(macOS)
             Toggle(isOn: $node.enabled) {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Node on this Mac").font(.caption.weight(.semibold))
-                    Text(nodeLine).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                    Text("Node on this Mac").font(.aeCaption.weight(.semibold))
+                    Text(nodeLine).font(.aeCaption).foregroundStyle(.secondary).lineLimit(2)
                 }
             }
             .toggleStyle(.switch)
@@ -511,10 +567,10 @@ private struct SidebarStatus: View {
             EarningsSidebarBadge()
             #endif
             HStack(spacing: 8) {
-                Circle().fill(model.status == nil ? Color.orange : Color.green).frame(width: 8, height: 8)
+                Circle().fill(model.status == nil || model.chainPausedSince != nil ? Color.orange : Color.aether).frame(width: 8, height: 8)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(model.status == nil ? "Connecting" : "Connected").font(.caption.weight(.semibold))
-                    Text(model.status.map { "Block #\($0.height)" } ?? "Searching DHT…").font(.caption2).foregroundStyle(.secondary)
+                    Text(model.status == nil ? "Connecting" : model.chainPausedSince != nil ? "Network paused" : "Connected").font(.aeCaption.weight(.semibold))
+                    Text(model.status.map { "Block #\($0.height)" } ?? "Searching DHT…").font(.aeCaption).foregroundStyle(.secondary)
                 }
                 Spacer()
             }
@@ -538,13 +594,14 @@ private struct SidebarStatus: View {
 
 private struct Card<Content: View>: View {
     let content: Content
+    @Environment(\.narrowLayout) private var narrow
     init(@ViewBuilder _ content: () -> Content) { self.content = content() }
 
     var body: some View {
         content
-            .padding(18)
+            .padding(narrow ? CardPadding.narrow : CardPadding.wide)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.background.secondary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .background(.background.secondary, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
     }
 }
 
@@ -614,14 +671,16 @@ private struct BalanceCard: View {
     }
 
     @ViewBuilder private var change: some View {
-        if let first = points.first, points.count > 1 {
+        let period = range == .all ? "total" : "in \(range.rawValue)"
+        if let first = points.first, points.count > 1, balance != first.aeth {
             let d = balance - first.aeth
-            Label("\(d >= 0 ? "+" : "")\(Amount.text(d)) AETH in \(range == .all ? "total" : range.rawValue)",
-                  systemImage: d >= 0 ? "arrow.up.right" : "arrow.down.right")
-                .font(.callout.weight(.medium))
-                .foregroundStyle(d >= 0 ? .green : .red)
+            Label("\(d > 0 ? "+" : "")\(Amount.text(d)) AETH \(period)", systemImage: d > 0 ? "arrow.up.right" : "arrow.down.right")
+                .font(.aeBody.weight(.medium))
+                .foregroundStyle(d > 0 ? Color.green : Color.secondary)
+        } else if points.count > 1 {
+            Text("No change \(period)").font(.aeBody).foregroundStyle(.secondary)
         } else {
-            Text("Your balance history appears here as it changes.").font(.callout).foregroundStyle(.secondary)
+            Text("Your balance history appears here as it changes.").font(.aeBody).foregroundStyle(.secondary)
         }
     }
 
@@ -649,15 +708,16 @@ private struct VerifiedBadge: View {
     @EnvironmentObject var model: WalletModel
 
     var body: some View {
-        if model.account != nil && model.verifyError == nil {
+        if let since = model.chainPausedSince {
+            NetworkPausedBadge(since: since)
+        } else if model.account != nil && model.verifyError == nil {
             Label("Verified", systemImage: "checkmark.shield.fill")
-                .font(.caption.weight(.semibold)).foregroundStyle(.green)
+                .font(.aeCaption.weight(.semibold)).foregroundStyle(.secondary)
                 .padding(.horizontal, 10).padding(.vertical, 4)
-                .background(.green.opacity(0.12), in: Capsule())
                 .help("This device checked the balance itself against the validators' signature. No server was trusted.")
         } else if model.networkOutdated {
             Label("This app is out of date · updating", systemImage: "arrow.down.circle.fill")
-                .font(.caption.weight(.semibold)).foregroundStyle(.orange)
+                .font(.aeCaption.weight(.semibold)).foregroundStyle(.orange)
                 .padding(.horizontal, 10).padding(.vertical, 4)
                 .background(.orange.opacity(0.12), in: Capsule())
                 .help("The network moved to a new version. The update is being fetched; it applies on the next launch.")
@@ -667,7 +727,7 @@ private struct VerifiedBadge: View {
                 OrbitSpinner().frame(width: 13, height: 13)
                 Text(model.status == nil ? "Connecting" : slow ? "Still verifying" : "Verifying")
             }
-            .font(.caption.weight(.semibold)).foregroundStyle(Color.aether)
+            .font(.aeCaption.weight(.semibold)).foregroundStyle(Color.aether)
             .padding(.horizontal, 11).padding(.vertical, 5)
             .background(Color.aether.opacity(0.10), in: Capsule())
             .help(model.verifyError ?? "Checking the balance against the validators' signature on this device.")
@@ -683,10 +743,10 @@ private struct NetworkCard: View {
     var body: some View {
         Card {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Activity on the network").font(.headline)
+                Text("Activity on the network").font(.aeHeadline)
                 if !blocks.isEmpty {
                     let busiest = blocks.map(\.txs).max() ?? 0
-                    Text("Transactions in the last \(blocks.count) blocks").font(.caption).foregroundStyle(.secondary)
+                    Text("Transactions in the last \(blocks.count) blocks").font(.aeFootnote).foregroundStyle(.secondary)
                     Chart(blocks, id: \.height) { b in
                         // Empty blocks show as a short stub so the rhythm of blocks stays visible.
                         BarMark(x: .value("Block", String(b.height)), y: .value("Txs", b.txs > 0 ? Double(b.txs) : Double(max(busiest, 1)) * 0.04))
@@ -698,7 +758,7 @@ private struct NetworkCard: View {
                     .chartYAxis { AxisMarks(values: .automatic(desiredCount: 3)) }
                     .frame(height: 140)
                     if busiest == 0 {
-                        Text("Quiet: no transactions right now.").font(.caption2).foregroundStyle(.tertiary)
+                        Text("Quiet: no transactions right now.").font(.aeCaption).foregroundStyle(.tertiary)
                     }
                 }
             }
@@ -711,9 +771,9 @@ private struct ActivityRow: View {
 
     private var icon: (String, Color) {
         switch item.kind {
-        case .sent: ("arrow.up.right.circle.fill", .blue)
+        case .sent: ("arrow.up.right.circle.fill", .secondary)
         case .received: ("arrow.down.left.circle.fill", .green)
-        case .security: ("lock.shield.fill", .purple)
+        case .security: ("lock.shield.fill", .secondary)
         }
     }
 
@@ -721,20 +781,20 @@ private struct ActivityRow: View {
         HStack(spacing: 12) {
             Image(systemName: icon.0).font(.title2).foregroundStyle(icon.1)
             VStack(alignment: .leading, spacing: 2) {
-                Text(item.title).font(.callout.weight(.medium)).lineLimit(2)
-                Text(item.date, style: .relative).font(.caption).foregroundStyle(.secondary)
-                    + Text(" ago").font(.caption).foregroundStyle(.secondary)
+                Text(item.title).font(.aeBody.weight(.medium)).lineLimit(2)
+                Text(item.date, style: .relative).font(.aeFootnote).foregroundStyle(.secondary)
+                    + Text(" ago").font(.aeFootnote).foregroundStyle(.secondary)
             }
             Spacer(minLength: 8)
             VStack(alignment: .trailing, spacing: 2) {
                 if let a = item.amount {
-                    Text("\(a >= 0 ? "+" : "")\(Amount.text(a))").font(.callout.weight(.semibold).monospacedDigit())
-                        .foregroundStyle(a >= 0 ? .green : .primary)
+                    Text("\(a >= 0 ? "+" : "")\(Amount.text(a))").font(.aeBody.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(a > 0 ? .green : .primary)
                 }
                 switch item.state {
-                case .pending: Text("Confirming…").font(.caption).foregroundStyle(.orange)
-                case .done: Text("Done").font(.caption).foregroundStyle(.secondary)
-                case .failed: Text("Failed").font(.caption).foregroundStyle(.red)
+                case .pending: Text("Confirming…").font(.aeFootnote).foregroundStyle(.orange)
+                case .done: Text("Done").font(.aeFootnote).foregroundStyle(.secondary)
+                case .failed: Text("Failed").font(.aeFootnote).foregroundStyle(.red)
                 }
             }
         }
@@ -751,11 +811,11 @@ private struct RoundAction: View {
     var body: some View {
         Button(action: action) {
             VStack(spacing: 8) {
-                Image(systemName: icon).font(.title3.weight(.semibold))
+                Image(systemName: icon).font(.aeTitle)
                     .frame(width: 54, height: 54)
                     .background(Color.aether.opacity(0.14), in: Circle())
                     .foregroundStyle(Color.aether)
-                Text(title).font(.caption.weight(.medium)).foregroundStyle(.primary)
+                Text(title).font(.aeFootnote.weight(.medium)).foregroundStyle(.primary)
             }
             .opacity(enabled ? 1 : 0.4)
         }
@@ -763,7 +823,7 @@ private struct RoundAction: View {
     }
 }
 
-private struct TokenRow: View {
+struct TokenRow: View {
     let symbol: String
     let name: String
     let amount: Double?
@@ -771,18 +831,18 @@ private struct TokenRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Text("Æ").font(.headline.bold()).foregroundStyle(.white)
+            Text("Æ").font(.aeHeadline).foregroundStyle(.white)
                 .frame(width: 40, height: 40)
                 .background(LinearGradient(colors: [.aether, .pink], startPoint: .topLeading, endPoint: .bottomTrailing), in: Circle())
             VStack(alignment: .leading, spacing: 2) {
-                Text(name).font(.callout.weight(.semibold))
+                Text(name).font(.aeBody.weight(.semibold))
                 HStack(spacing: 4) {
-                    Text(amount.map { "\(Amount.text($0)) \(symbol)" } ?? "—").font(.caption).foregroundStyle(.secondary)
-                    if verified { Image(systemName: "checkmark.seal.fill").font(.caption2).foregroundStyle(.green) }
+                    Text(symbol).font(.aeFootnote).foregroundStyle(.secondary)
+                    if verified { Label("Verified", systemImage: "checkmark.shield.fill").font(.aeCaption).foregroundStyle(.secondary) }
                 }
             }
             Spacer()
-            Text(amount.map(Amount.text) ?? "—").font(.callout.weight(.semibold).monospacedDigit())
+            Text(amount.map { "\(Amount.text($0)) \(symbol)" } ?? "—").font(.aeBody.weight(.semibold).monospacedDigit())
         }
     }
 }
@@ -795,12 +855,12 @@ private struct Tile: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Image(systemName: icon).foregroundStyle(Color.aether)
-            Text(value).font(.title3.weight(.semibold).monospacedDigit()).lineLimit(1).minimumScaleFactor(0.6)
-            Text(label).font(.caption).foregroundStyle(.secondary)
+            Text(value).font(.aeTitle.monospacedDigit()).lineLimit(1).minimumScaleFactor(0.6)
+            Text(label).font(.aeFootnote).foregroundStyle(.secondary)
         }
-        .padding(14)
+        .padding(CardPadding.narrow)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(.background.secondary, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
     }
 }
 
@@ -811,7 +871,7 @@ private struct ActivityList: View {
     var body: some View {
         let items = Array(model.activity.prefix(limit))
         if items.isEmpty {
-            Text("Nothing yet. Tap Get AETH to receive test tokens.").font(.callout).foregroundStyle(.secondary)
+            Text("Nothing yet. Payments you send and receive show up here.").font(.aeBody).foregroundStyle(.secondary)
         } else {
             VStack(spacing: 10) {
                 ForEach(items) { item in
@@ -836,32 +896,32 @@ private struct SendSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Send AETH").font(.title2.bold())
+            Text("Send AETH").font(.aeTitle)
             if let r = model.paymentRequest {
                 Label(r.memo.map { "A page asked for this payment: \($0)" } ?? "A page asked for this payment. Check the address and amount.", systemImage: "link")
-                    .font(.callout).foregroundStyle(.orange)
+                    .font(.aeBody).foregroundStyle(.orange)
                     .padding(10).frame(maxWidth: .infinity, alignment: .leading)
                     .background(.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
             }
             if let r = model.paymentRequest {
                 // A requested payment is shown as asked and cannot be edited here.
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("To").font(.caption).foregroundStyle(.secondary)
-                    Text(r.to).font(.body.monospaced()).textSelection(.enabled)
+                    Text("To").font(.aeFootnote).foregroundStyle(.secondary)
+                    Text(r.to).font(.aeBody.monospaced()).textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text("Amount").font(.caption).foregroundStyle(.secondary).padding(.top, 6)
-                    Text("\(r.amount) AETH").font(.title3.weight(.semibold).monospacedDigit())
+                    Text("Amount").font(.aeFootnote).foregroundStyle(.secondary).padding(.top, 6)
+                    Text("\(r.amount) AETH").font(.aeTitle.monospacedDigit())
                 }
             } else {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("To").font(.caption).foregroundStyle(.secondary)
+                    Text("To").font(.aeFootnote).foregroundStyle(.secondary)
                     TextField("0x… (several: separate with commas)", text: $model.sendTo)
-                        .textFieldStyle(.roundedBorder).font(.body.monospaced())
+                        .textFieldStyle(.roundedBorder).font(.aeBody.monospaced())
                 }
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Amount (each)").font(.caption).foregroundStyle(.secondary)
+                    Text("Amount (each)").font(.aeFootnote).foregroundStyle(.secondary)
                     HStack {
-                        TextField("0", text: $model.sendAmount).textFieldStyle(.roundedBorder).font(.title3.monospacedDigit())
+                        TextField("0", text: $model.sendAmount).textFieldStyle(.roundedBorder).font(.aeTitle.monospacedDigit())
                         Text("AETH").foregroundStyle(.secondary)
                         Button("Max") { model.sendAmount = Amount.text(max(0, balance - 0.001)) }.buttonStyle(.borderless)
                     }
@@ -871,13 +931,13 @@ private struct SendSheet: View {
                 Text("Available").foregroundStyle(.secondary)
                 Spacer()
                 Text("\(Amount.text(balance)) AETH").monospacedDigit()
-            }.font(.callout)
+            }.font(.aeBody)
             if let s = model.status {
                 HStack {
                     Text("Network fee").foregroundStyle(.secondary)
                     Spacer()
                     Text("≈ \(Amount.fee(s.transferFeeWei))").monospacedDigit()
-                }.font(.callout)
+                }.font(.aeBody)
             }
             HStack {
                 Button("Cancel") {
@@ -907,10 +967,10 @@ private struct CallSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Approve a request").font(.title2.bold())
+            Text("Approve a request").font(.aeTitle)
             if let r = model.callRequest {
                 Label("\(r.origin ?? "A page") asks you to sign this. Check it before you approve.", systemImage: "link")
-                    .font(.callout).foregroundStyle(.orange)
+                    .font(.aeBody).foregroundStyle(.orange)
                     .padding(10).frame(maxWidth: .infinity, alignment: .leading)
                     .background(.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
                 row("Action", r.method)
@@ -918,9 +978,9 @@ private struct CallSheet: View {
                 row("Sends", "\(r.value) AETH")
                 if let m = r.memo { row("Note", m) }
                 DisclosureGroup("Call data (\((r.data.count - 2) / 2) bytes)") {
-                    ScrollView { Text(r.data).font(.caption.monospaced()).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+                    ScrollView { Text(r.data).font(.aeFootnote.monospaced()).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
                         .frame(maxHeight: 120)
-                }.font(.caption)
+                }.font(.aeFootnote)
             }
             HStack {
                 Button("Reject") {
@@ -947,7 +1007,7 @@ private struct CallSheet: View {
             Text(v).font(mono ? .body.monospaced() : .body).textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
-        }.font(.callout)
+        }.font(.aeBody)
     }
 }
 
@@ -958,9 +1018,9 @@ private struct ConnectSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Connect").font(.title2.bold())
+            Text("Connect").font(.aeTitle)
             Text("\(model.connectRequest?.origin ?? "A page") wants to see your address \(Short.address(model.address)). It cannot move funds: every payment or call still asks you here.")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(.aeBody).foregroundStyle(.secondary)
             HStack {
                 Button("Cancel") {
                     model.connectRequest = nil
@@ -986,9 +1046,9 @@ private struct ReceiveSheet: View {
 
     var body: some View {
         VStack(spacing: 16) {
-            Text("Receive AETH").font(.title2.bold())
+            Text("Receive AETH").font(.aeTitle)
             QRCode(text: model.address).frame(maxWidth: 200, maxHeight: 200).aspectRatio(1, contentMode: .fit)
-            Text(model.address).font(.callout.monospaced()).multilineTextAlignment(.center).textSelection(.enabled)
+            Text(model.address).font(.aeBody.monospaced()).multilineTextAlignment(.center).textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
             HStack {
                 Button {
@@ -997,6 +1057,14 @@ private struct ReceiveSheet: View {
                 } label: { Label(copied ? "Copied" : "Copy address", systemImage: copied ? "checkmark" : "doc.on.doc") }
                     .buttonStyle(.borderedProminent)
                 Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
+            }
+            Divider()
+            // Testnet only: the faucet lives here (and on an empty Home), not as a main action.
+            VStack(spacing: 4) {
+                Button { model.faucet() } label: { Label("Get test AETH", systemImage: "drop") }
+                    .disabled(model.busy || model.address.isEmpty)
+                Text("Sends 10 free test AETH to this address. Test AETH has no value.").font(.aeCaption).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
             }
         }
         .padding(24)
@@ -1010,21 +1078,21 @@ private struct RecoveryPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Recovery device").font(.title3.bold())
+            Text("Recovery device").font(.aeHeadline)
             Text("If you lose this device, a second device you trust (your other Mac or iPhone) can move your funds to itself.")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(.aeBody).foregroundStyle(.secondary)
             step(1, "On the other device, copy its code", "Open Aether there, tap Recovery device, and copy \"This device's code\".")
             HStack {
-                TextField("Paste the other device's code", text: $model.guardianInput).textFieldStyle(.roundedBorder).font(.caption.monospaced())
+                TextField("Paste the other device's code", text: $model.guardianInput).textFieldStyle(.roundedBorder).font(.aeFootnote.monospaced())
                 Button("Trust it") { model.setRecoveryKey() }.buttonStyle(.borderedProminent).disabled(model.busy || model.guardianInput.isEmpty)
             }
             Button("Remove all my recovery devices and words") { model.removeRecoveryKeys() }
-                .font(.caption).disabled(model.busy)
+                .font(.aeFootnote).disabled(model.busy)
                 .help("Use this if a recovery device or your recovery words may be in someone else's hands, then add trusted ones again.")
             Divider()
             step(2, "This device's code", "Give it to someone who wants this device as their recovery device.")
             HStack {
-                Text(model.recoveryCode.isEmpty ? "…" : "\(model.recoveryCode.prefix(24))…").font(.caption.monospaced())
+                Text(model.recoveryCode.isEmpty ? "…" : "\(model.recoveryCode.prefix(24))…").font(.aeFootnote.monospaced())
                     .lineLimit(1).truncationMode(.middle)
                 Spacer()
                 Button { Clipboard.copy(model.recoveryCode) } label: { Label("Copy", systemImage: "doc.on.doc") }.disabled(model.recoveryCode.isEmpty)
@@ -1034,21 +1102,21 @@ private struct RecoveryPanel: View {
             if let p = model.outgoingRecovery {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Recovering \(Short.address(p.request.lost)): \(Wei.format(p.request.valueWei)) AETH").font(.callout.weight(.medium))
+                        Text("Recovering \(Short.address(p.request.lost)): \(Wei.format(p.request.valueWei)) AETH").font(.aeBody.weight(.medium))
                         Text(p.isReady ? "Ready to finish" : "Can finish \(p.readyAt.formatted(date: .abbreviated, time: .shortened))")
-                            .font(.caption).foregroundStyle(p.isReady ? .green : .secondary)
+                            .font(.aeFootnote).foregroundStyle(p.isReady ? Color.aether : .secondary)
                     }
                     Spacer()
                     Button("Finish recovery") { model.finishRecovery() }.buttonStyle(.borderedProminent).disabled(model.busy || !p.isReady)
                 }
             } else {
                 HStack {
-                    TextField("0x lost account", text: $model.lostInput).textFieldStyle(.roundedBorder).font(.caption.monospaced())
+                    TextField("0x lost account", text: $model.lostInput).textFieldStyle(.roundedBorder).font(.aeFootnote.monospaced())
                     Button("Start recovery") { model.recover() }.disabled(model.busy || model.lostInput.isEmpty)
                 }
-                Text("Lost every device? Use your 24 recovery words instead (with the lost account above).").font(.caption).foregroundStyle(.secondary)
+                Text("Lost every device? Use your 24 recovery words instead (with the lost account above).").font(.aeFootnote).foregroundStyle(.secondary)
                 HStack {
-                    SecureField("24 recovery words", text: $model.paperWordsInput).textFieldStyle(.roundedBorder).font(.caption.monospaced())
+                    SecureField("24 recovery words", text: $model.paperWordsInput).textFieldStyle(.roundedBorder).font(.aeFootnote.monospaced())
                     Button("Recover with words") { model.recoverWithWords() }
                         .disabled(model.busy || model.lostInput.isEmpty || model.paperWordsInput.split(separator: " ").count != 24)
                 }
@@ -1058,10 +1126,10 @@ private struct RecoveryPanel: View {
 
     private func step(_ n: Int, _ title: String, _ detail: String) -> some View {
         HStack(alignment: .top, spacing: 10) {
-            Text("\(n)").font(.caption.bold()).frame(width: 22, height: 22).background(Color.aether.opacity(0.15), in: Circle())
+            Text("\(n)").font(.aeFootnote.bold()).frame(width: 22, height: 22).background(Color.aether.opacity(0.15), in: Circle())
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.callout.weight(.semibold))
-                Text(detail).font(.caption).foregroundStyle(.secondary)
+                Text(title).font(.aeBody.weight(.semibold))
+                Text(detail).font(.aeFootnote).foregroundStyle(.secondary)
             }
         }
     }

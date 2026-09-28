@@ -79,3 +79,15 @@ extension View {
         #endif
     }
 }
+
+extension View {
+    /// Keeps `visible` in step with whether this view is scrolled into view
+    /// (macOS 15 / iOS 18; earlier systems only track appear and disappear).
+    @ViewBuilder func trackingScrollVisibility(_ visible: Binding<Bool>) -> some View {
+        if #available(macOS 15.0, iOS 18.0, *) {
+            onScrollVisibilityChange(threshold: 0.05) { visible.wrappedValue = $0 }
+        } else {
+            self
+        }
+    }
+}

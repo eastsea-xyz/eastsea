@@ -1,8 +1,9 @@
 import SwiftUI
 
 /// Simple mode (default): a dashboard for everyday use. Developer mode: the
-/// full view with verification details, raw logs and blocks. The switch sits in
-/// the Mac window's toolbar, and at the top trailing corner on iPhone.
+/// full view with verification details, raw logs and blocks. The switch is out of
+/// the way: View ▸ Developer Mode (⇧⌘D) and Settings on the Mac, the bottom of the
+/// Network page on iPhone; Developer mode itself has a Done button to leave it.
 struct ContentView: View {
     @EnvironmentObject var model: WalletModel
     @AppStorage("developerMode") private var developerMode = false
@@ -10,33 +11,11 @@ struct ContentView: View {
     @AppStorage("acceptedTerms") private var acceptedTerms = 0
 
     var body: some View {
-        content
-            #if os(macOS)
-            // In the window's toolbar, at the trailing edge, beside the page controls.
-            .toolbar { ToolbarItem(placement: .primaryAction) { modeSwitch } }
-            #endif
+        page
             .onAppear { model.start() }
             .sheet(isPresented: Binding(get: { acceptedTerms < Terms.version }, set: { _ in })) {
                 TermsSheet { acceptedTerms = Terms.version }
             }
-    }
-
-    @ViewBuilder private var content: some View {
-        #if os(macOS)
-        page
-        #else
-        // iPhone: a small switch at the top trailing corner, clear of the page titles.
-        VStack(spacing: 0) {
-            HStack {
-                Spacer()
-                modeSwitch
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 6)
-            .padding(.bottom, 2)
-            page
-        }
-        #endif
     }
 
     @ViewBuilder private var page: some View {
@@ -46,20 +25,11 @@ struct ContentView: View {
             SimpleDashboard()
         }
     }
-
-    private var modeSwitch: some View {
-        Toggle(isOn: $developerMode.animation(.easeInOut(duration: 0.2))) {
-            Text("Developer").font(.callout)
-        }
-        .toggleStyle(.switch)
-        .controlSize(.small)
-        .fixedSize()
-        .help("Developer mode: proofs, state roots, raw logs and blocks")
-    }
 }
 
 struct DeveloperView: View {
     @EnvironmentObject var model: WalletModel
+    @AppStorage("developerMode") private var developerMode = false
 
     #if os(macOS)
     /// Below this width the blocks panel moves under the wallet and the page scrolls.
@@ -124,6 +94,8 @@ struct DeveloperView: View {
                     .lineLimit(1).truncationMode(.middle)
             }
             Spacer(minLength: 0)
+            Button("Done") { withAnimation(.easeInOut(duration: 0.2)) { developerMode = false } }
+                .help("Leave Developer mode")
         }
     }
 

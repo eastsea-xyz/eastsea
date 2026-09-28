@@ -3,8 +3,9 @@ import SwiftUI
 import Combine
 #endif
 
-// "Your Mac is working, and this is what it earned": a loud hero card on Home, a badge in
-// the sidebar and a line in the menu-bar panel. Loud in looks only: every amount shown is
+// "Your Mac is working, and this is what it earned": a loud hero card on the Network page
+// (and on Home, under the balance, once a reward has arrived), a badge in the sidebar and a
+// line in the menu-bar panel. Loud in looks only: every amount shown is
 // a reward the chain actually paid (from `aether_rewards`), never a projection or a price.
 //
 // The drawing views take plain values, so they compile on iOS too (for the DEBUG preview
@@ -92,7 +93,7 @@ enum EarnInk {
 
 // MARK: - Hero card
 
-/// The big card at the top of Home while the node is on.
+/// The big earnings card while the node is on.
 struct EarningsHero: View {
     let summary: EarningsSummary
     let work: NodeWork
@@ -101,12 +102,14 @@ struct EarningsHero: View {
     var onProve: (() -> Void)?
     @Environment(\.narrowLayout) private var narrow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// On screen (scrolled into view); the aurora only moves while it is.
+    @State private var visible = true
 
-    /// Money is the headline once the Mac proves, or has ever been paid.
-    private var showsEarnings: Bool { work.isProving || summary.count > 0 }
+    /// Money is the headline once the Mac has been paid (never a row of zeros before).
+    private var showsEarnings: Bool { summary.count > 0 }
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: narrow ? 22 : 28, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
         VStack(alignment: .leading, spacing: narrow ? 14 : 18) {
             header
             if showsEarnings { EarnedBlock(summary: summary, celebration: celebration) } else { VerifiedBlock(work: work) }
@@ -114,13 +117,14 @@ struct EarningsHero: View {
             footer
         }
         .foregroundStyle(.white)
-        .padding(narrow ? 18 : 26)
+        .padding(narrow ? CardPadding.narrow : CardPadding.wide)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background { AuroraBackground(hot: showsEarnings, live: work.isLive) }
+        // One thing moves continuously per screen: the aurora while proving, else the live dot.
+        .background { AuroraBackground(hot: showsEarnings, live: work.isProving && visible) }
         .overlay { ConfettiBurst(trigger: celebration?.id ?? 0) }
         .clipShape(shape)
         .overlay(shape.strokeBorder(.white.opacity(0.28), lineWidth: 1))
-        .shadow(color: (showsEarnings ? EarnInk.pink : EarnInk.violet).opacity(0.45), radius: 22, y: 10)
+        .shadow(color: (showsEarnings ? EarnInk.pink : EarnInk.violet).opacity(0.30), radius: 10, y: 4)
         .keyframeAnimator(initialValue: 1.0, trigger: reduceMotion ? 0 : celebration?.id ?? 0) { view, s in
             view.scaleEffect(s)
         } keyframes: { _ in
@@ -130,17 +134,16 @@ struct EarningsHero: View {
             }
         }
         .accessibilityElement(children: .combine)
+        .onAppear { visible = true }
+        .onDisappear { visible = false }
+        .trackingScrollVisibility($visible)
     }
 
+    /// The live indicator sits on the card's own color, on the padding grid.
     private var header: some View {
         HStack(alignment: .center) {
-            LivePill(text: pillText, live: work.isLive, beat: work.height)
-            Spacer(minLength: 8)
-            OrbitSpinner(period: work.isLive ? 1.3 : 3)
-                .frame(width: narrow ? 34 : 44, height: narrow ? 34 : 44)
-                .padding(6)
-                .background(Circle().fill(.white.opacity(0.92)).shadow(color: EarnInk.pink.opacity(0.6), radius: 10))
-                .opacity(work.isLive ? 1 : 0.5)
+            LivePill(text: pillText, live: work.isLive, beat: work.height, ring: work.isLive && !work.isProving)
+            Spacer(minLength: 0)
         }
     }
 
@@ -156,7 +159,9 @@ struct EarningsHero: View {
     @ViewBuilder private var tiles: some View {
         HStack(spacing: narrow ? 8 : 12) {
             if showsEarnings {
-                StatTile(label: "Today", value: "+\(EarningsText.aeth(summary.todayWei))", unit: EarningsText.unit)
+                if summary.todayWei != "0" {
+                    StatTile(label: "Today", value: "+\(EarningsText.aeth(summary.todayWei))", unit: EarningsText.unit)
+                }
                 StatTile(label: "Received", value: "\(summary.count)", unit: summary.count == 1 ? "reward" : "rewards")
                 TimelineView(.periodic(from: .now, by: 30)) { tl in
                     StatTile(label: "Last reward", value: summary.lastRewardAt.map { EarningsText.ago($0, now: tl.date) } ?? "none yet",
@@ -192,8 +197,13 @@ struct EarningsHero: View {
             Image(systemName: footerIcon)
             Text(footerText).fixedSize(horizontal: false, vertical: true)
         }
-        .font(.callout.weight(.medium))
+        .font(.aeBody.weight(.medium))
         .foregroundStyle(.white.opacity(0.88))
+    }
+
+    /// " · 57 proofs this session" (nothing before the first one).
+    private var proofsText: String {
+        work.proofs == 0 ? "" : " · \(work.proofs) \(work.proofs == 1 ? "proof" : "proofs") this session"
     }
 
     private var footerIcon: String {
@@ -208,9 +218,9 @@ struct EarningsHero: View {
     private var footerText: String {
         switch work.phase {
         case .proving where summary.count > 0:
-            "This Mac's GPU is proving blocks · \(work.proofs) proofs this session. Every amount here was paid on chain."
+            "This Mac's GPU is proving blocks\(proofsText). Every amount here was paid on chain."
         case .proving:
-            "This Mac's GPU is proving blocks · \(work.proofs) proofs this session. The first valid proof of a block gets paid."
+            "This Mac's GPU is proving blocks\(proofsText). The first valid proof of a block gets paid."
         case .verifying:
             "Your Mac checks every block itself. Checking alone earns nothing yet on testnet."
         case .starting:
@@ -229,14 +239,14 @@ private struct EarnedBlock: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("EARNED SO FAR").font(.caption.weight(.heavy)).tracking(2).foregroundStyle(.white.opacity(0.78))
+            Text("Earned so far").font(.aeFootnote.weight(.semibold)).foregroundStyle(.white.opacity(0.78))
             BigNumber(value: WeiMath.aeth(summary.totalWei), decimals: EarningsText.decimals(summary.totalWei),
                       unit: EarningsText.unit, glow: EarnInk.gold)
                 // An overlay, so the label's width never shifts the number.
                 .overlay(alignment: .topLeading) {
                     FloatingReward(celebration: celebration).fixedSize().offset(x: narrow ? 40 : 60, y: narrow ? -26 : -34)
                 }
-            HourDelta(wei: summary.lastHourWei)
+            if summary.lastHourWei != "0" { HourDelta(wei: summary.lastHourWei) }
         }
     }
 }
@@ -247,7 +257,7 @@ private struct VerifiedBlock: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("BLOCKS VERIFIED THIS SESSION").font(.caption.weight(.heavy)).tracking(2).foregroundStyle(.white.opacity(0.78))
+            Text("Blocks verified this session").font(.aeFootnote.weight(.semibold)).foregroundStyle(.white.opacity(0.78))
             BigNumber(value: Double(work.blocksVerified), decimals: 0, unit: work.blocksVerified == 1 ? "block" : "blocks", glow: EarnInk.sky)
         }
     }
@@ -274,7 +284,7 @@ private struct BigNumber: View {
 
     private var number: some View {
         CountingText(value: shown, decimals: decimals)
-            .font(.system(size: narrow ? 52 : 68, weight: .heavy, design: .rounded))
+            .font(narrow ? .heroNumberNarrow : .heroNumber)
             .monospacedDigit()
             .lineLimit(1)
             .minimumScaleFactor(0.5)
@@ -283,7 +293,7 @@ private struct BigNumber: View {
     }
 
     private var unitText: some View {
-        Text(unit).font(.system(size: narrow ? 18 : 22, weight: .bold, design: .rounded)).foregroundStyle(.white.opacity(0.9))
+        Text(unit).font(narrow ? .aeHeadline : .aeTitle).foregroundStyle(.white.opacity(0.9))
     }
 
     private func count(to v: Double) {
@@ -316,7 +326,7 @@ private struct HourDelta: View {
             Image(systemName: some ? "plus.circle.fill" : "clock")
             Text(some ? "+\(EarningsText.aeth(wei)) \(EarningsText.unit) in the last hour" : "Nothing in the last hour")
         }
-        .font(.callout.weight(.bold))
+        .font(.aeBody.weight(.bold))
         .foregroundStyle(some ? EarnInk.night : .white.opacity(0.9))
         .padding(.horizontal, 12).padding(.vertical, 6)
         .background(some ? AnyShapeStyle(EarnInk.mint) : AnyShapeStyle(.white.opacity(0.16)), in: Capsule())
@@ -332,19 +342,19 @@ private struct StatTile: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(label.uppercased()).font(.system(size: 9.5, weight: .heavy)).tracking(0.8).foregroundStyle(.white.opacity(0.72))
+            Text(label).font(.aeCaption.weight(.semibold)).foregroundStyle(.white.opacity(0.72))
                 .lineLimit(1).minimumScaleFactor(0.7)
-            Text(value).font(.system(size: narrow ? 17 : 21, weight: .bold, design: .rounded)).monospacedDigit()
+            Text(value).font(narrow ? .aeHeadline : .aeTitle).monospacedDigit()
                 .lineLimit(1).minimumScaleFactor(0.55)
                 .contentTransition(.numericText())
             if let unit {
-                Text(unit).font(.caption2.weight(.medium)).foregroundStyle(.white.opacity(0.72)).lineLimit(1).minimumScaleFactor(0.7)
+                Text(unit).font(.aeCaption).foregroundStyle(.white.opacity(0.72)).lineLimit(1).minimumScaleFactor(0.7)
             }
         }
         .padding(.horizontal, narrow ? 10 : 14).padding(.vertical, narrow ? 9 : 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(.white.opacity(0.14), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(.white.opacity(0.18), lineWidth: 1))
+        .background(.white.opacity(0.14), in: RoundedRectangle(cornerRadius: Radius.inner, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Radius.inner, style: .continuous).strokeBorder(.white.opacity(0.18), lineWidth: 1))
     }
 }
 
@@ -353,15 +363,17 @@ struct LivePill: View {
     let text: String
     let live: Bool
     let beat: UInt64
+    /// The ever-pulsing ring (off while something else on screen already moves).
+    var ring = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var ring = false
+    @State private var ringOut = false
 
     var body: some View {
         HStack(spacing: 8) {
             ZStack {
-                if live && !reduceMotion {
+                if live && ring && !reduceMotion {
                     Circle().stroke(EarnInk.mint, lineWidth: 2)
-                        .scaleEffect(ring ? 2.8 : 1).opacity(ring ? 0 : 0.9)
+                        .scaleEffect(ringOut ? 2.8 : 1).opacity(ringOut ? 0 : 0.9)
                 }
                 Circle().fill(live ? EarnInk.mint : .orange).shadow(color: EarnInk.mint.opacity(live ? 0.9 : 0), radius: 5)
             }
@@ -373,18 +385,19 @@ struct LivePill: View {
                     SpringKeyframe(1.0, duration: 0.3)
                 }
             }
-            Text(text).font(.system(size: 12, weight: .black, design: .rounded)).tracking(2)
+            Text(text).font(.aeCaption.weight(.heavy)).tracking(1.5)
         }
         .padding(.horizontal, 12).padding(.vertical, 6)
         .background(.black.opacity(0.25), in: Capsule())
         .overlay(Capsule().strokeBorder(.white.opacity(0.3), lineWidth: 1))
         .onAppear { startRing() }
         .onChange(of: live) { _, _ in startRing() }
+        .onChange(of: ring) { _, _ in startRing() }
     }
 
     private func startRing() {
-        guard live, !reduceMotion, !ring else { return }
-        withAnimation(.easeOut(duration: 1.5).repeatForever(autoreverses: false)) { ring = true }
+        guard live, ring, !reduceMotion, !ringOut else { return }
+        withAnimation(.easeOut(duration: 1.5).repeatForever(autoreverses: false)) { ringOut = true }
     }
 }
 
@@ -395,17 +408,17 @@ private struct ProveCallToAction: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 10) {
-                Image(systemName: "bolt.fill").font(.title3)
+                Image(systemName: "bolt.fill").font(.aeHeadline)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Prove blocks on this Mac's GPU").font(.headline)
-                    Text("to earn test AETH").font(.caption.weight(.semibold)).opacity(0.8)
+                    Text("Prove blocks on this Mac's GPU").font(.aeHeadline)
+                    Text("to earn test AETH").font(.aeCaption.weight(.semibold)).opacity(0.8)
                 }
                 Spacer(minLength: 4)
-                Image(systemName: "chevron.right").font(.headline)
+                Image(systemName: "chevron.right").font(.aeHeadline)
             }
             .foregroundStyle(EarnInk.night)
             .padding(.horizontal, 16).padding(.vertical, 12)
-            .background(.white, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .background(.white, in: RoundedRectangle(cornerRadius: Radius.inner, style: .continuous))
             .shadow(color: .black.opacity(0.2), radius: 8, y: 4)
         }
         .buttonStyle(.plain)
@@ -426,7 +439,7 @@ private struct FloatingReward: View {
 
     var body: some View {
         Text("+\(EarningsText.aeth(celebration?.amountWei ?? "0")) \(EarningsText.unit)")
-            .font(.system(size: 20, weight: .black, design: .rounded))
+            .font(.aeTitle.weight(.black))
             .foregroundStyle(EarnInk.night)
             .padding(.horizontal, 12).padding(.vertical, 6)
             .background(LinearGradient(colors: [EarnInk.gold, .white], startPoint: .leading, endPoint: .trailing), in: Capsule())
@@ -661,7 +674,7 @@ struct EarningsBadge: View {
                 }
             Text(line).lineLimit(1).minimumScaleFactor(0.75)
         }
-        .font(.caption2.weight(.bold))
+        .font(.aeCaption.weight(.bold))
         .foregroundStyle(.white)
         .padding(.horizontal, 9).padding(.vertical, 5)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -706,6 +719,14 @@ final class Earnings: ObservableObject {
     /// Start following `node` (once; later calls do nothing).
     func attach(_ node: NodeController) {
         guard self.node == nil else { return }
+        #if DEBUG
+        if DesignPreview.on {
+            if DesignPreview.variant != "verifying" { summary = EarningsPreviewHarness.sample(count: 24) }
+            runningSince = Date().addingTimeInterval(-11_520)
+            firstHeight = 182_926
+            return
+        }
+        #endif
         self.node = node
         node.$state.sink { [weak self] in self?.stateChanged($0) }.store(in: &subscriptions)
         node.$height.sink { [weak self] in self?.heightChanged($0) }.store(in: &subscriptions)
@@ -813,6 +834,93 @@ struct NodeEarningsCard: View {
     }
 }
 
+/// Home, under the balance and the actions: the full earnings card once a reward has
+/// arrived; before that, one quiet line about what the node is doing (no zeros).
+struct HomeEarnings: View {
+    @EnvironmentObject var node: NodeController
+    @EnvironmentObject var earnings: Earnings
+    @EnvironmentObject var model: WalletModel
+    /// Opens the page with the node and the full card.
+    let open: () -> Void
+
+    var body: some View {
+        if node.enabled {
+            let work = earnings.work(node, canProve: !model.address.isEmpty)
+            let prove = model.address.isEmpty ? nil : proveOn
+            if earnings.summary.count > 0, earnings.summary.totalWei != "0" {
+                EarningsHero(summary: earnings.summary, work: work, celebration: earnings.celebration, onProve: prove)
+            } else {
+                NodeStatusLine(work: work, action: open, onProve: node.prove ? nil : prove)
+            }
+        }
+    }
+
+    /// Same as the Settings toggle "Prove blocks with Metal".
+    private func proveOn() {
+        node.proveAddress = model.address
+        node.prove = true
+    }
+}
+
+/// "● This Mac is verifying blocks  ›"
+struct NodeStatusLine: View {
+    let work: NodeWork
+    let action: () -> Void
+    /// Proving is off: say where testnet rewards go, and offer to prove (nil: hidden).
+    var onProve: (() -> Void)?
+
+    var body: some View {
+        if let onProve, work.phase == .verifying {
+            proveOffer(onProve)
+        } else {
+            line
+        }
+    }
+
+    /// Testnet rewards go only to the Mac that proves a block first; verifying alone earns nothing.
+    private func proveOffer(_ prove: @escaping () -> Void) -> some View {
+        HStack(spacing: 12) {
+            Circle().fill(Color.aether).frame(width: 8, height: 8)
+            Text("This Mac verifies blocks. Rewards go to Macs that prove them.")
+                .font(.aeBody).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 4)
+            Button(action: prove) { Label("Prove blocks", systemImage: "bolt.fill") }
+                .buttonStyle(.borderedProminent)
+                .help("Uses the GPU and power while on. The first valid proof of a block is paid to this wallet.")
+        }
+        .padding(.horizontal, 16).padding(.vertical, 12)
+        .background(.background.secondary, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+    }
+
+    private var line: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Circle().fill(work.isLive ? Color.aether : .orange).frame(width: 8, height: 8)
+                Text(text).lineLimit(2)
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+            }
+            .font(.aeBody)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 16).padding(.vertical, 12)
+            .background(.background.secondary, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Open the node on this Mac")
+    }
+
+    private var text: String {
+        switch work.phase {
+        case .verifying: "This Mac is verifying blocks"
+        case .proving: "This Mac is proving blocks · no reward yet"
+        case .starting: work.height > 0 ? "Node catching up · block #\(work.height)" : "Node starting…"
+        case .paused(let why): why
+        }
+    }
+}
+
 /// Under the node switch in the sidebar.
 struct EarningsSidebarBadge: View {
     @EnvironmentObject var node: NodeController
@@ -839,7 +947,7 @@ struct EarningsMenuLine: View {
                 Spacer(minLength: 4)
                 Text("\(EarningsText.aeth(s.totalWei)) total").foregroundStyle(.secondary)
             }
-            .font(.callout)
+            .font(.aeBody)
             .foregroundStyle(EarnInk.brand)
             .contentTransition(.numericText())
         }

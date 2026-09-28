@@ -10,7 +10,7 @@
 
 use crate::chain::Chain;
 use crate::faucet::Faucet;
-use crate::follow::Upstream;
+use crate::follow::{Upstream, BEHIND_MARGIN};
 use crate::roster::LocalKeys;
 use aether_execution::registry::{self, encode_beacon, REGISTRY};
 use aether_execution::EvmCall;
@@ -211,6 +211,13 @@ pub async fn beacon_loop(chain: Chain, outbox: Outbox, keys: CandidateKeys) {
     let mut sent_for = u64::MAX;
     let mut answering = Answering::default();
     loop {
+        // No beacons while catching up: one is a claim this Mac is current,
+        // and it would be checked against a state this node has not reached
+        // (a follower or a validator still catching up before it votes).
+        if chain.behind() > BEHIND_MARGIN {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            continue;
+        }
         let (height, state, cfg) = {
             let g = chain.lock();
             (g.finalized.height, g.finalized.state.clone(), g.cfg.clone())

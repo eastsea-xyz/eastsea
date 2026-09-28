@@ -7,16 +7,37 @@
 //! them), and persists the result. Wallets on this Mac then ask it instead of a
 //! remote node; transactions they submit are forwarded upstream. Nothing a
 //! validator sends is trusted beyond the certificate.
+//!
+//! Catch-up: blocks are fetched in pipelined batches (many requests in flight,
+//! executed in order), and a Mac that slept for hours — more than
+//! `JUMP_BEHIND` blocks behind — jumps to the network's certified snapshot
+//! instead of replaying (checked against the certified block after it, as a
+//! checkpoint start is; the gap's blocks stay fetchable from era files).
+//! `catch_up` runs the same machinery for a validator before it starts voting.
 
 use crate::block::Block;
 use crate::chain::Chain;
 use aether_light::{from_hex, verify_finalized_chain, ValidatorSet, MAX_BLOCK_BYTES};
 use commonware_codec::Decode as _;
+use futures::{StreamExt as _, TryStreamExt as _};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::time::Duration;
 use tracing::{info, warn};
+
+/// How far behind the network a node jumps to a certified snapshot instead of
+/// replaying (~30 min of 1 s blocks).
+pub const JUMP_BEHIND: u64 = 2_000;
+/// How far behind a node stops acting as a validator (proposing, voting,
+/// answering beacons) until it has caught up.
+pub const BEHIND_MARGIN: u64 = 20;
+/// Blocks fetched (and verified) in parallel while following: enough that a
+/// round trip is amortized over many blocks (a 150 ms link still syncs at
+/// hundreds of blocks a second) without holding long-lived buffers.
+const PIPELINE: u64 = 256;
+/// Snapshot chunks fetched in parallel.
+const SNAPSHOT_PARALLEL: usize = 8;
 
 /// Certified blocks this follower verified, served to wallets and other
 /// followers as `aether_getFinalized` (the same JSON a validator answers with).
@@ -122,9 +143,17 @@ impl Upstream {
     }
 }
 
+/// One pooled client for every upstream call: a follower catching up asks
+/// dozens of requests a second, and a client per request paid a TCP (or TLS)
+/// handshake every time.
+fn http() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
+
 async fn http_call(url: &str, method: &str, params: &Value) -> Result<Value, String> {
     let body = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
-    let mut r = reqwest::Client::new().post(url).json(&body).timeout(Duration::from_secs(10)).send().await.map_err(|e| e.to_string())?;
+    let mut r = http().post(url).json(&body).timeout(Duration::from_secs(10)).send().await.map_err(|e| e.to_string())?;
     if r.content_length().is_some_and(|n| n as usize > MAX_RESPONSE) {
         return Err("response too large".into());
     }
@@ -142,10 +171,17 @@ async fn http_call(url: &str, method: &str, params: &Value) -> Result<Value, Str
     }
 }
 
-/// Checkpoint sync: fetch the upstream's snapshot and the certified block
-/// after it, check both, and write the snapshot as `store`'s checkpoint.
-/// Returns the snapshot height.
-pub async fn checkpoint(upstream: &Upstream, set: &ValidatorSet, cfg: &crate::chain::ChainConfig, store: &crate::store::Store) -> Result<u64, String> {
+/// The network's finalized height, from the first source that answers.
+async fn net_height(upstream: &Upstream) -> Result<u64, String> {
+    upstream.first("aether_status", json!([])).await?["height"]
+        .as_u64()
+        .ok_or_else(|| "no upstream height".into())
+}
+
+/// The upstream's snapshot, downloaded and checked against its BLAKE3
+/// (authenticity comes from the certified block after it, in `check`).
+/// Chunks are fetched in parallel: each costs a round trip on a slow link.
+async fn download(upstream: &Upstream) -> Result<crate::snapshot::Snapshot, String> {
     let v = upstream.first("aether_snapshot", json!([])).await?;
     let (height, size, want) = (
         v["height"].as_u64().ok_or("no snapshot height")?,
@@ -154,41 +190,100 @@ pub async fn checkpoint(upstream: &Upstream, set: &ValidatorSet, cfg: &crate::ch
     );
     let chunk = v["chunk"].as_u64().ok_or("no snapshot chunk size")? as usize;
     if size > MAX_SNAPSHOT || !(MIN_SNAPSHOT_CHUNK..=MAX_RESPONSE / 2).contains(&chunk) {
-        return Err(format!("snapshot of {size} bytes in chunks of {chunk} is outside the limits"));
+        return Err(format!(
+            "snapshot of {size} bytes in chunks of {chunk} is outside the limits"
+        ));
     }
-    let mut bytes = Vec::with_capacity(size.min(64 << 20));
-    for index in 0..size.div_ceil(chunk) {
-        let c = upstream.first("aether_snapshotChunk", json!([height, index])).await?;
-        let data = hex::decode(c["data"].as_str().ok_or("no chunk data")?).map_err(|e| e.to_string())?;
+    let chunk_at = |index: u64| async move {
+        let c = upstream
+            .first("aether_snapshotChunk", json!([height, index]))
+            .await?;
+        let data =
+            hex::decode(c["data"].as_str().ok_or("no chunk data")?).map_err(|e| e.to_string())?;
         // Every chunk full-size except the last; never more than advertised.
-        if data.len() != chunk.min(size - bytes.len()) {
-            return Err("snapshot chunk of the wrong size".into());
+        let end = ((index + 1) * chunk as u64).min(size as u64);
+        if data.len() as u64 != end - index * chunk as u64 {
+            return Err("snapshot chunk of the wrong size".to_string());
         }
-        bytes.extend(data);
+        Ok(data)
+    };
+    let mut bytes = Vec::with_capacity(size.min(64 << 20));
+    if size <= chunk {
+        bytes.extend(chunk_at(0).await?);
+    } else {
+        let parts: Vec<Vec<u8>> = futures::stream::iter(0..size.div_ceil(chunk) as u64)
+            .map(chunk_at)
+            .buffered(SNAPSHOT_PARALLEL)
+            .try_collect()
+            .await?;
+        for p in parts {
+            bytes.extend(p);
+        }
     }
     // Integrity of the download; authenticity comes from the certified block below.
     if bytes.len() != size || crate::rpc::blake3_hex(&bytes) != want {
         return Err("snapshot download does not match its BLAKE3".into());
     }
     let snap = crate::snapshot::Snapshot::from_bytes(&bytes)?;
-    drop(bytes);
     if snap.summary.height != height {
         return Err("snapshot height does not match".into());
     }
+    Ok(snap)
+}
+
+/// Checkpoint sync: fetch the upstream's snapshot and the certified block
+/// after it, check both, and write the snapshot as `store`'s checkpoint.
+/// Returns the snapshot height.
+pub async fn checkpoint(upstream: &Upstream, set: &ValidatorSet, cfg: &crate::chain::ChainConfig, store: &crate::store::Store) -> Result<u64, String> {
+    let snap = download(upstream).await?;
     let h = snap.summary.height;
-    // The block after it, certified under the pinned identity (wait for it if needed).
-    let mut next = None;
+    let next = wait_certified(upstream, set, h + 1).await?;
+    let state = snap.check(&next, cfg, set.identity())?;
+    snap.install(store, &state, cfg)?;
+    info!(
+        height = h,
+        entries = snap.entries.len(),
+        "checkpoint: started from a certified snapshot (history not replayed)"
+    );
+    Ok(h)
+}
+
+/// Certified block `h`, waiting for the network to finalize it (a snapshot can
+/// be a little behind the tip).
+async fn wait_certified(upstream: &Upstream, set: &ValidatorSet, h: u64) -> Result<Block, String> {
     for _ in 0..60 {
-        if let Some((block, _)) = fetch(upstream, set, h + 1).await? {
-            next = Some(block);
-            break;
+        if let Some((block, _)) = fetch(upstream, set, h).await? {
+            return Ok(block);
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    let next = next.ok_or(format!("no certified block {} after the snapshot", h + 1))?;
-    let state = snap.check(&next, cfg, set.identity())?;
-    snap.install(store, &state, cfg)?;
-    info!(height = h, entries = snap.entries.len(), "checkpoint: started from a certified snapshot (history not replayed)");
+    Err(format!("no certified block {h} after the snapshot"))
+}
+
+/// A node that slept for hours jumps instead of replaying: fetch the network's
+/// snapshot, check it against the certified block after it (as a checkpoint
+/// start does), then swap it in over this chain's state and adopt it as the
+/// finalized head. The blocks skipped are not kept; they stay fetchable from
+/// era files, verified by the certified history root. Returns the height
+/// jumped to.
+async fn jump(chain: &Chain, upstream: &Upstream, set: &ValidatorSet) -> Result<u64, String> {
+    let snap = download(upstream).await?;
+    let h = snap.summary.height;
+    let ours = chain.finalized_height();
+    if h <= ours + JUMP_BEHIND {
+        return Err(format!(
+            "snapshot at {h} is only {} blocks ahead of {ours}; replaying instead",
+            h.saturating_sub(ours)
+        ));
+    }
+    let store = chain.store().ok_or("no store to jump in")?;
+    let next = wait_certified(upstream, set, h + 1).await?;
+    let state = snap.check(&next, &chain.cfg(), set.identity())?;
+    // The old state's keys go with the swap, so the store ends up holding exactly the snapshot.
+    let old: Vec<([u8; 32], [u8; 32])> = chain.lock().finalized.state.repo().entries().collect();
+    snap.install_over(&store, &state, old)?;
+    let (exec, summary) = snap.head(state);
+    chain.adopt(exec, summary);
     Ok(h)
 }
 
@@ -196,45 +291,261 @@ pub async fn checkpoint(upstream: &Upstream, set: &ValidatorSet, cfg: &crate::ch
 /// `joining`: this Mac's voting key when it is a candidate. When a finalized
 /// handoff seats it, the follower stops before the switch height (for up to
 /// `HOLD`), so `aether run` can start it as a voting node from that block.
-pub async fn run(chain: Chain, upstream: std::sync::Arc<Upstream>, set: ValidatorSet, archive: std::sync::Arc<FinalityArchive>, joining: Option<String>) {
+pub async fn run(
+    chain: Chain,
+    upstream: std::sync::Arc<Upstream>,
+    set: ValidatorSet,
+    archive: std::sync::Arc<FinalityArchive>,
+    joining: Option<String>,
+) {
     const HOLD: Duration = Duration::from_secs(120);
     let mut last_log = 0;
     let mut held_since: Option<std::time::Instant> = None;
+    // One height per round while idle at the tip (as before); a full batch
+    // while there is a backlog to fetch.
+    let mut window = 1u64;
     loop {
-        let next = chain.finalized_height() + 1;
-        let seated = chain
-            .lock()
-            .finalized
-            .handoff
-            .as_ref()
-            .is_some_and(|p| next >= p.switch && joining.as_ref().is_some_and(|k| p.handoff.members.iter().any(|(m, _)| m == k)));
-        if seated && held_since.get_or_insert_with(std::time::Instant::now).elapsed() < HOLD {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            continue;
-        }
-        match fetch(&upstream, &set, next).await {
-            Ok(Some((block, proof))) => match chain.finalize(&block) {
-                Ok(()) => {
-                    archive.insert(next, proof);
-                    if next - last_log >= 100 || next.is_multiple_of(10) {
-                        info!(height = next, root = %chain.lock().finalized.state.root(), "followed");
-                        last_log = next;
-                    }
+        // A handoff that seats this Mac: never run past its switch height
+        // (`aether run` adopts this follower's state there), and hold once it
+        // is reached.
+        let cap = match hold_cap(&chain, joining.as_deref()) {
+            Hold::Free => u64::MAX,
+            Hold::Approach(switch) => switch - 1,
+            Hold::Seated => {
+                held_since.get_or_insert_with(std::time::Instant::now);
+                if held_since.unwrap().elapsed() < HOLD {
+                    window = 1;
+                    tokio::time::sleep(Duration::from_millis(500)).await;
                     continue;
                 }
-                Err(e) => warn!(height = next, ?e, "certified block did not execute to the same result; not adopting it"),
-            },
-            Ok(None) => {}
-            // Upstream pruned this height (roadmap B4): replay its era from an era file instead.
-            Err(e) if e.contains("pruned") => match catch_up_era(&chain, &upstream, &set, next).await {
+                // The supervisor never came: follow the chain again.
+                u64::MAX
+            }
+        };
+        match advance(
+            &chain,
+            &upstream,
+            &set,
+            Some(&archive),
+            cap,
+            window,
+            &mut last_log,
+        )
+        .await
+        {
+            Ok(0) => {
+                window = 1;
+                tokio::time::sleep(Duration::from_millis(400)).await;
+            }
+            Ok(_) => window = PIPELINE,
+            Err(e) => {
+                warn!(height = chain.finalized_height() + 1, %e, "upstream");
+                chain.set_relaxed(false);
+                window = 1;
+                tokio::time::sleep(Duration::from_millis(400)).await;
+            }
+        }
+    }
+}
+
+/// What a pending handoff that seats this Mac means for the follower.
+enum Hold {
+    /// No handoff seats it: follow freely.
+    Free,
+    /// One does, before its switch height: `u64` is the switch.
+    Approach(u64),
+    /// It is at the switch height: hold for `aether run` to adopt the state.
+    Seated,
+}
+
+fn hold_cap(chain: &Chain, joining: Option<&str>) -> Hold {
+    let g = chain.lock();
+    let Some(p) = g
+        .finalized
+        .handoff
+        .as_ref()
+        .filter(|p| joining.is_some_and(|k| p.handoff.members.iter().any(|(m, _)| m == k)))
+    else {
+        return Hold::Free;
+    };
+    if g.finalized.height + 1 >= p.switch {
+        Hold::Seated
+    } else {
+        Hold::Approach(p.switch)
+    }
+}
+
+/// One round of following: learn the network's finalized height (kept for
+/// `aether_status`), jump to a certified snapshot when more than `JUMP_BEHIND`
+/// behind, then fetch, verify and finalize blocks with `window` requests in
+/// flight. A batch that adopts everything continues straight into the next
+/// (each costs one height round trip and one batch; the last batch of a
+/// backlog stops where the network's tip answers nothing). Returns how many
+/// blocks were adopted (0: at the tip, or an error is being retried).
+async fn advance(
+    chain: &Chain,
+    upstream: &Upstream,
+    set: &ValidatorSet,
+    archive: Option<&FinalityArchive>,
+    cap: u64,
+    window: u64,
+    last_log: &mut u64,
+) -> Result<u64, String> {
+    let mut adopted = 0u64;
+    let mut window = window.max(1);
+    loop {
+        let net = net_height(upstream).await?;
+        chain.lock().net_height = Some(net);
+        let ours = chain.finalized_height();
+        if net > ours + JUMP_BEHIND && adopted == 0 {
+            match jump(chain, upstream, set).await {
                 Ok(to) => {
-                    info!(from = next, to, "replayed a pruned era from its era file");
-                    continue;
+                    info!(from = ours, to, skipped = to - ours - 1, "jumped to a certified snapshot (the gap's blocks stay fetchable from era files)");
+                    log_follow(chain, last_log);
+                    chain.set_relaxed(false);
+                    return Ok(to - ours);
                 }
-                Err(e) => warn!(height = next, %e, "upstream pruned this era and it could not be fetched"),
-            },
-            Err(e) => warn!(height = next, %e, "upstream"),
+                Err(e) => {
+                    warn!(from = ours, %e, "could not jump to a certified snapshot; replaying instead")
+                }
+            }
         }
+        let last = pipeline(
+            chain,
+            upstream,
+            set,
+            archive,
+            ours + 1,
+            net.min(cap),
+            window,
+        )
+        .await?;
+        adopted += last - ours;
+        if last > ours {
+            log_follow(chain, last_log);
+        }
+        // A short batch means the tip (or a source that stopped answering);
+        // the caller decides when to try again. A full one means a backlog:
+        // keep going without asking for the height again.
+        if window == 1 || last < ours + window {
+            chain.set_relaxed(false);
+            return Ok(adopted);
+        }
+        window = PIPELINE;
+    }
+}
+
+/// Fetch, verify and finalize blocks `from..=cap` (at most `window` of them)
+/// with `window` requests in flight: certificates are checked as each answer
+/// arrives, blocks are executed in order, and nothing past a block that does
+/// not execute is adopted. Stops at the first height no source has yet, or
+/// replays its era file when the source pruned it. Returns the last height
+/// adopted (`from - 1` when the batch made no progress).
+async fn pipeline(
+    chain: &Chain,
+    upstream: &Upstream,
+    set: &ValidatorSet,
+    archive: Option<&FinalityArchive>,
+    from: u64,
+    cap: u64,
+    window: u64,
+) -> Result<u64, String> {
+    let to = cap.min(from + window - 1);
+    if to < from {
+        return Ok(from - 1);
+    }
+    let heights: Vec<u64> = (from..=to).collect();
+    let fetched = futures::future::join_all(heights.iter().map(|h| fetch(upstream, set, *h))).await;
+    let mut last = from - 1;
+    for (h, r) in heights.into_iter().zip(fetched) {
+        match r {
+            Ok(Some((block, proof))) => {
+                // A backlog replays without the per-block fsync (redb holds
+                // those commits until a durable one); the batch's last block
+                // commits durably and anchors it, so a crash mid-replay loses
+                // only the open batch — certified blocks, they replay again.
+                chain.set_relaxed(h != to);
+                match chain.finalize(&block) {
+                    Ok(()) => {
+                        if let Some(a) = archive {
+                            a.insert(h, proof);
+                        }
+                        last = h;
+                    }
+                    Err(e) => {
+                        warn!(
+                            height = h,
+                            ?e,
+                            "certified block did not execute to the same result; not adopting it"
+                        );
+                        return Ok(last);
+                    }
+                }
+            }
+            Ok(None) => break,
+            // The source pruned this era (roadmap B4): replay it from an era file instead.
+            Err(e) if e.contains("pruned") => match catch_up_era(chain, upstream, set, h).await {
+                Ok(to) => {
+                    info!(from = h, to, "replayed a pruned era from its era file");
+                    return Ok(to.max(last));
+                }
+                Err(e) => {
+                    warn!(height = h, %e, "upstream pruned this era and it could not be fetched");
+                    return Ok(last);
+                }
+            },
+            Err(e) => {
+                warn!(height = h, %e, "upstream");
+                break;
+            }
+        }
+    }
+    Ok(last)
+}
+
+fn log_follow(chain: &Chain, last_log: &mut u64) {
+    let (height, root) = {
+        let g = chain.lock();
+        (g.finalized.height, g.finalized.state.root())
+    };
+    if height - *last_log >= 100 || height.is_multiple_of(10) {
+        info!(height, %root, "followed");
+        *last_log = height;
+    }
+}
+
+/// Catch a validator up before it starts voting (`run_node` calls this before
+/// the consensus engine exists, so a committee member that slept cannot
+/// propose, vote or answer beacons on a chain it cannot yet execute): follow
+/// the network with the follower machinery — a certified snapshot jump
+/// included — until within `margin` blocks of its finalized height. Returns
+/// how many blocks were adopted (jumped or replayed).
+pub async fn catch_up(
+    chain: &Chain,
+    upstream: &Upstream,
+    set: &ValidatorSet,
+    margin: u64,
+) -> Result<u64, String> {
+    let start = chain.finalized_height();
+    let mut last_log = 0;
+    let mut window = PIPELINE;
+    loop {
+        let ours = chain.finalized_height();
+        if let Err(e) = advance(chain, upstream, set, None, u64::MAX, window, &mut last_log).await {
+            warn!(height = ours + 1, %e, "catching up");
+        }
+        let behind = chain.behind();
+        if behind <= margin {
+            // Caught up (this node is the network now): nothing is behind anymore.
+            chain.lock().net_height = None;
+            chain.set_relaxed(false);
+            return Ok(chain.finalized_height() - start);
+        }
+        window = if chain.finalized_height() > ours {
+            PIPELINE
+        } else {
+            1
+        };
         tokio::time::sleep(Duration::from_millis(400)).await;
     }
 }
@@ -266,7 +577,8 @@ pub async fn catch_up_era(chain: &Chain, upstream: &Upstream, set: &ValidatorSet
     tokio::task::spawn_blocking(move || {
         let mut last = next - 1;
         for b in e.blocks.iter().filter(|b| b.height.get() >= next) {
-            c.finalize(b).map_err(|e| format!("era block {} did not execute: {e:?}", b.height.get()))?;
+            c.finalize(b)
+                .map_err(|e| format!("era block {} did not execute: {e:?}", b.height.get()))?;
             last = b.height.get();
         }
         Ok(last)

@@ -377,6 +377,15 @@ pub struct Inner {
     pub pruned_below: u64,
     /// The last era read back from its file (old blocks served over RPC).
     era_cache: Option<(u64, Arc<crate::era::Era>)>,
+    /// The network's finalized height, as this node last heard from its
+    /// upstream (None: nothing told it). How far behind it is shows in
+    /// `aether_status` (`catching_up`, `behind`) and gates acting as a
+    /// validator while still catching up.
+    pub net_height: Option<u64>,
+    /// Replay mode (`follow` catching up): commits skip the per-block fsync.
+    /// Every block being replayed is certified and re-fetchable, so a power
+    /// loss only replays them; the first durable commit after it anchors the file.
+    pub relaxed: bool,
 }
 
 #[derive(Clone)]
@@ -483,6 +492,8 @@ impl Chain {
             beacon_out: None,
             pruned_below: 0,
             era_cache: None,
+            net_height: None,
+            relaxed: false,
         };
         (Chain(Arc::new(Mutex::new(inner))), genesis)
     }
@@ -593,6 +604,44 @@ impl Chain {
 
     pub fn cfg(&self) -> ChainConfig {
         self.lock().cfg.clone()
+    }
+
+    /// How many blocks behind the network this node last knew itself to be
+    /// (0 when caught up, or when nothing ever told it a height).
+    pub fn behind(&self) -> u64 {
+        let g = self.lock();
+        g.net_height.map_or(0, |n| n.saturating_sub(g.finalized.height))
+    }
+
+    /// Replay mode for `follow`: while a certified backlog is fetched and
+    /// re-executed, commits skip the per-block fsync — every block is
+    /// re-fetchable, so a power loss only replays them. Cleared at the tip:
+    /// the next durable commit then anchors everything the replay built.
+    pub fn set_relaxed(&self, relaxed: bool) {
+        self.lock().relaxed = relaxed;
+    }
+
+    /// Adopt a committee-certified snapshot as the finalized head, executing
+    /// nothing (`follow::jump` checked it against the certified block after
+    /// it, and `snapshot::install_over` already wrote the store). Blocks
+    /// between the old head and this one are skipped: as on a checkpoint
+    /// start there is no early history index (the gap's blocks stay fetchable
+    /// from era files, verified by the history root), while everything kept —
+    /// old summaries, receipts, proofs — is certified history of this same
+    /// chain. Nothing else moves: the mempool self-prunes against the new
+    /// state on the next finalize, and pooled beacons older than the new head
+    /// cannot make it into a block.
+    pub fn adopt(&self, exec: Arc<Executed>, summary: BlockSummary) {
+        let mut g = self.lock();
+        let height = exec.height;
+        g.executed.clear();
+        g.executed.insert(exec.digest, exec.clone());
+        g.blocks.insert(height, summary);
+        g.finalized = exec;
+        g.history_index = None;
+        // Old finalized blocks are no longer provable here (their states are
+        // gone); do not let them hold the prover's queue.
+        g.recent.clear();
     }
 
     /// Key rounds only go up: a handoff built on `parent` must carry a round
@@ -1703,13 +1752,9 @@ impl Chain {
         };
         let payload = block.payload().ok_or(ChainError::BadPayload)?;
         let summary = summary(block, &exec, payload.parent_state_root);
-        let (store, history_v2, previous_history) = {
+        let (store, history_v2, previous_history, relaxed) = {
             let g = self.lock();
-            (
-                g.store.clone(),
-                g.cfg.history_v2,
-                g.finalized.history.clone(),
-            )
+            (g.store.clone(), g.cfg.history_v2, g.finalized.history.clone(), g.relaxed)
         };
         // History v2: keep the block for its era file; an era's first block also keeps the history before it.
         let staged = history_v2.then(|| commonware_codec::Encode::encode(block));
@@ -1723,29 +1768,24 @@ impl Chain {
             });
         if let Some(store) = store {
             // Disk first: the in-memory head never runs ahead of what survives a crash.
-            store
-                .commit(Commit {
-                    height: exec.height,
-                    digest: digest_bytes(&exec.digest),
-                    root: exec.state.root(),
-                    diff: exec.state.journal(),
-                    summary: &summary,
-                    receipts: exec
-                        .tx_hashes
-                        .iter()
-                        .copied()
-                        .zip(exec.receipts.iter())
-                        .collect(),
-                    handoff: exec.handoff.as_deref().filter(|p| p.at == exec.height),
-                    seed: exec.seed.as_deref().filter(|s| s.0 == exec.height),
-                    history: &exec.history,
-                    schedule: &exec.schedule,
-                    statement: &exec.statement,
-                    staged: staged.as_ref().map(|b| crate::store::Staged {
-                        block: b,
-                        era_start: era_start.as_ref(),
-                    }),
-                })
+            let write = Commit {
+                height: exec.height,
+                digest: digest_bytes(&exec.digest),
+                root: exec.state.root(),
+                diff: exec.state.journal(),
+                summary: &summary,
+                receipts: exec.tx_hashes.iter().copied().zip(exec.receipts.iter()).collect(),
+                handoff: exec.handoff.as_deref().filter(|p| p.at == exec.height),
+                seed: exec.seed.as_deref().filter(|s| s.0 == exec.height),
+                history: &exec.history,
+                schedule: &exec.schedule,
+                statement: &exec.statement,
+                staged: staged.as_ref().map(|b| crate::store::Staged {
+                    block: b,
+                    era_start: era_start.as_ref(),
+                }),
+            };
+            (if relaxed { store.commit_relaxed(write) } else { store.commit(write) })
                 .map_err(|e| ChainError::Store(e.to_string()))?;
             // An era's last block: seal it into a file, off the consensus path.
             if history_v2 && (exec.height + 1).is_multiple_of(aether_state::mmr::ERA_LEN) {

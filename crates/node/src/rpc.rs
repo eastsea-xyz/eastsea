@@ -288,6 +288,9 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
             let g = chain.lock();
             let f = &g.finalized;
             let base = Chain::next_base_fee(&g.cfg, f);
+            // Catching up (a node that slept, or one still starting): the app
+            // shows this instead of a height that looks stale.
+            let behind = g.net_height.map_or(0, |n| n.saturating_sub(f.height));
             Ok(json!({
                 // Base fees (wei per unit) for the next block: the exec base is burned, prove goes to the prover escrow.
                 "base_fee": { "exec": base.exec.to_string(), "prove": base.prove.to_string() },
@@ -299,6 +302,11 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                 "timestamp_ms": f.timestamp,
                 "mempool": g.mempool.len(),
                 "hash_function": "blake3",
+                // How many blocks the network is ahead of this node (0 when
+                // caught up, or when nothing told it a height), and whether it
+                // is still catching up.
+                "catching_up": behind > 0,
+                "behind": behind,
                 // Protocol upgrades on chain: an app whose node runs an older
                 // protocol than one scheduled looks for its update right away.
                 "protocol": f.next_protocol(),

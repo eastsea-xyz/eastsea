@@ -362,8 +362,12 @@ impl Store {
         Ok(out)
     }
 
+    /// Certificates this node verified, served to wallets and other followers.
+    /// Written without the fsync: they are re-fetchable certified data, and
+    /// redb persists them with the next durable block commit.
     pub fn put_proof(&self, height: u64, proof: &[u8]) -> Result<(), StoreError> {
-        let tx = self.db.begin_write().map_err(dberr)?;
+        let mut tx = self.db.begin_write().map_err(dberr)?;
+        tx.set_durability(redb::Durability::None);
         tx.open_table(PROOFS).map_err(dberr)?.insert(height, proof).map_err(dberr)?;
         tx.commit().map_err(dberr)
     }
@@ -564,9 +568,22 @@ impl Store {
         self.db.compact().map_err(dberr)
     }
 
-    /// Persist one finalized block atomically.
+    /// Persist one finalized block atomically (durable: the commit fsyncs).
     pub fn commit(&self, c: Commit<'_>) -> Result<(), StoreError> {
-        let tx = self.db.begin_write().map_err(dberr)?;
+        self.write(c, redb::Durability::Immediate)
+    }
+
+    /// The same write without the fsync, while a certified backlog is being
+    /// replayed (`Chain::relaxed`): redb holds it until the next durable
+    /// commit, so a crash loses only the blocks after the last one — every
+    /// block is re-fetchable, so they simply replay.
+    pub fn commit_relaxed(&self, c: Commit<'_>) -> Result<(), StoreError> {
+        self.write(c, redb::Durability::None)
+    }
+
+    fn write(&self, c: Commit<'_>, durability: redb::Durability) -> Result<(), StoreError> {
+        let mut tx = self.db.begin_write().map_err(dberr)?;
+        tx.set_durability(durability);
         {
             let mut state = tx.open_table(STATE).map_err(dberr)?;
             for (k, v) in &c.diff.writes {

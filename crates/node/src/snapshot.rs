@@ -11,13 +11,16 @@
 //! seed) or makes the next block fail to execute to its certified result.
 
 use crate::block::Block;
-use crate::chain::{BlockSummary, Chain, ChainConfig};
+use crate::chain::{BlockSummary, Chain, ChainConfig, Executed};
 use crate::store::{Commit, Store};
 use aether_execution::{Journal, WorldState};
 use aether_types::{Bytes, B256};
 use commonware_consensus::Heightable;
+use commonware_cryptography::sha256::Digest;
 use commonware_cryptography::Digestible;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Snapshot {
@@ -95,11 +98,10 @@ impl Snapshot {
         Ok(state)
     }
 
-    /// Write the checked snapshot as the store's checkpoint; `Chain::open` then resumes from it.
-    /// Only certified facts are kept of block H's summary (hash, state root, fee
+    /// Only certified facts of block H's summary (hash, state root, fee
     /// excess); the rest is left empty rather than served unverified.
-    pub fn install(&self, store: &Store, state: &WorldState, cfg: &ChainConfig) -> Result<(), String> {
-        let summary = BlockSummary {
+    fn minimal_summary(&self) -> BlockSummary {
+        BlockSummary {
             height: self.summary.height,
             hash: self.summary.hash.clone(),
             parent: String::new(),
@@ -112,7 +114,41 @@ impl Snapshot {
             prove_gas: 0,
             base_fee: Default::default(),
             excess: self.summary.excess,
-        };
+        }
+    }
+
+    /// The head this snapshot installs, for `Chain::adopt`: an `Executed`
+    /// holding only what later blocks and RPC answers need — the certified
+    /// state and the handoff, seed, schedule, statement and fee excess the
+    /// certified block after the snapshot committed (timestamp and proposer
+    /// stay empty: nothing uncertified is served).
+    pub fn head(&self, state: WorldState) -> (Arc<Executed>, BlockSummary) {
+        let summary = self.minimal_summary();
+        let digest: [u8; 32] = hex::decode(&self.summary.hash).ok().and_then(|b| b.try_into().ok()).expect("snapshot block hash");
+        let exec = Arc::new(Executed {
+            height: self.summary.height,
+            digest: Digest(digest),
+            timestamp: 0,
+            state,
+            receipts: vec![],
+            tx_hashes: vec![],
+            gas: Default::default(),
+            proposer: aether_types::Address::ZERO,
+            base_fee: Default::default(),
+            excess: self.summary.excess,
+            handoff: self.handoff.clone().map(Arc::new),
+            seed: self.seed.clone().map(Arc::new),
+            history: Arc::new(self.history.clone()),
+            schedule: Arc::new(self.schedule.clone()),
+            statement: self.statement,
+            payouts: vec![],
+        });
+        (exec, summary)
+    }
+
+    /// Write the checked snapshot as the store's checkpoint; `Chain::open` then resumes from it.
+    pub fn install(&self, store: &Store, state: &WorldState, cfg: &ChainConfig) -> Result<(), String> {
+        let summary = self.minimal_summary();
         if store.head().map_err(|e| e.to_string())?.is_some() {
             return Err("the store already holds a chain".into());
         }
@@ -121,6 +157,51 @@ impl Snapshot {
         store.put_meta(crate::chain::GENESIS, &crate::chain::genesis_digest(&genesis)).map_err(|e| e.to_string())?;
         let digest: [u8; 32] = hex::decode(&self.summary.hash).ok().and_then(|b| b.try_into().ok()).ok_or("snapshot block hash")?;
         let diff = Journal { writes: self.entries.iter().map(|(k, v)| (*k, Some(*v))).collect(), codes: self.codes.clone() };
+        store
+            .commit(Commit {
+                height: self.summary.height,
+                digest,
+                root: state.root(),
+                diff: &diff,
+                summary: &summary,
+                receipts: vec![],
+                handoff: self.handoff.as_ref(),
+                seed: self.seed.as_ref(),
+                history: &self.history,
+                schedule: &self.schedule,
+                statement: &self.statement,
+                staged: None,
+            })
+            .map_err(|e| e.to_string())
+    }
+
+    /// Swap the checked snapshot in over a store that already holds a chain
+    /// (`follow::jump`): one atomic commit drops the keys the old finalized
+    /// state had that the snapshot does not and writes every changed snapshot
+    /// entry, so a later `Store::load` rebuilds exactly the snapshot's state.
+    /// The old and new entries are held in memory while writing (the snapshot
+    /// already was, during the download). Old rows outside the state tree —
+    /// summaries, receipts, era files — stay: they are certified history of
+    /// this same chain.
+    pub fn install_over(&self, store: &Store, state: &WorldState, old: impl IntoIterator<Item = ([u8; 32], [u8; 32])>) -> Result<(), String> {
+        if store.head().map_err(|e| e.to_string())?.is_none() {
+            return Err("no chain to jump over".into());
+        }
+        let old: HashMap<[u8; 32], [u8; 32]> = old.into_iter().collect();
+        let kept: std::collections::HashSet<&[u8; 32]> = self.entries.iter().map(|(k, _)| k).collect();
+        // A `None` write removes a key the snapshot drops; changed entries
+        // overwrite in place. The two never name the same key, and unchanged
+        // entries need no write at all.
+        let mut writes: Vec<([u8; 32], Option<[u8; 32]>)> = Vec::with_capacity(old.len().max(self.entries.len()));
+        for k in old.keys() {
+            if !kept.contains(k) {
+                writes.push((*k, None));
+            }
+        }
+        writes.extend(self.entries.iter().filter(|(k, v)| old.get(k) != Some(v)).map(|(k, v)| (*k, Some(*v))));
+        let summary = self.minimal_summary();
+        let digest: [u8; 32] = hex::decode(&self.summary.hash).ok().and_then(|b| b.try_into().ok()).ok_or("snapshot block hash")?;
+        let diff = Journal { writes, codes: self.codes.clone() };
         store
             .commit(Commit {
                 height: self.summary.height,

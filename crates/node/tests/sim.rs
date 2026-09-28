@@ -74,6 +74,7 @@ fn chain_config() -> ChainConfig {
         epoch_blocks: 0,
         min_streak: None,
         draw_epochs: None,
+        node_rewards: false,
     }
 }
 

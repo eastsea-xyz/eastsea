@@ -41,6 +41,11 @@ pub struct ChainConfig {
     /// Voting-set draw parameters (None = the defaults).
     pub min_streak: Option<u64>,
     pub draw_epochs: Option<u64>,
+    /// Node rewards (docs/design/15-node-rewards.md): half of each block's
+    /// issuance to the operators whose Macs beaconed, half to provers, 1/16 cap
+    /// per operator. A new network's genesis parameter (needs the registry);
+    /// off keeps the testnet's rules and genesis.
+    pub node_rewards: bool,
 }
 
 impl ChainConfig {
@@ -59,6 +64,9 @@ impl ChainConfig {
                 draw_epochs: self.draw_epochs.unwrap_or(d.draw_epochs),
             };
             aether_execution::registry::predeploy(&mut s, key, params).expect("registry predeploy");
+            if self.node_rewards {
+                aether_rewards::enable(&mut s);
+            }
         }
         s
     }
@@ -111,7 +119,9 @@ pub struct Executed {
     pub schedule: Arc<crate::upgrade::Schedule>,
     /// What a proof of this block proves, and its escrow share (the child records both, protocol 2).
     pub statement: Statement,
-    /// Proofs this block paid: (proven height, prover, amount).
+    /// Proofs this block paid: (proven height, prover, amount). Node rewards
+    /// paid by the first block of an epoch appear with the block's own height
+    /// as the proven height (no block proves itself).
     pub payouts: Vec<(u64, Address, U256)>,
 }
 
@@ -657,7 +667,8 @@ impl Chain {
         }
         let records = version >= 2 && parent.statement != Statement::default();
         let rotates = parent.schedule.iter().any(|a| a.at == parent.height + 1 && a.registrar.is_some());
-        if version == before && !records && !rotates && proofs.is_empty() {
+        let distributes = aether_rewards::distributes(&parent.state, parent.height + 1);
+        if version == before && !records && !rotates && !distributes && proofs.is_empty() {
             return Ok((std::borrow::Cow::Borrowed(&parent.state), vec![]));
         }
         let mut state = parent.state.clone();
@@ -684,7 +695,13 @@ impl Chain {
             }
         }
         let verifier: Option<&dyn ProofVerifier> = if certified { Some(&Certified) } else { verifier.as_deref() };
-        let payouts = pay_proofs(&mut state, parent.height + 1, proofs, verifier)?;
+        let mut payouts = Vec::new();
+        if distributes {
+            // The last epoch's node rewards, credited to operators directly (no claim).
+            let d = aether_rewards::distribute(&mut state, parent.height + 1).map_err(|e| ChainError::Exec(format!("node rewards: {e}")))?;
+            payouts.extend(d.paid.into_iter().filter(|(_, a)| !a.is_zero()).map(|(op, a)| (parent.height + 1, op, a)));
+        }
+        payouts.extend(pay_proofs(&mut state, parent.height + 1, proofs, verifier)?);
         Ok((std::borrow::Cow::Owned(state), payouts))
     }
 
@@ -1122,7 +1139,8 @@ impl Chain {
         let floor = exec.height.saturating_sub(64);
         g.executed.retain(|_, e| e.height >= floor);
         for (proven, prover, amount) in &exec.payouts {
-            let record = serde_json::json!({ "proven": proven, "amount": amount, "height": exec.height, "timestamp_ms": exec.timestamp });
+            let kind = if *proven == exec.height { "node" } else { "proof" };
+            let record = serde_json::json!({ "kind": kind, "proven": proven, "amount": amount, "height": exec.height, "timestamp_ms": exec.timestamp });
             if let Some(Err(e)) = g.store.as_ref().map(|s| s.put_reward(&prover.0 .0, exec.height, *proven, record.to_string().as_bytes())) {
                 tracing::warn!(%e, "could not keep a reward record");
             }
@@ -1317,7 +1335,13 @@ fn pay_proofs(
         if !verifier.verify(&bytes, aether_proving::block::claim(commitment, c.prover)) {
             return Err(bad(format!("proof of block {} does not verify", c.height)));
         }
-        let amount = aether_execution::proofs::pay(state, c.height, height, c.prover).map_err(|e| bad(format!("{e:?}")))?;
+        let amount = if aether_rewards::enabled(state) {
+            // Node rewards: issuance only to registered operators, 1/16 of the epoch's proof share each.
+            aether_rewards::pay_proof(state, c.height, height, c.prover).map(|(paid, _)| paid)
+        } else {
+            aether_execution::proofs::pay(state, c.height, height, c.prover)
+        }
+        .map_err(|e| bad(format!("{e:?}")))?;
         paid.push((c.height, c.prover, amount));
     }
     Ok(paid)

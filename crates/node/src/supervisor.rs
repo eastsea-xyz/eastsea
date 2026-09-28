@@ -422,6 +422,7 @@ mod tests {
             epoch_blocks: None,
             min_streak: None,
             draw_epochs: None,
+            node_rewards: None,
         }
     }
 

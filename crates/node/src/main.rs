@@ -316,6 +316,9 @@ enum Cmd {
         /// Epochs between voting-set draws (default 24).
         #[arg(long)]
         draw_epochs: Option<u64>,
+        /// Node rewards from genesis (docs/design/15-node-rewards.md): a new network only, needs --registrar.
+        #[arg(long)]
+        node_rewards: bool,
         members: Vec<String>,
     },
     /// List the public development accounts (funded at genesis; never use for value).
@@ -642,8 +645,8 @@ fn main() {
             };
             reshare(&from, &to, boundary, port, data, peers, link_base, offline, via_node)
         }
-        Cmd::Network { chain_id, faucet, registrar, epoch_blocks, min_streak, draw_epochs, members } => {
-            assemble_network(chain_id, faucet, registrar, (epoch_blocks, min_streak, draw_epochs), &members)
+        Cmd::Network { chain_id, faucet, registrar, epoch_blocks, min_streak, draw_epochs, node_rewards, members } => {
+            assemble_network(chain_id, faucet, registrar, (epoch_blocks, min_streak, draw_epochs), node_rewards, &members)
         }
         Cmd::RegistrarKey { data } => (|| {
             // Idempotent: an existing key is kept (and its public half printed).
@@ -797,6 +800,7 @@ fn chain_config(chain_id: u64, genesis: &aether_node::roster::Genesis) -> ChainC
         epoch_blocks: genesis.epoch_blocks,
         min_streak: genesis.min_streak,
         draw_epochs: genesis.draw_epochs,
+        node_rewards: genesis.node_rewards,
     }
 }
 
@@ -982,8 +986,18 @@ fn keygen(data: &str) -> Result<(), String> {
 /// (blocks per epoch, minimum streak, epochs per draw); None = the defaults.
 type VotingParams = (Option<u64>, Option<u64>, Option<u64>);
 
-fn assemble_network(chain_id: u64, faucet: Option<Address>, registrar: Option<String>, voting: VotingParams, members: &[String]) -> Result<(), String> {
+fn assemble_network(
+    chain_id: u64,
+    faucet: Option<Address>,
+    registrar: Option<String>,
+    voting: VotingParams,
+    node_rewards: bool,
+    members: &[String],
+) -> Result<(), String> {
     let (epoch_blocks, min_streak, draw_epochs) = voting;
+    if node_rewards && registrar.is_none() {
+        return Err("--node-rewards needs the voting-node registry (--registrar)".into());
+    }
     let validators = members
         .iter()
         .map(|p| std::fs::read(p).map_err(|e| format!("{p}: {e}")).and_then(|b| serde_json::from_slice(&b).map_err(|e| format!("{p}: {e}"))))
@@ -1000,6 +1014,7 @@ fn assemble_network(chain_id: u64, faucet: Option<Address>, registrar: Option<St
         epoch_blocks,
         min_streak,
         draw_epochs,
+        node_rewards: node_rewards.then_some(true),
     };
     aether_node::roster::Roster::from_file(&file)?;
     println!("{}", serde_json::to_string_pretty(&file).expect("json"));
@@ -1497,6 +1512,7 @@ fn run_dkg(p2p: P2pArgs, chain_id: u64, data: String, round: u64, genesis: aethe
     public.epoch_blocks = (genesis.epoch_blocks != 0).then_some(genesis.epoch_blocks);
     public.min_streak = genesis.min_streak;
     public.draw_epochs = genesis.draw_epochs;
+    public.node_rewards = genesis.node_rewards.then_some(true);
     let result = executor.start(async move |context| {
         // Accept incoming validator links (the node's RPC is not needed here).
         let _router = aether_node::p2p::open_public(&p2p).await.map(|ep| aether_net::serve_p2p(ep, loopback(p2p.port)));

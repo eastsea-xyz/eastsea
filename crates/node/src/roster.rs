@@ -66,6 +66,9 @@ pub struct NetworkFile {
     /// Epochs between voting-set draws (default 24).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub draw_epochs: Option<u64>,
+    /// Node rewards from genesis (docs/design/15-node-rewards.md; default off).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_rewards: Option<bool>,
 }
 
 /// What a network file fixes about genesis beyond the chain id.
@@ -77,6 +80,7 @@ pub struct Genesis {
     pub epoch_blocks: u64,
     pub min_streak: Option<u64>,
     pub draw_epochs: Option<u64>,
+    pub node_rewards: bool,
 }
 
 impl NetworkFile {
@@ -89,7 +93,14 @@ impl NetworkFile {
                 Some((x.try_into().map_err(|_| "registrar x")?, y.try_into().map_err(|_| "registrar must be 64 bytes (x‖y)")?))
             }
         };
-        Ok(Genesis { faucet: self.faucet, registrar, epoch_blocks: self.epoch_blocks.unwrap_or(0), min_streak: self.min_streak, draw_epochs: self.draw_epochs })
+        Ok(Genesis {
+            faucet: self.faucet,
+            registrar,
+            epoch_blocks: self.epoch_blocks.unwrap_or(0),
+            min_streak: self.min_streak,
+            draw_epochs: self.draw_epochs,
+            node_rewards: self.node_rewards.unwrap_or(false),
+        })
     }
 
     /// Carry genesis facts into a file written by a ceremony (dkg, reshare).
@@ -99,6 +110,7 @@ impl NetworkFile {
         self.epoch_blocks = from.epoch_blocks.or(self.epoch_blocks);
         self.min_streak = from.min_streak.or(self.min_streak);
         self.draw_epochs = from.draw_epochs.or(self.draw_epochs);
+        self.node_rewards = from.node_rewards.or(self.node_rewards);
     }
 }
 
@@ -190,6 +202,7 @@ impl Roster {
             epoch_blocks: None,
             min_streak: None,
             draw_epochs: None,
+            node_rewards: None,
         }
     }
 }

@@ -1818,8 +1818,18 @@ fn run_follow(
         .map_err(|e| e.to_string())?;
     rt.block_on(async move {
         let store = aether_node::store::Store::open(&std::path::Path::new(&data).join("state.redb")).map_err(|e| e.to_string())?;
+        // Following over iroh, this Mac also serves wallets directly (capacity
+        // review 2026-09-29): a public endpoint under its own persisted node
+        // id, so phones spread their reads over follower Macs instead of
+        // asking the validators. `--from-rpc` followers have no iroh endpoint.
+        let mut wallet_ep = None;
         let upstream = Arc::new(if from_rpc.is_empty() {
-            Upstream::Iroh(aether_net::RpcClient::new(nodes).await.map_err(|e| e.to_string())?, Default::default())
+            let ep = aether_net::bind(Some(wallet_node_key(std::path::Path::new(&data))?), vec![aether_net::ALPN_RPC.to_vec()])
+                .await
+                .map_err(|e| e.to_string())?;
+            let client = aether_net::RpcClient::with_endpoint(ep.clone(), nodes.clone());
+            wallet_ep = Some(ep);
+            Upstream::Iroh(client, Default::default())
         } else {
             Upstream::Http(from_rpc)
         });
@@ -1870,12 +1880,37 @@ fn run_follow(
             faucet: None,
             registrar: None,
             network: None,
-            upstream: Some(upstream),
+            upstream: Some(upstream.clone()),
             handoff: None,
             snapshot: Default::default(),
             prover,
             shards,
         };
+        // Serve wallets over the public endpoint (the same answers the loopback
+        // HTTP server gives; every one is verified by the reader), and announce
+        // this Mac as a wallet server to the validators, every minute. The
+        // router owns the endpoint, so it is bound to outlive this setup —
+        // like the validators' `_router`, it must never drop while running.
+        let _wallet_router = wallet_ep.map(|ep| {
+            tracing::info!(node_id = %ep.id(), "serving wallets over iroh; announced to the validators every minute");
+            let st = st.clone();
+            let router = aether_net::serve_rpc(ep, move |req| {
+                let st = st.clone();
+                async move { rpc::handle_value(&st, req).await }
+            });
+            let announcer = upstream.clone();
+            tokio::spawn(async move {
+                loop {
+                    if let Upstream::Iroh(c, _) = announcer.as_ref() {
+                        if let Err(e) = c.call("aether_announceWalletServer", serde_json::json!([])).await {
+                            tracing::debug!(%e, "wallet-server announce failed; retrying in a minute");
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                }
+            });
+            router
+        });
         rpc::serve(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), rpc_port), st).await.map_err(|e| e.to_string())
     })
 }
@@ -2016,6 +2051,25 @@ fn committee_keys(
         .map(|(_, s)| s)
         .expect("key is a validator");
     (participants, polynomial, share)
+}
+
+/// This Mac's wallet-server node key: dedicated and persisted (`<data>/wallet-node.key`),
+/// so the DHT record it publishes does not flap with the endpoint other roles
+/// reuse. Regenerating it only changes which node id wallets are pointed at.
+fn wallet_node_key(data: &std::path::Path) -> Result<aether_net::SecretKey, String> {
+    let path = data.join("wallet-node.key");
+    match std::fs::read(&path) {
+        Ok(bytes) if bytes.len() == 32 => {
+            let mut b = [0u8; 32];
+            b.copy_from_slice(&bytes);
+            Ok(aether_net::SecretKey::from_bytes(&b))
+        }
+        _ => {
+            let key = aether_net::SecretKey::generate();
+            write_secret(&path, &key.to_bytes());
+            Ok(key)
+        }
+    }
 }
 
 fn write_secret(path: &std::path::Path, bytes: &[u8]) {

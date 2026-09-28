@@ -346,7 +346,11 @@ final class WalletModel: ObservableObject {
                     if self.verifyError != nil { self.verifyError = nil }
                     self.record(balanceWei: acc.balanceWei)
                 }
-                if st == nil { self.setVerifyError("No validator reachable yet (\(conn))") } else if let err { self.setVerifyError(err) }
+                // A node that is still catching up serves an older block than one this wallet
+                // already verified; the FFI refuses it (finalized blocks never go back). That
+                // is not an error to show: keep the newer verified balance.
+                let behindNode = err?.contains("finalized blocks never go back") == true && self.account != nil
+                if st == nil { self.setVerifyError("No validator reachable yet (\(conn))") } else if let err, !behindNode { self.setVerifyError(err) }
                 self.trackChainProgress(st, blocks: bl)
                 self.trackVerification()
                 self.refreshTokens()

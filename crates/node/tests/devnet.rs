@@ -918,12 +918,13 @@ fn open_voting_nodes_take_over_the_chain_by_themselves() {
 
 /// Founder reserve keys run as `aether run` like any Mac (docs/ops/reserve-keys.md):
 /// three keys that are not in the genesis voting set and never register follow
-/// the chain, and with no independent operator the rules seat them at the first
-/// epoch. They reshare as followers, the running set signs the handoff, and from
-/// the switch height they vote: the set grows from four to seven with the same
-/// identity, and the chain never stops.
+/// the chain. With the genesis set holding four seats, not one of them joins —
+/// reserve keys only fill a committee that is short of four seats, because
+/// growing four to seven would put three seats on the founder's one Mac and let
+/// its outage stall the quorum. They stay followers with no share and no vote,
+/// and the chain never stops.
 #[test]
-fn founder_reserve_keys_join_by_themselves_under_aether_run() {
+fn founder_reserve_keys_stay_followers_over_a_full_committee() {
     let _serial = serial();
     let dir = std::env::temp_dir().join(format!("aether-devnet-test-{}-reserve", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -1004,59 +1005,36 @@ fn founder_reserve_keys_join_by_themselves_under_aether_run() {
     }
     net.wait_height(0, 3, 90);
     let reserve_keys: Vec<String> = reserve.iter().map(|r| keys_of(&d(r))).collect();
-    // Before the handoff the reserve keys follow (no share, not voting).
-    for r in reserve {
-        assert!(!dir.join(r).join("threshold.json").exists(), "{r} has no share before it is seated");
-    }
+    // The reserve keys follow (no share, not voting), and stay that way.
 
-    // No one acts from here, and the chain never stops.
-    let end = Instant::now() + Duration::from_secs(300);
-    let mut last_height = 0;
-    let mut stalled_since = Instant::now();
-    let handoff = loop {
-        let h = net.height(0);
-        if h > last_height {
-            last_height = h;
-            stalled_since = Instant::now();
-        }
-        assert!(stalled_since.elapsed() < Duration::from_secs(30), "the chain stopped at {h} (see {}/*.log)", dir.display());
-        if let Some(v) = net.rpc(0, "aether_handoff", json!([])).filter(|v| !v.is_null()) {
-            break v;
-        }
-        assert!(Instant::now() < end, "no handoff (see {}/*.log)", dir.display());
-        std::thread::sleep(Duration::from_millis(500));
-    };
-    let members: Vec<String> = handoff["members"].as_array().unwrap().iter().map(|m| m["key"].as_str().unwrap().to_string()).collect();
-    assert_eq!(members.len(), 7, "the genesis set plus every reserve key: {members:?}");
-    assert!(reserve_keys.iter().all(|k| members.contains(k)), "{members:?}");
-    let switch = handoff["switch"].as_u64().unwrap();
-
-    // Each reserve key installs its share and votes from the switch height.
-    let end = Instant::now() + Duration::from_secs(120);
+    // Nobody registers, so the committee never falls below its four seats: no
+    // handoff is ever proposed, and the chain keeps finalizing on its own.
+    let target = 4 * 40;
+    net.wait_height(0, target, 300);
+    assert!(
+        net.rpc(0, "aether_handoff", json!([])).filter(|v| !v.is_null()).is_none(),
+        "a full committee seats no reserve key (see {}/*.log)",
+        dir.display()
+    );
     for r in reserve {
-        let file = dir.join(r).join("network.json");
-        while !(dir.join(r).join("threshold.json").exists()
-            && serde_json::from_slice::<Value>(&std::fs::read(&file).unwrap()).ok().and_then(|v| v["round"].as_u64()) == Some(1))
-        {
-            assert!(Instant::now() < end, "{r} did not start voting (see {}/{r}.log)", dir.display());
-            std::thread::sleep(Duration::from_millis(500));
-        }
+        assert!(!dir.join(r).join("threshold.json").exists(), "{r} stays a follower with no share");
     }
-    let target = switch + 20;
+    // The followers keep up with the validators and agree on every block.
     for k in 0..n {
         net.wait_height(k, target, 120);
     }
     assert_agree(&net, &(0..n).collect::<Vec<_>>(), target);
-    // Seven proposers take turns now, so more than the four genesis members propose.
+    // The four genesis members propose; the reserve keys never do.
     let blocks = net.rpc(0, "aether_recentBlocks", json!([20])).unwrap();
     let proposers: std::collections::BTreeSet<String> = blocks
         .as_array()
         .unwrap()
         .iter()
-        .filter(|b| b["height"].as_u64().unwrap() >= switch)
+        .filter(|b| b["height"].as_u64().unwrap() >= 4 * 40)
         .map(|b| b["proposer"].as_str().unwrap().to_string())
         .collect();
-    assert!(proposers.len() > 4, "reserve keys propose blocks too: {proposers:?}");
+    assert!(!proposers.is_empty());
+    assert!(reserve_keys.iter().all(|k| !proposers.contains(k)), "a reserve key proposed: {proposers:?}");
 }
 
 fn keys_of(dir: &str) -> String {

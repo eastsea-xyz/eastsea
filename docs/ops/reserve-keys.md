@@ -6,9 +6,9 @@
 
 - 예비 키마다 `aether run` 프로세스가 하나씩 돈다. 데이터 폴더와 포트가 따로다.
 - 투표 세트 밖일 때: 검증하는 팔로워로 체인을 따라간다. 등록 후보가 아니라 비콘을 보내지 않는다. 보상도 없다.
-- 규칙이 예비 키를 넣을 때(독립 운영자 4명 미만): 제안된 세트에 자기 키가 있으면 팔로워인 채로 재공유에 참여한다. 인계가 확정되면 전환 높이부터 검증자로 투표한다. 사람이 할 일은 없다.
-- 규칙이 예비 키를 뺄 때(4명 이상): 몫(`threshold.json`)을 지우고 다시 팔로워가 된다.
-- 시험: `crates/node/tests/devnet.rs`의 `founder_reserve_keys_join_by_themselves_under_aether_run`. 등록하지 않은 예비 키 3개가 `aether run`만으로 첫 에포크에 들어와 4 → 7석이 되고, 체인은 멈추지 않는다.
+- 규칙이 예비 키를 넣을 때(위원회가 4석에 못 미치고 독립 운영자도 4명 미만): 제안된 세트에 자기 키가 있으면 팔로워인 채로 재공유에 참여한다. 4석에 모자란 자리만 들어온다. 인계가 확정되면 전환 높이부터 검증자로 투표한다. 사람이 할 일은 없다.
+- 규칙이 예비 키를 뺄 때(4명 이상, 또는 위원회가 4석으로 서면): 몫(`threshold.json`)을 지우고 다시 팔로워가 된다.
+- 시험: `crates/node/tests/devnet.rs`의 `founder_reserve_keys_stay_followers_over_a_full_committee`. 등록하지 않은 예비 키 3개가 `aether run`으로만 돌아도 제네시스 4석이 서 있는 한 하나도 들어오지 않고 팔로워로 남으며, 체인은 멈추지 않는다. 자리를 채우는 규칙 자체는 유닛·beacons 시험(`crates/node/src/rotation.rs`, `crates/node/tests/beacons.rs`)이 확인한다.
 
 ## 절차
 

@@ -222,10 +222,17 @@ pub fn independent(pool: &[(String, String)], candidate: impl Fn(&str) -> Option
 
 /// The next voting set with the founder's reserve keys applied to `drawn`
 /// (the draw's result, or None: the running set). While fewer than
-/// `MIN_OPEN_COMMITTEE` independent operators qualify, every reserve key is
-/// seated; from then on they all leave at once, and if that leaves fewer than
-/// `MIN_OPEN_COMMITTEE` seats, qualifying Macs fill them (ticket order, one
-/// per operator). Reserve keys are exempt from the per-operator seat cap:
+/// `MIN_OPEN_COMMITTEE` independent operators qualify, reserve keys fill only
+/// the seats the committee is short of `MIN_OPEN_COMMITTEE` — never more: a
+/// committee that already stands at four seats takes none, because growing it
+/// to seven would put three seats on the founder's one Mac and raise the
+/// quorum past what the other validators alone can meet, so that one Mac
+/// going offline would stall the chain. A committee short of seats first
+/// takes qualifying Macs (ticket order, one seat per operator) and reserve
+/// keys make up the rest; keys seated beyond the shortfall step down. From
+/// four independent operators on, the reserve keys all leave at once, and if
+/// that leaves fewer than `MIN_OPEN_COMMITTEE` seats, qualifying Macs fill
+/// them the same way. Reserve keys are exempt from the per-operator seat cap:
 /// that is the safety net. None when nothing changes.
 pub fn with_reserve(
     drawn: Option<Vec<(String, String)>>,
@@ -240,29 +247,47 @@ pub fn with_reserve(
     }
     let needed = independent(pool, &candidate, reserve) < MIN_OPEN_COMMITTEE;
     let mut next = drawn.clone().unwrap_or_else(|| running.members.clone());
-    if needed {
-        for m in &reserve.members {
-            if !next.iter().any(|(k, _)| *k == m.0) {
-                next.push(m.clone());
-            }
+    // Qualifying Macs fill a committee that is short of seats (ticket order,
+    // one seat per operator) — both when the reserve keys leave and while
+    // they are seated.
+    next.retain(|(k, _)| needed || !reserve.has(k));
+    let op = |k: &str| candidate(k).unwrap_or_else(|| k.to_string());
+    let mut seated: std::collections::BTreeSet<String> = next.iter().map(|(k, _)| op(k)).collect();
+    let mut order: Vec<&(String, String)> = pool.iter().filter(|(k, _)| !next.iter().any(|(n, _)| n == k)).collect();
+    order.sort_by_cached_key(|(k, _)| ticket(seed, k));
+    for m in order {
+        if next.len() >= MIN_OPEN_COMMITTEE {
+            break;
         }
-    } else {
-        next.retain(|(k, _)| !reserve.has(k));
-        let op = |k: &str| candidate(k).unwrap_or_else(|| k.to_string());
-        let mut seated: std::collections::BTreeSet<String> = next.iter().map(|(k, _)| op(k)).collect();
-        let mut order: Vec<&(String, String)> = pool.iter().filter(|(k, _)| !next.iter().any(|(n, _)| n == k)).collect();
-        order.sort_by_cached_key(|(k, _)| ticket(seed, k));
-        for m in order {
-            if next.len() >= MIN_OPEN_COMMITTEE {
+        if seated.insert(op(&m.0)) {
+            next.push(m.clone());
+        }
+    }
+    if needed {
+        // Only as many reserve keys as the committee is still short of
+        // MIN_OPEN_COMMITTEE seats, never more; keys seated beyond the
+        // shortfall step down. The cap stays three (all of them).
+        let short = MIN_OPEN_COMMITTEE.saturating_sub(next.iter().filter(|(k, _)| !reserve.has(k)).count()).min(reserve.members.len());
+        let mut seated = 0;
+        next.retain(|(k, _)| {
+            !reserve.has(k) || {
+                seated += 1;
+                seated <= short
+            }
+        });
+        for m in &reserve.members {
+            if seated >= short {
                 break;
             }
-            if seated.insert(op(&m.0)) {
+            if !next.iter().any(|(k, _)| *k == m.0) {
                 next.push(m.clone());
+                seated += 1;
             }
         }
-        if next.len() < MIN_OPEN_COMMITTEE {
-            return drawn;
-        }
+    } else if next.len() < MIN_OPEN_COMMITTEE {
+        // Dropping the reserve keys would leave the committee short and no
+        // qualifying Mac can fill it: they stay seated for now.
+        return drawn;
     }
     let same = next.len() == running.members.len() && next.iter().all(|m| running.members.contains(m));
     (!same).then_some(next)
@@ -467,19 +492,64 @@ mod tests {
     }
 
     #[test]
-    fn reserve_keys_join_while_fewer_than_four_independent_operators_qualify() {
-        // One independent Mac seated with the reserve keys; two more qualify: still < 4.
-        let running = Committee { members: vec![mac(1)] };
+    fn reserve_keys_fill_only_the_seats_a_short_committee_is_missing() {
+        // The committee is the qualifying independents themselves: the reserve
+        // keys make up the difference to four seats, and only that difference.
+        let r = reserve();
+        // No independent operator at all: only the founder's own registered Mac qualifies.
+        let founder = ("f1".into(), "fn1".into());
+        let next = with_reserve(None, std::slice::from_ref(&founder), &seed(5), ops_of, &r, &Committee { members: vec![founder.clone()] }).expect("reserve joins");
+        assert_eq!(next.len(), MIN_OPEN_COMMITTEE);
+        assert!(r.members.iter().all(|m| next.contains(m)), "three seats short: every reserve key");
+        // One to three independent operators seated: three, two, one reserve keys.
+        for i in 1..=3u8 {
+            let pool: Vec<_> = (1..=i).map(mac).collect();
+            assert_eq!(independent(&pool, ops_of, &r), i as usize, "independents count");
+            let next = with_reserve(None, &pool, &seed(5), ops_of, &r, &Committee { members: pool.clone() }).expect("reserve joins");
+            let seated = next.iter().filter(|(k, _)| k.starts_with('r')).count();
+            assert_eq!((seated, next.len()), (MIN_OPEN_COMMITTEE - i as usize, MIN_OPEN_COMMITTEE), "{i} independent operator(s)");
+        }
+        // A committee that already stands at four seats takes no reserve key at
+        // all, however few independent operators qualify: growing four seats
+        // to seven would put three of them on the founder's one Mac.
+        let pool = vec![mac(1), ("f1".into(), "fn1".into())];
+        assert_eq!(independent(&pool, ops_of, &r), 1);
+        assert!(with_reserve(None, &pool, &seed(5), ops_of, &r, &committee(4)).is_none(), "four seats standing: no reserve key joins");
+        // Qualifying Macs fill a short committee before any reserve key does.
         let pool = vec![mac(1), mac(2), mac(3), ("f1".into(), "fn1".into())];
-        assert_eq!(independent(&pool, ops_of, &reserve()), 3, "the founder's own Mac is not independent");
-        let next = with_reserve(None, &pool, &seed(5), ops_of, &reserve(), &running).expect("reserve joins");
-        assert_eq!(next.len(), 4);
-        assert!(reserve().members.iter().all(|m| next.contains(m)));
+        let next = with_reserve(None, &pool, &seed(5), ops_of, &r, &Committee { members: vec![mac(1)] }).expect("qualifying Macs fill the seats");
+        assert!(next.iter().all(|(k, _)| !k.starts_with('r')), "the Macs cover the shortfall");
+        assert_eq!(next.len(), MIN_OPEN_COMMITTEE);
+        assert!(next.contains(&mac(2)) && next.contains(&mac(3)) && next.contains(&founder));
         // Already seated: nothing changes.
-        assert!(with_reserve(None, &pool, &seed(5), ops_of, &reserve(), &Committee { members: next.clone() }).is_none());
+        let mut full = vec![mac(1)];
+        full.extend(r.members.iter().cloned());
+        assert!(with_reserve(None, std::slice::from_ref(&mac(1)), &seed(5), ops_of, &r, &Committee { members: full }).is_none());
         // Many Macs of one operator are still one operator.
         let whale: Vec<_> = (0..10).map(|i| (format!("w{i}"), format!("wn{i}"))).collect();
-        assert_eq!(independent(&whale, |_| Some("0xwhale".into()), &reserve()), 1);
+        assert_eq!(independent(&whale, |_| Some("0xwhale".into()), &r), 1);
+    }
+
+    #[test]
+    fn seated_reserve_keys_step_down_as_the_committee_fills() {
+        // A committee that once carried every reserve key keeps fewer as other
+        // seats stand, and none once four seats stand without them.
+        let r = reserve();
+        // The seven-seat set of the old rule (four genesis keys and every
+        // reserve key): trimmed back to four seats.
+        let mut legacy = committee(4).members;
+        legacy.extend(r.members.iter().cloned());
+        let next = with_reserve(None, std::slice::from_ref(&mac(1)), &seed(7), ops_of, &r, &Committee { members: legacy }).expect("steps down");
+        assert_eq!(next, committee(4).members, "a full committee keeps no reserve seat");
+        // Two independents seated with three reserve keys: two step down.
+        let mut seated = vec![mac(1), mac(2)];
+        seated.extend(r.members.iter().cloned());
+        let next = with_reserve(None, &seated, &seed(7), ops_of, &r, &Committee { members: seated.clone() }).expect("steps down");
+        assert_eq!(next, vec![mac(1), mac(2), r.members[0].clone(), r.members[1].clone()]);
+        // A third independent operator seated: exactly one reserve key stays.
+        let mut three = vec![mac(1), mac(2), mac(3)];
+        three.push(r.members[0].clone());
+        assert!(with_reserve(None, &three.clone(), &seed(7), ops_of, &r, &Committee { members: three }).is_none(), "already the rule's seat count");
     }
 
     #[test]

@@ -557,3 +557,71 @@ fn reserve_keys_are_a_genesis_parameter_of_at_most_three_and_earn_nothing() {
     registry::predeploy(&mut off, ([1; 32], [2; 32]), Params::default()).unwrap();
     assert!(set_reserve(&mut off, founder, &keys).is_err(), "behind the node-rewards genesis flag");
 }
+
+#[test]
+fn hour_profiles_track_when_each_mac_answers() {
+    // Two days of history: Mac 0 always answers, Mac 1 only the first four
+    // hours of each day. Each hour bucket is then exact — 1.0 or 0.0 —
+    // because both EMAs move in lockstep once a full day has passed.
+    let mut s = network();
+    register(&mut s, 0, operator(0), 0);
+    register(&mut s, 1, operator(1), 0);
+    for e in 1..=2 * DAY_EPOCHS {
+        answer(&mut s, 0, e, 0b1111);
+        answer(&mut s, 1, e, if e % DAY_EPOCHS < 4 { 0b1111 } else { 0 });
+        distribute(&mut s, (e + 1) * EB).unwrap();
+    }
+    let p0 = beacons::profile(&s, 0);
+    let p1 = beacons::profile(&s, 1);
+    for h in 0..DAY_EPOCHS {
+        assert_eq!(p0.at(h), Some(1.0), "Mac 0 hour {h}");
+        assert_eq!(p1.at(h), Some((h < 4).into()), "Mac 1 hour {h}");
+    }
+    assert_eq!((p0.overall(), p0.worst()), (Some(1.0), Some(1.0)));
+    assert_eq!(p1.worst(), Some(0.0));
+    assert!((p1.overall().unwrap() - 1.0 / 6.0).abs() < 1e-9);
+}
+
+#[test]
+fn profiles_recover_from_zero_and_decay_to_it() {
+    // One dark day, one always-on day, one dark day: the bucket climbs to a
+    // half (a step, not a jump) and then decays — a Mac that comes back is
+    // believed slowly, and one that stops is forgotten slowly.
+    let mut s = network();
+    register(&mut s, 0, operator(0), 0);
+    let dark = |e: u64| (e % DAY_EPOCHS) >= 8 && (e % DAY_EPOCHS) < 16;
+    for day in 0..3u64 {
+        for e in day * DAY_EPOCHS + 1..=(day + 1) * DAY_EPOCHS {
+            let up = match day {
+                1 => true,        // the recovery day
+                _ => !dark(e),    // dark at hours 8..15 otherwise
+            };
+            answer(&mut s, 0, e, if up { 0b1111 } else { 0 });
+            distribute(&mut s, (e + 1) * EB).unwrap();
+        }
+        let p = beacons::profile(&s, 0);
+        assert_eq!(p.at(0), Some(1.0), "an up hour stays exact on day {day}");
+        // The dark bucket: 0/4 = 0, then 4/8 = 1/2, then 3/12 = 1/4.
+        assert_eq!(p.at(8), Some([0.0, 0.5, 0.25][day as usize]), "day {day}");
+    }
+}
+
+#[test]
+fn the_recent_word_keeps_the_last_two_epochs() {
+    let mut s = network();
+    register(&mut s, 0, operator(0), 0);
+    assert_eq!(beacons::recent(&s, 0), None);
+    answer(&mut s, 0, 1, 0b1111);
+    distribute(&mut s, 2 * EB).unwrap();
+    assert_eq!(beacons::recent(&s, 0), Some((1, 4, beacons::NO_COUNT)));
+    answer(&mut s, 0, 2, 0b0001);
+    distribute(&mut s, 3 * EB).unwrap();
+    assert_eq!(beacons::recent(&s, 0), Some((2, 1, 4)));
+    answer(&mut s, 0, 3, 0);
+    distribute(&mut s, 4 * EB).unwrap();
+    assert_eq!(beacons::recent(&s, 0), Some((3, 0, 1)));
+    // An epoch with no distribution leaves a gap: unknown, never read as silence.
+    answer(&mut s, 0, 5, 0b1111);
+    distribute(&mut s, 6 * EB).unwrap();
+    assert_eq!(beacons::recent(&s, 0), Some((5, 4, beacons::NO_COUNT)));
+}

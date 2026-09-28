@@ -279,6 +279,12 @@ pub fn distribute(state: &mut WorldState, height: u64) -> Result<Distribution, S
     for (c, m) in candidates.iter().zip(macs) {
         set_mac(state, c.index, m);
     }
+    // The hour-of-day profile and the last two epochs' counts (13-roadmap.md,
+    // F): what the spread draw and early replacement read. A Mac registered
+    // mid-epoch is judged from its first full day.
+    for (c, a) in candidates.iter().zip(answered.iter()) {
+        beacons::note(state, c.index, epoch, *a, c.registered_epoch < epoch);
+    }
     Ok(Distribution { epoch, pool, paid, unminted: pool - minted })
 }
 

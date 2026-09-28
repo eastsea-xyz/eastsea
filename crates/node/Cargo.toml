@@ -53,6 +53,7 @@ hex = "0.4"
 p256 = { version = "=0.14.0", features = ["ecdsa", "pem", "pkcs8"] }
 base64 = "0.22"
 redb = "4.3"
+zstd = "0.13"
 
 [dev-dependencies]
 rand_chacha = "0.10"

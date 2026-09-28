@@ -5,6 +5,7 @@ pub mod chain;
 pub mod devicecheck;
 pub mod dkg;
 pub mod engine;
+pub mod era;
 pub mod epochs;
 pub mod faucet;
 pub mod follow;

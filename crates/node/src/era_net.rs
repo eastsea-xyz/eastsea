@@ -105,6 +105,17 @@ fn blake3_of(path: &Path, len: u64, modified: SystemTime) -> Option<String> {
     Some(hash)
 }
 
+/// The whole era file this node keeps, if any (shards cut it into pieces;
+/// peers get ranges through `chunk`). Files above `MAX_ERA_FILE` are not read.
+pub fn kept(store: &crate::store::Store, era: u64) -> Option<Vec<u8>> {
+    let path = store.era_dir().join(era::file_name(era));
+    let len = std::fs::metadata(&path).ok()?.len();
+    if len > MAX_ERA_FILE as u64 {
+        return None;
+    }
+    std::fs::read(path).ok()
+}
+
 /// `aether_eraInfo`: what a peer needs to download era `era` from this node.
 pub fn info(store: &crate::store::Store, era: u64) -> Value {
     let Some((path, len, modified)) = kept_file(store, era) else {

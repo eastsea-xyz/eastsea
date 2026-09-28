@@ -84,6 +84,10 @@ const TAG_OPERATOR: u64 = 2;
 const TAG_RESERVE: u64 = 7;
 /// Seating of the founder's reserve keys, rewritten at each committee switch.
 const TAG_SEATED: u64 = 8;
+/// Every storage tag of REWARDS (here and in beacons.rs), in one list: a new
+/// record takes the next free number (two records once shared tag 8).
+#[cfg(test)]
+pub(crate) const ALL_TAGS: [u64; 12] = [ENABLED, TAG_MAC, TAG_OPERATOR, TAG_RESERVE, TAG_SEATED, beacons::TAG_SLOTS, beacons::TAG_SLOT_HASH, beacons::TAG_DAY, beacons::TAG_BEACON, beacons::TAG_PROFILE, beacons::TAG_OFFERED, beacons::TAG_RECENT];
 
 pub mod beacons;
 
@@ -292,6 +296,12 @@ pub fn distribute(state: &mut WorldState, height: u64) -> Result<Distribution, S
     }
     for (c, m) in candidates.iter().zip(macs) {
         set_mac(state, c.index, m);
+    }
+    // The hour-of-day profile and the last two epochs' counts (13-roadmap.md,
+    // F): what the spread draw and early replacement read. A Mac registered
+    // mid-epoch is judged from its first full day.
+    for (c, a) in candidates.iter().zip(answered.iter()) {
+        beacons::note(state, c.index, epoch, *a, c.registered_epoch < epoch);
     }
     Ok(Distribution { epoch, pool, paid, unminted: pool - minted })
 }

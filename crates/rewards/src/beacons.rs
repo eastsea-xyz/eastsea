@@ -38,10 +38,10 @@ pub const MAX_ANSWERS_PER_BLOCK: usize = 1024;
 /// A registry candidate's liveness streak restarts after this many missed epochs (as in the contract).
 pub const GRACE_EPOCHS: u64 = 24;
 
-const TAG_SLOTS: u64 = 3;
-const TAG_SLOT_HASH: u64 = 4;
-const TAG_DAY: u64 = 5;
-const TAG_BEACON: u64 = 6;
+pub(crate) const TAG_SLOTS: u64 = 3;
+pub(crate) const TAG_SLOT_HASH: u64 = 4;
+pub(crate) const TAG_DAY: u64 = 5;
+pub(crate) const TAG_BEACON: u64 = 6;
 
 fn word_u64(w: U256, shift: usize) -> u64 {
     ((w >> shift) & U256::from(u64::MAX)).to::<u64>()
@@ -163,6 +163,136 @@ pub fn beacon(state: &WorldState, index: u64) -> Beacon {
 #[doc(hidden)]
 pub fn put_beacon(state: &mut WorldState, index: u64, b: Beacon) {
     state.set_storage(REWARDS, tagged(TAG_BEACON, U256::from(index)), b.pack());
+}
+
+/// Days of history an hour-of-day profile keeps (the EMA's denominator).
+pub const PROFILE_DAYS: u64 = 14;
+/// Fixed-point scale of a profile bucket: a fully available hour is this.
+pub const PROFILE_SCALE: u64 = 64;
+/// The scale `Profile` ratios are read in: a probability of 1 is this many
+/// units. Integer fixed point, never floating point — the liveness rules that
+/// read profiles (docs/design/13-roadmap.md, F) decide the next committee, so
+/// every validator must compute bit-identical words.
+pub const PROB_SCALE: u64 = 1_000_000_000;
+/// What `recent` writes when a count is unknown (a Mac's first epoch, or a gap).
+pub const NO_COUNT: u64 = 15;
+
+pub(crate) const TAG_PROFILE: u64 = 11;
+pub(crate) const TAG_OFFERED: u64 = 12;
+pub(crate) const TAG_RECENT: u64 = 13;
+/// Bits a profile bucket takes in its word (values fit in 7; the margin keeps
+/// the packing comfortable).
+const BUCKET_BITS: usize = 10;
+
+/// One day's step of a bucket's EMA, in `PROFILE_SCALE` fixed point:
+/// `v ← (v·(PROFILE_DAYS−1) + x) / PROFILE_DAYS`. The scale keeps a recovery
+/// from zero moving (a full day lifts 0 to 4) and a lapse decaying to zero.
+fn ema(v: u64, x: u64) -> u64 {
+    (v * (PROFILE_DAYS - 1) + x) / PROFILE_DAYS
+}
+
+/// A Mac's hour-of-day availability (docs/design/13-roadmap.md, F): per hour
+/// bucket, EMAs of the beacon slots answered and the slots offered. Derived
+/// from beacon answers only — where the Mac was awake, never where it claims
+/// to be — so it cannot be gamed by self-report and needs no location data.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Profile {
+    /// Answered slots per hour bucket, in `PROFILE_SCALE` units.
+    pub answered: [u64; DAY_EPOCHS as usize],
+    /// Offered slots per hour bucket, in `PROFILE_SCALE` units.
+    pub offered: [u64; DAY_EPOCHS as usize],
+}
+
+impl Profile {
+    fn bucket(w: U256, h: usize) -> u64 {
+        ((w >> (BUCKET_BITS * h)) & U256::from((1u64 << BUCKET_BITS) - 1)).to::<u64>()
+    }
+    /// Availability in hour bucket `h` (hours wrap), in `PROB_SCALE` units:
+    /// the answered/offered ratio, once that hour has ever been offered.
+    /// (The EMA keeps answered ≤ offered; the min only guards the division.)
+    pub fn at(&self, h: u64) -> Option<u64> {
+        let h = (h % DAY_EPOCHS) as usize;
+        let (a, o) = (self.answered[h], self.offered[h]);
+        (o > 0).then(|| a.min(o) * PROB_SCALE / o)
+    }
+    /// Availability over the whole day, in `PROB_SCALE` units.
+    pub fn overall(&self) -> Option<u64> {
+        let (a, o): (u64, u64) = (self.answered.iter().sum(), self.offered.iter().sum());
+        (o > 0).then(|| a.min(o) * PROB_SCALE / o)
+    }
+    /// The worst observed hour's availability, in `PROB_SCALE` units.
+    pub fn worst(&self) -> Option<u64> {
+        (0..DAY_EPOCHS).filter_map(|h| self.at(h)).fold(None, |worst, p| Some(worst.map_or(p, |w| w.min(p))))
+    }
+}
+
+/// The hour-of-day profile of registry candidate `index` (empty until its
+/// first full day has passed).
+pub fn profile(state: &WorldState, index: u64) -> Profile {
+    let (a, o) = (
+        state.storage(&REWARDS, tagged(TAG_PROFILE, U256::from(index))),
+        state.storage(&REWARDS, tagged(TAG_OFFERED, U256::from(index))),
+    );
+    let mut p = Profile::default();
+    for h in 0..DAY_EPOCHS as usize {
+        p.answered[h] = Profile::bucket(a, h);
+        p.offered[h] = Profile::bucket(o, h);
+    }
+    p
+}
+
+/// Fold epoch `epoch`'s observation (`answered` of `SLOTS` slots) into
+/// candidate `index`'s hour-of-day profile and recent-answer record.
+/// `distribute` calls this at every epoch boundary; `full` says the Mac was
+/// registered for the whole epoch (a Mac registered mid-epoch is judged from
+/// its first full day, so its ratio is exact rather than understated).
+pub fn note(state: &mut WorldState, index: u64, epoch: u64, answered: u64, full: bool) {
+    // A full epoch's observation is PROFILE_SCALE; each answered slot a quarter of it.
+    const SLOT: u64 = PROFILE_SCALE / SLOTS;
+    let hour = (epoch % DAY_EPOCHS) as usize;
+    let shift = BUCKET_BITS * hour;
+    let clear = U256::from(!0u64 >> (64 - BUCKET_BITS)) << shift;
+    let bucket = |w: U256| ((w >> shift) & U256::from((1u64 << BUCKET_BITS) - 1)).to::<u64>();
+    let put = |w: U256, v: u64| (w & !clear) | (U256::from(v) << shift);
+    let mut write = |tag: u64, x: u64| {
+        let at = tagged(tag, U256::from(index));
+        let w = state.storage(&REWARDS, at);
+        let next = put(w, ema(bucket(w), x));
+        if w != next {
+            state.set_storage(REWARDS, at, next);
+        }
+    };
+    if full {
+        write(TAG_PROFILE, answered.min(SLOTS) * SLOT);
+        write(TAG_OFFERED, PROFILE_SCALE);
+    }
+    // The last two epochs' counts: the beacon record itself keeps only the newest.
+    let at = tagged(TAG_RECENT, U256::from(index));
+    let old = state.storage(&REWARDS, at);
+    let prev = if old.is_zero() {
+        NO_COUNT
+    } else {
+        let last_of = |w: U256| ((w >> 4usize) & U256::from(0xFu64)).to::<u64>();
+        // The old word's count is epoch − 1's only if it was written for that epoch.
+        (((old >> 8usize).to::<u64>() - 1) + 1 == epoch).then(|| last_of(old)).unwrap_or(NO_COUNT)
+    };
+    let next = (U256::from(epoch + 1) << 8usize) | (U256::from(answered.min(NO_COUNT)) << 4usize) | U256::from(prev);
+    if old != next {
+        state.set_storage(REWARDS, at, next);
+    }
+}
+
+/// The last two distributed epochs' answered-slot counts for candidate
+/// `index`: (epoch, its count, the epoch before's), `NO_COUNT` where a count
+/// is unknown. None until a distribution has seen the Mac. Early replacement
+/// (docs/design/13-roadmap.md, F) reads this.
+pub fn recent(state: &WorldState, index: u64) -> Option<(u64, u64, u64)> {
+    let w = state.storage(&REWARDS, tagged(TAG_RECENT, U256::from(index)));
+    if w.is_zero() {
+        return None;
+    }
+    let field = |shift: usize| ((w >> shift) & U256::from(0xFu64)).to::<u64>();
+    Some((((w >> 8usize).to::<u64>() - 1), field(4), field(0)))
 }
 
 fn candidate_slot(index: u64, k: u64) -> U256 {

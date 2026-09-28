@@ -12,7 +12,7 @@ use aether_node::block::{Block, Context, EPOCH};
 use aether_node::chain::{build_payload, Chain, ChainConfig, ChainError, Executed, Extras, Reserve};
 use aether_node::dkg::{Ceremony, DkgOutput, KeyFile, Msg, Round as KeyRound, To};
 use aether_node::upgrade::SignedUpgrade;
-use aether_rewards::beacons;
+use aether_rewards::{beacons, DAY_EPOCHS};
 use aether_types::{Address, GasVector, TxEnvelope, U256};
 use commonware_codec::Encode as _;
 use commonware_consensus::types::{Round, View};
@@ -51,6 +51,9 @@ pub enum Mac {
     Slots(u64),
     /// Answers, but never gets a re-attestation (its app gives no DeviceCheck token).
     NoReattest,
+    /// Answers every slot of the hours this bit mask covers — a Mac asleep
+    /// through the rest of the day (hour = epoch % 24).
+    Awake(u32),
     /// Off.
     Off,
 }
@@ -173,6 +176,7 @@ impl Net {
                 Mac::Off => false,
                 Mac::Slots(mask) => mask & (1 << d.slot) != 0,
                 Mac::NoReattest => !d.needs_attestation,
+                Mac::Awake(mask) => mask & (1 << (d.epoch % DAY_EPOCHS)) != 0,
                 Mac::Honest => true,
             })
             .map(|d| {

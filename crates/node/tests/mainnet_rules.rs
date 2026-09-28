@@ -56,6 +56,7 @@ fn answers_once(n: &Net) -> Vec<BeaconAnswer> {
                 Mac::Off => false,
                 Mac::Slots(mask) => mask & (1 << d.slot) != 0,
                 Mac::NoReattest => !d.needs_attestation,
+                Mac::Awake(mask) => mask & (1 << (d.epoch % DAY_EPOCHS)) != 0,
                 Mac::Honest => true,
             };
             if !answer {

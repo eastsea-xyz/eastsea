@@ -20,3 +20,4 @@ pub mod snapshot;
 pub mod store;
 pub mod supervisor;
 pub mod upgrade;
+pub mod voting;

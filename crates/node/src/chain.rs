@@ -303,6 +303,10 @@ pub struct Inner {
     proof_backoff_until: u64,
     /// Proof submissions (claim output + proof) this node's RPC already refused.
     rejected: std::collections::HashSet<[u8; 32]>,
+    /// Pruning (roadmap B4): first height whose summary and receipts are kept.
+    pub pruned_below: u64,
+    /// The last era read back from its file (old blocks served over RPC).
+    era_cache: Option<(u64, Arc<crate::era::Era>)>,
 }
 
 #[derive(Clone)]
@@ -403,6 +407,8 @@ impl Chain {
             proof_proposal: None,
             proof_backoff_until: 0,
             rejected: Default::default(),
+            pruned_below: 0,
+            era_cache: None,
         };
         (Chain(Arc::new(Mutex::new(inner))), genesis)
     }
@@ -450,20 +456,9 @@ impl Chain {
                 let mut g = chain.lock();
                 g.executed.insert(digest, exec.clone());
                 // History proofs need every block from genesis; a checkpoint-started node has none before it.
-                let h = ChainHasher::new();
-                g.history_index = (0..=exec.height)
-                    .map(|k| {
-                        cp.blocks
-                            .get(&k)
-                            .and_then(|b| hex::decode(&b.hash).ok())
-                            .and_then(|d| <[u8; 32]>::try_from(d).ok())
-                            .map(|d| aether_state::mmr::leaf(&h, k, &d))
-                    })
-                    .try_fold(aether_state::mmr::EraIndex::default(), |mut idx, l| {
-                        idx.push(&h, l?);
-                        Some(idx)
-                    })
-                    .map(Arc::new);
+                // A pruned store keeps the roots of the eras it dropped instead (roadmap B4).
+                g.history_index = rebuild_history_index(&cp.blocks, &cp.era_roots, cp.pruned_below, exec.height, &exec.history).map(Arc::new);
+                g.pruned_below = cp.pruned_below;
                 g.finalized = exec;
                 g.blocks = cp.blocks;
                 g.receipts = cp.receipts;
@@ -893,51 +888,193 @@ impl Chain {
         anchor: u64,
     ) -> Result<(aether_state::mmr::MmrProof, String), String> {
         use aether_state::mmr::ERA_LEN;
-        let (index, hash, eras) = {
+        {
             let g = self.lock();
             if anchor == 0 || height >= anchor || anchor > g.finalized.height {
                 return Err("need height < anchor <= finalized height".into());
             }
+        }
+        let (index, eras) = self.era_leaves(&[height / ERA_LEN, anchor / ERA_LEN])?;
+        let h = ChainHasher::new();
+        let open = index.eras.len() as u64;
+        let e = height / ERA_LEN;
+        let hash = if e < open {
+            eras.get(&e).map(|(_, hashes)| hashes[(height % ERA_LEN) as usize])
+        } else {
+            self.lock()
+                .blocks
+                .get(&height)
+                .and_then(|b| hex::decode(&b.hash).ok())
+                .and_then(|d| d.try_into().ok())
+        }
+        .ok_or("block not kept here")?;
+        let proof = index
+            .prove(&h, anchor, height, |e| eras.get(&e).map(|(l, _)| l.clone()))
+            .ok_or("no proof")?;
+        Ok((proof, hex::encode(hash)))
+    }
+
+    /// Leaf digests and block hashes of the complete eras among `wanted`: from
+    /// the kept block summaries, or from the era file once they are pruned (read
+    /// back and checked against the era root this node keeps).
+    #[allow(clippy::type_complexity)]
+    fn era_leaves(
+        &self,
+        wanted: &[u64],
+    ) -> Result<
+        (
+            Arc<aether_state::mmr::EraIndex>,
+            BTreeMap<u64, (Vec<[u8; 32]>, Vec<[u8; 32]>)>,
+        ),
+        String,
+    > {
+        use aether_state::mmr::ERA_LEN;
+        let h = ChainHasher::new();
+        let (index, kept, from_file, store) = {
+            let g = self.lock();
             let index = g
                 .history_index
                 .clone()
                 .ok_or("this node started from a checkpoint and keeps no early history")?;
-            let hash = g
-                .blocks
-                .get(&height)
-                .map(|b| b.hash.clone())
-                .ok_or("block not kept here")?;
             let open = index.eras.len() as u64;
-            let mut eras = BTreeMap::new();
-            for e in [height / ERA_LEN, anchor / ERA_LEN]
-                .into_iter()
-                .filter(|e| *e < open)
-            {
-                let hashes: Vec<String> = g
+            let (mut kept, mut from_file) = (BTreeMap::new(), Vec::new());
+            for &e in wanted.iter().filter(|e| **e < open) {
+                if e * ERA_LEN < g.pruned_below {
+                    from_file.push(e);
+                    continue;
+                }
+                let hashes: Option<Vec<[u8; 32]>> = g
                     .blocks
                     .range(e * ERA_LEN..(e + 1) * ERA_LEN)
-                    .map(|(_, b)| b.hash.clone())
+                    .map(|(_, b)| hex::decode(&b.hash).ok()?.try_into().ok())
                     .collect();
-                eras.insert(e, hashes);
+                kept.insert(e, hashes.ok_or("bad block hash")?);
             }
-            (index, hash, eras)
+            (index, kept, from_file, g.store.clone())
         };
-        let h = ChainHasher::new();
-        let leaves = |e: u64| -> Option<Vec<[u8; 32]>> {
-            eras.get(&e)?
+        let mut out = BTreeMap::new();
+        for (e, hashes) in kept {
+            let leaves = hashes
                 .iter()
                 .enumerate()
-                .map(|(i, x)| {
-                    Some(aether_state::mmr::leaf(
-                        &h,
-                        e * ERA_LEN + i as u64,
-                        &hex::decode(x).ok()?.try_into().ok()?,
-                    ))
-                })
-                .collect()
+                .map(|(i, d)| aether_state::mmr::leaf(&h, e * ERA_LEN + i as u64, d))
+                .collect();
+            out.insert(e, (leaves, hashes));
+        }
+        for e in from_file {
+            let era = self.load_era(store.as_deref(), e, Some(&index.eras[e as usize]))?;
+            let hashes: Vec<[u8; 32]> = era.blocks.iter().map(|b| digest_bytes(&b.digest())).collect();
+            let leaves = hashes
+                .iter()
+                .enumerate()
+                .map(|(i, d)| aether_state::mmr::leaf(&h, e * ERA_LEN + i as u64, d))
+                .collect();
+            out.insert(e, (leaves, hashes));
+        }
+        Ok((index, out))
+    }
+
+    /// Era `era` from this node's era file, read back and checked (against
+    /// `root` when given); the last one read is cached.
+    pub fn load_era(
+        &self,
+        store: Option<&Store>,
+        era: u64,
+        root: Option<&[u8; 32]>,
+    ) -> Result<Arc<crate::era::Era>, String> {
+        if let Some((e, cached)) = self.lock().era_cache.clone() {
+            if e == era && root.is_none_or(|r| *r == cached.root) {
+                return Ok(cached);
+            }
+        }
+        let store = store.ok_or("no store")?;
+        let path = store.era_dir().join(crate::era::file_name(era));
+        let bytes = std::fs::read(&path)
+            .map_err(|_| format!("pruned: era {era} is pruned here and its file is not kept"))?;
+        let decoded = crate::era::read(&bytes, root).map_err(|e| format!("era {era} file: {e}"))?;
+        if decoded.index != era {
+            return Err(format!("era file {} holds era {}", path.display(), decoded.index));
+        }
+        let decoded = Arc::new(decoded);
+        self.lock().era_cache = Some((era, decoded.clone()));
+        Ok(decoded)
+    }
+
+    /// Proof that era `era`'s root is in the history under block `anchor`'s
+    /// history root (`aether_light::verify_era_root`): what a peer checks an
+    /// era file it fetched from this node against.
+    pub fn era_proof(&self, era: u64, anchor: u64) -> Result<aether_state::mmr::MmrProof, String> {
+        use aether_state::mmr::{ERA_BITS, ERA_LEN};
+        {
+            // `anchor` counts blocks: up to the whole finalized chain (the history
+            // root the next block will commit, what a peer at the same head holds).
+            let g = self.lock();
+            if anchor > g.finalized.height + 1 || (era + 1).saturating_mul(ERA_LEN) > anchor {
+                return Err("need a complete era below anchor <= finalized height + 1".into());
+            }
+        }
+        let (index, eras) = self.era_leaves(&[anchor / ERA_LEN])?;
+        let open = index.eras.len() as u64;
+        aether_state::mmr::prove_by_eras(
+            &ChainHasher::new(),
+            anchor,
+            era * ERA_LEN,
+            ERA_BITS,
+            &index.eras,
+            |e| {
+                if e == open {
+                    Some(index.open.clone())
+                } else {
+                    eras.get(&e).map(|(l, _)| l.clone())
+                }
+            },
+        )
+        .ok_or_else(|| "no proof".to_string())
+    }
+
+    /// Pruning (roadmap B4): drop the block summaries, receipts and finality
+    /// proofs below `cutoff` (an era boundary at or below the head), on disk
+    /// first and then in memory. The roots of the eras below it stay, so
+    /// history proofs keep working (from the era files while they are kept).
+    pub fn prune(&self, cutoff: u64) -> Result<crate::store::PruneReport, String> {
+        use aether_state::mmr::ERA_LEN;
+        let (store, roots) = {
+            let g = self.lock();
+            if cutoff <= g.pruned_below {
+                return Ok(Default::default());
+            }
+            if !cutoff.is_multiple_of(ERA_LEN) || cutoff > g.finalized.height {
+                return Err(format!("cannot prune below {cutoff}: not an era boundary at or below the head"));
+            }
+            let roots: Vec<(u64, [u8; 32])> = match &g.history_index {
+                Some(idx) => (g.pruned_below / ERA_LEN..cutoff / ERA_LEN)
+                    .filter_map(|e| idx.eras.get(e as usize).map(|r| (e, *r)))
+                    .collect(),
+                None => Vec::new(),
+            };
+            (g.store.clone(), roots)
         };
-        let proof = index.prove(&h, anchor, height, leaves).ok_or("no proof")?;
-        Ok((proof, hash))
+        let report = match &store {
+            Some(s) => s.prune_below(cutoff, &roots).map_err(|e| e.to_string())?,
+            None => Default::default(),
+        };
+        let mut g = self.lock();
+        g.blocks = g.blocks.split_off(&cutoff);
+        g.receipts.retain(|_, (h, _)| *h >= cutoff);
+        g.pruned_below = cutoff;
+        Ok(report)
+    }
+
+    /// Finalized block `height` read back from its era file (pruned heights).
+    pub fn old_block(&self, height: u64) -> Result<Block, String> {
+        use aether_state::mmr::ERA_LEN;
+        let (store, root) = {
+            let g = self.lock();
+            let e = height / ERA_LEN;
+            (g.store.clone(), g.history_index.as_ref().and_then(|i| i.eras.get(e as usize).copied()))
+        };
+        let era = self.load_era(store.as_deref(), height / ERA_LEN, root.as_ref())?;
+        Ok(era.blocks[(height % ERA_LEN) as usize].clone())
     }
 
     /// Rewards `prover` received for proofs (this node's record since it started keeping one).
@@ -1612,6 +1749,44 @@ fn affordable(tx: &TxEnvelope, state: &WorldState, base: FeeVector) -> Result<()
 
 fn digest_bytes(d: &Digest) -> [u8; 32] {
     d.as_ref().try_into().expect("sha256 digest is 32 bytes")
+}
+
+/// The history index at restart: roots of the pruned eras (roadmap B4), then a
+/// leaf per kept summary up to the head. None when a height is missing (a node
+/// started from a checkpoint) or the result is not the history the store
+/// committed (a damaged root table).
+fn rebuild_history_index(
+    blocks: &BTreeMap<u64, BlockSummary>,
+    era_roots: &[[u8; 32]],
+    pruned_below: u64,
+    head: u64,
+    history: &aether_state::mmr::Mmr,
+) -> Option<aether_state::mmr::EraIndex> {
+    use aether_state::mmr::ERA_LEN;
+    let h = ChainHasher::new();
+    let pruned_eras = pruned_below / ERA_LEN;
+    if !pruned_below.is_multiple_of(ERA_LEN) || (era_roots.len() as u64) < pruned_eras {
+        return None;
+    }
+    let mut idx = aether_state::mmr::EraIndex {
+        eras: era_roots[..pruned_eras as usize].to_vec(),
+        open: Vec::new(),
+    };
+    for k in pruned_below..=head {
+        let d = blocks
+            .get(&k)
+            .and_then(|b| hex::decode(&b.hash).ok())
+            .and_then(|d| <[u8; 32]>::try_from(d).ok())?;
+        idx.push(&h, aether_state::mmr::leaf(&h, k, &d));
+    }
+    if pruned_below > 0 && idx.mmr(&h) != *history {
+        tracing::warn!(
+            pruned_below,
+            "stored era roots do not match the committed history; history proofs are off"
+        );
+        return None;
+    }
+    Some(idx)
 }
 
 fn summary(block: &Block, e: &Executed, parent_state_root: B256) -> BlockSummary {

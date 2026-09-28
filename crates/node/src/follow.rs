@@ -225,10 +225,54 @@ pub async fn run(chain: Chain, upstream: std::sync::Arc<Upstream>, set: Validato
                 Err(e) => warn!(height = next, ?e, "certified block did not execute to the same result; not adopting it"),
             },
             Ok(None) => {}
+            // Upstream pruned this height (roadmap B4): replay its era from an era file instead.
+            Err(e) if e.contains("pruned") => match catch_up_era(&chain, &upstream, &set, next).await {
+                Ok(to) => {
+                    info!(from = next, to, "replayed a pruned era from its era file");
+                    continue;
+                }
+                Err(e) => warn!(height = next, %e, "upstream pruned this era and it could not be fetched"),
+            },
             Err(e) => warn!(height = next, %e, "upstream"),
         }
         tokio::time::sleep(Duration::from_millis(400)).await;
     }
+}
+
+/// Replay the rest of the era holding `next` from its era file: the file is
+/// checked against the history root of a later block whose certificate this
+/// follower verified, then every block is re-executed as usual. Returns the
+/// last height adopted.
+pub async fn catch_up_era(chain: &Chain, upstream: &Upstream, set: &ValidatorSet, next: u64) -> Result<u64, String> {
+    use aether_state::mmr::ERA_LEN;
+    let era = next / ERA_LEN;
+    let tip = upstream.first("aether_status", json!([])).await?["height"].as_u64().ok_or("no upstream height")?;
+    if tip < (era + 1) * ERA_LEN {
+        return Err(format!("upstream has not finished era {era}"));
+    }
+    // A certified block after the era: its history root commits every block before it.
+    let mut anchor = None;
+    for h in (tip.saturating_sub(8)..=tip).rev() {
+        if let Some((block, _)) = fetch(upstream, set, h).await? {
+            let root = block.payload().ok_or("anchor payload")?.history_root;
+            anchor = Some(crate::era_net::HistoryAnchor { leaves: h, root });
+            break;
+        }
+    }
+    let anchor = anchor.ok_or("no certified block to anchor the era on")?;
+    let known = chain.lock().history_index.as_ref().and_then(|i| i.eras.get(era as usize).copied());
+    let (_, e) = crate::era_net::fetch(upstream, era, &anchor, known.as_ref()).await?;
+    let c = chain.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut last = next - 1;
+        for b in e.blocks.iter().filter(|b| b.height.get() >= next) {
+            c.finalize(b).map_err(|e| format!("era block {} did not execute: {e:?}", b.height.get()))?;
+            last = b.height.get();
+        }
+        Ok(last)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Block `h` and its certificate, verified; `None` if no source has it yet.

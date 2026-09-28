@@ -30,6 +30,7 @@ postcard = { version = "1", features = ["alloc"] }
 commonware-actor = "=2026.9.0"
 commonware-broadcast = "=2026.9.0"
 commonware-codec = "=2026.9.0"
+commonware-coding = "=2026.9.0"
 commonware-consensus = "=2026.9.0"
 commonware-cryptography = "=2026.9.0"
 commonware-p2p = "=2026.9.0"

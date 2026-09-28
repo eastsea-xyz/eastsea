@@ -144,6 +144,13 @@ async fn start_validator(context: &Ctx, oracle: &Oracle<Pk, Ctx>, i: u64, chain:
         context.child("engine").with_attribute("validator", i),
         engine::Config {
             anchor: None,
+            // Half the validators keep marshal's archives in the pruning layout (roadmap B4):
+            // consensus must not care which one a node uses.
+            layout: if i.is_multiple_of(2) {
+                engine::Layout::Prunable
+            } else {
+                engine::Layout::Immutable
+            },
             blocker: oracle.control(me.clone()),
             provider: oracle.manager(),
             partition_prefix: format!("v{i}"),

@@ -266,6 +266,26 @@ impl EraIndex {
         }
     }
 
+    /// The MMR peaks over the same leaves: checks an index rebuilt from stored
+    /// era roots (a pruned node) against the history MMR it committed.
+    pub fn mmr<H: Hasher>(&self, h: &H) -> Mmr {
+        let n = self.leaves();
+        let (mut start, mut peaks) = (0u64, Vec::new());
+        for ht in (0..64u8).rev().filter(|b| n >> b & 1 == 1) {
+            let size = 1u64 << ht;
+            let d = if ht >= ERA_BITS {
+                let first = (start / ERA_LEN) as usize;
+                subtree_root(h, &self.eras[first..first + (size / ERA_LEN) as usize])
+            } else {
+                let off = (start - self.eras.len() as u64 * ERA_LEN) as usize;
+                subtree_root(h, &self.open[off..off + size as usize])
+            };
+            peaks.push((ht, d));
+            start += size;
+        }
+        Mmr { leaves: n, peaks }
+    }
+
     /// Proof of leaf `index` under the MMR of the first `n` leaves (`n` <= `leaves()`).
     pub fn prove<H: Hasher>(&self, h: &H, n: u64, index: u64, mut era_leaves: impl FnMut(u64) -> Option<Vec<Digest>>) -> Option<MmrProof> {
         if n > self.leaves() {
@@ -360,6 +380,22 @@ mod tests {
         // Wrong era leaves are refused, not turned into a bad proof.
         let bad = prove_by_eras(&h, total, 7, 0, &idx.eras, |e| if e == 0 { Some(vec![ZERO; ERA_LEN as usize]) } else { Some(open.clone()) });
         assert!(bad.is_none());
+    }
+
+    #[test]
+    fn an_era_index_gives_back_the_mmr_it_summarizes() {
+        let h = Blake3;
+        let (mut idx, mut mmr) = (EraIndex::default(), Mmr::default());
+        for i in 0..2 * ERA_LEN + 5 {
+            idx.push(&h, leaf(&h, i, &block(i)));
+            mmr = mmr.append(&h, i, &block(i));
+            if [0, 1, 7, ERA_LEN - 1, ERA_LEN, ERA_LEN + 1, 2 * ERA_LEN, 2 * ERA_LEN + 4].contains(&i) {
+                assert_eq!(idx.mmr(&h), mmr, "after leaf {i}");
+            }
+        }
+        // A wrong era root (a corrupted store) shows up as another MMR.
+        idx.eras[0][0] ^= 1;
+        assert_ne!(idx.mmr(&h), mmr);
     }
 
     #[test]

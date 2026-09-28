@@ -225,6 +225,41 @@ pub fn verify_history(anchor: &VerifiedBlock, height: u64, block_hash: &B256, pr
     }
 }
 
+/// An old block's full contents (codec bytes, from any untrusted archive or
+/// era file) verified through `anchor`'s history root: its hash is recomputed
+/// from the bytes, so the returned payload is exactly what was certified.
+pub fn verify_old_block(anchor: &VerifiedBlock, block_bytes: &[u8], proof: &aether_state::mmr::MmrProof) -> Result<(VerifiedBlock, block::Payload), LightError> {
+    let b = Block::decode_cfg(block_bytes, &Block::codec_config(MAX_BLOCK_BYTES)).map_err(|_| LightError::BadEncoding("block"))?;
+    let digest: [u8; 32] = b.digest().as_ref().try_into().map_err(|_| LightError::BadEncoding("digest"))?;
+    let height = b.height().get();
+    verify_history(anchor, height, &B256::from(digest), proof)?;
+    let payload = b.payload().ok_or(LightError::BadEncoding("payload"))?;
+    let v = VerifiedBlock {
+        height,
+        digest: format!("{}", b.digest()),
+        timestamp_ms: b.timestamp,
+        parent_state_root: payload.parent_state_root,
+        history_root: payload.history_root,
+    };
+    Ok((v, payload))
+}
+
+/// The root of era `era` (blocks `era * ERA_LEN ..`, `aether_state::mmr`) is in
+/// the history certified by `anchor`: every block of an era file hashing to
+/// this root is then certified too.
+pub fn verify_era_root(anchor: &VerifiedBlock, era: u64, root: &[u8; 32], proof: &aether_state::mmr::MmrProof) -> Result<(), LightError> {
+    use aether_state::mmr::{ERA_BITS, ERA_LEN};
+    let first = era.checked_mul(ERA_LEN).ok_or(LightError::WrongKey)?;
+    if proof.leaves != anchor.height || proof.index != first || first + ERA_LEN > anchor.height {
+        return Err(LightError::WrongKey);
+    }
+    if proof.verify_node(&ChainHasher::new(), root, ERA_BITS, &anchor.history_root.0) {
+        Ok(())
+    } else {
+        Err(LightError::ProofInvalid("era root".into()))
+    }
+}
+
 /// Hex helpers for transporting codec bytes over JSON.
 pub fn to_hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()

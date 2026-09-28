@@ -60,6 +60,7 @@ fn commit(store: &Store, height: u64, s: &WorldState) {
             history: &Default::default(),
             schedule: &Default::default(),
             statement: &Default::default(),
+            staged: None,
         })
         .unwrap();
 }
@@ -133,6 +134,7 @@ fn tampered_state_is_detected() {
             history: &Default::default(),
             schedule: &Default::default(),
             statement: &Default::default(),
+            staged: None,
         })
         .unwrap();
 

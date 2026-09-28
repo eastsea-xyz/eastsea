@@ -67,6 +67,74 @@ replaces 786 kB per era.
 - The MMR and the snapshot hash are only as good as the certificate on the
   header that carries them: nothing here adds trust beyond the committee.
 
+## Status (2026-09-28, roadmap B1-B3)
+
+**B1: why `state.redb` grew per block.** Measured on a copy of the 7780
+testnet store at height 69,651 (`cargo run -p aether-node --example
+store_stats -- <copy>`):
+
+| | bytes/block |
+|---|---|
+| file (logical) | 1,553 |
+| of which pages freed by copy-on-write, never returned | ~620 (43 MB) |
+| block summaries (JSON) | 587 |
+| receipts (JSON, per tx block) | 123 averaged |
+| state entries (mostly proof-market records) | 46 |
+
+Besides `state.redb`, marshal's block archive holds ~530 B/block and its
+finalization archive ~260 B/block (B4 prunes both once eras exist).
+
+Fixed without consensus changes (7780 included): summaries are written
+packed (postcard, links to the previous row elided; JSON rows still load):
+539 → 110 B/block; a store more than a quarter free is compacted at
+start-up (the testnet copy: 108 → 65 MB). Not fixable on 7780 without a
+consensus change: every protocol-2 block writes its statement record into
+the state tree (~68 B/block stored, also held in memory) and the record is
+pruned only after the 30-day claim window, so the state holds ~2.6M records
+at steady state (~180 MB).
+
+**B2: history root.** Already in every 7780 block since genesis (BLAKE3 MMR,
+leaf = H('L' ‖ height ‖ hash), checked by every node). Added: nodes keep era
+roots plus the open era instead of every leaf (`mmr::EraIndex`), history
+proofs read at most two eras (`mmr::prove_by_eras`; before, each
+`aether_historyProof` rehashed the whole history), an era's root proves as
+an MMR node (`MmrProof::verify_node`), and the light client verifies an old
+block's full bytes (`verify_old_block`) and whole eras (`verify_era_root`).
+
+**B3: era files** (`crates/node/src/era.rs`): 8,192 blocks from a multiple of
+8,192; heights, parent hashes and history roots recomputed; epochs, views,
+timestamps, versions delta-encoded; leaders as a dictionary; state roots and
+metadata hashes stored only when they change; bodies JSON; all zstd-19; the
+era's MMR sub-root is its identity and every read rebuilds each block and
+checks it. Any bit flip is detected (test).
+
+**History v2** (`network.json` `"history": 2`, bound to the genesis hash,
+off on 7780): an empty block records no proof-market statement (nothing to
+prove), so empty blocks leave state root and metadata unchanged; nodes seal
+each era into `eras/era-NNNNNNNN.aera`. Trade-off to confirm before the
+mainnet genesis: nobody earns proving issuance for empty blocks.
+
+Measured with `tests/history.rs` (`measure`, release, 8,192 blocks, 4
+rotating leaders, ~1 s blocks with jitter), bytes per block:
+
+| run | summary before (JSON) | summary after (packed) | state | era file |
+|---|---|---|---|---|
+| 7780 rules, empty | 539 | 110 | 68 | 65 |
+| 7780 rules, 1 transfer/block | 611 | 144 | 132 | 136 |
+| history v2, empty | 539 | 110 | 4 | **1.2** |
+| history v2, 1 transfer/block | 611 | 144 | 132 | 136 |
+
+Empty blocks archived under history v2: 1.2 B × 31.5M = **~38 MB/year**
+(target < 1 GB). Under 7780 rules they cannot go below ~64 B (two hashes
+that change every block): ~2 GB/year. A transfer costs ~136 B archived, close
+to its signature and key alone.
+
+Not done yet: the era's aggregated BLS signature (replaces 8,192
+certificates), B4 (prune marshal's archive, summaries and receipts older
+than 30 days once their era is sealed; serve eras over iroh-blobs), B5
+(Reed-Solomon shards). Until B4 a v2 node also keeps the open era's blocks in
+`state.redb` (bounded: one era, reused after sealing).
+
 ## Order
 
 1. MMR + `history_root` in blocks (a genesis change: ship with the next

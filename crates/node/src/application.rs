@@ -134,7 +134,7 @@ where
             }
         };
         let (payload, mut out) = build_payload(&parent, &pre, &ctx, self.chain.mempool_candidates(), extras);
-        let statement = if payload.version >= 2 { crate::chain::statement(&ctx, &payload.txs, &pre, &out) } else { [0; 32] };
+        let statement = if crate::chain::records_statement(&cfg, &payload) { crate::chain::statement(&ctx, &payload.txs, &pre, &out) } else { [0; 32] };
         crate::chain::with_activation(&pre, &mut out);
         drop(pre);
         let tx_hashes = payload.txs.iter().map(aether_execution::tx_hash).collect();

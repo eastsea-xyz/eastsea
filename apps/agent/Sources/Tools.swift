@@ -41,14 +41,37 @@ enum Tools {
     private static var validators: UInt32 = 4
     private static var configured = false
 
+    /// The app's node on this Mac, when its switch is on (the wallet uses it too).
+    static let appNodePort: UInt16 = 18545
+
     static func configure() {
         guard !configured else { return }
         configured = true
-        let env = ProcessInfo.processInfo.environment["AETHER_NETWORK"]
-        let url = env.map { URL(fileURLWithPath: $0) } ?? Paths.network
-        if let json = try? String(contentsOf: url, encoding: .utf8), let n = try? configureNetwork(networkJson: json) {
-            validators = n
+        for url in networkCandidates() {
+            if let json = try? String(contentsOf: url, encoding: .utf8), let n = try? configureNetwork(networkJson: json) {
+                validators = n
+                break
+            }
         }
+        // Like the wallet: ask the node on this Mac when it runs (it verifies every
+        // block itself; the certificates and proofs are still checked here).
+        if ProcessInfo.processInfo.environment["AETHER_NO_LOCAL_NODE"] == nil, localNodeHeight(port: appNodePort) != nil {
+            useLocalNode(port: appNodePort)
+        }
+    }
+
+    /// Where the network file (validators and committee key) can be: an explicit
+    /// path, the agent's own copy, then the one inside the Aether app this binary
+    /// ships in (also through the ~/.local/bin symlink), then the installed app.
+    static func networkCandidates() -> [URL] {
+        var urls: [URL] = []
+        if let env = ProcessInfo.processInfo.environment["AETHER_NETWORK"], !env.isEmpty { urls.append(URL(fileURLWithPath: env)) }
+        urls.append(Paths.network)
+        let exe = (Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])).resolvingSymlinksInPath()
+        // …/Aether.app/Contents/Helpers/aether-agent -> …/Aether.app/Contents/Resources/network.json
+        urls.append(exe.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Resources/network.json"))
+        urls.append(URL(fileURLWithPath: "/Applications/Aether.app/Contents/Resources/network.json"))
+        return urls
     }
 
     static var validatorCount: UInt32 { configure(); return validators }

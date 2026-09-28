@@ -254,13 +254,15 @@ fn anchor(height: u64, set: &ValidatorSet) -> R<VerifiedBlock> {
                 .transpose()
                 .map_err(|e| WalletError::Verification(e.to_string()))?
                 .unwrap_or_default();
+            // The chain this wallet is for, before any of this node's state is used.
+            let chain = expected_chain(&call("aether_status", json!([]))?)?;
             let vb = verify_finalized_chain(set, &block, &fin, &links).map_err(|e| WalletError::Verification(format!("certificate: {e}")))?;
-            // A valid but old certificate would let a node replay past state (e.g. an
-            // old, looser session that the owner then re-signs): require a recent one.
-            let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(u64::MAX);
-            if now_ms.saturating_sub(vb.timestamp_ms) > MAX_ANCHOR_AGE_MS {
-                return Err(WalletError::Verification(format!("the node served state from {} s ago; refusing stale data", (now_ms - vb.timestamp_ms) / 1000)));
+            if vb.height != height + 1 {
+                return Err(WalletError::Verification(format!("asked for block {}, got one for {}", height + 1, vb.height)));
             }
+            check_anchor_chain(&block, &links, chain)?;
+            remember_height(chain, vb.height)?;
+            check_freshness(vb.timestamp_ms)?;
             return Ok(vb);
         }
         std::thread::sleep(Duration::from_millis(250));
@@ -271,24 +273,115 @@ fn anchor(height: u64, set: &ValidatorSet) -> R<VerifiedBlock> {
 /// Verified state older than this is refused (clock skew and a slow network included).
 const MAX_ANCHOR_AGE_MS: u64 = 10 * 60 * 1000;
 
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(u64::MAX)
+}
+
+/// A valid but old certificate would let a node replay past state (e.g. an old,
+/// looser session that the owner then re-signs): require a recent one.
+fn check_freshness(timestamp_ms: u64) -> R<()> {
+    let now = now_ms();
+    if now.saturating_sub(timestamp_ms) > MAX_ANCHOR_AGE_MS {
+        return Err(WalletError::Verification(format!("the node served state from {} s ago; refusing stale data", (now - timestamp_ms) / 1000)));
+    }
+    Ok(())
+}
+
+/// Finalized blocks never go back: an anchor below the highest height already
+/// verified on that chain is a node replaying old state, not a newer balance.
+fn remember_height(chain_id: u64, height: u64) -> R<()> {
+    let mut seen = VERIFIED_HEIGHT.lock().expect("verified height lock");
+    match seen.iter_mut().find(|(c, _)| *c == chain_id) {
+        Some((_, best)) if height < *best => Err(WalletError::Verification(format!(
+            "the node served block {height}, but this wallet already verified block {best} of chain {chain_id}: finalized blocks never go back"
+        ))),
+        Some((_, best)) => {
+            *best = (*best).max(height);
+            Ok(())
+        }
+        None => {
+            seen.push((chain_id, height));
+            Ok(())
+        }
+    }
+}
+
+/// Every chain id a certified block commits to: the headers of its transactions
+/// and any committee-signed upgrade. The certificate covers the block's digest,
+/// so these are signed — a mismatch is another network's state, not a
+/// mislabeled answer. A block with no transaction and no upgrade carries no
+/// chain id, and is bound only by the pinned identity.
+fn committed_chain_ids(block: &[u8]) -> R<Vec<u64>> {
+    use commonware_codec::Decode;
+    let b = aether_light::block::Block::decode_cfg(block, &aether_light::block::Block::codec_config(aether_light::MAX_BLOCK_BYTES))
+        .map_err(|e| WalletError::Verification(format!("block: {e}")))?;
+    let payload = b.payload().ok_or_else(|| WalletError::Verification("block payload".into()))?;
+    let mut ids: Vec<u64> = payload.txs.iter().map(|tx| tx.header.chain_id).collect();
+    ids.extend(payload.upgrade.iter().map(|u| u.upgrade.chain_id));
+    Ok(ids)
+}
+
+/// The anchor (and the links leading to its certificate) must be for the chain
+/// this wallet is configured for.
+fn check_anchor_chain(block: &[u8], links: &[Vec<u8>], chain_id: u64) -> R<()> {
+    for b in std::iter::once(block).chain(links.iter().map(|l| l.as_slice())) {
+        for id in committed_chain_ids(b)? {
+            if id != chain_id {
+                return Err(WalletError::Verification(format!("the certificate is for chain {id}, but this wallet is for chain {chain_id}")));
+            }
+        }
+    }
+    Ok(())
+}
+
 static COMMITTEE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 static NODES: std::sync::Mutex<Option<Vec<aether_net::EndpointId>>> = std::sync::Mutex::new(None);
+
+/// Dev mode, on only if someone asked for it (`use_devnet_keys`, or
+/// `"devnet": true` in network.json): the public devnet committee key may then
+/// stand in for a pinned identity. Never the silent default.
+static DEVNET_KEYS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The chain every signature is for: from network.json, else the public devnet.
 /// Never taken from a node: a malicious node could otherwise collect signatures
 /// valid on another network where the same account holds funds.
 static CHAIN_ID: std::sync::Mutex<u64> = std::sync::Mutex::new(7_777);
 
+/// Highest anchor height verified so far, one entry per chain.
+static VERIFIED_HEIGHT: std::sync::Mutex<Vec<(u64, u64)>> = std::sync::Mutex::new(Vec::new());
+
+/// Trust the public devnet committee key (reproducible from a fixed seed, so it
+/// proves nothing about any real network). Explicit opt-in for development.
+#[uniffi::export]
+pub fn use_devnet_keys() {
+    DEVNET_KEYS.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn devnet_keys() -> bool {
+    DEVNET_KEYS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The highest block height this process verified a certificate for, on the
+/// chain this wallet is configured for (0 before the first one).
+#[uniffi::export]
+pub fn verified_height() -> u64 {
+    let chain = *CHAIN_ID.lock().expect("chain id lock");
+    VERIFIED_HEIGHT.lock().expect("verified height lock").iter().find(|(c, _)| *c == chain).map(|(_, h)| *h).unwrap_or(0)
+}
+
 fn expected_chain(status: &Value) -> R<u64> {
     let want = *CHAIN_ID.lock().expect("chain id lock");
     match status["chain_id"].as_u64() {
         Some(c) if c == want => Ok(want),
-        other => Err(WalletError::Verification(format!("the node reports chain {other:?}, but this wallet is for chain {want}"))),
+        Some(c) => Err(WalletError::Verification(format!("the node reports chain {c}, but this wallet is for chain {want}"))),
+        None => Err(WalletError::Verification(format!("the node does not say which chain it is on; this wallet is for chain {want}"))),
     }
 }
 
 /// Configure from network.json: the validators' node ids (looked up in the
 /// Mainline DHT) and the committee identity to pin. Call before anything else.
+/// The identity is required outside dev mode: without one there is nothing to
+/// verify a certificate against, so every verification API refuses to run.
 #[uniffi::export]
 pub fn configure_network(network_json: String) -> R<u32> {
     let v: Value = serde_json::from_str(&network_json).map_err(|e| WalletError::Invalid(format!("network.json: {e}")))?;
@@ -298,7 +391,16 @@ pub fn configure_network(network_json: String) -> R<u32> {
         .iter()
         .map(|m| m["node"].as_str().unwrap_or_default().parse::<aether_net::EndpointId>().map_err(|e| WalletError::Invalid(format!("node id: {e}"))))
         .collect::<R<Vec<_>>>()?;
-    if let Some(id) = v["identity"].as_str() {
+    if v["devnet"].as_bool().unwrap_or(false) {
+        use_devnet_keys();
+    }
+    let identity = v["identity"].as_str();
+    if identity.is_none() && !devnet_keys() {
+        return Err(WalletError::Invalid(
+            "network.json: \"identity\" (the committee key, printed by `aether dkg`) is required; dev mode needs \"devnet\": true here or a use_devnet_keys() call".into(),
+        ));
+    }
+    if let Some(id) = identity {
         set_committee_identity(id.to_string())?;
     }
     if let Some(c) = v["chain_id"].as_u64() {
@@ -310,7 +412,7 @@ pub fn configure_network(network_json: String) -> R<u32> {
 }
 
 /// Pin the committee identity (hex, printed by `aether dkg`) that finality
-/// certificates must verify under. Without it, the devnet dealer's identity.
+/// certificates must verify under. Required outside dev mode (see `use_devnet_keys`).
 #[uniffi::export]
 pub fn set_committee_identity(identity_hex: String) -> R<()> {
     ValidatorSet::from_hex(&identity_hex).map_err(|e| WalletError::Invalid(format!("identity: {e}")))?;
@@ -319,9 +421,14 @@ pub fn set_committee_identity(identity_hex: String) -> R<()> {
 }
 
 fn trusted_set(validators: u32) -> R<ValidatorSet> {
-    match COMMITTEE.lock().expect("committee lock").as_deref() {
-        Some(hex) => ValidatorSet::from_hex(hex).map_err(|e| WalletError::Invalid(format!("identity: {e}"))),
-        None => Ok(ValidatorSet::devnet(validators as u64)),
+    match COMMITTEE.lock().expect("committee lock").clone() {
+        Some(hex) => ValidatorSet::from_hex(&hex).map_err(|e| WalletError::Invalid(format!("identity: {e}"))),
+        // Dev mode only, and only because someone asked for it: the devnet key
+        // is public, so a chain built with it proves nothing by itself.
+        None if devnet_keys() => Ok(ValidatorSet::devnet(validators as u64)),
+        None => Err(WalletError::Verification(
+            "no committee identity is pinned, so nothing can be verified: pass network.json with \"identity\" to configure_network (development: use_devnet_keys)".into(),
+        )),
     }
 }
 
@@ -329,10 +436,10 @@ fn trusted_set(validators: u32) -> R<ValidatorSet> {
 #[uniffi::export]
 pub fn verified_account(address: String, validators: u32) -> R<VerifiedAccount> {
     let a: Address = address.parse().map_err(|_| WalletError::Invalid("address".into()))?;
+    let set = trusted_set(validators)?;
     let v = call("aether_getAccount", json!([a]))?;
     let proof: Proof = parse(&v["proof"], "proof")?;
     let height = v["height"].as_u64().unwrap_or_default();
-    let set = trusted_set(validators)?;
     let anchor = anchor(height, &set)?;
     let data = verify_account(&anchor, &a, &proof).map_err(|e| WalletError::Verification(format!("proof: {e}")))?.unwrap_or_default();
     Ok(VerifiedAccount {
@@ -616,6 +723,137 @@ mod tests {
         let c = sk.verifying_key().to_sec1_point(true).as_bytes().to_vec();
         let u = sk.verifying_key().to_sec1_point(false).as_bytes().to_vec();
         assert_eq!(account_address(c).unwrap(), account_address(u).unwrap());
+    }
+
+    // ---------------- network configuration and verification guards ----------------
+
+    /// The wallet's configuration is process-global, so these tests take turns.
+    fn config() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().expect("test lock")
+    }
+
+    fn reset_network() {
+        *COMMITTEE.lock().expect("committee lock") = None;
+        DEVNET_KEYS.store(false, std::sync::atomic::Ordering::Relaxed);
+        *CHAIN_ID.lock().expect("chain id lock") = 7_777;
+        VERIFIED_HEIGHT.lock().expect("verified height lock").clear();
+    }
+
+    fn network_json(identity: Option<&str>, devnet: bool) -> String {
+        json!({
+            "chain_id": 7_780,
+            "validators": [{ "node": "ae7b4bb59d9c18f830fed15a23fafec37029ee1de4df398b2154f312b9c1a23e" }],
+            "identity": identity,
+            "devnet": devnet,
+        })
+        .to_string()
+    }
+
+    /// Without a committee identity nothing can be verified: the public devnet
+    /// key is never a silent fallback (audit 3), only an explicit dev mode.
+    #[test]
+    fn verification_refuses_to_run_without_an_identity() {
+        let _g = config();
+        reset_network();
+        let err = trusted_set(4).map(|_| ()).unwrap_err().to_string();
+        assert!(err.contains("identity"), "{err}");
+        // An explicit dev mode brings the devnet key back, nothing else does.
+        use_devnet_keys();
+        assert_eq!(trusted_set(4).unwrap().identity_hex(), ValidatorSet::devnet(4).identity_hex());
+        reset_network();
+        assert!(trusted_set(4).is_err());
+        // A pinned identity is used whatever the mode.
+        set_committee_identity(ValidatorSet::devnet(3).identity_hex()).unwrap();
+        assert_eq!(trusted_set(4).unwrap().identity_hex(), ValidatorSet::devnet(3).identity_hex());
+        assert!(set_committee_identity("not hex".into()).is_err(), "a bad identity is refused");
+    }
+
+    /// `configure_network` refuses a network.json with no identity outside dev
+    /// mode, and accepts the devnet key only behind the explicit flag.
+    #[test]
+    fn configure_network_requires_an_identity_outside_dev_mode() {
+        let _g = config();
+        reset_network();
+        let err = configure_network(network_json(None, false)).unwrap_err().to_string();
+        assert!(err.contains("identity"), "{err}");
+        assert_eq!(configure_network(network_json(None, true)).unwrap(), 1);
+        assert!(devnet_keys(), "\"devnet\": true switches dev mode on");
+        assert!(trusted_set(4).is_ok());
+        reset_network();
+        let id = ValidatorSet::devnet(4).identity_hex();
+        assert_eq!(configure_network(network_json(Some(&id), false)).unwrap(), 1);
+        assert_eq!(*CHAIN_ID.lock().expect("chain id lock"), 7_780, "the chain id from network.json is applied");
+        assert_eq!(trusted_set(4).unwrap().identity_hex(), id);
+        assert!(!devnet_keys());
+        assert!(configure_network("{\"validators\": []}".to_string()).is_err(), "no validators either");
+    }
+
+    /// Finalized heights never go back: an anchor below the highest verified is
+    /// a replay of old state (audit 3), whatever certificate it comes with.
+    #[test]
+    fn verified_heights_only_move_forward() {
+        let _g = config();
+        reset_network();
+        assert_eq!(verified_height(), 0);
+        remember_height(7_777, 10).unwrap();
+        remember_height(7_777, 10).unwrap(); // the same height again is fine (a paused chain)
+        remember_height(7_777, 11).unwrap();
+        assert_eq!(verified_height(), 11);
+        let err = remember_height(7_777, 9).unwrap_err().to_string();
+        assert!(err.contains("never go back"), "{err}");
+        // Each chain keeps its own floor.
+        remember_height(7_780, 3).unwrap();
+        assert_eq!(verified_height(), 11);
+        assert!(remember_height(7_780, 2).is_err());
+    }
+
+    /// The 10-minute recency guard, kept as an extra check on top of the above.
+    #[test]
+    fn stale_anchors_are_refused() {
+        let now = now_ms();
+        check_freshness(now).unwrap();
+        check_freshness(now - MAX_ANCHOR_AGE_MS).unwrap();
+        let err = check_freshness(now - MAX_ANCHOR_AGE_MS - 1).unwrap_err().to_string();
+        assert!(err.contains("stale"), "{err}");
+        check_freshness(now + 60_000).unwrap(); // a node's clock a little ahead, not our problem
+    }
+
+    /// The chain id a certified block commits to (its transactions) is checked
+    /// against the wallet's: another network's state must not pass as verified,
+    /// even under a committee key that also verifies there.
+    #[test]
+    fn anchor_blocks_must_carry_the_configured_chain() {
+        use aether_light::block::Block;
+        use commonware_codec::Encode;
+        let empty = Block::genesis(7, alloy_primitives::B256::repeat_byte(1));
+        assert!(committed_chain_ids(&empty.encode()).unwrap().is_empty(), "an empty block carries no chain id");
+        let with_tx = |chain_id: u64| {
+            let mut p = empty.payload().unwrap();
+            p.txs.push(TxEnvelope {
+                header: TxHeader {
+                    chain_id,
+                    sender: Address::ZERO,
+                    nonce: 0,
+                    gas: GasVector::default(),
+                    max_fee: FeeVector::default(),
+                    tip: 0,
+                    payload_commitment: aether_execution::tx::payload_commitment(&[]),
+                    scheme: SignerScheme::P256,
+                },
+                payload: TxPayload::Plain(Bytes::new()),
+                signature: Bytes::new(),
+            });
+            Block::new(empty.context.clone(), empty.parent, empty.height, empty.timestamp, p.to_bytes()).encode().to_vec()
+        };
+        let (mine, other) = (with_tx(7), with_tx(8));
+        check_anchor_chain(&mine, &[], 7).unwrap();
+        assert_eq!(committed_chain_ids(&other).unwrap(), vec![8]);
+        let err = check_anchor_chain(&other, &[], 7).unwrap_err().to_string();
+        assert!(err.contains("chain 8"), "{err}");
+        // The blocks a certificate reaches back through (links) are checked too.
+        let err = check_anchor_chain(&mine, &[other], 7).unwrap_err().to_string();
+        assert!(err.contains("chain 8"), "{err}");
     }
 
     mod sha2_shim {

@@ -26,6 +26,8 @@ alloy-primitives.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 p256 = { version = "=0.14.0", features = ["ecdsa"] }
+# Decoding the certified block to check its chain id (same pin as aether-light).
+commonware-codec = "=2026.9.0"
 # Paper recovery key: 24 BIP-39 words derive a P-256 guardian key.
 bip39 = { version = "2", features = ["rand"] }
 sha2 = "0.11"

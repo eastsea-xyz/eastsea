@@ -1836,6 +1836,8 @@ public func chainStatus()throws  -> ChainStatus  {
 /**
  * Configure from network.json: the validators' node ids (looked up in the
  * Mainline DHT) and the committee identity to pin. Call before anything else.
+ * The identity is required outside dev mode: without one there is nothing to
+ * verify a certificate against, so every verification API refuses to run.
  */
 public func configureNetwork(networkJson: String)throws  -> UInt32  {
     return try  FfiConverterUInt32.lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
@@ -2151,7 +2153,7 @@ public func sessionStatus(account: String, validators: UInt32)throws  -> Session
 }
 /**
  * Pin the committee identity (hex, printed by `aether dkg`) that finality
- * certificates must verify under. Without it, the devnet dealer's identity.
+ * certificates must verify under. Required outside dev mode (see `use_devnet_keys`).
  */
 public func setCommitteeIdentity(identityHex: String)throws   {try rustCallWithError(FfiConverterTypeWalletError_lift) {
         uniffiCallStatus in
@@ -2174,6 +2176,16 @@ public func submitSigned(envelopeJson: String, signature: Data, p256PublicKey: D
 })
 }
 /**
+ * Trust the public devnet committee key (reproducible from a fixed seed, so it
+ * proves nothing about any real network). Explicit opt-in for development.
+ */
+public func useDevnetKeys()  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_use_devnet_keys(uniffiCallStatus
+    )
+}
+}
+/**
  * Use the node at 127.0.0.1:`port` (Some) or the validators over the network (None).
  */
 public func useLocalNode(port: UInt16?)  {try! rustCall() {
@@ -2192,6 +2204,17 @@ public func verifiedAccount(address: String, validators: UInt32)throws  -> Verif
     uniffi_aether_ffi_fn_func_verified_account(
         FfiConverterString.lower(address),
         FfiConverterUInt32.lower(validators),uniffiCallStatus
+    )
+})
+}
+/**
+ * The highest block height this process verified a certificate for, on the
+ * chain this wallet is configured for (0 before the first one).
+ */
+public func verifiedHeight() -> UInt64  {
+    return try!  FfiConverterUInt64.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_verified_height(uniffiCallStatus
     )
 })
 }
@@ -2258,7 +2281,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_aether_ffi_checksum_func_chain_status() != 33626) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_aether_ffi_checksum_func_configure_network() != 29290) {
+    if (uniffi_aether_ffi_checksum_func_configure_network() != 59322) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_configured_chain_id() != 13367) {
@@ -2336,16 +2359,22 @@ private let initializationResult: InitializationResult = {
     if (uniffi_aether_ffi_checksum_func_session_status() != 62054) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_aether_ffi_checksum_func_set_committee_identity() != 9931) {
+    if (uniffi_aether_ffi_checksum_func_set_committee_identity() != 27628) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_submit_signed() != 20395) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_use_devnet_keys() != 43153) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_use_local_node() != 24358) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_verified_account() != 47692) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_verified_height() != 9164) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_voting_node_status() != 63459) {

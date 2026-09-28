@@ -396,6 +396,12 @@ void uniffi_aether_ffi_fn_func_set_committee_identity(RustBuffer identity_hex, R
 RustBuffer uniffi_aether_ffi_fn_func_submit_signed(RustBuffer envelope_json, RustBuffer signature, RustBuffer p256_public_key, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_USE_DEVNET_KEYS
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_USE_DEVNET_KEYS
+void uniffi_aether_ffi_fn_func_use_devnet_keys(RustCallStatus *_Nonnull out_status
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_USE_LOCAL_NODE
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_USE_LOCAL_NODE
 void uniffi_aether_ffi_fn_func_use_local_node(RustBuffer port, RustCallStatus *_Nonnull out_status
@@ -404,6 +410,12 @@ void uniffi_aether_ffi_fn_func_use_local_node(RustBuffer port, RustCallStatus *_
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_VERIFIED_ACCOUNT
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_VERIFIED_ACCOUNT
 RustBuffer uniffi_aether_ffi_fn_func_verified_account(RustBuffer address, uint32_t validators, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_VERIFIED_HEIGHT
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_VERIFIED_HEIGHT
+uint64_t uniffi_aether_ffi_fn_func_verified_height(RustCallStatus *_Nonnull out_status
+    
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_VOTING_NODE_STATUS
@@ -867,6 +879,12 @@ uint16_t uniffi_aether_ffi_checksum_func_submit_signed(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_USE_DEVNET_KEYS
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_USE_DEVNET_KEYS
+uint16_t uniffi_aether_ffi_checksum_func_use_devnet_keys(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_USE_LOCAL_NODE
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_USE_LOCAL_NODE
 uint16_t uniffi_aether_ffi_checksum_func_use_local_node(void
@@ -876,6 +894,12 @@ uint16_t uniffi_aether_ffi_checksum_func_use_local_node(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_VERIFIED_ACCOUNT
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_VERIFIED_ACCOUNT
 uint16_t uniffi_aether_ffi_checksum_func_verified_account(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_VERIFIED_HEIGHT
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_VERIFIED_HEIGHT
+uint16_t uniffi_aether_ffi_checksum_func_verified_height(void
     
 );
 #endif

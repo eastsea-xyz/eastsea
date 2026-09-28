@@ -13,17 +13,35 @@
 //! iroh-blobs is not a dependency (only iroh itself is), so eras travel over
 //! this RPC instead of BLAKE3-verified blob streams; the checks above make the
 //! transport irrelevant to safety. See docs/design/13-roadmap.md B4.
+//!
+//! Serving (audit §5) never reads a whole era file per call: `aether_eraChunk`
+//! seeks to the asked range and reads exactly that, and `aether_eraInfo`'s
+//! BLAKE3 is streamed once per file and then cached (era files are sealed once
+//! and never change; the cache follows the file's length and mtime).
 
 use crate::era::{self, Era};
 use crate::follow::Upstream;
 use aether_state::mmr::MmrProof;
 use aether_types::B256;
 use serde_json::{json, Value};
+use std::io::{Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::SystemTime;
 
 /// Bytes per era chunk (hex doubles it on the wire; well under message limits).
 pub const ERA_CHUNK: usize = 1 << 20;
 /// Largest era file a node downloads (8192 full blocks compress far below it).
 pub const MAX_ERA_FILE: usize = 256 << 20;
+/// Era files whose (size, BLAKE3) is cached; a peer asks about a few eras.
+const ERA_CACHE: usize = 16;
+/// The (size, BLAKE3) of one era file, remembered while the file stands still.
+struct CachedEra {
+    len: u64,
+    modified: SystemTime,
+    blake3: String,
+}
+static ERA_INFO: Mutex<Vec<(PathBuf, CachedEra)>> = Mutex::new(Vec::new());
 
 /// A history root this node trusts: the MMR root over the first `leaves`
 /// blocks, as committed in block `leaves`'s header (its own finalized chain,
@@ -42,25 +60,76 @@ impl HistoryAnchor {
     }
 }
 
-/// The era file this node keeps, if any.
-pub fn kept(store: &crate::store::Store, era: u64) -> Option<Vec<u8>> {
-    std::fs::read(store.era_dir().join(era::file_name(era))).ok()
+/// The era file this node keeps: its path, length and mtime, if it is a file
+/// within the size a peer may download.
+fn kept_file(store: &crate::store::Store, era: u64) -> Option<(PathBuf, u64, SystemTime)> {
+    let path = store.era_dir().join(era::file_name(era));
+    let m = std::fs::metadata(&path).ok()?;
+    if !m.is_file() || m.len() > MAX_ERA_FILE as u64 {
+        return None;
+    }
+    Some((path, m.len(), m.modified().ok()?))
+}
+
+/// The era file's BLAKE3, hashed in bounded windows (never the whole file in
+/// memory) and cached per path while its length and mtime hold.
+fn blake3_of(path: &Path, len: u64, modified: SystemTime) -> Option<String> {
+    {
+        let mut cache = ERA_INFO.lock().expect("era info cache");
+        if let Some(i) = cache.iter().position(|(p, _)| p == path) {
+            if cache[i].1.len == len && cache[i].1.modified == modified {
+                let hash = cache[i].1.blake3.clone();
+                let entry = cache.remove(i); // most recently used last
+                cache.push(entry);
+                return Some(hash);
+            }
+            cache.remove(i); // the file moved on: recompute
+        }
+    }
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buf = vec![0u8; ERA_CHUNK];
+    loop {
+        let n = f.read(&mut buf).ok()?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    let hash = hasher.finalize().to_hex().to_string();
+    let mut cache = ERA_INFO.lock().expect("era info cache");
+    if cache.len() >= ERA_CACHE {
+        cache.remove(0);
+    }
+    cache.push((path.to_path_buf(), CachedEra { len, modified, blake3: hash.clone() }));
+    Some(hash)
 }
 
 /// `aether_eraInfo`: what a peer needs to download era `era` from this node.
 pub fn info(store: &crate::store::Store, era: u64) -> Value {
-    match kept(store, era) {
-        Some(b) => json!({ "era": era, "size": b.len(), "blake3": crate::rpc::blake3_hex(&b), "chunk": ERA_CHUNK }),
-        None => Value::Null,
+    let Some((path, len, modified)) = kept_file(store, era) else {
+        return Value::Null;
+    };
+    match blake3_of(&path, len, modified) {
+        Some(blake3) => json!({ "era": era, "size": len, "blake3": blake3, "chunk": ERA_CHUNK }),
+        None => Value::Null, // sealed but unreadable: as if not kept here
     }
 }
 
-/// `aether_eraChunk`: chunk `index` of era `era` (hex).
+/// `aether_eraChunk`: chunk `index` of era `era` (hex). Only the asked range
+/// is read: seek plus `read_exact`, at most `ERA_CHUNK` bytes, whatever the
+/// index says.
 pub fn chunk(store: &crate::store::Store, era: u64, index: usize) -> Result<Value, String> {
-    let b = kept(store, era).ok_or(format!("era {era} is not kept here"))?;
-    let start = index.saturating_mul(ERA_CHUNK).min(b.len());
-    let end = (start + ERA_CHUNK).min(b.len());
-    Ok(json!({ "data": hex::encode(&b[start..end]) }))
+    let (path, len, _) = kept_file(store, era).ok_or(format!("era {era} is not kept here"))?;
+    let start = index.saturating_mul(ERA_CHUNK).min(len as usize);
+    let end = (start + ERA_CHUNK).min(len as usize);
+    let mut buf = vec![0u8; end - start];
+    if !buf.is_empty() {
+        let mut f = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+        f.seek(SeekFrom::Start(start as u64)).map_err(|e| e.to_string())?;
+        f.read_exact(&mut buf).map_err(|e| e.to_string())?;
+    }
+    Ok(json!({ "data": hex::encode(buf) }))
 }
 
 /// Check era bytes from anywhere: they decode to 8192 blocks hashing to their
@@ -135,4 +204,64 @@ pub async fn fetch_into(chain: &crate::chain::Chain, upstream: &Upstream, era: u
     let known = chain.lock().history_index.as_ref().and_then(|i| i.eras.get(era as usize).copied());
     let (bytes, _) = fetch(upstream, era, &anchor, known.as_ref()).await?;
     save(&store, era, &bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn store(tag: &str) -> crate::store::Store {
+        let d = std::env::temp_dir().join(format!("aether-era-net-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        crate::store::Store::open(&d.join("db.redb")).unwrap()
+    }
+
+    /// A deterministic pattern of `len` bytes written as the node's era `era`.
+    fn file(store: &crate::store::Store, era: u64, len: usize) -> Vec<u8> {
+        std::fs::create_dir_all(store.era_dir()).unwrap();
+        let bytes: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+        std::fs::write(store.era_dir().join(era::file_name(era)), &bytes).unwrap();
+        bytes
+    }
+
+    #[test]
+    fn info_and_chunks_answer_from_the_file_without_reading_it_all() {
+        let s = store("serve");
+        let len = 2 * ERA_CHUNK + 543_210;
+        let bytes = file(&s, 7, len);
+
+        let v = info(&s, 7);
+        assert_eq!(v["era"], json!(7));
+        assert_eq!(v["size"], json!(len));
+        assert_eq!(v["chunk"], json!(ERA_CHUNK));
+        assert_eq!(v["blake3"], json!(crate::rpc::blake3_hex(&bytes)));
+
+        assert_eq!(chunk(&s, 7, 0).unwrap()["data"], json!(hex::encode(&bytes[..ERA_CHUNK])));
+        assert_eq!(chunk(&s, 7, 1).unwrap()["data"], json!(hex::encode(&bytes[ERA_CHUNK..2 * ERA_CHUNK])));
+        assert_eq!(chunk(&s, 7, 2).unwrap()["data"], json!(hex::encode(&bytes[2 * ERA_CHUNK..])));
+        assert_eq!(chunk(&s, 7, 3).unwrap()["data"], json!(""), "just past the end: empty, not an error");
+        assert_eq!(chunk(&s, 7, usize::MAX / 2).unwrap()["data"], json!(""), "a wild index is clamped, not a panic");
+    }
+
+    #[test]
+    fn a_missing_era_answers_null_and_an_error() {
+        let s = store("missing");
+        assert_eq!(info(&s, 3), Value::Null);
+        assert!(chunk(&s, 3, 0).unwrap_err().contains("not kept"));
+    }
+
+    #[test]
+    fn info_follows_the_file_and_the_cache_never_goes_stale() {
+        let s = store("cache");
+        file(&s, 9, ERA_CHUNK);
+        let first = info(&s, 9);
+        assert_eq!(first, info(&s, 9), "the second answer comes from the cache");
+        // The file is rewritten longer: length and mtime moved, so the hash is recomputed.
+        let longer = vec![7u8; 3 * ERA_CHUNK];
+        std::fs::write(s.era_dir().join(era::file_name(9)), &longer).unwrap();
+        let second = info(&s, 9);
+        assert_eq!(second["size"], json!(longer.len()));
+        assert_ne!(second["blake3"], first["blake3"]);
+        assert_eq!(second["blake3"], json!(crate::rpc::blake3_hex(&longer)));
+    }
 }

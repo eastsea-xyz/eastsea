@@ -18,6 +18,7 @@ use commonware_consensus::{
     simplex::{self, Engine as Consensus},
     types::ViewDelta,
 };
+use commonware_consensus::{Epochable as _, Viewable as _};
 use commonware_cryptography::{sha256::Digest, Digestible as _};
 use commonware_p2p::{Blocker, Provider, Receiver, Sender};
 use commonware_parallel::Sequential;
@@ -150,7 +151,7 @@ where
         );
         let page_cache = CacheRef::from_pooler(&context, PAGE_CACHE_PAGE_SIZE, PAGE_CACHE_CAPACITY);
         let prefix = cfg.partition_prefix.clone();
-        let finalizations = immutable::Archive::init(
+        let finalizations: immutable::Archive<E, Digest, Finalization> = immutable::Archive::init(
             context.child("finalizations_by_height"),
             // Threshold certificates are fixed-size; their codec config is `()`.
             archive_cfg(&prefix, "finalizations", page_cache.clone(), ()),
@@ -196,6 +197,40 @@ where
         }
         tracing::info!(checkpoint = restored, replayed_to = replayed.max(restored), "restored finalized state");
 
+        // Recovery (docs/design/13-roadmap.md F-P0): AETHER_RECOVER_CONSENSUS=<view>@<height>
+        // starts simplex from the finalization stored at <height>, which must be at <view>,
+        // with a vote journal of its own. Every validator restarts with the same value and
+        // keeps it set: later restarts reuse the same floor and journal, so nobody votes
+        // twice in a view. Once the committee moves to a new epoch the value is ignored.
+        // Used when a view was notarized but its block reached no store (the chain then
+        // cannot extend it); votes above that finalization are dropped, and nothing
+        // finalized changes. A bare <view> means the last stored finalization.
+        let recovered = match std::env::var("AETHER_RECOVER_CONSENSUS").ok() {
+            Some(v) => {
+                let (view, height) = match v.split_once('@') {
+                    Some((a, b)) => (a.parse::<u64>().ok(), b.parse::<u64>().ok()),
+                    None => (v.parse::<u64>().ok(), finalizations.last_index()),
+                };
+                let (Some(view), Some(height)) = (view, height) else {
+                    panic!("AETHER_RECOVER_CONSENSUS={v}: expected <view>@<height>")
+                };
+                match finalizations.get(Identifier::<Digest>::Index(height)).await.ok().flatten() {
+                    Some(f) if f.view().get() == view => {
+                        if f.epoch() == cfg.epocher.current() {
+                            tracing::warn!(view, height, "recovering consensus from a stored finalization with a vote journal of its own");
+                            Some(f)
+                        } else {
+                            tracing::info!(view, "AETHER_RECOVER_CONSENSUS is for an earlier epoch; ignored");
+                            None
+                        }
+                    }
+                    Some(f) => panic!("AETHER_RECOVER_CONSENSUS={v}, but the finalization at height {height} is at view {}: refusing", f.view().get()),
+                    None => panic!("AETHER_RECOVER_CONSENSUS={v}, but no finalization is stored at height {height}"),
+                }
+            }
+            None => None,
+        };
+
         let scheme = cfg.scheme;
         let epocher = cfg.epocher;
         let epoch = epocher.current();
@@ -235,9 +270,16 @@ where
                 reporter: marshal_mailbox.clone(),
                 track_historical_votes: false,
                 // One vote journal per epoch: a new committee never replays the old one's votes.
-                partition: if epoch.get() == 0 { format!("{prefix}-consensus") } else { format!("{prefix}-consensus-e{}", epoch.get()) },
+                partition: match &recovered {
+                    Some(f) => format!("{prefix}-consensus-r{}", f.view().get()),
+                    None if epoch.get() == 0 => format!("{prefix}-consensus"),
+                    None => format!("{prefix}-consensus-e{}", epoch.get()),
+                },
                 mailbox_size,
-                floor: simplex::Floor::Genesis(floor_digest),
+                floor: match recovered {
+                    Some(f) => simplex::Floor::Finalized(f),
+                    None => simplex::Floor::Genesis(floor_digest),
+                },
                 leader_timeout: cfg.leader_timeout,
                 certification_timeout: cfg.certification_timeout,
                 timeout_retry: cfg.nullify_retry,

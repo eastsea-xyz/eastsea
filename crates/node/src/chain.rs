@@ -1793,14 +1793,20 @@ impl Chain {
                     ops.get(k)
                         .map(|o| if capped { o.clone() } else { k.to_string() })
                 };
-                // Protocol 3: qualifying Macs join (up to 16 seats) instead of replacing members.
+                // Protocol 3: qualifying Macs join (up to 16 seats) instead of
+                // replacing members — and each seat goes where it lifts the
+                // committee's worst hour of the day (13-roadmap.md, F).
+                let reserve = Reserve::of(&exec.state);
+                let availability = (exec.next_protocol() >= 3 || reserve.is_some())
+                    .then(|| crate::rotation::availability(&exec.state));
+                let hours = |k: &str| availability.as_ref().and_then(|a| a.get(k).copied());
                 let drawn = if exec.next_protocol() >= 3 {
-                    crate::rotation::draw_v3(&pool, &seed, operator, &g.committee)
+                    crate::rotation::draw_spread(&pool, &seed, operator, &g.committee, hours)
                 } else {
                     crate::rotation::draw(&pool, &seed, operator, &g.committee)
                 };
                 // Founder reserve keys join or leave with the draw too.
-                let drawn = match Reserve::of(&exec.state) {
+                let drawn = match reserve {
                     Some(r) => crate::rotation::with_reserve(
                         drawn,
                         &pool,
@@ -1808,6 +1814,7 @@ impl Chain {
                         |k: &str| ops.get(k).cloned(),
                         &r,
                         &g.committee,
+                        hours,
                     ),
                     None => drawn,
                 };
@@ -1868,6 +1875,7 @@ impl Chain {
                 open && !recorded
             });
         }
+        replacement_step(&mut g, &previous, &exec);
         reserve_step(&mut g, &previous, &exec);
         Ok(())
     }
@@ -1999,8 +2007,10 @@ const POOL: &str = "pool";
 
 /// Founder reserve keys (genesis parameter): at every registry epoch's first
 /// block, seat them for the next epoch while fewer than four independent
-/// operators qualify, and let them go once four or more do. Proposes nothing
-/// while a proposal or a handoff is already on its way.
+/// operators qualify, and let them go once four or more do. From four on, the
+/// keys are a liveness safety net (13-roadmap.md, F): they seat themselves
+/// while the committee's worst hour of the day risks losing its quorum.
+/// Proposes nothing while a proposal or a handoff is already on its way.
 fn reserve_step(g: &mut Inner, previous: &Executed, exec: &Executed) {
     let Some(reserve) = Reserve::of(&exec.state) else {
         return;
@@ -2029,6 +2039,7 @@ fn reserve_step(g: &mut Inner, previous: &Executed, exec: &Executed) {
         params.min_streak,
     );
     let ops = crate::rotation::operators(&exec.state);
+    let availability = crate::rotation::availability(&exec.state);
     let next = crate::rotation::with_reserve(
         None,
         &pool,
@@ -2036,6 +2047,7 @@ fn reserve_step(g: &mut Inner, previous: &Executed, exec: &Executed) {
         |k: &str| ops.get(k).cloned(),
         &reserve,
         &g.committee,
+        |k: &str| availability.get(k).copied(),
     );
     if let Some(members) = next {
         tracing::info!(
@@ -2051,6 +2063,63 @@ fn reserve_step(g: &mut Inner, previous: &Executed, exec: &Executed) {
 fn current_draw(state: &WorldState, height: u64) -> u64 {
     let p = aether_execution::registry::params(state);
     height / (p.epoch_blocks * p.draw_epochs)
+}
+
+/// Early replacement (docs/design/13-roadmap.md, F): at every registry epoch's
+/// first block, hand a silent member's seat — fewer than two of the four beacon
+/// slots answered in each of the last two epochs — to the best eligible
+/// candidate, at most a third minus one seats per epoch. A substitution is a
+/// reshare, and a reshare needs the old committee's quorum, so this must
+/// happen before the quorum is lost, not after. Like `reserve_step`, it
+/// proposes nothing while a proposal or a handoff is already on its way (the
+/// keys' seating then waits for the next epoch).
+fn replacement_step(g: &mut Inner, previous: &Executed, exec: &Executed) {
+    if !aether_rewards::enabled(&exec.state) {
+        return;
+    }
+    let params = aether_execution::registry::params(&previous.state);
+    let handing_over = exec
+        .handoff
+        .as_ref()
+        .is_some_and(|p| p.switch > exec.height);
+    // A draw's first block leaves the voting set to the draw.
+    let draw_start = exec
+        .height
+        .is_multiple_of(params.epoch_blocks * params.draw_epochs);
+    if exec.height == 0
+        || draw_start
+        || !exec.height.is_multiple_of(params.epoch_blocks)
+        || g.committee.members.is_empty()
+        || g.proposal.is_some()
+        || handing_over
+    {
+        return;
+    }
+    let pool = crate::rotation::eligible(
+        &previous.state,
+        exec.height / params.epoch_blocks,
+        params.min_streak,
+    );
+    let ops = crate::rotation::operators(&exec.state);
+    let availability = crate::rotation::availability(&exec.state);
+    let recents = crate::rotation::recents(&exec.state);
+    let next = crate::rotation::replace_silent(
+        &g.committee,
+        &pool,
+        exec.digest.as_ref(),
+        |k: &str| ops.get(k).cloned(),
+        |k: &str| availability.get(k).copied(),
+        |k: &str| recents.get(k).copied(),
+        exec.height / params.epoch_blocks,
+    );
+    if let Some(members) = next {
+        tracing::info!(
+            members = members.len(),
+            "a silent member is replaced while the quorum still stands"
+        );
+        g.proposal = Some((current_draw(&exec.state, exec.height), members));
+        keep(&g.store, PROPOSAL, &g.proposal);
+    }
 }
 
 fn keep<T: Serialize + ?Sized>(store: &Option<Arc<Store>>, key: &str, value: &T) {

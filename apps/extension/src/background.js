@@ -9,6 +9,8 @@ import { Rpc, RpcError, DEFAULT_RPCS } from './lib/rpc.js';
 import { Wallet } from './lib/wallet.js';
 import { CHAIN_HEX, READ_METHODS, SEND_METHODS, normalizeTx, describeCall, originAllowed } from './lib/methods.js';
 import { weiToAeth } from './lib/units.js';
+import { parseTokenSources, scanTokens } from './lib/tokens.js';
+import { TERMS_VERSION } from './lib/terms.js';
 
 const ready = init({ module_or_path: chrome.runtime.getURL('wasm/aether_wasm_bg.wasm') });
 const area = (a) => ({
@@ -196,6 +198,59 @@ chrome.runtime.onConnect.addListener((port) => {
   });
 });
 
+// ---- assets (AETH + ERC-20 tokens, read from the node) ----
+
+let sourcesFile = null; // the bundled token-sources.json, fetched once
+async function tokenSources(chainId) {
+  if (!sourcesFile) sourcesFile = await (await fetch(chrome.runtime.getURL('token-sources.json'))).json();
+  return parseTokenSources(sourcesFile, chainId);
+}
+
+/**
+ * The token scan runs in the worker, throttled like the app's: `force` (the
+ * Assets view opens) re-reads after 5 s, otherwise every 30 s. The catalog and
+ * the last holdings live in local storage, so they survive worker restarts and
+ * are shown until the next read.
+ */
+async function refreshAssets({ force = false } = {}) {
+  const info = await vault.info();
+  const cached = (await local.get('assets')) || {};
+  if (!info) return { tokens: [], updated: cached.updated || null, error: null };
+  if (cached.address === info.address) {
+    const minAge = force ? 5_000 : 30_000;
+    if (Date.now() - (cached.updated || 0) < minAge) return { tokens: cached.holdings || [], updated: cached.updated || null, error: cached.error || null };
+  }
+  if (!refreshAssets.running) {
+    refreshAssets.running = (async () => {
+      const owner = info.address;
+      const out = { address: owner, updated: Date.now(), holdings: cached.address === owner ? cached.holdings || [] : [], error: cached.address === owner ? cached.error || null : null };
+      try {
+        await local.set('assets', out); // shown as "last read" while scanning
+        const status = await rpc.call('aether_status', []);
+        const sources = await tokenSources(status.chain_id);
+        if (sources) {
+          const key = `tokenCatalog.${status.chain_id}`;
+          const catalog = (await local.get(key)) || { tokens: {}, rejected: [], factoryRead: 0, pairsRead: 0, launchesRead: 0 };
+          const read = (to, data) => rpc.call('eth_call', [{ to, data }, 'latest']);
+          const { catalog: cat, held } = await scanTokens({ owner, sources, catalog, read });
+          await local.set(key, cat);
+          await local.set('assets', { address: owner, updated: Date.now(), holdings: held, error: null });
+        } else {
+          await local.set('assets', { address: owner, updated: Date.now(), holdings: [], error: null });
+        }
+      } catch (e) {
+        // Try again on the normal cadence, not every poll.
+        await local.set('assets', { address: owner, updated: Date.now(), holdings: out.holdings, error: e.message || String(e) }).catch(() => {});
+      } finally {
+        refreshAssets.running = null;
+      }
+    })();
+  }
+  await refreshAssets.running;
+  const fresh = (await local.get('assets')) || {};
+  return { tokens: fresh.address === info.address ? fresh.holdings || [] : [], updated: fresh.updated || null, error: fresh.error || null };
+}
+
 // ---- the popup and approval window ----
 
 async function state() {
@@ -207,6 +262,7 @@ async function state() {
     approvals: (await session.get('approvals')) || [],
     lockMinutes: (await local.get('lockMinutes')) || DEFAULT_LOCK_MINUTES,
     rpcs: (await local.get('rpcs')) || [],
+    terms: (await local.get('termsVersion')) || 0,
   };
 }
 
@@ -221,8 +277,9 @@ const ui = {
   account: async () => {
     const info = await vault.info();
     const [balance, status] = await Promise.all([wallet.balance(info.address), rpc.call('aether_status', [])]);
-    return { address: info.address, balance: balance.toString(), height: status.height, node: rpc.current };
+    return { address: info.address, balance: balance.toString(), height: status.height, blockAt: status.timestamp_ms, node: rpc.current };
   },
+  assets: ({ force } = {}) => refreshAssets({ force }),
   send: async ({ to, value_wei }) => {
     if (!(await vault.unlocked())) throw new Error('Unlock first.');
     const tx = normalizeTx({ to, value: value_wei });
@@ -249,6 +306,10 @@ const ui = {
     return state();
   },
   reveal: ({ password }) => vault.revealSecret(password),
+  acceptTerms: async () => {
+    await local.set('termsVersion', TERMS_VERSION);
+    return state();
+  },
   erase: async ({ password }) => {
     await vault.decrypt(password);
     await vault.erase();

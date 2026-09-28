@@ -1,0 +1,17 @@
+{
+  "_about": "Where the wallet looks for ERC-20 tokens, by chain id. Copied from aether-dex/deployments and aether-launchpad-demo/deployments (same as apps/agent/Resources/dex). Keep in sync with apps/wallet/Resources/token-sources.json.",
+  "chains": {
+    "7780": {
+      "network": "aether-testnet",
+      "waeth": "0xa2521982a17474cb2f8741c85de653b5282d72b0",
+      "tokenFactory": "0x5137f55b90989311f450a3a7c3015e0dc4a014dd",
+      "pairFactory": "0x8997a65cce24fb0ec0f5d1b728b8bab26b5548c5",
+      "launchpad": "0xa4e92734dac47d484ecd9d4329861d12f7fada46",
+      "seed": [
+        "0x6bc5ded76ccbdc8df35e7cd28b68fed245a74416",
+        "0x961f8add5ae93ff0700be8abd5f9f8ec69ba4347",
+        "0xc91367bac92c6de822de8afd0f34ff19fd8f7670"
+      ]
+    }
+  }
+}

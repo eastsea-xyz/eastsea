@@ -5,7 +5,9 @@
 //! - Discovery: free-rides the BitTorrent Mainline DHT. Each node publishes a
 //!   pkarr record (signed by its node key) with its current addresses; a client
 //!   that knows a node id resolves it from the DHT. No bootstrap server, no DNS.
-//! - Protocol `aether/rpc/1`: one JSON-RPC request per bidirectional stream.
+//! - Protocol `aether/rpc/1`: one JSON-RPC request per bidirectional stream,
+//!   bounded by a global and a per-peer concurrency limit plus a per-peer
+//!   token bucket (see [`RpcGate`]); over-limit requests get a JSON-RPC error.
 //! - Protocol `aether/p2p/1`: validator consensus traffic. Each bidirectional
 //!   stream carries one TCP connection of the Commonware p2p stack (see
 //!   [`tunnel`]); Commonware's own ed25519 handshake authenticates end to end.
@@ -26,11 +28,12 @@ use iroh_mainline_address_lookup::DhtAddressLookup;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::future::Future;
 use std::net::IpAddr;
 use std::pin::Pin;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 pub mod paths;
 pub mod tunnel;
@@ -41,6 +44,32 @@ pub const ALPN_P2P: &[u8] = b"aether/p2p/1";
 /// to the reshare running next to it, so both share one public node id.
 pub const ALPN_RESHARE: &[u8] = b"aether/reshare/1";
 const MAX_MESSAGE: usize = 16 * 1024 * 1024;
+
+/// DoS limits on public RPC streams (audit §5): at most this many requests are
+/// read and served at once, across all peers.
+const MAX_RPC_STREAMS: usize = 256;
+/// Concurrent streams one peer (one node id) may run; the rest get an error.
+const RPC_STREAMS_PER_PEER: usize = 16;
+/// A peer's request rate: a burst of `RPC_BURST`, then `RPC_RATE_PER_SEC` a
+/// second. A wallet or a catch-up download stays far under it.
+const RPC_BURST: u32 = 64;
+const RPC_RATE_PER_SEC: u32 = 32;
+/// Peers remembered for limiting (an entry is a semaphore and a bucket).
+const MAX_RPC_PEERS: usize = 1024;
+/// Reading a request or writing an answer may take at most this long, so a
+/// peer that stalls its stream cannot squat on its permits. Generous for a
+/// 16 MiB message over a relayed path.
+const RPC_IO: Duration = Duration::from_secs(30);
+
+/// Write `resp` and close our side, or give up when the peer will not read.
+async fn answer(send: &mut iroh::endpoint::SendStream, resp: &Value) {
+    let bytes = serde_json::to_vec(resp).unwrap_or_default();
+    let _ = tokio::time::timeout(RPC_IO, async {
+        let _ = send.write_all(&bytes).await;
+        let _ = send.finish();
+    })
+    .await;
+}
 
 /// Deterministic node key for devnet validator `i`. Public knowledge; devnet only.
 pub fn devnet_node_secret(i: u64) -> SecretKey {
@@ -111,8 +140,111 @@ pub async fn bind(secret: Option<SecretKey>, alpns: Vec<Vec<u8>>) -> Result<Endp
 
 type Handler = Arc<dyn Fn(Value) -> Pin<Box<dyn Future<Output = Value> + Send>> + Send + Sync>;
 
+/// One peer's request budget: `burst` requests at once, then `per_sec` a
+/// second. Integral refill: whole tokens for the elapsed whole milliseconds.
+struct TokenBucket {
+    tokens: u32,
+    burst: u32,
+    per_sec: u32,
+    last: Instant,
+}
+
+impl TokenBucket {
+    fn new(burst: u32, per_sec: u32) -> Self {
+        TokenBucket { tokens: burst, burst, per_sec, last: Instant::now() }
+    }
+
+    /// Take one token if the bucket holds one after refilling for `now - last`.
+    fn take(&mut self, now: Instant) -> bool {
+        let elapsed_ms = now.saturating_duration_since(self.last).as_millis() as u64;
+        let refill = (elapsed_ms * self.per_sec as u64 / 1000).min(self.burst as u64);
+        if refill > 0 {
+            self.tokens = self.tokens.saturating_add(refill as u32).min(self.burst);
+            self.last = now;
+        }
+        if self.tokens == 0 {
+            return false;
+        }
+        self.tokens -= 1;
+        true
+    }
+}
+
+/// What one peer (one node id) is limited by: a concurrency semaphore and a
+/// token bucket. Arc'd so permits stay valid even if the peer is forgotten.
+struct PeerLimit {
+    inflight: Arc<tokio::sync::Semaphore>,
+    bucket: Mutex<TokenBucket>,
+}
+
+/// The limits every `aether/rpc/1` connection on an endpoint shares: a global
+/// semaphore, and a semaphore and token bucket per peer. One peer cannot
+/// occupy every worker, and a flood of requests is answered with an error
+/// instead of being read and served (audit §5).
+struct RpcGate {
+    global: Arc<tokio::sync::Semaphore>,
+    peers: Mutex<HashMap<EndpointId, Arc<PeerLimit>>>,
+    per_peer: usize,
+    burst: u32,
+    per_sec: u32,
+}
+
+/// Both permits of one in-flight request; released when dropped.
+struct RpcGuard {
+    _global: tokio::sync::OwnedSemaphorePermit,
+    _peer: tokio::sync::OwnedSemaphorePermit,
+}
+
+impl RpcGate {
+    fn new(global: usize, per_peer: usize, burst: u32, per_sec: u32) -> Self {
+        RpcGate {
+            global: Arc::new(tokio::sync::Semaphore::new(global)),
+            peers: Mutex::new(HashMap::new()),
+            per_peer,
+            burst,
+            per_sec,
+        }
+    }
+
+    /// The limits of `id`, remembered for the next stream (bounded: a
+    /// remembered peer beyond the cap is dropped, its in-flight permits are
+    /// unaffected and a fresh entry is made on its next request).
+    fn peer(&self, id: EndpointId) -> Arc<PeerLimit> {
+        let mut peers = self.peers.lock().expect("rpc peer map");
+        if let Some(p) = peers.get(&id) {
+            return p.clone();
+        }
+        if peers.len() >= MAX_RPC_PEERS {
+            if let Some(forgotten) = peers.keys().next().copied() {
+                peers.remove(&forgotten);
+            }
+        }
+        let p = Arc::new(PeerLimit {
+            inflight: Arc::new(tokio::sync::Semaphore::new(self.per_peer)),
+            bucket: Mutex::new(TokenBucket::new(self.burst, self.per_sec)),
+        });
+        peers.insert(id, p.clone());
+        p
+    }
+
+    /// Admit one request of `peer`, or `None` when a limit is hit (the global
+    /// or the peer's concurrency, or the peer's rate). Permits are held until
+    /// the returned guard is dropped.
+    fn enter(&self, peer: &PeerLimit) -> Option<RpcGuard> {
+        let global = self.global.clone().try_acquire_owned().ok()?;
+        let inflight = peer.inflight.clone().try_acquire_owned().ok()?;
+        if !peer.bucket.lock().expect("rpc token bucket").take(Instant::now()) {
+            return None;
+        }
+        Some(RpcGuard { _global: global, _peer: inflight })
+    }
+}
+
 #[derive(Clone)]
-struct RpcProtocol(Handler);
+struct RpcProtocol {
+    handler: Handler,
+    gate: Arc<RpcGate>,
+}
 
 impl std::fmt::Debug for RpcProtocol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -122,23 +254,38 @@ impl std::fmt::Debug for RpcProtocol {
 
 impl ProtocolHandler for RpcProtocol {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+        let peer = self.gate.peer(conn.remote_id());
         loop {
             let Ok((mut send, mut recv)) = conn.accept_bi().await else {
                 break;
             };
-            let handler = self.0.clone();
+            let this = self.clone();
+            let peer = peer.clone();
             tokio::spawn(async move {
-                let Ok(bytes) = recv.read_to_end(MAX_MESSAGE).await else {
+                // Limits first, before reading anything: an over-limit request
+                // costs one small error answer, not a 16 MiB read and a handler.
+                let Some(_guard) = this.gate.enter(&peer) else {
+                    let busy = serde_json::json!({
+                        "jsonrpc": "2.0", "id": null,
+                        "error": { "code": -32000, "message": "server busy: rpc concurrency or rate limit reached, retry later" }
+                    });
+                    answer(&mut send, &busy).await;
                     return;
                 };
+                // A peer that stalls mid-request (or never reads its answer)
+                // must not hold its permits forever: the connection's idle
+                // timeout does not fire while its other streams carry traffic.
+                let bytes = match tokio::time::timeout(RPC_IO, recv.read_to_end(MAX_MESSAGE)).await {
+                    Ok(Ok(bytes)) => bytes,
+                    _ => return,
+                };
                 let resp = match serde_json::from_slice::<Value>(&bytes) {
-                    Ok(req) => handler(req).await,
+                    Ok(req) => (this.handler)(req).await,
                     Err(e) => {
                         serde_json::json!({ "jsonrpc": "2.0", "id": null, "error": { "code": -32700, "message": e.to_string() } })
                     }
                 };
-                let _ = send.write_all(&serde_json::to_vec(&resp).unwrap_or_default()).await;
-                let _ = send.finish();
+                answer(&mut send, &resp).await;
             });
         }
         Ok(())
@@ -154,7 +301,8 @@ where
     Fut: Future<Output = Value> + Send + 'static,
 {
     let h: Handler = Arc::new(move |v| Box::pin(handler(v)));
-    let mut r = Router::builder(endpoint).accept(ALPN_RPC, RpcProtocol(h));
+    let gate = Arc::new(RpcGate::new(MAX_RPC_STREAMS, RPC_STREAMS_PER_PEER, RPC_BURST, RPC_RATE_PER_SEC));
+    let mut r = Router::builder(endpoint).accept(ALPN_RPC, RpcProtocol { handler: h, gate });
     if let Some(target) = p2p_target {
         r = r.accept(ALPN_P2P, tunnel::Inbound { target });
         // The background reshare listens on the next port.
@@ -232,7 +380,10 @@ impl RpcClient {
         let fut = async {
             let (mut send, mut recv) = conn.open_bi().await.context("open stream")?;
             send.write_all(&serde_json::to_vec(&req)?).await?;
-            send.finish()?;
+            // A server over its limits stops reading and answers with an
+            // error; that answer is still worth reading, so a failed finish
+            // (the stream was reset) is not a failure of the call.
+            let _ = send.finish();
             let bytes = recv.read_to_end(MAX_MESSAGE).await?;
             anyhow::Ok(serde_json::from_slice::<Value>(&bytes)?)
         };
@@ -274,5 +425,128 @@ impl RpcClient {
         let cur = self.current.lock().await;
         let (_, c) = cur.as_ref()?;
         c.paths().iter().find(|p| p.is_selected()).map(|p| format!("{:?}", p.remote_addr()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{Ipv4Addr, SocketAddr};
+
+    #[test]
+    fn a_token_bucket_bursts_then_refills_by_elapsed_time() {
+        let t = Instant::now();
+        let mut b = TokenBucket::new(2, 500); // 2 at once, then one per 2 ms
+        assert!(b.take(t) && b.take(t), "the burst is allowed");
+        assert!(!b.take(t), "and nothing more in the same instant");
+        assert!(!b.take(t + Duration::from_millis(1)), "half a token is not a token");
+        // The bucket's own clock started nanoseconds after `t`, so the elapsed
+        // time truncates a whole millisecond early: 5 ms is safely 2+ tokens.
+        assert!(b.take(t + Duration::from_millis(5)), "refilled by the elapsed time");
+        assert!(b.take(t + Duration::from_millis(5)), "the refill covered the whole burst");
+        assert!(!b.take(t + Duration::from_millis(5)), "and it is spent again");
+        assert!(!b.take(t + Duration::from_millis(6)), "1 ms since the last refill is none of one");
+    }
+
+    #[test]
+    fn the_gate_caps_per_peer_and_global_concurrency() {
+        let peer_id = |i| SecretKey::from_bytes(&{ let mut s = [0u8; 32]; s[0] = i; s });
+        // The per-peer cap binds while the global one has room.
+        let gate = RpcGate::new(8, 2, u32::MAX, u32::MAX);
+        let (a, b) = (gate.peer(peer_id(1).public()), gate.peer(peer_id(2).public()));
+        let g1 = gate.enter(&a).expect("first of a");
+        let g2 = gate.enter(&a).expect("second of a");
+        assert!(gate.enter(&a).is_none(), "a is over its per-peer cap");
+        assert!(gate.enter(&b).is_some(), "another peer still has room");
+        drop(g1);
+        assert!(gate.enter(&a).is_some(), "a released permit went back to its semaphore");
+        drop(g2);
+
+        // The global cap binds across peers, whatever their own budgets.
+        let gate = RpcGate::new(2, 8, u32::MAX, u32::MAX);
+        let (a, b, c) = (gate.peer(peer_id(1).public()), gate.peer(peer_id(2).public()), gate.peer(peer_id(3).public()));
+        let g1 = gate.enter(&a).expect("first of a");
+        let g2 = gate.enter(&b).expect("first of b");
+        assert!(gate.enter(&c).is_none(), "the global cap is spent");
+        drop(g1);
+        assert!(gate.enter(&c).is_some(), "a released permit went back to the pool");
+        drop(g2);
+    }
+
+    #[test]
+    fn remembered_peers_stay_bounded() {
+        let gate = RpcGate::new(8, 8, u32::MAX, u32::MAX);
+        for _ in 0..=MAX_RPC_PEERS {
+            gate.peer(SecretKey::generate().public());
+        }
+        let len = gate.peers.lock().unwrap().len();
+        assert!(len <= MAX_RPC_PEERS, "{len} peers remembered");
+    }
+
+    /// One JSON-RPC call over one fresh bidirectional stream, ending in the
+    /// response (an error object included), like `RpcClient` does.
+    async fn rpc(conn: &Connection, method: &str) -> Value {
+        let (mut send, mut recv) = conn.open_bi().await.unwrap();
+        send.write_all(&serde_json::to_vec(&serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": [] })).unwrap())
+            .await
+            .unwrap();
+        let _ = send.finish();
+        let bytes = recv.read_to_end(MAX_MESSAGE).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    /// A stream held in the handler blocks the peer's second stream, which is
+    /// answered with a clear error instead of being served; once the first
+    /// finishes, the peer may call again. Localhost only: no relay, no DHT.
+    #[tokio::test]
+    async fn a_peer_over_its_stream_limit_gets_a_jsonrpc_error() {
+        let secret = SecretKey::generate();
+        let id = secret.public();
+        let server = Endpoint::builder(presets::Minimal)
+            .relay_mode(iroh::RelayMode::Disabled)
+            .alpns(vec![ALPN_RPC.to_vec()])
+            .secret_key(secret.clone())
+            .bind()
+            .await
+            .unwrap();
+        let port = server.bound_sockets().into_iter().find(|a| a.is_ipv4()).expect("an IPv4 socket").port();
+        let (release, held) = (Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Notify::new()));
+        let (r, h) = (release.clone(), held.clone());
+        let handler: Handler = Arc::new(move |req| {
+            let (r, h) = (r.clone(), h.clone());
+            Box::pin(async move {
+                if req["method"] == "hold" {
+                    h.notify_one();
+                    r.notified().await;
+                    serde_json::json!({ "jsonrpc": "2.0", "id": req["id"], "result": "held" })
+                } else {
+                    serde_json::json!({ "jsonrpc": "2.0", "id": req["id"], "result": "pong" })
+                }
+            })
+        });
+        // One concurrent stream per peer, a bucket that never runs dry.
+        let router = Router::builder(server)
+            .accept(ALPN_RPC, RpcProtocol { handler, gate: Arc::new(RpcGate::new(4, 1, u32::MAX, u32::MAX)) })
+            .spawn();
+
+        let client = Endpoint::builder(presets::Minimal).relay_mode(iroh::RelayMode::Disabled).bind().await.unwrap();
+        let addr = EndpointAddr::from_parts(id, [TransportAddr::Ip(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port))]);
+        let conn = client.connect(addr, ALPN_RPC).await.unwrap();
+
+        let holding = tokio::spawn({ let c = conn.clone(); async move { rpc(&c, "hold").await } });
+        tokio::time::timeout(Duration::from_secs(10), held.notified()).await.expect("the handler started");
+
+        let busy = tokio::time::timeout(Duration::from_secs(10), rpc(&conn, "ping")).await.expect("answered, not hung");
+        let err = busy["error"]["message"].as_str().expect("a busy error, not a result");
+        assert!(err.contains("server busy"), "{err}");
+
+        release.notify_one();
+        let held_answer = tokio::time::timeout(Duration::from_secs(10), holding).await.expect("the held call finished").unwrap();
+        assert_eq!(held_answer["result"], "held");
+
+        let again = tokio::time::timeout(Duration::from_secs(10), rpc(&conn, "ping")).await.expect("the limit was released");
+        assert_eq!(again["result"], "pong");
+        client.close().await;
+        let _ = router.shutdown().await;
     }
 }

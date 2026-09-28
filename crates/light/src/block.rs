@@ -149,10 +149,20 @@ pub struct Block {
 
 impl Block {
     pub fn genesis(chain_id: u64, genesis_root: B256) -> Self {
+        Self::genesis_with(chain_id, genesis_root, false)
+    }
+
+    /// Genesis of a chain; `history_v2` networks (a new genesis only) get a
+    /// genesis hash of their own, so no node can run them under other rules.
+    pub fn genesis_with(chain_id: u64, genesis_root: B256, history_v2: bool) -> Self {
         let context =
             Context { round: Round::new(EPOCH, View::zero()), leader: ed25519::PrivateKey::from_seed(0).public_key(), parent: (View::zero(), Digest::EMPTY) };
         let payload = Payload { version: 1, parent_state_root: genesis_root, ..Default::default() };
-        let tag = Sha256::hash(&[b"aether-genesis".as_slice(), &chain_id.to_be_bytes()]);
+        let tag = if history_v2 {
+            Sha256::hash(&[b"aether-genesis".as_slice(), &chain_id.to_be_bytes(), b"history-v2"])
+        } else {
+            Sha256::hash(&[b"aether-genesis".as_slice(), &chain_id.to_be_bytes()])
+        };
         Self::new(context, tag, Height::zero(), 0, payload.to_bytes())
     }
 
@@ -261,5 +271,8 @@ mod tests {
         assert_eq!(back.digest(), g.digest());
         assert_eq!(back.payload().unwrap().parent_state_root, B256::repeat_byte(3));
         assert_ne!(Block::genesis(8, B256::repeat_byte(3)).digest(), g.digest());
+        // History v2 is bound to the genesis hash; the original genesis is unchanged.
+        assert_eq!(Block::genesis_with(7, B256::repeat_byte(3), false), g);
+        assert_ne!(Block::genesis_with(7, B256::repeat_byte(3), true).digest(), g.digest());
     }
 }

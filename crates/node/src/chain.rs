@@ -41,6 +41,13 @@ pub struct ChainConfig {
     /// Voting-set draw parameters (None = the defaults).
     pub min_streak: Option<u64>,
     pub draw_epochs: Option<u64>,
+    /// History v2, for a new genesis only (docs/research/history-compression-2026.md,
+    /// roadmap B): a block with no transactions and no proofs records no
+    /// proof-market statement, so runs of empty blocks leave the state root and
+    /// chain metadata unchanged and cost a few bytes each in era files; the
+    /// node also seals every 8192 finalized blocks into an era file. Bound to
+    /// the genesis hash, so nodes can never disagree on it. Off on 7780.
+    pub history_v2: bool,
 }
 
 impl ChainConfig {
@@ -237,10 +244,10 @@ pub struct Inner {
     pub pool: Option<(u64, Vec<(String, String)>)>,
     /// A committee-signed draw seed waiting to be put in a block.
     pub seed_ready: Option<aether_light::block::Seed>,
-    /// MMR leaves of every finalized block from genesis (for history proofs),
-    /// shared so proofs are built without holding the chain lock. None when
-    /// this node started from a checkpoint (it does not have early blocks).
-    pub history_leaves: Option<Arc<Vec<[u8; 32]>>>,
+    /// Roots of the complete 8192-block eras and the open era's MMR leaves,
+    /// from genesis (history proofs read at most two eras' blocks, never all).
+    /// None when this node started from a checkpoint (it has no early blocks).
+    pub history_index: Option<Arc<aether_state::mmr::EraIndex>>,
     /// The newest protocol this node runs; blocks under a later one are refused.
     pub protocol: u32,
     /// One-time state changes of each protocol at its activation block.
@@ -293,7 +300,7 @@ pub enum ChainError {
 impl Chain {
     pub fn new(cfg: ChainConfig) -> (Self, Block) {
         let state = cfg.genesis_state();
-        let genesis = Block::genesis(cfg.chain_id, state.root());
+        let genesis = Block::genesis_with(cfg.chain_id, state.root(), cfg.history_v2);
         let exec = Arc::new(Executed {
             height: 0,
             digest: genesis.digest(),
@@ -332,7 +339,11 @@ impl Chain {
             epoch_start: 0,
             epoch_end: Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX)),
             proposal: None,
-            history_leaves: Some(Arc::new(vec![aether_state::mmr::leaf(&ChainHasher::new(), 0, &digest_bytes(&genesis.digest()))])),
+            history_index: Some(Arc::new({
+                let mut idx = aether_state::mmr::EraIndex::default();
+                idx.push(&ChainHasher::new(), aether_state::mmr::leaf(&ChainHasher::new(), 0, &digest_bytes(&genesis.digest())));
+                idx
+            })),
             handoff_ready: None,
             pool: None,
             seed_ready: None,
@@ -396,7 +407,7 @@ impl Chain {
                 g.executed.insert(digest, exec.clone());
                 // History proofs need every block from genesis; a checkpoint-started node has none before it.
                 let h = ChainHasher::new();
-                g.history_leaves = (0..=exec.height)
+                g.history_index = (0..=exec.height)
                     .map(|k| {
                         cp.blocks
                             .get(&k)
@@ -404,17 +415,26 @@ impl Chain {
                             .and_then(|d| <[u8; 32]>::try_from(d).ok())
                             .map(|d| aether_state::mmr::leaf(&h, k, &d))
                     })
-                    .collect::<Option<Vec<_>>>()
+                    .try_fold(aether_state::mmr::EraIndex::default(), |mut idx, l| {
+                        idx.push(&h, l?);
+                        Some(idx)
+                    })
                     .map(Arc::new);
                 g.finalized = exec;
                 g.blocks = cp.blocks;
                 g.receipts = cp.receipts;
+                // Eras completed before a restart but not sealed yet.
+                if g.cfg.history_v2 {
+                    let (store, head) = (store.clone(), g.finalized.height);
+                    std::thread::spawn(move || crate::era::seal_pending(&store, head));
+                }
                 g.store = Some(store);
             }
             None => {
                 let mut g = chain.lock();
                 let genesis_exec = g.finalized.clone();
                 let summary = g.blocks.get(&0).cloned().expect("genesis summary");
+                let (genesis_bytes, empty) = (commonware_codec::Encode::encode(&genesis), aether_state::mmr::Mmr::default());
                 store.commit(Commit {
                     height: 0,
                     digest: digest_bytes(&genesis_exec.digest),
@@ -427,6 +447,7 @@ impl Chain {
                     history: &genesis_exec.history,
                     schedule: &genesis_exec.schedule,
                     statement: &genesis_exec.statement,
+                    staged: g.cfg.history_v2.then(|| crate::store::Staged { block: &genesis_bytes, era_start: Some(&empty) }),
                 })?;
                 g.store = Some(store);
             }
@@ -615,7 +636,7 @@ impl Chain {
         let ctx = Self::block_context(&cfg, block, parent);
         let mut out = execute_block(&pre, &ctx, &payload.txs).map_err(|e| ChainError::Exec(format!("{e:?}")))?;
         // Protocol-1 blocks keep no statement (their metadata stays protocol-1).
-        let statement = if payload.version >= 2 { statement(&ctx, &payload.txs, &pre, &out) } else { [0; 32] };
+        let statement = if records_statement(&cfg, &payload) { statement(&ctx, &payload.txs, &pre, &out) } else { [0; 32] };
         with_activation(&pre, &mut out);
         if out.bal != payload.bal {
             return Err(ChainError::BalMismatch);
@@ -640,9 +661,9 @@ impl Chain {
         proofs: &[aether_light::block::ProofClaim],
         certified: bool,
     ) -> Result<(std::borrow::Cow<'a, WorldState>, Vec<(u64, Address, U256)>), ChainError> {
-        let (running, migrate, verifier) = {
+        let (running, migrate, verifier, history_v2) = {
             let g = self.lock();
-            (g.protocol, g.migrate, g.verifier.clone())
+            (g.protocol, g.migrate, g.verifier.clone(), g.cfg.history_v2)
         };
         let want = parent.next_protocol();
         if version != want {
@@ -657,7 +678,11 @@ impl Chain {
         }
         let records = version >= 2 && parent.statement != Statement::default();
         let rotates = parent.schedule.iter().any(|a| a.at == parent.height + 1 && a.registrar.is_some());
-        if version == before && !records && !rotates && proofs.is_empty() {
+        // The record of the block that just left the claim window goes (so state stays bounded).
+        let expired = (parent.height + 1).checked_sub(aether_execution::proofs::EXPIRY + 1);
+        // Under history v2 empty blocks record nothing, so pruning cannot wait for a record.
+        let stale = history_v2 && expired.is_some_and(|old| aether_execution::proofs::recorded(&parent.state, old));
+        if version == before && !records && !rotates && !stale && proofs.is_empty() {
             return Ok((std::borrow::Cow::Borrowed(&parent.state), vec![]));
         }
         let mut state = parent.state.clone();
@@ -672,8 +697,9 @@ impl Chain {
         }
         if records {
             aether_execution::proofs::record(&mut state, parent.height, parent.statement.commitment, parent.statement.escrow);
-            // The record of the block that just left the claim window goes (one per block, so state stays bounded).
-            if let Some(old) = (parent.height + 1).checked_sub(aether_execution::proofs::EXPIRY + 1) {
+        }
+        if records || stale {
+            if let Some(old) = expired {
                 aether_execution::proofs::prune(&mut state, old);
             }
         }
@@ -696,13 +722,46 @@ impl Chain {
         // Oldest first among the recent blocks: none left behind to expire.
         let pick = g.recent.iter().find_map(|b| {
             let h = b.height().get();
-            if g.attempted.contains(&h) || aether_execution::proofs::prover(&head.state, h).is_some() || b.payload()?.version < 2 {
+            if g.attempted.contains(&h) || aether_execution::proofs::prover(&head.state, h).is_some() || !records_statement(&g.cfg, &b.payload()?) {
                 return None;
             }
             Some((g.executed.get(&b.digest())?.clone(), g.executed.get(&b.parent)?.clone(), b.clone()))
         })?;
         g.attempted.insert(pick.0.height);
         Some(pick)
+    }
+
+    /// Inclusion proof of block `height` under the history root of block
+    /// `anchor` (which commits blocks 0..anchor), and the block's hash. Reads
+    /// the era roots plus at most two eras' block hashes under the lock; the
+    /// hashing happens outside it.
+    pub fn history_proof(&self, height: u64, anchor: u64) -> Result<(aether_state::mmr::MmrProof, String), String> {
+        use aether_state::mmr::ERA_LEN;
+        let (index, hash, eras) = {
+            let g = self.lock();
+            if anchor == 0 || height >= anchor || anchor > g.finalized.height {
+                return Err("need height < anchor <= finalized height".into());
+            }
+            let index = g.history_index.clone().ok_or("this node started from a checkpoint and keeps no early history")?;
+            let hash = g.blocks.get(&height).map(|b| b.hash.clone()).ok_or("block not kept here")?;
+            let open = index.eras.len() as u64;
+            let mut eras = BTreeMap::new();
+            for e in [height / ERA_LEN, anchor / ERA_LEN].into_iter().filter(|e| *e < open) {
+                let hashes: Vec<String> = g.blocks.range(e * ERA_LEN..(e + 1) * ERA_LEN).map(|(_, b)| b.hash.clone()).collect();
+                eras.insert(e, hashes);
+            }
+            (index, hash, eras)
+        };
+        let h = ChainHasher::new();
+        let leaves = |e: u64| -> Option<Vec<[u8; 32]>> {
+            eras.get(&e)?
+                .iter()
+                .enumerate()
+                .map(|(i, x)| Some(aether_state::mmr::leaf(&h, e * ERA_LEN + i as u64, &hex::decode(x).ok()?.try_into().ok()?)))
+                .collect()
+        };
+        let proof = index.prove(&h, anchor, height, leaves).ok_or("no proof")?;
+        Ok((proof, hash))
     }
 
     /// Rewards `prover` received for proofs (this node's record since it started keeping one).
@@ -1029,7 +1088,13 @@ impl Chain {
         };
         let payload = block.payload().ok_or(ChainError::BadPayload)?;
         let summary = summary(block, &exec, payload.parent_state_root);
-        let store = self.lock().store.clone();
+        let (store, history_v2, previous_history) = {
+            let g = self.lock();
+            (g.store.clone(), g.cfg.history_v2, g.finalized.history.clone())
+        };
+        // History v2: keep the block for its era file; an era's first block also keeps the history before it.
+        let staged = history_v2.then(|| commonware_codec::Encode::encode(block));
+        let era_start = (history_v2 && exec.height.is_multiple_of(aether_state::mmr::ERA_LEN)).then(|| if exec.height == 0 { Default::default() } else { (*previous_history).clone() });
         if let Some(store) = store {
             // Disk first: the in-memory head never runs ahead of what survives a crash.
             store
@@ -1045,8 +1110,14 @@ impl Chain {
                     history: &exec.history,
                     schedule: &exec.schedule,
                     statement: &exec.statement,
+                    staged: staged.as_ref().map(|b| crate::store::Staged { block: b, era_start: era_start.as_ref() }),
                 })
                 .map_err(|e| ChainError::Store(e.to_string()))?;
+            // An era's last block: seal it into a file, off the consensus path.
+            if history_v2 && (exec.height + 1).is_multiple_of(aether_state::mmr::ERA_LEN) {
+                let era = exec.height / aether_state::mmr::ERA_LEN;
+                std::thread::spawn(move || crate::era::seal_logged(&store, era));
+            }
         }
         let mut g = self.lock();
         for (h, r) in exec.tx_hashes.iter().zip(&exec.receipts) {
@@ -1072,8 +1143,8 @@ impl Chain {
         }
         inner.inclusion.prune(&state, exec.height, Instant::now());
         // One leaf per height, in order (genesis is delivered again at start-up).
-        if let Some(leaves) = g.history_leaves.as_mut().filter(|l| l.len() as u64 == exec.height) {
-            Arc::make_mut(leaves).push(aether_state::mmr::leaf(&ChainHasher::new(), exec.height, &digest_bytes(&exec.digest)));
+        if let Some(idx) = g.history_index.as_mut().filter(|i| i.leaves() == exec.height) {
+            Arc::make_mut(idx).push(&ChainHasher::new(), aether_state::mmr::leaf(&ChainHasher::new(), exec.height, &digest_bytes(&exec.digest)));
         }
         g.blocks.insert(exec.height, summary);
         let previous = std::mem::replace(&mut g.finalized, exec.clone());
@@ -1276,6 +1347,14 @@ pub fn with_activation(pre: &std::borrow::Cow<'_, WorldState>, out: &mut BlockOu
     if let std::borrow::Cow::Owned(migrated) = pre {
         out.state.prepend_journal(migrated.journal());
     }
+}
+
+/// Whether a block gets a proof-market statement (recorded by its child).
+/// Protocol-1 blocks never do; under history v2 neither does a block with no
+/// transactions and no proofs: there is nothing to prove, and an empty block
+/// then leaves the state root and chain metadata as they were.
+pub fn records_statement(cfg: &ChainConfig, payload: &Payload) -> bool {
+    payload.version >= 2 && !(cfg.history_v2 && payload.txs.is_empty() && payload.proofs.is_empty())
 }
 
 /// The statement commitment of a block that ran `txs` on `pre` under `ctx`.

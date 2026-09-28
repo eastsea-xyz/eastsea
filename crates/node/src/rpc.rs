@@ -247,17 +247,8 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
         "aether_historyProof" => {
             let height: u64 = param(p, 0)?;
             let anchor: u64 = param(p, 1)?;
-            // Take the shared leaves and the block hash under the lock; build the proof outside it.
-            let (leaves, hash) = {
-                let g = chain.lock();
-                if anchor == 0 || height >= anchor || anchor > g.finalized.height {
-                    return Err((-32602, "need height < anchor <= finalized height".into()));
-                }
-                let leaves = g.history_leaves.clone().ok_or((-32000, "this node started from a checkpoint and keeps no early history".to_string()))?;
-                (leaves, g.blocks.get(&height).map(|b| b.hash.clone()).ok_or((-32000, "block not kept here".to_string()))?)
-            };
-            let proof =
-                aether_state::mmr::prove(&aether_hash::ChainHasher::new(), &leaves[..anchor as usize], height).ok_or((-32000, "no proof".to_string()))?;
+            let code = |e: &String| if e.starts_with("need") { -32602 } else { -32000 };
+            let (proof, hash) = chain.history_proof(height, anchor).map_err(|e| (code(&e), e))?;
             Ok(json!({ "height": height, "hash": hash, "anchor": anchor, "proof": proof }))
         }
         // Voting-node candidates (the registry) and the current epoch.

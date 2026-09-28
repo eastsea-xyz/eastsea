@@ -29,6 +29,7 @@ fn config() -> ChainConfig {
         epoch_blocks: EPOCH_BLOCKS,
         min_streak: None,
         draw_epochs: None,
+        history_v2: false,
     }
 }
 

@@ -200,6 +200,7 @@ mod tests {
             epoch_blocks: 0,
             min_streak: None,
             draw_epochs: None,
+        history_v2: false,
         };
         (f, Chain::new(cfg).0)
     }

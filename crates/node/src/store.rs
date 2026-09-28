@@ -22,6 +22,12 @@ const CODE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("code");
 const BLOCKS: TableDefinition<u64, &[u8]> = TableDefinition::new("blocks");
 const RECEIPTS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("receipts");
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
+/// History v2: finalized blocks (codec bytes) of eras not yet sealed into a file.
+const ERA_BLOCKS: TableDefinition<u64, &[u8]> = TableDefinition::new("era_blocks");
+
+fn era_start_key(era: u64) -> String {
+    format!("era_start/{era}")
+}
 /// The latest committee handoff (JSON), restored with the checkpoint.
 const HANDOFF: &str = "handoff";
 /// The latest draw seed (JSON: height and seed), committed with its block.
@@ -97,6 +103,15 @@ pub struct Commit<'a> {
     pub schedule: &'a crate::upgrade::Schedule,
     /// Its statement commitment and escrow share.
     pub statement: &'a crate::chain::Statement,
+    /// History v2: the block's codec bytes, kept until its era is sealed.
+    pub staged: Option<Staged<'a>>,
+}
+
+/// A finalized block kept for its era file (`crate::era`).
+pub struct Staged<'a> {
+    pub block: &'a [u8],
+    /// On an era's first block: the history MMR before it (the era file's start).
+    pub era_start: Option<&'a aether_state::mmr::Mmr>,
 }
 
 /// First byte of a packed block summary. Older stores hold JSON rows (they
@@ -219,6 +234,8 @@ pub struct StoreStats {
 
 pub struct Store {
     db: Database,
+    /// The directory the store lives in (era files go in its `eras` folder).
+    dir: std::path::PathBuf,
 }
 
 impl Store {
@@ -236,7 +253,8 @@ impl Store {
         tx.open_table(PROOFS).map_err(dberr)?;
         tx.open_table(REWARDS).map_err(dberr)?;
         tx.commit().map_err(dberr)?;
-        let mut store = Store { db };
+        let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+        let mut store = Store { db, dir };
         store.compact_if_sparse(path)?;
         Ok(store)
     }
@@ -310,6 +328,61 @@ impl Store {
         Ok(t.get(height).map_err(dberr)?.map(|v| v.value().to_vec()))
     }
 
+    /// Where sealed era files go.
+    pub fn era_dir(&self) -> std::path::PathBuf {
+        self.dir.join("eras")
+    }
+
+    /// Eras with blocks kept for sealing, oldest first.
+    pub fn staged_eras(&self) -> Result<Vec<u64>, StoreError> {
+        let tx = self.db.begin_read().map_err(dberr)?;
+        let t = match tx.open_table(ERA_BLOCKS) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(vec![]),
+            Err(e) => return Err(dberr(e)),
+        };
+        let mut eras: Vec<u64> = Vec::new();
+        for row in t.iter().map_err(dberr)? {
+            let e = row.map_err(dberr)?.0.value() / aether_state::mmr::ERA_LEN;
+            if eras.last() != Some(&e) {
+                eras.push(e);
+            }
+        }
+        Ok(eras)
+    }
+
+    /// Era `era`'s kept blocks (codec bytes, by height) and the history before it.
+    #[allow(clippy::type_complexity)]
+    pub fn staged(&self, era: u64) -> Result<(Vec<(u64, Vec<u8>)>, Option<aether_state::mmr::Mmr>), StoreError> {
+        let len = aether_state::mmr::ERA_LEN;
+        let tx = self.db.begin_read().map_err(dberr)?;
+        let mut rows = Vec::new();
+        if let Ok(t) = tx.open_table(ERA_BLOCKS) {
+            for row in t.range(era * len..(era + 1) * len).map_err(dberr)? {
+                let (h, v) = row.map_err(dberr)?;
+                rows.push((h.value(), v.value().to_vec()));
+            }
+        }
+        let meta = tx.open_table(META).map_err(dberr)?;
+        let start = match meta.get(era_start_key(era).as_str()).map_err(dberr)? {
+            Some(v) => Some(serde_json::from_slice(v.value()).map_err(|_| StoreError::Corrupt("era start"))?),
+            None => None,
+        };
+        Ok((rows, start))
+    }
+
+    /// Forget era `era`'s kept blocks (its file is written, or it can never be complete).
+    pub fn drop_staged(&self, era: u64) -> Result<(), StoreError> {
+        let len = aether_state::mmr::ERA_LEN;
+        let tx = self.db.begin_write().map_err(dberr)?;
+        {
+            let mut t = tx.open_table(ERA_BLOCKS).map_err(dberr)?;
+            t.retain_in(era * len..(era + 1) * len, |_, _| false).map_err(dberr)?;
+            tx.open_table(META).map_err(dberr)?.remove(era_start_key(era).as_str()).map_err(dberr)?;
+        }
+        tx.commit().map_err(dberr)
+    }
+
     /// Storage use per table and for the whole file.
     pub fn stats(&self) -> Result<StoreStats, StoreError> {
         fn one<K: redb::Key + 'static, V: redb::Value + 'static>(
@@ -337,6 +410,7 @@ impl Store {
             one(&tx, META, "meta")?,
             one(&tx, PROOFS, "proofs")?,
             one(&tx, REWARDS, "rewards")?,
+            one(&tx, ERA_BLOCKS, "era_blocks")?,
         ];
         let db = tx.stats().map_err(dberr)?;
         let out = StoreStats {
@@ -394,6 +468,13 @@ impl Store {
             meta.insert(HISTORY, serde_json::to_vec(c.history).map_err(dberr)?.as_slice()).map_err(dberr)?;
             meta.insert(SCHEDULE, serde_json::to_vec(c.schedule).map_err(dberr)?.as_slice()).map_err(dberr)?;
             meta.insert(STATEMENT, serde_json::to_vec(c.statement).map_err(dberr)?.as_slice()).map_err(dberr)?;
+            if let Some(s) = &c.staged {
+                tx.open_table(ERA_BLOCKS).map_err(dberr)?.insert(c.height, s.block).map_err(dberr)?;
+                if let Some(start) = s.era_start {
+                    let key = era_start_key(c.height / aether_state::mmr::ERA_LEN);
+                    meta.insert(key.as_str(), serde_json::to_vec(start).map_err(dberr)?.as_slice()).map_err(dberr)?;
+                }
+            }
         }
         tx.commit().map_err(dberr)
     }
@@ -545,6 +626,7 @@ mod tests {
                     history: &Default::default(),
                     schedule: &Default::default(),
                     statement: &Default::default(),
+                    staged: None,
                 })
                 .unwrap()
         };

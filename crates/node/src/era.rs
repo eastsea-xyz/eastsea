@@ -484,6 +484,61 @@ pub fn read(bytes: &[u8], expected_root: Option<&H32>) -> Result<Era, EraError> 
     Ok(Era { index, start, blocks, root })
 }
 
+/// File name of era `era` in a store's era folder.
+pub fn file_name(era: u64) -> String {
+    format!("era-{era:08}.aera")
+}
+
+/// Seal era `era` from the blocks the store kept (history v2): write its file
+/// (to a temporary name, then renamed), read it back and check it, then drop
+/// the kept blocks. An era this node can never complete (it started from a
+/// checkpoint inside it) is dropped without a file. Returns the file written.
+pub fn seal(store: &crate::store::Store, era: u64) -> Result<Option<std::path::PathBuf>, String> {
+    let (rows, start) = store.staged(era).map_err(|e| e.to_string())?;
+    let complete = rows.len() as u64 == ERA_LEN && start.as_ref().is_some_and(|s| s.leaves == era * ERA_LEN);
+    if !complete {
+        store.drop_staged(era).map_err(|e| e.to_string())?;
+        return Ok(None);
+    }
+    let start = start.expect("checked");
+    let cfg = Block::codec_config(aether_light::MAX_BLOCK_BYTES);
+    let blocks = rows
+        .iter()
+        .map(|(_, b)| <Block as commonware_codec::Decode>::decode_cfg(b.as_slice(), &cfg).map_err(|e| format!("kept block: {e}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    let bytes = write(&start, &blocks).map_err(|e| e.to_string())?;
+    read(&bytes, None).map_err(|e| format!("era {era} does not read back: {e}"))?;
+    let dir = store.era_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(file_name(era));
+    let tmp = dir.join(format!("{}.tmp", file_name(era)));
+    {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+        f.write_all(&bytes).and_then(|_| f.sync_all()).map_err(|e| e.to_string())?;
+    }
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+    store.drop_staged(era).map_err(|e| e.to_string())?;
+    Ok(Some(path))
+}
+
+pub fn seal_logged(store: &crate::store::Store, era: u64) {
+    match seal(store, era) {
+        Ok(Some(p)) => tracing::info!(era, path = %p.display(), "era sealed"),
+        Ok(None) => tracing::info!(era, "era incomplete here (started from a checkpoint inside it); not sealed"),
+        Err(e) => tracing::warn!(era, %e, "could not seal era; its blocks stay kept"),
+    }
+}
+
+/// Seal every kept era that ended at or before finalized height `head`.
+pub fn seal_pending(store: &crate::store::Store, head: u64) {
+    for era in store.staged_eras().unwrap_or_default() {
+        if (era + 1) * ERA_LEN - 1 <= head {
+            seal_logged(store, era);
+        }
+    }
+}
+
 /// Proof that era `index`'s root is in the history of the first `n` blocks
 /// (the history root of block `n`), from the era roots a node keeps.
 pub fn prove_era(index: &aether_state::mmr::EraIndex, n: u64, era: u64) -> Option<MmrProof> {

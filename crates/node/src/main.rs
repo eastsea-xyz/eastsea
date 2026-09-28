@@ -797,6 +797,7 @@ fn chain_config(chain_id: u64, genesis: &aether_node::roster::Genesis) -> ChainC
         epoch_blocks: genesis.epoch_blocks,
         min_streak: genesis.min_streak,
         draw_epochs: genesis.draw_epochs,
+        history_v2: genesis.history >= 2,
     }
 }
 
@@ -1000,6 +1001,8 @@ fn assemble_network(chain_id: u64, faucet: Option<Address>, registrar: Option<St
         epoch_blocks,
         min_streak,
         draw_epochs,
+        // History v2 (a new genesis only) is set by adding "history": 2 to the file.
+        history: None,
     };
     aether_node::roster::Roster::from_file(&file)?;
     println!("{}", serde_json::to_string_pretty(&file).expect("json"));

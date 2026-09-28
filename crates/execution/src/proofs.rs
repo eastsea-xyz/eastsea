@@ -52,6 +52,11 @@ pub fn prune(state: &mut WorldState, height: u64) {
     }
 }
 
+/// Whether anything of block `height` is still recorded (a statement or its prover).
+pub fn recorded(state: &WorldState, height: u64) -> bool {
+    [COMMITMENT, ESCROW, PROVER].iter().any(|f| !state.storage(&PROVER_ESCROW, slot(height, *f)).is_zero())
+}
+
 /// Block `height`'s recorded statement commitment, if any.
 pub fn commitment(state: &WorldState, height: u64) -> Option<[u8; 32]> {
     let c = state.storage(&PROVER_ESCROW, slot(height, COMMITMENT));

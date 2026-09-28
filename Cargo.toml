@@ -15,6 +15,7 @@ aether-hash = { path = "crates/hash" }
 aether-crypto = { path = "crates/crypto" }
 aether-state = { path = "crates/state" }
 aether-execution = { path = "crates/execution" }
+aether-rewards = { path = "crates/rewards" }
 aether-consensus = { path = "crates/consensus" }
 aether-da = { path = "crates/da" }
 aether-proving = { path = "crates/proving" }

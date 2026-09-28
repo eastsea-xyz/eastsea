@@ -1,0 +1,15 @@
+[package]
+name = "aether-rewards"
+description = "Node rewards: epoch node pool, warm-up, 1/16 caps, capped proof issuance (docs/design/15-node-rewards.md)"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish = false
+
+# A crate of its own, not a module of aether-execution: the proving guest is
+# built from aether-execution, and any code added there changes the pinned
+# program id. These rules are system writes outside what proofs cover.
+
+[dependencies]
+aether-execution.workspace = true
+alloy-primitives.workspace = true

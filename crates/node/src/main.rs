@@ -18,7 +18,9 @@ use aether_types::{Address, Bytes, GasVector, TxEnvelope, TxHash, U256};
 use clap::{Parser, Subcommand};
 use commonware_consensus::{marshal, types::ViewDelta};
 use commonware_cryptography::{ed25519, Signer as _};
-use commonware_p2p::{authenticated::lookup, AddressableManager as _, Receiver as _, Recipients, Sender as _};
+use commonware_p2p::{
+    authenticated::lookup, AddressableManager as _, Receiver as _, Recipients, Sender as _,
+};
 use commonware_runtime::{tokio as cw_tokio, Quota, Runner as _, Supervisor as _};
 use commonware_utils::{NZUsize, NZU32};
 use serde_json::{json, Value};
@@ -316,6 +318,9 @@ enum Cmd {
         /// Epochs between voting-set draws (default 24).
         #[arg(long)]
         draw_epochs: Option<u64>,
+        /// Node rewards from genesis (docs/design/15-node-rewards.md): a new network only, needs --registrar.
+        #[arg(long)]
+        node_rewards: bool,
         members: Vec<String>,
     },
     /// List the public development accounts (funded at genesis; never use for value).
@@ -642,8 +647,8 @@ fn main() {
             };
             reshare(&from, &to, boundary, port, data, peers, link_base, offline, via_node)
         }
-        Cmd::Network { chain_id, faucet, registrar, epoch_blocks, min_streak, draw_epochs, members } => {
-            assemble_network(chain_id, faucet, registrar, (epoch_blocks, min_streak, draw_epochs), &members)
+        Cmd::Network { chain_id, faucet, registrar, epoch_blocks, min_streak, draw_epochs, node_rewards, members } => {
+            assemble_network(chain_id, faucet, registrar, (epoch_blocks, min_streak, draw_epochs), node_rewards, &members)
         }
         Cmd::RegistrarKey { data } => (|| {
             // Idempotent: an existing key is kept (and its public half printed).
@@ -780,17 +785,28 @@ fn main() {
 fn chain_config(chain_id: u64, genesis: &aether_node::roster::Genesis) -> ChainConfig {
     // A local devnet also gets the voting-node registry, with the public dev registrar key.
     let dev_registrar = genesis.faucet.is_none().then(|| {
-        let k = aether_node::faucet::Faucet::from_seed(&dev_seed(DEV_REGISTRAR)).expect("dev registrar");
+        let k = aether_node::faucet::Faucet::from_seed(&dev_seed(DEV_REGISTRAR))
+            .expect("dev registrar");
         let h = hex::decode(k.public_hex()).expect("hex");
-        (h[..32].try_into().expect("32"), h[32..].try_into().expect("32"))
+        (
+            h[..32].try_into().expect("32"),
+            h[32..].try_into().expect("32"),
+        )
     });
     let alloc = match genesis.faucet {
         Some(f) => vec![(f, U256::from(aether_node::faucet::SUPPLY))],
-        None => dev_accounts(DEV_ACCOUNTS).into_iter().map(|(_, a)| (a, U256::from(DEV_BALANCE))).collect(),
+        None => dev_accounts(DEV_ACCOUNTS)
+            .into_iter()
+            .map(|(_, a)| (a, U256::from(DEV_BALANCE)))
+            .collect(),
     };
     ChainConfig {
         chain_id,
-        limits: GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
+        limits: GasVector {
+            exec: 30_000_000,
+            state: u64::MAX,
+            prove: 200_000_000,
+        },
         alloc,
         fees: true,
         registrar: genesis.registrar.or(dev_registrar),
@@ -798,11 +814,18 @@ fn chain_config(chain_id: u64, genesis: &aether_node::roster::Genesis) -> ChainC
         min_streak: genesis.min_streak,
         draw_epochs: genesis.draw_epochs,
         history_v2: genesis.history >= 2,
+        node_rewards: genesis.node_rewards,
     }
 }
 
 /// p2p args, chain id, epoch starts, expected key round, genesis parameters.
-type P2pSetup = (P2pArgs, u64, Vec<aether_node::roster::EpochStart>, Option<u64>, aether_node::roster::Genesis);
+type P2pSetup = (
+    P2pArgs,
+    u64,
+    Vec<aether_node::roster::EpochStart>,
+    Option<u64>,
+    aether_node::roster::Genesis,
+);
 
 /// Who we are and who the others are: from --network + <data>/validator.key,
 /// or the public devnet keys (--index/--validators).
@@ -823,24 +846,62 @@ fn p2p_args(
             let file = NetworkFile::load(std::path::Path::new(&path))?;
             let roster = Roster::from_file(&file)?;
             let keys = LocalKeys::load(std::path::Path::new(data))?;
-            let index = roster.index_of(&keys.signer.public_key()).ok_or("this machine's validator key is not in network.json")?;
+            let index = roster
+                .index_of(&keys.signer.public_key())
+                .ok_or("this machine's validator key is not in network.json")?;
             // A network file with an identity names the key round its shares must be from.
             let round = file.identity.as_ref().map(|_| file.round);
             let genesis = file.genesis()?;
-            (roster, keys, index, file.chain_id, file.epochs, round, genesis)
+            (
+                roster,
+                keys,
+                index,
+                file.chain_id,
+                file.epochs,
+                round,
+                genesis,
+            )
         }
         None => {
-            let (index, n) = (index.ok_or("--index (or --network)")?, n.ok_or("--validators (or --network)")?);
-            (Roster::devnet(n), LocalKeys::devnet(index), index, DEFAULT_CHAIN_ID, vec![], None, Default::default())
+            let (index, n) = (
+                index.ok_or("--index (or --network)")?,
+                n.ok_or("--validators (or --network)")?,
+            );
+            (
+                Roster::devnet(n),
+                LocalKeys::devnet(index),
+                index,
+                DEFAULT_CHAIN_ID,
+                vec![],
+                None,
+                Default::default(),
+            )
         }
     };
     let transport = if peers.iter().any(|p| !p.is_empty()) {
         Transport::Tcp(peers)
     } else {
-        Transport::Iroh { link_base: link_base.unwrap_or(20_000 + 100 * index as u16) }
+        Transport::Iroh {
+            link_base: link_base.unwrap_or(20_000 + 100 * index as u16),
+        }
     };
     let n = roster.len();
-    Ok((P2pArgs { index, n, roster, keys, port, transport, offline, max_message: MAX_BLOCK_BYTES + 1024 * 1024 }, chain_id, epochs, round, genesis))
+    Ok((
+        P2pArgs {
+            index,
+            n,
+            roster,
+            keys,
+            port,
+            transport,
+            offline,
+            max_message: MAX_BLOCK_BYTES + 1024 * 1024,
+        },
+        chain_id,
+        epochs,
+        round,
+        genesis,
+    ))
 }
 
 /// Reshare: p2p over the union of both validator sets; old members deal with
@@ -858,60 +919,117 @@ fn reshare(
     via_node: bool,
 ) -> Result<(), String> {
     use aether_node::roster::{LocalKeys, NetworkFile, Roster};
-    tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,commonware=warn".into())).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "info,commonware=warn".into()),
+        )
+        .init();
     let old_file = NetworkFile::load(std::path::Path::new(from))?;
     let new_file = NetworkFile::load(std::path::Path::new(to))?;
     let (old, new) = (Roster::from_file(&old_file)?, Roster::from_file(&new_file)?);
-    let output_hex = old_file.output.clone().ok_or("--from has no committee output: use the network.json written by dkg/reshare")?;
+    let output_hex = old_file
+        .output
+        .clone()
+        .ok_or("--from has no committee output: use the network.json written by dkg/reshare")?;
     let n_old = old.len() as u32;
-    let previous = aether_node::dkg::KeyFile { round: old_file.round, output: output_hex, identity: String::new(), share: String::new() };
+    let previous = aether_node::dkg::KeyFile {
+        round: old_file.round,
+        output: output_hex,
+        identity: String::new(),
+        share: String::new(),
+    };
     let previous = previous.decode_output(n_old)?;
     let dir = std::path::PathBuf::from(&data);
     let keys = LocalKeys::load(&dir)?;
     let share = match std::fs::read(dir.join("threshold.json")) {
         Ok(b) if old.index_of(&keys.signer.public_key()).is_some() => {
-            let f: aether_node::dkg::KeyFile = serde_json::from_slice(&b).map_err(|e| e.to_string())?;
+            let f: aether_node::dkg::KeyFile =
+                serde_json::from_slice(&b).map_err(|e| e.to_string())?;
             Some(f.decode(n_old)?.1)
         }
         _ => None,
     };
     let union = old.union(&new);
-    let index = union.index_of(&keys.signer.public_key()).ok_or("this machine's key is in neither validator set")?;
+    let index = union
+        .index_of(&keys.signer.public_key())
+        .ok_or("this machine's key is in neither validator set")?;
     let transport = if peers.iter().any(|p| !p.is_empty()) {
         Transport::Tcp(peers)
     } else {
         // A staged reshare runs next to this Mac's node: its own link ports.
         let base = if boundary.is_none() { 30_000 } else { 20_000 };
-        Transport::Iroh { link_base: link_base.unwrap_or(base + 100 * index as u16) }
+        Transport::Iroh {
+            link_base: link_base.unwrap_or(base + 100 * index as u16),
+        }
     };
-    let p2p = P2pArgs { index, n: union.len(), roster: union, keys: keys.clone(), port, transport, offline, max_message: MAX_BLOCK_BYTES + 1024 * 1024 };
+    let p2p = P2pArgs {
+        index,
+        n: union.len(),
+        roster: union,
+        keys: keys.clone(),
+        port,
+        transport,
+        offline,
+        max_message: MAX_BLOCK_BYTES + 1024 * 1024,
+    };
     let round = aether_node::dkg::Round::reshare(previous, new.validators(), old_file.round + 1);
     let next_round = round.round;
     // A fresh runtime directory per attempt: a retried round never reads an older one's state.
-    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or_default();
-    let executor = cw_tokio::Runner::new(cw_tokio::Config::new().with_storage_directory(dir.join("reshare-runtime").join(secs.to_string())));
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default();
+    let executor = cw_tokio::Runner::new(
+        cw_tokio::Config::new()
+            .with_storage_directory(dir.join("reshare-runtime").join(secs.to_string())),
+    );
     let staged = boundary.is_none();
     let result = executor.start(async move |context| {
         let _public = if staged {
-            aether_node::p2p::open_reshare(&p2p, via_node, loopback(p2p.port)).await.map(|(ep, r)| (ep, r.map(Some).unwrap_or(None)))
+            aether_node::p2p::open_reshare(&p2p, via_node, loopback(p2p.port))
+                .await
+                .map(|(ep, r)| (ep, r.map(Some).unwrap_or(None)))
         } else {
-            aether_node::p2p::open_public(&p2p).await.map(|ep| (ep.clone(), Some(aether_net::serve_p2p(ep, loopback(p2p.port)))))
+            aether_node::p2p::open_public(&p2p).await.map(|ep| {
+                (
+                    ep.clone(),
+                    Some(aether_net::serve_p2p(ep, loopback(p2p.port))),
+                )
+            })
         };
-        let (mut network, mut oracle) = lookup::Network::new(context.child("network"), aether_node::p2p::config(&p2p, b"_DKG"));
+        let (mut network, mut oracle) = lookup::Network::new(
+            context.child("network"),
+            aether_node::p2p::config(&p2p, b"_DKG"),
+        );
         oracle.track(0, aether_node::p2p::peer_addresses(&p2p));
         let (sender, receiver) = network.register(0, Quota::per_second(NZU32!(256)));
         network.start();
         tracing::info!(index = p2p.index, round = next_round, "reshare: started");
-        aether_node::dkg::run(p2p.keys.signer.clone(), round, share, sender, receiver, Default::default()).await
+        aether_node::dkg::run(
+            p2p.keys.signer.clone(),
+            round,
+            share,
+            sender,
+            receiver,
+            Default::default(),
+        )
+        .await
     });
     match result.map_err(|e| format!("reshare failed: {e}"))? {
         Some((output, share)) => {
             let file = aether_node::dkg::KeyFile::new(next_round, &output, &share);
             let (threshold, network) = match boundary {
                 Some(_) => ("threshold.json", "network.json"),
-                None => (aether_node::rotation::STAGED_THRESHOLD, aether_node::rotation::STAGED_NETWORK),
+                None => (
+                    aether_node::rotation::STAGED_THRESHOLD,
+                    aether_node::rotation::STAGED_NETWORK,
+                ),
             };
-            write_secret(&dir.join(threshold), &serde_json::to_vec_pretty(&file).expect("json"));
+            write_secret(
+                &dir.join(threshold),
+                &serde_json::to_vec_pretty(&file).expect("json"),
+            );
             let mut public = new_file.clone();
             // Same chain, same genesis: keep its faucet even if the new roster file omits it.
             public.keep_genesis(&old_file);
@@ -920,9 +1038,16 @@ fn reshare(
             public.identity = Some(file.identity.clone());
             public.round = next_round;
             public.output = Some(file.output.clone());
-            std::fs::write(dir.join(network), serde_json::to_vec_pretty(&public).expect("json")).map_err(|e| e.to_string())?;
+            std::fs::write(
+                dir.join(network),
+                serde_json::to_vec_pretty(&public).expect("json"),
+            )
+            .map_err(|e| e.to_string())?;
             println!("committee identity: {} (unchanged)", file.identity);
-            println!("new share written to {} (mode 600)", dir.join(threshold).display());
+            println!(
+                "new share written to {} (mode 600)",
+                dir.join(threshold).display()
+            );
         }
         None if boundary.is_none() => {
             // Staged: keep signing with the old share until the switch height.
@@ -947,7 +1072,9 @@ fn partition_prefix(data: &str) -> String {
         return p.trim().to_string();
     }
     let existing = std::fs::read_dir(dir).ok().and_then(|entries| {
-        entries.filter_map(|e| e.ok()?.file_name().into_string().ok()).find_map(|name| name.strip_suffix("-blocks-metadata").map(str::to_string))
+        entries
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .find_map(|name| name.strip_suffix("-blocks-metadata").map(str::to_string))
     });
     let prefix = existing.unwrap_or_else(|| "aether".to_string());
     let _ = std::fs::write(&marker, &prefix);
@@ -956,12 +1083,21 @@ fn partition_prefix(data: &str) -> String {
 
 /// `<data>/anchor.json` (block and finalization hex, as `aether_getFinalized`
 /// returns them): where a voting node that was a follower starts.
-fn load_anchor(data: &str) -> Option<(aether_node::block::Block, aether_node::engine::Finalization)> {
+fn load_anchor(
+    data: &str,
+) -> Option<(aether_node::block::Block, aether_node::engine::Finalization)> {
     use commonware_codec::Decode as _;
     use commonware_codec::DecodeExt as _;
-    let v: Value = serde_json::from_slice(&std::fs::read(std::path::Path::new(data).join(aether_node::rotation::ANCHOR_FILE)).ok()?).ok()?;
+    let v: Value = serde_json::from_slice(
+        &std::fs::read(std::path::Path::new(data).join(aether_node::rotation::ANCHOR_FILE)).ok()?,
+    )
+    .ok()?;
     let hex = |k: &str| aether_light::from_hex(v[k].as_str()?).ok();
-    let block = aether_node::block::Block::decode_cfg(hex("block")?.as_slice(), &aether_node::block::Block::codec_config(MAX_BLOCK_BYTES)).ok()?;
+    let block = aether_node::block::Block::decode_cfg(
+        hex("block")?.as_slice(),
+        &aether_node::block::Block::codec_config(MAX_BLOCK_BYTES),
+    )
+    .ok()?;
     let fin = aether_node::engine::Finalization::decode(hex("finalization")?.as_slice()).ok()?;
     Some((block, fin))
 }
@@ -970,7 +1106,10 @@ fn keygen(data: &str) -> Result<(), String> {
     let dir = std::path::Path::new(data);
     let keys = aether_node::roster::LocalKeys::generate();
     keys.save(dir)?;
-    println!("{}", serde_json::to_string_pretty(&keys.public()).expect("json"));
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&keys.public()).expect("json")
+    );
     println!(
         "secret keys in {} (mode 600); share only {}",
         dir.join(aether_node::roster::KEY_FILE).display(),
@@ -983,11 +1122,25 @@ fn keygen(data: &str) -> Result<(), String> {
 /// (blocks per epoch, minimum streak, epochs per draw); None = the defaults.
 type VotingParams = (Option<u64>, Option<u64>, Option<u64>);
 
-fn assemble_network(chain_id: u64, faucet: Option<Address>, registrar: Option<String>, voting: VotingParams, members: &[String]) -> Result<(), String> {
+fn assemble_network(
+    chain_id: u64,
+    faucet: Option<Address>,
+    registrar: Option<String>,
+    voting: VotingParams,
+    node_rewards: bool,
+    members: &[String],
+) -> Result<(), String> {
     let (epoch_blocks, min_streak, draw_epochs) = voting;
+    if node_rewards && registrar.is_none() {
+        return Err("--node-rewards needs the voting-node registry (--registrar)".into());
+    }
     let validators = members
         .iter()
-        .map(|p| std::fs::read(p).map_err(|e| format!("{p}: {e}")).and_then(|b| serde_json::from_slice(&b).map_err(|e| format!("{p}: {e}"))))
+        .map(|p| {
+            std::fs::read(p)
+                .map_err(|e| format!("{p}: {e}"))
+                .and_then(|b| serde_json::from_slice(&b).map_err(|e| format!("{p}: {e}")))
+        })
         .collect::<Result<Vec<aether_node::roster::Member>, String>>()?;
     let file = aether_node::roster::NetworkFile {
         chain_id,
@@ -1003,6 +1156,7 @@ fn assemble_network(chain_id: u64, faucet: Option<Address>, registrar: Option<St
         draw_epochs,
         // History v2 (a new genesis only) is set by adding "history": 2 to the file.
         history: None,
+        node_rewards: node_rewards.then_some(true),
     };
     aether_node::roster::Roster::from_file(&file)?;
     println!("{}", serde_json::to_string_pretty(&file).expect("json"));
@@ -1031,7 +1185,12 @@ struct NodeArgs {
 }
 
 fn run_node(a: NodeArgs) {
-    tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,commonware=warn".into())).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "info,commonware=warn".into()),
+        )
+        .init();
     let NodeArgs {
         p2p,
         chain_id,
@@ -1049,35 +1208,69 @@ fn run_node(a: NodeArgs) {
         network_file,
     } = a;
     let faucet = genesis.faucet;
-    let registry = || aether_node::devicecheck::Registry::open(std::path::Path::new(&data).join("registrations.json"));
+    let registry = || {
+        aether_node::devicecheck::Registry::open(
+            std::path::Path::new(&data).join("registrations.json"),
+        )
+    };
     let registrar = if dev_registrar {
-        let signer = aether_node::faucet::Faucet::from_seed(&dev_seed(DEV_REGISTRAR)).expect("dev registrar");
-        Some(std::sync::Arc::new(aether_node::devicecheck::Registrar { apple: None, registry: registry(), signer, chain_id }))
+        let signer = aether_node::faucet::Faucet::from_seed(&dev_seed(DEV_REGISTRAR))
+            .expect("dev registrar");
+        Some(std::sync::Arc::new(aether_node::devicecheck::Registrar {
+            apple: None,
+            registry: registry(),
+            signer,
+            chain_id,
+        }))
     } else {
         devicecheck.map(|(k, id, team)| {
-            let apple = aether_node::devicecheck::DeviceCheck::load(std::path::Path::new(&k), &id, &team).expect("load --devicecheck-key");
-            let signer =
-                aether_node::faucet::Faucet::load(&std::path::Path::new(&data).join("registrar.key")).expect("<data>/registrar.key (aether registrar-key)");
-            std::sync::Arc::new(aether_node::devicecheck::Registrar { apple: Some(apple), registry: registry(), signer, chain_id })
+            let apple =
+                aether_node::devicecheck::DeviceCheck::load(std::path::Path::new(&k), &id, &team)
+                    .expect("load --devicecheck-key");
+            let signer = aether_node::faucet::Faucet::load(
+                &std::path::Path::new(&data).join("registrar.key"),
+            )
+            .expect("<data>/registrar.key (aether registrar-key)");
+            std::sync::Arc::new(aether_node::devicecheck::Registrar {
+                apple: Some(apple),
+                registry: registry(),
+                signer,
+                chain_id,
+            })
         })
     };
     let faucet_service = match (&faucet_key, faucet) {
         (Some(path), expected) => {
-            let f = aether_node::faucet::Faucet::load(std::path::Path::new(path)).expect("load --faucet-key");
+            let f = aether_node::faucet::Faucet::load(std::path::Path::new(path))
+                .expect("load --faucet-key");
             if let Some(e) = expected {
-                assert_eq!(f.address, e, "--faucet-key is not the faucet in network.json");
+                assert_eq!(
+                    f.address, e,
+                    "--faucet-key is not the faucet in network.json"
+                );
             }
             Some(std::sync::Arc::new(f))
         }
         // Local devnet: public dev account 10 (funded at genesis) hands out test tokens.
-        (None, None) => Some(std::sync::Arc::new(aether_node::faucet::Faucet::from_seed(&dev_seed(DEV_ACCOUNTS)).expect("dev faucet"))),
+        (None, None) => Some(std::sync::Arc::new(
+            aether_node::faucet::Faucet::from_seed(&dev_seed(DEV_ACCOUNTS)).expect("dev faucet"),
+        )),
         (None, Some(_)) => None,
     };
     let (index, port) = (p2p.index, p2p.port);
-    assert!(!p2p.offline || matches!(p2p.transport, Transport::Tcp(_)), "--offline needs --peers");
+    assert!(
+        !p2p.offline || matches!(p2p.transport, Transport::Tcp(_)),
+        "--offline needs --peers"
+    );
     let signer = p2p.keys.signer.clone();
     let (roster_keys, validator_set) = (p2p.roster.keys.clone(), p2p.validators());
-    let roster_members: Vec<(String, String)> = p2p.roster.keys.iter().zip(&p2p.roster.nodes).map(|(k, n)| (hex::encode(k.as_ref()), n.to_string())).collect();
+    let roster_members: Vec<(String, String)> = p2p
+        .roster
+        .keys
+        .iter()
+        .zip(&p2p.roster.nodes)
+        .map(|(k, n)| (hex::encode(k.as_ref()), n.to_string()))
+        .collect();
     let peers = aether_node::p2p::peer_addresses(&p2p);
     let p2p_cfg = aether_node::p2p::config(&p2p, b"_P2P");
     let links = matches!(p2p.transport, Transport::Iroh { .. });
@@ -1300,7 +1493,12 @@ fn run_node(a: NodeArgs) {
 /// (every node learns an activation the same way); signed upgrades in
 /// `<data>/upgrades/*.json` (verified; unsigned or foreign files are ignored) are
 /// put on chain by this node's proposals.
-fn watch_upgrades(chain: Chain, dir: std::path::PathBuf, identity: aether_light::Identity, chain_id: u64) {
+fn watch_upgrades(
+    chain: Chain,
+    dir: std::path::PathBuf,
+    identity: aether_light::Identity,
+    chain_id: u64,
+) {
     use aether_node::upgrade::{load, protocol_at, PROTOCOL};
     std::thread::spawn(move || {
         let mut reported = 0;
@@ -1312,7 +1510,11 @@ fn watch_upgrades(chain: Chain, dir: std::path::PathBuf, identity: aether_light:
             if ups.len() != reported {
                 reported = ups.len();
                 for u in &ups {
-                    tracing::info!(protocol = u.upgrade.protocol, activate_at = u.upgrade.activate_at, "committee-signed upgrade");
+                    tracing::info!(
+                        protocol = u.upgrade.protocol,
+                        activate_at = u.upgrade.activate_at,
+                        "committee-signed upgrade"
+                    );
                 }
             }
             let (next, on_chain) = {
@@ -1346,13 +1548,22 @@ fn install_verifier(chain: &Chain, data: &str, follower: bool) {
         chain.lock().verifier = Some(std::sync::Arc::new(Certified));
         return;
     }
-    match find_binary().map(|bin| Verifier::start(&bin, &std::path::Path::new(data).join("prover").join("verify"))) {
+    match find_binary().map(|bin| {
+        Verifier::start(
+            &bin,
+            &std::path::Path::new(data).join("prover").join("verify"),
+        )
+    }) {
         Some(Ok(v)) => {
             tracing::info!(program = %v.program(), "proof verifier ready");
             chain.lock().verifier = Some(std::sync::Arc::new(v));
         }
-        Some(Err(e)) => tracing::error!(%e, "no proof verifier: this validator cannot vote for blocks carrying proofs"),
-        None => tracing::error!("aether-prover not found: this validator cannot vote for blocks carrying proofs"),
+        Some(Err(e)) => {
+            tracing::error!(%e, "no proof verifier: this validator cannot vote for blocks carrying proofs")
+        }
+        None => tracing::error!(
+            "aether-prover not found: this validator cannot vote for blocks carrying proofs"
+        ),
     }
     // Under protocol 2 a validator that cannot verify proofs would vote against
     // every block carrying one: refuse to run as one until it is fixed.
@@ -1365,9 +1576,17 @@ fn install_verifier(chain: &Chain, data: &str, follower: bool) {
 
 /// With `AETHER_PROVE=<payout address>` this node also proves blocks and hands
 /// the proofs to its proposals (validator) or to a validator (follower).
-fn start_prover(chain: &Chain, data: &str, upstream: Option<std::sync::Arc<aether_node::follow::Upstream>>) -> Option<aether_node::prover::SharedStatus> {
+fn start_prover(
+    chain: &Chain,
+    data: &str,
+    upstream: Option<std::sync::Arc<aether_node::follow::Upstream>>,
+) -> Option<aether_node::prover::SharedStatus> {
     use aether_node::prover::{find_binary, spawn_service, Sidecar};
-    let payout: Address = std::env::var("AETHER_PROVE").ok()?.parse().map_err(|_| tracing::warn!("AETHER_PROVE is not an address")).ok()?;
+    let payout: Address = std::env::var("AETHER_PROVE")
+        .ok()?
+        .parse()
+        .map_err(|_| tracing::warn!("AETHER_PROVE is not an address"))
+        .ok()?;
     let dir = std::path::Path::new(data).join("prover");
     let bin_path = find_binary()?;
     let sidecar = match Some(Sidecar::spawn(&bin_path, &dir.join("prove"))) {
@@ -1384,11 +1603,21 @@ fn start_prover(chain: &Chain, data: &str, upstream: Option<std::sync::Arc<aethe
     let status = aether_node::prover::SharedStatus::default();
     let handle = tokio::runtime::Handle::current();
     let target = chain.clone();
-    spawn_service(chain.clone(), bin_path, dir.join("prove"), sidecar, payout, status.clone(), move |claim| match &upstream {
-        // The prover thread waits for the validator's answer (and retries on refusal).
-        Some(up) => handle.block_on(up.first("aether_submitProof", json!([claim]))).map(|_| ()),
-        None => target.add_own_proof(claim),
-    });
+    spawn_service(
+        chain.clone(),
+        bin_path,
+        dir.join("prove"),
+        sidecar,
+        payout,
+        status.clone(),
+        move |claim| match &upstream {
+            // The prover thread waits for the validator's answer (and retries on refusal).
+            Some(up) => handle
+                .block_on(up.first("aether_submitProof", json!([claim])))
+                .map(|_| ()),
+            None => target.add_own_proof(claim),
+        },
+    );
     tracing::info!(%payout, "proving blocks (rewards to this address)");
     Some(status)
 }
@@ -1417,12 +1646,20 @@ fn run_follow(
 ) -> Result<(), String> {
     use aether_node::follow::{self, FinalityArchive, Upstream};
     use std::sync::Arc;
-    tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,commonware=warn".into())).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "info,commonware=warn".into()),
+        )
+        .init();
     let (chain_id, genesis, set, nodes) = match network {
         Some(path) => {
             let file = aether_node::roster::NetworkFile::load(std::path::Path::new(&path))?;
-            let identity = file.identity.clone().ok_or("network.json has no committee identity: use the one written by dkg/reshare")?;
-            let set = aether_light::ValidatorSet::from_hex(&identity).map_err(|e| format!("identity: {e:?}"))?;
+            let identity = file.identity.clone().ok_or(
+                "network.json has no committee identity: use the one written by dkg/reshare",
+            )?;
+            let set = aether_light::ValidatorSet::from_hex(&identity)
+                .map_err(|e| format!("identity: {e:?}"))?;
             let nodes = aether_node::roster::Roster::from_file(&file)?.nodes;
             (file.chain_id, file.genesis()?, set, nodes)
         }
@@ -1431,11 +1668,19 @@ fn run_follow(
             if let Some(e) = dev_epoch_blocks {
                 genesis.epoch_blocks = e;
             }
-            (DEFAULT_CHAIN_ID, genesis, aether_light::ValidatorSet::devnet(validators), (1..=validators).map(aether_net::devnet_node_id).collect())
+            (
+                DEFAULT_CHAIN_ID,
+                genesis,
+                aether_light::ValidatorSet::devnet(validators),
+                (1..=validators).map(aether_net::devnet_node_id).collect(),
+            )
         }
     };
     let cfg = chain_config(chain_id, &genesis);
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(|e| e.to_string())?;
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
     rt.block_on(async move {
         let store = aether_node::store::Store::open(&std::path::Path::new(&data).join("state.redb")).map_err(|e| e.to_string())?;
         let upstream = Arc::new(if from_rpc.is_empty() {
@@ -1487,39 +1732,75 @@ fn run_follow(
     })
 }
 
-fn run_dkg(p2p: P2pArgs, chain_id: u64, data: String, round: u64, genesis: aether_node::roster::Genesis) {
-    tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,commonware=warn".into())).init();
+fn run_dkg(
+    p2p: P2pArgs,
+    chain_id: u64,
+    data: String,
+    round: u64,
+    genesis: aether_node::roster::Genesis,
+) {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "info,commonware=warn".into()),
+        )
+        .init();
     let dir = std::path::PathBuf::from(&data);
     std::fs::create_dir_all(&dir).expect("data dir");
     let out_path = dir.join("threshold.json");
-    let executor = cw_tokio::Runner::new(cw_tokio::Config::new().with_storage_directory(dir.join("dkg-runtime")));
+    let executor = cw_tokio::Runner::new(
+        cw_tokio::Config::new().with_storage_directory(dir.join("dkg-runtime")),
+    );
     let (mut public, dir_out) = (p2p.roster.to_file(chain_id), dir.clone());
     // Genesis facts survive the ceremony: the network.json it writes still names the faucet.
     public.faucet = genesis.faucet;
-    public.registrar = genesis.registrar.map(|(x, y)| format!("{}{}", hex::encode(x), hex::encode(y)));
+    public.registrar = genesis
+        .registrar
+        .map(|(x, y)| format!("{}{}", hex::encode(x), hex::encode(y)));
     public.epoch_blocks = (genesis.epoch_blocks != 0).then_some(genesis.epoch_blocks);
     public.min_streak = genesis.min_streak;
     public.draw_epochs = genesis.draw_epochs;
+    public.node_rewards = genesis.node_rewards.then_some(true);
     let result = executor.start(async move |context| {
         // Accept incoming validator links (the node's RPC is not needed here).
-        let _router = aether_node::p2p::open_public(&p2p).await.map(|ep| aether_net::serve_p2p(ep, loopback(p2p.port)));
-        let (mut network, mut oracle) = lookup::Network::new(context.child("network"), aether_node::p2p::config(&p2p, b"_DKG"));
+        let _router = aether_node::p2p::open_public(&p2p)
+            .await
+            .map(|ep| aether_net::serve_p2p(ep, loopback(p2p.port)));
+        let (mut network, mut oracle) = lookup::Network::new(
+            context.child("network"),
+            aether_node::p2p::config(&p2p, b"_DKG"),
+        );
         oracle.track(0, aether_node::p2p::peer_addresses(&p2p));
         let (sender, receiver) = network.register(0, Quota::per_second(NZU32!(256)));
         network.start();
         tracing::info!(index = p2p.index, n = p2p.n, round, "dkg: started");
-        aether_node::dkg::run(p2p.keys.signer.clone(), aether_node::dkg::Round::dkg(p2p.validators(), round), None, sender, receiver, Default::default()).await
+        aether_node::dkg::run(
+            p2p.keys.signer.clone(),
+            aether_node::dkg::Round::dkg(p2p.validators(), round),
+            None,
+            sender,
+            receiver,
+            Default::default(),
+        )
+        .await
     });
     match result {
         Ok(None) => unreachable!("every DKG participant is a player"),
         Ok(Some((output, share))) => {
             let file = aether_node::dkg::KeyFile::new(round, &output, &share);
-            write_secret(&out_path, &serde_json::to_vec_pretty(&file).expect("key file serializes"));
+            write_secret(
+                &out_path,
+                &serde_json::to_vec_pretty(&file).expect("key file serializes"),
+            );
             // network.json now also carries the committee identity wallets pin.
             public.identity = Some(file.identity.clone());
             public.round = round;
             public.output = Some(file.output.clone());
-            std::fs::write(dir_out.join("network.json"), serde_json::to_vec_pretty(&public).expect("json")).expect("write network.json");
+            std::fs::write(
+                dir_out.join("network.json"),
+                serde_json::to_vec_pretty(&public).expect("json"),
+            )
+            .expect("write network.json");
             println!("committee identity: {}", file.identity);
             println!("secret share written to {} (mode 600)", out_path.display());
         }
@@ -1539,12 +1820,15 @@ fn committee_keys(
     expected_round: Option<u64>,
 ) -> (
     commonware_utils::ordered::Set<PublicKey>,
-    commonware_cryptography::bls12381::primitives::sharing::Sharing<commonware_cryptography::bls12381::primitives::variant::MinSig>,
+    commonware_cryptography::bls12381::primitives::sharing::Sharing<
+        commonware_cryptography::bls12381::primitives::variant::MinSig,
+    >,
     commonware_cryptography::bls12381::primitives::group::Share,
 ) {
     let path = std::path::Path::new(data).join("threshold.json");
     if let Ok(bytes) = std::fs::read(&path) {
-        let file: aether_node::dkg::KeyFile = serde_json::from_slice(&bytes).expect("threshold.json");
+        let file: aether_node::dkg::KeyFile =
+            serde_json::from_slice(&bytes).expect("threshold.json");
         if let Some(r) = expected_round {
             assert_eq!(
                 file.round, r,
@@ -1552,23 +1836,45 @@ fn committee_keys(
                 file.round
             );
         }
-        let (output, share) = file.decode(validators.len() as u32).expect("threshold.json decodes");
-        assert_eq!(output.players(), validators, "threshold.json is for a different validator set");
+        let (output, share) = file
+            .decode(validators.len() as u32)
+            .expect("threshold.json decodes");
+        assert_eq!(
+            output.players(),
+            validators,
+            "threshold.json is for a different validator set"
+        );
         tracing::info!(identity = %file.identity, "committee key from DKG");
         return (output.players().clone(), output.public().clone(), share);
     }
     let n = validators.len() as u64;
-    assert_eq!(validators, &aether_node::p2p::validators(n), "no threshold.json for this network: run `aether dkg --network …` first");
-    tracing::warn!("no threshold.json: using the devnet dealer's shares (every share is public knowledge)");
+    assert_eq!(
+        validators,
+        &aether_node::p2p::validators(n),
+        "no threshold.json for this network: run `aether dkg --network …` first"
+    );
+    tracing::warn!(
+        "no threshold.json: using the devnet dealer's shares (every share is public knowledge)"
+    );
     let (participants, polynomial, shares) = aether_light::devnet_threshold(n);
-    let share = shares.into_iter().find(|(pk, _)| pk == me).map(|(_, s)| s).expect("key is a validator");
+    let share = shares
+        .into_iter()
+        .find(|(pk, _)| pk == me)
+        .map(|(_, s)| s)
+        .expect("key is a validator");
     (participants, polynomial, share)
 }
 
 fn write_secret(path: &std::path::Path, bytes: &[u8]) {
     use std::io::Write as _;
     use std::os::unix::fs::OpenOptionsExt as _;
-    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path).expect("open key file");
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .expect("open key file");
     f.write_all(bytes).expect("write key file");
 }
 
@@ -1594,7 +1900,11 @@ fn spawn_inclusion_lists<S, R>(
     let (send_tx, mut send_rx) = tokio::sync::mpsc::unbounded_channel::<InclusionList>();
     tokio::spawn(async move {
         while let Some(il) = send_rx.recv().await {
-            let _ = out.send(Recipients::All, serde_json::to_vec(&il).expect("list serializes"), false);
+            let _ = out.send(
+                Recipients::All,
+                serde_json::to_vec(&il).expect("list serializes"),
+                false,
+            );
         }
     });
     let (pub_chain, pub_send) = (chain.clone(), send_tx.clone());
@@ -1613,14 +1923,19 @@ fn spawn_inclusion_lists<S, R>(
             }
             last = hashes;
             let il = InclusionList::sign(&key, index, height, txs);
-            pub_chain.lock().inclusion.accept(&il, std::time::Instant::now());
+            pub_chain
+                .lock()
+                .inclusion
+                .accept(&il, std::time::Instant::now());
             tracing::info!(height, txs = il.txs.len(), "published inclusion list");
             let _ = pub_send.send(il);
         }
     });
     tokio::spawn(async move {
         while let Ok((_peer, msg)) = inbox.recv().await {
-            let Ok(il) = serde_json::from_slice::<InclusionList>(msg.as_ref()) else { continue };
+            let Ok(il) = serde_json::from_slice::<InclusionList>(msg.as_ref()) else {
+                continue;
+            };
             let fin = chain.lock().finalized.height;
             if il.height + 16 < fin || il.height > fin + 16 {
                 continue;
@@ -1629,7 +1944,10 @@ fn spawn_inclusion_lists<S, R>(
                 tracing::debug!(member = il.member, ?e, "rejected inclusion list");
                 continue;
             }
-            let fresh = chain.lock().inclusion.accept(&il, std::time::Instant::now());
+            let fresh = chain
+                .lock()
+                .inclusion
+                .accept(&il, std::time::Instant::now());
             if fresh {
                 let _ = send_tx.send(il);
             }
@@ -1641,8 +1959,13 @@ fn spawn_inclusion_lists<S, R>(
 
 fn call(rpc: &str, method: &str, params: Value) -> Result<Value, String> {
     let body = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
-    let resp: Value =
-        reqwest::blocking::Client::new().post(rpc).json(&body).send().map_err(|e| format!("rpc {rpc}: {e}"))?.json().map_err(|e| e.to_string())?;
+    let resp: Value = reqwest::blocking::Client::new()
+        .post(rpc)
+        .json(&body)
+        .send()
+        .map_err(|e| format!("rpc {rpc}: {e}"))?
+        .json()
+        .map_err(|e| e.to_string())?;
     if let Some(err) = resp.get("error") {
         return Err(err.to_string());
     }
@@ -1663,8 +1986,17 @@ fn dev_address(dev: u8) -> Result<Address, String> {
 const TIP: u128 = 1_000_000_000;
 
 fn fee_caps(status: &Value) -> Result<aether_types::FeeVector, String> {
-    let get = |k: &str| status["base_fee"][k].as_str().and_then(|v| v.parse::<u128>().ok()).ok_or(format!("status has no base_fee.{k}"));
-    Ok(aether_types::FeeVector { exec: get("exec")? * 2 + TIP, state: 0, prove: get("prove")? * 2 })
+    let get = |k: &str| {
+        status["base_fee"][k]
+            .as_str()
+            .and_then(|v| v.parse::<u128>().ok())
+            .ok_or(format!("status has no base_fee.{k}"))
+    };
+    Ok(aether_types::FeeVector {
+        exec: get("exec")? * 2 + TIP,
+        state: 0,
+        prove: get("prove")? * 2,
+    })
 }
 
 fn submit(rpc: &str, dev: u8, nonce: Option<u64>, c: EvmCall, wait: bool) -> Result<Value, String> {
@@ -1676,10 +2008,12 @@ fn submit(rpc: &str, dev: u8, nonce: Option<u64>, c: EvmCall, wait: bool) -> Res
         Some(n) => n,
         None => {
             let hex = call(rpc, "eth_getTransactionCount", json!([from]))?;
-            u64::from_str_radix(hex.as_str().unwrap_or("0x0").trim_start_matches("0x"), 16).map_err(|e| e.to_string())?
+            u64::from_str_radix(hex.as_str().unwrap_or("0x0").trim_start_matches("0x"), 16)
+                .map_err(|e| e.to_string())?
         }
     };
-    let tx = sign_call_with(&signer, chain_id, nonce, fee_caps(&status)?, TIP, &c).map_err(|e| e.to_string())?;
+    let tx = sign_call_with(&signer, chain_id, nonce, fee_caps(&status)?, TIP, &c)
+        .map_err(|e| e.to_string())?;
     let r = call(rpc, "aether_sendTransaction", json!([tx]))?;
     let hash: TxHash = serde_json::from_value(r["hash"].clone()).map_err(|e| e.to_string())?;
     println!("tx {hash}  from {from}  nonce {nonce}  (signed with P-256)");
@@ -1690,7 +2024,10 @@ fn submit(rpc: &str, dev: u8, nonce: Option<u64>, c: EvmCall, wait: bool) -> Res
         let r = call(rpc, "aether_getReceipt", json!([hash]))?;
         if r.get("receipt").is_some() {
             let rc = &r["receipt"];
-            println!("finalized in block {}  success={}  gas={}  prove_gas={}", r["height"], rc["success"], rc["gas_used"], rc["prove_gas"]);
+            println!(
+                "finalized in block {}  success={}  gas={}  prove_gas={}",
+                r["height"], rc["success"], rc["gas_used"], rc["prove_gas"]
+            );
             return Ok(r);
         }
         std::thread::sleep(Duration::from_millis(500));
@@ -1700,22 +2037,37 @@ fn submit(rpc: &str, dev: u8, nonce: Option<u64>, c: EvmCall, wait: bool) -> Res
 
 /// Fetch the finalized child block H+1 that commits to the state root after H,
 /// and verify its certificate against the validator set.
-fn trusted(validators: u64, identity: Option<String>) -> Result<aether_light::ValidatorSet, String> {
+fn trusted(
+    validators: u64,
+    identity: Option<String>,
+) -> Result<aether_light::ValidatorSet, String> {
     match identity {
-        Some(hex) => aether_light::ValidatorSet::from_hex(&hex).map_err(|e| format!("identity: {e}")),
+        Some(hex) => {
+            aether_light::ValidatorSet::from_hex(&hex).map_err(|e| format!("identity: {e}"))
+        }
         None => Ok(aether_light::ValidatorSet::devnet(validators)),
     }
 }
 
-fn certified_anchor(rpc: &str, height: u64, set: &aether_light::ValidatorSet) -> Result<aether_light::VerifiedBlock, String> {
+fn certified_anchor(
+    rpc: &str,
+    height: u64,
+    set: &aether_light::ValidatorSet,
+) -> Result<aether_light::VerifiedBlock, String> {
     for _ in 0..40 {
         let v = call(rpc, "aether_getFinalized", json!([height + 1]))?;
         if !v.is_null() {
-            let block = aether_light::from_hex(v["block"].as_str().unwrap_or_default()).map_err(|e| e.to_string())?;
-            let fin = aether_light::from_hex(v["finalization"].as_str().unwrap_or_default()).map_err(|e| e.to_string())?;
+            let block = aether_light::from_hex(v["block"].as_str().unwrap_or_default())
+                .map_err(|e| e.to_string())?;
+            let fin = aether_light::from_hex(v["finalization"].as_str().unwrap_or_default())
+                .map_err(|e| e.to_string())?;
             let links = v["links"]
                 .as_array()
-                .map(|a| a.iter().map(|l| aether_light::from_hex(l.as_str().unwrap_or_default())).collect::<Result<Vec<_>, _>>())
+                .map(|a| {
+                    a.iter()
+                        .map(|l| aether_light::from_hex(l.as_str().unwrap_or_default()))
+                        .collect::<Result<Vec<_>, _>>()
+                })
                 .transpose()
                 .map_err(|e| e.to_string())?
                 .unwrap_or_default();
@@ -1732,33 +2084,53 @@ fn verified_balance(rpc: &str, a: Address, set: &aether_light::ValidatorSet) -> 
     let proof: Proof = serde_json::from_value(v["proof"].clone()).map_err(|e| e.to_string())?;
     let height = v["height"].as_u64().unwrap_or_default();
     let anchor = certified_anchor(rpc, height, set)?;
-    let data = aether_light::verify_account(&anchor, &a, &proof).map_err(|e| format!("PROOF REJECTED: {e}"))?.unwrap_or_default();
+    let data = aether_light::verify_account(&anchor, &a, &proof)
+        .map_err(|e| format!("PROOF REJECTED: {e}"))?
+        .unwrap_or_default();
     let claimed: U256 = serde_json::from_value(v["balance"].clone()).map_err(|e| e.to_string())?;
     if U256::from(data.balance) != claimed {
-        return Err(format!("server claimed {claimed} but the proof says {}", data.balance));
+        return Err(format!(
+            "server claimed {claimed} but the proof says {}",
+            data.balance
+        ));
     }
     println!("address   {a}");
     println!("balance   {} wei", data.balance);
     println!("nonce     {}", data.nonce);
     println!("verified  ✓ finality certificate of block {}: one BLS threshold signature under committee key {}…", anchor.height, &set.identity_hex()[..16]);
-    println!("          ✓ it commits state root {} (after block {height})", anchor.parent_state_root);
+    println!(
+        "          ✓ it commits state root {} (after block {height})",
+        anchor.parent_state_root
+    );
     println!("          ✓ EIP-7864 proof for this address verifies under that root");
     Ok(())
 }
 
-fn verified_storage(rpc: &str, a: Address, slot: U256, set: &aether_light::ValidatorSet) -> Result<(), String> {
+fn verified_storage(
+    rpc: &str,
+    a: Address,
+    slot: U256,
+    set: &aether_light::ValidatorSet,
+) -> Result<(), String> {
     let v = call(rpc, "aether_getStorage", json!([a, slot]))?;
     let proof: Proof = serde_json::from_value(v["proof"].clone()).map_err(|e| e.to_string())?;
     let height = v["height"].as_u64().unwrap_or_default();
     let anchor = certified_anchor(rpc, height, set)?;
-    let value = aether_light::verify_storage(&anchor, &a, slot, &proof).map_err(|e| format!("PROOF REJECTED: {e}"))?;
+    let value = aether_light::verify_storage(&anchor, &a, slot, &proof)
+        .map_err(|e| format!("PROOF REJECTED: {e}"))?;
     println!("{a}[{slot}] = {value}");
-    println!("verified  ✓ finality certificate of block {} + proof under committed root {}", anchor.height, anchor.parent_state_root);
+    println!(
+        "verified  ✓ finality certificate of block {} + proof under committed root {}",
+        anchor.height, anchor.parent_state_root
+    );
     Ok(())
 }
 
 fn print_blocks(v: &Value) {
-    println!("{:>7}  {:>4}  {:>9}  {:<66}  proposer", "height", "txs", "gas", "state root after block");
+    println!(
+        "{:>7}  {:>4}  {:>9}  {:<66}  proposer",
+        "height", "txs", "gas", "state root after block"
+    );
     for b in v.as_array().into_iter().flatten() {
         println!(
             "{:>7}  {:>4}  {:>9}  {:<66}  {}",

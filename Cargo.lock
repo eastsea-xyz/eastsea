@@ -186,6 +186,7 @@ dependencies = [
  "aether-light",
  "aether-net",
  "aether-proving",
+ "aether-rewards",
  "aether-state",
  "aether-types",
  "alloy-primitives",
@@ -234,6 +235,14 @@ dependencies = [
  "blake3",
  "postcard",
  "serde",
+]
+
+[[package]]
+name = "aether-rewards"
+version = "0.2.0"
+dependencies = [
+ "aether-execution",
+ "alloy-primitives",
 ]
 
 [[package]]

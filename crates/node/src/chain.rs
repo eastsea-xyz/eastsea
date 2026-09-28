@@ -7,7 +7,9 @@ use crate::block::{Block, Payload, PublicKey};
 use crate::inclusion::{self, InclusionPool};
 use crate::store::{Commit, Store, StoreError};
 use aether_crypto::{address_of, PublicKey as AetherPk};
-use aether_execution::{execute_block, fees, BlockContext, BlockOutcome, FeePolicy, Receipt, WorldState};
+use aether_execution::{
+    execute_block, fees, BlockContext, BlockOutcome, FeePolicy, Receipt, WorldState,
+};
 use aether_hash::ChainHasher;
 use aether_types::{Address, FeeVector, GasVector, SignerScheme, TxEnvelope, TxHash, B256, U256};
 use commonware_consensus::Heightable;
@@ -48,6 +50,11 @@ pub struct ChainConfig {
     /// node also seals every 8192 finalized blocks into an era file. Bound to
     /// the genesis hash, so nodes can never disagree on it. Off on 7780.
     pub history_v2: bool,
+    /// Node rewards (docs/design/15-node-rewards.md): half of each block's
+    /// issuance to the operators whose Macs beaconed, half to provers, 1/16 cap
+    /// per operator. A new network's genesis parameter (needs the registry);
+    /// off keeps the testnet's rules and genesis.
+    pub node_rewards: bool,
 }
 
 impl ChainConfig {
@@ -57,15 +64,26 @@ impl ChainConfig {
             s.set_balance(*a, *v).expect("genesis balance fits u128");
         }
         // The account contract P-256 accounts delegate to (EIP-7702) for batched calls.
-        s.set_code(aether_execution::AETHER_ACCOUNT, aether_execution::aether_account_code()).expect("predeploy");
+        s.set_code(
+            aether_execution::AETHER_ACCOUNT,
+            aether_execution::aether_account_code(),
+        )
+        .expect("predeploy");
         if let Some(key) = self.registrar {
             let d = aether_execution::registry::Params::default();
             let params = aether_execution::registry::Params {
-                epoch_blocks: if self.epoch_blocks == 0 { d.epoch_blocks } else { self.epoch_blocks },
+                epoch_blocks: if self.epoch_blocks == 0 {
+                    d.epoch_blocks
+                } else {
+                    self.epoch_blocks
+                },
                 min_streak: self.min_streak.unwrap_or(d.min_streak),
                 draw_epochs: self.draw_epochs.unwrap_or(d.draw_epochs),
             };
             aether_execution::registry::predeploy(&mut s, key, params).expect("registry predeploy");
+            if self.node_rewards {
+                aether_rewards::enable(&mut s);
+            }
         }
         s
     }
@@ -84,13 +102,19 @@ pub fn dev_accounts(n: u8) -> Vec<(u8, Address)> {
     (1..=n)
         .map(|i| {
             let s = aether_crypto::P256Signer::from_seed(&dev_seed(i)).expect("valid dev seed");
-            (i, address_of(&aether_crypto::Signer::public_key(&s)).expect("address"))
+            (
+                i,
+                address_of(&aether_crypto::Signer::public_key(&s)).expect("address"),
+            )
         })
         .collect()
 }
 
 pub fn leader_address(leader: &PublicKey) -> Address {
-    let pk = AetherPk { scheme: SignerScheme::Ed25519, bytes: leader.as_ref().to_vec() };
+    let pk = AetherPk {
+        scheme: SignerScheme::Ed25519,
+        bytes: leader.as_ref().to_vec(),
+    };
     address_of(&pk).expect("ed25519 address")
 }
 
@@ -118,7 +142,9 @@ pub struct Executed {
     pub schedule: Arc<crate::upgrade::Schedule>,
     /// What a proof of this block proves, and its escrow share (the child records both, protocol 2).
     pub statement: Statement,
-    /// Proofs this block paid: (proven height, prover, amount).
+    /// Proofs this block paid: (proven height, prover, amount). Node rewards
+    /// paid by the first block of an epoch appear with the block's own height
+    /// as the proven height (no block proves itself).
     pub payouts: Vec<(u64, Address, U256)>,
 }
 
@@ -177,7 +203,13 @@ pub fn meta_digest(
 
 impl Executed {
     pub fn meta_digest(&self) -> B256 {
-        meta_digest(&self.excess, self.handoff.as_deref(), self.seed.as_deref(), &self.schedule, &self.statement)
+        meta_digest(
+            &self.excess,
+            self.handoff.as_deref(),
+            self.seed.as_deref(),
+            &self.schedule,
+            &self.statement,
+        )
     }
 
     /// The protocol whose rules the block after this one follows.
@@ -314,7 +346,11 @@ impl Chain {
             excess: GasVector::default(),
             handoff: None,
             seed: None,
-            history: Arc::new(aether_state::mmr::Mmr::default().append(&ChainHasher::new(), 0, &digest_bytes(&genesis.digest()))),
+            history: Arc::new(aether_state::mmr::Mmr::default().append(
+                &ChainHasher::new(),
+                0,
+                &digest_bytes(&genesis.digest()),
+            )),
             schedule: Arc::new(Vec::new()),
             statement: Statement::default(),
             payouts: vec![],
@@ -341,7 +377,14 @@ impl Chain {
             proposal: None,
             history_index: Some(Arc::new({
                 let mut idx = aether_state::mmr::EraIndex::default();
-                idx.push(&ChainHasher::new(), aether_state::mmr::leaf(&ChainHasher::new(), 0, &digest_bytes(&genesis.digest())));
+                idx.push(
+                    &ChainHasher::new(),
+                    aether_state::mmr::leaf(
+                        &ChainHasher::new(),
+                        0,
+                        &digest_bytes(&genesis.digest()),
+                    ),
+                );
                 idx
             })),
             handoff_ready: None,
@@ -381,7 +424,8 @@ impl Chain {
         match store.load()? {
             Some(cp) => {
                 use commonware_codec::DecodeExt;
-                let digest = Digest::decode(cp.digest.as_slice()).map_err(|_| StoreError::Corrupt("digest"))?;
+                let digest = Digest::decode(cp.digest.as_slice())
+                    .map_err(|_| StoreError::Corrupt("digest"))?;
                 let summary = cp.blocks.get(&cp.height).cloned();
                 let mut state = cp.state;
                 state.clear_journal();
@@ -434,7 +478,10 @@ impl Chain {
                 let mut g = chain.lock();
                 let genesis_exec = g.finalized.clone();
                 let summary = g.blocks.get(&0).cloned().expect("genesis summary");
-                let (genesis_bytes, empty) = (commonware_codec::Encode::encode(&genesis), aether_state::mmr::Mmr::default());
+                let (genesis_bytes, empty) = (
+                    commonware_codec::Encode::encode(&genesis),
+                    aether_state::mmr::Mmr::default(),
+                );
                 store.commit(Commit {
                     height: 0,
                     digest: digest_bytes(&genesis_exec.digest),
@@ -447,7 +494,10 @@ impl Chain {
                     history: &genesis_exec.history,
                     schedule: &genesis_exec.schedule,
                     statement: &genesis_exec.statement,
-                    staged: g.cfg.history_v2.then(|| crate::store::Staged { block: &genesis_bytes, era_start: Some(&empty) }),
+                    staged: g.cfg.history_v2.then(|| crate::store::Staged {
+                        block: &genesis_bytes,
+                        era_start: Some(&empty),
+                    }),
                 })?;
                 g.store = Some(store);
             }
@@ -479,14 +529,21 @@ impl Chain {
     /// Key rounds only go up: a handoff built on `parent` must carry a round
     /// above the last handoff's in its ancestry (so none is accepted twice).
     fn round_floor(parent: &Executed) -> u64 {
-        parent.handoff.as_ref().map(|p| p.handoff.round).unwrap_or(0)
+        parent
+            .handoff
+            .as_ref()
+            .map(|p| p.handoff.round)
+            .unwrap_or(0)
     }
 
     /// Whether this node's voting set has handed over before the block after
     /// `parent`: it then builds and votes for nothing past the switch.
     pub fn retired_after(&self, parent: &Executed) -> bool {
         let start = self.lock().epoch_start;
-        parent.handoff.as_ref().is_some_and(|p| p.switch > start && parent.height + 1 >= p.switch)
+        parent
+            .handoff
+            .as_ref()
+            .is_some_and(|p| p.switch > start && parent.height + 1 >= p.switch)
     }
 
     /// The handoff state after `block`: the parent's, or the one it carries
@@ -497,21 +554,35 @@ impl Chain {
         parent: &Executed,
         carried: Option<&aether_light::block::Handoff>,
     ) -> Result<Option<Arc<crate::handoff::Pending>>, ChainError> {
-        let Some(h) = carried else { return Ok(parent.handoff.clone()) };
+        let Some(h) = carried else {
+            return Ok(parent.handoff.clone());
+        };
         if parent.handoff.as_ref().is_some_and(|p| height < p.switch) {
-            return Err(ChainError::BadHandoff("another handoff is still pending".into()));
+            return Err(ChainError::BadHandoff(
+                "another handoff is still pending".into(),
+            ));
         }
         // Rounds only go up: a signed handoff cannot be replayed later.
         if h.round <= Self::round_floor(parent) {
-            return Err(ChainError::BadHandoff(format!("handoff round {} is not above {}", h.round, Self::round_floor(parent))));
+            return Err(ChainError::BadHandoff(format!(
+                "handoff round {} is not above {}",
+                h.round,
+                Self::round_floor(parent)
+            )));
         }
         let (identity, chain_id) = {
             let g = self.lock();
             (g.identity, g.cfg.chain_id)
         };
-        let identity = identity.ok_or_else(|| ChainError::BadHandoff("no committee identity (devnet dealer keys)".into()))?;
+        let identity = identity.ok_or_else(|| {
+            ChainError::BadHandoff("no committee identity (devnet dealer keys)".into())
+        })?;
         crate::handoff::verify(chain_id, &identity, h).map_err(ChainError::BadHandoff)?;
-        Ok(Some(Arc::new(crate::handoff::Pending { at: height, switch: height + crate::handoff::DELAY, handoff: h.clone() })))
+        Ok(Some(Arc::new(crate::handoff::Pending {
+            at: height,
+            switch: height + crate::handoff::DELAY,
+            handoff: h.clone(),
+        })))
     }
 
     /// After a restart: a finalized handoff still ends this node's epoch at its
@@ -520,13 +591,18 @@ impl Chain {
         let mut g = self.lock();
         if let Some(p) = g.finalized.handoff.clone() {
             if p.switch > g.epoch_start {
-                g.epoch_end.store(p.switch - 1, std::sync::atomic::Ordering::SeqCst);
+                g.epoch_end
+                    .store(p.switch - 1, std::sync::atomic::Ordering::SeqCst);
             }
         }
         let current = current_draw(&g.finalized.state, g.finalized.height);
         let load = |key: &str| g.store.as_ref().and_then(|s| s.meta(key).ok().flatten());
-        let proposal: Option<(u64, Vec<(String, String)>)> = load(PROPOSAL).and_then(|b| serde_json::from_slice(&b).ok()).flatten();
-        let pool: Option<(u64, Vec<(String, String)>)> = load(POOL).and_then(|b| serde_json::from_slice(&b).ok()).flatten();
+        let proposal: Option<(u64, Vec<(String, String)>)> = load(PROPOSAL)
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .flatten();
+        let pool: Option<(u64, Vec<(String, String)>)> = load(POOL)
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .flatten();
         g.proposal = proposal.filter(|(d, _)| *d == current);
         g.pool = pool.filter(|(d, _)| *d == current);
     }
@@ -539,16 +615,23 @@ impl Chain {
         parent: &Executed,
         carried: Option<&aether_light::block::Seed>,
     ) -> Result<Option<Arc<(u64, aether_light::block::Seed)>>, ChainError> {
-        let Some(s) = carried else { return Ok(parent.seed.clone()) };
+        let Some(s) = carried else {
+            return Ok(parent.seed.clone());
+        };
         let draw = current_draw(&parent.state, height);
         if s.draw != draw || draw == 0 || parent.seed.as_ref().is_some_and(|p| p.1.draw >= draw) {
-            return Err(ChainError::BadHandoff(format!("seed for draw {} in draw {draw}", s.draw)));
+            return Err(ChainError::BadHandoff(format!(
+                "seed for draw {} in draw {draw}",
+                s.draw
+            )));
         }
         let (identity, chain_id) = {
             let g = self.lock();
             (g.identity, g.cfg.chain_id)
         };
-        let identity = identity.ok_or_else(|| ChainError::BadHandoff("no committee identity (devnet dealer keys)".into()))?;
+        let identity = identity.ok_or_else(|| {
+            ChainError::BadHandoff("no committee identity (devnet dealer keys)".into())
+        })?;
         crate::handoff::verify_seed(chain_id, &identity, s).map_err(ChainError::BadHandoff)?;
         Ok(Some(Arc::new((height, s.clone()))))
     }
@@ -557,7 +640,8 @@ impl Chain {
     pub fn seed_for(&self, parent: &Executed) -> Option<aether_light::block::Seed> {
         let ready = self.lock().seed_ready.clone()?;
         let draw = current_draw(&parent.state, parent.height + 1);
-        (ready.draw == draw && parent.seed.as_ref().is_none_or(|p| p.1.draw < draw)).then_some(ready)
+        (ready.draw == draw && parent.seed.as_ref().is_none_or(|p| p.1.draw < draw))
+            .then_some(ready)
     }
 
     /// The handoff to put in a block built on `parent`, if one is ready and allowed.
@@ -576,12 +660,19 @@ impl Chain {
     /// Execution context of `block` on top of `parent` (base fees derive from the parent's excess).
     pub fn block_context(cfg: &ChainConfig, block: &Block, parent: &Executed) -> BlockContext {
         let proposer = leader_address(&block.context.leader);
-        let fees = cfg.fees.then(|| FeePolicy { base: fees::base_fee(parent.excess, cfg.limits), proposer });
+        let fees = cfg.fees.then(|| FeePolicy {
+            base: fees::base_fee(parent.excess, cfg.limits),
+            proposer,
+        });
         BlockContext {
             chain_id: cfg.chain_id,
             number: block.height().get(),
             timestamp: block.timestamp / 1000,
-            beneficiary: if fees.is_some() { aether_execution::FEE_COLLECTOR } else { proposer },
+            beneficiary: if fees.is_some() {
+                aether_execution::FEE_COLLECTOR
+            } else {
+                proposer
+            },
             limits: cfg.limits,
             fees,
         }
@@ -605,11 +696,20 @@ impl Chain {
     /// verified by the quorum that certified it, so this node applies them
     /// without asking its own verifier (whose local failure must never stop it
     /// from following the chain).
-    fn execute_certified(&self, block: &Block, parent: &Executed) -> Result<Arc<Executed>, ChainError> {
+    fn execute_certified(
+        &self,
+        block: &Block,
+        parent: &Executed,
+    ) -> Result<Arc<Executed>, ChainError> {
         self.execute_as(block, parent, true)
     }
 
-    fn execute_as(&self, block: &Block, parent: &Executed, certified: bool) -> Result<Arc<Executed>, ChainError> {
+    fn execute_as(
+        &self,
+        block: &Block,
+        parent: &Executed,
+        certified: bool,
+    ) -> Result<Arc<Executed>, ChainError> {
         if let Some(done) = self.get(&block.digest()) {
             return Ok(done);
         }
@@ -631,12 +731,18 @@ impl Chain {
             return Err(ChainError::BadPayload);
         }
         let (pre, payouts) = self.pre_state(parent, payload.version, &payload.proofs, certified)?;
-        let schedule = self.next_schedule(block.height().get(), parent, payload.upgrade.as_ref())?;
+        let schedule =
+            self.next_schedule(block.height().get(), parent, payload.upgrade.as_ref())?;
         let cfg = self.cfg();
         let ctx = Self::block_context(&cfg, block, parent);
-        let mut out = execute_block(&pre, &ctx, &payload.txs).map_err(|e| ChainError::Exec(format!("{e:?}")))?;
+        let mut out = execute_block(&pre, &ctx, &payload.txs)
+            .map_err(|e| ChainError::Exec(format!("{e:?}")))?;
         // Protocol-1 blocks keep no statement (their metadata stays protocol-1).
-        let statement = if records_statement(&cfg, &payload) { statement(&ctx, &payload.txs, &pre, &out) } else { [0; 32] };
+        let statement = if records_statement(&cfg, &payload) {
+            statement(&ctx, &payload.txs, &pre, &out)
+        } else {
+            [0; 32]
+        };
         with_activation(&pre, &mut out);
         if out.bal != payload.bal {
             return Err(ChainError::BalMismatch);
@@ -647,7 +753,9 @@ impl Chain {
         let handoff = self.next_handoff(block.height().get(), parent, payload.handoff.as_ref())?;
         let seed = self.next_seed(block.height().get(), parent, payload.seed.as_ref())?;
         let tx_hashes = payload.txs.iter().map(aether_execution::tx_hash).collect();
-        Ok(self.remember(block, parent, &ctx, out, tx_hashes, handoff, seed, schedule, statement, payouts))
+        Ok(self.remember(
+            block, parent, &ctx, out, tx_hashes, handoff, seed, schedule, statement, payouts,
+        ))
     }
 
     /// The state the block after `parent` executes on: the parent's, plus the
@@ -667,36 +775,57 @@ impl Chain {
         };
         let want = parent.next_protocol();
         if version != want {
-            return Err(ChainError::Protocol(format!("block under protocol {version}, scheduled {want}")));
+            return Err(ChainError::Protocol(format!(
+                "block under protocol {version}, scheduled {want}"
+            )));
         }
         if version > running {
-            return Err(ChainError::Protocol(format!("UPGRADE REQUIRED: the chain runs protocol {version}, this node {running}")));
+            return Err(ChainError::Protocol(format!(
+                "UPGRADE REQUIRED: the chain runs protocol {version}, this node {running}"
+            )));
         }
         let before = crate::upgrade::protocol_at(&parent.schedule, parent.height);
         if version < 2 && !proofs.is_empty() {
             return Err(ChainError::Protocol("proofs before protocol 2".into()));
         }
         let records = version >= 2 && parent.statement != Statement::default();
-        let rotates = parent.schedule.iter().any(|a| a.at == parent.height + 1 && a.registrar.is_some());
+        let rotates = parent
+            .schedule
+            .iter()
+            .any(|a| a.at == parent.height + 1 && a.registrar.is_some());
         // The record of the block that just left the claim window goes (so state stays bounded).
         let expired = (parent.height + 1).checked_sub(aether_execution::proofs::EXPIRY + 1);
         // Under history v2 empty blocks record nothing, so pruning cannot wait for a record.
-        let stale = history_v2 && expired.is_some_and(|old| aether_execution::proofs::recorded(&parent.state, old));
-        if version == before && !records && !rotates && !stale && proofs.is_empty() {
+        let stale = history_v2
+            && expired.is_some_and(|old| aether_execution::proofs::recorded(&parent.state, old));
+        let distributes = aether_rewards::distributes(&parent.state, parent.height + 1);
+        if version == before && !records && !rotates && !stale && !distributes && proofs.is_empty()
+        {
             return Ok((std::borrow::Cow::Borrowed(&parent.state), vec![]));
         }
         let mut state = parent.state.clone();
         // Its journal then holds only these system writes (see `with_activation`).
         state.clear_journal();
         for p in before + 1..=version {
-            migrate(p, &mut state).map_err(|e| ChainError::Protocol(format!("activating protocol {p}: {e}")))?;
+            migrate(p, &mut state)
+                .map_err(|e| ChainError::Protocol(format!("activating protocol {p}: {e}")))?;
         }
         // A committee-signed upgrade may replace the registrar key when it activates.
-        for (x, y) in parent.schedule.iter().filter(|a| a.at == parent.height + 1).filter_map(|a| a.registrar) {
+        for (x, y) in parent
+            .schedule
+            .iter()
+            .filter(|a| a.at == parent.height + 1)
+            .filter_map(|a| a.registrar)
+        {
             aether_execution::registry::set_registrar(&mut state, (x.0, y.0));
         }
         if records {
-            aether_execution::proofs::record(&mut state, parent.height, parent.statement.commitment, parent.statement.escrow);
+            aether_execution::proofs::record(
+                &mut state,
+                parent.height,
+                parent.statement.commitment,
+                parent.statement.escrow,
+            );
         }
         if records || stale {
             if let Some(old) = expired {
@@ -709,8 +838,24 @@ impl Chain {
                 true
             }
         }
-        let verifier: Option<&dyn ProofVerifier> = if certified { Some(&Certified) } else { verifier.as_deref() };
-        let payouts = pay_proofs(&mut state, parent.height + 1, proofs, verifier)?;
+        let verifier: Option<&dyn ProofVerifier> = if certified {
+            Some(&Certified)
+        } else {
+            verifier.as_deref()
+        };
+        let mut payouts = Vec::new();
+        if distributes {
+            // The last epoch's node rewards, credited to operators directly (no claim).
+            let d = aether_rewards::distribute(&mut state, parent.height + 1)
+                .map_err(|e| ChainError::Exec(format!("node rewards: {e}")))?;
+            payouts.extend(
+                d.paid
+                    .into_iter()
+                    .filter(|(_, a)| !a.is_zero())
+                    .map(|(op, a)| (parent.height + 1, op, a)),
+            );
+        }
+        payouts.extend(pay_proofs(&mut state, parent.height + 1, proofs, verifier)?);
         Ok((std::borrow::Cow::Owned(state), payouts))
     }
 
@@ -722,10 +867,17 @@ impl Chain {
         // Oldest first among the recent blocks: none left behind to expire.
         let pick = g.recent.iter().find_map(|b| {
             let h = b.height().get();
-            if g.attempted.contains(&h) || aether_execution::proofs::prover(&head.state, h).is_some() || !records_statement(&g.cfg, &b.payload()?) {
+            if g.attempted.contains(&h)
+                || aether_execution::proofs::prover(&head.state, h).is_some()
+                || !records_statement(&g.cfg, &b.payload()?)
+            {
                 return None;
             }
-            Some((g.executed.get(&b.digest())?.clone(), g.executed.get(&b.parent)?.clone(), b.clone()))
+            Some((
+                g.executed.get(&b.digest())?.clone(),
+                g.executed.get(&b.parent)?.clone(),
+                b.clone(),
+            ))
         })?;
         g.attempted.insert(pick.0.height);
         Some(pick)
@@ -735,19 +887,37 @@ impl Chain {
     /// `anchor` (which commits blocks 0..anchor), and the block's hash. Reads
     /// the era roots plus at most two eras' block hashes under the lock; the
     /// hashing happens outside it.
-    pub fn history_proof(&self, height: u64, anchor: u64) -> Result<(aether_state::mmr::MmrProof, String), String> {
+    pub fn history_proof(
+        &self,
+        height: u64,
+        anchor: u64,
+    ) -> Result<(aether_state::mmr::MmrProof, String), String> {
         use aether_state::mmr::ERA_LEN;
         let (index, hash, eras) = {
             let g = self.lock();
             if anchor == 0 || height >= anchor || anchor > g.finalized.height {
                 return Err("need height < anchor <= finalized height".into());
             }
-            let index = g.history_index.clone().ok_or("this node started from a checkpoint and keeps no early history")?;
-            let hash = g.blocks.get(&height).map(|b| b.hash.clone()).ok_or("block not kept here")?;
+            let index = g
+                .history_index
+                .clone()
+                .ok_or("this node started from a checkpoint and keeps no early history")?;
+            let hash = g
+                .blocks
+                .get(&height)
+                .map(|b| b.hash.clone())
+                .ok_or("block not kept here")?;
             let open = index.eras.len() as u64;
             let mut eras = BTreeMap::new();
-            for e in [height / ERA_LEN, anchor / ERA_LEN].into_iter().filter(|e| *e < open) {
-                let hashes: Vec<String> = g.blocks.range(e * ERA_LEN..(e + 1) * ERA_LEN).map(|(_, b)| b.hash.clone()).collect();
+            for e in [height / ERA_LEN, anchor / ERA_LEN]
+                .into_iter()
+                .filter(|e| *e < open)
+            {
+                let hashes: Vec<String> = g
+                    .blocks
+                    .range(e * ERA_LEN..(e + 1) * ERA_LEN)
+                    .map(|(_, b)| b.hash.clone())
+                    .collect();
                 eras.insert(e, hashes);
             }
             (index, hash, eras)
@@ -757,7 +927,13 @@ impl Chain {
             eras.get(&e)?
                 .iter()
                 .enumerate()
-                .map(|(i, x)| Some(aether_state::mmr::leaf(&h, e * ERA_LEN + i as u64, &hex::decode(x).ok()?.try_into().ok()?)))
+                .map(|(i, x)| {
+                    Some(aether_state::mmr::leaf(
+                        &h,
+                        e * ERA_LEN + i as u64,
+                        &hex::decode(x).ok()?.try_into().ok()?,
+                    ))
+                })
                 .collect()
         };
         let proof = index.prove(&h, anchor, height, leaves).ok_or("no proof")?;
@@ -773,8 +949,12 @@ impl Chain {
     pub fn recent_rewards(&self, prover: &Address, limit: usize) -> Vec<Value> {
         // Read the store without holding the chain lock (a long history must not stall consensus).
         let store = self.lock().store.clone();
-        let rows = store.and_then(|s| s.rewards(&prover.0 .0, limit).ok()).unwrap_or_default();
-        rows.iter().filter_map(|r| serde_json::from_slice(r).ok()).collect()
+        let rows = store
+            .and_then(|s| s.rewards(&prover.0 .0, limit).ok())
+            .unwrap_or_default();
+        rows.iter()
+            .filter_map(|r| serde_json::from_slice(r).ok())
+            .collect()
     }
 
     /// Keep a proof (verified by this node's verifier) for this node's next proposals.
@@ -787,11 +967,21 @@ impl Chain {
         self.add_proof_from(claim, true)
     }
 
-    fn add_proof_from(&self, claim: aether_light::block::ProofClaim, own: bool) -> Result<(), String> {
+    fn add_proof_from(
+        &self,
+        claim: aether_light::block::ProofClaim,
+        own: bool,
+    ) -> Result<(), String> {
         let open = |g: &Inner, h: u64| {
             let f = &g.finalized;
             aether_execution::proofs::claimable(&f.state, h, f.height + 1)
-                .or_else(|e| if h == f.height && aether_execution::proofs::prover(&f.state, h).is_none() { Ok(f.statement.commitment) } else { Err(e) })
+                .or_else(|e| {
+                    if h == f.height && aether_execution::proofs::prover(&f.state, h).is_none() {
+                        Ok(f.statement.commitment)
+                    } else {
+                        Err(e)
+                    }
+                })
                 .map_err(|e| format!("{e:?}"))
         };
         let (verifier, commitment) = {
@@ -808,22 +998,37 @@ impl Chain {
                 return Err("the proof is not a hex string of an allowed size".into());
             }
             let now = Instant::now();
-            if !own && g.last_proof_check.is_some_and(|t| now.duration_since(t) < PROOF_CHECK_INTERVAL) {
+            if !own
+                && g.last_proof_check
+                    .is_some_and(|t| now.duration_since(t) < PROOF_CHECK_INTERVAL)
+            {
                 return Err("busy; try again shortly".into());
             }
             let c = open(&g, claim.height)?;
             if !own {
                 g.last_proof_check = Some(now);
             }
-            (g.verifier.clone().ok_or("this node does not verify proofs")?, c)
+            (
+                g.verifier
+                    .clone()
+                    .ok_or("this node does not verify proofs")?,
+                c,
+            )
         };
         let bytes = hex::decode(&claim.proof).map_err(|_| "proof is not hex")?;
         let output = aether_proving::block::claim(commitment, claim.prover);
-        let key = *blake3::Hasher::new().update(&output).update(&bytes).finalize().as_bytes();
+        let key = *blake3::Hasher::new()
+            .update(&output)
+            .update(&bytes)
+            .finalize()
+            .as_bytes();
         if self.lock().rejected.contains(&key) {
             return Err("this proof was already refused".into());
         }
-        match (bytes.len() <= MAX_PROOF_BYTES).then(|| verifier.decide(&bytes, output)).flatten() {
+        match (bytes.len() <= MAX_PROOF_BYTES)
+            .then(|| verifier.decide(&bytes, output))
+            .flatten()
+        {
             Some(true) => {}
             Some(false) => {
                 // A definite refusal is remembered for the public RPC only (block proofs are always checked afresh).
@@ -859,10 +1064,16 @@ impl Chain {
         let next = parent.height + 1;
         let open = |h: u64| {
             aether_execution::proofs::prover(&parent.state, h).is_none()
-                && (h == parent.height || aether_execution::proofs::claimable(&parent.state, h, next).is_ok())
+                && (h == parent.height
+                    || aether_execution::proofs::claimable(&parent.state, h, next).is_ok())
         };
         let mut seen = std::collections::BTreeSet::new();
-        g.proof_pool.iter().filter(|c| open(c.height) && seen.insert(c.height)).take(MAX_PROOFS_PER_BLOCK).cloned().collect()
+        g.proof_pool
+            .iter()
+            .filter(|c| open(c.height) && seen.insert(c.height))
+            .take(MAX_PROOFS_PER_BLOCK)
+            .cloned()
+            .collect()
     }
 
     /// A proposal carrying proofs at `height` was built; if a different block
@@ -876,12 +1087,15 @@ impl Chain {
         let g = self.lock();
         let f = &g.finalized;
         aether_execution::proofs::prover(&f.state, height).is_none()
-            && (height == f.height || aether_execution::proofs::claimable(&f.state, height, f.height + 1).is_ok())
+            && (height == f.height
+                || aether_execution::proofs::claimable(&f.state, height, f.height + 1).is_ok())
     }
 
     /// Drop these proofs from the pool (they no longer verify here).
     pub fn drop_proofs(&self, heights: &[u64]) {
-        self.lock().proof_pool.retain(|c| !heights.contains(&c.height));
+        self.lock()
+            .proof_pool
+            .retain(|c| !heights.contains(&c.height));
     }
 
     /// Blocks' notice between an upgrade landing on chain and its activation:
@@ -897,7 +1111,11 @@ impl Chain {
     /// Whether `u` may go on chain in the block after `parent`: signed for this
     /// chain, a newer protocol than any scheduled, activating after the last one
     /// and at least `notice` blocks later, and of bounded size.
-    fn admissible_upgrade(parent: &Executed, cfg: &ChainConfig, u: &crate::upgrade::Upgrade) -> Result<(), String> {
+    fn admissible_upgrade(
+        parent: &Executed,
+        cfg: &ChainConfig,
+        u: &crate::upgrade::Upgrade,
+    ) -> Result<(), String> {
         // Protocol-1 nodes cannot read a registrar change: it may only be announced under protocol 2.
         if u.registrar.is_some() && parent.next_protocol() < 2 {
             return Err("a registrar change needs protocol 2".into());
@@ -906,20 +1124,32 @@ impl Chain {
         let notice = Self::notice(&parent.state, cfg.epoch_blocks);
         use crate::upgrade::{MAX_FIELD, MAX_RELEASES};
         let height = parent.height + 1;
-        let (last_protocol, last_at) = parent.schedule.last().map(|a| (a.protocol, a.at)).unwrap_or((1, 0));
+        let (last_protocol, last_at) = parent
+            .schedule
+            .last()
+            .map(|a| (a.protocol, a.at))
+            .unwrap_or((1, 0));
         if u.chain_id != chain_id {
             return Err("upgrade for another chain".into());
         }
         if u.protocol <= last_protocol || u.activate_at <= last_at {
-            return Err(format!("protocol {} at {} is not after {last_protocol} at {last_at}", u.protocol, u.activate_at));
+            return Err(format!(
+                "protocol {} at {} is not after {last_protocol} at {last_at}",
+                u.protocol, u.activate_at
+            ));
         }
         if u.activate_at < height.saturating_add(notice) {
-            return Err(format!("activation at {} gives less than {notice} blocks of notice", u.activate_at));
+            return Err(format!(
+                "activation at {} gives less than {notice} blocks of notice",
+                u.activate_at
+            ));
         }
         let long = |s: &String| s.len() > MAX_FIELD;
         if u.releases.len() > MAX_RELEASES
             || long(&u.notes)
-            || u.releases.iter().any(|r| long(&r.platform) || long(&r.version) || long(&r.blake3) || long(&r.url))
+            || u.releases
+                .iter()
+                .any(|r| long(&r.platform) || long(&r.version) || long(&r.blake3) || long(&r.url))
         {
             return Err("upgrade too large".into());
         }
@@ -934,14 +1164,18 @@ impl Chain {
         parent: &Executed,
         carried: Option<&crate::upgrade::SignedUpgrade>,
     ) -> Result<Arc<crate::upgrade::Schedule>, ChainError> {
-        let Some(s) = carried else { return Ok(parent.schedule.clone()) };
+        let Some(s) = carried else {
+            return Ok(parent.schedule.clone());
+        };
         debug_assert_eq!(height, parent.height + 1);
         let (identity, cfg) = {
             let g = self.lock();
             (g.identity, g.cfg.clone())
         };
         Self::admissible_upgrade(parent, &cfg, &s.upgrade).map_err(ChainError::Protocol)?;
-        let identity = identity.ok_or_else(|| ChainError::Protocol("no committee identity (devnet dealer keys)".into()))?;
+        let identity = identity.ok_or_else(|| {
+            ChainError::Protocol("no committee identity (devnet dealer keys)".into())
+        })?;
         crate::upgrade::verify(&identity, s).map_err(ChainError::Protocol)?;
         Ok(scheduled(&parent.schedule, &s.upgrade))
     }
@@ -950,7 +1184,10 @@ impl Chain {
     /// yet on chain that may go there now.
     pub fn upgrade_for(&self, parent: &Executed) -> Option<crate::upgrade::SignedUpgrade> {
         let g = self.lock();
-        g.upgrades_known.iter().find(|s| Self::admissible_upgrade(parent, &g.cfg, &s.upgrade).is_ok()).cloned()
+        g.upgrades_known
+            .iter()
+            .find(|s| Self::admissible_upgrade(parent, &g.cfg, &s.upgrade).is_ok())
+            .cloned()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -969,7 +1206,10 @@ impl Chain {
     ) -> Arc<Executed> {
         let escrow = out.settlement.to_escrow;
         let (base_fee, excess) = match &ctx.fees {
-            Some(f) => (f.base, fees::next_excess(parent.excess, out.gas, ctx.limits)),
+            Some(f) => (
+                f.base,
+                fees::next_excess(parent.excess, out.gas, ctx.limits),
+            ),
             None => (FeeVector::default(), GasVector::default()),
         };
         let exec = Arc::new(Executed {
@@ -985,9 +1225,20 @@ impl Chain {
             excess,
             handoff,
             seed,
-            history: Arc::new(parent.history.append(&ChainHasher::new(), block.height().get(), &digest_bytes(&block.digest()))),
+            history: Arc::new(parent.history.append(
+                &ChainHasher::new(),
+                block.height().get(),
+                &digest_bytes(&block.digest()),
+            )),
             schedule,
-            statement: if statement == [0; 32] { Statement::default() } else { Statement { commitment: statement, escrow } },
+            statement: if statement == [0; 32] {
+                Statement::default()
+            } else {
+                Statement {
+                    commitment: statement,
+                    escrow,
+                }
+            },
             payouts,
         });
         self.lock().executed.insert(block.digest(), exec.clone());
@@ -998,10 +1249,22 @@ impl Chain {
     /// (lowest nonce first per sender).
     pub fn mempool_candidates(&self) -> Vec<TxEnvelope> {
         let g = self.lock();
-        let censored = |t: &TxEnvelope| g.censor == Some(t.header.sender) || g.deprioritize == Some(t.header.sender);
-        let listed = if g.censor.is_some() { Vec::new() } else { g.inclusion.for_proposal() };
-        let listed_hashes: std::collections::HashSet<TxHash> = listed.iter().map(aether_execution::tx_hash).collect();
-        let mut rest: Vec<TxEnvelope> = g.mempool.iter().filter(|(h, t)| !listed_hashes.contains(*h) && !censored(t)).map(|(_, t)| t.clone()).collect();
+        let censored = |t: &TxEnvelope| {
+            g.censor == Some(t.header.sender) || g.deprioritize == Some(t.header.sender)
+        };
+        let listed = if g.censor.is_some() {
+            Vec::new()
+        } else {
+            g.inclusion.for_proposal()
+        };
+        let listed_hashes: std::collections::HashSet<TxHash> =
+            listed.iter().map(aether_execution::tx_hash).collect();
+        let mut rest: Vec<TxEnvelope> = g
+            .mempool
+            .iter()
+            .filter(|(h, t)| !listed_hashes.contains(*h) && !censored(t))
+            .map(|(_, t)| t.clone())
+            .collect();
         rest.sort_by_key(|t| (t.header.nonce, t.header.sender));
         let mut txs = listed;
         txs.extend(rest);
@@ -1012,15 +1275,30 @@ impl Chain {
     /// The oldest mempool txs waiting at least `min_age`, for this node's inclusion list.
     pub fn inclusion_candidates(&self, min_age: Duration, now: Instant) -> Vec<TxEnvelope> {
         let g = self.lock();
-        let mut waiting: Vec<(Instant, TxHash)> =
-            g.arrivals.iter().filter(|(h, t)| now.saturating_duration_since(**t) >= min_age && g.mempool.contains_key(*h)).map(|(h, t)| (*t, *h)).collect();
+        let mut waiting: Vec<(Instant, TxHash)> = g
+            .arrivals
+            .iter()
+            .filter(|(h, t)| {
+                now.saturating_duration_since(**t) >= min_age && g.mempool.contains_key(*h)
+            })
+            .map(|(h, t)| (*t, *h))
+            .collect();
         waiting.sort();
-        waiting.into_iter().take(inclusion::MAX_IL_TXS).filter_map(|(_, h)| g.mempool.get(&h).cloned()).collect()
+        waiting
+            .into_iter()
+            .take(inclusion::MAX_IL_TXS)
+            .filter_map(|(_, h)| g.mempool.get(&h).cloned())
+            .collect()
     }
 
     /// Listed txs that `exec` (a verified block) wrongly left out. Empty for a
     /// censoring devnet node, which ignores the lists.
-    pub fn inclusion_violations(&self, exec: &Executed, ctx: &BlockContext, now: Instant) -> Vec<TxHash> {
+    pub fn inclusion_violations(
+        &self,
+        exec: &Executed,
+        ctx: &BlockContext,
+        now: Instant,
+    ) -> Vec<TxHash> {
         let listed = {
             let g = self.lock();
             if g.censor.is_some() {
@@ -1052,7 +1330,12 @@ impl Chain {
         if g.cfg.fees {
             admissible(&tx, state, Self::next_base_fee(&g.cfg, &g.finalized))?;
         }
-        if g.pending_by_sender.get(&tx.header.sender).copied().unwrap_or(0) >= MAX_PER_SENDER {
+        if g.pending_by_sender
+            .get(&tx.header.sender)
+            .copied()
+            .unwrap_or(0)
+            >= MAX_PER_SENDER
+        {
             return Err(format!("sender has {MAX_PER_SENDER} pending transactions"));
         }
         *g.pending_by_sender.entry(tx.header.sender).or_default() += 1;
@@ -1090,11 +1373,22 @@ impl Chain {
         let summary = summary(block, &exec, payload.parent_state_root);
         let (store, history_v2, previous_history) = {
             let g = self.lock();
-            (g.store.clone(), g.cfg.history_v2, g.finalized.history.clone())
+            (
+                g.store.clone(),
+                g.cfg.history_v2,
+                g.finalized.history.clone(),
+            )
         };
         // History v2: keep the block for its era file; an era's first block also keeps the history before it.
         let staged = history_v2.then(|| commonware_codec::Encode::encode(block));
-        let era_start = (history_v2 && exec.height.is_multiple_of(aether_state::mmr::ERA_LEN)).then(|| if exec.height == 0 { Default::default() } else { (*previous_history).clone() });
+        let era_start = (history_v2 && exec.height.is_multiple_of(aether_state::mmr::ERA_LEN))
+            .then(|| {
+                if exec.height == 0 {
+                    Default::default()
+                } else {
+                    (*previous_history).clone()
+                }
+            });
         if let Some(store) = store {
             // Disk first: the in-memory head never runs ahead of what survives a crash.
             store
@@ -1104,13 +1398,21 @@ impl Chain {
                     root: exec.state.root(),
                     diff: exec.state.journal(),
                     summary: &summary,
-                    receipts: exec.tx_hashes.iter().copied().zip(exec.receipts.iter()).collect(),
+                    receipts: exec
+                        .tx_hashes
+                        .iter()
+                        .copied()
+                        .zip(exec.receipts.iter())
+                        .collect(),
                     handoff: exec.handoff.as_deref().filter(|p| p.at == exec.height),
                     seed: exec.seed.as_deref().filter(|s| s.0 == exec.height),
                     history: &exec.history,
                     schedule: &exec.schedule,
                     statement: &exec.statement,
-                    staged: staged.as_ref().map(|b| crate::store::Staged { block: b, era_start: era_start.as_ref() }),
+                    staged: staged.as_ref().map(|b| crate::store::Staged {
+                        block: b,
+                        era_start: era_start.as_ref(),
+                    }),
                 })
                 .map_err(|e| ChainError::Store(e.to_string()))?;
             // An era's last block: seal it into a file, off the consensus path.
@@ -1135,7 +1437,9 @@ impl Chain {
         let now = Instant::now();
         let inner = &mut *g;
         let arrivals = &inner.arrivals;
-        inner.mempool.retain(|h, tx| keep_in_pool(tx, arrivals.get(h).copied(), now, &state, base, fees));
+        inner
+            .mempool
+            .retain(|h, tx| keep_in_pool(tx, arrivals.get(h).copied(), now, &state, base, fees));
         inner.arrivals.retain(|h, _| inner.mempool.contains_key(h));
         inner.pending_by_sender.clear();
         for t in inner.mempool.values() {
@@ -1143,15 +1447,27 @@ impl Chain {
         }
         inner.inclusion.prune(&state, exec.height, Instant::now());
         // One leaf per height, in order (genesis is delivered again at start-up).
-        if let Some(idx) = g.history_index.as_mut().filter(|i| i.leaves() == exec.height) {
-            Arc::make_mut(idx).push(&ChainHasher::new(), aether_state::mmr::leaf(&ChainHasher::new(), exec.height, &digest_bytes(&exec.digest)));
+        if let Some(idx) = g
+            .history_index
+            .as_mut()
+            .filter(|i| i.leaves() == exec.height)
+        {
+            Arc::make_mut(idx).push(
+                &ChainHasher::new(),
+                aether_state::mmr::leaf(
+                    &ChainHasher::new(),
+                    exec.height,
+                    &digest_bytes(&exec.digest),
+                ),
+            );
         }
         g.blocks.insert(exec.height, summary);
         let previous = std::mem::replace(&mut g.finalized, exec.clone());
         // A finalized handoff ends the running epoch before its switch height.
         if let Some(p) = exec.handoff.as_ref().filter(|p| p.at == exec.height) {
             if p.switch > g.epoch_start {
-                g.epoch_end.store(p.switch - 1, std::sync::atomic::Ordering::SeqCst);
+                g.epoch_end
+                    .store(p.switch - 1, std::sync::atomic::Ordering::SeqCst);
             }
             if g.handoff_ready.as_ref() == Some(&p.handoff) {
                 g.handoff_ready = None;
@@ -1164,7 +1480,11 @@ impl Chain {
         let params = aether_execution::registry::params(&previous.state);
         let span = params.epoch_blocks * params.draw_epochs;
         if exec.height > 0 && exec.height.is_multiple_of(span) {
-            let pool = crate::rotation::eligible(&previous.state, exec.height / params.epoch_blocks, params.min_streak);
+            let pool = crate::rotation::eligible(
+                &previous.state,
+                exec.height / params.epoch_blocks,
+                params.min_streak,
+            );
             g.pool = Some((exec.height / span, pool));
             g.proposal = None;
             keep(&g.store, POOL, &g.pool);
@@ -1179,7 +1499,10 @@ impl Chain {
                 // The per-operator seat cap is a protocol-2 rule: before it, every key is its own operator.
                 let ops = crate::rotation::operators(&exec.state);
                 let capped = exec.next_protocol() >= 2;
-                let operator = |k: &str| ops.get(k).map(|o| if capped { o.clone() } else { k.to_string() });
+                let operator = |k: &str| {
+                    ops.get(k)
+                        .map(|o| if capped { o.clone() } else { k.to_string() })
+                };
                 // Protocol 3: qualifying Macs join (up to 16 seats) instead of replacing members.
                 g.proposal = if exec.next_protocol() >= 3 {
                     crate::rotation::draw_v3(&pool, &seed, operator, &g.committee)
@@ -1193,13 +1516,27 @@ impl Chain {
         let floor = exec.height.saturating_sub(64);
         g.executed.retain(|_, e| e.height >= floor);
         for (proven, prover, amount) in &exec.payouts {
-            let record = serde_json::json!({ "proven": proven, "amount": amount, "height": exec.height, "timestamp_ms": exec.timestamp });
-            if let Some(Err(e)) = g.store.as_ref().map(|s| s.put_reward(&prover.0 .0, exec.height, *proven, record.to_string().as_bytes())) {
+            let kind = if *proven == exec.height {
+                "node"
+            } else {
+                "proof"
+            };
+            let record = serde_json::json!({ "kind": kind, "proven": proven, "amount": amount, "height": exec.height, "timestamp_ms": exec.timestamp });
+            if let Some(Err(e)) = g.store.as_ref().map(|s| {
+                s.put_reward(
+                    &prover.0 .0,
+                    exec.height,
+                    *proven,
+                    record.to_string().as_bytes(),
+                )
+            }) {
                 tracing::warn!(%e, "could not keep a reward record");
             }
         }
         // Our proposal with proofs lost at this height: others may not verify them.
-        if g.proof_proposal.is_some_and(|(h, d)| h == exec.height && d != exec.digest) {
+        if g.proof_proposal
+            .is_some_and(|(h, d)| h == exec.height && d != exec.digest)
+        {
             g.proof_backoff_until = exec.height + PROOF_BACKOFF;
             g.proof_proposal = None;
         }
@@ -1210,7 +1547,9 @@ impl Chain {
         // Proofs of blocks now proven (or expired) leave the pool.
         let now = exec.height;
         let state = &exec.state;
-        g.proof_pool.retain(|c| aether_execution::proofs::claimable(state, c.height, now + 1).is_ok() || c.height == now);
+        g.proof_pool.retain(|c| {
+            aether_execution::proofs::claimable(state, c.height, now + 1).is_ok() || c.height == now
+        });
         g.attempted.retain(|h| *h + 64 >= now);
         Ok(())
     }
@@ -1230,7 +1569,14 @@ fn admissible(tx: &TxEnvelope, state: &WorldState, base: FeeVector) -> Result<()
 /// ahead, its sender can still pay for it, and it has not waited past the TTL.
 /// A tx whose fee caps are below the base fee stays (the fee may come down)
 /// until the TTL.
-fn keep_in_pool(tx: &TxEnvelope, arrived: Option<Instant>, now: Instant, state: &WorldState, base: FeeVector, fees: bool) -> bool {
+fn keep_in_pool(
+    tx: &TxEnvelope,
+    arrived: Option<Instant>,
+    now: Instant,
+    state: &WorldState,
+    base: FeeVector,
+    fees: bool,
+) -> bool {
     if tx.header.nonce < state.nonce(&tx.header.sender) {
         return false;
     }
@@ -1243,14 +1589,20 @@ fn keep_in_pool(tx: &TxEnvelope, arrived: Option<Instant>, now: Instant, state: 
 /// The payload decodes, the prove budget covers the gas limit, and the sender's
 /// balance covers value, gas at its fee cap and the prove budget.
 fn affordable(tx: &TxEnvelope, state: &WorldState, base: FeeVector) -> Result<(), String> {
-    let aether_types::TxPayload::Plain(bytes) = &tx.payload else { return Err("encrypted payloads are not supported yet".into()) };
+    let aether_types::TxPayload::Plain(bytes) = &tx.payload else {
+        return Err("encrypted payloads are not supported yet".into());
+    };
     let call = aether_execution::EvmCall::decode(bytes).map_err(|e| format!("payload: {e:?}"))?;
     if tx.header.gas.prove < call.gas_limit {
         return Err("prove budget below the gas limit".into());
     }
     let need = U256::from(call.gas_limit)
         .checked_mul(U256::from(tx.header.max_fee.exec))
-        .and_then(|g| U256::from(tx.header.gas.prove).checked_mul(U256::from(base.prove)).and_then(|p| g.checked_add(p)))
+        .and_then(|g| {
+            U256::from(tx.header.gas.prove)
+                .checked_mul(U256::from(base.prove))
+                .and_then(|p| g.checked_add(p))
+        })
         .and_then(|n| n.checked_add(call.value));
     if need.is_none_or(|n| state.balance(&tx.header.sender) < n) {
         return Err("insufficient funds for value, gas and prove budget".into());
@@ -1323,7 +1675,12 @@ pub fn build_payload(
     let (txs, out) = aether_execution::build_block(pre, ctx, candidates);
     let history_root = B256::from(parent.history.root(&ChainHasher::new()));
     let parent_meta = parent.meta_digest();
-    let Extras { handoff, seed, upgrade, proofs } = extras;
+    let Extras {
+        handoff,
+        seed,
+        upgrade,
+        proofs,
+    } = extras;
     let payload = Payload {
         version: parent.next_protocol(),
         parent_state_root: parent.state.root(),
@@ -1360,7 +1717,12 @@ pub fn records_statement(cfg: &ChainConfig, payload: &Payload) -> bool {
 /// The statement commitment of a block that ran `txs` on `pre` under `ctx`.
 /// Its pre-state is the one the transactions ran on (after the block's system
 /// writes: activation, records, payouts, which validators check directly).
-pub fn statement(ctx: &BlockContext, txs: &[TxEnvelope], pre: &WorldState, out: &BlockOutcome) -> [u8; 32] {
+pub fn statement(
+    ctx: &BlockContext,
+    txs: &[TxEnvelope],
+    pre: &WorldState,
+    out: &BlockOutcome,
+) -> [u8; 32] {
     aether_proving::block::BlockStatement {
         ctx: ctx.clone(),
         txs_hash: aether_proving::block::txs_hash(txs),
@@ -1391,21 +1753,35 @@ fn pay_proofs(
             return Err(bad(format!("proof of block {} is out of bounds", c.height)));
         }
         let bytes = hex::decode(&c.proof).map_err(|_| bad("proof is not hex".into()))?;
-        let commitment = aether_execution::proofs::claimable(state, c.height, height).map_err(|e| bad(format!("proof of block {}: {e:?}", c.height)))?;
+        let commitment = aether_execution::proofs::claimable(state, c.height, height)
+            .map_err(|e| bad(format!("proof of block {}: {e:?}", c.height)))?;
         // The proof's output binds the payout address: nobody can reroute it.
         if !verifier.verify(&bytes, aether_proving::block::claim(commitment, c.prover)) {
             return Err(bad(format!("proof of block {} does not verify", c.height)));
         }
-        let amount = aether_execution::proofs::pay(state, c.height, height, c.prover).map_err(|e| bad(format!("{e:?}")))?;
+        let amount = if aether_rewards::enabled(state) {
+            // Node rewards: issuance only to registered operators, 1/16 of the epoch's proof share each.
+            aether_rewards::pay_proof(state, c.height, height, c.prover).map(|(paid, _)| paid)
+        } else {
+            aether_execution::proofs::pay(state, c.height, height, c.prover)
+        }
+        .map_err(|e| bad(format!("{e:?}")))?;
         paid.push((c.height, c.prover, amount));
     }
     Ok(paid)
 }
 
 /// `schedule` with `u`'s activation appended.
-pub fn scheduled(schedule: &[crate::upgrade::Activation], u: &crate::upgrade::Upgrade) -> Arc<crate::upgrade::Schedule> {
+pub fn scheduled(
+    schedule: &[crate::upgrade::Activation],
+    u: &crate::upgrade::Upgrade,
+) -> Arc<crate::upgrade::Schedule> {
     let mut next = schedule.to_vec();
-    next.push(crate::upgrade::Activation { protocol: u.protocol, at: u.activate_at, registrar: u.registrar });
+    next.push(crate::upgrade::Activation {
+        protocol: u.protocol,
+        at: u.activate_at,
+        registrar: u.registrar,
+    });
     Arc::new(next)
 }
 
@@ -1418,19 +1794,37 @@ mod pool_tests {
     const GWEI: u128 = 1_000_000_000;
 
     fn tx(sender: Address, nonce: u64, value: u64) -> TxEnvelope {
-        let call = EvmCall { to: Some(Address::repeat_byte(0xaa)), value: U256::from(value), input: Bytes::new(), gas_limit: 21_000, delegate: None };
+        let call = EvmCall {
+            to: Some(Address::repeat_byte(0xaa)),
+            value: U256::from(value),
+            input: Bytes::new(),
+            gas_limit: 21_000,
+            delegate: None,
+        };
         let payload = call.encode();
         let header = TxHeader {
             chain_id: 7780,
             sender,
             nonce,
-            gas: GasVector { exec: 21_000, state: 0, prove: 21_000 },
-            max_fee: FeeVector { exec: GWEI, state: 0, prove: 0 },
+            gas: GasVector {
+                exec: 21_000,
+                state: 0,
+                prove: 21_000,
+            },
+            max_fee: FeeVector {
+                exec: GWEI,
+                state: 0,
+                prove: 0,
+            },
             tip: GWEI,
             payload_commitment: aether_execution::tx::payload_commitment(&payload),
             scheme: SignerScheme::P256,
         };
-        TxEnvelope { header, payload: TxPayload::Plain(Bytes::from(payload)), signature: Bytes::new() }
+        TxEnvelope {
+            header,
+            payload: TxPayload::Plain(Bytes::from(payload)),
+            signature: Bytes::new(),
+        }
     }
 
     fn funded(a: Address, wei: u128) -> WorldState {
@@ -1445,10 +1839,23 @@ mod pool_tests {
         let t = tx(a, 0, 1_000);
         let now = Instant::now();
         let enough = funded(a, 21_000 * GWEI + 1_000);
-        assert!(keep_in_pool(&t, Some(now), now, &enough, FeeVector::default(), true));
+        assert!(keep_in_pool(
+            &t,
+            Some(now),
+            now,
+            &enough,
+            FeeVector::default(),
+            true
+        ));
         let drained = funded(a, 10);
-        assert!(!keep_in_pool(&t, Some(now), now, &drained, FeeVector::default(), true), "admitted while affordable, then the balance went elsewhere");
-        assert!(keep_in_pool(&t, Some(now), now, &drained, FeeVector::default(), false), "without fees there is nothing to pay");
+        assert!(
+            !keep_in_pool(&t, Some(now), now, &drained, FeeVector::default(), true),
+            "admitted while affordable, then the balance went elsewhere"
+        );
+        assert!(
+            keep_in_pool(&t, Some(now), now, &drained, FeeVector::default(), false),
+            "without fees there is nothing to pay"
+        );
     }
 
     #[test]
@@ -1457,8 +1864,22 @@ mod pool_tests {
         let gapped = tx(a, 5, 1); // nonce 0..4 never arrive: it can never run
         let state = funded(a, 10u128.pow(18));
         let t0 = Instant::now();
-        assert!(keep_in_pool(&gapped, Some(t0), t0 + MEMPOOL_TTL / 2, &state, FeeVector::default(), true));
-        assert!(!keep_in_pool(&gapped, Some(t0), t0 + MEMPOOL_TTL, &state, FeeVector::default(), true));
+        assert!(keep_in_pool(
+            &gapped,
+            Some(t0),
+            t0 + MEMPOOL_TTL / 2,
+            &state,
+            FeeVector::default(),
+            true
+        ));
+        assert!(!keep_in_pool(
+            &gapped,
+            Some(t0),
+            t0 + MEMPOOL_TTL,
+            &state,
+            FeeVector::default(),
+            true
+        ));
     }
 
     #[test]
@@ -1467,8 +1888,18 @@ mod pool_tests {
         let t = tx(a, 0, 1);
         let state = funded(a, 10u128.pow(18));
         let now = Instant::now();
-        let high = FeeVector { exec: 5 * GWEI, state: 0, prove: 0 };
-        assert!(admissible(&t, &state, high).is_err(), "not admitted while the base fee is above its cap");
-        assert!(keep_in_pool(&t, Some(now), now, &state, high, true), "but an already pending one may wait for the fee to fall");
+        let high = FeeVector {
+            exec: 5 * GWEI,
+            state: 0,
+            prove: 0,
+        };
+        assert!(
+            admissible(&t, &state, high).is_err(),
+            "not admitted while the base fee is above its cap"
+        );
+        assert!(
+            keep_in_pool(&t, Some(now), now, &state, high, true),
+            "but an already pending one may wait for the fee to fall"
+        );
     }
 }

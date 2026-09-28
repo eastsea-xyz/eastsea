@@ -22,7 +22,11 @@ const MARKER: Address = Address::repeat_byte(0x42);
 fn config() -> ChainConfig {
     ChainConfig {
         chain_id: CHAIN,
-        limits: GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
+        limits: GasVector {
+            exec: 30_000_000,
+            state: u64::MAX,
+            prove: 200_000_000,
+        },
         alloc: vec![],
         fees: false,
         registrar: Some(([1; 32], [2; 32])),
@@ -30,6 +34,7 @@ fn config() -> ChainConfig {
         min_streak: None,
         draw_epochs: None,
         history_v2: false,
+        node_rewards: false,
     }
 }
 
@@ -58,35 +63,89 @@ fn signed(protocol: u32, activate_at: u64) -> SignedUpgrade {
         chain_id: CHAIN,
         protocol,
         activate_at,
-        releases: vec![Release { platform: "macos-arm64-dmg".into(), version: "0.6.0".into(), blake3: "ab".repeat(32), url: "https://x".into() }],
+        releases: vec![Release {
+            platform: "macos-arm64-dmg".into(),
+            version: "0.6.0".into(),
+            blake3: "ab".repeat(32),
+            url: "https://x".into(),
+        }],
         notes: String::new(),
         registrar: None,
     };
-    let partials: Vec<_> = shares.iter().take(3).map(|(_, s)| sign_partial(&u, s)).collect();
+    let partials: Vec<_> = shares
+        .iter()
+        .take(3)
+        .map(|(_, s)| sign_partial(&u, s))
+        .collect();
     combine(&sharing, &partials).unwrap()
 }
 
 /// A block on `parent` built the way a proposer builds it.
-fn propose(chain: &Chain, parent: &Executed, parent_block: &Block, upgrade: Option<SignedUpgrade>) -> Block {
+fn propose(
+    chain: &Chain,
+    parent: &Executed,
+    parent_block: &Block,
+    upgrade: Option<SignedUpgrade>,
+) -> Block {
     propose_with(chain, parent, parent_block, upgrade, vec![])
 }
 
-fn propose_with(chain: &Chain, parent: &Executed, parent_block: &Block, upgrade: Option<SignedUpgrade>, proofs: Vec<ProofClaim>) -> Block {
+fn propose_with(
+    chain: &Chain,
+    parent: &Executed,
+    parent_block: &Block,
+    upgrade: Option<SignedUpgrade>,
+    proofs: Vec<ProofClaim>,
+) -> Block {
     let height = parent_block.height.next();
     let leader = ed25519::PrivateKey::from_seed(1).public_key();
-    let context = Context { round: Round::new(EPOCH, View::new(height.get())), leader, parent: (View::new(height.get() - 1), parent_block.digest()) };
+    let context = Context {
+        round: Round::new(EPOCH, View::new(height.get())),
+        leader,
+        parent: (View::new(height.get() - 1), parent_block.digest()),
+    };
     let ts = height.get() * 1_000;
-    let skeleton = Block::new(context.clone(), parent_block.digest(), height, ts, bytes::Bytes::new());
+    let skeleton = Block::new(
+        context.clone(),
+        parent_block.digest(),
+        height,
+        ts,
+        bytes::Bytes::new(),
+    );
     let ctx = Chain::block_context(&chain.cfg(), &skeleton, parent);
-    let (pre, _) = chain.pre_state(parent, parent.next_protocol(), &proofs, false).unwrap();
-    let (payload, _) = build_payload(parent, &pre, &ctx, vec![], Extras { upgrade, proofs, ..Default::default() });
-    Block::new(context, parent_block.digest(), height, ts, payload.to_bytes())
+    let (pre, _) = chain
+        .pre_state(parent, parent.next_protocol(), &proofs, false)
+        .unwrap();
+    let (payload, _) = build_payload(
+        parent,
+        &pre,
+        &ctx,
+        vec![],
+        Extras {
+            upgrade,
+            proofs,
+            ..Default::default()
+        },
+    );
+    Block::new(
+        context,
+        parent_block.digest(),
+        height,
+        ts,
+        payload.to_bytes(),
+    )
 }
 
 fn with_payload(b: &Block, f: impl FnOnce(&mut aether_node::block::Payload)) -> Block {
     let mut p = b.payload().unwrap();
     f(&mut p);
-    Block::new(b.context.clone(), b.parent, b.height, b.timestamp, p.to_bytes())
+    Block::new(
+        b.context.clone(),
+        b.parent,
+        b.height,
+        b.timestamp,
+        p.to_bytes(),
+    )
 }
 
 fn advance(chain: &Chain, parent: Arc<Executed>, block: &Block) -> Arc<Executed> {
@@ -105,7 +164,14 @@ fn a_signed_upgrade_activates_at_its_height_and_old_nodes_stop_there() {
     // Block 1 puts the upgrade on chain: protocol 2 from height 20.
     let b1 = propose(&chain, &parent, &genesis, Some(signed(2, 20)));
     parent = advance(&chain, parent, &b1);
-    assert_eq!(*parent.schedule, vec![aether_node::upgrade::Activation { protocol: 2, at: 20, registrar: None }]);
+    assert_eq!(
+        *parent.schedule,
+        vec![aether_node::upgrade::Activation {
+            protocol: 2,
+            at: 20,
+            registrar: None
+        }]
+    );
     blocks.push(b1);
     for _ in 2..20 {
         let b = propose(&chain, &parent, blocks.last().unwrap(), None);
@@ -114,13 +180,20 @@ fn a_signed_upgrade_activates_at_its_height_and_old_nodes_stop_there() {
         blocks.push(b);
     }
     assert_eq!(parent.height, 19);
-    assert_eq!(parent.state.balance(&MARKER), U256::ZERO, "nothing changes before activation");
+    assert_eq!(
+        parent.state.balance(&MARKER),
+        U256::ZERO,
+        "nothing changes before activation"
+    );
 
     // Block 20 runs protocol 2 and applies its one-time change; block 21 does not repeat it.
     let b20 = propose(&chain, &parent, blocks.last().unwrap(), None);
     assert_eq!(b20.payload().unwrap().version, 2);
     let wrong = with_payload(&b20, |p| p.version = 1);
-    assert!(matches!(chain.execute(&wrong, &parent), Err(ChainError::Protocol(_))), "old rules at the activation height");
+    assert!(
+        matches!(chain.execute(&wrong, &parent), Err(ChainError::Protocol(_))),
+        "old rules at the activation height"
+    );
     parent = advance(&chain, parent, &b20);
     assert_eq!(parent.state.balance(&MARKER), U256::from(7u64));
     blocks.push(b20.clone());
@@ -135,7 +208,10 @@ fn a_signed_upgrade_activates_at_its_height_and_old_nodes_stop_there() {
     }
     match old.execute(&b20, &op) {
         Err(ChainError::Protocol(e)) => assert!(e.contains("UPGRADE REQUIRED"), "{e}"),
-        other => panic!("old node must stop at the new protocol: {:?}", other.map(|_| ())),
+        other => panic!(
+            "old node must stop at the new protocol: {:?}",
+            other.map(|_| ())
+        ),
     }
 
     // A checkpoint carries the schedule, certified by the next block.
@@ -144,7 +220,10 @@ fn a_signed_upgrade_activates_at_its_height_and_old_nodes_stop_there() {
     snap.check(&b20, &config(), sharing.public()).unwrap();
     let mut forged = snap.clone();
     forged.schedule.clear();
-    assert!(forged.check(&b20, &config(), sharing.public()).is_err(), "schedule is certified");
+    assert!(
+        forged.check(&b20, &config(), sharing.public()).is_err(),
+        "schedule is certified"
+    );
 }
 
 #[test]
@@ -169,12 +248,18 @@ fn upgrades_that_may_not_go_on_chain_are_refused() {
 
     // The proposer only offers what may go on chain, once.
     chain.lock().upgrades_known = vec![signed(2, 5), signed(2, 50)];
-    assert_eq!(chain.upgrade_for(&parent).map(|s| s.upgrade.activate_at), Some(50));
+    assert_eq!(
+        chain.upgrade_for(&parent).map(|s| s.upgrade.activate_at),
+        Some(50)
+    );
     let b1 = propose(&chain, &parent, &genesis, chain.upgrade_for(&parent));
     let p1 = advance(&chain, parent, &b1);
     assert!(chain.upgrade_for(&p1).is_none(), "already on chain");
     let again = propose_unchecked(&chain, &p1, &b1, signed(2, 50));
-    assert!(matches!(chain.execute(&again, &p1), Err(ChainError::Protocol(_))), "replayed upgrade");
+    assert!(
+        matches!(chain.execute(&again, &p1), Err(ChainError::Protocol(_))),
+        "replayed upgrade"
+    );
 }
 
 #[test]
@@ -184,16 +269,46 @@ fn only_the_canonical_payload_encoding_is_accepted() {
     let b1 = propose(&chain, &parent, &genesis, None);
     let mut json: serde_json::Value = serde_json::from_slice(&b1.data).unwrap();
     json["future_field"] = serde_json::json!(1);
-    let unknown = Block::new(b1.context.clone(), b1.parent, b1.height, b1.timestamp, serde_json::to_vec(&json).unwrap().into());
-    assert!(matches!(chain.execute(&unknown, &parent), Err(ChainError::BadPayload)), "unknown field");
-    let spaced = Block::new(b1.context.clone(), b1.parent, b1.height, b1.timestamp, serde_json::to_vec_pretty(&b1.payload().unwrap()).unwrap().into());
-    assert!(matches!(chain.execute(&spaced, &parent), Err(ChainError::BadPayload)), "second encoding");
+    let unknown = Block::new(
+        b1.context.clone(),
+        b1.parent,
+        b1.height,
+        b1.timestamp,
+        serde_json::to_vec(&json).unwrap().into(),
+    );
+    assert!(
+        matches!(
+            chain.execute(&unknown, &parent),
+            Err(ChainError::BadPayload)
+        ),
+        "unknown field"
+    );
+    let spaced = Block::new(
+        b1.context.clone(),
+        b1.parent,
+        b1.height,
+        b1.timestamp,
+        serde_json::to_vec_pretty(&b1.payload().unwrap())
+            .unwrap()
+            .into(),
+    );
+    assert!(
+        matches!(chain.execute(&spaced, &parent), Err(ChainError::BadPayload)),
+        "second encoding"
+    );
     chain.execute(&b1, &parent).unwrap();
 }
 
 /// A block carrying `u` without the proposer's own filtering.
-fn propose_unchecked(chain: &Chain, parent: &Executed, parent_block: &Block, u: SignedUpgrade) -> Block {
-    with_payload(&propose(chain, parent, parent_block, None), |p| p.upgrade = Some(u))
+fn propose_unchecked(
+    chain: &Chain,
+    parent: &Executed,
+    parent_block: &Block,
+    u: SignedUpgrade,
+) -> Block {
+    with_payload(&propose(chain, parent, parent_block, None), |p| {
+        p.upgrade = Some(u)
+    })
 }
 
 #[test]
@@ -206,8 +321,14 @@ fn a_store_never_mixes_two_geneses() {
     drop(Chain::open(config(), Store::open(&path).unwrap()).unwrap());
     // The same genesis reopens; another one (here: another chain id) is refused.
     drop(Chain::open(config(), Store::open(&path).unwrap()).unwrap());
-    let other = ChainConfig { chain_id: CHAIN + 1, ..config() };
-    assert!(matches!(Chain::open(other, Store::open(&path).unwrap()), Err(StoreError::OtherGenesis)));
+    let other = ChainConfig {
+        chain_id: CHAIN + 1,
+        ..config()
+    };
+    assert!(matches!(
+        Chain::open(other, Store::open(&path).unwrap()),
+        Err(StoreError::OtherGenesis)
+    ));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -242,7 +363,14 @@ fn an_activation_block_survives_a_restart() {
     let f = again.lock().finalized.clone();
     assert_eq!((f.height, f.state.root()), (21, root));
     assert_eq!(f.state.balance(&MARKER), U256::from(7u64));
-    assert_eq!(*f.schedule, vec![aether_node::upgrade::Activation { protocol: 2, at: 20, registrar: None }]);
+    assert_eq!(
+        *f.schedule,
+        vec![aether_node::upgrade::Activation {
+            protocol: 2,
+            at: 20,
+            registrar: None
+        }]
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -274,30 +402,64 @@ fn protocol_2_records_statements_and_pays_the_first_valid_proof() {
 
     let prover = Address::repeat_byte(0x77);
     // The echo "proof" is the claim output (statement commitment bound to the prover).
-    let claim = |h: u64, c: [u8; 32]| ProofClaim { height: h, prover, proof: hex::encode(aether_proving::block::claim(c, prover)) };
+    let claim = |h: u64, c: [u8; 32]| ProofClaim {
+        height: h,
+        prover,
+        proof: hex::encode(aether_proving::block::claim(c, prover)),
+    };
     let c20 = proofs::commitment(&parent.state, 20).unwrap();
     // A wrong proof, a proof of an unrecorded block, and two claims of one block are refused.
     // The same proof rerouted to another address does not verify.
-    let stolen = ProofClaim { prover: Address::repeat_byte(0x66), ..claim(20, c20) };
-    for bad in [vec![claim(20, [1; 32])], vec![claim(5, [0; 32])], vec![claim(20, c20), claim(20, c20)], vec![stolen]] {
-        let b = with_payload(&propose(&chain, &parent, &last, None), |p| p.proofs = bad.clone());
-        assert!(matches!(chain.execute(&b, &parent), Err(ChainError::Protocol(_))), "{bad:?}");
+    let stolen = ProofClaim {
+        prover: Address::repeat_byte(0x66),
+        ..claim(20, c20)
+    };
+    for bad in [
+        vec![claim(20, [1; 32])],
+        vec![claim(5, [0; 32])],
+        vec![claim(20, c20), claim(20, c20)],
+        vec![stolen],
+    ] {
+        let b = with_payload(&propose(&chain, &parent, &last, None), |p| {
+            p.proofs = bad.clone()
+        });
+        assert!(
+            matches!(chain.execute(&b, &parent), Err(ChainError::Protocol(_))),
+            "{bad:?}"
+        );
     }
     // The first valid proof is paid the block's issuance; block 21 (recorded by this block) can be proven here too.
     let c21 = parent.statement.commitment;
-    let b = propose_with(&chain, &parent, &last, None, vec![claim(20, c20), claim(21, c21)]);
+    let b = propose_with(
+        &chain,
+        &parent,
+        &last,
+        None,
+        vec![claim(20, c20), claim(21, c21)],
+    );
     let p22 = advance(&chain, parent.clone(), &b);
-    assert_eq!(p22.state.balance(&prover), proofs::issuance(20) + proofs::issuance(21));
+    assert_eq!(
+        p22.state.balance(&prover),
+        proofs::issuance(20) + proofs::issuance(21)
+    );
     assert_eq!(p22.payouts.len(), 2);
     assert_eq!(proofs::prover(&p22.state, 20), Some(prover));
     // Proven once only.
     let again = propose_with(&chain, &p22, &b, None, vec![]);
     let again = with_payload(&again, |p| p.proofs = vec![claim(20, c20)]);
-    assert!(matches!(chain.execute(&again, &p22), Err(ChainError::Protocol(_))));
+    assert!(matches!(
+        chain.execute(&again, &p22),
+        Err(ChainError::Protocol(_))
+    ));
     // A node without a verifier refuses blocks with proofs.
     chain.lock().verifier = None;
-    let fresh = with_payload(&propose(&chain, &parent, &last, None), |p| p.proofs = vec![claim(20, c20)]);
-    assert!(matches!(chain.execute(&fresh, &parent), Err(ChainError::Protocol(_))));
+    let fresh = with_payload(&propose(&chain, &parent, &last, None), |p| {
+        p.proofs = vec![claim(20, c20)]
+    });
+    assert!(matches!(
+        chain.execute(&fresh, &parent),
+        Err(ChainError::Protocol(_))
+    ));
 }
 
 #[test]
@@ -309,16 +471,33 @@ fn the_recorded_statement_is_what_the_prover_proves() {
     for _ in 2..=22 {
         let b = propose(&chain, &parent, &last, None);
         // The prover's input for this block: its pre-state (after the block's system writes), context, txs.
-        let (pre, _) = chain.pre_state(&parent, parent.next_protocol(), &[], false).unwrap();
+        let (pre, _) = chain
+            .pre_state(&parent, parent.next_protocol(), &[], false)
+            .unwrap();
         let ctx = Chain::block_context(&chain.cfg(), &b, &parent);
-        let input = aether_proving::block::input(&pre, &ctx, &b.payload().unwrap().txs, &[], Address::repeat_byte(1)).unwrap();
+        let input = aether_proving::block::input(
+            &pre,
+            &ctx,
+            &b.payload().unwrap().txs,
+            &[],
+            Address::repeat_byte(1),
+        )
+        .unwrap();
         let proved = aether_proving::block::execute(&input).unwrap().commitment();
         drop(pre);
         parent = advance(&chain, parent, &b);
         if parent.height >= 20 {
-            assert_eq!(proved, parent.statement.commitment, "block {}", parent.height);
+            assert_eq!(
+                proved, parent.statement.commitment,
+                "block {}",
+                parent.height
+            );
         } else {
-            assert_eq!(parent.statement, Default::default(), "protocol-1 blocks keep no statement");
+            assert_eq!(
+                parent.statement,
+                Default::default(),
+                "protocol-1 blocks keep no statement"
+            );
         }
         last = b;
     }
@@ -330,13 +509,28 @@ fn a_signed_upgrade_replaces_the_registrar_when_it_activates() {
     use aether_types::B256;
     let (chain, genesis) = node(3);
     let (_, sharing, shares) = aether_light::devnet_threshold(4);
-    let sign = |u: &Upgrade| combine(&sharing, &shares.iter().take(3).map(|(_, s)| sign_partial(u, s)).collect::<Vec<_>>()).unwrap();
+    let sign = |u: &Upgrade| {
+        combine(
+            &sharing,
+            &shares
+                .iter()
+                .take(3)
+                .map(|(_, s)| sign_partial(u, s))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap()
+    };
     // A registrar change cannot be announced before protocol 2 (protocol-1 nodes cannot read it).
     let mut early = signed(2, 20).upgrade;
     early.registrar = Some((B256::repeat_byte(5), B256::repeat_byte(6)));
     let parent = chain.lock().finalized.clone();
-    let b = with_payload(&propose(&chain, &parent, &genesis, None), |p| p.upgrade = Some(sign(&early)));
-    assert!(matches!(chain.execute(&b, &parent), Err(ChainError::Protocol(_))));
+    let b = with_payload(&propose(&chain, &parent, &genesis, None), |p| {
+        p.upgrade = Some(sign(&early))
+    });
+    assert!(matches!(
+        chain.execute(&b, &parent),
+        Err(ChainError::Protocol(_))
+    ));
 
     // Protocol 2 at 20; then protocol 3 at 40 carrying the new registrar key.
     let mut parent = parent;
@@ -351,11 +545,21 @@ fn a_signed_upgrade_replaces_the_registrar_when_it_activates() {
         parent = advance(&chain, parent, &b);
         last = b;
         if parent.height == 39 {
-            assert_eq!(parent.state.storage(&REGISTRY, U256::ZERO), before, "unchanged until activation");
+            assert_eq!(
+                parent.state.storage(&REGISTRY, U256::ZERO),
+                before,
+                "unchanged until activation"
+            );
         }
     }
-    assert_eq!(parent.state.storage(&REGISTRY, U256::ZERO), U256::from_be_bytes([5; 32]));
-    assert_eq!(parent.state.storage(&REGISTRY, U256::from(1u64)), U256::from_be_bytes([6; 32]));
+    assert_eq!(
+        parent.state.storage(&REGISTRY, U256::ZERO),
+        U256::from_be_bytes([5; 32])
+    );
+    assert_eq!(
+        parent.state.storage(&REGISTRY, U256::from(1u64)),
+        U256::from_be_bytes([6; 32])
+    );
 }
 
 #[test]
@@ -396,7 +600,11 @@ fn a_finalized_block_with_proofs_is_applied_even_without_a_local_verifier() {
     let _ = next;
     let prover = Address::repeat_byte(0x77);
     let c = proofs::commitment(&pa.state, 20).unwrap();
-    let claim = ProofClaim { height: 20, prover, proof: hex::encode(aether_proving::block::claim(c, prover)) };
+    let claim = ProofClaim {
+        height: 20,
+        prover,
+        proof: hex::encode(aether_proving::block::claim(c, prover)),
+    };
     let with_proof = propose_with(&a, &pa, &head, None, vec![claim]);
     // B has no verifier: it would not vote for this block...
     assert!(b.execute(&with_proof, &pb).is_err());

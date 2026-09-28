@@ -68,13 +68,19 @@ impl Supervisor {
 
     fn my_key(&self) -> Result<String, String> {
         let keys = crate::roster::LocalKeys::load(&self.data)?;
-        Ok(hex::encode(commonware_cryptography::Signer::public_key(&keys.signer).as_ref()))
+        Ok(hex::encode(
+            commonware_cryptography::Signer::public_key(&keys.signer).as_ref(),
+        ))
     }
 
     fn role(&self, me: &str) -> Result<Role, String> {
         let net = NetworkFile::load(&self.network_path())?;
         let member = net.validators.iter().any(|m| m.key == me);
-        Ok(if member && self.data.join("threshold.json").exists() { Role::Validator } else { Role::Candidate })
+        Ok(if member && self.data.join("threshold.json").exists() {
+            Role::Validator
+        } else {
+            Role::Candidate
+        })
     }
 
     /// `index@127.0.0.1:port` for every other member of `validators` that
@@ -91,9 +97,15 @@ impl Supervisor {
             .filter(|(_, m)| m.key != me)
             .filter_map(|(i, m)| {
                 let ports = std::fs::read_to_string(dir.join(&m.key)).ok()?;
-                let mut it = ports.split_whitespace().filter_map(|p| p.parse::<u16>().ok());
+                let mut it = ports
+                    .split_whitespace()
+                    .filter_map(|p| p.parse::<u16>().ok());
                 let (p2p, resh) = (it.next()?, it.next()?);
-                Some(format!("{}@127.0.0.1:{}", i + 1, if reshare { resh } else { p2p }))
+                Some(format!(
+                    "{}@127.0.0.1:{}",
+                    i + 1,
+                    if reshare { resh } else { p2p }
+                ))
             })
             .collect();
         Some(list.join(","))
@@ -104,25 +116,49 @@ impl Supervisor {
         let net = self.network_path();
         match role {
             Role::Validator => {
-                cmd.args(["node", "--exit-with-parent", "--network", &path_str(&net), "--data", &path_str(&self.data)]).args([
+                cmd.args([
+                    "node",
+                    "--exit-with-parent",
+                    "--network",
+                    &path_str(&net),
+                    "--data",
+                    &path_str(&self.data),
+                ])
+                .args([
                     "--port",
                     &self.port.to_string(),
                     "--rpc-port",
                     &self.rpc_port.to_string(),
                 ]);
-                if let Some(peers) = self.tcp_peers(&NetworkFile::load(&net)?.validators, me, false) {
+                if let Some(peers) = self.tcp_peers(&NetworkFile::load(&net)?.validators, me, false)
+                {
                     cmd.args(["--peers", &peers, "--offline"]);
                 }
                 cmd.args(&self.node_args);
             }
             Role::Candidate => {
-                cmd.args(["follow", "--exit-with-parent", "--network", &path_str(&net), "--data", &path_str(&self.data.join("follow"))])
-                    .args(["--keys", &path_str(&self.data), "--rpc-port", &self.rpc_port.to_string(), "--candidate", "--checkpoint"])
-                    .args(&self.follow_args);
+                cmd.args([
+                    "follow",
+                    "--exit-with-parent",
+                    "--network",
+                    &path_str(&net),
+                    "--data",
+                    &path_str(&self.data.join("follow")),
+                ])
+                .args([
+                    "--keys",
+                    &path_str(&self.data),
+                    "--rpc-port",
+                    &self.rpc_port.to_string(),
+                    "--candidate",
+                    "--checkpoint",
+                ])
+                .args(&self.follow_args);
             }
         }
         tracing::info!(?role, "aether run: starting");
-        cmd.spawn().map_err(|e| format!("spawn {}: {e}", self.exe.display()))
+        cmd.spawn()
+            .map_err(|e| format!("spawn {}: {e}", self.exe.display()))
     }
 
     /// Runs forever: (re)start the child for the current role; follow rotations.
@@ -130,7 +166,11 @@ impl Supervisor {
         let me = self.my_key()?;
         if let Some(dir) = &self.dev_peer_dir {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-            std::fs::write(dir.join(&me), format!("{} {}", self.port, self.reshare_port)).map_err(|e| e.to_string())?;
+            std::fs::write(
+                dir.join(&me),
+                format!("{} {}", self.port, self.reshare_port),
+            )
+            .map_err(|e| e.to_string())?;
         }
         loop {
             let role = self.role(&me)?;
@@ -162,12 +202,22 @@ impl Supervisor {
             if reshare.is_none() {
                 if let Ok(rot) = rpc_call(&rpc, "aether_rotation", json!([])) {
                     let epoch = rot["epoch"].as_u64();
-                    let involved = role == Role::Validator || rot["next"].as_array().is_some_and(|n| n.iter().any(|m| m["key"] == me));
+                    let involved = role == Role::Validator
+                        || rot["next"]
+                            .as_array()
+                            .is_some_and(|n| n.iter().any(|m| m["key"] == me));
                     if !rot.is_null() && involved && epoch != attempted {
                         attempted = epoch;
                         match self.start_reshare(role, me, &rot) {
-                            Ok(c) => reshare = Some(Reshare { child: c, started: Instant::now() }),
-                            Err(e) => tracing::warn!(%e, "aether run: cannot reshare to the proposed set"),
+                            Ok(c) => {
+                                reshare = Some(Reshare {
+                                    child: c,
+                                    started: Instant::now(),
+                                })
+                            }
+                            Err(e) => {
+                                tracing::warn!(%e, "aether run: cannot reshare to the proposed set")
+                            }
                         }
                     }
                 }
@@ -179,14 +229,19 @@ impl Supervisor {
                         reshare = None;
                     }
                     _ if r.started.elapsed() > self.reshare_timeout => {
-                        tracing::warn!("aether run: background reshare timed out; the running set carries on");
+                        tracing::warn!(
+                            "aether run: background reshare timed out; the running set carries on"
+                        );
                         stop(&mut reshare);
                     }
                     _ => {}
                 }
             }
             // 2. A staged reshare: sign its handoff (again now and then, for peers that missed it).
-            if role == Role::Validator && self.data.join(STAGED_THRESHOLD).exists() && last_sign.elapsed() > Duration::from_secs(5) {
+            if role == Role::Validator
+                && self.data.join(STAGED_THRESHOLD).exists()
+                && last_sign.elapsed() > Duration::from_secs(5)
+            {
                 last_sign = Instant::now();
                 if let Err(e) = rpc_call(&rpc, "aether_signHandoff", json!([])) {
                     tracing::debug!(%e, "handoff not signed");
@@ -207,8 +262,16 @@ impl Supervisor {
 
     /// The handoff is new to this Mac and the chain finalized its last block before the switch.
     fn handoff_due(&self, h: &Value) -> bool {
-        let (Some(round), Some(switch), Some(finalized)) = (h["round"].as_u64(), h["switch"].as_u64(), h["finalized"].as_u64()) else { return false };
-        let ours = NetworkFile::load(&self.network_path()).map(|n| n.round).unwrap_or(0);
+        let (Some(round), Some(switch), Some(finalized)) = (
+            h["round"].as_u64(),
+            h["switch"].as_u64(),
+            h["finalized"].as_u64(),
+        ) else {
+            return false;
+        };
+        let ours = NetworkFile::load(&self.network_path())
+            .map(|n| n.round)
+            .unwrap_or(0);
         round > ours && finalized + 1 >= switch
     }
 
@@ -218,38 +281,87 @@ impl Supervisor {
             Role::Validator => ours.clone(),
             Role::Candidate => {
                 // The running set's public file, checked against the identity this Mac pins.
-                let f: NetworkFile = serde_json::from_value(rot["network"].clone()).map_err(|e| format!("rotation has no network: {e}"))?;
+                let f: NetworkFile = serde_json::from_value(rot["network"].clone())
+                    .map_err(|e| format!("rotation has no network: {e}"))?;
                 if f.identity != ours.identity || f.chain_id != ours.chain_id {
                     return Err("the running set's network file is for another committee".into());
                 }
-                let out = f.output.clone().ok_or("the running set's network file has no output")?;
-                let identity = aether_light::ValidatorSet::from_hex(ours.identity.as_deref().unwrap_or_default()).map_err(|e| format!("{e:?}"))?;
-                let decoded = crate::dkg::KeyFile { round: f.round, output: out, identity: String::new(), share: String::new() }
-                    .decode_output(f.validators.len() as u32)?;
+                let out = f
+                    .output
+                    .clone()
+                    .ok_or("the running set's network file has no output")?;
+                let identity = aether_light::ValidatorSet::from_hex(
+                    ours.identity.as_deref().unwrap_or_default(),
+                )
+                .map_err(|e| format!("{e:?}"))?;
+                let decoded = crate::dkg::KeyFile {
+                    round: f.round,
+                    output: out,
+                    identity: String::new(),
+                    share: String::new(),
+                }
+                .decode_output(f.validators.len() as u32)?;
                 if decoded.public().public() != identity.identity() {
                     return Err("the running set's output is for another identity".into());
                 }
                 f
             }
         };
-        let next: Vec<Member> = serde_json::from_value(rot["next"].clone()).map_err(|e| format!("rotation next: {e}"))?;
-        let to = NetworkFile { validators: next.clone(), identity: None, output: None, epochs: vec![], ..from.clone() };
-        let (from_path, to_path) = (self.data.join("rotation-from.json"), self.data.join("rotation-to.json"));
-        std::fs::write(&from_path, serde_json::to_vec_pretty(&from).expect("json")).map_err(|e| e.to_string())?;
-        std::fs::write(&to_path, serde_json::to_vec_pretty(&to).expect("json")).map_err(|e| e.to_string())?;
+        let next: Vec<Member> = serde_json::from_value(rot["next"].clone())
+            .map_err(|e| format!("rotation next: {e}"))?;
+        let to = NetworkFile {
+            validators: next.clone(),
+            identity: None,
+            output: None,
+            epochs: vec![],
+            ..from.clone()
+        };
+        let (from_path, to_path) = (
+            self.data.join("rotation-from.json"),
+            self.data.join("rotation-to.json"),
+        );
+        std::fs::write(&from_path, serde_json::to_vec_pretty(&from).expect("json"))
+            .map_err(|e| e.to_string())?;
+        std::fs::write(&to_path, serde_json::to_vec_pretty(&to).expect("json"))
+            .map_err(|e| e.to_string())?;
         let _ = std::fs::remove_file(self.data.join(STAGED_THRESHOLD));
         let _ = std::fs::remove_file(self.data.join(STAGED_NETWORK));
         let mut cmd = Command::new(&self.exe);
-        cmd.args(["reshare", "--stage", "--exit-with-parent", "--from", &path_str(&from_path), "--to", &path_str(&to_path)]);
+        cmd.args([
+            "reshare",
+            "--stage",
+            "--exit-with-parent",
+            "--from",
+            &path_str(&from_path),
+            "--to",
+            &path_str(&to_path),
+        ]);
         if role == Role::Validator {
             cmd.arg("--via-node");
         }
-        cmd.args(["--port", &self.reshare_port.to_string(), "--data", &path_str(&self.data)]);
-        let union: Vec<Member> = from.validators.iter().cloned().chain(next.iter().filter(|m| !from.validators.contains(m)).cloned()).collect();
+        cmd.args([
+            "--port",
+            &self.reshare_port.to_string(),
+            "--data",
+            &path_str(&self.data),
+        ]);
+        let union: Vec<Member> = from
+            .validators
+            .iter()
+            .cloned()
+            .chain(
+                next.iter()
+                    .filter(|m| !from.validators.contains(m))
+                    .cloned(),
+            )
+            .collect();
         if let Some(peers) = self.tcp_peers(&union, me, true) {
             cmd.args(["--peers", &peers, "--offline"]);
         }
-        tracing::info!(members = next.len(), "aether run: resharing to the proposed voting set in the background");
+        tracing::info!(
+            members = next.len(),
+            "aether run: resharing to the proposed voting set in the background"
+        );
         cmd.spawn().map_err(|e| e.to_string())
     }
 
@@ -258,12 +370,25 @@ impl Supervisor {
         let switch = h["switch"].as_u64().ok_or("handoff switch")?;
         let round = h["round"].as_u64().ok_or("handoff round")?;
         let output = h["output"].as_str().ok_or("handoff output")?.to_string();
-        let members: Vec<Member> = serde_json::from_value(h["members"].clone()).map_err(|e| format!("handoff members: {e}"))?;
+        let members: Vec<Member> = serde_json::from_value(h["members"].clone())
+            .map_err(|e| format!("handoff members: {e}"))?;
         let end = switch - 1;
-        let end_hash = rpc_call(&self.rpc(), "aether_getBlock", json!([end]))?["hash"].as_str().ok_or("no block before the switch")?.to_string();
+        let end_hash = rpc_call(&self.rpc(), "aether_getBlock", json!([end]))?["hash"]
+            .as_str()
+            .ok_or("no block before the switch")?
+            .to_string();
         let ours = NetworkFile::load(&self.network_path())?;
-        let mut next = NetworkFile { validators: members.clone(), identity: ours.identity.clone(), round, output: Some(output.clone()), ..ours.clone() };
-        next.epochs.push(EpochStart { height: switch, parent: end_hash });
+        let mut next = NetworkFile {
+            validators: members.clone(),
+            identity: ours.identity.clone(),
+            round,
+            output: Some(output.clone()),
+            ..ours.clone()
+        };
+        next.epochs.push(EpochStart {
+            height: switch,
+            parent: end_hash,
+        });
         let staged: Option<crate::dkg::KeyFile> = std::fs::read(self.data.join(STAGED_THRESHOLD))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
@@ -275,12 +400,21 @@ impl Supervisor {
                     // No validator history: start from the block verified last as a follower.
                     let fin = rpc_call(&self.rpc(), "aether_getFinalized", json!([end]))?;
                     if fin.is_null() {
-                        return Err("the follower has no proof of the block before the switch yet".into());
+                        return Err(
+                            "the follower has no proof of the block before the switch yet".into(),
+                        );
                     }
-                    std::fs::write(self.data.join(crate::rotation::ANCHOR_FILE), fin.to_string()).map_err(|e| e.to_string())?;
+                    std::fs::write(
+                        self.data.join(crate::rotation::ANCHOR_FILE),
+                        fin.to_string(),
+                    )
+                    .map_err(|e| e.to_string())?;
                     self.adopt_follower_state()?;
                 }
-                write_secret(&self.data.join("threshold.json"), &serde_json::to_vec_pretty(&key).expect("json"))?;
+                write_secret(
+                    &self.data.join("threshold.json"),
+                    &serde_json::to_vec_pretty(&key).expect("json"),
+                )?;
                 tracing::info!(switch, "aether run: this Mac votes from the switch height");
             }
             (true, None) => {
@@ -306,14 +440,23 @@ impl Supervisor {
     /// Move a previous validator's storage aside and start from the follower's
     /// verified state (its node state and marshal archives would have a gap).
     fn adopt_follower_state(&self) -> Result<(), String> {
-        let prefix = std::fs::read_to_string(self.data.join("partition")).map(|p| p.trim().to_string()).unwrap_or_else(|_| "aether".into());
+        let prefix = std::fs::read_to_string(self.data.join("partition"))
+            .map(|p| p.trim().to_string())
+            .unwrap_or_else(|_| "aether".into());
         let stale: Vec<PathBuf> = std::fs::read_dir(&self.data)
             .map_err(|e| e.to_string())?
             .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n == "state.redb" || n.starts_with(&format!("{prefix}-"))))
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n == "state.redb" || n.starts_with(&format!("{prefix}-")))
+            })
             .collect();
         if !stale.is_empty() {
-            let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or_default();
+            let secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or_default();
             let aside = self.data.join(format!("stale-{secs}"));
             std::fs::create_dir_all(&aside).map_err(|e| e.to_string())?;
             for p in stale {
@@ -321,12 +464,20 @@ impl Supervisor {
                 std::fs::rename(&p, aside.join(name)).map_err(|e| e.to_string())?;
             }
         }
-        std::fs::copy(self.data.join("follow").join("state.redb"), self.data.join("state.redb")).map_err(|e| format!("follower state: {e}"))?;
+        std::fs::copy(
+            self.data.join("follow").join("state.redb"),
+            self.data.join("state.redb"),
+        )
+        .map_err(|e| format!("follower state: {e}"))?;
         Ok(())
     }
 
     fn write_network(&self, f: &NetworkFile) -> Result<(), String> {
-        std::fs::write(self.network_path(), serde_json::to_vec_pretty(f).expect("json")).map_err(|e| e.to_string())
+        std::fs::write(
+            self.network_path(),
+            serde_json::to_vec_pretty(f).expect("json"),
+        )
+        .map_err(|e| e.to_string())
     }
 }
 
@@ -339,7 +490,9 @@ fn stop(reshare: &mut Option<Reshare>) {
 
 /// Overwrite a secret file, then remove it.
 fn erase(path: &Path) -> Result<(), String> {
-    let Ok(len) = std::fs::metadata(path).map(|m| m.len()) else { return Ok(()) };
+    let Ok(len) = std::fs::metadata(path).map(|m| m.len()) else {
+        return Ok(());
+    };
     write_secret(path, &vec![0u8; len as usize])?;
     std::fs::remove_file(path).map_err(|e| e.to_string())
 }
@@ -348,7 +501,13 @@ fn erase(path: &Path) -> Result<(), String> {
 fn write_secret(path: &Path, bytes: &[u8]) -> Result<(), String> {
     use std::io::Write as _;
     use std::os::unix::fs::OpenOptionsExt as _;
-    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path).map_err(|e| e.to_string())?;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|e| e.to_string())?;
     f.write_all(bytes).map_err(|e| e.to_string())
 }
 
@@ -362,17 +521,27 @@ const KEEP_ACROSS_NETWORKS: [&str; 3] = ["validator.key", "validator.pub.json", 
 pub fn adopt_network(data: &Path, network: Option<&Path>) -> Result<(), String> {
     let ours = data.join("network.json");
     let Some(src) = network else {
-        return if ours.exists() { Ok(()) } else { Err("first run: pass --network <network.json>".into()) };
+        return if ours.exists() {
+            Ok(())
+        } else {
+            Err("first run: pass --network <network.json>".into())
+        };
     };
     let theirs = NetworkFile::load(src)?;
     if let Ok(current) = NetworkFile::load(&ours) {
         if current.chain_id == theirs.chain_id && current.identity == theirs.identity {
             return Ok(());
         }
-        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or_default();
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or_default();
         let aside = data.join(format!("stale-{secs}"));
         std::fs::create_dir_all(&aside).map_err(|e| e.to_string())?;
-        for e in std::fs::read_dir(data).map_err(|e| e.to_string())?.flatten() {
+        for e in std::fs::read_dir(data)
+            .map_err(|e| e.to_string())?
+            .flatten()
+        {
             let name = e.file_name();
             let n = name.to_string_lossy();
             if KEEP_ACROSS_NETWORKS.contains(&n.as_ref()) || n.starts_with("stale-") {
@@ -382,7 +551,9 @@ pub fn adopt_network(data: &Path, network: Option<&Path>) -> Result<(), String> 
         }
         tracing::warn!(moved_to = %aside.display(), "a different network: the previous one's data was moved aside");
     }
-    std::fs::copy(src, &ours).map(|_| ()).map_err(|e| format!("{}: {e}", src.display()))
+    std::fs::copy(src, &ours)
+        .map(|_| ())
+        .map_err(|e| format!("{}: {e}", src.display()))
 }
 
 fn path_str(p: &Path) -> String {
@@ -423,6 +594,7 @@ mod tests {
             min_streak: None,
             draw_epochs: None,
             history: None,
+            node_rewards: None,
         }
     }
 
@@ -448,8 +620,18 @@ mod tests {
         adopt_network(&data, Some(&src)).unwrap();
         assert!(!data.join("state.redb").exists());
         assert!(data.join("validator.key").exists());
-        assert_eq!(NetworkFile::load(&data.join("network.json")).unwrap().identity.as_deref(), Some("bb"));
-        let aside = std::fs::read_dir(&data).unwrap().flatten().find(|e| e.file_name().to_string_lossy().starts_with("stale-")).unwrap();
+        assert_eq!(
+            NetworkFile::load(&data.join("network.json"))
+                .unwrap()
+                .identity
+                .as_deref(),
+            Some("bb")
+        );
+        let aside = std::fs::read_dir(&data)
+            .unwrap()
+            .flatten()
+            .find(|e| e.file_name().to_string_lossy().starts_with("stale-"))
+            .unwrap();
         assert!(aside.path().join("state.redb").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }

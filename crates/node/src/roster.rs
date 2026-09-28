@@ -70,6 +70,9 @@ pub struct NetworkFile {
     /// `ChainConfig::history_v2`). Absent on 7780 and older networks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history: Option<u32>,
+    /// Node rewards from genesis (docs/design/15-node-rewards.md; default off).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_rewards: Option<bool>,
 }
 
 /// What a network file fixes about genesis beyond the chain id.
@@ -83,6 +86,7 @@ pub struct Genesis {
     pub draw_epochs: Option<u64>,
     /// History format version (0 or 1 = the original format).
     pub history: u32,
+    pub node_rewards: bool,
 }
 
 impl NetworkFile {
@@ -90,12 +94,27 @@ impl NetworkFile {
         let registrar = match &self.registrar {
             None => None,
             Some(h) => {
-                let b = hex::decode(h.trim_start_matches("0x")).map_err(|e| format!("registrar: {e}"))?;
-                let (x, y) = b.split_at_checked(32).ok_or("registrar must be 64 bytes (x‖y)")?;
-                Some((x.try_into().map_err(|_| "registrar x")?, y.try_into().map_err(|_| "registrar must be 64 bytes (x‖y)")?))
+                let b = hex::decode(h.trim_start_matches("0x"))
+                    .map_err(|e| format!("registrar: {e}"))?;
+                let (x, y) = b
+                    .split_at_checked(32)
+                    .ok_or("registrar must be 64 bytes (x‖y)")?;
+                Some((
+                    x.try_into().map_err(|_| "registrar x")?,
+                    y.try_into()
+                        .map_err(|_| "registrar must be 64 bytes (x‖y)")?,
+                ))
             }
         };
-        Ok(Genesis { faucet: self.faucet, registrar, epoch_blocks: self.epoch_blocks.unwrap_or(0), min_streak: self.min_streak, draw_epochs: self.draw_epochs, history: self.history.unwrap_or(0) })
+        Ok(Genesis {
+            faucet: self.faucet,
+            registrar,
+            epoch_blocks: self.epoch_blocks.unwrap_or(0),
+            min_streak: self.min_streak,
+            draw_epochs: self.draw_epochs,
+            history: self.history.unwrap_or(0),
+            node_rewards: self.node_rewards.unwrap_or(false),
+        })
     }
 
     /// Carry genesis facts into a file written by a ceremony (dkg, reshare).
@@ -106,6 +125,7 @@ impl NetworkFile {
         self.min_streak = from.min_streak.or(self.min_streak);
         self.draw_epochs = from.draw_epochs.or(self.draw_epochs);
         self.history = from.history.or(self.history);
+        self.node_rewards = from.node_rewards.or(self.node_rewards);
     }
 }
 
@@ -126,7 +146,12 @@ pub struct Roster {
 impl Roster {
     /// Public devnet validators `1..=n`.
     pub fn devnet(n: u64) -> Self {
-        Roster { keys: (1..=n).map(|i| aether_light::devnet_validator_key(i).public_key()).collect(), nodes: (1..=n).map(aether_net::devnet_node_id).collect() }
+        Roster {
+            keys: (1..=n)
+                .map(|i| aether_light::devnet_validator_key(i).public_key())
+                .collect(),
+            nodes: (1..=n).map(aether_net::devnet_node_id).collect(),
+        }
     }
 
     pub fn from_file(f: &NetworkFile) -> Result<Self, String> {
@@ -134,8 +159,15 @@ impl Roster {
         let mut nodes = Vec::new();
         for (i, m) in f.validators.iter().enumerate() {
             let k = hex::decode(&m.key).map_err(|e| format!("validator {}: key: {e}", i + 1))?;
-            keys.push(PublicKey::decode(k.as_slice()).map_err(|e| format!("validator {}: key: {e:?}", i + 1))?);
-            nodes.push(m.node.parse().map_err(|e| format!("validator {}: node: {e}", i + 1))?);
+            keys.push(
+                PublicKey::decode(k.as_slice())
+                    .map_err(|e| format!("validator {}: key: {e:?}", i + 1))?,
+            );
+            nodes.push(
+                m.node
+                    .parse()
+                    .map_err(|e| format!("validator {}: node: {e}", i + 1))?,
+            );
         }
         let r = Roster { keys, nodes };
         r.validators_checked()?;
@@ -151,17 +183,25 @@ impl Roster {
     }
 
     fn validators_checked(&self) -> Result<Set<PublicKey>, String> {
-        self.keys.iter().cloned().try_collect().map_err(|_| "duplicate validator key".to_string())
+        self.keys
+            .iter()
+            .cloned()
+            .try_collect()
+            .map_err(|_| "duplicate validator key".to_string())
     }
 
     /// The validator set (sorted, as consensus uses it).
     pub fn validators(&self) -> Set<PublicKey> {
-        self.validators_checked().expect("roster checked at construction")
+        self.validators_checked()
+            .expect("roster checked at construction")
     }
 
     /// 1-based index of `key`.
     pub fn index_of(&self, key: &PublicKey) -> Option<u64> {
-        self.keys.iter().position(|k| k == key).map(|p| p as u64 + 1)
+        self.keys
+            .iter()
+            .position(|k| k == key)
+            .map(|p| p as u64 + 1)
     }
 
     pub fn key(&self, i: u64) -> &PublicKey {
@@ -187,7 +227,15 @@ impl Roster {
     pub fn to_file(&self, chain_id: u64) -> NetworkFile {
         NetworkFile {
             chain_id,
-            validators: self.keys.iter().zip(&self.nodes).map(|(k, n)| Member { key: hex::encode(k.encode()), node: n.to_string() }).collect(),
+            validators: self
+                .keys
+                .iter()
+                .zip(&self.nodes)
+                .map(|(k, n)| Member {
+                    key: hex::encode(k.encode()),
+                    node: n.to_string(),
+                })
+                .collect(),
             identity: None,
             round: 0,
             output: None,
@@ -198,6 +246,7 @@ impl Roster {
             min_streak: None,
             draw_epochs: None,
             history: None,
+            node_rewards: None,
         }
     }
 }
@@ -217,28 +266,51 @@ struct KeyFileJson {
 
 impl LocalKeys {
     pub fn devnet(i: u64) -> Self {
-        LocalKeys { signer: aether_light::devnet_validator_key(i), node_secret: aether_net::devnet_node_secret(i) }
+        LocalKeys {
+            signer: aether_light::devnet_validator_key(i),
+            node_secret: aether_net::devnet_node_secret(i),
+        }
     }
 
     pub fn generate() -> Self {
         let seed: [u8; 32] = rand::random();
         let signer = ed25519::PrivateKey::decode(seed.as_slice()).expect("32-byte ed25519 seed");
-        LocalKeys { signer, node_secret: SecretKey::from_bytes(&rand::random()) }
+        LocalKeys {
+            signer,
+            node_secret: SecretKey::from_bytes(&rand::random()),
+        }
     }
 
     pub fn public(&self) -> Member {
-        Member { key: hex::encode(self.signer.public_key().encode()), node: self.node_secret.public().to_string() }
+        Member {
+            key: hex::encode(self.signer.public_key().encode()),
+            node: self.node_secret.public().to_string(),
+        }
     }
 
     /// Load `<dir>/validator.key`.
     pub fn load(dir: &Path) -> Result<Self, String> {
         let path = dir.join(KEY_FILE);
-        let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e} (run `aether keygen --data {}`)", path.display(), dir.display()))?;
-        let j: KeyFileJson = serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+        let bytes = std::fs::read(&path).map_err(|e| {
+            format!(
+                "{}: {e} (run `aether keygen --data {}`)",
+                path.display(),
+                dir.display()
+            )
+        })?;
+        let j: KeyFileJson =
+            serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
         let c = hex::decode(j.consensus).map_err(|e| e.to_string())?;
-        let signer = ed25519::PrivateKey::decode(c.as_slice()).map_err(|e| format!("consensus key: {e:?}"))?;
-        let n: [u8; 32] = hex::decode(j.node).map_err(|e| e.to_string())?.try_into().map_err(|_| "node key length".to_string())?;
-        Ok(LocalKeys { signer, node_secret: SecretKey::from_bytes(&n) })
+        let signer = ed25519::PrivateKey::decode(c.as_slice())
+            .map_err(|e| format!("consensus key: {e:?}"))?;
+        let n: [u8; 32] = hex::decode(j.node)
+            .map_err(|e| e.to_string())?
+            .try_into()
+            .map_err(|_| "node key length".to_string())?;
+        Ok(LocalKeys {
+            signer,
+            node_secret: SecretKey::from_bytes(&n),
+        })
     }
 
     /// Write `<dir>/validator.key` (mode 600) and `<dir>/validator.pub.json`. Refuses to overwrite.
@@ -247,14 +319,22 @@ impl LocalKeys {
         use std::os::unix::fs::OpenOptionsExt as _;
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         let path = dir.join(KEY_FILE);
-        let j = KeyFileJson { consensus: hex::encode(self.signer.encode()), node: hex::encode(self.node_secret.to_bytes()) };
+        let j = KeyFileJson {
+            consensus: hex::encode(self.signer.encode()),
+            node: hex::encode(self.node_secret.to_bytes()),
+        };
         let mut f = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
             .open(&path)
             .map_err(|e| format!("{}: {e} (keys are never overwritten)", path.display()))?;
-        f.write_all(&serde_json::to_vec_pretty(&j).expect("json")).map_err(|e| e.to_string())?;
-        std::fs::write(dir.join(PUBLIC_FILE), serde_json::to_vec_pretty(&self.public()).expect("json")).map_err(|e| e.to_string())
+        f.write_all(&serde_json::to_vec_pretty(&j).expect("json"))
+            .map_err(|e| e.to_string())?;
+        std::fs::write(
+            dir.join(PUBLIC_FILE),
+            serde_json::to_vec_pretty(&self.public()).expect("json"),
+        )
+        .map_err(|e| e.to_string())
     }
 }

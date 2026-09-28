@@ -441,7 +441,7 @@ private struct VotingNodeRow: View {
                 case nil:
                     EmptyView()
                 }
-                Text("Mainnet: no block rewards until \(VotingRules.mainnetIssuanceOperators) different operators vote. No sale, no founder share.")
+                Text("Mainnet: online Macs share the block rewards every hour, at most 1/\(VotingRules.mainnetIssuanceOperators) per operator. No sale, no founder share.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)

@@ -14,10 +14,10 @@ enum VotingRules {
     static let minStreakEpochs: UInt64 = 24
     /// Registered Macs needed before the network draws a voting set from them.
     static let minCandidates: UInt32 = 4
-    /// Mainnet: block rewards stay off until this many different operators vote.
+    /// Mainnet: one operator gets at most 1/this of each hour's block rewards.
     static let mainnetIssuanceOperators = 16
     /// Said the same way everywhere an early participant looks.
-    static let mainnetRewardsRule = "On the future mainnet there is no token sale and no founder share. Block rewards stay off until \(mainnetIssuanceOperators) different operators are voting: until then nobody, the founder included, earns anything. Joining early only puts your Mac ahead in the draw."
+    static let mainnetRewardsRule = "On the future mainnet there is no token sale and no founder share. Block rewards go to the Macs that are online, every hour. One operator gets at most 1/\(mainnetIssuanceOperators) of them, and the rest is never issued; once \(mainnetIssuanceOperators) operators are online, all of it is shared. Nothing here promises a price or a return."
 }
 
 private struct Bullet: View {

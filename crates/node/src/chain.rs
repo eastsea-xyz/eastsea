@@ -1625,7 +1625,7 @@ impl Chain {
         };
         let listed_hashes: std::collections::HashSet<TxHash> =
             listed.iter().map(aether_execution::tx_hash).collect();
-        let mut rest: Vec<TxEnvelope> = g
+        let rest: Vec<TxEnvelope> = g
             .mempool
             .iter()
             .filter(|(h, t)| !listed_hashes.contains(*h) && !censored(t))
@@ -2453,6 +2453,95 @@ mod pool_tests {
         }
     }
 
+    /// `mempool_candidates` as it was before the 2026-09-29 fix (482400e):
+    /// listed txs first, then the rest sorted by (nonce, sender). Kept verbatim
+    /// so the regression tests below can show what it did to a listed tx whose
+    /// sender's earlier nonces were still in the pool.
+    fn candidates_2026_09_28(chain: &Chain) -> Vec<TxEnvelope> {
+        let g = chain.lock();
+        let censored = |t: &TxEnvelope| {
+            g.censor == Some(t.header.sender) || g.deprioritize == Some(t.header.sender)
+        };
+        let listed = if g.censor.is_some() {
+            Vec::new()
+        } else {
+            g.inclusion.for_proposal()
+        };
+        let listed_hashes: std::collections::HashSet<TxHash> =
+            listed.iter().map(aether_execution::tx_hash).collect();
+        let mut rest: Vec<TxEnvelope> = g
+            .mempool
+            .iter()
+            .filter(|(h, t)| !listed_hashes.contains(*h) && !censored(t))
+            .map(|(_, t)| t.clone())
+            .collect();
+        rest.sort_by_key(|t| (t.header.nonce, t.header.sender));
+        let mut txs = listed;
+        txs.extend(rest);
+        txs.truncate(MAX_TXS_PER_BLOCK);
+        txs
+    }
+
+    /// Signed transfers from `signer`, one per nonce in `nonces`: cheap enough
+    /// that a block holds them all, so what lands is exactly what the ordering
+    /// tried, in the order it tried it.
+    fn transfers(key: &aether_crypto::P256Signer, nonces: std::ops::Range<u64>) -> Vec<TxEnvelope> {
+        nonces
+            .map(|nonce| {
+                aether_execution::sign_call(key, 7780, nonce, 1, &EvmCall {
+                    to: Some(Address::repeat_byte(0xaa)),
+                    value: U256::from(1),
+                    input: Bytes::new(),
+                    gas_limit: 21_000,
+                    delegate: None,
+                })
+                .unwrap()
+            })
+            .collect()
+    }
+
+    /// An inclusion list holding `txs` this node accepted at `seen` (bypassing
+    /// gossip verification, which is another node's job).
+    fn accept_list(chain: &Chain, txs: Vec<TxEnvelope>, seen: Instant) {
+        use commonware_cryptography::Signer as _;
+        let key = commonware_cryptography::ed25519::PrivateKey::from_seed(1);
+        let il = inclusion::InclusionList::sign(&key, 1, 1_000, txs);
+        assert!(chain.lock().inclusion.accept(&il, seen));
+    }
+
+    /// Build and execute (but not finalize) the block after `last` with `txs`,
+    /// also returning its `BlockContext`: the append check must judge the block
+    /// in the same context that built it.
+    fn build_ctx(
+        chain: &Chain,
+        parent: &Arc<Executed>,
+        last: &Block,
+        txs: Vec<TxEnvelope>,
+    ) -> (Arc<Executed>, BlockContext) {
+        use crate::block::{Context, EPOCH};
+        use commonware_consensus::types::{Round, View};
+        use commonware_cryptography::Signer as _;
+        let height = last.height.next();
+        let leader = commonware_cryptography::ed25519::PrivateKey::from_seed(1).public_key();
+        let context = Context { round: Round::new(EPOCH, View::new(height.get())), leader, parent: (View::new(height.get() - 1), last.digest()) };
+        let skeleton = Block::new(context.clone(), last.digest(), height, height.get() * 1_000, bytes::Bytes::new());
+        let ctx = Chain::block_context(&chain.cfg(), &skeleton, parent);
+        let (pre, _) = chain.pre_state_with(parent, parent.next_protocol(), &[], &[], false).unwrap();
+        let (payload, _) = build_payload(parent, &pre, &ctx, txs, Extras::default());
+        let block = Block::new(context, last.digest(), height, height.get() * 1_000, payload.to_bytes());
+        (chain.execute(&block, parent).unwrap(), ctx)
+    }
+
+    /// `sender`'s nonces that made it into `exec` (from `txs`), in block order.
+    fn landed_nonces(exec: &Executed, txs: &[TxEnvelope], sender: Address) -> Vec<u64> {
+        let mine: HashMap<TxHash, u64> = txs
+            .iter()
+            .filter(|t| t.header.sender == sender)
+            .map(|t| (aether_execution::tx_hash(t), t.header.nonce))
+            .collect();
+        exec.tx_hashes.iter().filter_map(|h| mine.get(h).copied()).collect()
+    }
+
     /// Build and execute (but not finalize) the block after `last` with `txs`.
     fn build(chain: &Chain, parent: &Arc<Executed>, last: &Block, txs: Vec<TxEnvelope>) -> (Block, Arc<Executed>) {
         use crate::block::{Context, EPOCH};
@@ -2641,6 +2730,112 @@ mod pool_tests {
             chain.add_to_mempool(fat(senders[16], 0, vec![7u8; 130_000])),
             Ok(true),
             "the freed budget admits again"
+        );
+    }
+
+    /// The 2026-09-29 testnet stall as a unit: one sender with 64 pending txs,
+    /// an inclusion list naming nonces 32..47. The listed tx sits at its
+    /// sender's nonce 32 while nonces 0..31 are still in the pool, so a proposer
+    /// that tried the list first skipped it for good — the voters then saw
+    /// "nonce 32 appendable but missing" and refused every proposal at height
+    /// 104408. Ordered with the pool (the fix), everything lands and the append
+    /// check holds.
+    #[test]
+    fn listed_txs_at_a_later_nonce_land_after_their_senders_earlier_ones() {
+        use aether_crypto::{P256Signer, Signer as _};
+        let mut seed = [0u8; 32];
+        seed[0] = 0x5b;
+        let key = P256Signer::from_seed(&seed).unwrap();
+        let sender = address_of(&key.public_key()).unwrap();
+        let (chain, genesis) = Chain::new(cfg(vec![(sender, U256::from(10u128.pow(24)))]));
+        let pending = transfers(&key, 0..64);
+        for t in &pending {
+            assert_eq!(chain.add_to_mempool(t.clone()), Ok(true));
+        }
+        let seen = Instant::now();
+        accept_list(&chain, pending[32..48].to_vec(), seen); // all 16 list slots
+        let now = seen + Duration::from_secs(1); // past inclusion::FREEZE
+        let parent = chain.lock().finalized.clone();
+
+        // The fix: one nonce order over listed and unlisted alike.
+        let (exec, ctx) = build_ctx(&chain, &parent, &genesis, chain.mempool_candidates());
+        assert_eq!(
+            landed_nonces(&exec, &pending, sender),
+            (0..64).collect::<Vec<u64>>(),
+            "a contiguous run, the listed nonces with it"
+        );
+        assert!(
+            chain.inclusion_violations(&exec, &ctx, now).is_empty(),
+            "nothing listed is missing and appendable"
+        );
+
+        // The pre-fix ordering: the list went before the sender's nonces 0..31,
+        // so nonce 32 was tried against state nonce 0, skipped, and never
+        // retried (it was not in `rest` either).
+        let (exec, ctx) = build_ctx(&chain, &parent, &genesis, candidates_2026_09_28(&chain));
+        assert_eq!(
+            landed_nonces(&exec, &pending, sender),
+            (0..32).collect::<Vec<u64>>(),
+            "the listed txs were tried too early and never retried"
+        );
+        assert_eq!(
+            chain.inclusion_violations(&exec, &ctx, now),
+            vec![aether_execution::tx_hash(&pending[32])],
+            "nonce 32 appendable but missing: the stall every validator saw"
+        );
+    }
+
+    /// The same with several senders: only the named senders' earlier nonces
+    /// hold their listed txs back, and every sender's landed nonces must stay
+    /// one contiguous run.
+    #[test]
+    fn listed_txs_of_several_senders_wait_for_their_own_earlier_nonces() {
+        use aether_crypto::{P256Signer, Signer as _};
+        let key = |b: u8| {
+            let mut seed = [0u8; 32];
+            seed[0] = 0x5c;
+            seed[31] = b;
+            P256Signer::from_seed(&seed).unwrap()
+        };
+        let (a, b, c) = (key(1), key(2), key(3));
+        let (addr_a, addr_b, addr_c) = (
+            address_of(&a.public_key()).unwrap(),
+            address_of(&b.public_key()).unwrap(),
+            address_of(&c.public_key()).unwrap(),
+        );
+        let (chain, genesis) = Chain::new(cfg(vec![
+            (addr_a, U256::from(10u128.pow(24))),
+            (addr_b, U256::from(10u128.pow(24))),
+            (addr_c, U256::from(10u128.pow(24))),
+        ]));
+        // A's nonces 32..37 and B's first two txs are listed; C is not named.
+        let (tx_a, tx_b, tx_c) = (transfers(&a, 0..64), transfers(&b, 0..2), transfers(&c, 0..16));
+        let mut listed = tx_a[32..38].to_vec();
+        listed.extend_from_slice(&tx_b);
+        for t in tx_a.iter().chain(&tx_b).chain(&tx_c) {
+            assert_eq!(chain.add_to_mempool(t.clone()), Ok(true));
+        }
+        let seen = Instant::now();
+        accept_list(&chain, listed, seen);
+        let now = seen + Duration::from_secs(1);
+        let parent = chain.lock().finalized.clone();
+
+        let (exec, ctx) = build_ctx(&chain, &parent, &genesis, chain.mempool_candidates());
+        assert_eq!(landed_nonces(&exec, &tx_a, addr_a), (0..64).collect::<Vec<u64>>());
+        assert_eq!(landed_nonces(&exec, &tx_b, addr_b), (0..2).collect::<Vec<u64>>());
+        assert_eq!(landed_nonces(&exec, &tx_c, addr_c), (0..16).collect::<Vec<u64>>());
+        assert!(chain.inclusion_violations(&exec, &ctx, now).is_empty());
+
+        // Before the fix A's listed txs burned their chance before A's nonces
+        // 0..31 lifted the state nonce; B's listed txs were at B's next nonce
+        // already, so only A's tx went missing.
+        let (exec, ctx) = build_ctx(&chain, &parent, &genesis, candidates_2026_09_28(&chain));
+        assert_eq!(landed_nonces(&exec, &tx_a, addr_a), (0..32).collect::<Vec<u64>>());
+        assert_eq!(landed_nonces(&exec, &tx_b, addr_b), (0..2).collect::<Vec<u64>>());
+        assert_eq!(landed_nonces(&exec, &tx_c, addr_c), (0..16).collect::<Vec<u64>>());
+        assert_eq!(
+            chain.inclusion_violations(&exec, &ctx, now),
+            vec![aether_execution::tx_hash(&tx_a[32])]
         );
     }
 }

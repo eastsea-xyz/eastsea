@@ -284,6 +284,21 @@ fn wait_receipt(net: &Net, i: usize, hash: &str, secs: u64) -> Value {
     panic!("tx {hash} not finalized within {secs}s");
 }
 
+/// Grant `addr` test tokens through the faucet on node `i` and wait for the
+/// grant to finalize. The faucet signs at most one grant per second, so a
+/// refused request is retried rather than treated as a verdict.
+fn faucet_grant(net: &Net, i: usize, addr: &str) {
+    let end = Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Some(g) = net.rpc(i, "aether_faucet", json!([addr])) {
+            wait_receipt(net, i, g["hash"].as_str().unwrap(), 30);
+            return;
+        }
+        assert!(Instant::now() < end, "the faucet on node {i} would not grant {addr}");
+        std::thread::sleep(Duration::from_millis(1_100));
+    }
+}
+
 /// Every validator leaves dev 3 out of its own ordering, and validator 1 also
 /// ignores inclusion lists. Dev 3's tx can then only land through a list:
 /// published by a committee member, gossiped, put first by an honest proposer.
@@ -542,9 +557,18 @@ fn validator_rotation_continues_the_chain_under_the_same_identity() {
     for i in 1..=5 {
         run_ok(&["keygen", "--data", &d(i)]);
     }
+    // A network.json genesis funds only the faucet (mainnet funds nobody), so
+    // this chain gets one, as the testnet does: machine 1 holds the key.
+    let faucet = run_ok(&["faucet-key", "--data", &d(1)]);
+    let faucet_addr = faucet.split_whitespace().nth(2).unwrap().to_string();
     let pubs = |ids: &[usize]| ids.iter().map(|i| format!("{}/validator.pub.json", d(*i))).collect::<Vec<_>>();
-    let net_a = run_ok(&[&["network".to_string()][..], &pubs(&[1, 2, 3, 4])].concat().iter().map(String::as_str).collect::<Vec<_>>());
-    let net_b = run_ok(&[&["network".to_string()][..], &pubs(&[2, 3, 4, 5])].concat().iter().map(String::as_str).collect::<Vec<_>>());
+    let network = |ids: &[usize]| {
+        let mut a = vec!["network".to_string(), "--faucet".to_string(), faucet_addr.clone()];
+        a.extend(pubs(ids));
+        run_ok(&a.iter().map(String::as_str).collect::<Vec<_>>())
+    };
+    let net_a = network(&[1, 2, 3, 4]);
+    let net_b = network(&[2, 3, 4, 5]);
     std::fs::write(path("A.json"), net_a).unwrap();
     std::fs::write(path("B.json"), net_b).unwrap();
 
@@ -575,11 +599,22 @@ fn validator_rotation_continues_the_chain_under_the_same_identity() {
     // Committee A runs; pay 0xaa.
     let p2p: Vec<u16> = (0..4).map(|_| free_port()).collect();
     let rpc: Vec<u16> = (0..4).map(|_| free_port()).collect();
-    let mut a = Net::prepared(dir.clone(), p2p, rpc, (1..=4).map(|i| vec!["--network".to_string(), format!("{}/network.json", d(i))]).collect());
+    let extra = (1..=4)
+        .map(|i| {
+            let mut a = vec!["--network".to_string(), format!("{}/network.json", d(i))];
+            if i == 1 {
+                a.extend(["--faucet-key".to_string(), format!("{}/faucet.key", d(i))]);
+            }
+            a
+        })
+        .collect::<Vec<_>>();
+    let mut a = Net::prepared(dir.clone(), p2p, rpc, extra);
     for k in 0..4 {
         a.spawn_with_network(k);
     }
     a.wait_height(0, 3, 60);
+    // Dev 1 is funded only through the faucet (the genesis funds nobody else).
+    faucet_grant(&a, 0, &dev_address(1));
     let aa = "0x00000000000000000000000000000000000000aa";
     a.cli(&["send", "--rpc", &a.url(0), "--from-dev", "1", "--to", aa, "--value", "11", "--wait"]);
     for k in 0..4 {
@@ -797,7 +832,14 @@ fn open_voting_nodes_take_over_the_chain_by_themselves() {
     for g in genesis_set {
         run_ok(&["keygen", "--data", &d(g)]);
     }
-    let mut args = vec!["network".to_string(), "--epoch-blocks".into(), "40".into(), "--min-streak".into(), "0".into(), "--draw-epochs".into(), "1".into()];
+    // A network.json genesis funds only the faucet: g1 holds its key, and the
+    // senders below get test tokens through it. It must also name the dev
+    // registrar: without one the registry is not predeployed, registrations
+    // call empty code (no candidate ever exists) and the draw machinery runs
+    // at epoch_blocks 1 with an empty pool — no handoff, ever.
+    let faucet = run_ok(&["faucet-key", "--data", &d("g1")]);
+    let faucet_addr = faucet.split_whitespace().nth(2).unwrap().to_string();
+    let mut args = vec!["network".to_string(), "--faucet".to_string(), faucet_addr.clone(), "--dev-registrar".into(), "--epoch-blocks".into(), "40".into(), "--min-streak".into(), "0".into(), "--draw-epochs".into(), "1".into()];
     args.extend(genesis_set.iter().map(|g| format!("{}/validator.pub.json", d(g))));
     std::fs::write(d("A.json"), run_ok(&args.iter().map(String::as_str).collect::<Vec<_>>())).unwrap();
     let ports: Vec<u16> = (0..4).map(|_| free_port()).collect();
@@ -853,13 +895,22 @@ fn open_voting_nodes_take_over_the_chain_by_themselves() {
             "120".into(),
         ];
         if k == 0 {
+            // The dev registrar registers any device without Apple, and g1's
+            // node also answers the faucet (the two may share a test chain;
+            // only the 7780 testnet refuses this).
             a.push("--node-arg=--dev-registrar".into());
+            a.push(format!("--node-arg=--faucet-key={}/faucet.key", d("g1")));
         }
         let log = std::fs::File::create(dir.join(format!("{name}.log"))).unwrap();
         let child = Command::new(BIN).args(&a).env("RUST_LOG", "info,commonware=warn").stdout(log).stderr(Stdio::null()).spawn().expect("spawn run");
         net.procs[k] = Some(child);
     }
     net.wait_height(0, 3, 90);
+    // Nobody is funded at genesis: the faucet on g1 funds the sender and the
+    // four operators-to-be (their registrations and tips come out of it).
+    for dev in 1..=5u8 {
+        faucet_grant(&net, 0, &dev_address(dev));
+    }
     let aa = "0x00000000000000000000000000000000000000aa";
     net.cli(&["send", "--rpc", &net.url(0), "--from-dev", "1", "--to", aa, "--value", "11", "--wait"]);
 
@@ -1135,4 +1186,35 @@ fn a_late_mac_starts_from_a_certified_snapshot() {
     assert!(net.rpc(f, "aether_getBlock", json!([1])).is_none_or(|b| b.is_null()), "the late Mac replayed history");
     let bal = net.cli(&["balance", bob, "--rpc", &net.url(f)]);
     assert!(bal.contains("balance   321 wei") && bal.contains("verified  ✓"), "{bal}");
+}
+
+/// The vote journal keeps one section file per view, pruned only below the
+/// last finalization minus view retention (~20 views). A healthy chain
+/// therefore holds a couple dozen files; a stalled one piles up one per burned
+/// view — 190 on 2026-09-29 — and the journal opens every one at startup,
+/// which is what exhausted launchd's 256-file limit and crash-looped the four
+/// validators. Run a chain well past view retention and check every node's
+/// journal stays small (unpruned it would hold one file per view: 80+ here).
+#[test]
+fn the_vote_journal_keeps_a_bounded_number_of_section_files() {
+    let _serial = serial();
+    let net = Net::start_with("journal", vec![vec![]; 4]);
+    net.wait_height(0, 80, 180);
+    let h = net.height(0);
+    for i in 0..4 {
+        net.wait_height(i, h, 30);
+    }
+    for i in 0..4 {
+        let dir = net.dir.join((i + 1).to_string()).join("aether-consensus");
+        let sections = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("node {i}: no vote journal at {}: {e}", dir.display()))
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+            .count();
+        assert!(sections > 1, "node {i}: no vote journal sections in {}", dir.display());
+        assert!(
+            sections <= 40,
+            "node {i} holds {sections} vote journal sections at height {h}: pruned only below the last finalization?"
+        );
+    }
 }

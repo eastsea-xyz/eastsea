@@ -190,8 +190,6 @@ private struct HomePage: View {
                 RoundAction(title: "Send", icon: "paperplane.fill") { sheet = .send }.disabled(model.busy || model.account == nil)
                 RoundAction(title: "Assets", icon: "square.stack.3d.up.fill") { sheet = .assets }.disabled(model.address.isEmpty)
             }
-            // Empty wallet: the testnet faucet, once, instead of a permanent action.
-            if model.account != nil, balance == 0 { FaucetButton() }
             #if os(macOS)
             HomeEarnings(open: showNetwork)
             #endif
@@ -317,20 +315,6 @@ private struct DeveloperModeCard: View {
     }
 }
 #endif
-
-/// The testnet faucet, offered while the wallet is empty (and in Receive).
-private struct FaucetButton: View {
-    @EnvironmentObject var model: WalletModel
-
-    var body: some View {
-        VStack(spacing: 4) {
-            Button { model.faucet() } label: { Label("Get test AETH", systemImage: "drop.fill") }
-                .buttonStyle(.bordered)
-                .disabled(model.busy || model.address.isEmpty)
-            Text("Free from the testnet faucet. Test AETH has no value.").font(.aeCaption).foregroundStyle(.secondary)
-        }
-    }
-}
 
 /// Shown when someone started recovering THIS account: cancel it if it was not you.
 private struct IncomingRecoveryAlert: View {
@@ -1072,14 +1056,6 @@ private struct ReceiveSheet: View {
                 } label: { Label(copied ? "Copied" : "Copy address", systemImage: copied ? "checkmark" : "doc.on.doc") }
                     .buttonStyle(.borderedProminent)
                 Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
-            }
-            Divider()
-            // Testnet only: the faucet lives here (and on an empty Home), not as a main action.
-            VStack(spacing: 4) {
-                Button { model.faucet() } label: { Label("Get test AETH", systemImage: "drop") }
-                    .disabled(model.busy || model.address.isEmpty)
-                Text("Sends 10 free test AETH to this address. Test AETH has no value.").font(.aeCaption).foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
             }
         }
         .padding(24)

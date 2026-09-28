@@ -292,6 +292,10 @@ enum Cmd {
         /// DeviceCheck token (base64) from the Mac app; any text on a dev registrar.
         #[arg(long, default_value = "dev")]
         device_token: String,
+        /// Priority fee (wei) on the registration tx: 0 lets a zero-balance operator
+        /// register on a network with no faucet (mainnet).
+        #[arg(long, default_value_t = TIP)]
+        tip: u128,
     },
     /// Validator: sign a protocol upgrade with this validator's key share (prints a partial).
     UpgradeSign {
@@ -347,6 +351,13 @@ enum Cmd {
         /// Node rewards from genesis (docs/design/15-node-rewards.md): a new network only, needs --registrar.
         #[arg(long)]
         node_rewards: bool,
+        /// History v2 (a new genesis only, roadmap B): quiet empty blocks, era files, prune by default.
+        #[arg(long)]
+        history: Option<u32>,
+        /// Write the public dev registrar key as the registrar: a local or rehearsal network whose
+        /// registrar node runs `aether run --dev-registrar` (no Apple DeviceCheck).
+        #[arg(long, conflicts_with = "registrar")]
+        dev_registrar: bool,
         /// Founder reserve keys (validator.pub.json, up to 3, one Mac): seated only while fewer
         /// than four independent operators qualify. Needs --node-rewards and --reserve-operator.
         #[arg(long = "reserve", requires = "reserve_operator")]
@@ -640,7 +651,7 @@ fn main() {
                 .run()
             })()
         }
-        Cmd::CandidateRegister { data, registrar_rpc, rpc, from_dev, device_token } => (|| {
+        Cmd::CandidateRegister { data, registrar_rpc, rpc, from_dev, device_token, tip } => (|| {
             let keys = aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(&data))?;
             let operator = dev_address(from_dev)?;
             let (vk, nid, beaconer) = (keys.validator_key(), keys.node_id(), keys.beaconer());
@@ -653,7 +664,7 @@ fn main() {
             let input = aether_execution::registry::encode_register(vk, nid, beaconer, part("r")?, part("s")?);
             println!("candidate {}  node {}  beacons from {beaconer}", hex::encode(vk), hex::encode(nid));
             let c = EvmCall { to: Some(aether_execution::registry::REGISTRY), value: U256::ZERO, input, gas_limit: 400_000, delegate: None };
-            let r = submit(&rpc, from_dev, None, c, true)?;
+            let r = submit_with_tip(&rpc, from_dev, None, c, true, tip)?;
             if r["receipt"]["success"] != json!(true) {
                 return Err("registration reverted (this Mac or voting key is already registered?)".into());
             }
@@ -686,9 +697,13 @@ fn main() {
             };
             reshare(&from, &to, boundary, port, data, peers, link_base, offline, via_node)
         }
-        Cmd::Network { chain_id, faucet, registrar, epoch_blocks, min_streak, draw_epochs, node_rewards, reserve, reserve_operator, members } => {
+        Cmd::Network { chain_id, faucet, registrar, dev_registrar, epoch_blocks, min_streak, draw_epochs, node_rewards, history, reserve, reserve_operator, members } => {
+            let registrar = match (registrar, dev_registrar) {
+                (None, true) => Some(dev_registrar_hex()),
+                (r, _) => r,
+            };
             let reserve = reserve_operator.map(|op| (op, reserve));
-            assemble_network(chain_id, faucet, registrar, (epoch_blocks, min_streak, draw_epochs), (node_rewards, reserve), &members)
+            assemble_network(chain_id, faucet, registrar, (epoch_blocks, min_streak, draw_epochs), history, (node_rewards, reserve), &members)
         }
         Cmd::RegistrarKey { data } => (|| {
             // Idempotent: an existing key is kept (and its public half printed).
@@ -821,10 +836,21 @@ fn main() {
     }
 }
 
+/// The public dev registrar key (x‖y hex): the key `aether run --dev-registrar`
+/// signs attestations with, for `aether network --dev-registrar`.
+fn dev_registrar_hex() -> String {
+    aether_node::faucet::Faucet::from_seed(&dev_seed(DEV_REGISTRAR))
+        .expect("dev registrar")
+        .public_hex()
+        .to_string()
+}
+
 /// Genesis: a public network funds only its faucet; a local devnet funds the public dev accounts.
-fn chain_config(chain_id: u64, genesis: &aether_node::roster::Genesis) -> ChainConfig {
+/// A network.json without a faucet (mainnet: 사전 발행 0) funds nobody: all
+/// tokens come from issuance (docs/design/12-launch-plan.md).
+fn chain_config(chain_id: u64, genesis: &aether_node::roster::Genesis, dev_alloc: bool) -> ChainConfig {
     // A local devnet also gets the voting-node registry, with the public dev registrar key.
-    let dev_registrar = genesis.faucet.is_none().then(|| {
+    let dev_registrar = dev_alloc.then(|| {
         let k = aether_node::faucet::Faucet::from_seed(&dev_seed(DEV_REGISTRAR))
             .expect("dev registrar");
         let h = hex::decode(k.public_hex()).expect("hex");
@@ -835,10 +861,11 @@ fn chain_config(chain_id: u64, genesis: &aether_node::roster::Genesis) -> ChainC
     });
     let alloc = match genesis.faucet {
         Some(f) => vec![(f, U256::from(aether_node::faucet::SUPPLY))],
-        None => dev_accounts(DEV_ACCOUNTS)
+        None if dev_alloc => dev_accounts(DEV_ACCOUNTS)
             .into_iter()
             .map(|(_, a)| (a, U256::from(DEV_BALANCE)))
             .collect(),
+        None => vec![],
     };
     ChainConfig {
         chain_id,
@@ -1168,6 +1195,7 @@ fn assemble_network(
     faucet: Option<Address>,
     registrar: Option<String>,
     voting: VotingParams,
+    history: Option<u32>,
     rewards: (bool, Option<(Address, Vec<String>)>),
     members: &[String],
 ) -> Result<(), String> {
@@ -1203,8 +1231,7 @@ fn assemble_network(
         epoch_blocks,
         min_streak,
         draw_epochs,
-        // History v2 (a new genesis only) is set by adding "history": 2 to the file.
-        history: None,
+        history,
         node_rewards: node_rewards.then_some(true),
         reserve,
     };
@@ -1306,10 +1333,10 @@ fn run_node(a: NodeArgs) {
             Some(std::sync::Arc::new(f))
         }
         // Local devnet: public dev account 10 (funded at genesis) hands out test tokens.
-        (None, None) => Some(std::sync::Arc::new(
+        (None, None) if network_file.is_none() => Some(std::sync::Arc::new(
             aether_node::faucet::Faucet::from_seed(&dev_seed(DEV_ACCOUNTS)).expect("dev faucet"),
         )),
-        (None, Some(_)) => None,
+        _ => None,
     };
     let (index, port) = (p2p.index, p2p.port);
     assert!(
@@ -1329,7 +1356,7 @@ fn run_node(a: NodeArgs) {
     let p2p_cfg = aether_node::p2p::config(&p2p, b"_P2P");
     let links = matches!(p2p.transport, Transport::Iroh { .. });
     let executor = cw_tokio::Runner::new(cw_tokio::Config::new().with_storage_directory(&data));
-    let cfg = chain_config(chain_id, &genesis);
+    let cfg = chain_config(chain_id, &genesis, network_file.is_none());
 
     executor.start(async move |context| {
         // Public endpoint first: validator links and wallet RPC share it.
@@ -1734,6 +1761,8 @@ fn run_follow(
                 .unwrap_or_else(|_| "info,commonware=warn".into()),
         )
         .init();
+    // A network.json with no faucet funds nobody (mainnet: 사전 발행 0).
+    let dev_alloc = network.is_none();
     let (chain_id, genesis, set, nodes) = match network {
         Some(path) => {
             let file = aether_node::roster::NetworkFile::load(std::path::Path::new(&path))?;
@@ -1758,7 +1787,7 @@ fn run_follow(
             )
         }
     };
-    let cfg = chain_config(chain_id, &genesis);
+    let cfg = chain_config(chain_id, &genesis, dev_alloc);
     // Followers run at the network's 1 s block time.
     let history = history.mode(cfg.history_v2, 1000)?;
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -1847,6 +1876,7 @@ fn run_dkg(
     public.epoch_blocks = (genesis.epoch_blocks != 0).then_some(genesis.epoch_blocks);
     public.min_streak = genesis.min_streak;
     public.draw_epochs = genesis.draw_epochs;
+    public.history = (genesis.history != 0).then_some(genesis.history);
     public.node_rewards = genesis.node_rewards.then_some(true);
     public.reserve = genesis.reserve.as_ref().map(|r| aether_node::roster::ReserveFile {
         operator: r.operator,
@@ -2076,7 +2106,7 @@ fn dev_address(dev: u8) -> Result<Address, String> {
 /// growth) plus a 1 gwei tip; only the actual base + tip is charged.
 const TIP: u128 = 1_000_000_000;
 
-fn fee_caps(status: &Value) -> Result<aether_types::FeeVector, String> {
+fn fee_caps(status: &Value, tip: u128) -> Result<aether_types::FeeVector, String> {
     let get = |k: &str| {
         status["base_fee"][k]
             .as_str()
@@ -2084,13 +2114,19 @@ fn fee_caps(status: &Value) -> Result<aether_types::FeeVector, String> {
             .ok_or(format!("status has no base_fee.{k}"))
     };
     Ok(aether_types::FeeVector {
-        exec: get("exec")? * 2 + TIP,
+        exec: get("exec")? * 2 + tip,
         state: 0,
         prove: get("prove")? * 2,
     })
 }
 
 fn submit(rpc: &str, dev: u8, nonce: Option<u64>, c: EvmCall, wait: bool) -> Result<Value, String> {
+    submit_with_tip(rpc, dev, nonce, c, wait, TIP)
+}
+
+/// `submit` with an explicit priority fee: 0 lets a zero-balance account send
+/// (its tx only needs the base fee, which an empty block still covers).
+fn submit_with_tip(rpc: &str, dev: u8, nonce: Option<u64>, c: EvmCall, wait: bool, tip: u128) -> Result<Value, String> {
     let signer = P256Signer::from_seed(&dev_seed(dev)).map_err(|e| e.to_string())?;
     let from = aether_crypto::address_of(&signer.public_key()).map_err(|e| e.to_string())?;
     let status = call(rpc, "aether_status", json!([]))?;
@@ -2103,7 +2139,7 @@ fn submit(rpc: &str, dev: u8, nonce: Option<u64>, c: EvmCall, wait: bool) -> Res
                 .map_err(|e| e.to_string())?
         }
     };
-    let tx = sign_call_with(&signer, chain_id, nonce, fee_caps(&status)?, TIP, &c)
+    let tx = sign_call_with(&signer, chain_id, nonce, fee_caps(&status, tip)?, tip, &c)
         .map_err(|e| e.to_string())?;
     let r = call(rpc, "aether_sendTransaction", json!([tx]))?;
     let hash: TxHash = serde_json::from_value(r["hash"].clone()).map_err(|e| e.to_string())?;

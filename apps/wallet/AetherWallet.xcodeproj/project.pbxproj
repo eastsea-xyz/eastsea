@@ -8,7 +8,9 @@
 
 /* Begin PBXBuildFile section */
 		0087B71D472FCD97109FFF10 /* network.json in Resources */ = {isa = PBXBuildFile; fileRef = AB6E5651AC1948FECDAE69D4 /* network.json */; };
+		0DDB06BE0AE4C8499F80B5AE /* hud-state.json in Resources */ = {isa = PBXBuildFile; fileRef = 70646AA077DE58322F3287D3 /* hud-state.json */; };
 		16504A4054237817545767F0 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B38A846EB23F0C4A52BF8A78 /* ContentView.swift */; };
+		39B6F83581E4A0D246C4E7C8 /* idle-notif-cooldown.json in Resources */ = {isa = PBXBuildFile; fileRef = 55CA2A9B867930CBD3A7ED86 /* idle-notif-cooldown.json */; };
 		3A048B1773EDB624E715846E /* AetherWalletApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39176493D3D105EBB072F17C /* AetherWalletApp.swift */; };
 		3C5180BEE4BF629CA69AF4CE /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B38A846EB23F0C4A52BF8A78 /* ContentView.swift */; };
 		3EFB40E8AE60667378C4B952 /* AetherWalletApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39176493D3D105EBB072F17C /* AetherWalletApp.swift */; };
@@ -18,6 +20,7 @@
 		5D11F92088FEABAA0085ADCD /* ProverMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DEBCE5EA044F272C9EA406C /* ProverMenu.swift */; };
 		6911A71C489CFE413F30C9A2 /* EnclaveKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 317D79B15C7F9E75B1A1F4FC /* EnclaveKey.swift */; };
 		6B328300B9C16A284BC72EDD /* NodeController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64A5EE5BA6294827128D61F5 /* NodeController.swift */; };
+		6C7315255FCC0E4EE62D50C3 /* hud-state.json in Resources */ = {isa = PBXBuildFile; fileRef = 70646AA077DE58322F3287D3 /* hud-state.json */; };
 		8A4A2901B223B0F689036DFB /* EnclaveKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 317D79B15C7F9E75B1A1F4FC /* EnclaveKey.swift */; };
 		8C21512BBE06AA542E27EBA1 /* NodeController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64A5EE5BA6294827128D61F5 /* NodeController.swift */; };
 		95004663796AA4EF45771D37 /* WalletModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 016BCAF9063410C1BBD4052D /* WalletModel.swift */; };
@@ -32,6 +35,7 @@
 		E202B9DDD9BDC75A9D6CA697 /* Onboarding.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65F2514912728847B547AC0A /* Onboarding.swift */; };
 		F0B3BB5AE45A3595EC6EB117 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 54084C88C38E2484A2641DE4 /* Assets.xcassets */; };
 		F3667C9BCD3B016F232A69D8 /* ProverMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DEBCE5EA044F272C9EA406C /* ProverMenu.swift */; };
+		F4B044B6CDE6AEE7502DFBA1 /* idle-notif-cooldown.json in Resources */ = {isa = PBXBuildFile; fileRef = 55CA2A9B867930CBD3A7ED86 /* idle-notif-cooldown.json */; };
 		F9D2A177F2CFE05346206EDB /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 54084C88C38E2484A2641DE4 /* Assets.xcassets */; };
 		FE6BCD03689259294F5B9945 /* SimpleDashboard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BCD0FCE195D7296CBCA13E9 /* SimpleDashboard.swift */; };
 /* End PBXBuildFile section */
@@ -46,9 +50,11 @@
 		462C807FB20A46B9919AE925 /* Spinners.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Spinners.swift; sourceTree = "<group>"; };
 		4BC12AF79B32D90A48860251 /* aether_ffi.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = aether_ffi.swift; sourceTree = "<group>"; };
 		54084C88C38E2484A2641DE4 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		55CA2A9B867930CBD3A7ED86 /* idle-notif-cooldown.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "idle-notif-cooldown.json"; sourceTree = "<group>"; };
 		55E7E86166A7CE6D29E6C709 /* AdaptiveLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdaptiveLayout.swift; sourceTree = "<group>"; };
 		64A5EE5BA6294827128D61F5 /* NodeController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeController.swift; sourceTree = "<group>"; };
 		65F2514912728847B547AC0A /* Onboarding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Onboarding.swift; sourceTree = "<group>"; };
+		70646AA077DE58322F3287D3 /* hud-state.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "hud-state.json"; sourceTree = "<group>"; };
 		9DEBCE5EA044F272C9EA406C /* ProverMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProverMenu.swift; sourceTree = "<group>"; };
 		AB6E5651AC1948FECDAE69D4 /* network.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = network.json; sourceTree = "<group>"; };
 		B38A846EB23F0C4A52BF8A78 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
@@ -72,6 +78,14 @@
 				4BC12AF79B32D90A48860251 /* aether_ffi.swift */,
 			);
 			path = Generated;
+			sourceTree = "<group>";
+		};
+		282BE4B157AF223806E49BDE /* .omc */ = {
+			isa = PBXGroup;
+			children = (
+				7844F6BD9B9285DA25E9C18C /* state */,
+			);
+			path = .omc;
 			sourceTree = "<group>";
 		};
 		2E89153E6DC67082E19B5371 /* Products */ = {
@@ -107,6 +121,7 @@
 				0BCD0FCE195D7296CBCA13E9 /* SimpleDashboard.swift */,
 				462C807FB20A46B9919AE925 /* Spinners.swift */,
 				016BCAF9063410C1BBD4052D /* WalletModel.swift */,
+				282BE4B157AF223806E49BDE /* .omc */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -117,6 +132,15 @@
 				AB6E5651AC1948FECDAE69D4 /* network.json */,
 			);
 			path = Resources;
+			sourceTree = "<group>";
+		};
+		7844F6BD9B9285DA25E9C18C /* state */ = {
+			isa = PBXGroup;
+			children = (
+				70646AA077DE58322F3287D3 /* hud-state.json */,
+				55CA2A9B867930CBD3A7ED86 /* idle-notif-cooldown.json */,
+			);
+			path = state;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -208,6 +232,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				F0B3BB5AE45A3595EC6EB117 /* Assets.xcassets in Resources */,
+				6C7315255FCC0E4EE62D50C3 /* hud-state.json in Resources */,
+				F4B044B6CDE6AEE7502DFBA1 /* idle-notif-cooldown.json in Resources */,
 				576FB72021E6A746C1A7AF9B /* network.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -217,6 +243,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				F9D2A177F2CFE05346206EDB /* Assets.xcassets in Resources */,
+				0DDB06BE0AE4C8499F80B5AE /* hud-state.json in Resources */,
+				39B6F83581E4A0D246C4E7C8 /* idle-notif-cooldown.json in Resources */,
 				0087B71D472FCD97109FFF10 /* network.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

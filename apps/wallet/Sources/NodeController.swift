@@ -1,4 +1,5 @@
 #if os(macOS)
+import DeviceCheck
 import Foundation
 import IOKit.ps
 import ServiceManagement
@@ -180,6 +181,33 @@ final class NodeController: ObservableObject {
         poll = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.check() }
         }
+        refreshDeviceToken()
+        tokenTimer?.invalidate()
+        tokenTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refreshDeviceToken() }
+        }
+    }
+
+    private var tokenTimer: Timer?
+
+    /// Daily re-attestation (docs/design/15-node-rewards.md): once a day the node
+    /// proves with a fresh Apple DeviceCheck token that it still runs on a real,
+    /// registered Mac. Only the app can make one, so it leaves one every hour
+    /// where the node looks for it (owner-readable only).
+    private func refreshDeviceToken() {
+        guard DCDevice.current.isSupported else { return }
+        let file = Self.dataDir.appendingPathComponent("devicecheck-token")
+        Task.detached {
+            guard let token = try? await DCDevice.current.generateToken() else { return }
+            let fm = FileManager.default
+            let tmp = file.appendingPathExtension("tmp")
+            guard fm.createFile(atPath: tmp.path, contents: Data(token.base64EncodedString().utf8), attributes: [.posixPermissions: 0o600]) else { return }
+            if fm.fileExists(atPath: file.path) {
+                _ = try? fm.replaceItemAt(file, withItemAt: tmp)
+            } else {
+                try? fm.moveItem(at: tmp, to: file)
+            }
+        }
     }
 
     func stop(keepSwitch: Bool = false) {
@@ -188,6 +216,7 @@ final class NodeController: ObservableObject {
             powerTimer = nil
         }
         poll?.invalidate()
+        tokenTimer?.invalidate()
         poll = nil
         switched = false
         useLocalNode(port: nil)

@@ -51,6 +51,9 @@ case "${1:-}" in
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <!-- The vote journal keeps one file per section: launchd's default of 256 open files is too few. -->
+  <key>SoftResourceLimits</key><dict><key>NumberOfFiles</key><integer>65536</integer></dict>
+  <key>HardResourceLimits</key><dict><key>NumberOfFiles</key><integer>65536</integer></dict>
   <key>ThrottleInterval</key><integer>10</integer>
   <key>StandardOutPath</key><string>$T/node$i.log</string>
   <key>StandardErrorPath</key><string>$T/node$i.log</string>

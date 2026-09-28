@@ -1582,9 +1582,15 @@ impl Chain {
             .filter(|(h, t)| !listed_hashes.contains(*h) && !censored(t))
             .map(|(_, t)| t.clone())
             .collect();
-        rest.sort_by_key(|t| (t.header.nonce, t.header.sender));
-        let mut txs = listed;
-        txs.extend(rest);
+        // Listed txs go in nonce order with the rest: a listed tx whose sender's
+        // earlier nonces sit in the mempool would fail up front, never be retried,
+        // and the block would then wrongly leave it out (2026-09-29 stall: every
+        // proposal failed the inclusion-list check at the next nonce). For equal
+        // nonces a listed tx still comes first.
+        let mut txs: Vec<(bool, TxEnvelope)> = rest.into_iter().map(|t| (false, t)).collect();
+        txs.extend(listed.into_iter().map(|t| (true, t)));
+        txs.sort_by_key(|(listed, t)| (t.header.nonce, !*listed, t.header.sender));
+        let mut txs: Vec<TxEnvelope> = txs.into_iter().map(|(_, t)| t).collect();
         txs.truncate(MAX_TXS_PER_BLOCK);
         txs
     }

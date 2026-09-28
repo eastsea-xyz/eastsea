@@ -42,13 +42,15 @@
 //! operator alone, as its Mac answering every slot — at the warm-up it already
 //! has (the credit is a weight: it moves no day count, no level, and an
 //! operator still takes the max over its Macs, so it adds no second share).
-//! See `reserve_served`.
+//! Serving means seated in the voting committee for the whole epoch, a record
+//! the chain writes at each committee switch (`switch_reserve`, read by
+//! `reserve_served`).
 
 use aether_execution::proofs::{self, ClaimError};
 use aether_execution::registry;
 use aether_execution::{StateError, WorldState};
 use alloy_primitives::{address, keccak256, Address, U256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 /// Where node-reward state lives (storage only, no code).
 pub const REWARDS: Address = address!("0000000000000000000000000000000000007704");
@@ -56,12 +58,6 @@ pub const REWARDS: Address = address!("0000000000000000000000000000000000007704"
 pub const MAX_SHARE: u64 = 16;
 /// Beacon slots per epoch (`beacons`): four unpredictable moments an hour.
 pub const SLOTS: u64 = 4;
-/// Seats a voting set never drops below (`aether_consensus::committee::
-/// MIN_OPEN_COMMITTEE`, written out again here: this crate sits below
-/// consensus). The founder's reserve keys are seated only while fewer
-/// independent operators than this qualify — which is also when their service
-/// counts for the founder (docs/design/15-node-rewards.md, "창업자 예비 키").
-pub const MIN_OPEN_COMMITTEE: u64 = 4;
 /// Epochs per warm-up day.
 pub const DAY_EPOCHS: u64 = 24;
 /// Warm-up days from 0.5 to 1.0 (one level per day).
@@ -86,6 +82,8 @@ const TAG_MAC: u64 = 1;
 const TAG_OPERATOR: u64 = 2;
 // 3..=6: beacons (slots, slot hashes, day, per-Mac record).
 const TAG_RESERVE: u64 = 7;
+/// Seating of the founder's reserve keys, rewritten at each committee switch.
+const TAG_SEATED: u64 = 8;
 
 pub mod beacons;
 
@@ -383,8 +381,9 @@ pub type ReserveKey = ([u8; 32], [u8; 32]);
 
 /// Genesis: the founder's reserve validator keys (ed25519 key, iroh node id)
 /// and the operator address they belong to. They are not registry candidates:
-/// they answer no beacons and earn no node rewards; nodes seat them only while
-/// fewer than `MIN_OPEN_COMMITTEE` independent operators qualify.
+/// they answer no beacons and earn no node rewards; nodes seat them only into
+/// seats a committee is short of four (`rotation::with_reserve`), and the
+/// chain records that seating for their service credit (`switch_reserve`).
 pub fn set_reserve(state: &mut WorldState, operator: Address, keys: &[ReserveKey]) -> Result<(), String> {
     if keys.is_empty() || keys.len() > MAX_RESERVE_KEYS {
         return Err(format!("1 to {MAX_RESERVE_KEYS} reserve keys"));
@@ -413,56 +412,81 @@ pub fn reserve(state: &WorldState) -> Option<(Address, Vec<ReserveKey>)> {
     Some((operator, (0..n.min(MAX_RESERVE_KEYS)).map(|i| (word(1 + 2 * i), word(2 + 2 * i))).collect()))
 }
 
-/// Whether the founder's reserve keys are the committee's safety net for the
-/// epoch that opens at `epoch`: fewer than `MIN_OPEN_COMMITTEE` independent
-/// operators qualify, counted exactly as the seating rule counts them at the
-/// same block (`rotation::eligible` and `rotation::independent` over this same
-/// state — the candidates alive in `epoch − 1`, deduplicated by operator, the
-/// founder's own Macs left out). Returns the founder's operator address; None
-/// without reserve keys at genesis, or once enough operators stand alone.
+/// The founder's reserve keys in the committee now: how many are members, and
+/// the height they have been seated since without a break (`since` is 0 while
+/// none are). One word the chain rewrites at each committee switch: seating
+/// itself lives in the node (`rotation`, the carried handoff), not in
+/// execution state, so the block a committee takes over at records it here as
+/// one of its system writes (chain.rs `pre_state_with`) — the same
+/// deterministic state on every node.
+pub fn seated(state: &WorldState) -> (u64, u64) {
+    let w = state.storage(&REWARDS, tagged(TAG_SEATED, U256::ZERO));
+    let field = |shift: usize| ((w >> shift) & U256::from(u64::MAX)).to::<u64>();
+    (field(0), field(64))
+}
+
+/// Record the committee that takes over at `height`: `members` exactly as the
+/// carried handoff names them (voting key hex, like `rotation::Reserve`).
+/// Seats held before and now keep their original height — the service did not
+/// break — and a committee with no reserve key clears the word, so the next
+/// seating restarts it at its own height. Writes nothing without reserve keys
+/// at genesis.
+pub fn switch_reserve(state: &mut WorldState, height: u64, members: &[(String, String)]) {
+    let Some((_, keys)) = reserve(state) else { return };
+    let holds = |k: &str| {
+        hex::decode(k.trim_start_matches("0x"))
+            .ok()
+            .and_then(|b| <[u8; 32]>::try_from(b).ok())
+            .is_some_and(|key| keys.iter().any(|(rk, _)| rk == &key))
+    };
+    let count = members.iter().filter(|(k, _)| holds(k)).count() as u64;
+    let (_, since) = seated(state);
+    let since = if count > 0 && since > 0 {
+        since // seated before and still: the service did not break
+    } else if count > 0 {
+        height
+    } else {
+        0
+    };
+    let w = U256::from(count) | (U256::from(since) << 64);
+    if state.storage(&REWARDS, tagged(TAG_SEATED, U256::ZERO)) != w {
+        state.set_storage(REWARDS, tagged(TAG_SEATED, U256::ZERO), w);
+    }
+}
+
+/// Whether the founder's reserve keys served the epoch that opens at `epoch`:
+/// seated in the voting committee from the epoch's first block on (the seating
+/// word has them from `since` at or before `epoch × epoch_blocks`, unbroken).
+/// Returns the founder's operator address; None without reserve keys at
+/// genesis, or while they hold no seat (a committee at four seats takes none,
+/// `rotation::with_reserve`). A seating or unseating inside the epoch does not
+/// count: only a full epoch of service does.
 ///
-/// This is the state's only cheap witness of reserve service. A finalization
+/// Seating is the state's cheap witness of reserve service: a finalization
 /// carries one threshold signature (no per-validator signers to count) and the
-/// proposer record never reaches the execution state, so an epoch the reserve
-/// keys served is read as: the chain seats them for the epoch that follows it.
-/// The chain is a contiguous finalized history, so the distribution block
-/// existing at all means the epoch's blocks were finalized — the ≥ 90%
-/// participation the rule asks for — and seating is continuous while
-/// operators are short, so the committee that epoch ran with is the one this
-/// predicate sees. In the exact epoch the operator count crosses the line the
-/// credit can sit one epoch early or late: the price of counting from state
-/// alone.
+/// proposer record never reaches the execution state. The chain is a
+/// contiguous finalized history, so the distribution block existing at all
+/// means the epoch's blocks were finalized — the ≥ 90% participation the rule
+/// asks for. The genesis committee is named by no handoff, so a seat it held
+/// is recorded by no switch: that epoch pays no credit (the ops procedure
+/// keeps the reserve keys out of the genesis roster) — conservative, never
+/// more.
 pub fn reserve_served(state: &WorldState, epoch: u64) -> Option<Address> {
     let (operator, _) = reserve(state)?;
-    let min_streak = registry::params(state).min_streak;
-    // The draw pool of `epoch`, as the seating rule freezes it from this state.
-    // (`rotation::eligible` also drops candidates whose node id is not a valid
-    // iroh endpoint, but any 32 bytes are one, so nothing registered is lost.)
-    let independent = registry::candidates(state)
-        .into_iter()
-        .filter(|c| {
-            epoch.checked_sub(1).is_some_and(|p| c.last_epoch == p)
-                && c.streak >= min_streak
-                && c.missed.saturating_mul(20) <= c.streak
-        })
-        .filter(|c| c.operator != operator)
-        .map(|c| c.operator)
-        .collect::<BTreeSet<_>>()
-        .len() as u64;
-    (independent < MIN_OPEN_COMMITTEE).then_some(operator)
+    let (count, since) = seated(state);
+    (count > 0 && since <= epoch.saturating_mul(registry::epoch_blocks(state))).then_some(operator)
 }
 
 /// Fold the founder's reserve credit into the per-Mac slot counts an epoch is
-/// paid by: an epoch the reserve keys served (see `reserve_served`; `epoch` is
-/// the epoch being paid, the block that pays it is the block that seats the
-/// next one) counts as the founder operator's full participation, so every Mac
-/// it registered answers all `SLOTS` slots — at the warm-up it already has.
-/// An operator's weight still takes the max over its Macs, so the credit never
-/// adds a second share, and it moves no day count and no warm-up level (only
-/// a Mac's own answers do). `distribute` and the reward view count through
-/// this same function, so the two cannot disagree about the founder either.
+/// paid by: an epoch the reserve keys served (see `reserve_served`) counts as
+/// the founder operator's full participation, so every Mac it registered
+/// answers all `SLOTS` slots — at the warm-up it already has. An operator's
+/// weight still takes the max over its Macs, so the credit never adds a second
+/// share, and it moves no day count and no warm-up level (only a Mac's own
+/// answers do). `distribute` and the reward view count through this same
+/// function, so the two cannot disagree about the founder either.
 pub fn apply_reserve_credit(state: &WorldState, epoch: u64, candidates: &[registry::Candidate], answered: &mut [u64]) {
-    let Some(founder) = reserve_served(state, epoch + 1) else { return };
+    let Some(founder) = reserve_served(state, epoch) else { return };
     for (c, a) in candidates.iter().zip(answered.iter_mut()) {
         if c.operator == founder {
             *a = (*a).max(SLOTS);

@@ -576,13 +576,28 @@ fn reserve_net(min_streak: u64) -> WorldState {
 const FOUNDER: Address = Address::new([0xf0; 20]);
 const RESERVE_KEYS: [([u8; 32], [u8; 32]); 1] = [([0x51; 32], [0x52; 32])];
 
+/// A committee whose members are the reserve keys (`seated` true) or plain
+/// keys, as the carried handoff would name them: (voting key hex, node id).
+fn committee(seated: bool) -> Vec<(String, String)> {
+    if seated {
+        RESERVE_KEYS.iter().map(|(k, n)| (hex::encode(k), hex::encode(n))).collect()
+    } else {
+        vec![(hex::encode([0x61; 32]), hex::encode([0x62; 32]))]
+    }
+}
+
+/// The chain applies a committee change at `height` (chain.rs `pre_state_with`).
+fn switch(s: &mut WorldState, height: u64, seated: bool) {
+    switch_reserve(s, height, &committee(seated));
+}
+
 #[test]
 fn reserve_service_pays_the_founder_as_if_its_mac_answered_every_slot() {
     // Two independent operators stay alive and the founder's warmed-up Mac
-    // sleeps: while the chain needs the reserve keys (fewer than four
-    // independent operators), each served epoch pays the founder exactly what
-    // its Mac would have earned answering all four slots — here a sixteenth,
-    // counted as one operator among the answering ones.
+    // sleeps; a committee change seats the reserve keys before the epoch being
+    // paid. Each served epoch then pays the founder exactly what its Mac would
+    // have earned answering all four slots — here a sixteenth, counted as one
+    // operator among the answering ones.
     let mut s = reserve_net(0);
     for i in 0..2 {
         register(&mut s, i, operator(i), 1);
@@ -590,6 +605,8 @@ fn reserve_service_pays_the_founder_as_if_its_mac_answered_every_slot() {
     }
     enroll(&mut s, 2, FOUNDER, 1);
     warm(&mut s, 2, WARMUP_STEPS);
+    switch(&mut s, EB, true);
+    assert_eq!(seated(&s), (RESERVE_KEYS.len() as u64, EB));
     let d = distribute(&mut s, 2 * EB).unwrap();
     assert_eq!(d.paid.len(), 3, "the founder counts as one operator");
     assert_eq!(s.balance(&FOUNDER), d.pool / U256::from(16u8), "the founder's full share");
@@ -598,10 +615,9 @@ fn reserve_service_pays_the_founder_as_if_its_mac_answered_every_slot() {
 
 #[test]
 fn reserve_service_follows_the_same_weight_rule_past_sixteen_operators() {
-    // Twenty operators answer every slot but none is drawable yet (min_streak
-    // 24, a day of unbroken liveness), so the committee still needs the
-    // reserve keys. With the weight sum past 16 × FULL the pool is shared by
-    // weight and the founder's credited weight is ruled like anyone's.
+    // Twenty operators answer every slot with the reserve keys seated. With
+    // the weight sum past 16 × FULL the pool is shared by weight and the
+    // founder's credited weight is ruled like anyone's.
     let mut s = reserve_net(24);
     for i in 0..20 {
         register(&mut s, i, operator(i), 1);
@@ -609,6 +625,7 @@ fn reserve_service_follows_the_same_weight_rule_past_sixteen_operators() {
     }
     enroll(&mut s, 20, FOUNDER, 1);
     warm(&mut s, 20, WARMUP_STEPS);
+    switch(&mut s, EB, true);
     let d = distribute(&mut s, 2 * EB).unwrap();
     assert_eq!(d.paid.len(), 21);
     assert!(21 * FULL > MAX_SHARE * FULL, "the weight sum passes the floor");
@@ -631,28 +648,94 @@ fn a_serving_founder_mac_is_not_paid_twice() {
     warm(&mut s, 1, WARMUP_STEPS);
     register(&mut s, 2, FOUNDER, 1); // a second, half-warm Mac of the founder
     warm(&mut s, 2, WARMUP_STEPS / 2);
+    switch(&mut s, EB, true);
     let d = distribute(&mut s, 2 * EB).unwrap();
     assert_eq!(d.paid.len(), 2, "the founder is one operator");
     assert_eq!(s.balance(&FOUNDER), d.pool / U256::from(16u8), "one share, not two");
 }
 
 #[test]
-fn no_reserve_credit_once_four_independent_operators_stand() {
-    // The credit rides on the reserve keys being seated: from four
-    // independent operators on they are not, and a sleeping founder Mac
-    // earns nothing; at three they are back and so is the credit.
-    for (independents, served) in [(3u64, true), (4, false)] {
-        let mut s = reserve_net(0);
-        for i in 0..independents {
-            register(&mut s, i, operator(i), 1);
-            warm(&mut s, i, WARMUP_STEPS);
-        }
-        enroll(&mut s, 9, FOUNDER, 1);
-        warm(&mut s, 9, WARMUP_STEPS);
-        distribute(&mut s, 2 * EB).unwrap();
-        let sixteenth = node_pool(1, EB) / U256::from(16u8);
-        assert_eq!(s.balance(&FOUNDER) == sixteenth, served, "{independents} independent operators");
+fn the_credit_follows_the_seating_not_the_operator_count() {
+    // The reserve keys serve only when the committee actually seats them: a
+    // four-seat committee takes none even with two independent operators
+    // (`rotation::with_reserve`), so without a seat there is no credit — and
+    // with one, the operator count around it changes nothing.
+    let mut s = reserve_net(0);
+    for i in 0..2 {
+        register(&mut s, i, operator(i), 1);
+        warm(&mut s, i, WARMUP_STEPS);
     }
+    enroll(&mut s, 9, FOUNDER, 1);
+    warm(&mut s, 9, WARMUP_STEPS);
+    distribute(&mut s, 2 * EB).unwrap();
+    assert!(s.balance(&FOUNDER).is_zero(), "no seat, no credit");
+    switch(&mut s, 2 * EB, true);
+    distribute(&mut s, 3 * EB).unwrap();
+    assert_eq!(s.balance(&FOUNDER), node_pool(2, EB) / U256::from(16u8), "seated: the credit returns");
+    // Two more independent operators stand, but the committee keeps its seat
+    // for them: the credit stays — only an unseating ends it.
+    for i in 2..4 {
+        register(&mut s, i, operator(i), 2);
+        warm(&mut s, i, WARMUP_STEPS);
+    }
+    for i in 0..5 {
+        beacon(&mut s, (if i == 4 { 9 } else { i }), 3);
+    }
+    let d = distribute(&mut s, 4 * EB).unwrap();
+    assert_eq!(d.paid.len(), 5, "five operators, the founder one of them");
+    assert_eq!(s.balance(&FOUNDER) - node_pool(2, EB) / U256::from(16u8), d.pool / U256::from(16u8), "still seated, still credited");
+}
+
+#[test]
+fn unseating_the_reserve_keys_ends_the_credit() {
+    // A committee change that seats no reserve key clears the word, and the
+    // next epoch pays the sleeping founder nothing — even one epoch later
+    // than the switch, when nothing else changed.
+    let mut s = reserve_net(0);
+    register(&mut s, 0, operator(0), 1);
+    warm(&mut s, 0, WARMUP_STEPS);
+    enroll(&mut s, 9, FOUNDER, 1);
+    warm(&mut s, 9, WARMUP_STEPS);
+    switch(&mut s, EB, true);
+    distribute(&mut s, 2 * EB).unwrap();
+    let paid = s.balance(&FOUNDER);
+    switch(&mut s, 2 * EB, false);
+    assert_eq!(seated(&s), (0, 0), "the word is cleared");
+    for e in 2..4 {
+        beacon(&mut s, 0, e);
+        distribute(&mut s, (e + 1) * EB).unwrap();
+    }
+    assert_eq!(s.balance(&FOUNDER), paid, "unseated: no credit for any epoch after");
+}
+
+#[test]
+fn a_mid_epoch_seating_serves_only_from_the_next_epoch() {
+    // The keys must hold the seat for the whole epoch: a switch landing inside
+    // an epoch credits none of it, and the same seating credits the next one.
+    // A switch at the epoch's first block is on time for that epoch.
+    let mut s = reserve_net(0);
+    register(&mut s, 0, operator(0), 0);
+    warm(&mut s, 0, WARMUP_STEPS);
+    enroll(&mut s, 1, FOUNDER, 0);
+    warm(&mut s, 1, WARMUP_STEPS);
+    switch(&mut s, 2 * EB + EB / 2, true); // inside epoch 2
+    beacon(&mut s, 0, 2);
+    distribute(&mut s, 3 * EB).unwrap();
+    assert!(s.balance(&FOUNDER).is_zero(), "epoch 2 was half-seated: no credit");
+    beacon(&mut s, 0, 3);
+    distribute(&mut s, 4 * EB).unwrap();
+    let after_full = s.balance(&FOUNDER);
+    assert_eq!(after_full, node_pool(3, EB) / U256::from(16u8), "epoch 3 fully seated");
+    // A break and a re-seating mid-epoch: no credit until a full epoch runs.
+    switch(&mut s, 4 * EB + 1, false);
+    switch(&mut s, 5 * EB + 1, true); // inside epoch 5
+    beacon(&mut s, 0, 5);
+    distribute(&mut s, 6 * EB).unwrap();
+    assert_eq!(s.balance(&FOUNDER), after_full, "the re-seating is mid-epoch 5: no credit");
+    assert_eq!(seated(&s).1, 5 * EB + 1);
+    // A switch that keeps a seat does not restart the height: unbroken service.
+    switch(&mut s, 6 * EB, true);
+    assert_eq!(seated(&s).1, 5 * EB + 1, "seat kept: the height stands");
 }
 
 #[test]
@@ -663,6 +746,7 @@ fn reserve_service_needs_the_founders_registered_mac() {
     for i in 0..2 {
         register(&mut s, i, operator(i), 1);
     }
+    switch(&mut s, EB, true);
     let d = distribute(&mut s, 2 * EB).unwrap();
     assert_eq!(d.paid.len(), 2);
     assert!(s.balance(&FOUNDER).is_zero());
@@ -679,6 +763,7 @@ fn reserve_service_moves_no_warm_up() {
     warm(&mut s, 0, WARMUP_STEPS);
     enroll(&mut s, 1, FOUNDER, 0);
     warm(&mut s, 1, 5);
+    switch(&mut s, 0, true);
     let mut shares = Vec::new();
     for day in 0..6u64 {
         for e in day * DAY_EPOCHS..(day + 1) * DAY_EPOCHS {

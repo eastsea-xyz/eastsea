@@ -874,6 +874,10 @@ impl Chain {
             && expired.is_some_and(|old| aether_execution::proofs::recorded(&parent.state, old));
         let distributes = aether_rewards::distributes(&parent.state, parent.height + 1);
         let slots = aether_rewards::beacons::touches(&parent.state, parent.height + 1);
+        // A committee takes over here: the seating of the founder's reserve keys
+        // becomes state (read below, after `distribute`).
+        let switches = parent.handoff.as_ref().is_some_and(|p| p.switch == parent.height + 1)
+            && aether_rewards::reserve(&parent.state).is_some();
         if !answers.is_empty() && !aether_rewards::enabled(&parent.state) {
             return Err(ChainError::Protocol("beacon answers without node rewards".into()));
         }
@@ -883,6 +887,7 @@ impl Chain {
             && !stale
             && !distributes
             && !slots
+            && !switches
             && proofs.is_empty()
             && answers.is_empty()
         {
@@ -939,6 +944,14 @@ impl Chain {
                     .filter(|(_, a)| !a.is_zero())
                     .map(|(op, a)| (parent.height + 1, op, a)),
             );
+        }
+        // The committee taking over here is the chain's record of the founder's
+        // reserve keys being seated or unseated (the seating itself lives in the
+        // node). After `distribute`, which pays the epoch by the committee that
+        // ran it; the next epoch's `distribute` then reads this word.
+        if switches {
+            let pending = parent.handoff.as_ref().expect("a handoff switches here");
+            aether_rewards::switch_reserve(&mut state, parent.height + 1, &pending.handoff.members);
         }
         // This epoch's beacon slots and the hash of a slot's block, then the answers.
         aether_rewards::beacons::on_block(&mut state, parent.height + 1, digest_bytes(&parent.digest));

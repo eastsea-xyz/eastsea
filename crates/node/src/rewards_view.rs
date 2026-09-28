@@ -20,9 +20,10 @@
 //! asking before the Macs moved on): a Mac that answered the new epoch reads
 //! as 0 for the old one — its record is gone — and on the epoch that ends a
 //! warm-up day the levels have already taken their step. The founder's
-//! reserve credit drifts the same way: it is counted through the reserve
-//! predicate, so an epoch first observed after every Mac moved on can show
-//! it where the distribution paid none. The first epoch of
+//! reserve credit drifts one way: it is read from the committee-seating word
+//! (`rewards::seated`), which only a later unseating clears, so an epoch
+//! first observed after the reserve keys stepped down can show no credit
+//! where the distribution paid one — never the reverse. The first epoch of
 //! a chain, still being answered, is counted live instead of pinned.
 //!
 //! A network whose genesis did not turn node rewards on (testnet 7780)

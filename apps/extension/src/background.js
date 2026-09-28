@@ -9,7 +9,8 @@ import { Rpc, RpcError, DEFAULT_RPCS } from './lib/rpc.js';
 import { Wallet } from './lib/wallet.js';
 import { CHAIN_HEX, READ_METHODS, SEND_METHODS, normalizeTx, describeCall, originAllowed } from './lib/methods.js';
 import { weiToAeth } from './lib/units.js';
-import { parseTokenSources, scanTokens } from './lib/tokens.js';
+import { parseTokenSources, scanTokens, formatTokenAmount, call, SEL, wordAddress, uintAt } from './lib/tokens.js';
+import { addressRisk, revertReason, splitHoldings, tokenShort } from './lib/safety.js';
 import { TERMS_VERSION } from './lib/terms.js';
 
 const ready = init({ module_or_path: chrome.runtime.getURL('wasm/aether_wasm_bg.wasm') });
@@ -140,7 +141,11 @@ async function approve(id) {
     }
     const hash = await wallet.send(a.tx, { status: a.status });
     a.resolve(hash);
-    track(hash, { title: describeCall(a.tx), origin: a.origin, value: a.tx.value_wei });
+    const what = describeCall(a.tx);
+    // A token approval moves that token: it counts as this wallet's own action
+    // for the display policy (swaps go through the router, so they cannot be
+    // attributed to a token without a log history).
+    track(hash, { title: what, origin: a.origin, value: a.tx.value_wei, to: a.tx.to || undefined, token: what.startsWith('Token approval') ? a.tx.to : undefined });
     return { hash };
   } catch (e) {
     // Put it back so the user can retry (after refreshing the fee) or reject.
@@ -251,6 +256,45 @@ async function refreshAssets({ force = false } = {}) {
   return { tokens: fresh.address === info.address ? fresh.holdings || [] : [], updated: fresh.updated || null, error: fresh.error || null };
 }
 
+// ---- the display policy (token-spam-2026.md §6) ----
+
+/**
+ * The sets the main list is decided from, all derived (never stored): tokens
+ * this wallet's own transactions touched, official addresses from the bundled
+ * list, and — the only part kept, on this device — the user's hide/show
+ * choices. These checks read public chain data and settings on this device.
+ * Nothing new is written on chain.
+ */
+async function displaySets(chainId) {
+  const activity = (await local.get('activity')) || [];
+  const sources = await tokenSources(chainId);
+  const choices = (await local.get(`tokenChoices.${chainId}`)) || {};
+  const official = sources ? [...(sources.seed || []), ...(sources.waeth ? [sources.waeth] : [])] : [];
+  const key = `tokenCatalog.${chainId}`;
+  const catalog = (await local.get(key)) || { tokens: {} };
+  return {
+    touched: activity.map((a) => a.token).filter(Boolean),
+    official,
+    hidden: choices.hidden || [],
+    shown: choices.shown || [],
+    officialSymbols: [{ symbol: 'AETH', name: 'Aether' },
+      ...official.map((a) => catalog.tokens[a.toLowerCase()]).filter(Boolean).map((t) => ({ symbol: t.symbol, name: t.name }))],
+  };
+}
+
+async function chooseToken(address, { hide = false, show = false } = {}) {
+  const status = await rpc.call('aether_status', []);
+  const a = String(address || '').toLowerCase();
+  const c = (await local.get(`tokenChoices.${status.chain_id}`)) || {};
+  const hidden = new Set(c.hidden || []);
+  const shown = new Set(c.shown || []);
+  if (hide) { hidden.add(a); shown.delete(a); }
+  if (show) { shown.add(a); hidden.delete(a); }
+  const out = { hidden: [...hidden], shown: [...shown] };
+  await local.set(`tokenChoices.${status.chain_id}`, out);
+  return out;
+}
+
 // ---- the popup and approval window ----
 
 async function state() {
@@ -279,14 +323,50 @@ const ui = {
     const [balance, status] = await Promise.all([wallet.balance(info.address), rpc.call('aether_status', [])]);
     return { address: info.address, balance: balance.toString(), height: status.height, blockAt: status.timestamp_ms, node: rpc.current };
   },
-  assets: ({ force } = {}) => refreshAssets({ force }),
-  send: async ({ to, value_wei }) => {
+  assets: async ({ force } = {}) => {
+    const base = await refreshAssets({ force });
+    const status = await rpc.call('aether_status', []).catch(() => null);
+    if (!status) return { ...base, unverified: [], officialSymbols: [{ symbol: 'AETH', name: 'Aether' }] };
+    const sets = await displaySets(status.chain_id);
+    const { main, unverified } = splitHoldings(base.tokens, sets);
+    return { ...base, tokens: main, unverified, officialSymbols: sets.officialSymbols };
+  },
+  /** Everything the Send form checks before signing: the recipient against
+   * the addresses this wallet sent to before, and the transfer itself as an
+   * eth_call from this account (a honeypot reverts here). Never stored. */
+  sendCheck: async ({ recipient, to, value_wei, data }) => {
+    const info = await vault.info();
+    const sent = ((await local.get('activity')) || []).map((a) => a.to).filter(Boolean);
+    const risk = addressRisk(recipient, sent);
+    let dry = { state: 'unchecked' };
+    try {
+      const result = await rpc.call('eth_call', [{ from: info.address, to, value: `0x${BigInt(value_wei || 0).toString(16)}`, data: data || '0x' }, 'latest']);
+      dry = result === '0x' || /^0x0*1$/.test(result) ? { state: 'ok' } : { state: 'reverted', message: 'the token contract did not confirm the transfer' };
+    } catch (e) {
+      dry = { state: 'reverted', message: revertReason(e.message) };
+    }
+    return { risk, dry };
+  },
+  send: async ({ to, value_wei, data, gas, token }) => {
     if (!(await vault.unlocked())) throw new Error('Unlock first.');
-    const tx = normalizeTx({ to, value: value_wei });
+    const tx = normalizeTx({ to: token ? token.address : to, value: token ? 0 : value_wei, data, gas: gas ?? (token ? 100_000 : 0) });
+    if (token) {
+      // Token balances are the node's answer: ask once more, so a balance that
+      // moved since the popup read it cannot be spent twice.
+      const info = await vault.info();
+      const balance = await uintAt(await rpc.call('eth_call', [{ to: token.address, data: call(SEL.balanceOf, wordAddress(info.address)) }, 'latest']));
+      if (balance < BigInt(token.amount)) throw new Error(`Not enough ${token.symbol}: the balance is ${formatTokenAmount(balance, token.decimals)}`);
+    }
     const hash = await wallet.send(tx);
-    track(hash, { title: 'Send AETH', origin: 'Aether Wallet', value: tx.value_wei, to });
+    if (token) {
+      track(hash, { title: `Sent ${formatTokenAmount(token.amount, token.decimals)} ${token.symbol} to ${tokenShort(to)}`, origin: 'Aether Wallet', value: tx.value_wei, to, token: token.address });
+    } else {
+      track(hash, { title: 'Send AETH', origin: 'Aether Wallet', value: tx.value_wei, to });
+    }
     return { hash };
   },
+  hideToken: ({ address }) => chooseToken(address, { hide: true }),
+  showToken: ({ address }) => chooseToken(address, { show: true }),
   faucet: async () => {
     const info = await vault.info();
     const hash = await wallet.faucet(info.address);

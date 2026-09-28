@@ -3,7 +3,8 @@
 // (origins, call data) is only ever set as text, never as HTML.
 
 import { aethToWei, formatAeth, shortAddress, weiToAeth } from '../src/lib/units.js';
-import { formatTokenAmount } from '../src/lib/tokens.js';
+import { erc20TransferCalldata, formatTokenAmount, formatTokenAmountExact, parseTokenAmount } from '../src/lib/tokens.js';
+import { addressRisk, looksLikeOfficial, tokenLabel, tokenShort } from '../src/lib/safety.js';
 import { nextPauseState, pausedLine, PAUSE_HELP } from '../src/lib/pause.js';
 import { TERMS_VERSION, DISCLAIMER_URL, NOTICE_POINTS } from '../src/lib/terms.js';
 
@@ -189,14 +190,92 @@ async function home(s) {
   load();
   updaters = [load];
 
+  // ---- the send form: AETH or any held token, with the send-flow checks of
+  // token-spam-2026.md §6 (look-alike recipient, first send, dry-run) ----
   const to = h('input', { placeholder: '0x… recipient', spellcheck: 'false' });
   const amount = h('input', { placeholder: 'Amount in AETH', inputmode: 'decimal' });
+  const max = h('button', { type: 'button', class: 'link small' }, 'Max');
+  const assetPick = h('select');
+  const warnBox = h('div');
   const sendBtn = h('button', { class: 'primary', type: 'submit' }, 'Send');
-  const sendForm = h('form', { class: 'card', hidden: true }, h('h2', {}, 'Send AETH'), h('label', {}, 'To', to), h('label', {}, 'Amount', amount), sendBtn);
+  const sendForm = h('form', { class: 'card', hidden: true }, h('h2', {}, 'Send'),
+    h('label', {}, 'Asset', assetPick),
+    h('label', {}, 'To', to),
+    h('label', {}, 'Amount', h('div', { class: 'row' }, amount, max)),
+    warnBox, sendBtn,
+    h('p', { class: 'small muted' }, 'Before signing, the recipient is checked against your history and the transfer is tried on the node. These checks read public chain data and settings on this device; nothing new is written on chain.'));
+
+  let holdings = [];            // the picker's tokens
+  let officialSymbols = [];     // official symbols, for the look-alike warning
+  let asset = null;             // the chosen holding (null: AETH)
+  let sent = [];                // addresses this wallet sent to before
+  let acked = false;            // the look-alike warning's confirmation
+
+  const ready = () => Boolean(to.value.trim() && amount.value.trim())
+    && (!asset || /^0x[0-9a-fA-F]{40}$/.test(to.value.trim()));
+
+  const warnings = () => {
+    acked = false;
+    const risk = addressRisk(to.value, sent);
+    const parts = [];
+    if (asset && asset.token.origin === 'launchpad') parts.push(h('span', { class: 'pill warn' }, 'Launchpad · unverified'));
+    if (asset && looksLikeOfficial(asset.token, officialSymbols)) parts.push(h('span', { class: 'pill warn' }, 'Mimics an official token'));
+    if (risk.poisoningMatch) {
+      const box = h('input', { type: 'checkbox' });
+      box.addEventListener('change', () => { acked = box.checked; sendBtn.disabled = !ready() || !acked; });
+      parts.push(h('div', { class: 'warn' },
+        h('strong', {}, 'This address only looks like one you sent to before'),
+        h('div', { class: 'small' }, `It shares its first and last characters with ${tokenShort(risk.poisoningMatch)} — a different address. Scammers copy exactly those to catch a quick copy-paste. Compare the whole address before sending.`),
+        h('label', { class: 'small' }, box, ' I compared the full address; this is where I want to send')));
+    } else if (risk.firstSend && to.value.trim()) {
+      parts.push(h('div', { class: 'small muted' }, 'First time sending to this address. Double-check it with whoever gave it to you.'));
+    }
+    warnBox.replaceChildren(...parts);
+    sendBtn.disabled = !ready() || (risk.poisoningMatch != null && !acked);
+  };
+  to.addEventListener('input', warnings);
+  amount.addEventListener('input', warnings);
+
+  const pickAssets = async () => {
+    try {
+      const t = await op('assets', {});
+      holdings = t.tokens || [];
+      officialSymbols = t.officialSymbols || [];
+    } catch { holdings = []; }
+    assetPick.replaceChildren(h('option', { value: '' }, 'AETH · Aether'),
+      ...holdings.map((x) => h('option', { value: x.token.address }, `${tokenLabel(x.token)} · ${formatTokenAmount(x.balance, x.token.decimals)}`)));
+  };
+  assetPick.addEventListener('change', () => {
+    asset = holdings.find((x) => x.token.address === assetPick.value) || null;
+    amount.placeholder = asset ? `Amount in ${asset.token.symbol}` : 'Amount in AETH';
+    warnings();
+  });
+  max.addEventListener('click', () => {
+    if (asset) amount.value = formatTokenAmountExact(asset.balance, asset.token.decimals);
+    else op('account').then((a) => { amount.value = weiToAeth(BigInt(a.balance) - 10n ** 15n); }).catch(() => {});
+    warnings();
+  });
+
   sendForm.addEventListener('submit', action(sendBtn, out, async () => {
-    const wei = aethToWei(amount.value);
-    const r = await op('send', { to: to.value.trim(), value_wei: wei.toString() });
-    out.replaceChildren(message('ok', `Sent ${weiToAeth(wei)} AETH · ${shortAddress(r.hash)}`));
+    const recipient = to.value.trim();
+    const risk = addressRisk(recipient, sent);
+    if (risk.poisoningMatch && !acked) throw new Error('Confirm the look-alike address warning first.');
+    let r;
+    if (asset) {
+      const units = parseTokenAmount(amount.value, asset.token.decimals);
+      if (BigInt(asset.balance) < units) throw new Error(`Not enough ${asset.token.symbol}: the balance is ${formatTokenAmount(asset.balance, asset.token.decimals)}`);
+      const data = erc20TransferCalldata(recipient, units);
+      const check = await op('sendCheck', { recipient, to: asset.token.address, value_wei: '0', data });
+      if (check.dry.state === 'reverted') throw new Error(`Not sent — this transfer would fail: ${check.dry.message}`);
+      r = await op('send', { to: recipient, data, token: { address: asset.token.address, symbol: asset.token.symbol, decimals: asset.token.decimals, amount: units.toString() } });
+      out.replaceChildren(message('ok', `Sent ${formatTokenAmount(units, asset.token.decimals)} ${asset.token.symbol} to ${tokenShort(recipient)} · ${shortAddress(r.hash)}`));
+    } else {
+      const wei = aethToWei(amount.value);
+      const check = await op('sendCheck', { recipient, to: recipient, value_wei: wei.toString(), data: '0x' });
+      if (check.dry.state === 'reverted') throw new Error(`Not sent — this transfer would fail: ${check.dry.message}`);
+      r = await op('send', { to: recipient, value_wei: wei.toString() });
+      out.replaceChildren(message('ok', `Sent ${weiToAeth(wei)} AETH · ${shortAddress(r.hash)}`));
+    }
     sendForm.hidden = true;
   }));
   const faucet = h('button', {}, h('span', { class: 'ico' }, '💧'), 'Get test AETH');
@@ -206,7 +285,7 @@ async function home(s) {
     setTimeout(refresh, 2500);
   }));
   const receive = h('button', { onclick: () => navigator.clipboard.writeText(s.address).then(() => out.replaceChildren(message('ok', 'Address copied.'))) }, h('span', { class: 'ico' }, '⬇'), 'Receive');
-  const send = h('button', { onclick: () => { sendForm.hidden = !sendForm.hidden; if (!sendForm.hidden) to.focus(); } }, h('span', { class: 'ico' }, '↗'), 'Send');
+  const send = h('button', { onclick: () => { sendForm.hidden = !sendForm.hidden; if (!sendForm.hidden) { to.focus(); pickAssets(); op('activity').then((l) => { sent = l.map((a) => a.to).filter(Boolean); warnings(); }).catch(() => {}); } } }, h('span', { class: 'ico' }, '↗'), 'Send');
   return [h('div', { class: 'card hero' }, h('div', { class: 'row', style: 'justify-content:center' }, addr, node), bal,
     h('div', { class: 'small muted' }, 'Aether testnet'),
     h('div', { class: 'small muted' }, 'Read from the node · not verified in the browser')),
@@ -222,15 +301,32 @@ function agoLine(ts, now = Date.now()) {
   return m < 120 ? `Updated ${m} min ago` : `Updated ${Math.floor(m / 60)} h ago`;
 }
 
-function holdingRow({ symbol, name, address, amount }) {
-  return h('div', { class: 'item', title: address }, h('span', { class: 'avatar', 'aria-hidden': 'true' }, (symbol[0] || '?').toUpperCase()),
-    h('div', { class: 'grow' }, h('div', {}, name || symbol), h('div', { class: 'small muted mono' }, shortAddress(address))),
-    amount, ' ', h('span', { class: 'muted' }, symbol));
+/** A token row: never the symbol alone ("NEB · 0x8a9B…F41c"), the launchpad
+ * and look-alike badges, and the user's own show/hide choice. */
+function holdingRow(x, officialSymbols, { onHide, onShow } = {}) {
+  const badges = [];
+  if (x.token.origin === 'launchpad') badges.push(h('span', { class: 'pill warn' }, 'Launchpad · unverified'));
+  if (looksLikeOfficial(x.token, officialSymbols)) badges.push(h('span', { class: 'pill warn' }, 'Mimics an official token'));
+  const act = onHide ? h('button', { class: 'small', onclick: onHide }, 'Hide')
+    : onShow ? h('button', { class: 'small', onclick: onShow }, 'Show in main list') : null;
+  return h('div', { class: 'item', title: x.token.address },
+    h('span', { class: 'avatar', 'aria-hidden': 'true' }, (x.token.symbol[0] || '?').toUpperCase()),
+    h('div', { class: 'grow' },
+      h('div', {}, x.token.name || x.token.symbol),
+      h('div', { class: 'small muted mono' }, tokenLabel(x.token)),
+      badges.length ? h('div', { class: 'row', style: 'gap:4px;margin-top:2px;flex-wrap:wrap' }, ...badges) : null),
+    act,
+    h('strong', { class: 'nowrap' }, formatTokenAmount(x.balance, x.token.decimals)), ' ', h('span', { class: 'muted' }, x.token.symbol));
 }
 
 async function assetsView(s) {
   const aethAmt = h('strong', {}, '…');
   const rows = h('div', { class: 'list' });
+  const unverified = h('div', { class: 'list' });
+  const unverifiedBox = h('details', { hidden: true },
+    h('summary', {}, 'Unverified'),
+    h('p', { class: 'small muted' }, 'Someone sent these to you. Nothing you signed ever touched them — anyone can create a token, so check the contract address before trusting one.'),
+    unverified);
   const note = h('div', { class: 'small muted' }, 'Looking for tokens…');
   const updated = h('div', { class: 'small muted' });
   const load = async (force) => {
@@ -242,13 +338,17 @@ async function assetsView(s) {
       return;
     }
     const t = assets.value;
-    rows.replaceChildren(...t.tokens.map((x) => holdingRow({
-      symbol: x.token.symbol,
-      name: x.token.name,
-      address: x.token.address,
-      amount: h('strong', { class: 'nowrap' }, formatTokenAmount(x.balance, x.token.decimals)),
+    const officialSymbols = t.officialSymbols || [];
+    rows.replaceChildren(...(t.tokens || []).map((x) => holdingRow(x, officialSymbols, {
+      onHide: async () => { await op('hideToken', { address: x.token.address }); load(false); },
     })));
-    note.replaceChildren(t.tokens.length ? '' : t.error ? 'Could not read tokens from the node. It tries again shortly.' : t.updated != null ? 'No other tokens in this wallet.' : 'Looking for tokens…');
+    unverified.replaceChildren(...(t.unverified || []).map((x) => holdingRow(x, officialSymbols, {
+      onShow: async () => { await op('showToken', { address: x.token.address }); load(false); },
+    })));
+    unverifiedBox.hidden = !(t.unverified || []).length;
+    unverifiedBox.querySelector('summary').textContent = `Unverified (${(t.unverified || []).length})`;
+    const any = (t.tokens || []).length + (t.unverified || []).length;
+    note.replaceChildren(any ? '' : t.error ? 'Could not read tokens from the node. It tries again shortly.' : t.updated != null ? 'No other tokens in this wallet.' : 'Looking for tokens…');
     updated.textContent = t.updated != null ? agoLine(t.updated) : '';
   };
   load(true);
@@ -258,9 +358,12 @@ async function assetsView(s) {
   return [h('div', { class: 'card' },
     h('div', { class: 'row' }, h('h2', { class: 'grow' }, 'Assets'), h('span', { class: 'small muted nowrap' }, 'Aether testnet')),
     h('div', { class: 'small muted' }, 'Read from the node · not verified in the browser'),
-    holdingRow({ symbol: 'AETH', name: 'Aether', address: s.address, amount: aethAmt }),
+    h('div', { class: 'item', title: s.address },
+      h('span', { class: 'avatar', 'aria-hidden': 'true' }, 'A'),
+      h('div', { class: 'grow' }, h('div', {}, 'Aether'), h('div', { class: 'small muted mono' }, shortAddress(s.address))),
+      aethAmt, ' ', h('span', { class: 'muted' }, 'AETH')),
     h('h2', {}, 'Tokens'),
-    rows, note, updated)];
+    rows, unverifiedBox, note, updated)];
 }
 
 async function activity() {

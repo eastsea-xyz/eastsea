@@ -28,6 +28,7 @@ header h1 { font-size: 15px; margin: 0; flex: 1; }
 .pill { font-size: 11px; padding: 3px 8px; border-radius: 999px; background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); white-space: nowrap; }
 .pill.good { color: var(--good); }
 .pill.paused { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); background: color-mix(in srgb, var(--warn) 10%, var(--panel)); cursor: help; }
+.pill.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); background: color-mix(in srgb, var(--warn) 10%, var(--panel)); }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 14px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .hero { text-align: center; padding: 18px 14px; }
 .balance { font-size: 30px; font-weight: 700; letter-spacing: -0.02em; overflow-wrap: anywhere; }

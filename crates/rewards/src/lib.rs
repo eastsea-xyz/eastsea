@@ -191,6 +191,13 @@ fn set_mac(state: &mut WorldState, index: u64, m: Mac) {
     }
 }
 
+/// Write candidate `index`'s warm-up state directly (tests and simulations;
+/// on chain only `distribute` writes it).
+#[doc(hidden)]
+pub fn put_mac(state: &mut WorldState, index: u64, m: Mac) {
+    set_mac(state, index, m)
+}
+
 /// What an epoch's distribution paid.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Distribution {
@@ -207,6 +214,35 @@ pub fn distributes(state: &WorldState, height: u64) -> bool {
     height > 0 && enabled(state) && height.is_multiple_of(registry::epoch_blocks(state))
 }
 
+/// Every operator's weight for an epoch: each candidate's `answered` slots ×
+/// its Mac's warm-up weight, an operator's taking the max over its Macs (extra
+/// Macs do not raise the 1/16 cap). `distribute` and the read-only view behind
+/// `aether_rewardStatus` both count through this, so the two can never
+/// disagree about N or about an operator's weight. `macs` and `answered` line
+/// up with `candidates`.
+pub fn operator_weights(
+    candidates: &[registry::Candidate],
+    macs: &[Mac],
+    answered: &[u64],
+) -> BTreeMap<Address, u64> {
+    let mut weights: BTreeMap<Address, u64> = BTreeMap::new();
+    for ((c, m), a) in candidates.iter().zip(macs).zip(answered) {
+        let w = a * m.warmup();
+        if w > 0 {
+            let e = weights.entry(c.operator).or_default();
+            *e = (*e).max(w);
+        }
+    }
+    weights
+}
+
+/// An operator's payout of an epoch's node `pool` for weight `w` out of
+/// `total`: the denominator never drops below `MAX_SHARE × FULL`, so nobody
+/// passes 1/16 of the pool; the division rounds down.
+pub fn share(pool: U256, w: u64, total: u64) -> U256 {
+    pool * U256::from(w) / U256::from(total.max(MAX_SHARE * FULL))
+}
+
 /// Run by the first block of an epoch, before its transactions (a system
 /// write, like proof payouts): count the last epoch's beacons, pay its node
 /// pool, and at the end of a day move every Mac's warm-up level.
@@ -216,25 +252,20 @@ pub fn distribute(state: &mut WorldState, height: u64) -> Result<Distribution, S
     let candidates = registry::candidates(state);
     let mut macs: Vec<Mac> = candidates.iter().map(|c| mac(state, c.index)).collect();
 
-    // Weights use the warm-up level the Macs had during the epoch.
-    let mut weights: BTreeMap<Address, u64> = BTreeMap::new();
-    for (c, m) in candidates.iter().zip(macs.iter_mut()) {
-        // Slots this Mac answered (signed, and re-attested when due) in the epoch.
-        let answered = beacons::beacon(state, c.index).answered(epoch);
-        m.answered += answered;
-        let w = answered * m.warmup();
-        if w > 0 {
-            let e = weights.entry(c.operator).or_default();
-            *e = (*e).max(w);
-        }
+    // Slots each Mac answered (signed, and re-attested when due) in the epoch.
+    let answered: Vec<u64> =
+        candidates.iter().map(|c| beacons::beacon(state, c.index).answered(epoch)).collect();
+    for (m, a) in macs.iter_mut().zip(answered.iter()) {
+        m.answered += a;
     }
+    // Weights use the warm-up level the Macs had during the epoch.
+    let weights = operator_weights(&candidates, &macs, &answered);
     let pool = node_pool(epoch, epoch_blocks);
     let total: u64 = weights.values().sum();
-    let denominator = U256::from(total.max(MAX_SHARE * FULL));
     let mut paid = Vec::with_capacity(weights.len());
     let mut minted = U256::ZERO;
     for (operator, w) in weights {
-        let amount = pool * U256::from(w) / denominator;
+        let amount = share(pool, w, total);
         if !amount.is_zero() {
             state.set_balance(operator, state.balance(&operator) + amount)?;
             minted += amount;

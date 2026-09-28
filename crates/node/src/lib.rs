@@ -18,6 +18,7 @@ pub mod p2p;
 pub mod prover;
 pub mod prune;
 pub mod roster;
+pub mod rewards_view;
 pub mod rotation;
 pub mod rpc;
 pub mod shards;

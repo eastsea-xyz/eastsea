@@ -1387,6 +1387,43 @@ fn run_node(a: NodeArgs) {
         let store = aether_node::store::Store::open(&std::path::Path::new(&data).join("state.redb")).expect("open state store");
         let (chain, genesis) = Chain::open(cfg.clone(), store).expect("restore state (delete the data dir to resync)");
         install_verifier(&chain, &data, false);
+        // Catch up before voting: a committee member that slept must not
+        // propose or vote on views it cannot execute (the committee treats it
+        // as offline until then). Follow the network with the follower
+        // machinery — a certified snapshot jump included — and only then start
+        // the consensus engine, so not one vote exists while behind. Fails
+        // open: a validator that cannot ask the network (it may be the only
+        // one up) starts as before, and the chain itself keeps it safe (it
+        // cannot vote for a block without the parent state).
+        if links && network_file.is_some() {
+            let me = p2p.keys.node_secret.public();
+            let nodes: Vec<_> = p2p.roster.nodes.iter().copied().filter(|n| *n != me).collect();
+            match if nodes.is_empty() {
+                Err("the roster names no other node".to_string())
+            } else {
+                aether_net::RpcClient::new(nodes).await.map_err(|e| e.to_string())
+            } {
+                Ok(client) => {
+                    let upstream = aether_node::follow::Upstream::Iroh(client, Default::default());
+                    let set = aether_light::ValidatorSet::new(*polynomial_identity);
+                    let caught = tokio::time::timeout(
+                        Duration::from_secs(120),
+                        aether_node::follow::catch_up(&chain, &upstream, &set, aether_node::follow::BEHIND_MARGIN),
+                    )
+                    .await;
+                    match caught {
+                        Ok(Ok(n)) if n > 0 => tracing::info!(height = chain.finalized_height(), blocks = n, "caught up before voting"),
+                        Ok(Ok(_)) => {}
+                        Ok(Err(e)) => tracing::warn!(%e, "could not catch up before voting; starting anyway"),
+                        Err(_) => tracing::warn!("catch-up before voting timed out; starting anyway"),
+                    }
+                }
+                Err(e) => tracing::warn!(%e, "no upstream to catch up with; starting anyway"),
+            }
+            // A catch-up that timed out mid-replay is dropped without clearing
+            // its replay mode: blocks from here on (voting) commit durably.
+            chain.set_relaxed(false);
+        }
         // A later epoch starts on the old committee's last block; it must be ours too.
         let epoch_floor = match epochs.last() {
             None => None,

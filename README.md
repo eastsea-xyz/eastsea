@@ -2,10 +2,10 @@
 
 > Any Mac can be a validator, and your Mac verifies your wallet itself.
 
-[![Legal Disclaimer](https://img.shields.io/badge/Legal-Disclaimer%20%26%20Terms-red.svg)](DISCLAIMER.md)
+[![Legal](https://img.shields.io/badge/Legal-Terms%20%26%20Disclaimer-lightgrey.svg)](DISCLAIMER.md)
 
 > [!IMPORTANT]
-> Aether is experimental, non-commercial research software provided **"AS IS"**. It runs as a **testnet** only. It is not a production blockchain and has not been audited. All tokens (AETH) and rewards are test artifacts with **zero monetary value**. See [DISCLAIMER.md](DISCLAIMER.md).
+> Aether is built for production. **Mainnet has not launched yet**: the network running today is the public testnet (chain 7780), and testnet AETH does not carry over. There is no token sale; the value of AETH is set by the market, and nothing here promises a price or a return. The software is provided **"AS IS"** and has not had an independent security audit yet. Nothing here is investment, legal or tax advice. See [DISCLAIMER.md](DISCLAIMER.md).
 
 ## Download
 

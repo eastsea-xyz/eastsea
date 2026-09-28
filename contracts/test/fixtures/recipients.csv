@@ -1,0 +1,10 @@
+# Fixture campaign for contracts/test/MerkleDistributor.t.sol; regenerated with
+#   node scripts/merkle-build.mjs contracts/test/fixtures/recipients.csv --out contracts/test/fixtures/merkle.json
+# Rows are deliberately unsorted, and 0x...04 appears twice: the CLI sorts by
+# (address, amount) before assigning indices, so the root is order-independent.
+address,amount
+0x0000000000000000000000000000000000000004,1500000000000000000000
+0x0000000000000000000000000000000000000002,250000000000000000000
+0x0000000000000000000000000000000000000004,500000000000000000000
+0x0000000000000000000000000000000000000009,1000000000000000000
+0x0000000000000000000000000000000000000001,42000000000000000000000

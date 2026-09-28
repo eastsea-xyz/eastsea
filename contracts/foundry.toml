@@ -4,3 +4,6 @@ out = "out"
 solc_version = "0.8.19"
 optimizer = true
 optimizer_runs = 200
+
+# Tests read the merkle fixture built by scripts/merkle-build.mjs.
+fs_permissions = [{ access = "read", path = "./test"}]

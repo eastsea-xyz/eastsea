@@ -708,7 +708,12 @@ private struct VerifiedBadge: View {
     @EnvironmentObject var model: WalletModel
 
     var body: some View {
-        if let since = model.chainPausedSince {
+        if let keyError = model.keyError {
+            Label(keyError, systemImage: "lock.fill")
+                .font(.aeCaption.weight(.semibold)).foregroundStyle(.orange)
+                .padding(.horizontal, 10).padding(.vertical, 4)
+                .help("The wallet key lives in this device's Secure Enclave, which only creates keys while the device is unlocked. Aether retries by itself.")
+        } else if let since = model.chainPausedSince {
             NetworkPausedBadge(since: since)
         } else if model.account != nil && model.verifyError == nil {
             Label("Verified", systemImage: "checkmark.shield.fill")

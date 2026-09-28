@@ -70,6 +70,10 @@ final class WalletModel: ObservableObject {
     static let tokenRefreshSeconds: TimeInterval = 30
 
     private var enclave: EnclaveAccount?
+    /// Why this device has no wallet key yet (e.g. the Mac was locked when the
+    /// app started: the Secure Enclave only makes keys while it is unlocked).
+    @Published var keyError: String?
+    private var lastKeyAttempt = Date.distantPast
     private var timer: Timer?
 
     func start() {
@@ -78,10 +82,21 @@ final class WalletModel: ObservableObject {
         if DesignPreview.on { return loadPreview() }
         #endif
         pinCommittee()
+        loadKey()
+        refresh()
+        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refresh() }
+        }
+    }
+
+    /// Load or create the wallet key. Retried from `refresh` until it works.
+    private func loadKey() {
+        lastKeyAttempt = Date()
         do {
             let acct = try EnclaveAccount.loadOrCreate(requireUserPresence: true)
             enclave = acct
             address = try accountAddress(p256PublicKey: acct.publicKey)
+            keyError = nil
             loadSaved()
             outgoingRecovery = PendingRecovery.load()
             loadTokens()
@@ -89,11 +104,9 @@ final class WalletModel: ObservableObject {
             keyLabel = acct.isSecureEnclave ? "Key in Secure Enclave" : "Simulator: software key (no Secure Enclave)"
             note(acct.isSecureEnclave ? "Secure Enclave key ready. Signing asks for Touch ID / Face ID or your passcode." : "Simulator: software key (no Secure Enclave here). Use a real device for hardware-bound keys.")
         } catch {
+            let locked = (error as NSError).code == Int(errSecInteractionNotAllowed)
+            keyError = locked ? "Unlock this device to create your wallet key." : "Could not create the wallet key: \(error.localizedDescription)"
             note("Key error: \(error.localizedDescription)")
-        }
-        refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
         }
     }
 
@@ -300,6 +313,7 @@ final class WalletModel: ObservableObject {
     }
 
     func refresh() {
+        if enclave == nil, Date().timeIntervalSince(lastKeyAttempt) > 5 { loadKey() }
         let addr = address, n = validators
         refreshes += 1
         // Recovery status needs several proofs; every 30 s is enough to warn within the delay.

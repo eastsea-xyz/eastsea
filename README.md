@@ -7,7 +7,7 @@
 [![Legal Disclaimer](https://img.shields.io/badge/Legal-Disclaimer%20%26%20Terms-red.svg)](DISCLAIMER.md)
 
 > [!IMPORTANT]
-> Aether Node is experimental, non-commercial research software provided **"AS IS"**. It is not a production blockchain and has not had an independent security audit. On the testnet, AETH and all rewards are test tokens with **zero monetary value**, and they do not carry over to any mainnet. Nothing here is investment, legal or tax advice. See [DISCLAIMER.md](DISCLAIMER.md).
+> Aether is built for production. **Mainnet has not launched yet**: the network running today is the public testnet (chain 7780), and testnet AETH does not carry over. There is no token sale; the value of AETH is set by the market, and nothing here promises a price or a return. The software is provided **"AS IS"** and has not had an independent security audit yet. Nothing here is investment, legal or tax advice. See [DISCLAIMER.md](DISCLAIMER.md).
 
 ## What it is
 
@@ -87,7 +87,7 @@ The committee key survives validator changes. Use `aether reshare` to move to a 
 ### Command line
 
 ```bash
-target/debug/aether dev-accounts                               # public test keys funded at genesis (no value)
+target/debug/aether dev-accounts                               # public dev keys funded at a local dev genesis (never use for value)
 target/debug/aether send --from-dev 1 --to 0x… --value 1000 --wait
 target/debug/aether balance 0x… --rpc http://127.0.0.1:8547   # verified locally with a proof, not trusted
 target/debug/aether batch --from-dev 1 --to 0xA,0xB --value 1  # several payments, one signature

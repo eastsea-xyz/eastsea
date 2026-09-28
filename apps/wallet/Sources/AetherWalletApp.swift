@@ -8,6 +8,7 @@ struct AetherWalletApp: App {
     @StateObject private var model = WalletModel()
     #if os(macOS)
     @StateObject private var node = NodeController()
+    @StateObject private var earnings = Earnings()
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     #endif
 
@@ -18,8 +19,10 @@ struct AetherWalletApp: App {
                 .environmentObject(model)
                 .environmentObject(node)
                 .environmentObject(appDelegate.updates)
+                .environmentObject(earnings)
                 .onAppear {
                     appDelegate.start(node: node, model: model)
+                    earnings.attach(node)
                     NSApp.setActivationPolicy(.regular)
                 }
                 // Closing the window keeps Aether in the menu bar (the node keeps running).
@@ -36,6 +39,12 @@ struct AetherWalletApp: App {
                 .overlay {
                     if ProcessInfo.processInfo.arguments.contains("-spinnerGallery") {
                         SpinnerGallery().frame(maxWidth: .infinity, maxHeight: .infinity).background(.background)
+                    }
+                }
+                // `-earningsPreview` (debug builds only): the Mac's earnings cards with sample rewards.
+                .overlay {
+                    if ProcessInfo.processInfo.arguments.contains("-earningsPreview") {
+                        EarningsPreviewHarness()
                     }
                 }
                 #endif
@@ -61,8 +70,11 @@ struct AetherWalletApp: App {
         }
         // Always in the menu bar: balance, node and prover at a glance; the window opens from here.
         MenuBarExtra {
-            MenuBarPanel().environmentObject(model).environmentObject(node)
-                .onAppear { appDelegate.start(node: node, model: model) }
+            MenuBarPanel().environmentObject(model).environmentObject(node).environmentObject(earnings)
+                .onAppear {
+                    appDelegate.start(node: node, model: model)
+                    earnings.attach(node)
+                }
         } label: {
             Image(systemName: node.prover?.proving != nil ? "cube.transparent.fill" : "cube.transparent")
         }

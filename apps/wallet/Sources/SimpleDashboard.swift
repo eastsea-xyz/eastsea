@@ -167,6 +167,9 @@ private struct HomePage: View {
     var body: some View {
         VStack(spacing: 22) {
             IncomingRecoveryAlert()
+            #if os(macOS)
+            NodeEarningsCard()
+            #endif
             hero
             HStack(spacing: narrow ? 20 : 28) {
                 RoundAction(title: "Receive", icon: "qrcode") { sheet = .receive }.disabled(model.address.isEmpty)
@@ -505,6 +508,7 @@ private struct SidebarStatus: View {
             .toggleStyle(.switch)
             .controlSize(.small)
             .help("Verify every block on this Mac and let the wallet use it. Off when the app quits.")
+            EarningsSidebarBadge()
             #endif
             HStack(spacing: 8) {
                 Circle().fill(model.status == nil ? Color.orange : Color.green).frame(width: 8, height: 8)

@@ -34,6 +34,7 @@ struct MenuBarPanel: View {
             Toggle("Node on this Mac", isOn: $node.enabled).toggleStyle(.switch).font(.callout)
             if node.enabled {
                 Text(nodeLine).font(.caption).foregroundStyle(.secondary)
+                EarningsMenuLine()
             }
             if node.prove, let p = node.prover {
                 VStack(alignment: .leading, spacing: 2) {

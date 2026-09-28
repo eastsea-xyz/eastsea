@@ -24,6 +24,12 @@ const RECEIPTS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("receipts")
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 /// History v2: finalized blocks (codec bytes) of eras not yet sealed into a file.
 const ERA_BLOCKS: TableDefinition<u64, &[u8]> = TableDefinition::new("era_blocks");
+/// Pruning (roadmap B4): roots of the eras whose per-block rows are gone
+/// (era -> 32 bytes). Restarts and history proofs rebuild the history index
+/// from them instead of from every block summary.
+const ERA_ROOTS: TableDefinition<u64, &[u8]> = TableDefinition::new("era_roots");
+/// First height whose summary, receipts and finality proof are still kept.
+const PRUNED_BELOW: &str = "pruned_below";
 
 fn era_start_key(era: u64) -> String {
     format!("era_start/{era}")
@@ -83,6 +89,18 @@ pub struct Checkpoint {
     pub history: aether_state::mmr::Mmr,
     pub schedule: crate::upgrade::Schedule,
     pub statement: crate::chain::Statement,
+    /// First height with a kept summary (0: nothing pruned).
+    pub pruned_below: u64,
+    /// Roots of the pruned eras, from era 0 (`ERA_ROOTS`).
+    pub era_roots: Vec<[u8; 32]>,
+}
+
+/// What one pruning pass removed.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
+pub struct PruneReport {
+    pub summaries: u64,
+    pub receipts: u64,
+    pub proofs: u64,
 }
 
 /// One finalized block's data to persist.
@@ -205,6 +223,34 @@ fn decode_summary(v: &[u8], height: u64, previous: Option<&BlockSummary>) -> Opt
         base_fee: aether_types::FeeVector { exec: p.base_fee.0, state: p.base_fee.1, prove: p.base_fee.2 },
         excess: aether_types::GasVector { exec: p.excess.0, state: p.excess.1, prove: p.excess.2 },
     })
+}
+
+/// Transaction hashes a summary row names (their receipts go with the row).
+fn summary_txs(v: &[u8]) -> Option<Vec<[u8; 32]>> {
+    if v.first() == Some(&PACKED) {
+        let p: Packed = postcard::from_bytes(&v[1..]).ok()?;
+        return Some(p.txs);
+    }
+    let s: BlockSummary = serde_json::from_slice(v).ok()?;
+    Some(s.txs.iter().map(|t| t.0).collect())
+}
+
+/// A packed row with the links to its predecessor written out, so it decodes
+/// on its own once the rows below it are pruned. JSON rows never elide links.
+fn unelide(v: &[u8], previous: &(String, B256)) -> Option<Vec<u8>> {
+    if v.first() != Some(&PACKED) {
+        return Some(v.to_vec());
+    }
+    let mut p: Packed = postcard::from_bytes(&v[1..]).ok()?;
+    if p.parent.is_none() {
+        p.parent = Some(hex32(&previous.0)?);
+    }
+    if p.parent_state_root.is_none() {
+        p.parent_state_root = Some(previous.1 .0);
+    }
+    let mut out = vec![PACKED];
+    out.extend(postcard::to_allocvec(&p).ok()?);
+    Some(out)
 }
 
 /// One table's share of the file.
@@ -383,6 +429,93 @@ impl Store {
         tx.commit().map_err(dberr)
     }
 
+    /// First height whose summary is still kept (0: nothing pruned).
+    pub fn pruned_below(&self) -> Result<u64, StoreError> {
+        Ok(match self.meta(PRUNED_BELOW)? {
+            Some(v) => u64::from_be_bytes(v.as_slice().try_into().map_err(|_| StoreError::Corrupt("pruned_below"))?),
+            None => 0,
+        })
+    }
+
+    /// The history MMR of the last persisted block (cheap; no state rebuild).
+    pub fn history(&self) -> Result<Option<aether_state::mmr::Mmr>, StoreError> {
+        match self.meta(HISTORY)? {
+            Some(v) => serde_json::from_slice(&v).map(Some).map_err(|_| StoreError::Corrupt("history")),
+            None => Ok(None),
+        }
+    }
+
+    /// Roots of the pruned eras (era 0 first); empty when nothing was pruned.
+    pub fn era_roots(&self) -> Result<Vec<[u8; 32]>, StoreError> {
+        let tx = self.db.begin_read().map_err(dberr)?;
+        let t = match tx.open_table(ERA_ROOTS) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(vec![]),
+            Err(e) => return Err(dberr(e)),
+        };
+        let mut out = Vec::new();
+        for (i, row) in t.iter().map_err(dberr)?.enumerate() {
+            let (k, v) = row.map_err(dberr)?;
+            if k.value() != i as u64 {
+                return Err(StoreError::Corrupt("era roots not contiguous"));
+            }
+            out.push(v.value().try_into().map_err(|_| StoreError::Corrupt("era root"))?);
+        }
+        Ok(out)
+    }
+
+    /// Pruning (roadmap B4): drop what the store keeps per block below `cutoff`
+    /// (block summaries, their receipts, a follower's finality proofs) and
+    /// record `roots` (era, root) of the eras below it. One era per
+    /// transaction, so a crash leaves a consistent prefix pruned; the first
+    /// kept summary is rewritten with its links so it loads on its own.
+    pub fn prune_below(&self, cutoff: u64, roots: &[(u64, [u8; 32])]) -> Result<PruneReport, StoreError> {
+        let len = aether_state::mmr::ERA_LEN;
+        let mut report = PruneReport::default();
+        let mut lo = self.pruned_below()?;
+        while lo < cutoff {
+            let hi = ((lo / len + 1) * len).min(cutoff);
+            let tx = self.db.begin_write().map_err(dberr)?;
+            {
+                let mut blocks = tx.open_table(BLOCKS).map_err(dberr)?;
+                let mut receipts = tx.open_table(RECEIPTS).map_err(dberr)?;
+                let links = blocks.get(hi - 1).map_err(dberr)?.and_then(|v| summary_links(v.value()));
+                let mut txs = Vec::new();
+                for row in blocks.range(lo..hi).map_err(dberr)? {
+                    let (_, v) = row.map_err(dberr)?;
+                    txs.extend(summary_txs(v.value()).ok_or(StoreError::Corrupt("block summary"))?);
+                    report.summaries += 1;
+                }
+                for t in &txs {
+                    if receipts.remove(t.as_slice()).map_err(dberr)?.is_some() {
+                        report.receipts += 1;
+                    }
+                }
+                blocks.retain_in(lo..hi, |_, _| false).map_err(dberr)?;
+                // The first kept row may elide its links to the row just removed.
+                let first = match (&links, blocks.get(hi).map_err(dberr)?) {
+                    (Some(l), Some(v)) => Some(unelide(v.value(), l).ok_or(StoreError::Corrupt("block summary"))?),
+                    _ => None,
+                };
+                if let Some(v) = first {
+                    blocks.insert(hi, v.as_slice()).map_err(dberr)?;
+                }
+                let mut proofs = tx.open_table(PROOFS).map_err(dberr)?;
+                let before = proofs.len().map_err(dberr)?;
+                proofs.retain_in(lo..hi, |_, _| false).map_err(dberr)?;
+                report.proofs += before - proofs.len().map_err(dberr)?;
+                let mut era_roots = tx.open_table(ERA_ROOTS).map_err(dberr)?;
+                for (e, r) in roots.iter().filter(|(e, _)| (lo / len..hi / len).contains(e)) {
+                    era_roots.insert(*e, r.as_slice()).map_err(dberr)?;
+                }
+                tx.open_table(META).map_err(dberr)?.insert(PRUNED_BELOW, hi.to_be_bytes().as_slice()).map_err(dberr)?;
+            }
+            tx.commit().map_err(dberr)?;
+            lo = hi;
+        }
+        Ok(report)
+    }
+
     /// Storage use per table and for the whole file.
     pub fn stats(&self) -> Result<StoreStats, StoreError> {
         fn one<K: redb::Key + 'static, V: redb::Value + 'static>(
@@ -411,6 +544,7 @@ impl Store {
             one(&tx, PROOFS, "proofs")?,
             one(&tx, REWARDS, "rewards")?,
             one(&tx, ERA_BLOCKS, "era_blocks")?,
+            one(&tx, ERA_ROOTS, "era_roots")?,
         ];
         let db = tx.stats().map_err(dberr)?;
         let out = StoreStats {
@@ -554,7 +688,10 @@ impl Store {
             let k: [u8; 32] = k.value().try_into().map_err(|_| StoreError::Corrupt("receipt key"))?;
             receipts.insert(B256::from(k), serde_json::from_slice(v.value()).map_err(|_| StoreError::Corrupt("receipt"))?);
         }
-        Ok(Some(Checkpoint { height, digest, state, blocks, receipts, handoff, seed, history, schedule, statement }))
+        drop(tx);
+        let pruned_below = self.pruned_below()?;
+        let era_roots = self.era_roots()?;
+        Ok(Some(Checkpoint { height, digest, state, blocks, receipts, handoff, seed, history, schedule, statement, pruned_below, era_roots }))
     }
 }
 

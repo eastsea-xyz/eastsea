@@ -40,6 +40,28 @@ struct Cli {
     cmd: Cmd,
 }
 
+/// What history a node keeps (roadmap B4).
+#[derive(clap::Args, Clone, Debug)]
+struct HistoryArgs {
+    /// `archive` keeps every block; `prune` keeps the last --retain-days and
+    /// the era files. Default: prune on history v2 networks, archive otherwise
+    /// (the 7780 testnet has no era files, so it always keeps everything).
+    #[arg(long)]
+    history: Option<String>,
+    /// Days of blocks, certificates, summaries and receipts a pruning node keeps.
+    #[arg(long, default_value_t = aether_node::prune::DEFAULT_RETAIN_DAYS)]
+    retain_days: u64,
+    /// Also delete the era files of pruned eras (keep only their roots).
+    #[arg(long)]
+    drop_era_files: bool,
+}
+
+impl HistoryArgs {
+    fn mode(&self, history_v2: bool, block_time_ms: u64) -> Result<aether_node::prune::HistoryMode, String> {
+        aether_node::prune::HistoryMode::resolve(self.history.as_deref(), history_v2, self.retain_days, block_time_ms, self.drop_era_files)
+    }
+}
+
 #[derive(Subcommand)]
 enum Cmd {
     /// Run a validator.
@@ -101,6 +123,8 @@ enum Cmd {
         /// Exit when the launching process does (`aether run`, the Mac app).
         #[arg(long)]
         exit_with_parent: bool,
+        #[command(flatten)]
+        history: HistoryArgs,
     },
     /// Distributed key generation for the committee (run on every validator at
     /// once). Writes <data>/threshold.json with this validator's secret share
@@ -207,6 +231,8 @@ enum Cmd {
         /// certified block) instead of replaying history from genesis.
         #[arg(long)]
         checkpoint: bool,
+        #[command(flatten)]
+        history: HistoryArgs,
     },
     /// Keep this Mac in the network: validator while in the voting set, verifying
     /// follower and candidate otherwise; rotations are followed automatically.
@@ -490,6 +516,7 @@ fn main() {
             dev_registrar,
             dev_epoch_blocks,
             exit_with_parent,
+            history,
         } => {
             if exit_with_parent {
                 exit_with_parent_process();
@@ -509,11 +536,16 @@ fn main() {
                     }
                     Ok(args)
                 })
-                .map(|(p2p, chain_id, epochs, key_round, mut genesis)| {
+                .and_then(|args| {
+                    let mode = history.mode(args.4.history >= 2, block_time_ms)?;
+                    Ok((args, mode))
+                })
+                .map(|((p2p, chain_id, epochs, key_round, mut genesis), history)| {
                     if let Some(e) = dev_epoch_blocks {
                         genesis.epoch_blocks = e;
                     }
                     run_node(NodeArgs {
+                        history,
                         p2p,
                         chain_id,
                         epochs,
@@ -568,12 +600,12 @@ fn main() {
             println!("signed by the committee: protocol {} at height {} on chain {}", s.upgrade.protocol, s.upgrade.activate_at, s.upgrade.chain_id);
             Ok(())
         })(),
-        Cmd::Follow { network, from_rpc, data, rpc_port, validators, exit_with_parent, candidate, dev_epoch_blocks, keys, checkpoint } => {
+        Cmd::Follow { network, from_rpc, data, rpc_port, validators, exit_with_parent, candidate, dev_epoch_blocks, keys, checkpoint, history } => {
             if exit_with_parent {
                 exit_with_parent_process();
             }
             let keys = candidate.then(|| keys.unwrap_or_else(|| data.clone()));
-            run_follow(network, from_rpc, data, rpc_port, validators, keys, dev_epoch_blocks, checkpoint)
+            run_follow(network, from_rpc, data, rpc_port, validators, keys, dev_epoch_blocks, checkpoint, history)
         }
         Cmd::CandidateInfo { data, operator, chain_id } => aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(&data)).map(|k| {
             let ownership = operator.zip(chain_id).map(|(op, id)| hex::encode(k.ownership(id, op)));
@@ -1201,6 +1233,8 @@ struct NodeArgs {
     dev_registrar: bool,
     /// network.json (with the committee output) when run from one: enables rotation.
     network_file: Option<Value>,
+    /// Archive or prune (roadmap B4).
+    history: aether_node::prune::HistoryMode,
 }
 
 fn run_node(a: NodeArgs) {
@@ -1225,6 +1259,7 @@ fn run_node(a: NodeArgs) {
         devicecheck,
         dev_registrar,
         network_file,
+        history,
     } = a;
     let faucet = genesis.faucet;
     let registry = || {
@@ -1406,10 +1441,15 @@ fn run_node(a: NodeArgs) {
             },
             backfill,
         );
+        let layout = engine::Layout::choose(history.prunes(), std::path::Path::new(&data), &partition_prefix(&data));
+        if history.prunes() && layout == engine::Layout::Immutable {
+            tracing::warn!("this node already keeps an immutable block archive: it prunes summaries and receipts, not marshal's blocks (start from a fresh data dir to prune those too)");
+        }
         let engine = engine::Engine::new(
             context.child("engine"),
             engine::Config {
                 anchor: load_anchor(&data),
+                layout,
                 blocker: oracle.clone(),
                 provider: oracle.clone(),
                 partition_prefix: partition_prefix(&data),
@@ -1433,6 +1473,13 @@ fn run_node(a: NodeArgs) {
         let marshal_mailbox = engine.mailbox.clone();
         engine.start(pending, recovered, resolver, broadcast, marshal_resolver);
         network.start();
+        match &history {
+            aether_node::prune::HistoryMode::Prune(r) => {
+                tracing::info!(retain_blocks = r.blocks, keep_era_files = r.keep_era_files, "pruning history older than the retention window");
+                tokio::spawn(aether_node::prune::run(chain.clone(), r.clone(), Some(marshal_mailbox.clone())));
+            }
+            aether_node::prune::HistoryMode::Archive => tracing::info!("archive node: keeping every block"),
+        }
 
         // Mempool gossip: RPC-accepted txs go out, peers' txs come in.
         // Beacon answers (node rewards networks) ride the same channel as
@@ -1677,6 +1724,7 @@ fn run_follow(
     candidate_keys: Option<String>,
     dev_epoch_blocks: Option<u64>,
     checkpoint: bool,
+    history: HistoryArgs,
 ) -> Result<(), String> {
     use aether_node::follow::{self, FinalityArchive, Upstream};
     use std::sync::Arc;
@@ -1711,6 +1759,8 @@ fn run_follow(
         }
     };
     let cfg = chain_config(chain_id, &genesis);
+    // Followers run at the network's 1 s block time.
+    let history = history.mode(cfg.history_v2, 1000)?;
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -1748,6 +1798,9 @@ fn run_follow(
             .and_then(|dir| aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(dir)).ok())
             .map(|k| hex::encode(k.validator_key()));
         tokio::spawn(follow::run(chain.clone(), upstream.clone(), set, archive.clone(), joining));
+        if let aether_node::prune::HistoryMode::Prune(r) = &history {
+            tokio::spawn(aether_node::prune::run(chain.clone(), r.clone(), None));
+        }
         tracing::info!(height = chain.finalized_height(), rpc_port, "following (not a validator): every block is verified and re-executed here");
         let prover = start_prover(&chain, &data, Some(upstream.clone()));
         let st = RpcState {

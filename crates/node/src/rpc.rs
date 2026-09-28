@@ -108,6 +108,8 @@ pub async fn handle_value(st: &RpcState, req: Value) -> Value {
         },
         "aether_network" => Ok(st.network.clone().unwrap_or(Value::Null)),
         "aether_submitProof" => submit_proof(st, &params).await,
+        // A pruned height (roadmap B4): read back from the era file, fetched and verified first if needed.
+        "aether_getBlock" if param::<u64>(&params, 0).is_ok_and(|h| h < st.chain.lock().pruned_below) => old_block(st, &params).await,
         _ => dispatch(st, &method, &params),
     };
     match result {
@@ -124,6 +126,10 @@ async fn finalized(st: &RpcState, p: &Value) -> RpcResult {
     use commonware_codec::Encode;
     use commonware_consensus::types::Height;
     let h: u64 = param(p, 0)?;
+    let pruned_below = st.chain.lock().pruned_below;
+    if h < pruned_below {
+        return Err((-32001, pruned_message(h, pruned_below)));
+    }
     let marshal = match &st.finality {
         Finality::Marshal(m) => m,
         Finality::Archive(a) => return Ok(a.get(h).unwrap_or(Value::Null)),
@@ -151,6 +157,60 @@ async fn finalized(st: &RpcState, p: &Value) -> RpcResult {
         }
     }
     Ok(Value::Null)
+}
+
+/// Why a pruned height has no certificate here (followers look for "pruned").
+pub fn pruned_message(h: u64, pruned_below: u64) -> String {
+    format!(
+        "pruned: this node keeps blocks from height {pruned_below}; block {h} is in era {} (aether_eraInfo / aether_eraChunk / aether_eraProof)",
+        h / aether_state::mmr::ERA_LEN
+    )
+}
+
+/// A pruned block from its era file (roadmap B4): the fields a summary has
+/// that the block itself carries, plus its codec bytes. A follower without the
+/// file fetches the era from upstream and verifies it first.
+async fn old_block(st: &RpcState, p: &Value) -> RpcResult {
+    use commonware_codec::Encode;
+    use commonware_cryptography::Digestible;
+    let h: u64 = param(p, 0)?;
+    let chain = st.chain.clone();
+    let mut read = {
+        let c = chain.clone();
+        tokio::task::spawn_blocking(move || c.old_block(h)).await.map_err(|e| (-32000, e.to_string()))?
+    };
+    if let (Err(_), Some(up)) = (&read, &st.upstream) {
+        let era = h / aether_state::mmr::ERA_LEN;
+        crate::era_net::fetch_into(&chain, up, era).await.map_err(|e| (-32000, e))?;
+        read = tokio::task::spawn_blocking(move || chain.old_block(h)).await.map_err(|e| (-32000, e.to_string()))?;
+    }
+    let b = read.map_err(|e| (-32001, e))?;
+    let payload = b.payload().ok_or((-32000, "block payload".to_string()))?;
+    let state_root = {
+        let g = st.chain.lock();
+        g.blocks.get(&(h + 1)).map(|n| n.parent_state_root)
+    };
+    let state_root = match state_root {
+        Some(r) => Some(r),
+        None => {
+            let c = st.chain.clone();
+            tokio::task::spawn_blocking(move || c.old_block(h + 1)).await.ok().and_then(Result::ok).and_then(|n| n.payload()).map(|p| p.parent_state_root)
+        }
+    };
+    Ok(json!({
+        "height": h,
+        "hash": format!("{}", b.digest()),
+        "parent": format!("{}", b.parent),
+        "timestamp_ms": b.timestamp,
+        "proposer": crate::chain::leader_address(&b.context.leader),
+        "state_root": state_root,
+        "parent_state_root": payload.parent_state_root,
+        "txs": payload.txs.iter().map(aether_execution::tx_hash).collect::<Vec<_>>(),
+        "gas_used": payload.gas.exec,
+        "prove_gas": payload.gas.prove,
+        "pruned": true,
+        "block": aether_light::to_hex(&b.encode()),
+    }))
 }
 
 /// `[device_token (base64), operator, validator_key (hex 32), node_id (hex 32), beaconer, ownership (hex)]`
@@ -297,6 +357,30 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
             let code = |e: &String| if e.starts_with("need") { -32602 } else { -32000 };
             let (proof, hash) = chain.history_proof(height, anchor).map_err(|e| (code(&e), e))?;
             Ok(json!({ "height": height, "hash": hash, "anchor": anchor, "proof": proof }))
+        }
+        // What history this node keeps (roadmap B4).
+        "aether_history" => {
+            let g = chain.lock();
+            let eras = g.history_index.as_ref().map(|i| i.eras.len());
+            Ok(json!({ "pruned_below": g.pruned_below, "head": g.finalized.height, "complete_eras": eras, "era_len": aether_state::mmr::ERA_LEN }))
+        }
+        // Era files, served to peers that pruned them or never had them (`era_net`).
+        "aether_eraInfo" => {
+            let era: u64 = param(p, 0)?;
+            Ok(chain.store().map(|s| crate::era_net::info(&s, era)).unwrap_or(Value::Null))
+        }
+        "aether_eraChunk" => {
+            let era: u64 = param(p, 0)?;
+            let index: usize = param(p, 1)?;
+            let s = chain.store().ok_or((-32000, "no store".to_string()))?;
+            crate::era_net::chunk(&s, era, index).map_err(|e| (-32000, e))
+        }
+        // The era's root under block `anchor`'s history root (`aether_light::verify_era_root`).
+        "aether_eraProof" => {
+            let era: u64 = param(p, 0)?;
+            let anchor: u64 = param(p, 1)?;
+            let proof = chain.era_proof(era, anchor).map_err(|e| (if e.starts_with("need") { -32602 } else { -32000 }, e))?;
+            Ok(json!({ "era": era, "anchor": anchor, "proof": proof }))
         }
         // Voting-node candidates (the registry) and the current epoch.
         "aether_candidates" => {

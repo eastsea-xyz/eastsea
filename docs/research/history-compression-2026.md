@@ -130,10 +130,38 @@ that change every block): ~2 GB/year. A transfer costs ~136 B archived, close
 to its signature and key alone.
 
 Not done yet: the era's aggregated BLS signature (replaces 8,192
-certificates), B4 (prune marshal's archive, summaries and receipts older
-than 30 days once their era is sealed; serve eras over iroh-blobs), B5
-(Reed-Solomon shards). Until B4 a v2 node also keeps the open era's blocks in
-`state.redb` (bounded: one era, reused after sealing).
+certificates). A v2 node also keeps the open era's blocks in `state.redb`
+(bounded: one era, reused after sealing).
+
+**B4: pruning** (`crates/node/src/prune.rs`, `archive.rs`, `era_net.rs`).
+`--history archive|prune` (default prune on history v2, archive otherwise:
+7780 unchanged, and `prune` is refused there since it has no era files),
+`--retain-days` (30), `--drop-era-files`. Every minute a node drops whole
+eras that are sealed (no kept blocks waiting for their file) and older than
+the window: marshal's blocks and certificates (a new node keeps them in
+prunable archives with one section per era; a node that already has
+immutable archives keeps them and prunes only its store), block summaries,
+receipts and a follower's finality proofs, one redb transaction per era. The
+roots of dropped eras stay in the store, and at start-up the history index is
+rebuilt from them and checked against the committed history MMR. History
+proofs of pruned heights read the era file. Old eras travel over the node's
+JSON-RPC (`aether_eraInfo`, `aether_eraChunk`, `aether_eraProof`; loopback
+HTTP and the public iroh endpoint), not iroh-blobs, which is not a
+dependency: the fetcher re-hashes every block and checks the era root against
+a history root it already trusts (`aether_light::verify_era_root`), so the
+transport carries no trust. A follower whose upstream pruned a height replays
+that era from its file, anchored on a later certified block.
+
+Measured (tests/prune.rs, empty v2 blocks): a kept block costs 448 B of
+block codec in marshal plus its certificate (~150-260 B) and a 110 B summary,
+so 30 days of 1 s blocks is ~2 GB and 7 days ~0.5 GB whatever the history's
+length; a pruned block costs 0.2-1.2 B of era file plus 0.004 B of root.
+
+**B5: shards** (`crates/node/src/shards.rs`, library only, no reward weight):
+commonware-coding Reed-Solomon over BLAKE3, 32 shards of which any 16 restore
+an era file (~2.1x its size in total), assigned by rendezvous hashing on a
+committee-signed draw seed. Restores are checked by the era root, so the
+shard commitment need not be on chain yet; beacon shard proofs come later.
 
 ## Order
 

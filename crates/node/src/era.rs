@@ -30,10 +30,10 @@
 //! block's hash, history roots follow from the MMR. Bodies (transactions,
 //! access list, rare extras) are JSON, compressed together.
 //!
-//! Not yet (roadmap B3b-B5): the era's aggregated finality signature (one BLS
-//! signature for all 8192 certificates), pruning the per-block archive once an
-//! era is sealed, serving eras over iroh-blobs, and Reed-Solomon shards. The
-//! file keeps room for them in a later format version.
+//! Pruning and serving eras: `crate::prune`, `crate::era_net` (B4); shards:
+//! `crate::shards` (B5). Not yet: the era's aggregated finality signature (one
+//! BLS signature for all 8192 certificates); the file keeps room for it in a
+//! later format version.
 
 use crate::block::{Block, Context, Payload, PublicKey};
 use aether_hash::{ChainHasher, Digest as H32};

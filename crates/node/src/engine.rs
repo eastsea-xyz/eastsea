@@ -28,7 +28,10 @@ use commonware_runtime::{
     buffer::paged::{page_size, CacheRef},
     spawn_cell, BufferPooler, Clock, ContextCell, Handle, Metrics, Spawner, Storage,
 };
-use commonware_storage::archive::{immutable, Archive as _, Identifier};
+use crate::archive::{prunable_config, Buffers, FinalizedBlocks, FinalizedCerts};
+pub use crate::archive::Layout;
+use commonware_consensus::marshal::store::{Blocks, Certificates};
+use commonware_storage::archive::{immutable, prunable, Identifier};
 use commonware_utils::{NZUsize, NZU64};
 use futures::future::try_join_all;
 use governor::clock::Clock as GClock;
@@ -79,6 +82,8 @@ pub struct Config<B: Blocker<PublicKey = PublicKey>, P: Provider<PublicKey = Pub
     /// A voting node that joins with no validator history starts from the last
     /// block it verified as a follower (and its finalization) instead of genesis.
     pub anchor: Option<(Block, Finalization)>,
+    /// Marshal's archive layout (`Layout::Prunable` on pruning nodes, roadmap B4).
+    pub layout: Layout,
     pub application: Application,
     pub mailbox_size: usize,
     pub leader_timeout: Duration,
@@ -99,15 +104,7 @@ where
     context: ContextCell<E>,
     buffer: buffered::Engine<E, PublicKey, Block, P>,
     buffer_mailbox: buffered::Mailbox<PublicKey, Block>,
-    marshal: MarshalActor<
-        E,
-        Standard<Block>,
-        RotatingProvider,
-        immutable::Archive<E, Digest, Finalization>,
-        immutable::Archive<E, Digest, Block>,
-        ScheduleEpocher,
-        Sequential,
-    >,
+    marshal: MarshalActor<E, Standard<Block>, RotatingProvider, FinalizedCerts<E>, FinalizedBlocks<E>, ScheduleEpocher, Sequential>,
     marshaled: Marshaled<E>,
     /// Handle for reading finalized blocks and certificates (served over RPC).
     pub mailbox: MarshalMailbox<Scheme, Standard<Block>>,
@@ -157,24 +154,54 @@ where
         );
         let page_cache = CacheRef::from_pooler(&context, PAGE_CACHE_PAGE_SIZE, PAGE_CACHE_CAPACITY);
         let prefix = cfg.partition_prefix.clone();
-        let finalizations: immutable::Archive<E, Digest, Finalization> = immutable::Archive::init(
-            context.child("finalizations_by_height"),
-            // Threshold certificates are fixed-size; their codec config is `()`.
-            archive_cfg(&prefix, "finalizations", page_cache.clone(), ()),
-        )
-        .await
-        .expect("finalizations archive");
-        let mut blocks = immutable::Archive::init(
-            context.child("finalized_blocks"),
-            archive_cfg(&prefix, "blocks", page_cache.clone(), Block::codec_config(MAX_BLOCK_BYTES)),
-        )
-        .await
-        .expect("blocks archive");
+        let (finalizations, mut blocks) = match cfg.layout {
+            Layout::Immutable => (
+                FinalizedCerts::Immutable(
+                    immutable::Archive::init(
+                        context.child("finalizations_by_height"),
+                        // Threshold certificates are fixed-size; their codec config is `()`.
+                        archive_cfg(&prefix, "finalizations", page_cache.clone(), ()),
+                    )
+                    .await
+                    .expect("finalizations archive"),
+                ),
+                FinalizedBlocks::Immutable(
+                    immutable::Archive::init(
+                        context.child("finalized_blocks"),
+                        archive_cfg(&prefix, "blocks", page_cache.clone(), Block::codec_config(MAX_BLOCK_BYTES)),
+                    )
+                    .await
+                    .expect("blocks archive"),
+                ),
+            ),
+            // Pruning (roadmap B4): one section per era, dropped once sealed and old.
+            Layout::Prunable => {
+                let buffers = Buffers { write: WRITE_BUFFER, replay: REPLAY_BUFFER };
+                (
+                    FinalizedCerts::Prunable(
+                        prunable::Archive::init(
+                            context.child("finalizations_by_height"),
+                            prunable_config(&prefix, "finalizations", page_cache.clone(), (), buffers),
+                        )
+                        .await
+                        .expect("finalizations archive"),
+                    ),
+                    FinalizedBlocks::Prunable(
+                        prunable::Archive::init(
+                            context.child("finalized_blocks"),
+                            prunable_config(&prefix, "blocks", page_cache.clone(), Block::codec_config(MAX_BLOCK_BYTES), buffers),
+                        )
+                        .await
+                        .expect("blocks archive"),
+                    ),
+                )
+            }
+        };
+        tracing::info!(layout = ?cfg.layout, "finalized block archive");
         // Fresh archives + an anchor: store the anchor block so marshal installs
         // the floor locally (nobody in a brand-new voting set has older blocks).
         let start = match cfg.anchor {
             Some((block, finalization)) if blocks.last_index().is_none() => {
-                use commonware_consensus::marshal::store::Blocks;
                 tracing::info!(height = block.height.get(), "starting from the verified anchor block");
                 blocks = Blocks::put(blocks, block).await.expect("store anchor block");
                 blocks = Blocks::sync(blocks).await.expect("sync anchor block");
@@ -188,8 +215,8 @@ where
         let restored = cfg.application.finalized_height();
         let mut replayed = 0u64;
         if let Some(last) = blocks.last_index() {
-            for h in restored + 1..=last {
-                match blocks.get(Identifier::Index(h)).await {
+            for h in restored + 1..=last.get() {
+                match Blocks::get(&blocks, Identifier::Index(h)).await {
                     Ok(Some(block)) => {
                         if let Err(e) = cfg.application.replay(&block) {
                             warn!(height = h, ?e, "replay stopped");
@@ -215,12 +242,12 @@ where
             Some(v) => {
                 let (view, height) = match v.split_once('@') {
                     Some((a, b)) => (a.parse::<u64>().ok(), b.parse::<u64>().ok()),
-                    None => (v.parse::<u64>().ok(), finalizations.last_index()),
+                    None => (v.parse::<u64>().ok(), Certificates::last_index(&finalizations).map(|h| h.get())),
                 };
                 let (Some(view), Some(height)) = (view, height) else {
                     panic!("AETHER_RECOVER_CONSENSUS={v}: expected <view>@<height>")
                 };
-                match finalizations.get(Identifier::<Digest>::Index(height)).await.ok().flatten() {
+                match Certificates::get(&finalizations, Identifier::<Digest>::Index(height)).await.ok().flatten() {
                     Some(f) if f.view().get() == view => {
                         if f.epoch() == cfg.epocher.current() {
                             tracing::warn!(view, height, "recovering consensus from a stored finalization with a vote journal of its own");

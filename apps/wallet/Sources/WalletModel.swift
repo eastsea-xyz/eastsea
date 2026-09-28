@@ -59,6 +59,10 @@ final class WalletModel: ObservableObject {
     /// verification needs the next block and a recent certificate, so a paused chain
     /// cannot verify: the last verified balance stays on screen meanwhile.
     @Published var chainPausedSince: Date?
+    private func setVerifyError(_ e: String?) {
+        if verifyError != e { verifyError = e }
+    }
+
     private var refreshes = 0
     private var lastHeight: UInt64?
     private var heightChangedAt: Date?
@@ -331,11 +335,18 @@ final class WalletModel: ObservableObject {
                 do { acc = try verifiedAccount(address: addr, validators: n) } catch { err = "\(error)" }
             }
             await MainActor.run {
-                self.status = st
-                self.connectionInfo = conn
-                self.blocks = bl
-                if let acc { self.account = acc; self.verifyError = nil; self.record(balanceWei: acc.balanceWei) }
-                if st == nil { self.verifyError = "No validator reachable yet (\(conn))" } else if let err { self.verifyError = err }
+                // Published only when something actually changed: an unchanged set
+                // would still invalidate every view watching this model (the whole
+                // window), which lands right on top of live resizes.
+                if self.status != st { self.status = st }
+                if self.connectionInfo != conn { self.connectionInfo = conn }
+                if self.blocks != bl { self.blocks = bl }
+                if let acc {
+                    if self.account != acc { self.account = acc }
+                    if self.verifyError != nil { self.verifyError = nil }
+                    self.record(balanceWei: acc.balanceWei)
+                }
+                if st == nil { self.setVerifyError("No validator reachable yet (\(conn))") } else if let err { self.setVerifyError(err) }
                 self.trackChainProgress(st, blocks: bl)
                 self.trackVerification()
                 self.refreshTokens()
@@ -604,12 +615,6 @@ final class WalletModel: ObservableObject {
             save()
         }
     }
-}
-
-struct BalancePoint: Codable, Identifiable, Equatable {
-    var id: Date { date }
-    let date: Date
-    let aeth: Double
 }
 
 struct ActivityItem: Codable, Identifiable, Equatable {

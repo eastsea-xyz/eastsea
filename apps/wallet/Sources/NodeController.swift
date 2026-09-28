@@ -282,7 +282,8 @@ final class NodeController: ObservableObject {
         Task.detached {
             let status = try? votingNodeStatus(validatorKey: key)
             await MainActor.run {
-                if let status { self.voting = status }
+                // Published only when it changed: the poll runs every 2 s.
+                if let status, self.voting != status { self.voting = status }
                 self.applyDuty()
             }
         }
@@ -299,14 +300,14 @@ final class NodeController: ObservableObject {
 
     private func refreshProver() {
         guard prove else {
-            prover = nil
+            if prover != nil { prover = nil }
             return
         }
         let port = Self.port
         Task.detached {
             let v = await LocalRPC.call(port: port, method: "aether_proverStatus", params: [])
             let status = v.flatMap { try? JSONSerialization.data(withJSONObject: $0) }.flatMap { try? JSONDecoder().decode(ProverStatus.self, from: $0) }
-            await MainActor.run { self.prover = status }
+            await MainActor.run { if self.prover != status { self.prover = status } }
         }
     }
 
@@ -349,13 +350,13 @@ final class NodeController: ObservableObject {
             let network = switched ? nil : (try? chainStatus())?.height
             await MainActor.run {
                 guard self.process != nil, let local else { return }
-                self.height = local
+                if self.height != local { self.height = local }
                 if self.switched || local + 2 >= (network ?? 0) {
                     useLocalNode(port: port)
                     self.switched = true
-                    self.state = .running
+                    if self.state != .running { self.state = .running }
                 } else {
-                    self.state = .starting  // catching up; the wallet keeps asking validators meanwhile
+                    if self.state != .starting { self.state = .starting }  // catching up; the wallet keeps asking validators meanwhile
                 }
             }
         }

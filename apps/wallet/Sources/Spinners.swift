@@ -31,6 +31,9 @@ struct OrbitSpinner: View {
     var period: Double = 1.3
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var scheme
+    /// Holds its last frame while the window is dragged, so resizing does not pay
+    /// for the blur layers on top of every layout pass.
+    @Environment(\.liveResize) private var resizing
     /// Time is measured from here: small numbers keep angles precise on the GPU (Float).
     @State private var epoch = Date()
 
@@ -40,7 +43,7 @@ struct OrbitSpinner: View {
     var body: some View {
         GeometryReader { g in
             let d = min(g.size.width, g.size.height)
-            TimelineView(.animation(minimumInterval: 1.0 / 60, paused: reduceMotion)) { tl in
+            TimelineView(.animation(minimumInterval: 1.0 / 60, paused: reduceMotion || resizing)) { tl in
                 Canvas { ctx, size in
                     let t = reduceMotion ? 0.42 * period : tl.date.timeIntervalSince(epoch)
                     OrbitSpinner.draw(in: &ctx, size: size, diameter: d, time: t, period: period,
@@ -186,11 +189,12 @@ private extension AetherInk.RGB {
 struct ShimmerBar: View {
     var cornerRadius: CGFloat = 14
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.liveResize) private var resizing
     @State private var epoch = Date()
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        TimelineView(.animation(minimumInterval: 1.0 / 60, paused: reduceMotion)) { tl in
+        TimelineView(.animation(minimumInterval: 1.0 / 60, paused: reduceMotion || resizing)) { tl in
             Canvas { ctx, size in
                 let t = reduceMotion ? 1.0 : tl.date.timeIntervalSince(epoch)
                 ShimmerBar.draw(in: &ctx, size: size, time: t)

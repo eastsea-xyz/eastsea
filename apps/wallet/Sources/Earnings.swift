@@ -476,12 +476,16 @@ struct AuroraBackground: View {
     var hot: Bool
     var live: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// While the window is being resized the aurora holds its last frame instead of
+    /// rasterizing its blurs onto every layout pass of the drag.
+    @Environment(\.liveResize) private var resizing
     @State private var epoch = Date()
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion || !live)) { tl in
+        let still = reduceMotion || !live
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: still || resizing)) { tl in
             Canvas { ctx, size in
-                let t = reduceMotion || !live ? 3.0 : tl.date.timeIntervalSince(epoch)
+                let t = still ? 3.0 : tl.date.timeIntervalSince(epoch)
                 AuroraBackground.draw(in: &ctx, size: size, time: t, hot: hot)
             }
         }
@@ -581,11 +585,12 @@ struct SeededRandom {
 struct ConfettiBurst: View {
     let trigger: Int
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.liveResize) private var resizing
     @State private var start: Date?
     static let duration = 2.4
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 60, paused: start == nil)) { tl in
+        TimelineView(.animation(minimumInterval: 1.0 / 60, paused: start == nil || resizing)) { tl in
             Canvas { ctx, size in
                 guard let start else { return }
                 let t = tl.date.timeIntervalSince(start)

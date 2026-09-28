@@ -1,5 +1,6 @@
 import SwiftUI
 #if os(macOS)
+import Combine
 import Sparkle
 #endif
 
@@ -100,6 +101,8 @@ struct SettingsView: View {
             Toggle("Run a node on this Mac", isOn: $node.enabled)
             Toggle("Only while on the power adapter", isOn: $node.onlyOnPower)
                 .help("On a laptop, pause the node on battery and resume on power.")
+            Label(node.awakeNote, systemImage: node.keepsAwake ? "sun.max.fill" : "moon.zzz")
+                .font(.caption).foregroundStyle(.secondary)
             Toggle("Open Aether at login", isOn: Binding(get: { node.startAtLogin }, set: { node.startAtLogin = $0 }))
             Toggle("Prove blocks with Metal on this Mac's GPU", isOn: Binding(get: { node.prove }, set: {
                 if $0 { node.proveAddress = model.address }
@@ -127,6 +130,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// What the Network page shows: when updates were last checked, and a Check button.
     @MainActor lazy var updates = Updates(updater)
     private var started = false
+    /// Tells a validator Mac when the network pauses and resumes.
+    private var pauseWatch: AnyCancellable?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         #if DEBUG
@@ -156,6 +161,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let check: () -> Void = { [weak self] in self?.updater.updater.checkForUpdatesInBackground() }
         node.onUpgradeNeeded = check
         model.onOutdated = check
+        pauseWatch = model.$chainPausedSince
+            .removeDuplicates { ($0 == nil) == ($1 == nil) }
+            .sink { [weak node] since in
+                MainActor.assumeIsolated { node?.networkPaused(since: since) }
+            }
         // Open at login by default (Settings can turn it off).
         if !UserDefaults.standard.bool(forKey: "loginItemDefaultApplied") {
             UserDefaults.standard.set(true, forKey: "loginItemDefaultApplied")

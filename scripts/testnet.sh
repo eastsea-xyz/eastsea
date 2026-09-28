@@ -3,6 +3,7 @@
 #   scripts/testnet.sh start | stop | status
 # Unlike devnet.sh, `start` never wipes chain data: the chain resumes where it stopped.
 # Validator 1 also serves the faucet (its key: <dir>/1/faucet.key).
+# While a validator runs, `caffeinate -s -w <pid>` keeps the Mac awake on power.
 set -euo pipefail
 T=${AETHER_TESTNET:-$HOME/aether-testnet}
 A="$T/bin/aether"
@@ -16,6 +17,8 @@ case "${1:-status}" in
       [ -f "$T/$i/faucet.key" ] && args+=("--node-arg=--faucet-key=$T/$i/faucet.key")
       nohup "$A" "${args[@]}" >> "$T/node$i.log" 2>&1 &
       echo $! > "$T/node$i.pid"
+      # No system sleep on power while this validator runs (ends with it).
+      nohup caffeinate -s -w "$!" >/dev/null 2>&1 &
       echo "validator $i  rpc http://127.0.0.1:$((8600 + i))  log $T/node$i.log"
     done ;;
   stop)

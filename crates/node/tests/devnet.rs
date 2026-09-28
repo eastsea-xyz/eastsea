@@ -916,6 +916,149 @@ fn open_voting_nodes_take_over_the_chain_by_themselves() {
     assert!(bal.contains("balance   11 wei") && bal.contains("verified  ✓"), "{bal}");
 }
 
+/// Founder reserve keys run as `aether run` like any Mac (docs/ops/reserve-keys.md):
+/// three keys that are not in the genesis voting set and never register follow
+/// the chain, and with no independent operator the rules seat them at the first
+/// epoch. They reshare as followers, the running set signs the handoff, and from
+/// the switch height they vote: the set grows from four to seven with the same
+/// identity, and the chain never stops.
+#[test]
+fn founder_reserve_keys_join_by_themselves_under_aether_run() {
+    let _serial = serial();
+    let dir = std::env::temp_dir().join(format!("aether-devnet-test-{}-reserve", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let d = |name: &str| dir.join(name).to_str().unwrap().to_string();
+    let genesis_set = ["g1", "g2", "g3", "g4"];
+    let reserve = ["r1", "r2", "r3"];
+    for k in genesis_set.iter().chain(reserve.iter()) {
+        run_ok(&["keygen", "--data", &d(k)]);
+    }
+    let reg = run_ok(&["registrar-key", "--data", &d("reg")]);
+    let registrar = reg.split_whitespace().nth(2).unwrap().to_string();
+    let founder = "0x00000000000000000000000000000000000000f0";
+    let mut args: Vec<String> = ["network", "--epoch-blocks", "40", "--min-streak", "0", "--draw-epochs", "1", "--node-rewards", "--registrar", &registrar, "--reserve-operator", founder]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    for r in reserve {
+        args.extend(["--reserve".to_string(), format!("{}/validator.pub.json", d(r))]);
+    }
+    args.extend(genesis_set.iter().map(|g| format!("{}/validator.pub.json", d(g))));
+    std::fs::write(d("A.json"), run_ok(&args.iter().map(String::as_str).collect::<Vec<_>>())).unwrap();
+    let ports: Vec<u16> = (0..4).map(|_| free_port()).collect();
+    let dkg: Vec<Child> = (0..4)
+        .map(|k| {
+            spawn_quiet(&[
+                "dkg".into(),
+                "--network".into(),
+                d("A.json"),
+                "--port".into(),
+                ports[k].to_string(),
+                "--data".into(),
+                d(genesis_set[k]),
+                "--peers".into(),
+                tcp_peers(&ports, k),
+                "--offline".into(),
+            ])
+        })
+        .collect();
+    for c in dkg {
+        assert!(c.wait_with_output().unwrap().status.success());
+    }
+    std::fs::copy(format!("{}/network.json", d("g1")), d("A-final.json")).unwrap();
+    let a_final = serde_json::from_slice::<Value>(&std::fs::read(d("A-final.json")).unwrap()).unwrap();
+    assert_eq!(a_final["reserve"]["validators"].as_array().map(Vec::len), Some(3), "the ceremony keeps the reserve keys");
+
+    // Seven processes on "one Mac", each only `aether run` (the reserve keys as in scripts/reserve-keys.sh).
+    let names: Vec<&str> = genesis_set.iter().chain(reserve.iter()).copied().collect();
+    let n = names.len();
+    let p2p: Vec<u16> = (0..n).map(|_| free_port()).collect();
+    let rpc: Vec<u16> = (0..n).map(|_| free_port()).collect();
+    let resh: Vec<u16> = (0..n).map(|_| free_port()).collect();
+    let mut net = Net::prepared(dir.clone(), p2p.clone(), rpc.clone(), vec![vec![]; n]);
+    for (k, name) in names.iter().enumerate() {
+        let others: Vec<String> = (0..n).filter(|j| *j != k).map(|j| format!("http://127.0.0.1:{}", rpc[j])).collect();
+        let a: Vec<String> = vec![
+            "run".into(),
+            "--data".into(),
+            d(name),
+            "--network".into(),
+            d("A-final.json"),
+            "--port".into(),
+            p2p[k].to_string(),
+            "--rpc-port".into(),
+            rpc[k].to_string(),
+            "--reshare-port".into(),
+            resh[k].to_string(),
+            "--dev-peer-dir".into(),
+            d("peers"),
+            "--node-arg=--block-time-ms=500".into(),
+            format!("--follow-arg=--from-rpc={}", others.join(",")),
+            "--reshare-timeout".into(),
+            "120".into(),
+        ];
+        let log = std::fs::File::create(dir.join(format!("{name}.log"))).unwrap();
+        let child = Command::new(BIN).args(&a).env("RUST_LOG", "info,commonware=warn").stdout(log).stderr(Stdio::null()).spawn().expect("spawn run");
+        net.procs[k] = Some(child);
+    }
+    net.wait_height(0, 3, 90);
+    let reserve_keys: Vec<String> = reserve.iter().map(|r| keys_of(&d(r))).collect();
+    // Before the handoff the reserve keys follow (no share, not voting).
+    for r in reserve {
+        assert!(!dir.join(r).join("threshold.json").exists(), "{r} has no share before it is seated");
+    }
+
+    // No one acts from here, and the chain never stops.
+    let end = Instant::now() + Duration::from_secs(300);
+    let mut last_height = 0;
+    let mut stalled_since = Instant::now();
+    let handoff = loop {
+        let h = net.height(0);
+        if h > last_height {
+            last_height = h;
+            stalled_since = Instant::now();
+        }
+        assert!(stalled_since.elapsed() < Duration::from_secs(30), "the chain stopped at {h} (see {}/*.log)", dir.display());
+        if let Some(v) = net.rpc(0, "aether_handoff", json!([])).filter(|v| !v.is_null()) {
+            break v;
+        }
+        assert!(Instant::now() < end, "no handoff (see {}/*.log)", dir.display());
+        std::thread::sleep(Duration::from_millis(500));
+    };
+    let members: Vec<String> = handoff["members"].as_array().unwrap().iter().map(|m| m["key"].as_str().unwrap().to_string()).collect();
+    assert_eq!(members.len(), 7, "the genesis set plus every reserve key: {members:?}");
+    assert!(reserve_keys.iter().all(|k| members.contains(k)), "{members:?}");
+    let switch = handoff["switch"].as_u64().unwrap();
+
+    // Each reserve key installs its share and votes from the switch height.
+    let end = Instant::now() + Duration::from_secs(120);
+    for r in reserve {
+        let file = dir.join(r).join("network.json");
+        while !(dir.join(r).join("threshold.json").exists()
+            && serde_json::from_slice::<Value>(&std::fs::read(&file).unwrap()).ok().and_then(|v| v["round"].as_u64()) == Some(1))
+        {
+            assert!(Instant::now() < end, "{r} did not start voting (see {}/{r}.log)", dir.display());
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+    let target = switch + 20;
+    for k in 0..n {
+        net.wait_height(k, target, 120);
+    }
+    assert_agree(&net, &(0..n).collect::<Vec<_>>(), target);
+    // Seven proposers take turns now, so more than the four genesis members propose.
+    let blocks = net.rpc(0, "aether_recentBlocks", json!([20])).unwrap();
+    let proposers: std::collections::BTreeSet<String> = blocks
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|b| b["height"].as_u64().unwrap() >= switch)
+        .map(|b| b["proposer"].as_str().unwrap().to_string())
+        .collect();
+    assert!(proposers.len() > 4, "reserve keys propose blocks too: {proposers:?}");
+}
+
 fn keys_of(dir: &str) -> String {
     serde_json::from_slice::<Value>(&std::fs::read(format!("{dir}/validator.pub.json")).unwrap()).unwrap()["key"].as_str().unwrap().to_string()
 }

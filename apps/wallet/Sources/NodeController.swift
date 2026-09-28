@@ -2,8 +2,10 @@
 import DeviceCheck
 import Foundation
 import IOKit.ps
+import IOKit.pwr_mgt
 import ServiceManagement
 import SwiftUI
+import UserNotifications
 
 /// The node inside the app (Transmission-style on/off). On: the bundled `aether`
 /// (`aether run`) follows the chain, verifying and re-executing every block on
@@ -81,6 +83,10 @@ final class NodeController: ObservableObject {
         }
     }
     private var powerTimer: Timer?
+    /// Held while this Mac is a validator (see `applyDuty`).
+    let sleepGuard = SleepGuard(reason: "Aether: this Mac signs blocks for the network (voting node)")
+    /// A "network is paused" notice was posted and its "running again" is due.
+    var pauseNotified = false
 
     static var onBattery: Bool {
         guard let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
@@ -110,7 +116,7 @@ final class NodeController: ObservableObject {
     static let port: UInt16 = 18_545
     /// Validator-to-validator port, used only while this Mac is voting.
     static let p2pPort: UInt16 = 19_101
-    private var process: Process?
+    private(set) var process: Process?
     private var poll: Timer?
 
     static var dataDir: URL {
@@ -223,6 +229,7 @@ final class NodeController: ObservableObject {
         if let p = process, p.isRunning { p.terminate() }
         process = nil
         state = .off
+        applyDuty()
     }
 
     private func exited(_ proc: Process) {
@@ -235,6 +242,7 @@ final class NodeController: ObservableObject {
         switched = false
         useLocalNode(port: nil)
         state = .failed("The node stopped (exit \(status)); see \(Self.dataDir.appendingPathComponent("node.log").path)")
+        applyDuty()
     }
 
     /// Read (or create) this Mac's voting-node keys with the bundled helper.
@@ -273,7 +281,10 @@ final class NodeController: ObservableObject {
         lastVotingCheck = Date()
         Task.detached {
             let status = try? votingNodeStatus(validatorKey: key)
-            await MainActor.run { if let status { self.voting = status } }
+            await MainActor.run {
+                if let status { self.voting = status }
+                self.applyDuty()
+            }
         }
     }
 
@@ -329,6 +340,7 @@ final class NodeController: ObservableObject {
 
     private func check() {
         refreshVoting()
+        applyDuty()
         refreshProver()
         refreshUpgrade()
         let port = Self.port, switched = self.switched
@@ -349,6 +361,84 @@ final class NodeController: ObservableObject {
         }
     }
 }
+// MARK: validator duty (docs/design/13-roadmap.md F, P0)
+
+extension NodeController {
+    /// This Mac's node runs and the network has it in the voting set.
+    var isValidator: Bool { process != nil && voting?.voting == true }
+
+    /// Keep the Mac awake while it signs blocks: a sleeping member is a missing
+    /// vote, and a third of them asleep pauses the network. On battery with
+    /// "Only while on the power adapter" on, the node is off anyway.
+    var keepsAwake: Bool { isValidator && !(onlyOnPower && Self.onBattery) }
+
+    /// One line for Settings: what Aether does about sleep.
+    var awakeNote: String {
+        if keepsAwake { return "This Mac signs blocks now: Aether keeps it from sleeping (the display can still sleep)." }
+        return onlyOnPower
+            ? "While this Mac signs blocks on power, Aether keeps it from sleeping."
+            : "While this Mac signs blocks, Aether keeps it from sleeping, on battery too."
+    }
+
+    /// Take or release the no-idle-sleep assertion to match `keepsAwake`.
+    func applyDuty() {
+        let on = keepsAwake
+        if on != sleepGuard.held {
+            sleepGuard.set(on)
+            objectWillChange.send()
+        }
+    }
+
+    /// The network made no block for a minute (`WalletModel.chainPausedSince`):
+    /// a validator hears it once when it pauses and once when it resumes.
+    func networkPaused(since: Date?) {
+        if since != nil, isValidator, !pauseNotified {
+            pauseNotified = true
+            LocalNotice.post(title: "The network is paused",
+                             body: "No block has been finalized for a minute. Keep this Mac awake and online: it is one of the Macs that sign blocks.")
+        } else if since == nil, pauseNotified {
+            pauseNotified = false
+            LocalNotice.post(title: "The network is running again", body: "Blocks are being finalized again.")
+        }
+    }
+}
+
+/// An IOKit assertion that stops idle system sleep (not display sleep) while held.
+final class SleepGuard {
+    private var id: IOPMAssertionID = 0
+    private(set) var held = false
+    let reason: String
+
+    init(reason: String) { self.reason = reason }
+
+    func set(_ on: Bool) {
+        if on, !held {
+            held = IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
+                                               IOPMAssertionLevel(kIOPMAssertionLevelOn), reason as CFString, &id) == kIOReturnSuccess
+        } else if !on, held {
+            IOPMAssertionRelease(id)
+            held = false
+        }
+    }
+
+    deinit { set(false) }
+}
+
+/// Local notifications (asks for permission the first time one is posted).
+enum LocalNotice {
+    static func post(title: String, body: String) {
+        let center = UNUserNotificationCenter.current()
+        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+            guard granted else { return }
+            let content = UNMutableNotificationContent()
+            content.title = title
+            content.body = body
+            content.sound = .default
+            center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+        }
+    }
+}
+
 /// JSON-RPC to the local node (loopback only).
 enum LocalRPC {
     static func call(port: UInt16, method: String, params: [Any]) async -> Any? {

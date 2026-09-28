@@ -1270,12 +1270,12 @@ fn run_node(a: NodeArgs) {
     let registrar = if dev_registrar {
         let signer = aether_node::faucet::Faucet::from_seed(&dev_seed(DEV_REGISTRAR))
             .expect("dev registrar");
-        Some(std::sync::Arc::new(aether_node::devicecheck::Registrar {
-            apple: None,
-            registry: registry(),
+        Some(std::sync::Arc::new(aether_node::devicecheck::Registrar::new(
+            None,
+            registry(),
             signer,
             chain_id,
-        }))
+        )))
     } else {
         devicecheck.map(|(k, id, team)| {
             let apple =
@@ -1285,12 +1285,12 @@ fn run_node(a: NodeArgs) {
                 &std::path::Path::new(&data).join("registrar.key"),
             )
             .expect("<data>/registrar.key (aether registrar-key)");
-            std::sync::Arc::new(aether_node::devicecheck::Registrar {
-                apple: Some(apple),
-                registry: registry(),
+            std::sync::Arc::new(aether_node::devicecheck::Registrar::new(
+                Some(apple),
+                registry(),
                 signer,
                 chain_id,
-            })
+            ))
         })
     };
     let faucet_service = match (&faucet_key, faucet) {

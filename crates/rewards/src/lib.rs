@@ -37,12 +37,18 @@
 //! weight 0.5 at 0, 1.0 at 14, one step per day (+1 on a good day: ≥ 90% of
 //! the day's slots answered; −1 otherwise). A day on which the network as a
 //! whole answered < 70% of its slots moves nobody.
+//!
+//! An epoch the founder's reserve keys served counts, for the founder's
+//! operator alone, as its Mac answering every slot — at the warm-up it already
+//! has (the credit is a weight: it moves no day count, no level, and an
+//! operator still takes the max over its Macs, so it adds no second share).
+//! See `reserve_served`.
 
 use aether_execution::proofs::{self, ClaimError};
 use aether_execution::registry;
 use aether_execution::{StateError, WorldState};
 use alloy_primitives::{address, keccak256, Address, U256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Where node-reward state lives (storage only, no code).
 pub const REWARDS: Address = address!("0000000000000000000000000000000000007704");
@@ -50,6 +56,12 @@ pub const REWARDS: Address = address!("0000000000000000000000000000000000007704"
 pub const MAX_SHARE: u64 = 16;
 /// Beacon slots per epoch (`beacons`): four unpredictable moments an hour.
 pub const SLOTS: u64 = 4;
+/// Seats a voting set never drops below (`aether_consensus::committee::
+/// MIN_OPEN_COMMITTEE`, written out again here: this crate sits below
+/// consensus). The founder's reserve keys are seated only while fewer
+/// independent operators than this qualify — which is also when their service
+/// counts for the founder (docs/design/15-node-rewards.md, "창업자 예비 키").
+pub const MIN_OPEN_COMMITTEE: u64 = 4;
 /// Epochs per warm-up day.
 pub const DAY_EPOCHS: u64 = 24;
 /// Warm-up days from 0.5 to 1.0 (one level per day).
@@ -253,11 +265,15 @@ pub fn distribute(state: &mut WorldState, height: u64) -> Result<Distribution, S
     let mut macs: Vec<Mac> = candidates.iter().map(|c| mac(state, c.index)).collect();
 
     // Slots each Mac answered (signed, and re-attested when due) in the epoch.
-    let answered: Vec<u64> =
+    let mut answered: Vec<u64> =
         candidates.iter().map(|c| beacons::beacon(state, c.index).answered(epoch)).collect();
     for (m, a) in macs.iter_mut().zip(answered.iter()) {
         m.answered += a;
     }
+    // The founder's reserve credit folds in only now, after the day counts:
+    // an epoch the reserve keys served counts as the founder's full
+    // participation for the weights and for nothing else.
+    apply_reserve_credit(state, epoch, &candidates, &mut answered);
     // Weights use the warm-up level the Macs had during the epoch.
     let weights = operator_weights(&candidates, &macs, &answered);
     let pool = node_pool(epoch, epoch_blocks);
@@ -395,6 +411,63 @@ pub fn reserve(state: &WorldState) -> Option<(Address, Vec<ReserveKey>)> {
     let operator = Address::from_slice(&head.to_be_bytes::<32>()[12..]);
     let word = |k: usize| state.storage(&REWARDS, tagged(TAG_RESERVE, U256::from(k))).to_be_bytes::<32>();
     Some((operator, (0..n.min(MAX_RESERVE_KEYS)).map(|i| (word(1 + 2 * i), word(2 + 2 * i))).collect()))
+}
+
+/// Whether the founder's reserve keys are the committee's safety net for the
+/// epoch that opens at `epoch`: fewer than `MIN_OPEN_COMMITTEE` independent
+/// operators qualify, counted exactly as the seating rule counts them at the
+/// same block (`rotation::eligible` and `rotation::independent` over this same
+/// state — the candidates alive in `epoch − 1`, deduplicated by operator, the
+/// founder's own Macs left out). Returns the founder's operator address; None
+/// without reserve keys at genesis, or once enough operators stand alone.
+///
+/// This is the state's only cheap witness of reserve service. A finalization
+/// carries one threshold signature (no per-validator signers to count) and the
+/// proposer record never reaches the execution state, so an epoch the reserve
+/// keys served is read as: the chain seats them for the epoch that follows it.
+/// The chain is a contiguous finalized history, so the distribution block
+/// existing at all means the epoch's blocks were finalized — the ≥ 90%
+/// participation the rule asks for — and seating is continuous while
+/// operators are short, so the committee that epoch ran with is the one this
+/// predicate sees. In the exact epoch the operator count crosses the line the
+/// credit can sit one epoch early or late: the price of counting from state
+/// alone.
+pub fn reserve_served(state: &WorldState, epoch: u64) -> Option<Address> {
+    let (operator, _) = reserve(state)?;
+    let min_streak = registry::params(state).min_streak;
+    // The draw pool of `epoch`, as the seating rule freezes it from this state.
+    // (`rotation::eligible` also drops candidates whose node id is not a valid
+    // iroh endpoint, but any 32 bytes are one, so nothing registered is lost.)
+    let independent = registry::candidates(state)
+        .into_iter()
+        .filter(|c| {
+            epoch.checked_sub(1).is_some_and(|p| c.last_epoch == p)
+                && c.streak >= min_streak
+                && c.missed.saturating_mul(20) <= c.streak
+        })
+        .filter(|c| c.operator != operator)
+        .map(|c| c.operator)
+        .collect::<BTreeSet<_>>()
+        .len() as u64;
+    (independent < MIN_OPEN_COMMITTEE).then_some(operator)
+}
+
+/// Fold the founder's reserve credit into the per-Mac slot counts an epoch is
+/// paid by: an epoch the reserve keys served (see `reserve_served`; `epoch` is
+/// the epoch being paid, the block that pays it is the block that seats the
+/// next one) counts as the founder operator's full participation, so every Mac
+/// it registered answers all `SLOTS` slots — at the warm-up it already has.
+/// An operator's weight still takes the max over its Macs, so the credit never
+/// adds a second share, and it moves no day count and no warm-up level (only
+/// a Mac's own answers do). `distribute` and the reward view count through
+/// this same function, so the two cannot disagree about the founder either.
+pub fn apply_reserve_credit(state: &WorldState, epoch: u64, candidates: &[registry::Candidate], answered: &mut [u64]) {
+    let Some(founder) = reserve_served(state, epoch + 1) else { return };
+    for (c, a) in candidates.iter().zip(answered.iter_mut()) {
+        if c.operator == founder {
+            *a = (*a).max(SLOTS);
+        }
+    }
 }
 
 /// Write `c` as registry candidate `c.index` in the contract's storage layout

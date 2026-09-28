@@ -6,7 +6,8 @@
 //! while fewer than 16 are online, from 16 full-weight operators on the whole
 //! pool is shared, and what caps and absences leave is never minted. Warm-up
 //! climbs one step a day, and the founder's reserve keys join the voting set
-//! below four independent operators and leave at four.
+//! below four independent operators and leave at four — while they serve, the
+//! epochs count as the founder's participation.
 
 mod common;
 
@@ -349,4 +350,57 @@ fn reserve_members() -> Vec<(String, String)> {
             (hex::encode(k.as_ref()), node.to_string())
         })
         .collect()
+}
+
+#[test]
+fn reserve_service_pays_the_founder_while_its_mac_sleeps() {
+    // Mac 4 is the founder's own registered Mac (docs/design/15, "창업자 예비
+    // 키"). It warms up with the network, then sleeps while its reserve keys
+    // keep the committee alive on two independent operators: every served
+    // epoch still pays the founder a full sixteenth, exactly as if its Mac had
+    // answered all four slots — at the warm-up it reached, never a second
+    // share, and the service moves no warm-up step. Once a fourth independent
+    // operator stands, the credit stops with the seating.
+    let founder = common::addr(&aether_crypto::P256Signer::from_seed(&common::seed(5)).unwrap());
+    let reserve = Reserve { operator: founder, members: reserve_members() };
+    let mut n = net(5, Some(reserve));
+    let mut minted = U256::ZERO;
+    assert_eq!(n.operator(4), founder);
+    // Two independent operators and the founder's Mac warm up together (the
+    // reserve keys serve throughout; the founder's Mac answers for itself, so
+    // the credit is idle). Macs 0, 1 and 4 register, in that order — so their
+    // candidate (registry) indices are 0, 1 and 2; Macs 2 and 3, registering
+    // last, are candidates 3 and 4. Warm-up state is per candidate index.
+    let regs = [0, 1, 4].iter().map(|&i| n.register(i)).collect::<Vec<_>>();
+    step(&mut n, &mut minted, regs);
+    for day in 0..WARMUP_STEPS as u64 {
+        run_day(&mut n, &mut minted, day, &[0, 1, 2], day);
+    }
+    assert_eq!(rewards::mac(&n.parent.state, 2).level, WARMUP_STEPS, "full weight before it sleeps");
+
+    // The founder's Mac sleeps; the reserve keys keep serving. Two epochs: the
+    // founder still earns a full sixteenth a served epoch, on the chain, in
+    // the block's payouts.
+    n.behaviour.insert(4, Mac::Off);
+    let first = n.parent.height / E;
+    for e in first..first + 2 {
+        let (before, exec) = paid_epoch(&mut n, &mut minted, e, 5);
+        let pool = pool_of_epoch(e);
+        assert_eq!(n.balance(4) - before[4], pool / U256::from(MAX_SHARE), "epoch {e}: the sleeping founder's full share");
+        assert_eq!(n.balance(0) - before[0], pool / U256::from(MAX_SHARE), "epoch {e}: an answering operator gets the same");
+        assert!(exec.payouts.iter().any(|(_, op, a)| *op == founder && *a == pool / U256::from(MAX_SHARE)), "the payout is on the record");
+        assert_eq!(exec.payouts.len(), 3, "the founder counts as one operator");
+    }
+    assert_eq!(rewards::mac(&n.parent.state, 2).level, WARMUP_STEPS, "the service moved no warm-up");
+
+    // Macs 2 and 3 register: four independent operators stand, the reserve
+    // keys step down, and the credit stops with them — the sleeping founder
+    // Mac earns nothing again.
+    let regs = (2..4).map(|i| n.register(i)).collect::<Vec<_>>();
+    step(&mut n, &mut minted, regs);
+    let last = n.parent.height / E;
+    let (before, exec) = paid_epoch(&mut n, &mut minted, last, 5);
+    assert_eq!(n.balance(4), before[4], "four independent operators: no credit for a sleeping Mac");
+    assert!(!exec.payouts.iter().any(|(_, op, _)| *op == founder), "the founder is off the payouts");
+    assert_eq!(exec.payouts.len(), 4, "only the answering operators");
 }

@@ -22,6 +22,9 @@ pub const MAX_TXS_PER_BLOCK: usize = 2_000;
 pub const MAX_MEMPOOL: usize = 50_000;
 /// Pending txs one sender may have (spam from one key cannot fill the pool).
 pub const MAX_PER_SENDER: usize = 64;
+/// A pending tx that has not made it into a block in this long leaves the pool
+/// (a nonce gap it cannot close, or fee caps the base fee stays above).
+pub const MEMPOOL_TTL: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Clone, Debug)]
 pub struct ChainConfig {
@@ -1051,8 +1054,17 @@ impl Chain {
             g.mempool.remove(h);
         }
         let state = exec.state.clone();
-        g.mempool.retain(|_, tx| tx.header.nonce >= state.nonce(&tx.header.sender));
+        // Drop what can no longer run: a used nonce, a sender whose balance no
+        // longer covers the tx (it paid for other txs meanwhile), or a tx left
+        // waiting past the TTL. Otherwise txs admitted while affordable would
+        // hold per-sender slots and pool space forever: enough of them would
+        // fill the pool and stop the chain from taking new txs.
+        let base = Self::next_base_fee(&g.cfg, &exec);
+        let fees = g.cfg.fees;
+        let now = Instant::now();
         let inner = &mut *g;
+        let arrivals = &inner.arrivals;
+        inner.mempool.retain(|h, tx| keep_in_pool(tx, arrivals.get(h).copied(), now, &state, base, fees));
         inner.arrivals.retain(|h, _| inner.mempool.contains_key(h));
         inner.pending_by_sender.clear();
         for t in inner.mempool.values() {
@@ -1131,11 +1143,31 @@ impl Chain {
 /// caps at least the current base fees (zero when uncongested), a prove budget covering the gas limit, and a
 /// balance covering value, max exec fee and prove budget.
 fn admissible(tx: &TxEnvelope, state: &WorldState, base: FeeVector) -> Result<(), String> {
-    let aether_types::TxPayload::Plain(bytes) = &tx.payload else { return Err("encrypted payloads are not supported yet".into()) };
-    let call = aether_execution::EvmCall::decode(bytes).map_err(|e| format!("payload: {e:?}"))?;
     if tx.header.max_fee.exec < base.exec || tx.header.max_fee.prove < base.prove {
         return Err("fee caps below the base fee".into());
     }
+    affordable(tx, state, base)
+}
+
+/// Whether a pending tx stays in the pool after a block: its nonce is still
+/// ahead, its sender can still pay for it, and it has not waited past the TTL.
+/// A tx whose fee caps are below the base fee stays (the fee may come down)
+/// until the TTL.
+fn keep_in_pool(tx: &TxEnvelope, arrived: Option<Instant>, now: Instant, state: &WorldState, base: FeeVector, fees: bool) -> bool {
+    if tx.header.nonce < state.nonce(&tx.header.sender) {
+        return false;
+    }
+    if arrived.is_some_and(|t| now.saturating_duration_since(t) >= MEMPOOL_TTL) {
+        return false;
+    }
+    !fees || affordable(tx, state, base).is_ok()
+}
+
+/// The payload decodes, the prove budget covers the gas limit, and the sender's
+/// balance covers value, gas at its fee cap and the prove budget.
+fn affordable(tx: &TxEnvelope, state: &WorldState, base: FeeVector) -> Result<(), String> {
+    let aether_types::TxPayload::Plain(bytes) = &tx.payload else { return Err("encrypted payloads are not supported yet".into()) };
+    let call = aether_execution::EvmCall::decode(bytes).map_err(|e| format!("payload: {e:?}"))?;
     if tx.header.gas.prove < call.gas_limit {
         return Err("prove budget below the gas limit".into());
     }
@@ -1290,4 +1322,68 @@ pub fn scheduled(schedule: &[crate::upgrade::Activation], u: &crate::upgrade::Up
     let mut next = schedule.to_vec();
     next.push(crate::upgrade::Activation { protocol: u.protocol, at: u.activate_at, registrar: u.registrar });
     Arc::new(next)
+}
+
+#[cfg(test)]
+mod pool_tests {
+    use super::*;
+    use aether_execution::EvmCall;
+    use aether_types::{Bytes, TxHeader, TxPayload};
+
+    const GWEI: u128 = 1_000_000_000;
+
+    fn tx(sender: Address, nonce: u64, value: u64) -> TxEnvelope {
+        let call = EvmCall { to: Some(Address::repeat_byte(0xaa)), value: U256::from(value), input: Bytes::new(), gas_limit: 21_000, delegate: None };
+        let payload = call.encode();
+        let header = TxHeader {
+            chain_id: 7780,
+            sender,
+            nonce,
+            gas: GasVector { exec: 21_000, state: 0, prove: 21_000 },
+            max_fee: FeeVector { exec: GWEI, state: 0, prove: 0 },
+            tip: GWEI,
+            payload_commitment: aether_execution::tx::payload_commitment(&payload),
+            scheme: SignerScheme::P256,
+        };
+        TxEnvelope { header, payload: TxPayload::Plain(Bytes::from(payload)), signature: Bytes::new() }
+    }
+
+    fn funded(a: Address, wei: u128) -> WorldState {
+        let mut s = WorldState::default();
+        s.set_balance(a, U256::from(wei)).unwrap();
+        s
+    }
+
+    #[test]
+    fn a_tx_its_sender_can_no_longer_pay_for_leaves_the_pool() {
+        let a = Address::repeat_byte(1);
+        let t = tx(a, 0, 1_000);
+        let now = Instant::now();
+        let enough = funded(a, 21_000 * GWEI + 1_000);
+        assert!(keep_in_pool(&t, Some(now), now, &enough, FeeVector::default(), true));
+        let drained = funded(a, 10);
+        assert!(!keep_in_pool(&t, Some(now), now, &drained, FeeVector::default(), true), "admitted while affordable, then the balance went elsewhere");
+        assert!(keep_in_pool(&t, Some(now), now, &drained, FeeVector::default(), false), "without fees there is nothing to pay");
+    }
+
+    #[test]
+    fn a_tx_waiting_past_the_ttl_leaves_even_if_it_could_still_run() {
+        let a = Address::repeat_byte(2);
+        let gapped = tx(a, 5, 1); // nonce 0..4 never arrive: it can never run
+        let state = funded(a, 10u128.pow(18));
+        let t0 = Instant::now();
+        assert!(keep_in_pool(&gapped, Some(t0), t0 + MEMPOOL_TTL / 2, &state, FeeVector::default(), true));
+        assert!(!keep_in_pool(&gapped, Some(t0), t0 + MEMPOOL_TTL, &state, FeeVector::default(), true));
+    }
+
+    #[test]
+    fn fee_caps_below_the_base_fee_wait_rather_than_leave() {
+        let a = Address::repeat_byte(3);
+        let t = tx(a, 0, 1);
+        let state = funded(a, 10u128.pow(18));
+        let now = Instant::now();
+        let high = FeeVector { exec: 5 * GWEI, state: 0, prove: 0 };
+        assert!(admissible(&t, &state, high).is_err(), "not admitted while the base fee is above its cap");
+        assert!(keep_in_pool(&t, Some(now), now, &state, high, true), "but an already pending one may wait for the fee to fall");
+    }
 }

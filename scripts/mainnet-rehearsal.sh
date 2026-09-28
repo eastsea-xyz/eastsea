@@ -20,8 +20,8 @@
 #   - the first epochs distribute exactly: the node pool of an epoch is the
 #     epoch's issuance halves (rewards::issuance) and each fresh Mac's operator
 #     gets pool/32 (docs/design/15-node-rewards.md);
-#   - the founder's reserve keys seat themselves below four independent
-#     operators (handoff to 7 members, keys voting);
+#   - the founder's reserve keys stay followers while the committee has four
+#     seats (they only fill seats a committee is short of; audit 1.1);
 #   - history pruning is the mainnet default: on, 30 days.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -201,32 +201,16 @@ else
   bad "the chain did not reach the next epochs"
 fi
 
-echo "== founder reserve keys seat themselves below four independent operators"
+echo "== founder reserve keys stay out of a full (4-seat) committee"
 rkeys=""
 for r in r1 r2 r3; do rkeys+=" $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["key"])' "$D/$r/validator.pub.json")"; done
-seated=""
-end=$((SECONDS + 300))
-while [ -z "$seated" ] && [ "$SECONDS" -lt "$end" ]; do
-  members=$(rpc aether_handoff '[]' "${rpcp[0]}" | jget '" ".join(m["key"] for m in d["result"]["members"])')
-  if [ -n "$members" ]; then
-    have=yes
-    for k in $rkeys; do case " $members " in *" $k "*) ;; *) have=no;; esac; done
-    [ "$have" = yes ] && [ "$(printf '%s\n' $members | wc -w | tr -d ' ')" = 7 ] && seated="$members"
-  fi
-  [ -n "$seated" ] || sleep 3
-done
-if [ -n "$seated" ]; then
-  ok "the handoff seats all 7 members (4 genesis + 3 reserve keys)"
-else
-  bad "no handoff with the reserve keys (see $D/*.log)"
-fi
-voting=yes
-for r in r1 r2 r3; do
-  [ -f "$D/$r/threshold.json" ] || voting=no
-  [ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("round", 0))' "$D/$r/network.json" 2>/dev/null || echo 0)" = 1 ] || voting=no
-done
-if [ "$voting" = yes ]; then ok "the reserve keys reshared and now vote (threshold.json, round 1)"; else bad "a reserve key is not voting yet"; fi
-if grep -q "founder reserve keys change the voting set" "$D/g1.log"; then ok "the chain logged the reserve keys' seating"; else bad "no reserve seating in validator 1's log"; fi
+members=$(rpc aether_handoff '[]' "${rpcp[0]}" | jget '" ".join(m["key"] for m in d["result"]["members"])' || true)
+seated=no
+for k in $rkeys; do case " $members " in *" $k "*) seated=yes;; esac; done
+if [ "$seated" = no ]; then ok "no reserve key in the voting set (4 genesis seats)"; else bad "a reserve key joined a full committee"; fi
+following=yes
+for r in r1 r2 r3; do [ -f "$D/$r/threshold.json" ] && following=no; done
+if [ "$following" = yes ]; then ok "the reserve keys run as followers (no key share)"; else bad "a reserve key holds a key share"; fi
 
 echo "== history pruning is the mainnet default (30 days, on)"
 retain=$((30 * 86400000 / BLOCK_MS))

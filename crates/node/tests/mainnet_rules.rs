@@ -283,7 +283,6 @@ fn reserve_keys_join_under_four_independent_operators_and_leave_at_four() {
     // The running set: four genesis keys (not candidates).
     let genesis: Vec<(String, String)> = (0..4).map(|i| (format!("{i:064x}"), format!("genesis{i}"))).collect();
     n.chain.lock().committee = aether_node::rotation::Committee { members: genesis.clone() };
-    let has_reserve = |m: &[(String, String)]| reserve.members.iter().all(|r| m.contains(r));
     let no_reserve = |m: &[(String, String)]| reserve.members.iter().all(|r| !m.contains(r));
     let independents = |n: &Net| {
         // As reserve_step sees it at an epoch boundary: the epoch starting here.
@@ -293,15 +292,33 @@ fn reserve_keys_join_under_four_independent_operators_and_leave_at_four() {
         aether_node::rotation::independent(&pool, |k| ops.get(k).cloned(), &r)
     };
 
-    // Two independent Macs and the founder's: under four, so the reserve keys
-    // seat themselves for the next epoch.
+    let reserve_seats = |m: &[(String, String)]| reserve.members.iter().filter(|r| m.contains(r)).count();
+
+    // Two independent Macs and the founder's: under four independent operators,
+    // but the committee already has four seats, so no reserve key joins (a
+    // 4-seat committee growing to 7 would need 5 of 7, and one founder Mac
+    // going dark would stall it: audit 1.1).
     let regs = [0, 1, 4].iter().map(|i| n.register(*i)).collect();
     step(&mut n, &mut minted, regs);
     run_to(&mut n, &mut minted, E);
     assert_eq!(independents(&n), 2);
-    let proposal = n.chain.lock().proposal.clone().expect("the reserve keys join under four");
-    assert!(has_reserve(&proposal.1));
-    assert!(genesis.iter().all(|g| proposal.1.contains(g)), "nobody else leaves");
+    if let Some(p) = n.chain.lock().proposal.clone() {
+        assert_eq!(reserve_seats(&p.1), 0, "a full committee takes no reserve key");
+    }
+    // A committee short of four (one member left): qualified Macs fill first,
+    // reserve keys only the seats still missing.
+    {
+        let mut g = n.chain.lock();
+        g.committee = aether_node::rotation::Committee { members: genesis[..1].to_vec() };
+        g.proposal = None;
+    }
+    run_to(&mut n, &mut minted, 2 * E);
+    let proposal = n.chain.lock().proposal.clone().expect("a short committee is refilled");
+    assert_eq!(proposal.1.len(), 4, "refilled to four seats");
+    // Qualified Macs are seated first; reserve keys take only what is still
+    // missing (exact counts per independent operator: rotation.rs unit tests).
+    let others = proposal.1.len() - reserve_seats(&proposal.1);
+    assert_eq!(reserve_seats(&proposal.1), 4usize.saturating_sub(others), "only the missing seats");
     {
         let mut g = n.chain.lock();
         g.committee = aether_node::rotation::Committee { members: proposal.1.clone() };
@@ -311,11 +328,15 @@ fn reserve_keys_join_under_four_independent_operators_and_leave_at_four() {
     // not count), so every reserve key leaves.
     let regs = [2, 3].iter().map(|i| n.register(*i)).collect();
     step(&mut n, &mut minted, regs);
-    run_to(&mut n, &mut minted, 3 * E);
+    run_to(&mut n, &mut minted, 4 * E);
     assert_eq!(independents(&n), 4);
-    let proposal = n.chain.lock().proposal.clone().expect("the reserve keys leave at four");
-    assert!(no_reserve(&proposal.1));
-    assert_eq!(proposal.1, genesis, "only the reserve keys leave");
+    // At four independent operators no reserve key stays: whatever the next
+    // committee is, it has none.
+    let next = {
+        let g = n.chain.lock();
+        g.proposal.clone().map(|p| p.1).unwrap_or_else(|| g.committee.members.clone())
+    };
+    assert!(no_reserve(&next), "the reserve keys leave at four");
     // They earned nothing: not candidates, no beacons.
     assert!(registry::candidates(&n.parent.state).iter().all(|c| !reserve.members.iter().any(|(k, _)| *k == hex::encode(c.validator_key))));
 }

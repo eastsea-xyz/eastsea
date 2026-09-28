@@ -8,6 +8,9 @@
 # The binary is signed with the Developer ID (SIGN_IDENTITY) and the agents name
 # the Aether app, so System Settings ▸ Login Items lists them as Aether (Pipln),
 # not as an unidentified command-line tool.
+# `caffeinate -s` wraps each validator: the Mac does not sleep while on power
+# (a sleeping validator is a missing vote). `--exit-with-parent` stops the node
+# if caffeinate is killed, so nothing is left running outside launchd.
 set -euo pipefail
 T=${AETHER_TESTNET:-$HOME/aether-testnet}
 A="$T/bin/aether"
@@ -37,11 +40,13 @@ case "${1:-}" in
   <key>AssociatedBundleIdentifiers</key><array><string>com.pipln.aether</string></array>
   <key>ProgramArguments</key>
   <array>
+    <string>/usr/bin/caffeinate</string><string>-s</string>
     <string>$A</string><string>run</string>
     <string>--network</string><string>$T/$i/network.json</string>
     <string>--port</string><string>$((9100 + i))</string>
     <string>--rpc-port</string><string>$((8600 + i))</string>
     <string>--data</string><string>$T/$i</string>
+    <string>--exit-with-parent</string>
     $extra
   </array>
   <key>RunAtLoad</key><true/>

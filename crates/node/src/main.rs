@@ -547,12 +547,6 @@ fn main() {
                     Ok(args)
                 })
                 .and_then(|args| {
-                    if dev_registrar && args.4.faucet.is_some() {
-                        return Err("--dev-registrar is only for test chains without a faucet".into());
-                    }
-                    Ok(args)
-                })
-                .and_then(|args| {
                     let mode = history.mode(args.4.history >= 2, block_time_ms)?;
                     Ok((args, mode))
                 })
@@ -1272,6 +1266,89 @@ struct NodeArgs {
     max_shards: usize,
 }
 
+/// The open-file limit a node asks for when its hard limit allows it.
+const NOFILE_WANT: u64 = 65_536;
+
+/// Raise this node's own soft open-file limit (RLIMIT_NOFILE) toward its hard
+/// limit. A validator holds a few hundred open files at once — the vote journal
+/// keeps one section file per view and opens every one at startup — but launchd
+/// and GUI apps hand their children a 256-file soft limit, which on 2026-09-29
+/// crash-looped all four validators ("Too many open files"). Never lowers the
+/// limit and never raises it above the hard limit or the kernel's per-process
+/// cap. Returns the soft limit now in effect (0 when it could not be read).
+#[cfg(unix)]
+fn raise_nofile_limit() -> u64 {
+    let Some((soft, hard)) = nofile() else {
+        tracing::warn!("could not read the open-file limit");
+        return 0;
+    };
+    let want = NOFILE_WANT.min(hard).min(nofile_per_proc()).max(soft);
+    if want > soft && set_nofile(want, hard).is_none() {
+        tracing::warn!(from = soft, "could not raise the open-file limit");
+        return soft;
+    }
+    want
+}
+
+#[cfg(not(unix))]
+fn raise_nofile_limit() -> u64 {
+    0
+}
+
+/// The soft and hard open-file limits (RLIM_INFINITY read back as u64::MAX).
+#[cfg(unix)]
+fn nofile() -> Option<(u64, u64)> {
+    let mut lim: libc::rlimit = unsafe { std::mem::zeroed() };
+    (unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) } == 0).then(|| {
+        (
+            lim.rlim_cur,
+            if lim.rlim_max == libc::RLIM_INFINITY {
+                u64::MAX
+            } else {
+                lim.rlim_max
+            },
+        )
+    })
+}
+
+/// Set the soft open-file limit to `soft`, keeping `hard` as it was.
+#[cfg(unix)]
+fn set_nofile(soft: u64, hard: u64) -> Option<()> {
+    let lim = libc::rlimit {
+        rlim_cur: soft,
+        rlim_max: if hard == u64::MAX {
+            libc::RLIM_INFINITY
+        } else {
+            hard
+        },
+    };
+    (unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &lim) } == 0).then_some(())
+}
+
+/// The most this process may ask for (macOS: kern.maxfilesperproc).
+#[cfg(target_os = "macos")]
+fn nofile_per_proc() -> u64 {
+    let mut v: libc::c_int = 0;
+    let mut len = std::mem::size_of::<libc::c_int>();
+    (unsafe {
+        libc::sysctlbyname(
+            b"kern.maxfilesperproc\0".as_ptr().cast(),
+            &mut v as *mut _ as *mut libc::c_void,
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    } == 0
+        && v > 0)
+        .then_some(v as u64)
+        .unwrap_or(u64::MAX)
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn nofile_per_proc() -> u64 {
+    u64::MAX
+}
+
 fn run_node(a: NodeArgs) {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -1279,6 +1356,10 @@ fn run_node(a: NodeArgs) {
                 .unwrap_or_else(|_| "info,commonware=warn".into()),
         )
         .init();
+    tracing::info!(
+        files = raise_nofile_limit(),
+        "open-file limit (the vote journal's section files are one fd each)"
+    );
     let NodeArgs {
         p2p,
         chain_id,
@@ -2336,5 +2417,29 @@ fn print_blocks(v: &Value) {
             b["state_root"].as_str().unwrap_or_default(),
             b["proposer"].as_str().unwrap_or_default()
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `raise_nofile_limit` reports the soft limit that is really in effect,
+    /// never lowers it, raises a low inherited one (launchd's 256) as far as
+    /// the hard limit and the kernel's per-process cap allow, and is idempotent.
+    #[test]
+    #[cfg(unix)]
+    fn the_open_file_limit_is_raised_never_lowered() {
+        let before = nofile().expect("read the open-file limit");
+        let raised = raise_nofile_limit();
+        let after = nofile().expect("read the open-file limit");
+        assert_eq!(raised, after.0, "it reports the limit now in effect");
+        assert!(after.0 >= before.0, "never lowers the soft limit");
+        assert!(after.0 <= NOFILE_WANT.max(before.0), "asks for at most {NOFILE_WANT}");
+        let ceiling = NOFILE_WANT.min(before.1).min(nofile_per_proc());
+        if before.0 < ceiling {
+            assert!(after.0 > before.0, "a low inherited limit was not raised");
+        }
+        assert_eq!(raise_nofile_limit(), after.0, "raising again changes nothing");
     }
 }

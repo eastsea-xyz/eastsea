@@ -149,6 +149,7 @@ fn rpc_state(chain: Chain, upstream: Option<Arc<Upstream>>) -> RpcState {
         handoff: None,
         snapshot: Default::default(),
         prover: None,
+        shards: None,
     }
 }
 

@@ -11,7 +11,7 @@ use aether_execution::{
     execute_block, fees, BlockContext, BlockOutcome, FeePolicy, Receipt, WorldState,
 };
 use aether_hash::ChainHasher;
-use aether_types::{Address, FeeVector, GasVector, SignerScheme, TxEnvelope, TxHash, B256, U256};
+use aether_types::{Address, Canonical, FeeVector, GasVector, SignerScheme, TxEnvelope, TxHash, B256, U256};
 use commonware_consensus::Heightable;
 use commonware_cryptography::{sha256::Digest, Digestible};
 use serde::Serialize;
@@ -24,6 +24,14 @@ pub const MAX_TXS_PER_BLOCK: usize = 2_000;
 pub const MAX_MEMPOOL: usize = 50_000;
 /// Pending txs one sender may have (spam from one key cannot fill the pool).
 pub const MAX_PER_SENDER: usize = 64;
+/// Largest tx admitted, by its canonical encoding. Contract deploys are the
+/// biggest legitimate payloads and the EVM caps their initcode at 49 KiB
+/// (EIP-3860), so 128 KiB takes any real call while keeping 50,000 txs well
+/// under a block's 8 MiB decode cap. Local admission policy, not consensus.
+pub const MAX_TX_BYTES: usize = 128 * 1024;
+/// All pending txs together, by the same count: their encodings' bytes. Like
+/// `MAX_MEMPOOL`, it rejects new txs when full (nothing is evicted).
+pub const MAX_MEMPOOL_BYTES: usize = 64 * 1024 * 1024;
 /// A pending tx that has not made it into a block in this long leaves the pool
 /// (a nonce gap it cannot close, or fee caps the base fee stays above).
 pub const MEMPOOL_TTL: Duration = Duration::from_secs(10 * 60);
@@ -299,6 +307,10 @@ pub struct Inner {
     pub mempool: BTreeMap<TxHash, TxEnvelope>,
     /// When each mempool tx arrived (inclusion lists name the oldest).
     arrivals: HashMap<TxHash, Instant>,
+    /// Each mempool tx's encoded size, and their sum: the pool's byte budget
+    /// (`MAX_MEMPOOL_BYTES`) charges and releases exactly what was admitted.
+    sizes: HashMap<TxHash, usize>,
+    mempool_bytes: usize,
     /// Txs named by inclusion lists (FOCIL).
     pub inclusion: InclusionPool,
     /// Devnet fault injection: act as a proposer that censors this sender and
@@ -430,6 +442,8 @@ impl Chain {
             mempool: BTreeMap::new(),
             pending_by_sender: HashMap::new(),
             arrivals: HashMap::new(),
+            sizes: HashMap::new(),
+            mempool_bytes: 0,
             inclusion: InclusionPool::default(),
             censor: None,
             committee: Default::default(),
@@ -1606,12 +1620,19 @@ impl Chain {
     /// would only ever be skipped cannot pile up for free.
     pub fn add_to_mempool(&self, tx: TxEnvelope) -> Result<bool, String> {
         let h = aether_execution::tx_hash(&tx);
+        let size = tx.to_canonical_bytes().len();
         let mut g = self.lock();
         if g.receipts.contains_key(&h) || g.mempool.contains_key(&h) {
             return Ok(false);
         }
+        if size > MAX_TX_BYTES {
+            return Err(format!("transaction is {size} bytes, over the {MAX_TX_BYTES}-byte cap"));
+        }
         if g.mempool.len() >= MAX_MEMPOOL {
             return Err("mempool full".into());
+        }
+        if g.mempool_bytes + size > MAX_MEMPOOL_BYTES {
+            return Err("mempool byte budget full".into());
         }
         let state = &g.finalized.state;
         if tx.header.nonce < state.nonce(&tx.header.sender) {
@@ -1630,6 +1651,8 @@ impl Chain {
         }
         *g.pending_by_sender.entry(tx.header.sender).or_default() += 1;
         g.mempool.insert(h, tx);
+        g.sizes.insert(h, size);
+        g.mempool_bytes += size;
         g.arrivals.insert(h, Instant::now());
         Ok(true)
     }
@@ -1715,6 +1738,9 @@ impl Chain {
         for (h, r) in exec.tx_hashes.iter().zip(&exec.receipts) {
             g.receipts.insert(*h, (exec.height, r.clone()));
             g.mempool.remove(h);
+            if let Some(s) = g.sizes.remove(h) {
+                g.mempool_bytes -= s;
+            }
         }
         let state = exec.state.clone();
         // Drop what can no longer run: a used nonce, a sender whose balance no
@@ -1731,6 +1757,20 @@ impl Chain {
             .mempool
             .retain(|h, tx| keep_in_pool(tx, arrivals.get(h).copied(), now, &state, base, fees));
         inner.arrivals.retain(|h, _| inner.mempool.contains_key(h));
+        // The byte budget follows the pool: sizes of txs that left give their
+        // bytes back, so the budget never leaks by a dropped tx.
+        {
+            let (mempool, sizes) = (&inner.mempool, &mut inner.sizes);
+            let mut freed = 0;
+            sizes.retain(|h, s| {
+                let kept = mempool.contains_key(h);
+                if !kept {
+                    freed += *s;
+                }
+                kept
+            });
+            inner.mempool_bytes -= freed;
+        }
         inner.pending_by_sender.clear();
         for t in inner.mempool.values() {
             *inner.pending_by_sender.entry(t.header.sender).or_default() += 1;
@@ -2242,6 +2282,66 @@ mod pool_tests {
         s
     }
 
+    fn cfg(alloc: Vec<(Address, U256)>) -> ChainConfig {
+        ChainConfig {
+            chain_id: 7780,
+            limits: GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
+            alloc,
+            fees: false,
+            registrar: None,
+            epoch_blocks: 0,
+            min_streak: None,
+            draw_epochs: None,
+            history_v2: false,
+            node_rewards: false,
+            reserve: None,
+        }
+    }
+
+    /// An unsigned envelope (admission checks no signature) with `input` bytes
+    /// of calldata and a 3M gas limit, as a deploy-sized call would carry.
+    fn fat(sender: Address, nonce: u64, input: Vec<u8>) -> TxEnvelope {
+        let call = EvmCall {
+            to: Some(Address::repeat_byte(0xaa)),
+            value: U256::ZERO,
+            input: Bytes::from(input),
+            gas_limit: 3_000_000,
+            delegate: None,
+        };
+        let payload = call.encode();
+        TxEnvelope {
+            header: TxHeader {
+                chain_id: 7780,
+                sender,
+                nonce,
+                gas: GasVector { exec: 3_000_000, state: 0, prove: 3_000_000 },
+                max_fee: FeeVector::default(),
+                tip: 0,
+                payload_commitment: aether_execution::tx::payload_commitment(&payload),
+                scheme: SignerScheme::P256,
+            },
+            payload: TxPayload::Plain(Bytes::from(payload)),
+            signature: Bytes::new(),
+        }
+    }
+
+    /// Build and execute (but not finalize) the block after `last` with `txs`.
+    fn build(chain: &Chain, parent: &Arc<Executed>, last: &Block, txs: Vec<TxEnvelope>) -> (Block, Arc<Executed>) {
+        use crate::block::{Context, EPOCH};
+        use commonware_consensus::types::{Round, View};
+        use commonware_cryptography::Signer as _;
+        let height = last.height.next();
+        let leader = commonware_cryptography::ed25519::PrivateKey::from_seed(1).public_key();
+        let context = Context { round: Round::new(EPOCH, View::new(height.get())), leader, parent: (View::new(height.get() - 1), last.digest()) };
+        let skeleton = Block::new(context.clone(), last.digest(), height, height.get() * 1_000, bytes::Bytes::new());
+        let ctx = Chain::block_context(&chain.cfg(), &skeleton, parent);
+        let (pre, _) = chain.pre_state_with(parent, parent.next_protocol(), &[], &[], false).unwrap();
+        let (payload, _) = build_payload(parent, &pre, &ctx, txs, Extras::default());
+        let block = Block::new(context, last.digest(), height, height.get() * 1_000, payload.to_bytes());
+        let exec = chain.execute(&block, parent).unwrap();
+        (block, exec)
+    }
+
     #[test]
     fn a_tx_its_sender_can_no_longer_pay_for_leaves_the_pool() {
         let a = Address::repeat_byte(1);
@@ -2309,6 +2409,110 @@ mod pool_tests {
         assert!(
             keep_in_pool(&t, Some(now), now, &state, high, true),
             "but an already pending one may wait for the fee to fall"
+        );
+    }
+
+    #[test]
+    fn a_tx_over_the_size_cap_is_refused_while_any_legit_deploy_fits() {
+        let sender = Address::repeat_byte(7);
+        let (chain, _) = Chain::new(cfg(vec![(sender, U256::from(10u128.pow(22)))]));
+        let err = chain.add_to_mempool(fat(sender, 0, vec![9u8; 200 * 1024])).unwrap_err();
+        assert!(err.contains("over the") && err.contains("cap"), "{err}");
+        assert!(chain.lock().mempool.is_empty(), "nothing was admitted");
+        // Deploy initcode is capped at 49 KiB by the EVM (EIP-3860); even twice
+        // that stays a normal pool citizen.
+        assert_eq!(chain.add_to_mempool(fat(sender, 0, vec![9u8; 100 * 1024])), Ok(true));
+        let g = chain.lock();
+        let (h, t) = g.mempool.iter().next().unwrap();
+        assert_eq!(g.mempool_bytes, t.to_canonical_bytes().len());
+        assert_eq!(g.mempool_bytes, g.sizes[h]);
+    }
+
+    #[test]
+    fn the_byte_budget_bounds_the_pool_and_comes_back_with_a_block() {
+        use aether_crypto::{P256Signer, Signer};
+        let keys: Vec<P256Signer> = (0..17u8)
+            .map(|i| {
+                let mut s = [0u8; 32];
+                s[0] = 0x5a;
+                s[31] = i + 1;
+                P256Signer::from_seed(&s).unwrap()
+            })
+            .collect();
+        let senders: Vec<Address> = keys.iter().map(|k| address_of(&k.public_key()).unwrap()).collect();
+        let (chain, genesis) = Chain::new(cfg(senders.iter().cloned().map(|a| (a, U256::from(10u128.pow(22)))).collect()));
+
+        // The first sender's earliest nonces, signed, so a block can land them.
+        // 130 KB of nonzero calldata floors at 21k + 130k×40 = 5.22M gas
+        // (EIP-7623), so the calls carry 6M each.
+        let landing: Vec<TxEnvelope> = (0..12)
+            .map(|nonce| {
+                aether_execution::sign_call(&keys[0], 7780, nonce, 1, &EvmCall {
+                    to: Some(Address::repeat_byte(0xaa)),
+                    value: U256::ZERO,
+                    input: Bytes::from(vec![7u8; 130_000]),
+                    gas_limit: 6_000_000,
+                    delegate: None,
+                })
+                .unwrap()
+            })
+            .collect();
+        // Fill past the 64 MiB budget: plenty of count slots, every sender
+        // under its per-sender cap, every tx under the size cap, so the byte
+        // budget is what stops this. The signed txs go in first so the block
+        // below lands exactly what the pool holds.
+        let mut admitted = 0;
+        let mut full = String::new();
+        for t in &landing {
+            assert_eq!(chain.add_to_mempool(t.clone()), Ok(true));
+            admitted += 1;
+        }
+        'fill: for (i, sender) in senders[0..16].iter().enumerate() {
+            let nonces = if i == 0 { 12..MAX_PER_SENDER as u64 } else { 0..MAX_PER_SENDER as u64 };
+            for nonce in nonces {
+                match chain.add_to_mempool(fat(*sender, nonce, vec![7u8; 130_000])) {
+                    Ok(true) => admitted += 1,
+                    Err(e) => {
+                        full = e;
+                        break 'fill;
+                    }
+                    Ok(false) => unreachable!("a fresh nonce cannot be known"),
+                }
+            }
+        }
+        assert_eq!(full, "mempool byte budget full", "the budget, not another cap, fills first");
+        {
+            let g = chain.lock();
+            // One more fat tx would not have fit: the budget, not the loop, stopped it.
+            assert!(MAX_MEMPOOL_BYTES - g.mempool_bytes < 130_200);
+            assert!(g.mempool_bytes <= MAX_MEMPOOL_BYTES);
+            assert_eq!(g.mempool_bytes, g.sizes.values().sum::<usize>(), "the budget is exactly the pool");
+            assert_eq!(g.sizes.len(), g.mempool.len());
+        }
+
+        // A block lands the first sender's signed earliest nonces (each floors
+        // at ~5.2M gas, so a 30M block holds about five); their bytes leave the
+        // budget.
+        let parent = chain.lock().finalized.clone();
+        let (block, exec) = build(&chain, &parent, &genesis, landing);
+        let landed = exec.tx_hashes.len();
+        assert!(landed >= 2, "{landed} of the fat txs landed");
+        let before = chain.lock();
+        let (bytes_before, sizes_before) = (before.mempool_bytes, before.sizes.clone());
+        drop(before);
+        chain.finalize(&block).unwrap();
+        let freed: usize = exec.tx_hashes.iter().map(|h| sizes_before[h]).sum();
+        assert!(freed > 0);
+        {
+            let g = chain.lock();
+            assert_eq!(g.mempool.len(), admitted - landed);
+            assert_eq!(g.mempool_bytes, bytes_before - freed, "the budget comes back with the block");
+            assert_eq!(g.sizes.values().sum::<usize>(), g.mempool_bytes);
+        }
+        assert_eq!(
+            chain.add_to_mempool(fat(senders[16], 0, vec![7u8; 130_000])),
+            Ok(true),
+            "the freed budget admits again"
         );
     }
 }

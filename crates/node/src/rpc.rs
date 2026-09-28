@@ -95,6 +95,12 @@ pub async fn handle_value(st: &RpcState, req: Value) -> Value {
     let result = match method.as_str() {
         "aether_getFinalized" => finalized(st, &params).await,
         "aether_registerDevice" => register_device(st, &params).await,
+        "aether_sendBeacon" => send_beacon(st, &params).await,
+        // A follower without the registrar key asks upstream (one hop).
+        "aether_reattest" if st.registrar.is_none() && st.upstream.is_some() => {
+            st.upstream.as_ref().expect("checked").first("aether_reattest", params.clone()).await.map_err(|e| (-32000, e))
+        }
+        "aether_reattest" => reattest(st, &params).await,
         // Followers ask validators (one hop: a forwarded question is never forwarded again).
         "aether_rotation" | "aether_network" if st.upstream.is_some() => match params.get(0) {
             Some(Value::Bool(true)) => Ok(Value::Null),
@@ -164,6 +170,47 @@ async fn register_device(st: &RpcState, p: &Value) -> RpcResult {
     let ownership = hex::decode(ownership.trim_start_matches("0x")).map_err(|_| (-32602, "param 5: ownership signature hex".to_string()))?;
     let a = r.register(&token, operator, key, node, beaconer, &ownership).await.map_err(|e| (-32000, e.to_string()))?;
     Ok(json!({ "r": hex::encode(a.r), "s": hex::encode(a.s), "registered_at": a.registered_at }))
+}
+
+/// `[answer]`: a registered Mac's beacon answer (no fee, no transaction).
+/// Checked against the finalized state, pooled for the next proposals; a
+/// validator sends it on to the others, a follower to its upstream.
+async fn send_beacon(st: &RpcState, p: &Value) -> RpcResult {
+    let a: aether_light::block::BeaconAnswer = param(p, 0)?;
+    let new = st.chain.submit_beacon(a.clone()).map_err(|e| (-32000, format!("rejected: {e}")))?;
+    if let Some(up) = st.upstream.clone().filter(|_| new) {
+        tokio::spawn(async move {
+            if let Err(e) = up.call("aether_sendBeacon", json!([a])).await {
+                tracing::warn!(%e, "beacon answer not forwarded upstream");
+            }
+        });
+    }
+    Ok(json!({ "accepted": new }))
+}
+
+/// `[device_token (base64), validator_key (hex 32), period, ownership (hex)]`
+/// → the registrar's re-attestation `{period, r, s}` for a beacon answer.
+/// Only for the current re-attestation period (or the next, near its start).
+async fn reattest(st: &RpcState, p: &Value) -> RpcResult {
+    let r = st.registrar.as_ref().ok_or((-32601, "this node does not re-attest devices".to_string()))?;
+    let token: String = param(p, 0)?;
+    let key: String = param(p, 1)?;
+    let key: [u8; 32] = hex::decode(key.trim_start_matches("0x")).ok().and_then(|b| b.try_into().ok()).ok_or((-32602, "param 1: 32-byte hex".to_string()))?;
+    let period: u64 = param(p, 2)?;
+    let ownership: String = param(p, 3)?;
+    let ownership = hex::decode(ownership.trim_start_matches("0x")).map_err(|_| (-32602, "param 3: signature hex".to_string()))?;
+    let (low, high) = {
+        let g = st.chain.lock();
+        let f = &g.finalized;
+        let epoch = (f.height + 1) / aether_execution::registry::epoch_blocks(&f.state);
+        let period = |slot| aether_rewards::beacons::period(&f.state, epoch, slot);
+        (period(0), period(aether_rewards::SLOTS - 1) + 1)
+    };
+    if period < low || period > high {
+        return Err((-32000, format!("period {period} is not current ({low}..={high})")));
+    }
+    let (rr, ss) = r.reattest(&token, key, period, &ownership).await.map_err(|e| (-32000, e.to_string()))?;
+    Ok(json!({ "period": period, "r": hex::encode(rr), "s": hex::encode(ss) }))
 }
 
 fn param<T: serde::de::DeserializeOwned>(p: &Value, i: usize) -> Result<T, (i64, String)> {

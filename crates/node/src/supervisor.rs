@@ -595,6 +595,7 @@ mod tests {
             draw_epochs: None,
             history: None,
             node_rewards: None,
+            reserve: None,
         }
     }
 

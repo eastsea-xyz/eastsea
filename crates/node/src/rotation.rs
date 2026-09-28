@@ -192,6 +192,82 @@ pub fn draw_v3(pool: &[(String, String)], seed: &[u8], candidate: impl Fn(&str) 
     (next.len() > n).then_some(next)
 }
 
+/// Founder reserve keys (docs/design/12-launch-plan.md, "창업자 Mac 안전망"): the
+/// founder's one extra right is running up to three voting keys on one Mac.
+/// They are not registry candidates (no beacons, no rewards) and are seated
+/// only while fewer than `MIN_OPEN_COMMITTEE` independent operators qualify.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reserve {
+    /// The founder's operator address (lowercase 0x hex): its own Macs are not independent.
+    pub operator: String,
+    /// (ed25519 key hex, iroh node id).
+    pub members: Vec<(String, String)>,
+}
+
+impl Reserve {
+    fn has(&self, key: &str) -> bool {
+        self.members.iter().any(|(k, _)| k == key)
+    }
+}
+
+/// Distinct operators, other than the founder, with a Mac in the pool.
+pub fn independent(pool: &[(String, String)], candidate: impl Fn(&str) -> Option<String>, reserve: &Reserve) -> usize {
+    pool.iter()
+        .filter(|(k, _)| !reserve.has(k))
+        .filter_map(|(k, _)| candidate(k))
+        .filter(|op| *op != reserve.operator)
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+}
+
+/// The next voting set with the founder's reserve keys applied to `drawn`
+/// (the draw's result, or None: the running set). While fewer than
+/// `MIN_OPEN_COMMITTEE` independent operators qualify, every reserve key is
+/// seated; from then on they all leave at once, and if that leaves fewer than
+/// `MIN_OPEN_COMMITTEE` seats, qualifying Macs fill them (ticket order, one
+/// per operator). Reserve keys are exempt from the per-operator seat cap:
+/// that is the safety net. None when nothing changes.
+pub fn with_reserve(
+    drawn: Option<Vec<(String, String)>>,
+    pool: &[(String, String)],
+    seed: &[u8],
+    candidate: impl Fn(&str) -> Option<String>,
+    reserve: &Reserve,
+    running: &Committee,
+) -> Option<Vec<(String, String)>> {
+    if running.members.is_empty() {
+        return drawn;
+    }
+    let needed = independent(pool, &candidate, reserve) < MIN_OPEN_COMMITTEE;
+    let mut next = drawn.clone().unwrap_or_else(|| running.members.clone());
+    if needed {
+        for m in &reserve.members {
+            if !next.iter().any(|(k, _)| *k == m.0) {
+                next.push(m.clone());
+            }
+        }
+    } else {
+        next.retain(|(k, _)| !reserve.has(k));
+        let op = |k: &str| candidate(k).unwrap_or_else(|| k.to_string());
+        let mut seated: std::collections::BTreeSet<String> = next.iter().map(|(k, _)| op(k)).collect();
+        let mut order: Vec<&(String, String)> = pool.iter().filter(|(k, _)| !next.iter().any(|(n, _)| n == k)).collect();
+        order.sort_by_cached_key(|(k, _)| ticket(seed, k));
+        for m in order {
+            if next.len() >= MIN_OPEN_COMMITTEE {
+                break;
+            }
+            if seated.insert(op(&m.0)) {
+                next.push(m.clone());
+            }
+        }
+        if next.len() < MIN_OPEN_COMMITTEE {
+            return drawn;
+        }
+    }
+    let same = next.len() == running.members.len() && next.iter().all(|m| running.members.contains(m));
+    (!same).then_some(next)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,6 +451,54 @@ mod tests {
         let running = committee(4);
         let already: Vec<_> = running.members.clone();
         assert!(draw_v3(&already, &seed(4), |_| None, &running).is_none());
+    }
+
+    fn reserve() -> Reserve {
+        Reserve { operator: "0xf0".into(), members: (1..=3).map(|i| (format!("r{i}"), format!("rn{i}"))).collect() }
+    }
+
+    fn ops_of(k: &str) -> Option<String> {
+        // Macs "m<i>" belong to operator "op<i>"; "f<i>" are the founder's own registered Macs.
+        if let Some(i) = k.strip_prefix('m') {
+            Some(format!("op{i}"))
+        } else {
+            k.starts_with('f').then(|| "0xf0".to_string())
+        }
+    }
+
+    #[test]
+    fn reserve_keys_join_while_fewer_than_four_independent_operators_qualify() {
+        // One independent Mac seated with the reserve keys; two more qualify: still < 4.
+        let running = Committee { members: vec![mac(1)] };
+        let pool = vec![mac(1), mac(2), mac(3), ("f1".into(), "fn1".into())];
+        assert_eq!(independent(&pool, ops_of, &reserve()), 3, "the founder's own Mac is not independent");
+        let next = with_reserve(None, &pool, &seed(5), ops_of, &reserve(), &running).expect("reserve joins");
+        assert_eq!(next.len(), 4);
+        assert!(reserve().members.iter().all(|m| next.contains(m)));
+        // Already seated: nothing changes.
+        assert!(with_reserve(None, &pool, &seed(5), ops_of, &reserve(), &Committee { members: next.clone() }).is_none());
+        // Many Macs of one operator are still one operator.
+        let whale: Vec<_> = (0..10).map(|i| (format!("w{i}"), format!("wn{i}"))).collect();
+        assert_eq!(independent(&whale, |_| Some("0xwhale".into()), &reserve()), 1);
+    }
+
+    #[test]
+    fn reserve_keys_leave_once_four_independent_operators_qualify() {
+        let mut seated = vec![mac(1), mac(2)];
+        seated.extend(reserve().members);
+        let running = Committee { members: seated };
+        let pool: Vec<_> = (1..=4).map(mac).collect();
+        let next = with_reserve(None, &pool, &seed(6), ops_of, &reserve(), &running).expect("reserve leaves");
+        assert!(next.iter().all(|(k, _)| !k.starts_with('r')), "every reserve key leaves at once");
+        assert_eq!(next.len(), MIN_OPEN_COMMITTEE, "qualifying Macs fill the seats");
+        assert!(next.contains(&mac(3)) && next.contains(&mac(4)));
+        // A draw result gets the same treatment.
+        let drawn = vec![mac(1), mac(2), mac(3), mac(4), reserve().members[0].clone()];
+        let next = with_reserve(Some(drawn), &pool, &seed(6), ops_of, &reserve(), &running).unwrap();
+        assert_eq!(next, vec![mac(1), mac(2), mac(3), mac(4)]);
+        // Without reserve keys seated and enough operators: nothing to do.
+        let clean = Committee { members: (1..=4).map(mac).collect() };
+        assert!(with_reserve(None, &pool, &seed(6), ops_of, &reserve(), &clean).is_none());
     }
 
     #[test]

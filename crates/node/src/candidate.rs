@@ -2,6 +2,11 @@
 //! nodes"): its keys, and the unattended beacon that proves it is alive each
 //! epoch (and builds its contribution streak). No person acts after the owner
 //! registers the Mac once.
+//!
+//! On a network with node rewards (docs/design/15-node-rewards.md) the node
+//! answers the epoch's four beacon slots instead of sending a paid `beacon()`
+//! transaction: answers go in blocks for free, so a Mac with a zero balance
+//! takes part, and each answer also counts as the epoch's liveness.
 
 use crate::chain::Chain;
 use crate::faucet::Faucet;
@@ -9,19 +14,33 @@ use crate::follow::Upstream;
 use crate::roster::LocalKeys;
 use aether_execution::registry::{self, encode_beacon, REGISTRY};
 use aether_execution::EvmCall;
+use aether_light::block::{BeaconAnswer, Reattestation};
+use aether_rewards::beacons;
 use aether_types::{Address, U256};
+use commonware_codec::Encode as _;
 use commonware_cryptography::Signer as _;
-use serde_json::json;
-use std::path::Path;
+use serde_json::{json, Value};
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{info, warn};
+
+/// In the candidate's data dir: a fresh DeviceCheck token (base64) the app
+/// writes for the node, used for the daily re-attestation.
+pub const DEVICE_TOKEN_FILE: &str = "devicecheck-token";
+
+/// Where re-attestation requests go when set (the registrar's RPC URL);
+/// otherwise a follower asks its upstream.
+pub const REGISTRAR_RPC_ENV: &str = "AETHER_REGISTRAR_RPC";
 
 /// A candidate's keys: voting key and iroh node key (`validator.key`) and the
 /// node's own account (`node-account.key`), which pays for and sends beacons.
 pub struct CandidateKeys {
     pub keys: LocalKeys,
     pub account: Faucet,
+    /// The data dir the keys live in (and the app's DeviceCheck token).
+    pub dir: PathBuf,
 }
 
 impl CandidateKeys {
@@ -39,7 +58,7 @@ impl CandidateKeys {
         if !account_path.exists() {
             Faucet::generate(&account_path)?;
         }
-        Ok(CandidateKeys { keys, account: Faucet::load(&account_path)? })
+        Ok(CandidateKeys { keys, account: Faucet::load(&account_path)?, dir: dir.to_path_buf() })
     }
 
     pub fn validator_key(&self) -> [u8; 32] {
@@ -56,8 +75,13 @@ impl CandidateKeys {
 
     /// The voting key's signature asking the registrar to register it for `operator`.
     pub fn ownership(&self, chain_id: u64, operator: Address) -> Vec<u8> {
-        use commonware_codec::Encode as _;
         let msg = registry::attestation_message(chain_id, operator, self.validator_key(), self.node_id(), self.beaconer());
+        self.keys.signer.sign(crate::devicecheck::OWNERSHIP_NAMESPACE, &msg).encode().to_vec()
+    }
+
+    /// The voting key's request to be re-attested for `period`.
+    pub fn reattest_request(&self, chain_id: u64, period: u64) -> Vec<u8> {
+        let msg = beacons::reattest_message(chain_id, &self.validator_key(), period);
         self.keys.signer.sign(crate::devicecheck::OWNERSHIP_NAMESPACE, &msg).encode().to_vec()
     }
 }
@@ -80,19 +104,122 @@ impl Outbox {
             }
         }
     }
+
+    async fn send_answer(&self, chain: &Chain, a: BeaconAnswer) -> Result<(), String> {
+        match self {
+            Outbox::Upstream(u) => u.call("aether_sendBeacon", json!([a])).await.map(|_| ()),
+            Outbox::Local(_) => chain.submit_beacon(a).map(|_| ()),
+        }
+    }
+
+    /// Ask the registrar (or, on a follower, the upstream) for a re-attestation.
+    async fn reattest(&self, params: Value) -> Result<Value, String> {
+        if let Ok(url) = std::env::var(REGISTRAR_RPC_ENV) {
+            let body = json!({ "jsonrpc": "2.0", "id": 1, "method": "aether_reattest", "params": params });
+            let v: Value = reqwest::Client::new()
+                .post(url)
+                .json(&body)
+                .timeout(Duration::from_secs(30))
+                .send()
+                .await
+                .map_err(|e| e.to_string())?
+                .json()
+                .await
+                .map_err(|e| e.to_string())?;
+            return match v.get("error") {
+                Some(e) => Err(e.to_string()),
+                None => Ok(v["result"].clone()),
+            };
+        }
+        match self {
+            Outbox::Upstream(u) => u.first("aether_reattest", params).await,
+            Outbox::Local(_) => Err(format!("no registrar to re-attest with (set {REGISTRAR_RPC_ENV})")),
+        }
+    }
 }
 
-/// Send one beacon per epoch once this candidate is registered. Runs forever,
-/// also while the Mac votes: a voting node that stopped beaconing would drop
-/// out of the next selection.
+/// What the loop remembers between rounds.
+#[derive(Default)]
+struct Answering {
+    /// (epoch, slot) answered.
+    sent: BTreeSet<(u64, u64)>,
+    /// Re-attestations fetched, by period.
+    attested: BTreeMap<u64, Reattestation>,
+}
+
+/// Answer every open slot of this Mac's registration (node rewards networks).
+async fn answer_slots(chain: &Chain, outbox: &Outbox, keys: &CandidateKeys, st: &mut Answering) {
+    let (height, state, chain_id, head_hash) = {
+        let g = chain.lock();
+        let f = &g.finalized;
+        (f.height, f.state.clone(), g.cfg.chain_id, f.digest.as_ref().try_into().expect("32-byte digest"))
+    };
+    let me = keys.validator_key();
+    let Some(c) = registry::candidates(&state).into_iter().find(|c| c.validator_key == me) else {
+        return;
+    };
+    let next = height + 1;
+    let view = crate::beacons::next_view(&state, next, head_hash);
+    for due in beacons::due(&view, next, &c) {
+        if st.sent.contains(&(due.epoch, due.slot)) {
+            continue;
+        }
+        let attest = match (due.needs_attestation, st.attested.get(&due.period)) {
+            (false, _) => None,
+            (true, Some(r)) => Some(r.clone()),
+            (true, None) => {
+                let params = match std::fs::read_to_string(keys.dir.join(DEVICE_TOKEN_FILE)) {
+                    Ok(token) => json!([token.trim(), hex::encode(me), due.period, hex::encode(keys.reattest_request(chain_id, due.period))]),
+                    Err(e) => {
+                        warn!(%e, period = due.period, "daily re-attestation due, but the app left no DeviceCheck token: this Mac earns nothing until it re-attests");
+                        continue;
+                    }
+                };
+                match outbox.reattest(params).await.and_then(|v| serde_json::from_value::<Reattestation>(v).map_err(|e| e.to_string())) {
+                    Ok(r) => {
+                        info!(period = due.period, "re-attested with a fresh DeviceCheck token");
+                        st.attested.insert(due.period, r.clone());
+                        Some(r)
+                    }
+                    Err(e) => {
+                        warn!(%e, "re-attestation refused");
+                        continue;
+                    }
+                }
+            }
+        };
+        let answer = crate::beacons::sign(&keys.keys.signer, chain_id, c.index, &due, attest);
+        match outbox.send_answer(chain, answer).await {
+            Ok(()) => {
+                st.sent.insert((due.epoch, due.slot));
+                info!(epoch = due.epoch, slot = due.slot, "beacon slot answered");
+            }
+            Err(e) => warn!(%e, "beacon answer not accepted"),
+        }
+    }
+    let epoch = next / registry::epoch_blocks(&state);
+    st.sent.retain(|(e, _)| *e >= epoch);
+    let keep = beacons::period(&view, epoch, 0);
+    st.attested.retain(|p, _| *p >= keep);
+}
+
+/// Send one beacon per epoch once this candidate is registered (on a node
+/// rewards network: answer the four slots). Runs forever, also while the Mac
+/// votes: a voting node that stopped beaconing would drop out of the next selection.
 pub async fn beacon_loop(chain: Chain, outbox: Outbox, keys: CandidateKeys) {
     let me = keys.validator_key();
     let mut sent_for = u64::MAX;
+    let mut answering = Answering::default();
     loop {
         let (height, state, cfg) = {
             let g = chain.lock();
             (g.finalized.height, g.finalized.state.clone(), g.cfg.clone())
         };
+        if aether_rewards::enabled(&state) {
+            answer_slots(&chain, &outbox, &keys, &mut answering).await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            continue;
+        }
         let epoch = height / registry::epoch_blocks(&state);
         match registry::candidates(&state).into_iter().find(|c| c.validator_key == me) {
             None => {}

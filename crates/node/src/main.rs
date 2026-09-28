@@ -321,6 +321,13 @@ enum Cmd {
         /// Node rewards from genesis (docs/design/15-node-rewards.md): a new network only, needs --registrar.
         #[arg(long)]
         node_rewards: bool,
+        /// Founder reserve keys (validator.pub.json, up to 3, one Mac): seated only while fewer
+        /// than four independent operators qualify. Needs --node-rewards and --reserve-operator.
+        #[arg(long = "reserve", requires = "reserve_operator")]
+        reserve: Vec<String>,
+        /// The founder's operator address (its own registered Macs are not independent).
+        #[arg(long)]
+        reserve_operator: Option<Address>,
         members: Vec<String>,
     },
     /// List the public development accounts (funded at genesis; never use for value).
@@ -647,8 +654,9 @@ fn main() {
             };
             reshare(&from, &to, boundary, port, data, peers, link_base, offline, via_node)
         }
-        Cmd::Network { chain_id, faucet, registrar, epoch_blocks, min_streak, draw_epochs, node_rewards, members } => {
-            assemble_network(chain_id, faucet, registrar, (epoch_blocks, min_streak, draw_epochs), node_rewards, &members)
+        Cmd::Network { chain_id, faucet, registrar, epoch_blocks, min_streak, draw_epochs, node_rewards, reserve, reserve_operator, members } => {
+            let reserve = reserve_operator.map(|op| (op, reserve));
+            assemble_network(chain_id, faucet, registrar, (epoch_blocks, min_streak, draw_epochs), (node_rewards, reserve), &members)
         }
         Cmd::RegistrarKey { data } => (|| {
             // Idempotent: an existing key is kept (and its public half printed).
@@ -815,6 +823,7 @@ fn chain_config(chain_id: u64, genesis: &aether_node::roster::Genesis) -> ChainC
         draw_epochs: genesis.draw_epochs,
         history_v2: genesis.history >= 2,
         node_rewards: genesis.node_rewards,
+        reserve: genesis.reserve.clone(),
     }
 }
 
@@ -1127,21 +1136,29 @@ fn assemble_network(
     faucet: Option<Address>,
     registrar: Option<String>,
     voting: VotingParams,
-    node_rewards: bool,
+    rewards: (bool, Option<(Address, Vec<String>)>),
     members: &[String],
 ) -> Result<(), String> {
     let (epoch_blocks, min_streak, draw_epochs) = voting;
+    let (node_rewards, reserve) = rewards;
     if node_rewards && registrar.is_none() {
         return Err("--node-rewards needs the voting-node registry (--registrar)".into());
     }
-    let validators = members
-        .iter()
-        .map(|p| {
-            std::fs::read(p)
-                .map_err(|e| format!("{p}: {e}"))
-                .and_then(|b| serde_json::from_slice(&b).map_err(|e| format!("{p}: {e}")))
-        })
-        .collect::<Result<Vec<aether_node::roster::Member>, String>>()?;
+    let read_members = |paths: &[String]| {
+        paths
+            .iter()
+            .map(|p| {
+                std::fs::read(p)
+                    .map_err(|e| format!("{p}: {e}"))
+                    .and_then(|b| serde_json::from_slice(&b).map_err(|e| format!("{p}: {e}")))
+            })
+            .collect::<Result<Vec<aether_node::roster::Member>, String>>()
+    };
+    let validators = read_members(members)?;
+    let reserve = match reserve {
+        None => None,
+        Some((operator, paths)) => Some(aether_node::roster::ReserveFile { operator, validators: read_members(&paths)? }),
+    };
     let file = aether_node::roster::NetworkFile {
         chain_id,
         validators,
@@ -1157,8 +1174,10 @@ fn assemble_network(
         // History v2 (a new genesis only) is set by adding "history": 2 to the file.
         history: None,
         node_rewards: node_rewards.then_some(true),
+        reserve,
     };
     aether_node::roster::Roster::from_file(&file)?;
+    file.genesis()?;
     println!("{}", serde_json::to_string_pretty(&file).expect("json"));
     Ok(())
 }
@@ -1416,10 +1435,18 @@ fn run_node(a: NodeArgs) {
         network.start();
 
         // Mempool gossip: RPC-accepted txs go out, peers' txs come in.
+        // Beacon answers (node rewards networks) ride the same channel as
+        // `{"beacon": answer}`; nodes that do not know them skip them as non-txs.
         let (gossip_tx, mut gossip_rx) = tokio::sync::mpsc::unbounded_channel::<TxEnvelope>();
+        let (beacon_tx, mut beacon_rx) = tokio::sync::mpsc::unbounded_channel::<aether_light::block::BeaconAnswer>();
+        chain.lock().beacon_out = Some(beacon_tx);
         tokio::spawn(async move {
-            while let Some(tx) = gossip_rx.recv().await {
-                let bytes = serde_json::to_vec(&tx).expect("tx serializes");
+            loop {
+                let bytes = tokio::select! {
+                    Some(tx) = gossip_rx.recv() => serde_json::to_vec(&tx).expect("tx serializes"),
+                    Some(a) = beacon_rx.recv() => serde_json::to_vec(&json!({ "beacon": a })).expect("answer serializes"),
+                    else => break,
+                };
                 let _ = tx_out.send(Recipients::All, bytes, false);
             }
         });
@@ -1427,9 +1454,16 @@ fn run_node(a: NodeArgs) {
         let chain_id = cfg.chain_id;
         tokio::spawn(async move {
             while let Ok((_peer, msg)) = tx_in.recv().await {
-                let Ok(tx) = serde_json::from_slice::<TxEnvelope>(msg.as_ref()) else { continue };
-                if aether_execution::validate_stateless(&tx, chain_id).is_ok() {
-                    let _ = gossip_chain.add_to_mempool(tx);
+                if let Ok(tx) = serde_json::from_slice::<TxEnvelope>(msg.as_ref()) {
+                    if aether_execution::validate_stateless(&tx, chain_id).is_ok() {
+                        let _ = gossip_chain.add_to_mempool(tx);
+                    }
+                } else if let Some(a) = serde_json::from_slice::<Value>(msg.as_ref())
+                    .ok()
+                    .and_then(|v| serde_json::from_value::<aether_light::block::BeaconAnswer>(v.get("beacon")?.clone()).ok())
+                {
+                    // Peers' answers are pooled, not relayed again (every validator hears every peer).
+                    let _ = gossip_chain.add_beacon(a);
                 }
             }
         });
@@ -1761,6 +1795,10 @@ fn run_dkg(
     public.min_streak = genesis.min_streak;
     public.draw_epochs = genesis.draw_epochs;
     public.node_rewards = genesis.node_rewards.then_some(true);
+    public.reserve = genesis.reserve.as_ref().map(|r| aether_node::roster::ReserveFile {
+        operator: r.operator,
+        validators: r.members.iter().map(|(key, node)| aether_node::roster::Member { key: key.clone(), node: node.clone() }).collect(),
+    });
     let result = executor.start(async move |context| {
         // Accept incoming validator links (the node's RPC is not needed here).
         let _router = aether_node::p2p::open_public(&p2p)

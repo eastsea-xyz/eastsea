@@ -109,17 +109,20 @@ where
             seed: self.chain.seed_for(&parent),
             upgrade: self.chain.upgrade_for(&parent),
             proofs: self.chain.proofs_for(&parent),
+            beacons: self.chain.beacons_for(&parent),
         };
         // Under the parent's next protocol, with its one-time changes if it activates here.
-        let attempt = self.chain.pre_state(&parent, parent.next_protocol(), &extras.proofs, false);
+        let attempt = self.chain.pre_state_with(&parent, parent.next_protocol(), &extras.proofs, &extras.beacons, false);
         let mut extras = extras;
         let (pre, payouts) = match attempt {
             Ok(pre) => pre,
             // Pooled proofs that no longer verify here: drop them and propose without.
-            Err(e) if !extras.proofs.is_empty() => {
-                warn!(?e, "dropping pooled proofs");
+            // (Beacon answers were checked against this parent: they go too, only for this block.)
+            Err(e) if !extras.proofs.is_empty() || !extras.beacons.is_empty() => {
+                warn!(?e, "dropping pooled proofs and beacon answers from this proposal");
                 self.chain.drop_proofs(&extras.proofs.iter().map(|c| c.height).collect::<Vec<_>>());
                 extras.proofs.clear();
+                extras.beacons.clear();
                 match self.chain.pre_state(&parent, parent.next_protocol(), &[], false) {
                     Ok(pre) => pre,
                     Err(e) => {

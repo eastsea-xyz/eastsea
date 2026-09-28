@@ -45,6 +45,7 @@ fn config(history_v2: bool) -> ChainConfig {
         draw_epochs: None,
         history_v2,
         node_rewards: false,
+        reserve: None,
     }
 }
 

@@ -15,7 +15,7 @@ fn operator(i: u64) -> Address {
     Address::from_word(U256::from(0x1000 + i).into())
 }
 
-/// Register Mac `index` for `op` in epoch `epoch` (a registration counts as that epoch's beacon).
+/// Register Mac `index` for `op` in epoch `epoch`, answering all four slots of that epoch.
 fn register(s: &mut WorldState, index: u64, op: Address, epoch: u64) {
     let c = Candidate {
         index,
@@ -29,12 +29,18 @@ fn register(s: &mut WorldState, index: u64, op: Address, epoch: u64) {
         missed: 0,
     };
     put_candidate(s, &c);
+    beacon(s, index, epoch);
 }
 
+/// Mac `index` answered all four slots of `epoch`.
 fn beacon(s: &mut WorldState, index: u64, epoch: u64) {
-    let mut c = registry::candidates(s)[index as usize].clone();
-    c.last_epoch = epoch;
-    put_candidate(s, &c);
+    answer(s, index, epoch, 0b1111);
+}
+
+/// Mac `index` answered the slots in `mask` of `epoch`.
+fn answer(s: &mut WorldState, index: u64, epoch: u64, mask: u64) {
+    let b = beacons::beacon(s, index);
+    beacons::put_beacon(s, index, beacons::Beacon { epoch, mask, ..b });
 }
 
 fn warm(s: &mut WorldState, index: u64, level: u64) {
@@ -381,4 +387,173 @@ fn over_many_epochs_no_more_than_the_issuance_is_minted() {
     assert_eq!(supply(&s, 5) + unminted, pools);
     // Five operators, at most 1/16 each: at least 11/16 of the node share was never minted.
     assert!(supply(&s, 5) * U256::from(16u8) <= pools * U256::from(5u8));
+}
+
+#[test]
+fn a_mac_that_answered_two_slots_of_four_gets_half_the_share() {
+    let mut s = network();
+    for i in 0..3 {
+        register(&mut s, i, operator(i), 0);
+        warm(&mut s, i, WARMUP_STEPS);
+    }
+    distribute(&mut s, EB).unwrap();
+    answer(&mut s, 0, 1, 0b1111);
+    answer(&mut s, 1, 1, 0b0101);
+    answer(&mut s, 2, 1, 0b1000);
+    let before: Vec<U256> = (0..3).map(|i| s.balance(&operator(i))).collect();
+    let d = distribute(&mut s, 2 * EB).unwrap();
+    let got = |i: u64| s.balance(&operator(i)) - before[i as usize];
+    assert_eq!(got(0), d.pool / U256::from(16u8));
+    assert_eq!(got(1), d.pool / U256::from(32u8), "2 of 4 slots: half");
+    assert_eq!(got(2), d.pool / U256::from(64u8), "1 of 4 slots: a quarter");
+    // Answers of an earlier epoch count for nothing now.
+    let d = distribute(&mut s, 3 * EB).unwrap();
+    assert!(d.paid.is_empty());
+}
+
+/// Epochs long enough for real slots (4 quarters of 25 blocks).
+const BEB: u64 = 100;
+
+fn slot_network() -> WorldState {
+    let mut s = WorldState::default();
+    registry::predeploy(&mut s, ([1; 32], [2; 32]), Params { epoch_blocks: BEB, min_streak: 0, draw_epochs: 1 }).unwrap();
+    enable(&mut s);
+    s
+}
+
+#[test]
+fn four_slots_one_per_quarter_fixed_only_by_the_epochs_first_block() {
+    let (quarter, window, span) = beacons::layout(BEB).unwrap();
+    assert_eq!((quarter, window, span), (25, 12, 12));
+    assert_eq!(beacons::layout(3_600), Some((900, 90, 809)), "an hour: a 90-block answer window");
+    assert!(beacons::layout(11).is_none(), "too short for four slots");
+    for seed in [[1u8; 32], [2; 32], [0xfe; 32]] {
+        let h = beacons::slot_heights(&seed, 7, BEB).unwrap();
+        for (k, s) in h.iter().enumerate() {
+            let k = k as u64;
+            assert!(*s > 7 * BEB + k * quarter && s + window < 7 * BEB + (k + 1) * quarter, "{h:?}");
+        }
+    }
+    assert_ne!(beacons::slot_heights(&[1; 32], 7, BEB), beacons::slot_heights(&[2; 32], 7, BEB), "the hash decides");
+    assert_eq!(beacons::slot_heights(&[1; 32], 7, BEB), beacons::slot_heights(&[1; 32], 7, BEB), "the same for everyone");
+}
+
+fn hash_of(h: u64) -> [u8; 32] {
+    let mut b = [0u8; 32];
+    b[..8].copy_from_slice(&h.to_be_bytes());
+    b[31] = 1;
+    b
+}
+
+/// The system writes of blocks `from..to` (block h's parent hash is `hash_of(h - 1)`).
+fn blocks(s: &mut WorldState, from: u64, to: u64) {
+    for h in from..to {
+        if distributes(s, h) {
+            distribute(s, h).unwrap();
+        }
+        beacons::on_block(s, h, hash_of(h - 1));
+    }
+}
+
+#[test]
+fn a_slot_opens_after_its_block_for_a_window_and_is_answered_once() {
+    let mut s = slot_network();
+    register(&mut s, 0, operator(0), 0);
+    let c = registry::candidates(&s)[0].clone();
+    blocks(&mut s, 1, BEB + 1);
+    let slots = beacons::slots(&s).unwrap();
+    assert_eq!(slots, beacons::slot_heights(&hash_of(BEB - 1), 1, BEB).unwrap(), "from the previous epoch's last block");
+    let s0 = slots[0];
+    blocks(&mut s, BEB + 1, s0 + 1);
+    assert!(beacons::check(&s, s0 + 1, &c, 0).is_err(), "the slot's hash is recorded by the next block");
+    blocks(&mut s, s0 + 1, s0 + 2);
+    assert_eq!(beacons::slot_hash(&s, 0), Some(hash_of(s0)));
+    let due = beacons::check(&s, s0 + 1, &c, 0).unwrap();
+    assert_eq!((due.epoch, due.slot, due.hash, due.needs_attestation), (1, 0, hash_of(s0), false));
+    assert_eq!(beacons::due(&s, s0 + 1, &c).len(), 1, "only the open slot");
+    assert!(beacons::check(&s, s0 + 13, &c, 0).is_err(), "the window closed");
+    assert!(beacons::check(&s, s0 + 1, &c, 1).is_err(), "slot 1 is not out yet");
+    beacons::record(&mut s, &c, &due, false);
+    assert!(beacons::check(&s, s0 + 2, &c, 0).unwrap_err().contains("already"));
+    assert_eq!(beacons::beacon(&s, 0).answered(1), 1);
+    // The registry liveness moved as the contract's beacon() would, without a transaction.
+    let c1 = registry::candidates(&s)[0].clone();
+    assert_eq!((c1.last_epoch, c1.streak, c1.missed), (1, 2, 0));
+    // The next epoch: new slots, the old hashes gone.
+    blocks(&mut s, s0 + 2, 2 * BEB + 1);
+    assert!(beacons::slot_hash(&s, 0).is_none());
+    assert_eq!(beacons::beacon(&s, 0).answered(2), 0);
+}
+
+#[test]
+fn liveness_from_answers_follows_the_contracts_grace_rule() {
+    let mut s = slot_network();
+    register(&mut s, 0, operator(0), 0);
+    let c = registry::candidates(&s)[0].clone();
+    let due = |epoch| beacons::Due { epoch, slot: 0, hash: [1; 32], period: 0, needs_attestation: false };
+    beacons::record(&mut s, &c, &due(3), false);
+    let c1 = registry::candidates(&s)[0].clone();
+    assert_eq!((c1.last_epoch, c1.streak, c1.missed), (3, 2, 2), "two epochs missed within the grace");
+    beacons::record(&mut s, &c, &due(3), false);
+    assert_eq!(registry::candidates(&s)[0].streak, 2, "once per epoch");
+    beacons::record(&mut s, &c, &due(3 + beacons::GRACE_EPOCHS + 1), false);
+    let c2 = registry::candidates(&s)[0].clone();
+    assert_eq!((c2.streak, c2.missed), (1, 0), "past the grace the streak restarts");
+}
+
+#[test]
+fn re_attestation_is_due_from_the_days_random_slot_after_the_registration_day() {
+    let mut s = slot_network();
+    register(&mut s, 0, operator(0), 0);
+    let c = registry::candidates(&s)[0].clone();
+    blocks(&mut s, 1, 2);
+    let (_, re_e, re_s) = beacons::day(&s).unwrap();
+    assert_eq!(beacons::reattest_slot(&hash_of(0)), (re_e, re_s));
+    // Day 0 is periods 0 and 1, both covered by the registration.
+    assert_eq!(beacons::period(&s, re_e, re_s), 1);
+    // Day 1.
+    let day1 = DAY_EPOCHS * BEB;
+    blocks(&mut s, 2, day1 + 1);
+    let (d, e1, k1) = beacons::day(&s).unwrap();
+    assert_eq!(d, 1);
+    let e = DAY_EPOCHS + e1;
+    assert_eq!(beacons::period(&s, e, k1), 2);
+    // Walk to day 1's re-attestation slot: from there an answer needs a re-attestation.
+    blocks(&mut s, day1 + 1, e * BEB + 1);
+    let at = beacons::slots(&s).unwrap()[k1 as usize];
+    blocks(&mut s, e * BEB + 1, at + 2);
+    let due = beacons::check(&s, at + 1, &c, k1).unwrap();
+    assert_eq!(due.period, 2);
+    assert!(due.needs_attestation, "registered on day 0: covered through period 1 only");
+    // An earlier slot of day 1 (if any) was still period 1: covered.
+    if (e1, k1) > (0, 0) {
+        assert_eq!(beacons::period(&s, DAY_EPOCHS, 0), 1);
+    }
+    beacons::record(&mut s, &c, &due, true);
+    assert_eq!(beacons::beacon(&s, 0).attested, Some(2));
+    // Re-attested: the rest of the period needs nothing more.
+    if k1 + 1 < SLOTS {
+        let h = beacons::slots(&s).unwrap()[k1 as usize + 1];
+        blocks(&mut s, at + 2, h + 2);
+        assert!(!beacons::check(&s, h + 1, &c, k1 + 1).unwrap().needs_attestation);
+    }
+}
+
+#[test]
+fn reserve_keys_are_a_genesis_parameter_of_at_most_three_and_earn_nothing() {
+    let mut s = network();
+    assert_eq!(reserve(&s), None);
+    let founder = Address::repeat_byte(0xf0);
+    let keys: Vec<([u8; 32], [u8; 32])> = (1..=3u8).map(|i| ([i; 32], [i + 10; 32])).collect();
+    assert!(set_reserve(&mut s, founder, &[keys.clone(), keys[..1].to_vec()].concat()).is_err(), "four is too many");
+    assert!(set_reserve(&mut s, founder, &[]).is_err());
+    set_reserve(&mut s, founder, &keys).unwrap();
+    assert_eq!(reserve(&s), Some((founder, keys.clone())));
+    // Not registry candidates: no beacons, no node rewards.
+    assert!(registry::candidates(&s).is_empty());
+    let d = distribute(&mut s, EB).unwrap();
+    assert!(d.paid.is_empty() && s.balance(&founder).is_zero());
+    let mut off = WorldState::default();
+    registry::predeploy(&mut off, ([1; 32], [2; 32]), Params::default()).unwrap();
+    assert!(set_reserve(&mut off, founder, &keys).is_err(), "behind the node-rewards genesis flag");
 }

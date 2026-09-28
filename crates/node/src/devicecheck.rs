@@ -23,6 +23,8 @@ pub enum DeviceCheckError {
     AlreadyRegistered,
     /// The request is not signed by the voting key it registers.
     Ownership,
+    /// Re-attestation: this device (or voting key) never registered.
+    NotRegistered,
     Apple(String),
 }
 
@@ -32,6 +34,7 @@ impl std::fmt::Display for DeviceCheckError {
             DeviceCheckError::InvalidToken(m) => write!(f, "device token rejected by Apple: {m}"),
             DeviceCheckError::AlreadyRegistered => write!(f, "this Mac already has a registered node"),
             DeviceCheckError::Ownership => write!(f, "not signed by the voting key being registered"),
+            DeviceCheckError::NotRegistered => write!(f, "this Mac or voting key never registered"),
             DeviceCheckError::Apple(m) => write!(f, "DeviceCheck: {m}"),
         }
     }
@@ -223,6 +226,37 @@ impl Registrar {
         let (r, s) = self.signer.sign_bytes(&msg).map_err(DeviceCheckError::Apple)?;
         Ok(Attestation { r, s, registered_at })
     }
+
+    /// Daily re-attestation (docs/design/15-node-rewards.md, A): the Mac holding
+    /// `validator_key` sends a fresh DeviceCheck token; Apple must accept it as
+    /// a genuine device of our app that registered before (bit 0), and the
+    /// voting key must sign the request. The registrar then signs
+    /// `reattest_message(chain, key, period)`, which validators check against
+    /// the registrar key in the registry, as the contract checks registrations.
+    /// The Apple call happens here, never in block validation.
+    ///
+    /// Limit: DeviceCheck gives no device identifier, so this proves "a genuine
+    /// registered Mac running our app holds this voting key today", not which
+    /// Mac; it stops keys copied to machines without DeviceCheck (servers, VMs).
+    pub async fn reattest(&self, device_token: &str, validator_key: [u8; 32], period: u64, ownership: &[u8]) -> Result<([u8; 32], [u8; 32]), DeviceCheckError> {
+        use commonware_codec::DecodeExt as _;
+        use commonware_cryptography::Verifier as _;
+        let msg = aether_rewards::beacons::reattest_message(self.chain_id, &validator_key, period);
+        let pk = commonware_cryptography::ed25519::PublicKey::decode(validator_key.as_slice()).map_err(|_| DeviceCheckError::Ownership)?;
+        let sig = commonware_cryptography::ed25519::Signature::decode(ownership).map_err(|_| DeviceCheckError::Ownership)?;
+        if !pk.verify(OWNERSHIP_NAMESPACE, &msg, &sig) {
+            return Err(DeviceCheckError::Ownership);
+        }
+        if self.registry.get(&hex::encode(validator_key)).is_none() {
+            return Err(DeviceCheckError::NotRegistered);
+        }
+        if let Some(apple) = &self.apple {
+            if !apple.is_registered(device_token).await? {
+                return Err(DeviceCheckError::NotRegistered);
+            }
+        }
+        self.signer.sign_bytes(&msg).map_err(DeviceCheckError::Apple)
+    }
 }
 
 #[cfg(test)]
@@ -280,6 +314,35 @@ mod tests {
         let fk: [u8; 32] = fresh.public_key().encode().as_ref().try_into().unwrap();
         let sig = fresh.sign(OWNERSHIP_NAMESPACE, &aether_execution::registry::attestation_message(7, op, fk, node, beacon)).encode().to_vec();
         assert!(r.register("tok", op, fk, node, beacon, &sig).await.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn reattestation_needs_the_voting_key_a_known_registration_and_apple() {
+        use commonware_codec::Encode as _;
+        use commonware_cryptography::Signer as _;
+        let dir = std::env::temp_dir().join(format!("aether-reattest-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let signer = crate::faucet::Faucet::from_seed(&[4u8; 32]).unwrap();
+        let registrar_pk = aether_crypto::Signer::public_key(&aether_crypto::P256Signer::from_seed(&[4u8; 32]).unwrap());
+        let dev = Registrar { apple: None, registry: Registry::open(dir.join("r.json")), signer, chain_id: 7 };
+        let voting = commonware_cryptography::ed25519::PrivateKey::from_seed(5);
+        let vk: [u8; 32] = voting.public_key().encode().as_ref().try_into().unwrap();
+        let own = |k: &commonware_cryptography::ed25519::PrivateKey, period| {
+            k.sign(OWNERSHIP_NAMESPACE, &aether_rewards::beacons::reattest_message(7, &vk, period)).encode().to_vec()
+        };
+        assert_eq!(dev.reattest("tok", vk, 3, &own(&voting, 3)).await, Err(DeviceCheckError::NotRegistered), "unknown key");
+        dev.registry.insert(&hex::encode(vk));
+        assert_eq!(dev.reattest("tok", vk, 3, &own(&voting, 4)).await, Err(DeviceCheckError::Ownership), "signed for another period");
+        let (r, s) = dev.reattest("tok", vk, 3, &own(&voting, 3)).await.unwrap();
+        // What validators check: the registrar's P-256 signature over the message.
+        let msg = aether_rewards::beacons::reattest_message(7, &vk, 3);
+        aether_crypto::verify(&registrar_pk, &msg, &[r, s].concat()).unwrap();
+        // With Apple configured but unreachable, it fails closed.
+        let key = SigningKey::from_slice(&[9u8; 32]).unwrap();
+        let apple = DeviceCheck { key, key_id: "K".into(), team: "T".into(), base: "http://127.0.0.1:9".into(), http: reqwest::Client::new() };
+        let live = Registrar { apple: Some(apple), ..dev };
+        assert!(live.reattest("tok", vk, 3, &own(&voting, 3)).await.is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

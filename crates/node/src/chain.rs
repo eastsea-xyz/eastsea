@@ -55,6 +55,54 @@ pub struct ChainConfig {
     /// per operator. A new network's genesis parameter (needs the registry);
     /// off keeps the testnet's rules and genesis.
     pub node_rewards: bool,
+    /// Founder reserve keys (docs/design/12-launch-plan.md, "창업자 Mac 안전망";
+    /// needs node rewards): up to three voting keys seated only while fewer
+    /// than four independent operators qualify for the voting set.
+    pub reserve: Option<Reserve>,
+}
+
+/// The founder's reserve validator keys, a genesis parameter.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reserve {
+    /// The founder's operator address (its registered Macs are not independent).
+    pub operator: Address,
+    /// (ed25519 key hex, iroh node id) of each reserve key.
+    pub members: Vec<(String, String)>,
+}
+
+impl Reserve {
+    /// (key, node id) bytes of each reserve key.
+    pub fn bytes(&self) -> Result<Vec<aether_rewards::ReserveKey>, String> {
+        self.members
+            .iter()
+            .map(|(k, n)| {
+                let key: [u8; 32] = hex::decode(k.trim_start_matches("0x"))
+                    .ok()
+                    .and_then(|b| b.try_into().ok())
+                    .ok_or_else(|| format!("reserve key {k}: 32-byte hex"))?;
+                let node = n
+                    .parse::<aether_net::EndpointId>()
+                    .map_err(|e| format!("reserve node {n}: {e}"))?;
+                Ok((key, *node.as_bytes()))
+            })
+            .collect()
+    }
+
+    /// The reserve set at genesis in `state`, if any.
+    pub fn of(state: &WorldState) -> Option<crate::rotation::Reserve> {
+        let (operator, keys) = aether_rewards::reserve(state)?;
+        Some(crate::rotation::Reserve {
+            operator: format!("{operator:#x}"),
+            members: keys
+                .iter()
+                .filter_map(|(k, n)| {
+                    aether_net::EndpointId::from_bytes(n)
+                        .ok()
+                        .map(|id| (hex::encode(k), id.to_string()))
+                })
+                .collect(),
+        })
+    }
 }
 
 impl ChainConfig {
@@ -83,6 +131,11 @@ impl ChainConfig {
             aether_execution::registry::predeploy(&mut s, key, params).expect("registry predeploy");
             if self.node_rewards {
                 aether_rewards::enable(&mut s);
+                if let Some(r) = &self.reserve {
+                    let keys = r.bytes().expect("valid reserve keys");
+                    aether_rewards::set_reserve(&mut s, r.operator, &keys)
+                        .expect("reserve keys");
+                }
             }
         }
         s
@@ -303,6 +356,11 @@ pub struct Inner {
     proof_backoff_until: u64,
     /// Proof submissions (claim output + proof) this node's RPC already refused.
     rejected: std::collections::HashSet<[u8; 32]>,
+    /// Beacon answers checked against the finalized state, waiting for a
+    /// block: by (epoch, slot, candidate index).
+    beacon_pool: BTreeMap<(u64, u64, u64), aether_light::block::BeaconAnswer>,
+    /// Where answers this node takes first go out to the other validators (validators only).
+    pub beacon_out: Option<tokio::sync::mpsc::UnboundedSender<aether_light::block::BeaconAnswer>>,
 }
 
 #[derive(Clone)]
@@ -403,6 +461,8 @@ impl Chain {
             proof_proposal: None,
             proof_backoff_until: 0,
             rejected: Default::default(),
+            beacon_pool: BTreeMap::new(),
+            beacon_out: None,
         };
         (Chain(Arc::new(Mutex::new(inner))), genesis)
     }
@@ -730,7 +790,13 @@ impl Chain {
         if payload.txs.len() > MAX_TXS_PER_BLOCK {
             return Err(ChainError::BadPayload);
         }
-        let (pre, payouts) = self.pre_state(parent, payload.version, &payload.proofs, certified)?;
+        let (pre, payouts) = self.pre_state_with(
+            parent,
+            payload.version,
+            &payload.proofs,
+            &payload.beacons,
+            certified,
+        )?;
         let schedule =
             self.next_schedule(block.height().get(), parent, payload.upgrade.as_ref())?;
         let cfg = self.cfg();
@@ -769,9 +835,22 @@ impl Chain {
         proofs: &[aether_light::block::ProofClaim],
         certified: bool,
     ) -> Result<(std::borrow::Cow<'a, WorldState>, Vec<(u64, Address, U256)>), ChainError> {
-        let (running, migrate, verifier, history_v2) = {
+        self.pre_state_with(parent, version, proofs, &[], certified)
+    }
+
+    /// `pre_state` of a block that also carries beacon answers.
+    #[allow(clippy::type_complexity)]
+    pub fn pre_state_with<'a>(
+        &self,
+        parent: &'a Executed,
+        version: u32,
+        proofs: &[aether_light::block::ProofClaim],
+        answers: &[aether_light::block::BeaconAnswer],
+        certified: bool,
+    ) -> Result<(std::borrow::Cow<'a, WorldState>, Vec<(u64, Address, U256)>), ChainError> {
+        let (running, migrate, verifier, history_v2, chain_id) = {
             let g = self.lock();
-            (g.protocol, g.migrate, g.verifier.clone(), g.cfg.history_v2)
+            (g.protocol, g.migrate, g.verifier.clone(), g.cfg.history_v2, g.cfg.chain_id)
         };
         let want = parent.next_protocol();
         if version != want {
@@ -799,7 +878,18 @@ impl Chain {
         let stale = history_v2
             && expired.is_some_and(|old| aether_execution::proofs::recorded(&parent.state, old));
         let distributes = aether_rewards::distributes(&parent.state, parent.height + 1);
-        if version == before && !records && !rotates && !stale && !distributes && proofs.is_empty()
+        let slots = aether_rewards::beacons::touches(&parent.state, parent.height + 1);
+        if !answers.is_empty() && !aether_rewards::enabled(&parent.state) {
+            return Err(ChainError::Protocol("beacon answers without node rewards".into()));
+        }
+        if version == before
+            && !records
+            && !rotates
+            && !stale
+            && !distributes
+            && !slots
+            && proofs.is_empty()
+            && answers.is_empty()
         {
             return Ok((std::borrow::Cow::Borrowed(&parent.state), vec![]));
         }
@@ -855,6 +945,10 @@ impl Chain {
                     .map(|(op, a)| (parent.height + 1, op, a)),
             );
         }
+        // This epoch's beacon slots and the hash of a slot's block, then the answers.
+        aether_rewards::beacons::on_block(&mut state, parent.height + 1, digest_bytes(&parent.digest));
+        crate::beacons::apply(&mut state, chain_id, parent.height + 1, answers)
+            .map_err(|e| ChainError::Protocol(format!("beacons: {e}")))?;
         payouts.extend(pay_proofs(&mut state, parent.height + 1, proofs, verifier)?);
         Ok((std::borrow::Cow::Owned(state), payouts))
     }
@@ -1096,6 +1190,65 @@ impl Chain {
         self.lock()
             .proof_pool
             .retain(|c| !heights.contains(&c.height));
+    }
+
+    /// Take a beacon answer into the pool if it is valid for the next block on
+    /// the finalized head. Ok(true) when it is new here.
+    pub fn add_beacon(&self, a: aether_light::block::BeaconAnswer) -> Result<bool, String> {
+        let (state, height, chain_id) = {
+            let g = self.lock();
+            let f = &g.finalized;
+            // The next block's slot writes first: the hash of a slot's block lands there.
+            let view = crate::beacons::next_view(&f.state, f.height + 1, digest_bytes(&f.digest));
+            (view, f.height + 1, g.cfg.chain_id)
+        };
+        let checked = crate::beacons::verify(&state, chain_id, height, &a)?;
+        let key = (checked.due.epoch, checked.due.slot, a.index);
+        let mut g = self.lock();
+        if g.beacon_pool.contains_key(&key) {
+            return Ok(false);
+        }
+        if g.beacon_pool.len() >= 16 * aether_rewards::beacons::MAX_ANSWERS_PER_BLOCK {
+            return Err("beacon pool full".into());
+        }
+        g.beacon_pool.insert(key, a);
+        Ok(true)
+    }
+
+    /// `add_beacon`, then send a new answer on to the other validators.
+    pub fn submit_beacon(&self, a: aether_light::block::BeaconAnswer) -> Result<bool, String> {
+        let new = self.add_beacon(a.clone())?;
+        if new {
+            if let Some(out) = self.lock().beacon_out.as_ref() {
+                let _ = out.send(a);
+            }
+        }
+        Ok(new)
+    }
+
+    /// Pooled answers valid in the block after `parent`, one per (Mac, slot).
+    pub fn beacons_for(&self, parent: &Executed) -> Vec<aether_light::block::BeaconAnswer> {
+        if !aether_rewards::enabled(&parent.state) {
+            return vec![];
+        }
+        let (pool, chain_id): (Vec<_>, u64) = {
+            let g = self.lock();
+            (g.beacon_pool.values().cloned().collect(), g.cfg.chain_id)
+        };
+        // Check them on the parent with this block's slot writes applied (a slot's hash lands here).
+        let height = parent.height + 1;
+        let mut state = crate::beacons::next_view(&parent.state, height, digest_bytes(&parent.digest));
+        let mut out = Vec::new();
+        for a in pool {
+            if out.len() == aether_rewards::beacons::MAX_ANSWERS_PER_BLOCK {
+                break;
+            }
+            if let Ok(c) = crate::beacons::verify(&state, chain_id, height, &a) {
+                aether_rewards::beacons::record(&mut state, &c.candidate, &c.due, c.attested);
+                out.push(a);
+            }
+        }
+        out
     }
 
     /// Blocks' notice between an upgrade landing on chain and its activation:
@@ -1504,12 +1657,24 @@ impl Chain {
                         .map(|o| if capped { o.clone() } else { k.to_string() })
                 };
                 // Protocol 3: qualifying Macs join (up to 16 seats) instead of replacing members.
-                g.proposal = if exec.next_protocol() >= 3 {
+                let drawn = if exec.next_protocol() >= 3 {
                     crate::rotation::draw_v3(&pool, &seed, operator, &g.committee)
                 } else {
                     crate::rotation::draw(&pool, &seed, operator, &g.committee)
-                }
-                .map(|m| (draw, m));
+                };
+                // Founder reserve keys join or leave with the draw too.
+                let drawn = match Reserve::of(&exec.state) {
+                    Some(r) => crate::rotation::with_reserve(
+                        drawn,
+                        &pool,
+                        &seed,
+                        |k: &str| ops.get(k).cloned(),
+                        &r,
+                        &g.committee,
+                    ),
+                    None => drawn,
+                };
+                g.proposal = drawn.map(|m| (draw, m));
                 keep(&g.store, PROPOSAL, &g.proposal);
             }
         }
@@ -1551,6 +1716,22 @@ impl Chain {
             aether_execution::proofs::claimable(state, c.height, now + 1).is_ok() || c.height == now
         });
         g.attempted.retain(|h| *h + 64 >= now);
+        // Answers recorded, or of slots whose window closed, leave the pool.
+        if !g.beacon_pool.is_empty() {
+            use aether_rewards::beacons;
+            let epoch_blocks = aether_execution::registry::epoch_blocks(state);
+            let epoch = (now + 1) / epoch_blocks;
+            let window = beacons::layout(epoch_blocks).map_or(0, |l| l.1);
+            let slots = beacons::slots(state);
+            g.beacon_pool.retain(|(e, slot, index), _| {
+                let b = beacons::beacon(state, *index);
+                let recorded = b.epoch == *e && b.mask & (1 << slot) != 0;
+                let open = *e == epoch
+                    && slots.is_some_and(|s| s.get(*slot as usize).is_some_and(|h| h + window > now));
+                open && !recorded
+            });
+        }
+        reserve_step(&mut g, &previous, &exec);
         Ok(())
     }
 }
@@ -1641,6 +1822,56 @@ pub fn genesis_digest(genesis: &Block) -> [u8; 32] {
 }
 const POOL: &str = "pool";
 
+/// Founder reserve keys (genesis parameter): at every registry epoch's first
+/// block, seat them for the next epoch while fewer than four independent
+/// operators qualify, and let them go once four or more do. Proposes nothing
+/// while a proposal or a handoff is already on its way.
+fn reserve_step(g: &mut Inner, previous: &Executed, exec: &Executed) {
+    let Some(reserve) = Reserve::of(&exec.state) else {
+        return;
+    };
+    let params = aether_execution::registry::params(&previous.state);
+    let handing_over = exec
+        .handoff
+        .as_ref()
+        .is_some_and(|p| p.switch > exec.height);
+    // A draw's first block leaves it to the draw (which applies the same rule with its seed).
+    let draw_start = exec
+        .height
+        .is_multiple_of(params.epoch_blocks * params.draw_epochs);
+    if exec.height == 0
+        || draw_start
+        || !exec.height.is_multiple_of(params.epoch_blocks)
+        || g.committee.members.is_empty()
+        || g.proposal.is_some()
+        || handing_over
+    {
+        return;
+    }
+    let pool = crate::rotation::eligible(
+        &previous.state,
+        exec.height / params.epoch_blocks,
+        params.min_streak,
+    );
+    let ops = crate::rotation::operators(&exec.state);
+    let next = crate::rotation::with_reserve(
+        None,
+        &pool,
+        exec.digest.as_ref(),
+        |k: &str| ops.get(k).cloned(),
+        &reserve,
+        &g.committee,
+    );
+    if let Some(members) = next {
+        tracing::info!(
+            members = members.len(),
+            "founder reserve keys change the voting set"
+        );
+        g.proposal = Some((current_draw(&exec.state, exec.height), members));
+        keep(&g.store, PROPOSAL, &g.proposal);
+    }
+}
+
 /// The draw a block at `height` belongs to (draws start at multiples of epoch_blocks × draw_epochs).
 fn current_draw(state: &WorldState, height: u64) -> u64 {
     let p = aether_execution::registry::params(state);
@@ -1662,6 +1893,7 @@ pub struct Extras {
     pub seed: Option<aether_light::block::Seed>,
     pub upgrade: Option<crate::upgrade::SignedUpgrade>,
     pub proofs: Vec<aether_light::block::ProofClaim>,
+    pub beacons: Vec<aether_light::block::BeaconAnswer>,
 }
 
 /// Build a payload on `parent`; `pre` is `Chain::pre_state` for the parent's next protocol.
@@ -1680,6 +1912,7 @@ pub fn build_payload(
         seed,
         upgrade,
         proofs,
+        beacons,
     } = extras;
     let payload = Payload {
         version: parent.next_protocol(),
@@ -1693,6 +1926,7 @@ pub fn build_payload(
         seed,
         upgrade,
         proofs,
+        beacons,
     };
     (payload, out)
 }

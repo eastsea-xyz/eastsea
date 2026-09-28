@@ -56,6 +56,34 @@ pub struct Payload {
     /// is paid its escrow share and issuance.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub proofs: Vec<ProofClaim>,
+    /// Beacon answers of registered Macs (node rewards networks only,
+    /// docs/design/15-node-rewards.md): no transaction and no fee, so a Mac
+    /// with a zero balance answers. Validators check every signature.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub beacons: Vec<BeaconAnswer>,
+}
+
+/// A registered Mac's answer to a beacon slot: its voting key's signature over
+/// (chain, epoch, slot, the slot block's hash). The epoch is the block's own.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BeaconAnswer {
+    /// Registry candidate index of the Mac.
+    pub index: u64,
+    pub slot: u64,
+    /// Ed25519 signature (hex).
+    pub signature: String,
+    /// The day's re-attestation, when due: the registrar's P-256 signature
+    /// after a fresh DeviceCheck token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attest: Option<Reattestation>,
+}
+
+/// The registrar's signature (r, s hex) over `aether_rewards::beacons::reattest_message`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reattestation {
+    pub period: u64,
+    pub r: String,
+    pub s: String,
 }
 
 /// A proof that block `height` executed as its recorded statement says.

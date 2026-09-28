@@ -73,6 +73,17 @@ pub struct NetworkFile {
     /// Node rewards from genesis (docs/design/15-node-rewards.md; default off).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_rewards: Option<bool>,
+    /// Founder reserve keys (with node rewards; docs/design/12-launch-plan.md).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reserve: Option<ReserveFile>,
+}
+
+/// The founder's reserve keys in a network file: up to three validator
+/// entries on one Mac, and the founder's operator address.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReserveFile {
+    pub operator: aether_types::Address,
+    pub validators: Vec<Member>,
 }
 
 /// What a network file fixes about genesis beyond the chain id.
@@ -87,6 +98,7 @@ pub struct Genesis {
     /// History format version (0 or 1 = the original format).
     pub history: u32,
     pub node_rewards: bool,
+    pub reserve: Option<crate::chain::Reserve>,
 }
 
 impl NetworkFile {
@@ -114,6 +126,24 @@ impl NetworkFile {
             draw_epochs: self.draw_epochs,
             history: self.history.unwrap_or(0),
             node_rewards: self.node_rewards.unwrap_or(false),
+            reserve: match &self.reserve {
+                None => None,
+                Some(r) => {
+                    if self.node_rewards != Some(true) {
+                        return Err("reserve keys need node rewards".into());
+                    }
+                    if r.validators.is_empty() || r.validators.len() > aether_rewards::MAX_RESERVE_KEYS {
+                        return Err(format!("1 to {} reserve keys", aether_rewards::MAX_RESERVE_KEYS));
+                    }
+                    let reserve = crate::chain::Reserve {
+                        operator: r.operator,
+                        members: r.validators.iter().map(|m| (m.key.to_lowercase(), m.node.clone())).collect(),
+                    };
+                    // Every key and node id must parse, or no genesis.
+                    reserve.bytes()?;
+                    Some(reserve)
+                }
+            },
         })
     }
 
@@ -126,6 +156,7 @@ impl NetworkFile {
         self.draw_epochs = from.draw_epochs.or(self.draw_epochs);
         self.history = from.history.or(self.history);
         self.node_rewards = from.node_rewards.or(self.node_rewards);
+        self.reserve = from.reserve.clone().or(self.reserve.take());
     }
 }
 
@@ -247,6 +278,7 @@ impl Roster {
             draw_epochs: None,
             history: None,
             node_rewards: None,
+            reserve: None,
         }
     }
 }

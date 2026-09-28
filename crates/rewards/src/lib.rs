@@ -48,8 +48,7 @@ use std::collections::BTreeMap;
 pub const REWARDS: Address = address!("0000000000000000000000000000000000007704");
 /// No operator gets more than 1/MAX_SHARE of an epoch's node or proof share.
 pub const MAX_SHARE: u64 = 16;
-/// Beacon slots per epoch. TODO(beacons): the 4-random-slots-per-hour protocol;
-/// today a beacon is once per epoch and counts as all `SLOTS` answered.
+/// Beacon slots per epoch (`beacons`): four unpredictable moments an hour.
 pub const SLOTS: u64 = 4;
 /// Epochs per warm-up day.
 pub const DAY_EPOCHS: u64 = 24;
@@ -73,6 +72,10 @@ const WAD: u128 = 1_000_000_000_000_000_000;
 const ENABLED: u64 = 0;
 const TAG_MAC: u64 = 1;
 const TAG_OPERATOR: u64 = 2;
+// 3..=6: beacons (slots, slot hashes, day, per-Mac record).
+const TAG_RESERVE: u64 = 7;
+
+pub mod beacons;
 
 fn tagged(tag: u64, low: U256) -> U256 {
     (U256::from(tag) << 200) | low
@@ -216,8 +219,8 @@ pub fn distribute(state: &mut WorldState, height: u64) -> Result<Distribution, S
     // Weights use the warm-up level the Macs had during the epoch.
     let mut weights: BTreeMap<Address, u64> = BTreeMap::new();
     for (c, m) in candidates.iter().zip(macs.iter_mut()) {
-        // Beacons are once per epoch today: a beacon answers all slots (TODO(beacons)).
-        let answered = if c.last_epoch == epoch { SLOTS } else { 0 };
+        // Slots this Mac answered (signed, and re-attested when due) in the epoch.
+        let answered = beacons::beacon(state, c.index).answered(epoch);
         m.answered += answered;
         let w = answered * m.warmup();
         if w > 0 {
@@ -323,6 +326,44 @@ pub fn pay_proof(state: &mut WorldState, height: u64, now: u64, prover: Address)
     let credited = proofs::issuance(height);
     state.set_balance(prover, state.balance(&prover) - credited + issued).map_err(ClaimError::State)?;
     Ok((paid - credited + issued, issued))
+}
+
+/// Founder reserve keys (docs/design/12-launch-plan.md, "창업자 Mac 안전망"): at most this many.
+pub const MAX_RESERVE_KEYS: usize = 3;
+
+/// A reserve key: (ed25519 voting key, iroh node id).
+pub type ReserveKey = ([u8; 32], [u8; 32]);
+
+/// Genesis: the founder's reserve validator keys (ed25519 key, iroh node id)
+/// and the operator address they belong to. They are not registry candidates:
+/// they answer no beacons and earn no node rewards; nodes seat them only while
+/// fewer than `MIN_OPEN_COMMITTEE` independent operators qualify.
+pub fn set_reserve(state: &mut WorldState, operator: Address, keys: &[ReserveKey]) -> Result<(), String> {
+    if keys.is_empty() || keys.len() > MAX_RESERVE_KEYS {
+        return Err(format!("1 to {MAX_RESERVE_KEYS} reserve keys"));
+    }
+    if !enabled(state) {
+        return Err("reserve keys need node rewards".into());
+    }
+    let head = U256::from_be_slice(operator.as_slice()) | (U256::from(keys.len()) << 160);
+    state.set_storage(REWARDS, tagged(TAG_RESERVE, U256::ZERO), head);
+    for (i, (key, node)) in keys.iter().enumerate() {
+        state.set_storage(REWARDS, tagged(TAG_RESERVE, U256::from(1 + 2 * i)), U256::from_be_bytes(*key));
+        state.set_storage(REWARDS, tagged(TAG_RESERVE, U256::from(2 + 2 * i)), U256::from_be_bytes(*node));
+    }
+    Ok(())
+}
+
+/// The founder's reserve keys set at genesis: (operator, [(key, node id)]).
+pub fn reserve(state: &WorldState) -> Option<(Address, Vec<ReserveKey>)> {
+    let head = state.storage(&REWARDS, tagged(TAG_RESERVE, U256::ZERO));
+    let n = (head >> 160usize).to::<u64>() as usize;
+    if n == 0 {
+        return None;
+    }
+    let operator = Address::from_slice(&head.to_be_bytes::<32>()[12..]);
+    let word = |k: usize| state.storage(&REWARDS, tagged(TAG_RESERVE, U256::from(k))).to_be_bytes::<32>();
+    Some((operator, (0..n.min(MAX_RESERVE_KEYS)).map(|i| (word(1 + 2 * i), word(2 + 2 * i))).collect()))
 }
 
 /// Write `c` as registry candidate `c.index` in the contract's storage layout

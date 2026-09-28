@@ -264,6 +264,7 @@ mod tests {
             draw_epochs: None,
             history_v2: false,
             node_rewards: false,
+            reserve: None,
         };
         (f, Chain::new(cfg).0)
     }

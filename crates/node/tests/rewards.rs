@@ -23,7 +23,7 @@ const EPOCH_BLOCKS: u64 = 12;
 const OPERATORS: usize = 4;
 
 fn net(node_rewards: bool) -> Net {
-    Net::new(Opts { chain_id: CHAIN, node_rewards, epoch_blocks: EPOCH_BLOCKS, macs: OPERATORS as u8, min_streak: None, reserve: None })
+    Net::new(Opts { chain_id: CHAIN, node_rewards, epoch_blocks: EPOCH_BLOCKS, macs: OPERATORS as u8, min_streak: None, history_v2: false, reserve: None })
 }
 
 fn supply(net: &Net, others: &[Address]) -> U256 {

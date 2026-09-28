@@ -70,6 +70,8 @@ pub struct Opts {
     pub epoch_blocks: u64,
     pub macs: u8,
     pub min_streak: Option<u64>,
+    /// Mainnet-flag networks run history v2 (quiet empty blocks).
+    pub history_v2: bool,
     pub reserve: Option<Reserve>,
 }
 
@@ -88,7 +90,7 @@ impl Net {
             min_streak: o.min_streak,
             draw_epochs: None,
             node_rewards: o.node_rewards,
-            history_v2: false,
+            history_v2: o.history_v2,
             reserve: o.reserve,
         };
         let (chain, genesis) = Chain::new(cfg);

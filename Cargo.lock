@@ -245,6 +245,7 @@ version = "0.2.0"
 dependencies = [
  "aether-execution",
  "alloy-primitives",
+ "hex",
 ]
 
 [[package]]

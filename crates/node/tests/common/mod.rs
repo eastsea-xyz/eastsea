@@ -10,13 +10,18 @@ use aether_execution::{sign_call, EvmCall};
 use aether_light::block::{BeaconAnswer, ProofClaim, Reattestation};
 use aether_node::block::{Block, Context, EPOCH};
 use aether_node::chain::{build_payload, Chain, ChainConfig, ChainError, Executed, Extras, Reserve};
+use aether_node::dkg::{Ceremony, DkgOutput, KeyFile, Msg, Round as KeyRound, To};
 use aether_node::upgrade::SignedUpgrade;
 use aether_rewards::beacons;
 use aether_types::{Address, GasVector, TxEnvelope, U256};
 use commonware_codec::Encode as _;
 use commonware_consensus::types::{Round, View};
+use commonware_cryptography::bls12381::primitives::group::Share;
 use commonware_cryptography::{ed25519, Digestible, Signer as _};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use commonware_utils::{ordered::Set, TryCollect};
+use rand::SeedableRng;
+use rand_chacha::ChaCha20Rng;
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 
 pub fn seed(b: u8) -> [u8; 32] {
@@ -58,6 +63,9 @@ pub struct Net {
     pub ops: Vec<P256Signer>,
     /// Voting keys, one per Mac.
     pub voting: Vec<ed25519::PrivateKey>,
+    /// The genesis committee the harness dealt (identity and shares), for
+    /// tests that drive committee handoffs.
+    pub committee: Committee,
     pub behaviour: BTreeMap<usize, Mac>,
     nonces: HashMap<Address, u64>,
     pub parent: Arc<Executed>,
@@ -94,15 +102,15 @@ impl Net {
             reserve: o.reserve,
         };
         let (chain, genesis) = Chain::new(cfg);
-        let (_, sharing, _) = aether_light::devnet_threshold(4);
+        let committee = Committee::genesis();
         {
             let mut g = chain.lock();
-            g.identity = Some(*sharing.public());
+            g.identity = Some(committee.identity());
             g.protocol = 2;
             g.verifier = Some(Arc::new(EchoVerifier));
         }
         let parent = chain.lock().finalized.clone();
-        Net { chain, chain_id: o.chain_id, registrar, ops, voting, behaviour: BTreeMap::new(), nonces: HashMap::new(), parent, last: genesis }
+        Net { chain, chain_id: o.chain_id, registrar, ops, voting, committee, behaviour: BTreeMap::new(), nonces: HashMap::new(), parent, last: genesis }
     }
 
     pub fn voting_key(&self, i: usize) -> [u8; 32] {
@@ -181,6 +189,11 @@ impl Net {
 
     /// Build and execute the next block (not finalized).
     pub fn build(&self, txs: Vec<TxEnvelope>, upgrade: Option<SignedUpgrade>, proofs: Vec<ProofClaim>, answers: Vec<BeaconAnswer>) -> Result<(Block, Arc<Executed>), ChainError> {
+        self.build_with(txs, upgrade, proofs, answers, None)
+    }
+
+    /// `build` carrying a committee handoff.
+    pub fn build_with(&self, txs: Vec<TxEnvelope>, upgrade: Option<SignedUpgrade>, proofs: Vec<ProofClaim>, answers: Vec<BeaconAnswer>, handoff: Option<aether_light::block::Handoff>) -> Result<(Block, Arc<Executed>), ChainError> {
         let (chain, parent) = (&self.chain, &self.parent);
         let height = self.last.height.next();
         let leader = ed25519::PrivateKey::from_seed(1).public_key();
@@ -191,7 +204,7 @@ impl Net {
         // The proposer's pre-state skips answers it cannot check; the block is then built with what is left.
         let (pre, _) = chain.pre_state_with(parent, parent.next_protocol(), &proofs, &answers, false)?;
         let n = txs.len();
-        let (payload, out) = build_payload(parent, &pre, &ctx, txs, Extras { upgrade, proofs, beacons: answers, ..Default::default() });
+        let (payload, out) = build_payload(parent, &pre, &ctx, txs, Extras { handoff, upgrade, proofs, beacons: answers, ..Default::default() });
         assert_eq!(payload.txs.len(), n, "every tx fits");
         assert!(out.receipts.iter().all(|r| r.success), "block {height}: a registry call failed");
         drop(pre);
@@ -214,6 +227,17 @@ impl Net {
         exec
     }
 
+    /// Build, execute and finalize the next block carrying a committee
+    /// handoff, with every Mac's answers.
+    pub fn step_handoff(&mut self, handoff: aether_light::block::Handoff) -> Arc<Executed> {
+        let answers = self.answers();
+        let (block, exec) = self.build_with(vec![], None, vec![], answers, Some(handoff)).unwrap();
+        self.chain.finalize(&block).unwrap();
+        self.parent = exec.clone();
+        self.last = block;
+        exec
+    }
+
     /// Empty blocks (with answers) until the head is at `height`.
     pub fn run_to(&mut self, height: u64) {
         while self.parent.height < height {
@@ -229,4 +253,147 @@ pub fn answered(state: &aether_execution::WorldState, index: u64, epoch: u64) ->
 
 pub fn set_of(i: &[usize]) -> BTreeSet<usize> {
     i.iter().copied().collect()
+}
+
+/// A DKG or reshare round run in memory: every key in `online` runs a
+/// `Ceremony` over a plain in-order queue — tests here want committees, not
+/// loss (tests/dkg.rs runs the same rounds over a lossy, reordering one).
+fn ceremony(
+    online: &[ed25519::PrivateKey],
+    round: &KeyRound,
+    shares: &BTreeMap<ed25519::PublicKey, Share>,
+    seed: u64,
+) -> BTreeMap<ed25519::PublicKey, KeyFile> {
+    struct Queue {
+        pks: Vec<ed25519::PublicKey>,
+        q: VecDeque<(ed25519::PublicKey, ed25519::PublicKey, Msg)>,
+    }
+    impl Queue {
+        fn send(&mut self, from: &ed25519::PublicKey, out: Vec<(To, Msg)>) {
+            for (to, msg) in out {
+                match to {
+                    To::One(p) => self.q.push_back((from.clone(), p, msg)),
+                    To::All => self.pks.iter().filter(|p| **p != *from).for_each(|t| self.q.push_back((from.clone(), t.clone(), msg.clone()))),
+                }
+            }
+        }
+    }
+    let pks: Vec<ed25519::PublicKey> = online.iter().map(|k| k.public_key()).collect();
+    let mut net = Queue { pks: pks.clone(), q: VecDeque::new() };
+    let mut cs = Vec::new();
+    for (i, k) in online.iter().enumerate() {
+        let (c, out) = Ceremony::start(ChaCha20Rng::seed_from_u64(seed * 31 + i as u64), k.clone(), round.clone(), shares.get(&pks[i]).cloned()).unwrap();
+        net.send(&pks[i], out);
+        cs.push(c);
+    }
+    let mut files = BTreeMap::new();
+    for tick in 0..600 {
+        for _ in 0..net.q.len() {
+            let Some((from, to, msg)) = net.q.pop_front() else { break };
+            if let Some(i) = pks.iter().position(|p| *p == to) {
+                let out = cs[i].on_message(&from, msg);
+                net.send(&to, out);
+            }
+        }
+        for i in 0..cs.len() {
+            let mut out = cs[i].pending_deals();
+            if cs[i].all_acked() || tick > 20 {
+                out.extend(cs[i].close_dealing());
+            }
+            if cs[i].is_player() && !files.contains_key(&pks[i]) && cs[i].have_all_logs() && tick > 30 {
+                let (o, s) = cs[i].finish(&mut ChaCha20Rng::seed_from_u64(7)).unwrap();
+                files.insert(pks[i].clone(), KeyFile::new(round.round, &o, &s));
+            }
+            out.extend(cs[i].rebroadcast());
+            net.send(&pks[i], out);
+        }
+        assert!(cs.iter().all(|c| c.agreement(false) != Some(false)), "identities disagree");
+        if cs.iter().all(|c| c.agreement(false) == Some(true)) {
+            return files;
+        }
+    }
+    panic!("the key round did not complete");
+}
+
+/// A voting committee the harness dealt: the members' keys and their shares of
+/// one threshold identity — the genesis committee, or the one a handoff names.
+pub struct Committee {
+    /// Members' ed25519 keys, in roster order.
+    pub keys: Vec<ed25519::PrivateKey>,
+    /// Each member's `KeyFile` (output hex, identity, share), by public key.
+    pub files: BTreeMap<ed25519::PublicKey, KeyFile>,
+}
+
+impl Committee {
+    /// The genesis committee: a fresh four-key DKG (fixed seeds).
+    pub fn genesis() -> Self {
+        let keys: Vec<ed25519::PrivateKey> = (0..4u64).map(|i| ed25519::PrivateKey::from_seed(200 + i)).collect();
+        let players: Set<ed25519::PublicKey> = keys.iter().map(|k| k.public_key()).try_collect().unwrap();
+        let dealt = ceremony(&keys, &KeyRound::dkg(players, 0), &BTreeMap::new(), 91);
+        Self::of(keys, dealt)
+    }
+
+    fn of(keys: Vec<ed25519::PrivateKey>, mut dealt: BTreeMap<ed25519::PublicKey, KeyFile>) -> Self {
+        let files = keys.iter().map(|k| (k.public_key(), dealt.remove(&k.public_key()).expect("every member finished"))).collect();
+        Committee { keys, files }
+    }
+
+    /// The committee's threshold identity, which every handoff must keep.
+    pub fn identity(&self) -> aether_light::Identity {
+        *self.output().public().public()
+    }
+
+    /// The committee's DKG output: the sharing of its identity.
+    fn output(&self) -> DkgOutput {
+        self.files.values().next().unwrap().decode(self.keys.len() as u32).unwrap().0
+    }
+
+    /// Sign `u` with a quorum of this committee, as a scheduled upgrade needs.
+    pub fn sign_upgrade(&self, u: &aether_node::upgrade::Upgrade) -> aether_node::upgrade::SignedUpgrade {
+        let sharing = self.output();
+        let n = self.keys.len() as u32;
+        let partials: Vec<_> = self.keys.iter().map(|k| aether_node::upgrade::sign_partial(u, &self.files[&k.public_key()].decode(n).unwrap().1)).collect();
+        aether_node::upgrade::combine(sharing.public(), &partials[..3]).unwrap()
+    }
+
+    /// Reshare the identity to `members` (ed25519 key, node id) at key round
+    /// `round` and sign the handoff for it with this committee's shares, as
+    /// the running committee does when the chain seats or unseats the
+    /// founder's reserve keys. The new committee (to sign the next handoff
+    /// from) comes back with it.
+    pub fn handoff_to(
+        &self,
+        chain_id: u64,
+        round: u64,
+        members: &[(ed25519::PrivateKey, String)],
+    ) -> (Committee, aether_light::block::Handoff) {
+        let keys: Vec<ed25519::PrivateKey> = members.iter().map(|(k, _)| k.clone()).collect();
+        let players: Set<ed25519::PublicKey> = keys.iter().map(|k| k.public_key()).try_collect().unwrap();
+        // The current share holders deal; the new members receive (a key in
+        // both sets runs one ceremony over both roles).
+        let mut online = self.keys.clone();
+        for k in &keys {
+            if !online.iter().any(|o| o.public_key() == k.public_key()) {
+                online.push(k.clone());
+            }
+        }
+        let n = self.keys.len() as u32;
+        let shares: BTreeMap<_, _> = self.keys.iter().map(|k| (k.public_key(), self.files[&k.public_key()].decode(n).unwrap().1)).collect();
+        let previous = self.output();
+        let dealt = ceremony(&online, &KeyRound::reshare(previous.clone(), players, round), &shares, round + 500);
+        let next = Self::of(keys, dealt);
+        let h = aether_light::block::Handoff {
+            round,
+            output: next.files.values().next().unwrap().output.clone(),
+            members: members.iter().map(|(k, node)| (hex::encode(k.public_key().encode()), node.clone())).collect(),
+            signature: String::new(),
+        };
+        // A quorum of the running committee signs (3 of 4 here).
+        let partials: Vec<_> = self.keys.iter().map(|k| {
+            let s = &shares[&k.public_key()];
+            aether_node::handoff::check_partial(chain_id, previous.public(), &h, &aether_node::handoff::sign_partial(chain_id, &h, s)).unwrap()
+        }).collect();
+        let signed = aether_node::handoff::combine(previous.public(), &h, &partials[..3]).unwrap();
+        (next, signed)
+    }
 }

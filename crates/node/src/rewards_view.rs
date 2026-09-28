@@ -4,8 +4,9 @@
 //! and where one operator's Macs stand. The app's rewards card reads this.
 //!
 //! Weights come from the same pure functions `distribute` runs
-//! (`rewards::operator_weights`, `rewards::share`), so the count and the
-//! expected share cannot disagree with what the chain pays.
+//! (`rewards::operator_weights`, `rewards::apply_reserve_credit`,
+//! `rewards::share`), so the count and the expected share cannot disagree
+//! with what the chain pays.
 //!
 //! A Mac's beacon record is one word per epoch that the next epoch's answers
 //! overwrite, so the view pins one snapshot per epoch: the first finalized
@@ -18,7 +19,11 @@
 //! observation differ from the distribution itself (a restart, or nobody
 //! asking before the Macs moved on): a Mac that answered the new epoch reads
 //! as 0 for the old one — its record is gone — and on the epoch that ends a
-//! warm-up day the levels have already taken their step. The first epoch of
+//! warm-up day the levels have already taken their step. The founder's
+//! reserve credit drifts one way: it is read from the committee-seating word
+//! (`rewards::seated`), which only a later unseating clears, so an epoch
+//! first observed after the reserve keys stepped down can show no credit
+//! where the distribution paid one — never the reverse. The first epoch of
 //! a chain, still being answered, is counted live instead of pinned.
 //!
 //! A network whose genesis did not turn node rewards on (testnet 7780)
@@ -68,7 +73,7 @@ fn scan(state: &WorldState, epoch: u64) -> (BTreeMap<Address, u64>, BTreeMap<u64
     let candidates = registry::candidates(state);
     let macs: Vec<rewards::Mac> = candidates.iter().map(|c| rewards::mac(state, c.index)).collect();
     let records: Vec<beacons::Beacon> = candidates.iter().map(|c| beacons::beacon(state, c.index)).collect();
-    let answered: Vec<u64> = records.iter().map(|b| b.answered(epoch)).collect();
+    let mut answered: Vec<u64> = records.iter().map(|b| b.answered(epoch)).collect();
     // What to show per Mac: its count while the record still speaks of `epoch`
     // (an older record answers 0); `None` once a newer epoch's answers ate it.
     let shown: BTreeMap<_, _> = candidates
@@ -76,6 +81,9 @@ fn scan(state: &WorldState, epoch: u64) -> (BTreeMap<Address, u64>, BTreeMap<u64
         .zip(records.iter())
         .map(|(c, b)| (c.index, (b.epoch <= epoch).then(|| b.answered(epoch))))
         .collect();
+    // The founder's reserve credit counts for the weights exactly as
+    // `distribute` paid it; the slots shown per Mac stay its own answers.
+    rewards::apply_reserve_credit(state, epoch, &candidates, &mut answered);
     (rewards::operator_weights(&candidates, &macs, &answered), shown)
 }
 

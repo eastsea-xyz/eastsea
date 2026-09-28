@@ -101,7 +101,7 @@ The app shows the same text (`VotingRules.mainnetRewardsRule`):
 > Planned for the future mainnet, which is not live: the rules may change before launch, and after it only by a committee-signed upgrade. No token sale, no premine and no founder allocation; the founder's Macs follow the same rules as everyone's. Half of each block's reward goes to registered Macs that stay online, shared every hour, and half to registered Macs that prove blocks. One operator gets at most 1/16 of each half, and the rest is never issued; once 16 operators are online, all of it is shared. The reward starts at 1 AETH a block and shrinks 15% a year, down to a floor of 0.1 AETH a block. Testnet AETH does not carry over. Nothing here promises a price, a return or a way to cash out.
 
 - **Registration:** a Mac joins through a registration service, currently run by Pipln, that checks an Apple DeviceCheck token with Apple. Apple does not sponsor or endorse Aether.
-- **Founder reserve keys:** the founder's only special permission is that one Mac may run up to 3 reserve validator keys, and only while fewer than 4 independent operators qualify to vote. Reserve keys get no rewards.
+- **Founder reserve keys:** The founder's only special permission: one Mac may run up to 3 reserve validator keys, and only while the network needs them. Hours they serve count as the founder's participation, under the same 1/16 cap as everyone; they add no extra share. (`VotingRules.founderReserveRule`, quoted word for word.)
 - **What 1/16 does not do:** it is counted per wallet address. Someone with several wallets and several real Macs gets several shares.
 
 ## Status (2026-09-26)

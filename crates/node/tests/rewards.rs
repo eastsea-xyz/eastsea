@@ -9,7 +9,7 @@ mod common;
 use aether_execution::{proofs, PROVER_ESCROW};
 use aether_light::block::ProofClaim;
 use aether_node::chain::leader_address;
-use aether_node::upgrade::{combine, sign_partial, Release, SignedUpgrade, Upgrade};
+use aether_node::upgrade::{Release, SignedUpgrade, Upgrade};
 use aether_rewards as rewards;
 use aether_rewards::{node_pool, proof_pool, proof_share};
 use aether_types::{Address, U256};
@@ -31,8 +31,7 @@ fn supply(net: &Net, others: &[Address]) -> U256 {
     (0..OPERATORS).map(|i| net.balance(i)).sum::<U256>() + others.iter().map(|a| s.balance(a)).sum::<U256>()
 }
 
-fn signed(protocol: u32, activate_at: u64) -> SignedUpgrade {
-    let (_, sharing, shares) = aether_light::devnet_threshold(4);
+fn signed(net: &Net, protocol: u32, activate_at: u64) -> SignedUpgrade {
     let u = Upgrade {
         chain_id: CHAIN,
         protocol,
@@ -41,8 +40,7 @@ fn signed(protocol: u32, activate_at: u64) -> SignedUpgrade {
         notes: String::new(),
         registrar: None,
     };
-    let partials: Vec<_> = shares.iter().take(3).map(|(_, s)| sign_partial(&u, s)).collect();
-    combine(&sharing, &partials).unwrap()
+    net.committee.sign_upgrade(&u)
 }
 
 #[test]
@@ -57,7 +55,7 @@ fn operators_whose_macs_answer_are_paid_each_epoch_and_proofs_are_capped() {
 
     // Epoch 0: four operators register at block 1 and answer every slot from block 2 on.
     let regs = (0..OPERATORS).map(|i| net.register(i)).collect();
-    net.step(regs, Some(signed(2, 20)), vec![]);
+    net.step(regs, Some(signed(&net, 2, 20)), vec![]);
     net.run_to(E - 1);
     assert!((0..OPERATORS as u64).all(|i| common::answered(&net.parent.state, i, 0) == 4));
     let before: Vec<U256> = (0..OPERATORS).map(|i| net.balance(i)).collect();

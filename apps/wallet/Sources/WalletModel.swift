@@ -52,6 +52,12 @@ final class WalletModel: ObservableObject {
     @Published var outgoingRecovery: PendingRecovery?
     /// ERC-20 tokens with a non-zero balance (read from the node, not light-client verified).
     @Published var tokens: [TokenHolding] = []
+    /// The token chosen in the Send sheet (nil: an AETH transfer, as before).
+    @Published var sendToken: TokenHolding?
+    /// The user's own token display choices, per chain (this device only —
+    /// everything else in the display policy is derived from the wallet's own
+    /// on-chain history and the bundled list).
+    @Published private(set) var tokenChoices = TokenChoices()
     /// When `tokens` was last read (nil: never, for this account).
     @Published var tokensUpdated: Date?
     @Published var tokensError: String?
@@ -67,6 +73,10 @@ final class WalletModel: ObservableObject {
     private var lastHeight: UInt64?
     private var heightChangedAt: Date?
     private var tokenScanRunning = false
+    /// Tokens known on this chain, kept between scans (also feeds the look-alike
+    /// and provenance checks with official metadata).
+    private(set) var tokenCatalog = TokenCatalog()
+    private var tokenChoicesForChain: UInt64?
 
     /// No new block for this long means the network is paused.
     static let pauseAfter: TimeInterval = 60
@@ -328,6 +338,7 @@ final class WalletModel: ObservableObject {
             }
             let st = try? chainStatus()
             let conn = connection()
+            if let st { await MainActor.run { self.loadTokenChoices(chain: st.chainId) } }
             let bl = (try? recentBlocks(n: 24)) ?? []
             var acc: VerifiedAccount?
             var err: String?
@@ -393,8 +404,7 @@ final class WalletModel: ObservableObject {
             return
         }
         tokenScanRunning = true
-        let owner = address, catalogKey = "tokenCatalog.\(chain)"
-        let catalog = UserDefaults.standard.data(forKey: catalogKey).flatMap { try? JSONDecoder().decode(TokenCatalog.self, from: $0) } ?? TokenCatalog()
+        let owner = address, catalogKey = "tokenCatalog.\(chain)", catalog = tokenCatalog
         Task.detached {
             let result = Result { try TokenScanner.scan(owner: owner, sources: sources, catalog: catalog, read: { try ethCall(to: $0, dataHex: $1) }) }
             await MainActor.run {
@@ -403,6 +413,7 @@ final class WalletModel: ObservableObject {
                 switch result {
                 case .success(let (cat, held)):
                     UserDefaults.standard.set(try? JSONEncoder().encode(cat), forKey: catalogKey)
+                    self.tokenCatalog = cat
                     self.tokens = held
                     self.tokensError = nil
                     self.tokensUpdated = Date()
@@ -421,6 +432,74 @@ final class WalletModel: ObservableObject {
     /// The last token balances read for this account, shown until the next read.
     private func loadTokens() {
         tokens = UserDefaults.standard.data(forKey: tokensKey).flatMap { try? JSONDecoder().decode([TokenHolding].self, from: $0) } ?? []
+        tokenCatalog = UserDefaults.standard.data(forKey: "tokenCatalog.\(status?.chainId ?? 0)")
+            .flatMap { try? JSONDecoder().decode(TokenCatalog.self, from: $0) } ?? TokenCatalog()
+    }
+
+    // MARK: token display policy (docs/research/token-spam-2026.md §6)
+
+    /// Addresses this wallet has sent to before — its own signed history, read
+    /// back from the tracked activity. Derived, never stored.
+    var sentAddresses: Set<String> {
+        Set(activity.flatMap { $0.recipients ?? [] }.map { $0.lowercased() })
+    }
+
+    /// Tokens this wallet's own signed transactions touched (a send, an
+    /// approval, a contract call to the token). Derived, never stored.
+    var touchedTokens: Set<String> {
+        Set(activity.compactMap(\.token).map { $0.lowercased() })
+    }
+
+    /// Official tokens of this chain (the bundled seed list + wrapped AETH).
+    var officialTokenAddresses: Set<String> {
+        guard let s = TokenSources.bundled(chainId: status?.chainId ?? 0) else { return [] }
+        return Set((s.seed + [s.waeth].compactMap { $0 }).map { $0.lowercased() })
+    }
+
+    /// Their symbols and names, for the look-alike warning (native AETH first).
+    var officialSymbols: [(symbol: String, name: String)] {
+        [("AETH", "Aether")] + officialTokenAddresses.sorted().compactMap { tokenCatalog.tokens[$0].map { ($0.symbol, $0.name) } }
+    }
+
+    /// Which holdings belong in the main Assets list and which in the collapsed
+    /// Unverified section (out of any total). AETH and tokens this wallet
+    /// acquired or moved by its own signed action are main-listed; what only
+    /// arrived by someone else's transfer is not.
+    var tokenSections: (main: [TokenHolding], unverified: [TokenHolding]) {
+        TokenDisplayPolicy(touched: touchedTokens, official: officialTokenAddresses,
+                           hidden: tokenChoices.hidden, shown: tokenChoices.shown).split(tokens)
+    }
+
+    /// Hide a token (moved out of the main list on this device), or show it again.
+    func setTokenHidden(_ address: String, _ hidden: Bool) {
+        let a = address.lowercased()
+        if hidden {
+            tokenChoices.hidden.insert(a)
+            tokenChoices.shown.remove(a)
+        } else {
+            tokenChoices.hidden.remove(a)
+        }
+        saveTokenChoices()
+    }
+
+    /// Move a token someone else sent in into the main list (this device).
+    func showTokenInMainList(_ address: String) {
+        let a = address.lowercased()
+        tokenChoices.shown.insert(a)
+        tokenChoices.hidden.remove(a)
+        saveTokenChoices()
+    }
+
+    private func saveTokenChoices() {
+        guard let chain = status?.chainId else { return }
+        UserDefaults.standard.set(try? JSONEncoder().encode(tokenChoices), forKey: "tokenChoices.\(chain)")
+    }
+
+    private func loadTokenChoices(chain: UInt64) {
+        guard tokenChoicesForChain != chain else { return }
+        tokenChoicesForChain = chain
+        tokenChoices = UserDefaults.standard.data(forKey: "tokenChoices.\(chain)")
+            .flatMap { try? JSONDecoder().decode(TokenChoices.self, from: $0) } ?? TokenChoices()
     }
 
     /// Verification that keeps failing on certificates means the chain moved on
@@ -490,6 +569,9 @@ final class WalletModel: ObservableObject {
         guard let enclave, let r = callRequest, let wei = Wei.from(aeth: r.value) else { return }
         callRequest = nil
         let pk = enclave.publicKey
+        // A call to a known token contract (an approval, a mint…) marks it as
+        // moved by this wallet's own action, for the display policy.
+        let token = r.to.isEmpty ? nil : tokenCatalog.tokens[r.to.lowercased()].map { _ in r.to.lowercased() }
         busy = true
         Task.detached {
             do {
@@ -497,7 +579,8 @@ final class WalletModel: ObservableObject {
                 let sig = try enclave.sign(prepared.signingMessage)
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
                 let title = r.to.isEmpty ? "Deployed a contract" : "Called \(Short.address(r.to))"
-                let ok = await self.track(h, label: title, item: ActivityItem(kind: .sent, title: title, amount: nil))
+                let ok = await self.track(h, label: title,
+                                          item: ActivityItem(kind: .sent, title: title, amount: nil, token: token))
                 await MainActor.run { if let cb = r.callback { self.reply(cb, ["tx": h, "status": ok ? "success" : "failed"]) } }
             } catch { await MainActor.run { self.note("Call failed: \(error)"); self.busy = false } }
         }
@@ -540,7 +623,8 @@ final class WalletModel: ObservableObject {
                 let label: String
                 let each = Double(Wei.format(wei)) ?? 0
                 let who = recipients.count == 1 ? Short.address(recipients[0]) : "\(recipients.count) people"
-                let item = ActivityItem(kind: .sent, title: "Sent to \(who)", amount: -each * Double(recipients.count))
+                let item = ActivityItem(kind: .sent, title: "Sent to \(who)", amount: -each * Double(recipients.count),
+                                        recipients: recipients.map { $0.lowercased() })
                 if recipients.count == 1 {
                     prepared = try prepareTransfer(p256PublicKey: pk, to: recipients[0], valueWei: wei)
                     label = "Sent \(Wei.format(wei)) AETH (nonce \(prepared.nonce))"
@@ -560,6 +644,61 @@ final class WalletModel: ObservableObject {
                     #endif
                 }
             } catch { await MainActor.run { self.note("Send failed: \(error)"); self.busy = false } }
+        }
+    }
+
+    /// Send `amountText` of the chosen token to `to`: an ERC-20 `transfer`
+    /// built as calldata and signed like any other contract call from this
+    /// account (same Touch ID, same activity tracking, then a fresh balance).
+    func sendTokenTx(to: String, amountText: String) {
+        guard let enclave, let token = sendToken else { return }
+        guard SendSafety.isValidAddress(to) else { return note("The recipient is not a valid address") }
+        guard let units = TokenAmount.parse(amountText, decimals: token.token.decimals) else { return note("Invalid token amount") }
+        guard WeiMath.compare(units, token.balance) <= 0 else {
+            return note("Not enough \(token.token.symbol): the balance is \(token.amount)")
+        }
+        guard let data = ERC20.transferCalldata(to: to, amount: units) else { return note("Could not build the transfer") }
+        let decimals = token.token.decimals
+        let shown = TokenAmount.exact(units, decimals: decimals)
+        let item = ActivityItem(kind: .sent, title: "Sent \(shown) \(token.token.symbol) to \(TokenLabel.short(to))",
+                                amount: nil, recipients: [to.lowercased()], token: token.token.address)
+        let pk = enclave.publicKey
+        sendToken = nil
+        busy = true
+        Task.detached {
+            do {
+                let prepared = try prepareCall(p256PublicKey: pk, to: token.token.address, valueWei: "0", dataHex: data, gasLimit: 100_000)
+                let sig = try enclave.sign(prepared.signingMessage)   // Secure Enclave, may prompt
+                let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
+                await self.track(h, label: "Sent \(shown) \(token.token.symbol) to \(TokenLabel.short(to)) (nonce \(prepared.nonce))", item: item)
+                await MainActor.run { self.refreshTokens(force: true) }
+            } catch { await MainActor.run { self.note("Token send failed: \(error)"); self.busy = false } }
+        }
+    }
+
+    /// Dry-run a send before it is signed: the transfer as an `eth_call` from
+    /// this account, so a honeypot (a token that reverts on transfer) or a
+    /// contract that cannot receive plain AETH is refused with its reason.
+    /// Never stored, never signed — these checks read public chain data and
+    /// settings on this device. Nothing new is written on chain.
+    static func dryRun(from: String, to: String, valueWei: String, data: String) async -> DryRunOutcome {
+        await SendDryRun.check(from: from, to: to, valueWei: valueWei, data: data, plainCall: { recipient, dataHex in
+            do {
+                return try ethCall(to: recipient, dataHex: dataHex)
+            } catch {
+                throw DryRunError(reason: ffiMessage(error))
+            }
+        })
+    }
+
+    /// The readable text of an FFI error (its message, not the Swift case
+    /// reflection `WalletError.Network(message: …)` would print).
+    static func ffiMessage(_ e: Error) -> String {
+        switch e {
+        case WalletError.Network(let m), WalletError.Invalid(let m), WalletError.Rejected(let m), WalletError.Verification(let m):
+            return m
+        default:
+            return (e as? LocalizedError)?.errorDescription ?? "\(e)"
         }
     }
 
@@ -631,6 +770,11 @@ struct ActivityItem: Codable, Identifiable, Equatable {
     /// Signed AETH change (nil for non-transfers).
     let amount: Double?
     var state: State = .pending
+    /// Who a send went to (lowercased), for the address-poisoning and
+    /// first-send checks. Nil in records written before token send existed.
+    var recipients: [String]? = nil
+    /// A token this action moved (address), for the display policy.
+    var token: String? = nil
 
     func with(state: State) -> ActivityItem {
         var c = self
@@ -640,6 +784,14 @@ struct ActivityItem: Codable, Identifiable, Equatable {
 
     /// A node reward this wallet received (iPhone Home shows those as one line).
     var isNodeReward: Bool { kind == .received && title.hasPrefix("Proof reward") }
+}
+
+/// The user's own choices about which tokens to show, kept on this device only
+/// (UserDefaults, per chain). The rest of the display policy is derived from
+/// the wallet's own on-chain history, so every device agrees on that part.
+struct TokenChoices: Codable, Equatable {
+    var hidden: Set<String> = []
+    var shown: Set<String> = []
 }
 
 enum Short {

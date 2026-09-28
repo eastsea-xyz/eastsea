@@ -29,7 +29,9 @@
 		6B328300B9C16A284BC72EDD /* NodeController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64A5EE5BA6294827128D61F5 /* NodeController.swift */; };
 		744ABDE9795D713D6D3CA46F /* token-sources.json in Resources */ = {isa = PBXBuildFile; fileRef = 2928FB2C0B82AF8C35E97D99 /* token-sources.json */; };
 		8A4A2901B223B0F689036DFB /* EnclaveKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 317D79B15C7F9E75B1A1F4FC /* EnclaveKey.swift */; };
+		8A8690DDB06F0148FD133737 /* TokenSend.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE00FF7FDD47F623CE4B55A0 /* TokenSend.swift */; };
 		8C21512BBE06AA542E27EBA1 /* NodeController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64A5EE5BA6294827128D61F5 /* NodeController.swift */; };
+		8FBC9A5F5A3237EA07862EB6 /* TokenSend.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE00FF7FDD47F623CE4B55A0 /* TokenSend.swift */; };
 		92B6DC24FA22759641E59512 /* AssetsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39DB57D9689E71FFECC579BA /* AssetsSheet.swift */; };
 		95004663796AA4EF45771D37 /* WalletModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 016BCAF9063410C1BBD4052D /* WalletModel.swift */; };
 		96D01674727A3032D42B5EDC /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = B60F2ADE6BD15611D4BD0811 /* Theme.swift */; };
@@ -85,6 +87,7 @@
 		C3A70AF889C5ACB1DDB2AF45 /* ResizeBenchmark.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResizeBenchmark.swift; sourceTree = "<group>"; };
 		C6C1B75440E8A6A577BD467E /* Earnings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Earnings.swift; sourceTree = "<group>"; };
 		E5D7C676A4030F20E37C58E7 /* TokenAssets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenAssets.swift; sourceTree = "<group>"; };
+		FE00FF7FDD47F623CE4B55A0 /* TokenSend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenSend.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -149,6 +152,7 @@
 				462C807FB20A46B9919AE925 /* Spinners.swift */,
 				B60F2ADE6BD15611D4BD0811 /* Theme.swift */,
 				E5D7C676A4030F20E37C58E7 /* TokenAssets.swift */,
+				FE00FF7FDD47F623CE4B55A0 /* TokenSend.swift */,
 				016BCAF9063410C1BBD4052D /* WalletModel.swift */,
 			);
 			path = Sources;
@@ -315,6 +319,7 @@
 				9E121F544310F602CD8ACFFE /* Spinners.swift in Sources */,
 				96D01674727A3032D42B5EDC /* Theme.swift in Sources */,
 				65632EFCC1603BC0D9B6C752 /* TokenAssets.swift in Sources */,
+				8A8690DDB06F0148FD133737 /* TokenSend.swift in Sources */,
 				95004663796AA4EF45771D37 /* WalletModel.swift in Sources */,
 				C9839F6819F2F86387CC88B7 /* aether_ffi.swift in Sources */,
 			);
@@ -343,6 +348,7 @@
 				50D901679B54ED9BD526B43E /* Spinners.swift in Sources */,
 				1B66F9FC578D265748C295D1 /* Theme.swift in Sources */,
 				D840F0A34EA5DA948F884D3E /* TokenAssets.swift in Sources */,
+				8FBC9A5F5A3237EA07862EB6 /* TokenSend.swift in Sources */,
 				D6DDA80E641E075D1DE236AD /* WalletModel.swift in Sources */,
 				BF69C9639B9D7215C5CE0605 /* aether_ffi.swift in Sources */,
 			);

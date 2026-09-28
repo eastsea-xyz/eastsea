@@ -34,6 +34,11 @@ struct TokenInfo: Codable, Equatable {
     let symbol: String
     let name: String
     let decimals: Int
+    /// Which on-chain list the token was enumerated from: "seed" (the bundled
+    /// official list), "dex" (the token factory), "pool" (a DEX pair side) or
+    /// "launchpad" (the launchpad's own list — anyone can create those). Nil in
+    /// catalogs written before this field existed.
+    var origin: String?
 }
 
 /// A token with a non-zero balance.
@@ -89,25 +94,42 @@ enum TokenScanner {
     }
 
     /// Enumerate the lists from where they were last read. A failure stops that list
-    /// where it is (it resumes next time).
+    /// where it is (it resumes next time). Each address remembers the most
+    /// specific list it was seen in (the launchpad's own list names its tokens).
     static func discover(sources: TokenSources, catalog cat: inout TokenCatalog, read: Read) {
-        var found: [String] = sources.seed + [sources.waeth].compactMap { $0 }
+        var found: [(address: String, origin: String)] = sources.seed.map { ($0, "seed") }
+        found.append(contentsOf: [sources.waeth].compactMap { $0 }.map { ($0, "seed") })
         if let f = sources.tokenFactory {
-            cat.factoryRead = list(f, count: Sel.allTokensLength, item: Sel.allTokens, from: cat.factoryRead, cap: maxFactoryTokens, read: read) { found.append($0) }
+            cat.factoryRead = list(f, count: Sel.allTokensLength, item: Sel.allTokens, from: cat.factoryRead, cap: maxFactoryTokens, read: read) { found.append(($0, "dex")) }
         }
         if let f = sources.pairFactory {
             cat.pairsRead = list(f, count: Sel.allPairsLength, item: Sel.allPairs, from: cat.pairsRead, cap: maxPools, read: read) { pair in
                 for sel in [Sel.token0, Sel.token1] {
-                    if let t = try? EVMABI.address(read(pair, EVMABI.call(sel))) { found.append(t) }
+                    if let t = try? EVMABI.address(read(pair, EVMABI.call(sel))) { found.append((t, "pool")) }
                 }
             }
         }
         if let l = sources.launchpad {
-            cat.launchesRead = list(l, count: Sel.tokenCount, item: Sel.tokens, from: cat.launchesRead, cap: maxLaunches, read: read) { found.append($0) }
+            cat.launchesRead = list(l, count: Sel.tokenCount, item: Sel.tokens, from: cat.launchesRead, cap: maxLaunches, read: read) { found.append(($0, "launchpad")) }
         }
-        for a in found.map({ $0.lowercased() }) where cat.tokens[a] == nil && !cat.rejected.contains(a) {
-            if let t = info(a, read: read) { cat.tokens[a] = t } else { cat.rejected.insert(a) }
+        for (a, origin) in found.map({ ($0.address.lowercased(), $0.origin) }) {
+            if let known = cat.tokens[a] {
+                if rank(origin) > rank(known.origin ?? "unknown") { cat.tokens[a]?.origin = origin }
+            } else if !cat.rejected.contains(a) {
+                if var t = info(a, read: read) {
+                    t.origin = origin
+                    cat.tokens[a] = t
+                } else {
+                    cat.rejected.insert(a)
+                }
+            }
         }
+    }
+
+    /// The more specific provenance wins, so a launchpad token keeps its badge
+    /// even after it graduates into a DEX pool.
+    private static func rank(_ origin: String) -> Int {
+        ["seed": 1, "pool": 2, "dex": 3, "launchpad": 4][origin] ?? 0
     }
 
     /// Entries `from..<min(length, cap)` of an on-chain address list; returns how far it got.

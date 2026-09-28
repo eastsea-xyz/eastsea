@@ -47,7 +47,7 @@ struct SimpleDashboard: View {
                 switch s {
                 case .send: SendSheet()
                 case .receive: ReceiveSheet()
-                case .assets: AssetsSheet()
+                case .assets: AssetsSheet(onSend: { t in model.sendToken = t; sheet = .send })
                 case .call: CallSheet()
                 case .connect: ConnectSheet()
                 case .votingInvite:
@@ -76,7 +76,7 @@ struct SimpleDashboard: View {
             .onChange(of: model.callRequest) { _, r in if r != nil { sheet = .call } }
             .onChange(of: model.connectRequest) { _, r in if r != nil { sheet = .connect } }
             // A payment link (aether://pay?...) opens the send sheet, filled in, for approval.
-            .onChange(of: model.paymentRequest) { _, r in if r != nil { sheet = .send } }
+            .onChange(of: model.paymentRequest) { _, r in if r != nil { model.sendToken = nil; sheet = .send } }
             #if os(macOS)
             // Once the node has caught up and this Mac is not registered, ask once.
             .onChange(of: node.voting) { _, _ in inviteIfReady() }
@@ -195,7 +195,7 @@ private struct HomePage: View {
             .padding(.top, 8)
             HStack(spacing: narrow ? 20 : 28) {
                 RoundAction(title: "Receive", icon: "qrcode") { sheet = .receive }.disabled(model.address.isEmpty)
-                RoundAction(title: "Send", icon: "paperplane.fill") { sheet = .send }.disabled(model.busy || model.account == nil)
+                RoundAction(title: "Send", icon: "paperplane.fill") { model.sendToken = nil; sheet = .send }.disabled(model.busy || model.account == nil)
                 RoundAction(title: "Assets", icon: "square.stack.3d.up.fill") { sheet = .assets }.disabled(model.address.isEmpty)
             }
             #if os(macOS)
@@ -451,6 +451,16 @@ private struct SecurityPage: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Protected by this device").font(.aeHeadline)
                         Text("Your key was created inside the Secure Enclave and can never be copied out. Every payment asks for Touch ID or your password. If you lose every device and have no recovery set up, nobody can restore the funds.")
+                            .font(.aeBody).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            Card {
+                HStack(alignment: .top, spacing: 14) {
+                    Image(systemName: "checkmark.shield").font(.system(size: 34)).foregroundStyle(Color.aether)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Checks before you send").font(.aeHeadline)
+                        Text("Before a transfer is signed, Aether compares the recipient with addresses you sent to before (a look-alike asks you to confirm the whole address), notes first-time sends, and tries the transfer on the node so a token that refuses transfers is caught first. These checks read public chain data and settings on this device. Nothing new is written on chain.")
                             .font(.aeBody).foregroundStyle(.secondary)
                     }
                 }
@@ -998,15 +1008,38 @@ private struct ActivityList: View {
 private struct SendSheet: View {
     @EnvironmentObject var model: WalletModel
     @Environment(\.dismiss) private var dismiss
+    /// The send flow's checks (docs/research/token-spam-2026.md §6.3). Nothing
+    /// they learn is stored: they read public chain data and settings on this
+    /// device, and nothing new is written on chain.
+    @State private var checking = false
+    @State private var refusal: String?
+    @State private var ackPoison = false
 
+    /// The token being sent (nil: AETH). A payment link always sends AETH.
+    private var token: TokenHolding? { model.paymentRequest == nil ? model.sendToken : nil }
     private var amount: Double? { Double(model.paymentRequest?.amount ?? model.sendAmount) }
     private var balance: Double { model.account.flatMap { Double(Wei.format($0.balanceWei)) } ?? 0 }
     private var recipient: String { model.paymentRequest?.to ?? model.sendTo }
-    private var valid: Bool { !recipient.isEmpty && (amount ?? 0) > 0 && (amount ?? 0) <= balance }
+    /// One address for a token send; AETH keeps its comma-separated list.
+    private var recipients: [String] {
+        recipient.split(whereSeparator: { $0 == "," || $0.isWhitespace }).map(String.init).filter { !$0.isEmpty }
+    }
+    private var risk: SendSafety.AddressRisk { SendSafety.addressRisk(recipient, sentTo: model.sentAddresses) }
+
+    private var valid: Bool {
+        if let t = token {
+            guard recipients.count == 1, SendSafety.isValidAddress(recipients[0]),
+                  let units = TokenAmount.parse(model.sendAmount, decimals: t.token.decimals),
+                  units != "0", WeiMath.compare(units, t.balance) <= 0 else { return false }
+        } else {
+            guard !recipient.isEmpty, (amount ?? 0) > 0, (amount ?? 0) <= balance else { return false }
+        }
+        return true
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Send AETH").font(.aeTitle)
+            Text(title).font(.aeTitle)
             if let r = model.paymentRequest {
                 Label(r.memo.map { "A page asked for this payment: \($0)" } ?? "A page asked for this payment. Check the address and amount.", systemImage: "link")
                     .font(.aeBody).foregroundStyle(Color.warn)
@@ -1023,24 +1056,33 @@ private struct SendSheet: View {
                     Text("\(r.amount) AETH").font(.aeTitle.monospacedDigit())
                 }
             } else {
+                assetPicker
                 VStack(alignment: .leading, spacing: 6) {
                     Text("To").font(.aeFootnote).foregroundStyle(.secondary)
-                    TextField("0x… (several: separate with commas)", text: $model.sendTo)
+                    TextField(token == nil ? "0x… (several: separate with commas)" : "0x…", text: $model.sendTo)
                         .textFieldStyle(.roundedBorder).font(.aeBody.monospaced())
                 }
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Amount (each)").font(.aeFootnote).foregroundStyle(.secondary)
+                    Text(token == nil ? "Amount (each)" : "Amount").font(.aeFootnote).foregroundStyle(.secondary)
                     HStack {
                         TextField("0", text: $model.sendAmount).textFieldStyle(.roundedBorder).font(.aeTitle.monospacedDigit())
-                        Text("AETH").foregroundStyle(.secondary)
-                        Button("Max") { model.sendAmount = Amount.text(max(0, balance - 0.001)) }.buttonStyle(.borderless)
+                        Text(token?.token.symbol ?? "AETH").foregroundStyle(.secondary)
+                        Button("Max") { fillMax() }.buttonStyle(.borderless)
                     }
+                }
+                if let t = token {
+                    TokenBadges(holding: t, official: model.officialSymbols)
                 }
             }
             HStack {
                 Text("Available").foregroundStyle(.secondary)
                 Spacer()
-                Text("\(Amount.text(balance)) AETH").monospacedDigit()
+                if let t = token {
+                    Text("\(t.amount) \(t.token.symbol)").monospacedDigit()
+                    Text("· \(TokenLabel.short(t.token.address))").monospaced().foregroundStyle(.secondary)
+                } else {
+                    Text("\(Amount.text(balance)) AETH").monospacedDigit()
+                }
             }.font(.aeBody)
             if let s = model.status {
                 HStack {
@@ -1049,24 +1091,118 @@ private struct SendSheet: View {
                     Text("≈ \(Amount.fee(s.transferFeeWei))").monospacedDigit()
                 }.font(.aeBody)
             }
+            warnings
+            if let refusal {
+                Label("Not sent — this transfer would fail: \(refusal)", systemImage: "xmark.octagon.fill")
+                    .font(.aeBody).foregroundStyle(Color.warn)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(10).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.warn.opacity(0.14), in: RoundedRectangle(cornerRadius: Radius.inner))
+            }
             HStack {
                 Button("Cancel") {
                     model.paymentRequest = nil
                     dismiss()
                 }.keyboardShortcut(.cancelAction)
                 Spacer()
-                Button {
-                    model.send()
-                    dismiss()
-                } label: { Label("Send", systemImage: "touchid").frame(minWidth: 100) }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(!valid || model.busy)
+                Button { send() } label: {
+                    Label(checking ? "Checking…" : "Send", systemImage: "touchid").frame(minWidth: 100)
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(!valid || model.busy || checking || (risk.poisoningMatch != nil && !ackPoison))
             }
         }
         .padding(24)
         .macMinSize(width: 420)
         .sheetScroll()
+        .onChange(of: recipient) { _, _ in ackPoison = false }
+    }
+
+    private var title: String {
+        if model.paymentRequest != nil { return "Send AETH" }
+        return token.map { "Send \($0.token.symbol)" } ?? "Send AETH"
+    }
+
+    /// AETH or any held token, labeled with its address — never the symbol
+    /// alone (a spam token can call itself anything).
+    private var assetPicker: some View {
+        HStack {
+            Text("Asset").font(.aeFootnote).foregroundStyle(.secondary)
+            Spacer()
+            Menu {
+                Button("AETH · Aether") { model.sendToken = nil; model.sendAmount = "1" }
+                ForEach(model.tokenSections.main) { t in
+                    Button("\(TokenLabel.row(t.token)) · \(t.amount)") { model.sendToken = t; model.sendAmount = "" }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Text(token.map { TokenLabel.row($0.token) } ?? "AETH · Aether").font(.aeBody.weight(.semibold))
+                    Image(systemName: "chevron.up.chevron.down").font(.aeCaption).foregroundStyle(.secondary)
+                }
+            }
+            .fixedSize()
+        }
+    }
+
+    private func fillMax() {
+        if let t = token {
+            model.sendAmount = TokenAmount.exact(t.balance, decimals: t.token.decimals)
+        } else {
+            model.sendAmount = Amount.text(max(0, balance - 0.001))
+        }
+    }
+
+    /// The poisoning warning blocks until the full address is confirmed; a
+    /// first send to a new address is only a note.
+    @ViewBuilder private var warnings: some View {
+        if let match = risk.poisoningMatch {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("This address only looks like one you sent to before", systemImage: "exclamationmark.triangle.fill")
+                    .font(.aeBody.weight(.semibold)).foregroundStyle(Color.warn)
+                Text("It shares its first and last characters with \(TokenLabel.short(match)) — a different address. Scammers copy exactly those to catch a quick copy-paste. Compare the whole address, character by character, before sending.")
+                    .font(.aeFootnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Toggle("I compared the full address; this is where I want to send", isOn: $ackPoison)
+                    .font(.aeFootnote)
+            }
+            .padding(12)
+            .background(Color.warn.opacity(0.14), in: RoundedRectangle(cornerRadius: Radius.inner))
+        } else if risk.firstSend, !recipient.isEmpty, valid {
+            Label("First time sending to this address. Double-check it with whoever gave it to you.", systemImage: "info.circle.fill")
+                .font(.aeFootnote).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Dry-run first, then sign: an `eth_call` of the same transfer from this
+    /// account, so a honeypot or a blocked transfer is refused before Touch ID
+    /// (multi-recipient AETH sends skip it; the batch cannot be replayed as one call).
+    private func send() {
+        guard valid, risk.poisoningMatch == nil || ackPoison else { return }
+        refusal = nil
+        let dry = recipients.count == 1
+        let to = recipients.first ?? recipient
+        let value = token == nil ? (Wei.from(aeth: model.paymentRequest?.amount ?? model.sendAmount) ?? "0") : "0"
+        let data = token.flatMap { t in
+            TokenAmount.parse(model.paymentRequest?.amount ?? model.sendAmount, decimals: t.token.decimals)
+                .flatMap { ERC20.transferCalldata(to: to, amount: $0) }
+        } ?? "0x"
+        let callTo = token?.token.address ?? to
+        checking = true
+        Task { @MainActor in
+            let outcome = dry ? await WalletModel.dryRun(from: model.address, to: callTo, valueWei: value, data: data) : .unchecked
+            checking = false
+            if case .reverted(let why) = outcome {
+                refusal = why
+                return
+            }
+            if token != nil {
+                model.sendTokenTx(to: to, amountText: model.paymentRequest?.amount ?? model.sendAmount)
+            } else {
+                model.send()
+            }
+            dismiss()
+        }
     }
 }
 

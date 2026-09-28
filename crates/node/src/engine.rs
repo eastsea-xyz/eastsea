@@ -5,6 +5,7 @@
 use crate::application::Application;
 use crate::block::{Block, PublicKey};
 use crate::epochs::{RotatingProvider, ScheduleEpocher};
+use crate::voting::DurableVote;
 use aether_light::Scheme;
 use commonware_broadcast::buffered;
 pub use commonware_consensus::marshal::core::Mailbox as MarshalMailboxOf;
@@ -13,7 +14,7 @@ use commonware_consensus::{
         self,
         core::{Actor as MarshalActor, Mailbox as MarshalMailbox},
         resolver::handler,
-        standard::{Deferred, Standard},
+        standard::{Inline, Standard},
     },
     simplex::{self, Engine as Consensus},
     types::ViewDelta,
@@ -38,7 +39,12 @@ use tracing::{error, warn};
 
 type Activity = simplex::types::Activity<Scheme, Digest>;
 pub type Finalization = simplex::types::Finalization<Scheme, Digest>;
-pub type Marshaled<E> = Deferred<E, Scheme, Application, Block, ScheduleEpocher>;
+/// Marshal adapter. `Inline`, not `Deferred`: `Application::verify` (execution
+/// and the FOCIL inclusion-list rule, which depends on what this node has seen)
+/// must decide the notarize vote, never certification. See `crate::voting`.
+pub type Marshaled<E> = Inline<E, Scheme, Application, Block, ScheduleEpocher>;
+/// What consensus drives: the adapter, voting notarize only once the block is durable.
+pub type Voter<E> = DurableVote<E, Marshaled<E>>;
 
 const SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER: u64 = 10;
 const PRUNABLE_ITEMS_PER_SECTION: NonZero<u64> = NZU64!(4_096);
@@ -105,7 +111,7 @@ where
     marshaled: Marshaled<E>,
     /// Handle for reading finalized blocks and certificates (served over RPC).
     pub mailbox: MarshalMailbox<Scheme, Standard<Block>>,
-    consensus: Consensus<E, Scheme, aether_light::Elector, B, Digest, Marshaled<E>, Marshaled<E>, MarshalMailbox<Scheme, Standard<Block>>, Sequential>,
+    consensus: Consensus<E, Scheme, aether_light::Elector, B, Digest, Voter<E>, Voter<E>, MarshalMailbox<Scheme, Standard<Block>>, Sequential>,
 }
 
 fn archive_cfg<C>(prefix: &str, name: &str, page_cache: CacheRef, codec_config: C) -> immutable::Config<C> {
@@ -260,13 +266,14 @@ where
         .await;
 
         let marshaled = Marshaled::<E>::new(context.child("marshaled"), cfg.application, marshal_mailbox.clone(), epocher);
+        let voter = DurableVote::new(context.child("voter"), marshaled.clone(), marshal_mailbox.clone());
         let consensus = Consensus::new(
             context.child("consensus"),
             simplex::Config {
                 epoch,
                 scheme,
-                automaton: marshaled.clone(),
-                relay: marshaled.clone(),
+                automaton: voter.clone(),
+                relay: voter,
                 reporter: marshal_mailbox.clone(),
                 track_historical_votes: false,
                 // One vote journal per epoch: a new committee never replays the old one's votes.

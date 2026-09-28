@@ -4,7 +4,9 @@
 //! code `aether node` runs) on Commonware's deterministic runtime and simulated
 //! p2p network. Time is virtual, so minutes of network time run in seconds and
 //! every run is reproducible from its seed. Faults: lossy and jittery links,
-//! a 2|2 partition, a validator cut off and rejoining.
+//! a 2|2 partition, a validator cut off and rejoining, validators that disagree
+//! about an inclusion list (the 2026-09-28 testnet stall), and slow or stalled
+//! disks.
 //!
 //! Checked every run: safety (no two different blocks finalized at one height,
 //! across all validators), liveness (the chain advances once a quorum can talk),
@@ -19,6 +21,7 @@ use aether_node::application::Application;
 use aether_node::chain::{dev_accounts, dev_seed, Chain, ChainConfig};
 use aether_node::engine::{self, MAX_BLOCK_BYTES};
 use aether_node::epochs::ScheduleEpocher;
+use aether_node::inclusion::InclusionList;
 use aether_types::{Address, Bytes, FeeVector, GasVector, U256};
 use commonware_consensus::marshal;
 use commonware_consensus::types::ViewDelta;
@@ -27,7 +30,10 @@ use commonware_p2p::simulated::{self, Link, Network, Oracle};
 use commonware_runtime::{deterministic, Clock, Quota, Runner as _, Supervisor as _};
 use commonware_utils::{probability, NZUsize, NZU32};
 use std::collections::BTreeMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+mod slow_disk;
+use slow_disk::{Disk, SlowDisk};
 
 type Pk = commonware_cryptography::ed25519::PublicKey;
 type Ctx = deterministic::Context;
@@ -54,6 +60,28 @@ enum Fault {
         from: u64,
         to: u64,
     },
+    /// For `[from, to)` seconds validators 1 and 3 hold an inclusion list naming
+    /// a tx that validators 2 and 4 never see, so 1 and 3 refuse every block
+    /// from 2 and 4 (the 2026-09-28 testnet stall: a notarized block that half
+    /// the committee then refused to certify).
+    SplitList {
+        from: u64,
+        to: u64,
+    },
+    /// Validator 4's disk takes `delay_ms` for every write and sync during
+    /// `[from, to)` seconds (a nearly full, busy disk, as on 2026-09-28).
+    SlowDisk {
+        from: u64,
+        to: u64,
+        delay_ms: u64,
+    },
+    /// Validators 3 and 4 (half the committee, so no quorum without them) take
+    /// `delay_ms` for every write and sync during `[from, to)` seconds.
+    SlowDisks {
+        from: u64,
+        to: u64,
+        delay_ms: u64,
+    },
 }
 
 /// What a run ends with, per validator.
@@ -76,7 +104,8 @@ fn chain_config() -> ChainConfig {
             state: u64::MAX,
             prove: 200_000_000,
         },
-        alloc: dev_accounts(4)
+        // Dev account 5 only ever sends through inclusion lists (`Fault::SplitList`).
+        alloc: dev_accounts(5)
             .into_iter()
             .map(|(_, a)| (a, U256::from(10u128.pow(24))))
             .collect(),
@@ -108,7 +137,7 @@ async fn link_all(oracle: &mut Oracle<Pk, Ctx>, keys: &[Pk], up: impl Fn(usize, 
     }
 }
 
-async fn start_validator(context: &Ctx, oracle: &Oracle<Pk, Ctx>, i: u64, chain: Chain) {
+async fn start_validator(context: &Ctx, oracle: &Oracle<Pk, Ctx>, i: u64, chain: Chain, disk: Disk) {
     let (participants, polynomial, shares) = devnet_threshold(N);
     let key = devnet_validator_key(i);
     let me = key.public_key();
@@ -142,7 +171,7 @@ async fn start_validator(context: &Ctx, oracle: &Oracle<Pk, Ctx>, i: u64, chain:
     );
     let (_, genesis) = Chain::new(chain_config());
     let engine = engine::Engine::new(
-        context.child("engine").with_attribute("validator", i),
+        SlowDisk::new(context.child("engine").with_attribute("validator", i), disk),
         engine::Config {
             anchor: None,
             blocker: oracle.control(me.clone()),
@@ -186,6 +215,27 @@ fn transfer(from: u8, nonce: u64, to: Address) -> aether_types::TxEnvelope {
     sign_call_with(&signer, 7_777, nonce, fees, 1_000_000_000, &call).expect("sign")
 }
 
+/// Puts dev account 5's next tx on an inclusion list that only validators 1
+/// and 3 hold, already past the voters' freeze. Their blocks include it; the
+/// blocks of 2 and 4 leave it out, so 1 and 3 refuse to vote for them.
+fn list_for_half(chains: &[Chain], t: u64) {
+    let sender = dev_accounts(5)[4].1;
+    let nonce = chains[0].lock().finalized.state.nonce(&sender);
+    let tx = transfer(5, nonce, Address::repeat_byte(0xb5));
+    let list = InclusionList {
+        height: 1_000_000 + t,
+        member: 1,
+        txs: vec![tx],
+        signature: String::new(),
+    };
+    let seen = Instant::now()
+        .checked_sub(Duration::from_secs(5))
+        .unwrap_or_else(Instant::now);
+    for i in [0, 2] {
+        chains[i].lock().inclusion.accept(&list, seen);
+    }
+}
+
 fn simulate(seed: u64, secs: u64, fault: Fault) -> Outcome {
     let cfg = deterministic::Config::new()
         .with_seed(seed)
@@ -209,8 +259,9 @@ fn simulate(seed: u64, secs: u64, fault: Fault) -> Outcome {
         link_all(&mut oracle, &keys, |_, _| true).await;
 
         let chains: Vec<Chain> = (0..N).map(|_| Chain::new(chain_config()).0).collect();
+        let disks: Vec<Disk> = (0..N).map(|_| Disk::default()).collect();
         for (i, chain) in chains.iter().enumerate() {
-            start_validator(&context, &oracle, i as u64 + 1, chain.clone()).await;
+            start_validator(&context, &oracle, i as u64 + 1, chain.clone(), disks[i].clone()).await;
         }
 
         let mut nonces = [0u64; 4];
@@ -222,19 +273,38 @@ fn simulate(seed: u64, secs: u64, fault: Fault) -> Outcome {
             let now = match fault {
                 Fault::Partition { from, to } if (from..to).contains(&t) => fault,
                 Fault::Isolate { from, to } if (from..to).contains(&t) => fault,
+                Fault::SplitList { from, to } if (from..to).contains(&t) => fault,
+                Fault::SlowDisk { from, to, .. } if (from..to).contains(&t) => fault,
+                Fault::SlowDisks { from, to, .. } if (from..to).contains(&t) => fault,
                 _ => Fault::None,
             };
             if std::mem::discriminant(&now) != std::mem::discriminant(&state) {
+                for d in &disks {
+                    d.set(Duration::ZERO);
+                }
                 match now {
-                    Fault::None => link_all(&mut oracle, &keys, |_, _| true).await,
+                    Fault::None | Fault::SplitList { .. } => {
+                        link_all(&mut oracle, &keys, |_, _| true).await
+                    }
                     Fault::Partition { .. } => {
                         link_all(&mut oracle, &keys, |i, j| (i < 2) == (j < 2)).await
                     }
                     Fault::Isolate { .. } => {
                         link_all(&mut oracle, &keys, |i, j| i != 3 && j != 3).await
                     }
+                    Fault::SlowDisk { delay_ms, .. } => {
+                        disks[3].set(Duration::from_millis(delay_ms))
+                    }
+                    Fault::SlowDisks { delay_ms, .. } => {
+                        for d in &disks[2..] {
+                            d.set(Duration::from_millis(delay_ms));
+                        }
+                    }
                 }
                 state = now;
+            }
+            if let Fault::SplitList { .. } = now {
+                list_for_half(&chains, t);
             }
             // A few payments per second, offered to every validator's mempool.
             if t % 2 == 0 {
@@ -367,6 +437,59 @@ fn partition_without_quorum_stalls_then_heals() {
 fn isolated_validator_does_not_stop_the_chain_and_catches_up() {
     let o = simulate(21, 90, Fault::Isolate { from: 15, to: 60 });
     check(&o, 60);
+}
+
+/// Regression for the 2026-09-28 testnet stall (height 69651, view 69842).
+/// Voters that disagree about an inclusion list must disagree before the
+/// notarize vote, never at certification: a block half the committee refuses
+/// to certify is notarized but can be neither finalized nor nullified, and the
+/// chain stops for good. With the check before the notarize vote, blocks from
+/// 2 and 4 miss the quorum and those views pass; blocks from 1 and 3 finalize.
+#[test]
+fn split_inclusion_list_does_not_stall_the_chain() {
+    let o = simulate(31, 90, Fault::SplitList { from: 10, to: 60 });
+    eprintln!(
+        "split list: heights {:?} txs {} longest gap {} s",
+        o.heights,
+        o.txs,
+        block_gaps(&o)
+    );
+    check(&o, 45);
+    assert!(
+        block_gaps(&o) < 20,
+        "the chain stalled while validators disagreed about a list"
+    );
+}
+
+/// A slow disk on one validator (every write and sync 400 ms): the other three
+/// still form quorums, so the chain keeps finalizing at nearly full speed, and
+/// the slow validator keeps up once its disk recovers.
+#[test]
+fn one_slow_disk_does_not_stop_the_chain() {
+    let o = simulate(41, 90, Fault::SlowDisk { from: 10, to: 60, delay_ms: 400 });
+    eprintln!(
+        "slow disk: heights {:?} txs {} longest gap {} s",
+        o.heights,
+        o.txs,
+        block_gaps(&o)
+    );
+    check(&o, 60);
+    assert!(block_gaps(&o) < 10, "one slow disk held the chain up");
+}
+
+/// Disks stalled (30 s per write and sync) on half the committee: no quorum
+/// can vote, so the chain stops, then resumes on its own once the disks do,
+/// with no two validators finalizing different blocks.
+#[test]
+fn stalled_disks_stall_then_resume_safely() {
+    let o = simulate(43, 120, Fault::SlowDisks { from: 20, to: 50, delay_ms: 30_000 });
+    let gap = block_gaps(&o);
+    eprintln!(
+        "stalled disks: heights {:?} txs {} longest gap {gap} s",
+        o.heights, o.txs
+    );
+    assert!(gap >= 20, "the chain kept finalizing on stalled disks (longest gap {gap} s)");
+    check(&o, 50);
 }
 
 #[test]

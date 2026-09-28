@@ -164,7 +164,9 @@ where
         if block.timestamp < parent_block.timestamp || block.timestamp > MAX_BLOCK_TIMESTAMP_MS {
             return false;
         }
-        // Never reject on the local clock (certification must be deterministic); wait out skew.
+        // Never reject on the local clock (a verdict must not depend on when it is asked); wait out skew.
+        // This verdict is the notarize vote (marshal `Inline`, see `crate::voting`), so a rule that
+        // depends on what this node has seen, like FOCIL below, may live here and nowhere later.
         rt.sleep_until(SystemTime::UNIX_EPOCH + Duration::from_millis(block.timestamp.saturating_sub(MAX_FUTURE_SKEW_MS))).await;
 
         let Some(parent) = self.resolve(parent_block, ancestry).await else { return false };
@@ -183,7 +185,7 @@ where
         };
         match executed {
             Ok(exec) => {
-                // FOCIL: refuse to vote for a block that censors listed txs.
+                // FOCIL: refuse to notarize a block that censors listed txs.
                 let ctx = Chain::block_context(&self.chain.cfg(), &block, &parent);
                 let missing = self.chain.inclusion_violations(&exec, &ctx, std::time::Instant::now());
                 if !missing.is_empty() {

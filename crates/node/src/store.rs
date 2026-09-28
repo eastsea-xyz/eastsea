@@ -12,7 +12,8 @@
 use crate::chain::BlockSummary;
 use aether_execution::{Journal, Receipt, WorldState};
 use aether_types::{Bytes, TxHash, B256};
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+use redb::{Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition};
+use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
@@ -98,6 +99,124 @@ pub struct Commit<'a> {
     pub statement: &'a crate::chain::Statement,
 }
 
+/// First byte of a packed block summary. Older stores hold JSON rows (they
+/// start with `{`); both are read, new rows are packed (roadmap B1: JSON
+/// summaries were ~590 of the ~680 bytes each empty block added).
+const PACKED: u8 = 0xa1;
+/// Files below this are not worth compacting at start-up.
+const COMPACT_MIN_FILE: u64 = 32 << 20;
+
+/// A block summary in postcard form, links to the previous height elided.
+#[derive(Serialize, serde::Deserialize)]
+struct Packed {
+    hash: [u8; 32],
+    /// None: the previous height's hash.
+    parent: Option<[u8; 32]>,
+    timestamp_ms: u64,
+    proposer: [u8; 20],
+    state_root: [u8; 32],
+    /// None: the previous height's state root.
+    parent_state_root: Option<[u8; 32]>,
+    txs: Vec<[u8; 32]>,
+    gas_used: u64,
+    prove_gas: u64,
+    base_fee: (u128, u128, u128),
+    excess: (u64, u64, u64),
+}
+
+fn hex32(s: &str) -> Option<[u8; 32]> {
+    let b: [u8; 32] = hex::decode(s).ok()?.try_into().ok()?;
+    // Only a string that comes back byte for byte is packed.
+    (hex::encode(b) == s).then_some(b)
+}
+
+/// The hash and state root a summary row links its successor to.
+fn summary_links(v: &[u8]) -> Option<(String, B256)> {
+    if v.first() == Some(&PACKED) {
+        let p: Packed = postcard::from_bytes(&v[1..]).ok()?;
+        return Some((hex::encode(p.hash), B256::from(p.state_root)));
+    }
+    let s: BlockSummary = serde_json::from_slice(v).ok()?;
+    Some((s.hash, s.state_root))
+}
+
+fn encode_summary(s: &BlockSummary, previous: Option<&(String, B256)>) -> Result<Vec<u8>, StoreError> {
+    let (Some(hash), Some(parent)) = (hex32(&s.hash), hex32(&s.parent)) else {
+        return serde_json::to_vec(s).map_err(dberr);
+    };
+    let p = Packed {
+        hash,
+        parent: (previous.map(|p| p.0.as_str()) != Some(s.parent.as_str())).then_some(parent),
+        timestamp_ms: s.timestamp_ms,
+        proposer: s.proposer.0 .0,
+        state_root: s.state_root.0,
+        parent_state_root: (previous.map(|p| p.1) != Some(s.parent_state_root)).then_some(s.parent_state_root.0),
+        txs: s.txs.iter().map(|t| t.0).collect(),
+        gas_used: s.gas_used,
+        prove_gas: s.prove_gas,
+        base_fee: (s.base_fee.exec, s.base_fee.state, s.base_fee.prove),
+        excess: (s.excess.exec, s.excess.state, s.excess.prove),
+    };
+    let mut out = vec![PACKED];
+    out.extend(postcard::to_allocvec(&p).map_err(dberr)?);
+    Ok(out)
+}
+
+/// Decode a summary row (packed or JSON); `previous` is the row one height below.
+fn decode_summary(v: &[u8], height: u64, previous: Option<&BlockSummary>) -> Option<BlockSummary> {
+    if v.first() != Some(&PACKED) {
+        return serde_json::from_slice(v).ok();
+    }
+    let p: Packed = postcard::from_bytes(&v[1..]).ok()?;
+    let parent = match p.parent {
+        Some(d) => hex::encode(d),
+        None => previous?.hash.clone(),
+    };
+    let parent_state_root = match p.parent_state_root {
+        Some(r) => B256::from(r),
+        None => previous?.state_root,
+    };
+    Some(BlockSummary {
+        height,
+        hash: hex::encode(p.hash),
+        parent,
+        timestamp_ms: p.timestamp_ms,
+        proposer: aether_types::Address::from(p.proposer),
+        state_root: B256::from(p.state_root),
+        parent_state_root,
+        txs: p.txs.into_iter().map(B256::from).collect(),
+        gas_used: p.gas_used,
+        prove_gas: p.prove_gas,
+        base_fee: aether_types::FeeVector { exec: p.base_fee.0, state: p.base_fee.1, prove: p.base_fee.2 },
+        excess: aether_types::GasVector { exec: p.excess.0, state: p.excess.1, prove: p.excess.2 },
+    })
+}
+
+/// One table's share of the file.
+#[derive(Debug, Clone, Serialize)]
+pub struct TableUse {
+    pub name: &'static str,
+    pub entries: u64,
+    /// Key and value bytes.
+    pub stored: u64,
+    /// Branch keys and other b-tree metadata.
+    pub metadata: u64,
+    /// Unused space inside the table's pages.
+    pub fragmented: u64,
+    pub pages: u64,
+}
+
+/// Where a store's bytes go (B1 of docs/design/13-roadmap.md).
+#[derive(Debug, Clone, Serialize)]
+pub struct StoreStats {
+    pub tables: Vec<TableUse>,
+    pub allocated_pages: u64,
+    pub page_size: u64,
+    pub stored: u64,
+    pub metadata: u64,
+    pub fragmented: u64,
+}
+
 pub struct Store {
     db: Database,
 }
@@ -117,7 +236,29 @@ impl Store {
         tx.open_table(PROOFS).map_err(dberr)?;
         tx.open_table(REWARDS).map_err(dberr)?;
         tx.commit().map_err(dberr)?;
-        Ok(Store { db })
+        let mut store = Store { db };
+        store.compact_if_sparse(path)?;
+        Ok(store)
+    }
+
+    /// redb never shrinks its file: pages freed by copy-on-write stay in it
+    /// (on the 7780 testnet ~40% of the file). Compact at start-up, when nothing
+    /// else holds the store, once a large share of the file is free.
+    fn compact_if_sparse(&mut self, path: &Path) -> Result<(), StoreError> {
+        let file = std::fs::metadata(path).map_err(dberr)?.len();
+        if file < COMPACT_MIN_FILE {
+            return Ok(());
+        }
+        let used = {
+            let tx = self.db.begin_write().map_err(dberr)?;
+            let s = tx.stats().map_err(dberr)?;
+            tx.abort().map_err(dberr)?;
+            s.allocated_pages() * s.page_size() as u64
+        };
+        if used * 4 < file * 3 {
+            while self.compact()? {}
+        }
+        Ok(())
     }
 
     pub fn put_meta(&self, key: &str, value: &[u8]) -> Result<(), StoreError> {
@@ -169,6 +310,52 @@ impl Store {
         Ok(t.get(height).map_err(dberr)?.map(|v| v.value().to_vec()))
     }
 
+    /// Storage use per table and for the whole file.
+    pub fn stats(&self) -> Result<StoreStats, StoreError> {
+        fn one<K: redb::Key + 'static, V: redb::Value + 'static>(
+            tx: &redb::WriteTransaction,
+            def: TableDefinition<K, V>,
+            name: &'static str,
+        ) -> Result<TableUse, StoreError> {
+            let t = tx.open_table(def).map_err(dberr)?;
+            let st = t.stats().map_err(dberr)?;
+            Ok(TableUse {
+                name,
+                entries: t.len().map_err(dberr)?,
+                stored: st.stored_bytes(),
+                metadata: st.metadata_bytes(),
+                fragmented: st.fragmented_bytes(),
+                pages: st.leaf_pages() + st.branch_pages(),
+            })
+        }
+        let tx = self.db.begin_write().map_err(dberr)?;
+        let tables = vec![
+            one(&tx, STATE, "state")?,
+            one(&tx, CODE, "code")?,
+            one(&tx, BLOCKS, "blocks")?,
+            one(&tx, RECEIPTS, "receipts")?,
+            one(&tx, META, "meta")?,
+            one(&tx, PROOFS, "proofs")?,
+            one(&tx, REWARDS, "rewards")?,
+        ];
+        let db = tx.stats().map_err(dberr)?;
+        let out = StoreStats {
+            tables,
+            allocated_pages: db.allocated_pages(),
+            page_size: db.page_size() as u64,
+            stored: db.stored_bytes(),
+            metadata: db.metadata_bytes(),
+            fragmented: db.fragmented_bytes(),
+        };
+        tx.abort().map_err(dberr)?;
+        Ok(out)
+    }
+
+    /// Give free pages back to the file system (redb compaction).
+    pub fn compact(&mut self) -> Result<bool, StoreError> {
+        self.db.compact().map_err(dberr)
+    }
+
     /// Persist one finalized block atomically.
     pub fn commit(&self, c: Commit<'_>) -> Result<(), StoreError> {
         let tx = self.db.begin_write().map_err(dberr)?;
@@ -185,7 +372,11 @@ impl Store {
                 code.insert(h.as_slice(), bytes.as_ref()).map_err(dberr)?;
             }
             let mut blocks = tx.open_table(BLOCKS).map_err(dberr)?;
-            blocks.insert(c.height, serde_json::to_vec(c.summary).map_err(dberr)?.as_slice()).map_err(dberr)?;
+            let previous = match c.height.checked_sub(1) {
+                Some(p) => blocks.get(p).map_err(dberr)?.and_then(|v| summary_links(v.value())),
+                None => None,
+            };
+            blocks.insert(c.height, encode_summary(c.summary, previous.as_ref())?.as_slice()).map_err(dberr)?;
             let mut receipts = tx.open_table(RECEIPTS).map_err(dberr)?;
             for (h, r) in &c.receipts {
                 receipts.insert(h.as_slice(), serde_json::to_vec(&(c.height, r)).map_err(dberr)?.as_slice()).map_err(dberr)?;
@@ -272,7 +463,9 @@ impl Store {
         let mut blocks = BTreeMap::new();
         for row in tx.open_table(BLOCKS).map_err(dberr)?.iter().map_err(dberr)? {
             let (h, v) = row.map_err(dberr)?;
-            blocks.insert(h.value(), serde_json::from_slice(v.value()).map_err(|_| StoreError::Corrupt("block summary"))?);
+            let previous = h.value().checked_sub(1).and_then(|p| blocks.get(&p));
+            let s = decode_summary(v.value(), h.value(), previous).ok_or(StoreError::Corrupt("block summary"))?;
+            blocks.insert(h.value(), s);
         }
         let mut receipts = HashMap::new();
         for row in tx.open_table(RECEIPTS).map_err(dberr)?.iter().map_err(dberr)? {
@@ -281,5 +474,96 @@ impl Store {
             receipts.insert(B256::from(k), serde_json::from_slice(v.value()).map_err(|_| StoreError::Corrupt("receipt"))?);
         }
         Ok(Some(Checkpoint { height, digest, state, blocks, receipts, handoff, seed, history, schedule, statement }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aether_types::{Address, FeeVector, GasVector};
+
+    fn summary(height: u64, parent: &str, parent_state_root: B256) -> BlockSummary {
+        BlockSummary {
+            height,
+            hash: hex::encode([height as u8 + 1; 32]),
+            parent: parent.to_string(),
+            timestamp_ms: 1_790_000_000_000 + height * 1000,
+            proposer: Address::repeat_byte(9),
+            state_root: B256::repeat_byte(height as u8 + 100),
+            parent_state_root,
+            txs: vec![B256::repeat_byte(3)],
+            gas_used: 21_000,
+            prove_gas: 5,
+            base_fee: FeeVector { exec: 7, state: 8, prove: 1 << 100 },
+            excess: GasVector { exec: 1, state: 2, prove: 3 },
+        }
+    }
+
+    fn same(a: &BlockSummary, b: &BlockSummary) {
+        assert_eq!(format!("{a:?}"), format!("{b:?}"));
+    }
+
+    #[test]
+    fn packed_summaries_round_trip_and_elide_links() {
+        let s0 = summary(0, &hex::encode([0xee; 32]), B256::ZERO);
+        let s1 = summary(1, &s0.hash, s0.state_root);
+        let p0 = encode_summary(&s0, None).unwrap();
+        let p1 = encode_summary(&s1, summary_links(&p0).as_ref()).unwrap();
+        let json = serde_json::to_vec(&s1).unwrap().len();
+        assert!(p1.len() * 3 < json, "packed {} vs json {json}", p1.len());
+        assert!(p1.len() + 60 < p0.len(), "links to the previous row are elided");
+        let d0 = decode_summary(&p0, 0, None).unwrap();
+        same(&d0, &s0);
+        same(&decode_summary(&p1, 1, Some(&d0)).unwrap(), &s1);
+        assert!(decode_summary(&p1, 1, None).is_none(), "an elided link needs the previous row");
+        // A summary that does not fit the packed form stays JSON.
+        let odd = BlockSummary { hash: "not hex".into(), ..s1.clone() };
+        let j = encode_summary(&odd, None).unwrap();
+        assert_eq!(j[0], b'{');
+        same(&decode_summary(&j, 1, None).unwrap(), &odd);
+    }
+
+    #[test]
+    fn stores_with_json_rows_still_load_and_new_rows_are_packed() {
+        let dir = std::env::temp_dir().join(format!("aether-store-packed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("state.redb");
+        let store = Store::open(&path).unwrap();
+        let state = WorldState::default();
+        let s0 = BlockSummary { state_root: state.root(), ..summary(0, &hex::encode([0xee; 32]), B256::ZERO) };
+        let commit = |store: &Store, s: &BlockSummary| {
+            store
+                .commit(Commit {
+                    height: s.height,
+                    digest: [s.height as u8 + 1; 32],
+                    root: state.root(),
+                    diff: state.journal(),
+                    summary: s,
+                    receipts: vec![],
+                    handoff: None,
+                    seed: None,
+                    history: &Default::default(),
+                    schedule: &Default::default(),
+                    statement: &Default::default(),
+                })
+                .unwrap()
+        };
+        commit(&store, &s0);
+        // Block 0 as an older binary wrote it: JSON.
+        let tx = store.db.begin_write().unwrap();
+        tx.open_table(BLOCKS).unwrap().insert(0, serde_json::to_vec(&s0).unwrap().as_slice()).unwrap();
+        tx.commit().unwrap();
+        let s1 = BlockSummary { state_root: state.root(), ..summary(1, &s0.hash, s0.state_root) };
+        commit(&store, &s1);
+        drop(store);
+        let cp = Store::open(&path).unwrap().load().unwrap().unwrap();
+        same(&cp.blocks[&0], &s0);
+        same(&cp.blocks[&1], &s1);
+        let store = Store::open(&path).unwrap();
+        let tx = store.db.begin_read().unwrap();
+        let t = tx.open_table(BLOCKS).unwrap();
+        assert_eq!(t.get(0).unwrap().unwrap().value()[0], b'{');
+        assert_eq!(t.get(1).unwrap().unwrap().value()[0], PACKED);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

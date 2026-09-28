@@ -434,7 +434,7 @@ private struct VotingNodeRow: View {
                 Text(detail).font(.callout).foregroundStyle(.secondary)
                 switch model.registration {
                 case .working?:
-                    HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Registering… confirm with Touch ID.") }.font(.callout)
+                    HStack(spacing: 7) { OrbitSpinner().frame(width: 14, height: 14); Text("Registering… confirm with Touch ID.") }.font(.callout)
                 case .failed(let why)?:
                     Label(why, systemImage: "exclamationmark.triangle.fill").font(.callout).foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
@@ -668,43 +668,6 @@ private struct VerifiedBadge: View {
             .background(Color.aether.opacity(0.10), in: Capsule())
             .help(model.verifyError ?? "Checking the balance against the validators' signature on this device.")
         }
-    }
-}
-
-/// A small comet orbiting a faint ring: calm, continuous, in the brand colors.
-struct OrbitSpinner: View {
-    @State private var spin = false
-
-    var body: some View {
-        ZStack {
-            Circle().stroke(Color.aether.opacity(0.15), lineWidth: 2)
-            Circle()
-                .trim(from: 0, to: 0.32)
-                .stroke(AngularGradient(colors: [Color.aether.opacity(0), .aether, .pink], center: .center, startAngle: .degrees(0), endAngle: .degrees(115)),
-                        style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                .rotationEffect(.degrees(spin ? 360 : 0))
-        }
-        .onAppear { withAnimation(.linear(duration: 1.1).repeatForever(autoreverses: false)) { spin = true } }
-    }
-}
-
-/// A placeholder that breathes while data loads (no dash, no jumpy text).
-struct ShimmerBar: View {
-    @State private var phase: CGFloat = -1
-
-    var body: some View {
-        GeometryReader { g in
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(.quaternary.opacity(0.6))
-                .overlay(
-                    LinearGradient(colors: [.clear, .white.opacity(0.55), .clear], startPoint: .leading, endPoint: .trailing)
-                        .frame(width: g.size.width * 0.45)
-                        .offset(x: phase * g.size.width)
-                        .blendMode(.plusLighter)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        }
-        .onAppear { withAnimation(.easeInOut(duration: 1.4).repeatForever(autoreverses: false)) { phase = 1.2 } }
     }
 }
 

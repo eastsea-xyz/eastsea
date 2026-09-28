@@ -31,6 +31,14 @@ struct AetherWalletApp: App {
             ContentView()
                 .environmentObject(model)
                 .onOpenURL { model.open(url: $0) }
+                #if DEBUG
+                // `-spinnerGallery` (debug builds only) shows every loader on one screen.
+                .overlay {
+                    if ProcessInfo.processInfo.arguments.contains("-spinnerGallery") {
+                        SpinnerGallery().frame(maxWidth: .infinity, maxHeight: .infinity).background(.background)
+                    }
+                }
+                #endif
             #endif
         }
         #if os(macOS)

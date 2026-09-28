@@ -45,12 +45,12 @@ fn hour_profiles_accrue_from_real_beacon_answers() {
     let p0 = beacons::profile(&n.parent.state, 0);
     let p1 = beacons::profile(&n.parent.state, 1);
     for h in 0..DAY_EPOCHS {
-        assert_eq!(p0.at(h), Some(1.0), "the always-on Mac, hour {h}");
-        assert_eq!(p1.at(h), Some((h < 8).into()), "the sleeping Mac, hour {h}");
+        assert_eq!(p0.at(h), Some(beacons::PROB_SCALE), "the always-on Mac, hour {h}");
+        assert_eq!(p1.at(h), Some(u64::from(h < 8) * beacons::PROB_SCALE), "the sleeping Mac, hour {h}");
     }
-    assert_eq!((p0.overall(), p0.worst()), (Some(1.0), Some(1.0)));
-    assert_eq!(p1.worst(), Some(0.0));
-    assert!((p1.overall().unwrap() - 1.0 / 3.0).abs() < 1e-9);
+    assert_eq!((p0.overall(), p0.worst()), (Some(beacons::PROB_SCALE), Some(beacons::PROB_SCALE)));
+    assert_eq!(p1.worst(), Some(0));
+    assert_eq!(p1.overall(), Some(beacons::PROB_SCALE / 3));
 }
 
 #[test]

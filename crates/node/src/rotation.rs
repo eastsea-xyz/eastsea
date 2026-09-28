@@ -195,32 +195,41 @@ pub fn draw_v3(pool: &[(String, String)], seed: &[u8], candidate: impl Fn(&str) 
 
 // --- docs/design/13-roadmap.md, F: a committee that sleeps ---
 
+/// The fixed point every probability below lives on: a probability of 1 is
+/// this many units (`beacons::PROB_SCALE`, a billion). These rules decide the
+/// next committee, which every validator must compute bit-identically, so all
+/// of their math is integer math on this scale — products in u128, rounded
+/// down — and never floating point.
+const SCALE: u64 = beacons::PROB_SCALE;
+
 /// Availability a seat is given where no profile reaches it (a Mac with no
 /// data yet, an hour nobody has observed): a healthy desktop, so a new Mac is
 /// not punished for being new — and with no profiles at all every candidate
 /// scores the same, the ticket decides, and the spread draw is `draw_v3`.
-pub const PRIOR: f64 = 0.99;
+pub const PRIOR: u64 = 99 * SCALE / 100;
 /// "Always on": a candidate up at least this much in every hour of the day.
-pub const ALWAYS_ON: f64 = 0.95;
+pub const ALWAYS_ON: u64 = 95 * SCALE / 100;
 /// A reserve key's uptime. The keys run on the founder's one Mac: each is
 /// nearly always up, but all of them fall together.
-pub const RESERVE_UP: f64 = 0.9999;
+pub const RESERVE_UP: u64 = 9999 * SCALE / 10000;
 /// Reserve keys seat themselves while the committee's worst hour of the day
 /// is likelier than this to lose its quorum (docs/design/13-roadmap.md, F).
-pub const RESERVE_JOIN_BELOW: f64 = 0.99;
+pub const RESERVE_JOIN_BELOW: u64 = 99 * SCALE / 100;
 /// ...and step down only once the odds are comfortably back above this. The
 /// gap between the two thresholds is hysteresis: a committee on the edge
 /// does not flap keys in and out every epoch.
-pub const RESERVE_LEAVE_ABOVE: f64 = 0.995;
+pub const RESERVE_LEAVE_ABOVE: u64 = 199 * SCALE / 200;
 /// Two picks whose worst-hour odds differ by less than this are a tie: the
-/// seed decides those, so which Macs are drawn stays unpredictable.
-const TIE: f64 = 1e-9;
+/// seed decides those, so which Macs are drawn stays unpredictable. Scores
+/// are integers on `SCALE`, so a tie is plain equality — one unit is 1e-9.
+const TIE: u64 = 1;
 /// A committee member is silent in an epoch it answered fewer than this many
 /// of the four beacon slots in.
 pub const SILENT_BELOW: u64 = 2;
 
-/// A seat's availability per hour bucket of the day, from its beacon profile.
-pub type Hours = [f64; DAY_EPOCHS as usize];
+/// A seat's availability per hour bucket of the day, from its beacon profile
+/// (`SCALE` units to 1).
+pub type Hours = [u64; DAY_EPOCHS as usize];
 
 /// Votes a committee of `n` seats needs: n − ⌊(n−1)/3⌋.
 fn quorum(n: usize) -> usize {
@@ -231,23 +240,23 @@ fn quorum(n: usize) -> usize {
     }
 }
 
-/// One more seat, up with probability `p`, folded into an hour's
-/// Poisson-binomial tail: `t[q]` is P(≥ q seats up), and the new seat shifts
-/// every quorum ask one way or the other.
-fn fold(t: &mut Vec<f64>, p: f64) {
-    let mut next = vec![1.0; t.len() + 1];
+/// One more seat, up with probability `p` (`SCALE` units), folded into an
+/// hour's Poisson-binomial tail: `t[q]` is P(≥ q seats up), and the new seat
+/// shifts every quorum ask one way or the other.
+fn fold(t: &mut Vec<u64>, p: u64) {
+    let mut next = vec![SCALE; t.len() + 1];
     for q in 1..next.len() {
-        next[q] = p * t[q - 1] + (1.0 - p) * t.get(q).copied().unwrap_or(0.0);
+        next[q] = ((t[q - 1] as u128 * p as u128 + t.get(q).copied().unwrap_or(0) as u128 * (SCALE - p) as u128) / SCALE as u128) as u64;
     }
     *t = next;
 }
 
 /// A seat set's per-hour Poisson-binomial tails: `tails[h][q]` = P(at least q
-/// of the seats are up in hour bucket `h`). Nothing here is self-reported —
-/// the probabilities are the seats' beacon-answer profiles, so a Mac that
-/// sleeps every night shows up as exactly that.
-fn tails(members: &[(String, String)], hours: &impl Fn(&str) -> Option<Hours>) -> Vec<Vec<f64>> {
-    let mut t = vec![vec![1.0f64]; DAY_EPOCHS as usize];
+/// of the seats are up in hour bucket `h`), in `SCALE` units. Nothing here is
+/// self-reported — the probabilities are the seats' beacon-answer profiles,
+/// so a Mac that sleeps every night shows up as exactly that.
+fn tails(members: &[(String, String)], hours: &impl Fn(&str) -> Option<Hours>) -> Vec<Vec<u64>> {
+    let mut t = vec![vec![SCALE]; DAY_EPOCHS as usize];
     for (k, _) in members {
         let p = hours(k);
         for (h, th) in t.iter_mut().enumerate() {
@@ -257,15 +266,15 @@ fn tails(members: &[(String, String)], hours: &impl Fn(&str) -> Option<Hours>) -
     t
 }
 
-/// P(≥ `q` seats up) at the tails' worst hour of the day.
-fn worst_at(t: &[Vec<f64>], q: usize) -> f64 {
-    t.iter().map(|t| t.get(q).copied().unwrap_or(0.0)).fold(f64::INFINITY, f64::min)
+/// P(≥ `q` seats up) at the tails' worst hour of the day, in `SCALE` units.
+fn worst_at(t: &[Vec<u64>], q: usize) -> u64 {
+    t.iter().map(|t| t.get(q).copied().unwrap_or(0)).fold(SCALE, u64::min)
 }
 
 /// P(a quorum of `members` is up) at their worst hour of the day (what the
-/// tests ask of a drawn set).
+/// tests ask of a drawn set), in `SCALE` units.
 #[cfg(test)]
-fn worst_hour(members: &[(String, String)], hours: &impl Fn(&str) -> Option<Hours>) -> f64 {
+fn worst_hour(members: &[(String, String)], hours: &impl Fn(&str) -> Option<Hours>) -> u64 {
     worst_at(&tails(members, hours), quorum(members.len()))
 }
 
@@ -273,23 +282,24 @@ fn worst_hour(members: &[(String, String)], hours: &impl Fn(&str) -> Option<Hour
 /// hour. The keys share the founder's one Mac, so they are not independent
 /// seats: with probability `RESERVE_UP` all `r` are up and the rest must
 /// muster `q − r`, otherwise they must muster the whole `q` alone.
-fn worst_with(bare: &[Vec<f64>], r: usize) -> f64 {
-    let at = |t: &Vec<f64>, q: usize| if q == 0 { 1.0 } else { t.get(q).copied().unwrap_or(0.0) };
+fn worst_with(bare: &[Vec<u64>], r: usize) -> u64 {
+    let at = |t: &Vec<u64>, q: usize| if q == 0 { SCALE } else { t.get(q).copied().unwrap_or(0) };
     let q = quorum(bare[0].len() - 1 + r);
     bare.iter()
-        .map(|t| RESERVE_UP * at(t, q.saturating_sub(r)) + (1.0 - RESERVE_UP) * at(t, q))
-        .fold(f64::INFINITY, f64::min)
+        .map(|t| ((at(t, q.saturating_sub(r)) as u128 * RESERVE_UP as u128 + at(t, q) as u128 * (SCALE - RESERVE_UP) as u128) / SCALE as u128) as u64)
+        .fold(SCALE, u64::min)
 }
 
 /// The worst hour's quorum odds after adding a seat with availability `p`:
 /// the tails convolved with one more Bernoulli, asked at the larger
-/// committee's quorum.
-fn score(t: &[Vec<f64>], q: usize, p: Option<&Hours>) -> f64 {
-    let at = |t: &Vec<f64>, q: usize| if q == 0 { 1.0 } else { t.get(q).copied().unwrap_or(0.0) };
+/// committee's quorum — the same words `fold` will produce, so the pick's
+/// score is exactly the set it leaves behind.
+fn score(t: &[Vec<u64>], q: usize, p: Option<&Hours>) -> u64 {
+    let at = |t: &Vec<u64>, q: usize| if q == 0 { SCALE } else { t.get(q).copied().unwrap_or(0) };
     t.iter()
-        .zip(p.map_or([PRIOR; DAY_EPOCHS as usize], |p| *p).iter())
-        .map(|(t, &p)| p * at(t, q.saturating_sub(1)) + (1.0 - p) * at(t, q))
-        .fold(f64::INFINITY, f64::min)
+        .zip(p.map_or([PRIOR; DAY_EPOCHS as usize], |p| *p))
+        .map(|(t, p)| ((at(t, q.saturating_sub(1)) as u128 * p as u128 + at(t, q) as u128 * (SCALE - p) as u128) / SCALE as u128) as u64)
+        .fold(SCALE, u64::min)
 }
 
 /// The greedy seat-picker the spread draw and early replacement share: always
@@ -309,18 +319,18 @@ struct Greedy<'a> {
 impl Greedy<'_> {
     /// The next seat from `order` given the committee's per-hour tails, or
     /// None when no candidate is left that the cap allows.
-    fn pick<'b>(&self, order: &[&'b (String, String)], t: &[Vec<f64>]) -> Option<&'b (String, String)> {
+    fn pick<'b>(&self, order: &[&'b (String, String)], t: &[Vec<u64>]) -> Option<&'b (String, String)> {
         let q = quorum(t[0].len());
         order.iter()
             .filter(|m| *self.held.get(&(self.op)(&m.0)).unwrap_or(&0) < self.cap)
             .map(|m| {
                 let p = (self.hours)(&m.0);
                 let s = score(t, q, p.as_ref()) / TIE;
-                // Descending score, always-on first, lowest ticket — and the
-                // grid keeps "within TIE" transitive, so the pick does not
-                // depend on the order the candidates happen to be listed in.
+                // Descending score, always-on first, lowest ticket — an
+                // integer grid, so a tie is plain equality and the pick does
+                // not depend on the order the candidates are listed in.
                 (
-                    std::cmp::Reverse(s.round() as i64),
+                    std::cmp::Reverse(s),
                     !p.is_some_and(|p| p.iter().all(|&x| x >= ALWAYS_ON)),
                     ticket(self.seed, &m.0),
                     *m,
@@ -331,7 +341,7 @@ impl Greedy<'_> {
     }
 
     /// Seat `m`: fold its availability into the tails and the operator's count.
-    fn seat(&mut self, m: &(String, String), t: &mut [Vec<f64>]) {
+    fn seat(&mut self, m: &(String, String), t: &mut [Vec<u64>]) {
         let p = (self.hours)(&m.0);
         for (h, th) in t.iter_mut().enumerate() {
             fold(th, p.map_or(PRIOR, |a| a[h]));
@@ -419,8 +429,8 @@ pub fn draw_spread(
 /// A key's worst hour of the day (its profile's worst bucket; `PRIOR` with no
 /// profile). Early replacement sends the worst profiles out first: the
 /// silence record condemns a member, its profile only orders them.
-fn worst_of(key: &str, hours: &impl Fn(&str) -> Option<Hours>) -> f64 {
-    hours(key).map_or(PRIOR, |p| p.iter().copied().fold(PRIOR, f64::min))
+fn worst_of(key: &str, hours: &impl Fn(&str) -> Option<Hours>) -> u64 {
+    hours(key).map_or(PRIOR, |p| p.iter().copied().fold(PRIOR, u64::min))
 }
 
 /// Early replacement (docs/design/13-roadmap.md, F): a substitution is a
@@ -460,8 +470,7 @@ pub fn replace_silent(
     }
     going.sort_by(|a, b| {
         worst_of(&a.0, &hours)
-            .partial_cmp(&worst_of(&b.0, &hours))
-            .expect("finite odds")
+            .cmp(&worst_of(&b.0, &hours))
             .then_with(|| ticket(seed, &a.0).cmp(&ticket(seed, &b.0)))
     });
     going.truncate(swaps);
@@ -920,8 +929,13 @@ mod tests {
         assert!(draw_at(&s, 4, b"seed", &running(&[0xa1, 0xa2, 0xa3, 0xa4])).is_none());
     }
 
+    /// `x`/`y` in `SCALE` units (the test's way of writing a probability).
+    fn pct(x: u64, y: u64) -> u64 {
+        x * SCALE / y
+    }
+
     /// n seats all up with probability p at every hour.
-    fn flat(n: usize, p: f64) -> (Vec<(String, String)>, impl Fn(&str) -> Option<Hours>) {
+    fn flat(n: usize, p: u64) -> (Vec<(String, String)>, impl Fn(&str) -> Option<Hours>) {
         let set: Vec<_> = (0..n).map(|i| (format!("k{i}"), format!("n{i}"))).collect();
         let hours = move |_: &str| -> Option<Hours> { Some([p; DAY_EPOCHS as usize]) };
         (set, hours)
@@ -931,17 +945,19 @@ mod tests {
     fn the_odds_match_the_binomial_tables() {
         // docs/research/small-committee-liveness-2026.md: 4 seats at 0.9 keep
         // their quorum 94.77% of the time; 16 seats at 0.65 — one time zone
-        // asleep — only about half.
-        let (four, p9) = flat(4, 0.9);
-        assert!((worst_hour(&four, &p9) - 0.9477).abs() < 1e-6);
-        let (sixteen, p65) = flat(16, 0.65);
+        // asleep — only about half. Integer fixed point rounds each fold down
+        // by under one unit, so the tables match to a few parts in a billion.
+        let (four, p9) = flat(4, pct(9, 10));
+        assert!(worst_hour(&four, &p9).abs_diff(pct(9477, 10000)) < 1_000, "{:?}", worst_hour(&four, &p9));
+        let (sixteen, p65) = flat(16, pct(65, 100));
         // The doc's "~50%" is the stall side: the quorum survives 49.0% of nights.
-        assert!((0.48..0.50).contains(&worst_hour(&sixteen, &p65)), "{:?}", worst_hour(&sixteen, &p65));
+        let wh = worst_hour(&sixteen, &p65);
+        assert!((pct(48, 100)..pct(50, 100)).contains(&wh), "{wh}");
         // No data at all: the PRIOR keeps a four-seat committee comfortably up.
-        assert!(worst_hour(&four, &|_| None) > 0.999);
+        assert!(worst_hour(&four, &|_| None) > pct(999, 1000));
         // Three time zones eight hours apart cover each other's nights; one
         // zone alone stalls through every night of its own.
-        let zone = |z: u64| std::array::from_fn(|h: usize| if ((h as u64 + 8 * z) % DAY_EPOCHS) < 16 { 0.95 } else { 0.2 });
+        let zone = |z: u64| std::array::from_fn(|h: usize| if ((h as u64 + 8 * z) % DAY_EPOCHS) < 16 { pct(95, 100) } else { pct(2, 10) });
         let mut avail = std::collections::HashMap::new();
         let mut spread = vec![];
         for z in 0..3u64 {
@@ -952,8 +968,8 @@ mod tests {
             }
         }
         let spread_hours = |k: &str| avail.get(k).copied();
-        let (alone, alone_hours) = flat(15, 0.2);
-        assert!(worst_hour(&spread, &spread_hours) > worst_hour(&alone, &alone_hours) * 100.0);
+        let (alone, alone_hours) = flat(15, pct(2, 10));
+        assert!(worst_hour(&spread, &spread_hours) > worst_hour(&alone, &alone_hours) * 100);
     }
 
     #[test]
@@ -961,7 +977,7 @@ mod tests {
         // Three time zones eight hours apart: each candidate is up through its
         // zone's 16-hour day and dark (p 0.2) through its 8-hour night — the
         // early-pool shape, everyone in one country.
-        let zone = |z: u64| std::array::from_fn(|h: usize| if ((h as u64 + 8 * z) % DAY_EPOCHS) < 16 { 1.0 } else { 0.2 });
+        let zone = |z: u64| std::array::from_fn(|h: usize| if ((h as u64 + 8 * z) % DAY_EPOCHS) < 16 { SCALE } else { pct(2, 10) });
         let mut avail = std::collections::HashMap::new();
         let mut pool = vec![];
         for (z, n) in [(0u64, 20u64), (1, 10), (2, 10)] {
@@ -988,10 +1004,83 @@ mod tests {
         for s in 1..=10u8 {
             let spread = draw_spread(&pool, &seed(s), ops, &running, hours).unwrap();
             let ticketed = draw_v3(&pool, &seed(s), ops, &running).unwrap();
-            assert!(worst_hour(&spread, &hours) + 1e-12 >= worst_hour(&ticketed, &hours), "seed {s}");
-            slept |= worst_hour(&spread, &hours) > worst_hour(&ticketed, &hours) + 1e-9;
+            assert!(worst_hour(&spread, &hours) >= worst_hour(&ticketed, &hours), "seed {s}");
+            slept |= worst_hour(&spread, &hours) > worst_hour(&ticketed, &hours);
         }
         assert!(slept, "the ticket draw sometimes adds to the sleeping zone");
+    }
+
+    /// Three time zones' candidates plus an always-on cohort: zone `z`'s Macs
+    /// are up through their 16-hour day and dark (p 1/5) through their 8-hour
+    /// night; the always-on cohort is up around the clock.
+    fn world() -> (std::collections::HashMap<String, Hours>, Vec<(String, String)>) {
+        let zone = |z: u64| std::array::from_fn(|h: usize| if ((h as u64 + 8 * z) % DAY_EPOCHS) < 16 { SCALE } else { pct(1, 5) });
+        let mut avail = std::collections::HashMap::new();
+        let mut pool = vec![];
+        for (z, n) in [(0u64, 20u64), (1, 10), (2, 10)] {
+            for i in 0..n {
+                let k = format!("z{z}m{i}");
+                avail.insert(k.clone(), zone(z));
+                pool.push((k, format!("n{z}{i}")));
+            }
+        }
+        for i in 0..4u64 {
+            avail.insert(format!("a{i}"), [SCALE; DAY_EPOCHS as usize]);
+            pool.push((format!("a{i}"), format!("an{i}")));
+        }
+        (avail, pool)
+    }
+
+    #[test]
+    fn the_same_state_draws_the_same_committee_every_time() {
+        // The draw decides the next committee, so it is consensus: computed
+        // twice it must land on the same words — and the order the pool
+        // happens to be listed in (a HashMap's whim on a real node) must not
+        // matter either.
+        let (avail, pool) = world();
+        let hours = |k: &str| avail.get(k).copied();
+        let ops = |k: &str| Some(k.to_string());
+        let running = Committee { members: pool[..10].to_vec() };
+        let first = draw_spread(&pool, &seed(1), ops, &running, hours).expect("grows");
+        assert_eq!(draw_spread(&pool, &seed(1), ops, &running, hours).unwrap(), first, "computed twice");
+        let mut shuffled = pool.clone();
+        shuffled.sort_by(|a, b| b.1.cmp(&a.1)); // by node id, not the insertion order
+        assert_eq!(draw_spread(&shuffled, &seed(1), ops, &running, hours).unwrap(), first, "pool order does not matter");
+        // The reserve keys' liveness rule computes the same words too.
+        let r = Reserve { operator: "0xf0".into(), members: (1..=3).map(|i| (format!("r{i}"), format!("rn{i}"))).collect() };
+        let seat = with_reserve(None, &pool, &seed(1), ops, &r, &running, hours).expect("a risky night seats a key");
+        assert_eq!(with_reserve(None, &shuffled, &seed(1), ops, &r, &running, hours).unwrap(), seat);
+        assert_eq!(with_reserve(None, &pool, &seed(1), ops, &r, &running, hours).unwrap(), seat);
+    }
+
+    #[test]
+    fn a_fixed_state_draws_a_fixed_committee() {
+        // Golden vector: any change to the draw's arithmetic — another
+        // rounding, scale or tie grid — draws a different committee here.
+        let (avail, pool) = world();
+        let hours = |k: &str| avail.get(k).copied();
+        let ops = |k: &str| Some(k.to_string());
+        let running = Committee { members: pool[..10].to_vec() };
+        assert_eq!(
+            draw_spread(&pool, &seed(1), ops, &running, hours),
+            Some(vec![
+                ("z0m0".into(), "n00".into()),
+                ("z0m1".into(), "n01".into()),
+                ("z0m2".into(), "n02".into()),
+                ("z0m3".into(), "n03".into()),
+                ("z0m4".into(), "n04".into()),
+                ("z0m5".into(), "n05".into()),
+                ("z0m6".into(), "n06".into()),
+                ("z0m7".into(), "n07".into()),
+                ("z0m8".into(), "n08".into()),
+                ("z0m9".into(), "n09".into()),
+                // The three seats the budget allows all go to the always-on
+                // cohort, in ticket order — the sleeping zone keeps none.
+                ("a3".into(), "an3".into()),
+                ("a1".into(), "an1".into()),
+                ("a2".into(), "an2".into()),
+            ])
+        );
     }
 
     #[test]
@@ -1002,7 +1091,7 @@ mod tests {
         let whale: Vec<(String, String)> = (0..3).map(|i| (format!("w{i}"), format!("wn{i}"))).collect();
         members.extend(whale);
         let pool: Vec<_> = (3..8).map(|i| (format!("w{i}"), format!("wn{i}"))).collect();
-        let hours = |k: &str| k.starts_with('w').then_some([1.0; DAY_EPOCHS as usize]);
+        let hours = |k: &str| k.starts_with('w').then_some([SCALE; DAY_EPOCHS as usize]);
         let ops = |k: &str| k.starts_with('w').then(|| "0xwhale".to_string());
         let running = Committee { members };
         let next = draw_spread(&pool, &seed(9), ops, &running, hours).expect("grows");
@@ -1033,9 +1122,9 @@ mod tests {
         // Four always-on seats and two at 0.5: P(≥5 of 6) = 0.75 < 0.99 — the
         // reserve keys' business now, and one key is exactly enough (with it
         // the four always-on seats alone carry the quorum of seven).
-        let at = |p: f64| [p; DAY_EPOCHS as usize];
+        let at = |p: u64| [p; DAY_EPOCHS as usize];
         for (k, _) in &members {
-            avail.insert(k.clone(), at(if sleeper(k) { 0.5 } else { 1.0 }));
+            avail.insert(k.clone(), at(if sleeper(k) { pct(1, 2) } else { SCALE }));
         }
         let hours = |k: &str| avail.get(k).copied();
         let running = Committee { members: members.clone() };
@@ -1048,7 +1137,7 @@ mod tests {
         // seating stays exactly as it is, keys seated or not.
         for (k, p) in avail.iter_mut() {
             if sleeper(k) {
-                *p = at(0.905);
+                *p = at(pct(905, 1000));
             }
         }
         let band = |k: &str| avail.get(k).copied();
@@ -1057,7 +1146,7 @@ mod tests {
         // Comfortable odds again: the key steps down.
         for (k, p) in avail.iter_mut() {
             if sleeper(k) {
-                *p = at(0.99);
+                *p = at(pct(99, 100));
             }
         }
         let after = with_reserve(None, &members, &seed(8), ops, &r, &seated, |k: &str| avail.get(k).copied()).expect("steps down");
@@ -1067,14 +1156,14 @@ mod tests {
         // saves that quorum, so none seats itself.
         let mut dark = std::collections::HashMap::new();
         for (i, (k, _)) in members.iter().enumerate() {
-            dark.insert(k.clone(), at(if i == 0 { 1.0 } else { 0.0 }));
+            dark.insert(k.clone(), at(if i == 0 { SCALE } else { 0 }));
         }
         assert!(with_reserve(None, &members, &seed(8), ops, &r, &running, |k: &str| dark.get(k).copied()).is_none());
     }
 
     #[test]
     fn silent_members_are_replaced_within_a_third_minus_one() {
-        let hours = |_: &str| -> Option<Hours> { Some([1.0; DAY_EPOCHS as usize]) };
+        let hours = |_: &str| -> Option<Hours> { Some([SCALE; DAY_EPOCHS as usize]) };
         let ops = |k: &str| k.starts_with('m').then(|| format!("op-{k}"));
         let pool: Vec<_> = (1..=2u8).map(mac).collect();
         let epoch = 30u64;

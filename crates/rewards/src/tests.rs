@@ -574,12 +574,12 @@ fn hour_profiles_track_when_each_mac_answers() {
     let p0 = beacons::profile(&s, 0);
     let p1 = beacons::profile(&s, 1);
     for h in 0..DAY_EPOCHS {
-        assert_eq!(p0.at(h), Some(1.0), "Mac 0 hour {h}");
-        assert_eq!(p1.at(h), Some((h < 4).into()), "Mac 1 hour {h}");
+        assert_eq!(p0.at(h), Some(beacons::PROB_SCALE), "Mac 0 hour {h}");
+        assert_eq!(p1.at(h), Some(u64::from(h < 4) * beacons::PROB_SCALE), "Mac 1 hour {h}");
     }
-    assert_eq!((p0.overall(), p0.worst()), (Some(1.0), Some(1.0)));
-    assert_eq!(p1.worst(), Some(0.0));
-    assert!((p1.overall().unwrap() - 1.0 / 6.0).abs() < 1e-9);
+    assert_eq!((p0.overall(), p0.worst()), (Some(beacons::PROB_SCALE), Some(beacons::PROB_SCALE)));
+    assert_eq!(p1.worst(), Some(0));
+    assert_eq!(p1.overall(), Some(beacons::PROB_SCALE / 6));
 }
 
 #[test]
@@ -600,9 +600,9 @@ fn profiles_recover_from_zero_and_decay_to_it() {
             distribute(&mut s, (e + 1) * EB).unwrap();
         }
         let p = beacons::profile(&s, 0);
-        assert_eq!(p.at(0), Some(1.0), "an up hour stays exact on day {day}");
+        assert_eq!(p.at(0), Some(beacons::PROB_SCALE), "an up hour stays exact on day {day}");
         // The dark bucket: 0/4 = 0, then 4/8 = 1/2, then 3/12 = 1/4.
-        assert_eq!(p.at(8), Some([0.0, 0.5, 0.25][day as usize]), "day {day}");
+        assert_eq!(p.at(8), Some([0, 4, 3][day as usize] * beacons::PROB_SCALE / [4, 8, 12][day as usize]), "day {day}");
     }
 }
 

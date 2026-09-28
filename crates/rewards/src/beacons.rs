@@ -169,6 +169,11 @@ pub fn put_beacon(state: &mut WorldState, index: u64, b: Beacon) {
 pub const PROFILE_DAYS: u64 = 14;
 /// Fixed-point scale of a profile bucket: a fully available hour is this.
 pub const PROFILE_SCALE: u64 = 64;
+/// The scale `Profile` ratios are read in: a probability of 1 is this many
+/// units. Integer fixed point, never floating point — the liveness rules that
+/// read profiles (docs/design/13-roadmap.md, F) decide the next committee, so
+/// every validator must compute bit-identical words.
+pub const PROB_SCALE: u64 = 1_000_000_000;
 /// What `recent` writes when a count is unknown (a Mac's first epoch, or a gap).
 pub const NO_COUNT: u64 = 15;
 
@@ -202,19 +207,21 @@ impl Profile {
     fn bucket(w: U256, h: usize) -> u64 {
         ((w >> (BUCKET_BITS * h)) & U256::from((1u64 << BUCKET_BITS) - 1)).to::<u64>()
     }
-    /// Availability in hour bucket `h` (hours wrap): the answered/offered
-    /// ratio, once that hour has ever been offered.
-    pub fn at(&self, h: u64) -> Option<f64> {
+    /// Availability in hour bucket `h` (hours wrap), in `PROB_SCALE` units:
+    /// the answered/offered ratio, once that hour has ever been offered.
+    /// (The EMA keeps answered ≤ offered; the min only guards the division.)
+    pub fn at(&self, h: u64) -> Option<u64> {
         let h = (h % DAY_EPOCHS) as usize;
-        (self.offered[h] > 0).then(|| self.answered[h] as f64 / self.offered[h] as f64)
+        let (a, o) = (self.answered[h], self.offered[h]);
+        (o > 0).then(|| a.min(o) * PROB_SCALE / o)
     }
-    /// Availability over the whole day.
-    pub fn overall(&self) -> Option<f64> {
-        let offered: u64 = self.offered.iter().sum();
-        (offered > 0).then(|| self.answered.iter().sum::<u64>() as f64 / offered as f64)
+    /// Availability over the whole day, in `PROB_SCALE` units.
+    pub fn overall(&self) -> Option<u64> {
+        let (a, o): (u64, u64) = (self.answered.iter().sum(), self.offered.iter().sum());
+        (o > 0).then(|| a.min(o) * PROB_SCALE / o)
     }
-    /// The worst observed hour's availability.
-    pub fn worst(&self) -> Option<f64> {
+    /// The worst observed hour's availability, in `PROB_SCALE` units.
+    pub fn worst(&self) -> Option<u64> {
         (0..DAY_EPOCHS).filter_map(|h| self.at(h)).fold(None, |worst, p| Some(worst.map_or(p, |w| w.min(p))))
     }
 }

@@ -1,0 +1,214 @@
+// Entry point: the header (search, endpoint, theme), the hash router and the
+// polling that keeps the home page and a pending transaction current. The
+// explorer talks to exactly one host — the Aether node whose endpoint the
+// reader sets — and to nothing else.
+
+import { DEFAULT_ENDPOINT, Node, loadEndpoint, saveEndpoint } from './rpc.js';
+import { parseTokenSources, tokenInfo, tokenOrigin } from './erc20.js';
+import { resolveSearch } from './search.js';
+import { accountView, blockView, errorView, homeView, notFoundView, tokenView, txView } from './pages.js';
+import { h, loading, message } from './dom.js';
+
+const view = document.getElementById('view');
+const top = document.getElementById('top');
+const foot = document.getElementById('foot');
+
+// ---- the context every view reads through ----
+
+const ctx = {
+  node: null,
+  chainId: null, // set once the node answers aether_status
+  pollNow: false, // the current page asked to be re-checked (a pending tx)
+  tokenCache: new Map(),
+  originCache: new Map(),
+  sourcesRaw: null, // token-sources.json as fetched
+
+  /** The token sources of the connected chain (null before the chain id is
+   * known, or when the file or the chain is missing). */
+  sources() {
+    return parseTokenSources(this.sourcesRaw, this.chainId);
+  },
+
+  /** `eth_call(to, data)` — the reader the ERC-20 helpers take. An arrow, so
+   * it keeps the node when handed around as a bare function. */
+  read: (to, data) => ctx.node.read(to, data),
+
+  /** Cached ERC-20 metadata (null = not a readable token); three eth_calls
+   * per address the first time, none after. */
+  async token(address) {
+    const a = String(address).toLowerCase();
+    if (!this.tokenCache.has(a)) this.tokenCache.set(a, await tokenInfo(a, (to, data) => this.node.read(to, data)));
+    return this.tokenCache.get(a);
+  },
+
+  /** Cached origin scan (the walk over the launchpad and DEX lists). */
+  async origin(address) {
+    const a = String(address).toLowerCase();
+    if (!this.originCache.has(a)) this.originCache.set(a, await tokenOrigin(a, this.sources(), (to, data) => this.node.read(to, data)));
+    return this.originCache.get(a);
+  },
+};
+
+// ---- header ----
+
+const searchInput = h('input', { id: 'q', type: 'search', placeholder: 'Height, 0x address or tx hash', 'aria-label': 'Search' });
+const searchMsg = h('span', { id: 'search-msg', class: 'small' });
+const nodeInput = h('input', { id: 'node-url', type: 'url', spellcheck: 'false', 'aria-label': 'Node JSON-RPC endpoint' });
+const nodeMsg = h('span', { class: 'small' });
+const chainPill = h('span', { class: 'pill', id: 'chain' }, 'connecting…');
+const themeButton = h('button', { class: 'ghost', title: 'Switch theme', onclick: cycleTheme }, '◐');
+
+top.append(
+  h('a', { class: 'brand', href: '#/' },
+    h('span', { class: 'logo', 'aria-hidden': 'true' }),
+    h('span', { class: 'brand-name' }, 'Aether Explorer')),
+  chainPill,
+  h('form', {
+    id: 'search',
+    role: 'search',
+    onsubmit: async (e) => {
+      e.preventDefault();
+      searchMsg.replaceChildren();
+      if (!String(searchInput.value).trim()) return;
+      const route = await resolveSearch(searchInput.value, ctx.node);
+      if (!route) {
+        searchMsg.append(message('error', `Nothing this node knows matches "${String(searchInput.value).trim().slice(0, 80)}" — try a height, a 0x… address or a tx hash.`));
+        return;
+      }
+      searchInput.value = '';
+      location.hash = `#/${route.page}/${route.page === 'block' ? route.height : (route.hash || route.address)}`;
+    },
+  }, searchInput, h('button', { type: 'submit' }, 'Search'), searchMsg),
+  h('details', { id: 'settings' },
+    h('summary', {}, 'Settings'),
+    h('div', { class: 'settings-body' },
+      h('label', {}, 'Node JSON-RPC endpoint', nodeInput),
+      h('div', { class: 'row tight' },
+        h('button', {
+          onclick: () => {
+            try {
+              const url = saveEndpoint(nodeInput.value, store);
+              connect(url);
+              nodeMsg.replaceChildren(message('ok', `Reading ${url} now.`));
+            } catch (e) {
+              nodeMsg.replaceChildren(message('error', e.message));
+            }
+          },
+        }, 'Save'),
+        h('button', {
+          onclick: () => {
+            nodeInput.value = DEFAULT_ENDPOINT;
+            saveEndpoint(DEFAULT_ENDPOINT, store);
+            connect(DEFAULT_ENDPOINT);
+          },
+        }, 'Reset'),
+        nodeMsg),
+      h('p', { class: 'small muted' }, 'An Aether node serves JSON-RPC on this Mac at 127.0.0.1:18545 while it runs. Reads only; the explorer signs nothing.'))),
+  themeButton,
+);
+
+foot.append(
+  h('p', { class: 'small muted' },
+    'Read-only data from one Aether node, chosen in Settings. Nothing here is light-client verified — pages say ',
+    h('em', {}, 'from the node'), ' where the wallet would verify a committee certificate. ',
+    'No analytics, no external requests, no prices.'),
+);
+
+// A storage handle that is null when the browser denies access outright; every
+// user of it already treats null as "keep the defaults".
+const store = (() => { try { return localStorage; } catch { return null; } })();
+
+// ---- endpoint, chain pill ----
+
+function connect(url) {
+  ctx.node = new Node(url);
+  ctx.chainId = null;
+  ctx.tokenCache.clear();
+  ctx.originCache.clear();
+  nodeInput.value = url;
+  chainPill.replaceChildren('connecting…');
+  chainPill.classList.remove('good');
+  ctx.node.call('aether_status')
+    .then((s) => {
+      ctx.chainId = s.chain_id;
+      const net = ctx.sources()?.network;
+      chainPill.replaceChildren(`${net || 'chain'} ${s.chain_id}`);
+      chainPill.classList.add('good');
+    })
+    .catch(() => chainPill.replaceChildren('no node'));
+  render();
+}
+
+// ---- routing ----
+
+const routes = [
+  [/^#?\/?$/, () => homeView(ctx)],
+  [/^#\/block\/(\d+)$/, (m) => blockView(ctx, Number(m[1]))],
+  [/^#\/tx\/((?:0x)?[0-9a-fA-F]{64})$/, (m) => txView(ctx, m[1].toLowerCase().replace(/^0x/, '').replace(/^/, '0x'))],
+  [/^#\/account\/(0x[0-9a-fA-F]{40})$/, (m) => accountView(ctx, m[1].toLowerCase())],
+  [/^#\/token\/(0x[0-9a-fA-F]{40})$/, (m) => tokenView(ctx, m[1].toLowerCase())],
+];
+
+// A slow page never overwrites a newer one: only the newest render may paint.
+let renderSeq = 0;
+
+async function render() {
+  ctx.pollNow = false;
+  const mine = ++renderSeq;
+  const hash = location.hash || '#/';
+  view.replaceChildren(loading());
+  let out;
+  try {
+    const hit = routes.find(([re]) => re.test(hash));
+    out = hit ? await hit[1](hash.match(hit[0])) : notFoundView(ctx, `No page for ${hash.slice(0, 60)}.`);
+  } catch (e) {
+    out = errorView(ctx, e);
+  }
+  if (mine === renderSeq) view.replaceChildren(out);
+}
+
+window.addEventListener('hashchange', render);
+
+// Keep the home page and a pending transaction current while someone watches;
+// a hidden tab or any other page (open disclosure blocks included) is left alone.
+setInterval(() => {
+  if (document.hidden) return;
+  const h0 = location.hash || '#/';
+  if (h0 === '#' || h0 === '#/' || ctx.pollNow) render();
+}, 12_000);
+
+// ---- theme ----
+
+function themePref() {
+  try {
+    return localStorage.getItem('aether-explorer.theme') || '';
+  } catch {
+    return ''; // storage denied (some private modes): follow the system
+  }
+}
+
+function applyTheme() {
+  const pref = themePref();
+  if (pref) document.documentElement.dataset.theme = pref;
+  else delete document.documentElement.dataset.theme;
+  themeButton.textContent = { dark: '☾', light: '☀' }[pref] || '◐';
+  themeButton.title = `Theme: ${pref || 'auto'}`;
+}
+
+function cycleTheme() {
+  const order = ['', 'dark', 'light'];
+  const next = order[(order.indexOf(themePref()) + 1) % order.length];
+  try {
+    localStorage.setItem('aether-explorer.theme', next);
+  } catch { /* keep the system theme when storage is denied */ }
+  applyTheme();
+}
+
+// ---- boot ----
+
+applyTheme();
+// Sources first, so the first chain pill and origin scan already have them.
+try {
+  ctx.sourcesRaw = await (await fetch('token-sources.json')).json();
+} catch { /* no sources: origin falls back to "not in any list" */ }
+connect(loadEndpoint(store));

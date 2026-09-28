@@ -1,0 +1,121 @@
+# Aether Explorer
+
+> 한국어 요약: Aether 노드의 JSON-RPC를 읽는 정적 파일 블록 익스플로러. 빌드 단계
+> 없이 `python3 -m http.server`로 띄우고, 브라우저가 노드(기본 `127.0.0.1:18545`)에
+> 직접 읽기 요청만 보낸다. 분석·외부 호출·가격 정보 없음. 모든 데이터는 "노드 제공"
+> 으로 표시하며, 브라우저에서 위원회 인증서를 검증하지는 않는다(지갑 앱만 검증).
+> `npm test`로 디코딩/포맷 헬퍼 단위 테스트, `node test/live.mjs`로 실노드 스모크.
+
+A read-only block explorer for an Aether chain, served as **static files** — no
+build step, no framework, no server-side code. The page in your browser talks
+straight to one Aether node's JSON-RPC endpoint (default `http://127.0.0.1:18545`,
+changeable in Settings). No analytics, no external requests of any kind, no
+prices.
+
+## Run
+
+```bash
+cd apps/explorer
+python3 -m http.server 8090
+# open http://localhost:8090
+```
+
+Any static file server works; `npx serve` or a GitHub Pages deployment behave
+the same. Opening `index.html` straight from the filesystem also works in most
+browsers (the node's CORS allows it — see below), but a served origin is the
+supported path.
+
+The node must be reachable from the browser: the Aether app's node listens on
+`127.0.0.1:18545` on this Mac while it runs. Point Settings at another URL to
+read a different node.
+
+## Pages
+
+| Page | What it shows |
+|---|---|
+| Home | finalized height (hero), tx rate over the newest 30 blocks, committee (registry candidates + epoch), protocol (with node/scheduled versions and an update pill), mempool, base fee, prover status, latest blocks, chain facts |
+| Block | every header field the RPC serves, neighbor links, this node's prover view of the block's proof, the transactions with their receipts (a pruned block shows what the era record still carries) |
+| Transaction | receipt (status, gas, contract creation, output), events decoded as ERC-20 `Transfer`/`Approval` with symbol and amount, raw logs for anything else |
+| Account | balance/nonce/code, token detection, latest rewards (`aether_rewards`), ERC-20 transfers to/from the address in the node's log window |
+| Token | name/symbol/decimals/total supply, the origin badge and impersonation warning exactly as the wallet shows them, recent transfers |
+| Search | height, `0x`-address, or tx hash; a hash with no receipt is matched against the newest block hashes |
+
+## Honest labels
+
+Nothing in this explorer is verified in the browser. The wallet app verifies
+finality certificates and state proofs with its light client; this page **reads
+one node and says so** on every page ("Data read from the node at …, not
+light-client verified"). Proof status on a block is that node's prover's view,
+not an on-chain record. Token badges follow the wallet's zero-trust policy:
+*Launchpad · unverified* is the wallet's label for launchpad tokens, not a
+judgement of fraud, and an "official list" badge only means the address is in
+the bundled `token-sources.json` (kept in sync with `apps/wallet` and
+`apps/extension`).
+
+Browser-side committee-certificate verification (launch plan E4) is future
+work; the RPC to support it (`aether_getFinalized`) already exists.
+
+## CORS and the node's endpoint
+
+`crates/node/src/rpc.rs` serves JSON-RPC on `POST /` with
+`Access-Control-Allow-Origin: *` (methods POST/OPTIONS, header `Content-Type`),
+bound to loopback. In practice:
+
+- A page served from **any origin** — `localhost:8090`, another port, a hosted
+  copy — may read a node on the user's own machine, which is exactly what this
+  explorer does.
+- The node **binds loopback only**. To explore a node on another machine you
+  need a tunnel or proxy (e.g. `ssh -L 18545:127.0.0.1:18545`) and to point
+  Settings at it.
+- The explorer only ever sends reads (`aether_*` queries, `eth_call`,
+  `eth_getLogs`, `eth_blockNumber`). It never sends a transaction; the one
+  write-ish RPC a node has (`aether_sendTransaction`) is never called.
+
+## RPC methods used
+
+`aether_status`, `aether_recentBlocks`, `aether_getBlock`, `aether_getReceipt`,
+`aether_getAccount`, `aether_candidates`, `aether_proverStatus`,
+`aether_rewards`, `aether_history`, `eth_call`, `eth_getLogs`,
+`eth_blockNumber`. Node-side notes are in `crates/node/src/rpc.rs`; the
+explorer adds no node RPCs.
+
+Two windows to know about: `eth_getLogs` scans at most the newest 2,000
+finalized blocks (token/account transfer lists are labeled with that), and
+block summaries are served for heights this node kept — older ones come back
+as era records, and heights below what it ever kept simply don't.
+
+## Tests
+
+```bash
+cd apps/explorer
+npm test              # decoding/formatting/search/RPC units (node --test, offline)
+node test/live.mjs    # renders every page against a real node (default 127.0.0.1:18545)
+```
+
+The unit tests cover the pure helpers: ABI word parsing and `Transfer`/
+`Approval` decoding, revert-reason decoding, amount/time formatting, the token
+metadata and origin scans (against a mock reader), the badge rules, the search
+classifier and resolver, and the JSON-RPC client (injected `fetch`, endpoint
+persistence, error and timeout paths). `test/live.mjs` is a manual smoke test
+in a minimal DOM stub — it is deliberately not part of `npm test`.
+
+## Layout
+
+```
+index.html          the shell (header, view, footer)
+explorer.css        the extension's palette, stretched over a page
+token-sources.json  copy of the wallet's token sources (keep in sync)
+js/dom.js           DOM builder — text only, never HTML from chain data
+js/rpc.js           JSON-RPC client + endpoint persistence
+js/format.js        amounts, numbers, times (BigInt-exact)
+js/abi.js           ABI words, selectors, ERC-20 event decoding, revert reasons
+js/erc20.js         token metadata, origin scan, badges, impersonation check
+js/search.js        search classification and hash resolution
+js/pages.js         the five views
+js/app.js           router, header, settings, theme, polling
+test/*.test.mjs     units (npm test)
+test/live.mjs       live smoke (manual)
+```
+
+Mobile-friendly (tables scroll, tiles wrap), dark/light (follows the system;
+the ◐ button cycles auto → dark → light).

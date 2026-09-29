@@ -233,8 +233,6 @@ fn enough(free: u64, size: u64) -> bool {
     free >= size.saturating_mul(2).saturating_add(RECOVERY_RESERVE)
 }
 
-/// The upstream's snapshot, downloaded and checked against its BLAKE3
-/// (authenticity comes from the certified block after it, in `check`).
 /// Refuse a peer's wrong-sized response before allocating its decoded bytes.
 pub fn decode_snapshot_chunk(value: &Value, expected: usize) -> Result<Vec<u8>, String> {
     let hex = value["data"].as_str().ok_or("no chunk data")?;
@@ -244,6 +242,8 @@ pub fn decode_snapshot_chunk(value: &Value, expected: usize) -> Result<Vec<u8>, 
     hex::decode(hex).map_err(|e| e.to_string())
 }
 
+/// The upstream's snapshot, downloaded and checked against its BLAKE3
+/// (authenticity comes from the certified block after it, in `check`).
 /// Chunks are fetched in parallel: each costs a round trip on a slow link.
 /// `guard` runs with the advertised size before the first chunk is fetched.
 async fn download_with(

@@ -10,9 +10,20 @@ publish = false
 crate-type = ["staticlib", "cdylib", "lib"]
 name = "aether_ffi"
 
+[features]
+# The Swift bindings generator (the uniffi-bindgen bin, run by
+# scripts/build-wallet.sh). Only the bin needs uniffi's "cli" feature: enabling
+# it in the library pulls uniffi_bindgen (and its askama templates) into the
+# staticlib, code-generation tooling the wallet never calls (the crate's release
+# rlib alone measures 29,818,752 bytes). It also compiles nondeterministically,
+# which alone kept libaether_ffi.a out of scripts/repro-check.sh, so the library
+# builds without it.
+bindgen = ["uniffi/cli"]
+
 [[bin]]
 name = "uniffi-bindgen"
 path = "uniffi-bindgen/main.rs"
+required-features = ["bindgen"]
 
 [dependencies]
 aether-types.workspace = true
@@ -34,7 +45,7 @@ commonware-codec = "=2026.9.0"
 bip39 = { version = "2", features = ["rand"] }
 sha2 = "0.11"
 thiserror.workspace = true
-uniffi = { version = "=0.32.2", features = ["cli"] }
+uniffi = { version = "=0.32.2" }
 
 [dev-dependencies]
 # Fake follower/validator servers over local iroh (tests/wallet_spread.rs).

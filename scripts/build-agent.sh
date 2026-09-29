@@ -5,8 +5,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:$PATH"
-MACOSX_DEPLOYMENT_TARGET=15.0 cargo build -p aether-ffi --release
-cargo run -q -p aether-ffi --bin uniffi-bindgen -- generate --library target/release/libaether_ffi.dylib --language swift --out-dir apps/wallet/Generated
+# The agent ships inside the app bundle: same bytes wherever the checkout lives.
+. scripts/repro-env.sh
+aether_repro_rustflags
+aether_repro_link_flags
+MACOSX_DEPLOYMENT_TARGET=15.0 cargo build -p aether-ffi --release --locked
+cargo run -q --locked -p aether-ffi --features bindgen --bin uniffi-bindgen -- generate --library target/release/libaether_ffi.dylib --language swift --out-dir apps/wallet/Generated
 mv -f apps/wallet/Generated/aether_ffiFFI.modulemap apps/wallet/Generated/module.modulemap
 out=target/agent
 mkdir -p "$out"
@@ -27,12 +31,15 @@ body = "\n".join(rows) if rows else "        :"
 open(sys.argv[1], "w", encoding="utf-8").write("enum DexDeployments {\n    static let byChainId: [UInt64: String] = [\n" + body + "\n    ]\n}\n")
 PY
 swiftc -O -target arm64-apple-macos15.0 -module-name AetherAgent \
+  -file-prefix-map "$PWD"=/aether-node -debug-prefix-map "$PWD"=/aether-node \
   -I apps/wallet/Generated -Xcc -fmodule-map-file=apps/wallet/Generated/module.modulemap \
   apps/agent/Sources/*.swift apps/wallet/Generated/aether_ffi.swift "$out/Skill.swift" "$out/DexDeployments.swift" \
   target/release/libaether_ffi.a \
   -framework SystemConfiguration -framework Security -framework CoreFoundation -framework OpenDirectory -framework IOKit \
   -o "$out/aether-agent"
-codesign -s - -f "$out/aether-agent" 2>/dev/null
+# swiftc links a Mach-O like any other: same UUID rewrite as the node (this
+# replaces the ad-hoc signature, so it is also the signing step).
+aether_repro_fix_uuid "$out/aether-agent"
 echo "built $out/aether-agent"
 if [ "${1:-}" = "--install" ]; then
   mkdir -p "$HOME/.local/bin"

@@ -8,11 +8,12 @@
 #
 # Needs: the `jolt` CLI (JOLT_PATH overrides) and the rustup toolchain on PATH.
 # Memory parameters must match #[jolt::provable] on guest/src/lib.rs::prove_block.
+# The guest compiles from the canonical stage (scripts/guest-stage.sh), not from
+# the checkout: the path cargo sees is part of the program id.
 set -euo pipefail
 cd "$(dirname "$0")"
 here="$(pwd)"
 out="${1:-$here/target-guest/prove_block.elf}"
-target_dir="${GUEST_TARGET_DIR:-$here/target-guest/aether-prover-guest-prove_block}"
 jolt_cmd="${JOLT_PATH:-jolt}"
 
 cargo_home="${CARGO_HOME:-$HOME/.cargo}"
@@ -25,16 +26,49 @@ done
 # The ELF is the program the proofs are about: prover and verifier must embed
 # the same bytes. Strip machine-specific paths (panic locations) so a build
 # does not depend on where the checkouts, cargo home or toolchain live.
-repo="$(cd ../.. && pwd)"
+script_dir="$(cd -P "$(pwd)" && pwd -P)"
+repo="$(cd -P "$script_dir/../.." && pwd -P)"
+# The guest is built through the canonical stage (scripts/guest-stage.sh): cargo
+# hashes each path dependency's path into the metadata it mangles symbols with,
+# and the Aether crates are above apps/prover's own workspace root, so building
+# in the checkout directly puts the checkout's path into the guest ELF. The
+# stage pins that path — and is shared mutable state, so this locks it.
+. "$repo/scripts/guest-stage.sh"
+stage="$(aether_guest_stage_path)"
+# build.rs runs this script while the host prover build is already staged, so
+# cargo hands it the *stage* as the package root and `../..` above is the stage,
+# not a checkout (a manual run from $stage/apps/prover looks the same). There the
+# stage already names the real tree and its owner holds it: entering with the
+# stage would repoint every link at itself.
+if [ "$repo" = "$(cd -P "$stage" 2>/dev/null && pwd -P)" ]; then
+  repo=""
+else
+  aether_guest_stage_enter "$repo"
+fi
+# Under the stage, so the string does not depend on how this script was reached.
+target_dir="${GUEST_TARGET_DIR:-$stage/apps/prover/target-guest/aether-prover-guest-prove_block}"
 jolt_src="$(cd "${JOLT_SRC:-/Volumes/workspace/aether-jolt/jolt}" && pwd)"
 sysroot="$(rustc --print sysroot)"
-# (rustc applies the last matching prefix, so the nested target dir goes last.)
-export ZEROOS_GUEST_RUSTFLAGS="--remap-path-prefix=$repo=/aether --remap-path-prefix=$jolt_src=/jolt --remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=$sysroot=/rustc --remap-path-prefix=$target_dir=/target"
+# One timestamp and zeroed archive dates, as in the host build
+# (scripts/repro-env.sh): the embedded ELF's hash is the program id, so it must
+# not follow the build time either.
+export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "${repo:-$stage}" log -1 --pretty=%ct 2>/dev/null || echo 1767225600)}"
+export ZERO_AR_DATE=1
+# A nested run has no checkout to remap (repo is empty, above): its sources are
+# already under the stage, which is remapped in both spellings.
+repo_remap=""
+if [ -n "$repo" ]; then repo_remap=" --remap-path-prefix=$repo=/aether"; fi
+# (rustc applies the last matching prefix, so the nested target dir goes last;
+# the stage is remapped in both spellings — see scripts/repro-env.sh.)
+export ZEROOS_GUEST_RUSTFLAGS="$(aether_guest_stage_remap /aether)$repo_remap --remap-path-prefix=$jolt_src=/jolt --remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=$sysroot=/rustc --remap-path-prefix=$target_dir=/target"
 
-JOLT_FUNC_NAME=prove_block "$jolt_cmd" build -p aether-prover-guest \
-  --mode std --backtrace off \
-  --stack-size 4194304 --heap-size 268435456 \
-  -- --release --target-dir "$target_dir" --features guest >&2
+# From the stage: the guest manifest, its `guest` member and every path
+# dependency are then seen under one fixed path.
+(cd "$stage/apps/prover" &&
+  JOLT_FUNC_NAME=prove_block "$jolt_cmd" build -p aether-prover-guest \
+    --mode std --backtrace off \
+    --stack-size 4194304 --heap-size 268435456 \
+    -- --release --target-dir "$target_dir" --features guest) >&2
 
 elf="$target_dir/riscv64imac-zero-linux-musl/release/aether-prover-guest"
 test -f "$elf" || { echo "build-guest: ELF not found at $elf" >&2; exit 1; }

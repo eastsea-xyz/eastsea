@@ -60,6 +60,14 @@ pub fn code_v2() -> Bytes {
 
 /// New candidates per epoch from protocol 2 (slot 7).
 pub const MAX_PER_EPOCH: u64 = 16;
+/// Storage slot of the per-epoch bound (0 = none, the v1 registry).
+const SLOT_MAX_PER_EPOCH: u64 = 7;
+
+/// The per-epoch registration bound in force (0 before protocol 2 installed
+/// the v2 registry, whether by an activation block or at genesis).
+pub fn max_per_epoch(state: &WorldState) -> u64 {
+    state.storage(&REGISTRY, U256::from(SLOT_MAX_PER_EPOCH)).to::<u64>()
+}
 
 /// Protocol 2: the registry's code becomes v2 with the per-epoch bound (no-op without a registry).
 pub fn upgrade_to_v2(state: &mut WorldState) -> Result<(), crate::world::StateError> {
@@ -67,7 +75,7 @@ pub fn upgrade_to_v2(state: &mut WorldState) -> Result<(), crate::world::StateEr
         return Ok(());
     }
     state.set_code(REGISTRY, code_v2())?;
-    state.set_storage(REGISTRY, U256::from(7u64), U256::from(MAX_PER_EPOCH));
+    state.set_storage(REGISTRY, U256::from(SLOT_MAX_PER_EPOCH), U256::from(MAX_PER_EPOCH));
     Ok(())
 }
 

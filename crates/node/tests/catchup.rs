@@ -48,6 +48,7 @@ use commonware_parallel::Sequential;
 use commonware_utils::non_empty;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -336,6 +337,64 @@ fn serve(
     (format!("http://127.0.0.1:{port}"), calls)
 }
 
+/// What a source serves with its first snapshot request held back: the member
+/// cannot pass the barrier, so the moment it is thousands of blocks behind is
+/// observed directly. A jump can finish between two polls of any sampler — the
+/// test does not control that interval — but it cannot pass a barrier.
+#[derive(Clone)]
+struct Held {
+    st: RpcState,
+    /// Set when the first snapshot request arrives, before it is held: by then
+    /// the member has heard the network's height (the jump is the step right
+    /// after `aether_status`) and has not adopted a block.
+    reached: Arc<AtomicBool>,
+    /// Only the first snapshot is held, so a later one cannot hang the test.
+    held_once: Arc<Mutex<bool>>,
+    /// Released by the test to let the held request (and the rest) through.
+    go: Arc<tokio::sync::Notify>,
+}
+
+async fn served_held(State(s): State<Held>, Json(req): Json<Value>) -> Json<Value> {
+    let is_snapshot = req.get("method").and_then(Value::as_str) == Some("aether_snapshot");
+    if is_snapshot {
+        let first = {
+            let mut held = s.held_once.lock().expect("held");
+            let first = !*held;
+            *held = true;
+            first
+        };
+        if first {
+            s.reached.store(true, Ordering::SeqCst);
+            s.go.notified().await;
+        }
+    }
+    Json(rpc::handle_value(&s.st, req).await)
+}
+
+/// A node's RPC on a free port whose first snapshot request is held until the
+/// test releases it, so a member that jumps is provably observed behind before
+/// it starts jumping. Returns its URL, the flag for "the jump asked", and the
+/// release.
+fn serve_held(
+    st: &RpcState,
+    rt: &tokio::runtime::Runtime,
+) -> (String, Arc<AtomicBool>, Arc<tokio::sync::Notify>) {
+    let reached = Arc::new(AtomicBool::new(false));
+    let go = Arc::new(tokio::sync::Notify::new());
+    let app = Router::new().route("/", post(served_held)).with_state(Held {
+        st: st.clone(),
+        reached: reached.clone(),
+        held_once: Arc::new(Mutex::new(false)),
+        go: go.clone(),
+    });
+    let listener = rt
+        .block_on(tokio::net::TcpListener::bind(("127.0.0.1", 0)))
+        .expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    rt.spawn(async move { axum::serve(listener, app).await.expect("serve") });
+    (format!("http://127.0.0.1:{port}"), reached, go)
+}
+
 /// A node's RPC on a free port whose served state can be swapped in place, as
 /// `run_node` swaps the read-only state it serves while catching up for the
 /// full one once voting starts (same URL throughout). Records every method.
@@ -404,13 +463,18 @@ fn adopt(n: &mut Node, block: &Block, proof: Value) {
     n.parent = n.chain.lock().finalized.clone();
 }
 
+/// Every request a member sent upstream, with how far behind the member was as
+/// the request arrived — read off its chain, not sampled: a request is a fact, a
+/// poll can miss.
+type Sent = Arc<Mutex<Vec<(String, u64)>>>;
+
 /// A server that only records what a member would have sent upstream, on a
 /// free port. Returns its URL and the log.
-fn recorder(rt: &tokio::runtime::Runtime) -> (String, Arc<Mutex<Vec<(Instant, String)>>>) {
-    let sent: Arc<Mutex<Vec<(Instant, String)>>> = Arc::new(Mutex::new(Vec::new()));
+fn recorder(rt: &tokio::runtime::Runtime, member: Chain) -> (String, Sent) {
+    let sent: Sent = Arc::new(Mutex::new(Vec::new()));
     let app = Router::new()
         .route("/", post(recorded))
-        .with_state(sent.clone());
+        .with_state((sent.clone(), member));
     let listener = rt
         .block_on(tokio::net::TcpListener::bind(("127.0.0.1", 0)))
         .expect("bind");
@@ -421,13 +485,13 @@ fn recorder(rt: &tokio::runtime::Runtime) -> (String, Arc<Mutex<Vec<(Instant, St
 
 /// Records what a member would have sent upstream, and answers plausibly.
 async fn recorded(
-    State(sent): State<Arc<Mutex<Vec<(Instant, String)>>>>,
+    State((sent, member)): State<(Sent, Chain)>,
     Json(req): Json<Value>,
 ) -> Json<Value> {
     if let Some(m) = req.get("method").and_then(Value::as_str) {
         sent.lock()
             .expect("sent")
-            .push((Instant::now(), m.to_string()));
+            .push((m.to_string(), member.behind()));
     }
     Json(
         json!({ "jsonrpc": "2.0", "id": req.get("id").cloned().unwrap_or(Value::Null), "result": { "hash": format!("{:0>64}", "0"), "accepted": true } }),
@@ -779,7 +843,7 @@ fn a_short_gap_replays_without_a_snapshot() {
 /// caught up: its beacon loop sends nothing while `behind` exceeds the margin
 /// (`aether node` also starts the consensus engine — its votes and proposals —
 /// only after the same `catch_up` returns), and it may jump to a certified
-/// snapshot to rejoin. The other three validators keep finalizing meanwhile.
+/// snapshot to rejoin. The other three kept finalizing while it slept.
 #[test]
 fn a_member_that_slept_does_not_beacon_until_caught_up() {
     let (dir_src, dir_mem) = (tmp("gate-src"), tmp("gate-member"));
@@ -835,80 +899,72 @@ fn a_member_that_slept_does_not_beacon_until_caught_up() {
     let exec = src.step(vec![reg]);
     assert!(exec.receipts[0].success, "the member is registered");
 
-    src.run_to(5_100, |h| h % 500 == 0);
-    let (url, _calls) = serve(&st, &rt, Duration::ZERO);
-    // Where the member would send beacons: a server that only records.
-    let (record_url, sent) = recorder(&rt);
+    src.run_to(5_300, |h| h % 500 == 0);
+    // Fix the snapshot the member will jump to, taken here at 5,300: still
+    // inside the 120-block window the source's cache serves when the member
+    // jumps at 5,400, so the jump lands below the tip — with a certified block
+    // after it to check against — and the last blocks replay for real.
+    rt.block_on(call(&st, "aether_snapshot", json!([])));
+    // The other three finished finalizing while the member slept. Its height is
+    // settled before the member starts catching up, so `behind` can only shrink
+    // from here: the readings below are not raced by the source growing.
+    src.run_to(5_400, |_| false);
 
-    // The member: behind by 5,100, with the beacon loop `aether follow
-    // --candidate` runs and the catch-up `aether node` runs before voting.
+    // The member: 5,400 behind, with the beacon loop `aether follow --candidate`
+    // runs and the catch-up `aether node` runs before voting. Beacons go to a
+    // server that only records, with how far behind the member was when the
+    // request arrived.
     let member = Node::start(&dir_mem);
+    let (record_url, sent) = recorder(&rt, member.chain.clone());
     rt.spawn(aether_node::candidate::beacon_loop(
         member.chain.clone(),
         aether_node::candidate::Outbox::Upstream(Arc::new(Upstream::Http(vec![record_url]))),
         aether_node::candidate::CandidateKeys::load_or_create(&dir_mem).unwrap(),
     ));
-    let samples = Arc::new(Mutex::new(Vec::<(Instant, u64)>::new()));
-    {
-        let (samples, chain) = (samples.clone(), member.chain.clone());
-        std::thread::spawn(move || loop {
-            samples
-                .lock()
-                .unwrap()
-                .push((Instant::now(), chain.behind()));
-            std::thread::sleep(Duration::from_millis(25));
-        });
-    }
-    // The other three keep finalizing while the member catches up.
-    let src = Arc::new(Mutex::new(src));
-    {
-        let src = src.clone();
-        std::thread::spawn(move || src.lock().unwrap().run_to(5_400, |_| false));
-    }
-    let adopted = rt
-        .block_on(follow::catch_up(
-            &member.chain,
-            &Upstream::Http(vec![url.clone()]),
-            &set(),
-            follow::BEHIND_MARGIN,
-        ))
-        .unwrap();
-    assert!(adopted > 5_000, "a jump did most of it");
-    // The other three finished on their own; the member closes the last blocks.
-    wait_until("the other three finished", || {
-        src.lock().unwrap().chain.finalized_height() == 5_400
-    });
-    rt.block_on(follow::catch_up(
-        &member.chain,
-        &Upstream::Http(vec![url]),
-        &set(),
-        follow::BEHIND_MARGIN,
-    ))
-    .unwrap();
-    assert_eq!(member.chain.finalized_height(), 5_400);
-
-    // Not one beacon went out while behind (every recorded send has a
-    // preceding `behind` sample within the margin), and it really was behind.
-    let (samples, sent) = (
-        samples.lock().unwrap().clone(),
-        sent.lock().unwrap().clone(),
+    let (url, reached, go) = serve_held(&st, &rt);
+    let catching = {
+        let (chain, url) = (member.chain.clone(), url.clone());
+        rt.spawn(async move {
+            follow::catch_up(&chain, &Upstream::Http(vec![url]), &set(), follow::BEHIND_MARGIN)
+                .await
+        })
+    };
+    // Held at the jump's snapshot request: the member has heard 5,400 from the
+    // source and has not adopted a block, so it is provably thousands behind —
+    // the fact the old sampler missed whenever the jump finished inside one
+    // 25 ms interval (it could not be seen on an idle machine, only under load).
+    wait_until("the member reached the jump", || reached.load(Ordering::SeqCst));
+    assert_eq!(
+        member.chain.finalized_height(),
+        0,
+        "still at genesis when the jump asked"
+    );
+    let behind = member.chain.behind();
+    assert!(
+        behind > 5_000,
+        "the member was thousands of blocks behind: {behind}"
     );
     assert!(
-        samples.iter().any(|(_, b)| *b > 5_000),
-        "the member was thousands of blocks behind"
+        sent.lock().unwrap().is_empty(),
+        "a beacon went out while {behind} blocks behind"
     );
-    for (t, m) in sent
+    go.notify_one();
+
+    let adopted = rt.block_on(catching).unwrap().unwrap();
+    assert!(adopted > 5_000, "a jump did most of it");
+    assert_eq!(member.chain.finalized_height(), 5_400);
+
+    // Not one beacon went out while behind: every recorded send carries the
+    // member's `behind` as the request arrived, and the source's height was
+    // already settled — the member only adopts blocks from here, so that
+    // reading cannot be above what the guard saw.
+    let log = sent.lock().unwrap().clone();
+    for (m, behind) in log
         .iter()
-        .filter(|(_, m)| m == "aether_sendTransaction" || m == "aether_sendBeacon")
+        .filter(|(m, _)| m == "aether_sendTransaction" || m == "aether_sendBeacon")
     {
-        let behind = samples
-            .iter()
-            .rev()
-            .find(|(s, _)| s <= t)
-            .map(|(_, b)| *b)
-            .unwrap_or(u64::MAX);
         assert!(
-            behind <= follow::BEHIND_MARGIN,
+            *behind <= follow::BEHIND_MARGIN,
             "a beacon ({m}) went out while {behind} blocks behind"
         );
     }
@@ -919,11 +975,14 @@ fn a_member_that_slept_does_not_beacon_until_caught_up() {
     );
     assert_eq!(
         member.chain.lock().finalized.state.root(),
-        src.lock().unwrap().chain.lock().finalized.state.root()
+        src.chain.lock().finalized.state.root()
     );
     // And now that it is current, the beacon goes out (registered, epochs behind).
     wait_until("the caught-up member's beacon", || {
-        sent.iter().any(|(_, m)| m == "aether_sendTransaction")
+        sent.lock()
+            .unwrap()
+            .iter()
+            .any(|(m, _)| m == "aether_sendTransaction")
     });
 
     drop((member, st));

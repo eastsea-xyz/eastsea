@@ -116,6 +116,7 @@ fn chain_config() -> ChainConfig {
         draw_epochs: None,
         history_v2: false,
         node_rewards: false,
+        committee: vec![],
         reserve: None,
     }
 }

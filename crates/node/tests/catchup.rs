@@ -80,6 +80,7 @@ fn config() -> ChainConfig {
         draw_epochs: None,
         history_v2: true,
         node_rewards: false,
+        committee: vec![],
         reserve: None,
     }
 }
@@ -210,7 +211,7 @@ impl Node {
         let ctx = Chain::block_context(&self.chain.cfg(), &skeleton, &self.parent);
         let (pre, _) = self
             .chain
-            .pre_state(&self.parent, self.parent.next_protocol(), &[], false)
+            .pre_state(&self.parent, self.parent.next_protocol(), &[], None, false)
             .unwrap();
         let (payload, _) = build_payload(&self.parent, &pre, &ctx, txs, Extras::default());
         drop(pre);

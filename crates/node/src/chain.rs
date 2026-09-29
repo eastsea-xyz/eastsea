@@ -63,6 +63,13 @@ pub struct ChainConfig {
     /// per operator. A new network's genesis parameter (needs the registry);
     /// off keeps the testnet's rules and genesis.
     pub node_rewards: bool,
+    /// The genesis validators (network.json `genesis_validators`, kept there
+    /// across handoffs), which the genesis state records as the first voting
+    /// committee (`rewards::set_committee`): with the running committee and
+    /// every decided next roster in state, each node derives them the same way
+    /// — validator, follower, or synced from a snapshot — and a handoff binds
+    /// to the committed roster (finding 2). Node rewards only; empty on 7780.
+    pub committee: Vec<(String, String)>,
     /// Founder reserve keys (docs/design/12-launch-plan.md, "창업자 Mac 안전망";
     /// needs node rewards): up to three voting keys seated only while fewer
     /// than four independent operators qualify for the voting set.
@@ -139,6 +146,8 @@ impl ChainConfig {
             aether_execution::registry::predeploy(&mut s, key, params).expect("registry predeploy");
             if self.node_rewards {
                 aether_rewards::enable(&mut s);
+                aether_rewards::set_committee(&mut s, &self.committee)
+                    .expect("genesis committee members parse");
                 if let Some(r) = &self.reserve {
                     let keys = r.bytes().expect("valid reserve keys");
                     aether_rewards::set_reserve(&mut s, r.operator, &keys)
@@ -676,12 +685,14 @@ impl Chain {
     }
 
     /// The handoff state after `block`: the parent's, or the one it carries
-    /// (valid only when signed by the committee and no other is still pending).
+    /// (valid only when signed by the committee, no other still pending, and —
+    /// on a node-rewards network — only to the roster the chain committed).
     fn next_handoff(
         &self,
         height: u64,
         parent: &Executed,
         carried: Option<&aether_light::block::Handoff>,
+        state: &WorldState,
     ) -> Result<Option<Arc<crate::handoff::Pending>>, ChainError> {
         let Some(h) = carried else {
             return Ok(parent.handoff.clone());
@@ -707,6 +718,23 @@ impl Chain {
             ChainError::BadHandoff("no committee identity (devnet dealer keys)".into())
         })?;
         crate::handoff::verify(chain_id, &identity, h).map_err(ChainError::BadHandoff)?;
+        // Finding 2 (red team, 2026-09-29): a node-rewards network commits the
+        // decided next roster in state, and a handoff may only hand the voting
+        // set over to exactly that roster — neither the proposer nor the
+        // signing committee can choose a different one. `state` is the block's
+        // pre state, so it also holds a commitment this same block makes when
+        // its seed lands with the handoff (`next_seed` refuses the seed right
+        // after, and with it the block). No commitment for the draw, no
+        // handoff: every committee change goes through a committed roster.
+        if aether_rewards::enabled(&parent.state) {
+            let draw = current_draw(&parent.state, height);
+            let committed = aether_rewards::next_roster(state).filter(|(d, _)| *d == draw);
+            if !committed.is_some_and(|(_, roster)| aether_rewards::same_roster(&roster, &h.members)) {
+                return Err(ChainError::BadHandoff(
+                    "not to the roster the chain committed for this draw".into(),
+                ));
+            }
+        }
         Ok(Some(Arc::new(crate::handoff::Pending {
             at: height,
             switch: height + crate::handoff::DELAY,
@@ -725,6 +753,12 @@ impl Chain {
             }
         }
         let current = current_draw(&g.finalized.state, g.finalized.height);
+        if aether_rewards::enabled(&g.finalized.state) {
+            // Node-rewards networks keep both in state (see `finalize`).
+            g.pool = aether_rewards::draw_pool(&g.finalized.state).filter(|(d, _)| *d == current);
+            g.proposal = aether_rewards::next_roster(&g.finalized.state).filter(|(d, _)| *d == current);
+            return;
+        }
         let load = |key: &str| g.store.as_ref().and_then(|s| s.meta(key).ok().flatten());
         let proposal: Option<(u64, Vec<(String, String)>)> = load(PROPOSAL)
             .and_then(|b| serde_json::from_slice(&b).ok())
@@ -864,6 +898,7 @@ impl Chain {
             payload.version,
             &payload.proofs,
             &payload.beacons,
+            payload.seed.as_ref(),
             certified,
         )?;
         let schedule =
@@ -885,7 +920,7 @@ impl Chain {
         if out.gas != payload.gas {
             return Err(ChainError::GasMismatch);
         }
-        let handoff = self.next_handoff(block.height().get(), parent, payload.handoff.as_ref())?;
+        let handoff = self.next_handoff(block.height().get(), parent, payload.handoff.as_ref(), &pre)?;
         let seed = self.next_seed(block.height().get(), parent, payload.seed.as_ref())?;
         let tx_hashes = payload.txs.iter().map(aether_execution::tx_hash).collect();
         Ok(self.remember(
@@ -902,12 +937,14 @@ impl Chain {
         parent: &'a Executed,
         version: u32,
         proofs: &[aether_light::block::ProofClaim],
+        seed: Option<&aether_light::block::Seed>,
         certified: bool,
     ) -> Result<(std::borrow::Cow<'a, WorldState>, Vec<(u64, Address, U256)>), ChainError> {
-        self.pre_state_with(parent, version, proofs, &[], certified)
+        self.pre_state_with(parent, version, proofs, &[], seed, certified)
     }
 
-    /// `pre_state` of a block that also carries beacon answers.
+    /// `pre_state` of a block that also carries beacon answers, and may carry
+    /// the draw seed whose voting-set decision becomes state.
     #[allow(clippy::type_complexity)]
     pub fn pre_state_with<'a>(
         &self,
@@ -915,6 +952,7 @@ impl Chain {
         version: u32,
         proofs: &[aether_light::block::ProofClaim],
         answers: &[aether_light::block::BeaconAnswer],
+        seed: Option<&aether_light::block::Seed>,
         certified: bool,
     ) -> Result<(std::borrow::Cow<'a, WorldState>, Vec<(u64, Address, U256)>), ChainError> {
         let (running, migrate, verifier, history_v2, chain_id) = {
@@ -948,10 +986,28 @@ impl Chain {
             && expired.is_some_and(|old| aether_execution::proofs::recorded(&parent.state, old));
         let distributes = aether_rewards::distributes(&parent.state, parent.height + 1);
         let slots = aether_rewards::beacons::touches(&parent.state, parent.height + 1);
-        // A committee takes over here: the seating of the founder's reserve keys
-        // becomes state (read below, after `distribute`).
-        let switches = parent.handoff.as_ref().is_some_and(|p| p.switch == parent.height + 1)
-            && aether_rewards::reserve(&parent.state).is_some();
+        // The node-rewards words that keep the committee in state (finding 2):
+        // the draw's pool freezes at its first block, the running committee
+        // rewrites at each switch, the decided next roster commits with a draw
+        // seed, a reserve reseat or an early replacement, and the overdue count
+        // ticks at every epoch.
+        let params = aether_execution::registry::params(&parent.state);
+        let span = params.epoch_blocks * params.draw_epochs;
+        let rewards_on = aether_rewards::enabled(&parent.state);
+        let freezes =
+            rewards_on && parent.height > 0 && (parent.height + 1).is_multiple_of(span);
+        // A registry epoch's first block: where the voting-set rules the draw
+        // does not own (early replacement, the reserve seating, the overdue
+        // count) decide, from the state this block's distribution just wrote.
+        let boundary = rewards_on
+            && parent.height > 0
+            && (parent.height + 1).is_multiple_of(params.epoch_blocks);
+        let epochs = boundary && aether_rewards::reserve(&parent.state).is_some();
+        // A committee takes over here: its members become the recorded running
+        // committee, and the seating of the founder's reserve keys becomes
+        // state (read below, after `distribute`).
+        let switches = rewards_on
+            && parent.handoff.as_ref().is_some_and(|p| p.switch == parent.height + 1);
         if !answers.is_empty() && !aether_rewards::enabled(&parent.state) {
             return Err(ChainError::Protocol("beacon answers without node rewards".into()));
         }
@@ -962,6 +1018,8 @@ impl Chain {
             && !distributes
             && !slots
             && !switches
+            && !freezes
+            && !boundary
             && proofs.is_empty()
             && answers.is_empty()
         {
@@ -996,6 +1054,18 @@ impl Chain {
                 aether_execution::proofs::prune(&mut state, old);
             }
         }
+        // A draw's pool is frozen from the state its first block builds on
+        // (before its seed exists), the same list `finalize` used to freeze
+        // node-locally: now every node holds it in state.
+        if freezes {
+            let pool = crate::rotation::eligible(
+                &parent.state,
+                (parent.height + 1) / params.epoch_blocks,
+                params.min_streak,
+            );
+            aether_rewards::freeze_pool(&mut state, (parent.height + 1) / span, &pool)
+                .map_err(|e| ChainError::Exec(format!("draw pool: {e}")))?;
+        }
         struct Certified;
         impl ProofVerifier for Certified {
             fn verify(&self, _: &[u8], _: [u8; 32]) -> bool {
@@ -1019,13 +1089,171 @@ impl Chain {
                     .map(|(op, a)| (parent.height + 1, op, a)),
             );
         }
-        // The committee taking over here is the chain's record of the founder's
-        // reserve keys being seated or unseated (the seating itself lives in the
-        // node). After `distribute`, which pays the epoch by the committee that
-        // ran it; the next epoch's `distribute` then reads this word.
+        // The committee taking over here is the chain's record of itself: the
+        // running committee word becomes the handoff's members (what every
+        // later draw and reserve reseat derives from), and the founder's
+        // reserve keys seated or unseated become state (the seating itself
+        // lives in the node). After `distribute`, which pays the epoch by the
+        // committee that ran it; the next epoch's `distribute` then reads this
+        // word. The roster it committed has served its purpose.
         if switches {
             let pending = parent.handoff.as_ref().expect("a handoff switches here");
+            aether_rewards::set_committee(&mut state, &pending.handoff.members)
+                .map_err(|e| ChainError::BadHandoff(format!("switch: {e}")))?;
             aether_rewards::switch_reserve(&mut state, parent.height + 1, &pending.handoff.members);
+            aether_rewards::clear_roster(&mut state);
+        }
+        // With the draw's seed on chain, every node draws the same next voting
+        // set — and commits it: only a handoff naming exactly this roster may
+        // carry the committee over (`next_handoff`). The same computation
+        // `finalize` runs node-locally on the other networks, on the same
+        // inputs — the profiles this block's distribution wrote above, the
+        // running committee from state — so every node commits the same roster.
+        if let Some(s) = seed {
+            let draw = current_draw(&parent.state, parent.height + 1);
+            if s.draw == draw
+                && draw > 0
+                && parent.seed.as_ref().is_none_or(|p| p.1.draw < draw)
+            {
+                if let Some((_, pool)) = aether_rewards::draw_pool(&state).filter(|(d, _)| *d == draw) {
+                    let seed_bytes = hex::decode(&s.signature).unwrap_or_default();
+                    // The per-operator seat cap is a protocol-2 rule: before it, every key is its own operator.
+                    let ops = crate::rotation::operators(&parent.state);
+                    let capped = version >= 2;
+                    let operator = |k: &str| {
+                        ops.get(k).map(|o| if capped { o.clone() } else { k.to_string() })
+                    };
+                    let running = crate::rotation::Committee { members: aether_rewards::committee(&state) };
+                    let reserve = Reserve::of(&parent.state);
+                    // Each seat goes where it lifts the committee's worst hour
+                    // of the day (13-roadmap.md, F): profiles from state, so
+                    // every node reads the same hours.
+                    let availability = (version >= 3 || reserve.is_some())
+                        .then(|| crate::rotation::availability(&state));
+                    let hours = |k: &str| availability.as_ref().and_then(|a| a.get(k).copied());
+                    // Protocol 3: qualifying Macs join (up to 16 seats) instead of
+                    // replacing members, each where the odds need it most.
+                    let drawn = if version >= 3 {
+                        crate::rotation::draw_spread(&pool, &seed_bytes, operator, &running, hours)
+                    } else {
+                        crate::rotation::draw(&pool, &seed_bytes, operator, &running)
+                    };
+                    // Founder reserve keys join or leave with the draw too.
+                    let drawn = match reserve {
+                        Some(r) => crate::rotation::with_reserve(
+                            drawn,
+                            &pool,
+                            &seed_bytes,
+                            |k: &str| ops.get(k).cloned(),
+                            &r,
+                            &running,
+                            hours,
+                        ),
+                        None => drawn,
+                    };
+                    if let Some(members) = drawn {
+                        aether_rewards::commit_roster(&mut state, draw, &members)
+                            .map_err(|e| ChainError::Exec(format!("roster: {e}")))?;
+                    }
+                }
+            }
+        }
+        // The voting-set rules of an epoch boundary the draw does not own (its
+        // own first block leaves the set to the draw): early replacement first,
+        // then the founder reserve keys' seating — the order `finalize` runs
+        // them in on the other networks decides which one commits here. Each
+        // recomputes the set for the epoch ahead — the frozen pool, the
+        // recorded committee, the parent's digest for ticket order, the
+        // profiles this block's distribution wrote — and commits it as this
+        // draw's roster. The seed for this draw, or a handoff still on its way,
+        // each stand in both' way, as the node-local rules they replace did.
+        if boundary
+            && !freezes
+            && parent.handoff.as_ref().is_none_or(|p| p.switch <= parent.height + 1)
+            && aether_rewards::next_roster(&state).is_none_or(|(d, _)| d != current_draw(&parent.state, parent.height + 1))
+        {
+            let running = crate::rotation::Committee { members: aether_rewards::committee(&state) };
+            let epoch = (parent.height + 1) / params.epoch_blocks;
+            if !running.members.is_empty() {
+                let pool = crate::rotation::eligible(&parent.state, epoch, params.min_streak);
+                let ops = crate::rotation::operators(&parent.state);
+                let availability = crate::rotation::availability(&state);
+                let recents = crate::rotation::recents(&state);
+                let hours = |k: &str| availability.get(k).copied();
+                // Early replacement (13-roadmap.md, F): a member silent through
+                // the last two epochs hands its seat to the candidate the
+                // spread rule picks, while the old quorum still stands.
+                let replaced = crate::rotation::replace_silent(
+                    &running,
+                    &pool,
+                    &digest_bytes(&parent.digest),
+                    |k: &str| ops.get(k).cloned(),
+                    hours,
+                    |k: &str| recents.get(k).copied(),
+                    epoch,
+                );
+                let members = match (replaced, Reserve::of(&parent.state)) {
+                    (Some(members), _) => {
+                        tracing::info!(
+                            members = members.len(),
+                            "a silent member is replaced while the quorum still stands"
+                        );
+                        Some(members)
+                    }
+                    // From four independent operators on, the keys' staying is a
+                    // question of the committee's predicted worst hour.
+                    (None, Some(reserve)) => crate::rotation::with_reserve(
+                        None,
+                        &pool,
+                        &digest_bytes(&parent.digest),
+                        |k: &str| ops.get(k).cloned(),
+                        &reserve,
+                        &running,
+                        hours,
+                    )
+                    .map(|members| {
+                        tracing::info!(
+                            members = members.len(),
+                            "founder reserve keys change the voting set"
+                        );
+                        members
+                    }),
+                    (None, None) => None,
+                };
+                if let Some(members) = members {
+                    aether_rewards::commit_roster(
+                        &mut state,
+                        current_draw(&parent.state, parent.height + 1),
+                        &members,
+                    )
+                    .map_err(|e| ChainError::Exec(format!("roster: {e}")))?;
+                }
+            }
+        }
+        // Finding 6: count the epochs the reserve keys hold seats nobody needs
+        // — four or more independent operators qualify — and stop their
+        // service credit past the grace (`rewards::reserve_served`). The count
+        // this block writes is the epoch's that opens here; `distribute` above
+        // read the word the boundary before it wrote.
+        if epochs {
+            let epoch = (parent.height + 1) / params.epoch_blocks;
+            if let Some(reserve) = Reserve::of(&parent.state) {
+                let pool = crate::rotation::eligible(&parent.state, epoch, params.min_streak);
+                let ops = crate::rotation::operators(&state);
+                let on = crate::rotation::independent(&pool, |k| ops.get(k).cloned(), &reserve)
+                    >= aether_consensus::committee::MIN_OPEN_COMMITTEE
+                    && aether_rewards::seated(&state).0 > 0;
+                let (_, so_far) = aether_rewards::overdue(&state);
+                let count = if on { so_far + 1 } else { 0 };
+                aether_rewards::set_overdue(&mut state, epoch, count);
+                if count > aether_rewards::RESERVE_GRACE_EPOCHS {
+                    tracing::warn!(
+                        epoch,
+                        count,
+                        "founder reserve keys still hold seats with four or more independent operators: their service credit has stopped"
+                    );
+                }
+            }
         }
         // This epoch's beacon slots and the hash of a slot's block, then the answers.
         aether_rewards::beacons::on_block(&mut state, parent.height + 1, digest_bytes(&parent.digest));
@@ -1900,61 +2128,83 @@ impl Chain {
             g.proposal = None;
             keep(&g.store, PROPOSAL, &g.proposal);
         }
-        // A draw's pool is frozen from the state its first block builds on (before its seed exists).
+        // A draw's pool is frozen from the state its first block builds on
+        // (before its seed exists): node-rewards networks froze it in state
+        // (`rewards::freeze_pool`), the others freeze it here as before.
         let params = aether_execution::registry::params(&previous.state);
         let span = params.epoch_blocks * params.draw_epochs;
         if exec.height > 0 && exec.height.is_multiple_of(span) {
-            let pool = crate::rotation::eligible(
-                &previous.state,
-                exec.height / params.epoch_blocks,
-                params.min_streak,
-            );
-            g.pool = Some((exec.height / span, pool));
+            g.pool = if aether_rewards::enabled(&exec.state) {
+                aether_rewards::draw_pool(&exec.state)
+            } else {
+                let pool = crate::rotation::eligible(
+                    &previous.state,
+                    exec.height / params.epoch_blocks,
+                    params.min_streak,
+                );
+                Some((exec.height / span, pool))
+            };
             g.proposal = None;
             keep(&g.store, POOL, &g.pool);
         }
-        // With the draw's seed on chain, everyone draws the same next voting set.
+        // With the draw's seed on chain, everyone draws the same next voting
+        // set. Node-rewards networks committed it with the block that carries
+        // the seed (`pre_state_with`); the others draw it here as before.
         if let Some(s) = exec.seed.as_ref().filter(|s| s.0 == exec.height) {
             if g.seed_ready.as_ref() == Some(&s.1) {
                 g.seed_ready = None;
             }
-            if let Some((draw, pool)) = g.pool.clone().filter(|(d, _)| *d == s.1.draw) {
-                let seed = hex::decode(&s.1.signature).unwrap_or_default();
-                // The per-operator seat cap is a protocol-2 rule: before it, every key is its own operator.
-                let ops = crate::rotation::operators(&exec.state);
-                let capped = exec.next_protocol() >= 2;
-                let operator = |k: &str| {
-                    ops.get(k)
-                        .map(|o| if capped { o.clone() } else { k.to_string() })
-                };
-                // Protocol 3: qualifying Macs join (up to 16 seats) instead of
-                // replacing members — and each seat goes where it lifts the
-                // committee's worst hour of the day (13-roadmap.md, F).
-                let reserve = Reserve::of(&exec.state);
-                let availability = (exec.next_protocol() >= 3 || reserve.is_some())
-                    .then(|| crate::rotation::availability(&exec.state));
-                let hours = |k: &str| availability.as_ref().and_then(|a| a.get(k).copied());
-                let drawn = if exec.next_protocol() >= 3 {
-                    crate::rotation::draw_spread(&pool, &seed, operator, &g.committee, hours)
-                } else {
-                    crate::rotation::draw(&pool, &seed, operator, &g.committee)
-                };
-                // Founder reserve keys join or leave with the draw too.
-                let drawn = match reserve {
-                    Some(r) => crate::rotation::with_reserve(
-                        drawn,
-                        &pool,
-                        &seed,
-                        |k: &str| ops.get(k).cloned(),
-                        &r,
-                        &g.committee,
-                        hours,
-                    ),
-                    None => drawn,
-                };
-                g.proposal = drawn.map(|m| (draw, m));
-                keep(&g.store, PROPOSAL, &g.proposal);
+            // Node-rewards networks committed the roster with the seed's own
+            // block (`pre_state_with`); the others draw it here as before.
+            if !aether_rewards::enabled(&exec.state) {
+                if let Some((draw, pool)) = g.pool.clone().filter(|(d, _)| *d == s.1.draw) {
+                    let seed = hex::decode(&s.1.signature).unwrap_or_default();
+                    // The per-operator seat cap is a protocol-2 rule: before it, every key is its own operator.
+                    let ops = crate::rotation::operators(&exec.state);
+                    let capped = exec.next_protocol() >= 2;
+                    let operator = |k: &str| {
+                        ops.get(k)
+                            .map(|o| if capped { o.clone() } else { k.to_string() })
+                    };
+                    // Protocol 3: qualifying Macs join (up to 16 seats) instead of
+                    // replacing members — and each seat goes where it lifts the
+                    // committee's worst hour of the day (13-roadmap.md, F).
+                    let reserve = Reserve::of(&exec.state);
+                    let availability = (exec.next_protocol() >= 3 || reserve.is_some())
+                        .then(|| crate::rotation::availability(&exec.state));
+                    let hours = |k: &str| availability.as_ref().and_then(|a| a.get(k).copied());
+                    let drawn = if exec.next_protocol() >= 3 {
+                        crate::rotation::draw_spread(&pool, &seed, operator, &g.committee, hours)
+                    } else {
+                        crate::rotation::draw(&pool, &seed, operator, &g.committee)
+                    };
+                    // Founder reserve keys join or leave with the draw too.
+                    let drawn = match reserve {
+                        Some(r) => crate::rotation::with_reserve(
+                            drawn,
+                            &pool,
+                            &seed,
+                            |k: &str| ops.get(k).cloned(),
+                            &r,
+                            &g.committee,
+                            hours,
+                        ),
+                        None => drawn,
+                    };
+                    g.proposal = drawn.map(|m| (draw, m));
+                    keep(&g.store, PROPOSAL, &g.proposal);
+                }
             }
+        }
+        // Node-rewards networks keep the draw's pool and the decided next
+        // roster in state — every node's the same, whatever its network.json
+        // — and the node-local mirrors follow it.
+        if aether_rewards::enabled(&exec.state) {
+            let draw = current_draw(&exec.state, exec.height);
+            g.pool = aether_rewards::draw_pool(&exec.state).filter(|(d, _)| *d == draw);
+            g.proposal = aether_rewards::next_roster(&exec.state).filter(|(d, _)| *d == draw);
+            keep(&g.store, POOL, &g.pool);
+            keep(&g.store, PROPOSAL, &g.proposal);
         }
         let floor = exec.height.saturating_sub(64);
         g.executed.retain(|_, e| e.height >= floor);
@@ -2007,7 +2257,9 @@ impl Chain {
                 open && !recorded
             });
         }
-        replacement_step(&mut g, &previous, &exec);
+        // Early replacement (node-rewards networks) and the reserve seating
+        // both commit their roster in state (see `pre_state_with`); only the
+        // node-local reserve rule of the other networks runs here.
         reserve_step(&mut g, &previous, &exec);
         Ok(())
     }
@@ -2137,13 +2389,19 @@ pub fn genesis_digest(genesis: &Block) -> [u8; 32] {
 }
 const POOL: &str = "pool";
 
-/// Founder reserve keys (genesis parameter): at every registry epoch's first
-/// block, seat them for the next epoch while fewer than four independent
-/// operators qualify, and let them go once four or more do. From four on, the
-/// keys are a liveness safety net (13-roadmap.md, F): they seat themselves
-/// while the committee's worst hour of the day risks losing its quorum.
-/// Proposes nothing while a proposal or a handoff is already on its way.
+/// Founder reserve keys (genesis parameter), the node-local rule of the
+/// networks without node rewards: at every registry epoch's first block, seat
+/// them for the next epoch while fewer than four independent operators
+/// qualify, and let them go once four or more do. From four on, the keys are a
+/// liveness safety net (13-roadmap.md, F): they seat themselves while the
+/// committee's worst hour of the day risks losing its quorum. Proposes nothing
+/// while a proposal or a handoff is already on its way.
 fn reserve_step(g: &mut Inner, previous: &Executed, exec: &Executed) {
+    // Node-rewards networks run the rule as a system write (see
+    // `pre_state_with`): state-derived, so it binds the handoff that follows.
+    if aether_rewards::enabled(&exec.state) {
+        return;
+    }
     let Some(reserve) = Reserve::of(&exec.state) else {
         return;
     };
@@ -2195,63 +2453,6 @@ fn reserve_step(g: &mut Inner, previous: &Executed, exec: &Executed) {
 fn current_draw(state: &WorldState, height: u64) -> u64 {
     let p = aether_execution::registry::params(state);
     height / (p.epoch_blocks * p.draw_epochs)
-}
-
-/// Early replacement (docs/design/13-roadmap.md, F): at every registry epoch's
-/// first block, hand a silent member's seat — fewer than two of the four beacon
-/// slots answered in each of the last two epochs — to the best eligible
-/// candidate, at most a third minus one seats per epoch. A substitution is a
-/// reshare, and a reshare needs the old committee's quorum, so this must
-/// happen before the quorum is lost, not after. Like `reserve_step`, it
-/// proposes nothing while a proposal or a handoff is already on its way (the
-/// keys' seating then waits for the next epoch).
-fn replacement_step(g: &mut Inner, previous: &Executed, exec: &Executed) {
-    if !aether_rewards::enabled(&exec.state) {
-        return;
-    }
-    let params = aether_execution::registry::params(&previous.state);
-    let handing_over = exec
-        .handoff
-        .as_ref()
-        .is_some_and(|p| p.switch > exec.height);
-    // A draw's first block leaves the voting set to the draw.
-    let draw_start = exec
-        .height
-        .is_multiple_of(params.epoch_blocks * params.draw_epochs);
-    if exec.height == 0
-        || draw_start
-        || !exec.height.is_multiple_of(params.epoch_blocks)
-        || g.committee.members.is_empty()
-        || g.proposal.is_some()
-        || handing_over
-    {
-        return;
-    }
-    let pool = crate::rotation::eligible(
-        &previous.state,
-        exec.height / params.epoch_blocks,
-        params.min_streak,
-    );
-    let ops = crate::rotation::operators(&exec.state);
-    let availability = crate::rotation::availability(&exec.state);
-    let recents = crate::rotation::recents(&exec.state);
-    let next = crate::rotation::replace_silent(
-        &g.committee,
-        &pool,
-        exec.digest.as_ref(),
-        |k: &str| ops.get(k).cloned(),
-        |k: &str| availability.get(k).copied(),
-        |k: &str| recents.get(k).copied(),
-        exec.height / params.epoch_blocks,
-    );
-    if let Some(members) = next {
-        tracing::info!(
-            members = members.len(),
-            "a silent member is replaced while the quorum still stands"
-        );
-        g.proposal = Some((current_draw(&exec.state, exec.height), members));
-        keep(&g.store, PROPOSAL, &g.proposal);
-    }
 }
 
 fn keep<T: Serialize + ?Sized>(store: &Option<Arc<Store>>, key: &str, value: &T) {
@@ -2455,6 +2656,7 @@ mod pool_tests {
             draw_epochs: None,
             history_v2: false,
             node_rewards: false,
+            committee: vec![],
             reserve: None,
         }
     }
@@ -2589,7 +2791,7 @@ mod pool_tests {
         let context = Context { round: Round::new(EPOCH, View::new(height.get())), leader, parent: (View::new(height.get() - 1), last.digest()) };
         let skeleton = Block::new(context.clone(), last.digest(), height, height.get() * 1_000, bytes::Bytes::new());
         let ctx = Chain::block_context(&chain.cfg(), &skeleton, parent);
-        let (pre, _) = chain.pre_state_with(parent, parent.next_protocol(), &[], &[], false).unwrap();
+        let (pre, _) = chain.pre_state_with(parent, parent.next_protocol(), &[], &[], None, false).unwrap();
         let (payload, _) = build_payload(parent, &pre, &ctx, txs, Extras::default());
         let block = Block::new(context, last.digest(), height, height.get() * 1_000, payload.to_bytes());
         (chain.execute(&block, parent).unwrap(), ctx)
@@ -2615,7 +2817,7 @@ mod pool_tests {
         let context = Context { round: Round::new(EPOCH, View::new(height.get())), leader, parent: (View::new(height.get() - 1), last.digest()) };
         let skeleton = Block::new(context.clone(), last.digest(), height, height.get() * 1_000, bytes::Bytes::new());
         let ctx = Chain::block_context(&chain.cfg(), &skeleton, parent);
-        let (pre, _) = chain.pre_state_with(parent, parent.next_protocol(), &[], &[], false).unwrap();
+        let (pre, _) = chain.pre_state_with(parent, parent.next_protocol(), &[], &[], None, false).unwrap();
         let (payload, _) = build_payload(parent, &pre, &ctx, txs, Extras::default());
         let block = Block::new(context, last.digest(), height, height.get() * 1_000, payload.to_bytes());
         let exec = chain.execute(&block, parent).unwrap();
@@ -2817,7 +3019,7 @@ mod pool_tests {
         }
         let seen = Instant::now();
         accept_list(&chain, pending[32..48].to_vec(), seen); // all 16 list slots
-        let now = seen + Duration::from_secs(1); // past inclusion::FREEZE
+        let now = seen + inclusion::FREEZE + Duration::from_millis(250); // past inclusion::FREEZE
         let parent = chain.lock().finalized.clone();
 
         // The fix: one nonce order over listed and unlisted alike.
@@ -2880,7 +3082,7 @@ mod pool_tests {
         }
         let seen = Instant::now();
         accept_list(&chain, listed, seen);
-        let now = seen + Duration::from_secs(1);
+        let now = seen + inclusion::FREEZE + Duration::from_millis(250); // past inclusion::FREEZE
         let parent = chain.lock().finalized.clone();
 
         let (exec, ctx) = build_ctx(&chain, &parent, &genesis, chain.mempool_candidates());

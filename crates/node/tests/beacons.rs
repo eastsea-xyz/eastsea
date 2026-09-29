@@ -18,8 +18,8 @@ use common::{answered, Mac, Net, Opts};
 /// that leave a walkable gap between twelve slots.
 const E: u64 = 48;
 
-fn net(macs: u8, reserve: Option<Reserve>) -> Net {
-    Net::new(Opts { chain_id: 7_792, node_rewards: true, epoch_blocks: E, macs, min_streak: Some(0), history_v2: false, reserve })
+fn net(macs: u8, reserve: Option<Reserve>, committee: Option<Vec<(String, String)>>) -> Net {
+    Net::new(Opts { chain_id: 7_792, node_rewards: true, epoch_blocks: E, macs, min_streak: Some(0), history_v2: false, reserve, committee })
 }
 
 /// What operator `i`'s Mac earns for `epoch` by the rule (one Mac per operator).
@@ -31,7 +31,7 @@ fn expected(n: &Net, index: u64, epoch: u64, total_weight: u64) -> U256 {
 
 #[test]
 fn macs_are_paid_by_the_slots_they_answer_and_fakes_count_for_nothing() {
-    let mut n = net(5, None);
+    let mut n = net(5, None, None);
     // 0, 1: every slot. 2: the first half of them. 3: fakes. 4: never re-attests.
     let regs = (0..5).map(|i| n.register(i)).collect();
     n.step_with(regs, None, vec![], vec![]);
@@ -138,60 +138,59 @@ fn founder_reserve_keys_fill_only_a_short_committee_and_leave_at_four() {
     // Mac 4 is the founder's own registered Mac: not independent.
     let founder = common::addr(&aether_crypto::P256Signer::from_seed(&common::seed(5)).unwrap());
     let reserve = Reserve { operator: founder, members: reserve_members() };
-    let mut n = net(5, Some(reserve.clone()));
-    assert_eq!(n.operator(4), founder);
-    let r = Reserve::of(&n.parent.state).expect("a genesis parameter");
-    assert_eq!(r.members, reserve.members);
-    // The running set: four genesis keys (not candidates).
-    let genesis: Vec<(String, String)> = (0..4).map(|i| (format!("{i:064x}"), format!("genesis{i}"))).collect();
-    n.chain.lock().committee = aether_node::rotation::Committee { members: genesis };
+    let rkeys: Vec<ed25519::PrivateKey> = (1..=3u64).map(|i| ed25519::PrivateKey::from_seed(100 + i)).collect();
     let seated = |m: &[(String, String)]| reserve.members.iter().filter(|x| m.contains(x)).count();
-    // Mac `i`'s committee entry (voting key, iroh node id).
-    fn mac(n: &Net, i: usize) -> (String, String) {
-        (hex::encode(n.voting_key(i)), aether_net::EndpointId::from_bytes(&Net::node_id(i)).unwrap().to_string())
+
+    // Two independent Macs and the founder's register, but four seats already
+    // stand at genesis: not one reserve key joins, and with no roster committed
+    // no committee change may happen at all. Four must never grow to seven.
+    {
+        let mut n = net(5, Some(reserve.clone()), None);
+        assert_eq!(n.operator(4), founder);
+        assert_eq!(Reserve::of(&n.parent.state).expect("a genesis parameter").members, reserve.members);
+        let regs = [0, 1, 4].iter().map(|i| n.register(*i)).collect();
+        n.step_with(regs, None, vec![], vec![]);
+        n.run_to(2 * E);
+        assert!(aether_rewards::next_roster(&n.parent.state).is_none(), "four seats standing: no reserve key joins");
     }
 
-    // Epoch 0: two independent Macs and the founder's register, but four seats
-    // already stand: not one reserve key joins. Four must never grow to seven.
+    // The network opens short of four seats — the bootstrap the reserve keys
+    // are for: the founder's Mac fills the third seat, one reserve key the
+    // fourth, and only those two, as a committed roster (so only a handoff
+    // naming exactly it may carry the committee over; see reserve_hardening.rs).
+    let mut n = net(5, Some(reserve.clone()), Some(vec![common::mac_entry(0), common::mac_entry(1)]));
     let regs = [0, 1, 4].iter().map(|i| n.register(*i)).collect();
-    n.step(regs, None, vec![]);
+    n.step_with(regs, None, vec![], vec![]);
     n.run_to(E);
-    assert!(n.chain.lock().proposal.is_none(), "four seats standing: no reserve key joins");
+    let (_, roster) = aether_rewards::next_roster(&n.parent.state).expect("the missing seats are filled");
+    assert_eq!(seated(&roster), 1, "only as many reserve keys as missing seats: {roster:?}");
+    assert_eq!(roster.len(), 4);
+    assert!([common::mac_entry(0), common::mac_entry(1), common::mac_entry(4)].iter().all(|m| roster.contains(m)), "the independents stay, the founder's Mac fills one seat");
 
-    // The committee falls to the two independents: the founder's Mac fills the
-    // third seat, one reserve key the fourth, and only those two.
-    {
-        let mut g = n.chain.lock();
-        g.committee = aether_node::rotation::Committee { members: vec![mac(&n, 0), mac(&n, 1)] };
-        g.proposal = None;
-    }
-    n.run_to(2 * E);
-    let proposal = n.chain.lock().proposal.clone().expect("the missing seats are filled");
-    assert_eq!(seated(&proposal.1), 1, "only as many reserve keys as missing seats: {:?}", proposal.1);
-    assert_eq!(proposal.1.len(), 4);
-    assert!([mac(&n, 0), mac(&n, 1), mac(&n, 4)].iter().all(|m| proposal.1.contains(m)), "the independents stay, the founder's Mac fills one seat");
-    // Their handoff happens; from the switch height that set votes.
-    {
-        let mut g = n.chain.lock();
-        g.committee = aether_node::rotation::Committee { members: proposal.1.clone() };
-        g.proposal = None;
-    }
+    // Their handoff goes through; from the switch height that set votes.
+    let (_, handoff) = n.committee.handoff_to(n.chain_id, 1, &common::seat_of(&n, &roster, &rkeys));
+    let carried = n.step_handoff(handoff);
+    let switch = carried.height + aether_node::handoff::DELAY;
+    n.run_to(switch);
+    assert_eq!(aether_rewards::committee(&n.parent.state), roster, "the switch records the committee");
+    assert_eq!(aether_rewards::seated(&n.parent.state).0, 1);
+    assert!(aether_rewards::next_roster(&n.parent.state).is_none(), "the roster it committed has served its purpose");
+
     // A third independent operator qualifies: the committee is at the rule's four seats, nothing changes.
     let reg = n.register(2);
-    n.step(vec![reg], None, vec![]);
-    n.run_to(3 * E);
-    assert!(n.chain.lock().proposal.is_none(), "already the rule's seat count");
+    n.step_with(vec![reg], None, vec![], vec![]);
+    n.run_to(5 * E);
+    assert!(aether_rewards::next_roster(&n.parent.state).is_none(), "already the rule's seat count");
     // A fourth: every reserve key leaves at the next epoch.
     let reg = n.register(3);
-    n.step(vec![reg], None, vec![]);
-    n.run_to(4 * E);
-    let pool = aether_node::rotation::eligible(&n.parent.state, 4, 0);
-    assert_eq!(pool.len(), 5);
-    let proposal = n.chain.lock().proposal.clone().expect("reserve keys leave");
-    assert_eq!(seated(&proposal.1), 0, "every reserve key leaves at once");
-    assert_eq!(proposal.1.len(), 4, "qualifying Macs fill the seats");
-    assert!([mac(&n, 0), mac(&n, 1), mac(&n, 4)].iter().all(|m| proposal.1.contains(m)));
-    assert!(proposal.1.contains(&mac(&n, 2)) || proposal.1.contains(&mac(&n, 3)), "a qualifying Mac takes the freed seat");
+    n.step_with(vec![reg], None, vec![], vec![]);
+    n.run_to(6 * E);
+    assert_eq!(aether_node::rotation::eligible(&n.parent.state, 6, 0).len(), 5);
+    let (_, leave) = aether_rewards::next_roster(&n.parent.state).expect("reserve keys leave");
+    assert_eq!(seated(&leave), 0, "every reserve key leaves at once");
+    assert_eq!(leave.len(), 4, "qualifying Macs fill the seats");
+    assert!([common::mac_entry(0), common::mac_entry(1), common::mac_entry(4)].iter().all(|m| leave.contains(m)));
+    assert!(leave.contains(&common::mac_entry(2)) || leave.contains(&common::mac_entry(3)), "a qualifying Mac takes the freed seat");
     // They earned nothing: not candidates, no beacons.
     assert!(registry::candidates(&n.parent.state).iter().all(|c| !reserve.members.iter().any(|(k, _)| *k == hex::encode(c.validator_key))));
 }

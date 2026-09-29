@@ -319,7 +319,7 @@ pub fn spawn_service(
 fn next_job(chain: &Chain, prover: Address) -> Option<(u64, usize, aether_proving::block::BlockInput)> {
     let (exec, parent, block) = chain.provable()?;
     let payload = block.payload()?;
-    let (pre, _) = chain.pre_state_with(&parent, payload.version, &payload.proofs, &payload.beacons, true).ok()?;
+    let (pre, _) = chain.pre_state_with(&parent, payload.version, &payload.proofs, &payload.beacons, payload.seed.as_ref(), true).ok()?;
     let ctx = Chain::block_context(&chain.cfg(), &block, &parent);
     let input = aether_proving::block::input(&pre, &ctx, &payload.txs, &[], prover).ok()?;
     debug_assert_eq!(aether_proving::block::execute(&input).ok()?.commitment(), exec.statement.commitment);

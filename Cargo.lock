@@ -170,6 +170,9 @@ name = "aether-net"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "commonware-codec",
+ "commonware-cryptography",
+ "hex",
  "iroh",
  "iroh-mainline-address-lookup",
  "rand 0.9.5",
@@ -249,6 +252,7 @@ name = "aether-rewards"
 version = "0.2.0"
 dependencies = [
  "aether-execution",
+ "aether-net",
  "alloy-primitives",
  "hex",
 ]

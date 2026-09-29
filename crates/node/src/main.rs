@@ -897,6 +897,7 @@ fn chain_config(chain_id: u64, genesis: &aether_node::roster::Genesis, dev_alloc
         draw_epochs: genesis.draw_epochs,
         history_v2: genesis.history >= 2,
         node_rewards: genesis.node_rewards,
+        committee: genesis.committee.clone(),
         reserve: genesis.reserve.clone(),
     }
 }
@@ -1236,6 +1237,9 @@ fn assemble_network(
     };
     let file = aether_node::roster::NetworkFile {
         chain_id,
+        // Frozen here: after handoffs rewrite `validators`, this is still the
+        // roster the genesis rewards words record (and re-syncs re-derive).
+        genesis_validators: Some(validators.clone()),
         validators,
         identity: None,
         round: 0,
@@ -1517,9 +1521,12 @@ fn run_node(a: NodeArgs) {
         // Public access: iroh endpoint published to the BitTorrent Mainline DHT.
         // Wallets find this node by its id alone and verify everything they get;
         // validators tunnel consensus traffic over the same endpoint.
+        // Wallet-server announcements are listed only for keys the finalized
+        // registry state knows (red-team 2026-09-29 §3).
         let _router = endpoint.clone().map(|ep| {
             tracing::info!(node_id = %ep.id(), "public endpoint on iroh; address published to Mainline DHT (serving read-only answers while catching up)");
             let st = served_state.clone();
+            let registry = aether_node::announce::checker(st.read().expect("served state").chain.clone());
             let p2p_target = links.then(|| loopback(port));
             aether_net::serve(
                 ep,
@@ -1528,6 +1535,7 @@ fn run_node(a: NodeArgs) {
                     async move { rpc::handle_value(&st, req).await }
                 },
                 p2p_target,
+                Some(registry),
             )
         });
         // Catch up before voting: a committee member that slept must not
@@ -2070,21 +2078,33 @@ fn run_follow(
         };
         // Serve wallets over the public endpoint (the same answers the loopback
         // HTTP server gives; every one is verified by the reader), and announce
-        // this Mac as a wallet server to the validators, every minute. The
+        // this Mac as a wallet server to the validators, every minute, signed
+        // by this Mac's voting key (a registered candidate's key — validators
+        // list the announcement only then; red-team 2026-09-29 §3). The
         // router owns the endpoint, so it is bound to outlive this setup —
         // like the validators' `_router`, it must never drop while running.
+        let announce_keys = candidate_keys
+            .as_ref()
+            .map(|dir| aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(dir)))
+            .transpose()?
+            .map(std::sync::Arc::new);
         let _wallet_router = wallet_ep.map(|ep| {
             tracing::info!(node_id = %ep.id(), "serving wallets over iroh; announced to the validators every minute");
+            let endpoint_id = ep.id();
             let st = st.clone();
             let router = aether_net::serve_rpc(ep, move |req| {
                 let st = st.clone();
                 async move { rpc::handle_value(&st, req).await }
             });
-            let announcer = upstream.clone();
+            let (announcer, keys) = (upstream.clone(), announce_keys.clone());
             tokio::spawn(async move {
+                if keys.is_none() {
+                    tracing::debug!("no candidate keys: serving wallets, but not announced (aether run --candidate)");
+                }
                 loop {
-                    if let Upstream::Iroh(c, _) = announcer.as_ref() {
-                        if let Err(e) = c.call("aether_announceWalletServer", serde_json::json!([])).await {
+                    if let (Upstream::Iroh(c, _), Some(keys)) = (announcer.as_ref(), keys.as_ref()) {
+                        let params = aether_node::announce::signed(keys, &endpoint_id);
+                        if let Err(e) = c.call("aether_announceWalletServer", serde_json::json!(params)).await {
                             tracing::debug!(%e, "wallet-server announce failed; retrying in a minute");
                         }
                     }

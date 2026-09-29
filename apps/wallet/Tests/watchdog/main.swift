@@ -10,13 +10,19 @@ let t0 = Date(timeIntervalSince1970: 1_790_000_000)
 // per death inside the window.
 var w = NodeWatchdog()
 w.started(t0)
-check(w.exited(t0.addingTimeInterval(60), code: 4, log: "Io: No space left on device") == .restart(after: 1), "first death: restart after 1 s")
-check(w.exited(t0.addingTimeInterval(120), code: 4) == .restart(after: 2), "second death: 2 s")
-check(w.exited(t0.addingTimeInterval(180), code: 4) == .restart(after: 4), "third death: 4 s (third restart)")
+check(w.exited(t0.addingTimeInterval(60), code: 1) == .restart(after: 1), "first death: restart after 1 s")
+check(w.exited(t0.addingTimeInterval(120), code: 1) == .restart(after: 2), "second death: 2 s")
+check(w.exited(t0.addingTimeInterval(180), code: 1) == .restart(after: 4), "third death: 4 s (third restart)")
 
 // The fourth death inside ten minutes stops the loop with the failure's sentence.
 let stopped = w.exited(t0.addingTimeInterval(240), code: 4, log: "storage failed: Io(\"No space left on device\")\nthe store database did not recover; exiting")
 check(stopped == .stop(.diskFull), "fourth death inside 10 min: stop with the disk-full sentence")
+var full = NodeWatchdog()
+full.started(t0)
+check(full.exited(t0.addingTimeInterval(3), code: 4, log: "No space left on device") == .stop(.diskFull), "a persistent full disk stops after the first exhausted recovery")
+check(!NodeWatchdog.storageRecovered(freeBytes: nil), "unknown free space never resumes a storage crash loop")
+check(!NodeWatchdog.storageRecovered(freeBytes: NodeWatchdog.diskResumeBytes - 1), "one byte below the resume threshold stays stopped")
+check(NodeWatchdog.storageRecovered(freeBytes: NodeWatchdog.diskResumeBytes), "a restored 10 GB reserve permits a restart")
 if case let .stop(f) = stopped {
     check(f.sentence.contains("10"), "the sentence says what to do (free space)")
 }
@@ -59,6 +65,14 @@ up.started(t0.addingTimeInterval(20))
 check(up.exited(t0.addingTimeInterval(23), code: 1) == .restart(after: 2), "quick death 2: restart")
 up.started(t0.addingTimeInterval(50))
 check(up.exited(t0.addingTimeInterval(80), code: 1) == .rollback, "third quick death in a row: roll the update back")
+var damaged = NodeWatchdog()
+for i in 1...3 {
+    let start = t0.addingTimeInterval(Double(i) * 20)
+    damaged.started(start)
+    check(damaged.exited(start.addingTimeInterval(3), code: 4, log: "corrupt database") == .restart(after: pow(2, Double(i - 1))), "database damage \(i): no binary rollback")
+}
+damaged.started(t0.addingTimeInterval(80))
+check(damaged.exited(t0.addingTimeInterval(83), code: 4, log: "corrupt database") == .stop(.database), "fourth damaged-database exit stops instead of rolling back")
 
 // A long-lived run in between breaks the streak.
 var mixed = NodeWatchdog()
@@ -74,13 +88,20 @@ check(NodeWatchdog.classify(code: 4, signaled: false, log: "Io: No space left on
 check(NodeWatchdog.classify(code: 4, signaled: false, log: "enospc") == .diskFull, "lowercased ENOSPC")
 check(NodeWatchdog.classify(code: 4, signaled: false, log: "the state database does not verify: moved it aside") == .database, "verification failure → database")
 check(NodeWatchdog.classify(code: 4, signaled: false, log: "corrupt database") == .database, "corruption text → database")
-check(NodeWatchdog.classify(code: 4, signaled: false, log: "quiet") == .diskFull, "storage exit without detail: assume the disk (the incident's shape)")
+check(NodeWatchdog.classify(code: 4, signaled: false, log: "completed handoff cannot be installed") == .handoff, "incomplete handoff is diagnosed separately")
+var handoff = NodeWatchdog()
+handoff.started(t0)
+check(handoff.exited(t0.addingTimeInterval(3), code: 4, log: "completed handoff cannot be installed") == .stop(.handoff), "a broken completed handoff never restarts a signer")
+check(NodeWatchdog.classify(code: 4, signaled: false, log: "quiet") == .storage, "unknown storage failure is not guessed to be a full disk")
+var failedStorage = NodeWatchdog()
+failedStorage.started(t0)
+check(failedStorage.exited(t0.addingTimeInterval(3), code: 4, log: "permission denied") == .stop(.storage), "a persistent storage condition does not restart every 30 seconds")
 check(NodeWatchdog.classify(code: 1, signaled: false, log: "memory allocation of 4 GiB failed") == .other, "an unclear log is neither disk nor database")
 check(NodeWatchdog.classify(code: 1, signaled: false, log: "out of memory") == .memory, "OOM text → memory")
 check(NodeWatchdog.classify(code: 0, signaled: true, log: "") == .memory, "a signal death (kill) → memory")
 check(NodeWatchdog.classify(code: 1, signaled: false, log: "connection refused") == .network, "network text")
 // The sentences stay plain: no log paths, no jargon, whatever the language.
-for f in [NodeWatchdog.Failure.diskFull, .database, .memory, .network, .other, .upgradeNeeded, .identityLost, .alreadyRunning] {
+for f in [NodeWatchdog.Failure.diskFull, .database, .handoff, .storage, .memory, .network, .other, .upgradeNeeded, .identityLost, .alreadyRunning] {
     check(!f.sentence.contains("/") && !f.sentence.contains("redb"), "\(f): no paths or jargon")
     check(!f.sentence.isEmpty, "\(f): says something")
 }
@@ -121,7 +142,8 @@ voting.started(t0)
 for secs in stride(from: 2.0, through: 118, by: 2) {
     check(voting.polled(t0.addingTimeInterval(secs), local: 100, network: 400, activity: 5, voting: true) == .none, "voting and frozen \(secs) s: wait")
 }
-check(voting.polled(t0.addingTimeInterval(124), local: 100, network: 400, activity: 5, voting: true) == .restart(after: 0), "voting: only past 120 s")
+check(voting.polled(t0.addingTimeInterval(124), local: 100, network: 400, activity: 5, voting: true) == .none, "voting: no restart without quorum evidence")
+check(voting.polled(t0.addingTimeInterval(126), local: 100, network: 400, activity: 5, voting: true, quorumSafe: true) == .restart(after: 0), "voting: restart only after quorum safety is established")
 
 // Red team #9: a sleep or wake invalidates what the watchdog was timing. A
 // freeze counted before the sleep must not fire on the strength of it.
@@ -144,5 +166,26 @@ check(!NodeWatchdog.rollbackAllowed(prevProtocol: 2, chainScheduled: nil), "unkn
 check(!NodeWatchdog.rollbackAllowed(prevProtocol: 2, chainScheduled: 3), "the old binary cannot run the chain: refuse")
 check(NodeWatchdog.rollbackAllowed(prevProtocol: 3, chainScheduled: 3), "the old binary speaks the scheduled protocol")
 check(NodeWatchdog.rollbackAllowed(prevProtocol: 4, chainScheduled: 3), "an even older-newer binary is fine")
+
+// Red team #14/#17: a dead status RPC releases the local route immediately;
+// a live but stale node releases it after five verified lag observations.
+var route = NodeWatchdog()
+check(!route.useLocalNode(local: 100, network: 100, responsive: true, currentlyLocal: false), "one caught-up poll is insufficient")
+check(!route.useLocalNode(local: 100, network: 100, responsive: true, currentlyLocal: false), "two caught-up polls are insufficient")
+check(route.useLocalNode(local: 100, network: 100, responsive: true, currentlyLocal: false), "three verified caught-up polls select local")
+for _ in 1...4 {
+    check(route.useLocalNode(local: 100, network: 200, responsive: true, currentlyLocal: true), "brief verified lag does not flap")
+}
+check(!route.useLocalNode(local: 100, network: 200, responsive: true, currentlyLocal: true), "five lag polls yield local")
+check(!route.useLocalNode(local: 100, network: 200, responsive: false, currentlyLocal: true), "an unresponsive RPC yields local immediately")
+check(!route.useLocalNode(local: nil, network: 200, responsive: false, currentlyLocal: true), "a dead RPC without height still yields local")
+
+// Red team #9: after wake, a prior local selection is stale. The route stays
+// remote until a fresh certified remote height supports three observations.
+var wakeRoute = NodeWatchdog()
+for _ in 1...3 { _ = wakeRoute.useLocalNode(local: 100, network: 100, responsive: true, currentlyLocal: false) }
+wakeRoute.invalidate()
+check(!wakeRoute.useLocalNode(local: 100, network: nil, responsive: true, currentlyLocal: true), "wake without an authenticated height releases local")
+check(!wakeRoute.useLocalNode(local: 100, network: 100, responsive: true, currentlyLocal: false), "the first post-wake certificate is only the first readiness poll")
 
 print("watchdog: all checks passed")

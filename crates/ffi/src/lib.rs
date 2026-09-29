@@ -1010,6 +1010,31 @@ pub fn verified_height() -> u64 {
     VERIFIED_HEIGHT.lock().expect("verified height lock").iter().find(|(c, _)| *c == chain).map(|(_, h)| *h).unwrap_or(0)
 }
 
+/// A recent height proven by a validator's finality certificate, queried
+/// through the remote client even while wallet reads use the local node.
+/// The watchdog must never compare a local height with another local status
+/// response, nor with a remote peer's unauthenticated numeric claim.
+#[uniffi::export]
+pub fn authenticated_remote_height() -> R<Option<u64>> {
+    let remote = net()?;
+    let chain = *CHAIN_ID.lock().expect("chain id lock");
+    if let Some(height) = CHECKED_HEIGHT.lock().expect("checked height lock")
+        .iter()
+        .find(|(id, _, at)| *id == chain && at.elapsed() < Duration::from_secs(8))
+        .map(|(_, height, _)| *height) {
+        return Ok(Some(height));
+    }
+    remote.rt.block_on(refresh_finalized_height(&remote.client));
+    Ok(recent_checked_height(chain))
+}
+
+fn recent_checked_height(chain: u64) -> Option<u64> {
+    CHECKED_HEIGHT.lock().expect("checked height lock")
+        .iter()
+        .find(|(id, _, at)| *id == chain && at.elapsed() < Duration::from_secs(30))
+        .map(|(_, height, _)| *height)
+}
+
 fn expected_chain(status: &Value) -> R<u64> {
     let want = *CHAIN_ID.lock().expect("chain id lock");
     match status["chain_id"].as_u64() {
@@ -1452,6 +1477,21 @@ mod tests {
         remember_height(7_780, 3).unwrap();
         assert_eq!(verified_height(), 11);
         assert!(remember_height(7_780, 2).is_err());
+    }
+
+    /// Red team #2/#17: a stale certificate cannot drive a local-node
+    /// restart or keep the wallet on an obsolete local route.
+    #[test]
+    fn remote_watchdog_height_requires_a_recent_certificate() {
+        let _g = config();
+        let chain = 9_990_017;
+        remember_checked_height(chain, 42);
+        assert_eq!(recent_checked_height(chain), Some(42));
+        let mut checked = CHECKED_HEIGHT.lock().unwrap();
+        let (_, _, at) = checked.iter_mut().find(|(id, _, _)| *id == chain).unwrap();
+        *at = std::time::Instant::now() - Duration::from_secs(31);
+        drop(checked);
+        assert_eq!(recent_checked_height(chain), None);
     }
 
     /// The 10-minute recency guard, kept as an extra check on top of the above.

@@ -42,6 +42,8 @@ struct NodeWatchdog {
     enum Failure: Equatable {
         case diskFull
         case database
+        case handoff
+        case storage
         case memory
         case network
         case other
@@ -62,8 +64,14 @@ struct NodeWatchdog {
                 return ko ? "디스크 공간이 부족해요. 10GB 비우면 노드가 저절로 다시 시작합니다."
                     : "The disk is full. Free 10 GB and the node restarts by itself."
             case .database:
-                return ko ? "노드 데이터가 계속 손상됩니다. 앱을 지웠다가 다시 설치해 주세요."
-                    : "The node's data keeps getting damaged. Please delete and reinstall the app."
+                return ko ? "노드 데이터가 계속 손상됩니다. 백업에서 복원하거나 지원에 문의해 주세요."
+                    : "The node's data keeps getting damaged. Restore it from a backup or contact support."
+            case .handoff:
+                return ko ? "노드 인계 데이터를 복구할 수 없어요. 백업에서 복원해 주세요."
+                    : "The node's handoff data cannot be recovered. Restore it from a backup."
+            case .storage:
+                return ko ? "노드 저장소를 열 수 없어요. 디스크 상태를 확인한 뒤 노드를 다시 켜 주세요."
+                    : "The node cannot open its storage. Check the disk, then turn the node on again."
             case .memory:
                 return ko ? "메모리가 부족해요. 다른 앱을 몇 개 닫아 주세요."
                     : "The Mac is low on memory. Close a few other apps."
@@ -97,6 +105,11 @@ struct NodeWatchdog {
     /// Restart backoff bounds.
     static let firstBackoff: TimeInterval = 1
     static let maxBackoff: TimeInterval = 60
+    static let diskResumeBytes: UInt64 = 10 * 1_024 * 1_024 * 1_024
+
+    static func storageRecovered(freeBytes: UInt64?) -> Bool {
+        freeBytes.map { $0 >= diskResumeBytes } ?? false
+    }
     /// Exit codes no restart can change: the node's own supervisor exits with
     /// them instead of restarting (3 upgrade required, 5 no proof verifier,
     /// 6 identity lost, 7 data directory locked), and the app does the same.
@@ -116,6 +129,36 @@ struct NodeWatchdog {
     private var lastActivity: UInt64?
     private var frozenSince: Date?
     private var stalled = false
+    private var behindPolls = 0
+    private var caughtUpPolls = 0
+
+    /// The wallet's local read route. An unresponsive status RPC yields the
+    /// route immediately; five verified lag observations yield it too. Three
+    /// verified caught-up observations are needed before returning to local.
+    mutating func useLocalNode(local: UInt64?, network: UInt64?, responsive: Bool, currentlyLocal: Bool) -> Bool {
+        guard responsive, let local, let network else {
+            behindPolls = 0
+            caughtUpPolls = 0
+            return false
+        }
+        let behind = network > local && network - local > 2
+        if currentlyLocal {
+            caughtUpPolls = 0
+            behindPolls = behind ? behindPolls + 1 : 0
+            if behindPolls >= 5 {
+                behindPolls = 0
+                return false
+            }
+            return true
+        }
+        behindPolls = 0
+        caughtUpPolls = behind ? 0 : caughtUpPolls + 1
+        if caughtUpPolls >= 3 {
+            caughtUpPolls = 0
+            return true
+        }
+        return false
+    }
 
     /// The node process is running as of `at`.
     mutating func started(_ at: Date) {
@@ -133,6 +176,11 @@ struct NodeWatchdog {
         exits.append(at)
         exits.removeAll { at.timeIntervalSince($0) > Self.crashWindow }
         lastFailure = Self.classify(code: code, signaled: signaled, log: log)
+        // The node already exhausted its storage reopen attempts. Repeating
+        // them on a full disk only burns power and log space.
+        if lastFailure == .diskFull { return .stop(.diskFull) }
+        if lastFailure == .handoff { return .stop(.handoff) }
+        if lastFailure == .storage { return .stop(.storage) }
         // A restart cannot fix these (red team #1): the update, the key or the
         // other app is the fix. Not even the rollback path may take them.
         if Self.unrestartable.contains(code) {
@@ -143,7 +191,7 @@ struct NodeWatchdog {
         } else {
             quickExits = 0
         }
-        if quickExits >= Self.maxQuickExits {
+        if quickExits >= Self.maxQuickExits && lastFailure != .database {
             return .rollback
         }
         // Three restarts is the limit: the fourth death in ten minutes stops
@@ -160,7 +208,7 @@ struct NodeWatchdog {
     /// never counts). `activity` is the node's stage-wise work counter, and
     /// `voting` says whether this Mac is in the voting set (its restart costs
     /// the network a signature, so it is given twice the patience).
-    mutating func polled(_ at: Date, local: UInt64?, network: UInt64?, activity: UInt64? = nil, voting: Bool = false) -> Decision {
+    mutating func polled(_ at: Date, local: UInt64?, network: UInt64?, activity: UInt64? = nil, voting: Bool = false, quorumSafe: Bool = false) -> Decision {
         guard let local else {
             frozenSince = nil
             lastActivity = nil
@@ -197,6 +245,10 @@ struct NodeWatchdog {
         frozenSince = since
         let stall = voting ? Self.stallAfter * 2 : Self.stallAfter
         guard at.timeIntervalSince(since) >= stall, !stalled else { return .none }
+        // No authenticated quorum evidence is available to the app today.
+        // A voting member cannot be restarted merely because its height is
+        // frozen; that could remove the signature keeping the chain live.
+        guard !voting || quorumSafe else { return .none }
         stalled = true
         lastFailure = .network
         return .restart(after: 0)
@@ -208,6 +260,8 @@ struct NodeWatchdog {
     mutating func invalidate() {
         lastHeight = nil
         lastActivity = nil
+        behindPolls = 0
+        caughtUpPolls = 0
         frozenSince = nil
         stalled = false
     }
@@ -239,7 +293,8 @@ struct NodeWatchdog {
             return .diskFull
         }
         if code == 4 {
-            return tail.contains("does not verify") || tail.contains("corrupt") ? .database : .diskFull
+            if tail.contains("handoff") { return .handoff }
+            return tail.contains("does not verify") || tail.contains("corrupt") ? .database : .storage
         }
         // The node's own "do not restart me" codes (its supervisor exits with
         // them rather than looping): each has its sentence.

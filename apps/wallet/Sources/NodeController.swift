@@ -39,7 +39,14 @@ final class NodeController: ObservableObject {
         let beaconer: String
     }
     @AppStorage("nodeEnabled") var enabled = false {
-        didSet { enabled ? startIfAllowed() : stop() }
+        didSet {
+            if enabled {
+                automaticRestartBlocked = false
+                startIfAllowed()
+            } else {
+                stop()
+            }
+        }
     }
     /// Prove blocks on this Mac's GPU for rewards (protocol 2); paid to `proveAddress`.
     @AppStorage("proveBlocks") var prove = false {
@@ -106,10 +113,16 @@ final class NodeController: ObservableObject {
     /// Start or pause for the power source; called every 30 s while the switch is on.
     private func applyPower() {
         guard enabled else { return }
+        if automaticRestartBlocked && watchdog.lastFailure == .diskFull,
+           let attrs = try? FileManager.default.attributesOfFileSystem(forPath: Self.dataDir.path),
+           let free = attrs[.systemFreeSize] as? NSNumber,
+           NodeWatchdog.storageRecovered(freeBytes: free.uint64Value) {
+            automaticRestartBlocked = false
+        }
         if onlyOnPower && Self.onBattery {
             if process != nil { stop(keepSwitch: true) }
             state = .waitingForPower
-        } else if process == nil, restartTimer == nil {
+        } else if process == nil, restartTimer == nil, !automaticRestartBlocked {
             // A watchdog restart already scheduled keeps its backoff.
             start()
         }
@@ -145,15 +158,15 @@ final class NodeController: ObservableObject {
     private var watchdog = NodeWatchdog()
     /// A watchdog-ordered restart is pending (its backoff is running).
     private var restartTimer: Timer?
+    /// A terminal watchdog decision must also gate the periodic power timer.
+    private var automaticRestartBlocked = false
     /// The last update's binary kept beside the current one: rolled back to
     /// when the new one cannot start (docs/design/24-self-healing.md layer 2).
     private var usePreviousBinary = false
-    /// Polls in a row the switched-to local node was behind the network
-    /// (red team #17): a few, so a second of lag at the tip does not flip it.
-    private var behindPolls = 0
     /// The "this Mac's node key cannot be read" notice went out (once per
     /// bout; red team #5 — a person must restore the key).
     private var identityNoticePosted = false
+    private var nextCandidateRetry = Date.distantPast
     /// Sleep/wake observers (red team #9): the watchdog's timing is stale the
     /// moment the Mac sleeps. Added once, kept for the app's lifetime.
     private var wakeObservers: [NSObjectProtocol] = []
@@ -201,6 +214,7 @@ final class NodeController: ObservableObject {
             return
         }
         loadCandidate(binary)
+        nextCandidateRetry = Date().addingTimeInterval(60)
         var args = ["run", "--data", Self.dataDir.path, "--rpc-port", String(Self.port), "--port", String(Self.p2pPort), "--exit-with-parent"]
         if let network = Bundle.main.url(forResource: "network", withExtension: "json") {
             args += ["--network", network.path]
@@ -276,7 +290,7 @@ final class NodeController: ObservableObject {
         poll = nil
         restartTimer = nil
         switched = false
-        behindPolls = 0
+        watchdog.invalidate()
         useLocalNode(port: nil)
         if let p = process, p.isRunning { p.terminate() }
         process = nil
@@ -320,6 +334,7 @@ final class NodeController: ObservableObject {
             }
         case .stop(let failure):
             // Too many deaths: stop restarting, one plain sentence (layer 4).
+            automaticRestartBlocked = true
             state = .failed(failure.sentence)
         case .rollback:
             // The updated binary cannot start: back to the previous one —
@@ -340,6 +355,7 @@ final class NodeController: ObservableObject {
                             self.watchdog.restarting()
                             self.start()
                         } else {
+                            self.automaticRestartBlocked = true
                             self.state = .failed(NodeWatchdog.Failure.upgradeNeeded.sentence)
                             self.upgradeAsked = true
                             self.onUpgradeNeeded?()
@@ -347,6 +363,7 @@ final class NodeController: ObservableObject {
                     }
                 }
             } else {
+                automaticRestartBlocked = true
                 state = .failed(NodeWatchdog.Failure.other.sentence)
             }
         case .none:
@@ -465,6 +482,10 @@ final class NodeController: ObservableObject {
     }
 
     private func check() {
+        if candidate == nil, Date() >= nextCandidateRetry {
+            nextCandidateRetry = Date().addingTimeInterval(60)
+            if let binary { loadCandidate(binary) }
+        }
         refreshVoting()
         applyDuty()
         refreshProver()
@@ -476,40 +497,32 @@ final class NodeController: ObservableObject {
             // cached for the rollback decision (red team #3) — the newest
             // protocol the chain has scheduled.
             let status = await LocalRPC.call(port: port, method: "aether_status", params: []) as? [String: Any]
-            let local = (status?["height"] as? NSNumber)?.uint64Value ?? localNodeHeight(port: port)
+            let statusHeight = (status?["height"] as? NSNumber)?.uint64Value
+            let local = statusHeight ?? localNodeHeight(port: port)
             // The network's height stays in the picture after the switch too
             // (red team #17): the wallet's own multi-source verified view,
             // whether or not it is reading through this node.
-            let network = (try? chainStatus())?.height
+            let network = try? authenticatedRemoteHeight()
             let activity = (status?["activity"] as? NSNumber)?.uint64Value
             await MainActor.run {
-                guard self.process != nil, let local else { return }
+                guard self.process != nil else { return }
+                let useLocal = self.watchdog.useLocalNode(
+                    local: statusHeight, network: network,
+                    responsive: status != nil, currentlyLocal: self.switched)
+                if self.switched != useLocal {
+                    self.switched = useLocal
+                    useLocalNode(port: useLocal ? port : nil)
+                    self.state = useLocal ? .running : .starting
+                }
+                guard let local else {
+                    self.state = .starting
+                    return
+                }
                 if self.height != local { self.height = local }
                 if let scheduled = (status?["newest_scheduled"] as? NSNumber)?.uint64Value {
                     self.scheduledProtocol = scheduled
                 }
-                if self.switched {
-                    // Red team #14/#17: a local node that falls behind gives
-                    // the wallet's traffic back to the network's nodes — after
-                    // a few polls in a row, so a second of lag at the tip (or
-                    // one slow answer) does not flip it.
-                    if let network, local + 2 < network {
-                        self.behindPolls += 1
-                        if self.behindPolls >= 5 {
-                            self.behindPolls = 0
-                            self.switched = false
-                            useLocalNode(port: nil)
-                            self.state = .starting
-                        }
-                    } else {
-                        self.behindPolls = 0
-                    }
-                } else if local + 2 >= (network ?? 0) {
-                    useLocalNode(port: port)
-                    self.switched = true
-                    self.behindPolls = 0
-                    if self.state != .running { self.state = .running }
-                } else if self.state != .starting {
+                if !self.switched && self.state != .starting {
                     self.state = .starting  // catching up; the wallet keeps asking validators meanwhile
                 }
                 // A stall (the network moves, ours has not for a minute) —
@@ -535,12 +548,22 @@ final class NodeController: ObservableObject {
         let center = NSWorkspace.shared.notificationCenter
         wakeObservers = [
             center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.watchdog.invalidate() }
+                Task { @MainActor in
+                    guard let self, self.process != nil else { return }
+                    self.watchdog.invalidate()
+                    self.switched = false
+                    useLocalNode(port: nil)
+                    self.state = .starting
+                }
             },
             center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in
-                    self?.watchdog.invalidate()
-                    self?.check()
+                    guard let self, self.process != nil else { return }
+                    self.watchdog.invalidate()
+                    self.switched = false
+                    useLocalNode(port: nil)
+                    self.state = .starting
+                    self.check()
                 }
             },
         ]

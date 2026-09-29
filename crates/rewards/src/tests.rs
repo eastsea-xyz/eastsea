@@ -586,9 +586,14 @@ fn committee(seated: bool) -> Vec<(String, String)> {
     }
 }
 
-/// The chain applies a committee change at `height` (chain.rs `pre_state_with`).
+/// The chain applies a committee change at `height` (chain.rs `pre_state_with`),
+/// and — when the height opens an epoch — that boundary's overdue write too
+/// (finding 6: here the ordinary case, the count at zero).
 fn switch(s: &mut WorldState, height: u64, seated: bool) {
     switch_reserve(s, height, &committee(seated));
+    if height.is_multiple_of(EB) {
+        set_overdue(s, height / EB, 0);
+    }
 }
 
 #[test]
@@ -667,6 +672,7 @@ fn the_credit_follows_the_seating_not_the_operator_count() {
     }
     enroll(&mut s, 9, FOUNDER, 1);
     warm(&mut s, 9, WARMUP_STEPS);
+    set_overdue(&mut s, 1, 0);
     distribute(&mut s, 2 * EB).unwrap();
     assert!(s.balance(&FOUNDER).is_zero(), "no seat, no credit");
     switch(&mut s, 2 * EB, true);
@@ -679,8 +685,9 @@ fn the_credit_follows_the_seating_not_the_operator_count() {
         warm(&mut s, i, WARMUP_STEPS);
     }
     for i in 0..5 {
-        beacon(&mut s, (if i == 4 { 9 } else { i }), 3);
+        beacon(&mut s, if i == 4 { 9 } else { i }, 3);
     }
+    set_overdue(&mut s, 3, 0);
     let d = distribute(&mut s, 4 * EB).unwrap();
     assert_eq!(d.paid.len(), 5, "five operators, the founder one of them");
     assert_eq!(s.balance(&FOUNDER) - node_pool(2, EB) / U256::from(16u8), d.pool / U256::from(16u8), "still seated, still credited");
@@ -703,6 +710,7 @@ fn unseating_the_reserve_keys_ends_the_credit() {
     assert_eq!(seated(&s), (0, 0), "the word is cleared");
     for e in 2..4 {
         beacon(&mut s, 0, e);
+        set_overdue(&mut s, e, 0);
         distribute(&mut s, (e + 1) * EB).unwrap();
     }
     assert_eq!(s.balance(&FOUNDER), paid, "unseated: no credit for any epoch after");
@@ -720,9 +728,11 @@ fn a_mid_epoch_seating_serves_only_from_the_next_epoch() {
     warm(&mut s, 1, WARMUP_STEPS);
     switch(&mut s, 2 * EB + EB / 2, true); // inside epoch 2
     beacon(&mut s, 0, 2);
+    set_overdue(&mut s, 2, 0);
     distribute(&mut s, 3 * EB).unwrap();
     assert!(s.balance(&FOUNDER).is_zero(), "epoch 2 was half-seated: no credit");
     beacon(&mut s, 0, 3);
+    set_overdue(&mut s, 3, 0);
     distribute(&mut s, 4 * EB).unwrap();
     let after_full = s.balance(&FOUNDER);
     assert_eq!(after_full, node_pool(3, EB) / U256::from(16u8), "epoch 3 fully seated");
@@ -730,6 +740,7 @@ fn a_mid_epoch_seating_serves_only_from_the_next_epoch() {
     switch(&mut s, 4 * EB + 1, false);
     switch(&mut s, 5 * EB + 1, true); // inside epoch 5
     beacon(&mut s, 0, 5);
+    set_overdue(&mut s, 5, 0);
     distribute(&mut s, 6 * EB).unwrap();
     assert_eq!(s.balance(&FOUNDER), after_full, "the re-seating is mid-epoch 5: no credit");
     assert_eq!(seated(&s).1, 5 * EB + 1);
@@ -769,6 +780,7 @@ fn reserve_service_moves_no_warm_up() {
         for e in day * DAY_EPOCHS..(day + 1) * DAY_EPOCHS {
             answer(&mut s, 0, e, 0b1111);
             answer(&mut s, 1, e, 0b0101);
+            set_overdue(&mut s, e, 0);
             let d = distribute(&mut s, (e + 1) * EB).unwrap();
             let level = 5u64.saturating_sub(day);
             let w = 4 * (WARMUP_STEPS + level);
@@ -782,4 +794,89 @@ fn reserve_service_moves_no_warm_up() {
     let pool = node_pool(DAY_EPOCHS, EB);
     assert!(shares.iter().all(|a| *a <= pool / U256::from(16u8)));
     assert_eq!(s.balance(&FOUNDER), shares.into_iter().sum::<U256>(), "every served epoch paid");
+}
+
+#[test]
+fn the_genesis_write_parks_the_registry_sentinel_on_every_reserve_key() {
+    // Finding 1: `set_reserve` prewrites the deployed registry's `indexOf`
+    // sentinel for each reserve key, so its own `register()` — a direct
+    // transaction, not one routed through the app — reverts Known().
+    let s = reserve_net(0);
+    for (key, _) in RESERVE_KEYS {
+        let at = U256::from_be_bytes(
+            keccak256([key.as_slice(), &U256::from(3u64).to_be_bytes::<32>()].concat()).0,
+        );
+        assert_eq!(s.storage(&registry::REGISTRY, at), U256::MAX, "the sentinel word");
+    }
+}
+
+#[test]
+fn committee_and_roster_words_round_trip_and_zero_their_tail() {
+    // The words that keep the voting set in state (finding 2): a member list
+    // reads back as written, and a shorter one zeroes the words a longer list
+    // used, so no stale member can survive a rewrite.
+    let id = |b: u8| aether_net::SecretKey::from_bytes(&[b; 32]).public().to_string();
+    let long = vec![(hex::encode([0x11; 32]), id(1)), (hex::encode([0x22; 32]), id(2)), (hex::encode([0x33; 32]), id(3))];
+    let short = vec![(hex::encode([0x44; 32]), id(4))];
+    let mut s = reserve_net(0);
+    set_committee(&mut s, &long).unwrap();
+    assert_eq!(super::committee(&s), long);
+    set_committee(&mut s, &short).unwrap();
+    assert_eq!(super::committee(&s), short);
+    assert_eq!(s.storage(&REWARDS, tagged(TAG_COMMITTEE, U256::from(5u64))), U256::ZERO, "a stale member word is zeroed");
+    // Rosters and pools the same, with their draw tags; cleared is None.
+    commit_roster(&mut s, 7, &long).unwrap();
+    assert_eq!(next_roster(&s), Some((7, long.clone())));
+    clear_roster(&mut s);
+    assert_eq!(next_roster(&s), None);
+    freeze_pool(&mut s, 9, &short).unwrap();
+    assert_eq!(draw_pool(&s), Some((9, short.clone())));
+    // A member that is not (key hex, node id) is refused; an empty list writes
+    // nothing (a network without node rewards).
+    assert!(set_committee(&mut s, &[("0".into(), id(4))]).is_err());
+    set_committee(&mut s, &[]).unwrap();
+    assert_eq!(super::committee(&s), short);
+    assert!(super::committee(&network()).is_empty());
+}
+
+#[test]
+fn same_roster_compares_members_not_order_or_spelling() {
+    let id = |b: u8| aether_net::SecretKey::from_bytes(&[b; 32]).public().to_string();
+    let a = [(hex::encode([1; 32]), id(1)), (hex::encode([2; 32]), id(2))];
+    assert!(same_roster(&a, &[a[1].clone(), a[0].clone()]), "order does not matter");
+    assert!(same_roster(&a, &[("0x".to_string() + &hex::encode([1; 32]), id(1)), (hex::encode([2; 32]).to_uppercase(), id(2))]), "nor spelling");
+    assert!(!same_roster(&a, &[a[0].clone(), (hex::encode([3; 32]), id(3))]), "a different member");
+    // A member that is not (key hex, node id) matches nothing: a handoff
+    // carrying one is refused.
+    assert!(!same_roster(&a, &[a[0].clone(), (hex::encode([2; 32]), "not-a-node-id".into())]));
+    assert!(!same_roster(&a, &[a[0].clone(), ("00".into(), id(2))]));
+    assert!(same_roster(&[], &[]));
+}
+
+#[test]
+fn past_two_overdue_epochs_the_service_credit_stops() {
+    // Finding 6: seats nobody needs — four or more independent operators
+    // qualify while the reserve keys still sit — pay two more epochs and
+    // stop. The word must be the epoch's own, so a stale or missing count
+    // pays nothing rather than guessing.
+    let mut s = reserve_net(0);
+    switch(&mut s, EB, true);
+    assert_eq!(overdue(&s), (1, 0));
+    for (count, served) in [(0u64, true), (1, true), (2, true), (3, false), (9, false)] {
+        set_overdue(&mut s, 2, count);
+        assert_eq!(reserve_served(&s, 2).is_some(), served, "count {count}");
+    }
+    // A stale count — another epoch's word — never serves.
+    set_overdue(&mut s, 2, 0);
+    assert!(reserve_served(&s, 2).is_some());
+    assert!(reserve_served(&s, 3).is_none(), "the word is epoch 2's, not 3's");
+    assert_eq!(overdue(&s), (2, 0));
+}
+
+#[test]
+fn every_rewards_storage_tag_is_distinct() {
+    let mut tags = crate::ALL_TAGS.to_vec();
+    tags.sort_unstable();
+    tags.dedup();
+    assert_eq!(tags.len(), crate::ALL_TAGS.len(), "two records share a storage tag");
 }

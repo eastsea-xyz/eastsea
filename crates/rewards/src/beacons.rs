@@ -38,10 +38,10 @@ pub const MAX_ANSWERS_PER_BLOCK: usize = 1024;
 /// A registry candidate's liveness streak restarts after this many missed epochs (as in the contract).
 pub const GRACE_EPOCHS: u64 = 24;
 
-const TAG_SLOTS: u64 = 3;
-const TAG_SLOT_HASH: u64 = 4;
-const TAG_DAY: u64 = 5;
-const TAG_BEACON: u64 = 6;
+pub(crate) const TAG_SLOTS: u64 = 3;
+pub(crate) const TAG_SLOT_HASH: u64 = 4;
+pub(crate) const TAG_DAY: u64 = 5;
+pub(crate) const TAG_BEACON: u64 = 6;
 
 fn word_u64(w: U256, shift: usize) -> u64 {
     ((w >> shift) & U256::from(u64::MAX)).to::<u64>()

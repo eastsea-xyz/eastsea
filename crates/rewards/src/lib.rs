@@ -84,6 +84,48 @@ const TAG_OPERATOR: u64 = 2;
 const TAG_RESERVE: u64 = 7;
 /// Seating of the founder's reserve keys, rewritten at each committee switch.
 const TAG_SEATED: u64 = 8;
+// 11..=13 are the concurrent beacons profile words (hour-of-day profile,
+// offers, recent counts) on phase1-nextgen: the reserve-hardening tags below
+// start past them so the merge keeps every tag distinct (the ALL_TAGS test).
+/// The running voting committee: the genesis roster first, then the members of
+/// each handoff from the block they take over at (a chain system write, so
+/// every node — validator, follower, or syncing from a snapshot — holds the
+/// same committee in state).
+const TAG_COMMITTEE: u64 = 9;
+/// The voting set the chain committed to for the current draw: the draw seed's
+/// decision, or a reserve reseat's. Only a handoff naming exactly these
+/// members may hand the committee over (chain.rs `next_handoff`).
+const TAG_ROSTER: u64 = 10;
+/// The draw's candidate pool, frozen at its first block from the registry
+/// state that block builds on (the same `rotation::eligible` list the draw
+/// reads).
+const TAG_POOL: u64 = 14;
+/// Consecutive registry epochs the founder's reserve keys have held seats
+/// while four or more independent operators qualified (`TAG_OVERDUE, 0` =
+/// `epoch | count << 64`): past `RESERVE_GRACE_EPOCHS` of them the service
+/// credit stops.
+const TAG_OVERDUE: u64 = 15;
+
+/// Every storage tag of REWARDS (here and in beacons.rs), in one list: a new
+/// record takes the next free number (two records once shared tag 8). The
+/// reserve-hardening words start at 14 because 11..=13 are the beacons
+/// profile words already taken on phase1-nextgen.
+#[cfg(test)]
+pub(crate) const ALL_TAGS: [u64; 13] = [
+    ENABLED,
+    TAG_MAC,
+    TAG_OPERATOR,
+    TAG_RESERVE,
+    TAG_SEATED,
+    TAG_COMMITTEE,
+    TAG_ROSTER,
+    TAG_POOL,
+    TAG_OVERDUE,
+    beacons::TAG_SLOTS,
+    beacons::TAG_SLOT_HASH,
+    beacons::TAG_DAY,
+    beacons::TAG_BEACON,
+];
 
 pub mod beacons;
 
@@ -397,6 +439,16 @@ pub fn set_reserve(state: &mut WorldState, operator: Address, keys: &[ReserveKey
         state.set_storage(REWARDS, tagged(TAG_RESERVE, U256::from(1 + 2 * i)), U256::from_be_bytes(*key));
         state.set_storage(REWARDS, tagged(TAG_RESERVE, U256::from(2 + 2 * i)), U256::from_be_bytes(*node));
     }
+    // A reserve key must never also register as a candidate (finding 1): the
+    // genesis write puts a sentinel into the deployed registry's `indexOf`
+    // mapping, so the pinned contract's `register()` reverts `Known()` on a
+    // direct registration too — the bytecode itself never changes.
+    for (key, _) in keys {
+        let at = U256::from_be_bytes(
+            keccak256([key.as_slice(), &U256::from(3u64).to_be_bytes::<32>()].concat()).0,
+        );
+        state.set_storage(registry::REGISTRY, at, U256::MAX);
+    }
     Ok(())
 }
 
@@ -454,6 +506,155 @@ pub fn switch_reserve(state: &mut WorldState, height: u64, members: &[(String, S
     }
 }
 
+/// A roster member as the words below hold it: (voting key bytes, iroh node
+/// id bytes). None when the strings are not exactly that.
+fn member_bytes(m: &(String, String)) -> Option<([u8; 32], [u8; 32])> {
+    let key = hex::decode(m.0.trim_start_matches("0x"))
+        .ok()
+        .and_then(|b| <[u8; 32]>::try_from(b).ok())?;
+    let node = m.1.parse::<aether_net::EndpointId>().ok()?;
+    Some((key, *node.as_bytes()))
+}
+
+/// Whether two rosters name the same members (parsed key and node id pairs;
+/// order and spelling do not matter). A roster with a member that is not
+/// (key hex, node id) matches nothing — a handoff carrying one is refused.
+pub fn same_roster(a: &[(String, String)], b: &[(String, String)]) -> bool {
+    let parsed = |m: &[(String, String)]| -> Option<Vec<([u8; 32], [u8; 32])>> {
+        let mut v: Vec<_> = m.iter().map(member_bytes).collect::<Option<_>>()?;
+        v.sort();
+        Some(v)
+    };
+    parsed(a).zip(parsed(b)).is_some_and(|(a, b)| a == b)
+}
+
+/// Write a member list as one word per member half: the head (`head`, holding
+/// the count), then each member's key and node id. Zeroes whatever a longer
+/// list left behind. Refuses a member that is not (key hex, node id).
+fn write_members(
+    state: &mut WorldState,
+    tag: u64,
+    head: U256,
+    members: &[(String, String)],
+) -> Result<(), String> {
+    let old = ((state.storage(&REWARDS, tagged(tag, U256::ZERO)) >> 64usize) & U256::from(u64::MAX))
+        .to::<u64>() as usize;
+    let mut words = vec![head];
+    for (key, node) in members {
+        let (k, n) = member_bytes(&(key.clone(), node.clone()))
+            .ok_or_else(|| format!("member {key}: 32-byte key hex and node id"))?;
+        words.push(U256::from_be_bytes(k));
+        words.push(U256::from_be_bytes(n));
+    }
+    for i in 0..words.len().max(1 + 2 * old) {
+        let w = words.get(i).copied().unwrap_or(U256::ZERO);
+        state.set_storage(REWARDS, tagged(tag, U256::from(i as u64)), w);
+    }
+    Ok(())
+}
+
+/// Read a member list back: (head's low word, member count, members).
+fn read_members(state: &WorldState, tag: u64) -> (u64, u64, Vec<(String, String)>) {
+    let head = state.storage(&REWARDS, tagged(tag, U256::ZERO));
+    let low = (head & U256::from(u64::MAX)).to::<u64>();
+    let count = ((head >> 64usize) & U256::from(u64::MAX)).to::<u64>();
+    let word = |k: u64| state.storage(&REWARDS, tagged(tag, U256::from(k))).to_be_bytes::<32>();
+    let members = (0..count as usize)
+        .filter_map(|i| {
+            let node = aether_net::EndpointId::from_bytes(&word(2 + 2 * i as u64)).ok()?;
+            Some((hex::encode(word(1 + 2 * i as u64)), node.to_string()))
+        })
+        .collect();
+    (low, count, members)
+}
+
+/// Genesis: the network's first voting committee (network.json keeps it as
+/// `genesis_validators` across handoffs, so every node derives the same
+/// genesis state however many committees came and went). Node rewards only;
+/// an empty list writes nothing.
+pub fn set_committee(state: &mut WorldState, members: &[(String, String)]) -> Result<(), String> {
+    if members.is_empty() {
+        return Ok(());
+    }
+    write_members(state, TAG_COMMITTEE, U256::from(members.len()) << 64usize, members)
+}
+
+/// The voting committee the chain last recorded: the genesis roster, or the
+/// members of the handoff that switched in last. Empty without node rewards.
+pub fn committee(state: &WorldState) -> Vec<(String, String)> {
+    read_members(state, TAG_COMMITTEE).2
+}
+
+/// Commit the voting set decided for draw `draw` — the draw seed's decision,
+/// or a reserve reseat's. Every node derives the same roster from state, and
+/// only a handoff naming exactly these members may carry it over.
+pub fn commit_roster(state: &mut WorldState, draw: u64, members: &[(String, String)]) -> Result<(), String> {
+    write_members(
+        state,
+        TAG_ROSTER,
+        U256::from(draw) | (U256::from(members.len()) << 64usize),
+        members,
+    )
+}
+
+/// Drop the committed roster (the committee it named has switched in).
+pub fn clear_roster(state: &mut WorldState) {
+    if next_roster(state).is_some() {
+        let _ = write_members(state, TAG_ROSTER, U256::ZERO, &[]);
+    }
+}
+
+/// The voting set committed for a draw: (draw, members). None while no
+/// decision is committed — nothing may hand over then.
+pub fn next_roster(state: &WorldState) -> Option<(u64, Vec<(String, String)>)> {
+    let (draw, count, members) = read_members(state, TAG_ROSTER);
+    (count > 0).then_some((draw, members))
+}
+
+/// Freeze the draw's candidate pool at its first block (`rotation::eligible`
+/// of the state that block builds on): the draw and every reserve reseat in
+/// the draw read this word, so the pool is not the proposer's choice.
+pub fn freeze_pool(state: &mut WorldState, draw: u64, members: &[(String, String)]) -> Result<(), String> {
+    write_members(
+        state,
+        TAG_POOL,
+        U256::from(draw) | (U256::from(members.len()) << 64usize),
+        members,
+    )
+}
+
+/// The candidate pool frozen for the draw that tagged it: (draw, members).
+/// None when no pool is frozen.
+pub fn draw_pool(state: &WorldState) -> Option<(u64, Vec<(String, String)>)> {
+    let (draw, count, members) = read_members(state, TAG_POOL);
+    (draw != 0 || count > 0).then_some((draw, members))
+}
+
+/// Finding 6 (red team, 2026-09-29): how many consecutive registry epochs the
+/// reserve keys may keep seats nobody needs before their credit stops. Seats
+/// held while four or more independent operators qualify mean the handoff
+/// home never completed; past this many epochs of that, the service credit is
+/// gone (the keys can win it back only by standing down).
+pub const RESERVE_GRACE_EPOCHS: u64 = 2;
+
+/// Record the overdue count as of the epoch opening at `epoch` (a chain
+/// system write at every epoch boundary while reserve keys exist).
+pub fn set_overdue(state: &mut WorldState, epoch: u64, count: u64) {
+    let w = U256::from(epoch) | (U256::from(count) << 64usize);
+    if state.storage(&REWARDS, tagged(TAG_OVERDUE, U256::ZERO)) != w {
+        state.set_storage(REWARDS, tagged(TAG_OVERDUE, U256::ZERO), w);
+    }
+}
+
+/// (epoch, count) of the last overdue write; (0, 0) when there was none.
+pub fn overdue(state: &WorldState) -> (u64, u64) {
+    let w = state.storage(&REWARDS, tagged(TAG_OVERDUE, U256::ZERO));
+    (
+        (w & U256::from(u64::MAX)).to::<u64>(),
+        ((w >> 64usize) & U256::from(u64::MAX)).to::<u64>(),
+    )
+}
+
 /// Whether the founder's reserve keys served the epoch that opens at `epoch`:
 /// seated in the voting committee from the epoch's first block on (the seating
 /// word has them from `since` at or before `epoch × epoch_blocks`, unbroken).
@@ -474,7 +675,15 @@ pub fn switch_reserve(state: &mut WorldState, height: u64, members: &[(String, S
 pub fn reserve_served(state: &WorldState, epoch: u64) -> Option<Address> {
     let (operator, _) = reserve(state)?;
     let (count, since) = seated(state);
-    (count > 0 && since <= epoch.saturating_mul(registry::epoch_blocks(state))).then_some(operator)
+    if count == 0 || since > epoch.saturating_mul(registry::epoch_blocks(state)) {
+        return None;
+    }
+    // Finding 6: seats nobody needs earn nothing past the grace epochs. The
+    // count must be this epoch's — the chain writes the word at every epoch
+    // boundary while reserve keys exist — so a missing or stale count pays
+    // nothing rather than guessing.
+    let (written, count) = overdue(state);
+    (written == epoch && count <= RESERVE_GRACE_EPOCHS).then_some(operator)
 }
 
 /// Fold the founder's reserve credit into the per-Mac slot counts an epoch is

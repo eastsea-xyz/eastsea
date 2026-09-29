@@ -45,6 +45,9 @@ pub const EXIT_IDENTITY: i32 = 6;
 /// directory a key that is gone or will not parse is a loss to report, never
 /// a reason to generate a different identity the chain does not know.
 pub fn registered_identity(dir: &Path) -> bool {
+    if dir.with_extension("identity").exists() {
+        return true;
+    }
     let marks = [
         crate::roster::KEY_FILE,
         crate::roster::PUBLIC_FILE,
@@ -112,7 +115,25 @@ impl CandidateKeys {
             }
             Faucet::generate(&account_path)?;
         }
-        Ok(CandidateKeys { keys, account: Faucet::load(&account_path)?, dir: dir.to_path_buf() })
+        let candidate = CandidateKeys { keys, account: Faucet::load(&account_path)?, dir: dir.to_path_buf() };
+        // This sibling survives deletion of the entire node data directory.
+        // Without it, that loss looks exactly like a first install and would
+        // silently mint a new registered identity (red team #5).
+        let marker = dir.with_extension("identity");
+        let fingerprint = format!("{}:{}", hex::encode(candidate.validator_key()), candidate.beaconer());
+        match std::fs::read_to_string(&marker) {
+            Ok(saved) if saved == fingerprint => {}
+            Ok(_) => return Err(format!("{} does not match this Mac's original identity; restore the original keys", marker.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if let Err(write) = crate::atomic::create(&marker, fingerprint.as_bytes(), 0o600) {
+                    if std::fs::read_to_string(&marker).ok().as_deref() != Some(fingerprint.as_str()) {
+                        return Err(format!("{}: {write}", marker.display()));
+                    }
+                }
+            }
+            Err(e) => return Err(format!("{}: {e}", marker.display())),
+        }
+        Ok(candidate)
     }
 
     pub fn validator_key(&self) -> [u8; 32] {
@@ -409,5 +430,28 @@ mod tests {
         assert!(!dir.join("node-account.key").exists());
         assert!(!original.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_deleted_data_directory_cannot_be_mistaken_for_first_install() {
+        let parent = tmp("whole-directory-gone");
+        let data = parent.join("node");
+        let original = CandidateKeys::load_or_create(&data).unwrap();
+        let identity = original.validator_key();
+        let key = std::fs::read(data.join(crate::roster::KEY_FILE)).unwrap();
+        let account = std::fs::read(data.join("node-account.key")).unwrap();
+        assert!(data.with_extension("identity").exists(), "the guard lives outside the data directory");
+        std::fs::remove_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&data).unwrap();
+        assert!(CandidateKeys::load_or_create(&data).is_err(), "a whole-directory loss cannot mint a replacement");
+        assert!(!data.join(crate::roster::KEY_FILE).exists());
+        std::fs::write(data.join(crate::roster::KEY_FILE), key).unwrap();
+        std::fs::write(data.join("node-account.key"), account).unwrap();
+        assert_eq!(CandidateKeys::load_or_create(&data).unwrap().validator_key(), identity, "the original backup works");
+        std::fs::remove_file(data.join(crate::roster::KEY_FILE)).unwrap();
+        crate::roster::LocalKeys::generate().save(&data).unwrap();
+        let err = CandidateKeys::load_or_create(&data).expect_err("a different restored key is not the original");
+        assert!(err.contains("original identity"), "{err}");
+        let _ = std::fs::remove_dir_all(&parent);
     }
 }

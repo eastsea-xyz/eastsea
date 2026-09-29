@@ -30,6 +30,7 @@
 		6911A71C489CFE413F30C9A2 /* EnclaveKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 317D79B15C7F9E75B1A1F4FC /* EnclaveKey.swift */; };
 		6B328300B9C16A284BC72EDD /* NodeController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64A5EE5BA6294827128D61F5 /* NodeController.swift */; };
 		744ABDE9795D713D6D3CA46F /* token-sources.json in Resources */ = {isa = PBXBuildFile; fileRef = 2928FB2C0B82AF8C35E97D99 /* token-sources.json */; };
+		83AC088B8D445053FDE07957 /* ResourcesSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = C56EEFC753370BDE2960BE52 /* ResourcesSettings.swift */; };
 		8A4A2901B223B0F689036DFB /* EnclaveKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 317D79B15C7F9E75B1A1F4FC /* EnclaveKey.swift */; };
 		8A8690DDB06F0148FD133737 /* TokenSend.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE00FF7FDD47F623CE4B55A0 /* TokenSend.swift */; };
 		8C21512BBE06AA542E27EBA1 /* NodeController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64A5EE5BA6294827128D61F5 /* NodeController.swift */; };
@@ -40,9 +41,12 @@
 		9BB3B88FC64A1C7001C851D2 /* AdaptiveLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55E7E86166A7CE6D29E6C709 /* AdaptiveLayout.swift */; };
 		9E121F544310F602CD8ACFFE /* Spinners.swift in Sources */ = {isa = PBXBuildFile; fileRef = 462C807FB20A46B9919AE925 /* Spinners.swift */; };
 		A27B00DA220487FD3B94FFAF /* Onboarding.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65F2514912728847B547AC0A /* Onboarding.swift */; };
+		A6411E9B1827C2B1B6D286AE /* ProverFlags.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94E4B4A2A4BDBBBBC6A12600 /* ProverFlags.swift */; };
 		A9AB518F8F246CB2A0974398 /* Earnings.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6C1B75440E8A6A577BD467E /* Earnings.swift */; };
 		ADEEA18CEEC7A29BDFBB47BB /* NetworkPaused.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B632CFC2DA1179CC9EAD01D /* NetworkPaused.swift */; };
+		B6002ECF68746BC997F245B2 /* ProverFlags.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94E4B4A2A4BDBBBBC6A12600 /* ProverFlags.swift */; };
 		BC44AAFBB810E5183CBF737E /* SimpleDashboard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BCD0FCE195D7296CBCA13E9 /* SimpleDashboard.swift */; };
+		BCEB55E80C0536BE08E67EE7 /* ResourcesSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = C56EEFC753370BDE2960BE52 /* ResourcesSettings.swift */; };
 		BF69C9639B9D7215C5CE0605 /* aether_ffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BC12AF79B32D90A48860251 /* aether_ffi.swift */; };
 		C45FFD044088BB85C2D842D2 /* AssetsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39DB57D9689E71FFECC579BA /* AssetsSheet.swift */; };
 		C9839F6819F2F86387CC88B7 /* aether_ffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BC12AF79B32D90A48860251 /* aether_ffi.swift */; };
@@ -83,11 +87,13 @@
 		65F2514912728847B547AC0A /* Onboarding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Onboarding.swift; sourceTree = "<group>"; };
 		745EAC0E04873F8FD0F29BC2 /* LiveResize.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveResize.swift; sourceTree = "<group>"; };
 		82F0B4CA90E38B66B43592E6 /* BalanceHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BalanceHistory.swift; sourceTree = "<group>"; };
+		94E4B4A2A4BDBBBBC6A12600 /* ProverFlags.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProverFlags.swift; sourceTree = "<group>"; };
 		9DEBCE5EA044F272C9EA406C /* ProverMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProverMenu.swift; sourceTree = "<group>"; };
 		AB6E5651AC1948FECDAE69D4 /* network.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = network.json; sourceTree = "<group>"; };
 		B38A846EB23F0C4A52BF8A78 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		B60F2ADE6BD15611D4BD0811 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		C3A70AF889C5ACB1DDB2AF45 /* ResizeBenchmark.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResizeBenchmark.swift; sourceTree = "<group>"; };
+		C56EEFC753370BDE2960BE52 /* ResourcesSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResourcesSettings.swift; sourceTree = "<group>"; };
 		C6C1B75440E8A6A577BD467E /* Earnings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Earnings.swift; sourceTree = "<group>"; };
 		E5D7C676A4030F20E37C58E7 /* TokenAssets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenAssets.swift; sourceTree = "<group>"; };
 		FE00FF7FDD47F623CE4B55A0 /* TokenSend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenSend.swift; sourceTree = "<group>"; };
@@ -150,8 +156,10 @@
 				64A5EE5BA6294827128D61F5 /* NodeController.swift */,
 				51F3FF6BB1FEAEB9503220A4 /* NodeWatchdog.swift */,
 				65F2514912728847B547AC0A /* Onboarding.swift */,
+				94E4B4A2A4BDBBBBC6A12600 /* ProverFlags.swift */,
 				9DEBCE5EA044F272C9EA406C /* ProverMenu.swift */,
 				C3A70AF889C5ACB1DDB2AF45 /* ResizeBenchmark.swift */,
+				C56EEFC753370BDE2960BE52 /* ResourcesSettings.swift */,
 				0BCD0FCE195D7296CBCA13E9 /* SimpleDashboard.swift */,
 				462C807FB20A46B9919AE925 /* Spinners.swift */,
 				B60F2ADE6BD15611D4BD0811 /* Theme.swift */,
@@ -318,8 +326,10 @@
 				6B328300B9C16A284BC72EDD /* NodeController.swift in Sources */,
 				2120D978A2E422529EDEAA37 /* NodeWatchdog.swift in Sources */,
 				A27B00DA220487FD3B94FFAF /* Onboarding.swift in Sources */,
+				A6411E9B1827C2B1B6D286AE /* ProverFlags.swift in Sources */,
 				5D11F92088FEABAA0085ADCD /* ProverMenu.swift in Sources */,
 				E8E7A825FBFD8C349EA8E74A /* ResizeBenchmark.swift in Sources */,
+				BCEB55E80C0536BE08E67EE7 /* ResourcesSettings.swift in Sources */,
 				FE6BCD03689259294F5B9945 /* SimpleDashboard.swift in Sources */,
 				9E121F544310F602CD8ACFFE /* Spinners.swift in Sources */,
 				96D01674727A3032D42B5EDC /* Theme.swift in Sources */,
@@ -348,8 +358,10 @@
 				8C21512BBE06AA542E27EBA1 /* NodeController.swift in Sources */,
 				554F88B6BC236C874C2227E1 /* NodeWatchdog.swift in Sources */,
 				E202B9DDD9BDC75A9D6CA697 /* Onboarding.swift in Sources */,
+				B6002ECF68746BC997F245B2 /* ProverFlags.swift in Sources */,
 				F3667C9BCD3B016F232A69D8 /* ProverMenu.swift in Sources */,
 				5EE841156B2F7713648B6E61 /* ResizeBenchmark.swift in Sources */,
+				83AC088B8D445053FDE07957 /* ResourcesSettings.swift in Sources */,
 				BC44AAFBB810E5183CBF737E /* SimpleDashboard.swift in Sources */,
 				50D901679B54ED9BD526B43E /* Spinners.swift in Sources */,
 				1B66F9FC578D265748C295D1 /* Theme.swift in Sources */,

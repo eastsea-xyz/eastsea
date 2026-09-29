@@ -70,6 +70,66 @@ impl HistoryArgs {
     }
 }
 
+/// Resource limits (docs/ops/resource-limits.md): a Mac running Aether never
+/// runs away with it — the prover sidecar's memory cap and worker threads, the
+/// node's own history-cache budget, and the data volume's free-space floor.
+#[derive(clap::Args, Clone, Debug, Default)]
+struct ResourceArgs {
+    /// The prover sidecar's memory cap (physical footprint): a plain number is
+    /// GB, 512M is exact. Default: a quarter of the RAM, at least 4 GB.
+    /// 0 = the prover never runs.
+    #[arg(long = "prover-max-memory", value_name = "SIZE")]
+    prover_max_memory: Option<String>,
+    /// Worker threads the prover may use. Default: half the cores.
+    #[arg(long = "prover-threads")]
+    prover_threads: Option<usize>,
+    /// Let proving run on battery power (it pauses otherwise).
+    #[arg(long = "prover-on-battery")]
+    prover_on_battery: bool,
+    /// Budget for this node's own in-memory history caches (summaries,
+    /// receipts). Default: a quarter of the RAM, at least 2 GB.
+    #[arg(long = "max-memory", value_name = "SIZE")]
+    max_memory: Option<String>,
+    /// Below this much free space on the data volume, no new era files or
+    /// shards are written and proving pauses. Default: 5 GB. 0 = off.
+    #[arg(long = "min-free-disk", value_name = "SIZE")]
+    min_free_disk: Option<String>,
+}
+
+impl ResourceArgs {
+    fn limits(&self) -> Result<aether_node::resources::Limits, String> {
+        aether_node::resources::Limits::resolve(
+            self.prover_max_memory.as_deref(),
+            self.prover_threads,
+            self.prover_on_battery,
+            self.max_memory.as_deref(),
+            self.min_free_disk.as_deref(),
+        )
+    }
+
+    /// The same settings as flags for a child process (`aether run` forwards
+    /// them to its `aether node`/`aether follow` children).
+    fn forward(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some(v) = &self.prover_max_memory {
+            out.push(format!("--prover-max-memory={v}"));
+        }
+        if let Some(v) = self.prover_threads {
+            out.push(format!("--prover-threads={v}"));
+        }
+        if self.prover_on_battery {
+            out.push("--prover-on-battery".into());
+        }
+        if let Some(v) = &self.max_memory {
+            out.push(format!("--max-memory={v}"));
+        }
+        if let Some(v) = &self.min_free_disk {
+            out.push(format!("--min-free-disk={v}"));
+        }
+        out
+    }
+}
+
 #[derive(Subcommand)]
 enum Cmd {
     /// Run a validator.
@@ -133,6 +193,8 @@ enum Cmd {
         exit_with_parent: bool,
         #[command(flatten)]
         history: HistoryArgs,
+        #[command(flatten)]
+        resources: ResourceArgs,
     },
     /// Distributed key generation for the committee (run on every validator at
     /// once). Writes <data>/threshold.json with this validator's secret share
@@ -245,6 +307,8 @@ enum Cmd {
         dev_storage_fault: Option<u64>,
         #[command(flatten)]
         history: HistoryArgs,
+        #[command(flatten)]
+        resources: ResourceArgs,
     },
     /// Keep this Mac in the network: validator while in the voting set, verifying
     /// follower and candidate otherwise; rotations are followed automatically.
@@ -276,6 +340,8 @@ enum Cmd {
         /// Exit when the launching app does (the Mac app's node switch).
         #[arg(long)]
         exit_with_parent: bool,
+        #[command(flatten)]
+        resources: ResourceArgs,
     },
     /// This Mac's voting-node identity in <data> (created the first time), as JSON.
     CandidateInfo {
@@ -554,6 +620,7 @@ fn main() {
             dev_epoch_blocks,
             exit_with_parent,
             history,
+            resources,
         } => {
             if exit_with_parent {
                 exit_with_parent_process();
@@ -604,6 +671,7 @@ fn main() {
                         devicecheck: devicecheck_key.zip(devicecheck_key_id).map(|(k, id)| (k, id, devicecheck_team)),
                         dev_registrar,
                         network_file,
+                        resources,
                     });
                 })
         }
@@ -644,12 +712,12 @@ fn main() {
             println!("signed by the committee: protocol {} at height {} on chain {}", s.upgrade.protocol, s.upgrade.activate_at, s.upgrade.chain_id);
             Ok(())
         })(),
-        Cmd::Follow { network, from_rpc, data, rpc_port, validators, exit_with_parent, candidate, dev_epoch_blocks, keys, checkpoint, dev_storage_fault, history } => {
+        Cmd::Follow { network, from_rpc, data, rpc_port, validators, exit_with_parent, candidate, dev_epoch_blocks, keys, checkpoint, dev_storage_fault, history, resources } => {
             if exit_with_parent {
                 exit_with_parent_process();
             }
             let keys = candidate.then(|| keys.unwrap_or_else(|| data.clone()));
-            run_follow(network, from_rpc, data, rpc_port, validators, keys, dev_epoch_blocks, checkpoint, dev_storage_fault, history)
+            run_follow(network, from_rpc, data, rpc_port, validators, keys, dev_epoch_blocks, checkpoint, dev_storage_fault, history, resources)
         }
         Cmd::CandidateInfo { data, operator, chain_id } => aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(&data)).map(|k| {
             let ownership = operator.zip(chain_id).map(|(op, id)| hex::encode(k.ownership(id, op)));
@@ -658,7 +726,7 @@ fn main() {
                 json!({ "validator_key": hex::encode(k.validator_key()), "node_id": hex::encode(k.node_id()), "beaconer": k.beaconer(), "ownership": ownership })
             );
         }),
-        Cmd::Run { data, network, port, rpc_port, reshare_port, node_args, follow_args, reshare_timeout, dev_peer_dir, exit_with_parent } => {
+        Cmd::Run { data, network, port, rpc_port, reshare_port, node_args, follow_args, reshare_timeout, dev_peer_dir, exit_with_parent, resources } => {
             if exit_with_parent {
                 exit_with_parent_process();
             }
@@ -670,6 +738,12 @@ fn main() {
                 std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
                 aether_node::candidate::CandidateKeys::load_or_create(&dir)?;
                 aether_node::supervisor::adopt_network(&dir, network.as_deref().map(std::path::Path::new))?;
+                // The same resource limits for whichever child runs (the
+                // supervisor adds them to both `aether node` and `aether follow`).
+                let forwarded = resources.forward();
+                let (mut node_args, mut follow_args) = (node_args, follow_args);
+                node_args.extend(forwarded.iter().cloned());
+                follow_args.extend(forwarded);
                 aether_node::supervisor::Supervisor {
                     exe: std::env::current_exe().map_err(|e| e.to_string())?,
                     data: dir,
@@ -1315,6 +1389,8 @@ struct NodeArgs {
     history: aether_node::prune::HistoryMode,
     /// Era shards this Mac holds at most (roadmap B5 phase 1).
     max_shards: usize,
+    /// Memory, CPU and disk limits (docs/ops/resource-limits.md).
+    resources: ResourceArgs,
 }
 
 /// The open-file limit a node asks for when its hard limit allows it.
@@ -1428,7 +1504,23 @@ fn run_node(a: NodeArgs) {
         network_file,
         history,
         max_shards,
+        resources,
     } = a;
+    // Resource limits (docs/ops/resource-limits.md), before the chain opens:
+    // the open itself trims the history caches under the budget, and the
+    // watchdog starts watching disk, pressure and battery from here on.
+    let limits = resources.limits().unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(2);
+    });
+    let m = aether_node::resources::install(limits, std::path::Path::new(&data).to_path_buf());
+    tracing::info!(
+        prover_max_memory_gb = m.limits.prover_max_memory / aether_node::resources::GB,
+        prover_threads = m.limits.prover_threads,
+        cache_budget_gb = m.limits.max_memory / aether_node::resources::GB,
+        min_free_disk_gb = m.limits.min_free_disk / aether_node::resources::GB,
+        "resource limits on"
+    );
     let faucet = genesis.faucet;
     let registry = || {
         aether_node::devicecheck::Registry::open(
@@ -1958,9 +2050,14 @@ fn start_prover(
         .parse()
         .map_err(|_| tracing::warn!("AETHER_PROVE is not an address"))
         .ok()?;
+    // --prover-max-memory=0: the user turned the prover off.
+    if aether_node::resources::monitor().is_some_and(|m| m.limits.prover_max_memory == 0) {
+        tracing::info!("the prover is off (--prover-max-memory=0)");
+        return None;
+    }
     let dir = std::path::Path::new(data).join("prover");
     let bin_path = find_binary()?;
-    let sidecar = match Some(Sidecar::spawn(&bin_path, &dir.join("prove"))) {
+    let sidecar = match Some(Sidecar::spawn_prover(&bin_path, &dir.join("prove"))) {
         Some(Ok(sc)) => sc,
         Some(Err(e)) => {
             tracing::warn!(%e, "cannot start the prover");
@@ -2016,6 +2113,7 @@ fn run_follow(
     checkpoint: bool,
     dev_storage_fault: Option<u64>,
     history: HistoryArgs,
+    resources: ResourceArgs,
 ) -> Result<(), String> {
     use aether_node::follow::{self, FinalityArchive, Upstream};
     use std::sync::Arc;
@@ -2025,6 +2123,8 @@ fn run_follow(
                 .unwrap_or_else(|_| "info,commonware=warn".into()),
         )
         .init();
+    // Resource limits before the chain opens (the caches trim under the budget).
+    aether_node::resources::install(resources.limits()?, std::path::Path::new(&data).to_path_buf());
     // A network.json with no faucet funds nobody (mainnet: 사전 발행 0).
     let dev_alloc = network.is_none();
     let (chain_id, genesis, set, nodes) = match network {
@@ -2646,6 +2746,50 @@ fn print_blocks(v: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The resource flags parse on `node`, `follow` and `run`, resolve to the
+    /// sizes they name, and `run` forwards them verbatim to its children.
+    #[test]
+    fn resource_flags_parse_and_resolve() {
+        let c = Cli::try_parse_from([
+            "aether", "node", "--port", "1", "--rpc-port", "2", "--data", "d",
+            "--prover-max-memory=8", "--prover-threads=6", "--prover-on-battery",
+            "--max-memory=512M", "--min-free-disk=10G",
+        ])
+        .expect("node parses");
+        let Cmd::Node { resources, .. } = c.cmd else { panic!("node") };
+        assert_eq!(
+            resources.forward(),
+            vec![
+                "--prover-max-memory=8",
+                "--prover-threads=6",
+                "--prover-on-battery",
+                "--max-memory=512M",
+                "--min-free-disk=10G",
+            ]
+        );
+        let l = resources.limits().unwrap();
+        assert_eq!(l.prover_max_memory, 8 * aether_node::resources::GB);
+        assert_eq!(l.prover_threads, 6);
+        assert!(l.prover_on_battery);
+        assert_eq!(l.max_memory, 512 * 1024 * 1024);
+        assert_eq!(l.min_free_disk, 10 * aether_node::resources::GB);
+
+        // 0 turns the prover (and the disk guard) off, and forwards as-is.
+        let c = Cli::try_parse_from(["aether", "run", "--data", "d", "--prover-max-memory=0"]).expect("run parses");
+        let Cmd::Run { resources, .. } = c.cmd else { panic!("run") };
+        assert_eq!(resources.forward(), vec!["--prover-max-memory=0"]);
+        assert_eq!(resources.limits().unwrap().prover_max_memory, 0);
+
+        let c = Cli::try_parse_from(["aether", "follow", "--data", "d", "--min-free-disk=0"]).expect("follow parses");
+        let Cmd::Follow { resources, .. } = c.cmd else { panic!("follow") };
+        assert_eq!(resources.limits().unwrap().min_free_disk, 0);
+
+        // A size that is not a size says so.
+        let c = Cli::try_parse_from(["aether", "node", "--port", "1", "--rpc-port", "2", "--data", "d", "--max-memory=lots"]).unwrap();
+        let Cmd::Node { resources, .. } = c.cmd else { panic!("node") };
+        assert!(resources.limits().is_err());
+    }
 
     /// `raise_nofile_limit` reports the soft limit that is really in effect,
     /// never lowers it, raises a low inherited one (launchd's 256) as far as

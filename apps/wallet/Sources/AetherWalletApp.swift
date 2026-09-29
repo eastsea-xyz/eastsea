@@ -110,12 +110,7 @@ struct SettingsView: View {
             Label(node.awakeNote, systemImage: node.keepsAwake ? "sun.max.fill" : "moon.zzz")
                 .font(.caption).foregroundStyle(.secondary)
             Toggle("Open Aether at login", isOn: Binding(get: { node.startAtLogin }, set: { node.startAtLogin = $0 }))
-            Toggle("Prove blocks with Metal on this Mac's GPU", isOn: Binding(get: { node.prove }, set: {
-                if $0 { node.proveAddress = model.address }
-                node.prove = $0
-            }))
-            .disabled(model.address.isEmpty)
-            .help("Your node proves recent blocks with Metal. The first valid proof of a block gets a test AETH reward in this wallet. Uses the GPU and power while on, at your cost.")
+            ResourcesSection()
             Text("Your node verifies every block itself and your wallet asks it instead of the network. Quitting Aether stops it.")
                 .font(.caption).foregroundStyle(.secondary)
             // Honest power ranges (docs/research/mac-power-cost-2026.md): the node is

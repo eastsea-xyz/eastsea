@@ -131,3 +131,15 @@ Aether.app (SwiftUI)
 
 - 스왑(라우터 경유)은 토큰별 귀속이 안 된다 — FFI에 로그/히스토리 API가 없어서. 나중에 FFI가 Transfer 로그를 주면 같은 순수 함수에 넣으면 된다.
 - 앱의 토큰 드라이런은 로컬 노드가 있을 때만 완전하다(아이폰은 미확인 통과).
+
+## 리소스 설정 — 구현됨 (2026-09-29)
+
+설정 ▸ 리소스(맥 앱). 배경과 노드 쪽 동작은 [docs/ops/resource-limits.md](../ops/resource-limits.md) — 2026-09-29 사고(증명 사이드카 14 GB·스왑 95%)로 생겼다.
+
+- **증명(Prover) 사용** 토글: 예전의 "Prove blocks with Metal on this Mac's GPU" 토글을 이 자리로 옮겼다. 켤 때 지갑 주소를 증명 보상 주소로 묶는 것도 그대로.
+- **최대 메모리**: 자동 (RAM의 25%) / 4 GB / 8 GB / 16 GB / 끄기 → `--prover-max-memory=auto(생략)/4/8/16/0`. 끄기는 증명 자체를 끈다.
+- **최대 CPU**: 절반(기본, 생략) / 전부 → `--prover-threads=<코어 수>`.
+- **배터리에서 증명 허용**: 끔이 기본. 켜면 `--prover-on-battery`.
+- 상태 줄: 증명 사이드카의 현재 메모리(`aether_proverStatus`의 `memory_bytes`/`memory_cap`), `paused == "memory"`면 "메모리 부족으로 일시 정지", `aether_status`의 `resources.disk_low`면 "디스크 공간 부족".
+
+선택은 UserDefaults(`proverMemory`·`proverCores`·`proverOnBattery`)에 저장되고, 노드를 (재)시작할 때 `ProverFlags.build`가 플래그로 만들어 `aether run`에 붙인다. 기본값(자동·절반·배터리 거부)은 플래그를 하나도 안 붙인다 — 노드 스스로 안전한 기본값(RAM의 25%, 코어의 절반)을 고르고, 플래그를 모르는 옛 노드 번들이어도 시작에 실패하지 않는다. **심플 모드에는 예산 조절 UI가 없다**(개발자 모드에서만 보인다): 노드의 안전한 기본값이 그대로 적용되고, 증명 토글과 경고("메모리 부족으로 일시 정지"·"디스크 공간 부족")는 심플 모드에서도 보인다 — 전기·발열을 쓰는 스위치를 숨기거나 문제를 조용히 넘기지 않는다. 메뉴 막대의 증명 상태에는 일시 정지 이유가 영어로 한 줄 더 붙는다.

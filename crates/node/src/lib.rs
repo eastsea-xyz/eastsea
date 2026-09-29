@@ -20,6 +20,7 @@ pub mod p2p;
 pub mod prover;
 pub mod prune;
 pub mod registrations;
+pub mod resources;
 pub mod roster;
 pub mod rewards_view;
 pub mod rotation;

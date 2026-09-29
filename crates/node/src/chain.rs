@@ -323,6 +323,63 @@ pub struct BlockSummary {
     pub excess: GasVector,
 }
 
+/// A summary's rough share of the history caches: itself plus each tx hash.
+fn summary_bytes(s: &BlockSummary) -> u64 {
+    (std::mem::size_of::<BlockSummary>() + s.txs.len() * std::mem::size_of::<TxHash>()) as u64
+}
+
+/// A receipt's rough share: itself, its return data, and its events.
+fn receipt_bytes(r: &Receipt) -> u64 {
+    let events: usize = r
+        .events
+        .iter()
+        .map(|e| std::mem::size_of::<aether_execution::Event>() + e.topics.len() * 32 + e.data.len())
+        .sum();
+    (std::mem::size_of::<Receipt>() + r.output.len() + events) as u64
+}
+
+/// The history caches' estimated bytes: kept summaries plus kept receipts.
+fn caches_bytes_of(blocks: &BTreeMap<u64, BlockSummary>, receipts: &HashMap<TxHash, (u64, Receipt)>) -> u64 {
+    blocks.values().map(summary_bytes).sum::<u64>() + receipts.values().map(|(_, r)| receipt_bytes(r)).sum::<u64>()
+}
+
+/// Bring the history caches inside `budget`: drop the oldest cached era's
+/// summaries and receipts, one era at a time, when its era file is on disk to
+/// back them. History v2 only — a network without era files (7780) would lose
+/// the heights for good. Never the open era, never an unsealed one: without
+/// the file, `old_block` and `era_leaves` could not serve what went.
+fn trim_caches(g: &mut Inner, budget: u64) {
+    use aether_state::mmr::ERA_LEN;
+    if !g.cfg.history_v2 || g.caches_bytes <= budget {
+        return;
+    }
+    let Some(era_dir) = g.store.as_ref().map(|s| s.era_dir()) else { return };
+    let open = g.history_index.as_ref().map_or(0, |i| i.eras.len() as u64);
+    let head = g.finalized.height;
+    while g.caches_bytes > budget {
+        let Some(&first) = g.blocks.keys().next() else { return };
+        let era = first / ERA_LEN;
+        if era >= open || (era + 1) * ERA_LEN > head {
+            return; // the open (or still uncounted) era is never dropped
+        }
+        if !era_dir.join(crate::era::file_name(era)).exists() {
+            return; // not sealed yet: nothing would back the heights
+        }
+        let floor = (era + 1) * ERA_LEN;
+        g.blocks = g.blocks.split_off(&floor);
+        g.receipts.retain(|_, (h, _)| *h >= floor);
+        g.caches_bytes = caches_bytes_of(&g.blocks, &g.receipts);
+        g.cache_below = g.cache_below.max(floor);
+        tracing::warn!(
+            era,
+            floor,
+            bytes = g.caches_bytes,
+            budget,
+            "history caches over their memory budget: dropped the oldest sealed era's summaries and receipts (blocks still served from the era file)"
+        );
+    }
+}
+
 pub struct Inner {
     pub cfg: ChainConfig,
     executed: HashMap<Digest, Arc<Executed>>,
@@ -405,6 +462,12 @@ pub struct Inner {
     pub registration_out: Option<tokio::sync::mpsc::UnboundedSender<aether_light::block::NodeRegistration>>,
     /// Pruning (roadmap B4): first height whose summary and receipts are kept.
     pub pruned_below: u64,
+    /// The history caches' memory budget (`--max-memory`): first height still
+    /// cached after eviction. History v2 only — an evicted era's file is on
+    /// disk, so its blocks keep being served (`old_block`, `era_leaves`).
+    pub cache_below: u64,
+    /// Estimated bytes of the kept block summaries and receipts.
+    caches_bytes: u64,
     /// The last era read back from its file (old blocks served over RPC).
     era_cache: Option<(u64, Arc<crate::era::Era>)>,
     /// The network's finalized height, as this node last heard from its
@@ -482,6 +545,7 @@ impl Chain {
         executed.insert(genesis.digest(), exec.clone());
         let mut blocks = BTreeMap::new();
         blocks.insert(0, summary(&genesis, &exec, B256::ZERO));
+        let caches_bytes = blocks.values().map(summary_bytes).sum::<u64>();
         let inner = Inner {
             cfg,
             executed,
@@ -533,6 +597,8 @@ impl Chain {
             registration_pool: BTreeMap::new(),
             registration_out: None,
             pruned_below: 0,
+            cache_below: 0,
+            caches_bytes,
             era_cache: None,
             net_height: None,
             relaxed: false,
@@ -590,8 +656,11 @@ impl Chain {
                 g.finalized = exec;
                 g.blocks = cp.blocks;
                 g.receipts = cp.receipts;
-                // Eras completed before a restart but not sealed yet.
-                if g.cfg.history_v2 {
+                g.caches_bytes = caches_bytes_of(&g.blocks, &g.receipts);
+                // Eras completed before a restart but not sealed yet — unless
+                // the disk is below its free-space floor (the blocks stay
+                // staged in the store; a later start's seal catches up).
+                if g.cfg.history_v2 && crate::resources::disk_ok() {
                     let (store, head) = (store.clone(), g.finalized.height);
                     std::thread::spawn(move || crate::era::seal_pending(&store, head));
                 }
@@ -625,6 +694,8 @@ impl Chain {
                 g.store = Some(store);
             }
         }
+        // A checkpoint's kept history may already be over the memory budget.
+        chain.trim_history_caches();
         Ok((chain, genesis))
     }
 
@@ -706,7 +777,9 @@ impl Chain {
         let height = exec.height;
         g.executed.clear();
         g.executed.insert(exec.digest, exec.clone());
-        g.blocks.insert(height, summary);
+        let sb = summary_bytes(&summary);
+        let old = g.blocks.insert(height, summary);
+        g.caches_bytes = g.caches_bytes.saturating_add(sb).saturating_sub(old.as_ref().map(summary_bytes).unwrap_or(0));
         g.finalized = exec;
         g.history_index = None;
         // Old finalized blocks are no longer provable here (their states are
@@ -1410,7 +1483,7 @@ impl Chain {
             let open = index.eras.len() as u64;
             let (mut kept, mut from_file) = (BTreeMap::new(), Vec::new());
             for &e in wanted.iter().filter(|e| **e < open) {
-                if e * ERA_LEN < g.pruned_below {
+                if e * ERA_LEN < g.pruned_below.max(g.cache_below) {
                     from_file.push(e);
                     continue;
                 }
@@ -1533,7 +1606,26 @@ impl Chain {
         g.blocks = g.blocks.split_off(&cutoff);
         g.receipts.retain(|_, (h, _)| *h >= cutoff);
         g.pruned_below = cutoff;
+        g.caches_bytes = caches_bytes_of(&g.blocks, &g.receipts);
         Ok(report)
+    }
+
+    /// Trim the history caches under the installed monitor's `--max-memory`
+    /// budget (no monitor installed: nothing happens).
+    pub fn trim_history_caches(&self) {
+        if let Some(budget) = crate::resources::monitor().map(|m| m.limits.max_memory) {
+            trim_caches(&mut self.lock(), budget);
+        }
+    }
+
+    /// The history caches' estimated bytes (summaries plus receipts).
+    pub fn caches_bytes(&self) -> u64 {
+        self.lock().caches_bytes
+    }
+
+    /// The trim with an explicit budget (tests).
+    pub fn trim_history_caches_with(&self, budget: u64) {
+        trim_caches(&mut self.lock(), budget);
     }
 
     /// Finalized block `height` read back from its era file (pruned heights).
@@ -2170,14 +2262,22 @@ impl Chain {
             (if relaxed { store.commit_relaxed(write) } else { store.commit(write) })
                 .map_err(|e| ChainError::Store(e.to_string()))?;
             // An era's last block: seal it into a file, off the consensus path.
+            // Below the free-space floor the seal waits — the blocks stay
+            // staged in the store, and a later start's `seal_pending` catches up.
             if history_v2 && (exec.height + 1).is_multiple_of(aether_state::mmr::ERA_LEN) {
                 let era = exec.height / aether_state::mmr::ERA_LEN;
-                std::thread::spawn(move || crate::era::seal_logged(&store, era));
+                if crate::resources::disk_ok() {
+                    std::thread::spawn(move || crate::era::seal_logged(&store, era));
+                } else {
+                    tracing::warn!(era, "disk below the free-space floor: era sealing waits for space");
+                }
             }
         }
         let mut g = self.lock();
         for (h, r) in exec.tx_hashes.iter().zip(&exec.receipts) {
-            g.receipts.insert(*h, (exec.height, r.clone()));
+            let rb = receipt_bytes(r);
+            let old = g.receipts.insert(*h, (exec.height, r.clone())).map(|(_, r)| receipt_bytes(&r));
+            g.caches_bytes = g.caches_bytes.saturating_add(rb).saturating_sub(old.unwrap_or(0));
             g.mempool.remove(h);
             if let Some(s) = g.sizes.remove(h) {
                 g.mempool_bytes -= s;
@@ -2232,7 +2332,9 @@ impl Chain {
                 ),
             );
         }
-        g.blocks.insert(exec.height, summary);
+        let sb = summary_bytes(&summary);
+        let old = g.blocks.insert(exec.height, summary);
+        g.caches_bytes = g.caches_bytes.saturating_add(sb).saturating_sub(old.as_ref().map(summary_bytes).unwrap_or(0));
         let previous = std::mem::replace(&mut g.finalized, exec.clone());
         // A finalized handoff ends the running epoch before its switch height.
         if let Some(p) = exec.handoff.as_ref().filter(|p| p.at == exec.height) {
@@ -2404,6 +2506,11 @@ impl Chain {
         // both commit their roster in state (see `pre_state_with`); only the
         // node-local reserve rule of the other networks runs here.
         reserve_step(&mut g, &previous, &exec);
+        // Last: keep the history caches inside their memory budget (a no-op
+        // when nothing is over or no monitor was installed).
+        if let Some(budget) = crate::resources::monitor().map(|m| m.limits.max_memory) {
+            trim_caches(&mut g, budget);
+        }
         Ok(())
     }
 }

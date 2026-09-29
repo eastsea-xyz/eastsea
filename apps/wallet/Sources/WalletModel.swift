@@ -119,7 +119,12 @@ final class WalletModel: ObservableObject {
             note(acct.isSecureEnclave ? "Secure Enclave key ready. Signing asks for Touch ID / Face ID or your passcode." : "Simulator: software key (no Secure Enclave here). Use a real device for hardware-bound keys.")
         } catch {
             let locked = (error as NSError).code == Int(errSecInteractionNotAllowed)
-            keyError = locked ? "Unlock this device to create your wallet key." : "Could not create the wallet key: \(error.localizedDescription)"
+            if case EnclaveAccount.KeyError.keyUnavailable = error {
+                // The wallet exists but cannot be opened yet; retried from `refresh`.
+                keyError = "Unlock this device to open your wallet. Your wallet is safe."
+            } else {
+                keyError = locked ? "Unlock this device to create your wallet key." : "Could not create the wallet key: \(error.localizedDescription)"
+            }
             note("Key error: \(error.localizedDescription)")
         }
     }

@@ -24,7 +24,7 @@ const CHAIN: u64 = 7_795;
 const E: u64 = 12;
 
 fn net(macs: u8) -> Net {
-    Net::new(Opts { chain_id: CHAIN, node_rewards: true, epoch_blocks: E, macs, min_streak: Some(0), history_v2: false, reserve: None, fees: true })
+    Net::new(Opts { chain_id: CHAIN, node_rewards: true, epoch_blocks: E, macs, min_streak: Some(0), history_v2: false, reserve: None, fees: true, committee: None })
 }
 
 fn signed(net: &Net, protocol: u32, activate_at: u64) -> SignedUpgrade {
@@ -64,7 +64,7 @@ fn raw_build(net: &Net, txs: Vec<TxEnvelope>, registrations: Vec<NodeRegistratio
     let ts = height.get() * 1_000;
     let skeleton = Block::new(context.clone(), net.last.digest(), height, ts, bytes::Bytes::new());
     let ctx = Chain::block_context(&chain.cfg(), &skeleton, parent);
-    let (pre, _) = chain.pre_state_with(parent, parent.next_protocol(), &[], &[], &registrations, false)?;
+    let (pre, _) = chain.pre_state_with(parent, parent.next_protocol(), &[], &[], &registrations, None, false)?;
     let (payload, _) = build_payload(parent, &pre, &ctx, txs, Extras { registrations, ..Default::default() });
     drop(pre);
     let block = Block::new(context, net.last.digest(), height, ts, payload.to_bytes());

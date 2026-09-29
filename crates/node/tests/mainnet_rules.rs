@@ -30,7 +30,7 @@ const MACS: usize = 20;
 /// chain's: rewards are the only mints this test counts).
 const FUNDED: u128 = 10u128.pow(20);
 
-fn net(macs: u8, reserve: Option<Reserve>) -> Net {
+fn net(macs: u8, reserve: Option<Reserve>, committee: Option<Vec<(String, String)>>) -> Net {
     Net::new(Opts {
         chain_id: CHAIN,
         node_rewards: true,
@@ -40,6 +40,7 @@ fn net(macs: u8, reserve: Option<Reserve>) -> Net {
         history_v2: true,
         reserve,
         fees: false,
+        committee,
     })
 }
 
@@ -126,7 +127,7 @@ fn supply(n: &Net, others: &[Address]) -> U256 {
 
 #[test]
 fn one_four_and_twenty_operators_get_exact_shares_and_the_rest_is_never_minted() {
-    let mut n = net(MACS as u8, None);
+    let mut n = net(MACS as u8, None, None);
     let mut minted = U256::ZERO;
     let proposer = leader_address(&ed25519::PrivateKey::from_seed(1).public_key());
     let others = [proposer, PROVER_ESCROW];
@@ -173,7 +174,7 @@ fn one_four_and_twenty_operators_get_exact_shares_and_the_rest_is_never_minted()
     let registered_at = step(&mut n, &mut minted, regs);
     let mixed = 16 * DAY_EPOCHS;
     assert_eq!(registered_at.height, mixed * E + 1);
-    let (before, exec) = paid_epoch(&mut n, &mut minted, mixed, 4);
+    let (before, _) = paid_epoch(&mut n, &mut minted, mixed, 4);
     let pool = pool_of_epoch(mixed);
     assert_eq!(n.balance(0) - before[0], pool / U256::from(MAX_SHARE), "the warm Mac still gets a sixteenth");
     for i in 1..4 {
@@ -190,7 +191,7 @@ fn one_four_and_twenty_operators_get_exact_shares_and_the_rest_is_never_minted()
     let epoch = 20 * DAY_EPOCHS + 10;
     run_to(&mut n, &mut minted, epoch * E);
     let weights: Vec<u64> = (0..4u64).map(|i| 4 * (WARMUP_STEPS + rewards::mac(&n.parent.state, i).level)).collect();
-    let (before, exec) = paid_epoch(&mut n, &mut minted, epoch, 4);
+    let (before, _) = paid_epoch(&mut n, &mut minted, epoch, 4);
     let pool = node_pool(epoch, E);
     let denominator = U256::from(weights.iter().sum::<u64>().max(MAX_SHARE * FULL));
     for (i, w) in weights.iter().enumerate() {
@@ -240,7 +241,7 @@ fn one_four_and_twenty_operators_get_exact_shares_and_the_rest_is_never_minted()
     let epoch = 40 * DAY_EPOCHS + 10;
     run_to(&mut n, &mut minted, epoch * E);
     let weights: Vec<u64> = (0..MACS as u64).map(|i| 4 * (WARMUP_STEPS + rewards::mac(&n.parent.state, i).level)).collect();
-    let (before, exec) = paid_epoch(&mut n, &mut minted, epoch, MACS);
+    let (before, _) = paid_epoch(&mut n, &mut minted, epoch, MACS);
     let pool = node_pool(epoch, E);
     let sum = weights.iter().sum::<u64>();
     assert!(sum > MAX_SHARE * FULL, "the weight sum passes the floor");
@@ -279,67 +280,72 @@ fn reserve_keys_join_under_four_independent_operators_and_leave_at_four() {
     // Mac 4 is the founder's own registered Mac: not independent (docs/design/15).
     let founder = common::addr(&aether_crypto::P256Signer::from_seed(&common::seed(5)).unwrap());
     let reserve = Reserve { operator: founder, members: reserve_members() };
-    let mut n = net(5, Some(reserve.clone()));
-    let mut minted = U256::ZERO;
-    assert_eq!(n.operator(4), founder);
-    assert_eq!(Reserve::of(&n.parent.state).unwrap().members, reserve.members);
-    // The running set: four genesis keys (not candidates).
-    let genesis: Vec<(String, String)> = (0..4).map(|i| (format!("{i:064x}"), format!("genesis{i}"))).collect();
-    n.chain.lock().committee = aether_node::rotation::Committee { members: genesis.clone() };
+    let (rkeys, _): (Vec<ed25519::PrivateKey>, Vec<_>) = reserve_set().into_iter().unzip();
     let no_reserve = |m: &[(String, String)]| reserve.members.iter().all(|r| !m.contains(r));
+    let reserve_seats = |m: &[(String, String)]| reserve.members.iter().filter(|r| m.contains(r)).count();
     let independents = |n: &Net| {
-        // As reserve_step sees it at an epoch boundary: the epoch starting here.
+        // As the boundary rule sees it: the epoch starting here.
         let r = Reserve::of(&n.parent.state).expect("the reserve is on chain");
         let pool = aether_node::rotation::eligible(&n.parent.state, n.parent.height / E, 0);
         let ops = aether_node::rotation::operators(&n.parent.state);
         aether_node::rotation::independent(&pool, |k| ops.get(k).cloned(), &r)
     };
 
-    let reserve_seats = |m: &[(String, String)]| reserve.members.iter().filter(|r| m.contains(r)).count();
-
-    // Two independent Macs and the founder's: under four independent operators,
-    // but the committee already has four seats, so no reserve key joins (a
+    // Two independent Macs and the founder's register against a committee
+    // already standing at four genesis seats: not one reserve key joins (a
     // 4-seat committee growing to 7 would need 5 of 7, and one founder Mac
-    // going dark would stall it: audit 1.1).
+    // going dark would stall it: audit 1.1) — and with no roster committed,
+    // no committee change may happen at all (finding 2, reserve_hardening.rs).
+    {
+        let mut n = net(5, Some(reserve.clone()), None);
+        let mut minted = U256::ZERO;
+        assert_eq!(n.operator(4), founder);
+        assert_eq!(Reserve::of(&n.parent.state).unwrap().members, reserve.members);
+        let regs = [0, 1, 4].iter().map(|i| n.register(*i)).collect();
+        step(&mut n, &mut minted, regs);
+        run_to(&mut n, &mut minted, 2 * E);
+        assert_eq!(independents(&n), 2);
+        assert!(aether_rewards::next_roster(&n.parent.state).is_none(), "a full committee takes no reserve key");
+    }
+
+    // The network opens short of four seats — the bootstrap the reserve keys
+    // are for: qualifying Macs fill first and the reserve keys take only the
+    // seats still missing, and only a handoff naming exactly that committed
+    // roster may carry the committee over.
+    let mut n = net(5, Some(reserve.clone()), Some(vec![common::mac_entry(0), common::mac_entry(1)]));
+    let mut minted = U256::ZERO;
     let regs = [0, 1, 4].iter().map(|i| n.register(*i)).collect();
     step(&mut n, &mut minted, regs);
     run_to(&mut n, &mut minted, E);
-    assert_eq!(independents(&n), 2);
-    if let Some(p) = n.chain.lock().proposal.clone() {
-        assert_eq!(reserve_seats(&p.1), 0, "a full committee takes no reserve key");
-    }
-    // A committee short of four (one member left): qualified Macs fill first,
-    // reserve keys only the seats still missing.
-    {
-        let mut g = n.chain.lock();
-        g.committee = aether_node::rotation::Committee { members: genesis[..1].to_vec() };
-        g.proposal = None;
-    }
-    run_to(&mut n, &mut minted, 2 * E);
-    let proposal = n.chain.lock().proposal.clone().expect("a short committee is refilled");
-    assert_eq!(proposal.1.len(), 4, "refilled to four seats");
+    let (_, roster) = aether_rewards::next_roster(&n.parent.state).expect("a short committee is refilled");
+    assert_eq!(roster.len(), 4, "refilled to four seats");
     // Qualified Macs are seated first; reserve keys take only what is still
     // missing (exact counts per independent operator: rotation.rs unit tests).
-    let others = proposal.1.len() - reserve_seats(&proposal.1);
-    assert_eq!(reserve_seats(&proposal.1), 4usize.saturating_sub(others), "only the missing seats");
-    {
-        let mut g = n.chain.lock();
-        g.committee = aether_node::rotation::Committee { members: proposal.1.clone() };
-        g.proposal = None;
-    }
+    let others = roster.len() - reserve_seats(&roster);
+    assert_eq!(reserve_seats(&roster), 4usize.saturating_sub(others), "only the missing seats");
+    assert!([common::mac_entry(0), common::mac_entry(1), common::mac_entry(4)].iter().all(|m| roster.contains(m)), "the founder's Mac fills a seat");
+    let (seated, handoff) = n.committee.handoff_to(CHAIN, 1, &common::seat_of(&n, &roster, &rkeys));
+    let carried = n.step_handoff(handoff);
+    run_to(&mut n, &mut minted, carried.height + aether_node::handoff::DELAY);
+    assert_eq!(aether_rewards::committee(&n.parent.state), roster, "the switch records the committee");
+    assert_eq!(rewards::seated(&n.parent.state).0, reserve_seats(&roster) as u64);
+
     // Macs 2 and 3: four independent operators (the founder's Mac still does
     // not count), so every reserve key leaves.
     let regs = [2, 3].iter().map(|i| n.register(*i)).collect();
     step(&mut n, &mut minted, regs);
-    run_to(&mut n, &mut minted, 4 * E);
+    run_to(&mut n, &mut minted, 7 * E);
     assert_eq!(independents(&n), 4);
-    // At four independent operators no reserve key stays: whatever the next
-    // committee is, it has none.
-    let next = {
-        let g = n.chain.lock();
-        g.proposal.clone().map(|p| p.1).unwrap_or_else(|| g.committee.members.clone())
-    };
-    assert!(no_reserve(&next), "the reserve keys leave at four");
+    assert_eq!(aether_node::rotation::eligible(&n.parent.state, 7, 0).len(), 5);
+    let (_, leave) = aether_rewards::next_roster(&n.parent.state).expect("the next roster drops them");
+    assert!(no_reserve(&leave), "the reserve keys leave at four");
+    assert!(leave.contains(&common::mac_entry(0)) && leave.contains(&common::mac_entry(1)));
+    assert!(leave.contains(&common::mac_entry(2)) || leave.contains(&common::mac_entry(3)), "a qualifying Mac takes the freed seat");
+    let (_, handoff) = seated.handoff_to(CHAIN, 2, &common::seat_of(&n, &leave, &rkeys));
+    let carried = n.step_handoff(handoff);
+    run_to(&mut n, &mut minted, carried.height + aether_node::handoff::DELAY);
+    assert_eq!(rewards::seated(&n.parent.state), (0, 0), "unseated: the word is cleared");
+    assert!(no_reserve(&aether_rewards::committee(&n.parent.state)));
     // They earned nothing: not candidates, no beacons.
     assert!(registry::candidates(&n.parent.state).iter().all(|c| !reserve.members.iter().any(|(k, _)| *k == hex::encode(c.validator_key))));
 }
@@ -364,62 +370,67 @@ fn reserve_set() -> Vec<(ed25519::PrivateKey, (String, String))> {
 #[test]
 fn reserve_service_pays_the_founder_while_its_mac_sleeps() {
     // Mac 4 is the founder's own registered Mac (docs/design/15, "창업자 예비
-    // 키"). It warms up with the network, then sleeps while its reserve keys
-    // hold the committee's missing seats. The credit follows the seating the
-    // chain records when a committee takes over: nothing before it (a full
-    // four-seat committee takes no reserve key however few independents
-    // stand), nothing for the epoch a seating lands inside, a full sixteenth
-    // for every epoch after it — exactly as if the Mac had answered all four
-    // slots, at the warm-up it reached, never a second share — and nothing
-    // again once a committee without the keys takes over.
+    // 키"). The network opens with mac 0's key alone in the committee — the
+    // bootstrap the reserve keys are for. The founder's Mac warms up with the
+    // network, then sleeps: the chain, not any one node, commits the seating
+    // as a roster, and only a handoff naming exactly it carries the committee
+    // over. Nothing before the switch (nothing is seated), nothing for the
+    // epoch it lands inside, a full sixteenth for every epoch after it —
+    // exactly as if the Mac had answered all four slots, at the warm-up it
+    // reached, never a second share. Four independent operators qualifying
+    // while the keys still sit ends it: two more epochs of grace (finding 6),
+    // then the credit stops until a committee without the keys takes over.
     let founder = common::addr(&aether_crypto::P256Signer::from_seed(&common::seed(5)).unwrap());
     let (rkeys, rmembers): (Vec<ed25519::PrivateKey>, Vec<(String, String)>) = reserve_set().into_iter().unzip();
     let reserve = Reserve { operator: founder, members: rmembers.clone() };
-    let mut n = net(5, Some(reserve));
+    let seated_in = |m: &[(String, String)]| rmembers.iter().filter(|r| m.contains(r)).count();
+    let mut n = net(5, Some(reserve), Some(vec![common::mac_entry(0)]));
     let mut minted = U256::ZERO;
     assert_eq!(n.operator(4), founder);
     // Two independent operators and the founder's Mac warm up together; the
     // founder's Mac answers for itself, so the credit is idle. Macs 0, 1 and
     // 4 register, in that order — so their candidate (registry) indices are
-    // 0, 1 and 2; Macs 2 and 3, registering in the last act, are candidates
-    // 3 and 4. Warm-up state is per candidate index.
+    // 0, 1 and 2; Macs 2 and 3, registering later, are candidates 3 and 4.
+    // Warm-up state is per candidate index.
     let regs = [0, 1, 4].iter().map(|&i| n.register(i)).collect::<Vec<_>>();
     step(&mut n, &mut minted, regs);
     for day in 0..WARMUP_STEPS as u64 {
         run_day(&mut n, &mut minted, day, &[0, 1, 2], day);
     }
     assert_eq!(rewards::mac(&n.parent.state, 2).level, WARMUP_STEPS, "full weight before it sleeps");
-    assert_eq!(rewards::seated(&n.parent.state), (0, 0), "the genesis committee is named by no handoff: nothing seated");
+    assert_eq!(rewards::seated(&n.parent.state), (0, 0), "no handoff has landed: nothing seated");
 
-    // The founder's Mac sleeps; the committee stands at four seats and takes
-    // no reserve key (two independent operators, audit 1.1): no credit.
+    // The founder's Mac sleeps from the boundary the day-14 judgment and
+    // draw 14's freeze both land on: out of the pool (its last epoch in it is
+    // 335), its level stays where the judgment left it. No handoff has
+    // landed, so nothing is seated and the sleeping Mac earns nothing.
     n.behaviour.insert(4, Mac::Off);
     let full = n.parent.height / E;
     let (before, exec) = paid_epoch(&mut n, &mut minted, full, 5);
-    assert_eq!(n.balance(4), before[4], "no seat: a sleeping Mac earns nothing");
+    assert_eq!(n.balance(4), before[4], "nothing seated: a sleeping Mac earns nothing");
     assert!(!exec.payouts.iter().any(|(_, op, _)| *op == founder), "the founder is off the payouts");
     assert_eq!(exec.payouts.len(), 2, "only the answering operators");
 
-    // The committee falls short of four: a committee-signed handoff seats Mac
-    // 0's key with the three reserve keys, and the chain records the seating
-    // at the switch — which lands inside an epoch, so that epoch is not
-    // served; only the ones after it are.
-    let mac_node = |i: usize| aether_net::SecretKey::from_bytes(&[i as u8 + 1; 32]).public().to_string();
-    let seat: Vec<(ed25519::PrivateKey, String)> = std::iter::once((n.voting[0].clone(), mac_node(0)))
-        .chain(rkeys.into_iter().zip(rmembers.iter().map(|(_, node)| node.clone())))
-        .collect();
-    let (seated, handoff) = n.committee.handoff_to(CHAIN, 1, &seat);
+    // The next boundary seats the reserve keys for the committee's missing
+    // seats — Mac 1 fills one, two reserve keys the rest — and commits it as
+    // the roster: only a handoff naming exactly it may carry it over.
+    let (_, roster) = aether_rewards::next_roster(&n.parent.state).expect("the chain seats the reserve keys");
+    assert_eq!(roster.len(), 4);
+    assert_eq!(seated_in(&roster), 2, "qualifying Macs first, the reserve keys fill the rest: {roster:?}");
+    assert!(roster.contains(&common::mac_entry(0)) && roster.contains(&common::mac_entry(1)));
+    let (seated, handoff) = n.committee.handoff_to(CHAIN, 1, &common::seat_of(&n, &roster, &rkeys));
     let carried = n.step_handoff(handoff);
     let switch = carried.height + aether_node::handoff::DELAY;
     assert_eq!(switch % E, 5, "the seating switch lands inside an epoch");
     run_to(&mut n, &mut minted, switch);
-    assert_eq!(rewards::seated(&n.parent.state), (3, switch), "three keys seated, from the switch");
+    assert_eq!(rewards::seated(&n.parent.state), (2, switch), "two keys seated, from the switch");
+    assert_eq!(aether_rewards::committee(&n.parent.state), roster);
     let half = switch / E;
     let (before, exec) = paid_epoch(&mut n, &mut minted, half, 5);
     assert_eq!(n.balance(4), before[4], "the epoch the seating lands in is not served");
     assert_eq!(exec.payouts.len(), 2, "the founder is off the payouts");
 
-    // Every epoch the keys hold the seat pays the founder what its Mac would
+    // Every epoch the keys hold the seats pays the founder what its Mac would
     // have earned answering all four slots: a sixteenth, counted as one
     // operator among the answering ones, on the record.
     for e in half + 1..half + 3 {
@@ -432,24 +443,46 @@ fn reserve_service_pays_the_founder_while_its_mac_sleeps() {
     }
     assert_eq!(rewards::mac(&n.parent.state, 2).level, WARMUP_STEPS, "the service moved no warm-up");
 
-    // Four independent operators stand and a committee without the reserve
-    // keys takes over: from its switch — inside an epoch again — the credit
-    // is gone, the sleeping founder Mac earns nothing.
+    // Macs 2 and 3 register (epoch 345): four independent operators qualify,
+    // so the next boundary commits a roster without a single reserve key and
+    // the overdue count starts ticking — the keys are still seated.
     let regs = (2..4).map(|i| n.register(i)).collect::<Vec<_>>();
     step(&mut n, &mut minted, regs);
-    let out: Vec<(ed25519::PrivateKey, String)> = (0..4).map(|i| (n.voting[i].clone(), mac_node(i))).collect();
-    let (_, handoff) = seated.handoff_to(CHAIN, 2, &out);
+    let four = n.parent.height / E + 1;
+    run_to(&mut n, &mut minted, four * E);
+    let (_, leave) = aether_rewards::next_roster(&n.parent.state).expect("the chain unseats them");
+    assert_eq!(seated_in(&leave), 0, "every reserve key leaves at once");
+    assert!(leave.contains(&common::mac_entry(0)) && leave.contains(&common::mac_entry(1)));
+    assert_eq!(rewards::overdue(&n.parent.state), (four, 1), "seats nobody needs start counting");
+
+    // Finding 6: the handoff home has not happened — the keys still sit. The
+    // credit lasts the two epochs of grace and stops, on chain.
+    for e in [four, four + 1] {
+        let (before, exec) = paid_epoch(&mut n, &mut minted, e, 5);
+        let pool = pool_of_epoch(e);
+        assert_eq!(n.balance(4) - before[4], pool / U256::from(MAX_SHARE), "epoch {e}: still inside the grace");
+        assert_eq!(exec.payouts.len(), 5, "the founder counts as one operator");
+    }
+    assert_eq!(rewards::overdue(&n.parent.state), (four + 2, 3), "past the grace the count keeps climbing");
+    for e in [four + 2, four + 3] {
+        let (before, exec) = paid_epoch(&mut n, &mut minted, e, 5);
+        assert_eq!(n.balance(4), before[4], "epoch {e}: past the grace, no credit while the keys still sit");
+        assert!(!exec.payouts.iter().any(|(_, op, _)| *op == founder), "the founder is off the payouts");
+        assert_eq!(exec.payouts.len(), 4, "only the answering operators");
+    }
+
+    // A committee without the keys takes over: from its switch — inside an
+    // epoch again — the seating word is clear and the count resets.
+    let (_, handoff) = seated.handoff_to(CHAIN, 2, &common::seat_of(&n, &leave, &rkeys));
     let carried = n.step_handoff(handoff);
     let unswitch = carried.height + aether_node::handoff::DELAY;
-    assert_eq!(unswitch % E, 6, "the unseating switch lands inside an epoch too");
+    assert_eq!(unswitch % E, 5, "the unseating switch lands inside an epoch too");
     run_to(&mut n, &mut minted, unswitch);
     assert_eq!(rewards::seated(&n.parent.state), (0, 0), "unseated: the word is cleared");
-    let gone = unswitch / E;
-    for e in gone..gone + 2 {
-        let (before, exec) = paid_epoch(&mut n, &mut minted, e, 5);
-        assert_eq!(n.balance(4), before[4], "epoch {e}: unseated, no credit for a sleeping Mac");
-        assert!(!exec.payouts.iter().any(|(_, op, _)| *op == founder), "the founder is off the payouts");
-        assert_eq!(exec.payouts.len(), 4, "epoch {e}: only the answering operators");
-    }
+    let gone = unswitch / E + 1;
+    let (before, exec) = paid_epoch(&mut n, &mut minted, gone, 5);
+    assert_eq!(n.balance(4), before[4], "unseated, no credit for a sleeping Mac");
+    assert!(!exec.payouts.iter().any(|(_, op, _)| *op == founder), "the founder is off the payouts");
+    assert_eq!(exec.payouts.len(), 4, "only the answering operators");
     assert_eq!(rewards::mac(&n.parent.state, 2).level, WARMUP_STEPS, "still no warm-up movement");
 }

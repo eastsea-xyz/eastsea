@@ -15,6 +15,11 @@ tokio = { version = "1", features = ["rt-multi-thread", "time", "macros", "sync"
 tracing = "0.1"
 anyhow = "1"
 rand.workspace = true
+# Wallet-server announcements are signed by a candidate's voting key (the same
+# pins as aether-node).
+commonware-codec = "=2026.9.0"
+commonware-cryptography = "=2026.9.0"
+hex = "0.4"
 
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

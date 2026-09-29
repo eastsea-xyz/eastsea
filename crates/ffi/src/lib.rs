@@ -130,11 +130,21 @@ fn net() -> R<&'static Net> {
         // Ask the validators every few minutes which follower Macs serve
         // wallets (nothing to ask when the servers were pinned: tests).
         if pinned.is_none() {
-            let (spread, client) = (spread.clone(), client.clone());
+            let (spread, refresh) = (spread.clone(), client.clone());
             rt.spawn(async move {
                 loop {
-                    spread.discover(&client).await;
+                    spread.discover(&refresh).await;
                     tokio::time::sleep(Duration::from_secs(5 * 60)).await;
+                }
+            });
+            // And every 30 s, the newest finalized height off a validator's
+            // own certificate: the bar a serving node's anchor must not lag
+            // far behind (red-team 2026-09-29 §3).
+            let refresh = client.clone();
+            rt.spawn(async move {
+                loop {
+                    refresh_finalized_height(&refresh).await;
+                    tokio::time::sleep(Duration::from_secs(30)).await;
                 }
             });
         }
@@ -149,12 +159,15 @@ fn net() -> R<&'static Net> {
 // Capacity review 2026-09-29: iPhone wallets (and any wallet without its own
 // node) poll every 2 s, and asking the validators directly is ~500k req/s on
 // 16 validators at a million phones. Follower Macs — any Mac running
-// `aether run` — announce themselves as wallet servers, and this wallet keeps
-// a few of them active, rotates away from trouble, and falls back to the
-// validators only when no follower answers. Nothing about verification
-// changes: every answer still passes the same certificate, proof and chain
-// checks, so a follower cannot lie — it can only be slow or stale, and the
-// monotonic-height rule already rejects stale.
+// `aether run` — announce themselves as wallet servers (a registered
+// candidate's signed announcement; validators list only those), and this
+// wallet keeps a few of them active, rotates away from trouble, and falls
+// back to the validators when no follower answers — or every one of them is
+// busy or failing (red-team 2026-09-29 §3: an all-busy pool must not deny
+// reads). Nothing about verification changes: every answer still passes the
+// same certificate, proof and chain checks, so a follower cannot lie — it
+// can only be slow or stale, and the monotonic-height rule already rejects
+// stale.
 
 /// Followers one wallet reads from at once: the connection footprint of a phone.
 const ACTIVE_FOLLOWERS: usize = 3;
@@ -454,11 +467,12 @@ impl Spread {
 
 impl Net {
     /// One read: follower Macs first, rotating over the active ones on
-    /// trouble, the validators as the fallback when no follower answers.
-    /// A "server busy" follower is answer enough — the load is not moved to
-    /// the validators, the caller simply tries again (it polls anyway).
+    /// trouble, the validators as the fallback when no follower answers —
+    /// or every one asked is busy or failing (red-team 2026-09-29 §3: an
+    /// all-busy pool must not turn into a denial of service). A single busy
+    /// follower is still not a reason: the rotation simply goes around it,
+    /// and it backs off politely.
     async fn read(&self, method: &str, params: Value) -> anyhow::Result<Value> {
-        let mut busy: Option<String> = None;
         for _ in 0..=ACTIVE_FOLLOWERS {
             let Some((id, addr)) = self.spread.pick() else {
                 break;
@@ -481,7 +495,6 @@ impl Net {
                     if message.contains("server busy") =>
                 {
                     self.spread.park(&id, Parked::Busy);
-                    busy = Some(message);
                     continue;
                 }
                 Err(aether_net::RpcError::Server { message, .. }) => {
@@ -496,10 +509,7 @@ impl Net {
                 }
             }
         }
-        match busy {
-            Some(m) => Err(anyhow::anyhow!(m)),
-            None => self.client.call(method, params).await,
-        }
+        self.client.call(method, params).await
     }
 }
 
@@ -819,6 +829,7 @@ fn anchor(height: u64, set: &ValidatorSet) -> R<VerifiedBlock> {
             check_anchor_chain(&block, &links, chain)?;
             remember_height(chain, vb.height)?;
             check_freshness(vb.timestamp_ms)?;
+            check_lag(chain, vb.height)?;
             return Ok(vb);
         }
         std::thread::sleep(Duration::from_millis(250));
@@ -841,6 +852,86 @@ fn check_freshness(timestamp_ms: u64) -> R<()> {
         return Err(WalletError::Verification(format!("the node served state from {} s ago; refusing stale data", (now - timestamp_ms) / 1000)));
     }
     Ok(())
+}
+
+/// How far an anchor may lag the newest finalized height a validator's own
+/// certificate showed (red-team 2026-09-29 §3): a follower keeps a small
+/// natural lag, but one far behind serves old state as if current.
+const MAX_FOLLOWER_LAG: u64 = 30;
+/// How long a checked height stays usable; the refresh loop keeps it fresh,
+/// and a wallet offline longer than this checks nothing rather than something
+/// stale itself.
+const CHECKED_HEIGHT_MAX_AGE: Duration = Duration::from_secs(10 * 60);
+
+/// Newest finalized height learned from a validator with its certificate
+/// verified, one entry per chain, with when. Never taken from the node serving
+/// the anchor (see [`refresh_finalized_height`]).
+static CHECKED_HEIGHT: std::sync::Mutex<Vec<(u64, u64, std::time::Instant)>> = std::sync::Mutex::new(Vec::new());
+
+/// An anchor more than [`MAX_FOLLOWER_LAG`] behind the newest finalized height
+/// a validator's certificate showed is old state served as current, whatever
+/// fresh-looking timestamp it carries (the monotonic rule still applies on top).
+fn check_lag(chain_id: u64, height: u64) -> R<()> {
+    let g = CHECKED_HEIGHT.lock().expect("checked height lock");
+    for (chain, newest, at) in g.iter() {
+        if *chain == chain_id
+            && at.elapsed() < CHECKED_HEIGHT_MAX_AGE
+            && newest.saturating_sub(height) > MAX_FOLLOWER_LAG
+        {
+            return Err(WalletError::Verification(format!(
+                "the node serves block {height}, but validators finalized block {newest}: stale data"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Remember the newest finalized height a validator's own certificate showed
+/// (kept per chain, never going back — a validator replaying an old
+/// certificate cannot lower the bar — and current: every successful refresh
+/// says the validators were just asked).
+fn remember_checked_height(chain_id: u64, height: u64) {
+    let mut g = CHECKED_HEIGHT.lock().expect("checked height lock");
+    match g.iter_mut().find(|(c, _, _)| *c == chain_id) {
+        Some((_, best, at)) => {
+            *best = (*best).max(height);
+            *at = std::time::Instant::now();
+        }
+        None => g.push((chain_id, height, std::time::Instant::now())),
+    }
+}
+
+/// How many validators the wallet is configured with (the committee's size,
+/// which `ValidatorSet::devnet` needs in dev mode).
+fn validator_count() -> u32 {
+    NODES.lock().expect("nodes lock").as_ref().map_or(DEVNET_VALIDATORS as u32, |n| n.len() as u32)
+}
+
+/// Ask a validator for the newest finalized height and verify the certificate
+/// it answers with (never a follower's, and never the status's word alone):
+/// the same checks an anchor passes, minus serving it to anyone. A failure
+/// simply leaves the last checked height in place.
+async fn refresh_finalized_height(client: &aether_net::RpcClient) {
+    let Ok(set) = trusted_set(validator_count()) else { return };
+    let Ok(status) = client.call("aether_status", json!([])).await else { return };
+    let (Ok(chain), Some(hint)) = (expected_chain(&status), status["height"].as_u64()) else { return };
+    let Ok(v) = client.call("aether_getFinalized", json!([hint])).await else { return };
+    if v.is_null() {
+        return;
+    }
+    let (block, fin) = match (v["block"].as_str(), v["finalization"].as_str()) {
+        (Some(b), Some(f)) => (from_hex(b).ok(), from_hex(f).ok()),
+        _ => return,
+    };
+    let (Some(block), Some(fin)) = (block, fin) else { return };
+    let links = v["links"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|l| from_hex(l.as_str().unwrap_or_default()).ok()).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let Ok(vb) = verify_finalized_chain(&set, &block, &fin, &links) else { return };
+    if check_anchor_chain(&block, &links, chain).is_ok() {
+        remember_checked_height(chain, vb.height);
+    }
 }
 
 /// Finalized blocks never go back: an anchor below the highest height already
@@ -1382,6 +1473,7 @@ mod tests {
         DEVNET_KEYS.store(false, std::sync::atomic::Ordering::Relaxed);
         *CHAIN_ID.lock().expect("chain id lock") = 7_777;
         VERIFIED_HEIGHT.lock().expect("verified height lock").clear();
+        CHECKED_HEIGHT.lock().expect("checked height lock").clear();
     }
 
     fn network_json(identity: Option<&str>, devnet: bool) -> String {
@@ -1461,6 +1553,32 @@ mod tests {
         let err = check_freshness(now - MAX_ANCHOR_AGE_MS - 1).unwrap_err().to_string();
         assert!(err.contains("stale"), "{err}");
         check_freshness(now + 60_000).unwrap(); // a node's clock a little ahead, not our problem
+    }
+
+    /// An anchor far behind the newest finalized height a validator's own
+    /// certificate showed is refused, however fresh its timestamp looks (a
+    /// follower can be slow but never certify anything newer than the
+    /// committee did); a small natural lag is fine, another chain is not
+    /// bound by it, and an aged checked height enforces nothing.
+    #[test]
+    fn anchors_far_behind_a_verified_finalized_height_are_stale() {
+        let _g = config();
+        reset_network();
+        remember_checked_height(7_777, 1_000);
+        check_lag(7_777, 1_000).unwrap();
+        check_lag(7_777, 1_000 - MAX_FOLLOWER_LAG).unwrap();
+        let err = check_lag(7_777, 1_000 - MAX_FOLLOWER_LAG - 1).unwrap_err().to_string();
+        assert!(err.contains("stale"), "{err}");
+        check_lag(7_780, 0).unwrap();
+
+        // The checked height never goes back: a validator replaying an old
+        // certificate cannot lower the bar.
+        remember_checked_height(7_777, 900);
+        assert!(check_lag(7_777, 900 - MAX_FOLLOWER_LAG - 1).is_err(), "still the height of block 1,000");
+
+        // Too old to trust the bar by: nothing is enforced on it.
+        CHECKED_HEIGHT.lock().expect("checked height lock").iter_mut().for_each(|(_, _, at)| *at = std::time::Instant::now() - CHECKED_HEIGHT_MAX_AGE - Duration::from_secs(1));
+        check_lag(7_777, 0).unwrap();
     }
 
     /// The chain id a certified block commits to (its transactions) is checked

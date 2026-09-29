@@ -1,6 +1,7 @@
 pub mod application;
 pub mod beacons;
 pub mod archive;
+pub mod announce;
 pub mod candidate;
 pub use aether_light::block;
 pub mod chain;

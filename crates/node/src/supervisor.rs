@@ -596,6 +596,7 @@ mod tests {
             history: None,
             node_rewards: None,
             reserve: None,
+            genesis_validators: None,
         }
     }
 

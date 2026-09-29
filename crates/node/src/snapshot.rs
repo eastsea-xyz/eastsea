@@ -89,6 +89,17 @@ impl Snapshot {
                 return Err("snapshot code does not match its hash".into());
             }
         }
+        // ...and the other way round (2026-09-29): the state root covers only
+        // the tree, and `codes` rides beside it, so a peer could leave a
+        // deployed contract's bytes out while every root still matches — the
+        // next call into it would fail for want of its code. Every code hash
+        // the tree names must arrive with its bytes.
+        let carried: std::collections::HashSet<B256> = self.codes.iter().map(|(h, _)| *h).collect();
+        for hash in named_code_hashes(&self.entries) {
+            if !carried.contains(&hash) {
+                return Err(format!("the tree names code {hash} the snapshot does not carry"));
+            }
+        }
         if let Some(p) = &self.handoff {
             crate::handoff::verify(cfg.chain_id, identity, &p.handoff)?;
         }
@@ -222,7 +233,163 @@ impl Snapshot {
     }
 }
 
+/// The code hashes the tree's account stems name, for `check`'s completeness
+/// half: a code hash is sub 1 of an account stem — but the stem hash hides the
+/// tree index, so code chunks past 128 (sub 0 of their own stems) and overflow
+/// storage slots (every sub of their own stems) can wear the same shape, and
+/// stems alone cannot be told apart. Two facts discriminate: an account stem
+/// (tree index 0) never carries a leaf at subs 2..63, and a code of at most
+/// 128 chunks lives wholly in its account's stem — rebuildable from the chunk
+/// leaves, so under today's version-0 encoding it must hash to the leaf it
+/// names. A stem that fails its check is not an account's: it names nothing.
+/// What survives is demanded: whatever the sub-1 leaf holds is what execution
+/// indexes `codes` by, so an honest snapshot always carries it. A contrived
+/// storage layout can still pass every check and name a hash nobody has: the
+/// snapshot is then refused and the jump falls back to replaying, which costs
+/// time and nothing else (2026-09-29).
+fn named_code_hashes(entries: &[([u8; 32], [u8; 32])]) -> Vec<B256> {
+    use aether_state::layout::BasicData;
+    /// Per stem: basic data (sub 0), code hash (sub 1), whether any sub 2..63
+    /// is written, and the chunk leaves (subs 128..255).
+    struct Stem {
+        basic: Option<[u8; 32]>,
+        hash: Option<[u8; 32]>,
+        inner: bool,
+        chunks: std::collections::BTreeMap<u8, [u8; 32]>,
+    }
+    let mut stems: std::collections::HashMap<[u8; 31], Stem> =
+        std::collections::HashMap::with_capacity(entries.len());
+    for (k, v) in entries {
+        if *v == [0u8; 32] {
+            continue; // a zero value is no leaf at all
+        }
+        let stem = stems
+            .entry(k[..31].try_into().expect("31 bytes"))
+            .or_insert(Stem { basic: None, hash: None, inner: false, chunks: Default::default() });
+        match k[31] {
+            0 => stem.basic.get_or_insert(*v),
+            1 => stem.hash.get_or_insert(*v),
+            2..=63 => {
+                stem.inner = true;
+                continue;
+            }
+            128..=255 => {
+                stem.chunks.insert(k[31], *v);
+                continue;
+            }
+            _ => continue,
+        };
+    }
+    let chunk = |chunks: &std::collections::BTreeMap<u8, [u8; 32]>, k: u8| {
+        chunks.get(&k).copied().unwrap_or([0u8; 32])
+    };
+    stems
+        .into_iter()
+        .filter_map(|(_, s)| {
+            let (basic, hash) = (s.basic?, s.hash?);
+            let d = BasicData::decode(&basic);
+            if d.code_size == 0 || s.inner {
+                return None;
+            }
+            // A code of at most 128 chunks never leaves the account's stem:
+            // rebuild it (an unwritten chunk leaf is 31 zero code bytes) and,
+            // under version-0 semantics, hold it to the hash it names.
+            let size = d.code_size as usize;
+            if size <= 128 * 31 {
+                if d.version != 0 {
+                    return Some(B256::from(hash));
+                }
+                let mut code = Vec::with_capacity(size);
+                for k in 0..size.div_ceil(31) {
+                    code.extend_from_slice(&chunk(&s.chunks, 128 + k as u8)[1..]);
+                }
+                code.truncate(size);
+                if alloy_primitives::keccak256(&code) != hash {
+                    return None;
+                }
+            }
+            Some(B256::from(hash))
+        })
+        .collect()
+}
+
 /// The certified block's hash matches the snapshot summary (used by tests).
 pub fn block_hash(b: &Block) -> String {
     format!("{}", b.digest())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn leaf(sub: u8, stem: &[u8; 31], v: [u8; 32]) -> ([u8; 32], [u8; 32]) {
+        let mut k = [0u8; 32];
+        k[..31].copy_from_slice(stem);
+        k[31] = sub;
+        (k, v)
+    }
+
+    fn basic(code_size: u32) -> [u8; 32] {
+        aether_state::layout::BasicData { version: 0, code_size, nonce: 0, balance: 7 }
+            .encode()
+            .expect("encode")
+    }
+
+    /// An account stem for `code`: basic data claiming its size, its keccak as
+    /// the code-hash leaf, and its chunkified code at subs 128...
+    fn coded_stem(stem: &[u8; 31], code: &[u8]) -> Vec<([u8; 32], [u8; 32])> {
+        let mut e = vec![
+            leaf(0, stem, basic(code.len() as u32)),
+            leaf(1, stem, alloy_primitives::keccak256(code).0),
+        ];
+        e.extend(
+            aether_state::layout::chunkify_code(code)
+                .into_iter()
+                .enumerate()
+                .map(|(k, c)| leaf(128 + k as u8, stem, c)),
+        );
+        e
+    }
+
+    #[test]
+    fn only_an_account_stem_names_its_code_hash() {
+        let stem = [7u8; 31];
+        // A contract's own stem names its code hash (rebuilt and held to it).
+        let code = (0..120u8).collect::<Vec<_>>();
+        assert_eq!(
+            named_code_hashes(&coded_stem(&stem, &code)),
+            vec![B256::from(alloy_primitives::keccak256(&code).0)]
+        );
+        // A hash the rebuilt code does not hash to names nothing: the stem is
+        // not an account's (storage wearing the shape).
+        let mut wrong = coded_stem(&stem, &code);
+        wrong[1].1[0] ^= 1;
+        assert!(named_code_hashes(&wrong).is_empty());
+        // A plain account: no code claimed, nothing named.
+        assert!(named_code_hashes(&[leaf(0, &stem, basic(0))]).is_empty());
+        // An overflow storage slot on sub 1 of its own stem is not a code hash.
+        assert!(named_code_hashes(&[leaf(1, &[8u8; 31], [5; 32])]).is_empty());
+        // A big contract's continuation stem wears its chunks at every sub from
+        // 0 (chunk 128 lands at sub 0 of the next stem, so its "basic data" and
+        // "code hash" are just code bytes). The leaves at subs 2..63 rule it
+        // out: an account stem never writes there.
+        let continuation: Vec<_> = aether_state::layout::chunkify_code(&code)
+            .into_iter()
+            .enumerate()
+            .map(|(k, c)| leaf(k as u8, &[9u8; 31], c))
+            .collect();
+        assert!(named_code_hashes(&continuation).is_empty());
+        // A code too big for one stem (more than 128 chunks) cannot be rebuilt
+        // and checked: its account stem still names the hash.
+        let big = (0..=u8::MAX).cycle().take(128 * 31 + 5).collect::<Vec<_>>();
+        let hash = alloy_primitives::keccak256(&big).0;
+        let mut big_stem = coded_stem(&stem, &big[..128 * 31]);
+        big_stem[0].1 = basic(big.len() as u32);
+        big_stem[1].1 = hash;
+        assert_eq!(named_code_hashes(&big_stem), vec![B256::from(hash)]);
+        // A zeroed code-hash leaf names nothing (a cleared account).
+        let mut cleared = coded_stem(&stem, &code);
+        cleared[1].1 = [0; 32];
+        assert!(named_code_hashes(&cleared).is_empty());
+    }
 }

@@ -628,10 +628,21 @@ impl Chain {
     }
 
     /// How many blocks behind the network this node last knew itself to be
-    /// (0 when caught up, or when nothing ever told it a height).
+    /// (0 when caught up — and also when nothing ever told it a height, which
+    /// is not the same thing: see `behind_known`).
     pub fn behind(&self) -> u64 {
         let g = self.lock();
         g.net_height.map_or(0, |n| n.saturating_sub(g.finalized.height))
+    }
+
+    /// `behind()`, but None while no network height is known: a node nothing
+    /// has answered is not "0 behind" — it is any number of blocks stale, and
+    /// must not act as though it were current. `catch_up` returns only once
+    /// this is Some, and keeps the last height it heard so the margin stays
+    /// meaningful after it (2026-09-29).
+    pub fn behind_known(&self) -> Option<u64> {
+        let g = self.lock();
+        g.net_height.map(|n| n.saturating_sub(g.finalized.height))
     }
 
     /// Replay mode for `follow`: while a certified backlog is fetched and
@@ -1920,8 +1931,9 @@ impl Chain {
         exec
     }
 
-    /// Candidate txs for a proposal: inclusion-list txs first, then the mempool
-    /// (lowest nonce first per sender).
+    /// Candidate txs for a proposal: inclusion-list txs (each with the sender's
+    /// earlier-nonce chain that must land before it), then the rest of the
+    /// mempool (lowest nonce first per sender).
     pub fn mempool_candidates(&self) -> Vec<TxEnvelope> {
         let g = self.lock();
         let censored = |t: &TxEnvelope| {
@@ -1940,15 +1952,38 @@ impl Chain {
             .filter(|(h, t)| !listed_hashes.contains(*h) && !censored(t))
             .map(|(_, t)| t.clone())
             .collect();
-        // Listed txs go in nonce order with the rest: a listed tx whose sender's
-        // earlier nonces sit in the mempool would fail up front, never be retried,
-        // and the block would then wrongly leave it out (2026-09-29 stall: every
-        // proposal failed the inclusion-list check at the next nonce). For equal
-        // nonces a listed tx still comes first.
-        let mut txs: Vec<(bool, TxEnvelope)> = rest.into_iter().map(|t| (false, t)).collect();
-        txs.extend(listed.into_iter().map(|t| (true, t)));
-        txs.sort_by_key(|(listed, t)| (t.header.nonce, !*listed, t.header.sender));
-        let mut txs: Vec<TxEnvelope> = txs.into_iter().map(|(_, t)| t).collect();
+        // Listed txs ride with their senders' earlier nonces ahead of everything
+        // else. One nonce order over the whole pool (the 2026-09-29 stall fix)
+        // let a listed tx at a later nonce be pushed past the block's tx budget
+        // by a flood of unrelated nonce-0 txs — block after block, without
+        // anyone censoring anything (2026-09-29 red-team 5). The chain that
+        // must land first goes first, so a listed tx needs only its own
+        // sender's earlier nonces, never room past two thousand strangers.
+        let mut wanted: HashMap<Address, u64> = HashMap::with_capacity(listed.len());
+        for t in &listed {
+            wanted
+                .entry(t.header.sender)
+                .and_modify(|top| *top = (*top).max(t.header.nonce))
+                .or_insert(t.header.nonce);
+        }
+        let mut head: Vec<(bool, TxEnvelope)> = Vec::new();
+        let mut tail: Vec<(bool, TxEnvelope)> = Vec::new();
+        for t in rest {
+            match wanted.get(&t.header.sender) {
+                Some(top) if t.header.nonce <= *top => head.push((false, t)),
+                _ => tail.push((false, t)),
+            }
+        }
+        head.extend(listed.into_iter().map(|t| (true, t)));
+        // Within the head (and between senders in it) nonce order still rules:
+        // a listed tx whose sender's earlier nonces sit in the mempool would
+        // fail up front, never be retried, and the block would then wrongly
+        // leave it out — the original stall. For equal nonces a listed tx
+        // still comes first.
+        head.sort_by_key(|(listed, t)| (t.header.nonce, !*listed, t.header.sender));
+        tail.sort_by_key(|(_, t)| (t.header.nonce, t.header.sender));
+        head.extend(tail);
+        let mut txs: Vec<TxEnvelope> = head.into_iter().map(|(_, t)| t).collect();
         txs.truncate(MAX_TXS_PER_BLOCK);
         txs
     }
@@ -2296,12 +2331,10 @@ impl Chain {
             let epoch_blocks = aether_execution::registry::epoch_blocks(state);
             let epoch = (now + 1) / epoch_blocks;
             let window = beacons::layout(epoch_blocks).map_or(0, |l| l.1);
-            let slots = beacons::slots(state);
             g.beacon_pool.retain(|(e, slot, index), _| {
                 let b = beacons::beacon(state, *index);
                 let recorded = b.epoch == *e && b.mask & (1 << slot) != 0;
-                let open = *e == epoch
-                    && slots.is_some_and(|s| s.get(*slot as usize).is_some_and(|h| h + window > now));
+                let open = *e == epoch && beacons::slot(state, *slot).is_some_and(|h| h + window > now);
                 open && !recorded
             });
         }
@@ -2792,6 +2825,36 @@ mod pool_tests {
         txs
     }
 
+    /// The 2026-09-28 fix's single nonce order over the whole pool, kept as the
+    /// flood regression's baseline: it is what let 2,000 unrelated nonce-0 txs
+    /// push a listed tx at a later nonce past the block's tx budget, block
+    /// after block, without the inclusion check ever seeing it appendable.
+    fn candidates_one_nonce_order(chain: &Chain) -> Vec<TxEnvelope> {
+        let g = chain.lock();
+        let censored = |t: &TxEnvelope| {
+            g.censor == Some(t.header.sender) || g.deprioritize == Some(t.header.sender)
+        };
+        let listed = if g.censor.is_some() {
+            Vec::new()
+        } else {
+            g.inclusion.for_proposal()
+        };
+        let listed_hashes: std::collections::HashSet<TxHash> =
+            listed.iter().map(aether_execution::tx_hash).collect();
+        let rest: Vec<TxEnvelope> = g
+            .mempool
+            .iter()
+            .filter(|(h, t)| !listed_hashes.contains(*h) && !censored(t))
+            .map(|(_, t)| t.clone())
+            .collect();
+        let mut txs: Vec<(bool, TxEnvelope)> = rest.into_iter().map(|t| (false, t)).collect();
+        txs.extend(listed.into_iter().map(|t| (true, t)));
+        txs.sort_by_key(|(listed, t)| (t.header.nonce, !*listed, t.header.sender));
+        let mut txs: Vec<TxEnvelope> = txs.into_iter().map(|(_, t)| t).collect();
+        txs.truncate(MAX_TXS_PER_BLOCK);
+        txs
+    }
+
     /// Signed transfers from `signer`, one per nonce in `nonces`: cheap enough
     /// that a block holds them all, so what lands is exactly what the ordering
     /// tried, in the order it tried it.
@@ -3146,6 +3209,74 @@ mod pool_tests {
         assert_eq!(
             chain.inclusion_violations(&exec, &ctx, now),
             vec![aether_execution::tx_hash(&tx_a[32])]
+        );
+    }
+
+    /// The other hole in a single nonce order over the pool (2026-09-29
+    /// red-team 5): 2,000 unrelated nonce-0 txs fill the block's whole tx
+    /// budget before a listed tx at a later nonce is reached — truncated out
+    /// every time, though nothing about it is unappendable. Its sender's
+    /// earlier-nonce chain goes ahead of the strangers now, so it lands.
+    #[test]
+    fn a_listed_tx_survives_a_flood_of_unrelated_nonce_zero_txs() {
+        use aether_crypto::{P256Signer, Signer as _};
+        let mut seed = [0u8; 32];
+        seed[0] = 0x5d;
+        let key = P256Signer::from_seed(&seed).unwrap();
+        let sender = address_of(&key.public_key()).unwrap();
+        let strangers: Vec<Address> = (1..=MAX_TXS_PER_BLOCK as u64).map(|i| Address::from_word(U256::from(i).into())).collect();
+        let mut alloc = vec![(sender, U256::from(10u128.pow(24)))];
+        alloc.extend(strangers.iter().cloned().map(|a| (a, U256::from(10u128.pow(24)))));
+        let (chain, genesis) = Chain::new(cfg(alloc));
+
+        let pending = transfers(&key, 0..64);
+        for t in &pending {
+            assert_eq!(chain.add_to_mempool(t.clone()), Ok(true));
+        }
+        for (i, a) in strangers.iter().enumerate() {
+            assert_eq!(chain.add_to_mempool(tx(*a, 0, 1 + i as u64)), Ok(true), "stranger {i}");
+        }
+        let seen = Instant::now();
+        accept_list(&chain, pending[32..48].to_vec(), seen); // all 16 list slots
+        let now = seen + Duration::from_secs(1); // past inclusion::FREEZE
+        let parent = chain.lock().finalized.clone();
+
+        // The fix: the listed txs and the nonces they stand on come first, so
+        // the strangers' volume cannot push them past the 2,000-tx cut. Gas
+        // still stops the block mid-stranger (30M gas, 21k a tx) — after the
+        // listed chain has landed.
+        let (exec, ctx) = build_ctx(&chain, &parent, &genesis, chain.mempool_candidates());
+        assert_eq!(
+            landed_nonces(&exec, &pending, sender),
+            (0..48).collect::<Vec<u64>>(),
+            "the sender's nonces through the last listed one, strangers after"
+        );
+        assert!(
+            chain.inclusion_violations(&exec, &ctx, now).is_empty(),
+            "nothing listed was pushed past the tx budget"
+        );
+
+        // The 2026-09-28 single nonce order this replaces: nonce 0 goes first
+        // — 2,001 txs of it — and everything at a later nonce fell past the
+        // 2,000-tx cut. Worse, the sender's nonces 0..31 were cut with them,
+        // so the inclusion check never saw the listed txs appendable and
+        // raised no alarm: the push-out was quiet, block after block.
+        let strung_out = candidates_one_nonce_order(&chain);
+        assert_eq!(strung_out.len(), MAX_TXS_PER_BLOCK, "the strangers fill the budget");
+        assert!(
+            strung_out.iter().all(|t| t.header.nonce == 0),
+            "and nothing at a later nonce survives the cut"
+        );
+        let offered: std::collections::HashSet<TxHash> =
+            strung_out.iter().map(aether_execution::tx_hash).collect();
+        for t in &pending[32..48] {
+            assert!(!offered.contains(&aether_execution::tx_hash(t)), "the listed tx was offered");
+        }
+        let (exec, ctx) = build_ctx(&chain, &parent, &genesis, strung_out);
+        assert_eq!(landed_nonces(&exec, &pending, sender), Vec::<u64>::new());
+        assert!(
+            chain.inclusion_violations(&exec, &ctx, now).is_empty(),
+            "nothing appendable missing: the inclusion check stays quiet — that is the hole"
         );
     }
 }

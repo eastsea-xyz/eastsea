@@ -20,7 +20,9 @@ use std::sync::{Arc, Mutex};
 use tracing_subscriber::fmt::MakeWriter;
 
 const CHAIN: u64 = 7_793;
-const E: u64 = 12;
+/// 36-block epochs (twelve slots of three blocks, a one-block answer window):
+/// the shortest twelve beacon slots fit with room to answer.
+const E: u64 = 36;
 /// One draw: 24 short epochs, as the default `draw_epochs` gives.
 const SPAN: u64 = E * 24;
 

@@ -22,9 +22,10 @@ use common::{Mac, Net, Opts};
 use std::sync::Arc;
 
 const CHAIN: u64 = 7_799;
-/// Short epochs (four slots of three blocks) so a day is 288 blocks, not
-/// 86_400: the warm-up climb (a step a day, 14 days) finishes in minutes.
-const E: u64 = 12;
+/// Short epochs (twelve slots of three blocks, a one-block answer window) so a
+/// day is 864 blocks, not 86_400: the warm-up climb (a step a day, 14 days)
+/// still finishes in minutes.
+const E: u64 = 36;
 const MACS: usize = 20;
 /// What the harness funds each operator with (gas money, not a premine of the
 /// chain's: rewards are the only mints this test counts).
@@ -45,7 +46,7 @@ fn net(macs: u8, reserve: Option<Reserve>, committee: Option<Vec<(String, String
 }
 
 /// Every Mac's answers for the next block, one state view for all of them
-/// (`answers` clones the state once per Mac: 20 Macs × 13_000 blocks adds up).
+/// (`answers` clones the state once per Mac: 20 Macs × 40_000 blocks adds up).
 fn answers_once(n: &Net) -> Vec<BeaconAnswer> {
     let view = n.view();
     let h = n.parent.height + 1;
@@ -187,11 +188,11 @@ fn one_four_and_twenty_operators_get_exact_shares_and_the_rest_is_never_minted()
     assert_eq!(rewards::mac(&n.parent.state, 0).level, WARMUP_STEPS, "Mac 0 stays full");
 
     // A mid-warm-up epoch pays exactly by the weight formula: everyone answers
-    // all four slots, so a Mac's weight is 4 × (14 + level).
+    // all twelve slots, so a Mac's weight is SLOTS × (14 + level).
     let epoch = 20 * DAY_EPOCHS + 10;
     run_to(&mut n, &mut minted, epoch * E);
-    let weights: Vec<u64> = (0..4u64).map(|i| 4 * (WARMUP_STEPS + rewards::mac(&n.parent.state, i).level)).collect();
-    let (before, _) = paid_epoch(&mut n, &mut minted, epoch, 4);
+    let weights: Vec<u64> = (0..4u64).map(|i| rewards::SLOTS * (WARMUP_STEPS + rewards::mac(&n.parent.state, i).level)).collect();
+    let (before, exec) = paid_epoch(&mut n, &mut minted, epoch, 4);
     let pool = node_pool(epoch, E);
     let denominator = U256::from(weights.iter().sum::<u64>().max(MAX_SHARE * FULL));
     for (i, w) in weights.iter().enumerate() {
@@ -240,8 +241,8 @@ fn one_four_and_twenty_operators_get_exact_shares_and_the_rest_is_never_minted()
     // denominator becomes the weight sum itself.
     let epoch = 40 * DAY_EPOCHS + 10;
     run_to(&mut n, &mut minted, epoch * E);
-    let weights: Vec<u64> = (0..MACS as u64).map(|i| 4 * (WARMUP_STEPS + rewards::mac(&n.parent.state, i).level)).collect();
-    let (before, _) = paid_epoch(&mut n, &mut minted, epoch, MACS);
+    let weights: Vec<u64> = (0..MACS as u64).map(|i| rewards::SLOTS * (WARMUP_STEPS + rewards::mac(&n.parent.state, i).level)).collect();
+    let (before, exec) = paid_epoch(&mut n, &mut minted, epoch, MACS);
     let pool = node_pool(epoch, E);
     let sum = weights.iter().sum::<u64>();
     assert!(sum > MAX_SHARE * FULL, "the weight sum passes the floor");
@@ -376,7 +377,7 @@ fn reserve_service_pays_the_founder_while_its_mac_sleeps() {
     // as a roster, and only a handoff naming exactly it carries the committee
     // over. Nothing before the switch (nothing is seated), nothing for the
     // epoch it lands inside, a full sixteenth for every epoch after it —
-    // exactly as if the Mac had answered all four slots, at the warm-up it
+    // exactly as if the Mac had answered every slot, at the warm-up it
     // reached, never a second share. Four independent operators qualifying
     // while the keys still sit ends it: two more epochs of grace (finding 6),
     // then the credit stops until a committee without the keys takes over.
@@ -421,7 +422,7 @@ fn reserve_service_pays_the_founder_while_its_mac_sleeps() {
     let (seated, handoff) = n.committee.handoff_to(CHAIN, 1, &common::seat_of(&n, &roster, &rkeys));
     let carried = n.step_handoff(handoff);
     let switch = carried.height + aether_node::handoff::DELAY;
-    assert_eq!(switch % E, 5, "the seating switch lands inside an epoch");
+    assert_eq!(switch % E, 29, "the seating switch lands inside an epoch");
     run_to(&mut n, &mut minted, switch);
     assert_eq!(rewards::seated(&n.parent.state), (2, switch), "two keys seated, from the switch");
     assert_eq!(aether_rewards::committee(&n.parent.state), roster);
@@ -431,7 +432,7 @@ fn reserve_service_pays_the_founder_while_its_mac_sleeps() {
     assert_eq!(exec.payouts.len(), 2, "the founder is off the payouts");
 
     // Every epoch the keys hold the seats pays the founder what its Mac would
-    // have earned answering all four slots: a sixteenth, counted as one
+    // have earned answering every slot: a sixteenth, counted as one
     // operator among the answering ones, on the record.
     for e in half + 1..half + 3 {
         let (before, exec) = paid_epoch(&mut n, &mut minted, e, 5);
@@ -476,7 +477,7 @@ fn reserve_service_pays_the_founder_while_its_mac_sleeps() {
     let (_, handoff) = seated.handoff_to(CHAIN, 2, &common::seat_of(&n, &leave, &rkeys));
     let carried = n.step_handoff(handoff);
     let unswitch = carried.height + aether_node::handoff::DELAY;
-    assert_eq!(unswitch % E, 5, "the unseating switch lands inside an epoch too");
+    assert_eq!(unswitch % E, 29, "the unseating switch lands inside an epoch too");
     run_to(&mut n, &mut minted, unswitch);
     assert_eq!(rewards::seated(&n.parent.state), (0, 0), "unseated: the word is cleared");
     let gone = unswitch / E + 1;

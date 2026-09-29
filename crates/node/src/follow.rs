@@ -22,6 +22,7 @@ use commonware_codec::Decode as _;
 use futures::{StreamExt as _, TryStreamExt as _};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::sync::Mutex;
 use std::time::Duration;
 use tracing::{info, warn};
@@ -519,7 +520,12 @@ fn log_follow(chain: &Chain, last_log: &mut u64) {
 /// propose, vote or answer beacons on a chain it cannot yet execute): follow
 /// the network with the follower machinery — a certified snapshot jump
 /// included — until within `margin` blocks of its finalized height. Returns
-/// how many blocks were adopted (jumped or replayed).
+/// how many blocks were adopted (jumped or replayed). A catch-up that never
+/// heard the network's height is not success (2026-09-29): an unknown height
+/// reads as "0 behind" and would start the validator on a guess, so this
+/// returns Err and the caller retries. On success the last height heard
+/// stays set — it is at most `margin` stale — so `behind()` keeps meaning
+/// something until this node's own finalizations carry it past the tip.
 pub async fn catch_up(
     chain: &Chain,
     upstream: &Upstream,
@@ -529,15 +535,22 @@ pub async fn catch_up(
     let start = chain.finalized_height();
     let mut last_log = 0;
     let mut window = PIPELINE;
+    let mut knew_height = false;
     loop {
         let ours = chain.finalized_height();
         if let Err(e) = advance(chain, upstream, set, None, u64::MAX, window, &mut last_log).await {
             warn!(height = ours + 1, %e, "catching up");
         }
+        // `advance` refreshes the height every round and nothing here clears
+        // it anymore, so `Some` means the network really answered.
+        knew_height |= chain.lock().net_height.is_some();
         let behind = chain.behind();
         if behind <= margin {
-            // Caught up (this node is the network now): nothing is behind anymore.
-            chain.lock().net_height = None;
+            if !knew_height {
+                // Nothing ever answered a height: "0 behind" is the unknown
+                // reading as zero, not being current. Not caught up.
+                return Err("never learned the network height".into());
+            }
             chain.set_relaxed(false);
             return Ok(chain.finalized_height() - start);
         }
@@ -548,6 +561,153 @@ pub async fn catch_up(
         };
         tokio::time::sleep(Duration::from_millis(400)).await;
     }
+}
+
+/// How long a starting validator waits for any roster peer to answer at all
+/// before it starts voting anyway (the fail-open the old code had, now only
+/// after a real wait). Far past a whole network restarting at once — every
+/// member answers from its stored finalized state within seconds of its
+/// endpoint binding — and short enough that a partitioned validator comes
+/// back on its own (docs/design/24-self-healing.md: 모든 검증자 동시 재시작).
+pub const STARTUP_PATIENCE: Duration = Duration::from_secs(5 * 60);
+
+/// One round of catching up from one peer before the roster is asked again
+/// (a source that answers a height but no blocks must not hold the gate forever).
+const CATCH_UP_ROUND: Duration = Duration::from_secs(120);
+/// How long one round waits before the roster is asked again.
+const ASK_AGAIN: Duration = Duration::from_secs(5);
+
+/// Whether a member that has not voted yet may start.
+#[derive(Debug, PartialEq, Eq)]
+pub enum VoteStart {
+    /// Every peer that answered puts nobody beyond `margin` ahead: at the tip.
+    /// The engine covers the last few blocks through consensus itself.
+    AtTip,
+    /// No peer answered at all for the whole patience window. Starting anyway
+    /// is the old fail-open, waited out: the chain's own rules (no vote on a
+    /// block this node cannot execute) keep a stale member harmless, and peers
+    /// that never come back are not fixed by waiting longer.
+    FailOpen,
+    /// A reachable peer is ahead: not yet.
+    Wait,
+}
+
+/// The startup gate's decision from one roster census: the finalized heights
+/// the peers that answered reported, where we are, how long since any of them
+/// last answered, and how much silence is tolerated. A height is "heard" only
+/// from a peer that answered — an unknown height never reads as zero.
+pub fn may_start_voting(answered: &[u64], ours: u64, margin: u64, silent_for: Duration, patience: Duration) -> VoteStart {
+    if answered.is_empty() {
+        return if silent_for >= patience { VoteStart::FailOpen } else { VoteStart::Wait };
+    }
+    if answered.iter().all(|h| *h <= ours + margin) { VoteStart::AtTip } else { VoteStart::Wait }
+}
+
+/// Ask every roster peer where it is — a census, not the first answer: one
+/// `aether_status` per peer, in parallel, each bounded. Peers that do not
+/// answer are absent (a restarting network comes up one by one; a peer still
+/// catching up serves read-only answers from its stored finalized state).
+pub async fn roster_heights(
+    endpoint: &aether_net::Endpoint,
+    nodes: &[aether_net::EndpointId],
+) -> Vec<(aether_net::EndpointId, u64)> {
+    let asked = futures::future::join_all(nodes.iter().map(|n| async move {
+        let addr = aether_net::EndpointAddr::from(*n);
+        match aether_net::connect_rpc(endpoint, &addr, Duration::from_secs(10)).await {
+            Ok(conn) => match aether_net::rpc_call(&conn, "aether_status", json!([])).await {
+                Ok(v) => v["height"].as_u64().map(|h| (*n, h)),
+                Err(e) => {
+                    tracing::debug!(peer = %n, %e, "answered no height");
+                    None
+                }
+            },
+            Err(e) => {
+                tracing::debug!(peer = %n, %e, "unreachable");
+                None
+            }
+        }
+    }))
+    .await;
+    asked.into_iter().flatten().collect()
+}
+
+/// Catch a restarting committee member up before it starts voting, and return
+/// when it may: the gate every validator passes on startup. Each round asks
+/// the whole roster where it is (`ask` returns every peer that answered, with
+/// its finalized height — a census, not the first answer), records the highest
+/// answer as the network's height, and decides:
+///
+/// - nobody beyond `margin` ahead → done, voting may start;
+/// - a peer ahead → catch up from the tallest one (`from` builds an upstream
+///   pointed at it) and ask again;
+/// - no answer at all for `patience` → done, with a warning.
+///
+/// Returns how many blocks were adopted. The caller must already serve
+/// read-only answers on its public endpoint (`main.rs` serves from its stored
+/// finalized state before this runs): a network where every validator
+/// restarts at once has nobody voting, so nobody would ever hear a height —
+/// the censuses break that, and the tallest member, finding nobody ahead,
+/// always proceeds first and then serves the rest its blocks.
+pub async fn catch_up_before_voting<P, A, AFut>(
+    chain: &Chain,
+    set: &ValidatorSet,
+    margin: u64,
+    patience: Duration,
+    ask: A,
+    from: impl Fn(&P) -> Upstream,
+) -> u64
+where
+    P: Clone + std::fmt::Display,
+    A: Fn() -> AFut,
+    AFut: Future<Output = Vec<(P, u64)>>,
+{
+    let start = chain.finalized_height();
+    let mut heard = std::time::Instant::now();
+    loop {
+        let answers = ask().await;
+        if answers.is_empty() {
+            warn!(silent_for = ?heard.elapsed(), ?patience, "no roster peer answers yet");
+        } else {
+            heard = std::time::Instant::now();
+            // The highest answer is the network's height: beacon answers and
+            // `aether_status` gate on it, and the engine covers the rest.
+            let net = answers.iter().map(|(_, h)| *h).max().expect("a peer answered");
+            chain.lock().net_height = Some(net);
+        }
+        let heights: Vec<u64> = answers.iter().map(|(_, h)| *h).collect();
+        match may_start_voting(&heights, chain.finalized_height(), margin, heard.elapsed(), patience) {
+            VoteStart::AtTip => break,
+            VoteStart::FailOpen => {
+                warn!(
+                    silent_for = ?heard.elapsed(),
+                    "no roster peer ever answered: starting to vote anyway (the old fail-open, after a real wait)"
+                );
+                break;
+            }
+            VoteStart::Wait => {}
+        }
+        if answers.is_empty() {
+            // Nothing answered, so there is nothing to catch up from: ask
+            // again after a while, until the patience window runs out.
+            tokio::time::sleep(ASK_AGAIN.min(patience)).await;
+            continue;
+        }
+        // Somebody is ahead: catch up from the tallest peer that answered.
+        let (peer, at) = answers.iter().max_by_key(|(_, h)| *h).expect("a peer answered").clone();
+        info!(peer = %peer, peer_height = at, ours = chain.finalized_height(), "a peer is ahead; catching up before voting");
+        let upstream = from(&peer);
+        match tokio::time::timeout(CATCH_UP_ROUND, catch_up(chain, &upstream, set, margin)).await {
+            Ok(Ok(n)) if n > 0 => info!(height = chain.finalized_height(), blocks = n, "caught up before voting"),
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => warn!(%e, "could not catch up before voting; asking the roster again"),
+            Err(_) => warn!("catch-up before voting timed out; asking the roster again"),
+        }
+        // A round dropped mid-replay is dropped without clearing its replay
+        // mode: blocks from here on (voting) commit durably.
+        chain.set_relaxed(false);
+        tokio::time::sleep(ASK_AGAIN.min(patience)).await;
+    }
+    chain.finalized_height() - start
 }
 
 /// Replay the rest of the era holding `next` from its era file: the file is
@@ -627,5 +787,30 @@ pub async fn forward(upstream: std::sync::Arc<Upstream>, mut rx: tokio::sync::mp
                 wait *= 2;
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The startup gate's decision: a height only counts when a peer answered
+    /// it, every answered peer must put nobody beyond the margin ahead, and
+    /// silence fails open only once the patience window has really passed.
+    #[test]
+    fn when_a_member_may_start_voting() {
+        let patience = Duration::from_secs(300);
+        // Peers at or behind us: at the tip, including a peer that lags (the
+        // margin is what "caught up" means; the engine covers the rest).
+        assert_eq!(may_start_voting(&[100, 100, 98], 100, BEHIND_MARGIN, Duration::ZERO, patience), VoteStart::AtTip);
+        assert_eq!(may_start_voting(&[120], 100, BEHIND_MARGIN, Duration::ZERO, patience), VoteStart::AtTip);
+        // A peer beyond the margin: wait — even after any silence elsewhere,
+        // for as long as that peer keeps answering.
+        assert_eq!(may_start_voting(&[121], 100, BEHIND_MARGIN, Duration::ZERO, patience), VoteStart::Wait);
+        assert_eq!(may_start_voting(&[98, 500], 100, BEHIND_MARGIN, patience, patience), VoteStart::Wait);
+        // Nobody answered: not "0 behind" — wait, and only after the patience
+        // window fail open.
+        assert_eq!(may_start_voting(&[], 100, BEHIND_MARGIN, patience - Duration::from_millis(1), patience), VoteStart::Wait);
+        assert_eq!(may_start_voting(&[], 100, BEHIND_MARGIN, patience, patience), VoteStart::FailOpen);
     }
 }

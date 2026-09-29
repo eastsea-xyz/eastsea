@@ -287,14 +287,14 @@ extension AppDelegate: SPUUpdaterDelegate {
     /// This selector is Sparkle's synchronous gate before its own download.
     /// The preflight hashes the archive and binds its EdDSA signature to the
     /// manifest; Sparkle then verifies that exact signature on its download.
-    @objc(updater:shouldProceedWithUpdate:updateCheck:error:)
-    func releaseShouldProceed(_ updater: SPUUpdater, item: SUAppcastItem,
-                              updateCheck: Int, error: AutoreleasingUnsafeMutablePointer<NSError?>?) -> Bool {
-        if releaseGate.mayProceed(item) { return true }
+    /// Swift imports Sparkle's `BOOL ... error:` selector as a throwing
+    /// method: returning proceeds, throwing stops the update.
+    func updater(_ updater: SPUUpdater, shouldProceedWithUpdate item: SUAppcastItem,
+                 updateCheck: SPUUpdateCheck) throws {
+        if releaseGate.mayProceed(item) { return }
         Task { @MainActor [weak self] in self?.startReleasePreflight(item) }
-        error?.pointee = NSError(domain: "AetherReleaseApproval", code: 1,
+        throw NSError(domain: "AetherReleaseApproval", code: 1,
             userInfo: [NSLocalizedDescriptionKey: "This update is not approved on chain yet"])
-        return false
     }
 
     /// Sparkle installs a downloaded update when the app quits, but Aether stays

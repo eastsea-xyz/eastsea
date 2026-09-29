@@ -99,6 +99,7 @@ pub async fn handle_value(st: &RpcState, req: Value) -> Value {
         "aether_getFinalized" => finalized(st, &params).await,
         "aether_registerDevice" => register_device(st, &params).await,
         "aether_sendBeacon" => send_beacon(st, &params).await,
+        "aether_sendRegistration" => send_registration(st, &params).await,
         // A follower without the registrar key asks upstream (one hop).
         "aether_reattest" if st.registrar.is_none() && st.upstream.is_some() => {
             st.upstream.as_ref().expect("checked").first("aether_reattest", params.clone()).await.map_err(|e| (-32000, e))
@@ -251,6 +252,25 @@ async fn send_beacon(st: &RpcState, p: &Value) -> RpcResult {
     Ok(json!({ "accepted": new }))
 }
 
+/// `[registration]`: a voting-node registration for the block's free lane (no
+/// fee, no transaction; docs/design/22-gas-pool.md 2층). Checked against the
+/// finalized state and pooled for the next proposals; a validator sends it on
+/// to the others, a follower to its upstream. Returns the item's id, which
+/// gets a pseudo-receipt in the block that carries it.
+async fn send_registration(st: &RpcState, p: &Value) -> RpcResult {
+    let r: aether_light::block::NodeRegistration = param(p, 0)?;
+    let id = crate::registrations::id(&r);
+    let new = st.chain.submit_registration(r.clone()).map_err(|e| (-32000, format!("rejected: {e}")))?;
+    if let Some(up) = st.upstream.clone().filter(|_| new) {
+        tokio::spawn(async move {
+            if let Err(e) = up.call("aether_sendRegistration", json!([r])).await {
+                tracing::warn!(%e, "registration not forwarded upstream");
+            }
+        });
+    }
+    Ok(json!({ "hash": id, "accepted": new }))
+}
+
 /// `[device_token (base64), validator_key (hex 32), period, ownership (hex)]`
 /// → the registrar's re-attestation `{period, r, s}` for a beacon answer.
 /// Only for the current re-attestation period (or the next, near its start).
@@ -316,7 +336,17 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                 // above protocol 1 carries its own at height 0, so `[3, 0]` here
                 // is how a rehearsal knows the rules were on from the start.
                 "schedule": f.schedule.iter().map(|a| json!([a.protocol, a.at])).collect::<Vec<_>>(),
+                // The free registration lane (G2): wallets see it and register
+                // without needing a balance for a paid contract call.
+                "free_registration": aether_rewards::enabled(&f.state),
             }))
+        }
+        // The next relay nonce a free-lane registration of `operator` must
+        // carry (`[operator]`): the count the chain has spent of its items.
+        "aether_registrationNonce" => {
+            let a: Address = param(p, 0)?;
+            let g = chain.lock();
+            Ok(json!(aether_execution::registry::lane_nonce(&g.finalized.state, &a)))
         }
         // The voting set proposed for this registry epoch (while no handoff is
         // pending): `aether run` on old and new members reshares to it in the background.

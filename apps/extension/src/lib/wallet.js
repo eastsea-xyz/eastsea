@@ -20,10 +20,12 @@ export class Wallet {
     return Math.max(chain, next);
   }
 
-  /** Estimated worst-case fee in wei for `gas` at the current base fee (display only). */
+  /** Estimated worst-case fee in wei for `gas` at the current base fee (display only):
+   *  0 while the base fee is 0 (below target load the network is free). */
   static maxFee(status, gas) {
     const g = BigInt(gas);
-    const exec = BigInt(status?.base_fee?.exec ?? '1000000000') * 2n + 1_000_000_000n;
+    const base = BigInt(status?.base_fee?.exec ?? '1000000000');
+    const exec = base === 0n ? 0n : base * 2n + 1_000_000_000n;
     const prove = BigInt(status?.base_fee?.prove ?? '1000000000') * 2n;
     return g * exec + g * prove;
   }
@@ -43,7 +45,10 @@ export class Wallet {
     if (!info) throw new Error('No wallet yet.');
     const status = shown || (await this.rpc.call('aether_status', []));
     const nonce = await this.nonceFor(info.address);
-    const prepared = JSON.parse(this.wasm.prepareTx(hex.dec(info.publicKey), JSON.stringify(status), BigInt(CHAIN_ID), BigInt(nonce), JSON.stringify(tx)));
+    // The balance decides the tip (G2): a zero balance sends with none, so a
+    // new account can transact while the base fee is 0.
+    const balance = await this.balance(info.address).catch(() => 0n);
+    const prepared = JSON.parse(this.wasm.prepareTx(hex.dec(info.publicKey), JSON.stringify(status), BigInt(CHAIN_ID), BigInt(nonce), JSON.stringify({ ...tx, balance_wei: balance.toString() })));
     const sig = await this.vault.sign(hex.dec(prepared.signing_message));
     const env = JSON.parse(this.wasm.attachSignature(JSON.stringify(prepared.envelope), sig, hex.dec(info.publicKey)));
     const r = await this.rpc.call('aether_sendTransaction', [env]);

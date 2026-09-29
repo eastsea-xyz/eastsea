@@ -28,6 +28,7 @@ fn net(macs: u8, reserve: Option<Reserve>, committee: Vec<(String, String)>) -> 
         history_v2: false,
         protocol: 1,
         reserve,
+        fees: false,
         committee: Some(committee),
     })
 }
@@ -223,7 +224,7 @@ fn a_protocol3_spread_draw_hands_over_to_the_roster_it_commits() {
     // committee signs the draw's seed.
     n.run_to(DAY_EPOCHS * E);
     let seed = n.committee.sign_seed(n.chain_id, 1);
-    let (block, exec) = n.build_extras(vec![], None, vec![], n.answers(), None, Some(seed)).unwrap();
+    let (block, exec) = n.build_extras(vec![], None, vec![], n.answers(), vec![], None, Some(seed)).unwrap();
     n.chain.finalize(&block).unwrap();
     n.parent = exec.clone();
     n.last = block;
@@ -239,7 +240,7 @@ fn a_protocol3_spread_draw_hands_over_to_the_roster_it_commits() {
     let mut wrong: Vec<_> = drawn.iter().filter(|m| **m != common::mac_entry(newcomer)).cloned().collect();
     wrong.push(common::mac_entry(other));
     let (_, refused) = n.committee.handoff_to(n.chain_id, 1, &common::seat_of(&n, &wrong, &[]));
-    match n.build_with(vec![], None, vec![], n.answers(), Some(refused)) {
+    match n.build_with(vec![], None, vec![], n.answers(), vec![], Some(refused)) {
         Err(aether_node::chain::ChainError::BadHandoff(_)) => {}
         Err(e) => panic!("a wrong roster's handoff failed another way: {e:?}"),
         Ok(_) => panic!("a handoff to another roster was accepted"),

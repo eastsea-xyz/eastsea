@@ -49,13 +49,13 @@ impl<'a> MakeWriter<'a> for Log {
 }
 
 fn net(reserve: Option<Reserve>, committee: Option<Vec<(String, String)>>) -> Net {
-    Net::new(Opts { chain_id: CHAIN, node_rewards: true, epoch_blocks: E, macs: 4, min_streak: Some(0), history_v2: false, protocol: 1, reserve, committee })
+    Net::new(Opts { chain_id: CHAIN, node_rewards: true, epoch_blocks: E, macs: 4, min_streak: Some(0), history_v2: false, protocol: 1, fees: false, reserve, committee })
 }
 
 /// Build the next block carrying `handoff`: it must be refused, as a bad
 /// handoff (not on any other ground), and the refusal is the answer.
 fn refused(n: &Net, handoff: aether_light::block::Handoff) -> ChainError {
-    let err = n.build_with(vec![], None, vec![], vec![], Some(handoff)).err().expect("the block is refused");
+    let err = n.build_with(vec![], None, vec![], vec![], vec![], Some(handoff)).err().expect("the block is refused");
     assert!(matches!(err, ChainError::BadHandoff(_)), "not a handoff refusal: {err:?}");
     err
 }
@@ -86,7 +86,7 @@ fn a_reserve_key_cannot_register_as_a_candidate() {
     let mut n = net(Some(Reserve { operator: founder, members: rmembers }), None);
     let node = *aether_net::SecretKey::from_bytes(&[0x71; 32]).public().as_bytes();
     let rogue = n.register_raw(0, rkeys[0].public_key().as_ref().try_into().unwrap(), node);
-    let (_, exec) = n.build_extras(vec![rogue], None, vec![], vec![], None, None).unwrap();
+    let (_, exec) = n.build_extras(vec![rogue], None, vec![], vec![], vec![], None, None).unwrap();
     assert!(!exec.receipts[0].success, "the registry itself reverts a reserve key");
     assert!(registry::candidates(&exec.state).is_empty(), "nothing registered");
     // An honest registration through the same door still goes through.
@@ -196,7 +196,7 @@ fn a_network_without_node_rewards_hands_over_as_before() {
     // The binding is a node-rewards rule: a genesis that did not turn them on
     // (testnet 7780) still accepts a committee-signed handoff with no roster
     // anywhere in state — its consensus rules never change.
-    let mut n = Net::new(Opts { chain_id: CHAIN + 1, node_rewards: false, epoch_blocks: E, macs: 4, min_streak: Some(0), history_v2: false, protocol: 1, reserve: None, committee: None });
+    let mut n = Net::new(Opts { chain_id: CHAIN + 1, node_rewards: false, epoch_blocks: E, macs: 4, min_streak: Some(0), history_v2: false, protocol: 1, fees: false, reserve: None, committee: None });
     let out: Vec<(ed25519::PrivateKey, String)> = (0..4).map(|i| (n.voting[i].clone(), mac_entry(i).1)).collect();
     let (_, handoff) = n.committee.handoff_to(CHAIN + 1, 1, &out);
     let carried = n.step_handoff(handoff);

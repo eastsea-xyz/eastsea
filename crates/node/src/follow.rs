@@ -685,6 +685,7 @@ fn rollback(chain: &Chain, cp: crate::store::Checkpoint) {
         schedule: std::sync::Arc::new(cp.schedule),
         statement: cp.statement,
         payouts: vec![],
+        registration_ids: vec![],
     });
     let height = exec.height;
     chain.adopt(exec, summary);

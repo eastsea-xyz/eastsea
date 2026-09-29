@@ -61,6 +61,43 @@ pub struct Payload {
     /// with a zero balance answers. Validators check every signature.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub beacons: Vec<BeaconAnswer>,
+    /// Voting-node registrations (node rewards networks only,
+    /// docs/design/22-gas-pool.md 2층): no transaction and no fee, so a new
+    /// Mac with a zero balance registers even while the chain is congested.
+    /// Validators check the registrar's attestation and the operator wallet's
+    /// relay signature; a block with an invalid item is invalid.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub registrations: Vec<NodeRegistration>,
+}
+
+/// A registration riding a block's free lane instead of a paid contract call:
+/// the same content the contract's `register` takes, plus the operator wallet's
+/// domain-separated signature over it (with a one-shot nonce and an expiry)
+/// and the compressed key that address derives `operator` from. Fixed-size, so
+/// a count of items bounds the lane's bytes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeRegistration {
+    /// The wallet registering itself as operator (pays nothing here).
+    pub operator: Address,
+    /// The Mac's voting key (ed25519, as the registry stores it).
+    pub validator_key: B256,
+    /// The Mac's iroh node id.
+    pub node_id: B256,
+    /// Where liveness beacons for this Mac are sent (usually the operator).
+    pub beaconer: Address,
+    /// The registrar's P-256 signature (r‖s) over
+    /// `registry::attestation_message` — given only for a fresh DeviceCheck
+    /// token of one Mac, exactly what the contract path checks.
+    pub attestation: Bytes,
+    /// The operator wallet's P-256 signature (r‖s) over
+    /// `registry::relay_message`: nobody relays another wallet's attestation.
+    pub signature: Bytes,
+    /// The wallet's compressed P-256 key (33 bytes); `address_of` gives `operator`.
+    pub operator_key: Bytes,
+    /// Must equal the chain's spent-item count for `operator` (one shot).
+    pub nonce: u64,
+    /// The item is valid in blocks at heights up to this one.
+    pub expiry: u64,
 }
 
 /// A registered Mac's answer to a beacon slot: its voting key's signature over

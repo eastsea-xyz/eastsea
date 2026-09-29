@@ -41,6 +41,7 @@ fn net(macs: u8, reserve: Option<Reserve>, committee: Option<Vec<(String, String
         history_v2: true,
         protocol: 3,
         reserve,
+        fees: false,
         committee,
     })
 }

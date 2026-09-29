@@ -87,6 +87,8 @@ pub struct Opts {
     /// every rule on from height 0 with no signed upgrade).
     pub protocol: u32,
     pub reserve: Option<Reserve>,
+    /// Fee policy v0 (base fees, tips): the mainnet rules, off on 7780.
+    pub fees: bool,
     /// The genesis committee the chain records (node-rewards networks): by
     /// default the dealt one, but the rule must also work for a short one
     /// (the recorded word, not the dealt set, is what the seating rule reads).
@@ -103,7 +105,7 @@ impl Net {
             chain_id: o.chain_id,
             limits: GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
             alloc: ops.iter().map(|s| (addr(s), U256::from(10u128.pow(20)))).collect(),
-            fees: false,
+            fees: o.fees,
             registrar: Some(aether_crypto::p256_xy(&registrar.public_key().bytes).unwrap()),
             epoch_blocks: o.epoch_blocks,
             min_streak: o.min_streak,
@@ -164,6 +166,30 @@ impl Net {
         addr(&self.ops[i])
     }
 
+    /// A free-lane registration item (G2): the registrar attests the Mac
+    /// (voting key `voting`, node id `node`) for `op`, and `op` signs the relay
+    /// message — the item the app's `prepare_register_node` builds and
+    /// `submit_signed` completes. Valid in blocks up to `expiry`, with relay
+    /// `nonce`.
+    pub fn lane_registration(&self, op: &P256Signer, voting: &ed25519::PrivateKey, node: [u8; 32], nonce: u64, expiry: u64) -> aether_light::block::NodeRegistration {
+        use aether_execution::registry::relay_message;
+        let operator = addr(op);
+        let key: [u8; 32] = voting.public_key().encode().as_ref().try_into().unwrap();
+        let attestation = self.registrar.sign(&attestation_message(self.chain_id, operator, key, node, operator)).unwrap();
+        let signature = op.sign(&relay_message(self.chain_id, operator, &key, &node, operator, &attestation, nonce, expiry)).unwrap();
+        aether_light::block::NodeRegistration {
+            operator,
+            validator_key: key.into(),
+            node_id: node.into(),
+            beaconer: operator,
+            attestation: attestation.into(),
+            signature: signature.into(),
+            operator_key: op.public_key().bytes.into(),
+            nonce,
+            expiry,
+        }
+    }
+
     pub fn balance(&self, i: usize) -> U256 {
         self.parent.state.balance(&self.operator(i))
     }
@@ -211,12 +237,12 @@ impl Net {
 
     /// Build and execute the next block (not finalized).
     pub fn build(&self, txs: Vec<TxEnvelope>, upgrade: Option<SignedUpgrade>, proofs: Vec<ProofClaim>, answers: Vec<BeaconAnswer>) -> Result<(Block, Arc<Executed>), ChainError> {
-        self.build_with(txs, upgrade, proofs, answers, None)
+        self.build_with(txs, upgrade, proofs, answers, vec![], None)
     }
 
-    /// `build` carrying a committee handoff.
-    pub fn build_with(&self, txs: Vec<TxEnvelope>, upgrade: Option<SignedUpgrade>, proofs: Vec<ProofClaim>, answers: Vec<BeaconAnswer>, handoff: Option<aether_light::block::Handoff>) -> Result<(Block, Arc<Executed>), ChainError> {
-        let (block, exec) = self.build_extras(txs, upgrade, proofs, answers, handoff, None)?;
+    /// `build` carrying a committee handoff and free-lane registrations.
+    pub fn build_with(&self, txs: Vec<TxEnvelope>, upgrade: Option<SignedUpgrade>, proofs: Vec<ProofClaim>, answers: Vec<BeaconAnswer>, registrations: Vec<aether_light::block::NodeRegistration>, handoff: Option<aether_light::block::Handoff>) -> Result<(Block, Arc<Executed>), ChainError> {
+        let (block, exec) = self.build_extras(txs, upgrade, proofs, answers, registrations, handoff, None)?;
         assert!(exec.receipts.iter().all(|r| r.success), "block {}: a registry call failed", exec.height);
         Ok((block, exec))
     }
@@ -224,7 +250,7 @@ impl Net {
     /// `build` carrying a handoff and a draw seed, without asserting the
     /// receipts (a test may expect a call to revert).
     #[allow(clippy::too_many_arguments)]
-    pub fn build_extras(&self, txs: Vec<TxEnvelope>, upgrade: Option<SignedUpgrade>, proofs: Vec<ProofClaim>, answers: Vec<BeaconAnswer>, handoff: Option<aether_light::block::Handoff>, seed: Option<aether_light::block::Seed>) -> Result<(Block, Arc<Executed>), ChainError> {
+    pub fn build_extras(&self, txs: Vec<TxEnvelope>, upgrade: Option<SignedUpgrade>, proofs: Vec<ProofClaim>, answers: Vec<BeaconAnswer>, registrations: Vec<aether_light::block::NodeRegistration>, handoff: Option<aether_light::block::Handoff>, seed: Option<aether_light::block::Seed>) -> Result<(Block, Arc<Executed>), ChainError> {
         let (chain, parent) = (&self.chain, &self.parent);
         let height = self.last.height.next();
         let leader = ed25519::PrivateKey::from_seed(1).public_key();
@@ -233,9 +259,9 @@ impl Net {
         let skeleton = Block::new(context.clone(), self.last.digest(), height, ts, bytes::Bytes::new());
         let ctx = Chain::block_context(&chain.cfg(), &skeleton, parent);
         // The proposer's pre-state skips answers it cannot check; the block is then built with what is left.
-        let (pre, _) = chain.pre_state_with(parent, parent.next_protocol(), &proofs, &answers, seed.as_ref(), false)?;
+        let (pre, _) = chain.pre_state_with(parent, parent.next_protocol(), &proofs, &answers, &registrations, seed.as_ref(), false)?;
         let n = txs.len();
-        let (payload, _) = build_payload(parent, &pre, &ctx, txs, Extras { handoff, upgrade, seed, proofs, beacons: answers });
+        let (payload, _) = build_payload(parent, &pre, &ctx, txs, Extras { handoff, upgrade, seed, proofs, beacons: answers, registrations });
         assert_eq!(payload.txs.len(), n, "every tx fits");
         drop(pre);
         let block = Block::new(context, self.last.digest(), height, ts, payload.to_bytes());
@@ -261,7 +287,7 @@ impl Net {
     /// handoff, with every Mac's answers.
     pub fn step_handoff(&mut self, handoff: aether_light::block::Handoff) -> Arc<Executed> {
         let answers = self.answers();
-        let (block, exec) = self.build_with(vec![], None, vec![], answers, Some(handoff)).unwrap();
+        let (block, exec) = self.build_with(vec![], None, vec![], answers, vec![], Some(handoff)).unwrap();
         self.chain.finalize(&block).unwrap();
         self.parent = exec.clone();
         self.last = block;

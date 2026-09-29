@@ -46,6 +46,12 @@ pub fn encode_execute(c: &[AccountCall]) -> Bytes {
     executeCall { calls: calls(c) }.abi_encode().into()
 }
 
+/// Decode a direct `execute` call for the node's non-consensus activity index.
+pub fn decode_execute(input: &[u8]) -> Option<Vec<AccountCall>> {
+    let call = executeCall::abi_decode_validate(input).ok()?;
+    Some(call.calls.into_iter().map(|c| (c.to, c.value, c.data)).collect())
+}
+
 /// `setGuardian(x, y)`: one recovery device, default delay (zeros turn recovery off).
 pub fn encode_set_guardian(x: [u8; 32], y: [u8; 32]) -> Bytes {
     setGuardianCall { x: x.into(), y: y.into() }.abi_encode().into()

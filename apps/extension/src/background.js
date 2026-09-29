@@ -122,7 +122,7 @@ async function activityPage(cursors = null) {
     } catch { return { address, page: { entries: [], next_cursor: null, history_start: 0 } }; }
   }));
   const chain = pages.flatMap(({ page }) => (page.entries || []).map((row) => describeHistory(row, { sources, catalog })));
-  const localItems = cursors ? [] : ((await local.get(activityKey())) || []);
+  const localItems = cursors ? [] : ((await local.get(activityKey())) || []).map((item) => ({ ...item, owner: item.owner || own }));
   return { items: mergeHistory(localItems, chain), cursors: Object.fromEntries(pages.filter(({ page }) => page.next_cursor).map(({ address, page }) => [address, page.next_cursor])),
     starts: Object.fromEntries(pages.map(({ address, page }) => [address, page.history_start])) };
 }

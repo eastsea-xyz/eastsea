@@ -67,6 +67,10 @@ struct ChainNames: Sendable {
 }
 
 enum ChainActivity {
+    static func historyKey(hash: String, address: String) -> String {
+        "\(hash.lowercased()):\(address.lowercased())"
+    }
+
     static func short(_ address: String) -> String {
         address.count > 12 ? "\(address.prefix(6))…\(address.suffix(4))" : address
     }

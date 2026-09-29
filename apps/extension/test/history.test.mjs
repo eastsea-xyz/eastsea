@@ -27,6 +27,16 @@ test('node finality replaces a local pending row once per hash', () => {
   assert.equal(mergeHistory(local, chain)[0].state, 'done');
 });
 
+test('linked wallets retain one finalized row per hash and address', () => {
+  const sender = describeHistory({ ...base, address: other, direction: 'out', kind: 'native_transfer', from: other });
+  const recipient = describeHistory(base);
+  const pending = { hash: '0xABC', owner: own, title: 'Pending', state: 'pending', at: 1 };
+  const merged = mergeHistory([pending], [sender, recipient, { ...recipient, owner: own.toUpperCase() }]);
+  assert.equal(merged.length, 2);
+  assert.deepEqual(new Set(merged.map((item) => item.owner.toLowerCase())), new Set([own, other]));
+  assert.equal(merged.find((item) => item.owner === own).state, 'done');
+});
+
 test('linked wallets reject duplicate and malformed addresses', () => {
   assert.equal(linkedAddress(other.toUpperCase().replace('0X', '0x'), own), other);
   assert.throws(() => linkedAddress(own, own));

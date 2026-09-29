@@ -21,7 +21,16 @@ struct EnclaveAccount {
 
     enum KeyError: LocalizedError {
         case enclaveUnavailable
-        var errorDescription: String? { "Secure Enclave is not available on this device" }
+        /// The key's handle exists but cannot be read or restored right now
+        /// (device locked, a Keychain hiccup after an OS update). Never a
+        /// reason to make a new key: that would orphan the wallet's address.
+        case keyUnavailable(String)
+        var errorDescription: String? {
+            switch self {
+            case .enclaveUnavailable: return "Secure Enclave is not available on this device"
+            case .keyUnavailable(let why): return "The wallet key cannot be opened right now (\(why)). Unlock this device and try again."
+            }
+        }
     }
 
     private static var storeURL: URL {
@@ -34,17 +43,30 @@ struct EnclaveAccount {
     static func loadOrCreate(requireUserPresence: Bool) throws -> EnclaveAccount {
         #if targetEnvironment(simulator)
         let url = storeURL.deletingLastPathComponent().appendingPathComponent("simulator-software-key.dat")
-        if let data = try? Data(contentsOf: url), let k = try? P256.Signing.PrivateKey(rawRepresentation: data) {
+        if FileManager.default.fileExists(atPath: url.path) {
+            guard let data = try? Data(contentsOf: url), let k = try? P256.Signing.PrivateKey(rawRepresentation: data) else {
+                throw KeyError.keyUnavailable("unreadable simulator key")
+            }
             return EnclaveAccount(key: .software(k), requiresUserPresence: false)
         }
         let k = P256.Signing.PrivateKey()
-        try k.rawRepresentation.write(to: url, options: [.atomic, .completeFileProtection])
+        try k.rawRepresentation.write(to: url, options: [.withoutOverwriting, .completeFileProtection])
         return EnclaveAccount(key: .software(k), requiresUserPresence: false)
         #else
         guard SecureEnclave.isAvailable else { throw KeyError.enclaveUnavailable }
-        if let data = try? Data(contentsOf: storeURL),
-           let key = try? SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: data) {
-            return EnclaveAccount(key: .enclave(key), requiresUserPresence: requireUserPresence)
+        // An existing handle is the wallet: if it cannot be read or restored
+        // now, fail and let the caller retry — never fall through to making a
+        // new key, which would overwrite the handle and orphan the address
+        // (red team 2026-09-29, self-healing review #8).
+        if FileManager.default.fileExists(atPath: storeURL.path) {
+            let data: Data
+            do { data = try Data(contentsOf: storeURL) } catch { throw KeyError.keyUnavailable(error.localizedDescription) }
+            do {
+                let key = try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: data)
+                return EnclaveAccount(key: .enclave(key), requiresUserPresence: requireUserPresence)
+            } catch {
+                throw KeyError.keyUnavailable(error.localizedDescription)
+            }
         }
         var flags: SecAccessControlCreateFlags = [.privateKeyUsage]
         if requireUserPresence { flags.insert(.userPresence) }
@@ -53,7 +75,8 @@ struct EnclaveAccount {
             throw error!.takeRetainedValue() as Error
         }
         let key = try SecureEnclave.P256.Signing.PrivateKey(accessControl: access)
-        try key.dataRepresentation.write(to: storeURL, options: [.atomic, .completeFileProtection])
+        // First key only: refuse to replace a handle that appeared meanwhile.
+        try key.dataRepresentation.write(to: storeURL, options: [.withoutOverwriting, .completeFileProtection])
         return EnclaveAccount(key: .enclave(key), requiresUserPresence: requireUserPresence)
         #endif
     }

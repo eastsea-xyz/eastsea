@@ -21,6 +21,7 @@ pub mod inclusion;
 pub mod p2p;
 pub mod prover;
 pub mod prune;
+pub mod registrar_signer;
 pub mod registrations;
 pub mod resources;
 pub mod roster;

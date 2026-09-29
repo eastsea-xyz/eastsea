@@ -792,7 +792,9 @@ fn a_member_that_slept_does_not_beacon_until_caught_up() {
     let registrar = Arc::new(aether_node::devicecheck::Registrar::new(
         None,
         aether_node::devicecheck::Registry::open(dir_src.join("registrations.json")),
-        aether_node::faucet::Faucet::from_seed(&dev_seed(11)).unwrap(),
+        std::sync::Arc::new(
+            aether_node::registrar_signer::FileSigner::from_seed(&dev_seed(11)).unwrap(),
+        ),
         CHAIN,
     ));
     let st = rpc_state(&src, Some(registrar));

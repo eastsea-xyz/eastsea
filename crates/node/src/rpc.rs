@@ -226,6 +226,9 @@ async fn old_block(st: &RpcState, p: &Value) -> RpcResult {
 /// → the registrar's attestation (r, s) to submit to the registry contract.
 async fn register_device(st: &RpcState, p: &Value) -> RpcResult {
     let r = st.registrar.as_ref().ok_or((-32601, "this node does not register devices".to_string()))?;
+    // The registry's registrar key decides: if the committee rotated or stopped
+    // it, this node must not sign attestations that are already dead (G11).
+    crate::devicecheck::registrar_key_check(&st.chain.lock().finalized.state, &r.signer.public_hex()).map_err(|e| (-32000, e))?;
     let token: String = param(p, 0)?;
     let operator: Address = param(p, 1)?;
     let hex32 = |i: usize| -> Result<[u8; 32], (i64, String)> {
@@ -289,6 +292,8 @@ async fn reattest(st: &RpcState, p: &Value) -> RpcResult {
     let (low, high) = {
         let g = st.chain.lock();
         let f = &g.finalized;
+        // A stopped or rotated registrar key signs re-attestations nobody takes.
+        crate::devicecheck::registrar_key_check(&f.state, &r.signer.public_hex()).map_err(|e| (-32000, e))?;
         let epoch = (f.height + 1) / aether_execution::registry::epoch_blocks(&f.state);
         let period = |slot| aether_rewards::beacons::period(&f.state, epoch, slot);
         (period(0), period(aether_rewards::SLOTS - 1) + 1)

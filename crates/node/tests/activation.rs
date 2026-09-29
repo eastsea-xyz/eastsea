@@ -621,6 +621,52 @@ fn a_signed_upgrade_replaces_the_registrar_when_it_activates() {
 }
 
 #[test]
+fn a_committee_upgrade_that_zeroes_the_registrar_stops_it() {
+    use aether_execution::registry::{registrar, registrar_revoked, REGISTRY};
+    use aether_types::B256;
+    let (chain, genesis) = node(3);
+    let (_, sharing, shares) = aether_light::devnet_threshold(4);
+    let sign = |u: &Upgrade| {
+        combine(
+            &sharing,
+            &shares
+                .iter()
+                .take(3)
+                .map(|(_, s)| sign_partial(u, s))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap()
+    };
+    let mut parent = chain.lock().finalized.clone();
+    let mut last = propose(&chain, &parent, &genesis, Some(signed(2, 20)));
+    parent = advance(&chain, parent, &last);
+    assert_eq!(registrar(&parent.state), ([1; 32], [2; 32]), "the genesis registrar");
+    assert!(!registrar_revoked(&parent.state));
+
+    // Protocol 3 at 40 carries registrar = (0, 0): the committee revokes it.
+    let mut later = signed(3, 40).upgrade;
+    later.registrar = Some((B256::ZERO, B256::ZERO));
+    let old_key = format!("{}{}", hex::encode([1u8; 32]), hex::encode([2u8; 32]));
+    for _ in 2..=40 {
+        let up = (parent.height == 25).then(|| sign(&later));
+        let b = propose(&chain, &parent, &last, up);
+        parent = advance(&chain, parent, &b);
+        last = b;
+        if parent.height == 39 {
+            assert!(!registrar_revoked(&parent.state), "the registrar still signs until the activation block");
+            assert!(aether_node::devicecheck::registrar_key_check(&parent.state, &old_key).is_ok());
+        }
+    }
+    assert!(registrar_revoked(&parent.state), "the committee stopped the registrar");
+    assert_eq!(parent.state.storage(&REGISTRY, U256::ZERO), U256::ZERO, "registrarX");
+    assert_eq!(parent.state.storage(&REGISTRY, U256::from(1u64)), U256::ZERO, "registrarY");
+    // The node's own key is stale from here on: it must refuse to sign, not send
+    // attestations every verifier (and the chain) rejects.
+    let err = aether_node::devicecheck::registrar_key_check(&parent.state, &old_key).unwrap_err();
+    assert!(err.contains("stopped"), "{err}");
+}
+
+#[test]
 fn a_snapshot_with_a_schedule_round_trips() {
     let (chain, genesis) = node(2);
     chain.lock().verifier = Some(Arc::new(EchoVerifier));

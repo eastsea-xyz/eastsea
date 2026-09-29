@@ -85,6 +85,23 @@ pub fn set_registrar(state: &mut WorldState, registrar: ([u8; 32], [u8; 32])) {
     state.set_storage(REGISTRY, U256::from(1u64), U256::from_be_bytes(registrar.1));
 }
 
+/// The registrar P-256 key (x, y) in force: registry slots 0 and 1, the same
+/// pair `CommitteeRegistry.register` verifies attestations against.
+pub fn registrar(state: &WorldState) -> ([u8; 32], [u8; 32]) {
+    (
+        state.storage(&REGISTRY, U256::ZERO).to_be_bytes::<32>(),
+        state.storage(&REGISTRY, U256::from(1u64)).to_be_bytes::<32>(),
+    )
+}
+
+/// Whether the committee stopped the registrar: both key halves were zeroed by
+/// an upgrade (`set_registrar(([0; 32], [0; 32]))`), so no attestation — a new
+/// registration or a beacon re-attestation — verifies any more
+/// (docs/design/14-registration.md 4). Candidates registered before stay.
+pub fn registrar_revoked(state: &WorldState) -> bool {
+    registrar(state) == ([0u8; 32], [0u8; 32])
+}
+
 /// Blocks per epoch as set at genesis.
 pub fn epoch_blocks(state: &WorldState) -> u64 {
     state.storage(&REGISTRY, U256::from(4u64)).to::<u64>().max(1)

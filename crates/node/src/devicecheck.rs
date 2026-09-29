@@ -201,7 +201,9 @@ pub struct Registrar {
     pub apple: Option<DeviceCheck>,
     pub registry: Registry,
     /// Signs attestations the CommitteeRegistry contract checks (its key is in genesis).
-    pub signer: crate::faucet::Faucet,
+    /// The file key on devnets, the Secure Enclave helper on mainnet
+    /// (crate::registrar_signer, docs/ops/registrar.md).
+    pub signer: std::sync::Arc<dyn crate::registrar_signer::RegistrarSigner>,
     pub chain_id: u64,
     /// Held across every Apple-touching path (query → update → record, the
     /// re-attestation limits): two registrations racing with different keys
@@ -223,7 +225,7 @@ pub struct Attestation {
 }
 
 impl Registrar {
-    pub fn new(apple: Option<DeviceCheck>, registry: Registry, signer: crate::faucet::Faucet, chain_id: u64) -> Self {
+    pub fn new(apple: Option<DeviceCheck>, registry: Registry, signer: std::sync::Arc<dyn crate::registrar_signer::RegistrarSigner>, chain_id: u64) -> Self {
         Registrar {
             apple,
             registry,
@@ -341,9 +343,36 @@ impl Registrar {
     }
 }
 
+/// Whether this node's registrar key can still sign attestations the chain would
+/// accept. A committee-signed upgrade can replace the registrar key or stop it
+/// by writing zeros (docs/design/14-registration.md 4); the registry's slots 0
+/// and 1 are what the contract verifies and what validators check, so a node
+/// whose own key is no longer there must not hand out attestations that are
+/// dead on arrival. `mine` is the key this node signs with (x‖y hex).
+pub fn registrar_key_check(state: &aether_execution::WorldState, mine: &str) -> Result<(), String> {
+    let (x, y) = aether_execution::registry::registrar(state);
+    if x == [0u8; 32] && y == [0u8; 32] {
+        return Err("the registrar is stopped on chain (no key at genesis, or the committee zeroed it): no new registrations".into());
+    }
+    let onchain = format!("{}{}", hex::encode(x), hex::encode(y));
+    if !onchain.eq_ignore_ascii_case(mine.trim()) {
+        return Err(format!(
+            "the registrar key in the registry is {onchain}, not this node's: it was rotated by a committee upgrade, and this node must switch to the new key (docs/ops/registrar.md)"
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::registrar_signer::RegistrarSigner as _;
+
+    /// A devnet file signer (seed 4): the key `<data>/registrar.key` holds on a
+    /// local devnet, and the P-256 key these tests verify against.
+    fn dev_signer() -> std::sync::Arc<dyn crate::registrar_signer::RegistrarSigner> {
+        std::sync::Arc::new(crate::registrar_signer::FileSigner::from_seed(&[4u8; 32]).unwrap())
+    }
 
     /// A loopback Apple: per-device bits (a token's device is the part before
     /// ':', as Apple maps every token of one Mac to the same bits), call
@@ -432,7 +461,7 @@ mod tests {
         let path = dir.join("registrations.json");
         let key = SigningKey::from_slice(&[9u8; 32]).unwrap();
         let apple = DeviceCheck { key, key_id: "K".into(), team: "T".into(), base: "http://127.0.0.1:9".into(), http: reqwest::Client::new() };
-        let signer = crate::faucet::Faucet::from_seed(&[4u8; 32]).unwrap();
+        let signer = dev_signer();
         let r = Registrar::new(Some(apple), Registry::open(path.clone()), signer, 7);
         let node: [u8; 32] = *aether_net::SecretKey::from_bytes(&[2; 32]).public().as_bytes();
         let voting = commonware_cryptography::ed25519::PrivateKey::from_seed(5);
@@ -465,7 +494,7 @@ mod tests {
         use commonware_cryptography::Signer as _;
         let dir = std::env::temp_dir().join(format!("aether-reattest-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let signer = crate::faucet::Faucet::from_seed(&[4u8; 32]).unwrap();
+        let signer = dev_signer();
         let registrar_pk = aether_crypto::Signer::public_key(&aether_crypto::P256Signer::from_seed(&[4u8; 32]).unwrap());
         let dev = Registrar::new(None, Registry::open(dir.join("r.json")), signer, 7);
         let voting = commonware_cryptography::ed25519::PrivateKey::from_seed(5);
@@ -503,7 +532,7 @@ mod tests {
         let r = std::sync::Arc::new(Registrar::new(
             Some(mock_devicecheck(base)),
             Registry::open(dir.join("r.json")),
-            crate::faucet::Faucet::from_seed(&[4u8; 32]).unwrap(),
+            dev_signer(),
             7,
         ));
         let node: [u8; 32] = *aether_net::SecretKey::from_bytes(&[2; 32]).public().as_bytes();
@@ -548,7 +577,7 @@ mod tests {
         let r = std::sync::Arc::new(Registrar::new(
             Some(mock_devicecheck(base)),
             Registry::open(dir.join("r.json")),
-            crate::faucet::Faucet::from_seed(&[4u8; 32]).unwrap(),
+            dev_signer(),
             7,
         ));
         let node: [u8; 32] = *aether_net::SecretKey::from_bytes(&[2; 32]).public().as_bytes();
@@ -582,7 +611,7 @@ mod tests {
         let (base, apple) = mock_apple(0).await;
         apple.bits.lock().unwrap().insert("mac1".into(), true); // this Mac registered
         apple.bits.lock().unwrap().insert("mac2".into(), true); // the borrowed one
-        let r = Registrar::new(Some(mock_devicecheck(base)), Registry::open(dir.join("r.json")), crate::faucet::Faucet::from_seed(&[4u8; 32]).unwrap(), 7);
+        let r = Registrar::new(Some(mock_devicecheck(base)), Registry::open(dir.join("r.json")), dev_signer(), 7);
         let key = |seed: u64| {
             let k = commonware_cryptography::ed25519::PrivateKey::from_seed(seed);
             let pk: [u8; 32] = k.public_key().encode().as_ref().try_into().unwrap();
@@ -613,6 +642,31 @@ mod tests {
         assert_eq!(r.reattest("mac3:t1", vk, 5, &own(&k, vk, 5)).await, Err(DeviceCheckError::NotRegistered));
         r.reattest("mac1:t4", vk, 5, &own(&k, vk, 5)).await.unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A committee-signed upgrade can rotate the registrar or stop it (G11):
+    /// the service must only sign with the key the registry holds, and zeros
+    /// mean "stopped" (docs/design/14-registration.md 4).
+    #[test]
+    fn the_service_only_signs_with_the_key_the_registry_holds() {
+        use aether_execution::{registry, WorldState};
+        let signer = crate::registrar_signer::FileSigner::from_seed(&[4u8; 32]).unwrap();
+        let seeded = aether_crypto::P256Signer::from_seed(&[4u8; 32]).unwrap();
+        let mut state = WorldState::default();
+        assert!(registrar_key_check(&state, &signer.public_hex()).is_err(), "a chain without a registry");
+        let xy = aether_crypto::p256_xy(&aether_crypto::Signer::public_key(&seeded).bytes).unwrap();
+        registry::predeploy(&mut state, xy, registry::Params::default()).unwrap();
+        assert_eq!(registrar_key_check(&state, &signer.public_hex()), Ok(()));
+        assert!(!registry::registrar_revoked(&state));
+        // Rotated to another key: the old key must stop signing.
+        registry::set_registrar(&mut state, ([5u8; 32], [6u8; 32]));
+        let err = registrar_key_check(&state, &signer.public_hex()).unwrap_err();
+        assert!(err.contains("rotated"), "{err}");
+        // Stopped: zeros stop every attestation.
+        registry::set_registrar(&mut state, ([0u8; 32], [0u8; 32]));
+        assert!(registry::registrar_revoked(&state));
+        let err = registrar_key_check(&state, &signer.public_hex()).unwrap_err();
+        assert!(err.contains("stopped"), "{err}");
     }
 
     /// Live check against Apple: AETHER_DEVICECHECK_KEY=path AETHER_DEVICECHECK_KEY_ID=… AETHER_DEVICECHECK_TOKEN=base64

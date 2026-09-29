@@ -16,5 +16,9 @@ jolt="${AETHER_JOLT:-/Volumes/workspace/aether-jolt}"
 # remap that tree too or the host binary follows the fork's location.
 aether_repro_rustflags "--remap-path-prefix=$(cd "$jolt" && pwd)=/jolt"
 (cd apps/prover && MACOSX_DEPLOYMENT_TARGET=14.0 cargo build -q --release --locked) >&2
-# The binary lands in CARGO_TARGET_DIR when one is set (shared build dirs).
-"${CARGO_TARGET_DIR:-apps/prover/target}/release/aether-prover" info | python3 -c 'import json,sys; print(json.load(sys.stdin)["guest_elf_sha256"])'
+# The binary lands in CARGO_TARGET_DIR when one is set (shared build dirs). Like
+# the node it carries the linker's UUID, which follows the build directory, and
+# it ships as it is built: rewrite the UUID from the code here, once.
+bin="${CARGO_TARGET_DIR:-apps/prover/target}/release/aether-prover"
+aether_repro_fix_uuid "$bin"
+"$bin" info | python3 -c 'import json,sys; print(json.load(sys.stdin)["guest_elf_sha256"])'

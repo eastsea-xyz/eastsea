@@ -48,6 +48,7 @@ fi
 . "$repo/scripts/repro-env.sh"
 
 work="${AETHER_REPRO_WORK:-${TMPDIR:-/tmp}}"
+mkdir -p "$work" # AETHER_REPRO_WORK may point at a directory that is not there yet
 work="$(mktemp -d "$work/aether-repro-XXXXXX")"
 # Two checkout paths of different lengths: a build that leaked its path shows up.
 a="$work/a" b="$work/bbbbbbbbbb"
@@ -76,6 +77,14 @@ copy_tree() {
 copy_tree "$a"
 copy_tree "$b"
 
+# sha256 of a built artifact, failing the side when it is not there: a missing
+# file would otherwise be recorded as an empty hash, and comparing two empty
+# strings is how a broken build reads as "DIFFER" instead of as a failure.
+hash_of() {
+  [ -f "$1" ] || { echo "missing artifact: $1" >&2; return 1; }
+  shasum -a 256 "$1" | awk '{print $1}'
+}
+
 # Build one side and leave "artifact <sha256>" lines in $dir/hashes.txt. Runs in
 # a subshell so a failure only fails that side.
 build_side() {
@@ -91,7 +100,7 @@ build_side() {
     # is already exported, so both sides keep the same timestamp.
     . "$dir/scripts/repro-env.sh"
     aether_repro_rustflags
-    export RUSTFLAGS="$RUSTFLAGS -C link-arg=-Wl,-reproducible"
+    aether_repro_link_flags
 
     pkgs=()
     [ "$want_node" = 1 ] && pkgs+=(-p aether-node)
@@ -101,19 +110,27 @@ build_side() {
     fi
     : > "$dir/hashes.txt"
     if [ "$want_node" = 1 ]; then
-      echo "node $(shasum -a 256 "$dir/target/$pdir/aether" | awk '{print $1}')" >> "$dir/hashes.txt"
+      # The linked binary still carries the linker's UUID; make it follow the
+      # code, as the release scripts do, or the two hashes always differ.
+      aether_repro_fix_uuid "$dir/target/$pdir/aether"
+      h=$(hash_of "$dir/target/$pdir/aether") || exit 1
+      echo "node $h" >> "$dir/hashes.txt"
     fi
     if [ "$want_ffi" = 1 ]; then
-      echo "ffi $(shasum -a 256 "$dir/target/$pdir/libaether_ffi.a" | awk '{print $1}')" >> "$dir/hashes.txt"
+      h=$(hash_of "$dir/target/$pdir/libaether_ffi.a") || exit 1
+      echo "ffi $h" >> "$dir/hashes.txt"
     fi
     if [ "$want_prover" = 1 ]; then
       id=$(scripts/prover-program.sh)
       echo "prover-program $id" >> "$dir/hashes.txt"
-      echo "prover-binary $(shasum -a 256 "$CARGO_TARGET_DIR/release/aether-prover" | awk '{print $1}')" >> "$dir/hashes.txt"
+      # prover-program.sh builds the sidecar and leaves it with a content UUID.
+      h=$(hash_of "${CARGO_TARGET_DIR:-apps/prover/target}/release/aether-prover") || exit 1
+      echo "prover-binary $h" >> "$dir/hashes.txt"
     fi
     if [ "$want_extension" = 1 ]; then
       scripts/build-extension.sh --zip >/dev/null
-      echo "extension $(shasum -a 256 "$dir"/dist/aether-extension-*.zip | awk '{print $1}')" >> "$dir/hashes.txt"
+      h=$(hash_of "$dir"/dist/aether-extension-*.zip) || exit 1
+      echo "extension $h" >> "$dir/hashes.txt"
     fi
   ) >"$dir/build.log" 2>&1; then
     echo 0 > "$dir/status"

@@ -3,9 +3,17 @@
 # Aether.app cannot be byte-identical: Xcode re-signs it (Developer ID, with the
 # notarization ticket stapled), and the signature covers the whole bundle. So
 # compare what signing does not change: strip the signature from copies of each
-# Mach-O in the bundle and compare SHA-256 and LC_UUID. Matching LC_UUID means
-# the linker produced the same image; matching stripped hashes means the code
-# and data are identical and only the signature differs.
+# Mach-O in the bundle and compare SHA-256. Matching stripped hashes means the
+# code and data are identical and only the signature (and the linker's UUID)
+# differs.
+#
+# The UUID is zeroed before hashing (scripts/macho-uuid.py) and reported, not
+# compared: -reproducible still leaves an LC_UUID that follows the link inputs,
+# so the app binary — which Xcode links from a build directory — carries a
+# different one when the checkout lives elsewhere. Xcode's own link keeps it
+# because dSYM lookup matches on the UUID; the Rust binaries the bundle embeds
+# (Helpers/) are rewritten to a content UUID by aether_repro_fix_uuid instead,
+# so they match byte for byte and only Xcode's two binaries show "differs".
 #
 #   scripts/repro-app-check.sh                 # build the app twice, compare
 #   scripts/repro-app-check.sh A.app B.app     # compare two built bundles
@@ -32,9 +40,11 @@ uuid_of() {
 }
 
 # Copy every Mach-O in the bundle to $dest (same relative layout), strip its
-# signature and write "path<TAB>sha256<TAB>uuid" lines to $manifest.
+# signature, zero its UUID and write "path<TAB>sha256<TAB>uuid" lines to
+# $manifest. The UUID is read before it is zeroed, so the manifest still shows
+# what the linker produced.
 collect() {
-  local app="$1" dest="$2" manifest="$3" f rel out
+  local app="$1" dest="$2" manifest="$3" f rel out uuid
   rm -rf "$dest"
   mkdir -p "$dest"
   : > "$manifest"
@@ -52,7 +62,9 @@ collect() {
     # bytes (the linker's ad-hoc signature is already part of the file), but it
     # is applied to both sides, so a difference still means different code.
     codesign --remove-signature "$out" >/dev/null 2>&1 || true
-    printf '%s\t%s\t%s\n' "$rel" "$(shasum -a 256 "$out" | awk '{print $1}')" "$(uuid_of "$out")" >> "$manifest"
+    uuid="$(uuid_of "$out")"
+    python3 "$repo/scripts/macho-uuid.py" zero "$out"
+    printf '%s\t%s\t%s\n' "$rel" "$(shasum -a 256 "$out" | awk '{print $1}')" "$uuid" >> "$manifest"
   done < <(find "$app" -type f ! -path '*.dSYM/*' -print0)
 }
 
@@ -136,34 +148,43 @@ def load(path):
 left, right, name_a, name_b = (load(sys.argv[1]), load(sys.argv[2]),
                               sys.argv[3], sys.argv[4])
 names = sorted(set(left) | set(right))
-bad = 0
-print(f"{'mach-o in the bundle':<44} {'stripped sha256':<9} {'lc_uuid'}")
-print(f"{'-'*44} {'-'*9} {'-'*9}")
+bad = uuid_differs = 0
+print(f"{'mach-o in the bundle':<44} {'stripped sha256':<15} {'lc_uuid'}")
+print(f"{'-'*44} {'-'*15} {'-'*9}")
 if not names:
     print("no Mach-O files found — is this a built .app?")
     sys.exit(1)
 for rel in names:
     name = rel if len(rel) <= 42 else "…" + rel[-41:]
     if rel not in left or rel not in right:
-        print(f"{name:<44} {'missing':<9} (only in {name_a if rel in left else name_b})")
+        print(f"{name:<44} {'missing':<15} (only in {name_a if rel in left else name_b})")
         bad += 1
         continue
+    # The hash has the UUID zeroed out, so it is the code and data; the UUID
+    # itself is informational (see the header: it follows the input paths).
     sha_ok = left[rel][0] == right[rel][0]
-    uuid_ok = left[rel][1] == right[rel][1]
-    print(f"{name:<44} {'ok' if sha_ok else 'DIFFER':<9} {'ok' if uuid_ok else 'DIFFER'}")
+    if left[rel][1] == right[rel][1]:
+        uuid_note = "same"
+    elif "none" in (left[rel][1], right[rel][1]):
+        uuid_note = "none"
+    else:
+        uuid_note = "differs"
+        uuid_differs += 1
+    print(f"{name:<44} {'ok' if sha_ok else 'DIFFER':<15} {uuid_note}")
     if not sha_ok:
         print(f"    {name_a}: {left[rel][0]}")
         print(f"    {name_b}: {right[rel][0]}")
-    if not uuid_ok:
-        print(f"    {name_a}: {left[rel][1]}")
-        print(f"    {name_b}: {right[rel][1]}")
-    if not (sha_ok and uuid_ok):
         bad += 1
 
 print()
+if uuid_differs:
+    print(f"note: {uuid_differs} of {len(names)} Mach-O files carry a different LC_UUID.")
+    print("      That is the linker's, not the code's: ld64 derives it from the")
+    print("      input paths, so an Xcode build in another directory always differs.")
 if bad:
     print(f"NOT reproducible: {bad} of {len(names)} Mach-O files differ")
-    print("(A bundle that differs only in its signature counts as matching above.)")
+    print("(A bundle that differs only in its signature and UUID counts as matching above.)")
     sys.exit(1)
 print(f"reproducible: all {len(names)} Mach-O files match once signatures are stripped")
+print("              (UUID field zeroed; codesign/LD_UUID is not part of the comparison)")
 PY

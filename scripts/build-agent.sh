@@ -8,9 +8,9 @@ export PATH="$HOME/.cargo/bin:$PATH"
 # The agent ships inside the app bundle: same bytes wherever the checkout lives.
 . scripts/repro-env.sh
 aether_repro_rustflags
-export RUSTFLAGS="$RUSTFLAGS -C link-arg=-Wl,-reproducible"
+aether_repro_link_flags
 MACOSX_DEPLOYMENT_TARGET=15.0 cargo build -p aether-ffi --release --locked
-cargo run -q --locked -p aether-ffi --bin uniffi-bindgen -- generate --library target/release/libaether_ffi.dylib --language swift --out-dir apps/wallet/Generated
+cargo run -q --locked -p aether-ffi --features bindgen --bin uniffi-bindgen -- generate --library target/release/libaether_ffi.dylib --language swift --out-dir apps/wallet/Generated
 mv -f apps/wallet/Generated/aether_ffiFFI.modulemap apps/wallet/Generated/module.modulemap
 out=target/agent
 mkdir -p "$out"
@@ -37,7 +37,9 @@ swiftc -O -target arm64-apple-macos15.0 -module-name AetherAgent \
   target/release/libaether_ffi.a \
   -framework SystemConfiguration -framework Security -framework CoreFoundation -framework OpenDirectory -framework IOKit \
   -o "$out/aether-agent"
-codesign -s - -f "$out/aether-agent" 2>/dev/null
+# swiftc links a Mach-O like any other: same UUID rewrite as the node (this
+# replaces the ad-hoc signature, so it is also the signing step).
+aether_repro_fix_uuid "$out/aether-agent"
 echo "built $out/aether-agent"
 if [ "${1:-}" = "--install" ]; then
   mkdir -p "$HOME/.local/bin"

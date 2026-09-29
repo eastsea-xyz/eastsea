@@ -43,7 +43,11 @@ targets:
         ENABLE_HARDENED_RUNTIME: YES
         SWIFT_INCLUDE_PATHS: $(SRCROOT)/Generated
         HEADER_SEARCH_PATHS: $(SRCROOT)/Generated
-        OTHER_LDFLAGS: $(SRCROOT)/../../target/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework OpenDirectory -framework IOKit
+        # -reproducible: the linker otherwise orders sections the way it happened
+        # to walk them, so two builds of the same source differ (repro-env.sh gives
+        # the Rust side the same flag; the UUID is this binary's own and is not
+        # compared — repro-app-check.sh zeroes it).
+        OTHER_LDFLAGS: -Wl,-reproducible $(SRCROOT)/../../target/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework OpenDirectory -framework IOKit
         # The checkout path must not reach the binary (scripts/repro-app-check.sh):
         # Swift records the source and object paths it was given.
         OTHER_SWIFT_FLAGS: -file-prefix-map $(SRCROOT)=/aether-node -debug-prefix-map $(SRCROOT)=/aether-node
@@ -97,8 +101,9 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
         SWIFT_INCLUDE_PATHS: $(SRCROOT)/Generated
         HEADER_SEARCH_PATHS: $(SRCROOT)/Generated
-        # Same as the macOS target: no checkout paths in the shipped binary.
+        # Same as the macOS target: no checkout paths in the shipped binary, and a
+        # link that does not depend on the order the linker walked the sections.
         OTHER_SWIFT_FLAGS: -file-prefix-map $(SRCROOT)=/aether-node -debug-prefix-map $(SRCROOT)=/aether-node
-        "OTHER_LDFLAGS[sdk=iphonesimulator*]": $(SRCROOT)/../../target/aarch64-apple-ios-sim/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework Network
-        "OTHER_LDFLAGS[sdk=iphoneos*]": $(SRCROOT)/../../target/aarch64-apple-ios/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework Network
+        "OTHER_LDFLAGS[sdk=iphonesimulator*]": -Wl,-reproducible $(SRCROOT)/../../target/aarch64-apple-ios-sim/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework Network
+        "OTHER_LDFLAGS[sdk=iphoneos*]": -Wl,-reproducible $(SRCROOT)/../../target/aarch64-apple-ios/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework Network
         "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64

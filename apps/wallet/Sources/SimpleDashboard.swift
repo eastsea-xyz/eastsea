@@ -465,6 +465,16 @@ private struct SecurityPage: View {
                     }
                 }
             }
+            Card {
+                HStack(alignment: .top, spacing: 14) {
+                    Image(systemName: "eye").font(.system(size: 34)).foregroundStyle(Color.aether)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Who sees your addresses").font(.aeHeadline)
+                        Text("Balance reads are answered by other Macs running Aether nodes, and those nodes see the addresses this wallet looks up. On a Mac with its own node switched on (Network page), reads stay on this Mac. Either way every balance is verified here, so a serving node can be slow or stale, never wrong.")
+                            .font(.aeBody).foregroundStyle(.secondary)
+                    }
+                }
+            }
             Card { PaperKeyPanel() }
             Card { RecoveryPanel() }
         }

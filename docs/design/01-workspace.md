@@ -44,10 +44,10 @@ aether/
 | revm | =43.0.3 | EVM | 43.0.0 selfdestruct 회귀 회피 (2026-09-26 최신 43.0.3) |
 | alloy-primitives, alloy-evm | 1.7.x / 0.39 | 타입, 블록 실행 glue | EIP-8037 상태 가스 포함 |
 | commonware-consensus, -p2p, -broadcast, -cryptography, -runtime | =2026.9.0 | 합의, 검증자 통신, BLS, 결정적 런타임 | 월간 릴리스, 파괴적 변경 → 고정 |
-| nomt | =1.0.5 | 상태 DB | io_uring은 Linux, macOS는 fallback |
+| redb | 4.3 | 상태 DB (`crates/node/src/store.rs`) | nomt은 쓰지 않음: 해시 MSB 태깅 때문에 EIP-7864 루트와 어긋난다(05장) |
 | p3-poseidon2, p3-koala-bear, p3-symmetric, p3-field | =0.8.0 | 해시 백엔드 | 상수는 Grain LFSR 공개 절차 |
-| iroh, iroh-blobs, iroh-relay | =1.2.x | 네트워크, 청크 전송 | |
-| pkarr | =8.0.x | 서명된 부트노드 목록 | |
+| iroh, iroh-relay | =1.2.x | 네트워크(QUIC·홀펀칭·릴레이) | iroh-blobs는 쓰지 않음: 이력은 에라 파일 + RPC 경로 |
+| iroh-mainline-address-lookup | =0.5.0 | 노드별 pkarr(DHT) 레코드로 피어 발견 | 프로젝트 부트노드 목록이 아님(`crates/net`) |
 | p256, k256, ed25519-dalek | 0.14 / 0.14 / 3.0 | 서명 | ed25519 3.x는 2.x와 비호환 |
 | cryptokit-rs | 0.3 | Secure Enclave 브리지 | macOS 26 SDK |
 | uniffi | 0.32 | Rust↔Swift | pre-1.0 |

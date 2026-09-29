@@ -7,7 +7,7 @@
 | 검증자 간 합의 메시지 | Commonware `p2p::authenticated::lookup` (인증된 검증자 목록) → 루프백 링크 포트 → iroh `aether/p2p/1` | 위원회 |
 | 블록·인증서·증명 gossip | Commonware `broadcast` → 공개 노드에는 iroh gossip 재전송 | 전체 |
 | 공개 노드 연결 | iroh 1.2 (QUIC, 홀펀칭, 릴레이) | 지갑·검증 노드 |
-| 피어 발견 | Pkarr(서명된 부트노드 목록) → DNS TXT → GitHub raw → Nostr(선택) | 전체 |
+| 피어 발견 | 노드별 pkarr 레코드(BitTorrent Mainline DHT, 노드 키로 서명) → 노드 id로 iroh 주소 조회 | 전체 |
 | 공인 주소 | Google·Cloudflare STUN | 전체 |
 | 릴레이 | 개발: n0 공개 릴레이, 운영: 자체 `iroh-relay`(Oracle A1 또는 poc 서버) | 필요 시 |
 
@@ -27,11 +27,13 @@ commonware ─tcp→ 127.0.0.1:<B 링크 포트> ─iroh QUIC(aether/p2p/1)→ I
 - 검증(2026-09-26): 이 맥(공인 198.51.100.10)에 검증자 1~3, poc-m3(공인 203.0.113.20, 다른 회선)에 검증자 4. 양쪽 모두 `direct <상대 공인IP>` 경로. 검증자 3 정지 중에는 정족수에 원격 검증자가 필수인데도 15초에 14블록 확정, 송금 확정 후 원격에서 잔액 일치.
 - 오프라인 테스트용 `--peers <i@host:port,…> --offline`은 평문 TCP.
 
-## Pkarr 부트노드 목록
+## 피어 발견 — 노드별 Pkarr/DHT 레코드 (구현)
 
-- 키: 프로젝트 ed25519 (오프라인 보관). 레코드: `_aether.<pubkey>` TXT = 부트노드 endpoint 목록 + 서명.
-- 갱신 주기 12시간(Mainline 만료 대비). 지갑은 Pkarr → DNS → GitHub 순으로 시도.
-- 기존 `peers.json`·하드코딩 IP는 제거.
+프로젝트가 관리하는 부트노드 목록이 아니라, **노드마다 자기 레코드**를 DHT에 올린다(`crates/net/src/lib.rs`).
+
+- 각 노드는 자기 노드 키로 서명한 pkarr 레코드(현재 주소들)를 BitTorrent Mainline DHT에 게시한다. 노드 id를 아는 쪽(지갑·팔로워·다른 노드)은 그 id로 DHT를 조회해 iroh 엔드포인트를 얻는다(`iroh-mainline-address-lookup`). **부트 서버도 DNS도 쓰지 않는다.**
+- 레코드가 노드 키로 서명되므로 남의 이름으로 주소를 바꿔치기할 수 없다(게시와 갱신은 `iroh-mainline-address-lookup`이 맡는다).
+- 기존 `peers.json`·하드코딩 IP·`_aether.<pubkey>` 프로젝트 TXT는 쓰지 않는다. 오프라인 시험용 `--peers`만 예외(위 "검증자 링크").
 
 ## DA 어댑터 — 보류 (00-overview D11)
 
@@ -44,8 +46,8 @@ commonware ─tcp→ 127.0.0.1:<B 링크 포트> ─iroh QUIC(aether/p2p/1)→ I
 
 ## 이력 배포 (`history/`)
 
-- 청크 = 1,000블록, ≤2GiB. 매니페스트(02 참조) 서명.
-- 미러 게시 파이프라인(아카이브 노드 전용): 청크 생성 → GitHub Release 업로드 → R2/B2 업로드 → iroh-blobs 시딩 → Internet Archive(주 1회) → 매니페스트 갱신.
+- 에라 = **8,192블록**(이력 v2, [13-roadmap.md](13-roadmap.md) B3; 헤더를 열 단위 스트림으로 나눠 zstd, 본문은 모아서 zstd — `crates/node/src/era.rs`). 이력 루트(MMR)로 검증되고, 매니페스트는 02 참조.
+- 미러 게시 파이프라인(아카이브 노드 전용): 에라 파일 생성 → GitHub Release 업로드 → R2/B2 업로드 → Internet Archive(주 1회) → 매니페스트 갱신. **iroh-blobs 시딩은 쓰지 않는다**: iroh은 의존성이지만 iroh-blobs는 아니고, 검증이 전송과 무관하므로 옛 에라는 기존 RPC 경로(`aether_eraInfo/eraChunk/eraProof`)로 받는다(B4).
 - 다운로더: 미러 동시 시도, 첫 완료본 BLAKE3 검증, 실패 미러 점수 하락.
 - 2단계: librqbit 추가(webseed = 같은 HTTP 미러).
 

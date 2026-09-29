@@ -28,6 +28,7 @@ pub mod rewards_view;
 pub mod rotation;
 pub mod rpc;
 pub mod shards;
+pub mod shadow;
 pub mod snapshot;
 pub mod store;
 pub mod supervisor;

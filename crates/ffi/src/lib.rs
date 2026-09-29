@@ -92,15 +92,20 @@ const DEVNET_VALIDATORS: u64 = 4;
 
 struct Net {
     rt: tokio::runtime::Runtime,
+    generation: u64,
     /// The validators: the fallback, and where writes go.
     client: std::sync::Arc<aether_net::RpcClient>,
     /// Follower Macs wallet reads spread over.
     spread: std::sync::Arc<Spread>,
 }
 
-fn net() -> R<&'static Net> {
-    static NET: std::sync::OnceLock<Result<Net, String>> = std::sync::OnceLock::new();
-    NET.get_or_init(|| {
+static NET: std::sync::Mutex<Option<Result<std::sync::Arc<Net>, String>>> = std::sync::Mutex::new(None);
+static NETWORK_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn net() -> R<std::sync::Arc<Net>> {
+    let mut cached = NET.lock().expect("network lock");
+    cached.get_or_insert_with(|| {
+        let generation = NETWORK_GENERATION.load(std::sync::atomic::Ordering::SeqCst);
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -147,15 +152,15 @@ fn net() -> R<&'static Net> {
             let refresh = client.clone();
             rt.spawn(async move {
                 loop {
-                    refresh_finalized_height(&refresh).await;
+                    refresh_finalized_height(&refresh, generation).await;
                     tokio::time::sleep(Duration::from_secs(30)).await;
                 }
             });
         }
-        Ok(Net { rt, client, spread })
+        Ok(std::sync::Arc::new(Net { rt, generation, client, spread }))
     })
-    .as_ref()
-    .map_err(|e| WalletError::Network(e.clone()))
+    .clone()
+    .map_err(WalletError::Network)
 }
 
 // ---------------- wallet reads spread over follower Macs ----------------
@@ -837,6 +842,7 @@ pub fn account_address(p256_public_key: Vec<u8>) -> R<String> {
 }
 
 fn anchor(height: u64, set: &ValidatorSet) -> R<VerifiedBlock> {
+    let generation = NETWORK_GENERATION.load(std::sync::atomic::Ordering::SeqCst);
     for _ in 0..40 {
         let v = call("aether_getFinalized", json!([height + 1]))?;
         if !v.is_null() {
@@ -856,6 +862,10 @@ fn anchor(height: u64, set: &ValidatorSet) -> R<VerifiedBlock> {
                 return Err(WalletError::Verification(format!("asked for block {}, got one for {}", height + 1, vb.height)));
             }
             check_anchor_chain(&block, &links, chain)?;
+            let _network = NET.lock().expect("network lock");
+            if generation != NETWORK_GENERATION.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(WalletError::Verification("network changed during verification".into()));
+            }
             remember_height(chain, vb.height)?;
             check_freshness(vb.timestamp_ms)?;
             check_lag(chain, vb.height)?;
@@ -940,7 +950,7 @@ fn validator_count() -> u32 {
 /// it answers with (never a follower's, and never the status's word alone):
 /// the same checks an anchor passes, minus serving it to anyone. A failure
 /// simply leaves the last checked height in place.
-async fn refresh_finalized_height(client: &aether_net::RpcClient) {
+async fn refresh_finalized_height(client: &aether_net::RpcClient, generation: u64) {
     let Ok(set) = trusted_set(validator_count()) else { return };
     let Ok(status) = client.call("aether_status", json!([])).await else { return };
     let (Ok(chain), Some(hint)) = (expected_chain(&status), status["height"].as_u64()) else { return };
@@ -958,7 +968,8 @@ async fn refresh_finalized_height(client: &aether_net::RpcClient) {
         .map(|a| a.iter().filter_map(|l| from_hex(l.as_str().unwrap_or_default()).ok()).collect::<Vec<_>>())
         .unwrap_or_default();
     let Ok(vb) = verify_finalized_chain(&set, &block, &fin, &links) else { return };
-    if check_anchor_chain(&block, &links, chain).is_ok() {
+    let _network = NET.lock().expect("network lock");
+    if generation == NETWORK_GENERATION.load(std::sync::atomic::Ordering::SeqCst) && check_anchor_chain(&block, &links, chain).is_ok() {
         remember_checked_height(chain, vb.height);
     }
 }
@@ -1055,6 +1066,10 @@ pub fn verified_height() -> u64 {
 /// response, nor with a remote peer's unauthenticated numeric claim.
 #[uniffi::export]
 pub fn authenticated_remote_height() -> R<Option<u64>> {
+    // A local development network has no remote validator set to compare with.
+    if devnet_keys() && LOCAL_NODE.lock().expect("local node lock").is_some() {
+        return Ok(None);
+    }
     let remote = net()?;
     let chain = *CHAIN_ID.lock().expect("chain id lock");
     if let Some(height) = CHECKED_HEIGHT.lock().expect("checked height lock")
@@ -1063,7 +1078,7 @@ pub fn authenticated_remote_height() -> R<Option<u64>> {
         .map(|(_, height, _)| *height) {
         return Ok(Some(height));
     }
-    remote.rt.block_on(refresh_finalized_height(&remote.client));
+    remote.rt.block_on(refresh_finalized_height(&remote.client, remote.generation));
     Ok(recent_checked_height(chain))
 }
 
@@ -1096,23 +1111,32 @@ pub fn configure_network(network_json: String) -> R<u32> {
         .iter()
         .map(|m| m["node"].as_str().unwrap_or_default().parse::<aether_net::EndpointId>().map_err(|e| WalletError::Invalid(format!("node id: {e}"))))
         .collect::<R<Vec<_>>>()?;
-    if v["devnet"].as_bool().unwrap_or(false) {
-        use_devnet_keys();
-    }
+    let devnet = v["devnet"].as_bool().unwrap_or(false);
     let identity = v["identity"].as_str();
-    if identity.is_none() && !devnet_keys() {
+    if identity.is_none() && !devnet {
         return Err(WalletError::Invalid(
-            "network.json: \"identity\" (the committee key, printed by `aether dkg`) is required; dev mode needs \"devnet\": true here or a use_devnet_keys() call".into(),
+            "network.json: \"identity\" (the committee key, printed by `aether dkg`) is required; local development needs \"devnet\": true".into(),
         ));
     }
+    let chain = v["chain_id"].as_u64().ok_or_else(|| WalletError::Invalid("network.json: chain_id".into()))?;
     if let Some(id) = identity {
-        set_committee_identity(id.to_string())?;
+        ValidatorSet::from_hex(id).map_err(|e| WalletError::Invalid(format!("identity: {e}")))?;
     }
-    if let Some(c) = v["chain_id"].as_u64() {
-        *CHAIN_ID.lock().expect("chain id lock") = c;
-    }
+    // The old client, certificate floor and local route belong to the old
+    // configuration. In particular, a devnet key must not survive a return
+    // to the bundled network.
+    let mut cached = NET.lock().expect("network lock");
+    NETWORK_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    *cached = None;
+    *COMMITTEE.lock().expect("committee lock") = identity.map(str::to_owned);
+    DEVNET_KEYS.store(devnet, std::sync::atomic::Ordering::Relaxed);
+    *CHAIN_ID.lock().expect("chain id lock") = chain;
+    *LOCAL_NODE.lock().expect("local node lock") = None;
+    VERIFIED_HEIGHT.lock().expect("verified height lock").clear();
+    CHECKED_HEIGHT.lock().expect("checked height lock").clear();
     let n = nodes.len() as u32;
     *NODES.lock().expect("nodes lock") = Some(nodes);
+    drop(cached);
     Ok(n)
 }
 
@@ -1599,6 +1623,22 @@ mod tests {
         assert_eq!(trusted_set(4).unwrap().identity_hex(), id);
         assert!(!devnet_keys());
         assert!(configure_network("{\"validators\": []}".to_string()).is_err(), "no validators either");
+    }
+
+    #[test]
+    fn reconfiguration_drops_old_identity_and_verification_state() {
+        let _g = config();
+        reset_network();
+        configure_network(network_json(None, true)).unwrap();
+        remember_height(7_780, 20).unwrap();
+        use_local_node(Some(18545));
+        assert_eq!(authenticated_remote_height().unwrap(), None);
+        let id = ValidatorSet::devnet(4).identity_hex();
+        configure_network(network_json(Some(&id), false)).unwrap();
+        assert!(!devnet_keys());
+        assert_eq!(verified_height(), 0);
+        assert_eq!(*LOCAL_NODE.lock().unwrap(), None);
+        assert_eq!(trusted_set(4).unwrap().identity_hex(), id);
     }
 
     /// Finalized heights never go back: an anchor below the highest verified is

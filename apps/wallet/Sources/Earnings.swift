@@ -222,7 +222,7 @@ struct EarningsHero: View {
         case .proving:
             "This Mac's GPU is proving blocks\(proofsText). The first valid proof of a block gets a reward."
         case .verifying:
-            "Your Mac checks every block itself. Checking alone is not rewarded on testnet."
+            "Your Mac checks every block itself. Checking alone earns no reward."
         case .starting:
             work.height > 0 ? "Catching up with the network · block #\(work.height)" : "Starting the node…"
         case .paused(let why):

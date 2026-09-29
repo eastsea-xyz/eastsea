@@ -2,7 +2,6 @@
 // envelope (the chain's own rules), the vault signs, wasm checks and attaches.
 
 import { hex } from './vault.js';
-import { CHAIN_ID } from './methods.js';
 
 export class Wallet {
   /** `wasm`: {prepareTx, attachSignature}; `rpc`: Rpc; `vault`: Vault. */
@@ -10,13 +9,13 @@ export class Wallet {
     this.wasm = wasm;
     this.rpc = rpc;
     this.vault = vault;
-    this.lastNonce = null; // {address, nonce}: lets two quick sends not reuse a nonce
+    this.lastNonce = null; // {address, nonce, chainId}: lets two quick sends not reuse a nonce
     this.queue = Promise.resolve(); // sends run one at a time, so nonces never collide
   }
 
   async nonceFor(address) {
     const chain = parseInt(await this.rpc.call('eth_getTransactionCount', [address]), 16);
-    const next = this.lastNonce && this.lastNonce.address === address ? this.lastNonce.nonce + 1 : 0;
+    const next = this.lastNonce && this.lastNonce.address === address && this.lastNonce.chainId === this.rpc.chainId ? this.lastNonce.nonce + 1 : 0;
     return Math.max(chain, next);
   }
 
@@ -43,16 +42,19 @@ export class Wallet {
   async sendNow(tx, { status: shown } = {}) {
     const info = await this.vault.info();
     if (!info) throw new Error('No wallet yet.');
+    const chainId = this.rpc.chainId;
     const status = shown || (await this.rpc.call('aether_status', []));
     const nonce = await this.nonceFor(info.address);
     // The balance decides the tip (G2): a zero balance sends with none, so a
     // new account can transact while the base fee is 0.
     const balance = await this.balance(info.address).catch(() => 0n);
-    const prepared = JSON.parse(this.wasm.prepareTx(hex.dec(info.publicKey), JSON.stringify(status), BigInt(CHAIN_ID), BigInt(nonce), JSON.stringify({ ...tx, balance_wei: balance.toString() })));
+    if (Number(status.chain_id) !== chainId || this.rpc.chainId !== chainId) throw new Error('The node is on another chain.');
+    const prepared = JSON.parse(this.wasm.prepareTx(hex.dec(info.publicKey), JSON.stringify(status), BigInt(chainId), BigInt(nonce), JSON.stringify({ ...tx, balance_wei: balance.toString() })));
     const sig = await this.vault.sign(hex.dec(prepared.signing_message));
+    if (this.rpc.chainId !== chainId) throw new Error('The wallet network changed before the transaction was sent.');
     const env = JSON.parse(this.wasm.attachSignature(JSON.stringify(prepared.envelope), sig, hex.dec(info.publicKey)));
     const r = await this.rpc.call('aether_sendTransaction', [env]);
-    this.lastNonce = { address: info.address, nonce };
+    this.lastNonce = { address: info.address, nonce, chainId };
     return r.hash;
   }
 

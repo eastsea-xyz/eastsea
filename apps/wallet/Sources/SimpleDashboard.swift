@@ -44,25 +44,32 @@ struct SimpleDashboard: View {
         shell
             .tint(.aether)
             .sheet(item: $sheet) { s in
-                switch s {
-                case .send: SendSheet()
-                case .receive: ReceiveSheet()
-                case .assets: AssetsSheet(onSend: { t in model.sendToken = t; sheet = .send })
-                case .call: CallSheet()
-                case .connect: ConnectSheet()
-                case .votingInvite:
-                    #if os(macOS)
-                    VotingNodeInvite(join: {
-                        inviteAnswered = true
-                        sheet = nil
-                        if let c = node.candidate { model.registerNode(c, node: node) }
-                    }, later: {
-                        inviteAnswered = true
-                        sheet = nil
-                    })
-                    #else
-                    EmptyView()
-                    #endif
+                VStack(spacing: 0) {
+                    if model.developmentNetwork {
+                        Text("Dev network · 127.0.0.1")
+                            .font(.caption.bold()).frame(maxWidth: .infinity)
+                            .padding(.vertical, 5).background(.orange).foregroundStyle(.black)
+                    }
+                    switch s {
+                    case .send: SendSheet()
+                    case .receive: ReceiveSheet()
+                    case .assets: AssetsSheet(onSend: { t in model.sendToken = t; sheet = .send })
+                    case .call: CallSheet()
+                    case .connect: ConnectSheet()
+                    case .votingInvite:
+                        #if os(macOS)
+                        VotingNodeInvite(join: {
+                            inviteAnswered = true
+                            sheet = nil
+                            if let c = node.candidate { model.registerNode(c, node: node) }
+                        }, later: {
+                            inviteAnswered = true
+                            sheet = nil
+                        })
+                        #else
+                        EmptyView()
+                        #endif
+                    }
                 }
             }
             #if DEBUG
@@ -478,7 +485,10 @@ private struct UpgradeNoticeCard: View {
 #if os(iOS)
 /// Developer mode (proofs, roots, raw logs), out of the way at the bottom of Network.
 private struct DeveloperModeCard: View {
+    @EnvironmentObject var model: WalletModel
     @AppStorage("developerMode") private var developerMode = false
+    @AppStorage("useDevelopmentNetwork") private var useDevelopmentNetwork = false
+    @AppStorage("developmentNetworkPort") private var developmentNetworkPort = 18546
 
     var body: some View {
         Card {
@@ -488,6 +498,21 @@ private struct DeveloperModeCard: View {
                     Text("Proofs, state roots, raw logs and blocks.").font(.aeFootnote).foregroundStyle(.secondary)
                 }
             }
+            if developerMode {
+                Picker("Network", selection: $useDevelopmentNetwork) {
+                    Text("Default").tag(false)
+                    Text("Local development network").tag(true)
+                }
+                Stepper("http://127.0.0.1:\(developmentNetworkPort)", value: $developmentNetworkPort, in: 1024...65535)
+                    .disabled(!useDevelopmentNetwork)
+            }
+        }
+        .onChange(of: useDevelopmentNetwork) { _, dev in model.selectNetwork(development: dev, port: UInt16(developmentNetworkPort)) }
+        .onChange(of: developmentNetworkPort) { _, port in
+            if useDevelopmentNetwork { model.selectNetwork(development: true, port: UInt16(port)) }
+        }
+        .onChange(of: developerMode) { _, enabled in
+            if !enabled { useDevelopmentNetwork = false; model.selectNetwork(development: false) }
         }
     }
 }
@@ -680,7 +705,7 @@ private struct VotingNodeRow: View {
                 case nil:
                     EmptyView()
                 }
-                DisclosureGroup("Planned mainnet rules") {
+                DisclosureGroup(Terms.isTestnet ? "Planned mainnet rules" : "Network reward rules") {
                     Text(VotingRules.mainnetRewardsRule + " " + VotingRules.founderReserveRule).font(.aeFootnote).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }

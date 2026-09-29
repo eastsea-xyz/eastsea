@@ -250,6 +250,14 @@ case "$log" in
 esac
 if grep -q "archive node: keeping every block" "$D"/*.log; then bad "a node runs as an archive node"; else ok "no node keeps every block"; fi
 
+echo "== shadow replay with this binary"
+shadow_to=$(( $(height "${rpcp[0]}") - 2 ))
+if [ "$shadow_to" -ge 1 ] && "$A" shadow --from "http://127.0.0.1:${rpcp[0]}" --to "$shadow_to" > "$D/shadow.log" 2>&1; then
+  ok "shadow replay matches state and receipt digests through height $shadow_to"
+else
+  bad "shadow replay diverged or could not read source blocks (see $D/shadow.log)"
+fi
+
 echo
 echo "==================== rehearsal results ===================="
 for p in ${PASS[@]+"${PASS[@]}"}; do printf 'PASS  %s\n' "$p"; done

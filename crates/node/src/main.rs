@@ -467,6 +467,18 @@ enum Cmd {
         #[arg(long)]
         network: String,
     },
+    /// Replay finalized blocks with this binary into an isolated scratch store.
+    Shadow {
+        /// A stopped history-v2 data directory or an archive peer's HTTP RPC URL.
+        #[arg(long)]
+        from: String,
+        /// Last finalized height to check (inclusive).
+        #[arg(long)]
+        to: u64,
+        /// Genesis network.json when it is outside the source data directory.
+        #[arg(long)]
+        network: Option<std::path::PathBuf>,
+    },
     /// Chain status.
     Status {
         #[arg(long, default_value = "http://127.0.0.1:8545")]
@@ -915,6 +927,7 @@ fn main() {
             let missing = aether_node::mainnet::missing(&rules);
             (rules.iter().all(|r| r.ok)).then_some(()).ok_or(missing)
         })(),
+        Cmd::Shadow { from, to, network } => run_shadow(&from, to, network.as_deref()),
         Cmd::Status { rpc } => call(&rpc, "aether_status", json!([])).map(|v| println!("{}", pretty(&v))),
         Cmd::Blocks { rpc, n } => call(&rpc, "aether_recentBlocks", json!([n])).map(|v| print_blocks(&v)),
         Cmd::Send { rpc, from_dev, to, value, nonce, wait } => {
@@ -1080,6 +1093,46 @@ fn chain_config(chain_id: u64, genesis: &aether_node::roster::Genesis, dev_alloc
         committee: genesis.committee.clone(),
         reserve: genesis.reserve.clone(),
     }
+}
+
+fn run_shadow(from: &str, to: u64, network: Option<&std::path::Path>) -> Result<(), String> {
+    struct Scratch(std::path::PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+    }
+    let base = std::env::current_dir().map_err(|e| e.to_string())?.join("tmp");
+    std::fs::create_dir_all(&base).map_err(|e| e.to_string())?;
+    let scratch = base.join(format!("shadow-{}-{}", std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_nanos()));
+    std::fs::create_dir(&scratch).map_err(|e| e.to_string())?;
+    let _cleanup = Scratch(scratch.clone());
+    let network = if let Some(path) = network {
+        Some(aether_node::roster::NetworkFile::load(path)?)
+    } else if from.starts_with("http://") || from.starts_with("https://") {
+        let value = call(from, "aether_network", json!([]))?;
+        if value.is_null() { None } else { Some(serde_json::from_value::<aether_node::roster::NetworkFile>(value).map_err(|e| e.to_string())?) }
+    } else {
+        let data = std::path::Path::new(from);
+        let file = data.join("network.json");
+        let parent = data.parent().unwrap_or(data).join("network.json");
+        let file = if file.is_file() { file } else { parent };
+        if file.is_file() { Some(aether_node::roster::NetworkFile::load(&file)?) }
+        else { return Err("source network.json is missing; pass --network <genesis network.json>".into()); }
+    };
+    let source = aether_node::shadow::Source::open(from, &scratch)?;
+    let cfg = if let Some(file) = network {
+        chain_config(file.chain_id, &file.genesis()?, false)
+    } else {
+        let chain_id = if let Some(url) = from.starts_with("http://").then_some(from).or_else(|| from.starts_with("https://").then_some(from)) {
+            call(url, "aether_status", json!([]))?["chain_id"].as_u64().ok_or("peer has no chain id")?
+        } else {
+            DEFAULT_CHAIN_ID
+        };
+        chain_config(chain_id, &aether_node::roster::Genesis::default(), true)
+    };
+    aether_node::shadow::replay(cfg, &source, to, &scratch)?;
+    println!("shadow PASS through finalized height {to}");
+    Ok(())
 }
 
 /// p2p args, chain id, epoch starts, expected key round, genesis parameters.

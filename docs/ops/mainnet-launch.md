@@ -7,10 +7,22 @@
 ## 0. 리허설 (출시 전날과 직전, 두 번)
 
 ```bash
-scripts/mainnet-rehearsal.sh $(mktemp -d)/rehearsal
+mkdir -p ./tmp
+scripts/mainnet-rehearsal.sh "$(mktemp -d ./tmp/mainnet-rehearsal.XXXXXX)/rehearsal"
 ```
 
-버리는 로컬 네트워트에 **메인넷과 같은 제네시스 플래그**(새 체인 아이디, `"protocol": 3`, `"history": 2`, node rewards, 등록기, 예비 키 3개, faucet·사전 발행 없음)를 걸고 4검증자+예비키+후보 Mac을 `aether run`만으로 띄워 확인한다: 블록 확정·4검증자 일치, 높이 1의 프로토콜이 3·에포크당 등록 상한 활성, 메인넷 규칙 목록 전부(아래 2단계), 빈 블록 조용(history v2), 사전 발행·faucet 없음, 첫 에포크 분배가 `rewards::issuance`와 정확히 일치(새 Mac pool/32), 예비 키 자동 착석, 30일 프루닝 기본값. **PASS가 아니면 다음 단계로 가지지 않는다.** 출시 직전에는 출시에 쓸 바이너리로 다시 한 번.
+버리는 로컬 네트워크에 **메인넷과 같은 제네시스 플래그**(새 체인 아이디, `"protocol": 3`, `"history": 2`, node rewards, 등록기, 예비 키 3개, faucet·사전 발행 없음)를 걸고 4검증자+예비키+후보 Mac을 `aether run`만으로 띄워 확인한다: 블록 확정·4검증자 일치, 높이 1의 프로토콜이 3·에포크당 등록 상한 활성, 메인넷 규칙 목록 전부(아래 2단계), 빈 블록 조용(history v2), 사전 발행·faucet 없음, 첫 에포크 분배가 `rewards::issuance`와 정확히 일치(새 Mac pool/32), 예비 키 자동 착석, 30일 프루닝 기본값, **현재 바이너리의 그림자 재실행 일치**. **PASS가 아니면 다음 단계로 가지지 않는다.** 출시 직전에는 출시에 쓸 바이너리로 다시 한 번.
+
+## 업그레이드 전 필수: 메인넷 그림자 재실행
+
+업그레이드 후보 바이너리로 메인넷의 높이 0부터 **대상 높이까지** 다시 실행한다. 원본 노드의 상태를 바꾸지 않고 `./tmp/` 아래 격리된 저장소를 사용한 뒤 지운다. 아카이브 RPC 또는 중지된 history-v2 아카이브 노드의 데이터 디렉터리와 원본 `network.json`이 필요하다. 가지치기로 블록이나 영수증이 빠진 노드로는 완전한 재실행을 할 수 없으며, 누락을 PASS로 처리하지 않는다.
+
+```bash
+aether shadow --from "$ARCHIVE_RPC" --to "$FINALIZED_HEIGHT"
+# 또는: aether shadow --from "$STOPPED_ARCHIVE_DATA" --network "$GENESIS_NETWORK_JSON" --to "$FINALIZED_HEIGHT"
+```
+
+매 블록의 상태 루트를 원본의 블록 요약과 대조하고, 거래 순서대로 직렬화한 영수증의 BLAKE3 다이제스트도 대조한다. 이 **영수증 다이제스트는 재실행 검사값**이며 현재 블록 형식에 온체인 영수증 루트는 없다. 첫 불일치에서 높이·필드·양쪽 값을 출력하고 0이 아닌 코드로 끝난다. 업그레이드 전에 이 검사와 `scripts/mainnet-rehearsal.sh`가 모두 PASS여야 한다.
 
 ## 1. 키 세레머니
 

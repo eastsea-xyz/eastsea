@@ -1,9 +1,6 @@
 import { Brand } from './brand.js';
 // What pages may ask the wallet, and how a transaction request is checked.
 
-export const CHAIN_ID = 7780;
-export const CHAIN_HEX = `0x${CHAIN_ID.toString(16)}`;
-
 /** Reads go straight to the node; nothing here can move funds. */
 export const READ_METHODS = new Set([
   'eth_blockNumber', 'eth_call', 'eth_estimateGas', 'eth_getBalance', 'eth_getCode',

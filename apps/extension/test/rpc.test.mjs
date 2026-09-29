@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Rpc } from '../src/lib/rpc.js';
+import { Wallet } from '../src/lib/wallet.js';
 
 function fakeNet(handlers) {
   const calls = [];
@@ -47,19 +48,41 @@ test('node errors keep their code', async () => {
 
 test('callAny finds the node that runs a node-local service', async () => {
   const net = fakeNet({
-    'http://a': () => ({ error: { code: -32601, message: 'this node does not run the faucet' } }),
-    'http://c': () => ({ result: { hash: '0x1' } }),
+    'http://a': (m) => m === 'eth_chainId' ? { result: '0x1e64' } : ({ error: { code: -32601, message: 'this node does not run the faucet' } }),
+    'http://c': (m) => m === 'eth_chainId' ? { result: '0x1e64' } : ({ result: { hash: '0x1' } }),
   });
   const rpc = new Rpc(['http://a', 'http://b', 'http://c'], { fetchImpl: net.fetchImpl });
   assert.deepEqual(await rpc.callAny('aether_faucet', ['0x0']), { hash: '0x1' });
-  const other = new Rpc(['http://x'], { fetchImpl: fakeNet({ 'http://x': () => ({ error: { code: -32000, message: 'rate limited' } }) }).fetchImpl });
+  const other = new Rpc(['http://x'], { fetchImpl: fakeNet({ 'http://x': (m) => m === 'eth_chainId' ? { result: '0x1e64' } : ({ error: { code: -32000, message: 'rate limited' } }) }).fetchImpl });
   await assert.rejects(other.callAny('aether_faucet', ['0x0']), /rate limited/);
+});
+
+test('switching chains forgets the old endpoint and refuses its faucet', async () => {
+  const net = fakeNet({
+    'http://default': () => ({ result: '0x1e64' }),
+    'http://dev': (m) => ({ result: m === 'eth_chainId' ? '0x1e61' : { hash: '0x1' } }),
+  });
+  const rpc = new Rpc(['http://default'], { fetchImpl: net.fetchImpl });
+  await rpc.endpoint();
+  rpc.setChain(7777, ['http://dev']);
+  assert.equal(rpc.current, null);
+  assert.equal(await rpc.endpoint(), 'http://dev');
+  assert.deepEqual(await rpc.callAny('aether_faucet'), { hash: '0x1' });
+});
+
+test('a pending nonce belongs only to its chain', async () => {
+  const rpc = { chainId: 7780, call: async () => '0x2' };
+  const wallet = new Wallet({ wasm: null, rpc, vault: null });
+  wallet.lastNonce = { address: '0xabc', nonce: 8, chainId: 7780 };
+  assert.equal(await wallet.nonceFor('0xabc'), 9);
+  rpc.chainId = 7777;
+  assert.equal(await wallet.nonceFor('0xabc'), 2);
 });
 
 test('a method an older node lacks is served by another node', async () => {
   const net = fakeNet({
     'http://old': (m) => (m === 'eth_chainId' ? { result: '0x1e64' } : { error: { code: -32601, message: 'method not found: eth_call' } }),
-    'http://new': () => ({ result: '0xbeef' }),
+    'http://new': (m) => ({ result: m === 'eth_chainId' ? '0x1e64' : '0xbeef' }),
   });
   const rpc = new Rpc(['http://old', 'http://new'], { fetchImpl: net.fetchImpl });
   assert.equal(await rpc.call('eth_call', [{}, 'latest']), '0xbeef');

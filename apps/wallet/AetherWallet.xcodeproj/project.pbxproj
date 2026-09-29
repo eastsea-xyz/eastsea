@@ -475,7 +475,7 @@
 				CODE_SIGN_IDENTITY = "Developer ID Application: Pipln (45WU468FZE)";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 10;
+				CURRENT_PROJECT_VERSION = 11;
 				DEVELOPMENT_TEAM = 45WU468FZE;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -488,7 +488,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.6.5;
+				MARKETING_VERSION = 0.6.6;
 				OTHER_LDFLAGS = "$(SRCROOT)/../../target/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework OpenDirectory -framework IOKit";
 				PRODUCT_BUNDLE_IDENTIFIER = com.pipln.aether;
 				PRODUCT_NAME = Aether;
@@ -592,7 +592,7 @@
 				CODE_SIGN_IDENTITY = "Developer ID Application: Pipln (45WU468FZE)";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 10;
+				CURRENT_PROJECT_VERSION = 11;
 				DEVELOPMENT_TEAM = 45WU468FZE;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -605,7 +605,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.6.5;
+				MARKETING_VERSION = 0.6.6;
 				OTHER_LDFLAGS = "$(SRCROOT)/../../target/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework OpenDirectory -framework IOKit";
 				PRODUCT_BUNDLE_IDENTIFIER = com.pipln.aether;
 				PRODUCT_NAME = Aether;

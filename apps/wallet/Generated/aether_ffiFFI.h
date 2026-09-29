@@ -251,7 +251,7 @@ RustBuffer uniffi_aether_ffi_fn_func_account_address(RustBuffer p256_public_key,
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_AUTHENTICATED_REMOTE_HEIGHT
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_AUTHENTICATED_REMOTE_HEIGHT
 RustBuffer uniffi_aether_ffi_fn_func_authenticated_remote_height(RustCallStatus *_Nonnull out_status
-
+    
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_CHAIN_STATUS
@@ -437,7 +437,7 @@ RustBuffer uniffi_aether_ffi_fn_func_voting_node_status(RustBuffer validator_key
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_WALLET_SERVERS
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_WALLET_SERVERS
 RustBuffer uniffi_aether_ffi_fn_func_wallet_servers(RustCallStatus *_Nonnull out_status
-
+    
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PAPER_KEY_NEW
@@ -725,7 +725,7 @@ uint16_t uniffi_aether_ffi_checksum_func_account_address(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_AUTHENTICATED_REMOTE_HEIGHT
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_AUTHENTICATED_REMOTE_HEIGHT
 uint16_t uniffi_aether_ffi_checksum_func_authenticated_remote_height(void
-
+    
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_CHAIN_STATUS
@@ -767,7 +767,7 @@ uint16_t uniffi_aether_ffi_checksum_func_eth_call(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_LOCAL_NODE_HEIGHT
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_LOCAL_NODE_HEIGHT
 uint16_t uniffi_aether_ffi_checksum_func_local_node_height(void
-
+    
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PIN_SERVERS
@@ -941,7 +941,7 @@ uint16_t uniffi_aether_ffi_checksum_func_voting_node_status(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_WALLET_SERVERS
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_WALLET_SERVERS
 uint16_t uniffi_aether_ffi_checksum_func_wallet_servers(void
-
+    
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PAPER_KEY_NEW

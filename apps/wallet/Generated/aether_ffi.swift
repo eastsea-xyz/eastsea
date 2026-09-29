@@ -828,9 +828,9 @@ public struct PinnedServer: Equatable, Hashable {
         self.socket = socket
     }
 
+    
 
-
-
+    
 }
 
 #if compiler(>=6)
@@ -844,7 +844,7 @@ public struct FfiConverterTypePinnedServer: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PinnedServer {
         return
             try PinnedServer(
-                node: FfiConverterString.read(from: &buf),
+                node: FfiConverterString.read(from: &buf), 
                 socket: FfiConverterString.read(from: &buf)
         )
     }
@@ -1649,13 +1649,13 @@ public struct WalletServerInfo: Equatable, Hashable {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(node: String,
+    public init(node: String, 
         /**
          * Requests rotate over it right now.
-         */active: Bool,
+         */active: Bool, 
         /**
          * Moving average of its call latency.
-         */latencyMs: UInt32?,
+         */latencyMs: UInt32?, 
         /**
          * Why it is passed over, when it is.
          */parked: String?, parkedForMs: UInt64?) {
@@ -1666,9 +1666,9 @@ public struct WalletServerInfo: Equatable, Hashable {
         self.parkedForMs = parkedForMs
     }
 
+    
 
-
-
+    
 }
 
 #if compiler(>=6)
@@ -1682,10 +1682,10 @@ public struct FfiConverterTypeWalletServerInfo: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> WalletServerInfo {
         return
             try WalletServerInfo(
-                node: FfiConverterString.read(from: &buf),
-                active: FfiConverterBool.read(from: &buf),
-                latencyMs: FfiConverterOptionUInt32.read(from: &buf),
-                parked: FfiConverterOptionString.read(from: &buf),
+                node: FfiConverterString.read(from: &buf), 
+                active: FfiConverterBool.read(from: &buf), 
+                latencyMs: FfiConverterOptionUInt32.read(from: &buf), 
+                parked: FfiConverterOptionString.read(from: &buf), 
                 parkedForMs: FfiConverterOptionUInt64.read(from: &buf)
         )
     }
@@ -1720,7 +1720,7 @@ public func FfiConverterTypeWalletServerInfo_lower(_ value: WalletServerInfo) ->
  */
 
 public enum Parked: Equatable, Hashable {
-
+    
     /**
      * It answered "server busy" (its DoS limits): back off, politely.
      */
@@ -1757,38 +1757,38 @@ public struct FfiConverterTypeParked: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Parked {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-
+        
         case 1: return .busy
-
+        
         case 2: return .error
-
+        
         case 3: return .stale
-
+        
         case 4: return .lying
-
+        
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
     public static func write(_ value: Parked, into buf: inout [UInt8]) {
         switch value {
-
-
+        
+        
         case .busy:
             writeInt(&buf, Int32(1))
-
-
+        
+        
         case .error:
             writeInt(&buf, Int32(2))
-
-
+        
+        
         case .stale:
             writeInt(&buf, Int32(3))
-
-
+        
+        
         case .lying:
             writeInt(&buf, Int32(4))
-
+        
         }
     }
 }
@@ -2379,8 +2379,13 @@ public func prepareRecoveryTo(p256PublicKey: Data, lostAccount: String, to: Stri
  * `device_token` is Apple's DeviceCheck token (base64): one Mac, one candidate.
  * `ownership` is the voting key's own signature (`aether candidate-info
  * --operator`), so nobody can register a voting key they do not hold.
- * The registrar (a validator holding the network's DeviceCheck key) attests;
- * the returned transaction, signed with the wallet key, puts it on chain.
+ * The registrar (a validator holding the network's DeviceCheck key) attests.
+ *
+ * On a network with the free registration lane (`aether_status`'s
+ * `free_registration`, docs/design/22-gas-pool.md 2층) the returned
+ * `envelope_json` is a lane item instead of a transaction: no gas, no balance
+ * needed, one signature from this wallet (the Secure Enclave signs the same
+ * `signing_message` field). Older networks get the paid contract call.
  */
 public func prepareRegisterNode(p256PublicKey: Data, deviceToken: String, validatorKey: String, nodeId: String, beaconer: String, ownership: String)throws  -> PreparedTx  {
     return try  FfiConverterTypePreparedTx_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
@@ -2525,7 +2530,9 @@ public func setCommitteeIdentity(identityHex: String)throws   {try rustCallWithE
 }
 }
 /**
- * Attach a Secure Enclave signature (raw r‖s, 64 bytes) and submit.
+ * Attach a Secure Enclave signature (raw r‖s, 64 bytes) and submit: a signed
+ * transaction, or the wallet's signature on a prepared free-lane registration
+ * (the `envelope_json` of `prepare_register_node` on a lane network).
  */
 public func submitSigned(envelopeJson: String, signature: Data, p256PublicKey: Data)throws  -> String  {
     return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
@@ -2701,7 +2708,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_aether_ffi_checksum_func_prepare_recovery_to() != 8634) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_aether_ffi_checksum_func_prepare_register_node() != 54988) {
+    if (uniffi_aether_ffi_checksum_func_prepare_register_node() != 56846) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_prepare_remove_recovery_keys() != 27224) {
@@ -2740,7 +2747,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_aether_ffi_checksum_func_set_committee_identity() != 27628) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_aether_ffi_checksum_func_submit_signed() != 20395) {
+    if (uniffi_aether_ffi_checksum_func_submit_signed() != 31125) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_use_devnet_keys() != 43153) {

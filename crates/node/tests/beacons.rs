@@ -1,6 +1,6 @@
 //! Beacon slots, re-attestation and founder reserve keys on a node-rewards
 //! chain (docs/design/15-node-rewards.md, docs/design/12-launch-plan.md).
-//! Five Macs: two answer every slot, one answers two of four, one tries to
+//! Five Macs: two answer every slot, one answers half of them, one tries to
 //! fake answers, one never re-attests. Founder reserve keys fill only the
 //! seats a committee is short of four and leave once four independent
 //! operators qualify.
@@ -14,7 +14,9 @@ use aether_types::U256;
 use commonware_cryptography::{ed25519, Signer as _};
 use common::{answered, Mac, Net, Opts};
 
-const E: u64 = 20;
+/// 48-block epochs (segments of four, a two-block answer window): the shortest
+/// that leave a walkable gap between twelve slots.
+const E: u64 = 48;
 
 fn net(macs: u8, reserve: Option<Reserve>, committee: Option<Vec<(String, String)>>) -> Net {
     Net::new(Opts { chain_id: 7_792, node_rewards: true, epoch_blocks: E, macs, min_streak: Some(0), history_v2: false, reserve, committee })
@@ -30,10 +32,10 @@ fn expected(n: &Net, index: u64, epoch: u64, total_weight: u64) -> U256 {
 #[test]
 fn macs_are_paid_by_the_slots_they_answer_and_fakes_count_for_nothing() {
     let mut n = net(5, None, None);
-    // 0, 1: every slot. 2: slots 0 and 1 only. 3: fakes. 4: never re-attests.
+    // 0, 1: every slot. 2: the first half of them. 3: fakes. 4: never re-attests.
     let regs = (0..5).map(|i| n.register(i)).collect();
     n.step_with(regs, None, vec![], vec![]);
-    n.behaviour.insert(2, Mac::Slots(0b0011));
+    n.behaviour.insert(2, Mac::Slots(0b0000_0011_1111));
     n.behaviour.insert(3, Mac::Off);
     n.behaviour.insert(4, Mac::NoReattest);
     let nonces: Vec<u64> = (0..5).map(|i| n.parent.state.nonce(&n.operator(i))).collect();
@@ -62,9 +64,9 @@ fn macs_are_paid_by_the_slots_they_answer_and_fakes_count_for_nothing() {
     }
     assert!(forged >= 8, "fakes were tried at every slot ({forged})");
     let state = n.parent.state.clone();
-    assert_eq!((0..5).map(|i| answered(&state, i, 1)).collect::<Vec<_>>(), vec![4, 4, 2, 0, 4]);
+    assert_eq!((0..5).map(|i| answered(&state, i, 1)).collect::<Vec<_>>(), vec![12, 12, 6, 0, 12]);
 
-    // Block 2E pays epoch 1 by answered slots: 4/4 → 1/32 (warm-up 0.5), 2/4 → 1/64, fake → 0.
+    // Block 2E pays epoch 1 by answered slots: 12/12 → 1/32 (warm-up 0.5), 6/12 → 1/64, fake → 0.
     let before: Vec<U256> = (0..5).map(|i| n.balance(i)).collect();
     let paid = n.step(vec![], None, vec![]);
     let pool = node_pool(1, E);
@@ -86,9 +88,13 @@ fn macs_are_paid_by_the_slots_they_answer_and_fakes_count_for_nothing() {
     let (day, re_epoch, re_slot) = beacons::day(&n.parent.state).unwrap();
     assert_eq!(day, 1);
     let re = DAY_EPOCHS + re_epoch;
-    let slot_height = |n: &Net| beacons::slots(&n.parent.state).unwrap()[re_slot as usize];
+    // The slot's height is only drawn once the block after the slot before it
+    // lands, so walk block by block until it is out.
     n.run_to(re * E + 1);
-    let at = slot_height(&n);
+    while beacons::slot(&n.parent.state, re_slot).is_none() {
+        n.step(vec![], None, vec![]);
+    }
+    let at = beacons::slot(&n.parent.state, re_slot).unwrap();
     n.run_to(at);
     // Mac 4's answer without a re-attestation is not valid; with the registrar's it would be.
     let view = n.view();
@@ -105,7 +111,7 @@ fn macs_are_paid_by_the_slots_they_answer_and_fakes_count_for_nothing() {
     n.run_to((re + 2) * E - 1);
     let state = n.parent.state.clone();
     assert_eq!(answered(&state, 4, re + 1), 0);
-    assert_eq!(answered(&state, 0, re + 1), 4);
+    assert_eq!(answered(&state, 0, re + 1), 12);
     let total: u64 = (0..5u64)
         .map(|i| answered(&state, i, re + 1) * (WARMUP_STEPS + aether_rewards::mac(&state, i).level))
         .sum();

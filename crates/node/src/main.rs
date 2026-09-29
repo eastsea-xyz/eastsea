@@ -1496,38 +1496,102 @@ fn run_node(a: NodeArgs) {
         let store = aether_node::store::Store::open(&std::path::Path::new(&data).join("state.redb")).expect("open state store");
         let (chain, genesis) = Chain::open(cfg.clone(), store).expect("restore state (delete the data dir to resync)");
         install_verifier(&chain, &data, false);
+        // Self-healing (2026-09-29, docs/design/24-self-healing.md): serve the
+        // public endpoint BEFORE catching up, from the stored finalized state —
+        // status, balances, snapshots, era reads; read-only answers while this
+        // node does not vote. Peers restarting at the same moment learn heights
+        // from each other instead of waiting for someone to start voting first.
+        // The served state is swapped for the full one (marshal finality
+        // answers, handoff signing, prover, shards) once voting starts.
+        let (gossip_tx, mut gossip_rx) = tokio::sync::mpsc::unbounded_channel::<TxEnvelope>();
+        let served_snapshot: rpc::SnapshotCache = Default::default();
+        let served_state = std::sync::Arc::new(std::sync::RwLock::new(rpc::RpcState {
+            chain: chain.clone(),
+            finality: rpc::Finality::Archive(std::sync::Arc::new(aether_node::follow::FinalityArchive::new(chain.store()))),
+            gossip: gossip_tx.clone(),
+            faucet: faucet_service.clone(),
+            registrar: registrar.clone(),
+            network: network_file.clone(),
+            upstream: None,
+            handoff: None,
+            snapshot: served_snapshot.clone(),
+            prover: None,
+            shards: None,
+        }));
+        // Public access: iroh endpoint published to the BitTorrent Mainline DHT.
+        // Wallets find this node by its id alone and verify everything they get;
+        // validators tunnel consensus traffic over the same endpoint.
+        // Wallet-server announcements are listed only for keys the finalized
+        // registry state knows (red-team 2026-09-29 §3).
+        let _router = endpoint.clone().map(|ep| {
+            tracing::info!(node_id = %ep.id(), "public endpoint on iroh; address published to Mainline DHT (serving read-only answers while catching up)");
+            let st = served_state.clone();
+            let registry = aether_node::announce::checker(st.read().expect("served state").chain.clone());
+            let p2p_target = links.then(|| loopback(port));
+            aether_net::serve(
+                ep,
+                move |req| {
+                    let st = st.read().expect("served state").clone();
+                    async move { rpc::handle_value(&st, req).await }
+                },
+                p2p_target,
+                Some(registry),
+            )
+        });
         // Catch up before voting: a committee member that slept must not
         // propose or vote on views it cannot execute (the committee treats it
         // as offline until then). Follow the network with the follower
         // machinery — a certified snapshot jump included — and only then start
-        // the consensus engine, so not one vote exists while behind. Fails
-        // open: a validator that cannot ask the network (it may be the only
-        // one up) starts as before, and the chain itself keeps it safe (it
-        // cannot vote for a block without the parent state).
+        // the consensus engine, so not one vote exists while behind. The
+        // network's height is defined by the roster's answers (2026-09-29): a
+        // census asks every peer, and voting starts when no reachable peer is
+        // ahead — so a network where every validator restarts at once
+        // recovers on its own (each answers the census from its stored state;
+        // the tallest proceeds first, then serves the rest its blocks). Only
+        // silence fails open, after a real wait; `AETHER_SKIP_CATCH_UP`
+        // overrides the asking for runbook recoveries. The one network that
+        // needs no asking is a single validator (a local devnet): it is the
+        // network, so its own finalized height is the height.
         if links && network_file.is_some() {
             let me = p2p.keys.node_secret.public();
             let nodes: Vec<_> = p2p.roster.nodes.iter().copied().filter(|n| *n != me).collect();
-            match if nodes.is_empty() {
-                Err("the roster names no other node".to_string())
+            if nodes.is_empty() {
+                tracing::warn!("the roster names no other node: single-validator network, taking our own height as the network's");
+                let ours = chain.finalized_height();
+                chain.lock().net_height = Some(ours);
+            } else if std::env::var_os("AETHER_SKIP_CATCH_UP").is_some() {
+                tracing::warn!("AETHER_SKIP_CATCH_UP is set: starting without a confirmed network height");
             } else {
-                aether_net::RpcClient::new(nodes).await.map_err(|e| e.to_string())
-            } {
-                Ok(client) => {
-                    let upstream = aether_node::follow::Upstream::Iroh(client, Default::default());
-                    let set = aether_light::ValidatorSet::new(*polynomial_identity);
-                    let caught = tokio::time::timeout(
-                        Duration::from_secs(120),
-                        aether_node::follow::catch_up(&chain, &upstream, &set, aether_node::follow::BEHIND_MARGIN),
-                    )
-                    .await;
-                    match caught {
-                        Ok(Ok(n)) if n > 0 => tracing::info!(height = chain.finalized_height(), blocks = n, "caught up before voting"),
-                        Ok(Ok(_)) => {}
-                        Ok(Err(e)) => tracing::warn!(%e, "could not catch up before voting; starting anyway"),
-                        Err(_) => tracing::warn!("catch-up before voting timed out; starting anyway"),
+                let set = aether_light::ValidatorSet::new(*polynomial_identity);
+                let ep = endpoint.clone().expect("iroh links serve the public endpoint");
+                let census = {
+                    let (ep, nodes) = (ep.clone(), nodes.clone());
+                    move || {
+                        let (ep, nodes) = (ep.clone(), nodes.clone());
+                        async move { aether_node::follow::roster_heights(&ep, &nodes).await }
                     }
+                };
+                let upstream_of = {
+                    let ep = ep.clone();
+                    move |n: &aether_net::EndpointId| {
+                        aether_node::follow::Upstream::Iroh(
+                            aether_net::RpcClient::with_endpoint(ep.clone(), vec![*n]),
+                            Default::default(),
+                        )
+                    }
+                };
+                let caught = aether_node::follow::catch_up_before_voting(
+                    &chain,
+                    &set,
+                    aether_node::follow::BEHIND_MARGIN,
+                    aether_node::follow::STARTUP_PATIENCE,
+                    census,
+                    upstream_of,
+                )
+                .await;
+                if caught > 0 {
+                    tracing::info!(height = chain.finalized_height(), blocks = caught, "caught up before voting");
                 }
-                Err(e) => tracing::warn!(%e, "no upstream to catch up with; starting anyway"),
             }
             // A catch-up that timed out mid-replay is dropped without clearing
             // its replay mode: blocks from here on (voting) commit durably.
@@ -1657,7 +1721,8 @@ fn run_node(a: NodeArgs) {
         // Mempool gossip: RPC-accepted txs go out, peers' txs come in.
         // Beacon answers (node rewards networks) ride the same channel as
         // `{"beacon": answer}`; nodes that do not know them skip them as non-txs.
-        let (gossip_tx, mut gossip_rx) = tokio::sync::mpsc::unbounded_channel::<TxEnvelope>();
+        // (The channel was made before catch-up: txs accepted from wallets
+        // while catching up wait in it until the network starts here.)
         let (beacon_tx, mut beacon_rx) = tokio::sync::mpsc::unbounded_channel::<aether_light::block::BeaconAnswer>();
         chain.lock().beacon_out = Some(beacon_tx);
         tokio::spawn(async move {
@@ -1723,31 +1788,15 @@ fn run_node(a: NodeArgs) {
             network: network_file,
             upstream: None,
             handoff: handoff_service,
-            snapshot: Default::default(),
+            snapshot: served_snapshot,
             prover,
             shards,
         };
-
-        // Public access: iroh endpoint published to the BitTorrent Mainline DHT.
-        // Wallets find this node by its id alone and verify everything they get;
-        // validators tunnel consensus traffic over the same endpoint.
-        // Wallet-server announcements are listed only for keys the finalized
-        // registry state knows (red-team 2026-09-29 §3).
-        let _router = endpoint.map(|ep| {
-            tracing::info!(node_id = %ep.id(), "public endpoint on iroh; address published to Mainline DHT");
-            let st = rpc_state.clone();
-            let registry = aether_node::announce::checker(st.chain.clone());
-            let p2p_target = links.then(|| loopback(port));
-            aether_net::serve(
-                ep,
-                move |req| {
-                    let st = st.clone();
-                    async move { rpc::handle_value(&st, req).await }
-                },
-                p2p_target,
-                Some(registry),
-            )
-        });
+        // Voting machinery is up: swap the endpoint's served state for the
+        // full one (marshal-backed finality answers, handoff signing, prover
+        // status, era shards). In-flight snapshot downloads keep working: the
+        // cache is the same one the read-only state served from.
+        *served_state.write().expect("served state") = rpc_state.clone();
 
         let rpc_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), rpc_port);
         tracing::info!(%rpc_addr, "rpc listening");

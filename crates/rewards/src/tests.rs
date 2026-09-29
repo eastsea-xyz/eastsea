@@ -4,6 +4,11 @@ use aether_execution::registry::{Candidate, Params};
 
 const EB: u64 = 10;
 
+/// A mask answering every slot of an epoch.
+const EVERY_SLOT: u64 = (1 << SLOTS) - 1;
+/// A mask answering the first half of an epoch's slots.
+const HALF_SLOTS: u64 = (1 << (SLOTS / 2)) - 1;
+
 fn network() -> WorldState {
     let mut s = WorldState::default();
     registry::predeploy(&mut s, ([1; 32], [2; 32]), Params { epoch_blocks: EB, min_streak: 0, draw_epochs: 1 }).unwrap();
@@ -15,7 +20,7 @@ fn operator(i: u64) -> Address {
     Address::from_word(U256::from(0x1000 + i).into())
 }
 
-/// Register Mac `index` for `op` in epoch `epoch`, answering all four slots of that epoch.
+/// Register Mac `index` for `op` in epoch `epoch`, answering all twelve slots of that epoch.
 fn register(s: &mut WorldState, index: u64, op: Address, epoch: u64) {
     enroll(s, index, op, epoch);
     beacon(s, index, epoch);
@@ -37,9 +42,9 @@ fn enroll(s: &mut WorldState, index: u64, op: Address, epoch: u64) {
     put_candidate(s, &c);
 }
 
-/// Mac `index` answered all four slots of `epoch`.
+/// Mac `index` answered all twelve slots of `epoch`.
 fn beacon(s: &mut WorldState, index: u64, epoch: u64) {
-    answer(s, index, epoch, 0b1111);
+    answer(s, index, epoch, EVERY_SLOT);
 }
 
 /// Mac `index` answered the slots in `mask` of `epoch`.
@@ -395,28 +400,28 @@ fn over_many_epochs_no_more_than_the_issuance_is_minted() {
 }
 
 #[test]
-fn a_mac_that_answered_two_slots_of_four_gets_half_the_share() {
+fn a_mac_that_answered_half_the_slots_gets_half_the_share() {
     let mut s = network();
     for i in 0..3 {
         register(&mut s, i, operator(i), 0);
         warm(&mut s, i, WARMUP_STEPS);
     }
     distribute(&mut s, EB).unwrap();
-    answer(&mut s, 0, 1, 0b1111);
-    answer(&mut s, 1, 1, 0b0101);
-    answer(&mut s, 2, 1, 0b1000);
+    answer(&mut s, 0, 1, EVERY_SLOT);
+    answer(&mut s, 1, 1, HALF_SLOTS);
+    answer(&mut s, 2, 1, (1 << (SLOTS / 4)) - 1);
     let before: Vec<U256> = (0..3).map(|i| s.balance(&operator(i))).collect();
     let d = distribute(&mut s, 2 * EB).unwrap();
     let got = |i: u64| s.balance(&operator(i)) - before[i as usize];
     assert_eq!(got(0), d.pool / U256::from(16u8));
-    assert_eq!(got(1), d.pool / U256::from(32u8), "2 of 4 slots: half");
-    assert_eq!(got(2), d.pool / U256::from(64u8), "1 of 4 slots: a quarter");
+    assert_eq!(got(1), d.pool / U256::from(32u8), "6 of 12 slots: half");
+    assert_eq!(got(2), d.pool / U256::from(64u8), "3 of 12 slots: a quarter");
     // Answers of an earlier epoch count for nothing now.
     let d = distribute(&mut s, 3 * EB).unwrap();
     assert!(d.paid.is_empty());
 }
 
-/// Epochs long enough for real slots (4 quarters of 25 blocks).
+/// Epochs long enough for real slots (twelve segments of 8 blocks).
 const BEB: u64 = 100;
 
 fn slot_network() -> WorldState {
@@ -427,20 +432,28 @@ fn slot_network() -> WorldState {
 }
 
 #[test]
-fn four_slots_one_per_quarter_fixed_only_by_the_epochs_first_block() {
-    let (quarter, window, span) = beacons::layout(BEB).unwrap();
-    assert_eq!((quarter, window, span), (25, 12, 12));
-    assert_eq!(beacons::layout(3_600), Some((900, 90, 809)), "an hour: a 90-block answer window");
-    assert!(beacons::layout(11).is_none(), "too short for four slots");
+fn each_slot_is_drawn_from_the_block_of_the_slot_before_it() {
+    let (segment, window, span) = beacons::layout(BEB).unwrap();
+    assert_eq!((segment, window, span), (8, 4, 3));
+    assert_eq!(beacons::layout(3_600), Some((300, 90, 209)), "an hour: a 90-block answer window");
+    assert!(beacons::layout(35).is_none(), "too short for twelve slots");
+    assert_eq!(beacons::layout(36), Some((3, 1, 1)), "the shortest twelve slots fit");
     for seed in [[1u8; 32], [2; 32], [0xfe; 32]] {
-        let h = beacons::slot_heights(&seed, 7, BEB).unwrap();
-        for (k, s) in h.iter().enumerate() {
-            let k = k as u64;
-            assert!(*s > 7 * BEB + k * quarter && s + window < 7 * BEB + (k + 1) * quarter, "{h:?}");
+        let mut prev = seed;
+        let mut last = 7 * BEB - 1; // the block before epoch 7: slot 0's seed
+        for k in 0..SLOTS {
+            let h = beacons::slot_height(&prev, 7, k, BEB).unwrap();
+            assert!(h > 7 * BEB + k * segment && h + window < 7 * BEB + (k + 1) * segment, "slot {k}: {h}");
+            // Slot 0 lands at best two blocks after the epoch's last block, and
+            // every later slot a full answer window after the slot before it:
+            // nobody could have known this height before the seed block landed.
+            assert!(h >= last + if k == 0 { 2 } else { window + 2 }, "slot {k} at {h}");
+            last = h;
+            prev = hash_of(h);
         }
     }
-    assert_ne!(beacons::slot_heights(&[1; 32], 7, BEB), beacons::slot_heights(&[2; 32], 7, BEB), "the hash decides");
-    assert_eq!(beacons::slot_heights(&[1; 32], 7, BEB), beacons::slot_heights(&[1; 32], 7, BEB), "the same for everyone");
+    assert_ne!(beacons::slot_height(&[1; 32], 7, 3, BEB), beacons::slot_height(&[2; 32], 7, 3, BEB), "the hash decides");
+    assert_eq!(beacons::slot_height(&[1; 32], 7, 3, BEB), beacons::slot_height(&[1; 32], 7, 3, BEB), "the same for everyone");
 }
 
 fn hash_of(h: u64) -> [u8; 32] {
@@ -465,19 +478,21 @@ fn a_slot_opens_after_its_block_for_a_window_and_is_answered_once() {
     let mut s = slot_network();
     register(&mut s, 0, operator(0), 0);
     let c = registry::candidates(&s)[0].clone();
+    let (_, window, _) = beacons::layout(BEB).unwrap();
     blocks(&mut s, 1, BEB + 1);
-    let slots = beacons::slots(&s).unwrap();
-    assert_eq!(slots, beacons::slot_heights(&hash_of(BEB - 1), 1, BEB).unwrap(), "from the previous epoch's last block");
-    let s0 = slots[0];
+    let s0 = beacons::slot(&s, 0).expect("the epoch's first block drew it");
+    assert_eq!(s0, beacons::slot_height(&hash_of(BEB - 1), 1, 0, BEB).unwrap(), "from the previous epoch's last block");
+    assert_eq!(beacons::slot(&s, 1), None, "slot 1 waits for slot 0's block");
     blocks(&mut s, BEB + 1, s0 + 1);
     assert!(beacons::check(&s, s0 + 1, &c, 0).is_err(), "the slot's hash is recorded by the next block");
     blocks(&mut s, s0 + 1, s0 + 2);
     assert_eq!(beacons::slot_hash(&s, 0), Some(hash_of(s0)));
+    assert_eq!(beacons::slot(&s, 1).map(|h| h >= s0 + 1 + window), Some(true), "drawn from slot 0's hash, after its window");
     let due = beacons::check(&s, s0 + 1, &c, 0).unwrap();
     assert_eq!((due.epoch, due.slot, due.hash, due.needs_attestation), (1, 0, hash_of(s0), false));
     assert_eq!(beacons::due(&s, s0 + 1, &c).len(), 1, "only the open slot");
-    assert!(beacons::check(&s, s0 + 13, &c, 0).is_err(), "the window closed");
-    assert!(beacons::check(&s, s0 + 1, &c, 1).is_err(), "slot 1 is not out yet");
+    assert!(beacons::check(&s, s0 + 1 + window, &c, 0).is_err(), "the window closed");
+    assert!(beacons::check(&s, s0 + 1, &c, 1).is_err(), "slot 1 opens later in the epoch");
     beacons::record(&mut s, &c, &due, false);
     assert!(beacons::check(&s, s0 + 2, &c, 0).unwrap_err().contains("already"));
     assert_eq!(beacons::beacon(&s, 0).answered(1), 1);
@@ -524,9 +539,16 @@ fn re_attestation_is_due_from_the_days_random_slot_after_the_registration_day() 
     let e = DAY_EPOCHS + e1;
     assert_eq!(beacons::period(&s, e, k1), 2);
     // Walk to day 1's re-attestation slot: from there an answer needs a re-attestation.
-    blocks(&mut s, day1 + 1, e * BEB + 1);
-    let at = beacons::slots(&s).unwrap()[k1 as usize];
-    blocks(&mut s, e * BEB + 1, at + 2);
+    // Each slot's height is only drawn once the block after the slot before it
+    // lands, so the walk steps until slot `k1` is out.
+    let mut h = e * BEB + 1;
+    blocks(&mut s, day1 + 1, h); // epoch e's first block draws slot 0
+    while beacons::slot(&s, k1).is_none() {
+        blocks(&mut s, h, h + 1);
+        h += 1;
+    }
+    let at = beacons::slot(&s, k1).unwrap();
+    blocks(&mut s, h, at + 2);
     let due = beacons::check(&s, at + 1, &c, k1).unwrap();
     assert_eq!(due.period, 2);
     assert!(due.needs_attestation, "registered on day 0: covered through period 1 only");
@@ -538,7 +560,7 @@ fn re_attestation_is_due_from_the_days_random_slot_after_the_registration_day() 
     assert_eq!(beacons::beacon(&s, 0).attested, Some(2));
     // Re-attested: the rest of the period needs nothing more.
     if k1 + 1 < SLOTS {
-        let h = beacons::slots(&s).unwrap()[k1 as usize + 1];
+        let h = beacons::slot(&s, k1 + 1).expect("drawn with slot k1's hash");
         blocks(&mut s, at + 2, h + 2);
         assert!(!beacons::check(&s, h + 1, &c, k1 + 1).unwrap().needs_attestation);
     }
@@ -601,7 +623,7 @@ fn reserve_service_pays_the_founder_as_if_its_mac_answered_every_slot() {
     // Two independent operators stay alive and the founder's warmed-up Mac
     // sleeps; a committee change seats the reserve keys before the epoch being
     // paid. Each served epoch then pays the founder exactly what its Mac would
-    // have earned answering all four slots — here a sixteenth, counted as one
+    // have earned answering all twelve slots — here a sixteenth, counted as one
     // operator among the answering ones.
     let mut s = reserve_net(0);
     for i in 0..2 {
@@ -778,12 +800,12 @@ fn reserve_service_moves_no_warm_up() {
     let mut shares = Vec::new();
     for day in 0..6u64 {
         for e in day * DAY_EPOCHS..(day + 1) * DAY_EPOCHS {
-            answer(&mut s, 0, e, 0b1111);
-            answer(&mut s, 1, e, 0b0101);
+            answer(&mut s, 0, e, EVERY_SLOT);
+            answer(&mut s, 1, e, HALF_SLOTS);
             set_overdue(&mut s, e, 0);
             let d = distribute(&mut s, (e + 1) * EB).unwrap();
             let level = 5u64.saturating_sub(day);
-            let w = 4 * (WARMUP_STEPS + level);
+            let w = SLOTS * (WARMUP_STEPS + level);
             let got = d.paid.iter().find(|(op, _)| *op == FOUNDER).map(|(_, a)| *a).unwrap();
             assert_eq!(got, d.pool * U256::from(w) / U256::from(MAX_SHARE * FULL), "epoch {e} at level {level}");
             shares.push(got);
@@ -805,8 +827,8 @@ fn hour_profiles_track_when_each_mac_answers() {
     register(&mut s, 0, operator(0), 0);
     register(&mut s, 1, operator(1), 0);
     for e in 1..=2 * DAY_EPOCHS {
-        answer(&mut s, 0, e, 0b1111);
-        answer(&mut s, 1, e, if e % DAY_EPOCHS < 4 { 0b1111 } else { 0 });
+        answer(&mut s, 0, e, EVERY_SLOT);
+        answer(&mut s, 1, e, if e % DAY_EPOCHS < 4 { EVERY_SLOT } else { 0 });
         distribute(&mut s, (e + 1) * EB).unwrap();
     }
     let p0 = beacons::profile(&s, 0);
@@ -834,13 +856,13 @@ fn profiles_recover_from_zero_and_decay_to_it() {
                 1 => true,        // the recovery day
                 _ => !dark(e),    // dark at hours 8..15 otherwise
             };
-            answer(&mut s, 0, e, if up { 0b1111 } else { 0 });
+            answer(&mut s, 0, e, if up { EVERY_SLOT } else { 0 });
             distribute(&mut s, (e + 1) * EB).unwrap();
         }
         let p = beacons::profile(&s, 0);
         assert_eq!(p.at(0), Some(beacons::PROB_SCALE), "an up hour stays exact on day {day}");
-        // The dark bucket: 0/4 = 0, then 4/8 = 1/2, then 3/12 = 1/4.
-        assert_eq!(p.at(8), Some([0, 4, 3][day as usize] * beacons::PROB_SCALE / [4, 8, 12][day as usize]), "day {day}");
+        // The dark bucket: 0/5 = 0, then 5/9, then 4/13.
+        assert_eq!(p.at(8), Some([0, 5, 4][day as usize] * beacons::PROB_SCALE / [5, 9, 13][day as usize]), "day {day}");
     }
 }
 
@@ -926,19 +948,19 @@ fn the_recent_word_keeps_the_last_two_epochs() {
     let mut s = network();
     register(&mut s, 0, operator(0), 0);
     assert_eq!(beacons::recent(&s, 0), None);
-    answer(&mut s, 0, 1, 0b1111);
+    answer(&mut s, 0, 1, EVERY_SLOT);
     distribute(&mut s, 2 * EB).unwrap();
-    assert_eq!(beacons::recent(&s, 0), Some((1, 4, beacons::NO_COUNT)));
+    assert_eq!(beacons::recent(&s, 0), Some((1, 12, beacons::NO_COUNT)));
     answer(&mut s, 0, 2, 0b0001);
     distribute(&mut s, 3 * EB).unwrap();
-    assert_eq!(beacons::recent(&s, 0), Some((2, 1, 4)));
+    assert_eq!(beacons::recent(&s, 0), Some((2, 1, 12)));
     answer(&mut s, 0, 3, 0);
     distribute(&mut s, 4 * EB).unwrap();
     assert_eq!(beacons::recent(&s, 0), Some((3, 0, 1)));
     // An epoch with no distribution leaves a gap: unknown, never read as silence.
-    answer(&mut s, 0, 5, 0b1111);
+    answer(&mut s, 0, 5, EVERY_SLOT);
     distribute(&mut s, 6 * EB).unwrap();
-    assert_eq!(beacons::recent(&s, 0), Some((5, 4, beacons::NO_COUNT)));
+    assert_eq!(beacons::recent(&s, 0), Some((5, 12, beacons::NO_COUNT)));
 }
 
 #[test]

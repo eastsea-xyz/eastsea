@@ -23,7 +23,7 @@
 //!
 //! ```text
 //! mac weight   m = answered_slots × (WARMUP_STEPS + level)       (0 ..= FULL)
-//! FULL         = SLOTS × 2 × WARMUP_STEPS                          (= 112)
+//! FULL         = SLOTS × 2 × WARMUP_STEPS                          (= 336)
 //! operator     w_i = max of its Macs' m                           (≤ FULL)
 //! W            = Σ w_i over operators with w_i > 0                 (N of them)
 //! share_i      = pool(e) × w_i / max(W, MAX_SHARE × FULL)
@@ -56,8 +56,9 @@ use std::collections::BTreeMap;
 pub const REWARDS: Address = address!("0000000000000000000000000000000000007704");
 /// No operator gets more than 1/MAX_SHARE of an epoch's node or proof share.
 pub const MAX_SHARE: u64 = 16;
-/// Beacon slots per epoch (`beacons`): four unpredictable moments an hour.
-pub const SLOTS: u64 = 4;
+/// Beacon slots per epoch (`beacons`): twelve unpredictable moments an hour,
+/// each unknown until roughly an answer window before it.
+pub const SLOTS: u64 = 12;
 /// Epochs per warm-up day.
 pub const DAY_EPOCHS: u64 = 24;
 /// Warm-up days from 0.5 to 1.0 (one level per day).

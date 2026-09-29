@@ -204,17 +204,23 @@ async fn answer_slots(chain: &Chain, outbox: &Outbox, keys: &CandidateKeys, st: 
 }
 
 /// Send one beacon per epoch once this candidate is registered (on a node
-/// rewards network: answer the four slots). Runs forever, also while the Mac
+/// rewards network: answer the slots). Runs forever, also while the Mac
 /// votes: a voting node that stopped beaconing would drop out of the next selection.
 pub async fn beacon_loop(chain: Chain, outbox: Outbox, keys: CandidateKeys) {
     let me = keys.validator_key();
     let mut sent_for = u64::MAX;
     let mut answering = Answering::default();
     loop {
-        // No beacons while catching up: one is a claim this Mac is current,
-        // and it would be checked against a state this node has not reached
-        // (a follower or a validator still catching up before it votes).
-        if chain.behind() > BEHIND_MARGIN {
+        // No beacons while catching up — and none before any height is known:
+        // one is a claim this Mac is current, and it would be checked against
+        // a state this node has not reached (a follower or a validator still
+        // catching up before it votes). An unknown height is not "0 behind"
+        // (2026-09-29): wait until the network says where we are.
+        let Some(behind) = chain.behind_known() else {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            continue;
+        };
+        if behind > BEHIND_MARGIN {
             tokio::time::sleep(Duration::from_secs(1)).await;
             continue;
         }

@@ -17,9 +17,10 @@ use commonware_cryptography::{ed25519, Signer as _};
 use common::{Mac, Net, Opts};
 
 const CHAIN: u64 = 7_791;
-/// Short epochs (four slots of three blocks) so that a sixteenth of an epoch's
-/// proof share is less than one block's.
-const EPOCH_BLOCKS: u64 = 12;
+/// Short epochs (twelve slots of three blocks, a one-block answer window) so a
+/// day stays 288 blocks while a sixteenth of an epoch's proof share spans
+/// several blocks' worth.
+const EPOCH_BLOCKS: u64 = 36;
 const OPERATORS: usize = 4;
 
 fn net(node_rewards: bool) -> Net {
@@ -54,10 +55,11 @@ fn operators_whose_macs_answer_are_paid_each_epoch_and_proofs_are_capped() {
     assert!(rewards::enabled(&net.parent.state));
 
     // Epoch 0: four operators register at block 1 and answer every slot from block 2 on.
+    // The upgrade activates a whole epoch later (the notice rule wants one).
     let regs = (0..OPERATORS).map(|i| net.register(i)).collect();
-    net.step(regs, Some(signed(&net, 2, 20)), vec![]);
+    net.step(regs, Some(signed(&net, 2, E + 1)), vec![]);
     net.run_to(E - 1);
-    assert!((0..OPERATORS as u64).all(|i| common::answered(&net.parent.state, i, 0) == 4));
+    assert!((0..OPERATORS as u64).all(|i| common::answered(&net.parent.state, i, 0) == rewards::SLOTS));
     let before: Vec<U256> = (0..OPERATORS).map(|i| net.balance(i)).collect();
 
     // Block E pays epoch 0: N = 4 new Macs (warm-up 0.5) get 1/32 of the pool each, no claim.
@@ -71,32 +73,43 @@ fn operators_whose_macs_answer_are_paid_each_epoch_and_proofs_are_capped() {
     let mut minted = pool0 / U256::from(32u8) * U256::from(OPERATORS);
     assert_eq!(supply(&net, &others), start + minted);
 
-    // Protocol 2 from block 20; block 21 records block 20's statement.
-    net.run_to(21);
-    // Block 22 (epoch 1): operator 0 proves block 20, a stranger proves block 21.
+    // Protocol 2 from block E + 1; block E + 2 records its statement.
+    net.run_to(E + 2);
+    // Block E + 3: operator 0 proves block E + 1, a stranger proves E + 2.
+    // Both stay in epoch 1, whose proof-share cap (a sixteenth of 36 blocks'
+    // worth) takes several proofs to exhaust.
     let p = &net.parent;
     let op0 = net.operator(0);
     let claim = |h: u64, c: [u8; 32], who: Address| ProofClaim { height: h, prover: who, proof: hex::encode(aether_proving::block::claim(c, who)) };
-    let c20 = proofs::commitment(&p.state, 20).unwrap();
-    let c21 = p.statement.commitment;
+    let c37 = proofs::commitment(&p.state, E + 1).unwrap();
+    let c38 = p.statement.commitment;
     let (b0, s0) = (net.balance(0), p.state.balance(&stranger));
-    let b22 = net.step(vec![], None, vec![claim(20, c20, op0), claim(21, c21, stranger)]);
-    // A sixteenth of epoch 1's proof share is less than one block's share with 12-block epochs.
-    let cap = proof_pool(1, E) / U256::from(16u8);
-    assert!(cap < proof_share(20));
-    assert_eq!(net.balance(0) - b0, cap);
+    let b39 = net.step(vec![], None, vec![claim(E + 1, c37, op0), claim(E + 2, c38, stranger)]);
+    assert_eq!(net.balance(0) - b0, proof_share(E + 1), "one proof: one block's worth");
     assert_eq!(net.parent.state.balance(&stranger), s0, "no issuance for a prover that registered no Mac");
-    assert_eq!(b22.payouts.len(), 2);
-    minted += cap;
+    assert_eq!(b39.payouts.len(), 2);
+    minted += proof_share(E + 1);
     assert_eq!(supply(&net, &others), start + minted);
-    // Operator 0's cap for epoch 1 is used up.
-    let c22 = net.parent.statement.commitment;
-    let b0 = net.balance(0);
-    net.step(vec![], None, vec![claim(22, c22, op0)]);
-    assert_eq!(net.balance(0), b0);
-    assert_eq!(proofs::prover(&net.parent.state, 22), Some(op0));
+    // Operator 0's cap for epoch 1: proofs of E + 3 and E + 4 land the rest of it...
+    let cap = proof_pool(1, E) / U256::from(16u8);
+    assert_eq!(cap, proof_share(E + 1) * U256::from(36u8) / U256::from(16u8), "36 blocks' worth, a sixteenth each");
+    let c39 = net.parent.statement.commitment;
+    net.step(vec![], None, vec![claim(E + 3, c39, op0)]);
+    assert_eq!(net.balance(0) - b0, proof_share(E + 1) * U256::from(2u8), "a second block's worth");
+    let c40 = net.parent.statement.commitment;
+    net.step(vec![], None, vec![claim(E + 4, c40, op0)]);
+    assert_eq!(net.balance(0) - b0, cap, "the third proof exhausts the cap exactly");
+    assert_eq!(proofs::prover(&net.parent.state, E + 4), Some(op0));
+    // ...and a fourth past it mints nothing, though it still proves the block.
+    let c41 = net.parent.statement.commitment;
+    net.step(vec![], None, vec![claim(E + 5, c41, op0)]);
+    assert_eq!(net.balance(0) - b0, cap);
+    assert_eq!(proofs::prover(&net.parent.state, E + 5), Some(op0));
+    minted += cap - proof_share(E + 1);
+    assert_eq!(supply(&net, &others), start + minted);
 
     // Block 2E pays epoch 1 (everyone answered); then operator 3 goes silent for epoch 2.
+    net.run_to(2 * E - 1);
     net.step(vec![], None, vec![]);
     minted += node_pool(1, E) / U256::from(32u8) * U256::from(OPERATORS);
     assert_eq!(supply(&net, &others), start + minted);

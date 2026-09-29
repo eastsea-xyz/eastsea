@@ -12,7 +12,9 @@ use aether_rewards::{beacons, DAY_EPOCHS};
 use common::{Mac, Net, Opts};
 use commonware_cryptography::{ed25519, Signer as _};
 
-const E: u64 = 20;
+/// 48-block epochs (segments of four, a two-block answer window): the shortest
+/// that leave a walkable gap between twelve slots.
+const E: u64 = 48;
 /// One draw (epoch_blocks × draw_epochs, the registry's default 24 epochs).
 const SPAN: u64 = E * DAY_EPOCHS;
 
@@ -204,7 +206,7 @@ fn a_protocol3_spread_draw_hands_over_to_the_roster_it_commits() {
     let upgrade = n.committee.sign_upgrade(&aether_node::upgrade::Upgrade {
         chain_id: n.chain_id,
         protocol: 3,
-        activate_at: 24,
+        activate_at: 64, // past the one-epoch notice (48 blocks) the chain demands
         releases: vec![aether_node::upgrade::Release {
             platform: "macos-arm64-dmg".into(),
             version: "0.6.0".into(),

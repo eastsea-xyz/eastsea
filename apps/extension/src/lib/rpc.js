@@ -1,3 +1,4 @@
+import { Brand } from './brand.js';
 // JSON-RPC to Aether nodes. The first endpoint that answers on the right chain
 // is used; one that does not answer sleeps 5 s, doubling to 60 s.
 
@@ -71,7 +72,7 @@ export class Rpc {
       } catch { /* not answering */ }
       this.fail(url);
     }
-    throw new RpcError('No Aether node answers. Turn on the node in the Aether app, or add a node in Settings.', 4900);
+    throw new RpcError(`No ${Brand.project} node answers. Turn on the node in the ${Brand.project} app, or add a node in Settings.`, 4900);
   }
 
   /**
@@ -79,7 +80,7 @@ export class Rpc {
    * service such as the testnet faucet runs on only some nodes).
    */
   async callAny(method, params = [], { notHere = /does not run|not supported|method not found/i } = {}) {
-    let last = new RpcError('No Aether node answers.', 4900);
+    let last = new RpcError(`No ${Brand.project} node answers.`, 4900);
     for (const url of this.urls) {
       try {
         const j = await this.post(url, method, params, TIMEOUT);

@@ -11,12 +11,12 @@ const base = { address: own, height: 7, tx_index: 0, tx_hash: '0xabc', timestamp
   method: null, success: true, tokens: [] };
 
 test('native receive and router swap are readable, with token identity', () => {
-  assert.match(describeHistory(base).title, /Received 5 AETH from/);
+  assert.match(describeHistory(base).title, /Received 5 DBLN from/);
   const swap = { ...base, address: own, from: own, to: router, kind: 'contract_call', method: '0xac344b4d',
     value_wei: '10000000000000000000', tokens: [{ token, from: router, to: own, amount: '250000000000000000000' }],
     pair_swaps: [{ pair: router, amount0_in: '10', amount1_in: '0', amount0_out: '0', amount1_out: '250' }] };
   const title = describeHistory(swap, { sources: { router }, catalog: { [token]: { symbol: 'NEB', decimals: 18 } } }).title;
-  assert.match(title, /Swapped 10 AETH → 250 NEB · 0x7878…7878/);
+  assert.match(title, /Swapped 10 DBLN → 250 NEB · 0x7878…7878/);
 });
 
 test('node finality replaces a local pending row once per hash', () => {

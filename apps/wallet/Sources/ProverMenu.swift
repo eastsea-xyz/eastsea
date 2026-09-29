@@ -10,13 +10,13 @@ struct MenuBarPanel: View {
     @Environment(\.openWindow) private var openWindow
 
     private var balance: String {
-        model.account.map { "\(Amount.text(Double(Wei.format($0.balanceWei)) ?? 0)) AETH" } ?? "…"
+        model.account.map { "\(Amount.text(Double(Wei.format($0.balanceWei)) ?? 0)) \(Brand.coinTicker)" } ?? "…"
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Aether").font(.headline)
+                Text("\(Brand.project)").font(.headline)
                 Spacer()
                 Text(Short.address(model.address)).font(.caption.monospaced()).foregroundStyle(.secondary)
             }
@@ -59,14 +59,14 @@ struct MenuBarPanel: View {
                             .foregroundStyle(.secondary)
                     }
                     if let r = p.last_reward {
-                        Text("Last reward \(Wei.format(LocalRPC.decimal(r))) AETH").foregroundStyle(.green)
+                        Text("Last reward \(Wei.format(LocalRPC.decimal(r))) \(Brand.coinTicker)").foregroundStyle(.green)
                     }
                     if let e = p.error { Text(e).foregroundStyle(.red).lineLimit(2) }
                 }.font(.aeCaption)
             }
             Divider()
             HStack {
-                Button("Open Aether") {
+                Button("Open \(Brand.project)") {
                     NSApp.setActivationPolicy(.regular)
                     openWindow(id: "main")
                     NSApp.activate(ignoringOtherApps: true)
@@ -78,7 +78,7 @@ struct MenuBarPanel: View {
                 Spacer()
                 Menu {
                     if node.prove { Button("Export Reward Records…") { exportRewards() } }
-                    Button("Quit Aether") { NSApp.terminate(nil) }
+                    Button("Quit \(Brand.project)") { NSApp.terminate(nil) }
                 } label: { Image(systemName: "ellipsis.circle") }
                     .menuStyle(.borderlessButton).fixedSize()
             }

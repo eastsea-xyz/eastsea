@@ -1,8 +1,12 @@
 // The watchdog's decisions (docs/design/24-self-healing.md layer 2), fed the
 // events NodeController sees. Pure logic, no app:
-//   swiftc -o /tmp/watchdog-check apps/wallet/Sources/NodeWatchdog.swift apps/wallet/Tests/watchdog/main.swift && /tmp/watchdog-check
+//   swiftc -o ./tmp/watchdog-check apps/wallet/Sources/Brand.swift apps/wallet/Sources/NodeWatchdog.swift apps/wallet/Tests/watchdog/main.swift && ./tmp/watchdog-check
 import Foundation
 func check(_ c: Bool, _ m: String) { if !c { print("FAIL", m); exit(1) } }
+check(Brand.project == "EastSea" && Brand.projectKo == "동해", "project names are localized")
+check(Brand.coinName == "AETH" && Brand.coinTicker == "AETH", "coin name stays pending")
+check(["EastSea", "동해"].contains { NodeWatchdog.Failure.alreadyRunning.sentence.contains($0) },
+      "another running app is named by the current brand")
 
 let t0 = Date(timeIntervalSince1970: 1_790_000_000)
 

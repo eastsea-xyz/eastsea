@@ -1,3 +1,4 @@
+import { Brand } from './lib/brand.js';
 // The extension's service worker: answers pages (through content.js), opens
 // an approval window for anything that needs the user, and serves the popup.
 // The origin of a page request always comes from Chrome (the port's sender),
@@ -184,7 +185,7 @@ async function approve(id) {
 // ---- page requests ----
 
 async function pageRequest(origin, method, params = []) {
-  if (!originAllowed(origin)) throw err(4100, 'Aether Wallet only talks to https pages (or pages served from this computer).');
+  if (!originAllowed(origin)) throw err(4100, `${Brand.project} Wallet only talks to https pages (or pages served from this computer).`);
   if (method === 'eth_chainId') return CHAIN_HEX;
   if (method === 'eth_accounts' || method === 'aether_accounts') {
     const a = await connectedAddress(origin);
@@ -200,7 +201,7 @@ async function pageRequest(origin, method, params = []) {
   }
   if (SEND_METHODS.has(method)) {
     const address = await connectedAddress(origin);
-    if (!address) throw err(4100, 'Connect this page to Aether Wallet first (eth_requestAccounts).');
+    if (!address) throw err(4100, `Connect this page to ${Brand.project} Wallet first (eth_requestAccounts).`);
     const raw = params[0] || {};
     if (raw.from && raw.from.toLowerCase() !== address.toLowerCase()) throw err(4100, '`from` is not the connected account.');
     let tx;
@@ -208,7 +209,7 @@ async function pageRequest(origin, method, params = []) {
     return askUser(origin, 'send', tx);
   }
   if (READ_METHODS.has(method)) return rpc.call(method, params);
-  throw err(4200, `Aether Wallet does not support ${method}.`);
+  throw err(4200, `${Brand.project} Wallet does not support ${method}.`);
 }
 
 chrome.runtime.onConnect.addListener((port) => {
@@ -302,7 +303,7 @@ async function displaySets(chainId) {
     official,
     hidden: choices.hidden || [],
     shown: choices.shown || [],
-    officialSymbols: [{ symbol: 'AETH', name: 'Aether' },
+    officialSymbols: [{ symbol: Brand.coinTicker, name: Brand.coinName },
       ...official.map((a) => catalog.tokens[a.toLowerCase()]).filter(Boolean).map((t) => ({ symbol: t.symbol, name: t.name }))],
   };
 }
@@ -352,7 +353,7 @@ const ui = {
   assets: async ({ force } = {}) => {
     const base = await refreshAssets({ force });
     const status = await rpc.call('aether_status', []).catch(() => null);
-    if (!status) return { ...base, unverified: [], officialSymbols: [{ symbol: 'AETH', name: 'Aether' }] };
+    if (!status) return { ...base, unverified: [], officialSymbols: [{ symbol: Brand.coinTicker, name: Brand.coinName }] };
     const sets = await displaySets(status.chain_id);
     const { main, unverified } = splitHoldings(base.tokens, sets);
     return { ...base, tokens: main, unverified, officialSymbols: sets.officialSymbols };
@@ -385,9 +386,9 @@ const ui = {
     }
     const hash = await wallet.send(tx);
     if (token) {
-      track(hash, { title: `Sent ${formatTokenAmount(token.amount, token.decimals)} ${token.symbol} to ${tokenShort(to)}`, origin: 'Aether Wallet', value: tx.value_wei, to, token: token.address });
+      track(hash, { title: `Sent ${formatTokenAmount(token.amount, token.decimals)} ${token.symbol} to ${tokenShort(to)}`, origin: `${Brand.project} Wallet`, value: tx.value_wei, to, token: token.address });
     } else {
-      track(hash, { title: 'Send AETH', origin: 'Aether Wallet', value: tx.value_wei, to });
+      track(hash, { title: `Send ${Brand.coinTicker}`, origin: `${Brand.project} Wallet`, value: tx.value_wei, to });
     }
     return { hash };
   },
@@ -396,7 +397,7 @@ const ui = {
   faucet: async () => {
     const info = await vault.info();
     const hash = await wallet.faucet(info.address);
-    track(hash, { title: 'Test AETH from the faucet', origin: 'Aether Wallet' });
+    track(hash, { title: `Test ${Brand.coinTicker} from the faucet`, origin: `${Brand.project} Wallet` });
     return { hash };
   },
   quote: ({ id }) => quote(id),

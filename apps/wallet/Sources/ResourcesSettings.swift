@@ -25,7 +25,7 @@ struct ResourcesSection: View {
                 node.prove = $0
             }))
             .disabled(model.address.isEmpty)
-            .help("Your node proves recent blocks with Metal. The first valid proof of a block gets a test AETH reward in this wallet.")
+            .help("Your node proves recent blocks with Metal. The first valid proof of a block gets a test \(Brand.coinTicker) reward in this wallet.")
             if developerMode {
                 Picker("최대 메모리", selection: $node.proverMemory) {
                     Text("자동 (RAM의 25%)").tag("auto")

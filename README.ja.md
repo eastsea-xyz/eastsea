@@ -1,4 +1,4 @@
-# Aether Node
+# EastSea Node
 
 [English](README.md) · [한국어](README.ko.md) · [中文](README.zh-CN.md) · **日本語** · [Tiếng Việt](README.vi.md) · [Español](README.es.md)
 
@@ -7,7 +7,7 @@
 [![Legal Disclaimer](https://img.shields.io/badge/Legal-Disclaimer%20%26%20Terms-red.svg)](DISCLAIMER.md)
 
 > [!IMPORTANT]
-> Aether Node は **「現状のまま（AS IS）」** 提供される、実験的かつ非商用の研究用ソフトウェアです。本番用のブロックチェーンではなく、監査も受けていません。すべてのトークン（AETH）と報酬はテスト用の成果物であり、**金銭的価値は一切ありません**。[DISCLAIMER.md](DISCLAIMER.md) を参照してください。
+> EastSea Node は **「現状のまま（AS IS）」** 提供される、実験的かつ非商用の研究用ソフトウェアです。本番用のブロックチェーンではなく、監査も受けていません。すべてのトークン（AETH）と報酬はテスト用の成果物であり、**金銭的価値は一切ありません**。[DISCLAIMER.md](DISCLAIMER.md) を参照してください。
 
 ## 概要
 
@@ -94,7 +94,7 @@ target/debug/aether blocks 10
 | アカウント | P-256（Secure Enclave）、secp256k1、Ed25519。`AetherAccount` への EIP-7702 委任により、1 つの署名で一括支払いが可能。2 台目のデバイスの Secure Enclave 鍵をリカバリーキーとして使用可能 | セッションキー、複数ガーディアン、時間ロック付きリカバリー |
 | クライアント | Mac と iOS のウォレット（Simple モードと Developer モード）、CLI、`aether-agent`（MCP）のすべてが残高をローカルで検証 | クライアント内での ZK ブロック証明、TestFlight |
 | 検閲耐性 | FOCIL 方式のインクルージョンリスト：リスト上のトランザクションを含まないブロックには、バリデータが投票を拒否する | 暗号化 mempool |
-| 証明（spike） | Jolt zkVM が実際の Aether ブロックを証明し、root はネイティブ実行と一致。Mac 1 台あたり毎時約 270 トランザクション。証明はチェーンより遅れて追従する | Metal バックエンド、チェックポイント証明 |
+| 証明（spike） | Jolt zkVM が実際の EastSea ブロックを証明し、root はネイティブ実行と一致。Mac 1 台あたり毎時約 270 トランザクション。証明はチェーンより遅れて追従する | Metal バックエンド、チェックポイント証明 |
 
 `legacy/` は以前の単一ノードのデモで、すでに置き換えられています。
 

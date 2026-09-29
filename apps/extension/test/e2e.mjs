@@ -30,7 +30,7 @@ try {
   await popup.setViewportSize({ width: 360, height: 600 });
   await popup.goto(`chrome-extension://${id}/ui/popup.html`);
   // First run: the one-time notice comes before the onboarding.
-  await popup.getByText('Before you use Aether').waitFor();
+  await popup.getByText('Before you use EastSea').waitFor();
   await popup.screenshot({ path: SHOTS + '0-notice.png' });
   await popup.getByRole('button', { name: 'I understand' }).click();
   await popup.getByText('Create a wallet').waitFor();

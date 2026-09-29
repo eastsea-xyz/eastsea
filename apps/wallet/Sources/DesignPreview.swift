@@ -59,7 +59,7 @@ extension WalletModel {
         activity = [
             ActivityItem(date: now.addingTimeInterval(-300), kind: .received, title: "Proof reward · block #184024", amount: 0.5, state: .done),
             ActivityItem(date: now.addingTimeInterval(-3_600), kind: .sent, title: "Sent to 0x12ab…90ab", amount: -2, state: .done),
-            ActivityItem(date: now.addingTimeInterval(-60_000), kind: .received, title: "Test AETH from faucet", amount: 10, state: .done),
+            ActivityItem(date: now.addingTimeInterval(-60_000), kind: .received, title: "Test \(Brand.coinTicker) from faucet", amount: 10, state: .done),
         ]
         tokens = [
             TokenHolding(token: TokenInfo(address: "0x6bc5ded76ccbdc8df35e7cd28b68fed245a74416", symbol: "NEB", name: "Nebula", decimals: 18), balance: "250000000000000000000"),

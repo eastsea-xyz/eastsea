@@ -1,4 +1,4 @@
-# Aether Node
+# EastSea Node
 
 [English](README.md) · [한국어](README.ko.md) · [中文](README.zh-CN.md) · [日本語](README.ja.md) · **Tiếng Việt** · [Español](README.es.md)
 
@@ -7,7 +7,7 @@
 [![Legal Disclaimer](https://img.shields.io/badge/Legal-Disclaimer%20%26%20Terms-red.svg)](DISCLAIMER.md)
 
 > [!IMPORTANT]
-> Aether Node là phần mềm nghiên cứu thử nghiệm, phi thương mại, được cung cấp **"NGUYÊN TRẠNG" (AS IS)**. Đây không phải là blockchain dùng cho môi trường production và chưa được kiểm toán. Mọi token (AETH) và phần thưởng chỉ là sản phẩm thử nghiệm, **không có bất kỳ giá trị tiền tệ nào**. Xem [DISCLAIMER.md](DISCLAIMER.md).
+> EastSea Node là phần mềm nghiên cứu thử nghiệm, phi thương mại, được cung cấp **"NGUYÊN TRẠNG" (AS IS)**. Đây không phải là blockchain dùng cho môi trường production và chưa được kiểm toán. Mọi token (AETH) và phần thưởng chỉ là sản phẩm thử nghiệm, **không có bất kỳ giá trị tiền tệ nào**. Xem [DISCLAIMER.md](DISCLAIMER.md).
 
 ## Đây là gì
 
@@ -94,7 +94,7 @@ target/debug/aether blocks 10
 | Tài khoản | P-256 (Secure Enclave), secp256k1 và Ed25519. Ủy quyền EIP-7702 cho `AetherAccount` cho phép thanh toán theo lô với một chữ ký. Khóa Secure Enclave của thiết bị thứ hai có thể làm khóa khôi phục | Session key, nhiều người giám hộ, khôi phục có khóa thời gian |
 | Client | Ví Mac và iOS (chế độ Đơn giản và Nhà phát triển), CLI và `aether-agent` (MCP) đều xác minh số dư cục bộ | Bằng chứng ZK cho block trong client, TestFlight |
 | Chống kiểm duyệt | Danh sách bao gồm kiểu FOCIL: validator từ chối bỏ phiếu cho block bỏ sót các giao dịch có trong danh sách | Mempool mã hóa |
-| Chứng minh (spike) | Jolt zkVM chứng minh được các block Aether thật, và root khớp với kết quả thực thi gốc. Khoảng 270 giao dịch mỗi giờ trên mỗi máy Mac. Bằng chứng đi sau chuỗi | Backend Metal, bằng chứng checkpoint |
+| Chứng minh (spike) | Jolt zkVM chứng minh được các block EastSea thật, và root khớp với kết quả thực thi gốc. Khoảng 270 giao dịch mỗi giờ trên mỗi máy Mac. Bằng chứng đi sau chuỗi | Backend Metal, bằng chứng checkpoint |
 
 `legacy/` là bản demo một node trước đây và đã được thay thế.
 

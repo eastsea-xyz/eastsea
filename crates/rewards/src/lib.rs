@@ -84,9 +84,9 @@ const TAG_OPERATOR: u64 = 2;
 const TAG_RESERVE: u64 = 7;
 /// Seating of the founder's reserve keys, rewritten at each committee switch.
 const TAG_SEATED: u64 = 8;
-// 11..=13 are the concurrent beacons profile words (hour-of-day profile,
-// offers, recent counts) on phase1-nextgen: the reserve-hardening tags below
-// start past them so the merge keeps every tag distinct (the ALL_TAGS test).
+// 11..=13 are the beacons profile words (hour-of-day profile, offers, recent
+// counts), so the reserve-hardening tags below start past them: every tag
+// stays distinct (the ALL_TAGS test).
 /// The running voting committee: the genesis roster first, then the members of
 /// each handoff from the block they take over at (a chain system write, so
 /// every node — validator, follower, or syncing from a snapshot — holds the
@@ -107,11 +107,9 @@ const TAG_POOL: u64 = 14;
 const TAG_OVERDUE: u64 = 15;
 
 /// Every storage tag of REWARDS (here and in beacons.rs), in one list: a new
-/// record takes the next free number (two records once shared tag 8). The
-/// reserve-hardening words start at 14 because 11..=13 are the beacons
-/// profile words already taken on phase1-nextgen.
+/// record takes the next free number (two records once shared tag 8).
 #[cfg(test)]
-pub(crate) const ALL_TAGS: [u64; 13] = [
+pub(crate) const ALL_TAGS: [u64; 16] = [
     ENABLED,
     TAG_MAC,
     TAG_OPERATOR,
@@ -125,6 +123,9 @@ pub(crate) const ALL_TAGS: [u64; 13] = [
     beacons::TAG_SLOT_HASH,
     beacons::TAG_DAY,
     beacons::TAG_BEACON,
+    beacons::TAG_PROFILE,
+    beacons::TAG_OFFERED,
+    beacons::TAG_RECENT,
 ];
 
 pub mod beacons;
@@ -334,6 +335,12 @@ pub fn distribute(state: &mut WorldState, height: u64) -> Result<Distribution, S
     }
     for (c, m) in candidates.iter().zip(macs) {
         set_mac(state, c.index, m);
+    }
+    // The hour-of-day profile and the last two epochs' counts (13-roadmap.md,
+    // F): what the spread draw and early replacement read. A Mac registered
+    // mid-epoch is judged from its first full day.
+    for (c, a) in candidates.iter().zip(answered.iter()) {
+        beacons::note(state, c.index, epoch, *a, c.registered_epoch < epoch);
     }
     Ok(Distribution { epoch, pool, paid, unminted: pool - minted })
 }

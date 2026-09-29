@@ -12,7 +12,7 @@ use aether_node::block::{Block, Context, EPOCH};
 use aether_node::chain::{build_payload, Chain, ChainConfig, ChainError, Executed, Extras, Reserve};
 use aether_node::dkg::{Ceremony, DkgOutput, KeyFile, Msg, Round as KeyRound, To};
 use aether_node::upgrade::SignedUpgrade;
-use aether_rewards::beacons;
+use aether_rewards::{beacons, DAY_EPOCHS};
 use aether_types::{Address, GasVector, TxEnvelope, U256};
 use commonware_codec::Encode as _;
 use commonware_consensus::types::{Round, View};
@@ -51,6 +51,9 @@ pub enum Mac {
     Slots(u64),
     /// Answers, but never gets a re-attestation (its app gives no DeviceCheck token).
     NoReattest,
+    /// Answers every slot of the hours this bit mask covers — a Mac asleep
+    /// through the rest of the day (hour = epoch % 24).
+    Awake(u32),
     /// Off.
     Off,
 }
@@ -186,6 +189,7 @@ impl Net {
                 Mac::Off => false,
                 Mac::Slots(mask) => mask & (1 << d.slot) != 0,
                 Mac::NoReattest => !d.needs_attestation,
+                Mac::Awake(mask) => mask & (1 << (d.epoch % DAY_EPOCHS)) != 0,
                 Mac::Honest => true,
             })
             .map(|d| {
@@ -410,7 +414,8 @@ impl Committee {
         let sharing = self.output();
         let n = self.keys.len() as u32;
         let partials: Vec<_> = self.keys.iter().map(|k| aether_node::upgrade::sign_partial(u, &self.files[&k.public_key()].decode(n).unwrap().1)).collect();
-        aether_node::upgrade::combine(sharing.public(), &partials[..3]).unwrap()
+        let quorum = sharing.public().required() as usize;
+        aether_node::upgrade::combine(sharing.public(), &partials[..quorum]).unwrap()
     }
 
     /// The committee's threshold signature on draw `draw`'s seed, as
@@ -419,7 +424,8 @@ impl Committee {
         let sharing = self.output();
         let n = self.keys.len() as u32;
         let shares: Vec<_> = self.keys.iter().map(|k| self.files[&k.public_key()].decode(n).unwrap().1).collect();
-        aether_node::handoff::sign_seed(chain_id, sharing.public(), draw, &[&shares[0], &shares[1], &shares[2]])
+        let quorum: Vec<&_> = shares[..sharing.public().required() as usize].iter().collect();
+        aether_node::handoff::sign_seed(chain_id, sharing.public(), draw, &quorum)
     }
 
     /// Reshare the identity to `members` (ed25519 key, node id) at key round
@@ -454,12 +460,13 @@ impl Committee {
             members: members.iter().map(|(k, node)| (hex::encode(k.public_key().encode()), node.clone())).collect(),
             signature: String::new(),
         };
-        // A quorum of the running committee signs (3 of 4 here).
+        // A quorum of the running committee signs (the sharing's own threshold,
+        // three of the four genesis keys and more once a handoff has grown it).
         let partials: Vec<_> = self.keys.iter().map(|k| {
             let s = &shares[&k.public_key()];
             aether_node::handoff::check_partial(chain_id, previous.public(), &h, &aether_node::handoff::sign_partial(chain_id, &h, s)).unwrap()
         }).collect();
-        let signed = aether_node::handoff::combine(previous.public(), &h, &partials[..3]).unwrap();
+        let signed = aether_node::handoff::combine(previous.public(), &h, &partials[..previous.public().required() as usize]).unwrap();
         (next, signed)
     }
 }

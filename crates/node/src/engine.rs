@@ -59,6 +59,18 @@ const FREEZER_JOURNAL_TARGET_SIZE: u64 = 1024 * 1024 * 1024;
 const FREEZER_JOURNAL_COMPRESSION: Option<u8> = Some(3);
 const REPLAY_BUFFER: NonZero<usize> = NZUsize!(8 * 1024 * 1024);
 const WRITE_BUFFER: NonZero<usize> = NZUsize!(1024 * 1024);
+/// The vote journal's own write buffer. Simplex keeps one section file per view
+/// and one write buffer per open section; a view holds a few votes (KBs). The
+/// journal is only pruned below the last finalization minus view retention, so
+/// while the chain stalls it gathers one section per burned view (2026-09-29:
+/// 190 sections) and every one of them carried a full WRITE_BUFFER of RAM.
+/// 64 KiB still batches thousands of votes per flush.
+const VOTE_WRITE_BUFFER: NonZero<usize> = NZUsize!(64 * 1024);
+/// A vote journal past this many section files is worth a warning: the journal
+/// opens every section at startup (one file descriptor each), and a validator
+/// holds ~70 more, so a few hundred sections exhausts launchd's 256-fd default
+/// exactly as on 2026-09-29 ("Too many open files", crash-looped).
+const VOTE_JOURNAL_WARN_SECTIONS: usize = 128;
 const PAGE_CACHE_PAGE_SIZE: NonZero<u16> = page_size(4_096);
 const PAGE_CACHE_CAPACITY: NonZero<usize> = NZUsize!(8_192);
 const MAX_REPAIR: NonZero<usize> = NZUsize!(20);
@@ -195,6 +207,15 @@ async fn partition_exists<E: Storage>(context: &E, partition: &str) -> Result<bo
     }
 }
 
+/// How many blobs a partition holds (0 when it does not exist yet).
+async fn partition_blobs<E: Storage>(context: &E, partition: &str) -> Result<usize, commonware_runtime::Error> {
+    match context.scan(partition).await {
+        Ok(names) => Ok(names.len()),
+        Err(commonware_runtime::Error::PartitionMissing(_)) => Ok(0),
+        Err(e) => Err(e),
+    }
+}
+
 impl<E, B, P> Engine<E, B, P>
 where
     E: BufferPooler + Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics,
@@ -312,6 +333,24 @@ where
         let epocher = cfg.epocher;
         let epoch = epocher.current();
         let floor_digest = cfg.epoch_floor.unwrap_or_else(|| cfg.genesis.digest());
+        // The vote journal keeps one section file per view and opens every
+        // section at startup. Say how many we are about to open: a stalled
+        // chain piles up sections (they are pruned only below the last
+        // finalization), and on 2026-09-29 that is what hit the fd limit.
+        let vote_partition = match &recovered {
+            Some(f) => format!("{prefix}-consensus-r{}", f.view().get()),
+            None if epoch.get() == 0 => format!("{prefix}-consensus"),
+            None => format!("{prefix}-consensus-e{}", epoch.get()),
+        };
+        match partition_blobs(&context, &vote_partition).await {
+            Ok(sections) if sections > VOTE_JOURNAL_WARN_SECTIONS => warn!(
+                partition = %vote_partition,
+                sections,
+                "vote journal holds many section files (one per view; pruned only below the last finalization): every one is opened at startup"
+            ),
+            Ok(sections) => tracing::info!(partition = %vote_partition, sections, "vote journal sections"),
+            Err(e) => warn!(%e, partition = %vote_partition, "could not count vote journal sections"),
+        }
         let (marshal, marshal_mailbox, _) = MarshalActor::init(
             context.child("marshal"),
             finalizations,
@@ -348,11 +387,7 @@ where
                 reporter: marshal_mailbox.clone(),
                 track_historical_votes: false,
                 // One vote journal per epoch: a new committee never replays the old one's votes.
-                partition: match &recovered {
-                    Some(f) => format!("{prefix}-consensus-r{}", f.view().get()),
-                    None if epoch.get() == 0 => format!("{prefix}-consensus"),
-                    None => format!("{prefix}-consensus-e{}", epoch.get()),
-                },
+                partition: vote_partition,
                 mailbox_size,
                 floor: match recovered {
                     Some(f) => simplex::Floor::Finalized(f),
@@ -366,7 +401,7 @@ where
                 skip: simplex::SkipPolicy::Enabled { timeout: cfg.skip_timeout, budget: simplex::SkipBudget::Participants },
                 forward: simplex::ForwardPolicy::Disabled,
                 replay_buffer: REPLAY_BUFFER,
-                write_buffer: WRITE_BUFFER,
+                write_buffer: VOTE_WRITE_BUFFER,
                 blocker: cfg.blocker,
                 page_cache,
                 elector: aether_light::ELECTOR,

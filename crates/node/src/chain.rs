@@ -978,16 +978,20 @@ impl Chain {
         // The node-rewards words that keep the committee in state (finding 2):
         // the draw's pool freezes at its first block, the running committee
         // rewrites at each switch, the decided next roster commits with a draw
-        // seed or a reserve reseat, and the overdue count ticks at every epoch.
+        // seed, a reserve reseat or an early replacement, and the overdue count
+        // ticks at every epoch.
         let params = aether_execution::registry::params(&parent.state);
         let span = params.epoch_blocks * params.draw_epochs;
         let rewards_on = aether_rewards::enabled(&parent.state);
         let freezes =
             rewards_on && parent.height > 0 && (parent.height + 1).is_multiple_of(span);
-        let epochs = rewards_on
+        // A registry epoch's first block: where the voting-set rules the draw
+        // does not own (early replacement, the reserve seating, the overdue
+        // count) decide, from the state this block's distribution just wrote.
+        let boundary = rewards_on
             && parent.height > 0
-            && aether_rewards::reserve(&parent.state).is_some()
             && (parent.height + 1).is_multiple_of(params.epoch_blocks);
+        let epochs = boundary && aether_rewards::reserve(&parent.state).is_some();
         // A committee takes over here: its members become the recorded running
         // committee, and the seating of the founder's reserve keys becomes
         // state (read below, after `distribute`).
@@ -1004,7 +1008,7 @@ impl Chain {
             && !slots
             && !switches
             && !freezes
-            && !epochs
+            && !boundary
             && proofs.is_empty()
             && answers.is_empty()
         {
@@ -1091,8 +1095,9 @@ impl Chain {
         // With the draw's seed on chain, every node draws the same next voting
         // set — and commits it: only a handoff naming exactly this roster may
         // carry the committee over (`next_handoff`). The same computation
-        // `finalize` used to run node-locally, on the same inputs, with the
-        // running committee from state.
+        // `finalize` runs node-locally on the other networks, on the same
+        // inputs — the profiles this block's distribution wrote above, the
+        // running committee from state — so every node commits the same roster.
         if let Some(s) = seed {
             let draw = current_draw(&parent.state, parent.height + 1);
             if s.draw == draw
@@ -1108,14 +1113,22 @@ impl Chain {
                         ops.get(k).map(|o| if capped { o.clone() } else { k.to_string() })
                     };
                     let running = crate::rotation::Committee { members: aether_rewards::committee(&state) };
-                    // Protocol 3: qualifying Macs join (up to 16 seats) instead of replacing members.
+                    let reserve = Reserve::of(&parent.state);
+                    // Each seat goes where it lifts the committee's worst hour
+                    // of the day (13-roadmap.md, F): profiles from state, so
+                    // every node reads the same hours.
+                    let availability = (version >= 3 || reserve.is_some())
+                        .then(|| crate::rotation::availability(&state));
+                    let hours = |k: &str| availability.as_ref().and_then(|a| a.get(k).copied());
+                    // Protocol 3: qualifying Macs join (up to 16 seats) instead of
+                    // replacing members, each where the odds need it most.
                     let drawn = if version >= 3 {
-                        crate::rotation::draw_v3(&pool, &seed_bytes, operator, &running)
+                        crate::rotation::draw_spread(&pool, &seed_bytes, operator, &running, hours)
                     } else {
                         crate::rotation::draw(&pool, &seed_bytes, operator, &running)
                     };
                     // Founder reserve keys join or leave with the draw too.
-                    let drawn = match Reserve::of(&parent.state) {
+                    let drawn = match reserve {
                         Some(r) => crate::rotation::with_reserve(
                             drawn,
                             &pool,
@@ -1123,6 +1136,7 @@ impl Chain {
                             |k: &str| ops.get(k).cloned(),
                             &r,
                             &running,
+                            hours,
                         ),
                         None => drawn,
                     };
@@ -1133,38 +1147,69 @@ impl Chain {
                 }
             }
         }
-        // Founder reserve keys at an epoch boundary the draw does not own (its
-        // own first block leaves seating to the draw): recompute the seating
-        // for the epoch ahead — the frozen pool, the recorded committee, the
-        // parent's digest for ticket order — and commit it as this draw's
-        // roster. The seed for this draw, or a handoff still on its way, each
-        // stand in its way, as the node-local rule they replace did.
-        if epochs
+        // The voting-set rules of an epoch boundary the draw does not own (its
+        // own first block leaves the set to the draw): early replacement first,
+        // then the founder reserve keys' seating — the order `finalize` runs
+        // them in on the other networks decides which one commits here. Each
+        // recomputes the set for the epoch ahead — the frozen pool, the
+        // recorded committee, the parent's digest for ticket order, the
+        // profiles this block's distribution wrote — and commits it as this
+        // draw's roster. The seed for this draw, or a handoff still on its way,
+        // each stand in both' way, as the node-local rules they replace did.
+        if boundary
             && !freezes
             && parent.handoff.as_ref().is_none_or(|p| p.switch <= parent.height + 1)
             && aether_rewards::next_roster(&state).is_none_or(|(d, _)| d != current_draw(&parent.state, parent.height + 1))
         {
             let running = crate::rotation::Committee { members: aether_rewards::committee(&state) };
-            if let (Some(reserve), false) = (Reserve::of(&parent.state), running.members.is_empty()) {
-                let pool = crate::rotation::eligible(
-                    &parent.state,
-                    (parent.height + 1) / params.epoch_blocks,
-                    params.min_streak,
-                );
+            let epoch = (parent.height + 1) / params.epoch_blocks;
+            if !running.members.is_empty() {
+                let pool = crate::rotation::eligible(&parent.state, epoch, params.min_streak);
                 let ops = crate::rotation::operators(&parent.state);
-                let next = crate::rotation::with_reserve(
-                    None,
+                let availability = crate::rotation::availability(&state);
+                let recents = crate::rotation::recents(&state);
+                let hours = |k: &str| availability.get(k).copied();
+                // Early replacement (13-roadmap.md, F): a member silent through
+                // the last two epochs hands its seat to the candidate the
+                // spread rule picks, while the old quorum still stands.
+                let replaced = crate::rotation::replace_silent(
+                    &running,
                     &pool,
                     &digest_bytes(&parent.digest),
                     |k: &str| ops.get(k).cloned(),
-                    &reserve,
-                    &running,
+                    hours,
+                    |k: &str| recents.get(k).copied(),
+                    epoch,
                 );
-                if let Some(members) = next {
-                    tracing::info!(
-                        members = members.len(),
-                        "founder reserve keys change the voting set"
-                    );
+                let members = match (replaced, Reserve::of(&parent.state)) {
+                    (Some(members), _) => {
+                        tracing::info!(
+                            members = members.len(),
+                            "a silent member is replaced while the quorum still stands"
+                        );
+                        Some(members)
+                    }
+                    // From four independent operators on, the keys' staying is a
+                    // question of the committee's predicted worst hour.
+                    (None, Some(reserve)) => crate::rotation::with_reserve(
+                        None,
+                        &pool,
+                        &digest_bytes(&parent.digest),
+                        |k: &str| ops.get(k).cloned(),
+                        &reserve,
+                        &running,
+                        hours,
+                    )
+                    .map(|members| {
+                        tracing::info!(
+                            members = members.len(),
+                            "founder reserve keys change the voting set"
+                        );
+                        members
+                    }),
+                    (None, None) => None,
+                };
+                if let Some(members) = members {
                     aether_rewards::commit_roster(
                         &mut state,
                         current_draw(&parent.state, parent.height + 1),
@@ -1808,7 +1853,7 @@ impl Chain {
         };
         let listed_hashes: std::collections::HashSet<TxHash> =
             listed.iter().map(aether_execution::tx_hash).collect();
-        let mut rest: Vec<TxEnvelope> = g
+        let rest: Vec<TxEnvelope> = g
             .mempool
             .iter()
             .filter(|(h, t)| !listed_hashes.contains(*h) && !censored(t))
@@ -2074,6 +2119,8 @@ impl Chain {
             if g.seed_ready.as_ref() == Some(&s.1) {
                 g.seed_ready = None;
             }
+            // Node-rewards networks committed the roster with the seed's own
+            // block (`pre_state_with`); the others draw it here as before.
             if !aether_rewards::enabled(&exec.state) {
                 if let Some((draw, pool)) = g.pool.clone().filter(|(d, _)| *d == s.1.draw) {
                     let seed = hex::decode(&s.1.signature).unwrap_or_default();
@@ -2084,14 +2131,20 @@ impl Chain {
                         ops.get(k)
                             .map(|o| if capped { o.clone() } else { k.to_string() })
                     };
-                    // Protocol 3: qualifying Macs join (up to 16 seats) instead of replacing members.
+                    // Protocol 3: qualifying Macs join (up to 16 seats) instead of
+                    // replacing members — and each seat goes where it lifts the
+                    // committee's worst hour of the day (13-roadmap.md, F).
+                    let reserve = Reserve::of(&exec.state);
+                    let availability = (exec.next_protocol() >= 3 || reserve.is_some())
+                        .then(|| crate::rotation::availability(&exec.state));
+                    let hours = |k: &str| availability.as_ref().and_then(|a| a.get(k).copied());
                     let drawn = if exec.next_protocol() >= 3 {
-                        crate::rotation::draw_v3(&pool, &seed, operator, &g.committee)
+                        crate::rotation::draw_spread(&pool, &seed, operator, &g.committee, hours)
                     } else {
                         crate::rotation::draw(&pool, &seed, operator, &g.committee)
                     };
                     // Founder reserve keys join or leave with the draw too.
-                    let drawn = match Reserve::of(&exec.state) {
+                    let drawn = match reserve {
                         Some(r) => crate::rotation::with_reserve(
                             drawn,
                             &pool,
@@ -2099,6 +2152,7 @@ impl Chain {
                             |k: &str| ops.get(k).cloned(),
                             &r,
                             &g.committee,
+                            hours,
                         ),
                         None => drawn,
                     };
@@ -2170,6 +2224,9 @@ impl Chain {
                 open && !recorded
             });
         }
+        // Early replacement (node-rewards networks) and the reserve seating
+        // both commit their roster in state (see `pre_state_with`); only the
+        // node-local reserve rule of the other networks runs here.
         reserve_step(&mut g, &previous, &exec);
         Ok(())
     }
@@ -2299,9 +2356,12 @@ pub fn genesis_digest(genesis: &Block) -> [u8; 32] {
 }
 const POOL: &str = "pool";
 
-/// Founder reserve keys (genesis parameter): at every registry epoch's first
-/// block, seat them for the next epoch while fewer than four independent
-/// operators qualify, and let them go once four or more do. Proposes nothing
+/// Founder reserve keys (genesis parameter), the node-local rule of the
+/// networks without node rewards: at every registry epoch's first block, seat
+/// them for the next epoch while fewer than four independent operators
+/// qualify, and let them go once four or more do. From four on, the keys are a
+/// liveness safety net (13-roadmap.md, F): they seat themselves while the
+/// committee's worst hour of the day risks losing its quorum. Proposes nothing
 /// while a proposal or a handoff is already on its way.
 fn reserve_step(g: &mut Inner, previous: &Executed, exec: &Executed) {
     // Node-rewards networks run the rule as a system write (see
@@ -2336,6 +2396,7 @@ fn reserve_step(g: &mut Inner, previous: &Executed, exec: &Executed) {
         params.min_streak,
     );
     let ops = crate::rotation::operators(&exec.state);
+    let availability = crate::rotation::availability(&exec.state);
     let next = crate::rotation::with_reserve(
         None,
         &pool,
@@ -2343,6 +2404,7 @@ fn reserve_step(g: &mut Inner, previous: &Executed, exec: &Executed) {
         |k: &str| ops.get(k).cloned(),
         &reserve,
         &g.committee,
+        |k: &str| availability.get(k).copied(),
     );
     if let Some(members) = next {
         tracing::info!(
@@ -2593,6 +2655,95 @@ mod pool_tests {
         }
     }
 
+    /// `mempool_candidates` as it was before the 2026-09-29 fix (482400e):
+    /// listed txs first, then the rest sorted by (nonce, sender). Kept verbatim
+    /// so the regression tests below can show what it did to a listed tx whose
+    /// sender's earlier nonces were still in the pool.
+    fn candidates_2026_09_28(chain: &Chain) -> Vec<TxEnvelope> {
+        let g = chain.lock();
+        let censored = |t: &TxEnvelope| {
+            g.censor == Some(t.header.sender) || g.deprioritize == Some(t.header.sender)
+        };
+        let listed = if g.censor.is_some() {
+            Vec::new()
+        } else {
+            g.inclusion.for_proposal()
+        };
+        let listed_hashes: std::collections::HashSet<TxHash> =
+            listed.iter().map(aether_execution::tx_hash).collect();
+        let mut rest: Vec<TxEnvelope> = g
+            .mempool
+            .iter()
+            .filter(|(h, t)| !listed_hashes.contains(*h) && !censored(t))
+            .map(|(_, t)| t.clone())
+            .collect();
+        rest.sort_by_key(|t| (t.header.nonce, t.header.sender));
+        let mut txs = listed;
+        txs.extend(rest);
+        txs.truncate(MAX_TXS_PER_BLOCK);
+        txs
+    }
+
+    /// Signed transfers from `signer`, one per nonce in `nonces`: cheap enough
+    /// that a block holds them all, so what lands is exactly what the ordering
+    /// tried, in the order it tried it.
+    fn transfers(key: &aether_crypto::P256Signer, nonces: std::ops::Range<u64>) -> Vec<TxEnvelope> {
+        nonces
+            .map(|nonce| {
+                aether_execution::sign_call(key, 7780, nonce, 1, &EvmCall {
+                    to: Some(Address::repeat_byte(0xaa)),
+                    value: U256::from(1),
+                    input: Bytes::new(),
+                    gas_limit: 21_000,
+                    delegate: None,
+                })
+                .unwrap()
+            })
+            .collect()
+    }
+
+    /// An inclusion list holding `txs` this node accepted at `seen` (bypassing
+    /// gossip verification, which is another node's job).
+    fn accept_list(chain: &Chain, txs: Vec<TxEnvelope>, seen: Instant) {
+        use commonware_cryptography::Signer as _;
+        let key = commonware_cryptography::ed25519::PrivateKey::from_seed(1);
+        let il = inclusion::InclusionList::sign(&key, 1, 1_000, txs);
+        assert!(chain.lock().inclusion.accept(&il, seen));
+    }
+
+    /// Build and execute (but not finalize) the block after `last` with `txs`,
+    /// also returning its `BlockContext`: the append check must judge the block
+    /// in the same context that built it.
+    fn build_ctx(
+        chain: &Chain,
+        parent: &Arc<Executed>,
+        last: &Block,
+        txs: Vec<TxEnvelope>,
+    ) -> (Arc<Executed>, BlockContext) {
+        use crate::block::{Context, EPOCH};
+        use commonware_consensus::types::{Round, View};
+        use commonware_cryptography::Signer as _;
+        let height = last.height.next();
+        let leader = commonware_cryptography::ed25519::PrivateKey::from_seed(1).public_key();
+        let context = Context { round: Round::new(EPOCH, View::new(height.get())), leader, parent: (View::new(height.get() - 1), last.digest()) };
+        let skeleton = Block::new(context.clone(), last.digest(), height, height.get() * 1_000, bytes::Bytes::new());
+        let ctx = Chain::block_context(&chain.cfg(), &skeleton, parent);
+        let (pre, _) = chain.pre_state_with(parent, parent.next_protocol(), &[], &[], None, false).unwrap();
+        let (payload, _) = build_payload(parent, &pre, &ctx, txs, Extras::default());
+        let block = Block::new(context, last.digest(), height, height.get() * 1_000, payload.to_bytes());
+        (chain.execute(&block, parent).unwrap(), ctx)
+    }
+
+    /// `sender`'s nonces that made it into `exec` (from `txs`), in block order.
+    fn landed_nonces(exec: &Executed, txs: &[TxEnvelope], sender: Address) -> Vec<u64> {
+        let mine: HashMap<TxHash, u64> = txs
+            .iter()
+            .filter(|t| t.header.sender == sender)
+            .map(|t| (aether_execution::tx_hash(t), t.header.nonce))
+            .collect();
+        exec.tx_hashes.iter().filter_map(|h| mine.get(h).copied()).collect()
+    }
+
     /// Build and execute (but not finalize) the block after `last` with `txs`.
     fn build(chain: &Chain, parent: &Arc<Executed>, last: &Block, txs: Vec<TxEnvelope>) -> (Block, Arc<Executed>) {
         use crate::block::{Context, EPOCH};
@@ -2781,6 +2932,112 @@ mod pool_tests {
             chain.add_to_mempool(fat(senders[16], 0, vec![7u8; 130_000])),
             Ok(true),
             "the freed budget admits again"
+        );
+    }
+
+    /// The 2026-09-29 testnet stall as a unit: one sender with 64 pending txs,
+    /// an inclusion list naming nonces 32..47. The listed tx sits at its
+    /// sender's nonce 32 while nonces 0..31 are still in the pool, so a proposer
+    /// that tried the list first skipped it for good — the voters then saw
+    /// "nonce 32 appendable but missing" and refused every proposal at height
+    /// 104408. Ordered with the pool (the fix), everything lands and the append
+    /// check holds.
+    #[test]
+    fn listed_txs_at_a_later_nonce_land_after_their_senders_earlier_ones() {
+        use aether_crypto::{P256Signer, Signer as _};
+        let mut seed = [0u8; 32];
+        seed[0] = 0x5b;
+        let key = P256Signer::from_seed(&seed).unwrap();
+        let sender = address_of(&key.public_key()).unwrap();
+        let (chain, genesis) = Chain::new(cfg(vec![(sender, U256::from(10u128.pow(24)))]));
+        let pending = transfers(&key, 0..64);
+        for t in &pending {
+            assert_eq!(chain.add_to_mempool(t.clone()), Ok(true));
+        }
+        let seen = Instant::now();
+        accept_list(&chain, pending[32..48].to_vec(), seen); // all 16 list slots
+        let now = seen + Duration::from_secs(1); // past inclusion::FREEZE
+        let parent = chain.lock().finalized.clone();
+
+        // The fix: one nonce order over listed and unlisted alike.
+        let (exec, ctx) = build_ctx(&chain, &parent, &genesis, chain.mempool_candidates());
+        assert_eq!(
+            landed_nonces(&exec, &pending, sender),
+            (0..64).collect::<Vec<u64>>(),
+            "a contiguous run, the listed nonces with it"
+        );
+        assert!(
+            chain.inclusion_violations(&exec, &ctx, now).is_empty(),
+            "nothing listed is missing and appendable"
+        );
+
+        // The pre-fix ordering: the list went before the sender's nonces 0..31,
+        // so nonce 32 was tried against state nonce 0, skipped, and never
+        // retried (it was not in `rest` either).
+        let (exec, ctx) = build_ctx(&chain, &parent, &genesis, candidates_2026_09_28(&chain));
+        assert_eq!(
+            landed_nonces(&exec, &pending, sender),
+            (0..32).collect::<Vec<u64>>(),
+            "the listed txs were tried too early and never retried"
+        );
+        assert_eq!(
+            chain.inclusion_violations(&exec, &ctx, now),
+            vec![aether_execution::tx_hash(&pending[32])],
+            "nonce 32 appendable but missing: the stall every validator saw"
+        );
+    }
+
+    /// The same with several senders: only the named senders' earlier nonces
+    /// hold their listed txs back, and every sender's landed nonces must stay
+    /// one contiguous run.
+    #[test]
+    fn listed_txs_of_several_senders_wait_for_their_own_earlier_nonces() {
+        use aether_crypto::{P256Signer, Signer as _};
+        let key = |b: u8| {
+            let mut seed = [0u8; 32];
+            seed[0] = 0x5c;
+            seed[31] = b;
+            P256Signer::from_seed(&seed).unwrap()
+        };
+        let (a, b, c) = (key(1), key(2), key(3));
+        let (addr_a, addr_b, addr_c) = (
+            address_of(&a.public_key()).unwrap(),
+            address_of(&b.public_key()).unwrap(),
+            address_of(&c.public_key()).unwrap(),
+        );
+        let (chain, genesis) = Chain::new(cfg(vec![
+            (addr_a, U256::from(10u128.pow(24))),
+            (addr_b, U256::from(10u128.pow(24))),
+            (addr_c, U256::from(10u128.pow(24))),
+        ]));
+        // A's nonces 32..37 and B's first two txs are listed; C is not named.
+        let (tx_a, tx_b, tx_c) = (transfers(&a, 0..64), transfers(&b, 0..2), transfers(&c, 0..16));
+        let mut listed = tx_a[32..38].to_vec();
+        listed.extend_from_slice(&tx_b);
+        for t in tx_a.iter().chain(&tx_b).chain(&tx_c) {
+            assert_eq!(chain.add_to_mempool(t.clone()), Ok(true));
+        }
+        let seen = Instant::now();
+        accept_list(&chain, listed, seen);
+        let now = seen + Duration::from_secs(1);
+        let parent = chain.lock().finalized.clone();
+
+        let (exec, ctx) = build_ctx(&chain, &parent, &genesis, chain.mempool_candidates());
+        assert_eq!(landed_nonces(&exec, &tx_a, addr_a), (0..64).collect::<Vec<u64>>());
+        assert_eq!(landed_nonces(&exec, &tx_b, addr_b), (0..2).collect::<Vec<u64>>());
+        assert_eq!(landed_nonces(&exec, &tx_c, addr_c), (0..16).collect::<Vec<u64>>());
+        assert!(chain.inclusion_violations(&exec, &ctx, now).is_empty());
+
+        // Before the fix A's listed txs burned their chance before A's nonces
+        // 0..31 lifted the state nonce; B's listed txs were at B's next nonce
+        // already, so only A's tx went missing.
+        let (exec, ctx) = build_ctx(&chain, &parent, &genesis, candidates_2026_09_28(&chain));
+        assert_eq!(landed_nonces(&exec, &tx_a, addr_a), (0..32).collect::<Vec<u64>>());
+        assert_eq!(landed_nonces(&exec, &tx_b, addr_b), (0..2).collect::<Vec<u64>>());
+        assert_eq!(landed_nonces(&exec, &tx_c, addr_c), (0..16).collect::<Vec<u64>>());
+        assert_eq!(
+            chain.inclusion_violations(&exec, &ctx, now),
+            vec![aether_execution::tx_hash(&tx_a[32])]
         );
     }
 }

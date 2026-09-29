@@ -21,7 +21,9 @@ aether-execution.workspace = true
 aether-light.workspace = true
 aether-state.workspace = true
 aether-net.workspace = true
-tokio = { version = "1", features = ["rt-multi-thread"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+anyhow = "1"
+rand.workspace = true
 alloy-primitives.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -35,3 +37,5 @@ thiserror.workspace = true
 uniffi = { version = "=0.32.2", features = ["cli"] }
 
 [dev-dependencies]
+# Fake follower/validator servers over local iroh (tests/wallet_spread.rs).
+iroh = { version = "=1.2.0", features = ["unstable-custom-transports"] }

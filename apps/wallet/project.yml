@@ -15,7 +15,8 @@ targets:
     dependencies:
       - package: Sparkle
     sources:
-      - Sources
+      - path: Sources
+        excludes: ["**/.omc/**", ".omc/**"]
       - path: Resources
         buildPhase: resources
       - Assets.xcassets
@@ -62,7 +63,8 @@ targets:
     type: application
     platform: iOS
     sources:
-      - Sources
+      - path: Sources
+        excludes: ["**/.omc/**", ".omc/**"]
       - path: Resources
         buildPhase: resources
       - Assets.xcassets

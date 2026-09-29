@@ -28,6 +28,10 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 const DEFAULT_CHAIN_ID: u64 = 7_777;
+/// The public testnet: the one chain with a faucet that must never run the
+/// dev registrar (its genesis registrar key is what actually decides on chain;
+/// local test networks may combine a faucet with the dev registrar).
+const TESTNET_CHAIN_ID: u64 = 7_780;
 const DEV_ACCOUNTS: u8 = 10;
 /// Seed index of the public devnet registrar key (local devnets only).
 const DEV_REGISTRAR: u8 = 11;
@@ -548,7 +552,12 @@ fn main() {
                 })
                 .and_then(|args| {
                     if dev_registrar && args.4.faucet.is_some() {
-                        return Err("--dev-registrar is only for test chains without a faucet".into());
+                        if args.1 == TESTNET_CHAIN_ID {
+                            return Err("--dev-registrar is only for test chains without a faucet".into());
+                        }
+                        // A local network that funds through a faucet (devnet tests):
+                        // allowed, but say it — the dev registrar registers any device.
+                        eprintln!("--dev-registrar on a chain with a faucet ({})", args.1);
                     }
                     Ok(args)
                 })
@@ -1276,6 +1285,89 @@ struct NodeArgs {
     max_shards: usize,
 }
 
+/// The open-file limit a node asks for when its hard limit allows it.
+const NOFILE_WANT: u64 = 65_536;
+
+/// Raise this node's own soft open-file limit (RLIMIT_NOFILE) toward its hard
+/// limit. A validator holds a few hundred open files at once — the vote journal
+/// keeps one section file per view and opens every one at startup — but launchd
+/// and GUI apps hand their children a 256-file soft limit, which on 2026-09-29
+/// crash-looped all four validators ("Too many open files"). Never lowers the
+/// limit and never raises it above the hard limit or the kernel's per-process
+/// cap. Returns the soft limit now in effect (0 when it could not be read).
+#[cfg(unix)]
+fn raise_nofile_limit() -> u64 {
+    let Some((soft, hard)) = nofile() else {
+        tracing::warn!("could not read the open-file limit");
+        return 0;
+    };
+    let want = NOFILE_WANT.min(hard).min(nofile_per_proc()).max(soft);
+    if want > soft && set_nofile(want, hard).is_none() {
+        tracing::warn!(from = soft, "could not raise the open-file limit");
+        return soft;
+    }
+    want
+}
+
+#[cfg(not(unix))]
+fn raise_nofile_limit() -> u64 {
+    0
+}
+
+/// The soft and hard open-file limits (RLIM_INFINITY read back as u64::MAX).
+#[cfg(unix)]
+fn nofile() -> Option<(u64, u64)> {
+    let mut lim: libc::rlimit = unsafe { std::mem::zeroed() };
+    (unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) } == 0).then(|| {
+        (
+            lim.rlim_cur,
+            if lim.rlim_max == libc::RLIM_INFINITY {
+                u64::MAX
+            } else {
+                lim.rlim_max
+            },
+        )
+    })
+}
+
+/// Set the soft open-file limit to `soft`, keeping `hard` as it was.
+#[cfg(unix)]
+fn set_nofile(soft: u64, hard: u64) -> Option<()> {
+    let lim = libc::rlimit {
+        rlim_cur: soft,
+        rlim_max: if hard == u64::MAX {
+            libc::RLIM_INFINITY
+        } else {
+            hard
+        },
+    };
+    (unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &lim) } == 0).then_some(())
+}
+
+/// The most this process may ask for (macOS: kern.maxfilesperproc).
+#[cfg(target_os = "macos")]
+fn nofile_per_proc() -> u64 {
+    let mut v: libc::c_int = 0;
+    let mut len = std::mem::size_of::<libc::c_int>();
+    (unsafe {
+        libc::sysctlbyname(
+            b"kern.maxfilesperproc\0".as_ptr().cast(),
+            &mut v as *mut _ as *mut libc::c_void,
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    } == 0
+        && v > 0)
+        .then_some(v as u64)
+        .unwrap_or(u64::MAX)
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn nofile_per_proc() -> u64 {
+    u64::MAX
+}
+
 fn run_node(a: NodeArgs) {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -1283,6 +1375,10 @@ fn run_node(a: NodeArgs) {
                 .unwrap_or_else(|_| "info,commonware=warn".into()),
         )
         .init();
+    tracing::info!(
+        files = raise_nofile_limit(),
+        "open-file limit (the vote journal's section files are one fd each)"
+    );
     let NodeArgs {
         p2p,
         chain_id,
@@ -1635,9 +1731,12 @@ fn run_node(a: NodeArgs) {
         // Public access: iroh endpoint published to the BitTorrent Mainline DHT.
         // Wallets find this node by its id alone and verify everything they get;
         // validators tunnel consensus traffic over the same endpoint.
+        // Wallet-server announcements are listed only for keys the finalized
+        // registry state knows (red-team 2026-09-29 §3).
         let _router = endpoint.map(|ep| {
             tracing::info!(node_id = %ep.id(), "public endpoint on iroh; address published to Mainline DHT");
             let st = rpc_state.clone();
+            let registry = aether_node::announce::checker(st.chain.clone());
             let p2p_target = links.then(|| loopback(port));
             aether_net::serve(
                 ep,
@@ -1646,6 +1745,7 @@ fn run_node(a: NodeArgs) {
                     async move { rpc::handle_value(&st, req).await }
                 },
                 p2p_target,
+                Some(registry),
             )
         });
 
@@ -1859,8 +1959,18 @@ fn run_follow(
         .map_err(|e| e.to_string())?;
     rt.block_on(async move {
         let store = aether_node::store::Store::open(&std::path::Path::new(&data).join("state.redb")).map_err(|e| e.to_string())?;
+        // Following over iroh, this Mac also serves wallets directly (capacity
+        // review 2026-09-29): a public endpoint under its own persisted node
+        // id, so phones spread their reads over follower Macs instead of
+        // asking the validators. `--from-rpc` followers have no iroh endpoint.
+        let mut wallet_ep = None;
         let upstream = Arc::new(if from_rpc.is_empty() {
-            Upstream::Iroh(aether_net::RpcClient::new(nodes).await.map_err(|e| e.to_string())?, Default::default())
+            let ep = aether_net::bind(Some(wallet_node_key(std::path::Path::new(&data))?), vec![aether_net::ALPN_RPC.to_vec()])
+                .await
+                .map_err(|e| e.to_string())?;
+            let client = aether_net::RpcClient::with_endpoint(ep.clone(), nodes.clone());
+            wallet_ep = Some(ep);
+            Upstream::Iroh(client, Default::default())
         } else {
             Upstream::Http(from_rpc)
         });
@@ -1911,12 +2021,49 @@ fn run_follow(
             faucet: None,
             registrar: None,
             network: None,
-            upstream: Some(upstream),
+            upstream: Some(upstream.clone()),
             handoff: None,
             snapshot: Default::default(),
             prover,
             shards,
         };
+        // Serve wallets over the public endpoint (the same answers the loopback
+        // HTTP server gives; every one is verified by the reader), and announce
+        // this Mac as a wallet server to the validators, every minute, signed
+        // by this Mac's voting key (a registered candidate's key — validators
+        // list the announcement only then; red-team 2026-09-29 §3). The
+        // router owns the endpoint, so it is bound to outlive this setup —
+        // like the validators' `_router`, it must never drop while running.
+        let announce_keys = candidate_keys
+            .as_ref()
+            .map(|dir| aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(dir)))
+            .transpose()?
+            .map(std::sync::Arc::new);
+        let _wallet_router = wallet_ep.map(|ep| {
+            tracing::info!(node_id = %ep.id(), "serving wallets over iroh; announced to the validators every minute");
+            let endpoint_id = ep.id();
+            let st = st.clone();
+            let router = aether_net::serve_rpc(ep, move |req| {
+                let st = st.clone();
+                async move { rpc::handle_value(&st, req).await }
+            });
+            let (announcer, keys) = (upstream.clone(), announce_keys.clone());
+            tokio::spawn(async move {
+                if keys.is_none() {
+                    tracing::debug!("no candidate keys: serving wallets, but not announced (aether run --candidate)");
+                }
+                loop {
+                    if let (Upstream::Iroh(c, _), Some(keys)) = (announcer.as_ref(), keys.as_ref()) {
+                        let params = aether_node::announce::signed(keys, &endpoint_id);
+                        if let Err(e) = c.call("aether_announceWalletServer", serde_json::json!(params)).await {
+                            tracing::debug!(%e, "wallet-server announce failed; retrying in a minute");
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                }
+            });
+            router
+        });
         rpc::serve(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), rpc_port), st).await.map_err(|e| e.to_string())
     })
 }
@@ -2057,6 +2204,25 @@ fn committee_keys(
         .map(|(_, s)| s)
         .expect("key is a validator");
     (participants, polynomial, share)
+}
+
+/// This Mac's wallet-server node key: dedicated and persisted (`<data>/wallet-node.key`),
+/// so the DHT record it publishes does not flap with the endpoint other roles
+/// reuse. Regenerating it only changes which node id wallets are pointed at.
+fn wallet_node_key(data: &std::path::Path) -> Result<aether_net::SecretKey, String> {
+    let path = data.join("wallet-node.key");
+    match std::fs::read(&path) {
+        Ok(bytes) if bytes.len() == 32 => {
+            let mut b = [0u8; 32];
+            b.copy_from_slice(&bytes);
+            Ok(aether_net::SecretKey::from_bytes(&b))
+        }
+        _ => {
+            let key = aether_net::SecretKey::generate();
+            write_secret(&path, &key.to_bytes());
+            Ok(key)
+        }
+    }
 }
 
 fn write_secret(path: &std::path::Path, bytes: &[u8]) {
@@ -2340,5 +2506,29 @@ fn print_blocks(v: &Value) {
             b["state_root"].as_str().unwrap_or_default(),
             b["proposer"].as_str().unwrap_or_default()
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `raise_nofile_limit` reports the soft limit that is really in effect,
+    /// never lowers it, raises a low inherited one (launchd's 256) as far as
+    /// the hard limit and the kernel's per-process cap allow, and is idempotent.
+    #[test]
+    #[cfg(unix)]
+    fn the_open_file_limit_is_raised_never_lowered() {
+        let before = nofile().expect("read the open-file limit");
+        let raised = raise_nofile_limit();
+        let after = nofile().expect("read the open-file limit");
+        assert_eq!(raised, after.0, "it reports the limit now in effect");
+        assert!(after.0 >= before.0, "never lowers the soft limit");
+        assert!(after.0 <= NOFILE_WANT.max(before.0), "asks for at most {NOFILE_WANT}");
+        let ceiling = NOFILE_WANT.min(before.1).min(nofile_per_proc());
+        if before.0 < ceiling {
+            assert!(after.0 > before.0, "a low inherited limit was not raised");
+        }
+        assert_eq!(raise_nofile_limit(), after.0, "raising again changes nothing");
     }
 }

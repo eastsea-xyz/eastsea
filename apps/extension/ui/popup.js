@@ -91,7 +91,7 @@ function onboarding() {
   };
   const form = h('form', { class: 'card' },
     h('h2', {}, 'Create a wallet'),
-    h('p', { class: 'muted small' }, 'A new key is made in this browser and encrypted with your password. It works without the Aether app. This is the testnet: test AETH has no value. Experimental software, provided as is and not independently audited.'),
+    h('p', { class: 'muted small' }, 'A new key is made in this browser and encrypted with your password. It works without the Aether app. Mainnet has not launched; this is the testnet, and its AETH does not carry over. Provided as is and not yet independently audited.'),
     h('label', {}, 'Password', pw),
     h('label', {}, 'Password again', pw2),
     create,

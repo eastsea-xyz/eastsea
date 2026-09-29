@@ -3,7 +3,7 @@ import SwiftUI
 /// The terms a user accepts before first use. Bump `version` when the text
 /// changes materially, and everyone is asked again.
 enum Terms {
-    static let version = 2
+    static let version = 3
     static let disclaimerURL = URL(string: "https://github.com/kjaylee/aether-node/blob/main/DISCLAIMER.md")!
 }
 
@@ -46,8 +46,8 @@ struct TermsSheet: View {
             VStack(alignment: .leading, spacing: 16) {
                 Image(systemName: "exclamationmark.shield.fill").font(.system(size: 34)).foregroundStyle(Color.warn)
                 Text("Before you use Aether").font(.title2.bold())
-                Bullet(icon: "flask", text: "Aether is experimental research software running on a test network. It is provided as is, without any warranty, has not had an independent security audit, and may have bugs.")
-                Bullet(icon: "drop", text: "AETH on this testnet comes free from the faucet and does not carry over to any future network. Nothing here promises a price, a return or a way to cash out.")
+                Bullet(icon: "hammer", text: "Aether is built for production. Mainnet has not launched yet; the network running today is the public testnet, and its AETH does not carry over. It is provided as is, without warranty, and has not had an independent security audit yet.")
+                Bullet(icon: "chart.line.uptrend.xyaxis", text: "There is no token sale. The value of AETH is set by the market; nothing here promises a price, a return, a listing or a way to cash out.")
                 Bullet(icon: "person.fill.checkmark", text: "You use Aether, and run its node, at your own risk and responsibility, including power and hardware costs, taxes, and following the laws where you live.")
                 Bullet(icon: "person.3.fill", text: VotingRules.mainnetRewardsRule)
                 Bullet(icon: "network", text: "Running Aether shows your IP address to other nodes and the public DHT. Joining as a voting node sends an Apple DeviceCheck token to the registration service, currently run by Pipln, which checks it with Apple. Addresses and transactions are public on chain.")

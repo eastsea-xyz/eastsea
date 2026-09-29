@@ -44,6 +44,7 @@
 		8FBC9A5F5A3237EA07862EB6 /* TokenSend.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE00FF7FDD47F623CE4B55A0 /* TokenSend.swift */; };
 		92B6DC24FA22759641E59512 /* AssetsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39DB57D9689E71FFECC579BA /* AssetsSheet.swift */; };
 		95004663796AA4EF45771D37 /* WalletModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 016BCAF9063410C1BBD4052D /* WalletModel.swift */; };
+		958D55CCC1C206CD0EDE08CA /* AgentWalletPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 020BD968AE07E378627D7EB7 /* AgentWalletPanel.swift */; };
 		96D01674727A3032D42B5EDC /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = B60F2ADE6BD15611D4BD0811 /* Theme.swift */; };
 		9BB3B88FC64A1C7001C851D2 /* AdaptiveLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55E7E86166A7CE6D29E6C709 /* AdaptiveLayout.swift */; };
 		9E121F544310F602CD8ACFFE /* Spinners.swift in Sources */ = {isa = PBXBuildFile; fileRef = 462C807FB20A46B9919AE925 /* Spinners.swift */; };
@@ -58,6 +59,7 @@
 		BD73509462322EA695D98A0D /* NetworkUpgrade.swift in Sources */ = {isa = PBXBuildFile; fileRef = BAF12832C2145F7B5553F13A /* NetworkUpgrade.swift */; };
 		BF69C9639B9D7215C5CE0605 /* aether_ffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BC12AF79B32D90A48860251 /* aether_ffi.swift */; };
 		C45FFD044088BB85C2D842D2 /* AssetsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39DB57D9689E71FFECC579BA /* AssetsSheet.swift */; };
+		C95F0C486AC46505C63D822B /* AgentWalletPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 020BD968AE07E378627D7EB7 /* AgentWalletPanel.swift */; };
 		C9839F6819F2F86387CC88B7 /* aether_ffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BC12AF79B32D90A48860251 /* aether_ffi.swift */; };
 		D011EF063EAF0FD0463BB20F /* NetworkUpgrade.swift in Sources */ = {isa = PBXBuildFile; fileRef = BAF12832C2145F7B5553F13A /* NetworkUpgrade.swift */; };
 		D35E3E06705EC147E0155308 /* token-sources.json in Resources */ = {isa = PBXBuildFile; fileRef = 2928FB2C0B82AF8C35E97D99 /* token-sources.json */; };
@@ -78,6 +80,7 @@
 
 /* Begin PBXFileReference section */
 		016BCAF9063410C1BBD4052D /* WalletModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletModel.swift; sourceTree = "<group>"; };
+		020BD968AE07E378627D7EB7 /* AgentWalletPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentWalletPanel.swift; sourceTree = "<group>"; };
 		02CE6DC842A323F5843165E1 /* EarningsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EarningsModel.swift; sourceTree = "<group>"; };
 		0BCD0FCE195D7296CBCA13E9 /* SimpleDashboard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimpleDashboard.swift; sourceTree = "<group>"; };
 		17F1C13C585683B68AF46003 /* AetherWalletIOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = AetherWalletIOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -159,6 +162,7 @@
 			children = (
 				55E7E86166A7CE6D29E6C709 /* AdaptiveLayout.swift */,
 				39176493D3D105EBB072F17C /* AetherWalletApp.swift */,
+				020BD968AE07E378627D7EB7 /* AgentWalletPanel.swift */,
 				39DB57D9689E71FFECC579BA /* AssetsSheet.swift */,
 				82F0B4CA90E38B66B43592E6 /* BalanceHistory.swift */,
 				32CECEE6B3B88424FB7E6774 /* Brand.swift */,
@@ -334,6 +338,7 @@
 			files = (
 				9BB3B88FC64A1C7001C851D2 /* AdaptiveLayout.swift in Sources */,
 				3EFB40E8AE60667378C4B952 /* AetherWalletApp.swift in Sources */,
+				958D55CCC1C206CD0EDE08CA /* AgentWalletPanel.swift in Sources */,
 				C45FFD044088BB85C2D842D2 /* AssetsSheet.swift in Sources */,
 				07411F0894B725B06CED2894 /* BalanceHistory.swift in Sources */,
 				75F66F94438EF25449852272 /* Brand.swift in Sources */,
@@ -371,6 +376,7 @@
 			files = (
 				4C04104159BE32A1EE7E6BA3 /* AdaptiveLayout.swift in Sources */,
 				3A048B1773EDB624E715846E /* AetherWalletApp.swift in Sources */,
+				C95F0C486AC46505C63D822B /* AgentWalletPanel.swift in Sources */,
 				92B6DC24FA22759641E59512 /* AssetsSheet.swift in Sources */,
 				1BA7A78F249B5426DD6B684F /* BalanceHistory.swift in Sources */,
 				8C28BCFEF72360666AC1D1FB /* Brand.swift in Sources */,

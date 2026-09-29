@@ -35,6 +35,8 @@ final class WalletModel: ObservableObject {
     @Published var callRequest: CallRequest?
     /// A page asking for this wallet's address (`aether://connect?...`).
     @Published var connectRequest: ConnectRequest?
+    /// Local agent receipt link (`aether://tx?hash=...`), shown in Security.
+    @Published var agentTransactionHash: String?
     /// Voting-node registration in progress or failed (nil: idle or done).
     @Published var registration: RegistrationState?
     @Published var busy = false
@@ -635,6 +637,11 @@ final class WalletModel: ObservableObject {
         case "connect":
             guard let callback else { return note("Ignored a connect link without a callback") }
             connectRequest = ConnectRequest(origin: q["origin"] ?? callback.host ?? "a page", callback: callback)
+        case "tx":
+            guard let hash = q["hash"], hash.count == 66, hash.hasPrefix("0x"), hash.dropFirst(2).allSatisfy(\.isHexDigit) else {
+                return note("Ignored an invalid transaction link")
+            }
+            agentTransactionHash = hash
         default:
             note("Ignored an unknown aether:// link")
         }

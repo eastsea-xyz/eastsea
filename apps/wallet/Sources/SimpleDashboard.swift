@@ -84,6 +84,7 @@ struct SimpleDashboard: View {
             .onChange(of: model.connectRequest) { _, r in if r != nil { sheet = .connect } }
             // A payment link (aether://pay?...) opens the send sheet, filled in, for approval.
             .onChange(of: model.paymentRequest) { _, r in if r != nil { model.sendToken = nil; sheet = .send } }
+            .onChange(of: model.agentTransactionHash) { _, hash in if hash != nil { page = .security } }
             #if os(macOS)
             // Once the node has caught up and this Mac is not registered, ask once.
             .onChange(of: node.voting) { _, _ in inviteIfReady() }
@@ -583,6 +584,9 @@ private struct SecurityPage: View {
                 }
             }
             Card { PaperKeyPanel() }
+            #if os(macOS)
+            Card { AgentWalletPanel() }
+            #endif
             Card { RecoveryPanel() }
         }
     }

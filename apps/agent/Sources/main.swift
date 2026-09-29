@@ -10,17 +10,22 @@ let usage = """
 aether-agent \(Version.string) — Aether wallet for AI agents (key in this Mac's Secure Enclave)
 
 Owner (changes ask for Touch ID; limits are enforced by the account contract):
-  init                                   create the keys; with a funded account also set default limits
-                                         (1 AETH per payment, 10 AETH per 24 h) and give the agent 0.2 AETH of gas
+  init                                   create keys; payments stay off until a named payee is approved
+  payee add --name NAME --address 0x..   allow a payee with Touch ID (default 7-day session)
+  payee list | pending                   approved payees / requests from the agent
+  stop                                   revoke the agent session with Touch ID
   policy show
   policy set [--per-tx X] [--per-day Y] [--allow 0x..,0x..|anyone] [--expires-days N] [--gas AETH]
+  policy renew [--days 7]                renew the session with Touch ID
+  token allow --address 0x.. --per-tx UNITS --per-day UNITS  (new-genesis only)
 
 Agents (JSON out):
   mcp                                    run as an MCP server on stdio
   status | wallet | history [--limit N]
   balance --address 0x..
-  send --to 0x.. --amount 0.5 [--dry-run]
-  pay-many --to 0x..,0x.. --amount 0.1 [--dry-run]     (each recipient gets --amount)
+  send --to 0x.. --amount 0.5 --purpose TEXT [--dry-run]
+  pay-many --to 0x..,0x.. --amount 0.1 --purpose TEXT [--dry-run]
+  pay-token --token 0x.. --to 0x.. --amount 1.5 --purpose TEXT [--dry-run]
   receipt --hash 0x..
   get-test-tokens
 
@@ -66,7 +71,8 @@ func runTool(_ name: String, _ f: [String: String]) {
     if let d = f["dry_run"] { args["dry_run"] = d == "true" }
     if name == "aether_pay_many" {
         let tos = (f["to"] ?? "").split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
-        args = ["payments": tos.map { ["to": $0, "amount": f["amount"] ?? ""] }, "dry_run": f["dry_run"] == "true"]
+        args = ["payments": tos.map { ["to": $0, "amount": f["amount"] ?? ""] },
+                "purpose": f["purpose"] ?? "", "dry_run": f["dry_run"] == "true"]
     }
     guard let tool = Tools.all.first(where: { $0.name == name }) else { fail(AgentError.input("unknown command")) }
     do { printJSON(try tool.run(args)) } catch { fail(error) }
@@ -79,7 +85,7 @@ let rest = argv.dropFirst(2)
 switch cmd {
 case "mcp":
     MCPServer.run()
-case "status", "wallet", "balance", "send", "pay-many", "receipt", "history", "get-test-tokens":
+case "status", "wallet", "balance", "send", "pay-many", "pay-token", "receipt", "history", "get-test-tokens":
     runTool("aether_" + cmd.replacingOccurrences(of: "-", with: "_"), flags(rest))
 case "dex-pools", "dex-token-info", "dex-quote":
     runTool(cmd.replacingOccurrences(of: "-", with: "_"), flags(rest))
@@ -87,6 +93,12 @@ case "init":
     do { printJSON(try Owner.initialize()) } catch { fail(error) }
 case "policy":
     do { printJSON(try Owner.policy(Array(rest))) } catch { fail(error) }
+case "payee":
+    do { printJSON(try Owner.payee(Array(rest))) } catch { fail(error) }
+case "token":
+    do { printJSON(try Owner.token(Array(rest))) } catch { fail(error) }
+case "stop":
+    do { printJSON(try Owner.stop()) } catch { fail(error) }
 case "setup":
     Setup.run(Array(rest))
 case "version", "--version":

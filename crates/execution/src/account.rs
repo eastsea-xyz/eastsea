@@ -21,7 +21,9 @@ sol! {
     function ownerExecute(Call[] calls, uint256 keyIndex, bytes32 r, bytes32 s);
     function addSession(Key key, uint128 perPayment, uint128 perDay, uint64 expires, address[] allow);
     function removeSession(uint256 index);
+    function setSessionToken(uint256 index, address token, uint128 perPayment, uint128 perDay);
     function sessionExecute(Call[] calls, uint256 index, bytes32 r, bytes32 s);
+    function transfer(address to, uint256 amount);
 }
 
 /// Calls for `AetherAccount`: (to, value, data).
@@ -128,6 +130,16 @@ pub fn encode_remove_session(index: u64) -> Bytes {
     removeSessionCall { index: U256::from(index) }.abi_encode().into()
 }
 
+/// Owner-only token policy, with amounts in the token's smallest units.
+pub fn encode_set_session_token(index: u64, token: Address, per_payment: u128, per_day: u128) -> Bytes {
+    setSessionTokenCall { index: U256::from(index), token, perPayment: per_payment, perDay: per_day }.abi_encode().into()
+}
+
+/// The only ERC-20 calldata a session may sign.
+pub fn encode_token_transfer(to: Address, amount: U256) -> Bytes {
+    transferCall { to, amount }.abi_encode().into()
+}
+
 /// The bytes a session key signs for payment `nonce` of the session with `id`
 /// (its unique id, not its index, so a re-added key cannot replay old signatures).
 pub fn session_message(chain_id: u64, account: Address, id: u64, nonce: u64, c: &[AccountCall]) -> Vec<u8> {
@@ -196,6 +208,18 @@ pub mod slots {
     /// Slot of `sessions[i].allow[j]`.
     pub fn session_allow(i: u64, j: u64) -> U256 {
         U256::from_be_bytes(keccak256((session(i) + U256::from(5u64)).to_be_bytes::<32>()).0) + U256::from(j)
+    }
+
+    /// TokenLimit mapping keyed by the immutable session id and token address.
+    pub fn session_token(id: u64, token: Address) -> U256 {
+        let mut key = [0u8; 64];
+        key[24..32].copy_from_slice(&id.to_be_bytes());
+        key[32..64].copy_from_slice(&at(9).to_be_bytes::<32>());
+        let inner = keccak256(key);
+        key = [0; 64];
+        key[12..32].copy_from_slice(token.as_slice());
+        key[32..64].copy_from_slice(inner.as_slice());
+        U256::from_be_bytes(keccak256(key).0)
     }
 
     /// `(perPayment, perDay)` from the session's third slot.

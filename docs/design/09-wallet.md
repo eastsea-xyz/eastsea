@@ -90,6 +90,14 @@ Aether.app (SwiftUI)
 - 업데이트(Sparkle)는 백그라운드에서 매시간 확인한다. 체인이 더 새 프로토콜을 예약하면 바로 확인한다.
 - 결제 링크 `aether://pay?to=0x…&amount=1.5&memo=…&callback=https://…`: 웹 페이지가 확장 없이 결제를 요청한다. 앱은 송금 화면을 채워 보여 주고, 사람이 Touch ID로 승인해야 보낸다. 저절로 보내지 않는다. 결과(`tx`, `status`)는 콜백이 https일 때만 그 주소로 돌려준다. 빠진 값이 있는 링크는 무시한다.
 
+### AI 비서 지갑의 소유자 통제 (2026-09-30)
+
+- `aether-agent init`은 키만 만든다. 소유자가 이름과 주소를 지정해 `payee add`를 Touch ID로 승인하기 전에는 결제 세션을 만들지 않는다. 첫 세션의 기본값은 1회 1 AETH, 24시간 10 AETH, 7일 만료다. `policy renew`도 Touch ID를 요구한다. `--allow anyone`은 경고를 동반한 명시적 선택이다.
+- Mac 지갑 보안 화면의 **비서 멈추기**와 `aether-agent stop`은 소유자 서명으로 세션을 온체인에서 제거한다. 이미 제출된 거래는 취소하지 못한다. 미승인 수취인은 결제 없이 로컬 승인 요청과 알림을 남기며, 지갑에서 이름을 입력하고 Touch ID로 추가한다.
+- 새 제네시스(`node_rewards` 또는 `history_v2`)의 계정 코드만 소유자가 지정한 ERC-20 `transfer(address,uint256)`을 허용한다. 토큰마다 최소 단위로 1회·24시간 한도를 따로 둔다. 다른 셀렉터·추가 데이터·미등록 토큰은 거부한다. 테스트넷 7780에는 기존 계정 바이트코드를 그대로 사용한다.
+- 세션 교체(`policy set`·`policy renew`·`payee add`)는 새 세션 ID를 부여하므로 이전 토큰 허용 목록도 폐기된다. 계속 쓸 토큰은 소유자가 다시 Touch ID로 허용한다.
+- `비서 사용 내역`은 체인 영수증의 최종 성공/실패를 확인한 뒤 기록한다. 목적과 수취인 이름은 로컬의 에이전트·소유자 입력이며 체인이 증명하는 구매 사실이 아니다. 거래 해시로 영수증을 다시 확인할 수 있다. 속은 비서는 허용된 수취인에게 한도 안의 금액을 쓸 수 있다.
+
 ## iOS 지갑 — 구현됨 (2026-09-26)
 
 - 같은 Rust 코어(UniFFI)를 `aarch64-apple-ios`·`aarch64-apple-ios-sim`으로 빌드, 같은 SwiftUI 소스를 macOS·iOS 공용으로(`#if os(...)`로 배치·클립보드만 분기). iOS 타깃 `AetherWalletIOS`(iOS 17+, 아이폰). iroh의 iOS 경로 모니터 때문에 `Network.framework` 링크 필요.

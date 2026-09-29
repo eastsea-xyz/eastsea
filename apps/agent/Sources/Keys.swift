@@ -11,6 +11,9 @@ enum Paths {
     static let agentKey = dir.appendingPathComponent("agent.key")
     static let ownerKey = dir.appendingPathComponent("owner.key")
     static let history = dir.appendingPathComponent("history.json")
+    static let pending = dir.appendingPathComponent("pending.json")
+    static let payees = dir.appendingPathComponent("payees.json")
+    static let payeeRequests = dir.appendingPathComponent("payee-requests.json")
     static let network = dir.appendingPathComponent("network.json")
 
     static func ensure() throws {

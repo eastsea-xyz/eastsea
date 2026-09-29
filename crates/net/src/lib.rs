@@ -11,7 +11,10 @@
 //! - Wallet-server discovery (`aether_announceWalletServer` /
 //!   `aether_walletServers`) rides the same protocol (see [`WalletServers`]):
 //!   follower Macs announce where they serve reads, so phones need not ask
-//!   the validators directly.
+//!   the validators directly. An announcement is signed by a registered
+//!   candidate's voting key over the announcing endpoint id (red-team
+//!   2026-09-29 §3), and a node lists it only if its own finalized registry
+//!   state knows the key.
 //! - Protocol `aether/p2p/1`: validator consensus traffic. Each bidirectional
 //!   stream carries one TCP connection of the Commonware p2p stack (see
 //!   [`tunnel`]); Commonware's own ed25519 handshake authenticates end to end.
@@ -72,58 +75,129 @@ const RPC_IO: Duration = Duration::from_secs(30);
 /// connection it arrives on, so nobody can announce a node they do not run —
 /// and a node here proves nothing anyway: every answer a wallet gets is
 /// verified against the committee certificate, so a wallet server can only be
-/// slow or stale, never lie.
+/// slow or stale, never lie. Red-team 2026-09-29 §3: the announcement is also
+/// signed (see [`WALLET_SERVER_NAMESPACE`]) by a key the node's own finalized
+/// registry state lists as a registered candidate, so an unregistered Mac
+/// cannot fill the list, and samples spread over distinct operators.
 pub struct WalletServers {
-    announced: Mutex<HashMap<EndpointId, Instant>>,
+    /// The registry check (a key is a registered candidate, run by whom).
+    registered: Option<RegisteredCandidate>,
+    announced: Mutex<HashMap<EndpointId, Announced>>,
+}
+
+/// What a wallet-server signature covers: the voting key's namespace over the
+/// announcing endpoint's own id, so a captured signature is worthless on any
+/// other endpoint.
+pub const WALLET_SERVER_NAMESPACE: &[u8] = b"aether-wallet-server";
+
+/// The registry check behind listing (red-team 2026-09-29 §3): asks the node's
+/// finalized registry state whether `key` belongs to a registered candidate,
+/// answered with that candidate's operator (what samples spread across).
+/// `None` refuses the announcement.
+pub type RegisteredCandidate = Arc<dyn Fn(&[u8; 32]) -> Option<[u8; 20]> + Send + Sync>;
+
+/// One listed wallet server: who operates it, and when it last announced.
+struct Announced {
+    operator: [u8; 20],
+    at: Instant,
 }
 
 /// How long an announcement counts (followers re-announce every minute).
 const WALLET_SERVER_TTL: Duration = Duration::from_secs(15 * 60);
 /// Announcers remembered: the bound on a flood of announcements.
 const WALLET_SERVERS_KEPT: usize = 4_096;
-/// How many one `aether_walletServers` answer carries. A random sample, so
-/// the clients of one validator do not all land on the same few Macs.
+/// How many one `aether_walletServers` answer carries. Spread over distinct
+/// operators first, so the clients of one validator do not all land on the
+/// same operator's Macs.
 const WALLET_SERVERS_SAMPLED: usize = 64;
 
 impl Default for WalletServers {
     fn default() -> Self {
-        WalletServers {
-            announced: Mutex::new(HashMap::new()),
-        }
+        WalletServers { registered: None, announced: Mutex::new(HashMap::new()) }
     }
 }
 
 impl WalletServers {
-    /// Record that `id` announced just now.
-    pub fn announce(&self, id: EndpointId) {
-        self.announce_at(id, Instant::now());
+    /// With the registry check of a node that knows the finalized registry
+    /// (validators); without one, announcements are refused.
+    pub fn new(registered: Option<RegisteredCandidate>) -> Self {
+        WalletServers { registered, announced: Mutex::new(HashMap::new()) }
     }
 
-    fn announce_at(&self, id: EndpointId, now: Instant) {
+    /// Verify and record one announcement: `key` and `sig` are the raw bytes
+    /// of a candidate's voting key and its signature over `remote` (the
+    /// connection the announcement arrived on) under
+    /// [`WALLET_SERVER_NAMESPACE`]; the registry check must list the key as a
+    /// registered candidate. Refused announcements are an `Err` for the
+    /// follower's log.
+    pub fn announce(&self, remote: EndpointId, key: &[u8], sig: &[u8]) -> Result<(), String> {
+        use commonware_codec::DecodeExt;
+        use commonware_cryptography::Verifier;
+        let key: [u8; 32] = key.try_into().map_err(|_| "validator key must be 32 bytes".to_string())?;
+        let sig = commonware_cryptography::ed25519::Signature::decode(sig).map_err(|_| "signature must be 64 bytes".to_string())?;
+        let pk = commonware_cryptography::ed25519::PublicKey::decode(key.as_slice()).map_err(|_| "validator key is not an ed25519 key".to_string())?;
+        if !pk.verify(WALLET_SERVER_NAMESPACE, remote.as_bytes(), &sig) {
+            return Err("the signature is not the key's over this endpoint id".into());
+        }
+        let operator = self
+            .registered
+            .as_ref()
+            .ok_or_else(|| "this node does not list wallet servers".to_string())?
+            (&key)
+            .ok_or_else(|| "not a registered candidate on this chain".to_string())?;
+        self.announce_at(remote, operator, Instant::now());
+        Ok(())
+    }
+
+    fn announce_at(&self, id: EndpointId, operator: [u8; 20], now: Instant) {
         let mut g = self.announced.lock().expect("wallet servers lock");
         if g.len() >= WALLET_SERVERS_KEPT && !g.contains_key(&id) {
             // Full: forget the one that announced longest ago.
-            if let Some(oldest) = g.iter().min_by_key(|(_, t)| **t).map(|(k, _)| *k) {
+            if let Some(oldest) = g.iter().min_by_key(|(_, a)| a.at).map(|(k, _)| *k) {
                 g.remove(&oldest);
             }
         }
-        g.insert(id, now);
+        g.insert(id, Announced { operator, at: now });
     }
 
-    /// A random sample of the ids that announced recently (hex-free: the ids).
+    /// A sample of the ids that announced recently, spread over distinct
+    /// operators first (one Mac per operator before any operator's second).
     pub fn sample(&self) -> Vec<EndpointId> {
-        self.live_at(Instant::now())
+        let mut live = self.live_at(Instant::now());
+        // Buckets in a random order, each holding that operator's Macs.
+        let mut buckets: HashMap<[u8; 20], Vec<EndpointId>> = HashMap::new();
+        for (id, operator) in live.drain(..) {
+            buckets.entry(operator).or_default().push(id);
+        }
+        let mut buckets: Vec<_> = buckets.into_values().collect();
+        buckets.shuffle(&mut rand::rng());
+        let mut out = Vec::with_capacity(WALLET_SERVERS_SAMPLED);
+        while out.len() < WALLET_SERVERS_SAMPLED {
+            let mut took = false;
+            for bucket in buckets.iter_mut() {
+                if let Some(id) = bucket.pop() {
+                    out.push(id);
+                    took = true;
+                    if out.len() == WALLET_SERVERS_SAMPLED {
+                        break;
+                    }
+                }
+            }
+            if !took {
+                break;
+            }
+        }
+        out
     }
 
-    fn live_at(&self, now: Instant) -> Vec<EndpointId> {
+    fn live_at(&self, now: Instant) -> Vec<(EndpointId, [u8; 20])> {
         let g = self.announced.lock().expect("wallet servers lock");
         let mut ids: Vec<_> = g
             .iter()
-            .filter(|(_, t)| now.saturating_duration_since(**t) < WALLET_SERVER_TTL)
-            .map(|(k, _)| *k)
+            .filter(|(_, a)| now.saturating_duration_since(a.at) < WALLET_SERVER_TTL)
+            .map(|(k, a)| (*k, a.operator))
             .collect();
         ids.shuffle(&mut rand::rng());
-        ids.truncate(WALLET_SERVERS_SAMPLED);
         ids
     }
 }
@@ -312,7 +386,8 @@ struct RpcProtocol {
     handler: Handler,
     gate: Arc<RpcGate>,
     /// Wallet-server discovery, when this endpoint is a place followers
-    /// announce to (any node serving `aether/rpc/1`).
+    /// announce to (any node serving `aether/rpc/1`): with the registry
+    /// check, announcements are verified and listed; without it, refused.
     wallets: Option<Arc<WalletServers>>,
 }
 
@@ -359,10 +434,27 @@ impl ProtocolHandler for RpcProtocol {
                     Ok(req) => match (req["method"].as_str(), this.wallets.as_ref()) {
                         // Wallet-server discovery rides the transport, inside
                         // the DoS limits, so an announcement is bound to the
-                        // connection it arrived on (see [`WalletServers`]).
+                        // connection it arrived on (see [`WalletServers`]):
+                        // `[validatorKey (hex), signature (hex)]`, the key's
+                        // signature over that endpoint id.
                         (Some("aether_announceWalletServer"), Some(w)) => {
-                            w.announce(remote);
-                            rpc_ok(&req, serde_json::json!({ "ok": true }))
+                            let param = |i: usize| {
+                                req.get("params").and_then(|p| p.get(i)).and_then(Value::as_str).map(str::to_string)
+                            };
+                            let parsed = match (param(0), param(1)) {
+                                (Some(k), Some(s)) => match (hex::decode(k.trim_start_matches("0x")), hex::decode(s.trim_start_matches("0x"))) {
+                                    (Ok(k), Ok(s)) => w.announce(remote, &k, &s),
+                                    _ => Err("validator key and signature must be hex".to_string()),
+                                },
+                                _ => Err("params: [validatorKey, signature]".to_string()),
+                            };
+                            match parsed {
+                                Ok(()) => rpc_ok(&req, serde_json::json!({ "ok": true })),
+                                Err(e) => serde_json::json!({
+                                    "jsonrpc": "2.0", "id": req.get("id").cloned().unwrap_or(Value::Null),
+                                    "error": { "code": -32000, "message": format!("announcement refused: {e}") }
+                                }),
+                            }
                         }
                         (Some("aether_walletServers"), Some(w)) => rpc_ok(
                             &req,
@@ -387,8 +479,15 @@ impl ProtocolHandler for RpcProtocol {
 
 /// Serve JSON-RPC over `aether/rpc/1` on `endpoint`; with `p2p_target`, also
 /// accept validator tunnels (`aether/p2p/1`) and forward them to that local
-/// Commonware p2p listener.
-pub fn serve<F, Fut>(endpoint: Endpoint, handler: F, p2p_target: Option<std::net::SocketAddr>) -> Router
+/// Commonware p2p listener. `registered` is the finalized-registry check
+/// wallet-server announcements are listed under (validators pass one;
+/// `None` refuses announcements).
+pub fn serve<F, Fut>(
+    endpoint: Endpoint,
+    handler: F,
+    p2p_target: Option<std::net::SocketAddr>,
+    registered: Option<RegisteredCandidate>,
+) -> Router
 where
     F: Fn(Value) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Value> + Send + 'static,
@@ -400,7 +499,7 @@ where
         RpcProtocol {
             handler: h,
             gate,
-            wallets: Some(Arc::new(WalletServers::default())),
+            wallets: Some(Arc::new(WalletServers::new(registered))),
         },
     );
     if let Some(target) = p2p_target {
@@ -428,7 +527,7 @@ where
     F: Fn(Value) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Value> + Send + 'static,
 {
-    serve(endpoint, handler, None)
+    serve(endpoint, handler, None, None)
 }
 
 /// How one JSON-RPC roundtrip failed.
@@ -675,12 +774,12 @@ mod tests {
         };
         let w = WalletServers::default();
         let t = Instant::now();
-        w.announce_at(id(1), t);
+        w.announce_at(id(1), [1; 20], t);
         assert_eq!(w.live_at(t).len(), 1, "a fresh announcement is live");
         assert!(w
             .live_at(t + WALLET_SERVER_TTL - Duration::from_secs(1))
             .iter()
-            .all(|i| *i == id(1)));
+            .all(|(i, _)| *i == id(1)));
         assert!(
             w.live_at(t + WALLET_SERVER_TTL + Duration::from_secs(1))
                 .is_empty(),
@@ -688,7 +787,7 @@ mod tests {
         );
         // The registry is bounded, however many announce.
         for i in 0..=(WALLET_SERVERS_KEPT as u8) + 1 {
-            w.announce_at(id((i % 254) as u8 + 2), t + Duration::from_secs(i as u64));
+            w.announce_at(id((i % 254) as u8 + 2), [1; 20], t + Duration::from_secs(i as u64));
         }
         let kept = w.live_at(t + Duration::from_secs(1)).len();
         assert!(
@@ -702,6 +801,85 @@ mod tests {
             "{:?} sampled",
             sample.len()
         );
+    }
+
+    /// A candidate's voting key, its signature over an endpoint id, and the
+    /// registry check that lists it (what `aether-node` supplies from its
+    /// finalized registry state).
+    fn candidate(seed: u64, endpoint: &EndpointId) -> (Vec<u8>, Vec<u8>, RegisteredCandidate) {
+        use commonware_codec::Encode as _;
+        use commonware_cryptography::{ed25519, Signer as _};
+        let sk = ed25519::PrivateKey::from_seed(seed);
+        let key = sk.public_key().encode().to_vec();
+        let sig = sk.sign(WALLET_SERVER_NAMESPACE, endpoint.as_bytes()).encode().to_vec();
+        let listed = key.clone();
+        let registered: RegisteredCandidate = Arc::new(move |k| (k == listed.as_slice()).then_some([seed as u8; 20]));
+        (key, sig, registered)
+    }
+
+    /// Only a registered candidate's own signature over the announcing
+    /// endpoint id lists it: nobody else's key, nobody else's endpoint, an
+    /// unregistered key, or a node without the registry check.
+    #[test]
+    fn announcements_need_a_registered_candidates_signature() {
+        let endpoint = SecretKey::generate().public();
+        let (key, sig, registered) = candidate(7, &endpoint);
+        let w = WalletServers::new(Some(registered));
+        w.announce(endpoint, &key, &sig).expect("a registered candidate's own signature lists it");
+        assert_eq!(w.live_at(Instant::now()), vec![(endpoint, [7; 20])]);
+
+        let w = WalletServers::new(Some(candidate(7, &endpoint).2));
+        let err = w.announce(endpoint, &key, &sig[..63]).unwrap_err();
+        assert!(err.contains("64 bytes"), "{err}");
+
+        // A signature over another endpoint id is refused, so a captured one
+        // is worthless (and nobody can announce an endpoint they do not run).
+        let other = SecretKey::generate().public();
+        let err = w.announce(other, &key, &sig).unwrap_err();
+        assert!(err.contains("endpoint id"), "{err}");
+        assert!(w.live_at(Instant::now()).is_empty());
+
+        // An unregistered candidate's signature is refused.
+        let (stranger, stranger_sig, _) = candidate(8, &endpoint);
+        let err = w.announce(endpoint, &stranger, &stranger_sig).unwrap_err();
+        assert!(err.contains("not a registered candidate"), "{err}");
+
+        // A node without the registry check (a follower) lists nobody.
+        let w = WalletServers::default();
+        let err = w.announce(endpoint, &key, &sig).unwrap_err();
+        assert!(err.contains("does not list"), "{err}");
+    }
+
+    /// Samples spread over distinct operators first: one Mac per operator
+    /// before any operator's second, so one operator cannot fill a pool.
+    #[test]
+    fn samples_spread_over_distinct_operators() {
+        let id = |i| {
+            SecretKey::from_bytes(&{
+                let mut s = [0u8; 32];
+                s[0] = i;
+                s
+            })
+            .public()
+        };
+        let w = WalletServers::default();
+        let t = Instant::now();
+        // Three operators, 50 Macs each.
+        let mut by_operator = [0usize; 3];
+        for i in 0..150u8 {
+            let operator = [i % 3; 20];
+            w.announce_at(id((i % 254) + 2), operator, t);
+        }
+        let sample = w.sample();
+        assert_eq!(sample.len(), WALLET_SERVERS_SAMPLED);
+        let live = w.live_at(t);
+        for id in &sample {
+            let (_, operator) = live.iter().find(|(i, _)| i == id).expect("sampled a live id");
+            by_operator[operator[0] as usize] += 1;
+        }
+        assert!(by_operator.iter().all(|c| *c > 0), "every operator is in the sample: {by_operator:?}");
+        let (max, min) = (by_operator.iter().max().copied().unwrap_or(0), by_operator.iter().min().copied().unwrap_or(0));
+        assert!(max <= min + 1, "no operator takes more than its even share: {by_operator:?}");
     }
 
     /// One JSON-RPC call over one fresh bidirectional stream, ending in the
@@ -808,8 +986,10 @@ mod tests {
     }
 
     /// Wallet-server discovery over a real `aether/rpc/1` connection: a
-    /// follower announces, and another client learns its node id from the
-    /// same server. Localhost only: no relay, no DHT.
+    /// follower announces with its candidate key's signature over its own
+    /// endpoint id, the server lists it only if its registry check knows the
+    /// key, and another client learns the node id. Localhost only: no relay,
+    /// no DHT.
     #[tokio::test]
     async fn wallet_server_discovery_rides_the_rpc_transport() {
         let secret = SecretKey::generate();
@@ -827,10 +1007,18 @@ mod tests {
             .find(|a| a.is_ipv4())
             .expect("an IPv4 socket")
             .port();
+        // The announcer's endpoint id is known before it connects, so its
+        // candidate key can sign it and the registry check can list the key.
+        let announcer_secret = SecretKey::generate();
+        let announcer_id = announcer_secret.public();
+        let (key, sig, registered) = candidate(7, &announcer_id);
         // The interception answers before the handler, which never runs here.
-        let router = serve_rpc(server, |_req| async move {
-            unreachable!("discovery is answered by the transport")
-        });
+        let router = serve(
+            server,
+            |_req| async move { unreachable!("discovery is answered by the transport") },
+            None,
+            Some(registered),
+        );
         let addr = EndpointAddr::from_parts(
             id,
             [TransportAddr::Ip(SocketAddr::new(
@@ -839,24 +1027,38 @@ mod tests {
             ))],
         );
 
-        let announcer = RpcClient::with_addrs(vec![addr.clone()]).await.unwrap();
-        announcer
-            .call("aether_announceWalletServer", serde_json::json!([]))
+        let announcer_ep = Endpoint::builder(presets::Minimal)
+            .relay_mode(iroh::RelayMode::Disabled)
+            .secret_key(announcer_secret)
+            .bind()
             .await
-            .expect("announced");
+            .unwrap();
+        let announce = |key: Vec<u8>, sig: Vec<u8>| {
+            let (ep, addr) = (announcer_ep.clone(), addr.clone());
+            async move {
+                let conn = connect_rpc(&ep, &addr, Duration::from_secs(10)).await.unwrap();
+                rpc_call(&conn, "aether_announceWalletServer", serde_json::json!([hex::encode(key), hex::encode(sig)])).await
+            }
+        };
+        announce(key, sig).await.expect("announced");
+        // An unregistered candidate is refused an answer, and not listed.
+        let (stranger, stranger_sig, _) = candidate(8, &announcer_id);
+        let refused = announce(stranger, stranger_sig).await.unwrap_err();
+        assert!(refused.to_string().contains("announcement refused"), "{refused}");
+
         let reader = RpcClient::with_addrs(vec![addr]).await.unwrap();
         let listed = reader
             .call("aether_walletServers", serde_json::json!([]))
             .await
             .expect("listed");
-        let mine = announcer.id().to_string();
+        let mine = announcer_id.to_string();
         assert!(
             listed
                 .as_array()
                 .is_some_and(|a| a.iter().any(|s| s.as_str() == Some(mine.as_str()))),
             "the announcer's own node id {mine} is listed: {listed}"
         );
-        announcer.endpoint().close().await;
+        announcer_ep.close().await;
         reader.endpoint().close().await;
         let _ = router.shutdown().await;
     }

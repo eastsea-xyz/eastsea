@@ -1,4 +1,6 @@
 /target
+/tmp/
+/fuzz/Cargo.lock
 /dist/aether-node
 /dist/aether-bench
 /dist/Aether Node.app

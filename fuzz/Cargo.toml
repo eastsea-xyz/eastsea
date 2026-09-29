@@ -1,0 +1,57 @@
+[package]
+name = "aether-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+aether-node = { path = "../crates/node" }
+aether-light = { path = "../crates/light" }
+aether-types = { path = "../crates/types" }
+aether-execution = { path = "../crates/execution" }
+commonware-codec = "=2026.9.0"
+libfuzzer-sys = "0.4"
+serde_json = "1"
+
+[[bin]]
+name = "tx_envelope"
+path = "fuzz_targets/tx_envelope.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "block_payload"
+path = "fuzz_targets/block_payload.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "beacon_answer"
+path = "fuzz_targets/beacon_answer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "era_file"
+path = "fuzz_targets/era_file.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "snapshot_chunk"
+path = "fuzz_targets/snapshot_chunk.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+
+[patch.crates-io]
+n0-mainline = { path = "../vendor/n0-mainline" }

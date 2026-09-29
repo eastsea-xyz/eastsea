@@ -69,6 +69,8 @@ fn config() -> ChainConfig {
         draw_epochs: None,
         history_v2: true,
         node_rewards: false,
+        group: 0,
+        max_committee: aether_node::rotation::GROW_UNTIL,
         reserve: None,
     }
 }
@@ -269,6 +271,7 @@ fn rpc_state(node: &Node, registrar: Option<Arc<aether_node::devicecheck::Regist
         handoff: None,
         snapshot: Default::default(),
         prover: None,
+        shards: None,
     }
 }
 

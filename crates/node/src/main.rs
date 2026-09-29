@@ -369,6 +369,14 @@ enum Cmd {
         /// The founder's operator address (its own registered Macs are not independent).
         #[arg(long)]
         reserve_operator: Option<Address>,
+        /// The consensus group this chain is (13-roadmap.md, 그룹 분열 준비): 0 — the
+        /// default — is the only group today; any other group is a new genesis of its own.
+        #[arg(long)]
+        group: Option<u16>,
+        /// Seats the voting committee grows to before draws swap instead of add
+        /// (default 16, at least 4, at most 128).
+        #[arg(long)]
+        max_committee: Option<u64>,
         members: Vec<String>,
     },
     /// List the public development accounts (funded at genesis; never use for value).
@@ -703,13 +711,13 @@ fn main() {
             };
             reshare(&from, &to, boundary, port, data, peers, link_base, offline, via_node)
         }
-        Cmd::Network { chain_id, faucet, registrar, dev_registrar, epoch_blocks, min_streak, draw_epochs, node_rewards, history, reserve, reserve_operator, members } => {
+        Cmd::Network { chain_id, faucet, registrar, dev_registrar, epoch_blocks, min_streak, draw_epochs, node_rewards, history, reserve, reserve_operator, group, max_committee, members } => {
             let registrar = match (registrar, dev_registrar) {
                 (None, true) => Some(dev_registrar_hex()),
                 (r, _) => r,
             };
             let reserve = reserve_operator.map(|op| (op, reserve));
-            assemble_network(chain_id, faucet, registrar, (epoch_blocks, min_streak, draw_epochs), history, (node_rewards, reserve), &members)
+            assemble_network(chain_id, faucet, registrar, (epoch_blocks, min_streak, draw_epochs), (history, group, max_committee), (node_rewards, reserve), &members)
         }
         Cmd::RegistrarKey { data } => (|| {
             // Idempotent: an existing key is kept (and its public half printed).
@@ -889,6 +897,8 @@ fn chain_config(chain_id: u64, genesis: &aether_node::roster::Genesis, dev_alloc
         history_v2: genesis.history >= 2,
         node_rewards: genesis.node_rewards,
         reserve: genesis.reserve.clone(),
+        group: genesis.group,
+        max_committee: genesis.max_committee,
     }
 }
 
@@ -1201,11 +1211,12 @@ fn assemble_network(
     faucet: Option<Address>,
     registrar: Option<String>,
     voting: VotingParams,
-    history: Option<u32>,
+    format: (Option<u32>, Option<u16>, Option<u64>),
     rewards: (bool, Option<(Address, Vec<String>)>),
     members: &[String],
 ) -> Result<(), String> {
     let (epoch_blocks, min_streak, draw_epochs) = voting;
+    let (history, group, max_committee) = format;
     let (node_rewards, reserve) = rewards;
     if node_rewards && registrar.is_none() {
         return Err("--node-rewards needs the voting-node registry (--registrar)".into());
@@ -1240,6 +1251,8 @@ fn assemble_network(
         history,
         node_rewards: node_rewards.then_some(true),
         reserve,
+        group,
+        max_committee,
     };
     aether_node::roster::Roster::from_file(&file)?;
     file.genesis()?;
@@ -1392,7 +1405,7 @@ fn run_node(a: NodeArgs) {
         let (participants, polynomial, share) = committee_keys(&data, &validator_set, &signer.public_key(), key_round);
         let (handoff_share, handoff_sharing) = (share.clone(), polynomial.clone());
         let polynomial_identity = &polynomial.public().clone();
-        let scheme = aether_light::Scheme::signer(&aether_light::consensus_namespace(), participants, polynomial, share).expect("share matches polynomial");
+        let scheme = aether_light::Scheme::signer(&aether_light::consensus_namespace_of(cfg.group), participants, polynomial, share).expect("share matches polynomial");
         let store = aether_node::store::Store::open(&std::path::Path::new(&data).join("state.redb")).expect("open state store");
         let (chain, genesis) = Chain::open(cfg.clone(), store).expect("restore state (delete the data dir to resync)");
         install_verifier(&chain, &data, false);
@@ -1414,7 +1427,7 @@ fn run_node(a: NodeArgs) {
             } {
                 Ok(client) => {
                     let upstream = aether_node::follow::Upstream::Iroh(client, Default::default());
-                    let set = aether_light::ValidatorSet::new(*polynomial_identity);
+                    let set = aether_light::ValidatorSet::for_group(*polynomial_identity, cfg.group);
                     let caught = tokio::time::timeout(
                         Duration::from_secs(120),
                         aether_node::follow::catch_up(&chain, &upstream, &set, aether_node::follow::BEHIND_MARGIN),
@@ -1529,6 +1542,7 @@ fn run_node(a: NodeArgs) {
                 me: signer.public_key(),
                 scheme,
                 identity: *polynomial_identity,
+                group: cfg.group,
                 epocher: aether_node::epochs::ScheduleEpocher::new(epochs.iter().map(|e| e.height).collect()).with_end(epoch_end),
                 epoch_floor,
                 genesis,
@@ -1823,13 +1837,15 @@ fn run_follow(
     let (chain_id, genesis, set, nodes) = match network {
         Some(path) => {
             let file = aether_node::roster::NetworkFile::load(std::path::Path::new(&path))?;
+            let genesis = file.genesis()?;
             let identity = file.identity.clone().ok_or(
                 "network.json has no committee identity: use the one written by dkg/reshare",
             )?;
             let set = aether_light::ValidatorSet::from_hex(&identity)
-                .map_err(|e| format!("identity: {e:?}"))?;
+                .map_err(|e| format!("identity: {e:?}"))?
+                .with_group(genesis.group);
             let nodes = aether_node::roster::Roster::from_file(&file)?.nodes;
-            (file.chain_id, file.genesis()?, set, nodes)
+            (file.chain_id, genesis, set, nodes)
         }
         None => {
             let mut genesis = aether_node::roster::Genesis::default();

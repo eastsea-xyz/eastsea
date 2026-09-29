@@ -61,6 +61,18 @@ pub struct TxHeader {
     /// Commitment to the payload; for encrypted payloads it is checked after decryption.
     pub payload_commitment: Hash,
     pub scheme: SignerScheme,
+    /// The group this tx runs in (0 = the only group today). None is group 0
+    /// and keeps the v2 signing bytes, so every existing signature stays valid;
+    /// any other group signs under the v3 tag instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<u16>,
+}
+
+impl TxHeader {
+    /// The group this tx belongs to: None means 0, the only group today.
+    pub fn group(&self) -> u16 {
+        self.group.unwrap_or(0)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -96,7 +108,15 @@ impl Canonical for FeeVector {
 
 impl Canonical for TxHeader {
     fn encode_canonical(&self, out: &mut alloc::vec::Vec<u8>) {
-        out.extend_from_slice(b"aether/tx-header/v2");
+        match self.group {
+            None => out.extend_from_slice(b"aether/tx-header/v2"),
+            // A group other than 0 changes what is signed (v3): a signer that
+            // knows no group can never produce these bytes by accident.
+            Some(group) => {
+                out.extend_from_slice(b"aether/tx-header/v3");
+                out.extend_from_slice(&group.to_be_bytes());
+            }
+        }
         put_u64(out, self.chain_id);
         out.extend_from_slice(self.sender.as_slice());
         put_u64(out, self.nonce);
@@ -154,6 +174,7 @@ mod tests {
             tip: 0,
             payload_commitment: B256::repeat_byte(9),
             scheme: SignerScheme::P256,
+            group: None,
         }
     }
 
@@ -164,6 +185,27 @@ mod tests {
         let mut h = header(1);
         h.scheme = SignerScheme::Ed25519;
         assert_ne!(h.to_canonical_bytes(), header(1).to_canonical_bytes());
+    }
+
+    #[test]
+    fn group_none_keeps_v2_bytes_and_other_groups_sign_differently() {
+        let v2 = header(1).to_canonical_bytes();
+        assert_eq!(&v2[..19], b"aether/tx-header/v2");
+        assert_eq!(header(1).group(), 0);
+        // A group tx signs under the v3 tag: never the same bytes as v2.
+        let mut g7 = header(1);
+        g7.group = Some(7);
+        let v3 = g7.to_canonical_bytes();
+        assert_eq!(&v3[..19], b"aether/tx-header/v3");
+        assert_eq!(&v3[19..21], 7u16.to_be_bytes());
+        assert_ne!(v2, v3);
+        let mut g8 = g7.clone();
+        g8.group = Some(8);
+        assert_ne!(v3, g8.to_canonical_bytes());
+        // Serde keeps the field optional, so old JSON round-trips unchanged.
+        let json = serde_json::to_string(&header(1)).unwrap();
+        assert!(!json.contains("group"));
+        assert_eq!(serde_json::from_str::<TxHeader>(&json).unwrap(), header(1));
     }
 
     #[test]

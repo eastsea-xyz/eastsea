@@ -116,6 +116,8 @@ fn chain_config() -> ChainConfig {
         draw_epochs: None,
         history_v2: false,
         node_rewards: false,
+        group: 0,
+        max_committee: aether_node::rotation::GROW_UNTIL,
         reserve: None,
     }
 }
@@ -187,6 +189,7 @@ async fn start_validator(context: &Ctx, oracle: &Oracle<Pk, Ctx>, i: u64, chain:
             me,
             scheme,
             identity,
+            group: 0,
             epocher: ScheduleEpocher::new(vec![]),
             epoch_floor: None,
             genesis,

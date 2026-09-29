@@ -102,6 +102,8 @@ impl Net {
             draw_epochs: None,
             node_rewards: o.node_rewards,
             history_v2: o.history_v2,
+            group: 0,
+            max_committee: aether_node::rotation::GROW_UNTIL,
             reserve: o.reserve,
         };
         let (chain, genesis) = Chain::new(cfg);
@@ -193,11 +195,11 @@ impl Net {
 
     /// Build and execute the next block (not finalized).
     pub fn build(&self, txs: Vec<TxEnvelope>, upgrade: Option<SignedUpgrade>, proofs: Vec<ProofClaim>, answers: Vec<BeaconAnswer>) -> Result<(Block, Arc<Executed>), ChainError> {
-        self.build_with(txs, upgrade, proofs, answers, None)
+        self.build_with(txs, upgrade, proofs, answers, None, None)
     }
 
-    /// `build` carrying a committee handoff.
-    pub fn build_with(&self, txs: Vec<TxEnvelope>, upgrade: Option<SignedUpgrade>, proofs: Vec<ProofClaim>, answers: Vec<BeaconAnswer>, handoff: Option<aether_light::block::Handoff>) -> Result<(Block, Arc<Executed>), ChainError> {
+    /// `build` carrying a committee handoff and a draw seed.
+    pub fn build_with(&self, txs: Vec<TxEnvelope>, upgrade: Option<SignedUpgrade>, proofs: Vec<ProofClaim>, answers: Vec<BeaconAnswer>, handoff: Option<aether_light::block::Handoff>, seed: Option<aether_light::block::Seed>) -> Result<(Block, Arc<Executed>), ChainError> {
         let (chain, parent) = (&self.chain, &self.parent);
         let height = self.last.height.next();
         let leader = ed25519::PrivateKey::from_seed(1).public_key();
@@ -208,7 +210,7 @@ impl Net {
         // The proposer's pre-state skips answers it cannot check; the block is then built with what is left.
         let (pre, _) = chain.pre_state_with(parent, parent.next_protocol(), &proofs, &answers, false)?;
         let n = txs.len();
-        let (payload, out) = build_payload(parent, &pre, &ctx, txs, Extras { handoff, upgrade, proofs, beacons: answers, ..Default::default() });
+        let (payload, out) = build_payload(parent, &pre, &ctx, txs, Extras { handoff, seed, upgrade, proofs, beacons: answers, ..Default::default() });
         assert_eq!(payload.txs.len(), n, "every tx fits");
         assert!(out.receipts.iter().all(|r| r.success), "block {height}: a registry call failed");
         drop(pre);
@@ -235,7 +237,7 @@ impl Net {
     /// handoff, with every Mac's answers.
     pub fn step_handoff(&mut self, handoff: aether_light::block::Handoff) -> Arc<Executed> {
         let answers = self.answers();
-        let (block, exec) = self.build_with(vec![], None, vec![], answers, Some(handoff)).unwrap();
+        let (block, exec) = self.build_with(vec![], None, vec![], answers, Some(handoff), None).unwrap();
         self.chain.finalize(&block).unwrap();
         self.parent = exec.clone();
         self.last = block;
@@ -358,6 +360,22 @@ impl Committee {
         let n = self.keys.len() as u32;
         let partials: Vec<_> = self.keys.iter().map(|k| aether_node::upgrade::sign_partial(u, &self.files[&k.public_key()].decode(n).unwrap().1)).collect();
         aether_node::upgrade::combine(sharing.public(), &partials[..3]).unwrap()
+    }
+
+    /// The committee's threshold signature on draw `draw`'s seed, as the
+    /// voting committee produces it between draws.
+    pub fn sign_seed(&self, chain_id: u64, draw: u64) -> aether_light::block::Seed {
+        let sharing = self.output();
+        let n = self.keys.len() as u32;
+        let partials: Vec<_> = self
+            .keys
+            .iter()
+            .map(|k| {
+                let share = &self.files[&k.public_key()].decode(n).unwrap().1;
+                aether_node::handoff::check_seed_partial(chain_id, sharing.public(), draw, &aether_node::handoff::sign_seed_partial(chain_id, draw, share)).unwrap()
+            })
+            .collect();
+        aether_node::handoff::combine_seed(sharing.public(), draw, &partials[..3]).unwrap()
     }
 
     /// Reshare the identity to `members` (ed25519 key, node id) at key round

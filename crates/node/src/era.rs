@@ -117,6 +117,14 @@ struct Body {
     proofs: Vec<aether_light::block::ProofClaim>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     beacons: Vec<aether_light::block::BeaconAnswer>,
+    /// The consensus group the block belongs to (0 = the only group today, and
+    /// omitted — group-0 bodies keep their exact bytes).
+    #[serde(default, skip_serializing_if = "is_zero_group")]
+    group: u16,
+}
+
+fn is_zero_group(group: &u16) -> bool {
+    *group == 0
 }
 
 fn digest_of(d: &Digest) -> H32 {
@@ -278,14 +286,15 @@ pub fn write(start: &Mmr, blocks: &[Block]) -> Result<Vec<u8>, EraError> {
                 for g in [p.gas.exec, p.gas.state, p.gas.prove] {
                     put_varint(&mut cols.gas, g);
                 }
-                let body = Body { txs: p.txs, bal: p.bal, handoff: p.handoff, seed: p.seed, upgrade: p.upgrade, proofs: p.proofs, beacons: p.beacons };
+                let body = Body { txs: p.txs, bal: p.bal, handoff: p.handoff, seed: p.seed, upgrade: p.upgrade, proofs: p.proofs, beacons: p.beacons, group: p.group };
                 let empty = body.txs.is_empty()
                     && body.bal == BlockAccessList::default()
                     && body.handoff.is_none()
                     && body.seed.is_none()
                     && body.upgrade.is_none()
                     && body.proofs.is_empty()
-                    && body.beacons.is_empty();
+                    && body.beacons.is_empty()
+                    && body.group == 0;
                 if !empty {
                     flags |= HAS_BODY;
                     let bytes = serde_json::to_vec(&body).map_err(|_| EraError::Corrupt("body"))?;
@@ -442,7 +451,7 @@ pub fn read(bytes: &[u8], expected_root: Option<&H32>) -> Result<Era, EraError> 
                 let n = body_lens.varint()? as usize;
                 serde_json::from_slice(bodies.take(n)?).map_err(|_| EraError::Corrupt("body"))?
             } else {
-                Body { txs: vec![], bal: BlockAccessList::default(), handoff: None, seed: None, upgrade: None, proofs: vec![], beacons: vec![] }
+                Body { txs: vec![], bal: BlockAccessList::default(), handoff: None, seed: None, upgrade: None, proofs: vec![], beacons: vec![], group: 0 }
             };
             let p = Payload {
                 version: u32::try_from(version).map_err(|_| EraError::Corrupt("version"))?,
@@ -457,6 +466,7 @@ pub fn read(bytes: &[u8], expected_root: Option<&H32>) -> Result<Era, EraError> 
                 upgrade: body.upgrade,
                 proofs: body.proofs,
                 beacons: body.beacons,
+                group: body.group,
             };
             p.to_bytes()
         };

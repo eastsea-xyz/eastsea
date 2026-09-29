@@ -264,6 +264,8 @@ mod tests {
             draw_epochs: None,
             history_v2: false,
             node_rewards: false,
+            group: 0,
+            max_committee: crate::rotation::GROW_UNTIL,
             reserve: None,
         };
         (f, Chain::new(cfg).0)

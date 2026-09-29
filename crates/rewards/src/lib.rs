@@ -49,11 +49,18 @@
 use aether_execution::proofs::{self, ClaimError};
 use aether_execution::registry;
 use aether_execution::{StateError, WorldState};
-use alloy_primitives::{address, keccak256, Address, U256};
+use alloy_primitives::{address, keccak256, Address, Bytes, U256};
 use std::collections::BTreeMap;
 
 /// Where node-reward state lives (storage only, no code).
 pub const REWARDS: Address = address!("0000000000000000000000000000000000007704");
+
+/// Read-only `randomness(uint64)` runtime predeployed at REWARDS on new-genesis
+/// networks. It reads only the tagged epoch slot; no external call can write
+/// rewards storage. Built from contracts/src/Randomness.sol with solc 0.8.19.
+pub fn randomness_code() -> Bytes {
+    Bytes::from(alloy_primitives::hex::decode(include_str!("randomness.bin.hex").trim()).expect("valid randomness runtime"))
+}
 /// No operator gets more than 1/MAX_SHARE of an epoch's node or proof share.
 pub const MAX_SHARE: u64 = 16;
 /// Beacon slots per epoch (`beacons`): four unpredictable moments an hour.
@@ -84,10 +91,15 @@ const TAG_OPERATOR: u64 = 2;
 const TAG_RESERVE: u64 = 7;
 /// Seating of the founder's reserve keys, rewritten at each committee switch.
 const TAG_SEATED: u64 = 8;
+/// The epoch randomness words: keccak256("aether-randomness/v1" ‖ epoch ‖
+/// draw ‖ seed signature), one word per epoch, written by its first block.
+const TAG_RANDOM: u64 = 9;
+/// New-genesis voting-set ceiling, committed by the genesis state root.
+const TAG_MAX_COMMITTEE: u64 = 10;
 /// Every storage tag of REWARDS (here and in beacons.rs), in one list: a new
 /// record takes the next free number (two records once shared tag 8).
 #[cfg(test)]
-pub(crate) const ALL_TAGS: [u64; 12] = [ENABLED, TAG_MAC, TAG_OPERATOR, TAG_RESERVE, TAG_SEATED, beacons::TAG_SLOTS, beacons::TAG_SLOT_HASH, beacons::TAG_DAY, beacons::TAG_BEACON, beacons::TAG_PROFILE, beacons::TAG_OFFERED, beacons::TAG_RECENT];
+pub(crate) const ALL_TAGS: [u64; 14] = [ENABLED, TAG_MAC, TAG_OPERATOR, TAG_RESERVE, TAG_SEATED, TAG_RANDOM, TAG_MAX_COMMITTEE, beacons::TAG_SLOTS, beacons::TAG_SLOT_HASH, beacons::TAG_DAY, beacons::TAG_BEACON, beacons::TAG_PROFILE, beacons::TAG_OFFERED, beacons::TAG_RECENT];
 
 pub mod beacons;
 
@@ -103,6 +115,11 @@ pub fn enable(state: &mut WorldState) {
 /// Whether this network's genesis turned node rewards on.
 pub fn enabled(state: &WorldState) -> bool {
     !state.storage(&REWARDS, U256::from(ENABLED)).is_zero()
+}
+
+/// Bind the committee ceiling to the new genesis state root.
+pub fn set_max_committee(state: &mut WorldState, size: u64) {
+    state.set_storage(REWARDS, tagged(TAG_MAX_COMMITTEE, U256::ZERO), U256::from(size));
 }
 
 /// `DAILY^n` in 1e18 fixed point, rounded down at every multiplication
@@ -304,6 +321,23 @@ pub fn distribute(state: &mut WorldState, height: u64) -> Result<Distribution, S
         beacons::note(state, c.index, epoch, *a, c.registered_epoch < epoch);
     }
     Ok(Distribution { epoch, pool, paid, unminted: pool - minted })
+}
+
+/// The randomness word of `epoch`: keccak256 over the domain, epoch, draw
+/// number and the committee's threshold signature (the same seed the voting-set draw
+/// uses). A threshold signature needs a quorum, so no single proposer can
+/// bias it — but the seed is on chain before the epoch begins, so the word is
+/// known one epoch ahead: contracts must commit before they reveal
+/// (contracts/src/Randomness.sol documents the slot).
+pub fn set_randomness(state: &mut WorldState, epoch: u64, draw: u64, signature: &[u8]) {
+    let word = keccak256([b"aether-randomness/v1".as_slice(), &epoch.to_be_bytes(), &draw.to_be_bytes(), signature].concat());
+    state.set_storage(REWARDS, tagged(TAG_RANDOM, U256::from(epoch)), U256::from_be_bytes(word.0));
+}
+
+/// The randomness word written at the start of `epoch` (0 before the first
+/// epoch that had a draw seed on chain — a contract sees 0, never a stale word).
+pub fn randomness(state: &WorldState, epoch: u64) -> U256 {
+    state.storage(&REWARDS, tagged(TAG_RANDOM, U256::from(epoch)))
 }
 
 /// A day (epochs `first..first + DAY_EPOCHS`) ended: move warm-up levels.

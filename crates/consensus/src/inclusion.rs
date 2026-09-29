@@ -53,6 +53,7 @@ mod tests {
                 tip: fee,
                 payload_commitment: B256::ZERO,
                 scheme: SignerScheme::P256,
+                group: None,
             },
             payload: TxPayload::Plain(Bytes::new()),
             signature: Bytes::new(),

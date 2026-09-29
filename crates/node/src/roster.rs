@@ -76,6 +76,15 @@ pub struct NetworkFile {
     /// Founder reserve keys (with node rewards; docs/design/12-launch-plan.md).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reserve: Option<ReserveFile>,
+    /// The consensus group this chain is (13-roadmap.md, 그룹 분열 준비):
+    /// 0 — the default — is the only group today; a group other than 0 is a
+    /// new genesis of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<u16>,
+    /// Committee ceiling the voting set grows to before draws swap seats
+    /// (`rotation::GROW_UNTIL`, 16, by default; 4..=128).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_committee: Option<u64>,
 }
 
 /// The founder's reserve keys in a network file: up to three validator
@@ -87,7 +96,7 @@ pub struct ReserveFile {
 }
 
 /// What a network file fixes about genesis beyond the chain id.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Genesis {
     pub faucet: Option<aether_types::Address>,
     pub registrar: Option<([u8; 32], [u8; 32])>,
@@ -99,6 +108,27 @@ pub struct Genesis {
     pub history: u32,
     pub node_rewards: bool,
     pub reserve: Option<crate::chain::Reserve>,
+    /// The consensus group (0 today; `ChainConfig::group`).
+    pub group: u16,
+    /// The committee ceiling (`ChainConfig::max_committee`).
+    pub max_committee: usize,
+}
+
+impl Default for Genesis {
+    fn default() -> Self {
+        Self {
+            faucet: None,
+            registrar: None,
+            epoch_blocks: 0,
+            min_streak: None,
+            draw_epochs: None,
+            history: 0,
+            node_rewards: false,
+            reserve: None,
+            group: 0,
+            max_committee: crate::rotation::GROW_UNTIL,
+        }
+    }
 }
 
 impl NetworkFile {
@@ -118,6 +148,23 @@ impl NetworkFile {
                 ))
             }
         };
+        let max_committee = self.max_committee.unwrap_or(crate::rotation::GROW_UNTIL as u64);
+        if !(4..=crate::rotation::MAX_VOTING_NODES as u64).contains(&max_committee) {
+            return Err(format!("max_committee must be 4..={}", crate::rotation::MAX_VOTING_NODES));
+        }
+        if (self.group.unwrap_or(0) != 0 || max_committee != crate::rotation::GROW_UNTIL as u64)
+            && !(self.node_rewards.unwrap_or(false) && self.history.unwrap_or(0) >= 2)
+        {
+            return Err("group and custom max_committee require node_rewards and history v2 at genesis".into());
+        }
+        if self.node_rewards.unwrap_or(false) && self.history.unwrap_or(0) >= 2
+            && self.validators.len() > max_committee as usize
+        {
+            return Err("genesis validators exceed max_committee".into());
+        }
+        if self.group.unwrap_or(0) != 0 && (registrar.is_some() || self.reserve.is_some()) {
+            return Err("registry and rewards reserve belong to root group 0".into());
+        }
         Ok(Genesis {
             faucet: self.faucet,
             registrar,
@@ -126,6 +173,8 @@ impl NetworkFile {
             draw_epochs: self.draw_epochs,
             history: self.history.unwrap_or(0),
             node_rewards: self.node_rewards.unwrap_or(false),
+            group: self.group.unwrap_or(0),
+            max_committee: max_committee as usize,
             reserve: match &self.reserve {
                 None => None,
                 Some(r) => {
@@ -157,6 +206,8 @@ impl NetworkFile {
         self.history = from.history.or(self.history);
         self.node_rewards = from.node_rewards.or(self.node_rewards);
         self.reserve = from.reserve.clone().or(self.reserve.take());
+        self.group = from.group.or(self.group);
+        self.max_committee = from.max_committee.or(self.max_committee);
     }
 }
 
@@ -279,6 +330,8 @@ impl Roster {
             history: None,
             node_rewards: None,
             reserve: None,
+            group: None,
+            max_committee: None,
         }
     }
 }
@@ -368,5 +421,64 @@ impl LocalKeys {
             serde_json::to_vec_pretty(&self.public()).expect("json"),
         )
         .map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn file(max_committee: Option<u64>, group: Option<u16>) -> NetworkFile {
+        let k = LocalKeys::devnet(1);
+        NetworkFile {
+            chain_id: 7_799,
+            validators: vec![Member { key: hex::encode(k.signer.public_key().encode()), node: k.node_secret.public().to_string() }],
+            identity: None,
+            round: 0,
+            output: None,
+            epochs: Vec::new(),
+            faucet: None,
+            registrar: None,
+            epoch_blocks: None,
+            min_streak: None,
+            draw_epochs: None,
+            history: Some(2),
+            node_rewards: Some(true),
+            reserve: None,
+            group,
+            max_committee,
+        }
+    }
+
+    /// The genesis group and committee ceiling: absent keeps group 0 and
+    /// `GROW_UNTIL` (every network today), and the ceiling must fit 4..=128.
+    #[test]
+    fn the_genesis_group_and_committee_ceiling_default_and_bounds() {
+        assert_eq!((Genesis::default().group, Genesis::default().max_committee), (0, crate::rotation::GROW_UNTIL));
+        let g = file(None, None).genesis().unwrap();
+        assert_eq!((g.group, g.max_committee), (0, crate::rotation::GROW_UNTIL));
+        let mut legacy = file(None, None);
+        legacy.history = None;
+        legacy.node_rewards = None;
+        assert_eq!((legacy.genesis().unwrap().group, legacy.genesis().unwrap().max_committee), (0, crate::rotation::GROW_UNTIL));
+        legacy.group = Some(1);
+        assert!(legacy.genesis().is_err());
+        legacy.group = None;
+        legacy.max_committee = Some(8);
+        assert!(legacy.genesis().is_err());
+        let g = file(Some(8), Some(1)).genesis().unwrap();
+        assert_eq!((g.group, g.max_committee), (1, 8));
+        let mut nonroot = file(None, Some(1));
+        nonroot.registrar = Some("11".repeat(64));
+        assert!(nonroot.genesis().unwrap_err().contains("root group 0"));
+        assert_eq!(file(Some(4), None).genesis().unwrap().max_committee, 4);
+        let mut too_many = file(Some(4), None);
+        too_many.validators = vec![too_many.validators[0].clone(); 5];
+        assert!(too_many.genesis().unwrap_err().contains("exceed max_committee"));
+        assert_eq!(file(Some(crate::rotation::MAX_VOTING_NODES as u64), None).genesis().unwrap().max_committee, crate::rotation::MAX_VOTING_NODES);
+        for bad in [0, 3, 129, u64::MAX] {
+            let err = file(Some(bad), None).genesis().unwrap_err();
+            assert!(err.contains("max_committee") && err.contains('4'), "{bad}: {err}");
+        }
     }
 }

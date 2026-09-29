@@ -596,6 +596,8 @@ mod tests {
             history: None,
             node_rewards: None,
             reserve: None,
+            group: None,
+            max_committee: None,
         }
     }
 

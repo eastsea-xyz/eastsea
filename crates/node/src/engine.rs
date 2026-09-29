@@ -73,6 +73,9 @@ pub struct Config<B: Blocker<PublicKey = PublicKey>, P: Provider<PublicKey = Pub
     pub scheme: Scheme,
     /// Committee identity (verifies certificates of every epoch).
     pub identity: aether_light::Identity,
+    /// The chain's consensus group (0 today): certificates verify under its
+    /// namespace.
+    pub group: u16,
     /// Epoch boundaries; the node runs the latest epoch.
     pub epocher: ScheduleEpocher,
     /// Digest consensus starts from in the current epoch: the chain genesis in
@@ -317,7 +320,7 @@ where
             finalizations,
             blocks,
             marshal::Config {
-                provider: RotatingProvider::new(epoch, scheme.clone(), cfg.identity),
+                provider: RotatingProvider::new(epoch, scheme.clone(), cfg.identity, cfg.group),
                 epocher: epocher.clone(),
                 partition_prefix: prefix.clone(),
                 mailbox_size,

@@ -45,6 +45,8 @@ fn config(history_v2: bool) -> ChainConfig {
         draw_epochs: None,
         history_v2,
         node_rewards: false,
+        group: 0,
+        max_committee: aether_node::rotation::GROW_UNTIL,
         reserve: None,
     }
 }

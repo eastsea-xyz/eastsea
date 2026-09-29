@@ -90,8 +90,10 @@ pub struct RotatingProvider {
 }
 
 impl RotatingProvider {
-    pub fn new(current: Epoch, signer: Scheme, identity: aether_light::Identity) -> Self {
-        let verifier = Scheme::certificate_verifier(&aether_light::consensus_namespace(), identity);
+    /// `group` is the chain's consensus group: certificates verify under its
+    /// namespace, so one group's certificate never passes as another's.
+    pub fn new(current: Epoch, signer: Scheme, identity: aether_light::Identity, group: u16) -> Self {
+        let verifier = Scheme::certificate_verifier(&aether_light::consensus_namespace_of(group), identity);
         RotatingProvider { current, signer: Arc::new(signer), verifier: Arc::new(verifier) }
     }
 }

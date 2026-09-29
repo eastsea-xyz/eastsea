@@ -44,7 +44,20 @@ pub const NAMESPACE: &[u8] = b"_AETHER_DEVNET_V1";
 pub const MAX_BLOCK_BYTES: u32 = 8 * 1024 * 1024;
 
 pub fn consensus_namespace() -> Vec<u8> {
-    union(NAMESPACE, b"_CONSENSUS")
+    consensus_namespace_of(0)
+}
+
+/// The namespace group `group`'s finalization certificates verify under: a
+/// certificate is a threshold signature over the namespace, so one group's
+/// proof of finality can never pass as another's. Group 0 — every network
+/// today — keeps the namespace unchanged.
+pub fn consensus_namespace_of(group: u16) -> Vec<u8> {
+    let ns = union(NAMESPACE, b"_CONSENSUS");
+    if group == 0 {
+        ns
+    } else {
+        union(&ns, &group.to_be_bytes())
+    }
 }
 
 /// Consensus signing scheme: BLS12-381 threshold (signatures in G1, 48 bytes)
@@ -90,6 +103,9 @@ pub enum LightError {
     RootNotCommitted,
     /// A block does not build on the one before it in a certified chain.
     BrokenLink,
+    /// A block of another consensus group: a group's client verifies only its
+    /// own group's chain.
+    WrongGroup,
 }
 
 impl core::fmt::Display for LightError {
@@ -104,11 +120,19 @@ impl std::error::Error for LightError {}
 pub struct ValidatorSet {
     scheme: Scheme,
     identity: Identity,
+    /// The consensus group whose blocks this client verifies (0 today).
+    group: u16,
 }
 
 impl ValidatorSet {
     pub fn new(identity: Identity) -> Self {
-        ValidatorSet { scheme: Scheme::certificate_verifier(&consensus_namespace(), identity), identity }
+        Self::for_group(identity, 0)
+    }
+
+    /// A client of group `group`'s chain: certificates verify under the
+    /// group's namespace and every block must carry the group.
+    pub fn for_group(identity: Identity, group: u16) -> Self {
+        ValidatorSet { scheme: Scheme::certificate_verifier(&consensus_namespace_of(group), identity), identity, group }
     }
 
     pub fn devnet(n: u64) -> Self {
@@ -123,8 +147,20 @@ impl ValidatorSet {
         Ok(Self::new(id))
     }
 
+    /// The same client, verifying another group's chain.
+    pub fn with_group(mut self, group: u16) -> Self {
+        self.scheme = Scheme::certificate_verifier(&consensus_namespace_of(group), self.identity);
+        self.group = group;
+        self
+    }
+
     pub fn identity(&self) -> &Identity {
         &self.identity
+    }
+
+    /// The consensus group this client verifies (0 today).
+    pub fn group(&self) -> u16 {
+        self.group
     }
 
     pub fn identity_hex(&self) -> String {
@@ -163,12 +199,19 @@ pub fn verify_finalized_chain(set: &ValidatorSet, block_bytes: &[u8], finalizati
     }
     let decode = |b: &[u8]| Block::decode_cfg(b, &Block::codec_config(MAX_BLOCK_BYTES)).map_err(|_| LightError::BadEncoding("block"));
     let block = decode(block_bytes)?;
+    let check_group = |b: &Block| match b.payload() {
+        Some(payload) if payload.group == set.group => Ok(()),
+        Some(_) => Err(LightError::WrongGroup),
+        None => Err(LightError::BadEncoding("payload")),
+    };
+    check_group(&block)?;
     let mut tip = block.clone();
     for l in links {
         let next = decode(l)?;
         if next.parent != tip.digest() || next.height.get() != tip.height.get() + 1 {
             return Err(LightError::BrokenLink);
         }
+        check_group(&next)?;
         tip = next;
     }
     // Threshold certificates have a fixed size: the codec needs no config.

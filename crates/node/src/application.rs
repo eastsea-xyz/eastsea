@@ -110,6 +110,7 @@ where
             upgrade: self.chain.upgrade_for(&parent),
             proofs: self.chain.proofs_for(&parent),
             beacons: self.chain.beacons_for(&parent),
+            group: cfg.group,
         };
         // Under the parent's next protocol, with its one-time changes if it activates here.
         let attempt = self.chain.pre_state_with(&parent, parent.next_protocol(), &extras.proofs, &extras.beacons, false);

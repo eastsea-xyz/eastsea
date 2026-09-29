@@ -39,6 +39,26 @@ pub fn verify_seed(chain_id: u64, identity: &Identity, s: &aether_light::block::
         .map_err(|_| "the committee did not sign this seed".to_string())
 }
 
+/// One running member's partial signature on draw `draw`'s seed (hex codec
+/// bytes), as the committee actor produces them.
+pub fn sign_seed_partial(chain_id: u64, draw: u64, share: &Share) -> String {
+    hex::encode(ops::threshold::sign_message::<MinSig>(share, SEED_NAMESPACE, &seed_message(chain_id, draw)).encode())
+}
+
+/// Check one seed partial against the running sharing.
+pub fn check_seed_partial(chain_id: u64, sharing: &Sharing<MinSig>, draw: u64, partial: &str) -> Result<PartialSignature<MinSig>, String> {
+    let bytes = hex::decode(partial).map_err(|e| e.to_string())?;
+    let p = PartialSignature::<MinSig>::decode(bytes.as_slice()).map_err(|e| format!("partial: {e:?}"))?;
+    ops::threshold::verify_message::<MinSig>(sharing, SEED_NAMESPACE, &seed_message(chain_id, draw), &p).map_err(|_| format!("invalid seed partial from signer {}", p.index))?;
+    Ok(p)
+}
+
+/// Combine checked partials into the committee's seed signature for `draw`.
+pub fn combine_seed(sharing: &Sharing<MinSig>, draw: u64, partials: &[PartialSignature<MinSig>]) -> Result<aether_light::block::Seed, String> {
+    let sig = ops::threshold::recover::<MinSig, _>(sharing, partials, &Sequential).map_err(|e| format!("need {} partials: {e:?}", sharing.required()))?;
+    Ok(aether_light::block::Seed { draw, signature: hex::encode(sig.encode()) })
+}
+
 /// A handoff the chain accepted: it switches at `switch`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pending {

@@ -153,7 +153,7 @@ impl Snapshot {
             return Err("the store already holds a chain".into());
         }
         // The data belongs to this network's genesis (Chain::open checks it).
-        let genesis = crate::block::Block::genesis_with(cfg.chain_id, cfg.genesis_state().root(), cfg.history_v2);
+        let genesis = crate::block::Block::genesis_with(cfg.chain_id, cfg.genesis_state().root(), cfg.history_v2, cfg.group);
         store.put_meta(crate::chain::GENESIS, &crate::chain::genesis_digest(&genesis)).map_err(|e| e.to_string())?;
         let digest: [u8; 32] = hex::decode(&self.summary.hash).ok().and_then(|b| b.try_into().ok()).ok_or("snapshot block hash")?;
         let diff = Journal { writes: self.entries.iter().map(|(k, v)| (*k, Some(*v))).collect(), codes: self.codes.clone() };

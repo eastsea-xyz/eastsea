@@ -110,6 +110,81 @@ fn a_block_is_proven_through_the_blocks_built_on_it() {
     assert!(verify_finalized_chain(&set, &anchor, &bytes(&f, "next_finalization"), &too_many).is_err());
 }
 
+/// Groups (13-roadmap.md): a group's certificates verify under its own
+/// namespace and its blocks carry its id, so one group's chain never passes as
+/// another's — checked against the genuine group-0 fixture certificate.
+mod groups {
+    use super::*;
+    use aether_light::block::Block;
+    use aether_light::consensus_namespace_of;
+    use commonware_codec::{Decode, Encode};
+
+    #[test]
+    fn old_certified_block_round_trips_without_a_group_field() {
+        let f = fixture();
+        let original = bytes(&f, "anchor_block");
+        let block = Block::decode_cfg(original.as_slice(), &Block::codec_config(aether_light::MAX_BLOCK_BYTES)).unwrap();
+        assert_eq!(block.payload().unwrap().group, 0);
+        assert_eq!(block.encode().to_vec(), original);
+    }
+
+    /// The same fixture block (`which`), re-encoded with `group` in its payload
+    /// (a different block: the digest commits to the payload).
+    fn regrouped(f: &Value, which: &str, group: u16) -> Vec<u8> {
+        let b = Block::decode_cfg(bytes(f, which).as_slice(), &Block::codec_config(aether_light::MAX_BLOCK_BYTES)).unwrap();
+        let mut p = b.payload().unwrap();
+        p.group = group;
+        Block::new(b.context.clone(), b.parent, b.height, b.timestamp, p.to_bytes()).encode().to_vec()
+    }
+
+    #[test]
+    fn namespaces_separate_groups() {
+        assert_eq!(consensus_namespace_of(0), aether_light::consensus_namespace(), "group 0 keeps today's namespace");
+        for g in [1u16, 2, 300] {
+            let ns = consensus_namespace_of(g);
+            assert!(ns.starts_with(&consensus_namespace_of(0)), "group {g} extends the base namespace");
+            assert!(ns.ends_with(&g.encode()), "group {g} ends with its id");
+            assert_ne!(ns, consensus_namespace_of(0));
+        }
+        assert_ne!(consensus_namespace_of(1), consensus_namespace_of(2));
+        assert_eq!(ValidatorSet::devnet(4).group(), 0);
+        assert_eq!(ValidatorSet::devnet(4).with_group(3).group(), 3);
+    }
+
+    /// A genuine group-0 certificate does not verify under group 1's namespace:
+    /// whatever block it is attached to, the signature itself is wrong there.
+    #[test]
+    fn another_groups_namespace_rejects_the_certificate() {
+        let f = fixture();
+        let set = ValidatorSet::devnet(4).with_group(1);
+        let err = verify_finalized(&set, &bytes(&f, "anchor_block"), &bytes(&f, "anchor_finalization")).unwrap_err();
+        assert_eq!(err, LightError::WrongGroup, "the payload check fires first");
+        // Same test with the payload claiming group 1: the signature still does
+        // not verify under group 1's namespace.
+        let err = verify_finalized(&set, &regrouped(&f, "anchor_block", 1), &bytes(&f, "anchor_finalization")).unwrap_err();
+        assert_eq!(err, LightError::CertificateInvalid, "the certificate is group 0's");
+        // Group 0 keeps verifying its own chain.
+        verify_finalized(&ValidatorSet::devnet(4), &bytes(&f, "anchor_block"), &bytes(&f, "anchor_finalization")).unwrap();
+        verify_finalized(&ValidatorSet::devnet(4).with_group(0), &bytes(&f, "anchor_block"), &bytes(&f, "anchor_finalization")).unwrap();
+    }
+
+    /// A block of another group is refused before its certificate is even
+    /// looked at, wherever it sits in the chain (also as a link).
+    #[test]
+    fn another_groups_block_rejects() {
+        let f = fixture();
+        let set = ValidatorSet::devnet(4);
+        for group in [1u16, 2] {
+            assert_eq!(verify_finalized(&set, &regrouped(&f, "anchor_block", group), &bytes(&f, "anchor_finalization")), Err(LightError::WrongGroup));
+            // The genuine anchor, then a link claiming another group: the link
+            // builds on the anchor (same parent, next height), so the group
+            // check is what refuses it.
+            let r = verify_finalized_chain(&set, &bytes(&f, "anchor_block"), &bytes(&f, "next_finalization"), &[regrouped(&f, "next_block", group)]);
+            assert_eq!(r, Err(LightError::WrongGroup), "a foreign link is refused too");
+        }
+    }
+}
+
 /// History: a certified block's history root proves an old block's full
 /// contents and whole eras (roots of 8192-block MMR subtrees).
 mod history {

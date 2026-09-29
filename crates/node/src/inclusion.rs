@@ -23,8 +23,12 @@ use std::time::{Duration, Instant};
 pub const IL_NAMESPACE: &[u8] = b"_AETHER_DEVNET_V1_INCLUSION";
 pub const COMMITTEE_SIZE: u64 = 8;
 pub const MAX_IL_TXS: usize = 16;
-/// Lists younger than this are not enforced by voters.
-pub const FREEZE: Duration = Duration::from_millis(750);
+/// Lists younger than this are not enforced by voters. Long enough that a
+/// listed tx has reached the proposer before it builds, even when a loaded
+/// machine delays gossip and verification (at 750 ms, testnet validators on
+/// one busy Mac refused about one proposal a minute for a tx the proposer
+/// had not yet seen, and each refusal cost a view timeout; 2026-09-29).
+pub const FREEZE: Duration = Duration::from_secs(3);
 const MAX_AGE: Duration = Duration::from_secs(120);
 const MAX_POOL: usize = 4096;
 

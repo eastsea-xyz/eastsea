@@ -2754,7 +2754,7 @@ mod pool_tests {
         }
         let seen = Instant::now();
         accept_list(&chain, pending[32..48].to_vec(), seen); // all 16 list slots
-        let now = seen + Duration::from_secs(1); // past inclusion::FREEZE
+        let now = seen + inclusion::FREEZE + Duration::from_millis(250); // past inclusion::FREEZE
         let parent = chain.lock().finalized.clone();
 
         // The fix: one nonce order over listed and unlisted alike.
@@ -2817,7 +2817,7 @@ mod pool_tests {
         }
         let seen = Instant::now();
         accept_list(&chain, listed, seen);
-        let now = seen + Duration::from_secs(1);
+        let now = seen + inclusion::FREEZE + Duration::from_millis(250); // past inclusion::FREEZE
         let parent = chain.lock().finalized.clone();
 
         let (exec, ctx) = build_ctx(&chain, &parent, &genesis, chain.mempool_candidates());

@@ -43,6 +43,7 @@ const SEED: &str = "seed";
 const HISTORY: &str = "history";
 /// Protocol activation schedule (JSON), committed with each block.
 const SCHEDULE: &str = "schedule";
+const UPGRADE_NOTICES: &str = "upgrade_notices";
 /// The head block's statement commitment and escrow share (JSON).
 const STATEMENT: &str = "statement";
 /// Finality proofs a follower verified (`aether_getFinalized` JSON by height):
@@ -192,6 +193,7 @@ pub struct Checkpoint {
     pub seed: Option<(u64, aether_light::block::Seed)>,
     pub history: aether_state::mmr::Mmr,
     pub schedule: crate::upgrade::Schedule,
+    pub upgrade_notices: Vec<crate::upgrade::SignedUpgrade>,
     pub statement: crate::chain::Statement,
     /// First height with a kept summary (0: nothing pruned).
     pub pruned_below: u64,
@@ -223,6 +225,7 @@ pub struct Commit<'a> {
     pub history: &'a aether_state::mmr::Mmr,
     /// Protocol activations on chain up to this block.
     pub schedule: &'a crate::upgrade::Schedule,
+    pub upgrade_notices: &'a [crate::upgrade::SignedUpgrade],
     /// Its statement commitment and escrow share.
     pub statement: &'a crate::chain::Statement,
     /// History v2: the block's codec bytes, kept until its era is sealed.
@@ -870,6 +873,7 @@ impl Store {
             }
             meta.insert(HISTORY, serde_json::to_vec(c.history).map_err(|e| StoreError::Db(e.to_string()))?.as_slice()).map_err(dberr)?;
             meta.insert(SCHEDULE, serde_json::to_vec(c.schedule).map_err(|e| StoreError::Db(e.to_string()))?.as_slice()).map_err(dberr)?;
+            meta.insert(UPGRADE_NOTICES, serde_json::to_vec(c.upgrade_notices).map_err(|e| StoreError::Db(e.to_string()))?.as_slice()).map_err(dberr)?;
             meta.insert(STATEMENT, serde_json::to_vec(c.statement).map_err(|e| StoreError::Db(e.to_string()))?.as_slice()).map_err(dberr)?;
             if let Some(s) = &c.staged {
                 tx.open_table(ERA_BLOCKS).map_err(dberr)?.insert(c.height, s.block).map_err(dberr)?;
@@ -936,6 +940,10 @@ impl Store {
             Some(v) => serde_json::from_slice(v.value()).map_err(|_| StoreError::Corrupt("schedule"))?,
             None => return Err(StoreError::Corrupt("schedule")),
         };
+        let upgrade_notices = match meta.get(UPGRADE_NOTICES).map_err(dberr)? {
+            Some(v) => serde_json::from_slice(v.value()).map_err(|_| StoreError::Corrupt("upgrade notices"))?,
+            None => Vec::new(),
+        };
         // Written from protocol 2 on; a store from before has none (a protocol-1 head).
         let statement = match meta.get(STATEMENT).map_err(dberr)? {
             Some(v) => serde_json::from_slice(v.value()).map_err(|_| StoreError::Corrupt("statement"))?,
@@ -980,7 +988,7 @@ impl Store {
         drop(tx);
         let pruned_below = self.pruned_below()?;
         let era_roots = self.era_roots()?;
-        Ok(Some(Checkpoint { height, digest, state, blocks, receipts, handoff, seed, history, schedule, statement, pruned_below, era_roots }))
+        Ok(Some(Checkpoint { height, digest, state, blocks, receipts, handoff, seed, history, schedule, upgrade_notices, statement, pruned_below, era_roots }))
     }
 }
 
@@ -1138,6 +1146,7 @@ mod tests {
                     seed: None,
                     history: &Default::default(),
                     schedule: &Default::default(),
+                    upgrade_notices: &[],
                     statement: &Default::default(),
                     staged: None,
                 })

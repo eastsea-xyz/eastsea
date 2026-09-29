@@ -346,6 +346,7 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                 // above protocol 1 carries its own at height 0, so `[3, 0]` here
                 // is how a rehearsal knows the rules were on from the start.
                 "schedule": f.schedule.iter().map(|a| json!([a.protocol, a.at])).collect::<Vec<_>>(),
+                "upcoming_upgrades": g.upgrade_notices,
                 // The free registration lane (G2): wallets see it and register
                 // without needing a balance for a paid contract call.
                 "free_registration": aether_rewards::enabled(&f.state),
@@ -389,7 +390,8 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
             let svc = st.handoff.as_ref().ok_or((-32601, "this node does not sign handoffs".to_string()))?;
             svc.sign_staged().map(|h| json!({ "round": h.round })).map_err(|e| (-32000, e))
         }
-        // The finalized state as a checkpoint snapshot (hex postcard, `snapshot::Snapshot`):
+        // The finalized state as a checkpoint snapshot (legacy postcard or
+        // new-genesis notice envelope, `snapshot::Snapshot`):
         // a new Mac checks it against the next certified block instead of replaying history.
         "aether_snapshot" => {
             let (height, bytes) = cached_snapshot(st);

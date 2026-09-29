@@ -37,6 +37,7 @@ fn signed(net: &Net, protocol: u32, activate_at: u64) -> SignedUpgrade {
         chain_id: CHAIN,
         protocol,
         activate_at,
+        emergency: false,
         releases: vec![Release { platform: "macos-arm64-dmg".into(), version: "0.7.0".into(), blake3: "ab".repeat(32), url: "https://x".into() }],
         notes: String::new(),
         registrar: None,

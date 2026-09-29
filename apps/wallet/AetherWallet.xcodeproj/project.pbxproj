@@ -46,6 +46,7 @@
 		A6411E9B1827C2B1B6D286AE /* ProverFlags.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94E4B4A2A4BDBBBBC6A12600 /* ProverFlags.swift */; };
 		A9AB518F8F246CB2A0974398 /* Earnings.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6C1B75440E8A6A577BD467E /* Earnings.swift */; };
 		ADEEA18CEEC7A29BDFBB47BB /* NetworkPaused.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B632CFC2DA1179CC9EAD01D /* NetworkPaused.swift */; };
+		129CB431AE33F1738E91D021 /* NetworkUpgrade.swift in Sources */ = {isa = PBXBuildFile; fileRef = 329CB431AE33F1738E91D023 /* NetworkUpgrade.swift */; };
 		B6002ECF68746BC997F245B2 /* ProverFlags.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94E4B4A2A4BDBBBBC6A12600 /* ProverFlags.swift */; };
 		BC44AAFBB810E5183CBF737E /* SimpleDashboard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BCD0FCE195D7296CBCA13E9 /* SimpleDashboard.swift */; };
 		BCEB55E80C0536BE08E67EE7 /* ResourcesSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = C56EEFC753370BDE2960BE52 /* ResourcesSettings.swift */; };
@@ -57,6 +58,7 @@
 		D840F0A34EA5DA948F884D3E /* TokenAssets.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5D7C676A4030F20E37C58E7 /* TokenAssets.swift */; };
 		DB0F8AA27789285B80E0C65B /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = C8AFA205B2434D884DE10E98 /* Sparkle */; };
 		E079A96A7F6CAAB46E4B9D8B /* NetworkPaused.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B632CFC2DA1179CC9EAD01D /* NetworkPaused.swift */; };
+		229CB431AE33F1738E91D022 /* NetworkUpgrade.swift in Sources */ = {isa = PBXBuildFile; fileRef = 329CB431AE33F1738E91D023 /* NetworkUpgrade.swift */; };
 		E202B9DDD9BDC75A9D6CA697 /* Onboarding.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65F2514912728847B547AC0A /* Onboarding.swift */; };
 		E5EBCFC648FC784DB287530F /* LiveResize.swift in Sources */ = {isa = PBXBuildFile; fileRef = 745EAC0E04873F8FD0F29BC2 /* LiveResize.swift */; };
 		E8E7A825FBFD8C349EA8E74A /* ResizeBenchmark.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3A70AF889C5ACB1DDB2AF45 /* ResizeBenchmark.swift */; };
@@ -77,6 +79,7 @@
 		2928FB2C0B82AF8C35E97D99 /* token-sources.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "token-sources.json"; sourceTree = "<group>"; };
 		2A79147942168696D38EE97B /* AetherWallet.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AetherWallet.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2B632CFC2DA1179CC9EAD01D /* NetworkPaused.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkPaused.swift; sourceTree = "<group>"; };
+		329CB431AE33F1738E91D023 /* NetworkUpgrade.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkUpgrade.swift; sourceTree = "<group>"; };
 		317D79B15C7F9E75B1A1F4FC /* EnclaveKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnclaveKey.swift; sourceTree = "<group>"; };
 		39176493D3D105EBB072F17C /* AetherWalletApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AetherWalletApp.swift; sourceTree = "<group>"; };
 		39DB57D9689E71FFECC579BA /* AssetsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssetsSheet.swift; sourceTree = "<group>"; };
@@ -157,6 +160,7 @@
 				317D79B15C7F9E75B1A1F4FC /* EnclaveKey.swift */,
 				745EAC0E04873F8FD0F29BC2 /* LiveResize.swift */,
 				2B632CFC2DA1179CC9EAD01D /* NetworkPaused.swift */,
+				329CB431AE33F1738E91D023 /* NetworkUpgrade.swift */,
 				64A5EE5BA6294827128D61F5 /* NodeController.swift */,
 				51F3FF6BB1FEAEB9503220A4 /* NodeWatchdog.swift */,
 				65F2514912728847B547AC0A /* Onboarding.swift */,
@@ -328,6 +332,7 @@
 				6911A71C489CFE413F30C9A2 /* EnclaveKey.swift in Sources */,
 				0155654A1EB68833738F6615 /* LiveResize.swift in Sources */,
 				ADEEA18CEEC7A29BDFBB47BB /* NetworkPaused.swift in Sources */,
+				129CB431AE33F1738E91D021 /* NetworkUpgrade.swift in Sources */,
 				6B328300B9C16A284BC72EDD /* NodeController.swift in Sources */,
 				2120D978A2E422529EDEAA37 /* NodeWatchdog.swift in Sources */,
 				A27B00DA220487FD3B94FFAF /* Onboarding.swift in Sources */,
@@ -361,6 +366,7 @@
 				8A4A2901B223B0F689036DFB /* EnclaveKey.swift in Sources */,
 				E5EBCFC648FC784DB287530F /* LiveResize.swift in Sources */,
 				E079A96A7F6CAAB46E4B9D8B /* NetworkPaused.swift in Sources */,
+				229CB431AE33F1738E91D022 /* NetworkUpgrade.swift in Sources */,
 				8C21512BBE06AA542E27EBA1 /* NodeController.swift in Sources */,
 				554F88B6BC236C874C2227E1 /* NodeWatchdog.swift in Sources */,
 				E202B9DDD9BDC75A9D6CA697 /* Onboarding.swift in Sources */,

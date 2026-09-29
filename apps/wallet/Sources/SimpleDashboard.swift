@@ -187,6 +187,9 @@ private struct HomePage: View {
     var body: some View {
         VStack(spacing: 24) {
             IncomingRecoveryAlert()
+            ForEach(model.scheduledUpgrades) { upgrade in
+                UpgradeNoticeCard(upgrade: upgrade)
+            }
             VStack(spacing: 8) {
                 accountButton
                 balanceText
@@ -407,6 +410,9 @@ private struct NetworkPage: View {
 
     var body: some View {
         VStack(spacing: 16) {
+            ForEach(model.scheduledUpgrades) { upgrade in
+                UpgradeNoticeCard(upgrade: upgrade)
+            }
             Card {
                 HStack(spacing: 16) {
                     Image(systemName: model.status == nil ? "antenna.radiowaves.left.and.right.slash" : model.chainPausedSince != nil ? "pause.circle.fill" : "checkmark.circle.fill")
@@ -435,6 +441,36 @@ private struct NetworkPage: View {
             #else
             DeveloperModeCard()
             #endif
+        }
+    }
+}
+
+private struct UpgradeNoticeCard: View {
+    @EnvironmentObject var model: WalletModel
+    let upgrade: NetworkUpgrade
+
+    var body: some View {
+        Card {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: upgrade.emergency ? "exclamationmark.triangle.fill" : "arrow.up.circle.fill")
+                    .font(.title2)
+                VStack(alignment: .leading, spacing: 6) {
+                    if upgrade.emergency {
+                        Text("EMERGENCY NETWORK UPGRADE").font(.aeHeadline.bold())
+                    }
+                    Text(upgrade.notice(height: model.status?.height ?? 0)).font(.aeBody)
+                    if let status = model.status, upgrade.requiresAppUpdate(supportedProtocol: status.supportedProtocol) {
+                        Text(upgrade.updateDeadline(height: status.height, now: Date()))
+                            .font(.aeHeadline)
+                    } else {
+                        Text("This version of Aether supports protocol \(upgrade.protocol).")
+                            .font(.aeFootnote)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(upgrade.emergency ? Color.red : Color.primary)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }

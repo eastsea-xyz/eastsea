@@ -8,7 +8,7 @@ use aether_light::block::ProofClaim;
 use aether_node::block::{Block, Context, EPOCH};
 use aether_node::chain::{build_payload, Chain, ChainConfig, ChainError, Executed, Extras};
 use aether_node::snapshot::Snapshot;
-use aether_node::upgrade::{combine, sign_partial, Release, SignedUpgrade, Upgrade};
+use aether_node::upgrade::{combine, sign_emergency_partial, sign_partial, Release, SignedUpgrade, Upgrade, MAINNET_NOTICE_BLOCKS};
 use aether_types::{Address, GasVector, U256};
 use commonware_consensus::types::{Round, View};
 use commonware_cryptography::{ed25519, Digestible, Signer};
@@ -66,6 +66,7 @@ fn signed(protocol: u32, activate_at: u64) -> SignedUpgrade {
         chain_id: CHAIN,
         protocol,
         activate_at,
+        emergency: false,
         releases: vec![Release {
             platform: "macos-arm64-dmg".into(),
             version: "0.6.0".into(),
@@ -81,6 +82,60 @@ fn signed(protocol: u32, activate_at: u64) -> SignedUpgrade {
         .map(|(_, s)| sign_partial(&u, s))
         .collect();
     combine(&sharing, &partials).unwrap()
+}
+
+#[test]
+fn new_genesis_requires_seven_days_except_unanimous_emergencies() {
+    let mut cfg = config();
+    cfg.protocol = 3;
+    cfg.history_v2 = true;
+    cfg.node_rewards = true;
+    cfg.committee = (1..=4).map(|i| (
+        hex::encode(aether_light::devnet_validator_key(i).public_key().as_ref()),
+        aether_net::devnet_node_secret(i).public().to_string(),
+    )).collect();
+    let (chain, genesis) = Chain::new(cfg);
+    let (_, sharing, shares) = aether_light::devnet_threshold(4);
+    chain.lock().identity = Some(*sharing.public());
+    let parent = chain.lock().finalized.clone();
+    assert!(chain.upgrade_for(&parent).is_none());
+
+    chain.lock().upgrades_known = vec![signed(4, MAINNET_NOTICE_BLOCKS)];
+    assert!(chain.upgrade_for(&parent).is_none(), "one block short of seven days");
+    let ordinary = signed(4, MAINNET_NOTICE_BLOCKS + 1);
+    chain.lock().upgrades_known = vec![ordinary.clone()];
+    assert!(chain.upgrade_for(&parent).is_some(), "the seven-day boundary is allowed");
+    let accepted = propose(&chain, &parent, &genesis, Some(ordinary));
+    assert!(chain.execute(&accepted, &parent).is_ok());
+
+    let mut emergency = signed(4, EPOCH_BLOCKS + 1).upgrade;
+    emergency.emergency = true;
+    let keys: Vec<_> = (1..=4).map(aether_light::devnet_validator_key).collect();
+    let approvals: Vec<_> = shares.iter().zip(&keys).map(|((_, share), key)| sign_emergency_partial(&emergency, share, key)).collect();
+    let unanimous = combine(&sharing, &approvals).unwrap();
+    chain.lock().upgrades_known = vec![unanimous.clone()];
+    assert!(chain.upgrade_for(&parent).is_some(), "unanimous approval permits a one-epoch emergency");
+    let emergency_block = propose(&chain, &parent, &genesis, Some(unanimous));
+    assert!(chain.execute(&emergency_block, &parent).is_ok());
+    let mut premature = emergency.clone();
+    premature.activate_at = EPOCH_BLOCKS;
+    let early_approvals: Vec<_> = shares.iter().zip(&keys).map(|((_, share), key)| sign_emergency_partial(&premature, share, key)).collect();
+    chain.lock().upgrades_known = vec![combine(&sharing, &early_approvals).unwrap()];
+    assert!(chain.upgrade_for(&parent).is_none(), "even an emergency waits one epoch");
+    chain.lock().upgrades_known = vec![combine(&sharing, &approvals[..3]).unwrap()];
+    assert!(chain.upgrade_for(&parent).is_none(), "threshold alone cannot shorten notice");
+
+    let (legacy, _) = node(3);
+    let old_parent = legacy.lock().finalized.clone();
+    legacy.lock().upgrades_known = vec![combine(&sharing, &approvals).unwrap()];
+    assert!(legacy.upgrade_for(&old_parent).is_none(), "legacy networks reject the emergency flag");
+    let legacy_snapshot = Snapshot::of(&legacy);
+    assert_eq!(legacy_snapshot.to_bytes(), postcard::to_allocvec(&legacy_snapshot).unwrap(), "legacy snapshot bytes stay unchanged");
+
+    advance(&chain, parent, &emergency_block);
+    let snapshot = Snapshot::from_bytes(&Snapshot::of(&chain).to_bytes()).unwrap();
+    assert_eq!(snapshot.upgrade_notices.len(), 1);
+    assert!(snapshot.upgrade_notices[0].upgrade.emergency);
 }
 
 /// A block on `parent` built the way a proposer builds it.

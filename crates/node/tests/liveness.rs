@@ -209,6 +209,7 @@ fn a_protocol3_spread_draw_hands_over_to_the_roster_it_commits() {
         chain_id: n.chain_id,
         protocol: 3,
         activate_at: 64, // past the one-epoch notice (48 blocks) the chain demands
+        emergency: false,
         releases: vec![aether_node::upgrade::Release {
             platform: "macos-arm64-dmg".into(),
             version: "0.6.0".into(),

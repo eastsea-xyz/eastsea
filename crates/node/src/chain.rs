@@ -469,6 +469,8 @@ pub struct Inner {
     /// Committee-signed upgrades this node knows of (from its upgrades folder),
     /// put on chain by its proposals until they are there.
     pub upgrades_known: Vec<crate::upgrade::SignedUpgrade>,
+    /// Signed notices from finalized blocks that have not activated yet.
+    pub upgrade_notices: Vec<crate::upgrade::SignedUpgrade>,
     /// Checks block proofs (protocol 2); None: this node refuses blocks carrying proofs.
     pub verifier: Option<Arc<dyn ProofVerifier>>,
     /// Proofs received and verified locally, waiting to go in a block.
@@ -619,6 +621,7 @@ impl Chain {
             protocol: crate::upgrade::PROTOCOL,
             migrate: aether_execution::forks::activate,
             upgrades_known: Vec::new(),
+            upgrade_notices: Vec::new(),
             verifier: None,
             proof_pool: Vec::new(),
             recent: Default::default(),
@@ -689,6 +692,7 @@ impl Chain {
                 g.history_index = rebuild_history_index(&cp.blocks, &cp.era_roots, cp.pruned_below, exec.height, &exec.history).map(Arc::new);
                 g.pruned_below = cp.pruned_below;
                 g.finalized = exec;
+                g.upgrade_notices = cp.upgrade_notices;
                 g.blocks = cp.blocks;
                 g.receipts = cp.receipts;
                 g.caches_bytes = caches_bytes_of(&g.blocks, &g.receipts);
@@ -720,6 +724,7 @@ impl Chain {
                     seed: None,
                     history: &genesis_exec.history,
                     schedule: &genesis_exec.schedule,
+                    upgrade_notices: &[],
                     statement: &genesis_exec.statement,
                     staged: g.cfg.history_v2.then(|| crate::store::Staged {
                         block: &genesis_bytes,
@@ -1974,14 +1979,29 @@ impl Chain {
     fn admissible_upgrade(
         parent: &Executed,
         cfg: &ChainConfig,
-        u: &crate::upgrade::Upgrade,
+        signed: &crate::upgrade::SignedUpgrade,
     ) -> Result<(), String> {
+        let u = &signed.upgrade;
         // Protocol-1 nodes cannot read a registrar change: it may only be announced under protocol 2.
         if u.registrar.is_some() && parent.next_protocol() < 2 {
             return Err("a registrar change needs protocol 2".into());
         }
         let chain_id = cfg.chain_id;
-        let notice = Self::notice(&parent.state, cfg.epoch_blocks);
+        let mainnet_rules = cfg.node_rewards || cfg.history_v2;
+        if mainnet_rules && parent.schedule.iter().filter(|a| a.at > parent.height).count() >= 16 {
+            return Err("too many pending upgrades".into());
+        }
+        if u.emergency && !mainnet_rules {
+            return Err("emergency upgrades require new-genesis rules".into());
+        }
+        if !u.emergency && !signed.emergency_approvals.is_empty() {
+            return Err("ordinary upgrade carries emergency approvals".into());
+        }
+        let notice = if mainnet_rules && !u.emergency {
+            crate::upgrade::MAINNET_NOTICE_BLOCKS
+        } else {
+            Self::notice(&parent.state, cfg.epoch_blocks)
+        };
         use crate::upgrade::{MAX_FIELD, MAX_RELEASES};
         let height = parent.height + 1;
         let (last_protocol, last_at) = parent
@@ -2003,6 +2023,9 @@ impl Chain {
                 "activation at {} gives less than {notice} blocks of notice",
                 u.activate_at
             ));
+        }
+        if u.emergency {
+            crate::upgrade::verify_emergency(signed, &aether_rewards::committee(&parent.state))?;
         }
         let long = |s: &String| s.len() > MAX_FIELD;
         if u.releases.len() > MAX_RELEASES
@@ -2032,7 +2055,7 @@ impl Chain {
             let g = self.lock();
             (g.identity, g.cfg.clone())
         };
-        Self::admissible_upgrade(parent, &cfg, &s.upgrade).map_err(ChainError::Protocol)?;
+        Self::admissible_upgrade(parent, &cfg, s).map_err(ChainError::Protocol)?;
         let identity = identity.ok_or_else(|| {
             ChainError::Protocol("no committee identity (devnet dealer keys)".into())
         })?;
@@ -2046,7 +2069,7 @@ impl Chain {
         let g = self.lock();
         g.upgrades_known
             .iter()
-            .find(|s| Self::admissible_upgrade(parent, &g.cfg, &s.upgrade).is_ok())
+            .find(|s| Self::admissible_upgrade(parent, &g.cfg, s).is_ok())
             .cloned()
     }
 
@@ -2279,6 +2302,11 @@ impl Chain {
             let g = self.lock();
             (g.store.clone(), g.cfg.history_v2, g.finalized.history.clone(), g.relaxed)
         };
+        let mut upgrade_notices = self.lock().upgrade_notices.clone();
+        upgrade_notices.retain(|s| s.upgrade.activate_at > exec.height);
+        if let Some(s) = &payload.upgrade {
+            upgrade_notices.push(s.clone());
+        }
         // History v2: keep the block for its era file; an era's first block also keeps the history before it.
         let staged = history_v2.then(|| commonware_codec::Encode::encode(block));
         let era_start = (history_v2 && exec.height.is_multiple_of(aether_state::mmr::ERA_LEN))
@@ -2314,6 +2342,7 @@ impl Chain {
                 seed: exec.seed.as_deref().filter(|s| s.0 == exec.height),
                 history: &exec.history,
                 schedule: &exec.schedule,
+                upgrade_notices: &upgrade_notices,
                 statement: &exec.statement,
                 staged: staged.as_ref().map(|b| crate::store::Staged {
                     block: b,
@@ -2335,6 +2364,7 @@ impl Chain {
             }
         }
         let mut g = self.lock();
+        g.upgrade_notices = upgrade_notices;
         for (h, r) in exec.tx_hashes.iter().zip(&exec.receipts) {
             let rb = receipt_bytes(r);
             let old = g.receipts.insert(*h, (exec.height, r.clone())).map(|(_, r)| receipt_bytes(&r));

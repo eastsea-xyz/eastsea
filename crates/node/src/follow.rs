@@ -455,6 +455,7 @@ async fn jump(chain: &Chain, upstream: &Upstream, set: &ValidatorSet) -> Result<
     snap.install_over(&store, &state, old)?;
     let (exec, summary) = snap.head(state);
     chain.adopt(exec, summary);
+    chain.lock().upgrade_notices = snap.upgrade_notices;
     Ok(h)
 }
 
@@ -779,6 +780,7 @@ fn rollback(chain: &Chain, cp: crate::store::Checkpoint) {
     });
     let height = exec.height;
     chain.adopt(exec, summary);
+    chain.lock().upgrade_notices = cp.upgrade_notices;
     tracing::warn!(height, "rolled the chain back to the last durable checkpoint; re-fetching what came after it");
 }
 

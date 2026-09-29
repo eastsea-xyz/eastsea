@@ -702,7 +702,7 @@ fn main() {
         }
         Cmd::Keygen { data } => keygen(&data),
         Cmd::UpgradeSign { data, network, upgrade } => (|| {
-            use aether_node::upgrade::{sign_partial, Upgrade};
+            use aether_node::upgrade::{sign_emergency_partial, sign_partial, Upgrade};
             let file = aether_node::roster::NetworkFile::load(std::path::Path::new(&network))?;
             let key: aether_node::dkg::KeyFile =
                 serde_json::from_slice(&std::fs::read(std::path::Path::new(&data).join("threshold.json")).map_err(|e| e.to_string())?)
@@ -712,7 +712,13 @@ fn main() {
             if u.chain_id != file.chain_id {
                 return Err(format!("upgrade is for chain {}, network.json for {}", u.chain_id, file.chain_id));
             }
-            println!("{}", serde_json::to_string_pretty(&sign_partial(&u, &share)).expect("json"));
+            let partial = if u.emergency {
+                let keys = aether_node::roster::LocalKeys::load(std::path::Path::new(&data))?;
+                sign_emergency_partial(&u, &share, &keys.signer)
+            } else {
+                sign_partial(&u, &share)
+            };
+            println!("{}", serde_json::to_string_pretty(&partial).expect("json"));
             Ok(())
         })(),
         Cmd::UpgradeCombine { network, partials } => (|| {
@@ -725,6 +731,10 @@ fn main() {
                 .map(|p| std::fs::read(p).map_err(|e| format!("{p}: {e}")).and_then(|b| serde_json::from_slice(&b).map_err(|e| format!("{p}: {e}"))))
                 .collect::<Result<Vec<aether_node::upgrade::PartialUpgrade>, String>>()?;
             let signed = aether_node::upgrade::combine(dkg.public(), &parts)?;
+            if signed.upgrade.emergency {
+                let committee: Vec<_> = file.validators.iter().map(|m| (m.key.trim_start_matches("0x").to_lowercase(), m.node.clone())).collect();
+                aether_node::upgrade::verify_emergency(&signed, &committee)?;
+            }
             println!("{}", serde_json::to_string_pretty(&signed).expect("json"));
             Ok(())
         })(),
@@ -734,6 +744,10 @@ fn main() {
             let s: aether_node::upgrade::SignedUpgrade =
                 serde_json::from_slice(&std::fs::read(&signed).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
             aether_node::upgrade::verify(set.identity(), &s)?;
+            if s.upgrade.emergency {
+                let committee: Vec<_> = file.validators.iter().map(|m| (m.key.trim_start_matches("0x").to_lowercase(), m.node.clone())).collect();
+                aether_node::upgrade::verify_emergency(&s, &committee)?;
+            }
             println!("signed by the committee: protocol {} at height {} on chain {}", s.upgrade.protocol, s.upgrade.activate_at, s.upgrade.chain_id);
             Ok(())
         })(),

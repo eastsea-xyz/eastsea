@@ -44,6 +44,9 @@ targets:
         SWIFT_INCLUDE_PATHS: $(SRCROOT)/Generated
         HEADER_SEARCH_PATHS: $(SRCROOT)/Generated
         OTHER_LDFLAGS: $(SRCROOT)/../../target/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework OpenDirectory -framework IOKit
+        # The checkout path must not reach the binary (scripts/repro-app-check.sh):
+        # Swift records the source and object paths it was given.
+        OTHER_SWIFT_FLAGS: -file-prefix-map $(SRCROOT)=/aether-node -debug-prefix-map $(SRCROOT)=/aether-node
         ARCHS: arm64
     postBuildScripts:
       - name: Embed node and agent
@@ -94,6 +97,8 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
         SWIFT_INCLUDE_PATHS: $(SRCROOT)/Generated
         HEADER_SEARCH_PATHS: $(SRCROOT)/Generated
+        # Same as the macOS target: no checkout paths in the shipped binary.
+        OTHER_SWIFT_FLAGS: -file-prefix-map $(SRCROOT)=/aether-node -debug-prefix-map $(SRCROOT)=/aether-node
         "OTHER_LDFLAGS[sdk=iphonesimulator*]": $(SRCROOT)/../../target/aarch64-apple-ios-sim/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework Network
         "OTHER_LDFLAGS[sdk=iphoneos*]": $(SRCROOT)/../../target/aarch64-apple-ios/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework Network
         "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64

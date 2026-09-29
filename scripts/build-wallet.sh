@@ -7,6 +7,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:$PATH"
 target=${1:-macos}
+# Release artifacts must be byte-identical wherever the checkout lives (gap G5).
+. scripts/repro-env.sh
+aether_repro_rustflags
+# The Darwin linker otherwise records the section order it happened to pick.
+export RUSTFLAGS="$RUSTFLAGS -C link-arg=-Wl,-reproducible"
 # The macOS node pins the proving program (the sidecar's embedded guest ELF), so
 # a node only verifies proofs of the program the protocol names.
 # A macOS build without it would verify any program: refuse.
@@ -16,14 +21,14 @@ if [ "$target" = macos ]; then
   echo "proving program $AETHER_PROVER_PROGRAM"
 fi
 case "$target" in
-  macos)  MACOSX_DEPLOYMENT_TARGET=14.0 cargo build -p aether-ffi -p aether-node --release ;;
-  ios-sim) IPHONEOS_DEPLOYMENT_TARGET=17.0 cargo build -p aether-ffi --release --target aarch64-apple-ios-sim ;;
-  ios)    IPHONEOS_DEPLOYMENT_TARGET=17.0 cargo build -p aether-ffi --release --target aarch64-apple-ios ;;
+  macos)  MACOSX_DEPLOYMENT_TARGET=14.0 cargo build -p aether-ffi -p aether-node --release --locked ;;
+  ios-sim) IPHONEOS_DEPLOYMENT_TARGET=17.0 cargo build -p aether-ffi --release --locked --target aarch64-apple-ios-sim ;;
+  ios)    IPHONEOS_DEPLOYMENT_TARGET=17.0 cargo build -p aether-ffi --release --locked --target aarch64-apple-ios ;;
   *) echo "usage: $0 [macos|ios-sim|ios]"; exit 1 ;;
 esac
 # Bindings come from the host (macOS) build of the same crate.
-[ -f target/release/libaether_ffi.dylib ] || MACOSX_DEPLOYMENT_TARGET=14.0 cargo build -p aether-ffi --release
-cargo run -q -p aether-ffi --bin uniffi-bindgen -- generate --library target/release/libaether_ffi.dylib --language swift --out-dir apps/wallet/Generated
+[ -f target/release/libaether_ffi.dylib ] || MACOSX_DEPLOYMENT_TARGET=14.0 cargo build -p aether-ffi --release --locked
+cargo run -q --locked -p aether-ffi --bin uniffi-bindgen -- generate --library target/release/libaether_ffi.dylib --language swift --out-dir apps/wallet/Generated
 mv -f apps/wallet/Generated/aether_ffiFFI.modulemap apps/wallet/Generated/module.modulemap
 # The macOS app embeds the node and the agent CLI (Contents/Helpers).
 [ "$target" = macos ] && scripts/build-agent.sh >/dev/null

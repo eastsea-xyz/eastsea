@@ -28,6 +28,11 @@ done
 repo="$(cd ../.. && pwd)"
 jolt_src="$(cd "${JOLT_SRC:-/Volumes/workspace/aether-jolt/jolt}" && pwd)"
 sysroot="$(rustc --print sysroot)"
+# One timestamp and zeroed archive dates, as in the host build
+# (scripts/repro-env.sh): the embedded ELF's hash is the program id, so it must
+# not follow the build time either.
+export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$repo" log -1 --pretty=%ct 2>/dev/null || echo 1767225600)}"
+export ZERO_AR_DATE=1
 # (rustc applies the last matching prefix, so the nested target dir goes last.)
 export ZEROOS_GUEST_RUSTFLAGS="--remap-path-prefix=$repo=/aether --remap-path-prefix=$jolt_src=/jolt --remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=$sysroot=/rustc --remap-path-prefix=$target_dir=/target"
 

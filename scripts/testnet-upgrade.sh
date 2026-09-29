@@ -10,12 +10,16 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 T=${AETHER_TESTNET:-$HOME/aether-testnet}
 export PATH="$HOME/.cargo/bin:$PATH"
+# Release binary: same bytes wherever the checkout lives (gap G5).
+. scripts/repro-env.sh
+aether_repro_rustflags
+export RUSTFLAGS="$RUSTFLAGS -C link-arg=-Wl,-reproducible"
 N=$(ls -d "$T"/[0-9]* 2>/dev/null | wc -l | tr -d ' ')
 [ "$N" -ge 4 ] || { echo "need at least 4 validator dirs in $T"; exit 1; }
 
 AETHER_PROVER_PROGRAM=$(scripts/prover-program.sh)
 export AETHER_PROVER_PROGRAM
-cargo build -q --release -p aether-node
+cargo build -q --release --locked -p aether-node
 echo "proving program $AETHER_PROVER_PROGRAM"
 
 height() { curl -s -m 2 "localhost:$((8600 + $1))" -H 'content-type: application/json' \

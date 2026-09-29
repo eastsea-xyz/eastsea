@@ -1,7 +1,9 @@
 //! Politeness: a follower over its limits ("server busy", the same DoS limits
 //! the transport enforces) is answer enough. The caller never sees the busy
 //! error, the load is not moved to the validators, and while the follower
-//! backs off the rotation simply goes around it.
+//! backs off the rotation simply goes around it. (The all-busy case, where the
+//! validators answer after all, is `wallet_busy_all`; one test per file: the
+//! wallet's configuration is process-global.)
 
 #[allow(dead_code)]
 mod wallet_common;

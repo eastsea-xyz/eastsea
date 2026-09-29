@@ -26,7 +26,7 @@ use std::sync::Arc;
 use serde_json::json;
 
 const CHAIN: u64 = 7_791;
-/// Protocol 2 (the proof market, as on 7780) from this height.
+/// Legacy history mode upgrades to protocol 2 here; history v2 starts with it.
 const P2_AT: u64 = 20;
 
 fn config(history_v2: bool) -> ChainConfig {
@@ -47,7 +47,7 @@ fn config(history_v2: bool) -> ChainConfig {
         min_streak: None,
         draw_epochs: None,
         history_v2,
-        protocol: 1,
+        protocol: if history_v2 { 2 } else { 1 },
         node_rewards: false,
         committee: vec![],
         reserve: None,
@@ -128,7 +128,7 @@ impl Node {
             bytes::Bytes::new(),
         );
         let ctx = Chain::block_context(&self.chain.cfg(), &skeleton, &self.parent);
-        let upgrade = (h == 1).then(upgrade_to_2);
+        let upgrade = (!self.chain.cfg().history_v2 && h == 1).then(upgrade_to_2);
         let (pre, _) = self
             .chain
             .pre_state(&self.parent, self.parent.next_protocol(), &[], None, false)
@@ -185,8 +185,7 @@ impl Node {
 
 #[tokio::test]
 async fn account_history_indexes_finalized_sends_receives_and_rpc_cursor() {
-    let dir = std::env::current_dir().unwrap().join("tmp").join(format!("account-history-{}", std::process::id()));
-    if dir.exists() { std::fs::remove_dir_all(&dir).unwrap(); }
+    let dir = tmp("account-history");
     std::fs::create_dir_all(&dir).unwrap();
     let mut n = Node::start(true, Some(&dir));
     let sender = aether_crypto::address_of(&aether_crypto::Signer::public_key(&P256Signer::from_seed(&dev_seed(1)).unwrap())).unwrap();
@@ -228,6 +227,75 @@ async fn account_history_indexes_finalized_sends_receives_and_rpc_cursor() {
 }
 
 #[test]
+fn account_history_indexes_all_delegated_batch_receivers_once_per_address() {
+    let dir = tmp("delegated-batch");
+    let mut n = Node::start(true, Some(&dir));
+    let signer = P256Signer::from_seed(&dev_seed(1)).unwrap();
+    let sender = aether_crypto::address_of(&aether_crypto::Signer::public_key(&signer)).unwrap();
+    let first = Address::repeat_byte(0xa1);
+    let second = Address::repeat_byte(0xa2);
+    let calls = [
+        (first, U256::from(3), Bytes::new()),
+        (second, U256::from(7), Bytes::new()),
+        (first, U256::from(11), Bytes::new()),
+    ];
+    let call = EvmCall {
+        to: Some(sender), value: U256::ZERO,
+        input: aether_execution::encode_execute(&calls),
+        gas_limit: 200_000, delegate: Some(aether_execution::AETHER_ACCOUNT),
+    };
+    let fees = FeeVector { exec: 100_000_000_000, state: 0, prove: 100_000_000_000 };
+    let tx = sign_call_with(&signer, CHAIN, 0, fees, 1_000_000_000, &call).unwrap();
+    let exec = n.step(vec![tx]);
+    assert!(exec.receipts[0].success);
+
+    let first_rows = n.chain.account_history(&first, None, 10).unwrap().entries;
+    assert_eq!(first_rows.len(), 1);
+    assert_eq!(first_rows[0].value_wei, "14");
+    assert_eq!(first_rows[0].direction, "in");
+    let second_rows = n.chain.account_history(&second, None, 10).unwrap().entries;
+    assert_eq!(second_rows.len(), 1);
+    assert_eq!(second_rows[0].value_wei, "7");
+    assert_eq!(second_rows[0].direction, "in");
+    let sender_rows = n.chain.account_history(&sender, None, 10).unwrap().entries;
+    assert_eq!(sender_rows.len(), 1);
+    assert_eq!(sender_rows[0].value_wei, "21");
+    assert_eq!(sender_rows[0].tx_hash, first_rows[0].tx_hash);
+    drop(n);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn account_history_keeps_batch_receipts_when_delegation_is_cleared_later_in_block() {
+    let dir = tmp("delegation-cleared");
+    let mut n = Node::start(true, Some(&dir));
+    let signer = P256Signer::from_seed(&dev_seed(1)).unwrap();
+    let sender = aether_crypto::address_of(&aether_crypto::Signer::public_key(&signer)).unwrap();
+    let recipient = Address::repeat_byte(0xa3);
+    let fees = FeeVector { exec: 100_000_000_000, state: 0, prove: 100_000_000_000 };
+    let batch = EvmCall {
+        to: Some(sender), value: U256::ZERO,
+        input: aether_execution::encode_execute(&[(recipient, U256::from(5), Bytes::new())]),
+        gas_limit: 150_000, delegate: Some(aether_execution::AETHER_ACCOUNT),
+    };
+    let clear = EvmCall {
+        to: Some(sender), value: U256::ZERO, input: Bytes::new(),
+        gas_limit: 100_000, delegate: Some(Address::ZERO),
+    };
+    let first = sign_call_with(&signer, CHAIN, 0, fees, 1_000_000_000, &batch).unwrap();
+    // EIP-7702 authorization consumes the nonce after the outer transaction.
+    let second = sign_call_with(&signer, CHAIN, 2, fees, 1_000_000_000, &clear).unwrap();
+    let exec = n.step(vec![first, second]);
+    assert_eq!(exec.receipts.len(), 2);
+    assert!(exec.receipts.iter().all(|receipt| receipt.success));
+    let rows = n.chain.account_history(&recipient, None, 10).unwrap().entries;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].value_wei, "5");
+    drop(n);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn account_history_collects_token_receipts_and_system_rewards() {
     let signer = P256Signer::from_seed(&dev_seed(1)).unwrap();
     let sender = aether_crypto::address_of(&aether_crypto::Signer::public_key(&signer)).unwrap();
@@ -252,7 +320,7 @@ fn account_history_collects_token_receipts_and_system_rewards() {
             Event { address: Address::repeat_byte(0xef),
                 topics: vec![B256::from_slice(&swap_topic), B256::from(from), B256::from(to)],
                 data: Bytes::from(swap_data) }] };
-    let rows = aether_node::account_history::transaction(&tx, &receipt, 3, 0, 3000);
+    let rows = aether_node::account_history::transaction(&tx, &receipt, 3, 0, 3000, false);
     assert_eq!(rows.len(), 2);
     let incoming = rows.iter().find(|r| r.address == recipient).unwrap();
     assert_eq!(incoming.kind, "erc20_transfer");

@@ -2320,8 +2320,29 @@ impl Chain {
         if let Some(store) = store {
             // Disk first: the in-memory head never runs ahead of what survives a crash.
             let mut account_rows = Vec::new();
+            let mut account_delegations = {
+                let g = self.lock();
+                let mut by_sender = HashMap::new();
+                for tx in &payload.txs {
+                    by_sender.entry(tx.header.sender).or_insert_with(|| {
+                        let code = g.finalized.state.code(&tx.header.sender);
+                        code.len() == 23
+                            && code[..3] == [0xef, 0x01, 0x00]
+                            && code[3..] == aether_execution::AETHER_ACCOUNT.0 .0
+                    });
+                }
+                by_sender
+            };
             for (index, (tx, receipt)) in payload.txs.iter().zip(&exec.receipts).enumerate() {
-                account_rows.extend(crate::account_history::transaction(tx, receipt, exec.height, index as u32, exec.timestamp));
+                if let aether_types::TxPayload::Plain(bytes) = &tx.payload {
+                    if let Ok(call) = aether_execution::EvmCall::decode(bytes) {
+                        if let Some(delegate) = call.delegate {
+                            account_delegations.insert(tx.header.sender, delegate == aether_execution::AETHER_ACCOUNT);
+                        }
+                    }
+                }
+                let is_aether_account = account_delegations.get(&tx.header.sender).copied().unwrap_or(false);
+                account_rows.extend(crate::account_history::transaction(tx, receipt, exec.height, index as u32, exec.timestamp, is_aether_account));
             }
             for (index, (proven, address, amount)) in exec.payouts.iter().enumerate() {
                 account_rows.push(crate::account_history::reward(*address, exec.height, payload.txs.len() as u32 + index as u32, exec.timestamp, *amount, *proven == exec.height));

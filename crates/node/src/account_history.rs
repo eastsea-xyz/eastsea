@@ -106,6 +106,7 @@ pub fn transaction(
     height: u64,
     index: u32,
     timestamp_ms: u64,
+    is_aether_account: bool,
 ) -> Vec<Entry> {
     let sender = tx.header.sender;
     let call = match &tx.payload {
@@ -114,6 +115,18 @@ pub fn transaction(
     };
     let destination = call.as_ref().and_then(|c| c.to);
     let value = call.as_ref().map(|c| c.value).unwrap_or(U256::ZERO);
+    let mut native_transfers = BTreeMap::<Address, U256>::new();
+    if receipt.success && is_aether_account && destination == Some(sender) {
+        if let Some(calls) = call.as_ref().and_then(|c| aether_execution::account::decode_execute(&c.input)) {
+            for (to, amount, _) in calls {
+                if to != sender && amount > U256::ZERO {
+                    let total = native_transfers.entry(to).or_default();
+                    *total = total.saturating_add(amount);
+                }
+            }
+        }
+    }
+    let native_sent = native_transfers.values().copied().fold(U256::ZERO, |total, amount| total.saturating_add(amount));
     let method = call
         .as_ref()
         .and_then(|c| (c.input.len() >= 4).then(|| format!("0x{}", hex::encode(&c.input[..4]))));
@@ -143,6 +156,9 @@ pub fn transaction(
             accounts.entry(to).or_default();
         }
     }
+    for recipient in native_transfers.keys() {
+        accounts.entry(*recipient).or_default();
+    }
     for movement in moves {
         if movement.from != Address::ZERO {
             accounts
@@ -157,10 +173,10 @@ pub fn transaction(
     accounts
         .into_iter()
         .map(|(address, tokens)| {
+            let native_value = native_transfers.get(&address).copied().unwrap_or(U256::ZERO);
             let native_in = receipt.success
-                && value > U256::ZERO
-                && destination == Some(address)
-                && sender != address;
+                && ((value > U256::ZERO && destination == Some(address) && sender != address)
+                    || native_value > U256::ZERO);
             let token_in = tokens.iter().any(|t| t.to == address && t.from != address);
             let kind = if address == sender && destination.is_none() {
                 "deploy"
@@ -192,8 +208,10 @@ pub fn transaction(
                 .into(),
                 kind: kind.into(),
                 from: Some(sender),
-                to: destination,
-                value_wei: value.to_string(),
+                to: if native_value > U256::ZERO { Some(address) } else { destination },
+                value_wei: (if native_value > U256::ZERO { native_value } else if address == sender && native_sent > U256::ZERO {
+                    native_sent
+                } else { value }).to_string(),
                 method: method.clone(),
                 approval_amount: approval
                     .map(|c| U256::from_be_slice(&c.input[36..68]).to_string()),

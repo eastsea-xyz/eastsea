@@ -79,11 +79,14 @@ export function describeHistory(row, { sources = {}, catalog = {} } = {}) {
 
 export function mergeHistory(local = [], chain = []) {
   const byHash = new Map();
-  for (const item of local) byHash.set(String(item.hash).toLowerCase(), item);
+  const keyOf = (item) => `${String(item.hash).toLowerCase()}:${String(item.owner || '').toLowerCase()}`;
+  for (const item of local) byHash.set(keyOf(item), item);
   for (const item of chain) {
-    const key = String(item.hash).toLowerCase();
-    const previous = byHash.get(key);
-    if (previous?.source === 'node') continue; // primary address wins when linked wallets share a tx
+    const key = keyOf(item);
+    const pendingKey = `${String(item.hash).toLowerCase()}:`;
+    const previous = byHash.get(key) || byHash.get(pendingKey);
+    if (previous?.source === 'node') continue;
+    byHash.delete(pendingKey);
     byHash.set(key, previous ? { ...previous, ...item, title: item.title, source: 'node' } : item);
   }
   return [...byHash.values()].sort((a, b) => (b.at || 0) - (a.at || 0));

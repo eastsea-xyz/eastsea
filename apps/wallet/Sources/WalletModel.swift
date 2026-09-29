@@ -933,8 +933,14 @@ final class WalletModel: ObservableObject {
                                 item.token = row.to?.lowercased()
                             }
                         }
-                        if let i = self.activity.firstIndex(where: { $0.hash?.lowercased() == hash }) {
-                            if self.activity[i].owner?.lowercased() == own.lowercased(), key != own.lowercased() { continue }
+                        let identity = ChainActivity.historyKey(hash: hash, address: key)
+                        if let i = self.activity.firstIndex(where: {
+                            guard let oldHash = $0.hash else { return false }
+                            if let owner = $0.owner {
+                                return ChainActivity.historyKey(hash: oldHash, address: owner) == identity
+                            }
+                            return key == own.lowercased() && oldHash.lowercased() == hash
+                        }) {
                             item.id = self.activity[i].id
                             item.recipients = self.activity[i].recipients ?? item.recipients
                             item.token = self.activity[i].token ?? item.token

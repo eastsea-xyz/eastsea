@@ -463,7 +463,7 @@ private struct UpgradeNoticeCard: View {
                         Text(upgrade.updateDeadline(height: status.height, now: Date()))
                             .font(.aeHeadline)
                     } else {
-                        Text("This version of Aether supports protocol \(upgrade.protocol).")
+                        Text("This version of \(Brand.project) supports protocol \(upgrade.protocol).")
                             .font(.aeFootnote)
                     }
                 }

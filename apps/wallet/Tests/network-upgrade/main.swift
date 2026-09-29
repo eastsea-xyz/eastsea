@@ -16,7 +16,7 @@ check(notices[0].notice(height: 1).contains("Critical security fix"), "signed no
 check(notices[0].emergency, "emergency flag is visible")
 check(notices[0].requiresAppUpdate(supportedProtocol: 3), "newer protocol needs an app update")
 check(!notices[1].requiresAppUpdate(supportedProtocol: 4), "supported protocol needs no update")
-check(notices[1].updateDeadline(height: 1, now: Date(timeIntervalSince1970: 0)).contains("Update Aether before"), "unsupported protocol has an update deadline")
+check(notices[1].updateDeadline(height: 1, now: Date(timeIntervalSince1970: 0)).contains("Update \(Brand.project) before"), "unsupported protocol has an update deadline")
 check(NetworkUpgrade.parse(json, height: 604_801).isEmpty, "activated upgrades disappear")
 check(NetworkUpgrade.parse("broken", height: 0).isEmpty, "malformed status does not show a false notice")
 print("OK")

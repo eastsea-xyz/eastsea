@@ -36,6 +36,6 @@ struct NetworkUpgrade: Decodable, Equatable, Identifiable {
     func updateDeadline(height: UInt64, now: Date) -> String {
         let remaining = activateAt - min(height, activateAt)
         let estimated = now.addingTimeInterval(TimeInterval(remaining))
-        return "Update Aether before \(estimated.formatted(date: .abbreviated, time: .shortened)) (estimated)"
+        return "Update \(Brand.project) before \(estimated.formatted(date: .abbreviated, time: .shortened)) (estimated)"
     }
 }

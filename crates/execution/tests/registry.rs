@@ -144,3 +144,45 @@ fn protocol_2_bounds_registrations_per_epoch_and_keeps_candidates() {
     registry::set_registrar(&mut net.state, ([0; 32], [0; 32]));
     assert!(!reg(&mut net, 5, 3 * EPOCH_BLOCKS), "no registrar, no new candidates");
 }
+
+#[test]
+fn a_rotated_registrar_signs_and_a_revoked_one_goes_silent() {
+    let mut net = Net::new();
+    let owner = P256Signer::from_seed(&seed(2)).unwrap();
+    let node = P256Signer::from_seed(&seed(3)).unwrap();
+    let op = net.fund(&owner);
+    let beaconer = net.fund(&node);
+    let reg = |net: &mut Net, k: u8, block: u64| {
+        let (key, id) = ([k; 32], [k.wrapping_add(100); 32]);
+        let (r, s) = net.attest(op, key, id, beaconer);
+        net.call(&owner, encode_register(key, id, beaconer, r, s), block)
+    };
+
+    assert!(!registry::registrar_revoked(&net.state));
+    assert_eq!(
+        registry::registrar(&net.state),
+        aether_crypto::p256_xy(&net.registrar.public_key().bytes).unwrap()
+    );
+    assert!(reg(&mut net, 1, 5));
+
+    // The committee rotates the key in a signed upgrade. Attestations signed
+    // with the old key die at once — they are what the new registry no longer
+    // holds — and this node has to switch to the new key (docs/ops/registrar.md).
+    let next = P256Signer::from_seed(&seed(9)).unwrap();
+    registry::set_registrar(&mut net.state, aether_crypto::p256_xy(&next.public_key().bytes).unwrap());
+    assert!(!registry::registrar_revoked(&net.state), "a rotated registrar is not a stopped one");
+    assert!(!reg(&mut net, 2, 6), "the retired key no longer attests");
+    net.registrar = next;
+    assert!(reg(&mut net, 3, 7), "the key the committee installed does");
+
+    // A second upgrade zeroes both halves: revocation. Nothing attests any more,
+    // and the candidates already registered stay (the committee still votes on
+    // them; only new registrations stop).
+    let candidates_before = candidates(&net.state).len();
+    registry::set_registrar(&mut net.state, ([0; 32], [0; 32]));
+    assert!(registry::registrar_revoked(&net.state));
+    assert!(!reg(&mut net, 4, 8), "a revoked registrar attests nothing");
+    assert_eq!(net.state.storage(&REGISTRY, U256::ZERO), U256::ZERO);
+    assert_eq!(net.state.storage(&REGISTRY, U256::from(1u64)), U256::ZERO);
+    assert_eq!(candidates(&net.state).len(), candidates_before, "registered candidates stay");
+}

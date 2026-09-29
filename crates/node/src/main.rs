@@ -182,6 +182,12 @@ enum Cmd {
         devicecheck_key_id: Option<String>,
         #[arg(long, default_value = "45WU468FZE")]
         devicecheck_team: String,
+        /// Sign registrar attestations with the Secure Enclave helper
+        /// (`apps/registrar-signer`, docs/ops/registrar.md) listening on this
+        /// Unix socket. Without it, attestations are signed with
+        /// <data>/registrar.key — local devnets and rehearsals.
+        #[arg(long)]
+        registrar_signer: Option<String>,
         /// Test chains (no faucet): register every device without Apple (public dev registrar key).
         #[arg(long, hide = true)]
         dev_registrar: bool,
@@ -634,6 +640,7 @@ fn main() {
             devicecheck_key,
             devicecheck_key_id,
             devicecheck_team,
+            registrar_signer,
             dev_registrar,
             dev_epoch_blocks,
             exit_with_parent,
@@ -673,6 +680,21 @@ fn main() {
                     Ok(args)
                 })
                 .and_then(|args| {
+                    // The Secure Enclave helper (apps/registrar-signer) replaces
+                    // the file key of a real DeviceCheck registrar, nothing else:
+                    // there is no registrar service to sign for otherwise.
+                    match (&registrar_signer, &devicecheck_key, dev_registrar) {
+                        (Some(_), _, true) => {
+                            return Err("--registrar-signer conflicts with --dev-registrar: the dev registrar signs with the public dev key".into())
+                        }
+                        (Some(_), None, _) => {
+                            return Err("--registrar-signer needs --devicecheck-key: the helper signs the attestations of a DeviceCheck registrar".into())
+                        }
+                        _ => {}
+                    }
+                    Ok(args)
+                })
+                .and_then(|args| {
                     if dev_registrar && args.4.faucet.is_some() {
                         if args.1 == TESTNET_CHAIN_ID {
                             return Err("--dev-registrar is only for test chains without a faucet".into());
@@ -706,6 +728,7 @@ fn main() {
                         genesis,
                         faucet_key,
                         devicecheck: devicecheck_key.zip(devicecheck_key_id).map(|(k, id)| (k, id, devicecheck_team)),
+                        registrar_signer,
                         dev_registrar,
                         network_file,
                         resources,
@@ -907,7 +930,11 @@ fn main() {
                 aether_node::faucet::Faucet::generate(&path)?;
             }
             let k = aether_node::faucet::Faucet::load(&path)?;
-            println!("registrar key {}\nin {data}/registrar.key (put the key in network.json with `aether network --registrar`)", k.public_hex());
+            println!(
+                "registrar key {}\nin {data}/registrar.key (put the key in network.json with `aether network --registrar`). \
+                 A signing Mac keeps this key in the Secure Enclave instead: apps/registrar-signer, docs/ops/registrar.md",
+                k.public_hex()
+            );
             Ok(())
         })(),
         Cmd::DevAccounts => {
@@ -1511,6 +1538,9 @@ struct NodeArgs {
     faucet_key: Option<String>,
     /// (key path, key id, team) of the DeviceCheck key, if this node registers Macs.
     devicecheck: Option<(String, String, String)>,
+    /// Unix socket of the Secure Enclave signer helper (apps/registrar-signer);
+    /// without it the registrar signs with `<data>/registrar.key`.
+    registrar_signer: Option<String>,
     dev_registrar: bool,
     /// network.json (with the committee output) when run from one: enables rotation.
     network_file: Option<Value>,
@@ -1606,6 +1636,7 @@ fn nofile_per_proc() -> u64 {
 }
 
 fn run_node(a: NodeArgs) {
+    use aether_node::registrar_signer::RegistrarSigner as _;
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -1629,6 +1660,7 @@ fn run_node(a: NodeArgs) {
         genesis,
         faucet_key,
         devicecheck,
+        registrar_signer,
         dev_registrar,
         network_file,
         history,
@@ -1656,31 +1688,65 @@ fn run_node(a: NodeArgs) {
             std::path::Path::new(&data).join("registrations.json"),
         )
     };
-    let registrar = if dev_registrar {
-        let signer = aether_node::faucet::Faucet::from_seed(&dev_seed(DEV_REGISTRAR))
-            .expect("dev registrar");
-        Some(std::sync::Arc::new(aether_node::devicecheck::Registrar::new(
-            None,
-            registry(),
-            signer,
-            chain_id,
-        )))
-    } else {
-        devicecheck.map(|(k, id, team)| {
+    // Where the registrar's attestation key is (docs/ops/registrar.md): the
+    // Secure Enclave of the signing Mac when --registrar-signer is given, the
+    // `<data>/registrar.key` seed file otherwise. A node that does not run the
+    // registrar service never reads either — a validator needs no registrar key.
+    let signer: Option<std::sync::Arc<dyn aether_node::registrar_signer::RegistrarSigner>> =
+        if dev_registrar {
+            Some(std::sync::Arc::new(
+                aether_node::registrar_signer::FileSigner::from_seed(&dev_seed(DEV_REGISTRAR))
+                    .expect("dev registrar"),
+            ))
+        } else {
+            match (&registrar_signer, devicecheck.is_some()) {
+                (Some(socket), _) => {
+                    let signer = aether_node::registrar_signer::EnclaveSigner::connect(
+                        std::path::Path::new(socket),
+                    )
+                    .unwrap_or_else(|e| {
+                        eprintln!("error: --registrar-signer {socket}: {e}");
+                        std::process::exit(2);
+                    });
+                    tracing::info!(
+                        key = %signer.describe(),
+                        "the registrar signs with the Secure Enclave on the signing Mac"
+                    );
+                    Some(std::sync::Arc::new(signer))
+                }
+                (None, true) => Some(std::sync::Arc::new(
+                    aether_node::registrar_signer::FileSigner::load(
+                        &std::path::Path::new(&data).join("registrar.key"),
+                    )
+                    .expect("<data>/registrar.key (aether registrar-key)"),
+                )),
+                (None, false) => None,
+            }
+        };
+    // What this node signs with, checked against the registry once the chain is
+    // open: the committee can rotate or stop the registrar by upgrade.
+    let registrar_key = signer.as_ref().map(|s| s.public_hex());
+    let registrar = match signer {
+        Some(signer) if dev_registrar => {
+            Some(std::sync::Arc::new(aether_node::devicecheck::Registrar::new(
+                None,
+                registry(),
+                signer,
+                chain_id,
+            )))
+        }
+        Some(signer) => devicecheck.map(|(k, id, team)| {
             let apple =
                 aether_node::devicecheck::DeviceCheck::load(std::path::Path::new(&k), &id, &team)
                     .expect("load --devicecheck-key");
-            let signer = aether_node::faucet::Faucet::load(
-                &std::path::Path::new(&data).join("registrar.key"),
-            )
-            .expect("<data>/registrar.key (aether registrar-key)");
             std::sync::Arc::new(aether_node::devicecheck::Registrar::new(
                 Some(apple),
                 registry(),
                 signer,
                 chain_id,
             ))
-        })
+        }),
+        None => None,
     };
     let faucet_service = match (&faucet_key, faucet) {
         (Some(path), expected) => {
@@ -1759,6 +1825,17 @@ fn run_node(a: NodeArgs) {
             Err(e) => panic!("restore state (delete the data dir to resync): {e:?}"),
         };
         install_verifier(&chain, &data, false);
+        // The registrar key in the registry decides: the committee can rotate
+        // or stop the registrar by a threshold-signed upgrade, and then this
+        // node's attestations are already dead (docs/design/14-registration.md
+        // 4). Registrations refuse below; say it here, where the operator looks
+        // first, so a rotated key is noticed at startup and not at a failed
+        // registration.
+        if let Some(key) = &registrar_key {
+            if let Err(e) = aether_node::devicecheck::registrar_key_check(&chain.lock().finalized.state, key) {
+                tracing::warn!("registrar: {e}");
+            }
+        }
         // Self-healing (2026-09-29, docs/design/24-self-healing.md): serve the
         // public endpoint BEFORE catching up, from the stored finalized state —
         // status, balances, snapshots, era reads; read-only answers while this

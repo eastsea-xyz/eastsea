@@ -14,6 +14,7 @@ use commonware_runtime::{Clock, Metrics, Spawner, Storage};
 use commonware_utils::{Acknowledgement, SystemTimeExt};
 use futures::StreamExt;
 use rand::Rng;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tracing::{info, warn};
@@ -26,11 +27,18 @@ const MAX_FUTURE_SKEW_MS: u64 = 1_000;
 pub struct Application {
     chain: Chain,
     delay_ms: u64,
+    proposals_enabled: Arc<AtomicBool>,
 }
 
 impl Application {
     pub fn new(chain: Chain, delay_ms: u64) -> Self {
-        Self { chain, delay_ms }
+        Self { chain, delay_ms, proposals_enabled: Arc::new(AtomicBool::new(true)) }
+    }
+
+    /// Fault injection: keep voting, but produce no blocks when elected leader.
+    pub fn with_proposal_switch(mut self, enabled: Arc<AtomicBool>) -> Self {
+        self.proposals_enabled = enabled;
+        self
     }
 
     /// Height of the finalized state this node already holds (restored from disk).
@@ -81,6 +89,9 @@ where
     type Input = ();
 
     async fn propose(&mut self, (rt, context): (E, Self::Context), mut ancestry: impl Ancestry<Self::Block>, _input: ()) -> Option<Self::Block> {
+        if !self.proposals_enabled.load(Ordering::SeqCst) {
+            return None;
+        }
         let parent_block = ancestry.next().await?;
         let parent = self.resolve(parent_block.clone(), ancestry).await?;
         if self.chain.retired_after(&parent) {

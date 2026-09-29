@@ -7,6 +7,7 @@ import { erc20TransferCalldata, formatTokenAmount, formatTokenAmountExact, parse
 import { addressRisk, looksLikeOfficial, tokenLabel, tokenShort } from '../src/lib/safety.js';
 import { nextPauseState, pausedLine, PAUSE_HELP } from '../src/lib/pause.js';
 import { TERMS_VERSION, DISCLAIMER_URL, NOTICE_POINTS } from '../src/lib/terms.js';
+import { mergeHistory } from '../src/lib/history.js';
 
 const params = new URLSearchParams(location.search);
 const approveId = params.get('approve');
@@ -278,18 +279,12 @@ async function home(s) {
     }
     sendForm.hidden = true;
   }));
-  const faucet = h('button', {}, h('span', { class: 'ico' }, '💧'), 'Get test AETH');
-  faucet.addEventListener('click', action(faucet, out, async () => {
-    const r = await op('faucet');
-    out.replaceChildren(message('ok', `Faucet sent · ${shortAddress(r.hash)}. The balance updates when it is final.`));
-    setTimeout(refresh, 2500);
-  }));
   const receive = h('button', { onclick: () => navigator.clipboard.writeText(s.address).then(() => out.replaceChildren(message('ok', 'Address copied.'))) }, h('span', { class: 'ico' }, '⬇'), 'Receive');
-  const send = h('button', { onclick: () => { sendForm.hidden = !sendForm.hidden; if (!sendForm.hidden) { to.focus(); pickAssets(); op('activity').then((l) => { sent = l.map((a) => a.to).filter(Boolean); warnings(); }).catch(() => {}); } } }, h('span', { class: 'ico' }, '↗'), 'Send');
+  const send = h('button', { onclick: () => { sendForm.hidden = !sendForm.hidden; if (!sendForm.hidden) { to.focus(); pickAssets(); op('activity').then((l) => { sent = l.filter((a) => !a.owner || a.owner.toLowerCase() === s.address.toLowerCase()).map((a) => a.to).filter(Boolean); warnings(); }).catch(() => {}); } } }, h('span', { class: 'ico' }, '↗'), 'Send');
   return [h('div', { class: 'card hero' }, h('div', { class: 'row', style: 'justify-content:center' }, addr, node), bal,
     h('div', { class: 'small muted' }, 'Aether testnet'),
     h('div', { class: 'small muted' }, 'Read from the node · not verified in the browser')),
-    h('div', { class: 'actions' }, receive, send, faucet), sendForm, out];
+    h('div', { class: 'actions' }, receive, send), sendForm, out];
 }
 
 // ---- assets ----
@@ -367,12 +362,39 @@ async function assetsView(s) {
 }
 
 async function activity() {
-  const list = await op('activity');
-  if (!list.length) return [h('div', { class: 'card' }, h('p', { class: 'muted' }, 'No transactions yet.'))];
-  return [h('div', { class: 'card list' }, list.map((a) => h('div', { class: 'item' },
+  let { items, cursors, starts } = await op('activityPage');
+  const linked = await op('linkedWallets');
+  const rows = h('div', { class: 'card list' });
+  const draw = () => rows.replaceChildren(...(items.length ? items.map((a) => h('div', { class: 'item' },
     h('span', { class: `dot ${a.state}`, title: a.state }),
     h('div', { class: 'grow' }, h('div', {}, a.title), h('div', { class: 'small muted' }, `${a.origin} · ${new Date(a.at).toLocaleString()}`), h('div', { class: 'mono muted', title: a.hash }, shortAddress(a.hash))),
-    a.value && a.value !== '0' ? h('div', { class: 'small' }, `${formatAeth(a.value)} AETH`) : null)))];
+    a.value && a.value !== '0' && !a.title.startsWith('Swapped') ? h('div', { class: 'small' }, `${formatAeth(a.value)} AETH`) : null))
+    : [h('p', { class: 'muted' }, 'No transactions yet.')]));
+  draw();
+  const more = h('button', { type: 'button' }, 'Load older');
+  more.hidden = !Object.keys(cursors).length;
+  more.addEventListener('click', async () => {
+    more.disabled = true;
+    try {
+      const page = await op('activityPage', { cursors });
+      items = mergeHistory(items, page.items);
+      cursors = page.cursors;
+      starts = { ...starts, ...page.starts };
+      draw();
+      more.hidden = !Object.keys(cursors).length;
+    } finally { more.disabled = false; }
+  });
+  const address = h('input', { placeholder: '0x… address (view only)', spellcheck: 'false', 'aria-label': 'Linked wallet address' });
+  const add = h('button', { type: 'submit' }, 'Add');
+  const output = h('div');
+  const form = h('form', { class: 'row' }, address, add);
+  form.addEventListener('submit', action(add, output, async () => { await op('linkWallet', { address: address.value }); refresh(); }));
+  const links = h('div', { class: 'card' }, h('h2', {}, 'Linked wallets'),
+    h('p', { class: 'small muted' }, 'View activity for up to 8 other addresses. Their signing keys stay in their own wallets.'),
+    ...linked.map((a) => h('div', { class: 'item' }, h('span', { class: 'mono grow', title: a }, shortAddress(a)),
+      h('button', { onclick: async () => { await op('unlinkWallet', { address: a }); refresh(); } }, 'Remove'))), form, output);
+  const first = Math.max(0, ...Object.values(starts || {}));
+  return [links, first ? h('p', { class: 'small muted' }, `This node's retained history starts at block #${first}.`) : null, rows, more];
 }
 
 async function sitesView() {
@@ -387,17 +409,28 @@ async function sitesView() {
 function settingsView(s) {
   const out = h('div');
   const minutes = h('input', { type: 'number', min: 1, max: 1440, value: s.lockMinutes });
+  const developerMode = h('input', { type: 'checkbox' });
+  developerMode.checked = Boolean(s.developerMode);
   const rpcs = h('textarea', { placeholder: 'https://node.example (one per line)', spellcheck: 'false' }, s.rpcs.join('\n'));
   const save = h('button', { type: 'submit' }, 'Save');
   const form = h('form', { class: 'card' }, h('h2', {}, 'Settings'), h('label', {}, 'Lock after (minutes)', minutes),
-    h('label', {}, 'Extra nodes, tried before the defaults', rpcs), h('p', { class: 'small muted' }, 'Defaults: the Aether app\'s node on this computer (127.0.0.1:18545), then this Mac\'s testnet validators.'), save);
+    h('label', {}, 'Extra nodes, tried before the defaults', rpcs), h('p', { class: 'small muted' }, 'Defaults: the Aether app\'s node on this computer (127.0.0.1:18545), then this Mac\'s testnet validators.'),
+    h('label', {}, developerMode, ' Developer mode'), save);
   form.addEventListener('submit', action(save, out, async () => {
     const list = rpcs.value.split(/\s+/).filter(Boolean);
     const extra = list.filter((u) => !/^http:\/\/(127\.0\.0\.1|localhost)[:/]/.test(u));
     if (extra.length && !(await chrome.permissions.request({ origins: extra.map((u) => `${new URL(u).origin}/*`) }))) throw new Error('The browser did not allow those nodes.');
-    await op('settings', { lockMinutes: minutes.value, rpcs: list });
+    await op('settings', { lockMinutes: minutes.value, rpcs: list, developerMode: developerMode.checked });
     out.replaceChildren(message('ok', 'Saved.'));
+    if (developerMode.checked !== s.developerMode) refresh();
   }));
+  const developerOut = h('div');
+  const faucet = h('button', { type: 'button' }, 'Get test AETH');
+  faucet.addEventListener('click', action(faucet, developerOut, async () => {
+    const r = await op('faucet');
+    developerOut.replaceChildren(message('ok', `Faucet sent · ${shortAddress(r.hash)}. The balance updates when it is final.`));
+  }));
+  const developer = h('details', { class: 'card' }, h('summary', {}, 'Developer mode'), faucet, developerOut);
 
   const pw = h('input', { type: 'password', autocomplete: 'current-password', placeholder: 'Password' });
   const reveal = h('button', { type: 'button' }, 'Show private key');
@@ -413,7 +446,7 @@ function settingsView(s) {
     refresh();
   }));
   const backup = h('div', { class: 'card' }, h('h2', {}, 'Backup'), h('p', { class: 'small muted' }, 'The key lives only in this browser. Keep a copy of the private key somewhere safe.'), pw, h('div', { class: 'row' }, reveal, erase), keyOut);
-  return [form, out, backup];
+  return [form, out, s.developerMode ? developer : null, backup];
 }
 
 async function refresh() {

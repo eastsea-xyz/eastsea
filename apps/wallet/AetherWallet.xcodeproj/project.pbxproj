@@ -16,12 +16,14 @@
 		2120D978A2E422529EDEAA37 /* NodeWatchdog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51F3FF6BB1FEAEB9503220A4 /* NodeWatchdog.swift */; };
 		3A048B1773EDB624E715846E /* AetherWalletApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39176493D3D105EBB072F17C /* AetherWalletApp.swift */; };
 		3C5180BEE4BF629CA69AF4CE /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B38A846EB23F0C4A52BF8A78 /* ContentView.swift */; };
+		3EF6E8CB8686359FE5CEA244 /* ChainActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87BD832EE8990B2380C0EF86 /* ChainActivity.swift */; };
 		3EFB40E8AE60667378C4B952 /* AetherWalletApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39176493D3D105EBB072F17C /* AetherWalletApp.swift */; };
 		44100BFA372DAC2216F2E74C /* Earnings.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6C1B75440E8A6A577BD467E /* Earnings.swift */; };
 		4C04104159BE32A1EE7E6BA3 /* AdaptiveLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55E7E86166A7CE6D29E6C709 /* AdaptiveLayout.swift */; };
 		50D901679B54ED9BD526B43E /* Spinners.swift in Sources */ = {isa = PBXBuildFile; fileRef = 462C807FB20A46B9919AE925 /* Spinners.swift */; };
 		554F88B6BC236C874C2227E1 /* NodeWatchdog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51F3FF6BB1FEAEB9503220A4 /* NodeWatchdog.swift */; };
 		576FB72021E6A746C1A7AF9B /* network.json in Resources */ = {isa = PBXBuildFile; fileRef = AB6E5651AC1948FECDAE69D4 /* network.json */; };
+		5A2FF36B2D89573A00075F88 /* ChainActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87BD832EE8990B2380C0EF86 /* ChainActivity.swift */; };
 		5D11F92088FEABAA0085ADCD /* ProverMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DEBCE5EA044F272C9EA406C /* ProverMenu.swift */; };
 		5EE841156B2F7713648B6E61 /* ResizeBenchmark.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3A70AF889C5ACB1DDB2AF45 /* ResizeBenchmark.swift */; };
 		63B4C06602DFB64063DE9B7C /* EarningsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02CE6DC842A323F5843165E1 /* EarningsModel.swift */; };
@@ -87,6 +89,7 @@
 		65F2514912728847B547AC0A /* Onboarding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Onboarding.swift; sourceTree = "<group>"; };
 		745EAC0E04873F8FD0F29BC2 /* LiveResize.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveResize.swift; sourceTree = "<group>"; };
 		82F0B4CA90E38B66B43592E6 /* BalanceHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BalanceHistory.swift; sourceTree = "<group>"; };
+		87BD832EE8990B2380C0EF86 /* ChainActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChainActivity.swift; sourceTree = "<group>"; };
 		94E4B4A2A4BDBBBBC6A12600 /* ProverFlags.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProverFlags.swift; sourceTree = "<group>"; };
 		9DEBCE5EA044F272C9EA406C /* ProverMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProverMenu.swift; sourceTree = "<group>"; };
 		AB6E5651AC1948FECDAE69D4 /* network.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = network.json; sourceTree = "<group>"; };
@@ -146,6 +149,7 @@
 				39176493D3D105EBB072F17C /* AetherWalletApp.swift */,
 				39DB57D9689E71FFECC579BA /* AssetsSheet.swift */,
 				82F0B4CA90E38B66B43592E6 /* BalanceHistory.swift */,
+				87BD832EE8990B2380C0EF86 /* ChainActivity.swift */,
 				B38A846EB23F0C4A52BF8A78 /* ContentView.swift */,
 				260B382C7E1D4499BE9AE870 /* DesignPreview.swift */,
 				C6C1B75440E8A6A577BD467E /* Earnings.swift */,
@@ -316,6 +320,7 @@
 				3EFB40E8AE60667378C4B952 /* AetherWalletApp.swift in Sources */,
 				C45FFD044088BB85C2D842D2 /* AssetsSheet.swift in Sources */,
 				07411F0894B725B06CED2894 /* BalanceHistory.swift in Sources */,
+				3EF6E8CB8686359FE5CEA244 /* ChainActivity.swift in Sources */,
 				16504A4054237817545767F0 /* ContentView.swift in Sources */,
 				F5D803ED94B649009D54712A /* DesignPreview.swift in Sources */,
 				A9AB518F8F246CB2A0974398 /* Earnings.swift in Sources */,
@@ -348,6 +353,7 @@
 				3A048B1773EDB624E715846E /* AetherWalletApp.swift in Sources */,
 				92B6DC24FA22759641E59512 /* AssetsSheet.swift in Sources */,
 				1BA7A78F249B5426DD6B684F /* BalanceHistory.swift in Sources */,
+				5A2FF36B2D89573A00075F88 /* ChainActivity.swift in Sources */,
 				3C5180BEE4BF629CA69AF4CE /* ContentView.swift in Sources */,
 				ED3E2EB438264E2123EBDBD9 /* DesignPreview.swift in Sources */,
 				44100BFA372DAC2216F2E74C /* Earnings.swift in Sources */,

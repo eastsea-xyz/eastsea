@@ -51,6 +51,12 @@ const PROOFS: TableDefinition<u64, &[u8]> = TableDefinition::new("proofs");
 /// Rewards paid to provers, kept by this node for tax records: (prover ‖ paid-in
 /// height) -> JSON. Not consensus data; nothing is ever dropped.
 const REWARDS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("rewards");
+/// Address || height || transaction index -> one finalized activity row.
+const ACCOUNT_HISTORY: TableDefinition<&[u8], &[u8]> = TableDefinition::new("account_history");
+/// Height -> concatenated account-history keys, so pruning is proportional to
+/// the removed blocks rather than every account's lifetime activity.
+const ACCOUNT_BLOCK_KEYS: TableDefinition<u64, &[u8]> = TableDefinition::new("account_block_keys");
+const ACCOUNT_HISTORY_SINCE: &str = "account_history_since";
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -423,6 +429,8 @@ impl Store {
         tx.open_table(META).map_err(dberr)?;
         tx.open_table(PROOFS).map_err(dberr)?;
         tx.open_table(REWARDS).map_err(dberr)?;
+        tx.open_table(ACCOUNT_HISTORY).map_err(dberr)?;
+        tx.open_table(ACCOUNT_BLOCK_KEYS).map_err(dberr)?;
         tx.commit().map_err(dberr)?;
         Ok(db)
     }
@@ -523,6 +531,51 @@ impl Store {
         }
         out.reverse();
         Ok(out)
+    }
+
+    /// Newest account activity, with an exclusive opaque cursor. Rows are
+    /// returned from one read transaction, so pagination cannot see a half
+    /// committed block. The index begins at `history_start` on upgraded stores.
+    pub fn account_history(&self, address: &[u8; 20], before: Option<&str>, limit: usize) -> Result<crate::account_history::Page, StoreError> {
+        let tx = self.read_tx()?;
+        let mut start = address.to_vec();
+        start.extend_from_slice(&[0; 12]);
+        let mut end = address.to_vec();
+        end.extend_from_slice(&[0xff; 12]);
+        let upper = match before {
+            Some(cursor) => {
+                let key = hex::decode(cursor.strip_prefix("0x").unwrap_or(cursor)).map_err(|_| StoreError::Db("invalid history cursor".into()))?;
+                if key.len() != 32 || !key.starts_with(address) {
+                    return Err(StoreError::Db("history cursor belongs to another address".into()));
+                }
+                key
+            }
+            None => end,
+        };
+        let rows = tx.open_table(ACCOUNT_HISTORY).map_err(dberr)?;
+        let mut entries = Vec::new();
+        let mut next_cursor = None;
+        let range = rows.range(start.as_slice()..upper.as_slice()).map_err(dberr)?;
+        for row in range.rev() {
+            let (key, value) = row.map_err(dberr)?;
+            if entries.len() == limit { next_cursor = entries.last().map(|(k, _): &(String, crate::account_history::Entry)| k.clone()); break; }
+            let entry = serde_json::from_slice(value.value()).map_err(|_| StoreError::Corrupt("account history row"))?;
+            entries.push((hex::encode(key.value()), entry));
+        }
+        let meta = tx.open_table(META).map_err(dberr)?;
+        let read_word = |key| -> Result<Option<u64>, StoreError> {
+            let Some(value) = meta.get(key).map_err(dberr)? else { return Ok(None) };
+            let bytes: [u8; 8] = value.value().try_into().map_err(|_| StoreError::Corrupt("account history metadata"))?;
+            Ok(Some(u64::from_be_bytes(bytes)))
+        };
+        let since = read_word(ACCOUNT_HISTORY_SINCE)?;
+        let pruned = read_word(PRUNED_BELOW)?.unwrap_or(0);
+        let head = read_word("height")?.unwrap_or(0);
+        Ok(crate::account_history::Page {
+            entries: entries.into_iter().map(|(_, e)| e).collect(), next_cursor,
+            history_start: since.map(|h| h.max(pruned)).unwrap_or(head.saturating_add(1).max(pruned)),
+            indexed_height: since.map(|_| head).unwrap_or(0),
+        })
     }
 
     /// Certificates this node verified, served to wallets and other followers.
@@ -671,6 +724,17 @@ impl Store {
                 let before = proofs.len().map_err(dberr)?;
                 proofs.retain_in(lo..hi, |_, _| false).map_err(dberr)?;
                 report.proofs += before - proofs.len().map_err(dberr)?;
+                let mut account_keys = tx.open_table(ACCOUNT_BLOCK_KEYS).map_err(dberr)?;
+                let mut account_rows = tx.open_table(ACCOUNT_HISTORY).map_err(dberr)?;
+                for h in lo..hi {
+                    if let Some(keys) = account_keys.remove(h).map_err(dberr)? {
+                        let (chunks, remainder) = keys.value().as_chunks::<32>();
+                        if !remainder.is_empty() { return Err(StoreError::Corrupt("account history block keys")); }
+                        for key in chunks {
+                            account_rows.remove(key.as_slice()).map_err(dberr)?;
+                        }
+                    }
+                }
                 let mut era_roots = tx.open_table(ERA_ROOTS).map_err(dberr)?;
                 for (e, r) in roots.iter().filter(|(e, _)| (lo / len..hi / len).contains(e)) {
                     era_roots.insert(*e, r.as_slice()).map_err(dberr)?;
@@ -710,6 +774,8 @@ impl Store {
             one(&tx, META, "meta")?,
             one(&tx, PROOFS, "proofs")?,
             one(&tx, REWARDS, "rewards")?,
+            one(&tx, ACCOUNT_HISTORY, "account_history")?,
+            one(&tx, ACCOUNT_BLOCK_KEYS, "account_block_keys")?,
             one(&tx, ERA_BLOCKS, "era_blocks")?,
             one(&tx, ERA_ROOTS, "era_roots")?,
         ];
@@ -736,7 +802,11 @@ impl Store {
 
     /// Persist one finalized block atomically (durable: the commit fsyncs).
     pub fn commit(&self, c: Commit<'_>) -> Result<(), StoreError> {
-        self.write(c, redb::Durability::Immediate)
+        self.write(c, &[], redb::Durability::Immediate, false)
+    }
+
+    pub fn commit_with_history(&self, c: Commit<'_>, history: &[crate::account_history::Entry], relaxed: bool) -> Result<(), StoreError> {
+        self.write(c, history, if relaxed { redb::Durability::None } else { redb::Durability::Immediate }, true)
     }
 
     /// The same write without the fsync, while a certified backlog is being
@@ -744,10 +814,10 @@ impl Store {
     /// commit, so a crash loses only the blocks after the last one — every
     /// block is re-fetchable, so they simply replay.
     pub fn commit_relaxed(&self, c: Commit<'_>) -> Result<(), StoreError> {
-        self.write(c, redb::Durability::None)
+        self.write(c, &[], redb::Durability::None, false)
     }
 
-    fn write(&self, c: Commit<'_>, durability: redb::Durability) -> Result<(), StoreError> {
+    fn write(&self, c: Commit<'_>, history: &[crate::account_history::Entry], durability: redb::Durability, indexing: bool) -> Result<(), StoreError> {
         let mut tx = self.write_tx()?;
         tx.set_durability(durability).map_err(dberr)?;
         {
@@ -772,7 +842,23 @@ impl Store {
             for (h, r) in &c.receipts {
                 receipts.insert(h.as_slice(), serde_json::to_vec(&(c.height, r)).map_err(|e| StoreError::Db(e.to_string()))?.as_slice()).map_err(dberr)?;
             }
+            let mut keys = Vec::with_capacity(history.len() * 32);
+            let mut account_rows = tx.open_table(ACCOUNT_HISTORY).map_err(dberr)?;
+            for entry in history {
+                let mut key = Vec::with_capacity(32);
+                key.extend_from_slice(entry.address.as_slice());
+                key.extend_from_slice(&entry.height.to_be_bytes());
+                key.extend_from_slice(&entry.tx_index.to_be_bytes());
+                account_rows.insert(key.as_slice(), serde_json::to_vec(entry).map_err(|e| StoreError::Db(e.to_string()))?.as_slice()).map_err(dberr)?;
+                keys.extend_from_slice(&key);
+            }
+            if !keys.is_empty() {
+                tx.open_table(ACCOUNT_BLOCK_KEYS).map_err(dberr)?.insert(c.height, keys.as_slice()).map_err(dberr)?;
+            }
             let mut meta = tx.open_table(META).map_err(dberr)?;
+            if indexing && meta.get(ACCOUNT_HISTORY_SINCE).map_err(dberr)?.is_none() {
+                meta.insert(ACCOUNT_HISTORY_SINCE, c.height.to_be_bytes().as_slice()).map_err(dberr)?;
+            }
             meta.insert("height", c.height.to_be_bytes().as_slice()).map_err(dberr)?;
             meta.insert("digest", c.digest.as_slice()).map_err(dberr)?;
             meta.insert("root", c.root.as_slice()).map_err(dberr)?;

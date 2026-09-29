@@ -82,6 +82,7 @@ fn answer(mode: &Mode, req: Value, served: &Arc<Mutex<Vec<String>>>) -> Value {
             "address": f["address"], "balance": f["balance"], "nonce": 0,
             "height": f["height"], "state_root": f["state_root"], "proof": f["proof"],
         }),
+        "aether_accountHistory" => json!({ "entries": [], "next_cursor": null, "history_start": 1, "indexed_height": 6 }),
         // The captured anchor, whatever height is asked (the wallet checks).
         "aether_getFinalized" => json!({
             "height": req["params"][0].as_u64().unwrap_or_default().saturating_sub(1),

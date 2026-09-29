@@ -12,6 +12,7 @@ import { weiToAeth } from './lib/units.js';
 import { parseTokenSources, scanTokens, formatTokenAmount, call, SEL, wordAddress, uintAt } from './lib/tokens.js';
 import { addressRisk, revertReason, splitHoldings, tokenShort } from './lib/safety.js';
 import { TERMS_VERSION } from './lib/terms.js';
+import { linkedAddress, describeHistory, mergeHistory } from './lib/history.js';
 
 const ready = init({ module_or_path: chrome.runtime.getURL('wasm/aether_wasm_bg.wasm') });
 const area = (a) => ({
@@ -67,6 +68,30 @@ function broadcast(origin, event, data) {
 async function record(item) {
   const list = ((await local.get('activity')) || []).filter((a) => a.hash !== item.hash);
   await local.set('activity', [item, ...list].slice(0, 50));
+}
+
+async function activityPage(cursors = null) {
+  const info = await vault.info();
+  const own = info?.address;
+  const linked = (await local.get('linkedWallets')) || [];
+  const addresses = own ? [own, ...linked] : linked;
+  const selected = cursors ? addresses.filter((a) => Object.hasOwn(cursors, a)) : addresses;
+  let sources = {}, catalog = {};
+  try {
+    const status = await rpc.call('aether_status', []);
+    sources = (await tokenSources(status.chain_id)) || {};
+    catalog = ((await local.get(`tokenCatalog.${status.chain_id}`)) || {}).tokens || {};
+  } catch { /* the local pending list still opens without a node */ }
+  const pages = await Promise.all(selected.map(async (address) => {
+    try {
+      const page = await rpc.call('aether_accountHistory', [address, cursors?.[address] || null, 200]);
+      return { address, page };
+    } catch { return { address, page: { entries: [], next_cursor: null, history_start: 0 } }; }
+  }));
+  const chain = pages.flatMap(({ page }) => (page.entries || []).map((row) => describeHistory(row, { sources, catalog })));
+  const localItems = cursors ? [] : ((await local.get('activity')) || []);
+  return { items: mergeHistory(localItems, chain), cursors: Object.fromEntries(pages.filter(({ page }) => page.next_cursor).map(({ address, page }) => [address, page.next_cursor])),
+    starts: Object.fromEntries(pages.map(({ address, page }) => [address, page.history_start])) };
 }
 async function track(hash, base) {
   await record({ ...base, hash, state: 'pending', at: Date.now() });
@@ -305,6 +330,7 @@ async function state() {
     address: info?.address || null,
     approvals: (await session.get('approvals')) || [],
     lockMinutes: (await local.get('lockMinutes')) || DEFAULT_LOCK_MINUTES,
+    developerMode: Boolean(await local.get('developerMode')),
     rpcs: (await local.get('rpcs')) || [],
     terms: (await local.get('termsVersion')) || 0,
   };
@@ -374,11 +400,27 @@ const ui = {
     return { hash };
   },
   quote: ({ id }) => quote(id),
-  activity: async () => (await local.get('activity')) || [],
+  activity: async () => (await activityPage()).items,
+  activityPage: ({ cursors } = {}) => activityPage(cursors || null),
+  linkedWallets: async () => (await local.get('linkedWallets')) || [],
+  linkWallet: async ({ address }) => {
+    const own = (await vault.info())?.address;
+    const current = (await local.get('linkedWallets')) || [];
+    if (current.length >= 8) throw new Error('You can link up to 8 view-only wallets.');
+    const next = [...current, linkedAddress(address, own, current)];
+    await local.set('linkedWallets', next);
+    return next;
+  },
+  unlinkWallet: async ({ address }) => {
+    const next = ((await local.get('linkedWallets')) || []).filter((a) => a.toLowerCase() !== String(address).toLowerCase());
+    await local.set('linkedWallets', next);
+    return next;
+  },
   sites: async () => sites(),
   disconnect: ({ origin }) => setSite(origin, null),
-  settings: async ({ lockMinutes, rpcs }) => {
+  settings: async ({ lockMinutes, rpcs, developerMode }) => {
     if (lockMinutes !== undefined) await local.set('lockMinutes', Math.min(Math.max(Number(lockMinutes) || DEFAULT_LOCK_MINUTES, 1), 24 * 60));
+    if (developerMode !== undefined) await local.set('developerMode', Boolean(developerMode));
     if (rpcs !== undefined) {
       const list = rpcs.filter((u) => { try { return ['http:', 'https:'].includes(new URL(u).protocol); } catch { return false; } });
       await local.set('rpcs', list);

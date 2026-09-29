@@ -2164,6 +2164,20 @@ public func accountAddress(p256PublicKey: Data)throws  -> String  {
 })
 }
 /**
+ * Node-sourced, paginated account activity. Balances remain certificate
+ * verified; this JSON is display data and includes `history_start`.
+ */
+public func accountHistory(address: String, cursor: String?, limit: UInt32)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_account_history(
+        FfiConverterString.lower(address),
+        FfiConverterOptionString.lower(cursor),
+        FfiConverterUInt32.lower(limit),uniffiCallStatus
+    )
+})
+}
+/**
  * A recent height proven by a validator's finality certificate, queried
  * through the remote client even while wallet reads use the local node.
  * The watchdog must never compare a local height with another local status
@@ -2650,6 +2664,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_aether_ffi_checksum_func_account_address() != 24481) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_aether_ffi_checksum_func_account_history() != 21531) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_aether_ffi_checksum_func_authenticated_remote_height() != 44901) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -2701,7 +2718,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_aether_ffi_checksum_func_prepare_recovery_to() != 8634) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_aether_ffi_checksum_func_prepare_register_node() != 54988) {
+    if (uniffi_aether_ffi_checksum_func_prepare_register_node() != 56846) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_prepare_remove_recovery_keys() != 27224) {
@@ -2740,7 +2757,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_aether_ffi_checksum_func_set_committee_identity() != 27628) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_aether_ffi_checksum_func_submit_signed() != 20395) {
+    if (uniffi_aether_ffi_checksum_func_submit_signed() != 31125) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_use_devnet_keys() != 43153) {

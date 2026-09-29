@@ -6,8 +6,8 @@
 #[allow(dead_code)]
 mod wallet_common;
 
-use aether_ffi::{chain_status, pin_servers};
-use wallet_common::follower;
+use aether_ffi::{account_history, chain_status, pin_servers};
+use wallet_common::{fixture_address, follower};
 
 #[test]
 fn reads_spread_over_followers_and_never_reach_the_validators() {
@@ -22,6 +22,8 @@ fn reads_spread_over_followers_and_never_reach_the_validators() {
     for _ in 0..12 {
         assert_eq!(chain_status().unwrap().chain_id, 7_777);
     }
+    let history = account_history(fixture_address(), None, 50).unwrap();
+    assert!(history.contains("history_start"));
 
     assert_eq!(
         validator.total(),
@@ -35,12 +37,12 @@ fn reads_spread_over_followers_and_never_reach_the_validators() {
         "requests spread over several followers: {counts:?}"
     );
     assert!(
-        counts.iter().all(|c| *c <= 6),
+        counts.iter().all(|c| *c <= 7),
         "no follower takes more than its share: {counts:?}"
     );
     assert_eq!(
         counts.iter().sum::<usize>(),
-        12,
+        13,
         "every read was answered by a follower: {counts:?}"
     );
 }

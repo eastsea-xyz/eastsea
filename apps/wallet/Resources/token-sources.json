@@ -4,6 +4,7 @@
     "7780": {
       "network": "aether-testnet",
       "waeth": "0xa2521982a17474cb2f8741c85de653b5282d72b0",
+      "router": "0xc6bb9eeee1aa186562f6b6d14f7df6bcbac19981",
       "tokenFactory": "0x5137f55b90989311f450a3a7c3015e0dc4a014dd",
       "pairFactory": "0x8997a65cce24fb0ec0f5d1b728b8bab26b5548c5",
       "launchpad": "0xa4e92734dac47d484ecd9d4329861d12f7fada46",

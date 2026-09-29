@@ -8,11 +8,13 @@
 
 use aether_crypto::P256Signer;
 use aether_execution::{sign_call_with, EvmCall};
+use aether_execution::{Event, Receipt};
 use aether_node::block::{Block, Context, EPOCH};
 use aether_node::chain::{
     build_payload, dev_accounts, dev_seed, BlockSummary, Chain, ChainConfig, Executed, Extras,
 };
 use aether_node::era;
+use aether_node::rpc::{self, Finality, RpcState};
 use aether_node::store::Store;
 use aether_node::upgrade::{combine, sign_partial, Release, SignedUpgrade, Upgrade};
 use aether_state::mmr::ERA_LEN;
@@ -21,6 +23,7 @@ use commonware_consensus::types::{Round, View};
 use commonware_cryptography::{ed25519, Digestible, Signer};
 use std::path::PathBuf;
 use std::sync::Arc;
+use serde_json::json;
 
 const CHAIN: u64 = 7_791;
 /// Protocol 2 (the proof market, as on 7780) from this height.
@@ -177,6 +180,87 @@ impl Node {
             assert_eq!(exec.tx_hashes.len(), txs.len(), "the transfer is included");
         }
     }
+}
+
+#[tokio::test]
+async fn account_history_indexes_finalized_sends_receives_and_rpc_cursor() {
+    let dir = std::env::current_dir().unwrap().join("tmp").join(format!("account-history-{}", std::process::id()));
+    if dir.exists() { std::fs::remove_dir_all(&dir).unwrap(); }
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut n = Node::start(true, Some(&dir));
+    let sender = aether_crypto::address_of(&aether_crypto::Signer::public_key(&P256Signer::from_seed(&dev_seed(1)).unwrap())).unwrap();
+    let receiver = Address::repeat_byte(0xb0);
+    let first = n.transfer();
+    n.step(vec![first]);
+    let second = n.transfer();
+    n.step(vec![second]);
+    let own = n.chain.account_history(&sender, None, 1).unwrap();
+    assert_eq!(own.entries.len(), 1);
+    assert_eq!(own.entries[0].height, 2);
+    assert_eq!(own.entries[0].direction, "out");
+    let older = n.chain.account_history(&sender, own.next_cursor.as_deref(), 1).unwrap();
+    assert_eq!(older.entries[0].height, 1);
+    let received = n.chain.account_history(&receiver, None, 10).unwrap();
+    assert_eq!(received.entries.len(), 2);
+    assert!(received.entries.iter().all(|e| e.direction == "in" && e.value_wei == "1000"));
+
+    let st = RpcState {
+        chain: n.chain.clone(), finality: Finality::Archive(Arc::new(aether_node::follow::FinalityArchive::new(None))),
+        gossip: tokio::sync::mpsc::unbounded_channel().0, faucet: None, registrar: None,
+        network: None, upstream: None, handoff: None, snapshot: Default::default(), prover: None, shards: None,
+    };
+    let answer = rpc::handle_value(&st, json!({"jsonrpc":"2.0","id":1,"method":"aether_accountHistory","params":[receiver,null,200]})).await;
+    assert_eq!(answer["result"]["entries"].as_array().unwrap().len(), 2);
+    assert_eq!(answer["result"]["indexed_height"], 2);
+    let rejected = rpc::handle_value(&st, json!({"jsonrpc":"2.0","id":2,"method":"aether_accountHistory","params":[receiver,null,201]})).await;
+    assert_eq!(rejected["error"]["code"], -32602);
+    drop(st);
+    drop(n);
+    let (restored, _) = Chain::open(config(true), Store::open(&dir.join("state.redb")).unwrap()).unwrap();
+    assert_eq!(restored.account_history(&receiver, None, 10).unwrap().entries.len(), 2);
+    restored.store().unwrap().prune_below(2, &[]).unwrap();
+    let kept = restored.account_history(&receiver, None, 10).unwrap();
+    assert_eq!(kept.entries.len(), 1);
+    assert_eq!(kept.history_start, 2);
+    drop(restored);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn account_history_collects_token_receipts_and_system_rewards() {
+    let signer = P256Signer::from_seed(&dev_seed(1)).unwrap();
+    let sender = aether_crypto::address_of(&aether_crypto::Signer::public_key(&signer)).unwrap();
+    let recipient = Address::repeat_byte(0xab);
+    let token = Address::repeat_byte(0xcd);
+    let call = EvmCall { to: Some(token), value: U256::ZERO,
+        input: Bytes::from(hex::decode("a9059cbb").unwrap()), gas_limit: 100_000, delegate: None };
+    let tx = sign_call_with(&signer, CHAIN, 0, FeeVector::default(), 0, &call).unwrap();
+    let mut from = [0u8; 32];
+    from[12..].copy_from_slice(sender.as_slice());
+    let mut to = [0u8; 32];
+    to[12..].copy_from_slice(recipient.as_slice());
+    let topic = hex::decode("ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef").unwrap();
+    let swap_topic = hex::decode("d78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822").unwrap();
+    let swap_data = [U256::from(10u64), U256::ZERO, U256::ZERO, U256::from(250u64)]
+        .into_iter().flat_map(|v| v.to_be_bytes::<32>()).collect::<Vec<_>>();
+    let receipt = Receipt { tx_hash: aether_execution::tx_hash(&tx), success: true, gas_used: 50_000,
+        prove_gas: 0, contract_address: None, logs: 2, output: Bytes::new(),
+        events: vec![Event { address: token,
+            topics: vec![B256::from_slice(&topic), B256::from(from), B256::from(to)],
+            data: Bytes::from(U256::from(250u64).to_be_bytes::<32>().to_vec()) },
+            Event { address: Address::repeat_byte(0xef),
+                topics: vec![B256::from_slice(&swap_topic), B256::from(from), B256::from(to)],
+                data: Bytes::from(swap_data) }] };
+    let rows = aether_node::account_history::transaction(&tx, &receipt, 3, 0, 3000);
+    assert_eq!(rows.len(), 2);
+    let incoming = rows.iter().find(|r| r.address == recipient).unwrap();
+    assert_eq!(incoming.kind, "erc20_transfer");
+    assert_eq!(incoming.tokens[0].amount, "250");
+    assert_eq!(incoming.direction, "in");
+    assert_eq!(incoming.pair_swaps[0].amount1_out, "250");
+    let reward = aether_node::account_history::reward(recipient, 4, 0, 4000, U256::from(9), true);
+    assert_eq!(reward.kind, "node_reward");
+    assert_eq!(reward.value_wei, "9");
 }
 
 fn tmp(name: &str) -> PathBuf {

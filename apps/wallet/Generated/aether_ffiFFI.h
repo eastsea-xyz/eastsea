@@ -248,6 +248,11 @@ typedef void (*UniffiForeignFutureCompleteVoid)(uint64_t, UniffiForeignFutureRes
 RustBuffer uniffi_aether_ffi_fn_func_account_address(RustBuffer p256_public_key, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_ACCOUNT_HISTORY
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_ACCOUNT_HISTORY
+RustBuffer uniffi_aether_ffi_fn_func_account_history(RustBuffer address, RustBuffer cursor, uint32_t limit, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_AUTHENTICATED_REMOTE_HEIGHT
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_AUTHENTICATED_REMOTE_HEIGHT
 RustBuffer uniffi_aether_ffi_fn_func_authenticated_remote_height(RustCallStatus *_Nonnull out_status
@@ -722,6 +727,12 @@ uint16_t uniffi_aether_ffi_checksum_func_account_address(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_ACCOUNT_HISTORY
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_ACCOUNT_HISTORY
+uint16_t uniffi_aether_ffi_checksum_func_account_history(void
+
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_AUTHENTICATED_REMOTE_HEIGHT
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_AUTHENTICATED_REMOTE_HEIGHT
 uint16_t uniffi_aether_ffi_checksum_func_authenticated_remote_height(void
@@ -968,4 +979,3 @@ uint32_t ffi_aether_ffi_uniffi_contract_version(void
     
 );
 #endif
-

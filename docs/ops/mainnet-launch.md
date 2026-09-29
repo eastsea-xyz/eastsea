@@ -2,7 +2,7 @@
 
 한 번 만들면 되돌릴 수 없는 제네시스를 실제로 만드는 절차다. 결정 사항(사전 발행 0, faucet 없음, 창업자 몫 없음, 첫 블록부터 node rewards, history v2)은 [12-launch-plan.md](../design/12-launch-plan.md)에, 규칙은 [15-node-rewards.md](../design/15-node-rewards.md)에 있다. 이 문서는 손으로 하는 순서만 다룬다.
 
-출시 판단 자체는 별개다: 12-launch-plan의 빠른 메인넷 조건(E1–E7)을 모두 충족했는지가 먼저고, 이 문서는 그 다음의 실행 계획이다.
+출시 판단 자체는 별개다: 12-launch-plan의 빠른 메인넷 조건 (1)~(8)을 모두 충족했는지가 먼저고, 이 문서는 그 다음의 실행 계획이다.
 
 ## 0. 리허설 (출시 전날과 직전, 두 번)
 
@@ -11,7 +11,7 @@ mkdir -p ./tmp
 scripts/mainnet-rehearsal.sh "$(mktemp -d ./tmp/mainnet-rehearsal.XXXXXX)/rehearsal"
 ```
 
-버리는 로컬 네트워크에 **메인넷과 같은 제네시스 플래그**(새 체인 아이디, `"protocol": 3`, `"history": 2`, node rewards, 등록기, 예비 키 3개, faucet·사전 발행 없음)를 걸고 4검증자+예비키+후보 Mac을 `aether run`만으로 띄워 확인한다: 블록 확정·4검증자 일치, 높이 1의 프로토콜이 3·에포크당 등록 상한 활성, 메인넷 규칙 목록 전부(아래 2단계), 빈 블록 조용(history v2), 사전 발행·faucet 없음, 첫 에포크 분배가 `rewards::issuance`와 정확히 일치(새 Mac pool/32), 예비 키 자동 착석, 30일 프루닝 기본값, **현재 바이너리의 그림자 재실행 일치**. **PASS가 아니면 다음 단계로 가지지 않는다.** 출시 직전에는 출시에 쓸 바이너리로 다시 한 번.
+버리는 로컬 네트워크에 **메인넷과 같은 제네시스 플래그**(새 체인 아이디, `"protocol": 3`, `"history": 2`, node rewards, 등록기, 예비 키 3개, faucet·사전 발행 없음)를 걸고 4검증자+예비키+후보 Mac을 `aether run`만으로 띄워 확인한다: 블록 확정·4검증자 일치, 높이 1의 프로토콜이 3·에포크당 등록 상한 활성, 메인넷 규칙 목록 전부(아래 2단계), 빈 블록 조용(history v2), 사전 발행·faucet 없음, 첫 에포크 분배가 `rewards::issuance`와 정확히 일치(새 Mac pool/32), 예비 키는 4석이 서 있으면 들어오지 않고 팔로워로 남음, 30일 프루닝 기본값, **현재 바이너리의 그림자 재실행 일치**. **PASS가 아니면 다음 단계로 가지지 않는다.** 출시 직전에는 출시에 쓸 바이너리로 다시 한 번.
 
 ## 업그레이드 전 필수: 메인넷 그림자 재실행
 
@@ -30,8 +30,8 @@ aether shadow --from "$ARCHIVE_RPC" --to "$FINALIZED_HEIGHT"
 |---|---|---|
 | 검증자 키 ×4 | 검증자로 쓸 Mac 4대, 각각 `aether keygen --data <dir>` | 서로 다른 사람의 Mac(12-launch-plan). 디스크에만 있는 유일한 사본이다 |
 | 예비 키 ×3 | 창업자 Mac 1대, `scripts/reserve-keys.sh init` | `~/aether-reserve/{1,2,3}`. 규칙과 운영은 [reserve-keys.md](reserve-keys.md) |
-| 등록기 키 | 검증자 1번 Mac, `aether registrar-key --data <dir>` | P-256. 등록·재인증 서명에 쓴다 |
-| DeviceCheck 키 | Apple 개발자 계정의 `.p8` | `~/.config/aether/devicecheck/`. **메인넷 등록기는 반드시 Apple 키**. 리허설의 `--dev-registrar`는 시험 전용이다 |
+| 등록기 키 | **서명 전용 Mac**, `aether registrar-key --data <dir>` | P-256. 등록·재인증 서명에 쓴다. 12-launch-plan "창업자 자산 보안"대로 **Secure Enclave에 보관**한다(2026-09-29). 지금 바이너리는 아직 `<data>/registrar.key` 파일 키다(갭 G4) |
+| DeviceCheck 키 | Apple 개발자 계정의 `.p8` | **서명 전용 Mac**의 `~/.config/aether/devicecheck/`. **메인넷 등록기는 반드시 Apple 키**. 리허설의 `--dev-registrar`는 시험 전용이다 |
 | faucet 키 | (없음) | 메인넷은 faucet이 없다. 만들지 않는다 |
 
 모든 `validator.key`, `registrar.key`, `.p8`는 오프라인(암호화된 외장 드라이브 등)에 백업한다. 잃어버린 검증자 키는 그 자리를 영원히 못 채운다.
@@ -40,7 +40,7 @@ dev 계정(1–10번)은 메인넷 제네시스에서 잔액이 0이다(사전 �
 
 ## 2. network.json
 
-검증자 1번 Mac에서(공개 항목들을 모아):
+검증자 1번 Mac에서(공개 항목들을 모아; `--registrar`에 넣을 등록기 공개키 hex는 서명 전용 Mac에서 `aether registrar-key --data <dir>`가 출력한 값을 옮겨 적는다):
 
 ```bash
 aether network \
@@ -58,13 +58,13 @@ aether network \
 ```
 
 - `--faucet`을 주지 않는다: 이 네트워크에는 사전 발행이 없고, 모든 토큰이 발행(보상)으로만 나온다.
-- `--protocol 3`은 제네시스부터 프로토콜 3 규칙(증명 시장, registry v2·에포크당 등록 상한, 16석 증가 추첨)을 켠다. 메인넷은 증명 보상 없이 열리지 않으므로 이 값은 생략하지 않는다(15-node-rewards "업그레이드 불필요"). 7780에는 이 필드가 없다(프로토콜 1 제네시스, 업그레이드로 2·3 도입 — 제네시스가 바뀌지 않는다).
+- `--protocol 3`은 제네시스부터 프로토콜 3 규칙(증명 시장, registry v2·에포크당 등록 상한, 16석 증가 추첨)을 켠다. 메인넷은 증명 보상 없이 열리지 않으므로 이 값은 생략하지 않는다(15-node-rewards "구현 순서" 2번: 메인넷은 제네시스부터 이 규칙, 업그레이드 불필요). 7780에는 이 필드가 없다(프로토콜 1 제네시스, 업그레이드로 2·3 도입 — 제네시스가 바뀌지 않는다).
 - `--history 2`는 새 제네시스에서만 유효하다(7780에는 없다). 빈 블록이 조용해지고 era 파일·30일 프루닝이 기본이 된다.
 - epoch_blocks/min_streak/draw_epochs는 기본값(3600/24/24)을 그대로 쓴다. 리허설에서 줄여 본 것은 시간 단축용 값이다.
 
 ### 메인넷 규칙 목록 (높이 1부터 켜져 있어야 하는 규칙)
 
-메인넷은 어떤 규칙도 "출시 뒤 업그레이드로 켠다" 없이 제네시스부터 전부 켜져 있어야 한다(갭 G1: 프로토콜 1로 열리면 증명 시장·등록 상한·16석 증가가 꺼진 채 시작한다). 목록은 코드에 하나로 있다(`crates/node/src/mainnet.rs`, `mainnet::check`) — 항목을 추가하면 아래 세 검사가 같이 실패한다:
+메인넷은 어떤 규칙도 "출시 뒤 업그레이드로 켠다" 없이 제네시스부터 전부 켜져 있어야 한다. 제네시스 프로토콜 필드는 이미 있다(갭 G1 닫힘: `aether network --protocol 3`; 7780처럼 프로토콜 1로 열리면 증명 시장·등록 상한·16석 증가가 꺼진 채 시작하므로 이 값을 생략하지 않는다). 목록은 코드에 하나로 있다(`crates/node/src/mainnet.rs`, `mainnet::check`) — 항목을 추가하면 아래 세 검사가 같이 실패한다:
 
 - `aether mainnet-rules --network genesis.json` — network.json에서 노드와 똑같이 제네시스를 만들어 항목마다 `ok`/`FAIL`을 출력하고, 꺼진 것이 하나라도 있으면 실패한다(DKG 뒤 최종 network.json으로 다시 한 번).
 - `scripts/mainnet-rehearsal.sh`(0단계) — 같은 검사를 PASS 항목으로 돌리고, 살아 있는 네트워크에서 높이 1의 프로토콜과 등록 상한도 확인한다.
@@ -112,7 +112,7 @@ aether dkg --network genesis.json --port <p2p 포트> --data <자기 데이터 �
   --peers 1@<ip1>:<port>,2@<ip2>:<port>,… 
 ```
 
-4개가 모두 끝나면 검증자 1의 `<data>/network.json`이 최종본이다(identity, output이 들어 있다). 예비 키 폴더의 network.json은 아직 없어도 된다(착석 때 자기 몫을 받는다).
+4개가 모두 끝나면 검증자 1의 `<data>/network.json`이 최종본이다(identity, output이 들어 있다). 예비 키 폴더의 network.json은 아직 없어도 된다(제네시스 4석이 서 있으면 예비 키는 팔로워로 남고, 위원회가 4석에 못 미칠 때 모자란 자리를 채우면서 자기 몫을 받는다).
 
 DKG가 쓴 network.json이 제네시스 플래그를 그대로 가져갔는지 확인한다(세레머니가 플래그를 흘려버리면 검증자가 전부 아카이브 모드로 도는 식의 사고가 된다):
 
@@ -135,7 +135,7 @@ aether mainnet-rules --network <검증자 1 데이터 디렉터리>/network.json
 
 - 체인 아이디가 의도한 값이다.
 - 검증자 4개 키 지문과 예비 키 3개 지문이 키 세레머니 결과와 일치한다.
-- 등록기 키 지문이 일치한다. DeviceCheck `.p8`이 검증자 1에 있다.
+- 등록기 키 지문이 일치한다. DeviceCheck `.p8`이 서명 전용 Mac에 있다(등록기도 그 Mac에서 돈다).
 - `"protocol": 3`(제네시스부터 증명 시장·등록 상한·16석 증가), `"history": 2`, node rewards 켜짐, faucet 없음, 사전 발행 없음(2단계 검증 출력과 `aether mainnet-rules` 전 항목 ok).
 - 리허설(0단계)이 이 바이너리로 PASS했다.
 - 소스 공개 준비가 됐다(12-launch-plan: 메인넷과 동시 공개).
@@ -147,9 +147,9 @@ aether mainnet-rules --network <검증자 1 데이터 디렉터리>/network.json
 
 - 각 검증자 Mac: `aether run --network <최종 network.json> --data <dir>`을 launchd + `caffeinate -s`로(`scripts/testnet-launchagent.sh` 패턴, 라벨은 메인넷용으로 따로). 데이터 디렉터리는 메인넷 전용으로 새로 만든다(테스트넷 것을 재사용하지 않는다).
 - 프로토콜 업그레이드 단계는 없다: 제네시스가 `"protocol": 3`으로 시작해 첫 블록부터 전부 마지막 규칙이다. 출시 뒤의 규칙 변경만 위원회 서명 업그레이드로 한다.
-- 검증자 1(등록기): `--devicecheck-key <.p8 경로> --devicecheck-key-id <KID> --devicecheck-team <팀 아이디>`를 함께.
-- 창업자 Mac: `scripts/reserve-keys.sh install <최종 network.json>`. 독립 운영자가 4명이 되기 전까지 예비 키 3개가 자리를 지킨다. 사람이 할 일은 없다.
-- 확인: 각 노드 `aether status`로 높이가 오르고, `aether_handoff`가 7멤버(4+3)를 보이고, 예비 키 `threshold.json`이 생기면 착석 완료.
+- 서명 전용 Mac(등록기): `aether run`에 `--devicecheck-key <.p8 경로> --devicecheck-key-id <KID> --devicecheck-team <팀 아이디>`를 함께. 등록기 키는 이 Mac에 둔다(12-launch-plan "창업자 자산 보안": Secure Enclave; 지금 바이너리는 파일 키 — 갭 G4).
+- 창업자 Mac: `scripts/reserve-keys.sh install <최종 network.json>`. 예비 키 3개는 위원회가 4석에 못 미칠 때만 모자란 자리를 채운다 — 제네시스 4석이 서 있으면 하나도 들어오지 않고 팔로워로 남는다([15-node-rewards.md](../design/15-node-rewards.md) "창업자 예비 키"). 사람이 할 일은 없다.
+- 확인: 각 노드 `aether status`로 높이가 오르고 `schedule`이 `[3, 0]`이다(제네시스부터 프로토콜 3). `aether_handoff`는 위원회가 **바뀔 때만** 값을 준다 — 제네시스 4석이 그대로면 `null`이다. 예비 키 쪽에서 볼 것은 `threshold.json`이 없다는 점이고, 위원회가 4석 아래로 짧아져 모자란 자리를 채울 때만 생긴다.
 
 ## 6. 앱 번들 업데이트
 
@@ -171,7 +171,7 @@ aether mainnet-rules --network <검증자 1 데이터 디렉터리>/network.json
 
 - **합의가 멈춤(파티션, 검증자 다수 다운)**: [consensus-recovery.md](consensus-recovery.md)의 `AETHER_RECOVER_CONSENSUS=<view>@<height>` 복구. 검증자 4대 중 3대만 살아 있으면 체인은 계속 간다(3f+1).
 - **예비 키 Mac이 죽음**: 독립 운영자가 4명 이상이면 영향 없다(그 자리는 어차피 비어 있다). 미만이면 창업자 Mac을 최우선으로 복구한다(launchd KeepAlive가 재시작한다).
-- **등록기 죽음**: 새 등록·재인증만 멈춘다(기존 Mac의 재인증 유예가 지나면 그 Mac의 보상이 줄어든다). 검증자 1을 최우선으로 복구한다.
+- **등록기 죽음**: 새 등록·재인증만 멈춘다(기존 Mac의 재인증 유예가 지나면 그 Mac의 보상이 줄어든다). 서명 전용 Mac의 등록기를 최우선으로 복구한다.
 - **보상·발행 규칙 불일치 발견**: 즉시 공표하고 합의된 프로토콜 업그레이드로만 고친다. 잘못 발행된 물량을 되돌리는 상태 롤백은 없다.
 - **아예 처음부터(새 제네시스)**: 마지막 수단. 체인 아이디를 바꾸고 1단계부터. 기존 체인은 그대로 두고 "이주"로 안내한다. 이미 분배가 시작된 뒤에는 커뮤니티 합의 없이는 불가능하다.
 

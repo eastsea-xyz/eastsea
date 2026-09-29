@@ -56,7 +56,7 @@ EIP-7864 바이너리 트리, 해시 전용, P-256 계정, FOCIL)를 레거시 �
 | D11 | DA: Celestia 소버린, 이더리움 blob은 trait 뒤. **보류:** `crates/da`에는 `LocalDa`만 있고 노드가 쓰지 않는다. DA 요금(토크노믹스 R6)도 보류 | nextgen-da-mev-ai |
 | D12 | MEV: FOCIL 포함 목록(1단계) → tle(2단계) | nextgen-da-mev-ai |
 | D13 | 네트워크: iroh 1.2, Pkarr, STUN | network-infra |
-| D14 | 이력: 매니페스트 + HTTP/iroh-blobs 다중 미러 | ipfs-alternatives |
+| D14 | 이력: 매니페스트 + HTTP 다중 미러(에라 파일, B3) / 옛 에라는 RPC로 수신 — iroh-blobs는 쓰지 않음(B4) | ipfs-alternatives |
 | D15 | 지갑: Rust 코어 → UniFFI → SwiftUI, Sparkle 배포 | nextgen-wallet |
 | D16 | AI: 합의 밖. 증명 스케줄링·자원 관리·조기 경보만. tract CPU | nextgen-da-mev-ai |
 | D17 | 증명 목표: 128비트 보안, ≤300KiB | nextgen-zk |
@@ -71,7 +71,7 @@ EIP-7864 바이너리 트리, 해시 전용, P-256 계정, FOCIL)를 레거시 �
 | S3 | 노드 기반: reth SDK vs 경량(Commonware+grevm+NOMT) | 노트북 RSS·바이너리 크기 실측 |
 | S4 | 블록 크기·주기 | 결론: 블록 주기는 증명과 분리(1초 유지). 증명은 지연·체크포인트·청크 병렬 |
 | S5 | 병목 커널 우선순위 | NTT/해시/sumcheck 프로파일 비율 |
-| S6 | 이력 P2P: iroh-blobs vs librqbit | 통합 난이도, webseed 필요성 |
+| S6 | 이력 P2P: iroh-blobs vs librqbit | iroh-blobs는 쓰지 않음(B4: 옛 에라는 `aether_eraInfo/eraChunk/eraProof` RPC). librqbit은 오픈소스 미러 webseed가 필요할 때 2단계 |
 
 ## 미결 (사용자 답변 필요)
 

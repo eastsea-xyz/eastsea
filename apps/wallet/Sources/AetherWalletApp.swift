@@ -78,7 +78,7 @@ struct AetherWalletApp: App {
         #endif
         #if os(macOS)
         Settings {
-            SettingsView().environmentObject(node).environmentObject(model)
+            SettingsView().environmentObject(node).environmentObject(model).environmentObject(appDelegate.updates)
         }
         // Always in the menu bar: balance, node and prover at a glance; the window opens from here.
         MenuBarExtra {
@@ -100,6 +100,7 @@ struct AetherWalletApp: App {
 struct SettingsView: View {
     @EnvironmentObject var node: NodeController
     @EnvironmentObject var model: WalletModel
+    @EnvironmentObject var updates: Updates
     @AppStorage("developerMode") private var developerMode = false
 
     var body: some View {
@@ -121,6 +122,24 @@ struct SettingsView: View {
             Divider()
             Toggle("Developer mode (proofs, state roots, raw logs)", isOn: $developerMode)
                 .help("Also in View ▸ Developer Mode (⇧⌘D)")
+            if let pending = updates.pendingRelease {
+                Divider()
+                Text("Approved release \(pending.version) (\(pending.build))")
+                Text("SHA-256: \(pending.fingerprint)")
+                    .font(.caption.monospaced()).fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                Text("Published in block \(pending.publishedBlock)")
+                    .font(.caption).foregroundStyle(.secondary)
+                if pending.emergency {
+                    Label("Emergency release · all three builders signed", systemImage: "exclamationmark.shield")
+                } else if let date = pending.availableAt {
+                    Text("Installable after \(date.formatted())")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if let issue = updates.approvalIssue {
+                Text(issue).font(.caption).foregroundStyle(.orange)
+            }
         }
         .padding(20)
         .frame(width: 420)
@@ -131,6 +150,8 @@ struct SettingsView: View {
 /// running; Quit stops both.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var node: NodeController?
+    weak var model: WalletModel?
+    private let releaseGate = ReleaseUpdateGate()
     /// Sparkle: checks the signed appcast on GitHub Releases and installs updates.
     lazy var updater = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: self, userDriverDelegate: nil)
     /// What the Network page shows: when updates were last checked, and a Check button.
@@ -172,6 +193,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         #endif
         self.node = node
+        self.model = model
         let check: () -> Void = { [weak self] in self?.updater.updater.checkForUpdatesInBackground() }
         node.onUpgradeNeeded = check
         model.onOutdated = check
@@ -224,6 +246,8 @@ enum CommandLineTools {
 @MainActor
 final class Updates: ObservableObject {
     private let controller: SPUStandardUpdaterController
+    @Published var pendingRelease: PendingRelease?
+    @Published var approvalIssue: String?
 
     init(_ controller: SPUStandardUpdaterController) {
         self.controller = controller
@@ -243,6 +267,36 @@ final class Updates: ObservableObject {
 }
 
 extension AppDelegate: SPUUpdaterDelegate {
+    func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
+        Task { @MainActor [weak self] in
+            self?.startReleasePreflight(item)
+        }
+    }
+
+    @MainActor private func startReleasePreflight(_ item: SUAppcastItem) {
+        releaseGate.inspect(item, validators: model?.validators ?? 0) { [weak self] pending, issue, ready in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.updates.pendingRelease = pending
+                self.updates.approvalIssue = issue
+                if ready { self.updater.updater.checkForUpdatesInBackground() }
+            }
+        }
+    }
+
+    /// This selector is Sparkle's synchronous gate before its own download.
+    /// The preflight hashes the archive and binds its EdDSA signature to the
+    /// manifest; Sparkle then verifies that exact signature on its download.
+    @objc(updater:shouldProceedWithUpdate:updateCheck:error:)
+    func releaseShouldProceed(_ updater: SPUUpdater, item: SUAppcastItem,
+                              updateCheck: Int, error: AutoreleasingUnsafeMutablePointer<NSError?>?) -> Bool {
+        if releaseGate.mayProceed(item) { return true }
+        Task { @MainActor [weak self] in self?.startReleasePreflight(item) }
+        error?.pointee = NSError(domain: "AetherReleaseApproval", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "This update is not approved on chain yet"])
+        return false
+    }
+
     /// Sparkle installs a downloaded update when the app quits, but Aether stays
     /// in the menu bar with its node for days. Install now instead: the app
     /// relaunches on the new version and the node restarts with it, so a Mac

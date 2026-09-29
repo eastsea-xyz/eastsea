@@ -5,7 +5,7 @@
 
 use crate::chain::Chain;
 use aether_execution::validate_stateless;
-use aether_state::layout::{basic_data_key, storage_slot_key};
+use aether_state::layout::{basic_data_key, code_hash_key, storage_slot_key};
 use aether_state::StateRepository;
 use aether_types::{Address, TxEnvelope, TxHash, U256};
 use axum::{extract::State, routing::post, Json, Router};
@@ -587,6 +587,24 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
             let proof = repo.prove(&[storage_slot_key(repo.hasher(), &a, slot)]).remove(0);
             Ok(json!({ "value": f.state.storage(&a, slot), "height": f.height, "state_root": f.state.root(), "proof": proof }))
         }
+        "aether_getCodeHash" => {
+            let a: Address = param(p, 0)?;
+            let g = chain.lock();
+            let f = &g.finalized;
+            let repo = f.state.repo();
+            let proof = repo.prove(&[code_hash_key(repo.hasher(), &a)]).remove(0);
+            Ok(json!({ "value": f.state.code_hash(&a), "height": f.height, "proof": proof }))
+        }
+        "aether_releaseEntries" => {
+            // Discovery only. Wallets verify every selected entry with
+            // `aether_getStorage` proofs and the pinned ReleaseLog code hash.
+            let a: Address = param(p, 0)?;
+            let start: u64 = param(p, 1).unwrap_or(0);
+            let limit: u64 = param(p, 2).unwrap_or(32).min(64);
+            let g = chain.lock();
+            let f = &g.finalized;
+            Ok(release_entries(&f.state, a, start, limit, f.height))
+        }
         "aether_getReceipt" => {
             let h: TxHash = param(p, 0)?;
             let g = chain.lock();
@@ -624,6 +642,51 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
             Ok(json!(format!("0x{}", hex::encode(chain.lock().finalized.state.code(&a)))))
         }
         _ => Err((-32601, format!("method not found: {method}"))),
+    }
+}
+
+fn release_entries(state: &aether_execution::WorldState, address: Address, start: u64, limit: u64, height: u64) -> Value {
+    let count = state.storage(&address, U256::ZERO).min(U256::from(u64::MAX)).to::<u64>();
+    let base = U256::from_be_bytes(alloy_primitives::keccak256([0u8; 32]).0);
+    let entries: Vec<_> = (start..count.min(start.saturating_add(limit.min(64))))
+        .map(|index| {
+            let slot = base + U256::from(index) * U256::from(4);
+            let metadata = state.storage(&address, slot + U256::from(3));
+            json!({
+                "index": index,
+                "manifest_sha256": format!("{:064x}", state.storage(&address, slot)),
+                "archive_sha256": format!("{:064x}", state.storage(&address, slot + U256::from(1))),
+                "signatures_sha256": format!("{:064x}", state.storage(&address, slot + U256::from(2))),
+                "published_block": (metadata & U256::from(u64::MAX)).to::<u64>(),
+                "published_at": ((metadata >> 64usize) & U256::from(u64::MAX)).to::<u64>(),
+                "emergency": ((metadata >> 128usize) & U256::from(1)).to::<u8>() == 1,
+            })
+        })
+        .collect();
+    json!({ "count": count, "height": height, "entries": entries })
+}
+
+#[cfg(test)]
+mod release_tests {
+    use super::*;
+
+    #[test]
+    fn release_entries_are_paginated_from_state() {
+        let address: Address = "0x0000000000000000000000000000000000007704".parse().unwrap();
+        let mut state = aether_execution::WorldState::default();
+        state.set_storage(address, U256::ZERO, U256::from(2));
+        let base = U256::from_be_bytes(alloy_primitives::keccak256([0u8; 32]).0);
+        state.set_storage(address, base + U256::from(4), U256::from(42));
+        state.set_storage(address, base + U256::from(7), U256::from(100) | (U256::from(1_000) << 64usize) | (U256::from(1) << 128usize));
+        let page = release_entries(&state, address, 1, 1, 200);
+        assert_eq!(page["count"], 2);
+        assert_eq!(page["height"], 200);
+        assert_eq!(page["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(page["entries"][0]["manifest_sha256"], format!("{:064x}", U256::from(42)));
+        assert_eq!(page["entries"][0]["published_block"], 100);
+        assert_eq!(page["entries"][0]["published_at"], 1_000);
+        assert_eq!(page["entries"][0]["emergency"], true);
+        assert!(release_entries(&state, address, 2, 1, 200)["entries"].as_array().unwrap().is_empty());
     }
 }
 

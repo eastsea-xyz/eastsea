@@ -708,10 +708,10 @@ public struct ChainStatus: Equatable, Hashable {
     public init(chainId: UInt64, height: UInt64, stateRoot: String, mempool: UInt64, 
         /**
          * Estimated fee (wei) of a plain transfer at the next block's base fee plus the tip.
-         */transferFeeWei: String,
+         */transferFeeWei: String, 
         /**
          * Scheduled notices reported by the selected node (JSON array).
-         */upgradesJson: String,
+         */upgradesJson: String, 
         /**
          * Highest chain protocol this wallet build knows how to display and submit to.
          */supportedProtocol: UInt32) {
@@ -744,8 +744,8 @@ public struct FfiConverterTypeChainStatus: FfiConverterRustBuffer {
                 height: FfiConverterUInt64.read(from: &buf), 
                 stateRoot: FfiConverterString.read(from: &buf), 
                 mempool: FfiConverterUInt64.read(from: &buf), 
-                transferFeeWei: FfiConverterString.read(from: &buf),
-                upgradesJson: FfiConverterString.read(from: &buf),
+                transferFeeWei: FfiConverterString.read(from: &buf), 
+                upgradesJson: FfiConverterString.read(from: &buf), 
                 supportedProtocol: FfiConverterUInt32.read(from: &buf)
         )
     }
@@ -1547,6 +1547,91 @@ public func FfiConverterTypeVerifiedAccount_lift(_ buf: RustBuffer) throws -> Ve
 #endif
 public func FfiConverterTypeVerifiedAccount_lower(_ value: VerifiedAccount) -> RustBuffer {
     return FfiConverterTypeVerifiedAccount.lower(value)
+}
+
+
+/**
+ * A ReleaseLog entry proven against a committee-certified state root.
+ */
+public struct VerifiedRelease: Equatable, Hashable {
+    public var manifestSha256: String
+    public var archiveSha256: String
+    public var signaturesSha256: String
+    public var publishedBlock: UInt64
+    public var publishedAt: UInt64
+    public var emergency: Bool
+    public var stateHeight: UInt64
+    public var certifiedBlock: UInt64
+    public var certifiedTimestampMs: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(manifestSha256: String, archiveSha256: String, signaturesSha256: String, publishedBlock: UInt64, publishedAt: UInt64, emergency: Bool, stateHeight: UInt64, certifiedBlock: UInt64, certifiedTimestampMs: UInt64) {
+        self.manifestSha256 = manifestSha256
+        self.archiveSha256 = archiveSha256
+        self.signaturesSha256 = signaturesSha256
+        self.publishedBlock = publishedBlock
+        self.publishedAt = publishedAt
+        self.emergency = emergency
+        self.stateHeight = stateHeight
+        self.certifiedBlock = certifiedBlock
+        self.certifiedTimestampMs = certifiedTimestampMs
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension VerifiedRelease: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeVerifiedRelease: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> VerifiedRelease {
+        return
+            try VerifiedRelease(
+                manifestSha256: FfiConverterString.read(from: &buf), 
+                archiveSha256: FfiConverterString.read(from: &buf), 
+                signaturesSha256: FfiConverterString.read(from: &buf), 
+                publishedBlock: FfiConverterUInt64.read(from: &buf), 
+                publishedAt: FfiConverterUInt64.read(from: &buf), 
+                emergency: FfiConverterBool.read(from: &buf), 
+                stateHeight: FfiConverterUInt64.read(from: &buf), 
+                certifiedBlock: FfiConverterUInt64.read(from: &buf), 
+                certifiedTimestampMs: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: VerifiedRelease, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.manifestSha256, into: &buf)
+        FfiConverterString.write(value.archiveSha256, into: &buf)
+        FfiConverterString.write(value.signaturesSha256, into: &buf)
+        FfiConverterUInt64.write(value.publishedBlock, into: &buf)
+        FfiConverterUInt64.write(value.publishedAt, into: &buf)
+        FfiConverterBool.write(value.emergency, into: &buf)
+        FfiConverterUInt64.write(value.stateHeight, into: &buf)
+        FfiConverterUInt64.write(value.certifiedBlock, into: &buf)
+        FfiConverterUInt64.write(value.certifiedTimestampMs, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVerifiedRelease_lift(_ buf: RustBuffer) throws -> VerifiedRelease {
+    return try FfiConverterTypeVerifiedRelease.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVerifiedRelease_lower(_ value: VerifiedRelease) -> RustBuffer {
+    return FfiConverterTypeVerifiedRelease.lower(value)
 }
 
 
@@ -2621,6 +2706,21 @@ public func verifiedHeight() -> UInt64  {
     )
 })
 }
+/**
+ * Read a ReleaseLog entry. Every slot must come from one state height, and
+ * every EIP-7864 proof is checked under the same finality certificate.
+ */
+public func verifiedRelease(contract: String, codeHash: String, index: UInt64, validators: UInt32)throws  -> VerifiedRelease  {
+    return try  FfiConverterTypeVerifiedRelease_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_verified_release(
+        FfiConverterString.lower(contract),
+        FfiConverterString.lower(codeHash),
+        FfiConverterUInt64.lower(index),
+        FfiConverterUInt32.lower(validators),uniffiCallStatus
+    )
+})
+}
 public func votingNodeStatus(validatorKey: String)throws  -> VotingNodeStatus  {
     return try  FfiConverterTypeVotingNodeStatus_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
         uniffiCallStatus in
@@ -2797,6 +2897,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_verified_height() != 9164) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_verified_release() != 43384) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_voting_node_status() != 63459) {

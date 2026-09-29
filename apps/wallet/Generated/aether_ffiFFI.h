@@ -434,6 +434,11 @@ uint64_t uniffi_aether_ffi_fn_func_verified_height(RustCallStatus *_Nonnull out_
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_VERIFIED_RELEASE
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_VERIFIED_RELEASE
+RustBuffer uniffi_aether_ffi_fn_func_verified_release(RustBuffer contract, RustBuffer code_hash, uint64_t index, uint32_t validators, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_VOTING_NODE_STATUS
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_VOTING_NODE_STATUS
 RustBuffer uniffi_aether_ffi_fn_func_voting_node_status(RustBuffer validator_key, RustCallStatus *_Nonnull out_status
@@ -730,7 +735,7 @@ uint16_t uniffi_aether_ffi_checksum_func_account_address(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_ACCOUNT_HISTORY
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_ACCOUNT_HISTORY
 uint16_t uniffi_aether_ffi_checksum_func_account_history(void
-
+    
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_AUTHENTICATED_REMOTE_HEIGHT
@@ -943,6 +948,12 @@ uint16_t uniffi_aether_ffi_checksum_func_verified_height(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_VERIFIED_RELEASE
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_VERIFIED_RELEASE
+uint16_t uniffi_aether_ffi_checksum_func_verified_release(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_VOTING_NODE_STATUS
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_VOTING_NODE_STATUS
 uint16_t uniffi_aether_ffi_checksum_func_voting_node_status(void
@@ -979,3 +990,4 @@ uint32_t ffi_aether_ffi_uniffi_contract_version(void
     
 );
 #endif
+

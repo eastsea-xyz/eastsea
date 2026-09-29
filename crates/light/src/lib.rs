@@ -18,7 +18,7 @@
 pub mod block;
 
 use aether_hash::ChainHasher;
-use aether_state::layout::{basic_data_key, storage_slot_key, BasicData};
+use aether_state::layout::{basic_data_key, code_hash_key, storage_slot_key, BasicData};
 use aether_state::Proof;
 use aether_types::{Address, B256, U256};
 use block::{Block, PublicKey};
@@ -219,6 +219,13 @@ pub fn verify_storage(anchor: &VerifiedBlock, address: &Address, slot: U256, pro
     let h = ChainHasher::new();
     check_proof(proof, storage_slot_key(&h, address, slot), &anchor.parent_state_root)?;
     Ok(proof.value.map(U256::from_be_bytes).unwrap_or_default())
+}
+
+/// Contract runtime code hash proven against a certified root.
+pub fn verify_code_hash(anchor: &VerifiedBlock, address: &Address, proof: &Proof) -> Result<Option<B256>, LightError> {
+    let h = ChainHasher::new();
+    check_proof(proof, code_hash_key(&h, address), &anchor.parent_state_root)?;
+    Ok(proof.value.map(B256::from))
 }
 
 /// Block `height` with hash `block_hash` is in the history certified by

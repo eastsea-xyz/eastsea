@@ -253,7 +253,7 @@ final class NodeController: ObservableObject {
         guard let h = try? FileHandle(forReadingFrom: Self.dataDir.appendingPathComponent("node.log")) else { return "" }
         defer { try? h.close() }
         let size = (try? h.seekToEnd()) ?? 0
-        try? h.seek(to: max(0, size - UInt64(bytes)))
+        try? h.seek(toOffset: max(0, size - UInt64(bytes)))
         return String(data: h.readDataToEndOfFile(), encoding: .utf8) ?? ""
     }
 

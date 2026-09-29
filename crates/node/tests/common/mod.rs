@@ -81,6 +81,10 @@ pub struct Opts {
     /// Mainnet-flag networks run history v2 (quiet empty blocks).
     pub history_v2: bool,
     pub reserve: Option<Reserve>,
+    /// The genesis committee the chain records (node-rewards networks): by
+    /// default the dealt one, but the rule must also work for a short one
+    /// (the recorded word, not the dealt set, is what the seating rule reads).
+    pub committee: Option<Vec<(String, String)>>,
 }
 
 impl Net {
@@ -88,6 +92,7 @@ impl Net {
         let registrar = P256Signer::from_seed(&seed(0)).unwrap();
         let ops: Vec<P256Signer> = (1..=o.macs).map(|i| P256Signer::from_seed(&seed(i)).unwrap()).collect();
         let voting = (1..=o.macs as u64).map(ed25519::PrivateKey::from_seed).collect();
+        let committee = Committee::genesis();
         let cfg = ChainConfig {
             chain_id: o.chain_id,
             limits: GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
@@ -99,10 +104,10 @@ impl Net {
             draw_epochs: None,
             node_rewards: o.node_rewards,
             history_v2: o.history_v2,
+            committee: o.committee.clone().unwrap_or_else(Committee::genesis_members),
             reserve: o.reserve,
         };
         let (chain, genesis) = Chain::new(cfg);
-        let committee = Committee::genesis();
         {
             let mut g = chain.lock();
             g.identity = Some(committee.identity());
@@ -137,6 +142,14 @@ impl Net {
         let sig = self.registrar.sign(&attestation_message(self.chain_id, op, key, node, op)).unwrap();
         self.behaviour.entry(i).or_insert(Mac::Honest);
         self.call(i, encode_register(key, node, op, sig[..32].try_into().unwrap(), sig[32..64].try_into().unwrap()))
+    }
+
+    /// Operator `i` registers a key it does not own (a reserve key, say): a
+    /// direct transaction with a valid attestation, not one the app built.
+    pub fn register_raw(&mut self, from: usize, key: [u8; 32], node: [u8; 32]) -> TxEnvelope {
+        let op = addr(&self.ops[from]);
+        let sig = self.registrar.sign(&attestation_message(self.chain_id, op, key, node, op)).unwrap();
+        self.call(from, encode_register(key, node, op, sig[..32].try_into().unwrap(), sig[32..64].try_into().unwrap()))
     }
 
     pub fn operator(&self, i: usize) -> Address {
@@ -194,6 +207,15 @@ impl Net {
 
     /// `build` carrying a committee handoff.
     pub fn build_with(&self, txs: Vec<TxEnvelope>, upgrade: Option<SignedUpgrade>, proofs: Vec<ProofClaim>, answers: Vec<BeaconAnswer>, handoff: Option<aether_light::block::Handoff>) -> Result<(Block, Arc<Executed>), ChainError> {
+        let (block, exec) = self.build_extras(txs, upgrade, proofs, answers, handoff, None)?;
+        assert!(exec.receipts.iter().all(|r| r.success), "block {}: a registry call failed", exec.height);
+        Ok((block, exec))
+    }
+
+    /// `build` carrying a handoff and a draw seed, without asserting the
+    /// receipts (a test may expect a call to revert).
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_extras(&self, txs: Vec<TxEnvelope>, upgrade: Option<SignedUpgrade>, proofs: Vec<ProofClaim>, answers: Vec<BeaconAnswer>, handoff: Option<aether_light::block::Handoff>, seed: Option<aether_light::block::Seed>) -> Result<(Block, Arc<Executed>), ChainError> {
         let (chain, parent) = (&self.chain, &self.parent);
         let height = self.last.height.next();
         let leader = ed25519::PrivateKey::from_seed(1).public_key();
@@ -202,11 +224,10 @@ impl Net {
         let skeleton = Block::new(context.clone(), self.last.digest(), height, ts, bytes::Bytes::new());
         let ctx = Chain::block_context(&chain.cfg(), &skeleton, parent);
         // The proposer's pre-state skips answers it cannot check; the block is then built with what is left.
-        let (pre, _) = chain.pre_state_with(parent, parent.next_protocol(), &proofs, &answers, false)?;
+        let (pre, _) = chain.pre_state_with(parent, parent.next_protocol(), &proofs, &answers, seed.as_ref(), false)?;
         let n = txs.len();
-        let (payload, out) = build_payload(parent, &pre, &ctx, txs, Extras { handoff, upgrade, proofs, beacons: answers, ..Default::default() });
+        let (payload, _) = build_payload(parent, &pre, &ctx, txs, Extras { handoff, upgrade, seed, proofs, beacons: answers });
         assert_eq!(payload.txs.len(), n, "every tx fits");
-        assert!(out.receipts.iter().all(|r| r.success), "block {height}: a registry call failed");
         drop(pre);
         let block = Block::new(context, self.last.digest(), height, ts, payload.to_bytes());
         let exec = chain.execute(&block, parent)?;
@@ -244,6 +265,30 @@ impl Net {
             self.step(vec![], None, vec![]);
         }
     }
+}
+
+/// Mac `i`'s committee entry (voting key hex, iroh node id): the pair a
+/// committee or roster word holds, the same one `register` would give.
+pub fn mac_entry(i: usize) -> (String, String) {
+    let key = ed25519::PrivateKey::from_seed(i as u64 + 1).public_key();
+    let node = aether_net::SecretKey::from_bytes(&[i as u8 + 1; 32]).public();
+    (hex::encode(key.encode()), node.to_string())
+}
+
+/// The handoff members for a committed roster: every key must be one this
+/// harness holds — a Mac's `voting` key or one of `reserve` — with the node
+/// id exactly as the roster records it.
+pub fn seat_of(net: &Net, roster: &[(String, String)], reserve: &[ed25519::PrivateKey]) -> Vec<(ed25519::PrivateKey, String)> {
+    let key_of = |k: &str| {
+        (0..net.voting.len())
+            .find(|&i| hex::encode(net.voting_key(i)) == k)
+            .map(|i| net.voting[i].clone())
+            .or_else(|| reserve.iter().find(|r| hex::encode(r.public_key().encode()) == k).cloned())
+    };
+    roster
+        .iter()
+        .map(|(k, node)| (key_of(k).expect("a key this harness holds"), node.clone()))
+        .collect()
 }
 
 /// Every Mac key that was ever answered in `epoch`, by candidate index.
@@ -333,6 +378,18 @@ impl Committee {
         Self::of(keys, dealt)
     }
 
+    /// The genesis committee's members, as a recorded committee word holds
+    /// them (the dealt keys with node ids of their own).
+    pub fn genesis_members() -> Vec<(String, String)> {
+        (0..4u64)
+            .map(|i| {
+                let key = ed25519::PrivateKey::from_seed(200 + i).public_key();
+                let node = aether_net::SecretKey::from_bytes(&[0xa0 + i as u8; 32]).public();
+                (hex::encode(key.encode()), node.to_string())
+            })
+            .collect()
+    }
+
     fn of(keys: Vec<ed25519::PrivateKey>, mut dealt: BTreeMap<ed25519::PublicKey, KeyFile>) -> Self {
         let files = keys.iter().map(|k| (k.public_key(), dealt.remove(&k.public_key()).expect("every member finished"))).collect();
         Committee { keys, files }
@@ -354,6 +411,15 @@ impl Committee {
         let n = self.keys.len() as u32;
         let partials: Vec<_> = self.keys.iter().map(|k| aether_node::upgrade::sign_partial(u, &self.files[&k.public_key()].decode(n).unwrap().1)).collect();
         aether_node::upgrade::combine(sharing.public(), &partials[..3]).unwrap()
+    }
+
+    /// The committee's threshold signature on draw `draw`'s seed, as
+    /// `handoff::Service::tick` collects it over gossip.
+    pub fn sign_seed(&self, chain_id: u64, draw: u64) -> aether_light::block::Seed {
+        let sharing = self.output();
+        let n = self.keys.len() as u32;
+        let shares: Vec<_> = self.keys.iter().map(|k| self.files[&k.public_key()].decode(n).unwrap().1).collect();
+        aether_node::handoff::sign_seed(chain_id, sharing.public(), draw, &[&shares[0], &shares[1], &shares[2]])
     }
 
     /// Reshare the identity to `members` (ed25519 key, node id) at key round

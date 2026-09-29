@@ -888,6 +888,7 @@ fn chain_config(chain_id: u64, genesis: &aether_node::roster::Genesis, dev_alloc
         draw_epochs: genesis.draw_epochs,
         history_v2: genesis.history >= 2,
         node_rewards: genesis.node_rewards,
+        committee: genesis.committee.clone(),
         reserve: genesis.reserve.clone(),
     }
 }
@@ -1227,6 +1228,9 @@ fn assemble_network(
     };
     let file = aether_node::roster::NetworkFile {
         chain_id,
+        // Frozen here: after handoffs rewrite `validators`, this is still the
+        // roster the genesis rewards words record (and re-syncs re-derive).
+        genesis_validators: Some(validators.clone()),
         validators,
         identity: None,
         round: 0,

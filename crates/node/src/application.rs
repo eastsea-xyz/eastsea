@@ -112,7 +112,7 @@ where
             beacons: self.chain.beacons_for(&parent),
         };
         // Under the parent's next protocol, with its one-time changes if it activates here.
-        let attempt = self.chain.pre_state_with(&parent, parent.next_protocol(), &extras.proofs, &extras.beacons, false);
+        let attempt = self.chain.pre_state_with(&parent, parent.next_protocol(), &extras.proofs, &extras.beacons, extras.seed.as_ref(), false);
         let mut extras = extras;
         let (pre, payouts) = match attempt {
             Ok(pre) => pre,
@@ -123,7 +123,8 @@ where
                 self.chain.drop_proofs(&extras.proofs.iter().map(|c| c.height).collect::<Vec<_>>());
                 extras.proofs.clear();
                 extras.beacons.clear();
-                match self.chain.pre_state(&parent, parent.next_protocol(), &[], false) {
+                // The seed stays: this block still carries it, so its commitment still happens.
+                match self.chain.pre_state(&parent, parent.next_protocol(), &[], extras.seed.as_ref(), false) {
                     Ok(pre) => pre,
                     Err(e) => {
                         warn!(?e, "not proposing");

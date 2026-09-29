@@ -59,3 +59,5 @@ zstd = "0.13"
 
 [dev-dependencies]
 rand_chacha = "0.10"
+# The reserve-hardening tests capture the chain's overdue warning (finding 6).
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

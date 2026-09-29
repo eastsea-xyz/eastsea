@@ -1,4 +1,4 @@
-# Aether Node
+# EastSea Node
 
 [English](README.md) · [한국어](README.ko.md) · **中文** · [日本語](README.ja.md) · [Tiếng Việt](README.vi.md) · [Español](README.es.md)
 
@@ -7,7 +7,7 @@
 [![Legal Disclaimer](https://img.shields.io/badge/Legal-Disclaimer%20%26%20Terms-red.svg)](DISCLAIMER.md)
 
 > [!IMPORTANT]
-> Aether Node 是实验性、非商业的研究软件，按 **"现状"（AS IS）** 提供。它不是生产级区块链，也未经过审计。所有代币（AETH）和奖励都只是测试产物，**没有任何货币价值**。详见 [DISCLAIMER.md](DISCLAIMER.md)。
+> EastSea Node 是实验性、非商业的研究软件，按 **"现状"（AS IS）** 提供。它不是生产级区块链，也未经过审计。所有代币（AETH）和奖励都只是测试产物，**没有任何货币价值**。详见 [DISCLAIMER.md](DISCLAIMER.md)。
 
 ## 这是什么
 
@@ -94,7 +94,7 @@ target/debug/aether blocks 10
 | 账户 | P-256（Secure Enclave）、secp256k1 和 Ed25519。通过 EIP-7702 委托给 `AetherAccount`，可用一个签名完成批量支付。另一台设备的 Secure Enclave 密钥可作为恢复密钥 | 会话密钥、多个监护人、时间锁恢复 |
 | 客户端 | Mac 和 iOS 钱包（简单模式和开发者模式）、CLI 以及 `aether-agent`（MCP）都在本地验证余额 | 客户端内的 ZK 区块证明、TestFlight |
 | 抗审查 | FOCIL 风格的包含列表：如果区块遗漏了列表中的交易，验证者拒绝为其投票 | 加密内存池 |
-| 证明（spike） | Jolt zkVM 可以证明真实的 Aether 区块，根与原生执行结果一致。每台 Mac 每小时约 270 笔交易。证明落后于链 | Metal 后端、检查点证明 |
+| 证明（spike） | Jolt zkVM 可以证明真实的 EastSea 区块，根与原生执行结果一致。每台 Mac 每小时约 270 笔交易。证明落后于链 | Metal 后端、检查点证明 |
 
 `legacy/` 是早期的单节点演示，已被取代。
 

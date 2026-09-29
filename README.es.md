@@ -1,4 +1,4 @@
-# Aether Node
+# EastSea Node
 
 [English](README.md) · [한국어](README.ko.md) · [中文](README.zh-CN.md) · [日本語](README.ja.md) · [Tiếng Việt](README.vi.md) · **Español**
 
@@ -7,7 +7,7 @@
 [![Legal Disclaimer](https://img.shields.io/badge/Legal-Disclaimer%20%26%20Terms-red.svg)](DISCLAIMER.md)
 
 > [!IMPORTANT]
-> Aether Node es software de investigación experimental y no comercial, que se ofrece **"TAL CUAL" ("AS IS")**. No es una blockchain de producción y no ha sido auditado. Todos los tokens (AETH) y las recompensas son artefactos de prueba **sin ningún valor monetario**. Consulta [DISCLAIMER.md](DISCLAIMER.md).
+> EastSea Node es software de investigación experimental y no comercial, que se ofrece **"TAL CUAL" ("AS IS")**. No es una blockchain de producción y no ha sido auditado. Todos los tokens (AETH) y las recompensas son artefactos de prueba **sin ningún valor monetario**. Consulta [DISCLAIMER.md](DISCLAIMER.md).
 
 ## Qué es
 
@@ -94,7 +94,7 @@ target/debug/aether blocks 10
 | Cuentas | P-256 (Secure Enclave), secp256k1 y Ed25519. La delegación EIP-7702 a `AetherAccount` permite pagos agrupados con una sola firma. La clave del Secure Enclave de un segundo dispositivo puede funcionar como clave de recuperación | Claves de sesión, múltiples guardianes, recuperación con bloqueo temporal |
 | Clientes | Las billeteras para Mac e iOS (modos Simple y Developer), la CLI y `aether-agent` (MCP) verifican los saldos localmente | Pruebas ZK de bloques en el cliente, TestFlight |
 | Resistencia a la censura | Listas de inclusión al estilo FOCIL: los validadores se niegan a votar por un bloque que omite transacciones listadas | Mempool cifrado |
-| Generación de pruebas (spike) | Jolt zkVM prueba bloques reales de Aether, y las raíces coinciden con la ejecución nativa. Unas 270 transacciones por hora por Mac. Las pruebas van por detrás de la cadena | Backend de Metal, pruebas de checkpoint |
+| Generación de pruebas (spike) | Jolt zkVM prueba bloques reales de EastSea, y las raíces coinciden con la ejecución nativa. Unas 270 transacciones por hora por Mac. Las pruebas van por detrás de la cadena | Backend de Metal, pruebas de checkpoint |
 
 `legacy/` es la demo anterior de un solo nodo y ya fue reemplazada.
 

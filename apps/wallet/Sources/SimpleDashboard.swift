@@ -234,12 +234,12 @@ private struct HomePage: View {
     @ViewBuilder private var balanceText: some View {
         if model.account == nil, model.chainPausedSince != nil {
             // Paused before anything could be verified: nothing to show yet.
-            Text("– AETH").font(.display).foregroundStyle(.secondary)
+            Text("– \(Brand.coinTicker)").font(.display).foregroundStyle(.secondary)
         } else if model.account == nil {
             // Loading: a soft shimmer where the balance will appear.
             ShimmerBar().frame(maxWidth: 220).frame(height: 52)
         } else {
-            Text("\(Amount.text(balance)) AETH")
+            Text("\(Amount.text(balance)) \(Brand.coinTicker)")
                 .font(.display)
                 .monospacedDigit()
                 .lineLimit(1)
@@ -280,7 +280,7 @@ private struct NodeRewardsLine: View {
             Button(action: showActivity) {
                 HStack(spacing: 8) {
                     Circle().fill(Color.aether).frame(width: 8, height: 8)
-                    Text("Node rewards · +\(Amount.text(total)) AETH")
+                    Text("Node rewards · +\(Amount.text(total)) \(Brand.coinTicker)")
                     Spacer(minLength: 4)
                     Image(systemName: "chevron.right").foregroundStyle(.tertiary)
                 }
@@ -366,7 +366,7 @@ private struct RewardsExportCard: View {
                 Image(systemName: "square.and.arrow.down").font(.aeTitle).foregroundStyle(Color.aether)
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Reward records").font(.aeHeadline)
-                    Text("Every reward this Mac's proofs earned — time, block, amount and kind — as a CSV for your own records. Aether does not give tax advice.")
+                    Text("Every reward this Mac's proofs earned — time, block, amount and kind — as a CSV for your own records. \(Brand.project) does not give tax advice.")
                         .font(.aeBody).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -418,7 +418,7 @@ private struct NetworkPage: View {
                     Image(systemName: model.status == nil ? "antenna.radiowaves.left.and.right.slash" : model.chainPausedSince != nil ? "pause.circle.fill" : "checkmark.circle.fill")
                         .font(.system(size: narrow ? 30 : 40)).foregroundStyle(model.status == nil || model.chainPausedSince != nil ? Color.warn : Color.aether)
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(model.status == nil ? "Connecting to Aether…" : model.chainPausedSince != nil ? "Network paused" : "Connected to Aether")
+                        Text(model.status == nil ? "Connecting to \(Brand.project)…" : model.chainPausedSince != nil ? "Network paused" : "Connected to \(Brand.project)")
                             .font(.aeTitle)
                         Text("Found the validators on the public DHT. Your balance is checked on this device against their group signature.")
                             .font(.aeBody).foregroundStyle(.secondary)
@@ -542,7 +542,7 @@ private struct SecurityPage: View {
                     Image(systemName: "checkmark.shield").font(.system(size: 34)).foregroundStyle(Color.aether)
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Checks before you send").font(.aeHeadline)
-                        Text("Before a transfer is signed, Aether compares the recipient with addresses you sent to before (a look-alike asks you to confirm the whole address), notes first-time sends, and tries the transfer on the node so a token that refuses transfers is caught first. These checks read public chain data and settings on this device. Nothing new is written on chain.")
+                        Text("Before a transfer is signed, \(Brand.project) compares the recipient with addresses you sent to before (a look-alike asks you to confirm the whole address), notes first-time sends, and tries the transfer on the node so a token that refuses transfers is caught first. These checks read public chain data and settings on this device. Nothing new is written on chain.")
                             .font(.aeBody).foregroundStyle(.secondary)
                     }
                 }
@@ -552,7 +552,7 @@ private struct SecurityPage: View {
                     Image(systemName: "eye").font(.system(size: 34)).foregroundStyle(Color.aether)
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Who sees your addresses").font(.aeHeadline)
-                        Text("Balance reads are answered by other Macs running Aether nodes, and those nodes see the addresses this wallet looks up. On a Mac with its own node switched on (Network page), reads stay on this Mac. Either way every balance is verified here, so a serving node can be slow or stale, never wrong.")
+                        Text("Balance reads are answered by other Macs running \(Brand.project) nodes, and those nodes see the addresses this wallet looks up. On a Mac with its own node switched on (Network page), reads stay on this Mac. Either way every balance is verified here, so a serving node can be slow or stale, never wrong.")
                             .font(.aeBody).foregroundStyle(.secondary)
                     }
                 }
@@ -613,7 +613,7 @@ private struct NodeCard: View {
                     Image(systemName: "server.rack").font(.system(size: 30)).foregroundStyle(Color.aether)
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Run a node on this Mac").font(.aeHeadline)
-                        Text("Your Mac checks every block itself and your wallet asks it instead of the network. It stops when you quit Aether.")
+                        Text("Your Mac checks every block itself and your wallet asks it instead of the network. It stops when you quit \(Brand.project).")
                             .font(.aeBody).foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -638,7 +638,7 @@ private struct UpdateCard: View {
             HStack(alignment: .center, spacing: 14) {
                 Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 26)).foregroundStyle(Color.aether)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Aether \(updates.version)").font(.aeHeadline)
+                    Text("\(Brand.project) \(updates.version)").font(.aeHeadline)
                     // Re-read every half minute so "checked 1 hour ago" stays true.
                     TimelineView(.periodic(from: .now, by: 30)) { context in
                         Text(checked(at: context.date)).font(.aeBody).foregroundStyle(.secondary)
@@ -856,7 +856,7 @@ private struct BalanceCard: View {
         let period = range == .all ? "total" : "in \(range.rawValue)"
         if let first = points.first, points.count > 1, balance != first.aeth {
             let d = balance - first.aeth
-            Label("\(d > 0 ? "+" : "")\(Amount.text(d)) AETH \(period)", systemImage: d > 0 ? "arrow.up.right" : "arrow.down.right")
+            Label("\(d > 0 ? "+" : "")\(Amount.text(d)) \(Brand.coinTicker) \(period)", systemImage: d > 0 ? "arrow.up.right" : "arrow.down.right")
                 .font(.aeBody.weight(.medium))
                 .foregroundStyle(d > 0 ? Color.green : Color.secondary)
         } else if points.count > 1 {
@@ -869,10 +869,10 @@ private struct BalanceCard: View {
     @ViewBuilder private var chart: some View {
         if points.count > 1 {
             Chart(points) { p in
-                AreaMark(x: .value("Time", p.date), y: .value("AETH", p.aeth))
+                AreaMark(x: .value("Time", p.date), y: .value("\(Brand.coinTicker)", p.aeth))
                     .interpolationMethod(.stepEnd)
                     .foregroundStyle(.linearGradient(colors: [.aether.opacity(0.35), .aether.opacity(0.02)], startPoint: .top, endPoint: .bottom))
-                LineMark(x: .value("Time", p.date), y: .value("AETH", p.aeth))
+                LineMark(x: .value("Time", p.date), y: .value("\(Brand.coinTicker)", p.aeth))
                     .interpolationMethod(.stepEnd)
                     .lineStyle(StrokeStyle(lineWidth: 2.5))
                     .foregroundStyle(Color.aether)
@@ -908,7 +908,7 @@ private struct VerifiedBadge: View {
             Label(keyError, systemImage: "lock.fill")
                 .font(.aeCaption.weight(.semibold)).foregroundStyle(Color.warn)
                 .padding(.horizontal, 10).padding(.vertical, 4)
-                .help("The wallet key lives in this device's Secure Enclave, which only creates keys while the device is unlocked. Aether retries by itself.")
+                .help("The wallet key lives in this device's Secure Enclave, which only creates keys while the device is unlocked. \(Brand.project) retries by itself.")
         } else if let since = model.chainPausedSince {
             NetworkPausedBadge(since: since)
         } else if model.account != nil && model.verifyError == nil {
@@ -1149,7 +1149,7 @@ private struct SendSheet: View {
                     Text(r.to).font(.aeBody.monospaced()).textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                     Text("Amount").font(.aeFootnote).foregroundStyle(.secondary).padding(.top, 6)
-                    Text("\(r.amount) AETH").font(.aeTitle.monospacedDigit())
+                    Text("\(r.amount) \(Brand.coinTicker)").font(.aeTitle.monospacedDigit())
                 }
             } else {
                 assetPicker
@@ -1162,7 +1162,7 @@ private struct SendSheet: View {
                     Text(token == nil ? "Amount (each)" : "Amount").font(.aeFootnote).foregroundStyle(.secondary)
                     HStack {
                         TextField("0", text: $model.sendAmount).textFieldStyle(.roundedBorder).font(.aeTitle.monospacedDigit())
-                        Text(token?.token.symbol ?? "AETH").foregroundStyle(.secondary)
+                        Text(token?.token.symbol ?? "\(Brand.coinTicker)").foregroundStyle(.secondary)
                         Button("Max") { fillMax() }.buttonStyle(.borderless)
                     }
                 }
@@ -1177,7 +1177,7 @@ private struct SendSheet: View {
                     Text("\(t.amount) \(t.token.symbol)").monospacedDigit()
                     Text("· \(TokenLabel.short(t.token.address))").monospaced().foregroundStyle(.secondary)
                 } else {
-                    Text("\(Amount.text(balance)) AETH").monospacedDigit()
+                    Text("\(Amount.text(balance)) \(Brand.coinTicker)").monospacedDigit()
                 }
             }.font(.aeBody)
             if let s = model.status {
@@ -1216,8 +1216,8 @@ private struct SendSheet: View {
     }
 
     private var title: String {
-        if model.paymentRequest != nil { return "Send AETH" }
-        return token.map { "Send \($0.token.symbol)" } ?? "Send AETH"
+        if model.paymentRequest != nil { return "Send \(Brand.coinTicker)" }
+        return token.map { "Send \($0.token.symbol)" } ?? "Send \(Brand.coinTicker)"
     }
 
     /// AETH or any held token, labeled with its address — never the symbol
@@ -1227,13 +1227,13 @@ private struct SendSheet: View {
             Text("Asset").font(.aeFootnote).foregroundStyle(.secondary)
             Spacer()
             Menu {
-                Button("AETH · Aether") { model.sendToken = nil; model.sendAmount = "1" }
+                Button("\(Brand.coinTicker) · \(Brand.coinName)") { model.sendToken = nil; model.sendAmount = "1" }
                 ForEach(model.tokenSections.main) { t in
                     Button("\(TokenLabel.row(t.token)) · \(t.amount)") { model.sendToken = t; model.sendAmount = "" }
                 }
             } label: {
                 HStack(spacing: 6) {
-                    Text(token.map { TokenLabel.row($0.token) } ?? "AETH · Aether").font(.aeBody.weight(.semibold))
+                    Text(token.map { TokenLabel.row($0.token) } ?? "\(Brand.coinTicker) · \(Brand.coinName)").font(.aeBody.weight(.semibold))
                     Image(systemName: "chevron.up.chevron.down").font(.aeCaption).foregroundStyle(.secondary)
                 }
             }
@@ -1317,7 +1317,7 @@ private struct CallSheet: View {
                     .background(Color.warn.opacity(0.14), in: RoundedRectangle(cornerRadius: Radius.inner))
                 row("Action", r.method)
                 if !r.to.isEmpty { row("Contract", r.to, mono: true) }
-                row("Sends", "\(r.value) AETH")
+                row("Sends", "\(r.value) \(Brand.coinTicker)")
                 if let m = r.memo { row("Note", m) }
                 DisclosureGroup("Call data (\((r.data.count - 2) / 2) bytes)") {
                     ScrollView { Text(r.data).font(.aeFootnote.monospaced()).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
@@ -1388,7 +1388,7 @@ private struct ReceiveSheet: View {
 
     var body: some View {
         VStack(spacing: 16) {
-            Text("Receive AETH").font(.aeTitle)
+            Text("Receive \(Brand.coinTicker)").font(.aeTitle)
             QRCode(text: model.address).frame(maxWidth: 200, maxHeight: 200).aspectRatio(1, contentMode: .fit)
             Text(model.address).font(.aeBody.monospaced()).multilineTextAlignment(.center).textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1415,7 +1415,7 @@ private struct RecoveryPanel: View {
             Text("Recovery device").font(.aeHeadline)
             Text("If you lose this device, a second device you trust (your other Mac or iPhone) can move your funds to itself.")
                 .font(.aeBody).foregroundStyle(.secondary)
-            step(1, "On the other device, copy its code", "Open Aether there, tap Recovery device, and copy \"This device's code\".")
+            step(1, "On the other device, copy its code", "Open \(Brand.project) there, tap Recovery device, and copy \"This device's code\".")
             HStack {
                 TextField("Paste the other device's code", text: $model.guardianInput).textFieldStyle(.roundedBorder).font(.aeFootnote.monospaced())
                 Button("Trust it") { model.setRecoveryKey() }.buttonStyle(.borderedProminent).disabled(model.busy || model.guardianInput.isEmpty)
@@ -1436,7 +1436,7 @@ private struct RecoveryPanel: View {
             if let p = model.outgoingRecovery {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Recovering \(Short.address(p.request.lost)): \(Wei.format(p.request.valueWei)) AETH").font(.aeBody.weight(.medium))
+                        Text("Recovering \(Short.address(p.request.lost)): \(Wei.format(p.request.valueWei)) \(Brand.coinTicker)").font(.aeBody.weight(.medium))
                         Text(p.isReady ? "Ready to finish" : "Can finish \(p.readyAt.formatted(date: .abbreviated, time: .shortened))")
                             .font(.aeFootnote).foregroundStyle(p.isReady ? Color.aether : .secondary)
                     }
@@ -1501,6 +1501,6 @@ enum Amount {
     static func fee(_ wei: String) -> String {
         let aeth = (Double(wei) ?? 0) / 1e18
         if aeth == 0 { return "free" }
-        return "\(aeth.formatted(.number.precision(.significantDigits(1...3)))) AETH"
+        return "\(aeth.formatted(.number.precision(.significantDigits(1...3)))) \(Brand.coinTicker)"
     }
 }

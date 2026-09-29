@@ -91,7 +91,7 @@ struct DeveloperView: View {
         HStack {
             Image(systemName: "cube.transparent").font(.title)
             VStack(alignment: .leading) {
-                Text("Aether Wallet").font(.title2.bold())
+                Text("\(Brand.project) Wallet").font(.title2.bold())
                 if let s = model.status {
                     Text("devnet \(s.chainId) · height \(s.height) · \(model.validators) validators")
                         .font(.caption).foregroundStyle(.secondary)
@@ -117,7 +117,7 @@ struct DeveloperView: View {
                     Button { Clipboard.copy(model.address) }
                         label: { Image(systemName: "doc.on.doc") }.buttonStyle(.borderless)
                 }
-                Text(model.account.map { "\(Wei.format($0.balanceWei)) AETH" } ?? "…")
+                Text(model.account.map { "\(Wei.format($0.balanceWei)) \(Brand.coinTicker)" } ?? "…")
                     .font(.system(size: 34, weight: .semibold, design: .rounded))
                 if let a = model.account, model.verifyError == nil {
                     Label("Verified by this device", systemImage: "checkmark.seal.fill").foregroundStyle(.green).font(.headline)
@@ -130,7 +130,7 @@ struct DeveloperView: View {
                 HStack {
                     Label(model.keyLabel, systemImage: "lock.shield").font(.caption)
                     Spacer()
-                    Button("Get 10 test AETH") { model.faucet() }.disabled(model.busy || model.address.isEmpty)
+                    Button("Get 10 test \(Brand.coinTicker)") { model.faucet() }.disabled(model.busy || model.address.isEmpty)
                 }
             }.frame(maxWidth: .infinity, alignment: .leading)
         } label: { Text("Account") }
@@ -140,7 +140,7 @@ struct DeveloperView: View {
         GroupBox {
             HStack {
                 TextField("0x recipient (several: comma-separated, one signature)", text: $model.sendTo).textFieldStyle(.roundedBorder).font(.callout.monospaced())
-                TextField("AETH", text: $model.sendAmount).textFieldStyle(.roundedBorder).frame(width: 80)
+                TextField("\(Brand.coinTicker)", text: $model.sendAmount).textFieldStyle(.roundedBorder).frame(width: 80)
                 Button("Send") { model.send() }.keyboardShortcut(.return).disabled(model.busy || model.sendTo.isEmpty)
             }
         } label: { Text("Send (signed in the Secure Enclave)") }
@@ -168,7 +168,7 @@ struct DeveloperView: View {
                 }
                 if let p = model.outgoingRecovery {
                     HStack {
-                        Text("Pending: \(Wei.format(p.request.valueWei)) AETH from \(p.request.lost.prefix(10))… · ready \(p.readyAt.formatted())").font(.caption)
+                        Text("Pending: \(Wei.format(p.request.valueWei)) \(Brand.coinTicker) from \(p.request.lost.prefix(10))… · ready \(p.readyAt.formatted())").font(.caption)
                         Spacer()
                         Button("Finish") { model.finishRecovery() }.disabled(model.busy || !p.isReady)
                     }

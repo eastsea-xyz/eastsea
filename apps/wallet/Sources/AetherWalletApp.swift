@@ -17,7 +17,7 @@ struct AetherWalletApp: App {
     #endif
 
     var body: some Scene {
-        WindowGroup("Aether", id: "main") {
+        WindowGroup("\(Brand.project)", id: "main") {
             #if os(macOS)
             ContentView()
                 .environmentObject(model)
@@ -109,9 +109,9 @@ struct SettingsView: View {
                 .help("On a laptop, pause the node on battery and resume on power.")
             Label(node.awakeNote, systemImage: node.keepsAwake ? "sun.max.fill" : "moon.zzz")
                 .font(.caption).foregroundStyle(.secondary)
-            Toggle("Open Aether at login", isOn: Binding(get: { node.startAtLogin }, set: { node.startAtLogin = $0 }))
+            Toggle("Open \(Brand.project) at login", isOn: Binding(get: { node.startAtLogin }, set: { node.startAtLogin = $0 }))
             ResourcesSection()
-            Text("Your node verifies every block itself and your wallet asks it instead of the network. Quitting Aether stops it.")
+            Text("Your node verifies every block itself and your wallet asks it instead of the network. Quitting \(Brand.project) stops it.")
                 .font(.caption).foregroundStyle(.secondary)
             // Honest power ranges (docs/research/mac-power-cost-2026.md): the node is
             // cheap; GPU proving is the costly part. No won figure — electricity

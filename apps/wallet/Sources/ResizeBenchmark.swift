@@ -33,7 +33,7 @@ enum ResizeBenchmark {
     @MainActor
     static func run() {
         NSApp.activate(ignoringOtherApps: true)
-        let awake = ProcessInfo.processInfo.beginActivity(options: .userInitiated, reason: "Aether resize benchmark")
+        let awake = ProcessInfo.processInfo.beginActivity(options: .userInitiated, reason: "\(Brand.project) resize benchmark")
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
             guard let win = NSApp.windows.first(where: { $0.isVisible && $0.canBecomeMain }) else {
                 print("resize-benchmark: no window")

@@ -15,7 +15,7 @@
     port.onDisconnect.addListener(() => {
       port = null;
       // The worker restarted mid-request: tell the page instead of hanging.
-      for (const id of waiting) window.postMessage({ tag: TO_PAGE, id, error: { code: 4900, message: 'Aether Wallet restarted; please try again.' } }, window.location.origin);
+      for (const id of waiting) window.postMessage({ tag: TO_PAGE, id, error: { code: 4900, message: 'EastSea Wallet restarted; please try again.' } }, window.location.origin);
       waiting.clear();
     });
   }
@@ -29,7 +29,7 @@
       waiting.add(id);
       port.postMessage({ id, method, params });
     } catch {
-      window.postMessage({ tag: TO_PAGE, id, error: { code: 4900, message: 'Aether Wallet is not available (was it updated? reload the page).' } }, window.location.origin);
+      window.postMessage({ tag: TO_PAGE, id, error: { code: 4900, message: 'EastSea Wallet is not available (was it updated? reload the page).' } }, window.location.origin);
     }
   });
 

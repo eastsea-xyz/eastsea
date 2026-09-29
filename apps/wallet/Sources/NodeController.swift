@@ -112,7 +112,7 @@ final class NodeController: ObservableObject {
     }
     private var powerTimer: Timer?
     /// Held while this Mac is a validator (see `applyDuty`).
-    let sleepGuard = SleepGuard(reason: "Aether: this Mac signs blocks for the network (voting node)")
+    let sleepGuard = SleepGuard(reason: "\(Brand.project): this Mac signs blocks for the network (voting node)")
     /// A "network is paused" notice was posted and its "running again" is due.
     var pauseNotified = false
 
@@ -409,7 +409,7 @@ final class NodeController: ObservableObject {
             // and the wallet still works; this says why it does not vote.
             if !identityNoticePosted {
                 identityNoticePosted = true
-                LocalNotice.post(title: "Aether", body: NodeWatchdog.Failure.identityLost.sentence)
+                LocalNotice.post(title: "\(Brand.project)", body: NodeWatchdog.Failure.identityLost.sentence)
             }
             return
         }
@@ -621,10 +621,10 @@ extension NodeController {
 
     /// One line for Settings: what Aether does about sleep.
     var awakeNote: String {
-        if keepsAwake { return "This Mac signs blocks now: Aether keeps it from sleeping (the display can still sleep)." }
+        if keepsAwake { return "This Mac signs blocks now: \(Brand.project) keeps it from sleeping (the display can still sleep)." }
         return onlyOnPower
-            ? "While this Mac signs blocks on power, Aether keeps it from sleeping."
-            : "While this Mac signs blocks, Aether keeps it from sleeping, on battery too."
+            ? "While this Mac signs blocks on power, \(Brand.project) keeps it from sleeping."
+            : "While this Mac signs blocks, \(Brand.project) keeps it from sleeping, on battery too."
     }
 
     /// Take or release the no-idle-sleep assertion to match `keepsAwake`.

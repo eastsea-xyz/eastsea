@@ -1,4 +1,4 @@
-# Aether Node
+# 동해 Node
 
 [English](README.md) · **한국어** · [中文](README.zh-CN.md) · [日本語](README.ja.md) · [Tiếng Việt](README.vi.md) · [Español](README.es.md)
 
@@ -7,7 +7,7 @@
 [![Legal Disclaimer](https://img.shields.io/badge/Legal-Disclaimer%20%26%20Terms-red.svg)](DISCLAIMER.md)
 
 > [!IMPORTANT]
-> Aether Node는 **"있는 그대로(AS IS)"** 제공되는 실험적·비상업적 연구용 소프트웨어입니다. 프로덕션 블록체인이 아니며 감사(audit)를 받지 않았습니다. 모든 토큰(AETH)과 보상은 테스트용 산출물로 **금전적 가치가 전혀 없습니다**. [DISCLAIMER.md](DISCLAIMER.md)를 참고하십시오.
+> 동해 Node는 **"있는 그대로(AS IS)"** 제공되는 실험적·비상업적 연구용 소프트웨어입니다. 프로덕션 블록체인이 아니며 감사(audit)를 받지 않았습니다. 모든 토큰(AETH)과 보상은 테스트용 산출물로 **금전적 가치가 전혀 없습니다**. [DISCLAIMER.md](DISCLAIMER.md)를 참고하십시오.
 
 ## 개요
 
@@ -94,7 +94,7 @@ target/debug/aether blocks 10
 | 계정 | P-256(Secure Enclave), secp256k1, Ed25519. `AetherAccount`에 대한 EIP-7702 위임으로 서명 하나로 일괄 결제 가능. 두 번째 기기의 Secure Enclave 키를 복구 키로 사용 가능 | 세션 키, 다중 guardian, 시간 잠금 복구 |
 | 클라이언트 | Mac 및 iOS 지갑(Simple 및 Developer 모드), CLI, `aether-agent`(MCP) 모두 잔액을 로컬에서 검증 | 클라이언트 내 ZK 블록 증명, TestFlight |
 | 검열 저항성 | FOCIL 방식의 inclusion list: 목록에 있는 트랜잭션을 누락한 블록에는 validator가 투표를 거부 | 암호화된 mempool |
-| 증명 (spike) | Jolt zkVM이 실제 Aether 블록을 증명하며, root가 네이티브 실행과 일치. Mac 한 대당 시간당 약 270개 트랜잭션. 증명은 체인보다 뒤따라감 | Metal 백엔드, 체크포인트 증명 |
+| 증명 (spike) | Jolt zkVM이 실제 동해 블록을 증명하며, root가 네이티브 실행과 일치. Mac 한 대당 시간당 약 270개 트랜잭션. 증명은 체인보다 뒤따라감 | Metal 백엔드, 체크포인트 증명 |
 
 `legacy/`는 이전의 단일 노드 데모이며 현재는 대체되었습니다.
 

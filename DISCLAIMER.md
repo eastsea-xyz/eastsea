@@ -1,13 +1,13 @@
-# Aether: Legal Notice, Terms of Use, and Limitation of Liability
+# EastSea: Legal Notice, Terms of Use, and Limitation of Liability
 
 **Last Updated:** September 29, 2026
 **Primary Language:** English (authoritative version). A Korean summary follows below.
 
 ---
 
-## 1. What Aether Is
+## 1. What EastSea Is
 
-Aether is open-source software built for production use: a Mac app that runs a node and a wallet, an iPhone wallet, a browser extension, and the node software itself (the "Software"), for the Aether network, a blockchain whose validators are Macs.
+EastSea is open-source software built for production use: a Mac app that runs a node and a wallet, an iPhone wallet, a browser extension, and the node software itself (the "Software"), for the EastSea network, a blockchain whose validators are Macs.
 
 - **Mainnet has not launched.** The network running today is the public testnet (chain 7780). Mainnet will be a new network with a new genesis.
 - **Not yet independently audited.** The Software has not had an independent security audit. It may contain bugs, including bugs that affect funds.
@@ -38,7 +38,7 @@ Aether is open-source software built for production use: a Mac app that runs a n
 1. **Peer-to-peer connections.** The Software connects to other nodes over encrypted QUIC connections (iroh). Nodes publish and look up their network addresses as records on the public BitTorrent Mainline DHT (BEP 44). The DHT is used only for addresses; the Software does not download, share, or store any files through BitTorrent.
 2. **Relays.** When two nodes cannot connect directly, traffic passes through public relay servers. It stays end-to-end encrypted.
 3. **What others can see.** Other nodes can see your IP address. Nodes that answer your wallet's requests can see which addresses you look up. On a Mac, the wallet asks its own node first.
-4. **Voting-node registration.** Joining as a voting node sends an Apple DeviceCheck token to the registration service, currently run by Pipln, which checks it with Apple. Apple does not sponsor or endorse Aether.
+4. **Voting-node registration.** Joining as a voting node sends an Apple DeviceCheck token to the registration service, currently run by Pipln, which checks it with Apple. Apple does not sponsor or endorse EastSea.
 5. We run no analytics and collect no personal data in the Software.
 
 ---
@@ -78,8 +78,8 @@ The legal status of peer-to-peer software, blockchain nodes, and digital assets 
 **시행일:** 2026년 9월 29일
 *(참고용 요약이며, 해석이 다를 경우 위 영문 원본이 우선합니다.)*
 
-### 1. Aether는
-Aether는 **실제 운영(production)을 목표로 만든 오픈소스 소프트웨어**입니다(Mac 앱, iPhone 지갑, 브라우저 확장, 노드). 메인넷은 아직 출시되지 않았고, 지금 돌아가는 네트워크는 공개 테스트넷(체인 7780)입니다. 메인넷은 새 제네시스로 시작하는 새 네트워크입니다. 아직 독립 보안 감사를 받지 않았고, 자금에 영향을 주는 버그가 있을 수 있습니다.
+### 1. 동해는
+동해는 **실제 운영(production)을 목표로 만든 오픈소스 소프트웨어**입니다(Mac 앱, iPhone 지갑, 브라우저 확장, 노드). 메인넷은 아직 출시되지 않았고, 지금 돌아가는 네트워크는 공개 테스트넷(체인 7780)입니다. 메인넷은 새 제네시스로 시작하는 새 네트워크입니다. 아직 독립 보안 감사를 받지 않았고, 자금에 영향을 주는 버그가 있을 수 있습니다.
 
 ### 2. AETH와 가치
 * AETH는 공개된 규칙에 따른 블록 보상으로만 생깁니다. 판매, 사전 발행, 창업자 몫은 없습니다.

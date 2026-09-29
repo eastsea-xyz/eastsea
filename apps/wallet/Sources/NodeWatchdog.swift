@@ -88,8 +88,8 @@ struct NodeWatchdog {
                 return ko ? "이 Mac의 노드 키를 읽을 수 없어요. 백업에서 키를 되찾으면 노드가 다시 투표합니다."
                     : "This Mac's node key cannot be read. Restore it from a backup and the node votes again."
             case .alreadyRunning:
-                return ko ? "다른 Aether가 이미 이 노드를 실행하고 있어요. 그 앱에서 노드를 켜 주세요."
-                    : "Another Aether is already running this node. Please use that app instead."
+                return ko ? "다른 \(Brand.projectKo)가 이미 이 노드를 실행하고 있어요. 그 앱에서 노드를 켜 주세요."
+                    : "Another \(Brand.project) is already running this node. Please use that app instead."
             }
         }
     }

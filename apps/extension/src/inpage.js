@@ -52,7 +52,7 @@
 
   const info = Object.freeze({
     uuid: crypto.randomUUID(),
-    name: 'Aether Wallet',
+    name: 'EastSea Wallet',
     rdns: 'com.pipln.aether',
     icon: 'data:image/svg+xml;base64,' + btoa('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7d66f2"/><stop offset="1" stop-color="#ec4899"/></linearGradient></defs><circle cx="16" cy="16" r="15" fill="url(#g)"/></svg>'),
   });

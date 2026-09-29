@@ -271,7 +271,7 @@ fn on_a_real_chain_the_view_shows_the_last_epoch_and_the_actual_payout() {
     // slots fit: the first two sit at heights 1 and 5, their hashes recorded by
     // blocks 2 and 6.
     const E: u64 = 48;
-    let mut net = Net::new(Opts { chain_id: 0x9a, node_rewards: true, epoch_blocks: E, macs: 4, min_streak: None, history_v2: false, protocol: 1, reserve: None, committee: None })
+    let mut net = Net::new(Opts { chain_id: 0x9a, node_rewards: true, epoch_blocks: E, macs: 4, min_streak: None, history_v2: false, protocol: 1, reserve: None, committee: None });
     let regs = (0..4).map(|i| net.register(i)).collect();
     net.step(regs, None, vec![]);
     // Epoch 0, two of its slots in: counted live.
@@ -308,7 +308,7 @@ fn on_a_real_chain_the_view_shows_the_last_epoch_and_the_actual_payout() {
 
 #[test]
 fn the_testnet_rules_answer_enabled_false() {
-    let mut net = Net::new(Opts { chain_id: 7780, node_rewards: false, epoch_blocks: 12, macs: 1, min_streak: None, history_v2: false, protocol: 1, reserve: None, committee: None })
+    let mut net = Net::new(Opts { chain_id: 7780, node_rewards: false, epoch_blocks: 12, macs: 1, min_streak: None, history_v2: false, protocol: 1, reserve: None, committee: None });
     net.step(vec![], None, vec![]);
     let f = &net.parent;
     let v = rewards_view::status(7780, &f.state, f.height, None, None, None);

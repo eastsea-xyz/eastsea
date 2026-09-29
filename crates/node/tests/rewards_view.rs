@@ -25,6 +25,9 @@ use common::{Net, Opts};
 /// Epochs of ten blocks (short, as the rewards unit tests use).
 const EB: u64 = 10;
 
+/// A mask answering every slot of an epoch.
+const EVERY_SLOT: u64 = (1 << rewards::SLOTS) - 1;
+
 fn network() -> WorldState {
     let mut s = WorldState::default();
     registry::predeploy(&mut s, ([1; 32], [2; 32]), Params { epoch_blocks: EB, min_streak: 0, draw_epochs: 1 }).unwrap();
@@ -68,7 +71,7 @@ fn one_or_four_operators_each_get_a_sixteenth_of_the_pool() {
     for (n, chain) in [(1u64, 0x92u64), (4, 0x93)] {
         let mut s = network();
         for i in 0..n {
-            add_mac(&mut s, i, operator(i), rewards::WARMUP_STEPS, 0, 0b1111, None);
+            add_mac(&mut s, i, operator(i), rewards::WARMUP_STEPS, 0, EVERY_SLOT, None);
         }
         // The first block of epoch 1 (height EB) distributed epoch 0; no epoch-1
         // answer has landed at it, so the pin sees exactly what it paid.
@@ -90,7 +93,7 @@ fn one_or_four_operators_each_get_a_sixteenth_of_the_pool() {
         let macs = v["operator"]["macs"].as_array().unwrap();
         assert_eq!(macs.len(), 1);
         assert_eq!(macs[0]["index"], json!(0));
-        assert_eq!(macs[0]["answered_slots_last_epoch"], json!(4));
+        assert_eq!(macs[0]["answered_slots_last_epoch"], json!(rewards::SLOTS));
         assert_eq!(macs[0]["answered_slots_this_epoch"], json!(0));
         assert_eq!(macs[0]["warmup_level"], json!(rewards::WARMUP_STEPS));
         assert_eq!(macs[0]["warmup_percent"], json!(100));
@@ -103,7 +106,7 @@ fn from_sixteen_operators_on_the_pool_shares_by_weight() {
     // Twenty full weights: each a twentieth of the pool, nobody capped.
     let mut s = network();
     for i in 0..20 {
-        add_mac(&mut s, i, operator(i), rewards::WARMUP_STEPS, 0, 0b1111, None);
+        add_mac(&mut s, i, operator(i), rewards::WARMUP_STEPS, 0, EVERY_SLOT, None);
     }
     let v = status(&s, 0x94, EB, [0x94; 32], Some(operator(0)));
     assert_eq!(v["operators_online_last_epoch"], json!(20));
@@ -115,12 +118,12 @@ fn from_sixteen_operators_on_the_pool_shares_by_weight() {
     // split to pure proportions — its share, and everyone's, follows weights.
     let mut s = network();
     for i in 0..16 {
-        add_mac(&mut s, i, operator(i), rewards::WARMUP_STEPS, 0, 0b1111, None);
+        add_mac(&mut s, i, operator(i), rewards::WARMUP_STEPS, 0, EVERY_SLOT, None);
     }
-    add_mac(&mut s, 16, operator(16), 0, 0, 0b1111, None);
+    add_mac(&mut s, 16, operator(16), 0, 0, EVERY_SLOT, None);
     let weights = rewards_view::epoch_weights(&s, 0);
     let total: u64 = weights.values().sum();
-    assert_eq!(total, 16 * rewards::FULL + 4 * rewards::WARMUP_STEPS);
+    assert_eq!(total, 16 * rewards::FULL + rewards::SLOTS * rewards::WARMUP_STEPS);
     for op in [operator(0), operator(16)] {
         let v = status(&s, 0x95, EB, [0x95; 32], Some(op));
         assert_eq!(v["operators_online_last_epoch"], json!(17));
@@ -131,7 +134,7 @@ fn from_sixteen_operators_on_the_pool_shares_by_weight() {
     }
     // The half-warmed Mac earns half of a full one's share, modulo the floor.
     let full = pool * U256::from(rewards::FULL) / U256::from(total);
-    let half = pool * U256::from(4 * rewards::WARMUP_STEPS) / U256::from(total);
+    let half = pool * U256::from(rewards::SLOTS * rewards::WARMUP_STEPS) / U256::from(total);
     assert!(full - half * U256::from(2u8) <= U256::from(1u8));
 }
 
@@ -141,8 +144,8 @@ fn two_macs_of_one_operator_count_once() {
     let op = operator(0);
     // One Mac answers half the slots; the operator still counts once, at its
     // better Mac's weight — extra Macs do not raise the 1/16 cap.
-    add_mac(&mut s, 0, op, rewards::WARMUP_STEPS, 0, 0b0101, None);
-    add_mac(&mut s, 1, op, rewards::WARMUP_STEPS, 0, 0b1111, None);
+    add_mac(&mut s, 0, op, rewards::WARMUP_STEPS, 0, (1 << (rewards::SLOTS / 2)) - 1, None);
+    add_mac(&mut s, 1, op, rewards::WARMUP_STEPS, 0, EVERY_SLOT, None);
     let pool = rewards::node_pool(0, EB);
     let v = status(&s, 0x96, EB, [0x96; 32], Some(op));
     assert_eq!(v["operators_online_last_epoch"], json!(1));
@@ -159,9 +162,9 @@ fn warmup_percent_and_reattest_show_per_mac() {
     // Day 2 (epoch 48): registration covers only the first day's periods, so a
     // re-attestation for period 1 no longer passes; epoch 48's answers have
     // begun, eating one Mac's epoch-47 record.
-    add_mac(&mut s, 0, op, 0, 47, 0b1111, Some(1));
+    add_mac(&mut s, 0, op, 0, 47, EVERY_SLOT, Some(1));
     add_mac(&mut s, 1, op, 7, 48, 0b0010, Some(2));
-    add_mac(&mut s, 2, op, rewards::WARMUP_STEPS, 47, 0b1111, Some(2));
+    add_mac(&mut s, 2, op, rewards::WARMUP_STEPS, 47, EVERY_SLOT, Some(2));
     let pool = rewards::node_pool(47, EB);
     let v = status(&s, 0x97, 48 * EB, [0x97; 32], Some(op));
     let macs = v["operator"]["macs"].as_array().unwrap();
@@ -175,7 +178,7 @@ fn warmup_percent_and_reattest_show_per_mac() {
     assert_eq!(macs[2]["reattest_ok"], json!(true));
     // This epoch against the last, and a record the new epoch already ate.
     assert_eq!(macs[0]["answered_slots_this_epoch"], json!(0));
-    assert_eq!(macs[0]["answered_slots_last_epoch"], json!(4));
+    assert_eq!(macs[0]["answered_slots_last_epoch"], json!(rewards::SLOTS));
     assert_eq!(macs[1]["answered_slots_this_epoch"], json!(1));
     assert_eq!(macs[1]["answered_slots_last_epoch"], json!(null));
     // The operator's weight is the max over its Macs: the two full-slot ones.
@@ -195,7 +198,7 @@ fn a_network_without_node_rewards_answers_enabled_false_only() {
 fn the_first_sight_of_an_epoch_stays_pinned() {
     let mut s = network();
     for i in 0..4 {
-        add_mac(&mut s, i, operator(i), rewards::WARMUP_STEPS, 0, 0b1111, None);
+        add_mac(&mut s, i, operator(i), rewards::WARMUP_STEPS, 0, EVERY_SLOT, None);
     }
     let root = [0x99; 32];
     let v = status(&s, 0x99, EB, root, None);
@@ -211,7 +214,7 @@ fn the_first_sight_of_an_epoch_stays_pinned() {
     assert_eq!(v["operator"]["expected_share_last_epoch"], json!((rewards::node_pool(0, EB) / U256::from(16u8)).to_string()));
     // The live parts still move with the chain: this epoch, nothing yet.
     assert_eq!(v["operator"]["macs"][0]["answered_slots_this_epoch"], json!(0));
-    assert_eq!(v["operator"]["macs"][0]["answered_slots_last_epoch"], json!(4));
+    assert_eq!(v["operator"]["macs"][0]["answered_slots_last_epoch"], json!(rewards::SLOTS));
 }
 
 /// The view's weights are `distribute`'s payments, over randomized states:
@@ -227,7 +230,7 @@ fn the_view_counts_exactly_what_distribute_pays_on_random_states() {
         for index in 0..rng.random_range(0..=24u64) {
             let op = operator(rng.random_range(0..operators));
             let level = rng.random_range(0..=rewards::WARMUP_STEPS);
-            let mask = rng.random_range(0..16u64);
+            let mask = rng.random_range(0..(1u64 << rewards::SLOTS));
             add_mac(&mut s, index, op, level, epoch, mask, None);
         }
         // What the view says about the epoch, taken before the distribution runs.
@@ -264,13 +267,15 @@ fn received_comes_from_the_newest_node_record_of_that_distribution() {
 
 #[test]
 fn on_a_real_chain_the_view_shows_the_last_epoch_and_the_actual_payout() {
-    const E: u64 = 12;
+    // 48-block epochs (segments of four, a two-block answer window) so twelve
+    // slots fit: the first two sit at heights 1 and 5, their hashes recorded by
+    // blocks 2 and 6.
+    const E: u64 = 48;
     let mut net = Net::new(Opts { chain_id: 0x9a, node_rewards: true, epoch_blocks: E, macs: 4, min_streak: None, history_v2: false, reserve: None });
     let regs = (0..4).map(|i| net.register(i)).collect();
     net.step(regs, None, vec![]);
-    // Epoch 0, two of its slots in (with 12-block epochs the slots sit at
-    // heights 1 and 4, their hashes recorded by blocks 2 and 5): counted live.
-    net.run_to(5);
+    // Epoch 0, two of its slots in: counted live.
+    net.run_to(6);
     let f = &net.parent;
     let v = rewards_view::status(0x9a, &f.state, f.height, Some(f.state.root()), Some(net.operator(0)), None);
     assert_eq!(v["epoch"], json!(0));
@@ -288,14 +293,14 @@ fn on_a_real_chain_the_view_shows_the_last_epoch_and_the_actual_payout() {
     assert_eq!(v["epoch"], json!(2));
     assert_eq!(v["operators_online_last_epoch"], json!(4));
     assert_eq!(v["node_pool_last_epoch"], json!(pool.to_string()));
-    // New Macs: warm-up 0.5, all four slots answered — 1/32 each, held by the cap.
+    // New Macs: warm-up 0.5, all twelve slots answered — 1/32 each, held by the cap.
     let paid = net.balance(0) - before;
     assert_eq!(paid, pool / U256::from(32u8));
     assert_eq!(v["operator"]["expected_share_last_epoch"], json!(paid.to_string()));
     assert_eq!(v["operator"]["capped"], json!(true));
     assert_eq!(v["operator"]["received_last_distribution"], json!(null), "a memory-only net keeps no reward records");
     let mac = &v["operator"]["macs"][0];
-    assert_eq!(mac["answered_slots_last_epoch"], json!(4));
+    assert_eq!(mac["answered_slots_last_epoch"], json!(rewards::SLOTS));
     assert_eq!(mac["answered_slots_this_epoch"], json!(0));
     assert_eq!(mac["warmup_percent"], json!(50));
     assert_eq!(mac["reattest_ok"], json!(true));

@@ -1,17 +1,21 @@
-//! Beacon slots (docs/design/15-node-rewards.md, A): four unpredictable
+//! Beacon slots (docs/design/15-node-rewards.md, A): twelve unpredictable
 //! moments per epoch at which a registered Mac proves it is running.
 //!
-//! - **Slots.** At an epoch's first block (height 1 for epoch 0), the hash of
-//!   the block before it (the previous epoch's last block) fixes the epoch's
-//!   four slot heights, one in each quarter of the epoch. Nobody knows them
-//!   before that block exists.
+//! - **Slots.** Each slot's height is unknown until shortly before it. The
+//!   hash of the block before an epoch (the previous epoch's last block) fixes
+//!   slot 0's height within the epoch's first twelfth; the hash of slot k−1's
+//!   block — recorded by the block right after it — fixes slot k's height
+//!   within the epoch's (k+1)-th twelfth. A slot's place is therefore never
+//!   known more than about an answer window (~90 s) ahead, and a Mac cannot
+//!   plan the day's answers in one sitting: it has to be running
+//!   (2026-09-29 red-team 1).
 //! - **Answer.** When slot `k`'s block `s` is out, its hash is recorded by block
 //!   `s + 1`. A registered Mac then signs `message(chain, epoch, k, hash)` with
 //!   the voting key the registry binds to it, and the answer is valid in blocks
 //!   `s + 1 ..= s + window` (90 blocks, ~90 s, on hour-long epochs).
 //! - **Record.** Proposers put answers in the block (`Payload::beacons`, no
 //!   transaction, no fee: a Mac with a zero balance answers). Validators check
-//!   each signature; the state keeps one word per Mac: the epoch, a 4-bit mask
+//!   each signature; the state keeps one word per Mac: the epoch, a 12-bit mask
 //!   of the slots answered, and the last re-attested period. An answer also
 //!   advances the Mac's registry liveness (streak) exactly as the contract's
 //!   paid `beacon()` call does, so the Mac never has to send that transaction.
@@ -47,12 +51,12 @@ fn word_u64(w: U256, shift: usize) -> u64 {
     ((w >> shift) & U256::from(u64::MAX)).to::<u64>()
 }
 
-/// (quarter, answer window, random span) for an epoch length; None when the
-/// epoch is too short for four slots with room to answer (under 12 blocks).
+/// (segment, answer window, random span) for an epoch length; None when the
+/// epoch is too short for twelve slots with room to answer (under 36 blocks).
 pub fn layout(epoch_blocks: u64) -> Option<(u64, u64, u64)> {
-    let quarter = epoch_blocks / SLOTS;
-    let window = ANSWER_WINDOW.min((quarter / 2).max(1));
-    (quarter >= window + 2).then(|| (quarter, window, quarter - window - 1))
+    let segment = epoch_blocks / SLOTS;
+    let window = ANSWER_WINDOW.min((segment / 2).max(1));
+    (segment >= window + 2).then(|| (segment, window, segment - window - 1))
 }
 
 fn draw(seed: &[u8; 32], label: &[u8], k: u64) -> u64 {
@@ -60,16 +64,13 @@ fn draw(seed: &[u8; 32], label: &[u8], k: u64) -> u64 {
     u64::from_be_bytes(h[..8].try_into().expect("8 bytes"))
 }
 
-/// The four slot heights of `epoch`, from the hash of the block before its first block.
-/// Slot `k` lies in the epoch's `k`-th quarter, early enough that its window ends inside the epoch.
-pub fn slot_heights(seed: &[u8; 32], epoch: u64, epoch_blocks: u64) -> Option<[u64; SLOTS as usize]> {
-    let (quarter, _, span) = layout(epoch_blocks)?;
-    let mut out = [0u64; SLOTS as usize];
-    for (k, h) in out.iter_mut().enumerate() {
-        let k = k as u64;
-        *h = epoch * epoch_blocks + k * quarter + 1 + draw(seed, b"slot", k) % span;
-    }
-    Some(out)
+/// Slot `slot`'s height in `epoch`: somewhere in the epoch's `slot + 1`-th
+/// segment, early enough that its window ends inside the epoch. The seed is
+/// the hash of the block before the epoch (slot 0) or of the slot before it
+/// (every later slot) — see `on_block`, which draws them one at a time.
+pub fn slot_height(seed: &[u8; 32], epoch: u64, slot: u64, epoch_blocks: u64) -> Option<u64> {
+    let (segment, _, span) = layout(epoch_blocks)?;
+    Some(epoch * epoch_blocks + slot * segment + 1 + draw(seed, b"slot", slot) % span)
 }
 
 /// The day's re-attestation slot (epoch within the day, slot), from its first seed.
@@ -89,17 +90,12 @@ pub fn reattest_message(chain_id: u64, validator_key: &[u8; 32], period: u64) ->
     [b"aether-reattest".as_slice(), &chain_id.to_be_bytes(), REWARDS.as_slice(), validator_key, &period.to_be_bytes()].concat()
 }
 
-/// The current epoch's slot heights, once its first block set them.
-pub fn slots(state: &WorldState) -> Option<[u64; SLOTS as usize]> {
-    let w = state.storage(&REWARDS, tagged(TAG_SLOTS, U256::ZERO));
-    if w.is_zero() {
-        return None;
-    }
-    let mut out = [0u64; SLOTS as usize];
-    for (k, h) in out.iter_mut().enumerate() {
-        *h = word_u64(w, 64 * k);
-    }
-    Some(out)
+/// Slot `slot`'s height this epoch, once drawn: slot 0 by the epoch's first
+/// block, slot k by the block after slot k−1's — which is also the earliest
+/// anyone not building that block could know it.
+pub fn slot(state: &WorldState, slot: u64) -> Option<u64> {
+    let w = state.storage(&REWARDS, tagged(TAG_SLOTS, U256::from(slot)));
+    (!w.is_zero()).then(|| w.to::<u64>())
 }
 
 /// Hash of slot `slot`'s block, once recorded (this epoch only).
@@ -167,8 +163,9 @@ pub fn put_beacon(state: &mut WorldState, index: u64, b: Beacon) {
 
 /// Days of history an hour-of-day profile keeps (the EMA's denominator).
 pub const PROFILE_DAYS: u64 = 14;
-/// Fixed-point scale of a profile bucket: a fully available hour is this.
-pub const PROFILE_SCALE: u64 = 64;
+/// Fixed-point scale of a profile bucket: a fully available hour is this
+/// (twelve slots × 6, so one slot's share divides it exactly).
+pub const PROFILE_SCALE: u64 = 72;
 /// The scale `Profile` ratios are read in: a probability of 1 is this many
 /// units. Integer fixed point, never floating point — the liveness rules that
 /// read profiles (docs/design/13-roadmap.md, F) decide the next committee, so
@@ -247,7 +244,7 @@ pub fn profile(state: &WorldState, index: u64) -> Profile {
 /// registered for the whole epoch (a Mac registered mid-epoch is judged from
 /// its first full day, so its ratio is exact rather than understated).
 pub fn note(state: &mut WorldState, index: u64, epoch: u64, answered: u64, full: bool) {
-    // A full epoch's observation is PROFILE_SCALE; each answered slot a quarter of it.
+    // A full epoch's observation is PROFILE_SCALE; each answered slot a twelfth of it.
     const SLOT: u64 = PROFILE_SCALE / SLOTS;
     let hour = (epoch % DAY_EPOCHS) as usize;
     let shift = BUCKET_BITS * hour;
@@ -336,26 +333,25 @@ pub struct Due {
 
 /// Whether candidate `c` may answer slot `slot` in the block at `height`
 /// (before signatures, which the node checks).
-pub fn check(state: &WorldState, height: u64, c: &Candidate, slot: u64) -> Result<Due, String> {
+pub fn check(state: &WorldState, height: u64, c: &Candidate, k: u64) -> Result<Due, String> {
     if !enabled(state) {
         return Err("no node rewards on this network".into());
     }
     let epoch_blocks = registry::epoch_blocks(state);
     let epoch = height / epoch_blocks;
     let (_, window, _) = layout(epoch_blocks).ok_or("epochs too short for beacon slots")?;
-    let heights = slots(state).ok_or("no beacon slots yet")?;
-    let s = *heights.get(slot as usize).ok_or("no such slot")?;
+    let s = slot(state, k).ok_or("no such slot drawn yet")?;
     if s / epoch_blocks != epoch || height <= s || height > s + window {
-        return Err(format!("slot {slot} is not open at height {height}"));
+        return Err(format!("slot {k} is not open at height {height}"));
     }
-    let hash = slot_hash(state, slot).ok_or("slot hash not recorded")?;
+    let hash = slot_hash(state, k).ok_or("slot hash not recorded")?;
     let b = beacon(state, c.index);
-    if b.epoch == epoch && b.mask & (1 << slot) != 0 {
-        return Err(format!("slot {slot} already answered"));
+    if b.epoch == epoch && b.mask & (1 << k) != 0 {
+        return Err(format!("slot {k} already answered"));
     }
-    let period = period(state, epoch, slot);
+    let period = period(state, epoch, k);
     let covered = period <= c.registered_epoch / DAY_EPOCHS + 1 || b.attested == Some(period);
-    Ok(Due { epoch, slot, hash, period, needs_attestation: !covered })
+    Ok(Due { epoch, slot: k, hash, period, needs_attestation: !covered })
 }
 
 /// Record a verified answer of `c`: its slot bit, its re-attestation, and its registry liveness.
@@ -398,13 +394,15 @@ pub fn touches(state: &WorldState, height: u64) -> bool {
     if layout(epoch_blocks).is_none() || height == 0 {
         return false;
     }
-    height == first_block(height / epoch_blocks, epoch_blocks) || slots(state).is_some_and(|s| s.iter().any(|h| h + 1 == height))
+    height == first_block(height / epoch_blocks, epoch_blocks)
+        || (0..SLOTS).any(|k| slot(state, k).is_some_and(|h| h + 1 == height))
 }
 
 /// Block `height`'s beacon system writes (after the epoch's distribution),
-/// given the hash of its parent: at an epoch's first block the epoch's slots
+/// given the hash of its parent: at an epoch's first block the epoch's slot 0
 /// (and at a day's first block its re-attestation slot); right after a slot's
-/// block, that block's hash.
+/// block, that block's hash — and, drawn from that hash, the next slot's
+/// height, which until this block existed nobody could know.
 pub fn on_block(state: &mut WorldState, height: u64, parent_hash: [u8; 32]) {
     if !touches(state, height) {
         return;
@@ -412,9 +410,14 @@ pub fn on_block(state: &mut WorldState, height: u64, parent_hash: [u8; 32]) {
     let epoch_blocks = registry::epoch_blocks(state);
     let epoch = height / epoch_blocks;
     if height == first_block(epoch, epoch_blocks) {
-        let heights = slot_heights(&parent_hash, epoch, epoch_blocks).expect("layout checked");
-        let packed = heights.iter().enumerate().fold(U256::ZERO, |w, (k, h)| w | (U256::from(*h) << (64 * k)));
-        state.set_storage(REWARDS, tagged(TAG_SLOTS, U256::ZERO), packed);
+        let h0 = slot_height(&parent_hash, epoch, 0, epoch_blocks).expect("layout checked");
+        state.set_storage(REWARDS, tagged(TAG_SLOTS, U256::ZERO), U256::from(h0));
+        for k in 1..SLOTS {
+            let at = tagged(TAG_SLOTS, U256::from(k));
+            if !state.storage(&REWARDS, at).is_zero() {
+                state.set_storage(REWARDS, at, U256::ZERO);
+            }
+        }
         for k in 0..SLOTS {
             let at = tagged(TAG_SLOT_HASH, U256::from(k));
             if !state.storage(&REWARDS, at).is_zero() {
@@ -429,11 +432,14 @@ pub fn on_block(state: &mut WorldState, height: u64, parent_hash: [u8; 32]) {
             state.set_storage(REWARDS, tagged(TAG_DAY, U256::ZERO), w);
         }
     }
-    if let Some(heights) = slots(state) {
-        for (k, h) in heights.iter().enumerate() {
-            if h + 1 == height {
-                state.set_storage(REWARDS, tagged(TAG_SLOT_HASH, U256::from(k as u64)), U256::from_be_bytes(parent_hash));
-            }
+    for k in 0..SLOTS {
+        if slot(state, k) != Some(height - 1) {
+            continue;
+        }
+        state.set_storage(REWARDS, tagged(TAG_SLOT_HASH, U256::from(k)), U256::from_be_bytes(parent_hash));
+        if k + 1 < SLOTS {
+            let next = slot_height(&parent_hash, epoch, k + 1, epoch_blocks).expect("layout checked");
+            state.set_storage(REWARDS, tagged(TAG_SLOTS, U256::from(k + 1)), U256::from(next));
         }
     }
 }

@@ -2000,12 +2000,10 @@ impl Chain {
             let epoch_blocks = aether_execution::registry::epoch_blocks(state);
             let epoch = (now + 1) / epoch_blocks;
             let window = beacons::layout(epoch_blocks).map_or(0, |l| l.1);
-            let slots = beacons::slots(state);
             g.beacon_pool.retain(|(e, slot, index), _| {
                 let b = beacons::beacon(state, *index);
                 let recorded = b.epoch == *e && b.mask & (1 << slot) != 0;
-                let open = *e == epoch
-                    && slots.is_some_and(|s| s.get(*slot as usize).is_some_and(|h| h + window > now));
+                let open = *e == epoch && beacons::slot(state, *slot).is_some_and(|h| h + window > now);
                 open && !recorded
             });
         }

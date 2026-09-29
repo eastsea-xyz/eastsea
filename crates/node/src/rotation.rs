@@ -11,7 +11,7 @@
 use aether_consensus::committee::MIN_OPEN_COMMITTEE;
 use aether_execution::registry;
 use aether_execution::WorldState;
-use aether_rewards::{beacons, DAY_EPOCHS};
+use aether_rewards::{beacons, DAY_EPOCHS, SLOTS};
 
 /// In a validator's data dir: files a background reshare stages for a handoff.
 pub const STAGED_THRESHOLD: &str = "threshold-next.json";
@@ -224,8 +224,8 @@ pub const RESERVE_LEAVE_ABOVE: u64 = 199 * SCALE / 200;
 /// are integers on `SCALE`, so a tie is plain equality — one unit is 1e-9.
 const TIE: u64 = 1;
 /// A committee member is silent in an epoch it answered fewer than this many
-/// of the four beacon slots in.
-pub const SILENT_BELOW: u64 = 2;
+/// beacon slots in (half of the epoch's twelve).
+pub const SILENT_BELOW: u64 = SLOTS / 2;
 
 /// A seat's availability per hour bucket of the day, from its beacon profile
 /// (`SCALE` units to 1).
@@ -436,7 +436,7 @@ fn worst_of(key: &str, hours: &impl Fn(&str) -> Option<Hours>) -> u64 {
 /// Early replacement (docs/design/13-roadmap.md, F): a substitution is a
 /// reshare, and a reshare needs the old committee's quorum — so a member
 /// going silent must be replaced while the quorum still stands. Members that
-/// answered fewer than `SILENT_BELOW` of an epoch's four beacon slots in each
+/// answered fewer than `SILENT_BELOW` of an epoch's beacon slots in each
 /// of the last two epochs (`recent`, written by the beacon distributions)
 /// hand their seat to the candidate the spread rule picks. At most a third
 /// minus one of the seats change per epoch, and a committee under six seats

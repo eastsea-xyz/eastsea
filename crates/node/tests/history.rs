@@ -46,6 +46,7 @@ fn config(history_v2: bool) -> ChainConfig {
         history_v2,
         protocol: 1,
         node_rewards: false,
+        committee: vec![],
         reserve: None,
     }
 }
@@ -126,7 +127,7 @@ impl Node {
         let upgrade = (h == 1).then(upgrade_to_2);
         let (pre, _) = self
             .chain
-            .pre_state(&self.parent, self.parent.next_protocol(), &[], false)
+            .pre_state(&self.parent, self.parent.next_protocol(), &[], None, false)
             .unwrap();
         let (payload, _) = build_payload(
             &self.parent,

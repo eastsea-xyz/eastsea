@@ -171,6 +171,9 @@ mod tests {
             history_v2: true,
             protocol: upgrade::PROTOCOL,
             node_rewards: true,
+            // No committee word: the checklist reads rules, not rosters, and
+            // the real genesis committee is a ceremony output, not a flag.
+            committee: vec![],
             reserve: Some(Reserve {
                 operator: Address::repeat_byte(0x99),
                 members: (1..=3)

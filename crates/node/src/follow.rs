@@ -22,6 +22,7 @@ use commonware_codec::Decode as _;
 use futures::{StreamExt as _, TryStreamExt as _};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::sync::Mutex;
 use std::time::Duration;
 use tracing::{info, warn};
@@ -29,6 +30,10 @@ use tracing::{info, warn};
 /// How far behind the network a node jumps to a certified snapshot instead of
 /// replaying (~30 min of 1 s blocks).
 pub const JUMP_BEHIND: u64 = 2_000;
+/// Marks a storage failure in a follow error, so the loop heals the store
+/// instead of retrying the same block on a dead database (the incident of
+/// 2026-09-29: a full disk, and 288 retries of one block).
+const STORE_FAILED: &str = "storage failed";
 /// How far behind a node stops acting as a validator (proposing, voting,
 /// answering beacons) until it has caught up.
 pub const BEHIND_MARGIN: u64 = 20;
@@ -248,6 +253,101 @@ pub async fn checkpoint(upstream: &Upstream, set: &ValidatorSet, cfg: &crate::ch
     Ok(h)
 }
 
+/// Bad data, as opposed to a bad disk (a disk error fails the start-up and is
+/// retried on the same file; bad data never gets better, so the file is moved
+/// aside and the history is re-fetched). `Chain::open`'s full check reports
+/// these too — [`reset_store`] handles both tiers.
+pub fn is_corruption(e: &crate::store::StoreError) -> bool {
+    matches!(
+        e,
+        crate::store::StoreError::Corrupt(_)
+            | crate::store::StoreError::RootMismatch { .. }
+            | crate::store::StoreError::Unreadable(_)
+    )
+}
+
+/// Move the state database (and, for a validator, its marshal archive
+/// partitions, which would otherwise have a gap to a fresh state) aside under
+/// `<data>/corrupt-<time>/`, never deleted, and open a fresh one. Everything
+/// else in the data dir — keys and the consensus vote journal above all —
+/// stays where it is.
+fn move_aside(data: &std::path::Path, why: &str) -> Result<(), String> {
+    let prefix = std::fs::read_to_string(data.join("partition"))
+        .map(|p| p.trim().to_string())
+        .unwrap_or_else(|_| "aether".into());
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default();
+    let aside = data.join(format!("corrupt-{secs}"));
+    std::fs::create_dir_all(&aside).map_err(|e| e.to_string())?;
+    let gone: Vec<std::path::PathBuf> = std::fs::read_dir(data)
+        .map_err(|e| e.to_string())?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                // Never the consensus journal (`{prefix}-consensus*`): a
+                // validator that lost its record of past votes could sign a
+                // second, conflicting vote for a view it already voted in
+                // (red team 2026-09-29, self-healing #4). Only the state and
+                // the block archive, which re-sync from certified blocks.
+                .is_some_and(|n| {
+                    n == "state.redb"
+                        || (n.starts_with(&format!("{prefix}-")) && !n.starts_with(&format!("{prefix}-consensus")))
+                })
+        })
+        .collect();
+    for p in gone {
+        let name = p.file_name().expect("listed entry has a name").to_owned();
+        std::fs::rename(&p, aside.join(name)).map_err(|e| e.to_string())?;
+    }
+    warn!(moved_to = %aside.display(), why, "the state database does not verify: moved it aside (never deleted); the chain re-syncs, certified block by certified block");
+    Ok(())
+}
+
+/// Open the node's state database, verifying what it claims (the cheap tier-1
+/// check; `Chain::open` does the full one). A database that does not verify is
+/// moved aside ([`move_aside`]) and a fresh one opens in its place — the caller
+/// re-syncs through the usual paths (`--checkpoint`, or the snapshot jump once
+/// the network is more than [`JUMP_BEHIND`] ahead). A disk error fails the
+/// start-up instead: a restart then retries the same file once space frees.
+/// Returns the store and whether the old file was moved aside.
+pub fn open_store(data: &std::path::Path) -> Result<(crate::store::Store, bool), String> {
+    open_store_with(data, std::sync::Arc::new(crate::store::Store::open))
+}
+
+/// [`open_store`] with a custom way to open the database file: the hidden
+/// `--dev-storage-fault` of the self-healing tests runs the real process on a
+/// disk that fills. No release path passes one.
+pub fn open_store_with(
+    data: &std::path::Path,
+    open: std::sync::Arc<dyn Fn(&std::path::Path) -> Result<crate::store::Store, crate::store::StoreError> + Send + Sync>,
+) -> Result<(crate::store::Store, bool), String> {
+    let path = data.join("state.redb");
+    let reset = |why: &str| -> Result<crate::store::Store, String> {
+        move_aside(data, why)?;
+        open(&path).map_err(|e| e.to_string())
+    };
+    match open(&path) {
+        Ok(s) => match s.verify_head() {
+            Ok(()) => Ok((s, false)),
+            Err(e) if is_corruption(&e) => Ok((reset(&e.to_string())?, true)),
+            Err(e) => return Err(e.to_string()),
+        },
+        Err(e) if is_corruption(&e) => Ok((reset(&e.to_string())?, true)),
+        Err(e) => return Err(e.to_string()),
+    }
+}
+
+/// The same move-aside when `Chain::open` refuses a database that passed tier 1
+/// (its state rebuild does not match the checkpoint, a row does not decode…):
+/// a fresh store the caller fills from a certified snapshot or a replay.
+pub fn reset_store(data: &std::path::Path, e: &crate::store::StoreError) -> Result<crate::store::Store, String> {
+    move_aside(data, &e.to_string())?;
+    crate::store::Store::open(&data.join("state.redb")).map_err(|e| e.to_string())
+}
+
 /// Certified block `h`, waiting for the network to finalize it (a snapshot can
 /// be a little behind the tip).
 async fn wait_certified(upstream: &Upstream, set: &ValidatorSet, h: u64) -> Result<Block, String> {
@@ -339,8 +439,12 @@ pub async fn run(
             }
             Ok(_) => window = PIPELINE,
             Err(e) => {
-                warn!(height = chain.finalized_height() + 1, %e, "upstream");
                 chain.set_relaxed(false);
+                if e.starts_with(STORE_FAILED) {
+                    recover(&chain).await;
+                } else {
+                    warn!(height = chain.finalized_height() + 1, %e, "upstream");
+                }
                 window = 1;
                 tokio::time::sleep(Duration::from_millis(400)).await;
             }
@@ -473,6 +577,14 @@ async fn pipeline(
                         last = h;
                     }
                     Err(e) => {
+                        // Storage is not a block that will not execute: say
+                        // what failed and let the caller heal the store
+                        // (2026-09-29: a full disk was logged as a bad block
+                        // and retried 288 times).
+                        if matches!(e, crate::chain::ChainError::Store(_)) {
+                            tracing::error!(height = h, ?e, "storage failed while committing a finalized block");
+                            return Err(format!("{STORE_FAILED}: {e:?}"));
+                        }
                         warn!(
                             height = h,
                             ?e,
@@ -503,6 +615,82 @@ async fn pipeline(
     Ok(last)
 }
 
+/// Heal the chain's store after a storage failure (docs/design/24-self-healing.md
+/// layer 1): close the database, re-open it with backoff until the disk takes
+/// a write again, then roll the chain back to the last durable checkpoint —
+/// blocks of a replayed backlog that were never fsynced may be gone, and
+/// everything above the checkpoint is certified, so the loop fetches and
+/// re-executes it. A disk that never heals ends the process with the storage
+/// code: the app restarts the node, whose startup check re-syncs (a certified
+/// snapshot jump) if the file turns out to be damaged.
+async fn recover(chain: &Chain) {
+    let Some(store) = chain.store() else { return };
+    let healed = tokio::task::spawn_blocking({
+        let store = store.clone();
+        move || crate::store::Recovery::from_env().reopen(&store)
+    })
+    .await;
+    match healed {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            tracing::error!(%e, "the store database did not recover; exiting so the app restarts the node");
+            std::process::exit(crate::store::EXIT_STORAGE);
+        }
+        Err(e) => tracing::error!(%e, "the store recovery task"),
+    }
+    chain.set_relaxed(false);
+    match store.load() {
+        Ok(Some(cp)) => rollback(chain, cp),
+        // A store that holds nothing, or does not verify, is corruption:
+        // exiting hands it to the startup integrity check, which moves the
+        // file aside and re-syncs from a certified snapshot.
+        other => {
+            tracing::error!(other = ?other.map(|_| ()), "the re-opened store does not verify; exiting so the app restarts the node");
+            std::process::exit(crate::store::EXIT_STORAGE);
+        }
+    }
+}
+
+/// Roll the chain back to the store's checkpoint: the same restore
+/// `Chain::open` does at a restart, without restarting. Summaries and
+/// receipts above the checkpoint stay until the chain passes their heights
+/// again (they are certified history of this same chain); history proofs
+/// need the early blocks, so none is served until then, as after a jump.
+fn rollback(chain: &Chain, cp: crate::store::Checkpoint) {
+    use commonware_codec::DecodeExt;
+    let Ok(digest) = commonware_cryptography::sha256::Digest::decode(cp.digest.as_slice()) else {
+        tracing::error!("the checkpoint's digest does not decode");
+        return;
+    };
+    let Some(summary) = cp.blocks.get(&cp.height).cloned() else {
+        tracing::error!(height = cp.height, "the checkpoint's block summary is gone");
+        return;
+    };
+    let mut state = cp.state;
+    state.clear_journal();
+    let exec = std::sync::Arc::new(crate::chain::Executed {
+        height: cp.height,
+        digest,
+        timestamp: summary.timestamp_ms,
+        state,
+        receipts: vec![],
+        tx_hashes: summary.txs.clone(),
+        gas: Default::default(),
+        proposer: summary.proposer,
+        base_fee: summary.base_fee,
+        excess: summary.excess,
+        handoff: cp.handoff.map(std::sync::Arc::new),
+        seed: cp.seed.map(std::sync::Arc::new),
+        history: std::sync::Arc::new(cp.history),
+        schedule: std::sync::Arc::new(cp.schedule),
+        statement: cp.statement,
+        payouts: vec![],
+    });
+    let height = exec.height;
+    chain.adopt(exec, summary);
+    tracing::warn!(height, "rolled the chain back to the last durable checkpoint; re-fetching what came after it");
+}
+
 fn log_follow(chain: &Chain, last_log: &mut u64) {
     let (height, root) = {
         let g = chain.lock();
@@ -519,7 +707,12 @@ fn log_follow(chain: &Chain, last_log: &mut u64) {
 /// propose, vote or answer beacons on a chain it cannot yet execute): follow
 /// the network with the follower machinery — a certified snapshot jump
 /// included — until within `margin` blocks of its finalized height. Returns
-/// how many blocks were adopted (jumped or replayed).
+/// how many blocks were adopted (jumped or replayed). A catch-up that never
+/// heard the network's height is not success (2026-09-29): an unknown height
+/// reads as "0 behind" and would start the validator on a guess, so this
+/// returns Err and the caller retries. On success the last height heard
+/// stays set — it is at most `margin` stale — so `behind()` keeps meaning
+/// something until this node's own finalizations carry it past the tip.
 pub async fn catch_up(
     chain: &Chain,
     upstream: &Upstream,
@@ -529,15 +722,26 @@ pub async fn catch_up(
     let start = chain.finalized_height();
     let mut last_log = 0;
     let mut window = PIPELINE;
+    let mut knew_height = false;
     loop {
         let ours = chain.finalized_height();
         if let Err(e) = advance(chain, upstream, set, None, u64::MAX, window, &mut last_log).await {
-            warn!(height = ours + 1, %e, "catching up");
+            if e.starts_with(STORE_FAILED) {
+                recover(chain).await;
+            } else {
+                warn!(height = ours + 1, %e, "catching up");
+            }
         }
+        // `advance` refreshes the height every round and nothing here clears
+        // it anymore, so `Some` means the network really answered.
+        knew_height |= chain.lock().net_height.is_some();
         let behind = chain.behind();
         if behind <= margin {
-            // Caught up (this node is the network now): nothing is behind anymore.
-            chain.lock().net_height = None;
+            if !knew_height {
+                // Nothing ever answered a height: "0 behind" is the unknown
+                // reading as zero, not being current. Not caught up.
+                return Err("never learned the network height".into());
+            }
             chain.set_relaxed(false);
             return Ok(chain.finalized_height() - start);
         }
@@ -548,6 +752,153 @@ pub async fn catch_up(
         };
         tokio::time::sleep(Duration::from_millis(400)).await;
     }
+}
+
+/// How long a starting validator waits for any roster peer to answer at all
+/// before it starts voting anyway (the fail-open the old code had, now only
+/// after a real wait). Far past a whole network restarting at once — every
+/// member answers from its stored finalized state within seconds of its
+/// endpoint binding — and short enough that a partitioned validator comes
+/// back on its own (docs/design/24-self-healing.md: 모든 검증자 동시 재시작).
+pub const STARTUP_PATIENCE: Duration = Duration::from_secs(5 * 60);
+
+/// One round of catching up from one peer before the roster is asked again
+/// (a source that answers a height but no blocks must not hold the gate forever).
+const CATCH_UP_ROUND: Duration = Duration::from_secs(120);
+/// How long one round waits before the roster is asked again.
+const ASK_AGAIN: Duration = Duration::from_secs(5);
+
+/// Whether a member that has not voted yet may start.
+#[derive(Debug, PartialEq, Eq)]
+pub enum VoteStart {
+    /// Every peer that answered puts nobody beyond `margin` ahead: at the tip.
+    /// The engine covers the last few blocks through consensus itself.
+    AtTip,
+    /// No peer answered at all for the whole patience window. Starting anyway
+    /// is the old fail-open, waited out: the chain's own rules (no vote on a
+    /// block this node cannot execute) keep a stale member harmless, and peers
+    /// that never come back are not fixed by waiting longer.
+    FailOpen,
+    /// A reachable peer is ahead: not yet.
+    Wait,
+}
+
+/// The startup gate's decision from one roster census: the finalized heights
+/// the peers that answered reported, where we are, how long since any of them
+/// last answered, and how much silence is tolerated. A height is "heard" only
+/// from a peer that answered — an unknown height never reads as zero.
+pub fn may_start_voting(answered: &[u64], ours: u64, margin: u64, silent_for: Duration, patience: Duration) -> VoteStart {
+    if answered.is_empty() {
+        return if silent_for >= patience { VoteStart::FailOpen } else { VoteStart::Wait };
+    }
+    if answered.iter().all(|h| *h <= ours + margin) { VoteStart::AtTip } else { VoteStart::Wait }
+}
+
+/// Ask every roster peer where it is — a census, not the first answer: one
+/// `aether_status` per peer, in parallel, each bounded. Peers that do not
+/// answer are absent (a restarting network comes up one by one; a peer still
+/// catching up serves read-only answers from its stored finalized state).
+pub async fn roster_heights(
+    endpoint: &aether_net::Endpoint,
+    nodes: &[aether_net::EndpointId],
+) -> Vec<(aether_net::EndpointId, u64)> {
+    let asked = futures::future::join_all(nodes.iter().map(|n| async move {
+        let addr = aether_net::EndpointAddr::from(*n);
+        match aether_net::connect_rpc(endpoint, &addr, Duration::from_secs(10)).await {
+            Ok(conn) => match aether_net::rpc_call(&conn, "aether_status", json!([])).await {
+                Ok(v) => v["height"].as_u64().map(|h| (*n, h)),
+                Err(e) => {
+                    tracing::debug!(peer = %n, %e, "answered no height");
+                    None
+                }
+            },
+            Err(e) => {
+                tracing::debug!(peer = %n, %e, "unreachable");
+                None
+            }
+        }
+    }))
+    .await;
+    asked.into_iter().flatten().collect()
+}
+
+/// Catch a restarting committee member up before it starts voting, and return
+/// when it may: the gate every validator passes on startup. Each round asks
+/// the whole roster where it is (`ask` returns every peer that answered, with
+/// its finalized height — a census, not the first answer), records the highest
+/// answer as the network's height, and decides:
+///
+/// - nobody beyond `margin` ahead → done, voting may start;
+/// - a peer ahead → catch up from the tallest one (`from` builds an upstream
+///   pointed at it) and ask again;
+/// - no answer at all for `patience` → done, with a warning.
+///
+/// Returns how many blocks were adopted. The caller must already serve
+/// read-only answers on its public endpoint (`main.rs` serves from its stored
+/// finalized state before this runs): a network where every validator
+/// restarts at once has nobody voting, so nobody would ever hear a height —
+/// the censuses break that, and the tallest member, finding nobody ahead,
+/// always proceeds first and then serves the rest its blocks.
+pub async fn catch_up_before_voting<P, A, AFut>(
+    chain: &Chain,
+    set: &ValidatorSet,
+    margin: u64,
+    patience: Duration,
+    ask: A,
+    from: impl Fn(&P) -> Upstream,
+) -> u64
+where
+    P: Clone + std::fmt::Display,
+    A: Fn() -> AFut,
+    AFut: Future<Output = Vec<(P, u64)>>,
+{
+    let start = chain.finalized_height();
+    let mut heard = std::time::Instant::now();
+    loop {
+        let answers = ask().await;
+        if answers.is_empty() {
+            warn!(silent_for = ?heard.elapsed(), ?patience, "no roster peer answers yet");
+        } else {
+            heard = std::time::Instant::now();
+            // The highest answer is the network's height: beacon answers and
+            // `aether_status` gate on it, and the engine covers the rest.
+            let net = answers.iter().map(|(_, h)| *h).max().expect("a peer answered");
+            chain.lock().net_height = Some(net);
+        }
+        let heights: Vec<u64> = answers.iter().map(|(_, h)| *h).collect();
+        match may_start_voting(&heights, chain.finalized_height(), margin, heard.elapsed(), patience) {
+            VoteStart::AtTip => break,
+            VoteStart::FailOpen => {
+                warn!(
+                    silent_for = ?heard.elapsed(),
+                    "no roster peer ever answered: starting to vote anyway (the old fail-open, after a real wait)"
+                );
+                break;
+            }
+            VoteStart::Wait => {}
+        }
+        if answers.is_empty() {
+            // Nothing answered, so there is nothing to catch up from: ask
+            // again after a while, until the patience window runs out.
+            tokio::time::sleep(ASK_AGAIN.min(patience)).await;
+            continue;
+        }
+        // Somebody is ahead: catch up from the tallest peer that answered.
+        let (peer, at) = answers.iter().max_by_key(|(_, h)| *h).expect("a peer answered").clone();
+        info!(peer = %peer, peer_height = at, ours = chain.finalized_height(), "a peer is ahead; catching up before voting");
+        let upstream = from(&peer);
+        match tokio::time::timeout(CATCH_UP_ROUND, catch_up(chain, &upstream, set, margin)).await {
+            Ok(Ok(n)) if n > 0 => info!(height = chain.finalized_height(), blocks = n, "caught up before voting"),
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => warn!(%e, "could not catch up before voting; asking the roster again"),
+            Err(_) => warn!("catch-up before voting timed out; asking the roster again"),
+        }
+        // A round dropped mid-replay is dropped without clearing its replay
+        // mode: blocks from here on (voting) commit durably.
+        chain.set_relaxed(false);
+        tokio::time::sleep(ASK_AGAIN.min(patience)).await;
+    }
+    chain.finalized_height() - start
 }
 
 /// Replay the rest of the era holding `next` from its era file: the file is
@@ -627,5 +978,30 @@ pub async fn forward(upstream: std::sync::Arc<Upstream>, mut rx: tokio::sync::mp
                 wait *= 2;
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The startup gate's decision: a height only counts when a peer answered
+    /// it, every answered peer must put nobody beyond the margin ahead, and
+    /// silence fails open only once the patience window has really passed.
+    #[test]
+    fn when_a_member_may_start_voting() {
+        let patience = Duration::from_secs(300);
+        // Peers at or behind us: at the tip, including a peer that lags (the
+        // margin is what "caught up" means; the engine covers the rest).
+        assert_eq!(may_start_voting(&[100, 100, 98], 100, BEHIND_MARGIN, Duration::ZERO, patience), VoteStart::AtTip);
+        assert_eq!(may_start_voting(&[120], 100, BEHIND_MARGIN, Duration::ZERO, patience), VoteStart::AtTip);
+        // A peer beyond the margin: wait — even after any silence elsewhere,
+        // for as long as that peer keeps answering.
+        assert_eq!(may_start_voting(&[121], 100, BEHIND_MARGIN, Duration::ZERO, patience), VoteStart::Wait);
+        assert_eq!(may_start_voting(&[98, 500], 100, BEHIND_MARGIN, patience, patience), VoteStart::Wait);
+        // Nobody answered: not "0 behind" — wait, and only after the patience
+        // window fail open.
+        assert_eq!(may_start_voting(&[], 100, BEHIND_MARGIN, patience - Duration::from_millis(1), patience), VoteStart::Wait);
+        assert_eq!(may_start_voting(&[], 100, BEHIND_MARGIN, patience, patience), VoteStart::FailOpen);
     }
 }

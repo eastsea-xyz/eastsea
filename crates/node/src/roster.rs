@@ -83,6 +83,13 @@ pub struct NetworkFile {
     /// Founder reserve keys (with node rewards; docs/design/12-launch-plan.md).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reserve: Option<ReserveFile>,
+    /// The validators this network opened with. `validators` names the running
+    /// committee (each handoff rewrites it), but a node re-syncing from
+    /// genesis — and every node deriving the genesis rewards words — needs the
+    /// very first roster however many committees came and went, so `aether
+    /// network` freezes it here and ceremonies carry it on (`keep_genesis`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub genesis_validators: Option<Vec<Member>>,
 }
 
 /// The founder's reserve keys in a network file: up to three validator
@@ -108,6 +115,11 @@ pub struct Genesis {
     /// later protocols on; 0 = `Default`, read as 1).
     pub protocol: u32,
     pub node_rewards: bool,
+    /// The validators the network opened with (the file's
+    /// `genesis_validators`, or its validators before the first handoff):
+    /// node rewards record them in the genesis state as the first voting
+    /// committee, so every node derives the same one.
+    pub committee: Vec<(String, String)>,
     pub reserve: Option<crate::chain::Reserve>,
 }
 
@@ -147,6 +159,7 @@ impl NetworkFile {
             history: self.history.unwrap_or(0),
             protocol,
             node_rewards: self.node_rewards.unwrap_or(false),
+            committee: self.committee()?,
             reserve: match &self.reserve {
                 None => None,
                 Some(r) => {
@@ -162,10 +175,51 @@ impl NetworkFile {
                     };
                     // Every key and node id must parse, or no genesis.
                     reserve.bytes()?;
+                    // No validator of this network is also a reserve key (red
+                    // team, finding 3): a key that is both would sit in the
+                    // committee and in the reserve, so the founder's Mac would
+                    // run it either way and the overlap would hide from the
+                    // independent-operator count.
+                    let plain = |k: &str| k.trim_start_matches("0x").to_lowercase();
+                    let same_node = |a: &str, b: &str| {
+                        match (a.parse::<EndpointId>(), b.parse::<EndpointId>()) {
+                            (Ok(a), Ok(b)) => a == b,
+                            _ => a == b,
+                        }
+                    };
+                    for (key, node) in &reserve.members {
+                        for (i, v) in self.validators.iter().enumerate() {
+                            if plain(&v.key) == plain(key) {
+                                return Err(format!("validator {}: its key is also a reserve key", i + 1));
+                            }
+                            if same_node(&v.node, node) {
+                                return Err(format!("validator {}: its node id is also a reserve key's", i + 1));
+                            }
+                        }
+                    }
                     Some(reserve)
                 }
             },
         })
+    }
+
+    /// The validators the network opened with, keys lowercased as roster
+    /// words hold them: the file's `genesis_validators`, or its validators
+    /// (before the first handoff rewrote them).
+    pub fn committee(&self) -> Result<Vec<(String, String)>, String> {
+        let source = self.genesis_validators.as_ref().unwrap_or(&self.validators);
+        let mut members = Vec::with_capacity(source.len());
+        for (i, m) in source.iter().enumerate() {
+            let key = hex::decode(m.key.trim_start_matches("0x"))
+                .map_err(|e| format!("validator {}: key: {e}", i + 1))?;
+            <[u8; 32]>::try_from(key)
+                .map_err(|_| format!("validator {}: key: 32-byte hex", i + 1))?;
+            m.node
+                .parse::<EndpointId>()
+                .map_err(|e| format!("validator {}: node: {e}", i + 1))?;
+            members.push((m.key.trim_start_matches("0x").to_lowercase(), m.node.clone()));
+        }
+        Ok(members)
     }
 
     /// Carry genesis facts into a file written by a ceremony (dkg, reshare).
@@ -179,6 +233,7 @@ impl NetworkFile {
         self.protocol = from.protocol.or(self.protocol);
         self.node_rewards = from.node_rewards.or(self.node_rewards);
         self.reserve = from.reserve.clone().or(self.reserve.take());
+        self.genesis_validators = from.genesis_validators.clone().or(self.genesis_validators.take());
     }
 }
 
@@ -302,6 +357,7 @@ impl Roster {
             protocol: None,
             node_rewards: None,
             reserve: None,
+            genesis_validators: None,
         }
     }
 }

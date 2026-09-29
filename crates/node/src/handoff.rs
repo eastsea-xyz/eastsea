@@ -39,6 +39,18 @@ pub fn verify_seed(chain_id: u64, identity: &Identity, s: &aether_light::block::
         .map_err(|_| "the committee did not sign this seed".to_string())
 }
 
+/// The committee's seed for draw `draw` from `shares` of its identity — what
+/// `Service::tick` collects over gossip, done in one step (tests).
+pub fn sign_seed(chain_id: u64, sharing: &Sharing<MinSig>, draw: u64, shares: &[&Share]) -> aether_light::block::Seed {
+    let partials: Vec<_> = shares
+        .iter()
+        .map(|s| ops::threshold::sign_message::<MinSig>(s, SEED_NAMESPACE, &seed_message(chain_id, draw)))
+        .collect();
+    let sig = ops::threshold::recover::<MinSig, _>(sharing, &partials, &Sequential)
+        .expect("a quorum of shares signs the seed");
+    aether_light::block::Seed { draw, signature: hex::encode(sig.encode()) }
+}
+
 /// A handoff the chain accepted: it switches at `switch`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pending {

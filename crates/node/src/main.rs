@@ -239,6 +239,10 @@ enum Cmd {
         /// certified block) instead of replaying history from genesis.
         #[arg(long)]
         checkpoint: bool,
+        /// Dev only (hidden): the disk fills `<ms>` after start, so the node
+        /// hits the storage path of docs/design/24-self-healing.md.
+        #[arg(long, hide = true)]
+        dev_storage_fault: Option<u64>,
         #[command(flatten)]
         history: HistoryArgs,
     },
@@ -640,12 +644,12 @@ fn main() {
             println!("signed by the committee: protocol {} at height {} on chain {}", s.upgrade.protocol, s.upgrade.activate_at, s.upgrade.chain_id);
             Ok(())
         })(),
-        Cmd::Follow { network, from_rpc, data, rpc_port, validators, exit_with_parent, candidate, dev_epoch_blocks, keys, checkpoint, history } => {
+        Cmd::Follow { network, from_rpc, data, rpc_port, validators, exit_with_parent, candidate, dev_epoch_blocks, keys, checkpoint, dev_storage_fault, history } => {
             if exit_with_parent {
                 exit_with_parent_process();
             }
             let keys = candidate.then(|| keys.unwrap_or_else(|| data.clone()));
-            run_follow(network, from_rpc, data, rpc_port, validators, keys, dev_epoch_blocks, checkpoint, history)
+            run_follow(network, from_rpc, data, rpc_port, validators, keys, dev_epoch_blocks, checkpoint, dev_storage_fault, history)
         }
         Cmd::CandidateInfo { data, operator, chain_id } => aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(&data)).map(|k| {
             let ownership = operator.zip(chain_id).map(|(op, id)| hex::encode(k.ownership(id, op)));
@@ -923,6 +927,7 @@ fn chain_config(chain_id: u64, genesis: &aether_node::roster::Genesis, dev_alloc
         history_v2: genesis.history >= 2,
         protocol: genesis.protocol.max(1),
         node_rewards: genesis.node_rewards,
+        committee: genesis.committee.clone(),
         reserve: genesis.reserve.clone(),
     }
 }
@@ -1263,6 +1268,9 @@ fn assemble_network(
     };
     let file = aether_node::roster::NetworkFile {
         chain_id,
+        // Frozen here: after handoffs rewrite `validators`, this is still the
+        // roster the genesis rewards words record (and re-syncs re-derive).
+        genesis_validators: Some(validators.clone()),
         validators,
         identity: None,
         round: 0,
@@ -1517,41 +1525,115 @@ fn run_node(a: NodeArgs) {
         let (handoff_share, handoff_sharing) = (share.clone(), polynomial.clone());
         let polynomial_identity = &polynomial.public().clone();
         let scheme = aether_light::Scheme::signer(&aether_light::consensus_namespace(), participants, polynomial, share).expect("share matches polynomial");
-        let store = aether_node::store::Store::open(&std::path::Path::new(&data).join("state.redb")).expect("open state store");
-        let (chain, genesis) = Chain::open(cfg.clone(), store).expect("restore state (delete the data dir to resync)");
+        // Start-up integrity as a follower has it (docs/design/24-self-healing.md
+        // layer 1): a database that does not verify is moved aside (never
+        // deleted; the keys stay) and the catch-up below re-syncs it.
+        let (store, _) = aether_node::follow::open_store(std::path::Path::new(&data)).expect("open state store");
+        let (chain, genesis) = match Chain::open(cfg.clone(), store) {
+            Ok(opened) => opened,
+            Err(e) if aether_node::follow::is_corruption(&e) => {
+                let store = aether_node::follow::reset_store(std::path::Path::new(&data), &e).expect("move a corrupt database aside");
+                Chain::open(cfg.clone(), store).expect("restore state after moving a corrupt database aside")
+            }
+            Err(e) => panic!("restore state (delete the data dir to resync): {e:?}"),
+        };
         install_verifier(&chain, &data, false);
+        // Self-healing (2026-09-29, docs/design/24-self-healing.md): serve the
+        // public endpoint BEFORE catching up, from the stored finalized state —
+        // status, balances, snapshots, era reads; read-only answers while this
+        // node does not vote. Peers restarting at the same moment learn heights
+        // from each other instead of waiting for someone to start voting first.
+        // The served state is swapped for the full one (marshal finality
+        // answers, handoff signing, prover, shards) once voting starts.
+        let (gossip_tx, mut gossip_rx) = tokio::sync::mpsc::unbounded_channel::<TxEnvelope>();
+        let served_snapshot: rpc::SnapshotCache = Default::default();
+        let served_state = std::sync::Arc::new(std::sync::RwLock::new(rpc::RpcState {
+            chain: chain.clone(),
+            finality: rpc::Finality::Archive(std::sync::Arc::new(aether_node::follow::FinalityArchive::new(chain.store()))),
+            gossip: gossip_tx.clone(),
+            faucet: faucet_service.clone(),
+            registrar: registrar.clone(),
+            network: network_file.clone(),
+            upstream: None,
+            handoff: None,
+            snapshot: served_snapshot.clone(),
+            prover: None,
+            shards: None,
+        }));
+        // Public access: iroh endpoint published to the BitTorrent Mainline DHT.
+        // Wallets find this node by its id alone and verify everything they get;
+        // validators tunnel consensus traffic over the same endpoint.
+        // Wallet-server announcements are listed only for keys the finalized
+        // registry state knows (red-team 2026-09-29 §3).
+        let _router = endpoint.clone().map(|ep| {
+            tracing::info!(node_id = %ep.id(), "public endpoint on iroh; address published to Mainline DHT (serving read-only answers while catching up)");
+            let st = served_state.clone();
+            let registry = aether_node::announce::checker(st.read().expect("served state").chain.clone());
+            let p2p_target = links.then(|| loopback(port));
+            aether_net::serve(
+                ep,
+                move |req| {
+                    let st = st.read().expect("served state").clone();
+                    async move { rpc::handle_value(&st, req).await }
+                },
+                p2p_target,
+                Some(registry),
+            )
+        });
         // Catch up before voting: a committee member that slept must not
         // propose or vote on views it cannot execute (the committee treats it
         // as offline until then). Follow the network with the follower
         // machinery — a certified snapshot jump included — and only then start
-        // the consensus engine, so not one vote exists while behind. Fails
-        // open: a validator that cannot ask the network (it may be the only
-        // one up) starts as before, and the chain itself keeps it safe (it
-        // cannot vote for a block without the parent state).
+        // the consensus engine, so not one vote exists while behind. The
+        // network's height is defined by the roster's answers (2026-09-29): a
+        // census asks every peer, and voting starts when no reachable peer is
+        // ahead — so a network where every validator restarts at once
+        // recovers on its own (each answers the census from its stored state;
+        // the tallest proceeds first, then serves the rest its blocks). Only
+        // silence fails open, after a real wait; `AETHER_SKIP_CATCH_UP`
+        // overrides the asking for runbook recoveries. The one network that
+        // needs no asking is a single validator (a local devnet): it is the
+        // network, so its own finalized height is the height.
         if links && network_file.is_some() {
             let me = p2p.keys.node_secret.public();
             let nodes: Vec<_> = p2p.roster.nodes.iter().copied().filter(|n| *n != me).collect();
-            match if nodes.is_empty() {
-                Err("the roster names no other node".to_string())
+            if nodes.is_empty() {
+                tracing::warn!("the roster names no other node: single-validator network, taking our own height as the network's");
+                let ours = chain.finalized_height();
+                chain.lock().net_height = Some(ours);
+            } else if std::env::var_os("AETHER_SKIP_CATCH_UP").is_some() {
+                tracing::warn!("AETHER_SKIP_CATCH_UP is set: starting without a confirmed network height");
             } else {
-                aether_net::RpcClient::new(nodes).await.map_err(|e| e.to_string())
-            } {
-                Ok(client) => {
-                    let upstream = aether_node::follow::Upstream::Iroh(client, Default::default());
-                    let set = aether_light::ValidatorSet::new(*polynomial_identity);
-                    let caught = tokio::time::timeout(
-                        Duration::from_secs(120),
-                        aether_node::follow::catch_up(&chain, &upstream, &set, aether_node::follow::BEHIND_MARGIN),
-                    )
-                    .await;
-                    match caught {
-                        Ok(Ok(n)) if n > 0 => tracing::info!(height = chain.finalized_height(), blocks = n, "caught up before voting"),
-                        Ok(Ok(_)) => {}
-                        Ok(Err(e)) => tracing::warn!(%e, "could not catch up before voting; starting anyway"),
-                        Err(_) => tracing::warn!("catch-up before voting timed out; starting anyway"),
+                let set = aether_light::ValidatorSet::new(*polynomial_identity);
+                let ep = endpoint.clone().expect("iroh links serve the public endpoint");
+                let census = {
+                    let (ep, nodes) = (ep.clone(), nodes.clone());
+                    move || {
+                        let (ep, nodes) = (ep.clone(), nodes.clone());
+                        async move { aether_node::follow::roster_heights(&ep, &nodes).await }
                     }
+                };
+                let upstream_of = {
+                    let ep = ep.clone();
+                    move |n: &aether_net::EndpointId| {
+                        aether_node::follow::Upstream::Iroh(
+                            aether_net::RpcClient::with_endpoint(ep.clone(), vec![*n]),
+                            Default::default(),
+                        )
+                    }
+                };
+                let caught = aether_node::follow::catch_up_before_voting(
+                    &chain,
+                    &set,
+                    aether_node::follow::BEHIND_MARGIN,
+                    aether_node::follow::STARTUP_PATIENCE,
+                    census,
+                    upstream_of,
+                )
+                .await;
+                if caught > 0 {
+                    tracing::info!(height = chain.finalized_height(), blocks = caught, "caught up before voting");
                 }
-                Err(e) => tracing::warn!(%e, "no upstream to catch up with; starting anyway"),
             }
             // A catch-up that timed out mid-replay is dropped without clearing
             // its replay mode: blocks from here on (voting) commit durably.
@@ -1681,7 +1763,8 @@ fn run_node(a: NodeArgs) {
         // Mempool gossip: RPC-accepted txs go out, peers' txs come in.
         // Beacon answers (node rewards networks) ride the same channel as
         // `{"beacon": answer}`; nodes that do not know them skip them as non-txs.
-        let (gossip_tx, mut gossip_rx) = tokio::sync::mpsc::unbounded_channel::<TxEnvelope>();
+        // (The channel was made before catch-up: txs accepted from wallets
+        // while catching up wait in it until the network starts here.)
         let (beacon_tx, mut beacon_rx) = tokio::sync::mpsc::unbounded_channel::<aether_light::block::BeaconAnswer>();
         chain.lock().beacon_out = Some(beacon_tx);
         tokio::spawn(async move {
@@ -1747,27 +1830,15 @@ fn run_node(a: NodeArgs) {
             network: network_file,
             upstream: None,
             handoff: handoff_service,
-            snapshot: Default::default(),
+            snapshot: served_snapshot,
             prover,
             shards,
         };
-
-        // Public access: iroh endpoint published to the BitTorrent Mainline DHT.
-        // Wallets find this node by its id alone and verify everything they get;
-        // validators tunnel consensus traffic over the same endpoint.
-        let _router = endpoint.map(|ep| {
-            tracing::info!(node_id = %ep.id(), "public endpoint on iroh; address published to Mainline DHT");
-            let st = rpc_state.clone();
-            let p2p_target = links.then(|| loopback(port));
-            aether_net::serve(
-                ep,
-                move |req| {
-                    let st = st.clone();
-                    async move { rpc::handle_value(&st, req).await }
-                },
-                p2p_target,
-            )
-        });
+        // Voting machinery is up: swap the endpoint's served state for the
+        // full one (marshal-backed finality answers, handoff signing, prover
+        // status, era shards). In-flight snapshot downloads keep working: the
+        // cache is the same one the read-only state served from.
+        *served_state.write().expect("served state") = rpc_state.clone();
 
         let rpc_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), rpc_port);
         tracing::info!(%rpc_addr, "rpc listening");
@@ -1859,7 +1930,9 @@ fn install_verifier(chain: &Chain, data: &str, follower: bool) {
     let g = chain.lock();
     if g.verifier.is_none() && g.finalized.schedule.iter().any(|a| a.protocol >= 2) {
         tracing::error!("protocol 2 is scheduled and this validator has no working proof verifier (aether-prover): stopping");
-        std::process::exit(4);
+        // Exit codes: 3 upgrade required, 4 storage (store::EXIT_STORAGE),
+        // 5 this one — the app restarts with backoff for none of them.
+        std::process::exit(5);
     }
 }
 
@@ -1932,6 +2005,7 @@ fn run_follow(
     candidate_keys: Option<String>,
     dev_epoch_blocks: Option<u64>,
     checkpoint: bool,
+    dev_storage_fault: Option<u64>,
     history: HistoryArgs,
 ) -> Result<(), String> {
     use aether_node::follow::{self, FinalityArchive, Upstream};
@@ -1978,7 +2052,22 @@ fn run_follow(
         .build()
         .map_err(|e| e.to_string())?;
     rt.block_on(async move {
-        let store = aether_node::store::Store::open(&std::path::Path::new(&data).join("state.redb")).map_err(|e| e.to_string())?;
+        // Start-up integrity (docs/design/24-self-healing.md layer 1): a state
+        // database that does not verify is moved aside (never deleted; the
+        // keys stay) and re-syncs — a certified snapshot first, as below. The
+        // hidden dev flag runs the same start on a disk that fills.
+        let (store, _) = match dev_storage_fault {
+            Some(ms) => {
+                tracing::warn!(ms, "--dev-storage-fault: this disk fails from now on (self-healing test)");
+                follow::open_store_with(
+                    std::path::Path::new(&data),
+                    std::sync::Arc::new(move |p| {
+                        aether_node::store::open_with_a_disk_that_fills(p, Duration::from_millis(ms))
+                    }),
+                )?
+            }
+            None => follow::open_store(std::path::Path::new(&data))?,
+        };
         // Following over iroh, this Mac also serves wallets directly (capacity
         // review 2026-09-29): a public endpoint under its own persisted node
         // id, so phones spread their reads over follower Macs instead of
@@ -2002,7 +2091,23 @@ fn run_follow(
                 tracing::warn!(%e, "checkpoint sync failed; replaying history from genesis");
             }
         }
-        let (chain, _) = Chain::open(cfg, store).map_err(|e| format!("restore state (delete the data dir to resync): {e}"))?;
+        let (chain, _) = match Chain::open(cfg.clone(), store) {
+            Ok(opened) => opened,
+            // Bad data only the full check catches (the rebuilt state does not
+            // match the checkpoint): the same recovery as at open — move the
+            // file aside, never delete it, and start from a certified snapshot.
+            Err(e) if follow::is_corruption(&e) => {
+                let store = follow::reset_store(std::path::Path::new(&data), &e)?;
+                if checkpoint {
+                    let attempt = tokio::time::timeout(Duration::from_secs(900), follow::checkpoint(&upstream, &set, &cfg, &store)).await;
+                    if let Err(e) = attempt.map_err(|_| "timed out".to_string()).and_then(|r| r) {
+                        tracing::warn!(%e, "checkpoint sync failed; replaying history from genesis");
+                    }
+                }
+                Chain::open(cfg, store).map_err(|e| format!("restore state (delete the data dir to resync): {e}"))?
+            }
+            Err(e) => return Err(format!("restore state (delete the data dir to resync): {e}")),
+        };
         install_verifier(&chain, &data, true);
         let archive = Arc::new(FinalityArchive::new(chain.store()));
         let (gossip, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -2049,21 +2154,33 @@ fn run_follow(
         };
         // Serve wallets over the public endpoint (the same answers the loopback
         // HTTP server gives; every one is verified by the reader), and announce
-        // this Mac as a wallet server to the validators, every minute. The
+        // this Mac as a wallet server to the validators, every minute, signed
+        // by this Mac's voting key (a registered candidate's key — validators
+        // list the announcement only then; red-team 2026-09-29 §3). The
         // router owns the endpoint, so it is bound to outlive this setup —
         // like the validators' `_router`, it must never drop while running.
+        let announce_keys = candidate_keys
+            .as_ref()
+            .map(|dir| aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(dir)))
+            .transpose()?
+            .map(std::sync::Arc::new);
         let _wallet_router = wallet_ep.map(|ep| {
             tracing::info!(node_id = %ep.id(), "serving wallets over iroh; announced to the validators every minute");
+            let endpoint_id = ep.id();
             let st = st.clone();
             let router = aether_net::serve_rpc(ep, move |req| {
                 let st = st.clone();
                 async move { rpc::handle_value(&st, req).await }
             });
-            let announcer = upstream.clone();
+            let (announcer, keys) = (upstream.clone(), announce_keys.clone());
             tokio::spawn(async move {
+                if keys.is_none() {
+                    tracing::debug!("no candidate keys: serving wallets, but not announced (aether run --candidate)");
+                }
                 loop {
-                    if let Upstream::Iroh(c, _) = announcer.as_ref() {
-                        if let Err(e) = c.call("aether_announceWalletServer", serde_json::json!([])).await {
+                    if let (Upstream::Iroh(c, _), Some(keys)) = (announcer.as_ref(), keys.as_ref()) {
+                        let params = aether_node::announce::signed(keys, &endpoint_id);
+                        if let Err(e) = c.call("aether_announceWalletServer", serde_json::json!(params)).await {
                             tracing::debug!(%e, "wallet-server announce failed; retrying in a minute");
                         }
                     }

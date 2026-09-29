@@ -597,6 +597,7 @@ mod tests {
             protocol: None,
             node_rewards: None,
             reserve: None,
+            genesis_validators: None,
         }
     }
 

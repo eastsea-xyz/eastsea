@@ -36,6 +36,7 @@ fn config() -> ChainConfig {
         history_v2: false,
         protocol: 1,
         node_rewards: false,
+        committee: vec![],
         reserve: None,
     }
 }
@@ -116,7 +117,7 @@ fn propose_with(
     );
     let ctx = Chain::block_context(&chain.cfg(), &skeleton, parent);
     let (pre, _) = chain
-        .pre_state(parent, parent.next_protocol(), &proofs, false)
+        .pre_state(parent, parent.next_protocol(), &proofs, None, false)
         .unwrap();
     let (payload, _) = build_payload(
         parent,
@@ -474,7 +475,7 @@ fn the_recorded_statement_is_what_the_prover_proves() {
         let b = propose(&chain, &parent, &last, None);
         // The prover's input for this block: its pre-state (after the block's system writes), context, txs.
         let (pre, _) = chain
-            .pre_state(&parent, parent.next_protocol(), &[], false)
+            .pre_state(&parent, parent.next_protocol(), &[], None, false)
             .unwrap();
         let ctx = Chain::block_context(&chain.cfg(), &b, &parent);
         let input = aether_proving::block::input(

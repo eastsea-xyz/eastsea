@@ -71,6 +71,34 @@ const VOTE_WRITE_BUFFER: NonZero<usize> = NZUsize!(64 * 1024);
 /// holds ~70 more, so a few hundred sections exhausts launchd's 256-fd default
 /// exactly as on 2026-09-29 ("Too many open files", crash-looped).
 const VOTE_JOURNAL_WARN_SECTIONS: usize = 128;
+/// The divisor turning the soft open-file limit into the share of it at which
+/// the journal count is worth a warning (2026-09-29 red-team 5): raising the
+/// limit bounds nothing by itself — while the chain does not finalize, every
+/// burned view leaves a section file behind, and every section is one
+/// descriptor at the next startup. Half leaves room for the ~70 files a
+/// validator holds besides them, and time to raise the limit again.
+const VOTE_JOURNAL_LIMIT_DIVISOR: u64 = 2;
+
+/// The section count at which to warn about the vote journal: half the soft
+/// open-file limit, never below the plain "many sections" bar — launchd's
+/// 256 warns where the bar already is, a raised 65,536 only as the journal
+/// really approaches it (and an unlimited process never on fd count).
+fn vote_journal_warn_at(soft_limit: u64) -> usize {
+    (soft_limit / VOTE_JOURNAL_LIMIT_DIVISOR).max(VOTE_JOURNAL_WARN_SECTIONS as u64) as usize
+}
+
+/// This process's soft open-file limit (RLIMIT_INFINITY reads as u64::MAX; 0
+/// when it cannot be read, which leaves the fixed bar in charge).
+#[cfg(unix)]
+fn soft_nofile() -> u64 {
+    let mut lim: libc::rlimit = unsafe { std::mem::zeroed() };
+    (unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) } == 0).then_some(lim.rlim_cur).unwrap_or(0)
+}
+
+#[cfg(not(unix))]
+fn soft_nofile() -> u64 {
+    0
+}
 const PAGE_CACHE_PAGE_SIZE: NonZero<u16> = page_size(4_096);
 const PAGE_CACHE_CAPACITY: NonZero<usize> = NZUsize!(8_192);
 const MAX_REPAIR: NonZero<usize> = NZUsize!(20);
@@ -351,6 +379,31 @@ where
             Ok(sections) => tracing::info!(partition = %vote_partition, sections, "vote journal sections"),
             Err(e) => warn!(%e, partition = %vote_partition, "could not count vote journal sections"),
         }
+        // That count is a startup snapshot. While the chain runs without
+        // finalizing, every burned view leaves another section file behind and
+        // nothing bounds the pile — the raised limit only moves the ceiling
+        // (2026-09-29 red-team 5). Keep counting as it grows and warn as the
+        // journal approaches half the limit: that is the room to act in before
+        // the next restart opens every section at once.
+        {
+            let watch = vote_partition.clone();
+            context.child("journal-watch").spawn(|ctx| async move {
+                loop {
+                    ctx.sleep(std::time::Duration::from_secs(60)).await;
+                    let at = vote_journal_warn_at(soft_nofile());
+                    match partition_blobs(&ctx, &watch).await {
+                        Ok(sections) if sections >= at => warn!(
+                            partition = %watch,
+                            sections,
+                            warn_at = at,
+                            "vote journal approaching the open-file limit (one section file per view, every one opened at startup): finalize — or recover and prune — before it is hit"
+                        ),
+                        Ok(_) => {}
+                        Err(e) => warn!(%e, partition = %watch, "could not count vote journal sections"),
+                    }
+                }
+            });
+        }
         let (marshal, marshal_mailbox, _) = MarshalActor::init(
             context.child("marshal"),
             finalizations,
@@ -441,5 +494,24 @@ where
         } else {
             warn!("engine stopped");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The journal warning tracks the limit it will actually hit: launchd's
+    /// 256-fd default warns where the fixed bar already is (128 sections plus
+    /// the ~70 files a validator holds besides them), a raised limit only as
+    /// the journal reaches half of it, and an unreadable or unlimited one
+    /// falls back to the fixed bar alone.
+    #[test]
+    fn the_journal_warning_tracks_the_open_file_limit() {
+        assert_eq!(vote_journal_warn_at(0), VOTE_JOURNAL_WARN_SECTIONS);
+        assert_eq!(vote_journal_warn_at(256), 128);
+        assert_eq!(vote_journal_warn_at(65_536), 32_768);
+        assert_eq!(vote_journal_warn_at(u64::MAX), (u64::MAX / 2) as usize);
+        assert!(vote_journal_warn_at(64) >= 64, "a bar above the limit itself still warns early");
     }
 }

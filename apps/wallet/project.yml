@@ -56,8 +56,16 @@ targets:
           mkdir -p "$H"
           for t in "$SRCROOT/../../target/release/aether" "$SRCROOT/../../target/agent/aether-agent" "$SRCROOT/../../apps/prover/target/release/aether-prover"; do
             [ -x "$t" ] || continue
+            name="$(basename "$t")"
+            # Keep the node's previous binary one update back (as aether.prev):
+            # if the new one cannot start, the app runs it instead
+            # (docs/design/24-self-healing.md layer 2, upgrade rollback).
+            if [ "$name" = "aether" ] && [ -x "$H/aether" ] && ! cmp -s "$H/aether" "$t"; then
+              cp -f "$H/aether" "$H/aether.prev"
+              codesign --force --options runtime --timestamp=none --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$H/aether.prev"
+            fi
             cp -f "$t" "$H/"
-            codesign --force --options runtime --timestamp=none --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$H/$(basename "$t")"
+            codesign --force --options runtime --timestamp=none --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$H/$name"
           done
   AetherWalletIOS:
     type: application

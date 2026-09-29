@@ -117,6 +117,7 @@ fn chain_config() -> ChainConfig {
         history_v2: false,
         protocol: 1,
         node_rewards: false,
+        committee: vec![],
         reserve: None,
     }
 }

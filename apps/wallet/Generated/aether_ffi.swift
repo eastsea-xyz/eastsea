@@ -2164,6 +2164,20 @@ public func accountAddress(p256PublicKey: Data)throws  -> String  {
 })
 }
 /**
+ * Node-sourced, paginated account activity. Balances remain certificate
+ * verified; this JSON is display data and includes `history_start`.
+ */
+public func accountHistory(address: String, cursor: String?, limit: UInt32)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_account_history(
+        FfiConverterString.lower(address),
+        FfiConverterOptionString.lower(cursor),
+        FfiConverterUInt32.lower(limit),uniffiCallStatus
+    )
+})
+}
+/**
  * A recent height proven by a validator's finality certificate, queried
  * through the remote client even while wallet reads use the local node.
  * The watchdog must never compare a local height with another local status
@@ -2655,6 +2669,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.contractVersionMismatch
     }
     if (uniffi_aether_ffi_checksum_func_account_address() != 24481) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_account_history() != 21531) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_authenticated_remote_height() != 44901) {

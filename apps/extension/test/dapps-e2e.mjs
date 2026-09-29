@@ -39,6 +39,10 @@ try {
   await pws.nth(0).fill('e2e-password-1'); await pws.nth(1).fill('e2e-password-1');
   await popup.getByRole('button', { name: 'Create wallet' }).click();
   await popup.getByText('Block ').waitFor({ timeout: 20000 });
+  await popup.getByRole('button', { name: 'Settings' }).click();
+  await popup.getByRole('checkbox', { name: 'Developer mode' }).check();
+  await popup.getByRole('button', { name: 'Save' }).click();
+  await popup.locator('details').filter({ hasText: 'Developer mode' }).locator('summary').click();
   await popup.getByRole('button', { name: /Get test AETH/ }).click();
   await popup.locator('.msg').first().waitFor({ timeout: 20000 });
   await popup.waitForTimeout(3000); await popup.close();

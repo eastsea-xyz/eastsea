@@ -1,4 +1,5 @@
 pub mod application;
+pub mod account_history;
 pub mod atomic;
 pub mod beacons;
 pub mod archive;

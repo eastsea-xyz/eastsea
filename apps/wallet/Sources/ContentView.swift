@@ -187,15 +187,29 @@ struct DeveloperView: View {
     }
 
     private var activity: some View {
-        GroupBox {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(Array(model.log.enumerated()), id: \.offset) { _, line in
-                        Text(line).font(.caption.monospaced()).frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .leading, spacing: 8) {
+            LinkedWalletsCard()
+            GroupBox("Activity") {
+                VStack(alignment: .leading, spacing: 6) {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 6) {
+                            ForEach(model.activity) { item in
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(item.title).font(.callout)
+                                    Text("\(item.source ?? "On this device") · \(item.date.formatted()) · \(item.hash ?? "")")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                Divider()
+                            }
+                        }
+                    }
+                    .frame(minHeight: 120, maxHeight: 300)
+                    if model.olderActivityAvailable {
+                        Button("Load older activity") { model.loadOlderActivity() }
                     }
                 }
-            }.frame(minHeight: 120)
-        } label: { Text("Activity") }
+            }
+        }
     }
 
     private var blocksPanel: some View {

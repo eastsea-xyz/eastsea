@@ -293,12 +293,58 @@ private struct NodeRewardsLine: View {
 #endif
 
 private struct ActivityPage: View {
+    @EnvironmentObject var model: WalletModel
     var body: some View {
         VStack(spacing: 12) {
-            Card { ActivityList(limit: 100) }
+            LinkedWalletsCard()
+            Card {
+                VStack(spacing: 12) {
+                    ActivityList(limit: Int.max)
+                    if model.olderActivityAvailable {
+                        Button("Load older activity") { model.loadOlderActivity() }
+                    }
+                    if let first = model.activityHistoryStart, first > 0 {
+                        Text("This node's retained history starts at block #\(first).")
+                            .font(.aeFootnote).foregroundStyle(.secondary)
+                    }
+                }
+            }
             #if os(macOS)
             RewardsExportCard()
             #endif
+        }
+    }
+}
+
+struct LinkedWalletsCard: View {
+    @EnvironmentObject var model: WalletModel
+    @State private var input = ""
+    @State private var invalid = false
+
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Linked wallets").font(.aeHeadline)
+                Text("Add another address to see one combined history. This is view only; signing keys stay in their own wallets.")
+                    .font(.aeFootnote).foregroundStyle(.secondary)
+                ForEach(model.linkedWallets, id: \.self) { address in
+                    HStack {
+                        Text(address).font(.aeFootnote.monospaced()).lineLimit(1).truncationMode(.middle)
+                        Spacer()
+                        Button("Remove") { model.removeLinkedWallet(address) }
+                    }
+                }
+                HStack {
+                    TextField("0x… address", text: $input)
+                        .textFieldStyle(.roundedBorder)
+                    Button("Add") {
+                        invalid = !model.addLinkedWallet(input)
+                        if !invalid { input = "" }
+                    }
+                }
+                if invalid { Text("Enter a new, valid 0x address (up to 8 linked wallets).")
+                    .font(.aeFootnote).foregroundStyle(.red) }
+            }
         }
     }
 }
@@ -914,6 +960,10 @@ private struct ActivityRow: View {
                 Text(item.title).font(.aeBody.weight(.medium)).lineLimit(2)
                 Text(item.date, style: .relative).font(.aeFootnote).foregroundStyle(.secondary)
                     + Text(" ago").font(.aeFootnote).foregroundStyle(.secondary)
+                if let source = item.source {
+                    Text("\(source) · \(ChainActivity.short(item.owner ?? ""))")
+                        .font(.aeFootnote).foregroundStyle(.secondary)
+                }
             }
             Spacer(minLength: 8)
             VStack(alignment: .trailing, spacing: 2) {
@@ -1003,7 +1053,7 @@ private struct ActivityList: View {
         if items.isEmpty {
             Text("Nothing yet. Payments you send and receive show up here.").font(.aeBody).foregroundStyle(.secondary)
         } else {
-            VStack(spacing: 10) {
+            LazyVStack(spacing: 10) {
                 ForEach(items) { item in
                     ActivityRow(item: item)
                     if item.id != items.last?.id { Divider() }

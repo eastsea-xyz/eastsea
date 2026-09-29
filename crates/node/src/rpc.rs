@@ -543,6 +543,13 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
             let limit = p.get(1).and_then(Value::as_u64).unwrap_or(1_000).min(10_000) as usize;
             Ok(json!(chain.recent_rewards(&a, limit)))
         }
+        "aether_accountHistory" => {
+            let address: Address = param(p, 0)?;
+            let cursor = p.get(1).filter(|v| !v.is_null()).map(|v| v.as_str().ok_or((-32602, "cursor must be a string".to_string()))).transpose()?;
+            let limit = p.get(2).filter(|v| !v.is_null()).map(|v| v.as_u64().ok_or((-32602, "limit must be a positive integer".to_string()))).transpose()?.unwrap_or(50);
+            if !(1..=200).contains(&limit) { return Err((-32602, "limit must be 1..200".into())); }
+            Ok(json!(chain.account_history(&address, cursor, limit as usize).map_err(|e| (-32000, e))?))
+        }
         "aether_sendTransaction" => {
             let tx: TxEnvelope = param(p, 0)?;
             let cfg = chain.cfg();

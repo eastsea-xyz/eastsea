@@ -7,7 +7,7 @@ export const CHAIN_HEX = `0x${CHAIN_ID.toString(16)}`;
 export const READ_METHODS = new Set([
   'eth_blockNumber', 'eth_call', 'eth_estimateGas', 'eth_getBalance', 'eth_getCode',
   'eth_getLogs', 'eth_getStorageAt', 'eth_getTransactionCount', 'eth_gasPrice',
-  'net_version', 'aether_status', 'aether_getReceipt', 'aether_getAccount',
+  'net_version', 'aether_status', 'aether_getReceipt', 'aether_getAccount', 'aether_accountHistory',
 ]);
 
 export const ACCOUNT_METHODS = new Set(['eth_requestAccounts', 'aether_requestAccounts', 'eth_accounts', 'aether_accounts']);

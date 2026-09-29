@@ -3,7 +3,7 @@
 //! fixture, so every guard (identity, chain, replay, staleness) is exercised
 //! end to end without a network.
 
-use aether_ffi::{use_devnet_keys, use_local_node, verified_account, verified_height};
+use aether_ffi::{account_history, use_devnet_keys, use_local_node, verified_account, verified_height};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
@@ -57,6 +57,7 @@ fn fake_node(served: Arc<Mutex<Served>>) -> u16 {
                 }),
                 // Whatever block it is holding, honest or not.
                 "aether_getFinalized" => json!({ "height": asked - 1, "block": g.block, "finalization": g.finalization, "links": [] }),
+                "aether_accountHistory" => json!({ "entries": [], "next_cursor": null, "history_start": 5, "indexed_height": g.height }),
                 _ => Value::Null,
             };
             let body = json!({ "jsonrpc": "2.0", "id": 1, "result": result }).to_string();
@@ -150,5 +151,10 @@ fn verification_guards_refuse_unconfigured_stale_and_foreign_state() {
     let err = read();
     assert!(err.contains("chain 7780"), "{err}");
 
+    // History is a node-sourced read, independent of the verified-balance
+    // guard above; its paging contract still validates address and limit.
+    let page: Value = serde_json::from_str(&account_history(addr.clone(), None, 200).unwrap()).unwrap();
+    assert_eq!(page["history_start"], 5);
+    assert!(account_history(addr, None, 201).is_err());
     use_local_node(None);
 }

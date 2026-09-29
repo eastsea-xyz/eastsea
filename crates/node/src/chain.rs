@@ -1696,6 +1696,13 @@ impl Chain {
             .collect()
     }
 
+    /// Node-sourced account activity. This is a display index, not a proof of
+    /// account balance; callers continue to verify balances separately.
+    pub fn account_history(&self, address: &Address, before: Option<&str>, limit: usize) -> Result<crate::account_history::Page, String> {
+        let store = self.lock().store.clone().ok_or("this node has no finalized history store")?;
+        store.account_history(&address.0 .0, before, limit).map_err(|e| e.to_string())
+    }
+
     /// Keep a proof (verified by this node's verifier) for this node's next proposals.
     pub fn add_proof(&self, claim: aether_light::block::ProofClaim) -> Result<(), String> {
         self.add_proof_from(claim, false)
@@ -2284,6 +2291,18 @@ impl Chain {
             });
         if let Some(store) = store {
             // Disk first: the in-memory head never runs ahead of what survives a crash.
+            let mut account_rows = Vec::new();
+            for (index, (tx, receipt)) in payload.txs.iter().zip(&exec.receipts).enumerate() {
+                account_rows.extend(crate::account_history::transaction(tx, receipt, exec.height, index as u32, exec.timestamp));
+            }
+            for (index, (proven, address, amount)) in exec.payouts.iter().enumerate() {
+                account_rows.push(crate::account_history::reward(*address, exec.height, payload.txs.len() as u32 + index as u32, exec.timestamp, *amount, *proven == exec.height));
+            }
+            for (index, registration) in payload.registrations.iter().enumerate() {
+                account_rows.push(crate::account_history::registration(registration.operator, exec.height,
+                    (payload.txs.len() + exec.payouts.len() + index) as u32, exec.timestamp,
+                    crate::registrations::id(registration)));
+            }
             let write = Commit {
                 height: exec.height,
                 digest: digest_bytes(&exec.digest),
@@ -2301,7 +2320,7 @@ impl Chain {
                     era_start: era_start.as_ref(),
                 }),
             };
-            (if relaxed { store.commit_relaxed(write) } else { store.commit(write) })
+            store.commit_with_history(write, &account_rows, relaxed)
                 .map_err(|e| ChainError::Store(e.to_string()))?;
             // An era's last block: seal it into a file, off the consensus path.
             // Below the free-space floor the seal waits — the blocks stay

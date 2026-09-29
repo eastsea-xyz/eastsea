@@ -11,6 +11,7 @@ import Foundation
 struct TokenSources: Codable, Equatable {
     var network: String?
     var waeth: String?
+    var router: String?
     var tokenFactory: String?
     var pairFactory: String?
     var launchpad: String?

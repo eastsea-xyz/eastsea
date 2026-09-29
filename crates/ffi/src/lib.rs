@@ -1428,6 +1428,28 @@ pub fn recent_blocks(n: u32) -> R<Vec<BlockInfo>> {
         .collect())
 }
 
+/// Node-sourced, paginated account activity. Balances remain certificate
+/// verified; this JSON is display data and includes `history_start`.
+#[uniffi::export]
+pub fn account_history(address: String, cursor: Option<String>, limit: u32) -> R<String> {
+    let address: Address = address.parse().map_err(|_| WalletError::Invalid("address".into()))?;
+    if !(1..=200).contains(&limit) { return Err(WalletError::Invalid("limit must be 1..200".into())); }
+    let result = call("aether_accountHistory", json!([address, cursor, limit]))?;
+    Ok(result.to_string())
+}
+
+#[cfg(test)]
+mod account_history_tests {
+    use super::*;
+
+    #[test]
+    fn history_is_a_follower_read_and_rejects_bad_inputs_locally() {
+        assert!(!needs_a_validator("aether_accountHistory"));
+        assert!(account_history("not an address".into(), None, 50).is_err());
+        assert!(account_history(format!("{:#x}", Address::ZERO), None, 201).is_err());
+    }
+}
+
 /// Test tokens (zero value) from the node's faucet, rate-limited by the node.
 #[uniffi::export]
 pub fn devnet_faucet(to: String, value_wei: String) -> R<String> {

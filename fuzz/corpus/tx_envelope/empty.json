@@ -1,0 +1,1 @@
+{"header": {"chain_id": 7777, "sender": "0x0000000000000000000000000000000000000000", "nonce": 0, "gas": {"exec": 0, "state": 0, "prove": 0}, "max_fee": {"exec": 0, "state": 0, "prove": 0}, "tip": 0, "payload_commitment": "0x0000000000000000000000000000000000000000000000000000000000000000", "scheme": "P256"}, "payload": {"Plain": "0x"}, "signature": "0x"}

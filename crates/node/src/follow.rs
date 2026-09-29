@@ -235,6 +235,15 @@ fn enough(free: u64, size: u64) -> bool {
 
 /// The upstream's snapshot, downloaded and checked against its BLAKE3
 /// (authenticity comes from the certified block after it, in `check`).
+/// Refuse a peer's wrong-sized response before allocating its decoded bytes.
+pub fn decode_snapshot_chunk(value: &Value, expected: usize) -> Result<Vec<u8>, String> {
+    let hex = value["data"].as_str().ok_or("no chunk data")?;
+    if expected > MAX_RESPONSE / 2 || hex.len() != expected * 2 {
+        return Err("snapshot chunk of the wrong size".to_string());
+    }
+    hex::decode(hex).map_err(|e| e.to_string())
+}
+
 /// Chunks are fetched in parallel: each costs a round trip on a slow link.
 /// `guard` runs with the advertised size before the first chunk is fetched.
 async fn download_with(
@@ -261,15 +270,11 @@ async fn download_with(
         let c = upstream
             .first("aether_snapshotChunk", json!([height, index]))
             .await?;
-        let data =
-            hex::decode(c["data"].as_str().ok_or("no chunk data")?).map_err(|e| e.to_string())?;
         // Every chunk full-size except the last; never more than advertised.
         let end = ((index + 1) * chunk as u64).min(size as u64);
-        if data.len() as u64 != end - index * chunk as u64 {
-            return Err("snapshot chunk of the wrong size".to_string());
-        }
+        let data = decode_snapshot_chunk(&c, (end - index * chunk as u64) as usize)?;
         crate::chain::tick();
-        Ok(data)
+        Ok::<Vec<u8>, String>(data)
     };
     let mut bytes = Vec::with_capacity(size.min(64 << 20));
     if size <= chunk {
@@ -1077,6 +1082,15 @@ pub async fn forward(upstream: std::sync::Arc<Upstream>, mut rx: tokio::sync::mp
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_chunk_rejects_wrong_length_before_decoding() {
+        assert_eq!(decode_snapshot_chunk(&json!({"data": "00ff"}), 2).unwrap(), [0, 255]);
+        assert!(decode_snapshot_chunk(&json!({"data": "00ff"}), 1).is_err());
+        assert!(decode_snapshot_chunk(&json!({"data": "gg"}), 1).is_err());
+        assert!(decode_snapshot_chunk(&json!({}), 1).is_err());
+        assert!(decode_snapshot_chunk(&json!({"data": ""}), MAX_RESPONSE).is_err());
+    }
 
     /// The startup gate's decision: a height only counts when a peer answered
     /// it, every answered peer must put nobody beyond the margin ahead, and

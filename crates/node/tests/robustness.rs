@@ -65,6 +65,19 @@ fn signed_tx() -> TxEnvelope {
 }
 
 #[test]
+fn fuzz_corpus_reaches_structured_parsers() {
+    let tx = include_bytes!("../../../fuzz/corpus/tx_envelope/empty.json");
+    assert!(serde_json::from_slice::<TxEnvelope>(tx).is_ok());
+    let payload = include_bytes!("../../../fuzz/corpus/block_payload/empty.json");
+    assert!(Payload::from_bytes(payload).is_some());
+    let beacon = include_bytes!("../../../fuzz/corpus/beacon_answer/shape.json");
+    assert!(serde_json::from_slice::<aether_light::block::BeaconAnswer>(beacon).is_ok());
+    let chunk = include_bytes!("../../../fuzz/corpus/snapshot_chunk/one-byte.json");
+    let value = serde_json::from_slice(chunk).unwrap();
+    assert_eq!(aether_node::follow::decode_snapshot_chunk(&value, 1).unwrap(), [0]);
+}
+
+#[test]
 fn call_decoder_never_panics_and_round_trips() {
     let mut r = rng();
     let valid = EvmCall {

@@ -475,7 +475,7 @@ where
         // the next restart opens every section at once.
         {
             let watch = vote_partition.clone();
-            context.child("journal-watch").spawn(|ctx| async move {
+            context.child("journal_watch").spawn(|ctx| async move {
                 loop {
                     ctx.sleep(std::time::Duration::from_secs(60)).await;
                     let at = vote_journal_warn_at(soft_nofile());

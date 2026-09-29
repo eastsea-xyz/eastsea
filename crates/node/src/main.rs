@@ -383,6 +383,14 @@ enum Cmd {
     },
     /// List the public development accounts (funded at genesis; never use for value).
     DevAccounts,
+    /// Check a network.json against the mainnet rule set: every rule the mainnet
+    /// must have active at height 1 (docs/ops/mainnet-launch.md §2), built from
+    /// the file's genesis. Prints one line per rule; fails listing what is off.
+    MainnetRules {
+        /// network.json to check.
+        #[arg(long)]
+        network: String,
+    },
     /// Chain status.
     Status {
         #[arg(long, default_value = "http://127.0.0.1:8545")]
@@ -742,6 +750,17 @@ fn main() {
             }
             Ok(())
         }
+        Cmd::MainnetRules { network } => (|| {
+            let file = aether_node::roster::NetworkFile::load(std::path::Path::new(&network))?;
+            let genesis = file.genesis()?;
+            let chain_id = file.chain_id;
+            let rules = aether_node::mainnet::check(&chain_config(chain_id, &genesis, false));
+            for r in &rules {
+                println!("{}  {}: {}", if r.ok { "ok" } else { "FAIL" }, r.name, r.detail);
+            }
+            let missing = aether_node::mainnet::missing(&rules);
+            (rules.iter().all(|r| r.ok)).then_some(()).ok_or(missing)
+        })(),
         Cmd::Status { rpc } => call(&rpc, "aether_status", json!([])).map(|v| println!("{}", pretty(&v))),
         Cmd::Blocks { rpc, n } => call(&rpc, "aether_recentBlocks", json!([n])).map(|v| print_blocks(&v)),
         Cmd::Send { rpc, from_dev, to, value, nonce, wait } => {

@@ -38,6 +38,7 @@ fn net(macs: u8, reserve: Option<Reserve>) -> Net {
         macs,
         min_streak: Some(0),
         history_v2: true,
+        protocol: 3,
         reserve,
     })
 }
@@ -121,6 +122,55 @@ fn pool_of_epoch(epoch: u64) -> U256 {
 fn supply(n: &Net, others: &[Address]) -> U256 {
     let s = &n.parent.state;
     (0..MACS).map(|i| n.balance(i)).sum::<U256>() + others.iter().map(|a| s.balance(a)).sum::<U256>()
+}
+
+/// The mainnet rule set (docs/ops/mainnet-launch.md §2): every rule the
+/// mainnet must have active at height 1, checked against this freshly built
+/// mainnet-flag genesis — and against the chain as it actually runs. A new
+/// rule joins the doc's table, `mainnet::check` and this list together.
+#[test]
+fn the_mainnet_rule_set_is_on_from_height_1() {
+    use aether_node::mainnet;
+    let founder = common::addr(&aether_crypto::P256Signer::from_seed(&common::seed(5)).unwrap());
+    let mut n = net(5, Some(Reserve { operator: founder, members: reserve_members() }));
+    // The harness funds every operator with gas money (FUNDED above) so its
+    // supply identities stay simple; the mainnet's genesis funds nobody. The
+    // checklist runs on the mainnet shape of this genesis — everything but the
+    // alloc is the chain as built, and the live checks below run on that chain.
+    let mut cfg = n.chain.cfg();
+    cfg.alloc.clear();
+    let rules = mainnet::check(&cfg);
+    assert_eq!(
+        rules.iter().map(|r| r.name).collect::<Vec<_>>(),
+        [
+            "protocol from genesis",
+            "proof market",
+            "registry v2",
+            "registration cap",
+            "16-seat growth",
+            "node rewards",
+            "beacons",
+            "re-attestation",
+            "reserve rules",
+            "smooth issuance",
+            "history v2",
+            "pruning default",
+            "no premine, no faucet",
+            "zero-tip acceptance",
+        ]
+    );
+    assert!(rules.iter().all(|r| r.ok), "{}", mainnet::missing(&rules));
+
+    // What the checklist asserts is also what the chain runs: the activation is
+    // on the schedule from height 0, the cap is in the registry's storage, and
+    // the first block with a transaction records a proof-market statement.
+    let g = n.chain.lock().finalized.clone();
+    assert_eq!(aether_node::upgrade::protocol_at(&g.schedule, 1), aether_node::upgrade::PROTOCOL);
+    assert_eq!(registry::max_per_epoch(&g.state), registry::MAX_PER_EPOCH);
+    let mut minted = U256::ZERO;
+    let registration = n.register(0);
+    step(&mut n, &mut minted, vec![registration]);
+    assert_ne!(n.parent.statement, Default::default(), "block 1 records a statement");
 }
 
 #[test]

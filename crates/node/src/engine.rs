@@ -19,6 +19,7 @@ use commonware_consensus::{
     simplex::{self, Engine as Consensus},
     types::{Epoch, ViewDelta},
 };
+use commonware_consensus::types::Epocher as _;
 use commonware_consensus::{Epochable as _, Viewable as _};
 use commonware_cryptography::{sha256::Digest, Digestible as _};
 use commonware_p2p::{Blocker, Provider, Receiver, Sender};
@@ -109,6 +110,10 @@ pub struct Config<B: Blocker<PublicKey = PublicKey>, P: Provider<PublicKey = Pub
     pub blocker: B,
     pub provider: P,
     pub partition_prefix: String,
+    /// Durable evidence that this Mac entered an epoch's voting engine. If
+    /// its journal later disappears, even before any block finalized, it may
+    /// have signed and must not start a fresh journal with the same key.
+    pub journal_dir: Option<std::path::PathBuf>,
     pub me: PublicKey,
     pub scheme: Scheme,
     /// Committee identity (verifies certificates of every epoch).
@@ -232,6 +237,55 @@ async fn partition_exists<E: Storage>(context: &E, partition: &str) -> Result<bo
         Ok(_) => Ok(true),
         Err(commonware_runtime::Error::PartitionMissing(_)) => Ok(false),
         Err(e) => Err(e),
+    }
+}
+
+/// The process exits with this code when its vote journal cannot be trusted
+/// (red team #4): the archive shows this Mac already delivered finalizations
+/// in the current epoch, but the journal holding the votes it cast in that
+/// epoch is gone. Voting must not resume on an empty journal — that is how a
+/// key signs twice — so the supervisor follows instead, until the next
+/// committee round (or an operator-led `AETHER_RECOVER_CONSENSUS`).
+pub const EXIT_JOURNAL: i32 = 8;
+
+/// The restart gate's verdict on the vote journal: the state database, the
+/// block archive and the vote journal are diagnosed apart (red team #4), and
+/// only a journal this Mac's own history explains may take more votes.
+///
+/// - `recovered`: the operator-directed `AETHER_RECOVER_CONSENSUS` recovery,
+///   which by design starts a journal of its own;
+/// - `journal_has_votes`: the current epoch's journal partition holds votes —
+///   a normal restart, whatever the archive says;
+/// - `delivered`: the last height this Mac delivered as a validator. `None`
+///   (a joining member's fresh archive) or below `epoch_start` (the epoch
+///   began after its last delivery — including every earlier epoch) means it
+///   cannot have voted in this epoch, so an absent journal is expected;
+/// - anything else — deliveries inside the epoch without the journal they
+///   were voted into — is untrusted, as is a journal that cannot even be
+///   looked at (`lookup_failed`).
+fn journal_gate(
+    recovered: bool,
+    journal_has_votes: bool,
+    delivered: Option<u64>,
+    epoch_start: u64,
+    lookup_failed: bool,
+    previously_started: bool,
+) -> Result<(), &'static str> {
+    if recovered {
+        return Ok(());
+    }
+    if lookup_failed {
+        return Err("the vote journal cannot be examined");
+    }
+    if journal_has_votes {
+        return Ok(());
+    }
+    if previously_started {
+        return Err("this Mac entered voting in this epoch, but its vote journal is gone");
+    }
+    match delivered {
+        Some(h) if h >= epoch_start => Err("finalizations from this epoch are stored, but this epoch's vote journal holds no votes"),
+        _ => Ok(()),
     }
 }
 
@@ -370,14 +424,48 @@ where
             None if epoch.get() == 0 => format!("{prefix}-consensus"),
             None => format!("{prefix}-consensus-e{}", epoch.get()),
         };
-        match partition_blobs(&context, &vote_partition).await {
+        let journal_sections = partition_blobs(&context, &vote_partition).await;
+        let marker = cfg.journal_dir.as_ref().map(|d| d.join(format!("vote-epoch-{}.seen", epoch.get())));
+        let previously_started = marker.as_ref().is_some_and(|p| p.exists());
+        // The restart gate (red team #4): before consensus casts one more
+        // vote, the votes this Mac already cast in this epoch must still be
+        // accounted for. A missing journal with deliveries inside the epoch
+        // means the journal was lost — never voted over with a fresh one.
+        if let Err(why) = journal_gate(
+            recovered.is_some(),
+            matches!(&journal_sections, Ok(n) if *n > 0),
+            Certificates::last_index(&finalizations).map(|h| h.get()),
+            epocher.first(epoch).map(|h| h.get()).unwrap_or(0),
+            journal_sections.is_err(),
+            previously_started,
+        ) {
+            tracing::error!(
+                partition = %vote_partition,
+                epoch = epoch.get(),
+                %why,
+                "this Mac's vote journal cannot be trusted: voting does not resume. \
+                 The supervisor follows instead; the next committee round starts a \
+                 fresh journal, and AETHER_RECOVER_CONSENSUS is the operator-led override"
+            );
+            std::process::exit(EXIT_JOURNAL);
+        }
+        // Publish this before consensus can sign. A crash after publication
+        // but before its first vote is conservative: it follows until the
+        // next epoch if the journal is absent, never risks a double vote.
+        if let Some(path) = marker.filter(|_| !previously_started) {
+            if let Err(e) = crate::atomic::create(&path, epoch.get().to_string().as_bytes(), 0o600) {
+                tracing::error!(%e, "cannot record vote-journal ownership; refusing to vote");
+                std::process::exit(EXIT_JOURNAL);
+            }
+        }
+        match journal_sections {
             Ok(sections) if sections > VOTE_JOURNAL_WARN_SECTIONS => warn!(
                 partition = %vote_partition,
                 sections,
                 "vote journal holds many section files (one per view; pruned only below the last finalization): every one is opened at startup"
             ),
             Ok(sections) => tracing::info!(partition = %vote_partition, sections, "vote journal sections"),
-            Err(e) => warn!(%e, partition = %vote_partition, "could not count vote journal sections"),
+            Err(e) => unreachable!("the gate exited on a journal lookup failure: {e}"),
         }
         // That count is a startup snapshot. While the chain runs without
         // finalizing, every burned view leaves another section file behind and
@@ -513,5 +601,42 @@ mod tests {
         assert_eq!(vote_journal_warn_at(65_536), 32_768);
         assert_eq!(vote_journal_warn_at(u64::MAX), (u64::MAX / 2) as usize);
         assert!(vote_journal_warn_at(64) >= 64, "a bar above the limit itself still warns early");
+    }
+
+    /// Red team #4, the restart gate: a validator resumes voting only when
+    /// the votes it cast in this epoch are still accounted for. Every way a
+    /// Mac legitimately finds no journal passes; the one that means loss —
+    /// deliveries inside the epoch, journal gone — refuses.
+    #[test]
+    fn the_journal_gate_refuses_only_a_lost_journal() {
+        const START: u64 = 3_600;
+
+        // A normal restart mid-epoch: the journal holds this epoch's votes.
+        assert!(journal_gate(false, true, Some(4_200), START, false, true).is_ok());
+        // A first committee at genesis (epoch 0, journal present).
+        assert!(journal_gate(false, true, Some(9), 0, false, true).is_ok());
+
+        // A joining member: fresh archives, nothing delivered, no journal yet.
+        assert!(journal_gate(false, false, None, START, false, false).is_ok());
+        // The epoch just began; its deliveries are all from earlier epochs.
+        assert!(journal_gate(false, false, Some(3_599), START, false, false).is_ok());
+        // Exactly at the boundary: still nothing delivered inside the epoch.
+        assert!(journal_gate(false, false, Some(START - 1), START, false, false).is_ok());
+        // A validator can sign before the first finalization; its durable
+        // epoch marker still forbids a new journal after loss.
+        assert!(journal_gate(false, false, None, START, false, true).is_err());
+
+        // The loss the gate exists for: this Mac delivered inside the epoch,
+        // and the journal those votes went into is gone.
+        assert!(journal_gate(false, false, Some(START), START, false, false).is_err());
+        assert!(journal_gate(false, false, Some(4_200), START, false, false).is_err());
+        // And with the journal's own votes present, those same deliveries are
+        // the normal restart this whole check must not break.
+        assert!(journal_gate(false, true, Some(4_200), START, false, true).is_ok());
+        // A journal that cannot be examined is not trusted either.
+        assert!(journal_gate(false, false, Some(4_200), START, true, false).is_err());
+
+        // The operator-led recovery starts a journal of its own, on purpose.
+        assert!(journal_gate(true, false, Some(4_200), START, false, true).is_ok());
     }
 }

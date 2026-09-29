@@ -59,8 +59,14 @@ impl Engine {
         let commitment = parse_hex32(commitment_hex)?;
         let proof = std::fs::read(proof_path).map_err(|e| format!("read {proof_path}: {e}"))?;
         let t = Instant::now();
-        guarded(|| program::verify(self.pp.clone(), &proof, commitment))?;
-        Ok(json!({ "verified": true, "seconds": secs(t) }))
+        match guarded(|| program::verify(self.pp.clone(), &proof, commitment)) {
+            Ok(()) => Ok(json!({ "verified": true, "seconds": secs(t) })),
+            // Jolt panics are verifier failures, never proof verdicts.
+            Err(e) if e.to_string().starts_with("panicked:") => Err(e),
+            // Deserialization, shape and cryptographic checks depend only on
+            // the supplied proof and commitment: they are definite refusals.
+            Err(_) => Ok(json!({ "verified": false, "seconds": secs(t) })),
+        }
     }
 
     /// Prove a sample block, verify it with a fresh preprocessing (as a

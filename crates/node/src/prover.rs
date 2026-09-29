@@ -46,6 +46,28 @@ const VERIFY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const PROVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
 const SPAWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// The verify timeout, overridable for the fault tests (hidden, like
+/// `AETHER_STORE_RECOVERY`): `AETHER_VERIFY_TIMEOUT_MS=<ms>`.
+fn verify_timeout() -> std::time::Duration {
+    std::env::var("AETHER_VERIFY_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map_or(VERIFY_TIMEOUT, std::time::Duration::from_millis)
+}
+
+/// The sidecar's verdict on one proof (red team #20).
+#[derive(Debug, PartialEq, Eq)]
+pub enum Verified {
+    /// Checked: the proof holds for the commitment.
+    Valid,
+    /// Checked: it does not.
+    Invalid,
+    /// No verdict — the sidecar died, hung, could not be talked to, or could
+    /// not read the proof. Nothing may be remembered from this: not a
+    /// rejection, not an acceptance.
+    Unavailable(String),
+}
+
 /// One `aether-prover serve` process.
 pub struct Sidecar {
     io: Mutex<Io>,
@@ -55,6 +77,13 @@ pub struct Sidecar {
     pid: u32,
     /// SHA-256 of the guest ELF it proves and verifies against.
     pub program: String,
+}
+
+/// Never anything about the child it holds (`unwrap_err` in tests wants Debug).
+impl std::fmt::Debug for Sidecar {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Sidecar(..)")
+    }
 }
 
 impl Sidecar {
@@ -118,8 +147,24 @@ impl Sidecar {
                 return Err("the sidecar did not start in time".into());
             }
         };
-        let info: Value = serde_json::from_str(&first).map_err(|e| format!("sidecar info: {e}"))?;
-        let program = info["guest_elf_sha256"].as_str().ok_or("sidecar did not report its program")?.to_string();
+        // A sidecar whose line is unusable is refused *and* stopped (red team
+        // #20): an answer the node cannot read must not leave a stray process.
+        let info: Value = match serde_json::from_str(&first) {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("sidecar info: {e}"));
+            }
+        };
+        let program = match info["guest_elf_sha256"].as_str() {
+            Some(p) => p.to_string(),
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("sidecar did not report its program".into());
+            }
+        };
         if let Some(pinned) = PROGRAM.filter(|p| *p != program) {
             let _ = child.kill();
             let _ = child.wait();
@@ -169,16 +214,33 @@ impl Sidecar {
         Ok((proof, commitment, reply["seconds"].as_f64().unwrap_or_default()))
     }
 
-    pub fn verify(&self, proof: &[u8], commitment: [u8; 32]) -> Result<bool, String> {
+    /// What the sidecar said about a proof (red team #20): three values,
+    /// never two. "Could not check" is not "checked and false" — a node that
+    /// reads a dead sidecar as a refusal rejects proofs it never judged and
+    /// splits itself from the network.
+    pub fn verify(&self, proof: &[u8], commitment: [u8; 32]) -> Verified {
         let path = self.dir.join(format!("{}.verify", unique()));
-        std::fs::write(&path, proof).map_err(|e| e.to_string())?;
-        let reply = self.request(json!({"cmd": "verify", "proof": path, "commitment": hex::encode(commitment)}), VERIFY_TIMEOUT);
+        if let Err(e) = std::fs::write(&path, proof) {
+            return Verified::Unavailable(format!("proof file: {e}"));
+        }
+        let reply = self.request(json!({"cmd": "verify", "proof": path, "commitment": hex::encode(commitment)}), verify_timeout());
         let _ = std::fs::remove_file(&path);
         match reply {
-            Ok(v) => Ok(v["verified"].as_bool() == Some(true)),
-            // A rejected proof is an answer; a dead sidecar is not.
-            Err(e) if e.contains("exited") || e.contains("sidecar:") => Err(e),
-            Err(_) => Ok(false),
+            Ok(v) if v["verified"].as_bool() == Some(true) => Verified::Valid,
+            Ok(v) if v["verified"].as_bool() == Some(false) => Verified::Invalid,
+            // An answer that carries no verdict judges nothing.
+            Ok(_) => Verified::Unavailable("the sidecar answered without a verdict".into()),
+            // This node could not talk to the sidecar, or read its answer:
+            // every message `request` builds itself says "sidecar".
+            Err(e) if e.starts_with("sidecar") || e.starts_with("the sidecar") => Verified::Unavailable(e),
+            // The sidecar could not read the proof file this node just wrote —
+            // a disk or transport problem, not a property of the proof.
+            Err(e) if e.starts_with("read ") => Verified::Unavailable(e),
+            // Only an explicit proof rejection is a verdict. An unexpected
+            // sidecar error can be a panic, parse failure or I/O problem and
+            // must not be turned into an invalid-proof decision.
+            Err(e) if e == "proof rejected" => Verified::Invalid,
+            Err(e) => Verified::Unavailable(e),
         }
     }
 }
@@ -224,17 +286,28 @@ impl Verifier {
         self.sidecar.lock().map(|s| s.program.clone()).unwrap_or_default()
     }
 
-    /// Ask the sidecar; if it died, start a new one and ask again once.
-    fn ask(&self, proof: &[u8], commitment: [u8; 32]) -> Result<bool, String> {
-        let current = self.sidecar.lock().map_err(|_| "verifier lock poisoned")?.clone();
+    /// Ask the sidecar; when it could not answer, start a new one and ask
+    /// again once. An invalid proof is an answer — it is never re-asked.
+    fn ask(&self, proof: &[u8], commitment: [u8; 32]) -> Verified {
+        let current = match self.sidecar.lock() {
+            Ok(s) => s.clone(),
+            Err(_) => return Verified::Unavailable("verifier lock poisoned".into()),
+        };
         match current.verify(proof, commitment) {
-            Err(e) => {
+            Verified::Unavailable(e) => {
                 tracing::warn!(%e, "proof verifier stopped; starting a new one");
-                let fresh = Arc::new(Sidecar::spawn(&self.bin, &self.dir)?);
-                *self.sidecar.lock().map_err(|_| "verifier lock poisoned")? = fresh.clone();
+                let fresh = match Sidecar::spawn(&self.bin, &self.dir) {
+                    Ok(f) => f,
+                    Err(e) => return Verified::Unavailable(e),
+                };
+                let fresh = Arc::new(fresh);
+                match self.sidecar.lock() {
+                    Ok(mut slot) => *slot = fresh.clone(),
+                    Err(_) => return Verified::Unavailable("verifier lock poisoned".into()),
+                }
                 fresh.verify(proof, commitment)
             }
-            ok => ok,
+            answered => answered,
         }
     }
 }
@@ -250,7 +323,7 @@ impl ProofVerifier for Verifier {
         match self.ask(proof, commitment) {
             // Only a verified proof is remembered: a refusal may have been a
             // transient failure, and caching it would split this node from the rest.
-            Ok(true) => {
+            Verified::Valid => {
                 if let Ok(mut s) = self.seen.lock() {
                     if s.len() > 4096 {
                         s.clear();
@@ -259,9 +332,9 @@ impl ProofVerifier for Verifier {
                 }
                 Some(true)
             }
-            Ok(false) => Some(false),
-            Err(e) => {
-                tracing::error!(%e, "proof verifier unavailable; refusing blocks with proofs");
+            Verified::Invalid => Some(false),
+            Verified::Unavailable(e) => {
+                tracing::error!(%e, "proof verifier unavailable; refusing to judge");
                 None
             }
         }
@@ -635,6 +708,138 @@ mod tests {
         g.ensure();
         assert!(!g.dead.load(std::sync::atomic::Ordering::Relaxed));
         assert!(crate::resources::footprint(g.current().pid).is_some(), "a fresh sidecar is running");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod sidecar_fault_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::path::{Path, PathBuf};
+
+    /// An executable stand-in for `aether-prover serve`: prints the info line
+    /// (echoing the pinned program when the build pins one), then answers
+    /// every verify request with `answer` — a shell snippet, so a test plays
+    /// the sidecar faults: a verdict, a refusal, a hang, an exit.
+    fn fake_prover(dir: &Path, answer: &str) -> PathBuf {
+        let program = PROGRAM.unwrap_or("any-program");
+        let path = dir.join(format!("fake-{}", unique()));
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\necho '{{\"guest_elf_sha256\":\"{program}\"}}'\n\
+                 while IFS= read -r line; do\n  case \"$line\" in\n    *verify*) {answer} ;;\n    \
+                 *) echo '{{\"ok\":false,\"error\":\"no such command\"}}' ;;\n  esac\ndone\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("aether-prover-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Red team #20: "could not check" is never "checked and false". A
+    /// verdict and a refusal are answers; a sidecar that hangs, dies, or
+    /// cannot read the proof leaves no verdict at all — the caller refuses to
+    /// judge instead of rejecting.
+    #[test]
+    fn a_proof_check_has_three_answers_not_two() {
+        let dir = scratch("3v");
+        std::env::set_var("AETHER_VERIFY_TIMEOUT_MS", "200");
+        let commit = [7u8; 32];
+
+        let valid = Sidecar::spawn(&fake_prover(&dir, r#"echo '{"ok":true,"verified":true,"seconds":0.1}'"#), &dir).unwrap();
+        assert_eq!(valid.verify(b"a proof", commit), Verified::Valid);
+
+        let invalid = Sidecar::spawn(&fake_prover(&dir, r#"echo '{"ok":true,"verified":false}'"#), &dir).unwrap();
+        assert_eq!(invalid.verify(b"a proof", commit), Verified::Invalid);
+
+        // The sidecar could not read what it was asked to judge: not a verdict.
+        let unreadable = Sidecar::spawn(&fake_prover(&dir, r#"echo '{"ok":false,"error":"read /tmp/1-0.verify: No such file or directory"}'"#), &dir).unwrap();
+        assert!(matches!(unreadable.verify(b"a proof", commit), Verified::Unavailable(_)));
+        let unknown = Sidecar::spawn(&fake_prover(&dir, r#"echo '{"ok":false,"error":"request panicked"}'"#), &dir).unwrap();
+        assert!(matches!(unknown.verify(b"a proof", commit), Verified::Unavailable(_)));
+
+        // A hung sidecar is not waited on past the timeout, and not read as a refusal.
+        let hung = Sidecar::spawn(&fake_prover(&dir, "sleep 5"), &dir).unwrap();
+        assert!(matches!(hung.verify(b"a proof", commit), Verified::Unavailable(_)));
+
+        // A dead one — it exits instead of answering.
+        let dead = Sidecar::spawn(&fake_prover(&dir, "exit 0"), &dir).unwrap();
+        assert!(matches!(dead.verify(b"a proof", commit), Verified::Unavailable(_)));
+
+        std::env::remove_var("AETHER_VERIFY_TIMEOUT_MS");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A sidecar whose first line is unusable is refused *and* stopped: a
+    /// sidecar the node will not talk to must not keep running.
+    #[test]
+    fn a_sidecar_that_reports_nonsense_is_refused_and_not_left_running() {
+        let dir = scratch("spawn");
+        for (name, line, why) in [
+            ("garbled", "not json", "sidecar info"),
+            ("mute-program", r#"{"ready":true}"#, "did not report its program"),
+        ] {
+            let pidfile = dir.join(format!("{name}.pid"));
+            let script = dir.join(name);
+            std::fs::write(
+                &script,
+                format!("#!/bin/sh\necho $$ > {}\necho '{line}'\nsleep 5\n", pidfile.display()),
+            )
+            .unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+            let err = Sidecar::spawn(&script, &dir).unwrap_err();
+            assert!(err.contains(why), "{name}: {err}");
+            let pid: i32 = std::fs::read_to_string(&pidfile).unwrap().trim().parse().unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while unsafe { libc::kill(pid, 0) == 0 } && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            assert!(unsafe { libc::kill(pid, 0) == -1 }, "{name}: the refused sidecar was stopped, not left running");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A refusal is an answer, asked once; an unavailability is retried on a
+    /// fresh sidecar, once — and only the second ask is a second request.
+    #[test]
+    fn an_invalid_proof_is_answered_once_and_an_unavailable_one_retries() {
+        let dir = scratch("retry");
+        let commit = [7u8; 32];
+        // One counter per stand-in: its lines are the requests this bin served.
+        let fake = |name: &str, reply: &str| {
+            let counter = dir.join(format!("{name}.asks"));
+            fake_prover(&dir, &format!("echo ask >> {}; {reply}", counter.display()))
+        };
+
+        let v = Verifier::start(
+            &fake("refused", r#"echo '{"ok":true,"verified":false}'"#),
+            &dir,
+        )
+        .unwrap();
+        assert_eq!(v.decide(b"a proof", commit), Some(false));
+        assert_eq!(std::fs::read_to_string(dir.join("refused.asks")).unwrap(), "ask\n", "a refusal is never re-asked");
+
+        let v = Verifier::start(
+            &fake("unreadable", r#"echo '{"ok":false,"error":"read /tmp/9-9.verify: No such file"}'"#),
+            &dir,
+        )
+        .unwrap();
+        assert_eq!(v.decide(b"another proof", commit), None, "no verdict after the retry");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("unreadable.asks")).unwrap(),
+            "ask\nask\n",
+            "one ask on the dead sidecar, one on its replacement"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

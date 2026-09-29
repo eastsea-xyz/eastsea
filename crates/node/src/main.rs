@@ -263,6 +263,12 @@ enum Cmd {
         #[arg(long)]
         data: String,
     },
+    /// The protocol this binary implements. Hidden: the app asks a candidate
+    /// rollback binary (`Helpers/aether.prev`) this before returning to it —
+    /// a rollback to a binary that cannot run the chain's scheduled protocol
+    /// would stop the node for good (red team #3).
+    #[command(hide = true)]
+    Protocol,
     /// Generate this validator's keys in <data> (never overwrites). Prints the public entry.
     Keygen {
         #[arg(long)]
@@ -625,6 +631,25 @@ fn main() {
             if exit_with_parent {
                 exit_with_parent_process();
             }
+            // A seated validator whose key file is gone or unreadable stops
+            // with its own exit code (red team #5): it must not be replaced by
+            // a devnet stand-in or a fresh identity.
+            {
+                let dir = std::path::Path::new(&data);
+                if network.is_some()
+                    && dir.join("threshold.json").exists()
+                    && aether_node::roster::LocalKeys::load(dir).is_err()
+                {
+                    eprintln!(
+                        "this Mac's validator key cannot be read but it holds a committee \
+                         share: no new identity is generated. Restore {}/{} from a backup, or \
+                         unregister this Mac and register a new one on purpose",
+                        dir.display(),
+                        aether_node::roster::KEY_FILE
+                    );
+                    std::process::exit(aether_node::candidate::EXIT_IDENTITY);
+                }
+            }
             let with_file = network.is_some();
             let network_file = network.as_ref().and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice::<Value>(&b).ok());
             let max_shards = history.max_shards;
@@ -719,13 +744,25 @@ fn main() {
             let keys = candidate.then(|| keys.unwrap_or_else(|| data.clone()));
             run_follow(network, from_rpc, data, rpc_port, validators, keys, dev_epoch_blocks, checkpoint, dev_storage_fault, history, resources)
         }
-        Cmd::CandidateInfo { data, operator, chain_id } => aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(&data)).map(|k| {
+        Cmd::CandidateInfo { data, operator, chain_id } => (|| {
+            let dir = std::path::Path::new(&data);
+            let k = match aether_node::candidate::CandidateKeys::load_or_create(dir) {
+                Ok(k) => k,
+                // A lost identity is its own exit code (red team #5): the app
+                // shows the one sentence instead of a generic failure.
+                Err(e) if aether_node::candidate::registered_identity(dir) => {
+                    eprintln!("{e}");
+                    std::process::exit(aether_node::candidate::EXIT_IDENTITY);
+                }
+                Err(e) => return Err(e),
+            };
             let ownership = operator.zip(chain_id).map(|(op, id)| hex::encode(k.ownership(id, op)));
             println!(
                 "{}",
                 json!({ "validator_key": hex::encode(k.validator_key()), "node_id": hex::encode(k.node_id()), "beaconer": k.beaconer(), "ownership": ownership })
             );
-        }),
+            Ok(())
+        })(),
         Cmd::Run { data, network, port, rpc_port, reshare_port, node_args, follow_args, reshare_timeout, dev_peer_dir, exit_with_parent, resources } => {
             if exit_with_parent {
                 exit_with_parent_process();
@@ -736,8 +773,29 @@ fn main() {
             (|| {
                 let dir = std::path::PathBuf::from(&data);
                 std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-                aether_node::candidate::CandidateKeys::load_or_create(&dir)?;
+                // One data directory, one `aether` (red team #12): a second
+                // app's run stops before touching anything, with its own exit
+                // code — "already running" is not a crash to restart.
+                let _lock = match aether_node::supervisor::lock_data_dir(&dir) {
+                    Ok(l) => l,
+                    Err(e) => {
+                        eprintln!("{e}");
+                        std::process::exit(aether_node::supervisor::EXIT_LOCKED);
+                    }
+                };
+                // First install: create the keys. A directory that ever held an
+                // identity refuses instead (red team #5) — and `aether run`
+                // goes on as a follower without them, never a new identity.
+                if let Err(e) = aether_node::candidate::CandidateKeys::load_or_create(&dir) {
+                    tracing::error!(%e, "aether run: this Mac's identity cannot be loaded; running as a follower");
+                }
                 aether_node::supervisor::adopt_network(&dir, network.as_deref().map(std::path::Path::new))?;
+                // A committee install a previous run did not finish (red team
+                // #19): complete it before any role decision reads the files.
+                if let Err(e) = aether_node::supervisor::finish_incomplete(&dir) {
+                    eprintln!("a completed handoff cannot be installed: {e}");
+                    std::process::exit(aether_node::store::EXIT_STORAGE);
+                }
                 // The same resource limits for whichever child runs (the
                 // supervisor adds them to both `aether node` and `aether follow`).
                 let forwarded = resources.forward();
@@ -791,6 +849,10 @@ fn main() {
             let store = aether_node::store::Store::open(&std::path::Path::new(&data).join("state.redb")).map_err(|e| e.to_string())?;
             let (h, d) = store.head().map_err(|e| e.to_string())?.ok_or("no finalized state")?;
             println!("{h} {}", hex::encode(d));
+            Ok(())
+        })(),
+        Cmd::Protocol => (|| {
+            println!("{}", aether_node::upgrade::PROTOCOL);
             Ok(())
         })(),
         Cmd::Reshare { from, to, epoch_end, epoch_end_hash, stage, via_node, port, data, peers, link_base, offline, exit_with_parent } => {
@@ -1824,6 +1886,7 @@ fn run_node(a: NodeArgs) {
                 blocker: oracle.clone(),
                 provider: oracle.clone(),
                 partition_prefix: partition_prefix(&data),
+                journal_dir: Some(std::path::PathBuf::from(&data)),
                 me: signer.public_key(),
                 scheme,
                 identity: *polynomial_identity,
@@ -1987,7 +2050,7 @@ fn watch_upgrades(
             let need = protocol_at(&on_chain, next);
             if need > PROTOCOL {
                 tracing::error!(need, have = PROTOCOL, height = next, "UPGRADE REQUIRED: this binary runs protocol {PROTOCOL} but the committee activated {need}; stopping before the new rules apply. Install the signed release.");
-                std::process::exit(3);
+                std::process::exit(aether_node::supervisor::EXIT_UPGRADE_REQUIRED);
             }
             std::thread::sleep(Duration::from_millis(500));
         }
@@ -2033,7 +2096,7 @@ fn install_verifier(chain: &Chain, data: &str, follower: bool) {
         tracing::error!("protocol 2 is scheduled and this validator has no working proof verifier (aether-prover): stopping");
         // Exit codes: 3 upgrade required, 4 storage (store::EXIT_STORAGE),
         // 5 this one — the app restarts with backoff for none of them.
-        std::process::exit(5);
+        std::process::exit(aether_node::supervisor::EXIT_NO_VERIFIER);
     }
 }
 
@@ -2460,16 +2523,7 @@ fn wallet_node_key(data: &std::path::Path) -> Result<aether_net::SecretKey, Stri
 }
 
 fn write_secret(path: &std::path::Path, bytes: &[u8]) {
-    use std::io::Write as _;
-    use std::os::unix::fs::OpenOptionsExt as _;
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)
-        .expect("open key file");
-    f.write_all(bytes).expect("write key file");
+    aether_node::atomic::replace(path, bytes, 0o600).expect("write key file");
 }
 
 /// FOCIL gossip: as a committee member, sign and publish the oldest waiting

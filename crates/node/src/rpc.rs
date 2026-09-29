@@ -331,6 +331,12 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                 // is still catching up.
                 "catching_up": behind > 0,
                 "behind": behind,
+                // Stage-wise progress (red team #2): a frozen height with a
+                // rising `activity` is a node busy on a snapshot, a store
+                // recovery or a replay — not a stuck one. `stage` names the
+                // long stage when there is one.
+                "activity": crate::chain::activity(),
+                "stage": crate::chain::stage(),
                 // Protocol upgrades on chain: an app whose node runs an older
                 // protocol than one scheduled looks for its update right away.
                 "protocol": f.next_protocol(),

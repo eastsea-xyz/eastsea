@@ -152,6 +152,9 @@ impl Recovery {
         let mut wait = self.backoff;
         let mut last = StoreError::Db("never tried".into());
         for attempt in 1..=self.attempts {
+            // Each try is work (red team #2): a node re-opening its database
+            // under a rising backoff must not read as stuck between tries.
+            crate::chain::tick();
             tracing::warn!(attempt, of = self.attempts, "re-opening the store database");
             match store.reopen() {
                 Ok(()) => {
@@ -485,6 +488,12 @@ impl Store {
         tx.commit().map_err(dberr)
     }
 
+    /// The database file (its directory is where a recovery's space is
+    /// checked, `crate::follow::require_space`).
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     pub fn meta(&self, key: &str) -> Result<Option<Vec<u8>>, StoreError> {
         let tx = self.read_tx()?;
         let t = tx.open_table(META).map_err(dberr)?;
@@ -521,7 +530,7 @@ impl Store {
     /// redb persists them with the next durable block commit.
     pub fn put_proof(&self, height: u64, proof: &[u8]) -> Result<(), StoreError> {
         let mut tx = self.write_tx()?;
-        tx.set_durability(redb::Durability::None);
+        tx.set_durability(redb::Durability::None).map_err(dberr)?;
         tx.open_table(PROOFS).map_err(dberr)?.insert(height, proof).map_err(dberr)?;
         tx.commit().map_err(dberr)
     }
@@ -740,7 +749,7 @@ impl Store {
 
     fn write(&self, c: Commit<'_>, durability: redb::Durability) -> Result<(), StoreError> {
         let mut tx = self.write_tx()?;
-        tx.set_durability(durability);
+        tx.set_durability(durability).map_err(dberr)?;
         {
             let mut state = tx.open_table(STATE).map_err(dberr)?;
             for (k, v) in &c.diff.writes {

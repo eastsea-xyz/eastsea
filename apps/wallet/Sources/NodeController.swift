@@ -1,4 +1,5 @@
 #if os(macOS)
+import AppKit
 import DeviceCheck
 import Foundation
 import IOKit.ps
@@ -38,7 +39,14 @@ final class NodeController: ObservableObject {
         let beaconer: String
     }
     @AppStorage("nodeEnabled") var enabled = false {
-        didSet { enabled ? startIfAllowed() : stop() }
+        didSet {
+            if enabled {
+                automaticRestartBlocked = false
+                startIfAllowed()
+            } else {
+                stop()
+            }
+        }
     }
     /// Prove blocks on this Mac's GPU for rewards (protocol 2); paid to `proveAddress`.
     @AppStorage("proveBlocks") var prove = false {
@@ -125,10 +133,16 @@ final class NodeController: ObservableObject {
     /// Start or pause for the power source; called every 30 s while the switch is on.
     private func applyPower() {
         guard enabled else { return }
+        if automaticRestartBlocked && watchdog.lastFailure == .diskFull,
+           let attrs = try? FileManager.default.attributesOfFileSystem(forPath: Self.dataDir.path),
+           let free = attrs[.systemFreeSize] as? NSNumber,
+           NodeWatchdog.storageRecovered(freeBytes: free.uint64Value) {
+            automaticRestartBlocked = false
+        }
         if onlyOnPower && Self.onBattery {
             if process != nil { stop(keepSwitch: true) }
             state = .waitingForPower
-        } else if process == nil, restartTimer == nil {
+        } else if process == nil, restartTimer == nil, !automaticRestartBlocked {
             // A watchdog restart already scheduled keeps its backoff.
             start()
         }
@@ -164,9 +178,43 @@ final class NodeController: ObservableObject {
     private var watchdog = NodeWatchdog()
     /// A watchdog-ordered restart is pending (its backoff is running).
     private var restartTimer: Timer?
+    /// A terminal watchdog decision must also gate the periodic power timer.
+    private var automaticRestartBlocked = false
     /// The last update's binary kept beside the current one: rolled back to
     /// when the new one cannot start (docs/design/24-self-healing.md layer 2).
     private var usePreviousBinary = false
+    /// The "this Mac's node key cannot be read" notice went out (once per
+    /// bout; red team #5 — a person must restore the key).
+    private var identityNoticePosted = false
+    private var nextCandidateRetry = Date.distantPast
+    /// Sleep/wake observers (red team #9): the watchdog's timing is stale the
+    /// moment the Mac sleeps. Added once, kept for the app's lifetime.
+    private var wakeObservers: [NSObjectProtocol] = []
+
+    /// The newest protocol the chain has scheduled, as this app last heard it
+    /// from its own node (`aether_status.newest_scheduled`), kept across
+    /// restarts: the rollback decision needs it exactly when the node can no
+    /// longer answer (red team #3).
+    private var scheduledProtocol: UInt64? {
+        get { UserDefaults.standard.string(forKey: "nodeScheduledProtocol").flatMap(UInt64.init) }
+        set { UserDefaults.standard.set(newValue.map(String.init), forKey: "nodeScheduledProtocol") }
+    }
+
+    /// The protocol a binary implements (`aether protocol` — no chain, no
+    /// data): asked of the previous binary before returning to it (red team
+    /// #3). Synchronous; call off the main actor.
+    nonisolated static func protocolOf(_ binary: URL) -> UInt64? {
+        let p = Process(), out = Pipe()
+        p.executableURL = binary
+        p.arguments = ["protocol"]
+        p.standardOutput = out
+        guard (try? p.run()) != nil else { return nil }
+        p.waitUntilExit()
+        guard p.terminationStatus == 0,
+              let line = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+                  .trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
+        return UInt64(line)
+    }
 
     /// Resume the user's choice at launch.
     func restore() {
@@ -186,6 +234,7 @@ final class NodeController: ObservableObject {
             return
         }
         loadCandidate(binary)
+        nextCandidateRetry = Date().addingTimeInterval(60)
         var args = ["run", "--data", Self.dataDir.path, "--rpc-port", String(Self.port), "--port", String(Self.p2pPort), "--exit-with-parent"]
         if let network = Bundle.main.url(forResource: "network", withExtension: "json") {
             args += ["--network", network.path]
@@ -219,6 +268,7 @@ final class NodeController: ObservableObject {
         process = p
         watchdog.started(Date())
         state = .starting
+        watchSleep()
         poll = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.check() }
         }
@@ -262,6 +312,7 @@ final class NodeController: ObservableObject {
         poll = nil
         restartTimer = nil
         switched = false
+        watchdog.invalidate()
         useLocalNode(port: nil)
         if let p = process, p.isRunning { p.terminate() }
         process = nil
@@ -283,7 +334,7 @@ final class NodeController: ObservableObject {
         // Stopped on purpose, or an older process (after a restart) finishing late.
         guard let current = process, current === proc else { return }
         let status = proc.terminationStatus
-        if status == 3 { onUpgradeNeeded?() }  // UPGRADE REQUIRED (see `watch_upgrades`)
+        if status == 3 || status == 5 { onUpgradeNeeded?() }  // UPGRADE REQUIRED / no proof verifier (see `watch_upgrades`, `install_verifier`)
         process = nil
         poll?.invalidate()
         switched = false
@@ -305,18 +356,36 @@ final class NodeController: ObservableObject {
             }
         case .stop(let failure):
             // Too many deaths: stop restarting, one plain sentence (layer 4).
+            automaticRestartBlocked = true
             state = .failed(failure.sentence)
         case .rollback:
             // The updated binary cannot start: back to the previous one —
-            // once. If that one dies too, it is an ordinary crash loop, and
-            // the sentence above ends the restarting.
+            // once, and only if that binary can still run the chain (red team
+            // #3): an old binary on a chain it cannot read stops the node for
+            // good, which is worse than the crash loop this was meant to fix.
+            // Otherwise voting stops and the update is asked for again.
             let prev = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/aether.prev")
             if !usePreviousBinary, FileManager.default.isExecutableFile(atPath: prev.path) {
-                usePreviousBinary = true
-                state = .failed("업데이트 뒤 노드가 시작되지 않아 이전 버전으로 되돌렸습니다")
-                watchdog.restarting()
-                start()
+                let scheduled = scheduledProtocol
+                Task.detached {
+                    let prevProtocol = Self.protocolOf(prev)
+                    await MainActor.run {
+                        guard self.enabled, self.process == nil else { return }
+                        if NodeWatchdog.rollbackAllowed(prevProtocol: prevProtocol, chainScheduled: scheduled) {
+                            self.usePreviousBinary = true
+                            self.state = .failed("업데이트 뒤 노드가 시작되지 않아 이전 버전으로 되돌렸습니다")
+                            self.watchdog.restarting()
+                            self.start()
+                        } else {
+                            self.automaticRestartBlocked = true
+                            self.state = .failed(NodeWatchdog.Failure.upgradeNeeded.sentence)
+                            self.upgradeAsked = true
+                            self.onUpgradeNeeded?()
+                        }
+                    }
+                }
             } else {
+                automaticRestartBlocked = true
                 state = .failed(NodeWatchdog.Failure.other.sentence)
             }
         case .none:
@@ -333,6 +402,18 @@ final class NodeController: ObservableObject {
         p.standardOutput = out
         guard (try? p.run()) != nil else { return }
         p.waitUntilExit()
+        if p.terminationStatus == 6 {
+            // The node key cannot be read (red team #5): the helper refuses to
+            // mint a replacement identity, and so does the app — a person
+            // restores the key from a backup. The node (keyless) still runs
+            // and the wallet still works; this says why it does not vote.
+            if !identityNoticePosted {
+                identityNoticePosted = true
+                LocalNotice.post(title: "Aether", body: NodeWatchdog.Failure.identityLost.sentence)
+            }
+            return
+        }
+        identityNoticePosted = false
         guard p.terminationStatus == 0,
               let v = try? JSONSerialization.jsonObject(with: out.fileHandleForReading.readDataToEndOfFile()) as? [String: Any],
               let key = v["validator_key"] as? String, let node = v["node_id"] as? String, let beaconer = v["beaconer"] as? String else { return }
@@ -439,6 +520,10 @@ final class NodeController: ObservableObject {
     }
 
     private func check() {
+        if candidate == nil, Date() >= nextCandidateRetry {
+            nextCandidateRetry = Date().addingTimeInterval(60)
+            if let binary { loadCandidate(binary) }
+        }
         refreshVoting()
         applyDuty()
         refreshProver()
@@ -446,26 +531,81 @@ final class NodeController: ObservableObject {
         refreshDisk()
         let port = Self.port, switched = self.switched
         Task.detached {
-            let local = localNodeHeight(port: port)
-            let network = switched ? nil : (try? chainStatus())?.height
+            // One reading of the local node covers all three feeds: its
+            // height, its stage-wise activity counter (red team #2), and —
+            // cached for the rollback decision (red team #3) — the newest
+            // protocol the chain has scheduled.
+            let status = await LocalRPC.call(port: port, method: "aether_status", params: []) as? [String: Any]
+            let statusHeight = (status?["height"] as? NSNumber)?.uint64Value
+            let local = statusHeight ?? localNodeHeight(port: port)
+            // The network's height stays in the picture after the switch too
+            // (red team #17): the wallet's own multi-source verified view,
+            // whether or not it is reading through this node.
+            let network = try? authenticatedRemoteHeight()
+            let activity = (status?["activity"] as? NSNumber)?.uint64Value
             await MainActor.run {
-                guard self.process != nil, let local else { return }
-                if self.height != local { self.height = local }
-                if self.switched || local + 2 >= (network ?? 0) {
-                    useLocalNode(port: port)
-                    self.switched = true
-                    if self.state != .running { self.state = .running }
-                } else {
-                    if self.state != .starting { self.state = .starting }  // catching up; the wallet keeps asking validators meanwhile
+                guard self.process != nil else { return }
+                let useLocal = self.watchdog.useLocalNode(
+                    local: statusHeight, network: network,
+                    responsive: status != nil, currentlyLocal: self.switched)
+                if self.switched != useLocal {
+                    self.switched = useLocal
+                    useLocalNode(port: useLocal ? port : nil)
+                    self.state = useLocal ? .running : .starting
                 }
-                // A stall (the network moves, ours has not for a minute):
-                // restart the node — the incident of 2026-09-29 looked like
-                // this, and "끊김" told the user nothing.
-                if case .restart = self.watchdog.polled(Date(), local: local, network: network) {
+                guard let local else {
+                    self.state = .starting
+                    return
+                }
+                if self.height != local { self.height = local }
+                if let scheduled = (status?["newest_scheduled"] as? NSNumber)?.uint64Value {
+                    self.scheduledProtocol = scheduled
+                }
+                if !self.switched && self.state != .starting {
+                    self.state = .starting  // catching up; the wallet keeps asking validators meanwhile
+                }
+                // A stall (the network moves, ours has not for a minute) —
+                // unless the node's own work counter is moving (a snapshot
+                // download, a store recovery, a backlog replay), and with
+                // twice the patience while this Mac is in the voting set (its
+                // restart costs the network a signature). The incident of
+                // 2026-09-29 looked exactly like this, and "끊김" told the
+                // user nothing.
+                if case .restart = self.watchdog.polled(Date(), local: local, network: network, activity: activity, voting: self.isValidator) {
                     self.restartIfRunning()
                 }
             }
         }
+    }
+
+    /// Sleep/wake (red team #9): everything the watchdog was timing before a
+    /// sleep is stale the moment the Mac sleeps — the freeze it was counting,
+    /// the heights it was comparing. Invalidate on both ends of a sleep, and
+    /// take a fresh reading right on the wake.
+    private func watchSleep() {
+        guard wakeObservers.isEmpty else { return }
+        let center = NSWorkspace.shared.notificationCenter
+        wakeObservers = [
+            center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self, self.process != nil else { return }
+                    self.watchdog.invalidate()
+                    self.switched = false
+                    useLocalNode(port: nil)
+                    self.state = .starting
+                }
+            },
+            center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self, self.process != nil else { return }
+                    self.watchdog.invalidate()
+                    self.switched = false
+                    useLocalNode(port: nil)
+                    self.state = .starting
+                    self.check()
+                }
+            },
+        ]
     }
 }
 // MARK: validator duty (docs/design/13-roadmap.md F, P0)

@@ -186,6 +186,7 @@ async fn start_validator(context: &Ctx, oracle: &Oracle<Pk, Ctx>, i: u64, chain:
             blocker: oracle.control(me.clone()),
             provider: oracle.manager(),
             partition_prefix: format!("v{i}"),
+            journal_dir: None,
             me,
             scheme,
             identity,

@@ -426,27 +426,24 @@ impl LocalKeys {
 
     /// Write `<dir>/validator.key` (mode 600) and `<dir>/validator.pub.json`. Refuses to overwrite.
     pub fn save(&self, dir: &Path) -> Result<(), String> {
-        use std::io::Write as _;
-        use std::os::unix::fs::OpenOptionsExt as _;
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         let path = dir.join(KEY_FILE);
+        if path.exists() {
+            return Err(format!("{} exists (keys are never overwritten)", path.display()));
+        }
         let j = KeyFileJson {
             consensus: hex::encode(self.signer.encode()),
             node: hex::encode(self.node_secret.to_bytes()),
         };
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)
-            .map_err(|e| format!("{}: {e} (keys are never overwritten)", path.display()))?;
-        f.write_all(&serde_json::to_vec_pretty(&j).expect("json"))
-            .map_err(|e| e.to_string())?;
-        std::fs::write(
-            dir.join(PUBLIC_FILE),
-            serde_json::to_vec_pretty(&self.public()).expect("json"),
-        )
-        .map_err(|e| e.to_string())
+        // Atomic replacement (red team #5): a crash or a full disk mid-write
+        // leaves no truncated key file a later start would treat as lost.
+        crate::atomic::create(&path, &serde_json::to_vec_pretty(&j).expect("json"), 0o600)?;
+        crate::atomic::replace(
+            &dir.join(PUBLIC_FILE),
+            &serde_json::to_vec_pretty(&self.public()).expect("json"),
+            0o644,
+        )?;
+        Ok(())
     }
 }
 

@@ -50,8 +50,8 @@
 | 31-32 | B4 가지치기, B5 조각 1단계 | ✅ | `prune.rs`, `shards.rs`, `era_net.rs` |
 | 33 | 목표치 아래 기본 수수료 0 | ✅ | `execution/src/fees.rs:22-27,64-70` |
 | 34 | **지갑이 잔액 0이면 팁 0** (12:106, 13 E1) | ❌ | 아래 G2 |
-| 35 | 레지스트라 키를 서명 전용 Mac의 Secure Enclave에 (12:115) | ❌ | `main.rs:329,725,1417`: `<data>/registrar.key` 파일 |
-| 36 | 위원회가 레지스트라 키 교체·철회 (12:116) | 🔶 | 교체는 `upgrade.rs:38`, `chain.rs:929-932`. 레지스트라를 없애는 철회 경로는 없음 |
+| 35 | 레지스트라 키를 서명 전용 Mac의 Secure Enclave에 (12:115) | ✅ | `apps/registrar-signer`(Swift CLI, CryptoKit Secure Enclave) + `crates/node/src/registrar_signer.rs`(`--registrar-signer <socket>`). 키는 칩 밖으로 나오지 않고 노드 데이터 폴더에 없다. 파일 키(`registrar.key`)는 개발망·리허설용으로만 남음. 상주 launchd 잡은 아직 없음(docs/ops/registrar.md "남은 일") |
+| 36 | 위원회가 레지스트라 키 교체·철회 (12:116) | ✅ | 교체는 `upgrade.rs:38`, `chain.rs:929-932`. 철회는 두 조각을 0으로 쓰는 업그레이드: `registry::registrar_revoked`(`execution/src/registry.rs`), 노드는 `devicecheck::registrar_key_check`로 거부(`rpc.rs` register_device·reattest, `main.rs` 시작 경고). 시험: `crates/node/tests/activation.rs`, `crates/execution/tests/registry.rs` |
 | 37 | 에포크당 신규 등록 상한 온체인 (12:115-116) | 🔶 | `execution/src/registry.rs:61-70` `MAX_PER_EPOCH=16`. **프로토콜 2 업그레이드 때만** 설치됨 |
 | 38 | 업그레이드 7일 뒤 발효, 앱이 미리 알림 (12:115) | ❌ | `chain.rs:1467-1475`: 최소 예고가 **1 에포크(1시간)**. 앱은 업데이트 확인만 함(`NodeController.swift:331-340`) |
 | 39 | 재현 가능한 빌드, 업데이트 서명 지문 표시 (12:115) | ❌ | remap은 `build-extension.sh:12`에만 있음. 앱 UI에 지문 표시 없음 |
@@ -81,14 +81,14 @@
 | **G1** | 메인넷은 제네시스부터 노드 보상·증명 시장·16석 증가 규칙 (15:90, 13 E1) | `ChainConfig`(`chain.rs:40-70`)와 `NetworkFile`(`roster.rs:40-79`)에 프로토콜 필드가 없음. 일정표가 비면 `protocol_at`이 1을 돌려줌(`upgrade.rs:45-47`). 그 결과 증명 거부(`chain.rs:925-926`), 증가 추첨 꺼짐(`chain.rs:1902` `next_protocol() >= 3`), 등록 상한 없음(`forks.rs:19`는 v2 업그레이드 때만 적용). mainnet-launch.md에는 업그레이드 단계도 없음 | **CRITICAL** |
 | **G2** | 잔액 없는 거래: 지갑이 팁 0 (12:106 (1), 13 E1) | FFI `fee_caps`가 팁을 1 gwei로 고정(`crates/ffi/src/lib.rs:550-566`), `prepare`가 모든 거래에 적용(`:1068-1088`). 확장 wasm도 같음(`crates/wasm/src/lib.rs:28-32`). 실행 계층은 `gas_limit × max_fee.exec`만큼 잔액을 요구(`execution/src/block.rs:273-276`). 그래서 `prepare_register_node`(`ffi:1141-1158`, gas 400k)가 잔액 0에서 실패함. CLI만 `--tip 0` 지원(`main.rs:2346-2348`) | **CRITICAL** |
 | G3 | 업그레이드 7일 예고, 앱이 미리 알림 (12:115) | `chain.rs:1467-1475`: 예고가 1 에포크 | HIGH |
-| G4 | 레지스트라 키를 Secure Enclave·서명 전용 Mac에 (12:115) | `main.rs:329,725,1417` 파일 키. mainnet-launch.md:21도 "검증자 1번 Mac"에 둠 | HIGH |
+| G4 | 레지스트라 키를 Secure Enclave·서명 전용 Mac에 (12:115) | **해결(2026-09-30):** 서명 전용 Mac의 Secure Enclave + `--registrar-signer`(apps/registrar-signer, docs/ops/registrar.md, mainnet-launch.md 1·5단계). 파일 키는 개발망용. 상주 잡·자동 재연결은 남음 | HIGH |
 | G5 | 재현 가능한 빌드와 증명 프로그램 ID 고정 (15:161, 12:115) | `scripts/prover-program.sh`에 `--remap-path-prefix` 없음. 앱·노드 릴리스 스크립트에도 없음 | HIGH |
 | G6 | 인계 명단 바인딩, 예비 키 강화, 레드팀 09-29 수정 | 진행 중, 미병합 | HIGH |
 | G7 | 릴리스 로그와 빌더 공동서명 (공급망) | 진행 중 | HIGH |
 | G8 | 그룹 대비 제네시스 필드 (13:135 "메인넷 제네시스에 미리") | 제네시스를 한 번 만들면 되돌릴 수 없어서 나중에 넣을 수 없음. 진행 중 | HIGH |
 | G9 | 교차 모델 감사 1회 무결점 (12:106 (3)) | 합의·발행·대기열 코드가 아직 동결 전(G1·G2·G6 미해결) | HIGH |
 | G10 | 에포크당 등록 상한이 제네시스부터 있어야 함 | G1과 같은 원인(`registry.rs:61-70`이 v2 전용) | HIGH |
-| G11 | 레지스트라 철회 경로 (12:116) | `Activation.registrar: Option`은 교체만 가능하고 없앨 수 없음 | MEDIUM |
+| G11 | 레지스트라 철회 경로 (12:116) | **해결(2026-09-30):** `registrar`를 `(0, 0)`으로 두는 업그레이드가 철회다 — `registry::registrar_revoked`, 노드의 `registrar_key_check`가 등록·재인증을 거부하고 시작 시 경고. 후보는 남는다 | MEDIUM |
 | G12 | 첫 보상 알림, 공개 네트워크 화면 (15:69-73) | 없음 | MEDIUM |
 | G13 | 이름 서비스와 금고 UI ("메인넷 전 만들 것", 12:70) | `contracts/src`에 이름 서비스 없음. 금고는 UI 없음 | MEDIUM |
 | G14 | k-of-n 복구 FFI와 `addOwner` (12:19) | `ffi/lib.rs:1560` | MEDIUM |
@@ -141,7 +141,7 @@ G1은 제네시스 직후 서명 업그레이드 2번(프로토콜 2, 그다음 
 3. G6·G7·G8: 진행 중인 브랜치를 병합합니다(인계 명단 바인딩·예비 키 강화, 레드팀 09-29, 릴리스 로그·공동서명, 그룹 번호·위원회 크기·에포크 BLS 난수 제네시스 필드).
 4. G3: 업그레이드 최소 예고를 7일로 하고, 앱에 예약된 업그레이드 알림을 넣습니다(G1 이후에 해야 메인넷 초기가 막히지 않음).
 5. G5: `--remap-path-prefix`와 고정 툴체인으로 증명 프로그램 ID·노드·앱을 재현 가능하게 빌드합니다. 앱에 Sparkle 서명 지문을 표시합니다.
-6. G4·G11: 레지스트라 서명을 Secure Enclave로 옮기고(서명 전용 Mac 도우미), 위원회 업그레이드로 레지스트라를 철회하는 경로를 추가합니다.
+6. G4·G11: ~~레지스트라 서명을 Secure Enclave로 옮기고(서명 전용 Mac 도우미), 위원회 업그레이드로 레지스트라를 철회하는 경로를 추가합니다.~~ **완료(2026-09-30, docs/ops/registrar.md).** 서명 전용 Mac의 상주 launchd 잡과 교체 자동 반영은 남았습니다.
 7. mainnet-launch.md와 `mainnet-rehearsal.sh`에 프로토콜·상한·잔액 0 거래 점검을 추가합니다.
 8. G12: 첫 보상 알림, 공개 네트워크 화면(`aether_rewardStatus` 기반).
 9. G13: 이름 서비스 컨트랙트, 금고·잠금 UI(설계 원칙상 메인넷 전 목록).

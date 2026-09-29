@@ -49,7 +49,7 @@ impl<'a> MakeWriter<'a> for Log {
 }
 
 fn net(reserve: Option<Reserve>, committee: Option<Vec<(String, String)>>) -> Net {
-    Net::new(Opts { chain_id: CHAIN, node_rewards: true, epoch_blocks: E, macs: 4, min_streak: Some(0), history_v2: false, reserve, committee })
+    Net::new(Opts { chain_id: CHAIN, node_rewards: true, epoch_blocks: E, macs: 4, min_streak: Some(0), history_v2: false, protocol: 1, reserve, committee })
 }
 
 /// Build the next block carrying `handoff`: it must be refused, as a bad
@@ -196,7 +196,7 @@ fn a_network_without_node_rewards_hands_over_as_before() {
     // The binding is a node-rewards rule: a genesis that did not turn them on
     // (testnet 7780) still accepts a committee-signed handoff with no roster
     // anywhere in state — its consensus rules never change.
-    let mut n = Net::new(Opts { chain_id: CHAIN + 1, node_rewards: false, epoch_blocks: E, macs: 4, min_streak: Some(0), history_v2: false, reserve: None, committee: None });
+    let mut n = Net::new(Opts { chain_id: CHAIN + 1, node_rewards: false, epoch_blocks: E, macs: 4, min_streak: Some(0), history_v2: false, protocol: 1, reserve: None, committee: None });
     let out: Vec<(ed25519::PrivateKey, String)> = (0..4).map(|i| (n.voting[i].clone(), mac_entry(i).1)).collect();
     let (_, handoff) = n.committee.handoff_to(CHAIN + 1, 1, &out);
     let carried = n.step_handoff(handoff);
@@ -226,6 +226,7 @@ fn a_network_file_never_seats_a_validator_that_is_also_a_reserve_key() {
         node_rewards: Some(true),
         reserve: Some(ReserveFile { operator: Address::repeat_byte(0xf0), validators: reserve }),
         genesis_validators: None,
+        protocol: None,
     };
     assert!(file(vec![member(9)]).genesis().is_ok(), "a reserve key of its own is fine");
     assert_eq!(file(vec![member(1)]).genesis().unwrap_err(), "validator 1: its key is also a reserve key");

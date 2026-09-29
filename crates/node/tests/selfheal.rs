@@ -48,6 +48,7 @@ fn config(chain_id: u64) -> ChainConfig {
         draw_epochs: None,
         history_v2: false,
         node_rewards: false,
+        protocol: 1,
         committee: Vec::new(),
         reserve: None,
     }

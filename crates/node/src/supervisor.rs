@@ -594,6 +594,7 @@ mod tests {
             min_streak: None,
             draw_epochs: None,
             history: None,
+            protocol: None,
             node_rewards: None,
             reserve: None,
         }

@@ -34,6 +34,7 @@ fn config() -> ChainConfig {
         min_streak: None,
         draw_epochs: None,
         history_v2: false,
+        protocol: 1,
         node_rewards: false,
         reserve: None,
     }
@@ -614,4 +615,109 @@ fn a_finalized_block_with_proofs_is_applied_even_without_a_local_verifier() {
     let applied = b.lock().finalized.clone();
     assert_eq!(applied.height, pb.height + 1);
     assert_eq!(applied.state.balance(&prover), proofs::issuance(20));
+}
+
+/// A genesis above protocol 1 runs the activated rules from height 0 (gap G1):
+/// the same one-time changes an activation block applies are installed at
+/// genesis, and the schedule carries the activation at height 0 — so the proof
+/// market, the registry v2 and its cap are on at block 1, with no signed
+/// upgrade, and a chain that upgraded there agrees on the rules.
+#[test]
+fn a_genesis_above_protocol_1_runs_the_activated_rules_from_height_0() {
+    use aether_execution::registry;
+    let mut cfg = config();
+    cfg.protocol = 3;
+    let (chain, genesis) = {
+        let (chain, genesis) = Chain::new(cfg);
+        let (_, sharing, _) = aether_light::devnet_threshold(4);
+        let mut g = chain.lock();
+        g.identity = Some(*sharing.public());
+        g.protocol = 3;
+        g.verifier = Some(Arc::new(EchoVerifier));
+        drop(g);
+        (chain, genesis)
+    };
+    let parent = chain.lock().finalized.clone();
+    // The activation is on the schedule from height 0, with no registrar change.
+    assert_eq!(
+        *parent.schedule,
+        vec![aether_node::upgrade::Activation { protocol: 3, at: 0, registrar: None }]
+    );
+    assert_eq!(aether_node::upgrade::protocol_at(&parent.schedule, 1), 3);
+    // The genesis state is exactly what the activations install: the same code
+    // path an activation block runs, applied at genesis.
+    let mut activated = config().genesis_state();
+    for p in 2..=3 {
+        aether_execution::forks::activate(p, &mut activated).unwrap();
+    }
+    assert_eq!(activated.root(), parent.state.root());
+    assert_eq!(parent.state.code(&registry::REGISTRY), registry::code_v2());
+    assert_eq!(registry::max_per_epoch(&parent.state), registry::MAX_PER_EPOCH);
+
+    // Block 1 runs protocol 3, records a statement, and its proof pays at block 2.
+    let b1 = propose(&chain, &parent, &genesis, None);
+    assert_eq!(b1.payload().unwrap().version, 3);
+    let p1 = advance(&chain, parent.clone(), &b1);
+    assert_ne!(p1.statement, Default::default());
+    let prover = Address::repeat_byte(0x77);
+    let claim = ProofClaim {
+        height: 1,
+        prover,
+        proof: hex::encode(aether_proving::block::claim(p1.statement.commitment, prover)),
+    };
+    let b2 = propose_with(&chain, &p1, &b1, None, vec![claim]);
+    let p2 = advance(&chain, p1, &b2);
+    assert_eq!(p2.state.balance(&prover), aether_execution::proofs::issuance(1));
+
+    // The same rules by the upgrade path: a protocol-1 genesis that signs 2
+    // then 3 reaches the same registry code, cap and protocol.
+    let (slow, slow_genesis) = {
+        let (chain, genesis) = Chain::new(config());
+        let (_, sharing, _) = aether_light::devnet_threshold(4);
+        let mut g = chain.lock();
+        g.identity = Some(*sharing.public());
+        g.protocol = 3;
+        g.verifier = Some(Arc::new(EchoVerifier));
+        drop(g);
+        (chain, genesis)
+    };
+    let mut sp = slow.lock().finalized.clone();
+    assert!(sp.schedule.is_empty(), "a protocol-1 genesis schedules nothing");
+    let mut last = propose(&slow, &sp, &slow_genesis, Some(signed(2, 20)));
+    sp = advance(&slow, sp, &last);
+    for _ in 2..=40 {
+        let up = (sp.height == 25).then(|| signed(3, 40));
+        let b = propose(&slow, &sp, &last, up);
+        sp = advance(&slow, sp, &b);
+        last = b;
+    }
+    assert_eq!(sp.next_protocol(), 3);
+    assert_eq!(sp.state.code(&registry::REGISTRY), registry::code_v2());
+    assert_eq!(registry::max_per_epoch(&sp.state), registry::MAX_PER_EPOCH);
+}
+
+/// The testnet's genesis is byte-identical: a config without the protocol field
+/// (0/`Default`, read as 1) builds the same genesis block, state and metadata as
+/// before the field existed, and schedules nothing.
+#[test]
+fn a_genesis_without_a_protocol_stays_byte_identical() {
+    let mut zero = config();
+    zero.protocol = 0;
+    let (with_field, genesis) = Chain::new(config());
+    let (_, without) = Chain::new(zero);
+    assert_eq!(genesis.digest(), without.digest());
+    // The genesis block, state root and metadata as they were before the field
+    // (the pre-change values, pinned): 7780 keeps its chain id, genesis hash and
+    // proof program.
+    assert_eq!(format!("{}", genesis.digest()), "3367caeea3e4165b5c9bca85c162ed36ac84b2131443cd353547b331869621bb");
+    let exec = with_field.lock().finalized.clone();
+    assert_eq!(
+        format!("{:x}", exec.state.root()),
+        "e375dc32d852b36143ed6ef4aeb30fa1db17fd457d75d0e1bb82acb6c01985e7"
+    );
+    assert_eq!(
+        format!("{:x}", exec.meta_digest()),
+        "ea886ae2e6344e3483e621fa828b21acb29258864f6274985a18988c0c39535f"
+    );
+    assert!(exec.schedule.is_empty());
 }

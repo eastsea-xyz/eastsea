@@ -68,6 +68,7 @@ fn config() -> ChainConfig {
         min_streak: None,
         draw_epochs: None,
         history_v2: true,
+        protocol: 1,
         node_rewards: false,
         reserve: None,
     }
@@ -269,6 +270,7 @@ fn rpc_state(node: &Node, registrar: Option<Arc<aether_node::devicecheck::Regist
         handoff: None,
         snapshot: Default::default(),
         prover: None,
+        shards: None,
     }
 }
 

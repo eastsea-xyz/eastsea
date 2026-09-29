@@ -44,6 +44,7 @@ fn config(history_v2: bool) -> ChainConfig {
         min_streak: None,
         draw_epochs: None,
         history_v2,
+        protocol: 1,
         node_rewards: false,
         reserve: None,
     }

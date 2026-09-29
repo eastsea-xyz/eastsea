@@ -269,6 +269,7 @@ fn rpc_state(node: &Node, registrar: Option<Arc<aether_node::devicecheck::Regist
         handoff: None,
         snapshot: Default::default(),
         prover: None,
+        shards: None,
     }
 }
 

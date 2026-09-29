@@ -69,3 +69,8 @@ akita-types = { path = "/Volumes/workspace/aether-jolt/akita/crates/akita-types"
 
 [profile.release]
 debug = false
+# One codegen unit: with several, LLVM's thread scheduling can reorder sections
+# between builds, so the host binary (and the embedded guest ELF it carries)
+# changes bytes from run to run. The node pins its program id, so a rebuild
+# must land on the same bytes (scripts/repro-check.sh).
+codegen-units = 1

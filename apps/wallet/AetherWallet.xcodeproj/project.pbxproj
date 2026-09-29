@@ -488,6 +488,7 @@
 				);
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = "$(SRCROOT)/../../target/aarch64-apple-ios/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework Network";
 				"OTHER_LDFLAGS[sdk=iphonesimulator*]" = "$(SRCROOT)/../../target/aarch64-apple-ios-sim/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework Network";
+				OTHER_SWIFT_FLAGS = "-file-prefix-map $(SRCROOT)=/aether-node -debug-prefix-map $(SRCROOT)=/aether-node";
 				PRODUCT_BUNDLE_IDENTIFIER = com.pipln.aether.ios;
 				PRODUCT_NAME = Aether;
 				SDKROOT = iphoneos;
@@ -520,6 +521,7 @@
 				);
 				MARKETING_VERSION = 0.6.6;
 				OTHER_LDFLAGS = "$(SRCROOT)/../../target/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework OpenDirectory -framework IOKit";
+				OTHER_SWIFT_FLAGS = "-file-prefix-map $(SRCROOT)=/aether-node -debug-prefix-map $(SRCROOT)=/aether-node";
 				PRODUCT_BUNDLE_IDENTIFIER = com.pipln.aether;
 				PRODUCT_NAME = Aether;
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -549,6 +551,7 @@
 				);
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = "$(SRCROOT)/../../target/aarch64-apple-ios/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework Network";
 				"OTHER_LDFLAGS[sdk=iphonesimulator*]" = "$(SRCROOT)/../../target/aarch64-apple-ios-sim/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework Network";
+				OTHER_SWIFT_FLAGS = "-file-prefix-map $(SRCROOT)=/aether-node -debug-prefix-map $(SRCROOT)=/aether-node";
 				PRODUCT_BUNDLE_IDENTIFIER = com.pipln.aether.ios;
 				PRODUCT_NAME = Aether;
 				SDKROOT = iphoneos;
@@ -637,6 +640,7 @@
 				);
 				MARKETING_VERSION = 0.6.6;
 				OTHER_LDFLAGS = "$(SRCROOT)/../../target/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework OpenDirectory -framework IOKit";
+				OTHER_SWIFT_FLAGS = "-file-prefix-map $(SRCROOT)=/aether-node -debug-prefix-map $(SRCROOT)=/aether-node";
 				PRODUCT_BUNDLE_IDENTIFIER = com.pipln.aether;
 				PRODUCT_NAME = Aether;
 				PROVISIONING_PROFILE_SPECIFIER = "";

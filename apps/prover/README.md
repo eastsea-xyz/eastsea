@@ -72,9 +72,11 @@ JSON 필드와 인자 이름은 역사적 이유로 `commitment`이지만 값은
   대조). 콜드 RSS 1.07 GB 중 0.41 GB 는 프로그램 전처리(바이트코드 2^21)다.
 - 증명이 선언한 `ram_K`는 메모리 레이아웃 상한으로 검사한 뒤 셋업을 만든다(DoS 방지).
 - ELF가 곧 프로그램 ID다: prover 와 verifier 는 같은 ELF 를 내장해야 한다.
-  `build-guest.sh`는 `--remap-path-prefix`로 경로를 지워 체크아웃·툴체인 위치와 무관한
-  ELF를 만든다. 릴리스에서는 한 번 빌드한 ELF를 `AETHER_PROVER_GUEST_ELF`로 고정하고
-  `info`의 SHA-256 을 기록할 것.
+  `build-guest.sh`는 게스트를 고정 경로 스테이지(`scripts/guest-stage.sh`)에서 빌드하고
+  경로를 `--remap-path-prefix`로 지워 체크아웃·툴체인 위치와 무관한 ELF를 만든다(체크아웃
+  경로는 cargo가 `-C metadata`에 해시하므로 remap만으로는 부족하다 —
+  `docs/ops/reproducible-builds.md`). 릴리스에서는 한 번 빌드한 ELF를
+  `AETHER_PROVER_GUEST_ELF`로 고정하고 `info`의 SHA-256 을 기록할 것.
 - `scripts/prover-program.sh`가 이 사이드카를 빌드하고 SHA-256(프로그램 ID)을 출력한다.
   `build-wallet.sh`·`testnet-reset.sh`는 이 값을 `AETHER_PROVER_PROGRAM`으로 넣어 노드를
   빌드하고, 노드는 시작할 때 사이드카의 `info`와 대조한다. Jolt 포크가 없으면 macOS 앱

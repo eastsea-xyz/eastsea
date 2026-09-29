@@ -56,6 +56,20 @@ pub struct VerifiedAccount {
     pub validators: u32,
 }
 
+/// A ReleaseLog entry proven against a committee-certified state root.
+#[derive(uniffi::Record)]
+pub struct VerifiedRelease {
+    pub manifest_sha256: String,
+    pub archive_sha256: String,
+    pub signatures_sha256: String,
+    pub published_block: u64,
+    pub published_at: u64,
+    pub emergency: bool,
+    pub state_height: u64,
+    pub certified_block: u64,
+    pub certified_timestamp_ms: u64,
+}
+
 #[derive(uniffi::Record)]
 pub struct PreparedTx {
     pub from: String,
@@ -1453,6 +1467,136 @@ fn verified_slot_at(account: Address, slot: U256, set: &ValidatorSet) -> R<U256>
     let height = v["height"].as_u64().unwrap_or_default();
     let anchor = anchor(height, set)?;
     aether_light::verify_storage(&anchor, &account, slot, &proof).map_err(|e| WalletError::Verification(format!("account storage: {e}")))
+}
+
+/// ReleaseLog's `Entry[] public entries` starts at storage slot 0. Each
+/// fixed-size Entry occupies four slots at keccak256(slot 0) + index * 4.
+fn release_slots(index: u64) -> R<[U256; 5]> {
+    let offset = index.checked_mul(4).ok_or_else(|| WalletError::Invalid("release index too large".into()))?;
+    let base = U256::from_be_bytes(alloy_primitives::keccak256([0u8; 32]).0) + U256::from(offset);
+    Ok([U256::ZERO, base, base + U256::from(1), base + U256::from(2), base + U256::from(3)])
+}
+
+fn release_metadata(meta: U256, height: u64) -> R<(u64, u64, bool)> {
+    let published_block = (meta & U256::from(u64::MAX)).to::<u64>();
+    let published_at = ((meta >> 64usize) & U256::from(u64::MAX)).to::<u64>();
+    let emergency_byte = ((meta >> 128usize) & U256::from(0xff)).to::<u8>();
+    if published_block == 0 || published_block > height || published_at == 0 || emergency_byte > 1 || meta >> 136usize != U256::ZERO {
+        return Err(WalletError::Verification("invalid release publication metadata".into()));
+    }
+    Ok((published_block, published_at, emergency_byte == 1))
+}
+
+/// Read a ReleaseLog entry. Every slot must come from one state height, and
+/// every EIP-7864 proof is checked under the same finality certificate.
+#[uniffi::export]
+pub fn verified_release(contract: String, code_hash: String, index: u64, validators: u32) -> R<VerifiedRelease> {
+    // The index comes from an untrusted distribution sidecar. A missing entry
+    // must not park an honest follower as a liar for six hours.
+    verified_release_at(contract, code_hash, index, validators)
+}
+
+fn verified_release_at(contract: String, code_hash: String, index: u64, validators: u32) -> R<VerifiedRelease> {
+    let address: Address = contract.parse().map_err(|_| WalletError::Invalid("release log address".into()))?;
+    let expected_hash: aether_types::B256 = code_hash.parse().map_err(|_| WalletError::Invalid("release log code hash".into()))?;
+    let set = trusted_set(validators)?;
+    let slots = release_slots(index)?;
+    let replies = slots.iter().map(|s| call("aether_getStorage", json!([address, s]))).collect::<R<Vec<_>>>()?;
+    let code = call("aether_getCodeHash", json!([address]))?;
+    let height = replies[0]["height"].as_u64().ok_or_else(|| WalletError::Verification("release state height missing".into()))?;
+    if replies.iter().any(|v| v["height"].as_u64() != Some(height)) || code["height"].as_u64() != Some(height) {
+        return Err(WalletError::Verification("release storage slots came from different blocks".into()));
+    }
+    let anchor = anchor(height, &set)?;
+    let code_proof: Proof = parse(&code["proof"], "code hash proof")?;
+    if aether_light::verify_code_hash(&anchor, &address, &code_proof)
+        .map_err(|e| WalletError::Verification(format!("release code proof: {e}")))? != Some(expected_hash) {
+        return Err(WalletError::Verification("the ReleaseLog runtime code hash is not pinned".into()));
+    }
+    let values = replies.iter().zip(slots.iter()).map(|(v, slot)| {
+        let proof: Proof = parse(&v["proof"], "proof")?;
+        aether_light::verify_storage(&anchor, &address, *slot, &proof)
+            .map_err(|e| WalletError::Verification(format!("release storage proof: {e}")))
+    }).collect::<R<Vec<_>>>()?;
+    if U256::from(index) >= values[0] {
+        return Err(WalletError::Verification("release entry does not exist".into()));
+    }
+    let (published_block, published_at, emergency) = release_metadata(values[4], height)?;
+    Ok(VerifiedRelease {
+        manifest_sha256: format!("{:064x}", values[1]),
+        archive_sha256: format!("{:064x}", values[2]),
+        signatures_sha256: format!("{:064x}", values[3]),
+        published_block,
+        published_at,
+        emergency,
+        state_height: height,
+        certified_block: anchor.height,
+        certified_timestamp_ms: anchor.timestamp_ms,
+    })
+}
+
+#[cfg(test)]
+mod release_tests {
+    use super::*;
+
+    #[test]
+    fn release_slots_follow_solidity_dynamic_array_layout() {
+        let first = release_slots(0).unwrap();
+        let second = release_slots(1).unwrap();
+        assert_eq!(first[0], U256::ZERO);
+        assert_eq!(first[1], U256::from_be_bytes(alloy_primitives::keccak256([0u8; 32]).0));
+        assert_eq!(second[1], first[1] + U256::from(4));
+        assert_eq!(second[4], second[1] + U256::from(3));
+        assert!(release_slots(u64::MAX).is_err());
+    }
+
+    #[test]
+    fn release_metadata_rejects_future_and_noncanonical_values() {
+        let meta = U256::from(50) | (U256::from(1_000_000) << 64usize) | (U256::from(1) << 128usize);
+        assert_eq!(release_metadata(meta, 50).unwrap(), (50, 1_000_000, true));
+        assert!(release_metadata(meta, 49).is_err());
+        assert!(release_metadata(meta | (U256::from(2) << 128usize), 50).is_err());
+        assert!(release_metadata(meta | (U256::from(1) << 200usize), 50).is_err());
+    }
+
+    #[test]
+    fn release_storage_rejects_a_tampered_rpc_proof() {
+        let fixture: Value = serde_json::from_str(include_str!("../../light/tests/fixtures/devnet4.json")).unwrap();
+        let block = from_hex(fixture["anchor_block"].as_str().unwrap()).unwrap();
+        let finalization = from_hex(fixture["anchor_finalization"].as_str().unwrap()).unwrap();
+        let anchor = verify_finalized_chain(&ValidatorSet::devnet(4), &block, &finalization, &[]).unwrap();
+        let address: Address = fixture["address"].as_str().unwrap().parse().unwrap();
+        let wrong_proof: Proof = serde_json::from_value(fixture["proof"].clone()).unwrap();
+        assert!(aether_light::verify_storage(&anchor, &address, release_slots(0).unwrap()[1], &wrong_proof).is_err());
+        assert!(aether_light::verify_code_hash(&anchor, &address, &wrong_proof).is_err());
+    }
+
+    #[test]
+    fn release_list_slots_verify_against_the_certified_state_root() {
+        use aether_state::layout::{code_hash_key, storage_slot_key};
+        use aether_state::StateRepository;
+        let address: Address = "0x0000000000000000000000000000000000007704".parse().unwrap();
+        let mut state = aether_execution::WorldState::default();
+        state.set_code(address, vec![0x00].into()).unwrap();
+        let slots = release_slots(0).unwrap();
+        let expected = [U256::from(1), U256::from(11), U256::from(22), U256::from(33),
+            U256::from(100) | (U256::from(1_000_000) << 64usize)];
+        for (slot, value) in slots.iter().zip(expected) {
+            state.set_storage(address, *slot, value);
+        }
+        let anchor = VerifiedBlock { height: 201, digest: String::new(), timestamp_ms: 1_000_001_000,
+            parent_state_root: state.root(), history_root: aether_types::B256::ZERO };
+        let repo = state.repo();
+        let code = repo.prove(&[code_hash_key(repo.hasher(), &address)]).remove(0);
+        assert_eq!(aether_light::verify_code_hash(&anchor, &address, &code).unwrap(), Some(state.code_hash(&address)));
+        for (slot, value) in slots.iter().zip(expected) {
+            let proof = repo.prove(&[storage_slot_key(repo.hasher(), &address, *slot)]).remove(0);
+            assert_eq!(aether_light::verify_storage(&anchor, &address, *slot, &proof).unwrap(), value);
+            let mut tampered = proof.clone();
+            tampered.value = Some(U256::from(999).to_be_bytes::<32>());
+            assert!(aether_light::verify_storage(&anchor, &address, *slot, &tampered).is_err());
+        }
+    }
 }
 
 /// Make the device with `recovery_code` able to recover this account after a

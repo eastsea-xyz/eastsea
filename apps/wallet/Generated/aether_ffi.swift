@@ -814,6 +814,63 @@ public func FfiConverterTypePayment_lower(_ value: Payment) -> RustBuffer {
 }
 
 
+/**
+ * A server by node id and one socket address, for pinning (tests, previews).
+ */
+public struct PinnedServer: Equatable, Hashable {
+    public var node: String
+    public var socket: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(node: String, socket: String) {
+        self.node = node
+        self.socket = socket
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension PinnedServer: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePinnedServer: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PinnedServer {
+        return
+            try PinnedServer(
+                node: FfiConverterString.read(from: &buf),
+                socket: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: PinnedServer, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.node, into: &buf)
+        FfiConverterString.write(value.socket, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePinnedServer_lift(_ buf: RustBuffer) throws -> PinnedServer {
+    return try FfiConverterTypePinnedServer.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePinnedServer_lower(_ value: PinnedServer) -> RustBuffer {
+    return FfiConverterTypePinnedServer.lower(value)
+}
+
+
 public struct PreparedTx: Equatable, Hashable {
     public var from: String
     public var nonce: UInt64
@@ -1474,6 +1531,91 @@ public func FfiConverterTypeVerifiedAccount_lower(_ value: VerifiedAccount) -> R
 
 
 /**
+ * A ReleaseLog entry proven against a committee-certified state root.
+ */
+public struct VerifiedRelease: Equatable, Hashable {
+    public var manifestSha256: String
+    public var archiveSha256: String
+    public var signaturesSha256: String
+    public var publishedBlock: UInt64
+    public var publishedAt: UInt64
+    public var emergency: Bool
+    public var stateHeight: UInt64
+    public var certifiedBlock: UInt64
+    public var certifiedTimestampMs: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(manifestSha256: String, archiveSha256: String, signaturesSha256: String, publishedBlock: UInt64, publishedAt: UInt64, emergency: Bool, stateHeight: UInt64, certifiedBlock: UInt64, certifiedTimestampMs: UInt64) {
+        self.manifestSha256 = manifestSha256
+        self.archiveSha256 = archiveSha256
+        self.signaturesSha256 = signaturesSha256
+        self.publishedBlock = publishedBlock
+        self.publishedAt = publishedAt
+        self.emergency = emergency
+        self.stateHeight = stateHeight
+        self.certifiedBlock = certifiedBlock
+        self.certifiedTimestampMs = certifiedTimestampMs
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension VerifiedRelease: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeVerifiedRelease: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> VerifiedRelease {
+        return
+            try VerifiedRelease(
+                manifestSha256: FfiConverterString.read(from: &buf),
+                archiveSha256: FfiConverterString.read(from: &buf),
+                signaturesSha256: FfiConverterString.read(from: &buf),
+                publishedBlock: FfiConverterUInt64.read(from: &buf),
+                publishedAt: FfiConverterUInt64.read(from: &buf),
+                emergency: FfiConverterBool.read(from: &buf),
+                stateHeight: FfiConverterUInt64.read(from: &buf),
+                certifiedBlock: FfiConverterUInt64.read(from: &buf),
+                certifiedTimestampMs: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: VerifiedRelease, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.manifestSha256, into: &buf)
+        FfiConverterString.write(value.archiveSha256, into: &buf)
+        FfiConverterString.write(value.signaturesSha256, into: &buf)
+        FfiConverterUInt64.write(value.publishedBlock, into: &buf)
+        FfiConverterUInt64.write(value.publishedAt, into: &buf)
+        FfiConverterBool.write(value.emergency, into: &buf)
+        FfiConverterUInt64.write(value.stateHeight, into: &buf)
+        FfiConverterUInt64.write(value.certifiedBlock, into: &buf)
+        FfiConverterUInt64.write(value.certifiedTimestampMs, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVerifiedRelease_lift(_ buf: RustBuffer) throws -> VerifiedRelease {
+    return try FfiConverterTypeVerifiedRelease.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVerifiedRelease_lower(_ value: VerifiedRelease) -> RustBuffer {
+    return FfiConverterTypeVerifiedRelease.lower(value)
+}
+
+
+/**
  * This Mac as a voting node: the registry's view of it (display only; the
  * numbers are not proven against a certificate).
  */
@@ -1569,6 +1711,188 @@ public func FfiConverterTypeVotingNodeStatus_lift(_ buf: RustBuffer) throws -> V
 public func FfiConverterTypeVotingNodeStatus_lower(_ value: VotingNodeStatus) -> RustBuffer {
     return FfiConverterTypeVotingNodeStatus.lower(value)
 }
+
+
+/**
+ * One follower Mac in the wallet's read pool (diagnostics; tests).
+ */
+public struct WalletServerInfo: Equatable, Hashable {
+    public var node: String
+    /**
+     * Requests rotate over it right now.
+     */
+    public var active: Bool
+    /**
+     * Moving average of its call latency.
+     */
+    public var latencyMs: UInt32?
+    /**
+     * Why it is passed over, when it is.
+     */
+    public var parked: String?
+    public var parkedForMs: UInt64?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(node: String,
+        /**
+         * Requests rotate over it right now.
+         */active: Bool,
+        /**
+         * Moving average of its call latency.
+         */latencyMs: UInt32?,
+        /**
+         * Why it is passed over, when it is.
+         */parked: String?, parkedForMs: UInt64?) {
+        self.node = node
+        self.active = active
+        self.latencyMs = latencyMs
+        self.parked = parked
+        self.parkedForMs = parkedForMs
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension WalletServerInfo: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeWalletServerInfo: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> WalletServerInfo {
+        return
+            try WalletServerInfo(
+                node: FfiConverterString.read(from: &buf),
+                active: FfiConverterBool.read(from: &buf),
+                latencyMs: FfiConverterOptionUInt32.read(from: &buf),
+                parked: FfiConverterOptionString.read(from: &buf),
+                parkedForMs: FfiConverterOptionUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: WalletServerInfo, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.node, into: &buf)
+        FfiConverterBool.write(value.active, into: &buf)
+        FfiConverterOptionUInt32.write(value.latencyMs, into: &buf)
+        FfiConverterOptionString.write(value.parked, into: &buf)
+        FfiConverterOptionUInt64.write(value.parkedForMs, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeWalletServerInfo_lift(_ buf: RustBuffer) throws -> WalletServerInfo {
+    return try FfiConverterTypeWalletServerInfo.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeWalletServerInfo_lower(_ value: WalletServerInfo) -> RustBuffer {
+    return FfiConverterTypeWalletServerInfo.lower(value)
+}
+
+
+/**
+ * Why a follower is passed over for a while.
+ */
+
+public enum Parked: Equatable, Hashable {
+
+    /**
+     * It answered "server busy" (its DoS limits): back off, politely.
+     */
+    case busy
+    /**
+     * It broke (connect, stream, timeout): rotate away.
+     */
+    case error
+    /**
+     * Its answers verify but lag the chain: try a fresher follower.
+     */
+    case stale
+    /**
+     * It served something that failed verification: demoted.
+     */
+    case lying
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension Parked: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeParked: FfiConverterRustBuffer {
+    typealias SwiftType = Parked
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Parked {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .busy
+
+        case 2: return .error
+
+        case 3: return .stale
+
+        case 4: return .lying
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: Parked, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .busy:
+            writeInt(&buf, Int32(1))
+
+
+        case .error:
+            writeInt(&buf, Int32(2))
+
+
+        case .stale:
+            writeInt(&buf, Int32(3))
+
+
+        case .lying:
+            writeInt(&buf, Int32(4))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeParked_lift(_ buf: RustBuffer) throws -> Parked {
+    return try FfiConverterTypeParked.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeParked_lower(_ value: Parked) -> RustBuffer {
+    return FfiConverterTypeParked.lower(value)
+}
+
 
 
 public 
@@ -1696,6 +2020,30 @@ fileprivate struct FfiConverterOptionUInt16: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionUInt32: FfiConverterRustBuffer {
+    typealias SwiftType = UInt32?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterUInt32.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterUInt32.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionUInt64: FfiConverterRustBuffer {
     typealias SwiftType = UInt64?
 
@@ -1712,6 +2060,30 @@ fileprivate struct FfiConverterOptionUInt64: FfiConverterRustBuffer {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterUInt64.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
+    typealias SwiftType = String?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterString.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterString.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -1815,6 +2187,56 @@ fileprivate struct FfiConverterSequenceTypePayment: FfiConverterRustBuffer {
         return seq
     }
 }
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypePinnedServer: FfiConverterRustBuffer {
+    typealias SwiftType = [PinnedServer]
+
+    public static func write(_ value: [PinnedServer], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypePinnedServer.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [PinnedServer] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [PinnedServer]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypePinnedServer.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeWalletServerInfo: FfiConverterRustBuffer {
+    typealias SwiftType = [WalletServerInfo]
+
+    public static func write(_ value: [WalletServerInfo], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeWalletServerInfo.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [WalletServerInfo] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [WalletServerInfo]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeWalletServerInfo.read(from: &buf))
+        }
+        return seq
+    }
+}
 /**
  * Account address for a Secure Enclave P-256 public key.
  */
@@ -1904,6 +2326,18 @@ public func localNodeHeight(port: UInt16) -> UInt64?  {
         FfiConverterUInt16.lower(port),uniffiCallStatus
     )
 })
+}
+/**
+ * Pin the follower Macs and validators to fixed addresses, bypassing
+ * discovery (tests and previews). Call before anything else.
+ */
+public func pinServers(followers: [PinnedServer], validators: [PinnedServer])throws   {try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_pin_servers(
+        FfiConverterSequenceTypePinnedServer.lower(followers),
+        FfiConverterSequenceTypePinnedServer.lower(validators),uniffiCallStatus
+    )
+}
 }
 /**
  * Add a recovery key (another device's code, or recovery words) next to the
@@ -2218,11 +2652,36 @@ public func verifiedHeight() -> UInt64  {
     )
 })
 }
+/**
+ * Read a ReleaseLog entry. Every slot must come from one state height, and
+ * every EIP-7864 proof is checked under the same finality certificate.
+ */
+public func verifiedRelease(contract: String, codeHash: String, index: UInt64, validators: UInt32)throws  -> VerifiedRelease  {
+    return try  FfiConverterTypeVerifiedRelease_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_verified_release(
+        FfiConverterString.lower(contract),
+        FfiConverterString.lower(codeHash),
+        FfiConverterUInt64.lower(index),
+        FfiConverterUInt32.lower(validators),uniffiCallStatus
+    )
+})
+}
 public func votingNodeStatus(validatorKey: String)throws  -> VotingNodeStatus  {
     return try  FfiConverterTypeVotingNodeStatus_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
         uniffiCallStatus in
     uniffi_aether_ffi_fn_func_voting_node_status(
         FfiConverterString.lower(validatorKey),uniffiCallStatus
+    )
+})
+}
+/**
+ * The follower Macs this wallet's reads spread over (diagnostics; tests).
+ */
+public func walletServers() -> [WalletServerInfo]  {
+    return try!  FfiConverterSequenceTypeWalletServerInfo.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_wallet_servers(uniffiCallStatus
     )
 })
 }
@@ -2297,6 +2756,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_local_node_height() != 10285) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_pin_servers() != 22504) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_prepare_add_recovery_key() != 5161) {
@@ -2377,7 +2839,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_aether_ffi_checksum_func_verified_height() != 9164) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_aether_ffi_checksum_func_verified_release() != 43384) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_aether_ffi_checksum_func_voting_node_status() != 63459) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_wallet_servers() != 2360) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_paper_key_new() != 36008) {

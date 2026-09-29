@@ -28,8 +28,10 @@ mv -f apps/wallet/Generated/aether_ffiFFI.modulemap apps/wallet/Generated/module
 # The macOS app embeds the node and the agent CLI (Contents/Helpers).
 [ "$target" = macos ] && scripts/build-agent.sh >/dev/null
 cd apps/wallet && xcodegen generate >/dev/null
+swift_flags=()
+if [ -n "${OTHER_SWIFT_FLAGS:-}" ]; then swift_flags+=("OTHER_SWIFT_FLAGS=$OTHER_SWIFT_FLAGS"); fi
 case "$target" in
-  macos)  xcodebuild -project AetherWallet.xcodeproj -scheme AetherWallet -configuration Release -derivedDataPath build build | grep -E "BUILD|error:" ;;
+  macos)  xcodebuild -project AetherWallet.xcodeproj -scheme AetherWallet -configuration Release -derivedDataPath build "${swift_flags[@]}" build | grep -E "BUILD|error:" ;;
   ios-sim) xcodebuild -project AetherWallet.xcodeproj -scheme AetherWalletIOS -sdk iphonesimulator -configuration Debug -derivedDataPath build CODE_SIGNING_ALLOWED=NO build | grep -E "BUILD|error:" ;;
   ios)    xcodebuild -project AetherWallet.xcodeproj -scheme AetherWalletIOS -sdk iphoneos -destination 'generic/platform=iOS' -configuration Release -derivedDataPath build CODE_SIGNING_ALLOWED=NO build | grep -E "BUILD|error:" ;;
 esac

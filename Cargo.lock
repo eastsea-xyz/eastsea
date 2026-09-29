@@ -252,6 +252,7 @@ name = "aether-rewards"
 version = "0.2.0"
 dependencies = [
  "aether-execution",
+ "aether-net",
  "alloy-primitives",
  "hex",
 ]

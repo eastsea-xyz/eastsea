@@ -47,7 +47,12 @@ contract CommitteeRegistry {
     bytes32 public registrarY;
 
     Candidate[] public candidates;
-    mapping(bytes32 => uint256) public indexOf; // validatorKey => index + 1
+    /// validatorKey => index + 1. A node-rewards genesis with founder reserve
+    /// keys prewrites type(uint256).max sentinels here for each reserve key
+    /// (rewards::set_reserve, slot keccak256(key . bytes32(3))), so this
+    /// contract's own `register()` reverts Known() on a direct registration of
+    /// one — the deployed bytecode never changes.
+    mapping(bytes32 => uint256) public indexOf;
     /// Blocks per epoch, fixed at genesis (slot 4; one hour of 1 s blocks on the testnet).
     uint64 public epochBlocks;
     /// Epochs of unbroken liveness before a Mac can be drawn into the voting set (slot 5).

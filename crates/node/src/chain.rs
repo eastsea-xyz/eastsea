@@ -245,6 +245,41 @@ pub trait ProofVerifier: Send + Sync {
     }
 }
 
+/// Stage-wise progress (red team 2026-09-29 #2): a node can be slow but
+/// healthy — downloading a certified snapshot, re-opening its database after
+/// a full disk, replaying a backlog — and a watchdog that looks at height
+/// alone kills exactly those. Every real step of work ticks `activity`, and
+/// each long stage names itself, so a watcher can tell "stuck" (nothing
+/// moves) from "busy on something that is not a block" (height frozen,
+/// activity advancing). Process-wide on purpose: whatever inside this node
+/// is making progress is a reason not to kill it.
+static ACTIVITY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static STAGE: Mutex<Option<&'static str>> = Mutex::new(None);
+
+/// One step of real work happened (a block committed, a snapshot chunk
+/// fetched, a store re-open attempted, an upstream answer taken).
+pub fn tick() {
+    ACTIVITY.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// How many steps of work this process has done (starts at 0 each run).
+pub fn activity() -> u64 {
+    ACTIVITY.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Name the long stage this node is in (`"snapshot"`, `"storage"`…), or
+/// `None` to say it is back to work a height already reports.
+pub fn set_stage(stage: Option<&'static str>) {
+    if let Ok(mut s) = STAGE.lock() {
+        *s = stage;
+    }
+}
+
+/// The stage [`set_stage`] last named.
+pub fn stage() -> Option<&'static str> {
+    STAGE.lock().ok().and_then(|s| *s)
+}
+
 /// Hash of the chain metadata a block leaves outside the state tree.
 pub fn meta_digest(
     excess: &GasVector,
@@ -651,10 +686,14 @@ impl Chain {
     /// so the app restarts the node, which catches up before it votes again.
     pub fn heal_store(&self) {
         let Some(store) = self.store() else { return };
+        // A store healing under backoff is a stage (red team #2): each re-open
+        // attempt ticks, so a watcher sees work while the height is frozen.
+        set_stage(Some("storage"));
         if let Err(e) = crate::store::Recovery::from_env().reopen(&store) {
             tracing::error!(%e, "the store database did not recover; exiting so the app restarts the node");
             std::process::exit(crate::store::EXIT_STORAGE);
         }
+        set_stage(None);
     }
 
     /// Adopt a committee-certified snapshot as the finalized head, executing
@@ -2006,6 +2045,9 @@ impl Chain {
 
     /// Adopt a finalized block (delivered in order by marshal) and persist it.
     pub fn finalize(&self, block: &Block) -> Result<(), ChainError> {
+        // A commit attempt is work, even one that fails on a full disk: the
+        // store's re-opens tick too, so a healing node never reads as stuck.
+        tick();
         let height = block.height().get();
         {
             let g = self.lock();
@@ -2583,8 +2625,10 @@ fn pay_proofs(
         let commitment = aether_execution::proofs::claimable(state, c.height, height)
             .map_err(|e| bad(format!("proof of block {}: {e:?}", c.height)))?;
         // The proof's output binds the payout address: nobody can reroute it.
-        if !verifier.verify(&bytes, aether_proving::block::claim(commitment, c.prover)) {
-            return Err(bad(format!("proof of block {} does not verify", c.height)));
+        match verifier.decide(&bytes, aether_proving::block::claim(commitment, c.prover)) {
+            Some(true) => {}
+            Some(false) => return Err(bad(format!("proof of block {} does not verify", c.height))),
+            None => return Err(ChainError::Exec("proof verifier unavailable; no verdict on this block".into())),
         }
         let amount = if aether_rewards::enabled(state) {
             // Node rewards: issuance only to registered operators, 1/16 of the epoch's proof share each.

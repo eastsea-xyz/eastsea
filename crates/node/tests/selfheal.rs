@@ -502,3 +502,42 @@ fn a_network_cut_heals_into_a_catch_up() {
     let _ = std::fs::remove_dir_all(&dir_src);
     let _ = std::fs::remove_dir_all(&dir_fol);
 }
+
+/// Red team #2: inject snapshot work while the finalized height is frozen.
+/// The status RPC is called directly: this exercises the watchdog's wire
+/// fields without requiring a local listening socket in restricted builds.
+#[test]
+fn a_frozen_height_with_rising_activity_is_not_a_stuck_node() {
+    let dir = tmp("activity");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let node = chain_on(config(CHAIN), Store::open(&dir.join("state.redb")).unwrap());
+    let read_status = || rt.block_on(rpc::handle_value(
+        &rpc_state(&node),
+        serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "aether_status", "params": []}),
+    ));
+    let before = read_status();
+    aether_node::chain::set_stage(Some("snapshot"));
+    for _ in 0..5 {
+        aether_node::chain::tick(); // one completed snapshot chunk each
+    }
+    let working = read_status();
+    assert_eq!(working["result"]["height"], before["result"]["height"]);
+    assert!(working["result"]["activity"].as_u64().unwrap() > before["result"]["activity"].as_u64().unwrap());
+    assert_eq!(working["result"]["stage"], "snapshot");
+    aether_node::chain::set_stage(None);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Red team #3: the app rolls back to `Helpers/aether.prev` only after asking
+/// that binary what protocol it implements. The hidden arm prints it, so the
+/// comparison needs no chain and no running node.
+#[test]
+fn a_binary_reports_the_protocol_it_implements() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_aether"))
+        .arg("protocol")
+        .output()
+        .expect("spawn aether");
+    assert!(out.status.success(), "aether protocol: {}", String::from_utf8_lossy(&out.stderr));
+    let said: u32 = String::from_utf8(out.stdout).unwrap().trim().parse().unwrap();
+    assert_eq!(said, aether_node::upgrade::PROTOCOL);
+}

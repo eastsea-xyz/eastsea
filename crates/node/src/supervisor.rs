@@ -22,6 +22,45 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
+/// The child's exit codes that no restart can fix; `aether run` ends with the
+/// same code so the app shows the matching sentence and keeps the wallet on a
+/// remote node. 3: the chain activated a newer protocol than this binary runs
+/// (`main.rs` watch_upgrades). 5: protocol 2 is due and no proof verifier
+/// could be installed (`main.rs` install_verifier).
+pub const EXIT_UPGRADE_REQUIRED: i32 = 3;
+pub const EXIT_NO_VERIFIER: i32 = 5;
+
+/// The process exits with this code when another `aether` already holds this
+/// data directory (red team #12): two apps must never run one node between
+/// them. "Already running" is a state to surface, never a crash to restart.
+pub const EXIT_LOCKED: i32 = 7;
+
+/// Written when a validator refuses to resume voting (the engine's
+/// [`crate::engine::EXIT_JOURNAL`], red team #4): it holds the committee
+/// round the refusal belongs to. Voting stays off for that round — a lost
+/// journal is never voted over with a fresh one — and returns with the next
+/// round's share, which comes with a fresh journal.
+const NO_VOTE_FILE: &str = "no-vote";
+
+/// Record that voting must not resume for the committee's current `round`
+/// (the child refused with [`crate::engine::EXIT_JOURNAL`]).
+fn note_untrusted_journal(data: &Path, round: u64) {
+    if let Ok(old) = std::fs::read_to_string(data.join(NO_VOTE_FILE)) {
+        if old.trim().parse::<u64>().is_ok_and(|r| r >= round) {
+            return; // an earlier, still-binding refusal
+        }
+    }
+    let _ = crate::atomic::replace(&data.join(NO_VOTE_FILE), round.to_string().as_bytes(), 0o600);
+}
+
+/// Whether voting is off for the committee's current `round`.
+fn voting_paused(data: &Path, round: u64) -> bool {
+    std::fs::read_to_string(data.join(NO_VOTE_FILE))
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .is_some_and(|r| r >= round)
+}
+
 pub struct Supervisor {
     /// The `aether` binary to run children with.
     pub exe: PathBuf,
@@ -49,12 +88,102 @@ pub struct Supervisor {
 enum Role {
     Validator,
     Candidate,
+    /// This Mac has its key and former share, but its vote journal is
+    /// untrusted in the current round. It follows without beacons or votes;
+    /// the share may still help reshare into the next round.
+    Paused,
+    /// A follower without this Mac's identity: the key file is unreadable
+    /// (red team #5), so it neither votes nor candidates — the wallet and the
+    /// follower keep working until the key is restored.
+    Keyless,
 }
 
 /// A background reshare for one registry epoch's proposal.
 struct Reshare {
     child: Child,
     started: Instant,
+}
+
+/// What watching the child ended with.
+enum Watched {
+    /// A handoff was installed: the restart is the role change itself.
+    Switched,
+    /// The child exited on its own.
+    Exited(std::process::ExitStatus),
+}
+
+/// One child exit, as the supervisor persists it (red team #1): the backoff
+/// and the stop decision come from this history in `<data>/run-state.json`,
+/// so even a restart of `aether run` itself does not reset the clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ExitNote {
+    /// When this child was started (unix ms).
+    pub started_ms: u64,
+    /// When it exited (unix ms).
+    pub at_ms: u64,
+    /// Its exit code, or `None` when a signal killed it.
+    pub code: Option<i32>,
+}
+
+/// What the supervisor does after a child exits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Next {
+    /// Start again after this long (the backoff doubles per quick exit).
+    Again(Duration),
+    /// Do not restart: end `aether run` with this code, so the app shows the
+    /// matching sentence and keeps the wallet on a remote node.
+    Stop(i32),
+}
+
+/// The window of "10분에 3번 넘게 죽으면 멈춤": more exits than
+/// [`MAX_EXITS_IN_WINDOW`] inside it ends the run.
+const WINDOW_MS: u64 = 10 * 60 * 1_000;
+const MAX_EXITS_IN_WINDOW: usize = 3;
+/// A child that lived this long made progress; its exit does not deepen the
+/// backoff (a real crash loop never gets here).
+const PROGRESS_MS: u64 = 5 * 60 * 1_000;
+const FIRST_BACKOFF_MS: u64 = 1_000;
+const MAX_BACKOFF_MS: u64 = 60_000;
+
+/// The decision after a child exited, over the persisted history (red team
+/// #1): an exit code a restart cannot change ends the run with that code;
+/// too many exits inside the window end it with the last code; anything else
+/// backs off, doubling per consecutive quick exit up to a minute.
+pub fn next_restart(exits: &[ExitNote], now_ms: u64) -> Next {
+    let Some(last) = exits.last() else { return Next::Again(Duration::from_millis(FIRST_BACKOFF_MS)) };
+    match last.code {
+        Some(code @ (EXIT_UPGRADE_REQUIRED | crate::store::EXIT_STORAGE | EXIT_NO_VERIFIER | crate::candidate::EXIT_IDENTITY | EXIT_LOCKED)) => {
+            return Next::Stop(code);
+        }
+        _ => {}
+    }
+    let recent = exits.iter().filter(|e| now_ms.saturating_sub(e.at_ms) <= WINDOW_MS).count();
+    if recent > MAX_EXITS_IN_WINDOW {
+        return Next::Stop(last.code.unwrap_or(1));
+    }
+    let quick = exits
+        .iter()
+        .rev()
+        .take_while(|e| e.at_ms.saturating_sub(e.started_ms) < PROGRESS_MS)
+        .count();
+    Next::Again(Duration::from_millis((FIRST_BACKOFF_MS << quick.saturating_sub(1).min(6)).min(MAX_BACKOFF_MS)))
+}
+
+/// `<data>/run-state.json`: an unreadable history cannot be treated as a
+/// fresh one, since that would let a crash loop reset its restart budget.
+fn load_exits(data: &Path) -> Result<Vec<ExitNote>, String> {
+    match std::fs::read(data.join("run-state.json")) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("run-state.json: {e}")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(format!("run-state.json: {e}")),
+    }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or_default()
 }
 
 impl Supervisor {
@@ -66,15 +195,33 @@ impl Supervisor {
         format!("http://127.0.0.1:{}", self.rpc_port)
     }
 
-    fn my_key(&self) -> Result<String, String> {
-        let keys = crate::roster::LocalKeys::load(&self.data)?;
-        Ok(hex::encode(
-            commonware_cryptography::Signer::public_key(&keys.signer).as_ref(),
-        ))
+    /// This Mac's voting key hex, or `None` when the key file cannot be read.
+    /// Losing the key never mints a new identity (red team #5): the caller
+    /// keeps the Mac following instead.
+    fn my_key(&self) -> Option<String> {
+        match crate::candidate::CandidateKeys::load_or_create(&self.data) {
+            Ok(keys) => Some(hex::encode(keys.validator_key())),
+            Err(e) => {
+                tracing::error!(
+                    %e,
+                    role = "follower",
+                    "aether run: this Mac's identity files cannot be read, so it does not vote and \
+                     does not candidate; restore the files in {} from a backup to vote again",
+                    self.data.display(),
+                );
+                None
+            }
+        }
     }
 
-    fn role(&self, me: &str) -> Result<Role, String> {
+    fn role(&self, me: Option<&str>) -> Result<Role, String> {
         let net = NetworkFile::load(&self.network_path())?;
+        let Some(me) = me else { return Ok(Role::Keyless) };
+        if voting_paused(&self.data, net.round) {
+            // The engine refused this round's journal (red team #4): the Mac
+            // follows until the committee moves on.
+            return Ok(Role::Paused);
+        }
         let member = net.validators.iter().any(|m| m.key == me);
         Ok(if member && self.data.join("threshold.json").exists() {
             Role::Validator
@@ -111,7 +258,7 @@ impl Supervisor {
         Some(list.join(","))
     }
 
-    fn spawn(&self, role: Role, me: &str) -> Result<Child, String> {
+    fn spawn(&self, role: Role, me: Option<&str>) -> Result<Child, String> {
         let mut cmd = Command::new(&self.exe);
         let net = self.network_path();
         match role {
@@ -130,13 +277,13 @@ impl Supervisor {
                     "--rpc-port",
                     &self.rpc_port.to_string(),
                 ]);
-                if let Some(peers) = self.tcp_peers(&NetworkFile::load(&net)?.validators, me, false)
+                if let Some(peers) = self.tcp_peers(&NetworkFile::load(&net)?.validators, me.expect("a validator has its key"), false)
                 {
                     cmd.args(["--peers", &peers, "--offline"]);
                 }
                 cmd.args(&self.node_args);
             }
-            Role::Candidate => {
+            Role::Candidate | Role::Paused | Role::Keyless => {
                 cmd.args([
                     "follow",
                     "--exit-with-parent",
@@ -145,15 +292,13 @@ impl Supervisor {
                     "--data",
                     &path_str(&self.data.join("follow")),
                 ])
-                .args([
-                    "--keys",
-                    &path_str(&self.data),
-                    "--rpc-port",
-                    &self.rpc_port.to_string(),
-                    "--candidate",
-                    "--checkpoint",
-                ])
-                .args(&self.follow_args);
+                .args(["--rpc-port", &self.rpc_port.to_string(), "--checkpoint"]);
+                if role == Role::Candidate {
+                    // The candidate's beacon keys are the Mac's own; the keyless
+                    // follower has none to send.
+                    cmd.args(["--keys", &path_str(&self.data), "--candidate"]);
+                }
+                cmd.args(&self.follow_args);
             }
         }
         tracing::info!(?role, "aether run: starting");
@@ -161,54 +306,128 @@ impl Supervisor {
             .map_err(|e| format!("spawn {}: {e}", self.exe.display()))
     }
 
-    /// Runs forever: (re)start the child for the current role; follow rotations.
+    /// Runs forever: (re)start the child for the current role; follow
+    /// rotations. Restarts are bounded and backed off (red team #1): the exit
+    /// history persists in `<data>/run-state.json`, a restart backs off
+    /// 1 s → 60 s, and a child that keeps dying inside ten minutes ends
+    /// `aether run` with the child's own exit code instead of looping.
     pub fn run(&self) -> Result<(), String> {
-        let me = self.my_key()?;
-        if let Some(dir) = &self.dev_peer_dir {
+        let mut me = self.my_key();
+        if let (Some(dir), Some(me)) = (&self.dev_peer_dir, &me) {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
             std::fs::write(
-                dir.join(&me),
+                dir.join(me),
                 format!("{} {}", self.port, self.reshare_port),
             )
             .map_err(|e| e.to_string())?;
         }
+        let mut exits = load_exits(&self.data).unwrap_or_else(|e| {
+            tracing::error!(%e, "restart history cannot be trusted; stopping");
+            std::process::exit(crate::store::EXIT_STORAGE);
+        });
         loop {
-            let role = self.role(&me)?;
-            let mut child = self.spawn(role, &me)?;
-            let switched = self.watch(&mut child, role, &me);
+            // A completed handoff must be installed before any child reads
+            // network.json or its share. If disk failure prevents that, keep
+            // the validator stopped rather than starting with a mixed pair.
+            if let Err(e) = finish_incomplete(&self.data) {
+                tracing::error!(%e, "a completed handoff cannot be installed; keeping the signer stopped");
+                std::process::exit(crate::store::EXIT_STORAGE);
+            }
+            let role = self.role(me.as_deref())?;
+            let started_ms = now_ms();
+            let mut child = self.spawn(role, me.as_deref())?;
+            match self.watch(&mut child, role, me.as_deref()) {
+                Watched::Switched => {
+                    // The restart is the role change itself, not a crash.
+                    me = self.my_key();
+                    exits.clear();
+                    let _ = std::fs::remove_file(self.data.join("run-state.json"));
+                }
+                Watched::Exited(status) => {
+                    exits.push(ExitNote { started_ms, at_ms: now_ms(), code: status.code() });
+                    exits.retain(|e| now_ms().saturating_sub(e.at_ms) <= WINDOW_MS);
+                    if let Err(e) = crate::atomic::replace(
+                        &self.data.join("run-state.json"),
+                        &serde_json::to_vec(&exits).unwrap_or_default(),
+                        0o644,
+                    ) {
+                        tracing::error!(%e, "restart history could not be saved; stopping");
+                        std::process::exit(crate::store::EXIT_STORAGE);
+                    }
+                    match next_restart(&exits, now_ms()) {
+                        Next::Again(d) => {
+                            tracing::warn!(code = ?status.code(), backoff_ms = d.as_millis() as u64, "aether run: child exited; restarting");
+                            std::thread::sleep(d);
+                        }
+                        Next::Stop(code) => {
+                            tracing::error!(
+                                code,
+                                exits = exits.len(),
+                                "aether run: the child keeps failing (or asked not to be restarted); stopping. \
+                                 The wallet keeps working through other nodes; the app shows what to do"
+                            );
+                            std::process::exit(code);
+                        }
+                    }
+                }
+            }
             let _ = child.kill();
             let _ = child.wait();
-            if !switched {
-                std::thread::sleep(Duration::from_secs(2));
-            }
         }
     }
 
-    /// Watch the child; returns true after installing a handoff (restart in the
-    /// new role), false when the child exited on its own.
-    fn watch(&self, child: &mut Child, role: Role, me: &str) -> bool {
+    /// Watch the child; ends after installing a handoff (restart in the new
+    /// role) or when the child exits on its own.
+    fn watch(&self, child: &mut Child, role: Role, me: Option<&str>) -> Watched {
         let rpc = self.rpc();
         let mut reshare: Option<Reshare> = None;
         let mut attempted: Option<u64> = None;
         let mut last_sign = Instant::now() - Duration::from_secs(60);
         loop {
             std::thread::sleep(Duration::from_secs(1));
-            if child.try_wait().ok().flatten().is_some() {
-                tracing::warn!("aether run: child exited; restarting");
+            if let Some(status) = child.try_wait().ok().flatten() {
+                // An untrusted vote journal (red team #4) is not a crash to
+                // retry: the next `aether node` would hit the same gate. Vote
+                // off for this committee round instead; follow meanwhile.
+                if status.code() == Some(crate::engine::EXIT_JOURNAL) {
+                    match NetworkFile::load(&self.network_path()) {
+                        Ok(net) => {
+                            note_untrusted_journal(&self.data, net.round);
+                            tracing::error!(
+                                round = net.round,
+                                "aether run: this Mac's vote journal cannot be trusted; following until the committee's next round"
+                            );
+                        }
+                        Err(e) => tracing::warn!(%e, "aether run: could not read the round to pause voting for"),
+                    }
+                }
+                tracing::warn!(%status, "aether run: child exited");
                 stop(&mut reshare);
-                return false;
+                return Watched::Exited(status);
+            }
+            if role == Role::Keyless
+                && crate::candidate::CandidateKeys::load_or_create(&self.data).is_ok() {
+                tracing::info!("aether run: restored identity is readable; re-evaluating the role");
+                return Watched::Switched;
             }
             // 1. A proposed voting set: reshare to it in the background, once per registry epoch.
             if reshare.is_none() {
                 if let Ok(rot) = rpc_call(&rpc, "aether_rotation", json!([])) {
                     let epoch = rot["epoch"].as_u64();
-                    let involved = role == Role::Validator
-                        || rot["next"]
-                            .as_array()
-                            .is_some_and(|n| n.iter().any(|m| m["key"] == me));
+                    // Without this Mac's key there is no share to reshare and no
+                    // seat to take (red team #5).
+                    let involved = match me {
+                        Some(me) => {
+                            (role == Role::Validator || role == Role::Paused)
+                                || rot["next"]
+                                    .as_array()
+                                    .is_some_and(|n| n.iter().any(|m| m["key"] == me))
+                        }
+                        None => false,
+                    };
                     if !rot.is_null() && involved && epoch != attempted {
                         attempted = epoch;
-                        match self.start_reshare(role, me, &rot) {
+                        match self.start_reshare(role, me.expect("involved means keyed"), &rot) {
                             Ok(c) => {
                                 reshare = Some(Reshare {
                                     child: c,
@@ -248,12 +467,19 @@ impl Supervisor {
                 }
             }
             // 3. A finalized handoff whose switch height the chain reached: install the new role.
-            if let Ok(h) = rpc_call(&rpc, "aether_handoff", json!([])) {
+            if let (Some(me), Ok(h)) = (me, rpc_call(&rpc, "aether_handoff", json!([]))) {
                 if self.handoff_due(&h) {
                     stop(&mut reshare);
+                    // The old validator must not keep signing while its share
+                    // and network pointer are changed on disk.
+                    let _ = child.kill();
+                    let status = child.wait().expect("a stopped child can be reaped");
                     match self.install(role, me, &h) {
-                        Ok(()) => return true,
-                        Err(e) => tracing::warn!(%e, "aether run: could not install the handoff"),
+                        Ok(()) => return Watched::Switched,
+                        Err(e) => {
+                            tracing::warn!(%e, "aether run: could not install the handoff");
+                            return Watched::Exited(status);
+                        }
                     }
                 }
             }
@@ -278,7 +504,10 @@ impl Supervisor {
     fn start_reshare(&self, role: Role, me: &str, rot: &Value) -> Result<Child, String> {
         let ours = NetworkFile::load(&self.network_path())?;
         let from: NetworkFile = match role {
-            Role::Validator => ours.clone(),
+            Role::Validator | Role::Paused => ours.clone(),
+            // Never reached (a keyless Mac is not `involved`), and a Mac with
+            // no key has no share to reshare even if it were.
+            Role::Keyless => return Err("a Mac without its key has no share to reshare".into()),
             Role::Candidate => {
                 // The running set's public file, checked against the identity this Mac pins.
                 let f: NetworkFile = serde_json::from_value(rot["network"].clone())
@@ -366,6 +595,15 @@ impl Supervisor {
     }
 
     /// Take this Mac's role in the new voting set: files only; the caller restarts.
+    ///
+    /// Atomic across power cuts and full disks (red team #19): the whole
+    /// generation — the network file and, for a seated member, its share — is
+    /// prepared and synced in `<data>/gen/<round>/` first and marked complete
+    /// (`.installed`); only then is it activated, by swapping the share and
+    /// then `network.json` (the pointer every role decision reads against). A
+    /// run that dies mid-install resumes it before a child starts
+    /// ([`finish_incomplete`]); the old child is stopped before any active
+    /// file changes, so no signer can observe an incomplete pair.
     fn install(&self, role: Role, me: &str, h: &Value) -> Result<(), String> {
         let switch = h["switch"].as_u64().ok_or("handoff switch")?;
         let round = h["round"].as_u64().ok_or("handoff round")?;
@@ -392,53 +630,73 @@ impl Supervisor {
         let staged: Option<crate::dkg::KeyFile> = std::fs::read(self.data.join(STAGED_THRESHOLD))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
-            .filter(|k: &crate::dkg::KeyFile| k.output == output && k.round == round);
+            .filter(|k: &crate::dkg::KeyFile| k.output == output && k.round == round
+                && next.identity.as_deref() == Some(k.identity.as_str()));
         let joining = members.iter().any(|m| m.key == me);
-        match (joining, staged) {
-            (true, Some(key)) => {
-                if role == Role::Candidate {
-                    // No validator history: start from the block verified last as a follower.
-                    let fin = rpc_call(&self.rpc(), "aether_getFinalized", json!([end]))?;
-                    if fin.is_null() {
-                        return Err(
-                            "the follower has no proof of the block before the switch yet".into(),
-                        );
-                    }
-                    std::fs::write(
-                        self.data.join(crate::rotation::ANCHOR_FILE),
-                        fin.to_string(),
-                    )
-                    .map_err(|e| e.to_string())?;
-                    self.adopt_follower_state()?;
-                }
-                write_secret(
-                    &self.data.join("threshold.json"),
-                    &serde_json::to_vec_pretty(&key).expect("json"),
-                )?;
-                tracing::info!(switch, "aether run: this Mac votes from the switch height");
-            }
-            (true, None) => {
-                // Seated, but the reshare did not finish here: the old share is for
-                // the old round and useless now. Follow until a later draw.
-                erase(&self.data.join("threshold.json"))?;
-                tracing::warn!("aether run: in the new voting set without its share (the reshare did not finish here); following");
-            }
-            (false, _) => {
-                // Erase the old share: the new sharing has the same secret, so a
-                // quorum of old shares kept anywhere could still sign. Safety
-                // rests on honest members deleting theirs when they leave.
-                erase(&self.data.join("threshold.json"))?;
-                tracing::info!(switch, "aether run: left the voting set; following");
+
+        // 1. Prepare the generation, before anything active changes. Anything
+        //    that can fail (the anchor proof above all) fails here, with the
+        //    old world still in place.
+        let gen = self.data.join("gen").join(round.to_string());
+        std::fs::create_dir_all(&gen).map_err(|e| e.to_string())?;
+        crate::atomic::replace(
+            &gen.join("network.json"),
+            &serde_json::to_vec_pretty(&next).map_err(|e| e.to_string())?,
+            0o644,
+        )?;
+        match &staged {
+            Some(key) => crate::atomic::replace(
+                &gen.join("threshold.json"),
+                &serde_json::to_vec_pretty(key).map_err(|e| e.to_string())?,
+                0o600,
+            )?,
+            None => {
+                let _ = std::fs::remove_file(gen.join("threshold.json"));
             }
         }
-        self.write_network(&next)?;
+        // 2. A joining candidate starts from the state it verified as a
+        //    follower (and the anchor that proves it); marked, so a resumed
+        //    install does not repeat the move.
+        if joining && staged.is_some() && (role == Role::Candidate || role == Role::Paused) && !gen.join(".adopted").exists() {
+            let fin = rpc_call(&self.rpc(), "aether_getFinalized", json!([end]))?;
+            if fin.is_null() {
+                return Err("the follower has no proof of the block before the switch yet".into());
+            }
+            crate::atomic::replace(
+                &self.data.join(crate::rotation::ANCHOR_FILE),
+                fin.to_string().as_bytes(),
+                0o644,
+            )?;
+            self.adopt_follower_state()?;
+            crate::atomic::replace(&gen.join(".adopted"), b"", 0o644)?;
+        }
+        // 3. The generation is complete on disk: from here the install is
+        //    resumable, never re-prepared.
+        crate::atomic::replace(&gen.join(".installed"), b"", 0o644)?;
+
+        // 4. Activate.
+        activate_generation(&self.data, &gen)?;
+        match (joining, staged.is_some()) {
+            (true, true) => tracing::info!(switch, "aether run: this Mac votes from the switch height"),
+            (true, false) => tracing::warn!(
+                "aether run: in the new voting set without its share (the reshare did not finish here); following"
+            ),
+            (false, _) => tracing::info!(switch, "aether run: left the voting set; following"),
+        }
         let _ = std::fs::remove_file(self.data.join(STAGED_THRESHOLD));
         let _ = std::fs::remove_file(self.data.join(STAGED_NETWORK));
+        // A new round's share comes with a fresh journal: an old pause
+        // (crate::engine::EXIT_JOURNAL) no longer binds.
+        let _ = std::fs::remove_file(self.data.join(NO_VOTE_FILE));
+        prune_generations(&self.data, round);
         Ok(())
     }
 
     /// Move a previous validator's storage aside and start from the follower's
     /// verified state (its node state and marshal archives would have a gap).
+    /// The vote journal stays where it is (red team #4): it is the only record
+    /// of the votes this Mac cast, and a stale epoch's journal is never reused
+    /// anyway — the next round votes into its own partition.
     fn adopt_follower_state(&self) -> Result<(), String> {
         let prefix = std::fs::read_to_string(self.data.join("partition"))
             .map(|p| p.trim().to_string())
@@ -447,9 +705,11 @@ impl Supervisor {
             .map_err(|e| e.to_string())?
             .filter_map(|e| e.ok().map(|e| e.path()))
             .filter(|p| {
-                p.file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n == "state.redb" || n.starts_with(&format!("{prefix}-")))
+                p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                    n == "state.redb"
+                        || (n.starts_with(&format!("{prefix}-"))
+                            && !n.starts_with(&format!("{prefix}-consensus")))
+                })
             })
             .collect();
         if !stale.is_empty() {
@@ -472,12 +732,90 @@ impl Supervisor {
         Ok(())
     }
 
-    fn write_network(&self, f: &NetworkFile) -> Result<(), String> {
-        std::fs::write(
-            self.network_path(),
-            serde_json::to_vec_pretty(f).expect("json"),
-        )
-        .map_err(|e| e.to_string())
+}
+
+/// Swap a prepared generation in (red team #19): the share first, then
+/// `network.json`, the pointer every role decision reads against. A seated
+/// member's new one, or none (a member that leaves drops its share, so no
+/// quorum of forgotten old shares can sign). The child is stopped before this
+/// starts, and the next run completes any interruption before spawning one.
+fn activate_generation(data: &Path, gen: &Path) -> Result<(), String> {
+    let network = std::fs::read(gen.join("network.json")).map_err(|e| e.to_string())?;
+    let next = NetworkFile::load(&gen.join("network.json"))?;
+    match std::fs::read(gen.join("threshold.json")) {
+        Ok(share) => {
+            let key: crate::dkg::KeyFile = serde_json::from_slice(&share)
+                .map_err(|e| format!("prepared share: {e}"))?;
+            if key.round != next.round || next.output.as_deref() != Some(key.output.as_str())
+                || next.identity.as_deref() != Some(key.identity.as_str()) {
+                return Err("prepared share does not match the generation's network".into());
+            }
+            crate::atomic::replace(&data.join("threshold.json"), &share, 0o600)?;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => erase(&data.join("threshold.json"))?,
+        Err(e) => return Err(e.to_string()),
+    }
+    crate::atomic::replace(&data.join("network.json"), &network, 0o644)?;
+    Ok(())
+}
+
+/// Whether the data dir does not yet hold `gen`'s world: the pointer, or the
+/// share that world carries, differs. Activation swaps the share before the
+/// pointer; a crash between them is precisely "share moved, pointer not".
+/// Comparing both files also repairs a pair left by an older installer.
+fn world_differs(data: &Path, gen: &Path) -> bool {
+    let same = |a: std::path::PathBuf, b: std::path::PathBuf| std::fs::read(a).ok() == std::fs::read(b).ok();
+    let share = |dir: &Path| dir.join("threshold.json");
+    !same(data.join("network.json"), gen.join("network.json"))
+        || if share(gen).exists() {
+            !same(share(data), share(gen))
+        } else {
+            share(data).exists()
+        }
+}
+
+/// Finish an install a power cut or a full disk interrupted (red team #19):
+/// a generation marked complete (`.installed`) for a round at or newer than
+/// the active network file, whose world the data dir does not hold yet, is
+/// activated — the same swap, run again, idempotent. A generation without
+/// the marker was never complete; the handoff that prepared it prepares it
+/// again, so it is left alone.
+pub fn finish_incomplete(data: &Path) -> Result<(), String> {
+    let ours = NetworkFile::load(&data.join("network.json"))
+        .map(|n| n.round)
+        .unwrap_or(0);
+    let mut gens = std::fs::read_dir(data.join("gen"))
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.is_dir())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    gens.sort_by_key(|gen| gen.file_name().and_then(|n| n.to_str()).and_then(|n| n.parse::<u64>().ok()).unwrap_or(0));
+    for gen in gens {
+        let Ok(round) = gen.file_name().and_then(|n| n.to_str()).unwrap_or_default().parse::<u64>() else {
+            continue;
+        };
+        if round < ours || !gen.join(".installed").exists() || !world_differs(data, &gen) {
+            continue;
+        }
+        activate_generation(data, &gen).map_err(|e| format!("could not finish committee round {round}: {e}"))?;
+        tracing::warn!(round, "aether run: finished installing committee round {round} (a previous run was interrupted)");
+    }
+    Ok(())
+}
+
+/// Generations older than `keep` are history nobody reads again.
+fn prune_generations(data: &Path, keep: u64) {
+    let gens = std::fs::read_dir(data.join("gen"))
+        .map(|entries| entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect::<Vec<_>>())
+        .unwrap_or_default();
+    for gen in gens {
+        if gen.file_name().and_then(|n| n.to_str()).unwrap_or_default().parse::<u64>().is_ok_and(|r| r < keep) {
+            let _ = std::fs::remove_dir_all(gen);
+        }
     }
 }
 
@@ -485,6 +823,28 @@ fn stop(reshare: &mut Option<Reshare>) {
     if let Some(mut r) = reshare.take() {
         let _ = r.child.kill();
         let _ = r.child.wait();
+    }
+}
+
+/// Hold `<data>/run.lock` exclusively for the whole run (red team #12): two
+/// apps must never run one node between them. The lock lives in the open
+/// file description, so keep the returned file for as long as `aether run`
+/// runs; the children never re-take it (they are this run's own).
+pub fn lock_data_dir(data: &Path) -> Result<std::fs::File, String> {
+    use std::os::unix::io::AsRawFd as _;
+    std::fs::create_dir_all(data).map_err(|e| e.to_string())?;
+    let f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(data.join("run.lock"))
+        .map_err(|e| e.to_string())?;
+    match unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } {
+        0 => Ok(f),
+        _ => Err(format!(
+            "another aether already runs with the data directory {} (it holds run.lock)",
+            data.display()
+        )),
     }
 }
 
@@ -497,22 +857,14 @@ fn erase(path: &Path) -> Result<(), String> {
     std::fs::remove_file(path).map_err(|e| e.to_string())
 }
 
-/// Secret files are written 0600.
+/// Secret files are written 0600, atomically: a crash mid-write never leaves
+/// a truncated share behind (red team #5's atomic-replacement rule).
 fn write_secret(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    use std::io::Write as _;
-    use std::os::unix::fs::OpenOptionsExt as _;
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)
-        .map_err(|e| e.to_string())?;
-    f.write_all(bytes).map_err(|e| e.to_string())
+    crate::atomic::replace(path, bytes, 0o600)
 }
 
 /// Keys that identify this Mac; everything else in <data> belongs to one network.
-const KEEP_ACROSS_NETWORKS: [&str; 3] = ["validator.key", "validator.pub.json", "node-account.key"];
+const KEEP_ACROSS_NETWORKS: [&str; 4] = ["validator.key", "validator.pub.json", "node-account.key", "run.lock"];
 
 /// Put `network` in `<data>/network.json`: the first time, or when it is a
 /// different network (a testnet reset: other chain id or committee identity).
@@ -635,6 +987,333 @@ mod tests {
             .find(|e| e.file_name().to_string_lossy().starts_with("stale-"))
             .unwrap();
         assert!(aside.path().join("state.redb").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn sup(dir: &Path) -> Supervisor {
+        Supervisor {
+            exe: std::env::current_exe().unwrap(),
+            data: dir.to_path_buf(),
+            port: 0,
+            reshare_port: 0,
+            rpc_port: 0,
+            node_args: vec![],
+            follow_args: vec![],
+            dev_peer_dir: None,
+            reshare_timeout: Duration::from_secs(1),
+        }
+    }
+
+    /// Red team #5: a seated validator whose key file is damaged (or gone)
+    /// loses the vote, not the wallet — the supervisor runs it as a plain
+    /// follower and never generates a replacement identity.
+    #[test]
+    fn a_mac_whose_key_is_unreadable_follows_instead_of_voting() {
+        let dir = std::env::temp_dir().join(format!("aether-keyless-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::candidate::CandidateKeys::load_or_create(&dir).unwrap();
+        std::fs::write(dir.join("threshold.json"), b"share").unwrap();
+        let me = sup(&dir).my_key().expect("a saved key loads");
+        let backup = std::fs::read(dir.join(crate::roster::KEY_FILE)).unwrap();
+
+        let mut net = file(1, "aa");
+        net.validators = vec![Member { key: me.clone(), node: "node".into() }];
+        std::fs::write(dir.join("network.json"), serde_json::to_vec(&net).unwrap()).unwrap();
+        let s = sup(&dir);
+        assert_eq!(s.role(Some(&me)).unwrap(), Role::Validator, "a member with its share votes");
+
+        // The incident: the key file no longer parses.
+        std::fs::write(dir.join(crate::roster::KEY_FILE), b"torn write").unwrap();
+        assert!(s.my_key().is_none(), "the damaged key does not load");
+        assert_eq!(s.role(None).unwrap(), Role::Keyless, "and the Mac follows, keyless");
+        assert!(
+            dir.join("threshold.json").exists() && dir.join(crate::roster::KEY_FILE).exists(),
+            "nothing was minted or erased meanwhile"
+        );
+        std::fs::write(dir.join(crate::roster::KEY_FILE), backup).unwrap();
+        assert_eq!(s.my_key().as_deref(), Some(me.as_str()), "the restored backup revives the original identity");
+        assert_eq!(s.role(Some(&me)).unwrap(), Role::Validator);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Red team #4: a validator that refused its journal (engine exit 8)
+    /// follows for the rest of that committee round, and may vote again only
+    /// once the committee has moved to a later round.
+    #[test]
+    fn an_untrusted_journal_pauses_voting_until_the_next_round() {
+        let dir = std::env::temp_dir().join(format!("aether-novote-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::candidate::CandidateKeys::load_or_create(&dir).unwrap();
+        std::fs::write(dir.join("threshold.json"), b"share").unwrap();
+        let me = sup(&dir).my_key().unwrap();
+        let mut net = file(1, "aa");
+        net.round = 7;
+        net.validators = vec![Member { key: me.clone(), node: "node".into() }];
+        std::fs::write(dir.join("network.json"), serde_json::to_vec(&net).unwrap()).unwrap();
+        let s = sup(&dir);
+        assert_eq!(s.role(Some(&me)).unwrap(), Role::Validator);
+
+        // The child refuses with the journal exit code, mid-round.
+        note_untrusted_journal(&dir, net.round);
+        assert!(voting_paused(&dir, net.round));
+        assert_eq!(s.role(Some(&me)).unwrap(), Role::Paused, "voting and beacons stay off for round 7");
+        // An older refusal does not extend the pause; a newer round ends it.
+        note_untrusted_journal(&dir, 3);
+        assert!(voting_paused(&dir, net.round), "the round-7 refusal still binds");
+        net.round = 8;
+        std::fs::write(dir.join("network.json"), serde_json::to_vec(&net).unwrap()).unwrap();
+        assert_eq!(s.role(Some(&me)).unwrap(), Role::Validator, "the next round votes again");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Red team #4: adopting a follower's state moves the validator's state
+    /// and archives aside, but never the vote journal — the one record of the
+    /// votes this Mac cast.
+    #[test]
+    fn adopting_a_followers_state_keeps_the_vote_journal() {
+        let dir = std::env::temp_dir().join(format!("aether-adopt-journal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("follow")).unwrap();
+        std::fs::write(dir.join("partition"), b"aether").unwrap();
+        for name in ["state.redb", "aether-finalizations-ordinal", "aether-finalized-blocks-ordinal"] {
+            std::fs::write(dir.join(name), b"validator state").unwrap();
+        }
+        for name in ["aether-consensus", "aether-consensus-e1", "aether-consensus-r9"] {
+            std::fs::create_dir_all(dir.join(name)).unwrap();
+            std::fs::write(dir.join(name).join("0"), b"a vote").unwrap();
+        }
+        std::fs::write(dir.join("follow").join("state.redb"), b"follower state").unwrap();
+
+        sup(&dir).adopt_follower_state().unwrap();
+        assert!(dir.join("aether-consensus").join("0").exists(), "the vote journal stays");
+        assert!(dir.join("aether-consensus-e1").exists());
+        assert!(dir.join("aether-consensus-r9").exists());
+        let aside = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .find(|e| e.file_name().to_string_lossy().starts_with("stale-"))
+            .unwrap()
+            .path();
+        let moved: Vec<String> = std::fs::read_dir(&aside)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("aether-consensus"))
+            .collect();
+        assert!(moved.is_empty(), "no journal partition was moved: {moved:?}");
+        assert!(aside.join("state.redb").exists(), "the state moved");
+        assert!(aside.join("aether-finalizations-ordinal").exists(), "the archive moved");
+        assert_eq!(std::fs::read(dir.join("state.redb")).unwrap(), b"follower state");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn exit(at: u64, uptime_ms: u64, code: i32) -> ExitNote {
+        ExitNote { started_ms: at - uptime_ms, at_ms: at, code: Some(code) }
+    }
+
+    /// Red team #1: the supervisor no longer restarts a dying child every
+    /// 2 s forever. Exit codes a restart cannot change stop immediately, four
+    /// exits inside ten minutes stop the loop, and every quick exit doubles
+    /// the backoff up to a minute — while a child that made progress does not
+    /// deepen it.
+    #[test]
+    fn restarts_back_off_and_stop_instead_of_looping() {
+        const NOW: u64 = 10_000_000_000;
+        // Nothing yet: the first try waits only the base backoff.
+        assert_eq!(next_restart(&[], NOW), Next::Again(Duration::from_secs(1)));
+        // Consecutive quick exits: 1 s, 2 s, 4 s — but the fourth inside ten
+        // minutes never restarts at all.
+        let streak = |n: u64, base: u64| (0..n).map(|i| exit(base + i * 1_000, 1_000, 1)).collect::<Vec<_>>();
+        for (n, want) in [(1u64, 1u64), (2, 2), (3, 4)] {
+            assert_eq!(next_restart(&streak(n, NOW - n * 1_000), NOW), Next::Again(Duration::from_secs(want)));
+        }
+        assert_eq!(
+            next_restart(&streak(4, NOW - 4_000), NOW),
+            Next::Stop(1),
+            "the fourth exit inside ten minutes never restarts"
+        );
+        // The fourth exit being a storage code stops with that code, so the
+        // app can say what to do (free disk space).
+        let storage = [exit(NOW - 3_000, 1_000, 1), exit(NOW - 2_000, 1_000, 1), exit(NOW - 1_000, 1_000, 1), exit(NOW, 1_000, crate::store::EXIT_STORAGE)];
+        assert_eq!(next_restart(&storage, NOW), Next::Stop(crate::store::EXIT_STORAGE));
+        // A streak that predates the window still deepens the backoff — the
+        // loop is the same loop — up to the minute cap.
+        let base = NOW - WINDOW_MS - 10 * 60 * 1_000;
+        for (n, want) in [(4u64, 8u64), (5, 16), (6, 32), (8, 60)] {
+            assert_eq!(next_restart(&streak(n, base), NOW), Next::Again(Duration::from_secs(want)), "{n} old quick exits back off {want} s");
+        }
+        // A child that ran five minutes made progress: the backoff starts over.
+        let mut mixed = streak(2, NOW - 2_000);
+        mixed.push(exit(NOW, PROGRESS_MS + 1, 1));
+        assert_eq!(next_restart(&mixed, NOW), Next::Again(Duration::from_secs(1)));
+
+        // Exit codes a restart cannot change propagate the moment they happen.
+        for code in [
+            EXIT_UPGRADE_REQUIRED,
+            crate::store::EXIT_STORAGE,
+            EXIT_NO_VERIFIER,
+            crate::candidate::EXIT_IDENTITY,
+            EXIT_LOCKED,
+        ] {
+            assert_eq!(next_restart(&[exit(NOW, 1_000, code)], NOW), Next::Stop(code));
+        }
+    }
+
+    /// The history persists, and a damaged history file is a fresh one.
+    #[test]
+    fn the_exit_history_survives_a_restart_of_the_supervisor_itself() {
+        let dir = std::env::temp_dir().join(format!("aether-runstate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(load_exits(&dir).unwrap().is_empty());
+        let note = exit(now_ms(), 500, 9);
+        let _ = crate::atomic::replace(
+            &dir.join("run-state.json"),
+            &serde_json::to_vec(&vec![note]).unwrap(),
+            0o644,
+        );
+        assert_eq!(load_exits(&dir).unwrap(), vec![note], "the next run inherits the backoff");
+        std::fs::write(dir.join("run-state.json"), b"{not json").unwrap();
+        assert!(load_exits(&dir).is_err(), "a damaged history cannot reset the restart budget");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Red team #12: one data directory, one `aether`. A second taker of the
+    /// lock fails; once the first lets go, it succeeds again.
+    #[test]
+    fn a_second_aether_on_the_same_data_dir_fails_to_start() {
+        let dir = std::env::temp_dir().join(format!("aether-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = lock_data_dir(&dir).expect("the first taker locks");
+        let err = lock_data_dir(&dir).expect_err("the second taker fails");
+        assert!(err.contains("another aether"), "{err}");
+        drop(first);
+        assert!(lock_data_dir(&dir).is_ok(), "after the first lets go");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_network_reset_does_not_move_the_live_run_lock() {
+        let dir = std::env::temp_dir().join(format!("aether-lock-reset-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("source.json");
+        let data = dir.join("node");
+        std::fs::create_dir_all(&data).unwrap();
+        let mut first = file(1, "aa");
+        std::fs::write(&src, serde_json::to_vec(&first).unwrap()).unwrap();
+        adopt_network(&data, Some(&src)).unwrap();
+        let lock = lock_data_dir(&data).unwrap();
+        first.identity = Some("bb".into());
+        std::fs::write(&src, serde_json::to_vec(&first).unwrap()).unwrap();
+        adopt_network(&data, Some(&src)).unwrap();
+        assert!(data.join("run.lock").exists());
+        assert!(lock_data_dir(&data).is_err(), "reset cannot unlock the directory while its process lives");
+        drop(lock);
+        assert!(lock_data_dir(&data).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The crash points of a committee install (red team #19), as states on
+    /// disk. Each is what a run that died there leaves behind; every one must
+    /// end in the same installed world once the next run resumes.
+    #[test]
+    fn an_interrupted_committee_install_resumes_to_the_same_world() {
+        let dir = std::env::temp_dir().join(format!("aether-gen-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut old = file(1, "aa");
+        old.round = 5;
+        std::fs::write(dir.join("network.json"), serde_json::to_vec(&old).unwrap()).unwrap();
+        std::fs::write(dir.join("threshold.json"), b"the old share").unwrap();
+
+        // The prepared generation for round 6, complete on disk.
+        let mut next = file(1, "aa");
+        next.round = 6;
+        next.output = Some("the new output".into());
+        let gen = dir.join("gen").join("6");
+        std::fs::create_dir_all(&gen).unwrap();
+        std::fs::write(gen.join("network.json"), serde_json::to_vec(&next).unwrap()).unwrap();
+        let share = serde_json::to_vec(&crate::dkg::KeyFile {
+            round: 6, output: "the new output".into(), identity: "aa".into(), share: "00".into(),
+        }).unwrap();
+        std::fs::write(gen.join("threshold.json"), &share).unwrap();
+
+        // Crash before the completion marker: the old world is untouched.
+        finish_incomplete(&dir).unwrap();
+        assert_eq!(NetworkFile::load(&dir.join("network.json")).unwrap().round, 5, "an unmarked generation installs nothing");
+        assert_eq!(std::fs::read(dir.join("threshold.json")).unwrap(), b"the old share");
+
+        // Crash right after the marker (before any activation): the resume
+        // swaps pointer and share in.
+        std::fs::write(gen.join(".installed"), b"").unwrap();
+        finish_incomplete(&dir).unwrap();
+        assert_eq!(NetworkFile::load(&dir.join("network.json")).unwrap().round, 6, "the pointer moved");
+        assert_eq!(std::fs::read(dir.join("threshold.json")).unwrap(), share);
+        // And it lands there again from any earlier point, idempotently.
+        finish_incomplete(&dir).unwrap();
+        assert_eq!(NetworkFile::load(&dir.join("network.json")).unwrap().round, 6);
+
+        // A later crash between pointer and share: pointer already 6, share
+        // still the old one — the resume finishes the swap.
+        std::fs::write(dir.join("threshold.json"), b"the old share").unwrap();
+        finish_incomplete(&dir).unwrap();
+        assert_eq!(std::fs::read(dir.join("threshold.json")).unwrap(), share);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A member that leaves the voting set drops its share as part of the
+    /// install — and an interrupted install still drops it, on resume.
+    #[test]
+    fn a_leaving_member_drops_its_share_even_from_an_interrupted_install() {
+        let dir = std::env::temp_dir().join(format!("aether-gen-leave-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut old = file(1, "aa");
+        old.round = 5;
+        std::fs::write(dir.join("network.json"), serde_json::to_vec(&old).unwrap()).unwrap();
+        std::fs::write(dir.join("threshold.json"), b"the old share").unwrap();
+
+        let mut next = file(1, "bb"); // another committee: this Mac leaves
+        next.round = 6;
+        let gen = dir.join("gen").join("6");
+        std::fs::create_dir_all(&gen).unwrap();
+        std::fs::write(gen.join("network.json"), serde_json::to_vec(&next).unwrap()).unwrap();
+        // No threshold.json in the generation: the seat went to someone else.
+        std::fs::write(gen.join(".installed"), b"").unwrap();
+
+        finish_incomplete(&dir).unwrap();
+        assert_eq!(NetworkFile::load(&dir.join("network.json")).unwrap().round, 6);
+        assert!(!dir.join("threshold.json").exists(), "the old share is gone, so no quorum of forgotten shares can sign");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_broken_prepared_share_never_advances_the_network_pointer() {
+        let dir = std::env::temp_dir().join(format!("aether-gen-broken-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut old = file(1, "aa");
+        old.round = 5;
+        std::fs::write(dir.join("network.json"), serde_json::to_vec(&old).unwrap()).unwrap();
+        std::fs::write(dir.join("threshold.json"), b"the old share").unwrap();
+        let mut next = file(1, "aa");
+        next.round = 6;
+        let gen = dir.join("gen/6");
+        std::fs::create_dir_all(gen.join("threshold.json")).unwrap(); // injected I/O failure
+        std::fs::write(gen.join("network.json"), serde_json::to_vec(&next).unwrap()).unwrap();
+        std::fs::write(gen.join(".installed"), b"").unwrap();
+
+        assert!(finish_incomplete(&dir).is_err(), "startup must stop on a broken completed generation");
+        assert_eq!(NetworkFile::load(&dir.join("network.json")).unwrap().round, 5);
+        assert_eq!(std::fs::read(dir.join("threshold.json")).unwrap(), b"the old share");
+        std::fs::remove_dir(gen.join("threshold.json")).unwrap();
+        std::fs::write(gen.join("threshold.json"), b"torn share").unwrap();
+        assert!(finish_incomplete(&dir).is_err(), "malformed share bytes cannot become active");
+        assert_eq!(NetworkFile::load(&dir.join("network.json")).unwrap().round, 5);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

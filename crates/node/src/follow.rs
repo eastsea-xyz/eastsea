@@ -103,12 +103,23 @@ pub enum Upstream {
 }
 
 impl Upstream {
-    /// Ask each source in turn until `accept` takes an answer.
-    async fn ask<T>(&self, method: &str, params: Value, accept: impl Fn(Value) -> Result<Option<T>, String>) -> Result<Option<T>, String> {
+    /// Ask each source in turn until `accept` takes an answer. Every answer
+    /// that came back — including "nothing new at the tip" — is a step of
+    /// work (red team #2): a watcher comparing `activity` across polls can
+    /// tell a node that is asking from one where nothing moves.
+    async fn ask<T>(&self, method: &str, params: Value, accept: impl Fn(Value) -> Result<Option<T>, String> + Send + Sync) -> Result<Option<T>, String> {
+        let answer = self.ask_upstream(method, params, &accept).await;
+        if answer.is_ok() {
+            crate::chain::tick();
+        }
+        answer
+    }
+
+    async fn ask_upstream<T>(&self, method: &str, params: Value, accept: &(dyn Fn(Value) -> Result<Option<T>, String> + Send + Sync)) -> Result<Option<T>, String> {
         match self {
             Upstream::Iroh(c, misses) => {
                 use std::sync::atomic::Ordering::Relaxed;
-                let answer = c.call(method, params).await.map_err(|e| e.to_string()).and_then(&accept);
+                let answer = c.call(method, params).await.map_err(|e| e.to_string()).and_then(accept);
                 // Switch validators when one serves data that does not verify, or has
                 // had nothing new for a while (it may be lagging behind the others).
                 let stale = match &answer {
@@ -128,7 +139,7 @@ impl Upstream {
             Upstream::Http(urls) => {
                 let mut last = Err(String::from("no upstream"));
                 for url in urls {
-                    match http_call(url, method, &params).await.and_then(&accept) {
+                    match http_call(url, method, &params).await.and_then(accept) {
                         Ok(Some(v)) => return Ok(Some(v)),
                         other => last = other,
                     }
@@ -183,10 +194,53 @@ async fn net_height(upstream: &Upstream) -> Result<u64, String> {
         .ok_or_else(|| "no upstream height".into())
 }
 
+/// The margin a snapshot recovery keeps free on top of the snapshot itself
+/// (docs/design/24-self-healing.md: 5 GB): the tree it installs goes into the
+/// database beside the file that is still there, and compaction after it
+/// wants room of its own.
+pub const RECOVERY_RESERVE: u64 = 5 << 30;
+
+/// Free bytes on the volume holding `dir` (0 when it cannot be read).
+fn free_bytes(dir: &std::path::Path) -> u64 {
+    let Ok(c) = std::ffi::CString::new(dir.to_string_lossy().as_bytes()) else { return 0 };
+    let mut v: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(c.as_ptr(), &mut v) } != 0 {
+        return 0;
+    }
+    (v.f_bavail as u64).saturating_mul(v.f_frsize as u64)
+}
+
+/// Refuse a recovery the disk cannot finish (red team #7): a snapshot
+/// recovery on a full disk deletes nothing but writes twice its size — the
+/// download in memory and the tree into the database — beside the file that
+/// is still there, and redb wants to compact after it. Running out of space
+/// mid-recovery is exactly the incident that keeps repeating.
+fn require_space(dir: &std::path::Path, size: u64) -> Result<(), String> {
+    let free = free_bytes(dir);
+    let needed = size.saturating_mul(2).saturating_add(RECOVERY_RESERVE);
+    if !enough(free, size) {
+        return Err(format!(
+            "only {free} bytes are free but a snapshot recovery of {size} bytes needs {needed}: \
+             free disk space, and until then this Mac reads through other nodes"
+        ));
+    }
+    Ok(())
+}
+
+/// The guard's decision, on the numbers: twice the snapshot plus the fixed
+/// reserve, saturating (a size no disk holds is simply refused).
+fn enough(free: u64, size: u64) -> bool {
+    free >= size.saturating_mul(2).saturating_add(RECOVERY_RESERVE)
+}
+
 /// The upstream's snapshot, downloaded and checked against its BLAKE3
 /// (authenticity comes from the certified block after it, in `check`).
 /// Chunks are fetched in parallel: each costs a round trip on a slow link.
-async fn download(upstream: &Upstream) -> Result<crate::snapshot::Snapshot, String> {
+/// `guard` runs with the advertised size before the first chunk is fetched.
+async fn download_with(
+    upstream: &Upstream,
+    guard: &(dyn Fn(u64) -> Result<(), String> + Send + Sync),
+) -> Result<crate::snapshot::Snapshot, String> {
     let v = upstream.first("aether_snapshot", json!([])).await?;
     let (height, size, want) = (
         v["height"].as_u64().ok_or("no snapshot height")?,
@@ -199,6 +253,10 @@ async fn download(upstream: &Upstream) -> Result<crate::snapshot::Snapshot, Stri
             "snapshot of {size} bytes in chunks of {chunk} is outside the limits"
         ));
     }
+    guard(size as u64)?;
+    // The one stage whose work is not blocks: name it, so a frozen height
+    // during the download reads as progress, not as a stall (red team #2).
+    crate::chain::set_stage(Some("snapshot"));
     let chunk_at = |index: u64| async move {
         let c = upstream
             .first("aether_snapshotChunk", json!([height, index]))
@@ -210,6 +268,7 @@ async fn download(upstream: &Upstream) -> Result<crate::snapshot::Snapshot, Stri
         if data.len() as u64 != end - index * chunk as u64 {
             return Err("snapshot chunk of the wrong size".to_string());
         }
+        crate::chain::tick();
         Ok(data)
     };
     let mut bytes = Vec::with_capacity(size.min(64 << 20));
@@ -236,11 +295,18 @@ async fn download(upstream: &Upstream) -> Result<crate::snapshot::Snapshot, Stri
     Ok(snap)
 }
 
+/// [`download_with`] with the shipped guard: enough room for the recovery,
+/// checked against the volume the database lives on (red team #7).
+async fn download(upstream: &Upstream, dir: &std::path::Path) -> Result<crate::snapshot::Snapshot, String> {
+    download_with(upstream, &|size| require_space(dir, size)).await
+}
+
 /// Checkpoint sync: fetch the upstream's snapshot and the certified block
 /// after it, check both, and write the snapshot as `store`'s checkpoint.
 /// Returns the snapshot height.
 pub async fn checkpoint(upstream: &Upstream, set: &ValidatorSet, cfg: &crate::chain::ChainConfig, store: &crate::store::Store) -> Result<u64, String> {
-    let snap = download(upstream).await?;
+    let dir = store.path().parent().unwrap_or_else(|| std::path::Path::new("."));
+    let snap = download(upstream, dir).await?;
     let h = snap.summary.height;
     let next = wait_certified(upstream, set, h + 1).await?;
     let state = snap.check(&next, cfg, set.identity())?;
@@ -298,6 +364,11 @@ fn move_aside(data: &std::path::Path, why: &str) -> Result<(), String> {
                 })
         })
         .collect();
+    // The state moves first: a crash mid-move then leaves a fresh state under
+    // an archive that is only older (which replays block by block), never a
+    // state checkpoint ahead of a half-gone archive.
+    let mut gone = gone;
+    gone.sort_by_key(|p| p.file_name().and_then(|n| n.to_str()).map(|n| n != "state.redb").unwrap_or(true));
     for p in gone {
         let name = p.file_name().expect("listed entry has a name").to_owned();
         std::fs::rename(&p, aside.join(name)).map_err(|e| e.to_string())?;
@@ -367,7 +438,8 @@ async fn wait_certified(upstream: &Upstream, set: &ValidatorSet, h: u64) -> Resu
 /// era files, verified by the certified history root. Returns the height
 /// jumped to.
 async fn jump(chain: &Chain, upstream: &Upstream, set: &ValidatorSet) -> Result<u64, String> {
-    let snap = download(upstream).await?;
+    let store = chain.store().ok_or("no store to jump in")?;
+    let snap = download(upstream, store.path().parent().unwrap_or_else(|| std::path::Path::new("."))).await?;
     let h = snap.summary.height;
     let ours = chain.finalized_height();
     if h <= ours + JUMP_BEHIND {
@@ -376,7 +448,6 @@ async fn jump(chain: &Chain, upstream: &Upstream, set: &ValidatorSet) -> Result<
             h.saturating_sub(ours)
         ));
     }
-    let store = chain.store().ok_or("no store to jump in")?;
     let next = wait_certified(upstream, set, h + 1).await?;
     let state = snap.check(&next, &chain.cfg(), set.identity())?;
     // The old state's keys go with the swap, so the store ends up holding exactly the snapshot.
@@ -385,6 +456,18 @@ async fn jump(chain: &Chain, upstream: &Upstream, set: &ValidatorSet) -> Result<
     let (exec, summary) = snap.head(state);
     chain.adopt(exec, summary);
     Ok(h)
+}
+
+/// How long the follow loop waits after an error before trying again (red
+/// team #16): a full disk is a condition only a person changes, so retries
+/// back off for half a minute instead of hammering a disk that is full; a
+/// network blip is still quick.
+fn error_backoff(err: &str) -> Duration {
+    if err.contains("No space left") || err.contains("free disk space") {
+        Duration::from_secs(30)
+    } else {
+        Duration::from_millis(400)
+    }
 }
 
 /// Follow the chain forever: verify, execute and persist each next block.
@@ -443,10 +526,10 @@ pub async fn run(
                 if e.starts_with(STORE_FAILED) {
                     recover(&chain).await;
                 } else {
-                    warn!(height = chain.finalized_height() + 1, %e, "upstream");
+                    warn!(height = chain.finalized_height() + 1, backoff_ms = error_backoff(&e).as_millis() as u64, %e, "upstream");
                 }
                 window = 1;
-                tokio::time::sleep(Duration::from_millis(400)).await;
+                tokio::time::sleep(error_backoff(&e)).await;
             }
         }
     }
@@ -495,6 +578,9 @@ async fn advance(
     window: u64,
     last_log: &mut u64,
 ) -> Result<u64, String> {
+    // Each round starts unnamed (red team #2): a stage that still holds names
+    // itself again below; one that has finished does not linger in aether_status.
+    crate::chain::set_stage(None);
     let mut adopted = 0u64;
     let mut window = window.max(1);
     loop {
@@ -625,6 +711,10 @@ async fn pipeline(
 /// snapshot jump) if the file turns out to be damaged.
 async fn recover(chain: &Chain) {
     let Some(store) = chain.store() else { return };
+    // A store re-opening after a disk failure is a stage all its own: the
+    // height freezes for its whole backoff, and that is the healing working
+    // (red team #2/#16).
+    crate::chain::set_stage(Some("storage"));
     let healed = tokio::task::spawn_blocking({
         let store = store.clone();
         move || crate::store::Recovery::from_env().reopen(&store)
@@ -1003,5 +1093,24 @@ mod tests {
         // window fail open.
         assert_eq!(may_start_voting(&[], 100, BEHIND_MARGIN, patience - Duration::from_millis(1), patience), VoteStart::Wait);
         assert_eq!(may_start_voting(&[], 100, BEHIND_MARGIN, patience, patience), VoteStart::FailOpen);
+    }
+
+    /// Red team #7/#16: a recovery the disk cannot hold never starts, and a
+    /// full disk is not retried at network speed.
+    #[test]
+    fn space_is_checked_before_a_recovery_and_full_disks_back_off() {
+        let (size, free) = (1u64 << 30, RECOVERY_RESERVE + 2 * (1u64 << 30));
+        assert!(enough(free, size), "twice the snapshot plus the reserve is exactly enough");
+        assert!(!enough(free - 1, size), "one byte short is not");
+        assert!(!enough(RECOVERY_RESERVE, size), "the reserve alone does not fit the snapshot twice over");
+        assert!(!enough(u64::MAX - 1, u64::MAX), "a size no disk holds is refused (the need saturates past every disk)");
+        // The shipped guard reads a real volume and says the one sentence.
+        let dir = std::env::temp_dir();
+        assert!(free_bytes(&dir) > 0, "a readable volume reports its free bytes");
+        let err = require_space(&dir, u64::MAX).unwrap_err();
+        assert!(err.contains("free disk space"), "{err}");
+        assert_eq!(error_backoff(&err), Duration::from_secs(30), "the space refusal backs off");
+        assert_eq!(error_backoff("io: No space left on device"), Duration::from_secs(30));
+        assert_eq!(error_backoff("connection refused"), Duration::from_millis(400));
     }
 }

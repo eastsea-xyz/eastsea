@@ -34,6 +34,38 @@ pub const DEVICE_TOKEN_FILE: &str = "devicecheck-token";
 /// otherwise a follower asks its upstream.
 pub const REGISTRAR_RPC_ENV: &str = "AETHER_REGISTRAR_RPC";
 
+/// The process exits with this code when this Mac's identity is unreadable
+/// (red team #5): a registered Mac must never vote under a replacement key,
+/// so voting stays off until the real key file is restored.
+pub const EXIT_IDENTITY: i32 = 6;
+
+/// Whether `<dir>` holds — or ever held — this Mac's identity: the key files
+/// themselves, a committee's files, or the moved-aside remains of either
+/// (`stale-*` from a network reset, `corrupt-*` from a store heal). In such a
+/// directory a key that is gone or will not parse is a loss to report, never
+/// a reason to generate a different identity the chain does not know.
+pub fn registered_identity(dir: &Path) -> bool {
+    let marks = [
+        crate::roster::KEY_FILE,
+        crate::roster::PUBLIC_FILE,
+        "node-account.key",
+        "network.json",
+        "threshold.json",
+    ];
+    if marks.iter().any(|m| dir.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                let n = e.file_name();
+                let n = n.to_string_lossy();
+                n.starts_with("stale-") || n.starts_with("corrupt-")
+            })
+        })
+        .unwrap_or(false)
+}
+
 /// A candidate's keys: voting key and iroh node key (`validator.key`) and the
 /// node's own account (`node-account.key`), which pays for and sends beacons.
 pub struct CandidateKeys {
@@ -43,19 +75,41 @@ pub struct CandidateKeys {
     pub dir: PathBuf,
 }
 
+/// Never the key material itself (`expect_err` in tests wants Debug).
+impl std::fmt::Debug for CandidateKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CandidateKeys(..)")
+    }
+}
+
 impl CandidateKeys {
     /// Load `<dir>`'s keys, creating them the first time (never overwritten).
+    /// A key that is gone or unreadable in a directory that ever held an
+    /// identity is refused, not replaced (red team #5): the chain knows the
+    /// registered key, and a fresh one would silently vote as someone else.
     pub fn load_or_create(dir: &Path) -> Result<Self, String> {
-        let keys = match LocalKeys::load(dir) {
-            Ok(k) => k,
-            Err(_) => {
+        let (keys, first_install) = match LocalKeys::load(dir) {
+            Ok(k) => (k, false),
+            Err(e) => {
+                if registered_identity(dir) {
+                    return Err(format!(
+                        "{e}; this Mac already had an identity, so no new key is generated. \
+                         Voting stays off until {}/{} is restored from a backup (or this Mac \
+                         is unregistered and a new identity is registered on purpose)",
+                        dir.display(),
+                        crate::roster::KEY_FILE
+                    ));
+                }
                 let k = LocalKeys::generate();
                 k.save(dir)?;
-                k
+                (k, true)
             }
         };
         let account_path = dir.join("node-account.key");
         if !account_path.exists() {
+            if !first_install {
+                return Err(format!("{} is missing from an existing identity; restore it from a backup instead of replacing it", account_path.display()));
+            }
             Faucet::generate(&account_path)?;
         }
         Ok(CandidateKeys { keys, account: Faucet::load(&account_path)?, dir: dir.to_path_buf() })
@@ -254,5 +308,106 @@ pub async fn beacon_loop(chain: Chain, outbox: Outbox, keys: CandidateKeys) {
             }
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("aether-candidate-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// A first install creates its keys; a re-run loads the very same ones.
+    #[test]
+    fn a_first_install_creates_keys_and_keeps_them() {
+        let dir = tmp("fresh");
+        let a = CandidateKeys::load_or_create(&dir).unwrap();
+        let again = CandidateKeys::load_or_create(&dir).unwrap();
+        assert_eq!(a.validator_key(), again.validator_key(), "the identity never changes");
+        assert!(dir.join(crate::roster::KEY_FILE).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Red team #5: the key file vanishing (or failing to parse) in a
+    /// directory that ever held an identity must not mint a new identity —
+    /// the chain knows the old key, and a fresh one would vote as someone
+    /// else. Every marker of a past identity refuses the same way.
+    #[test]
+    fn a_lost_or_broken_key_is_never_replaced_by_a_new_identity() {
+        for (name, marker) in [
+            ("key-gone", None),
+            ("pub-left", Some(crate::roster::PUBLIC_FILE)),
+            ("network-left", Some("network.json")),
+            ("share-left", Some("threshold.json")),
+            ("account-left", Some("node-account.key")),
+            ("moved-aside", Some("stale-123")),
+        ] {
+            let dir = tmp(name);
+            // A real first install, then the incident.
+            CandidateKeys::load_or_create(&dir).unwrap();
+            let was = dir.join(crate::roster::KEY_FILE);
+            match marker {
+                None => {
+                    std::fs::remove_file(&was).unwrap();
+                }
+                Some(m) if m == crate::roster::PUBLIC_FILE => {
+                    std::fs::remove_file(&was).unwrap();
+                }
+                Some(m) if m.starts_with("stale-") => {
+                    let gone = dir.parent().unwrap().join(format!("aether-candidate-gone-{name}-{}", std::process::id()));
+                    std::fs::rename(&dir, &gone).unwrap();
+                    std::fs::create_dir_all(&dir).unwrap();
+                    std::fs::create_dir_all(dir.join(m)).unwrap();
+                    let _ = std::fs::remove_dir_all(&gone);
+                }
+                Some(m) => {
+                    std::fs::remove_file(&was).unwrap();
+                    std::fs::write(dir.join(m), b"leftovers of an installed Mac").unwrap();
+                }
+            }
+            let before: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().collect();
+            let err = CandidateKeys::load_or_create(&dir).expect_err("a registered identity refuses to regenerate");
+            assert!(err.contains("no new key is generated"), "{name}: {err}");
+            assert!(
+                !dir.join(crate::roster::KEY_FILE).exists(),
+                "{name}: no replacement key was written"
+            );
+            let after: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().collect();
+            assert_eq!(before.len(), after.len(), "{name}: the directory is untouched");
+        }
+    }
+
+    /// A key file damaged in place (torn write, disk corruption) is the same
+    /// refusal — parsing failure is loss, not first install.
+    #[test]
+    fn a_key_that_no_longer_parses_is_refused_too() {
+        let dir = tmp("corrupt");
+        CandidateKeys::load_or_create(&dir).unwrap();
+        std::fs::write(dir.join(crate::roster::KEY_FILE), b"{\"consensus\": \"zz").unwrap();
+        let err = CandidateKeys::load_or_create(&dir).expect_err("a broken key is not a fresh Mac");
+        assert!(err.contains("no new key is generated"), "{err}");
+        assert_eq!(
+            std::fs::read(dir.join(crate::roster::KEY_FILE)).unwrap(),
+            b"{\"consensus\": \"zz",
+            "the damaged bytes stay for an operator to inspect"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_beacon_account_is_not_silently_replaced() {
+        let dir = tmp("account-gone");
+        let original = CandidateKeys::load_or_create(&dir).unwrap().beaconer();
+        std::fs::remove_file(dir.join("node-account.key")).unwrap();
+        let err = CandidateKeys::load_or_create(&dir).expect_err("an existing account is not regenerated");
+        assert!(err.contains("restore it from a backup"), "{err}");
+        assert!(!dir.join("node-account.key").exists());
+        assert!(!original.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

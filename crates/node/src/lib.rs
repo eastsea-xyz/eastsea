@@ -1,4 +1,5 @@
 pub mod application;
+pub mod atomic;
 pub mod beacons;
 pub mod archive;
 pub mod announce;

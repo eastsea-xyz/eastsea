@@ -41,6 +41,10 @@ pub struct ChainStatus {
     pub mempool: u64,
     /// Estimated fee (wei) of a plain transfer at the next block's base fee plus the tip.
     pub transfer_fee_wei: String,
+    /// Scheduled notices reported by the selected node (JSON array).
+    pub upgrades_json: String,
+    /// Highest chain protocol this wallet build knows how to display and submit to.
+    pub supported_protocol: u32,
 }
 
 #[derive(uniffi::Record)]
@@ -54,6 +58,20 @@ pub struct VerifiedAccount {
     pub certified_block: u64,
     pub state_root: String,
     pub validators: u32,
+}
+
+/// A ReleaseLog entry proven against a committee-certified state root.
+#[derive(uniffi::Record)]
+pub struct VerifiedRelease {
+    pub manifest_sha256: String,
+    pub archive_sha256: String,
+    pub signatures_sha256: String,
+    pub published_block: u64,
+    pub published_at: u64,
+    pub emergency: bool,
+    pub state_height: u64,
+    pub certified_block: u64,
+    pub certified_timestamp_ms: u64,
 }
 
 #[derive(uniffi::Record)]
@@ -88,34 +106,514 @@ const DEVNET_VALIDATORS: u64 = 4;
 
 struct Net {
     rt: tokio::runtime::Runtime,
-    client: aether_net::RpcClient,
+    generation: u64,
+    /// The validators: the fallback, and where writes go.
+    client: std::sync::Arc<aether_net::RpcClient>,
+    /// Follower Macs wallet reads spread over.
+    spread: std::sync::Arc<Spread>,
 }
 
-fn net() -> R<&'static Net> {
-    static NET: std::sync::OnceLock<Result<Net, String>> = std::sync::OnceLock::new();
-    NET.get_or_init(|| {
-        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(|e| e.to_string())?;
-        let configured = NODES.lock().expect("nodes lock").clone();
-        let ids = configured.unwrap_or_else(|| (1..=DEVNET_VALIDATORS).map(aether_net::devnet_node_id).collect());
-        let client = rt.block_on(aether_net::RpcClient::new(ids)).map_err(|e| e.to_string())?;
-        Ok(Net { rt, client })
+static NET: std::sync::Mutex<Option<Result<std::sync::Arc<Net>, String>>> = std::sync::Mutex::new(None);
+static NETWORK_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn net() -> R<std::sync::Arc<Net>> {
+    let mut cached = NET.lock().expect("network lock");
+    cached.get_or_insert_with(|| {
+        let generation = NETWORK_GENERATION.load(std::sync::atomic::Ordering::SeqCst);
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| e.to_string())?;
+        let pinned = PINNED_SERVERS.lock().expect("pinned servers lock").clone();
+        let built: std::result::Result<_, String> = rt.block_on(async {
+            let client = match &pinned {
+                Some((_, validators)) => {
+                    aether_net::RpcClient::with_addrs(validators.clone()).await
+                }
+                None => {
+                    let ids = NODES
+                        .lock()
+                        .expect("nodes lock")
+                        .clone()
+                        .unwrap_or_else(|| {
+                            (1..=DEVNET_VALIDATORS)
+                                .map(aether_net::devnet_node_id)
+                                .collect()
+                        });
+                    aether_net::RpcClient::new(ids).await
+                }
+            };
+            let client = client.map_err(|e| e.to_string())?;
+            let pinned_followers = pinned.as_ref().map(|(f, _)| f.clone()).unwrap_or_default();
+            let endpoint = client.endpoint().clone();
+            Ok((client, Spread::on(endpoint, pinned_followers)))
+        });
+        let (client, spread) = built?;
+        let (client, spread) = (std::sync::Arc::new(client), std::sync::Arc::new(spread));
+        // Ask the validators every few minutes which follower Macs serve
+        // wallets (nothing to ask when the servers were pinned: tests).
+        if pinned.is_none() {
+            let (spread, refresh) = (spread.clone(), client.clone());
+            rt.spawn(async move {
+                loop {
+                    spread.discover(&refresh).await;
+                    tokio::time::sleep(Duration::from_secs(5 * 60)).await;
+                }
+            });
+            // And every 30 s, the newest finalized height off a validator's
+            // own certificate: the bar a serving node's anchor must not lag
+            // far behind (red-team 2026-09-29 §3).
+            let refresh = client.clone();
+            rt.spawn(async move {
+                loop {
+                    refresh_finalized_height(&refresh, generation).await;
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                }
+            });
+        }
+        Ok(std::sync::Arc::new(Net { rt, generation, client, spread }))
     })
-    .as_ref()
-    .map_err(|e| WalletError::Network(e.clone()))
+    .clone()
+    .map_err(WalletError::Network)
 }
 
-/// Fee caps from the node's next base fees: 2x headroom plus a 1 gwei tip
-/// (only base + tip is charged). Older nodes without `base_fee` get the floor.
-fn fee_caps(status: &Value) -> (FeeVector, u128) {
+// ---------------- wallet reads spread over follower Macs ----------------
+//
+// Capacity review 2026-09-29: iPhone wallets (and any wallet without its own
+// node) poll every 2 s, and asking the validators directly is ~500k req/s on
+// 16 validators at a million phones. Follower Macs — any Mac running
+// `aether run` — announce themselves as wallet servers (a registered
+// candidate's signed announcement; validators list only those), and this
+// wallet keeps a few of them active, rotates away from trouble, and falls
+// back to the validators when no follower answers — or every one of them is
+// busy or failing (red-team 2026-09-29 §3: an all-busy pool must not deny
+// reads). Nothing about verification changes: every answer still passes the
+// same certificate, proof and chain checks, so a follower cannot lie — it
+// can only be slow or stale, and the monotonic-height rule already rejects
+// stale.
+
+/// Followers one wallet reads from at once: the connection footprint of a phone.
+const ACTIVE_FOLLOWERS: usize = 3;
+/// Followers remembered at all (discovery merges into this pool).
+const FOLLOWER_POOL: usize = 12;
+/// How long connecting to one follower may take before the next is tried.
+const CONNECT_FOLLOWER: Duration = Duration::from_secs(12);
+
+/// Why a follower is passed over for a while.
+#[derive(Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum Parked {
+    /// It answered "server busy" (its DoS limits): back off, politely.
+    Busy,
+    /// It broke (connect, stream, timeout): rotate away.
+    Error,
+    /// Its answers verify but lag the chain: try a fresher follower.
+    Stale,
+    /// It served something that failed verification: demoted.
+    Lying,
+}
+
+impl Parked {
+    fn as_str(self) -> &'static str {
+        match self {
+            Parked::Busy => "busy",
+            Parked::Error => "error",
+            Parked::Stale => "stale",
+            Parked::Lying => "lying",
+        }
+    }
+
+    /// The first park of its kind, and the longest it can grow to by doubling.
+    fn base(self) -> Duration {
+        match self {
+            Parked::Busy => Duration::from_secs(1),
+            Parked::Error => Duration::from_secs(2),
+            Parked::Stale => Duration::from_secs(5),
+            Parked::Lying => Duration::from_secs(10 * 60),
+        }
+    }
+
+    fn cap(self) -> Duration {
+        match self {
+            Parked::Busy => Duration::from_secs(30),
+            Parked::Error => Duration::from_secs(5 * 60),
+            Parked::Stale => Duration::from_secs(60),
+            Parked::Lying => Duration::from_secs(6 * 60 * 60),
+        }
+    }
+}
+
+/// One follower this wallet may read from, and how it has been behaving.
+struct Follower {
+    addr: aether_net::EndpointAddr,
+    conn: Option<aether_net::Connection>,
+    /// Moving average of call latency (ms); none until the first answer.
+    latency_ms: Option<f64>,
+    /// Passed over until this instant.
+    parked: Option<(Parked, std::time::Instant)>,
+    /// Parks in a row of the same kind (each doubles the next one).
+    strikes: u32,
+}
+
+impl Follower {
+    fn healthy(&self, now: std::time::Instant) -> bool {
+        self.parked.is_none_or(|(_, until)| now >= until)
+    }
+}
+
+/// Reads spread over follower Macs: round-robin over a few active ones,
+/// preferring low latency when (re)filling, rotating away from trouble.
+struct Spread {
+    endpoint: aether_net::Endpoint,
+    inner: std::sync::Mutex<Inner>,
+}
+
+struct Inner {
+    followers: Vec<Follower>,
+    /// The `ACTIVE_FOLLOWERS` ids requests rotate over.
+    active: Vec<aether_net::EndpointId>,
+    /// Next position in the rotation.
+    rr: usize,
+}
+
+/// A fresh active follower: the lowest-latency of a small random sample of
+/// the healthy pool (unmeasured servers win, so new blood is always tried).
+fn choose(
+    followers: &[Follower],
+    active: &[aether_net::EndpointId],
+    now: std::time::Instant,
+) -> Option<aether_net::EndpointId> {
+    use rand::seq::IndexedRandom as _;
+    let candidates: Vec<usize> = followers
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| !active.contains(&f.addr.id) && f.healthy(now))
+        .map(|(i, _)| i)
+        .collect();
+    (0..3)
+        .filter_map(|_| candidates.choose(&mut rand::rng()).copied())
+        .min_by_key(|&i| followers[i].latency_ms.map(|l| l as u64).unwrap_or(0))
+        .map(|i| followers[i].addr.id)
+}
+
+impl Spread {
+    /// On `endpoint` (shared with the validator client), with `pinned`
+    /// followers that are never re-discovered (tests and previews).
+    fn on(endpoint: aether_net::Endpoint, pinned: Vec<aether_net::EndpointAddr>) -> Spread {
+        Spread {
+            endpoint,
+            inner: std::sync::Mutex::new(Inner {
+                followers: pinned
+                    .into_iter()
+                    .map(|addr| Follower {
+                        addr,
+                        conn: None,
+                        latency_ms: None,
+                        parked: None,
+                        strikes: 0,
+                    })
+                    .collect(),
+                active: Vec::new(),
+                rr: 0,
+            }),
+        }
+    }
+
+    /// Ask the validators which follower Macs serve wallets, and merge them
+    /// into the pool (a healthy server is never dropped for a new one; the
+    /// longest-parked inactive one makes room).
+    async fn discover(&self, validators: &aether_net::RpcClient) {
+        let Ok(list) = validators.call("aether_walletServers", json!([])).await else {
+            return;
+        };
+        let ids = list.as_array().map(|a| {
+            a.iter()
+                .filter_map(|s| s.as_str().and_then(|s| s.parse().ok()))
+                .collect::<Vec<aether_net::EndpointId>>()
+        });
+        let Some(ids) = ids else { return };
+        let mut g = self.inner.lock().expect("spread lock");
+        for id in ids {
+            if g.followers.iter().any(|f| f.addr.id == id) {
+                continue;
+            }
+            if g.followers.len() >= FOLLOWER_POOL {
+                let room = (0..g.followers.len())
+                    .filter(|&i| {
+                        !g.active.contains(&g.followers[i].addr.id)
+                            && g.followers[i].parked.is_some()
+                    })
+                    .max_by_key(|&i| g.followers[i].parked.expect("checked").1);
+                match room {
+                    Some(victim) => {
+                        g.followers.remove(victim);
+                    }
+                    None => return, // full of healthy servers: nothing to add
+                }
+            }
+            g.followers.push(Follower {
+                addr: aether_net::EndpointAddr::from(id),
+                conn: None,
+                latency_ms: None,
+                parked: None,
+                strikes: 0,
+            });
+        }
+    }
+
+    /// The next follower to ask, refilling the rotation first: round-robin
+    /// over up to `ACTIVE_FOLLOWERS` healthy ones.
+    fn pick(&self) -> Option<(aether_net::EndpointId, aether_net::EndpointAddr)> {
+        let mut g = self.inner.lock().expect("spread lock");
+        let now = std::time::Instant::now();
+        let mut active: Vec<aether_net::EndpointId> = Vec::new();
+        for id in g.active.iter() {
+            if g.followers
+                .iter()
+                .any(|f| &f.addr.id == id && f.healthy(now))
+            {
+                active.push(*id);
+            }
+        }
+        while active.len() < ACTIVE_FOLLOWERS {
+            let Some(id) = choose(&g.followers, &active, now) else {
+                break;
+            };
+            active.push(id);
+        }
+        g.active = active;
+        g.rr = g.rr.wrapping_add(1);
+        let id = *g.active.get(g.rr % g.active.len().max(1))?;
+        let addr = g.followers.iter().find(|f| f.addr.id == id)?.addr.clone();
+        Some((id, addr))
+    }
+
+    /// A healthy cached connection to `id`, or a fresh one.
+    async fn conn_to(
+        &self,
+        id: &aether_net::EndpointId,
+        addr: &aether_net::EndpointAddr,
+    ) -> Result<aether_net::Connection, aether_net::RpcError> {
+        if let Some(c) = self
+            .inner
+            .lock()
+            .expect("spread lock")
+            .followers
+            .iter()
+            .find(|f| &f.addr.id == id)
+            .and_then(|f| {
+                f.conn
+                    .as_ref()
+                    .filter(|c| c.close_reason().is_none())
+                    .cloned()
+            })
+        {
+            return Ok(c);
+        }
+        let c = aether_net::connect_rpc(&self.endpoint, addr, CONNECT_FOLLOWER)
+            .await
+            .map_err(aether_net::RpcError::Transport)?;
+        if let Some(f) = self
+            .inner
+            .lock()
+            .expect("spread lock")
+            .followers
+            .iter_mut()
+            .find(|f| &f.addr.id == id)
+        {
+            f.conn = Some(c.clone());
+        }
+        Ok(c)
+    }
+
+    /// Record that `id` answered in `took` (a healthy server again).
+    fn answered(&self, id: &aether_net::EndpointId, took: Duration) {
+        let mut g = self.inner.lock().expect("spread lock");
+        let Some(f) = g.followers.iter_mut().find(|f| &f.addr.id == id) else {
+            return;
+        };
+        let ms = took.as_secs_f64() * 1000.0;
+        f.latency_ms = Some(match f.latency_ms {
+            Some(ema) => ema * 0.7 + ms * 0.3,
+            None => ms,
+        });
+        f.strikes = 0;
+        f.parked = None;
+    }
+
+    /// Pass `id` over for a while, longer every time in a row.
+    fn park(&self, id: &aether_net::EndpointId, why: Parked) {
+        let mut g = self.inner.lock().expect("spread lock");
+        let Some(f) = g.followers.iter_mut().find(|f| &f.addr.id == id) else {
+            return;
+        };
+        f.strikes = if f.parked.is_some_and(|(w, _)| w == why) {
+            f.strikes + 1
+        } else {
+            1
+        };
+        let mut for_how_long = why.base();
+        for _ in 1..f.strikes {
+            for_how_long = (for_how_long * 2).min(why.cap());
+        }
+        f.parked = Some((why, std::time::Instant::now() + for_how_long));
+        if matches!(why, Parked::Error | Parked::Lying) {
+            f.conn = None;
+        }
+        g.active.retain(|a| a != id);
+    }
+
+    /// Healthy followers right now (display and diagnostics).
+    fn healthy(&self) -> usize {
+        let g = self.inner.lock().expect("spread lock");
+        let now = std::time::Instant::now();
+        g.followers.iter().filter(|f| f.healthy(now)).count()
+    }
+
+    /// The pool as it stands (diagnostics; tests).
+    fn describe(&self) -> Vec<WalletServerInfo> {
+        let g = self.inner.lock().expect("spread lock");
+        let now = std::time::Instant::now();
+        g.followers
+            .iter()
+            .map(|f| WalletServerInfo {
+                node: f.addr.id.to_string(),
+                active: g.active.contains(&f.addr.id),
+                latency_ms: f.latency_ms.map(|l| l as u32),
+                parked: f.parked.map(|(w, _)| w.as_str().to_string()),
+                parked_for_ms: f
+                    .parked
+                    .map(|(_, until)| until.saturating_duration_since(now).as_millis() as u64),
+            })
+            .collect()
+    }
+}
+
+impl Net {
+    /// One read: follower Macs first, rotating over the active ones on
+    /// trouble, the validators as the fallback when no follower answers —
+    /// or every one asked is busy or failing (red-team 2026-09-29 §3: an
+    /// all-busy pool must not turn into a denial of service). A single busy
+    /// follower is still not a reason: the rotation simply goes around it,
+    /// and it backs off politely.
+    async fn read(&self, method: &str, params: Value) -> anyhow::Result<Value> {
+        for _ in 0..=ACTIVE_FOLLOWERS {
+            let Some((id, addr)) = self.spread.pick() else {
+                break;
+            };
+            let conn = match self.spread.conn_to(&id, &addr).await {
+                Ok(c) => c,
+                Err(_) => {
+                    self.spread.park(&id, Parked::Error);
+                    continue;
+                }
+            };
+            let started = std::time::Instant::now();
+            match aether_net::rpc_call(&conn, method, params.clone()).await {
+                Ok(v) => {
+                    self.spread.answered(&id, started.elapsed());
+                    note_served(id);
+                    return Ok(v);
+                }
+                Err(aether_net::RpcError::Server { message, .. })
+                    if message.contains("server busy") =>
+                {
+                    self.spread.park(&id, Parked::Busy);
+                    continue;
+                }
+                Err(aether_net::RpcError::Server { message, .. }) => {
+                    // The follower's own answer (e.g. a pruned height): pass it on.
+                    self.spread.answered(&id, started.elapsed());
+                    note_served(id);
+                    return Err(anyhow::anyhow!(message));
+                }
+                Err(aether_net::RpcError::Transport(_)) => {
+                    self.spread.park(&id, Parked::Error);
+                    continue;
+                }
+            }
+        }
+        self.client.call(method, params).await
+    }
+}
+
+thread_local! {
+    /// The followers that served the current verified read (this thread): a
+    /// verification failure parks exactly these.
+    static SERVED_BY: std::cell::RefCell<Vec<aether_net::EndpointId>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn note_served(id: aether_net::EndpointId) {
+    SERVED_BY.with_borrow_mut(|v| {
+        if !v.contains(&id) {
+            v.push(id);
+        }
+        while v.len() > 4 {
+            v.remove(0);
+        }
+    });
+}
+
+/// Wrap a verified read so its failures demote whoever served them: stale
+/// answers (a follower behind the chain, or a block not finalized yet) only
+/// rotate away briefly, while anything that failed the certificate, proof or
+/// chain checks is demoted for a long while — and the validator that served
+/// it is rotated past. Nothing about the checks themselves changes.
+fn demote_on_failure<T>(read: impl FnOnce() -> R<T>) -> R<T> {
+    SERVED_BY.with_borrow_mut(Vec::clear);
+    let r = read();
+    if r.is_err() && LOCAL_NODE.lock().expect("local node lock").is_none() {
+        if let Ok(n) = net() {
+            let lying = !matches!(&r, Err(e) if e.to_string().contains("stale") || e.to_string().contains("never go back") || e.to_string().contains("not finalized yet"));
+            SERVED_BY.with_borrow(|served| {
+                for id in served {
+                    n.spread
+                        .park(id, if lying { Parked::Lying } else { Parked::Stale });
+                }
+            });
+            if lying {
+                n.rt.block_on(n.client.rotate());
+            }
+        }
+    }
+    r
+}
+
+/// Fee caps from the node's next base fees and the sender's balance: 2x
+/// headroom plus a 1 gwei tip (only base + tip is charged). A sender with no
+/// balance, or a chain at its zero floor (below target load the base fee is 0),
+/// sends with tip 0 and exec capped at base × 2 — one base-fee doubling of
+/// headroom — so a new account can transact at all (G2). Older nodes without
+/// `base_fee` get the floor.
+fn fee_caps(status: &Value, balance: Option<U256>) -> (FeeVector, u128) {
     const GWEI: u128 = 1_000_000_000;
-    let get = |k: &str| status["base_fee"][k].as_str().and_then(|v| v.parse::<u128>().ok()).unwrap_or(GWEI);
-    (FeeVector { exec: get("exec") * 2 + GWEI, state: 0, prove: get("prove") * 2 }, GWEI)
+    let get = |k: &str| {
+        status["base_fee"][k]
+            .as_str()
+            .and_then(|v| v.parse::<u128>().ok())
+            .unwrap_or(GWEI)
+    };
+    let free = get("exec") == 0 || balance == Some(U256::ZERO);
+    (
+        FeeVector {
+            exec: if free { get("exec") * 2 } else { get("exec") * 2 + GWEI },
+            state: 0,
+            prove: get("prove") * 2,
+        },
+        if free { 0 } else { GWEI },
+    )
 }
 
-/// A 21k-gas transfer runs no bytecode (no prove gas): it pays base + tip per gas.
+/// A 21k-gas transfer runs no bytecode (no prove gas): it pays base + tip per
+/// gas, and nothing while the base fee is 0.
 fn transfer_fee(status: &Value) -> u128 {
     const GWEI: u128 = 1_000_000_000;
-    let base = status["base_fee"]["exec"].as_str().and_then(|v| v.parse::<u128>().ok()).unwrap_or(0);
+    let base = status["base_fee"]["exec"]
+        .as_str()
+        .and_then(|v| v.parse::<u128>().ok())
+        .unwrap_or(0);
+    if base == 0 {
+        return 0;
+    }
     21_000 * (base + GWEI)
 }
 
@@ -155,6 +653,22 @@ fn local_call(port: u16, method: &str, params: Value) -> R<Value> {
     }
 }
 
+/// Methods only a validator serves: writes, and the registrar's attestation.
+/// Everything else a follower Mac can answer, and reads spread over those.
+fn needs_a_validator(method: &str) -> bool {
+    matches!(
+        method,
+        "aether_sendTransaction"
+            | "aether_faucet"
+            | "aether_registerDevice"
+            | "aether_sendBeacon"
+            | "aether_sendRegistration"
+            | "aether_reattest"
+            | "aether_submitProof"
+            | "aether_signHandoff"
+    )
+}
+
 fn call(method: &str, params: Value) -> R<Value> {
     // Copy the setting out first: never hold the lock across a network read.
     let local = *LOCAL_NODE.lock().expect("local node lock");
@@ -162,9 +676,18 @@ fn call(method: &str, params: Value) -> R<Value> {
         return local_call(port, method, params);
     }
     let n = net()?;
-    n.rt.block_on(n.client.call(method, params)).map_err(|e| {
+    let v = if needs_a_validator(method) {
+        n.rt.block_on(n.client.call(method, params))
+    } else {
+        n.rt.block_on(n.read(method, params))
+    };
+    v.map_err(|e| {
         let m = e.to_string();
-        if m.contains("connect") || m.contains("timed out") || m.contains("stream") {
+        if m.contains("connect")
+            || m.contains("timed out")
+            || m.contains("stream")
+            || m.contains("server busy")
+        {
             WalletError::Network(m)
         } else {
             WalletError::Rejected(m)
@@ -180,8 +703,70 @@ pub fn connection() -> String {
         return format!("This Mac's node (127.0.0.1:{port})");
     }
     match net() {
-        Ok(n) => format!("Mainline DHT · {}", n.rt.block_on(n.client.describe())),
+        Ok(n) => {
+            let validators = n.rt.block_on(n.client.describe());
+            match n.spread.healthy() {
+                0 => format!("Mainline DHT · {validators}"),
+                followers => format!("{followers} follower Macs · {validators}"),
+            }
+        }
         Err(e) => format!("offline: {e}"),
+    }
+}
+
+/// A server by node id and one socket address, for pinning (tests, previews).
+#[derive(uniffi::Record)]
+pub struct PinnedServer {
+    pub node: String,
+    pub socket: String,
+}
+
+/// Pin the follower Macs and validators to fixed addresses, bypassing
+/// discovery (tests and previews). Call before anything else.
+#[doc(hidden)]
+#[uniffi::export]
+pub fn pin_servers(followers: Vec<PinnedServer>, validators: Vec<PinnedServer>) -> R<()> {
+    let parse = |s: &PinnedServer| -> R<aether_net::EndpointAddr> {
+        let id: aether_net::EndpointId = s
+            .node
+            .parse()
+            .map_err(|e| WalletError::Invalid(format!("node id: {e}")))?;
+        let sa: std::net::SocketAddr = s
+            .socket
+            .parse()
+            .map_err(|e| WalletError::Invalid(format!("socket: {e}")))?;
+        Ok(aether_net::EndpointAddr::from_parts(
+            id,
+            [aether_net::TransportAddr::Ip(sa)],
+        ))
+    };
+    let (f, v) = (
+        followers.iter().map(&parse).collect::<R<Vec<_>>>()?,
+        validators.iter().map(&parse).collect::<R<Vec<_>>>()?,
+    );
+    *PINNED_SERVERS.lock().expect("pinned servers lock") = Some((f, v));
+    Ok(())
+}
+
+/// One follower Mac in the wallet's read pool (diagnostics; tests).
+#[derive(Debug, uniffi::Record)]
+pub struct WalletServerInfo {
+    pub node: String,
+    /// Requests rotate over it right now.
+    pub active: bool,
+    /// Moving average of its call latency.
+    pub latency_ms: Option<u32>,
+    /// Why it is passed over, when it is.
+    pub parked: Option<String>,
+    pub parked_for_ms: Option<u64>,
+}
+
+/// The follower Macs this wallet's reads spread over (diagnostics; tests).
+#[uniffi::export]
+pub fn wallet_servers() -> Vec<WalletServerInfo> {
+    match net() {
+        Ok(n) => n.spread.describe(),
+        Err(_) => Vec::new(),
     }
 }
 
@@ -191,8 +776,12 @@ fn parse<T: serde::de::DeserializeOwned>(v: &Value, what: &str) -> R<T> {
 
 fn p256_key(compressed: &[u8]) -> R<PublicKey> {
     // Accept compressed (33) or X9.63 uncompressed (65) SEC1 and normalize to compressed.
-    let vk = p256::ecdsa::VerifyingKey::from_sec1_bytes(compressed).map_err(|_| WalletError::Invalid("P-256 public key".into()))?;
-    Ok(PublicKey { scheme: SignerScheme::P256, bytes: vk.to_sec1_point(true).as_bytes().to_vec() })
+    let vk = p256::ecdsa::VerifyingKey::from_sec1_bytes(compressed)
+        .map_err(|_| WalletError::Invalid("P-256 public key".into()))?;
+    Ok(PublicKey {
+        scheme: SignerScheme::P256,
+        bytes: vk.to_sec1_point(true).as_bytes().to_vec(),
+    })
 }
 
 #[uniffi::export]
@@ -204,7 +793,32 @@ pub fn chain_status() -> R<ChainStatus> {
         state_root: v["state_root"].as_str().unwrap_or_default().to_string(),
         mempool: v["mempool"].as_u64().unwrap_or_default(),
         transfer_fee_wei: transfer_fee(&v).to_string(),
+        upgrades_json: scheduled_upgrade_json(&v),
+        // Bump with the bundled node/light-client release, not with a remote node's version.
+        supported_protocol: 3,
     })
+}
+
+/// Only show notices signed by the pinned committee and present in the node's
+/// finalized schedule. Status RPC is otherwise an untrusted read.
+fn scheduled_upgrade_json(status: &Value) -> String {
+    let Ok(chain) = expected_chain(status) else { return "[]".into() };
+    let validators = NODES.lock().expect("nodes lock").as_ref().map_or(4, |n| n.len() as u32);
+    let Ok(set) = trusted_set(validators) else { return "[]".into() };
+    let Some(schedule) = status["schedule"].as_array() else { return "[]".into() };
+    let notices = status["upcoming_upgrades"].as_array().into_iter().flatten().filter_map(|value| {
+        let signed: aether_light::block::SignedUpgrade = serde_json::from_value(value.clone()).ok()?;
+        let u = &signed.upgrade;
+        if u.chain_id != chain || u.activate_at <= status["height"].as_u64()? {
+            return None;
+        }
+        if !schedule.iter().any(|a| a[0].as_u64() == Some(u.protocol as u64) && a[1].as_u64() == Some(u.activate_at)) {
+            return None;
+        }
+        aether_light::verify_upgrade(set.identity(), &signed).ok()?;
+        Some(json!({ "protocol": u.protocol, "activate_at": u.activate_at, "emergency": u.emergency, "notes": u.notes }))
+    }).collect::<Vec<_>>();
+    Value::Array(notices).to_string()
 }
 
 /// The chain id this wallet is configured for (network.json; the devnet otherwise).
@@ -242,6 +856,7 @@ pub fn account_address(p256_public_key: Vec<u8>) -> R<String> {
 }
 
 fn anchor(height: u64, set: &ValidatorSet) -> R<VerifiedBlock> {
+    let generation = NETWORK_GENERATION.load(std::sync::atomic::Ordering::SeqCst);
     for _ in 0..40 {
         let v = call("aether_getFinalized", json!([height + 1]))?;
         if !v.is_null() {
@@ -261,8 +876,13 @@ fn anchor(height: u64, set: &ValidatorSet) -> R<VerifiedBlock> {
                 return Err(WalletError::Verification(format!("asked for block {}, got one for {}", height + 1, vb.height)));
             }
             check_anchor_chain(&block, &links, chain)?;
+            let _network = NET.lock().expect("network lock");
+            if generation != NETWORK_GENERATION.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(WalletError::Verification("network changed during verification".into()));
+            }
             remember_height(chain, vb.height)?;
             check_freshness(vb.timestamp_ms)?;
+            check_lag(chain, vb.height)?;
             return Ok(vb);
         }
         std::thread::sleep(Duration::from_millis(250));
@@ -285,6 +905,87 @@ fn check_freshness(timestamp_ms: u64) -> R<()> {
         return Err(WalletError::Verification(format!("the node served state from {} s ago; refusing stale data", (now - timestamp_ms) / 1000)));
     }
     Ok(())
+}
+
+/// How far an anchor may lag the newest finalized height a validator's own
+/// certificate showed (red-team 2026-09-29 §3): a follower keeps a small
+/// natural lag, but one far behind serves old state as if current.
+const MAX_FOLLOWER_LAG: u64 = 30;
+/// How long a checked height stays usable; the refresh loop keeps it fresh,
+/// and a wallet offline longer than this checks nothing rather than something
+/// stale itself.
+const CHECKED_HEIGHT_MAX_AGE: Duration = Duration::from_secs(10 * 60);
+
+/// Newest finalized height learned from a validator with its certificate
+/// verified, one entry per chain, with when. Never taken from the node serving
+/// the anchor (see [`refresh_finalized_height`]).
+static CHECKED_HEIGHT: std::sync::Mutex<Vec<(u64, u64, std::time::Instant)>> = std::sync::Mutex::new(Vec::new());
+
+/// An anchor more than [`MAX_FOLLOWER_LAG`] behind the newest finalized height
+/// a validator's certificate showed is old state served as current, whatever
+/// fresh-looking timestamp it carries (the monotonic rule still applies on top).
+fn check_lag(chain_id: u64, height: u64) -> R<()> {
+    let g = CHECKED_HEIGHT.lock().expect("checked height lock");
+    for (chain, newest, at) in g.iter() {
+        if *chain == chain_id
+            && at.elapsed() < CHECKED_HEIGHT_MAX_AGE
+            && newest.saturating_sub(height) > MAX_FOLLOWER_LAG
+        {
+            return Err(WalletError::Verification(format!(
+                "the node serves block {height}, but validators finalized block {newest}: stale data"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Remember the newest finalized height a validator's own certificate showed
+/// (kept per chain, never going back — a validator replaying an old
+/// certificate cannot lower the bar — and current: every successful refresh
+/// says the validators were just asked).
+fn remember_checked_height(chain_id: u64, height: u64) {
+    let mut g = CHECKED_HEIGHT.lock().expect("checked height lock");
+    match g.iter_mut().find(|(c, _, _)| *c == chain_id) {
+        Some((_, best, at)) => {
+            *best = (*best).max(height);
+            *at = std::time::Instant::now();
+        }
+        None => g.push((chain_id, height, std::time::Instant::now())),
+    }
+}
+
+/// How many validators the wallet is configured with (the committee's size,
+/// which `ValidatorSet::devnet` needs in dev mode).
+fn validator_count() -> u32 {
+    NODES.lock().expect("nodes lock").as_ref().map_or(DEVNET_VALIDATORS as u32, |n| n.len() as u32)
+}
+
+/// Ask a validator for the newest finalized height and verify the certificate
+/// it answers with (never a follower's, and never the status's word alone):
+/// the same checks an anchor passes, minus serving it to anyone. A failure
+/// simply leaves the last checked height in place.
+async fn refresh_finalized_height(client: &aether_net::RpcClient, generation: u64) {
+    let Ok(set) = trusted_set(validator_count()) else { return };
+    let Ok(status) = client.call("aether_status", json!([])).await else { return };
+    let (Ok(chain), Some(hint)) = (expected_chain(&status), status["height"].as_u64()) else { return };
+    let Ok(v) = client.call("aether_getFinalized", json!([hint])).await else { return };
+    if v.is_null() {
+        return;
+    }
+    let (block, fin) = match (v["block"].as_str(), v["finalization"].as_str()) {
+        (Some(b), Some(f)) => (from_hex(b).ok(), from_hex(f).ok()),
+        _ => return,
+    };
+    let (Some(block), Some(fin)) = (block, fin) else { return };
+    let links = v["links"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|l| from_hex(l.as_str().unwrap_or_default()).ok()).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let Ok(vb) = verify_finalized_chain(&set, &block, &fin, &links) else { return };
+    let _network = NET.lock().expect("network lock");
+    if generation == NETWORK_GENERATION.load(std::sync::atomic::Ordering::SeqCst) && check_anchor_chain(&block, &links, chain).is_ok() {
+        remember_checked_height(chain, vb.height);
+    }
 }
 
 /// Finalized blocks never go back: an anchor below the highest height already
@@ -340,6 +1041,10 @@ static NODES: std::sync::Mutex<Option<Vec<aether_net::EndpointId>>> = std::sync:
 /// namespace and every block must carry it.
 static GROUP: std::sync::Mutex<u16> = std::sync::Mutex::new(0);
 
+/// Fixed follower and validator addresses, when discovery must not run
+/// (tests pin fake servers on both sides). Set by `pin_servers`.
+static PINNED_SERVERS: std::sync::Mutex<Option<(Vec<aether_net::EndpointAddr>, Vec<aether_net::EndpointAddr>)>> = std::sync::Mutex::new(None);
+
 /// Dev mode, on only if someone asked for it (`use_devnet_keys`, or
 /// `"devnet": true` in network.json): the public devnet committee key may then
 /// stand in for a pinned identity. Never the silent default.
@@ -372,6 +1077,35 @@ pub fn verified_height() -> u64 {
     VERIFIED_HEIGHT.lock().expect("verified height lock").iter().find(|(c, _)| *c == chain).map(|(_, h)| *h).unwrap_or(0)
 }
 
+/// A recent height proven by a validator's finality certificate, queried
+/// through the remote client even while wallet reads use the local node.
+/// The watchdog must never compare a local height with another local status
+/// response, nor with a remote peer's unauthenticated numeric claim.
+#[uniffi::export]
+pub fn authenticated_remote_height() -> R<Option<u64>> {
+    // A local development network has no remote validator set to compare with.
+    if devnet_keys() && LOCAL_NODE.lock().expect("local node lock").is_some() {
+        return Ok(None);
+    }
+    let remote = net()?;
+    let chain = *CHAIN_ID.lock().expect("chain id lock");
+    if let Some(height) = CHECKED_HEIGHT.lock().expect("checked height lock")
+        .iter()
+        .find(|(id, _, at)| *id == chain && at.elapsed() < Duration::from_secs(8))
+        .map(|(_, height, _)| *height) {
+        return Ok(Some(height));
+    }
+    remote.rt.block_on(refresh_finalized_height(&remote.client, remote.generation));
+    Ok(recent_checked_height(chain))
+}
+
+fn recent_checked_height(chain: u64) -> Option<u64> {
+    CHECKED_HEIGHT.lock().expect("checked height lock")
+        .iter()
+        .find(|(id, _, at)| *id == chain && at.elapsed() < Duration::from_secs(30))
+        .map(|(_, height, _)| *height)
+}
+
 fn expected_chain(status: &Value) -> R<u64> {
     let want = *CHAIN_ID.lock().expect("chain id lock");
     match status["chain_id"].as_u64() {
@@ -399,24 +1133,33 @@ pub fn configure_network(network_json: String) -> R<u32> {
         .iter()
         .map(|m| m["node"].as_str().unwrap_or_default().parse::<aether_net::EndpointId>().map_err(|e| WalletError::Invalid(format!("node id: {e}"))))
         .collect::<R<Vec<_>>>()?;
-    if v["devnet"].as_bool().unwrap_or(false) {
-        use_devnet_keys();
-    }
+    let devnet = v["devnet"].as_bool().unwrap_or(false);
     let identity = v["identity"].as_str();
-    if identity.is_none() && !devnet_keys() {
+    if identity.is_none() && !devnet {
         return Err(WalletError::Invalid(
-            "network.json: \"identity\" (the committee key, printed by `aether dkg`) is required; dev mode needs \"devnet\": true here or a use_devnet_keys() call".into(),
+            "network.json: \"identity\" (the committee key, printed by `aether dkg`) is required; local development needs \"devnet\": true".into(),
         ));
     }
+    let chain = v["chain_id"].as_u64().ok_or_else(|| WalletError::Invalid("network.json: chain_id".into()))?;
     if let Some(id) = identity {
-        set_committee_identity(id.to_string())?;
+        ValidatorSet::from_hex(id).map_err(|e| WalletError::Invalid(format!("identity: {e}")))?;
     }
-    if let Some(c) = v["chain_id"].as_u64() {
-        *CHAIN_ID.lock().expect("chain id lock") = c;
-    }
+    // The old client, certificate floor and local route belong to the old
+    // configuration. In particular, a devnet key must not survive a return
+    // to the bundled network.
+    let mut cached = NET.lock().expect("network lock");
+    NETWORK_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    *cached = None;
+    *COMMITTEE.lock().expect("committee lock") = identity.map(str::to_owned);
+    DEVNET_KEYS.store(devnet, std::sync::atomic::Ordering::Relaxed);
+    *CHAIN_ID.lock().expect("chain id lock") = chain;
+    *LOCAL_NODE.lock().expect("local node lock") = None;
+    VERIFIED_HEIGHT.lock().expect("verified height lock").clear();
+    CHECKED_HEIGHT.lock().expect("checked height lock").clear();
     *GROUP.lock().expect("group lock") = group;
     let n = nodes.len() as u32;
     *NODES.lock().expect("nodes lock") = Some(nodes);
+    drop(cached);
     Ok(n)
 }
 
@@ -445,6 +1188,10 @@ fn trusted_set(validators: u32) -> R<ValidatorSet> {
 /// Balance and nonce, verified against a validator-signed state root.
 #[uniffi::export]
 pub fn verified_account(address: String, validators: u32) -> R<VerifiedAccount> {
+    demote_on_failure(|| verified_account_at(address, validators))
+}
+
+fn verified_account_at(address: String, validators: u32) -> R<VerifiedAccount> {
     let a: Address = address.parse().map_err(|_| WalletError::Invalid("address".into()))?;
     let set = trusted_set(validators)?;
     let v = call("aether_getAccount", json!([a]))?;
@@ -526,7 +1273,9 @@ fn prepare(p256_public_key: &[u8], body: impl FnOnce(Address) -> R<EvmCall>) -> 
     let from = address_of(&pk).map_err(|e| WalletError::Invalid(e.to_string()))?;
     let status = call("aether_status", json!([]))?;
     let chain_id = expected_chain(&status)?;
-    let (max_fee, tip) = fee_caps(&status);
+    let balance_hex = call("eth_getBalance", json!([from]))?;
+    let balance = balance_hex.as_str().and_then(|h| U256::from_str_radix(h.trim_start_matches("0x"), 16).ok());
+    let (max_fee, tip) = fee_caps(&status, balance);
     let nonce_hex = call("eth_getTransactionCount", json!([from]))?;
     let nonce = u64::from_str_radix(nonce_hex.as_str().unwrap_or("0x0").trim_start_matches("0x"), 16).map_err(|e| WalletError::Invalid(e.to_string()))?;
     let call_body = body(from)?;
@@ -591,12 +1340,21 @@ pub fn voting_node_status(validator_key: String) -> R<VotingNodeStatus> {
     })
 }
 
+/// How long a prepared free-lane registration stays valid (2 h of 1 s blocks):
+/// the block that carries it must not be past this height.
+const REGISTRATION_TTL: u64 = 7_200;
+
 /// Register this Mac as a voting-node candidate, operated by the wallet's account.
 /// `device_token` is Apple's DeviceCheck token (base64): one Mac, one candidate.
 /// `ownership` is the voting key's own signature (`aether candidate-info
 /// --operator`), so nobody can register a voting key they do not hold.
-/// The registrar (a validator holding the network's DeviceCheck key) attests;
-/// the returned transaction, signed with the wallet key, puts it on chain.
+/// The registrar (a validator holding the network's DeviceCheck key) attests.
+///
+/// On a network with the free registration lane (`aether_status`'s
+/// `free_registration`, docs/design/22-gas-pool.md 2층) the returned
+/// `envelope_json` is a lane item instead of a transaction: no gas, no balance
+/// needed, one signature from this wallet (the Secure Enclave signs the same
+/// `signing_message` field). Older networks get the paid contract call.
 #[uniffi::export]
 pub fn prepare_register_node(
     p256_public_key: Vec<u8>,
@@ -611,9 +1369,38 @@ pub fn prepare_register_node(
     };
     let (key, node) = (hex32(&validator_key, "voting key")?, hex32(&node_id, "node id")?);
     let beaconer: Address = beaconer.parse().map_err(|_| WalletError::Invalid("beaconer address".into()))?;
-    let operator = address_of(&p256_key(&p256_public_key)?).map_err(|e| WalletError::Invalid(e.to_string()))?;
+    let pk = p256_key(&p256_public_key)?;
+    let operator = address_of(&pk).map_err(|e| WalletError::Invalid(e.to_string()))?;
     let a = registrar_call(json!([device_token, operator, hex_lower(&key), hex_lower(&node), beaconer, ownership]))?;
     let (r, s) = (hex32(a["r"].as_str().unwrap_or_default(), "attestation r")?, hex32(a["s"].as_str().unwrap_or_default(), "attestation s")?);
+    let attestation = [r, s].concat();
+    let status = call("aether_status", json!([]))?;
+    if status["free_registration"].as_bool().unwrap_or(false) {
+        let chain_id = expected_chain(&status)?;
+        let height = status["height"].as_u64().unwrap_or_default();
+        let nonce = call("aether_registrationNonce", json!([operator]))?.as_u64().unwrap_or_default();
+        let expiry = height.saturating_add(REGISTRATION_TTL);
+        let signing_message = aether_execution::registry::relay_message(chain_id, operator, &key, &node, beaconer, &attestation, nonce, expiry);
+        // The item's canonical serialization (what the node re-parses and the
+        // block carries); the signature field is filled by `submit_signed`.
+        let item = aether_light::block::NodeRegistration {
+            operator,
+            validator_key: key.into(),
+            node_id: node.into(),
+            beaconer,
+            attestation: Bytes::from(attestation).0,
+            signature: Default::default(),
+            operator_key: Bytes::from(pk.bytes.clone()).0,
+            nonce,
+            expiry,
+        };
+        return Ok(PreparedTx {
+            from: operator.to_checksum(None),
+            nonce,
+            signing_message,
+            envelope_json: json!({ "free_registration": { "chain_id": chain_id, "item": item } }).to_string(),
+        });
+    }
     let input = aether_execution::registry::encode_register(key, node, beaconer, r, s);
     prepare(&p256_public_key, |_| Ok(EvmCall { to: Some(aether_execution::registry::REGISTRY), value: U256::ZERO, input, gas_limit: 400_000, delegate: None }))
 }
@@ -635,9 +1422,16 @@ fn registrar_call(params: Value) -> R<Value> {
     Err(last)
 }
 
-/// Attach a Secure Enclave signature (raw r‖s, 64 bytes) and submit.
+/// Attach a Secure Enclave signature (raw r‖s, 64 bytes) and submit: a signed
+/// transaction, or the wallet's signature on a prepared free-lane registration
+/// (the `envelope_json` of `prepare_register_node` on a lane network).
 #[uniffi::export]
 pub fn submit_signed(envelope_json: String, signature: Vec<u8>, p256_public_key: Vec<u8>) -> R<String> {
+    if let Ok(v) = serde_json::from_str::<Value>(&envelope_json) {
+        if v.get("free_registration").is_some() {
+            return submit_registration(v, signature, p256_public_key);
+        }
+    }
     let mut env: TxEnvelope = serde_json::from_str(&envelope_json).map_err(|e| WalletError::Invalid(e.to_string()))?;
     let pk = p256_key(&p256_public_key)?;
     let sig = p256::ecdsa::Signature::from_slice(&signature).map_err(|_| WalletError::Invalid("signature must be 64-byte r‖s".into()))?;
@@ -647,6 +1441,39 @@ pub fn submit_signed(envelope_json: String, signature: Vec<u8>, p256_public_key:
     bytes.extend_from_slice(&pk.bytes);
     env.signature = Bytes::from(bytes);
     let v = call("aether_sendTransaction", json!([env]))?;
+    let h: TxHash = parse(&v["hash"], "hash")?;
+    Ok(format!("{h}"))
+}
+
+/// Sign a prepared free-lane registration with the wallet key and send it to
+/// the lane (`aether_sendRegistration`): the same checks `submit_signed` does,
+/// then the item goes out with its signature attached. Returns the item's id —
+/// `receipt` polls it like a tx hash.
+fn submit_registration(prepared: Value, signature: Vec<u8>, p256_public_key: Vec<u8>) -> R<String> {
+    let lane = &prepared["free_registration"];
+    let chain_id = lane["chain_id"].as_u64().ok_or_else(|| WalletError::Invalid("registration chain id".into()))?;
+    let mut item: aether_light::block::NodeRegistration =
+        serde_json::from_value(lane["item"].clone()).map_err(|e| WalletError::Invalid(format!("registration: {e}")))?;
+    let pk = p256_key(&p256_public_key)?;
+    if address_of(&pk).map_err(|e| WalletError::Invalid(e.to_string()))? != item.operator {
+        return Err(WalletError::Invalid("this key is not the registration's operator".into()));
+    }
+    let sig = p256::ecdsa::Signature::from_slice(&signature).map_err(|_| WalletError::Invalid("signature must be 64-byte r‖s".into()))?;
+    // Secure Enclave may return high-s; the chain only accepts low-s.
+    let bytes = sig.normalize_s().to_bytes().to_vec();
+    let msg = aether_execution::registry::relay_message(
+        chain_id,
+        item.operator,
+        &item.validator_key.0,
+        &item.node_id.0,
+        item.beaconer,
+        &item.attestation,
+        item.nonce,
+        item.expiry,
+    );
+    aether_crypto::verify(&pk, &msg, &bytes).map_err(|e| WalletError::Invalid(format!("signature does not match key: {e}")))?;
+    item.signature = Bytes::from(bytes).0;
+    let v = call("aether_sendRegistration", json!([item]))?;
     let h: TxHash = parse(&v["hash"], "hash")?;
     Ok(format!("{h}"))
 }
@@ -680,6 +1507,28 @@ pub fn recent_blocks(n: u32) -> R<Vec<BlockInfo>> {
             timestamp_ms: b["timestamp_ms"].as_u64().unwrap_or_default(),
         })
         .collect())
+}
+
+/// Node-sourced, paginated account activity. Balances remain certificate
+/// verified; this JSON is display data and includes `history_start`.
+#[uniffi::export]
+pub fn account_history(address: String, cursor: Option<String>, limit: u32) -> R<String> {
+    let address: Address = address.parse().map_err(|_| WalletError::Invalid("address".into()))?;
+    if !(1..=200).contains(&limit) { return Err(WalletError::Invalid("limit must be 1..200".into())); }
+    let result = call("aether_accountHistory", json!([address, cursor, limit]))?;
+    Ok(result.to_string())
+}
+
+#[cfg(test)]
+mod account_history_tests {
+    use super::*;
+
+    #[test]
+    fn history_is_a_follower_read_and_rejects_bad_inputs_locally() {
+        assert!(!needs_a_validator("aether_accountHistory"));
+        assert!(account_history("not an address".into(), None, 50).is_err());
+        assert!(account_history(format!("{:#x}", Address::ZERO), None, 201).is_err());
+    }
 }
 
 /// Test tokens (zero value) from the node's faucet, rate-limited by the node.
@@ -749,9 +1598,11 @@ mod tests {
 
     fn reset_network() {
         *COMMITTEE.lock().expect("committee lock") = None;
+        *GROUP.lock().expect("group lock") = 0;
         DEVNET_KEYS.store(false, std::sync::atomic::Ordering::Relaxed);
         *CHAIN_ID.lock().expect("chain id lock") = 7_777;
         VERIFIED_HEIGHT.lock().expect("verified height lock").clear();
+        CHECKED_HEIGHT.lock().expect("checked height lock").clear();
     }
 
     fn network_json(identity: Option<&str>, devnet: bool) -> String {
@@ -803,6 +1654,37 @@ mod tests {
         assert!(configure_network("{\"validators\": []}".to_string()).is_err(), "no validators either");
     }
 
+    #[test]
+    fn reconfiguration_sets_and_resets_the_consensus_group() {
+        let _g = config();
+        reset_network();
+        let mut network: Value = serde_json::from_str(&network_json(None, true)).unwrap();
+        network["group"] = json!(7);
+        configure_network(network.to_string()).unwrap();
+        assert_eq!(trusted_set(4).unwrap().group(), 7);
+        network["group"] = json!(u16::MAX as u64 + 1);
+        assert!(configure_network(network.to_string()).is_err());
+        assert_eq!(trusted_set(4).unwrap().group(), 7, "invalid configuration changes nothing");
+        configure_network(network_json(None, true)).unwrap();
+        assert_eq!(trusted_set(4).unwrap().group(), 0);
+    }
+
+    #[test]
+    fn reconfiguration_drops_old_identity_and_verification_state() {
+        let _g = config();
+        reset_network();
+        configure_network(network_json(None, true)).unwrap();
+        remember_height(7_780, 20).unwrap();
+        use_local_node(Some(18545));
+        assert_eq!(authenticated_remote_height().unwrap(), None);
+        let id = ValidatorSet::devnet(4).identity_hex();
+        configure_network(network_json(Some(&id), false)).unwrap();
+        assert!(!devnet_keys());
+        assert_eq!(verified_height(), 0);
+        assert_eq!(*LOCAL_NODE.lock().unwrap(), None);
+        assert_eq!(trusted_set(4).unwrap().identity_hex(), id);
+    }
+
     /// Finalized heights never go back: an anchor below the highest verified is
     /// a replay of old state (audit 3), whatever certificate it comes with.
     #[test]
@@ -822,6 +1704,21 @@ mod tests {
         assert!(remember_height(7_780, 2).is_err());
     }
 
+    /// Red team #2/#17: a stale certificate cannot drive a local-node
+    /// restart or keep the wallet on an obsolete local route.
+    #[test]
+    fn remote_watchdog_height_requires_a_recent_certificate() {
+        let _g = config();
+        let chain = 9_990_017;
+        remember_checked_height(chain, 42);
+        assert_eq!(recent_checked_height(chain), Some(42));
+        let mut checked = CHECKED_HEIGHT.lock().unwrap();
+        let (_, _, at) = checked.iter_mut().find(|(id, _, _)| *id == chain).unwrap();
+        *at = std::time::Instant::now() - Duration::from_secs(31);
+        drop(checked);
+        assert_eq!(recent_checked_height(chain), None);
+    }
+
     /// The 10-minute recency guard, kept as an extra check on top of the above.
     #[test]
     fn stale_anchors_are_refused() {
@@ -831,6 +1728,32 @@ mod tests {
         let err = check_freshness(now - MAX_ANCHOR_AGE_MS - 1).unwrap_err().to_string();
         assert!(err.contains("stale"), "{err}");
         check_freshness(now + 60_000).unwrap(); // a node's clock a little ahead, not our problem
+    }
+
+    /// An anchor far behind the newest finalized height a validator's own
+    /// certificate showed is refused, however fresh its timestamp looks (a
+    /// follower can be slow but never certify anything newer than the
+    /// committee did); a small natural lag is fine, another chain is not
+    /// bound by it, and an aged checked height enforces nothing.
+    #[test]
+    fn anchors_far_behind_a_verified_finalized_height_are_stale() {
+        let _g = config();
+        reset_network();
+        remember_checked_height(7_777, 1_000);
+        check_lag(7_777, 1_000).unwrap();
+        check_lag(7_777, 1_000 - MAX_FOLLOWER_LAG).unwrap();
+        let err = check_lag(7_777, 1_000 - MAX_FOLLOWER_LAG - 1).unwrap_err().to_string();
+        assert!(err.contains("stale"), "{err}");
+        check_lag(7_780, 0).unwrap();
+
+        // The checked height never goes back: a validator replaying an old
+        // certificate cannot lower the bar.
+        remember_checked_height(7_777, 900);
+        assert!(check_lag(7_777, 900 - MAX_FOLLOWER_LAG - 1).is_err(), "still the height of block 1,000");
+
+        // Too old to trust the bar by: nothing is enforced on it.
+        CHECKED_HEIGHT.lock().expect("checked height lock").iter_mut().for_each(|(_, _, at)| *at = std::time::Instant::now() - CHECKED_HEIGHT_MAX_AGE - Duration::from_secs(1));
+        check_lag(7_777, 0).unwrap();
     }
 
     /// The chain id a certified block commits to (its transactions) is checked
@@ -905,11 +1828,145 @@ fn parse_code(code: &str) -> R<([u8; 32], [u8; 32])> {
 
 /// A storage slot of `account`, proven against a certified state root.
 fn verified_slot(account: Address, slot: U256, set: &ValidatorSet) -> R<U256> {
+    demote_on_failure(|| verified_slot_at(account, slot, set))
+}
+
+fn verified_slot_at(account: Address, slot: U256, set: &ValidatorSet) -> R<U256> {
     let v = call("aether_getStorage", json!([account, slot]))?;
     let proof: Proof = parse(&v["proof"], "proof")?;
     let height = v["height"].as_u64().unwrap_or_default();
     let anchor = anchor(height, set)?;
     aether_light::verify_storage(&anchor, &account, slot, &proof).map_err(|e| WalletError::Verification(format!("account storage: {e}")))
+}
+
+/// ReleaseLog's `Entry[] public entries` starts at storage slot 0. Each
+/// fixed-size Entry occupies four slots at keccak256(slot 0) + index * 4.
+fn release_slots(index: u64) -> R<[U256; 5]> {
+    let offset = index.checked_mul(4).ok_or_else(|| WalletError::Invalid("release index too large".into()))?;
+    let base = U256::from_be_bytes(alloy_primitives::keccak256([0u8; 32]).0) + U256::from(offset);
+    Ok([U256::ZERO, base, base + U256::from(1), base + U256::from(2), base + U256::from(3)])
+}
+
+fn release_metadata(meta: U256, height: u64) -> R<(u64, u64, bool)> {
+    let published_block = (meta & U256::from(u64::MAX)).to::<u64>();
+    let published_at = ((meta >> 64usize) & U256::from(u64::MAX)).to::<u64>();
+    let emergency_byte = ((meta >> 128usize) & U256::from(0xff)).to::<u8>();
+    if published_block == 0 || published_block > height || published_at == 0 || emergency_byte > 1 || meta >> 136usize != U256::ZERO {
+        return Err(WalletError::Verification("invalid release publication metadata".into()));
+    }
+    Ok((published_block, published_at, emergency_byte == 1))
+}
+
+/// Read a ReleaseLog entry. Every slot must come from one state height, and
+/// every EIP-7864 proof is checked under the same finality certificate.
+#[uniffi::export]
+pub fn verified_release(contract: String, code_hash: String, index: u64, validators: u32) -> R<VerifiedRelease> {
+    // The index comes from an untrusted distribution sidecar. A missing entry
+    // must not park an honest follower as a liar for six hours.
+    verified_release_at(contract, code_hash, index, validators)
+}
+
+fn verified_release_at(contract: String, code_hash: String, index: u64, validators: u32) -> R<VerifiedRelease> {
+    let address: Address = contract.parse().map_err(|_| WalletError::Invalid("release log address".into()))?;
+    let expected_hash: aether_types::B256 = code_hash.parse().map_err(|_| WalletError::Invalid("release log code hash".into()))?;
+    let set = trusted_set(validators)?;
+    let slots = release_slots(index)?;
+    let replies = slots.iter().map(|s| call("aether_getStorage", json!([address, s]))).collect::<R<Vec<_>>>()?;
+    let code = call("aether_getCodeHash", json!([address]))?;
+    let height = replies[0]["height"].as_u64().ok_or_else(|| WalletError::Verification("release state height missing".into()))?;
+    if replies.iter().any(|v| v["height"].as_u64() != Some(height)) || code["height"].as_u64() != Some(height) {
+        return Err(WalletError::Verification("release storage slots came from different blocks".into()));
+    }
+    let anchor = anchor(height, &set)?;
+    let code_proof: Proof = parse(&code["proof"], "code hash proof")?;
+    if aether_light::verify_code_hash(&anchor, &address, &code_proof)
+        .map_err(|e| WalletError::Verification(format!("release code proof: {e}")))? != Some(expected_hash) {
+        return Err(WalletError::Verification("the ReleaseLog runtime code hash is not pinned".into()));
+    }
+    let values = replies.iter().zip(slots.iter()).map(|(v, slot)| {
+        let proof: Proof = parse(&v["proof"], "proof")?;
+        aether_light::verify_storage(&anchor, &address, *slot, &proof)
+            .map_err(|e| WalletError::Verification(format!("release storage proof: {e}")))
+    }).collect::<R<Vec<_>>>()?;
+    if U256::from(index) >= values[0] {
+        return Err(WalletError::Verification("release entry does not exist".into()));
+    }
+    let (published_block, published_at, emergency) = release_metadata(values[4], height)?;
+    Ok(VerifiedRelease {
+        manifest_sha256: format!("{:064x}", values[1]),
+        archive_sha256: format!("{:064x}", values[2]),
+        signatures_sha256: format!("{:064x}", values[3]),
+        published_block,
+        published_at,
+        emergency,
+        state_height: height,
+        certified_block: anchor.height,
+        certified_timestamp_ms: anchor.timestamp_ms,
+    })
+}
+
+#[cfg(test)]
+mod release_tests {
+    use super::*;
+
+    #[test]
+    fn release_slots_follow_solidity_dynamic_array_layout() {
+        let first = release_slots(0).unwrap();
+        let second = release_slots(1).unwrap();
+        assert_eq!(first[0], U256::ZERO);
+        assert_eq!(first[1], U256::from_be_bytes(alloy_primitives::keccak256([0u8; 32]).0));
+        assert_eq!(second[1], first[1] + U256::from(4));
+        assert_eq!(second[4], second[1] + U256::from(3));
+        assert!(release_slots(u64::MAX).is_err());
+    }
+
+    #[test]
+    fn release_metadata_rejects_future_and_noncanonical_values() {
+        let meta = U256::from(50) | (U256::from(1_000_000) << 64usize) | (U256::from(1) << 128usize);
+        assert_eq!(release_metadata(meta, 50).unwrap(), (50, 1_000_000, true));
+        assert!(release_metadata(meta, 49).is_err());
+        assert!(release_metadata(meta | (U256::from(2) << 128usize), 50).is_err());
+        assert!(release_metadata(meta | (U256::from(1) << 200usize), 50).is_err());
+    }
+
+    #[test]
+    fn release_storage_rejects_a_tampered_rpc_proof() {
+        let fixture: Value = serde_json::from_str(include_str!("../../light/tests/fixtures/devnet4.json")).unwrap();
+        let block = from_hex(fixture["anchor_block"].as_str().unwrap()).unwrap();
+        let finalization = from_hex(fixture["anchor_finalization"].as_str().unwrap()).unwrap();
+        let anchor = verify_finalized_chain(&ValidatorSet::devnet(4), &block, &finalization, &[]).unwrap();
+        let address: Address = fixture["address"].as_str().unwrap().parse().unwrap();
+        let wrong_proof: Proof = serde_json::from_value(fixture["proof"].clone()).unwrap();
+        assert!(aether_light::verify_storage(&anchor, &address, release_slots(0).unwrap()[1], &wrong_proof).is_err());
+        assert!(aether_light::verify_code_hash(&anchor, &address, &wrong_proof).is_err());
+    }
+
+    #[test]
+    fn release_list_slots_verify_against_the_certified_state_root() {
+        use aether_state::layout::{code_hash_key, storage_slot_key};
+        use aether_state::StateRepository;
+        let address: Address = "0x0000000000000000000000000000000000007704".parse().unwrap();
+        let mut state = aether_execution::WorldState::default();
+        state.set_code(address, vec![0x00].into()).unwrap();
+        let slots = release_slots(0).unwrap();
+        let expected = [U256::from(1), U256::from(11), U256::from(22), U256::from(33),
+            U256::from(100) | (U256::from(1_000_000) << 64usize)];
+        for (slot, value) in slots.iter().zip(expected) {
+            state.set_storage(address, *slot, value);
+        }
+        let anchor = VerifiedBlock { height: 201, digest: String::new(), timestamp_ms: 1_000_001_000,
+            parent_state_root: state.root(), history_root: aether_types::B256::ZERO };
+        let repo = state.repo();
+        let code = repo.prove(&[code_hash_key(repo.hasher(), &address)]).remove(0);
+        assert_eq!(aether_light::verify_code_hash(&anchor, &address, &code).unwrap(), Some(state.code_hash(&address)));
+        for (slot, value) in slots.iter().zip(expected) {
+            let proof = repo.prove(&[storage_slot_key(repo.hasher(), &address, *slot)]).remove(0);
+            assert_eq!(aether_light::verify_storage(&anchor, &address, *slot, &proof).unwrap(), value);
+            let mut tampered = proof.clone();
+            tampered.value = Some(U256::from(999).to_be_bytes::<32>());
+            assert!(aether_light::verify_storage(&anchor, &address, *slot, &tampered).is_err());
+        }
+    }
 }
 
 /// Make the device with `recovery_code` able to recover this account after a

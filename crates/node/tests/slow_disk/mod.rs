@@ -16,17 +16,35 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-/// The disk delay of one validator, in milliseconds per write, resize or sync.
+/// The disk delay and clock offset of one simulated validator.
 #[derive(Clone, Default)]
-pub struct Disk(Arc<AtomicU64>);
+pub struct Disk {
+    delay: Arc<AtomicU64>,
+    skew_ms: Arc<std::sync::atomic::AtomicI64>,
+}
 
 impl Disk {
     pub fn set(&self, delay: Duration) {
-        self.0.store(delay.as_millis() as u64, Ordering::SeqCst);
+        self.delay.store(delay.as_millis() as u64, Ordering::SeqCst);
     }
 
     fn delay(&self) -> Duration {
-        Duration::from_millis(self.0.load(Ordering::SeqCst))
+        Duration::from_millis(self.delay.load(Ordering::SeqCst))
+    }
+
+    pub fn set_skew_ms(&self, skew_ms: i64) {
+        self.skew_ms.store(skew_ms, Ordering::SeqCst);
+    }
+
+    fn skew(&self, time: SystemTime, reverse: bool) -> SystemTime {
+        // sleep_until receives a local deadline; map it back to runtime time.
+        let skew = self.skew_ms.load(Ordering::SeqCst);
+        let duration = Duration::from_millis(skew.unsigned_abs());
+        if (skew > 0) != reverse {
+            time.checked_add(duration).unwrap_or(time)
+        } else {
+            time.checked_sub(duration).unwrap_or(time)
+        }
     }
 }
 
@@ -95,7 +113,7 @@ impl Metrics for SlowDisk {
 
 impl Clock for SlowDisk {
     fn current(&self) -> SystemTime {
-        self.inner.current()
+        self.disk.skew(self.inner.current(), false)
     }
 
     fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send + 'static {
@@ -103,7 +121,7 @@ impl Clock for SlowDisk {
     }
 
     fn sleep_until(&self, deadline: SystemTime) -> impl Future<Output = ()> + Send + 'static {
-        self.inner.sleep_until(deadline)
+        self.inner.sleep_until(self.disk.skew(deadline, true))
     }
 }
 
@@ -111,7 +129,7 @@ impl governor::clock::Clock for SlowDisk {
     type Instant = SystemTime;
 
     fn now(&self) -> SystemTime {
-        self.inner.current()
+        self.current()
     }
 }
 

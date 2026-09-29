@@ -5,7 +5,7 @@
 
 use crate::chain::Chain;
 use aether_execution::validate_stateless;
-use aether_state::layout::{basic_data_key, storage_slot_key};
+use aether_state::layout::{basic_data_key, code_hash_key, storage_slot_key};
 use aether_state::StateRepository;
 use aether_types::{Address, TxEnvelope, TxHash, U256};
 use axum::{extract::State, routing::post, Json, Router};
@@ -99,6 +99,7 @@ pub async fn handle_value(st: &RpcState, req: Value) -> Value {
         "aether_getFinalized" => finalized(st, &params).await,
         "aether_registerDevice" => register_device(st, &params).await,
         "aether_sendBeacon" => send_beacon(st, &params).await,
+        "aether_sendRegistration" => send_registration(st, &params).await,
         // A follower without the registrar key asks upstream (one hop).
         "aether_reattest" if st.registrar.is_none() && st.upstream.is_some() => {
             st.upstream.as_ref().expect("checked").first("aether_reattest", params.clone()).await.map_err(|e| (-32000, e))
@@ -111,8 +112,12 @@ pub async fn handle_value(st: &RpcState, req: Value) -> Value {
         },
         "aether_network" => Ok(st.network.clone().unwrap_or(Value::Null)),
         "aether_submitProof" => submit_proof(st, &params).await,
-        // A pruned height (roadmap B4): read back from the era file, fetched and verified first if needed.
-        "aether_getBlock" if param::<u64>(&params, 0).is_ok_and(|h| h < st.chain.lock().pruned_below) => old_block(st, &params).await,
+        // A pruned height (roadmap B4) or one whose cache copy the memory
+        // budget dropped: read back from the era file, fetched and verified first if needed.
+        "aether_getBlock" if param::<u64>(&params, 0).is_ok_and(|h| {
+            let g = st.chain.lock();
+            h < g.pruned_below.max(g.cache_below)
+        }) => old_block(st, &params).await,
         _ => dispatch(st, &method, &params),
     };
     match result {
@@ -251,6 +256,25 @@ async fn send_beacon(st: &RpcState, p: &Value) -> RpcResult {
     Ok(json!({ "accepted": new }))
 }
 
+/// `[registration]`: a voting-node registration for the block's free lane (no
+/// fee, no transaction; docs/design/22-gas-pool.md 2층). Checked against the
+/// finalized state and pooled for the next proposals; a validator sends it on
+/// to the others, a follower to its upstream. Returns the item's id, which
+/// gets a pseudo-receipt in the block that carries it.
+async fn send_registration(st: &RpcState, p: &Value) -> RpcResult {
+    let r: aether_light::block::NodeRegistration = param(p, 0)?;
+    let id = crate::registrations::id(&r);
+    let new = st.chain.submit_registration(r.clone()).map_err(|e| (-32000, format!("rejected: {e}")))?;
+    if let Some(up) = st.upstream.clone().filter(|_| new) {
+        tokio::spawn(async move {
+            if let Err(e) = up.call("aether_sendRegistration", json!([r])).await {
+                tracing::warn!(%e, "registration not forwarded upstream");
+            }
+        });
+    }
+    Ok(json!({ "hash": id, "accepted": new }))
+}
+
 /// `[device_token (base64), validator_key (hex 32), period, ownership (hex)]`
 /// → the registrar's re-attestation `{period, r, s}` for a beacon answer.
 /// Only for the current re-attestation period (or the next, near its start).
@@ -307,12 +331,36 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                 // is still catching up.
                 "catching_up": behind > 0,
                 "behind": behind,
+                // Stage-wise progress (red team #2): a frozen height with a
+                // rising `activity` is a node busy on a snapshot, a store
+                // recovery or a replay — not a stuck one. `stage` names the
+                // long stage when there is one.
+                "activity": crate::chain::activity(),
+                "stage": crate::chain::stage(),
                 // Protocol upgrades on chain: an app whose node runs an older
                 // protocol than one scheduled looks for its update right away.
                 "protocol": f.next_protocol(),
                 "node_protocol": crate::upgrade::PROTOCOL,
                 "newest_scheduled": f.schedule.iter().map(|a| a.protocol).max().unwrap_or(1),
+                // Activations on chain as (protocol, at-height) pairs: a genesis
+                // above protocol 1 carries its own at height 0, so `[3, 0]` here
+                // is how a rehearsal knows the rules were on from the start.
+                "schedule": f.schedule.iter().map(|a| json!([a.protocol, a.at])).collect::<Vec<_>>(),
+                "upcoming_upgrades": g.upgrade_notices,
+                // The free registration lane (G2): wallets see it and register
+                // without needing a balance for a paid contract call.
+                "free_registration": aether_rewards::enabled(&f.state),
+                // This node's resource state (docs/ops/resource-limits.md):
+                // the disk guard the app shows as "디스크 공간 부족".
+                "resources": crate::resources::monitor().map(|m| m.status_value()).unwrap_or(Value::Null),
             }))
+        }
+        // The next relay nonce a free-lane registration of `operator` must
+        // carry (`[operator]`): the count the chain has spent of its items.
+        "aether_registrationNonce" => {
+            let a: Address = param(p, 0)?;
+            let g = chain.lock();
+            Ok(json!(aether_execution::registry::lane_nonce(&g.finalized.state, &a)))
         }
         // The voting set proposed for this registry epoch (while no handoff is
         // pending): `aether run` on old and new members reshares to it in the background.
@@ -342,7 +390,8 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
             let svc = st.handoff.as_ref().ok_or((-32601, "this node does not sign handoffs".to_string()))?;
             svc.sign_staged().map(|h| json!({ "round": h.round })).map_err(|e| (-32000, e))
         }
-        // The finalized state as a checkpoint snapshot (hex postcard, `snapshot::Snapshot`):
+        // The finalized state as a checkpoint snapshot (legacy postcard or
+        // new-genesis notice envelope, `snapshot::Snapshot`):
         // a new Mac checks it against the next certified block instead of replaying history.
         "aether_snapshot" => {
             let (height, bytes) = cached_snapshot(st);
@@ -433,7 +482,7 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                     })
                 })
                 .collect();
-            Ok(json!({ "epoch": epoch, "candidates": list }))
+            Ok(json!({ "epoch": epoch, "candidates": list, "max_per_epoch": aether_execution::registry::max_per_epoch(state) }))
         }
         "aether_faucet" => {
             let to: Address = param(p, 0)?;
@@ -496,6 +545,13 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
             let limit = p.get(1).and_then(Value::as_u64).unwrap_or(1_000).min(10_000) as usize;
             Ok(json!(chain.recent_rewards(&a, limit)))
         }
+        "aether_accountHistory" => {
+            let address: Address = param(p, 0)?;
+            let cursor = p.get(1).filter(|v| !v.is_null()).map(|v| v.as_str().ok_or((-32602, "cursor must be a string".to_string()))).transpose()?;
+            let limit = p.get(2).filter(|v| !v.is_null()).map(|v| v.as_u64().ok_or((-32602, "limit must be a positive integer".to_string()))).transpose()?.unwrap_or(50);
+            if !(1..=200).contains(&limit) { return Err((-32602, "limit must be 1..200".into())); }
+            Ok(json!(chain.account_history(&address, cursor, limit as usize).map_err(|e| (-32000, e))?))
+        }
         "aether_sendTransaction" => {
             let tx: TxEnvelope = param(p, 0)?;
             let cfg = chain.cfg();
@@ -530,6 +586,24 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
             let repo = f.state.repo();
             let proof = repo.prove(&[storage_slot_key(repo.hasher(), &a, slot)]).remove(0);
             Ok(json!({ "value": f.state.storage(&a, slot), "height": f.height, "state_root": f.state.root(), "proof": proof }))
+        }
+        "aether_getCodeHash" => {
+            let a: Address = param(p, 0)?;
+            let g = chain.lock();
+            let f = &g.finalized;
+            let repo = f.state.repo();
+            let proof = repo.prove(&[code_hash_key(repo.hasher(), &a)]).remove(0);
+            Ok(json!({ "value": f.state.code_hash(&a), "height": f.height, "proof": proof }))
+        }
+        "aether_releaseEntries" => {
+            // Discovery only. Wallets verify every selected entry with
+            // `aether_getStorage` proofs and the pinned ReleaseLog code hash.
+            let a: Address = param(p, 0)?;
+            let start: u64 = param(p, 1).unwrap_or(0);
+            let limit: u64 = param(p, 2).unwrap_or(32).min(64);
+            let g = chain.lock();
+            let f = &g.finalized;
+            Ok(release_entries(&f.state, a, start, limit, f.height))
         }
         "aether_getReceipt" => {
             let h: TxHash = param(p, 0)?;
@@ -568,6 +642,51 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
             Ok(json!(format!("0x{}", hex::encode(chain.lock().finalized.state.code(&a)))))
         }
         _ => Err((-32601, format!("method not found: {method}"))),
+    }
+}
+
+fn release_entries(state: &aether_execution::WorldState, address: Address, start: u64, limit: u64, height: u64) -> Value {
+    let count = state.storage(&address, U256::ZERO).min(U256::from(u64::MAX)).to::<u64>();
+    let base = U256::from_be_bytes(alloy_primitives::keccak256([0u8; 32]).0);
+    let entries: Vec<_> = (start..count.min(start.saturating_add(limit.min(64))))
+        .map(|index| {
+            let slot = base + U256::from(index) * U256::from(4);
+            let metadata = state.storage(&address, slot + U256::from(3));
+            json!({
+                "index": index,
+                "manifest_sha256": format!("{:064x}", state.storage(&address, slot)),
+                "archive_sha256": format!("{:064x}", state.storage(&address, slot + U256::from(1))),
+                "signatures_sha256": format!("{:064x}", state.storage(&address, slot + U256::from(2))),
+                "published_block": (metadata & U256::from(u64::MAX)).to::<u64>(),
+                "published_at": ((metadata >> 64usize) & U256::from(u64::MAX)).to::<u64>(),
+                "emergency": ((metadata >> 128usize) & U256::from(1)).to::<u8>() == 1,
+            })
+        })
+        .collect();
+    json!({ "count": count, "height": height, "entries": entries })
+}
+
+#[cfg(test)]
+mod release_tests {
+    use super::*;
+
+    #[test]
+    fn release_entries_are_paginated_from_state() {
+        let address: Address = "0x0000000000000000000000000000000000007704".parse().unwrap();
+        let mut state = aether_execution::WorldState::default();
+        state.set_storage(address, U256::ZERO, U256::from(2));
+        let base = U256::from_be_bytes(alloy_primitives::keccak256([0u8; 32]).0);
+        state.set_storage(address, base + U256::from(4), U256::from(42));
+        state.set_storage(address, base + U256::from(7), U256::from(100) | (U256::from(1_000) << 64usize) | (U256::from(1) << 128usize));
+        let page = release_entries(&state, address, 1, 1, 200);
+        assert_eq!(page["count"], 2);
+        assert_eq!(page["height"], 200);
+        assert_eq!(page["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(page["entries"][0]["manifest_sha256"], format!("{:064x}", U256::from(42)));
+        assert_eq!(page["entries"][0]["published_block"], 100);
+        assert_eq!(page["entries"][0]["published_at"], 1_000);
+        assert_eq!(page["entries"][0]["emergency"], true);
+        assert!(release_entries(&state, address, 2, 1, 200)["entries"].as_array().unwrap().is_empty());
     }
 }
 

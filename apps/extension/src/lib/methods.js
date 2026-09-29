@@ -1,13 +1,11 @@
+import { Brand } from './brand.js';
 // What pages may ask the wallet, and how a transaction request is checked.
-
-export const CHAIN_ID = 7780;
-export const CHAIN_HEX = `0x${CHAIN_ID.toString(16)}`;
 
 /** Reads go straight to the node; nothing here can move funds. */
 export const READ_METHODS = new Set([
   'eth_blockNumber', 'eth_call', 'eth_estimateGas', 'eth_getBalance', 'eth_getCode',
   'eth_getLogs', 'eth_getStorageAt', 'eth_getTransactionCount', 'eth_gasPrice',
-  'net_version', 'aether_status', 'aether_getReceipt', 'aether_getAccount',
+  'net_version', 'aether_status', 'aether_getReceipt', 'aether_getAccount', 'aether_accountHistory',
 ]);
 
 export const ACCOUNT_METHODS = new Set(['eth_requestAccounts', 'aether_requestAccounts', 'eth_accounts', 'aether_accounts']);
@@ -46,17 +44,17 @@ function quantity(v, what) {
 /** What a call does, from well-known 4-byte selectors (display only). */
 export function describeCall({ to, data }) {
   if (!to) return `Deploy a contract (${(data.length - 2) / 2} bytes)`;
-  if (data === '0x') return 'Send AETH';
+  if (data === '0x') return `Send ${Brand.coinTicker}`;
   const known = {
     '0xa9059cbb': 'Token transfer', '0x095ea7b3': 'Token approval (allows spending)', '0x23b872dd': 'Token transfer from',
     // Aether DEX router
-    '0x38ed1739': 'Swap tokens', '0xac344b4d': 'Swap AETH for tokens', '0x3f070ce1': 'Swap tokens for AETH',
-    '0xe8e33700': 'Add liquidity', '0xcf2df7c6': 'Add liquidity with AETH', '0xbaa2abde': 'Remove liquidity',
-    '0x0fb9ca68': 'Remove liquidity to AETH', '0xd0e30db0': 'Wrap AETH', '0x2e1a7d4d': 'Unwrap AETH',
+    '0x38ed1739': 'Swap tokens', '0xac344b4d': `Swap ${Brand.coinTicker} for tokens`, '0x3f070ce1': `Swap tokens for ${Brand.coinTicker}`,
+    '0xe8e33700': 'Add liquidity', '0xcf2df7c6': `Add liquidity with ${Brand.coinTicker}`, '0xbaa2abde': 'Remove liquidity',
+    '0x0fb9ca68': `Remove liquidity to ${Brand.coinTicker}`, '0xd0e30db0': `Wrap ${Brand.coinTicker}`, '0x2e1a7d4d': `Unwrap ${Brand.coinTicker}`,
     '0x3ca6d100': 'Create a token', '0xc7ff321d': 'Create a token',
     // Aether launchpad
     '0x42a81515': 'Launch a token', '0xcce7ec13': 'Buy on the launch curve', '0x6a272462': 'Sell on the launch curve',
-    '0x5cf66fe1': 'Buy with AETH (graduated pool)', '0xff5b07d8': 'Sell for AETH (graduated pool)',
+    '0x5cf66fe1': `Buy with ${Brand.coinTicker} (graduated pool)`, '0xff5b07d8': `Sell for ${Brand.coinTicker} (graduated pool)`,
   };
   return known[data.slice(0, 10)] || `Contract call ${data.slice(0, 10)}`;
 }

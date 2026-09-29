@@ -121,11 +121,11 @@ enum SendSafety {
         return false
     }
 
-    /// Equal, one edit away (for symbols of 3+ chars), or containing the
-    /// official symbol "aeth" (wrapped-AETH style names).
+    /// Equal, one edit away (for symbols of 3+ chars), or containing an
+    /// official symbol of 4+ chars (wrapped-coin style names such as "WDBLN").
     private static func resembles(_ a: String, _ b: String) -> Bool {
         if a == b { return true }
-        if b == "aeth", a.contains("aeth") { return true }
+        if b.count >= 4, a.contains(b) { return true }
         return min(a.count, b.count) >= 3 && editDistance(a, b) <= 1
     }
 

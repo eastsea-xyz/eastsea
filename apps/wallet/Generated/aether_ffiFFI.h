@@ -248,6 +248,17 @@ typedef void (*UniffiForeignFutureCompleteVoid)(uint64_t, UniffiForeignFutureRes
 RustBuffer uniffi_aether_ffi_fn_func_account_address(RustBuffer p256_public_key, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_ACCOUNT_HISTORY
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_ACCOUNT_HISTORY
+RustBuffer uniffi_aether_ffi_fn_func_account_history(RustBuffer address, RustBuffer cursor, uint32_t limit, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_AUTHENTICATED_REMOTE_HEIGHT
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_AUTHENTICATED_REMOTE_HEIGHT
+RustBuffer uniffi_aether_ffi_fn_func_authenticated_remote_height(RustCallStatus *_Nonnull out_status
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_CHAIN_STATUS
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_CHAIN_STATUS
 RustBuffer uniffi_aether_ffi_fn_func_chain_status(RustCallStatus *_Nonnull out_status
@@ -284,6 +295,11 @@ RustBuffer uniffi_aether_ffi_fn_func_eth_call(RustBuffer to, RustBuffer data_hex
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_LOCAL_NODE_HEIGHT
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_LOCAL_NODE_HEIGHT
 RustBuffer uniffi_aether_ffi_fn_func_local_node_height(uint16_t port, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PIN_SERVERS
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PIN_SERVERS
+void uniffi_aether_ffi_fn_func_pin_servers(RustBuffer followers, RustBuffer validators, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_ADD_RECOVERY_KEY
@@ -418,9 +434,20 @@ uint64_t uniffi_aether_ffi_fn_func_verified_height(RustCallStatus *_Nonnull out_
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_VERIFIED_RELEASE
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_VERIFIED_RELEASE
+RustBuffer uniffi_aether_ffi_fn_func_verified_release(RustBuffer contract, RustBuffer code_hash, uint64_t index, uint32_t validators, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_VOTING_NODE_STATUS
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_VOTING_NODE_STATUS
 RustBuffer uniffi_aether_ffi_fn_func_voting_node_status(RustBuffer validator_key, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_WALLET_SERVERS
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_WALLET_SERVERS
+RustBuffer uniffi_aether_ffi_fn_func_wallet_servers(RustCallStatus *_Nonnull out_status
+    
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PAPER_KEY_NEW
@@ -705,6 +732,18 @@ uint16_t uniffi_aether_ffi_checksum_func_account_address(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_ACCOUNT_HISTORY
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_ACCOUNT_HISTORY
+uint16_t uniffi_aether_ffi_checksum_func_account_history(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_AUTHENTICATED_REMOTE_HEIGHT
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_AUTHENTICATED_REMOTE_HEIGHT
+uint16_t uniffi_aether_ffi_checksum_func_authenticated_remote_height(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_CHAIN_STATUS
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_CHAIN_STATUS
 uint16_t uniffi_aether_ffi_checksum_func_chain_status(void
@@ -744,6 +783,12 @@ uint16_t uniffi_aether_ffi_checksum_func_eth_call(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_LOCAL_NODE_HEIGHT
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_LOCAL_NODE_HEIGHT
 uint16_t uniffi_aether_ffi_checksum_func_local_node_height(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PIN_SERVERS
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PIN_SERVERS
+uint16_t uniffi_aether_ffi_checksum_func_pin_servers(void
     
 );
 #endif
@@ -903,9 +948,21 @@ uint16_t uniffi_aether_ffi_checksum_func_verified_height(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_VERIFIED_RELEASE
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_VERIFIED_RELEASE
+uint16_t uniffi_aether_ffi_checksum_func_verified_release(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_VOTING_NODE_STATUS
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_VOTING_NODE_STATUS
 uint16_t uniffi_aether_ffi_checksum_func_voting_node_status(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_WALLET_SERVERS
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_WALLET_SERVERS
+uint16_t uniffi_aether_ffi_checksum_func_wallet_servers(void
     
 );
 #endif

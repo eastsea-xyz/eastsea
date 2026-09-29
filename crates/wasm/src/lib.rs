@@ -25,10 +25,18 @@ fn p256_key(bytes: &[u8]) -> Result<PublicKey, String> {
     Ok(PublicKey { scheme: SignerScheme::P256, bytes: vk.to_sec1_point(true).as_bytes().to_vec() })
 }
 
-/// Fee caps from `aether_status`: twice the base fee plus a 1 gwei tip.
-fn fee_caps(status: &Value) -> (FeeVector, u128) {
+/// Fee caps from `aether_status` and the sender's balance: twice the base fee
+/// plus a 1 gwei tip — or, when the chain is at its zero floor (below target
+/// load the base fee is 0) or the sender has no balance, tip 0 and exec
+/// capped at base × 2, so a new account can transact at all (G2). Mirrors
+/// `aether-ffi::fee_caps`.
+fn fee_caps(status: &Value, balance: Option<U256>) -> (FeeVector, u128) {
     let get = |k: &str| status["base_fee"][k].as_str().and_then(|v| v.parse::<u128>().ok()).unwrap_or(GWEI);
-    (FeeVector { exec: get("exec") * 2 + GWEI, state: 0, prove: get("prove") * 2 }, GWEI)
+    let free = get("exec") == 0 || balance == Some(U256::ZERO);
+    (
+        FeeVector { exec: if free { get("exec") * 2 } else { get("exec") * 2 + GWEI }, state: 0, prove: get("prove") * 2 },
+        if free { 0 } else { GWEI },
+    )
 }
 
 pub fn address_for(public_key: &[u8]) -> Result<String, String> {
@@ -42,6 +50,8 @@ pub struct Request<'a> {
     pub value_wei: &'a str,
     pub data_hex: &'a str,
     pub gas_limit: u64,
+    /// The sender's balance (wei): a zero balance sends with tip 0 (G2).
+    pub balance_wei: &'a str,
 }
 
 /// Build the envelope for `req` from `public_key`. Returns JSON:
@@ -63,7 +73,8 @@ pub fn prepare_tx(public_key: &[u8], status: &Value, expected_chain: u64, nonce:
     };
     let call = EvmCall { to, value, input: Bytes::from(input), gas_limit, delegate: None };
     let payload = call.encode();
-    let (max_fee, tip) = fee_caps(status);
+    let balance = if req.balance_wei.is_empty() { None } else { req.balance_wei.parse::<U256>().ok() };
+    let (max_fee, tip) = fee_caps(status, balance);
     let header = TxHeader {
         chain_id,
         sender: from,
@@ -122,7 +133,7 @@ pub fn public_key_from_secret_js(secret: &[u8]) -> Result<Vec<u8>, JsError> {
     public_key_from_secret(secret).map_err(err)
 }
 
-/// `request_json`: `{to, value_wei, data, gas}`; `status_json`: the `aether_status` result.
+/// `request_json`: `{to, value_wei, data, gas, balance_wei?}`; `status_json`: the `aether_status` result.
 #[wasm_bindgen(js_name = prepareTx)]
 pub fn prepare_tx_js(public_key: &[u8], status_json: &str, expected_chain: u64, nonce: u64, request_json: &str) -> Result<String, JsError> {
     let status: Value = serde_json::from_str(status_json).map_err(err)?;
@@ -132,6 +143,7 @@ pub fn prepare_tx_js(public_key: &[u8], status_json: &str, expected_chain: u64, 
         value_wei: r["value_wei"].as_str().unwrap_or("0"),
         data_hex: r["data"].as_str().unwrap_or("0x"),
         gas_limit: r["gas"].as_u64().unwrap_or(0),
+        balance_wei: r["balance_wei"].as_str().unwrap_or(""),
     };
     Ok(prepare_tx(public_key, &status, expected_chain, nonce, &req).map_err(err)?.to_string())
 }
@@ -166,7 +178,7 @@ mod tests {
     fn prepared_and_signed_envelope_verifies_like_the_chain() {
         let k = key();
         let pk = pubkey(&k);
-        let req = Request { to: "0x00000000000000000000000000000000000000aa", value_wei: "1000", data_hex: "0x", gas_limit: 0 };
+        let req = Request { to: "0x00000000000000000000000000000000000000aa", value_wei: "1000", data_hex: "0x", gas_limit: 0, balance_wei: "" };
         let p = prepare_tx(&pk, &status(), 7780, 3, &req).unwrap();
         assert_eq!(p["gas_limit"], 21_000);
         let msg = alloy_primitives::hex::decode(p["signing_message"].as_str().unwrap()).unwrap();
@@ -183,7 +195,7 @@ mod tests {
     fn high_s_signatures_are_normalized() {
         let k = key();
         let pk = pubkey(&k);
-        let req = Request { to: "0x00000000000000000000000000000000000000aa", value_wei: "0", data_hex: "0xa9059cbb", gas_limit: 50_000 };
+        let req = Request { to: "0x00000000000000000000000000000000000000aa", value_wei: "0", data_hex: "0xa9059cbb", gas_limit: 50_000, balance_wei: "" };
         let p = prepare_tx(&pk, &status(), 7780, 0, &req).unwrap();
         let msg = alloy_primitives::hex::decode(p["signing_message"].as_str().unwrap()).unwrap();
         let sig: p256::ecdsa::Signature = k.sign(&msg);
@@ -205,7 +217,7 @@ mod tests {
     fn wrong_chain_and_wrong_key_are_rejected() {
         let k = key();
         let pk = pubkey(&k);
-        let req = Request { to: "", value_wei: "0", data_hex: "0x6000", gas_limit: 0 };
+        let req = Request { to: "", value_wei: "0", data_hex: "0x6000", gas_limit: 0, balance_wei: "" };
         assert!(prepare_tx(&pk, &status(), 1, 0, &req).unwrap_err().contains("chain"));
         let p = prepare_tx(&pk, &status(), 7780, 0, &req).unwrap();
         assert_eq!(p["gas_limit"], 3_000_000);
@@ -216,5 +228,30 @@ mod tests {
         // A matching signature from another key still cannot claim this sender.
         let other_pk = pubkey(&other);
         assert!(attach(&p["envelope"], &sig.to_bytes(), &other_pk).unwrap_err().contains("sender"));
+    }
+
+    #[test]
+    fn a_zero_base_fee_or_zero_balance_sends_with_no_tip() {
+        // At the zero floor (below target load): cap 0, tip 0 — a new account pays nothing.
+        assert_eq!(fee_caps(&status(), None), (FeeVector { exec: 0, state: 0, prove: 0 }, 0));
+        assert_eq!(fee_caps(&status(), Some(U256::ZERO)), (FeeVector { exec: 0, state: 0, prove: 0 }, 0));
+        // A funded sender at the floor still tips nothing (nothing to tip over).
+        assert_eq!(fee_caps(&status(), Some(U256::from(1u8))), (FeeVector { exec: 0, state: 0, prove: 0 }, 0));
+        // Congested: base 2 gwei — funded keeps the 1 gwei tip, a zero balance
+        // caps at base × 2 with tip 0.
+        let busy = json!({"chain_id": 7780, "base_fee": {"exec": "2000000000", "prove": "0"}});
+        let (funded, tip) = fee_caps(&busy, Some(U256::from(1_000_000_000_000_000_000u64)));
+        assert_eq!((funded.exec, tip), (5_000_000_000, GWEI));
+        let (broke, tip) = fee_caps(&busy, Some(U256::ZERO));
+        assert_eq!((broke.exec, tip), (4_000_000_000, 0));
+        // The envelope carries the rule (and the chain's own check accepts it).
+        let k = key();
+        let p = prepare_tx(&pubkey(&k), &status(), 7780, 0, &Request { to: "0x00000000000000000000000000000000000000aa", value_wei: "0", data_hex: "0x", gas_limit: 0, balance_wei: "0" }).unwrap();
+        let env: TxEnvelope = serde_json::from_value(p["envelope"].clone()).unwrap();
+        assert_eq!((env.header.max_fee.exec, env.header.tip), (0, 0));
+        let msg = alloy_primitives::hex::decode(p["signing_message"].as_str().unwrap()).unwrap();
+        let sig: p256::ecdsa::Signature = k.sign(&msg);
+        let signed = attach(&p["envelope"], &sig.to_bytes(), &pubkey(&k)).unwrap();
+        validate_stateless(&serde_json::from_value(signed).unwrap(), 7780).expect("zero-tip tx is valid as built");
     }
 }

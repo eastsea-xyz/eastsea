@@ -10,10 +10,17 @@ import DeviceCheck
 @MainActor
 final class WalletModel: ObservableObject {
     @Published var connectionInfo = "Looking up validators on the Mainline DHT…"
+    @Published private(set) var developmentNetwork = false
+    @Published private(set) var developmentPort: UInt16 = 18546
+    @Published private(set) var networkChainId: UInt64 = 0
     @Published var validators: UInt32 = 4
     @Published var address = ""
     @Published var account: VerifiedAccount?
     @Published var status: ChainStatus?
+    var scheduledUpgrades: [NetworkUpgrade] {
+        guard let status else { return [] }
+        return NetworkUpgrade.parse(status.upgradesJson, height: status.height)
+    }
     @Published var blocks: [BlockInfo] = []
     @Published var verifyError: String?
     /// Since when verification has been failing (nil while it works).
@@ -46,6 +53,9 @@ final class WalletModel: ObservableObject {
     @Published var history: [BalancePoint] = []
     /// This wallet's own actions, newest first, for the simple-mode feed.
     @Published var activity: [ActivityItem] = []
+    @Published private(set) var linkedWallets: [String] = []
+    @Published private(set) var activityHistoryStart: UInt64?
+    @Published private(set) var olderActivityAvailable = false
     /// A recovery someone started on THIS account (cancel it if it was not you).
     @Published var incomingRecovery: RecoveryStatus?
     /// A recovery this device proposed for another account, waiting for its delay.
@@ -70,9 +80,15 @@ final class WalletModel: ObservableObject {
     }
 
     private var refreshes = 0
+    private var networkGeneration: UInt64 = 0
     private var lastHeight: UInt64?
     private var heightChangedAt: Date?
     private var tokenScanRunning = false
+    private var activityLoading = false
+    private var lastActivityHeight: UInt64?
+    private var activityCursors: [String: String] = [:]
+    private var activityExhausted: Set<String> = []
+    private var pendingBalanceRises: [(height: UInt64, wei: String)] = []
     /// Tokens known on this chain, kept between scans (also feeds the look-alike
     /// and provenance checks with official metadata).
     private(set) var tokenCatalog = TokenCatalog()
@@ -119,7 +135,12 @@ final class WalletModel: ObservableObject {
             note(acct.isSecureEnclave ? "Secure Enclave key ready. Signing asks for Touch ID / Face ID or your passcode." : "Simulator: software key (no Secure Enclave here). Use a real device for hardware-bound keys.")
         } catch {
             let locked = (error as NSError).code == Int(errSecInteractionNotAllowed)
-            keyError = locked ? "Unlock this device to create your wallet key." : "Could not create the wallet key: \(error.localizedDescription)"
+            if case EnclaveAccount.KeyError.keyUnavailable = error {
+                // The wallet exists but cannot be opened yet; retried from `refresh`.
+                keyError = "Unlock this device to open your wallet. Your wallet is safe."
+            } else {
+                keyError = locked ? "Unlock this device to create your wallet key." : "Could not create the wallet key: \(error.localizedDescription)"
+            }
             note("Key error: \(error.localizedDescription)")
         }
     }
@@ -133,12 +154,63 @@ final class WalletModel: ObservableObject {
             return
         }
         do {
-            validators = try configureNetwork(networkJson: json)
-            let id = (try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])?["identity"] as? String ?? "devnet"
-            note("Network: \(validators) validators · committee key \(id.prefix(16))… (network.json)")
+            let bundled = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any] ?? [:]
+            let defaultChain = (bundled["chain_id"] as? NSNumber)?.uint64Value ?? 0
+            let dev = UserDefaults.standard.bool(forKey: "useDevelopmentNetwork") && UserDefaults.standard.bool(forKey: "developerMode")
+            if !dev { UserDefaults.standard.set(false, forKey: "useDevelopmentNetwork") }
+            let savedPort = UserDefaults.standard.integer(forKey: "developmentNetworkPort")
+            let port = (1024...65535).contains(savedPort) ? UInt16(savedPort) : 18546
+            let devValidators = Array(((bundled["validators"] as? [[String: Any]]) ?? []).prefix(4))
+            let devJSON = try JSONSerialization.data(withJSONObject: ["chain_id": 7777, "validators": devValidators, "devnet": true])
+            validators = try configureNetwork(networkJson: dev ? String(decoding: devJSON, as: UTF8.self) : json)
+            networkChainId = dev ? 7777 : defaultChain
+            developmentNetwork = dev
+            developmentPort = port
+            if dev { useLocalNode(port: port) }
+            let id = dev ? "local devnet keys" : (bundled["identity"] as? String ?? "missing identity")
+            note("Network: \(validators) validators · committee key \(id.prefix(16))…")
         } catch {
             note("network.json rejected: \(error)")
         }
+    }
+
+    func selectNetwork(development: Bool, port: UInt16 = 18546) {
+        guard !development || UserDefaults.standard.bool(forKey: "developerMode") else { return }
+        if development == developmentNetwork && (!development || port == developmentPort) { return }
+        guard !busy else {
+            UserDefaults.standard.set(developmentNetwork, forKey: "useDevelopmentNetwork")
+            if developmentNetwork { UserDefaults.standard.set(true, forKey: "developerMode") }
+            note("Wait for the pending transaction before switching networks.")
+            return
+        }
+        save()
+        networkGeneration &+= 1
+        UserDefaults.standard.set(development, forKey: "useDevelopmentNetwork")
+        if development { UserDefaults.standard.set(Int(port), forKey: "developmentNetworkPort") }
+        pinCommittee()
+        status = nil
+        account = nil
+        blocks = []
+        verifyError = nil
+        verifyFailingSince = nil
+        networkOutdated = false
+        chainPausedSince = nil
+        lastHeight = nil
+        lastActivityHeight = nil
+        activityCursors = [:]
+        activityExhausted = []
+        activityHistoryStart = nil
+        olderActivityAvailable = false
+        pendingBalanceRises = []
+        activityLoading = false
+        tokenScanRunning = false
+        tokenChoicesForChain = nil
+        tokensUpdated = nil
+        tokensError = nil
+        loadSaved()
+        loadTokens()
+        loadTokenChoices(chain: networkChainId)
+        refresh()
     }
 
     /// Register another device's key as this account's recovery key (one signature).
@@ -236,7 +308,7 @@ final class WalletModel: ObservableObject {
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
                 // Keep the request until the chain confirms it ran: a revert (e.g. the
                 // delay counted from inclusion, not from submission) can be retried.
-                let ok = await self.track(h, label: "Recovered \(Wei.format(pending.request.valueWei)) AETH from \(pending.request.lost.prefix(10))…",
+                let ok = await self.track(h, label: "Recovered \(Wei.format(pending.request.valueWei)) \(Brand.coinTicker) from \(pending.request.lost.prefix(10))…",
                                  item: ActivityItem(kind: .received, title: "Recovered from \(Short.address(pending.request.lost))",
                                                     amount: Double(Wei.format(pending.request.valueWei))))
                 await MainActor.run {
@@ -328,31 +400,37 @@ final class WalletModel: ObservableObject {
 
     func refresh() {
         if enclave == nil, Date().timeIntervalSince(lastKeyAttempt) > 5 { loadKey() }
-        let addr = address, n = validators
+        let addr = address, n = validators, generation = networkGeneration
         refreshes += 1
         // Recovery status needs several proofs; every 30 s is enough to warn within the delay.
         let checkRecovery = refreshes % 15 == 1 && !addr.isEmpty
         Task.detached {
             if checkRecovery, let rs = try? recoveryStatus(account: addr, validators: n) {
-                await MainActor.run { self.incomingRecovery = rs.pending ? rs : nil }
+                await MainActor.run { if self.networkGeneration == generation { self.incomingRecovery = rs.pending ? rs : nil } }
             }
             let st = try? chainStatus()
             let conn = connection()
-            if let st { await MainActor.run { self.loadTokenChoices(chain: st.chainId) } }
+            if let st { await MainActor.run { if self.networkGeneration == generation { self.loadTokenChoices(chain: st.chainId) } } }
             let bl = (try? recentBlocks(n: 24)) ?? []
             var acc: VerifiedAccount?
             var err: String?
             if !addr.isEmpty {
                 do { acc = try verifiedAccount(address: addr, validators: n) } catch { err = "\(error)" }
             }
+            let verified = acc, readError = err
             await MainActor.run {
+                guard self.networkGeneration == generation else { return }
                 // Published only when something actually changed: an unchanged set
                 // would still invalidate every view watching this model (the whole
                 // window), which lands right on top of live resizes.
                 if self.status != st { self.status = st }
                 if self.connectionInfo != conn { self.connectionInfo = conn }
                 if self.blocks != bl { self.blocks = bl }
-                if let acc {
+                if let acc = verified {
+                    if let old = self.account, acc.stateHeight == old.stateHeight + 1,
+                       let rise = ChainActivity.rise(acc.balanceWei, over: old.balanceWei) {
+                        self.pendingBalanceRises.append((acc.stateHeight, rise))
+                    }
                     if self.account != acc { self.account = acc }
                     if self.verifyError != nil { self.verifyError = nil }
                     self.record(balanceWei: acc.balanceWei)
@@ -360,11 +438,16 @@ final class WalletModel: ObservableObject {
                 // A node that is still catching up serves an older block than one this wallet
                 // already verified; the FFI refuses it (finalized blocks never go back). That
                 // is not an error to show: keep the newer verified balance.
-                let behindNode = err?.contains("finalized blocks never go back") == true && self.account != nil
-                if st == nil { self.setVerifyError("No validator reachable yet (\(conn))") } else if let err, !behindNode { self.setVerifyError(err) }
+                let behindNode = readError?.contains("finalized blocks never go back") == true && self.account != nil
+                if st == nil { self.setVerifyError("No validator reachable yet (\(conn))") } else if let readError, !behindNode { self.setVerifyError(readError) }
                 self.trackChainProgress(st, blocks: bl)
                 self.trackVerification()
                 self.refreshTokens()
+                if let st, !self.activityLoading,
+                   (st.height != self.lastActivityHeight || self.refreshes % 15 == 1) {
+                    self.lastActivityHeight = st.height
+                    self.refreshChainActivity()
+                }
             }
         }
     }
@@ -404,10 +487,11 @@ final class WalletModel: ObservableObject {
             return
         }
         tokenScanRunning = true
-        let owner = address, catalogKey = "tokenCatalog.\(chain)", catalog = tokenCatalog
+        let owner = address, catalogKey = "tokenCatalog.\(chain)", catalog = tokenCatalog, generation = networkGeneration
         Task.detached {
             let result = Result { try TokenScanner.scan(owner: owner, sources: sources, catalog: catalog, read: { try ethCall(to: $0, dataHex: $1) }) }
             await MainActor.run {
+                guard self.networkGeneration == generation else { return }
                 self.tokenScanRunning = false
                 guard owner == self.address else { return }
                 switch result {
@@ -427,12 +511,16 @@ final class WalletModel: ObservableObject {
         }
     }
 
-    private var tokensKey: String { "tokenHoldings.\(address)" }
+    private var tokensKey: String { "tokenHoldings.\(networkChainId).\(address)" }
 
     /// The last token balances read for this account, shown until the next read.
     private func loadTokens() {
+        if networkChainId == 7780, UserDefaults.standard.object(forKey: tokensKey) == nil,
+           let old = UserDefaults.standard.data(forKey: "tokenHoldings.\(address)") {
+            UserDefaults.standard.set(old, forKey: tokensKey)
+        }
         tokens = UserDefaults.standard.data(forKey: tokensKey).flatMap { try? JSONDecoder().decode([TokenHolding].self, from: $0) } ?? []
-        tokenCatalog = UserDefaults.standard.data(forKey: "tokenCatalog.\(status?.chainId ?? 0)")
+        tokenCatalog = UserDefaults.standard.data(forKey: "tokenCatalog.\(networkChainId)")
             .flatMap { try? JSONDecoder().decode(TokenCatalog.self, from: $0) } ?? TokenCatalog()
     }
 
@@ -441,13 +529,15 @@ final class WalletModel: ObservableObject {
     /// Addresses this wallet has sent to before — its own signed history, read
     /// back from the tracked activity. Derived, never stored.
     var sentAddresses: Set<String> {
-        Set(activity.flatMap { $0.recipients ?? [] }.map { $0.lowercased() })
+        Set(activity.filter { $0.owner == nil || $0.owner?.lowercased() == address.lowercased() }
+            .flatMap { $0.recipients ?? [] }.map { $0.lowercased() })
     }
 
     /// Tokens this wallet's own signed transactions touched (a send, an
     /// approval, a contract call to the token). Derived, never stored.
     var touchedTokens: Set<String> {
-        Set(activity.compactMap(\.token).map { $0.lowercased() })
+        Set(activity.filter { $0.owner == nil || $0.owner?.lowercased() == address.lowercased() }
+            .compactMap(\.token).map { $0.lowercased() })
     }
 
     /// Official tokens of this chain (the bundled seed list + wrapped AETH).
@@ -458,7 +548,7 @@ final class WalletModel: ObservableObject {
 
     /// Their symbols and names, for the look-alike warning (native AETH first).
     var officialSymbols: [(symbol: String, name: String)] {
-        [("AETH", "Aether")] + officialTokenAddresses.sorted().compactMap { tokenCatalog.tokens[$0].map { ($0.symbol, $0.name) } }
+        [(Brand.coinTicker, Brand.coinName)] + officialTokenAddresses.sorted().compactMap { tokenCatalog.tokens[$0].map { ($0.symbol, $0.name) } }
     }
 
     /// Which holdings belong in the main Assets list and which in the collapsed
@@ -595,12 +685,13 @@ final class WalletModel: ObservableObject {
     }
 
     func faucet() {
+        guard developmentNetwork && UserDefaults.standard.bool(forKey: "developerMode") else { return }
         let addr = address
         busy = true
         Task.detached {
             do {
                 let h = try devnetFaucet(to: addr, valueWei: Wei.from(aeth: "10")!)
-                await self.track(h, label: "Faucet 10 AETH", item: ActivityItem(kind: .received, title: "Test AETH from faucet", amount: 10))
+                await self.track(h, label: "Faucet 10 \(Brand.coinTicker)", item: ActivityItem(kind: .received, title: "Test \(Brand.coinTicker) from faucet", amount: 10))
             } catch { await MainActor.run { self.note("Faucet failed: \(error)"); self.busy = false } }
         }
     }
@@ -627,11 +718,11 @@ final class WalletModel: ObservableObject {
                                         recipients: recipients.map { $0.lowercased() })
                 if recipients.count == 1 {
                     prepared = try prepareTransfer(p256PublicKey: pk, to: recipients[0], valueWei: wei)
-                    label = "Sent \(Wei.format(wei)) AETH (nonce \(prepared.nonce))"
+                    label = "Sent \(Wei.format(wei)) \(Brand.coinTicker) (nonce \(prepared.nonce))"
                 } else {
                     // All payments in one tx: one signature, all or nothing (EIP-7702 batch).
                     prepared = try prepareBatch(p256PublicKey: pk, payments: recipients.map { Payment(to: $0, valueWei: wei) })
-                    label = "Paid \(recipients.count) recipients \(Wei.format(wei)) AETH each with one signature (nonce \(prepared.nonce))"
+                    label = "Paid \(recipients.count) recipients \(Wei.format(wei)) \(Brand.coinTicker) each with one signature (nonce \(prepared.nonce))"
                 }
                 let sig = try enclave.sign(prepared.signingMessage)   // Secure Enclave, may prompt
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
@@ -707,7 +798,8 @@ final class WalletModel: ObservableObject {
     private func track(_ hash: String, label: String, item: ActivityItem) async -> Bool {
         await MainActor.run {
             self.note("\(label) submitted \(hash.prefix(14))…")
-            self.activity.insert(item.with(state: .pending), at: 0)
+            self.activity.insert(item.with(state: .pending).with(hash: hash), at: 0)
+            self.save()
         }
         for _ in 0..<60 {
             if let r = try? receipt(txHash: hash) {
@@ -727,19 +819,150 @@ final class WalletModel: ObservableObject {
 
     // MARK: dashboard data (kept per account in UserDefaults)
 
-    private var historyKey: String { "balanceHistory.\(address)" }
-    private var activityKey: String { "activity.\(address)" }
+    private var historyKey: String { "balanceHistory.\(networkChainId).\(address)" }
+    private var activityKey: String { "activity.\(networkChainId).\(address)" }
+    private var linkedKey: String { "linkedWallets.\(address)" }
 
     private func loadSaved() {
         let d = UserDefaults.standard
+        if networkChainId == 7780 {
+            if d.object(forKey: historyKey) == nil, let old = d.data(forKey: "balanceHistory.\(address)") { d.set(old, forKey: historyKey) }
+            if d.object(forKey: activityKey) == nil, let old = d.data(forKey: "activity.\(address)") { d.set(old, forKey: activityKey) }
+        }
         history = d.data(forKey: historyKey).flatMap { try? JSONDecoder().decode([BalancePoint].self, from: $0) } ?? []
         activity = d.data(forKey: activityKey).flatMap { try? JSONDecoder().decode([ActivityItem].self, from: $0) } ?? []
+        linkedWallets = d.stringArray(forKey: linkedKey) ?? []
     }
 
     private func save() {
         let d = UserDefaults.standard
         d.set(try? JSONEncoder().encode(history), forKey: historyKey)
-        d.set(try? JSONEncoder().encode(Array(activity.prefix(100))), forKey: activityKey)
+        d.set(try? JSONEncoder().encode(Array(activity.prefix(500))), forKey: activityKey)
+    }
+
+    func addLinkedWallet(_ input: String) -> Bool {
+        guard linkedWallets.count < 8,
+              let address = ChainActivity.validLinkedAddress(input, own: self.address, existing: linkedWallets) else { return false }
+        linkedWallets.append(address)
+        UserDefaults.standard.set(linkedWallets, forKey: linkedKey)
+        lastActivityHeight = nil
+        refreshChainActivity()
+        return true
+    }
+
+    func removeLinkedWallet(_ address: String) {
+        linkedWallets.removeAll { $0.lowercased() == address.lowercased() }
+        UserDefaults.standard.set(linkedWallets, forKey: linkedKey)
+        activity.removeAll { $0.owner?.lowercased() == address.lowercased() }
+        activityCursors.removeValue(forKey: address.lowercased())
+        activityExhausted.remove(address.lowercased())
+        lastActivityHeight = nil
+        save()
+    }
+
+    func loadOlderActivity() { refreshChainActivity(older: true) }
+
+    private func refreshChainActivity(older: Bool = false) {
+        guard !activityLoading, !address.isEmpty else { return }
+        let own = address
+        let addresses = ([own] + linkedWallets).filter { !older || activityCursors[$0.lowercased()] != nil }
+        guard !addresses.isEmpty else { return }
+        let cursors = activityCursors
+        let generation = networkGeneration
+        let sources = status.flatMap { TokenSources.bundled(chainId: $0.chainId) }
+        let names = ChainNames(router: sources?.router, launchpad: sources?.launchpad,
+                               tokenFactory: sources?.tokenFactory, waeth: sources?.waeth,
+                               tokens: tokenCatalog.tokens.mapValues { ChainTokenName(symbol: $0.symbol, decimals: $0.decimals, origin: $0.origin) })
+        activityLoading = true
+        Task.detached {
+            var pages: [(String, ChainHistoryPage)] = []
+            for address in addresses {
+                do {
+                    let json = try accountHistory(address: address, cursor: older ? cursors[address.lowercased()] : nil, limit: 200)
+                    pages.append((address, try ChainHistoryPage.decode(json)))
+                } catch { /* keep the last successful view until a node answers */ }
+            }
+            let fetchedPages = pages
+            await MainActor.run {
+                guard self.networkGeneration == generation else { return }
+                self.activityLoading = false
+                guard self.address == own else { return }
+                var incomingHashes = Set<String>()
+                for (address, page) in fetchedPages {
+                    let key = address.lowercased()
+                    if key != own.lowercased(), !self.linkedWallets.contains(where: { $0.lowercased() == key }) { continue }
+                    if older || (self.activityCursors[key] == nil && !self.activityExhausted.contains(key)) {
+                        if let cursor = page.nextCursor { self.activityCursors[key] = cursor }
+                        else {
+                            self.activityCursors.removeValue(forKey: key)
+                            self.activityExhausted.insert(key)
+                        }
+                    }
+                    self.activityHistoryStart = max(self.activityHistoryStart ?? 0, page.historyStart)
+                    if !older {
+                        let noticeKey = "incomingNotice.\(self.networkChainId).\(key)"
+                        var notice = UserDefaults.standard.data(forKey: noticeKey).flatMap { try? JSONDecoder().decode(IncomingNoticeState.self, from: $0) }
+                        if notice == nil {
+                            notice = IncomingNoticeState(height: page.entries.map(\.height).max() ?? page.indexedHeight,
+                                                         hashes: Set(page.entries.map { $0.txHash.lowercased() }))
+                        } else {
+                            for row in notice!.consume(page.entries) where incomingHashes.insert(row.txHash.lowercased()).inserted {
+                                #if os(macOS)
+                                LocalNotice.post(title: "Payment received", body: ChainActivity.title(row, names: names))
+                                #endif
+                            }
+                        }
+                        UserDefaults.standard.set(try? JSONEncoder().encode(notice), forKey: noticeKey)
+                    }
+                    for row in page.entries {
+                        let hash = row.txHash.lowercased()
+                        let title = ChainActivity.title(row, names: names)
+                        let amount = ["native_transfer", "node_reward", "proof_reward"].contains(row.kind)
+                            ? (Double(ChainActivity.units(row.valueWei)).map { row.direction == "out" ? -$0 : $0 }) : nil
+                        var item = ActivityItem(date: Date(timeIntervalSince1970: TimeInterval(row.timestampMs) / 1_000),
+                                                kind: row.direction == "in" ? .received : (row.kind == "contract_call" || row.kind == "deploy" ? .security : .sent),
+                                                title: title, amount: amount, state: row.success ? .done : .failed)
+                        item.hash = row.txHash
+                        item.source = "From the node"
+                        item.owner = row.address
+                        if key == own.lowercased(), row.direction == "out" {
+                            item.recipients = row.kind == "native_transfer" ? row.to.map { [$0.lowercased()] }
+                                : row.kind == "erc20_transfer" ? row.tokens.filter { $0.from.lowercased() == key }.map { $0.to.lowercased() }
+                                : nil
+                            if row.kind == "erc20_transfer" || row.method == "0x095ea7b3" {
+                                item.token = row.to?.lowercased()
+                            }
+                        }
+                        if let i = self.activity.firstIndex(where: { $0.hash?.lowercased() == hash }) {
+                            if self.activity[i].owner?.lowercased() == own.lowercased(), key != own.lowercased() { continue }
+                            item.id = self.activity[i].id
+                            item.recipients = self.activity[i].recipients ?? item.recipients
+                            item.token = self.activity[i].token ?? item.token
+                            self.activity[i] = item
+                        } else { self.activity.append(item) }
+                    }
+                    if key == own.lowercased() {
+                        let oldest = page.entries.last?.height ?? page.historyStart
+                        for rise in self.pendingBalanceRises where page.indexedHeight >= rise.height && rise.height >= oldest {
+                            let matched = page.entries.contains { $0.height == rise.height && $0.direction == "in" }
+                            if !matched {
+                                var item = ActivityItem(kind: .received,
+                                    title: "Balance increased by \(ChainActivity.units(rise.wei)) \(Brand.coinTicker) · block #\(rise.height)",
+                                    amount: Double(ChainActivity.units(rise.wei)), state: .done)
+                                item.source = "From the node"
+                                item.owner = own
+                                item.hash = "balance:\(rise.height):\(own.lowercased())"
+                                if !self.activity.contains(where: { $0.hash == item.hash }) { self.activity.append(item) }
+                            }
+                        }
+                        self.pendingBalanceRises.removeAll { page.indexedHeight >= $0.height && $0.height >= oldest }
+                    }
+                }
+                self.olderActivityAvailable = !self.activityCursors.isEmpty
+                self.activity.sort { $0.date > $1.date }
+                self.save()
+            }
+        }
     }
 
     /// Add a chart point when the balance changes, or once a minute otherwise.
@@ -775,10 +998,20 @@ struct ActivityItem: Codable, Identifiable, Equatable {
     var recipients: [String]? = nil
     /// A token this action moved (address), for the display policy.
     var token: String? = nil
+    /// Node rows have this hash; local rows acquire it before submission.
+    var hash: String? = nil
+    var source: String? = nil
+    var owner: String? = nil
 
     func with(state: State) -> ActivityItem {
         var c = self
         c.state = state
+        return c
+    }
+
+    func with(hash: String) -> ActivityItem {
+        var c = self
+        c.hash = hash
         return c
     }
 
@@ -860,7 +1093,7 @@ struct PendingRecovery {
 
 enum NodeRegistrationError: LocalizedError {
     case unsupported
-    var errorDescription: String? { "This Mac cannot create a DeviceCheck token (needs a signed Aether app on a real Mac)." }
+    var errorDescription: String? { "This Mac cannot create a DeviceCheck token (needs a signed \(Brand.project) app on a real Mac)." }
 }
 
 /// Where a voting-node registration stands, for the Network page.

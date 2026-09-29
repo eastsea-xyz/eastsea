@@ -2,7 +2,6 @@
 // envelope (the chain's own rules), the vault signs, wasm checks and attaches.
 
 import { hex } from './vault.js';
-import { CHAIN_ID } from './methods.js';
 
 export class Wallet {
   /** `wasm`: {prepareTx, attachSignature}; `rpc`: Rpc; `vault`: Vault. */
@@ -10,20 +9,22 @@ export class Wallet {
     this.wasm = wasm;
     this.rpc = rpc;
     this.vault = vault;
-    this.lastNonce = null; // {address, nonce}: lets two quick sends not reuse a nonce
+    this.lastNonce = null; // {address, nonce, chainId}: lets two quick sends not reuse a nonce
     this.queue = Promise.resolve(); // sends run one at a time, so nonces never collide
   }
 
   async nonceFor(address) {
     const chain = parseInt(await this.rpc.call('eth_getTransactionCount', [address]), 16);
-    const next = this.lastNonce && this.lastNonce.address === address ? this.lastNonce.nonce + 1 : 0;
+    const next = this.lastNonce && this.lastNonce.address === address && this.lastNonce.chainId === this.rpc.chainId ? this.lastNonce.nonce + 1 : 0;
     return Math.max(chain, next);
   }
 
-  /** Estimated worst-case fee in wei for `gas` at the current base fee (display only). */
+  /** Estimated worst-case fee in wei for `gas` at the current base fee (display only):
+   *  0 while the base fee is 0 (below target load the network is free). */
   static maxFee(status, gas) {
     const g = BigInt(gas);
-    const exec = BigInt(status?.base_fee?.exec ?? '1000000000') * 2n + 1_000_000_000n;
+    const base = BigInt(status?.base_fee?.exec ?? '1000000000');
+    const exec = base === 0n ? 0n : base * 2n + 1_000_000_000n;
     const prove = BigInt(status?.base_fee?.prove ?? '1000000000') * 2n;
     return g * exec + g * prove;
   }
@@ -41,13 +42,19 @@ export class Wallet {
   async sendNow(tx, { status: shown } = {}) {
     const info = await this.vault.info();
     if (!info) throw new Error('No wallet yet.');
+    const chainId = this.rpc.chainId;
     const status = shown || (await this.rpc.call('aether_status', []));
     const nonce = await this.nonceFor(info.address);
-    const prepared = JSON.parse(this.wasm.prepareTx(hex.dec(info.publicKey), JSON.stringify(status), BigInt(CHAIN_ID), BigInt(nonce), JSON.stringify(tx)));
+    // The balance decides the tip (G2): a zero balance sends with none, so a
+    // new account can transact while the base fee is 0.
+    const balance = await this.balance(info.address).catch(() => 0n);
+    if (Number(status.chain_id) !== chainId || this.rpc.chainId !== chainId) throw new Error('The node is on another chain.');
+    const prepared = JSON.parse(this.wasm.prepareTx(hex.dec(info.publicKey), JSON.stringify(status), BigInt(chainId), BigInt(nonce), JSON.stringify({ ...tx, balance_wei: balance.toString() })));
     const sig = await this.vault.sign(hex.dec(prepared.signing_message));
+    if (this.rpc.chainId !== chainId) throw new Error('The wallet network changed before the transaction was sent.');
     const env = JSON.parse(this.wasm.attachSignature(JSON.stringify(prepared.envelope), sig, hex.dec(info.publicKey)));
     const r = await this.rpc.call('aether_sendTransaction', [env]);
-    this.lastNonce = { address: info.address, nonce };
+    this.lastNonce = { address: info.address, nonce, chainId };
     return r.hash;
   }
 

@@ -18,7 +18,7 @@ struct AssetsSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Assets").font(.aeTitle)
-            TokenRow(symbol: "AETH", name: "Aether", amount: balance, verified: model.account != nil && model.verifyError == nil)
+            TokenRow(symbol: Brand.coinTicker, name: Brand.coinName, amount: balance, verified: model.account != nil && model.verifyError == nil)
             if let since = model.chainPausedSince { NetworkPausedBadge(since: since) }
             Divider()
             mainTokens

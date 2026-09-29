@@ -83,3 +83,66 @@ Commonware 버그는 아니다. `Deferred`의 계약(certify는 결정적이어�
 - notarize가 디스크 동기화를 기다린다. 디스크가 느린 검증자는 투표가 늦다. 절반 이상이 느리면 체인도 그만큼 느려진다(시험으로 확인: 멈췄다가 재개).
 - 제안자 자신의 블록은 여전히 보낸 뒤에 저장한다(Commonware 방식). 다른 투표자들이 디스크에 저장한 뒤 투표하므로, 인증된 블록은 여전히 f+1명의 정직한 검증자에게 있다.
 - FOCIL 판정은 여전히 검증자마다 다를 수 있다. 이제는 그 블록이 정족수를 못 얻고 뷰가 넘어갈 뿐이다. 제안자 절반이 계속 거절당하면 블록 간격이 길어진다(시험에서 최대 17초).
+
+---
+
+# 2026-09-29 스톨: 포함 목록 정렬 버그와 열린 파일 한도
+
+2026-09-28 사고 다음날, 높이 104408에서 다시 멈췄다. 이번엔 원인이 둘이었다.
+
+## 증상
+
+- 모든 제안이 포함 목록(FOCIL) 검사에 걸렸다: `inclusion list violated; not voting … missing=1`이 모든 뷰에 반복된다(09-28과 같은 로그, 다른 원인).
+- 검증자 재시작이 `Too many open files`로 반복됐다(crash loop). 투표 저널 파티션 `aether-consensus-r69841`의 섹션 파일들을 여는 순간 EMFILE.
+
+## 원인
+
+**1. 제안 정렬 버그(체인을 멈춘 쪽).** 제안자는 포함 목록에 오른 거래를 블록 앞쪽에 먼저 놓고 나머지 멤풀 거래를 뒤에 이었다. 어떤 상장 거래는 송신자의 논스 n+32였는데, 같은 송신자의 이전 논스 n..n+31은 아직 멤풀 뒤쪽에 있었다. `build_block`은 후보를 주어진 순서대로 한 번만 실행하고 실패한 거래를 다시 시도하지 않는다. 논스 n+32는 상태 논스 n 앞에서 스킵되고, `rest`에도 없으니 영영 들어가지 못했다. 검증자들의 append 검사는 "논스 n+32를 넣을 수 있는데 빠졌다"로 나왔고, 모든 제안이 같은 거래에 걸려 정족수를 잃었다.
+
+**2. 열린 파일 한도(재시작을 막은 쪽).** simplex 투표 저널은 뷰마다 섹션 파일 하나를 만들고, 마지막 확정 − view_retention(20) 아래로만 지운다. 체인이 멈춘 동안 탄 뷰마다 섹션이 쌓여 190개가 됐다(확정 위의 뷰들은 안전성 증거라 지우면 안 된다 — 쌓인 것 자체는 정상 동작). 저널은 시작할 때 모든 섹션을 열어 파일 디스크립터를 하나씩 잡고, 검증자는 평소에도 ~70개를 쓴다. launchd가 넘겨주는 소프트 한도는 256: 70 + 190 > 256이라 EMFILE.
+
+## 수정
+
+| 무엇 | 어디 | 내용 |
+|---|---|---|
+| 제안 정렬 | `chain.rs` `mempool_candidates` (482400e) | 상장 거래와 나머지를 (논스, 상장 우선, 송신자) 하나의 순서로 정렬. 상장 거래가 같은 송신자의 이전 논스 뒤에 온다 |
+| 저널 쓰기 버퍼 | `engine.rs` `VOTE_WRITE_BUFFER` | 1 MiB → 64 KiB. 섹션마다 버퍼 하나라, 스톨 중 190 섹션 × 1 MiB의 RAM을 들고 있었다 |
+| 시작 로그 | `engine.rs` | 시작할 때 저널 섹션 수를 기록, 128개 넘으면 경고(`vote journal holds many section files`) |
+| 소프트 한도 | `main.rs` `raise_nofile_limit` | 노드가 시작할 때 자기 RLIMIT_NOFILE 소프트 한도를 하드 한도(또는 65 536, macOS `kern.maxfilesperproc`)까지 올리고 값을 기록(`open-file limit`). GUI 앱의 자식 노드가 256을 물려받아도 된다 |
+| launchd | LaunchAgents/LaunchDaemons | `NumberOfFiles` 상향(오너 조치, 2026-09-29 적용) |
+
+### 레드팀 2026-09-29 추가 수정 (로컬 정책)
+
+같은 날 레드팀 보고(항목 2·5)가 위 두 축의 잔여 구멍을 짚었다.
+
+| 무엇 | 어디 | 내용 |
+|---|---|---|
+| 제안 정렬(홍수) | `chain.rs` `mempool_candidates` | 전역 논스 정렬 하나로는 무관한 논스 0 거래 2 000개가 상장 거래(더 늦은 논스)를 블록 거래 상한(2 000)밖으로 밀어낼 수 있었다 — 블록마다 반복되는 사실상 검열. 이제 상장 거래를 **송신자의 이전 논스 사슬과 함께** 다른 거래보다 앞에 놓고 자른다 |
+| 저널 관찰자 | `engine.rs` | 시작 때 한 번 세는 것만으론 부족하다(한도 상향은 상한을 옮길 뿐). 실행 중 분당 한 번 섹션 수를 세어 소프트 fd 한도의 절반에 다가가면 경고(`vote journal approaching the open-file limit`) |
+| 캐치업 미지 높이 | `follow.rs` `catch_up`, `chain.rs` `behind_known` | 어느 누구도 높이를 답한 적 없으면 "0 뒤짐"이 아니라 실패다. 확정 높이를 모르는 채 투표를 시작하지 않는다(재시도 루프). 검증자 1개 네트워크(로컬 devnet)만 예외: 자기 높이가 곧 네트워크 높이 |
+| 동시 재시작 자가 회복 | `main.rs` `run_node`, `follow.rs` `catch_up_before_voting` | 캐치업 루프 **전에** 공개 엔드포인트가 저장된 확정 상태로 읽기 전용 응답(상태·높이)을 서빙하기 시작한다. 네트워크 높이는 명부 피어 전원의 대답으로 정한다: 답한 피어 아무도 `margin` 넘게 앞서 있지 않으면 투표를 시작하고(가장 앞선 노드가 항상 먼저 간다), 앞선 피어가 있으면 그 노드로부터 따라잡고, 아무 대답이 5분(`STARTUP_PATIENCE`) 없으면 경고와 함께 시작한다 — 기존 fail-open이 진짜 기다림 뒤에만. 모든 검증자가 동시에 멎었다 돌아와도 사람 손이 필요 없다 |
+| 스냅샷 코드 누락 | `snapshot.rs` `check` | 상태 루트는 트리만 덮고 `codes`는 곁들이므로, 배포된 계약의 코드 바이트를 뺀 스냅샷이 모든 루트를 통과했다. 트리가 이름하는 모든 코드 해시가 함께 왔는지 확인하고, 아니면 점프 대신 리플레이로 돌아간다 |
+
+캐치업 예외: 복구 절차 중 위쪽 응답이 없어도 시작해야 한다면 `AETHER_SKIP_CATCH_UP=1`을 넣는다(높이 확인을 건너뛰고 경고만 남긴다). 단, 네 검증자를 함께 재시작하는 것 자체는 예외가 아니다: 위 표의 동시 재시작 행대로 노드들이 서로의 높이를 배우고 혼자 회복하므로 환경변수 없이 그냥 재시작하면 된다.
+
+회귀 시험: `chain.rs`의 `listed_txs_at_a_later_nonce_land_after_their_senders_earlier_ones`(한 송신자 64거래, 목록은 논스 32..47 — 수정 전 순서를 그대로 둔 `candidates_2026_09_28`로 위반 재현), `listed_txs_of_several_senders_wait_for_their_own_earlier_nonces`(3송신자). 저널 상한: `devnet.rs`의 `the_vote_journal_keeps_a_bounded_number_of_section_files`(높이 80에서 각 노드 섹션 ≤ 40; 정상 21~23). 동시 재시작: `catchup.rs`의 `every_validator_restarting_at_once_resumes_on_its_own`(4노드 전원 재시작 → 게이트가 서로의 높이를 배워 환경변수 없이 재개), `a_member_far_behind_waits_then_catches_up_through_the_gate`(앞선 피어가 있으면 거절하고 블록이 서빙되면 게이트 안에서 따라잡음), `a_network_that_never_answers_fails_open_after_a_real_wait`(진짜 기다림 뒤에만 fail-open).
+
+## 탐지 (모니터링 경보 텍스트)
+
+- `Too many open files` — 노드 로그. 즉시 페이지.
+- `vote journal holds many section files` — 시작 로그. 섹션 128개 이상: 스톨이 길었다는 뜻.
+- `vote journal approaching the open-file limit` — 실행 중 경고. 섹션이 소프트 fd 한도의 절반: 확정이 이어지지 않으면 다음 재시작이 fd에 걸린다.
+- `inclusion list violated; not voting` — 여러 뷰에 반복되면 제안 정렬/포함 목록 문제.
+- 높이가 수 분간 멈춤(기존 liveness 경보).
+
+## 복구 (당시 한 일)
+
+1. launchd `NumberOfFiles` 상향.
+2. 정렬 수정 바이너리(482400e) 배포.
+3. **네 검증자를 함께 재시작했다.** `AETHER_RECOVER_CONSENSUS`는 09-28 복구 값(뷰 69841 → 저널 `aether-consensus-r69841`)을 그대로 뒀다(위 절차 5: 두 번 투표 방지).
+4. 높이 상승 확인. 저널은 확정이 이어지면서 다시 21~23 섹션으로 줄었다(확인: `ls ~/aether-testnet/<n>/aether-consensus-r69841 | wc -l`).
+
+## 남은 위험
+
+- 스톨이 길어지면 저널 섹션은 계속 쌓인다(뷰당 하나, 확정 전엔 못 지운다). fd 예산은 이제 65 536(또는 하드 한도)까지고 시작 로그·실행 중 경고(한도 절반)로 보이지만, 아주 긴 스톨 뒤 재시작은 여전히 파일 수만큼 fd를 쓴다. 경고가 뜨면 확정을 회복하거나 위 복구 절차로 저널을 다시 시작한다.
+- 소프트 한도는 `kern.maxfilesperproc`보다 크게 못 올린다.

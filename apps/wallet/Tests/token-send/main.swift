@@ -1,6 +1,6 @@
 // Checks the token-send helpers without an app or a node (mirrors the
 // extension's test/send.test.mjs):
-//   swiftc -o /tmp/token-send-check apps/wallet/Sources/TokenSend.swift apps/wallet/Sources/TokenAssets.swift apps/wallet/Sources/EarningsModel.swift apps/wallet/Tests/token-send/main.swift && /tmp/token-send-check
+//   swiftc -o ./tmp/token-send-check apps/wallet/Sources/Brand.swift apps/wallet/Sources/TokenSend.swift apps/wallet/Sources/TokenAssets.swift apps/wallet/Sources/EarningsModel.swift apps/wallet/Tests/token-send/main.swift && ./tmp/token-send-check
 import Foundation
 func check(_ c: Bool, _ m: String) { if !c { print("FAIL", m); exit(1) } }
 
@@ -66,13 +66,13 @@ check(!SendSafety.isValidAddress("1234567890abcdef1234567890abcdef12345678"), "n
 check(!SendSafety.isValidAddress("0x1234567890abcdef1234567890abcdef1234567g"), "hex only")
 
 // Look-alike symbols (NFKD-folded, edit distance 1, the aeth family).
-let official: [(symbol: String, name: String)] = [("AETH", "Aether"), ("USDT", "Tether Dollar")]
+let official: [(symbol: String, name: String)] = [(Brand.coinTicker, Brand.coinName), ("USDT", "Tether Dollar")]
 check(SendSafety.looksLikeOfficial(symbol: "AETH", name: "x", official: official), "equal symbol")
 check(SendSafety.looksLikeOfficial(symbol: "AET", name: "", official: official), "one edit away")
 check(SendSafety.looksLikeOfficial(symbol: "AETHR", name: "", official: official), "one insert away")
 check(SendSafety.looksLikeOfficial(symbol: "WAETH", name: "", official: official), "contains aeth")
 check(SendSafety.looksLikeOfficial(symbol: "ÆTH", name: "", official: official), "folded accent")
-check(SendSafety.looksLikeOfficial(symbol: "NEB", name: "Aethers", official: official), "name resembles")
+check(SendSafety.looksLikeOfficial(symbol: "NEB", name: "AETHs", official: official), "name resembles")
 check(!SendSafety.looksLikeOfficial(symbol: "NEB", name: "Nebula", official: official), "unrelated")
 check(!SendSafety.looksLikeOfficial(symbol: "NEBD", name: "Nebula", official: official), "one edit but short official only")
 check(SendSafety.looksLikeOfficial(symbol: "usdt", name: "", official: official), "case-insensitive")

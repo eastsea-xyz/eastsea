@@ -6,7 +6,10 @@
 //!   checkpoint start is), keeps only certified facts of the gap, restarts on
 //!   what it jumped to, and ends at the same state root as the network.
 //! - A snapshot that does not check against the certified chain is refused and
-//!   the follower falls back to replaying.
+//!   the follower falls back to replaying — a snapshot that omits a deployed
+//!   code (every root still matching) is refused the same way.
+//! - A catch-up that never heard the network's height is not success: it
+//!   returns Err, for an unknown height must not read as "0 behind".
 //! - A short gap replays normally, without a snapshot, and `aether_status`
 //!   reports `catching_up`/`behind` while it does.
 //! - A committee member that slept does not act as one until caught up: no
@@ -14,6 +17,14 @@
 //!   finalizing. (Votes and proposals come from the consensus engine, which
 //!   `aether node` starts only after `follow::catch_up` returns — the same
 //!   rule, enforced structurally; beacons are the part this test can drive.)
+//! - Every validator of a network restarting at once recovers on its own
+//!   (2026-09-29, docs/design/24-self-healing.md: 모든 검증자 동시 재시작): each
+//!   serves its stored finalized state on its public endpoint while its
+//!   startup gate runs, the gates learn the network's height from each
+//!   other's answers, and the chain resumes finalizing with no operator and
+//!   no env var. A member far behind refuses to start while a reachable peer
+//!   is ahead of it, and catches up through the gate once that peer serves
+//!   blocks; a network that never answers fails open only after a real wait.
 //! - Replay is pipelined: over a 150 ms link it runs at hundreds of blocks a
 //!   second where one-fetch-per-block ran at ~6.
 
@@ -68,9 +79,11 @@ fn config() -> ChainConfig {
         min_streak: None,
         draw_epochs: None,
         history_v2: true,
+        protocol: 1,
         node_rewards: false,
         group: 0,
         max_committee: aether_node::rotation::GROW_UNTIL,
+        committee: vec![],
         reserve: None,
     }
 }
@@ -201,7 +214,7 @@ impl Node {
         let ctx = Chain::block_context(&self.chain.cfg(), &skeleton, &self.parent);
         let (pre, _) = self
             .chain
-            .pre_state(&self.parent, self.parent.next_protocol(), &[], false)
+            .pre_state(&self.parent, self.parent.next_protocol(), &[], None, false)
             .unwrap();
         let (payload, _) = build_payload(&self.parent, &pre, &ctx, txs, Extras::default());
         drop(pre);
@@ -321,6 +334,74 @@ fn serve(
     let port = listener.local_addr().unwrap().port();
     rt.spawn(async move { axum::serve(listener, app).await.expect("serve") });
     (format!("http://127.0.0.1:{port}"), calls)
+}
+
+/// A node's RPC on a free port whose served state can be swapped in place, as
+/// `run_node` swaps the read-only state it serves while catching up for the
+/// full one once voting starts (same URL throughout). Records every method.
+fn serve_swappable(
+    st: RpcState,
+    rt: &tokio::runtime::Runtime,
+) -> (String, Arc<Mutex<RpcState>>, Arc<Mutex<Vec<String>>>) {
+    let served = Arc::new(Mutex::new(st));
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let app = Router::new()
+        .route("/", post(served_swappable))
+        .with_state((served.clone(), calls.clone()));
+    let listener = rt
+        .block_on(tokio::net::TcpListener::bind(("127.0.0.1", 0)))
+        .expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    rt.spawn(async move { axum::serve(listener, app).await.expect("serve") });
+    (format!("http://127.0.0.1:{port}"), served, calls)
+}
+
+async fn served_swappable(
+    State((served, calls)): State<(Arc<Mutex<RpcState>>, Arc<Mutex<Vec<String>>>)>,
+    Json(req): Json<Value>,
+) -> Json<Value> {
+    if let Some(m) = req.get("method").and_then(Value::as_str) {
+        calls.lock().expect("calls").push(m.to_string());
+    }
+    let st = served.lock().expect("served state").clone();
+    Json(rpc::handle_value(&st, req).await)
+}
+
+/// The read-only state a restarting validator serves before it votes, as
+/// `run_node` builds it: the stored finalized chain answers everything that
+/// needs no consensus machinery. What it can serve beyond `aether_status`
+/// depends on the node's archive, exactly as on a real restart.
+fn early_state(node: &Node) -> RpcState {
+    rpc_state(node, None)
+}
+
+/// Every roster peer that answered `aether_status`, with its finalized height
+/// — the census the startup gate runs each round (a peer that does not answer
+/// is absent, not "height 0").
+async fn census(urls: &[String]) -> Vec<(String, u64)> {
+    let mut answered = Vec::new();
+    for u in urls {
+        let height = Upstream::Http(vec![u.clone()])
+            .first("aether_status", json!([]))
+            .await
+            .ok()
+            .and_then(|v| v["height"].as_u64());
+        if let Some(h) = height {
+            answered.push((u.clone(), h));
+        }
+    }
+    answered
+}
+
+/// Adopt a finalized block the way the engine's backfill does: execute and
+/// finalize it, keep its certificate, and move the parent. (A resumed node's
+/// `blocks` starts empty; `step` needs the parent block pushed back too.)
+fn adopt(n: &mut Node, block: &Block, proof: Value) {
+    let h = block.height.get();
+    n.chain.finalize(block).unwrap();
+    n.archive.insert(h, proof);
+    n.blocks.push(block.clone());
+    n.parent = n.chain.lock().finalized.clone();
 }
 
 /// A server that only records what a member would have sent upstream, on a
@@ -532,6 +613,99 @@ fn a_bad_snapshot_is_refused_and_replayed_instead() {
     let _ = std::fs::remove_dir_all(&dir_fol);
 }
 
+/// A snapshot that carries the tree's code-hash leaf but not the code's bytes
+/// (2026-09-29, red-team 2): every root still matches, only the execution
+/// index comes up short — the first call into that contract would fail. The
+/// check demands every hash the tree names, and the follower replays instead.
+#[test]
+fn a_snapshot_that_omits_a_deployed_code_is_refused_and_replayed_instead() {
+    let (dir_src, dir_fol) = (tmp("code-src"), tmp("code-follower"));
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mut src = Node::start(&dir_src);
+    // Deploy a contract in block 1: CODECOPY/RETURN ten runtime bytes that
+    // themselves return 32 bytes of memory — code the state will name.
+    let mut init = hex::decode("600a600c600039600a6000f3").unwrap();
+    let runtime = hex::decode("60ff60005260206000f3").unwrap();
+    init.extend_from_slice(&runtime);
+    let create = EvmCall {
+        to: None,
+        value: U256::ZERO,
+        input: init.into(),
+        gas_limit: 300_000,
+        delegate: None,
+    };
+    let create = src.submit(create);
+    let exec = src.step(vec![create]);
+    assert!(exec.receipts[0].success, "the contract is deployed");
+    let code_hash = B256::from(alloy_primitives::keccak256(&runtime));
+
+    src.run_to(2_050, |h| h % 300 == 0);
+    let st = rpc_state(&src, None);
+    rt.block_on(call(&st, "aether_snapshot", json!([])));
+    let bytes = {
+        st.snapshot
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("cached snapshot")
+            .1
+    };
+    let mut snap = aether_node::snapshot::Snapshot::from_bytes(&bytes).unwrap();
+    assert!(
+        snap.codes.iter().any(|(h, _)| *h == code_hash),
+        "the deployed code rides with the snapshot"
+    );
+    // The pristine snapshot checks (against the certified block after it).
+    src.run_to(2_051, |_| false);
+    let identity = src.chain.lock().identity.expect("identity");
+    assert!(
+        matches!(snap.check(&src.blocks[2_051], &config(), &identity), Ok(_)),
+        "the carried code passes the check"
+    );
+    // With the code dropped — roots untouched — it must not.
+    snap.codes.retain(|(h, _)| *h != code_hash);
+    let err = match snap.check(&src.blocks[2_051], &config(), &identity) {
+        Err(e) => e,
+        Ok(_) => panic!("the omitted code must not pass"),
+    };
+    assert!(err.contains("does not carry"), "{err}");
+    *st.snapshot.lock().unwrap() = Some((2_050, Arc::new(snap.to_bytes())));
+    src.run_to(2_100, |_| false);
+
+    let (url, calls) = serve(&st, &rt, Duration::ZERO);
+    let follower = Node::start(&dir_fol);
+    rt.block_on(follow::catch_up(
+        &follower.chain,
+        &Upstream::Http(vec![url]),
+        &set(),
+        0,
+    ))
+    .unwrap();
+
+    assert!(
+        calls
+            .lock()
+            .unwrap()
+            .contains(&"aether_snapshot".to_owned()),
+        "the jump was attempted"
+    );
+    assert_eq!(
+        follower.chain.finalized_height(),
+        2_100,
+        "fell back to replaying the whole way"
+    );
+    assert_eq!(
+        follower.chain.lock().finalized.state.root(),
+        src.chain.lock().finalized.state.root()
+    );
+    // The replayed state really carries the code: the contract runs again.
+    assert!(follower.chain.lock().finalized.state.codes().contains_key(&code_hash));
+
+    drop((src, follower, st));
+    let _ = std::fs::remove_dir_all(&dir_src);
+    let _ = std::fs::remove_dir_all(&dir_fol);
+}
+
 /// 100 blocks behind is a replay, not a snapshot jump, and while it runs
 /// `aether_status` says the node is catching up and by how much.
 #[test]
@@ -736,7 +910,11 @@ fn a_member_that_slept_does_not_beacon_until_caught_up() {
             "a beacon ({m}) went out while {behind} blocks behind"
         );
     }
-    assert_eq!(member.chain.behind(), 0, "caught up clears it");
+    assert_eq!(
+        member.chain.behind_known(),
+        Some(0),
+        "caught up, with the height it heard kept (not cleared to unknown)"
+    );
     assert_eq!(
         member.chain.lock().finalized.state.root(),
         src.lock().unwrap().chain.lock().finalized.state.root()
@@ -749,6 +927,294 @@ fn a_member_that_slept_does_not_beacon_until_caught_up() {
     drop((member, st));
     let _ = std::fs::remove_dir_all(&dir_src);
     let _ = std::fs::remove_dir_all(&dir_mem);
+}
+
+/// A catch-up that never heard the network's height is not success
+/// (2026-09-29): an unreachable upstream used to read as "0 behind" — the
+/// unknown height as zero — and returned Ok, starting the validator on a
+/// guess. It returns Err now, and no height was learned.
+#[test]
+fn a_catch_up_that_never_heard_a_height_is_not_success() {
+    let dir_fol = tmp("deaf-follower");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let follower = Node::start(&dir_fol);
+    let err = rt
+        .block_on(follow::catch_up(
+            &follower.chain,
+            // Nothing listens there: every request is refused.
+            &Upstream::Http(vec!["http://127.0.0.1:9".into()]),
+            &set(),
+            follow::BEHIND_MARGIN,
+        ))
+        .unwrap_err();
+    assert!(err.contains("never learned the network height"), "{err}");
+    assert_eq!(follower.chain.behind_known(), None, "still nothing heard");
+
+    drop(follower);
+    let _ = std::fs::remove_dir_all(&dir_fol);
+}
+
+/// The startup gate over HTTP peers: the census asks every URL, blocks come
+/// from the tallest peer that answered. (`run_node` runs the same gate over
+/// iroh; the HTTP shape is what a test can stand up hermetically — the iroh
+/// path needs the Mainline DHT.)
+fn gate(
+    rt: &tokio::runtime::Runtime,
+    chain: &Chain,
+    urls: Vec<String>,
+    patience: Duration,
+) -> tokio::task::JoinHandle<u64> {
+    let chain = chain.clone();
+    rt.spawn(async move {
+        follow::catch_up_before_voting(
+            &chain,
+            &set(),
+            follow::BEHIND_MARGIN,
+            patience,
+            move || {
+                let urls = urls.clone();
+                async move { census(&urls).await }
+            },
+            |u: &String| Upstream::Http(vec![u.clone()]),
+        )
+        .await
+    })
+}
+
+/// Every validator of a network stops and restarts at once — a reboot, a
+/// power cut, launchd restarting the fleet — so nobody is voting and nobody
+/// would ever have answered a height: the old catch-up loop spun forever and
+/// the chain came back only if an operator set AETHER_SKIP_CATCH_UP on some
+/// node. Now each validator serves its stored finalized state (read-only
+/// answers) before it catches up, the startup gates learn the network's
+/// height from each other's censuses, and the chain resumes finalizing on
+/// its own. No env var is set anywhere.
+#[test]
+fn every_validator_restarting_at_once_resumes_on_its_own() {
+    let dirs: Vec<_> = (0..4).map(|i| tmp(&format!("heal-restart-{i}"))).collect();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    // The network before it stopped: validator 1 produced to 30, the others
+    // followed (validator 4 missed the last block). Txs are kept out: a
+    // resumed node's tx nonce starts over.
+    let mut a = Node::start(&dirs[0]);
+    a.run_to(30, |_| false);
+    let mut others = Vec::new();
+    for (i, dir) in dirs.iter().enumerate().skip(1) {
+        let mut n = Node::start(dir);
+        for h in 1..=if i == 3 { 29 } else { 30 } {
+            let block = a.blocks[h as usize].clone();
+            let proof = a.archive.get(h).expect("certified");
+            adopt(&mut n, &block, proof);
+        }
+        others.push(n);
+    }
+    assert_eq!(
+        [&a, &others[0], &others[1], &others[2]].map(|n| n.chain.finalized_height()),
+        [30, 30, 30, 29]
+    );
+    // What survives the restart: the certificates, and the last block (a
+    // resumed node produces from it).
+    let last_block = a.blocks.last().unwrap().clone();
+    let proofs: Vec<Value> = (1..=30u64).map(|h| a.archive.get(h).expect("certified")).collect();
+
+    drop((a, others));
+    let mut nodes: Vec<Node> = dirs.iter().map(|d| Node::resume(d)).collect();
+    for n in &mut nodes {
+        for h in 1..=n.chain.finalized_height() {
+            n.archive.insert(h, proofs[(h - 1) as usize].clone());
+        }
+    }
+    // Every validator comes up at once, each serving read-only answers from
+    // its stored finalized state while its own gate runs.
+    let mut urls = Vec::new();
+    let mut logs = Vec::new();
+    for n in &nodes {
+        let (url, _served, calls) = serve_swappable(early_state(n), &rt);
+        urls.push(url);
+        logs.push(calls);
+    }
+    let gates: Vec<_> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| {
+            let others: Vec<String> = urls
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .map(|(_, u)| u.clone())
+                .collect();
+            gate(&rt, &n.chain, others, follow::STARTUP_PATIENCE)
+        })
+        .collect();
+    // All four gates decide "at the tip" from each other's answers, in
+    // seconds — not the patience window — and no blocks were fetched (nobody
+    // is beyond the margin ahead; the engine covers the last one).
+    let adopted = rt.block_on(async {
+        let mut adopted = Vec::new();
+        for g in gates {
+            adopted.push(
+                tokio::time::timeout(Duration::from_secs(30), g)
+                    .await
+                    .expect("the gate decided on its own")
+                    .expect("the gate task ran"),
+            );
+        }
+        adopted
+    });
+    assert_eq!(adopted, vec![0, 0, 0, 0]);
+    assert_eq!(
+        nodes.iter().map(|n| n.chain.finalized_height()).collect::<Vec<_>>(),
+        vec![30, 30, 30, 29]
+    );
+    for calls in &logs {
+        let calls = calls.lock().unwrap().clone();
+        assert!(!calls.is_empty(), "the other validators asked this one");
+        assert!(
+            calls.iter().all(|m| m == "aether_status"),
+            "only the census was asked: {calls:?}"
+        );
+    }
+    assert_eq!(nodes[0].chain.behind_known(), Some(0));
+    assert_eq!(nodes[3].chain.behind_known(), Some(1), "one behind, within the margin");
+
+    // And the chain resumes finalizing: validator 1 produces again (from the
+    // block it restarted on), the others adopt what it finalized — validator
+    // 4 takes the block it missed through the same path.
+    nodes[0].blocks.push(last_block);
+    nodes[0].run_to(33, |_| false);
+    let root = nodes[0].chain.lock().finalized.state.root();
+    let produced: Vec<(Block, Value)> = (30..=33u64)
+        .map(|h| {
+            (
+                nodes[0].blocks[(h - 30) as usize].clone(),
+                nodes[0].archive.get(h).expect("certified"),
+            )
+        })
+        .collect();
+    for n in nodes.iter_mut().skip(1) {
+        for h in n.chain.finalized_height() + 1..=33 {
+            let (block, proof) = produced[(h - 30) as usize].clone();
+            adopt(n, &block, proof);
+        }
+    }
+    for n in &nodes {
+        assert_eq!(n.chain.finalized_height(), 33);
+        assert_eq!(n.chain.lock().finalized.state.root(), root);
+    }
+
+    drop(nodes);
+    for d in &dirs {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
+/// A member far behind refuses to start while a reachable peer is ahead of
+/// it, and catches up through the gate once that peer serves blocks: the
+/// peer's endpoint answers `aether_status` from its stored state right away,
+/// but its finalized blocks only once its own startup finished. The tallest
+/// node's gate, finding nobody ahead of it, proceeds at once — that is what
+/// breaks the simultaneous-restart knot.
+#[test]
+fn a_member_far_behind_waits_then_catches_up_through_the_gate() {
+    let (dir_net, dir_mem) = (tmp("heal-ahead"), tmp("heal-behind"));
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mut net = Node::start(&dir_net);
+    net.run_to(200, |_| false);
+    let mut member = Node::start(&dir_mem);
+    for h in 1..=40u64 {
+        let block = net.blocks[h as usize].clone();
+        let proof = net.archive.get(h).expect("certified");
+        adopt(&mut member, &block, proof);
+    }
+    let proofs: Vec<Value> = (1..=200u64).map(|h| net.archive.get(h).expect("certified")).collect();
+    drop((net, member));
+
+    // Both restart at once. The member's read-only state is complete; the
+    // tallest node answers `aether_status` immediately but serves no blocks
+    // yet (its history is still coming up), then swaps in the state that
+    // serves them — the same URL throughout.
+    let net = Node::resume(&dir_net);
+    let member = Node::resume(&dir_mem);
+    for h in 1..=40u64 {
+        member.archive.insert(h, proofs[(h - 1) as usize].clone());
+    }
+    let (net_url, net_served, _net_calls) = serve_swappable(early_state(&net), &rt);
+    let (mem_url, _mem_served, _mem_calls) = serve_swappable(early_state(&member), &rt);
+
+    let net_gate = gate(&rt, &net.chain, vec![mem_url], follow::STARTUP_PATIENCE);
+    let member_gate = gate(&rt, &member.chain, vec![net_url], follow::STARTUP_PATIENCE);
+    let net_adopted = rt.block_on(async {
+        tokio::time::timeout(Duration::from_secs(30), net_gate)
+            .await
+            .expect("the tallest node's gate decided")
+            .expect("the gate task ran")
+    });
+    assert_eq!(net_adopted, 0, "nobody is ahead of the tallest node");
+
+    // While the peer ahead serves no blocks, the member refuses to start:
+    // its gate is still deciding and it has adopted nothing.
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(
+        !member_gate.is_finished(),
+        "the member's gate is still waiting: the peer ahead has not come up"
+    );
+    assert_eq!(member.chain.finalized_height(), 40, "nothing adopted meanwhile");
+    assert_eq!(member.chain.behind_known(), Some(160), "and it knows how far behind it is");
+
+    // The tallest node finishes starting: the same endpoint now serves the
+    // full state, history included.
+    for h in 1..=200u64 {
+        net.archive.insert(h, proofs[(h - 1) as usize].clone());
+    }
+    *net_served.lock().unwrap() = rpc_state(&net, None);
+    let adopted = rt.block_on(async {
+        tokio::time::timeout(Duration::from_secs(60), member_gate)
+            .await
+            .expect("the member's gate decided once the peer came up")
+            .expect("the gate task ran")
+    });
+    assert_eq!(adopted, 160, "caught up through the gate");
+    assert_eq!(member.chain.finalized_height(), 200);
+    assert_eq!(member.chain.behind_known(), Some(0));
+    assert_eq!(
+        member.chain.lock().finalized.state.root(),
+        net.chain.lock().finalized.state.root(),
+        "the same state the tallest node has"
+    );
+
+    drop((net, member));
+    let _ = std::fs::remove_dir_all(&dir_net);
+    let _ = std::fs::remove_dir_all(&dir_mem);
+}
+
+/// A network that never answers — the peers are gone for good, or this Mac
+/// is partitioned — fails open after a real wait: the gate warns and starts
+/// voting anyway (the chain's own rules keep a stale member harmless), not
+/// instantly as the old code did.
+#[test]
+fn a_network_that_never_answers_fails_open_after_a_real_wait() {
+    let dir = tmp("heal-silent");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mut node = Node::start(&dir);
+    node.run_to(5, |_| false);
+    let patience = Duration::from_millis(700);
+    let t = Instant::now();
+    let adopted = rt.block_on(follow::catch_up_before_voting(
+        &node.chain,
+        &set(),
+        follow::BEHIND_MARGIN,
+        patience,
+        || async { census(&["http://127.0.0.1:9".into()]).await },
+        |u: &String| Upstream::Http(vec![u.clone()]),
+    ));
+    assert_eq!(adopted, 0);
+    assert_eq!(node.chain.finalized_height(), 5, "nothing was adopted from nowhere");
+    assert!(t.elapsed() >= patience, "it really waited out the patience window");
+    assert!(t.elapsed() < Duration::from_secs(30), "and did not hang forever");
+    assert_eq!(node.chain.behind_known(), None, "nothing was ever heard");
+
+    drop(node);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// One fetch per block (the old loop) against a 150 ms link runs at ~6 blocks/s;

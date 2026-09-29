@@ -19,6 +19,7 @@ use commonware_consensus::{
     simplex::{self, Engine as Consensus},
     types::{Epoch, ViewDelta},
 };
+use commonware_consensus::types::Epocher as _;
 use commonware_consensus::{Epochable as _, Viewable as _};
 use commonware_cryptography::{sha256::Digest, Digestible as _};
 use commonware_p2p::{Blocker, Provider, Receiver, Sender};
@@ -59,6 +60,46 @@ const FREEZER_JOURNAL_TARGET_SIZE: u64 = 1024 * 1024 * 1024;
 const FREEZER_JOURNAL_COMPRESSION: Option<u8> = Some(3);
 const REPLAY_BUFFER: NonZero<usize> = NZUsize!(8 * 1024 * 1024);
 const WRITE_BUFFER: NonZero<usize> = NZUsize!(1024 * 1024);
+/// The vote journal's own write buffer. Simplex keeps one section file per view
+/// and one write buffer per open section; a view holds a few votes (KBs). The
+/// journal is only pruned below the last finalization minus view retention, so
+/// while the chain stalls it gathers one section per burned view (2026-09-29:
+/// 190 sections) and every one of them carried a full WRITE_BUFFER of RAM.
+/// 64 KiB still batches thousands of votes per flush.
+const VOTE_WRITE_BUFFER: NonZero<usize> = NZUsize!(64 * 1024);
+/// A vote journal past this many section files is worth a warning: the journal
+/// opens every section at startup (one file descriptor each), and a validator
+/// holds ~70 more, so a few hundred sections exhausts launchd's 256-fd default
+/// exactly as on 2026-09-29 ("Too many open files", crash-looped).
+const VOTE_JOURNAL_WARN_SECTIONS: usize = 128;
+/// The divisor turning the soft open-file limit into the share of it at which
+/// the journal count is worth a warning (2026-09-29 red-team 5): raising the
+/// limit bounds nothing by itself — while the chain does not finalize, every
+/// burned view leaves a section file behind, and every section is one
+/// descriptor at the next startup. Half leaves room for the ~70 files a
+/// validator holds besides them, and time to raise the limit again.
+const VOTE_JOURNAL_LIMIT_DIVISOR: u64 = 2;
+
+/// The section count at which to warn about the vote journal: half the soft
+/// open-file limit, never below the plain "many sections" bar — launchd's
+/// 256 warns where the bar already is, a raised 65,536 only as the journal
+/// really approaches it (and an unlimited process never on fd count).
+fn vote_journal_warn_at(soft_limit: u64) -> usize {
+    (soft_limit / VOTE_JOURNAL_LIMIT_DIVISOR).max(VOTE_JOURNAL_WARN_SECTIONS as u64) as usize
+}
+
+/// This process's soft open-file limit (RLIMIT_INFINITY reads as u64::MAX; 0
+/// when it cannot be read, which leaves the fixed bar in charge).
+#[cfg(unix)]
+fn soft_nofile() -> u64 {
+    let mut lim: libc::rlimit = unsafe { std::mem::zeroed() };
+    (unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) } == 0).then_some(lim.rlim_cur).unwrap_or(0)
+}
+
+#[cfg(not(unix))]
+fn soft_nofile() -> u64 {
+    0
+}
 const PAGE_CACHE_PAGE_SIZE: NonZero<u16> = page_size(4_096);
 const PAGE_CACHE_CAPACITY: NonZero<usize> = NZUsize!(8_192);
 const MAX_REPAIR: NonZero<usize> = NZUsize!(20);
@@ -69,6 +110,10 @@ pub struct Config<B: Blocker<PublicKey = PublicKey>, P: Provider<PublicKey = Pub
     pub blocker: B,
     pub provider: P,
     pub partition_prefix: String,
+    /// Durable evidence that this Mac entered an epoch's voting engine. If
+    /// its journal later disappears, even before any block finalized, it may
+    /// have signed and must not start a fresh journal with the same key.
+    pub journal_dir: Option<std::path::PathBuf>,
     pub me: PublicKey,
     pub scheme: Scheme,
     /// Committee identity (verifies certificates of every epoch).
@@ -198,6 +243,64 @@ async fn partition_exists<E: Storage>(context: &E, partition: &str) -> Result<bo
     }
 }
 
+/// The process exits with this code when its vote journal cannot be trusted
+/// (red team #4): the archive shows this Mac already delivered finalizations
+/// in the current epoch, but the journal holding the votes it cast in that
+/// epoch is gone. Voting must not resume on an empty journal — that is how a
+/// key signs twice — so the supervisor follows instead, until the next
+/// committee round (or an operator-led `AETHER_RECOVER_CONSENSUS`).
+pub const EXIT_JOURNAL: i32 = 8;
+
+/// The restart gate's verdict on the vote journal: the state database, the
+/// block archive and the vote journal are diagnosed apart (red team #4), and
+/// only a journal this Mac's own history explains may take more votes.
+///
+/// - `recovered`: the operator-directed `AETHER_RECOVER_CONSENSUS` recovery,
+///   which by design starts a journal of its own;
+/// - `journal_has_votes`: the current epoch's journal partition holds votes —
+///   a normal restart, whatever the archive says;
+/// - `delivered`: the last height this Mac delivered as a validator. `None`
+///   (a joining member's fresh archive) or below `epoch_start` (the epoch
+///   began after its last delivery — including every earlier epoch) means it
+///   cannot have voted in this epoch, so an absent journal is expected;
+/// - anything else — deliveries inside the epoch without the journal they
+///   were voted into — is untrusted, as is a journal that cannot even be
+///   looked at (`lookup_failed`).
+fn journal_gate(
+    recovered: bool,
+    journal_has_votes: bool,
+    delivered: Option<u64>,
+    epoch_start: u64,
+    lookup_failed: bool,
+    previously_started: bool,
+) -> Result<(), &'static str> {
+    if recovered {
+        return Ok(());
+    }
+    if lookup_failed {
+        return Err("the vote journal cannot be examined");
+    }
+    if journal_has_votes {
+        return Ok(());
+    }
+    if previously_started {
+        return Err("this Mac entered voting in this epoch, but its vote journal is gone");
+    }
+    match delivered {
+        Some(h) if h >= epoch_start => Err("finalizations from this epoch are stored, but this epoch's vote journal holds no votes"),
+        _ => Ok(()),
+    }
+}
+
+/// How many blobs a partition holds (0 when it does not exist yet).
+async fn partition_blobs<E: Storage>(context: &E, partition: &str) -> Result<usize, commonware_runtime::Error> {
+    match context.scan(partition).await {
+        Ok(names) => Ok(names.len()),
+        Err(commonware_runtime::Error::PartitionMissing(_)) => Ok(0),
+        Err(e) => Err(e),
+    }
+}
+
 impl<E, B, P> Engine<E, B, P>
 where
     E: BufferPooler + Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics,
@@ -315,6 +418,83 @@ where
         let epocher = cfg.epocher;
         let epoch = epocher.current();
         let floor_digest = cfg.epoch_floor.unwrap_or_else(|| cfg.genesis.digest());
+        // The vote journal keeps one section file per view and opens every
+        // section at startup. Say how many we are about to open: a stalled
+        // chain piles up sections (they are pruned only below the last
+        // finalization), and on 2026-09-29 that is what hit the fd limit.
+        let vote_partition = match &recovered {
+            Some(f) => format!("{prefix}-consensus-r{}", f.view().get()),
+            None if epoch.get() == 0 => format!("{prefix}-consensus"),
+            None => format!("{prefix}-consensus-e{}", epoch.get()),
+        };
+        let journal_sections = partition_blobs(&context, &vote_partition).await;
+        let marker = cfg.journal_dir.as_ref().map(|d| d.join(format!("vote-epoch-{}.seen", epoch.get())));
+        let previously_started = marker.as_ref().is_some_and(|p| p.exists());
+        // The restart gate (red team #4): before consensus casts one more
+        // vote, the votes this Mac already cast in this epoch must still be
+        // accounted for. A missing journal with deliveries inside the epoch
+        // means the journal was lost — never voted over with a fresh one.
+        if let Err(why) = journal_gate(
+            recovered.is_some(),
+            matches!(&journal_sections, Ok(n) if *n > 0),
+            Certificates::last_index(&finalizations).map(|h| h.get()),
+            epocher.first(epoch).map(|h| h.get()).unwrap_or(0),
+            journal_sections.is_err(),
+            previously_started,
+        ) {
+            tracing::error!(
+                partition = %vote_partition,
+                epoch = epoch.get(),
+                %why,
+                "this Mac's vote journal cannot be trusted: voting does not resume. \
+                 The supervisor follows instead; the next committee round starts a \
+                 fresh journal, and AETHER_RECOVER_CONSENSUS is the operator-led override"
+            );
+            std::process::exit(EXIT_JOURNAL);
+        }
+        // Publish this before consensus can sign. A crash after publication
+        // but before its first vote is conservative: it follows until the
+        // next epoch if the journal is absent, never risks a double vote.
+        if let Some(path) = marker.filter(|_| !previously_started) {
+            if let Err(e) = crate::atomic::create(&path, epoch.get().to_string().as_bytes(), 0o600) {
+                tracing::error!(%e, "cannot record vote-journal ownership; refusing to vote");
+                std::process::exit(EXIT_JOURNAL);
+            }
+        }
+        match journal_sections {
+            Ok(sections) if sections > VOTE_JOURNAL_WARN_SECTIONS => warn!(
+                partition = %vote_partition,
+                sections,
+                "vote journal holds many section files (one per view; pruned only below the last finalization): every one is opened at startup"
+            ),
+            Ok(sections) => tracing::info!(partition = %vote_partition, sections, "vote journal sections"),
+            Err(e) => unreachable!("the gate exited on a journal lookup failure: {e}"),
+        }
+        // That count is a startup snapshot. While the chain runs without
+        // finalizing, every burned view leaves another section file behind and
+        // nothing bounds the pile — the raised limit only moves the ceiling
+        // (2026-09-29 red-team 5). Keep counting as it grows and warn as the
+        // journal approaches half the limit: that is the room to act in before
+        // the next restart opens every section at once.
+        {
+            let watch = vote_partition.clone();
+            context.child("journal_watch").spawn(|ctx| async move {
+                loop {
+                    ctx.sleep(std::time::Duration::from_secs(60)).await;
+                    let at = vote_journal_warn_at(soft_nofile());
+                    match partition_blobs(&ctx, &watch).await {
+                        Ok(sections) if sections >= at => warn!(
+                            partition = %watch,
+                            sections,
+                            warn_at = at,
+                            "vote journal approaching the open-file limit (one section file per view, every one opened at startup): finalize — or recover and prune — before it is hit"
+                        ),
+                        Ok(_) => {}
+                        Err(e) => warn!(%e, partition = %watch, "could not count vote journal sections"),
+                    }
+                }
+            });
+        }
         let (marshal, marshal_mailbox, _) = MarshalActor::init(
             context.child("marshal"),
             finalizations,
@@ -351,11 +531,7 @@ where
                 reporter: marshal_mailbox.clone(),
                 track_historical_votes: false,
                 // One vote journal per epoch: a new committee never replays the old one's votes.
-                partition: match &recovered {
-                    Some(f) => format!("{prefix}-consensus-r{}", f.view().get()),
-                    None if epoch.get() == 0 => format!("{prefix}-consensus"),
-                    None => format!("{prefix}-consensus-e{}", epoch.get()),
-                },
+                partition: vote_partition,
                 mailbox_size,
                 floor: match recovered {
                     Some(f) => simplex::Floor::Finalized(f),
@@ -369,7 +545,7 @@ where
                 skip: simplex::SkipPolicy::Enabled { timeout: cfg.skip_timeout, budget: simplex::SkipBudget::Participants },
                 forward: simplex::ForwardPolicy::Disabled,
                 replay_buffer: REPLAY_BUFFER,
-                write_buffer: WRITE_BUFFER,
+                write_buffer: VOTE_WRITE_BUFFER,
                 blocker: cfg.blocker,
                 page_cache,
                 elector: aether_light::ELECTOR,
@@ -409,5 +585,61 @@ where
         } else {
             warn!("engine stopped");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The journal warning tracks the limit it will actually hit: launchd's
+    /// 256-fd default warns where the fixed bar already is (128 sections plus
+    /// the ~70 files a validator holds besides them), a raised limit only as
+    /// the journal reaches half of it, and an unreadable or unlimited one
+    /// falls back to the fixed bar alone.
+    #[test]
+    fn the_journal_warning_tracks_the_open_file_limit() {
+        assert_eq!(vote_journal_warn_at(0), VOTE_JOURNAL_WARN_SECTIONS);
+        assert_eq!(vote_journal_warn_at(256), 128);
+        assert_eq!(vote_journal_warn_at(65_536), 32_768);
+        assert_eq!(vote_journal_warn_at(u64::MAX), (u64::MAX / 2) as usize);
+        assert!(vote_journal_warn_at(64) >= 64, "a bar above the limit itself still warns early");
+    }
+
+    /// Red team #4, the restart gate: a validator resumes voting only when
+    /// the votes it cast in this epoch are still accounted for. Every way a
+    /// Mac legitimately finds no journal passes; the one that means loss —
+    /// deliveries inside the epoch, journal gone — refuses.
+    #[test]
+    fn the_journal_gate_refuses_only_a_lost_journal() {
+        const START: u64 = 3_600;
+
+        // A normal restart mid-epoch: the journal holds this epoch's votes.
+        assert!(journal_gate(false, true, Some(4_200), START, false, true).is_ok());
+        // A first committee at genesis (epoch 0, journal present).
+        assert!(journal_gate(false, true, Some(9), 0, false, true).is_ok());
+
+        // A joining member: fresh archives, nothing delivered, no journal yet.
+        assert!(journal_gate(false, false, None, START, false, false).is_ok());
+        // The epoch just began; its deliveries are all from earlier epochs.
+        assert!(journal_gate(false, false, Some(3_599), START, false, false).is_ok());
+        // Exactly at the boundary: still nothing delivered inside the epoch.
+        assert!(journal_gate(false, false, Some(START - 1), START, false, false).is_ok());
+        // A validator can sign before the first finalization; its durable
+        // epoch marker still forbids a new journal after loss.
+        assert!(journal_gate(false, false, None, START, false, true).is_err());
+
+        // The loss the gate exists for: this Mac delivered inside the epoch,
+        // and the journal those votes went into is gone.
+        assert!(journal_gate(false, false, Some(START), START, false, false).is_err());
+        assert!(journal_gate(false, false, Some(4_200), START, false, false).is_err());
+        // And with the journal's own votes present, those same deliveries are
+        // the normal restart this whole check must not break.
+        assert!(journal_gate(false, true, Some(4_200), START, false, true).is_ok());
+        // A journal that cannot be examined is not trusted either.
+        assert!(journal_gate(false, false, Some(4_200), START, true, false).is_err());
+
+        // The operator-led recovery starts a journal of its own, on purpose.
+        assert!(journal_gate(true, false, Some(4_200), START, false, true).is_ok());
     }
 }

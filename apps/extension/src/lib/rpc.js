@@ -1,10 +1,9 @@
+import { Brand } from './brand.js';
 // JSON-RPC to Aether nodes. The first endpoint that answers on the right chain
 // is used; one that does not answer sleeps 5 s, doubling to 60 s.
 
-import { CHAIN_ID } from './methods.js';
-
-/** The app's node on this computer first, then this Mac's testnet validators. */
-export const DEFAULT_RPCS = ['http://127.0.0.1:18545', 'http://127.0.0.1:8601', 'http://127.0.0.1:8602', 'http://127.0.0.1:8603', 'http://127.0.0.1:8604'];
+/** The app's node follows the network.json bundled with the app. */
+export const DEFAULT_RPCS = ['http://127.0.0.1:18545'];
 const TIMEOUT = 8_000;
 const PROBE_TIMEOUT = 2_500;
 
@@ -18,8 +17,9 @@ export class RpcError extends Error {
 
 export class Rpc {
   /** `urls`: endpoints in order; `fetchImpl` for tests. */
-  constructor(urls = DEFAULT_RPCS, { fetchImpl = (...a) => fetch(...a), now = () => Date.now() } = {}) {
+  constructor(urls = DEFAULT_RPCS, { chainId = 7780, fetchImpl = (...a) => fetch(...a), now = () => Date.now() } = {}) {
     this.urls = [...new Set(urls.filter(Boolean))];
+    this.chainId = chainId;
     this.fetch = fetchImpl;
     this.now = now;
     this.backoff = new Map(); // url -> {until, delay}
@@ -30,6 +30,11 @@ export class Rpc {
     this.urls = [...new Set(urls.filter(Boolean))];
     this.current = null;
     this.backoff.clear();
+  }
+
+  setChain(chainId, urls) {
+    this.chainId = chainId;
+    this.setUrls(urls);
   }
 
   fail(url) {
@@ -63,7 +68,7 @@ export class Rpc {
       if (b && this.now() < b.until) continue;
       try {
         const j = await this.post(url, 'eth_chainId', [], PROBE_TIMEOUT);
-        if (j.result && parseInt(j.result, 16) === CHAIN_ID) {
+        if (j.result && parseInt(j.result, 16) === this.chainId) {
           this.backoff.delete(url);
           this.current = url;
           return url;
@@ -71,7 +76,7 @@ export class Rpc {
       } catch { /* not answering */ }
       this.fail(url);
     }
-    throw new RpcError('No Aether node answers. Turn on the node in the Aether app, or add a node in Settings.', 4900);
+    throw new RpcError(`No ${Brand.project} node answers. Turn on the node in the ${Brand.project} app, or add a node in Settings.`, 4900);
   }
 
   /**
@@ -79,9 +84,11 @@ export class Rpc {
    * service such as the testnet faucet runs on only some nodes).
    */
   async callAny(method, params = [], { notHere = /does not run|not supported|method not found/i } = {}) {
-    let last = new RpcError('No Aether node answers.', 4900);
+    let last = new RpcError(`No ${Brand.project} node answers.`, 4900);
     for (const url of this.urls) {
       try {
+        const chain = await this.post(url, 'eth_chainId', [], PROBE_TIMEOUT);
+        if (parseInt(chain.result, 16) !== this.chainId) continue;
         const j = await this.post(url, method, params, TIMEOUT);
         if (!j.error) return j.result;
         last = new RpcError(j.error.message || 'node error', j.error.code ?? -32603, j.error.data);

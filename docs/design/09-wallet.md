@@ -20,7 +20,7 @@ Aether.app (SwiftUI)
 |---|---|
 | 연결·설정 | `configure_network`, `set_committee_identity`, `use_devnet_keys`, `use_local_node`, `local_node_height`, `connection`, `chain_status`, `verified_height` |
 | 계정·잔액 | `account_address`, `verified_account`(확정 인증서 + EIP-7864 증명으로 검증, `aether-light`) |
-| 송금 | `prepare_transfer`, `prepare_batch`, `submit_signed`, `receipt`, `recent_blocks`, `devnet_faucet` |
+| 송금·활동 | `prepare_transfer`, `prepare_batch`, `submit_signed`, `receipt`, `recent_blocks`, `account_history`(노드의 주소별 확정 내역, 커서 200건 이하), `devnet_faucet`(개발자 모드 전용) |
 | 복구 | `recovery_key_code`, `prepare_set_recovery_key`, `prepare_add_recovery_key`, `recovery_status`, `prepare_recovery(_to)`, `prepare_recovery_submit`, `prepare_finish_recovery`, `prepare_cancel_recovery`, `prepare_remove_recovery_keys`, 복구 단어 `paper_key_new`·`paper_key_public`·`paper_key_sign` |
 | 에이전트 세션 키 | `session_status`, `prepare_set_session`, `prepare_session_payment`, `prepare_session_submit` |
 | 투표 노드 | `voting_node_status`, `prepare_register_node` |
@@ -127,7 +127,26 @@ Aether.app (SwiftUI)
 
 파생 집합("내가 보낸 주소", "내 트랜잭션이 건드린 토큰")은 지갑이 이미 추적하던 활동/영수증에서 계산한다(체인에 아무것도 새로 쓰지 않는다). 기기에만 저장하는 것은 사용자 선택(숨김·표시, UserDefaults `tokenChoices.<chain>` / `chrome.storage.local`)이다. 드라이런 결과는 저장하지 않는다. 도우미 상단 주석과 앱 보안 화면에 이 문장을 뒀다: "이 검사는 이 기기의 공개 체인 데이터와 설정만 읽는다. 체인에는 아무것도 새로 쓰지 않는다."
 
+### 주소별 확정 내역과 연결 지갑
+
+- 노드는 확정 블록의 송신자·네이티브 AETH 수신자·ERC-20 `Transfer` 로그의 송수신자·노드/증명 보상 수령자를 주소별로 색인한다. `aether_accountHistory [address, before_cursor?, limit]`는 최신순으로 돌려주며 `history_start`와 `indexed_height`를 함께 보낸다. 기존 저장소를 업그레이드한 노드는 색인을 시작한 높이부터 표시한다. 가지치기한 블록의 색인도 함께 지운다.
+- 앱은 FFI의 읽기 분산 경로로 이 데이터를 읽고, 로컬 대기 거래와 해시로 합친다. 상세 정보에는 **"From the node"**를 표시한다. 이 내역은 노드의 표시 데이터이며 AETH 잔액은 계속 확정 인증서와 상태 증명으로 검증한다.
+- DEX Router·런치패드·TokenFactory는 배포 주소와 메서드 셀렉터가 함께 맞을 때 스왑·유동성·출시로 해석한다. 스왑은 Pair `Swap` 로그가 있어야 확정 스왑으로 표시하고, 수량은 트랜잭션 값과 `Transfer`/WAETH `Withdrawal` 로그에서 읽는다. ERC-20 토큰은 심볼만 쓰지 않고 주소를 곁들인다. 알 수 없는 호출도 메서드와 `Transfer` 로그의 토큰 이동을 보여 준다. 연결 지갑은 공개 주소만 보관하고, 서명 키나 권한은 합치지 않는다.
+- 새 수신 거래 알림은 주소별 마지막 처리 높이와 해시로 한 번만 보낸다. 검증된 잔액이 인접한 블록에서 증가했는데 수신 내역이 없으면 그 높이에 잔액 증가 항목을 표시한다. 내부 AETH 이동은 별도 로그가 없으므로 이 대체 항목은 관측한 높이에 한정된다.
+- 테스트넷 faucet은 앱 심플 모드와 확장 홈에 두지 않는다. 확장에서는 설정의 개발자 모드를 켠 뒤에만 보인다.
+
 ### 남은 것
 
-- 스왑(라우터 경유)은 토큰별 귀속이 안 된다 — FFI에 로그/히스토리 API가 없어서. 나중에 FFI가 Transfer 로그를 주면 같은 순수 함수에 넣으면 된다.
 - 앱의 토큰 드라이런은 로컬 노드가 있을 때만 완전하다(아이폰은 미확인 통과).
+
+## 리소스 설정 — 구현됨 (2026-09-29)
+
+설정 ▸ 리소스(맥 앱). 배경과 노드 쪽 동작은 [docs/ops/resource-limits.md](../ops/resource-limits.md) — 2026-09-29 사고(증명 사이드카 14 GB·스왑 95%)로 생겼다.
+
+- **증명(Prover) 사용** 토글: 예전의 "Prove blocks with Metal on this Mac's GPU" 토글을 이 자리로 옮겼다. 켤 때 지갑 주소를 증명 보상 주소로 묶는 것도 그대로.
+- **최대 메모리**: 자동 (RAM의 25%) / 4 GB / 8 GB / 16 GB / 끄기 → `--prover-max-memory=auto(생략)/4/8/16/0`. 끄기는 증명 자체를 끈다.
+- **최대 CPU**: 절반(기본, 생략) / 전부 → `--prover-threads=<코어 수>`.
+- **배터리에서 증명 허용**: 끔이 기본. 켜면 `--prover-on-battery`.
+- 상태 줄: 증명 사이드카의 현재 메모리(`aether_proverStatus`의 `memory_bytes`/`memory_cap`), `paused == "memory"`면 "메모리 부족으로 일시 정지", `aether_status`의 `resources.disk_low`면 "디스크 공간 부족".
+
+선택은 UserDefaults(`proverMemory`·`proverCores`·`proverOnBattery`)에 저장되고, 노드를 (재)시작할 때 `ProverFlags.build`가 플래그로 만들어 `aether run`에 붙인다. 기본값(자동·절반·배터리 거부)은 플래그를 하나도 안 붙인다 — 노드 스스로 안전한 기본값(RAM의 25%, 코어의 절반)을 고르고, 플래그를 모르는 옛 노드 번들이어도 시작에 실패하지 않는다. **심플 모드에는 예산 조절 UI가 없다**(개발자 모드에서만 보인다): 노드의 안전한 기본값이 그대로 적용되고, 증명 토글과 경고("메모리 부족으로 일시 정지"·"디스크 공간 부족")는 심플 모드에서도 보인다 — 전기·발열을 쓰는 스위치를 숨기거나 문제를 조용히 넘기지 않는다. 메뉴 막대의 증명 상태에는 일시 정지 이유가 영어로 한 줄 더 붙는다.

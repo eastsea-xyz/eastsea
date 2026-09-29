@@ -28,6 +28,10 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 const DEFAULT_CHAIN_ID: u64 = 7_777;
+/// The public testnet: the one chain with a faucet that must never run the
+/// dev registrar (its genesis registrar key is what actually decides on chain;
+/// local test networks may combine a faucet with the dev registrar).
+const TESTNET_CHAIN_ID: u64 = 7_780;
 const DEV_ACCOUNTS: u8 = 10;
 /// Seed index of the public devnet registrar key (local devnets only).
 const DEV_REGISTRAR: u8 = 11;
@@ -63,6 +67,66 @@ struct HistoryArgs {
 impl HistoryArgs {
     fn mode(&self, history_v2: bool, block_time_ms: u64) -> Result<aether_node::prune::HistoryMode, String> {
         aether_node::prune::HistoryMode::resolve(self.history.as_deref(), history_v2, self.retain_days, block_time_ms, self.drop_era_files)
+    }
+}
+
+/// Resource limits (docs/ops/resource-limits.md): a Mac running Aether never
+/// runs away with it — the prover sidecar's memory cap and worker threads, the
+/// node's own history-cache budget, and the data volume's free-space floor.
+#[derive(clap::Args, Clone, Debug, Default)]
+struct ResourceArgs {
+    /// The prover sidecar's memory cap (physical footprint): a plain number is
+    /// GB, 512M is exact. Default: a quarter of the RAM, at least 4 GB.
+    /// 0 = the prover never runs.
+    #[arg(long = "prover-max-memory", value_name = "SIZE")]
+    prover_max_memory: Option<String>,
+    /// Worker threads the prover may use. Default: half the cores.
+    #[arg(long = "prover-threads")]
+    prover_threads: Option<usize>,
+    /// Let proving run on battery power (it pauses otherwise).
+    #[arg(long = "prover-on-battery")]
+    prover_on_battery: bool,
+    /// Budget for this node's own in-memory history caches (summaries,
+    /// receipts). Default: a quarter of the RAM, at least 2 GB.
+    #[arg(long = "max-memory", value_name = "SIZE")]
+    max_memory: Option<String>,
+    /// Below this much free space on the data volume, no new era files or
+    /// shards are written and proving pauses. Default: 5 GB. 0 = off.
+    #[arg(long = "min-free-disk", value_name = "SIZE")]
+    min_free_disk: Option<String>,
+}
+
+impl ResourceArgs {
+    fn limits(&self) -> Result<aether_node::resources::Limits, String> {
+        aether_node::resources::Limits::resolve(
+            self.prover_max_memory.as_deref(),
+            self.prover_threads,
+            self.prover_on_battery,
+            self.max_memory.as_deref(),
+            self.min_free_disk.as_deref(),
+        )
+    }
+
+    /// The same settings as flags for a child process (`aether run` forwards
+    /// them to its `aether node`/`aether follow` children).
+    fn forward(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some(v) = &self.prover_max_memory {
+            out.push(format!("--prover-max-memory={v}"));
+        }
+        if let Some(v) = self.prover_threads {
+            out.push(format!("--prover-threads={v}"));
+        }
+        if self.prover_on_battery {
+            out.push("--prover-on-battery".into());
+        }
+        if let Some(v) = &self.max_memory {
+            out.push(format!("--max-memory={v}"));
+        }
+        if let Some(v) = &self.min_free_disk {
+            out.push(format!("--min-free-disk={v}"));
+        }
+        out
     }
 }
 
@@ -129,6 +193,8 @@ enum Cmd {
         exit_with_parent: bool,
         #[command(flatten)]
         history: HistoryArgs,
+        #[command(flatten)]
+        resources: ResourceArgs,
     },
     /// Distributed key generation for the committee (run on every validator at
     /// once). Writes <data>/threshold.json with this validator's secret share
@@ -197,6 +263,12 @@ enum Cmd {
         #[arg(long)]
         data: String,
     },
+    /// The protocol this binary implements. Hidden: the app asks a candidate
+    /// rollback binary (`Helpers/aether.prev`) this before returning to it —
+    /// a rollback to a binary that cannot run the chain's scheduled protocol
+    /// would stop the node for good (red team #3).
+    #[command(hide = true)]
+    Protocol,
     /// Generate this validator's keys in <data> (never overwrites). Prints the public entry.
     Keygen {
         #[arg(long)]
@@ -235,8 +307,14 @@ enum Cmd {
         /// certified block) instead of replaying history from genesis.
         #[arg(long)]
         checkpoint: bool,
+        /// Dev only (hidden): the disk fills `<ms>` after start, so the node
+        /// hits the storage path of docs/design/24-self-healing.md.
+        #[arg(long, hide = true)]
+        dev_storage_fault: Option<u64>,
         #[command(flatten)]
         history: HistoryArgs,
+        #[command(flatten)]
+        resources: ResourceArgs,
     },
     /// Keep this Mac in the network: validator while in the voting set, verifying
     /// follower and candidate otherwise; rotations are followed automatically.
@@ -268,6 +346,8 @@ enum Cmd {
         /// Exit when the launching app does (the Mac app's node switch).
         #[arg(long)]
         exit_with_parent: bool,
+        #[command(flatten)]
+        resources: ResourceArgs,
     },
     /// This Mac's voting-node identity in <data> (created the first time), as JSON.
     CandidateInfo {
@@ -358,6 +438,12 @@ enum Cmd {
         /// History v2 (a new genesis only, roadmap B): quiet empty blocks, era files, prune by default.
         #[arg(long)]
         history: Option<u32>,
+        /// Protocol this genesis starts under (1 to the newest this binary runs): the mainnet names
+        /// the newest (3: proof market, registry v2 with its registration cap, 16-seat growth) and
+        /// never needs an upgrade (docs/design/15-node-rewards.md, gap G1). Absent: 1, upgrades
+        /// turn later protocols on — 7780's genesis stays byte-identical.
+        #[arg(long)]
+        protocol: Option<u32>,
         /// Write the public dev registrar key as the registrar: a local or rehearsal network whose
         /// registrar node runs `aether run --dev-registrar` (no Apple DeviceCheck).
         #[arg(long, conflicts_with = "registrar")]
@@ -381,6 +467,26 @@ enum Cmd {
     },
     /// List the public development accounts (funded at genesis; never use for value).
     DevAccounts,
+    /// Check a network.json against the mainnet rule set: every rule the mainnet
+    /// must have active at height 1 (docs/ops/mainnet-launch.md §2), built from
+    /// the file's genesis. Prints one line per rule; fails listing what is off.
+    MainnetRules {
+        /// network.json to check.
+        #[arg(long)]
+        network: String,
+    },
+    /// Replay finalized blocks with this binary into an isolated scratch store.
+    Shadow {
+        /// A stopped history-v2 data directory or an archive peer's HTTP RPC URL.
+        #[arg(long)]
+        from: String,
+        /// Last finalized height to check (inclusive).
+        #[arg(long)]
+        to: u64,
+        /// Genesis network.json when it is outside the source data directory.
+        #[arg(long)]
+        network: Option<std::path::PathBuf>,
+    },
     /// Chain status.
     Status {
         #[arg(long, default_value = "http://127.0.0.1:8545")]
@@ -540,9 +646,29 @@ fn main() {
             dev_epoch_blocks,
             exit_with_parent,
             history,
+            resources,
         } => {
             if exit_with_parent {
                 exit_with_parent_process();
+            }
+            // A seated validator whose key file is gone or unreadable stops
+            // with its own exit code (red team #5): it must not be replaced by
+            // a devnet stand-in or a fresh identity.
+            {
+                let dir = std::path::Path::new(&data);
+                if network.is_some()
+                    && dir.join("threshold.json").exists()
+                    && aether_node::roster::LocalKeys::load(dir).is_err()
+                {
+                    eprintln!(
+                        "this Mac's validator key cannot be read but it holds a committee \
+                         share: no new identity is generated. Restore {}/{} from a backup, or \
+                         unregister this Mac and register a new one on purpose",
+                        dir.display(),
+                        aether_node::roster::KEY_FILE
+                    );
+                    std::process::exit(aether_node::candidate::EXIT_IDENTITY);
+                }
             }
             let with_file = network.is_some();
             let network_file = network.as_ref().and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice::<Value>(&b).ok());
@@ -556,7 +682,12 @@ fn main() {
                 })
                 .and_then(|args| {
                     if dev_registrar && args.4.faucet.is_some() {
-                        return Err("--dev-registrar is only for test chains without a faucet".into());
+                        if args.1 == TESTNET_CHAIN_ID {
+                            return Err("--dev-registrar is only for test chains without a faucet".into());
+                        }
+                        // A local network that funds through a faucet (devnet tests):
+                        // allowed, but say it — the dev registrar registers any device.
+                        eprintln!("--dev-registrar on a chain with a faucet ({})", args.1);
                     }
                     Ok(args)
                 })
@@ -585,12 +716,13 @@ fn main() {
                         devicecheck: devicecheck_key.zip(devicecheck_key_id).map(|(k, id)| (k, id, devicecheck_team)),
                         dev_registrar,
                         network_file,
+                        resources,
                     });
                 })
         }
         Cmd::Keygen { data } => keygen(&data),
         Cmd::UpgradeSign { data, network, upgrade } => (|| {
-            use aether_node::upgrade::{sign_partial, Upgrade};
+            use aether_node::upgrade::{sign_emergency_partial, sign_partial, Upgrade};
             let file = aether_node::roster::NetworkFile::load(std::path::Path::new(&network))?;
             let key: aether_node::dkg::KeyFile =
                 serde_json::from_slice(&std::fs::read(std::path::Path::new(&data).join("threshold.json")).map_err(|e| e.to_string())?)
@@ -600,7 +732,13 @@ fn main() {
             if u.chain_id != file.chain_id {
                 return Err(format!("upgrade is for chain {}, network.json for {}", u.chain_id, file.chain_id));
             }
-            println!("{}", serde_json::to_string_pretty(&sign_partial(&u, &share)).expect("json"));
+            let partial = if u.emergency {
+                let keys = aether_node::roster::LocalKeys::load(std::path::Path::new(&data))?;
+                sign_emergency_partial(&u, &share, &keys.signer)
+            } else {
+                sign_partial(&u, &share)
+            };
+            println!("{}", serde_json::to_string_pretty(&partial).expect("json"));
             Ok(())
         })(),
         Cmd::UpgradeCombine { network, partials } => (|| {
@@ -613,6 +751,10 @@ fn main() {
                 .map(|p| std::fs::read(p).map_err(|e| format!("{p}: {e}")).and_then(|b| serde_json::from_slice(&b).map_err(|e| format!("{p}: {e}"))))
                 .collect::<Result<Vec<aether_node::upgrade::PartialUpgrade>, String>>()?;
             let signed = aether_node::upgrade::combine(dkg.public(), &parts)?;
+            if signed.upgrade.emergency {
+                let committee: Vec<_> = file.validators.iter().map(|m| (m.key.trim_start_matches("0x").to_lowercase(), m.node.clone())).collect();
+                aether_node::upgrade::verify_emergency(&signed, &committee)?;
+            }
             println!("{}", serde_json::to_string_pretty(&signed).expect("json"));
             Ok(())
         })(),
@@ -622,24 +764,40 @@ fn main() {
             let s: aether_node::upgrade::SignedUpgrade =
                 serde_json::from_slice(&std::fs::read(&signed).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
             aether_node::upgrade::verify(set.identity(), &s)?;
+            if s.upgrade.emergency {
+                let committee: Vec<_> = file.validators.iter().map(|m| (m.key.trim_start_matches("0x").to_lowercase(), m.node.clone())).collect();
+                aether_node::upgrade::verify_emergency(&s, &committee)?;
+            }
             println!("signed by the committee: protocol {} at height {} on chain {}", s.upgrade.protocol, s.upgrade.activate_at, s.upgrade.chain_id);
             Ok(())
         })(),
-        Cmd::Follow { network, from_rpc, data, rpc_port, validators, exit_with_parent, candidate, dev_epoch_blocks, keys, checkpoint, history } => {
+        Cmd::Follow { network, from_rpc, data, rpc_port, validators, exit_with_parent, candidate, dev_epoch_blocks, keys, checkpoint, dev_storage_fault, history, resources } => {
             if exit_with_parent {
                 exit_with_parent_process();
             }
             let keys = candidate.then(|| keys.unwrap_or_else(|| data.clone()));
-            run_follow(network, from_rpc, data, rpc_port, validators, keys, dev_epoch_blocks, checkpoint, history)
+            run_follow(network, from_rpc, data, rpc_port, validators, keys, dev_epoch_blocks, checkpoint, dev_storage_fault, history, resources)
         }
-        Cmd::CandidateInfo { data, operator, chain_id } => aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(&data)).map(|k| {
+        Cmd::CandidateInfo { data, operator, chain_id } => (|| {
+            let dir = std::path::Path::new(&data);
+            let k = match aether_node::candidate::CandidateKeys::load_or_create(dir) {
+                Ok(k) => k,
+                // A lost identity is its own exit code (red team #5): the app
+                // shows the one sentence instead of a generic failure.
+                Err(e) if aether_node::candidate::registered_identity(dir) => {
+                    eprintln!("{e}");
+                    std::process::exit(aether_node::candidate::EXIT_IDENTITY);
+                }
+                Err(e) => return Err(e),
+            };
             let ownership = operator.zip(chain_id).map(|(op, id)| hex::encode(k.ownership(id, op)));
             println!(
                 "{}",
                 json!({ "validator_key": hex::encode(k.validator_key()), "node_id": hex::encode(k.node_id()), "beaconer": k.beaconer(), "ownership": ownership })
             );
-        }),
-        Cmd::Run { data, network, port, rpc_port, reshare_port, node_args, follow_args, reshare_timeout, dev_peer_dir, exit_with_parent } => {
+            Ok(())
+        })(),
+        Cmd::Run { data, network, port, rpc_port, reshare_port, node_args, follow_args, reshare_timeout, dev_peer_dir, exit_with_parent, resources } => {
             if exit_with_parent {
                 exit_with_parent_process();
             }
@@ -649,8 +807,35 @@ fn main() {
             (|| {
                 let dir = std::path::PathBuf::from(&data);
                 std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-                aether_node::candidate::CandidateKeys::load_or_create(&dir)?;
+                // One data directory, one `aether` (red team #12): a second
+                // app's run stops before touching anything, with its own exit
+                // code — "already running" is not a crash to restart.
+                let _lock = match aether_node::supervisor::lock_data_dir(&dir) {
+                    Ok(l) => l,
+                    Err(e) => {
+                        eprintln!("{e}");
+                        std::process::exit(aether_node::supervisor::EXIT_LOCKED);
+                    }
+                };
+                // First install: create the keys. A directory that ever held an
+                // identity refuses instead (red team #5) — and `aether run`
+                // goes on as a follower without them, never a new identity.
+                if let Err(e) = aether_node::candidate::CandidateKeys::load_or_create(&dir) {
+                    tracing::error!(%e, "aether run: this Mac's identity cannot be loaded; running as a follower");
+                }
                 aether_node::supervisor::adopt_network(&dir, network.as_deref().map(std::path::Path::new))?;
+                // A committee install a previous run did not finish (red team
+                // #19): complete it before any role decision reads the files.
+                if let Err(e) = aether_node::supervisor::finish_incomplete(&dir) {
+                    eprintln!("a completed handoff cannot be installed: {e}");
+                    std::process::exit(aether_node::store::EXIT_STORAGE);
+                }
+                // The same resource limits for whichever child runs (the
+                // supervisor adds them to both `aether node` and `aether follow`).
+                let forwarded = resources.forward();
+                let (mut node_args, mut follow_args) = (node_args, follow_args);
+                node_args.extend(forwarded.iter().cloned());
+                follow_args.extend(forwarded);
                 aether_node::supervisor::Supervisor {
                     exe: std::env::current_exe().map_err(|e| e.to_string())?,
                     data: dir,
@@ -700,6 +885,10 @@ fn main() {
             println!("{h} {}", hex::encode(d));
             Ok(())
         })(),
+        Cmd::Protocol => (|| {
+            println!("{}", aether_node::upgrade::PROTOCOL);
+            Ok(())
+        })(),
         Cmd::Reshare { from, to, epoch_end, epoch_end_hash, stage, via_node, port, data, peers, link_base, offline, exit_with_parent } => {
             if exit_with_parent {
                 exit_with_parent_process();
@@ -711,13 +900,13 @@ fn main() {
             };
             reshare(&from, &to, boundary, port, data, peers, link_base, offline, via_node)
         }
-        Cmd::Network { chain_id, faucet, registrar, dev_registrar, epoch_blocks, min_streak, draw_epochs, node_rewards, history, reserve, reserve_operator, group, max_committee, members } => {
+        Cmd::Network { chain_id, faucet, registrar, dev_registrar, epoch_blocks, min_streak, draw_epochs, node_rewards, history, protocol, reserve, reserve_operator, group, max_committee, members } => {
             let registrar = match (registrar, dev_registrar) {
                 (None, true) => Some(dev_registrar_hex()),
                 (r, _) => r,
             };
             let reserve = reserve_operator.map(|op| (op, reserve));
-            assemble_network(chain_id, faucet, registrar, (epoch_blocks, min_streak, draw_epochs), (history, group, max_committee), (node_rewards, reserve), &members)
+            assemble_network(chain_id, faucet, registrar, (epoch_blocks, min_streak, draw_epochs), (history, protocol, group, max_committee), (node_rewards, reserve), &members)
         }
         Cmd::RegistrarKey { data } => (|| {
             // Idempotent: an existing key is kept (and its public half printed).
@@ -735,6 +924,18 @@ fn main() {
             }
             Ok(())
         }
+        Cmd::MainnetRules { network } => (|| {
+            let file = aether_node::roster::NetworkFile::load(std::path::Path::new(&network))?;
+            let genesis = file.genesis()?;
+            let chain_id = file.chain_id;
+            let rules = aether_node::mainnet::check(&chain_config(chain_id, &genesis, false));
+            for r in &rules {
+                println!("{}  {}: {}", if r.ok { "ok" } else { "FAIL" }, r.name, r.detail);
+            }
+            let missing = aether_node::mainnet::missing(&rules);
+            (rules.iter().all(|r| r.ok)).then_some(()).ok_or(missing)
+        })(),
+        Cmd::Shadow { from, to, network } => run_shadow(&from, to, network.as_deref()),
         Cmd::Status { rpc } => call(&rpc, "aether_status", json!([])).map(|v| println!("{}", pretty(&v))),
         Cmd::Blocks { rpc, n } => call(&rpc, "aether_recentBlocks", json!([n])).map(|v| print_blocks(&v)),
         Cmd::Send { rpc, from_dev, to, value, nonce, wait } => {
@@ -895,11 +1096,53 @@ fn chain_config(chain_id: u64, genesis: &aether_node::roster::Genesis, dev_alloc
         min_streak: genesis.min_streak,
         draw_epochs: genesis.draw_epochs,
         history_v2: genesis.history >= 2,
+        protocol: genesis.protocol.max(1),
         node_rewards: genesis.node_rewards,
+        committee: genesis.committee.clone(),
         reserve: genesis.reserve.clone(),
         group: genesis.group,
         max_committee: genesis.max_committee,
     }
+}
+
+fn run_shadow(from: &str, to: u64, network: Option<&std::path::Path>) -> Result<(), String> {
+    struct Scratch(std::path::PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+    }
+    let base = std::env::current_dir().map_err(|e| e.to_string())?.join("tmp");
+    std::fs::create_dir_all(&base).map_err(|e| e.to_string())?;
+    let scratch = base.join(format!("shadow-{}-{}", std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_nanos()));
+    std::fs::create_dir(&scratch).map_err(|e| e.to_string())?;
+    let _cleanup = Scratch(scratch.clone());
+    let network = if let Some(path) = network {
+        Some(aether_node::roster::NetworkFile::load(path)?)
+    } else if from.starts_with("http://") || from.starts_with("https://") {
+        let value = call(from, "aether_network", json!([]))?;
+        if value.is_null() { None } else { Some(serde_json::from_value::<aether_node::roster::NetworkFile>(value).map_err(|e| e.to_string())?) }
+    } else {
+        let data = std::path::Path::new(from);
+        let file = data.join("network.json");
+        let parent = data.parent().unwrap_or(data).join("network.json");
+        let file = if file.is_file() { file } else { parent };
+        if file.is_file() { Some(aether_node::roster::NetworkFile::load(&file)?) }
+        else { return Err("source network.json is missing; pass --network <genesis network.json>".into()); }
+    };
+    let source = aether_node::shadow::Source::open(from, &scratch)?;
+    let cfg = if let Some(file) = network {
+        chain_config(file.chain_id, &file.genesis()?, false)
+    } else {
+        let chain_id = if let Some(url) = from.starts_with("http://").then_some(from).or_else(|| from.starts_with("https://").then_some(from)) {
+            call(url, "aether_status", json!([]))?["chain_id"].as_u64().ok_or("peer has no chain id")?
+        } else {
+            DEFAULT_CHAIN_ID
+        };
+        chain_config(chain_id, &aether_node::roster::Genesis::default(), true)
+    };
+    aether_node::shadow::replay(cfg, &source, to, &scratch)?;
+    println!("shadow PASS through finalized height {to}");
+    Ok(())
 }
 
 /// p2p args, chain id, epoch starts, expected key round, genesis parameters.
@@ -1211,12 +1454,12 @@ fn assemble_network(
     faucet: Option<Address>,
     registrar: Option<String>,
     voting: VotingParams,
-    format: (Option<u32>, Option<u16>, Option<u64>),
+    format: (Option<u32>, Option<u32>, Option<u16>, Option<u64>),
     rewards: (bool, Option<(Address, Vec<String>)>),
     members: &[String],
 ) -> Result<(), String> {
     let (epoch_blocks, min_streak, draw_epochs) = voting;
-    let (history, group, max_committee) = format;
+    let (history, protocol, group, max_committee) = format;
     let (node_rewards, reserve) = rewards;
     if node_rewards && registrar.is_none() {
         return Err("--node-rewards needs the voting-node registry (--registrar)".into());
@@ -1238,6 +1481,9 @@ fn assemble_network(
     };
     let file = aether_node::roster::NetworkFile {
         chain_id,
+        // Frozen here: after handoffs rewrite `validators`, this is still the
+        // roster the genesis rewards words record (and re-syncs re-derive).
+        genesis_validators: Some(validators.clone()),
         validators,
         identity: None,
         round: 0,
@@ -1249,6 +1495,7 @@ fn assemble_network(
         min_streak,
         draw_epochs,
         history,
+        protocol,
         node_rewards: node_rewards.then_some(true),
         reserve,
         group,
@@ -1283,6 +1530,91 @@ struct NodeArgs {
     history: aether_node::prune::HistoryMode,
     /// Era shards this Mac holds at most (roadmap B5 phase 1).
     max_shards: usize,
+    /// Memory, CPU and disk limits (docs/ops/resource-limits.md).
+    resources: ResourceArgs,
+}
+
+/// The open-file limit a node asks for when its hard limit allows it.
+const NOFILE_WANT: u64 = 65_536;
+
+/// Raise this node's own soft open-file limit (RLIMIT_NOFILE) toward its hard
+/// limit. A validator holds a few hundred open files at once — the vote journal
+/// keeps one section file per view and opens every one at startup — but launchd
+/// and GUI apps hand their children a 256-file soft limit, which on 2026-09-29
+/// crash-looped all four validators ("Too many open files"). Never lowers the
+/// limit and never raises it above the hard limit or the kernel's per-process
+/// cap. Returns the soft limit now in effect (0 when it could not be read).
+#[cfg(unix)]
+fn raise_nofile_limit() -> u64 {
+    let Some((soft, hard)) = nofile() else {
+        tracing::warn!("could not read the open-file limit");
+        return 0;
+    };
+    let want = NOFILE_WANT.min(hard).min(nofile_per_proc()).max(soft);
+    if want > soft && set_nofile(want, hard).is_none() {
+        tracing::warn!(from = soft, "could not raise the open-file limit");
+        return soft;
+    }
+    want
+}
+
+#[cfg(not(unix))]
+fn raise_nofile_limit() -> u64 {
+    0
+}
+
+/// The soft and hard open-file limits (RLIM_INFINITY read back as u64::MAX).
+#[cfg(unix)]
+fn nofile() -> Option<(u64, u64)> {
+    let mut lim: libc::rlimit = unsafe { std::mem::zeroed() };
+    (unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) } == 0).then(|| {
+        (
+            lim.rlim_cur,
+            if lim.rlim_max == libc::RLIM_INFINITY {
+                u64::MAX
+            } else {
+                lim.rlim_max
+            },
+        )
+    })
+}
+
+/// Set the soft open-file limit to `soft`, keeping `hard` as it was.
+#[cfg(unix)]
+fn set_nofile(soft: u64, hard: u64) -> Option<()> {
+    let lim = libc::rlimit {
+        rlim_cur: soft,
+        rlim_max: if hard == u64::MAX {
+            libc::RLIM_INFINITY
+        } else {
+            hard
+        },
+    };
+    (unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &lim) } == 0).then_some(())
+}
+
+/// The most this process may ask for (macOS: kern.maxfilesperproc).
+#[cfg(target_os = "macos")]
+fn nofile_per_proc() -> u64 {
+    let mut v: libc::c_int = 0;
+    let mut len = std::mem::size_of::<libc::c_int>();
+    (unsafe {
+        libc::sysctlbyname(
+            b"kern.maxfilesperproc\0".as_ptr().cast(),
+            &mut v as *mut _ as *mut libc::c_void,
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    } == 0
+        && v > 0)
+        .then_some(v as u64)
+        .unwrap_or(u64::MAX)
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn nofile_per_proc() -> u64 {
+    u64::MAX
 }
 
 fn run_node(a: NodeArgs) {
@@ -1292,6 +1624,10 @@ fn run_node(a: NodeArgs) {
                 .unwrap_or_else(|_| "info,commonware=warn".into()),
         )
         .init();
+    tracing::info!(
+        files = raise_nofile_limit(),
+        "open-file limit (the vote journal's section files are one fd each)"
+    );
     let NodeArgs {
         p2p,
         chain_id,
@@ -1309,7 +1645,23 @@ fn run_node(a: NodeArgs) {
         network_file,
         history,
         max_shards,
+        resources,
     } = a;
+    // Resource limits (docs/ops/resource-limits.md), before the chain opens:
+    // the open itself trims the history caches under the budget, and the
+    // watchdog starts watching disk, pressure and battery from here on.
+    let limits = resources.limits().unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(2);
+    });
+    let m = aether_node::resources::install(limits, std::path::Path::new(&data).to_path_buf());
+    tracing::info!(
+        prover_max_memory_gb = m.limits.prover_max_memory / aether_node::resources::GB,
+        prover_threads = m.limits.prover_threads,
+        cache_budget_gb = m.limits.max_memory / aether_node::resources::GB,
+        min_free_disk_gb = m.limits.min_free_disk / aether_node::resources::GB,
+        "resource limits on"
+    );
     let faucet = genesis.faucet;
     let registry = || {
         aether_node::devicecheck::Registry::open(
@@ -1406,41 +1758,115 @@ fn run_node(a: NodeArgs) {
         let (handoff_share, handoff_sharing) = (share.clone(), polynomial.clone());
         let polynomial_identity = &polynomial.public().clone();
         let scheme = aether_light::Scheme::signer(&aether_light::consensus_namespace_of(cfg.group), participants, polynomial, share).expect("share matches polynomial");
-        let store = aether_node::store::Store::open(&std::path::Path::new(&data).join("state.redb")).expect("open state store");
-        let (chain, genesis) = Chain::open(cfg.clone(), store).expect("restore state (delete the data dir to resync)");
+        // Start-up integrity as a follower has it (docs/design/24-self-healing.md
+        // layer 1): a database that does not verify is moved aside (never
+        // deleted; the keys stay) and the catch-up below re-syncs it.
+        let (store, _) = aether_node::follow::open_store(std::path::Path::new(&data)).expect("open state store");
+        let (chain, genesis) = match Chain::open(cfg.clone(), store) {
+            Ok(opened) => opened,
+            Err(e) if aether_node::follow::is_corruption(&e) => {
+                let store = aether_node::follow::reset_store(std::path::Path::new(&data), &e).expect("move a corrupt database aside");
+                Chain::open(cfg.clone(), store).expect("restore state after moving a corrupt database aside")
+            }
+            Err(e) => panic!("restore state (delete the data dir to resync): {e:?}"),
+        };
         install_verifier(&chain, &data, false);
+        // Self-healing (2026-09-29, docs/design/24-self-healing.md): serve the
+        // public endpoint BEFORE catching up, from the stored finalized state —
+        // status, balances, snapshots, era reads; read-only answers while this
+        // node does not vote. Peers restarting at the same moment learn heights
+        // from each other instead of waiting for someone to start voting first.
+        // The served state is swapped for the full one (marshal finality
+        // answers, handoff signing, prover, shards) once voting starts.
+        let (gossip_tx, mut gossip_rx) = tokio::sync::mpsc::unbounded_channel::<TxEnvelope>();
+        let served_snapshot: rpc::SnapshotCache = Default::default();
+        let served_state = std::sync::Arc::new(std::sync::RwLock::new(rpc::RpcState {
+            chain: chain.clone(),
+            finality: rpc::Finality::Archive(std::sync::Arc::new(aether_node::follow::FinalityArchive::new(chain.store()))),
+            gossip: gossip_tx.clone(),
+            faucet: faucet_service.clone(),
+            registrar: registrar.clone(),
+            network: network_file.clone(),
+            upstream: None,
+            handoff: None,
+            snapshot: served_snapshot.clone(),
+            prover: None,
+            shards: None,
+        }));
+        // Public access: iroh endpoint published to the BitTorrent Mainline DHT.
+        // Wallets find this node by its id alone and verify everything they get;
+        // validators tunnel consensus traffic over the same endpoint.
+        // Wallet-server announcements are listed only for keys the finalized
+        // registry state knows (red-team 2026-09-29 §3).
+        let _router = endpoint.clone().map(|ep| {
+            tracing::info!(node_id = %ep.id(), "public endpoint on iroh; address published to Mainline DHT (serving read-only answers while catching up)");
+            let st = served_state.clone();
+            let registry = aether_node::announce::checker(st.read().expect("served state").chain.clone());
+            let p2p_target = links.then(|| loopback(port));
+            aether_net::serve(
+                ep,
+                move |req| {
+                    let st = st.read().expect("served state").clone();
+                    async move { rpc::handle_value(&st, req).await }
+                },
+                p2p_target,
+                Some(registry),
+            )
+        });
         // Catch up before voting: a committee member that slept must not
         // propose or vote on views it cannot execute (the committee treats it
         // as offline until then). Follow the network with the follower
         // machinery — a certified snapshot jump included — and only then start
-        // the consensus engine, so not one vote exists while behind. Fails
-        // open: a validator that cannot ask the network (it may be the only
-        // one up) starts as before, and the chain itself keeps it safe (it
-        // cannot vote for a block without the parent state).
+        // the consensus engine, so not one vote exists while behind. The
+        // network's height is defined by the roster's answers (2026-09-29): a
+        // census asks every peer, and voting starts when no reachable peer is
+        // ahead — so a network where every validator restarts at once
+        // recovers on its own (each answers the census from its stored state;
+        // the tallest proceeds first, then serves the rest its blocks). Only
+        // silence fails open, after a real wait; `AETHER_SKIP_CATCH_UP`
+        // overrides the asking for runbook recoveries. The one network that
+        // needs no asking is a single validator (a local devnet): it is the
+        // network, so its own finalized height is the height.
         if links && network_file.is_some() {
             let me = p2p.keys.node_secret.public();
             let nodes: Vec<_> = p2p.roster.nodes.iter().copied().filter(|n| *n != me).collect();
-            match if nodes.is_empty() {
-                Err("the roster names no other node".to_string())
+            if nodes.is_empty() {
+                tracing::warn!("the roster names no other node: single-validator network, taking our own height as the network's");
+                let ours = chain.finalized_height();
+                chain.lock().net_height = Some(ours);
+            } else if std::env::var_os("AETHER_SKIP_CATCH_UP").is_some() {
+                tracing::warn!("AETHER_SKIP_CATCH_UP is set: starting without a confirmed network height");
             } else {
-                aether_net::RpcClient::new(nodes).await.map_err(|e| e.to_string())
-            } {
-                Ok(client) => {
-                    let upstream = aether_node::follow::Upstream::Iroh(client, Default::default());
-                    let set = aether_light::ValidatorSet::for_group(*polynomial_identity, cfg.group);
-                    let caught = tokio::time::timeout(
-                        Duration::from_secs(120),
-                        aether_node::follow::catch_up(&chain, &upstream, &set, aether_node::follow::BEHIND_MARGIN),
-                    )
-                    .await;
-                    match caught {
-                        Ok(Ok(n)) if n > 0 => tracing::info!(height = chain.finalized_height(), blocks = n, "caught up before voting"),
-                        Ok(Ok(_)) => {}
-                        Ok(Err(e)) => tracing::warn!(%e, "could not catch up before voting; starting anyway"),
-                        Err(_) => tracing::warn!("catch-up before voting timed out; starting anyway"),
+                let set = aether_light::ValidatorSet::for_group(*polynomial_identity, cfg.group);
+                let ep = endpoint.clone().expect("iroh links serve the public endpoint");
+                let census = {
+                    let (ep, nodes) = (ep.clone(), nodes.clone());
+                    move || {
+                        let (ep, nodes) = (ep.clone(), nodes.clone());
+                        async move { aether_node::follow::roster_heights(&ep, &nodes).await }
                     }
+                };
+                let upstream_of = {
+                    let ep = ep.clone();
+                    move |n: &aether_net::EndpointId| {
+                        aether_node::follow::Upstream::Iroh(
+                            aether_net::RpcClient::with_endpoint(ep.clone(), vec![*n]),
+                            Default::default(),
+                        )
+                    }
+                };
+                let caught = aether_node::follow::catch_up_before_voting(
+                    &chain,
+                    &set,
+                    aether_node::follow::BEHIND_MARGIN,
+                    aether_node::follow::STARTUP_PATIENCE,
+                    census,
+                    upstream_of,
+                )
+                .await;
+                if caught > 0 {
+                    tracing::info!(height = chain.finalized_height(), blocks = caught, "caught up before voting");
                 }
-                Err(e) => tracing::warn!(%e, "no upstream to catch up with; starting anyway"),
             }
             // A catch-up that timed out mid-replay is dropped without clearing
             // its replay mode: blocks from here on (voting) commit durably.
@@ -1539,6 +1965,7 @@ fn run_node(a: NodeArgs) {
                 blocker: oracle.clone(),
                 provider: oracle.clone(),
                 partition_prefix: partition_prefix(&data),
+                journal_dir: Some(std::path::PathBuf::from(&data)),
                 me: signer.public_key(),
                 scheme,
                 identity: *polynomial_identity,
@@ -1569,16 +1996,21 @@ fn run_node(a: NodeArgs) {
         }
 
         // Mempool gossip: RPC-accepted txs go out, peers' txs come in.
-        // Beacon answers (node rewards networks) ride the same channel as
-        // `{"beacon": answer}`; nodes that do not know them skip them as non-txs.
-        let (gossip_tx, mut gossip_rx) = tokio::sync::mpsc::unbounded_channel::<TxEnvelope>();
+        // Beacon answers and free-lane registrations (node rewards networks)
+        // ride the same channel as `{"beacon": answer}` /
+        // `{"registration": item}`; nodes that do not know them skip them as non-txs.
+        // (The channel was made before catch-up: txs accepted from wallets
+        // while catching up wait in it until the network starts here.)
         let (beacon_tx, mut beacon_rx) = tokio::sync::mpsc::unbounded_channel::<aether_light::block::BeaconAnswer>();
+        let (registration_tx, mut registration_rx) = tokio::sync::mpsc::unbounded_channel::<aether_light::block::NodeRegistration>();
         chain.lock().beacon_out = Some(beacon_tx);
+        chain.lock().registration_out = Some(registration_tx);
         tokio::spawn(async move {
             loop {
                 let bytes = tokio::select! {
                     Some(tx) = gossip_rx.recv() => serde_json::to_vec(&tx).expect("tx serializes"),
                     Some(a) = beacon_rx.recv() => serde_json::to_vec(&json!({ "beacon": a })).expect("answer serializes"),
+                    Some(r) = registration_rx.recv() => serde_json::to_vec(&json!({ "registration": r })).expect("registration serializes"),
                     else => break,
                 };
                 let _ = tx_out.send(Recipients::All, bytes, false);
@@ -1598,6 +2030,11 @@ fn run_node(a: NodeArgs) {
                 {
                     // Peers' answers are pooled, not relayed again (every validator hears every peer).
                     let _ = gossip_chain.add_beacon(a);
+                } else if let Some(r) = serde_json::from_slice::<Value>(msg.as_ref())
+                    .ok()
+                    .and_then(|v| serde_json::from_value::<aether_light::block::NodeRegistration>(v.get("registration")?.clone()).ok())
+                {
+                    let _ = gossip_chain.add_registration(r);
                 }
             }
         });
@@ -1637,27 +2074,15 @@ fn run_node(a: NodeArgs) {
             network: network_file,
             upstream: None,
             handoff: handoff_service,
-            snapshot: Default::default(),
+            snapshot: served_snapshot,
             prover,
             shards,
         };
-
-        // Public access: iroh endpoint published to the BitTorrent Mainline DHT.
-        // Wallets find this node by its id alone and verify everything they get;
-        // validators tunnel consensus traffic over the same endpoint.
-        let _router = endpoint.map(|ep| {
-            tracing::info!(node_id = %ep.id(), "public endpoint on iroh; address published to Mainline DHT");
-            let st = rpc_state.clone();
-            let p2p_target = links.then(|| loopback(port));
-            aether_net::serve(
-                ep,
-                move |req| {
-                    let st = st.clone();
-                    async move { rpc::handle_value(&st, req).await }
-                },
-                p2p_target,
-            )
-        });
+        // Voting machinery is up: swap the endpoint's served state for the
+        // full one (marshal-backed finality answers, handoff signing, prover
+        // status, era shards). In-flight snapshot downloads keep working: the
+        // cache is the same one the read-only state served from.
+        *served_state.write().expect("served state") = rpc_state.clone();
 
         let rpc_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), rpc_port);
         tracing::info!(%rpc_addr, "rpc listening");
@@ -1705,7 +2130,7 @@ fn watch_upgrades(
             let need = protocol_at(&on_chain, next);
             if need > PROTOCOL {
                 tracing::error!(need, have = PROTOCOL, height = next, "UPGRADE REQUIRED: this binary runs protocol {PROTOCOL} but the committee activated {need}; stopping before the new rules apply. Install the signed release.");
-                std::process::exit(3);
+                std::process::exit(aether_node::supervisor::EXIT_UPGRADE_REQUIRED);
             }
             std::thread::sleep(Duration::from_millis(500));
         }
@@ -1749,7 +2174,9 @@ fn install_verifier(chain: &Chain, data: &str, follower: bool) {
     let g = chain.lock();
     if g.verifier.is_none() && g.finalized.schedule.iter().any(|a| a.protocol >= 2) {
         tracing::error!("protocol 2 is scheduled and this validator has no working proof verifier (aether-prover): stopping");
-        std::process::exit(4);
+        // Exit codes: 3 upgrade required, 4 storage (store::EXIT_STORAGE),
+        // 5 this one — the app restarts with backoff for none of them.
+        std::process::exit(aether_node::supervisor::EXIT_NO_VERIFIER);
     }
 }
 
@@ -1766,9 +2193,14 @@ fn start_prover(
         .parse()
         .map_err(|_| tracing::warn!("AETHER_PROVE is not an address"))
         .ok()?;
+    // --prover-max-memory=0: the user turned the prover off.
+    if aether_node::resources::monitor().is_some_and(|m| m.limits.prover_max_memory == 0) {
+        tracing::info!("the prover is off (--prover-max-memory=0)");
+        return None;
+    }
     let dir = std::path::Path::new(data).join("prover");
     let bin_path = find_binary()?;
-    let sidecar = match Some(Sidecar::spawn(&bin_path, &dir.join("prove"))) {
+    let sidecar = match Some(Sidecar::spawn_prover(&bin_path, &dir.join("prove"))) {
         Some(Ok(sc)) => sc,
         Some(Err(e)) => {
             tracing::warn!(%e, "cannot start the prover");
@@ -1822,7 +2254,9 @@ fn run_follow(
     candidate_keys: Option<String>,
     dev_epoch_blocks: Option<u64>,
     checkpoint: bool,
+    dev_storage_fault: Option<u64>,
     history: HistoryArgs,
+    resources: ResourceArgs,
 ) -> Result<(), String> {
     use aether_node::follow::{self, FinalityArchive, Upstream};
     use std::sync::Arc;
@@ -1832,6 +2266,8 @@ fn run_follow(
                 .unwrap_or_else(|_| "info,commonware=warn".into()),
         )
         .init();
+    // Resource limits before the chain opens (the caches trim under the budget).
+    aether_node::resources::install(resources.limits()?, std::path::Path::new(&data).to_path_buf());
     // A network.json with no faucet funds nobody (mainnet: 사전 발행 0).
     let dev_alloc = network.is_none();
     let (chain_id, genesis, set, nodes) = match network {
@@ -1870,9 +2306,34 @@ fn run_follow(
         .build()
         .map_err(|e| e.to_string())?;
     rt.block_on(async move {
-        let store = aether_node::store::Store::open(&std::path::Path::new(&data).join("state.redb")).map_err(|e| e.to_string())?;
+        // Start-up integrity (docs/design/24-self-healing.md layer 1): a state
+        // database that does not verify is moved aside (never deleted; the
+        // keys stay) and re-syncs — a certified snapshot first, as below. The
+        // hidden dev flag runs the same start on a disk that fills.
+        let (store, _) = match dev_storage_fault {
+            Some(ms) => {
+                tracing::warn!(ms, "--dev-storage-fault: this disk fails from now on (self-healing test)");
+                follow::open_store_with(
+                    std::path::Path::new(&data),
+                    std::sync::Arc::new(move |p| {
+                        aether_node::store::open_with_a_disk_that_fills(p, Duration::from_millis(ms))
+                    }),
+                )?
+            }
+            None => follow::open_store(std::path::Path::new(&data))?,
+        };
+        // Following over iroh, this Mac also serves wallets directly (capacity
+        // review 2026-09-29): a public endpoint under its own persisted node
+        // id, so phones spread their reads over follower Macs instead of
+        // asking the validators. `--from-rpc` followers have no iroh endpoint.
+        let mut wallet_ep = None;
         let upstream = Arc::new(if from_rpc.is_empty() {
-            Upstream::Iroh(aether_net::RpcClient::new(nodes).await.map_err(|e| e.to_string())?, Default::default())
+            let ep = aether_net::bind(Some(wallet_node_key(std::path::Path::new(&data))?), vec![aether_net::ALPN_RPC.to_vec()])
+                .await
+                .map_err(|e| e.to_string())?;
+            let client = aether_net::RpcClient::with_endpoint(ep.clone(), nodes.clone());
+            wallet_ep = Some(ep);
+            Upstream::Iroh(client, Default::default())
         } else {
             Upstream::Http(from_rpc)
         });
@@ -1884,7 +2345,23 @@ fn run_follow(
                 tracing::warn!(%e, "checkpoint sync failed; replaying history from genesis");
             }
         }
-        let (chain, _) = Chain::open(cfg, store).map_err(|e| format!("restore state (delete the data dir to resync): {e}"))?;
+        let (chain, _) = match Chain::open(cfg.clone(), store) {
+            Ok(opened) => opened,
+            // Bad data only the full check catches (the rebuilt state does not
+            // match the checkpoint): the same recovery as at open — move the
+            // file aside, never delete it, and start from a certified snapshot.
+            Err(e) if follow::is_corruption(&e) => {
+                let store = follow::reset_store(std::path::Path::new(&data), &e)?;
+                if checkpoint {
+                    let attempt = tokio::time::timeout(Duration::from_secs(900), follow::checkpoint(&upstream, &set, &cfg, &store)).await;
+                    if let Err(e) = attempt.map_err(|_| "timed out".to_string()).and_then(|r| r) {
+                        tracing::warn!(%e, "checkpoint sync failed; replaying history from genesis");
+                    }
+                }
+                Chain::open(cfg, store).map_err(|e| format!("restore state (delete the data dir to resync): {e}"))?
+            }
+            Err(e) => return Err(format!("restore state (delete the data dir to resync): {e}")),
+        };
         install_verifier(&chain, &data, true);
         let archive = Arc::new(FinalityArchive::new(chain.store()));
         let (gossip, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1923,12 +2400,49 @@ fn run_follow(
             faucet: None,
             registrar: None,
             network: None,
-            upstream: Some(upstream),
+            upstream: Some(upstream.clone()),
             handoff: None,
             snapshot: Default::default(),
             prover,
             shards,
         };
+        // Serve wallets over the public endpoint (the same answers the loopback
+        // HTTP server gives; every one is verified by the reader), and announce
+        // this Mac as a wallet server to the validators, every minute, signed
+        // by this Mac's voting key (a registered candidate's key — validators
+        // list the announcement only then; red-team 2026-09-29 §3). The
+        // router owns the endpoint, so it is bound to outlive this setup —
+        // like the validators' `_router`, it must never drop while running.
+        let announce_keys = candidate_keys
+            .as_ref()
+            .map(|dir| aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(dir)))
+            .transpose()?
+            .map(std::sync::Arc::new);
+        let _wallet_router = wallet_ep.map(|ep| {
+            tracing::info!(node_id = %ep.id(), "serving wallets over iroh; announced to the validators every minute");
+            let endpoint_id = ep.id();
+            let st = st.clone();
+            let router = aether_net::serve_rpc(ep, move |req| {
+                let st = st.clone();
+                async move { rpc::handle_value(&st, req).await }
+            });
+            let (announcer, keys) = (upstream.clone(), announce_keys.clone());
+            tokio::spawn(async move {
+                if keys.is_none() {
+                    tracing::debug!("no candidate keys: serving wallets, but not announced (aether run --candidate)");
+                }
+                loop {
+                    if let (Upstream::Iroh(c, _), Some(keys)) = (announcer.as_ref(), keys.as_ref()) {
+                        let params = aether_node::announce::signed(keys, &endpoint_id);
+                        if let Err(e) = c.call("aether_announceWalletServer", serde_json::json!(params)).await {
+                            tracing::debug!(%e, "wallet-server announce failed; retrying in a minute");
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                }
+            });
+            router
+        });
         rpc::serve(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), rpc_port), st).await.map_err(|e| e.to_string())
     })
 }
@@ -2071,17 +2585,27 @@ fn committee_keys(
     (participants, polynomial, share)
 }
 
+/// This Mac's wallet-server node key: dedicated and persisted (`<data>/wallet-node.key`),
+/// so the DHT record it publishes does not flap with the endpoint other roles
+/// reuse. Regenerating it only changes which node id wallets are pointed at.
+fn wallet_node_key(data: &std::path::Path) -> Result<aether_net::SecretKey, String> {
+    let path = data.join("wallet-node.key");
+    match std::fs::read(&path) {
+        Ok(bytes) if bytes.len() == 32 => {
+            let mut b = [0u8; 32];
+            b.copy_from_slice(&bytes);
+            Ok(aether_net::SecretKey::from_bytes(&b))
+        }
+        _ => {
+            let key = aether_net::SecretKey::generate();
+            write_secret(&path, &key.to_bytes());
+            Ok(key)
+        }
+    }
+}
+
 fn write_secret(path: &std::path::Path, bytes: &[u8]) {
-    use std::io::Write as _;
-    use std::os::unix::fs::OpenOptionsExt as _;
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)
-        .expect("open key file");
-    f.write_all(bytes).expect("write key file");
+    aether_node::atomic::replace(path, bytes, 0o600).expect("write key file");
 }
 
 /// FOCIL gossip: as a committee member, sign and publish the oldest waiting
@@ -2352,5 +2876,73 @@ fn print_blocks(v: &Value) {
             b["state_root"].as_str().unwrap_or_default(),
             b["proposer"].as_str().unwrap_or_default()
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The resource flags parse on `node`, `follow` and `run`, resolve to the
+    /// sizes they name, and `run` forwards them verbatim to its children.
+    #[test]
+    fn resource_flags_parse_and_resolve() {
+        let c = Cli::try_parse_from([
+            "aether", "node", "--port", "1", "--rpc-port", "2", "--data", "d",
+            "--prover-max-memory=8", "--prover-threads=6", "--prover-on-battery",
+            "--max-memory=512M", "--min-free-disk=10G",
+        ])
+        .expect("node parses");
+        let Cmd::Node { resources, .. } = c.cmd else { panic!("node") };
+        assert_eq!(
+            resources.forward(),
+            vec![
+                "--prover-max-memory=8",
+                "--prover-threads=6",
+                "--prover-on-battery",
+                "--max-memory=512M",
+                "--min-free-disk=10G",
+            ]
+        );
+        let l = resources.limits().unwrap();
+        assert_eq!(l.prover_max_memory, 8 * aether_node::resources::GB);
+        assert_eq!(l.prover_threads, 6);
+        assert!(l.prover_on_battery);
+        assert_eq!(l.max_memory, 512 * 1024 * 1024);
+        assert_eq!(l.min_free_disk, 10 * aether_node::resources::GB);
+
+        // 0 turns the prover (and the disk guard) off, and forwards as-is.
+        let c = Cli::try_parse_from(["aether", "run", "--data", "d", "--prover-max-memory=0"]).expect("run parses");
+        let Cmd::Run { resources, .. } = c.cmd else { panic!("run") };
+        assert_eq!(resources.forward(), vec!["--prover-max-memory=0"]);
+        assert_eq!(resources.limits().unwrap().prover_max_memory, 0);
+
+        let c = Cli::try_parse_from(["aether", "follow", "--data", "d", "--min-free-disk=0"]).expect("follow parses");
+        let Cmd::Follow { resources, .. } = c.cmd else { panic!("follow") };
+        assert_eq!(resources.limits().unwrap().min_free_disk, 0);
+
+        // A size that is not a size says so.
+        let c = Cli::try_parse_from(["aether", "node", "--port", "1", "--rpc-port", "2", "--data", "d", "--max-memory=lots"]).unwrap();
+        let Cmd::Node { resources, .. } = c.cmd else { panic!("node") };
+        assert!(resources.limits().is_err());
+    }
+
+    /// `raise_nofile_limit` reports the soft limit that is really in effect,
+    /// never lowers it, raises a low inherited one (launchd's 256) as far as
+    /// the hard limit and the kernel's per-process cap allow, and is idempotent.
+    #[test]
+    #[cfg(unix)]
+    fn the_open_file_limit_is_raised_never_lowered() {
+        let before = nofile().expect("read the open-file limit");
+        let raised = raise_nofile_limit();
+        let after = nofile().expect("read the open-file limit");
+        assert_eq!(raised, after.0, "it reports the limit now in effect");
+        assert!(after.0 >= before.0, "never lowers the soft limit");
+        assert!(after.0 <= NOFILE_WANT.max(before.0), "asks for at most {NOFILE_WANT}");
+        let ceiling = NOFILE_WANT.min(before.1).min(nofile_per_proc());
+        if before.0 < ceiling {
+            assert!(after.0 > before.0, "a low inherited limit was not raised");
+        }
+        assert_eq!(raise_nofile_limit(), after.0, "raising again changes nothing");
     }
 }

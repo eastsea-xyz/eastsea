@@ -30,7 +30,7 @@ try {
   await popup.setViewportSize({ width: 360, height: 600 });
   await popup.goto(`chrome-extension://${id}/ui/popup.html`);
   // First run: the one-time notice comes before the onboarding.
-  await popup.getByText('Before you use Aether').waitFor();
+  await popup.getByText('Before you use EastSea').waitFor();
   await popup.screenshot({ path: SHOTS + '0-notice.png' });
   await popup.getByRole('button', { name: 'I understand' }).click();
   await popup.getByText('Create a wallet').waitFor();
@@ -40,6 +40,10 @@ try {
   await pws.nth(1).fill('e2e-password-1');
   await popup.getByRole('button', { name: 'Create wallet' }).click();
   await popup.getByText('Block ').waitFor({ timeout: 20000 });
+  await popup.getByRole('button', { name: 'Settings' }).click();
+  await popup.getByRole('checkbox', { name: 'Developer mode' }).check();
+  await popup.getByRole('button', { name: 'Save' }).click();
+  await popup.locator('details').filter({ hasText: 'Developer mode' }).locator('summary').click();
   await popup.getByRole('button', { name: /Get test AETH/ }).click();
   await popup.locator('.msg').first().waitFor({ timeout: 20000 });
   console.log('faucet msg:', await popup.locator('.msg').first().innerText());

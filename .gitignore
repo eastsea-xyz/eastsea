@@ -1,4 +1,6 @@
 /target
+/tmp/
+/fuzz/Cargo.lock
 /dist/aether-node
 /dist/aether-bench
 /dist/Aether Node.app
@@ -21,3 +23,6 @@ docs/.pdca-snapshots/
 
 # Tool state folders (never app resources)
 .omc/
+
+# release-mac.sh scratch (mounted DMG, TMPDIR)
+/tmp/

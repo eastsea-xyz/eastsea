@@ -1,3 +1,4 @@
+import { Brand } from './lib/brand.js';
 // The extension's service worker: answers pages (through content.js), opens
 // an approval window for anything that needs the user, and serves the popup.
 // The origin of a page request always comes from Chrome (the port's sender),
@@ -6,12 +7,14 @@
 import init, { accountAddress, prepareTx, attachSignature, publicKeyFromSecret } from '../wasm/aether_wasm.js';
 import { Vault, DEFAULT_LOCK_MINUTES } from './lib/vault.js';
 import { Rpc, RpcError, DEFAULT_RPCS } from './lib/rpc.js';
+import { networkSettings } from './lib/network.js';
 import { Wallet } from './lib/wallet.js';
-import { CHAIN_HEX, READ_METHODS, SEND_METHODS, normalizeTx, describeCall, originAllowed } from './lib/methods.js';
+import { READ_METHODS, SEND_METHODS, normalizeTx, describeCall, originAllowed } from './lib/methods.js';
 import { weiToAeth } from './lib/units.js';
 import { parseTokenSources, scanTokens, formatTokenAmount, call, SEL, wordAddress, uintAt } from './lib/tokens.js';
 import { addressRisk, revertReason, splitHoldings, tokenShort } from './lib/safety.js';
 import { TERMS_VERSION } from './lib/terms.js';
+import { linkedAddress, describeHistory, mergeHistory } from './lib/history.js';
 
 const ready = init({ module_or_path: chrome.runtime.getURL('wasm/aether_wasm_bg.wasm') });
 const area = (a) => ({
@@ -35,12 +38,42 @@ session.set('approvals', []);
 /** At most this many requests from one site wait at once (no approval-window flood). */
 const MAX_PENDING_PER_ORIGIN = 3;
 
+let defaultNetwork;
+let activeNetwork;
+const configured = (async () => {
+  defaultNetwork = await (await fetch(chrome.runtime.getURL('network.json'))).json();
+  for (const key of ['activity', 'assets']) {
+    const old = await local.get(key);
+    if (old !== undefined && await local.get(`${key}.7780`) === undefined) await local.set(`${key}.7780`, old);
+    if (old !== undefined) await local.remove(key);
+  }
+  await applySettings();
+})();
 async function applySettings() {
-  const custom = (await local.get('rpcs')) || [];
-  rpc.setUrls([...custom, ...DEFAULT_RPCS]);
+  const next = networkSettings(defaultNetwork, {
+    developerMode: await local.get('developerMode'),
+    developmentNetwork: await local.get('developmentNetwork'),
+    developmentPort: (await local.get('developmentPort')) || 18546,
+    rpcs: (await local.get('rpcs')) || [],
+  });
+  const switched = activeNetwork && activeNetwork.chainId !== next.chainId;
+  activeNetwork = next;
+  rpc.setChain(next.chainId, next.urls);
+  if (switched) {
+    wallet.lastNonce = null;
+    for (const [id, pending] of approvals) {
+      approvals.delete(id);
+      pending.reject(err(4901, 'The wallet network changed. Please try again.'));
+    }
+    publishApprovals();
+    broadcast(null, 'chainChanged', `0x${next.chainId.toString(16)}`);
+  }
 }
-applySettings();
-chrome.storage.onChanged.addListener((c, a) => { if (a === 'local' && c.rpcs) applySettings(); });
+chrome.storage.onChanged.addListener((c, a) => {
+  if (a === 'local' && ['rpcs', 'developerMode', 'developmentNetwork', 'developmentPort'].some((key) => c[key])) configured.then(applySettings);
+});
+const activityKey = () => `activity.${rpc.chainId}`;
+const assetsKey = () => `assets.${rpc.chainId}`;
 
 // ---- connected sites ----
 
@@ -64,14 +97,41 @@ function broadcast(origin, event, data) {
 
 // ---- activity ----
 
-async function record(item) {
-  const list = ((await local.get('activity')) || []).filter((a) => a.hash !== item.hash);
-  await local.set('activity', [item, ...list].slice(0, 50));
+async function record(item, chainId = rpc.chainId) {
+  const key = `activity.${chainId}`;
+  const list = ((await local.get(key)) || []).filter((a) => a.hash !== item.hash);
+  await local.set(key, [item, ...list].slice(0, 50));
+}
+
+async function activityPage(cursors = null) {
+  const info = await vault.info();
+  const own = info?.address;
+  const linked = (await local.get('linkedWallets')) || [];
+  const addresses = own ? [own, ...linked] : linked;
+  const selected = cursors ? addresses.filter((a) => Object.hasOwn(cursors, a)) : addresses;
+  let sources = {}, catalog = {};
+  try {
+    const status = await rpc.call('aether_status', []);
+    sources = (await tokenSources(status.chain_id)) || {};
+    catalog = ((await local.get(`tokenCatalog.${status.chain_id}`)) || {}).tokens || {};
+  } catch { /* the local pending list still opens without a node */ }
+  const pages = await Promise.all(selected.map(async (address) => {
+    try {
+      const page = await rpc.call('aether_accountHistory', [address, cursors?.[address] || null, 200]);
+      return { address, page };
+    } catch { return { address, page: { entries: [], next_cursor: null, history_start: 0 } }; }
+  }));
+  const chain = pages.flatMap(({ page }) => (page.entries || []).map((row) => describeHistory(row, { sources, catalog })));
+  const localItems = cursors ? [] : ((await local.get(activityKey())) || []);
+  return { items: mergeHistory(localItems, chain), cursors: Object.fromEntries(pages.filter(({ page }) => page.next_cursor).map(({ address, page }) => [address, page.next_cursor])),
+    starts: Object.fromEntries(pages.map(({ address, page }) => [address, page.history_start])) };
 }
 async function track(hash, base) {
-  await record({ ...base, hash, state: 'pending', at: Date.now() });
+  const chainId = rpc.chainId;
+  await record({ ...base, hash, state: 'pending', at: Date.now() }, chainId);
+  if (rpc.chainId !== chainId) return;
   const r = await wallet.receipt(hash);
-  await record({ ...base, hash, state: r ? (r.ok ? 'done' : 'failed') : 'unknown', height: r?.height, at: Date.now() });
+  if (rpc.chainId === chainId) await record({ ...base, hash, state: r ? (r.ok ? 'done' : 'failed') : 'unknown', height: r?.height, at: Date.now() }, chainId);
 }
 
 // ---- approvals ----
@@ -159,8 +219,8 @@ async function approve(id) {
 // ---- page requests ----
 
 async function pageRequest(origin, method, params = []) {
-  if (!originAllowed(origin)) throw err(4100, 'Aether Wallet only talks to https pages (or pages served from this computer).');
-  if (method === 'eth_chainId') return CHAIN_HEX;
+  if (!originAllowed(origin)) throw err(4100, `${Brand.project} Wallet only talks to https pages (or pages served from this computer).`);
+  if (method === 'eth_chainId') return `0x${rpc.chainId.toString(16)}`;
   if (method === 'eth_accounts' || method === 'aether_accounts') {
     const a = await connectedAddress(origin);
     return a ? [a] : [];
@@ -175,7 +235,7 @@ async function pageRequest(origin, method, params = []) {
   }
   if (SEND_METHODS.has(method)) {
     const address = await connectedAddress(origin);
-    if (!address) throw err(4100, 'Connect this page to Aether Wallet first (eth_requestAccounts).');
+    if (!address) throw err(4100, `Connect this page to ${Brand.project} Wallet first (eth_requestAccounts).`);
     const raw = params[0] || {};
     if (raw.from && raw.from.toLowerCase() !== address.toLowerCase()) throw err(4100, '`from` is not the connected account.');
     let tx;
@@ -183,7 +243,7 @@ async function pageRequest(origin, method, params = []) {
     return askUser(origin, 'send', tx);
   }
   if (READ_METHODS.has(method)) return rpc.call(method, params);
-  throw err(4200, `Aether Wallet does not support ${method}.`);
+  throw err(4200, `${Brand.project} Wallet does not support ${method}.`);
 }
 
 chrome.runtime.onConnect.addListener((port) => {
@@ -195,7 +255,7 @@ chrome.runtime.onConnect.addListener((port) => {
   port.onMessage.addListener(async (m) => {
     if (!m || typeof m.id !== 'string' || typeof m.method !== 'string') return;
     try {
-      await ready;
+      await Promise.all([ready, configured]);
       p.post({ id: m.id, result: await pageRequest(origin, m.method, Array.isArray(m.params) ? m.params : []) });
     } catch (e) {
       p.post({ id: m.id, error: { code: e.code ?? -32603, message: e.message || String(e), data: e.data } });
@@ -219,7 +279,8 @@ async function tokenSources(chainId) {
  */
 async function refreshAssets({ force = false } = {}) {
   const info = await vault.info();
-  const cached = (await local.get('assets')) || {};
+  const key = assetsKey();
+  const cached = (await local.get(key)) || {};
   if (!info) return { tokens: [], updated: cached.updated || null, error: null };
   if (cached.address === info.address) {
     const minAge = force ? 5_000 : 30_000;
@@ -230,29 +291,29 @@ async function refreshAssets({ force = false } = {}) {
       const owner = info.address;
       const out = { address: owner, updated: Date.now(), holdings: cached.address === owner ? cached.holdings || [] : [], error: cached.address === owner ? cached.error || null : null };
       try {
-        await local.set('assets', out); // shown as "last read" while scanning
+        await local.set(key, out); // shown as "last read" while scanning
         const status = await rpc.call('aether_status', []);
         const sources = await tokenSources(status.chain_id);
         if (sources) {
-          const key = `tokenCatalog.${status.chain_id}`;
-          const catalog = (await local.get(key)) || { tokens: {}, rejected: [], factoryRead: 0, pairsRead: 0, launchesRead: 0 };
+          const catalogKey = `tokenCatalog.${status.chain_id}`;
+          const catalog = (await local.get(catalogKey)) || { tokens: {}, rejected: [], factoryRead: 0, pairsRead: 0, launchesRead: 0 };
           const read = (to, data) => rpc.call('eth_call', [{ to, data }, 'latest']);
           const { catalog: cat, held } = await scanTokens({ owner, sources, catalog, read });
-          await local.set(key, cat);
-          await local.set('assets', { address: owner, updated: Date.now(), holdings: held, error: null });
+          await local.set(catalogKey, cat);
+          await local.set(key, { address: owner, updated: Date.now(), holdings: held, error: null });
         } else {
-          await local.set('assets', { address: owner, updated: Date.now(), holdings: [], error: null });
+          await local.set(key, { address: owner, updated: Date.now(), holdings: [], error: null });
         }
       } catch (e) {
         // Try again on the normal cadence, not every poll.
-        await local.set('assets', { address: owner, updated: Date.now(), holdings: out.holdings, error: e.message || String(e) }).catch(() => {});
+        await local.set(key, { address: owner, updated: Date.now(), holdings: out.holdings, error: e.message || String(e) }).catch(() => {});
       } finally {
         refreshAssets.running = null;
       }
     })();
   }
   await refreshAssets.running;
-  const fresh = (await local.get('assets')) || {};
+  const fresh = (await local.get(key)) || {};
   return { tokens: fresh.address === info.address ? fresh.holdings || [] : [], updated: fresh.updated || null, error: fresh.error || null };
 }
 
@@ -266,7 +327,7 @@ async function refreshAssets({ force = false } = {}) {
  * Nothing new is written on chain.
  */
 async function displaySets(chainId) {
-  const activity = (await local.get('activity')) || [];
+  const activity = (await local.get(activityKey())) || [];
   const sources = await tokenSources(chainId);
   const choices = (await local.get(`tokenChoices.${chainId}`)) || {};
   const official = sources ? [...(sources.seed || []), ...(sources.waeth ? [sources.waeth] : [])] : [];
@@ -277,7 +338,7 @@ async function displaySets(chainId) {
     official,
     hidden: choices.hidden || [],
     shown: choices.shown || [],
-    officialSymbols: [{ symbol: 'AETH', name: 'Aether' },
+    officialSymbols: [{ symbol: Brand.coinTicker, name: Brand.coinName },
       ...official.map((a) => catalog.tokens[a.toLowerCase()]).filter(Boolean).map((t) => ({ symbol: t.symbol, name: t.name }))],
   };
 }
@@ -305,6 +366,11 @@ async function state() {
     address: info?.address || null,
     approvals: (await session.get('approvals')) || [],
     lockMinutes: (await local.get('lockMinutes')) || DEFAULT_LOCK_MINUTES,
+    developerMode: Boolean(await local.get('developerMode')),
+    developmentNetwork: activeNetwork?.development || false,
+    developmentPort: activeNetwork?.port || (await local.get('developmentPort')) || 18546,
+    chainId: rpc.chainId,
+    defaultChainId: Number(defaultNetwork.chain_id),
     rpcs: (await local.get('rpcs')) || [],
     terms: (await local.get('termsVersion')) || 0,
   };
@@ -326,7 +392,7 @@ const ui = {
   assets: async ({ force } = {}) => {
     const base = await refreshAssets({ force });
     const status = await rpc.call('aether_status', []).catch(() => null);
-    if (!status) return { ...base, unverified: [], officialSymbols: [{ symbol: 'AETH', name: 'Aether' }] };
+    if (!status) return { ...base, unverified: [], officialSymbols: [{ symbol: Brand.coinTicker, name: Brand.coinName }] };
     const sets = await displaySets(status.chain_id);
     const { main, unverified } = splitHoldings(base.tokens, sets);
     return { ...base, tokens: main, unverified, officialSymbols: sets.officialSymbols };
@@ -336,7 +402,7 @@ const ui = {
    * eth_call from this account (a honeypot reverts here). Never stored. */
   sendCheck: async ({ recipient, to, value_wei, data }) => {
     const info = await vault.info();
-    const sent = ((await local.get('activity')) || []).map((a) => a.to).filter(Boolean);
+    const sent = ((await local.get(activityKey())) || []).map((a) => a.to).filter(Boolean);
     const risk = addressRisk(recipient, sent);
     let dry = { state: 'unchecked' };
     try {
@@ -359,30 +425,54 @@ const ui = {
     }
     const hash = await wallet.send(tx);
     if (token) {
-      track(hash, { title: `Sent ${formatTokenAmount(token.amount, token.decimals)} ${token.symbol} to ${tokenShort(to)}`, origin: 'Aether Wallet', value: tx.value_wei, to, token: token.address });
+      track(hash, { title: `Sent ${formatTokenAmount(token.amount, token.decimals)} ${token.symbol} to ${tokenShort(to)}`, origin: `${Brand.project} Wallet`, value: tx.value_wei, to, token: token.address });
     } else {
-      track(hash, { title: 'Send AETH', origin: 'Aether Wallet', value: tx.value_wei, to });
+      track(hash, { title: `Send ${Brand.coinTicker}`, origin: `${Brand.project} Wallet`, value: tx.value_wei, to });
     }
     return { hash };
   },
   hideToken: ({ address }) => chooseToken(address, { hide: true }),
   showToken: ({ address }) => chooseToken(address, { show: true }),
   faucet: async () => {
+    if (!(await local.get('developerMode'))) throw new Error('The faucet is available only on the local development network.');
     const info = await vault.info();
+    if (!activeNetwork?.development) throw new Error('The faucet is available only on the local development network.');
     const hash = await wallet.faucet(info.address);
-    track(hash, { title: 'Test AETH from the faucet', origin: 'Aether Wallet' });
+    track(hash, { title: `Test ${Brand.coinTicker} from the faucet`, origin: `${Brand.project} Wallet` });
     return { hash };
   },
   quote: ({ id }) => quote(id),
-  activity: async () => (await local.get('activity')) || [],
+  activity: async () => (await activityPage()).items,
+  activityPage: ({ cursors } = {}) => activityPage(cursors || null),
+  linkedWallets: async () => (await local.get('linkedWallets')) || [],
+  linkWallet: async ({ address }) => {
+    const own = (await vault.info())?.address;
+    const current = (await local.get('linkedWallets')) || [];
+    if (current.length >= 8) throw new Error('You can link up to 8 view-only wallets.');
+    const next = [...current, linkedAddress(address, own, current)];
+    await local.set('linkedWallets', next);
+    return next;
+  },
+  unlinkWallet: async ({ address }) => {
+    const next = ((await local.get('linkedWallets')) || []).filter((a) => a.toLowerCase() !== String(address).toLowerCase());
+    await local.set('linkedWallets', next);
+    return next;
+  },
   sites: async () => sites(),
   disconnect: ({ origin }) => setSite(origin, null),
-  settings: async ({ lockMinutes, rpcs }) => {
+  settings: async ({ lockMinutes, rpcs, developerMode, developmentNetwork, developmentPort }) => {
+    if (developmentNetwork && developerMode === false) throw new Error('Turn on Developer mode first.');
+    if (developmentNetwork) networkSettings(defaultNetwork, { developerMode: true, developmentNetwork, developmentPort });
     if (lockMinutes !== undefined) await local.set('lockMinutes', Math.min(Math.max(Number(lockMinutes) || DEFAULT_LOCK_MINUTES, 1), 24 * 60));
+    if (developerMode !== undefined) await local.set('developerMode', Boolean(developerMode));
+    if (developerMode === false) developmentNetwork = false;
+    if (developmentNetwork !== undefined) await local.set('developmentNetwork', Boolean(developmentNetwork));
+    if (developmentPort !== undefined) await local.set('developmentPort', Number(developmentPort));
     if (rpcs !== undefined) {
       const list = rpcs.filter((u) => { try { return ['http:', 'https:'].includes(new URL(u).protocol); } catch { return false; } });
       await local.set('rpcs', list);
     }
+    await applySettings();
     return state();
   },
   reveal: ({ password }) => vault.revealSecret(password),
@@ -402,7 +492,7 @@ const ui = {
 chrome.runtime.onMessage.addListener((m, sender, reply) => {
   // Only this extension's own pages drive the wallet; content scripts cannot.
   if (sender.id !== chrome.runtime.id || !sender.url?.startsWith(UI_PREFIX) || !m || !ui[m.op]) return false;
-  ready
+  Promise.all([ready, configured])
     .then(() => ui[m.op](m.args || {}))
     .then((result) => reply({ ok: true, result }), (e) => reply({ ok: false, error: e.message || String(e) }));
   return true;

@@ -50,9 +50,11 @@ fn config() -> ChainConfig {
         min_streak: None,
         draw_epochs: None,
         history_v2: true,
+        protocol: 1,
         node_rewards: false,
         group: 0,
         max_committee: aether_node::rotation::GROW_UNTIL,
+        committee: vec![],
         reserve: None,
     }
 }
@@ -113,7 +115,7 @@ impl Node {
         let context = Context { round: Round::new(EPOCH, View::new(h)), leader, parent: (View::new(h - 1), parent.digest) };
         let skeleton = Block::new(context.clone(), parent.digest, height, 1_790_000_000_000 + h * 1000, bytes::Bytes::new());
         let ctx = Chain::block_context(&self.chain.cfg(), &skeleton, &parent);
-        let (pre, _) = self.chain.pre_state(&parent, parent.next_protocol(), &[], false).unwrap();
+        let (pre, _) = self.chain.pre_state(&parent, parent.next_protocol(), &[], None, false).unwrap();
         let (payload, _) = build_payload(&parent, &pre, &ctx, txs, Extras::default());
         drop(pre);
         let block = Block::new(context, parent.digest, height, 1_790_000_000_000 + h * 1000, payload.to_bytes());

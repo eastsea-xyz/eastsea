@@ -24,7 +24,7 @@ const DRAW_AT: u64 = E * 24;
 const MACS: usize = 4;
 
 fn net() -> Net {
-    Net::new(Opts { chain_id: CHAIN, node_rewards: true, epoch_blocks: E, macs: MACS as u8, min_streak: Some(0), history_v2: true, reserve: None })
+    Net::new(Opts { chain_id: CHAIN, node_rewards: true, epoch_blocks: E, macs: MACS as u8, min_streak: Some(0), history_v2: true, protocol: 1, reserve: None, fees: false, committee: None })
 }
 
 /// The word an epoch opened by `seed` must hold.
@@ -42,7 +42,7 @@ fn expected_word(epoch: u64, seed: &Seed) -> U256 {
 /// words included.
 fn step(a: &mut Net, b: &mut Net, txs: Vec<TxEnvelope>, seed: Option<Seed>) -> Arc<Executed> {
     let answers = a.answers();
-    let (block, exec) = a.build_with(txs, None, vec![], answers, None, seed).unwrap();
+    let (block, exec) = a.build_extras(txs, None, vec![], answers, vec![], None, seed).unwrap();
     let bexec = b.chain.execute(&block, &b.parent).unwrap();
     assert_eq!(bexec.state.root(), exec.state.root(), "two nodes diverged at height {}", exec.height);
     for e in 0..=exec.height / E {

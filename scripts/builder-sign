@@ -1,0 +1,125 @@
+#!/usr/bin/env swift
+// Sign exact release-manifest bytes with this Mac's non-exportable Secure Enclave key.
+// Usage: builder-sign init | public-key | sign <manifest.json> --local-manifest <rebuilt.json>
+import CryptoKit
+import Foundation
+import LocalAuthentication
+import Security
+
+struct BuilderSignature: Codable {
+    let publicKey: String
+    let signature: String
+    let manifestSha256: String
+
+    enum CodingKeys: String, CodingKey {
+        case publicKey = "public_key", signature, manifestSha256 = "manifest_sha256"
+    }
+}
+
+struct BundledSignature: Codable {
+    let publicKey: String
+    let signature: String
+    enum CodingKeys: String, CodingKey { case publicKey = "public_key", signature }
+}
+
+func hex(_ data: Data) -> String { data.map { String(format: "%02x", $0) }.joined() }
+
+func bytes(_ hex: String) throws -> Data {
+    guard hex.count.isMultiple(of: 2) else { throw BuilderError.invalidHex }
+    var result = Data()
+    var i = hex.startIndex
+    while i < hex.endIndex {
+        let end = hex.index(i, offsetBy: 2)
+        guard let byte = UInt8(hex[i..<end], radix: 16) else { throw BuilderError.invalidHex }
+        result.append(byte)
+        i = end
+    }
+    return result
+}
+
+enum BuilderError: Error, CustomStringConvertible {
+    case usage, missingKey, invalidHex, badSignature, alreadyInitialized
+    var description: String {
+        switch self {
+        case .usage: "usage: builder-sign init | public-key | sign <manifest> --local-manifest <rebuilt> | verify <manifest> <signature> | verify-bundle <manifest> <bundle> | self-test"
+        case .missingKey: "builder key missing; run builder-sign init on this Mac"
+        case .invalidHex: "invalid hex in builder signature"
+        case .badSignature: "builder signature or manifest hash does not match"
+        case .alreadyInitialized: "builder key already exists; refusing to replace it"
+        }
+    }
+}
+
+let keyPath = FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent(".config/aether-builder/keyref")
+
+func savedKey() throws -> SecureEnclave.P256.Signing.PrivateKey {
+    guard let reference = try? Data(contentsOf: keyPath) else { throw BuilderError.missingKey }
+    return try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: reference)
+}
+
+func run() throws {
+    let args = Array(CommandLine.arguments.dropFirst())
+    switch args {
+    case ["init"]:
+        guard !FileManager.default.fileExists(atPath: keyPath.path) else { throw BuilderError.alreadyInitialized }
+        let control = SecAccessControlCreateWithFlags(nil, kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+            [.privateKeyUsage, .userPresence], nil)!
+        let key = try SecureEnclave.P256.Signing.PrivateKey(accessControl: control, authenticationContext: LAContext())
+        try FileManager.default.createDirectory(at: keyPath.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try key.dataRepresentation.write(to: keyPath, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: keyPath.path)
+        print(hex(key.publicKey.x963Representation))
+    case ["public-key"]:
+        print(hex(try savedKey().publicKey.x963Representation))
+    case _ where args.count == 4 && args[0] == "sign" && args[2] == "--local-manifest":
+        let data = try Data(contentsOf: URL(fileURLWithPath: args[1]))
+        guard data == (try Data(contentsOf: URL(fileURLWithPath: args[3]))) else { throw BuilderError.badSignature }
+        let key = try savedKey()
+        let signature = try key.signature(for: data)
+        let output = BuilderSignature(publicKey: hex(key.publicKey.x963Representation),
+            signature: hex(signature.rawRepresentation),
+            manifestSha256: hex(Data(SHA256.hash(data: data))))
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        print(String(decoding: try encoder.encode(output), as: UTF8.self))
+    case _ where args.count == 3 && args[0] == "verify":
+        let manifest = try Data(contentsOf: URL(fileURLWithPath: args[1]))
+        let signed = try JSONDecoder().decode(BuilderSignature.self,
+            from: Data(contentsOf: URL(fileURLWithPath: args[2])))
+        let key = try P256.Signing.PublicKey(x963Representation: bytes(signed.publicKey))
+        let signature = try P256.Signing.ECDSASignature(rawRepresentation: bytes(signed.signature))
+        guard signed.manifestSha256 == hex(Data(SHA256.hash(data: manifest))),
+              key.isValidSignature(signature, for: manifest) else { throw BuilderError.badSignature }
+        print("valid builder signature: \(signed.publicKey)")
+    case _ where args.count == 3 && args[0] == "verify-bundle":
+        let manifest = try Data(contentsOf: URL(fileURLWithPath: args[1]))
+        let signatures = try JSONDecoder().decode([BundledSignature].self,
+            from: Data(contentsOf: URL(fileURLWithPath: args[2])))
+        guard (2...3).contains(signatures.count) else { throw BuilderError.badSignature }
+        var seen = Set<String>()
+        for signed in signatures {
+            let key = try P256.Signing.PublicKey(x963Representation: bytes(signed.publicKey))
+            let signature = try P256.Signing.ECDSASignature(rawRepresentation: bytes(signed.signature))
+            guard seen.insert(signed.publicKey.lowercased()).inserted,
+                  key.isValidSignature(signature, for: manifest) else { throw BuilderError.badSignature }
+        }
+        print("\(seen.count) valid, distinct builder signatures")
+    case ["self-test"]:
+        let key = P256.Signing.PrivateKey()
+        let manifest = Data("AetherRelease/v1 test".utf8)
+        let signature = try key.signature(for: manifest)
+        guard key.publicKey.isValidSignature(signature, for: manifest),
+              !key.publicKey.isValidSignature(signature, for: Data("tampered".utf8)) else {
+            throw BuilderError.badSignature
+        }
+        print("builder-sign self-test passed")
+    default:
+        throw BuilderError.usage
+    }
+}
+
+do { try run() } catch {
+    fputs("builder-sign: \(error)\n", stderr)
+    exit(1)
+}

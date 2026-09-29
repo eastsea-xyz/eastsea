@@ -1,11 +1,11 @@
 {
   "manifest_version": 3,
-  "name": "Aether Wallet",
-  "short_name": "Aether",
+  "name": "EastSea Wallet",
+  "short_name": "EastSea",
   "version": "0.1.1",
-  "description": "Aether testnet wallet in your browser. Your key is stored encrypted in this browser; every transaction needs your approval. Test AETH has no value.",
+  "description": "EastSea wallet in your browser. Your key is stored encrypted in this browser; every transaction needs your approval.",
   "icons": { "16": "icons/16.png", "32": "icons/32.png", "48": "icons/48.png", "128": "icons/128.png" },
-  "action": { "default_popup": "ui/popup.html", "default_title": "Aether Wallet" },
+  "action": { "default_popup": "ui/popup.html", "default_title": "EastSea Wallet" },
   "background": { "service_worker": "src/background.js", "type": "module" },
   "content_scripts": [
     { "matches": ["http://*/*", "https://*/*"], "js": ["src/inpage.js"], "run_at": "document_start", "world": "MAIN", "all_frames": false },

@@ -5,17 +5,18 @@
 //! p2p network. Time is virtual, so minutes of network time run in seconds and
 //! every run is reproducible from its seed. Faults: lossy and jittery links,
 //! a 2|2 partition, a validator cut off and rejoining, validators that disagree
-//! about an inclusion list (the 2026-09-28 testnet stall), and slow or stalled
-//! disks.
+//! about an inclusion list (the 2026-09-28 testnet stall), slow or stalled
+//! disks, seeded crashes, silent or double-voting members, and clock skew.
 //!
 //! Checked every run: safety (no two different blocks finalized at one height,
 //! across all validators), liveness (the chain advances once a quorum can talk),
-//! agreement (every validator reaches the same state root), and replay (the same
+//! agreement (validators share finalized hashes), and replay (the same
 //! seed gives the same chain). `AETHER_SIM_SEEDS` / `AETHER_SIM_SECS` scale the
 //! ignored `soak` test for long runs.
 
 use aether_crypto::P256Signer;
 use aether_execution::{sign_call_with, EvmCall};
+use aether_light::block::Handoff;
 use aether_light::{consensus_namespace, devnet_threshold, devnet_validator_key, Scheme};
 use aether_node::application::Application;
 use aether_node::chain::{dev_accounts, dev_seed, Chain, ChainConfig};
@@ -23,13 +24,24 @@ use aether_node::engine::{self, MAX_BLOCK_BYTES};
 use aether_node::epochs::ScheduleEpocher;
 use aether_node::inclusion::InclusionList;
 use aether_types::{Address, Bytes, FeeVector, GasVector, U256};
+use commonware_codec::Encode as _;
 use commonware_consensus::marshal;
-use commonware_consensus::types::ViewDelta;
-use commonware_cryptography::Signer as _;
+use commonware_consensus::simplex::types::{Notarize, Proposal, Vote};
+use commonware_consensus::types::{Epoch, Round, View, ViewDelta};
+use commonware_cryptography::bls12381::dkg::feldman_desmedt::deal;
+use commonware_cryptography::bls12381::primitives::sharing::Mode;
+use commonware_cryptography::bls12381::primitives::variant::MinSig;
+use commonware_cryptography::{sha256::Digest, Hasher as _, Sha256, Signer as _};
 use commonware_p2p::simulated::{self, Link, Network, Oracle};
+use commonware_p2p::{Recipients, Sender as _};
 use commonware_runtime::{deterministic, Clock, Quota, Runner as _, Supervisor as _};
-use commonware_utils::{probability, NZUsize, NZU32};
+use commonware_utils::{probability, N3f1, NZUsize, NZU32};
+use rand::SeedableRng as _;
 use std::collections::BTreeMap;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant};
 
 mod slow_disk;
@@ -82,6 +94,12 @@ enum Fault {
         to: u64,
         delay_ms: u64,
     },
+    /// One member casts votes but never proposes when it is elected leader.
+    Silent { from: u64, to: u64 },
+    /// Validator 4's local clock is ahead of the other validators.
+    ClockSkew { from: u64, to: u64, skew_ms: i64 },
+    /// Validator 4 signs two different notarize votes in the same views.
+    Equivocate { from: u64, to: u64 },
 }
 
 /// What a run ends with, per validator.
@@ -94,6 +112,8 @@ struct Outcome {
     txs: usize,
     /// Block timestamps (ms) of validator 1's finalized chain.
     timestamps: Vec<u64>,
+    equivocation_detected: bool,
+    handoff_switch: Option<u64>,
 }
 
 fn chain_config() -> ChainConfig {
@@ -115,9 +135,11 @@ fn chain_config() -> ChainConfig {
         min_streak: None,
         draw_epochs: None,
         history_v2: false,
+        protocol: 1,
         node_rewards: false,
         group: 0,
         max_committee: aether_node::rotation::GROW_UNTIL,
+        committee: vec![],
         reserve: None,
     }
 }
@@ -139,7 +161,7 @@ async fn link_all(oracle: &mut Oracle<Pk, Ctx>, keys: &[Pk], up: impl Fn(usize, 
     }
 }
 
-async fn start_validator(context: &Ctx, oracle: &Oracle<Pk, Ctx>, i: u64, chain: Chain, disk: Disk) {
+async fn start_validator(context: &Ctx, oracle: &Oracle<Pk, Ctx>, i: u64, chain: Chain, disk: Disk, proposals: Arc<AtomicBool>) -> (Scheme, simulated::Sender<Pk, Ctx>) {
     let (participants, polynomial, shares) = devnet_threshold(N);
     let key = devnet_validator_key(i);
     let me = key.public_key();
@@ -153,6 +175,8 @@ async fn start_validator(context: &Ctx, oracle: &Oracle<Pk, Ctx>, i: u64, chain:
         .expect("share matches");
     let control = oracle.control(me.clone());
     let pending = control.register(0, QUOTA).await.expect("register");
+    let injected_votes = pending.0.clone();
+    let injected_scheme = scheme.clone();
     let recovered = control.register(1, QUOTA).await.expect("register");
     let resolver = control.register(2, QUOTA).await.expect("register");
     let broadcast = control.register(3, QUOTA).await.expect("register");
@@ -186,6 +210,7 @@ async fn start_validator(context: &Ctx, oracle: &Oracle<Pk, Ctx>, i: u64, chain:
             blocker: oracle.control(me.clone()),
             provider: oracle.manager(),
             partition_prefix: format!("v{i}"),
+            journal_dir: None,
             me,
             scheme,
             identity,
@@ -193,7 +218,7 @@ async fn start_validator(context: &Ctx, oracle: &Oracle<Pk, Ctx>, i: u64, chain:
             epocher: ScheduleEpocher::new(vec![]),
             epoch_floor: None,
             genesis,
-            application: Application::new(chain, BLOCK_MS),
+            application: Application::new(chain, BLOCK_MS).with_proposal_switch(proposals),
             mailbox_size: 1024,
             leader_timeout: Duration::from_secs(2),
             certification_timeout: Duration::from_secs(3),
@@ -205,6 +230,46 @@ async fn start_validator(context: &Ctx, oracle: &Oracle<Pk, Ctx>, i: u64, chain:
     )
     .await;
     engine.start(pending, recovered, resolver, broadcast, marshal_resolver);
+    (injected_scheme, injected_votes)
+}
+
+fn send_conflicting_votes(scheme: &Scheme, sender: &mut simulated::Sender<Pk, Ctx>, peers: &[Pk]) {
+    for view in 1..128 {
+        let round = Round::new(Epoch::zero(), View::new(view));
+        let a = Proposal::new(round, View::zero(), Sha256::hash(&[format!("a{view}").as_bytes()]));
+        let b = Proposal::new(round, View::zero(), Sha256::hash(&[format!("b{view}").as_bytes()]));
+        for proposal in [a, b] {
+            let vote = Vote::<Scheme, Digest>::Notarize(Notarize::sign(scheme, proposal).expect("share signs"));
+            sender.send(Recipients::Some(peers.to_vec()), vote.encode(), true);
+        }
+    }
+}
+
+/// A signed handoff to the same roster is enough to exercise the durable
+/// pending-handoff transition without changing the committee's voting keys.
+fn signed_handoff() -> Handoff {
+    let (participants, sharing, shares) = devnet_threshold(N);
+    let mut seed = [0u8; 32];
+    seed[..24].copy_from_slice(b"aether-devnet-threshold-");
+    seed[24..].copy_from_slice(&N.to_be_bytes());
+    let (output, _) = deal::<MinSig, Pk, N3f1>(
+        rand_chacha::ChaCha20Rng::from_seed(seed), Mode::NonZeroCounter, participants.clone(),
+    ).expect("devnet sharing");
+    assert_eq!(output.public(), &sharing);
+    let handoff = Handoff {
+        round: 1,
+        output: hex::encode(output.encode()),
+        members: participants.iter().enumerate().map(|(i, key)| {
+            let node = aether_net::SecretKey::from_bytes(&[0xa0 + i as u8; 32]).public();
+            (hex::encode(key.encode()), node.to_string())
+        }).collect(),
+        signature: String::new(),
+    };
+    let partials: Vec<_> = shares.iter().take(sharing.required() as usize).map(|(_, share)| {
+        let signed = aether_node::handoff::sign_partial(7_777, &handoff, share);
+        aether_node::handoff::check_partial(7_777, &sharing, &handoff, &signed).expect("signed partial")
+    }).collect();
+    aether_node::handoff::combine(&sharing, &handoff, &partials).expect("quorum handoff")
 }
 
 /// A transfer from dev account `from` with `nonce`, priced well above the base fee.
@@ -270,14 +335,20 @@ fn simulate(seed: u64, secs: u64, fault: Fault) -> Outcome {
 
         let chains: Vec<Chain> = (0..N).map(|_| Chain::new(chain_config()).0).collect();
         let disks: Vec<Disk> = (0..N).map(|_| Disk::default()).collect();
+        let proposals: Vec<_> = (0..N).map(|_| Arc::new(AtomicBool::new(true))).collect();
+        let mut byzantine = None;
         for (i, chain) in chains.iter().enumerate() {
-            start_validator(&context, &oracle, i as u64 + 1, chain.clone(), disks[i].clone()).await;
+            let injected = start_validator(&context, &oracle, i as u64 + 1, chain.clone(), disks[i].clone(), proposals[i].clone()).await;
+            if i == 3 {
+                byzantine = Some(injected);
+            }
         }
 
         let mut nonces = [0u64; 4];
         let mut sent = 0;
         let bob = Address::repeat_byte(0xb0);
         let mut state = Fault::None;
+        let mut equivocation_detected = false;
         for t in 0..secs {
             // Apply the fault schedule at whole virtual seconds.
             let now = match fault {
@@ -286,14 +357,19 @@ fn simulate(seed: u64, secs: u64, fault: Fault) -> Outcome {
                 Fault::SplitList { from, to } if (from..to).contains(&t) => fault,
                 Fault::SlowDisk { from, to, .. } if (from..to).contains(&t) => fault,
                 Fault::SlowDisks { from, to, .. } if (from..to).contains(&t) => fault,
+                Fault::Silent { from, to } if (from..to).contains(&t) => fault,
+                Fault::ClockSkew { from, to, .. } if (from..to).contains(&t) => fault,
+                Fault::Equivocate { from, to } if (from..to).contains(&t) => fault,
                 _ => Fault::None,
             };
             if std::mem::discriminant(&now) != std::mem::discriminant(&state) {
                 for d in &disks {
                     d.set(Duration::ZERO);
+                    d.set_skew_ms(0);
                 }
+                proposals[3].store(true, Ordering::SeqCst);
                 match now {
-                    Fault::None | Fault::SplitList { .. } => {
+                    Fault::None | Fault::SplitList { .. } | Fault::Silent { .. } | Fault::ClockSkew { .. } | Fault::Equivocate { .. } => {
                         link_all(&mut oracle, &keys, |_, _| true).await
                     }
                     Fault::Partition { .. } => {
@@ -309,6 +385,21 @@ fn simulate(seed: u64, secs: u64, fault: Fault) -> Outcome {
                         for d in &disks[2..] {
                             d.set(Duration::from_millis(delay_ms));
                         }
+                    }
+                }
+                if let Fault::Silent { .. } = now {
+                    proposals[3].store(false, Ordering::SeqCst);
+                }
+                if let Fault::ClockSkew { skew_ms, .. } = now {
+                    disks[3].set_skew_ms(skew_ms);
+                }
+                if let Fault::Equivocate { .. } = now {
+                    let (scheme, sender) = byzantine.as_mut().expect("validator 4");
+                    send_conflicting_votes(scheme, sender, &keys[..3]);
+                }
+                if matches!(state, Fault::Equivocate { .. }) && matches!(now, Fault::None) {
+                    for peer in &keys[..3] {
+                        oracle.unblock(peer.clone(), keys[3].clone()).await.expect("heal peer");
                     }
                 }
                 state = now;
@@ -335,47 +426,130 @@ fn simulate(seed: u64, secs: u64, fault: Fault) -> Outcome {
                 }
             }
             context.sleep(Duration::from_secs(1)).await;
+            if matches!(fault, Fault::Equivocate { .. }) {
+                equivocation_detected |= oracle.blocked().await.expect("blocked peers").iter().any(|(_, peer)| *peer == keys[3]);
+            }
         }
         // Let everyone settle.
         context.sleep(Duration::from_secs(30)).await;
 
-        // One lock at a time: a guard lives to the end of its statement.
-        let heights = chains.iter().map(|c| c.finalized_height()).collect();
-        let finalized = chains
-            .iter()
-            .map(|c| {
-                c.lock()
-                    .blocks
-                    .iter()
-                    .map(|(h, b)| (*h, b.hash.clone()))
-                    .collect()
-            })
-            .collect();
-        let roots = chains
-            .iter()
-            .map(|c| format!("{}", c.lock().finalized.state.root()))
-            .collect();
-        let (txs, timestamps) = {
-            let g = chains[0].lock();
-            (
-                g.blocks.values().map(|b| b.txs.len()).sum(),
-                g.blocks
-                    .values()
-                    .filter(|b| b.height > 0)
-                    .map(|b| b.timestamp_ms)
-                    .collect(),
-            )
-        };
-        let outcome = Outcome {
-            heights,
-            finalized,
-            roots,
-            txs,
-            timestamps,
-        };
         let _ = sent;
-        outcome
+        let mut result = outcome(&chains);
+        result.equivocation_detected = equivocation_detected;
+        result
     })
+}
+
+/// One lock at a time: a guard lives to the end of its statement.
+fn outcome(chains: &[Chain]) -> Outcome {
+    let heights = chains.iter().map(|c| c.finalized_height()).collect();
+    let finalized = chains
+        .iter()
+        .map(|c| {
+            c.lock()
+                .blocks
+                .iter()
+                .map(|(h, b)| (*h, b.hash.clone()))
+                .collect()
+        })
+        .collect();
+    let roots = chains
+        .iter()
+        .map(|c| format!("{}", c.lock().finalized.state.root()))
+        .collect();
+    let (txs, timestamps) = {
+        let g = chains[0].lock();
+        (
+            g.blocks.values().map(|b| b.txs.len()).sum(),
+            g.blocks
+                .values()
+                .filter(|b| b.height > 0)
+                .map(|b| b.timestamp_ms)
+                .collect(),
+        )
+    };
+    Outcome {
+        heights,
+        finalized,
+        roots,
+        txs,
+        timestamps,
+        equivocation_detected: false,
+        handoff_switch: chains[0].lock().finalized.handoff.as_ref().map(|p| p.switch),
+    }
+}
+
+/// Stop the whole deterministic process at seeded virtual times. The next
+/// runner keeps only Commonware's durable storage; every engine and network
+/// channel is created anew, and Application replays its finalized archive.
+fn simulate_restarts(seed: u64, with_handoff: bool) -> Vec<Outcome> {
+    let cuts = [12 + seed % 8, 15 + (seed / 7) % 9, if with_handoff { 30 } else { 50 }];
+    let handoff = with_handoff.then(signed_handoff);
+    let identity = *devnet_threshold(N).1.public();
+    let mut runner = deterministic::Runner::new(
+        deterministic::Config::new().with_seed(seed).with_timeout(Some(Duration::from_secs(180))),
+    );
+    let mut outcomes = Vec::new();
+    for (phase, secs) in cuts.into_iter().enumerate() {
+        let pending = handoff.clone();
+        let (o, checkpoint) = runner.start_and_recover(|context| async move {
+            let keys: Vec<Pk> = (1..=N).map(|i| devnet_validator_key(i).public_key()).collect();
+            let (network, mut oracle) = Network::new_with_peers(
+                context.child("network"),
+                simulated::Config {
+                    max_size: MAX_BLOCK_BYTES + 1024 * 1024,
+                    max_peers_per_set: NZUsize!(N as usize),
+                    disconnect_on_block: true,
+                    tracked_peer_sets: NZUsize!(1),
+                },
+                keys,
+            )
+            .await;
+            network.start();
+            let keys: Vec<Pk> = (1..=N).map(|i| devnet_validator_key(i).public_key()).collect();
+            link_all(&mut oracle, &keys, |_, _| true).await;
+            let chains: Vec<Chain> = (0..N).map(|_| Chain::new(chain_config()).0).collect();
+            if let Some(h) = pending {
+                for chain in &chains {
+                    let mut g = chain.lock();
+                    g.identity = Some(identity);
+                    if phase == 1 {
+                        g.handoff_ready = Some(h.clone());
+                    }
+                }
+            }
+            for (i, chain) in chains.iter().enumerate() {
+                if phase == 1 && i == seed as usize % N as usize {
+                    continue; // This validator remains down until the last phase.
+                }
+                start_validator(
+                    &context, &oracle, i as u64 + 1, chain.clone(), Disk::default(),
+                    Arc::new(AtomicBool::new(true)),
+                ).await;
+            }
+            let bob = Address::repeat_byte(0xb0);
+            for t in 0..secs {
+                if t % 2 == 0 {
+                    for from in 1..=4u8 {
+                        let sender = dev_accounts(4)[from as usize - 1].1;
+                        let nonce = chains[0].lock().finalized.state.nonce(&sender);
+                        let tx = transfer(from, nonce, bob);
+                        for chain in &chains {
+                            let _ = chain.add_to_mempool(tx.clone());
+                        }
+                    }
+                }
+                context.sleep(Duration::from_secs(1)).await;
+            }
+            if phase == 2 {
+                context.sleep(Duration::from_secs(if with_handoff { 5 } else { 30 })).await;
+            }
+            outcome(&chains)
+        });
+        outcomes.push(o);
+        runner = deterministic::Runner::from(checkpoint);
+    }
+    outcomes
 }
 
 /// Longest wait between consecutive finalized blocks (virtual seconds).
@@ -415,7 +589,43 @@ fn check(o: &Outcome, min_height: u64) {
         hashes.windows(2).all(|w| w[0] == w[1]),
         "validators disagree at height {at_min}"
     );
+    if o.heights.iter().all(|h| *h == top) {
+        assert!(o.roots.windows(2).all(|w| w[0] == w[1]), "state roots disagree at the same height");
+    }
     assert!(o.txs > 0, "no transactions were finalized");
+}
+
+#[test]
+fn validators_restart_from_durable_journals_at_seeded_points() {
+    for seed in [61, 67] {
+        check_restart_phases(&simulate_restarts(seed, false));
+    }
+}
+
+fn check_restart_phases(phases: &[Outcome]) {
+    let mut finalized = BTreeMap::new();
+    for phase in phases {
+        for chain in &phase.finalized {
+            for (height, hash) in chain {
+                if let Some(previous) = finalized.insert(*height, hash) {
+                    assert_eq!(previous, hash, "conflicting finalization across restarts at {height}");
+                }
+            }
+        }
+    }
+    let middle_head = *phases[1].heights.iter().max().unwrap();
+    let recovered_tail = *phases[2].heights.iter().min().unwrap();
+    assert!(recovered_tail > middle_head + 20, "restart did not restore liveness");
+    check(phases.last().unwrap(), 45);
+}
+
+#[test]
+fn restart_during_signed_handoff_preserves_the_pending_switch() {
+    let phases = simulate_restarts(61, true);
+    let switch = phases[1].handoff_switch.expect("handoff finalized before crash");
+    assert!(phases[1].heights.iter().all(|h| *h < switch), "crash is inside handoff delay");
+    assert_eq!(phases[2].handoff_switch, Some(switch), "restarted nodes forgot the handoff");
+    check_restart_phases(&phases);
 }
 
 #[test]
@@ -500,6 +710,26 @@ fn stalled_disks_stall_then_resume_safely() {
     );
     assert!(gap >= 20, "the chain kept finalizing on stalled disks (longest gap {gap} s)");
     check(&o, 50);
+}
+
+#[test]
+fn silent_voter_does_not_stop_other_leaders() {
+    let o = simulate(51, 90, Fault::Silent { from: 15, to: 60 });
+    check(&o, 50);
+    assert!(block_gaps(&o) < 15, "one silent proposer stalled the chain");
+}
+
+#[test]
+fn a_skewed_clock_cannot_finalize_conflicting_blocks() {
+    let o = simulate(53, 90, Fault::ClockSkew { from: 15, to: 60, skew_ms: 2_000 });
+    check(&o, 45);
+}
+
+#[test]
+fn equivocating_vote_is_detected_and_ignored() {
+    let o = simulate(55, 90, Fault::Equivocate { from: 15, to: 40 });
+    assert!(o.equivocation_detected, "honest peers did not block the double voter");
+    check(&o, 45);
 }
 
 #[test]

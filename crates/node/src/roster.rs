@@ -70,6 +70,13 @@ pub struct NetworkFile {
     /// `ChainConfig::history_v2`). Absent on 7780 and older networks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history: Option<u32>,
+    /// Protocol rules this genesis starts under (e.g. 3: proof market, registry
+    /// v2 with its registration cap and the 16-seat growth, from height 0;
+    /// docs/design/15-node-rewards.md "업그레이드 불필요"). Absent on 7780 and
+    /// older networks: protocol 1, later protocols arrive by committee-signed
+    /// upgrade — so their genesis stays byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<u32>,
     /// Node rewards from genesis (docs/design/15-node-rewards.md; default off).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_rewards: Option<bool>,
@@ -85,6 +92,13 @@ pub struct NetworkFile {
     /// (`rotation::GROW_UNTIL`, 16, by default; 4..=128).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_committee: Option<u64>,
+    /// The validators this network opened with. `validators` names the running
+    /// committee (each handoff rewrites it), but a node re-syncing from
+    /// genesis — and every node deriving the genesis rewards words — needs the
+    /// very first roster however many committees came and went, so `aether
+    /// network` freezes it here and ceremonies carry it on (`keep_genesis`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub genesis_validators: Option<Vec<Member>>,
 }
 
 /// The founder's reserve keys in a network file: up to three validator
@@ -106,7 +120,15 @@ pub struct Genesis {
     pub draw_epochs: Option<u64>,
     /// History format version (0 or 1 = the original format).
     pub history: u32,
+    /// Protocol rules from height 0 (1 = the testnet's genesis, upgrades turn
+    /// later protocols on; 0 = `Default`, read as 1).
+    pub protocol: u32,
     pub node_rewards: bool,
+    /// The validators the network opened with (the file's
+    /// `genesis_validators`, or its validators before the first handoff):
+    /// node rewards record them in the genesis state as the first voting
+    /// committee, so every node derives the same one.
+    pub committee: Vec<(String, String)>,
     pub reserve: Option<crate::chain::Reserve>,
     /// The consensus group (0 today; `ChainConfig::group`).
     pub group: u16,
@@ -123,7 +145,9 @@ impl Default for Genesis {
             min_streak: None,
             draw_epochs: None,
             history: 0,
+            protocol: 0,
             node_rewards: false,
+            committee: Vec::new(),
             reserve: None,
             group: 0,
             max_committee: crate::rotation::GROW_UNTIL,
@@ -165,6 +189,16 @@ impl NetworkFile {
         if self.group.unwrap_or(0) != 0 && (registrar.is_some() || self.reserve.is_some()) {
             return Err("registry and rewards reserve belong to root group 0".into());
         }
+        // A genesis may name the protocol it starts under, 1 (the testnet's
+        // genesis) up to the newest this binary runs; anything else is a typo,
+        // not a default to round.
+        let protocol = match self.protocol {
+            None => 1,
+            Some(p) if (1..=crate::upgrade::PROTOCOL).contains(&p) => p,
+            Some(p) => {
+                return Err(format!("protocol {p}: expected 1 to {}", crate::upgrade::PROTOCOL))
+            }
+        };
         Ok(Genesis {
             faucet: self.faucet,
             registrar,
@@ -172,9 +206,11 @@ impl NetworkFile {
             min_streak: self.min_streak,
             draw_epochs: self.draw_epochs,
             history: self.history.unwrap_or(0),
+            protocol,
             node_rewards: self.node_rewards.unwrap_or(false),
             group: self.group.unwrap_or(0),
             max_committee: max_committee as usize,
+            committee: self.committee()?,
             reserve: match &self.reserve {
                 None => None,
                 Some(r) => {
@@ -190,10 +226,51 @@ impl NetworkFile {
                     };
                     // Every key and node id must parse, or no genesis.
                     reserve.bytes()?;
+                    // No validator of this network is also a reserve key (red
+                    // team, finding 3): a key that is both would sit in the
+                    // committee and in the reserve, so the founder's Mac would
+                    // run it either way and the overlap would hide from the
+                    // independent-operator count.
+                    let plain = |k: &str| k.trim_start_matches("0x").to_lowercase();
+                    let same_node = |a: &str, b: &str| {
+                        match (a.parse::<EndpointId>(), b.parse::<EndpointId>()) {
+                            (Ok(a), Ok(b)) => a == b,
+                            _ => a == b,
+                        }
+                    };
+                    for (key, node) in &reserve.members {
+                        for (i, v) in self.validators.iter().enumerate() {
+                            if plain(&v.key) == plain(key) {
+                                return Err(format!("validator {}: its key is also a reserve key", i + 1));
+                            }
+                            if same_node(&v.node, node) {
+                                return Err(format!("validator {}: its node id is also a reserve key's", i + 1));
+                            }
+                        }
+                    }
                     Some(reserve)
                 }
             },
         })
+    }
+
+    /// The validators the network opened with, keys lowercased as roster
+    /// words hold them: the file's `genesis_validators`, or its validators
+    /// (before the first handoff rewrote them).
+    pub fn committee(&self) -> Result<Vec<(String, String)>, String> {
+        let source = self.genesis_validators.as_ref().unwrap_or(&self.validators);
+        let mut members = Vec::with_capacity(source.len());
+        for (i, m) in source.iter().enumerate() {
+            let key = hex::decode(m.key.trim_start_matches("0x"))
+                .map_err(|e| format!("validator {}: key: {e}", i + 1))?;
+            <[u8; 32]>::try_from(key)
+                .map_err(|_| format!("validator {}: key: 32-byte hex", i + 1))?;
+            m.node
+                .parse::<EndpointId>()
+                .map_err(|e| format!("validator {}: node: {e}", i + 1))?;
+            members.push((m.key.trim_start_matches("0x").to_lowercase(), m.node.clone()));
+        }
+        Ok(members)
     }
 
     /// Carry genesis facts into a file written by a ceremony (dkg, reshare).
@@ -204,10 +281,12 @@ impl NetworkFile {
         self.min_streak = from.min_streak.or(self.min_streak);
         self.draw_epochs = from.draw_epochs.or(self.draw_epochs);
         self.history = from.history.or(self.history);
+        self.protocol = from.protocol.or(self.protocol);
         self.node_rewards = from.node_rewards.or(self.node_rewards);
         self.reserve = from.reserve.clone().or(self.reserve.take());
         self.group = from.group.or(self.group);
         self.max_committee = from.max_committee.or(self.max_committee);
+        self.genesis_validators = from.genesis_validators.clone().or(self.genesis_validators.take());
     }
 }
 
@@ -328,10 +407,12 @@ impl Roster {
             min_streak: None,
             draw_epochs: None,
             history: None,
+            protocol: None,
             node_rewards: None,
             reserve: None,
             group: None,
             max_committee: None,
+            genesis_validators: None,
         }
     }
 }
@@ -400,32 +481,68 @@ impl LocalKeys {
 
     /// Write `<dir>/validator.key` (mode 600) and `<dir>/validator.pub.json`. Refuses to overwrite.
     pub fn save(&self, dir: &Path) -> Result<(), String> {
-        use std::io::Write as _;
-        use std::os::unix::fs::OpenOptionsExt as _;
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         let path = dir.join(KEY_FILE);
+        if path.exists() {
+            return Err(format!("{} exists (keys are never overwritten)", path.display()));
+        }
         let j = KeyFileJson {
             consensus: hex::encode(self.signer.encode()),
             node: hex::encode(self.node_secret.to_bytes()),
         };
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)
-            .map_err(|e| format!("{}: {e} (keys are never overwritten)", path.display()))?;
-        f.write_all(&serde_json::to_vec_pretty(&j).expect("json"))
-            .map_err(|e| e.to_string())?;
-        std::fs::write(
-            dir.join(PUBLIC_FILE),
-            serde_json::to_vec_pretty(&self.public()).expect("json"),
-        )
-        .map_err(|e| e.to_string())
+        // Atomic replacement (red team #5): a crash or a full disk mid-write
+        // leaves no truncated key file a later start would treat as lost.
+        crate::atomic::create(&path, &serde_json::to_vec_pretty(&j).expect("json"), 0o600)?;
+        crate::atomic::replace(
+            &dir.join(PUBLIC_FILE),
+            &serde_json::to_vec_pretty(&self.public()).expect("json"),
+            0o644,
+        )?;
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    fn file(json: &str) -> NetworkFile {
+        serde_json::from_str(json).expect("network file")
+    }
+
+    #[test]
+    fn the_protocol_field_names_the_genesis_rules() {
+        // 7780 and older files have no field: protocol 1, upgrades turn the
+        // later protocols on, and the file serializes back without the field.
+        let old = file(r#"{"chain_id":7780,"validators":[]}"#);
+        assert_eq!(old.genesis().unwrap().protocol, 1);
+        assert!(!serde_json::to_string(&old).unwrap().contains("protocol"));
+        // A new network names the protocol it starts under.
+        let mainnet = file(r#"{"chain_id":7799,"validators":[],"protocol":3}"#);
+        assert_eq!(mainnet.genesis().unwrap().protocol, 3);
+        // Anything else is refused, not rounded to a default.
+        for bad in [0u32, crate::upgrade::PROTOCOL + 1, u32::MAX] {
+            let msg = format!(r#"{{"chain_id":1,"validators":[],"protocol":{bad}}}"#);
+            assert!(file(&msg).genesis().is_err(), "protocol {bad}");
+        }
+        assert!(file(r#"{"chain_id":1,"validators":[],"protocol":1}"#).genesis().is_ok());
+    }
+
+    #[test]
+    fn ceremonies_carry_the_genesis_protocol() {
+        // dkg/reshare write a new network.json: the genesis facts, the
+        // protocol included, must survive the ceremony.
+        let from = file(r#"{"chain_id":7799,"validators":[],"protocol":3,"history":2}"#);
+        let mut written = file(r#"{"chain_id":7799,"validators":[]}"#);
+        written.keep_genesis(&from);
+        assert_eq!(written.protocol, Some(3));
+        assert_eq!(written.genesis().unwrap().protocol, 3);
+        assert_eq!(written.genesis().unwrap().history, 2);
+    }
+}
+
+#[cfg(test)]
+mod group_tests {
     use super::*;
 
     fn file(max_committee: Option<u64>, group: Option<u16>) -> NetworkFile {
@@ -443,10 +560,12 @@ mod tests {
             min_streak: None,
             draw_epochs: None,
             history: Some(2),
+            protocol: None,
             node_rewards: Some(true),
             reserve: None,
             group,
             max_committee,
+            genesis_validators: None,
         }
     }
 

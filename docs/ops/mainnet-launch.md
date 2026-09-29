@@ -7,10 +7,22 @@
 ## 0. 리허설 (출시 전날과 직전, 두 번)
 
 ```bash
-scripts/mainnet-rehearsal.sh $(mktemp -d)/rehearsal
+mkdir -p ./tmp
+scripts/mainnet-rehearsal.sh "$(mktemp -d ./tmp/mainnet-rehearsal.XXXXXX)/rehearsal"
 ```
 
-버리는 로컬 네트워트에 **메인넷과 같은 제네시스 플래그**(새 체인 아이디, `"history": 2`, node rewards, 등록기, 예비 키 3개, faucet·사전 발행 없음)를 걸고 4검증자+예비키+후보 Mac을 `aether run`만으로 띄워 확인한다: 블록 확정·4검증자 일치, 빈 블록 조용(history v2), 사전 발행·faucet 없음, 첫 에포크 분배가 `rewards::issuance`와 정확히 일치(새 Mac pool/32), 예비 키 자동 착석, 30일 프루닝 기본값. **PASS가 아니면 다음 단계로 가지 않는다.** 출시 직전에는 출시에 쓸 바이너리로 다시 한 번.
+버리는 로컬 네트워크에 **메인넷과 같은 제네시스 플래그**(새 체인 아이디, `"protocol": 3`, `"history": 2`, node rewards, 등록기, 예비 키 3개, faucet·사전 발행 없음)를 걸고 4검증자+예비키+후보 Mac을 `aether run`만으로 띄워 확인한다: 블록 확정·4검증자 일치, 높이 1의 프로토콜이 3·에포크당 등록 상한 활성, 메인넷 규칙 목록 전부(아래 2단계), 빈 블록 조용(history v2), 사전 발행·faucet 없음, 첫 에포크 분배가 `rewards::issuance`와 정확히 일치(새 Mac pool/32), 예비 키 자동 착석, 30일 프루닝 기본값, **현재 바이너리의 그림자 재실행 일치**. **PASS가 아니면 다음 단계로 가지지 않는다.** 출시 직전에는 출시에 쓸 바이너리로 다시 한 번.
+
+## 업그레이드 전 필수: 메인넷 그림자 재실행
+
+업그레이드 후보 바이너리로 메인넷의 높이 0부터 **대상 높이까지** 다시 실행한다. 원본 노드의 상태를 바꾸지 않고 `./tmp/` 아래 격리된 저장소를 사용한 뒤 지운다. 아카이브 RPC 또는 중지된 history-v2 아카이브 노드의 데이터 디렉터리와 원본 `network.json`이 필요하다. 가지치기로 블록이나 영수증이 빠진 노드로는 완전한 재실행을 할 수 없으며, 누락을 PASS로 처리하지 않는다.
+
+```bash
+aether shadow --from "$ARCHIVE_RPC" --to "$FINALIZED_HEIGHT"
+# 또는: aether shadow --from "$STOPPED_ARCHIVE_DATA" --network "$GENESIS_NETWORK_JSON" --to "$FINALIZED_HEIGHT"
+```
+
+매 블록의 상태 루트를 원본의 블록 요약과 대조하고, 거래 순서대로 직렬화한 영수증의 BLAKE3 다이제스트도 대조한다. 이 **영수증 다이제스트는 재실행 검사값**이며 현재 블록 형식에 온체인 영수증 루트는 없다. 첫 불일치에서 높이·필드·양쪽 값을 출력하고 0이 아닌 코드로 끝난다. 업그레이드 전에 이 검사와 `scripts/mainnet-rehearsal.sh`가 모두 PASS여야 한다.
 
 ## 1. 키 세레머니
 
@@ -33,6 +45,7 @@ dev 계정(1–10번)은 메인넷 제네시스에서 잔액이 0이다(사전 �
 ```bash
 aether network \
   --chain-id <새 체인 아이디> \
+  --protocol 3 \
   --history 2 \
   --node-rewards \
   --registrar <aether registrar-key가 출력한 x‖y hex> \
@@ -45,8 +58,34 @@ aether network \
 ```
 
 - `--faucet`을 주지 않는다: 이 네트워크에는 사전 발행이 없고, 모든 토큰이 발행(보상)으로만 나온다.
+- `--protocol 3`은 제네시스부터 프로토콜 3 규칙(증명 시장, registry v2·에포크당 등록 상한, 16석 증가 추첨)을 켠다. 메인넷은 증명 보상 없이 열리지 않으므로 이 값은 생략하지 않는다(15-node-rewards "업그레이드 불필요"). 7780에는 이 필드가 없다(프로토콜 1 제네시스, 업그레이드로 2·3 도입 — 제네시스가 바뀌지 않는다).
 - `--history 2`는 새 제네시스에서만 유효하다(7780에는 없다). 빈 블록이 조용해지고 era 파일·30일 프루닝이 기본이 된다.
 - epoch_blocks/min_streak/draw_epochs는 기본값(3600/24/24)을 그대로 쓴다. 리허설에서 줄여 본 것은 시간 단축용 값이다.
+
+### 메인넷 규칙 목록 (높이 1부터 켜져 있어야 하는 규칙)
+
+메인넷은 어떤 규칙도 "출시 뒤 업그레이드로 켠다" 없이 제네시스부터 전부 켜져 있어야 한다(갭 G1: 프로토콜 1로 열리면 증명 시장·등록 상한·16석 증가가 꺼진 채 시작한다). 목록은 코드에 하나로 있다(`crates/node/src/mainnet.rs`, `mainnet::check`) — 항목을 추가하면 아래 세 검사가 같이 실패한다:
+
+- `aether mainnet-rules --network genesis.json` — network.json에서 노드와 똑같이 제네시스를 만들어 항목마다 `ok`/`FAIL`을 출력하고, 꺼진 것이 하나라도 있으면 실패한다(DKG 뒤 최종 network.json으로 다시 한 번).
+- `scripts/mainnet-rehearsal.sh`(0단계) — 같은 검사를 PASS 항목으로 돌리고, 살아 있는 네트워크에서 높이 1의 프로토콜과 등록 상한도 확인한다.
+- 단위 테스트(`crates/node/tests/mainnet_rules.rs`) — 메인넷 플래그 제네시스로 모든 항목이 켜져 있는지, 플래그를 하나 빼면 정확히 그 항목이 꺼지는지 확인한다.
+
+| 규칙 | 켜져 있다는 것 |
+|---|---|
+| protocol from genesis | 높이 1의 프로토콜이 이 바이너리의 최신(지금 3)이다 |
+| proof market | 첫 블록부터 statement 기록·증명 지급이 살아 있다 (프로토콜 2) |
+| registry v2 | 등록기 컨트랙트가 v2 코드로 시작한다 |
+| registration cap | 에포크당 신규 등록 상한(16)이 온체인에 있다 |
+| 16-seat growth | 검증자 증가 추첨이 16석까지 자란다 (프로토콜 3) |
+| node rewards | 노드 보상이 첫 블록부터 분배된다 |
+| beacons | 한 에포크(3600블록)에 비콘 슬롯 4개가 들어간다 |
+| re-attestation | 하루 한 번 재확인(등록기 P-256 서명)이 살아 있다 |
+| reserve rules | 창업자 예비 키 3개가 온체인에 있고 독립 운영자 4명 미만에서만 앉는다 |
+| smooth issuance | 발행이 매끄러운 감쇠다: 1 AETH/블록에서 연 15% 감쇠, 0.1 AETH 바닥 |
+| history v2 | 빈 블록이 조용하고 era 파일이 쌓인다 |
+| pruning default | 프루닝이 기본(30일 보존)이다 |
+| no premine, no faucet | 제네시스 잔액이 전부 0이다 |
+| zero-tip acceptance | 첫 블록 base fee가 0이어서 잔액 0 계정이 팁 0으로 거래한다 |
 
 눈으로 확인한다:
 
@@ -55,11 +94,13 @@ python3 - <<'PY'
 import json
 n = json.load(open("genesis.json"))
 assert n["chain_id"] == <새 체인 아이디>
+assert n.get("protocol") == 3, "메인넷은 제네시스부터 프로토콜 3"
 assert n.get("history") == 2 and n.get("node_rewards") is True
 assert n.get("faucet") is None, "faucet이 있으면 안 된다"
 assert len(n.get("reserve", {}).get("validators", [])) == 3
 assert len(n["validators"]) == 4
 PY
+aether mainnet-rules --network genesis.json
 ```
 
 ## 3. 제네시스 DKG
@@ -79,10 +120,11 @@ DKG가 쓴 network.json이 제네시스 플래그를 그대로 가져갔는지 �
 python3 - <<'PY'
 import json
 n = json.load(open("<검증자 1 데이터 디렉터리>/network.json"))
-assert n.get("history") == 2 and n.get("node_rewards") is True
+assert n.get("protocol") == 3 and n.get("history") == 2 and n.get("node_rewards") is True
 assert n.get("faucet") is None and n.get("epoch_blocks") is None
 assert len(n.get("reserve", {}).get("validators", [])) == 3
 PY
+aether mainnet-rules --network <검증자 1 데이터 디렉터리>/network.json
 ```
 
 ## 4. 사용자 확인 직전 — 되돌릴 수 없는 마지막 단계
@@ -94,7 +136,7 @@ PY
 - 체인 아이디가 의도한 값이다.
 - 검증자 4개 키 지문과 예비 키 3개 지문이 키 세레머니 결과와 일치한다.
 - 등록기 키 지문이 일치한다. DeviceCheck `.p8`이 검증자 1에 있다.
-- `"history": 2`, node rewards 켜짐, faucet 없음, 사전 발행 없음(2단계 검증 출력).
+- `"protocol": 3`(제네시스부터 증명 시장·등록 상한·16석 증가), `"history": 2`, node rewards 켜짐, faucet 없음, 사전 발행 없음(2단계 검증 출력과 `aether mainnet-rules` 전 항목 ok).
 - 리허설(0단계)이 이 바이너리로 PASS했다.
 - 소스 공개 준비가 됐다(12-launch-plan: 메인넷과 동시 공개).
 - 앱 번들(6단계)이 심사 중이다.
@@ -104,6 +146,7 @@ PY
 ## 5. 검증자 가동
 
 - 각 검증자 Mac: `aether run --network <최종 network.json> --data <dir>`을 launchd + `caffeinate -s`로(`scripts/testnet-launchagent.sh` 패턴, 라벨은 메인넷용으로 따로). 데이터 디렉터리는 메인넷 전용으로 새로 만든다(테스트넷 것을 재사용하지 않는다).
+- 프로토콜 업그레이드 단계는 없다: 제네시스가 `"protocol": 3`으로 시작해 첫 블록부터 전부 마지막 규칙이다. 출시 뒤의 규칙 변경만 위원회 서명 업그레이드로 한다.
 - 검증자 1(등록기): `--devicecheck-key <.p8 경로> --devicecheck-key-id <KID> --devicecheck-team <팀 아이디>`를 함께.
 - 창업자 Mac: `scripts/reserve-keys.sh install <최종 network.json>`. 독립 운영자가 4명이 되기 전까지 예비 키 3개가 자리를 지킨다. 사람이 할 일은 없다.
 - 확인: 각 노드 `aether status`로 높이가 오르고, `aether_handoff`가 7멤버(4+3)를 보이고, 예비 키 `threshold.json`이 생기면 착석 완료.
@@ -119,7 +162,7 @@ PY
 - [ ] 소스 코드 공개(메인넷 시작과 동시 — 12-launch-plan).
 - [ ] 발행 규칙 공개: 사전 발행 0, 연 감쇠 발행, 절반은 노드 보상·절반은 증명 보상, 1/16 상한, 미분배 몫은 영구 미발행.
 - [ ] 검증자 4대의 운영자 공개(각각 다른 사람/조직), 예비 키 정책 공개(독립 운영자 4명 미만 동안 창업자 Mac의 안전망, 보상 없음).
-- [ ] 네트워크 파라미터 공개(체인 아이디, epoch, history v2, 프루닝 기본값).
+- [ ] 네트워크 파라미터 공개(체인 아이디, 프로토콜 3 제네시스, epoch, history v2, 프루닝 기본값).
 - [ ] 출시 공지(앱 릴리스 노트, 웹사이트, SNS) — 하루 전에 초안 확정.
 
 ## 8. 중단·복구 기준

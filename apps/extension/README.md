@@ -1,6 +1,6 @@
-# Aether Wallet browser extension
+# EastSea Wallet browser extension
 
-A Manifest V3 extension for Chromium browsers (Chrome, Edge, Brave, Arc). It works **without the Aether app**.
+A Manifest V3 extension for Chromium browsers (Chrome, Edge, Brave, Arc). It works **without the EastSea app**.
 
 - **Key:** a P-256 key made by WebCrypto in the browser. At rest it is encrypted with your password (PBKDF2-SHA256, 600k iterations, AES-GCM). While unlocked it lives only in memory-only session storage, and it locks after 30 minutes by default.
 - **Transactions:** built by `crates/wasm`, the same Rust rules the app and the chain use. The signature is checked against the key before anything is sent.
@@ -9,7 +9,7 @@ A Manifest V3 extension for Chromium browsers (Chrome, Edge, Brave, Arc). It wor
 - **Assets:** AETH plus the ERC-20 tokens the app also finds (`token-sources.json`: the DEX token factory, its pools and the launchpad, read with `eth_call`s), cached and re-read on open and every 30 s. Labeled "Read from the node" — nothing is verified in the browser.
 - **Network paused:** the popup header shows it when the chain has made no new block for 60 s (the app's rule); a new block clears it.
 - **First run:** a one-time notice with the app's terms risk points (experimental, as-is, key loss, testnet tokens have no value), kept per `TERMS_VERSION`.
-- **Nodes:** the Aether app's node on this computer (`127.0.0.1:18545`) first, then this Mac's testnet validators, then any nodes you add in Settings.
+- **Nodes:** the EastSea app's node on this computer (`127.0.0.1:18545`) first, then this Mac's testnet validators, then any nodes you add in Settings.
 
 ## Build and load
 

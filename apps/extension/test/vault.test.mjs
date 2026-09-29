@@ -57,6 +57,7 @@ test('a WebCrypto signature over the prepared envelope passes the chain check', 
   const tx = { to: '0x00000000000000000000000000000000000000aa', value_wei: '5', data: '0x', gas: 0 };
   const sent = [];
   const rpc = {
+    chainId: 7780,
     call: async (m, p) => {
       if (m === 'aether_status') return status;
       if (m === 'eth_getTransactionCount') return '0x4';
@@ -81,10 +82,13 @@ test('overlapping sends run one at a time and get distinct nonces', async () => 
   const sent = [];
   let statusCalls = 0;
   const rpc = {
+    chainId: 7780,
     call: async (m, p) => {
       if (m === 'aether_status') { statusCalls += 1; return status; }
       if (m === 'eth_getTransactionCount') { await new Promise((r) => setTimeout(r, 20)); return '0x0'; }
       if (m === 'aether_sendTransaction') { sent.push(p[0]); return { hash: `0x${sent.length}` }; }
+      // A funded account (G2: only a zero balance sends with no tip).
+      if (m === 'eth_getBalance') return '0xde0b6b3a7640000';
       throw new Error(m);
     },
   };

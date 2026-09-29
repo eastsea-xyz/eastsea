@@ -48,7 +48,7 @@ struct RewardCelebration: Equatable {
 }
 
 enum EarningsText {
-    static let unit = "test AETH"
+    static let unit = "test \(Brand.coinTicker)"
 
     static func aeth(_ wei: String) -> String { Wei.format(wei) }
 
@@ -222,7 +222,7 @@ struct EarningsHero: View {
         case .proving:
             "This Mac's GPU is proving blocks\(proofsText). The first valid proof of a block gets a reward."
         case .verifying:
-            "Your Mac checks every block itself. Checking alone is not rewarded on testnet."
+            "Your Mac checks every block itself. Checking alone earns no reward."
         case .starting:
             work.height > 0 ? "Catching up with the network · block #\(work.height)" : "Starting the node…"
         case .paused(let why):
@@ -411,7 +411,7 @@ private struct ProveCallToAction: View {
                 Image(systemName: "bolt.fill").font(.aeHeadline)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Prove blocks on this Mac's GPU").font(.aeHeadline)
-                    Text("for test AETH rewards").font(.aeCaption.weight(.semibold)).opacity(0.8)
+                    Text("for test \(Brand.coinTicker) rewards").font(.aeCaption.weight(.semibold)).opacity(0.8)
                 }
                 Spacer(minLength: 4)
                 Image(systemName: "chevron.right").font(.aeHeadline)
@@ -422,7 +422,7 @@ private struct ProveCallToAction: View {
             .shadow(color: .black.opacity(0.2), radius: 8, y: 4)
         }
         .buttonStyle(.plain)
-        .help("Uses the GPU and power while on, at your cost. The first valid proof of a block gets a test AETH reward in this wallet.")
+        .help("Uses the GPU and power while on, at your cost. The first valid proof of a block gets a test \(Brand.coinTicker) reward in this wallet.")
     }
 }
 
@@ -1029,7 +1029,7 @@ struct NodeStatusLine: View {
             Spacer(minLength: 4)
             Button(action: prove) { Label("Prove blocks", systemImage: "bolt.fill") }
                 .buttonStyle(.borderedProminent)
-                .help("Uses the GPU and power while on, at your cost. The first valid proof of a block gets a test AETH reward in this wallet.")
+                .help("Uses the GPU and power while on, at your cost. The first valid proof of a block gets a test \(Brand.coinTicker) reward in this wallet.")
         }
         .padding(.horizontal, 16).padding(.vertical, 12)
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))

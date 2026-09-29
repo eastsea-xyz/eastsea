@@ -52,6 +52,7 @@ tower-http = { version = "0.6", features = ["cors"] }
 tokio = { version = "1", features = ["net", "rt-multi-thread", "macros", "time"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls"] }
 hex = "0.4"
+libc = "0.2"
 p256 = { version = "=0.14.0", features = ["ecdsa", "pem", "pkcs8"] }
 base64 = "0.22"
 redb = "4.3"
@@ -59,3 +60,5 @@ zstd = "0.13"
 
 [dev-dependencies]
 rand_chacha = "0.10"
+# The reserve-hardening tests capture the chain's overdue warning (finding 6).
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

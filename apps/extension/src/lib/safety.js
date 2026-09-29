@@ -63,7 +63,9 @@ export function editDistance(a, b) {
 
 function resembles(a, b) {
   if (a === b) return true;
-  if (b === 'aeth' && a.includes('aeth')) return true;
+  // A name that contains an official symbol (wrapped/derived names such as
+  // "WDBLN") is a look-alike; short symbols are left to the edit-distance rule.
+  if (b.length >= 4 && a.includes(b)) return true;
   return Math.min(a.length, b.length) >= 3 && editDistance(a, b) <= 1;
 }
 

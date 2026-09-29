@@ -17,7 +17,7 @@ struct AetherWalletApp: App {
     #endif
 
     var body: some Scene {
-        WindowGroup("Aether", id: "main") {
+        WindowGroup("\(Brand.project)", id: "main") {
             #if os(macOS)
             ContentView()
                 .environmentObject(model)
@@ -78,7 +78,7 @@ struct AetherWalletApp: App {
         #endif
         #if os(macOS)
         Settings {
-            SettingsView().environmentObject(node).environmentObject(model)
+            SettingsView().environmentObject(node).environmentObject(model).environmentObject(appDelegate.updates)
         }
         // Always in the menu bar: balance, node and prover at a glance; the window opens from here.
         MenuBarExtra {
@@ -100,23 +100,25 @@ struct AetherWalletApp: App {
 struct SettingsView: View {
     @EnvironmentObject var node: NodeController
     @EnvironmentObject var model: WalletModel
+    @EnvironmentObject var updates: Updates
     @AppStorage("developerMode") private var developerMode = false
+    @AppStorage("useDevelopmentNetwork") private var useDevelopmentNetwork = false
+    @AppStorage("developmentNetworkPort") private var developmentNetworkPort = 18546
 
     var body: some View {
         Form {
+            if model.developmentNetwork {
+                Text("Dev network · 127.0.0.1:\(developmentNetworkPort)")
+                    .font(.caption.bold()).foregroundStyle(.orange)
+            }
             Toggle("Run a node on this Mac", isOn: $node.enabled)
             Toggle("Only while on the power adapter", isOn: $node.onlyOnPower)
                 .help("On a laptop, pause the node on battery and resume on power.")
             Label(node.awakeNote, systemImage: node.keepsAwake ? "sun.max.fill" : "moon.zzz")
                 .font(.caption).foregroundStyle(.secondary)
-            Toggle("Open Aether at login", isOn: Binding(get: { node.startAtLogin }, set: { node.startAtLogin = $0 }))
-            Toggle("Prove blocks with Metal on this Mac's GPU", isOn: Binding(get: { node.prove }, set: {
-                if $0 { node.proveAddress = model.address }
-                node.prove = $0
-            }))
-            .disabled(model.address.isEmpty)
-            .help("Your node proves recent blocks with Metal. The first valid proof of a block gets a test AETH reward in this wallet. Uses the GPU and power while on, at your cost.")
-            Text("Your node verifies every block itself and your wallet asks it instead of the network. Quitting Aether stops it.")
+            Toggle("Open \(Brand.project) at login", isOn: Binding(get: { node.startAtLogin }, set: { node.startAtLogin = $0 }))
+            ResourcesSection()
+            Text("Your node verifies every block itself and your wallet asks it instead of the network. Quitting \(Brand.project) stops it.")
                 .font(.caption).foregroundStyle(.secondary)
             // Honest power ranges (docs/research/mac-power-cost-2026.md): the node is
             // cheap; GPU proving is the costly part. No won figure — electricity
@@ -126,6 +128,42 @@ struct SettingsView: View {
             Divider()
             Toggle("Developer mode (proofs, state roots, raw logs)", isOn: $developerMode)
                 .help("Also in View ▸ Developer Mode (⇧⌘D)")
+            if developerMode {
+                Picker("Network", selection: $useDevelopmentNetwork) {
+                    Text("Default").tag(false)
+                    Text("Local development network").tag(true)
+                }
+                Stepper("Local RPC: http://127.0.0.1:\(developmentNetworkPort)", value: $developmentNetworkPort, in: 1024...65535)
+                    .disabled(!useDevelopmentNetwork)
+            }
+            if let pending = updates.pendingRelease {
+                Divider()
+                Text("Approved release \(pending.version) (\(pending.build))")
+                Text("SHA-256: \(pending.fingerprint)")
+                    .font(.caption.monospaced()).fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                Text("Published in block \(pending.publishedBlock)")
+                    .font(.caption).foregroundStyle(.secondary)
+                if pending.emergency {
+                    Label("Emergency release · all three builders signed", systemImage: "exclamationmark.shield")
+                } else if let date = pending.availableAt {
+                    Text("Installable after \(date.formatted())")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if let issue = updates.approvalIssue {
+                Text(issue).font(.caption).foregroundStyle(.orange)
+            }
+        }
+        .onChange(of: useDevelopmentNetwork) { _, dev in
+            model.selectNetwork(development: dev, port: UInt16(developmentNetworkPort))
+            if !dev { node.refreshWalletRoute() }
+        }
+        .onChange(of: developmentNetworkPort) { _, port in
+            if useDevelopmentNetwork { model.selectNetwork(development: true, port: UInt16(port)) }
+        }
+        .onChange(of: developerMode) { _, enabled in
+            if !enabled { useDevelopmentNetwork = false; model.selectNetwork(development: false); node.refreshWalletRoute() }
         }
         .padding(20)
         .frame(width: 420)
@@ -136,6 +174,8 @@ struct SettingsView: View {
 /// running; Quit stops both.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var node: NodeController?
+    weak var model: WalletModel?
+    private let releaseGate = ReleaseUpdateGate()
     /// Sparkle: checks the signed appcast on GitHub Releases and installs updates.
     lazy var updater = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: self, userDriverDelegate: nil)
     /// What the Network page shows: when updates were last checked, and a Check button.
@@ -177,6 +217,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         #endif
         self.node = node
+        self.model = model
         let check: () -> Void = { [weak self] in self?.updater.updater.checkForUpdatesInBackground() }
         node.onUpgradeNeeded = check
         model.onOutdated = check
@@ -229,6 +270,8 @@ enum CommandLineTools {
 @MainActor
 final class Updates: ObservableObject {
     private let controller: SPUStandardUpdaterController
+    @Published var pendingRelease: PendingRelease?
+    @Published var approvalIssue: String?
 
     init(_ controller: SPUStandardUpdaterController) {
         self.controller = controller
@@ -248,6 +291,36 @@ final class Updates: ObservableObject {
 }
 
 extension AppDelegate: SPUUpdaterDelegate {
+    func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
+        Task { @MainActor [weak self] in
+            self?.startReleasePreflight(item)
+        }
+    }
+
+    @MainActor private func startReleasePreflight(_ item: SUAppcastItem) {
+        releaseGate.inspect(item, validators: model?.validators ?? 0) { [weak self] pending, issue, ready in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.updates.pendingRelease = pending
+                self.updates.approvalIssue = issue
+                if ready { self.updater.updater.checkForUpdatesInBackground() }
+            }
+        }
+    }
+
+    /// This selector is Sparkle's synchronous gate before its own download.
+    /// The preflight hashes the archive and binds its EdDSA signature to the
+    /// manifest; Sparkle then verifies that exact signature on its download.
+    /// Swift imports Sparkle's `BOOL ... error:` selector as a throwing
+    /// method: returning proceeds, throwing stops the update.
+    func updater(_ updater: SPUUpdater, shouldProceedWithUpdate item: SUAppcastItem,
+                 updateCheck: SPUUpdateCheck) throws {
+        if releaseGate.mayProceed(item) { return }
+        Task { @MainActor [weak self] in self?.startReleasePreflight(item) }
+        throw NSError(domain: "AetherReleaseApproval", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "This update is not approved on chain yet"])
+    }
+
     /// Sparkle installs a downloaded update when the app quits, but Aether stays
     /// in the menu bar with its node for days. Install now instead: the app
     /// relaunches on the new version and the node restarts with it, so a Mac

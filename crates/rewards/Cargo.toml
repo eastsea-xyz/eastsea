@@ -12,5 +12,6 @@ publish = false
 
 [dependencies]
 aether-execution.workspace = true
+aether-net.workspace = true
 alloy-primitives.workspace = true
 hex = "0.4"

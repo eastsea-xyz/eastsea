@@ -8,12 +8,17 @@
 # launchd, nothing touches the running testnet, and cleanup is trapped, so
 # Ctrl-C is safe.
 #
-# The network: a new chain id, history v2, node rewards from genesis, the dev
-# registrar (no Apple DeviceCheck call), the founder's three reserve keys, no
-# faucet and no premine. Four validators, the three reserve keys and two
-# candidate Macs, each only `aether run`. Epochs are 40 blocks of 500 ms so
-# the rehearsal finishes in minutes; every other parameter keeps its mainnet
-# default. Checks (PASS/FAIL table at the end):
+# The network: a new chain id, protocol 3 from genesis (proof market, registry
+# v2 registration cap, 16-seat growth — no upgrade), history v2, node rewards
+# from genesis, the dev registrar (no Apple DeviceCheck call), the founder's
+# three reserve keys, no faucet and no premine. Four validators, the three
+# reserve keys and two candidate Macs, each only `aether run`. Epochs are 40
+# blocks of 500 ms so the rehearsal finishes in minutes; every other parameter
+# keeps its mainnet default. Checks (PASS/FAIL table at the end):
+#   - every mainnet rule is on at genesis (`aether mainnet-rules`, the one
+#     list in crates/node/src/mainnet.rs; docs/ops/mainnet-launch.md §2);
+#   - the chain runs protocol 3 at height 1 and the registration cap is
+#     active (16 per epoch, read from the live state);
 #   - blocks finalize and the four validators agree on the state root;
 #   - empty blocks are quiet under history v2 (no statement, root unchanged);
 #   - no premine and no faucet: dev accounts are unfunded, the faucet RPC refuses;
@@ -90,8 +95,8 @@ founder=$("$A" dev-accounts | awk '$1 == "dev" && $2 == 1 {print $3}')
 ops=($("$A" dev-accounts | awk '$1 == "dev" && ($2 == 2 || $2 == 3) {print $3}'))
 [ "${#ops[@]}" = 2 ] || { echo "could not read the dev accounts" >&2; exit 1; }
 
-echo "== genesis (chain $CHAIN, history 2, node rewards, dev registrar, reserve keys, no faucet)"
-"$A" network --chain-id "$CHAIN" --epoch-blocks "$EPOCH_BLOCKS" --history 2 --node-rewards --dev-registrar \
+echo "== genesis (chain $CHAIN, protocol 3, history 2, node rewards, dev registrar, reserve keys, no faucet)"
+"$A" network --chain-id "$CHAIN" --protocol 3 --epoch-blocks "$EPOCH_BLOCKS" --history 2 --node-rewards --dev-registrar \
   --reserve-operator "$founder" \
   --reserve "$D/r1/validator.pub.json" --reserve "$D/r2/validator.pub.json" --reserve "$D/r3/validator.pub.json" \
   "$D"/g1/validator.pub.json "$D"/g2/validator.pub.json "$D"/g3/validator.pub.json "$D"/g4/validator.pub.json \
@@ -113,6 +118,13 @@ done
 for p in ${PIDS[@]+"${PIDS[@]}"}; do wait "$p" || { echo "dkg failed (see $D/dkg*.log)" >&2; exit 1; }; done
 PIDS=()
 cp "$D/g1/network.json" "$D/network.json"
+
+echo "== mainnet rule set (every rule on at height 1; docs/ops/mainnet-launch.md §2)"
+if rules=$("$A" mainnet-rules --network "$D/network.json" 2>&1); then
+  ok "aether mainnet-rules: every rule on ($(printf '%s\n' "$rules" | grep -c '^ok') items)"
+else
+  bad "aether mainnet-rules failed:"$'\n'"$rules"
+fi
 
 echo "== aether run × 9 (validators 1-4, reserve keys 5-7, candidates 8-9)"
 mkdir -p "$D/peers"
@@ -140,6 +152,19 @@ if [ "$(printf '%s\n' $roots | sort -u | grep -c .)" = 1 ]; then
 else
   bad "the validators disagree at height $h: $roots"
 fi
+
+echo "== protocol 3 from genesis, registration cap active"
+# The activation schedule carries [3, 0]: protocol 3 rules from height 0, so
+# the protocol at height 1 is 3 (what aether_status reports at any height).
+proto=$(rpc aether_status '[]' "${rpcp[0]}" | jget 'd["result"]["protocol"]')
+at0=$(rpc aether_status '[]' "${rpcp[0]}" | jget '"yes" if [3, 0] in d["result"].get("schedule", []) else "no"')
+if [ "$proto" = 3 ] && [ "$at0" = yes ]; then
+  ok "the chain runs protocol 3 from height 0 (protocol at head $proto, [3, 0] on the schedule)"
+else
+  bad "protocol at height 1 is not 3 (protocol '$proto', [3, 0] on the schedule: '$at0')"
+fi
+cap=$(rpc aether_candidates '[]' "${rpcp[0]}" | jget 'd["result"]["max_per_epoch"]')
+[ "$cap" = 16 ] && ok "registration cap active at genesis (max_per_epoch $cap)" || bad "no registration cap (max_per_epoch '$cap', want 16)"
 
 echo "== history v2: empty blocks are quiet (no statement, root unchanged)"
 # No candidates are registered yet, so no beacon answers: of the recent empty
@@ -224,6 +249,14 @@ case "$log" in
     bad "no prune line with retain_blocks=$retain in validator 1's log" ;;
 esac
 if grep -q "archive node: keeping every block" "$D"/*.log; then bad "a node runs as an archive node"; else ok "no node keeps every block"; fi
+
+echo "== shadow replay with this binary"
+shadow_to=$(( $(height "${rpcp[0]}") - 2 ))
+if [ "$shadow_to" -ge 1 ] && "$A" shadow --from "http://127.0.0.1:${rpcp[0]}" --to "$shadow_to" > "$D/shadow.log" 2>&1; then
+  ok "shadow replay matches state and receipt digests through height $shadow_to"
+else
+  bad "shadow replay diverged or could not read source blocks (see $D/shadow.log)"
+fi
 
 echo
 echo "==================== rehearsal results ===================="

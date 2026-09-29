@@ -6,6 +6,9 @@ import SwiftUI
 /// Network page on iPhone; Developer mode itself has a Done button to leave it.
 struct ContentView: View {
     @EnvironmentObject var model: WalletModel
+    #if os(macOS)
+    @EnvironmentObject var node: NodeController
+    #endif
     @AppStorage("developerMode") private var developerMode = false
     /// The terms version this user accepted (0: none yet).
     @AppStorage("acceptedTerms") private var acceptedTerms = 0
@@ -13,6 +16,21 @@ struct ContentView: View {
     var body: some View {
         page
             .onAppear { model.start() }
+            .onChange(of: developerMode) { _, enabled in
+                if !enabled && model.developmentNetwork {
+                    model.selectNetwork(development: false)
+                    #if os(macOS)
+                    node.refreshWalletRoute()
+                    #endif
+                }
+            }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if model.developmentNetwork {
+                    Text("Dev network · 127.0.0.1")
+                        .font(.caption.bold()).frame(maxWidth: .infinity)
+                        .padding(.vertical, 5).background(.orange).foregroundStyle(.black)
+                }
+            }
             .sheet(isPresented: Binding(get: { Self.needsTerms(acceptedTerms) }, set: { _ in })) {
                 TermsSheet { acceptedTerms = Terms.version }
             }
@@ -91,9 +109,9 @@ struct DeveloperView: View {
         HStack {
             Image(systemName: "cube.transparent").font(.title)
             VStack(alignment: .leading) {
-                Text("Aether Wallet").font(.title2.bold())
+                Text("\(Brand.project) Wallet").font(.title2.bold())
                 if let s = model.status {
-                    Text("devnet \(s.chainId) · height \(s.height) · \(model.validators) validators")
+                    Text("\(model.developmentNetwork ? "devnet" : "chain") \(s.chainId) · height \(s.height) · \(model.validators) validators")
                         .font(.caption).foregroundStyle(.secondary)
                 } else {
                     Text("connecting…").font(.caption).foregroundStyle(.secondary)
@@ -117,7 +135,7 @@ struct DeveloperView: View {
                     Button { Clipboard.copy(model.address) }
                         label: { Image(systemName: "doc.on.doc") }.buttonStyle(.borderless)
                 }
-                Text(model.account.map { "\(Wei.format($0.balanceWei)) AETH" } ?? "…")
+                Text(model.account.map { "\(Wei.format($0.balanceWei)) \(Brand.coinTicker)" } ?? "…")
                     .font(.system(size: 34, weight: .semibold, design: .rounded))
                 if let a = model.account, model.verifyError == nil {
                     Label("Verified by this device", systemImage: "checkmark.seal.fill").foregroundStyle(.green).font(.headline)
@@ -130,7 +148,9 @@ struct DeveloperView: View {
                 HStack {
                     Label(model.keyLabel, systemImage: "lock.shield").font(.caption)
                     Spacer()
-                    Button("Get 10 test AETH") { model.faucet() }.disabled(model.busy || model.address.isEmpty)
+                    if model.developmentNetwork {
+                        Button("Get 10 test \(Brand.coinTicker)") { model.faucet() }.disabled(model.busy || model.address.isEmpty)
+                    }
                 }
             }.frame(maxWidth: .infinity, alignment: .leading)
         } label: { Text("Account") }
@@ -140,7 +160,7 @@ struct DeveloperView: View {
         GroupBox {
             HStack {
                 TextField("0x recipient (several: comma-separated, one signature)", text: $model.sendTo).textFieldStyle(.roundedBorder).font(.callout.monospaced())
-                TextField("AETH", text: $model.sendAmount).textFieldStyle(.roundedBorder).frame(width: 80)
+                TextField("\(Brand.coinTicker)", text: $model.sendAmount).textFieldStyle(.roundedBorder).frame(width: 80)
                 Button("Send") { model.send() }.keyboardShortcut(.return).disabled(model.busy || model.sendTo.isEmpty)
             }
         } label: { Text("Send (signed in the Secure Enclave)") }
@@ -168,7 +188,7 @@ struct DeveloperView: View {
                 }
                 if let p = model.outgoingRecovery {
                     HStack {
-                        Text("Pending: \(Wei.format(p.request.valueWei)) AETH from \(p.request.lost.prefix(10))… · ready \(p.readyAt.formatted())").font(.caption)
+                        Text("Pending: \(Wei.format(p.request.valueWei)) \(Brand.coinTicker) from \(p.request.lost.prefix(10))… · ready \(p.readyAt.formatted())").font(.caption)
                         Spacer()
                         Button("Finish") { model.finishRecovery() }.disabled(model.busy || !p.isReady)
                     }
@@ -187,15 +207,29 @@ struct DeveloperView: View {
     }
 
     private var activity: some View {
-        GroupBox {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(Array(model.log.enumerated()), id: \.offset) { _, line in
-                        Text(line).font(.caption.monospaced()).frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .leading, spacing: 8) {
+            LinkedWalletsCard()
+            GroupBox("Activity") {
+                VStack(alignment: .leading, spacing: 6) {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 6) {
+                            ForEach(model.activity) { item in
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(item.title).font(.callout)
+                                    Text("\(item.source ?? "On this device") · \(item.date.formatted()) · \(item.hash ?? "")")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                Divider()
+                            }
+                        }
+                    }
+                    .frame(minHeight: 120, maxHeight: 300)
+                    if model.olderActivityAvailable {
+                        Button("Load older activity") { model.loadOlderActivity() }
                     }
                 }
-            }.frame(minHeight: 120)
-        } label: { Text("Activity") }
+            }
+        }
     }
 
     private var blocksPanel: some View {

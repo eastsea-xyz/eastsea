@@ -225,15 +225,7 @@ impl Faucet {
 
 #[cfg(unix)]
 fn write_private(path: &Path, data: &[u8]) -> Result<(), String> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)
-        .map_err(|e| e.to_string())?;
-    f.write_all(data).map_err(|e| e.to_string())
+    crate::atomic::create(path, data, 0o600)
 }
 
 #[cfg(not(unix))]
@@ -263,9 +255,11 @@ mod tests {
             min_streak: None,
             draw_epochs: None,
             history_v2: false,
+            protocol: 1,
             node_rewards: false,
             group: 0,
             max_committee: crate::rotation::GROW_UNTIL,
+            committee: vec![],
             reserve: None,
         };
         (f, Chain::new(cfg).0)

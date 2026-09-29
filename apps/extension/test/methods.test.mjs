@@ -20,10 +20,10 @@ test('malformed requests are refused', () => {
 });
 
 test('known selectors are named for the approval screen', () => {
-  assert.equal(describeCall({ to: TO, data: '0x' }), 'Send AETH');
+  assert.equal(describeCall({ to: TO, data: '0x' }), 'Send DBLN');
   assert.equal(describeCall({ to: TO, data: '0x38ed1739aa' }), 'Swap tokens');
   assert.equal(describeCall({ to: TO, data: '0xcce7ec13' }), 'Buy on the launch curve');
-  assert.equal(describeCall({ to: TO, data: '0x5cf66fe1' }), 'Buy with AETH (graduated pool)');
+  assert.equal(describeCall({ to: TO, data: '0x5cf66fe1' }), 'Buy with DBLN (graduated pool)');
   assert.match(describeCall({ to: '', data: '0x6000' }), /Deploy/);
   assert.match(describeCall({ to: TO, data: '0x12345678' }), /0x12345678/);
 });

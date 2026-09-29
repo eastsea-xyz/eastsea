@@ -14,6 +14,7 @@ use commonware_runtime::{Clock, Metrics, Spawner, Storage};
 use commonware_utils::{Acknowledgement, SystemTimeExt};
 use futures::StreamExt;
 use rand::Rng;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tracing::{info, warn};
@@ -26,11 +27,18 @@ const MAX_FUTURE_SKEW_MS: u64 = 1_000;
 pub struct Application {
     chain: Chain,
     delay_ms: u64,
+    proposals_enabled: Arc<AtomicBool>,
 }
 
 impl Application {
     pub fn new(chain: Chain, delay_ms: u64) -> Self {
-        Self { chain, delay_ms }
+        Self { chain, delay_ms, proposals_enabled: Arc::new(AtomicBool::new(true)) }
+    }
+
+    /// Fault injection: keep voting, but produce no blocks when elected leader.
+    pub fn with_proposal_switch(mut self, enabled: Arc<AtomicBool>) -> Self {
+        self.proposals_enabled = enabled;
+        self
     }
 
     /// Height of the finalized state this node already holds (restored from disk).
@@ -81,6 +89,9 @@ where
     type Input = ();
 
     async fn propose(&mut self, (rt, context): (E, Self::Context), mut ancestry: impl Ancestry<Self::Block>, _input: ()) -> Option<Self::Block> {
+        if !self.proposals_enabled.load(Ordering::SeqCst) {
+            return None;
+        }
         let parent_block = ancestry.next().await?;
         let parent = self.resolve(parent_block.clone(), ancestry).await?;
         if self.chain.retired_after(&parent) {
@@ -111,20 +122,24 @@ where
             proofs: self.chain.proofs_for(&parent),
             beacons: self.chain.beacons_for(&parent),
             group: cfg.group,
+            registrations: self.chain.registrations_for(&parent),
         };
         // Under the parent's next protocol, with its one-time changes if it activates here.
-        let attempt = self.chain.pre_state_with(&parent, parent.next_protocol(), &extras.proofs, &extras.beacons, false);
+        let attempt = self.chain.pre_state_with(&parent, parent.next_protocol(), &extras.proofs, &extras.beacons, &extras.registrations, extras.seed.as_ref(), false);
         let mut extras = extras;
         let (pre, payouts) = match attempt {
             Ok(pre) => pre,
             // Pooled proofs that no longer verify here: drop them and propose without.
-            // (Beacon answers were checked against this parent: they go too, only for this block.)
-            Err(e) if !extras.proofs.is_empty() || !extras.beacons.is_empty() => {
-                warn!(?e, "dropping pooled proofs and beacon answers from this proposal");
+            // (Beacon answers and registrations were checked against this
+            // parent: they go too, only for this block.)
+            Err(e) if !extras.proofs.is_empty() || !extras.beacons.is_empty() || !extras.registrations.is_empty() => {
+                warn!(?e, "dropping pooled proofs, beacon answers and registrations from this proposal");
                 self.chain.drop_proofs(&extras.proofs.iter().map(|c| c.height).collect::<Vec<_>>());
                 extras.proofs.clear();
                 extras.beacons.clear();
-                match self.chain.pre_state(&parent, parent.next_protocol(), &[], false) {
+                extras.registrations.clear();
+                // The seed stays: this block still carries it, so its commitment still happens.
+                match self.chain.pre_state(&parent, parent.next_protocol(), &[], extras.seed.as_ref(), false) {
                     Ok(pre) => pre,
                     Err(e) => {
                         warn!(?e, "not proposing");
@@ -142,6 +157,7 @@ where
         crate::chain::with_activation(&pre, &mut out);
         drop(pre);
         let tx_hashes = payload.txs.iter().map(aether_execution::tx_hash).collect();
+        let registration_ids = payload.registrations.iter().map(crate::registrations::id).collect();
         let block = Block::new(context, parent_block.digest(), height, ts, payload.to_bytes());
         if !payload.proofs.is_empty() {
             self.chain.proposed_with_proofs(height.get(), block.digest());
@@ -154,7 +170,7 @@ where
         };
         let seed = payload.seed.as_ref().map(|s| std::sync::Arc::new((height.get(), s.clone()))).or_else(|| parent.seed.clone());
         let schedule = payload.upgrade.as_ref().map(|u| crate::chain::scheduled(&parent.schedule, &u.upgrade)).unwrap_or_else(|| parent.schedule.clone());
-        self.chain.remember(&block, &parent, &ctx, out, tx_hashes, pending, seed, schedule, statement, payouts);
+        self.chain.remember(&block, &parent, &ctx, out, tx_hashes, pending, seed, schedule, statement, payouts, registration_ids);
         info!(height = %height, txs = payload.txs.len(), "proposed");
         Some(block)
     }
@@ -220,6 +236,58 @@ impl Reporter for Application {
                 }
                 Err(e @ crate::chain::ChainError::ConflictingFinality { .. }) => {
                     tracing::error!(height = %block.height(), ?e, "CONFLICTING FINALIZED BLOCK: this node's chain differs from the network's; stop and investigate")
+                }
+                // Storage, not the block: heal it here, synchronously
+                // (docs/design/24-self-healing.md layer 1) — marshal waits on
+                // this call, so consensus on this node pauses until the block
+                // is on disk, then continues without a restart. Only a stored
+                // block is ever acknowledged: acknowledging here would leave a
+                // gap in the store that no restart repairs, while an
+                // unacknowledged one is redelivered ("at-least-once delivery").
+                Err(crate::chain::ChainError::Store(e)) => {
+                    tracing::error!(height = %block.height(), %e, "storage failed while committing a finalized block; re-opening the database");
+                    let mut on_disk = false;
+                    let mut still_storage = false;
+                    for _ in 0..3 {
+                        // Exits with the storage code if the disk never heals.
+                        self.chain.heal_store();
+                        match self.chain.finalize(&block) {
+                            Ok(()) => {
+                                on_disk = true;
+                                break;
+                            }
+                            // The disk took the probe write but not the commit.
+                            Err(crate::chain::ChainError::Store(e)) => {
+                                still_storage = true;
+                                tracing::warn!(height = %block.height(), %e, "the re-opened store refused the commit again");
+                            }
+                            Err(e) => {
+                                warn!(height = %block.height(), ?e, "failed to adopt finalized block");
+                                break;
+                            }
+                        }
+                    }
+                    if on_disk {
+                        let g = self.chain.lock();
+                        info!(
+                            height = %block.height(),
+                            txs = g.finalized.tx_hashes.len(),
+                            root = %g.finalized.state.root(),
+                            "finalized"
+                        );
+                    } else if still_storage {
+                        // A disk that takes a probe but not a block is still
+                        // full: exit with the storage code rather than loop.
+                        tracing::error!("the store still refuses commits; exiting so the app restarts the node");
+                        std::process::exit(crate::store::EXIT_STORAGE);
+                    }
+                    // Otherwise the block itself is the problem: not
+                    // acknowledged — marshal stops rather than mark a block
+                    // this node does not hold as delivered.
+                    if on_disk {
+                        ack.acknowledge();
+                    }
+                    return Feedback::Ok;
                 }
                 Err(e) => warn!(height = %block.height(), ?e, "failed to adopt finalized block"),
             }

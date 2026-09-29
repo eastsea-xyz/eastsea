@@ -1,4 +1,4 @@
-# Aether Node
+# EastSea Node
 
 **English** · [한국어](README.ko.md) · [中文](README.zh-CN.md) · [日本語](README.ja.md) · [Tiếng Việt](README.vi.md) · [Español](README.es.md)
 
@@ -7,7 +7,7 @@
 [![Legal Disclaimer](https://img.shields.io/badge/Legal-Disclaimer%20%26%20Terms-red.svg)](DISCLAIMER.md)
 
 > [!IMPORTANT]
-> Aether Node is experimental, non-commercial research software provided **"AS IS"**. It is not a production blockchain and has not had an independent security audit. On the testnet, AETH and all rewards are test tokens with **zero monetary value**, and they do not carry over to any mainnet. Nothing here is investment, legal or tax advice. See [DISCLAIMER.md](DISCLAIMER.md).
+> EastSea is built for production. **Mainnet has not launched yet**: the network running today is the public testnet (chain 7780), and testnet AETH does not carry over. There is no token sale; the value of AETH is set by the market, and nothing here promises a price or a return. The software is provided **"AS IS"** and has not had an independent security audit yet. Nothing here is investment, legal or tax advice. See [DISCLAIMER.md](DISCLAIMER.md).
 
 ## What it is
 
@@ -53,7 +53,7 @@ scripts/build-extension.sh        # then load apps/extension unpacked from chrom
 ```
 
 - **No app needed:** the key is made in the browser and encrypted with your password.
-- **Pages:** get `window.aether` (EIP-1193, announced through EIP-6963). Aether DEX and the launchpad demo use it when it is installed.
+- **Pages:** get `window.aether` (EIP-1193, announced through EIP-6963). EastSea DEX and the launchpad demo use it when it is installed.
 - **Approvals:** connecting a site and every transaction open an approval window.
 - Details: [apps/extension/README.md](apps/extension/README.md).
 
@@ -87,7 +87,7 @@ The committee key survives validator changes. Use `aether reshare` to move to a 
 ### Command line
 
 ```bash
-target/debug/aether dev-accounts                               # public test keys funded at genesis (no value)
+target/debug/aether dev-accounts                               # public dev keys funded at a local dev genesis (never use for value)
 target/debug/aether send --from-dev 1 --to 0x… --value 1000 --wait
 target/debug/aether balance 0x… --rpc http://127.0.0.1:8547   # verified locally with a proof, not trusted
 target/debug/aether batch --from-dev 1 --to 0xA,0xB --value 1  # several payments, one signature
@@ -100,7 +100,7 @@ The app shows the same text (`VotingRules.mainnetRewardsRule`):
 
 > Planned for the future mainnet, which is not live: the rules may change before launch, and after it only by a committee-signed upgrade. No token sale, no premine and no founder allocation; the founder's Macs follow the same rules as everyone's. Half of each block's reward goes to registered Macs that stay online, shared every hour, and half to registered Macs that prove blocks. One operator gets at most 1/16 of each half, and the rest is never issued; once 16 operators are online, all of it is shared. The reward starts at 1 AETH a block and shrinks 15% a year, down to a floor of 0.1 AETH a block. Testnet AETH does not carry over. Nothing here promises a price, a return or a way to cash out.
 
-- **Registration:** a Mac joins through a registration service, currently run by Pipln, that checks an Apple DeviceCheck token with Apple. Apple does not sponsor or endorse Aether.
+- **Registration:** a Mac joins through a registration service, currently run by Pipln, that checks an Apple DeviceCheck token with Apple. Apple does not sponsor or endorse EastSea.
 - **Founder reserve keys:** The founder's only special permission: one Mac may run up to 3 reserve validator keys, and only while the network needs them. Hours they serve count as the founder's participation, under the same 1/16 cap as everyone; they add no extra share. (`VotingRules.founderReserveRule`, quoted word for word.)
 - **What 1/16 does not do:** it is counted per wallet address. Someone with several wallets and several real Macs gets several shares.
 
@@ -116,7 +116,7 @@ The app shows the same text (`VotingRules.mainnetRewardsRule`):
 | Accounts | P-256 (Secure Enclave), secp256k1 and Ed25519. EIP-7702 delegation to `AetherAccount` allows batched payments under one signature. A second device's Secure Enclave key can act as the recovery key | Session keys, multiple guardians, time-locked recovery |
 | Clients | Mac and iOS wallets (Simple and Developer modes), the CLI, and `aether-agent` (MCP) all verify balances locally | ZK block proofs in the client, TestFlight |
 | Censorship resistance | FOCIL-style inclusion lists: validators refuse to vote for a block that leaves out listed transactions | Encrypted mempool |
-| Proving (spike) | Jolt zkVM proves real Aether blocks, and the roots match native execution. About 270 transactions per hour per Mac. Proofs trail the chain | Metal backend, checkpoint proofs |
+| Proving (spike) | Jolt zkVM proves real EastSea blocks, and the roots match native execution. About 270 transactions per hour per Mac. Proofs trail the chain | Metal backend, checkpoint proofs |
 
 `legacy/` is the earlier single-node demo and has been replaced.
 

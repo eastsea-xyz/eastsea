@@ -3,6 +3,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { Brand } from '../src/lib/brand.js';
 import { erc20TransferCalldata, formatTokenAmount, formatTokenAmountExact, parseTokenAmount } from '../src/lib/tokens.js';
 import { addressRisk, isValidAddress, looksLikeOfficial, normalized, revertReason, splitHoldings, tokenLabel, tokenShort } from '../src/lib/safety.js';
 
@@ -65,14 +66,14 @@ test('addressRisk: first-4/last-4 poisoning and first sends', () => {
   assert.equal(isValidAddress('0x1234567890abcdef1234567890abcdef1234567g'), false);
 });
 
-test('look-alike symbols: folded, edit distance 1, the aeth family', () => {
-  const official = [{ symbol: 'AETH', name: 'Aether' }, { symbol: 'USDT', name: 'Tether Dollar' }];
-  assert.equal(looksLikeOfficial({ symbol: 'AETH', name: 'x' }, official), true);
-  assert.equal(looksLikeOfficial({ symbol: 'AET', name: '' }, official), true);
-  assert.equal(looksLikeOfficial({ symbol: 'AETHR', name: '' }, official), true);
-  assert.equal(looksLikeOfficial({ symbol: 'WAETH', name: '' }, official), true);
-  assert.equal(looksLikeOfficial({ symbol: 'ÆTH', name: '' }, official), true);
-  assert.equal(looksLikeOfficial({ symbol: 'NEB', name: 'Aethers' }, official), true);
+test('look-alike symbols: folded, edit distance 1, names containing an official symbol', () => {
+  const official = [{ symbol: Brand.coinTicker, name: Brand.coinName }, { symbol: 'USDT', name: 'Tether Dollar' }];
+  assert.equal(looksLikeOfficial({ symbol: 'DBLN', name: 'x' }, official), true);
+  assert.equal(looksLikeOfficial({ symbol: 'DBL', name: '' }, official), true);
+  assert.equal(looksLikeOfficial({ symbol: 'DBLNR', name: '' }, official), true);
+  assert.equal(looksLikeOfficial({ symbol: 'WDBLN', name: '' }, official), true);
+  assert.equal(looksLikeOfficial({ symbol: 'ĐBLN', name: '' }, official), true);
+  assert.equal(looksLikeOfficial({ symbol: 'NEB', name: 'DBLNs' }, official), true);
   assert.equal(looksLikeOfficial({ symbol: 'NEB', name: 'Nebula' }, official), false);
   assert.equal(looksLikeOfficial({ symbol: 'NEBD', name: 'Nebula' }, official), false);
   assert.equal(looksLikeOfficial({ symbol: 'usdt', name: '' }, official), true);

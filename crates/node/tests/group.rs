@@ -24,7 +24,9 @@ fn cfg() -> ChainConfig {
         min_streak: None,
         draw_epochs: None,
         history_v2: true,
+        protocol: 1,
         node_rewards: true,
+        committee: vec![],
         reserve: None,
         group: 3,
         max_committee: aether_node::rotation::GROW_UNTIL,
@@ -51,7 +53,7 @@ fn build(chain: &Chain, parent: &Arc<Executed>, last: &Block, txs: Vec<TxEnvelop
     let context = Context { round: Round::new(EPOCH, View::new(height.get())), leader, parent: (View::new(height.get() - 1), last.digest()) };
     let skeleton = Block::new(context.clone(), last.digest(), height, height.get() * 1_000, bytes::Bytes::new());
     let ctx = Chain::block_context(&chain.cfg(), &skeleton, parent);
-    let (pre, _) = chain.pre_state(parent, parent.next_protocol(), &[], false).unwrap();
+    let (pre, _) = chain.pre_state(parent, parent.next_protocol(), &[], None, false).unwrap();
     let (mut payload, _) = build_payload(parent, &pre, &ctx, txs, Extras { group, ..Default::default() });
     // The proposer filters other groups' txs out; a faulty one puts them back.
     if let Some(tx) = foreign {

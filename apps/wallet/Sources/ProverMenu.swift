@@ -10,13 +10,17 @@ struct MenuBarPanel: View {
     @Environment(\.openWindow) private var openWindow
 
     private var balance: String {
-        model.account.map { "\(Amount.text(Double(Wei.format($0.balanceWei)) ?? 0)) AETH" } ?? "…"
+        model.account.map { "\(Amount.text(Double(Wei.format($0.balanceWei)) ?? 0)) \(Brand.coinTicker)" } ?? "…"
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if model.developmentNetwork {
+                Text("Dev network · 127.0.0.1")
+                    .font(.caption.bold()).foregroundStyle(.orange)
+            }
             HStack {
-                Text("Aether").font(.headline)
+                Text("\(Brand.project)").font(.headline)
                 Spacer()
                 Text(Short.address(model.address)).font(.caption.monospaced()).foregroundStyle(.secondary)
             }
@@ -51,15 +55,22 @@ struct MenuBarPanel: View {
                         Text("Proved block #\(h) · \(p.last_txs ?? 0) tx · \(Int((p.last_seconds ?? 0).rounded())) s")
                     }
                     Text("\(p.proofs ?? 0) proofs this session\(p.lag.map { " · \($0) blocks behind" } ?? "")")
+                    if let paused = p.paused {
+                        // docs/ops/resource-limits.md: the node's own words for why it holds proving.
+                        Text(paused == "memory"
+                             ? "Paused: over the memory cap, waiting out its pause"
+                             : "Paused: \(paused == "pressure" ? "system memory pressure" : paused == "battery" ? "on battery" : "disk space low")")
+                            .foregroundStyle(.secondary)
+                    }
                     if let r = p.last_reward {
-                        Text("Last reward \(Wei.format(LocalRPC.decimal(r))) AETH").foregroundStyle(.green)
+                        Text("Last reward \(Wei.format(LocalRPC.decimal(r))) \(Brand.coinTicker)").foregroundStyle(.green)
                     }
                     if let e = p.error { Text(e).foregroundStyle(.red).lineLimit(2) }
                 }.font(.aeCaption)
             }
             Divider()
             HStack {
-                Button("Open Aether") {
+                Button("Open \(Brand.project)") {
                     NSApp.setActivationPolicy(.regular)
                     openWindow(id: "main")
                     NSApp.activate(ignoringOtherApps: true)
@@ -71,7 +82,7 @@ struct MenuBarPanel: View {
                 Spacer()
                 Menu {
                     if node.prove { Button("Export Reward Records…") { exportRewards() } }
-                    Button("Quit Aether") { NSApp.terminate(nil) }
+                    Button("Quit \(Brand.project)") { NSApp.terminate(nil) }
                 } label: { Image(systemName: "ellipsis.circle") }
                     .menuStyle(.borderlessButton).fixedSize()
             }

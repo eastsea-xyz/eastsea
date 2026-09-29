@@ -15,6 +15,10 @@ struct MenuBarPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if model.developmentNetwork {
+                Text("Dev network · 127.0.0.1")
+                    .font(.caption.bold()).foregroundStyle(.orange)
+            }
             HStack {
                 Text("\(Brand.project)").font(.headline)
                 Spacer()

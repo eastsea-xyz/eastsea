@@ -6,6 +6,9 @@ import SwiftUI
 /// Network page on iPhone; Developer mode itself has a Done button to leave it.
 struct ContentView: View {
     @EnvironmentObject var model: WalletModel
+    #if os(macOS)
+    @EnvironmentObject var node: NodeController
+    #endif
     @AppStorage("developerMode") private var developerMode = false
     /// The terms version this user accepted (0: none yet).
     @AppStorage("acceptedTerms") private var acceptedTerms = 0
@@ -13,6 +16,21 @@ struct ContentView: View {
     var body: some View {
         page
             .onAppear { model.start() }
+            .onChange(of: developerMode) { _, enabled in
+                if !enabled && model.developmentNetwork {
+                    model.selectNetwork(development: false)
+                    #if os(macOS)
+                    node.refreshWalletRoute()
+                    #endif
+                }
+            }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if model.developmentNetwork {
+                    Text("Dev network · 127.0.0.1")
+                        .font(.caption.bold()).frame(maxWidth: .infinity)
+                        .padding(.vertical, 5).background(.orange).foregroundStyle(.black)
+                }
+            }
             .sheet(isPresented: Binding(get: { Self.needsTerms(acceptedTerms) }, set: { _ in })) {
                 TermsSheet { acceptedTerms = Terms.version }
             }
@@ -93,7 +111,7 @@ struct DeveloperView: View {
             VStack(alignment: .leading) {
                 Text("\(Brand.project) Wallet").font(.title2.bold())
                 if let s = model.status {
-                    Text("devnet \(s.chainId) · height \(s.height) · \(model.validators) validators")
+                    Text("\(model.developmentNetwork ? "devnet" : "chain") \(s.chainId) · height \(s.height) · \(model.validators) validators")
                         .font(.caption).foregroundStyle(.secondary)
                 } else {
                     Text("connecting…").font(.caption).foregroundStyle(.secondary)
@@ -130,7 +148,9 @@ struct DeveloperView: View {
                 HStack {
                     Label(model.keyLabel, systemImage: "lock.shield").font(.caption)
                     Spacer()
-                    Button("Get 10 test \(Brand.coinTicker)") { model.faucet() }.disabled(model.busy || model.address.isEmpty)
+                    if model.developmentNetwork {
+                        Button("Get 10 test \(Brand.coinTicker)") { model.faucet() }.disabled(model.busy || model.address.isEmpty)
+                    }
                 }
             }.frame(maxWidth: .infinity, alignment: .leading)
         } label: { Text("Account") }

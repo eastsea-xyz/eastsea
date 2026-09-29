@@ -102,9 +102,15 @@ struct SettingsView: View {
     @EnvironmentObject var model: WalletModel
     @EnvironmentObject var updates: Updates
     @AppStorage("developerMode") private var developerMode = false
+    @AppStorage("useDevelopmentNetwork") private var useDevelopmentNetwork = false
+    @AppStorage("developmentNetworkPort") private var developmentNetworkPort = 18546
 
     var body: some View {
         Form {
+            if model.developmentNetwork {
+                Text("Dev network · 127.0.0.1:\(developmentNetworkPort)")
+                    .font(.caption.bold()).foregroundStyle(.orange)
+            }
             Toggle("Run a node on this Mac", isOn: $node.enabled)
             Toggle("Only while on the power adapter", isOn: $node.onlyOnPower)
                 .help("On a laptop, pause the node on battery and resume on power.")
@@ -122,6 +128,14 @@ struct SettingsView: View {
             Divider()
             Toggle("Developer mode (proofs, state roots, raw logs)", isOn: $developerMode)
                 .help("Also in View ▸ Developer Mode (⇧⌘D)")
+            if developerMode {
+                Picker("Network", selection: $useDevelopmentNetwork) {
+                    Text("Default").tag(false)
+                    Text("Local development network").tag(true)
+                }
+                Stepper("Local RPC: http://127.0.0.1:\(developmentNetworkPort)", value: $developmentNetworkPort, in: 1024...65535)
+                    .disabled(!useDevelopmentNetwork)
+            }
             if let pending = updates.pendingRelease {
                 Divider()
                 Text("Approved release \(pending.version) (\(pending.build))")
@@ -140,6 +154,16 @@ struct SettingsView: View {
             if let issue = updates.approvalIssue {
                 Text(issue).font(.caption).foregroundStyle(.orange)
             }
+        }
+        .onChange(of: useDevelopmentNetwork) { _, dev in
+            model.selectNetwork(development: dev, port: UInt16(developmentNetworkPort))
+            if !dev { node.refreshWalletRoute() }
+        }
+        .onChange(of: developmentNetworkPort) { _, port in
+            if useDevelopmentNetwork { model.selectNetwork(development: true, port: UInt16(port)) }
+        }
+        .onChange(of: developerMode) { _, enabled in
+            if !enabled { useDevelopmentNetwork = false; model.selectNetwork(development: false); node.refreshWalletRoute() }
         }
         .padding(20)
         .frame(width: 420)

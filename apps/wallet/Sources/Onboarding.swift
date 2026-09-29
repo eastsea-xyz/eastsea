@@ -3,7 +3,13 @@ import SwiftUI
 /// The terms a user accepts before first use. Bump `version` when the text
 /// changes materially, and everyone is asked again.
 enum Terms {
-    static let version = 4
+    static let isTestnet: Bool = {
+        guard let url = Bundle.main.url(forResource: "network", withExtension: "json"),
+              let data = try? Data(contentsOf: url),
+              let network = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return true }
+        return (network["chain_id"] as? NSNumber)?.uint64Value == 7780
+    }()
+    static let version = isTestnet ? 4 : 5
     static let disclaimerURL = URL(string: "https://github.com/kjaylee/aether-node/blob/main/DISCLAIMER.md")!
 }
 
@@ -18,7 +24,13 @@ enum VotingRules {
     static let mainnetIssuanceOperators = 16
     /// Said the same way everywhere an early participant looks.
     /// README.md "Planned mainnet rules" quotes this word for word.
-    static let mainnetRewardsRule = "Planned for the future mainnet, which is not live: the rules may change before launch, and after it only by a committee-signed upgrade. No token sale, no premine and no founder allocation; the founder's Macs follow the same rules as everyone's. Half of each block's reward goes to registered Macs that stay online, shared every hour, and half to registered Macs that prove blocks. One operator gets at most 1/\(mainnetIssuanceOperators) of each half, and the rest is never issued; once \(mainnetIssuanceOperators) operators are online, all of it is shared. The reward starts at 1 \(Brand.coinTicker) a block and shrinks 15% a year, down to a floor of 0.1 \(Brand.coinTicker) a block. Testnet \(Brand.coinTicker) does not carry over. Nothing here promises a price, a return or a way to cash out."
+    static var mainnetRewardsRule: String {
+        let timing = Terms.isTestnet
+            ? "Planned for the future mainnet, which is not live: the rules may change before launch, and after it only by a committee-signed upgrade. "
+            : "These rules run from mainnet genesis and can change only by a committee-signed upgrade. "
+        let testnet = Terms.isTestnet ? "Testnet \(Brand.coinTicker) does not carry over. " : ""
+        return timing + "No token sale, no premine and no founder allocation; the founder's Macs follow the same rules as everyone's. Half of each block's reward goes to registered Macs that stay online, shared every hour, and half to registered Macs that prove blocks. One operator gets at most 1/\(mainnetIssuanceOperators) of each half, and the rest is never issued; once \(mainnetIssuanceOperators) operators are online, all of it is shared. The reward starts at 1 \(Brand.coinTicker) a block and shrinks 15% a year, down to a floor of 0.1 \(Brand.coinTicker) a block. " + testnet + "Nothing here promises a price, a return or a way to cash out."
+    }
     /// The founder's one exception (docs/design/12-launch-plan.md "창업자 Mac 안전망").
     /// README.md "Planned mainnet rules" quotes this word for word.
     static let founderReserveRule = "The founder's only special permission: one Mac may run up to 3 reserve validator keys, and only while the network needs them. Hours they serve count as the founder's participation, under the same 1/16 cap as everyone; they add no extra share."
@@ -40,13 +52,20 @@ private struct Bullet: View {
 /// First launch: what Aether is, and that using it is the user's own risk.
 struct TermsSheet: View {
     let accept: () -> Void
+    @AppStorage("useDevelopmentNetwork") private var useDevelopmentNetwork = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                if useDevelopmentNetwork {
+                    Text("Dev network · 127.0.0.1")
+                        .font(.caption.bold()).foregroundStyle(.orange)
+                }
                 Image(systemName: "exclamationmark.shield.fill").font(.system(size: 34)).foregroundStyle(Color.warn)
                 Text("Before you use \(Brand.project)").font(.title2.bold())
-                Bullet(icon: "hammer", text: "\(Brand.project) is built for production. Mainnet has not launched yet; the network running today is the public testnet, and its \(Brand.coinTicker) does not carry over. It is provided as is, without warranty, and has not had an independent security audit yet.")
+                Bullet(icon: "hammer", text: Terms.isTestnet
+                       ? "\(Brand.project) is built for production. Mainnet has not launched yet; the network running today is the public testnet, and its \(Brand.coinTicker) does not carry over. It is provided as is, without warranty, and has not had an independent security audit yet."
+                       : "\(Brand.project) is on mainnet. It is provided as is, without warranty, and has not had an independent security audit yet.")
                 Bullet(icon: "chart.line.uptrend.xyaxis", text: "There is no token sale. The value of \(Brand.coinTicker) is set by the market; nothing here promises a price, a return, a listing or a way to cash out.")
                 Bullet(icon: "person.fill.checkmark", text: "You use \(Brand.project), and run its node, at your own risk and responsibility, including power and hardware costs, taxes, and following the laws where you live.")
                 Bullet(icon: "person.3.fill", text: VotingRules.mainnetRewardsRule)

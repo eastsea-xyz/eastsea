@@ -10,6 +10,9 @@ import DeviceCheck
 @MainActor
 final class WalletModel: ObservableObject {
     @Published var connectionInfo = "Looking up validators on the Mainline DHT…"
+    @Published private(set) var developmentNetwork = false
+    @Published private(set) var developmentPort: UInt16 = 18546
+    @Published private(set) var networkChainId: UInt64 = 0
     @Published var validators: UInt32 = 4
     @Published var address = ""
     @Published var account: VerifiedAccount?
@@ -77,6 +80,7 @@ final class WalletModel: ObservableObject {
     }
 
     private var refreshes = 0
+    private var networkGeneration: UInt64 = 0
     private var lastHeight: UInt64?
     private var heightChangedAt: Date?
     private var tokenScanRunning = false
@@ -150,12 +154,63 @@ final class WalletModel: ObservableObject {
             return
         }
         do {
-            validators = try configureNetwork(networkJson: json)
-            let id = (try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])?["identity"] as? String ?? "devnet"
-            note("Network: \(validators) validators · committee key \(id.prefix(16))… (network.json)")
+            let bundled = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any] ?? [:]
+            let defaultChain = (bundled["chain_id"] as? NSNumber)?.uint64Value ?? 0
+            let dev = UserDefaults.standard.bool(forKey: "useDevelopmentNetwork") && UserDefaults.standard.bool(forKey: "developerMode")
+            if !dev { UserDefaults.standard.set(false, forKey: "useDevelopmentNetwork") }
+            let savedPort = UserDefaults.standard.integer(forKey: "developmentNetworkPort")
+            let port = (1024...65535).contains(savedPort) ? UInt16(savedPort) : 18546
+            let devValidators = Array(((bundled["validators"] as? [[String: Any]]) ?? []).prefix(4))
+            let devJSON = try JSONSerialization.data(withJSONObject: ["chain_id": 7777, "validators": devValidators, "devnet": true])
+            validators = try configureNetwork(networkJson: dev ? String(decoding: devJSON, as: UTF8.self) : json)
+            networkChainId = dev ? 7777 : defaultChain
+            developmentNetwork = dev
+            developmentPort = port
+            if dev { useLocalNode(port: port) }
+            let id = dev ? "local devnet keys" : (bundled["identity"] as? String ?? "missing identity")
+            note("Network: \(validators) validators · committee key \(id.prefix(16))…")
         } catch {
             note("network.json rejected: \(error)")
         }
+    }
+
+    func selectNetwork(development: Bool, port: UInt16 = 18546) {
+        guard !development || UserDefaults.standard.bool(forKey: "developerMode") else { return }
+        if development == developmentNetwork && (!development || port == developmentPort) { return }
+        guard !busy else {
+            UserDefaults.standard.set(developmentNetwork, forKey: "useDevelopmentNetwork")
+            if developmentNetwork { UserDefaults.standard.set(true, forKey: "developerMode") }
+            note("Wait for the pending transaction before switching networks.")
+            return
+        }
+        save()
+        networkGeneration &+= 1
+        UserDefaults.standard.set(development, forKey: "useDevelopmentNetwork")
+        if development { UserDefaults.standard.set(Int(port), forKey: "developmentNetworkPort") }
+        pinCommittee()
+        status = nil
+        account = nil
+        blocks = []
+        verifyError = nil
+        verifyFailingSince = nil
+        networkOutdated = false
+        chainPausedSince = nil
+        lastHeight = nil
+        lastActivityHeight = nil
+        activityCursors = [:]
+        activityExhausted = []
+        activityHistoryStart = nil
+        olderActivityAvailable = false
+        pendingBalanceRises = []
+        activityLoading = false
+        tokenScanRunning = false
+        tokenChoicesForChain = nil
+        tokensUpdated = nil
+        tokensError = nil
+        loadSaved()
+        loadTokens()
+        loadTokenChoices(chain: networkChainId)
+        refresh()
     }
 
     /// Register another device's key as this account's recovery key (one signature).
@@ -345,17 +400,17 @@ final class WalletModel: ObservableObject {
 
     func refresh() {
         if enclave == nil, Date().timeIntervalSince(lastKeyAttempt) > 5 { loadKey() }
-        let addr = address, n = validators
+        let addr = address, n = validators, generation = networkGeneration
         refreshes += 1
         // Recovery status needs several proofs; every 30 s is enough to warn within the delay.
         let checkRecovery = refreshes % 15 == 1 && !addr.isEmpty
         Task.detached {
             if checkRecovery, let rs = try? recoveryStatus(account: addr, validators: n) {
-                await MainActor.run { self.incomingRecovery = rs.pending ? rs : nil }
+                await MainActor.run { if self.networkGeneration == generation { self.incomingRecovery = rs.pending ? rs : nil } }
             }
             let st = try? chainStatus()
             let conn = connection()
-            if let st { await MainActor.run { self.loadTokenChoices(chain: st.chainId) } }
+            if let st { await MainActor.run { if self.networkGeneration == generation { self.loadTokenChoices(chain: st.chainId) } } }
             let bl = (try? recentBlocks(n: 24)) ?? []
             var acc: VerifiedAccount?
             var err: String?
@@ -364,6 +419,7 @@ final class WalletModel: ObservableObject {
             }
             let verified = acc, readError = err
             await MainActor.run {
+                guard self.networkGeneration == generation else { return }
                 // Published only when something actually changed: an unchanged set
                 // would still invalidate every view watching this model (the whole
                 // window), which lands right on top of live resizes.
@@ -431,10 +487,11 @@ final class WalletModel: ObservableObject {
             return
         }
         tokenScanRunning = true
-        let owner = address, catalogKey = "tokenCatalog.\(chain)", catalog = tokenCatalog
+        let owner = address, catalogKey = "tokenCatalog.\(chain)", catalog = tokenCatalog, generation = networkGeneration
         Task.detached {
             let result = Result { try TokenScanner.scan(owner: owner, sources: sources, catalog: catalog, read: { try ethCall(to: $0, dataHex: $1) }) }
             await MainActor.run {
+                guard self.networkGeneration == generation else { return }
                 self.tokenScanRunning = false
                 guard owner == self.address else { return }
                 switch result {
@@ -454,12 +511,16 @@ final class WalletModel: ObservableObject {
         }
     }
 
-    private var tokensKey: String { "tokenHoldings.\(address)" }
+    private var tokensKey: String { "tokenHoldings.\(networkChainId).\(address)" }
 
     /// The last token balances read for this account, shown until the next read.
     private func loadTokens() {
+        if networkChainId == 7780, UserDefaults.standard.object(forKey: tokensKey) == nil,
+           let old = UserDefaults.standard.data(forKey: "tokenHoldings.\(address)") {
+            UserDefaults.standard.set(old, forKey: tokensKey)
+        }
         tokens = UserDefaults.standard.data(forKey: tokensKey).flatMap { try? JSONDecoder().decode([TokenHolding].self, from: $0) } ?? []
-        tokenCatalog = UserDefaults.standard.data(forKey: "tokenCatalog.\(status?.chainId ?? 0)")
+        tokenCatalog = UserDefaults.standard.data(forKey: "tokenCatalog.\(networkChainId)")
             .flatMap { try? JSONDecoder().decode(TokenCatalog.self, from: $0) } ?? TokenCatalog()
     }
 
@@ -624,6 +685,7 @@ final class WalletModel: ObservableObject {
     }
 
     func faucet() {
+        guard developmentNetwork && UserDefaults.standard.bool(forKey: "developerMode") else { return }
         let addr = address
         busy = true
         Task.detached {
@@ -757,12 +819,16 @@ final class WalletModel: ObservableObject {
 
     // MARK: dashboard data (kept per account in UserDefaults)
 
-    private var historyKey: String { "balanceHistory.\(address)" }
-    private var activityKey: String { "activity.\(address)" }
+    private var historyKey: String { "balanceHistory.\(networkChainId).\(address)" }
+    private var activityKey: String { "activity.\(networkChainId).\(address)" }
     private var linkedKey: String { "linkedWallets.\(address)" }
 
     private func loadSaved() {
         let d = UserDefaults.standard
+        if networkChainId == 7780 {
+            if d.object(forKey: historyKey) == nil, let old = d.data(forKey: "balanceHistory.\(address)") { d.set(old, forKey: historyKey) }
+            if d.object(forKey: activityKey) == nil, let old = d.data(forKey: "activity.\(address)") { d.set(old, forKey: activityKey) }
+        }
         history = d.data(forKey: historyKey).flatMap { try? JSONDecoder().decode([BalancePoint].self, from: $0) } ?? []
         activity = d.data(forKey: activityKey).flatMap { try? JSONDecoder().decode([ActivityItem].self, from: $0) } ?? []
         linkedWallets = d.stringArray(forKey: linkedKey) ?? []
@@ -802,6 +868,7 @@ final class WalletModel: ObservableObject {
         let addresses = ([own] + linkedWallets).filter { !older || activityCursors[$0.lowercased()] != nil }
         guard !addresses.isEmpty else { return }
         let cursors = activityCursors
+        let generation = networkGeneration
         let sources = status.flatMap { TokenSources.bundled(chainId: $0.chainId) }
         let names = ChainNames(router: sources?.router, launchpad: sources?.launchpad,
                                tokenFactory: sources?.tokenFactory, waeth: sources?.waeth,
@@ -817,6 +884,7 @@ final class WalletModel: ObservableObject {
             }
             let fetchedPages = pages
             await MainActor.run {
+                guard self.networkGeneration == generation else { return }
                 self.activityLoading = false
                 guard self.address == own else { return }
                 var incomingHashes = Set<String>()
@@ -832,7 +900,7 @@ final class WalletModel: ObservableObject {
                     }
                     self.activityHistoryStart = max(self.activityHistoryStart ?? 0, page.historyStart)
                     if !older {
-                        let noticeKey = "incomingNotice.\(key)"
+                        let noticeKey = "incomingNotice.\(self.networkChainId).\(key)"
                         var notice = UserDefaults.standard.data(forKey: noticeKey).flatMap { try? JSONDecoder().decode(IncomingNoticeState.self, from: $0) }
                         if notice == nil {
                             notice = IncomingNoticeState(height: page.entries.map(\.height).max() ?? page.indexedHeight,

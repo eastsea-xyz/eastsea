@@ -15,6 +15,8 @@ const approveId = params.get('approve');
 if (approveId) document.body.classList.add('window');
 const app = document.getElementById('app');
 let tab = 'home';
+let developmentNetwork = false;
+let defaultChainId = 7780;
 let pauseState = null; // the network-pause tracker, for as long as this popup is open
 let updaters = []; // what the 15 s poll re-runs while the popup is open
 setInterval(() => { for (const u of updaters) Promise.resolve().then(u).catch(() => {}); }, 15_000);
@@ -39,7 +41,8 @@ function h(tag, props = {}, ...children) {
 }
 
 function header(extra) {
-  return h('header', {}, h('div', { class: 'logo', 'aria-hidden': 'true' }), h('h1', {}, `${Brand.project} Wallet`), extra);
+  return h('header', {}, h('div', { class: 'logo', 'aria-hidden': 'true' }), h('h1', {}, `${Brand.project} Wallet`),
+    developmentNetwork ? h('span', { class: 'pill warn' }, 'Dev network') : null, extra);
 }
 
 function message(kind, text) {
@@ -93,7 +96,7 @@ function onboarding() {
   };
   const form = h('form', { class: 'card' },
     h('h2', {}, 'Create a wallet'),
-    h('p', { class: 'muted small' }, `A new key is made in this browser and encrypted with your password. It works without the ${Brand.project} app. Mainnet has not launched; this is the testnet, and its ${Brand.coinTicker} does not carry over. Provided as is and not yet independently audited.`),
+    h('p', { class: 'muted small' }, `A new key is made in this browser and encrypted with your password. It works without the ${Brand.project} app. ${defaultChainId === 7780 ? `This is the testnet; its ${Brand.coinTicker} does not carry over to mainnet. ` : ''}Provided as is and not yet independently audited.`),
     h('label', {}, 'Password', pw),
     h('label', {}, 'Password again', pw2),
     create,
@@ -154,7 +157,7 @@ async function approvalView(s) {
     setTimeout(() => window.close(), r.hash ? 1400 : 600);
   }));
   no.addEventListener('click', action(no, out, async () => { await op('reject', { id: approveId }); window.close(); }));
-  render(header(h('span', { class: 'pill' }, 'Testnet')), h('div', { class: 'card' }, ...body), h('div', { class: 'row' }, h('div', { class: 'grow' }), no, yes), out);
+  render(header(h('span', { class: 'pill' }, developmentNetwork ? 'Dev network' : `Chain ${defaultChainId}`)), h('div', { class: 'card' }, ...body), h('div', { class: 'row' }, h('div', { class: 'grow' }), no, yes), out);
 }
 
 // ---- main popup ----
@@ -283,7 +286,7 @@ async function home(s) {
   const receive = h('button', { onclick: () => navigator.clipboard.writeText(s.address).then(() => out.replaceChildren(message('ok', 'Address copied.'))) }, h('span', { class: 'ico' }, '⬇'), 'Receive');
   const send = h('button', { onclick: () => { sendForm.hidden = !sendForm.hidden; if (!sendForm.hidden) { to.focus(); pickAssets(); op('activity').then((l) => { sent = l.filter((a) => !a.owner || a.owner.toLowerCase() === s.address.toLowerCase()).map((a) => a.to).filter(Boolean); warnings(); }).catch(() => {}); } } }, h('span', { class: 'ico' }, '↗'), 'Send');
   return [h('div', { class: 'card hero' }, h('div', { class: 'row', style: 'justify-content:center' }, addr, node), bal,
-    h('div', { class: 'small muted' }, `${Brand.project} testnet`),
+    h('div', { class: 'small muted' }, developmentNetwork ? 'Dev network' : `${Brand.project} chain ${defaultChainId}`),
     h('div', { class: 'small muted' }, 'Read from the node · not verified in the browser')),
     h('div', { class: 'actions' }, receive, send), sendForm, out];
 }
@@ -352,7 +355,7 @@ async function assetsView(s) {
   // One card like the app's Assets sheet; nothing in this popup is verified here,
   // so the one label covers the AETH balance and the tokens alike.
   return [h('div', { class: 'card' },
-    h('div', { class: 'row' }, h('h2', { class: 'grow' }, 'Assets'), h('span', { class: 'small muted nowrap' }, `${Brand.project} testnet`)),
+    h('div', { class: 'row' }, h('h2', { class: 'grow' }, 'Assets'), h('span', { class: 'small muted nowrap' }, developmentNetwork ? 'Dev network' : `${Brand.project} network`)),
     h('div', { class: 'small muted' }, 'Read from the node · not verified in the browser'),
     h('div', { class: 'item', title: s.address },
       h('span', { class: 'avatar', 'aria-hidden': 'true' }, Brand.project[0]),
@@ -412,18 +415,26 @@ function settingsView(s) {
   const minutes = h('input', { type: 'number', min: 1, max: 1440, value: s.lockMinutes });
   const developerMode = h('input', { type: 'checkbox' });
   developerMode.checked = Boolean(s.developerMode);
+  const network = h('select', {}, h('option', { value: 'default' }, 'Default'), h('option', { value: 'development' }, 'Local development network'));
+  network.value = s.developmentNetwork ? 'development' : 'default';
+  const port = h('input', { type: 'number', min: 1024, max: 65535, value: s.developmentPort });
+  const networkFields = h('div', { class: 'network-fields' }, h('label', {}, 'Network', network), h('label', {}, 'Local RPC port (127.0.0.1)', port));
+  networkFields.hidden = !developerMode.checked;
+  developerMode.addEventListener('change', () => { networkFields.hidden = !developerMode.checked; });
   const rpcs = h('textarea', { placeholder: 'https://node.example (one per line)', spellcheck: 'false' }, s.rpcs.join('\n'));
   const save = h('button', { type: 'submit' }, 'Save');
   const form = h('form', { class: 'card' }, h('h2', {}, 'Settings'), h('label', {}, 'Lock after (minutes)', minutes),
-    h('label', {}, 'Extra nodes, tried before the defaults', rpcs), h('p', { class: 'small muted' }, `Defaults: the ${Brand.project} app\'s node on this computer (127.0.0.1:18545), then this Mac\'s testnet validators.`),
-    h('label', {}, developerMode, ' Developer mode'), save);
+    h('label', {}, 'Extra default-network nodes', rpcs), h('p', { class: 'small muted' }, `Default: the ${Brand.project} app\'s node on this computer (127.0.0.1:18545).`),
+    h('label', {}, developerMode, ' Developer mode'), networkFields, save);
   form.addEventListener('submit', action(save, out, async () => {
     const list = rpcs.value.split(/\s+/).filter(Boolean);
+    if (network.value === 'development' && !developerMode.checked) throw new Error('Turn on Developer mode to use a local development network.');
     const extra = list.filter((u) => !/^http:\/\/(127\.0\.0\.1|localhost)[:/]/.test(u));
     if (extra.length && !(await chrome.permissions.request({ origins: extra.map((u) => `${new URL(u).origin}/*`) }))) throw new Error('The browser did not allow those nodes.');
-    await op('settings', { lockMinutes: minutes.value, rpcs: list, developerMode: developerMode.checked });
+    await op('settings', { lockMinutes: minutes.value, rpcs: list, developerMode: developerMode.checked,
+      developmentNetwork: network.value === 'development', developmentPort: Number(port.value) });
     out.replaceChildren(message('ok', 'Saved.'));
-    if (developerMode.checked !== s.developerMode) refresh();
+    if (developerMode.checked !== s.developerMode || (network.value === 'development') !== s.developmentNetwork) refresh();
   }));
   const developerOut = h('div');
   const faucet = h('button', { type: 'button' }, `Get test ${Brand.coinTicker}`);
@@ -447,7 +458,7 @@ function settingsView(s) {
     refresh();
   }));
   const backup = h('div', { class: 'card' }, h('h2', {}, 'Backup'), h('p', { class: 'small muted' }, 'The key lives only in this browser. Keep a copy of the private key somewhere safe.'), pw, h('div', { class: 'row' }, reveal, erase), keyOut);
-  return [form, out, s.developerMode ? developer : null, backup];
+  return [form, out, s.developerMode && s.developmentNetwork ? developer : null, backup];
 }
 
 async function refresh() {
@@ -459,6 +470,8 @@ async function refresh() {
     render(header(), message('error', e.message));
     return;
   }
+  developmentNetwork = s.developmentNetwork;
+  defaultChainId = s.defaultChainId;
   if (s.terms < TERMS_VERSION) return noticeView();
   if (!s.exists) return onboarding();
   if (!s.unlocked) return unlockView(s.address);

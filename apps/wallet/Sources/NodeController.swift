@@ -149,6 +149,11 @@ final class NodeController: ObservableObject {
     }
 
     static let port: UInt16 = 18_545
+
+    func refreshWalletRoute() {
+        guard !UserDefaults.standard.bool(forKey: "useDevelopmentNetwork") else { return }
+        useLocalNode(port: switched ? Self.port : nil)
+    }
     /// Validator-to-validator port, used only while this Mac is voting.
     static let p2pPort: UInt16 = 19_101
     private(set) var process: Process?
@@ -313,7 +318,7 @@ final class NodeController: ObservableObject {
         restartTimer = nil
         switched = false
         watchdog.invalidate()
-        useLocalNode(port: nil)
+        if !UserDefaults.standard.bool(forKey: "useDevelopmentNetwork") { useLocalNode(port: nil) }
         if let p = process, p.isRunning { p.terminate() }
         process = nil
         state = .off
@@ -338,7 +343,7 @@ final class NodeController: ObservableObject {
         process = nil
         poll?.invalidate()
         switched = false
-        useLocalNode(port: nil)  // the wallet reads other nodes from this moment on
+        if !UserDefaults.standard.bool(forKey: "useDevelopmentNetwork") { useLocalNode(port: nil) }  // the wallet reads other nodes from this moment on
         applyDuty()
         switch watchdog.exited(Date(), code: status, signaled: proc.terminationReason == .uncaughtSignal, log: nodeLogTail()) {
         case .restart(let after):
@@ -550,7 +555,7 @@ final class NodeController: ObservableObject {
                     responsive: status != nil, currentlyLocal: self.switched)
                 if self.switched != useLocal {
                     self.switched = useLocal
-                    useLocalNode(port: useLocal ? port : nil)
+                    if !UserDefaults.standard.bool(forKey: "useDevelopmentNetwork") { useLocalNode(port: useLocal ? port : nil) }
                     self.state = useLocal ? .running : .starting
                 }
                 guard let local else {
@@ -591,7 +596,7 @@ final class NodeController: ObservableObject {
                     guard let self, self.process != nil else { return }
                     self.watchdog.invalidate()
                     self.switched = false
-                    useLocalNode(port: nil)
+                    if !UserDefaults.standard.bool(forKey: "useDevelopmentNetwork") { useLocalNode(port: nil) }
                     self.state = .starting
                 }
             },
@@ -600,7 +605,7 @@ final class NodeController: ObservableObject {
                     guard let self, self.process != nil else { return }
                     self.watchdog.invalidate()
                     self.switched = false
-                    useLocalNode(port: nil)
+                    if !UserDefaults.standard.bool(forKey: "useDevelopmentNetwork") { useLocalNode(port: nil) }
                     self.state = .starting
                     self.check()
                 }

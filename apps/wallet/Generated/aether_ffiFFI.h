@@ -362,6 +362,16 @@ RustBuffer uniffi_aether_ffi_fn_func_prepare_session_payment(RustBuffer account,
 RustBuffer uniffi_aether_ffi_fn_func_prepare_session_submit(RustBuffer session_public_key, RustBuffer request, RustBuffer session_signature, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_SESSION_TOKEN_PAYMENT
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_SESSION_TOKEN_PAYMENT
+RustBuffer uniffi_aether_ffi_fn_func_prepare_session_token_payment(RustBuffer account, RustBuffer token, RustBuffer to, RustBuffer amount, uint32_t validators, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_SESSION_TOKEN_SUBMIT
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_SESSION_TOKEN_SUBMIT
+RustBuffer uniffi_aether_ffi_fn_func_prepare_session_token_submit(RustBuffer session_public_key, RustBuffer request, RustBuffer session_signature, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_SET_RECOVERY_KEY
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_SET_RECOVERY_KEY
 RustBuffer uniffi_aether_ffi_fn_func_prepare_set_recovery_key(RustBuffer p256_public_key, RustBuffer recovery_code, RustCallStatus *_Nonnull out_status
@@ -370,6 +380,16 @@ RustBuffer uniffi_aether_ffi_fn_func_prepare_set_recovery_key(RustBuffer p256_pu
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_SET_SESSION
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_SET_SESSION
 RustBuffer uniffi_aether_ffi_fn_func_prepare_set_session(RustBuffer owner_public_key, RustBuffer settings, uint32_t validators, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_SET_SESSION_TOKEN
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_SET_SESSION_TOKEN
+RustBuffer uniffi_aether_ffi_fn_func_prepare_set_session_token(RustBuffer owner_public_key, RustBuffer token, RustBuffer per_payment, RustBuffer per_day, uint32_t validators, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_STOP_SESSIONS
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_STOP_SESSIONS
+RustBuffer uniffi_aether_ffi_fn_func_prepare_stop_sessions(RustBuffer owner_public_key, uint32_t validators, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_TRANSFER
@@ -400,6 +420,11 @@ RustBuffer uniffi_aether_ffi_fn_func_recovery_status(RustBuffer account, uint32_
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_SESSION_STATUS
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_SESSION_STATUS
 RustBuffer uniffi_aether_ffi_fn_func_session_status(RustBuffer account, uint32_t validators, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_SESSION_TOKEN_STATUS
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_SESSION_TOKEN_STATUS
+RustBuffer uniffi_aether_ffi_fn_func_session_token_status(RustBuffer account, RustBuffer token, uint32_t validators, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_SET_COMMITTEE_IDENTITY
@@ -864,6 +889,18 @@ uint16_t uniffi_aether_ffi_checksum_func_prepare_session_submit(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_SESSION_TOKEN_PAYMENT
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_SESSION_TOKEN_PAYMENT
+uint16_t uniffi_aether_ffi_checksum_func_prepare_session_token_payment(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_SESSION_TOKEN_SUBMIT
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_SESSION_TOKEN_SUBMIT
+uint16_t uniffi_aether_ffi_checksum_func_prepare_session_token_submit(void
+
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_SET_RECOVERY_KEY
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_SET_RECOVERY_KEY
 uint16_t uniffi_aether_ffi_checksum_func_prepare_set_recovery_key(void
@@ -874,6 +911,18 @@ uint16_t uniffi_aether_ffi_checksum_func_prepare_set_recovery_key(void
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_SET_SESSION
 uint16_t uniffi_aether_ffi_checksum_func_prepare_set_session(void
     
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_SET_SESSION_TOKEN
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_SET_SESSION_TOKEN
+uint16_t uniffi_aether_ffi_checksum_func_prepare_set_session_token(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_STOP_SESSIONS
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_STOP_SESSIONS
+uint16_t uniffi_aether_ffi_checksum_func_prepare_stop_sessions(void
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_TRANSFER
@@ -910,6 +959,12 @@ uint16_t uniffi_aether_ffi_checksum_func_recovery_status(void
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_SESSION_STATUS
 uint16_t uniffi_aether_ffi_checksum_func_session_status(void
     
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_SESSION_TOKEN_STATUS
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_SESSION_TOKEN_STATUS
+uint16_t uniffi_aether_ffi_checksum_func_session_token_status(void
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_SET_COMMITTEE_IDENTITY

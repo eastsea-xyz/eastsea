@@ -27,3 +27,13 @@ pub const AETHER_ACCOUNT: alloy_primitives::Address = alloy_primitives::address!
 pub fn aether_account_code() -> alloy_primitives::Bytes {
     alloy_primitives::Bytes::from(alloy_primitives::hex::decode(include_str!("aether_account.bin.hex").trim()).expect("valid hex"))
 }
+
+/// New-genesis account code. The original artifact stays pinned for testnet 7780.
+pub fn aether_account_code_v2() -> alloy_primitives::Bytes {
+    alloy_primitives::Bytes::from(alloy_primitives::hex::decode(include_str!("aether_account_v2.bin.hex").trim()).expect("valid hex"))
+}
+
+/// Only new-genesis networks install the token-capable account code.
+pub fn aether_account_code_for_genesis(node_rewards: bool, history_v2: bool) -> alloy_primitives::Bytes {
+    if node_rewards || history_v2 { aether_account_code_v2() } else { aether_account_code() }
+}

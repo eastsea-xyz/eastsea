@@ -8,10 +8,11 @@ enum MCPServer {
 
     static let instructions = """
     Aether wallet for this agent. The agent pays from its own account with a key held in this Mac's Secure Enclave \
-    (it cannot be exported). The account contract enforces the owner's limits on chain (per payment, per 24 h, \
-    allowed recipients, expiry); only the owner can change them, with Touch ID. Balances are verified on this Mac \
+    (it cannot be exported). The account contract checks the owner's limits on chain (per payment, per 24 h, \
+    allowed recipients, expiry); a tricked agent can still spend within them. Only the owner can change them, with Touch ID. Balances are verified on this Mac \
     against the validators' threshold signature. If a payment is refused, tell the human the limit and that they can \
-    change it with `aether-agent policy set`; do not retry around it. Use aether_send with dry_run first when unsure. \
+    change it with `aether-agent policy set`; do not retry around it. Every payment needs a truthful purpose. \
+    New payees require owner approval, and the owner can stop the session with `aether-agent stop`. Use dry_run when unsure. \
     Amounts are decimal AETH strings. The dex_* tools only read the Aether DEX (pools, tokens, quotes); a quote is an \
     estimate, and agents cannot swap yet.
     """

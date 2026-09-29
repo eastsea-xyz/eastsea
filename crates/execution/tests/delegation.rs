@@ -8,6 +8,14 @@ use aether_types::{Address, Bytes, GasVector, TxEnvelope, U256};
 
 const CHAIN: u64 = 7_777;
 
+#[test]
+fn account_code_is_token_capable_only_on_new_genesis() {
+    assert_eq!(aether_execution::aether_account_code_for_genesis(false, false), aether_account_code());
+    assert_eq!(aether_execution::aether_account_code_for_genesis(true, false), aether_execution::aether_account_code_v2());
+    assert_eq!(aether_execution::aether_account_code_for_genesis(false, true), aether_execution::aether_account_code_v2());
+    assert_ne!(aether_account_code(), aether_execution::aether_account_code_v2());
+}
+
 fn seed(b: u8) -> [u8; 32] {
     let mut s = [0u8; 32];
     s[0] = 0x77;

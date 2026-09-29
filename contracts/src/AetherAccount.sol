@@ -12,10 +12,8 @@ pragma solidity ^0.8.19;
 /// keys added this way drive the account by signature (`ownerExecute`), so a
 /// new device takes over the same address.
 ///
-/// Session keys (e.g. an AI agent's key) pay plain transfers by signature, within
-/// limits this contract enforces: per payment, at most `perDay` in ANY 24 hours,
-/// an optional recipient list and an expiry. Whoever holds a session key can never exceed
-/// them, whatever code it runs.
+/// Session keys pay native transfers or explicitly configured ERC-20 transfers.
+/// A compromised agent may still spend within the owner's limits.
 ///
 /// Limit: EIP-7702 cannot revoke the account's original key. Recovery is for a
 /// lost key; whoever holds a stolen original key can still move funds.
@@ -48,6 +46,8 @@ contract AetherAccount {
     error RecipientNotAllowed(address to);
     error OverPaymentLimit(uint256 total, uint256 limit);
     error OverDailyLimit(uint256 spent, uint256 limit);
+    error TokenNotAllowed(address token);
+    error TokenTransferFailed(uint256 index);
 
     event Executed(uint256 calls);
     event GuardiansSet(uint256 count, uint8 threshold, uint64 delay);
@@ -60,6 +60,7 @@ contract AetherAccount {
     event SessionAdded(uint256 index, bytes32 x, bytes32 y, uint128 perPayment, uint128 perDay, uint64 expires);
     event SessionRemoved(uint256 index);
     event SessionPaid(uint256 index, uint256 nonce, uint256 total);
+    event SessionTokenSet(uint256 index, address token, uint128 perPayment, uint128 perDay);
 
     /// P256VERIFY (EIP-7951 / RIP-7212): sha256 digest, r, s, x, y -> 1 on success.
     address constant P256VERIFY = address(0x100);
@@ -74,6 +75,7 @@ contract AetherAccount {
     bytes32 constant SESSION_TAG = 0x2e4a90ade1d79b1a035dc199dd5094be459e7c7e62f5f46349a2f67f0e9cd513;
     uint256 constant MAX_SESSIONS = 8;
     uint256 constant MAX_ALLOWED = 16;
+    bytes4 constant TRANSFER_SELECTOR = 0xa9059cbb;
 
     /// Storage lives in the delegating account itself, so use a namespaced slot
     /// (ERC-7201) no other code at this address will collide with:
@@ -94,6 +96,15 @@ contract AetherAccount {
         Session[] sessions;
         /// Every session ever added gets a new id, which its signatures cover.
         uint256 sessionSerial;
+        mapping(uint256 => mapping(address => TokenLimit)) tokenLimits;
+    }
+
+    struct TokenLimit {
+        uint128 perPayment;
+        uint128 perDay;
+        uint64 day;
+        uint128 spent;
+        uint128 prevSpent;
     }
 
     struct Session {
@@ -342,6 +353,27 @@ contract AetherAccount {
         emit SessionRemoved(index);
     }
 
+    /// Token amounts are base units of this token, never AETH wei. A removed
+    /// session's id cannot be reused, so its old token permissions stay inert.
+    function setSessionToken(uint256 index, address token, uint128 perPayment, uint128 perDay) external onlySelf {
+        State storage st = _state();
+        if (index >= st.sessions.length || token == address(0) || token == address(this) || token.code.length == 0
+            || perPayment == 0 || perPayment > perDay) revert BadSession();
+        TokenLimit storage limit = st.tokenLimits[st.sessions[index].id][token];
+        limit.perPayment = perPayment;
+        limit.perDay = perDay;
+        limit.day = 0;
+        limit.spent = 0;
+        limit.prevSpent = 0;
+        emit SessionTokenSet(index, token, perPayment, perDay);
+    }
+
+    function sessionToken(uint256 index, address token) external view returns (TokenLimit memory) {
+        State storage st = _state();
+        if (index >= st.sessions.length) revert BadSession();
+        return st.tokenLimits[st.sessions[index].id][token];
+    }
+
     function sessionCount() external view returns (uint256) {
         return _state().sessions.length;
     }
@@ -366,10 +398,30 @@ contract AetherAccount {
         if (!_verify(sessionDigest(calls, ss.id, nonce), r, s, ss.key)) revert BadSession();
         uint256 total = 0;
         for (uint256 i = 0; i < calls.length; i++) {
-            // Value transfers only: no contract calls, and never into the account's own settings.
-            if (calls[i].data.length != 0 || calls[i].to == address(this)) revert NotAPayment(i);
-            if (ss.allow.length > 0 && !_allowed(ss.allow, calls[i].to)) revert RecipientNotAllowed(calls[i].to);
-            total += calls[i].value;
+            if (calls[i].to == address(this)) revert NotAPayment(i);
+            if (calls[i].data.length == 0) {
+                if (ss.allow.length > 0 && !_allowed(ss.allow, calls[i].to)) revert RecipientNotAllowed(calls[i].to);
+                total += calls[i].value;
+            } else {
+                if (calls[i].to.code.length == 0) revert TokenNotAllowed(calls[i].to);
+                (address recipient, uint256 amount) = _tokenTransfer(calls[i], i);
+                if (ss.allow.length > 0 && !_allowed(ss.allow, recipient)) revert RecipientNotAllowed(recipient);
+                // Count every call to this token in the signed batch as one
+                // payment. Only the first occurrence updates its daily usage.
+                bool first = true;
+                for (uint256 j = 0; j < i; j++) {
+                    if (calls[j].to == calls[i].to && calls[j].data.length != 0) first = false;
+                }
+                if (first) {
+                    for (uint256 j = i + 1; j < calls.length; j++) {
+                        if (calls[j].to == calls[i].to && calls[j].data.length != 0) {
+                            (, uint256 nextAmount) = _tokenTransfer(calls[j], j);
+                            amount += nextAmount;
+                        }
+                    }
+                    _spendToken(st.tokenLimits[ss.id][calls[i].to], calls[i].to, amount);
+                }
+            }
         }
         if (total > ss.perPayment) revert OverPaymentLimit(total, ss.perPayment);
         // Any 24 hours overlap at most two consecutive UTC days, so capping each
@@ -384,8 +436,39 @@ contract AetherAccount {
         if (used > ss.perDay) revert OverDailyLimit(used, ss.perDay);
         ss.spent += uint128(total);
         ss.nonce = nonce + 1;
-        _run(calls);
+        _runSession(calls);
         emit SessionPaid(index, nonce, total);
+    }
+
+    function _runSession(Call[] calldata calls) private {
+        for (uint256 i = 0; i < calls.length; i++) {
+            (bool ok, bytes memory result) = calls[i].to.call{value: calls[i].value}(calls[i].data);
+            if (!ok) revert CallFailed(i, result);
+            if (calls[i].data.length != 0 && result.length != 0
+                && (result.length != 32 || !abi.decode(result, (bool)))) revert TokenTransferFailed(i);
+        }
+    }
+
+    function _tokenTransfer(Call calldata c, uint256 index) private pure returns (address recipient, uint256 amount) {
+        if (c.value != 0 || c.data.length != 68 || bytes4(c.data[:4]) != TRANSFER_SELECTOR) revert NotAPayment(index);
+        // abi.decode also rejects malformed address padding. No trailing data,
+        // approve, transferFrom, or arbitrary token method can enter this path.
+        (recipient, amount) = abi.decode(c.data[4:], (address, uint256));
+        if (recipient == address(0) || amount == 0) revert NotAPayment(index);
+    }
+
+    function _spendToken(TokenLimit storage limit, address token, uint256 amount) private {
+        if (limit.perPayment == 0) revert TokenNotAllowed(token);
+        if (amount > limit.perPayment) revert OverPaymentLimit(amount, limit.perPayment);
+        uint64 today = uint64(block.timestamp / 1 days);
+        if (today != limit.day) {
+            limit.prevSpent = today == limit.day + 1 ? limit.spent : 0;
+            limit.spent = 0;
+            limit.day = today;
+        }
+        uint256 used = uint256(limit.prevSpent) + limit.spent + amount;
+        if (used > limit.perDay) revert OverDailyLimit(used, limit.perDay);
+        limit.spent += uint128(amount);
     }
 
     function _allowed(address[] storage allow, address to) private view returns (bool) {

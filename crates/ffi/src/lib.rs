@@ -2267,6 +2267,61 @@ pub fn prepare_set_session(owner_public_key: Vec<u8>, settings: SessionSettings,
     })
 }
 
+/// Revoke every session of this account with one owner-authenticated tx.
+#[uniffi::export]
+pub fn prepare_stop_sessions(owner_public_key: Vec<u8>, validators: u32) -> R<PreparedTx> {
+    let owner = address_of(&p256_key(&owner_public_key)?).map_err(|e| WalletError::Invalid(e.to_string()))?;
+    let set = trusted_set(validators)?;
+    let count = verified_slot(owner, slots::session_count(), &set)?.to::<u64>();
+    if count == 0 { return Err(WalletError::Invalid("no active session".into())); }
+    let calls: Vec<aether_execution::AccountCall> = (0..count).map(|_| (owner, U256::ZERO, acct::encode_remove_session(0))).collect();
+    prepare(&owner_public_key, |from| Ok(EvmCall {
+        to: Some(from), value: U256::ZERO, input: aether_execution::encode_execute(&calls),
+        gas_limit: 200_000 + 70_000 * count, delegate: Some(aether_execution::AETHER_ACCOUNT),
+    }))
+}
+
+#[derive(uniffi::Record)]
+pub struct SessionTokenStatus {
+    pub per_payment: String,
+    pub per_day: String,
+    pub left_now: String,
+}
+
+#[uniffi::export]
+pub fn session_token_status(account: String, token: String, validators: u32) -> R<SessionTokenStatus> {
+    let a: Address = account.parse().map_err(|_| WalletError::Invalid("account address".into()))?;
+    let token: Address = token.parse().map_err(|_| WalletError::Invalid("token address".into()))?;
+    let set = trusted_set(validators)?;
+    if verified_slot(a, slots::session_count(), &set)?.is_zero() { return Err(WalletError::Invalid("no session".into())); }
+    let id = verified_slot(a, slots::session(0) + U256::from(7u64), &set)?.to::<u64>();
+    let base = slots::session_token(id, token);
+    let (per_payment, per_day) = slots::unpack_limits(verified_slot(a, base, &set)?);
+    let usage = verified_slot(a, base + U256::from(1u64), &set)?;
+    let bytes = usage.to_be_bytes::<32>();
+    let day = u64::from_be_bytes(bytes[24..32].try_into().expect("day"));
+    let spent = u128::from_be_bytes(bytes[8..24].try_into().expect("spent"));
+    let prev = verified_slot(a, base + U256::from(2u64), &set)?.to::<u128>();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or_default();
+    Ok(SessionTokenStatus { per_payment: per_payment.to_string(), per_day: per_day.to_string(),
+        left_now: slots::left_now(per_day, day, spent, prev, now).to_string() })
+}
+
+/// Add or replace a listed token's on-chain caps without renewing the session.
+#[uniffi::export]
+pub fn prepare_set_session_token(owner_public_key: Vec<u8>, token: String, per_payment: String, per_day: String, validators: u32) -> R<PreparedTx> {
+    let t: Address = token.parse().map_err(|_| WalletError::Invalid("token address".into()))?;
+    let p = per_payment.parse::<u128>().map_err(|_| WalletError::Invalid("per payment".into()))?;
+    let d = per_day.parse::<u128>().map_err(|_| WalletError::Invalid("per day".into()))?;
+    if p == 0 || p > d { return Err(WalletError::Invalid("need 0 < per-payment <= per-day".into())); }
+    let owner = address_of(&p256_key(&owner_public_key)?).map_err(|e| WalletError::Invalid(e.to_string()))?;
+    let set = trusted_set(validators)?;
+    if verified_slot(owner, slots::session_count(), &set)?.is_zero() { return Err(WalletError::Invalid("no session".into())); }
+    let calls = [(owner, U256::ZERO, acct::encode_set_session_token(0, t, p, d))];
+    prepare(&owner_public_key, |from| Ok(EvmCall { to: Some(from), value: U256::ZERO,
+        input: aether_execution::encode_execute(&calls), gas_limit: 300_000, delegate: Some(aether_execution::AETHER_ACCOUNT) }))
+}
+
 /// A payment a session key signs for `account` (then `prepare_session_submit`).
 #[derive(uniffi::Record)]
 pub struct SessionRequest {
@@ -2275,6 +2330,45 @@ pub struct SessionRequest {
     pub nonce: u64,
     /// Sign with the session key (SHA-256 applied by CryptoKit).
     pub message: Vec<u8>,
+}
+
+#[derive(uniffi::Record)]
+pub struct SessionTokenRequest {
+    pub account: String,
+    pub token: String,
+    pub to: String,
+    pub amount: String,
+    pub nonce: u64,
+    pub message: Vec<u8>,
+}
+
+fn token_call(token: &str, to: &str, amount: &str) -> R<aether_execution::AccountCall> {
+    let t: Address = token.parse().map_err(|_| WalletError::Invalid("token".into()))?;
+    let recipient: Address = to.parse().map_err(|_| WalletError::Invalid("recipient".into()))?;
+    let value: U256 = amount.parse().map_err(|_| WalletError::Invalid("token amount".into()))?;
+    if value.is_zero() { return Err(WalletError::Invalid("token amount".into())); }
+    Ok((t, U256::ZERO, acct::encode_token_transfer(recipient, value)))
+}
+
+#[uniffi::export]
+pub fn prepare_session_token_payment(account: String, token: String, to: String, amount: String, validators: u32) -> R<SessionTokenRequest> {
+    let a: Address = account.parse().map_err(|_| WalletError::Invalid("account".into()))?;
+    let calls = [token_call(&token, &to, &amount)?];
+    let set = trusted_set(validators)?;
+    if verified_slot(a, slots::session_count(), &set)?.is_zero() { return Err(WalletError::Invalid("no session".into())); }
+    let nonce = verified_slot(a, slots::session(0) + U256::from(6u64), &set)?.to::<u64>();
+    let id = verified_slot(a, slots::session(0) + U256::from(7u64), &set)?.to::<u64>();
+    let chain_id = expected_chain(&call("aether_status", json!([]))?)?;
+    Ok(SessionTokenRequest { account, token, to, amount, nonce, message: acct::session_message(chain_id, a, id, nonce, &calls) })
+}
+
+#[uniffi::export]
+pub fn prepare_session_token_submit(session_public_key: Vec<u8>, request: SessionTokenRequest, session_signature: Vec<u8>) -> R<PreparedTx> {
+    let a: Address = request.account.parse().map_err(|_| WalletError::Invalid("account".into()))?;
+    let calls = [token_call(&request.token, &request.to, &request.amount)?];
+    let sig = normalize_p256(&session_signature)?;
+    let input = acct::encode_session_execute(&calls, 0, sig[..32].try_into().expect("32"), sig[32..64].try_into().expect("32"));
+    prepare(&session_public_key, |_| Ok(EvmCall { to: Some(a), value: U256::ZERO, input, gas_limit: 200_000, delegate: None }))
 }
 
 fn session_calls(payments: &[Payment]) -> R<Vec<aether_execution::AccountCall>> {

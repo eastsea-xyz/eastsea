@@ -61,13 +61,14 @@ scripts/build-extension.sh        # then load apps/extension unpacked from chrom
 
 ```bash
 scripts/build-agent.sh --install   # ~/.local/bin/aether-agent
-aether-agent init                  # you, once: create keys; fund the account, then set limits (Touch ID)
+aether-agent init                  # you, once: create keys; fund the account
+aether-agent payee add --name Shop --address 0x...  # approve first payee with Touch ID
 aether-agent setup all --apply     # register the MCP server "aether" with every agent tool you have installed
 ```
 
-- **Tools:** status, wallet, balance, send, pay_many (one transaction), receipt, history.
-- **Default limits:** 1 AETH per payment and 10 AETH per 24 hours. Change them with `aether-agent policy set`, which asks for Touch ID.
-- **Enforced on chain:** the agent pays with a session key of its account; the contract checks every payment against the limits, the allowed recipients and the expiry. Editing local files or processes does not lift them; only the owner can change them, with Touch ID. Gas comes from a separate small balance.
+- **Tools:** status, wallet, balance, send, pay_many (one transaction), pay_token (new genesis), receipt, history.
+- **Safe default:** payments stay off until the owner adds a named payee with `aether-agent payee add --name NAME --address 0x...` and Touch ID. The first session lasts seven days, with 1 AETH per payment and 10 AETH per 24 hours. Renew with `aether-agent policy renew`; stop immediately with `aether-agent stop` or **비서 멈추기** in the Mac wallet.
+- **On-chain limits:** the contract checks payment caps, approved recipients, and expiry. The owner can explicitly choose `--allow anyone` after a warning. A tricked agent can still spend within its limits, and stopping cannot undo a transaction already submitted. Gas comes from a separate small balance. Token payments require a new-genesis account contract and `aether-agent token allow --address 0x... --per-tx UNITS --per-day UNITS` (token base units, Touch ID). Renewing or replacing a session clears its token permissions; the owner must approve them again.
 - Details: [AGENTS.md](AGENTS.md) and [the skill file](agents/skills/aether-wallet/SKILL.md).
 
 ### Run a real network

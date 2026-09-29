@@ -152,7 +152,7 @@ impl ChainConfig {
         // The account contract P-256 accounts delegate to (EIP-7702) for batched calls.
         s.set_code(
             aether_execution::AETHER_ACCOUNT,
-            aether_execution::aether_account_code(),
+            aether_execution::aether_account_code_for_genesis(self.node_rewards, self.history_v2),
         )
         .expect("predeploy");
         if self.node_rewards && self.history_v2 {

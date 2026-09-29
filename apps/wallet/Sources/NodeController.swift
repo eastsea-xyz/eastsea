@@ -108,7 +108,8 @@ final class NodeController: ObservableObject {
         if onlyOnPower && Self.onBattery {
             if process != nil { stop(keepSwitch: true) }
             state = .waitingForPower
-        } else if process == nil {
+        } else if process == nil, restartTimer == nil {
+            // A watchdog restart already scheduled keeps its backoff.
             start()
         }
     }
@@ -124,7 +125,9 @@ final class NodeController: ObservableObject {
     }
 
     private var binary: URL? {
-        let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/aether")
+        let helpers = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers")
+        let name = usePreviousBinary ? "aether.prev" : "aether"
+        let helper = helpers.appendingPathComponent(name)
         return FileManager.default.isExecutableFile(atPath: helper.path) ? helper : nil
     }
 
@@ -135,6 +138,15 @@ final class NodeController: ObservableObject {
         height = 184_210
     }
     #endif
+
+    /// What the app does when its node stops, stalls, or dies over and over
+    /// (docs/design/24-self-healing.md layer 2).
+    private var watchdog = NodeWatchdog()
+    /// A watchdog-ordered restart is pending (its backoff is running).
+    private var restartTimer: Timer?
+    /// The last update's binary kept beside the current one: rolled back to
+    /// when the new one cannot start (docs/design/24-self-healing.md layer 2).
+    private var usePreviousBinary = false
 
     /// Resume the user's choice at launch.
     func restore() {
@@ -183,6 +195,7 @@ final class NodeController: ObservableObject {
             return
         }
         process = p
+        watchdog.started(Date())
         state = .starting
         poll = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.check() }
@@ -223,13 +236,25 @@ final class NodeController: ObservableObject {
         }
         poll?.invalidate()
         tokenTimer?.invalidate()
+        restartTimer?.invalidate()
         poll = nil
+        restartTimer = nil
         switched = false
         useLocalNode(port: nil)
         if let p = process, p.isRunning { p.terminate() }
         process = nil
         state = .off
         applyDuty()
+    }
+
+    /// The tail of the node's log: what the watchdog reads to tell a full disk
+    /// from a damaged database when the node exits with the storage code.
+    private func nodeLogTail(_ bytes: Int = 8_192) -> String {
+        guard let h = try? FileHandle(forReadingFrom: Self.dataDir.appendingPathComponent("node.log")) else { return "" }
+        defer { try? h.close() }
+        let size = (try? h.seekToEnd()) ?? 0
+        try? h.seek(toOffset: max(0, size - UInt64(bytes)))
+        return String(data: h.readDataToEndOfFile(), encoding: .utf8) ?? ""
     }
 
     private func exited(_ proc: Process) {
@@ -240,9 +265,41 @@ final class NodeController: ObservableObject {
         process = nil
         poll?.invalidate()
         switched = false
-        useLocalNode(port: nil)
-        state = .failed("The node stopped (exit \(status)); see \(Self.dataDir.appendingPathComponent("node.log").path)")
+        useLocalNode(port: nil)  // the wallet reads other nodes from this moment on
         applyDuty()
+        switch watchdog.exited(Date(), code: status, signaled: proc.terminationReason == .uncaughtSignal, log: nodeLogTail()) {
+        case .restart(let after):
+            // Restart with backoff (docs/design/24-self-healing.md layer 2):
+            // the wallet is on remote nodes already, so a few seconds cost
+            // nothing but a crash loop.
+            state = .failed("The node stopped (exit \(status)); restarting it")
+            watchdog.restarting()
+            restartTimer = Timer.scheduledTimer(withTimeInterval: max(after, 0.05), repeats: false) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self, self.process == nil, self.restartTimer != nil else { return }
+                    self.restartTimer = nil
+                    self.start()
+                }
+            }
+        case .stop(let failure):
+            // Too many deaths: stop restarting, one plain sentence (layer 4).
+            state = .failed(failure.sentence)
+        case .rollback:
+            // The updated binary cannot start: back to the previous one —
+            // once. If that one dies too, it is an ordinary crash loop, and
+            // the sentence above ends the restarting.
+            let prev = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/aether.prev")
+            if !usePreviousBinary, FileManager.default.isExecutableFile(atPath: prev.path) {
+                usePreviousBinary = true
+                state = .failed("업데이트 뒤 노드가 시작되지 않아 이전 버전으로 되돌렸습니다")
+                watchdog.restarting()
+                start()
+            } else {
+                state = .failed(NodeWatchdog.Failure.other.sentence)
+            }
+        case .none:
+            state = .failed("The node stopped (exit \(status)); see \(Self.dataDir.appendingPathComponent("node.log").path)")
+        }
     }
 
     /// Read (or create) this Mac's voting-node keys with the bundled helper.
@@ -295,6 +352,7 @@ final class NodeController: ObservableObject {
     private func restartIfRunning() {
         guard process != nil else { return }
         stop(keepSwitch: true)
+        watchdog.restarting()
         start()
     }
 
@@ -360,6 +418,12 @@ final class NodeController: ObservableObject {
                     if self.state != .running { self.state = .running }
                 } else {
                     if self.state != .starting { self.state = .starting }  // catching up; the wallet keeps asking validators meanwhile
+                }
+                // A stall (the network moves, ours has not for a minute):
+                // restart the node — the incident of 2026-09-29 looked like
+                // this, and "끊김" told the user nothing.
+                if case .restart = self.watchdog.polled(Date(), local: local, network: network) {
+                    self.restartIfRunning()
                 }
             }
         }

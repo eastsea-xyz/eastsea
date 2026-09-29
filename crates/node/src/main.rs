@@ -239,6 +239,10 @@ enum Cmd {
         /// certified block) instead of replaying history from genesis.
         #[arg(long)]
         checkpoint: bool,
+        /// Dev only (hidden): the disk fills `<ms>` after start, so the node
+        /// hits the storage path of docs/design/24-self-healing.md.
+        #[arg(long, hide = true)]
+        dev_storage_fault: Option<u64>,
         #[command(flatten)]
         history: HistoryArgs,
     },
@@ -626,12 +630,12 @@ fn main() {
             println!("signed by the committee: protocol {} at height {} on chain {}", s.upgrade.protocol, s.upgrade.activate_at, s.upgrade.chain_id);
             Ok(())
         })(),
-        Cmd::Follow { network, from_rpc, data, rpc_port, validators, exit_with_parent, candidate, dev_epoch_blocks, keys, checkpoint, history } => {
+        Cmd::Follow { network, from_rpc, data, rpc_port, validators, exit_with_parent, candidate, dev_epoch_blocks, keys, checkpoint, dev_storage_fault, history } => {
             if exit_with_parent {
                 exit_with_parent_process();
             }
             let keys = candidate.then(|| keys.unwrap_or_else(|| data.clone()));
-            run_follow(network, from_rpc, data, rpc_port, validators, keys, dev_epoch_blocks, checkpoint, history)
+            run_follow(network, from_rpc, data, rpc_port, validators, keys, dev_epoch_blocks, checkpoint, dev_storage_fault, history)
         }
         Cmd::CandidateInfo { data, operator, chain_id } => aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(&data)).map(|k| {
             let ownership = operator.zip(chain_id).map(|(op, id)| hex::encode(k.ownership(id, op)));
@@ -1493,8 +1497,18 @@ fn run_node(a: NodeArgs) {
         let (handoff_share, handoff_sharing) = (share.clone(), polynomial.clone());
         let polynomial_identity = &polynomial.public().clone();
         let scheme = aether_light::Scheme::signer(&aether_light::consensus_namespace(), participants, polynomial, share).expect("share matches polynomial");
-        let store = aether_node::store::Store::open(&std::path::Path::new(&data).join("state.redb")).expect("open state store");
-        let (chain, genesis) = Chain::open(cfg.clone(), store).expect("restore state (delete the data dir to resync)");
+        // Start-up integrity as a follower has it (docs/design/24-self-healing.md
+        // layer 1): a database that does not verify is moved aside (never
+        // deleted; the keys stay) and the catch-up below re-syncs it.
+        let (store, _) = aether_node::follow::open_store(std::path::Path::new(&data)).expect("open state store");
+        let (chain, genesis) = match Chain::open(cfg.clone(), store) {
+            Ok(opened) => opened,
+            Err(e) if aether_node::follow::is_corruption(&e) => {
+                let store = aether_node::follow::reset_store(std::path::Path::new(&data), &e).expect("move a corrupt database aside");
+                Chain::open(cfg.clone(), store).expect("restore state after moving a corrupt database aside")
+            }
+            Err(e) => panic!("restore state (delete the data dir to resync): {e:?}"),
+        };
         install_verifier(&chain, &data, false);
         // Self-healing (2026-09-29, docs/design/24-self-healing.md): serve the
         // public endpoint BEFORE catching up, from the stored finalized state —
@@ -1888,7 +1902,9 @@ fn install_verifier(chain: &Chain, data: &str, follower: bool) {
     let g = chain.lock();
     if g.verifier.is_none() && g.finalized.schedule.iter().any(|a| a.protocol >= 2) {
         tracing::error!("protocol 2 is scheduled and this validator has no working proof verifier (aether-prover): stopping");
-        std::process::exit(4);
+        // Exit codes: 3 upgrade required, 4 storage (store::EXIT_STORAGE),
+        // 5 this one — the app restarts with backoff for none of them.
+        std::process::exit(5);
     }
 }
 
@@ -1961,6 +1977,7 @@ fn run_follow(
     candidate_keys: Option<String>,
     dev_epoch_blocks: Option<u64>,
     checkpoint: bool,
+    dev_storage_fault: Option<u64>,
     history: HistoryArgs,
 ) -> Result<(), String> {
     use aether_node::follow::{self, FinalityArchive, Upstream};
@@ -2007,7 +2024,22 @@ fn run_follow(
         .build()
         .map_err(|e| e.to_string())?;
     rt.block_on(async move {
-        let store = aether_node::store::Store::open(&std::path::Path::new(&data).join("state.redb")).map_err(|e| e.to_string())?;
+        // Start-up integrity (docs/design/24-self-healing.md layer 1): a state
+        // database that does not verify is moved aside (never deleted; the
+        // keys stay) and re-syncs — a certified snapshot first, as below. The
+        // hidden dev flag runs the same start on a disk that fills.
+        let (store, _) = match dev_storage_fault {
+            Some(ms) => {
+                tracing::warn!(ms, "--dev-storage-fault: this disk fails from now on (self-healing test)");
+                follow::open_store_with(
+                    std::path::Path::new(&data),
+                    std::sync::Arc::new(move |p| {
+                        aether_node::store::open_with_a_disk_that_fills(p, Duration::from_millis(ms))
+                    }),
+                )?
+            }
+            None => follow::open_store(std::path::Path::new(&data))?,
+        };
         // Following over iroh, this Mac also serves wallets directly (capacity
         // review 2026-09-29): a public endpoint under its own persisted node
         // id, so phones spread their reads over follower Macs instead of
@@ -2031,7 +2063,23 @@ fn run_follow(
                 tracing::warn!(%e, "checkpoint sync failed; replaying history from genesis");
             }
         }
-        let (chain, _) = Chain::open(cfg, store).map_err(|e| format!("restore state (delete the data dir to resync): {e}"))?;
+        let (chain, _) = match Chain::open(cfg.clone(), store) {
+            Ok(opened) => opened,
+            // Bad data only the full check catches (the rebuilt state does not
+            // match the checkpoint): the same recovery as at open — move the
+            // file aside, never delete it, and start from a certified snapshot.
+            Err(e) if follow::is_corruption(&e) => {
+                let store = follow::reset_store(std::path::Path::new(&data), &e)?;
+                if checkpoint {
+                    let attempt = tokio::time::timeout(Duration::from_secs(900), follow::checkpoint(&upstream, &set, &cfg, &store)).await;
+                    if let Err(e) = attempt.map_err(|_| "timed out".to_string()).and_then(|r| r) {
+                        tracing::warn!(%e, "checkpoint sync failed; replaying history from genesis");
+                    }
+                }
+                Chain::open(cfg, store).map_err(|e| format!("restore state (delete the data dir to resync): {e}"))?
+            }
+            Err(e) => return Err(format!("restore state (delete the data dir to resync): {e}")),
+        };
         install_verifier(&chain, &data, true);
         let archive = Arc::new(FinalityArchive::new(chain.store()));
         let (gossip, rx) = tokio::sync::mpsc::unbounded_channel();

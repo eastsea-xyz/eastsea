@@ -221,6 +221,58 @@ impl Reporter for Application {
                 Err(e @ crate::chain::ChainError::ConflictingFinality { .. }) => {
                     tracing::error!(height = %block.height(), ?e, "CONFLICTING FINALIZED BLOCK: this node's chain differs from the network's; stop and investigate")
                 }
+                // Storage, not the block: heal it here, synchronously
+                // (docs/design/24-self-healing.md layer 1) — marshal waits on
+                // this call, so consensus on this node pauses until the block
+                // is on disk, then continues without a restart. Only a stored
+                // block is ever acknowledged: acknowledging here would leave a
+                // gap in the store that no restart repairs, while an
+                // unacknowledged one is redelivered ("at-least-once delivery").
+                Err(crate::chain::ChainError::Store(e)) => {
+                    tracing::error!(height = %block.height(), %e, "storage failed while committing a finalized block; re-opening the database");
+                    let mut on_disk = false;
+                    let mut still_storage = false;
+                    for _ in 0..3 {
+                        // Exits with the storage code if the disk never heals.
+                        self.chain.heal_store();
+                        match self.chain.finalize(&block) {
+                            Ok(()) => {
+                                on_disk = true;
+                                break;
+                            }
+                            // The disk took the probe write but not the commit.
+                            Err(crate::chain::ChainError::Store(e)) => {
+                                still_storage = true;
+                                tracing::warn!(height = %block.height(), %e, "the re-opened store refused the commit again");
+                            }
+                            Err(e) => {
+                                warn!(height = %block.height(), ?e, "failed to adopt finalized block");
+                                break;
+                            }
+                        }
+                    }
+                    if on_disk {
+                        let g = self.chain.lock();
+                        info!(
+                            height = %block.height(),
+                            txs = g.finalized.tx_hashes.len(),
+                            root = %g.finalized.state.root(),
+                            "finalized"
+                        );
+                    } else if still_storage {
+                        // A disk that takes a probe but not a block is still
+                        // full: exit with the storage code rather than loop.
+                        tracing::error!("the store still refuses commits; exiting so the app restarts the node");
+                        std::process::exit(crate::store::EXIT_STORAGE);
+                    }
+                    // Otherwise the block itself is the problem: not
+                    // acknowledged — marshal stops rather than mark a block
+                    // this node does not hold as delivered.
+                    if on_disk {
+                        ack.acknowledge();
+                    }
+                    return Feedback::Ok;
+                }
                 Err(e) => warn!(height = %block.height(), ?e, "failed to adopt finalized block"),
             }
             ack.acknowledge();

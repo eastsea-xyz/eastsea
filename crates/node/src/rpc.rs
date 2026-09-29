@@ -111,8 +111,12 @@ pub async fn handle_value(st: &RpcState, req: Value) -> Value {
         },
         "aether_network" => Ok(st.network.clone().unwrap_or(Value::Null)),
         "aether_submitProof" => submit_proof(st, &params).await,
-        // A pruned height (roadmap B4): read back from the era file, fetched and verified first if needed.
-        "aether_getBlock" if param::<u64>(&params, 0).is_ok_and(|h| h < st.chain.lock().pruned_below) => old_block(st, &params).await,
+        // A pruned height (roadmap B4) or one whose cache copy the memory
+        // budget dropped: read back from the era file, fetched and verified first if needed.
+        "aether_getBlock" if param::<u64>(&params, 0).is_ok_and(|h| {
+            let g = st.chain.lock();
+            h < g.pruned_below.max(g.cache_below)
+        }) => old_block(st, &params).await,
         _ => dispatch(st, &method, &params),
     };
     match result {
@@ -312,6 +316,9 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                 "protocol": f.next_protocol(),
                 "node_protocol": crate::upgrade::PROTOCOL,
                 "newest_scheduled": f.schedule.iter().map(|a| a.protocol).max().unwrap_or(1),
+                // This node's resource state (docs/ops/resource-limits.md):
+                // the disk guard the app shows as "디스크 공간 부족".
+                "resources": crate::resources::monitor().map(|m| m.status_value()).unwrap_or(Value::Null),
             }))
         }
         // The voting set proposed for this registry epoch (while no handoff is

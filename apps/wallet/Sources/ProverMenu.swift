@@ -51,6 +51,13 @@ struct MenuBarPanel: View {
                         Text("Proved block #\(h) · \(p.last_txs ?? 0) tx · \(Int((p.last_seconds ?? 0).rounded())) s")
                     }
                     Text("\(p.proofs ?? 0) proofs this session\(p.lag.map { " · \($0) blocks behind" } ?? "")")
+                    if let paused = p.paused {
+                        // docs/ops/resource-limits.md: the node's own words for why it holds proving.
+                        Text(paused == "memory"
+                             ? "Paused: over the memory cap, waiting out its pause"
+                             : "Paused: \(paused == "pressure" ? "system memory pressure" : paused == "battery" ? "on battery" : "disk space low")")
+                            .foregroundStyle(.secondary)
+                    }
                     if let r = p.last_reward {
                         Text("Last reward \(Wei.format(LocalRPC.decimal(r))) AETH").foregroundStyle(.green)
                     }

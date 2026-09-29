@@ -480,6 +480,11 @@ pub async fn reconcile(chain: &Chain, upstream: Option<&crate::follow::Upstream>
         return;
     }
     s.drop_except(&v.mine);
+    // Below the free-space floor no new shard files are written (dropping what
+    // is no longer assigned still ran above: it only frees space).
+    if !crate::resources::disk_ok() {
+        return;
+    }
     let mut eras: Vec<u64> = v.mine.iter().map(|(e, _)| *e).collect();
     eras.dedup();
     for era in eras {

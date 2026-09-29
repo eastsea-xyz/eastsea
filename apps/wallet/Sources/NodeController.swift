@@ -45,8 +45,23 @@ final class NodeController: ObservableObject {
         didSet { restartIfRunning() }
     }
     @AppStorage("proveAddress") var proveAddress = ""
+    /// Settings ▸ 리소스 (docs/ops/resource-limits.md): the prover's memory cap
+    /// ("auto" = RAM의 25%, GB, "off"), CPU share ("half"/"all"), and whether it
+    /// may run on battery. Passed to the node as flags on (re)start.
+    @AppStorage("proverMemory") var proverMemory = "auto" {
+        didSet { restartIfRunning() }
+    }
+    @AppStorage("proverCores") var proverCores = "half" {
+        didSet { restartIfRunning() }
+    }
+    @AppStorage("proverOnBattery") var proverOnBattery = false {
+        didSet { restartIfRunning() }
+    }
     /// What the prover did last (from the node's `aether_proverStatus`).
     @Published private(set) var prover: ProverStatus?
+    /// The node's data volume is below its free-space floor (`aether_status`):
+    /// no new era files or shards, proving paused — shown as "디스크 공간 부족".
+    @Published private(set) var diskLow = false
     /// Called when the chain schedules a protocol this app's node does not run
     /// (or the node stopped for it): look for the signed update right away.
     var onUpgradeNeeded: (() -> Void)?
@@ -60,6 +75,11 @@ final class NodeController: ObservableObject {
         let last_seconds: Double?
         let proofs: UInt64?
         let error: String?
+        /// Why proving is paused right now ("memory", "pressure", "battery", "disk").
+        let paused: String?
+        /// The sidecar's physical footprint at the last sample, and its cap.
+        let memory_bytes: UInt64?
+        let memory_cap: UInt64?
         /// Blocks between the chain head and the last block proven here.
         let lag: UInt64?
         /// The last reward received (wei, hex).
@@ -158,6 +178,8 @@ final class NodeController: ObservableObject {
         if let network = Bundle.main.url(forResource: "network", withExtension: "json") {
             args += ["--network", network.path]
         }
+        args += ProverFlags.build(memory: proverMemory, cores: proverCores, battery: proverOnBattery,
+                                  activeProcessors: ProcessInfo.processInfo.activeProcessorCount)
         let p = Process()
         p.executableURL = binary
         p.arguments = args
@@ -342,11 +364,28 @@ final class NodeController: ObservableObject {
         }
     }
 
+    /// The node's data volume dropped below its free-space floor (`aether_status`
+    /// ▸ resources): era seals and shard writes hold, proving pauses, and the
+    /// Settings page says 디스크 공간 부족 until 2 GB above the floor again.
+    private func refreshDisk() {
+        guard state == .running || state == .starting else {
+            if diskLow { diskLow = false }
+            return
+        }
+        let port = Self.port
+        Task.detached {
+            let status = await LocalRPC.call(port: port, method: "aether_status", params: []) as? [String: Any]
+            let low = ((status?["resources"] as? [String: Any])?["disk_low"] as? Bool) ?? false
+            await MainActor.run { if self.diskLow != low { self.diskLow = low } }
+        }
+    }
+
     private func check() {
         refreshVoting()
         applyDuty()
         refreshProver()
         refreshUpgrade()
+        refreshDisk()
         let port = Self.port, switched = self.switched
         Task.detached {
             let local = localNodeHeight(port: port)

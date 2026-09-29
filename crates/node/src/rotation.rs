@@ -564,8 +564,13 @@ pub fn with_reserve(
         return drawn;
     }
     let needed = independent(pool, &candidate, reserve) < MIN_OPEN_COMMITTEE;
+    // The keys seated right now, read from the running committee before the
+    // draw's result replaces them: a normal draw orders non-candidate members
+    // out first, so its set can carry none of the keys — and the hysteresis
+    // band below must keep the keys the committee actually seats, not read the
+    // draw's absence as a step down.
+    let seated = running.members.iter().filter(|(k, _)| reserve.has(k)).count();
     let mut next = drawn.clone().unwrap_or_else(|| running.members.clone());
-    let seated = next.iter().filter(|(k, _)| reserve.has(k)).count();
     // Qualifying Macs fill a committee that is short of seats (ticket order,
     // one seat per operator) — both when the reserve keys leave and while
     // they are seated.
@@ -1159,6 +1164,47 @@ mod tests {
             dark.insert(k.clone(), at(if i == 0 { SCALE } else { 0 }));
         }
         assert!(with_reserve(None, &members, &seed(8), ops, &r, &running, |k: &str| dark.get(k).copied()).is_none());
+    }
+
+    #[test]
+    fn the_band_keeps_the_keys_a_draw_dropped() {
+        // The 2026-09-29 finding: a normal draw orders non-candidate members
+        // out first, so its result can carry none of the reserve keys even
+        // while they hold a seat. Reading the seating from the draw then made
+        // the hysteresis band "keep zero keys" — the seat quietly vanished
+        // while the risk had never left the band. The band must keep what the
+        // running committee seats.
+        let r = reserve();
+        let ops = |k: &str| Some(format!("op-{k}"));
+        let members: Vec<(String, String)> = (0..5).map(|i| (format!("c{i}"), format!("n{i}"))).collect();
+        let m1 = mac(1);
+        let at = |p: u64| [p; DAY_EPOCHS as usize];
+        // c0..c2 and the incoming m1 always on, c3 and c4 at 0.905: the drawn
+        // six need ≥ 5 up, so P = 2p − p² = 0.990975 — inside the band.
+        let mut avail = std::collections::HashMap::new();
+        for (i, (k, _)) in members.iter().enumerate() {
+            avail.insert(k.clone(), at(if i >= 3 { pct(905, 1000) } else { SCALE }));
+        }
+        avail.insert(m1.0.clone(), at(SCALE));
+        let hours = |k: &str| avail.get(k).copied();
+        let mut running = members.clone();
+        running.push(r.members[0].clone()); // the key holds a seat
+        let running = Committee { members: running };
+        let mut drawn = members.clone();
+        drawn.push(m1.clone()); // the draw replaced the key with a candidate
+        // Four independents in the pool, so the seats are the Macs' own to hold.
+        let pool: Vec<(String, String)> = (1..=4).map(mac).collect();
+        let next = with_reserve(Some(drawn.clone()), &pool, &seed(8), ops, &r, &running, hours).expect("the band keeps the seat");
+        assert!(next.contains(&r.members[0]), "the key the committee seats stays through the draw");
+        assert!(next.contains(&m1) && next.len() == drawn.len() + 1);
+        // Comfortable odds again: the draw's set stands without the key.
+        for p in avail.values_mut() {
+            if p[0] == pct(905, 1000) {
+                *p = at(pct(99, 100));
+            }
+        }
+        let next = with_reserve(Some(drawn), &pool, &seed(8), ops, &r, &running, |k: &str| avail.get(k).copied()).unwrap();
+        assert!(next.iter().all(|(k, _)| !k.starts_with('r')), "past LEAVE_ABOVE the key steps down");
     }
 
     #[test]

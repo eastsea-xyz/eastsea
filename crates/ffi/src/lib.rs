@@ -41,6 +41,10 @@ pub struct ChainStatus {
     pub mempool: u64,
     /// Estimated fee (wei) of a plain transfer at the next block's base fee plus the tip.
     pub transfer_fee_wei: String,
+    /// Scheduled notices reported by the selected node (JSON array).
+    pub upgrades_json: String,
+    /// Highest chain protocol this wallet build knows how to display and submit to.
+    pub supported_protocol: u32,
 }
 
 #[derive(uniffi::Record)]
@@ -770,7 +774,32 @@ pub fn chain_status() -> R<ChainStatus> {
         state_root: v["state_root"].as_str().unwrap_or_default().to_string(),
         mempool: v["mempool"].as_u64().unwrap_or_default(),
         transfer_fee_wei: transfer_fee(&v).to_string(),
+        upgrades_json: scheduled_upgrade_json(&v),
+        // Bump with the bundled node/light-client release, not with a remote node's version.
+        supported_protocol: 3,
     })
+}
+
+/// Only show notices signed by the pinned committee and present in the node's
+/// finalized schedule. Status RPC is otherwise an untrusted read.
+fn scheduled_upgrade_json(status: &Value) -> String {
+    let Ok(chain) = expected_chain(status) else { return "[]".into() };
+    let validators = NODES.lock().expect("nodes lock").as_ref().map_or(4, |n| n.len() as u32);
+    let Ok(set) = trusted_set(validators) else { return "[]".into() };
+    let Some(schedule) = status["schedule"].as_array() else { return "[]".into() };
+    let notices = status["upcoming_upgrades"].as_array().into_iter().flatten().filter_map(|value| {
+        let signed: aether_light::block::SignedUpgrade = serde_json::from_value(value.clone()).ok()?;
+        let u = &signed.upgrade;
+        if u.chain_id != chain || u.activate_at <= status["height"].as_u64()? {
+            return None;
+        }
+        if !schedule.iter().any(|a| a[0].as_u64() == Some(u.protocol as u64) && a[1].as_u64() == Some(u.activate_at)) {
+            return None;
+        }
+        aether_light::verify_upgrade(set.identity(), &signed).ok()?;
+        Some(json!({ "protocol": u.protocol, "activate_at": u.activate_at, "emergency": u.emergency, "notes": u.notes }))
+    }).collect::<Vec<_>>();
+    Value::Array(notices).to_string()
 }
 
 /// The chain id this wallet is configured for (network.json; the devnet otherwise).

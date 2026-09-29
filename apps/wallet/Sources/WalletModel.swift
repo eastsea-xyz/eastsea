@@ -14,6 +14,10 @@ final class WalletModel: ObservableObject {
     @Published var address = ""
     @Published var account: VerifiedAccount?
     @Published var status: ChainStatus?
+    var scheduledUpgrades: [NetworkUpgrade] {
+        guard let status else { return [] }
+        return NetworkUpgrade.parse(status.upgradesJson, height: status.height)
+    }
     @Published var blocks: [BlockInfo] = []
     @Published var verifyError: String?
     /// Since when verification has been failing (nil while it works).

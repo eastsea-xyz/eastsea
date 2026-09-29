@@ -152,6 +152,9 @@ pub struct Upgrade {
     pub protocol: u32,
     /// First height the new rules apply to.
     pub activate_at: u64,
+    /// Short notice is permitted only with every current validator's approval.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub emergency: bool,
     pub releases: Vec<Release>,
     #[serde(default)]
     pub notes: String,
@@ -161,12 +164,17 @@ pub struct Upgrade {
     pub registrar: Option<(B256, B256)>,
 }
 
+fn is_false(value: &bool) -> bool { !*value }
+
 /// An upgrade with the committee's threshold signature (nodes verify it).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SignedUpgrade {
     pub upgrade: Upgrade,
     /// Codec bytes (hex) of the BLS12-381 (MinSig) signature.
     pub signature: String,
+    /// Validator key and Ed25519 signature pairs for an emergency upgrade.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub emergency_approvals: Vec<(String, String)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

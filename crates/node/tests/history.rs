@@ -60,6 +60,7 @@ fn upgrade_to_2() -> SignedUpgrade {
         chain_id: CHAIN,
         protocol: 2,
         activate_at: P2_AT,
+        emergency: false,
         releases: vec![Release {
             platform: "macos-arm64-dmg".into(),
             version: "0.6.0".into(),

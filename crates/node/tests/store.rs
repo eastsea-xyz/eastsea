@@ -46,6 +46,10 @@ fn summary(height: u64, s: &WorldState) -> BlockSummary {
 }
 
 fn commit(store: &Store, height: u64, s: &WorldState) {
+    commit_with_notices(store, height, s, &[]);
+}
+
+fn commit_with_notices(store: &Store, height: u64, s: &WorldState, notices: &[aether_node::upgrade::SignedUpgrade]) {
     let sm = summary(height, s);
     store
         .commit(Commit {
@@ -59,10 +63,31 @@ fn commit(store: &Store, height: u64, s: &WorldState) {
             seed: None,
             history: &Default::default(),
             schedule: &Default::default(),
+            upgrade_notices: notices,
             statement: &Default::default(),
             staged: None,
         })
         .unwrap();
+}
+
+#[test]
+fn pending_upgrade_notice_survives_a_restart() {
+    use aether_node::upgrade::{SignedUpgrade, Upgrade};
+    let dir = std::env::temp_dir().join(format!("aether-store-upgrade-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join("state.redb");
+    let store = Store::open(&path).unwrap();
+    let state = WorldState::default();
+    let notice = SignedUpgrade {
+        upgrade: Upgrade { chain_id: CHAIN, protocol: 4, activate_at: 604_801, emergency: false,
+            releases: vec![], notes: "Release notes".into(), registrar: None },
+        signature: "test".into(), emergency_approvals: vec![],
+    };
+    commit_with_notices(&store, 0, &state, std::slice::from_ref(&notice));
+    drop(store);
+    let loaded = Store::open(&path).unwrap().load().unwrap().unwrap();
+    assert_eq!(loaded.upgrade_notices, vec![notice]);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -133,6 +158,7 @@ fn tampered_state_is_detected() {
             seed: None,
             history: &Default::default(),
             schedule: &Default::default(),
+            upgrade_notices: &[],
             statement: &Default::default(),
             staged: None,
         })

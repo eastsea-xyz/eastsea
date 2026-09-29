@@ -694,18 +694,34 @@ public struct ChainStatus: Equatable, Hashable {
      * Estimated fee (wei) of a plain transfer at the next block's base fee plus the tip.
      */
     public var transferFeeWei: String
+    /**
+     * Scheduled notices reported by the selected node (JSON array).
+     */
+    public var upgradesJson: String
+    /**
+     * Highest chain protocol this wallet build knows how to display and submit to.
+     */
+    public var supportedProtocol: UInt32
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
     public init(chainId: UInt64, height: UInt64, stateRoot: String, mempool: UInt64, 
         /**
          * Estimated fee (wei) of a plain transfer at the next block's base fee plus the tip.
-         */transferFeeWei: String) {
+         */transferFeeWei: String,
+        /**
+         * Scheduled notices reported by the selected node (JSON array).
+         */upgradesJson: String,
+        /**
+         * Highest chain protocol this wallet build knows how to display and submit to.
+         */supportedProtocol: UInt32) {
         self.chainId = chainId
         self.height = height
         self.stateRoot = stateRoot
         self.mempool = mempool
         self.transferFeeWei = transferFeeWei
+        self.upgradesJson = upgradesJson
+        self.supportedProtocol = supportedProtocol
     }
 
     
@@ -728,7 +744,9 @@ public struct FfiConverterTypeChainStatus: FfiConverterRustBuffer {
                 height: FfiConverterUInt64.read(from: &buf), 
                 stateRoot: FfiConverterString.read(from: &buf), 
                 mempool: FfiConverterUInt64.read(from: &buf), 
-                transferFeeWei: FfiConverterString.read(from: &buf)
+                transferFeeWei: FfiConverterString.read(from: &buf),
+                upgradesJson: FfiConverterString.read(from: &buf),
+                supportedProtocol: FfiConverterUInt32.read(from: &buf)
         )
     }
 
@@ -738,6 +756,8 @@ public struct FfiConverterTypeChainStatus: FfiConverterRustBuffer {
         FfiConverterString.write(value.stateRoot, into: &buf)
         FfiConverterUInt64.write(value.mempool, into: &buf)
         FfiConverterString.write(value.transferFeeWei, into: &buf)
+        FfiConverterString.write(value.upgradesJson, into: &buf)
+        FfiConverterUInt32.write(value.supportedProtocol, into: &buf)
     }
 }
 

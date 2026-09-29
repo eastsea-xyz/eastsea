@@ -22,7 +22,7 @@ use aether_state::layout::{basic_data_key, storage_slot_key, BasicData};
 use aether_state::Proof;
 use aether_types::{Address, B256, U256};
 use block::{Block, PublicKey};
-use commonware_codec::Decode;
+use commonware_codec::{Decode, DecodeExt};
 use commonware_consensus::simplex::{
     elector::{Random, RandomVersion},
     scheme::bls12381_threshold::vrf,
@@ -31,6 +31,7 @@ use commonware_consensus::simplex::{
 use commonware_consensus::Heightable;
 use commonware_cryptography::bls12381::dkg::feldman_desmedt::deal;
 use commonware_cryptography::bls12381::primitives::group::Share;
+use commonware_cryptography::bls12381::primitives::ops;
 use commonware_cryptography::bls12381::primitives::sharing::{Mode, Sharing};
 use commonware_cryptography::bls12381::primitives::variant::{MinSig, Variant};
 use commonware_cryptography::{ed25519, sha256::Digest, Digestible, Signer as _};
@@ -52,6 +53,16 @@ pub fn consensus_namespace() -> Vec<u8> {
 pub type Scheme = vrf::Scheme<PublicKey, MinSig>;
 /// The committee's group public key; constant across reshares.
 pub type Identity = <MinSig as Variant>::Public;
+pub const UPGRADE_NAMESPACE: &[u8] = b"aether-upgrade-v1";
+
+/// Check a committee-signed upgrade without trusting the node that served it.
+pub fn verify_upgrade(identity: &Identity, signed: &block::SignedUpgrade) -> Result<(), String> {
+    let bytes = from_hex(&signed.signature).map_err(|e| format!("signature: {e}"))?;
+    let signature = <MinSig as Variant>::Signature::decode(bytes.as_slice()).map_err(|e| format!("signature: {e:?}"))?;
+    let message = serde_json::to_vec(&signed.upgrade).map_err(|e| e.to_string())?;
+    ops::verify_message::<MinSig>(identity, UPGRADE_NAMESPACE, &message, &signature)
+        .map_err(|_| "the committee did not sign this upgrade".to_string())
+}
 /// Leader election from the previous round's VRF seed (unpredictable leaders).
 pub type Elector = Random<commonware_cryptography::Sha256>;
 pub const ELECTOR: Elector = Random::new(RandomVersion::V1);

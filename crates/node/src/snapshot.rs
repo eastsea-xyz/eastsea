@@ -32,6 +32,9 @@ pub struct Snapshot {
     pub seed: Option<(u64, aether_light::block::Seed)>,
     pub schedule: crate::upgrade::Schedule,
     pub statement: crate::chain::Statement,
+    /// Kept outside the legacy postcard layout; these are signed display data.
+    #[serde(skip)]
+    pub upgrade_notices: Vec<crate::upgrade::SignedUpgrade>,
 }
 
 impl Snapshot {
@@ -48,15 +51,34 @@ impl Snapshot {
             seed: f.seed.as_deref().cloned(),
             schedule: (*f.schedule).clone(),
             statement: f.statement,
+            upgrade_notices: g.upgrade_notices.clone(),
         }
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
-        postcard::to_allocvec(self).expect("snapshot serializes")
+        let legacy = postcard::to_allocvec(self).expect("snapshot serializes");
+        if !self.schedule.first().is_some_and(|a| a.at == 0 && a.protocol > 1) {
+            return legacy;
+        }
+        let notices = serde_json::to_vec(&self.upgrade_notices).expect("notices serialize");
+        let mut out = b"AUN2".to_vec();
+        out.extend_from_slice(&(legacy.len() as u32).to_be_bytes());
+        out.extend_from_slice(&legacy);
+        out.extend_from_slice(&notices);
+        out
     }
 
     pub fn from_bytes(b: &[u8]) -> Result<Snapshot, String> {
-        postcard::from_bytes(b).map_err(|e| format!("snapshot: {e}"))
+        if b.starts_with(b"AUN2") {
+            let size = b.get(4..8).ok_or("snapshot notice header")?;
+            let n = u32::from_be_bytes(size.try_into().expect("four bytes")) as usize;
+            let body = b.get(8..8 + n).ok_or("snapshot notice body")?;
+            let mut snap: Snapshot = postcard::from_bytes(body).map_err(|e| format!("snapshot: {e}"))?;
+            snap.upgrade_notices = serde_json::from_slice(&b[8 + n..]).map_err(|e| format!("snapshot notices: {e}"))?;
+            Ok(snap)
+        } else {
+            postcard::from_bytes(b).map_err(|e| format!("snapshot: {e}"))
+        }
     }
 
     /// Check the snapshot against `next`, the certified block after it (the
@@ -82,6 +104,13 @@ impl Snapshot {
         // Everything outside the tree: fee excess, pending handoff, seed, protocol schedule, certified by the next block.
         if crate::chain::meta_digest(&self.summary.excess, self.handoff.as_ref(), self.seed.as_ref(), &self.schedule, &self.statement) != payload.parent_meta {
             return Err("snapshot metadata does not match the certified block".into());
+        }
+        for notice in &self.upgrade_notices {
+            crate::upgrade::verify(identity, notice)?;
+            if notice.upgrade.chain_id != cfg.chain_id
+                || !self.schedule.iter().any(|a| a.protocol == notice.upgrade.protocol && a.at == notice.upgrade.activate_at) {
+                return Err("snapshot notice is not in the certified schedule".into());
+            }
         }
         // Code bytes are named by their keccak hash in the tree: check each.
         for (hash, code) in &self.codes {
@@ -181,6 +210,7 @@ impl Snapshot {
                 seed: self.seed.as_ref(),
                 history: &self.history,
                 schedule: &self.schedule,
+                upgrade_notices: &self.upgrade_notices,
                 statement: &self.statement,
                 staged: None,
             })
@@ -226,6 +256,7 @@ impl Snapshot {
                 seed: self.seed.as_ref(),
                 history: &self.history,
                 schedule: &self.schedule,
+                upgrade_notices: &self.upgrade_notices,
                 statement: &self.statement,
                 staged: None,
             })

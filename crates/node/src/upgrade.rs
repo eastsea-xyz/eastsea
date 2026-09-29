@@ -16,14 +16,17 @@ use commonware_codec::{DecodeExt, Encode};
 use commonware_cryptography::bls12381::primitives::group::Share;
 use commonware_cryptography::bls12381::primitives::ops;
 use commonware_cryptography::bls12381::primitives::sharing::Sharing;
-use commonware_cryptography::bls12381::primitives::variant::{MinSig, PartialSignature, Variant};
+use commonware_cryptography::bls12381::primitives::variant::{MinSig, PartialSignature};
 use commonware_parallel::Sequential;
+use commonware_cryptography::{ed25519, Signer as _, Verifier as _};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// The protocol this binary implements.
 pub const PROTOCOL: u32 = 3;
-const NAMESPACE: &[u8] = b"aether-upgrade-v1";
+const NAMESPACE: &[u8] = aether_light::UPGRADE_NAMESPACE;
+const EMERGENCY_NAMESPACE: &[u8] = b"aether-upgrade-emergency-v1";
+pub const MAINNET_NOTICE_BLOCKS: u64 = 604_800;
 
 pub use aether_light::block::{Release, SignedUpgrade, Upgrade};
 
@@ -60,11 +63,20 @@ pub struct PartialUpgrade {
     pub upgrade: Upgrade,
     /// Codec bytes (hex) of the partial signature.
     pub partial: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emergency_approval: Option<(String, String)>,
 }
 
 pub fn sign_partial(upgrade: &Upgrade, share: &Share) -> PartialUpgrade {
     let p = ops::threshold::sign_message::<MinSig>(share, NAMESPACE, &message(upgrade));
-    PartialUpgrade { upgrade: upgrade.clone(), partial: hex::encode(p.encode()) }
+    PartialUpgrade { upgrade: upgrade.clone(), partial: hex::encode(p.encode()), emergency_approval: None }
+}
+
+pub fn sign_emergency_partial(upgrade: &Upgrade, share: &Share, key: &ed25519::PrivateKey) -> PartialUpgrade {
+    let mut partial = sign_partial(upgrade, share);
+    let signature = key.sign(EMERGENCY_NAMESPACE, &message(upgrade));
+    partial.emergency_approval = Some((hex::encode(key.public_key().encode()), hex::encode(signature.encode())));
+    partial
 }
 
 /// Combine partials (all for the same upgrade, each checked) into the committee signature.
@@ -82,14 +94,37 @@ pub fn combine(sharing: &Sharing<MinSig>, partials: &[PartialUpgrade]) -> Result
         decoded.push(ps);
     }
     let sig = ops::threshold::recover::<MinSig, _>(sharing, &decoded, &Sequential).map_err(|e| format!("need {} valid partials: {e:?}", sharing.required()))?;
-    Ok(SignedUpgrade { upgrade: first.upgrade.clone(), signature: hex::encode(sig.encode()) })
+    let emergency_approvals = if first.upgrade.emergency {
+        partials.iter().filter_map(|p| p.emergency_approval.clone()).collect()
+    } else {
+        Vec::new()
+    };
+    Ok(SignedUpgrade { upgrade: first.upgrade.clone(), signature: hex::encode(sig.encode()), emergency_approvals })
+}
+
+/// An emergency needs one independent approval from every current voting key.
+pub fn verify_emergency(s: &SignedUpgrade, committee: &[(String, String)]) -> Result<(), String> {
+    if committee.is_empty() || s.emergency_approvals.len() != committee.len() {
+        return Err("emergency upgrade needs every current committee member".into());
+    }
+    let mut remaining: std::collections::HashSet<_> = committee.iter().map(|m| m.0.as_str()).collect();
+    if remaining.len() != committee.len() { return Err("duplicate committee key".into()); }
+    for (key, signature) in &s.emergency_approvals {
+        if !remaining.remove(key.as_str()) { return Err("duplicate or foreign emergency signer".into()); }
+        let pk = hex::decode(key).map_err(|_| "emergency signer key is not hex")?;
+        let pk = ed25519::PublicKey::decode(pk.as_slice()).map_err(|_| "invalid emergency signer key")?;
+        let sig = hex::decode(signature).map_err(|_| "emergency signature is not hex")?;
+        let sig = ed25519::Signature::decode(sig.as_slice()).map_err(|_| "invalid emergency signature")?;
+        if !pk.verify(EMERGENCY_NAMESPACE, &message(&s.upgrade), &sig) {
+            return Err("emergency approval does not verify".into());
+        }
+    }
+    Ok(())
 }
 
 /// Check the committee signature.
 pub fn verify(identity: &Identity, s: &SignedUpgrade) -> Result<(), String> {
-    let bytes = hex::decode(&s.signature).map_err(|e| e.to_string())?;
-    let sig = <MinSig as Variant>::Signature::decode(bytes.as_slice()).map_err(|e| format!("signature: {e:?}"))?;
-    ops::verify_message::<MinSig>(identity, NAMESPACE, &message(&s.upgrade), &sig).map_err(|_| "the committee did not sign this upgrade".to_string())
+    aether_light::verify_upgrade(identity, s)
 }
 
 /// Verified upgrades for `chain_id` from `dir/*.json` (unsigned or foreign files are skipped, with a reason).
@@ -126,6 +161,7 @@ mod tests {
             chain_id: 7_778,
             protocol,
             activate_at: at,
+            emergency: false,
             releases: vec![Release { platform: "macos-arm64-dmg".into(), version: "0.2.0".into(), blake3: "ab".repeat(32), url: "https://x".into() }],
             notes: "test".into(),
             registrar: None,
@@ -137,6 +173,7 @@ mod tests {
         let (_, sharing, shares) = aether_light::devnet_threshold(4);
         let identity = *sharing.public();
         let u = upgrade(2, 1_000);
+        assert!(!serde_json::to_string(&u).unwrap().contains("emergency"), "legacy signing bytes stay unchanged");
         let partials: Vec<_> = shares.iter().take(3).map(|(_, s)| sign_partial(&u, s)).collect();
         let signed = combine(&sharing, &partials).unwrap();
         verify(&identity, &signed).unwrap();
@@ -178,5 +215,26 @@ mod tests {
         assert_eq!(ok.len(), 1);
         assert_eq!(skipped.len(), 1, "a forged upgrade is ignored");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emergency_requires_every_current_member_and_binds_the_upgrade() {
+        let (_, sharing, shares) = aether_light::devnet_threshold(4);
+        let keys: Vec<_> = (1..=4).map(aether_light::devnet_validator_key).collect();
+        let committee: Vec<_> = keys.iter().map(|key| (hex::encode(key.public_key().encode()), String::new())).collect();
+        let mut u = upgrade(4, 100);
+        u.emergency = true;
+        let partials: Vec<_> = shares.iter().zip(&keys).map(|((_, share), key)| sign_emergency_partial(&u, share, key)).collect();
+        let all = combine(&sharing, &partials).unwrap();
+        verify(sharing.public(), &all).unwrap();
+        verify_emergency(&all, &committee).unwrap();
+        let three = combine(&sharing, &partials[..3]).unwrap();
+        assert!(verify_emergency(&three, &committee).is_err());
+        let mut changed = all.clone();
+        changed.emergency_approvals[0].1 = all.emergency_approvals[1].1.clone();
+        assert!(verify_emergency(&changed, &committee).is_err());
+        changed = all.clone();
+        changed.emergency_approvals[0].0 = all.emergency_approvals[1].0.clone();
+        assert!(verify_emergency(&changed, &committee).is_err());
     }
 }

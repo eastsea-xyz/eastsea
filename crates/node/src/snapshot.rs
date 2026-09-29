@@ -142,6 +142,7 @@ impl Snapshot {
             schedule: Arc::new(self.schedule.clone()),
             statement: self.statement,
             payouts: vec![],
+            registration_ids: vec![],
         });
         (exec, summary)
     }

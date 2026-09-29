@@ -82,6 +82,150 @@ pub fn epoch_blocks(state: &WorldState) -> u64 {
     state.storage(&REGISTRY, U256::from(4u64)).to::<u64>().max(1)
 }
 
+// ---- The free registration lane (docs/design/22-gas-pool.md 2층) ----
+//
+// A block may carry registrations as payload items, validated exactly like the
+// contract's `register` and applied as a system write (beacon answers' pattern),
+// so a Mac with a zero balance registers even while the chain is congested.
+// The primitives below are the contract's own storage rules, shared by both
+// paths so the two can never disagree.
+
+/// Free registrations one block may carry: each costs two P-256 verifications
+/// (the registrar's attestation and the operator wallet's relay signature).
+/// Items are fixed-size, so this bounds the lane's bytes too.
+pub const MAX_FREE_PER_BLOCK: usize = 4;
+
+/// Slot of `indexOf` (validatorKey => index + 1; 0 is unknown).
+fn index_of_slot(validator_key: &[u8; 32]) -> U256 {
+    U256::from_be_bytes(keccak256([validator_key.as_slice(), &U256::from(3u64).to_be_bytes::<32>()].concat()).0)
+}
+
+/// The candidate index of `validator_key`, + 1 as the contract stores it
+/// (0: not registered). The contract's `Known` check, as a read.
+pub fn index_of(state: &WorldState, validator_key: &[u8; 32]) -> u64 {
+    state.storage(&REGISTRY, index_of_slot(validator_key)).to::<u64>()
+}
+
+/// Free-lane items the operator at `operator` has already spent, in a tagged
+/// slot far above the contract's own (its literal slots stay small numbers and
+/// its arrays live at keccak-derived ones) — the rewards crate's convention.
+const TAG_LANE_NONCE: u128 = 9;
+
+fn lane_nonce_slot(operator: &Address) -> U256 {
+    (U256::from(TAG_LANE_NONCE) << 200) | U256::from_be_slice(operator.as_slice())
+}
+
+/// The next relay nonce `operator`'s free-lane item must carry: an item is
+/// consumed exactly once (the signed nonce makes replay a state check).
+pub fn lane_nonce(state: &WorldState, operator: &Address) -> u64 {
+    state.storage(&REGISTRY, lane_nonce_slot(operator)).to::<u64>()
+}
+
+/// Count one more spent item for `operator` (after its registration applied).
+pub fn bump_lane_nonce(state: &mut WorldState, operator: &Address) {
+    let slot = lane_nonce_slot(operator);
+    let next = state.storage(&REGISTRY, slot).saturating_add(U256::from(1u8));
+    state.set_storage(REGISTRY, slot, next);
+}
+
+/// New registrations epoch `epoch` may still take: the v2 contract's own bound
+/// (slot 7) when it set one, else the built-in cap — one number for both paths.
+pub fn per_epoch_cap(state: &WorldState) -> u64 {
+    match state.storage(&REGISTRY, U256::from(7u64)).to::<u64>() {
+        0 => MAX_PER_EPOCH,
+        set => set,
+    }
+}
+
+/// The epoch `count_registration` last wrote.
+pub fn reg_epoch(state: &WorldState) -> u64 {
+    state.storage(&REGISTRY, U256::from(8u64)).to::<u64>()
+}
+
+/// Registrations counted for that epoch.
+pub fn reg_count(state: &WorldState) -> u64 {
+    state.storage(&REGISTRY, U256::from(9u64)).to::<u64>()
+}
+
+/// Count a new registration in `epoch` (slots 8 and 9, exactly the words the
+/// v2 contract keeps): a new epoch resets, the cap spent refuses.
+fn count_registration(state: &mut WorldState, epoch: u64) -> Result<(), String> {
+    let (mut e, mut n) = (reg_epoch(state), reg_count(state));
+    if e != epoch {
+        e = epoch;
+        n = 0;
+    }
+    let cap = per_epoch_cap(state);
+    if n >= cap {
+        return Err(format!("epoch {epoch} already took {n} of {cap} registrations"));
+    }
+    state.set_storage(REGISTRY, U256::from(8u64), U256::from(e));
+    state.set_storage(REGISTRY, U256::from(9u64), U256::from(n + 1));
+    Ok(())
+}
+
+/// What the operator wallet signs to put its registration in a block's free
+/// lane: domain-separated (chain, registry), over the whole registered content
+/// plus the one-shot nonce and expiry. A relay carrying someone else's
+/// attestation fails this check.
+pub fn relay_message(
+    chain_id: u64,
+    operator: Address,
+    validator_key: &[u8; 32],
+    node_id: &[u8; 32],
+    beaconer: Address,
+    attestation: &[u8],
+    nonce: u64,
+    expiry: u64,
+) -> Vec<u8> {
+    [
+        b"aether-registration".as_slice(),
+        &chain_id.to_be_bytes(),
+        REGISTRY.as_slice(),
+        operator.as_slice(),
+        validator_key,
+        node_id,
+        beaconer.as_slice(),
+        attestation,
+        &nonce.to_be_bytes(),
+        &expiry.to_be_bytes(),
+    ]
+    .concat()
+}
+
+/// Register a candidate as a system write: the exact words the contract's
+/// `register` writes for a fresh key, the v2 epoch cap counted the same way.
+/// Signature checks happen before this (the contract path inside `register`,
+/// the free lane in `aether_node::registrations`).
+pub fn register_system(
+    state: &mut WorldState,
+    height: u64,
+    operator: Address,
+    validator_key: [u8; 32],
+    node_id: [u8; 32],
+    beaconer: Address,
+) -> Result<(), String> {
+    if index_of(state, &validator_key) != 0 {
+        return Err("voting key already registered".into());
+    }
+    let epoch = height / epoch_blocks(state);
+    count_registration(state, epoch)?;
+    let index = state.storage(&REGISTRY, U256::from(2u64)).to::<u64>();
+    if index >= 100_000 {
+        return Err("registry full".into());
+    }
+    let at = |k: u64| U256::from_be_bytes(keccak256(U256::from(2u64).to_be_bytes::<32>()).0) + U256::from(5 * index + k);
+    state.set_storage(REGISTRY, at(0), U256::from_be_slice(operator.as_slice()));
+    state.set_storage(REGISTRY, at(1), U256::from_be_bytes(validator_key));
+    state.set_storage(REGISTRY, at(2), U256::from_be_bytes(node_id));
+    state.set_storage(REGISTRY, at(3), U256::from_be_slice(beaconer.as_slice()) | (U256::from(epoch) << 160usize));
+    // The contract pushes (lastEpoch: e, streak: 1, missed: 0).
+    state.set_storage(REGISTRY, at(4), U256::from(epoch) | (U256::from(1u8) << 64usize));
+    state.set_storage(REGISTRY, U256::from(2u64), U256::from(index + 1));
+    state.set_storage(REGISTRY, index_of_slot(&validator_key), U256::from(index + 1));
+    Ok(())
+}
+
 /// The voting-set parameters as set at genesis.
 pub fn params(state: &WorldState) -> Params {
     Params {
@@ -146,4 +290,72 @@ pub fn candidates(state: &WorldState) -> Vec<Candidate> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state() -> WorldState {
+        let mut s = WorldState::default();
+        predeploy(&mut s, ([1; 32], [2; 32]), Params::default()).unwrap();
+        s
+    }
+
+    fn key(i: u8) -> [u8; 32] {
+        [i; 32]
+    }
+
+    #[test]
+    fn register_system_writes_what_put_candidate_reads() {
+        let mut s = state();
+        let (op, beaconer) = (Address::repeat_byte(7), Address::repeat_byte(9));
+        register_system(&mut s, 7_200, op, key(1), key(2), beaconer).unwrap();
+        // One epoch in (3_600-block epochs): the words the contract writes.
+        assert_eq!(reg_epoch(&s), 2);
+        assert_eq!(reg_count(&s), 1);
+        assert_eq!(index_of(&s, &key(1)), 1);
+        let c = &candidates(&s)[0];
+        assert_eq!((c.operator, c.validator_key, c.node_id, c.beaconer), (op, key(1), key(2), beaconer));
+        assert_eq!((c.registered_epoch, c.last_epoch, c.streak, c.missed), (2, 2, 1, 0));
+        // A second registration of the same key is refused, lane or contract.
+        assert!(register_system(&mut s, 7_201, op, key(1), key(2), beaconer).unwrap_err().contains("already"));
+    }
+
+    #[test]
+    fn the_epoch_cap_is_shared_and_resets_per_epoch() {
+        let mut s = state();
+        // Slot 7 unset (protocol 1): the lane still bounds itself.
+        assert_eq!(per_epoch_cap(&s), MAX_PER_EPOCH);
+        for i in 0..MAX_PER_EPOCH {
+            register_system(&mut s, 10 + i as u64, Address::repeat_byte(i as u8 + 1), key(i as u8 + 1), key(0), Address::ZERO).unwrap();
+        }
+        assert_eq!(reg_count(&s), MAX_PER_EPOCH);
+        let full = register_system(&mut s, 99, Address::repeat_byte(0xfe), key(0xfe), key(0), Address::ZERO).unwrap_err();
+        assert!(full.contains("already took 16 of 16"), "{full}");
+        // The next epoch starts clean.
+        register_system(&mut s, 3_600, Address::repeat_byte(0xff), key(0xff), key(0), Address::ZERO).unwrap();
+        assert_eq!((reg_epoch(&s), reg_count(&s)), (1, 1));
+        // What v2 sets in slot 7 is the cap for both paths.
+        let mut v2 = state();
+        upgrade_to_v2(&mut v2).unwrap();
+        assert_eq!(per_epoch_cap(&v2), MAX_PER_EPOCH);
+    }
+
+    #[test]
+    fn lane_nonces_are_per_operator_and_never_touch_contract_slots() {
+        let mut s = state();
+        let a = Address::repeat_byte(1);
+        assert_eq!(lane_nonce(&s, &a), 0);
+        let before: Vec<U256> = (0u64..=9).map(|k| s.storage(&REGISTRY, U256::from(k))).collect();
+        bump_lane_nonce(&mut s, &a);
+        bump_lane_nonce(&mut s, &a);
+        assert_eq!(lane_nonce(&s, &a), 2);
+        assert_eq!(lane_nonce(&s, &Address::repeat_byte(2)), 0);
+        // The tagged slot is far above every literal slot the contract uses:
+        // none of them moves.
+        let after: Vec<U256> = (0u64..=9).map(|k| s.storage(&REGISTRY, U256::from(k))).collect();
+        assert_eq!(before, after, "the lane never touches the contract's own slots");
+        assert_eq!(index_of(&s, &key(1)), 0);
+    }
 }

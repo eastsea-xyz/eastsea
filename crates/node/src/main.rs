@@ -1651,16 +1651,20 @@ fn run_node(a: NodeArgs) {
         }
 
         // Mempool gossip: RPC-accepted txs go out, peers' txs come in.
-        // Beacon answers (node rewards networks) ride the same channel as
-        // `{"beacon": answer}`; nodes that do not know them skip them as non-txs.
+        // Beacon answers and free-lane registrations (node rewards networks)
+        // ride the same channel as `{"beacon": answer}` /
+        // `{"registration": item}`; nodes that do not know them skip them as non-txs.
         let (gossip_tx, mut gossip_rx) = tokio::sync::mpsc::unbounded_channel::<TxEnvelope>();
         let (beacon_tx, mut beacon_rx) = tokio::sync::mpsc::unbounded_channel::<aether_light::block::BeaconAnswer>();
+        let (registration_tx, mut registration_rx) = tokio::sync::mpsc::unbounded_channel::<aether_light::block::NodeRegistration>();
         chain.lock().beacon_out = Some(beacon_tx);
+        chain.lock().registration_out = Some(registration_tx);
         tokio::spawn(async move {
             loop {
                 let bytes = tokio::select! {
                     Some(tx) = gossip_rx.recv() => serde_json::to_vec(&tx).expect("tx serializes"),
                     Some(a) = beacon_rx.recv() => serde_json::to_vec(&json!({ "beacon": a })).expect("answer serializes"),
+                    Some(r) = registration_rx.recv() => serde_json::to_vec(&json!({ "registration": r })).expect("registration serializes"),
                     else => break,
                 };
                 let _ = tx_out.send(Recipients::All, bytes, false);
@@ -1680,6 +1684,11 @@ fn run_node(a: NodeArgs) {
                 {
                     // Peers' answers are pooled, not relayed again (every validator hears every peer).
                     let _ = gossip_chain.add_beacon(a);
+                } else if let Some(r) = serde_json::from_slice::<Value>(msg.as_ref())
+                    .ok()
+                    .and_then(|v| serde_json::from_value::<aether_light::block::NodeRegistration>(v.get("registration")?.clone()).ok())
+                {
+                    let _ = gossip_chain.add_registration(r);
                 }
             }
         });

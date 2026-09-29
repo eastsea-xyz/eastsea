@@ -110,19 +110,22 @@ where
             upgrade: self.chain.upgrade_for(&parent),
             proofs: self.chain.proofs_for(&parent),
             beacons: self.chain.beacons_for(&parent),
+            registrations: self.chain.registrations_for(&parent),
         };
         // Under the parent's next protocol, with its one-time changes if it activates here.
-        let attempt = self.chain.pre_state_with(&parent, parent.next_protocol(), &extras.proofs, &extras.beacons, false);
+        let attempt = self.chain.pre_state_with(&parent, parent.next_protocol(), &extras.proofs, &extras.beacons, &extras.registrations, false);
         let mut extras = extras;
         let (pre, payouts) = match attempt {
             Ok(pre) => pre,
             // Pooled proofs that no longer verify here: drop them and propose without.
-            // (Beacon answers were checked against this parent: they go too, only for this block.)
-            Err(e) if !extras.proofs.is_empty() || !extras.beacons.is_empty() => {
-                warn!(?e, "dropping pooled proofs and beacon answers from this proposal");
+            // (Beacon answers and registrations were checked against this
+            // parent: they go too, only for this block.)
+            Err(e) if !extras.proofs.is_empty() || !extras.beacons.is_empty() || !extras.registrations.is_empty() => {
+                warn!(?e, "dropping pooled proofs, beacon answers and registrations from this proposal");
                 self.chain.drop_proofs(&extras.proofs.iter().map(|c| c.height).collect::<Vec<_>>());
                 extras.proofs.clear();
                 extras.beacons.clear();
+                extras.registrations.clear();
                 match self.chain.pre_state(&parent, parent.next_protocol(), &[], false) {
                     Ok(pre) => pre,
                     Err(e) => {
@@ -141,6 +144,7 @@ where
         crate::chain::with_activation(&pre, &mut out);
         drop(pre);
         let tx_hashes = payload.txs.iter().map(aether_execution::tx_hash).collect();
+        let registration_ids = payload.registrations.iter().map(crate::registrations::id).collect();
         let block = Block::new(context, parent_block.digest(), height, ts, payload.to_bytes());
         if !payload.proofs.is_empty() {
             self.chain.proposed_with_proofs(height.get(), block.digest());
@@ -153,7 +157,7 @@ where
         };
         let seed = payload.seed.as_ref().map(|s| std::sync::Arc::new((height.get(), s.clone()))).or_else(|| parent.seed.clone());
         let schedule = payload.upgrade.as_ref().map(|u| crate::chain::scheduled(&parent.schedule, &u.upgrade)).unwrap_or_else(|| parent.schedule.clone());
-        self.chain.remember(&block, &parent, &ctx, out, tx_hashes, pending, seed, schedule, statement, payouts);
+        self.chain.remember(&block, &parent, &ctx, out, tx_hashes, pending, seed, schedule, statement, payouts, registration_ids);
         info!(height = %height, txs = payload.txs.len(), "proposed");
         Some(block)
     }

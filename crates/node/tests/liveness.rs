@@ -14,7 +14,7 @@ use commonware_cryptography::{ed25519, Signer as _};
 const E: u64 = 20;
 
 fn net(macs: u8, reserve: Option<Reserve>) -> Net {
-    Net::new(Opts { chain_id: 7_793, node_rewards: true, epoch_blocks: E, macs, min_streak: Some(0), history_v2: false, reserve })
+    Net::new(Opts { chain_id: 7_793, node_rewards: true, epoch_blocks: E, macs, min_streak: Some(0), history_v2: false, reserve, fees: false })
 }
 
 /// Mac `i`'s committee entry (voting key, iroh node id).

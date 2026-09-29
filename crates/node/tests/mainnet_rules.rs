@@ -39,6 +39,7 @@ fn net(macs: u8, reserve: Option<Reserve>) -> Net {
         min_streak: Some(0),
         history_v2: true,
         reserve,
+        fees: false,
     })
 }
 

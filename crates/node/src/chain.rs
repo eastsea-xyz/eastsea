@@ -207,6 +207,9 @@ pub struct Executed {
     /// paid by the first block of an epoch appear with the block's own height
     /// as the proven height (no block proves itself).
     pub payouts: Vec<(u64, Address, U256)>,
+    /// Ids (`registrations::id`) of the free-lane registrations this block
+    /// carried, for their pseudo-receipts when it finalizes.
+    pub registration_ids: Vec<TxHash>,
 }
 
 /// A block's statement commitment (aether_proving::block) and escrow share.
@@ -373,6 +376,11 @@ pub struct Inner {
     beacon_pool: BTreeMap<(u64, u64, u64), aether_light::block::BeaconAnswer>,
     /// Where answers this node takes first go out to the other validators (validators only).
     pub beacon_out: Option<tokio::sync::mpsc::UnboundedSender<aether_light::block::BeaconAnswer>>,
+    /// Free-lane registrations checked against the finalized state, waiting
+    /// for a block: one in flight per operator (its signed nonce is one-shot).
+    registration_pool: BTreeMap<Address, aether_light::block::NodeRegistration>,
+    /// Where registrations this node takes first go out to the other validators (validators only).
+    pub registration_out: Option<tokio::sync::mpsc::UnboundedSender<aether_light::block::NodeRegistration>>,
     /// Pruning (roadmap B4): first height whose summary and receipts are kept.
     pub pruned_below: u64,
     /// The last era read back from its file (old blocks served over RPC).
@@ -437,6 +445,7 @@ impl Chain {
             schedule: Arc::new(Vec::new()),
             statement: Statement::default(),
             payouts: vec![],
+            registration_ids: vec![],
         });
         let mut executed = HashMap::new();
         executed.insert(genesis.digest(), exec.clone());
@@ -490,6 +499,8 @@ impl Chain {
             rejected: Default::default(),
             beacon_pool: BTreeMap::new(),
             beacon_out: None,
+            registration_pool: BTreeMap::new(),
+            registration_out: None,
             pruned_below: 0,
             era_cache: None,
             net_height: None,
@@ -537,6 +548,7 @@ impl Chain {
                     schedule: Arc::new(cp.schedule),
                     statement: cp.statement,
                     payouts: vec![],
+                    registration_ids: vec![],
                 });
                 let mut g = chain.lock();
                 g.executed.insert(digest, exec.clone());
@@ -853,6 +865,7 @@ impl Chain {
             payload.version,
             &payload.proofs,
             &payload.beacons,
+            &payload.registrations,
             certified,
         )?;
         let schedule =
@@ -877,8 +890,9 @@ impl Chain {
         let handoff = self.next_handoff(block.height().get(), parent, payload.handoff.as_ref())?;
         let seed = self.next_seed(block.height().get(), parent, payload.seed.as_ref())?;
         let tx_hashes = payload.txs.iter().map(aether_execution::tx_hash).collect();
+        let registration_ids = payload.registrations.iter().map(crate::registrations::id).collect();
         Ok(self.remember(
-            block, parent, &ctx, out, tx_hashes, handoff, seed, schedule, statement, payouts,
+            block, parent, &ctx, out, tx_hashes, handoff, seed, schedule, statement, payouts, registration_ids,
         ))
     }
 
@@ -893,10 +907,11 @@ impl Chain {
         proofs: &[aether_light::block::ProofClaim],
         certified: bool,
     ) -> Result<(std::borrow::Cow<'a, WorldState>, Vec<(u64, Address, U256)>), ChainError> {
-        self.pre_state_with(parent, version, proofs, &[], certified)
+        self.pre_state_with(parent, version, proofs, &[], &[], certified)
     }
 
-    /// `pre_state` of a block that also carries beacon answers.
+    /// `pre_state` of a block that also carries beacon answers and free-lane
+    /// registrations.
     #[allow(clippy::type_complexity)]
     pub fn pre_state_with<'a>(
         &self,
@@ -904,6 +919,7 @@ impl Chain {
         version: u32,
         proofs: &[aether_light::block::ProofClaim],
         answers: &[aether_light::block::BeaconAnswer],
+        registrations: &[aether_light::block::NodeRegistration],
         certified: bool,
     ) -> Result<(std::borrow::Cow<'a, WorldState>, Vec<(u64, Address, U256)>), ChainError> {
         let (running, migrate, verifier, history_v2, chain_id) = {
@@ -944,6 +960,9 @@ impl Chain {
         if !answers.is_empty() && !aether_rewards::enabled(&parent.state) {
             return Err(ChainError::Protocol("beacon answers without node rewards".into()));
         }
+        if !registrations.is_empty() && !aether_rewards::enabled(&parent.state) {
+            return Err(ChainError::Protocol("free registrations without node rewards".into()));
+        }
         if version == before
             && !records
             && !rotates
@@ -953,6 +972,7 @@ impl Chain {
             && !switches
             && proofs.is_empty()
             && answers.is_empty()
+            && registrations.is_empty()
         {
             return Ok((std::borrow::Cow::Borrowed(&parent.state), vec![]));
         }
@@ -1020,6 +1040,10 @@ impl Chain {
         aether_rewards::beacons::on_block(&mut state, parent.height + 1, digest_bytes(&parent.digest));
         crate::beacons::apply(&mut state, chain_id, parent.height + 1, answers)
             .map_err(|e| ChainError::Protocol(format!("beacons: {e}")))?;
+        // The block's free-lane registrations, after the answers (both are
+        // system writes checked against this same state).
+        crate::registrations::apply(&mut state, chain_id, parent.height + 1, registrations)
+            .map_err(|e| ChainError::Protocol(format!("registrations: {e}")))?;
         payouts.extend(pay_proofs(&mut state, parent.height + 1, proofs, verifier)?);
         Ok((std::borrow::Cow::Owned(state), payouts))
     }
@@ -1464,6 +1488,61 @@ impl Chain {
         out
     }
 
+    /// Take a free-lane registration into the pool if it is valid for the next
+    /// block on the finalized head (a later one for the same operator replaces
+    /// an unconfirmed earlier item: its nonce is only spent on chain).
+    /// Ok(true) when it is new here.
+    pub fn add_registration(&self, r: aether_light::block::NodeRegistration) -> Result<bool, String> {
+        let (state, height, chain_id) = {
+            let g = self.lock();
+            let f = &g.finalized;
+            (f.state.clone(), f.height + 1, g.cfg.chain_id)
+        };
+        crate::registrations::verify(&state, chain_id, height, &r)?;
+        let mut g = self.lock();
+        if g.registration_pool.len() >= aether_execution::registry::MAX_PER_EPOCH as usize {
+            return Err("registration pool full".into());
+        }
+        let new = g.registration_pool.insert(r.operator, r).is_none();
+        Ok(new)
+    }
+
+    /// `add_registration`, then send a new item on to the other validators.
+    pub fn submit_registration(&self, r: aether_light::block::NodeRegistration) -> Result<bool, String> {
+        let new = self.add_registration(r.clone())?;
+        if new {
+            if let Some(out) = self.lock().registration_out.as_ref() {
+                let _ = out.send(r);
+            }
+        }
+        Ok(new)
+    }
+
+    /// Pooled registrations valid in the block after `parent`, checked and
+    /// recorded on a copy of the parent's state so several items line up in
+    /// nonce order, at most a block's worth.
+    pub fn registrations_for(&self, parent: &Executed) -> Vec<aether_light::block::NodeRegistration> {
+        if !aether_rewards::enabled(&parent.state) {
+            return vec![];
+        }
+        let (pool, chain_id): (Vec<_>, u64) = {
+            let g = self.lock();
+            (g.registration_pool.values().cloned().collect(), g.cfg.chain_id)
+        };
+        let height = parent.height + 1;
+        let mut state = parent.state.clone();
+        let mut out = Vec::new();
+        for r in pool {
+            if out.len() == aether_execution::registry::MAX_FREE_PER_BLOCK {
+                break;
+            }
+            if crate::registrations::apply(&mut state, chain_id, height, std::slice::from_ref(&r)).is_ok() {
+                out.push(r);
+            }
+        }
+        out
+    }
+
     /// Blocks' notice between an upgrade landing on chain and its activation:
     /// one voting-node epoch, so every running Mac sees it well before (the
     /// genesis epoch length on a chain without a registry).
@@ -1569,6 +1648,7 @@ impl Chain {
         schedule: Arc<crate::upgrade::Schedule>,
         statement: [u8; 32],
         payouts: Vec<(u64, Address, U256)>,
+        registration_ids: Vec<TxHash>,
     ) -> Arc<Executed> {
         let escrow = out.settlement.to_escrow;
         let (base_fee, excess) = match &ctx.fees {
@@ -1606,6 +1686,7 @@ impl Chain {
                 }
             },
             payouts,
+            registration_ids,
         });
         self.lock().executed.insert(block.digest(), exec.clone());
         exec
@@ -1974,6 +2055,30 @@ impl Chain {
                 open && !recorded
             });
         }
+        // A free-lane item succeeded: its id gets a receipt the wallet polls
+        // like a tx's (in memory here; the registry state itself is the durable
+        // record). Items whose key landed (however it got there) or that
+        // expired leave the pool.
+        if !exec.registration_ids.is_empty() {
+            for id in &exec.registration_ids {
+                g.receipts.insert(*id, (exec.height, Receipt {
+                    tx_hash: *id,
+                    success: true,
+                    gas_used: 0,
+                    prove_gas: 0,
+                    contract_address: None,
+                    logs: 0,
+                    output: Default::default(),
+                    events: vec![],
+                }));
+            }
+        }
+        if !g.registration_pool.is_empty() {
+            let next = exec.height + 1;
+            g.registration_pool.retain(|_, r| {
+                aether_execution::registry::index_of(state, &r.validator_key.0) == 0 && next <= r.expiry
+            });
+        }
         replacement_step(&mut g, &previous, &exec);
         reserve_step(&mut g, &previous, &exec);
         Ok(())
@@ -2237,6 +2342,7 @@ pub struct Extras {
     pub upgrade: Option<crate::upgrade::SignedUpgrade>,
     pub proofs: Vec<aether_light::block::ProofClaim>,
     pub beacons: Vec<aether_light::block::BeaconAnswer>,
+    pub registrations: Vec<aether_light::block::NodeRegistration>,
 }
 
 /// Build a payload on `parent`; `pre` is `Chain::pre_state` for the parent's next protocol.
@@ -2256,6 +2362,7 @@ pub fn build_payload(
         upgrade,
         proofs,
         beacons,
+        registrations,
     } = extras;
     let payload = Payload {
         version: parent.next_protocol(),
@@ -2270,6 +2377,7 @@ pub fn build_payload(
         upgrade,
         proofs,
         beacons,
+        registrations,
     };
     (payload, out)
 }
@@ -2526,7 +2634,7 @@ mod pool_tests {
         let context = Context { round: Round::new(EPOCH, View::new(height.get())), leader, parent: (View::new(height.get() - 1), last.digest()) };
         let skeleton = Block::new(context.clone(), last.digest(), height, height.get() * 1_000, bytes::Bytes::new());
         let ctx = Chain::block_context(&chain.cfg(), &skeleton, parent);
-        let (pre, _) = chain.pre_state_with(parent, parent.next_protocol(), &[], &[], false).unwrap();
+        let (pre, _) = chain.pre_state_with(parent, parent.next_protocol(), &[], &[], &[], false).unwrap();
         let (payload, _) = build_payload(parent, &pre, &ctx, txs, Extras::default());
         let block = Block::new(context, last.digest(), height, height.get() * 1_000, payload.to_bytes());
         (chain.execute(&block, parent).unwrap(), ctx)
@@ -2552,7 +2660,7 @@ mod pool_tests {
         let context = Context { round: Round::new(EPOCH, View::new(height.get())), leader, parent: (View::new(height.get() - 1), last.digest()) };
         let skeleton = Block::new(context.clone(), last.digest(), height, height.get() * 1_000, bytes::Bytes::new());
         let ctx = Chain::block_context(&chain.cfg(), &skeleton, parent);
-        let (pre, _) = chain.pre_state_with(parent, parent.next_protocol(), &[], &[], false).unwrap();
+        let (pre, _) = chain.pre_state_with(parent, parent.next_protocol(), &[], &[], &[], false).unwrap();
         let (payload, _) = build_payload(parent, &pre, &ctx, txs, Extras::default());
         let block = Block::new(context, last.digest(), height, height.get() * 1_000, payload.to_bytes());
         let exec = chain.execute(&block, parent).unwrap();

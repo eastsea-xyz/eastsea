@@ -545,9 +545,13 @@ fn demote_on_failure<T>(read: impl FnOnce() -> R<T>) -> R<T> {
     r
 }
 
-/// Fee caps from the node's next base fees: 2x headroom plus a 1 gwei tip
-/// (only base + tip is charged). Older nodes without `base_fee` get the floor.
-fn fee_caps(status: &Value) -> (FeeVector, u128) {
+/// Fee caps from the node's next base fees and the sender's balance: 2x
+/// headroom plus a 1 gwei tip (only base + tip is charged). A sender with no
+/// balance, or a chain at its zero floor (below target load the base fee is 0),
+/// sends with tip 0 and exec capped at base × 2 — one base-fee doubling of
+/// headroom — so a new account can transact at all (G2). Older nodes without
+/// `base_fee` get the floor.
+fn fee_caps(status: &Value, balance: Option<U256>) -> (FeeVector, u128) {
     const GWEI: u128 = 1_000_000_000;
     let get = |k: &str| {
         status["base_fee"][k]
@@ -555,23 +559,28 @@ fn fee_caps(status: &Value) -> (FeeVector, u128) {
             .and_then(|v| v.parse::<u128>().ok())
             .unwrap_or(GWEI)
     };
+    let free = get("exec") == 0 || balance == Some(U256::ZERO);
     (
         FeeVector {
-            exec: get("exec") * 2 + GWEI,
+            exec: if free { get("exec") * 2 } else { get("exec") * 2 + GWEI },
             state: 0,
             prove: get("prove") * 2,
         },
-        GWEI,
+        if free { 0 } else { GWEI },
     )
 }
 
-/// A 21k-gas transfer runs no bytecode (no prove gas): it pays base + tip per gas.
+/// A 21k-gas transfer runs no bytecode (no prove gas): it pays base + tip per
+/// gas, and nothing while the base fee is 0.
 fn transfer_fee(status: &Value) -> u128 {
     const GWEI: u128 = 1_000_000_000;
     let base = status["base_fee"]["exec"]
         .as_str()
         .and_then(|v| v.parse::<u128>().ok())
         .unwrap_or(0);
+    if base == 0 {
+        return 0;
+    }
     21_000 * (base + GWEI)
 }
 
@@ -620,6 +629,7 @@ fn needs_a_validator(method: &str) -> bool {
             | "aether_faucet"
             | "aether_registerDevice"
             | "aether_sendBeacon"
+            | "aether_sendRegistration"
             | "aether_reattest"
             | "aether_submitProof"
             | "aether_signHandoff"
@@ -1070,7 +1080,9 @@ fn prepare(p256_public_key: &[u8], body: impl FnOnce(Address) -> R<EvmCall>) -> 
     let from = address_of(&pk).map_err(|e| WalletError::Invalid(e.to_string()))?;
     let status = call("aether_status", json!([]))?;
     let chain_id = expected_chain(&status)?;
-    let (max_fee, tip) = fee_caps(&status);
+    let balance_hex = call("eth_getBalance", json!([from]))?;
+    let balance = balance_hex.as_str().and_then(|h| U256::from_str_radix(h.trim_start_matches("0x"), 16).ok());
+    let (max_fee, tip) = fee_caps(&status, balance);
     let nonce_hex = call("eth_getTransactionCount", json!([from]))?;
     let nonce = u64::from_str_radix(nonce_hex.as_str().unwrap_or("0x0").trim_start_matches("0x"), 16).map_err(|e| WalletError::Invalid(e.to_string()))?;
     let call_body = body(from)?;
@@ -1131,12 +1143,21 @@ pub fn voting_node_status(validator_key: String) -> R<VotingNodeStatus> {
     })
 }
 
+/// How long a prepared free-lane registration stays valid (2 h of 1 s blocks):
+/// the block that carries it must not be past this height.
+const REGISTRATION_TTL: u64 = 7_200;
+
 /// Register this Mac as a voting-node candidate, operated by the wallet's account.
 /// `device_token` is Apple's DeviceCheck token (base64): one Mac, one candidate.
 /// `ownership` is the voting key's own signature (`aether candidate-info
 /// --operator`), so nobody can register a voting key they do not hold.
-/// The registrar (a validator holding the network's DeviceCheck key) attests;
-/// the returned transaction, signed with the wallet key, puts it on chain.
+/// The registrar (a validator holding the network's DeviceCheck key) attests.
+///
+/// On a network with the free registration lane (`aether_status`'s
+/// `free_registration`, docs/design/22-gas-pool.md 2층) the returned
+/// `envelope_json` is a lane item instead of a transaction: no gas, no balance
+/// needed, one signature from this wallet (the Secure Enclave signs the same
+/// `signing_message` field). Older networks get the paid contract call.
 #[uniffi::export]
 pub fn prepare_register_node(
     p256_public_key: Vec<u8>,
@@ -1151,9 +1172,38 @@ pub fn prepare_register_node(
     };
     let (key, node) = (hex32(&validator_key, "voting key")?, hex32(&node_id, "node id")?);
     let beaconer: Address = beaconer.parse().map_err(|_| WalletError::Invalid("beaconer address".into()))?;
-    let operator = address_of(&p256_key(&p256_public_key)?).map_err(|e| WalletError::Invalid(e.to_string()))?;
+    let pk = p256_key(&p256_public_key)?;
+    let operator = address_of(&pk).map_err(|e| WalletError::Invalid(e.to_string()))?;
     let a = registrar_call(json!([device_token, operator, hex_lower(&key), hex_lower(&node), beaconer, ownership]))?;
     let (r, s) = (hex32(a["r"].as_str().unwrap_or_default(), "attestation r")?, hex32(a["s"].as_str().unwrap_or_default(), "attestation s")?);
+    let attestation = [r, s].concat();
+    let status = call("aether_status", json!([]))?;
+    if status["free_registration"].as_bool().unwrap_or(false) {
+        let chain_id = expected_chain(&status)?;
+        let height = status["height"].as_u64().unwrap_or_default();
+        let nonce = call("aether_registrationNonce", json!([operator]))?.as_u64().unwrap_or_default();
+        let expiry = height.saturating_add(REGISTRATION_TTL);
+        let signing_message = aether_execution::registry::relay_message(chain_id, operator, &key, &node, beaconer, &attestation, nonce, expiry);
+        // The item's canonical serialization (what the node re-parses and the
+        // block carries); the signature field is filled by `submit_signed`.
+        let item = aether_light::block::NodeRegistration {
+            operator,
+            validator_key: key.into(),
+            node_id: node.into(),
+            beaconer,
+            attestation: Bytes::from(attestation).0,
+            signature: Default::default(),
+            operator_key: Bytes::from(pk.bytes.clone()).0,
+            nonce,
+            expiry,
+        };
+        return Ok(PreparedTx {
+            from: operator.to_checksum(None),
+            nonce,
+            signing_message,
+            envelope_json: json!({ "free_registration": { "chain_id": chain_id, "item": item } }).to_string(),
+        });
+    }
     let input = aether_execution::registry::encode_register(key, node, beaconer, r, s);
     prepare(&p256_public_key, |_| Ok(EvmCall { to: Some(aether_execution::registry::REGISTRY), value: U256::ZERO, input, gas_limit: 400_000, delegate: None }))
 }
@@ -1175,9 +1225,16 @@ fn registrar_call(params: Value) -> R<Value> {
     Err(last)
 }
 
-/// Attach a Secure Enclave signature (raw r‖s, 64 bytes) and submit.
+/// Attach a Secure Enclave signature (raw r‖s, 64 bytes) and submit: a signed
+/// transaction, or the wallet's signature on a prepared free-lane registration
+/// (the `envelope_json` of `prepare_register_node` on a lane network).
 #[uniffi::export]
 pub fn submit_signed(envelope_json: String, signature: Vec<u8>, p256_public_key: Vec<u8>) -> R<String> {
+    if let Ok(v) = serde_json::from_str::<Value>(&envelope_json) {
+        if v.get("free_registration").is_some() {
+            return submit_registration(v, signature, p256_public_key);
+        }
+    }
     let mut env: TxEnvelope = serde_json::from_str(&envelope_json).map_err(|e| WalletError::Invalid(e.to_string()))?;
     let pk = p256_key(&p256_public_key)?;
     let sig = p256::ecdsa::Signature::from_slice(&signature).map_err(|_| WalletError::Invalid("signature must be 64-byte r‖s".into()))?;
@@ -1187,6 +1244,39 @@ pub fn submit_signed(envelope_json: String, signature: Vec<u8>, p256_public_key:
     bytes.extend_from_slice(&pk.bytes);
     env.signature = Bytes::from(bytes);
     let v = call("aether_sendTransaction", json!([env]))?;
+    let h: TxHash = parse(&v["hash"], "hash")?;
+    Ok(format!("{h}"))
+}
+
+/// Sign a prepared free-lane registration with the wallet key and send it to
+/// the lane (`aether_sendRegistration`): the same checks `submit_signed` does,
+/// then the item goes out with its signature attached. Returns the item's id —
+/// `receipt` polls it like a tx hash.
+fn submit_registration(prepared: Value, signature: Vec<u8>, p256_public_key: Vec<u8>) -> R<String> {
+    let lane = &prepared["free_registration"];
+    let chain_id = lane["chain_id"].as_u64().ok_or_else(|| WalletError::Invalid("registration chain id".into()))?;
+    let mut item: aether_light::block::NodeRegistration =
+        serde_json::from_value(lane["item"].clone()).map_err(|e| WalletError::Invalid(format!("registration: {e}")))?;
+    let pk = p256_key(&p256_public_key)?;
+    if address_of(&pk).map_err(|e| WalletError::Invalid(e.to_string()))? != item.operator {
+        return Err(WalletError::Invalid("this key is not the registration's operator".into()));
+    }
+    let sig = p256::ecdsa::Signature::from_slice(&signature).map_err(|_| WalletError::Invalid("signature must be 64-byte r‖s".into()))?;
+    // Secure Enclave may return high-s; the chain only accepts low-s.
+    let bytes = sig.normalize_s().to_bytes().to_vec();
+    let msg = aether_execution::registry::relay_message(
+        chain_id,
+        item.operator,
+        &item.validator_key.0,
+        &item.node_id.0,
+        item.beaconer,
+        &item.attestation,
+        item.nonce,
+        item.expiry,
+    );
+    aether_crypto::verify(&pk, &msg, &bytes).map_err(|e| WalletError::Invalid(format!("signature does not match key: {e}")))?;
+    item.signature = Bytes::from(bytes).0;
+    let v = call("aether_sendRegistration", json!([item]))?;
     let h: TxHash = parse(&v["hash"], "hash")?;
     Ok(format!("{h}"))
 }

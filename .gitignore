@@ -21,3 +21,6 @@ docs/.pdca-snapshots/
 
 # Tool state folders (never app resources)
 .omc/
+
+# release-mac.sh scratch (mounted DMG, TMPDIR)
+/tmp/

@@ -621,6 +621,22 @@ impl Chain {
         self.lock().relaxed = relaxed;
     }
 
+    /// Re-open the store after a storage failure (docs/design/24-self-healing.md
+    /// layer 1), synchronously where the failed commit happened: consensus on
+    /// this node waits here — it must not finalize past a block that is not on
+    /// disk. The in-memory finalized head never ran past a commit that failed,
+    /// so nothing rolls back: once the database is re-opened and the disk
+    /// takes a write again (a probe commit), the caller retries its commit.
+    /// A heal that keeps failing ends the process with the storage exit code,
+    /// so the app restarts the node, which catches up before it votes again.
+    pub fn heal_store(&self) {
+        let Some(store) = self.store() else { return };
+        if let Err(e) = crate::store::Recovery::from_env().reopen(&store) {
+            tracing::error!(%e, "the store database did not recover; exiting so the app restarts the node");
+            std::process::exit(crate::store::EXIT_STORAGE);
+        }
+    }
+
     /// Adopt a committee-certified snapshot as the finalized head, executing
     /// nothing (`follow::jump` checked it against the certified block after
     /// it, and `snapshot::install_over` already wrote the store). Blocks

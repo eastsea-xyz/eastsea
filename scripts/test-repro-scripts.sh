@@ -19,6 +19,11 @@
 #    on twice.
 # 5. macho-uuid.py reads the UUID dwarfdump reports, blanks exactly that field
 #    (it is what makes 3 work) and rebuilds it from the file (4).
+# 6. guest-stage.sh, the fixed path both prover builds go through, links the
+#    checkout without ever clobbering a foreign file or linking it to itself
+#    (build.rs reaches the stage from inside it), and serialises two builds that
+#    share it (nested ones included) — the piece that keeps the proving program
+#    id off the checkout path.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 repo="$PWD"
@@ -28,7 +33,7 @@ trap 'rm -rf "$tmp"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "ok: $*"; }
 
-echo "=== [1/5] repro-env.sh ==="
+echo "=== [1/6] repro-env.sh ==="
 # Fresh shell so the parent environment cannot leak in.
 env -u SOURCE_DATE_EPOCH -u ZERO_AR_DATE -u RUSTFLAGS -u AETHER_REMAP_FLAGS \
   CARGO_TARGET_DIR="$tmp/target-one" bash -c '
@@ -82,7 +87,7 @@ cold="$(remap_flags "$tmp/target-two")"
 case "$warm" in *"$tmp/target-two=/aether-target"*) ;; *) fail "no target remap in: $warm" ;; esac
 pass "same remap list for a cold and a warm target dir"
 
-echo "=== [2/5] deterministic-zip.py ==="
+echo "=== [2/6] deterministic-zip.py ==="
 src_a="$tmp/src_a" src_b="$tmp/src_b"
 mkdir -p "$src_a/src" "$src_a/wasm"
 printf 'console.log("hi");\n' > "$src_a/src/a.js"
@@ -116,7 +121,7 @@ hc=$(shasum -a 256 "$tmp/c.zip" | awk '{print $1}')
 [ "$ha" != "$hc" ] || fail "zip did not change with the content"
 pass "same content -> same bytes, .test. left out, changes show up"
 
-echo "=== [3/5] repro-app-check.sh ==="
+echo "=== [3/6] repro-app-check.sh ==="
 cat > "$tmp/main.c" <<'EOF'
 #include <stdio.h>
 int main(void) { puts("aether reproducible bundle"); return 0; }
@@ -175,7 +180,7 @@ if scripts/repro-app-check.sh "$tmp/A.app" "$tmp/C.app" >"$tmp/c.log" 2>&1; then
 fi
 pass "a real code difference is reported (exit 1)"
 
-echo "=== [4/5] aether_repro_fix_uuid ==="
+echo "=== [4/6] aether_repro_fix_uuid ==="
 fix_uuid() { # fix_uuid FILE
   env -u SOURCE_DATE_EPOCH -u ZERO_AR_DATE -u RUSTFLAGS -u AETHER_REMAP_FLAGS \
     bash -c '. "$1/scripts/repro-env.sh"; aether_repro_fix_uuid "$2"' _ "$repo" "$1"
@@ -219,7 +224,7 @@ fix_uuid "$tmp/x/hello"
 if fix_uuid "$tmp/no-such-binary" >/dev/null 2>&1; then fail "fix_uuid accepted a missing file"; fi
 pass "idempotent, and a missing binary fails"
 
-echo "=== [5/5] macho-uuid.py ==="
+echo "=== [5/6] macho-uuid.py ==="
 uuid_bin="$tmp/uuid-bin"
 clang -O2 "$tmp/main.c" -o "$uuid_bin"
 got=$(scripts/macho-uuid.py print "$uuid_bin" | sed 's/.*: //')
@@ -250,6 +255,133 @@ scripts/macho-uuid.py rebuild "$tmp/uuid-zeroed"
 clang -O2 "$tmp/main.c" -Wl,-no_uuid -o "$tmp/no-uuid" 2>/dev/null
 if scripts/macho-uuid.py rebuild "$tmp/no-uuid" >/dev/null 2>&1; then fail "rebuild invented a UUID"; fi
 pass "reads the UUID dwarfdump reports, blanks exactly that field, rebuilds it, rejects non-Mach-O"
+
+echo "=== [6/6] guest-stage.sh ==="
+# The stage is what makes the program id independent of the checkout (cargo
+# hashes the path of a dependency that lives outside the invoking workspace
+# root; see scripts/guest-stage.sh). No cargo here: the stage's own behaviour —
+# the remap it offers, the links it makes and refuses to overwrite, and the lock
+# that lets two builds share one stage.
+stage="$tmp/stage"
+mkdir -p "$stage"
+stage_real="$(cd -P "$stage" && pwd -P)"
+run_stage() { # run_stage SHELL-BODY [ARG...]
+  AETHER_GUEST_STAGE="$stage" bash -c ". '$repo/scripts/guest-stage.sh'; $1" _ "${@:2}"
+}
+# Both spellings of the stage go to the same place: cargo hands rustc whichever
+# one it happens to have (macOS /tmp -> /private/tmp), and a missing one leaks
+# the builder's path into the ELF.
+map="$(run_stage 'aether_guest_stage_remap /aether')"
+case "$map" in *"--remap-path-prefix=$stage=/aether"*) ;; *) fail "no remap for the stage: $map" ;; esac
+if [ "$stage_real" != "$stage" ]; then
+  case "$map" in *"--remap-path-prefix=$stage_real=/aether"*) ;; *) fail "no remap for the physical stage: $map" ;; esac
+fi
+pass "remaps the stage, in both spellings"
+
+# populate: a link per entry that exists, nothing for the ones that do not
+# (the repo may have no .cargo/), and re-pointing when the tree moves — the
+# stage is one path for every checkout, so it must follow the tree being built.
+tree_a="$tmp/tree-a" tree_b="$tmp/tree-b"
+mkdir -p "$tree_a/apps/prover" "$tree_a/crates" "$tree_b/apps/prover"
+printf 'a\n' >"$tree_a/Cargo.toml"
+printf 'b\n' >"$tree_b/Cargo.toml"
+tree_b_real="$(cd -P "$tree_b" && pwd -P)"
+run_stage 'aether_guest_stage_populate "$1"' "$tree_a"
+for e in Cargo.toml crates; do
+  [ -L "$stage/$e" ] || fail "populate did not link $e"
+done
+if [ -e "$stage/vendor" ] || [ -L "$stage/vendor" ]; then fail "populate invented vendor/"; fi
+if [ ! -d "$stage/apps/prover" ] || [ -L "$stage/apps/prover" ]; then
+  fail "apps/prover must be a real directory (it is the workspace root cargo hashes)"
+fi
+[ -L "$stage/apps/prover/target" ] || fail "the build output directory is not shared with the checkout"
+run_stage 'aether_guest_stage_populate "$1"' "$tree_a"
+[ -L "$stage/Cargo.toml" ] || fail "populate is not idempotent"
+run_stage 'aether_guest_stage_populate "$1"' "$tree_b" || fail "populate failed on the second tree"
+# Links point at the physical tree (populate resolves it), which is also the
+# only form that works when the checkout is reached through a symlink.
+[ "$(readlink "$stage/Cargo.toml")" = "$tree_b_real/Cargo.toml" ] || fail "populate did not re-point the stage"
+# A build that reaches the stage from inside it — build.rs running
+# build-guest.sh, which cargo starts with the stage as the package root — names
+# the stage as its checkout. Linking that points every entry at itself and the
+# build then finds no workspace root, so the stage must stay as it is.
+run_stage 'aether_guest_stage_populate "$1"' "$stage" || fail "populate failed on the stage itself"
+[ "$(readlink "$stage/Cargo.toml")" = "$tree_b_real/Cargo.toml" ] ||
+  fail "populating from inside the stage pointed it at itself"
+run_stage 'AETHER_GUEST_STAGE_LOCKED=1 aether_guest_stage_enter "$1"' "$stage" ||
+  fail "enter refused the stage itself"
+[ "$(readlink "$stage/Cargo.toml")" = "$tree_b_real/Cargo.toml" ] ||
+  fail "entering from inside the stage pointed it at itself"
+pass "links what exists, idempotent, follows the tree, never links to itself"
+
+# A real file where a link belongs means someone else owns that path: refuse,
+# and leave it there.
+rm -rf "$stage"
+mkdir -p "$stage"
+printf 'mine\n' >"$stage/Cargo.toml"
+if run_stage 'aether_guest_stage_populate "$1"' "$tree_a" >/dev/null 2>&1; then
+  fail "populate replaced a real file"
+fi
+[ "$(cat "$stage/Cargo.toml")" = mine ] || fail "populate clobbered the file it refused"
+if run_stage 'aether_guest_stage_enter "$1"' "$tmp/no-such-checkout" >/dev/null 2>&1; then
+  fail "enter accepted a missing checkout"
+fi
+pass "refuses to replace what it did not create"
+
+# The lock: one stage, several builds. A second build waits for the first, and
+# a nested one (host build -> build.rs -> build-guest.sh) does not wait at all:
+# it inherits its parent's lock through AETHER_GUEST_STAGE_LOCKED, which it must
+# leave alone.
+rm -rf "$stage" "$stage.lock"
+mkdir -p "$stage"
+run_stage 'aether_guest_stage_lock; sleep 2; aether_guest_stage_unlock' &
+holder=$!
+for _ in $(seq 40); do
+  [ -e "$stage.lock/owner" ] && break
+  sleep 0.1
+done
+[ -e "$stage.lock/owner" ] || fail "the first build never took the lock"
+[ "$(awk '{print $2}' "$stage.lock/owner")" = "$(hostname)" ] || fail "the lock does not name its host"
+# This one can only answer after the holder let go (2s), not before.
+started=$(date +%s)
+if [ "$(run_stage 'aether_guest_stage_lock; echo took-it; aether_guest_stage_unlock')" != took-it ]; then
+  fail "the second build never got the lock"
+fi
+elapsed=$(($(date +%s) - started))
+[ "$elapsed" -ge 1 ] || fail "the second build did not wait for the first (${elapsed}s)"
+wait "$holder" || fail "the lock holder failed"
+if [ -e "$stage.lock" ]; then fail "the lock outlived its holders"; fi
+# A nested build must not release the lock it did not take, nor block on it.
+run_stage 'aether_guest_stage_lock; sleep 2; aether_guest_stage_unlock' &
+holder=$!
+for _ in $(seq 40); do
+  [ -e "$stage.lock/owner" ] && break
+  sleep 0.1
+done
+nested="$(run_stage 'AETHER_GUEST_STAGE_LOCKED=1 aether_guest_stage_enter "$1"
+  [ -d "$AETHER_GUEST_STAGE.lock" ] && echo still-held' "$tree_a")"
+[ "$nested" = still-held ] || fail "a nested build touched its parent's lock ($nested)"
+wait "$holder" || fail "the second lock holder failed"
+# The wait budget is a safety valve for a holder that is alive but stuck: a
+# waiting build gives up (AETHER_GUEST_STAGE_LOCK_WAIT seconds, default 2h)
+# instead of hanging forever.
+run_stage 'aether_guest_stage_lock; sleep 3; aether_guest_stage_unlock' &
+holder=$!
+for _ in $(seq 40); do
+  [ -e "$stage.lock/owner" ] && break
+  sleep 0.1
+done
+if run_stage 'AETHER_GUEST_STAGE_LOCK_WAIT=1 aether_guest_stage_lock' >/dev/null 2>&1; then
+  fail "a build waited past its lock budget"
+fi
+wait "$holder" || fail "the budgeted lock holder failed"
+if [ -e "$stage.lock" ]; then fail "the budgeted holder's lock outlived it"; fi
+# A holder that died (same host, pid gone) must not block the next build.
+mkdir -p "$stage.lock"
+echo "999999 $(hostname)" >"$stage.lock/owner"
+run_stage 'aether_guest_stage_lock; aether_guest_stage_unlock' || fail "a stale lock was not recovered"
+if [ -e "$stage.lock" ]; then fail "unlock left the lock"; fi
+pass "serialises builds, tolerates nesting, recovers a dead holder, gives up on a stuck one"
 
 echo
 echo "all reproducible-build script tests passed"

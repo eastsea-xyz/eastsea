@@ -26,12 +26,20 @@ pub fn find_binary() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("AETHER_PROVER") {
         return Some(PathBuf::from(p));
     }
-    let beside = std::env::current_exe().ok()?.with_file_name("aether-prover");
+    let exe = std::env::current_exe().ok()?;
+    let beside = exe.with_file_name("aether-prover");
     if beside.exists() {
         return Some(beside);
     }
-    let dev = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/prover/target/release/aether-prover");
-    dev.exists().then_some(dev)
+    dev_binary(&exe).filter(|dev| dev.exists())
+}
+
+/// Where the development build keeps the sidecar, for an executable at `exe`
+/// (apps/prover has its own target dir). Built from the running executable:
+/// `CARGO_MANIFEST_DIR` would bake the builder's absolute path into the binary,
+/// so the same source built in another directory would differ (gap G5).
+fn dev_binary(exe: &Path) -> Option<PathBuf> {
+    Some(exe.parent()?.join("../../apps/prover/target/release/aether-prover"))
 }
 
 struct Io {
@@ -648,6 +656,22 @@ mod tests {
             kills: std::sync::atomic::AtomicU32::new(0),
             backoff_until: Mutex::new(None),
         }
+    }
+
+    /// The development sidecar is looked up from the running executable, so a
+    /// node built in another directory looks next to itself. It used to come
+    /// from `env!("CARGO_MANIFEST_DIR")`, which put the builder's absolute path
+    /// in the binary: same source, different bytes (gap G5).
+    #[test]
+    fn the_development_sidecar_is_found_from_the_executable_not_the_checkout() {
+        assert_eq!(
+            dev_binary(Path::new("/builds/one/target/release/aether")).unwrap(),
+            Path::new("/builds/one/target/release/../../apps/prover/target/release/aether-prover")
+        );
+        assert_eq!(
+            dev_binary(Path::new("/somewhere/else/bbbbbbbbbb/target/release/aether")).unwrap(),
+            Path::new("/somewhere/else/bbbbbbbbbb/target/release/../../apps/prover/target/release/aether-prover")
+        );
     }
 
     #[test]

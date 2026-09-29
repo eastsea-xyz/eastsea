@@ -6,7 +6,10 @@
 //!   checkpoint start is), keeps only certified facts of the gap, restarts on
 //!   what it jumped to, and ends at the same state root as the network.
 //! - A snapshot that does not check against the certified chain is refused and
-//!   the follower falls back to replaying.
+//!   the follower falls back to replaying — a snapshot that omits a deployed
+//!   code (every root still matching) is refused the same way.
+//! - A catch-up that never heard the network's height is not success: it
+//!   returns Err, for an unknown height must not read as "0 behind".
 //! - A short gap replays normally, without a snapshot, and `aether_status`
 //!   reports `catching_up`/`behind` while it does.
 //! - A committee member that slept does not act as one until caught up: no
@@ -269,6 +272,7 @@ fn rpc_state(node: &Node, registrar: Option<Arc<aether_node::devicecheck::Regist
         handoff: None,
         snapshot: Default::default(),
         prover: None,
+        shards: None,
     }
 }
 
@@ -529,6 +533,99 @@ fn a_bad_snapshot_is_refused_and_replayed_instead() {
     let _ = std::fs::remove_dir_all(&dir_fol);
 }
 
+/// A snapshot that carries the tree's code-hash leaf but not the code's bytes
+/// (2026-09-29, red-team 2): every root still matches, only the execution
+/// index comes up short — the first call into that contract would fail. The
+/// check demands every hash the tree names, and the follower replays instead.
+#[test]
+fn a_snapshot_that_omits_a_deployed_code_is_refused_and_replayed_instead() {
+    let (dir_src, dir_fol) = (tmp("code-src"), tmp("code-follower"));
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mut src = Node::start(&dir_src);
+    // Deploy a contract in block 1: CODECOPY/RETURN ten runtime bytes that
+    // themselves return 32 bytes of memory — code the state will name.
+    let mut init = hex::decode("600a600c600039600a6000f3").unwrap();
+    let runtime = hex::decode("60ff60005260206000f3").unwrap();
+    init.extend_from_slice(&runtime);
+    let create = EvmCall {
+        to: None,
+        value: U256::ZERO,
+        input: init.into(),
+        gas_limit: 300_000,
+        delegate: None,
+    };
+    let create = src.submit(create);
+    let exec = src.step(vec![create]);
+    assert!(exec.receipts[0].success, "the contract is deployed");
+    let code_hash = B256::from(alloy_primitives::keccak256(&runtime));
+
+    src.run_to(2_050, |h| h % 300 == 0);
+    let st = rpc_state(&src, None);
+    rt.block_on(call(&st, "aether_snapshot", json!([])));
+    let bytes = {
+        st.snapshot
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("cached snapshot")
+            .1
+    };
+    let mut snap = aether_node::snapshot::Snapshot::from_bytes(&bytes).unwrap();
+    assert!(
+        snap.codes.iter().any(|(h, _)| *h == code_hash),
+        "the deployed code rides with the snapshot"
+    );
+    // The pristine snapshot checks (against the certified block after it).
+    src.run_to(2_051, |_| false);
+    let identity = src.chain.lock().identity.expect("identity");
+    assert!(
+        matches!(snap.check(&src.blocks[2_051], &config(), &identity), Ok(_)),
+        "the carried code passes the check"
+    );
+    // With the code dropped — roots untouched — it must not.
+    snap.codes.retain(|(h, _)| *h != code_hash);
+    let err = match snap.check(&src.blocks[2_051], &config(), &identity) {
+        Err(e) => e,
+        Ok(_) => panic!("the omitted code must not pass"),
+    };
+    assert!(err.contains("does not carry"), "{err}");
+    *st.snapshot.lock().unwrap() = Some((2_050, Arc::new(snap.to_bytes())));
+    src.run_to(2_100, |_| false);
+
+    let (url, calls) = serve(&st, &rt, Duration::ZERO);
+    let follower = Node::start(&dir_fol);
+    rt.block_on(follow::catch_up(
+        &follower.chain,
+        &Upstream::Http(vec![url]),
+        &set(),
+        0,
+    ))
+    .unwrap();
+
+    assert!(
+        calls
+            .lock()
+            .unwrap()
+            .contains(&"aether_snapshot".to_owned()),
+        "the jump was attempted"
+    );
+    assert_eq!(
+        follower.chain.finalized_height(),
+        2_100,
+        "fell back to replaying the whole way"
+    );
+    assert_eq!(
+        follower.chain.lock().finalized.state.root(),
+        src.chain.lock().finalized.state.root()
+    );
+    // The replayed state really carries the code: the contract runs again.
+    assert!(follower.chain.lock().finalized.state.codes().contains_key(&code_hash));
+
+    drop((src, follower, st));
+    let _ = std::fs::remove_dir_all(&dir_src);
+    let _ = std::fs::remove_dir_all(&dir_fol);
+}
+
 /// 100 blocks behind is a replay, not a snapshot jump, and while it runs
 /// `aether_status` says the node is catching up and by how much.
 #[test]
@@ -733,7 +830,11 @@ fn a_member_that_slept_does_not_beacon_until_caught_up() {
             "a beacon ({m}) went out while {behind} blocks behind"
         );
     }
-    assert_eq!(member.chain.behind(), 0, "caught up clears it");
+    assert_eq!(
+        member.chain.behind_known(),
+        Some(0),
+        "caught up, with the height it heard kept (not cleared to unknown)"
+    );
     assert_eq!(
         member.chain.lock().finalized.state.root(),
         src.lock().unwrap().chain.lock().finalized.state.root()
@@ -746,6 +847,31 @@ fn a_member_that_slept_does_not_beacon_until_caught_up() {
     drop((member, st));
     let _ = std::fs::remove_dir_all(&dir_src);
     let _ = std::fs::remove_dir_all(&dir_mem);
+}
+
+/// A catch-up that never heard the network's height is not success
+/// (2026-09-29): an unreachable upstream used to read as "0 behind" — the
+/// unknown height as zero — and returned Ok, starting the validator on a
+/// guess. It returns Err now, and no height was learned.
+#[test]
+fn a_catch_up_that_never_heard_a_height_is_not_success() {
+    let dir_fol = tmp("deaf-follower");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let follower = Node::start(&dir_fol);
+    let err = rt
+        .block_on(follow::catch_up(
+            &follower.chain,
+            // Nothing listens there: every request is refused.
+            &Upstream::Http(vec!["http://127.0.0.1:9".into()]),
+            &set(),
+            follow::BEHIND_MARGIN,
+        ))
+        .unwrap_err();
+    assert!(err.contains("never learned the network height"), "{err}");
+    assert_eq!(follower.chain.behind_known(), None, "still nothing heard");
+
+    drop(follower);
+    let _ = std::fs::remove_dir_all(&dir_fol);
 }
 
 /// One fetch per block (the old loop) against a 150 ms link runs at ~6 blocks/s;

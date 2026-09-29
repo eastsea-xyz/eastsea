@@ -607,10 +607,21 @@ impl Chain {
     }
 
     /// How many blocks behind the network this node last knew itself to be
-    /// (0 when caught up, or when nothing ever told it a height).
+    /// (0 when caught up — and also when nothing ever told it a height, which
+    /// is not the same thing: see `behind_known`).
     pub fn behind(&self) -> u64 {
         let g = self.lock();
         g.net_height.map_or(0, |n| n.saturating_sub(g.finalized.height))
+    }
+
+    /// `behind()`, but None while no network height is known: a node nothing
+    /// has answered is not "0 behind" — it is any number of blocks stale, and
+    /// must not act as though it were current. `catch_up` returns only once
+    /// this is Some, and keeps the last height it heard so the margin stays
+    /// meaningful after it (2026-09-29).
+    pub fn behind_known(&self) -> Option<u64> {
+        let g = self.lock();
+        g.net_height.map(|n| n.saturating_sub(g.finalized.height))
     }
 
     /// Replay mode for `follow`: while a certified backlog is fetched and

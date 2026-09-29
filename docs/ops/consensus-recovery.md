@@ -111,6 +111,17 @@ Commonware 버그는 아니다. `Deferred`의 계약(certify는 결정적이어�
 | 소프트 한도 | `main.rs` `raise_nofile_limit` | 노드가 시작할 때 자기 RLIMIT_NOFILE 소프트 한도를 하드 한도(또는 65 536, macOS `kern.maxfilesperproc`)까지 올리고 값을 기록(`open-file limit`). GUI 앱의 자식 노드가 256을 물려받아도 된다 |
 | launchd | LaunchAgents/LaunchDaemons | `NumberOfFiles` 상향(오너 조치, 2026-09-29 적용) |
 
+### 레드팀 2026-09-29 추가 수정 (로컬 정책)
+
+같은 날 레드팀 보고(항목 2·5)가 위 두 축의 잔여 구멍을 짚었다.
+
+| 무엇 | 어디 | 내용 |
+|---|---|---|
+| 캐치업 미지 높이 | `follow.rs` `catch_up`, `chain.rs` `behind_known` | 어느 누구도 높이를 답한 적 없으면 "0 뒤짐"이 아니라 실패다. 확정 높이를 모르는 채 투표를 시작하지 않는다(재시도 루프). 검증자 1개 네트워크(로컬 devnet)만 예외: 자기 높이가 곧 네트워크 높이 |
+| 스냅샷 코드 누락 | `snapshot.rs` `check` | 상태 루트는 트리만 덮고 `codes`는 곁들이므로, 배포된 계약의 코드 바이트를 뺀 스냅샷이 모든 루트를 통과했다. 트리가 이름하는 모든 코드 해시가 함께 왔는지 확인하고, 아니면 점프 대신 리플레이로 돌아간다 |
+
+캐치업 예외: 복구 절차 중 위쪽 응답이 없어도 시작해야 한다면 `AETHER_SKIP_CATCH_UP=1`을 넣는다(높이 확인을 건너뛰고 경고만 남긴다).
+
 회귀 시험: `chain.rs`의 `listed_txs_at_a_later_nonce_land_after_their_senders_earlier_ones`(한 송신자 64거래, 목록은 논스 32..47 — 수정 전 순서를 그대로 둔 `candidates_2026_09_28`로 위반 재현), `listed_txs_of_several_senders_wait_for_their_own_earlier_nonces`(3송신자). 저널 상한: `devnet.rs`의 `the_vote_journal_keeps_a_bounded_number_of_section_files`(높이 80에서 각 노드 섹션 ≤ 40; 정상 21~23).
 
 ## 탐지 (모니터링 경보 텍스트)

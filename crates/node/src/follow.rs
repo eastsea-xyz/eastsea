@@ -519,7 +519,12 @@ fn log_follow(chain: &Chain, last_log: &mut u64) {
 /// propose, vote or answer beacons on a chain it cannot yet execute): follow
 /// the network with the follower machinery — a certified snapshot jump
 /// included — until within `margin` blocks of its finalized height. Returns
-/// how many blocks were adopted (jumped or replayed).
+/// how many blocks were adopted (jumped or replayed). A catch-up that never
+/// heard the network's height is not success (2026-09-29): an unknown height
+/// reads as "0 behind" and would start the validator on a guess, so this
+/// returns Err and the caller retries. On success the last height heard
+/// stays set — it is at most `margin` stale — so `behind()` keeps meaning
+/// something until this node's own finalizations carry it past the tip.
 pub async fn catch_up(
     chain: &Chain,
     upstream: &Upstream,
@@ -529,15 +534,22 @@ pub async fn catch_up(
     let start = chain.finalized_height();
     let mut last_log = 0;
     let mut window = PIPELINE;
+    let mut knew_height = false;
     loop {
         let ours = chain.finalized_height();
         if let Err(e) = advance(chain, upstream, set, None, u64::MAX, window, &mut last_log).await {
             warn!(height = ours + 1, %e, "catching up");
         }
+        // `advance` refreshes the height every round and nothing here clears
+        // it anymore, so `Some` means the network really answered.
+        knew_height |= chain.lock().net_height.is_some();
         let behind = chain.behind();
         if behind <= margin {
-            // Caught up (this node is the network now): nothing is behind anymore.
-            chain.lock().net_height = None;
+            if !knew_height {
+                // Nothing ever answered a height: "0 behind" is the unknown
+                // reading as zero, not being current. Not caught up.
+                return Err("never learned the network height".into());
+            }
             chain.set_relaxed(false);
             return Ok(chain.finalized_height() - start);
         }

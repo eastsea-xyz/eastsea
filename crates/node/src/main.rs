@@ -1496,34 +1496,52 @@ fn run_node(a: NodeArgs) {
         // propose or vote on views it cannot execute (the committee treats it
         // as offline until then). Follow the network with the follower
         // machinery — a certified snapshot jump included — and only then start
-        // the consensus engine, so not one vote exists while behind. Fails
-        // open: a validator that cannot ask the network (it may be the only
-        // one up) starts as before, and the chain itself keeps it safe (it
-        // cannot vote for a block without the parent state).
+        // the consensus engine, so not one vote exists while behind. A node
+        // that never learned the network's height is not "0 behind" — it is
+        // any number of blocks stale (2026-09-29) — so with other nodes in
+        // the roster this retries until a height was heard and reached,
+        // instead of starting anyway; `AETHER_SKIP_CATCH_UP` overrides it for
+        // runbook recoveries. The one network that needs no asking is a
+        // single validator (a local devnet): it is the network, so its own
+        // finalized height is the height.
         if links && network_file.is_some() {
             let me = p2p.keys.node_secret.public();
             let nodes: Vec<_> = p2p.roster.nodes.iter().copied().filter(|n| *n != me).collect();
-            match if nodes.is_empty() {
-                Err("the roster names no other node".to_string())
+            if nodes.is_empty() {
+                tracing::warn!("the roster names no other node: single-validator network, taking our own height as the network's");
+                let ours = chain.finalized_height();
+                chain.lock().net_height = Some(ours);
+            } else if std::env::var_os("AETHER_SKIP_CATCH_UP").is_some() {
+                tracing::warn!("AETHER_SKIP_CATCH_UP is set: starting without a confirmed network height");
             } else {
-                aether_net::RpcClient::new(nodes).await.map_err(|e| e.to_string())
-            } {
-                Ok(client) => {
-                    let upstream = aether_node::follow::Upstream::Iroh(client, Default::default());
-                    let set = aether_light::ValidatorSet::new(*polynomial_identity);
-                    let caught = tokio::time::timeout(
-                        Duration::from_secs(120),
-                        aether_node::follow::catch_up(&chain, &upstream, &set, aether_node::follow::BEHIND_MARGIN),
-                    )
-                    .await;
-                    match caught {
-                        Ok(Ok(n)) if n > 0 => tracing::info!(height = chain.finalized_height(), blocks = n, "caught up before voting"),
-                        Ok(Ok(_)) => {}
-                        Ok(Err(e)) => tracing::warn!(%e, "could not catch up before voting; starting anyway"),
-                        Err(_) => tracing::warn!("catch-up before voting timed out; starting anyway"),
+                let set = aether_light::ValidatorSet::new(*polynomial_identity);
+                loop {
+                    match aether_net::RpcClient::new(nodes.clone()).await {
+                        Ok(client) => {
+                            let upstream = aether_node::follow::Upstream::Iroh(client, Default::default());
+                            let caught = tokio::time::timeout(
+                                Duration::from_secs(120),
+                                aether_node::follow::catch_up(&chain, &upstream, &set, aether_node::follow::BEHIND_MARGIN),
+                            )
+                            .await;
+                            match caught {
+                                Ok(Ok(n)) if n > 0 => {
+                                    tracing::info!(height = chain.finalized_height(), blocks = n, "caught up before voting");
+                                    break;
+                                }
+                                Ok(Ok(_)) => break,
+                                Ok(Err(e)) => tracing::warn!(%e, "could not catch up before voting; retrying"),
+                                Err(_) => tracing::warn!("catch-up before voting timed out; retrying"),
+                            }
+                        }
+                        Err(e) => tracing::warn!(e = %e, "no upstream to catch up with; retrying"),
                     }
+                    // A catch-up that timed out mid-replay is dropped without
+                    // clearing its replay mode: blocks from here on (voting)
+                    // commit durably.
+                    chain.set_relaxed(false);
+                    tokio::time::sleep(Duration::from_secs(5)).await;
                 }
-                Err(e) => tracing::warn!(%e, "no upstream to catch up with; starting anyway"),
             }
             // A catch-up that timed out mid-replay is dropped without clearing
             // its replay mode: blocks from here on (voting) commit durably.

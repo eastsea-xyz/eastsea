@@ -185,6 +185,8 @@ mod tests {
                     })
                     .collect(),
             }),
+            group: 0,
+            max_committee: crate::rotation::GROW_UNTIL,
         }
     }
 

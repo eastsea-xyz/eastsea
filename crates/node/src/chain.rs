@@ -80,6 +80,16 @@ pub struct ChainConfig {
     /// needs node rewards): up to three voting keys seated only while fewer
     /// than four independent operators qualify for the voting set.
     pub reserve: Option<Reserve>,
+    /// The consensus group this chain is (13-roadmap.md, 그룹 분열 준비):
+    /// 0 is the only group today. Blocks of a group run only that group's
+    /// txs, and the group is part of what a finalization certificate signs,
+    /// so no group's proof of finality passes as another's. Fixed at genesis
+    /// (a group-1 chain is a new genesis of its own).
+    pub group: u16,
+    /// Seats the voting committee grows to before draws start swapping
+    /// instead of adding (`rotation::GROW_UNTIL` is the default; a new
+    /// network's genesis parameter, at least four).
+    pub max_committee: usize,
 }
 
 /// The founder's reserve validator keys, a genesis parameter.
@@ -128,6 +138,13 @@ impl Reserve {
 
 impl ChainConfig {
     pub fn genesis_state(&self) -> WorldState {
+        assert!((4..=crate::rotation::MAX_VOTING_NODES).contains(&self.max_committee), "max_committee must be 4..=128");
+        assert!(
+            (self.group == 0 && self.max_committee == crate::rotation::GROW_UNTIL)
+                || (self.node_rewards && self.history_v2),
+            "group and custom max_committee require a node_rewards/history-v2 genesis"
+        );
+        assert!(self.group == 0 || (self.registrar.is_none() && self.reserve.is_none()), "registry and rewards reserve belong to root group 0");
         let mut s = WorldState::default();
         for (a, v) in &self.alloc {
             s.set_balance(*a, *v).expect("genesis balance fits u128");
@@ -138,6 +155,11 @@ impl ChainConfig {
             aether_execution::aether_account_code(),
         )
         .expect("predeploy");
+        if self.node_rewards && self.history_v2 {
+            s.set_code(aether_rewards::REWARDS, aether_rewards::randomness_code())
+                .expect("randomness predeploy");
+            aether_rewards::set_max_committee(&mut s, self.max_committee as u64);
+        }
         if let Some(key) = self.registrar {
             let d = aether_execution::registry::Params::default();
             let params = aether_execution::registry::Params {
@@ -536,6 +558,8 @@ pub enum ChainError {
         height: u64,
     },
     BadHandoff(String),
+    /// The block, or a tx in it, belongs to another consensus group.
+    WrongGroup,
     /// Wrong protocol version, an invalid upgrade, or one this node does not run.
     Protocol(String),
     /// The payload's history root or parent metadata hash does not match the chain before it.
@@ -545,7 +569,7 @@ pub enum ChainError {
 impl Chain {
     pub fn new(cfg: ChainConfig) -> (Self, Block) {
         let state = cfg.genesis_state();
-        let genesis = Block::genesis_with(cfg.chain_id, state.root(), cfg.history_v2);
+        let genesis = Block::genesis_with(cfg.chain_id, state.root(), cfg.history_v2, cfg.group);
         // A genesis above protocol 1 carries its activation from height 0: the
         // rules (installed in `genesis_state` above) apply to every block, and
         // committee-signed upgrades still append after it. Protocol 1 keeps the
@@ -1060,6 +1084,16 @@ impl Chain {
         if payload.txs.len() > MAX_TXS_PER_BLOCK {
             return Err(ChainError::BadPayload);
         }
+        // The block belongs to this chain's group and runs only its txs: a
+        // group's certificate covers the payload (group included), so a block
+        // of another group never finalizes here even before this check.
+        let cfg = self.cfg();
+        if payload.group != cfg.group {
+            return Err(ChainError::WrongGroup);
+        }
+        if payload.txs.iter().any(|tx| tx.header.group() != cfg.group) {
+            return Err(ChainError::WrongGroup);
+        }
         let (pre, payouts) = self.pre_state_with(
             parent,
             payload.version,
@@ -1071,7 +1105,6 @@ impl Chain {
         )?;
         let schedule =
             self.next_schedule(block.height().get(), parent, payload.upgrade.as_ref())?;
-        let cfg = self.cfg();
         let ctx = Self::block_context(&cfg, block, parent);
         let mut out = execute_block(&pre, &ctx, &payload.txs)
             .map_err(|e| ChainError::Exec(format!("{e:?}")))?;
@@ -1263,6 +1296,19 @@ impl Chain {
                     .filter(|(_, a)| !a.is_zero())
                     .map(|(op, a)| (parent.height + 1, op, a)),
             );
+            // The epoch opening here gets its randomness word: the latest draw
+            // seed on chain (a committee threshold signature — no single
+            // proposer can bias it), published before the epoch began. It is
+            // predictable before its epoch, so contracts commit before the
+            // draw seed is published and reveal after the epoch opens.
+            if history_v2 {
+                if let Some((_, s)) = parent.seed.as_deref() {
+                    let epoch_blocks = aether_execution::registry::epoch_blocks(&state);
+                    let signature = hex::decode(&s.signature)
+                        .map_err(|_| ChainError::Protocol("invalid recorded draw seed".into()))?;
+                    aether_rewards::set_randomness(&mut state, (parent.height + 1) / epoch_blocks, s.draw, &signature);
+                }
+            }
         }
         // The committee taking over here is the chain's record of itself: the
         // running committee word becomes the handoff's members (what every
@@ -1309,9 +1355,9 @@ impl Chain {
                     // Protocol 3: qualifying Macs join (up to 16 seats) instead of
                     // replacing members, each where the odds need it most.
                     let drawn = if version >= 3 {
-                        crate::rotation::draw_spread(&pool, &seed_bytes, operator, &running, hours)
+                        crate::rotation::draw_spread_capped(&pool, &seed_bytes, operator, &running, hours, self.cfg().max_committee)
                     } else {
-                        crate::rotation::draw(&pool, &seed_bytes, operator, &running)
+                        crate::rotation::draw_capped(&pool, &seed_bytes, operator, &running, self.cfg().max_committee)
                     };
                     // Founder reserve keys join or leave with the draw too.
                     let drawn = match reserve {
@@ -2214,12 +2260,14 @@ impl Chain {
         ctx: &BlockContext,
         now: Instant,
     ) -> Vec<TxHash> {
-        let listed = {
+        let listed: Vec<TxEnvelope> = {
             let g = self.lock();
             if g.censor.is_some() {
                 return Vec::new();
             }
-            g.inclusion.enforceable(now)
+            // Another group's tx is not this proposer's to include (the chain
+            // rejects it), so leaving it out is not censoring.
+            g.inclusion.enforceable(now).into_iter().filter(|t| t.header.group() == g.cfg.group).collect()
         };
         let full = exec.tx_hashes.len() >= MAX_TXS_PER_BLOCK;
         inclusion::violations(&listed, &exec.tx_hashes, full, &exec.state, ctx, exec.gas)
@@ -2248,6 +2296,10 @@ impl Chain {
         let state = &g.finalized.state;
         if tx.header.nonce < state.nonce(&tx.header.sender) {
             return Err("nonce already used".into());
+        }
+        // Another group's tx can never run in this chain's blocks.
+        if tx.header.group() != g.cfg.group {
+            return Err(format!("tx of group {} on a group-{} chain", tx.header.group(), g.cfg.group));
         }
         if g.cfg.fees {
             admissible(&tx, state, Self::next_base_fee(&g.cfg, &g.finalized))?;
@@ -2486,7 +2538,7 @@ impl Chain {
                         .then(|| crate::rotation::availability(&exec.state));
                     let hours = |k: &str| availability.as_ref().and_then(|a| a.get(k).copied());
                     let drawn = if exec.next_protocol() >= 3 {
-                        crate::rotation::draw_spread(&pool, &seed, operator, &g.committee, hours)
+                        crate::rotation::draw_spread(&pool, &seed, operator, &g.committee, hours, crate::rotation::GROW_UNTIL)
                     } else {
                         crate::rotation::draw(&pool, &seed, operator, &g.committee)
                     };
@@ -2812,6 +2864,9 @@ pub struct Extras {
     pub upgrade: Option<crate::upgrade::SignedUpgrade>,
     pub proofs: Vec<aether_light::block::ProofClaim>,
     pub beacons: Vec<aether_light::block::BeaconAnswer>,
+    /// The group the block belongs to (0 = the default; proposers set their
+    /// chain's group, and the chain refuses any other).
+    pub group: u16,
     pub registrations: Vec<aether_light::block::NodeRegistration>,
 }
 
@@ -2823,6 +2878,9 @@ pub fn build_payload(
     candidates: Vec<TxEnvelope>,
     extras: Extras,
 ) -> (Payload, aether_execution::BlockOutcome) {
+    let group = extras.group;
+    // Another group's tx never belongs in this block (the chain would refuse it).
+    let candidates = candidates.into_iter().filter(|tx| tx.header.group() == group).collect();
     let (txs, out) = aether_execution::build_block(pre, ctx, candidates);
     let history_root = B256::from(parent.history.root(&ChainHasher::new()));
     let parent_meta = parent.meta_digest();
@@ -2833,6 +2891,7 @@ pub fn build_payload(
         proofs,
         beacons,
         registrations,
+        ..
     } = extras;
     let payload = Payload {
         version: parent.next_protocol(),
@@ -2847,6 +2906,7 @@ pub fn build_payload(
         upgrade,
         proofs,
         beacons,
+        group,
         registrations,
     };
     (payload, out)
@@ -2976,6 +3036,7 @@ mod pool_tests {
             tip: GWEI,
             payload_commitment: aether_execution::tx::payload_commitment(&payload),
             scheme: SignerScheme::P256,
+            group: None,
         };
         TxEnvelope {
             header,
@@ -3005,6 +3066,8 @@ mod pool_tests {
             node_rewards: false,
             committee: vec![],
             reserve: None,
+            group: 0,
+            max_committee: crate::rotation::GROW_UNTIL,
         }
     }
 
@@ -3029,6 +3092,7 @@ mod pool_tests {
                 tip: 0,
                 payload_commitment: aether_execution::tx::payload_commitment(&payload),
                 scheme: SignerScheme::P256,
+                group: None,
             },
             payload: TxPayload::Plain(Bytes::from(payload)),
             signature: Bytes::new(),

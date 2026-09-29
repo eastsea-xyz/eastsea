@@ -51,6 +51,8 @@ fn config(chain_id: u64) -> ChainConfig {
         protocol: 1,
         committee: Vec::new(),
         reserve: None,
+        group: 0,
+        max_committee: aether_node::rotation::GROW_UNTIL,
     }
 }
 

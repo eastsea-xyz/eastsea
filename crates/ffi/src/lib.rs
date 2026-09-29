@@ -1037,6 +1037,9 @@ fn check_anchor_chain(block: &[u8], links: &[Vec<u8>], chain_id: u64) -> R<()> {
 
 static COMMITTEE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 static NODES: std::sync::Mutex<Option<Vec<aether_net::EndpointId>>> = std::sync::Mutex::new(None);
+/// The chain's consensus group (0 today): certificates verify under its
+/// namespace and every block must carry it.
+static GROUP: std::sync::Mutex<u16> = std::sync::Mutex::new(0);
 
 /// Fixed follower and validator addresses, when discovery must not run
 /// (tests pin fake servers on both sides). Set by `pin_servers`.
@@ -1119,6 +1122,11 @@ fn expected_chain(status: &Value) -> R<u64> {
 #[uniffi::export]
 pub fn configure_network(network_json: String) -> R<u32> {
     let v: Value = serde_json::from_str(&network_json).map_err(|e| WalletError::Invalid(format!("network.json: {e}")))?;
+    let group = match v.get("group") {
+        None | Some(serde_json::Value::Null) => 0,
+        Some(value) => value.as_u64().and_then(|g| u16::try_from(g).ok())
+            .ok_or_else(|| WalletError::Invalid("network.json: group".into()))?,
+    };
     let nodes = v["validators"]
         .as_array()
         .ok_or_else(|| WalletError::Invalid("network.json: validators".into()))?
@@ -1148,6 +1156,7 @@ pub fn configure_network(network_json: String) -> R<u32> {
     *LOCAL_NODE.lock().expect("local node lock") = None;
     VERIFIED_HEIGHT.lock().expect("verified height lock").clear();
     CHECKED_HEIGHT.lock().expect("checked height lock").clear();
+    *GROUP.lock().expect("group lock") = group;
     let n = nodes.len() as u32;
     *NODES.lock().expect("nodes lock") = Some(nodes);
     drop(cached);
@@ -1164,11 +1173,12 @@ pub fn set_committee_identity(identity_hex: String) -> R<()> {
 }
 
 fn trusted_set(validators: u32) -> R<ValidatorSet> {
+    let group = *GROUP.lock().expect("group lock");
     match COMMITTEE.lock().expect("committee lock").clone() {
-        Some(hex) => ValidatorSet::from_hex(&hex).map_err(|e| WalletError::Invalid(format!("identity: {e}"))),
+        Some(hex) => ValidatorSet::from_hex(&hex).map_err(|e| WalletError::Invalid(format!("identity: {e}"))).map(|s| s.with_group(group)),
         // Dev mode only, and only because someone asked for it: the devnet key
         // is public, so a chain built with it proves nothing by itself.
-        None if devnet_keys() => Ok(ValidatorSet::devnet(validators as u64)),
+        None if devnet_keys() => Ok(ValidatorSet::devnet(validators as u64).with_group(group)),
         None => Err(WalletError::Verification(
             "no committee identity is pinned, so nothing can be verified: pass network.json with \"identity\" to configure_network (development: use_devnet_keys)".into(),
         )),
@@ -1270,6 +1280,7 @@ fn prepare(p256_public_key: &[u8], body: impl FnOnce(Address) -> R<EvmCall>) -> 
     let nonce = u64::from_str_radix(nonce_hex.as_str().unwrap_or("0x0").trim_start_matches("0x"), 16).map_err(|e| WalletError::Invalid(e.to_string()))?;
     let call_body = body(from)?;
     let payload = call_body.encode();
+    let group = *GROUP.lock().expect("group lock");
     let header = TxHeader {
         chain_id,
         sender: from,
@@ -1280,6 +1291,9 @@ fn prepare(p256_public_key: &[u8], body: impl FnOnce(Address) -> R<EvmCall>) -> 
         tip,
         payload_commitment: aether_execution::tx::payload_commitment(&payload),
         scheme: SignerScheme::P256,
+        // Group 0 keeps Secure Enclave v2 signing bytes; a split group signs
+        // the group's v3 envelope.
+        group: (group != 0).then_some(group),
     };
     let env = TxEnvelope { header, payload: TxPayload::Plain(Bytes::from(payload)), signature: Bytes::new() };
     Ok(PreparedTx {
@@ -1584,6 +1598,7 @@ mod tests {
 
     fn reset_network() {
         *COMMITTEE.lock().expect("committee lock") = None;
+        *GROUP.lock().expect("group lock") = 0;
         DEVNET_KEYS.store(false, std::sync::atomic::Ordering::Relaxed);
         *CHAIN_ID.lock().expect("chain id lock") = 7_777;
         VERIFIED_HEIGHT.lock().expect("verified height lock").clear();
@@ -1637,6 +1652,21 @@ mod tests {
         assert_eq!(trusted_set(4).unwrap().identity_hex(), id);
         assert!(!devnet_keys());
         assert!(configure_network("{\"validators\": []}".to_string()).is_err(), "no validators either");
+    }
+
+    #[test]
+    fn reconfiguration_sets_and_resets_the_consensus_group() {
+        let _g = config();
+        reset_network();
+        let mut network: Value = serde_json::from_str(&network_json(None, true)).unwrap();
+        network["group"] = json!(7);
+        configure_network(network.to_string()).unwrap();
+        assert_eq!(trusted_set(4).unwrap().group(), 7);
+        network["group"] = json!(u16::MAX as u64 + 1);
+        assert!(configure_network(network.to_string()).is_err());
+        assert_eq!(trusted_set(4).unwrap().group(), 7, "invalid configuration changes nothing");
+        configure_network(network_json(None, true)).unwrap();
+        assert_eq!(trusted_set(4).unwrap().group(), 0);
     }
 
     #[test]
@@ -1747,6 +1777,7 @@ mod tests {
                     tip: 0,
                     payload_commitment: aether_execution::tx::payload_commitment(&[]),
                     scheme: SignerScheme::P256,
+                    group: None,
                 },
                 payload: TxPayload::Plain(Bytes::new()),
                 signature: Bytes::new(),

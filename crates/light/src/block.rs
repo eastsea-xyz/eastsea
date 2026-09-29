@@ -61,6 +61,12 @@ pub struct Payload {
     /// with a zero balance answers. Validators check every signature.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub beacons: Vec<BeaconAnswer>,
+    /// The consensus group this block belongs to (13-roadmap.md, 그룹 분열
+    /// 준비): 0 is the only group today, so the field stays out of the bytes
+    /// unless a network splits. A block runs only its own group's txs, and a
+    /// light client of one group refuses another group's blocks.
+    #[serde(default, skip_serializing_if = "is_zero_group")]
+    pub group: u16,
     /// Voting-node registrations (node rewards networks only,
     /// docs/design/22-gas-pool.md 2층): no transaction and no fee, so a new
     /// Mac with a zero balance registers even while the chain is congested.
@@ -68,6 +74,10 @@ pub struct Payload {
     /// relay signature; a block with an invalid item is invalid.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub registrations: Vec<NodeRegistration>,
+}
+
+fn is_zero_group(group: &u16) -> bool {
+    *group == 0
 }
 
 /// A registration riding a block's free lane instead of a paid contract call:
@@ -222,15 +232,16 @@ pub struct Block {
 
 impl Block {
     pub fn genesis(chain_id: u64, genesis_root: B256) -> Self {
-        Self::genesis_with(chain_id, genesis_root, false)
+        Self::genesis_with(chain_id, genesis_root, false, 0)
     }
 
     /// Genesis of a chain; `history_v2` networks (a new genesis only) get a
-    /// genesis hash of their own, so no node can run them under other rules.
-    pub fn genesis_with(chain_id: u64, genesis_root: B256, history_v2: bool) -> Self {
+    /// genesis hash of their own, so no node can run them under other rules,
+    /// and a chain of group `group` (0 today) carries the group in its payload.
+    pub fn genesis_with(chain_id: u64, genesis_root: B256, history_v2: bool, group: u16) -> Self {
         let context =
             Context { round: Round::new(EPOCH, View::zero()), leader: ed25519::PrivateKey::from_seed(0).public_key(), parent: (View::zero(), Digest::EMPTY) };
-        let payload = Payload { version: 1, parent_state_root: genesis_root, ..Default::default() };
+        let payload = Payload { version: 1, parent_state_root: genesis_root, group, ..Default::default() };
         let tag = if history_v2 {
             Sha256::hash(&[b"aether-genesis".as_slice(), &chain_id.to_be_bytes(), b"history-v2"])
         } else {
@@ -345,7 +356,29 @@ mod tests {
         assert_eq!(back.payload().unwrap().parent_state_root, B256::repeat_byte(3));
         assert_ne!(Block::genesis(8, B256::repeat_byte(3)).digest(), g.digest());
         // History v2 is bound to the genesis hash; the original genesis is unchanged.
-        assert_eq!(Block::genesis_with(7, B256::repeat_byte(3), false), g);
-        assert_ne!(Block::genesis_with(7, B256::repeat_byte(3), true).digest(), g.digest());
+        assert_eq!(Block::genesis_with(7, B256::repeat_byte(3), false, 0), g);
+        assert_ne!(Block::genesis_with(7, B256::repeat_byte(3), true, 0).digest(), g.digest());
+        // So is any group other than 0; group 0 adds no bytes (7780's genesis
+        // and blocks stay byte-identical).
+        assert_ne!(Block::genesis_with(7, B256::repeat_byte(3), false, 1).digest(), g.digest());
+    }
+
+    /// 7780's genesis and an old block carry no `group` field, parse as group 0,
+    /// and re-serialize to exactly the same bytes.
+    #[test]
+    fn group_field_keeps_7780_bytes_unchanged() {
+        let g = Block::genesis(7780, B256::repeat_byte(3));
+        assert_eq!(g.payload().unwrap().group, 0);
+        // Group 0 puts no key in the JSON, so these are exactly the bytes a
+        // node from before the group field produced — an old block (or an old
+        // genesis) parses and re-encodes unchanged.
+        let text = std::str::from_utf8(&g.data).unwrap();
+        assert!(!text.contains("group"));
+        assert_eq!(Payload::from_bytes(&g.data).unwrap().to_bytes(), g.data);
+        // A group payload keeps its field and its group through a round trip.
+        let split = Payload { group: 2, ..Payload::from_bytes(&g.data).unwrap() };
+        let bytes = split.to_bytes();
+        assert!(std::str::from_utf8(&bytes).unwrap().contains("\"group\":2"));
+        assert_eq!(Payload::from_bytes(&bytes).unwrap().to_bytes(), bytes);
     }
 }

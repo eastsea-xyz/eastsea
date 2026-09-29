@@ -92,6 +92,12 @@ pub fn draw(pool: &[(String, String)], seed: &[u8], candidate: impl Fn(&str) -> 
     draw_sized(pool, seed, candidate, running, target_size(pool.len()), MIN_OPEN_COMMITTEE)
 }
 
+/// The original draw with a new-genesis committee ceiling. Legacy networks
+/// keep `draw` so their target-size rule is byte-for-byte unchanged.
+pub fn draw_capped(pool: &[(String, String)], seed: &[u8], candidate: impl Fn(&str) -> Option<String>, running: &Committee, max: usize) -> Option<Vec<(String, String)>> {
+    draw_sized(pool, seed, candidate, running, target_size(pool.len()).min(max), MIN_OPEN_COMMITTEE)
+}
+
 /// `draw` with its target size and the size it never shrinks below given.
 fn draw_sized(
     pool: &[(String, String)],
@@ -149,27 +155,31 @@ fn draw_sized(
 
 /// Protocol 3: up to this many seats, a Mac that qualifies joins the voting set
 /// instead of replacing a member (the same count that later turns mainnet
-/// issuance on). From here on, draws swap seats as in `draw`.
+/// issuance on). From here on, draws swap seats as in `draw`. A new network
+/// sets its own ceiling at genesis (`ChainConfig::max_committee`); this is the
+/// default and the testnet's.
 pub const GROW_UNTIL: usize = 16;
 
-/// Protocol-3 draw. Below `GROW_UNTIL` seats, qualifying Macs are added (in
-/// ticket order, fewer than a third of the running seats per draw, at least
-/// one) and nobody leaves, so every Mac that keeps a day of unbroken uptime
-/// becomes a voter; one operator still never holds a third of the new set.
-/// At `GROW_UNTIL` seats and above it is `draw`.
-pub fn draw_v3(pool: &[(String, String)], seed: &[u8], candidate: impl Fn(&str) -> Option<String>, running: &Committee) -> Option<Vec<(String, String)>> {
+/// Protocol-3 draw. Below `max` seats, qualifying Macs are added (in ticket
+/// order, fewer than a third of the running seats per draw, at least one) and
+/// nobody leaves, so every Mac that keeps a day of unbroken uptime becomes a
+/// voter; one operator still never holds a third of the new set. At `max`
+/// seats and above it is `draw`. `max` is the chain's committee ceiling
+/// (`GROW_UNTIL`, at least four).
+pub fn draw_v3(pool: &[(String, String)], seed: &[u8], candidate: impl Fn(&str) -> Option<String>, running: &Committee, max: usize) -> Option<Vec<(String, String)>> {
+    let max = max.max(MIN_OPEN_COMMITTEE);
     let n = running.members.len();
-    if n >= GROW_UNTIL {
-        // Swap seats from here on, but never below sixteen.
-        let target = target_size(pool.len()).max(GROW_UNTIL);
-        return draw_sized(pool, seed, candidate, running, target, GROW_UNTIL);
+    if n >= max {
+        // Swap seats from here on; the new-genesis ceiling is a real maximum.
+        let target = target_size(pool.len()).min(max);
+        return draw_sized(pool, seed, candidate, running, target, max);
     }
     if n == 0 {
         return None;
     }
     let mut incoming: Vec<&(String, String)> = pool.iter().filter(|(k, _)| !running.has(k)).collect();
     incoming.sort_by_cached_key(|(k, _)| ticket(seed, k));
-    let budget = (n.saturating_sub(1) / 3).max(1).min(GROW_UNTIL - n).min(incoming.len());
+    let budget = (n.saturating_sub(1) / 3).max(1).min(max - n).min(incoming.len());
     if budget == 0 {
         return None;
     }
@@ -380,29 +390,57 @@ pub fn recents(state: &WorldState) -> std::collections::HashMap<String, (u64, u6
 /// The spread draw (docs/design/13-roadmap.md, F): `draw_v3` with the worst
 /// hour in mind. Early Macs cluster in one time zone, and a one-time-zone
 /// committee stalls every night even at sixteen seats — so while the committee
-/// grows to `GROW_UNTIL`, each added seat is the candidate that leaves it the
-/// best odds of a quorum at the worst hour of the day. The budget, the
-/// per-operator cap and the swap path at `GROW_UNTIL` and above are
-/// `draw_v3`'s; with no profiles every candidate scores the same and this is
-/// exactly `draw_v3`. None when nothing changes.
+/// grows to `max`, each added seat is the candidate that leaves it the best
+/// odds of a quorum at the worst hour of the day. The budget, the per-operator
+/// cap and the swap path at `max` and above are `draw_v3`'s; with no profiles
+/// every candidate scores the same and this is exactly `draw_v3`. `max` is the
+/// chain's committee ceiling (`GROW_UNTIL`, at least four). None when nothing
+/// changes.
 pub fn draw_spread(
     pool: &[(String, String)],
     seed: &[u8],
     candidate: impl Fn(&str) -> Option<String>,
     running: &Committee,
     hours: impl Fn(&str) -> Option<Hours>,
+    max: usize,
 ) -> Option<Vec<(String, String)>> {
+    draw_spread_with_ceiling(pool, seed, candidate, running, hours, max, false)
+}
+
+/// New-genesis draw: unlike testnet 7780's historical growth threshold, the
+/// configured size is a hard ceiling even when the candidate pool gets large.
+pub fn draw_spread_capped(
+    pool: &[(String, String)],
+    seed: &[u8],
+    candidate: impl Fn(&str) -> Option<String>,
+    running: &Committee,
+    hours: impl Fn(&str) -> Option<Hours>,
+    max: usize,
+) -> Option<Vec<(String, String)>> {
+    draw_spread_with_ceiling(pool, seed, candidate, running, hours, max, true)
+}
+
+fn draw_spread_with_ceiling(
+    pool: &[(String, String)],
+    seed: &[u8],
+    candidate: impl Fn(&str) -> Option<String>,
+    running: &Committee,
+    hours: impl Fn(&str) -> Option<Hours>,
+    max: usize,
+    capped: bool,
+) -> Option<Vec<(String, String)>> {
+    let max = max.max(MIN_OPEN_COMMITTEE);
     let n = running.members.len();
-    if n >= GROW_UNTIL {
-        // Swap seats from here on, but never below sixteen.
-        let target = target_size(pool.len()).max(GROW_UNTIL);
-        return draw_sized(pool, seed, candidate, running, target, GROW_UNTIL);
+    if n >= max {
+        // 7780 keeps its original growth threshold; new genesis caps seats.
+        let target = if capped { target_size(pool.len()).min(max) } else { target_size(pool.len()).max(max) };
+        return draw_sized(pool, seed, candidate, running, target, max);
     }
     if n == 0 {
         return None;
     }
     let mut order: Vec<&(String, String)> = pool.iter().filter(|(k, _)| !running.has(k)).collect();
-    let budget = (n.saturating_sub(1) / 3).max(1).min(GROW_UNTIL - n).min(order.len());
+    let budget = (n.saturating_sub(1) / 3).max(1).min(max - n).min(order.len());
     if budget == 0 {
         return None;
     }
@@ -799,7 +837,7 @@ mod tests {
 
     #[test]
     fn v3_one_qualifying_mac_joins_four_genesis_seats() {
-        let next = draw_v3(&[mac(1)], &seed(1), |k| k.starts_with('m').then(|| format!("op-{k}")), &committee(4)).expect("grows");
+        let next = draw_v3(&[mac(1)], &seed(1), |k| k.starts_with('m').then(|| format!("op-{k}")), &committee(4), GROW_UNTIL).expect("grows");
         assert_eq!(next.len(), 5);
         assert!(next.iter().any(|(k, _)| k == "m1"));
         assert!(committee(4).members.iter().all(|m| next.contains(m)), "nobody leaves while growing");
@@ -809,30 +847,57 @@ mod tests {
     fn v3_grows_by_less_than_a_third_per_draw_and_stops_at_sixteen() {
         let pool: Vec<_> = (1..=20).map(mac).collect();
         let ops = |k: &str| k.starts_with('m').then(|| format!("op-{k}"));
-        assert_eq!(draw_v3(&pool, &seed(2), ops, &committee(4)).unwrap().len(), 5, "4 seats: one more");
-        assert_eq!(draw_v3(&pool, &seed(2), ops, &committee(10)).unwrap().len(), 13, "10 seats: three more");
-        assert_eq!(draw_v3(&pool, &seed(2), ops, &committee(15)).unwrap().len(), 16, "never past sixteen by growing");
-        let at_cap = draw_v3(&pool, &seed(2), ops, &committee(16)).unwrap();
+        assert_eq!(draw_v3(&pool, &seed(2), ops, &committee(4), GROW_UNTIL).unwrap().len(), 5, "4 seats: one more");
+        assert_eq!(draw_v3(&pool, &seed(2), ops, &committee(10), GROW_UNTIL).unwrap().len(), 13, "10 seats: three more");
+        assert_eq!(draw_v3(&pool, &seed(2), ops, &committee(15), GROW_UNTIL).unwrap().len(), 16, "never past sixteen by growing");
+        let at_cap = draw_v3(&pool, &seed(2), ops, &committee(16), GROW_UNTIL).unwrap();
         assert_eq!(at_cap.len(), 16, "at sixteen, draws swap seats instead");
+    }
+
+    #[test]
+    fn v3_the_genesis_committee_ceiling_is_respected() {
+        // A network whose genesis set max_committee to 7: growth stops there and
+        // swaps seats from there, never shrinking below it.
+        let pool: Vec<_> = (1..=20).map(mac).collect();
+        let ops = |k: &str| k.starts_with('m').then(|| format!("op-{k}"));
+        assert_eq!(draw_v3(&pool, &seed(2), ops, &committee(4), 7).unwrap().len(), 5, "4 seats: one more");
+        assert_eq!(draw_v3(&pool, &seed(2), ops, &committee(6), 7).unwrap().len(), 7, "never past the ceiling by growing");
+        let at_cap = draw_v3(&pool, &seed(2), ops, &committee(7), 7).unwrap();
+        assert_eq!(at_cap.len(), 7, "at the ceiling, draws swap seats instead");
+        assert!(at_cap.iter().all(|(k, _)| k.starts_with('m') || k.starts_with('g')), "seats change, the count does not");
+        // The spread draw grows under the same ceiling.
+        assert_eq!(draw_spread(&pool, &seed(2), ops, &committee(6), |_| None, 7).unwrap().len(), 7);
+        let large: Vec<_> = (1..=80).map(mac).collect();
+        assert_eq!(draw_spread_capped(&large, &seed(2), ops, &committee(7), |_| None, 7).unwrap().len(), 7);
+        assert_eq!(draw_capped(&large, &seed(2), ops, &committee(7), 7).unwrap().len(), 7);
+        let mut ranked = large.clone();
+        ranked.sort_by_cached_key(|(k, _)| ticket(&seed(2), k));
+        let seated = Committee { members: ranked[..7].to_vec() };
+        assert!(draw_spread(&large, &seed(2), ops, &seated, |_| None, 7).unwrap().len() > 7,
+            "the 7780 growth rule remains unchanged");
+        assert!(draw(&large, &seed(2), ops, &seated).unwrap().len() > 7,
+            "the pre-v3 legacy draw is unchanged too");
+        assert!(draw_spread_capped(&large, &seed(2), ops, &seated, |_| None, 7).is_none());
+        assert!(draw_capped(&large, &seed(2), ops, &seated, 7).is_none());
     }
 
     #[test]
     fn v3_one_operator_never_holds_a_third_of_the_grown_set() {
         // Two Macs of one operator; four genesis seats are each their own operator.
         let pool = vec![mac(1), mac(2)];
-        let next = draw_v3(&pool, &seed(3), |k| k.starts_with('m').then(|| "same-owner".to_string()), &committee(4)).unwrap();
+        let next = draw_v3(&pool, &seed(3), |k| k.starts_with('m').then(|| "same-owner".to_string()), &committee(4), GROW_UNTIL).unwrap();
         assert_eq!(next.len(), 5, "one seat per draw at this size");
-        let ten = draw_v3(&pool, &seed(3), |k| k.starts_with('m').then(|| "same-owner".to_string()), &committee(10)).unwrap();
+        let ten = draw_v3(&pool, &seed(3), |k| k.starts_with('m').then(|| "same-owner".to_string()), &committee(10), GROW_UNTIL).unwrap();
         let theirs = ten.iter().filter(|(k, _)| k.starts_with('m')).count();
         assert!(theirs * 3 < ten.len(), "{theirs} of {} seats", ten.len());
     }
 
     #[test]
     fn v3_nothing_to_add_keeps_the_set() {
-        assert!(draw_v3(&[], &seed(4), |_| None, &committee(4)).is_none());
+        assert!(draw_v3(&[], &seed(4), |_| None, &committee(4), GROW_UNTIL).is_none());
         let running = committee(4);
         let already: Vec<_> = running.members.clone();
-        assert!(draw_v3(&already, &seed(4), |_| None, &running).is_none());
+        assert!(draw_v3(&already, &seed(4), |_| None, &running, GROW_UNTIL).is_none());
     }
 
     fn reserve() -> Reserve {
@@ -997,18 +1062,18 @@ mod tests {
         // Ten seats from one zone running, ten more of its Macs waiting in
         // the pool beside the other zones'; the draw may add three.
         let running = Committee { members: pool[..10].to_vec() };
-        let next = draw_spread(&pool, &seed(1), ops, &running, hours).expect("grows");
+        let next = draw_spread(&pool, &seed(1), ops, &running, hours, GROW_UNTIL).expect("grows");
         assert_eq!(next.len(), 13, "(10−1)/3 = 3 more seats");
         let added: Vec<&str> = next.iter().filter(|m| !running.has(&m.0)).map(|(k, _)| k.as_str()).collect();
         assert!(added.iter().all(|k| !k.starts_with("z0")), "the draw looks outside the sleeping zone: {added:?}");
         assert!(worst_hour(&next, &hours) > worst_hour(&running.members, &hours), "the worst hour improves");
         // Deterministic: the same state draws the same set for everyone.
-        assert_eq!(draw_spread(&pool, &seed(1), ops, &running, hours).unwrap(), next);
+        assert_eq!(draw_spread(&pool, &seed(1), ops, &running, hours, GROW_UNTIL).unwrap(), next);
         // The ticket-only draw never beats it, and sometimes sleeps.
         let mut slept = false;
         for s in 1..=10u8 {
-            let spread = draw_spread(&pool, &seed(s), ops, &running, hours).unwrap();
-            let ticketed = draw_v3(&pool, &seed(s), ops, &running).unwrap();
+            let spread = draw_spread(&pool, &seed(s), ops, &running, hours, GROW_UNTIL).unwrap();
+            let ticketed = draw_v3(&pool, &seed(s), ops, &running, GROW_UNTIL).unwrap();
             assert!(worst_hour(&spread, &hours) >= worst_hour(&ticketed, &hours), "seed {s}");
             slept |= worst_hour(&spread, &hours) > worst_hour(&ticketed, &hours);
         }
@@ -1046,11 +1111,11 @@ mod tests {
         let hours = |k: &str| avail.get(k).copied();
         let ops = |k: &str| Some(k.to_string());
         let running = Committee { members: pool[..10].to_vec() };
-        let first = draw_spread(&pool, &seed(1), ops, &running, hours).expect("grows");
-        assert_eq!(draw_spread(&pool, &seed(1), ops, &running, hours).unwrap(), first, "computed twice");
+        let first = draw_spread(&pool, &seed(1), ops, &running, hours, GROW_UNTIL).expect("grows");
+        assert_eq!(draw_spread(&pool, &seed(1), ops, &running, hours, GROW_UNTIL).unwrap(), first, "computed twice");
         let mut shuffled = pool.clone();
         shuffled.sort_by(|a, b| b.1.cmp(&a.1)); // by node id, not the insertion order
-        assert_eq!(draw_spread(&shuffled, &seed(1), ops, &running, hours).unwrap(), first, "pool order does not matter");
+        assert_eq!(draw_spread(&shuffled, &seed(1), ops, &running, hours, GROW_UNTIL).unwrap(), first, "pool order does not matter");
         // The reserve keys' liveness rule computes the same words too.
         let r = Reserve { operator: "0xf0".into(), members: (1..=3).map(|i| (format!("r{i}"), format!("rn{i}"))).collect() };
         let seat = with_reserve(None, &pool, &seed(1), ops, &r, &running, hours).expect("a risky night seats a key");
@@ -1067,7 +1132,7 @@ mod tests {
         let ops = |k: &str| Some(k.to_string());
         let running = Committee { members: pool[..10].to_vec() };
         assert_eq!(
-            draw_spread(&pool, &seed(1), ops, &running, hours),
+            draw_spread(&pool, &seed(1), ops, &running, hours, GROW_UNTIL),
             Some(vec![
                 ("z0m0".into(), "n00".into()),
                 ("z0m1".into(), "n01".into()),
@@ -1099,7 +1164,7 @@ mod tests {
         let hours = |k: &str| k.starts_with('w').then_some([SCALE; DAY_EPOCHS as usize]);
         let ops = |k: &str| k.starts_with('w').then(|| "0xwhale".to_string());
         let running = Committee { members };
-        let next = draw_spread(&pool, &seed(9), ops, &running, hours).expect("grows");
+        let next = draw_spread(&pool, &seed(9), ops, &running, hours, GROW_UNTIL).expect("grows");
         assert_eq!(next.iter().filter(|(k, _)| k.starts_with('w')).count(), 4, "one more whale seat: the cap holds");
     }
 
@@ -1110,8 +1175,8 @@ mod tests {
         for (s, n) in [(seed(1), 4u8), (seed(2), 7), (seed(3), 12)] {
             let running = committee(n);
             assert_eq!(
-                draw_spread(&pool, &s, ops, &running, |_| None),
-                draw_v3(&pool, &s, ops, &running),
+                draw_spread(&pool, &s, ops, &running, |_| None, GROW_UNTIL),
+                draw_v3(&pool, &s, ops, &running, GROW_UNTIL),
                 "no data: the ticket decides, as before"
             );
         }

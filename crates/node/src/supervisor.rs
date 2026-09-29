@@ -949,6 +949,8 @@ mod tests {
             protocol: None,
             node_rewards: None,
             reserve: None,
+            group: None,
+            max_committee: None,
             genesis_validators: None,
         }
     }

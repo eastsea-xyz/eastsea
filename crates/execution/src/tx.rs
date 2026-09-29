@@ -28,6 +28,7 @@ const DELEGATE_TAG: u8 = 0xd7;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TxError {
     WrongChain,
+    NonCanonicalGroup,
     EncryptedPayloadUnsupported,
     PayloadCommitment,
     MalformedPayload,
@@ -113,6 +114,7 @@ pub fn sign_call_with(signer: &dyn Signer, chain_id: u64, nonce: u64, max_fee: F
         tip,
         payload_commitment: payload_commitment(&payload),
         scheme: signer.scheme(),
+        group: None,
     };
     let mut env = TxEnvelope { header, payload: TxPayload::Plain(Bytes::from(payload)), signature: Bytes::new() };
     let mut sig = signer.sign(&env.signing_bytes())?;
@@ -123,12 +125,38 @@ pub fn sign_call_with(signer: &dyn Signer, chain_id: u64, nonce: u64, max_fee: F
     Ok(env)
 }
 
+/// `sign_call` for a chain of group `group` (0 = the only group today, same
+/// bytes as `sign_call`): the group is part of what the sender signs, so a
+/// signed tx cannot be replayed into another group's blocks.
+pub fn sign_call_group(
+    signer: &dyn Signer,
+    chain_id: u64,
+    nonce: u64,
+    gas_price: u128,
+    group: u16,
+    call: &EvmCall,
+) -> Result<TxEnvelope, CryptoError> {
+    let mut tx = sign_call(signer, chain_id, nonce, gas_price, call)?;
+    if group != 0 {
+        tx.header.group = Some(group);
+        let mut sig = signer.sign(&tx.signing_bytes())?;
+        if tx.header.scheme != SignerScheme::Secp256k1 {
+            sig.extend_from_slice(&signer.public_key().bytes);
+        }
+        tx.signature = Bytes::from(sig);
+    }
+    Ok(tx)
+}
+
 /// Stateless validity: chain, payload commitment, signature, sender binding.
 /// Returns the decoded call. Nonce and balance are checked during execution.
 pub fn validate_stateless(tx: &TxEnvelope, chain_id: u64) -> Result<EvmCall, TxError> {
     let h = &tx.header;
     if h.chain_id != chain_id {
         return Err(TxError::WrongChain);
+    }
+    if h.group == Some(0) {
+        return Err(TxError::NonCanonicalGroup);
     }
     let payload = match &tx.payload {
         TxPayload::Plain(b) => b,
@@ -219,5 +247,20 @@ mod tests {
         let mut t = sign_call(&other, 7, 0, 1, &call()).unwrap();
         t.header.sender = tx.header.sender;
         assert!(validate_stateless(&t, 7).is_err());
+    }
+
+    #[test]
+    fn group_signatures_are_distinct_and_zero_is_canonical_only_when_absent() {
+        let signer = P256Signer::from_seed(&seed(6)).unwrap();
+        let legacy = sign_call(&signer, 7, 0, 1, &call()).unwrap();
+        assert_eq!(sign_call_group(&signer, 7, 0, 1, 0, &call()).unwrap(), legacy);
+        let grouped = sign_call_group(&signer, 7, 0, 1, 3, &call()).unwrap();
+        assert_eq!(validate_stateless(&grouped, 7).unwrap(), call());
+        let mut replay = grouped.clone();
+        replay.header.group = Some(4);
+        assert!(matches!(validate_stateless(&replay, 7), Err(TxError::BadSignature(_))));
+        let mut noncanonical = legacy;
+        noncanonical.header.group = Some(0);
+        assert_eq!(validate_stateless(&noncanonical, 7), Err(TxError::NonCanonicalGroup));
     }
 }

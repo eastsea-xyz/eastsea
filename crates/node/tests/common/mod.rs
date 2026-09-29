@@ -112,6 +112,8 @@ impl Net {
             draw_epochs: None,
             node_rewards: o.node_rewards,
             history_v2: o.history_v2,
+            group: 0,
+            max_committee: aether_node::rotation::GROW_UNTIL,
             protocol: o.protocol,
             committee: o.committee.clone().unwrap_or_else(Committee::genesis_members),
             reserve: o.reserve,
@@ -261,7 +263,7 @@ impl Net {
         // The proposer's pre-state skips answers it cannot check; the block is then built with what is left.
         let (pre, _) = chain.pre_state_with(parent, parent.next_protocol(), &proofs, &answers, &registrations, seed.as_ref(), false)?;
         let n = txs.len();
-        let (payload, _) = build_payload(parent, &pre, &ctx, txs, Extras { handoff, upgrade, seed, proofs, beacons: answers, registrations });
+        let (payload, _) = build_payload(parent, &pre, &ctx, txs, Extras { handoff, upgrade, seed, proofs, beacons: answers, registrations, group: chain.cfg().group });
         assert_eq!(payload.txs.len(), n, "every tx fits");
         drop(pre);
         let block = Block::new(context, self.last.digest(), height, ts, payload.to_bytes());
@@ -449,14 +451,20 @@ impl Committee {
         aether_node::upgrade::combine(sharing.public(), &partials[..quorum]).unwrap()
     }
 
-    /// The committee's threshold signature on draw `draw`'s seed, as
-    /// `handoff::Service::tick` collects it over gossip.
+    /// The committee's threshold signature on draw `draw`'s seed, as the
+    /// voting committee produces it between draws.
     pub fn sign_seed(&self, chain_id: u64, draw: u64) -> aether_light::block::Seed {
         let sharing = self.output();
         let n = self.keys.len() as u32;
-        let shares: Vec<_> = self.keys.iter().map(|k| self.files[&k.public_key()].decode(n).unwrap().1).collect();
-        let quorum: Vec<&_> = shares[..sharing.public().required() as usize].iter().collect();
-        aether_node::handoff::sign_seed(chain_id, sharing.public(), draw, &quorum)
+        let partials: Vec<_> = self
+            .keys
+            .iter()
+            .map(|k| {
+                let share = &self.files[&k.public_key()].decode(n).unwrap().1;
+                aether_node::handoff::check_seed_partial(chain_id, sharing.public(), draw, &aether_node::handoff::sign_seed_partial(chain_id, draw, share)).unwrap()
+            })
+            .collect();
+        aether_node::handoff::combine_seed(sharing.public(), draw, &partials[..sharing.public().required() as usize]).unwrap()
     }
 
     /// Reshare the identity to `members` (ed25519 key, node id) at key round

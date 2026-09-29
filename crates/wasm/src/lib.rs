@@ -85,6 +85,7 @@ pub fn prepare_tx(public_key: &[u8], status: &Value, expected_chain: u64, nonce:
         tip,
         payload_commitment: payload_commitment(&payload),
         scheme: SignerScheme::P256,
+        group: None,
     };
     let env = TxEnvelope { header, payload: TxPayload::Plain(Bytes::from(payload)), signature: Bytes::new() };
     Ok(json!({

@@ -81,6 +81,8 @@ fn config() -> ChainConfig {
         history_v2: true,
         protocol: 1,
         node_rewards: false,
+        group: 0,
+        max_committee: aether_node::rotation::GROW_UNTIL,
         committee: vec![],
         reserve: None,
     }

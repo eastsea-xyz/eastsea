@@ -32,6 +32,8 @@ fn config() -> ChainConfig {
         protocol: 1,
         committee: vec![],
         reserve: None,
+        group: 0,
+        max_committee: aether_node::rotation::GROW_UNTIL,
     }
 }
 

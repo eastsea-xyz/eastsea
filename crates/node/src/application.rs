@@ -121,6 +121,7 @@ where
             upgrade: self.chain.upgrade_for(&parent),
             proofs: self.chain.proofs_for(&parent),
             beacons: self.chain.beacons_for(&parent),
+            group: cfg.group,
             registrations: self.chain.registrations_for(&parent),
         };
         // Under the parent's next protocol, with its one-time changes if it activates here.

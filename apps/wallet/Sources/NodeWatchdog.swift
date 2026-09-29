@@ -8,11 +8,19 @@ import Foundation
 /// Rules:
 /// - the node exited on its own → restart it, backing off (1 s doubling to
 ///   60 s) so a tight crash loop cannot spin the Mac;
+/// - an exit code a restart cannot change (upgrade needed, verifier missing,
+///   identity lost, already running) → stop at once with its sentence;
 /// - three exits within 10 minutes → stop restarting and say one plain
 ///   sentence about the last failure (layer 4: what to do, no jargon);
 /// - the network's finalized height moves but ours has not for 60 s while the
 ///   node runs → restart it (the incident of 2026-09-29 looked exactly like
-///   this, and "끊김" told the user nothing).
+///   this, and "끊김" told the user nothing) — but never while the node's
+///   stage-wise `activity` still rises (a snapshot download, a store
+///   recovery, a replay are work, not a stall; red team #2), and a voting
+///   node is given twice the patience (its restart costs the network a
+///   signature; red team #2's quorum check);
+/// - a sleep or a wake makes everything the watchdog was timing stale
+///   (red team #9).
 struct NodeWatchdog {
     /// What the app should do about its node right now.
     enum Decision: Equatable {
@@ -37,6 +45,14 @@ struct NodeWatchdog {
         case memory
         case network
         case other
+        /// This binary cannot run what the chain runs (or has no proof
+        /// verifier): the update is the fix, not a restart.
+        case upgradeNeeded
+        /// This Mac's node key is gone or unreadable: the node refuses to mint
+        /// a new identity, and so must the app — a person restores the key.
+        case identityLost
+        /// Another Aether already runs this node's data directory.
+        case alreadyRunning
 
         /// One sentence, in the app's language: what happened and what to do.
         var sentence: String {
@@ -57,6 +73,15 @@ struct NodeWatchdog {
             case .other:
                 return ko ? "노드가 계속 종료됩니다. 앱을 다시 실행해 주세요."
                     : "The node keeps stopping. Please restart the app."
+            case .upgradeNeeded:
+                return ko ? "이 버전으로는 체인을 실행할 수 없어요. 앱을 업데이트해 주세요."
+                    : "This version can no longer run the chain. Please update the app."
+            case .identityLost:
+                return ko ? "이 Mac의 노드 키를 읽을 수 없어요. 백업에서 키를 되찾으면 노드가 다시 투표합니다."
+                    : "This Mac's node key cannot be read. Restore it from a backup and the node votes again."
+            case .alreadyRunning:
+                return ko ? "다른 Aether가 이미 이 노드를 실행하고 있어요. 그 앱에서 노드를 켜 주세요."
+                    : "Another Aether is already running this node. Please use that app instead."
             }
         }
     }
@@ -72,6 +97,10 @@ struct NodeWatchdog {
     /// Restart backoff bounds.
     static let firstBackoff: TimeInterval = 1
     static let maxBackoff: TimeInterval = 60
+    /// Exit codes no restart can change: the node's own supervisor exits with
+    /// them instead of restarting (3 upgrade required, 5 no proof verifier,
+    /// 6 identity lost, 7 data directory locked), and the app does the same.
+    static let unrestartable: [Int32] = [3, 5, 6, 7]
 
     /// The node's recent deaths (sliding `crashWindow`), oldest first.
     private(set) var exits: [Date] = []
@@ -82,6 +111,9 @@ struct NodeWatchdog {
     /// The last failure the node reported, for the sentence if it keeps dying.
     private(set) var lastFailure: Failure = .other
     private var lastHeight: UInt64?
+    /// The stage-wise activity counter at the previous poll (`aether_status`):
+    /// rising work at a frozen height is progress, not a stall (red team #2).
+    private var lastActivity: UInt64?
     private var frozenSince: Date?
     private var stalled = false
 
@@ -89,6 +121,7 @@ struct NodeWatchdog {
     mutating func started(_ at: Date) {
         startedAt = at
         lastHeight = nil
+        lastActivity = nil
         frozenSince = nil
         stalled = false
     }
@@ -100,6 +133,11 @@ struct NodeWatchdog {
         exits.append(at)
         exits.removeAll { at.timeIntervalSince($0) > Self.crashWindow }
         lastFailure = Self.classify(code: code, signaled: signaled, log: log)
+        // A restart cannot fix these (red team #1): the update, the key or the
+        // other app is the fix. Not even the rollback path may take them.
+        if Self.unrestartable.contains(code) {
+            return .stop(lastFailure)
+        }
         if let startedAt, at.timeIntervalSince(startedAt) < Self.quickExit {
             quickExits += 1
         } else {
@@ -117,18 +155,37 @@ struct NodeWatchdog {
     }
 
     /// One 2-second poll (the same one NodeController already runs): `local`
-    /// is this node's height, `network` the highest height any node reports.
-    mutating func polled(_ at: Date, local: UInt64?, network: UInt64?) -> Decision {
+    /// is this node's height, `network` the highest height the wallet itself
+    /// verified (its own multi-source check — an unheard height is `nil` and
+    /// never counts). `activity` is the node's stage-wise work counter, and
+    /// `voting` says whether this Mac is in the voting set (its restart costs
+    /// the network a signature, so it is given twice the patience).
+    mutating func polled(_ at: Date, local: UInt64?, network: UInt64?, activity: UInt64? = nil, voting: Bool = false) -> Decision {
         guard let local else {
             frozenSince = nil
+            lastActivity = nil
             return .none
         }
+        // Work, however it shows (red team #2): a height that moved, or a
+        // stage-wise counter that rose while the height stood still — a
+        // snapshot download, a store recovery, a backlog replay are all slow,
+        // all healthy. A poll that observed work is not a freeze observation.
+        var worked = false
         if local != lastHeight {
             lastHeight = local
             frozenSince = nil
             stalled = false
-            return .none
+            worked = true
         }
+        if let activity {
+            if activity != lastActivity {
+                frozenSince = nil
+                stalled = false
+                worked = true
+            }
+            lastActivity = activity
+        }
+        if worked { return .none }
         // Our height is standing still; that is only a stall while the network
         // moves ahead (a paused network is not the node's fault, and it has
         // its own notice).
@@ -138,10 +195,31 @@ struct NodeWatchdog {
         }
         let since = frozenSince ?? at
         frozenSince = since
-        guard at.timeIntervalSince(since) >= Self.stallAfter, !stalled else { return .none }
+        let stall = voting ? Self.stallAfter * 2 : Self.stallAfter
+        guard at.timeIntervalSince(since) >= stall, !stalled else { return .none }
         stalled = true
         lastFailure = .network
         return .restart(after: 0)
+    }
+
+    /// A sleep or a wake (red team #9): everything the watchdog was timing is
+    /// stale the moment the Mac sleeps — the freeze it was counting, the
+    /// heights it was comparing. Forget them and decide on fresh facts only.
+    mutating func invalidate() {
+        lastHeight = nil
+        lastActivity = nil
+        frozenSince = nil
+        stalled = false
+    }
+
+    /// Whether returning to the previous binary is safe (red team #3): only
+    /// when that binary speaks the protocol the chain has scheduled — an old
+    /// binary on a chain it cannot run stops the node for good, which is worse
+    /// than the crash loop it was meant to fix. An unknown on either side is a
+    /// refusal, not a guess.
+    static func rollbackAllowed(prevProtocol: UInt64?, chainScheduled: UInt64?) -> Bool {
+        guard let prev = prevProtocol, let scheduled = chainScheduled else { return false }
+        return prev >= scheduled
     }
 
     /// A restart was carried out (the watchdog's counts live on across them:
@@ -163,6 +241,11 @@ struct NodeWatchdog {
         if code == 4 {
             return tail.contains("does not verify") || tail.contains("corrupt") ? .database : .diskFull
         }
+        // The node's own "do not restart me" codes (its supervisor exits with
+        // them rather than looping): each has its sentence.
+        if code == 3 || code == 5 { return .upgradeNeeded }
+        if code == 6 { return .identityLost }
+        if code == 7 { return .alreadyRunning }
         if tail.contains("cannot allocate memory") || tail.contains("out of memory") {
             return .memory
         }

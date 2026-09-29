@@ -80,9 +80,69 @@ check(NodeWatchdog.classify(code: 1, signaled: false, log: "out of memory") == .
 check(NodeWatchdog.classify(code: 0, signaled: true, log: "") == .memory, "a signal death (kill) → memory")
 check(NodeWatchdog.classify(code: 1, signaled: false, log: "connection refused") == .network, "network text")
 // The sentences stay plain: no log paths, no jargon, whatever the language.
-for f in [NodeWatchdog.Failure.diskFull, .database, .memory, .network, .other] {
+for f in [NodeWatchdog.Failure.diskFull, .database, .memory, .network, .other, .upgradeNeeded, .identityLost, .alreadyRunning] {
     check(!f.sentence.contains("/") && !f.sentence.contains("redb"), "\(f): no paths or jargon")
     check(!f.sentence.isEmpty, "\(f): says something")
 }
+
+// The node's own "do not restart me" exit codes (red team #1/#12): the first
+// death stops the app's restarts with the matching sentence — even a quick
+// one, and never the rollback path.
+var gated = NodeWatchdog()
+gated.started(t0)
+check(gated.exited(t0.addingTimeInterval(3), code: 7) == .stop(.alreadyRunning), "a locked data dir stops at once")
+check(gated.exited(t0.addingTimeInterval(4), code: 6) == .stop(.identityLost), "a lost key stops at once")
+check(gated.exited(t0.addingTimeInterval(5), code: 3) == .stop(.upgradeNeeded), "an upgrade exit stops at once")
+check(gated.exited(t0.addingTimeInterval(6), code: 5) == .stop(.upgradeNeeded), "a missing verifier stops at once")
+var keyloss = NodeWatchdog()
+keyloss.started(t0)
+for i in 1...3 {
+    keyloss.started(t0.addingTimeInterval(Double(i) * 20))
+    check(keyloss.exited(t0.addingTimeInterval(Double(i) * 20 + 3), code: 6) == .stop(.identityLost), "identity death \(i): never rollback, never restart")
+}
+
+// Red team #2: work at a frozen height is progress. A node downloading a
+// snapshot (its `activity` counter rising every poll) is never a stall; the
+// moment the work stops, the usual 60 s applies.
+var busy = NodeWatchdog()
+busy.started(t0)
+for secs in stride(from: 2.0, through: 300, by: 2) {
+    check(busy.polled(t0.addingTimeInterval(secs), local: 0, network: 2_100, activity: UInt64(secs / 2), voting: false) == .none, "busy at height 0 for \(secs) s: not a stall")
+}
+for secs in stride(from: 302.0, through: 356, by: 2) {
+    check(busy.polled(t0.addingTimeInterval(secs), local: 0, network: 2_100, activity: 150) == .none, "work stopped, \(secs - 300) s: wait")
+}
+check(busy.polled(t0.addingTimeInterval(364), local: 0, network: 2_100, activity: 150) == .restart(after: 0), "work stopped and 60 s passed: restart")
+
+// Red team #2's quorum check: a voting node is given twice the patience — its
+// restart costs the network a signature.
+var voting = NodeWatchdog()
+voting.started(t0)
+for secs in stride(from: 2.0, through: 118, by: 2) {
+    check(voting.polled(t0.addingTimeInterval(secs), local: 100, network: 400, activity: 5, voting: true) == .none, "voting and frozen \(secs) s: wait")
+}
+check(voting.polled(t0.addingTimeInterval(124), local: 100, network: 400, activity: 5, voting: true) == .restart(after: 0), "voting: only past 120 s")
+
+// Red team #9: a sleep or wake invalidates what the watchdog was timing. A
+// freeze counted before the sleep must not fire on the strength of it.
+var woke = NodeWatchdog()
+woke.started(t0)
+for secs in stride(from: 2.0, through: 58, by: 2) {
+    _ = woke.polled(t0.addingTimeInterval(secs), local: 100, network: 400)
+}
+woke.invalidate()
+check(woke.polled(t0.addingTimeInterval(64), local: 100, network: 400) == .none, "the pre-sleep freeze (60 s old by now) is gone: the clock starts over")
+for secs in stride(from: 66.0, through: 122, by: 2) {
+    check(woke.polled(t0.addingTimeInterval(secs), local: 100, network: 400) == .none, "freshly frozen \(secs - 64) s after the wake: wait")
+}
+check(woke.polled(t0.addingTimeInterval(126), local: 100, network: 400) == .restart(after: 0), "and 60 s of genuinely frozen polls still restart")
+
+// Red team #3: roll back only when the previous binary speaks the protocol the
+// chain has scheduled. An unknown on either side is a refusal, not a guess.
+check(!NodeWatchdog.rollbackAllowed(prevProtocol: nil, chainScheduled: 3), "unknown previous binary: refuse")
+check(!NodeWatchdog.rollbackAllowed(prevProtocol: 2, chainScheduled: nil), "unknown chain schedule: refuse")
+check(!NodeWatchdog.rollbackAllowed(prevProtocol: 2, chainScheduled: 3), "the old binary cannot run the chain: refuse")
+check(NodeWatchdog.rollbackAllowed(prevProtocol: 3, chainScheduled: 3), "the old binary speaks the scheduled protocol")
+check(NodeWatchdog.rollbackAllowed(prevProtocol: 4, chainScheduled: 3), "an even older-newer binary is fine")
 
 print("watchdog: all checks passed")

@@ -19,7 +19,7 @@ use common::{answered, Mac, Net, Opts};
 const E: u64 = 48;
 
 fn net(macs: u8, reserve: Option<Reserve>, committee: Option<Vec<(String, String)>>) -> Net {
-    Net::new(Opts { chain_id: 7_792, node_rewards: true, epoch_blocks: E, macs, min_streak: Some(0), history_v2: false, reserve, committee })
+    Net::new(Opts { chain_id: 7_792, node_rewards: true, epoch_blocks: E, macs, min_streak: Some(0), history_v2: false, protocol: 1, reserve, committee })
 }
 
 /// What operator `i`'s Mac earns for `epoch` by the rule (one Mac per operator).

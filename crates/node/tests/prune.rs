@@ -39,6 +39,7 @@ fn config() -> ChainConfig {
         min_streak: None,
         draw_epochs: None,
         history_v2: true,
+        protocol: 1,
         node_rewards: false,
         committee: vec![],
         reserve: None,

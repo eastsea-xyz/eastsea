@@ -366,6 +366,12 @@ enum Cmd {
         /// History v2 (a new genesis only, roadmap B): quiet empty blocks, era files, prune by default.
         #[arg(long)]
         history: Option<u32>,
+        /// Protocol this genesis starts under (1 to the newest this binary runs): the mainnet names
+        /// the newest (3: proof market, registry v2 with its registration cap, 16-seat growth) and
+        /// never needs an upgrade (docs/design/15-node-rewards.md, gap G1). Absent: 1, upgrades
+        /// turn later protocols on — 7780's genesis stays byte-identical.
+        #[arg(long)]
+        protocol: Option<u32>,
         /// Write the public dev registrar key as the registrar: a local or rehearsal network whose
         /// registrar node runs `aether run --dev-registrar` (no Apple DeviceCheck).
         #[arg(long, conflicts_with = "registrar")]
@@ -381,6 +387,14 @@ enum Cmd {
     },
     /// List the public development accounts (funded at genesis; never use for value).
     DevAccounts,
+    /// Check a network.json against the mainnet rule set: every rule the mainnet
+    /// must have active at height 1 (docs/ops/mainnet-launch.md §2), built from
+    /// the file's genesis. Prints one line per rule; fails listing what is off.
+    MainnetRules {
+        /// network.json to check.
+        #[arg(long)]
+        network: String,
+    },
     /// Chain status.
     Status {
         #[arg(long, default_value = "http://127.0.0.1:8545")]
@@ -716,13 +730,13 @@ fn main() {
             };
             reshare(&from, &to, boundary, port, data, peers, link_base, offline, via_node)
         }
-        Cmd::Network { chain_id, faucet, registrar, dev_registrar, epoch_blocks, min_streak, draw_epochs, node_rewards, history, reserve, reserve_operator, members } => {
+        Cmd::Network { chain_id, faucet, registrar, dev_registrar, epoch_blocks, min_streak, draw_epochs, node_rewards, history, protocol, reserve, reserve_operator, members } => {
             let registrar = match (registrar, dev_registrar) {
                 (None, true) => Some(dev_registrar_hex()),
                 (r, _) => r,
             };
             let reserve = reserve_operator.map(|op| (op, reserve));
-            assemble_network(chain_id, faucet, registrar, (epoch_blocks, min_streak, draw_epochs), history, (node_rewards, reserve), &members)
+            assemble_network(chain_id, faucet, registrar, (epoch_blocks, min_streak, draw_epochs), history, protocol, (node_rewards, reserve), &members)
         }
         Cmd::RegistrarKey { data } => (|| {
             // Idempotent: an existing key is kept (and its public half printed).
@@ -740,6 +754,17 @@ fn main() {
             }
             Ok(())
         }
+        Cmd::MainnetRules { network } => (|| {
+            let file = aether_node::roster::NetworkFile::load(std::path::Path::new(&network))?;
+            let genesis = file.genesis()?;
+            let chain_id = file.chain_id;
+            let rules = aether_node::mainnet::check(&chain_config(chain_id, &genesis, false));
+            for r in &rules {
+                println!("{}  {}: {}", if r.ok { "ok" } else { "FAIL" }, r.name, r.detail);
+            }
+            let missing = aether_node::mainnet::missing(&rules);
+            (rules.iter().all(|r| r.ok)).then_some(()).ok_or(missing)
+        })(),
         Cmd::Status { rpc } => call(&rpc, "aether_status", json!([])).map(|v| println!("{}", pretty(&v))),
         Cmd::Blocks { rpc, n } => call(&rpc, "aether_recentBlocks", json!([n])).map(|v| print_blocks(&v)),
         Cmd::Send { rpc, from_dev, to, value, nonce, wait } => {
@@ -900,6 +925,7 @@ fn chain_config(chain_id: u64, genesis: &aether_node::roster::Genesis, dev_alloc
         min_streak: genesis.min_streak,
         draw_epochs: genesis.draw_epochs,
         history_v2: genesis.history >= 2,
+        protocol: genesis.protocol.max(1),
         node_rewards: genesis.node_rewards,
         committee: genesis.committee.clone(),
         reserve: genesis.reserve.clone(),
@@ -1216,6 +1242,7 @@ fn assemble_network(
     registrar: Option<String>,
     voting: VotingParams,
     history: Option<u32>,
+    protocol: Option<u32>,
     rewards: (bool, Option<(Address, Vec<String>)>),
     members: &[String],
 ) -> Result<(), String> {
@@ -1255,6 +1282,7 @@ fn assemble_network(
         min_streak,
         draw_epochs,
         history,
+        protocol,
         node_rewards: node_rewards.then_some(true),
         reserve,
     };

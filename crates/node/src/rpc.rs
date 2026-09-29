@@ -312,6 +312,10 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                 "protocol": f.next_protocol(),
                 "node_protocol": crate::upgrade::PROTOCOL,
                 "newest_scheduled": f.schedule.iter().map(|a| a.protocol).max().unwrap_or(1),
+                // Activations on chain as (protocol, at-height) pairs: a genesis
+                // above protocol 1 carries its own at height 0, so `[3, 0]` here
+                // is how a rehearsal knows the rules were on from the start.
+                "schedule": f.schedule.iter().map(|a| json!([a.protocol, a.at])).collect::<Vec<_>>(),
             }))
         }
         // The voting set proposed for this registry epoch (while no handoff is
@@ -433,7 +437,7 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                     })
                 })
                 .collect();
-            Ok(json!({ "epoch": epoch, "candidates": list }))
+            Ok(json!({ "epoch": epoch, "candidates": list, "max_per_epoch": aether_execution::registry::max_per_epoch(state) }))
         }
         "aether_faucet" => {
             let to: Address = param(p, 0)?;

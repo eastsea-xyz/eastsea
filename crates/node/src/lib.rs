@@ -14,6 +14,7 @@ pub mod epochs;
 pub mod faucet;
 pub mod follow;
 pub mod handoff;
+pub mod mainnet;
 pub mod inclusion;
 pub mod p2p;
 pub mod prover;

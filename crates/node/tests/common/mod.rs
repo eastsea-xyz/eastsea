@@ -83,6 +83,9 @@ pub struct Opts {
     pub min_streak: Option<u64>,
     /// Mainnet-flag networks run history v2 (quiet empty blocks).
     pub history_v2: bool,
+    /// Protocol the genesis starts under (1 = the testnet's; 3 = the mainnet's,
+    /// every rule on from height 0 with no signed upgrade).
+    pub protocol: u32,
     pub reserve: Option<Reserve>,
     /// The genesis committee the chain records (node-rewards networks): by
     /// default the dealt one, but the rule must also work for a short one
@@ -107,6 +110,7 @@ impl Net {
             draw_epochs: None,
             node_rewards: o.node_rewards,
             history_v2: o.history_v2,
+            protocol: o.protocol,
             committee: o.committee.clone().unwrap_or_else(Committee::genesis_members),
             reserve: o.reserve,
         };
@@ -114,7 +118,8 @@ impl Net {
         {
             let mut g = chain.lock();
             g.identity = Some(committee.identity());
-            g.protocol = 2;
+            // At least protocol 2: the harness may drive an upgrade to it.
+            g.protocol = o.protocol.max(2);
             g.verifier = Some(Arc::new(EchoVerifier));
         }
         let parent = chain.lock().finalized.clone();

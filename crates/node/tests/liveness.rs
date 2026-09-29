@@ -26,6 +26,7 @@ fn net(macs: u8, reserve: Option<Reserve>, committee: Vec<(String, String)>) -> 
         macs,
         min_streak: Some(0),
         history_v2: false,
+        protocol: 1,
         reserve,
         committee: Some(committee),
     })

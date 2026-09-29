@@ -70,6 +70,13 @@ pub struct NetworkFile {
     /// `ChainConfig::history_v2`). Absent on 7780 and older networks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history: Option<u32>,
+    /// Protocol rules this genesis starts under (e.g. 3: proof market, registry
+    /// v2 with its registration cap and the 16-seat growth, from height 0;
+    /// docs/design/15-node-rewards.md "업그레이드 불필요"). Absent on 7780 and
+    /// older networks: protocol 1, later protocols arrive by committee-signed
+    /// upgrade — so their genesis stays byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<u32>,
     /// Node rewards from genesis (docs/design/15-node-rewards.md; default off).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_rewards: Option<bool>,
@@ -104,6 +111,9 @@ pub struct Genesis {
     pub draw_epochs: Option<u64>,
     /// History format version (0 or 1 = the original format).
     pub history: u32,
+    /// Protocol rules from height 0 (1 = the testnet's genesis, upgrades turn
+    /// later protocols on; 0 = `Default`, read as 1).
+    pub protocol: u32,
     pub node_rewards: bool,
     /// The validators the network opened with (the file's
     /// `genesis_validators`, or its validators before the first handoff):
@@ -130,6 +140,16 @@ impl NetworkFile {
                 ))
             }
         };
+        // A genesis may name the protocol it starts under, 1 (the testnet's
+        // genesis) up to the newest this binary runs; anything else is a typo,
+        // not a default to round.
+        let protocol = match self.protocol {
+            None => 1,
+            Some(p) if (1..=crate::upgrade::PROTOCOL).contains(&p) => p,
+            Some(p) => {
+                return Err(format!("protocol {p}: expected 1 to {}", crate::upgrade::PROTOCOL))
+            }
+        };
         Ok(Genesis {
             faucet: self.faucet,
             registrar,
@@ -137,6 +157,7 @@ impl NetworkFile {
             min_streak: self.min_streak,
             draw_epochs: self.draw_epochs,
             history: self.history.unwrap_or(0),
+            protocol,
             node_rewards: self.node_rewards.unwrap_or(false),
             committee: self.committee()?,
             reserve: match &self.reserve {
@@ -209,6 +230,7 @@ impl NetworkFile {
         self.min_streak = from.min_streak.or(self.min_streak);
         self.draw_epochs = from.draw_epochs.or(self.draw_epochs);
         self.history = from.history.or(self.history);
+        self.protocol = from.protocol.or(self.protocol);
         self.node_rewards = from.node_rewards.or(self.node_rewards);
         self.reserve = from.reserve.clone().or(self.reserve.take());
         self.genesis_validators = from.genesis_validators.clone().or(self.genesis_validators.take());
@@ -332,6 +354,7 @@ impl Roster {
             min_streak: None,
             draw_epochs: None,
             history: None,
+            protocol: None,
             node_rewards: None,
             reserve: None,
             genesis_validators: None,
@@ -424,5 +447,44 @@ impl LocalKeys {
             serde_json::to_vec_pretty(&self.public()).expect("json"),
         )
         .map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn file(json: &str) -> NetworkFile {
+        serde_json::from_str(json).expect("network file")
+    }
+
+    #[test]
+    fn the_protocol_field_names_the_genesis_rules() {
+        // 7780 and older files have no field: protocol 1, upgrades turn the
+        // later protocols on, and the file serializes back without the field.
+        let old = file(r#"{"chain_id":7780,"validators":[]}"#);
+        assert_eq!(old.genesis().unwrap().protocol, 1);
+        assert!(!serde_json::to_string(&old).unwrap().contains("protocol"));
+        // A new network names the protocol it starts under.
+        let mainnet = file(r#"{"chain_id":7799,"validators":[],"protocol":3}"#);
+        assert_eq!(mainnet.genesis().unwrap().protocol, 3);
+        // Anything else is refused, not rounded to a default.
+        for bad in [0u32, crate::upgrade::PROTOCOL + 1, u32::MAX] {
+            let msg = format!(r#"{{"chain_id":1,"validators":[],"protocol":{bad}}}"#);
+            assert!(file(&msg).genesis().is_err(), "protocol {bad}");
+        }
+        assert!(file(r#"{"chain_id":1,"validators":[],"protocol":1}"#).genesis().is_ok());
+    }
+
+    #[test]
+    fn ceremonies_carry_the_genesis_protocol() {
+        // dkg/reshare write a new network.json: the genesis facts, the
+        // protocol included, must survive the ceremony.
+        let from = file(r#"{"chain_id":7799,"validators":[],"protocol":3,"history":2}"#);
+        let mut written = file(r#"{"chain_id":7799,"validators":[]}"#);
+        written.keep_genesis(&from);
+        assert_eq!(written.protocol, Some(3));
+        assert_eq!(written.genesis().unwrap().protocol, 3);
+        assert_eq!(written.genesis().unwrap().history, 2);
     }
 }

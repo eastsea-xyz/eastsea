@@ -58,6 +58,12 @@ pub struct ChainConfig {
     /// node also seals every 8192 finalized blocks into an era file. Bound to
     /// the genesis hash, so nodes can never disagree on it. Off on 7780.
     pub history_v2: bool,
+    /// Protocol rules from height 0 (docs/design/15-node-rewards.md: the
+    /// mainnet runs the newest rules — proof market, registry v2 with its
+    /// registration cap, 16-seat growth — without an upgrade; see
+    /// `crate::mainnet`). 1 (or 0): the testnet's genesis, byte-identical,
+    /// later protocols arrive by committee-signed upgrade.
+    pub protocol: u32,
     /// Node rewards (docs/design/15-node-rewards.md): half of each block's
     /// issuance to the operators whose Macs beaconed, half to provers, 1/16 cap
     /// per operator. A new network's genesis parameter (needs the registry);
@@ -154,6 +160,13 @@ impl ChainConfig {
                         .expect("reserve keys");
                 }
             }
+        }
+        // A genesis above protocol 1 installs what that protocol's activation
+        // installs (the same one-time changes an activation block applies), so
+        // a new network runs the newest rules from height 0 with no signed
+        // upgrade (docs/design/15-node-rewards.md, gap G1).
+        for p in 2..=self.protocol {
+            aether_execution::forks::activate(p, &mut s).expect("genesis activation");
         }
         s
     }
@@ -425,6 +438,15 @@ impl Chain {
     pub fn new(cfg: ChainConfig) -> (Self, Block) {
         let state = cfg.genesis_state();
         let genesis = Block::genesis_with(cfg.chain_id, state.root(), cfg.history_v2);
+        // A genesis above protocol 1 carries its activation from height 0: the
+        // rules (installed in `genesis_state` above) apply to every block, and
+        // committee-signed upgrades still append after it. Protocol 1 keeps the
+        // empty schedule, so 7780's genesis is byte-identical.
+        let schedule = (cfg.protocol > 1)
+            .then(|| {
+                vec![crate::upgrade::Activation { protocol: cfg.protocol, at: 0, registrar: None }]
+            })
+            .unwrap_or_default();
         let exec = Arc::new(Executed {
             height: 0,
             digest: genesis.digest(),
@@ -443,7 +465,7 @@ impl Chain {
                 0,
                 &digest_bytes(&genesis.digest()),
             )),
-            schedule: Arc::new(Vec::new()),
+            schedule: Arc::new(schedule),
             statement: Statement::default(),
             payouts: vec![],
         });
@@ -2671,6 +2693,7 @@ mod pool_tests {
             min_streak: None,
             draw_epochs: None,
             history_v2: false,
+            protocol: 1,
             node_rewards: false,
             committee: vec![],
             reserve: None,

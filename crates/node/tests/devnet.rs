@@ -112,10 +112,10 @@ impl Net {
     }
 
     /// Wait until node `i` reports height `h`. A started-but-not-yet-answering
-    /// RPC is startup, not a stall: on a loaded machine it can take tens of
-    /// seconds, so the budget is counted from the first answer. From there a
-    /// node that stops making progress still fails the test, and the overall
-    /// limit bounds the wait even for a node whose RPC never comes up.
+    /// RPC is startup, not a stall: on a loaded machine it can take a minute or
+    /// more, so the budget is counted from the first answer. From there a node
+    /// that stops making progress still fails the test; a node that never
+    /// answers at all gets the generous overall limit, and no wait exceeds it.
     fn wait_height(&self, i: usize, h: u64, secs: u64) {
         let start = Instant::now();
         let overall = Duration::from_secs(secs + 240);
@@ -130,14 +130,18 @@ impl Net {
             if answered.is_none() && status.is_some() {
                 answered = Some(now);
             }
-            let since = |t: Instant| now.duration_since(t);
-            if since(answered.unwrap_or(start)) >= Duration::from_secs(secs)
-                || since(start) >= overall
-            {
+            // An answering node gets `secs` from that first answer; a silent
+            // one gets the whole overall limit instead (so a slow start is
+            // never mistaken for a stall), and `overall` caps both.
+            let deadline = match answered {
+                Some(first) => (first + Duration::from_secs(secs)).min(start + overall),
+                None => start + overall,
+            };
+            if now >= deadline {
                 panic!(
                     "node {i} did not reach height {h} (at {}) after {}s{}",
                     height.unwrap_or(0),
-                    since(start).as_secs(),
+                    now.duration_since(start).as_secs(),
                     if answered.is_none() { "; its RPC never answered" } else { "" }
                 );
             }

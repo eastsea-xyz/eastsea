@@ -9,7 +9,6 @@ mod common;
 use aether_execution::{proofs, PROVER_ESCROW};
 use aether_light::block::ProofClaim;
 use aether_node::chain::leader_address;
-use aether_node::upgrade::{Release, SignedUpgrade, Upgrade};
 use aether_rewards as rewards;
 use aether_rewards::{node_pool, proof_pool, proof_share};
 use aether_types::{Address, U256};
@@ -23,26 +22,17 @@ const CHAIN: u64 = 7_791;
 const EPOCH_BLOCKS: u64 = 36;
 const OPERATORS: usize = 4;
 
+/// Node rewards put the chain under the mainnet rules (`Chain::admissible_upgrade`:
+/// an ordinary upgrade needs seven days of notice), so the genesis starts at
+/// protocol 2 — the rules the proof market below needs — instead of scheduling
+/// that upgrade a few blocks ahead.
 fn net(node_rewards: bool) -> Net {
-    Net::new(Opts { chain_id: CHAIN, node_rewards, epoch_blocks: EPOCH_BLOCKS, macs: OPERATORS as u8, min_streak: None, history_v2: false, protocol: 1, fees: false, reserve: None, committee: None })
+    Net::new(Opts { chain_id: CHAIN, node_rewards, epoch_blocks: EPOCH_BLOCKS, macs: OPERATORS as u8, min_streak: None, history_v2: false, protocol: 2, fees: false, reserve: None, committee: None })
 }
 
 fn supply(net: &Net, others: &[Address]) -> U256 {
     let s = &net.parent.state;
     (0..OPERATORS).map(|i| net.balance(i)).sum::<U256>() + others.iter().map(|a| s.balance(a)).sum::<U256>()
-}
-
-fn signed(net: &Net, protocol: u32, activate_at: u64) -> SignedUpgrade {
-    let u = Upgrade {
-        chain_id: CHAIN,
-        protocol,
-        activate_at,
-        emergency: false,
-        releases: vec![Release { platform: "macos-arm64-dmg".into(), version: "0.7.0".into(), blake3: "ab".repeat(32), url: "https://x".into() }],
-        notes: String::new(),
-        registrar: None,
-    };
-    net.committee.sign_upgrade(&u)
 }
 
 #[test]
@@ -56,9 +46,9 @@ fn operators_whose_macs_answer_are_paid_each_epoch_and_proofs_are_capped() {
     assert!(rewards::enabled(&net.parent.state));
 
     // Epoch 0: four operators register at block 1 and answer every slot from block 2 on.
-    // The upgrade activates a whole epoch later (the notice rule wants one).
+    // The genesis runs protocol 2 (the proof market) from height 0.
     let regs = (0..OPERATORS).map(|i| net.register(i)).collect();
-    net.step(regs, Some(signed(&net, 2, E + 1)), vec![]);
+    net.step(regs, None, vec![]);
     net.run_to(E - 1);
     assert!((0..OPERATORS as u64).all(|i| common::answered(&net.parent.state, i, 0) == rewards::SLOTS));
     let before: Vec<U256> = (0..OPERATORS).map(|i| net.balance(i)).collect();

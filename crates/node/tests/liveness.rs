@@ -18,7 +18,11 @@ const E: u64 = 48;
 /// One draw (epoch_blocks × draw_epochs, the registry's default 24 epochs).
 const SPAN: u64 = E * DAY_EPOCHS;
 
-fn net(macs: u8, reserve: Option<Reserve>, committee: Vec<(String, String)>) -> Net {
+/// A node-rewards chain, which is under the mainnet rules (`Chain::admissible_upgrade`:
+/// an ordinary upgrade needs seven days of notice), so tests that need a later
+/// protocol start the genesis there rather than scheduling an upgrade: 1 for
+/// the handoff rules the other tests were written against, 3 for the spread draw.
+fn net_at(protocol: u32, macs: u8, reserve: Option<Reserve>, committee: Vec<(String, String)>) -> Net {
     Net::new(Opts {
         chain_id: 7_793,
         node_rewards: true,
@@ -26,11 +30,15 @@ fn net(macs: u8, reserve: Option<Reserve>, committee: Vec<(String, String)>) -> 
         macs,
         min_streak: Some(0),
         history_v2: false,
-        protocol: 1,
+        protocol,
         reserve,
         fees: false,
         committee: Some(committee),
     })
+}
+
+fn net(macs: u8, reserve: Option<Reserve>, committee: Vec<(String, String)>) -> Net {
+    net_at(1, macs, reserve, committee)
 }
 
 /// The roster the chain committed for the current draw, if any (a draw's own
@@ -202,25 +210,11 @@ fn a_protocol3_spread_draw_hands_over_to_the_roster_it_commits() {
     // Four seats at genesis, six Macs registered: the spread draw's budget is
     // one seat (4 + budget ≤ 16, (4 − 1)/3 = 1), so exactly one of the two
     // waiting Macs joins where the (here all-equal) worst-hour odds tie —
-    // the seed decides, and the chain commits the roster it drew.
-    let mut n = net(6, None, (0..4).map(common::mac_entry).collect());
-    n.chain.lock().protocol = 3; // this node runs protocol 3
-    let upgrade = n.committee.sign_upgrade(&aether_node::upgrade::Upgrade {
-        chain_id: n.chain_id,
-        protocol: 3,
-        activate_at: 64, // past the one-epoch notice (48 blocks) the chain demands
-        emergency: false,
-        releases: vec![aether_node::upgrade::Release {
-            platform: "macos-arm64-dmg".into(),
-            version: "0.6.0".into(),
-            blake3: "ab".repeat(32),
-            url: "https://x".into(),
-        }],
-        notes: String::new(),
-        registrar: None,
-    });
+    // the seed decides, and the chain commits the roster it drew. The genesis
+    // starts at protocol 3, so the spread draw is on from height 0.
+    let mut n = net_at(3, 6, None, (0..4).map(common::mac_entry).collect());
     let regs = (0..6).map(|i| n.register(i)).collect();
-    n.step_with(regs, Some(upgrade), vec![], vec![]);
+    n.step_with(regs, None, vec![], vec![]);
     // A day passes: the pool for draw 1 freezes at its first block, and the
     // committee signs the draw's seed.
     n.run_to(DAY_EPOCHS * E);

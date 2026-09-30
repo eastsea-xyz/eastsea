@@ -111,15 +111,38 @@ impl Net {
         self.rpc(i, "aether_status", json!([])).and_then(|v| v["height"].as_u64()).unwrap_or(0)
     }
 
+    /// Wait until node `i` reports height `h`. A started-but-not-yet-answering
+    /// RPC is startup, not a stall: on a loaded machine it can take tens of
+    /// seconds, so the budget is counted from the first answer. From there a
+    /// node that stops making progress still fails the test, and the overall
+    /// limit bounds the wait even for a node whose RPC never comes up.
     fn wait_height(&self, i: usize, h: u64, secs: u64) {
-        let end = Instant::now() + Duration::from_secs(secs);
-        while Instant::now() < end {
-            if self.height(i) >= h {
+        let start = Instant::now();
+        let overall = Duration::from_secs(secs + 240);
+        let mut answered: Option<Instant> = None;
+        loop {
+            let status = self.rpc(i, "aether_status", json!([]));
+            let height = status.as_ref().and_then(|v| v["height"].as_u64());
+            if height.is_some_and(|got| got >= h) {
                 return;
+            }
+            let now = Instant::now();
+            if answered.is_none() && status.is_some() {
+                answered = Some(now);
+            }
+            let since = |t: Instant| now.duration_since(t);
+            if since(answered.unwrap_or(start)) >= Duration::from_secs(secs)
+                || since(start) >= overall
+            {
+                panic!(
+                    "node {i} did not reach height {h} (at {}) after {}s{}",
+                    height.unwrap_or(0),
+                    since(start).as_secs(),
+                    if answered.is_none() { "; its RPC never answered" } else { "" }
+                );
             }
             std::thread::sleep(Duration::from_millis(200));
         }
-        panic!("node {i} did not reach height {h} (at {})", self.height(i));
     }
 
     /// Run the CLI expecting failure; returns stderr.

@@ -47,7 +47,11 @@ fn config(history_v2: bool) -> ChainConfig {
         min_streak: None,
         draw_epochs: None,
         history_v2,
-        protocol: 1,
+        // History v2 alone puts a chain under the mainnet rules
+        // (`Chain::admissible_upgrade`: an ordinary upgrade needs seven days of
+        // notice), so its genesis starts at protocol 2 — the rules 7780
+        // activates at block 20 — instead of scheduling that upgrade.
+        protocol: if history_v2 { 2 } else { 1 },
         node_rewards: false,
         group: 0,
         max_committee: aether_node::rotation::GROW_UNTIL,
@@ -130,7 +134,9 @@ impl Node {
             bytes::Bytes::new(),
         );
         let ctx = Chain::block_context(&self.chain.cfg(), &skeleton, &self.parent);
-        let upgrade = (h == 1).then(upgrade_to_2);
+        // A 7780-shaped chain (protocol 1) schedules protocol 2 twenty blocks
+        // ahead; a history-v2 genesis already runs it from height 0.
+        let upgrade = (h == 1 && self.parent.next_protocol() == 1).then(upgrade_to_2);
         let (pre, _) = self
             .chain
             .pre_state(&self.parent, self.parent.next_protocol(), &[], None, false)

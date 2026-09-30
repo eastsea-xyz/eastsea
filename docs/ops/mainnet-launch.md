@@ -34,7 +34,7 @@ aether shadow --from "$ARCHIVE_RPC" --to "$FINALIZED_HEIGHT"
 | DeviceCheck 키 | Apple 개발자 계정의 `.p8` | `~/.config/aether/devicecheck/`. **메인넷 등록기는 반드시 Apple 키**. 리허설의 `--dev-registrar`는 시험 전용이다 |
 | faucet 키 | (없음) | 메인넷은 faucet이 없다. 만들지 않는다 |
 
-모든 `validator.key`와 `.p8`은 오프라인(암호화된 외장 드라이브 등)에 백업한다. 잃어버린 검증자 키는 그 자리를 영원히 못 채운다. **등록기 키는 백업할 것이 없다**: 개인 키는 Secure Enclave 밖으로 나오지 않으므로(`registrar.key`는 개발망용), 서명 Mac을 잃으면 위원회 교체로 새 키를 넣는다([registrar.md](registrar.md)).
+모든 `validator.key`·`node-account.key`와 `.p8`은 오프라인(암호화된 외장 드라이브 등)에 백업한다. 잃어버린 검증자 키는 그 자리를 영원히 못 채운다. **등록기 키는 백업할 것이 없다**: 개인 키는 Secure Enclave 밖으로 나오지 않으므로(`registrar.key`는 개발망용), 서명 Mac을 잃으면 위원회 교체로 새 키를 넣는다([registrar.md](registrar.md)).
 
 dev 계정(1–10번)은 메인넷 제네시스에서 잔액이 0이다(사전 발행 0). 후보 등록은 수수료 팁 없이 한다: `aether candidate-register … --tip 0`(기본 base fee가 0인 동안 잔액 0으로 등록된다).
 

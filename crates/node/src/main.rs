@@ -1460,13 +1460,23 @@ fn keygen(data: &str) -> Result<(), String> {
     let dir = std::path::Path::new(data);
     let keys = aether_node::roster::LocalKeys::generate();
     keys.save(dir)?;
+    // The identity is both secrets: the voting key and the node account that
+    // pays for and sends beacons. A directory with one but not the other is a
+    // *lost* identity and never runs (candidate.rs, red team #5), so keygen —
+    // the documented first install — writes both, exactly as `aether run` does
+    // on a fresh directory. An existing account key is never replaced.
+    let account = dir.join(aether_node::candidate::ACCOUNT_FILE);
+    if !account.exists() {
+        aether_node::faucet::Faucet::generate(&account)?;
+    }
     println!(
         "{}",
         serde_json::to_string_pretty(&keys.public()).expect("json")
     );
     println!(
-        "secret keys in {} (mode 600); share only {}",
+        "secret keys in {} and {} (mode 600); share only {}",
         dir.join(aether_node::roster::KEY_FILE).display(),
+        account.display(),
         dir.join(aether_node::roster::PUBLIC_FILE).display()
     );
     Ok(())

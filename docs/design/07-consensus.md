@@ -17,7 +17,7 @@
   - 안전장치: 노드는 network.json에 identity가 없거나 threshold.json 라운드가 다르면 기동 거부. 에포크 부모 해시가 자기 확정 블록과 다르거나 경계 너머까지 확정했으면 기동 거부. 이미 확정한 높이에 다른 블록이 오면 `CONFLICTING FINALIZED BLOCK` 오류(예전엔 조용히 무시했음). 저장소 파티션 이름을 인덱스와 분리(`<data>/partition`).
   - 검증: 상태기계 재공유(교체·오프라인 딜러), 통합 테스트 `validator_rotation_continues_the_chain_under_the_same_identity` — A={1,2,3,4}가 체인 진행 후 정지, B={2,3,4,5}로 재공유, 빈 데이터로 합류한 5번 포함 B가 **같은 체인**을 이어가고(경계 블록 해시 일치), A 시절 잔액을 5번에서 같은 identity로 검증.
   - 이 절차는 수동 경로로 남아 있다. 체인을 멈추지 않는 재공유와 자동 추첨은 아래 "열린 위원회"에서 구현됨.
-- 검증자 키 — **로컬 생성 구현됨**: `aether keygen --data d`가 합의 ed25519 키와 iroh 노드 키를 만들어 `validator.key`(600, 덮어쓰기 거부)에 두고 공개 절반만 `validator.pub.json`으로 낸다. `aether network a.json b.json …`가 `network.json`(체인 id, 검증자 키·노드 id)을 만든다. 노드·DKG는 `--network`로 자기 키를 찾아 인덱스를 정하고, DKG가 identity를 network.json에 더한다. 지갑은 그 network.json 하나로 노드 id(DHT 조회)와 위원회 키를 받는다. 실망은 이 방식으로 재구성: poc-m3의 비밀키는 poc-m3 밖으로 나간 적 없음. `--network` 없이 띄우면 예전처럼 공개 devnet 키.
+- 검증자 키 — **로컬 생성 구현됨**: `aether keygen --data d`가 합의 ed25519 키와 iroh 노드 키를 만들어 `validator.key`(600, 덮어쓰기 거부)에 두고 공개 절반만 `validator.pub.json`으로 낸다. 같은 디렉터리에 비컨을 보내는 노드 계정 키 `node-account.key`(600)도 함께 만든다 — 신원은 두 비밀이고, 하나만 있는 디렉터리는 첫 설치가 아니라 잃어버린 신원으로 보아 새로 만들지 않는다(red team #5). `aether network a.json b.json …`가 `network.json`(체인 id, 검증자 키·노드 id)을 만든다. 노드·DKG는 `--network`로 자기 키를 찾아 인덱스를 정하고, DKG가 identity를 network.json에 더한다. 지갑은 그 network.json 하나로 노드 id(DHT 조회)와 위원회 키를 받는다. 실망은 이 방식으로 재구성: poc-m3의 비밀키는 poc-m3 밖으로 나간 적 없음. `--network` 없이 띄우면 예전처럼 공개 devnet 키.
 - 주의(Commonware 문서): 라운드 시드는 같은 라운드 실행에 쓰면 안 된다(리더가 시드를 먼저 알 수 있음). 실행에 난수를 쓸 때는 k라운드 뒤 시드를 약정-공개 방식으로 쓴다.
 - 위원회 선출: 처음 설계한 VRF 가중 선출(D9) 대신, 등록된 Mac 중에서 위원회 서명 시드로 추첨한다. 아래 "위원회"와 "열린 위원회" 참조.
 

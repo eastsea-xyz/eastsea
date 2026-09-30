@@ -102,7 +102,7 @@ contract CommitteeRegistry {
     }
 
     /// Liveness for this epoch, sent by the node's own account (one counts per epoch).
-    function beacon(bytes32 validatorKey) external {
+    function beacon(bytes32 validatorKey) external virtual {
         uint256 i = indexOf[validatorKey];
         if (i == 0) revert Unknown();
         Candidate storage c = candidates[i - 1];

@@ -190,6 +190,9 @@ impl ChainConfig {
         for p in 2..=self.protocol {
             aether_execution::forks::activate(p, &mut s).expect("genesis activation");
         }
+        if self.node_rewards && self.history_v2 && self.registrar.is_some() {
+            aether_rewards::registry_v3::genesis(&mut s).expect("new-genesis registry v3");
+        }
         s
     }
 }
@@ -1265,7 +1268,7 @@ impl Chain {
         // A draw's pool is frozen from the state its first block builds on
         // (before its seed exists), the same list `finalize` used to freeze
         // node-locally: now every node holds it in state.
-        if freezes {
+        if freezes && !aether_rewards::registry_v3::is_v3(&state) {
             let pool = crate::rotation::eligible(
                 &parent.state,
                 (parent.height + 1) / params.epoch_blocks,
@@ -1310,6 +1313,12 @@ impl Chain {
                 }
             }
         }
+        if freezes && aether_rewards::registry_v3::is_v3(&state) {
+            let epoch = (parent.height + 1) / params.epoch_blocks;
+            let pool = crate::rotation::eligible(&state, epoch, params.min_streak);
+            aether_rewards::freeze_pool(&mut state, (parent.height + 1) / span, &pool)
+                .map_err(|e| ChainError::Exec(format!("draw pool: {e}")))?;
+        }
         // The committee taking over here is the chain's record of itself: the
         // running committee word becomes the handoff's members (what every
         // later draw and reserve reseat derives from), and the founder's
@@ -1335,6 +1344,8 @@ impl Chain {
             if s.draw == draw
                 && draw > 0
                 && parent.seed.as_ref().is_none_or(|p| p.1.draw < draw)
+                && (!aether_rewards::registry_v3::is_v3(&state)
+                    || aether_rewards::next_roster(&state).is_none_or(|(d, _)| d != draw))
             {
                 if let Some((_, pool)) = aether_rewards::draw_pool(&state).filter(|(d, _)| *d == draw) {
                     let seed_bytes = hex::decode(&s.signature).unwrap_or_default();
@@ -1388,15 +1399,19 @@ impl Chain {
         // profiles this block's distribution wrote — and commits it as this
         // draw's roster. The seed for this draw, or a handoff still on its way,
         // each stand in both' way, as the node-local rules they replace did.
+        let departures = crate::rotation::departures(&state);
+        let urgent_leave = aether_rewards::registry_v3::is_v3(&state)
+            && aether_rewards::committee(&state).iter().any(|(k, _)| departures.contains(k));
         if boundary
-            && !freezes
+            && (!freezes || (urgent_leave && seed.is_none()))
             && parent.handoff.as_ref().is_none_or(|p| p.switch <= parent.height + 1)
             && aether_rewards::next_roster(&state).is_none_or(|(d, _)| d != current_draw(&parent.state, parent.height + 1))
         {
             let running = crate::rotation::Committee { members: aether_rewards::committee(&state) };
             let epoch = (parent.height + 1) / params.epoch_blocks;
             if !running.members.is_empty() {
-                let pool = crate::rotation::eligible(&parent.state, epoch, params.min_streak);
+                let eligibility_state = if aether_rewards::registry_v3::is_v3(&state) { &state } else { &parent.state };
+                let pool = crate::rotation::eligible(eligibility_state, epoch, params.min_streak);
                 let ops = crate::rotation::operators(&parent.state);
                 let availability = crate::rotation::availability(&state);
                 let recents = crate::rotation::recents(&state);
@@ -1404,13 +1419,14 @@ impl Chain {
                 // Early replacement (13-roadmap.md, F): a member silent through
                 // the last two epochs hands its seat to the candidate the
                 // spread rule picks, while the old quorum still stands.
-                let replaced = crate::rotation::replace_silent(
+                let replaced = crate::rotation::replace_unavailable(
                     &running,
                     &pool,
                     &digest_bytes(&parent.digest),
                     |k: &str| ops.get(k).cloned(),
                     hours,
                     |k: &str| recents.get(k).copied(),
+                    |k: &str| departures.contains(k),
                     epoch,
                 );
                 let members = match (replaced, Reserve::of(&parent.state)) {
@@ -1459,7 +1475,8 @@ impl Chain {
         if epochs {
             let epoch = (parent.height + 1) / params.epoch_blocks;
             if let Some(reserve) = Reserve::of(&parent.state) {
-                let pool = crate::rotation::eligible(&parent.state, epoch, params.min_streak);
+                let eligibility_state = if aether_rewards::registry_v3::is_v3(&state) { &state } else { &parent.state };
+                let pool = crate::rotation::eligible(eligibility_state, epoch, params.min_streak);
                 let ops = crate::rotation::operators(&state);
                 let on = crate::rotation::independent(&pool, |k| ops.get(k).cloned(), &reserve)
                     >= aether_consensus::committee::MIN_OPEN_COMMITTEE
@@ -2636,6 +2653,9 @@ impl Chain {
             let epoch = (now + 1) / epoch_blocks;
             let window = beacons::layout(epoch_blocks).map_or(0, |l| l.1);
             g.beacon_pool.retain(|(e, slot, index), _| {
+                if let Some((signed_height, _)) = beacons::availability_of(*slot) {
+                    return signed_height > now && *e == epoch;
+                }
                 let b = beacons::beacon(state, *index);
                 let recorded = b.epoch == *e && b.mask & (1 << slot) != 0;
                 let open = *e == epoch && beacons::slot(state, *slot).is_some_and(|h| h + window > now);

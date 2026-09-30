@@ -11,7 +11,7 @@
 use aether_consensus::committee::MIN_OPEN_COMMITTEE;
 use aether_execution::registry;
 use aether_execution::WorldState;
-use aether_rewards::{beacons, DAY_EPOCHS, SLOTS};
+use aether_rewards::{beacons, registry_v3, DAY_EPOCHS, SLOTS};
 
 /// In a validator's data dir: files a background reshare stages for a handoff.
 pub const STAGED_THRESHOLD: &str = "threshold-next.json";
@@ -48,10 +48,21 @@ pub fn eligible(state: &WorldState, epoch: u64, min_streak: u64) -> Vec<(String,
     if epoch == 0 {
         return vec![];
     }
+    let free = registry_v3::is_v3(state) && aether_rewards::enabled(state);
     registry::candidates(state)
         .into_iter()
-        // Up at least 95% of the time during the streak (missed * 20 <= streak).
-        .filter(|c| c.last_epoch == epoch - 1 && c.streak >= min_streak && c.missed.saturating_mul(20) <= c.streak)
+        .filter(|c| {
+            if !free {
+                return c.last_epoch == epoch - 1 && c.streak >= min_streak && c.missed.saturating_mul(20) <= c.streak;
+            }
+            let (up, no_drop) = beacons::stability(state, c.index, epoch);
+            let hour = epoch % DAY_EPOCHS;
+            let at_hour = beacons::profile(state, c.index).at(hour).is_none_or(|p| p >= beacons::PROB_SCALE / 2);
+            c.registered_epoch.saturating_add(min_streak) <= epoch
+                && c.last_epoch == epoch - 1
+                && up >= 3 && no_drop && at_hour
+                && !registry_v3::availability(state, c.index).is_some_and(|(_, leaving)| leaving)
+        })
         .filter_map(|c| aether_net::EndpointId::from_bytes(&c.node_id).ok().map(|n| (hex::encode(c.validator_key), n.to_string())))
         .collect()
 }
@@ -387,6 +398,18 @@ pub fn recents(state: &WorldState) -> std::collections::HashMap<String, (u64, u6
         .collect()
 }
 
+/// Voting keys that signed a leaving announcement still in force.
+pub fn departures(state: &WorldState) -> std::collections::HashSet<String> {
+    if !registry_v3::is_v3(state) {
+        return Default::default();
+    }
+    registry::candidates(state)
+        .into_iter()
+        .filter(|c| registry_v3::availability(state, c.index).is_some_and(|(_, leaving)| leaving))
+        .map(|c| hex::encode(c.validator_key))
+        .collect()
+}
+
 /// The spread draw (docs/design/13-roadmap.md, F): `draw_v3` with the worst
 /// hour in mind. Early Macs cluster in one time zone, and a one-time-zone
 /// committee stalls every night even at sixteen seats — so while the committee
@@ -491,8 +514,27 @@ pub fn replace_silent(
     recent: impl Fn(&str) -> Option<(u64, u64, u64)>,
     epoch: u64,
 ) -> Option<Vec<(String, String)>> {
+    replace_unavailable(running, pool, seed, candidate, hours, recent, |_| false, epoch)
+}
+
+/// V3 early replacement: an announced departure is eligible at the very next
+/// epoch boundary; silent members still need two bad epochs. The old quorum
+/// signs the same bounded reshare in both cases.
+pub fn replace_unavailable(
+    running: &Committee,
+    pool: &[(String, String)],
+    seed: &[u8],
+    candidate: impl Fn(&str) -> Option<String>,
+    hours: impl Fn(&str) -> Option<Hours>,
+    recent: impl Fn(&str) -> Option<(u64, u64, u64)>,
+    leaving: impl Fn(&str) -> bool,
+    epoch: u64,
+) -> Option<Vec<(String, String)>> {
     let n = running.members.len();
-    let swaps = (n / 3).saturating_sub(1);
+    let departing = running.members.iter().any(|(k, _)| leaving(k));
+    // A four/five-seat committee still has its old quorum after one announced
+    // departure. Silence alone keeps the old conservative no-swap rule.
+    let swaps = (n / 3).saturating_sub(1).max(usize::from((4..=5).contains(&n) && departing));
     if swaps == 0 || epoch == 0 {
         return None;
     }
@@ -502,13 +544,14 @@ pub fn replace_silent(
         matches!(recent(k), Some((e, last, prev))
             if e + 1 == epoch && last != beacons::NO_COUNT && prev != beacons::NO_COUNT && last < SILENT_BELOW && prev < SILENT_BELOW)
     };
-    let mut going: Vec<&(String, String)> = running.members.iter().filter(|(k, _)| silent(k)).collect();
+    let mut going: Vec<&(String, String)> = running.members.iter().filter(|(k, _)| leaving(k) || silent(k)).collect();
     if going.is_empty() {
         return None;
     }
     going.sort_by(|a, b| {
-        worst_of(&a.0, &hours)
-            .cmp(&worst_of(&b.0, &hours))
+        (!leaving(&a.0))
+            .cmp(&(!leaving(&b.0)))
+            .then_with(|| worst_of(&a.0, &hours).cmp(&worst_of(&b.0, &hours)))
             .then_with(|| ticket(seed, &a.0).cmp(&ticket(seed, &b.0)))
     });
     going.truncate(swaps);
@@ -997,6 +1040,44 @@ mod tests {
     fn too_few_eligible_keep_the_running_set() {
         let s = registry_with(3, 3);
         assert!(draw_at(&s, 4, b"seed", &running(&[0xa1, 0xa2, 0xa3, 0xa4])).is_none());
+    }
+
+    #[test]
+    fn announced_laptop_nights_keep_a_sixteen_seat_quorum() {
+        // Twelve laptops sleep eight hours each day in three non-overlapping
+        // cohorts of four; four always-on Macs keep the base quorum. Eight
+        // independent spares let the bounded handoff replace each cohort.
+        let all: Vec<_> = (1..=24).map(mac).collect();
+        let mut running = Committee { members: all[..16].to_vec() };
+        let op = |k: &str| Some(k.to_owned());
+        for hour in 0..7 * DAY_EPOCHS {
+            let sleeping = |k: &str| {
+                let i: usize = k.strip_prefix('m').unwrap_or("0").parse().unwrap_or(0);
+                (1..=12).contains(&i) && (hour % DAY_EPOCHS) / 8 == ((i - 1) / 4) as u64
+            };
+            let pool: Vec<_> = all.iter().filter(|(k, _)| !sleeping(k)).cloned().collect();
+            let next = replace_unavailable(&running, &pool, &seed(hour as u8), op, |_| None, |_| None, sleeping, hour + 1);
+            if let Some(members) = next {
+                assert_eq!(members.len(), 16);
+                running.members = members;
+            }
+            let awake = running.members.iter().filter(|(k, _)| !sleeping(k)).count();
+            assert!(awake >= quorum(16), "hour {hour}: {awake} live seats");
+        }
+    }
+
+    #[test]
+    fn announced_departure_can_handoff_one_small_committee_seat() {
+        for n in [4, 5] {
+            let running = committee(n);
+            let spare = mac(1);
+            let next = replace_unavailable(&running, std::slice::from_ref(&spare), &seed(9), ops_of, |_| None, |_| None, |k| k == "g0", 10)
+                .expect("the remaining old members can sign one handoff");
+            assert_eq!(next.len(), n as usize);
+            assert!(!next.iter().any(|(k, _)| k == "g0"));
+            assert!(next.contains(&spare));
+            assert!(replace_silent(&running, std::slice::from_ref(&spare), &seed(9), ops_of, |_| None, |_| Some((9, 0, 0)), 10).is_none(), "unannounced silence keeps the old small-set rule");
+        }
     }
 
     /// `x`/`y` in `SCALE` units (the test's way of writing a probability).

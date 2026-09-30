@@ -970,3 +970,54 @@ fn every_rewards_storage_tag_is_distinct() {
     tags.dedup();
     assert_eq!(tags.len(), crate::ALL_TAGS.len(), "two records share a storage tag");
 }
+
+#[test]
+fn announced_night_keeps_warmup_and_recent_stability() {
+    let mut s = network();
+    registry_v3::genesis(&mut s).unwrap();
+    enroll(&mut s, 0, operator(0), 0);
+    enroll(&mut s, 1, operator(1), 0);
+    warm(&mut s, 0, 3);
+    warm(&mut s, 1, 3);
+    for e in 1..2 * DAY_EPOCHS {
+        let asleep = e % DAY_EPOCHS < 8;
+        registry_v3::set_availability(&mut s, 0, e * EB, asleep);
+        answer(&mut s, 0, e, if asleep { 0 } else { EVERY_SLOT });
+        answer(&mut s, 1, e, EVERY_SLOT);
+        distribute(&mut s, (e + 1) * EB).unwrap();
+        let (up, no_drop) = beacons::stability(&s, 0, e + 1);
+        assert!(no_drop, "announced hour {e} is not an unexpected drop");
+        if e == DAY_EPOCHS { assert_eq!(up, 3); }
+    }
+    assert_eq!(mac(&s, 0).level, 5, "sleep does not lower warm-up");
+    assert_eq!(beacons::announced_sleep(&s, 0), 0, "day count resets");
+
+    let mut unannounced = network();
+    registry_v3::genesis(&mut unannounced).unwrap();
+    enroll(&mut unannounced, 0, operator(0), 0);
+    enroll(&mut unannounced, 1, operator(1), 0);
+    warm(&mut unannounced, 0, 3);
+    for e in 1..2 * DAY_EPOCHS {
+        answer(&mut unannounced, 0, e, if e % DAY_EPOCHS < 8 { 0 } else { EVERY_SLOT });
+        answer(&mut unannounced, 1, e, EVERY_SLOT);
+        distribute(&mut unannounced, (e + 1) * EB).unwrap();
+    }
+    assert_eq!(mac(&unannounced, 0).level, 1, "unannounced loss still costs warm-up");
+}
+
+#[test]
+fn announced_long_sleep_preserves_streak_but_a_later_unannounced_gap_does_not() {
+    let mut s = network();
+    registry_v3::genesis(&mut s).unwrap();
+    enroll(&mut s, 0, operator(0), 0);
+    let c = beacons::candidate(&s, 0).unwrap();
+    let due = |epoch| beacons::Due { epoch, slot: 0, hash: [1; 32], period: 0, needs_attestation: false };
+    beacons::record(&mut s, &c, &due(1), false);
+    registry_v3::set_availability(&mut s, 0, EB + 1, true);
+    registry_v3::set_availability(&mut s, 0, 30 * EB, false);
+    beacons::record(&mut s, &c, &due(30), false);
+    let resumed = beacons::candidate(&s, 0).unwrap();
+    assert_eq!((resumed.streak, resumed.missed), (3, 0));
+    beacons::record(&mut s, &c, &due(60), false);
+    assert_eq!(beacons::candidate(&s, 0).unwrap().streak, 1);
+}

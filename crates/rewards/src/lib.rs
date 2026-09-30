@@ -121,7 +121,7 @@ const TAG_MAX_COMMITTEE: u64 = 10;
 /// Every storage tag of REWARDS (here and in beacons.rs), in one list: a new
 /// record takes the next free number (two records once shared tag 8).
 #[cfg(test)]
-pub(crate) const ALL_TAGS: [u64; 18] = [
+pub(crate) const ALL_TAGS: [u64; 19] = [
     ENABLED,
     TAG_MAC,
     TAG_OPERATOR,
@@ -140,9 +140,11 @@ pub(crate) const ALL_TAGS: [u64; 18] = [
     beacons::TAG_PROFILE,
     beacons::TAG_OFFERED,
     beacons::TAG_RECENT,
+    beacons::TAG_STABILITY,
 ];
 
 pub mod beacons;
+pub mod registry_v3;
 
 fn tagged(tag: u64, low: U256) -> U256 {
     (U256::from(tag) << 200) | low
@@ -349,17 +351,17 @@ pub fn distribute(state: &mut WorldState, height: u64) -> Result<Distribution, S
         paid.push((operator, amount));
     }
 
-    if (epoch + 1).is_multiple_of(DAY_EPOCHS) {
-        end_day(&candidates, &mut macs, epoch + 1 - DAY_EPOCHS);
-    }
-    for (c, m) in candidates.iter().zip(macs) {
-        set_mac(state, c.index, m);
-    }
     // The hour-of-day profile and the last two epochs' counts (13-roadmap.md,
     // F): what the spread draw and early replacement read. A Mac registered
     // mid-epoch is judged from its first full day.
     for (c, a) in candidates.iter().zip(answered.iter()) {
         beacons::note(state, c.index, epoch, *a, c.registered_epoch < epoch);
+    }
+    if (epoch + 1).is_multiple_of(DAY_EPOCHS) {
+        end_day(state, &candidates, &mut macs, epoch + 1 - DAY_EPOCHS);
+    }
+    for (c, m) in candidates.iter().zip(macs) {
+        set_mac(state, c.index, m);
     }
     Ok(Distribution { epoch, pool, paid, unminted: pool - minted })
 }
@@ -382,7 +384,7 @@ pub fn randomness(state: &WorldState, epoch: u64) -> U256 {
 }
 
 /// A day (epochs `first..first + DAY_EPOCHS`) ended: move warm-up levels.
-fn end_day(candidates: &[registry::Candidate], macs: &mut [Mac], first: u64) {
+fn end_day(state: &mut WorldState, candidates: &[registry::Candidate], macs: &mut [Mac], first: u64) {
     let day_slots = DAY_EPOCHS * SLOTS;
     // Macs registered for the whole day; long-silent ones (nothing today or
     // yesterday) do not drag the network rate down forever.
@@ -394,7 +396,11 @@ fn end_day(candidates: &[registry::Candidate], macs: &mut [Mac], first: u64) {
     if !neutral {
         for &i in &full_day {
             let m = &mut macs[i];
-            m.level = if m.answered * 100 >= day_slots * GOOD_DAY_PERCENT {
+            let announced = if registry_v3::is_v3(state) { beacons::announced_sleep(state, candidates[i].index) } else { 0 };
+            let expected = day_slots.saturating_sub(announced * SLOTS);
+            m.level = if expected == 0 {
+                m.level
+            } else if m.answered * 100 >= expected * GOOD_DAY_PERCENT {
                 (m.level + 1).min(WARMUP_STEPS)
             } else {
                 m.level.saturating_sub(1)
@@ -404,6 +410,11 @@ fn end_day(candidates: &[registry::Candidate], macs: &mut [Mac], first: u64) {
     for m in macs.iter_mut() {
         m.previous = m.answered;
         m.answered = 0;
+    }
+    if registry_v3::is_v3(state) {
+        for c in candidates {
+            beacons::reset_announced_sleep(state, c.index);
+        }
     }
 }
 

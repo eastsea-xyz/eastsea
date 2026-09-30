@@ -30,7 +30,7 @@
 //!   valid re-attestation cannot have its answers included: weight 0 until it
 //!   re-attests.
 
-use crate::{enabled, tagged, DAY_EPOCHS, REWARDS, SLOTS};
+use crate::{enabled, registry_v3, tagged, DAY_EPOCHS, REWARDS, SLOTS};
 use aether_execution::registry::{self, Candidate};
 use aether_execution::WorldState;
 use alloy_primitives::{keccak256, Address, U256};
@@ -39,6 +39,16 @@ use alloy_primitives::{keccak256, Address, U256};
 pub const ANSWER_WINDOW: u64 = 90;
 /// Answers one block may carry (each is one signature check).
 pub const MAX_ANSWERS_PER_BLOCK: usize = 1024;
+/// Availability signals use slot numbers above the twelve ordinary slots.
+/// Their number binds a block height and direction without changing the old
+/// beacon payload shape: stale signatures expire with that block.
+pub fn availability_slot(height: u64, leaving: bool) -> Option<u64> {
+    height.checked_mul(2)?.checked_add(SLOTS + u64::from(!leaving))
+}
+
+pub fn availability_of(slot: u64) -> Option<(u64, bool)> {
+    (slot >= SLOTS).then(|| ((slot - SLOTS) / 2, (slot - SLOTS).is_multiple_of(2)))
+}
 /// A registry candidate's liveness streak restarts after this many missed epochs (as in the contract).
 pub const GRACE_EPOCHS: u64 = 24;
 
@@ -82,6 +92,12 @@ pub fn reattest_slot(seed: &[u8; 32]) -> (u64, u64) {
 /// What a Mac signs (with its registered voting key) to answer slot `slot` of `epoch`.
 pub fn message(chain_id: u64, epoch: u64, slot: u64, hash: &[u8; 32]) -> Vec<u8> {
     [b"aether-beacon".as_slice(), &chain_id.to_be_bytes(), REWARDS.as_slice(), &epoch.to_be_bytes(), &slot.to_be_bytes(), hash].concat()
+}
+
+/// Domain-separated from slot answers and bound to one block height, so an
+/// old sleep cannot be replayed after the Mac announces its return.
+pub fn availability_message(chain_id: u64, height: u64, leaving: bool) -> Vec<u8> {
+    [b"aether-availability/v1".as_slice(), &chain_id.to_be_bytes(), REWARDS.as_slice(), &height.to_be_bytes(), &[u8::from(leaving)]].concat()
 }
 
 /// What the registrar signs (P-256, SHA-256 of these bytes) after a fresh
@@ -177,6 +193,9 @@ pub const NO_COUNT: u64 = 15;
 pub(crate) const TAG_PROFILE: u64 = 11;
 pub(crate) const TAG_OFFERED: u64 = 12;
 pub(crate) const TAG_RECENT: u64 = 13;
+/// New-genesis recent stability: last epoch, four up bits, six unexpected-drop
+/// bits, and this day's announced sleeping hours. The next free REWARDS tag.
+pub(crate) const TAG_STABILITY: u64 = 18;
 /// Bits a profile bucket takes in its word (values fit in 7; the margin keeps
 /// the packing comfortable).
 const BUCKET_BITS: usize = 10;
@@ -277,6 +296,24 @@ pub fn note(state: &mut WorldState, index: u64, epoch: u64, answered: u64, full:
     if old != next {
         state.set_storage(REWARDS, at, next);
     }
+    if full && registry_v3::is_v3(state) {
+        let at = tagged(TAG_STABILITY, U256::from(index));
+        let old = state.storage(&REWARDS, at);
+        let last = word_u64(old, 0).checked_sub(1);
+        let gap = last.map_or(1, |last| epoch.saturating_sub(last)).clamp(1, 6);
+        let previous_up = ((old >> 64usize) & U256::from(15u8)).to::<u8>();
+        let previous_drops = ((old >> 68usize) & U256::from(63u8)).to::<u8>();
+        let leaving = registry_v3::announced_for_epoch(state, index, epoch);
+        let up = (previous_up << gap | u8::from(answered >= SLOTS / 2)) & 15;
+        let gap_drops = ((1u8 << (gap - 1)) - 1) << 1;
+        let drops = (previous_drops << gap | gap_drops | u8::from(!leaving && answered < SLOTS / 2)) & 63;
+        let sleep = announced_sleep(state, index) + u64::from(leaving && answered < SLOTS / 2);
+        let next = U256::from(epoch + 1)
+            | (U256::from(up) << 64usize)
+            | (U256::from(drops) << 68usize)
+            | (U256::from(sleep.min(24)) << 74usize);
+        state.set_storage(REWARDS, at, next);
+    }
 }
 
 /// The last two distributed epochs' answered-slot counts for candidate
@@ -290,6 +327,32 @@ pub fn recent(state: &WorldState, index: u64) -> Option<(u64, u64, u64)> {
     }
     let field = |shift: usize| ((w >> shift) & U256::from(0xFu64)).to::<u64>();
     Some((((w >> 8usize).to::<u64>() - 1), field(4), field(0)))
+}
+
+/// (up in the last four epochs, unannounced drops in the last six).
+/// A gap in observations is treated as an unannounced drop unless a signed
+/// leaving announcement was in force when the missed epoch ended.
+pub fn stability(state: &WorldState, index: u64, epoch: u64) -> (u32, bool) {
+    let w = state.storage(&REWARDS, tagged(TAG_STABILITY, U256::from(index)));
+    if w.is_zero() || word_u64(w, 0) != epoch {
+        return (0, false);
+    }
+    let up = ((w >> 64usize) & U256::from(15u8)).to::<u8>();
+    let drops = ((w >> 68usize) & U256::from(63u8)).to::<u8>();
+    (up.count_ones(), drops == 0)
+}
+
+pub fn announced_sleep(state: &WorldState, index: u64) -> u64 {
+    ((state.storage(&REWARDS, tagged(TAG_STABILITY, U256::from(index))) >> 74usize) & U256::from(255u8)).to::<u64>()
+}
+
+pub fn reset_announced_sleep(state: &mut WorldState, index: u64) {
+    let at = tagged(TAG_STABILITY, U256::from(index));
+    let w = state.storage(&REWARDS, at);
+    let next = w & !(U256::from(255u8) << 74usize);
+    if w != next {
+        state.set_storage(REWARDS, at, next);
+    }
 }
 
 fn candidate_slot(index: u64, k: u64) -> U256 {
@@ -356,6 +419,10 @@ pub fn check(state: &WorldState, height: u64, c: &Candidate, k: u64) -> Result<D
 
 /// Record a verified answer of `c`: its slot bit, its re-attestation, and its registry liveness.
 pub fn record(state: &mut WorldState, c: &Candidate, due: &Due, attested: bool) {
+    if let Some((height, leaving)) = availability_of(due.slot) {
+        registry_v3::set_availability(state, c.index, height, leaving);
+        return;
+    }
     let mut b = beacon(state, c.index);
     if b.epoch != due.epoch {
         b = Beacon { epoch: due.epoch, mask: 0, attested: b.attested };
@@ -377,7 +444,16 @@ fn mark_live(state: &mut WorldState, index: u64, epoch: u64) {
         return;
     }
     let gap = epoch - last;
-    let (streak, missed) = if gap <= GRACE_EPOCHS { (streak + 1, missed + gap - 1) } else { (1, 0) };
+    let announced_gap = registry_v3::is_v3(state)
+        && registry_v3::last_leaving(state, index).is_some_and(|h| h / registry::epoch_blocks(state) >= last)
+        && registry_v3::availability(state, index).is_some_and(|(h, leaving)| leaving || h / registry::epoch_blocks(state) + 1 >= epoch);
+    let (streak, missed) = if announced_gap {
+        (streak + 1, missed)
+    } else if gap <= GRACE_EPOCHS {
+        (streak + 1, missed + gap - 1)
+    } else {
+        (1, 0)
+    };
     state.set_storage(registry::REGISTRY, at, U256::from(epoch) | (U256::from(streak) << 64) | (U256::from(missed) << 128));
 }
 

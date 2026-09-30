@@ -140,6 +140,9 @@ final class NodeController: ObservableObject {
             automaticRestartBlocked = false
         }
         if onlyOnPower && Self.onBattery {
+            // Keep voting until the announced handoff lands. Stopping a seated
+            // Mac before the old quorum signs can stall the whole committee.
+            if isValidator { return }
             if process != nil { stop(keepSwitch: true) }
             state = .waitingForPower
         } else if process == nil, restartTimer == nil, !automaticRestartBlocked {
@@ -195,6 +198,17 @@ final class NodeController: ObservableObject {
     /// Sleep/wake observers (red team #9): the watchdog's timing is stale the
     /// moment the Mac sleeps. Added once, kept for the app's lifetime.
     private var wakeObservers: [NSObjectProtocol] = []
+    private var powerSourceSource: CFRunLoopSource?
+
+    /// The node signs and gossips this local request with its registered voting
+    /// key. A signal wakes its one-second loop before macOS suspends the process.
+    private func announceAvailability(leaving: Bool) {
+        let file = Self.dataDir.appendingPathComponent("availability-state")
+        try? Data((leaving ? "leaving" : "back").utf8).write(to: file, options: .atomic)
+        if case .running = state, candidate != nil, let process, process.isRunning {
+            Darwin.kill(process.processIdentifier, SIGUSR1)
+        }
+    }
 
     /// The newest protocol the chain has scheduled, as this app last heard it
     /// from its own node (`aether_status.newest_scheduled`), kept across
@@ -238,6 +252,7 @@ final class NodeController: ObservableObject {
             state = .failed("\(error.localizedDescription)")
             return
         }
+        announceAvailability(leaving: Self.onBattery)
         loadCandidate(binary)
         nextCandidateRetry = Date().addingTimeInterval(60)
         var args = ["run", "--data", Self.dataDir.path, "--rpc-port", String(Self.port), "--port", String(Self.p2pPort), "--exit-with-parent"]
@@ -590,8 +605,20 @@ final class NodeController: ObservableObject {
     private func watchSleep() {
         guard wakeObservers.isEmpty else { return }
         let center = NSWorkspace.shared.notificationCenter
+        if let source = IOPSNotificationCreateRunLoopSource({ context in
+            guard let context else { return }
+            let controller = Unmanaged<NodeController>.fromOpaque(context).takeUnretainedValue()
+            Task { @MainActor in
+                controller.announceAvailability(leaving: Self.onBattery)
+                controller.applyPower()
+            }
+        }, Unmanaged.passUnretained(self).toOpaque())?.takeRetainedValue() {
+            powerSourceSource = source
+            CFRunLoopAddSource(CFRunLoopGetMain(), source, .defaultMode)
+        }
         wakeObservers = [
             center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.announceAvailability(leaving: true) }
                 Task { @MainActor in
                     guard let self, self.process != nil else { return }
                     self.watchdog.invalidate()
@@ -601,6 +628,7 @@ final class NodeController: ObservableObject {
                 }
             },
             center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.announceAvailability(leaving: Self.onBattery) }
                 Task { @MainActor in
                     guard let self, self.process != nil else { return }
                     self.watchdog.invalidate()
@@ -609,6 +637,9 @@ final class NodeController: ObservableObject {
                     self.state = .starting
                     self.check()
                 }
+            },
+            center.addObserver(forName: NSWorkspace.willPowerOffNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.announceAvailability(leaving: true) }
             },
         ]
     }

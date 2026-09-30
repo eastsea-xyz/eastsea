@@ -892,13 +892,13 @@ uint16_t uniffi_aether_ffi_checksum_func_prepare_session_submit(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_SESSION_TOKEN_PAYMENT
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_SESSION_TOKEN_PAYMENT
 uint16_t uniffi_aether_ffi_checksum_func_prepare_session_token_payment(void
-
+    
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_SESSION_TOKEN_SUBMIT
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_SESSION_TOKEN_SUBMIT
 uint16_t uniffi_aether_ffi_checksum_func_prepare_session_token_submit(void
-
+    
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_SET_RECOVERY_KEY
@@ -916,13 +916,13 @@ uint16_t uniffi_aether_ffi_checksum_func_prepare_set_session(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_SET_SESSION_TOKEN
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_SET_SESSION_TOKEN
 uint16_t uniffi_aether_ffi_checksum_func_prepare_set_session_token(void
-
+    
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_STOP_SESSIONS
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_STOP_SESSIONS
 uint16_t uniffi_aether_ffi_checksum_func_prepare_stop_sessions(void
-
+    
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_TRANSFER
@@ -964,7 +964,7 @@ uint16_t uniffi_aether_ffi_checksum_func_session_status(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_SESSION_TOKEN_STATUS
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_SESSION_TOKEN_STATUS
 uint16_t uniffi_aether_ffi_checksum_func_session_token_status(void
-
+    
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_SET_COMMITTEE_IDENTITY

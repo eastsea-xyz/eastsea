@@ -1425,9 +1425,9 @@ public struct SessionTokenRequest: Equatable, Hashable {
         self.message = message
     }
 
+    
 
-
-
+    
 }
 
 #if compiler(>=6)
@@ -1441,11 +1441,11 @@ public struct FfiConverterTypeSessionTokenRequest: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SessionTokenRequest {
         return
             try SessionTokenRequest(
-                account: FfiConverterString.read(from: &buf),
-                token: FfiConverterString.read(from: &buf),
-                to: FfiConverterString.read(from: &buf),
-                amount: FfiConverterString.read(from: &buf),
-                nonce: FfiConverterUInt64.read(from: &buf),
+                account: FfiConverterString.read(from: &buf), 
+                token: FfiConverterString.read(from: &buf), 
+                to: FfiConverterString.read(from: &buf), 
+                amount: FfiConverterString.read(from: &buf), 
+                nonce: FfiConverterUInt64.read(from: &buf), 
                 message: FfiConverterData.read(from: &buf)
         )
     }
@@ -1489,9 +1489,9 @@ public struct SessionTokenStatus: Equatable, Hashable {
         self.leftNow = leftNow
     }
 
+    
 
-
-
+    
 }
 
 #if compiler(>=6)
@@ -1505,8 +1505,8 @@ public struct FfiConverterTypeSessionTokenStatus: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SessionTokenStatus {
         return
             try SessionTokenStatus(
-                perPayment: FfiConverterString.read(from: &buf),
-                perDay: FfiConverterString.read(from: &buf),
+                perPayment: FfiConverterString.read(from: &buf), 
+                perDay: FfiConverterString.read(from: &buf), 
                 leftNow: FfiConverterString.read(from: &buf)
         )
     }

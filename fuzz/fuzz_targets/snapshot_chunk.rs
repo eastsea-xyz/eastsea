@@ -6,7 +6,7 @@ fuzz_target!(|data: &[u8]| {
     if data.len() > 64 << 10 {
         return;
     }
-    if let Ok(response) = serde_json::from_slice(data) {
+    if let Ok(response) = serde_json::from_slice::<serde_json::Value>(data) {
         let expected = response["expected"]
             .as_u64()
             .map(|n| n as usize)

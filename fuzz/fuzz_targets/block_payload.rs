@@ -1,7 +1,7 @@
 #![no_main]
 
 use aether_light::block::{Block, Payload};
-use commonware_codec::DecodeExt;
+use commonware_codec::Decode;
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {

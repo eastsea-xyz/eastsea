@@ -17,7 +17,7 @@ export AETHER_PROVER_PROGRAM=$("$root/scripts/prover-program.sh")
 cd "$root/fuzz"
 for target in tx_envelope block_payload beacon_answer era_file snapshot_chunk; do
     mkdir -p "$root/tmp/fuzz-corpus/$target" "$root/tmp/fuzz-artifacts/$target"
-    cp -n "$root/fuzz/corpus/$target/"* "$root/tmp/fuzz-corpus/$target/"
-    cargo +nightly-2026-01-15 fuzz run "$target" "$root/tmp/fuzz-corpus/$target" -- \
+    cp -n "$root/fuzz/corpus/$target/"* "$root/tmp/fuzz-corpus/$target/" || true   # BSD cp -n exits 1 when a seed is already there
+    cargo "+${FUZZ_TOOLCHAIN:-nightly}" fuzz run "$target" "$root/tmp/fuzz-corpus/$target" -- \
         -max_total_time=60 -artifact_prefix="$root/tmp/fuzz-artifacts/$target/"
 done

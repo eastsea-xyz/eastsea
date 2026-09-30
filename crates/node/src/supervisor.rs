@@ -186,6 +186,30 @@ fn now_ms() -> u64 {
         .unwrap_or_default()
 }
 
+/// What [`Supervisor::install`] reads out of the old world: the block the new
+/// epoch anchors on, and the proof of it a joining Mac starts from. Both are
+/// the child's to give, and the swap itself runs with that child already
+/// stopped (no signer may see a half-swapped share and pointer) — a stopped
+/// child answers no RPC, so the reads happen first, while it is still up.
+struct Anchor {
+    end_hash: String,
+    finalized: Value,
+}
+
+impl Anchor {
+    fn read(rpc: &str, switch: u64) -> Result<Self, String> {
+        let end = switch.checked_sub(1).ok_or("handoff switch")?;
+        let end_hash = rpc_call(rpc, "aether_getBlock", json!([end]))?["hash"]
+            .as_str()
+            .ok_or("no block before the switch")?
+            .to_string();
+        Ok(Self {
+            end_hash,
+            finalized: rpc_call(rpc, "aether_getFinalized", json!([end]))?,
+        })
+    }
+}
+
 impl Supervisor {
     fn network_path(&self) -> PathBuf {
         self.data.join("network.json")
@@ -193,6 +217,13 @@ impl Supervisor {
 
     fn rpc(&self) -> String {
         format!("http://127.0.0.1:{}", self.rpc_port)
+    }
+
+    /// The old world's anchor for a handoff this Mac is about to install: read
+    /// now, from the child that holds it, because the install stops that child
+    /// first and then changes its share and pointer on disk.
+    fn anchor(&self, h: &Value) -> Result<Anchor, String> {
+        Anchor::read(&self.rpc(), h["switch"].as_u64().ok_or("handoff switch")?)
     }
 
     /// This Mac's voting key hex, or `None` when the key file cannot be read.
@@ -470,11 +501,14 @@ impl Supervisor {
             if let (Some(me), Ok(h)) = (me, rpc_call(&rpc, "aether_handoff", json!([]))) {
                 if self.handoff_due(&h) {
                     stop(&mut reshare);
+                    // The install needs this from the old world, and only the
+                    // child below has it: read before the stop.
+                    let anchor = self.anchor(&h);
                     // The old validator must not keep signing while its share
                     // and network pointer are changed on disk.
                     let _ = child.kill();
                     let status = child.wait().expect("a stopped child can be reaped");
-                    match self.install(role, me, &h) {
+                    match anchor.and_then(|anchor| self.install(role, me, &h, &anchor)) {
                         Ok(()) => return Watched::Switched,
                         Err(e) => {
                             tracing::warn!(%e, "aether run: could not install the handoff");
@@ -603,18 +637,16 @@ impl Supervisor {
     /// then `network.json` (the pointer every role decision reads against). A
     /// run that dies mid-install resumes it before a child starts
     /// ([`finish_incomplete`]); the old child is stopped before any active
-    /// file changes, so no signer can observe an incomplete pair.
-    fn install(&self, role: Role, me: &str, h: &Value) -> Result<(), String> {
+    /// file changes, so no signer can observe an incomplete pair — and what
+    /// the install needs from that child is read before it is stopped
+    /// ([`Anchor`]).
+    fn install(&self, role: Role, me: &str, h: &Value, anchor: &Anchor) -> Result<(), String> {
         let switch = h["switch"].as_u64().ok_or("handoff switch")?;
         let round = h["round"].as_u64().ok_or("handoff round")?;
         let output = h["output"].as_str().ok_or("handoff output")?.to_string();
         let members: Vec<Member> = serde_json::from_value(h["members"].clone())
             .map_err(|e| format!("handoff members: {e}"))?;
-        let end = switch - 1;
-        let end_hash = rpc_call(&self.rpc(), "aether_getBlock", json!([end]))?["hash"]
-            .as_str()
-            .ok_or("no block before the switch")?
-            .to_string();
+        let end_hash = anchor.end_hash.clone();
         let ours = NetworkFile::load(&self.network_path())?;
         let mut next = NetworkFile {
             validators: members.clone(),
@@ -635,8 +667,8 @@ impl Supervisor {
         let joining = members.iter().any(|m| m.key == me);
 
         // 1. Prepare the generation, before anything active changes. Anything
-        //    that can fail (the anchor proof above all) fails here, with the
-        //    old world still in place.
+        //    that can fail (the proof a joining Mac starts from above all)
+        //    fails here, with the old world still in place.
         let gen = self.data.join("gen").join(round.to_string());
         std::fs::create_dir_all(&gen).map_err(|e| e.to_string())?;
         crate::atomic::replace(
@@ -658,7 +690,7 @@ impl Supervisor {
         //    follower (and the anchor that proves it); marked, so a resumed
         //    install does not repeat the move.
         if joining && staged.is_some() && (role == Role::Candidate || role == Role::Paused) && !gen.join(".adopted").exists() {
-            let fin = rpc_call(&self.rpc(), "aether_getFinalized", json!([end]))?;
+            let fin = &anchor.finalized;
             if fin.is_null() {
                 return Err("the follower has no proof of the block before the switch yet".into());
             }
@@ -1291,6 +1323,51 @@ mod tests {
         finish_incomplete(&dir).unwrap();
         assert_eq!(NetworkFile::load(&dir.join("network.json")).unwrap().round, 6);
         assert!(!dir.join("threshold.json").exists(), "the old share is gone, so no quorum of forgotten shares can sign");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Red team #19: the swap itself runs with the old child already stopped,
+    /// so the two things the install reads from the old world — the block its
+    /// epoch anchors on, and the proof a joining Mac starts from — are read
+    /// while that child is still answering. An install that asked the stopped
+    /// child would never finish a handoff: each node would restart, fail the
+    /// same read and give up (`open_voting_nodes_take_over_the_chain_by_themselves`).
+    #[test]
+    fn a_handoff_install_reads_the_old_world_before_it_stops_the_child() {
+        let dir = std::env::temp_dir().join(format!("aether-install-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let me = "a".repeat(64);
+        let mut ours = file(1, "id");
+        ours.round = 3;
+        ours.validators = vec![Member { key: me.clone(), node: "node".into() }];
+        std::fs::write(dir.join("network.json"), serde_json::to_vec(&ours).unwrap()).unwrap();
+        std::fs::write(dir.join("threshold.json"), b"the old share").unwrap();
+
+        // The chain finalized the handoff for round 4; this Mac leaves at the switch.
+        let switch = 40u64;
+        let h = json!({
+            "round": 4,
+            "switch": switch,
+            "output": "the new committee",
+            "finalized": switch - 1,
+            "members": [{ "key": "b".repeat(64), "node": "node" }],
+        });
+        // The reads the install needs come from the child, before it is stopped.
+        let anchor = Anchor { end_hash: "the block before the switch".into(), finalized: Value::Null };
+        sup(&dir)
+            .install(Role::Validator, &me, &h, &anchor)
+            .expect("an install needs no running child");
+
+        let next = NetworkFile::load(&dir.join("network.json")).unwrap();
+        assert_eq!(next.round, 4);
+        assert_eq!(next.validators.len(), 1);
+        assert_eq!(next.validators[0].key, "b".repeat(64));
+        assert!(!dir.join("threshold.json").exists(), "a Mac that leaves drops its share");
+        assert!(dir.join("gen").join("4").join(".installed").exists(), "the generation is complete");
+        let epoch = next.epochs.last().expect("the new round starts an epoch");
+        assert_eq!(epoch.height, switch);
+        assert_eq!(epoch.parent, "the block before the switch", "the epoch anchors on the block read from the child");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

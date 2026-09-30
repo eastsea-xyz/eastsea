@@ -188,10 +188,11 @@ function nodePill() {
 async function home(s) {
   const out = h('div');
   const bal = h('div', { class: 'balance' }, '…');
+  const proofNote = h('div', { class: 'small muted' }, developmentNetwork ? 'Dev network · read from the node' : 'Checking AETH balance…');
   const { node, show } = nodePill();
   const addr = h('button', { class: 'link mono', title: 'Copy address', onclick: async () => { await navigator.clipboard.writeText(s.address); addr.textContent = 'Copied'; setTimeout(() => { addr.textContent = shortAddress(s.address); }, 900); } }, shortAddress(s.address));
-  const load = () => op('account').then((a) => { bal.textContent = `${formatAeth(a.balance)} ${Brand.coinTicker}`; show(a); })
-    .catch((e) => { bal.textContent = '—'; node.textContent = 'No node'; node.className = 'pill'; out.replaceChildren(message('error', e.message)); });
+  const load = () => op('account').then((a) => { bal.textContent = `${formatAeth(a.balance)} ${Brand.coinTicker}`; show(a); if (!developmentNetwork) proofNote.textContent = 'AETH balance verified with a certificate and state proof'; })
+    .catch((e) => { bal.textContent = '—'; node.textContent = 'No node'; node.className = 'pill'; proofNote.textContent = 'AETH balance unavailable'; out.replaceChildren(message('error', e.message)); });
   load();
   updaters = [load];
 
@@ -287,7 +288,7 @@ async function home(s) {
   const send = h('button', { onclick: () => { sendForm.hidden = !sendForm.hidden; if (!sendForm.hidden) { to.focus(); pickAssets(); op('activity').then((l) => { sent = l.filter((a) => !a.owner || a.owner.toLowerCase() === s.address.toLowerCase()).map((a) => a.to).filter(Boolean); warnings(); }).catch(() => {}); } } }, h('span', { class: 'ico' }, '↗'), 'Send');
   return [h('div', { class: 'card hero' }, h('div', { class: 'row', style: 'justify-content:center' }, addr, node), bal,
     h('div', { class: 'small muted' }, developmentNetwork ? 'Dev network' : `${Brand.project} chain ${defaultChainId}`),
-    h('div', { class: 'small muted' }, 'Read from the node · not verified in the browser')),
+    proofNote),
     h('div', { class: 'actions' }, receive, send), sendForm, out];
 }
 
@@ -320,6 +321,7 @@ function holdingRow(x, officialSymbols, { onHide, onShow } = {}) {
 
 async function assetsView(s) {
   const aethAmt = h('strong', {}, '…');
+  const proofNote = h('div', { class: 'small muted' }, developmentNetwork ? 'Dev network · read from the node' : 'Checking AETH balance…');
   const rows = h('div', { class: 'list' });
   const unverified = h('div', { class: 'list' });
   const unverifiedBox = h('details', { hidden: true },
@@ -330,8 +332,13 @@ async function assetsView(s) {
   const updated = h('div', { class: 'small muted' });
   const load = async (force) => {
     const [acct, assets] = await Promise.allSettled([op('account'), op('assets', { force })]);
-    if (acct.status === 'fulfilled') aethAmt.replaceChildren(`${formatAeth(acct.value.balance)} ${Brand.coinTicker}`);
-    else aethAmt.replaceChildren('—');
+    if (acct.status === 'fulfilled') {
+      aethAmt.replaceChildren(`${formatAeth(acct.value.balance)} ${Brand.coinTicker}`);
+      if (!developmentNetwork) proofNote.textContent = 'AETH verified · token balances read from the node';
+    } else {
+      aethAmt.replaceChildren('—');
+      proofNote.textContent = 'AETH balance unavailable · token balances read from the node';
+    }
     if (assets.status === 'rejected') {
       note.textContent = 'Could not read tokens from the node. It tries again shortly.';
       return;
@@ -352,11 +359,10 @@ async function assetsView(s) {
   };
   load(true);
   updaters = [() => load(false)];
-  // One card like the app's Assets sheet; nothing in this popup is verified here,
-  // so the one label covers the AETH balance and the tokens alike.
+  // The AETH account is proof checked; token calls remain node-sourced.
   return [h('div', { class: 'card' },
     h('div', { class: 'row' }, h('h2', { class: 'grow' }, 'Assets'), h('span', { class: 'small muted nowrap' }, developmentNetwork ? 'Dev network' : `${Brand.project} network`)),
-    h('div', { class: 'small muted' }, 'Read from the node · not verified in the browser'),
+    proofNote,
     h('div', { class: 'item', title: s.address },
       h('span', { class: 'avatar', 'aria-hidden': 'true' }, Brand.project[0]),
       h('div', { class: 'grow' }, h('div', {}, Brand.coinName), h('div', { class: 'small muted mono' }, shortAddress(s.address))),

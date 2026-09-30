@@ -17,13 +17,25 @@ export class RpcError extends Error {
 
 export class Rpc {
   /** `urls`: endpoints in order; `fetchImpl` for tests. */
-  constructor(urls = DEFAULT_RPCS, { chainId = 7780, fetchImpl = (...a) => fetch(...a), now = () => Date.now() } = {}) {
+  constructor(urls = DEFAULT_RPCS, { chainId = 7780, fetchImpl = (...a) => fetch(...a), now = () => Date.now(), verifyAccount = null, network = null, floorStore = null } = {}) {
     this.urls = [...new Set(urls.filter(Boolean))];
     this.chainId = chainId;
     this.fetch = fetchImpl;
     this.now = now;
     this.backoff = new Map(); // url -> {until, delay}
     this.current = null;
+    this.verifyAccount = verifyAccount;
+    this.network = network;
+    this.floorStore = floorStore;
+    if (verifyAccount && !floorStore) throw new Error('Verified reads require persistent height storage.');
+    this.floorTask = Promise.resolve();
+    this.generation = 0;
+    this.verifiedAccounts = new Map();
+  }
+
+  setVerifier(network) {
+    this.network = network;
+    this.generation++;
   }
 
   setUrls(urls) {
@@ -34,6 +46,8 @@ export class Rpc {
 
   setChain(chainId, urls) {
     this.chainId = chainId;
+    this.generation++;
+    this.verifiedAccounts.clear();
     this.setUrls(urls);
   }
 
@@ -103,6 +117,9 @@ export class Rpc {
 
   /** Call `method`; a node error comes back as RpcError with the node's code. */
   async call(method, params = []) {
+    if (this.verifyAccount && this.network && ['aether_getAccount', 'eth_getBalance', 'eth_getTransactionCount'].includes(method)) {
+      return this.callVerifiedAccount(method, params);
+    }
     const url = await this.endpoint();
     let j;
     try {
@@ -115,5 +132,100 @@ export class Rpc {
     if (j.error && j.error.code === -32601 && this.urls.length > 1) return this.callAny(method, params);
     if (j.error) throw new RpcError(j.error.message || 'node error', j.error.code ?? -32603, j.error.data);
     return j.result;
+  }
+
+  async checkedPost(url, method, params) {
+    const answer = await this.post(url, method, params, TIMEOUT);
+    if (answer.error) throw new RpcError(answer.error.message || 'node error', answer.error.code ?? -32603, answer.error.data);
+    if (!Object.hasOwn(answer, 'result')) throw new Error(`missing ${method} result`);
+    return answer.result;
+  }
+
+  async heightFloor(key) {
+    const stored = await this.floorStore.get(key);
+    if (stored === undefined) return 0;
+    if (!Number.isSafeInteger(stored) || stored < 0) throw new Error('Stored verified height is invalid.');
+    return stored;
+  }
+
+  async certifiedAt(url, height) {
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const answer = await this.checkedPost(url, 'aether_getFinalized', [height]);
+      if (answer != null) return answer;
+      if (attempt < 39) await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw new Error(`block ${height} not finalized yet`);
+  }
+
+  parkVerified(url, kind) {
+    const limits = { busy: [1_000, 30_000], error: [2_000, 300_000], stale: [5_000, 60_000], lying: [600_000, 21_600_000] };
+    const [base, cap] = limits[kind];
+    const previous = this.backoff.get(url);
+    const delay = previous?.kind === kind ? Math.min(previous.delay * 2, cap) : base;
+    this.backoff.set(url, { kind, until: this.now() + delay, delay });
+    if (this.current === url) this.current = null;
+  }
+
+  async callVerifiedAccount(method, params) {
+    const address = params[0];
+    if (typeof address !== 'string') throw new RpcError('An account address is required.', -32602);
+    const generation = this.generation;
+    let last = new RpcError('No node served a verified account.', 4900);
+    for (const url of this.urls) {
+      const parked = this.backoff.get(url);
+      if (parked && this.now() < parked.until) continue;
+      try {
+        const account = await this.checkedPost(url, 'aether_getAccount', [address]);
+        const height = account?.height;
+        if (!Number.isSafeInteger(height) || height < 0) {
+          const bad = new Error('account height is missing');
+          bad.verification = true;
+          throw bad;
+        }
+        const [finalized, status] = await Promise.all([
+          this.certifiedAt(url, height + 1),
+          this.checkedPost(url, 'aether_status', []),
+        ]);
+        const floorKey = `verifiedHeight.${this.chainId}`;
+        const floor = await this.heightFloor(floorKey);
+        let verified;
+        try {
+          verified = JSON.parse(await this.verifyAccount(JSON.stringify(this.network), JSON.stringify(status),
+            JSON.stringify(account), JSON.stringify(finalized), address, BigInt(floor), BigInt(this.now())));
+        } catch (e) {
+          const failure = new Error(e?.message || String(e));
+          failure.verification = true;
+          throw failure;
+        }
+        if (generation !== this.generation) throw new Error('network changed during verification');
+        const certified = Number(verified.certified_block);
+        if (!Number.isSafeInteger(certified) || certified < floor) {
+          const failure = new Error('invalid certified height');
+          failure.verification = true;
+          throw failure;
+        }
+        const commit = this.floorTask.catch(() => {}).then(async () => {
+          const latest = await this.heightFloor(floorKey);
+          if (generation !== this.generation || certified < latest) throw new Error('finalized blocks never go back');
+          if (certified > latest) await this.floorStore.set(floorKey, certified);
+        });
+        this.floorTask = commit;
+        await commit;
+        this.backoff.delete(url);
+        this.current = url;
+        if (this.verifiedAccounts.size >= 16) this.verifiedAccounts.delete(this.verifiedAccounts.keys().next().value);
+        this.verifiedAccounts.set(address.toLowerCase(), { height: certified, timestampMs: Number(verified.timestamp_ms) });
+        if (method === 'eth_getBalance') return `0x${BigInt(verified.balance_wei).toString(16)}`;
+        if (method === 'eth_getTransactionCount') return `0x${BigInt(verified.nonce).toString(16)}`;
+        return account;
+      } catch (e) {
+        last = new RpcError(`node ${url} did not serve a verified account: ${e.message || e}`, 4900);
+        const kind = /server busy/i.test(e.message) ? 'busy'
+          : /stale|never go back|not finalized yet/i.test(e.message) ? 'stale'
+            : e.verification ? 'lying' : 'error';
+        this.parkVerified(url, kind);
+      }
+    }
+    throw last;
   }
 }

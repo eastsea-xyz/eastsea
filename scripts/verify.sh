@@ -49,7 +49,7 @@ if [ "$what" = all ] || [ "$what" = rehearsal ]; then
   # mainnet genesis flags through `aether network` -> `aether dkg` -> `aether run`,
   # with the proving sidecar pinned like a release (a second Mac found, on
   # 2026-10-03, that dkg dropped the genesis protocol while every test passed).
-  step rehearsal bash -c 'export AETHER_PROVER_PROGRAM=$(scripts/prover-program.sh) && cargo build --release -p aether-node --bin aether && d=$PWD/tmp/rehearsal-bin && mkdir -p $d && cp "$CARGO_TARGET_DIR/release/aether" $d/aether && cp apps/prover/target/release/aether-prover $d/aether-prover && rm -rf tmp/rehearsal-run && AETHER_BIN=$d/aether scripts/mainnet-rehearsal.sh $PWD/tmp/rehearsal-run'
+  step rehearsal bash -c 'export AETHER_PROVER_PROGRAM=$(scripts/prover-program.sh) && cargo build --release -p aether-node --bin aether && d=$PWD/tmp/rehearsal-bin && mkdir -p $d && cp "$CARGO_TARGET_DIR/release/aether" $d/aether && cp "$CARGO_TARGET_DIR/release/aether-prover" $d/aether-prover && rm -rf tmp/rehearsal-run && AETHER_BIN=$d/aether scripts/mainnet-rehearsal.sh $PWD/tmp/rehearsal-run'
 fi
 
 echo "verify: $fails failed step(s)"

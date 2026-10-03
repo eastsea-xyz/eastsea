@@ -242,7 +242,7 @@ if bad:
 if len(rows) < 3:
     print("only %d full epochs paid so far" % len(rows)); sys.exit(3)
 print("%d epochs, amounts %s" % (len(rows), sorted({int(r["amount"], 16) for r in rows})))
-' 2>&1); rc=$?
+' 2>&1) && rc=0 || rc=$?   # set -e: a waiting python must not abort the poll
       detail+=" [$res]"
       if [ "$rc" = 1 ]; then state=bad; elif [ "$rc" != 0 ] && [ "$state" = ok ]; then state=waiting; fi
     done

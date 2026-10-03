@@ -86,7 +86,10 @@ Drag the app to Applications. The app is a wallet and, with the switch on, a nod
 Updates arrive automatically (EastSea ▸ Check for Updates…).${RELEASE_NOTES:+
 
 $RELEASE_NOTES}"
-# The browser extension ships with each app release.
+# The browser extension ships through the Chrome/Edge stores only. Its zip is built and hashed
+# here for the store upload but is NOT a public release asset: release approval signs the DMG
+# and the app executables, not this zip, so a swapped zip must never be installable from the
+# GitHub release (audit 3, A3-6).
 if [ "$mode" != --publish-prepared ]; then scripts/build-extension.sh --zip >/dev/null; fi
 ext_version=$(python3 -c 'import json; print(json.load(open("apps/extension/manifest.json"))["version"])')
 ext="dist/aether-extension-$ext_version.zip"
@@ -96,7 +99,7 @@ if [ "$mode" = --prepare ] || { [ -n "${AETHER_RELEASE_LOG:-}" ] && [ "$mode" !=
   echo "Prepared artifacts only. Publish the manifest on chain, then run --publish-prepared with AETHER_RELEASE_INDEX."
   exit 0
 fi
-assets=("$dmg" dist/appcast.xml "$ext")
+assets=("$dmg" dist/appcast.xml)
 if [ "$mode" = --publish-prepared ]; then
   : "${AETHER_RELEASE_INDEX:?set the finalized ReleaseLog entry index}"
   scripts/release-approve.py finalize --manifest "$manifest" --signatures "$builder_sigs" \

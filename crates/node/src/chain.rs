@@ -2886,7 +2886,8 @@ fn reserve_step(g: &mut Inner, previous: &Executed, exec: &Executed) {
 /// The draw a block at `height` belongs to (draws start at multiples of epoch_blocks × draw_epochs).
 fn current_draw(state: &WorldState, height: u64) -> u64 {
     let p = aether_execution::registry::params(state);
-    height / (p.epoch_blocks * p.draw_epochs)
+    // Saturating: a genesis is bounded (roster.rs), but a state word is read here.
+    height / p.epoch_blocks.saturating_mul(p.draw_epochs).max(1)
 }
 
 fn keep<T: Serialize + ?Sized>(store: &Option<Arc<Store>>, key: &str, value: &T) {

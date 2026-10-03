@@ -151,6 +151,7 @@ fn the_mainnet_rule_set_is_on_from_height_1() {
             "registry v3",
             "registration cap",
             "16-seat growth",
+            "epoch parameters",
             "node rewards",
             "beacons",
             "re-attestation",

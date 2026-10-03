@@ -475,6 +475,21 @@ RustBuffer uniffi_aether_ffi_fn_func_wallet_servers(RustCallStatus *_Nonnull out
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_ATOMIC_SWAP_CLAIM_CALLDATA
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_ATOMIC_SWAP_CLAIM_CALLDATA
+RustBuffer uniffi_aether_ffi_fn_func_atomic_swap_claim_calldata(uint64_t id, RustBuffer preimage_hex, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_ATOMIC_SWAP_LOCK_CALLDATA
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_ATOMIC_SWAP_LOCK_CALLDATA
+RustBuffer uniffi_aether_ffi_fn_func_atomic_swap_lock_calldata(RustBuffer recipient, RustBuffer hashlock_hex, uint64_t timelock, RustBuffer token, RustBuffer amount_wei, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_ATOMIC_SWAP_REFUND_CALLDATA
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_ATOMIC_SWAP_REFUND_CALLDATA
+RustBuffer uniffi_aether_ffi_fn_func_atomic_swap_refund_calldata(uint64_t id, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PAPER_KEY_NEW
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PAPER_KEY_NEW
 RustBuffer uniffi_aether_ffi_fn_func_paper_key_new(RustCallStatus *_Nonnull out_status
@@ -1018,6 +1033,24 @@ uint16_t uniffi_aether_ffi_checksum_func_voting_node_status(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_WALLET_SERVERS
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_WALLET_SERVERS
 uint16_t uniffi_aether_ffi_checksum_func_wallet_servers(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_ATOMIC_SWAP_CLAIM_CALLDATA
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_ATOMIC_SWAP_CLAIM_CALLDATA
+uint16_t uniffi_aether_ffi_checksum_func_atomic_swap_claim_calldata(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_ATOMIC_SWAP_LOCK_CALLDATA
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_ATOMIC_SWAP_LOCK_CALLDATA
+uint16_t uniffi_aether_ffi_checksum_func_atomic_swap_lock_calldata(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_ATOMIC_SWAP_REFUND_CALLDATA
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_ATOMIC_SWAP_REFUND_CALLDATA
+uint16_t uniffi_aether_ffi_checksum_func_atomic_swap_refund_calldata(void
     
 );
 #endif

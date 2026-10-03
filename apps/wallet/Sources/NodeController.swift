@@ -609,7 +609,7 @@ final class NodeController: ObservableObject {
             guard let context else { return }
             let controller = Unmanaged<NodeController>.fromOpaque(context).takeUnretainedValue()
             Task { @MainActor in
-                controller.announceAvailability(leaving: Self.onBattery)
+                controller.announceAvailability(leaving: NodeController.onBattery)
                 controller.applyPower()
             }
         }, Unmanaged.passUnretained(self).toOpaque())?.takeRetainedValue() {

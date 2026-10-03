@@ -148,7 +148,7 @@ fn the_mainnet_rule_set_is_on_from_height_1() {
         [
             "protocol from genesis",
             "proof market",
-            "registry v2",
+            "registry v3",
             "registration cap",
             "16-seat growth",
             "node rewards",

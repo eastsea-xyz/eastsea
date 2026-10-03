@@ -225,7 +225,7 @@ mod tests {
         g1.protocol = 1;
         assert_eq!(
             off(g1),
-            ["protocol from genesis", "proof market", "registry v3", "registration cap", "16-seat growth"]
+            ["protocol from genesis", "proof market", "registration cap", "16-seat growth"]
         );
         // A premine (or a faucet) funds genesis accounts.
         let mut premine = mainnet();

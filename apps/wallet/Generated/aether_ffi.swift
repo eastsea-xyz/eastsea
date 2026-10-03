@@ -2927,6 +2927,45 @@ public func walletServers() -> [WalletServerInfo]  {
 })
 }
 /**
+ * Encode `claim(uint256,bytes)` with the original Bitcoin-compatible bytes.
+ */
+public func atomicSwapClaimCalldata(id: UInt64, preimageHex: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_atomic_swap_claim_calldata(
+        FfiConverterUInt64.lower(id),
+        FfiConverterString.lower(preimageHex),uniffiCallStatus
+    )
+})
+}
+/**
+ * Encode `lock(address,bytes32,uint64,address,uint256)`. Native coin uses the
+ * zero token address and must be sent with `value_wei == amount_wei`.
+ */
+public func atomicSwapLockCalldata(recipient: String, hashlockHex: String, timelock: UInt64, token: String, amountWei: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_atomic_swap_lock_calldata(
+        FfiConverterString.lower(recipient),
+        FfiConverterString.lower(hashlockHex),
+        FfiConverterUInt64.lower(timelock),
+        FfiConverterString.lower(token),
+        FfiConverterString.lower(amountWei),uniffiCallStatus
+    )
+})
+}
+/**
+ * Encode `refund(uint256)`; the contract pays its stored sender.
+ */
+public func atomicSwapRefundCalldata(id: UInt64) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_atomic_swap_refund_calldata(
+        FfiConverterUInt64.lower(id),uniffiCallStatus
+    )
+})
+}
+/**
  * New paper recovery key: 24 words (256 bits of entropy).
  */
 public func paperKeyNew() -> String  {
@@ -3108,6 +3147,15 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_wallet_servers() != 2360) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_atomic_swap_claim_calldata() != 49444) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_atomic_swap_lock_calldata() != 41079) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_atomic_swap_refund_calldata() != 31122) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_paper_key_new() != 36008) {

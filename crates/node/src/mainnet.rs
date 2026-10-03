@@ -231,14 +231,16 @@ mod tests {
         let mut premine = mainnet();
         premine.alloc = vec![(Address::repeat_byte(1), U256::from(1u8))];
         assert_eq!(off(premine), ["no premine, no faucet"]);
+        // The v3 registry is installed only by a genesis with node rewards, history v2
+        // and a registrar (chain.rs), so it also drops out with either of them.
         // Rewards off takes the epoch machinery with it.
         let mut cold = mainnet();
         cold.node_rewards = false;
-        assert_eq!(off(cold), ["node rewards", "beacons", "re-attestation", "reserve rules"]);
+        assert_eq!(off(cold), ["registry v3", "node rewards", "beacons", "re-attestation", "reserve rules"]);
         // History v1 keeps every block by default.
         let mut v1 = mainnet();
         v1.history_v2 = false;
-        assert_eq!(off(v1), ["history v2", "pruning default"]);
+        assert_eq!(off(v1), ["registry v3", "history v2", "pruning default"]);
         // The reserve keys are a genesis parameter.
         let mut none = mainnet();
         none.reserve = None;

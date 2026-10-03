@@ -328,6 +328,11 @@ pub async fn checkpoint(upstream: &Upstream, set: &ValidatorSet, cfg: &crate::ch
 /// retried on the same file; bad data never gets better, so the file is moved
 /// aside and the history is re-fetched). `Chain::open`'s full check reports
 /// these too — [`reset_store`] handles both tiers.
+///
+/// A schema newer than this binary reads ([`StoreError::TooNew`]) is
+/// deliberately not corruption: the file holds intact newer data, so it is
+/// never moved aside — the node stops with the update-required exit code and
+/// the app installs the newer release ([`is_too_new_error`]).
 pub fn is_corruption(e: &crate::store::StoreError) -> bool {
     matches!(
         e,
@@ -335,6 +340,16 @@ pub fn is_corruption(e: &crate::store::StoreError) -> bool {
             | crate::store::StoreError::RootMismatch { .. }
             | crate::store::StoreError::Unreadable(_)
     )
+}
+
+/// Whether an `open_store` error means the database's schema is newer than
+/// this binary reads (`StoreError::TooNew`, red team #15): the child stops
+/// with [`crate::supervisor::EXIT_UPGRADE_REQUIRED`] — the app's existing
+/// "update required" handling — and the data is never moved aside or deleted.
+/// String form, because `open_store` reports strings; `StoreError`'s `Display`
+/// is its `Debug`, so the variant name is in it.
+pub fn is_too_new_error(e: &str) -> bool {
+    e.contains("TooNew")
 }
 
 /// Move the state database (and, for a validator, its marshal archive

@@ -544,3 +544,95 @@ fn a_binary_reports_the_protocol_it_implements() {
     let said: u32 = String::from_utf8(out.stdout).unwrap().trim().parse().unwrap();
     assert_eq!(said, aether_node::upgrade::PROTOCOL);
 }
+
+/// A database written by a newer aether (the app rolled back to `aether.prev`
+/// after crashes; red team #15) is intact data, not damage: the recovery path
+/// that moves broken files aside never fires, the keys and the file stay
+/// exactly where they were, and the refusal names the update, not corruption.
+#[test]
+fn a_too_new_database_is_not_corruption_and_is_never_moved_aside() {
+    let dir = tmp("too-new");
+    let path = dir.join("state.redb");
+    {
+        let store = Store::open(&path).unwrap();
+        // What a newer binary left (the on-disk contract: meta rows
+        // "schema_version" and "min_read_version", u32 big-endian).
+        store.put_meta("schema_version", &2u32.to_be_bytes()).unwrap();
+        store.put_meta("min_read_version", &2u32.to_be_bytes()).unwrap();
+        store.put_meta("height", &30u64.to_be_bytes()).unwrap();
+    }
+    std::fs::write(dir.join("validator.key"), b"the keys stay").unwrap();
+
+    // The exact path every node start goes through.
+    match follow::open_store(&dir) {
+        Err(e) => assert!(follow::is_too_new_error(&e), "the refusal names the schema, not damage: {e}"),
+        Ok(_) => panic!("a database this binary cannot read must not open"),
+    }
+    match Store::open(&path) {
+        Err(e) => assert!(!follow::is_corruption(&e), "newer data is never corruption — nothing moves it aside"),
+        Ok(_) => panic!(),
+    }
+    assert!(path.exists(), "the database file was not deleted");
+    assert!(dir.join("validator.key").exists(), "the keys were not touched");
+    assert!(
+        !std::fs::read_dir(&dir).unwrap().flatten().any(|e| e.file_name().to_string_lossy().starts_with("corrupt-")),
+        "no move-aside: re-syncing from scratch would destroy intact newer data"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The same meeting, end to end on the real binary: `aether follow` stops with
+/// the update-required exit code (3) — the existing code the supervisor
+/// refuses to restart through and the app turns into "install the newer
+/// release" — without touching the data directory.
+#[test]
+fn a_node_that_meets_a_too_new_database_exits_with_the_update_code() {
+    let dir = tmp("too-new-exit");
+    {
+        let store = Store::open(&dir.join("state.redb")).unwrap();
+        store.put_meta("schema_version", &2u32.to_be_bytes()).unwrap();
+        store.put_meta("min_read_version", &2u32.to_be_bytes()).unwrap();
+    }
+    std::fs::write(dir.join("validator.key"), b"the keys stay").unwrap();
+
+    // A loopback port for the child's own RPC; the upstream URL is never
+    // reached — the store opens before any network.
+    let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let rpc_port = probe.local_addr().unwrap().port();
+    drop(probe);
+
+    let log = std::fs::File::create(dir.join("node.log")).unwrap();
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_aether"))
+        .args([
+            "follow",
+            "--data", dir.to_str().unwrap(),
+            "--from-rpc", "http://127.0.0.1:1",
+            "--rpc-port", &rpc_port.to_string(),
+        ])
+        .stdout(log.try_clone().unwrap())
+        .stderr(log)
+        .spawn()
+        .expect("spawn aether");
+    let deadline = Instant::now() + Duration::from_secs(180); // dyld can be slow on a busy Mac
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            break s;
+        }
+        assert!(Instant::now() < deadline, "the node never exited; log: {}", std::fs::read_to_string(dir.join("node.log")).unwrap_or_default());
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let log = std::fs::read_to_string(dir.join("node.log")).unwrap_or_default();
+    assert_eq!(
+        status.code(),
+        Some(aether_node::supervisor::EXIT_UPGRADE_REQUIRED),
+        "exit 3 is update-required (log: {log})"
+    );
+    assert!(log.contains("UPDATE REQUIRED"), "the log says what to do: {log}");
+    assert!(dir.join("state.redb").exists(), "the newer data is untouched");
+    assert!(dir.join("validator.key").exists(), "the keys are untouched");
+    assert!(
+        !std::fs::read_dir(&dir).unwrap().flatten().any(|e| e.file_name().to_string_lossy().starts_with("corrupt-")),
+        "nothing moved aside"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

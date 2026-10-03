@@ -23,8 +23,9 @@
 #   - empty blocks are quiet under history v2 (no statement, root unchanged);
 #   - no premine and no faucet: dev accounts are unfunded, the faucet RPC refuses;
 #   - the first epochs distribute exactly: the node pool of an epoch is the
-#     epoch's issuance halves (rewards::issuance) and each fresh Mac's operator
-#     gets pool/32 (docs/design/15-node-rewards.md);
+#     epoch's issuance halves (rewards::issuance) and a fresh Mac's operator gets
+#     pool × k × WARMUP_STEPS / (MAX_SHARE × FULL) for the k slots it answered
+#     (docs/design/15-node-rewards.md; k varies with beacon timing in a 20 s epoch);
 #   - the founder's reserve keys stay followers while the committee has four
 #     seats (they only fill seats a committee is short of; audit 1.1);
 #   - history pruning is the mainnet default: on, 30 days.
@@ -206,21 +207,41 @@ cand=$(rpc aether_candidates '[]' "${rpcp[0]}" | jget 'len(d["result"]["candidat
 [ "$cand" = 2 ] && ok "the registry lists both Macs" || bad "the registry lists $cand Macs (want 2)"
 
 echo "== first distributions (an epoch's node pool is its issuance halves)"
-# Day 0 issuance is 1e18 a block: an epoch's pool is 40 × 5e17. Two fresh Macs
-# answering all four slots weigh 56 each, below the 16 × 112 floor, so each
-# operator gets pool × 56/1792 = pool/32, exactly (rewards::issuance).
-want=$(python3 -c "print(40 * (10**18 // 2) * 56 // 1792)")
+# Day 0 issuance is 1e18 a block: an epoch's pool is 40 × 5e17. Fresh Macs
+# (warm-up level 0) weigh k × 14 for the k slots they answered in the epoch; with
+# fewer than 16 operators the sum stays below the floor MAX_SHARE × FULL
+# = 16 × (SLOTS × 2 × 14) = 5376 (SLOTS = 12), so an operator gets exactly
+# pool × k × 14 / 5376 (rewards::lib docs). How many slots answer in a 20 s
+# epoch depends on timing, so the check is: every operator is paid in every epoch
+# after the first (a partial one: the Macs registered inside it) and each amount
+# is exactly one of the legal values for k = 1..SLOTS.
 if wait_height "${rpcp[0]}" "$(( (h / EPOCH_BLOCKS + 4) * EPOCH_BLOCKS ))" 180; then
-  paid=yes got=""
+  paid=yes detail=""
   for o in "${ops[@]}"; do
-    g=$(rpc aether_rewards "[\"$o\"]" "${rpcp[0]}" | jget '[int(r["amount"], 16) for r in d["result"] if r["kind"] == "node"][-1]')
-    got+=" $g"
-    [ "$g" = "$want" ] || paid=no
+    raw=$(rpc aether_rewards "[\"$o\"]" "${rpcp[0]}")
+    res=$(printf '%s' "$raw" | python3 -c '
+import json, sys
+EPOCH, SLOTS, WARM, MAX_SHARE = 40, 12, 14, 16
+pool = EPOCH * (10**18 // 2)
+legal = {pool * k * WARM // (MAX_SHARE * SLOTS * 2 * WARM) for k in range(1, SLOTS + 1)}
+try:
+    rows = [r for r in json.load(sys.stdin)["result"] if r["kind"] == "node"]
+except Exception as e:
+    print("unreadable:", e); sys.exit(1)
+rows = sorted(rows, key=lambda r: r["height"])[1:]
+if len(rows) < 2:
+    print("only %d full epochs paid" % len(rows)); sys.exit(1)
+bad = [int(r["amount"], 16) for r in rows if int(r["amount"], 16) not in legal]
+if bad:
+    print("illegal amounts", bad); sys.exit(1)
+print("%d epochs, amounts %s" % (len(rows), sorted({int(r["amount"], 16) for r in rows})))
+' 2>&1) || { paid=no; detail+=" [$o: $res]"; echo "    aether_rewards $o: $(printf '%s' "$raw" | head -c 500)" >&2; continue; }
+    detail+=" [$res]"
   done
   if [ "$paid" = yes ]; then
-    ok "each fresh Mac's operator was paid exactly $want wei (pool/32)"
+    ok "each operator was paid in every full epoch, each amount exactly pool·k·14/5376:$detail"
   else
-    bad "a node reward was not pool/32 ($want): got$got"
+    bad "a node reward was missing or not an exact slot share:$detail"
   fi
 else
   bad "the chain did not reach the next epochs"

@@ -3,6 +3,7 @@
 #   scripts/verify.sh            everything (about an hour on a loaded Mac)
 #   scripts/verify.sh rust       Rust tests + clippy only
 #   scripts/verify.sh apps       contracts, extension, fuzz build, bindings, Xcode builds
+#   scripts/verify.sh rehearsal  the mainnet-genesis rehearsal with a pinned proving sidecar
 # Why it exists: on 2026-09-30 five merged branches were checked only by their own
 # test files, and the first whole-workspace run three days later found a broken
 # macOS build, stale bindings and four failing tests. Every step prints PASS/FAIL;
@@ -41,6 +42,14 @@ if [ "$what" = all ] || [ "$what" = apps ]; then
   step swift-pure scripts/test-swift-pure.sh
   # Every Tests/<dir> must be in that table.
   step swift-pure-coverage bash -c 'for d in apps/wallet/Tests/*/; do n=$(basename $d); grep -q "^run $n " scripts/test-swift-pure.sh || { echo "missing in scripts/test-swift-pure.sh: $n"; exit 1; }; done'
+fi
+
+if [ "$what" = all ] || [ "$what" = rehearsal ]; then
+  # The end-to-end check the unit and integration tests cannot give: the exact
+  # mainnet genesis flags through `aether network` -> `aether dkg` -> `aether run`,
+  # with the proving sidecar pinned like a release (a second Mac found, on
+  # 2026-10-03, that dkg dropped the genesis protocol while every test passed).
+  step rehearsal bash -c 'export AETHER_PROVER_PROGRAM=$(scripts/prover-program.sh) && cargo build --release -p aether-node --bin aether && d=$PWD/tmp/rehearsal-bin && mkdir -p $d && cp "$CARGO_TARGET_DIR/release/aether" $d/aether && cp apps/prover/target/release/aether-prover $d/aether-prover && rm -rf tmp/rehearsal-run && AETHER_BIN=$d/aether scripts/mainnet-rehearsal.sh $PWD/tmp/rehearsal-run'
 fi
 
 echo "verify: $fails failed step(s)"

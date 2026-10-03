@@ -8,12 +8,14 @@
 
 uniffi::setup_scaffolding!();
 
+mod atomic_swap;
 mod paper;
 use aether_crypto::{address_of, PublicKey};
 use aether_execution::EvmCall;
 use aether_light::{from_hex, verify_account, verify_finalized_chain, ValidatorSet, VerifiedBlock};
 use aether_state::Proof;
 use aether_types::{Address, Bytes, FeeVector, GasVector, SignerScheme, TxEnvelope, TxHash, TxHeader, TxPayload, U256};
+pub use atomic_swap::*;
 pub use paper::*;
 use serde_json::{json, Value};
 use std::time::Duration;

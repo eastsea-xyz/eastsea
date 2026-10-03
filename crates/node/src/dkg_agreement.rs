@@ -811,6 +811,37 @@ mod tests {
     use super::*;
     use commonware_utils::TryCollect;
 
+    #[test]
+    fn a_decision_certificate_is_rebroadcast_after_journal_restart() {
+        let mut keys: Vec<_> = (1..=4).map(aether_light::devnet_validator_key).collect();
+        keys.sort_by_key(|key| key.public_key());
+        let players: Set<_> = keys.iter().map(|key| key.public_key()).try_collect().unwrap();
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+        let tmp = root.join("tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let path = tmp.join(format!("dkg-decision-relay-{}-{}.journal", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let digest = [42; 32];
+        let mut voters: Vec<_> = keys.iter().map(|key| Agreement::new(key.clone(), players.clone(), 111)).collect();
+        voters[0].attach_journal(path.clone()).unwrap();
+        let votes = voters[..3].iter_mut().map(|voter| voter.sign_vote(Phase::Commit, digest).unwrap()).collect();
+        voters[0].decided = Some(Certificate { view: 0, phase: Phase::Commit, digest, votes });
+        voters[0].persist_or_stop();
+        drop(voters);
+
+        let mut relay = Agreement::new(keys[0].clone(), players, 111);
+        relay.attach_journal(path.clone()).unwrap();
+        let available = [digest].into_iter().collect();
+        let mut sent_decision = false;
+        for _ in 0..REBROADCAST_TICKS {
+            sent_decision |= relay.tick(&available).into_iter().any(|msg| matches!(msg, AgreementMsg::Decision(_)));
+        }
+        assert_eq!(relay.decided(), Some(digest));
+        assert!(sent_decision, "a restarted relay must send the decision proof to a late player");
+        drop(relay);
+        std::fs::remove_file(path).unwrap();
+    }
+
     fn deliver(
         agreements: &mut [Agreement],
         members: &[PublicKey],

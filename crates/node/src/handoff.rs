@@ -111,16 +111,19 @@ pub fn verify(chain_id: u64, identity: &Identity, h: &Handoff) -> Result<(), Str
     let bytes = hex::decode(&h.signature).map_err(|e| e.to_string())?;
     let sig = <MinSig as Variant>::Signature::decode(bytes.as_slice()).map_err(|e| format!("signature: {e:?}"))?;
     ops::verify_message::<MinSig>(identity, NAMESPACE, &message(chain_id, h), &sig).map_err(|_| "the committee did not sign this handoff".to_string())?;
-    verify_output(identity, h)
+    verify_output(chain_id, identity, h)
 }
 
 /// The output shares the same identity among exactly the members.
-pub fn verify_output(identity: &Identity, h: &Handoff) -> Result<(), String> {
+pub fn verify_output(chain_id: u64, identity: &Identity, h: &Handoff) -> Result<(), String> {
     let n = u32::try_from(h.members.len()).map_err(|_| "too many members".to_string())?;
     if n < 4 {
         return Err("a voting set needs at least four members".into());
     }
     let output = KeyFile { round: h.round, output: h.output.clone(), identity: String::new(), share: String::new() }.decode_output(n)?;
+    if chain_id != 7_780 && output.revealed().iter().any(|player| output.players().position(player).is_some()) {
+        return Err("the new sharing reveals a seated player's threshold share".into());
+    }
     if output.public().public() != identity {
         return Err("the new sharing is for another identity".into());
     }
@@ -271,7 +274,7 @@ impl Service {
         if proposal.1 != h.members {
             return Err("the staged reshare is for another voting set".into());
         }
-        verify_output(&self.identity, &h)?;
+        verify_output(self.chain_id, &self.identity, &h)?;
         let partial = sign_partial(self.chain_id, &h, &self.share);
         self.accept(&PartialMsg { handoff: h.clone(), partial: partial.clone() })?;
         let _ = self.out.send(CommitteeMsg::Handoff(PartialMsg { handoff: h.clone(), partial }));
@@ -287,7 +290,7 @@ impl Service {
         if proposal.1 != h.members {
             return Err("partial for another voting set".into());
         }
-        verify_output(&self.identity, &h)?;
+        verify_output(self.chain_id, &self.identity, &h)?;
         let p = check_partial(self.chain_id, &self.sharing, &h, &m.partial)?;
         let key = message(self.chain_id, &h);
         let ready = {

@@ -136,6 +136,14 @@ pub struct Genesis {
     pub max_committee: usize,
 }
 
+/// Upper bounds a genesis may name for the voting-node epoch and the draw window
+/// (blocks per epoch, epochs per draw). Mainnet runs 3600 and 24; the bounds are
+/// generous, but finite so that no product of the two can overflow a u64 (an
+/// audit found a genesis that passed every launch check and then crashed every
+/// validator on `epoch_blocks * draw_epochs`).
+pub const MAX_EPOCH_BLOCKS: u64 = 1 << 20;
+pub const MAX_DRAW_EPOCHS: u64 = 1 << 10;
+
 impl Default for Genesis {
     fn default() -> Self {
         Self {
@@ -172,6 +180,12 @@ impl NetworkFile {
                 ))
             }
         };
+        if self.epoch_blocks.unwrap_or(0) > MAX_EPOCH_BLOCKS {
+            return Err(format!("epoch_blocks must be at most {MAX_EPOCH_BLOCKS}"));
+        }
+        if self.draw_epochs.unwrap_or(0) > MAX_DRAW_EPOCHS {
+            return Err(format!("draw_epochs must be at most {MAX_DRAW_EPOCHS}"));
+        }
         let max_committee = self.max_committee.unwrap_or(crate::rotation::GROW_UNTIL as u64);
         if !(4..=crate::rotation::MAX_VOTING_NODES as u64).contains(&max_committee) {
             return Err(format!("max_committee must be 4..={}", crate::rotation::MAX_VOTING_NODES));
@@ -575,6 +589,25 @@ mod tests {
         let mut written = file(r#"{"chain_id":7780,"validators":[]}"#);
         written.carry_genesis(&old.genesis().unwrap());
         assert!(written.protocol.is_none() && written.history.is_none() && written.node_rewards.is_none());
+    }
+
+    #[test]
+    fn the_epoch_parameters_are_bounded_so_their_product_cannot_overflow() {
+        // Audit 1, A2: 2^63 blocks an epoch and a draw every 2 epochs wrapped to
+        // zero in release builds and crashed every validator at startup.
+        for bad in [
+            r#"{"chain_id":1,"validators":[],"epoch_blocks":9223372036854775808,"draw_epochs":2}"#,
+            r#"{"chain_id":1,"validators":[],"epoch_blocks":18446744073709551615}"#,
+            r#"{"chain_id":1,"validators":[],"draw_epochs":18446744073709551615}"#,
+        ] {
+            assert!(file(bad).genesis().is_err(), "{bad}");
+        }
+        let edge = format!(r#"{{"chain_id":1,"validators":[],"epoch_blocks":{MAX_EPOCH_BLOCKS},"draw_epochs":{MAX_DRAW_EPOCHS}}}"#);
+        let g = file(&edge).genesis().expect("the bounds themselves are fine");
+        assert!(g.epoch_blocks.checked_mul(g.draw_epochs.unwrap()).is_some());
+        // Mainnet defaults and the rehearsal shape stay valid.
+        assert!(file(r#"{"chain_id":1,"validators":[],"epoch_blocks":3600,"draw_epochs":24}"#).genesis().is_ok());
+        assert!(file(r#"{"chain_id":1,"validators":[],"epoch_blocks":40}"#).genesis().is_ok());
     }
 
     #[test]

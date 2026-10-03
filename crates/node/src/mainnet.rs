@@ -57,8 +57,21 @@ pub fn check(cfg: &ChainConfig) -> Vec<Rule> {
         ),
         rule(
             "16-seat growth",
-            next >= 3,
-            format!("voting-set draws grow to {} seats (protocol 3)", crate::rotation::GROW_UNTIL),
+            next >= 3 && cfg.max_committee == crate::rotation::GROW_UNTIL,
+            format!(
+                "voting-set draws grow to {} seats (protocol 3); this genesis caps the committee at {}",
+                crate::rotation::GROW_UNTIL,
+                cfg.max_committee
+            ),
+        ),
+        rule(
+            "epoch parameters",
+            cfg.epoch_blocks <= crate::roster::MAX_EPOCH_BLOCKS && cfg.draw_epochs.unwrap_or(0) <= crate::roster::MAX_DRAW_EPOCHS,
+            format!(
+                "blocks per epoch at most {} and epochs per draw at most {} (no overflow, no zero divisor)",
+                crate::roster::MAX_EPOCH_BLOCKS,
+                crate::roster::MAX_DRAW_EPOCHS
+            ),
         ),
         rule(
             "node rewards",
@@ -191,12 +204,13 @@ mod tests {
     }
 
     /// The names `check` returns, in order: docs/ops/mainnet-launch.md's table.
-    const NAMES: [&str; 14] = [
+    const NAMES: [&str; 15] = [
         "protocol from genesis",
         "proof market",
         "registry v3",
         "registration cap",
         "16-seat growth",
+        "epoch parameters",
         "node rewards",
         "beacons",
         "re-attestation",
@@ -227,6 +241,16 @@ mod tests {
             off(g1),
             ["protocol from genesis", "proof market", "registration cap", "16-seat growth"]
         );
+        // Audit 1, A5: a four-seat committee cap is not "16-seat growth".
+        let mut capped = mainnet();
+        capped.max_committee = 4;
+        assert_eq!(off(capped), ["16-seat growth"]);
+        // Audit 1, A2: epoch parameters outside the bounds fail their own rule
+        // (the same config used to pass every rule and then crash on resume).
+        let mut huge = mainnet();
+        huge.epoch_blocks = 1 << 63;
+        huge.draw_epochs = Some(2);
+        assert_eq!(off(huge), ["epoch parameters"]);
         // A premine (or a faucet) funds genesis accounts.
         let mut premine = mainnet();
         premine.alloc = vec![(Address::repeat_byte(1), U256::from(1u8))];

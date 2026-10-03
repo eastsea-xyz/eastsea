@@ -59,6 +59,12 @@ final class ReleaseUpdateGate {
         "\(item.versionString)|\((item.displayVersionString as String?) ?? "")|\(signature)|\((item.fileURL as URL?)?.absoluteString ?? "")"
     }
 
+    /// The update tracker's identity for an appcast item: the same notion of
+    /// "this exact item" the gate itself uses (read-only; no gate behaviour).
+    static func trackerKey(_ item: SUAppcastItem) -> String {
+        itemKey(item, signature: sparkleSignature(item) ?? "")
+    }
+
     func mayProceed(_ item: SUAppcastItem) -> Bool {
         guard let trust = ReleaseTrust.bundled() else { return false }
         if trust.chainId == 7_777 || trust.chainId == 7_780 { return true }

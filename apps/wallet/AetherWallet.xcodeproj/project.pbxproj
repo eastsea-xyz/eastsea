@@ -32,6 +32,7 @@
 		65632EFCC1603BC0D9B6C752 /* TokenAssets.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5D7C676A4030F20E37C58E7 /* TokenAssets.swift */; };
 		68C02116FA3214FB9535A952 /* EarningsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02CE6DC842A323F5843165E1 /* EarningsModel.swift */; };
 		6911A71C489CFE413F30C9A2 /* EnclaveKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 317D79B15C7F9E75B1A1F4FC /* EnclaveKey.swift */; };
+		696C62ACB62331AE933D81DC /* UpdateTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 790C6CEC63EC7A21B28A79CC /* UpdateTracker.swift */; };
 		6B328300B9C16A284BC72EDD /* NodeController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64A5EE5BA6294827128D61F5 /* NodeController.swift */; };
 		744ABDE9795D713D6D3CA46F /* token-sources.json in Resources */ = {isa = PBXBuildFile; fileRef = 2928FB2C0B82AF8C35E97D99 /* token-sources.json */; };
 		75F66F94438EF25449852272 /* Brand.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32CECEE6B3B88424FB7E6774 /* Brand.swift */; };
@@ -62,6 +63,7 @@
 		C95F0C486AC46505C63D822B /* AgentWalletPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 020BD968AE07E378627D7EB7 /* AgentWalletPanel.swift */; };
 		C9839F6819F2F86387CC88B7 /* aether_ffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BC12AF79B32D90A48860251 /* aether_ffi.swift */; };
 		D011EF063EAF0FD0463BB20F /* NetworkUpgrade.swift in Sources */ = {isa = PBXBuildFile; fileRef = BAF12832C2145F7B5553F13A /* NetworkUpgrade.swift */; };
+		D229901FC826CDF2C1547675 /* UpdateTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 790C6CEC63EC7A21B28A79CC /* UpdateTracker.swift */; };
 		D35E3E06705EC147E0155308 /* token-sources.json in Resources */ = {isa = PBXBuildFile; fileRef = 2928FB2C0B82AF8C35E97D99 /* token-sources.json */; };
 		D6DDA80E641E075D1DE236AD /* WalletModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 016BCAF9063410C1BBD4052D /* WalletModel.swift */; };
 		D840F0A34EA5DA948F884D3E /* TokenAssets.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5D7C676A4030F20E37C58E7 /* TokenAssets.swift */; };
@@ -100,6 +102,7 @@
 		64A5EE5BA6294827128D61F5 /* NodeController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeController.swift; sourceTree = "<group>"; };
 		65F2514912728847B547AC0A /* Onboarding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Onboarding.swift; sourceTree = "<group>"; };
 		745EAC0E04873F8FD0F29BC2 /* LiveResize.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveResize.swift; sourceTree = "<group>"; };
+		790C6CEC63EC7A21B28A79CC /* UpdateTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateTracker.swift; sourceTree = "<group>"; };
 		82F0B4CA90E38B66B43592E6 /* BalanceHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BalanceHistory.swift; sourceTree = "<group>"; };
 		87BD832EE8990B2380C0EF86 /* ChainActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChainActivity.swift; sourceTree = "<group>"; };
 		94E4B4A2A4BDBBBBC6A12600 /* ProverFlags.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProverFlags.swift; sourceTree = "<group>"; };
@@ -189,6 +192,7 @@
 				B60F2ADE6BD15611D4BD0811 /* Theme.swift */,
 				E5D7C676A4030F20E37C58E7 /* TokenAssets.swift */,
 				FE00FF7FDD47F623CE4B55A0 /* TokenSend.swift */,
+				790C6CEC63EC7A21B28A79CC /* UpdateTracker.swift */,
 				016BCAF9063410C1BBD4052D /* WalletModel.swift */,
 			);
 			path = Sources;
@@ -365,6 +369,7 @@
 				96D01674727A3032D42B5EDC /* Theme.swift in Sources */,
 				65632EFCC1603BC0D9B6C752 /* TokenAssets.swift in Sources */,
 				8A8690DDB06F0148FD133737 /* TokenSend.swift in Sources */,
+				D229901FC826CDF2C1547675 /* UpdateTracker.swift in Sources */,
 				95004663796AA4EF45771D37 /* WalletModel.swift in Sources */,
 				C9839F6819F2F86387CC88B7 /* aether_ffi.swift in Sources */,
 			);
@@ -403,6 +408,7 @@
 				1B66F9FC578D265748C295D1 /* Theme.swift in Sources */,
 				D840F0A34EA5DA948F884D3E /* TokenAssets.swift in Sources */,
 				8FBC9A5F5A3237EA07862EB6 /* TokenSend.swift in Sources */,
+				696C62ACB62331AE933D81DC /* UpdateTracker.swift in Sources */,
 				D6DDA80E641E075D1DE236AD /* WalletModel.swift in Sources */,
 				BF69C9639B9D7215C5CE0605 /* aether_ffi.swift in Sources */,
 			);

@@ -672,6 +672,12 @@ private struct UpdateCard: View {
                     TimelineView(.periodic(from: .now, by: 30)) { context in
                         Text(checked(at: context.date)).font(.aeBody).foregroundStyle(.secondary)
                     }
+                    // A failed update, or the health check after one: one honest
+                    // sentence with what happens next (red team #11).
+                    if let notice = updates.installNotice {
+                        Text(notice).font(.aeBody).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 Button("Check for Updates") { updates.check() }

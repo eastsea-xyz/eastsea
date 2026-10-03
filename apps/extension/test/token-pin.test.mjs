@@ -9,8 +9,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { SEL, call, parseTokenAmount, wordUint } from '../src/lib/tokens.js';
 import {
-  pinKey, emptyPins, sameTokenMetadata, foldObserved, acceptChanged, sendBlocker, pinnedTokenInfo, catalogWithPins,
+  pinKey, emptyPins, sameTokenMetadata, foldObserved, acceptChanged, sendBlocker, pinnedTokenInfo, catalogWithPins, denominationOf,
 } from '../src/lib/tokenPin.js';
+import { KNOWN_TOKENS } from '../src/lib/knownTokens.js';
 
 const word = (v) => wordUint(v);
 const str = (s) => {
@@ -154,4 +155,81 @@ test('a flagged catalog entry still shows the pinned details', () => {
   );
   assert.equal(synced.tokens[usdx].origin, 'seed');
   assert.equal(synced.tokens.other.decimals, 3);
+});
+
+// ---- audit R2-2: denominations come from the shipped list, not the pins ----
+
+test('denominationOf: the shipped list decides for its tokens, pins are unverified for the rest', () => {
+  const waeth = Object.keys(KNOWN_TOKENS[7780])[0];
+  const waethPin = { decimals: 9, symbol: 'WAETH', name: 'Wrapped AETH', address: waeth }; // a lying pin
+  const pins = { tokens: { [usdx]: { ...honest, address: usdx }, [waeth]: waethPin }, changed: {}, generation: 4 };
+
+  // On the shipped list: shipped decimals, flagged as node disagreement, but
+  // never "unverified units" and never paused.
+  const known = denominationOf(7780, waeth, pins);
+  assert.equal(known.decimals, 18);
+  assert.equal(known.trusted, true);
+  assert.equal(known.nodeDisagrees, true); // the pin differs from the list
+  assert.equal(known.unverifiedUnits, undefined);
+  assert.equal(known.pinGeneration, 4);
+
+  // Not on the list: the pin's details may be shown, as unverified units.
+  const unverified = denominationOf(7780, usdx, pins);
+  assert.deepEqual(
+    { decimals: unverified.decimals, symbol: unverified.symbol, name: unverified.name },
+    honest,
+  );
+  assert.equal(unverified.trusted, false);
+  assert.equal(unverified.unverifiedUnits, true);
+  assert.equal(unverified.metadataChanged, false);
+  assert.equal(unverified.pinGeneration, 4);
+
+  // A flagged unlisted token reports the change…
+  const flagged = foldObserved(pins, usdx, lying, 5, 1).pins;
+  assert.equal(denominationOf(7780, usdx, flagged).metadataChanged, true);
+
+  // …no pin at all is simply unconfirmed; junk input resolves quietly.
+  const none = denominationOf(7780, '0x00000000000000000000000000000000000000c2', pins);
+  assert.equal(none.unconfirmed, true);
+  assert.equal(denominationOf(7780, '', pins).unconfirmed, true);
+  assert.equal(denominationOf(7780, usdx, null).unconfirmed, true);
+});
+
+test('folding keeps the generation and does not churn on a persisting change', () => {
+  const withGen = { tokens: {}, changed: {}, generation: 7 };
+  const pinned = foldObserved(withGen, usdx, honest, 1_000, 2).pins;
+  assert.equal(pinned.generation, 7); // folds never move the generation
+  const flagged = foldObserved(pinned, usdx, lying, 2_000, 1).pins;
+  assert.equal(flagged.generation, 7);
+
+  // The same divergent answer observed again is not a new change: the stored
+  // record (and so its content) stays exactly as it was.
+  const again = foldObserved(flagged, usdx, lying, 9_000, 1);
+  assert.equal(again.outcome, 'changed');
+  assert.equal(again.pins.changed[key].seenAt, 2_000); // not refreshed to 9_000
+
+  // A *different* divergence still updates the record.
+  const moved = foldObserved(flagged, usdx, { decimals: 12, symbol: 'USDX', name: 'Test Dollar' }, 3_000, 1);
+  assert.equal(moved.pins.changed[key].decimals, 12);
+
+  // Accepting renumbers nothing either — only the store bumps generations.
+  assert.equal(acceptChanged(flagged, usdx, lying, 4_000, 2).generation, 7);
+});
+
+test('catalogWithPins shows shipped details for listed tokens even against a lying pin', () => {
+  const [waeth] = Object.keys(KNOWN_TOKENS[7780]);
+  const catalog = { tokens: {
+    [usdx]: { decimals: 3, symbol: 'OLD', name: 'Stale', address: usdx },
+    [waeth]: { decimals: 9, symbol: 'WAETH', name: 'Lying Pin', address: waeth },
+  }, rejected: [] };
+  const pins = foldObserved(foldObserved({ tokens: {}, changed: {}, generation: 0 }, usdx, honest, 1, 1).pins, waeth, { decimals: 9, symbol: 'WAETH', name: 'Lying Pin' }, 2, 1).pins;
+  const synced = catalogWithPins(catalog, pins, 7780);
+  // The unlisted token shows its pinned details…
+  assert.deepEqual(
+    { decimals: synced.tokens[usdx].decimals, symbol: synced.tokens[usdx].symbol, name: synced.tokens[usdx].name },
+    honest,
+  );
+  // …the listed one shows the shipped list's, pin or no pin.
+  assert.equal(synced.tokens[waeth].decimals, 18);
+  assert.equal(synced.tokens[waeth].name, KNOWN_TOKENS[7780][waeth].name);
 });

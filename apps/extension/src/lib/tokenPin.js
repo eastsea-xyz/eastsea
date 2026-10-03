@@ -1,15 +1,21 @@
-// Trust-on-first-use pinning for ERC-20 metadata (docs/research/audit-1-2026-10-03.md,
-// finding A3): the units a signed transfer uses must never be something one
-// untrusted RPC can change. The first time a token is seen, its decimals, symbol
-// and name are read from two different configured endpoints that must agree;
-// the agreed values are pinned in extension storage keyed by (chainId, token
-// address). A later read that disagrees with the pin is never used — the token
-// is marked "metadata changed" and sending it is blocked until the user
-// re-confirms on a screen that shows the old and new values. Pure functions
-// with the readers passed in, so this is tested without a node
-// (test/token-pin.test.mjs).
+// Trust-on-first-use pinning for ERC-20 metadata (docs/research/audit-1-2026-10-03.md
+// finding A3, tightened by audit-2 R2-2): the units a signed transfer uses must
+// never be something an untrusted RPC can decide. Pins record what the nodes
+// said for continuity — a later read that disagrees with the pin is never used
+// silently — but since audit 2 they are NOT trusted denominations: trusted
+// units come only from the shipped list (lib/knownTokens.js), and every other
+// token's units are unverified, needing an explicit base-unit confirmation to
+// send (lib/sendIntent.js). The first time a token is seen, its decimals,
+// symbol and name are read from two different configured endpoints that must
+// agree (when a second endpoint exists); the agreed values are pinned in
+// extension storage keyed by (chainId, token address). A stored pin state also
+// carries a `generation`, moved by lib/pinStore.js whenever its content
+// changes, which the send path checks so an open confirmation cannot sign
+// against pins that moved under it (audit R2-5). Pure functions with the
+// readers passed in, so this is tested without a node (test/token-pin.test.mjs).
 
 import { SEL, call, tokenInfoFrom } from './tokens.js';
+import { knownToken } from './knownTokens.js';
 
 /** The per-chain pin store: `tokenPin.<chainId>` in chrome.storage.local. */
 export const pinKey = (chainId) => `tokenPin.${chainId}`;
@@ -73,7 +79,7 @@ export function foldObserved(pins, address, observed, now = Date.now(), sources 
   const cur = pins.tokens[key];
   if (!cur) {
     return {
-      pins: { tokens: { ...pins.tokens, [key]: { ...observed, address: key, sources, pinnedAt: now } }, changed: pins.changed },
+      pins: { ...pins, tokens: { ...pins.tokens, [key]: { ...observed, address: key, sources, pinnedAt: now } } },
       outcome: 'pinned',
     };
   }
@@ -81,10 +87,14 @@ export function foldObserved(pins, address, observed, now = Date.now(), sources 
     if (!pins.changed[key]) return { pins, outcome: 'agree' };
     const changed = { ...pins.changed };
     delete changed[key];
-    return { pins: { tokens: pins.tokens, changed }, outcome: 'agree' };
+    return { pins: { ...pins, tokens: pins.tokens, changed }, outcome: 'agree' };
   }
+  // The same divergent answer again keeps the recorded change as it is: a
+  // persisting disagreement must not churn the stored content (and so the pin
+  // generation) on every scan.
+  if (pins.changed[key] && sameTokenMetadata(pins.changed[key], observed)) return { pins, outcome: 'changed' };
   return {
-    pins: { tokens: pins.tokens, changed: { ...pins.changed, [key]: { ...observed, address: key, seenAt: now } } },
+    pins: { ...pins, tokens: pins.tokens, changed: { ...pins.changed, [key]: { ...observed, address: key, seenAt: now } } },
     outcome: 'changed',
   };
 }
@@ -96,10 +106,12 @@ export function acceptChanged(pins, address, observed, now = Date.now(), sources
   const tokens = { ...pins.tokens, [key]: { ...observed, address: key, sources, pinnedAt: now } };
   const changed = { ...pins.changed };
   delete changed[key];
-  return { tokens, changed };
+  return { ...pins, generation: (pins.generation || 0), tokens, changed };
 }
 
-/** May this token be sent right now? One plain sentence when not. */
+/** May this token be sent right now? One plain sentence when not. (Tokens on
+ * the shipped list are exempt: their units never come from the pin, so node
+ * noise does not pause them — the caller checks the list first.) */
 export function sendBlocker(pins, address) {
   const key = String(address || '').toLowerCase();
   return pins.changed[key]
@@ -107,12 +119,50 @@ export function sendBlocker(pins, address) {
     : null;
 }
 
+/** The details a display or a send must use for `address` on `chainId`
+ * (audit R2-2): the shipped list decides; the pin only ever supplies
+ * unverified details. Returns `{ decimals, symbol, name, trusted }` plus the
+ * state the views show — `unverifiedUnits` (not on the shipped list),
+ * `nodeDisagrees` (on the list, but the stored pin or a flagged change
+ * differs from it), `metadataChanged`, `unconfirmed` (no pin at all), and the
+ * `pinGeneration` the send intent must carry. */
+export function denominationOf(chainId, address, pins) {
+  const key = String(address || '').toLowerCase();
+  const generation = Number(pins?.generation) || 0;
+  const known = knownToken(chainId, key);
+  if (known) {
+    const pin = pins?.tokens?.[key];
+    return {
+      decimals: known.decimals, symbol: known.symbol, name: known.name,
+      trusted: true,
+      nodeDisagrees: Boolean(pins?.changed?.[key]) || (Boolean(pin) && !sameTokenMetadata(pin, known)),
+      pinGeneration: generation,
+    };
+  }
+  const pin = pins?.tokens?.[key];
+  if (!pin) {
+    return { decimals: null, symbol: null, name: null, trusted: false, unconfirmed: true, pinGeneration: generation };
+  }
+  return {
+    decimals: pin.decimals, symbol: pin.symbol, name: pin.name,
+    trusted: false, unverifiedUnits: true,
+    metadataChanged: Boolean(pins?.changed?.[key]),
+    pinGeneration: generation,
+  };
+}
+
 /** A catalog whose token entries carry the pinned details, so every view that
  * reads the catalog (activity labels, the safety sets) shows what was pinned,
- * not what one endpoint last said. */
-export function catalogWithPins(catalog, pins) {
+ * not what one endpoint last said. Entries on the shipped list (`chainId`)
+ * show the shipped details instead — a lying pin never rewrites them. */
+export function catalogWithPins(catalog, pins, chainId = null) {
   const tokens = {};
   for (const [key, t] of Object.entries(catalog.tokens || {})) {
+    const known = chainId != null ? knownToken(chainId, key) : null;
+    if (known) {
+      tokens[key] = { ...t, decimals: known.decimals, symbol: known.symbol, name: known.name };
+      continue;
+    }
     const pin = pins.tokens[key];
     tokens[key] = pin ? { ...t, decimals: pin.decimals, symbol: pin.symbol, name: pin.name } : t;
   }

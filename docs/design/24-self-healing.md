@@ -103,3 +103,15 @@
 **시험(3부)**: `store.rs` 단위 시험 8개(새 파일 스탬프, 이전 DB의 그 자리 채택, TooNew 거부와 원시 행 불변·해독 불가 버전 행도 같은 거부, 마이그레이션 서브스텝 실행·완료 스탬프, 중단 → 기록된 서브스텝 재개, 커밋 중간 사망의 전부-아니면-전무, 등록된 단계 없는 낮은 버전 거부), `tests/selfheal.rs` 2개(TooNew는 손상 아님 — `corrupt-*` 이동 없음·키 보존·`follow::open_store`가 업데이트로 말하기, 실제 `aether follow` 바이너리가 로그에 "UPDATE REQUIRED"를 남기며 종료 코드 3으로 끝남).
 
 **아직 안 된 것**: 실제 v2 마이그레이션은 존재하지 않는다(메커니즘과 시험만; 첫 표 의미 변경 때 `CURRENT_SCHEMA`를 올리고 단계를 등록한다). 마샬 아카이브 파티션과 era 파일은 별도 형식이라 이 버전 체계 밖이다. redb 파일 포맷 자체의 호환성은 redb가 관리한다.
+
+## 구현 3부 #11 (2026-10-03, 레드팀 #11: Sparkle 업데이트 실패)
+
+**앱 (`apps/wallet`)** — `UpdateTracker.swift`(판정만: 순수 상태 기계, 모든 시간 판정은 주입 시계, iOS 타깃에도 컴파일됨)과 `AetherWalletApp.swift`·`SimpleDashboard.swift`(배선):
+- 업데이트 주기 **발견 → 다운로드 → 검증 → 설치 → 건강 확인 → healthy/failed**를 `~/Library/Application Support/Aether/update-state.json`에 원자적으로 영속화한다. 파일이 없거나 비었거나 깨졌으면 idle로 읽는다 — 앱이 죽는 경로가 없고, 다음 이벤트가 파일을 다시 쓴다.
+- **원인별 재시도**: 네트워크·다운로드 실패는 백오프 1분(2배씩, 6시간 상한)으로 횟수 제한 없이, 단 꽉 찬 반복은 없다. 서명·릴리스 승인 게이트 거부는 **같은 아이템을 재시도하지 않는다** — 다음 appcast 항목을 기다리고 한 문장으로 알린다(게이트가 나중에 그 항목을 통과시키면 다운로드 사실이 거부 기록에 우선하여 사이클이 이어진다). 설치 실패는 백오프로 최대 3회, 그 뒤엔 "웹사이트에서 직접 내려받아 교체하라"는 문장과 함께 멈춘다(그 항목은 차단, 새 항목은 새로 3회). **건강 실패**(대상 버전으로 다시 켜졌지만 10분 안에 노드가 살지 못함; 따라잡기 중도 건강으로 친다)는 원인을 기록해 문구와 기존 복구 로직이 쓰게 할 뿐, **둘째 롤백 메커니즘을 만들지 않는다** — 회복은 기존 NodeWatchdog·`aether.prev` 롤백이 그대로 담당한다.
+- **재시작 복귀**: 앱이 어떤 상태에서 죽었든 기록에서 재개한다. 설치 중 강제 종료는 다음 시작 때 실행 중 버전과 대상 버전을 비교해 판정하고(같으면 건강 확인 대기, 다르면 설치 실패 1회), 건강 확인 창은 첫 릴런치 시각 기준으로 흘러간다(재시작마다 초기화되지 않는다). 시계가 거꾸로 가면(잠자기·NTP 점프) 타임아웃·재시도가 조기 발화하지 않고, 백오표 산술은 시각 거리가 아니라 시도 횟수만으로 계산한다.
+- **배선**: AppDelegate가 Sparkle 델리게이트(`didFindValidUpdate`→발견, `shouldProceedWithUpdate` 통과→다운로드, `willInstallUpdateOnQuit`→검증·설치 — 블록 실행 전에 동기적으로 기록, `didAbortWithError`→원인 분류, 게이트 사전검사 결과→거부)를 트래커에 먹인다. 30초 틱이 건강 창 만료·노드 관측·예정된 재시도(백그라운드 재점검)를 처리한다. 네트워크 페이지의 업데이트 카드가 `failed`와 `awaitingHealth`에 **한 문장**을 보여 준다(영문, `Brand.project` 사용). Sparkle 자체 동작·appcast·피드 URL·릴리스 승인 게이트는 전혀 바꾸지 않았다(`ReleaseUpdateGate.trackerKey`는 게이트가 쓰는 아이템 항등식을 읽기 전용으로 노출한 것뿐).
+
+**시험(3부)**: `apps/wallet/Tests/update-state`(순수 swiftc 프로그램 — 모든 전이, 원인별 백오표 배수·상한, 각 상태에서 죽인 뒤 재개, 깨진·빈 기록, 거꾸로 가는 시계; `mkdir -p ./tmp && swiftc -o ./tmp/update-state-check apps/wallet/Sources/Brand.swift apps/wallet/Sources/UpdateTracker.swift apps/wallet/Tests/update-state/main.swift && ./tmp/update-state-check`). macOS·iOS 디버그 빌드 통과.
+
+**다루지 않은 것(3부)**: 실제 기기에서 Sparkle 설치 단계의 실패 주입(상태 기계는 순수 시험으로만 검증 — 실 업데이트 경로는 appcast가 바뀌어야 시험된다), 게이트 사전검사 중 네트워크 오류와 온체인 거부의 구분(둘 다 "거부"로 기록된다 — 게이트가 항목을 나중에 통과시키지 않으면 다음 appcast 항목까지 기다린다), 업데이트 서버가 appcast 자체를 못 주는 상황의 별도 문구(네트워크 실패 문장으로 처리), iOS에는 배선 없음(Sparkle은 macOS 전용; 상태 기계 파일만 공유 컴파일).

@@ -273,6 +273,29 @@ impl NetworkFile {
         Ok(members)
     }
 
+    /// Write every genesis fact of `g` into a file a ceremony (dkg) builds from
+    /// the roster alone: the inverse of [`NetworkFile::genesis`]. A fact left out
+    /// here silently reverts to its default in the written network.json (the
+    /// protocol did: a rehearsal chain declared protocol 3 and ran protocol 1).
+    pub fn carry_genesis(&mut self, g: &Genesis) {
+        self.faucet = g.faucet;
+        self.registrar = g.registrar.map(|(x, y)| format!("{}{}", hex::encode(x), hex::encode(y)));
+        self.epoch_blocks = (g.epoch_blocks != 0).then_some(g.epoch_blocks);
+        self.min_streak = g.min_streak;
+        self.draw_epochs = g.draw_epochs;
+        self.history = (g.history != 0).then_some(g.history);
+        self.protocol = (g.protocol > 1).then_some(g.protocol);
+        self.node_rewards = g.node_rewards.then_some(true);
+        self.reserve = g.reserve.as_ref().map(|r| ReserveFile {
+            operator: r.operator,
+            validators: r.members.iter().map(|(key, node)| Member { key: key.clone(), node: node.clone() }).collect(),
+        });
+        self.group = (g.group != 0).then_some(g.group);
+        self.max_committee = (g.max_committee != crate::rotation::GROW_UNTIL).then_some(g.max_committee as u64);
+        // The roster the network opened with, frozen: handoffs rewrite `validators`.
+        self.genesis_validators = Some(g.committee.iter().map(|(key, node)| Member { key: key.clone(), node: node.clone() }).collect());
+    }
+
     /// Carry genesis facts into a file written by a ceremony (dkg, reshare).
     pub fn keep_genesis(&mut self, from: &NetworkFile) {
         self.faucet = from.faucet.or(self.faucet);
@@ -526,6 +549,32 @@ mod tests {
             assert!(file(&msg).genesis().is_err(), "protocol {bad}");
         }
         assert!(file(r#"{"chain_id":1,"validators":[],"protocol":1}"#).genesis().is_ok());
+    }
+
+    /// What `aether dkg` does: build a file from the roster alone and carry the
+    /// genesis into it. The written file must describe the SAME genesis.
+    fn dkg_roundtrip(json: &str) {
+        let from = file(json);
+        let genesis = from.genesis().expect("genesis");
+        let mut written = file(&format!(r#"{{"chain_id":{},"validators":[]}}"#, from.chain_id));
+        written.carry_genesis(&genesis);
+        assert_eq!(written.genesis().expect("written genesis"), genesis, "{json}");
+    }
+
+    #[test]
+    fn a_dkg_written_network_file_keeps_the_whole_genesis() {
+        // The mainnet rehearsal shape: protocol 3, history v2, node rewards, a registrar.
+        dkg_roundtrip(&format!(
+            r#"{{"chain_id":7799,"validators":[],"protocol":3,"history":2,"node_rewards":true,"epoch_blocks":40,"min_streak":0,"draw_epochs":5,"registrar":"{}"}}"#,
+            "ab".repeat(64)
+        ));
+        // A group and a custom committee ceiling (new genesis only).
+        dkg_roundtrip(r#"{"chain_id":7800,"validators":[],"protocol":3,"history":2,"node_rewards":true,"group":2,"max_committee":12}"#);
+        // The testnet shape stays field-free (protocol 1, no history, no rewards).
+        let old = file(r#"{"chain_id":7780,"validators":[]}"#);
+        let mut written = file(r#"{"chain_id":7780,"validators":[]}"#);
+        written.carry_genesis(&old.genesis().unwrap());
+        assert!(written.protocol.is_none() && written.history.is_none() && written.node_rewards.is_none());
     }
 
     #[test]

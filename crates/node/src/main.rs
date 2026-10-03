@@ -2575,20 +2575,10 @@ fn run_dkg(
         cw_tokio::Config::new().with_storage_directory(dir.join("dkg-runtime")),
     );
     let (mut public, dir_out) = (p2p.roster.to_file(chain_id), dir.clone());
-    // Genesis facts survive the ceremony: the network.json it writes still names the faucet.
-    public.faucet = genesis.faucet;
-    public.registrar = genesis
-        .registrar
-        .map(|(x, y)| format!("{}{}", hex::encode(x), hex::encode(y)));
-    public.epoch_blocks = (genesis.epoch_blocks != 0).then_some(genesis.epoch_blocks);
-    public.min_streak = genesis.min_streak;
-    public.draw_epochs = genesis.draw_epochs;
-    public.history = (genesis.history != 0).then_some(genesis.history);
-    public.node_rewards = genesis.node_rewards.then_some(true);
-    public.reserve = genesis.reserve.as_ref().map(|r| aether_node::roster::ReserveFile {
-        operator: r.operator,
-        validators: r.members.iter().map(|(key, node)| aether_node::roster::Member { key: key.clone(), node: node.clone() }).collect(),
-    });
+    // Every genesis fact survives the ceremony (`carry_genesis` is the inverse of
+    // `NetworkFile::genesis`; a hand-copied list had lost the protocol, group,
+    // committee ceiling and the frozen genesis roster).
+    public.carry_genesis(&genesis);
     let result = executor.start(async move |context| {
         // Accept incoming validator links (the node's RPC is not needed here).
         let _router = aether_node::p2p::open_public(&p2p)

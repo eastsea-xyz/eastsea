@@ -11,8 +11,11 @@ import { networkSettings } from './lib/network.js';
 import { Wallet } from './lib/wallet.js';
 import { READ_METHODS, SEND_METHODS, normalizeTx, describeCall, originAllowed } from './lib/methods.js';
 import { weiToAeth } from './lib/units.js';
-import { parseTokenSources, scanTokens, formatTokenAmount, call, SEL, wordAddress, uintAt, parseTokenAmount, erc20TransferCalldata, emptyCatalog } from './lib/tokens.js';
-import { pinKey, emptyPins, sameTokenMetadata, pinnedTokenInfo, foldObserved, acceptChanged, sendBlocker, catalogWithPins } from './lib/tokenPin.js';
+import { parseTokenSources, scanTokens, formatTokenAmount, call, SEL, wordAddress, uintAt, emptyCatalog } from './lib/tokens.js';
+import { sameTokenMetadata, pinnedTokenInfo, foldObserved, acceptChanged, catalogWithPins, denominationOf } from './lib/tokenPin.js';
+import { pinStore } from './lib/pinStore.js';
+import { checkSendIntent } from './lib/sendIntent.js';
+import { knownToken } from './lib/knownTokens.js';
 import { addressRisk, revertReason, splitHoldings, tokenShort } from './lib/safety.js';
 import { TERMS_VERSION } from './lib/terms.js';
 import { linkedAddress, describeHistory, mergeHistory } from './lib/history.js';
@@ -31,6 +34,11 @@ const rpc = new Rpc(DEFAULT_RPCS, {
   floorStore: { get: (key) => local.get(key), set: (key, value) => local.set(key, value) },
 });
 const wallet = new Wallet({ wasm: { prepareTx, attachSignature }, rpc, vault });
+// All metadata-pin writes go through one serialized, generation-counted store
+// (audit R2-5): a scan and a review accepted while it ran merge instead of
+// overwriting each other, and the send path can tell when the pins behind an
+// open confirmation moved.
+const pinsStore = pinStore(local);
 
 const UI_PREFIX = chrome.runtime.getURL('ui/');
 const ports = new Set(); // content-script ports, for events
@@ -283,7 +291,11 @@ async function tokenSources(chainId) {
  * worker restarts and are shown until the next read. A token first seen here
  * gets its decimals, symbol and name pinned from endpoints that must agree
  * (lib/tokenPin.js, audit A3); later reads that disagree are flagged, never
- * used, and pause sending until the user reviews them in Assets.
+ * used, and pause sending until the user reviews them in Assets. Since audit
+ * R2-2 the pins are continuity bookkeeping only: a holding's trusted units
+ * come from the shipped list (lib/knownTokens.js), everything else is marked
+ * "unverified units" and can only be sent through the base-unit confirmation
+ * of lib/sendIntent.js.
  */
 async function refreshAssets({ force = false } = {}) {
   const info = await vault.info();
@@ -306,16 +318,18 @@ async function refreshAssets({ force = false } = {}) {
           const chain = status.chain_id;
           const catalogKey = `tokenCatalog.${chain}`;
           const catalog = (await local.get(catalogKey)) || emptyCatalog();
-          let pins = (await local.get(pinKey(chain))) || emptyPins();
           const read = (to, data) => rpc.call('eth_call', [{ to, data }, 'latest']);
           const readAgreed = (to, data) => rpc.callAgreed('eth_call', [{ to, data }, 'latest']);
           // With a second endpoint configured, a first sighting needs both to
           // agree; with only the default local node, the pin honestly records
-          // its single source.
+          // its single source. Either way the pin is continuity bookkeeping,
+          // not a trusted denomination (audit R2-2: trusted units come from
+          // lib/knownTokens.js; everything else is "unverified units").
           const requireTwo = rpc.urls.length >= 2;
+          const observations = []; // { address, info, sources, at }
           const infoOf = async (address, single) => {
             const seen = await pinnedTokenInfo(address, { single, agreed: requireTwo ? readAgreed : null });
-            pins = foldObserved(pins, address, seen.info, Date.now(), seen.sources).pins;
+            observations.push({ address, info: seen.info, sources: seen.sources, at: Date.now() });
             return seen.info;
           };
           const { catalog: cat, held } = await scanTokens({ owner, sources, catalog, read, infoOf });
@@ -324,9 +338,9 @@ async function refreshAssets({ force = false } = {}) {
           // pinned now through the same two-source rule.
           for (const { token } of held) {
             try {
-              const pinned = Boolean(pins.tokens[token.address]);
+              const pinned = observations.some((o) => o.address === token.address);
               const seen = await pinnedTokenInfo(token.address, { single: read, agreed: !pinned && requireTwo ? readAgreed : null });
-              if (seen.info) pins = foldObserved(pins, token.address, seen.info, Date.now(), seen.sources).pins;
+              if (seen.info) observations.push({ address: token.address, info: seen.info, sources: seen.sources, at: Date.now() });
             } catch (e) {
               // Unconfirmable right now (the endpoints disagree): the pin
               // stands and the holding shows as not confirmed; never trust
@@ -334,14 +348,26 @@ async function refreshAssets({ force = false } = {}) {
               if (!e?.tokenUnverified) throw e;
             }
           }
+          // One serialized fold of everything this scan observed onto the pins
+          // stored NOW (audit R2-5): a review accepted mid-scan survives, and
+          // the generation moves only when the stored content changed.
+          const pins = await pinsStore.update(chain, (current) =>
+            observations.reduce((p, o) => foldObserved(p, o.address, o.info, o.at, o.sources).pins, current));
           const pinnedHeld = held.map((h) => {
             const pin = pins.tokens[h.token.address];
-            if (!pin) return { ...h, token: { ...h.token, unconfirmed: true } };
-            return { ...h, token: { ...h.token, decimals: pin.decimals, symbol: pin.symbol, name: pin.name, metadataChanged: Boolean(pins.changed[h.token.address]), pinSources: pin.sources } };
+            const d = denominationOf(chain, h.token.address, pins);
+            if (!pin && !d.trusted) return { ...h, token: { ...h.token, unconfirmed: true, pinGeneration: d.pinGeneration } };
+            return {
+              ...h,
+              token: {
+                ...h.token, decimals: d.decimals, symbol: d.symbol, name: d.name,
+                trusted: d.trusted, unverifiedUnits: Boolean(d.unverifiedUnits), nodeDisagrees: Boolean(d.nodeDisagrees),
+                metadataChanged: Boolean(d.metadataChanged), pinSources: pin?.sources, pinGeneration: d.pinGeneration,
+              },
+            };
           });
-          const synced = catalogWithPins(cat, pins);
+          const synced = catalogWithPins(cat, pins, chain);
           await local.set(catalogKey, synced);
-          await local.set(pinKey(chain), pins);
           await local.set(key, { address: owner, updated: Date.now(), holdings: pinnedHeld, error: null });
         } else {
           await local.set(key, { address: owner, updated: Date.now(), holdings: [], error: null });
@@ -461,25 +487,31 @@ const ui = {
   send: async ({ to, value_wei, data, gas, token }) => {
     if (!(await vault.unlocked())) throw new Error('Unlock first.');
     if (token) {
-      // Audit A3: the units a token transfer signs come from the pinned
-      // details only. A fresh RPC answer never decides them, a flagged change
-      // blocks the send until the user reviews it in Assets, and the calldata
-      // is derived here (the popup sends the amount text, not units).
+      // Audits A3 + R2-2 + R2-5: the popup's confirmation produced an
+      // immutable send intent (lib/sendIntent.js) — token, recipient, the
+      // exact base-unit integer, the decimals that were shown, and the pin
+      // generation the display was built from. Signing uses exactly that
+      // integer: no amount text is re-parsed here, no fresh RPC answer can
+      // move the units (a token on the shipped list signs with the shipped
+      // decimals; any other token needed an acknowledged base-unit count),
+      // and a pin state that changed since the confirmation refuses to sign.
+      const chain = rpc.chainId;
       const address = String(token.address || '').toLowerCase();
-      const pins = (await local.get(pinKey(rpc.chainId))) || emptyPins();
-      const block = sendBlocker(pins, address);
-      if (block) throw new Error(block);
+      const pins = await pinsStore.read(chain);
+      const known = knownToken(chain, address);
+      const calldata = checkSendIntent({ token, recipient: to, baseUnits: token.baseUnits }, { pins, known });
       const pin = pins.tokens[address];
-      if (!pin) throw new Error('This token’s details are not confirmed yet. Open Assets and let the wallet confirm them first.');
-      const units = parseTokenAmount(token.amountText, pin.decimals);
+      const decimals = known ? known.decimals : pin?.decimals;
+      const symbol = known ? known.symbol : pin?.symbol;
+      const units = BigInt(String(token.baseUnits));
       // Token balances are the node's answer: ask once more, so a balance that
       // moved since the popup read it cannot be spent twice.
       const info = await vault.info();
       const balance = await uintAt(await rpc.call('eth_call', [{ to: address, data: call(SEL.balanceOf, wordAddress(info.address)) }, 'latest']));
-      if (balance < units) throw new Error(`Not enough ${pin.symbol}: the balance is ${formatTokenAmount(balance, pin.decimals)}`);
-      const tx = normalizeTx({ to: address, value: 0, data: erc20TransferCalldata(to, units), gas: 100_000 });
+      if (balance < units) throw new Error(`Not enough ${symbol}: the balance is ${formatTokenAmount(balance, decimals)}`);
+      const tx = normalizeTx({ to: address, value: 0, data: calldata, gas: 100_000 });
       const hash = await wallet.send(tx);
-      track(hash, { title: `Sent ${formatTokenAmount(units, pin.decimals)} ${pin.symbol} to ${tokenShort(to)}`, origin: `${Brand.project} Wallet`, value: 0, to, token: address });
+      track(hash, { title: `Sent ${formatTokenAmount(units, decimals)} ${symbol} to ${tokenShort(to)}`, origin: `${Brand.project} Wallet`, value: 0, to, token: address });
       return { hash };
     }
     const tx = normalizeTx({ to, value: value_wei, data, gas });
@@ -492,7 +524,7 @@ const ui = {
    * from the nodes here. */
   tokenChange: async ({ address }) => {
     const a = String(address || '').toLowerCase();
-    const pins = (await local.get(pinKey(rpc.chainId))) || emptyPins();
+    const pins = await pinsStore.read(rpc.chainId);
     return { pinned: pins.tokens[a] || null, observed: pins.changed[a] || null };
   },
   /** The user compared the old and new details and chose the new ones: they
@@ -500,19 +532,28 @@ const ui = {
    * confirm the new values right now (they disagree). */
   confirmTokenChange: async ({ address }) => {
     const a = String(address || '').toLowerCase();
-    const pins = (await local.get(pinKey(rpc.chainId))) || emptyPins();
-    if (!pins.changed[a]) throw new Error('This token has no flagged change to review.');
+    const chain = rpc.chainId;
+    const now = await pinsStore.read(chain);
+    if (!now.changed[a]) throw new Error('This token has no flagged change to review.');
     const single = (to, data) => rpc.call('eth_call', [{ to, data }, 'latest']);
     const agreed = rpc.urls.length >= 2 ? (to, data) => rpc.callAgreed('eth_call', [{ to, data }, 'latest']) : null;
     const seen = await pinnedTokenInfo(a, { single, agreed });
     if (!seen.info) throw new Error('This token did not answer like a token.');
-    const matchesFlagged = sameTokenMetadata(seen.info, pins.changed[a]);
-    const next = matchesFlagged
-      ? acceptChanged(pins, a, seen.info, Date.now(), seen.sources)
-      : foldObserved(pins, a, seen.info, Date.now(), seen.sources).pins; // the anomaly ended or moved again
-    await local.set(pinKey(rpc.chainId), next);
+    // The accept is a compare-and-swap on the pin store (audit R2-5): it folds
+    // onto whatever is stored when the write's turn comes — a scan that read
+    // older state cannot overwrite the user's choice, and a change someone
+    // resolved meanwhile does not get re-accepted blindly.
+    let matchesFlagged = false;
+    const next = await pinsStore.update(chain, (pins) => {
+      const flagged = pins.changed[a];
+      if (!flagged) return pins; // resolved while we were reading the nodes
+      matchesFlagged = sameTokenMetadata(seen.info, flagged);
+      return matchesFlagged
+        ? acceptChanged(pins, a, seen.info, Date.now(), seen.sources)
+        : foldObserved(pins, a, seen.info, Date.now(), seen.sources).pins; // the anomaly ended or moved again
+    });
     const status = await rpc.call('aether_status', []).catch(() => null);
-    if (status) await local.set(`tokenCatalog.${status.chain_id}`, catalogWithPins((await local.get(`tokenCatalog.${status.chain_id}`)) || emptyCatalog(), next));
+    if (status) await local.set(`tokenCatalog.${status.chain_id}`, catalogWithPins((await local.get(`tokenCatalog.${status.chain_id}`)) || emptyCatalog(), next, status.chain_id));
     return { accepted: matchesFlagged, stillChanged: Boolean(next.changed[a]) };
   },
   hideToken: ({ address }) => chooseToken(address, { hide: true }),

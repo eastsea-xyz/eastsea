@@ -4,7 +4,8 @@ import { Brand } from '../src/lib/brand.js';
 // (origins, call data) is only ever set as text, never as HTML.
 
 import { aethToWei, formatAeth, shortAddress, weiToAeth } from '../src/lib/units.js';
-import { erc20TransferCalldata, formatTokenAmount, formatTokenAmountExact, grouped, parseTokenAmount } from '../src/lib/tokens.js';
+import { erc20TransferCalldata, formatTokenAmount, formatTokenAmountExact, grouped } from '../src/lib/tokens.js';
+import { buildSendIntent } from '../src/lib/sendIntent.js';
 import { addressRisk, looksLikeOfficial, tokenLabel, tokenShort } from '../src/lib/safety.js';
 import { nextPauseState, pausedLine, PAUSE_HELP } from '../src/lib/pause.js';
 import { TERMS_VERSION, DISCLAIMER_URL, NOTICE_POINTS } from '../src/lib/terms.js';
@@ -225,6 +226,7 @@ async function home(s) {
     const risk = addressRisk(to.value, sent);
     const parts = [];
     if (asset && asset.token.origin === 'launchpad') parts.push(h('span', { class: 'pill warn' }, 'Launchpad · unverified'));
+    if (asset && asset.token.unverifiedUnits) parts.push(h('span', { class: 'pill warn' }, 'Unverified units'));
     if (asset && looksLikeOfficial(asset.token, officialSymbols)) parts.push(h('span', { class: 'pill warn' }, 'Mimics an official token'));
     if (risk.poisoningMatch) {
       const box = h('input', { type: 'checkbox' });
@@ -267,13 +269,20 @@ async function home(s) {
     const risk = addressRisk(recipient, sent);
     if (risk.poisoningMatch && !acked) throw new Error('Confirm the look-alike address warning first.');
     if (asset) {
-      // Audit A3: the units shown and signed come from the details pinned on
-      // this device, and a flagged or unconfirmed token cannot be sent until
-      // the change is reviewed in Assets.
-      if (asset.token.metadataChanged) throw new Error('This token now reports different details than the ones saved on this device. Review the change in Assets first.');
-      if (asset.token.unconfirmed) throw new Error('This token’s details are not confirmed yet. Open Assets and let the wallet confirm them first.');
+      // Audits A3 + R2-2: the units shown and signed come either from the
+      // list shipped with the wallet (trusted) or from details pinned on this
+      // device — and pinned details are "unverified units" that can only be
+      // sent after the exact base-unit count is acknowledged below.
+      if (!asset.token.trusted) {
+        if (asset.token.metadataChanged) throw new Error('This token now reports different details than the ones saved on this device. Review the change in Assets first.');
+        if (asset.token.unconfirmed) throw new Error('This token’s details are not confirmed yet. Open Assets and let the wallet confirm them first.');
+      }
       const pin = asset.token;
-      const units = parseTokenAmount(amount.value, pin.decimals);
+      // One immutable send intent (audit R2-5): the amount text is parsed
+      // ONCE, under the decimals this screen shows, and travels as an exact
+      // integer from here on — never re-parsed under whatever is stored later.
+      const intent = buildSendIntent({ recipient, amountText: amount.value, token: pin });
+      const units = BigInt(intent.baseUnits);
       if (BigInt(asset.balance) < units) throw new Error(`Not enough ${pin.symbol}: the balance is ${formatTokenAmount(asset.balance, pin.decimals)}`);
       const data = erc20TransferCalldata(recipient, units); // for the node simulation only
       const check = await op('sendCheck', { recipient, to: pin.address, value_wei: '0', data });
@@ -285,22 +294,34 @@ async function home(s) {
         : 'The node could not simulate this transfer, so there is no estimate.';
       const back = h('button', { type: 'button' }, 'Back');
       const confirmBtn = h('button', { class: 'primary', type: 'button' }, 'Confirm');
+      // Unverified units need the user's explicit acknowledgement of the
+      // exact count before Confirm works (audit R2-2).
+      let unitsAcked = pin.trusted;
+      const ack = pin.trusted ? null : h('input', { type: 'checkbox' });
+      if (ack) {
+        confirmBtn.disabled = true;
+        ack.addEventListener('change', () => { unitsAcked = ack.checked; confirmBtn.disabled = !unitsAcked; });
+      }
       back.addEventListener('click', () => out.replaceChildren());
       confirmBtn.addEventListener('click', action(confirmBtn, out, async () => {
-        // The wallet core derives the calldata again from the pin; this page
-        // sends the amount text, never units of its own.
-        const r = await op('send', { to: recipient, token: { address: pin.address, amountText: amount.value } });
-        out.replaceChildren(message('ok', `Sent ${formatTokenAmount(units, pin.decimals)} ${pin.symbol} to ${tokenShort(recipient)} · ${shortAddress(r.hash)}`));
+        // Exactly what was confirmed: the wallet core signs this integer and
+        // refuses if the stored details moved since this card was built.
+        const r = await op('send', { to: intent.recipient, token: { ...intent.token, acknowledged: unitsAcked, baseUnits: intent.baseUnits } });
+        out.replaceChildren(message('ok', `Sent ${formatTokenAmount(units, pin.decimals)} ${pin.symbol} to ${tokenShort(intent.recipient)} · ${shortAddress(r.hash)}`));
         sendForm.hidden = true;
       }));
       out.replaceChildren(h('div', { class: 'card' },
         h('h2', {}, 'Confirm the send'),
         h('div', { class: 'kv' },
-          h('span', {}, 'You send'), h('strong', {}, `${formatTokenAmount(units, pin.decimals)} ${pin.symbol}`),
-          h('span', {}, 'Exact amount'), h('span', { class: 'mono' }, `${grouped(units)} units`),
-          h('span', {}, 'Decimals'), h('span', { class: 'mono' }, String(pin.decimals)),
-          h('span', {}, 'To'), h('span', { class: 'mono' }, recipient),
+          h('span', {}, 'You will send'), h('strong', {}, `${grouped(units)} units`),
+          h('span', {}, 'Shown as'), h('span', { class: 'mono' }, `${formatTokenAmount(units, pin.decimals)} ${pin.symbol}`),
+          h('span', {}, 'Decimals'), h('span', { class: 'mono' }, pin.trusted ? `${pin.decimals} (shipped list)` : `${pin.decimals} (unverified claim)`),
+          h('span', {}, 'To'), h('span', { class: 'mono' }, intent.recipient),
           h('span', {}, 'From'), h('span', { class: 'mono' }, shortAddress(s.address))),
+        pin.trusted ? null : h('div', { class: 'warn' },
+          h('strong', {}, 'Unverified units'),
+          h('div', { class: 'small' }, `This token is not on the wallet’s trusted list, so the wallet cannot check what one unit is. The count above follows the token contract’s unverified claim of ${pin.decimals} decimals. Compare it with what you expect before sending.`),
+          h('label', { class: 'small' }, ack, ` I checked the exact count: ${grouped(units)} units is what I want to send`)),
         h('p', { class: 'small muted' }, estimate),
         h('div', { class: 'row' }, h('div', { class: 'grow' }), back, confirmBtn)));
     } else {
@@ -335,7 +356,9 @@ function holdingRow(x, officialSymbols, { onHide, onShow } = {}) {
   const badges = [];
   if (x.token.origin === 'launchpad') badges.push(h('span', { class: 'pill warn' }, 'Launchpad · unverified'));
   if (looksLikeOfficial(x.token, officialSymbols)) badges.push(h('span', { class: 'pill warn' }, 'Mimics an official token'));
-  if (x.token.metadataChanged) badges.push(h('span', { class: 'pill warn' }, 'Details changed'));
+  if (x.token.nodeDisagrees) badges.push(h('span', { class: 'pill warn' }, 'Node disagrees · units from the shipped list'));
+  if (x.token.unverifiedUnits) badges.push(h('span', { class: 'pill warn' }, 'Unverified units'));
+  if (!x.token.trusted && x.token.metadataChanged) badges.push(h('span', { class: 'pill warn' }, 'Details changed'));
   else if (x.token.unconfirmed) badges.push(h('span', { class: 'pill warn' }, 'Details not confirmed'));
   const act = onHide ? h('button', { class: 'small', onclick: onHide }, 'Hide')
     : onShow ? h('button', { class: 'small', onclick: onShow }, 'Show in main list') : null;
@@ -403,7 +426,10 @@ async function assetsView(s) {
     }
     const t = assets.value;
     const officialSymbols = t.officialSymbols || [];
-    const flagged = [...(t.tokens || []), ...(t.unverified || [])].filter((x) => x.token.metadataChanged);
+    // A "details changed" review is for pinned, unverified tokens only: a
+    // token on the shipped list never pauses for node noise (audit R2-2) —
+    // it just carries the nodeDisagrees badge.
+    const flagged = [...(t.tokens || []), ...(t.unverified || [])].filter((x) => x.token.metadataChanged && !x.token.trusted);
     review.replaceChildren();
     for (const x of flagged) review.append(await tokenReviewCard(x.token, () => load(true)));
     rows.replaceChildren(...(t.tokens || []).map((x) => holdingRow(x, officialSymbols, {

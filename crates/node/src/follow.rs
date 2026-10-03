@@ -85,12 +85,189 @@ impl FinalityArchive {
 }
 
 /// Largest snapshot a new Mac downloads. This is a wire bound, not a memory
-/// budget: decoding overlaps the assembled bytes and decoded entries; later,
-/// certification overlaps decoded entries and a rebuilt state. Replay remains
+/// budget: the inbound memory guard below turns it into one. Replay remains
 /// the fallback.
 const MAX_SNAPSHOT: usize = 1 << 30;
 /// Smallest chunk accepted (bounds the number of requests).
 const MIN_SNAPSHOT_CHUNK: usize = 64 << 10;
+
+/// How many wire bytes one downloaded byte can become in memory, at the worst
+/// moment: the file read back for decoding (`Snapshot::from_bytes` needs the
+/// whole slice) overlapping the decoded entries, then `Snapshot::check`
+/// cloning those entries to rebuild the state. Measured, not guessed, by
+/// `follower_decode_allocation_probe` (see the test module): the follower's
+/// real path on a 300,000-entry synthetic snapshot measured wire=19,200,348
+/// bytes and a sampled peak delta of 94,749,056 bytes — ~4.9× the wire —
+/// while the server-side 100,000-entry probe's estimate puts the extra at
+/// ~6.6× its wire size and its sampler caught only a quarter of that (1 ms
+/// sampling misses transients), so 8 rounds the measurement up with headroom
+/// for those blind spots. The budget it feeds is
+/// `resources::snapshot_memory_budget` — the same headroom and pressure
+/// policy the serving side already applies, not a second one.
+pub const SNAPSHOT_DECODE_AMPLIFICATION: u64 = 8;
+
+/// How long a memory-budget refusal stands before the same advertised size is
+/// measured again (memory frees up when other apps quit; a peer that serves a
+/// smaller snapshot is never blocked by it).
+const MEMORY_REFUSAL_COOLDOWN: Duration = Duration::from_secs(300);
+
+/// The last snapshot size refused by the memory guard, and when. Kept so the
+/// follow loop cannot spin asking the same peer for the same oversized
+/// manifest every round — the refusal is retried at cooldown pace, and the
+/// replay fallback makes progress in between.
+static MEMORY_REFUSED: Mutex<Option<(u64, std::time::Instant)>> = Mutex::new(None);
+
+fn note_refusal(size: u64) {
+    *MEMORY_REFUSED.lock().expect("snapshot refusal state") = Some((size, std::time::Instant::now()));
+}
+
+fn last_refusal() -> Option<(u64, std::time::Instant)> {
+    *MEMORY_REFUSED.lock().expect("snapshot refusal state")
+}
+
+/// Whether a size refused `at` still blocks a manifest of `size` bytes now.
+/// Same-or-larger sizes are blocked inside the cooldown; smaller ones and
+/// stale ones are measured afresh.
+fn refusal_blocks(last: Option<(u64, std::time::Instant)>, size: u64, now: std::time::Instant) -> bool {
+    last.is_some_and(|(refused, at)| size >= refused && now.duration_since(at) < MEMORY_REFUSAL_COOLDOWN)
+}
+
+/// Worst-case decode/build peak of `size` wire bytes against a budget.
+fn fits_memory_budget(size: u64, budget: u64) -> bool {
+    size.saturating_mul(SNAPSHOT_DECODE_AMPLIFICATION) <= budget
+}
+
+/// The inbound memory guard's decision on the numbers (budget as a parameter
+/// so the arithmetic and the message stay testable; `require_memory` reads the
+/// real one). An honest large snapshot is not misbehaviour: the message says
+/// replay continues, and nothing here ever touches peer trust.
+fn require_memory_with(size: u64, budget: Result<u64, String>) -> Result<(), String> {
+    let budget = budget?;
+    if fits_memory_budget(size, budget) {
+        return Ok(());
+    }
+    Err(format!(
+        "snapshot of {size} bytes needs up to {} bytes to decode and check but the memory budget is {budget} bytes: replaying instead",
+        size.saturating_mul(SNAPSHOT_DECODE_AMPLIFICATION)
+    ))
+}
+
+/// Refuse a peer's snapshot this Mac cannot decode within the memory headroom
+/// the node already computes ([`crate::resources::snapshot_memory_budget`] —
+/// one quarter of available memory, capped by the configured node budget,
+/// refused outright under elevated pressure). A size judgement is remembered
+/// for [`MEMORY_REFUSAL_COOLDOWN`]; a pressure reading is not, since it can
+/// lift on its own.
+fn require_memory(size: u64) -> Result<(), String> {
+    let budget = crate::resources::snapshot_memory_budget();
+    let verdict = require_memory_with(size, budget.clone());
+    if verdict.is_err() {
+        if let Ok(b) = budget {
+            warn!(
+                size,
+                budget = b,
+                "refusing the peer's snapshot for memory; replaying instead (the peer did nothing wrong)"
+            );
+            note_refusal(size);
+        } else {
+            warn!(size, "refusing the peer's snapshot; replaying instead");
+        }
+    }
+    verdict
+}
+
+/// The file a download assembles into, instead of RAM: created clean, streamed
+/// through, hash-checked incrementally, and removed by `Drop` on success,
+/// failure and the next start alike.
+const WORKSPACE_FILE: &str = "snapshot-download.part";
+
+/// Remove a crashed download's partial workspace file (before a new download
+/// and at node startup, via `open_store_with`). Returns whether one was there.
+fn clean_stale_workspace(dir: &std::path::Path) -> bool {
+    std::fs::remove_file(dir.join(WORKSPACE_FILE)).is_ok()
+}
+
+struct WorkspaceFile {
+    path: std::path::PathBuf,
+    file: std::fs::File,
+    hasher: blake3::Hasher,
+    written: u64,
+    /// The advertised size: a peer sending past it fails the download here.
+    limit: u64,
+}
+
+impl WorkspaceFile {
+    fn create(dir: &std::path::Path, size: u64) -> Result<Self, String> {
+        clean_stale_workspace(dir);
+        let path = dir.join(WORKSPACE_FILE);
+        let file = std::fs::File::create(&path).map_err(|e| format!("snapshot workspace file: {e}"))?;
+        Ok(WorkspaceFile { path, file, hasher: blake3::Hasher::new(), written: 0, limit: size })
+    }
+
+    /// One chunk onto the file and into the running hash.
+    fn append(&mut self, part: &[u8]) -> Result<(), String> {
+        if self.written.saturating_add(part.len() as u64) > self.limit {
+            return Err("the peer sent more snapshot bytes than it advertised".into());
+        }
+        std::io::Write::write_all(&mut self.file, part).map_err(|e| format!("snapshot workspace file: {e}"))?;
+        self.hasher.update(part);
+        self.written += part.len() as u64;
+        Ok(())
+    }
+
+    /// The download's integrity gate: exact size, exact BLAKE3. Only then is
+    /// the file read back whole — the existing decode API
+    /// (`Snapshot::from_bytes(&[u8])`) needs the whole slice in memory, so
+    /// this is the one deliberate second copy of the wire bytes;
+    /// [`SNAPSHOT_DECODE_AMPLIFICATION`] keeps the budget honest about it
+    /// rather than redesigning decoding. `Drop` removes the file after.
+    fn finish(self, size: usize, want: &str) -> Result<Vec<u8>, String> {
+        if self.written != size as u64 || self.hasher.finalize().to_hex().to_string() != want {
+            return Err("snapshot download does not match its BLAKE3".into());
+        }
+        std::fs::read(&self.path).map_err(|e| format!("snapshot workspace file: {e}"))
+    }
+}
+
+impl Drop for WorkspaceFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Download `size` bytes in `chunk`-sized pieces, at most
+/// [`SNAPSHOT_PARALLEL`] in flight, streaming each onto the workspace file
+/// under `dir` — never holding the assembled snapshot in RAM — and return the
+/// hash-verified bytes. `fetch_chunk` supplies chunk `index`'s exact
+/// `expected` length; the file refuses anything past `size`. Failure removes
+/// the workspace file ([`WorkspaceFile`]'s `Drop`).
+async fn download_streamed<F, Fut>(
+    dir: &std::path::Path,
+    size: usize,
+    chunk: usize,
+    want: &str,
+    fetch_chunk: F,
+) -> Result<Vec<u8>, String>
+where
+    F: Fn(u64, usize) -> Fut,
+    Fut: Future<Output = Result<Vec<u8>, String>>,
+{
+    let mut ws = WorkspaceFile::create(dir, size as u64)?;
+    let take = |index: u64| {
+        let end = ((index + 1) * chunk as u64).min(size as u64);
+        (end - index * chunk as u64) as usize
+    };
+    let mut fetch_chunk = fetch_chunk;
+    futures::stream::iter(0..size.div_ceil(chunk) as u64)
+        .map(move |index| fetch_chunk(index, take(index)))
+        .buffered(SNAPSHOT_PARALLEL)
+        .try_fold(&mut ws, |ws, part| async move {
+            ws.append(&part)?;
+            Ok(ws)
+        })
+        .await?;
+    ws.finish(size, want)
+}
 
 /// Largest upstream response accepted (a block and its certificate, hex encoded).
 const MAX_RESPONSE: usize = 4 * MAX_BLOCK_BYTES as usize + (1 << 20);
@@ -243,15 +420,9 @@ pub fn decode_snapshot_chunk(value: &Value, expected: usize) -> Result<Vec<u8>, 
     hex::decode(hex).map_err(|e| e.to_string())
 }
 
-/// The upstream's snapshot, downloaded and checked against its BLAKE3
-/// (authenticity comes from the certified block after it, in `check`).
-/// Chunks are fetched in parallel: each costs a round trip on a slow link.
-/// `guard` runs with the advertised size before the first chunk is fetched.
-async fn download_with(
-    upstream: &Upstream,
-    guard: &(dyn Fn(u64) -> Result<(), String> + Send + Sync),
-) -> Result<crate::snapshot::Snapshot, String> {
-    let v = upstream.first("aether_snapshot", json!([])).await?;
+/// The peer's manifest, parsed and wire-bounds-checked (the resource guards
+/// run in `guard` right after this, before any chunk is fetched).
+fn manifest_limits(v: &Value) -> Result<(u64, usize, String, usize), String> {
     let (height, size, want) = (
         v["height"].as_u64().ok_or("no snapshot height")?,
         v["size"].as_u64().ok_or("no snapshot size")? as usize,
@@ -259,38 +430,37 @@ async fn download_with(
     );
     let chunk = v["chunk"].as_u64().ok_or("no snapshot chunk size")? as usize;
     if size > MAX_SNAPSHOT || !(MIN_SNAPSHOT_CHUNK..=MAX_RESPONSE / 2).contains(&chunk) {
-        return Err(format!(
-            "snapshot of {size} bytes in chunks of {chunk} is outside the limits"
-        ));
+        return Err(format!("snapshot of {size} bytes in chunks of {chunk} is outside the limits"));
     }
+    Ok((height, size, want, chunk))
+}
+
+/// The upstream's snapshot, downloaded and checked against its BLAKE3
+/// (authenticity comes from the certified block after it, in `check`).
+/// `guard` runs with the advertised size before the first chunk is fetched:
+/// disk space, and the inbound memory budget against the worst-case
+/// decode/build peak. The chunks stream onto a workspace file under `dir`
+/// (never the whole snapshot in RAM) and are hash-checked incrementally.
+async fn download_with(
+    upstream: &Upstream,
+    dir: &std::path::Path,
+    guard: &(dyn Fn(u64) -> Result<(), String> + Send + Sync),
+) -> Result<crate::snapshot::Snapshot, String> {
+    let v = upstream.first("aether_snapshot", json!([])).await?;
+    let (height, size, want, chunk) = manifest_limits(&v)?;
     guard(size as u64)?;
     // The one stage whose work is not blocks: name it, so a frozen height
     // during the download reads as progress, not as a stall (red team #2).
     crate::chain::set_stage(Some("snapshot"));
-    let chunk_at = |index: u64| async move {
+    let bytes = download_streamed(dir, size, chunk, &want, |index, expected| async move {
         let c = upstream
             .first("aether_snapshotChunk", json!([height, index]))
             .await?;
-        // Every chunk full-size except the last; never more than advertised.
-        let end = ((index + 1) * chunk as u64).min(size as u64);
-        let data = decode_snapshot_chunk(&c, (end - index * chunk as u64) as usize)?;
+        let data = decode_snapshot_chunk(&c, expected)?;
         crate::chain::tick();
         Ok::<Vec<u8>, String>(data)
-    };
-    // Keep only the assembled buffer plus at most SNAPSHOT_PARALLEL in-flight
-    // chunks; collecting all chunks separately doubled the download footprint.
-    let bytes = futures::stream::iter(0..size.div_ceil(chunk) as u64)
-        .map(chunk_at)
-        .buffered(SNAPSHOT_PARALLEL)
-        .try_fold(Vec::with_capacity(size.min(64 << 20)), |mut bytes, part| async move {
-            bytes.extend_from_slice(&part);
-            Ok(bytes)
-        })
-        .await?;
-    // Integrity of the download; authenticity comes from the certified block below.
-    if bytes.len() != size || crate::rpc::blake3_hex(&bytes) != want {
-        return Err("snapshot download does not match its BLAKE3".into());
-    }
+    })
+    .await?;
     let snap = crate::snapshot::Snapshot::from_bytes(&bytes)?;
     if snap.summary.height != height {
         return Err("snapshot height does not match".into());
@@ -298,10 +468,20 @@ async fn download_with(
     Ok(snap)
 }
 
-/// [`download_with`] with the shipped guard: enough room for the recovery,
-/// checked against the volume the database lives on (red team #7).
+/// [`download_with`] with the shipped guard: enough room for the recovery on
+/// the volume the database lives on (red team #7), and the measured inbound
+/// memory budget (A3-5) — a recently refused size is answered from the
+/// cooldown without re-measuring, so the loop cannot spin on one peer.
 async fn download(upstream: &Upstream, dir: &std::path::Path) -> Result<crate::snapshot::Snapshot, String> {
-    download_with(upstream, &|size| require_space(dir, size)).await
+    download_with(upstream, dir, &|size| {
+        if refusal_blocks(last_refusal(), size, std::time::Instant::now()) {
+            return Err(format!(
+                "snapshot of {size} bytes was already refused by the memory budget; replaying instead"
+            ));
+        }
+        require_space(dir, size).and_then(|()| require_memory(size))
+    })
+    .await
 }
 
 /// Checkpoint sync: fetch the upstream's snapshot and the certified block
@@ -413,6 +593,9 @@ pub fn open_store_with(
     data: &std::path::Path,
     open: std::sync::Arc<dyn Fn(&std::path::Path) -> Result<crate::store::Store, crate::store::StoreError> + Send + Sync>,
 ) -> Result<(crate::store::Store, bool), String> {
+    // A download that crashed mid-stream leaves its workspace file behind (A3-5):
+    // every start wipes it, whether or not this run downloads again.
+    clean_stale_workspace(data);
     let path = data.join("state.redb");
     let reset = |why: &str| -> Result<crate::store::Store, String> {
         move_aside(data, why)?;
@@ -1303,5 +1486,200 @@ mod tests {
         assert_eq!(error_backoff(&err), Duration::from_secs(30), "the space refusal backs off");
         assert_eq!(error_backoff("io: No space left on device"), Duration::from_secs(30));
         assert_eq!(error_backoff("connection refused"), Duration::from_millis(400));
+    }
+
+    /// A fresh, empty directory per test (the crate has no tempfile dependency).
+    fn scratch(name: &str) -> std::path::PathBuf {
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "aether-follow-{}-{}-{}",
+            name,
+            std::process::id(),
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    /// A3-5 (a): a manifest whose worst-case decode/build peak does not fit the
+    /// memory budget is refused before any chunk is fetched, and the refusal is
+    /// remembered long enough that the follow loop cannot spin on the same
+    /// peer-advertised size — while never counting as peer misbehaviour.
+    #[test]
+    fn a_snapshot_beyond_the_memory_budget_is_refused_and_not_retried_in_a_loop() {
+        const AMP: u64 = SNAPSHOT_DECODE_AMPLIFICATION;
+        // The worst-case peak is the advertised size times the amplification.
+        assert!(fits_memory_budget(8, 8 * AMP), "exactly the budget fits");
+        assert!(!fits_memory_budget(8, 8 * AMP - 1), "one byte of peak over is refused");
+        assert!(!fits_memory_budget(u64::MAX, u64::MAX - 1), "the peak saturates instead of wrapping past the budget");
+        // The refusal names the memory budget (not the peer) and says replay continues.
+        let err = require_memory_with(1 << 30, Ok(64 << 20)).unwrap_err();
+        assert!(err.contains("memory budget"), "{err}");
+        assert!(err.contains("replaying"), "{err}");
+        assert!(!err.contains("lied"), "an honest large snapshot is not misbehaviour: {err}");
+        // A peer under elevated pressure is refused without a size judgement too.
+        assert!(require_memory_with(1, Err("pressure".into())).is_err());
+        // The cooldown: the same size asked again within it is still refused
+        // without a second budget measurement, a smaller snapshot is not.
+        let now = std::time::Instant::now();
+        assert!(!refusal_blocks(None, 1 << 30, now), "nothing was refused yet");
+        assert!(refusal_blocks(Some((1 << 30, now)), 1 << 30, now + Duration::from_secs(1)));
+        assert!(!refusal_blocks(Some((1 << 30, now)), 1 << 29, now + Duration::from_secs(1)),
+            "a smaller snapshot than the one refused is a different question");
+        assert!(!refusal_blocks(Some((1 << 30, now)), 1 << 30, now + MEMORY_REFUSAL_COOLDOWN + Duration::from_secs(1)),
+            "after the cooldown the budget may have changed: measure again");
+    }
+
+    /// A3-5 (b): a peer that stops mid-download leaves no workspace file behind.
+    #[tokio::test]
+    async fn a_stalled_download_leaves_no_workspace_file() {
+        let dir = scratch("stalled");
+        // A leftover from a previous crash is cleaned up before a new download.
+        std::fs::write(dir.join(WORKSPACE_FILE), b"stale").unwrap();
+        let err = download_streamed(&dir, 2 << 20, 1 << 20, "00", |index, _| async move {
+            if index == 1 {
+                Err("peer stopped mid-download".into())
+            } else {
+                Ok(vec![0u8; 1 << 20])
+            }
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(err, "peer stopped mid-download");
+        assert!(!dir.join(WORKSPACE_FILE).exists(), "failure must remove the workspace file");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A3-5 (b): a download that completes but does not hash to the manifest's
+    /// BLAKE3 (or truncates) is refused and cleaned up.
+    #[tokio::test]
+    async fn a_mismatched_download_is_refused_and_cleaned_up() {
+        let dir = scratch("mismatch");
+        let data = vec![7u8; 3 << 20];
+        let want = crate::rpc::blake3_hex(&data);
+        let truncated = download_streamed(&dir, 2 << 20, 1 << 20, &want, |_, n| {
+            let part = vec![7u8; n];
+            async move { Ok(part) }
+        })
+        .await; // supplies 2 MiB of the 2 MiB asked — but the hash is of 3 MiB
+        assert!(truncated.is_err(), "the assembled bytes must match the advertised hash");
+        assert!(!dir.join(WORKSPACE_FILE).exists(), "a refused snapshot leaves no file");
+        let honest = crate::rpc::blake3_hex(&data[..1 << 20]);
+        assert!(download_streamed(&dir, 1 << 20, 1 << 20, &honest, |_, n| {
+            let part = data[..n].to_vec();
+            async move { Ok(part) }
+        })
+        .await
+        .is_ok());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A3-5 (c): the happy path streams every chunk through the workspace file
+    /// and returns exactly the assembled bytes; the file is gone afterwards.
+    #[tokio::test]
+    async fn the_happy_path_streams_through_the_workspace_file() {
+        let dir = scratch("happy");
+        let data: Vec<u8> = (0..3_000_000u32).map(|i| (i * 7 % 251) as u8).collect();
+        let want = crate::rpc::blake3_hex(&data);
+        let chunk = 1 << 20;
+        let out = download_streamed(&dir, data.len(), chunk, &want, |index, n| {
+            let part = data[index as usize * chunk..][..n].to_vec();
+            async move { Ok(part) }
+        })
+        .await
+        .expect("an honest download assembles");
+        assert_eq!(out.len(), data.len());
+        assert_eq!(out, data, "the streamed bytes are the assembled snapshot");
+        assert!(!dir.join(WORKSPACE_FILE).exists(), "success must remove the workspace file");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A3-5 (2): the workspace file left by a crashed download is removed the
+    /// next time the node starts a download (and at startup via `open_store`).
+    #[test]
+    fn a_stale_workspace_file_is_removed_before_reuse() {
+        let dir = scratch("stale");
+        assert!(!clean_stale_workspace(&dir), "a fresh dir has nothing to clean");
+        assert!(!dir.join(WORKSPACE_FILE).exists(), "nothing lingers");
+        std::fs::write(dir.join(WORKSPACE_FILE), b"leftover").unwrap();
+        assert!(clean_stale_workspace(&dir), "the crashed download's file goes");
+        assert!(!dir.join(WORKSPACE_FILE).exists());
+        assert!(!clean_stale_workspace(&dir), "a second start finds nothing to clean");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The measured justification for [`SNAPSHOT_DECODE_AMPLIFICATION`]: the
+    /// follower's real inbound path on a synthetic snapshot — stream the wire
+    /// bytes through the workspace file, read them back (the one deliberate
+    /// full copy `Snapshot::from_bytes` needs), decode, then do exactly what
+    /// `Snapshot::check` does (`entries.clone()` + `WorldState::from_parts` +
+    /// root) — sampled by physical footprint, like the server-side
+    /// `snapshot_build_allocation_probe` it answers to. The wire bytes already
+    /// in the baseline stand for the file on disk, so the delta is the pure
+    /// inbound peak.
+    #[test]
+    #[ignore = "manual physical-footprint measurement of the follower's inbound peak"]
+    fn follower_decode_allocation_probe() {
+        use crate::chain::ChainConfig;
+        let config = ChainConfig {
+            chain_id: 7781,
+            limits: aether_types::GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
+            alloc: vec![], fees: false, registrar: None, epoch_blocks: 0,
+            min_streak: None, draw_epochs: None, history_v2: true, protocol: 2,
+            node_rewards: false, committee: vec![], reserve: None, group: 0,
+            max_committee: crate::rotation::GROW_UNTIL,
+        };
+        let entries: Vec<_> = (0..300_000u32).map(|i| {
+            let mut key = [0u8; 32];
+            key[..4].copy_from_slice(&i.to_be_bytes());
+            (key, [7u8; 32])
+        }).collect();
+        let state = aether_execution::WorldState::from_parts(entries, Default::default());
+        let (chain, _) = crate::chain::Chain::new(config);
+        {
+            let mut g = chain.lock();
+            let mut head = (*g.finalized).clone();
+            head.state = state;
+            g.finalized = std::sync::Arc::new(head);
+        }
+        let wire = crate::snapshot::Snapshot::of(&chain).to_bytes();
+        drop(chain);
+        let pid = std::process::id();
+        let before = crate::resources::footprint(pid).unwrap_or(0);
+        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let peak = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(before));
+        let sampler = {
+            let (running, peak) = (running.clone(), peak.clone());
+            std::thread::spawn(move || while running.load(std::sync::atomic::Ordering::Relaxed) {
+                if let Some(n) = crate::resources::footprint(pid) {
+                    peak.fetch_max(n, std::sync::atomic::Ordering::Relaxed);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            })
+        };
+        let dir = scratch("probe");
+        let want = crate::rpc::blake3_hex(&wire);
+        let chunk = 1 << 20;
+        let bytes = futures::executor::block_on(download_streamed(&dir, wire.len(), chunk, &want, |index, n| {
+            let part = wire[index as usize * chunk..][..n].to_vec();
+            async move { Ok(part) }
+        }))
+        .expect("probe download");
+        let decoded = crate::snapshot::Snapshot::from_bytes(&bytes).expect("probe decode");
+        // Exactly what `Snapshot::check` allocates before its root comparison:
+        let checked = aether_execution::WorldState::from_parts(
+            decoded.entries.clone(),
+            decoded.codes.iter().cloned().collect(),
+        );
+        let _ = checked.root();
+        running.store(false, std::sync::atomic::Ordering::Relaxed);
+        sampler.join().unwrap();
+        let delta = peak.load(std::sync::atomic::Ordering::Relaxed).saturating_sub(before);
+        let ratio = (delta as f64 / wire.len() as f64).ceil();
+        eprintln!(
+            "follower inbound probe: entries={}, wire={}, sampled_footprint_delta={}, amplification(ceil)={}",
+            decoded.entries.len(), wire.len(), delta, ratio
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

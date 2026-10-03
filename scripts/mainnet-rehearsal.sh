@@ -217,11 +217,16 @@ echo "== first distributions (an epoch's node pool is its issuance halves)"
 # epoch depends on timing, so the check is: every operator is paid in every epoch
 # after the first (a partial one: the Macs registered inside it) and each amount
 # is exactly one of the legal values for k = 1..SLOTS.
+# The Macs join late in a slow chain, so wait for the payouts instead of reading
+# at a fixed height: poll until every operator has three full epochs, fail at once
+# on an amount that is not a legal slot share, fail on a timeout with the raw answers.
 if wait_height "${rpcp[0]}" "$(( (h / EPOCH_BLOCKS + 4) * EPOCH_BLOCKS ))" 360; then
-  paid=yes detail=""
-  for o in "${ops[@]}"; do
-    raw=$(rpc aether_rewards "[\"$o\"]" "${rpcp[0]}")
-    res=$(printf '%s' "$raw" | python3 -c '
+  deadline=$((SECONDS + 600))
+  while :; do
+    state=ok detail=""
+    for o in "${ops[@]}"; do
+      raw=$(rpc aether_rewards "[\"$o\"]" "${rpcp[0]}")
+      res=$(printf '%s' "$raw" | python3 -c '
 import json, sys
 EPOCH, SLOTS, WARM, MAX_SHARE = 40, 12, 14, 16
 pool = EPOCH * (10**18 // 2)
@@ -229,21 +234,28 @@ legal = {pool * k * WARM // (MAX_SHARE * SLOTS * 2 * WARM) for k in range(1, SLO
 try:
     rows = [r for r in json.load(sys.stdin)["result"] if r["kind"] == "node"]
 except Exception as e:
-    print("unreadable:", e); sys.exit(1)
-rows = sorted(rows, key=lambda r: r["height"])[1:]
-if len(rows) < 2:
-    print("only %d full epochs paid" % len(rows)); sys.exit(1)
+    print("unreadable:", e); sys.exit(3)
+rows = sorted(rows, key=lambda r: r["height"])[1:]   # the first is a partial epoch
 bad = [int(r["amount"], 16) for r in rows if int(r["amount"], 16) not in legal]
 if bad:
     print("illegal amounts", bad); sys.exit(1)
+if len(rows) < 3:
+    print("only %d full epochs paid so far" % len(rows)); sys.exit(3)
 print("%d epochs, amounts %s" % (len(rows), sorted({int(r["amount"], 16) for r in rows})))
-' 2>&1) || { paid=no; detail+=" [$o: $res]"; echo "    aether_rewards $o: $(printf '%s' "$raw" | head -c 500)" >&2; continue; }
-    detail+=" [$res]"
+' 2>&1); rc=$?
+      detail+=" [$res]"
+      if [ "$rc" = 1 ]; then state=bad; elif [ "$rc" != 0 ] && [ "$state" = ok ]; then state=waiting; fi
+    done
+    [ "$state" = waiting ] && [ "$SECONDS" -lt "$deadline" ] && { sleep 10; continue; }
+    break
   done
-  if [ "$paid" = yes ]; then
+  if [ "$state" = ok ]; then
     ok "each operator was paid in every full epoch, each amount exactly pool·k·14/5376:$detail"
   else
-    bad "a node reward was missing or not an exact slot share:$detail"
+    bad "a node reward was missing or not an exact slot share ($state):$detail"
+    for o in "${ops[@]}"; do
+      echo "    aether_rewards $o: $(rpc aether_rewards "[\"$o\"]" "${rpcp[0]}" | head -c 500)" >&2
+    done
   fi
 else
   bad "the chain did not reach the next epochs"

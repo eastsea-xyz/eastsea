@@ -59,6 +59,26 @@ const ACCOUNT_HISTORY: TableDefinition<&[u8], &[u8]> = TableDefinition::new("acc
 const ACCOUNT_BLOCK_KEYS: TableDefinition<u64, &[u8]> = TableDefinition::new("account_block_keys");
 const ACCOUNT_HISTORY_SINCE: &str = "account_history_since";
 
+/// The schema version of the tables above, as this binary writes them
+/// (docs/design/24-self-healing.md, red team #15). Version 1 is the layout as
+/// it stands: nothing has migrated yet, so [`migrations`] is empty. The first
+/// change to a table's meaning bumps this and registers a migration step.
+pub const CURRENT_SCHEMA: u32 = 1;
+/// `meta.schema_version` (u32, big-endian): the layout that wrote the data.
+/// Absent on a database from before this change: those are version 1, adopted
+/// in place — stamped, never rejected, never rebuilt.
+const SCHEMA_VERSION: &str = "schema_version";
+/// `meta.min_read_version` (u32, big-endian): the oldest schema a binary may
+/// run and still read this database. An older binary — the app rolled back to
+/// `aether.prev` after crashes — refuses with [`StoreError::TooNew`] instead
+/// of misreading rows a newer layout wrote.
+const MIN_READ_VERSION: &str = "min_read_version";
+/// `meta.migration` (JSON): the migration step marker — the step in flight
+/// and whether it finished. Marker and data commit in one redb write
+/// transaction, so an interrupted migration leaves the database at a recorded
+/// sub-step boundary and the next open resumes exactly there.
+const MIGRATION: &str = "migration";
+
 #[derive(Debug)]
 pub enum StoreError {
     Db(String),
@@ -83,6 +103,21 @@ pub enum StoreError {
     /// The data was written for another genesis (another network or an older
     /// genesis): it is never mixed with this one.
     OtherGenesis,
+    /// The database's schema is newer than this binary reads
+    /// (`min_read_version` above [`CURRENT_SCHEMA`]): intact data this binary
+    /// must not touch — typically the app rolled back to `aether.prev` after
+    /// crashes. Never corruption (`crate::follow::is_corruption`): the file is
+    /// never moved aside, never deleted, never written. The node stops with
+    /// the update-required exit code (3) so the app installs the newer signed
+    /// release instead of rolling back over the data.
+    TooNew {
+        /// The schema version the database records, if it decodes.
+        found: Option<u32>,
+        /// The minimum reader it declares, if that decodes.
+        min_read: Option<u32>,
+        /// The schema this binary implements.
+        ours: u32,
+    },
 }
 
 impl StoreError {
@@ -179,6 +214,99 @@ impl Recovery {
             }
         }
         Err(last)
+    }
+}
+
+/// The migration step marker (`meta.migration`, JSON).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+struct MigrationMarker {
+    name: String,
+    step: u32,
+    done: bool,
+}
+
+/// What `meta` records about the database's schema.
+#[derive(Debug, PartialEq, Eq)]
+enum Schema {
+    /// No version recorded: a database from before this change, or a fresh
+    /// file. It is version 1 — adopted in place, never rejected, never rebuilt.
+    Unrecorded,
+    /// A version row that does not decode as this binary writes it: a layout
+    /// it does not understand. That reads as too new, never as corruption —
+    /// the file is intact data that must not be destroyed for decoding wrong.
+    Undecodable,
+    /// `schema_version` decodes; `min_read_version` may be absent (then the
+    /// version itself is the minimum a reader must support).
+    Recorded { version: u32, min_read: Option<u32> },
+}
+
+/// One registered schema migration step: how a database at version `to - 1`
+/// becomes one at `to`. None exist yet — [`CURRENT_SCHEMA`] is 1 and
+/// [`migrations`] is empty; the first change to a table's meaning registers a
+/// step there and bumps the version.
+pub struct Migration {
+    /// The schema version this step migrates the database to.
+    pub to: u32,
+    /// Its name, recorded in the step marker.
+    pub name: &'static str,
+    /// Runs the step's sub-steps, starting at `resume` (0 on a fresh run; the
+    /// recorded marker's step after an interrupted one). Every sub-step is one
+    /// redb write transaction and must be idempotent: an interrupted run
+    /// resumes at the recorded sub-step, which re-runs it.
+    pub run: fn(&MigrationStep<'_>, u32) -> Result<(), StoreError>,
+}
+
+/// The registered schema migrations, in order. Empty while
+/// [`CURRENT_SCHEMA`] is 1; the mechanism's tests prove it with a test-only
+/// list, and release code opens with exactly this one.
+pub fn migrations() -> &'static [Migration] {
+    &[]
+}
+
+/// What a migration step runs its sub-steps through: the database being
+/// migrated, before the `Store` is handed out.
+pub struct MigrationStep<'a> {
+    db: &'a Database,
+    name: &'static str,
+    /// The last sub-step this step ran, for the done marker.
+    last: std::cell::Cell<u32>,
+}
+
+impl MigrationStep<'_> {
+    /// One sub-step: the marker `{name, step, done: false}` and `body`'s
+    /// writes commit in one transaction, so a crash leaves either both or
+    /// neither — never data the marker does not describe.
+    pub fn sub(&self, step: u32, body: impl FnOnce(&redb::WriteTransaction) -> Result<(), StoreError>) -> Result<(), StoreError> {
+        let tx = self.db.begin_write().map_err(dberr)?;
+        {
+            let marker = serde_json::to_vec(&MigrationMarker { name: self.name.to_string(), step, done: false })
+                .map_err(|e| StoreError::Db(e.to_string()))?;
+            tx.open_table(META).map_err(dberr)?.insert(MIGRATION, marker.as_slice()).map_err(dberr)?;
+        }
+        body(&tx)?;
+        tx.commit().map_err(dberr)?;
+        self.last.set(step);
+        // A long migration is progress, not a stall (red team #2): every
+        // committed sub-step counts as activity while the height is frozen.
+        crate::chain::tick();
+        Ok(())
+    }
+
+    /// The step finished: the done marker and the new versions
+    /// (`schema_version = to`, `min_read_version = to`) commit in one
+    /// transaction. From here a binary older than `to` refuses with
+    /// [`StoreError::TooNew`] instead of misreading the migrated data.
+    pub fn finish(&self, to: u32) -> Result<(), StoreError> {
+        let tx = self.db.begin_write().map_err(dberr)?;
+        {
+            let mut meta = tx.open_table(META).map_err(dberr)?;
+            let marker = serde_json::to_vec(&MigrationMarker { name: self.name.to_string(), step: self.last.get(), done: true })
+                .map_err(|e| StoreError::Db(e.to_string()))?;
+            meta.insert(MIGRATION, marker.as_slice()).map_err(dberr)?;
+            meta.insert(SCHEMA_VERSION, to.to_be_bytes().as_slice()).map_err(dberr)?;
+            meta.insert(MIN_READ_VERSION, to.to_be_bytes().as_slice()).map_err(dberr)?;
+        }
+        tx.commit().map_err(dberr)
     }
 }
 
@@ -403,7 +531,7 @@ pub struct Store {
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self, StoreError> {
-        Self::open_with(path, Arc::new(|p| Database::create(p).map_err(dberr)))
+        Self::open_migrating(path, Arc::new(|p| Database::create(p).map_err(dberr)), migrations())
     }
 
     /// `open` with a custom way to open the database file.
@@ -411,10 +539,21 @@ impl Store {
         path: &Path,
         open: Arc<dyn Fn(&Path) -> Result<Database, StoreError> + Send + Sync>,
     ) -> Result<Self, StoreError> {
+        Self::open_migrating(path, open, migrations())
+    }
+
+    /// `open` with an explicit migration list: the mechanism's tests prove it
+    /// with a test-only list. No release path passes one that differs from
+    /// [`migrations`].
+    pub fn open_migrating(
+        path: &Path,
+        open: Arc<dyn Fn(&Path) -> Result<Database, StoreError> + Send + Sync>,
+        migrations: &[Migration],
+    ) -> Result<Self, StoreError> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| StoreError::Io(e.to_string()))?;
         }
-        let db = Self::init(open(path)?)?;
+        let db = Self::prepare(open(path)?, migrations)?;
         let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
         let mut store = Store { db: Mutex::new(Some(db)), open, path: path.to_path_buf(), dir };
         store.compact_if_sparse(path)?;
@@ -423,8 +562,7 @@ impl Store {
 
     /// The tables this store uses: a fresh file gets them, an existing one
     /// keeps its rows.
-    fn init(db: Database) -> Result<Database, StoreError> {
-        let tx = db.begin_write().map_err(dberr)?;
+    fn init_tables(tx: &redb::WriteTransaction) -> Result<(), StoreError> {
         for t in [STATE, CODE, RECEIPTS] {
             tx.open_table(t).map_err(dberr)?;
         }
@@ -434,8 +572,123 @@ impl Store {
         tx.open_table(REWARDS).map_err(dberr)?;
         tx.open_table(ACCOUNT_HISTORY).map_err(dberr)?;
         tx.open_table(ACCOUNT_BLOCK_KEYS).map_err(dberr)?;
-        tx.commit().map_err(dberr)?;
+        Ok(())
+    }
+
+    /// Read the schema `meta` records, before anything writes to the file.
+    fn read_schema(db: &Database) -> Result<Schema, StoreError> {
+        let tx = db.begin_read().map_err(dberr)?;
+        let meta = match tx.open_table(META) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Schema::Unrecorded),
+            Err(e) => return Err(dberr(e)),
+        };
+        // A row that is not a big-endian u32 is data a newer layout wrote.
+        let word = |key: &str| -> Result<Option<Option<u32>>, StoreError> {
+            Ok(meta.get(key).map_err(dberr)?.map(|v| v.value().try_into().ok().map(u32::from_be_bytes)))
+        };
+        Ok(match (word(SCHEMA_VERSION)?, word(MIN_READ_VERSION)?) {
+            (None, None) => Schema::Unrecorded,
+            (Some(Some(version)), min_read) => Schema::Recorded { version, min_read: min_read.flatten() },
+            _ => Schema::Undecodable,
+        })
+    }
+
+    /// Give a freshly opened database its tables and enforce the recorded
+    /// schema (docs/design/24-self-healing.md, red team #15), all before the
+    /// store is handed out:
+    ///
+    /// - nothing recorded — a database from before this change — is version 1:
+    ///   stamped in place, never rejected, never rebuilt;
+    /// - `min_read_version` above [`CURRENT_SCHEMA`] — data a newer binary
+    ///   wrote — is refused with [`StoreError::TooNew`] before a single write,
+    ///   so the caller can stop without touching it;
+    /// - a version below [`CURRENT_SCHEMA`] runs the registered migration
+    ///   steps in order, resuming an interrupted one at its recorded sub-step.
+    fn prepare(db: Database, migrations: &[Migration]) -> Result<Database, StoreError> {
+        match Self::read_schema(&db)? {
+            Schema::Unrecorded => {
+                tracing::info!(
+                    version = CURRENT_SCHEMA,
+                    "no schema version recorded: adopting this database as version {CURRENT_SCHEMA} in place"
+                );
+                let tx = db.begin_write().map_err(dberr)?;
+                Self::init_tables(&tx)?;
+                {
+                    let mut meta = tx.open_table(META).map_err(dberr)?;
+                    meta.insert(SCHEMA_VERSION, CURRENT_SCHEMA.to_be_bytes().as_slice()).map_err(dberr)?;
+                    meta.insert(MIN_READ_VERSION, CURRENT_SCHEMA.to_be_bytes().as_slice()).map_err(dberr)?;
+                }
+                tx.commit().map_err(dberr)?;
+            }
+            Schema::Undecodable => {
+                return Err(StoreError::TooNew { found: None, min_read: None, ours: CURRENT_SCHEMA });
+            }
+            Schema::Recorded { version, min_read } => {
+                if min_read.unwrap_or(version) > CURRENT_SCHEMA {
+                    return Err(StoreError::TooNew { found: Some(version), min_read, ours: CURRENT_SCHEMA });
+                }
+                let tx = db.begin_write().map_err(dberr)?;
+                Self::init_tables(&tx)?;
+                tx.commit().map_err(dberr)?;
+                if version < CURRENT_SCHEMA {
+                    Self::migrate(&db, version, migrations)?;
+                }
+            }
+        }
         Ok(db)
+    }
+
+    /// Run the registered migration steps that take the database from `from`
+    /// to [`CURRENT_SCHEMA`], in order. A step interrupted mid-run left its
+    /// marker at the sub-step in flight: resume exactly there — every
+    /// sub-step is idempotent, so re-running the recorded one is safe.
+    fn migrate(db: &Database, from: u32, migrations: &[Migration]) -> Result<(), StoreError> {
+        let mut next = from + 1;
+        for m in migrations {
+            if m.to <= from {
+                continue; // the recorded version says an earlier run applied it
+            }
+            if m.to != next {
+                return Err(StoreError::Db(format!("the migration list skips version {next}")));
+            }
+            let resume = match Self::marker(db)? {
+                // A step in flight for this migration: resume at its recorded
+                // sub-step.
+                Some(marker) if !marker.done && marker.name == m.name => marker.step,
+                _ => 0,
+            };
+            tracing::info!(migration = m.name, from, to = m.to, resume, "running a schema migration");
+            let step = MigrationStep { db, name: m.name, last: std::cell::Cell::new(0) };
+            (m.run)(&step, resume)?;
+            step.finish(m.to)?;
+            next = m.to + 1;
+        }
+        if next != CURRENT_SCHEMA + 1 {
+            return Err(StoreError::Db(format!("the migration list does not reach version {CURRENT_SCHEMA}")));
+        }
+        Ok(())
+    }
+
+    /// The migration step marker, if one is recorded. A marker that does not
+    /// decode is a restart from the first sub-step (they are idempotent),
+    /// never a refusal: this is recovery data, and the file is never moved
+    /// aside for it.
+    fn marker(db: &Database) -> Result<Option<MigrationMarker>, StoreError> {
+        let tx = db.begin_read().map_err(dberr)?;
+        let meta = match tx.open_table(META) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
+            Err(e) => return Err(dberr(e)),
+        };
+        let Some(v) = meta.get(MIGRATION).map_err(dberr)? else { return Ok(None) };
+        match serde_json::from_slice(v.value()) {
+            Ok(marker) => Ok(Some(marker)),
+            Err(_) => {
+                tracing::warn!("the migration marker does not decode; restarting the step from its first sub-step");
+                Ok(None)
+            }
+        }
     }
 
     /// Close the database and open the file again, then check the disk takes
@@ -448,7 +701,9 @@ impl Store {
         {
             let mut db = self.db.lock().expect("store lock");
             drop(db.take()); // the file lock goes with the old database
-            *db = Some(Self::init((self.open)(&self.path)?)?);
+            // The schema check runs again too: a migration interrupted by the
+            // I/O error resumes at its recorded sub-step.
+            *db = Some(Self::prepare((self.open)(&self.path)?, migrations())?);
         }
         // The probe: a durable write, so a still-full disk fails here instead
         // of on the next block.
@@ -1260,6 +1515,332 @@ mod tests {
             Err(e) if e.contains("Unreadable") => {}
             other => panic!("truncated: expected Unreadable, got {:?}", other.map(|_| ())),
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- Schema versions (red team #15, docs/design/24-self-healing.md) ----
+
+    fn dir_for(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("aether-store-{name}-{}", std::process::id()))
+    }
+
+    /// A meta row as a raw redb reader sees it: the test's proof of what the
+    /// database holds, without going through the code under test.
+    fn raw_meta_row(path: &Path, key: &str) -> Option<Vec<u8>> {
+        let db = redb::Database::create(path).unwrap();
+        let tx = db.begin_read().unwrap();
+        let t = tx.open_table(META).unwrap();
+        t.get(key).unwrap().map(|v| v.value().to_vec())
+    }
+
+    /// The migration step marker, read raw.
+    fn raw_marker(path: &Path) -> Option<MigrationMarker> {
+        raw_meta_row(path, MIGRATION).and_then(|v| serde_json::from_slice(&v).ok())
+    }
+
+    /// The default opener the mechanism's tests use.
+    fn plain_open() -> Arc<dyn Fn(&Path) -> Result<Database, StoreError> + Send + Sync> {
+        Arc::new(|p| redb::Database::create(p).map_err(dberr))
+    }
+
+    /// `Store::open`'s error (`Store` is not `Debug`, so no `unwrap_err`).
+    fn refuse(path: &Path) -> StoreError {
+        match Store::open(path) {
+            Err(e) => e,
+            Ok(_) => panic!("expected this database to be refused"),
+        }
+    }
+
+    /// A migration step that bumps a per-sub-step counter row (`m/<k>`) each
+    /// time it runs, starting at `resume`: the run counts are on disk, so the
+    /// tests can see exactly which sub-steps ran how often.
+    fn count_runs(step: &MigrationStep<'_>, resume: u32, upto: u32, die_at: Option<u32>) -> Result<(), StoreError> {
+        for k in 0..upto {
+            if k < resume {
+                continue; // committed by the interrupted run: skipped, not redone
+            }
+            if die_at == Some(k) && resume == 0 {
+                // Simulated death between sub-steps: sub-steps below `k` are
+                // on disk with the marker at k - 1; nothing of `k` is.
+                return Err(StoreError::Db(format!("simulated kill before sub-step {k}")));
+            }
+            step.sub(k, |tx| {
+                let mut meta = tx.open_table(META).map_err(dberr)?;
+                let key = format!("m/{k}");
+                let now = match meta.get(key.as_str()).map_err(dberr)? {
+                    Some(v) => {
+                        let b: [u8; 4] = v.value().try_into().expect("counter row");
+                        u32::from_be_bytes(b)
+                    }
+                    None => 0,
+                };
+                meta.insert(key.as_str(), (now + 1).to_be_bytes().as_slice()).map_err(dberr)?;
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
+    fn counter(path: &Path, k: u32) -> u32 {
+        raw_meta_row(path, &format!("m/{k}")).map(|v| u32::from_be_bytes(v.try_into().expect("counter row"))).unwrap_or(0)
+    }
+
+    #[test]
+    fn the_current_schema_is_one_and_nothing_migrates_yet() {
+        assert_eq!(CURRENT_SCHEMA, 1, "the first schema change bumps this and registers a step");
+        assert!(migrations().is_empty(), "an empty list means every unrecorded database opens as version 1");
+    }
+
+    #[test]
+    fn a_fresh_database_is_stamped_with_the_current_schema() {
+        let dir = dir_for("schema-fresh");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("state.redb");
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.meta(SCHEMA_VERSION).unwrap().as_deref(), Some(&CURRENT_SCHEMA.to_be_bytes()[..]));
+        assert_eq!(store.meta(MIN_READ_VERSION).unwrap().as_deref(), Some(&CURRENT_SCHEMA.to_be_bytes()[..]));
+        drop(store);
+        assert!(Store::open(&path).is_ok(), "a stamped database re-opens");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A database from before this change: tables and rows, no version. It is
+    /// version 1 — adopted in place (stamped, its rows kept), never rejected,
+    /// never rebuilt.
+    #[test]
+    fn a_database_from_before_schema_versions_is_adopted_as_version_1() {
+        let dir = dir_for("schema-old");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.redb");
+        {
+            let db = redb::Database::create(&path).unwrap();
+            let tx = db.begin_write().unwrap();
+            tx.open_table(BLOCKS).unwrap();
+            {
+                let mut meta = tx.open_table(META).unwrap();
+                meta.insert("height", 7u64.to_be_bytes().as_slice()).unwrap();
+            }
+            tx.commit().unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.meta("height").unwrap().as_deref(), Some(&7u64.to_be_bytes()[..]), "the old rows are kept");
+        assert_eq!(store.meta(SCHEMA_VERSION).unwrap().as_deref(), Some(&CURRENT_SCHEMA.to_be_bytes()[..]), "stamped in place");
+        assert_eq!(store.meta(MIN_READ_VERSION).unwrap().as_deref(), Some(&CURRENT_SCHEMA.to_be_bytes()[..]));
+        drop(store);
+        assert!(Store::open(&path).is_ok(), "and it opens again as a version-1 database");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Data a newer binary wrote (the app rolled back to `aether.prev` after
+    /// crashes): refused with `TooNew` before a single write — not a disk
+    /// problem, never corruption — and the rows are exactly as that binary
+    /// left them. A version row that does not decode is the same refusal.
+    #[test]
+    fn a_database_written_by_a_newer_schema_is_refused_untouched() {
+        let dir = dir_for("schema-new");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("state.redb");
+        {
+            let store = Store::open(&path).unwrap();
+            store.put_meta(SCHEMA_VERSION, &2u32.to_be_bytes()).unwrap();
+            store.put_meta(MIN_READ_VERSION, &2u32.to_be_bytes()).unwrap();
+            drop(store);
+        }
+        match Store::open(&path) {
+            Err(StoreError::TooNew { found: Some(2), min_read: Some(2), ours: CURRENT_SCHEMA }) => {}
+            other => panic!("expected TooNew(2, 2), got {:?}", other.map(|_| ())),
+        }
+        let refused = refuse(&path);
+        assert!(!refused.is_disk(), "not a disk problem: no re-open loop");
+        assert!(crate::follow::is_too_new_error(&refused.to_string()), "the update-required path recognizes it");
+        assert!(!crate::follow::is_corruption(&refused), "never moved aside, never deleted");
+        assert_eq!(raw_meta_row(&path, SCHEMA_VERSION), Some(2u32.to_be_bytes().to_vec()), "untouched");
+        assert_eq!(raw_meta_row(&path, MIN_READ_VERSION), Some(2u32.to_be_bytes().to_vec()), "untouched");
+
+        // A version row that is not a u32: a layout this binary does not
+        // understand — the same refusal, not corruption.
+        {
+            let db = redb::Database::create(&path).unwrap();
+            let tx = db.begin_write().unwrap();
+            tx.open_table(META).unwrap().insert(SCHEMA_VERSION, &b"not-a-u32"[..]).unwrap();
+            tx.commit().unwrap();
+        }
+        match Store::open(&path) {
+            Err(StoreError::TooNew { found: None, min_read: None, ours: CURRENT_SCHEMA }) => {}
+            other => panic!("an undecodable version row is TooNew(None), got {:?}", other.map(|_| ())),
+        }
+        assert!(!crate::follow::is_corruption(&refuse(&path)));
+
+        // A readable minimum declared by a newer schema: version 2, min 1.
+        {
+            let db = redb::Database::create(&path).unwrap();
+            let tx = db.begin_write().unwrap();
+            {
+                let mut meta = tx.open_table(META).unwrap();
+                meta.insert(SCHEMA_VERSION, 2u32.to_be_bytes().as_slice()).unwrap();
+                meta.insert(MIN_READ_VERSION, 1u32.to_be_bytes().as_slice()).unwrap();
+            }
+            tx.commit().unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.meta(SCHEMA_VERSION).unwrap().as_deref(), Some(&2u32.to_be_bytes()[..]), "a newer schema that keeps version 1 readable opens, rows unchanged");
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The mechanism, with a test-only migration: each sub-step runs exactly
+    /// once, and the finished step stamps the schema and its done marker in
+    /// one transaction with the last sub-step.
+    #[test]
+    fn a_registered_migration_runs_its_sub_steps_and_stamps_the_schema() {
+        let dir = dir_for("schema-migrate");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("state.redb");
+        {
+            let store = Store::open(&path).unwrap();
+            store.put_meta(SCHEMA_VERSION, &0u32.to_be_bytes()).unwrap();
+            drop(store);
+        }
+        fn run(step: &MigrationStep<'_>, resume: u32) -> Result<(), StoreError> {
+            count_runs(step, resume, 3, None)
+        }
+        let list = [Migration { to: 1, name: "test-one", run }];
+        Store::open_migrating(&path, plain_open(), &list).unwrap();
+        for k in 0..3u32 {
+            assert_eq!(counter(&path, k), 1, "sub-step {k} ran exactly once");
+        }
+        assert_eq!(raw_meta_row(&path, SCHEMA_VERSION), Some(1u32.to_be_bytes().to_vec()));
+        assert_eq!(raw_meta_row(&path, MIN_READ_VERSION), Some(1u32.to_be_bytes().to_vec()));
+        assert_eq!(raw_marker(&path), Some(MigrationMarker { name: "test-one".into(), step: 2, done: true }));
+        // Re-opening a migrated database runs nothing again.
+        Store::open_migrating(&path, plain_open(), &list).unwrap();
+        for k in 0..3u32 {
+            assert_eq!(counter(&path, k), 1, "a stamped database does not re-run the step");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// "open, kill the step closure, reopen, finish": a run that dies between
+    /// sub-steps leaves the marker at the last committed sub-step, and the
+    /// next open resumes exactly there — re-running that sub-step (idempotent)
+    /// and finishing, never redoing the committed ones.
+    #[test]
+    fn an_interrupted_migration_resumes_at_the_recorded_step() {
+        let dir = dir_for("schema-resume");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("state.redb");
+        {
+            let store = Store::open(&path).unwrap();
+            store.put_meta(SCHEMA_VERSION, &0u32.to_be_bytes()).unwrap();
+            drop(store);
+        }
+        fn run(step: &MigrationStep<'_>, resume: u32) -> Result<(), StoreError> {
+            count_runs(step, resume, 4, Some(2))
+        }
+        let list = [Migration { to: 1, name: "test-resume", run }];
+        let died = match Store::open_migrating(&path, plain_open(), &list) {
+            Err(e) => e,
+            Ok(_) => panic!("the interrupted run was supposed to fail the open"),
+        };
+        assert!(died.to_string().contains("simulated kill"), "{died}");
+        // What the interrupted run left: sub-steps 0 and 1 committed, the
+        // marker at 1, in flight.
+        assert_eq!(raw_marker(&path), Some(MigrationMarker { name: "test-resume".into(), step: 1, done: false }));
+        assert_eq!((counter(&path, 0), counter(&path, 1)), (1, 1));
+        assert_eq!((counter(&path, 2), counter(&path, 3)), (0, 0), "nothing of the dying sub-step is on disk");
+
+        // Reopen: it resumes at 1 — redoing 1 (idempotent), then 2 and 3.
+        Store::open_migrating(&path, plain_open(), &list).unwrap();
+        assert_eq!((counter(&path, 0), counter(&path, 1), counter(&path, 2), counter(&path, 3)), (1, 2, 1, 1));
+        assert_eq!(raw_meta_row(&path, SCHEMA_VERSION), Some(1u32.to_be_bytes().to_vec()));
+        assert_eq!(raw_marker(&path), Some(MigrationMarker { name: "test-resume".into(), step: 3, done: true }));
+
+        // And a third open changes nothing.
+        Store::open_migrating(&path, plain_open(), &list).unwrap();
+        assert_eq!((counter(&path, 0), counter(&path, 1), counter(&path, 2), counter(&path, 3)), (1, 2, 1, 1));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A sub-step that dies mid-commit (the disk fills between the marker's
+    /// write and the commit) leaves either all or nothing: the marker still
+    /// names the last committed sub-step and the dead sub-step's row is not
+    /// there. The next open, once the disk takes writes, resumes from there.
+    #[test]
+    fn a_sub_step_that_dies_mid_commit_leaves_either_all_or_nothing() {
+        let dir = dir_for("schema-enospc");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("state.redb");
+        let full_marker = dir.join("FULL");
+        {
+            let store = Store::open(&path).unwrap();
+            store.put_meta(SCHEMA_VERSION, &0u32.to_be_bytes()).unwrap();
+            drop(store);
+        }
+        // The disk is "full" exactly while <dir>/FULL exists: the sub-step's
+        // body creates it outside redb (a plain file write, so it survives the
+        // aborted transaction), and the test removes it to heal the disk. A
+        // plain `fn` cannot capture the path, so it recomputes the same
+        // test-scoped directory.
+        fn run(step: &MigrationStep<'_>, resume: u32) -> Result<(), StoreError> {
+            let fill = dir_for("schema-enospc").join("FULL");
+            for k in 0..3u32 {
+                if k < resume {
+                    continue;
+                }
+                step.sub(k, |tx| {
+                    if resume == 0 && k == 2 {
+                        std::fs::write(&fill, b"").map_err(|e| StoreError::Io(e.to_string()))?;
+                    }
+                    let mut meta = tx.open_table(META).map_err(dberr)?;
+                    let key = format!("m/{k}");
+                    meta.insert(key.as_str(), 1u32.to_be_bytes().as_slice()).map_err(dberr)?;
+                    Ok(())
+                })?;
+            }
+            Ok(())
+        }
+        let list = [Migration { to: 1, name: "test-enospc", run }];
+        let open = {
+            let full_marker = full_marker.clone();
+            Arc::new(move |p: &Path| open_on_a_full_disk(p, {
+                let full_marker = full_marker.clone();
+                Arc::new(move || full_marker.exists())
+            })) as Arc<dyn Fn(&Path) -> Result<Database, StoreError> + Send + Sync>
+        };
+        match Store::open_migrating(&path, open.clone(), &list) {
+            Err(StoreError::Io(_)) => {}
+            other => panic!("the full disk fails the sub-step's commit, got {:?}", other.map(|_| ())),
+        }
+        // Either all or nothing: the marker still names sub-step 1 (the last
+        // committed), and sub-step 2's row is not on disk.
+        assert_eq!(raw_marker(&path), Some(MigrationMarker { name: "test-enospc".into(), step: 1, done: false }));
+        assert_eq!(counter(&path, 2), 0, "the dead sub-step's row never landed");
+        assert_eq!(raw_meta_row(&path, SCHEMA_VERSION), Some(0u32.to_be_bytes().to_vec()), "the schema did not advance");
+
+        // The disk takes writes again: the next open finishes the step.
+        std::fs::remove_file(&full_marker).unwrap();
+        Store::open_migrating(&path, open.clone(), &list).unwrap();
+        assert_eq!((counter(&path, 0), counter(&path, 1), counter(&path, 2)), (1, 1, 1));
+        assert_eq!(raw_meta_row(&path, SCHEMA_VERSION), Some(1u32.to_be_bytes().to_vec()));
+        assert_eq!(raw_marker(&path), Some(MigrationMarker { name: "test-enospc".into(), step: 2, done: true }));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A recorded version below this binary's, with no registered steps for
+    /// it, is a refusal — never a silent misread of rows as the wrong layout.
+    #[test]
+    fn a_database_below_the_current_schema_without_registered_steps_refuses() {
+        let dir = dir_for("schema-nosteps");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("state.redb");
+        {
+            let store = Store::open(&path).unwrap();
+            store.put_meta(SCHEMA_VERSION, &0u32.to_be_bytes()).unwrap();
+            drop(store);
+        }
+        let e = refuse(&path).to_string();
+        assert!(e.contains("does not reach"), "a version with no registered steps cannot open: {e}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

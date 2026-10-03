@@ -1836,8 +1836,17 @@ fn run_node(a: NodeArgs) {
         let scheme = aether_light::Scheme::signer(&aether_light::consensus_namespace_of(cfg.group), participants, polynomial, share).expect("share matches polynomial");
         // Start-up integrity as a follower has it (docs/design/24-self-healing.md
         // layer 1): a database that does not verify is moved aside (never
-        // deleted; the keys stay) and the catch-up below re-syncs it.
-        let (store, _) = aether_node::follow::open_store(std::path::Path::new(&data)).expect("open state store");
+        // deleted; the keys stay) and the catch-up below re-syncs it. A schema
+        // newer than this binary reads (red team #15) is not corruption: the
+        // data is untouched and the node stops with the update-required code.
+        let (store, _) = match aether_node::follow::open_store(std::path::Path::new(&data)) {
+            Ok(opened) => opened,
+            Err(e) if aether_node::follow::is_too_new_error(&e) => {
+                tracing::error!(%e, "UPDATE REQUIRED: the state database was written by a newer aether; stopping without touching it — install the signed release");
+                std::process::exit(aether_node::supervisor::EXIT_UPGRADE_REQUIRED);
+            }
+            Err(e) => panic!("open state store: {e}"),
+        };
         let (chain, genesis) = match Chain::open(cfg.clone(), store) {
             Ok(opened) => opened,
             Err(e) if aether_node::follow::is_corruption(&e) => {
@@ -2396,8 +2405,12 @@ fn run_follow(
         // Start-up integrity (docs/design/24-self-healing.md layer 1): a state
         // database that does not verify is moved aside (never deleted; the
         // keys stay) and re-syncs — a certified snapshot first, as below. The
-        // hidden dev flag runs the same start on a disk that fills.
-        let (store, _) = match dev_storage_fault {
+        // hidden dev flag runs the same start on a disk that fills. A schema
+        // newer than this binary reads (red team #15) is none of those: the
+        // data is never moved aside or written — the node stops with the
+        // update-required exit code, which the supervisor and the app already
+        // turn into "install the newer release" (`is_too_new_error`).
+        let opened = match dev_storage_fault {
             Some(ms) => {
                 tracing::warn!(ms, "--dev-storage-fault: this disk fails from now on (self-healing test)");
                 follow::open_store_with(
@@ -2405,9 +2418,17 @@ fn run_follow(
                     std::sync::Arc::new(move |p| {
                         aether_node::store::open_with_a_disk_that_fills(p, Duration::from_millis(ms))
                     }),
-                )?
+                )
             }
-            None => follow::open_store(std::path::Path::new(&data))?,
+            None => follow::open_store(std::path::Path::new(&data)),
+        };
+        let (store, _) = match opened {
+            Ok(opened) => opened,
+            Err(e) if aether_node::follow::is_too_new_error(&e) => {
+                tracing::error!(%e, "UPDATE REQUIRED: the state database was written by a newer aether; stopping without touching it — install the signed release");
+                std::process::exit(aether_node::supervisor::EXIT_UPGRADE_REQUIRED);
+            }
+            Err(e) => return Err(e),
         };
         // Following over iroh, this Mac also serves wallets directly (capacity
         // review 2026-09-29): a public endpoint under its own persisted node

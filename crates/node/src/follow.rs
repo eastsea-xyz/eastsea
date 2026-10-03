@@ -880,6 +880,61 @@ pub const STARTUP_PATIENCE: Duration = Duration::from_secs(5 * 60);
 const CATCH_UP_ROUND: Duration = Duration::from_secs(120);
 /// How long one round waits before the roster is asked again.
 const ASK_AGAIN: Duration = Duration::from_secs(5);
+/// A bogus status answer gets two bounded chances to supply its claimed
+/// finalization before its claim is ignored for a minute.
+const CLAIM_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
+const CLAIM_FETCH_ATTEMPTS: u8 = 2;
+const CLAIM_QUARANTINE: Duration = Duration::from_secs(60);
+
+#[derive(Default)]
+struct PeerEvidence {
+    certified: Option<u64>,
+    failed_attempts: u8,
+    quarantined_until: Option<std::time::Instant>,
+}
+
+#[derive(Default)]
+struct StartupEvidence(BTreeMap<String, PeerEvidence>);
+
+impl StartupEvidence {
+    fn certified_heights(&self) -> Vec<u64> {
+        self.0.values().filter_map(|p| p.certified).collect()
+    }
+
+    fn certified(&self, peer: &str) -> Option<u64> {
+        self.0.get(peer).and_then(|p| p.certified)
+    }
+
+    fn should_probe(&self, peer: &str, claimed: u64, now: std::time::Instant) -> bool {
+        let Some(p) = self.0.get(peer) else { return true };
+        if p.certified.is_some_and(|h| h >= claimed) { return false; }
+        !p.quarantined_until.is_some_and(|until| now < until)
+    }
+
+    fn unresolved_ahead(&self, peer: &str, claimed: u64, ours: u64, margin: u64, now: std::time::Instant) -> bool {
+        claimed > ours.saturating_add(margin)
+            && self.certified(peer).is_none_or(|h| h < claimed)
+            && self.0.get(peer).is_none_or(|p| !p.quarantined_until.is_some_and(|until| now < until))
+    }
+
+    fn record(&mut self, peer: &str, claimed: u64, verified: bool, now: std::time::Instant) {
+        let p = self.0.entry(peer.to_owned()).or_default();
+        if verified {
+            p.certified = Some(p.certified.unwrap_or(0).max(claimed));
+            p.failed_attempts = 0;
+            p.quarantined_until = None;
+        } else {
+            if p.quarantined_until.is_some_and(|until| now >= until) {
+                p.failed_attempts = 0;
+                p.quarantined_until = None;
+            }
+            p.failed_attempts = p.failed_attempts.saturating_add(1);
+            if p.failed_attempts >= CLAIM_FETCH_ATTEMPTS {
+                p.quarantined_until = now.checked_add(CLAIM_QUARANTINE);
+            }
+        }
+    }
+}
 
 /// Whether a member that has not voted yet may start.
 #[derive(Debug, PartialEq, Eq)]
@@ -896,10 +951,9 @@ pub enum VoteStart {
     Wait,
 }
 
-/// The startup gate's decision from one roster census: the finalized heights
-/// the peers that answered reported, where we are, how long since any of them
-/// last answered, and how much silence is tolerated. A height is "heard" only
-/// from a peer that answered — an unknown height never reads as zero.
+/// The startup gate's decision from one roster census. Legacy callers pass
+/// reported heights; new-genesis callers pass only certificate-backed heights
+/// and the time since startup without any such evidence.
 pub fn may_start_voting(answered: &[u64], ours: u64, margin: u64, silent_for: Duration, patience: Duration) -> VoteStart {
     if answered.is_empty() {
         return if silent_for >= patience { VoteStart::FailOpen } else { VoteStart::Wait };
@@ -907,7 +961,7 @@ pub fn may_start_voting(answered: &[u64], ours: u64, margin: u64, silent_for: Du
     if answered.iter().all(|h| *h <= ours + margin) { VoteStart::AtTip } else { VoteStart::Wait }
 }
 
-/// Ask every roster peer where it is — a census, not the first answer: one
+/// Ask every roster peer where it claims to be — a census, not the first answer: one
 /// `aether_status` per peer, in parallel, each bounded. Peers that do not
 /// answer are absent (a restarting network comes up one by one; a peer still
 /// catching up serves read-only answers from its stored finalized state).
@@ -937,14 +991,17 @@ pub async fn roster_heights(
 
 /// Catch a restarting committee member up before it starts voting, and return
 /// when it may: the gate every validator passes on startup. Each round asks
-/// the whole roster where it is (`ask` returns every peer that answered, with
-/// its finalized height — a census, not the first answer), records the highest
-/// answer as the network's height, and decides:
+/// the whole roster where it claims to be (`ask` returns every peer that
+/// answered). On new-genesis chains, each height is checked against a verified
+/// block and finalization certificate before it controls the gate or the
+/// network height. Two failed bounded fetches quarantine an unsupported claim;
+/// repeated status answers do not reset the five-minute patience clock.
+/// Legacy chains retain their original status-height behavior. The gate decides:
 ///
 /// - nobody beyond `margin` ahead → done, voting may start;
 /// - a peer ahead → catch up from the tallest one (`from` builds an upstream
 ///   pointed at it) and ask again;
-/// - no answer at all for `patience` → done, with a warning.
+/// - no usable evidence for `patience` → done, with a warning.
 ///
 /// Returns how many blocks were adopted. The caller must already serve
 /// read-only answers on its public endpoint (`main.rs` serves from its stored
@@ -967,9 +1024,36 @@ where
 {
     let start = chain.finalized_height();
     let mut heard = std::time::Instant::now();
+    let new_genesis = {
+        let cfg = chain.cfg();
+        cfg.node_rewards || cfg.history_v2
+    };
+    let mut evidence = StartupEvidence::default();
     loop {
         let answers = ask().await;
-        if answers.is_empty() {
+        if new_genesis {
+            // Probe each claim through the same certificate and block checks as
+            // follower catch-up. A status answer alone never counts as height.
+            let now = std::time::Instant::now();
+            let from_ref = &from;
+            let probes = answers.iter().filter(|(peer, h)| evidence.should_probe(&peer.to_string(), *h, now)).map(|(peer, h)| async move {
+                if *h == 0 {
+                    // Genesis is fixed by the local network file; no finality
+                    // certificate exists for it and it cannot be ahead.
+                    return (peer.to_string(), *h, true);
+                }
+                let upstream = from_ref(peer);
+                let verified = matches!(tokio::time::timeout(CLAIM_FETCH_TIMEOUT, fetch(&upstream, set, *h)).await, Ok(Ok(Some((block, _)))) if block.height.get() == *h);
+                (peer.to_string(), *h, verified)
+            });
+            for (peer, height, verified) in futures::future::join_all(probes).await {
+                if !verified { warn!(%peer, claimed_height = height, "roster height has no verified finalization"); }
+                evidence.record(&peer, height, verified, std::time::Instant::now());
+            }
+            if let Some(net) = evidence.certified_heights().into_iter().max() {
+                chain.lock().net_height = Some(net);
+            }
+        } else if answers.is_empty() {
             warn!(silent_for = ?heard.elapsed(), ?patience, "no roster peer answers yet");
         } else {
             heard = std::time::Instant::now();
@@ -978,7 +1062,34 @@ where
             let net = answers.iter().map(|(_, h)| *h).max().expect("a peer answered");
             chain.lock().net_height = Some(net);
         }
-        let heights: Vec<u64> = answers.iter().map(|(_, h)| *h).collect();
+        let heights: Vec<u64> = if new_genesis {
+            let certified = evidence.certified_heights();
+            let current_proof = answers.iter().any(|(peer, claimed)| evidence.certified(&peer.to_string()).is_some_and(|h| h >= *claimed));
+            if !current_proof && certified.iter().all(|h| *h <= chain.finalized_height().saturating_add(margin)) {
+                // Old at-tip evidence does not replace a fresh census. A
+                // certified peer ahead remains a blocker even if it vanishes.
+                Vec::new()
+            } else {
+                certified
+            }
+        } else {
+            answers.iter().map(|(_, h)| *h).collect()
+        };
+        if new_genesis && answers.iter().any(|(peer, h)| evidence.unresolved_ahead(&peer.to_string(), *h, chain.finalized_height(), margin, std::time::Instant::now())) {
+            tokio::time::sleep(ASK_AGAIN.min(patience)).await;
+            continue;
+        }
+        // Genesis needs no certificate, but a lone genesis answer must not
+        // turn an unsupported claim of a later chain into instant permission
+        // for a truly stale node. Give the normal patience window to recover
+        // evidence before taking the same fail-open risk as total silence.
+        if new_genesis && heights.iter().all(|h| *h == 0)
+            && answers.iter().any(|(_, h)| *h > chain.finalized_height().saturating_add(margin))
+            && heard.elapsed() < patience
+        {
+            tokio::time::sleep(ASK_AGAIN.min(patience)).await;
+            continue;
+        }
         match may_start_voting(&heights, chain.finalized_height(), margin, heard.elapsed(), patience) {
             VoteStart::AtTip => break,
             VoteStart::FailOpen => {
@@ -990,14 +1101,28 @@ where
             }
             VoteStart::Wait => {}
         }
-        if answers.is_empty() {
+        if answers.is_empty() || (new_genesis && heights.is_empty()) {
             // Nothing answered, so there is nothing to catch up from: ask
             // again after a while, until the patience window runs out.
             tokio::time::sleep(ASK_AGAIN.min(patience)).await;
             continue;
         }
         // Somebody is ahead: catch up from the tallest peer that answered.
-        let (peer, at) = answers.iter().max_by_key(|(_, h)| *h).expect("a peer answered").clone();
+        let target = if new_genesis {
+            answers.iter().filter_map(|(peer, _)| evidence.certified(&peer.to_string()).map(|h| (peer.clone(), h))).max_by_key(|(_, h)| *h)
+        } else {
+            answers.iter().max_by_key(|(_, h)| *h).cloned()
+        };
+        let Some((peer, at)) = target else {
+            tokio::time::sleep(ASK_AGAIN.min(patience)).await;
+            continue;
+        };
+        if new_genesis && at <= chain.finalized_height().saturating_add(margin) {
+            // A previously certified higher peer is offline; keep waiting for
+            // it or another source, but do not catch up from a smaller claim.
+            tokio::time::sleep(ASK_AGAIN.min(patience)).await;
+            continue;
+        }
         info!(peer = %peer, peer_height = at, ours = chain.finalized_height(), "a peer is ahead; catching up before voting");
         let upstream = from(&peer);
         match tokio::time::timeout(CATCH_UP_ROUND, catch_up(chain, &upstream, set, margin)).await {
@@ -1117,14 +1242,50 @@ mod tests {
         // margin is what "caught up" means; the engine covers the rest).
         assert_eq!(may_start_voting(&[100, 100, 98], 100, BEHIND_MARGIN, Duration::ZERO, patience), VoteStart::AtTip);
         assert_eq!(may_start_voting(&[120], 100, BEHIND_MARGIN, Duration::ZERO, patience), VoteStart::AtTip);
-        // A peer beyond the margin: wait — even after any silence elsewhere,
-        // for as long as that peer keeps answering.
+        // Legacy status heights still work exactly as before. For new genesis,
+        // this same decision is fed only certified heights (see tests below).
         assert_eq!(may_start_voting(&[121], 100, BEHIND_MARGIN, Duration::ZERO, patience), VoteStart::Wait);
         assert_eq!(may_start_voting(&[98, 500], 100, BEHIND_MARGIN, patience, patience), VoteStart::Wait);
         // Nobody answered: not "0 behind" — wait, and only after the patience
         // window fail open.
         assert_eq!(may_start_voting(&[], 100, BEHIND_MARGIN, patience - Duration::from_millis(1), patience), VoteStart::Wait);
         assert_eq!(may_start_voting(&[], 100, BEHIND_MARGIN, patience, patience), VoteStart::FailOpen);
+    }
+
+    #[test]
+    fn unproved_absurd_claim_cannot_hold_a_new_genesis_restart_gate() {
+        let start = std::time::Instant::now();
+        let mut evidence = StartupEvidence::default();
+        evidence.record("honest-a", 100, true, start);
+        evidence.record("honest-b", 100, true, start);
+        for attempt in 0..2 {
+            let now = start + Duration::from_secs(attempt);
+            assert!(evidence.should_probe("liar", 1_000_000_000_000, now));
+            evidence.record("liar", 1_000_000_000_000, false, now);
+            if attempt == 0 {
+                assert!(evidence.unresolved_ahead("liar", 1_000_000_000_000, 100, BEHIND_MARGIN, now));
+            }
+        }
+        assert!(!evidence.should_probe("liar", 1_000_000_000_000, start + Duration::from_secs(3)));
+        assert!(!evidence.unresolved_ahead("liar", 1_000_000_000_000, 100, BEHIND_MARGIN, start + Duration::from_secs(3)));
+        assert!(evidence.should_probe("liar", 1_000_000_000_000, start + CLAIM_QUARANTINE + Duration::from_secs(1)));
+        assert_eq!(may_start_voting(&evidence.certified_heights(), 100, BEHIND_MARGIN, Duration::from_secs(3), STARTUP_PATIENCE), VoteStart::AtTip);
+        // If no honest peer can supply a certificate, repeated status answers
+        // still cannot reset the five-minute fail-open clock.
+        let only_liar = StartupEvidence::default();
+        assert_eq!(may_start_voting(&only_liar.certified_heights(), 100, BEHIND_MARGIN, STARTUP_PATIENCE, STARTUP_PATIENCE), VoteStart::FailOpen);
+    }
+
+    #[test]
+    fn certified_ahead_peer_still_blocks_voting_even_if_it_is_quarantined_later() {
+        let start = std::time::Instant::now();
+        let mut evidence = StartupEvidence::default();
+        evidence.record("honest", 500, true, start);
+        evidence.record("honest", 1_000_000_000_000, false, start + Duration::from_secs(1));
+        evidence.record("honest", 1_000_000_000_000, false, start + Duration::from_secs(2));
+        assert_eq!(evidence.certified_heights(), vec![500]);
+        assert_eq!(may_start_voting(&evidence.certified_heights(), 100, BEHIND_MARGIN, STARTUP_PATIENCE, STARTUP_PATIENCE), VoteStart::Wait);
+        assert_eq!(may_start_voting(&evidence.certified_heights(), 480, BEHIND_MARGIN, STARTUP_PATIENCE, STARTUP_PATIENCE), VoteStart::AtTip);
     }
 
     /// Red team #7/#16: a recovery the disk cannot hold never starts, and a

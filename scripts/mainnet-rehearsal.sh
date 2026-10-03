@@ -13,8 +13,10 @@
 # from genesis, the dev registrar (no Apple DeviceCheck call), the founder's
 # three reserve keys, no faucet and no premine. Four validators, the three
 # reserve keys and two candidate Macs, each only `aether run`. Epochs are 40
-# blocks of 500 ms so the rehearsal finishes in minutes; every other parameter
-# keeps its mainnet default. Checks (PASS/FAIL table at the end):
+# blocks of at least 1000 ms (the new-genesis consensus floor). Reaching the
+# four-epoch rewards check takes at least ~160 seconds of block time, plus
+# startup, registration and RPC checks; allow about 4-6 minutes end to end.
+# Every other parameter keeps its mainnet default. Checks (PASS/FAIL table at the end):
 #   - every mainnet rule is on at genesis (`aether mainnet-rules`, the one
 #     list in crates/node/src/mainnet.rs; docs/ops/mainnet-launch.md §2);
 #   - the chain runs protocol 3 at height 1 and the registration cap is
@@ -25,7 +27,7 @@
 #   - the first epochs distribute exactly: the node pool of an epoch is the
 #     epoch's issuance halves (rewards::issuance) and a fresh Mac's operator gets
 #     pool × k × WARMUP_STEPS / (MAX_SHARE × FULL) for the k slots it answered
-#     (docs/design/15-node-rewards.md; k varies with beacon timing in a 20 s epoch);
+#     (docs/design/15-node-rewards.md; k varies with beacon timing in a 40 s epoch);
 #   - the founder's reserve keys stay followers while the committee has four
 #     seats (they only fill seats a committee is short of; audit 1.1);
 #   - history pruning is the mainnet default: on, 30 days.
@@ -35,7 +37,7 @@ A="${AETHER_BIN:-${CARGO_TARGET_DIR:-$ROOT/target}/release/aether}"
 [ -x "$A" ] || { echo "no aether binary at $A (build it, or set AETHER_BIN)" >&2; exit 1; }
 CHAIN=${REHEARSAL_CHAIN_ID:-7799}
 EPOCH_BLOCKS=40
-BLOCK_MS=500
+BLOCK_MS=1000
 D=${1:-}
 [ -n "$D" ] || { sed -n '2,26p' "$0"; exit 1; }
 mkdir -p "$D"
@@ -211,11 +213,11 @@ echo "== first distributions (an epoch's node pool is its issuance halves)"
 # (warm-up level 0) weigh k × 14 for the k slots they answered in the epoch; with
 # fewer than 16 operators the sum stays below the floor MAX_SHARE × FULL
 # = 16 × (SLOTS × 2 × 14) = 5376 (SLOTS = 12), so an operator gets exactly
-# pool × k × 14 / 5376 (rewards::lib docs). How many slots answer in a 20 s
+# pool × k × 14 / 5376 (rewards::lib docs). How many slots answer in a 40 s
 # epoch depends on timing, so the check is: every operator is paid in every epoch
 # after the first (a partial one: the Macs registered inside it) and each amount
 # is exactly one of the legal values for k = 1..SLOTS.
-if wait_height "${rpcp[0]}" "$(( (h / EPOCH_BLOCKS + 4) * EPOCH_BLOCKS ))" 180; then
+if wait_height "${rpcp[0]}" "$(( (h / EPOCH_BLOCKS + 4) * EPOCH_BLOCKS ))" 360; then
   paid=yes detail=""
   for o in "${ops[@]}"; do
     raw=$(rpc aether_rewards "[\"$o\"]" "${rpcp[0]}")

@@ -22,6 +22,23 @@ use tracing::{info, warn};
 /// Fixed consensus cutoff for timestamps (2200-01-01) so validity never depends on platform limits.
 const MAX_BLOCK_TIMESTAMP_MS: u64 = 7_258_118_400_000;
 const MAX_FUTURE_SKEW_MS: u64 = 1_000;
+/// A new-genesis block must advance certified chain time by at least one second.
+pub const MIN_BLOCK_INTERVAL_MS: u64 = 1_000;
+static BELOW_FLOOR_WARNED: AtomicBool = AtomicBool::new(false);
+
+fn mainnet_rules(chain: &Chain) -> bool {
+    let cfg = chain.cfg();
+    cfg.node_rewards || cfg.history_v2
+}
+
+fn proposal_delay_ms(configured: u64, new_genesis: bool) -> u64 {
+    if new_genesis { configured.max(MIN_BLOCK_INTERVAL_MS) } else { configured }
+}
+
+fn valid_block_timestamp(timestamp: u64, parent: u64, new_genesis: bool) -> bool {
+    let interval = if new_genesis { MIN_BLOCK_INTERVAL_MS } else { 0 };
+    parent.checked_add(interval).is_some_and(|minimum| timestamp >= minimum && timestamp <= MAX_BLOCK_TIMESTAMP_MS)
+}
 
 #[derive(Clone)]
 pub struct Application {
@@ -32,7 +49,11 @@ pub struct Application {
 
 impl Application {
     pub fn new(chain: Chain, delay_ms: u64) -> Self {
-        Self { chain, delay_ms, proposals_enabled: Arc::new(AtomicBool::new(true)) }
+        let delay = proposal_delay_ms(delay_ms, mainnet_rules(&chain));
+        if delay != delay_ms && !BELOW_FLOOR_WARNED.swap(true, Ordering::Relaxed) {
+            warn!(configured_ms = delay_ms, minimum_ms = MIN_BLOCK_INTERVAL_MS, "block-time-ms is below the new-genesis consensus floor; using the floor");
+        }
+        Self { chain, delay_ms: delay, proposals_enabled: Arc::new(AtomicBool::new(true)) }
     }
 
     /// Fault injection: keep voting, but produce no blocks when elected leader.
@@ -178,7 +199,7 @@ where
     async fn verify(&mut self, (rt, _): (E, Self::Context), mut ancestry: impl Ancestry<Self::Block>) -> bool {
         let Some(block) = ancestry.next().await else { return false };
         let Some(parent_block) = ancestry.next().await else { return false };
-        if block.timestamp < parent_block.timestamp || block.timestamp > MAX_BLOCK_TIMESTAMP_MS {
+        if !valid_block_timestamp(block.timestamp, parent_block.timestamp, mainnet_rules(&self.chain)) {
             return false;
         }
         // Never reject on the local clock (a verdict must not depend on when it is asked); wait out skew.
@@ -294,5 +315,26 @@ impl Reporter for Application {
             ack.acknowledge();
         }
         Feedback::Ok
+    }
+}
+
+#[cfg(test)]
+mod timestamp_tests {
+    use super::*;
+
+    #[test]
+    fn one_tick_after_parent_is_only_valid_on_legacy_genesis() {
+        assert!(valid_block_timestamp(10_001, 10_000, false));
+        assert!(!valid_block_timestamp(10_001, 10_000, true));
+        assert!(valid_block_timestamp(11_000, 10_000, true));
+        assert!(!valid_block_timestamp(10_000, 10_000, true));
+        assert!(!valid_block_timestamp(11_000, u64::MAX, true));
+    }
+
+    #[test]
+    fn proposer_delay_below_mainnet_floor_cannot_produce_invalid_timestamp() {
+        assert_eq!(proposal_delay_ms(100, true), MIN_BLOCK_INTERVAL_MS);
+        assert_eq!(proposal_delay_ms(100, false), 100);
+        assert_eq!(proposal_delay_ms(1_500, true), 1_500);
     }
 }

@@ -92,6 +92,8 @@
 
 **시험(2부)**: Rust — `cargo test -p aether-node --lib`(supervisor: 백오프·재시작 한도·세대 설치·잠금·키 없는 Mac·저널 정지, prover: 세 값·재시도 규칙·사이드카 정리, engine: 저널 게이트, follow: 공간 확인·투표 시작 판정, atomic: 원자 교체), `cargo test -p aether-node --test selfheal`(활동이 오르는 얼어 붙은 높이는 재시작하지 않는다·`aether protocol` 즉답). Swift — `apps/wallet/Tests/watchdog`(위 모든 판정; `mkdir -p ./tmp && swiftc -o ./tmp/watchdog-check apps/wallet/Sources/NodeWatchdog.swift apps/wallet/Tests/watchdog/main.swift && ./tmp/watchdog-check`). 7780 합의 규칙은 그대로다(새 합의 규칙 없음; 종료 코드와 상태 필드는 비합의 경로).
 
+**2026-10-03 감사 A1 후속:** 새 제네시스의 검증자 재시작 게이트는 `aether_status`의 자칭 높이를 곧바로 믿지 않는다. 해당 높이의 블록과 확정 인증서를 검증한 뒤에만 앞선 높이로 센다. 두 번의 한도 있는 조회에도 증명하지 못하면 60초 동안 그 주장을 격리하고, 반복 상태 응답으로 5분 인내 시계를 되돌리지 않는다. 실제 인증된 앞선 높이는 격리 중에도 남아 따라잡기 전 투표를 막는다. 투표 저널의 별도 종료 코드 8 거부는 그대로 적용한다. 모든 검증자가 동시에 재시작해 보관된 인증서를 즉시 제공하지 못하면, 최초 투표는 기존 5분 무응답 경로를 기다릴 수 있다. 7780의 시작 게이트는 기존 자칭 높이 규칙을 유지한다.
+
 ## 구현 3부 (2026-10-03, 레드팀 #15)
 
 **스키마 버전 (`crates/node/src/store.rs`)** — 데이터베이스가 자기 레이아웃을 기록하고, 읽을 수 없는 새 레이아웃은 절대 손대지 않는다:

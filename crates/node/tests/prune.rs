@@ -352,7 +352,7 @@ fn prunable_block_archive_drops_whole_eras_and_survives_restart() {
         use commonware_cryptography::{Hasher as _, Sha256};
         let leader = ed25519::PrivateKey::from_seed(h % 4).public_key();
         let parent = Sha256::hash(&[h.to_be_bytes().as_slice()]);
-        Block::new(Context { round: Round::new(EPOCH, View::new(h)), leader, parent: (View::new(h), parent) }, parent, Height::new(h), h, bytes::Bytes::new())
+        Block::new(Context { round: Round::new(EPOCH, View::new(h)), leader, parent: (View::new(h), parent) }, parent, Height::new(h), h * 1_000, bytes::Bytes::new())
     };
     let total = 3 * ERA_LEN;
     let open = move |context: deterministic::Context| async move {

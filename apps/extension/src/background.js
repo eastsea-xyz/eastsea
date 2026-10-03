@@ -4,7 +4,7 @@ import { Brand } from './lib/brand.js';
 // The origin of a page request always comes from Chrome (the port's sender),
 // never from the page.
 
-import init, { accountAddress, prepareTx, attachSignature, publicKeyFromSecret } from '../wasm/aether_wasm.js';
+import init, { accountAddress, prepareTx, attachSignature, publicKeyFromSecret, verifyAccount } from '../wasm/aether_wasm.js';
 import { Vault, DEFAULT_LOCK_MINUTES } from './lib/vault.js';
 import { Rpc, RpcError, DEFAULT_RPCS } from './lib/rpc.js';
 import { networkSettings } from './lib/network.js';
@@ -25,7 +25,10 @@ const area = (a) => ({
 const local = area(chrome.storage.local);
 const session = area(chrome.storage.session);
 const vault = new Vault({ local, session, addressOf: (pub) => accountAddress(pub) });
-const rpc = new Rpc(DEFAULT_RPCS);
+const rpc = new Rpc(DEFAULT_RPCS, {
+  verifyAccount: async (...args) => { await ready; return verifyAccount(...args); },
+  floorStore: { get: (key) => local.get(key), set: (key, value) => local.set(key, value) },
+});
 const wallet = new Wallet({ wasm: { prepareTx, attachSignature }, rpc, vault });
 
 const UI_PREFIX = chrome.runtime.getURL('ui/');
@@ -59,6 +62,7 @@ async function applySettings() {
   const switched = activeNetwork && activeNetwork.chainId !== next.chainId;
   activeNetwork = next;
   rpc.setChain(next.chainId, next.urls);
+  rpc.setVerifier(next.development ? null : defaultNetwork);
   if (switched) {
     wallet.lastNonce = null;
     for (const [id, pending] of approvals) {
@@ -387,7 +391,10 @@ const ui = {
   account: async () => {
     const info = await vault.info();
     const [balance, status] = await Promise.all([wallet.balance(info.address), rpc.call('aether_status', [])]);
-    return { address: info.address, balance: balance.toString(), height: status.height, blockAt: status.timestamp_ms, node: rpc.current };
+    const checked = activeNetwork?.development ? null : rpc.verifiedAccounts.get(info.address.toLowerCase());
+    if (!activeNetwork?.development && !checked) throw new Error('AETH balance was not verified.');
+    return { address: info.address, balance: balance.toString(), height: checked?.height ?? status.height,
+      blockAt: checked?.timestampMs ?? status.timestamp_ms, node: rpc.current };
   },
   assets: async ({ force } = {}) => {
     const base = await refreshAssets({ force });

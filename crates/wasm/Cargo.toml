@@ -13,7 +13,10 @@ crate-type = ["cdylib", "rlib"]
 aether-types.workspace = true
 aether-crypto.workspace = true
 aether-execution = { path = "../execution", default-features = false }
+aether-light.workspace = true
+aether-state.workspace = true
 alloy-primitives.workspace = true
+commonware-codec = "=2026.9.0"
 serde_json.workspace = true
 p256.workspace = true
 wasm-bindgen = "0.2"

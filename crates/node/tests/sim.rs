@@ -18,11 +18,12 @@ use aether_crypto::P256Signer;
 use aether_execution::{sign_call_with, EvmCall};
 use aether_light::block::Handoff;
 use aether_light::{consensus_namespace, devnet_threshold, devnet_validator_key, Scheme};
-use aether_node::application::Application;
+use aether_node::application::{Application, MIN_BLOCK_INTERVAL_MS};
 use aether_node::chain::{dev_accounts, dev_seed, Chain, ChainConfig};
 use aether_node::engine::{self, MAX_BLOCK_BYTES};
 use aether_node::epochs::ScheduleEpocher;
 use aether_node::inclusion::InclusionList;
+use aether_node::upgrade::MAINNET_NOTICE_BLOCKS;
 use aether_types::{Address, Bytes, FeeVector, GasVector, U256};
 use commonware_codec::Encode as _;
 use commonware_consensus::marshal;
@@ -162,6 +163,10 @@ async fn link_all(oracle: &mut Oracle<Pk, Ctx>, keys: &[Pk], up: impl Fn(usize, 
 }
 
 async fn start_validator(context: &Ctx, oracle: &Oracle<Pk, Ctx>, i: u64, chain: Chain, disk: Disk, proposals: Arc<AtomicBool>) -> (Scheme, simulated::Sender<Pk, Ctx>) {
+    start_validator_with_delay(context, oracle, i, chain, disk, proposals, BLOCK_MS).await
+}
+
+async fn start_validator_with_delay(context: &Ctx, oracle: &Oracle<Pk, Ctx>, i: u64, chain: Chain, disk: Disk, proposals: Arc<AtomicBool>, block_ms: u64) -> (Scheme, simulated::Sender<Pk, Ctx>) {
     let (participants, polynomial, shares) = devnet_threshold(N);
     let key = devnet_validator_key(i);
     let me = key.public_key();
@@ -195,7 +200,7 @@ async fn start_validator(context: &Ctx, oracle: &Oracle<Pk, Ctx>, i: u64, chain:
         },
         backfill,
     );
-    let (_, genesis) = Chain::new(chain_config());
+    let (_, genesis) = Chain::new(chain.cfg());
     let engine = engine::Engine::new(
         SlowDisk::new(context.child("engine").with_attribute("validator", i), disk),
         engine::Config {
@@ -218,7 +223,7 @@ async fn start_validator(context: &Ctx, oracle: &Oracle<Pk, Ctx>, i: u64, chain:
             epocher: ScheduleEpocher::new(vec![]),
             epoch_floor: None,
             genesis,
-            application: Application::new(chain, BLOCK_MS).with_proposal_switch(proposals),
+            application: Application::new(chain, block_ms).with_proposal_switch(proposals),
             mailbox_size: 1024,
             leader_timeout: Duration::from_secs(2),
             certification_timeout: Duration::from_secs(3),
@@ -312,6 +317,10 @@ fn list_for_half(chains: &[Chain], t: u64) {
 }
 
 fn simulate(seed: u64, secs: u64, fault: Fault) -> Outcome {
+    simulate_with_rules(seed, secs, fault, false, BLOCK_MS)
+}
+
+fn simulate_with_rules(seed: u64, secs: u64, fault: Fault, new_genesis: bool, block_ms: u64) -> Outcome {
     let cfg = deterministic::Config::new()
         .with_seed(seed)
         .with_timeout(Some(Duration::from_secs(secs + 120)));
@@ -333,12 +342,16 @@ fn simulate(seed: u64, secs: u64, fault: Fault) -> Outcome {
         network.start();
         link_all(&mut oracle, &keys, |_, _| true).await;
 
-        let chains: Vec<Chain> = (0..N).map(|_| Chain::new(chain_config()).0).collect();
+        let chains: Vec<Chain> = (0..N).map(|_| {
+            let mut cfg = chain_config();
+            cfg.history_v2 = new_genesis;
+            Chain::new(cfg).0
+        }).collect();
         let disks: Vec<Disk> = (0..N).map(|_| Disk::default()).collect();
         let proposals: Vec<_> = (0..N).map(|_| Arc::new(AtomicBool::new(true))).collect();
         let mut byzantine = None;
         for (i, chain) in chains.iter().enumerate() {
-            let injected = start_validator(&context, &oracle, i as u64 + 1, chain.clone(), disks[i].clone(), proposals[i].clone()).await;
+            let injected = start_validator_with_delay(&context, &oracle, i as u64 + 1, chain.clone(), disks[i].clone(), proposals[i].clone(), block_ms).await;
             if i == 3 {
                 byzantine = Some(injected);
             }
@@ -477,6 +490,27 @@ fn outcome(chains: &[Chain]) -> Outcome {
         equivocation_detected: false,
         handoff_switch: chains[0].lock().finalized.handoff.as_ref().map(|p| p.switch),
     }
+}
+
+#[test]
+fn new_genesis_notice_needs_seven_days_of_certified_chain_time() {
+    // Four real validators, with a proposer configured ten times faster than
+    // the consensus floor. Virtual time keeps this test short.
+    let out = simulate_with_rules(77, 25, Fault::None, true, 100);
+    let height = out.heights.iter().copied().min().unwrap();
+    assert!(height > 2, "the simulated committee must actually finalize blocks: {out:?}");
+    assert!(height < MAINNET_NOTICE_BLOCKS);
+    for (index, timestamp) in out.timestamps.iter().enumerate() {
+        let h = index as u64 + 1;
+        assert!(*timestamp >= h * MIN_BLOCK_INTERVAL_MS, "height {h} finalized too early at {timestamp}");
+    }
+    for pair in out.timestamps.windows(2) {
+        assert!(pair[1] - pair[0] >= MIN_BLOCK_INTERVAL_MS, "a 100 ms proposer finalized blocks too close together: {pair:?}");
+    }
+    assert!(
+        MAINNET_NOTICE_BLOCKS * MIN_BLOCK_INTERVAL_MS >= 604_800_000,
+        "the first permitted activation height must require seven days of chain time"
+    );
 }
 
 /// Stop the whole deterministic process at seeded virtual times. The next

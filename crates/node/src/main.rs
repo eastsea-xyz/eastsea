@@ -714,7 +714,9 @@ fn main() {
                     Ok(args)
                 })
                 .and_then(|args| {
-                    let mode = history.mode(args.4.history >= 2, block_time_ms)?;
+                    let new_genesis = args.4.node_rewards || args.4.history >= 2;
+                    let effective_ms = if new_genesis { block_time_ms.max(aether_node::application::MIN_BLOCK_INTERVAL_MS) } else { block_time_ms };
+                    let mode = history.mode(args.4.history >= 2, effective_ms)?;
                     Ok((args, mode))
                 })
                 .map(|((p2p, chain_id, epochs, key_round, mut genesis), history)| {
@@ -2135,7 +2137,8 @@ fn run_node(a: NodeArgs) {
             }
         });
 
-        spawn_inclusion_lists(chain.clone(), signer.clone(), index, roster_keys, cfg.chain_id, Duration::from_millis(block_time_ms), il_out, il_in);
+        let effective_ms = if cfg.node_rewards || cfg.history_v2 { block_time_ms.max(aether_node::application::MIN_BLOCK_INTERVAL_MS) } else { block_time_ms };
+        spawn_inclusion_lists(chain.clone(), signer.clone(), index, roster_keys, cfg.chain_id, Duration::from_millis(effective_ms), il_out, il_in);
 
         // A registered voting node keeps proving it is alive while it votes.
         let mut shard_me = None;

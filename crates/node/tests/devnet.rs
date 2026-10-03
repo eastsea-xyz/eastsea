@@ -1107,7 +1107,7 @@ fn founder_reserve_keys_stay_followers_over_a_full_committee() {
             resh[k].to_string(),
             "--dev-peer-dir".into(),
             d("peers"),
-            "--node-arg=--block-time-ms=500".into(),
+            "--node-arg=--block-time-ms=1000".into(),
             format!("--follow-arg=--from-rpc={}", others.join(",")),
             "--reshare-timeout".into(),
             "120".into(),

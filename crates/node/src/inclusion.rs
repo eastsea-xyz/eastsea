@@ -30,7 +30,9 @@ pub const MAX_IL_TXS: usize = 16;
 /// had not yet seen, and each refusal cost a view timeout; 2026-09-29).
 pub const FREEZE: Duration = Duration::from_secs(3);
 const MAX_AGE: Duration = Duration::from_secs(120);
-const MAX_POOL: usize = 4096;
+/// Listed txs this pool holds at most. The mempool's eviction rule spares
+/// every listed tx it can (R2-6): what a list names is this node's obligation.
+pub const MAX_POOL: usize = 4096;
 
 /// A committee member's signed list for `height`.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -148,6 +150,13 @@ impl InclusionPool {
 
     pub fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    /// Whether `h` is named by a held list: a tx an inclusion list names is
+    /// this node's obligation to propose, so mempool eviction spares it
+    /// (R2-6) whatever its fee.
+    pub fn contains(&self, h: &TxHash) -> bool {
+        self.entries.contains_key(h)
     }
 
     pub fn is_empty(&self) -> bool {

@@ -30,11 +30,25 @@ pub const MAX_PER_SENDER: usize = 64;
 /// under a block's 8 MiB decode cap. Local admission policy, not consensus.
 pub const MAX_TX_BYTES: usize = 128 * 1024;
 /// All pending txs together, by the same count: their encodings' bytes. Like
-/// `MAX_MEMPOOL`, it rejects new txs when full (nothing is evicted).
+/// `MAX_MEMPOOL`, it rejects new txs when full — except that a strictly
+/// higher-fee tx may evict the lowest-fee entry to make room (fee networks
+/// only; see `add_to_mempool`).
 pub const MAX_MEMPOOL_BYTES: usize = 64 * 1024 * 1024;
 /// A pending tx that has not made it into a block in this long leaves the pool
 /// (a nonce gap it cannot close, or fee caps the base fee stays above).
 pub const MEMPOOL_TTL: Duration = Duration::from_secs(10 * 60);
+/// Zero-fee entries (nothing over the base fee, no tip) are capped at a
+/// fraction of the pool (R2-6, audit round 2, 2026-10-03): without a cap a
+/// zero-balance spammer's free txs could hold every slot and crowd paying
+/// senders out. Fee networks only — 7780 has no fees and one lane as before.
+pub const MAX_FREE_MEMPOOL: usize = MAX_MEMPOOL / 4;
+/// How long a tx whose fee caps sit below the base fee may hold pool capacity
+/// waiting for the fee to come down (R2-6): the base fee falls by a full
+/// target per empty block, so any spike a rational cap waited out is gone in
+/// well under a minute. Past the wait the entry leaves instead of squatting
+/// until the TTL; the sender always knows, because admission refuses
+/// below-cap txs — re-submitting at higher caps is its move.
+pub const MEMPOOL_FEE_WAIT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug)]
 pub struct ChainConfig {
@@ -453,6 +467,9 @@ pub struct Inner {
     /// (`MAX_MEMPOOL_BYTES`) charges and releases exactly what was admitted.
     sizes: HashMap<TxHash, usize>,
     mempool_bytes: usize,
+    /// Zero-fee entries in the pool (fee networks only; `MAX_FREE_MEMPOOL`
+    /// caps them — R2-6).
+    free_in_pool: usize,
     /// Txs named by inclusion lists (FOCIL).
     pub inclusion: InclusionPool,
     /// Devnet fault injection: act as a proposer that censors this sender and
@@ -621,6 +638,7 @@ impl Chain {
             arrivals: HashMap::new(),
             sizes: HashMap::new(),
             mempool_bytes: 0,
+            free_in_pool: 0,
             inclusion: InclusionPool::default(),
             censor: None,
             committee: Default::default(),
@@ -852,6 +870,14 @@ impl Chain {
         let old = g.blocks.insert(height, summary);
         g.caches_bytes = g.caches_bytes.saturating_add(sb).saturating_sub(old.as_ref().map(summary_bytes).unwrap_or(0));
         g.finalized = exec;
+        // The new head's base fee re-sorts the pool between paying and free
+        // lanes; keep the quota's count true to it until the next finalize.
+        let base = Self::next_base_fee(&g.cfg, &g.finalized);
+        g.free_in_pool = if g.cfg.fees {
+            g.mempool.values().filter(|t| effective_fee(t, base) == 0).count()
+        } else {
+            0
+        };
         g.history_index = None;
         // Old finalized blocks are no longer provable here (their states are
         // gone); do not let them hold the prover's queue.
@@ -2293,7 +2319,10 @@ impl Chain {
     /// Returns false if the pool is full or the tx is already known.
     /// Admit a (signature-checked) tx: `Ok(true)` if new, `Ok(false)` if already
     /// known, `Err` if it could never execute or the pool is full, so txs that
-    /// would only ever be skipped cannot pile up for free.
+    /// would only ever be skipped cannot pile up for free. On a fee network a
+    /// full pool still admits a strictly higher-fee tx by evicting the
+    /// lowest-fee entry that is safe to drop (R2-6, audit round 2, 2026-10-03);
+    /// without fees (7780) a full pool refuses, as it always did.
     pub fn add_to_mempool(&self, tx: TxEnvelope) -> Result<bool, String> {
         let h = aether_execution::tx_hash(&tx);
         let size = tx.to_canonical_bytes().len();
@@ -2304,12 +2333,6 @@ impl Chain {
         if size > MAX_TX_BYTES {
             return Err(format!("transaction is {size} bytes, over the {MAX_TX_BYTES}-byte cap"));
         }
-        if g.mempool.len() >= MAX_MEMPOOL {
-            return Err("mempool full".into());
-        }
-        if g.mempool_bytes + size > MAX_MEMPOOL_BYTES {
-            return Err("mempool byte budget full".into());
-        }
         let state = &g.finalized.state;
         if tx.header.nonce < state.nonce(&tx.header.sender) {
             return Err("nonce already used".into());
@@ -2318,8 +2341,9 @@ impl Chain {
         if tx.header.group() != g.cfg.group {
             return Err(format!("tx of group {} on a group-{} chain", tx.header.group(), g.cfg.group));
         }
+        let base = Self::next_base_fee(&g.cfg, &g.finalized);
         if g.cfg.fees {
-            admissible(&tx, state, Self::next_base_fee(&g.cfg, &g.finalized))?;
+            admissible(&tx, state, base)?;
         }
         if g.pending_by_sender
             .get(&tx.header.sender)
@@ -2329,7 +2353,31 @@ impl Chain {
         {
             return Err(format!("sender has {MAX_PER_SENDER} pending transactions"));
         }
+        // A tx that pays nothing at the current base fee takes a free-lane
+        // slot, and the free lane is a quota of the pool (R2-6): zero-balance
+        // spam cannot crowd paying senders out of their three quarters. Fee
+        // networks only — 7780 has a single lane, as it always had.
+        let free = g.cfg.fees && effective_fee(&tx, base) == 0;
+        if free && g.free_in_pool >= MAX_FREE_MEMPOOL {
+            return Err(format!(
+                "free lane full: {MAX_FREE_MEMPOOL} of {MAX_MEMPOOL} entries already pay nothing"
+            ));
+        }
+        let count_full = g.mempool.len() >= MAX_MEMPOOL;
+        let bytes_full = g.mempool_bytes + size > MAX_MEMPOOL_BYTES;
+        if (count_full || bytes_full)
+            && (!g.cfg.fees || free || !evict_for(&mut g, &tx, base, size))
+        {
+            return Err(if count_full {
+                "mempool full".into()
+            } else {
+                "mempool byte budget full".into()
+            });
+        }
         *g.pending_by_sender.entry(tx.header.sender).or_default() += 1;
+        if free {
+            g.free_in_pool += 1;
+        }
         g.mempool.insert(h, tx);
         g.sizes.insert(h, size);
         g.mempool_bytes += size;
@@ -2494,8 +2542,12 @@ impl Chain {
             inner.mempool_bytes -= freed;
         }
         inner.pending_by_sender.clear();
+        inner.free_in_pool = 0;
         for t in inner.mempool.values() {
             *inner.pending_by_sender.entry(t.header.sender).or_default() += 1;
+            if fees && effective_fee(t, base) == 0 {
+                inner.free_in_pool += 1;
+            }
         }
         inner.inclusion.prune(&state, exec.height, Instant::now());
         // One leaf per height, in order (genesis is delivered again at start-up).
@@ -2709,10 +2761,79 @@ fn admissible(tx: &TxEnvelope, state: &WorldState, base: FeeVector) -> Result<()
     affordable(tx, state, base)
 }
 
+/// What a tx would actually pay at `base` (R2-6's ranking fee): exec gas at
+/// the base fee plus its tip, capped by `max_fee.exec` (EIP-1559 shape), plus
+/// prove gas at the base fee capped by its prove cap. Zero means the tx pays
+/// nothing at this base fee — a free-lane entry.
+fn effective_fee(tx: &TxEnvelope, base: FeeVector) -> u128 {
+    let exec = base.exec.saturating_add(tx.header.tip).min(tx.header.max_fee.exec);
+    let prove = base.prove.min(tx.header.max_fee.prove);
+    exec.saturating_add(prove)
+}
+
+/// Make room for `tx` (`size` bytes, paying `effective_fee(tx, base)`) by
+/// evicting the lowest-fee pending entries that may safely leave (R2-6): only
+/// a sender's highest pending nonce — its runnable prefix stays runnable —
+/// and never a tx an inclusion list names (FOCIL: what a list names is this
+/// node's obligation to propose, whatever its fee). Only strictly lower-fee
+/// entries go; an equal fee never displaces its peer. True when the pool now
+/// holds the count and byte room `tx` needs.
+fn evict_for(g: &mut Inner, tx: &TxEnvelope, base: FeeVector, size: usize) -> bool {
+    let room = |g: &Inner| g.mempool.len() < MAX_MEMPOOL && g.mempool_bytes + size <= MAX_MEMPOOL_BYTES;
+    if room(g) {
+        return true;
+    }
+    // A sender's nonce chain leaves from its end only: the highest pending
+    // nonce is the one entry of the chain whose removal strands nothing.
+    let mut tops: HashMap<Address, u64> = HashMap::with_capacity(g.pending_by_sender.len());
+    for t in g.mempool.values() {
+        tops.entry(t.header.sender)
+            .and_modify(|top| *top = (*top).max(t.header.nonce))
+            .or_insert(t.header.nonce);
+    }
+    let mut candidates: Vec<(u128, Instant, TxHash, Address)> = g
+        .mempool
+        .iter()
+        .filter(|(h, t)| t.header.nonce == tops[&t.header.sender] && !g.inclusion.contains(h))
+        .map(|(h, t)| {
+            (
+                effective_fee(t, base),
+                g.arrivals.get(h).copied().unwrap_or_else(Instant::now),
+                *h,
+                t.header.sender,
+            )
+        })
+        .collect();
+    candidates.sort_unstable();
+    let floor = effective_fee(tx, base);
+    for (their_fee, _, h, sender) in candidates {
+        if their_fee >= floor {
+            break; // nothing strictly lower remains
+        }
+        let evicted = g.mempool.remove(&h).expect("a candidate is pending");
+        g.mempool_bytes -= g.sizes.remove(&h).unwrap_or_default();
+        g.arrivals.remove(&h);
+        let pending = g.pending_by_sender.entry(sender).or_default();
+        *pending -= 1;
+        if *pending == 0 {
+            g.pending_by_sender.remove(&sender);
+        }
+        if effective_fee(&evicted, base) == 0 {
+            g.free_in_pool -= 1;
+        }
+        if room(g) {
+            break;
+        }
+    }
+    room(g)
+}
+
 /// Whether a pending tx stays in the pool after a block: its nonce is still
 /// ahead, its sender can still pay for it, and it has not waited past the TTL.
-/// A tx whose fee caps are below the base fee stays (the fee may come down)
-/// until the TTL.
+/// A tx whose fee caps are below the base fee waits for the fee to come down
+/// for `MEMPOOL_FEE_WAIT` (not the whole TTL, R2-6): the base fee falls by a
+/// target per empty block, so a wait worth making is over in well under a
+/// minute, and past it the entry stops holding paying capacity.
 fn keep_in_pool(
     tx: &TxEnvelope,
     arrived: Option<Instant>,
@@ -2725,6 +2846,12 @@ fn keep_in_pool(
         return false;
     }
     if arrived.is_some_and(|t| now.saturating_duration_since(t) >= MEMPOOL_TTL) {
+        return false;
+    }
+    if fees
+        && (tx.header.max_fee.exec < base.exec || tx.header.max_fee.prove < base.prove)
+        && arrived.is_some_and(|t| now.saturating_duration_since(t) >= MEMPOOL_FEE_WAIT)
+    {
         return false;
     }
     !fees || affordable(tx, state, base).is_ok()
@@ -3623,5 +3750,340 @@ mod pool_tests {
             chain.inclusion_violations(&exec, &ctx, now).is_empty(),
             "nothing appendable missing: the inclusion check stays quiet — that is the hole"
         );
+    }
+
+    /// A fee-network `cfg` (7780's shape with fees on — the mainnet rules).
+    fn fee_cfg(alloc: Vec<(Address, U256)>) -> ChainConfig {
+        ChainConfig { fees: true, ..cfg(alloc) }
+    }
+
+    /// A zero-balance sender's zero-tip, zero-cap call (unsigned: admission
+    /// checks no signature): pays nothing while the base fee is zero, which is
+    /// the audit's free spam.
+    fn free_tx(sender: Address, nonce: u64) -> TxEnvelope {
+        let call = EvmCall {
+            to: Some(Address::repeat_byte(0xaa)),
+            value: U256::ZERO,
+            input: Bytes::new(),
+            gas_limit: 21_000,
+            delegate: None,
+        };
+        let payload = call.encode();
+        TxEnvelope {
+            header: TxHeader {
+                chain_id: 7780,
+                sender,
+                nonce,
+                gas: GasVector { exec: 21_000, state: 0, prove: 21_000 },
+                max_fee: FeeVector::default(),
+                tip: 0,
+                payload_commitment: aether_execution::tx::payload_commitment(&payload),
+                scheme: SignerScheme::P256,
+                group: None,
+            },
+            payload: TxPayload::Plain(Bytes::from(payload)),
+            signature: Bytes::new(),
+        }
+    }
+
+    /// `tx` with an explicit exec tip and cap (the prove cap stays 0).
+    fn priced(sender: Address, nonce: u64, tip: u128, cap: u128) -> TxEnvelope {
+        let mut t = tx(sender, nonce, 1);
+        t.header.tip = tip;
+        t.header.max_fee.exec = cap;
+        t
+    }
+
+    /// Fresh addresses (no balance, no nonce), as many as a spammer mints keys.
+    fn strangers(n: usize) -> Vec<Address> {
+        (1..=n as u64).map(|i| Address::from_word(U256::from(i).into())).collect()
+    }
+
+    /// More fresh addresses past the first `skip` words, disjoint from
+    /// [`strangers`] of the same size: two spam crowds must never share a key.
+    fn strangers_after(skip: usize, n: usize) -> Vec<Address> {
+        (skip as u64 + 1..=skip as u64 + n as u64)
+            .map(|i| Address::from_word(U256::from(i).into()))
+            .collect()
+    }
+
+    /// R2-6 (2026-10-03 audit round 2), the PoC as a test: while the base fee
+    /// is zero, a zero-balance attacker with fresh keys fills the pool with
+    /// zero-tip, zero-cap calls — 50,000 of them from 782 keys — and a funded
+    /// sender's higher-fee tx then heard `Err("mempool full")`. The free lane
+    /// now stops at its pool-wide quota, and the paying tx walks straight in
+    /// over the three-quarters of the pool it can never be crowded out of.
+    #[test]
+    fn zero_fee_spam_cannot_fill_the_pool_or_exclude_a_paying_sender() {
+        let payer = Address::repeat_byte(0x11);
+        let (chain, _) = Chain::new(fee_cfg(vec![(payer, U256::from(10u128.pow(20)))]));
+        let mut admitted = 0;
+        'spam: for sender in strangers(MAX_MEMPOOL / MAX_PER_SENDER + 8) {
+            for nonce in 0..MAX_PER_SENDER as u64 {
+                match chain.add_to_mempool(free_tx(sender, nonce)) {
+                    Ok(true) => admitted += 1,
+                    Ok(false) => unreachable!("a fresh tx cannot be known"),
+                    Err(e) => {
+                        assert!(e.contains("free lane"), "the quota refuses more spam: {e}");
+                        assert_eq!(admitted, MAX_FREE_MEMPOOL, "the quota, not another cap, fills first");
+                        break 'spam;
+                    }
+                }
+            }
+        }
+        {
+            let g = chain.lock();
+            assert_eq!(g.mempool.len(), MAX_FREE_MEMPOOL);
+            assert_eq!(g.free_in_pool, MAX_FREE_MEMPOOL, "every spam tx is a free entry");
+        }
+        // Before the fix this returned Err("mempool full") over a full pool of
+        // zero-fee spam; the pool is three-quarters empty now, so it is simply
+        // admitted.
+        assert!(chain.add_to_mempool(priced(payer, 0, GWEI, GWEI)).unwrap());
+        let g = chain.lock();
+        assert_eq!(g.mempool.len(), MAX_FREE_MEMPOOL + 1);
+        assert_eq!(g.free_in_pool, MAX_FREE_MEMPOOL, "the paying tx is no free entry");
+    }
+
+    /// A pool full of fee-paying txs still admits a strictly higher-fee one by
+    /// evicting the lowest-fee entry, and never evicts for an equal fee.
+    #[test]
+    fn a_full_pool_admits_a_strictly_higher_fee_and_refuses_an_equal_one() {
+        // 782 senders × 64 txs at tip 1 gwei = 50,048 candidates: enough to
+        // fill the count cap mid-way through the last sender. `richer` is
+        // funded alongside them, outside the fill, for the eviction below.
+        let richer = Address::repeat_byte(0x22);
+        let fillers = strangers(MAX_MEMPOOL / MAX_PER_SENDER + 2);
+        let mut alloc: Vec<(Address, U256)> =
+            fillers.iter().cloned().map(|a| (a, U256::from(10u128.pow(18)))).collect();
+        alloc.push((richer, U256::from(10u128.pow(18))));
+        let (chain, _) = Chain::new(fee_cfg(alloc));
+        let mut admitted = 0;
+        let mut full = String::new();
+        'fill: for sender in &fillers {
+            for nonce in 0..MAX_PER_SENDER as u64 {
+                match chain.add_to_mempool(priced(*sender, nonce, GWEI, GWEI)) {
+                    Ok(true) => admitted += 1,
+                    Err(e) => {
+                        full = e;
+                        break 'fill;
+                    }
+                    Ok(false) => unreachable!("a fresh tx cannot be known"),
+                }
+            }
+        }
+        assert_eq!(full, "mempool full", "an equal fee never evicts anything");
+        assert_eq!(admitted, MAX_MEMPOOL);
+        assert_eq!(chain.lock().free_in_pool, 0, "tip-1 txs pay at base fee 0");
+
+        // Tip 2 gwei strictly outranks the tip-1 floor: one entry makes way.
+        assert!(chain.add_to_mempool(priced(richer, 0, 2 * GWEI, 2 * GWEI)).unwrap());
+        let g = chain.lock();
+        assert_eq!(g.mempool.len(), MAX_MEMPOOL, "one lowest-fee entry made way");
+        assert_eq!(g.free_in_pool, 0);
+    }
+
+    /// Eviction never breaks a nonce chain: only a sender's highest pending
+    /// nonce may leave, so the survivors stay a runnable prefix. The oldest
+    /// free entries are one sender's nonces 0..3 — without the rule the
+    /// eviction would take nonce 0 (oldest, same fee) and strand 1 and 2 past
+    /// a gap nothing can close. With it, the end of the chain goes instead.
+    #[test]
+    fn eviction_never_breaks_a_nonce_chain() {
+        let payer = Address::repeat_byte(0x33);
+        let chained_sender = Address::repeat_byte(0x44);
+        let fillers = strangers(MAX_MEMPOOL - 3);
+        let mut alloc: Vec<(Address, U256)> =
+            fillers.iter().cloned().map(|a| (a, U256::from(10u128.pow(17)))).collect();
+        alloc.push((payer, U256::from(10u128.pow(18))));
+        let (chain, _) = Chain::new(fee_cfg(alloc));
+        let chained: Vec<TxEnvelope> = (0..3).map(|n| free_tx(chained_sender, n)).collect();
+        for t in &chained {
+            assert_eq!(chain.add_to_mempool(t.clone()), Ok(true));
+        }
+        // One tip-1 tx per funded stranger tops the pool up to exactly the
+        // count cap — no failed attempt, so nothing is evicted yet.
+        for sender in &fillers {
+            assert_eq!(chain.add_to_mempool(priced(*sender, 0, GWEI, GWEI)), Ok(true));
+        }
+        assert_eq!(chain.lock().mempool.len(), MAX_MEMPOOL);
+        // A tip-1 tx outranks only the free chain entries; their runnable
+        // prefix survives, the end of the chain makes way.
+        assert!(chain.add_to_mempool(priced(payer, 0, GWEI, GWEI)).unwrap());
+        let g = chain.lock();
+        assert_eq!(g.mempool.len(), MAX_MEMPOOL, "exactly one entry made way");
+        for t in &chained[..2] {
+            assert!(g.mempool.contains_key(&aether_execution::tx_hash(t)), "the runnable prefix survives");
+        }
+        assert!(!g.mempool.contains_key(&aether_execution::tx_hash(&chained[2])), "the chain's end, never its head");
+    }
+
+    /// Eviction never touches what an inclusion list names (FOCIL): a listed
+    /// tx is this node's obligation to propose and its voters' to check for,
+    /// whatever happens to its mempool slot. The listed entries here are the
+    /// only free ones in a full pool — exactly what a fee comparison would
+    /// evict first — and they all survive a higher-fee admission.
+    #[test]
+    fn eviction_spares_what_inclusion_lists_name() {
+        use commonware_cryptography::Signer as _;
+        let payer = Address::repeat_byte(0x55);
+        let listed_free = strangers(inclusion::MAX_POOL);
+        let junk = strangers_after(inclusion::MAX_POOL, MAX_MEMPOOL - inclusion::MAX_POOL);
+        let mut alloc: Vec<(Address, U256)> =
+            junk.iter().cloned().map(|a| (a, U256::from(10u128.pow(17)))).collect();
+        alloc.push((payer, U256::from(10u128.pow(18))));
+        let (chain, _) = Chain::new(fee_cfg(alloc));
+        let listed: Vec<TxEnvelope> = listed_free.iter().map(|a| free_tx(*a, 0)).collect();
+        for t in &listed {
+            assert_eq!(chain.add_to_mempool(t.clone()), Ok(true));
+        }
+        let seen = Instant::now();
+        let key = commonware_cryptography::ed25519::PrivateKey::from_seed(1);
+        for (i, chunk) in listed.chunks(inclusion::MAX_IL_TXS).enumerate() {
+            let il = inclusion::InclusionList::sign(&key, 1, 2_000 + i as u64, chunk.to_vec());
+            assert!(chain.lock().inclusion.accept(&il, seen));
+        }
+        assert_eq!(chain.lock().inclusion.len(), inclusion::MAX_POOL, "every listed tx is held");
+        // Unlisted strangers top the pool up to exactly the count cap.
+        for sender in &junk {
+            assert_eq!(chain.add_to_mempool(priced(*sender, 0, GWEI, GWEI)), Ok(true));
+        }
+        assert_eq!(chain.lock().mempool.len(), MAX_MEMPOOL);
+        assert!(chain.add_to_mempool(priced(payer, 0, 2 * GWEI, 2 * GWEI)).unwrap());
+        let g = chain.lock();
+        assert_eq!(g.mempool.len(), MAX_MEMPOOL, "one unlisted entry made way");
+        for t in &listed {
+            assert!(g.mempool.contains_key(&aether_execution::tx_hash(t)), "a listed tx never leaves for a fee");
+        }
+    }
+
+    /// When nothing can leave — every lower-fee entry is named by an inclusion
+    /// list and the rest fee as much as the newcomer — a full pool still says
+    /// no instead of breaking an obligation or evicting an equal fee.
+    #[test]
+    fn a_full_pool_with_nothing_evictable_still_says_no() {
+        use commonware_cryptography::Signer as _;
+        let payer = Address::repeat_byte(0x66);
+        let listed_free = strangers(inclusion::MAX_POOL);
+        let dear = strangers_after(inclusion::MAX_POOL, MAX_MEMPOOL - inclusion::MAX_POOL);
+        let mut alloc: Vec<(Address, U256)> =
+            dear.iter().cloned().map(|a| (a, U256::from(10u128.pow(18)))).collect();
+        alloc.push((payer, U256::from(10u128.pow(18))));
+        let (chain, _) = Chain::new(fee_cfg(alloc));
+        let listed: Vec<TxEnvelope> = listed_free.iter().map(|a| free_tx(*a, 0)).collect();
+        for t in &listed {
+            assert_eq!(chain.add_to_mempool(t.clone()), Ok(true));
+        }
+        let seen = Instant::now();
+        let key = commonware_cryptography::ed25519::PrivateKey::from_seed(1);
+        for (i, chunk) in listed.chunks(inclusion::MAX_IL_TXS).enumerate() {
+            let il = inclusion::InclusionList::sign(&key, 1, 3_000 + i as u64, chunk.to_vec());
+            assert!(chain.lock().inclusion.accept(&il, seen));
+        }
+        // Tip-5 txs fill the rest; the pool never gets to evict while filling
+        // (the count cap is only reached with the last of them).
+        for sender in &dear {
+            assert_eq!(chain.add_to_mempool(priced(*sender, 0, 5 * GWEI, 5 * GWEI)), Ok(true));
+        }
+        assert_eq!(chain.lock().mempool.len(), MAX_MEMPOOL);
+        // A tip-2 tx would happily evict the free listed entries (0 < 2 gwei)
+        // and cannot touch the tip-5 ones (5 > 2): refused, obligation intact.
+        assert_eq!(chain.add_to_mempool(priced(payer, 0, 2 * GWEI, 2 * GWEI)).unwrap_err(), "mempool full");
+        let g = chain.lock();
+        for t in &listed {
+            assert!(g.mempool.contains_key(&aether_execution::tx_hash(t)));
+        }
+    }
+
+    /// The byte budget evicts for a paying tx the same way the count cap does:
+    /// free fat entries hold the whole budget, and a fat paying tx still gets
+    /// in by displacing one of them (a small one would fit in the crumbs
+    /// without touching anything, which is also fine).
+    #[test]
+    fn the_byte_budget_too_evicts_free_entries_for_a_paying_tx() {
+        let payer = Address::repeat_byte(0x77);
+        let senders = strangers(540);
+        let (chain, _) = Chain::new(fee_cfg(vec![(payer, U256::from(10u128.pow(18)))]));
+        let mut admitted = 0;
+        let mut full = String::new();
+        'fill: for sender in &senders {
+            match chain.add_to_mempool(fat(*sender, 0, vec![7u8; 130_000])) {
+                Ok(true) => admitted += 1,
+                Ok(false) => unreachable!("a fresh tx cannot be known"),
+                Err(e) => {
+                    full = e;
+                    break 'fill;
+                }
+            }
+        }
+        assert_eq!(full, "mempool byte budget full", "the budget, not the quota or count, fills first");
+        assert!(admitted < MAX_FREE_MEMPOOL, "the free quota is nowhere near full");
+        let (bytes, free) = {
+            let g = chain.lock();
+            (g.mempool_bytes, g.free_in_pool)
+        };
+        assert_eq!(free, admitted, "every fat spam tx is free");
+        // A paying tx too big for the crumbs left in the budget fits once one
+        // fat free entry gives its bytes back.
+        let mut big = fat(payer, 0, vec![7u8; 120_000]);
+        big.header.tip = GWEI;
+        big.header.max_fee.exec = GWEI;
+        assert!(chain.add_to_mempool(big).unwrap());
+        let g = chain.lock();
+        assert_eq!(g.mempool.len(), admitted, "one entry made way");
+        assert_eq!(g.free_in_pool, admitted - 1);
+        assert!(g.mempool_bytes < bytes, "the budget gave the fat entry's bytes back");
+        assert!(g.mempool_bytes <= MAX_MEMPOOL_BYTES);
+    }
+
+    /// A tx whose fee caps sit below the base fee cannot be included while the
+    /// fee is up there, and stops holding pool capacity after
+    /// `MEMPOOL_FEE_WAIT` — well before the TTL — so paying capacity comes
+    /// back promptly (R2-6). The sender always knows: admission refuses
+    /// below-cap txs, so re-submitting at higher caps is the wallet's move.
+    #[test]
+    fn a_tx_below_the_base_fee_leaves_after_the_fee_wait_not_the_ttl() {
+        let a = Address::repeat_byte(5);
+        let t = tx(a, 0, 1);
+        let state = funded(a, 10u128.pow(18));
+        let t0 = Instant::now();
+        let high = FeeVector { exec: 5 * GWEI, state: 0, prove: 0 };
+        assert!(
+            keep_in_pool(&t, Some(t0), t0 + MEMPOOL_FEE_WAIT / 2, &state, high, true),
+            "a short spike may still pass before the wait"
+        );
+        assert!(
+            !keep_in_pool(&t, Some(t0), t0 + MEMPOOL_FEE_WAIT, &state, high, true),
+            "past the wait the entry stops holding paying capacity"
+        );
+        assert!(
+            keep_in_pool(&t, Some(t0), t0 + MEMPOOL_FEE_WAIT, &state, FeeVector::default(), true),
+            "at a base fee it can pay, only the TTL rules"
+        );
+    }
+
+    /// 7780's shape (no fees) is one free lane as before: the quota and
+    /// fee-based eviction do not exist there, the count cap behaves exactly as
+    /// it always did.
+    #[test]
+    fn without_fees_the_pool_is_one_lane_as_before() {
+        let (chain, _) = Chain::new(cfg(vec![]));
+        let mut admitted = 0;
+        let mut full = String::new();
+        'fill: for sender in strangers(MAX_MEMPOOL / MAX_PER_SENDER + 2) {
+            for nonce in 0..MAX_PER_SENDER as u64 {
+                match chain.add_to_mempool(free_tx(sender, nonce)) {
+                    Ok(true) => admitted += 1,
+                    Ok(false) => unreachable!("a fresh tx cannot be known"),
+                    Err(e) => {
+                        full = e;
+                        break 'fill;
+                    }
+                }
+            }
+        }
+        assert_eq!(full, "mempool full", "the count cap, no quota before it");
+        assert_eq!(admitted, MAX_MEMPOOL, "every zero-fee tx was admissible");
+        assert_eq!(chain.lock().free_in_pool, 0, "the free counter is a fee-network concern");
     }
 }

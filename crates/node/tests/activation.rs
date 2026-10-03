@@ -86,10 +86,11 @@ fn signed(protocol: u32, activate_at: u64) -> SignedUpgrade {
     combine(&sharing, &partials).unwrap()
 }
 
-#[test]
-fn new_genesis_requires_seven_days_except_unanimous_emergencies() {
+/// A mainnet-rules genesis (node rewards + history v2) at `protocol`: the
+/// configuration the seven-day notice applies to.
+fn mainnet(protocol: u32) -> (Chain, Block) {
     let mut cfg = config();
-    cfg.protocol = 3;
+    cfg.protocol = protocol;
     cfg.history_v2 = true;
     cfg.node_rewards = true;
     cfg.committee = (1..=4).map(|i| (
@@ -97,8 +98,18 @@ fn new_genesis_requires_seven_days_except_unanimous_emergencies() {
         aether_net::devnet_node_secret(i).public().to_string(),
     )).collect();
     let (chain, genesis) = Chain::new(cfg);
+    let (_, sharing, _) = aether_light::devnet_threshold(4);
+    let mut g = chain.lock();
+    g.identity = Some(*sharing.public());
+    g.protocol = protocol;
+    drop(g);
+    (chain, genesis)
+}
+
+#[test]
+fn new_genesis_requires_seven_days_except_unanimous_emergencies() {
+    let (chain, genesis) = mainnet(3);
     let (_, sharing, shares) = aether_light::devnet_threshold(4);
-    chain.lock().identity = Some(*sharing.public());
     let parent = chain.lock().finalized.clone();
     assert!(chain.upgrade_for(&parent).is_none());
 
@@ -319,6 +330,46 @@ fn upgrades_that_may_not_go_on_chain_are_refused() {
     assert!(
         matches!(chain.execute(&again, &p1), Err(ChainError::Protocol(_))),
         "replayed upgrade"
+    );
+}
+
+/// The seven-day notice binds the chain, not only the proposer's own offer: a
+/// block carrying a committee-signed upgrade that gives less than seven days
+/// of notice does not execute under the mainnet rules, and the refusal names
+/// the rule. The same too-early upgrade is admissible on a chain without them,
+/// so what is refused is the notice and not the upgrade itself.
+#[test]
+fn under_the_mainnet_rules_a_too_early_activation_is_refused() {
+    let (chain, genesis) = mainnet(3);
+    let parent = chain.lock().finalized.clone();
+    let early = signed(4, EPOCH_BLOCKS + 1); // an epoch of notice, not seven days
+    let b = propose_unchecked(&chain, &parent, &genesis, early.clone());
+    match chain.execute(&b, &parent) {
+        Err(ChainError::Protocol(e)) => assert!(e.contains("less than 604800 blocks of notice"), "{e}"),
+        other => panic!(
+            "a too-early activation must be refused: {:?}",
+            other.map(|_| ())
+        ),
+    }
+    chain.lock().upgrades_known = vec![early];
+    assert!(
+        chain.upgrade_for(&parent).is_none(),
+        "the proposer offers nothing so early either"
+    );
+
+    // The same notice is enough on a chain without the mainnet rules, where
+    // the ordinary notice is one epoch (10 blocks).
+    let (plain, plain_genesis) = node(2);
+    let plain_parent = plain.lock().finalized.clone();
+    let plain_block = propose_unchecked(
+        &plain,
+        &plain_parent,
+        &plain_genesis,
+        signed(2, EPOCH_BLOCKS + 1),
+    );
+    assert!(
+        plain.execute(&plain_block, &plain_parent).is_ok(),
+        "one epoch of notice goes on chain without the mainnet rules"
     );
 }
 

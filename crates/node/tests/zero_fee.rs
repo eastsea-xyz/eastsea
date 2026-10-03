@@ -12,7 +12,6 @@ use aether_execution::{sign_call_with, EvmCall};
 use aether_light::block::NodeRegistration;
 use aether_node::block::{Block, Context, EPOCH};
 use aether_node::chain::{build_payload, Chain, ChainError, Extras};
-use aether_node::upgrade::{Release, SignedUpgrade, Upgrade};
 use aether_types::{Address, FeeVector, TxEnvelope, U256};
 use commonware_codec::Encode as _;
 use commonware_consensus::types::{Round, View};
@@ -23,21 +22,12 @@ use std::sync::Arc;
 const CHAIN: u64 = 7_795;
 const E: u64 = 12;
 
+/// Node rewards put these chains under the mainnet rules (`Chain::admissible_upgrade`:
+/// an ordinary upgrade needs seven days of notice), so the genesis starts at
+/// protocol 2 — the registry v2 code and its own epoch cap, which the lane and
+/// the contract share — instead of scheduling that upgrade a few blocks ahead.
 fn net(macs: u8) -> Net {
-    Net::new(Opts { chain_id: CHAIN, node_rewards: true, epoch_blocks: E, macs, min_streak: Some(0), history_v2: false, protocol: 1, reserve: None, fees: true, committee: None })
-}
-
-fn signed(net: &Net, protocol: u32, activate_at: u64) -> SignedUpgrade {
-    let u = Upgrade {
-        chain_id: CHAIN,
-        protocol,
-        activate_at,
-        emergency: false,
-        releases: vec![Release { platform: "macos-arm64-dmg".into(), version: "0.7.0".into(), blake3: "ab".repeat(32), url: "https://x".into() }],
-        notes: String::new(),
-        registrar: None,
-    };
-    net.committee.sign_upgrade(&u)
+    Net::new(Opts { chain_id: CHAIN, node_rewards: true, epoch_blocks: E, macs, min_streak: Some(0), history_v2: false, protocol: 2, reserve: None, fees: true, committee: None })
 }
 
 /// A wallet with no balance on this chain (not one of the funded operators).
@@ -221,12 +211,10 @@ fn invalid_lane_items_make_the_block_invalid() {
 fn the_lane_and_the_contract_write_the_same_words_and_share_the_epoch_cap() {
     // Two identical networks: Mac 1 registers through the paid contract on
     // one, through the free lane on the other, at the same height of the same
-    // epoch (protocol 2, so the contract runs its own epoch cap).
+    // epoch (the genesis is protocol 2, so the contract runs its own epoch cap).
     let mut contract = net(2);
     let mut lane = net(2);
     assert_eq!(contract.parent.state.root(), lane.parent.state.root(), "same genesis");
-    contract.step(vec![], Some(signed(&contract, 2, 13)), vec![]);
-    lane.step(vec![], Some(signed(&lane, 2, 13)), vec![]);
     contract.run_to(12);
     lane.run_to(12);
 

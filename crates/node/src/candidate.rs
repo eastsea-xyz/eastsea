@@ -39,6 +39,12 @@ pub const REGISTRAR_RPC_ENV: &str = "AETHER_REGISTRAR_RPC";
 /// so voting stays off until the real key file is restored.
 pub const EXIT_IDENTITY: i32 = 6;
 
+/// The node's own account key in the data dir (mode 600): it pays for and
+/// sends beacons. It is written together with the voting key on the first
+/// install, so a directory holding one but not the other is a loss to report,
+/// never a fresh Mac (`registered_identity`).
+pub const ACCOUNT_FILE: &str = "node-account.key";
+
 /// Whether `<dir>` holds — or ever held — this Mac's identity: the key files
 /// themselves, a committee's files, or the moved-aside remains of either
 /// (`stale-*` from a network reset, `corrupt-*` from a store heal). In such a
@@ -51,7 +57,7 @@ pub fn registered_identity(dir: &Path) -> bool {
     let marks = [
         crate::roster::KEY_FILE,
         crate::roster::PUBLIC_FILE,
-        "node-account.key",
+        ACCOUNT_FILE,
         "network.json",
         "threshold.json",
     ];
@@ -108,7 +114,7 @@ impl CandidateKeys {
                 (k, true)
             }
         };
-        let account_path = dir.join("node-account.key");
+        let account_path = dir.join(ACCOUNT_FILE);
         if !account_path.exists() {
             if !first_install {
                 return Err(format!("{} is missing from an existing identity; restore it from a backup instead of replacing it", account_path.display()));

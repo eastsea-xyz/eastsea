@@ -111,15 +111,42 @@ impl Net {
         self.rpc(i, "aether_status", json!([])).and_then(|v| v["height"].as_u64()).unwrap_or(0)
     }
 
+    /// Wait until node `i` reports height `h`. A started-but-not-yet-answering
+    /// RPC is startup, not a stall: on a loaded machine it can take a minute or
+    /// more, so the budget is counted from the first answer. From there a node
+    /// that stops making progress still fails the test; a node that never
+    /// answers at all gets the generous overall limit, and no wait exceeds it.
     fn wait_height(&self, i: usize, h: u64, secs: u64) {
-        let end = Instant::now() + Duration::from_secs(secs);
-        while Instant::now() < end {
-            if self.height(i) >= h {
+        let start = Instant::now();
+        let overall = Duration::from_secs(secs + 240);
+        let mut answered: Option<Instant> = None;
+        loop {
+            let status = self.rpc(i, "aether_status", json!([]));
+            let height = status.as_ref().and_then(|v| v["height"].as_u64());
+            if height.is_some_and(|got| got >= h) {
                 return;
+            }
+            let now = Instant::now();
+            if answered.is_none() && status.is_some() {
+                answered = Some(now);
+            }
+            // An answering node gets `secs` from that first answer; a silent
+            // one gets the whole overall limit instead (so a slow start is
+            // never mistaken for a stall), and `overall` caps both.
+            let deadline = match answered {
+                Some(first) => (first + Duration::from_secs(secs)).min(start + overall),
+                None => start + overall,
+            };
+            if now >= deadline {
+                panic!(
+                    "node {i} did not reach height {h} (at {}) after {}s{}",
+                    height.unwrap_or(0),
+                    now.duration_since(start).as_secs(),
+                    if answered.is_none() { "; its RPC never answered" } else { "" }
+                );
             }
             std::thread::sleep(Duration::from_millis(200));
         }
-        panic!("node {i} did not reach height {h} (at {})", self.height(i));
     }
 
     /// Run the CLI expecting failure; returns stderr.
@@ -390,6 +417,40 @@ fn dkg_ceremony_then_consensus_under_its_identity() {
     assert!(!out.status.success(), "the dealer's devnet identity must not verify DKG certificates");
 }
 
+/// `aether keygen` is the documented first install of a validator ("Run a real
+/// network" in the README), so the directory it writes must be one a node can
+/// load. An identity holds two secrets — the voting key and the node account
+/// that pays for and sends beacons — and a directory with the voting key but
+/// no account key is read as a *lost* identity and never runs (candidate.rs,
+/// red team #5: no replacement signer is ever minted). keygen is that first
+/// install, so it writes both, exactly as `aether run` does on a fresh
+/// directory; it still refuses to overwrite either one.
+#[test]
+fn keygen_writes_the_whole_identity_a_node_loads() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("aether-devnet-test-{}-keygen", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let d = dir.to_str().unwrap();
+    run_ok(&["keygen", "--data", d]);
+
+    let account = dir.join("node-account.key");
+    assert!(account.exists(), "keygen installs the node account key with the voting key");
+    assert_eq!(std::fs::metadata(&account).unwrap().permissions().mode() & 0o777, 0o600, "the account secret is 0600");
+
+    // The node loads the directory instead of reporting "node-account.key is
+    // missing from an existing identity" and starting keyless.
+    let info: Value = serde_json::from_str(&run_ok(&["candidate-info", "--data", d])).unwrap();
+    assert!(!info["validator_key"].as_str().unwrap().is_empty() && !info["beaconer"].as_str().unwrap().is_empty(), "{info}");
+
+    // Neither secret is ever replaced: keygen refuses a directory it made.
+    let (key, acct) = (std::fs::read(dir.join("validator.key")).unwrap(), std::fs::read(&account).unwrap());
+    let again = Command::new(BIN).args(["keygen", "--data", d]).output().unwrap();
+    assert!(!again.status.success(), "keygen must not overwrite: {}", String::from_utf8_lossy(&again.stderr));
+    assert_eq!(std::fs::read(dir.join("validator.key")).unwrap(), key, "the voting key is kept");
+    assert_eq!(std::fs::read(&account).unwrap(), acct, "the account key is kept");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Real-network setup: every validator generates its own keys, the public
 /// entries become network.json, the DKG runs on those keys, and consensus
 /// starts from the file. Nothing uses the public devnet keys.
@@ -408,7 +469,8 @@ fn locally_generated_keys_network_file_dkg_and_consensus() {
     }
     use std::os::unix::fs::PermissionsExt;
     assert_eq!(std::fs::metadata(data(0).join("validator.key")).unwrap().permissions().mode() & 0o777, 0o600);
-    assert!(!Command::new(BIN).args(["keygen", "--data", data(0).to_str().unwrap()]).status().unwrap().success(), "keygen must not overwrite");
+    let again = Command::new(BIN).args(["keygen", "--data", data(0).to_str().unwrap()]).output().unwrap();
+    assert!(!again.status.success(), "keygen must not overwrite: {}", String::from_utf8_lossy(&again.stderr));
 
     // 2. a faucet key on validator 1's machine, then network.json from the public
     //    halves: genesis funds only the faucet (no public dev keys).

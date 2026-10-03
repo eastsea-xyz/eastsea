@@ -14,6 +14,7 @@ run network-upgrade Brand.swift NetworkUpgrade.swift
 run release-approval ReleaseApproval.swift
 run resources ProverFlags.swift
 run reward-status EarningsModel.swift
+run token-guard Brand.swift TokenSend.swift TokenAssets.swift EarningsModel.swift TokenGuard.swift
 run token-send Brand.swift TokenSend.swift TokenAssets.swift EarningsModel.swift
 run update-state Brand.swift UpdateTracker.swift
 run watchdog Brand.swift Clock.swift NodeWatchdog.swift

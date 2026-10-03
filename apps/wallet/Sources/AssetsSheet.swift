@@ -81,7 +81,7 @@ struct AssetsSheet: View {
     @ViewBuilder private func rows(_ holdings: [TokenHolding], unverified: Bool) -> some View {
         // The divider between sections comes from the caller; no trailing one.
         ForEach(Array(holdings.enumerated()), id: \.element.id) { i, t in
-            TokenHoldingRow(holding: t, official: model.officialSymbols, onSend: onSend.map { send in { send(t) } })
+            TokenHoldingRow(holding: t, official: model.officialSymbols, chainId: model.status?.chainId ?? 0, onSend: onSend.map { send in { send(t) } })
                 .contextMenu {
                     Button("Copy Token Address") { Clipboard.copy(t.token.address) }
                     Divider()
@@ -104,6 +104,8 @@ struct AssetsSheet: View {
 private struct TokenHoldingRow: View {
     let holding: TokenHolding
     let official: [(symbol: String, name: String)]
+    /// The chain the trust list is keyed by; 0 keeps everything unverified.
+    var chainId: UInt64 = 0
     var onSend: (() -> Void)?
 
     var body: some View {
@@ -116,7 +118,7 @@ private struct TokenHoldingRow: View {
                     Text(holding.token.name.isEmpty ? holding.token.symbol : holding.token.name).font(.aeBody.weight(.semibold)).lineLimit(1)
                     // Never the symbol alone: anyone can deploy another "USDT".
                     Text(TokenLabel.row(holding.token)).font(.aeCaption.monospaced()).foregroundStyle(.secondary)
-                    TokenBadges(holding: holding, official: official)
+                    TokenBadges(holding: holding, official: official, chainId: chainId)
                 }
                 Spacer(minLength: 8)
                 Text("\(holding.amount) \(holding.token.symbol)").font(.aeBody.weight(.semibold).monospacedDigit())
@@ -129,13 +131,16 @@ private struct TokenHoldingRow: View {
 }
 
 /// The warnings a token carries with it: created on the launchpad (anyone can),
-/// or a symbol/name mimicking an official token. No prices, no returns.
+/// a symbol/name mimicking an official token, or — audit R2-2 — units the wallet
+/// does not vouch for. No prices, no returns.
 struct TokenBadges: View {
     let holding: TokenHolding
     let official: [(symbol: String, name: String)]
+    /// The chain the shipped trust list is keyed by; 0 keeps everything unverified.
+    var chainId: UInt64 = 0
 
     var body: some View {
-        if isLaunchpad || lookAlike {
+        if isLaunchpad || lookAlike || nodeDisagrees || unverifiedUnits {
             HStack(spacing: 10) {
                 if isLaunchpad {
                     Label("Launchpad · unverified", systemImage: "exclamationmark.bubble.fill")
@@ -145,6 +150,14 @@ struct TokenBadges: View {
                     Label("Mimics an official token", systemImage: "exclamationmark.shield.fill")
                         .font(.aeCaption.weight(.semibold)).foregroundStyle(Color.warn)
                 }
+                if nodeDisagrees {
+                    Label("Node disagrees · units from the shipped list", systemImage: "arrow.triangle.2.circlepath")
+                        .font(.aeCaption.weight(.semibold)).foregroundStyle(.secondary)
+                }
+                if unverifiedUnits {
+                    Label("Unverified units", systemImage: "questionmark.circle")
+                        .font(.aeCaption.weight(.semibold)).foregroundStyle(.secondary)
+                }
             }
         }
     }
@@ -153,4 +166,9 @@ struct TokenBadges: View {
     private var lookAlike: Bool {
         SendSafety.looksLikeOfficial(symbol: holding.token.symbol, name: holding.token.name, official: official)
     }
+    private var denomination: TokenDenomination {
+        TokenDenomination.of(chainId: chainId, address: holding.token.address, claimed: holding.token)
+    }
+    private var nodeDisagrees: Bool { denomination.nodeDisagrees }
+    private var unverifiedUnits: Bool { denomination.unverifiedUnits }
 }

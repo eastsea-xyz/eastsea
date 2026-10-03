@@ -1157,6 +1157,12 @@ private struct SendSheet: View {
     @State private var checking = false
     @State private var refusal: String?
     @State private var ackPoison = false
+    /// The send intent frozen when the confirm step opened (audit R2-5): the
+    /// signing step executes exactly this and refuses if anything moved.
+    @State private var intent: SendIntent?
+    /// The user's confirmation of the exact base-unit count (audit R2-2,
+    /// unverified units only).
+    @State private var ackUnits = false
 
     /// The token being sent (nil: AETH). A payment link always sends AETH.
     private var token: TokenHolding? { model.paymentRequest == nil ? model.sendToken : nil }
@@ -1168,11 +1174,17 @@ private struct SendSheet: View {
         recipient.split(whereSeparator: { $0 == "," || $0.isWhitespace }).map(String.init).filter { !$0.isEmpty }
     }
     private var risk: SendSafety.AddressRisk { SendSafety.addressRisk(recipient, sentTo: model.sentAddresses) }
+    /// The denomination the amounts on this sheet are shown under (audit R2-2):
+    /// the shipped list decides for a listed token — a node's claim never does.
+    private var denomination: TokenDenomination? {
+        token.map { TokenDenomination.of(chainId: model.status?.chainId ?? 0, address: $0.token.address, claimed: $0.token) }
+    }
 
     private var valid: Bool {
         if let t = token {
             guard recipients.count == 1, SendSafety.isValidAddress(recipients[0]),
-                  let units = TokenAmount.parse(model.sendAmount, decimals: t.token.decimals),
+                  let decimals = denomination?.decimals,
+                  let units = TokenAmount.parse(model.sendAmount, decimals: decimals),
                   units != "0", WeiMath.compare(units, t.balance) <= 0 else { return false }
         } else {
             guard !recipient.isEmpty, (amount ?? 0) > 0, (amount ?? 0) <= balance else { return false }
@@ -1181,6 +1193,14 @@ private struct SendSheet: View {
     }
 
     var body: some View {
+        if let frozen = intent {
+            confirmCard(frozen)
+        } else {
+            form
+        }
+    }
+
+    private var form: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text(title).font(.aeTitle)
             if let r = model.paymentRequest {
@@ -1214,14 +1234,20 @@ private struct SendSheet: View {
                     }
                 }
                 if let t = token {
-                    TokenBadges(holding: t, official: model.officialSymbols)
+                    TokenBadges(holding: t, official: model.officialSymbols, chainId: model.status?.chainId ?? 0)
                 }
             }
             HStack {
                 Text("Available").foregroundStyle(.secondary)
                 Spacer()
-                if let t = token {
-                    Text("\(t.amount) \(t.token.symbol)").monospacedDigit()
+                if let t = token, let d = denomination {
+                    // Unverified units are never shown as a friendly amount: the
+                    // raw count is the only thing that can be trusted to be exact.
+                    if d.unverifiedUnits {
+                        Text("\(t.balance) raw units").monospacedDigit()
+                    } else {
+                        Text("\(t.amount) \(t.token.symbol)").monospacedDigit()
+                    }
                     Text("· \(TokenLabel.short(t.token.address))").monospaced().foregroundStyle(.secondary)
                 } else {
                     Text("\(Amount.text(balance)) \(Brand.coinTicker)").monospacedDigit()
@@ -1234,9 +1260,10 @@ private struct SendSheet: View {
                     Text("≈ \(Amount.fee(s.transferFeeWei))").monospacedDigit()
                 }.font(.aeBody)
             }
+            denominationNote
             warnings
             if let refusal {
-                Label("Not sent — this transfer would fail: \(refusal)", systemImage: "xmark.octagon.fill")
+                Label("Not sent — \(refusal)", systemImage: "xmark.octagon.fill")
                     .font(.aeBody).foregroundStyle(Color.warn)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(10).frame(maxWidth: .infinity, alignment: .leading)
@@ -1267,8 +1294,31 @@ private struct SendSheet: View {
         return token.map { "Send \($0.token.symbol)" } ?? "Send \(Brand.coinTicker)"
     }
 
-    /// AETH or any held token, labeled with its address — never the symbol
-    /// alone (a spam token can call itself anything).
+    /// The form's note about the units the amount field is parsed under (audit
+    /// R2-2): an unverified token states its own unit size, and a listed token
+    /// whose node claim disagrees still uses the list's.
+    @ViewBuilder private var denominationNote: some View {
+        if let d = denomination, d.unverifiedUnits {
+            Label("This token is not on the wallet’s trusted list: its unit size is its own claim. You will confirm the exact unit count before sending.", systemImage: "exclamationmark.triangle.fill")
+                .font(.aeFootnote).foregroundStyle(Color.warn)
+                .fixedSize(horizontal: false, vertical: true)
+        } else if let d = denomination, d.nodeDisagrees {
+            Label("The node reports different details than the list shipped with the wallet; the list decides the units.", systemImage: "info.circle.fill")
+                .font(.aeFootnote).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func fillMax() {
+        if let t = token, let decimals = denomination?.decimals {
+            model.sendAmount = TokenAmount.exact(t.balance, decimals: decimals)
+        } else {
+            model.sendAmount = Amount.text(max(0, balance - 0.001))
+        }
+    }
+
+    /// AETH or any held token, labeled with its address — never the symbol alone
+    /// (a spam token can call itself anything).
     private var assetPicker: some View {
         HStack {
             Text("Asset").font(.aeFootnote).foregroundStyle(.secondary)
@@ -1285,14 +1335,6 @@ private struct SendSheet: View {
                 }
             }
             .fixedSize()
-        }
-    }
-
-    private func fillMax() {
-        if let t = token {
-            model.sendAmount = TokenAmount.exact(t.balance, decimals: t.token.decimals)
-        } else {
-            model.sendAmount = Amount.text(max(0, balance - 0.001))
         }
     }
 
@@ -1320,16 +1362,30 @@ private struct SendSheet: View {
     /// Dry-run first, then sign: an `eth_call` of the same transfer from this
     /// account, so a honeypot or a blocked transfer is refused before Touch ID
     /// (multi-recipient AETH sends skip it; the batch cannot be replayed as one call).
+    /// A token send freezes its intent here (audit R2-5) — the amount text is
+    /// parsed once, under the decimals this sheet showed it under — and the
+    /// confirm card signs exactly that, never a re-read of the form.
     private func send() {
         guard valid, risk.poisoningMatch == nil || ackPoison else { return }
         refusal = nil
         let dry = recipients.count == 1
         let to = recipients.first ?? recipient
         let value = token == nil ? (Wei.from(aeth: model.paymentRequest?.amount ?? model.sendAmount) ?? "0") : "0"
-        let data = token.flatMap { t in
-            TokenAmount.parse(model.paymentRequest?.amount ?? model.sendAmount, decimals: t.token.decimals)
-                .flatMap { ERC20.transferCalldata(to: to, amount: $0) }
-        } ?? "0x"
+        var frozen: SendIntent?
+        if let t = token, let d = denomination, let decimals = d.decimals {
+            do {
+                frozen = try SendIntent.build(recipient: to, amountText: model.paymentRequest?.amount ?? model.sendAmount,
+                                              token: SendIntent.Token(address: t.token.address, decimals: decimals,
+                                                                      trusted: d.trusted, acknowledged: false))
+            } catch let e as TokenGuardError {
+                refusal = e.errorDescription
+                return
+            } catch {
+                refusal = "\(error)"
+                return
+            }
+        }
+        let data = frozen.flatMap { ERC20.transferCalldata(to: $0.recipient, amount: $0.baseUnits) } ?? "0x"
         let callTo = token?.token.address ?? to
         checking = true
         Task { @MainActor in
@@ -1339,13 +1395,87 @@ private struct SendSheet: View {
                 refusal = why
                 return
             }
-            if token != nil {
-                model.sendTokenTx(to: to, amountText: model.paymentRequest?.amount ?? model.sendAmount)
+            if let frozen {
+                intent = frozen
+                ackUnits = false
             } else {
                 model.send()
+                dismiss()
             }
-            dismiss()
         }
+    }
+
+    /// The confirm step of a token send (audits R2-2/R2-5): every fact shown
+    /// comes from the intent frozen when this card opened, and Confirm signs
+    /// exactly those facts. Unverified units need an explicit confirmation of
+    /// the exact base-unit count before the signature is asked for.
+    private func confirmCard(_ frozen: SendIntent) -> some View {
+        let now = TokenDenomination.of(chainId: model.status?.chainId ?? 0, address: frozen.token.address,
+                                       claimed: model.tokens.first { $0.token.address == frozen.token.address }?.token)
+        let symbol = now.symbol ?? "units"
+        return VStack(alignment: .leading, spacing: 16) {
+            Text("Confirm the send").font(.aeTitle)
+            VStack(alignment: .leading, spacing: 6) {
+                row("You will send", "\(SendIntent.grouped(frozen.baseUnits)) units", mono: true)
+                row("Shown as", "\(TokenAmount.exact(frozen.baseUnits, decimals: frozen.token.decimals)) \(symbol)")
+                row("Decimals", "\(frozen.token.decimals) \(frozen.token.trusted ? "(shipped list)" : "(unverified claim)")")
+                row("To", frozen.recipient, mono: true)
+                row("Token", TokenLabel.row(TokenInfo(address: frozen.token.address, symbol: now.symbol ?? "?",
+                                                      name: now.name ?? "", decimals: frozen.token.decimals, origin: nil)), mono: true)
+            }
+            if now.nodeDisagrees {
+                Label("The node now reports different details than the shipped list. The list decides the units; nothing moved.", systemImage: "info.circle.fill")
+                    .font(.aeFootnote).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if !frozen.token.trusted {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("This token is not on the wallet’s trusted list", systemImage: "exclamationmark.triangle.fill")
+                        .font(.aeBody.weight(.semibold)).foregroundStyle(Color.warn)
+                    Text("Its name, symbol and unit size are its own unverified claims, so the amount above may not mean what it seems. The signature sends exactly the unit count shown — check that count.")
+                        .font(.aeFootnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Toggle("I checked the exact count: \(SendIntent.grouped(frozen.baseUnits)) units is what I want to send", isOn: $ackUnits)
+                        .font(.aeFootnote)
+                }
+                .padding(12)
+                .background(Color.warn.opacity(0.14), in: RoundedRectangle(cornerRadius: Radius.inner))
+            }
+            HStack {
+                Button("Back") {
+                    intent = nil
+                    ackUnits = false
+                }.keyboardShortcut(.cancelAction)
+                Spacer()
+                Button {
+                    if let why = model.sendTokenTx(frozen.with(acknowledged: ackUnits)) {
+                        // Refused at signing time (something moved): back to the
+                        // form with the reason, so the send is confirmed afresh.
+                        refusal = why
+                        intent = nil
+                        ackUnits = false
+                    } else {
+                        dismiss()
+                    }
+                } label: {
+                    Label("Confirm", systemImage: "touchid").frame(minWidth: 100)
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(model.busy || (!frozen.token.trusted && !ackUnits))
+            }
+        }
+        .padding(24)
+        .macMinSize(width: 420)
+        .sheetScroll()
+    }
+
+    private func row(_ k: String, _ v: String, mono: Bool = false) -> some View {
+        HStack(alignment: .top) {
+            Text(k).foregroundStyle(.secondary).frame(width: 88, alignment: .leading)
+            Text(v).font(mono ? .body.monospaced() : .body).textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+        }.font(.aeBody)
     }
 }
 

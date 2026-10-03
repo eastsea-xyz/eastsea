@@ -63,12 +63,14 @@
 		BCEB55E80C0536BE08E67EE7 /* ResourcesSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = C56EEFC753370BDE2960BE52 /* ResourcesSettings.swift */; };
 		BD73509462322EA695D98A0D /* NetworkUpgrade.swift in Sources */ = {isa = PBXBuildFile; fileRef = BAF12832C2145F7B5553F13A /* NetworkUpgrade.swift */; };
 		BF69C9639B9D7215C5CE0605 /* aether_ffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BC12AF79B32D90A48860251 /* aether_ffi.swift */; };
+		C368B77C668A312DBC5DB879 /* TokenGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA017029CBA36810DE47F6DE /* TokenGuard.swift */; };
 		C45FFD044088BB85C2D842D2 /* AssetsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39DB57D9689E71FFECC579BA /* AssetsSheet.swift */; };
 		C95F0C486AC46505C63D822B /* AgentWalletPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 020BD968AE07E378627D7EB7 /* AgentWalletPanel.swift */; };
 		C9839F6819F2F86387CC88B7 /* aether_ffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BC12AF79B32D90A48860251 /* aether_ffi.swift */; };
 		D011EF063EAF0FD0463BB20F /* NetworkUpgrade.swift in Sources */ = {isa = PBXBuildFile; fileRef = BAF12832C2145F7B5553F13A /* NetworkUpgrade.swift */; };
 		D229901FC826CDF2C1547675 /* UpdateTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 790C6CEC63EC7A21B28A79CC /* UpdateTracker.swift */; };
 		D35E3E06705EC147E0155308 /* token-sources.json in Resources */ = {isa = PBXBuildFile; fileRef = 2928FB2C0B82AF8C35E97D99 /* token-sources.json */; };
+		D42A398A83223BE1055DEF3B /* TokenGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA017029CBA36810DE47F6DE /* TokenGuard.swift */; };
 		D6DDA80E641E075D1DE236AD /* WalletModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 016BCAF9063410C1BBD4052D /* WalletModel.swift */; };
 		D840F0A34EA5DA948F884D3E /* TokenAssets.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5D7C676A4030F20E37C58E7 /* TokenAssets.swift */; };
 		DB0F8AA27789285B80E0C65B /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = C8AFA205B2434D884DE10E98 /* Sparkle */; };
@@ -113,6 +115,7 @@
 		94E4B4A2A4BDBBBBC6A12600 /* ProverFlags.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProverFlags.swift; sourceTree = "<group>"; };
 		9D1303552378BB828A2C9D21 /* ReleaseUpdateGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReleaseUpdateGate.swift; sourceTree = "<group>"; };
 		9DEBCE5EA044F272C9EA406C /* ProverMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProverMenu.swift; sourceTree = "<group>"; };
+		AA017029CBA36810DE47F6DE /* TokenGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenGuard.swift; sourceTree = "<group>"; };
 		AB4C9843D1CF8E29F627927D /* ReleaseApproval.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReleaseApproval.swift; sourceTree = "<group>"; };
 		AB6E5651AC1948FECDAE69D4 /* network.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = network.json; sourceTree = "<group>"; };
 		AD1FD85FD2537EBDD04207CB /* InstallLocation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstallLocation.swift; sourceTree = "<group>"; };
@@ -199,6 +202,7 @@
 				462C807FB20A46B9919AE925 /* Spinners.swift */,
 				B60F2ADE6BD15611D4BD0811 /* Theme.swift */,
 				E5D7C676A4030F20E37C58E7 /* TokenAssets.swift */,
+				AA017029CBA36810DE47F6DE /* TokenGuard.swift */,
 				FE00FF7FDD47F623CE4B55A0 /* TokenSend.swift */,
 				790C6CEC63EC7A21B28A79CC /* UpdateTracker.swift */,
 				016BCAF9063410C1BBD4052D /* WalletModel.swift */,
@@ -378,6 +382,7 @@
 				9E121F544310F602CD8ACFFE /* Spinners.swift in Sources */,
 				96D01674727A3032D42B5EDC /* Theme.swift in Sources */,
 				65632EFCC1603BC0D9B6C752 /* TokenAssets.swift in Sources */,
+				C368B77C668A312DBC5DB879 /* TokenGuard.swift in Sources */,
 				8A8690DDB06F0148FD133737 /* TokenSend.swift in Sources */,
 				D229901FC826CDF2C1547675 /* UpdateTracker.swift in Sources */,
 				95004663796AA4EF45771D37 /* WalletModel.swift in Sources */,
@@ -419,6 +424,7 @@
 				50D901679B54ED9BD526B43E /* Spinners.swift in Sources */,
 				1B66F9FC578D265748C295D1 /* Theme.swift in Sources */,
 				D840F0A34EA5DA948F884D3E /* TokenAssets.swift in Sources */,
+				D42A398A83223BE1055DEF3B /* TokenGuard.swift in Sources */,
 				8FBC9A5F5A3237EA07862EB6 /* TokenSend.swift in Sources */,
 				696C62ACB62331AE933D81DC /* UpdateTracker.swift in Sources */,
 				D6DDA80E641E075D1DE236AD /* WalletModel.swift in Sources */,

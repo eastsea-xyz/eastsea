@@ -745,33 +745,51 @@ final class WalletModel: ObservableObject {
         }
     }
 
-    /// Send `amountText` of the chosen token to `to`: an ERC-20 `transfer`
-    /// built as calldata and signed like any other contract call from this
-    /// account (same Touch ID, same activity tracking, then a fresh balance).
-    func sendTokenTx(to: String, amountText: String) {
-        guard let enclave, let token = sendToken else { return }
-        guard SendSafety.isValidAddress(to) else { return note("The recipient is not a valid address") }
-        guard let units = TokenAmount.parse(amountText, decimals: token.token.decimals) else { return note("Invalid token amount") }
-        guard WeiMath.compare(units, token.balance) <= 0 else {
-            return note("Not enough \(token.token.symbol): the balance is \(token.amount)")
+    /// Send the frozen, confirmed intent (audits R2-2/R2-5, ported from the
+    /// extension): the review screen froze what it showed — recipient, token,
+    /// exact base-unit count — and this re-checks that intent against the state
+    /// NOW and refuses when anything moved. It never re-parses an amount text
+    /// under whatever decimals are stored later. Returns nil when the send was
+    /// started; otherwise the refusal to show (the send sheet stays open).
+    func sendTokenTx(_ intent: SendIntent) -> String? {
+        guard let enclave else { return "The wallet key is not ready yet" }
+        guard let chain = status?.chainId else {
+            note("Not sent — the network is not ready yet")
+            return "The network is not ready yet."
         }
-        guard let data = ERC20.transferCalldata(to: to, amount: units) else { return note("Could not build the transfer") }
-        let decimals = token.token.decimals
-        let shown = TokenAmount.exact(units, decimals: decimals)
-        let item = ActivityItem(kind: .sent, title: "Sent \(shown) \(token.token.symbol) to \(TokenLabel.short(to))",
-                                amount: nil, recipients: [to.lowercased()], token: token.token.address)
+        let known = KnownTokens.knownToken(chainId: chain, address: intent.token.address)
+        let current = tokens.first { $0.token.address == intent.token.address }
+        let data: String
+        do {
+            data = try SendIntent.check(intent, current: current?.token, known: known)
+        } catch let e as TokenGuardError {
+            note("Not sent — \(e.errorDescription ?? "\(e)")")
+            return e.errorDescription
+        } catch {
+            note("Not sent — \(error)")
+            return "\(error)"
+        }
+        guard let holding = current, WeiMath.compare(intent.baseUnits, holding.balance) <= 0 else {
+            note("Not sent — this wallet now holds less than the confirmed amount")
+            return "This wallet now holds less than the confirmed amount."
+        }
+        let symbol = TokenDenomination.of(chainId: chain, address: intent.token.address, claimed: current?.token).symbol ?? "?"
+        let shown = TokenAmount.exact(intent.baseUnits, decimals: intent.token.decimals)
+        let item = ActivityItem(kind: .sent, title: "Sent \(shown) \(symbol) to \(TokenLabel.short(intent.recipient))",
+                                amount: nil, recipients: [intent.recipient.lowercased()], token: intent.token.address)
         let pk = enclave.publicKey
         sendToken = nil
         busy = true
         Task.detached {
             do {
-                let prepared = try prepareCall(p256PublicKey: pk, to: token.token.address, valueWei: "0", dataHex: data, gasLimit: 100_000)
+                let prepared = try prepareCall(p256PublicKey: pk, to: intent.token.address, valueWei: "0", dataHex: data, gasLimit: 100_000)
                 let sig = try enclave.sign(prepared.signingMessage)   // Secure Enclave, may prompt
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
-                await self.track(h, label: "Sent \(shown) \(token.token.symbol) to \(TokenLabel.short(to)) (nonce \(prepared.nonce))", item: item)
+                await self.track(h, label: "Sent \(shown) \(symbol) to \(TokenLabel.short(intent.recipient)) (nonce \(prepared.nonce))", item: item)
                 await MainActor.run { self.refreshTokens(force: true) }
             } catch { await MainActor.run { self.note("Token send failed: \(error)"); self.busy = false } }
         }
+        return nil
     }
 
     /// Dry-run a send before it is signed: the transfer as an `eth_call` from

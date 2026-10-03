@@ -9,6 +9,7 @@ pub use aether_light::block;
 pub mod chain;
 pub mod devicecheck;
 pub mod dkg;
+pub mod dkg_agreement;
 pub mod engine;
 pub mod era;
 pub mod era_net;

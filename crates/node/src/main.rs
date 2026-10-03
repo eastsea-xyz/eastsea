@@ -1334,10 +1334,16 @@ fn reshare(
         max_message: MAX_BLOCK_BYTES + 1024 * 1024,
     };
     let mut round = aether_node::dkg::Round::reshare(previous, new.validators(), old_file.round + 1);
-    if old_file.chain_id == 7_780 {
+    let legacy_agreement = old_file.chain_id == 7_780;
+    if legacy_agreement {
         round = round.legacy_agreement();
+    } else {
+        round = round.with_chain_id(old_file.chain_id);
     }
     let next_round = round.round;
+    // The vote/dealing journals survive retries of this same key round. The
+    // Commonware runtime directory below is intentionally fresh per attempt.
+    let agreement_journal = dir.join(format!("dkg-agreement-reshare-{next_round}.journal"));
     // A fresh runtime directory per attempt: a retried round never reads an older one's state.
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1369,15 +1375,13 @@ fn reshare(
         let (sender, receiver) = network.register(0, Quota::per_second(NZU32!(256)));
         network.start();
         tracing::info!(index = p2p.index, round = next_round, "reshare: started");
-        aether_node::dkg::run(
-            p2p.keys.signer.clone(),
-            round,
-            share,
-            sender,
-            receiver,
-            Default::default(),
-        )
-        .await
+        if legacy_agreement {
+            aether_node::dkg::run(p2p.keys.signer.clone(), round, share, sender, receiver, Default::default()).await
+        } else {
+            aether_node::dkg::run_with_journal(
+                p2p.keys.signer.clone(), round, share, sender, receiver, Default::default(), agreement_journal,
+            ).await
+        }
     });
     match result.map_err(|e| format!("reshare failed: {e}"))? {
         Some((output, share)) => {
@@ -2581,6 +2585,7 @@ fn run_dkg(
     let dir = std::path::PathBuf::from(&data);
     std::fs::create_dir_all(&dir).expect("data dir");
     let out_path = dir.join("threshold.json");
+    let agreement_journal = dir.join(format!("dkg-agreement-genesis-{round}.journal"));
     let executor = cw_tokio::Runner::new(
         cw_tokio::Config::new().with_storage_directory(dir.join("dkg-runtime")),
     );
@@ -2605,16 +2610,16 @@ fn run_dkg(
         let mut key_round = aether_node::dkg::Round::dkg(p2p.validators(), round);
         if chain_id == 7_780 {
             key_round = key_round.legacy_agreement();
+        } else {
+            key_round = key_round.with_chain_id(chain_id);
         }
-        aether_node::dkg::run(
-            p2p.keys.signer.clone(),
-            key_round,
-            None,
-            sender,
-            receiver,
-            Default::default(),
-        )
-        .await
+        if chain_id == 7_780 {
+            aether_node::dkg::run(p2p.keys.signer.clone(), key_round, None, sender, receiver, Default::default()).await
+        } else {
+            aether_node::dkg::run_with_journal(
+                p2p.keys.signer.clone(), key_round, None, sender, receiver, Default::default(), agreement_journal,
+            ).await
+        }
     });
     match result {
         Ok(None) => unreachable!("every DKG participant is a player"),

@@ -369,6 +369,7 @@ fn ceremony(
         cs.push(c);
     }
     let mut files = BTreeMap::new();
+    let mut proposals = vec![None; cs.len()];
     for tick in 0..600 {
         for _ in 0..net.q.len() {
             let Some((from, to, msg)) = net.q.pop_front() else { break };
@@ -382,15 +383,25 @@ fn ceremony(
             if cs[i].all_acked() || tick > 20 {
                 out.extend(cs[i].close_dealing());
             }
-            if cs[i].is_player() && !files.contains_key(&pks[i]) && cs[i].have_all_logs() && tick > 30 {
-                let (o, s) = cs[i].finish(&mut ChaCha20Rng::seed_from_u64(7)).unwrap();
-                files.insert(pks[i].clone(), KeyFile::new(round.round, &o, &s));
+            if cs[i].is_player() && tick > 60 && cs[i].have_quorum_logs() {
+                if let Some((digest, msg)) = cs[i].propose_transcript() {
+                    if proposals[i].as_ref() != Some(&digest) {
+                        proposals[i] = Some(digest);
+                        out.push((To::All, msg));
+                    }
+                }
+            }
+            if tick > 60 { out.extend(cs[i].tick_agreement()); }
+            if cs[i].is_player() && !files.contains_key(&pks[i]) {
+                if let Some(digest) = cs[i].certified_transcript() {
+                    let (o, s) = cs[i].finish_decided(&mut ChaCha20Rng::seed_from_u64(7), &digest).unwrap();
+                    files.insert(pks[i].clone(), KeyFile::new(round.round, &o, &s));
+                }
             }
             out.extend(cs[i].rebroadcast());
             net.send(&pks[i], out);
         }
-        assert!(cs.iter().all(|c| c.agreement(false) != Some(false)), "identities disagree");
-        if cs.iter().all(|c| c.agreement(false) == Some(true)) {
+        if pks.iter().enumerate().filter(|(i, _)| cs[*i].is_player()).all(|(_, pk)| files.contains_key(pk)) {
             return files;
         }
     }

@@ -42,6 +42,16 @@ pub const MEMPOOL_TTL: Duration = Duration::from_secs(10 * 60);
 /// zero-balance spammer's free txs could hold every slot and crowd paying
 /// senders out. Fee networks only — 7780 has no fees and one lane as before.
 pub const MAX_FREE_MEMPOOL: usize = MAX_MEMPOOL / 4;
+/// Bytes the free lane may hold (A3-3, audit round 3, 2026-10-04): the count
+/// quota above left the whole byte budget reachable by free txs — a few
+/// hundred fat zero-fee calls, far under `MAX_FREE_MEMPOOL` — so zero-fee
+/// calldata spam could still starve paying senders of bytes. One eighth keeps
+/// the lane's byte share strictly below the three quarters of entries paying
+/// senders always keep, however fat the zero-fee traffic: 8 MiB seats ~64
+/// maximum-size txs (or any number of small ones) while ≥ 56 MiB stays
+/// reserved for fees. Fee networks only — 7780 has no fees and one lane as
+/// before.
+pub const MAX_FREE_MEMPOOL_BYTES: usize = MAX_MEMPOOL_BYTES / 8;
 /// How long a tx whose fee caps sit below the base fee may hold pool capacity
 /// waiting for the fee to come down (R2-6): the base fee falls by a full
 /// target per empty block, so any spike a rational cap waited out is gone in
@@ -470,6 +480,10 @@ pub struct Inner {
     /// Zero-fee entries in the pool (fee networks only; `MAX_FREE_MEMPOOL`
     /// caps them — R2-6).
     free_in_pool: usize,
+    /// Bytes held by those zero-fee entries (`MAX_FREE_MEMPOOL_BYTES` caps
+    /// them — A3-3): the free lane's share of the byte budget, kept in step
+    /// with `free_in_pool`.
+    free_mempool_bytes: usize,
     /// Txs named by inclusion lists (FOCIL).
     pub inclusion: InclusionPool,
     /// Devnet fault injection: act as a proposer that censors this sender and
@@ -639,6 +653,7 @@ impl Chain {
             sizes: HashMap::new(),
             mempool_bytes: 0,
             free_in_pool: 0,
+            free_mempool_bytes: 0,
             inclusion: InclusionPool::default(),
             censor: None,
             committee: Default::default(),
@@ -871,13 +886,24 @@ impl Chain {
         g.caches_bytes = g.caches_bytes.saturating_add(sb).saturating_sub(old.as_ref().map(summary_bytes).unwrap_or(0));
         g.finalized = exec;
         // The new head's base fee re-sorts the pool between paying and free
-        // lanes; keep the quota's count true to it until the next finalize.
+        // lanes; keep the quota's count and byte share true to it until the
+        // next finalize.
         let base = Self::next_base_fee(&g.cfg, &g.finalized);
-        g.free_in_pool = if g.cfg.fees {
-            g.mempool.values().filter(|t| effective_fee(t, base) == 0).count()
+        if g.cfg.fees {
+            let mut free = 0;
+            let mut free_bytes = 0;
+            for (h, t) in g.mempool.iter() {
+                if effective_fee(t, base) == 0 {
+                    free += 1;
+                    free_bytes += g.sizes.get(h).copied().unwrap_or_default();
+                }
+            }
+            g.free_in_pool = free;
+            g.free_mempool_bytes = free_bytes;
         } else {
-            0
-        };
+            g.free_in_pool = 0;
+            g.free_mempool_bytes = 0;
+        }
         g.history_index = None;
         // Old finalized blocks are no longer provable here (their states are
         // gone); do not let them hold the prover's queue.
@@ -2355,12 +2381,20 @@ impl Chain {
         }
         // A tx that pays nothing at the current base fee takes a free-lane
         // slot, and the free lane is a quota of the pool (R2-6): zero-balance
-        // spam cannot crowd paying senders out of their three quarters. Fee
+        // spam cannot crowd paying senders out of their three quarters. Its
+        // bytes are a share of the budget too (A3-3): the count quota alone
+        // left the whole 64 MiB reachable by a few hundred fat free txs. Fee
         // networks only — 7780 has a single lane, as it always had.
         let free = g.cfg.fees && effective_fee(&tx, base) == 0;
         if free && g.free_in_pool >= MAX_FREE_MEMPOOL {
             return Err(format!(
                 "free lane full: {MAX_FREE_MEMPOOL} of {MAX_MEMPOOL} entries already pay nothing"
+            ));
+        }
+        if free && g.free_mempool_bytes + size > MAX_FREE_MEMPOOL_BYTES {
+            return Err(format!(
+                "free lane byte budget full: zero-fee entries already hold {} of the {MAX_FREE_MEMPOOL_BYTES}-byte share",
+                g.free_mempool_bytes
             ));
         }
         let count_full = g.mempool.len() >= MAX_MEMPOOL;
@@ -2377,6 +2411,7 @@ impl Chain {
         *g.pending_by_sender.entry(tx.header.sender).or_default() += 1;
         if free {
             g.free_in_pool += 1;
+            g.free_mempool_bytes += size;
         }
         g.mempool.insert(h, tx);
         g.sizes.insert(h, size);
@@ -2543,10 +2578,12 @@ impl Chain {
         }
         inner.pending_by_sender.clear();
         inner.free_in_pool = 0;
-        for t in inner.mempool.values() {
+        inner.free_mempool_bytes = 0;
+        for (h, t) in inner.mempool.iter() {
             *inner.pending_by_sender.entry(t.header.sender).or_default() += 1;
             if fees && effective_fee(t, base) == 0 {
                 inner.free_in_pool += 1;
+                inner.free_mempool_bytes += inner.sizes.get(h).copied().unwrap_or_default();
             }
         }
         inner.inclusion.prune(&state, exec.height, Instant::now());
@@ -2778,6 +2815,13 @@ fn effective_fee(tx: &TxEnvelope, base: FeeVector) -> u128 {
 /// node's obligation to propose, whatever its fee). Only strictly lower-fee
 /// entries go; an equal fee never displaces its peer. True when the pool now
 /// holds the count and byte room `tx` needs.
+///
+/// The decision comes first, the removals after (A3-3, audit round 3): the
+/// complete evictable set is walked in (fee, arrival) order to find the
+/// shortest prefix whose departure makes the newcomer fit. No prefix does —
+/// the newcomer cannot fit even with every eligible victim gone — and false
+/// comes back with the pool exactly as it was, so a rejected admission never
+/// deletes paying entries for free.
 fn evict_for(g: &mut Inner, tx: &TxEnvelope, base: FeeVector, size: usize) -> bool {
     let room = |g: &Inner| g.mempool.len() < MAX_MEMPOOL && g.mempool_bytes + size <= MAX_MEMPOOL_BYTES;
     if room(g) {
@@ -2806,12 +2850,33 @@ fn evict_for(g: &mut Inner, tx: &TxEnvelope, base: FeeVector, size: usize) -> bo
         .collect();
     candidates.sort_unstable();
     let floor = effective_fee(tx, base);
-    for (their_fee, _, h, sender) in candidates {
-        if their_fee >= floor {
+    // Decide: walk the strictly-lower-fee prefix, simulating each departure,
+    // until the newcomer fits. Candidates sort by fee, so the eligible ones
+    // are exactly this prefix.
+    let fits = |removed: usize, freed: usize| {
+        g.mempool.len() - removed < MAX_MEMPOOL && g.mempool_bytes - freed + size <= MAX_MEMPOOL_BYTES
+    };
+    let mut freed = 0;
+    let mut take: Option<usize> = None;
+    for (i, (their_fee, _, h, _)) in candidates.iter().enumerate() {
+        if *their_fee >= floor {
             break; // nothing strictly lower remains
         }
+        freed += g.sizes.get(h).copied().unwrap_or_default();
+        if fits(i + 1, freed) {
+            take = Some(i + 1);
+            break;
+        }
+    }
+    let Some(take) = take else {
+        return false; // cannot fit even after evicting every eligible victim
+    };
+    // Remove: the pool only now changes, and only by the prefix that pays
+    // for the newcomer's room.
+    for (_, _, h, sender) in candidates.into_iter().take(take) {
         let evicted = g.mempool.remove(&h).expect("a candidate is pending");
-        g.mempool_bytes -= g.sizes.remove(&h).unwrap_or_default();
+        let freed = g.sizes.remove(&h).unwrap_or_default();
+        g.mempool_bytes -= freed;
         g.arrivals.remove(&h);
         let pending = g.pending_by_sender.entry(sender).or_default();
         *pending -= 1;
@@ -2820,12 +2885,10 @@ fn evict_for(g: &mut Inner, tx: &TxEnvelope, base: FeeVector, size: usize) -> bo
         }
         if effective_fee(&evicted, base) == 0 {
             g.free_in_pool -= 1;
-        }
-        if room(g) {
-            break;
+            g.free_mempool_bytes -= freed;
         }
     }
-    room(g)
+    true
 }
 
 /// Whether a pending tx stays in the pool after a block: its nonce is still
@@ -3995,20 +4058,193 @@ mod pool_tests {
         }
     }
 
-    /// The byte budget evicts for a paying tx the same way the count cap does:
-    /// free fat entries hold the whole budget, and a fat paying tx still gets
-    /// in by displacing one of them (a small one would fit in the crumbs
-    /// without touching anything, which is also fine).
+    /// A3-3 (2026-10-04 audit round 3), the PoC as a test: the 64 MiB byte
+    /// budget full of funded high-fee calldata in several 64-nonce chains, each
+    /// chain ending in a small zero-fee tip, then a fat tx of the fill's own
+    /// size that pays more than those tips but less than the fat mass. The
+    /// small tips are its only eligible victims and together free far too few
+    /// bytes, so admission must fail — and it must fail without deleting
+    /// anything. Before the fix, `evict_for` removed each eligible tip as it
+    /// walked them, returned false, and the RPC rejected the newcomer anyway:
+    /// a denial-of-include the attacker paid nothing for and could repeat on
+    /// rearranged tips. The mass fill stops while there is still room (the
+    /// newcomer is exactly a fat tx's size, so the leftover cannot absorb it)
+    /// because a fill that ran to refusal would itself evict the tips, which
+    /// is R2-6 working, not the bug under test.
     #[test]
-    fn the_byte_budget_too_evicts_free_entries_for_a_paying_tx() {
+    fn a_rejected_fee_bump_leaves_the_pool_untouched() {
+        let payer = Address::repeat_byte(0x88);
+        let chains = strangers(9); // eight complete chains, the ninth supplies fill mass
+        let mut alloc: Vec<(Address, U256)> =
+            chains.iter().cloned().map(|a| (a, U256::from(10u128.pow(24)))).collect();
+        alloc.push((payer, U256::from(10u128.pow(24))));
+        let (chain, _) = Chain::new(fee_cfg(alloc));
+        let fat_size = fat(chains[0], 0, vec![7u8; 130_000]).to_canonical_bytes().len();
+
+        // Chains 0..=7: nonces 0..=62 of funded 5-gwei calldata, nonce 63 the
+        // small zero-fee tip that is the only thing a cheaper tx could evict.
+        let mut tips = Vec::new();
+        let mut listed_fat = None;
+        for (ci, sender) in chains[0..8].iter().enumerate() {
+            for nonce in 0..63u64 {
+                let mut t = fat(*sender, nonce, vec![7u8; 130_000]);
+                t.header.tip = 5 * GWEI;
+                t.header.max_fee.exec = 5 * GWEI;
+                assert_eq!(chain.add_to_mempool(t.clone()), Ok(true));
+                if ci == 1 && nonce == 30 {
+                    listed_fat = Some(t);
+                }
+            }
+            let tip = free_tx(*sender, 63);
+            assert_eq!(chain.add_to_mempool(tip.clone()), Ok(true));
+            tips.push(tip);
+        }
+        // The ninth chain's fat mass exhausts the budget, stopping while there
+        // is room so nothing is evicted on the way in; its top nonce is a fat
+        // one, so it contributes no eligible victim of its own.
+        let mut mass = 0;
+        'fill: for nonce in 0..64u64 {
+            if chain.lock().mempool_bytes + fat_size > MAX_MEMPOOL_BYTES {
+                break 'fill;
+            }
+            let mut t = fat(chains[8], nonce, vec![7u8; 130_000]);
+            t.header.tip = 5 * GWEI;
+            t.header.max_fee.exec = 5 * GWEI;
+            assert_eq!(chain.add_to_mempool(t), Ok(true));
+            mass += 1;
+        }
+        assert!(mass > 0, "the ninth chain really did add fill mass");
+        // One tip and one fat tx are this node's inclusion obligations: a
+        // refusal that deleted them would trade an obligation for nothing.
+        let seen = Instant::now();
+        accept_list(&chain, vec![tips[0].clone(), listed_fat.expect("nonce 30 of chain 1")], seen);
+
+        let before = {
+            let g = chain.lock();
+            assert!(g.mempool_bytes + fat_size > MAX_MEMPOOL_BYTES, "the byte budget, not the count, is full");
+            (
+                g.mempool.keys().cloned().collect::<Vec<TxHash>>(),
+                g.mempool_bytes,
+                g.sizes.clone(),
+                g.arrivals.clone(),
+                g.pending_by_sender.clone(),
+                g.free_in_pool,
+                g.inclusion.len(),
+            )
+        };
+        let mut newcomer = fat(payer, 0, vec![7u8; 130_000]);
+        newcomer.header.tip = GWEI;
+        newcomer.header.max_fee.exec = GWEI;
+        assert_eq!(newcomer.to_canonical_bytes().len(), fat_size, "the newcomer is exactly a fill tx's size");
+        // More than the zero-fee tips pay, less than the fat mass: the tips
+        // are its only eligible victims, and they free too few bytes to fit.
+        assert_eq!(
+            chain.add_to_mempool(newcomer.clone()),
+            Err("mempool byte budget full".to_string())
+        );
+        let g = chain.lock();
+        assert_eq!(
+            g.mempool.keys().cloned().collect::<Vec<TxHash>>(),
+            before.0,
+            "no entry left for a tx that did not get in"
+        );
+        assert_eq!(g.mempool_bytes, before.1, "the byte budget is unchanged");
+        assert_eq!(g.sizes, before.2);
+        assert_eq!(g.arrivals, before.3, "arrival order is unchanged");
+        assert_eq!(g.pending_by_sender, before.4, "sender counts are unchanged");
+        assert_eq!(g.free_in_pool, before.5, "the free lane is unchanged");
+        assert_eq!(g.inclusion.len(), before.6, "inclusion obligations are unchanged");
+        for t in &tips {
+            assert!(g.mempool.contains_key(&aether_execution::tx_hash(t)), "every small tip survived the refusal");
+        }
+        assert!(!g.mempool.contains_key(&aether_execution::tx_hash(&newcomer)));
+    }
+
+    /// A3-3's other half: the free lane's cap is a byte reservation, not only
+    /// a count. The R2-6 count quota left the whole 64 MiB budget reachable by
+    /// free txs — a few hundred fat ones, far under the 12,500-entry quota —
+    /// so zero-fee calldata could still starve paying senders of bytes. Free
+    /// entries now hold at most their share of the byte budget; a free tx past
+    /// it is refused, and paying senders keep the rest to themselves.
+    #[test]
+    fn free_txs_cannot_hold_more_than_their_byte_share_of_the_budget() {
         let payer = Address::repeat_byte(0x77);
         let senders = strangers(540);
         let (chain, _) = Chain::new(fee_cfg(vec![(payer, U256::from(10u128.pow(18)))]));
+        let fat_size = fat(senders[0], 0, vec![7u8; 130_000]).to_canonical_bytes().len();
         let mut admitted = 0;
-        let mut full = String::new();
+        let mut refused = String::new();
         'fill: for sender in &senders {
             match chain.add_to_mempool(fat(*sender, 0, vec![7u8; 130_000])) {
                 Ok(true) => admitted += 1,
+                Ok(false) => unreachable!("a fresh tx cannot be known"),
+                Err(e) => {
+                    refused = e;
+                    break 'fill;
+                }
+            }
+        }
+        assert!(
+            refused.starts_with("free lane byte budget full"),
+            "the byte share, not the quota or count, stops the fill: {refused}"
+        );
+        {
+            let g = chain.lock();
+            // The pool so far is nothing but free entries, so the bytes they
+            // hold are the free lane's, and they sit at its share.
+            assert_eq!(g.free_in_pool, admitted, "every fat spam tx is free");
+            assert_eq!(g.mempool_bytes, g.sizes.values().sum::<usize>());
+            assert!(
+                g.mempool_bytes + fat_size > MAX_FREE_MEMPOOL_BYTES,
+                "the share, not the senders, stopped the fill"
+            );
+            assert!(g.mempool_bytes <= MAX_FREE_MEMPOOL_BYTES, "the free lane holds at most its share");
+        }
+        // The seven eighths the free lane can never touch are the paying
+        // senders': a fat paying tx walks in without evicting anything.
+        let (len, bytes) = {
+            let g = chain.lock();
+            (g.mempool.len(), g.mempool_bytes)
+        };
+        let mut big = fat(payer, 0, vec![7u8; 120_000]);
+        big.header.tip = GWEI;
+        big.header.max_fee.exec = GWEI;
+        assert!(chain.add_to_mempool(big).unwrap());
+        let g = chain.lock();
+        assert_eq!(g.mempool.len(), len + 1, "nothing made way for a tx with the budget to itself");
+        assert!(g.mempool_bytes > bytes);
+        assert_eq!(g.free_in_pool, admitted, "the paying tx is no free entry");
+        assert!(g.mempool_bytes <= MAX_MEMPOOL_BYTES);
+    }
+
+    /// The fix must not overcorrect into never evicting: a paying newcomer
+    /// that CAN fit after evicting still evicts and lands. The budget fills
+    /// with tip-1 fat txs over a fat zero-fee lane — the fill's tail displaces
+    /// the free lane exactly as R2-6 intended — and once even the crumbs are
+    /// gone, a tip-2 fat tx displaces exactly one tip-1 entry and walks in.
+    #[test]
+    fn a_paying_newcomer_that_fits_still_evicts_correctly() {
+        let payer = Address::repeat_byte(0x99);
+        let lane = strangers(64); // ~64 fat free txs ≈ the 8 MiB share
+        let fillers = strangers_after(64, 540);
+        let crumbs = strangers_after(64 + 540, 600);
+        let mut alloc: Vec<(Address, U256)> =
+            fillers.iter().cloned().map(|a| (a, U256::from(10u128.pow(24)))).collect();
+        alloc.extend(crumbs.iter().cloned().map(|a| (a, U256::from(10u128.pow(18)))));
+        alloc.push((payer, U256::from(10u128.pow(24))));
+        let (chain, _) = Chain::new(fee_cfg(alloc));
+        let fat_size = fat(lane[0], 0, vec![7u8; 130_000]).to_canonical_bytes().len();
+        for sender in &lane {
+            assert_eq!(chain.add_to_mempool(fat(*sender, 0, vec![7u8; 130_000])), Ok(true));
+        }
+        assert_eq!(chain.lock().free_in_pool, lane.len(), "the lane sits in the pool free");
+        let mut full = String::new();
+        'fill: for sender in &fillers {
+            let mut t = fat(*sender, 0, vec![7u8; 130_000]);
+            t.header.tip = GWEI;
+            t.header.max_fee.exec = GWEI;
+            match chain.add_to_mempool(t) {
+                Ok(true) => (),
                 Ok(false) => unreachable!("a fresh tx cannot be known"),
                 Err(e) => {
                     full = e;
@@ -4016,23 +4252,34 @@ mod pool_tests {
                 }
             }
         }
-        assert_eq!(full, "mempool byte budget full", "the budget, not the quota or count, fills first");
-        assert!(admitted < MAX_FREE_MEMPOOL, "the free quota is nowhere near full");
-        let (bytes, free) = {
+        {
             let g = chain.lock();
-            (g.mempool_bytes, g.free_in_pool)
+            assert_eq!(full, "mempool byte budget full");
+            assert!(g.mempool_bytes + fat_size > MAX_MEMPOOL_BYTES, "the byte budget, not the count, is full");
+            assert_eq!(g.free_in_pool, 0, "the fill's tail displaced the free lane, never a tip-1 peer");
+        }
+        'crumbs: for sender in &crumbs {
+            match chain.add_to_mempool(priced(*sender, 0, GWEI, GWEI)) {
+                Ok(true) => (),
+                Ok(false) => unreachable!("a fresh tx cannot be known"),
+                Err(e) => {
+                    assert_eq!(e, "mempool byte budget full");
+                    break 'crumbs;
+                }
+            }
+        }
+        let (len, bytes) = {
+            let g = chain.lock();
+            (g.mempool.len(), g.mempool_bytes)
         };
-        assert_eq!(free, admitted, "every fat spam tx is free");
-        // A paying tx too big for the crumbs left in the budget fits once one
-        // fat free entry gives its bytes back.
-        let mut big = fat(payer, 0, vec![7u8; 120_000]);
-        big.header.tip = GWEI;
-        big.header.max_fee.exec = GWEI;
-        assert!(chain.add_to_mempool(big).unwrap());
+        let mut big = fat(payer, 0, vec![7u8; 126_000]);
+        big.header.tip = 2 * GWEI;
+        big.header.max_fee.exec = 2 * GWEI;
+        assert!(chain.add_to_mempool(big.clone()).unwrap());
         let g = chain.lock();
-        assert_eq!(g.mempool.len(), admitted, "one entry made way");
-        assert_eq!(g.free_in_pool, admitted - 1);
-        assert!(g.mempool_bytes < bytes, "the budget gave the fat entry's bytes back");
+        assert_eq!(g.mempool.len(), len, "exactly one entry made way");
+        assert!(g.mempool.contains_key(&aether_execution::tx_hash(&big)));
+        assert!(g.mempool_bytes < bytes, "the evicted entry gave more bytes back than the newcomer brought");
         assert!(g.mempool_bytes <= MAX_MEMPOOL_BYTES);
     }
 

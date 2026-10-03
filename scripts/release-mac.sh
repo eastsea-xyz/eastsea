@@ -65,9 +65,9 @@ cat > dist/appcast.xml <<XML
 <?xml version="1.0" encoding="utf-8"?>
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
   <channel>
-    <title>Aether</title>
+    <title>EastSea</title>
     <item>
-      <title>Aether $version</title>
+      <title>EastSea $version</title>
       <pubDate>$(LC_ALL=C date -u "+%a, %d %b %Y %H:%M:%S +0000")</pubDate>
       <sparkle:version>$build</sparkle:version>
       <sparkle:shortVersionString>$version</sparkle:shortVersionString>
@@ -79,11 +79,11 @@ cat > dist/appcast.xml <<XML
 XML
 fi
 
-notes="Aether $version for macOS (Apple silicon), signed by Pipln and notarized by Apple.
+notes="EastSea $version for macOS (Apple silicon), signed by Pipln and notarized by Apple.
 
-Drag Aether to Applications. The app is a wallet and, with the switch on, a node that verifies every block on this Mac. It connects to the Aether testnet (test tokens have no value).
+Drag the app to Applications. The app is a wallet and, with the switch on, a node that verifies every block on this Mac. It connects to the Aether testnet (test tokens have no value).
 
-Updates arrive automatically (Aether ▸ Check for Updates…).${RELEASE_NOTES:+
+Updates arrive automatically (EastSea ▸ Check for Updates…).${RELEASE_NOTES:+
 
 $RELEASE_NOTES}"
 # The browser extension ships with each app release.
@@ -119,19 +119,19 @@ else
     echo "tag $tag already exists on origin"; exit 1
   fi
   notes_file=$(mktemp)
-  printf '# Aether %s (testnet)\n\n%s\n' "$version" "$notes" > "$notes_file"
+  printf '# EastSea %s (testnet)\n\n%s\n' "$version" "$notes" > "$notes_file"
   idx=$(mktemp -u)
   GIT_INDEX_FILE="$idx" git -C "$PWD" read-tree origin/main
   blob=$(git -C "$PWD" hash-object -w "$notes_file")
   GIT_INDEX_FILE="$idx" git -C "$PWD" update-index --add --cacheinfo "100644,$blob,releases/$tag.md"
   tree=$(GIT_INDEX_FILE="$idx" git -C "$PWD" write-tree)
   rm -f "$idx" "$notes_file"
-  commit=$(git -C "$PWD" commit-tree "$tree" -p origin/main -m "release: Aether $version (testnet)")
+  commit=$(git -C "$PWD" commit-tree "$tree" -p origin/main -m "release: EastSea $version (testnet)")
   git -C "$PWD" tag -f "$tag" "$commit" >/dev/null
   git -C "$PWD" push -q origin "refs/tags/$tag"
 fi
 
 draft=()
 if [ "$mode" = --draft ]; then draft=(--draft); fi
-gh release create "$tag" "${assets[@]}" --repo "$repo" --verify-tag --title "Aether $version (testnet)" --notes "$notes" --latest "${draft[@]}"
+gh release create "$tag" "${assets[@]}" --repo "$repo" --verify-tag --title "EastSea $version (testnet)" --notes "$notes" --latest "${draft[@]}"
 echo "released $tag"

@@ -42,7 +42,7 @@ ln -s /Applications "$stage/Applications"
 mkdir -p dist
 dmg="dist/Aether-$version.dmg"
 rm -f "$dmg"
-hdiutil create -quiet -volname "Aether" -srcfolder "$stage" -fs HFS+ -format UDZO "$dmg"
+hdiutil create -quiet -volname "EastSea" -srcfolder "$stage" -fs HFS+ -format UDZO "$dmg"
 
 if [ -n "${SIGN_IDENTITY:-}" ]; then
   codesign --force --timestamp --sign "$SIGN_IDENTITY" "$dmg"

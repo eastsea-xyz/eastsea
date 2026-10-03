@@ -484,7 +484,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = "$(SRCROOT)/Generated";
 				INFOPLIST_FILE = "Info-ios.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = Aether;
+				INFOPLIST_KEY_CFBundleDisplayName = EastSea;
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "Sign transactions with your device's Secure Enclave key.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
@@ -518,9 +518,9 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = "$(SRCROOT)/Generated";
 				INFOPLIST_FILE = "Info-mac.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = Aether;
+				INFOPLIST_KEY_CFBundleDisplayName = EastSea;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.finance";
-				INFOPLIST_KEY_NSHumanReadableCopyright = "Aether testnet by Pipln. Test tokens have no value.";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "EastSea testnet by Pipln. Test tokens have no value.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -547,7 +547,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = "$(SRCROOT)/Generated";
 				INFOPLIST_FILE = "Info-ios.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = Aether;
+				INFOPLIST_KEY_CFBundleDisplayName = EastSea;
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "Sign transactions with your device's Secure Enclave key.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
@@ -637,9 +637,9 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = "$(SRCROOT)/Generated";
 				INFOPLIST_FILE = "Info-mac.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = Aether;
+				INFOPLIST_KEY_CFBundleDisplayName = EastSea;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.finance";
-				INFOPLIST_KEY_NSHumanReadableCopyright = "Aether testnet by Pipln. Test tokens have no value.";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "EastSea testnet by Pipln. Test tokens have no value.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",

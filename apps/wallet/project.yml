@@ -33,13 +33,13 @@ targets:
         PROVISIONING_PROFILE_SPECIFIER: ""
         SWIFT_VERSION: "5.0"
         GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_CFBundleDisplayName: Aether
+        INFOPLIST_KEY_CFBundleDisplayName: EastSea
         MARKETING_VERSION: 0.6.6
         CURRENT_PROJECT_VERSION: 11
         # Sparkle keys (feed URL, EdDSA public key) merged into the generated Info.plist.
         INFOPLIST_FILE: Info-mac.plist
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.finance
-        INFOPLIST_KEY_NSHumanReadableCopyright: Aether testnet by Pipln. Test tokens have no value.
+        INFOPLIST_KEY_NSHumanReadableCopyright: EastSea testnet by Pipln. Test tokens have no value.
         ENABLE_HARDENED_RUNTIME: YES
         SWIFT_INCLUDE_PATHS: $(SRCROOT)/Generated
         HEADER_SEARCH_PATHS: $(SRCROOT)/Generated
@@ -92,7 +92,7 @@ targets:
         DEVELOPMENT_TEAM: 45WU468FZE
         SWIFT_VERSION: "5.0"
         GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_CFBundleDisplayName: Aether
+        INFOPLIST_KEY_CFBundleDisplayName: EastSea
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         # The aether:// URL scheme, merged into the generated Info.plist.
         INFOPLIST_FILE: Info-ios.plist

@@ -20,7 +20,10 @@ import Foundation
 ///   node is given twice the patience (its restart costs the network a
 ///   signature; red team #2's quorum check);
 /// - a sleep or a wake makes everything the watchdog was timing stale
-///   (red team #9).
+///   (red team #9);
+/// - every duration is a `MonotonicInstant` from the never-jumping clock the
+///   caller injects (red team #6): a manual clock change or an NTP step can
+///   neither fabricate a stall nor hide one, and time asleep does not count.
 struct NodeWatchdog {
     /// What the app should do about its node right now.
     enum Decision: Equatable {
@@ -116,9 +119,9 @@ struct NodeWatchdog {
     static let unrestartable: [Int32] = [3, 5, 6, 7]
 
     /// The node's recent deaths (sliding `crashWindow`), oldest first.
-    private(set) var exits: [Date] = []
+    private(set) var exits: [MonotonicInstant] = []
     /// When the node last started (quick-exit streaks measure from this).
-    private(set) var startedAt: Date?
+    private(set) var startedAt: MonotonicInstant?
     /// Deaths in a row that each came within `quickExit` of a start.
     private(set) var quickExits = 0
     /// The last failure the node reported, for the sentence if it keeps dying.
@@ -127,7 +130,7 @@ struct NodeWatchdog {
     /// The stage-wise activity counter at the previous poll (`aether_status`):
     /// rising work at a frozen height is progress, not a stall (red team #2).
     private var lastActivity: UInt64?
-    private var frozenSince: Date?
+    private var frozenSince: MonotonicInstant?
     private var stalled = false
     private var behindPolls = 0
     private var caughtUpPolls = 0
@@ -160,8 +163,9 @@ struct NodeWatchdog {
         return false
     }
 
-    /// The node process is running as of `at`.
-    mutating func started(_ at: Date) {
+    /// The node process is running as of `at` (monotonic: the injected
+    /// clock's reading, never a wall-clock `Date` — red team #6).
+    mutating func started(_ at: MonotonicInstant) {
         startedAt = at
         lastHeight = nil
         lastActivity = nil
@@ -172,9 +176,9 @@ struct NodeWatchdog {
     /// The node exited on its own with `code` (a signal-death is reported with
     /// `signaled: true`). `log` is the tail of node.log, when there is one:
     /// the exit code says *that* storage failed, the log tail says which kind.
-    mutating func exited(_ at: Date, code: Int32, signaled: Bool = false, log: String = "") -> Decision {
+    mutating func exited(_ at: MonotonicInstant, code: Int32, signaled: Bool = false, log: String = "") -> Decision {
         exits.append(at)
-        exits.removeAll { at.timeIntervalSince($0) > Self.crashWindow }
+        exits.removeAll { at.elapsed(since: $0) > Self.crashWindow }
         lastFailure = Self.classify(code: code, signaled: signaled, log: log)
         // The node already exhausted its storage reopen attempts. Repeating
         // them on a full disk only burns power and log space.
@@ -186,7 +190,7 @@ struct NodeWatchdog {
         if Self.unrestartable.contains(code) {
             return .stop(lastFailure)
         }
-        if let startedAt, at.timeIntervalSince(startedAt) < Self.quickExit {
+        if let startedAt, at.elapsed(since: startedAt) < Self.quickExit {
             quickExits += 1
         } else {
             quickExits = 0
@@ -208,7 +212,7 @@ struct NodeWatchdog {
     /// never counts). `activity` is the node's stage-wise work counter, and
     /// `voting` says whether this Mac is in the voting set (its restart costs
     /// the network a signature, so it is given twice the patience).
-    mutating func polled(_ at: Date, local: UInt64?, network: UInt64?, activity: UInt64? = nil, voting: Bool = false, quorumSafe: Bool = false) -> Decision {
+    mutating func polled(_ at: MonotonicInstant, local: UInt64?, network: UInt64?, activity: UInt64? = nil, voting: Bool = false, quorumSafe: Bool = false) -> Decision {
         guard let local else {
             frozenSince = nil
             lastActivity = nil
@@ -244,7 +248,7 @@ struct NodeWatchdog {
         let since = frozenSince ?? at
         frozenSince = since
         let stall = voting ? Self.stallAfter * 2 : Self.stallAfter
-        guard at.timeIntervalSince(since) >= stall, !stalled else { return .none }
+        guard at.elapsed(since: since) >= stall, !stalled else { return .none }
         // No authenticated quorum evidence is available to the app today.
         // A voting member cannot be restarted merely because its height is
         // frozen; that could remove the signature keeping the chain live.

@@ -313,4 +313,66 @@ mid.tracker.downloading()
 check(mid.tracker.found(key: "k1", version: "1.2", build: "34") == true, "same item mid-cycle: accepted, no restart")
 check(mid.tracker.state == .downloading(version: "1.2", build: "34"), "still downloading the same item")
 
+// Red team #6: a record written while the Mac's clock was wrong. The failure
+// was scheduled +30 days out (the clock was 30 days fast); relaunched with an
+// honest clock, that "schedule" is clamped to now — the retry is due at once,
+// and the persisted attempt count keeps the backoff honest afterwards.
+let fastClock = Rig()
+fastClock.tracker.found(key: "k1", version: "1.2", build: "34")
+fastClock.tracker.downloading()
+fastClock.advance(30 * 86_400)
+fastClock.tracker.aborted(networkError: true)
+let honest = Rig(resuming: fastClock.tracker.recordURLForTesting!, from: t0)
+check(honest.tracker.state == .failed(cause: .network, attempts: 1, nextRetryAt: t0),
+      "a retry scheduled beyond the largest backoff is clamped to now")
+check(honest.tracker.retryDue(), "a clamped retry is due at once")
+honest.tracker.found(key: "k1", version: "1.2", build: "34")
+honest.tracker.downloading()
+honest.tracker.aborted(networkError: true)
+check(honest.tracker.state == .failed(cause: .network, attempts: 2, nextRetryAt: t0.addingTimeInterval(120)),
+      "the attempt count survived the clamp: the backoff keeps doubling")
+
+// The same clamp for a health window started while the clock was wrong: it
+// runs its honest ten minutes from now, not thirty days from now.
+let fastHealth = Rig()
+fastHealth.tracker.found(key: "k1", version: "1.2", build: "34")
+fastHealth.tracker.downloading(); fastHealth.tracker.verified(); fastHealth.tracker.installing()
+fastHealth.advance(30 * 86_400)
+fastHealth.tracker.relaunched(runningVersion: "1.2", runningBuild: "34")
+let honestHealth = Rig(resuming: fastHealth.tracker.recordURLForTesting!, from: t0)
+check(honestHealth.tracker.state == .awaitingHealth(version: "1.2", build: "34", startedAt: t0),
+      "a health window started beyond the largest backoff is clamped to now")
+honestHealth.tracker.tick()
+check(honestHealth.tracker.state.awaitingHealthVersion == "1.2", "the clamped window does not fire at once")
+honestHealth.advance(599)
+honestHealth.tracker.tick()
+check(honestHealth.tracker.state.awaitingHealthVersion == "1.2", "one second inside the clamped window: still waiting")
+honestHealth.advance(1)
+honestHealth.tracker.tick()
+check(honestHealth.tracker.state.failedCause == .health, "the clamped window ends on time")
+
+// Mid-session: the clock steps back 10 h after a failure was scheduled +60 s
+// out — the "retry" now sits 10 h in the future, which no backoff of ours
+// could have written. It is due now rather than postponed to a wrong schedule.
+let stepBack = Rig()
+stepBack.tracker.found(key: "k1", version: "1.2", build: "34")
+stepBack.tracker.downloading()
+stepBack.tracker.aborted(networkError: true)
+check(!stepBack.tracker.retryDue(), "freshly scheduled +60 s: not due yet")
+stepBack.advance(-10 * 3600)
+check(stepBack.tracker.retryDue(), "a retry 10 h in the future (only a clock artifact) is due now")
+
+// And a startedAt pushed into the future by a backward step never fires the
+// window early, but the window still ends once the clock is honestly past it.
+let stepBackHealth = Rig()
+stepBackHealth.tracker.found(key: "k1", version: "1.2", build: "34")
+stepBackHealth.tracker.downloading(); stepBackHealth.tracker.verified(); stepBackHealth.tracker.installing()
+stepBackHealth.tracker.relaunched(runningVersion: "1.2", runningBuild: "34")
+stepBackHealth.advance(-7200)
+stepBackHealth.tracker.tick()
+check(stepBackHealth.tracker.state.awaitingHealthVersion == "1.2", "a startedAt pushed into the future by a backward step never fires early")
+stepBackHealth.advance(7200 + 600)
+stepBackHealth.tracker.tick()
+check(stepBackHealth.tracker.state.failedCause == .health, "and the window still ends once honestly past")
+
 print("update-state: all checks passed")

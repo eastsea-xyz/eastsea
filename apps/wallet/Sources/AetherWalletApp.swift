@@ -243,8 +243,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateTickTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.updateTick() }
         }
-        // Open at login by default (Settings can turn it off).
-        if !UserDefaults.standard.bool(forKey: "loginItemDefaultApplied") {
+        // Open at login by default (Settings can turn it off). Not from a
+        // wrong place (red team #10): a login item pointing into a DMG or a
+        // translocated copy is gone at the next unmount, and the "applied"
+        // flag stays unset too, so the first run from a proper Applications
+        // folder still takes the default.
+        if !node.wrongLocation, !UserDefaults.standard.bool(forKey: "loginItemDefaultApplied") {
             UserDefaults.standard.set(true, forKey: "loginItemDefaultApplied")
             node.startAtLogin = true
         }
@@ -282,6 +286,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 /// Link the bundled `aether` and `aether-agent` into ~/.local/bin.
 enum CommandLineTools {
     static func install() {
+        // Red team #10: a symlink into a bundle that disappears (a DMG, a
+        // translocated copy) is a command line that breaks at the next
+        // unmount — the move sentence says what to do instead.
+        guard InstallLocation.currentIsRunnable else {
+            let alert = NSAlert()
+            alert.messageText = InstallLocation.moveSentence
+            alert.informativeText = Brand.project + " is running from a temporary place."
+            alert.runModal()
+            return
+        }
         let helpers = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers")
         let bin = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin")
         var done: [String] = []

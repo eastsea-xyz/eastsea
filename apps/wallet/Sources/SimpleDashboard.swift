@@ -782,6 +782,17 @@ private struct SidebarStatus: View {
             .toggleStyle(.switch)
             .controlSize(.small)
             .help("Verify every block on this Mac and let the wallet use it. Off when the app quits.")
+            if node.wrongLocation {
+                // Red team #10: the sentence is the node line above (it is the
+                // node's state); this is just the way to the bundle to move it.
+                Button {
+                    InstallLocation.revealInFinder()
+                } label: {
+                    Label("Show in Finder", systemImage: "folder")
+                }
+                .controlSize(.small)
+                .buttonStyle(.link)
+            }
             EarningsSidebarBadge()
             #endif
             HStack(spacing: 8) {
@@ -799,12 +810,13 @@ private struct SidebarStatus: View {
     /// Short on purpose: the sidebar is 170–190 pt, and the block number (which
     /// the "Connected" line below already shows) is what got truncated here.
     private var nodeLine: String {
+        if node.wrongLocation { return InstallLocation.moveSentence }
         switch node.state {
-        case .off: "Off"
-        case .starting: node.height > 0 ? "Catching up" : "Starting…"
-        case .running: "Verifying blocks"
-        case .waitingForPower: "Paused on battery"
-        case .failed(let m): m
+        case .off: return "Off"
+        case .starting: return node.height > 0 ? "Catching up" : "Starting…"
+        case .running: return "Verifying blocks"
+        case .waitingForPower: return "Paused on battery"
+        case .failed(let m): return m
         }
     }
     #endif

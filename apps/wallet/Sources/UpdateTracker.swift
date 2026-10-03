@@ -79,6 +79,13 @@ struct UpdateTracker {
     /// health failure is recorded. Catching up counts as living: a node that
     /// is downloading a snapshot is working, not broken.
     static let healthWindow: TimeInterval = 600
+    /// No time this tracker persists can legitimately sit further in the
+    /// future than its largest backoff. A `nextRetryAt` or health-window
+    /// start beyond that (red team #6: the record was written while the
+    /// Mac's clock was wrong, then the clock was corrected) is a clock
+    /// artifact, not a schedule — clamp it to now, so a retry or a health
+    /// check can never be postponed for weeks.
+    static let maxFutureTolerance: TimeInterval = networkMaxBackoff
 
     static func networkBackoff(afterAttempts attempts: Int) -> TimeInterval {
         min(networkFirstBackoff * pow(2, Double(attempts - 1)), networkMaxBackoff)
@@ -124,20 +131,35 @@ struct UpdateTracker {
         currentBuild = record.build ?? ""
         attempts = record.attempts
         lastCause = record.lastCause.flatMap(Cause.init(rawValue:))
+        // Red team #6: persisted times are wall-clock by necessity (they must
+        // survive a restart), so they are made robust instead — anything the
+        // app could never have scheduled that far ahead is clamped to now.
+        let present = now()
+        let recordStartedAt = Self.clampedToPresent(record.startedAt, now: present)
+        let recordNextRetryAt = Self.clampedToPresent(record.nextRetryAt, now: present)
         switch record.phase {
         case "found": state = .found(version: currentVersion, build: currentBuild)
         case "downloading": state = .downloading(version: currentVersion, build: currentBuild)
         case "verified": state = .verified(version: currentVersion, build: currentBuild)
         case "installing": state = .installing(version: currentVersion, build: currentBuild)
         case "awaitingHealth":
-            guard let startedAt = record.startedAt else { return }
+            guard let startedAt = recordStartedAt else { return }
             state = .awaitingHealth(version: currentVersion, build: currentBuild, startedAt: startedAt)
         case "healthy": state = .healthy(version: currentVersion, build: currentBuild)
         case "failed":
             guard let cause = lastCause else { return }
-            state = .failed(cause: cause, attempts: record.attempts, nextRetryAt: record.nextRetryAt)
+            state = .failed(cause: cause, attempts: record.attempts, nextRetryAt: recordNextRetryAt)
         default: return
         }
+    }
+
+    /// A persisted time far in the future is a clock artifact (red team #6):
+    /// clamp it to now rather than trust it as a schedule. A clamped retry
+    /// is due at once — the persisted attempt count keeps the backoff
+    /// growing, so this can never become a tight loop.
+    private static func clampedToPresent(_ date: Date?, now: Date) -> Date? {
+        guard let date, date.timeIntervalSince(now) > maxFutureTolerance else { return date }
+        return now
     }
 
     // MARK: events (fed by AppDelegate from Sparkle's delegate callbacks)
@@ -288,17 +310,28 @@ struct UpdateTracker {
 
     /// The app's periodic tick (30 s): ends the health window when it passed.
     mutating func tick() {
-        if case .awaitingHealth(_, _, let startedAt) = state,
-           now().timeIntervalSince(startedAt) >= Self.healthWindow {
-            fail(.health)
+        if case .awaitingHealth(_, _, let startedAt) = state {
+            // A startedAt in the future means the wall clock stepped back
+            // after the record was written (red team #6): measure the window
+            // from now instead of waiting for the clock to catch up with a
+            // wrong value — the check must eventually fire, never early.
+            let windowStart = min(startedAt, now())
+            if now().timeIntervalSince(windowStart) >= Self.healthWindow {
+                fail(.health)
+            }
         }
     }
 
     /// Whether a scheduled retry (network or install) is due now — the app
     /// then asks Sparkle to check again. Refusals, health failures and a
-    /// given-up install schedule nothing.
+    /// given-up install schedule nothing. A retry scheduled *further* out
+    /// than the largest possible backoff cannot be one we wrote — only a
+    /// clock artifact (red team #6) — and is due now; exactly the cap is a
+    /// legal schedule (the 6 h network backoff) and still waits.
     func retryDue() -> Bool {
-        if case .failed(_, _, let next?) = state { return now() >= next }
+        if case .failed(_, _, let next?) = state {
+            return now() >= next || next.timeIntervalSince(now()) > Self.maxFutureTolerance
+        }
         return false
     }
 

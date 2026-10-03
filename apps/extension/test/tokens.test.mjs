@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import {
   SEL, CAPS, parseTokenSources, emptyCatalog, discoverTokens, scanTokens,
-  tokenInfo, formatTokenAmount, call, wordAddress, wordUint, uintAt, uint64At, addressAt, stringAt,
+  tokenInfo, formatTokenAmount, grouped, call, wordAddress, wordUint, uintAt, uint64At, addressAt, stringAt,
 } from '../src/lib/tokens.js';
 
 const word = (v) => wordUint(v);
@@ -158,6 +158,31 @@ test('formatTokenAmount mirrors the app formatting', () => {
   assert.equal(formatTokenAmount('1000000', 6), '1');
   assert.equal(formatTokenAmount(word(1).slice(2), 18), '<0.000001');
   assert.equal(formatTokenAmount(1n, 18), '<0.000001');
+});
+
+test('a token whose details the nodes dispute is skipped, not rejected', async () => {
+  const { read } = fakeChain();
+  const disputed = async (address, r) => {
+    if (address === tC) {
+      const e = new Error('The nodes did not agree on one answer.');
+      e.tokenUnverified = true;
+      throw e;
+    }
+    return tokenInfo(address, r);
+  };
+  const cat = await discoverTokens(sources, emptyCatalog(), read, disputed);
+  assert.equal(cat.tokens[tC], undefined, 'a disputed token is not catalogued');
+  assert.equal(cat.rejected.includes(tC), false, 'and it is not rejected: it is retried');
+  // When the nodes agree again, the next scan catalogs it.
+  const again = await discoverTokens(sources, cat, read);
+  assert.equal(again.tokens[tC].decimals, 6);
+});
+
+test('grouped units for the confirmation line', () => {
+  assert.equal(grouped(0n), '0');
+  assert.equal(grouped('999'), '999');
+  assert.equal(grouped('1000000'), '1,000,000');
+  assert.equal(grouped('1000000000000000000'), '1,000,000,000,000,000,000');
 });
 
 test('the bundled token-sources.json parses for chain 7780', () => {

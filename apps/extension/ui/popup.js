@@ -4,7 +4,7 @@ import { Brand } from '../src/lib/brand.js';
 // (origins, call data) is only ever set as text, never as HTML.
 
 import { aethToWei, formatAeth, shortAddress, weiToAeth } from '../src/lib/units.js';
-import { erc20TransferCalldata, formatTokenAmount, formatTokenAmountExact, parseTokenAmount } from '../src/lib/tokens.js';
+import { erc20TransferCalldata, formatTokenAmount, formatTokenAmountExact, grouped, parseTokenAmount } from '../src/lib/tokens.js';
 import { addressRisk, looksLikeOfficial, tokenLabel, tokenShort } from '../src/lib/safety.js';
 import { nextPauseState, pausedLine, PAUSE_HELP } from '../src/lib/pause.js';
 import { TERMS_VERSION, DISCLAIMER_URL, NOTICE_POINTS } from '../src/lib/terms.js';
@@ -209,7 +209,7 @@ async function home(s) {
     h('label', {}, 'To', to),
     h('label', {}, 'Amount', h('div', { class: 'row' }, amount, max)),
     warnBox, sendBtn,
-    h('p', { class: 'small muted' }, 'Before signing, the recipient is checked against your history and the transfer is tried on the node. These checks read public chain data and settings on this device; nothing new is written on chain.'));
+    h('p', { class: 'small muted' }, 'Before signing, the recipient is checked against your history and the transfer is tried on the node (an estimate, not a guarantee). These checks read public chain data and settings on this device; nothing new is written on chain.'));
 
   let holdings = [];            // the picker's tokens
   let officialSymbols = [];     // official symbols, for the look-alike warning
@@ -266,23 +266,51 @@ async function home(s) {
     const recipient = to.value.trim();
     const risk = addressRisk(recipient, sent);
     if (risk.poisoningMatch && !acked) throw new Error('Confirm the look-alike address warning first.');
-    let r;
     if (asset) {
-      const units = parseTokenAmount(amount.value, asset.token.decimals);
-      if (BigInt(asset.balance) < units) throw new Error(`Not enough ${asset.token.symbol}: the balance is ${formatTokenAmount(asset.balance, asset.token.decimals)}`);
-      const data = erc20TransferCalldata(recipient, units);
-      const check = await op('sendCheck', { recipient, to: asset.token.address, value_wei: '0', data });
+      // Audit A3: the units shown and signed come from the details pinned on
+      // this device, and a flagged or unconfirmed token cannot be sent until
+      // the change is reviewed in Assets.
+      if (asset.token.metadataChanged) throw new Error('This token now reports different details than the ones saved on this device. Review the change in Assets first.');
+      if (asset.token.unconfirmed) throw new Error('This token’s details are not confirmed yet. Open Assets and let the wallet confirm them first.');
+      const pin = asset.token;
+      const units = parseTokenAmount(amount.value, pin.decimals);
+      if (BigInt(asset.balance) < units) throw new Error(`Not enough ${pin.symbol}: the balance is ${formatTokenAmount(asset.balance, pin.decimals)}`);
+      const data = erc20TransferCalldata(recipient, units); // for the node simulation only
+      const check = await op('sendCheck', { recipient, to: pin.address, value_wei: '0', data });
       if (check.dry.state === 'reverted') throw new Error(`Not sent — this transfer would fail: ${check.dry.message}`);
-      r = await op('send', { to: recipient, data, token: { address: asset.token.address, symbol: asset.token.symbol, decimals: asset.token.decimals, amount: units.toString() } });
-      out.replaceChildren(message('ok', `Sent ${formatTokenAmount(units, asset.token.decimals)} ${asset.token.symbol} to ${tokenShort(recipient)} · ${shortAddress(r.hash)}`));
+      // The simulation is never proof of success: it is shown as an estimate,
+      // and no warning was skipped because it did not fail.
+      const estimate = check.dry.state === 'ok'
+        ? 'Node estimate, not a guarantee: the simulated transfer did not fail.'
+        : 'The node could not simulate this transfer, so there is no estimate.';
+      const back = h('button', { type: 'button' }, 'Back');
+      const confirmBtn = h('button', { class: 'primary', type: 'button' }, 'Confirm');
+      back.addEventListener('click', () => out.replaceChildren());
+      confirmBtn.addEventListener('click', action(confirmBtn, out, async () => {
+        // The wallet core derives the calldata again from the pin; this page
+        // sends the amount text, never units of its own.
+        const r = await op('send', { to: recipient, token: { address: pin.address, amountText: amount.value } });
+        out.replaceChildren(message('ok', `Sent ${formatTokenAmount(units, pin.decimals)} ${pin.symbol} to ${tokenShort(recipient)} · ${shortAddress(r.hash)}`));
+        sendForm.hidden = true;
+      }));
+      out.replaceChildren(h('div', { class: 'card' },
+        h('h2', {}, 'Confirm the send'),
+        h('div', { class: 'kv' },
+          h('span', {}, 'You send'), h('strong', {}, `${formatTokenAmount(units, pin.decimals)} ${pin.symbol}`),
+          h('span', {}, 'Exact amount'), h('span', { class: 'mono' }, `${grouped(units)} units`),
+          h('span', {}, 'Decimals'), h('span', { class: 'mono' }, String(pin.decimals)),
+          h('span', {}, 'To'), h('span', { class: 'mono' }, recipient),
+          h('span', {}, 'From'), h('span', { class: 'mono' }, shortAddress(s.address))),
+        h('p', { class: 'small muted' }, estimate),
+        h('div', { class: 'row' }, h('div', { class: 'grow' }), back, confirmBtn)));
     } else {
       const wei = aethToWei(amount.value);
       const check = await op('sendCheck', { recipient, to: recipient, value_wei: wei.toString(), data: '0x' });
       if (check.dry.state === 'reverted') throw new Error(`Not sent — this transfer would fail: ${check.dry.message}`);
-      r = await op('send', { to: recipient, value_wei: wei.toString() });
+      const r = await op('send', { to: recipient, value_wei: wei.toString() });
       out.replaceChildren(message('ok', `Sent ${weiToAeth(wei)} ${Brand.coinTicker} · ${shortAddress(r.hash)}`));
+      sendForm.hidden = true;
     }
-    sendForm.hidden = true;
   }));
   const receive = h('button', { onclick: () => navigator.clipboard.writeText(s.address).then(() => out.replaceChildren(message('ok', 'Address copied.'))) }, h('span', { class: 'ico' }, '⬇'), 'Receive');
   const send = h('button', { onclick: () => { sendForm.hidden = !sendForm.hidden; if (!sendForm.hidden) { to.focus(); pickAssets(); op('activity').then((l) => { sent = l.filter((a) => !a.owner || a.owner.toLowerCase() === s.address.toLowerCase()).map((a) => a.to).filter(Boolean); warnings(); }).catch(() => {}); } } }, h('span', { class: 'ico' }, '↗'), 'Send');
@@ -307,6 +335,8 @@ function holdingRow(x, officialSymbols, { onHide, onShow } = {}) {
   const badges = [];
   if (x.token.origin === 'launchpad') badges.push(h('span', { class: 'pill warn' }, 'Launchpad · unverified'));
   if (looksLikeOfficial(x.token, officialSymbols)) badges.push(h('span', { class: 'pill warn' }, 'Mimics an official token'));
+  if (x.token.metadataChanged) badges.push(h('span', { class: 'pill warn' }, 'Details changed'));
+  else if (x.token.unconfirmed) badges.push(h('span', { class: 'pill warn' }, 'Details not confirmed'));
   const act = onHide ? h('button', { class: 'small', onclick: onHide }, 'Hide')
     : onShow ? h('button', { class: 'small', onclick: onShow }, 'Show in main list') : null;
   return h('div', { class: 'item', title: x.token.address },
@@ -319,10 +349,38 @@ function holdingRow(x, officialSymbols, { onHide, onShow } = {}) {
     h('strong', { class: 'nowrap' }, formatTokenAmount(x.balance, x.token.decimals)), ' ', h('span', { class: 'muted' }, x.token.symbol));
 }
 
+/** The audit-A3 review card: the details saved on this device and the changed
+ * ones side by side. Sending stays paused until the user answers it. */
+async function tokenReviewCard(token, done) {
+  const out = h('div');
+  const { pinned, observed } = await op('tokenChange', { address: token.address }).catch(() => ({ pinned: null, observed: null }));
+  const show = (m) => h('div', { class: 'kv' },
+    h('span', {}, 'Decimals'), h('span', { class: 'mono' }, String(m?.decimals ?? '—')),
+    h('span', {}, 'Symbol'), h('span', { class: 'mono' }, m?.symbol ?? '—'),
+    h('span', {}, 'Name'), h('span', { class: 'mono' }, m?.name ?? '—'));
+  const keep = h('button', { type: 'button' }, 'Not now');
+  const use = h('button', { class: 'primary', type: 'button' }, 'Use the new details');
+  const card = h('div', { class: 'card' },
+    h('h2', {}, `${token.symbol} reports different details`),
+    h('p', { class: 'small' }, 'The nodes now describe this token differently than the details saved on this device, so sending it is paused. Compare both, then use the new details only if you know why they changed.'),
+    h('div', { class: 'small muted' }, 'Saved on this device'), show(pinned),
+    h('div', { class: 'small muted' }, 'Reported by the nodes'), show(observed || token),
+    h('div', { class: 'row' }, h('div', { class: 'grow' }), keep, use),
+    out);
+  keep.addEventListener('click', () => card.remove()); // stays paused
+  use.addEventListener('click', action(use, out, async () => {
+    const r = await op('confirmTokenChange', { address: token.address });
+    out.replaceChildren(message('ok', r.accepted ? 'The new details are saved. Sending works again.' : 'The nodes describe this token differently again; the saved details stand and sending stays paused.'));
+    done();
+  }));
+  return card;
+}
+
 async function assetsView(s) {
   const aethAmt = h('strong', {}, '…');
   const proofNote = h('div', { class: 'small muted' }, developmentNetwork ? 'Dev network · read from the node' : 'Checking AETH balance…');
   const rows = h('div', { class: 'list' });
+  const review = h('div', { class: 'list', style: 'gap:10px' });
   const unverified = h('div', { class: 'list' });
   const unverifiedBox = h('details', { hidden: true },
     h('summary', {}, 'Unverified'),
@@ -345,6 +403,9 @@ async function assetsView(s) {
     }
     const t = assets.value;
     const officialSymbols = t.officialSymbols || [];
+    const flagged = [...(t.tokens || []), ...(t.unverified || [])].filter((x) => x.token.metadataChanged);
+    review.replaceChildren();
+    for (const x of flagged) review.append(await tokenReviewCard(x.token, () => load(true)));
     rows.replaceChildren(...(t.tokens || []).map((x) => holdingRow(x, officialSymbols, {
       onHide: async () => { await op('hideToken', { address: x.token.address }); load(false); },
     })));
@@ -368,7 +429,7 @@ async function assetsView(s) {
       h('div', { class: 'grow' }, h('div', {}, Brand.coinName), h('div', { class: 'small muted mono' }, shortAddress(s.address))),
       aethAmt, ' ', h('span', { class: 'muted' }, Brand.coinTicker)),
     h('h2', {}, 'Tokens'),
-    rows, unverifiedBox, note, updated)];
+    review, rows, unverifiedBox, note, updated)];
 }
 
 async function activity() {

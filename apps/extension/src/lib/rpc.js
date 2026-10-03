@@ -134,6 +134,37 @@ export class Rpc {
     return j.result;
   }
 
+  /**
+   * Ask every configured endpoint the same question and answer only when the
+   * ones that answer all agree — used for a token's first-seen metadata
+   * (audit A3: one untrusted RPC must not decide the units a transfer signs).
+   * Off-line endpoints and wrong-chain answers are skipped; an endpoint that
+   * answers differently is a disagreement, not a vote. Returns
+   * `{ result, sources }`, `sources` being how many endpoints agreed.
+   */
+  async callAgreed(method, params = []) {
+    const answers = [];
+    for (const url of this.urls) {
+      const b = this.backoff.get(url);
+      if (b && this.now() < b.until) continue;
+      try {
+        const chain = await this.post(url, 'eth_chainId', [], PROBE_TIMEOUT);
+        if (parseInt(chain.result, 16) !== this.chainId) continue;
+        const j = await this.post(url, method, params, TIMEOUT);
+        if (j.error) continue;
+        answers.push(j.result);
+      } catch { /* not answering */ }
+    }
+    if (!answers.length) throw new RpcError(`No ${Brand.project} node answers. Turn on the node in the ${Brand.project} app, or add a node in Settings.`, 4900);
+    const first = JSON.stringify(answers[0]);
+    if (answers.some((a) => JSON.stringify(a) !== first)) {
+      const e = new RpcError('The nodes did not agree on one answer.', -32603);
+      e.disagreed = true;
+      throw e;
+    }
+    return { result: answers[0], sources: answers.length };
+  }
+
   async checkedPost(url, method, params) {
     const answer = await this.post(url, method, params, TIMEOUT);
     if (answer.error) throw new RpcError(answer.error.message || 'node error', answer.error.code ?? -32603, answer.error.data);

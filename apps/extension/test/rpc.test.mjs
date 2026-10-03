@@ -87,3 +87,34 @@ test('a method an older node lacks is served by another node', async () => {
   const rpc = new Rpc(['http://old', 'http://new'], { fetchImpl: net.fetchImpl });
   assert.equal(await rpc.call('eth_call', [{}, 'latest']), '0xbeef');
 });
+
+test('callAgreed answers only when every node that answers agrees', async () => {
+  const net = fakeNet({
+    'http://a': (m) => (m === 'eth_chainId' ? { result: '0x1e64' } : { result: '0xaa' }),
+    'http://b': (m) => (m === 'eth_chainId' ? { result: '0x1e64' } : { result: '0xaa' }),
+    'http://off': () => { throw new Error('refused'); },
+    'http://other': (m) => (m === 'eth_chainId' ? { result: '0x1' } : { result: '0xaa' }),
+  });
+  const rpc = new Rpc(['http://a', 'http://b', 'http://off', 'http://other'], { fetchImpl: net.fetchImpl });
+  assert.deepEqual(await rpc.callAgreed('eth_call', [{}]), { result: '0xaa', sources: 2 });
+});
+
+test('callAgreed reports a disagreement instead of choosing an answer', async () => {
+  const net = fakeNet({
+    'http://a': (m) => (m === 'eth_chainId' ? { result: '0x1e64' } : { result: '0xaa' }),
+    'http://b': (m) => (m === 'eth_chainId' ? { result: '0x1e64' } : { result: '0xbb' }),
+  });
+  const rpc = new Rpc(['http://a', 'http://b'], { fetchImpl: net.fetchImpl });
+  await assert.rejects(rpc.callAgreed('eth_call', [{}]), (e) => e.disagreed === true && /agree/.test(e.message));
+});
+
+test('callAgreed counts the endpoints that answered and fails when none did', async () => {
+  const net = fakeNet({
+    'http://a': (m) => (m === 'eth_chainId' ? { result: '0x1e64' } : { result: '0xaa' }),
+    'http://off': () => { throw new Error('refused'); },
+  });
+  const rpc = new Rpc(['http://a', 'http://off'], { fetchImpl: net.fetchImpl });
+  assert.deepEqual(await rpc.callAgreed('eth_call', [{}]), { result: '0xaa', sources: 1 });
+  const none = new Rpc(['http://off'], { fetchImpl: net.fetchImpl });
+  await assert.rejects(none.callAgreed('eth_call', [{}]), (e) => e.code === 4900);
+});

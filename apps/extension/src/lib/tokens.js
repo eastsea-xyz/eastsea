@@ -29,9 +29,11 @@ export function parseTokenSources(file, chainId) {
   }
 }
 
-/** Tokens seen so far on a chain, and how far each list was read. */
+/** Tokens seen so far on a chain, and how far each list was read. `pending`
+ * holds addresses whose details could not be confirmed yet (the endpoints
+ * disagreed, or only one answered): they are retried on the next scan. */
 export function emptyCatalog() {
-  return { tokens: {}, rejected: [], factoryRead: 0, pairsRead: 0, launchesRead: 0 };
+  return { tokens: {}, pending: {}, rejected: [], factoryRead: 0, pairsRead: 0, launchesRead: 0 };
 }
 
 // ---- the few Solidity ABI pieces the scan needs ----
@@ -93,25 +95,46 @@ export function stringAt(data) {
 
 // ---- discovery and balances ----
 
-/** Symbol, name and decimals; null when `decimals` is missing or absurd. */
-export async function tokenInfo(address, read) {
+/**
+ * Symbol, name and decimals from three readers (thunks, so the pin policy in
+ * lib/tokenPin.js can source them its own way); null when `decimals` is
+ * missing or absurd.
+ */
+export async function tokenInfoFrom({ decimals, symbol, name }) {
   let d;
   try {
-    d = await uint64At(await read(address, call(SEL.decimals)));
-  } catch {
+    d = await uint64At(await decimals());
+  } catch (e) {
+    if (e?.tokenUnverified) throw e; // an unconfirmed read is not a null token
     return null;
   }
   if (d > 77) return null;
-  let symbol = '???';
-  let name = '';
+  let sym = '???';
+  let nm = '';
   try {
-    const s = await stringAt(await read(address, call(SEL.symbol)));
-    if (s) symbol = s;
-  } catch { /* keep ??? */ }
+    const s = await stringAt(await symbol());
+    if (s) sym = s;
+  } catch (e) {
+    if (e?.tokenUnverified) throw e;
+    /* keep ??? */
+  }
   try {
-    name = await stringAt(await read(address, call(SEL.name)));
-  } catch { /* keep empty */ }
-  return { address: address.toLowerCase(), symbol: symbol.slice(0, 16), name: name.slice(0, 48), decimals: d };
+    nm = await stringAt(await name());
+  } catch (e) {
+    if (e?.tokenUnverified) throw e;
+    /* keep empty */
+  }
+  return { address: '', symbol: sym.slice(0, 16), name: nm.slice(0, 48), decimals: d };
+}
+
+/** `tokenInfoFrom` with every field read through one reader, as the scan does. */
+export async function tokenInfo(address, read) {
+  const info = await tokenInfoFrom({
+    decimals: () => read(address, call(SEL.decimals)),
+    symbol: () => read(address, call(SEL.symbol)),
+    name: () => read(address, call(SEL.name)),
+  });
+  return info && { ...info, address: address.toLowerCase() };
 }
 
 /**
@@ -149,9 +172,13 @@ async function readList(contract, countSel, itemSel, from, cap, read, each) {
  */
 const ORIGIN_RANK = { seed: 1, pool: 2, dex: 3, launchpad: 4 };
 
-export async function discoverTokens(sources, catalog, read) {
-  const cat = { ...catalog, tokens: { ...catalog.tokens }, rejected: new Set(catalog.rejected) };
-  const found = [...(sources.seed || []).map((a) => [a, 'seed']), ...(sources.waeth ? [[sources.waeth, 'seed']] : [])];
+export async function discoverTokens(sources, catalog, read, infoOf = tokenInfo) {
+  const cat = { ...catalog, tokens: { ...catalog.tokens }, pending: { ...catalog.pending }, rejected: new Set(catalog.rejected) };
+  const found = [
+    ...Object.entries(cat.pending).map(([a, origin]) => [a, origin]), // retried every scan
+    ...(sources.seed || []).map((a) => [a, 'seed']),
+    ...(sources.waeth ? [[sources.waeth, 'seed']] : []),
+  ];
   cat.factoryRead = await readList(sources.tokenFactory, SEL.allTokensLength, SEL.allTokens, cat.factoryRead, CAPS.factoryTokens, read, (a) => found.push([a, 'dex']));
   cat.pairsRead = await readList(sources.pairFactory, SEL.allPairsLength, SEL.allPairs, cat.pairsRead, CAPS.pools, read, async (pair) => {
     for (const sel of [SEL.token0, SEL.token1]) {
@@ -167,11 +194,23 @@ export async function discoverTokens(sources, catalog, read) {
     if (known) {
       if ((ORIGIN_RANK[origin] || 0) > (ORIGIN_RANK[known.origin] || 0)) cat.tokens[key] = { ...known, origin };
     } else if (!cat.rejected.has(key)) {
-      const info = await tokenInfo(key, read);
-      if (info) cat.tokens[key] = { ...info, origin }; else cat.rejected.add(key);
+      let info;
+      try {
+        info = await infoOf(key, read);
+      } catch (e) {
+        // Unconfirmed details (the endpoints disagreed, or only one answered):
+        // neither catalogued nor rejected — the next scan tries again.
+        if (e?.tokenUnverified) {
+          cat.pending[key] = origin;
+          continue;
+        }
+        throw e;
+      }
+      delete cat.pending[key];
+      if (info) cat.tokens[key] = { ...info, address: key, origin }; else cat.rejected.add(key);
     }
   }
-  return { ...cat, rejected: [...cat.rejected] };
+  return { ...cat, pending: cat.pending, rejected: [...cat.rejected] };
 }
 
 /**
@@ -179,8 +218,8 @@ export async function discoverTokens(sources, catalog, read) {
  * Returns the updated catalog and the non-zero holdings (by symbol). Throws only
  * when a balance cannot be read, as in the app.
  */
-export async function scanTokens({ owner, sources, catalog, read }) {
-  const cat = await discoverTokens(sources, catalog, read);
+export async function scanTokens({ owner, sources, catalog, read, infoOf }) {
+  const cat = await discoverTokens(sources, catalog, read, infoOf);
   const held = [];
   for (const token of Object.values(cat.tokens)) {
     const balance = (await uintAt(await read(token.address, call(SEL.balanceOf, wordAddress(owner))))).toString();
@@ -191,6 +230,12 @@ export async function scanTokens({ owner, sources, catalog, read }) {
 }
 
 // ---- display ----
+
+/** Whole base units with thousands separators, for the confirmation line. */
+export function grouped(raw) {
+  const s = typeof raw === 'bigint' ? raw.toString() : String(raw);
+  return s.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
 
 /** Base units -> display text, at most 6 fraction digits with trailing zeros
  * dropped (TokenUnits.format in the app): exact for whole numbers, "<0.000001"

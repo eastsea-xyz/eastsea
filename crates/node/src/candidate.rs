@@ -15,7 +15,7 @@ use crate::roster::LocalKeys;
 use aether_execution::registry::{self, encode_beacon, REGISTRY};
 use aether_execution::EvmCall;
 use aether_light::block::{BeaconAnswer, Reattestation};
-use aether_rewards::beacons;
+use aether_rewards::{beacons, registry_v3};
 use aether_types::{Address, U256};
 use commonware_codec::Encode as _;
 use commonware_cryptography::Signer as _;
@@ -29,6 +29,8 @@ use tracing::{info, warn};
 /// In the candidate's data dir: a fresh DeviceCheck token (base64) the app
 /// writes for the node, used for the daily re-attestation.
 pub const DEVICE_TOKEN_FILE: &str = "devicecheck-token";
+/// Written by the Mac app before sleep/power-off and on wake/power return.
+pub const AVAILABILITY_FILE: &str = "availability-state";
 
 /// Where re-attestation requests go when set (the registrar's RPC URL);
 /// otherwise a follower asks its upstream.
@@ -291,6 +293,8 @@ pub async fn beacon_loop(chain: Chain, outbox: Outbox, keys: CandidateKeys) {
     let me = keys.validator_key();
     let mut sent_for = u64::MAX;
     let mut answering = Answering::default();
+    #[cfg(unix)]
+    let mut wake = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1()).expect("SIGUSR1 handler");
     loop {
         // No beacons while catching up — and none before any height is known:
         // one is a claim this Mac is current, and it would be checked against
@@ -310,7 +314,25 @@ pub async fn beacon_loop(chain: Chain, outbox: Outbox, keys: CandidateKeys) {
             (g.finalized.height, g.finalized.state.clone(), g.cfg.clone())
         };
         if aether_rewards::enabled(&state) {
-            answer_slots(&chain, &outbox, &keys, &mut answering).await;
+            let free_voting = registry_v3::is_v3(&state);
+            let leaving = free_voting && std::fs::read_to_string(keys.dir.join(AVAILABILITY_FILE)).ok().is_some_and(|v| v.trim() == "leaving");
+            if free_voting {
+                if let Some(c) = registry::candidates(&state).into_iter().find(|c| c.validator_key == me) {
+                    let on_chain = registry_v3::availability(&state, c.index).is_some_and(|(_, v)| v);
+                    if on_chain != leaving {
+                        let signal = crate::beacons::sign_availability(&keys.keys.signer, cfg.chain_id, c.index, height + 1, leaving);
+                        if let Err(e) = outbox.send_answer(&chain, signal).await {
+                            warn!(%e, leaving, "availability announcement not accepted");
+                        }
+                    }
+                }
+            }
+            if !leaving {
+                answer_slots(&chain, &outbox, &keys, &mut answering).await;
+            }
+            #[cfg(unix)]
+            tokio::select! { _ = tokio::time::sleep(Duration::from_secs(1)) => {}, _ = wake.recv() => {} }
+            #[cfg(not(unix))]
             tokio::time::sleep(Duration::from_secs(1)).await;
             continue;
         }

@@ -46,9 +46,9 @@ pub fn check(cfg: &ChainConfig) -> Vec<Rule> {
             "blocks record statements from height 1 and proofs pay (protocol 2)".into(),
         ),
         rule(
-            "registry v2",
-            state.code(&registry::REGISTRY) == registry::code_v2(),
-            "the voting-node registry starts as the v2 code".into(),
+            "registry v3",
+            state.code(&registry::REGISTRY) == aether_rewards::registry_v3::code(),
+            "the voting-node registry starts as the v3 code".into(),
         ),
         rule(
             "registration cap",
@@ -194,7 +194,7 @@ mod tests {
     const NAMES: [&str; 14] = [
         "protocol from genesis",
         "proof market",
-        "registry v2",
+        "registry v3",
         "registration cap",
         "16-seat growth",
         "node rewards",
@@ -225,7 +225,7 @@ mod tests {
         g1.protocol = 1;
         assert_eq!(
             off(g1),
-            ["protocol from genesis", "proof market", "registry v2", "registration cap", "16-seat growth"]
+            ["protocol from genesis", "proof market", "registry v3", "registration cap", "16-seat growth"]
         );
         // A premine (or a faucet) funds genesis accounts.
         let mut premine = mainnet();

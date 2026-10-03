@@ -110,6 +110,68 @@ fn hour_profiles_accrue_from_real_beacon_answers() {
 }
 
 #[test]
+fn new_genesis_skips_an_announced_candidate_and_accepts_its_return() {
+    let mut n = Net::new(Opts {
+        chain_id: 7_794,
+        node_rewards: true,
+        epoch_blocks: E,
+        macs: 5,
+        min_streak: Some(0),
+        history_v2: true,
+        protocol: 3,
+        reserve: None,
+        fees: false,
+        committee: Some((0..4).map(common::mac_entry).collect()),
+    });
+    let regs = (0..5).map(|i| n.register(i)).collect();
+    n.step_with(regs, None, vec![], vec![]);
+    n.run_to(4 * E);
+    let pool = aether_node::rotation::eligible(&n.parent.state, 4, 0);
+    assert_eq!(pool.len(), 5, "three recent answering hours suffice");
+
+    let leaving = aether_node::beacons::sign_availability(&n.voting[4], n.chain_id, 4, n.parent.height + 1, true);
+    let mut answers = n.answers();
+    answers.push(leaving);
+    n.step_with(vec![], None, vec![], answers);
+    n.run_to(5 * E);
+    assert!(!aether_node::rotation::eligible(&n.parent.state, 5, 0).contains(&common::mac_entry(4)));
+
+    let back = aether_node::beacons::sign_availability(&n.voting[4], n.chain_id, 4, n.parent.height + 1, false);
+    let mut answers = n.answers();
+    answers.push(back);
+    n.step_with(vec![], None, vec![], answers);
+    n.run_to(6 * E);
+    assert!(aether_node::rotation::eligible(&n.parent.state, 6, 0).contains(&common::mac_entry(4)));
+}
+
+#[test]
+fn announced_member_is_replaced_even_at_a_draw_boundary() {
+    let mut n = Net::new(Opts {
+        chain_id: 7_795,
+        node_rewards: true,
+        epoch_blocks: E,
+        macs: 8,
+        min_streak: Some(0),
+        history_v2: true,
+        protocol: 3,
+        reserve: None,
+        fees: false,
+        committee: Some((0..7).map(common::mac_entry).collect()),
+    });
+    let regs = (0..8).map(|i| n.register(i)).collect();
+    n.step_with(regs, None, vec![], vec![]);
+    n.run_to(SPAN - 2);
+    let leaving = aether_node::beacons::sign_availability(&n.voting[6], n.chain_id, 6, SPAN - 1, true);
+    let mut answers = n.answers();
+    answers.push(leaving);
+    n.step_with(vec![], None, vec![], answers);
+    n.step(vec![], None, vec![]);
+    let next = roster(&n).expect("an announced departure has priority at the draw boundary");
+    assert_eq!(next.len(), 7);
+    assert!(!next.contains(&common::mac_entry(6)) && next.contains(&common::mac_entry(7)));
+}
+
+#[test]
 fn a_silent_member_is_replaced_while_the_quorum_still_stands() {
     // Six seats (one swap per epoch: 6/3 − 1 = 1) recorded in the genesis
     // committee word, two spares waiting.
@@ -212,7 +274,18 @@ fn a_protocol3_spread_draw_hands_over_to_the_roster_it_commits() {
     // waiting Macs joins where the (here all-equal) worst-hour odds tie —
     // the seed decides, and the chain commits the roster it drew. The genesis
     // starts at protocol 3, so the spread draw is on from height 0.
-    let mut n = net_at(3, 6, None, (0..4).map(common::mac_entry).collect());
+    let mut n = Net::new(Opts {
+        chain_id: 7_796,
+        node_rewards: true,
+        epoch_blocks: E,
+        macs: 6,
+        min_streak: Some(0),
+        history_v2: false,
+        protocol: 3,
+        reserve: None,
+        fees: false,
+        committee: Some((0..4).map(common::mac_entry).collect()),
+    });
     let regs = (0..6).map(|i| n.register(i)).collect();
     n.step_with(regs, None, vec![], vec![]);
     // A day passes: the pool for draw 1 freezes at its first block, and the

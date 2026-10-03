@@ -15,6 +15,7 @@ use aether_execution::registry::{self, Candidate};
 use aether_execution::WorldState;
 use aether_light::block::{BeaconAnswer, Reattestation};
 use aether_rewards::beacons::{self, Due};
+use aether_rewards::registry_v3;
 use aether_types::{SignerScheme, U256};
 use commonware_codec::{DecodeExt as _, Encode as _};
 use commonware_cryptography::{ed25519, Signer as _, Verifier as _};
@@ -34,6 +35,12 @@ pub struct Checked {
 pub fn sign(key: &ed25519::PrivateKey, chain_id: u64, index: u64, due: &Due, attest: Option<Reattestation>) -> BeaconAnswer {
     let msg = beacons::message(chain_id, due.epoch, due.slot, &due.hash);
     BeaconAnswer { index, slot: due.slot, signature: hex::encode(key.sign(NAMESPACE, &msg).encode()), attest }
+}
+
+/// Sign an immediate leaving/back announcement for the next block.
+pub fn sign_availability(key: &ed25519::PrivateKey, chain_id: u64, index: u64, height: u64, leaving: bool) -> BeaconAnswer {
+    let msg = beacons::availability_message(chain_id, height, leaving);
+    BeaconAnswer { index, slot: beacons::availability_slot(height, leaving).expect("block height fits a beacon slot"), signature: hex::encode(key.sign(NAMESPACE, &msg).encode()), attest: None }
 }
 
 /// The registrar's P-256 key as the registry holds it (SEC1, uncompressed).
@@ -56,6 +63,25 @@ pub fn verify_reattestation(state: &WorldState, chain_id: u64, validator_key: &[
 /// Check `a` for the block at `height` built on `state`.
 pub fn verify(state: &WorldState, chain_id: u64, height: u64, a: &BeaconAnswer) -> Result<Checked, String> {
     let candidate = beacons::candidate(state, a.index).ok_or_else(|| format!("no candidate {}", a.index))?;
+    if let Some((signed_height, leaving)) = beacons::availability_of(a.slot) {
+        if !registry_v3::is_v3(state) || a.attest.is_some() {
+            return Err("availability signals require registry v3 and no re-attestation".into());
+        }
+        if signed_height != height {
+            return Err("availability signal is for a different block".into());
+        }
+        let previous = registry_v3::availability(state, a.index);
+        if previous.is_some_and(|(at, was_leaving)| at >= height || was_leaving == leaving) || (!leaving && previous.is_none()) {
+            return Err("availability already has this status".into());
+        }
+        let epoch = height / registry::epoch_blocks(state);
+        let key = ed25519::PublicKey::decode(candidate.validator_key.as_slice()).map_err(|_| "registered key is not ed25519")?;
+        let sig = hex::decode(&a.signature).ok().and_then(|b| ed25519::Signature::decode(b.as_slice()).ok()).ok_or("signature is not an ed25519 signature")?;
+        if !key.verify(NAMESPACE, &beacons::availability_message(chain_id, height, leaving), &sig) {
+            return Err("availability is not signed for this block by the voting key".into());
+        }
+        return Ok(Checked { candidate, due: Due { epoch, slot: a.slot, hash: [0; 32], period: height, needs_attestation: false }, attested: false });
+    }
     let due = beacons::check(state, height, &candidate, a.slot)?;
     let key = ed25519::PublicKey::decode(candidate.validator_key.as_slice()).map_err(|_| "registered key is not ed25519")?;
     let sig = hex::decode(&a.signature).ok().and_then(|b| ed25519::Signature::decode(b.as_slice()).ok()).ok_or("signature is not an ed25519 signature")?;
@@ -164,6 +190,22 @@ mod tests {
         apply(&mut s, CHAIN, h, std::slice::from_ref(&good)).unwrap();
         assert_eq!(beacons::beacon(&s, 0).answered(1), 1);
         assert!(apply(&mut s, CHAIN, h, &[good]).is_err(), "answered once");
+    }
+
+    #[test]
+    fn signed_leaving_and_back_are_epoch_bound_and_v3_only() {
+        let (mut s, key, h) = setup();
+        let leaving = sign_availability(&key, CHAIN, 0, h, true);
+        assert!(verify(&s, CHAIN, h, &leaving).is_err(), "old registry rejects the new signal");
+        registry_v3::genesis(&mut s).unwrap();
+        let forged = sign_availability(&ed25519::PrivateKey::from_seed(3), CHAIN, 0, h, true);
+        assert!(verify(&s, CHAIN, h, &forged).is_err());
+        apply(&mut s, CHAIN, h, &[leaving.clone()]).unwrap();
+        assert_eq!(registry_v3::availability(&s, 0), Some((h, true)));
+        assert!(verify(&s, CHAIN, h + EB, &leaving).is_err(), "old epoch cannot replay");
+        let back = sign_availability(&key, CHAIN, 0, h + 1, false);
+        apply(&mut s, CHAIN, h + 1, &[back]).unwrap();
+        assert_eq!(registry_v3::availability(&s, 0), Some((h + 1, false)));
     }
 
     #[test]

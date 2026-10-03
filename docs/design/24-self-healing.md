@@ -115,3 +115,19 @@
 **시험(3부)**: `apps/wallet/Tests/update-state`(순수 swiftc 프로그램 — 모든 전이, 원인별 백오표 배수·상한, 각 상태에서 죽인 뒤 재개, 깨진·빈 기록, 거꾸로 가는 시계; `mkdir -p ./tmp && swiftc -o ./tmp/update-state-check apps/wallet/Sources/Brand.swift apps/wallet/Sources/UpdateTracker.swift apps/wallet/Tests/update-state/main.swift && ./tmp/update-state-check`). macOS·iOS 디버그 빌드 통과.
 
 **다루지 않은 것(3부)**: 실제 기기에서 Sparkle 설치 단계의 실패 주입(상태 기계는 순수 시험으로만 검증 — 실 업데이트 경로는 appcast가 바뀌어야 시험된다), 게이트 사전검사 중 네트워크 오류와 온체인 거부의 구분(둘 다 "거부"로 기록된다 — 게이트가 항목을 나중에 통과시키지 않으면 다음 appcast 항목까지 기다린다), 업데이트 서버가 appcast 자체를 못 주는 상황의 별도 문구(네트워크 실패 문장으로 처리), iOS에는 배선 없음(Sparkle은 macOS 전용; 상태 기계 파일만 공유 컴파일).
+
+## 구현 3부 #6·#10 (2026-10-03, 레드팀 #6 시계 점프 · #10 잘못된 위치 실행)
+
+**시계 (#6)** — `Clock.swift`(새 파일: `Clock` 프로토콜·`MonotonicInstant`·`UptimeClock`), `NodeWatchdog.swift`·`NodeController.swift`·`UpdateTracker.swift`:
+- 앱의 모든 **지속 시간 판정** — 멈춤 시계(60초), 충돌 창(600초), 빠른 죽음(60초), 후보 재확인(60초), 투표 상태 갱신 스로틀(10초) — 을 단조 시계로 옮겼다. `MonotonicInstant`는 값 타입 래퍼라 `Date`를 단조 자리에 넘기면 **컴파일이 안 된다**(시험 파일이 컴파일되는 것 자체가 그 보증이다). 사람이 읽거나 재시작을 넘어야 하는 값만 `Date`에 남는다.
+- 단조 시계로 `DispatchTime.now().uptimeNanoseconds`를 골랐다. Darwin의 `CLOCK_MONOTONIC`은 **잠자는 동안도 전진**해서 잠에서 깨어난 뒤 wake 알림을 놓치면 8시간짜리 거짓 멈춤이 된다(=#6이 막으려는 바로 그 사고). `mach_absolute_time` 계열(`DispatchTime`·`systemUptime`)은 깨어 있는 동안에만 전진한다: 잠자기 자체는 멈춤으로 보이지 않고, 뒤로도 가지 않는다. 정수 나노초라 macOS·iOS 모두에서 같은 의미다. 기존 sleep/wake 무효화(#9)는 그대로 남아 실제 깨어남에서는 측정을 다시 시작하고, 이 시계는 **wake 알림을 잃은 경우까지** 무해하게 만든다.
+- 벽시계 점프가 재시작을 만들거나 숨일 수 없음을 시험으로 증명한다: 58초 얼어 붙은 뒤 "+2시간 점프"(수동 변경·NTP step·DST)를 관측에 반영하지 않는 단조 폴은 여전히 기다리고, 60초의 진짜 깨어 있던 시간만 재시작한다. 충돌 창·빠른 죽음 스트릭도 단조 거리만 센다.
+- `UpdateTracker`의 영속 시각(`startedAt`·`nextRetryAt`)은 재시작을 넘어야 해서 벽시계일 수밖에 없다 — 대신 **강건하게** 만들었다: 우리가 쓸 수 있는 가장 먼 미래는 최대 백오프(6시간)이므로, 그보다 먼 영속 시각은 시계가 틀리던 때의 산물이다. init에서 now로 클램프하고, 세션 중 시계가 뒤로 점프해 nextRetryAt이 6시간+ 미래가 되면 즉시 due로 판정한다(시도 횟수는 영속되므로 타이트 루프가 되지 않는다). 건강 확인 창은 startedAt이 미래면 `min(startedAt, now)`부터 잰다 — 조기 발화도, 영원한 미발화도 없다.
+
+**위치 (#10)** — `InstallLocation.swift`(새 파일), `NodeController.swift`·`AetherWalletApp.swift`·`ProverMenu.swift`·`SimpleDashboard.swift`:
+- 런치 시 번들 경로와 볼륨 읽기 전용 플래그로 실행 위치를 판정한다(순수 함수, 규칙은 한 곳에 명시): (1) App Translocation 경로 → 안 됨, (2) 읽기 전용 볼륨(마운트된 DMG·잠긴 디스크) → 안 됨, (3) `/DerivedData/`·`/build/` 개발 빌드 → 됨(우리가 직접 빌드·실행하는 자리; 허위 경고 금지), (4) `/Applications`·`~/Applications`(하위 폴더 포함, 경로 구분자 경계 검사) → 됨, (5) 나머지(Downloads·Desktop·Documents·`/Volumes/…`) → 안 됨. 볼륨 플래그를 읽을 수 없으면 쓰기 가능으로 취급한다(fail-open: 제대로 설치된 앱을 허위로 재촉하지 않는다).
+- 안 되는 위치에서는: **노드가 시작하지 않고**(`start()` 가드), **login item을 등록하지 않는다**(`startAtLogin` setter 가드 + AppDelegate의 기본 등록 스킵 — "이미 적용함" 표시도 남기지 않아 올바른 폴더로 옮긴 뒤 첫 실행에 기본값이 다시 적용된다), **명령줄 도구를 설치하지 않는다**(사라질 번들로의 심볼릭 링크 방지). 사이드바와 메뉴 막대 패널에 한 문장("EastSea를 응용 프로그램 폴더로 옮긴 뒤 실행해 주세요." / 영문)과 Finder에서 보여주는 버튼을 둔다. **지갑의 읽기 전용 뷰는 결코 차단하지 않는다** — 노드만 로컬에서 안 돌 뿐 지갑은 원격 검증자 폴백(층 3)으로 그대로 동작한다. 서명·번들 ID·Sparkle·appcast는 전혀 바꾸지 않았다.
+
+**시험(3부)**: `apps/wallet/Tests/watchdog`(MonotonicInstant 산술·UptimeClock 단조성·벽시계 ±점프가 멈춤·충돌 창 판정에 영향 없음; 컴파일 명령에 `Sources/Clock.swift` 추가), `apps/wallet/Tests/update-state`(+30일 시계에서 쓴 기록을 정직한 시계로 재개하면 클램프되어 즉시 due·건강 창은 제시간에 끝남, 세션 중 −10시간 점프로 6시간+ 미래가 된 재시도는 즉시 due, 미래가 된 startedAt은 조기 발화 없음), `apps/wallet/Tests/install-location`(새 swiftc 프로그램: /Applications·하위 폴더·~/Applications 허용, DMG·Translocation·Downloads·Desktop·읽기 전용 볼륨 거부, DerivedData·build/ 개발 빌드 허용, "/Applications-Backup" 경계, 문장은 경로·전문용어 없음). 세 프로그램 모두 통과, macOS·iOS 디버그 빌드 통과.
+
+**다루지 않은 것(3부)**: 실기기에서 DMG·Translocation 실행의 수동 확인(규칙은 순수 시험으로만 검증 — macOS가 실제로 만드는 경로 형식에 의존한다), 위치 판정의 재평가 없음(런치 시 한 번; 실행 중 번들을 옮기면 다음 실행부터 적용된다), 시간대·DST는 사람이 읽는 표시용 `Date`에만 영향(지속 시간 판정은 이미 단조라 무관), iOS에는 위치 규칙이 없다(번들이 샌드박스 컨테이너에 있고 노드도 없다 — 공유 컴파일만).

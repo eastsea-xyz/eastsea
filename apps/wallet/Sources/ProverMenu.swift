@@ -48,6 +48,20 @@ struct MenuBarPanel: View {
                 Text(nodeLine).font(.aeCaption).foregroundStyle(.secondary)
                 EarningsMenuLine()
             }
+            if node.wrongLocation {
+                // Red team #10: one sentence wherever the node would be, plus
+                // a way to get to the bundle to move it.
+                HStack(alignment: .top) {
+                    Text(InstallLocation.moveSentence).font(.aeCaption).foregroundStyle(.orange)
+                    Button {
+                        InstallLocation.revealInFinder()
+                    } label: {
+                        Image(systemName: "folder")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Show in Finder")
+                }
+            }
             if node.prove, let p = node.prover {
                 VStack(alignment: .leading, spacing: 2) {
                     if let h = p.proving { Text("Proving block #\(h)…") }
@@ -92,12 +106,13 @@ struct MenuBarPanel: View {
     }
 
     private var nodeLine: String {
+        if node.wrongLocation { return InstallLocation.moveSentence }
         switch node.state {
-        case .off: "Off"
-        case .starting: node.height > 0 ? "Catching up · block #\(node.height)" : "Starting…"
-        case .running: "Verifying · block #\(node.height)"
-        case .waitingForPower: "Paused until the Mac is on power"
-        case .failed(let e): e
+        case .off: return "Off"
+        case .starting: return node.height > 0 ? "Catching up · block #\(node.height)" : "Starting…"
+        case .running: return "Verifying · block #\(node.height)"
+        case .waitingForPower: return "Paused until the Mac is on power"
+        case .failed(let e): return e
         }
     }
 

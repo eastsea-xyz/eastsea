@@ -102,6 +102,12 @@ final class NodeController: ObservableObject {
     var startAtLogin: Bool {
         get { SMAppService.mainApp.status == .enabled }
         set {
+            if wrongLocation, newValue {
+                // Red team #10: never point a login item at a place that
+                // disappears (a DMG, a translocated copy). The toggle reads
+                // back off, and the move sentence says why.
+                return
+            }
             do {
                 if newValue { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
             } catch {
@@ -109,6 +115,22 @@ final class NodeController: ObservableObject {
             }
             objectWillChange.send()
         }
+    }
+    /// Durations — the stall clock, the crash window, retry throttles — run
+    /// on this never-jumping clock (red team #6). Wall-clock `Date` stays
+    /// only where a person reads it.
+    private let clock: Clock
+    /// Red team #10: the app is running from a place it cannot live in — a
+    /// mounted DMG, a translocated Downloads copy, a read-only volume. From
+    /// there the node never starts and no login item is registered; the
+    /// wallet keeps working through other nodes and one sentence says what
+    /// to do. The wallet's read-only views are never blocked for this.
+    @Published private(set) var wrongLocation: Bool
+
+    init(clock: Clock = UptimeClock()) {
+        self.clock = clock
+        wrongLocation = !InstallLocation.currentIsRunnable
+        if wrongLocation { state = .failed(InstallLocation.moveSentence) }
     }
     private var powerTimer: Timer?
     /// Held while this Mac is a validator (see `applyDuty`).
@@ -194,7 +216,9 @@ final class NodeController: ObservableObject {
     /// The "this Mac's node key cannot be read" notice went out (once per
     /// bout; red team #5 — a person must restore the key).
     private var identityNoticePosted = false
-    private var nextCandidateRetry = Date.distantPast
+    /// Monotonic (red team #6): a wall-clock jump must not postpone the
+    /// key-loss re-check for hours or fire it instantly.
+    private var nextCandidateRetry = MonotonicInstant.distantPast
     /// Sleep/wake observers (red team #9): the watchdog's timing is stale the
     /// moment the Mac sleeps. Added once, kept for the app's lifetime.
     private var wakeObservers: [NSObjectProtocol] = []
@@ -241,6 +265,13 @@ final class NodeController: ObservableObject {
     }
 
     func start() {
+        guard !wrongLocation else {
+            // Red team #10: from a DMG/Downloads/read-only place the node's
+            // data would point into a bundle that disappears. One sentence;
+            // the wallet keeps working through other nodes.
+            state = .failed(InstallLocation.moveSentence)
+            return
+        }
         guard process == nil else { return }
         guard let binary else {
             state = .failed("This build does not include the node")
@@ -254,7 +285,7 @@ final class NodeController: ObservableObject {
         }
         announceAvailability(leaving: Self.onBattery)
         loadCandidate(binary)
-        nextCandidateRetry = Date().addingTimeInterval(60)
+        nextCandidateRetry = clock.now.advanced(by: 60)
         var args = ["run", "--data", Self.dataDir.path, "--rpc-port", String(Self.port), "--port", String(Self.p2pPort), "--exit-with-parent"]
         if let network = Bundle.main.url(forResource: "network", withExtension: "json") {
             args += ["--network", network.path]
@@ -286,7 +317,7 @@ final class NodeController: ObservableObject {
             return
         }
         process = p
-        watchdog.started(Date())
+        watchdog.started(clock.now)
         state = .starting
         watchSleep()
         poll = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
@@ -360,7 +391,7 @@ final class NodeController: ObservableObject {
         switched = false
         if !UserDefaults.standard.bool(forKey: "useDevelopmentNetwork") { useLocalNode(port: nil) }  // the wallet reads other nodes from this moment on
         applyDuty()
-        switch watchdog.exited(Date(), code: status, signaled: proc.terminationReason == .uncaughtSignal, log: nodeLogTail()) {
+        switch watchdog.exited(clock.now, code: status, signaled: proc.terminationReason == .uncaughtSignal, log: nodeLogTail()) {
         case .restart(let after):
             // Restart with backoff (docs/design/24-self-healing.md layer 2):
             // the wallet is on remote nodes already, so a few seconds cost
@@ -454,11 +485,11 @@ final class NodeController: ObservableObject {
         return v["ownership"] as? String
     }
 
-    private var lastVotingCheck = Date.distantPast
+    private var lastVotingCheck = MonotonicInstant.distantPast
 
     private func refreshVoting() {
-        guard let key = candidate?.validatorKey, Date().timeIntervalSince(lastVotingCheck) > 10 else { return }
-        lastVotingCheck = Date()
+        guard let key = candidate?.validatorKey, clock.now.elapsed(since: lastVotingCheck) > 10 else { return }
+        lastVotingCheck = clock.now
         Task.detached {
             let status = try? votingNodeStatus(validatorKey: key)
             await MainActor.run {
@@ -540,8 +571,8 @@ final class NodeController: ObservableObject {
     }
 
     private func check() {
-        if candidate == nil, Date() >= nextCandidateRetry {
-            nextCandidateRetry = Date().addingTimeInterval(60)
+        if candidate == nil, clock.now >= nextCandidateRetry {
+            nextCandidateRetry = clock.now.advanced(by: 60)
             if let binary { loadCandidate(binary) }
         }
         refreshVoting()
@@ -591,7 +622,7 @@ final class NodeController: ObservableObject {
                 // restart costs the network a signature). The incident of
                 // 2026-09-29 looked exactly like this, and "끊김" told the
                 // user nothing.
-                if case .restart = self.watchdog.polled(Date(), local: local, network: network, activity: activity, voting: self.isValidator) {
+                if case .restart = self.watchdog.polled(self.clock.now, local: local, network: network, activity: activity, voting: self.isValidator) {
                     self.restartIfRunning()
                 }
             }

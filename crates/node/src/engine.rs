@@ -191,10 +191,13 @@ fn archive_cfg<C>(prefix: &str, name: &str, page_cache: CacheRef, codec_config: 
 /// 3. It is for the current committee epoch; an earlier epoch is ignored
 ///    (Ok(None)) rather than refused, so a value left set after an epoch change
 ///    never bricks the node.
-/// 4. A first recovery (no vote journal for the view exists yet) must name the
-///    last stored finalization: starting lower forks the node away from
-///    finalizations other validators keep. Restarts after the recovery find the
-///    journal and start wherever the value says, as before.
+/// 4. The `-consensus-r<view>` vote journal already exists: the value may only
+///    restart a past recovery, whose journal replays the votes it cast. A first
+///    recovery — no such journal — always refuses (audit 4, A4-3): the last
+///    finalized view is not evidence of the highest view this Mac may have
+///    signed, so a fresh journal under the floor could sign a view twice with
+///    the same committee share. The safe path is no override at all: follow
+///    until the next committee round starts a fresh share and journal.
 pub async fn recover<E: BufferPooler + Clock + Metrics + Storage>(
     context: &E,
     finalizations: &FinalizedCerts<E>,
@@ -224,13 +227,12 @@ pub async fn recover<E: BufferPooler + Clock + Metrics + Storage>(
     let journal_exists = partition_exists(context, &partition)
         .await
         .map_err(|e| format!("{value}, but could not look for the {partition} vote journal: {e}"))?;
-    if Some(height) != last && !journal_exists {
+    if !journal_exists {
         return Err(format!(
-            "{value}, but the first recovery (the {partition} vote journal does not exist yet) must name the last stored finalization, height {}",
-            last.unwrap_or_default()
+            "{value}, but the {partition} vote journal does not exist: the last finalization is not evidence of the highest view this Mac may have signed, and a fresh journal there could sign twice with this committee share. Leave AETHER_RECOVER_CONSENSUS unset and restart: this Mac follows and serves until the next committee round starts a fresh share and journal"
         ));
     }
-    tracing::warn!(view, height, "recovering consensus from a stored finalization with a vote journal of its own");
+    tracing::warn!(view, height, "restarting consensus from a stored finalization with its own vote journal");
     Ok(Some(f))
 }
 
@@ -245,20 +247,22 @@ async fn partition_exists<E: Storage>(context: &E, partition: &str) -> Result<bo
 
 /// The process exits with this code when its vote journal cannot be trusted
 /// (red team #4): the archive shows this Mac already delivered finalizations
-/// in the current epoch, but the journal holding the votes it cast in that
-/// epoch is gone. Voting must not resume on an empty journal — that is how a
-/// key signs twice — so the supervisor follows instead, until the next
-/// committee round (or an operator-led `AETHER_RECOVER_CONSENSUS`).
+/// in the epoch, but the journal holding the votes it cast in that epoch is
+/// gone. Voting must not resume on an empty journal — that is how a key
+/// signs twice — so the supervisor follows instead, until the next
+/// committee round brings a fresh share and journal.
 pub const EXIT_JOURNAL: i32 = 8;
 
 /// The restart gate's verdict on the vote journal: the state database, the
 /// block archive and the vote journal are diagnosed apart (red team #4), and
 /// only a journal this Mac's own history explains may take more votes.
 ///
-/// - `recovered`: the operator-directed `AETHER_RECOVER_CONSENSUS` recovery,
-///   which by design starts a journal of its own;
 /// - `journal_has_votes`: the current epoch's journal partition holds votes —
-///   a normal restart, whatever the archive says;
+///   a normal restart, whatever the archive says. A restarted
+///   `AETHER_RECOVER_CONSENSUS` recovery passes the same way: the journal its
+///   past recovery created holds the votes it cast. There is no override
+///   bypass (audit 4, A4-3) — a journal-less recovery never reaches the gate,
+///   `recover` refuses it first;
 /// - `delivered`: the last height this Mac delivered as a validator. `None`
 ///   (a joining member's fresh archive) or below `epoch_start` (the epoch
 ///   began after its last delivery — including every earlier epoch) means it
@@ -267,16 +271,12 @@ pub const EXIT_JOURNAL: i32 = 8;
 ///   were voted into — is untrusted, as is a journal that cannot even be
 ///   looked at (`lookup_failed`).
 fn journal_gate(
-    recovered: bool,
     journal_has_votes: bool,
     delivered: Option<u64>,
     epoch_start: u64,
     lookup_failed: bool,
     previously_started: bool,
 ) -> Result<(), &'static str> {
-    if recovered {
-        return Ok(());
-    }
     if lookup_failed {
         return Err("the vote journal cannot be examined");
     }
@@ -398,14 +398,17 @@ where
         }
         tracing::info!(checkpoint = restored, replayed_to = replayed.max(restored), "restored finalized state");
 
-        // Recovery (docs/design/13-roadmap.md F-P0): AETHER_RECOVER_CONSENSUS=<view>@<height>
-        // starts simplex from the finalization stored at <height>, which must be at <view>,
-        // with a vote journal of its own. Every validator restarts with the same value and
-        // keeps it set: later restarts reuse the same floor and journal, so nobody votes
-        // twice in a view. Once the committee moves to a new epoch the value is ignored.
-        // Used when a view was notarized but its block reached no store (the chain then
-        // cannot extend it); votes above that finalization are dropped, and nothing
-        // finalized changes. A bare <view> means the last stored finalization.
+        // Recovery (docs/design/13-roadmap.md F-P0, audit 4 A4-3):
+        // AETHER_RECOVER_CONSENSUS=<view>@<height> only restarts a past
+        // recovery — the `-consensus-r<view>` journal it created replays the
+        // votes cast above that floor, so nobody votes twice in a view. A
+        // first recovery (no such journal) is refused in `recover`: the last
+        // finalized view is not evidence of the highest view this Mac may
+        // have signed, and a fresh journal under it could double-vote with
+        // the same committee share; the safe alternative is following until
+        // the next committee round. Once the committee moves to a new epoch
+        // the value is ignored. A bare <view> means the last stored
+        // finalization.
         let recovered = match std::env::var("AETHER_RECOVER_CONSENSUS").ok() {
             Some(v) => match recover(&context, &finalizations, &prefix, cfg.epocher.current(), &v).await {
                 Ok(f) => f,
@@ -435,7 +438,6 @@ where
         // accounted for. A missing journal with deliveries inside the epoch
         // means the journal was lost — never voted over with a fresh one.
         if let Err(why) = journal_gate(
-            recovered.is_some(),
             matches!(&journal_sections, Ok(n) if *n > 0),
             Certificates::last_index(&finalizations).map(|h| h.get()),
             epocher.first(epoch).map(|h| h.get()).unwrap_or(0),
@@ -448,7 +450,7 @@ where
                 %why,
                 "this Mac's vote journal cannot be trusted: voting does not resume. \
                  The supervisor follows instead; the next committee round starts a \
-                 fresh journal, and AETHER_RECOVER_CONSENSUS is the operator-led override"
+                 fresh share and journal"
             );
             std::process::exit(EXIT_JOURNAL);
         }
@@ -609,37 +611,40 @@ mod tests {
     /// Red team #4, the restart gate: a validator resumes voting only when
     /// the votes it cast in this epoch are still accounted for. Every way a
     /// Mac legitimately finds no journal passes; the one that means loss —
-    /// deliveries inside the epoch, journal gone — refuses.
+    /// deliveries inside the epoch, journal gone — refuses. There is no
+    /// override bypass (audit 4, A4-3): a journal-less recovery never
+    /// reaches the gate, `recover` refuses it first, and a restarted
+    /// recovery passes through its own journal's votes like any restart.
     #[test]
     fn the_journal_gate_refuses_only_a_lost_journal() {
         const START: u64 = 3_600;
 
         // A normal restart mid-epoch: the journal holds this epoch's votes.
-        assert!(journal_gate(false, true, Some(4_200), START, false, true).is_ok());
+        assert!(journal_gate(true, Some(4_200), START, false, true).is_ok());
         // A first committee at genesis (epoch 0, journal present).
-        assert!(journal_gate(false, true, Some(9), 0, false, true).is_ok());
+        assert!(journal_gate(true, Some(9), 0, false, true).is_ok());
 
         // A joining member: fresh archives, nothing delivered, no journal yet.
-        assert!(journal_gate(false, false, None, START, false, false).is_ok());
+        assert!(journal_gate(false, None, START, false, false).is_ok());
         // The epoch just began; its deliveries are all from earlier epochs.
-        assert!(journal_gate(false, false, Some(3_599), START, false, false).is_ok());
+        assert!(journal_gate(false, Some(3_599), START, false, false).is_ok());
         // Exactly at the boundary: still nothing delivered inside the epoch.
-        assert!(journal_gate(false, false, Some(START - 1), START, false, false).is_ok());
+        assert!(journal_gate(false, Some(START - 1), START, false, false).is_ok());
         // A validator can sign before the first finalization; its durable
         // epoch marker still forbids a new journal after loss.
-        assert!(journal_gate(false, false, None, START, false, true).is_err());
+        assert!(journal_gate(false, None, START, false, true).is_err());
 
         // The loss the gate exists for: this Mac delivered inside the epoch,
-        // and the journal those votes went into is gone.
-        assert!(journal_gate(false, false, Some(START), START, false, false).is_err());
-        assert!(journal_gate(false, false, Some(4_200), START, false, false).is_err());
+        // and the journal those votes went into is gone. A journal-less
+        // recovery is exactly this case — the old bypass would have allowed
+        // it to vote again from an empty journal.
+        assert!(journal_gate(false, Some(START), START, false, false).is_err());
+        assert!(journal_gate(false, Some(4_200), START, false, false).is_err());
         // And with the journal's own votes present, those same deliveries are
-        // the normal restart this whole check must not break.
-        assert!(journal_gate(false, true, Some(4_200), START, false, true).is_ok());
+        // the normal restart this whole check must not break — including a
+        // restarted AETHER_RECOVER_CONSENSUS recovery.
+        assert!(journal_gate(true, Some(4_200), START, false, true).is_ok());
         // A journal that cannot be examined is not trusted either.
-        assert!(journal_gate(false, false, Some(4_200), START, true, false).is_err());
-
-        // The operator-led recovery starts a journal of its own, on purpose.
-        assert!(journal_gate(true, false, Some(4_200), START, false, true).is_ok());
+        assert!(journal_gate(false, Some(4_200), START, true, false).is_err());
     }
 }

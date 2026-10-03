@@ -41,7 +41,7 @@
 
 ## 창업자 Mac을 영구히 잃으면
 
-예비 키가 좌석을 채우는 동안 이 Mac은 확정 정족수의 일부다(최대 3석 = 4석 위원회의 3-of-4 정족수 전부를 혼자 쥔다). 이 절은 그 Mac을 영구히 잃었을 때의 개요다(2026-09-29, [12-launch-plan.md](../design/12-launch-plan.md) 빠른 메인넷 조건 (8), [15-node-rewards.md](../design/15-node-rewards.md) "한계"). `AETHER_RECOVER_CONSENSUS`([consensus-recovery.md](consensus-recovery.md))는 멈춘 뷰를 마지막 확정 인증서로 되돌리는 절차일 뿐 위원회나 share를 바꾸지 못하므로 여기서는 소용이 없다.
+예비 키가 좌석을 채우는 동안 이 Mac은 확정 정족수의 일부다(최대 3석 = 4석 위원회의 3-of-4 정족수 전부를 혼자 쥔다). 이 절은 그 Mac을 영구히 잃었을 때의 개요다(2026-09-29, [12-launch-plan.md](../design/12-launch-plan.md) 빠른 메인넷 조건 (8), [15-node-rewards.md](../design/15-node-rewards.md) "한계"). `AETHER_RECOVER_CONSENSUS`([consensus-recovery.md](consensus-recovery.md))는 과거 복구의 투표 기록을 재시작하는 것일 뿐(2026-10-04 감사 4 A4-3 이후 새 복구 시작은 거부된다) 위원회나 share를 바꾸지 못하므로 여기서는 소용이 없다.
 
 | 상황 | 복구 |
 |---|---|

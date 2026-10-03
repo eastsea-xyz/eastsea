@@ -1333,7 +1333,10 @@ fn reshare(
         offline,
         max_message: MAX_BLOCK_BYTES + 1024 * 1024,
     };
-    let round = aether_node::dkg::Round::reshare(previous, new.validators(), old_file.round + 1);
+    let mut round = aether_node::dkg::Round::reshare(previous, new.validators(), old_file.round + 1);
+    if old_file.chain_id == 7_780 {
+        round = round.legacy_agreement();
+    }
     let next_round = round.round;
     // A fresh runtime directory per attempt: a retried round never reads an older one's state.
     let secs = std::time::SystemTime::now()
@@ -2599,9 +2602,13 @@ fn run_dkg(
         let (sender, receiver) = network.register(0, Quota::per_second(NZU32!(256)));
         network.start();
         tracing::info!(index = p2p.index, n = p2p.n, round, "dkg: started");
+        let mut key_round = aether_node::dkg::Round::dkg(p2p.validators(), round);
+        if chain_id == 7_780 {
+            key_round = key_round.legacy_agreement();
+        }
         aether_node::dkg::run(
             p2p.keys.signer.clone(),
-            aether_node::dkg::Round::dkg(p2p.validators(), round),
+            key_round,
             None,
             sender,
             receiver,

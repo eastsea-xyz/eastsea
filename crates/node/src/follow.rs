@@ -84,9 +84,10 @@ impl FinalityArchive {
     }
 }
 
-/// Largest snapshot a new Mac downloads. It is held in memory (twice, while
-/// decoding) before the certified block checks it, so it stays well under the
-/// smallest Mac's memory; replaying from genesis remains the fallback.
+/// Largest snapshot a new Mac downloads. This is a wire bound, not a memory
+/// budget: decoding overlaps the assembled bytes and decoded entries; later,
+/// certification overlaps decoded entries and a rebuilt state. Replay remains
+/// the fallback.
 const MAX_SNAPSHOT: usize = 1 << 30;
 /// Smallest chunk accepted (bounds the number of requests).
 const MIN_SNAPSHOT_CHUNK: usize = 64 << 10;
@@ -276,19 +277,16 @@ async fn download_with(
         crate::chain::tick();
         Ok::<Vec<u8>, String>(data)
     };
-    let mut bytes = Vec::with_capacity(size.min(64 << 20));
-    if size <= chunk {
-        bytes.extend(chunk_at(0).await?);
-    } else {
-        let parts: Vec<Vec<u8>> = futures::stream::iter(0..size.div_ceil(chunk) as u64)
-            .map(chunk_at)
-            .buffered(SNAPSHOT_PARALLEL)
-            .try_collect()
-            .await?;
-        for p in parts {
-            bytes.extend(p);
-        }
-    }
+    // Keep only the assembled buffer plus at most SNAPSHOT_PARALLEL in-flight
+    // chunks; collecting all chunks separately doubled the download footprint.
+    let bytes = futures::stream::iter(0..size.div_ceil(chunk) as u64)
+        .map(chunk_at)
+        .buffered(SNAPSHOT_PARALLEL)
+        .try_fold(Vec::with_capacity(size.min(64 << 20)), |mut bytes, part| async move {
+            bytes.extend_from_slice(&part);
+            Ok(bytes)
+        })
+        .await?;
     // Integrity of the download; authenticity comes from the certified block below.
     if bytes.len() != size || crate::rpc::blake3_hex(&bytes) != want {
         return Err("snapshot download does not match its BLAKE3".into());

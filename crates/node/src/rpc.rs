@@ -11,6 +11,9 @@ use aether_types::{Address, TxEnvelope, TxHash, U256};
 use axum::{extract::State, routing::post, Json, Router};
 use serde_json::{json, Value};
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 /// Validators serve certified blocks from marshal; a follower from what it verified.
@@ -48,26 +51,109 @@ pub struct RpcState {
     pub shards: Option<std::sync::Arc<crate::shards::Shards>>,
 }
 
-/// The snapshot being served: (height, serialized bytes).
-pub type SnapshotCache = std::sync::Arc<std::sync::Mutex<Option<(u64, std::sync::Arc<Vec<u8>>)>>>;
+/// The snapshot being served: (height, serialized bytes). One caller builds;
+/// other callers get a prompt error instead of lining up behind a long build.
+pub type CachedSnapshot = (u64, Arc<Vec<u8>>);
+
+#[derive(Clone, Default)]
+pub struct SnapshotCache(Arc<SnapshotCacheInner>);
+
+#[derive(Default)]
+struct SnapshotCacheInner {
+    bytes: Mutex<Option<CachedSnapshot>>,
+    queued: AtomicBool,
+    building: AtomicBool,
+    last_attempt: Mutex<Option<Instant>>,
+    manifest: Mutex<Option<(std::sync::Weak<Vec<u8>>, String)>>,
+}
+
+impl SnapshotCache {
+    pub fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, Option<CachedSnapshot>>> {
+        self.0.bytes.lock()
+    }
+
+    fn manifest(&self, bytes: &Arc<Vec<u8>>) -> String {
+        let mut cached = self.0.manifest.lock().expect("snapshot manifest");
+        if let Some((old, digest)) = cached.as_ref() {
+            if old.upgrade().is_some_and(|old| Arc::ptr_eq(&old, bytes)) { return digest.clone(); }
+        }
+        let digest = blake3_hex(bytes);
+        *cached = Some((Arc::downgrade(bytes), digest.clone()));
+        digest
+    }
+}
+
+struct SnapshotBuild<'a>(&'a AtomicBool);
+impl Drop for SnapshotBuild<'_> {
+    fn drop(&mut self) { self.0.store(false, Ordering::Release); }
+}
+
+struct QueuedBuild(Arc<SnapshotCacheInner>);
+impl Drop for QueuedBuild {
+    fn drop(&mut self) { self.0.queued.store(false, Ordering::Release); }
+}
 
 /// Bytes per snapshot chunk (well under transport message limits).
 pub const SNAPSHOT_CHUNK: usize = 1 << 20;
 
-/// The snapshot of the finalized state, rebuilt at most once per height.
-fn cached_snapshot(st: &RpcState) -> (u64, std::sync::Arc<Vec<u8>>) {
+/// The snapshot of the finalized state, rebuilt at most once per 120 blocks.
+fn cached_snapshot(st: &RpcState) -> Result<CachedSnapshot, (i64, String)> {
     let height = st.chain.finalized_height();
-    let mut cache = st.snapshot.lock().expect("snapshot cache");
-    if let Some((h, b)) = cache.as_ref() {
-        // Keep serving one snapshot for a while so a download can finish.
-        if *h + 120 >= height {
-            return (*h, b.clone());
+    let fresh = || {
+        st.snapshot.lock().expect("snapshot cache").as_ref().and_then(|(h, b)|
+            (h.saturating_add(120) >= height).then(|| (*h, b.clone())))
+    };
+    if let Some(hit) = fresh() { return Ok(hit); }
+    if st.snapshot.0.building.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+        return Err((-32000, "snapshot rebuild already running; retry later".into()));
+    }
+    let _building = SnapshotBuild(&st.snapshot.0.building);
+    if let Some(hit) = fresh() { return Ok(hit); }
+    {
+        let mut last = st.snapshot.0.last_attempt.lock().expect("snapshot attempt");
+        if last.is_some_and(|at| at.elapsed() < Duration::from_secs(30)) {
+            return Err((-32000, "snapshot rebuild rate limited; retry in 30 seconds".into()));
+        }
+        *last = Some(Instant::now());
+    }
+    let source = crate::snapshot::Snapshot::source(&st.chain);
+    let estimate = source.estimated_peak_bytes();
+    let budget = crate::resources::snapshot_memory_budget().map_err(|e| (-32000, e))?;
+    if estimate > budget {
+        return Err((-32000, format!("snapshot build refused: estimated extra memory {estimate} bytes exceeds budget {budget} bytes")));
+    }
+    let s = source.build();
+    let bytes = s.to_bytes();
+    if bytes.len() > 1 << 30 {
+        return Err((-32000, "snapshot build refused: wire size exceeds 1 GiB".into()));
+    }
+    let built = (s.summary.height, Arc::new(bytes));
+    *st.snapshot.0.manifest.lock().expect("snapshot manifest") = Some((Arc::downgrade(&built.1), blake3_hex(&built.1)));
+    *st.snapshot.lock().expect("snapshot cache") = Some(built.clone());
+    Ok(built)
+}
+
+async fn snapshot_manifest(st: &RpcState) -> RpcResult {
+    let height = st.chain.finalized_height();
+    let cached = st.snapshot.lock().expect("snapshot cache").clone();
+    if let Some((h, bytes)) = cached.as_ref() {
+        if h.saturating_add(120) >= height {
+            return Ok(json!({ "height": h, "size": bytes.len(), "blake3": st.snapshot.manifest(bytes), "chunk": SNAPSHOT_CHUNK }));
         }
     }
-    let s = crate::snapshot::Snapshot::of(&st.chain);
-    let fresh = (s.summary.height, std::sync::Arc::new(s.to_bytes()));
-    *cache = Some(fresh.clone());
-    fresh
+    if st.snapshot.0.queued.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+        return Err((-32000, "snapshot rebuild already queued; retry later".into()));
+    }
+    // A request occupies at most one blocking worker. Repeated RPC calls do
+    // not queue behind it or block the runtime that drives finalization.
+    let state = st.clone();
+    tokio::task::spawn_blocking(move || {
+        let _queued = QueuedBuild(state.snapshot.0.clone());
+        let (h, bytes) = cached_snapshot(&state)?;
+        Ok(json!({ "height": h, "size": bytes.len(), "blake3": state.snapshot.manifest(&bytes), "chunk": SNAPSHOT_CHUNK }))
+    })
+    .await
+    .map_err(|e| (-32000, format!("snapshot worker failed: {e}")))?
 }
 
 pub fn blake3_hex(b: &[u8]) -> String {
@@ -97,6 +183,7 @@ pub async fn handle_value(st: &RpcState, req: Value) -> Value {
     let params = req.get("params").cloned().unwrap_or(Value::Array(vec![]));
     let result = match method.as_str() {
         "aether_getFinalized" => finalized(st, &params).await,
+        "aether_snapshot" => snapshot_manifest(st).await,
         "aether_registerDevice" => register_device(st, &params).await,
         "aether_sendBeacon" => send_beacon(st, &params).await,
         "aether_sendRegistration" => send_registration(st, &params).await,
@@ -398,15 +485,13 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
         // The finalized state as a checkpoint snapshot (legacy postcard or
         // new-genesis notice envelope, `snapshot::Snapshot`):
         // a new Mac checks it against the next certified block instead of replaying history.
-        "aether_snapshot" => {
-            let (height, bytes) = cached_snapshot(st);
-            Ok(json!({ "height": height, "size": bytes.len(), "blake3": blake3_hex(&bytes), "chunk": SNAPSHOT_CHUNK }))
-        }
         // One chunk of the cached snapshot at `height` (hex); the whole is checked by its BLAKE3.
         "aether_snapshotChunk" => {
             let height: u64 = param(p, 0)?;
             let index: usize = param(p, 1)?;
-            let (h, bytes) = cached_snapshot(st);
+            // Chunk requests never initiate a rebuild. An old manifest stays
+            // downloadable while the next manifest is being prepared.
+            let (h, bytes) = st.snapshot.lock().expect("snapshot cache").clone().ok_or((-32000, "snapshot not available; request aether_snapshot first".to_string()))?;
             if h != height {
                 return Err((-32000, format!("snapshot moved on to height {h}")));
             }
@@ -692,6 +777,51 @@ mod release_tests {
         assert_eq!(page["entries"][0]["published_at"], 1_000);
         assert_eq!(page["entries"][0]["emergency"], true);
         assert!(release_entries(&state, address, 2, 1, 200)["entries"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn snapshot_rebuild_is_single_flight_and_rate_limited() {
+        let (chain, _) = Chain::new(crate::chain::ChainConfig {
+            chain_id: 7781,
+            limits: aether_types::GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
+            alloc: vec![], fees: false, registrar: None, epoch_blocks: 0,
+            min_streak: None, draw_epochs: None, history_v2: false, protocol: 1,
+            node_rewards: false, committee: vec![], reserve: None, group: 0,
+            max_committee: crate::rotation::GROW_UNTIL,
+        });
+        let (gossip, _) = mpsc::unbounded_channel();
+        let st = RpcState {
+            chain,
+            finality: Finality::Archive(Arc::new(crate::follow::FinalityArchive::default())),
+            gossip,
+            faucet: None,
+            registrar: None,
+            network: None,
+            upstream: None,
+            handoff: None,
+            snapshot: Default::default(),
+            prover: None,
+            shards: None,
+        };
+        st.snapshot.0.building.store(true, Ordering::Release);
+        assert!(cached_snapshot(&st).unwrap_err().1.contains("already running"));
+        st.snapshot.0.building.store(false, Ordering::Release);
+        st.snapshot.0.queued.store(true, Ordering::Release);
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let busy = rt.block_on(handle_value(&st, json!({ "id": 1, "method": "aether_snapshot", "params": [] })));
+        assert!(busy["error"]["message"].as_str().unwrap().contains("already queued"));
+        st.snapshot.0.queued.store(false, Ordering::Release);
+        *st.snapshot.0.last_attempt.lock().unwrap() = Some(Instant::now());
+        assert!(cached_snapshot(&st).unwrap_err().1.contains("rate limited"));
+        *st.snapshot.0.last_attempt.lock().unwrap() = None;
+        let manifest = rt.block_on(handle_value(&st, json!({ "id": 2, "method": "aether_snapshot", "params": [] })));
+        assert!(manifest["error"].is_null(), "the blocking worker built the manifest: {manifest}");
+        let first = cached_snapshot(&st).unwrap();
+        let second = cached_snapshot(&st).unwrap();
+        assert!(Arc::ptr_eq(&first.1, &second.1), "one build per cache window");
+        assert_eq!(manifest["result"]["blake3"], blake3_hex(&first.1));
+        let chunk = rt.block_on(handle_value(&st, json!({ "id": 3, "method": "aether_snapshotChunk", "params": [first.0, 0] })));
+        assert_eq!(hex::decode(chunk["result"]["data"].as_str().unwrap()).unwrap(), *first.1);
     }
 }
 

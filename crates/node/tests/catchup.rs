@@ -1131,8 +1131,11 @@ fn every_validator_restarting_at_once_resumes_on_its_own() {
         let calls = calls.lock().unwrap().clone();
         assert!(!calls.is_empty(), "the other validators asked this one");
         assert!(
-            calls.iter().all(|m| m == "aether_status"),
-            "only the census was asked: {calls:?}"
+            // New-genesis gate: a claimed height is backed by a certified block
+            // fetch before it counts (audit 1, A1), so the census may be followed
+            // by `aether_getFinalized` probes and nothing else.
+            calls.iter().all(|m| m == "aether_status" || m == "aether_getFinalized"),
+            "only the census and its certificate probes were asked: {calls:?}"
         );
     }
     assert_eq!(nodes[0].chain.behind_known(), Some(0));
@@ -1220,7 +1223,9 @@ fn a_member_far_behind_waits_then_catches_up_through_the_gate() {
         "the member's gate is still waiting: the peer ahead has not come up"
     );
     assert_eq!(member.chain.finalized_height(), 40, "nothing adopted meanwhile");
-    assert_eq!(member.chain.behind_known(), Some(160), "and it knows how far behind it is");
+    // An unproven claim does not set the network height (audit 1, A1): until the
+    // peer ahead can show a certified block the member only knows it must wait.
+    assert_eq!(member.chain.behind_known(), None, "an unproven claim is not a known height");
 
     // The tallest node finishes starting: the same endpoint now serves the
     // full state, history included.

@@ -354,7 +354,9 @@ fn reserve_keys_join_under_four_independent_operators_and_leave_at_four() {
         assert_eq!(Reserve::of(&n.parent.state).unwrap().members, reserve.members);
         let regs = [0, 1, 4].iter().map(|i| n.register(*i)).collect();
         step(&mut n, &mut minted, regs);
-        run_to(&mut n, &mut minted, 2 * E);
+        // Registration lands inside epoch 0. Stability has three full up
+        // observations only after epochs 1, 2 and 3 have been distributed.
+        run_to(&mut n, &mut minted, 4 * E);
         assert_eq!(independents(&n), 2);
         assert!(aether_rewards::next_roster(&n.parent.state).is_none(), "a full committee takes no reserve key");
     }
@@ -368,12 +370,21 @@ fn reserve_keys_join_under_four_independent_operators_and_leave_at_four() {
     let regs = [0, 1, 4].iter().map(|i| n.register(*i)).collect();
     step(&mut n, &mut minted, regs);
     run_to(&mut n, &mut minted, E);
+    let (_, initial) = aether_rewards::next_roster(&n.parent.state).expect("the short committee initially needs reserve seats");
+    assert_eq!(reserve_seats(&initial), 2, "only the two genesis seats are available before stability is established");
+    // The first draw keeps its committed roster until the next draw. Epoch 4
+    // has the required three full beacon observations, but draw 1's first
+    // non-freeze boundary is epoch 25. There the founder's Mac takes a seat
+    // without counting toward the four independent operators.
+    run_to(&mut n, &mut minted, 25 * E);
+    assert_eq!(independents(&n), 2);
     let (_, roster) = aether_rewards::next_roster(&n.parent.state).expect("a short committee is refilled");
     assert_eq!(roster.len(), 4, "refilled to four seats");
     // Qualified Macs are seated first; reserve keys take only what is still
     // missing (exact counts per independent operator: rotation.rs unit tests).
     let others = roster.len() - reserve_seats(&roster);
     assert_eq!(reserve_seats(&roster), 4usize.saturating_sub(others), "only the missing seats");
+    assert_eq!(reserve_seats(&roster), 1, "three qualifying Macs leave one seat for the reserve");
     assert!([common::mac_entry(0), common::mac_entry(1), common::mac_entry(4)].iter().all(|m| roster.contains(m)), "the founder's Mac fills a seat");
     let (seated, handoff) = n.committee.handoff_to(CHAIN, 1, &common::seat_of(&n, &roster, &rkeys));
     let carried = n.step_handoff(handoff);
@@ -385,9 +396,10 @@ fn reserve_keys_join_under_four_independent_operators_and_leave_at_four() {
     // not count), so every reserve key leaves.
     let regs = [2, 3].iter().map(|i| n.register(*i)).collect();
     step(&mut n, &mut minted, regs);
-    run_to(&mut n, &mut minted, 7 * E);
+    let four = n.parent.height / E + 4; // registration epoch, then three full epochs
+    run_to(&mut n, &mut minted, four * E);
     assert_eq!(independents(&n), 4);
-    assert_eq!(aether_node::rotation::eligible(&n.parent.state, 7, 0).len(), 5);
+    assert_eq!(aether_node::rotation::eligible(&n.parent.state, four, 0).len(), 5);
     let (_, leave) = aether_rewards::next_roster(&n.parent.state).expect("the next roster drops them");
     assert!(no_reserve(&leave), "the reserve keys leave at four");
     assert!(leave.contains(&common::mac_entry(0)) && leave.contains(&common::mac_entry(1)));
@@ -452,9 +464,9 @@ fn reserve_service_pays_the_founder_while_its_mac_sleeps() {
     assert_eq!(rewards::seated(&n.parent.state), (0, 0), "no handoff has landed: nothing seated");
 
     // The founder's Mac sleeps from the boundary the day-14 judgment and
-    // draw 14's freeze both land on: out of the pool (its last epoch in it is
-    // 335), its level stays where the judgment left it. No handoff has
-    // landed, so nothing is seated and the sleeping Mac earns nothing.
+    // draw 14's freeze both land on. It loses eligibility after its first
+    // silent epoch (336), while its level stays where the judgment left it.
+    // No handoff has landed, so the sleeping Mac earns nothing.
     n.behaviour.insert(4, Mac::Off);
     let full = n.parent.height / E;
     let (before, exec) = paid_epoch(&mut n, &mut minted, full, 5);
@@ -462,13 +474,14 @@ fn reserve_service_pays_the_founder_while_its_mac_sleeps() {
     assert!(!exec.payouts.iter().any(|(_, op, _)| *op == founder), "the founder is off the payouts");
     assert_eq!(exec.payouts.len(), 2, "only the answering operators");
 
-    // The next boundary seats the reserve keys for the committee's missing
-    // seats — Mac 1 fills one, two reserve keys the rest — and commits it as
-    // the roster: only a handoff naming exactly it may carry it over.
+    // The next boundary removes the sleeping Mac from the eligible pool.
+    // Mac 1 fills one of the committee's missing seats, and two reserve keys
+    // fill the rest. Only a handoff naming that committed roster may carry it.
     let (_, roster) = aether_rewards::next_roster(&n.parent.state).expect("the chain seats the reserve keys");
     assert_eq!(roster.len(), 4);
     assert_eq!(seated_in(&roster), 2, "qualifying Macs first, the reserve keys fill the rest: {roster:?}");
     assert!(roster.contains(&common::mac_entry(0)) && roster.contains(&common::mac_entry(1)));
+    assert!(!roster.contains(&common::mac_entry(4)), "the sleeping founder Mac is not seated");
     let (seated, handoff) = n.committee.handoff_to(CHAIN, 1, &common::seat_of(&n, &roster, &rkeys));
     let carried = n.step_handoff(handoff);
     let switch = carried.height + aether_node::handoff::DELAY;
@@ -494,12 +507,13 @@ fn reserve_service_pays_the_founder_while_its_mac_sleeps() {
     }
     assert_eq!(rewards::mac(&n.parent.state, 2).level, WARMUP_STEPS, "the service moved no warm-up");
 
-    // Macs 2 and 3 register (epoch 345): four independent operators qualify,
-    // so the next boundary commits a roster without a single reserve key and
-    // the overdue count starts ticking — the keys are still seated.
+    // Macs 2 and 3 register partway through an epoch. After their next three
+    // full epochs, four independent operators qualify; that boundary commits
+    // a roster without reserve keys and starts the overdue count while they
+    // are still seated.
     let regs = (2..4).map(|i| n.register(i)).collect::<Vec<_>>();
     step(&mut n, &mut minted, regs);
-    let four = n.parent.height / E + 1;
+    let four = n.parent.height / E + 4;
     run_to(&mut n, &mut minted, four * E);
     let (_, leave) = aether_rewards::next_roster(&n.parent.state).expect("the chain unseats them");
     assert_eq!(seated_in(&leave), 0, "every reserve key leaves at once");

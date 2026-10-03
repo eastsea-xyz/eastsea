@@ -123,7 +123,7 @@ PIDS=()
 cp "$D/g1/network.json" "$D/network.json"
 
 echo "== mainnet rule set (every rule on at height 1; docs/ops/mainnet-launch.md §2)"
-if rules=$("$A" mainnet-rules --network "$D/network.json" 2>&1); then
+if rules=$("$A" mainnet-rules --rehearsal --network "$D/network.json" 2>&1); then
   ok "aether mainnet-rules: every rule on ($(printf '%s\n' "$rules" | grep -c '^ok') items)"
 else
   bad "aether mainnet-rules failed:"$'\n'"$rules"

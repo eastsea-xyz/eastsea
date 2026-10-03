@@ -66,7 +66,7 @@ aether network \
 
 메인넷은 어떤 규칙도 "출시 뒤 업그레이드로 켠다" 없이 제네시스부터 전부 켜져 있어야 한다. 제네시스 프로토콜 필드는 이미 있다(갭 G1 닫힘: `aether network --protocol 3`; 7780처럼 프로토콜 1로 열리면 증명 시장·등록 상한·16석 증가가 꺼진 채 시작하므로 이 값을 생략하지 않는다). 목록은 코드에 하나로 있다(`crates/node/src/mainnet.rs`, `mainnet::check`) — 항목을 추가하면 아래 세 검사가 같이 실패한다:
 
-- `aether mainnet-rules --network genesis.json` — network.json에서 노드와 똑같이 제네시스를 만들어 항목마다 `ok`/`FAIL`을 출력하고, 꺼진 것이 하나라도 있으면 실패한다(DKG 뒤 최종 network.json으로 다시 한 번).
+- `aether mainnet-rules --network genesis.json` — network.json에서 노드와 똑같이 제네시스를 만들어 항목마다 `ok`/`FAIL`을 출력하고, 꺼진 것이 하나라도 있으면 실패한다(DKG 뒤 최종 network.json으로 다시 한 번). 규칙은 17개이며, **실제 출시 검사는 에포크(3600블록)·후보 워밍업(24)·추첨(24에포크)의 공표된 정책 값을 정확히 요구**하고 레지스트라 키가 0이거나 곡선 밖이면 실패한다. 리허설만 `--rehearsal`로 단축 값을 허용하며, 허용했다는 사실이 출력에 `REHEARSAL VALUES`로 남는다.
 - `scripts/mainnet-rehearsal.sh`(0단계) — 같은 검사를 PASS 항목으로 돌리고, 살아 있는 네트워크에서 높이 1의 프로토콜과 등록 상한도 확인한다.
 - 단위 테스트(`crates/node/tests/mainnet_rules.rs`) — 메인넷 플래그 제네시스로 모든 항목이 켜져 있는지, 플래그를 하나 빼면 정확히 그 항목이 꺼지는지 확인한다.
 

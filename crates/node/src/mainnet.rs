@@ -27,6 +27,13 @@ pub struct Rule {
 /// Every rule the mainnet must have active at height 1, checked against a
 /// freshly built genesis. Same order as the table in docs/ops/mainnet-launch.md.
 pub fn check(cfg: &ChainConfig) -> Vec<Rule> {
+    check_with(cfg, false)
+}
+
+/// `check`, with the one allowance a rehearsal needs: shortened epochs and
+/// candidate timing (a rehearsal must finish in minutes). The allowance is
+/// reported in the rule's detail, never silent; the real launch is `check`.
+pub fn check_with(cfg: &ChainConfig, rehearsal: bool) -> Vec<Rule> {
     let (chain, _) = Chain::new(cfg.clone());
     let genesis = chain.lock().finalized.clone();
     let state = &genesis.state;
@@ -51,6 +58,11 @@ pub fn check(cfg: &ChainConfig) -> Vec<Rule> {
             "the voting-node registry starts as the v3 code".into(),
         ),
         rule(
+            "registrar key",
+            cfg.registrar.is_some_and(|(x, y)| aether_crypto::p256_point_is_valid(&x, &y)),
+            "the registrar is a real, nonzero P-256 key on the curve (a zero or made-up key would silently disable registration)".into(),
+        ),
+        rule(
             "registration cap",
             registry::max_per_epoch(state) == registry::MAX_PER_EPOCH,
             format!("at most {} new candidates an epoch, on chain", registry::MAX_PER_EPOCH),
@@ -73,6 +85,23 @@ pub fn check(cfg: &ChainConfig) -> Vec<Rule> {
                 crate::roster::MAX_DRAW_EPOCHS
             ),
         ),
+        {
+            let params = registry::params(state);
+            let (epoch, streak, draw) = (params.epoch_blocks, params.min_streak, params.draw_epochs);
+            let policy = (registry::EPOCH_BLOCKS, registry::MIN_STREAK, registry::DRAW_EPOCHS);
+            let matches = (epoch, streak, draw) == policy;
+            rule(
+                "candidate timing",
+                matches || rehearsal,
+                if matches {
+                    format!("{epoch} blocks an epoch, {streak} epochs of warm-up, a draw every {draw} epochs: the published policy")
+                } else if rehearsal {
+                    format!("REHEARSAL VALUES ({epoch}, {streak}, {draw}) differ from the published policy {policy:?}; allowed only for a rehearsal")
+                } else {
+                    format!("({epoch} blocks, {streak} warm-up epochs, draw every {draw}) differs from the published policy {policy:?}")
+                },
+            )
+        },
         rule(
             "node rewards",
             aether_rewards::enabled(state),
@@ -171,13 +200,20 @@ mod tests {
 
     /// The mainnet flags, as docs/ops/mainnet-launch.md §2 assembles them
     /// (`aether network --protocol 3 --history 2 --node-rewards --registrar …`).
+    /// A real P-256 registrar key (the old fixture's made-up pair is off the curve).
+    fn real_registrar() -> ([u8; 32], [u8; 32]) {
+        use aether_crypto::Signer;
+        let key = aether_crypto::P256Signer::from_seed(&[5; 32]).unwrap().public_key();
+        aether_crypto::p256_xy(&key.bytes).unwrap()
+    }
+
     fn mainnet() -> ChainConfig {
         ChainConfig {
             chain_id: 7_801,
             limits: GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
             alloc: vec![],
             fees: true,
-            registrar: Some(([7; 32], [8; 32])),
+            registrar: Some(real_registrar()),
             epoch_blocks: 0,
             min_streak: None,
             draw_epochs: None,
@@ -204,13 +240,15 @@ mod tests {
     }
 
     /// The names `check` returns, in order: docs/ops/mainnet-launch.md's table.
-    const NAMES: [&str; 15] = [
+    const NAMES: [&str; 17] = [
         "protocol from genesis",
         "proof market",
         "registry v3",
+        "registrar key",
         "registration cap",
         "16-seat growth",
         "epoch parameters",
+        "candidate timing",
         "node rewards",
         "beacons",
         "re-attestation",
@@ -250,7 +288,21 @@ mod tests {
         let mut huge = mainnet();
         huge.epoch_blocks = 1 << 63;
         huge.draw_epochs = Some(2);
-        assert_eq!(off(huge), ["epoch parameters"]);
+        assert_eq!(off(huge), ["epoch parameters", "candidate timing"]);
+        // Audit 2, R2-3: a zero or made-up registrar key disables registration.
+        let mut dead = mainnet();
+        dead.registrar = Some(([0; 32], [0; 32]));
+        assert_eq!(off(dead), ["registrar key"]);
+        // Audit 2, R2-3: timing other than the published policy fails the strict
+        // check and is allowed (and reported) only for a rehearsal.
+        let mut quick = mainnet();
+        quick.min_streak = Some(0);
+        quick.draw_epochs = Some(1);
+        quick.epoch_blocks = 40;
+        assert_eq!(off(quick.clone()), ["candidate timing"]);
+        let rehearsal = check_with(&quick, true);
+        assert!(rehearsal.iter().all(|r| r.ok), "{}", missing(&rehearsal));
+        assert!(rehearsal.iter().any(|r| r.name == "candidate timing" && r.detail.starts_with("REHEARSAL VALUES")));
         // A premine (or a faucet) funds genesis accounts.
         let mut premine = mainnet();
         premine.alloc = vec![(Address::repeat_byte(1), U256::from(1u8))];

@@ -480,6 +480,10 @@ enum Cmd {
         /// network.json to check.
         #[arg(long)]
         network: String,
+        /// Allow shortened epoch and candidate timing (a rehearsal must finish in
+        /// minutes). Reported in the output; never use it for the real launch.
+        #[arg(long)]
+        rehearsal: bool,
     },
     /// Replay finalized blocks with this binary into an isolated scratch store.
     Shadow {
@@ -953,11 +957,11 @@ fn main() {
             }
             Ok(())
         }
-        Cmd::MainnetRules { network } => (|| {
+        Cmd::MainnetRules { network, rehearsal } => (|| {
             let file = aether_node::roster::NetworkFile::load(std::path::Path::new(&network))?;
             let genesis = file.genesis()?;
             let chain_id = file.chain_id;
-            let rules = aether_node::mainnet::check(&chain_config(chain_id, &genesis, false));
+            let rules = aether_node::mainnet::check_with(&chain_config(chain_id, &genesis, false), rehearsal);
             for r in &rules {
                 println!("{}  {}: {}", if r.ok { "ok" } else { "FAIL" }, r.name, r.detail);
             }

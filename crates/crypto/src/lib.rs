@@ -194,6 +194,17 @@ impl Signer for Ed25519Signer {
     }
 }
 
+/// Is (x, y) a real P-256 public key: nonzero and on the curve? A key that is
+/// not (the zero point, a made-up pair) can never verify a signature, so a
+/// genesis naming it as the registrar would silently disable registration.
+pub fn p256_point_is_valid(x: &[u8; 32], y: &[u8; 32]) -> bool {
+    let mut sec1 = [0u8; 65];
+    sec1[0] = 4;
+    sec1[1..33].copy_from_slice(x);
+    sec1[33..].copy_from_slice(y);
+    p256::ecdsa::VerifyingKey::from_sec1_bytes(&sec1).is_ok()
+}
+
 /// Affine (x, y) of a P-256 public key given in SEC1 form (compressed or not):
 /// what P256VERIFY and `AetherAccount.setGuardian` take.
 pub fn p256_xy(sec1: &[u8]) -> Result<([u8; 32], [u8; 32]), CryptoError> {
@@ -297,6 +308,17 @@ mod tests {
         // >= group order
         assert!(P256Signer::from_seed(&[0xff; 32]).is_err());
         assert!(Secp256k1Signer::from_seed(&[0xff; 32]).is_err());
+    }
+
+    #[test]
+    fn only_a_real_p256_point_is_a_valid_registrar() {
+        let real = P256Signer::from_seed(&[5; 32]).unwrap().public_key();
+        let (x, y) = p256_xy(&real.bytes).unwrap();
+        assert!(p256_point_is_valid(&x, &y));
+        // The zero point cannot verify anything; a made-up pair is off the curve.
+        assert!(!p256_point_is_valid(&[0; 32], &[0; 32]));
+        assert!(!p256_point_is_valid(&[7; 32], &[8; 32]));
+        assert!(!p256_point_is_valid(&x, &[0; 32]));
     }
 
     proptest! {

@@ -173,11 +173,17 @@ impl NetworkFile {
                 let (x, y) = b
                     .split_at_checked(32)
                     .ok_or("registrar must be 64 bytes (x‖y)")?;
-                Some((
+                let xy: ([u8; 32], [u8; 32]) = (
                     x.try_into().map_err(|_| "registrar x")?,
                     y.try_into()
                         .map_err(|_| "registrar must be 64 bytes (x‖y)")?,
-                ))
+                );
+                // Audit 2, R2-3: the zero key (or any pair off the curve) can never
+                // verify an attestation: registration would be dead from genesis.
+                if !aether_crypto::p256_point_is_valid(&xy.0, &xy.1) {
+                    return Err("registrar is not a valid P-256 public key (nonzero, on the curve)".into());
+                }
+                Some(xy)
             }
         };
         if self.epoch_blocks.unwrap_or(0) > MAX_EPOCH_BLOCKS {
@@ -547,6 +553,25 @@ mod tests {
         serde_json::from_str(json).expect("network file")
     }
 
+    /// A real P-256 key as the registrar's x‖y hex.
+    fn registrar_hex() -> String {
+        use aether_crypto::Signer;
+        let key = aether_crypto::P256Signer::from_seed(&[5; 32]).unwrap().public_key();
+        let (x, y) = aether_crypto::p256_xy(&key.bytes).unwrap();
+        format!("{}{}", hex::encode(x), hex::encode(y))
+    }
+
+    #[test]
+    fn the_registrar_must_be_a_real_p256_key() {
+        // Audit 2, R2-3: 64 zero bytes parsed fine and the launch check said ok.
+        for bad in ["00".repeat(64), "ab".repeat(64)] {
+            let msg = format!(r#"{{"chain_id":1,"validators":[],"node_rewards":true,"history":2,"registrar":"{bad}"}}"#);
+            assert!(file(&msg).genesis().is_err(), "{bad}");
+        }
+        let ok = format!(r#"{{"chain_id":1,"validators":[],"node_rewards":true,"history":2,"registrar":"{}"}}"#, registrar_hex());
+        assert!(file(&ok).genesis().is_ok());
+    }
+
     #[test]
     fn the_protocol_field_names_the_genesis_rules() {
         // 7780 and older files have no field: protocol 1, upgrades turn the
@@ -580,7 +605,7 @@ mod tests {
         // The mainnet rehearsal shape: protocol 3, history v2, node rewards, a registrar.
         dkg_roundtrip(&format!(
             r#"{{"chain_id":7799,"validators":[],"protocol":3,"history":2,"node_rewards":true,"epoch_blocks":40,"min_streak":0,"draw_epochs":5,"registrar":"{}"}}"#,
-            "ab".repeat(64)
+            registrar_hex()
         ));
         // A group and a custom committee ceiling (new genesis only).
         dkg_roundtrip(r#"{"chain_id":7800,"validators":[],"protocol":3,"history":2,"node_rewards":true,"group":2,"max_committee":12}"#);
@@ -670,7 +695,12 @@ mod group_tests {
         let g = file(Some(8), Some(1)).genesis().unwrap();
         assert_eq!((g.group, g.max_committee), (1, 8));
         let mut nonroot = file(None, Some(1));
-        nonroot.registrar = Some("11".repeat(64));
+        nonroot.registrar = Some({
+            use aether_crypto::Signer;
+            let key = aether_crypto::P256Signer::from_seed(&[5; 32]).unwrap().public_key();
+            let (x, y) = aether_crypto::p256_xy(&key.bytes).unwrap();
+            format!("{}{}", hex::encode(x), hex::encode(y))
+        });
         assert!(nonroot.genesis().unwrap_err().contains("root group 0"));
         assert_eq!(file(Some(4), None).genesis().unwrap().max_committee, 4);
         let mut too_many = file(Some(4), None);

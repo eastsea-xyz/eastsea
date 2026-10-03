@@ -142,16 +142,25 @@ fn the_mainnet_rule_set_is_on_from_height_1() {
     // alloc is the chain as built, and the live checks below run on that chain.
     let mut cfg = n.chain.cfg();
     cfg.alloc.clear();
-    let rules = mainnet::check(&cfg);
+    // The harness shortens epochs and uses a made-up registrar key; the checklist
+    // runs on a real key and, for the timing rule, as a rehearsal (audit 2, R2-3).
+    {
+        use aether_crypto::Signer;
+        let key = aether_crypto::P256Signer::from_seed(&[5; 32]).unwrap().public_key();
+        cfg.registrar = Some(aether_crypto::p256_xy(&key.bytes).unwrap());
+    }
+    let rules = mainnet::check_with(&cfg, true);
     assert_eq!(
         rules.iter().map(|r| r.name).collect::<Vec<_>>(),
         [
             "protocol from genesis",
             "proof market",
             "registry v3",
+            "registrar key",
             "registration cap",
             "16-seat growth",
             "epoch parameters",
+            "candidate timing",
             "node rewards",
             "beacons",
             "re-attestation",

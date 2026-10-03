@@ -49,6 +49,8 @@ const LEGACY_QUORUM_DONE_DELAY: std::time::Duration = std::time::Duration::from_
 const LEGACY_DONE_RELAY: std::time::Duration = std::time::Duration::from_secs(5);
 const ALL_PLAYERS_DONE_RELAY: std::time::Duration = std::time::Duration::from_secs(5);
 const CERTIFIED_TRANSCRIPT_RELAY: std::time::Duration = std::time::Duration::from_secs(30);
+/// Keep a staged, certified round reachable while a late player catches up.
+pub const POST_STAGE_RELAY: std::time::Duration = std::time::Duration::from_secs(120);
 
 pub type DkgOutput = Output<MinSig, PublicKey>;
 
@@ -636,6 +638,9 @@ impl Ceremony {
         if raw.len() < self.dealers.quorum::<N3f1>() as usize { return None; }
         let output = observe::<MinSig, PublicKey, N3f1, ed25519::Batch>(&mut commonware_utils::sys_rng(), logs, &commonware_parallel::Sequential).ok()?;
         if self.expected.is_some_and(|id| id != *output.public().public()) { return None; }
+        // Commonware can validly select logs that reveal a player's complete
+        // threshold share. Such a bundle must never become vote-eligible.
+        if self.strict_agreement && output.revealed().iter().any(|player| self.players.position(player).is_some()) { return None; }
         Some((raw, output))
     }
 
@@ -692,6 +697,26 @@ impl Ceremony {
         self.announced.len() == self.players.len() && self.announced.values().all(|done| *done == digest)
     }
 
+    /// Persist the exact certified bundle even for an old-only reshare dealer,
+    /// which has no player share to finalize. A later relay process must be
+    /// able to reconstruct it after this ceremony process returns.
+    fn persist_certified_transcript(&mut self, digest: &[u8]) -> Result<(), DkgError> {
+        if self.certified_transcript().as_deref() != Some(digest) {
+            return Err(DkgError::Finalize("no quorum certificate for transcript".into()));
+        }
+        let raw = self.transcripts.get(digest).ok_or_else(|| DkgError::Finalize("decided transcript unavailable".into()))?;
+        if let Some(journal) = self.deal_journal.as_mut() {
+            let entries: Vec<_> = raw.iter().map(|(dealer, log)| (dealer.encode().to_vec(), log.clone())).collect();
+            if let Some(old) = &journal.decided_transcript {
+                if old != &entries { return Err(DkgError::Finalize("persisted transcript conflicts with new decision".into())); }
+            } else {
+                journal.append(DealRecord::DecidedTranscript { entries: entries.clone() }).map_err(DkgError::Finalize)?;
+                journal.decided_transcript = Some(entries);
+            }
+        }
+        Ok(())
+    }
+
     /// Rebuild from retained private dealings and finalize only the certified log bundle.
     /// This also repairs a player that computed an earlier, incompatible candidate.
     pub fn finish_decided(&mut self, rng: &mut impl CryptoRng, digest: &[u8]) -> Result<(DkgOutput, Share), DkgError> {
@@ -699,6 +724,12 @@ impl Ceremony {
             return Err(DkgError::Finalize("no quorum certificate for transcript".into()));
         }
         let raw = self.transcripts.get(digest).ok_or_else(|| DkgError::Finalize("decided transcript unavailable".into()))?;
+        // Revalidate before deriving even a local share from the certified
+        // logs. A journal or future agreement change must not turn a revealed
+        // seated share into a finalized committee output.
+        if self.checked_logs(raw.iter().map(|(dealer, log)| (dealer.clone(), log.clone()))).is_none() {
+            return Err(DkgError::Finalize("decided transcript has an unsafe DKG output".into()));
+        }
         let mut player = Player::new(self.info.clone(), self.key.clone()).map_err(|e| DkgError::Finalize(format!("rebuild player: {e:?}")))?;
         for (dealer, (commitment, dealing)) in &self.accepted_deals {
             let pub_msg = DealerPubMsg::<MinSig>::decode_cfg(commitment.as_slice(), &self.n).map_err(|e| DkgError::Finalize(format!("stored commitment: {e:?}")))?;
@@ -713,16 +744,11 @@ impl Ceremony {
             logs.record(signer, log);
         }
         let (output, share) = player.finalize::<N3f1, ed25519::Batch>(rng, logs, &commonware_parallel::Sequential).map_err(|e| DkgError::Finalize(format!("decided output: {e:?}")))?;
-        if self.transcript_digest(raw, &output) != digest { return Err(DkgError::Finalize("decided output digest mismatch".into())); }
-        if let Some(journal) = self.deal_journal.as_mut() {
-            let entries: Vec<_> = raw.iter().map(|(dealer, log)| (dealer.encode().to_vec(), log.clone())).collect();
-            if let Some(old) = &journal.decided_transcript {
-                if old != &entries { return Err(DkgError::Finalize("persisted transcript conflicts with new decision".into())); }
-            } else {
-                journal.append(DealRecord::DecidedTranscript { entries: entries.clone() }).map_err(DkgError::Finalize)?;
-                journal.decided_transcript = Some(entries);
-            }
+        if output.revealed().iter().any(|player| self.players.position(player).is_some()) {
+            return Err(DkgError::Finalize("decided output reveals a seated player's threshold share; retry with a new round".into()));
         }
+        if self.transcript_digest(raw, &output) != digest { return Err(DkgError::Finalize("decided output digest mismatch".into())); }
+        self.persist_certified_transcript(digest)?;
         self.identity = Some(*output.public().public());
         self.output_digest = Some(digest.to_vec());
         self.announced.insert(self.me.clone(), digest.to_vec());
@@ -832,6 +858,22 @@ pub struct Timeouts {
     pub total: std::time::Duration,
 }
 
+impl Timeouts {
+    /// Last tick at which the child can wait for a certified decision.
+    fn strict_deadline(&self, players: usize) -> std::time::Duration {
+        let longest_view = TICK_INTERVAL.saturating_mul((BASE_VIEW_TICKS << MAX_VIEW_BACKOFF) as u32);
+        self.total.max(self.dealing.saturating_add(longest_view.saturating_mul(players.min(u32::MAX as usize) as u32)).saturating_add(CERTIFIED_TRANSCRIPT_RELAY))
+    }
+
+    /// Allow a decision at the deadline to receive its full final relay window.
+    /// The supervisor adds a separate process return margin to this bound.
+    pub fn strict_return_bound(&self, players: usize) -> std::time::Duration {
+        // One tick may notice a decision that arrived just before the
+        // deadline; another may notice that its relay window has elapsed.
+        self.strict_deadline(players).saturating_add(CERTIFIED_TRANSCRIPT_RELAY).saturating_add(TICK_INTERVAL.saturating_mul(2))
+    }
+}
+
 impl Default for Timeouts {
     fn default() -> Self {
         Timeouts { dealing: std::time::Duration::from_secs(30), total: std::time::Duration::from_secs(300) }
@@ -887,6 +929,70 @@ where
     run_inner(key, round, share, sender, receiver, timeouts, Some(journal)).await
 }
 
+/// Resume only the certified transcript relay after the ceremony child has
+/// returned and its caller has staged the usable share. This deliberately
+/// reopens the same round journals; a new attempt after a disclosed share must
+/// instead use a new round and new journals.
+pub async fn run_relay_with_journal<S, R>(
+    key: ed25519::PrivateKey,
+    round: Round,
+    share: Option<Share>,
+    mut sender: S,
+    mut receiver: R,
+    journal: PathBuf,
+    duration: std::time::Duration,
+) -> Result<(), DkgError>
+where
+    S: commonware_p2p::Sender<PublicKey = PublicKey>,
+    R: commonware_p2p::Receiver<PublicKey = PublicKey>,
+{
+    if !round.strict_agreement {
+        return Err(DkgError::Setup("post-stage relay requires a new-genesis ceremony".into()));
+    }
+    if round.players.position(&key.public_key()).is_none() {
+        return Err(DkgError::Setup("post-stage relay requires a new-committee player".into()));
+    }
+    let deal_path = journal.with_extension("deals");
+    if !journal.exists() || !deal_path.exists() {
+        return Err(DkgError::Setup("post-stage relay requires existing ceremony journals".into()));
+    }
+    let deals = DealJournal::open(deal_path, DealJournal::binding(&key, &round)).map_err(DkgError::Setup)?;
+    if deals.decided_transcript.is_none() {
+        return Err(DkgError::Setup("post-stage relay has no persisted certified transcript".into()));
+    }
+    let (mut c, _) = Ceremony::start(rand::rngs::StdRng::from_seed(deals.seed), key, round, share)?;
+    c.attach_deal_journal(deals)?;
+    c.agreement.as_mut().expect("strict ceremony has agreement").attach_journal(journal).map_err(DkgError::Setup)?;
+    // Restore Agreement's available set from the verified bundle before
+    // checking the persisted decision or broadcasting any message.
+    let out = c.tick_agreement();
+    if c.certified_transcript().is_none() {
+        return Err(DkgError::Setup("post-stage relay has no certified decision for its transcript".into()));
+    }
+    send_all(&mut sender, out);
+    send_all(&mut sender, c.rebroadcast());
+    let end = tokio::time::Instant::now() + duration;
+    let mut tick = tokio::time::interval(TICK_INTERVAL);
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep_until(end) => return Ok(()),
+            r = receiver.recv() => {
+                let Ok((from, msg)) = r else { return Err(DkgError::Finalize("p2p closed during post-stage relay".into())) };
+                if let Ok(m) = serde_json::from_slice::<Msg>(msg.as_ref()) {
+                    let out = c.on_message(&from, m);
+                    if let Some(error) = c.journal_error.take() { return Err(DkgError::Finalize(error)); }
+                    send_all(&mut sender, out);
+                }
+            }
+            _ = tick.tick() => {
+                let mut out = c.tick_agreement();
+                out.extend(c.rebroadcast());
+                send_all(&mut sender, out);
+            }
+        }
+    }
+}
+
 /// New-genesis players return only after finalizing a certified signed-log
 /// bundle. An old-only resharing dealer returns `None` after relaying the
 /// decision.
@@ -926,10 +1032,8 @@ where
     let mut log_revision = 0;
     let mut agreed_at: Option<Instant> = None;
     let mut proposal: Option<Vec<u8>> = None;
-    // The cap on view backoff is 64 seconds at a 500 ms tick. Give a strict
-    // ceremony enough time to rotate past an offline run of proposers.
-    let longest_view = TICK_INTERVAL.saturating_mul((BASE_VIEW_TICKS << MAX_VIEW_BACKOFF) as u32);
-    let strict_deadline = timeouts.total.max(timeouts.dealing.saturating_add(longest_view.saturating_mul(c.players.len() as u32)).saturating_add(CERTIFIED_TRANSCRIPT_RELAY));
+    // Give a strict ceremony enough time to rotate past offline proposers.
+    let strict_deadline = timeouts.strict_deadline(c.players.len());
     let mut tick = tokio::time::interval(TICK_INTERVAL);
     loop {
         tokio::select! {
@@ -968,6 +1072,9 @@ where
                         }
                     }
                     out.extend(c.tick_agreement());
+                    if let Some(digest) = c.certified_transcript() {
+                        c.persist_certified_transcript(&digest)?;
+                    }
                     if result.is_none() && c.is_player() {
                         if let Some(digest) = c.certified_transcript() {
                             let (o, s) = c.finish_decided(&mut rng, &digest)?;

@@ -17,6 +17,8 @@
 
 use crate::roster::{EpochStart, Member, NetworkFile};
 use crate::rotation::{STAGED_NETWORK, STAGED_THRESHOLD};
+use commonware_codec::DecodeExt;
+use commonware_cryptography::bls12381::primitives::variant::MinSig;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
@@ -80,8 +82,9 @@ pub struct Supervisor {
     /// Local tests: nodes talk plain TCP on loopback; each writes its p2p port
     /// to `<dir>/<voting key hex>` so the others can find it.
     pub dev_peer_dir: Option<PathBuf>,
-    /// How long a background reshare may take.
-    pub reshare_timeout: Duration,
+    /// Explicit background reshare deadline. None derives it from the child
+    /// protocol bound and the proposed player count.
+    pub reshare_timeout: Option<Duration>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -102,6 +105,23 @@ enum Role {
 struct Reshare {
     child: Child,
     started: Instant,
+    timeout: Duration,
+}
+
+const RESHARE_RETURN_MARGIN: Duration = Duration::from_secs(15);
+
+/// Allow the strict child to reach its last view and relay its decision,
+/// then allow a staged child to reopen its journal for late-player recovery.
+pub fn default_reshare_timeout(players: usize) -> Duration {
+    crate::dkg::Timeouts::default()
+        .strict_return_bound(players)
+        .saturating_add(crate::dkg::POST_STAGE_RELAY)
+        .saturating_add(RESHARE_RETURN_MARGIN)
+}
+
+fn reshare_round(old_round: u64, draw: u64) -> Result<u64, String> {
+    old_round.checked_add(draw).and_then(|n| n.checked_add(1))
+        .ok_or_else(|| "reshare round overflow".into())
 }
 
 /// What watching the child ended with.
@@ -411,6 +431,7 @@ impl Supervisor {
     /// role) or when the child exits on its own.
     fn watch(&self, child: &mut Child, role: Role, me: Option<&str>) -> Watched {
         let rpc = self.rpc();
+        let strict_reshare = NetworkFile::load(&self.network_path()).is_ok_and(|net| net.chain_id != 7_780);
         let mut reshare: Option<Reshare> = None;
         let mut attempted: Option<u64> = None;
         let mut last_sign = Instant::now() - Duration::from_secs(60);
@@ -460,9 +481,13 @@ impl Supervisor {
                         attempted = epoch;
                         match self.start_reshare(role, me.expect("involved means keyed"), &rot) {
                             Ok(c) => {
+                                let players = rot["next"].as_array().map_or(0, Vec::len);
                                 reshare = Some(Reshare {
                                     child: c,
                                     started: Instant::now(),
+                                    timeout: self.reshare_timeout.unwrap_or_else(|| {
+                                        if strict_reshare { default_reshare_timeout(players) } else { Duration::from_secs(300) }
+                                    }),
                                 })
                             }
                             Err(e) => {
@@ -476,19 +501,28 @@ impl Supervisor {
                 match r.child.try_wait() {
                     Ok(Some(status)) => {
                         tracing::info!(%status, "aether run: background reshare finished");
+                        if strict_reshare && !status.success() {
+                            let _ = std::fs::remove_file(self.data.join(STAGED_THRESHOLD));
+                            let _ = std::fs::remove_file(self.data.join(STAGED_NETWORK));
+                        }
                         reshare = None;
                     }
-                    _ if r.started.elapsed() > self.reshare_timeout => {
+                    _ if r.started.elapsed() > r.timeout => {
                         tracing::warn!(
                             "aether run: background reshare timed out; the running set carries on"
                         );
                         stop(&mut reshare);
+                        if strict_reshare {
+                            let _ = std::fs::remove_file(self.data.join(STAGED_THRESHOLD));
+                            let _ = std::fs::remove_file(self.data.join(STAGED_NETWORK));
+                        }
                     }
                     _ => {}
                 }
             }
             // 2. A staged reshare: sign its handoff (again now and then, for peers that missed it).
             if role == Role::Validator
+                && (!strict_reshare || reshare.is_none())
                 && self.data.join(STAGED_THRESHOLD).exists()
                 && last_sign.elapsed() > Duration::from_secs(5)
             {
@@ -500,6 +534,10 @@ impl Supervisor {
             // 3. A finalized handoff whose switch height the chain reached: install the new role.
             if let (Some(me), Ok(h)) = (me, rpc_call(&rpc, "aether_handoff", json!([]))) {
                 if self.handoff_due(&h) {
+                    if let Err(e) = self.check_joining_share(me, &h) {
+                        tracing::warn!(%e, "aether run: cannot install a seated handoff without a usable share");
+                        continue;
+                    }
                     stop(&mut reshare);
                     // The install needs this from the old world, and only the
                     // child below has it: read before the stop.
@@ -533,6 +571,37 @@ impl Supervisor {
             .map(|n| n.round)
             .unwrap_or(0);
         round > ours && finalized + 1 >= switch
+    }
+
+    /// A new-genesis seat is installed only with its exact staged share,
+    /// checked against the handoff polynomial and this Mac's voting key.
+    fn check_joining_share(&self, me: &str, h: &Value) -> Result<(), String> {
+        let current = NetworkFile::load(&self.network_path())?;
+        if current.chain_id == 7_780 { return Ok(()); }
+        let members: Vec<Member> = serde_json::from_value(h["members"].clone())
+            .map_err(|e| format!("handoff members: {e}"))?;
+        if !members.iter().any(|member| member.key == me) { return Ok(()); }
+        let output_hex = h["output"].as_str().ok_or("handoff output")?;
+        let round = h["round"].as_u64().ok_or("handoff round")?;
+        let bytes = std::fs::read(self.data.join(STAGED_THRESHOLD))
+            .map_err(|e| format!("no staged share for the new seat: {e}"))?;
+        let key: crate::dkg::KeyFile = serde_json::from_slice(&bytes)
+            .map_err(|e| format!("staged share: {e}"))?;
+        if key.round != round || key.output != output_hex {
+            return Err("staged share does not match the handoff".into());
+        }
+        let (output, share) = key.decode(members.len() as u32)?;
+        let me = crate::block::PublicKey::decode(hex::decode(me).map_err(|e| e.to_string())?.as_slice())
+            .map_err(|e| format!("local voting key: {e:?}"))?;
+        if output.players().get(usize::from(share.index)) != Some(&me)
+            || output.public().partial_public(share.index).ok() != Some(share.public::<MinSig>())
+        {
+            return Err("staged threshold share cannot sign for this seat".into());
+        }
+        if output.revealed().iter().any(|player| output.players().position(player).is_some()) {
+            return Err("handoff reveals a seated player's threshold share".into());
+        }
+        Ok(())
     }
 
     fn start_reshare(&self, role: Role, me: &str, rot: &Value) -> Result<Child, String> {
@@ -599,6 +668,13 @@ impl Supervisor {
             "--to",
             &path_str(&to_path),
         ]);
+        if from.chain_id != 7_780 {
+            let epoch = rot["epoch"].as_u64().ok_or("rotation epoch")?;
+            // Failed ceremonies in later draw periods must not replay the
+            // same DKG round, signed logs, or durable randomness seed.
+            let round = reshare_round(from.round, epoch)?;
+            cmd.args(["--round", &round.to_string()]);
+        }
         if role == Role::Validator {
             cmd.arg("--via-node");
         }
@@ -641,6 +717,7 @@ impl Supervisor {
     /// the install needs from that child is read before it is stopped
     /// ([`Anchor`]).
     fn install(&self, role: Role, me: &str, h: &Value, anchor: &Anchor) -> Result<(), String> {
+        self.check_joining_share(me, h)?;
         let switch = h["switch"].as_u64().ok_or("handoff switch")?;
         let round = h["round"].as_u64().ok_or("handoff round")?;
         let output = h["output"].as_str().ok_or("handoff output")?.to_string();
@@ -964,6 +1041,27 @@ fn rpc_call(url: &str, method: &str, params: Value) -> Result<Value, String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn new_genesis_handoff_refuses_a_seat_without_its_staged_share() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+        let dir = root.join("tmp").join(format!("handoff-seat-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let me = "01";
+        let handoff = json!({"round": 1, "output": "00", "members": [{"key": me, "node": "node"}]});
+        std::fs::write(dir.join("network.json"), serde_json::to_vec(&file(7_781, "aa")).unwrap()).unwrap();
+        assert!(sup(&dir).check_joining_share(me, &handoff).unwrap_err().contains("no staged share"));
+        std::fs::write(dir.join("network.json"), serde_json::to_vec(&file(7_780, "aa")).unwrap()).unwrap();
+        assert!(sup(&dir).check_joining_share(me, &handoff).is_ok(), "chain 7780 keeps its existing install path");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_later_draw_uses_a_fresh_reshare_round() {
+        let old = 9;
+        assert_eq!(reshare_round(old, 24).unwrap(), reshare_round(old, 24).unwrap(), "restart resumes its journal");
+        assert!(reshare_round(old, 25).unwrap() > reshare_round(old, 24).unwrap(), "a new draw gets new DKG randomness");
+    }
+
     fn file(chain_id: u64, identity: &str) -> NetworkFile {
         NetworkFile {
             chain_id,
@@ -1035,7 +1133,7 @@ mod tests {
             node_args: vec![],
             follow_args: vec![],
             dev_peer_dir: None,
-            reshare_timeout: Duration::from_secs(1),
+            reshare_timeout: Some(Duration::from_secs(1)),
         }
     }
 

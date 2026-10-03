@@ -119,6 +119,7 @@ fn four_validators_agree_despite_loss_and_reordering() {
     for seed in 1..=3 {
         let files = run(4, seed, 0.3, |_, _| {});
         check(&files, 4);
+        assert!(files[0].decode(4).unwrap().0.revealed().is_empty());
     }
 }
 
@@ -208,6 +209,7 @@ fn dkg4() -> (Vec<ed25519::PrivateKey>, std::collections::BTreeMap<PublicKey, Ke
         "d4d640dd887badd0590e992adeb4230a91f4bfc3cae786b8301f42222ac53163",
         "the all-honest genesis output is unchanged",
     );
+    assert!(files.values().next().unwrap().decode(4).unwrap().0.revealed().is_empty());
     (ks, files)
 }
 
@@ -295,74 +297,55 @@ fn a_handoff_is_signed_by_the_running_committee() {
     assert!(check_partial(CHAIN, previous.public(), &h, &sign_partial(CHAIN, &h, &new_share)).is_err());
 }
 
-/// A player drawn into the new set that never shows up does not stop the
-/// reshare: the dealers reveal its share, a quorum of players agrees, and the
-/// others hold working shares of the same identity.
+/// A player misses the dealing/ack window. Even a valid three-dealer bundle
+/// must not become vote-eligible when those logs reveal the fourth share.
+/// Once that player returns, a fresh round with fresh dealer randomness works.
 #[test]
-fn reshare_completes_without_an_unreachable_new_player() {
-    let (ks, files) = dkg4();
-    let identity = files.values().next().unwrap().identity.clone();
-    let (previous, _) = files.values().next().unwrap().decode(4).unwrap();
-    let extra = aether_light::devnet_validator_key(6);
-    // New set: 2, 3, 4, 5 and 6; validator 6 never starts.
-    let next: Set<PublicKey> = ks[1..5].iter().map(|k| k.public_key()).chain([extra.public_key()]).try_collect().unwrap();
-    let round = Round::reshare(previous, next, 1);
-    let online: Vec<ed25519::PrivateKey> = ks.clone();
-    let pks: Vec<PublicKey> = online.iter().map(|k| k.public_key()).collect();
-    let shares = shares_of(&files, 4);
-    let mut net = Net { queue: VecDeque::new(), rng: ChaCha20Rng::seed_from_u64(21), drop_rate: 0.0 };
-    let mut cs = Vec::new();
-    for (i, k) in online.iter().enumerate() {
-        let (c, out) = Ceremony::start(ChaCha20Rng::seed_from_u64(900 + i as u64), k.clone(), round.clone(), shares.get(&pks[i]).cloned()).unwrap();
-        net.send(&pks[i], &pks, out);
-        cs.push(c);
+fn delayed_ack_revealed_share_requires_fresh_round() {
+    let ks = keys(4);
+    let pks: Vec<_> = ks.iter().map(|key| key.public_key()).collect();
+    let roster: Set<PublicKey> = pks.iter().cloned().try_collect().unwrap();
+    let mut ceremonies = Vec::new();
+    let mut queue = VecDeque::new();
+    for (i, key) in ks.iter().enumerate() {
+        let (ceremony, outbound) = Ceremony::start(
+            ChaCha20Rng::seed_from_u64(400 + i as u64),
+            key.clone(),
+            Round::dkg(roster.clone(), 80).with_chain_id(7781),
+            None,
+        ).unwrap();
+        for (recipient, message) in outbound {
+            let To::One(recipient) = recipient else { continue };
+            let to = pks.iter().position(|pk| *pk == recipient).unwrap();
+            if i < 3 && to < 3 { queue.push_back((i, to, message)); }
+        }
+        ceremonies.push(ceremony);
     }
-    let idx = |p: &PublicKey| pks.iter().position(|x| x == p);
-    let mut files_out = std::collections::BTreeMap::new();
-    let mut proposals = vec![None; cs.len()];
-    for tick in 0..400 {
-        for _ in 0..net.queue.len() {
-            let Some((from, to, msg)) = net.queue.pop_front() else { break };
-            if let Some(i) = idx(&to) {
-                let out = cs[i].on_message(&from, msg);
-                net.send(&to, &pks, out);
-            }
-        }
-        for i in 0..cs.len() {
-            let mut out = cs[i].pending_deals();
-            if cs[i].all_acked() || tick > 20 {
-                out.extend(cs[i].close_dealing());
-            }
-            if cs[i].is_player() && tick > 60 && cs[i].have_quorum_logs() {
-                if let Some((digest, msg)) = cs[i].propose_transcript() {
-                    if proposals[i].as_ref() != Some(&digest) {
-                        proposals[i] = Some(digest);
-                        out.push((To::All, msg));
-                    }
-                }
-            }
-            if tick > 60 { out.extend(cs[i].tick_agreement()); }
-            if cs[i].is_player() && !files_out.contains_key(&pks[i]) {
-                if let Some(digest) = cs[i].certified_transcript() {
-                    let (o, s) = cs[i].finish_decided(&mut ChaCha20Rng::seed_from_u64(7), &digest).unwrap();
-                    files_out.insert(pks[i].clone(), KeyFile::new(1, &o, &s));
-                }
-            }
-            out.extend(cs[i].rebroadcast());
-            net.send(&pks[i], &pks, out);
-        }
-        if tick <= 60 { assert!(files_out.is_empty(), "the offline player cannot supply an early certificate"); }
-        if files_out.len() == 4 {
-            assert_eq!(files_out.len(), 4, "the four reachable new players hold shares");
-            assert!(files_out.values().all(|f| f.identity == identity));
-            for f in files_out.values() {
-                let (o, s) = f.decode(5).unwrap();
-                assert!(aether_light::Scheme::signer(&aether_light::consensus_namespace(), o.players().clone(), o.public().clone(), s).is_some());
-            }
-            return;
+    while let Some((from, to, message)) = queue.pop_front() {
+        for (recipient, reply) in ceremonies[to].on_message(&pks[from], message) {
+            let To::One(recipient) = recipient else { continue };
+            let peer = pks.iter().position(|pk| *pk == recipient).unwrap();
+            queue.push_back((to, peer, reply));
         }
     }
-    panic!("the reshare did not complete without the unreachable player");
+    let logs: Vec<_> = ceremonies[..3].iter_mut().map(|c| {
+        c.close_dealing().into_iter().find_map(|(_, msg)| matches!(msg, Msg::Log { .. }).then_some(msg)).unwrap()
+    }).collect();
+    for ceremony in &mut ceremonies[..3] {
+        for (from, log) in logs.iter().enumerate() { ceremony.on_message(&pks[from], log.clone()); }
+        assert!(ceremony.have_quorum_logs());
+        assert!(ceremony.propose_transcript().is_none(), "publicly revealed seated share must never be vote-eligible");
+        assert!(ceremony.certified_transcript().is_none());
+    }
+
+    let retry = run_round(&ks, Round::dkg(roster, 81).with_chain_id(7781), &Default::default(), 401, 0.0);
+    assert_eq!(retry.len(), 4);
+    let recovered: Vec<_> = retry.values().map(|file| file.decode(4).unwrap()).collect();
+    assert!(recovered.iter().all(|(output, _)| output.revealed().is_empty()));
+    assert!(recovered.windows(2).all(|pair| pair[0].0.encode().to_vec() == pair[1].0.encode().to_vec()));
+    assert!(recovered.iter().all(|(output, share)| {
+        aether_light::Scheme::signer(&aether_light::consensus_namespace(), output.players().clone(), output.public().clone(), share.clone()).is_some()
+    }));
 }
 
 /// Signed logs can be delivered to different quorums before the decision.
@@ -519,15 +502,19 @@ fn late_minority_cannot_be_left_behind(reshare: bool) {
     let agreed = proposals[0].0.clone();
     assert!(proposals.iter().all(|(digest, _)| *digest == agreed));
     assert_ne!(minority_digest, agreed, "the schedule must split the candidate transcripts");
-    // The certified signed bundle reaches the fourth player even though its
-    // own local candidate and announcement arrive after the old five-second gate.
-    for (to, ceremony) in cs.iter_mut().enumerate() {
+    // Keep player four off the bundle/decision channel until after the first
+    // three have finalized. It still has all private dealings from the Ack phase.
+    for (to, ceremony) in cs[..3].iter_mut().enumerate() {
         for from in 0..3 {
             if to != from { ceremony.on_message(&pks[from], proposals[from].1.clone()); }
         }
     }
-    certify(&mut cs, &pks, &[0, 1, 2]);
+    let certified_gossip = certify(&mut cs, &pks, &[0, 1, 2]);
     for c in &cs[..3] { assert_eq!(c.certified_transcript(), Some(agreed.clone())); }
+    let (source, decision) = certified_gossip.iter().find(|(_, msg)| matches!(msg, Msg::Agreement(AgreementMsg::Decision(_))))
+        .expect("quorum broadcasts a decision certificate");
+    cs[3].on_message(&pks[*source], decision.clone());
+    assert!(cs[3].certified_transcript().is_none(), "decision alone cannot finalize without the signed bundle");
     let mut usable = Vec::new();
     for ceremony in &mut cs[..2] {
         usable.push(ceremony.finish_decided(&mut ChaCha20Rng::seed_from_u64(7), &agreed).unwrap());
@@ -539,14 +526,13 @@ fn late_minority_cannot_be_left_behind(reshare: bool) {
     cs[0].on_message(&pks[3], Msg::Done(minority_digest));
     assert_ne!(cs[0].agreement(true), Some(false), "late minority Done cannot revoke a certificate");
     // The fourth player's receive path was partitioned through the old five
-    // second return window and beyond a 30 second grace. Player 3 is gone;
-    // the remaining two keep serving their signed bundle and Decision proof.
+    // second return window and beyond a 30 second grace. Players 1 and 2 have
+    // returned and no longer participate. One bounded relay of the decided
+    // bundle and certificate must suffice for the late honest player.
     for _ in 0..70 {
-        for from in 0..2 {
-            let mut out = cs[from].tick_agreement();
-            out.extend(cs[from].rebroadcast());
-            for (_, msg) in out { cs[3].on_message(&pks[from], msg); }
-        }
+        let mut out = cs[0].tick_agreement();
+        out.extend(cs[0].rebroadcast());
+        for (_, msg) in out { cs[3].on_message(&pks[0], msg); }
         cs[3].tick_agreement();
     }
     assert_eq!(cs[3].certified_transcript(), Some(agreed.clone()));
@@ -686,6 +672,7 @@ fn chain_bound_new_genesis_players_share_one_usable_output() {
         partials.push(aether_node::handoff::check_seed_partial(7781, output.public(), 1, &partial).unwrap());
     }
     let (output, _) = files.values().next().unwrap().decode(4).unwrap();
+    assert!(output.revealed().is_empty(), "all-honest chain-bound output has no published share");
     let seed = aether_node::handoff::combine_seed(output.public(), 1, &partials[..3]).unwrap();
     aether_node::handoff::verify_seed(7781, output.public().public(), &seed).unwrap();
 }

@@ -255,6 +255,10 @@ enum Cmd {
         port: u16,
         #[arg(long)]
         data: String,
+        /// New-genesis ceremony round. Increase this after a failed ceremony
+        /// so a retry uses a new journal and fresh dealer randomness.
+        #[arg(long)]
+        round: Option<u64>,
         #[arg(long, value_delimiter = ',')]
         peers: Vec<String>,
         #[arg(long)]
@@ -345,8 +349,8 @@ enum Cmd {
         #[arg(long = "follow-arg", allow_hyphen_values = true)]
         follow_args: Vec<String>,
         /// Seconds a reshare may take before the running set carries on.
-        #[arg(long, default_value_t = 300)]
-        reshare_timeout: u64,
+        #[arg(long)]
+        reshare_timeout: Option<u64>,
         #[arg(long, hide = true)]
         dev_peer_dir: Option<String>,
         /// Exit when the launching app does (the Mac app's node switch).
@@ -874,7 +878,7 @@ fn main() {
                     node_args,
                     follow_args,
                     dev_peer_dir: dev_peer_dir.map(Into::into),
-                    reshare_timeout: Duration::from_secs(reshare_timeout),
+                    reshare_timeout: reshare_timeout.map(Duration::from_secs),
                 }
                 .run()
             })()
@@ -918,7 +922,7 @@ fn main() {
             println!("{}", aether_node::upgrade::PROTOCOL);
             Ok(())
         })(),
-        Cmd::Reshare { from, to, epoch_end, epoch_end_hash, stage, via_node, port, data, peers, link_base, offline, exit_with_parent } => {
+        Cmd::Reshare { from, to, epoch_end, epoch_end_hash, stage, via_node, port, data, round, peers, link_base, offline, exit_with_parent } => {
             if exit_with_parent {
                 exit_with_parent_process();
             }
@@ -927,7 +931,7 @@ fn main() {
                 (false, Some(h), Some(parent)) => Some(aether_node::roster::EpochStart { height: h + 1, parent }),
                 _ => unreachable!("clap requires --epoch-end and --epoch-end-hash without --stage"),
             };
-            reshare(&from, &to, boundary, port, data, peers, link_base, offline, via_node)
+            reshare(&from, &to, boundary, port, data, round, peers, link_base, offline, via_node)
         }
         Cmd::Network { chain_id, faucet, registrar, dev_registrar, epoch_blocks, min_streak, draw_epochs, node_rewards, history, protocol, reserve, reserve_operator, group, max_committee, members } => {
             let registrar = match (registrar, dev_registrar) {
@@ -1273,6 +1277,7 @@ fn reshare(
     boundary: Option<aether_node::roster::EpochStart>,
     port: u16,
     data: String,
+    requested_round: Option<u64>,
     peers: Vec<String>,
     link_base: Option<u16>,
     offline: bool,
@@ -1300,6 +1305,9 @@ fn reshare(
         share: String::new(),
     };
     let previous = previous.decode_output(n_old)?;
+    if old_file.chain_id != 7_780 && previous.revealed().iter().any(|player| previous.players().position(player).is_some()) {
+        return Err("current committee output reveals a seated player's threshold share".into());
+    }
     let dir = std::path::PathBuf::from(&data);
     let keys = LocalKeys::load(&dir)?;
     let share = match std::fs::read(dir.join("threshold.json")) {
@@ -1340,7 +1348,16 @@ fn reshare(
     } else {
         round = round.with_chain_id(old_file.chain_id);
     }
-    let next_round = round.round;
+    let next_round = if legacy_agreement {
+        round.round
+    } else {
+        let chosen = requested_round.unwrap_or(round.round);
+        if chosen < round.round {
+            return Err(format!("reshare round {chosen} must be at least {}", round.round));
+        }
+        round.round = chosen;
+        chosen
+    };
     // The vote/dealing journals survive retries of this same key round. The
     // Commonware runtime directory below is intentionally fresh per attempt.
     let agreement_journal = dir.join(format!("dkg-agreement-reshare-{next_round}.journal"));
@@ -1354,6 +1371,8 @@ fn reshare(
             .with_storage_directory(dir.join("reshare-runtime").join(secs.to_string())),
     );
     let staged = boundary.is_none();
+    let relay_inputs = (staged && !legacy_agreement && round.players.position(&p2p.keys.signer.public_key()).is_some())
+        .then(|| (p2p.clone(), round.clone(), share.clone(), agreement_journal.clone()));
     let result = executor.start(async move |context| {
         let _public = if staged {
             aether_node::p2p::open_reshare(&p2p, via_node, loopback(p2p.port))
@@ -1385,6 +1404,9 @@ fn reshare(
     });
     match result.map_err(|e| format!("reshare failed: {e}"))? {
         Some((output, share)) => {
+            if !legacy_agreement && output.revealed().iter().any(|player| output.players().position(player).is_some()) {
+                return Err("reshare output reveals a seated player's threshold share; retry with a higher --round".into());
+            }
             let file = aether_node::dkg::KeyFile::new(next_round, &output, &share);
             let (threshold, network) = match boundary {
                 Some(_) => ("threshold.json", "network.json"),
@@ -1425,6 +1447,30 @@ fn reshare(
             let _ = std::fs::remove_file(dir.join("threshold.json"));
             println!("dealt our share to the new committee; this validator has left it");
         }
+    }
+    if let Some((p2p, round, share, journal)) = relay_inputs {
+        // Stage the share before reopening the same durable ceremony for a
+        // bounded relay. A late player that acked its private deals can now
+        // obtain the decided bundle and certificate after the first child
+        // returned; this second phase cannot create a new DKG output.
+        let relay_dir = dir.join("reshare-relay-runtime").join(format!("{next_round}-{secs}"));
+        let relay = cw_tokio::Runner::new(cw_tokio::Config::new().with_storage_directory(relay_dir));
+        relay.start(async move |context| {
+            let _public = aether_node::p2p::open_reshare(&p2p, via_node, loopback(p2p.port))
+                .await
+                .map(|(ep, r)| (ep, r.map(Some).unwrap_or(None)));
+            let (mut network, mut oracle) = lookup::Network::new(
+                context.child("network"),
+                aether_node::p2p::config(&p2p, b"_DKG"),
+            );
+            oracle.track(0, aether_node::p2p::peer_addresses(&p2p));
+            let (sender, receiver) = network.register(0, Quota::per_second(NZU32!(256)));
+            network.start();
+            aether_node::dkg::run_relay_with_journal(
+                p2p.keys.signer.clone(), round, share, sender, receiver,
+                journal, aether_node::dkg::POST_STAGE_RELAY,
+            ).await
+        }).map_err(|e| format!("reshare relay failed: {e}"))?;
     }
     Ok(())
 }
@@ -1843,7 +1889,7 @@ fn run_node(a: NodeArgs) {
         // BLS threshold certificates (one group signature per block) with a VRF
         // seed per round for leader election. Devnet shares come from a fixed
         // dealer seed; a real network derives them with a DKG.
-        let (participants, polynomial, share) = committee_keys(&data, &validator_set, &signer.public_key(), key_round);
+        let (participants, polynomial, share) = committee_keys(&data, &validator_set, &signer.public_key(), key_round, chain_id);
         let (handoff_share, handoff_sharing) = (share.clone(), polynomial.clone());
         let polynomial_identity = &polynomial.public().clone();
         let scheme = aether_light::Scheme::signer(&aether_light::consensus_namespace_of(cfg.group), participants, polynomial, share).expect("share matches polynomial");
@@ -2624,6 +2670,10 @@ fn run_dkg(
     match result {
         Ok(None) => unreachable!("every DKG participant is a player"),
         Ok(Some((output, share))) => {
+            if chain_id != 7_780 && output.revealed().iter().any(|player| output.players().position(player).is_some()) {
+                eprintln!("dkg failed: output reveals a seated player's threshold share; retry with a higher --round");
+                std::process::exit(1);
+            }
             let file = aether_node::dkg::KeyFile::new(round, &output, &share);
             write_secret(
                 &out_path,
@@ -2655,6 +2705,7 @@ fn committee_keys(
     validators: &commonware_utils::ordered::Set<PublicKey>,
     me: &PublicKey,
     expected_round: Option<u64>,
+    chain_id: u64,
 ) -> (
     commonware_utils::ordered::Set<PublicKey>,
     commonware_cryptography::bls12381::primitives::sharing::Sharing<
@@ -2680,6 +2731,10 @@ fn committee_keys(
             output.players(),
             validators,
             "threshold.json is for a different validator set"
+        );
+        assert!(
+            chain_id == 7_780 || !output.revealed().iter().any(|player| validators.position(player).is_some()),
+            "threshold.json reveals a seated player's threshold share; do not run consensus with this committee key"
         );
         tracing::info!(identity = %file.identity, "committee key from DKG");
         return (output.players().clone(), output.public().clone(), share);
@@ -2999,6 +3054,19 @@ fn print_blocks(v: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_reshare_timeout_exceeds_four_player_child_return() {
+        let cli = Cli::try_parse_from(["aether", "run", "--data", "d"]).expect("run parses");
+        let Cmd::Run { reshare_timeout, .. } = cli.cmd else { panic!("run") };
+        assert_eq!(reshare_timeout, None, "the shipped default derives from the player count");
+        let child = aether_node::dkg::Timeouts::default().strict_return_bound(4);
+        let supervisor = aether_node::supervisor::default_reshare_timeout(4);
+        assert!(supervisor > child + aether_node::dkg::POST_STAGE_RELAY);
+        let override_cli = Cli::try_parse_from(["aether", "run", "--data", "d", "--reshare-timeout", "600"]).expect("override parses");
+        let Cmd::Run { reshare_timeout, .. } = override_cli.cmd else { panic!("run") };
+        assert_eq!(reshare_timeout, Some(600));
+    }
 
     /// The resource flags parse on `node`, `follow` and `run`, resolve to the
     /// sizes they name, and `run` forwards them verbatim to its children.

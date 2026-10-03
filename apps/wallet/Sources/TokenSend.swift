@@ -116,7 +116,7 @@ enum SendSafety {
         for o in official {
             let os = normalized(o.symbol), on = normalized(o.name)
             if os.isEmpty { continue }
-            if resembles(s, os) || (!on.isEmpty && (resembles(s, on) || resembles(n, os))) { return true }
+            if resembles(s, os) || (!on.isEmpty && (resembles(s, on) || resembles(n, os) || resembles(n, on))) { return true }
         }
         return false
     }

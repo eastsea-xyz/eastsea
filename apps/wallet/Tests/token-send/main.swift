@@ -65,14 +65,17 @@ check(SendSafety.isValidAddress("0x1234567890AbCdEf1234567890aBcDeF12345678"), "
 check(!SendSafety.isValidAddress("1234567890abcdef1234567890abcdef12345678"), "needs 0x")
 check(!SendSafety.isValidAddress("0x1234567890abcdef1234567890abcdef1234567g"), "hex only")
 
-// Look-alike symbols (NFKD-folded, edit distance 1, the aeth family).
+// Look-alike symbols (NFKD-folded, edit distance 1, the official ticker family),
+// derived from the brand constants so a rename cannot leave these testing a dead name.
 let official: [(symbol: String, name: String)] = [(Brand.coinTicker, Brand.coinName), ("USDT", "Tether Dollar")]
-check(SendSafety.looksLikeOfficial(symbol: "AETH", name: "x", official: official), "equal symbol")
-check(SendSafety.looksLikeOfficial(symbol: "AET", name: "", official: official), "one edit away")
-check(SendSafety.looksLikeOfficial(symbol: "AETHR", name: "", official: official), "one insert away")
-check(SendSafety.looksLikeOfficial(symbol: "WAETH", name: "", official: official), "contains aeth")
-check(SendSafety.looksLikeOfficial(symbol: "ÆTH", name: "", official: official), "folded accent")
-check(SendSafety.looksLikeOfficial(symbol: "NEB", name: "AETHs", official: official), "name resembles")
+let tick = Brand.coinTicker
+check(SendSafety.looksLikeOfficial(symbol: tick, name: "x", official: official), "equal symbol")
+check(SendSafety.looksLikeOfficial(symbol: String(tick.dropLast()), name: "", official: official), "one edit away")
+check(SendSafety.looksLikeOfficial(symbol: tick + "R", name: "", official: official), "one insert away")
+check(SendSafety.looksLikeOfficial(symbol: "W" + tick, name: "", official: official), "contains the ticker")
+check(SendSafety.looksLikeOfficial(symbol: String(tick.unicodeScalars.map { Character(Unicode.Scalar($0.value + 0xFEE0)!) }), name: "", official: official), "fullwidth letters fold to the ticker")
+check(SendSafety.looksLikeOfficial(symbol: "NEB", name: tick + "s", official: official), "name resembles")
+check(SendSafety.looksLikeOfficial(symbol: "NEB", name: Brand.coinName, official: official), "same name as the coin")
 check(!SendSafety.looksLikeOfficial(symbol: "NEB", name: "Nebula", official: official), "unrelated")
 check(!SendSafety.looksLikeOfficial(symbol: "NEBD", name: "Nebula", official: official), "one edit but short official only")
 check(SendSafety.looksLikeOfficial(symbol: "usdt", name: "", official: official), "case-insensitive")

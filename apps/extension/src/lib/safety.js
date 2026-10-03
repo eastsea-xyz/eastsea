@@ -77,7 +77,7 @@ export function looksLikeOfficial(token, official) {
     const os = normalized(o.symbol);
     const on = normalized(o.name);
     if (!os) continue;
-    if (resembles(s, os) || (on && (resembles(s, on) || resembles(n, os)))) return true;
+    if (resembles(s, os) || (on && (resembles(s, on) || resembles(n, os) || resembles(n, on)))) return true;
   }
   return false;
 }

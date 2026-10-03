@@ -69,6 +69,9 @@ test('addressRisk: first-4/last-4 poisoning and first sends', () => {
 test('look-alike symbols: folded, edit distance 1, names containing an official symbol', () => {
   const official = [{ symbol: Brand.coinTicker, name: Brand.coinName }, { symbol: 'USDT', name: 'Tether Dollar' }];
   assert.equal(looksLikeOfficial({ symbol: 'DBLN', name: 'x' }, official), true);
+  // A token that copies the coin's NAME under another symbol is an impersonation too.
+  assert.equal(looksLikeOfficial({ symbol: 'NEB', name: 'Doubloon' }, official), true);
+  assert.equal(looksLikeOfficial({ symbol: 'NEB', name: 'Nebula' }, official), false);
   assert.equal(looksLikeOfficial({ symbol: 'DBL', name: '' }, official), true);
   assert.equal(looksLikeOfficial({ symbol: 'DBLNR', name: '' }, official), true);
   assert.equal(looksLikeOfficial({ symbol: 'WDBLN', name: '' }, official), true);

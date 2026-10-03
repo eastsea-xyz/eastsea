@@ -8,6 +8,20 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:$PATH"
 rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
+# The BLS verifier (blst) is C: it needs a clang with a wasm32 backend. Apple's
+# clang has none. Use CC_wasm32_unknown_unknown if set, else Homebrew's llvm.
+if [ -z "${CC_wasm32_unknown_unknown:-}" ]; then
+  for llvm in /opt/homebrew/opt/llvm /opt/homebrew/opt/llvm@21 /opt/homebrew/opt/llvm@20 /opt/homebrew/opt/llvm@19; do
+    if [ -x "$llvm/bin/clang" ] && "$llvm/bin/clang" --print-targets | grep -q wasm32; then
+      export CC_wasm32_unknown_unknown="$llvm/bin/clang" AR_wasm32_unknown_unknown="$llvm/bin/llvm-ar"
+      break
+    fi
+  done
+fi
+if [ -z "${CC_wasm32_unknown_unknown:-}" ]; then
+  echo "error: no clang with a wasm32 target (Apple's clang has none). brew install llvm, or set CC_wasm32_unknown_unknown and AR_wasm32_unknown_unknown" >&2
+  exit 1
+fi
 # Release artifact: same bytes wherever the checkout lives (gap G5). The wasm
 # target dir goes under the checkout, so name it before repro-env.sh so the
 # remap list covers it.

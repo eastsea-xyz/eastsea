@@ -37,13 +37,34 @@ pub struct Snapshot {
     pub upgrade_notices: Vec<crate::upgrade::SignedUpgrade>,
 }
 
-impl Snapshot {
-    /// The node's finalized state as a snapshot.
-    pub fn of(chain: &Chain) -> Snapshot {
+pub(crate) struct SnapshotSource {
+    finalized: Arc<Executed>,
+    summary: BlockSummary,
+    notices: Vec<crate::upgrade::SignedUpgrade>,
+}
+
+impl SnapshotSource {
+    fn capture(chain: &Chain) -> Self {
         let g = chain.lock();
-        let f = &g.finalized;
+        SnapshotSource {
+            finalized: g.finalized.clone(),
+            summary: g.blocks.get(&g.finalized.height).cloned().expect("finalized block summary"),
+            notices: g.upgrade_notices.clone(),
+        }
+    }
+
+    /// Conservative extra allocation for entries, serialization, the notice
+    /// envelope and allocator growth. The source state already exists.
+    pub(crate) fn estimated_peak_bytes(&self) -> u64 {
+        let entries = self.finalized.state.repo().entries().count() as u64;
+        let code_bytes: u64 = self.finalized.state.codes().values().map(|c| c.len() as u64).sum();
+        entries.saturating_mul(64).saturating_add(code_bytes).saturating_mul(4).saturating_add(16 << 20)
+    }
+
+    pub(crate) fn build(self) -> Snapshot {
+        let f = &self.finalized;
         Snapshot {
-            summary: g.blocks.get(&f.height).cloned().expect("finalized block summary"),
+            summary: self.summary,
             entries: f.state.repo().entries().collect(),
             codes: f.state.codes().iter().map(|(k, v)| (*k, v.clone())).collect(),
             history: (*f.history).clone(),
@@ -51,21 +72,39 @@ impl Snapshot {
             seed: f.seed.as_deref().cloned(),
             schedule: (*f.schedule).clone(),
             statement: f.statement,
-            upgrade_notices: g.upgrade_notices.clone(),
+            upgrade_notices: self.notices,
         }
+    }
+}
+
+impl Snapshot {
+    /// The node's finalized state as a snapshot.
+    pub fn of(chain: &Chain) -> Snapshot {
+        SnapshotSource::capture(chain).build()
+    }
+
+    /// A consistent finalized read handle. Cloning the Arc and small metadata
+    /// is the only work done under the consensus mutex.
+    pub(crate) fn source(chain: &Chain) -> SnapshotSource {
+        SnapshotSource::capture(chain)
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
-        let legacy = postcard::to_allocvec(self).expect("snapshot serializes");
+        let mut legacy = postcard::to_allocvec(self).expect("snapshot serializes");
         if !self.schedule.first().is_some_and(|a| a.at == 0 && a.protocol > 1) {
             return legacy;
         }
         let notices = serde_json::to_vec(&self.upgrade_notices).expect("notices serialize");
-        let mut out = b"AUN2".to_vec();
-        out.extend_from_slice(&(legacy.len() as u32).to_be_bytes());
-        out.extend_from_slice(&legacy);
-        out.extend_from_slice(&notices);
-        out
+        let n = legacy.len();
+        // Prepend the envelope in place; a second full-sized Vec would double
+        // the serialized state's live memory until this function returned.
+        legacy.reserve(8 + notices.len());
+        legacy.resize(n + 8, 0);
+        legacy.copy_within(0..n, 8);
+        legacy[..4].copy_from_slice(b"AUN2");
+        legacy[4..8].copy_from_slice(&(n as u32).to_be_bytes());
+        legacy.extend_from_slice(&notices);
+        legacy
     }
 
     pub fn from_bytes(b: &[u8]) -> Result<Snapshot, String> {
@@ -352,6 +391,73 @@ pub fn block_hash(b: &Block) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cfg() -> ChainConfig {
+        ChainConfig {
+            chain_id: 7781,
+            limits: aether_types::GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
+            alloc: vec![], fees: false, registrar: None, epoch_blocks: 0,
+            min_streak: None, draw_epochs: None, history_v2: false, protocol: 1,
+            node_rewards: false, committee: vec![], reserve: None, group: 0,
+            max_committee: crate::rotation::GROW_UNTIL,
+        }
+    }
+
+    #[test]
+    fn snapshot_build_does_not_hold_consensus_mutex() {
+        let (chain, _) = Chain::new(cfg());
+        let source = Snapshot::source(&chain);
+        let guard = chain.lock();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || tx.send(source.build().summary.height).unwrap());
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap(), 0,
+            "snapshot entry copy must complete while consensus holds its mutex");
+        drop(guard);
+        thread.join().unwrap();
+    }
+
+    #[test]
+    #[ignore = "manual physical-footprint measurement of a synthetic large state"]
+    fn snapshot_build_allocation_probe() {
+        let mut config = cfg();
+        config.history_v2 = true;
+        config.protocol = 2;
+        let (chain, _) = Chain::new(config);
+        let entries: Vec<_> = (0..100_000u32).map(|i| {
+            let mut key = [0u8; 32];
+            key[..4].copy_from_slice(&i.to_be_bytes());
+            (key, [7u8; 32])
+        }).collect();
+        let state = WorldState::from_parts(entries, Default::default());
+        {
+            let mut g = chain.lock();
+            let mut head = (*g.finalized).clone();
+            head.state = state;
+            g.finalized = Arc::new(head);
+        }
+        let pid = std::process::id();
+        let before = crate::resources::footprint(pid).unwrap_or(0);
+        let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let peak = Arc::new(std::sync::atomic::AtomicU64::new(before));
+        let sampler = {
+            let running = running.clone();
+            let peak = peak.clone();
+            std::thread::spawn(move || while running.load(std::sync::atomic::Ordering::Relaxed) {
+                if let Some(n) = crate::resources::footprint(pid) {
+                    peak.fetch_max(n, std::sync::atomic::Ordering::Relaxed);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            })
+        };
+        let source = Snapshot::source(&chain);
+        let estimate = source.estimated_peak_bytes();
+        let snap = source.build();
+        let wire = snap.to_bytes();
+        running.store(false, std::sync::atomic::Ordering::Relaxed);
+        sampler.join().unwrap();
+        eprintln!("snapshot allocation probe: entries={}, wire={}, estimated_extra={}, sampled_footprint_delta={}",
+            snap.entries.len(), wire.len(), estimate, peak.load(std::sync::atomic::Ordering::Relaxed).saturating_sub(before));
+    }
 
     fn leaf(sub: u8, stem: &[u8; 31], v: [u8; 32]) -> ([u8; 32], [u8; 32]) {
         let mut k = [0u8; 32];

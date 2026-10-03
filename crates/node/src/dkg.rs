@@ -12,8 +12,10 @@
 //! Genesis ceremony rules (simple and safe, not live): every dealer's log is
 //! required; logs are relayed so that a log seen by one honest node reaches
 //! all; a dealer caught signing two different logs is excluded; the run ends
-//! with every validator announcing its computed identity, and the result is
-//! only accepted if all announcements agree.
+//! with every validator announcing a digest of its complete public output and
+//! accepted dealer set. A split aborts the attempt; a later attempt starts
+//! from fresh logs. The legacy testnet ceremony keeps its original identity
+//! announcement so an in-flight 7780 round remains wire-compatible.
 
 use crate::block::PublicKey;
 use aether_light::Identity;
@@ -47,7 +49,7 @@ pub enum Msg {
     Ack(Vec<u8>),
     /// A dealer's signed log (broadcast, and relayed by everyone).
     Log { dealer: Vec<u8>, log: Vec<u8> },
-    /// The identity this validator computed.
+    /// Legacy identity or the digest of the complete public output and dealers.
     Done(Vec<u8>),
 }
 
@@ -61,7 +63,7 @@ pub enum To {
 pub enum DkgError {
     Setup(String),
     Finalize(String),
-    /// Validators computed different identities: the ceremony must be rerun.
+    /// Validators computed different public outputs: the ceremony must be rerun.
     Disagreement,
 }
 
@@ -80,18 +82,26 @@ pub struct Round {
     pub previous: Option<DkgOutput>,
     pub dealers: Set<PublicKey>,
     pub players: Set<PublicKey>,
+    strict_agreement: bool,
 }
 
 impl Round {
     /// Fresh key: every participant deals and receives.
     pub fn dkg(participants: Set<PublicKey>, round: u64) -> Self {
-        Round { round, previous: None, dealers: participants.clone(), players: participants }
+        Round { round, previous: None, dealers: participants.clone(), players: participants, strict_agreement: true }
     }
 
     /// Move the existing key to `players`: the current share holders deal. The
     /// committee identity (what wallets pin) is unchanged.
     pub fn reshare(previous: DkgOutput, players: Set<PublicKey>, round: u64) -> Self {
-        Round { round, dealers: previous.players().clone(), previous: Some(previous), players }
+        Round { round, dealers: previous.players().clone(), previous: Some(previous), players, strict_agreement: true }
+    }
+
+    /// Existing 7780 rounds retain their original DKG control-message bytes.
+    /// The call site must select this only for chain 7780.
+    pub fn legacy_agreement(mut self) -> Self {
+        self.strict_agreement = false;
+        self
     }
 
     fn identity(&self) -> Option<Identity> {
@@ -107,6 +117,8 @@ pub struct Ceremony {
     players: Set<PublicKey>,
     /// A reshare must reproduce this identity.
     expected: Option<Identity>,
+    strict_agreement: bool,
+    round: u64,
     dealer: Option<Dealer<MinSig, ed25519::PrivateKey>>,
     player: Option<Player<MinSig, ed25519::PrivateKey>>,
     /// Our deal messages, re-sent until acknowledged.
@@ -118,6 +130,7 @@ pub struct Ceremony {
     logs: BTreeMap<PublicKey, Vec<u8>>,
     equivocators: BTreeSet<PublicKey>,
     identity: Option<Identity>,
+    output_digest: Option<Vec<u8>>,
     announced: BTreeMap<PublicKey, Vec<u8>>,
 }
 
@@ -149,6 +162,8 @@ impl Ceremony {
             dealers: round.dealers,
             players: round.players,
             expected,
+            strict_agreement: round.strict_agreement,
+            round: round.round,
             dealer: None,
             player,
             deals: BTreeMap::new(),
@@ -157,6 +172,7 @@ impl Ceremony {
             logs: BTreeMap::new(),
             equivocators: BTreeSet::new(),
             identity: None,
+            output_digest: None,
             announced: BTreeMap::new(),
         };
         let mut out = Vec::new();
@@ -203,8 +219,8 @@ impl Ceremony {
     /// Everything we know, for periodic re-broadcast (logs and our announcement).
     pub fn rebroadcast(&self) -> Vec<(To, Msg)> {
         let mut out: Vec<(To, Msg)> = self.logs.iter().map(|(d, log)| (To::All, Msg::Log { dealer: d.encode().to_vec(), log: log.clone() })).collect();
-        if let Some(id) = &self.identity {
-            out.push((To::All, Msg::Done(id.encode().to_vec())));
+        if let Some(done) = self.announcement() {
+            out.push((To::All, Msg::Done(done)));
         }
         out
     }
@@ -321,20 +337,39 @@ impl Ceremony {
             return Err(DkgError::Finalize("reshare changed the committee identity".into()));
         }
         self.identity = Some(identity);
-        self.announced.insert(self.me.clone(), identity.encode().to_vec());
+        if self.strict_agreement {
+            let mut hash = blake3::Hasher::new_derive_key("aether DKG output agreement v1");
+            hash.update(&self.round.to_be_bytes());
+            hash.update(&output.encode());
+            // Explicitly bind the exact accepted dealers, even if an upstream
+            // Output codec changes what it includes in a future version.
+            for dealer in output.dealers().iter() {
+                hash.update(&dealer.encode());
+            }
+            self.output_digest = Some(hash.finalize().as_bytes().to_vec());
+        }
+        self.announced.insert(self.me.clone(), self.announcement().expect("finished player announces"));
         Ok((output, share))
     }
 
-    /// `Some(true)` once every player announced the same identity as ours (a
-    /// dealer-only node compares with the committee's existing identity),
+    fn announcement(&self) -> Option<Vec<u8>> {
+        if self.strict_agreement { self.output_digest.clone() } else { self.identity.map(|id| id.encode().to_vec()) }
+    }
+
+    /// `Some(true)` once every player announced the same public output as ours,
     /// `Some(false)` on any mismatch, `None` while waiting.
-    /// Whether the players agree on the identity. Every player normally; once
+    /// Whether the players agree on the output. Every player normally; once
     /// the round has run past its dealing window (`late`), a quorum of players
     /// is enough: an unreachable player then holds a seat whose share the
     /// dealers revealed, and counts as one of the faults the set tolerates.
     pub fn agreement(&self, late: bool) -> Option<bool> {
-        let mine = self.identity.or(if self.is_player() { None } else { self.expected })?.encode().to_vec();
-        if self.announced.values().any(|id| *id != mine) {
+        let mine = match self.announcement() {
+            Some(done) => done,
+            None if !self.is_player() && !self.strict_agreement => self.expected?.encode().to_vec(),
+            None if !self.is_player() => self.announced.values().next()?.clone(),
+            None => return None,
+        };
+        if self.announced.values().any(|done| *done != mine) {
             return Some(false);
         }
         let quorum = self.players.quorum::<N3f1>() as usize;

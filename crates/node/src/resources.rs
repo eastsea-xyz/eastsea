@@ -144,6 +144,40 @@ pub fn pages_pressure(free_pages: u64, inactive_pages: u64, page_size: u64, ram:
     })
 }
 
+/// Reclaimable memory available to a snapshot build. The Mac path uses the
+/// same page counters as the watchdog; absence is handled conservatively by
+/// `snapshot_memory_budget` rather than interpreted as unlimited memory.
+#[cfg(target_os = "macos")]
+pub fn available_memory() -> Option<u64> {
+    let pages = u64::from(sysctl_u32(b"vm.page_free_count\0")?).saturating_add(reclaimable_pages()?);
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    (page_size > 0).then(|| pages.saturating_mul(page_size as u64).min(physical_ram()))
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn available_memory() -> Option<u64> {
+    std::fs::read_to_string("/proc/meminfo").ok()?.lines().find_map(|line| {
+        line.strip_prefix("MemAvailable:")?.split_whitespace().next()?.parse::<u64>().ok().map(|kib| kib.saturating_mul(1024))
+    })
+}
+
+/// Extra allocation allowed for a snapshot: at most one quarter of currently
+/// available memory and at most the configured node memory budget.
+pub fn snapshot_memory_budget() -> Result<u64, String> {
+    if matches!(pressure_level().or_else(pages_pressure_now), Some(PRESSURE_WARN | PRESSURE_CRITICAL)) {
+        return Err("snapshot build refused: system memory pressure is elevated".into());
+    }
+    // If the page counters are unavailable, permit at most 128 MiB of new
+    // allocation instead of inferring headroom from a possibly guessed RAM.
+    let available = available_memory().unwrap_or(512 * 1024 * 1024);
+    let configured = monitor().map(|m| m.limits.max_memory).unwrap_or_else(default_cache_budget);
+    Ok(snapshot_memory_budget_for(available, configured))
+}
+
+pub fn snapshot_memory_budget_for(available: u64, configured: u64) -> u64 {
+    (available / 4).min(configured)
+}
+
 /// `pages_pressure` for this Mac, read from `vm.page_*_count` and the page size.
 #[cfg(target_os = "macos")]
 fn pages_pressure_now() -> Option<u8> {
@@ -571,6 +605,13 @@ pub fn disk_ok() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshots_use_a_quarter_of_free_memory_and_the_configured_cap() {
+        assert_eq!(snapshot_memory_budget_for(2 * GB, 2 * GB), GB / 2);
+        assert_eq!(snapshot_memory_budget_for(16 * GB, GB), GB);
+        assert_eq!(snapshot_memory_budget_for(0, GB), 0);
+    }
 
     fn monitor_with(limits: Limits) -> Monitor {
         Monitor { limits, dir: PathBuf::from("."), state: Mutex::new(State::default()) }

@@ -2,6 +2,7 @@
 
 use aether_node::block::PublicKey;
 use aether_node::dkg::{Ceremony, KeyFile, Msg, Round, To};
+use commonware_codec::Encode;
 use commonware_cryptography::{ed25519, Signer as _};
 use commonware_utils::{ordered::Set, TryCollect};
 use rand::{RngExt, SeedableRng};
@@ -322,4 +323,78 @@ fn reshare_completes_without_an_unreachable_new_player() {
         }
     }
     panic!("the reshare did not complete without the unreachable player");
+}
+
+/// Signed logs can be delivered to different quorums before the finish timer.
+/// A mismatched output must never pass the stage gate; a fresh attempt after
+/// delivery recovers and all staged shares verify under its public sharing.
+fn split_logs_then_restart(first_count: usize, first_missing: &[usize], second_missing: &[usize]) {
+    let (ks, files) = dkg4();
+    let pks: Vec<_> = ks[..4].iter().map(|k| k.public_key()).collect();
+    let (previous, _) = files.values().next().unwrap().decode(4).unwrap();
+    let players: Set<PublicKey> = pks.iter().cloned().try_collect().unwrap();
+    let round = Round::reshare(previous, players, 42);
+    let shares = shares_of(&files, 4);
+    let mut cs = Vec::new();
+    let mut queue = VecDeque::new();
+    for (i, key) in ks[..4].iter().enumerate() {
+        let (c, out) = Ceremony::start(ChaCha20Rng::seed_from_u64(100 + i as u64), key.clone(), round.clone(), Some(shares[&pks[i]].clone())).unwrap();
+        for (to, msg) in out {
+            if let To::One(peer) = to { queue.push_back((i, pks.iter().position(|p| p == &peer).unwrap(), msg)); }
+        }
+        cs.push(c);
+    }
+    // Deliver every deal and acknowledgement before closing dealers.
+    while let Some((from, to, msg)) = queue.pop_front() {
+        for (dest, reply) in cs[to].on_message(&pks[from], msg) {
+            if let To::One(peer) = dest { queue.push_back((to, pks.iter().position(|p| p == &peer).unwrap(), reply)); }
+        }
+    }
+    let logs: Vec<_> = cs.iter_mut().map(|c| c.close_dealing().into_iter().find_map(|(_, m)| matches!(m, Msg::Log { .. }).then_some(m)).unwrap()).collect();
+    for (to, ceremony) in cs.iter_mut().enumerate() {
+        for (from, log) in logs.iter().enumerate() {
+            let missing = if to < first_count { first_missing } else { second_missing };
+            if !missing.contains(&from) && to != from { ceremony.on_message(&pks[from], log.clone()); }
+        }
+    }
+    let mut output = Vec::new();
+    for c in &mut cs {
+        assert!(c.have_quorum_logs());
+        output.push(c.finish(&mut ChaCha20Rng::seed_from_u64(7)).unwrap());
+    }
+    assert_ne!(output[0].0.encode().to_vec(), output[first_count].0.encode().to_vec(), "schedule must split the public output");
+    // Only the announcements are delivered; the delayed logs remain withheld.
+    let dones: Vec<_> = cs.iter().map(|c| c.rebroadcast().into_iter().find_map(|(_, m)| matches!(m, Msg::Done(_)).then_some(m)).unwrap()).collect();
+    for (to, ceremony) in cs.iter_mut().enumerate() {
+        for (from, done) in dones.iter().enumerate() {
+            if from != to { ceremony.on_message(&pks[from], done.clone()); }
+        }
+    }
+    assert!(cs.iter().all(|c| c.agreement(true) != Some(true)), "no split output may be staged");
+
+    // The live supervisor retries a failed ceremony. On the next attempt all
+    // logs arrive; the output and every post-switch partial agree.
+    let staged = run_round(&ks[..4], round, &shares, 43, 0.0);
+    assert_eq!(staged.len(), 4);
+    let (canonical, _) = staged.values().next().unwrap().decode(4).unwrap();
+    let mut partials = Vec::new();
+    for f in staged.values() {
+        let (out, share) = f.decode(4).unwrap();
+        assert_eq!(out.encode().to_vec(), canonical.encode().to_vec());
+        let partial = aether_node::handoff::sign_seed_partial(7781, 9, &share);
+        partials.push(aether_node::handoff::check_seed_partial(7781, canonical.public(), 9, &partial).unwrap());
+    }
+    let seed = aether_node::handoff::combine_seed(canonical.public(), 9, &partials[..3]).unwrap();
+    aether_node::handoff::verify_seed(7781, canonical.public().public(), &seed).unwrap();
+}
+
+#[test]
+fn three_to_one_log_split_cannot_stage_and_restart_recovers() {
+    // First two plus player 3 see four logs; player 4 sees only three.
+    split_logs_then_restart(3, &[], &[0]);
+}
+
+#[test]
+fn two_to_two_log_split_cannot_stage_and_restart_recovers() {
+    split_logs_then_restart(2, &[3], &[0]);
 }

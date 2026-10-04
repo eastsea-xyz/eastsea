@@ -161,21 +161,115 @@ pub fn available_memory() -> Option<u64> {
     })
 }
 
+/// Test-only replacements for the host's pressure level and available memory,
+/// so the snapshot gate's tests run the same on every machine (a busy Mac
+/// sits at WARN most of the day). Process-wide scope: tests that pin readings
+/// hold [`SEAM`] while they do, and integration tests pin one shared value.
+///
+/// Guard: compiled only under `cfg(test)` and under the `test-seam` feature,
+/// which nothing enables but this crate's own `[dev-dependencies]`
+/// self-reference. The shipped binary (`cargo build`, with or without
+/// `--release`) compiles the whole seam out, so no environment variable,
+/// config file or RPC can weaken a real node's gate.
+#[cfg(any(test, feature = "test-seam"))]
+static TEST_READINGS: RwLock<Option<(Option<u8>, Option<u64>)>> = RwLock::new(None);
+
+/// Serializes the lib's tests that pin [`TEST_READINGS`]: they run in parallel
+/// threads of one process and would otherwise read each other's overrides.
+#[cfg(any(test, feature = "test-seam"))]
+pub static SEAM: Mutex<()> = Mutex::new(());
+
+/// Pin the readings the snapshot gate sees. `None` for a field falls back to
+/// the host for that field; [`clear_test_readings`] restores the host.
+#[cfg(any(test, feature = "test-seam"))]
+pub fn set_test_readings(pressure: Option<u8>, available: Option<u64>) {
+    *TEST_READINGS.write().expect("test readings") = Some((pressure, available));
+}
+
+#[cfg(any(test, feature = "test-seam"))]
+pub fn clear_test_readings() {
+    *TEST_READINGS.write().expect("test readings") = None;
+}
+
+fn test_readings() -> Option<(Option<u8>, Option<u64>)> {
+    #[cfg(any(test, feature = "test-seam"))]
+    { *TEST_READINGS.read().expect("test readings") }
+    #[cfg(not(any(test, feature = "test-seam")))]
+    { None }
+}
+
 /// Extra allocation allowed for a snapshot: at most one quarter of currently
 /// available memory and at most the configured node memory budget.
 pub fn snapshot_memory_budget() -> Result<u64, String> {
-    if matches!(pressure_level().or_else(pages_pressure_now), Some(PRESSURE_WARN | PRESSURE_CRITICAL)) {
-        return Err("snapshot build refused: system memory pressure is elevated".into());
-    }
-    // If the page counters are unavailable, permit at most 128 MiB of new
-    // allocation instead of inferring headroom from a possibly guessed RAM.
-    let available = available_memory().unwrap_or(512 * 1024 * 1024);
-    let configured = monitor().map(|m| m.limits.max_memory).unwrap_or_else(default_cache_budget);
-    Ok(snapshot_memory_budget_for(available, configured))
+    snapshot_budget_for(gate_pressure(), gate_available(), gate_configured())
 }
 
 pub fn snapshot_memory_budget_for(available: u64, configured: u64) -> u64 {
     (available / 4).min(configured)
+}
+
+/// The snapshot gate's pressure policy (docs/design/05-state.md):
+///
+/// * CRITICAL always refuses — the kernel is already reclaiming for survival,
+///   and a build competing with it can push the Mac into swap or a jetsam kill.
+/// * WARN — where an ordinary consumer Mac sits for much of a day under normal
+///   use — is not a refusal by itself: the same budget check as at NORMAL
+///   decides. A build that fits still runs, so a busy-but-healthy Mac keeps
+///   serving checkpoint sync to new and recovering nodes; one that does not
+///   fit is refused exactly as at NORMAL would refuse it.
+///
+/// The follower-side inbound guard (follow.rs, audit 3 A3-5) reads the same
+/// budget through [`snapshot_memory_budget`], so this one policy governs both
+/// serving and downloading.
+fn snapshot_budget_for(pressure: Option<u8>, available: u64, configured: u64) -> Result<u64, String> {
+    if pressure.is_some_and(|p| p >= PRESSURE_CRITICAL) {
+        return Err("snapshot build refused: system memory pressure is critical".into());
+    }
+    Ok(snapshot_memory_budget_for(available, configured))
+}
+
+/// The serving-side gate (rpc.rs): may a build whose estimated extra memory is
+/// `estimate` run on this host's live readings?
+pub fn snapshot_build_gate(estimate: u64) -> Result<(), String> {
+    snapshot_gate_for(gate_pressure(), estimate, gate_available(), gate_configured())
+}
+
+/// [`snapshot_build_gate`] on chosen numbers: the pressure policy first, then
+/// the estimate against the budget.
+pub fn snapshot_gate_for(pressure: Option<u8>, estimate: u64, available: u64, configured: u64) -> Result<(), String> {
+    let budget = snapshot_budget_for(pressure, available, configured)?;
+    if estimate > budget {
+        return Err(format!("snapshot build refused: estimated extra memory {estimate} bytes exceeds budget {budget} bytes"));
+    }
+    Ok(())
+}
+
+/// Available memory with the page counters' absence handled conservatively: if
+/// they are unavailable, permit at most 128 MiB of new allocation instead of
+/// inferring headroom from a possibly guessed RAM.
+fn gate_available() -> u64 {
+    gate_available_memory().unwrap_or(512 * 1024 * 1024)
+}
+
+fn gate_configured() -> u64 {
+    monitor().map(|m| m.limits.max_memory).unwrap_or_else(default_cache_budget)
+}
+
+/// The pressure level the snapshot gate sees: a test seam's override when one
+/// is pinned, the kernel's own level (with the page-count fallback) otherwise.
+/// The watchdog's own sampling stays on the raw readings.
+fn gate_pressure() -> Option<u8> {
+    match test_readings() {
+        Some((pressure, _)) => pressure,
+        None => pressure_level().or_else(pages_pressure_now),
+    }
+}
+
+fn gate_available_memory() -> Option<u64> {
+    match test_readings() {
+        Some((_, available)) => available,
+        None => available_memory(),
+    }
 }
 
 /// `pages_pressure` for this Mac, read from `vm.page_*_count` and the page size.
@@ -611,6 +705,45 @@ mod tests {
         assert_eq!(snapshot_memory_budget_for(2 * GB, 2 * GB), GB / 2);
         assert_eq!(snapshot_memory_budget_for(16 * GB, GB), GB);
         assert_eq!(snapshot_memory_budget_for(0, GB), 0);
+    }
+
+    /// The snapshot gate's pressure policy (docs/design/05-state.md): critical
+    /// always refuses; warn is the budget check, not a refusal of its own, so
+    /// a busy-but-healthy Mac still serves checkpoint sync; normal is
+    /// unchanged. A kernel that stays silent behaves as normal.
+    #[test]
+    fn warn_defers_to_the_budget_and_critical_refuses_outright() {
+        // A quarter of 8 GB available is 2 GB, and the cap is 2 GB: budget 2 GB.
+        let (available, configured) = (8 * GB, 2 * GB);
+        for pressure in [None, Some(PRESSURE_NORMAL), Some(PRESSURE_WARN)] {
+            assert!(snapshot_gate_for(pressure, 2 * GB, available, configured).is_ok(), "{pressure:?}: a fitting build runs");
+            assert_eq!(snapshot_budget_for(pressure, available, configured).unwrap(), 2 * GB, "{pressure:?}: the budget itself is unchanged");
+        }
+        // One byte over the budget: refused at warn exactly as at normal.
+        for pressure in [Some(PRESSURE_NORMAL), Some(PRESSURE_WARN)] {
+            let err = snapshot_gate_for(pressure, 2 * GB + 1, available, configured).unwrap_err();
+            assert!(err.contains("exceeds budget"), "{pressure:?}: {err}");
+        }
+        // Critical refuses whatever the headroom, with no budget arithmetic.
+        let err = snapshot_gate_for(Some(PRESSURE_CRITICAL), 1, 64 * GB, 64 * GB).unwrap_err();
+        assert!(err.contains("critical"), "{err}");
+    }
+
+    /// The seam replaces the host's readings for the gate — whatever this
+    /// machine is really under — and clearing restores the host.
+    #[test]
+    fn the_test_seam_pins_the_readings_the_gate_sees() {
+        let _seam = SEAM.lock().unwrap_or_else(|e| e.into_inner());
+        set_test_readings(Some(PRESSURE_CRITICAL), None);
+        assert!(snapshot_memory_budget().unwrap_err().contains("critical"));
+        set_test_readings(Some(PRESSURE_WARN), Some(8 * GB));
+        assert_eq!(snapshot_memory_budget().unwrap(), 2 * GB, "warn with pinned headroom budgets normally");
+        assert!(snapshot_build_gate(2 * GB).is_ok(), "a fitting estimate builds under pinned warn");
+        assert!(snapshot_build_gate(2 * GB + 1).is_err(), "a non-fitting estimate refuses under pinned warn");
+        clear_test_readings();
+        set_test_readings(None, Some(4 * GB));
+        assert_eq!(snapshot_memory_budget().unwrap(), GB, "a pinned available memory alone also pins the budget");
+        clear_test_readings();
     }
 
     fn monitor_with(limits: Limits) -> Monitor {

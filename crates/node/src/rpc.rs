@@ -117,11 +117,10 @@ fn cached_snapshot(st: &RpcState) -> Result<CachedSnapshot, (i64, String)> {
         *last = Some(Instant::now());
     }
     let source = crate::snapshot::Snapshot::source(&st.chain);
-    let estimate = source.estimated_peak_bytes();
-    let budget = crate::resources::snapshot_memory_budget().map_err(|e| (-32000, e))?;
-    if estimate > budget {
-        return Err((-32000, format!("snapshot build refused: estimated extra memory {estimate} bytes exceeds budget {budget} bytes")));
-    }
+    // The pressure policy and the memory budget live in one place
+    // (resources::snapshot_gate_for): critical always refuses, warn and normal
+    // refuse only a build that does not fit the budget.
+    crate::resources::snapshot_build_gate(source.estimated_peak_bytes()).map_err(|e| (-32000, e))?;
     let s = source.build();
     let bytes = s.to_bytes();
     if bytes.len() > 1 << 30 {
@@ -872,6 +871,11 @@ mod release_tests {
 
     #[test]
     fn snapshot_rebuild_is_single_flight_and_rate_limited() {
+        // This test must not depend on the machine it runs on: a busy Mac sits
+        // at WARN most of the day. Pin normal pressure and roomy memory (the
+        // seam exists only in test builds — resources.rs).
+        let _seam = crate::resources::SEAM.lock().unwrap_or_else(|e| e.into_inner());
+        crate::resources::set_test_readings(Some(crate::resources::PRESSURE_NORMAL), Some(64 * crate::resources::GB));
         let (chain, _) = Chain::new(crate::chain::ChainConfig {
             chain_id: 7781,
             limits: aether_types::GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },

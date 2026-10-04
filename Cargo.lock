@@ -193,6 +193,7 @@ dependencies = [
  "aether-hash",
  "aether-light",
  "aether-net",
+ "aether-node",
  "aether-proving",
  "aether-rewards",
  "aether-state",

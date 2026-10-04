@@ -155,7 +155,9 @@ fn require_memory_with(size: u64, budget: Result<u64, String>) -> Result<(), Str
 /// Refuse a peer's snapshot this Mac cannot decode within the memory headroom
 /// the node already computes ([`crate::resources::snapshot_memory_budget`] —
 /// one quarter of available memory, capped by the configured node budget,
-/// refused outright under elevated pressure). A size judgement is remembered
+/// refused outright under critical pressure; warn defers to the budget, the
+/// same policy the serving side applies in `resources::snapshot_gate_for`).
+/// A size judgement is remembered
 /// for [`MEMORY_REFUSAL_COOLDOWN`]; a pressure reading is not, since it can
 /// lift on its own.
 fn require_memory(size: u64) -> Result<(), String> {
@@ -1517,7 +1519,7 @@ mod tests {
         assert!(err.contains("memory budget"), "{err}");
         assert!(err.contains("replaying"), "{err}");
         assert!(!err.contains("lied"), "an honest large snapshot is not misbehaviour: {err}");
-        // A peer under elevated pressure is refused without a size judgement too.
+        // A peer under critical pressure is refused without a size judgement too.
         assert!(require_memory_with(1, Err("pressure".into())).is_err());
         // The cooldown: the same size asked again within it is still refused
         // without a second budget measurement, a smaller snapshot is not.

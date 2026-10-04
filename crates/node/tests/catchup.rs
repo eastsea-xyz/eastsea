@@ -545,12 +545,24 @@ fn wait_until(what: &str, mut ok: impl FnMut() -> bool) {
     }
 }
 
+/// The snapshot gate must not read this test host's live memory pressure (a
+/// busy Mac sits at WARN most of the day, which used to refuse every build):
+/// pin normal pressure and roomy memory for the nodes this process plays.
+/// Test-only seam — a shipped binary compiles it out (resources.rs).
+fn pin_snapshot_gate() {
+    aether_node::resources::set_test_readings(
+        Some(aether_node::resources::PRESSURE_NORMAL),
+        Some(64 * aether_node::resources::GB),
+    );
+}
+
 /// A Mac that slept ~85 minutes (5,100 blocks at 1 s each) jumps to the
 /// network's certified snapshot instead of replaying: the gap's blocks are not
 /// kept (only certified facts of the snapshot block), the state root matches
 /// the network's, and a restart resumes from what it jumped to.
 #[test]
 fn a_follower_that_slept_jumps_to_a_certified_snapshot() {
+    pin_snapshot_gate();
     let (dir_src, dir_fol) = (tmp("jump-src"), tmp("jump-follower"));
     let rt = tokio::runtime::Runtime::new().unwrap();
     let mut src = Node::start(&dir_src);
@@ -658,6 +670,7 @@ fn a_follower_that_slept_jumps_to_a_certified_snapshot() {
 /// network never finalized — is refused, and the follower replays instead.
 #[test]
 fn a_bad_snapshot_is_refused_and_replayed_instead() {
+    pin_snapshot_gate();
     let (dir_src, dir_fol) = (tmp("bad-src"), tmp("bad-follower"));
     let rt = tokio::runtime::Runtime::new().unwrap();
     let mut src = Node::start(&dir_src);
@@ -722,6 +735,7 @@ fn a_bad_snapshot_is_refused_and_replayed_instead() {
 /// check demands every hash the tree names, and the follower replays instead.
 #[test]
 fn a_snapshot_that_omits_a_deployed_code_is_refused_and_replayed_instead() {
+    pin_snapshot_gate();
     let (dir_src, dir_fol) = (tmp("code-src"), tmp("code-follower"));
     let rt = tokio::runtime::Runtime::new().unwrap();
     let mut src = Node::start(&dir_src);

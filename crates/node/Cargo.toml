@@ -58,7 +58,20 @@ base64 = "0.22"
 redb = "4.3"
 zstd = "0.13"
 
+[features]
+# Compiles the resource-reading test seam (resources.rs `set_test_readings`)
+# so integration tests (tests/) can pin the pressure level and available
+# memory the snapshot gate sees. Never a default feature and never enabled by
+# another crate's [dependencies]: the only place it is turned on is this
+# crate's own [dev-dependencies] self-reference below, which plain builds
+# (`cargo build`, `--release` included) never consult — a shipped binary
+# compiles the seam out entirely.
+test-seam = []
+
 [dev-dependencies]
 rand_chacha = "0.10"
 # The reserve-hardening tests capture the chain's overdue warning (finding 6).
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Lets this crate's integration tests reach the test-only seam in resources.rs
+# (tokio does the same self-reference for its test-util features).
+aether-node = { path = ".", features = ["test-seam"] }

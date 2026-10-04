@@ -708,6 +708,10 @@ struct EarningsBadge: View {
 @MainActor
 final class Earnings: ObservableObject {
     @Published private(set) var summary = EarningsSummary.empty
+    /// The reward rows behind `summary`, exactly as the node reported them —
+    /// the export writes what this app saw, not a fresh re-read
+    /// (docs/research/node-reward-tax-2026.md).
+    @Published private(set) var entries: [RewardEntry] = []
     @Published private(set) var celebration: RewardCelebration?
     @Published private(set) var runningSince: Date?
     @Published private(set) var firstHeight: UInt64?
@@ -734,7 +738,11 @@ final class Earnings: ObservableObject {
         guard self.node == nil else { return }
         #if DEBUG
         if DesignPreview.on {
-            if DesignPreview.variant != "verifying" { summary = EarningsPreviewHarness.sample(count: 24) }
+            if DesignPreview.variant != "verifying" {
+                let sample = EarningsPreviewHarness.sampleEntries(count: 24)
+                entries = sample
+                summary = EarningsSummary.aggregate(sample, now: Date())
+            }
             if DesignPreview.rewardStatus { status = RewardStatus(json: DesignPreview.sampleRewardStatus) }
             runningSince = Date().addingTimeInterval(-11_520)
             firstHeight = 182_926
@@ -811,6 +819,7 @@ final class Earnings: ObservableObject {
             address = node.proveAddress
             loaded = false
             summary = .empty
+            entries = []
         }
         fetching = true
         let addr = address
@@ -818,7 +827,9 @@ final class Earnings: ObservableObject {
             defer { fetching = false }
             guard let rows = await LocalRPC.call(port: NodeController.port, method: "aether_rewards", params: [addr, Self.limit]) as? [[String: Any]],
                   addr == address else { return }
-            apply(EarningsSummary.aggregate(rows.compactMap(RewardEntry.init(json:)), now: Date()))
+            let list = rows.compactMap(RewardEntry.init(json:))
+            entries = list
+            apply(EarningsSummary.aggregate(list, now: Date()))
         }
     }
 
@@ -861,6 +872,7 @@ struct NodeEarningsCard: View {
                 EarningsHero(summary: earnings.summary, work: earnings.work(node, canProve: !model.address.isEmpty),
                              celebration: earnings.celebration, onProve: proveOn)
                 RewardStandingCard(status: earnings.status)
+                EarningsExportCard()
             }
         }
     }
@@ -868,6 +880,41 @@ struct NodeEarningsCard: View {
     private func proveOn() {
         node.proveAddress = model.address
         node.prove = true
+    }
+}
+
+/// "Export earnings (CSV)" on the Earnings screen: the rows this app saw
+/// (the same ones the hero card sums), written to a file the user picks —
+/// plus the one line that keeps EastSea honest about what it is
+/// (docs/research/node-reward-tax-2026.md).
+private struct EarningsExportCard: View {
+    @EnvironmentObject var earnings: Earnings
+
+    var body: some View {
+        Card {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "square.and.arrow.down").font(.aeTitle).foregroundStyle(Color.aether)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Export earnings (CSV)").font(.aeHeadline)
+                    Text("Every reward this Mac earned, as this app saw it — time, kind and the exact amount — for your own records. This is not tax advice.")
+                        .font(.aeBody).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Button("Export CSV…") { export() }
+                    .disabled(earnings.entries.isEmpty)
+                    .help("Saves eastsea-earnings.csv from what this app saw. The records never leave this Mac.")
+            }
+        }
+    }
+
+    private func export() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "eastsea-earnings.csv"
+        panel.allowedContentTypes = [.commaSeparatedText]
+        if panel.runModal() == .OK, let url = panel.url {
+            try? EarningsCSV.document(earnings.entries).write(to: url, atomically: true, encoding: .utf8)
+        }
     }
 }
 
@@ -1154,13 +1201,17 @@ struct EarningsPreviewHarness: View {
         }
     }
 
-    static func sample(count: Int) -> EarningsSummary {
+    static func sampleEntries(count: Int) -> [RewardEntry] {
         let now = Date()
-        let entries = (0..<count).map { i in
-            RewardEntry(proven: UInt64(184_000 + i), amountWei: "500000000000000000", height: UInt64(184_001 + i),
-                        time: now.addingTimeInterval(Double(i - count + 1) * 600))
+        return (0..<count).map { i in
+            let time = now.addingTimeInterval(Double(i - count + 1) * 600)
+            return RewardEntry(proven: UInt64(184_000 + i), amountWei: "500000000000000000", height: UInt64(184_001 + i),
+                               time: time, timestampMs: UInt64(time.timeIntervalSince1970 * 1000))
         }
-        return EarningsSummary.aggregate(entries, now: now)
+    }
+
+    static func sample(count: Int) -> EarningsSummary {
+        EarningsSummary.aggregate(sampleEntries(count: count), now: Date())
     }
 }
 

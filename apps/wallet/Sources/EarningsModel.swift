@@ -13,6 +13,13 @@ struct RewardEntry: Equatable, Sendable {
     /// The block that paid it.
     let height: UInt64
     let time: Date
+    /// "node" (an epoch's distribution paid this operator) or "proof" (a
+    /// proven block's reward): the node's own label, derived from
+    /// proven == height when the row did not carry one.
+    let kind: String
+    /// The paying block's timestamp as the node reported it (0: not reported —
+    /// the export then leaves the time column empty rather than guessing).
+    let timestampMs: UInt64
 
     /// One row of `aether_rewards` (numbers or "0x…" hex); nil when a field is missing.
     init?(json row: [String: Any]) {
@@ -20,15 +27,23 @@ struct RewardEntry: Equatable, Sendable {
         self.proven = Self.uint(row["proven"]) ?? 0
         self.amountWei = WeiMath.decimal(row["amount"])
         self.height = height
-        let ms = Self.uint(row["timestamp_ms"]).map(Double.init) ?? 0
-        self.time = Date(timeIntervalSince1970: ms / 1000)
+        let ms = Self.uint(row["timestamp_ms"]) ?? 0
+        self.timestampMs = ms
+        self.time = Date(timeIntervalSince1970: Double(ms) / 1000)
+        if let k = row["kind"] as? String, k == "node" || k == "proof" {
+            self.kind = k
+        } else {
+            self.kind = proven == height ? "node" : "proof"
+        }
     }
 
-    init(proven: UInt64, amountWei: String, height: UInt64, time: Date) {
+    init(proven: UInt64, amountWei: String, height: UInt64, time: Date, kind: String? = nil, timestampMs: UInt64 = 0) {
         self.proven = proven
         self.amountWei = amountWei
         self.height = height
         self.time = time
+        self.kind = kind ?? (proven == height ? "node" : "proof")
+        self.timestampMs = timestampMs
     }
 
     private static func uint(_ v: Any?) -> UInt64? {

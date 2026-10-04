@@ -330,9 +330,6 @@ private struct ActivityPage: View {
                     }
                 }
             }
-            #if os(macOS)
-            RewardsExportCard()
-            #endif
         }
     }
 }
@@ -369,48 +366,6 @@ struct LinkedWalletsCard: View {
         }
     }
 }
-
-#if os(macOS)
-/// Every reward this Mac earned, as a CSV for the user's own records, and the
-/// one line that keeps Aether honest: it is not a tax adviser
-/// (docs/research/node-reward-tax-2026.md).
-private struct RewardsExportCard: View {
-    @EnvironmentObject var node: NodeController
-    @State private var working = false
-
-    var body: some View {
-        Card {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: "square.and.arrow.down").font(.aeTitle).foregroundStyle(Color.aether)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Reward records").font(.aeHeadline)
-                    Text("Every reward this Mac's proofs earned — time, block, amount and kind — as a CSV for your own records. \(Brand.project) does not give tax advice.")
-                        .font(.aeBody).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 8)
-                Button(working ? "Exporting…" : "Export CSV…") { export() }
-                    .disabled(working || node.proveAddress.isEmpty)
-                    .help("Saves eastsea-rewards.csv. The node keeps the records; nothing leaves this Mac.")
-            }
-        }
-    }
-
-    private func export() {
-        working = true
-        Task { @MainActor in
-            defer { working = false }
-            guard let csv = await node.rewardsCSV() else { return }
-            let panel = NSSavePanel()
-            panel.nameFieldStringValue = "eastsea-rewards.csv"
-            panel.allowedContentTypes = [.commaSeparatedText]
-            if panel.runModal() == .OK, let url = panel.url {
-                try? csv.write(to: url, atomically: true, encoding: .utf8)
-            }
-        }
-    }
-}
-#endif
 
 private struct NetworkPage: View {
     @EnvironmentObject var model: WalletModel

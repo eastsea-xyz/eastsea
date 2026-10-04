@@ -975,9 +975,12 @@ impl Chain {
         if aether_rewards::enabled(&parent.state) {
             let draw = current_draw(&parent.state, height);
             let committed = aether_rewards::next_roster(state).filter(|(d, _)| *d == draw);
-            if !committed.is_some_and(|(_, roster)| aether_rewards::same_roster(&roster, &h.members)) {
+            if !committed.is_some_and(|(_, roster)| {
+                aether_rewards::same_roster(&roster, &h.members)
+                    || (chain_id != 7_780 && crate::handoff::roster_allowed(chain_id, &roster, &h.members))
+            }) {
                 return Err(ChainError::BadHandoff(
-                    "not to the roster the chain committed for this draw".into(),
+                    "not a ready subset of the roster the chain committed for this draw".into(),
                 ));
             }
         }
@@ -3372,7 +3375,8 @@ mod pool_tests {
         g.proposal = Some((2, vec![("candidate".into(), "node".into())]));
         assert!(proposal_in_window(&g, 120, &g.finalized.state), "the next draw keeps the first proposal");
         assert!(proposal_in_window(&g, 320, &g.finalized.state), "a late supervisor sees the same proposal");
-        assert!(!proposal_in_window(&g, 700, &g.finalized.state), "a later attempt can draw a new set");
+        let boundary = crate::supervisor::reshare_attempt_blocks(5).unwrap();
+        assert!(!proposal_in_window(&g, boundary, &g.finalized.state), "a later attempt can draw a new set");
         g.cfg.chain_id = 7_780;
         assert!(!proposal_in_window(&g, 120, &g.finalized.state), "7780 still expires proposals each draw");
     }

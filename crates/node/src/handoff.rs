@@ -10,6 +10,7 @@
 //! changes nothing, so the running set can never fork with the new one.
 
 use crate::dkg::KeyFile;
+use crate::block::PublicKey;
 use aether_light::block::Handoff;
 use aether_light::Identity;
 use commonware_codec::{DecodeExt, Encode};
@@ -19,13 +20,75 @@ use commonware_cryptography::bls12381::primitives::sharing::Sharing;
 use commonware_cryptography::bls12381::primitives::variant::{MinSig, PartialSignature, Variant};
 use commonware_parallel::Sequential;
 use serde::{Deserialize, Serialize};
+use commonware_utils::ordered::Quorum as _;
 
 /// Blocks between the handoff block and the first block of the new set: time
 /// for every old member to learn the switch height and for new members to
 /// catch up to it (about a minute of 1 s blocks).
 pub const DELAY: u64 = 64;
+pub const READY_FILE: &str = "reshare-ready.json";
 const NAMESPACE: &[u8] = b"aether-handoff-v1";
 const SEED_NAMESPACE: &[u8] = b"aether-committee-seed-v1";
+const READY_NAMESPACE: &[u8] = b"aether-share-ready-v1";
+
+/// Public receipts collected over the authenticated DKG channel during a
+/// bounded readiness window. The relay writes this even for an old-only dealer.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Readiness {
+    pub round: u64,
+    pub output: String,
+    pub members: Vec<(String, String)>,
+    /// Validator key (hex) -> new-sharing partial signature (hex).
+    pub proofs: std::collections::BTreeMap<String, String>,
+}
+
+impl Readiness {
+    /// The deterministic retry roster consists of seats with valid receipts.
+    /// A handoff is never signed for the failed round; a new DKG round is
+    /// required because removing a player changes the public polynomial.
+    pub fn retry_members(&self, chain_id: u64) -> Result<Option<Vec<(String, String)>>, String> {
+        let ready: Vec<_> = self.members.iter().filter(|(key, _)| {
+            self.proofs.get(&key.to_lowercase()).is_some_and(|proof|
+                check_ready(chain_id, self.round, &self.output, &self.members, key, proof).is_ok())
+        }).cloned().collect();
+        if ready.len() == self.members.len() { return Ok(None); }
+        if ready.len() < 4 { return Err("fewer than four ready seats; wait for a fresh chain proposal".into()); }
+        if self.members.len() - ready.len() > (self.members.len() - 1) / 3 {
+            return Err("too many unready seats for one bounded roster retry".into());
+        }
+        Ok(Some(ready))
+    }
+}
+
+fn ready_message(chain_id: u64, round: u64, output: &str, members: &[(String, String)]) -> Vec<u8> {
+    let output_digest = blake3::hash(&hex::decode(output).expect("checked output hex"));
+    let roster_digest = blake3::hash(&serde_json::to_vec(members).expect("roster serializes"));
+    serde_json::to_vec(&(chain_id, round, output_digest.as_bytes(), roster_digest.as_bytes(), "share-ready"))
+        .expect("readiness message serializes")
+}
+
+/// Prove the staged share can produce a partial under this exact polynomial.
+pub fn sign_ready(chain_id: u64, round: u64, output: &str, members: &[(String, String)], share: &Share) -> String {
+    hex::encode(ops::threshold::sign_message::<MinSig>(share, READY_NAMESPACE, &ready_message(chain_id, round, output, members)).encode())
+}
+
+/// The partial must verify under the output and have the index assigned to
+/// `member` in its ordered player set; a different player's share cannot be
+/// passed off as this seat's proof.
+pub fn check_ready(chain_id: u64, round: u64, output: &str, members: &[(String, String)], member: &str, proof: &str) -> Result<(), String> {
+    let output = KeyFile { round, output: output.to_string(), identity: String::new(), share: String::new() }
+        .decode_output(members.len() as u32)?;
+    let pk = PublicKey::decode(hex::decode(member).map_err(|e| e.to_string())?.as_slice())
+        .map_err(|e| format!("ready member: {e:?}"))?;
+    let bytes = hex::decode(proof).map_err(|e| e.to_string())?;
+    let partial = PartialSignature::<MinSig>::decode(bytes.as_slice()).map_err(|e| format!("ready partial: {e:?}"))?;
+    if output.players().key(partial.index) != Some(&pk) {
+        return Err("ready partial belongs to another seat".into());
+    }
+    ops::threshold::verify_message::<MinSig>(output.public(), READY_NAMESPACE,
+        &ready_message(chain_id, round, &hex::encode(output.encode()), members), &partial)
+        .map_err(|_| "ready partial does not match the new sharing".to_string())
+}
 
 fn seed_message(chain_id: u64, draw: u64) -> Vec<u8> {
     [chain_id.to_be_bytes(), draw.to_be_bytes()].concat()
@@ -83,7 +146,11 @@ pub struct Pending {
 
 /// What the committee signs: everything but the signature, bound to the chain.
 fn message(chain_id: u64, h: &Handoff) -> Vec<u8> {
-    serde_json::to_vec(&(chain_id, h.round, &h.output, &h.members)).expect("handoff serializes")
+    if chain_id == 7_780 {
+        serde_json::to_vec(&(chain_id, h.round, &h.output, &h.members)).expect("handoff serializes")
+    } else {
+        serde_json::to_vec(&(chain_id, h.round, &h.output, &h.members, &h.ready)).expect("handoff serializes")
+    }
 }
 
 /// One running member's partial signature (hex codec bytes).
@@ -134,6 +201,14 @@ pub fn verify_output(chain_id: u64, identity: &Identity, h: &Handoff) -> Result<
     if players != members {
         return Err("the new sharing's players are not the members".into());
     }
+    if chain_id != 7_780 {
+        if h.ready.len() != h.members.len() {
+            return Err("every new seat must provide a share-ready partial".into());
+        }
+        for ((key, _), proof) in h.members.iter().zip(&h.ready) {
+            check_ready(chain_id, h.round, &h.output, &h.members, key, proof)?;
+        }
+    }
     Ok(())
 }
 
@@ -154,6 +229,20 @@ pub enum CommitteeMsg {
 
 /// Each signer's latest partial: (signed message, partial).
 type Partials = std::collections::BTreeMap<u32, (Vec<u8>, PartialSignature<MinSig>)>;
+
+/// A failed seat may be removed only on new-genesis chains. Every retained
+/// member must be from the chain's proposal with the same node identity.
+pub(crate) fn roster_allowed(chain_id: u64, proposed: &[(String, String)], members: &[(String, String)]) -> bool {
+    if chain_id == 7_780 {
+        return proposed == members;
+    }
+    members.len() >= 4
+        && members.len() <= proposed.len()
+        && proposed.len() - members.len() <= proposed.len().saturating_sub(1) / 3
+        && members.iter().all(|(key, node)| {
+        proposed.iter().any(|(pkey, pnode)| pkey.eq_ignore_ascii_case(key) && pnode == node)
+        })
+}
 
 /// Collects the running committee's partial signatures and, at the threshold,
 /// puts the signed handoff up for the next proposer (`Chain::handoff_ready`).
@@ -260,18 +349,23 @@ impl Service {
     /// is to the voting set the chain proposed. Never signs anything else: an
     /// output nobody holds shares of would stop the chain at the switch.
     pub fn sign_staged(&self) -> Result<Handoff, String> {
-        let key: KeyFile =
-            serde_json::from_slice(&std::fs::read(self.data.join(crate::rotation::STAGED_THRESHOLD)).map_err(|e| format!("no staged reshare: {e}"))?)
-                .map_err(|e| e.to_string())?;
-        let net = crate::roster::NetworkFile::load(&self.data.join(crate::rotation::STAGED_NETWORK))?;
-        let h = Handoff {
-            round: key.round,
-            output: key.output,
-            members: net.validators.iter().map(|m| (m.key.to_lowercase(), m.node.clone())).collect(),
-            signature: String::new(),
+        let h = if self.chain_id == 7_780 {
+            let key: KeyFile = serde_json::from_slice(&std::fs::read(self.data.join(crate::rotation::STAGED_THRESHOLD))
+                .map_err(|e| format!("no staged reshare: {e}"))?).map_err(|e| e.to_string())?;
+            let net = crate::roster::NetworkFile::load(&self.data.join(crate::rotation::STAGED_NETWORK))?;
+            Handoff { round: key.round, output: key.output,
+                members: net.validators.iter().map(|m| (m.key.to_lowercase(), m.node.clone())).collect(),
+                ready: vec![], signature: String::new() }
+        } else {
+            let record: Readiness = serde_json::from_slice(&std::fs::read(self.data.join(READY_FILE))
+                .map_err(|e| format!("no completed readiness window: {e}"))?).map_err(|e| e.to_string())?;
+            let ready = record.members.iter().map(|(key, _)| record.proofs.get(&key.to_lowercase()).cloned()
+                .ok_or_else(|| format!("no share-ready proof for {key}"))).collect::<Result<Vec<_>, _>>()?;
+            Handoff { round: record.round, output: record.output, members: record.members,
+                ready, signature: String::new() }
         };
         let proposal = self.chain.lock().proposal.clone().ok_or("no voting set is proposed now")?;
-        if proposal.1 != h.members {
+        if !roster_allowed(self.chain_id, &proposal.1, &h.members) {
             return Err("the staged reshare is for another voting set".into());
         }
         verify_output(self.chain_id, &self.identity, &h)?;
@@ -287,7 +381,7 @@ impl Service {
     pub fn accept(&self, m: &PartialMsg) -> Result<(), String> {
         let h = Handoff { signature: String::new(), ..m.handoff.clone() };
         let proposal = self.chain.lock().proposal.clone().ok_or("no voting set is proposed now")?;
-        if proposal.1 != h.members {
+        if !roster_allowed(self.chain_id, &proposal.1, &h.members) {
             return Err("partial for another voting set".into());
         }
         verify_output(self.chain_id, &self.identity, &h)?;
@@ -309,5 +403,29 @@ impl Service {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn handoff_subset_never_adds_an_unproposed_seat_or_changes_legacy_bytes() {
+        let proposed: Vec<_> = (0..5).map(|i| (format!("key{i}"), format!("node{i}"))).collect();
+        let reduced = proposed[..4].to_vec();
+        assert!(roster_allowed(7_781, &proposed, &reduced));
+        assert!(!roster_allowed(7_780, &proposed, &reduced));
+        assert!(!roster_allowed(7_781, &proposed, &proposed[..3]));
+        let large: Vec<_> = (0..8).map(|i| (format!("key{i}"), format!("node{i}"))).collect();
+        assert!(!roster_allowed(7_781, &large, &large[..5]), "a retry cannot discard more than one fault bound");
+        let mut changed = reduced.clone();
+        changed[0].1 = "another-node".into();
+        assert!(!roster_allowed(7_781, &proposed, &changed));
+        changed[0] = ("new-key".into(), "node0".into());
+        assert!(!roster_allowed(7_781, &proposed, &changed));
+        let legacy = Handoff { round: 1, output: "00".into(), members: reduced, ready: vec![], signature: String::new() };
+        assert_eq!(message(7_780, &legacy), serde_json::to_vec(&(7_780u64, 1u64, "00", &legacy.members)).unwrap());
+        assert!(!serde_json::to_string(&legacy).unwrap().contains("ready"));
     }
 }

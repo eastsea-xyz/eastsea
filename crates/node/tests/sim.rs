@@ -261,15 +261,17 @@ fn signed_handoff() -> Handoff {
         rand_chacha::ChaCha20Rng::from_seed(seed), Mode::NonZeroCounter, participants.clone(),
     ).expect("devnet sharing");
     assert_eq!(output.public(), &sharing);
-    let handoff = Handoff {
+    let mut handoff = Handoff {
         round: 1,
         output: hex::encode(output.encode()),
         members: participants.iter().enumerate().map(|(i, key)| {
             let node = aether_net::SecretKey::from_bytes(&[0xa0 + i as u8; 32]).public();
             (hex::encode(key.encode()), node.to_string())
         }).collect(),
+        ready: vec![],
         signature: String::new(),
     };
+    handoff.ready = shares.iter().map(|(_, share)| aether_node::handoff::sign_ready(7_777, handoff.round, &handoff.output, &handoff.members, share)).collect();
     let partials: Vec<_> = shares.iter().take(sharing.required() as usize).map(|(_, share)| {
         let signed = aether_node::handoff::sign_partial(7_777, &handoff, share);
         aether_node::handoff::check_partial(7_777, &sharing, &handoff, &signed).expect("signed partial")

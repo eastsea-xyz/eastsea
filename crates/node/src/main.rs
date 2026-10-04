@@ -1373,6 +1373,8 @@ fn reshare(
     let staged = boundary.is_none();
     let relay_inputs = (staged && !legacy_agreement)
         .then(|| (p2p.clone(), round.clone(), share.clone(), agreement_journal.clone()));
+    let readiness_members: Vec<(String, String)> = new_file.validators.iter()
+        .map(|m| (m.key.to_lowercase(), m.node.clone())).collect();
     let result = executor.start(async move |context| {
         let _public = if staged {
             aether_node::p2p::open_reshare(&p2p, via_node, loopback(p2p.port))
@@ -1402,12 +1404,14 @@ fn reshare(
             ).await
         }
     });
+    let mut staged_share = None;
     match result.map_err(|e| format!("reshare failed: {e}"))? {
         Some((output, share)) => {
             if !legacy_agreement && output.revealed().iter().any(|player| output.players().position(player).is_some()) {
                 return Err("reshare output reveals a seated player's threshold share; retry with a higher --round".into());
             }
             let file = aether_node::dkg::KeyFile::new(next_round, &output, &share);
+            staged_share = Some(share.clone());
             let (threshold, network) = match boundary {
                 Some(_) => ("threshold.json", "network.json"),
                 None => (
@@ -1452,6 +1456,11 @@ fn reshare(
         // Stage any new share before reopening the durable ceremony. Departing
         // dealers also relay the bundle and certificate to late players.
         let relay_dir = dir.join("reshare-relay-runtime").join(format!("{next_round}-{secs}"));
+        let readiness = aether_node::dkg::ReadinessPlan {
+            members: readiness_members,
+            staged_share,
+            destination: dir.join(aether_node::handoff::READY_FILE),
+        };
         let relay = cw_tokio::Runner::new(cw_tokio::Config::new().with_storage_directory(relay_dir));
         relay.start(async move |context| {
             let _public = aether_node::p2p::open_reshare(&p2p, via_node, loopback(p2p.port))
@@ -1466,7 +1475,7 @@ fn reshare(
             network.start();
             aether_node::dkg::run_relay_with_journal(
                 p2p.keys.signer.clone(), round, share, sender, receiver,
-                journal, aether_node::dkg::POST_STAGE_RELAY,
+                journal, Some(readiness),
             ).await
         }).map_err(|e| format!("reshare relay failed: {e}"))?;
     }
@@ -2718,7 +2727,7 @@ fn run_dkg(
             aether_node::dkg::run_relay_with_journal(
                 p2p.keys.signer.clone(),
                 aether_node::dkg::Round::dkg(p2p.validators(), round).with_chain_id(chain_id),
-                None, sender, receiver, journal, aether_node::dkg::POST_STAGE_RELAY,
+                None, sender, receiver, journal, None,
             ).await
         });
         if let Err(error) = result {

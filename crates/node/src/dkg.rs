@@ -53,6 +53,9 @@ const STRICT_DECISION_GRACE: std::time::Duration = std::time::Duration::from_sec
 const CERTIFIED_TRANSCRIPT_RELAY: std::time::Duration = std::time::Duration::from_secs(30);
 /// Keep a staged, certified round reachable while a late player catches up.
 pub const POST_STAGE_RELAY: std::time::Duration = std::time::Duration::from_secs(60);
+/// Allow every seated player to stage and prove its partial share. This is
+/// deliberately longer than the certified-transcript relay above.
+pub const SHARE_READY_WINDOW: std::time::Duration = std::time::Duration::from_secs(120);
 
 fn strict_decision_grace_elapsed(agreed_at: Option<std::time::Instant>, now: std::time::Instant) -> bool {
     agreed_at.is_some_and(|decided| now.duration_since(decided) > STRICT_DECISION_GRACE)
@@ -75,6 +78,8 @@ pub enum Msg {
     Transcript(Vec<(Vec<u8>, Vec<u8>)>),
     /// Certified new-genesis transcript consensus control message.
     Agreement(AgreementMsg),
+    /// New-genesis proof that a seated player holds this exact output's share.
+    Ready { player: String, proof: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -596,6 +601,7 @@ impl Ceremony {
                 }
                 self.agreement.as_mut().map(|a| a.on_message(from, msg).into_iter().map(|m| (To::All, Msg::Agreement(m))).collect()).unwrap_or_default()
             }
+            Msg::Ready { .. } => vec![], // collected only after staging
         }
     }
 
@@ -702,6 +708,15 @@ impl Ceremony {
     pub fn certified_transcript(&self) -> Option<Vec<u8>> {
         let digest = self.agreement.as_ref()?.decided()?.to_vec();
         self.transcripts.contains_key(&digest).then_some(digest)
+    }
+
+    /// The public output can be reconstructed by a departing old dealer too;
+    /// no private new-player share is needed to verify readiness receipts.
+    fn certified_output(&self) -> Option<DkgOutput> {
+        let digest = self.certified_transcript()?;
+        let raw = self.transcripts.get(&digest)?;
+        let (checked, output) = self.checked_logs(raw.iter().map(|(dealer, log)| (dealer.clone(), log.clone())))?;
+        (self.transcript_digest(&checked, &output) == digest).then_some(output)
     }
 
     /// Persist the exact certified bundle even for an old-only reshare dealer,
@@ -936,10 +951,16 @@ where
     run_inner(key, round, share, sender, receiver, timeouts, Some(journal)).await
 }
 
-/// Resume only the certified transcript relay after the ceremony child has
-/// returned and its caller has staged any usable share. A departing dealer
-/// also serves the decision. This deliberately reopens the same round journals;
-/// a new attempt after a disclosed share must use a new round and journals.
+/// Extra inputs for a resharing relay; genesis only relays the transcript.
+pub struct ReadinessPlan {
+    pub members: Vec<(String, String)>,
+    pub staged_share: Option<Share>,
+    pub destination: PathBuf,
+}
+
+/// Resume the certified transcript relay after the caller staged its share.
+/// A departing dealer serves the decision and verifies readiness without a
+/// new share. The old round's durable journals are reopened without new votes.
 pub async fn run_relay_with_journal<S, R>(
     key: ed25519::PrivateKey,
     round: Round,
@@ -947,7 +968,7 @@ pub async fn run_relay_with_journal<S, R>(
     mut sender: S,
     mut receiver: R,
     journal: PathBuf,
-    duration: std::time::Duration,
+    readiness: Option<ReadinessPlan>,
 ) -> Result<(), DkgError>
 where
     S: commonware_p2p::Sender<PublicKey = PublicKey>,
@@ -967,6 +988,9 @@ where
     if deals.decided_transcript.is_none() {
         return Err(DkgError::Setup("post-stage relay has no persisted certified transcript".into()));
     }
+    let chain_id = round.chain_id;
+    let key_round = round.round;
+    let me = key.public_key();
     let (mut c, _) = Ceremony::start(rand::rngs::StdRng::from_seed(deals.seed), key, round, share)?;
     c.attach_deal_journal(deals)?;
     c.agreement.as_mut().expect("strict ceremony has agreement").attach_journal(journal).map_err(DkgError::Setup)?;
@@ -976,25 +1000,72 @@ where
     if c.certified_transcript().is_none() {
         return Err(DkgError::Setup("post-stage relay has no certified decision for its transcript".into()));
     }
+    let mut ready_record = if let Some(plan) = &readiness {
+        let output = c.certified_output().ok_or_else(|| DkgError::Setup("certified public output unavailable".into()))?;
+        let output = hex::encode(output.encode());
+        let mut record = crate::handoff::Readiness {
+            round: key_round, output, members: plan.members.clone(), proofs: BTreeMap::new(),
+        };
+        if let Some(staged) = &plan.staged_share {
+            let chain_id = chain_id.ok_or_else(|| DkgError::Setup("readiness needs chain id".into()))?;
+            let member = hex::encode(me.encode());
+            let proof = crate::handoff::sign_ready(chain_id, key_round, &record.output, &record.members, staged);
+            crate::handoff::check_ready(chain_id, key_round, &record.output, &record.members, &member, &proof)
+                .map_err(DkgError::Setup)?;
+            record.proofs.insert(member, proof);
+        }
+        Some(record)
+    } else { None };
     send_all(&mut sender, out);
     send_all(&mut sender, c.rebroadcast());
-    let end = tokio::time::Instant::now() + duration;
+    let started = tokio::time::Instant::now();
+    let end = tokio::time::Instant::now() + if readiness.is_some() { SHARE_READY_WINDOW } else { POST_STAGE_RELAY };
     let mut tick = tokio::time::interval(TICK_INTERVAL);
+    let mut last_ready = tokio::time::Instant::now() - std::time::Duration::from_secs(2);
     loop {
         tokio::select! {
-            _ = tokio::time::sleep_until(end) => return Ok(()),
+            _ = tokio::time::sleep_until(end) => {
+                if let (Some(plan), Some(record)) = (readiness.as_ref(), ready_record.as_ref()) {
+                    crate::atomic::replace(&plan.destination, &serde_json::to_vec(record).expect("readiness serializes"), 0o600)
+                        .map_err(DkgError::Finalize)?;
+                }
+                return Ok(());
+            },
             r = receiver.recv() => {
                 let Ok((from, msg)) = r else { return Err(DkgError::Finalize("p2p closed during post-stage relay".into())) };
                 if let Ok(m) = serde_json::from_slice::<Msg>(msg.as_ref()) {
-                    let out = c.on_message(&from, m);
-                    if let Some(error) = c.journal_error.take() { return Err(DkgError::Finalize(error)); }
-                    send_all(&mut sender, out);
+                    match m {
+                        Msg::Ready { player, proof } => {
+                            if let (Some(record), Some(chain_id)) = (ready_record.as_mut(), chain_id) {
+                                let player = player.to_lowercase();
+                                if record.members.iter().any(|(key, _)| key.eq_ignore_ascii_case(&player))
+                                    && crate::handoff::check_ready(chain_id, key_round, &record.output, &record.members, &player, &proof).is_ok() {
+                                    record.proofs.insert(player, proof);
+                                }
+                            }
+                        }
+                        other if started.elapsed() <= POST_STAGE_RELAY => {
+                            let out = c.on_message(&from, other);
+                            if let Some(error) = c.journal_error.take() { return Err(DkgError::Finalize(error)); }
+                            send_all(&mut sender, out);
+                        }
+                        _ => {}
+                    }
                 }
             }
             _ = tick.tick() => {
-                let mut out = c.tick_agreement();
-                out.extend(c.rebroadcast());
-                send_all(&mut sender, out);
+                if started.elapsed() <= POST_STAGE_RELAY {
+                    let mut out = c.tick_agreement();
+                    out.extend(c.rebroadcast());
+                    send_all(&mut sender, out);
+                }
+                if last_ready.elapsed() >= std::time::Duration::from_secs(2) {
+                    if let Some(record) = &ready_record {
+                        send_all(&mut sender, record.proofs.iter().map(|(player, proof)|
+                            (To::All, Msg::Ready { player: player.clone(), proof: proof.clone() })).collect());
+                    }
+                    last_ready = tokio::time::Instant::now();
+                }
             }
         }
     }

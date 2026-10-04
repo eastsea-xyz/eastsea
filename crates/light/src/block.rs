@@ -204,6 +204,11 @@ pub struct Handoff {
     pub output: String,
     /// The new voting set, in roster order: (ed25519 key hex, iroh node id).
     pub members: Vec<(String, String)>,
+    /// New-genesis partial signatures proving each seat held a share of this
+    /// exact output before the old committee signed (roster order). Omitted on
+    /// chain 7780 to preserve its existing wire bytes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ready: Vec<String>,
     /// BLS12-381 threshold signature (hex) of the running committee.
     pub signature: String,
 }

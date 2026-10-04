@@ -504,12 +504,16 @@ impl Committee {
         let previous = self.output();
         let dealt = ceremony(&online, &KeyRound::reshare(previous.clone(), players, round), &shares, round + 500);
         let next = Self::of(keys, dealt);
-        let h = aether_light::block::Handoff {
+        let mut h = aether_light::block::Handoff {
             round,
             output: next.files.values().next().unwrap().output.clone(),
             members: members.iter().map(|(k, node)| (hex::encode(k.public_key().encode()), node.clone())).collect(),
+            ready: vec![],
             signature: String::new(),
         };
+        h.ready = members.iter().map(|(key, _)| {
+            aether_node::handoff::sign_ready(chain_id, round, &h.output, &h.members, &next.files[&key.public_key()].decode(next.keys.len() as u32).unwrap().1)
+        }).collect();
         // A quorum of the running committee signs (the sharing's own threshold,
         // three of the four genesis keys and more once a handoff has grown it).
         let partials: Vec<_> = self.keys.iter().map(|k| {

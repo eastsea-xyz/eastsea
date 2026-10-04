@@ -274,7 +274,11 @@ fn a_handoff_is_signed_by_the_running_committee() {
     let out = run_round(&ks, Round::reshare(previous.clone(), next, 1), &shares_of(&files, 4), 14, 0.0);
     let new_file = out.values().next().unwrap();
     let members: Vec<(String, String)> = ks[1..5].iter().map(|k| (hex::encode(k.public_key().encode()), "node".to_string())).collect();
-    let h = aether_light::block::Handoff { round: 1, output: new_file.output.clone(), members: members.clone(), signature: String::new() };
+    let ready = members.iter().map(|(key, _)| {
+        let pk = ks.iter().find(|k| hex::encode(k.public_key().encode()) == *key).unwrap().public_key();
+        aether_node::handoff::sign_ready(7, 1, &new_file.output, &members, &out[&pk].decode(4).unwrap().1)
+    }).collect();
+    let h = aether_light::block::Handoff { round: 1, output: new_file.output.clone(), members: members.clone(), ready, signature: String::new() };
     const CHAIN: u64 = 7;
 
     // Old shares sign; any three of four combine.
@@ -283,6 +287,10 @@ fn a_handoff_is_signed_by_the_running_committee() {
     assert!(combine(previous.public(), &h, &partials[..2]).is_err(), "two of four is not a quorum");
     let signed = combine(previous.public(), &h, &partials[..3]).unwrap();
     verify(CHAIN, &identity, &signed).unwrap();
+    aether_node::handoff::check_ready(CHAIN, 1, &h.output, &h.members, &h.members[0].0, &h.ready[0]).unwrap();
+    assert!(aether_node::handoff::check_ready(CHAIN + 1, 1, &h.output, &h.members, &h.members[0].0, &h.ready[0]).is_err());
+    assert!(aether_node::handoff::check_ready(CHAIN, 2, &h.output, &h.members, &h.members[0].0, &h.ready[0]).is_err());
+    assert!(aether_node::handoff::check_ready(CHAIN, 1, &h.output, &h.members, &h.members[1].0, &h.ready[0]).is_err());
 
     // Another chain, another roster, or a signature over something else: rejected.
     assert!(verify(CHAIN + 1, &identity, &signed).is_err());
@@ -295,6 +303,100 @@ fn a_handoff_is_signed_by_the_running_committee() {
     // A share of the new sharing is not a running-committee share.
     let new_share = new_file.decode(4).unwrap().1;
     assert!(check_partial(CHAIN, previous.public(), &h, &sign_partial(CHAIN, &h, &new_share)).is_err());
+}
+
+/// A5-2: the fifth seat can miss the certified decision after the finite
+/// relay even though the other four staged the same five-player output.
+/// The old committee must not certify that seat without evidence of its share.
+#[test]
+fn sleeping_fifth_seat_cannot_be_certified_from_four_staged_shares() {
+    use aether_node::handoff::{check_partial, combine, sign_partial, verify};
+    let (ks, files) = dkg4();
+    let pks: Vec<_> = ks.iter().map(|k| k.public_key()).collect();
+    let (previous, _) = files.values().next().unwrap().decode(4).unwrap();
+    let identity = *previous.public().public();
+    let next: Set<PublicKey> = pks.iter().cloned().try_collect().unwrap();
+    let round = Round::reshare(previous.clone(), next, 1).with_chain_id(7781);
+    let old_shares = shares_of(&files, 4);
+    let mut cs = Vec::new();
+    let mut queue = VecDeque::new();
+    for (i, key) in ks.iter().enumerate() {
+        let (ceremony, outbound) = Ceremony::start(ChaCha20Rng::seed_from_u64(1200 + i as u64),
+            key.clone(), round.clone(), old_shares.get(&pks[i]).cloned()).unwrap();
+        for (to, msg) in outbound {
+            if let To::One(peer) = to { queue.push_back((i, pks.iter().position(|pk| pk == &peer).unwrap(), msg)); }
+        }
+        cs.push(ceremony);
+    }
+    // All five accept private dealings, then the fifth sleeps before the
+    // certified decision. Four active players can still agree and stage.
+    while let Some((from, to, msg)) = queue.pop_front() {
+        for (dest, reply) in cs[to].on_message(&pks[from], msg) {
+            if let To::One(peer) = dest { queue.push_back((to, pks.iter().position(|pk| pk == &peer).unwrap(), reply)); }
+        }
+    }
+    let logs: Vec<_> = cs[..4].iter_mut().map(|c| c.close_dealing().into_iter()
+        .find_map(|(_, msg)| matches!(msg, Msg::Log { .. }).then_some(msg)).unwrap()).collect();
+    for ceremony in &mut cs {
+        for (from, log) in logs.iter().enumerate() { ceremony.on_message(&pks[from], log.clone()); }
+    }
+    let proposals: Vec<_> = cs[..4].iter_mut().map(|c| c.propose_transcript().unwrap()).collect();
+    for (to, ceremony) in cs[..4].iter_mut().enumerate() {
+        for (from, (_, proposal)) in proposals.iter().enumerate() {
+            if from != to { ceremony.on_message(&pks[from], proposal.clone()); }
+        }
+    }
+    certify(&mut cs, &pks, &[0, 1, 2, 3]);
+    let mut staged = Vec::new();
+    for ceremony in &mut cs[..4] {
+        let digest = ceremony.certified_transcript().unwrap();
+        let (output, share) = ceremony.finish_decided(&mut ChaCha20Rng::seed_from_u64(7), &digest).unwrap();
+        staged.push(KeyFile::new(1, &output, &share));
+    }
+    assert!(cs[4].certified_transcript().is_none());
+    // Advance the 120-second readiness window without delivering its relay to
+    // the fifth player. No fifth proof can appear by the deadline.
+    for _ in 0..(aether_node::dkg::SHARE_READY_WINDOW.as_millis() / 500) {
+        for c in &mut cs[..4] { c.tick_agreement(); }
+    }
+    let output = staged[0].output.clone();
+    let members: Vec<(String, String)> = ks.iter().map(|k| (hex::encode(k.public_key().encode()), "node".to_string())).collect();
+    let proofs = ks[..4].iter().enumerate().map(|(i, key)| {
+        (hex::encode(key.public_key().encode()),
+         aether_node::handoff::sign_ready(7781, 1, &output, &members, &staged[i].decode(5).unwrap().1))
+    }).collect();
+    let readiness = aether_node::handoff::Readiness { round: 1, output: output.clone(), members: members.clone(), proofs };
+    let reduced = readiness.retry_members(7781).unwrap().unwrap();
+    assert_eq!(reduced.len(), 4);
+    assert!(!reduced.iter().any(|(key, _)| key == &members[4].0));
+    let h = aether_light::block::Handoff { round: 1, output, members, ready: vec![], signature: String::new() };
+    let old = shares_of(&files, 4);
+    let partials: Vec<_> = old.values().map(|s| check_partial(7781, previous.public(), &h, &sign_partial(7781, &h, s)).unwrap()).collect();
+    let signed = combine(previous.public(), &h, &partials[..3]).unwrap();
+    assert!(verify(7781, &identity, &signed).is_err(), "an unready fifth seat must not receive a signed handoff");
+
+    // The proposed reduced roster runs a fresh round; its four ready shares
+    // sustain 3-of-4 quorum even if a Byzantine seat stops after handoff.
+    let reduced_keys: Set<PublicKey> = pks[..4].iter().cloned().try_collect().unwrap();
+    let retry = run_round(&ks[..4], Round::reshare(previous.clone(), reduced_keys, 2).with_chain_id(7781),
+        &old_shares, 1201, 0.0);
+    let retry_output = retry.values().next().unwrap().output.clone();
+    let ready = ks[..4].iter().map(|key| {
+        aether_node::handoff::sign_ready(7781, 2, &retry_output, &reduced,
+            &retry[&key.public_key()].decode(4).unwrap().1)
+    }).collect();
+    let h = aether_light::block::Handoff { round: 2, output: retry_output, members: reduced, ready, signature: String::new() };
+    let partials: Vec<_> = old.values().map(|s| check_partial(7781, previous.public(), &h, &sign_partial(7781, &h, s)).unwrap()).collect();
+    let signed = combine(previous.public(), &h, &partials[..3]).unwrap();
+    verify(7781, &identity, &signed).unwrap();
+    let new_output = retry.values().next().unwrap().decode(4).unwrap().0;
+    let survivors: Vec<_> = ks[1..4].iter().map(|key| {
+        let share = retry[&key.public_key()].decode(4).unwrap().1;
+        aether_node::handoff::check_seed_partial(7781, new_output.public(), 9,
+            &aether_node::handoff::sign_seed_partial(7781, 9, &share)).unwrap()
+    }).collect();
+    let seed = aether_node::handoff::combine_seed(new_output.public(), 9, &survivors).unwrap();
+    aether_node::handoff::verify_seed(7781, &identity, &seed).unwrap();
 }
 
 /// A player misses the dealing/ack window. Even a valid three-dealer bundle
@@ -666,7 +768,12 @@ fn departing_dealer_serves_the_decided_bundle_to_a_late_candidate() {
     assert_eq!(cs[4].certified_transcript(), Some(decided.clone()));
     let (output, share) = cs[4].finish_decided(&mut ChaCha20Rng::seed_from_u64(7), &decided).unwrap();
     assert!(output.revealed().is_empty());
-    assert!(aether_light::Scheme::signer(&aether_light::consensus_namespace(), output.players().clone(), output.public().clone(), share).is_some());
+    assert!(aether_light::Scheme::signer(&aether_light::consensus_namespace(), output.players().clone(), output.public().clone(), share.clone()).is_some());
+    let members: Vec<_> = pks[1..].iter().map(|key| (hex::encode(key.encode()), "node".to_string())).collect();
+    let output_hex = hex::encode(output.encode());
+    let proof = aether_node::handoff::sign_ready(7781, 75, &output_hex, &members, &share);
+    assert!(!cs[0].is_player(), "the departing dealer has no new share");
+    aether_node::handoff::check_ready(7781, 75, &output_hex, &members, &members[3].0, &proof).unwrap();
 }
 
 #[test]

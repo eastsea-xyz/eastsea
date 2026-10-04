@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Package the macOS app as a drag-to-install DMG (Aether.app + an Applications shortcut).
+# Package the macOS app as a drag-to-install DMG (EastSea.app + an Applications shortcut).
 #
 #   scripts/package-mac.sh
 #       Local build, signed with the development identity from project.yml.
@@ -10,17 +10,17 @@
 #         APP_STORE_CONNECT_API_KEY_ID / _ISSUER_ID / _PATH  (an App Store Connect API key;
 #                                                `source ~/.config/app-store-release/env.sh`)
 #       and the ticket is stapled to the DMG.
-# Output: dist/Aether-<version>.dmg
+# Output: dist/EastSea-<version>.dmg
 set -euo pipefail
 cd "$(dirname "$0")/.."
 version=${AETHER_VERSION:-$(git describe --tags --always --dirty)}
 scripts/build-wallet.sh macos >/dev/null
-src="apps/wallet/build/Build/Products/Release/Aether.app"
+src="apps/wallet/build/Build/Products/Release/EastSea.app"
 [ -d "$src" ] || { echo "build failed: $src missing"; exit 1; }
 
 stage=$(mktemp -d)
 trap 'rm -rf "${stage:?}"' EXIT
-app="$stage/Aether.app"
+app="$stage/EastSea.app"
 cp -R "$src" "$app"
 
 if [ -n "${SIGN_IDENTITY:-}" ]; then
@@ -40,7 +40,7 @@ codesign --verify --deep --strict "$app"
 
 ln -s /Applications "$stage/Applications"
 mkdir -p dist
-dmg="dist/Aether-$version.dmg"
+dmg="dist/EastSea-$version.dmg"
 rm -f "$dmg"
 hdiutil create -quiet -volname "EastSea" -srcfolder "$stage" -fs HFS+ -format UDZO "$dmg"
 

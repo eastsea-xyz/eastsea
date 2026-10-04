@@ -17,11 +17,11 @@ version=$(awk '/MARKETING_VERSION:/{print $2; exit}' "$yml")
 build=$(awk '/CURRENT_PROJECT_VERSION:/{print $2; exit}' "$yml")
 tag="app-v$version"
 repo=kjaylee/aether-node
-dmg="dist/Aether-$version.dmg"
+dmg="dist/EastSea-$version.dmg"
 mode=${1:-}
-manifest="dist/Aether-$version-manifest.json"
-builder_sigs="dist/Aether-$version-builder-sigs.json"
-release_index="dist/Aether-$version-release-index.json"
+manifest="dist/EastSea-$version-manifest.json"
+builder_sigs="dist/EastSea-$version-builder-sigs.json"
+release_index="dist/EastSea-$version-release-index.json"
 
 if [ "$mode" != --publish-prepared ]; then
 source ~/.config/app-store-release/env.sh
@@ -49,7 +49,7 @@ if [ -n "${AETHER_RELEASE_LOG:-}" ]; then
   trap 'hdiutil detach -quiet "$PWD/tmp/release-mount" 2>/dev/null || true' EXIT
   scripts/release-approve.py prepare --chain-id "$AETHER_RELEASE_CHAIN_ID" \
     --log "$AETHER_RELEASE_LOG" --version "$version" --build "$build" \
-    --dmg "$dmg" --app "$PWD/tmp/release-mount/Aether.app" --sparkle-signature "$sparkle_sig" --source-tag "$tag" \
+    --dmg "$dmg" --app "$PWD/tmp/release-mount/EastSea.app" --sparkle-signature "$sparkle_sig" --source-tag "$tag" \
     --out "$manifest" "${emergency[@]}"
   hdiutil detach -quiet "$PWD/tmp/release-mount"
   trap - EXIT
@@ -60,7 +60,7 @@ if [ -n "${AETHER_RELEASE_LOG:-}" ]; then
   fi
 fi
 
-url="https://github.com/$repo/releases/download/$tag/Aether-$version.dmg"
+url="https://github.com/$repo/releases/download/$tag/EastSea-$version.dmg"
 cat > dist/appcast.xml <<XML
 <?xml version="1.0" encoding="utf-8"?>
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
@@ -81,7 +81,7 @@ fi
 
 notes="EastSea $version for macOS (Apple silicon), signed by Pipln and notarized by Apple.
 
-Drag the app to Applications. The app is a wallet and, with the switch on, a node that verifies every block on this Mac. It connects to the Aether testnet (test tokens have no value).
+Drag the app to Applications. The app is a wallet and, with the switch on, a node that verifies every block on this Mac. It connects to the EastSea testnet (test tokens have no value).
 
 Updates arrive automatically (EastSea ▸ Check for Updates…).${RELEASE_NOTES:+
 
@@ -92,7 +92,7 @@ $RELEASE_NOTES}"
 # GitHub release (audit 3, A3-6).
 if [ "$mode" != --publish-prepared ]; then scripts/build-extension.sh --zip >/dev/null; fi
 ext_version=$(python3 -c 'import json; print(json.load(open("apps/extension/manifest.json"))["version"])')
-ext="dist/aether-extension-$ext_version.zip"
+ext="dist/eastsea-extension-$ext_version.zip"
 echo "Extension zip SHA-256: $(shasum -a 256 "$ext" | awk '{print $1}')  $ext"
 
 if [ "$mode" = --prepare ] || { [ -n "${AETHER_RELEASE_LOG:-}" ] && [ "$mode" != --publish-prepared ]; }; then

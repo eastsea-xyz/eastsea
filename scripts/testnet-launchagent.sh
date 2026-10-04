@@ -6,7 +6,7 @@
 # `aether run`: a validator while the network keeps it in the voting set, a
 # verifying follower once registered Macs take the seats.
 # The binary is signed with the Developer ID (SIGN_IDENTITY) and the agents name
-# the Aether app, so System Settings ▸ Login Items lists them as Aether (Pipln),
+# the EastSea app, so System Settings ▸ Login Items lists them as EastSea (Pipln),
 # not as an unidentified command-line tool.
 # `caffeinate -s` wraps each validator: the Mac does not sleep while on power
 # (a sleeping validator is a missing vote). `--exit-with-parent` stops the node
@@ -37,7 +37,7 @@ case "${1:-}" in
 <plist version="1.0">
 <dict>
   <key>Label</key><string>$(label "$i")</string>
-  <key>AssociatedBundleIdentifiers</key><array><string>com.pipln.aether</string></array>
+  <key>AssociatedBundleIdentifiers</key><array><string>com.pipln.eastsea</string></array>
   <key>ProgramArguments</key>
   <array>
     <string>/usr/bin/caffeinate</string><string>-s</string>

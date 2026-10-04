@@ -13,7 +13,7 @@
 | 계층 | 대상 | 재현 수준 | 검증 |
 |---|---|---|---|
 | **Tier 1** | `aether`(노드), `libaether_ffi.a`, `aether-prover`·증명 프로그램 ID, 브라우저 확장 ZIP | **비트 단위 일치** (노드·사이드카는 `LC_UUID` 재작성 뒤) | 배포본과 제3자 빌드의 SHA-256 대조 |
-| **Tier 2** | macOS `AetherWallet.app` 내부 Mach-O | **서명 제거 + `LC_UUID`를 0으로 비운 뒤 비트 일치** | `codesign --remove-signature` 뒤 해시, `macho-uuid.py`, `dwarfdump --uuid` |
+| **Tier 2** | macOS `EastSea.app` 내부 Mach-O | **서명 제거 + `LC_UUID`를 0으로 비운 뒤 비트 일치** | `codesign --remove-signature` 뒤 해시, `macho-uuid.py`, `dwarfdump --uuid` |
 | **Tier 3** | iOS App Store 배포본 | **외부 검증 불가** | (아래 "재현되지 않는 것" 참고) |
 
 ## 빌드 환경 (`scripts/repro-env.sh`)
@@ -84,7 +84,7 @@ scripts/repro-check.sh node extension      # 골라서
 | `ffi` | `target/release/libaether_ffi.a` |
 | `prover-program` | `scripts/prover-program.sh`가 내는 프로그램 ID |
 | `prover-binary` | `target/release/aether-prover` |
-| `extension` | `dist/aether-extension-<version>.zip` |
+| `extension` | `dist/eastsea-extension-<version>.zip` |
 
 환경변수: `AETHER_REPRO_WORK`(두 트리를 둘 곳, 기본 `$TMPDIR`), `AETHER_REPRO_KEEP=1`(남겨 두기), `AETHER_REPRO_SERIAL=1`(한 쪽씩), `AETHER_PROFILE`(기본 `release`). Jolt 포크나 `jolt` CLI가 없으면 prover는 건너뛴다. prover 단계는 두 트리가 같은 스테이지(`AETHER_GUEST_STAGE`)를 쓰므로 스테이지 락으로 직렬화되어 한 쪽씩 돈다(나머지는 병렬). 두 번의 콜드 빌드라 오래 걸리고 타깃 디렉터리 두 개분의 디스크가 필요하다.
 

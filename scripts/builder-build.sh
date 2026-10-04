@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Independent builder Mac: rebuild the tagged source without a distribution
 # certificate, compare normalized code hashes to the release Mac's manifest.
-#   scripts/builder-build.sh <manifest.json> <shared-Aether.dmg> <rebuilt.json>
+#   scripts/builder-build.sh <manifest.json> <shared-EastSea.dmg> <rebuilt.json>
 set -euo pipefail
 cd "$(dirname "$0")/.."
 manifest=${1:?manifest.json required}
@@ -17,5 +17,5 @@ export CODE_SIGNING_ALLOWED=NO
 [ -z "$(git -C "$PWD" status --porcelain)" ] || { echo "ALARM: source worktree is dirty" >&2; exit 1; }
 scripts/build-wallet.sh macos
 scripts/release-approve.py rebuild "$manifest" --dmg "$dmg" \
-  --app apps/wallet/build/Build/Products/Release/Aether.app --out "$rebuilt"
+  --app apps/wallet/build/Build/Products/Release/EastSea.app --out "$rebuilt"
 echo "Rebuild matched. Sign with: scripts/builder-sign sign $manifest --local-manifest $rebuilt"

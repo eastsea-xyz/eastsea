@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tier-2 reproducible check for the macOS app bundle (gap G5). The shipped
-# Aether.app cannot be byte-identical: Xcode re-signs it (Developer ID, with the
+# EastSea.app cannot be byte-identical: Xcode re-signs it (Developer ID, with the
 # notarization ticket stapled), and the signature covers the whole bundle. So
 # compare what signing does not change: strip the signature from copies of each
 # Mach-O in the bundle and compare SHA-256. Matching stripped hashes means the
@@ -124,8 +124,8 @@ elif [ $# -eq 0 ]; then
       exit 1
     fi
   done
-  a="$a/apps/wallet/build/Build/Products/Release/Aether.app"
-  b="$b/apps/wallet/build/Build/Products/Release/Aether.app"
+  a="$a/apps/wallet/build/Build/Products/Release/EastSea.app"
+  b="$b/apps/wallet/build/Build/Products/Release/EastSea.app"
 else
   usage
 fi

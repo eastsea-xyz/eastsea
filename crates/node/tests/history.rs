@@ -6,8 +6,8 @@
 //! `cargo test -p aether-node --release --test history -- --ignored --nocapture measure`
 //! prints the bytes-per-block table of the roadmap (B1/B3).
 
-use aether_crypto::P256Signer;
-use aether_execution::{sign_call_with, EvmCall};
+use aether_crypto::{P256Signer, Signer as AetherSigner};
+use aether_execution::{recommended_state_budget, sign_call_with, EvmCall};
 use aether_execution::{Event, Receipt};
 use aether_node::block::{Block, Context, EPOCH};
 use aether_node::chain::{
@@ -171,11 +171,18 @@ impl Node {
         };
         let fees = FeeVector {
             exec: 100_000_000_000,
-            state: 0,
+            state: aether_execution::fees::STATE_UNIT_PRICE,
             prove: 100_000_000_000,
         };
         self.nonce += 1;
-        sign_call_with(&signer, CHAIN, self.nonce - 1, fees, 1_000_000_000, &call).unwrap()
+        let mut tx = sign_call_with(&signer, CHAIN, self.nonce - 1, fees, 1_000_000_000, &call).unwrap();
+        // The sender is funded: reserve enough to pay for the new account the
+        // transfer creates (paid state growth on new-genesis chains).
+        tx.header.gas.state = recommended_state_budget(&call, Some(U256::from(10u128.pow(24))), fees.state);
+        let mut signature = AetherSigner::sign(&signer, &tx.signing_bytes()).unwrap();
+        signature.extend_from_slice(&AetherSigner::public_key(&signer).bytes);
+        tx.signature = Bytes::from(signature);
+        tx
     }
 
     fn run_to(&mut self, height: u64, with_tx: impl Fn(u64) -> bool) {
@@ -252,8 +259,13 @@ fn account_history_indexes_all_delegated_batch_receivers_once_per_address() {
         input: aether_execution::encode_execute(&calls),
         gas_limit: 200_000, delegate: Some(aether_execution::AETHER_ACCOUNT),
     };
-    let fees = FeeVector { exec: 100_000_000_000, state: 0, prove: 100_000_000_000 };
-    let tx = sign_call_with(&signer, CHAIN, 0, fees, 1_000_000_000, &call).unwrap();
+    let fees = FeeVector { exec: 100_000_000_000, state: aether_execution::fees::STATE_UNIT_PRICE, prove: 100_000_000_000 };
+    let mut tx = sign_call_with(&signer, CHAIN, 0, fees, 1_000_000_000, &call).unwrap();
+    // The sender is funded: reserve what the batch's new accounts cost.
+    tx.header.gas.state = recommended_state_budget(&call, Some(U256::from(10u128.pow(24))), fees.state);
+    let mut signature = AetherSigner::sign(&signer, &tx.signing_bytes()).unwrap();
+    signature.extend_from_slice(&AetherSigner::public_key(&signer).bytes);
+    tx.signature = Bytes::from(signature);
     let exec = n.step(vec![tx]);
     assert!(exec.receipts[0].success);
 
@@ -280,7 +292,16 @@ fn account_history_keeps_batch_receipts_when_delegation_is_cleared_later_in_bloc
     let signer = P256Signer::from_seed(&dev_seed(1)).unwrap();
     let sender = aether_crypto::address_of(&aether_crypto::Signer::public_key(&signer)).unwrap();
     let recipient = Address::repeat_byte(0xa3);
-    let fees = FeeVector { exec: 100_000_000_000, state: 0, prove: 100_000_000_000 };
+    let fees = FeeVector { exec: 100_000_000_000, state: aether_execution::fees::STATE_UNIT_PRICE, prove: 100_000_000_000 };
+    let paid = |nonce: u64, call: &EvmCall| {
+        // The sender is funded: reserve what the call's new state costs.
+        let mut tx = sign_call_with(&signer, CHAIN, nonce, fees, 1_000_000_000, call).unwrap();
+        tx.header.gas.state = recommended_state_budget(call, Some(U256::from(10u128.pow(24))), fees.state);
+        let mut signature = AetherSigner::sign(&signer, &tx.signing_bytes()).unwrap();
+        signature.extend_from_slice(&AetherSigner::public_key(&signer).bytes);
+        tx.signature = Bytes::from(signature);
+        tx
+    };
     let batch = EvmCall {
         to: Some(sender), value: U256::ZERO,
         input: aether_execution::encode_execute(&[(recipient, U256::from(5), Bytes::new())]),
@@ -290,9 +311,9 @@ fn account_history_keeps_batch_receipts_when_delegation_is_cleared_later_in_bloc
         to: Some(sender), value: U256::ZERO, input: Bytes::new(),
         gas_limit: 100_000, delegate: Some(Address::ZERO),
     };
-    let first = sign_call_with(&signer, CHAIN, 0, fees, 1_000_000_000, &batch).unwrap();
+    let first = paid(0, &batch);
     // EIP-7702 authorization consumes the nonce after the outer transaction.
-    let second = sign_call_with(&signer, CHAIN, 2, fees, 1_000_000_000, &clear).unwrap();
+    let second = paid(2, &clear);
     let exec = n.step(vec![first, second]);
     assert_eq!(exec.receipts.len(), 2);
     assert!(exec.receipts.iter().all(|receipt| receipt.success));

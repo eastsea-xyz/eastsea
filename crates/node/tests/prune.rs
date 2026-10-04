@@ -7,8 +7,8 @@
 //! Blocks are built and finalized the way a proposer and marshal do, without
 //! consensus (as in `tests/history.rs`).
 
-use aether_crypto::P256Signer;
-use aether_execution::{sign_call_with, EvmCall};
+use aether_crypto::{P256Signer, Signer as AetherSigner};
+use aether_execution::{recommended_state_budget, sign_call_with, EvmCall};
 use aether_node::block::{Block, Context, EPOCH};
 use aether_node::chain::{build_payload, dev_accounts, dev_seed, Chain, ChainConfig, Executed, Extras};
 use aether_node::era;
@@ -97,9 +97,16 @@ impl Node {
     fn transfer(&mut self) -> TxEnvelope {
         let signer = P256Signer::from_seed(&dev_seed(1)).unwrap();
         let call = EvmCall { to: Some(Address::repeat_byte(0xb0)), value: U256::from(1_000u64), input: Bytes::new(), gas_limit: 21_000, delegate: None };
-        let fees = FeeVector { exec: 100_000_000_000, state: 0, prove: 100_000_000_000 };
+        let fees = FeeVector { exec: 100_000_000_000, state: aether_execution::fees::STATE_UNIT_PRICE, prove: 100_000_000_000 };
         self.nonce += 1;
-        sign_call_with(&signer, CHAIN, self.nonce - 1, fees, 1_000_000_000, &call).unwrap()
+        let mut tx = sign_call_with(&signer, CHAIN, self.nonce - 1, fees, 1_000_000_000, &call).unwrap();
+        // The sender is funded: reserve enough to pay for the new account the
+        // transfer creates (paid state growth on new-genesis chains).
+        tx.header.gas.state = recommended_state_budget(&call, Some(U256::from(10u128.pow(24))), fees.state);
+        let mut signature = AetherSigner::sign(&signer, &tx.signing_bytes()).unwrap();
+        signature.extend_from_slice(&AetherSigner::public_key(&signer).bytes);
+        tx.signature = Bytes::from(signature);
+        tx
     }
 
     /// Run to `height`, with a transfer in every block `with_tx` names.

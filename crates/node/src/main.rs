@@ -965,7 +965,10 @@ fn main() {
             let file = aether_node::roster::NetworkFile::load(std::path::Path::new(&network))?;
             let genesis = file.genesis()?;
             let chain_id = file.chain_id;
-            let rules = aether_node::mainnet::check_with(&chain_config(chain_id, &genesis, false), rehearsal);
+            let mut rules = aether_node::mainnet::check_with(&chain_config(chain_id, &genesis, false), rehearsal);
+            // Audit 5, A5-4: the strict gate also decodes the exact committee
+            // fields the file carries (or names the file pre-DKG).
+            rules.extend(aether_node::mainnet::check_final(&file, rehearsal));
             for r in &rules {
                 println!("{}  {}: {}", if r.ok { "ok" } else { "FAIL" }, r.name, r.detail);
             }
@@ -1305,7 +1308,7 @@ fn reshare(
         share: String::new(),
     };
     let previous = previous.decode_output(n_old)?;
-    if old_file.chain_id != 7_780 && previous.revealed().iter().any(|player| previous.players().position(player).is_some()) {
+    if old_file.chain_id != 7_780 && aether_node::dkg::KeyFile::reveals_seated_share(&previous, &previous.players()) {
         return Err("current committee output reveals a seated player's threshold share".into());
     }
     let dir = std::path::PathBuf::from(&data);
@@ -1407,7 +1410,7 @@ fn reshare(
     let mut staged_share = None;
     match result.map_err(|e| format!("reshare failed: {e}"))? {
         Some((output, share)) => {
-            if !legacy_agreement && output.revealed().iter().any(|player| output.players().position(player).is_some()) {
+            if !legacy_agreement && aether_node::dkg::KeyFile::reveals_seated_share(&output, &output.players()) {
                 return Err("reshare output reveals a seated player's threshold share; retry with a higher --round".into());
             }
             let file = aether_node::dkg::KeyFile::new(next_round, &output, &share);
@@ -2678,7 +2681,7 @@ fn run_dkg(
     match result {
         Ok(None) => unreachable!("every DKG participant is a player"),
         Ok(Some((output, share))) => {
-            if chain_id != 7_780 && output.revealed().iter().any(|player| output.players().position(player).is_some()) {
+            if chain_id != 7_780 && aether_node::dkg::KeyFile::reveals_seated_share(&output, &output.players()) {
                 eprintln!("dkg failed: output reveals a seated player's threshold share; retry with a higher --round");
                 std::process::exit(1);
             }
@@ -2772,9 +2775,33 @@ fn committee_keys(
             "threshold.json is for a different validator set"
         );
         assert!(
-            chain_id == 7_780 || !output.revealed().iter().any(|player| validators.position(player).is_some()),
+            chain_id == 7_780
+                || !aether_node::dkg::KeyFile::reveals_seated_share(&output, validators),
             "threshold.json reveals a seated player's threshold share; do not run consensus with this committee key"
         );
+        // Audit 5, A5-4: a validator votes only with the committee the final
+        // network.json carries. The running testnet (7780) keeps its legacy
+        // behavior; every other chain compares this Mac's threshold.json
+        // against the final file before consensus starts. The gate sits behind
+        // the new-genesis work (a reshare rewrites both files together), and
+        // it is a CLI-side check only — the consensus rules themselves do not
+        // change.
+        if chain_id != aether_node::mainnet::TESTNET_CHAIN_ID {
+            if let Ok(bytes) = std::fs::read(std::path::Path::new(data).join("network.json")) {
+                if let Ok(net) = serde_json::from_slice::<aether_node::roster::NetworkFile>(&bytes) {
+                    if net.chain_id == chain_id {
+                        if let Err(why) = aether_node::mainnet::local_share_matches_network(&file, &net) {
+                            eprintln!(
+                                "refusing to start: this Mac's threshold.json does not match {data}/network.json ({why}).\n\
+                                 Run scripts/mainnet-genesis.sh verify-local on this Mac, then use the final network.json \
+                                 the coordinator checked. Quit; do not vote under a committee key the final file does not carry."
+                            );
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            }
+        }
         tracing::info!(identity = %file.identity, "committee key from DKG");
         return (output.players().clone(), output.public().clone(), share);
     }

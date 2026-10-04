@@ -27,6 +27,14 @@ func makeOldSupport() -> (root: URL, defaults: UserDefaults) {
     try? "{\"round\":0,\"share\":\"secret\"}".write(to: node.appending(path: "threshold.json"), atomically: true, encoding: .utf8)
     try? "vote\nvote\n".write(to: node.appending(path: "votes.jsonl"), atomically: true, encoding: .utf8)
     try? String(repeating: "chain-data ", count: 500).write(to: node.appending(path: "data.db"), atomically: true, encoding: .utf8)
+    // The committee's public file and the vote journals at the names the node
+    // binary itself reads at its data root (supervisor.rs, main.rs).
+    try? "{\"chain_id\":1,\"round\":0}".write(to: node.appending(path: "network.json"), atomically: true, encoding: .utf8)
+    try? "validator-pub".write(to: node.appending(path: "validator.pub.json"), atomically: true, encoding: .utf8)
+    let journal = node.appending(path: "aether-consensus-r1")
+    try? FileManager.default.createDirectory(at: journal, withIntermediateDirectories: true)
+    try? "vote-journal-bytes".write(to: journal.appending(path: "0"), atomically: true, encoding: .utf8)
+    try? "dkg-round-0".write(to: node.appending(path: "dkg-agreement-genesis-0.journal"), atomically: true, encoding: .utf8)
     FileManager.default.createFile(atPath: node.appending(path: "run.lock").path, contents: Data())
     try? FileManager.default.createDirectory(at: root.appending(path: "AetherWallet"), withIntermediateDirectories: true)
     try? "enclave-handle".write(to: root.appending(path: "AetherWallet/enclave-key.dat"), atomically: true, encoding: .utf8)
@@ -205,6 +213,182 @@ do {
            "the old tree is untouched by the refusal")
     try? FileManager.default.removeItem(at: root.appending(path: "EastSea"))
     try? FileManager.default.removeItem(at: elsewhere)
+    cleanup(root, d)
+}
+
+// 7. Forced cross-volume fallback (audit 6, A6-5): the move cannot happen, so
+//    a verified copy leaves the old tree behind — and the old tree must not
+//    keep a usable signing identity for any binary to pick up.
+do {
+    let (root, d) = makeOldSupport()
+    // An occupied destination forces moveItem to fail, the cross-volume path.
+    let newNode = root.appending(path: "EastSea/node")
+    try? FileManager.default.createDirectory(at: newNode, withIntermediateDirectories: true)
+    try? "earlier partial attempt".write(to: newNode.appending(path: "data.db"), atomically: true, encoding: .utf8)
+    let outcome = DataMigration.migrate(support: root, defaults: d)
+    expect(outcome == .done, "the forced-copy migration completes: \(outcome)")
+    expect(doneFlag(d), "done is set after the verified copy")
+    let fm = FileManager.default
+    let oldNode = root.appending(path: "Aether/node")
+    expect(fm.fileExists(atPath: oldNode.path), "the copy fallback keeps the old tree")
+    // The old root no longer holds anything a signer can use (A6-5).
+    for gone in ["validator.key", "validator.pub.json", "node-account.key", "threshold.json",
+                 "aether-consensus-r1", "dkg-agreement-genesis-0.journal"] {
+        expect(!fm.fileExists(atPath: oldNode.appending(path: gone).path), "the old root no longer holds \(gone)")
+    }
+    // ...while the quarantine directory inside it does (recoverable).
+    let quarantined = ((try? fm.contentsOfDirectory(atPath: oldNode.path)) ?? [])
+        .filter { $0.hasPrefix("eastsea-quarantine-") }
+    expect(quarantined.count == 1, "one quarantine directory: \(quarantined)")
+    if let q = quarantined.first {
+        for kept in ["validator.key", "validator.pub.json", "node-account.key", "threshold.json",
+                     "aether-consensus-r1", "dkg-agreement-genesis-0.journal"] {
+            expect(fm.fileExists(atPath: oldNode.appending(path: q).appending(path: kept).path),
+                   "the quarantine holds \(kept) for recovery")
+        }
+    }
+    // network.json and run.lock stay: the old binary's identity guard keeps
+    // refusing a fresh key (candidate.rs registered_identity).
+    expect(fm.fileExists(atPath: oldNode.appending(path: "network.json").path), "network.json stays in the old root")
+    expect(fm.fileExists(atPath: oldNode.appending(path: "run.lock").path), "run.lock stays in the old root")
+    expect(fm.fileExists(atPath: oldNode.appending(path: "MIGRATED-TO-EASTSEA").path), "the marker is left")
+    for f in ["validator.key", "threshold.json", "network.json", "data.db"] {
+        expect(fm.fileExists(atPath: newNode.appending(path: f).path), "the new tree carries \(f)")
+    }
+    expect(try String(contentsOf: newNode.appending(path: "data.db"), encoding: .utf8)
+        == String(repeating: "chain-data ", count: 500), "the partial destination file was replaced with the real database")
+    cleanup(root, d)
+}
+
+/// The old binary's own gates, as source facts (candidate.rs
+/// `registered_identity`, supervisor.rs `role`/`my_key`): signing needs a
+/// readable validator.key AND threshold.json, and a fresh key is only ever
+/// minted in a directory that never held an identity.
+func oldBinaryView(_ node: URL) -> (canSign: Bool, refusesFreshIdentity: Bool) {
+    let fm = FileManager.default
+    let marks = ["validator.key", "validator.pub.json", "node-account.key", "network.json", "threshold.json"]
+    let registered = marks.contains { fm.fileExists(atPath: node.appending(path: $0).path) }
+        || ((try? fm.contentsOfDirectory(atPath: node.path)) ?? []).contains {
+            $0.hasPrefix("stale-") || $0.hasPrefix("corrupt-")
+        }
+    let canSign = fm.fileExists(atPath: node.appending(path: "validator.key").path)
+        && fm.fileExists(atPath: node.appending(path: "threshold.json").path)
+    return (canSign, registered)
+}
+
+// 8. The old-binary view of the old tree after a copy migration (audit 6,
+//    A6-5): before it, the old app can sign; after the verified copy and
+//    quarantine, it can neither sign nor mint a fresh identity.
+do {
+    let (root, d) = makeOldSupport()
+    let oldNode = root.appending(path: "Aether/node")
+    var view = oldBinaryView(oldNode)
+    expect(view.canSign, "before the migration the old tree can sign")
+    expect(view.refusesFreshIdentity, "before the migration the old root is a registered identity")
+    // Force the copy path, as in scenario 7.
+    let newNode = root.appending(path: "EastSea/node")
+    try? FileManager.default.createDirectory(at: newNode, withIntermediateDirectories: true)
+    try? "x".write(to: newNode.appending(path: "data.db"), atomically: true, encoding: .utf8)
+    _ = DataMigration.migrate(support: root, defaults: d)
+    view = oldBinaryView(oldNode)
+    expect(!view.canSign, "after the migration the old binary can no longer sign (no key, no share)")
+    expect(view.refusesFreshIdentity, "the old root still refuses to mint a fresh identity (network.json stays)")
+    // The same-volume path removes the old tree entirely — also unsignable.
+    let (root2, d2) = makeOldSupport()
+    _ = DataMigration.migrate(support: root2, defaults: d2)
+    expect(!FileManager.default.fileExists(atPath: root2.appending(path: "Aether/node").path),
+           "the same-volume move leaves no old tree at all")
+    cleanup(root, d)
+    cleanup(root2, d2)
+}
+
+// 9. A same-size, different-content file beyond the old 4 MiB hash limit
+//    (audit 6, A6-6): the streaming hash must catch it and the migration must
+//    replace the destination file before ever marking done.
+do {
+    let (root, d) = makeOldSupport()
+    let oldNode = root.appending(path: "Aether/node")
+    let newNode = root.appending(path: "EastSea/node")
+    // 5 MiB files, one byte apart, both beyond 4 MiB.
+    let big = Data(repeating: 0x41, count: 5 << 20)
+    try? big.write(to: oldNode.appending(path: "big.db"))
+    var poisoned = big
+    poisoned[1 << 20] = 0x42
+    try? FileManager.default.createDirectory(at: newNode, withIntermediateDirectories: true)
+    try? poisoned.write(to: newNode.appending(path: "big.db"))
+    try? "earlier attempt".write(to: newNode.appending(path: "data.db"), atomically: true, encoding: .utf8)
+    expect(!DataMigration.fileMatches(oldNode.appending(path: "big.db"), newNode.appending(path: "big.db")),
+           "two 5 MiB files one byte apart do NOT match")
+    let outcome = DataMigration.migrate(support: root, defaults: d)
+    expect(outcome == .done, "the migration recopies and verifies: \(outcome)")
+    expect(DataMigration.fileMatches(oldNode.appending(path: "big.db"), newNode.appending(path: "big.db")),
+           "the poisoned destination was replaced with a verified copy")
+    expect(try Data(contentsOf: newNode.appending(path: "big.db")) == big, "the recopied bytes are exact")
+    cleanup(root, d)
+}
+
+// 10. A partially-copied destination is not a green light for the node (audit
+//     6, A6-6): while the old tree waits, mayStartNode refuses even when
+//     EastSea/node already exists.
+do {
+    let (root, d) = makeOldSupport()
+    let newNode = root.appending(path: "EastSea/node")
+    // A half-copied tree from an interrupted run.
+    try? FileManager.default.createDirectory(at: newNode, withIntermediateDirectories: true)
+    try? "chain-da".write(to: newNode.appending(path: "data.db"), atomically: true, encoding: .utf8)
+    expect(DataMigration.mayStartNode(support: root, defaults: d) != nil,
+           "a partial destination tree still refuses the node start")
+    // So does an empty placeholder directory.
+    try? FileManager.default.removeItem(at: newNode.appending(path: "data.db"))
+    expect(DataMigration.mayStartNode(support: root, defaults: d) != nil,
+           "an empty destination directory still refuses the node start")
+    // The same-volume completion clears the refusal.
+    expect(DataMigration.migrate(support: root, defaults: d) == .done, "the migration completes over the placeholder")
+    expect(DataMigration.mayStartNode(support: root, defaults: d) == nil, "a completed migration allows the node")
+    cleanup(root, d)
+}
+
+// 11. An interrupted quarantine resumes (audit 6, A6-5): the old root may sit
+//     mid-quarantine — some signing files moved, the rest still in place.
+//     Re-running must finish the job idempotently, not fail or skip.
+do {
+    let (root, d) = makeOldSupport()
+    let oldNode = root.appending(path: "Aether/node")
+    let newNode = root.appending(path: "EastSea/node")
+    // Force the copy path, then let the verified copy finish but "crash"
+    // right after the first quarantine rename.
+    try? FileManager.default.createDirectory(at: newNode, withIntermediateDirectories: true)
+    try? "x".write(to: newNode.appending(path: "data.db"), atomically: true, encoding: .utf8)
+    expect(DataMigration.syncTreeVerified(oldNode, newNode), "the tree copy verifies on its own")
+    let half = oldNode.appending(path: "eastsea-quarantine-12345")
+    try? FileManager.default.createDirectory(at: half, withIntermediateDirectories: true)
+    try? FileManager.default.moveItem(at: oldNode.appending(path: "validator.key"), to: half.appending(path: "validator.key"))
+    expect(DataMigration.mayStartNode(support: root, defaults: d) != nil,
+           "a half-quarantined old tree still refuses the node start")
+    expect(oldBinaryView(oldNode).canSign == false, "with the key gone the old binary already cannot sign")
+    let outcome = DataMigration.migrate(support: root, defaults: d)
+    expect(outcome == .done, "the resumed migration finishes: \(outcome)")
+    expect(doneFlag(d), "done is set after the resumed quarantine")
+    for gone in ["validator.key", "threshold.json", "node-account.key", "validator.pub.json",
+                 "aether-consensus-r1", "dkg-agreement-genesis-0.journal"] {
+        expect(!FileManager.default.fileExists(atPath: oldNode.appending(path: gone).path),
+               "the resumed quarantine removed \(gone) from the old root")
+    }
+    expect(FileManager.default.fileExists(atPath: half.appending(path: "validator.key").path),
+           "the earlier half-quarantine is respected, not duplicated away")
+    let quarantines = ((try? FileManager.default.contentsOfDirectory(atPath: oldNode.path)) ?? [])
+        .filter { $0.hasPrefix("eastsea-quarantine-") }
+    var restored = 0
+    for q in quarantines {
+        for name in ["validator.key", "threshold.json", "node-account.key", "validator.pub.json",
+                     "aether-consensus-r1", "dkg-agreement-genesis-0.journal"]
+            where FileManager.default.fileExists(atPath: oldNode.appending(path: q).appending(path: name).path) {
+            restored += 1
+        }
+    }
+    expect(restored == 6, "every quarantined item is recoverable from the quarantine directories: \(restored)")
+    expect(FileManager.default.fileExists(atPath: oldNode.appending(path: "network.json").path),
+           "network.json stays for the identity guard")
     cleanup(root, d)
 }
 

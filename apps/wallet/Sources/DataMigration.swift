@@ -6,9 +6,12 @@ import Foundation
 /// done flag is set only after every precious item (the wallet key handles,
 /// the validator identity and threshold share, the vote journal, the node
 /// database) exists at its new home and matches the old copy (audit 5,
-/// A5-5). A failed or deferred run leaves the old data exactly where it was
-/// and retries on the next launch; nothing is ever deleted except by a
-/// successful same-volume move of the (large) chain data (A5-7).
+/// A5-5) — every file by content, however large (audit 6, A6-6). A failed
+/// or deferred run leaves the old data exactly where it was and retries on
+/// the next launch; nothing is ever deleted except by a successful
+/// same-volume move of the (large) chain data (A5-7). A tree that had to be
+/// copied (cross-volume) is left behind but emptied of everything its old
+/// binary could sign with (audit 6, A6-5).
 enum DataMigration {
     enum Outcome: Equatable {
         /// No old install found (fresh install): nothing to move.
@@ -32,10 +35,16 @@ enum DataMigration {
     /// cannot be changed to know about the rename, so the marker is what
     /// tells a human this tree is no longer the live one.
     private static let markerName = "MIGRATED-TO-EASTSEA"
-    /// Files at or under this size are compared by SHA-256, not size alone
-    /// (keys, journals, configs). Larger files (the chain database) are
-    /// compared by the tree manifest: same paths, same sizes.
-    private static let hashLimit = 4 << 20
+    /// What an old binary can sign with (audit 6, A6-5): the validator key,
+    /// its public file, the account key, the threshold share — and the
+    /// journals its consensus would resume from.
+    private static let signingMaterial = ["validator.key", "validator.pub.json", "node-account.key", "threshold.json"]
+    private static let signingMaterialPrefixes = ["aether-consensus", "dkg-agreement-", "vote-epoch-"]
+    /// Quarantined signing material lives in the old tree, under this
+    /// prefix: recoverable by hand, and invisible to the node — the
+    /// identity marks (candidate.rs) and the network sweep (supervisor.rs)
+    /// never look inside a subdirectory for a key.
+    private static let quarantinePrefix = "eastsea-quarantine-"
 
     private static var fm: FileManager { FileManager.default }
 
@@ -90,9 +99,10 @@ enum DataMigration {
         if fm.fileExists(atPath: oldNode.path) {
             // A tree already at its new home is the resume path of an
             // interrupted run (or a cross-volume fallback): verified copy,
-            // old tree kept and marked. A missing one moves outright.
+            // then the old tree is emptied of its signing material and
+            // marked. A missing one moves outright.
             let movedIn = fm.fileExists(atPath: newNode.path)
-                ? syncTreeVerified(oldNode, newNode) && markOldTreeMigrated(oldNode)
+                ? syncTreeVerified(oldNode, newNode) && quarantineOldSigningMaterial(oldNode) && markOldTreeMigrated(oldNode)
                 : moveTreeVerified(oldNode, newNode)
             if !movedIn { problems.append("the node data (identity, share, journal, database) did not move or did not verify") }
         }
@@ -129,38 +139,63 @@ enum DataMigration {
         return nil
     }
 
-    /// Audit 5, A5-7: the node must not start a fresh data directory while
-    /// the old one (identity, threshold share, chain) waits unmigrated.
+    /// Audit 5, A5-7 and audit 6, A6-5/A6-6: the node must not start while
+    /// the old one (identity, threshold share, chain) waits unmigrated —
+    /// not even onto a partially-copied new tree, which is not verified
+    /// until the done flag is set.
     static func mayStartNode(support: URL? = nil, defaults: UserDefaults = .standard) -> String? {
         let s = support ?? supportURL
         if defaults.bool(forKey: doneKey) { return nil }
-        if fm.fileExists(atPath: s.appending(path: "Aether/node").path)
-            && !fm.fileExists(atPath: s.appending(path: "EastSea/node").path) {
-            return "the old Aether node data (validator identity, threshold share, chain) has not moved into place "
-                + "yet. Launch the app once more to finish the data move (quit the old Aether app if it asks) — "
-                + "starting fresh now would strand this Mac's validator identity."
+        if fm.fileExists(atPath: s.appending(path: "Aether/node").path) {
+            return "the old Aether node data (validator identity, threshold share, chain) has not finished moving "
+                + "into place. Launch the app once more to finish the data move (quit the old Aether app if it "
+                + "asks) — starting now could run two copies of one validator identity."
         }
         return nil
     }
 
     // MARK: verification
 
-    /// True when both files exist with the same size and — for files within
-    /// the hash limit — the same SHA-256. The comparison behind every "done".
+    /// True when both files exist with the same size and the same streamed
+    /// SHA-256 — any size, no cutoff: a same-size different-content file is
+    /// caught however big it is (audit 6, A6-6). The comparison behind
+    /// every "done".
     static func fileMatches(_ old: URL, _ new: URL) -> Bool {
         guard let a = size(of: old), let b = size(of: new), a == b else { return false }
-        guard a <= hashLimit else { return true }
-        guard let da = try? Data(contentsOf: old), let db = try? Data(contentsOf: new) else { return false }
-        return sha256Hex(da) == sha256Hex(db)
+        guard let ha = streamSHA256(old), let hb = streamSHA256(new) else { return false }
+        return ha == hb
+    }
+
+    /// SHA-256 of a file of any size, read in chunks (audit 6, A6-6): no
+    /// size limit and never the whole file in memory — the chain database
+    /// is gigabytes. `nil` on any read error: a digest of "whatever we
+    /// managed to read" would be a false match waiting to happen.
+    private static func streamSHA256(_ url: URL) -> String? {
+        var sha = SHA256()
+        do {
+            let fh = try FileHandle(forReadingFrom: url)
+            defer { try? fh.close() }
+            while let chunk = try fh.read(upToCount: 1 << 20) {   // nil = end of file
+                sha.update(chunk)
+            }
+        } catch { return nil }
+        return sha.finalHex()
     }
 
     /// SHA-256 as lowercase hex (FIPS 180-4). Pure Swift: this file must
     /// compile alone for the pure-Swift test, which allows no crypto
     /// framework — the "abc" and empty vectors pin it in that test.
     static func sha256Hex(_ data: Data) -> String {
-        var h: [UInt32] = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-                           0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]
-        let k: [UInt32] = [
+        var sha = SHA256()
+        sha.update(data)
+        return sha.finalHex()
+    }
+
+    /// Incremental SHA-256 (FIPS 180-4). Blocks are consumed as slices of
+    /// one buffer with a single `removeSubrange` per update, so streaming a
+    /// file stays linear instead of quadratic.
+    private struct SHA256 {
+        private static let k: [UInt32] = [
             0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
             0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
             0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
@@ -169,16 +204,43 @@ enum DataMigration {
             0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
             0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
             0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2]
-        var padded = [UInt8](data)
-        let bitLength = UInt64(data.count) &* 8
-        padded.append(0x80)
-        while padded.count % 64 != 56 { padded.append(0) }
-        for shift in stride(from: 56, through: 0, by: -8) { padded.append(UInt8((bitLength >> UInt64(shift)) & 0xff)) }
-        for chunkStart in stride(from: 0, to: padded.count, by: 64) {
+
+        private var h: [UInt32] = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+                                   0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]
+        private var buffer = Data()
+        private var bytes = UInt64(0)
+
+        mutating func update(_ data: Data) {
+            buffer.append(data)
+            bytes &+= UInt64(data.count)
+            var start = buffer.startIndex
+            while buffer.endIndex - start >= 64 {
+                compress(buffer[start..<start + 64])
+                start += 64
+            }
+            buffer.removeSubrange(buffer.startIndex..<start)
+        }
+
+        mutating func finalHex() -> String {
+            var tail = buffer
+            let bitLength = bytes &* 8
+            tail.append(0x80)
+            while tail.count % 64 != 56 { tail.append(0) }
+            for shift in stride(from: 56, through: 0, by: -8) { tail.append(UInt8((bitLength >> UInt64(shift)) & 0xff)) }
+            var start = tail.startIndex
+            while tail.endIndex - start >= 64 {
+                compress(tail[start..<start + 64])
+                start += 64
+            }
+            return h.map { String(format: "%08x", $0) }.joined()
+        }
+
+        private mutating func compress(_ block: Data) {
+            let base = block.startIndex
             var w = [UInt32](repeating: 0, count: 64)
             for i in 0..<16 {
-                let j = chunkStart + i * 4
-                w[i] = UInt32(padded[j]) << 24 | UInt32(padded[j + 1]) << 16 | UInt32(padded[j + 2]) << 8 | UInt32(padded[j + 3])
+                let j = base + i * 4
+                w[i] = UInt32(block[j]) << 24 | UInt32(block[j + 1]) << 16 | UInt32(block[j + 2]) << 8 | UInt32(block[j + 3])
             }
             for i in 16..<64 {
                 let s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >> 3)
@@ -189,7 +251,7 @@ enum DataMigration {
             for i in 0..<64 {
                 let s1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)
                 let ch = (e & f) ^ (~e & g)
-                let t1 = hh &+ s1 &+ ch &+ k[i] &+ w[i]
+                let t1 = hh &+ s1 &+ ch &+ Self.k[i] &+ w[i]
                 let s0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)
                 let maj = (a & b) ^ (a & c) ^ (b & c)
                 let t2 = s0 &+ maj
@@ -198,10 +260,9 @@ enum DataMigration {
             h[0] = h[0] &+ a; h[1] = h[1] &+ b; h[2] = h[2] &+ c; h[3] = h[3] &+ d
             h[4] = h[4] &+ e; h[5] = h[5] &+ f; h[6] = h[6] &+ g; h[7] = h[7] &+ hh
         }
-        return h.map { String(format: "%08x", $0) }.joined()
-    }
 
-    private static func rotr(_ x: UInt32, _ n: UInt32) -> UInt32 { (x >> n) | (x << (32 - n)) }
+        private func rotr(_ x: UInt32, _ n: UInt32) -> UInt32 { (x >> n) | (x << (32 - n)) }
+    }
 
     private static func size(of url: URL) -> Int64? {
         (try? fm.attributesOfItem(atPath: url.path))?[.size] as? Int64
@@ -216,7 +277,9 @@ enum DataMigration {
             try fm.createDirectory(at: new.deletingLastPathComponent(), withIntermediateDirectories: true)
             try fm.moveItem(at: old, to: new)
         } catch {
-            return syncTreeVerified(old, new) && markOldTreeMigrated(old)
+            // Cross-volume (or a destination that cannot be replaced): the
+            // verified-copy fallback, with the same old-tree shutdown.
+            return syncTreeVerified(old, new) && quarantineOldSigningMaterial(old) && markOldTreeMigrated(old)
         }
         guard let after = manifest(of: new) else { return false }
         return before == after
@@ -225,10 +288,15 @@ enum DataMigration {
     /// Verified copy of a tree, file by file (the cross-volume fallback and
     /// the resume path of an interrupted earlier run). Already-correct files
     /// are kept; a file that does not match is replaced and re-verified;
-    /// `run.lock` is never copied. True only when the whole manifest matches.
+    /// `run.lock` is never copied. True only when every file the old tree
+    /// vouches for is at the new home with the size it had.
     static func syncTreeVerified(_ old: URL, _ new: URL) -> Bool {
         guard let entries = manifest(of: old) else { return false }
-        for (rel, bytes) in entries where rel != lockName {
+        // The old tree's live lock is never copied, and its quarantine
+        // directories are recovery copies for a human — not cargo for the
+        // new home (they can appear mid-resume, after the copy already ran).
+        func syncable(_ rel: String) -> Bool { rel != lockName && !rel.hasPrefix(quarantinePrefix) }
+        for (rel, bytes) in entries where syncable(rel) {
             let o = old.appending(path: rel), n = new.appending(path: rel)
             if let have = size(of: n), have == bytes, fileMatches(o, n) { continue }
             do {
@@ -239,7 +307,12 @@ enum DataMigration {
             if !fileMatches(o, n) { return false }
         }
         guard let copied = manifest(of: new) else { return false }
-        return copied.filter { $0.key != lockName } == entries.filter { $0.key != lockName }
+        // Contents were hash-checked file by file above; here every old file
+        // must be present with its size. The new side may hold files the old
+        // side no longer lists — a quarantine resumed after the copy removes
+        // entries from the old manifest that the new tree rightly keeps.
+        return entries.filter { syncable($0.key) }
+            .allSatisfy { copied[$0.key] == $0.value }
     }
 
     /// Copy one small precious file unless a verified copy is already there.
@@ -281,6 +354,44 @@ enum DataMigration {
                 return false
             }
         }
+        return true
+    }
+
+    /// Audit 6, A6-5: a copied (not moved) old tree must stop being a usable
+    /// signer. The old binary cannot be taught the rename, and its
+    /// one-instance lock is per data directory (supervisor.rs `run.lock`),
+    /// so the only barrier the old app respects is the material itself: the
+    /// validator key, the threshold share and the journals move into a
+    /// quarantine directory inside the old tree — recoverable by hand, and
+    /// invisible to the node's key lookup, which never reads inside a
+    /// subdirectory (candidate.rs / supervisor.rs). `network.json` and the
+    /// old `run.lock` stay, so the old binary still refuses to mint a fresh
+    /// identity there (its `registered_identity` guard).
+    ///
+    /// Each item is one rename: interrupted anywhere, the tree has the item
+    /// either still in place (the next run moves it) or already quarantined
+    /// — never half-moved. This runs only after the new tree is fully
+    /// verified, and `mayStartNode` keeps the new node off until the done
+    /// flag is set, so at no point can both trees serve the identity.
+    ///
+    /// An OS-wide lock keyed by the validator public key (audit 5, A5-5's
+    /// option) was considered and rejected: the old binary predates the
+    /// rename and would never take that lock, so it excludes nothing that
+    /// matters — a lock only the new app honors is a false sense of safety,
+    /// while removing the material excludes every binary at once.
+    private static func quarantineOldSigningMaterial(_ old: URL) -> Bool {
+        guard let names = try? fm.contentsOfDirectory(atPath: old.path) else { return false }
+        let targets = names.filter { name in
+            signingMaterial.contains(name) || signingMaterialPrefixes.contains { name.hasPrefix($0) }
+        }
+        guard !targets.isEmpty else { return true }   // an interrupted quarantine, already finished
+        let q = old.appending(path: "\(quarantinePrefix)\(Int(Date().timeIntervalSince1970 * 1000))")
+        do {
+            try fm.createDirectory(at: q, withIntermediateDirectories: true)
+            for name in targets {
+                try fm.moveItem(at: old.appending(path: name), to: q.appending(path: name))
+            }
+        } catch { return false }
         return true
     }
 

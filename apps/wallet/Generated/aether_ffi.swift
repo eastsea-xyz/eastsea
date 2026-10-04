@@ -691,7 +691,10 @@ public struct ChainStatus: Equatable, Hashable {
     public var stateRoot: String
     public var mempool: UInt64
     /**
-     * Estimated fee (wei) of a plain transfer at the next block's base fee plus the tip.
+     * Maximum fee (wei) of a plain transfer: the exec fee plus the charge a
+     * recipient without an account pays (100 state units at the fixed
+     * price). A recipient whose certified account exists pays no such
+     * charge — `transfer_quote` says which case applies (audit 6, A6-7).
      */
     public var transferFeeWei: String
     /**
@@ -707,7 +710,10 @@ public struct ChainStatus: Equatable, Hashable {
     // declare one manually.
     public init(chainId: UInt64, height: UInt64, stateRoot: String, mempool: UInt64, 
         /**
-         * Estimated fee (wei) of a plain transfer at the next block's base fee plus the tip.
+         * Maximum fee (wei) of a plain transfer: the exec fee plus the charge a
+         * recipient without an account pays (100 state units at the fixed
+         * price). A recipient whose certified account exists pays no such
+         * charge — `transfer_quote` says which case applies (audit 6, A6-7).
          */transferFeeWei: String, 
         /**
          * Scheduled notices reported by the selected node (JSON array).
@@ -1534,17 +1540,104 @@ public func FfiConverterTypeSessionTokenStatus_lower(_ value: SessionTokenStatus
 }
 
 
+/**
+ * The fee a plain native transfer is quoted (audit 6, A6-7): the exec fee,
+ * plus — until a certified account proves the recipient exists — the
+ * mandatory new-recipient state charge. `fee_is_maximum` tells the UI the
+ * number still carries a charge an existing recipient will not pay, so the
+ * sendable balance must reserve it.
+ */
+public struct TransferQuote: Equatable, Hashable {
+    public var feeWei: String
+    /**
+     * The part of `fee_wei` only a recipient without an account pays.
+     */
+    public var newRecipientChargeWei: String
+    /**
+     * False once the recipient's certified account exists (the quote is exact).
+     */
+    public var feeIsMaximum: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(feeWei: String, 
+        /**
+         * The part of `fee_wei` only a recipient without an account pays.
+         */newRecipientChargeWei: String, 
+        /**
+         * False once the recipient's certified account exists (the quote is exact).
+         */feeIsMaximum: Bool) {
+        self.feeWei = feeWei
+        self.newRecipientChargeWei = newRecipientChargeWei
+        self.feeIsMaximum = feeIsMaximum
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension TransferQuote: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTransferQuote: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TransferQuote {
+        return
+            try TransferQuote(
+                feeWei: FfiConverterString.read(from: &buf), 
+                newRecipientChargeWei: FfiConverterString.read(from: &buf), 
+                feeIsMaximum: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: TransferQuote, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.feeWei, into: &buf)
+        FfiConverterString.write(value.newRecipientChargeWei, into: &buf)
+        FfiConverterBool.write(value.feeIsMaximum, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTransferQuote_lift(_ buf: RustBuffer) throws -> TransferQuote {
+    return try FfiConverterTypeTransferQuote.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTransferQuote_lower(_ value: TransferQuote) -> RustBuffer {
+    return FfiConverterTypeTransferQuote.lower(value)
+}
+
+
 public struct TxReceipt: Equatable, Hashable {
     public var height: UInt64
     public var success: Bool
     public var gasUsed: UInt64
+    /**
+     * The state fee actually burned (0 when the recipient already had an
+     * account) — replaces the quote's "maximum" after the send (audit 6, A6-7).
+     */
+    public var stateFeeWei: String
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(height: UInt64, success: Bool, gasUsed: UInt64) {
+    public init(height: UInt64, success: Bool, gasUsed: UInt64, 
+        /**
+         * The state fee actually burned (0 when the recipient already had an
+         * account) — replaces the quote's "maximum" after the send (audit 6, A6-7).
+         */stateFeeWei: String) {
         self.height = height
         self.success = success
         self.gasUsed = gasUsed
+        self.stateFeeWei = stateFeeWei
     }
 
     
@@ -1565,7 +1658,8 @@ public struct FfiConverterTypeTxReceipt: FfiConverterRustBuffer {
             try TxReceipt(
                 height: FfiConverterUInt64.read(from: &buf), 
                 success: FfiConverterBool.read(from: &buf), 
-                gasUsed: FfiConverterUInt64.read(from: &buf)
+                gasUsed: FfiConverterUInt64.read(from: &buf), 
+                stateFeeWei: FfiConverterString.read(from: &buf)
         )
     }
 
@@ -1573,6 +1667,7 @@ public struct FfiConverterTypeTxReceipt: FfiConverterRustBuffer {
         FfiConverterUInt64.write(value.height, into: &buf)
         FfiConverterBool.write(value.success, into: &buf)
         FfiConverterUInt64.write(value.gasUsed, into: &buf)
+        FfiConverterString.write(value.stateFeeWei, into: &buf)
     }
 }
 
@@ -2851,6 +2946,20 @@ public func submitSigned(envelopeJson: String, signature: Data, p256PublicKey: D
 })
 }
 /**
+ * The send sheet's fee for a plain transfer to `recipient` (audit 6, A6-7):
+ * the exec fee plus the possible new-recipient state charge, exact (not a
+ * maximum) once the recipient's certified account exists.
+ */
+public func transferQuote(recipient: String, validators: UInt32)throws  -> TransferQuote  {
+    return try  FfiConverterTypeTransferQuote_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_transfer_quote(
+        FfiConverterString.lower(recipient),
+        FfiConverterUInt32.lower(validators),uniffiCallStatus
+    )
+})
+}
+/**
  * Trust the public devnet committee key (reproducible from a fixed seed, so it
  * proves nothing about any real network). Explicit opt-in for development.
  */
@@ -3126,6 +3235,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_submit_signed() != 31125) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_transfer_quote() != 47018) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_use_devnet_keys() != 43153) {

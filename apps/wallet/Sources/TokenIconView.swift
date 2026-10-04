@@ -8,7 +8,9 @@ import SwiftUI
 /// a quiet pastel disc with a DASHED ring and a "?" corner badge, so the two
 /// differ in shape, not only in colour, and read in light and dark alike
 /// (official art is drawn white-on-brand, the glyph dark-ink-on-pastel, both
-/// with their own background in every scheme).
+/// with their own background in every scheme). The native coin swaps its
+/// vector art for the shipped `DoubloonCoin` render at 48 pt and above, where
+/// the stamped detail reads; small rows keep the vector.
 struct TokenIcon: View {
     let spec: TokenIconSpec
     var size: CGFloat = 28
@@ -26,7 +28,15 @@ struct TokenIcon: View {
     var body: some View {
         ZStack {
             switch spec.kind {
-            case .nativeCoin: DoubloonArt(size: size)
+            case .nativeCoin:
+                if size >= 48 {
+                    Image("DoubloonCoin")
+                        .resizable()
+                        .interpolation(.high)
+                        .aspectRatio(contentMode: .fit)
+                } else {
+                    DoubloonArt(size: size)
+                }
             case .official(let symbol): OfficialTokenArt(symbol: symbol, size: size)
             case .generated(let letter, let seed): GeneratedGlyphArt(letter: letter, seed: seed, size: size)
             }

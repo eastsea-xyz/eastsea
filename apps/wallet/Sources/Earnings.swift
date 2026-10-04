@@ -139,11 +139,13 @@ struct EarningsHero: View {
         .trackingScrollVisibility($visible)
     }
 
-    /// The live indicator sits on the card's own color, on the padding grid.
+    /// The live indicator sits on the card's own color, on the padding grid;
+    /// the coin (the shipped render, 48 pt and up) anchors the money side.
     private var header: some View {
         HStack(alignment: .center) {
             LivePill(text: pillText, live: work.isLive, beat: work.height, ring: work.isLive && !work.isProving)
             Spacer(minLength: 0)
+            TokenIcon(chainId: 0, address: nil, symbol: Brand.coinTicker, size: 48)
         }
     }
 

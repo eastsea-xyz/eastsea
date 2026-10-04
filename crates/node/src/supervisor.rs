@@ -1077,6 +1077,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn shipped_reshare_timeout_covers_child_and_post_stage_relay() {
+        assert_eq!(crate::dkg::Timeouts::default().strict_return_bound(4), Duration::from_secs(322));
+        assert_eq!(crate::dkg::POST_STAGE_RELAY, Duration::from_secs(60));
+        assert_eq!(default_reshare_timeout(4), Duration::from_secs(397));
+        for players in [4, 5] {
+            let child = crate::dkg::Timeouts::default().strict_return_bound(players);
+            assert!(default_reshare_timeout(players) > child + crate::dkg::POST_STAGE_RELAY);
+        }
+    }
+
+    #[test]
     fn new_genesis_handoff_refuses_a_seat_without_its_staged_share() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
         let dir = root.join("tmp").join(format!("handoff-seat-{}-{}", std::process::id(), now_ms()));

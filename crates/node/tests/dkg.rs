@@ -559,6 +559,117 @@ fn reshare_late_minority_after_majority_stage_and_one_offline() {
 }
 
 #[test]
+fn four_of_five_stage_while_a_silent_player_recovers_from_relay() {
+    let ks = keys(5);
+    let pks: Vec<_> = ks.iter().map(|key| key.public_key()).collect();
+    let roster: Set<PublicKey> = pks.iter().cloned().try_collect().unwrap();
+    let round = Round::dkg(roster, 74).with_chain_id(7781);
+    let mut cs = Vec::new();
+    let mut queue = VecDeque::new();
+    for (i, key) in ks.iter().enumerate() {
+        let (ceremony, outbound) = Ceremony::start(ChaCha20Rng::seed_from_u64(950 + i as u64), key.clone(), round.clone(), None).unwrap();
+        for (to, msg) in outbound {
+            if let To::One(peer) = to { queue.push_back((i, pks.iter().position(|pk| pk == &peer).unwrap(), msg)); }
+        }
+        cs.push(ceremony);
+    }
+    while let Some((from, to, msg)) = queue.pop_front() {
+        for (dest, reply) in cs[to].on_message(&pks[from], msg) {
+            if let To::One(peer) = dest { queue.push_back((to, pks.iter().position(|pk| pk == &peer).unwrap(), reply)); }
+        }
+    }
+    let logs: Vec<_> = cs.iter_mut().map(|c| c.close_dealing().into_iter().find_map(|(_, msg)| matches!(msg, Msg::Log { .. }).then_some(msg)).unwrap()).collect();
+    for ceremony in &mut cs {
+        for (from, log) in logs.iter().enumerate() { ceremony.on_message(&pks[from], log.clone()); }
+    }
+    let proposals: Vec<_> = cs[..4].iter_mut().map(|c| c.propose_transcript().unwrap()).collect();
+    let decided = proposals[0].0.clone();
+    assert!(proposals.iter().all(|(digest, _)| *digest == decided));
+    for to in 0..4 {
+        for (from, (_, proposal)) in proposals.iter().enumerate() {
+            if from != to { cs[to].on_message(&pks[from], proposal.clone()); }
+        }
+    }
+    certify(&mut cs, &pks, &[0, 1, 2, 3]);
+    let staged: Vec<_> = cs[..4].iter_mut().map(|c| {
+        assert_eq!(c.certified_transcript(), Some(decided.clone()));
+        let (output, share) = c.finish_decided(&mut ChaCha20Rng::seed_from_u64(7), &decided).unwrap();
+        assert!(output.revealed().is_empty());
+        assert!(aether_light::Scheme::signer(&aether_light::consensus_namespace(), output.players().clone(), output.public().clone(), share).is_some());
+        output.encode().to_vec()
+    }).collect();
+    assert!(staged.iter().all(|output| output == &staged[0]));
+    assert!(cs[4].certified_transcript().is_none(), "the fifth player has not announced or heard the decision");
+    for _ in 0..8 {
+        let mut out = cs[0].tick_agreement();
+        out.extend(cs[0].rebroadcast());
+        for (_, msg) in out { cs[4].on_message(&pks[0], msg); }
+        cs[4].tick_agreement();
+    }
+    assert_eq!(cs[4].certified_transcript(), Some(decided.clone()));
+    let (output, share) = cs[4].finish_decided(&mut ChaCha20Rng::seed_from_u64(7), &decided).unwrap();
+    assert_eq!(output.encode().to_vec(), staged[0]);
+    assert!(aether_light::Scheme::signer(&aether_light::consensus_namespace(), output.players().clone(), output.public().clone(), share).is_some());
+}
+
+#[test]
+fn departing_dealer_serves_the_decided_bundle_to_a_late_candidate() {
+    let (ks, previous_files) = dkg4();
+    let pks: Vec<_> = ks.iter().map(|key| key.public_key()).collect();
+    let previous = previous_files.values().next().unwrap().decode(4).unwrap().0;
+    let players: Set<PublicKey> = pks[1..].iter().cloned().try_collect().unwrap();
+    let round = Round::reshare(previous, players, 75).with_chain_id(7781);
+    let shares = shares_of(&previous_files, 4);
+    let mut cs = Vec::new();
+    let mut queue = VecDeque::new();
+    for (i, key) in ks.iter().enumerate() {
+        let (ceremony, outbound) = Ceremony::start(ChaCha20Rng::seed_from_u64(1000 + i as u64), key.clone(), round.clone(), shares.get(&pks[i]).cloned()).unwrap();
+        for (to, msg) in outbound {
+            if let To::One(peer) = to { queue.push_back((i, pks.iter().position(|pk| pk == &peer).unwrap(), msg)); }
+        }
+        cs.push(ceremony);
+    }
+    while let Some((from, to, msg)) = queue.pop_front() {
+        for (dest, reply) in cs[to].on_message(&pks[from], msg) {
+            if let To::One(peer) = dest { queue.push_back((to, pks.iter().position(|pk| pk == &peer).unwrap(), reply)); }
+        }
+    }
+    let logs: Vec<_> = cs[..4].iter_mut().map(|c| c.close_dealing().into_iter().find_map(|(_, msg)| matches!(msg, Msg::Log { .. }).then_some(msg)).unwrap()).collect();
+    for ceremony in &mut cs {
+        for (from, log) in logs.iter().enumerate() { ceremony.on_message(&pks[from], log.clone()); }
+    }
+    let proposals: Vec<_> = cs[1..4].iter_mut().map(|c| c.propose_transcript().unwrap()).collect();
+    let decided = proposals[0].0.clone();
+    for (from, (_, proposal)) in proposals.iter().enumerate() {
+        for to in 0..4 {
+            if from + 1 != to { cs[to].on_message(&pks[from + 1], proposal.clone()); }
+        }
+    }
+    let gossip = certify(&mut cs, &pks, &[1, 2, 3]);
+    for (from, msg) in gossip { cs[0].on_message(&pks[from], msg); }
+    cs[0].tick_agreement();
+    assert!(!cs[0].is_player());
+    assert_eq!(cs[0].certified_transcript(), Some(decided.clone()));
+    let mut served_decision = false;
+    let mut served_bundle = false;
+    for _ in 0..8 {
+        let mut out = cs[0].tick_agreement();
+        out.extend(cs[0].rebroadcast());
+        for (_, msg) in out {
+            served_decision |= matches!(&msg, Msg::Agreement(AgreementMsg::Decision(_)));
+            served_bundle |= matches!(&msg, Msg::Transcript(_));
+            cs[4].on_message(&pks[0], msg);
+        }
+        cs[4].tick_agreement();
+    }
+    assert!(served_decision && served_bundle, "departing dealer serves both certificate and signed bundle");
+    assert_eq!(cs[4].certified_transcript(), Some(decided.clone()));
+    let (output, share) = cs[4].finish_decided(&mut ChaCha20Rng::seed_from_u64(7), &decided).unwrap();
+    assert!(output.revealed().is_empty());
+    assert!(aether_light::Scheme::signer(&aether_light::consensus_namespace(), output.players().clone(), output.public().clone(), share).is_some());
+}
+
+#[test]
 fn byzantine_zero_done_cannot_abort_honest_quorum() {
     let ks = keys(4);
     let pks: Vec<_> = ks.iter().map(|k| k.public_key()).collect();

@@ -47,10 +47,16 @@ const QUORUM_LOG_DELAY: std::time::Duration = std::time::Duration::from_secs(10)
 const LOG_SETTLE_TIME: std::time::Duration = std::time::Duration::from_secs(2);
 const LEGACY_QUORUM_DONE_DELAY: std::time::Duration = std::time::Duration::from_secs(20);
 const LEGACY_DONE_RELAY: std::time::Duration = std::time::Duration::from_secs(5);
-const ALL_PLAYERS_DONE_RELAY: std::time::Duration = std::time::Duration::from_secs(5);
+/// Keep the certified decision on the live channel briefly before staging.
+/// Later arrivals use the journal-backed relay after staging.
+const STRICT_DECISION_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 const CERTIFIED_TRANSCRIPT_RELAY: std::time::Duration = std::time::Duration::from_secs(30);
 /// Keep a staged, certified round reachable while a late player catches up.
-pub const POST_STAGE_RELAY: std::time::Duration = std::time::Duration::from_secs(120);
+pub const POST_STAGE_RELAY: std::time::Duration = std::time::Duration::from_secs(60);
+
+fn strict_decision_grace_elapsed(agreed_at: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    agreed_at.is_some_and(|decided| now.duration_since(decided) > STRICT_DECISION_GRACE)
+}
 
 pub type DkgOutput = Output<MinSig, PublicKey>;
 
@@ -572,7 +578,7 @@ impl Ceremony {
                 vec![]
             }
             Msg::Transcript(entries) => {
-                if !self.strict_agreement || self.players.position(from).is_none() { return vec![]; }
+                if !self.strict_agreement || (self.players.position(from).is_none() && self.dealers.position(from).is_none()) { return vec![]; }
                 // A Byzantine sender can assemble many valid quorum subsets.
                 // Bound retained bundles per authenticated sender while leaving
                 // room for an honest peer's log set to converge over a round.
@@ -583,7 +589,13 @@ impl Ceremony {
                 if self.transcripts.len() > before { *self.transcript_counts.entry(from.clone()).or_default() += 1; }
                 vec![]
             }
-            Msg::Agreement(msg) => self.agreement.as_mut().map(|a| a.on_message(from, msg).into_iter().map(|m| (To::All, Msg::Agreement(m))).collect()).unwrap_or_default(),
+            Msg::Agreement(msg) => {
+                if self.players.position(from).is_none()
+                    && (self.dealers.position(from).is_none() || !matches!(&msg, AgreementMsg::Decision(_))) {
+                    return vec![];
+                }
+                self.agreement.as_mut().map(|a| a.on_message(from, msg).into_iter().map(|m| (To::All, Msg::Agreement(m))).collect()).unwrap_or_default()
+            }
         }
     }
 
@@ -690,11 +702,6 @@ impl Ceremony {
     pub fn certified_transcript(&self) -> Option<Vec<u8>> {
         let digest = self.agreement.as_ref()?.decided()?.to_vec();
         self.transcripts.contains_key(&digest).then_some(digest)
-    }
-
-    fn all_players_finished_certified(&self) -> bool {
-        let Some(digest) = self.certified_transcript() else { return false };
-        self.announced.len() == self.players.len() && self.announced.values().all(|done| *done == digest)
     }
 
     /// Persist the exact certified bundle even for an old-only reshare dealer,
@@ -865,12 +872,12 @@ impl Timeouts {
         self.total.max(self.dealing.saturating_add(longest_view.saturating_mul(players.min(u32::MAX as usize) as u32)).saturating_add(CERTIFIED_TRANSCRIPT_RELAY))
     }
 
-    /// Allow a decision at the deadline to receive its full final relay window.
+    /// Allow a decision at the deadline to receive its grace before returning.
     /// The supervisor adds a separate process return margin to this bound.
     pub fn strict_return_bound(&self, players: usize) -> std::time::Duration {
         // One tick may notice a decision that arrived just before the
-        // deadline; another may notice that its relay window has elapsed.
-        self.strict_deadline(players).saturating_add(CERTIFIED_TRANSCRIPT_RELAY).saturating_add(TICK_INTERVAL.saturating_mul(2))
+        // deadline; another may notice that its grace has elapsed.
+        self.strict_deadline(players).saturating_add(STRICT_DECISION_GRACE).saturating_add(TICK_INTERVAL.saturating_mul(2))
     }
 }
 
@@ -930,9 +937,9 @@ where
 }
 
 /// Resume only the certified transcript relay after the ceremony child has
-/// returned and its caller has staged the usable share. This deliberately
-/// reopens the same round journals; a new attempt after a disclosed share must
-/// instead use a new round and new journals.
+/// returned and its caller has staged any usable share. A departing dealer
+/// also serves the decision. This deliberately reopens the same round journals;
+/// a new attempt after a disclosed share must use a new round and journals.
 pub async fn run_relay_with_journal<S, R>(
     key: ed25519::PrivateKey,
     round: Round,
@@ -949,8 +956,8 @@ where
     if !round.strict_agreement {
         return Err(DkgError::Setup("post-stage relay requires a new-genesis ceremony".into()));
     }
-    if round.players.position(&key.public_key()).is_none() {
-        return Err(DkgError::Setup("post-stage relay requires a new-committee player".into()));
+    if round.dealers.position(&key.public_key()).is_none() && round.players.position(&key.public_key()).is_none() {
+        return Err(DkgError::Setup("post-stage relay requires a ceremony participant".into()));
     }
     let deal_path = journal.with_extension("deals");
     if !journal.exists() || !deal_path.exists() {
@@ -1093,16 +1100,12 @@ where
                 out.extend(c.rebroadcast());
                 send_all(&mut sender, out);
                 if c.strict_agreement {
-                    // A quorum can decide while another honest player is
-                    // partitioned. Keep the signed bundle and decision on the
-                    // DKG channel through the ceremony deadline so that player
-                    // can recover its matching share before this channel closes.
-                    // If every authenticated player announces the certified
-                    // output, no delayed honest player still needs that bundle.
-                    if c.all_players_finished_certified() && agreed_at.is_some_and(|t| t.elapsed() > ALL_PLAYERS_DONE_RELAY) {
-                        return Ok(result);
-                    }
-                    if elapsed > strict_deadline && agreed_at.is_some_and(|t| t.elapsed() > CERTIFIED_TRANSCRIPT_RELAY) {
+                    // The exact certified bundle is persisted and the player's
+                    // share has been finalized before agreed_at is set. Do not
+                    // wait for every Done: a silent player would hold staging
+                    // past the supervisor timeout. The caller reopens a bounded
+                    // relay after staging for late players.
+                    if strict_decision_grace_elapsed(agreed_at, Instant::now()) {
                         return Ok(result);
                     }
                 } else {
@@ -1135,6 +1138,15 @@ mod tests {
     use commonware_utils::TryCollect;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    #[test]
+    fn certified_return_needs_only_a_short_decision_grace() {
+        let decided = std::time::Instant::now();
+        assert!(!strict_decision_grace_elapsed(Some(decided), decided));
+        assert!(!strict_decision_grace_elapsed(Some(decided), decided + STRICT_DECISION_GRACE));
+        assert!(strict_decision_grace_elapsed(Some(decided), decided + STRICT_DECISION_GRACE + TICK_INTERVAL));
+        assert!(!strict_decision_grace_elapsed(None, decided + STRICT_DECISION_GRACE + TICK_INTERVAL));
+        assert!(STRICT_DECISION_GRACE < std::time::Duration::from_secs(120));
+    }
     #[test]
     fn private_deals_and_own_log_survive_restart() {
         let keys: Vec<_> = (1..=4).map(aether_light::devnet_validator_key).collect();

@@ -1371,7 +1371,7 @@ fn reshare(
             .with_storage_directory(dir.join("reshare-runtime").join(secs.to_string())),
     );
     let staged = boundary.is_none();
-    let relay_inputs = (staged && !legacy_agreement && round.players.position(&p2p.keys.signer.public_key()).is_some())
+    let relay_inputs = (staged && !legacy_agreement)
         .then(|| (p2p.clone(), round.clone(), share.clone(), agreement_journal.clone()));
     let result = executor.start(async move |context| {
         let _public = if staged {
@@ -1449,10 +1449,8 @@ fn reshare(
         }
     }
     if let Some((p2p, round, share, journal)) = relay_inputs {
-        // Stage the share before reopening the same durable ceremony for a
-        // bounded relay. A late player that acked its private deals can now
-        // obtain the decided bundle and certificate after the first child
-        // returned; this second phase cannot create a new DKG output.
+        // Stage any new share before reopening the durable ceremony. Departing
+        // dealers also relay the bundle and certificate to late players.
         let relay_dir = dir.join("reshare-relay-runtime").join(format!("{next_round}-{secs}"));
         let relay = cw_tokio::Runner::new(cw_tokio::Config::new().with_storage_directory(relay_dir));
         relay.start(async move |context| {
@@ -2640,6 +2638,7 @@ fn run_dkg(
     // `NetworkFile::genesis`; a hand-copied list had lost the protocol, group,
     // committee ceiling and the frozen genesis roster).
     public.carry_genesis(&genesis);
+    let relay_inputs = (chain_id != 7_780).then(|| (p2p.clone(), agreement_journal.clone()));
     let result = executor.start(async move |context| {
         // Accept incoming validator links (the node's RPC is not needed here).
         let _router = aether_node::p2p::open_public(&p2p)
@@ -2693,6 +2692,37 @@ fn run_dkg(
         }
         Err(e) => {
             eprintln!("dkg failed: {e}");
+            std::process::exit(1);
+        }
+    }
+    if let Some((p2p, journal)) = relay_inputs {
+        // The genesis share is now durable. Keep the certified bundle and
+        // decision reachable for a player that joins after this one returned.
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or_default();
+        let relay = cw_tokio::Runner::new(cw_tokio::Config::new()
+            .with_storage_directory(dir.join("dkg-relay-runtime").join(format!("{round}-{secs}"))));
+        let result = relay.start(async move |context| {
+            let _router = aether_node::p2p::open_public(&p2p)
+                .await
+                .map(|ep| aether_net::serve_p2p(ep, loopback(p2p.port)));
+            let (mut network, mut oracle) = lookup::Network::new(
+                context.child("network"),
+                aether_node::p2p::config(&p2p, b"_DKG"),
+            );
+            oracle.track(0, aether_node::p2p::peer_addresses(&p2p));
+            let (sender, receiver) = network.register(0, Quota::per_second(NZU32!(256)));
+            network.start();
+            aether_node::dkg::run_relay_with_journal(
+                p2p.keys.signer.clone(),
+                aether_node::dkg::Round::dkg(p2p.validators(), round).with_chain_id(chain_id),
+                None, sender, receiver, journal, aether_node::dkg::POST_STAGE_RELAY,
+            ).await
+        });
+        if let Err(error) = result {
+            eprintln!("dkg relay failed: {error}");
             std::process::exit(1);
         }
     }

@@ -714,7 +714,10 @@ impl Agreement {
         self.available.extend(available.iter().copied());
         self.ticks = self.ticks.saturating_add(1);
         if self.players.position(&self.me).is_none() {
-            return Vec::new();
+            // A departing dealer never votes, but still serves the certified
+            // decision while its journal-backed relay is running.
+            return self.decided.as_ref().filter(|_| self.ticks.is_multiple_of(REBROADCAST_TICKS))
+                .map(|qc| vec![AgreementMsg::Decision(qc.clone())]).unwrap_or_default();
         }
         self.view_ticks = self.view_ticks.saturating_add(1);
         let mut out = Vec::new();
@@ -765,7 +768,10 @@ impl Agreement {
     }
 
     pub fn on_message(&mut self, from: &PublicKey, msg: AgreementMsg) -> Vec<AgreementMsg> {
-        if self.players.position(from).is_none() {
+        // A departing dealer may carry a quorum-signed decision to a late
+        // player. Only the certificate can cross this boundary; proposals and
+        // votes still require an authenticated member of the new committee.
+        if self.players.position(from).is_none() && !matches!(&msg, AgreementMsg::Decision(_)) {
             return Vec::new();
         }
         let accepted = match &msg {
@@ -840,6 +846,20 @@ mod tests {
         assert!(sent_decision, "a restarted relay must send the decision proof to a late player");
         drop(relay);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn departing_dealer_rebroadcasts_a_decision_to_late_players() {
+        let keys: Vec<_> = (1..=5).map(aether_light::devnet_validator_key).collect();
+        let players: Set<_> = keys[1..].iter().map(|key| key.public_key()).try_collect().unwrap();
+        let digest = [42; 32];
+        let mut dealer = Agreement::new(keys[0].clone(), players.clone(), 112);
+        let votes = keys[1..4].iter().map(|key| {
+            Agreement::new(key.clone(), players.clone(), 112).sign_vote(Phase::Commit, digest).unwrap()
+        }).collect();
+        dealer.decided = Some(Certificate { view: 0, phase: Phase::Commit, digest, votes });
+        let available = [digest].into_iter().collect();
+        assert!((0..REBROADCAST_TICKS).any(|_| dealer.tick(&available).into_iter().any(|msg| matches!(msg, AgreementMsg::Decision(_)))));
     }
 
     fn deliver(

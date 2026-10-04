@@ -506,7 +506,7 @@ pub struct Inner {
     /// the consensus epocher reads it, so the running set re-proposes its last
     /// block until it is final, then stops.
     pub epoch_end: Arc<std::sync::atomic::AtomicU64>,
-    /// The voting set proposed for the current registry epoch (from its first block).
+    /// The voting set proposed for the current ceremony window (from its draw).
     pub proposal: Option<(u64, Vec<(String, String)>)>,
     /// A committee-signed handoff waiting to be put in a block.
     pub handoff_ready: Option<aether_light::block::Handoff>,
@@ -989,7 +989,7 @@ impl Chain {
     }
 
     /// After a restart: a finalized handoff still ends this node's epoch at its
-    /// switch, and the voting set proposed for this registry epoch still stands.
+    /// switch, and a proposal in the current ceremony window still stands.
     pub fn resume(&self) {
         let mut g = self.lock();
         if let Some(p) = g.finalized.handoff.clone() {
@@ -1012,7 +1012,12 @@ impl Chain {
         let pool: Option<(u64, Vec<(String, String)>)> = load(POOL)
             .and_then(|b| serde_json::from_slice(&b).ok())
             .flatten();
-        g.proposal = proposal.filter(|(d, _)| *d == current);
+        g.proposal = proposal;
+        if g.proposal.as_ref().is_some_and(|(d, _)| *d != current)
+            && !proposal_in_window(&g, g.finalized.height, &g.finalized.state)
+        {
+            g.proposal = None;
+        }
         g.pool = pool.filter(|(d, _)| *d == current);
     }
 
@@ -2635,7 +2640,9 @@ impl Chain {
                 );
                 Some((exec.height / span, pool))
             };
-            g.proposal = None;
+            if !proposal_in_window(&g, exec.height, &exec.state) {
+                g.proposal = None;
+            }
             keep(&g.store, POOL, &g.pool);
         }
         // With the draw's seed on chain, everyone draws the same next voting
@@ -2647,7 +2654,9 @@ impl Chain {
             }
             // Node-rewards networks committed the roster with the seed's own
             // block (`pre_state_with`); the others draw it here as before.
-            if !aether_rewards::enabled(&exec.state) {
+            if !aether_rewards::enabled(&exec.state)
+                && !proposal_in_window(&g, exec.height, &exec.state)
+            {
                 if let Some((draw, pool)) = g.pool.clone().filter(|(d, _)| *d == s.1.draw) {
                     let seed = hex::decode(&s.1.signature).unwrap_or_default();
                     // The per-operator seat cap is a protocol-2 rule: before it, every key is its own operator.
@@ -3073,6 +3082,27 @@ fn reserve_step(g: &mut Inner, previous: &Executed, exec: &Executed) {
     }
 }
 
+/// A new-genesis proposal remains available while its ceremony can finish,
+/// even when a short devnet draw ends. 7780 keeps its draw-scoped proposal.
+pub(crate) fn proposal_in_window(g: &Inner, height: u64, state: &WorldState) -> bool {
+    if g.cfg.chain_id == 7_780 || aether_rewards::enabled(state) {
+        return false;
+    }
+    let Some((draw, _)) = g.proposal.as_ref() else { return false };
+    let params = aether_execution::registry::params(state);
+    let span = params.epoch_blocks.saturating_mul(params.draw_epochs);
+    let first = draw.saturating_mul(span).max(g.epoch_start);
+    let reserve = Reserve::of(state).map_or(0, |r| r.members.len());
+    let players = crate::supervisor::reshare_attempt_players(g.committee.members.len(), reserve);
+    match (
+        crate::supervisor::reshare_attempt(first, g.epoch_start, players),
+        crate::supervisor::reshare_attempt(height, g.epoch_start, players),
+    ) {
+        (Ok(first), Ok(now)) => first == now,
+        _ => false,
+    }
+}
+
 /// The draw a block at `height` belongs to (draws start at multiples of epoch_blocks × draw_epochs).
 fn current_draw(state: &WorldState, height: u64) -> u64 {
     let p = aether_execution::registry::params(state);
@@ -3301,6 +3331,24 @@ mod pool_tests {
             group: 0,
             max_committee: crate::rotation::GROW_UNTIL,
         }
+    }
+
+    #[test]
+    fn new_genesis_keeps_a_proposal_across_short_draws_until_the_ceremony_window_ends() {
+        let mut config = cfg(vec![]);
+        config.chain_id = 7_799;
+        config.registrar = Some(([1; 32], [2; 32]));
+        config.epoch_blocks = 40;
+        config.draw_epochs = Some(1);
+        let (chain, _) = Chain::new(config);
+        let mut g = chain.lock();
+        g.committee.members = (0..4).map(|i| (i.to_string(), i.to_string())).collect();
+        g.proposal = Some((2, vec![("candidate".into(), "node".into())]));
+        assert!(proposal_in_window(&g, 120, &g.finalized.state), "the next draw keeps the first proposal");
+        assert!(proposal_in_window(&g, 320, &g.finalized.state), "a late supervisor sees the same proposal");
+        assert!(!proposal_in_window(&g, 700, &g.finalized.state), "a later attempt can draw a new set");
+        g.cfg.chain_id = 7_780;
+        assert!(!proposal_in_window(&g, 120, &g.finalized.state), "7780 still expires proposals each draw");
     }
 
     /// An unsigned envelope (admission checks no signature) with `input` bytes

@@ -13,7 +13,7 @@
 //!    from the block they verified as followers, members that leave follow.
 //!
 //! A failed reshare changes nothing: the running set keeps going and the next
-//! registry epoch tries again. No person acts at any step.
+//! ceremony window tries again. No person acts at any step.
 
 use crate::roster::{EpochStart, Member, NetworkFile};
 use crate::rotation::{STAGED_NETWORK, STAGED_THRESHOLD};
@@ -101,7 +101,7 @@ enum Role {
     Keyless,
 }
 
-/// A background reshare for one registry epoch's proposal.
+/// A background reshare for one proposed voting set.
 struct Reshare {
     child: Child,
     started: Instant,
@@ -109,6 +109,9 @@ struct Reshare {
 }
 
 const RESHARE_RETURN_MARGIN: Duration = Duration::from_secs(15);
+/// Leave time for supervisors to see a finalized proposal and start the child
+/// before the next attempt. The window must outlast the child's full deadline.
+const RESHARE_ATTEMPT_MARGIN: Duration = Duration::from_secs(60);
 
 /// Allow the strict child to reach its last view and relay its decision,
 /// then allow a staged child to reopen its journal for late-player recovery.
@@ -119,8 +122,30 @@ pub fn default_reshare_timeout(players: usize) -> Duration {
         .saturating_add(RESHARE_RETURN_MARGIN)
 }
 
-fn reshare_round(old_round: u64, draw: u64) -> Result<u64, String> {
-    old_round.checked_add(draw).and_then(|n| n.checked_add(1))
+pub(crate) fn reshare_attempt_players(current: usize, reserve: usize) -> usize {
+    // Draws may change the proposed roster inside one window. Bound the
+    // child deadline from the running committee, which stays fixed until a
+    // handoff: a draw adds at most a third, plus any reserve seats.
+    let growth = (current.saturating_sub(1) / 3).max(1);
+    current.saturating_add(growth).saturating_add(reserve)
+}
+
+/// Number of one-second-or-slower blocks in a full ceremony plus a start margin.
+fn reshare_attempt_blocks(players_bound: usize) -> Result<u64, String> {
+    let window_ms = default_reshare_timeout(players_bound)
+        .saturating_add(RESHARE_ATTEMPT_MARGIN)
+        .as_millis();
+    let blocks = window_ms.div_ceil(u128::from(crate::application::MIN_BLOCK_INTERVAL_MS));
+    Ok(u64::try_from(blocks).map_err(|_| "reshare attempt window overflow")?.max(1))
+}
+
+pub(crate) fn reshare_attempt(height: u64, committee_start: u64, players_bound: usize) -> Result<u64, String> {
+    let elapsed = height.checked_sub(committee_start).ok_or("rotation predates this committee")?;
+    Ok(elapsed / reshare_attempt_blocks(players_bound)?)
+}
+
+fn reshare_round(old_round: u64, attempt: u64) -> Result<u64, String> {
+    old_round.checked_add(attempt).and_then(|n| n.checked_add(1))
         .ok_or_else(|| "reshare round overflow".into())
 }
 
@@ -462,10 +487,22 @@ impl Supervisor {
                 tracing::info!("aether run: restored identity is readable; re-evaluating the role");
                 return Watched::Switched;
             }
-            // 1. A proposed voting set: reshare to it in the background, once per registry epoch.
+            // 1. A proposed voting set: reshare to it in the background, once per ceremony window.
             if reshare.is_none() {
                 if let Ok(rot) = rpc_call(&rpc, "aether_rotation", json!([])) {
                     let epoch = rot["epoch"].as_u64();
+                    let players = rot["next"].as_array().map_or(0, Vec::len);
+                    let attempt = if strict_reshare {
+                        let from: Option<NetworkFile> = serde_json::from_value(rot["network"].clone()).ok();
+                        rot["height"].as_u64().zip(from.as_ref())
+                            .and_then(|(height, from)| {
+                                let start = from.epochs.last().map_or(0, |epoch| epoch.height);
+                                let reserve = from.reserve.as_ref().map_or(0, |r| r.validators.len());
+                                reshare_attempt(height, start, reshare_attempt_players(from.validators.len(), reserve)).ok()
+                            })
+                    } else {
+                        epoch
+                    };
                     // Without this Mac's key there is no share to reshare and no
                     // seat to take (red team #5).
                     let involved = match me {
@@ -477,11 +514,10 @@ impl Supervisor {
                         }
                         None => false,
                     };
-                    if !rot.is_null() && involved && epoch != attempted {
-                        attempted = epoch;
-                        match self.start_reshare(role, me.expect("involved means keyed"), &rot) {
+                    if let Some(attempt) = attempt.filter(|attempt| !rot.is_null() && involved && Some(*attempt) != attempted) {
+                        attempted = Some(attempt);
+                        match self.start_reshare(role, me.expect("involved means keyed"), &rot, attempt) {
                             Ok(c) => {
-                                let players = rot["next"].as_array().map_or(0, Vec::len);
                                 reshare = Some(Reshare {
                                     child: c,
                                     started: Instant::now(),
@@ -604,7 +640,7 @@ impl Supervisor {
         Ok(())
     }
 
-    fn start_reshare(&self, role: Role, me: &str, rot: &Value) -> Result<Child, String> {
+    fn start_reshare(&self, role: Role, me: &str, rot: &Value, attempt: u64) -> Result<Child, String> {
         let ours = NetworkFile::load(&self.network_path())?;
         let from: NetworkFile = match role {
             Role::Validator | Role::Paused => ours.clone(),
@@ -669,10 +705,9 @@ impl Supervisor {
             &path_str(&to_path),
         ]);
         if from.chain_id != 7_780 {
-            let epoch = rot["epoch"].as_u64().ok_or("rotation epoch")?;
-            // Failed ceremonies in later draw periods must not replay the
+            // Failed ceremonies in later attempt windows must not replay the
             // same DKG round, signed logs, or durable randomness seed.
-            let round = reshare_round(from.round, epoch)?;
+            let round = reshare_round(from.round, attempt)?;
             cmd.args(["--round", &round.to_string()]);
         }
         if role == Role::Validator {
@@ -1056,10 +1091,32 @@ mod tests {
     }
 
     #[test]
-    fn a_later_draw_uses_a_fresh_reshare_round() {
+    fn a_later_attempt_uses_a_fresh_reshare_round() {
         let old = 9;
         assert_eq!(reshare_round(old, 24).unwrap(), reshare_round(old, 24).unwrap(), "restart resumes its journal");
-        assert!(reshare_round(old, 25).unwrap() > reshare_round(old, 24).unwrap(), "a new draw gets new DKG randomness");
+        assert!(reshare_round(old, 25).unwrap() > reshare_round(old, 24).unwrap(), "a new attempt gets new DKG randomness");
+    }
+
+    #[test]
+    fn staggered_supervisors_share_a_round_until_the_attempt_window_ends() {
+        let old = 9;
+        let samples = [80, 120, 200, 320];
+        let mut from = file(7_781, "aa");
+        from.validators = (0..4).map(|i| Member { key: i.to_string(), node: i.to_string() }).collect();
+        // Four current validators can grow by one seat; the bound stays five
+        // even if the current draw proposes a different candidate.
+        let players_bound = reshare_attempt_players(from.validators.len(), 0);
+        assert_eq!(players_bound, 5);
+        let round_at = |height| reshare_round(old, reshare_attempt(height, 0, players_bound).unwrap()).unwrap();
+        let rounds: Vec<_> = samples.into_iter().map(round_at).collect();
+        assert!(rounds.iter().all(|round| *round == rounds[0]), "supervisors joining one ceremony must agree despite later draws");
+        assert_eq!(round_at(200), rounds[0], "restart in the window resumes the same round");
+        assert_eq!(reshare_attempt(2_200, 2_000, players_bound).unwrap(), reshare_attempt(200, 0, players_bound).unwrap(), "a later committee uses its own chain-visible start");
+        let blocks = reshare_attempt_blocks(players_bound).unwrap();
+        assert_eq!(round_at(blocks - 1), rounds[0]);
+        assert!(round_at(blocks) > rounds[0], "a later retry uses a fresh round");
+        assert!(u128::from(blocks) * u128::from(crate::application::MIN_BLOCK_INTERVAL_MS)
+            > default_reshare_timeout(players_bound).as_millis());
     }
 
     fn file(chain_id: u64, identity: &str) -> NetworkFile {

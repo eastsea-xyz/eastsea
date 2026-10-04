@@ -454,7 +454,7 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
             let g = chain.lock();
             Ok(json!(aether_execution::registry::lane_nonce(&g.finalized.state, &a)))
         }
-        // The voting set proposed for this registry epoch (while no handoff is
+        // The voting set proposed for this ceremony window (while no handoff is
         // pending): `aether run` on old and new members reshares to it in the background.
         "aether_rotation" => {
             let g = chain.lock();
@@ -462,11 +462,18 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
             let params = aether_execution::registry::params(&f.state);
             let Some((draw, members)) = g.proposal.clone() else { return Ok(Value::Null) };
             let pending = f.handoff.as_ref().is_some_and(|p| f.height < p.switch);
-            if draw != f.height / (params.epoch_blocks * params.draw_epochs) || pending {
+            if (draw != f.height / (params.epoch_blocks * params.draw_epochs)
+                && !crate::chain::proposal_in_window(&g, f.height, &f.state))
+                || pending
+            {
                 return Ok(Value::Null);
             }
             let next: Vec<Value> = members.iter().map(|(k, n)| json!({ "key": k, "node": n })).collect();
-            Ok(json!({ "epoch": draw, "next": next, "network": st.network }))
+            if g.cfg.chain_id == 7_780 {
+                Ok(json!({ "epoch": draw, "next": next, "network": st.network }))
+            } else {
+                Ok(json!({ "epoch": draw, "height": f.height, "next": next, "network": st.network }))
+            }
         }
         // The latest committee handoff on this node's finalized chain (verified here).
         "aether_handoff" => {

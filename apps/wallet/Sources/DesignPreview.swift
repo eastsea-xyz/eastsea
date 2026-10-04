@@ -10,6 +10,9 @@ enum DesignPreview {
     /// `-rewardStatus 1`: the Network page's node-rewards standing card (the
     /// testnet would answer enabled:false and show nothing).
     static var rewardStatus: Bool { UserDefaults.standard.string(forKey: "rewardStatus") == "1" }
+    /// `-historyNotice 1`: the history page's "this node cannot show your full
+    /// history" notice, as an old node would leave it.
+    static var historyNotice: Bool { UserDefaults.standard.string(forKey: "historyNotice") == "1" }
 
     /// One `aether_rewardStatus [operator]` answer: 9 operators, this Mac at
     /// warm-up level 4 ((14+4)/28 → 64%), a capped share of the last hour.
@@ -50,6 +53,9 @@ extension WalletModel {
         account = VerifiedAccount(address: address, balanceWei: empty ? "0" : "12500000000000000000", nonce: 3,
                                   stateHeight: 184_209, certifiedBlock: 184_210, stateRoot: "0x", validators: 4)
         if v == "paused" { chainPausedSince = now.addingTimeInterval(-240) }
+        if DesignPreview.historyNotice {
+            historyFailure = .unsupportedNode
+        }
         guard !empty else {
             tokensUpdated = now
             return

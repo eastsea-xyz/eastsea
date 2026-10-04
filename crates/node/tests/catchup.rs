@@ -28,9 +28,9 @@
 //! - Replay is pipelined: over a 150 ms link it runs at hundreds of blocks a
 //!   second where one-fetch-per-block ran at ~6.
 
-use aether_crypto::P256Signer;
+use aether_crypto::{P256Signer, Signer};
 use aether_execution::registry::{encode_register, REGISTRY};
-use aether_execution::{sign_call_with, EvmCall};
+use aether_execution::{recommended_state_budget, sign_call_with, EvmCall};
 use aether_node::block::{Block, Context, EPOCH};
 use aether_node::chain::{
     build_payload, dev_accounts, dev_seed, Chain, ChainConfig, Executed, Extras,
@@ -232,11 +232,22 @@ impl Node {
         let signer = P256Signer::from_seed(&dev_seed(1)).unwrap();
         let fees = FeeVector {
             exec: 100_000_000_000,
-            state: 0,
+            state: aether_execution::fees::STATE_UNIT_PRICE,
             prove: 100_000_000_000,
         };
         self.nonce += 1;
-        sign_call_with(&signer, CHAIN, self.nonce - 1, fees, 1_000_000_000, &call).unwrap()
+        let mut tx = sign_call_with(&signer, CHAIN, self.nonce - 1, fees, 1_000_000_000, &call).unwrap();
+        // config() funds this sender; reserve enough to pay for its deployed
+        // code, new accounts, and storage before the snapshot is built.
+        tx.header.gas.state = recommended_state_budget(
+            &call,
+            Some(U256::from(10u128.pow(24))),
+            fees.state,
+        );
+        let mut signature = signer.sign(&tx.signing_bytes()).unwrap();
+        signature.extend_from_slice(&signer.public_key().bytes);
+        tx.signature = Bytes::from(signature);
+        tx
     }
 
     fn transfer(&mut self) -> TxEnvelope {
@@ -271,6 +282,34 @@ fn tmp(name: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     d
+}
+
+#[test]
+fn funded_source_pays_for_transfer_and_deployed_code() {
+    let dir = tmp("paid-source");
+    let mut source = Node::start(&dir);
+    let transfer = source.transfer();
+    assert_eq!(transfer.header.max_fee.state, aether_execution::fees::STATE_UNIT_PRICE);
+    assert!(transfer.header.gas.state >= aether_execution::fees::STATE_ACCOUNT_UNITS);
+    let paid = source.step(vec![transfer]);
+    assert_eq!(paid.receipts[0].state_gas, aether_execution::fees::STATE_ACCOUNT_UNITS);
+    assert!(paid.receipts[0].state_fee > U256::ZERO);
+
+    let mut init = hex::decode("600a600c600039600a6000f3").unwrap();
+    init.extend_from_slice(&hex::decode("60ff60005260206000f3").unwrap());
+    let create = source.submit(EvmCall {
+        to: None,
+        value: U256::ZERO,
+        input: init.into(),
+        gas_limit: 300_000,
+        delegate: None,
+    });
+    let deployed = source.step(vec![create]);
+    assert!(deployed.receipts[0].success);
+    assert!(deployed.receipts[0].state_gas > 0);
+    assert!(deployed.receipts[0].state_fee > U256::ZERO);
+    drop(source);
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 fn rpc_state(node: &Node, registrar: Option<Arc<aether_node::devicecheck::Registrar>>) -> RpcState {

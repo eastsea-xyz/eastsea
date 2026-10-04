@@ -1044,10 +1044,15 @@ where
                     match m {
                         Msg::Ready { player, proof } => {
                             if let (Some(record), Some(chain_id)) = (ready_record.as_mut(), chain_id) {
-                                let player = player.to_lowercase();
-                                if record.members.iter().any(|(key, _)| key.eq_ignore_ascii_case(&player))
-                                    && crate::handoff::check_ready(chain_id, key_round, &record.output, &record.members, &player, &proof).is_ok() {
-                                    record.proofs.insert(player, proof);
+                                if record.accept_proof(chain_id, &player, &proof) == Ok(true) {
+                                    // Gossip the complete set once more before this child
+                                    // exits; peers may still be missing an individual proof.
+                                    send_all(&mut sender, record.proofs.iter().map(|(player, proof)|
+                                        (To::All, Msg::Ready { player: player.clone(), proof: proof.clone() })).collect());
+                                    let plan = readiness.as_ref().expect("readiness record has a plan");
+                                    crate::atomic::replace(&plan.destination, &serde_json::to_vec(record).expect("readiness serializes"), 0o600)
+                                        .map_err(DkgError::Finalize)?;
+                                    return Ok(());
                                 }
                             }
                         }

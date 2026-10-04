@@ -69,7 +69,14 @@ fn wrong_group_tx_is_refused_by_the_pool_and_by_blocks() {
 
     // A group-3 tx (signed under the v3 tag) is admitted; a group-0 or group-1
     // tx can never run in this chain's blocks, so the pool refuses it outright.
-    let ours = sign_call_group(&signer(), 7_799, 0, 1, 3, &transfer(2)).unwrap();
+    let mut ours = sign_call_group(&signer(), 7_799, 0, 1, 3, &transfer(2)).unwrap();
+    // A transfer to a fresh account grows state by 100 units on this genesis.
+    // Sign a payable budget so admission reaches the group rule being tested.
+    ours.header.gas.state = aether_execution::fees::STATE_ACCOUNT_UNITS;
+    ours.header.max_fee.state = aether_execution::fees::STATE_UNIT_PRICE;
+    let mut signature = signer().sign(&ours.signing_bytes()).unwrap();
+    signature.extend_from_slice(&signer().public_key().bytes);
+    ours.signature = Bytes::from(signature);
     assert_eq!(ours.header.group(), 3);
     assert_eq!(chain.add_to_mempool(ours.clone()), Ok(true));
     for tx in [

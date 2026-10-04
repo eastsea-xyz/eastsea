@@ -1012,10 +1012,25 @@ fn open_voting_nodes_take_over_the_chain_by_themselves() {
     // The seed-drawn candidate: its Mac is net index 4 + its position among c1..c4.
     let j = 4 + candidates.iter().position(|c| &keys_of(&d(c)) == joined[0]).unwrap();
     let switch = handoff["switch"].as_u64().unwrap();
+    let round = handoff["round"].as_u64().unwrap();
 
-    // Past the switch: c1 builds blocks, g1 follows them, everyone agrees.
+    // Strict reshares derive their round from the draw, so the first handoff
+    // can be round 3. Check the candidate's installed files too: a follower's
+    // aether_network RPC proxies upstream and cannot prove that it is voting.
     let end = Instant::now() + Duration::from_secs(120);
-    while net.rpc(j, "aether_network", json!([])).and_then(|v| v["round"].as_u64()) != Some(1) {
+    let candidate = d(candidates[j - 4]);
+    let installed = || {
+        let network = std::fs::read(format!("{candidate}/network.json")).ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+        let threshold = std::fs::read(format!("{candidate}/threshold.json")).ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+        network.as_ref().and_then(|v| v["round"].as_u64()) == Some(round)
+            && network.as_ref().map(|v| &v["output"]) == Some(&handoff["output"])
+            && threshold.as_ref().and_then(|v| v["round"].as_u64()) == Some(round)
+            && threshold.as_ref().map(|v| &v["output"]) == Some(&handoff["output"])
+            && !std::path::Path::new(&candidate).join("no-vote").exists()
+    };
+    while !installed() || net.rpc(j, "aether_network", json!([])).and_then(|v| v["round"].as_u64()) != Some(round) {
         assert!(Instant::now() < end, "the drawn candidate did not start voting (see {}/*.log)", dir.display());
         std::thread::sleep(Duration::from_millis(500));
     }

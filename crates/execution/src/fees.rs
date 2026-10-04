@@ -1,8 +1,9 @@
 //! Fee policy v0 for a zero-value testnet (docs/research/tokenomics-2026.md §4).
 //!
-//! - Base fee per dimension (exec, prove) with EIP-4844-style exponential
-//!   updates from the parent's excess. `base_exec` is burned (revm does not
-//!   credit it); `base_prove` pays provers through the escrow.
+//! - Exec and prove base fees have EIP-4844-style exponential updates from
+//!   the parent's excess. `base_exec` is burned (revm does not credit it);
+//!   `base_prove` pays provers through the escrow. New-genesis state growth
+//!   instead has the fixed burned price below, even at zero exec/prove base.
 //! - Priority fees (tips) collect at `FEE_COLLECTOR` during the block and are
 //!   split at the end: 60% proposer, 20% prover escrow, 20% burned (the burn
 //!   floor makes self-paid fake tips cost the proposer).
@@ -29,6 +30,15 @@ pub const SCALE: FeeVector = FeeVector { exec: 100_000_000_000, state: 0, prove:
 pub const UPDATE_QUOTIENT: u64 = 96;
 /// Tip split in percent: proposer, prover escrow, burn.
 pub const TIP_SPLIT: (u64, u64, u64) = (60, 20, 20);
+
+/// New-genesis state growth price. One unit is one code byte; a newly occupied
+/// storage slot or account costs 100 units. This is independent of congestion.
+pub const STATE_UNIT_PRICE: u128 = 1_000_000_000_000;
+pub const STATE_SLOT_UNITS: u64 = 100;
+pub const STATE_ACCOUNT_UNITS: u64 = 100;
+/// Consensus limits for new-genesis transactions, excluding capped system writes.
+pub const MAX_STATE_UNITS_PER_BLOCK: u64 = 100_000;
+pub const MAX_NEW_SLOTS_PER_BLOCK: u64 = 512;
 
 /// What a block's fees follow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -77,6 +87,8 @@ pub struct Settlement {
     pub to_escrow: U256,
     pub burned_tips: U256,
     pub prove_fees: U256,
+    /// Fixed state growth fees, removed from circulation like exec base fees.
+    pub burned_state: U256,
 }
 
 /// End of block: split collected tips and move prove fees to the escrow.
@@ -96,7 +108,7 @@ pub fn settle(state: &mut WorldState, policy: &FeePolicy, prove_fees: U256) -> S
         let eb = state.balance(&PROVER_ESCROW) + credit;
         state.set_balance(PROVER_ESCROW, eb).expect("escrow balance fits");
     }
-    Settlement { tips, to_proposer, to_escrow: credit, burned_tips, prove_fees }
+    Settlement { tips, to_proposer, to_escrow: credit, burned_tips, prove_fees, burned_state: U256::ZERO }
 }
 
 #[cfg(test)]

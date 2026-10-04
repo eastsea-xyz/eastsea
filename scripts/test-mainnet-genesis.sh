@@ -60,7 +60,7 @@ NET=$WORK/dry/v1/network.json
 echo "== 2. STRICT mainnet-rules (never --rehearsal) on the dry run's final file"
 if out=$("$A" mainnet-rules --network "$NET" 2>&1); then
   n=$(printf '%s\n' "$out" | grep -c '^ok' || true)
-  if [ "$n" = 17 ]; then ok "strict check passes: all 17 rules on"; else bad "strict check passed but printed $n ok lines (want 17)"; fi
+  if [ "$n" = 18 ]; then ok "strict check passes: all 18 rules on"; else bad "strict check passed but printed $n ok lines (want 18)"; fi
 else
   bad "strict check FAILED on the dry run's file:"$'\n'"$out"
 fi
@@ -72,7 +72,7 @@ fi
 echo "  values a rehearsal legitimately shortens: NONE."
 echo "  The dry run assembles with the published policy — epoch 3600 blocks, min streak 24,"
 echo "  draw every 24 epochs (defaults; the tool refuses every timing flag) and a real P-256"
-echo "  registrar key — so the strict 17-rule check passes its file unchanged. The shortened"
+echo "  registrar key — so the strict 18-rule check passes its file unchanged. The shortened"
 echo "  timing a rehearsal needs (epoch_blocks 40 etc.) and the --rehearsal allowance belong"
 echo "  to scripts/mainnet-rehearsal.sh alone; this tool passes --rehearsal only in --dry-run,"
 echo "  as a label, never to excuse a value."

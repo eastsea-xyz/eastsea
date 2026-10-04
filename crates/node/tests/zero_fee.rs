@@ -12,7 +12,7 @@ use aether_execution::{sign_call_with, EvmCall};
 use aether_light::block::NodeRegistration;
 use aether_node::block::{Block, Context, EPOCH};
 use aether_node::chain::{build_payload, Chain, ChainError, Extras};
-use aether_types::{Address, FeeVector, TxEnvelope, U256};
+use aether_types::{Address, Bytes, FeeVector, TxEnvelope, U256};
 use commonware_codec::Encode as _;
 use commonware_consensus::types::{Round, View};
 use commonware_cryptography::{ed25519, Digestible as _, Signer as _};
@@ -118,6 +118,38 @@ fn a_zero_balance_zero_tip_tx_is_free_and_included_below_target() {
     assert_eq!(exec.state.balance(&addr(&stranger)), U256::ZERO);
     assert_eq!(exec.state.nonce(&addr(&stranger)), 1);
     assert_eq!(Chain::next_base_fee(&n.chain.cfg(), &n.parent).exec, 0, "21k gas is far below target");
+}
+
+#[test]
+fn mempool_and_block_execution_both_reject_a_zero_balance_state_writer() {
+    let mut n = net(1);
+    let init = Bytes::from_static(&[
+        0x60, 0x06, 0x60, 0x0c, 0x60, 0x00, 0x39, 0x60, 0x06, 0x60, 0x00, 0xf3,
+        0x60, 0x01, 0x60, 0x00, 0x55, 0x00,
+    ]);
+    let deploy_call = EvmCall { to: None, value: U256::ZERO, input: init, gas_limit: 200_000, delegate: None };
+    let mut deploy = sign_call_with(
+        &n.ops[0], CHAIN, 0,
+        FeeVector { exec: 0, state: aether_execution::fees::STATE_UNIT_PRICE, prove: 0 },
+        0, &deploy_call,
+    ).unwrap();
+    deploy.header.gas.state = 106;
+    let mut sig = n.ops[0].sign(&deploy.signing_bytes()).unwrap();
+    sig.extend_from_slice(&n.ops[0].public_key().bytes);
+    deploy.signature = Bytes::from(sig);
+    let deployed = n.step(vec![deploy], None, vec![]);
+    let writer = deployed.receipts[0].contract_address.unwrap();
+    assert_eq!(deployed.receipts[0].state_gas, 106);
+
+    let zero = free_call(&broke(99), 0, &EvmCall { to: Some(writer), value: U256::ZERO, input: Default::default(), gas_limit: 100_000, delegate: None });
+    let pool_err = n.chain.add_to_mempool(zero.clone()).unwrap_err();
+    assert!(pool_err.contains("state growth"), "{pool_err}");
+    let future = free_call(&broke(98), 5, &EvmCall { to: Some(writer), value: U256::ZERO, input: Default::default(), gas_limit: 100_000, delegate: None });
+    let future_err = n.chain.add_to_mempool(future).unwrap_err();
+    assert!(future_err.contains("state growth"), "{future_err}");
+    let ctx = Chain::block_context(&n.chain.cfg(), &n.last, &n.parent);
+    let block_err = aether_execution::execute_block(&n.parent.state, &ctx, &[zero]).err().unwrap();
+    assert!(format!("{block_err:?}").contains("state growth"));
 }
 
 #[test]

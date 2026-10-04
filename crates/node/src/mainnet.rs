@@ -13,7 +13,7 @@
 use crate::chain::{Chain, ChainConfig};
 use crate::upgrade;
 use aether_execution::registry;
-use aether_types::{FeeVector, U256};
+use aether_types::U256;
 
 /// One item of the list: the rule, and whether the genesis has it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -40,6 +40,8 @@ pub fn check_with(cfg: &ChainConfig, rehearsal: bool) -> Vec<Rule> {
     let at1 = upgrade::protocol_at(&genesis.schedule, 1);
     let next = genesis.next_protocol();
     let epoch_blocks = registry::params(state).epoch_blocks;
+    let probe = crate::block::Block::genesis_with(cfg.chain_id, state.root(), cfg.history_v2, cfg.group);
+    let state_limit = Chain::block_context(cfg, &probe, &genesis).limits.state;
     let rule = |name: &'static str, ok: bool, detail: String| Rule { name, ok, detail };
     vec![
         rule(
@@ -133,6 +135,18 @@ pub fn check_with(cfg: &ChainConfig, rehearsal: bool) -> Vec<Rule> {
         smooth_issuance(),
         rule("history v2", cfg.history_v2, "quiet empty blocks, era files, history proofs over them".into()),
         rule(
+            "paid state growth",
+            (cfg.node_rewards || cfg.history_v2)
+                && state_limit == aether_execution::fees::MAX_STATE_UNITS_PER_BLOCK
+                && Chain::next_base_fee(cfg, &genesis).state == aether_execution::fees::STATE_UNIT_PRICE,
+            format!(
+                "{} wei per code byte, {} units per new slot or account, at most {} new slots per block",
+                aether_execution::fees::STATE_UNIT_PRICE,
+                aether_execution::fees::STATE_SLOT_UNITS,
+                aether_execution::fees::MAX_NEW_SLOTS_PER_BLOCK
+            ),
+        ),
+        rule(
             "pruning default",
             matches!(
                 crate::prune::HistoryMode::resolve(
@@ -153,8 +167,8 @@ pub fn check_with(cfg: &ChainConfig, rehearsal: bool) -> Vec<Rule> {
         ),
         rule(
             "zero-tip acceptance",
-            Chain::next_base_fee(cfg, &genesis) == FeeVector::default(),
-            "the first block's base fee is 0: a zero-balance account transacts with tip 0".into(),
+            { let base = Chain::next_base_fee(cfg, &genesis); base.exec == 0 && base.prove == 0 },
+            "the first block's exec/prove base fees are 0: a zero-balance plain transfer pays no state fee".into(),
         ),
     ]
 }
@@ -240,7 +254,7 @@ mod tests {
     }
 
     /// The names `check` returns, in order: docs/ops/mainnet-launch.md's table.
-    const NAMES: [&str; 17] = [
+    const NAMES: [&str; 18] = [
         "protocol from genesis",
         "proof market",
         "registry v3",
@@ -255,6 +269,7 @@ mod tests {
         "reserve rules",
         "smooth issuance",
         "history v2",
+        "paid state growth",
         "pruning default",
         "no premine, no faucet",
         "zero-tip acceptance",
@@ -317,6 +332,10 @@ mod tests {
         let mut v1 = mainnet();
         v1.history_v2 = false;
         assert_eq!(off(v1), ["registry v3", "history v2", "pruning default"]);
+        let mut legacy = mainnet();
+        legacy.node_rewards = false;
+        legacy.history_v2 = false;
+        assert!(off(legacy).contains(&"paid state growth"));
         // The reserve keys are a genesis parameter.
         let mut none = mainnet();
         none.reserve = None;

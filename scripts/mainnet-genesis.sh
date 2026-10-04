@@ -302,9 +302,9 @@ run_check() { # run_check <network.json> [expected chain id] <genesis|final>
   rules=(mainnet-rules --network "$file")
   if [ "$REHEARSAL" = 1 ]; then rules=(mainnet-rules --rehearsal --network "$file"); fi
   if out=$("$A" "${rules[@]}" 2>&1); then
-    verdict "aether mainnet-rules, all 17 rules" 1 "every rule on ($(printf '%s\n' "$out" | grep -c '^ok') ok)$tag"
+    verdict "aether mainnet-rules, all 18 rules" 1 "every rule on ($(printf '%s\n' "$out" | grep -c '^ok') ok)$tag"
   else
-    verdict "aether mainnet-rules, all 17 rules" 0 "$mode check failed:$tag"$'\n'"$(printf '%s\n' "$out" | sed 's/^/    /')"
+    verdict "aether mainnet-rules, all 18 rules" 0 "$mode check failed:$tag"$'\n'"$(printf '%s\n' "$out" | sed 's/^/    /')"
   fi
   echo "== the file carries every genesis flag (stage: $stage)"
   out=$(net_verdicts "$file" "$want" "$stage")

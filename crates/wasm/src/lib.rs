@@ -37,7 +37,11 @@ fn fee_caps(status: &Value, balance: Option<U256>) -> (FeeVector, u128) {
     let get = |k: &str| status["base_fee"][k].as_str().and_then(|v| v.parse::<u128>().ok()).unwrap_or(GWEI);
     let free = get("exec") == 0 || balance == Some(U256::ZERO);
     (
-        FeeVector { exec: if free { get("exec") * 2 } else { get("exec") * 2 + GWEI }, state: 0, prove: get("prove") * 2 },
+        FeeVector {
+            exec: if free { get("exec") * 2 } else { get("exec") * 2 + GWEI },
+            state: status["base_fee"]["state"].as_str().and_then(|v| v.parse().ok()).unwrap_or(0),
+            prove: get("prove") * 2,
+        },
         if free { 0 } else { GWEI },
     )
 }
@@ -83,7 +87,7 @@ pub fn prepare_tx(public_key: &[u8], status: &Value, expected_chain: u64, nonce:
         sender: from,
         nonce,
         // Every interpreted instruction costs at least 1 gas, so prove steps <= gas_limit.
-        gas: GasVector { exec: gas_limit, state: 0, prove: gas_limit },
+        gas: GasVector { exec: gas_limit, state: aether_execution::recommended_state_budget(&call, balance, max_fee.state), prove: gas_limit },
         max_fee,
         tip,
         payload_commitment: payload_commitment(&payload),
@@ -371,5 +375,19 @@ mod tests {
         let sig: p256::ecdsa::Signature = k.sign(&msg);
         let signed = attach(&p["envelope"], &sig.to_bytes(), &pubkey(&k)).unwrap();
         validate_stateless(&serde_json::from_value(signed).unwrap(), 7780).expect("zero-tip tx is valid as built");
+    }
+
+    #[test]
+    fn new_genesis_wallet_signs_a_state_budget_only_when_funded() {
+        let status = json!({"chain_id": 7801, "base_fee": {"exec": "0", "state": "1000000000000", "prove": "0"}});
+        let k = key();
+        let pk = pubkey(&k);
+        let contract = Request { to: "0x7777777777777777777777777777777777777777", value_wei: "0", data_hex: "0x01", gas_limit: 100_000, balance_wei: "1000000000000000000" };
+        let prepared = prepare_tx(&pk, &status, 7801, 0, &contract).unwrap();
+        assert_eq!(prepared["envelope"]["header"]["gas"]["state"], 600);
+        assert_eq!(prepared["envelope"]["header"]["max_fee"]["state"].as_u64(), Some(1_000_000_000_000));
+        let free = Request { to: "0x7777777777777777777777777777777777777777", value_wei: "0", data_hex: "", gas_limit: 21_000, balance_wei: "0" };
+        let prepared = prepare_tx(&pk, &status, 7801, 0, &free).unwrap();
+        assert_eq!(prepared["envelope"]["header"]["gas"]["state"], 0);
     }
 }

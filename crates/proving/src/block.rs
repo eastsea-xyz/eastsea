@@ -184,4 +184,32 @@ mod tests {
         assert_ne!(output(&other).unwrap(), output(&input).unwrap());
         assert_eq!(output(&input).unwrap(), claim(st.commitment(), input.prover));
     }
+
+    #[test]
+    fn witness_replay_charges_the_same_net_state_growth() {
+        use aether_execution::{fees, sign_call_with, FeePolicy, FEE_COLLECTOR};
+        use aether_types::FeeVector;
+        let signer = P256Signer::from_seed(&[9; 32]).unwrap();
+        let sender = aether_crypto::address_of(&signer.public_key()).unwrap();
+        let writer = Address::repeat_byte(0x77);
+        let mut pre = WorldState::default();
+        pre.set_balance(sender, U256::from(10u128.pow(20))).unwrap();
+        pre.set_code(writer, Bytes::from_static(&[0x60, 0x01, 0x60, 0x00, 0x55, 0x00])).unwrap();
+        let mut ctx = setup().1;
+        ctx.limits.state = fees::MAX_STATE_UNITS_PER_BLOCK;
+        ctx.beneficiary = FEE_COLLECTOR;
+        ctx.fees = Some(FeePolicy { base: FeeVector { exec: 0, state: fees::STATE_UNIT_PRICE, prove: 0 }, proposer: Address::repeat_byte(0xbe) });
+        let call = EvmCall { to: Some(writer), value: U256::ZERO, input: Bytes::new(), gas_limit: 100_000, delegate: None };
+        let mut tx = sign_call_with(&signer, ctx.chain_id, 0, FeeVector { exec: 0, state: fees::STATE_UNIT_PRICE, prove: 0 }, 0, &call).unwrap();
+        tx.header.gas.state = 100;
+        let mut sig = signer.sign(&tx.signing_bytes()).unwrap();
+        sig.extend_from_slice(&signer.public_key().bytes);
+        tx.signature = Bytes::from(sig);
+        let guest_input = input(&pre, &ctx, std::slice::from_ref(&tx), &[], Address::repeat_byte(8)).unwrap();
+        let replay = execute(&guest_input).unwrap();
+        let native = aether_execution::execute_block(&pre, &ctx, &[tx]).unwrap();
+        assert_eq!(replay.post_state_root, native.state.root());
+        assert_eq!(replay.gas, native.gas);
+        assert_eq!(replay.gas.state, 100);
+    }
 }

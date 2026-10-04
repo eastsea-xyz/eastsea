@@ -7,7 +7,7 @@ import Foundation
 //   aether-agent setup <harness>     register with Claude Code, Codex, Antigravity, OpenClaw, Hermes
 
 let usage = """
-aether-agent \(Version.string) — Aether wallet for AI agents (key in this Mac's Secure Enclave)
+aether-agent \(Version.string) — EastSea wallet for AI agents (key in this Mac's Secure Enclave)
 
 Owner (changes ask for Touch ID; limits are enforced by the account contract):
   init                                   create keys; payments stay off until a named payee is approved

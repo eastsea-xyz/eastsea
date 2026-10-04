@@ -59,6 +59,7 @@
 		A9AB518F8F246CB2A0974398 /* Earnings.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6C1B75440E8A6A577BD467E /* Earnings.swift */; };
 		ADEEA18CEEC7A29BDFBB47BB /* NetworkPaused.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B632CFC2DA1179CC9EAD01D /* NetworkPaused.swift */; };
 		B6002ECF68746BC997F245B2 /* ProverFlags.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94E4B4A2A4BDBBBBC6A12600 /* ProverFlags.swift */; };
+		B638706A5CFC03350AB5758D /* DataMigration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CA1040C5885E62AF6B0AAC4 /* DataMigration.swift */; };
 		BC44AAFBB810E5183CBF737E /* SimpleDashboard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BCD0FCE195D7296CBCA13E9 /* SimpleDashboard.swift */; };
 		BCEB55E80C0536BE08E67EE7 /* ResourcesSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = C56EEFC753370BDE2960BE52 /* ResourcesSettings.swift */; };
 		BD73509462322EA695D98A0D /* NetworkUpgrade.swift in Sources */ = {isa = PBXBuildFile; fileRef = BAF12832C2145F7B5553F13A /* NetworkUpgrade.swift */; };
@@ -76,6 +77,7 @@
 		DB0F8AA27789285B80E0C65B /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = C8AFA205B2434D884DE10E98 /* Sparkle */; };
 		E079A96A7F6CAAB46E4B9D8B /* NetworkPaused.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B632CFC2DA1179CC9EAD01D /* NetworkPaused.swift */; };
 		E202B9DDD9BDC75A9D6CA697 /* Onboarding.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65F2514912728847B547AC0A /* Onboarding.swift */; };
+		E4B5084F019A2D559E9C4758 /* DataMigration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CA1040C5885E62AF6B0AAC4 /* DataMigration.swift */; };
 		E5EBCFC648FC784DB287530F /* LiveResize.swift in Sources */ = {isa = PBXBuildFile; fileRef = 745EAC0E04873F8FD0F29BC2 /* LiveResize.swift */; };
 		E8E7A825FBFD8C349EA8E74A /* ResizeBenchmark.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3A70AF889C5ACB1DDB2AF45 /* ResizeBenchmark.swift */; };
 		ED3E2EB438264E2123EBDBD9 /* DesignPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 260B382C7E1D4499BE9AE870 /* DesignPreview.swift */; };
@@ -91,6 +93,7 @@
 		020BD968AE07E378627D7EB7 /* AgentWalletPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentWalletPanel.swift; sourceTree = "<group>"; };
 		02CE6DC842A323F5843165E1 /* EarningsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EarningsModel.swift; sourceTree = "<group>"; };
 		0BCD0FCE195D7296CBCA13E9 /* SimpleDashboard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimpleDashboard.swift; sourceTree = "<group>"; };
+		0CA1040C5885E62AF6B0AAC4 /* DataMigration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataMigration.swift; sourceTree = "<group>"; };
 		17F1C13C585683B68AF46003 /* AetherWalletIOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = AetherWalletIOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		260B382C7E1D4499BE9AE870 /* DesignPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignPreview.swift; sourceTree = "<group>"; };
 		2928FB2C0B82AF8C35E97D99 /* token-sources.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "token-sources.json"; sourceTree = "<group>"; };
@@ -181,6 +184,7 @@
 				87BD832EE8990B2380C0EF86 /* ChainActivity.swift */,
 				3C192196B8C44174CC74F27E /* Clock.swift */,
 				B38A846EB23F0C4A52BF8A78 /* ContentView.swift */,
+				0CA1040C5885E62AF6B0AAC4 /* DataMigration.swift */,
 				260B382C7E1D4499BE9AE870 /* DesignPreview.swift */,
 				C6C1B75440E8A6A577BD467E /* Earnings.swift */,
 				02CE6DC842A323F5843165E1 /* EarningsModel.swift */,
@@ -361,6 +365,7 @@
 				3EF6E8CB8686359FE5CEA244 /* ChainActivity.swift in Sources */,
 				5FC931C5B50114A80F16DF82 /* Clock.swift in Sources */,
 				16504A4054237817545767F0 /* ContentView.swift in Sources */,
+				E4B5084F019A2D559E9C4758 /* DataMigration.swift in Sources */,
 				F5D803ED94B649009D54712A /* DesignPreview.swift in Sources */,
 				A9AB518F8F246CB2A0974398 /* Earnings.swift in Sources */,
 				63B4C06602DFB64063DE9B7C /* EarningsModel.swift in Sources */,
@@ -403,6 +408,7 @@
 				5A2FF36B2D89573A00075F88 /* ChainActivity.swift in Sources */,
 				00F35CE007D35B5FB3793AD6 /* Clock.swift in Sources */,
 				3C5180BEE4BF629CA69AF4CE /* ContentView.swift in Sources */,
+				B638706A5CFC03350AB5758D /* DataMigration.swift in Sources */,
 				ED3E2EB438264E2123EBDBD9 /* DesignPreview.swift in Sources */,
 				44100BFA372DAC2216F2E74C /* Earnings.swift in Sources */,
 				68C02116FA3214FB9535A952 /* EarningsModel.swift in Sources */,
@@ -519,8 +525,8 @@
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = "-Wl,-reproducible $(SRCROOT)/../../target/aarch64-apple-ios/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework Network";
 				"OTHER_LDFLAGS[sdk=iphonesimulator*]" = "-Wl,-reproducible $(SRCROOT)/../../target/aarch64-apple-ios-sim/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework Network";
 				OTHER_SWIFT_FLAGS = "-file-prefix-map $(SRCROOT)=/aether-node -debug-prefix-map $(SRCROOT)=/aether-node";
-				PRODUCT_BUNDLE_IDENTIFIER = com.pipln.aether.ios;
-				PRODUCT_NAME = Aether;
+				PRODUCT_BUNDLE_IDENTIFIER = com.pipln.eastsea.ios;
+				PRODUCT_NAME = EastSea;
 				SDKROOT = iphoneos;
 				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/Generated";
 				SWIFT_VERSION = 5.0;
@@ -552,8 +558,8 @@
 				MARKETING_VERSION = 0.6.6;
 				OTHER_LDFLAGS = "-Wl,-reproducible $(SRCROOT)/../../target/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework OpenDirectory -framework IOKit";
 				OTHER_SWIFT_FLAGS = "-file-prefix-map $(SRCROOT)=/aether-node -debug-prefix-map $(SRCROOT)=/aether-node";
-				PRODUCT_BUNDLE_IDENTIFIER = com.pipln.aether;
-				PRODUCT_NAME = Aether;
+				PRODUCT_BUNDLE_IDENTIFIER = com.pipln.eastsea;
+				PRODUCT_NAME = EastSea;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SDKROOT = macosx;
 				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/Generated";
@@ -582,8 +588,8 @@
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = "-Wl,-reproducible $(SRCROOT)/../../target/aarch64-apple-ios/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework Network";
 				"OTHER_LDFLAGS[sdk=iphonesimulator*]" = "-Wl,-reproducible $(SRCROOT)/../../target/aarch64-apple-ios-sim/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework Network";
 				OTHER_SWIFT_FLAGS = "-file-prefix-map $(SRCROOT)=/aether-node -debug-prefix-map $(SRCROOT)=/aether-node";
-				PRODUCT_BUNDLE_IDENTIFIER = com.pipln.aether.ios;
-				PRODUCT_NAME = Aether;
+				PRODUCT_BUNDLE_IDENTIFIER = com.pipln.eastsea.ios;
+				PRODUCT_NAME = EastSea;
 				SDKROOT = iphoneos;
 				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/Generated";
 				SWIFT_VERSION = 5.0;
@@ -671,8 +677,8 @@
 				MARKETING_VERSION = 0.6.6;
 				OTHER_LDFLAGS = "-Wl,-reproducible $(SRCROOT)/../../target/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework OpenDirectory -framework IOKit";
 				OTHER_SWIFT_FLAGS = "-file-prefix-map $(SRCROOT)=/aether-node -debug-prefix-map $(SRCROOT)=/aether-node";
-				PRODUCT_BUNDLE_IDENTIFIER = com.pipln.aether;
-				PRODUCT_NAME = Aether;
+				PRODUCT_BUNDLE_IDENTIFIER = com.pipln.eastsea;
+				PRODUCT_NAME = EastSea;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SDKROOT = macosx;
 				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/Generated";

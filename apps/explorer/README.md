@@ -1,14 +1,14 @@
-# Aether Explorer
+# EastSea Explorer
 
-> 한국어 요약: Aether 노드의 JSON-RPC를 읽는 정적 파일 블록 익스플로러. 빌드 단계
+> 한국어 요약: EastSea 노드의 JSON-RPC를 읽는 정적 파일 블록 익스플로러. 빌드 단계
 > 없이 `python3 -m http.server`로 띄우고, 브라우저가 노드(기본 `127.0.0.1:18545`)에
 > 직접 읽기 요청만 보낸다. 분석·외부 호출·가격 정보 없음. 모든 데이터는 "노드 제공"
 > 으로 표시하며, 브라우저에서 위원회 인증서를 검증하지는 않는다(지갑 앱만 검증).
 > `npm test`로 디코딩/포맷 헬퍼 단위 테스트, `node test/live.mjs`로 실노드 스모크.
 
-A read-only block explorer for an Aether chain, served as **static files** — no
+A read-only block explorer for an EastSea chain, served as **static files** — no
 build step, no framework, no server-side code. The page in your browser talks
-straight to one Aether node's JSON-RPC endpoint (default `http://127.0.0.1:18545`,
+straight to one EastSea node's JSON-RPC endpoint (default `http://127.0.0.1:18545`,
 changeable in Settings). No analytics, no external requests of any kind, no
 prices.
 
@@ -25,7 +25,7 @@ the same. Opening `index.html` straight from the filesystem also works in most
 browsers (the node's CORS allows it — see below), but a served origin is the
 supported path.
 
-The node must be reachable from the browser: the Aether app's node listens on
+The node must be reachable from the browser: the EastSea app's node listens on
 `127.0.0.1:18545` on this Mac while it runs. Point Settings at another URL to
 read a different node.
 

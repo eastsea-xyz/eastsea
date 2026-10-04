@@ -1,4 +1,4 @@
-// JSON-RPC 2.0 client for an Aether node's HTTP endpoint
+// JSON-RPC 2.0 client for an EastSea node's HTTP endpoint
 // (crates/node/src/rpc.rs — POST /, any origin, read-only here: the explorer
 // signs nothing and sends nothing the mempool would take). fetch and storage
 // are injectable so the tests run without a node (test/rpc.test.mjs).
@@ -82,7 +82,7 @@ export class Node {
     try {
       body = await res.json();
     } catch {
-      throw new RpcError('the node did not answer JSON (is this an Aether node?)', -1);
+      throw new RpcError('the node did not answer JSON (is this an EastSea node?)', -1);
     }
     if (body?.error) throw new RpcError(body.error.message, body.error.code);
     return body?.result;

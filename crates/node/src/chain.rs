@@ -259,6 +259,10 @@ pub struct Executed {
     pub receipts: Vec<Receipt>,
     pub tx_hashes: Vec<TxHash>,
     pub gas: GasVector,
+    /// New storage slots counted against this block's 512-slot cap.
+    pub new_slots: u64,
+    /// Transaction and receipt bytes counted against this block's persistence cap.
+    pub persistent_bytes: u64,
     pub proposer: Address,
     /// Base fees this block paid.
     pub base_fee: FeeVector,
@@ -621,6 +625,8 @@ impl Chain {
             receipts: vec![],
             tx_hashes: vec![],
             gas: GasVector::default(),
+            new_slots: 0,
+            persistent_bytes: 0,
             proposer: Address::ZERO,
             base_fee: FeeVector::default(),
             excess: GasVector::default(),
@@ -734,6 +740,8 @@ impl Chain {
                     receipts: vec![],
                     tx_hashes: summary.as_ref().map(|b| b.txs.clone()).unwrap_or_default(),
                     gas: GasVector::default(),
+                    new_slots: 0,
+                    persistent_bytes: 0,
                     proposer: summary.as_ref().map(|b| b.proposer).unwrap_or_default(),
                     base_fee: summary.as_ref().map(|b| b.base_fee).unwrap_or_default(),
                     excess: summary.as_ref().map(|b| b.excess).unwrap_or_default(),
@@ -2236,6 +2244,8 @@ impl Chain {
             receipts: out.receipts,
             tx_hashes,
             gas: out.gas,
+            new_slots: out.new_slots,
+            persistent_bytes: out.persistent_bytes,
             proposer: leader_address(&block.context.leader),
             base_fee,
             excess,
@@ -2356,7 +2366,7 @@ impl Chain {
             g.inclusion.enforceable(now).into_iter().filter(|t| t.header.group() == g.cfg.group).collect()
         };
         let full = exec.tx_hashes.len() >= MAX_TXS_PER_BLOCK;
-        inclusion::violations(&listed, &exec.tx_hashes, full, &exec.state, ctx, exec.gas)
+        inclusion::violations(&listed, &exec.tx_hashes, full, &exec.state, ctx, exec.gas, exec.new_slots, exec.persistent_bytes)
     }
 
     /// Returns false if the pool is full or the tx is already known.
@@ -2478,9 +2488,9 @@ impl Chain {
         };
         let payload = block.payload().ok_or(ChainError::BadPayload)?;
         let summary = summary(block, &exec, payload.parent_state_root);
-        let (store, history_v2, previous_history, relaxed) = {
+        let (store, history_v2, compact_swaps, previous_history, relaxed) = {
             let g = self.lock();
-            (g.store.clone(), g.cfg.history_v2, g.finalized.history.clone(), g.relaxed)
+            (g.store.clone(), g.cfg.history_v2, g.cfg.node_rewards || g.cfg.history_v2, g.finalized.history.clone(), g.relaxed)
         };
         let mut upgrade_notices = self.lock().upgrade_notices.clone();
         upgrade_notices.retain(|s| s.upgrade.activate_at > exec.height);
@@ -2522,7 +2532,7 @@ impl Chain {
                     }
                 }
                 let is_aether_account = account_delegations.get(&tx.header.sender).copied().unwrap_or(false);
-                account_rows.extend(crate::account_history::transaction(tx, receipt, exec.height, index as u32, exec.timestamp, is_aether_account));
+                account_rows.extend(crate::account_history::transaction(tx, receipt, exec.height, index as u32, exec.timestamp, is_aether_account, compact_swaps));
             }
             for (index, (proven, address, amount)) in exec.payouts.iter().enumerate() {
                 account_rows.push(crate::account_history::reward(*address, exec.height, payload.txs.len() as u32 + index as u32, exec.timestamp, *amount, *proven == exec.height));

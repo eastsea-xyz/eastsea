@@ -165,11 +165,13 @@ impl InclusionPool {
 }
 
 /// Listed txs a block wrongly left out: not in the block and still appendable
-/// to its post-state within its remaining gas. Empty when the block is full.
-pub fn violations(listed: &[TxEnvelope], block_txs: &[TxHash], block_full: bool, post: &WorldState, ctx: &BlockContext, used: GasVector) -> Vec<TxHash> {
+/// to its post-state within its remaining gas, new-slot and byte budgets.
+/// Empty when the block is full.
+#[allow(clippy::too_many_arguments)] // All three resource totals describe the same block.
+pub fn violations(listed: &[TxEnvelope], block_txs: &[TxHash], block_full: bool, post: &WorldState, ctx: &BlockContext, used: GasVector, used_new_slots: u64, used_persistent_bytes: u64) -> Vec<TxHash> {
     if block_full {
         return Vec::new();
     }
     let present: HashSet<&TxHash> = block_txs.iter().collect();
-    listed.iter().filter(|t| !present.contains(&tx_hash(t)) && can_append(post, ctx, used, t)).map(tx_hash).collect()
+    listed.iter().filter(|t| !present.contains(&tx_hash(t)) && can_append(post, ctx, used, used_new_slots, used_persistent_bytes, t)).map(tx_hash).collect()
 }

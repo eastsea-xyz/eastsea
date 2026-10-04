@@ -24,15 +24,21 @@ pub struct EvmCall {
 
 /// Wallet default for the signed state budget on a paid-state genesis.
 /// EVM fresh slots cost at least 20k execution gas, account creation 32k,
-/// and deployed code 200 per byte, so one unit per 200 gas plus 100 account
-/// units covers ordinary calls while preserving the zero-balance free path.
+/// and deployed code 200 per byte. One unit per 200 gas covers normal log
+/// volume, while the input and envelope allowance covers archived tx bytes.
 /// Callers with a known storage layout may sign a tighter explicit budget.
 pub fn recommended_state_budget(call: &EvmCall, balance: Option<U256>, state_price: u128) -> u64 {
     if state_price == 0 || balance.is_none_or(|b| b.is_zero()) { return 0; }
+    // Covers the signed envelope (including a P-256 signature) and a receipt.
+    // Calldata is added separately because zero bytes use only 4 execution gas.
+    let persisted = (call.input.len() as u64).saturating_add(512).div_ceil(crate::fees::RECEIPT_BYTES_PER_STATE_UNIT);
     if call.to.is_some() && call.input.is_empty() && call.delegate.is_none() {
-        return if call.value.is_zero() { 0 } else { crate::fees::STATE_ACCOUNT_UNITS };
+        // Reserve for the sender's first account and, for a positive transfer,
+        // a recipient that has not existed before this transaction.
+        return persisted.saturating_add(crate::fees::STATE_ACCOUNT_UNITS)
+            .saturating_add(if call.value.is_zero() { 0 } else { crate::fees::STATE_ACCOUNT_UNITS });
     }
-    (call.gas_limit / 200).saturating_add(crate::fees::STATE_ACCOUNT_UNITS).min(crate::fees::MAX_STATE_UNITS_PER_BLOCK)
+    (call.gas_limit / 200).saturating_add(crate::fees::STATE_ACCOUNT_UNITS).saturating_add(persisted).min(crate::fees::MAX_STATE_UNITS_PER_BLOCK)
 }
 
 /// Payload trailer tag for `delegate` (absent = no change, keeps old encodings valid).

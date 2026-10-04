@@ -245,7 +245,7 @@ fn bench_parallel_vs_sequential() {
     println!("240 txs from 240 senders: sequential {ts:?}, parallel {tp:?} ({:.2}x)", ts.as_secs_f64() / tp.as_secs_f64());
     let t = std::time::Instant::now();
     for tx in &distinct {
-        let _ = aether_execution::can_append(&many.pre, &w.ctx, GasVector::default(), tx);
+        let _ = aether_execution::can_append(&many.pre, &w.ctx, GasVector::default(), 0, 0, tx);
     }
     println!("  of which signature check + revm (240 runs, no commit): {:?}", t.elapsed());
 

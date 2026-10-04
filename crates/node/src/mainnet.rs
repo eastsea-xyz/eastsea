@@ -13,7 +13,7 @@
 use crate::chain::{Chain, ChainConfig};
 use crate::upgrade;
 use aether_execution::registry;
-use aether_types::{FeeVector, U256};
+use aether_types::{Address, Bytes, FeeVector, U256};
 use commonware_codec::Encode as _;
 
 /// One item of the list: the rule, and whether the genesis has it.
@@ -162,9 +162,13 @@ pub fn check_with(cfg: &ChainConfig, rehearsal: bool) -> Vec<Rule> {
             "paid state growth",
             (cfg.node_rewards || cfg.history_v2)
                 && state_limit == aether_execution::fees::MAX_STATE_UNITS_PER_BLOCK
-                && Chain::next_base_fee(cfg, &genesis).state == aether_execution::fees::STATE_UNIT_PRICE,
+                && Chain::next_base_fee(cfg, &genesis).state == aether_execution::fees::STATE_UNIT_PRICE
+                && aether_execution::fees::STATE_ACCOUNT_UNITS > 0
+                && aether_execution::fees::RECEIPT_BYTES_PER_STATE_UNIT > 0
+                && aether_execution::fees::EVENT_BASE_BYTES > 0
+                && paid_growth_probes(cfg, &genesis),
             format!(
-                "{} wei per code byte, {} units per new slot or account, at most {} new slots per block",
+                "{} wei per state unit; {} units per new slot or account (including the sender); event bytes have a nonzero price and a receipt-byte block cap; at most {} new slots per block",
                 aether_execution::fees::STATE_UNIT_PRICE,
                 aether_execution::fees::STATE_SLOT_UNITS,
                 aether_execution::fees::MAX_NEW_SLOTS_PER_BLOCK
@@ -192,9 +196,69 @@ pub fn check_with(cfg: &ChainConfig, rehearsal: bool) -> Vec<Rule> {
         rule(
             "zero-tip acceptance",
             { let base = Chain::next_base_fee(cfg, &genesis); base.exec == 0 && base.prove == 0 },
-            "the first block's exec/prove base fees are 0: a zero-balance plain transfer pays no state fee".into(),
+            "the first block's exec/prove base fees are 0; an already funded account can transact with zero tip".into(),
         ),
     ]
+}
+
+/// Exercise the two audit-6 escape routes against the genesis executor. The
+/// checklist checks actual admission and receipts, so keeping the finite state
+/// limit while accidentally exempting senders or events cannot pass this gate.
+fn paid_growth_probes(cfg: &ChainConfig, genesis: &crate::chain::Executed) -> bool {
+    use aether_crypto::{P256Signer, Signer as _};
+    use aether_execution::{check_admission, execute_block, sign_call_with, EvmCall};
+
+    let probe = crate::block::Block::genesis_with(cfg.chain_id, genesis.state.root(), cfg.history_v2, cfg.group);
+    let ctx = Chain::block_context(cfg, &probe, genesis);
+    let sender = match P256Signer::from_seed(&[0xa6; 32]) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let plain = EvmCall { to: Some(Address::repeat_byte(0x42)), value: U256::ZERO, input: Bytes::new(), gas_limit: 21_000, delegate: None };
+    let fresh = match sign_call_with(&sender, cfg.chain_id, 0, FeeVector::default(), 0, &plain) {
+        Ok(tx) => tx,
+        Err(_) => return false,
+    };
+    if check_admission(&genesis.state, &ctx, &fresh).is_ok()
+        || execute_block(&genesis.state, &ctx, &[fresh]).is_ok()
+    {
+        return false;
+    }
+
+    let sender_address = match aether_crypto::address_of(&sender.public_key()) {
+        Ok(a) => a,
+        Err(_) => return false,
+    };
+    let contract = Address::repeat_byte(0x43);
+    let mut state = genesis.state.clone();
+    // LOG0 of 32 zero bytes: PUSH1 32, PUSH1 0, LOG0, STOP.
+    if state.set_balance(sender_address, U256::from(1_000_000_000_000_000_000u128)).is_err()
+        || state.set_code(contract, Bytes::from_static(&[0x60, 0x20, 0x60, 0x00, 0xa0, 0x00])).is_err()
+    {
+        return false;
+    }
+    let logger = EvmCall { to: Some(contract), value: U256::ZERO, input: Bytes::new(), gas_limit: 50_000, delegate: None };
+    let paid = |call: &EvmCall| {
+        let mut tx = sign_call_with(
+            &sender, cfg.chain_id, 0,
+            FeeVector { state: aether_execution::fees::STATE_UNIT_PRICE, ..FeeVector::default() },
+            0, call,
+        ).ok()?;
+        tx.header.gas.state = 100;
+        let mut signature = sender.sign(&tx.signing_bytes()).ok()?;
+        signature.extend_from_slice(&sender.public_key().bytes);
+        tx.signature = Bytes::from(signature);
+        Some(tx)
+    };
+    let (Some(plain), Some(logged)) = (paid(&plain), paid(&logger)) else { return false };
+    let (Ok(plain_out), Ok(log_out)) = (
+        execute_block(&state, &ctx, &[plain]),
+        execute_block(&state, &ctx, &[logged]),
+    ) else { return false };
+    let (Some(plain_receipt), Some(log_receipt)) = (plain_out.receipts.first(), log_out.receipts.first()) else { return false };
+    log_receipt.events.len() == 1
+        && log_receipt.state_gas > plain_receipt.state_gas
+        && aether_execution::fees::MAX_PERSISTENT_BYTES_PER_BLOCK <= 2 * 1024 * 1024
 }
 
 /// The published issuance schedule: 1 AETH a block at height 0, decaying

@@ -100,6 +100,8 @@ fn pair_swap(event: &aether_execution::Event) -> Option<PairSwap> {
     })
 }
 
+/// `compact_swaps` is enabled only for a new genesis. Legacy history keeps
+/// Swap details on every address row for byte-for-byte chain-7780 compatibility.
 pub fn transaction(
     tx: &TxEnvelope,
     receipt: &Receipt,
@@ -107,6 +109,7 @@ pub fn transaction(
     index: u32,
     timestamp_ms: u64,
     is_aether_account: bool,
+    compact_swaps: bool,
 ) -> Vec<Entry> {
     let sender = tx.header.sender;
     let call = match &tx.payload {
@@ -221,7 +224,10 @@ pub fn transaction(
                 native_payout_source: withdrawal.map(|e| e.address),
                 success: receipt.success,
                 tokens,
-                pair_swaps: pair_swaps.clone(),
+                // A swap describes the sender's call. Copying every swap into
+                // every token recipient's row makes history grow as the product
+                // of Swap and Transfer event counts.
+                pair_swaps: if !compact_swaps || address == sender { pair_swaps.clone() } else { Vec::new() },
             }
         })
         .collect()
@@ -285,5 +291,80 @@ pub fn registration(
         success: true,
         tokens: Vec::new(),
         pair_swaps: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aether_crypto::P256Signer;
+    use aether_execution::sign_call;
+    use aether_types::{B256, Bytes};
+
+    fn indexed_address(address: Address) -> B256 {
+        let mut topic = [0u8; 32];
+        topic[12..].copy_from_slice(address.as_slice());
+        B256::from(topic)
+    }
+
+    fn history_with_events(n: usize, compact_swaps: bool) -> (Address, Vec<Entry>) {
+        let signer = P256Signer::from_seed(&[19; 32]).unwrap();
+        let call = EvmCall {
+            to: Some(Address::repeat_byte(0x99)),
+            value: U256::ZERO,
+            input: Bytes::new(),
+            gas_limit: 15_000_000,
+            delegate: None,
+        };
+        let tx = sign_call(&signer, 7, 0, 0, &call).unwrap();
+        let sender = tx.header.sender;
+        let mut events = Vec::with_capacity(n * 2);
+        for i in 0..n {
+            let recipient = Address::repeat_byte(i as u8 + 1);
+            events.push(aether_execution::Event {
+                address: Address::repeat_byte(0x44),
+                topics: vec![B256::from(TRANSFER), indexed_address(sender), indexed_address(recipient)],
+                data: Bytes::from(vec![0u8; 32]),
+            });
+            events.push(aether_execution::Event {
+                address: Address::repeat_byte(0x55),
+                topics: vec![B256::from(SWAP), B256::ZERO, B256::ZERO],
+                data: Bytes::from(vec![0u8; 128]),
+            });
+        }
+        let receipt = Receipt {
+            tx_hash: tx_hash(&tx),
+            success: true,
+            gas_used: 0,
+            prove_gas: 0,
+            state_gas: 0,
+            state_fee: U256::ZERO,
+            contract_address: None,
+            logs: events.len() as u32,
+            output: Bytes::new(),
+            events,
+        };
+        (sender, transaction(&tx, &receipt, 1, 0, 1_000, false, compact_swaps))
+    }
+
+    #[test]
+    fn swap_details_stay_on_sender_row_as_transfer_recipients_grow() {
+        let (sender, small) = history_with_events(24, true);
+        let (_, large) = history_with_events(48, true);
+        assert_eq!(small.len(), 25);
+        assert_eq!(large.len(), 49);
+        assert_eq!(large.iter().find(|row| row.address == sender).unwrap().pair_swaps.len(), 48);
+        assert!(large.iter().filter(|row| row.address != sender).all(|row| row.pair_swaps.is_empty()));
+
+        let small_bytes = serde_json::to_vec(&small).unwrap().len();
+        let large_bytes = serde_json::to_vec(&large).unwrap().len();
+        assert!(large_bytes < small_bytes * 3, "history grew faster than events: {small_bytes} -> {large_bytes}");
+    }
+
+    #[test]
+    fn legacy_history_repeats_swaps_on_recipient_rows() {
+        let (_, rows) = history_with_events(2, false);
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().all(|row| row.pair_swaps.len() == 2));
     }
 }

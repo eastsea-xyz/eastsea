@@ -3050,7 +3050,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_aether_ffi_checksum_func_prepare_add_recovery_key() != 5161) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_aether_ffi_checksum_func_prepare_batch() != 9304) {
+    if (uniffi_aether_ffi_checksum_func_prepare_batch() != 11440) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_prepare_call() != 61515) {
@@ -3089,7 +3089,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_aether_ffi_checksum_func_prepare_session_token_submit() != 17212) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_aether_ffi_checksum_func_prepare_set_recovery_key() != 4596) {
+    if (uniffi_aether_ffi_checksum_func_prepare_set_recovery_key() != 43579) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_prepare_set_session() != 28576) {

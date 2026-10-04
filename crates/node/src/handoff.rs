@@ -43,6 +43,18 @@ pub struct Readiness {
 }
 
 impl Readiness {
+    /// Accept only a proof for a seat in this exact sharing. A complete
+    /// record can end the relay without waiting out its failure deadline.
+    pub fn accept_proof(&mut self, chain_id: u64, member: &str, proof: &str) -> Result<bool, String> {
+        let member = member.to_lowercase();
+        if !self.members.iter().any(|(key, _)| key.eq_ignore_ascii_case(&member)) {
+            return Err("ready proof is for a non-member".into());
+        }
+        check_ready(chain_id, self.round, &self.output, &self.members, &member, proof)?;
+        self.proofs.insert(member, proof.to_string());
+        Ok(self.members.iter().all(|(key, _)| self.proofs.contains_key(&key.to_lowercase())))
+    }
+
     /// The deterministic retry roster consists of seats with valid receipts.
     /// A handoff is never signed for the failed round; a new DKG round is
     /// required because removing a player changes the public polynomial.

@@ -305,6 +305,50 @@ fn a_handoff_is_signed_by_the_running_committee() {
     assert!(check_partial(CHAIN, previous.public(), &h, &sign_partial(CHAIN, &h, &new_share)).is_err());
 }
 
+/// A healthy five-seat relay finishes when its last valid share proof arrives,
+/// rather than consuming the 120-second failure window used for missing seats.
+#[test]
+fn five_ready_players_finish_relay_within_a_few_ticks_of_the_last_proof() {
+    use aether_node::handoff::{sign_ready, verify_output, Readiness};
+    let (ks, files) = dkg4();
+    let (previous, _) = files.values().next().unwrap().decode(4).unwrap();
+    let identity = *previous.public().public();
+    let players: Set<PublicKey> = ks.iter().map(|key| key.public_key()).try_collect().unwrap();
+    let staged = run_round(
+        &ks,
+        Round::reshare(previous, players, 3).with_chain_id(7781),
+        &shares_of(&files, 4),
+        131,
+        0.0,
+    );
+    assert_eq!(staged.len(), 5, "every proposed seat staged a share");
+    let output = staged.values().next().unwrap().output.clone();
+    let members: Vec<_> = ks.iter().map(|key| (hex::encode(key.public_key().encode()), "node".to_string())).collect();
+    let mut readiness = Readiness { round: 3, output, members, proofs: Default::default() };
+    let mut completion_tick = None;
+    for (i, key) in ks.iter().enumerate() {
+        let member = hex::encode(key.public_key().encode());
+        let share = staged[&key.public_key()].decode(5).unwrap().1;
+        let proof = sign_ready(7781, 3, &readiness.output, &readiness.members, &share);
+        let tick = i.min(3); // proofs arrive over four 500 ms relay ticks
+        if readiness.accept_proof(7781, &member, &proof).unwrap() {
+            completion_tick = Some(tick);
+        }
+        if i < 4 { assert!(completion_tick.is_none(), "a missing seat cannot finish the relay"); }
+    }
+    let last_proof_tick = 3;
+    assert!(completion_tick.unwrap() <= last_proof_tick + 2);
+    assert!(completion_tick.unwrap() < (aether_node::dkg::SHARE_READY_WINDOW.as_millis() / 500) as usize);
+    let handoff = aether_light::block::Handoff {
+        round: 3,
+        output: readiness.output.clone(),
+        ready: readiness.members.iter().map(|(key, _)| readiness.proofs[key].clone()).collect(),
+        members: readiness.members,
+        signature: String::new(),
+    };
+    verify_output(7781, &identity, &handoff).unwrap();
+}
+
 /// A5-2: the fifth seat can miss the certified decision after the finite
 /// relay even though the other four staged the same five-player output.
 /// The old committee must not certify that seat without evidence of its share.

@@ -2,7 +2,7 @@
 pragma solidity ^0.8.19;
 
 import {AllowanceAccount} from "../base/AllowanceAccount.sol";
-import {LibP256, MockP256Verify} from "./AetherVault.t.sol";
+import {LibP256, MockP256Verify} from "./EastSeaVault.t.sol";
 
 interface VmAllowance {
     function warp(uint256) external;

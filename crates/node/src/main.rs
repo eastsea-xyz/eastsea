@@ -528,7 +528,7 @@ enum Cmd {
         #[arg(long)]
         wait: bool,
     },
-    /// Pay several addresses in ONE signed tx (EIP-7702 delegation to AetherAccount).
+    /// Pay several addresses in ONE signed tx (EIP-7702 delegation to EastSeaAccount).
     Batch {
         #[arg(long, default_value = "http://127.0.0.1:8545")]
         rpc: String,

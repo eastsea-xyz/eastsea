@@ -98,7 +98,7 @@ enum Op {
     BadNonce {
         from: usize,
     },
-    /// Delegate to AetherAccount (first time) and batch-pay two targets.
+    /// Delegate to EastSeaAccount (first time) and batch-pay two targets.
     Batch {
         from: usize,
         a: usize,

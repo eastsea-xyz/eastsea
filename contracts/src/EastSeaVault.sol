@@ -4,12 +4,12 @@ pragma solidity ^0.8.19;
 /// A shared vault ("금고", docs/design/16-vault.md): non-custodial, no admin,
 /// no upgrade path, no fees. The owners are P-256 public keys (the user's Mac
 /// and iPhone Secure Enclave keys, plus family or team members) with an
-/// M-of-N threshold, like AetherAccount's guardian keys.
+/// M-of-N threshold, like EastSeaAccount's guardian keys.
 ///
 /// Money leaves two ways:
 ///   - `spend`: ONE owner's signature moves native AETH at once, within the
 ///     vault-wide daily limit (any 24 hours, UTC-day accounting as in
-///     AetherAccount's session keys).
+///     EastSeaAccount's session keys).
 ///   - the queue: anything else (amounts over the limit, ERC-20 transfers)
 ///     becomes a proposal that `threshold` distinct owners must sign, and that
 ///     anyone may execute `delay` seconds after the LAST needed approval.
@@ -21,7 +21,7 @@ pragma solidity ^0.8.19;
 /// Owners are keys, not addresses, so every owner action is a P-256 signature
 /// over a digest binding chain id, the vault address and a nonce (proposal id,
 /// spend nonce or cancel nonce); anyone relays the transaction.
-contract AetherVault {
+contract EastSeaVault {
     struct Key {
         bytes32 x;
         bytes32 y;
@@ -340,25 +340,25 @@ contract AetherVault {
 /// the salt (and the other creation parameters), so the app can show the
 /// address before deploying, and re-derive it on any machine. No admin, no
 /// registry: the factory only ever deploys.
-contract AetherVaultFactory {
+contract EastSeaVaultFactory {
     event VaultCreated(address indexed vault, bytes32 indexed salt, uint8 threshold, uint128 dailyLimit, uint64 delay);
 
-    function create(AetherVault.Key[] calldata keys, uint8 threshold, uint128 dailyLimit, uint64 delay, bytes32 salt)
+    function create(EastSeaVault.Key[] calldata keys, uint8 threshold, uint128 dailyLimit, uint64 delay, bytes32 salt)
         external
         returns (address)
     {
-        AetherVault vault = new AetherVault{salt: salt}(keys, threshold, dailyLimit, delay);
+        EastSeaVault vault = new EastSeaVault{salt: salt}(keys, threshold, dailyLimit, delay);
         emit VaultCreated(address(vault), salt, threshold, dailyLimit, delay);
         return address(vault);
     }
 
     /// Where `create` with these exact arguments will deploy.
-    function predict(AetherVault.Key[] calldata keys, uint8 threshold, uint128 dailyLimit, uint64 delay, bytes32 salt)
+    function predict(EastSeaVault.Key[] calldata keys, uint8 threshold, uint128 dailyLimit, uint64 delay, bytes32 salt)
         external
         view
         returns (address)
     {
-        bytes32 initCode = keccak256(abi.encodePacked(type(AetherVault).creationCode, abi.encode(keys, threshold, dailyLimit, delay)));
+        bytes32 initCode = keccak256(abi.encodePacked(type(EastSeaVault).creationCode, abi.encode(keys, threshold, dailyLimit, delay)));
         return address(uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), address(this), salt, initCode)))));
     }
 }

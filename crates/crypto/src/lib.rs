@@ -206,7 +206,7 @@ pub fn p256_point_is_valid(x: &[u8; 32], y: &[u8; 32]) -> bool {
 }
 
 /// Affine (x, y) of a P-256 public key given in SEC1 form (compressed or not):
-/// what P256VERIFY and `AetherAccount.setGuardian` take.
+/// what P256VERIFY and `EastSeaAccount.setGuardian` take.
 pub fn p256_xy(sec1: &[u8]) -> Result<([u8; 32], [u8; 32]), CryptoError> {
     use p256::elliptic_curve::sec1::ToSec1Point;
     let vk = p256::ecdsa::VerifyingKey::from_sec1_bytes(sec1).map_err(|_| CryptoError::InvalidPublicKey)?;

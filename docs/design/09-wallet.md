@@ -68,14 +68,14 @@ Aether.app (SwiftUI)
 ## 위임 계정(EIP-7702) — 구현됨 (2026-09-26)
 
 - P-256(Secure Enclave) 계정에는 secp256k1 키가 없어 표준 7702 권한 튜플을 만들 수 없다. 대신 **자기 서명 tx 자체가 권한**이다: `EvmCall.delegate = Some(addr)`면 실행 전에 발신자 코드가 7702 지정자 `0xef0100‖addr`가 된다(`Address::ZERO`면 해제). 구현은 revm의 7702 처리에 발신자를 authority로 넣은 `RecoveredAuthorization`(nonce = tx nonce + 1, 표준 자기 후원 규칙)을 주는 방식이라 가스·nonce·EIP-3607 예외가 표준과 같다. 페이로드에는 선택적 꼬리(태그 0xd7 + 20B)로 붙어 기존 인코딩은 그대로 유효.
-- 위임 대상 `AetherAccount`(`contracts/src/AetherAccount.sol`, 0x…7702에 제네시스 선배포): `execute((address,uint256,bytes)[])` — 여러 호출을 **서명 한 번(Touch ID 한 번)**에 원자적으로. 계정 자신만 호출 가능(`msg.sender == address(this)`).
+- 위임 대상 `EastSeaAccount`(`contracts/src/EastSeaAccount.sol`, 0x…7702에 제네시스 선배포): `execute((address,uint256,bytes)[])` — 여러 호출을 **서명 한 번(Touch ID 한 번)**에 원자적으로. 계정 자신만 호출 가능(`msg.sender == address(this)`).
 - 지갑: 받는 사람을 쉼표로 여러 개 적으면 `prepare_batch`로 한 tx. 첫 배치에서 위임을 같이 설정하고 이후엔 생략.
 - 상태: 코드 변경(위임 설정·교체·해제)을 트리에 기록(이전 코드 청크 삭제), BAL `code_touched`. 병렬 실행 차등 테스트에 위임·배치 연산 포함.
 - 검증: 위임+배치 한 tx, 이후 배치, 해제, 타인 호출 거부(OnlySelf), 코덱 하위호환, 4검증자 devnet에서 서명 한 번으로 3곳 지급 후 경량 검증.
 
 ### 복구 키(가디언) — 구현됨
 
-- `AetherAccount.setGuardian(x, y)`: 계정이 두 번째 기기(다른 맥·아이폰) Secure Enclave의 P-256 공개키를 복구 키로 등록(자기 호출만). 저장은 ERC-7201 네임스페이스 슬롯(`aether.account.guardian`) — 7702에서 저장소는 계정 자신의 것이라 충돌 방지.
+- `EastSeaAccount.setGuardian(x, y)`: 계정이 두 번째 기기(다른 맥·아이폰) Secure Enclave의 P-256 공개키를 복구 키로 등록(자기 호출만). 저장은 ERC-7201 네임스페이스 슬롯(`aether.account.guardian`) — 7702에서 저장소는 계정 자신의 것이라 충돌 방지.
 - `guardianExecute(calls, r, s)`: 가디언 서명을 **P256VERIFY(0x100)**로 검증해 호출 실행. 서명 대상은 `sha256(abi.encode(chainid, account, nonce, calls))` — Secure Enclave가 SHA-256으로 서명하는 방식과 같다. nonce로 재생 방지, 누구나 중계 가능.
 - 지갑(대칭 설계): "이 맥의 복구 키 코드"(x‖y) 복사 → 상대가 "내 복구 키로 지정". 키를 잃으면 가디언 맥에서 "분실 계정 복구": 잔액과 가디언 nonce를 **확정 인증서 + 저장소 증명으로 검증**한 뒤 가디언으로 서명, 자기 계정에서 중계(Touch ID 두 번).
 - CLI `set-guardian`, `recover`. 검증: 복구 성공, 재생·다른 키·조작된 호출 거부, 가디언 없으면 불가, 4검증자 devnet에서 등록→복구→분실 계정 잔액 0 경량 검증.

@@ -1240,7 +1240,7 @@ pub struct Payment {
 }
 
 /// Several payments, all or nothing, under ONE signature (one Touch ID).
-/// The account delegates to AetherAccount (EIP-7702) in the same tx the first
+/// The account delegates to EastSeaAccount (EIP-7702) in the same tx the first
 /// time; afterwards it just calls its own `execute`.
 #[uniffi::export]
 pub fn prepare_batch(p256_public_key: Vec<u8>, payments: Vec<Payment>) -> R<PreparedTx> {
@@ -1972,7 +1972,7 @@ mod release_tests {
 }
 
 /// Make the device with `recovery_code` able to recover this account after a
-/// 48-hour delay that this account can cancel (delegates to AetherAccount first
+/// 48-hour delay that this account can cancel (delegates to EastSeaAccount first
 /// if needed). Sign with the Secure Enclave and submit.
 #[uniffi::export]
 pub fn prepare_set_recovery_key(p256_public_key: Vec<u8>, recovery_code: String) -> R<PreparedTx> {

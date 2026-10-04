@@ -2531,7 +2531,7 @@ public func prepareAddRecoveryKey(p256PublicKey: Data, recoveryCode: String)thro
 }
 /**
  * Several payments, all or nothing, under ONE signature (one Touch ID).
- * The account delegates to AetherAccount (EIP-7702) in the same tx the first
+ * The account delegates to EastSeaAccount (EIP-7702) in the same tx the first
  * time; afterwards it just calls its own `execute`.
  */
 public func prepareBatch(p256PublicKey: Data, payments: [Payment])throws  -> PreparedTx  {
@@ -2706,7 +2706,7 @@ public func prepareSessionTokenSubmit(sessionPublicKey: Data, request: SessionTo
 }
 /**
  * Make the device with `recovery_code` able to recover this account after a
- * 48-hour delay that this account can cancel (delegates to AetherAccount first
+ * 48-hour delay that this account can cancel (delegates to EastSeaAccount first
  * if needed). Sign with the Secure Enclave and submit.
  */
 public func prepareSetRecoveryKey(p256PublicKey: Data, recoveryCode: String)throws  -> PreparedTx  {

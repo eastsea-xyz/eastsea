@@ -1,5 +1,5 @@
-//! Calls, signed messages and storage layout of `AetherAccount`
-//! (contracts/src/AetherAccount.sol): batched calls, k-of-n guardians with a
+//! Calls, signed messages and storage layout of `EastSeaAccount`
+//! (contracts/src/EastSeaAccount.sol): batched calls, k-of-n guardians with a
 //! delayed, cancellable recovery, and owner keys that take over an address.
 
 use alloy_primitives::{keccak256, Address, Bytes, B256, U256};
@@ -26,7 +26,7 @@ sol! {
     function transfer(address to, uint256 amount);
 }
 
-/// Calls for `AetherAccount`: (to, value, data).
+/// Calls for `EastSeaAccount`: (to, value, data).
 pub type AccountCall = (Address, U256, Bytes);
 
 /// Recovery runs this long after it is proposed unless the owner chose otherwise.

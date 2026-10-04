@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 pragma solidity ^0.8.19;
 
-/// Code that an Aether account (a P-256 Secure Enclave key) delegates to with
+/// Code that an EastSea account (a P-256 Secure Enclave key) delegates to with
 /// EIP-7702: the account keeps its address and key, and gains batched calls and
 /// social recovery. It runs in the account's own context, so only the account
 /// itself (a tx it signed, sent to its own address) may change its settings.
@@ -17,7 +17,7 @@ pragma solidity ^0.8.19;
 ///
 /// Limit: EIP-7702 cannot revoke the account's original key. Recovery is for a
 /// lost key; whoever holds a stolen original key can still move funds.
-contract AetherAccount {
+contract EastSeaAccount {
     struct Call {
         address to;
         uint256 value;

@@ -10,7 +10,7 @@
 
 ## 계약과 서명
 
-- `contracts/base/AllowanceAccount.sol`은 생성자에서 USDC 주소, ERC-4337 v0.7 EntryPoint 주소, 소유자 원시 P-256 공개키 `(x,y)`를 고정한다. EIP-7702 위임이나 `AetherAccount.sol`의 `onlySelf` 계정 전제를 가져오지 않는다. 토큰과 EntryPoint 주소는 변경할 수 없으므로 실제 배포 전에 Base의 정확한 주소와 코드 해시를 재확인해야 한다.
+- `contracts/base/AllowanceAccount.sol`은 생성자에서 USDC 주소, ERC-4337 v0.7 EntryPoint 주소, 소유자 원시 P-256 공개키 `(x,y)`를 고정한다. EIP-7702 위임이나 `EastSeaAccount.sol`의 `onlySelf` 계정 전제를 가져오지 않는다. 토큰과 EntryPoint 주소는 변경할 수 없으므로 실제 배포 전에 Base의 정확한 주소와 코드 해시를 재확인해야 한다.
 - CryptoKit 원시 서명 `r||s`를 사용한다. 서명자는 P-256 차수의 절반보다 큰 `s`를 `n-s`로 정규화해야 한다. 계약은 높은 `s`, 범위 밖의 `r/s`, 곡선 밖 공개키를 거부한다. WebAuthn의 `authenticatorData`·출처·사용자 확인을 검증하는 패스키 경로가 아니다.
 - 직접 소유자 실행은 `SHA-256(abi.encode(OWNER_TAG, chainId, account, ownerNonce, expiry, to, value, keccak256(data)))`에 서명한다. ERC-4337 `validateUserOp`은 EntryPoint만 호출할 수 있으며 `executeFromEntryPoint` 호출, 별도의 `userOpNonce`, 만료, `userOpHash`와 체인·계정 도메인을 검사한다. 서명 형식은 `abi.encode(uint64 expiry, bytes32 r, bytes32 s)`다. 배포 및 EntryPoint 예치·번들러 통합은 아직 없다.
 - Base의 `0x100` P-256 프리컴파일을 우선 사용한다. 없는 로컬 EVM에서는 Solidity 검증으로 폴백한다. 로컬 폴백은 가스가 비싸고, 실제 배포 전에 선택한 Base 환경의 프리컴파일 동작·가스·서명 벡터를 재검증해야 한다.

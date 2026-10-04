@@ -2,12 +2,12 @@
 
 멀티시그·가족 계정을 하나로 합친 공용 금고. 12-launch-plan.md 원칙 그대로: **비수탁, 수수료 0, 불변·무관리자 컨트랙트.** 오너는 사람의 주소가 아니라 P-256 공개 키(Mac·iPhone Secure Enclave, 가족·팀 멤버)이고, M-of-N 정족수가 자금을 지킨다. Squads/Safe 형태를 Aether답게: 출금은 24~48시간 대기 중 취소 가능, 소액은 하루 한도로 즉시(12-launch-plan.md "금고" 항목, docs/research/popular-utilities-2026.md 1)·2) 참고).
 
-소스: `contracts/src/AetherVault.sol` (`AetherVault`, `AetherVaultFactory`), 테스트: `contracts/test/AetherVault.t.sol`. Rust 변경 없음.
+소스: `contracts/src/EastSeaVault.sol` (`EastSeaVault`, `EastSeaVaultFactory`), 테스트: `contracts/test/EastSeaVault.t.sol`. Rust 변경 없음.
 
 ## 모델
 
 ```
-오너(=SE 키) M-of-N (1 ≤ M ≤ N ≤ 8; AetherAccount 키 한도와 동일)
+오너(=SE 키) M-of-N (1 ≤ M ≤ N ≤ 8; EastSeaAccount 키 한도와 동일)
   │
   ├─ spend:        오너 1명 서명 → 네이티브 AETH 즉시 송금 (하루 한도 안)
   │                 한도는 금고 전체 기준, 임의의 24시간 창에 적용
@@ -23,7 +23,7 @@
 - 설정 제안은 **전체 설정을 통째로 교체**한다(앱은 체인상 현재 설정을 읽어 한 필드만 바꿔 제출). 실행 시 대기열 전체가 새 시대(queue era)로 무효화된다 — 옛 오너 세트에 대한 승인이 새 오너 세트 아래에서 살아남으면 안 되기 때문이다. 무효화된 제안의 스토리지는 남지만 `SettingsExecuted(id, era)` 이벤트로 앱이 목록을 정리한다.
 - 즉시 지출(`spend`)은 네이티브 AETH 순수 송금만 허용한다(콜데이터 없음). ERC-20 출금은 언제나 대기열 경로 — 토큰 컨트랙트 코드가 단일 서명만으로 실행되는 일을 원천적으로 막는다. ERC-20 일일 한도는 v1에서 의도적으로 뺐다(토큰별 단위 문제, 단순성).
 
-## 서명 (AetherAccount 방식 재사용)
+## 서명 (EastSeaAccount 방식 재사용)
 
 P256VERIFY 프리컴파일(0x100)로 검증하는 SHA-256 다이제스트. EIP-712형 도메인: **체인 id + 금고 주소 + 태그 + nonce**가 모든 다이제스트에 들어가 금고 간·체인 간 재생을 차단한다.
 
@@ -36,7 +36,7 @@ P256VERIFY 프리컴파일(0x100)로 검증하는 SHA-256 다이제스트. EIP-7
 
 승인(`approve`)은 제안 구조체에 저장된 필드로 다이제스트를 다시 계산해 검증하므로, 승인 시점에 원래 파라미터를 다시 전달할 필요가 없다(서명이 서로 다른 파라미터에 대한 것이면 `BadSignature`).
 
-일일 한도 계산은 AetherAccount 세션 키와 같은 트릭: 임의의 24시간 창은 연속한 두 UTC 하루를 넘지 못하므로, "오늘 + 어제" 지출 합을 한도로 묶으면 모든 창이 묶인다. `dailyAvailable()` 뷰가 앱에 남은 한도를 준다.
+일일 한도 계산은 EastSeaAccount 세션 키와 같은 트릭: 임의의 24시간 창은 연속한 두 UTC 하루를 넘지 못하므로, "오늘 + 어제" 지출 합을 한도로 묶으면 모든 창이 묶인다. `dailyAvailable()` 뷰가 앱에 남은 한도를 준다.
 
 ## 보안 설계
 
@@ -61,7 +61,7 @@ P256VERIFY 프리컴파일(0x100)로 검증하는 SHA-256 다이제스트. EIP-7
 
 ## 팩토리 (CREATE2)
 
-`AetherVaultFactory.create(keys, threshold, dailyLimit, delay, salt)`는 `new AetherVault{salt}`로 배포하고, `predict(...)`가 같은 인자에 대한 주소를 미리 계산한다. 주소는 오너·정족수·한도·지연(생성 코드에 인코딩) + salt + 팩토리 주소의 함수로 결정적 — 앱은 배포 전 주소를 보여 줄 수 있고 어떤 기기에서든 다시 유도할 수 있다. 같은 인자+salt의 재배포는 CREATE2 충돌로 되돌아간다. 프록시가 아니라 풀 계약을 그대로 배포한다(불변 원칙에 부합, Aether에서 가스는 싸다).
+`EastSeaVaultFactory.create(keys, threshold, dailyLimit, delay, salt)`는 `new EastSeaVault{salt}`로 배포하고, `predict(...)`가 같은 인자에 대한 주소를 미리 계산한다. 주소는 오너·정족수·한도·지연(생성 코드에 인코딩) + salt + 팩토리 주소의 함수로 결정적 — 앱은 배포 전 주소를 보여 줄 수 있고 어떤 기기에서든 다시 유도할 수 있다. 같은 인자+salt의 재배포는 CREATE2 충돌로 되돌아간다. 프록시가 아니라 풀 계약을 그대로 배포한다(불변 원칙에 부합, EastSea에서 가스는 싸다).
 
 ## 테스트 (`cd contracts && forge test`)
 

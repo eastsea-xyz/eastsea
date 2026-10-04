@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 pragma solidity ^0.8.19;
 
-import {AetherNames} from "../src/AetherNames.sol";
+import {EastSeaNames} from "../src/EastSeaNames.sol";
 
 interface Vm {
     function warp(uint256) external;
@@ -16,7 +16,7 @@ interface Vm {
 /// value); `armRegister` registers a second, separately committed name with
 /// real value. Both modes record whether the inner call landed.
 contract ReentrantPayer {
-    AetherNames public names;
+    EastSeaNames public names;
     bytes public callData;
     string public rName;
     address public rOwner;
@@ -26,7 +26,7 @@ contract ReentrantPayer {
     bool public armedRegister;
     uint256 public innerOk; // 1 = the re-entrant call succeeded
 
-    constructor(AetherNames n) {
+    constructor(EastSeaNames n) {
         names = n;
     }
 
@@ -67,10 +67,10 @@ contract ReentrantPayer {
 /// staying false through a full lifecycle is the proof: owning a name grants
 /// no callback surface to attack.
 contract StubOwner {
-    AetherNames public names;
+    EastSeaNames public names;
     bool public touched;
 
-    constructor(AetherNames n) {
+    constructor(EastSeaNames n) {
         names = n;
     }
 
@@ -87,7 +87,7 @@ contract StubOwner {
     }
 }
 
-contract AetherNamesTest {
+contract EastSeaNamesTest {
     Vm constant vm = Vm(0x7109709ECfa91a80626fF3989D68f67F5b1DD12D);
 
     address alice = address(0xA11CE);
@@ -97,7 +97,7 @@ contract AetherNamesTest {
 
     bytes32 constant SALT = bytes32(uint256(0xa11ce));
 
-    AetherNames names;
+    EastSeaNames names;
 
     event Registered(string name, bytes32 indexed node, address indexed owner, uint64 expires, uint256 fee);
     event Renewed(bytes32 indexed node, uint64 newExpires, uint256 fee);
@@ -119,7 +119,7 @@ contract AetherNamesTest {
     uint256 mFees;
 
     function setUp() public {
-        names = new AetherNames();
+        names = new EastSeaNames();
         vm.deal(alice, 1000 ether);
         vm.deal(bob, 1000 ether);
         vm.deal(carol, 1000 ether);
@@ -250,7 +250,7 @@ contract AetherNamesTest {
         names.commit(commitFor("xn--pay", alice, SALT));
         vm.warp(block.timestamp + names.MIN_COMMIT_AGE());
         vm.prank(alice);
-        vm.expectRevert(err(AetherNames.InvalidName.selector));
+        vm.expectRevert(err(EastSeaNames.InvalidName.selector));
         names.register{value: 10 ether}("xn--pay", alice, SALT);
     }
 
@@ -259,7 +259,7 @@ contract AetherNamesTest {
         names.commit(commitFor("abc", address(0), SALT));
         vm.warp(block.timestamp + names.MIN_COMMIT_AGE());
         vm.prank(alice);
-        vm.expectRevert(err(AetherNames.InvalidOwner.selector));
+        vm.expectRevert(err(EastSeaNames.InvalidOwner.selector));
         names.register{value: 10 ether}("abc", address(0), SALT);
     }
 
@@ -294,7 +294,7 @@ contract AetherNamesTest {
         names.commit(commitFor("abc", alice, SALT));
         vm.warp(block.timestamp + names.MIN_COMMIT_AGE());
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(AetherNames.InsufficientFee.selector, 2 ether));
+        vm.expectRevert(abi.encodeWithSelector(EastSeaNames.InsufficientFee.selector, 2 ether));
         names.register{value: 1.9 ether}("abc", alice, SALT);
     }
 
@@ -302,7 +302,7 @@ contract AetherNamesTest {
 
     function test_RegisterRequiresMatchingCommitment() public {
         vm.prank(alice);
-        vm.expectRevert(err(AetherNames.UnknownCommitment.selector));
+        vm.expectRevert(err(EastSeaNames.UnknownCommitment.selector));
         names.register{value: 2 ether}("abc", alice, SALT);
 
         // a commitment over different parameters does not help
@@ -310,10 +310,10 @@ contract AetherNamesTest {
         names.commit(commitFor("abcd", alice, SALT));
         vm.warp(block.timestamp + names.MIN_COMMIT_AGE());
         vm.prank(alice);
-        vm.expectRevert(err(AetherNames.UnknownCommitment.selector));
+        vm.expectRevert(err(EastSeaNames.UnknownCommitment.selector));
         names.register{value: 2 ether}("abc", alice, SALT); // wrong name in hash
         vm.prank(alice);
-        vm.expectRevert(err(AetherNames.UnknownCommitment.selector));
+        vm.expectRevert(err(EastSeaNames.UnknownCommitment.selector));
         names.register{value: 0.5 ether}("abcd", bob, SALT); // wrong owner in hash
     }
 
@@ -325,7 +325,7 @@ contract AetherNamesTest {
         uint256 minAge = names.MIN_COMMIT_AGE();
         vm.warp(t0 + minAge - 1); // one second too early
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(AetherNames.CommitTooNew.selector, minAge - 1));
+        vm.expectRevert(abi.encodeWithSelector(EastSeaNames.CommitTooNew.selector, minAge - 1));
         names.register{value: 2 ether}("abc", alice, SALT);
 
         vm.warp(t0 + names.MIN_COMMIT_AGE()); // exactly old enough
@@ -344,7 +344,7 @@ contract AetherNamesTest {
         names.commit(commitFor("abe", bob, SALT));
         vm.warp(block.timestamp + names.MAX_COMMIT_AGE()); // exactly too old
         vm.prank(bob);
-        vm.expectRevert(err(AetherNames.CommitTooOld.selector));
+        vm.expectRevert(err(EastSeaNames.CommitTooOld.selector));
         names.register{value: 2 ether}("abe", bob, SALT);
 
         // re-committing the same hash refreshes the window
@@ -363,7 +363,7 @@ contract AetherNamesTest {
         // the same commitment is deleted after the reveal: a replay fails
         // before the name is even checked
         vm.prank(alice);
-        vm.expectRevert(err(AetherNames.UnknownCommitment.selector));
+        vm.expectRevert(err(EastSeaNames.UnknownCommitment.selector));
         names.register{value: 2 ether}("abc", alice, SALT);
     }
 
@@ -376,7 +376,7 @@ contract AetherNamesTest {
         // eve watches the mempool at reveal time and tries to copy it:
         // the victim's salt does not open a commitment bound to eve
         vm.prank(eve);
-        vm.expectRevert(err(AetherNames.UnknownCommitment.selector));
+        vm.expectRevert(err(EastSeaNames.UnknownCommitment.selector));
         names.register{value: 2 ether}("abc", eve, SALT);
 
         // committing her own hash now and revealing in the same breath is
@@ -385,7 +385,7 @@ contract AetherNamesTest {
         vm.prank(eve);
         names.commit(commitFor("abc", eve, bytes32(uint256(0xE1E))));
         vm.prank(eve);
-        vm.expectRevert(abi.encodeWithSelector(AetherNames.CommitTooNew.selector, 0));
+        vm.expectRevert(abi.encodeWithSelector(EastSeaNames.CommitTooNew.selector, 0));
         names.register{value: 2 ether}("abc", eve, bytes32(uint256(0xE1E)));
 
         vm.prank(alice);
@@ -419,7 +419,7 @@ contract AetherNamesTest {
 
         // only carol controls the name now
         vm.prank(alice);
-        vm.expectRevert(err(AetherNames.NotOwner.selector));
+        vm.expectRevert(err(EastSeaNames.NotOwner.selector));
         names.setAddr("abcde", alice);
     }
 
@@ -430,7 +430,7 @@ contract AetherNamesTest {
 
         commitAndAge("abc", bob, SALT);
         vm.prank(bob);
-        vm.expectRevert(err(AetherNames.NameTaken.selector));
+        vm.expectRevert(err(EastSeaNames.NameTaken.selector));
         names.register{value: 2 ether}("abc", bob, SALT);
     }
 
@@ -471,10 +471,10 @@ contract AetherNamesTest {
         assertEq(names.ownerOf(gone), address(0));
         assertEq(names.addrOf(gone), address(0));
         vm.prank(alice);
-        vm.expectRevert(err(AetherNames.Released.selector));
+        vm.expectRevert(err(EastSeaNames.Released.selector));
         names.renew{value: 0.1 ether}("abcdef");
         vm.prank(alice);
-        vm.expectRevert(err(AetherNames.NotOwner.selector));
+        vm.expectRevert(err(EastSeaNames.NotOwner.selector));
         names.setAddr("abcdef", alice); // released: nobody owns it
     }
 
@@ -533,7 +533,7 @@ contract AetherNamesTest {
 
     function test_RenewUnknownName() public {
         vm.prank(alice);
-        vm.expectRevert(err(AetherNames.Unregistered.selector));
+        vm.expectRevert(err(EastSeaNames.Unregistered.selector));
         names.renew{value: 0.1 ether}("abcde");
     }
 
@@ -560,7 +560,7 @@ contract AetherNamesTest {
 
         // alice lost every owner right with the transfer
         vm.prank(alice);
-        vm.expectRevert(err(AetherNames.NotOwner.selector));
+        vm.expectRevert(err(EastSeaNames.NotOwner.selector));
         names.setAddr("abcde", alice);
     }
 
@@ -572,14 +572,14 @@ contract AetherNamesTest {
 
         // only the owner may propose
         vm.prank(bob);
-        vm.expectRevert(err(AetherNames.NotOwner.selector));
+        vm.expectRevert(err(EastSeaNames.NotOwner.selector));
         names.transferPropose("abcde", bob);
 
         // only the pending owner may accept
         vm.prank(alice);
         names.transferPropose("abcde", bob);
         vm.prank(carol);
-        vm.expectRevert(err(AetherNames.NotPendingOwner.selector));
+        vm.expectRevert(err(EastSeaNames.NotPendingOwner.selector));
         names.transferAccept("abcde");
 
         // proposing zero cancels
@@ -587,7 +587,7 @@ contract AetherNamesTest {
         names.transferPropose("abcde", address(0));
         assertEq(names.pendingOwnerOf(node), address(0));
         vm.prank(bob);
-        vm.expectRevert(err(AetherNames.NotPendingOwner.selector));
+        vm.expectRevert(err(EastSeaNames.NotPendingOwner.selector));
         names.transferAccept("abcde");
 
         // a new proposal overwrites the old one
@@ -596,7 +596,7 @@ contract AetherNamesTest {
         vm.prank(alice);
         names.transferPropose("abcde", carol);
         vm.prank(bob);
-        vm.expectRevert(err(AetherNames.NotPendingOwner.selector));
+        vm.expectRevert(err(EastSeaNames.NotPendingOwner.selector));
         names.transferAccept("abcde");
         vm.prank(carol);
         names.transferAccept("abcde");
@@ -612,7 +612,7 @@ contract AetherNamesTest {
         bytes32 node = names.nodeFor("abcde");
 
         vm.prank(bob);
-        vm.expectRevert(err(AetherNames.NotOwner.selector));
+        vm.expectRevert(err(EastSeaNames.NotOwner.selector));
         names.setAddr("abcde", bob);
 
         vm.expectEmit(true, true, true, true);
@@ -641,7 +641,7 @@ contract AetherNamesTest {
 
         // the fifth distinct key does not fit
         vm.prank(alice);
-        vm.expectRevert(err(AetherNames.TooManyTextRecords.selector));
+        vm.expectRevert(err(EastSeaNames.TooManyTextRecords.selector));
         names.setText("abcde", "fifth", "y");
 
         // rewriting an existing key costs no slot
@@ -667,19 +667,19 @@ contract AetherNamesTest {
         names.register{value: 0.1 ether}("abcde", alice, SALT);
 
         vm.prank(alice);
-        vm.expectRevert(err(AetherNames.BadTextKey.selector));
+        vm.expectRevert(err(EastSeaNames.BadTextKey.selector));
         names.setText("abcde", "", "v"); // empty key
 
         vm.prank(alice);
-        vm.expectRevert(err(AetherNames.BadTextKey.selector));
+        vm.expectRevert(err(EastSeaNames.BadTextKey.selector));
         names.setText("abcde", "abcdefghijklmnopqrstuvwxyz1234567", "v"); // 33 bytes
 
         vm.prank(alice);
-        vm.expectRevert(err(AetherNames.BadTextKey.selector));
+        vm.expectRevert(err(EastSeaNames.BadTextKey.selector));
         names.setText("abcde", "Bad_Key", "v"); // charset is [a-z0-9-]
 
         vm.prank(alice);
-        vm.expectRevert(err(AetherNames.TextValueTooLong.selector));
+        vm.expectRevert(err(EastSeaNames.TextValueTooLong.selector));
         names.setText("abcde", "k", rep("1", 129)); // one byte over
 
         // 128 bytes on the nose is fine
@@ -688,7 +688,7 @@ contract AetherNamesTest {
 
         // owner-only, and the name must still be live
         vm.prank(bob);
-        vm.expectRevert(err(AetherNames.NotOwner.selector));
+        vm.expectRevert(err(EastSeaNames.NotOwner.selector));
         names.setText("abcde", "k", "v");
     }
 
@@ -702,7 +702,7 @@ contract AetherNamesTest {
 
         // no address record yet: nothing points back
         vm.prank(alice);
-        vm.expectRevert(err(AetherNames.ReverseMismatch.selector));
+        vm.expectRevert(err(EastSeaNames.ReverseMismatch.selector));
         names.setReverse("abcde");
 
         vm.prank(alice);
@@ -730,10 +730,10 @@ contract AetherNamesTest {
         // ...but neither can pin the name on alice's address: bob is not
         // alice (addr != msg.sender), and alice does not own the name
         vm.prank(bob);
-        vm.expectRevert(err(AetherNames.ReverseMismatch.selector));
+        vm.expectRevert(err(EastSeaNames.ReverseMismatch.selector));
         names.setReverse("abcde");
         vm.prank(alice);
-        vm.expectRevert(err(AetherNames.NotOwner.selector));
+        vm.expectRevert(err(EastSeaNames.NotOwner.selector));
         names.setReverse("abcde");
         assertTrue(bytes(names.reverseOf(alice)).length == 0);
 
@@ -827,7 +827,7 @@ contract AetherNamesTest {
         assertEq(names.ownerOf(names.nodeFor("abc")), address(stub));
 
         // a contract owner acts through its own calls, exactly like an
-        // AetherAccount would
+        // EastSeaAccount would
         stub.setAddr("abc", address(stub));
         assertEq(names.addrOf(names.nodeFor("abc")), address(stub));
         stub.propose("abc", bob);

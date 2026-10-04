@@ -26,10 +26,10 @@ pragma solidity ^0.8.19;
 /// data (the release is lazy: views go quiet immediately, and the next
 /// registration sweeps the old record).
 ///
-/// Owners are addresses, and Aether accounts are smart accounts, so an owner
+/// Owners are addresses, and EastSea accounts are smart accounts, so an owner
 /// may well be a contract. This contract never calls its owners; ownership
 /// grants no callback surface.
-contract AetherNames {
+contract EastSeaNames {
     struct Record {
         address owner;
         uint64 expires;

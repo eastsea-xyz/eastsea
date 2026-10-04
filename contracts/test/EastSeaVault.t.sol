@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 pragma solidity ^0.8.19;
 
-import {AetherVault, AetherVaultFactory} from "../src/AetherVault.sol";
+import {EastSeaVault, EastSeaVaultFactory} from "../src/EastSeaVault.sol";
 
 interface Vm {
     function warp(uint256) external;
@@ -188,7 +188,7 @@ contract ERC20Mock {
 /// Calls back into the vault from inside transfer().
 contract ReentrantERC20 {
     mapping(address => uint256) public balanceOf;
-    AetherVault public vault;
+    EastSeaVault public vault;
     uint256 public attackId;
     bool public armed;
     bool public reentrySucceeded;
@@ -197,7 +197,7 @@ contract ReentrantERC20 {
         balanceOf[to] += v;
     }
 
-    function arm(AetherVault v, uint256 id) external {
+    function arm(EastSeaVault v, uint256 id) external {
         vault = v;
         attackId = id;
         armed = true;
@@ -216,7 +216,7 @@ contract ReentrantERC20 {
     }
 }
 
-contract AetherVaultTest {
+contract EastSeaVaultTest {
     Vm constant vm = Vm(0x7109709ECfa91a80626fF3989D68f67F5b1DD12D);
 
     // Owner private keys (d) and signing nonces (k), chosen away from every
@@ -229,13 +229,13 @@ contract AetherVaultTest {
     uint256 constant STRANGER = 0x9999;
     uint256 constant K = 0x2001;
 
-    AetherVaultFactory factory;
-    AetherVault vault;
+    EastSeaVaultFactory factory;
+    EastSeaVault vault;
     ERC20Mock token;
     address recipient = address(0xBEEF);
 
     event WithdrawalProposed(uint256 indexed id, address token, address indexed to, uint256 amount);
-    event SettingsProposed(uint256 indexed id, AetherVault.Key[] newOwners, uint8 newThreshold, uint128 newDailyLimit, uint64 newDelay);
+    event SettingsProposed(uint256 indexed id, EastSeaVault.Key[] newOwners, uint8 newThreshold, uint128 newDailyLimit, uint64 newDelay);
     event Approved(uint256 indexed id, uint256 indexed ownerIndex, uint256 approvals, uint64 readyAt);
     event WithdrawalExecuted(uint256 indexed id, address token, address indexed to, uint256 amount);
     event SettingsExecuted(uint256 indexed id, uint256 indexed era);
@@ -245,8 +245,8 @@ contract AetherVaultTest {
     function setUp() public {
         // This forge's EVM predates RIP-7212: install an equivalent verifier at 0x100.
         vm.etch(address(0x100), type(MockP256Verify).runtimeCode);
-        factory = new AetherVaultFactory();
-        vault = AetherVault(payable(factory.create(_owners(), 2, 1 ether, 48 hours, bytes32(uint256(0x51)))));
+        factory = new EastSeaVaultFactory();
+        vault = EastSeaVault(payable(factory.create(_owners(), 2, 1 ether, 48 hours, bytes32(uint256(0x51)))));
         vm.deal(address(vault), 100 ether);
         token = new ERC20Mock();
         token.mint(address(vault), 1000 ether);
@@ -254,13 +254,13 @@ contract AetherVaultTest {
 
     // ---- helpers ----
 
-    function key(uint256 d) internal view returns (AetherVault.Key memory) {
+    function key(uint256 d) internal view returns (EastSeaVault.Key memory) {
         (bytes32 x, bytes32 y) = LibP256.derivePub(d);
-        return AetherVault.Key(x, y);
+        return EastSeaVault.Key(x, y);
     }
 
-    function _owners() internal view returns (AetherVault.Key[] memory ks) {
-        ks = new AetherVault.Key[](3);
+    function _owners() internal view returns (EastSeaVault.Key[] memory ks) {
+        ks = new EastSeaVault.Key[](3);
         ks[0] = key(D0);
         ks[1] = key(D1);
         ks[2] = key(D2);
@@ -294,7 +294,7 @@ contract AetherVaultTest {
         return LibP256.sign(d, vault.withdrawDigest(id, tok, to, amount), K);
     }
 
-    function settingsSig(uint256 id, AetherVault.Key[] memory ks, uint8 t, uint128 l, uint64 dly, uint256 d)
+    function settingsSig(uint256 id, EastSeaVault.Key[] memory ks, uint8 t, uint128 l, uint64 dly, uint256 d)
         internal
         view
         returns (bytes32 r, bytes32 s)
@@ -362,7 +362,7 @@ contract AetherVaultTest {
 
         // together over the limit
         (r, s) = spendSig(recipient, 0.3 ether, 2, D1);
-        vm.expectRevert(abi.encodeWithSelector(AetherVault.OverDailyLimit.selector, 1.1 ether, 1 ether));
+        vm.expectRevert(abi.encodeWithSelector(EastSeaVault.OverDailyLimit.selector, 1.1 ether, 1 ether));
         vault.spend(recipient, 0.3 ether, 1, r, s);
     }
 
@@ -371,20 +371,20 @@ contract AetherVaultTest {
         (bytes32 r, bytes32 s) = spendSig(recipient, 0.6 ether, 0, D0);
         vault.spend(recipient, 0.6 ether, 0, r, s);
         (r, s) = spendSig(recipient, 0.5 ether, 1, D0);
-        vm.expectRevert(abi.encodeWithSelector(AetherVault.OverDailyLimit.selector, 1.1 ether, 1 ether));
+        vm.expectRevert(abi.encodeWithSelector(EastSeaVault.OverDailyLimit.selector, 1.1 ether, 1 ether));
         vault.spend(recipient, 0.5 ether, 0, r, s);
 
         // ... 12 h later still counts (same day)
         vm.warp(block.timestamp + 12 hours);
         (r, s) = spendSig(recipient, 0.5 ether, 1, D0);
-        vm.expectRevert(abi.encodeWithSelector(AetherVault.OverDailyLimit.selector, 1.1 ether, 1 ether));
+        vm.expectRevert(abi.encodeWithSelector(EastSeaVault.OverDailyLimit.selector, 1.1 ether, 1 ether));
         vault.spend(recipient, 0.5 ether, 0, r, s);
 
         // next day: yesterday's 0.6 still bounds the last 24 h
         vm.warp(block.timestamp + 12 hours);
         assertEq(vault.dailyAvailable(), 0.4 ether);
         (r, s) = spendSig(recipient, 0.5 ether, 1, D0);
-        vm.expectRevert(abi.encodeWithSelector(AetherVault.OverDailyLimit.selector, 1.1 ether, 1 ether));
+        vm.expectRevert(abi.encodeWithSelector(EastSeaVault.OverDailyLimit.selector, 1.1 ether, 1 ether));
         vault.spend(recipient, 0.5 ether, 0, r, s);
         (r, s) = spendSig(recipient, 0.4 ether, 1, D0);
         vault.spend(recipient, 0.4 ether, 0, r, s);
@@ -393,7 +393,7 @@ contract AetherVaultTest {
         vm.warp(block.timestamp + 1 days);
         assertEq(vault.dailyAvailable(), 0.6 ether);
         (r, s) = spendSig(recipient, 1 ether, 2, D2);
-        vm.expectRevert(abi.encodeWithSelector(AetherVault.OverDailyLimit.selector, 1.4 ether, 1 ether));
+        vm.expectRevert(abi.encodeWithSelector(EastSeaVault.OverDailyLimit.selector, 1.4 ether, 1 ether));
         vault.spend(recipient, 1 ether, 2, r, s);
         (r, s) = spendSig(recipient, 0.6 ether, 2, D2);
         vault.spend(recipient, 0.6 ether, 2, r, s);
@@ -410,13 +410,13 @@ contract AetherVaultTest {
         emit WithdrawalProposed(1, address(0), recipient, amount);
         vault.proposeWithdrawal(address(0), recipient, amount, 0, r, s);
 
-        AetherVault.Proposal memory p = vault.proposal(1);
-        assertEq(uint8(p.kind), uint8(AetherVault.Kind.Withdraw));
+        EastSeaVault.Proposal memory p = vault.proposal(1);
+        assertEq(uint8(p.kind), uint8(EastSeaVault.Kind.Withdraw));
         assertEq(uint256(p.approvals), 1);
         assertEq(uint256(p.readyAt), 0); // threshold (2) not reached
 
         // execute before the threshold is met
-        vm.expectRevert(err(AetherVault.NotReady.selector));
+        vm.expectRevert(err(EastSeaVault.NotReady.selector));
         vault.execute(1);
 
         uint256 ts2 = block.timestamp;
@@ -437,7 +437,7 @@ contract AetherVaultTest {
 
         // too early
         vm.warp(ts2 + 47 hours);
-        vm.expectRevert(abi.encodeWithSelector(AetherVault.NotYet.selector, readyAt));
+        vm.expectRevert(abi.encodeWithSelector(EastSeaVault.NotYet.selector, readyAt));
         vault.execute(1);
         assertEq(recipient.balance, 0);
 
@@ -450,7 +450,7 @@ contract AetherVaultTest {
         assertEq(address(vault).balance, 95 ether);
 
         // gone for good
-        vm.expectRevert(err(AetherVault.UnknownProposal.selector));
+        vm.expectRevert(err(EastSeaVault.UnknownProposal.selector));
         vault.execute(1);
     }
 
@@ -473,7 +473,7 @@ contract AetherVaultTest {
         vault.proposeWithdrawal(address(0), recipient, 5 ether, 0, r, s);
         (r, s) = cancelSig(1, 0, D2); // not the proposer
         vault.cancel(1, 2, r, s);
-        vm.expectRevert(err(AetherVault.UnknownProposal.selector));
+        vm.expectRevert(err(EastSeaVault.UnknownProposal.selector));
         vault.execute(1);
 
         // during the delay: a ready proposal is still cancellable
@@ -483,12 +483,12 @@ contract AetherVaultTest {
         (r, s) = cancelSig(2, 1, D1);
         vault.cancel(2, 1, r, s);
         vm.warp(readyAt);
-        vm.expectRevert(err(AetherVault.UnknownProposal.selector));
+        vm.expectRevert(err(EastSeaVault.UnknownProposal.selector));
         vault.execute(2);
         assertEq(recipient.balance, 0);
 
         // a settings proposal cancels the same way
-        AetherVault.Key[] memory ks = new AetherVault.Key[](2);
+        EastSeaVault.Key[] memory ks = new EastSeaVault.Key[](2);
         ks[0] = key(D0);
         ks[1] = key(D3);
         (r, s) = settingsSig(3, ks, 2, 1 ether, 24 hours, D0);
@@ -505,7 +505,7 @@ contract AetherVaultTest {
         readyWithdrawal(5 ether, 1);
 
         // rotate to (D3, D0, D4), still 2-of-3, new limit and delay
-        AetherVault.Key[] memory ks = new AetherVault.Key[](3);
+        EastSeaVault.Key[] memory ks = new EastSeaVault.Key[](3);
         ks[0] = key(D3);
         ks[1] = key(D0);
         ks[2] = key(D4);
@@ -528,12 +528,12 @@ contract AetherVaultTest {
         assertEq(uint256(x0), uint256(ks[0].x));
 
         // the pending withdrawal from the old era is gone
-        vm.expectRevert(err(AetherVault.UnknownProposal.selector));
+        vm.expectRevert(err(EastSeaVault.UnknownProposal.selector));
         vault.execute(1);
 
         // a removed owner (old index 2 = D2) no longer signs anything
         (r, s) = spendSig(recipient, 0.1 ether, 0, D2);
-        vm.expectRevert(err(AetherVault.BadSignature.selector));
+        vm.expectRevert(err(EastSeaVault.BadSignature.selector));
         vault.spend(recipient, 0.1 ether, 2, r, s);
 
         // a new owner spends under the new limit
@@ -552,7 +552,7 @@ contract AetherVaultTest {
         (bytes32 r, bytes32 s) = spendSig(recipient, 0.1 ether, 0, D0);
         vault.spend(recipient, 0.1 ether, 0, r, s);
         // same signature again: the nonce moved
-        vm.expectRevert(err(AetherVault.BadSignature.selector));
+        vm.expectRevert(err(EastSeaVault.BadSignature.selector));
         vault.spend(recipient, 0.1 ether, 0, r, s);
         assertEq(recipient.balance, 0.1 ether);
     }
@@ -563,23 +563,23 @@ contract AetherVaultTest {
         (r, s) = withdrawSig(1, address(0), recipient, 5 ether, D1);
         vault.approve(1, 1, r, s);
         // even a fresh signature over the same digest cannot count twice
-        vm.expectRevert(err(AetherVault.AlreadyApproved.selector));
+        vm.expectRevert(err(EastSeaVault.AlreadyApproved.selector));
         vault.approve(1, 1, r, s);
     }
 
     function test_ReplayAcrossVaults() public {
-        AetherVault other = AetherVault(payable(factory.create(_owners(), 2, 1 ether, 48 hours, bytes32(uint256(0x52)))));
+        EastSeaVault other = EastSeaVault(payable(factory.create(_owners(), 2, 1 ether, 48 hours, bytes32(uint256(0x52)))));
         (bytes32 r, bytes32 s) = withdrawSig(1, address(0), recipient, 5 ether, D0);
         vault.proposeWithdrawal(address(0), recipient, 5 ether, 0, r, s);
         // the same signature does not open a proposal on another vault
-        vm.expectRevert(err(AetherVault.BadSignature.selector));
+        vm.expectRevert(err(EastSeaVault.BadSignature.selector));
         other.proposeWithdrawal(address(0), recipient, 5 ether, 0, r, s);
     }
 
     function test_ReplayAcrossChains() public {
         (bytes32 r, bytes32 s) = spendSig(recipient, 0.1 ether, 0, D0);
         vm.chainId(7781);
-        vm.expectRevert(err(AetherVault.BadSignature.selector));
+        vm.expectRevert(err(EastSeaVault.BadSignature.selector));
         vault.spend(recipient, 0.1 ether, 0, r, s);
     }
 
@@ -592,7 +592,7 @@ contract AetherVaultTest {
         (r, s) = withdrawSig(2, address(0), recipient, 5 ether, D0);
         vault.proposeWithdrawal(address(0), recipient, 5 ether, 0, r, s);
         (bytes32 cr, bytes32 cs) = cancelSig(2, 0, D1);
-        vm.expectRevert(err(AetherVault.BadSignature.selector)); // nonce is 1 now
+        vm.expectRevert(err(EastSeaVault.BadSignature.selector)); // nonce is 1 now
         vault.cancel(2, 1, cr, cs);
         (cr, cs) = cancelSig(2, 1, D1);
         vault.cancel(2, 1, cr, cs);
@@ -617,7 +617,7 @@ contract AetherVaultTest {
         assertTrue(!evil.reentrySucceeded());
         assertEq(evil.balanceOf(recipient), 50 ether); // moved exactly once
         assertEq(evil.balanceOf(address(vault)), 0);
-        vm.expectRevert(err(AetherVault.UnknownProposal.selector));
+        vm.expectRevert(err(EastSeaVault.UnknownProposal.selector));
         vault.execute(1);
     }
 
@@ -626,33 +626,33 @@ contract AetherVaultTest {
     function test_WrongSignerRejected() public {
         // not an owner at all
         (bytes32 r, bytes32 s) = spendSig(recipient, 0.1 ether, 0, STRANGER);
-        vm.expectRevert(err(AetherVault.BadSignature.selector));
+        vm.expectRevert(err(EastSeaVault.BadSignature.selector));
         vault.spend(recipient, 0.1 ether, 0, r, s);
 
         // a valid signature from a different owner, claimed as another index
         (r, s) = spendSig(recipient, 0.1 ether, 0, D0);
-        vm.expectRevert(err(AetherVault.BadSignature.selector));
+        vm.expectRevert(err(EastSeaVault.BadSignature.selector));
         vault.spend(recipient, 0.1 ether, 1, r, s);
 
         // signed over different parameters than relayed
         (r, s) = withdrawSig(1, address(0), recipient, 5 ether, D0);
-        vm.expectRevert(err(AetherVault.BadSignature.selector));
+        vm.expectRevert(err(EastSeaVault.BadSignature.selector));
         vault.proposeWithdrawal(address(0), recipient, 6 ether, 0, r, s);
 
         // approve with the proposer's own key under another owner's index
         (r, s) = withdrawSig(1, address(0), recipient, 5 ether, D0);
         vault.proposeWithdrawal(address(0), recipient, 5 ether, 0, r, s);
         (r, s) = withdrawSig(1, address(0), recipient, 5 ether, D0);
-        vm.expectRevert(err(AetherVault.BadSignature.selector));
+        vm.expectRevert(err(EastSeaVault.BadSignature.selector));
         vault.approve(1, 1, r, s);
 
         // cancel by a stranger
         (r, s) = cancelSig(1, 0, STRANGER);
-        vm.expectRevert(err(AetherVault.BadSignature.selector));
+        vm.expectRevert(err(EastSeaVault.BadSignature.selector));
         vault.cancel(1, 1, r, s);
 
         // index out of range
-        vm.expectRevert(err(AetherVault.BadSignature.selector));
+        vm.expectRevert(err(EastSeaVault.BadSignature.selector));
         vault.spend(recipient, 0.1 ether, 3, bytes32(uint256(1)), bytes32(uint256(1)));
     }
 
@@ -662,23 +662,23 @@ contract AetherVaultTest {
         // key derivation staticcalls the modexp precompile, so everything the
         // reverting calls need is built before vm.expectRevert (which latches
         // onto the very next call).
-        AetherVault.Key[] memory ks = _owners();
-        AetherVault.Key[] memory one = new AetherVault.Key[](1);
+        EastSeaVault.Key[] memory ks = _owners();
+        EastSeaVault.Key[] memory one = new EastSeaVault.Key[](1);
         one[0] = key(D0);
         (bytes32 r, bytes32 s) = settingsSig(1, one, 1, 1 ether, 12 hours, D0);
 
         // at creation, directly and through the factory
-        vm.expectRevert(err(AetherVault.BadConfig.selector));
-        new AetherVault(ks, 2, 1 ether, 23 hours);
-        vm.expectRevert(err(AetherVault.BadConfig.selector));
+        vm.expectRevert(err(EastSeaVault.BadConfig.selector));
+        new EastSeaVault(ks, 2, 1 ether, 23 hours);
+        vm.expectRevert(err(EastSeaVault.BadConfig.selector));
         factory.create(ks, 2, 1 ether, 23 hours, bytes32(uint256(0x53)));
 
         // 24 h on the dot is fine
-        AetherVault ok24 = AetherVault(payable(factory.create(ks, 2, 1 ether, 24 hours, bytes32(uint256(0x53)))));
+        EastSeaVault ok24 = EastSeaVault(payable(factory.create(ks, 2, 1 ether, 24 hours, bytes32(uint256(0x53)))));
         assertEq(uint256(ok24.delay()), 24 hours);
 
         // settings proposals cannot lower it below the minimum either
-        vm.expectRevert(err(AetherVault.BadConfig.selector));
+        vm.expectRevert(err(EastSeaVault.BadConfig.selector));
         vault.proposeSettings(one, 1, 1 ether, 12 hours, 0, r, s);
     }
 
@@ -687,24 +687,24 @@ contract AetherVaultTest {
     function test_ConfigValidation() public {
         // built up front: vm.expectRevert latches onto the next call, and key
         // derivation itself staticcalls the modexp precompile.
-        AetherVault.Key[] memory ks = _owners();
-        AetherVault.Key[] memory none = new AetherVault.Key[](0);
-        AetherVault.Key[] memory dup = new AetherVault.Key[](2);
+        EastSeaVault.Key[] memory ks = _owners();
+        EastSeaVault.Key[] memory none = new EastSeaVault.Key[](0);
+        EastSeaVault.Key[] memory dup = new EastSeaVault.Key[](2);
         dup[0] = key(D0);
         dup[1] = key(D0);
-        AetherVault.Key[] memory zero = new AetherVault.Key[](1);
-        zero[0] = AetherVault.Key(bytes32(0), bytes32(0));
+        EastSeaVault.Key[] memory zero = new EastSeaVault.Key[](1);
+        zero[0] = EastSeaVault.Key(bytes32(0), bytes32(0));
 
-        vm.expectRevert(err(AetherVault.BadConfig.selector)); // threshold 0
-        new AetherVault(ks, 0, 1 ether, 48 hours);
-        vm.expectRevert(err(AetherVault.BadConfig.selector)); // threshold above the count
-        new AetherVault(ks, 4, 1 ether, 48 hours);
-        vm.expectRevert(err(AetherVault.BadConfig.selector)); // no owners
-        new AetherVault(none, 1, 1 ether, 48 hours);
-        vm.expectRevert(err(AetherVault.BadConfig.selector)); // duplicate keys
-        new AetherVault(dup, 1, 1 ether, 48 hours);
-        vm.expectRevert(err(AetherVault.BadConfig.selector)); // zero key
-        new AetherVault(zero, 1, 1 ether, 48 hours);
+        vm.expectRevert(err(EastSeaVault.BadConfig.selector)); // threshold 0
+        new EastSeaVault(ks, 0, 1 ether, 48 hours);
+        vm.expectRevert(err(EastSeaVault.BadConfig.selector)); // threshold above the count
+        new EastSeaVault(ks, 4, 1 ether, 48 hours);
+        vm.expectRevert(err(EastSeaVault.BadConfig.selector)); // no owners
+        new EastSeaVault(none, 1, 1 ether, 48 hours);
+        vm.expectRevert(err(EastSeaVault.BadConfig.selector)); // duplicate keys
+        new EastSeaVault(dup, 1, 1 ether, 48 hours);
+        vm.expectRevert(err(EastSeaVault.BadConfig.selector)); // zero key
+        new EastSeaVault(zero, 1, 1 ether, 48 hours);
     }
 
     // ---- CREATE2 factory ----
@@ -714,7 +714,7 @@ contract AetherVaultTest {
         address predicted = factory.predict(_owners(), 2, 1 ether, 48 hours, salt);
         address deployed = factory.create(_owners(), 2, 1 ether, 48 hours, salt);
         assertEq(deployed, predicted);
-        assertEq(AetherVault(payable(deployed)).ownerCount(), 3);
+        assertEq(EastSeaVault(payable(deployed)).ownerCount(), 3);
 
         // same owners + salt (and other params) again: CREATE2 collision
         bool collided;

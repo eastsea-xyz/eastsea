@@ -1,4 +1,4 @@
-//! EIP-7702 delegation for P-256 accounts: batched calls through AetherAccount.
+//! EIP-7702 delegation for P-256 accounts: batched calls through EastSeaAccount.
 
 use aether_crypto::{P256Signer, Signer};
 use aether_execution::{

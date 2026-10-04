@@ -2,7 +2,7 @@
 
 주소 대신 이름. 12-launch-plan.md E18 그대로: **고정 소각 요금, 경매 없음.** 오너·관리자·업그레이드·일시정지가 없는 불변 컨트랙트이고, 요금은 전액 소각됩니다 — 누구도 수수료를 받지 않습니다 (원칙: 비수탁, 수수료 0, 추천·순위 없음). 소유자는 주소이고 Aether 계정은 스마트 계정이므로 컨트랙트가 오너일 수 있습니다. 이 컨트랙트는 오너를 호출하지 않습니다: 소유권은 어떤 콜백 표면도 주지 않습니다.
 
-소스: `contracts/src/AetherNames.sol` (`AetherNames`), 테스트: `contracts/test/AetherNames.t.sol`. Rust 변경 없음.
+소스: `contracts/src/EastSeaNames.sol` (`EastSeaNames`), 테스트: `contracts/test/EastSeaNames.t.sol`. Rust 변경 없음.
 
 ## 모델
 

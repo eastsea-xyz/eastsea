@@ -20,10 +20,10 @@ pub use tx::{sign_call, sign_call_group, sign_call_with, tx_hash, validate_state
 pub use world::{ChainHasher, Journal, StateError, StateWitness, WorldState};
 
 /// Where the account contract lives (predeployed at genesis). Accounts delegate
-/// to it with EIP-7702 to get batched calls (`contracts/src/AetherAccount.sol`).
+/// to it with EIP-7702 to get batched calls (`contracts/src/EastSeaAccount.sol`).
 pub const AETHER_ACCOUNT: alloy_primitives::Address = alloy_primitives::address!("0000000000000000000000000000000000007702");
 
-/// Runtime bytecode of `AetherAccount` (solc 0.8.19, optimizer 200 runs).
+/// Runtime bytecode of `EastSeaAccount` (solc 0.8.19, optimizer 200 runs).
 pub fn aether_account_code() -> alloy_primitives::Bytes {
     alloy_primitives::Bytes::from(alloy_primitives::hex::decode(include_str!("aether_account.bin.hex").trim()).expect("valid hex"))
 }

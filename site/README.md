@@ -4,12 +4,13 @@
 구성되고 어디에나 그대로 올리면 된다(이후 eastsea.xyz 호스팅 예정).
 
 - `index.html` — 전체 콘텐츠(한국어·영어 동시 포함, CSS로 표시 전환)
+- `privacy.html` — 개인정보 처리방침(이중 언어, 푸터에서 연결)
 - `styles.css` — 딥씨 팔레트(네이비·틸·골드), `prefers-color-scheme` 라이트/다크
 - `README.md` — 이 문서
 
 제약(지켜야 할 것): 외부 트래커 없음, 서드파티 CDN의 웹폰트·스크립트 없음(시스템
 폰트 스택), 쿠키 없음, 이미지 없음(인라인 SVG뿐). 유일한 상태 저장은 언어 선택
-`localStorage["eastsea-lang"]`(try/catch 감싸짐). 총 용량 약 52KB.
+`localStorage["eastsea-lang"]`(try/catch 감싸짐). 총 용량 약 62KB.
 
 ## 미리보기
 
@@ -29,11 +30,12 @@ python3 -m http.server -d site    # http://localhost:8000
 
 ## 검증 (2026-10-04, Playwright + Chrome)
 
-360px·1280px × 라이트·다크 × ko·en 조합에서 확인했다:
+`index.html`·`privacy.html` 모두 360px·1280px × 라이트·다크 × ko·en 조합에서 확인했다:
 
 - 가로 스크롤 없음(`scrollWidth == viewport`), 표도 360px 안에 들어옴
 - 콘솔 에러·경고 0
-- 언어 초기 판정(locale 기반)·토글·localStorage 저장 정상
+- 언어 초기 판정(locale 기반)·토글·localStorage 저장·재방문 유지 정상
+- 네트워크 요청은 로컬 문서·styles.css뿐 — 외부 요청 0
 - 본문 텍스트 대비 WCAG AA 전부 통과(라이트 최저 5.3:1, 다크 최저 7.9:1)
 
 ## 사실 ↔ 출처 매핑 (리드 검토용)
@@ -49,7 +51,7 @@ python3 -m http.server -d site    # http://localhost:8000
 | 보상 개요: 매시간(에포크 3,600블록) 분배, 발행 절반은 노드 몫·절반은 증명 몫 | `docs/design/15-node-rewards.md` §규칙 |
 | min(1/N, 1/16) 상한, 남는 몫 미발행 | 〃 |
 | N=1/4/16+ 분배 표(1/16, 4/16, 전부) | 〃 §"운영자 N명이 모였을 때" |
-| "먼저 온 사람이 더 큰 몫"(적을 때 1/16, 16 넘으면 1/N) | 〃 §초기 참여자의 이점 |
+| "몫은 참여자 수에 따라 정해집니다" + "조기 참여 별도 혜택 없음"(투자 피치 톤 제거) | 〃 §운영자 N명이 모였을 때(공식 그대로) |
 | 열두 번 예고 없는 점호, 답한 슬롯만큼(꼼수 차단) | 〃 §비콘 슬롯 |
 | 워밍업 14일, 정상 몫의 절반에서 시작 | 〃 §B |
 | 청구 없이 다음 에포크 첫 블록이 자동 지급 | 〃 §지급 시점 |
@@ -60,15 +62,21 @@ python3 -m http.server -d site    # http://localhost:8000
 | 프리마인·창업자 몫·토큰 세일 없음, 코인은 블록 보상로만 발행 | `README.md`, `DISCLAIMER.md` §2.1 |
 | 메인넷 수도꼭지 없음(테스트 코인 수도꼭지는 테스트넷 전용) | `DISCLAIMER.md` §2.1, `agents/skills/aether-wallet/SKILL.md`(테스트 토큰 "testnet only") |
 | 업데이트는 독립 빌더 2+(긴급 3) 서명, 발행 기록은 체인에 공개 | `docs/design/19-release-approval.md` |
-| 보안 검토 여러 라운드(교차 모델)·"통과" 아님·유료 외부 감사 전 무 | `README.md`("not yet independently audited"), `docs/design/12-launch-plan.md` |
+| "AI 모델 간 교차 점검" 여러 라운드·"통과 증명서" 아님·공인 외부 보안 업체 감사 전 무 | `README.md`("not yet independently audited"), `docs/design/12-launch-plan.md`; 표현 기준 `docs/research/legal-opinion-memo-2026-10-04.md` §3.6 |
 | 지갑 무분석·무개인정보수집 | `DISCLAIMER.md` |
 | 필요 조건: 애플 실리콘 맥 1대 | `README.md` |
 | 확장: Chrome·Edge·Brave·Arc, 키는 브라우저 생성·비밀번호 암호화 | `README.md` |
 | 운영 주체 Pipln, 등록 서비스 + Apple DeviceCheck, Apple 비후원·비보증 | `README.md`, `AGENTS.md` |
 | 맥 분실 시 복구 키 없으면 누구도 복구 불가 / 보조 Apple 기기 = 복구 키 | `README.md` |
 | 히어로 상태 줄(테스트넷 운영 중·메인넷 전·세일 없음) | `README.md` |
+| 히어로 상태 줄 확장: 테스트넷 코인 무가치·투자 조언 아님(상단 노출) | `DISCLAIMER.md` §2 |
+| 히어로 리드 "검증에 참여합니다"(수익·'잠자는 동안 일한다' 표현 제거) | `README.md` |
+| CTA·섹션 제목 "노드 보상 규칙/분배 규칙"('버는 방법' 표현 제거) | `docs/design/15-node-rewards.md` |
+| "켜 두면 매시간 점호에 응합니다"·가동 시간 기록(야간 수익 표현 제거) | 〃 §비콘 슬롯 |
+| FAQ 토큰 세일: 창업자도 같은 규칙으로 맥을 가동해야 보상 | `README.md` §Planned mainnet rules |
 | AI 에이전트 지갑: 한도·수신인·기한을 Touch ID로 설정, 체인이 강제, 속은 에이전트도 한도 내만 | `AGENTS.md`, `agents/skills/aether-wallet/SKILL.md` |
 | 푸터 법적 문구("조언 아님"·as-is·DISCLAIMER.md 안내) | `DISCLAIMER.md` |
+| 푸터·privacy.html 전체(수집 항목·목적·보유·Apple 국외이전·권리·연락처) | `docs/ops/privacy-policy.md`(표준 원본), 메모 §3.4 초안; 등록 수집 사실은 `docs/design/14-registration.md`, `DISCLAIMER.md` §4 |
 | 푸터 상표 문장(권리 주장·등록 준비 중) | `TRADEMARKS.md` |
 
 의도적 생략: `docs/design/15-node-rewards.md`의 AETH 표기(레거시), 보관(sharding)·

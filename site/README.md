@@ -30,11 +30,12 @@ python3 -m http.server -d site    # http://localhost:8000
 
 ## 검증 (2026-10-04, Playwright + Chrome)
 
-360px·1280px × 라이트·다크 × ko·en 조합에서 확인했다:
+`index.html`·`privacy.html` 모두 360px·1280px × 라이트·다크 × ko·en 조합에서 확인했다:
 
 - 가로 스크롤 없음(`scrollWidth == viewport`), 표도 360px 안에 들어옴
 - 콘솔 에러·경고 0
-- 언어 초기 판정(locale 기반)·토글·localStorage 저장 정상
+- 언어 초기 판정(locale 기반)·토글·localStorage 저장·재방문 유지 정상
+- 네트워크 요청은 로컬 문서·styles.css뿐 — 외부 요청 0
 - 본문 텍스트 대비 WCAG AA 전부 통과(라이트 최저 5.3:1, 다크 최저 7.9:1)
 
 ## 사실 ↔ 출처 매핑 (리드 검토용)

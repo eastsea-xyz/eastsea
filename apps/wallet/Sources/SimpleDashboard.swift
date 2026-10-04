@@ -402,7 +402,7 @@ private struct NetworkPage: View {
                 Tile(value: model.status.map { "#\($0.height)" } ?? "—", label: "Latest block", icon: "cube")
                 Tile(value: "\(model.validators)", label: "Validators", icon: "person.3.fill")
                 Tile(value: blockTime, label: "Block time", icon: "timer")
-                Tile(value: model.status.map { Amount.fee($0.transferFeeWei) } ?? "—", label: "Transfer fee", icon: "flame")
+                Tile(value: model.status.map { Amount.fee($0.transferFeeWei) } ?? "—", label: "Transfer fee (max)", icon: "flame")
                 Tile(value: model.status.map { "\($0.mempool)" } ?? "—", label: "Waiting txs", icon: "tray.full")
             }
             NetworkCard()
@@ -1142,6 +1142,11 @@ private struct SendSheet: View {
     /// The user's confirmation of the exact base-unit count (audit R2-2,
     /// unverified units only).
     @State private var ackUnits = false
+    /// The quoted fee for this sheet's single recipient (audit 6, A6-7): a
+    /// plain transfer may have to create the recipient's account, so the
+    /// quote is a maximum until a certified account proves otherwise. A
+    /// token send, or several recipients, keep `nil` (the status maximum).
+    @State private var quote: TransferQuote?
 
     /// The token being sent (nil: AETH). A payment link always sends AETH.
     private var token: TokenHolding? { model.paymentRequest == nil ? model.sendToken : nil }
@@ -1159,6 +1164,15 @@ private struct SendSheet: View {
         token.map { TokenDenomination.of(chainId: model.status?.chainId ?? 0, address: $0.token.address, claimed: $0.token) }
     }
 
+    /// The most a plain transfer from this sheet can cost in fees (audit 6,
+    /// A6-7): the single recipient's quote when there is one, otherwise the
+    /// status maximum — times the recipient count, since each fresh address
+    /// can add its own account charge.
+    private var maxFee: Double {
+        let each = Double(Wei.format(quote?.feeWei ?? model.status?.transferFeeWei ?? "0")) ?? 0
+        return each * Double(max(recipients.count, 1))
+    }
+
     private var valid: Bool {
         if let t = token {
             guard recipients.count == 1, SendSafety.isValidAddress(recipients[0]),
@@ -1166,7 +1180,7 @@ private struct SendSheet: View {
                   let units = TokenAmount.parse(model.sendAmount, decimals: decimals),
                   units != "0", WeiMath.compare(units, t.balance) <= 0 else { return false }
         } else {
-            guard !recipient.isEmpty, (amount ?? 0) > 0, (amount ?? 0) <= balance else { return false }
+            guard !recipient.isEmpty, (amount ?? 0) > 0, (amount ?? 0) + maxFee <= balance else { return false }
         }
         return true
     }
@@ -1240,7 +1254,13 @@ private struct SendSheet: View {
                 HStack {
                     Text("Network fee").foregroundStyle(.secondary)
                     Spacer()
-                    Text("≈ \(Amount.fee(s.transferFeeWei))").monospacedDigit()
+                    // The quote is a maximum while the recipient may be new
+                    // (audit 6, A6-7): the possible account charge is in it.
+                    if let q = quote, !q.feeIsMaximum {
+                        Text("≈ \(Amount.fee(q.feeWei))").monospacedDigit()
+                    } else {
+                        Text("≤ \(Amount.fee(quote?.feeWei ?? s.transferFeeWei))").monospacedDigit()
+                    }
                 }.font(.aeBody)
             }
             denominationNote
@@ -1270,6 +1290,13 @@ private struct SendSheet: View {
         .macMinSize(width: 420)
         .sheetScroll()
         .onChange(of: recipient) { _, _ in ackPoison = false }
+        .task(id: recipients) {
+            guard token == nil, recipients.count == 1, SendSafety.isValidAddress(recipients[0]) else {
+                quote = nil
+                return
+            }
+            quote = try? transferQuote(recipient: recipients[0], validators: model.validators)
+        }
     }
 
     private var title: String {
@@ -1296,7 +1323,10 @@ private struct SendSheet: View {
         if let t = token, let decimals = denomination?.decimals {
             model.sendAmount = TokenAmount.exact(t.balance, decimals: decimals)
         } else {
-            model.sendAmount = Amount.text(max(0, balance - 0.001))
+            // What can actually leave: the balance minus the fee a plain
+            // transfer burns (audit 6, A6-7) — the possible new-recipient
+            // charge included, so a full send is never rejected for it.
+            model.sendAmount = Amount.text(max(0, balance - maxFee))
         }
     }
 

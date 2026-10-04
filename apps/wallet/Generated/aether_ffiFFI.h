@@ -437,6 +437,11 @@ void uniffi_aether_ffi_fn_func_set_committee_identity(RustBuffer identity_hex, R
 RustBuffer uniffi_aether_ffi_fn_func_submit_signed(RustBuffer envelope_json, RustBuffer signature, RustBuffer p256_public_key, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_TRANSFER_QUOTE
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_TRANSFER_QUOTE
+RustBuffer uniffi_aether_ffi_fn_func_transfer_quote(RustBuffer recipient, uint32_t validators, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_USE_DEVNET_KEYS
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_USE_DEVNET_KEYS
 void uniffi_aether_ffi_fn_func_use_devnet_keys(RustCallStatus *_Nonnull out_status
@@ -991,6 +996,12 @@ uint16_t uniffi_aether_ffi_checksum_func_set_committee_identity(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_SUBMIT_SIGNED
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_SUBMIT_SIGNED
 uint16_t uniffi_aether_ffi_checksum_func_submit_signed(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_TRANSFER_QUOTE
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_TRANSFER_QUOTE
+uint16_t uniffi_aether_ffi_checksum_func_transfer_quote(void
     
 );
 #endif

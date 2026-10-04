@@ -839,7 +839,7 @@ final class WalletModel: ObservableObject {
             if let r = try? receipt(txHash: hash) {
                 await MainActor.run {
                     self.settle(item.id, state: r.success ? .done : .failed)
-                    self.note("\(label) finalized in block \(r.height) (\(r.success ? "success" : "failed"), gas \(r.gasUsed))")
+                    self.note("\(label) finalized in block \(r.height) (\(r.success ? "success" : "failed"), gas \(r.gasUsed)\(r.stateFeeWei != "0" ? ", state fee \(Amount.fee(r.stateFeeWei))" : ""))")
                     self.busy = false
                     self.refresh()
                 }

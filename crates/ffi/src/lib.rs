@@ -41,7 +41,10 @@ pub struct ChainStatus {
     pub height: u64,
     pub state_root: String,
     pub mempool: u64,
-    /// Estimated fee (wei) of a plain transfer at the next block's base fee plus the tip.
+    /// Maximum fee (wei) of a plain transfer: the exec fee plus the charge a
+    /// recipient without an account pays (100 state units at the fixed
+    /// price). A recipient whose certified account exists pays no such
+    /// charge — `transfer_quote` says which case applies (audit 6, A6-7).
     pub transfer_fee_wei: String,
     /// Scheduled notices reported by the selected node (JSON array).
     pub upgrades_json: String,
@@ -91,6 +94,9 @@ pub struct TxReceipt {
     pub height: u64,
     pub success: bool,
     pub gas_used: u64,
+    /// The state fee actually burned (0 when the recipient already had an
+    /// account) — replaces the quote's "maximum" after the send (audit 6, A6-7).
+    pub state_fee_wei: String,
 }
 
 #[derive(uniffi::Record)]
@@ -585,7 +591,10 @@ fn demote_on_failure<T>(read: impl FnOnce() -> R<T>) -> R<T> {
 /// balance, or a chain at its zero floor (below target load the base fee is 0),
 /// sends with tip 0 and exec capped at base × 2 — one base-fee doubling of
 /// headroom — so a new account can transact at all (G2). Older nodes without
-/// `base_fee` get the floor.
+/// `base_fee` get the floor. The state cap never goes below the fixed state
+/// unit price, so the 100-unit reserve a funded transfer to a fresh recipient
+/// signs (tx.rs `recommended_state_budget`) passes `check_budget`'s floor
+/// (audit 6, A6-7).
 fn fee_caps(status: &Value, balance: Option<U256>) -> (FeeVector, u128) {
     const GWEI: u128 = 1_000_000_000;
     let get = |k: &str| {
@@ -598,25 +607,81 @@ fn fee_caps(status: &Value, balance: Option<U256>) -> (FeeVector, u128) {
     (
         FeeVector {
             exec: if free { get("exec") * 2 } else { get("exec") * 2 + GWEI },
-            state: status["base_fee"]["state"].as_str().and_then(|v| v.parse().ok()).unwrap_or(0),
+            state: get("state").max(aether_execution::fees::STATE_UNIT_PRICE),
             prove: get("prove") * 2,
         },
         if free { 0 } else { GWEI },
     )
 }
 
+/// The fee a plain native transfer is quoted (audit 6, A6-7): the exec fee,
+/// plus — until a certified account proves the recipient exists — the
+/// mandatory new-recipient state charge. `fee_is_maximum` tells the UI the
+/// number still carries a charge an existing recipient will not pay, so the
+/// sendable balance must reserve it.
+#[derive(uniffi::Record)]
+pub struct TransferQuote {
+    pub fee_wei: String,
+    /// The part of `fee_wei` only a recipient without an account pays.
+    pub new_recipient_charge_wei: String,
+    /// False once the recipient's certified account exists (the quote is exact).
+    pub fee_is_maximum: bool,
+}
+
 /// A 21k-gas transfer runs no bytecode (no prove gas): it pays base + tip per
-/// gas, and nothing while the base fee is 0.
-fn transfer_fee(status: &Value) -> u128 {
+/// gas, and nothing while the base fee is 0 — but a recipient without an
+/// account still burns the fixed 100-unit state charge, whatever the base fee
+/// is (audit 6, A6-7). `recipient_exists` unknown (`None`) keeps the charge:
+/// the quote is then a maximum.
+fn quote_from_status(status: &Value, recipient_exists: Option<bool>) -> TransferQuote {
     const GWEI: u128 = 1_000_000_000;
     let base = status["base_fee"]["exec"]
         .as_str()
         .and_then(|v| v.parse::<u128>().ok())
         .unwrap_or(0);
-    if base == 0 {
-        return 0;
+    let exec = if base == 0 { 0 } else { 21_000 * (base + GWEI) };
+    let charge = if recipient_exists == Some(true) {
+        0
+    } else {
+        u128::from(aether_execution::fees::STATE_ACCOUNT_UNITS) * aether_execution::fees::STATE_UNIT_PRICE
+    };
+    TransferQuote {
+        fee_wei: (exec + charge).to_string(),
+        new_recipient_charge_wei: charge.to_string(),
+        fee_is_maximum: recipient_exists != Some(true),
     }
-    21_000 * (base + GWEI)
+}
+
+/// Whether `address` holds a non-empty account in certified state (empty
+/// accounts are cleared, so nonce-or-balance is existence). `None` when the
+/// account cannot be verified right now — the quote then stays a maximum,
+/// which is the safe side (audit 6, A6-7).
+fn certified_recipient_exists(address: &str, validators: u32) -> Option<bool> {
+    let a = verified_account_at(address.to_string(), validators).ok()?;
+    Some(a.nonce > 0 || a.balance_wei != "0")
+}
+
+/// The send sheet's fee for a plain transfer to `recipient` (audit 6, A6-7):
+/// the exec fee plus the possible new-recipient state charge, exact (not a
+/// maximum) once the recipient's certified account exists.
+#[uniffi::export]
+pub fn transfer_quote(recipient: String, validators: u32) -> R<TransferQuote> {
+    let a: Address = recipient.parse().map_err(|_| WalletError::Invalid("recipient address".into()))?;
+    let status = call("aether_status", json!([]))?;
+    let exists = certified_recipient_exists(&a.to_checksum(None), validators);
+    Ok(quote_from_status(&status, exists))
+}
+
+/// A U256 the way this chain's JSON may spell it: a decimal string, a 0x-hex
+/// string, or a bare number. `None` when absent or unparsable.
+fn u256_of_json(v: &Value) -> Option<U256> {
+    if let Some(s) = v.as_str() {
+        return s
+            .strip_prefix("0x")
+            .and_then(|h| U256::from_str_radix(h, 16).ok())
+            .or_else(|| s.parse().ok());
+    }
+    v.as_u64().map(U256::from)
 }
 
 /// The node running on this Mac (the app's node switch), if on. Wallet reads then
@@ -794,7 +859,7 @@ pub fn chain_status() -> R<ChainStatus> {
         height: v["height"].as_u64().unwrap_or_default(),
         state_root: v["state_root"].as_str().unwrap_or_default().to_string(),
         mempool: v["mempool"].as_u64().unwrap_or_default(),
-        transfer_fee_wei: transfer_fee(&v).to_string(),
+        transfer_fee_wei: quote_from_status(&v, None).fee_wei,
         upgrades_json: scheduled_upgrade_json(&v),
         // Bump with the bundled node/light-client release, not with a remote node's version.
         supported_protocol: 3,
@@ -1495,6 +1560,7 @@ pub fn receipt(tx_hash: String) -> R<Option<TxReceipt>> {
         height: v["height"].as_u64().unwrap_or_default(),
         success: v["receipt"]["success"].as_bool().unwrap_or(false),
         gas_used: v["receipt"]["gas_used"].as_u64().unwrap_or_default(),
+        state_fee_wei: u256_of_json(&v["receipt"]["state_fee"]).unwrap_or(U256::ZERO).to_string(),
     }))
 }
 
@@ -1798,6 +1864,69 @@ mod tests {
         // The blocks a certificate reaches back through (links) are checked too.
         let err = check_anchor_chain(&mine, &[other], 7).unwrap_err().to_string();
         assert!(err.contains("chain 8"), "{err}");
+    }
+
+    // ---------------- transfer fee quotes (audit 6, A6-7) ----------------
+
+    /// A plain transfer's displayed fee must carry the mandatory new-recipient
+    /// state charge (100 units at the fixed price) while the recipient's
+    /// certified account state is unknown, and drop it once a verified proof
+    /// shows the recipient exists.
+    #[test]
+    fn transfer_quotes_price_the_possible_new_recipient_account() {
+        use aether_execution::fees::{STATE_ACCOUNT_UNITS, STATE_UNIT_PRICE};
+        let charge = u128::from(STATE_ACCOUNT_UNITS) * STATE_UNIT_PRICE;
+        let zero = json!({ "base_fee": { "exec": "0" } });
+        let priced = json!({ "base_fee": { "exec": "7000000000" } });
+
+        // The chain at its zero exec floor: the fee is exactly the possible charge.
+        let q = quote_from_status(&zero, None);
+        assert_eq!(q.fee_wei.parse::<u128>().unwrap(), charge);
+        assert_eq!(q.new_recipient_charge_wei.parse::<u128>().unwrap(), charge);
+        assert!(q.fee_is_maximum, "an unknown recipient keeps the quote a maximum");
+
+        // A priced chain adds the exec fee and keeps the possible charge.
+        let q = quote_from_status(&priced, Some(false));
+        assert_eq!(q.fee_wei.parse::<u128>().unwrap(), 21_000 * (7_000_000_000 + 1_000_000_000) + charge);
+
+        // A recipient whose certified account exists pays no charge: the quote
+        // is exact, not a maximum.
+        let q = quote_from_status(&priced, Some(true));
+        assert_eq!(q.fee_wei.parse::<u128>().unwrap(), 21_000 * (7_000_000_000 + 1_000_000_000));
+        assert_eq!(q.new_recipient_charge_wei.parse::<u128>().unwrap(), 0);
+        assert!(!q.fee_is_maximum);
+    }
+
+    /// The signed caps must accept the state budget a funded transfer needs
+    /// (audit 6, A6-7): the state cap at the fixed unit price, so a new
+    /// recipient's 100-unit reserve passes `check_budget`'s price floor.
+    #[test]
+    fn fee_caps_reserve_the_fixed_state_price_for_new_recipients() {
+        use aether_execution::{fees::STATE_UNIT_PRICE, fees::STATE_ACCOUNT_UNITS, recommended_state_budget};
+        let status = json!({ "base_fee": { "exec": "0", "prove": "0" } });
+        let (caps, _tip) = fee_caps(&status, Some(U256::from(1_000u64)));
+        assert_eq!(caps.state, STATE_UNIT_PRICE, "the state cap must meet the fixed state price floor");
+        // The budget a funded transfer then signs (tx.rs) covers a new account.
+        let call = EvmCall {
+            to: Some(Address::ZERO),
+            value: U256::from(1u64),
+            input: Bytes::new(),
+            gas_limit: 21_000,
+            delegate: None,
+        };
+        assert_eq!(recommended_state_budget(&call, Some(U256::from(1u64)), caps.state), STATE_ACCOUNT_UNITS);
+    }
+
+    /// The receipt's actual burned state fee, so the app can replace the
+    /// "maximum" quote with what the send really cost.
+    #[test]
+    fn receipt_state_fee_parses_decimal_and_hex_strings() {
+        assert_eq!(u256_of_json(&json!("100000000000000")), Some(U256::from(100_000_000_000_000u64)));
+        assert_eq!(u256_of_json(&json!("0x5af3107a4000")), Some(U256::from(100_000_000_000_000u64)));
+        assert_eq!(u256_of_json(&json!("0")), Some(U256::ZERO));
+        assert_eq!(u256_of_json(&json!(0)), Some(U256::ZERO));
+        assert_eq!(u256_of_json(&Value::Null), None);
+        assert_eq!(u256_of_json(&json!("zz")), None);
     }
 
     mod sha2_shim {

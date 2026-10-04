@@ -15,13 +15,21 @@
 #       published policy (protocol 3, history 2, node rewards, registry v3,
 #       epoch 3600 blocks / min streak 24 / draw every 24 epochs as defaults —
 #       no timing flag is ever passed) and refuses rehearsal-only values.
-#   scripts/mainnet-genesis.sh check <network.json> [--chain-id <id>]
+#   scripts/mainnet-genesis.sh check <network.json> --chain-id <id> --ceremony <ceremony.json>
 #       COORDINATOR, after the DKG: `aether mainnet-rules --network <file>`
 #       STRICT (never --rehearsal) plus every genesis flag still carried by the
 #       final file — the failure mode docs/ops/mainnet-launch.md §3 warns
-#       about. PASS/FAIL list; nonzero exit on any failure.
+#       about. --chain-id is required and must equal the id assemble recorded
+#       in ceremony.json (a rehearsal/testnet id is refused outside --dry-run).
+#       PASS/FAIL list; nonzero exit on any failure.
+#   scripts/mainnet-genesis.sh verify-local <network.json> --data <dir>
+#       EACH validator Mac, before it votes: re-runs the strict check on the
+#       final file it received, then compares this Mac's threshold.json
+#       (round, output, identity) against that file — the node makes the same
+#       refusal at startup (main.rs committee_keys). Refuses the rehearsal
+#       and testnet chain ids like `check` does.
 #   scripts/mainnet-genesis.sh --dry-run [<dir>]
-#       all three subcommands on one machine with throwaway keys in a temp
+#       every subcommand on one machine with throwaway keys in a temp
 #       dir, the genesis DKG over loopback included. REHEARSAL, not a launch
 #       file: the only place --rehearsal is ever passed.
 # Env: AETHER_BIN (default: <repo>/tmp/target/release/aether, then
@@ -53,7 +61,7 @@ REHEARSAL_CHAIN_ID=7799    # scripts/mainnet-rehearsal.sh's default: rehearsal-o
 REHEARSAL=0   # 1 only under --dry-run: --rehearsal may be passed there and nowhere else
 
 die() { echo "error: $*" >&2; exit 1; }
-usage() { sed -n '2,28p' "$0"; exit 1; }
+usage() { sed -n '2,36p' "$0"; exit 1; }
 fp() { printf '%s…' "${1:0:16}"; }
 mode_of() { stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"; }
 
@@ -273,24 +281,113 @@ Secure Enclave key: pass its x‖y hex (\`aether-registrar-signer public\`, docs
   echo "  reserve operator  $rop"
   echo "  timing            epoch $EPOCH_BLOCKS blocks · min streak $MIN_STREAK · draw every $DRAW_EPOCHS epochs (defaults, untouched)"
   echo
+  python3 - "$out/ceremony.json" "$chain_id" "$registrar" "$rop" \
+    "${vkeys[@]}" "${vnodes[@]}" "${rkeys[@]}" <<'PY'
+import datetime, json, sys
+out, chain_id, registrar, rop = sys.argv[1:5]
+keys, nodes, reserve = sys.argv[5:9], sys.argv[9:13], sys.argv[13:16]
+json.dump({
+    "chain_id": int(chain_id),
+    "assembled": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+    "registrar": registrar,
+    "reserve_operator": rop,
+    "validators": [{"key": k, "node": n} for k, n in zip(keys, nodes)],
+    "reserve": [{"key": k} for k in sys.argv[13:16]],
+}, open(out, "w"), indent=2)
+PY
+  echo "== ceremony record: $out/ceremony.json (public: the id this ceremony runs under — check and verify-local compare against it)"
+  echo
   echo "NEXT — the genesis DKG (doc §3): copy $out/genesis.json to all $N_VALIDATORS validator Macs and run ON ALL FOUR AT ONCE,"
   echo "each on its own Mac with its own --data dir from \`mainnet-genesis.sh keys\`:"
   echo "  aether dkg --network <genesis.json> --port <this Mac's p2p port> --data <this Mac's data dir> \\"
   echo "    --peers 1@<ip1>:<port>,2@<ip2>:<port>,3@<ip3>:<port>,4@<ip4>:<port>"
   echo "THEN copy validator 1's <data>/network.json back here and run the strict final check:"
-  echo "  scripts/mainnet-genesis.sh check <network.json> --chain-id $chain_id"
+  echo "  scripts/mainnet-genesis.sh check <network.json> --chain-id $chain_id --ceremony $out/ceremony.json"
+  echo "THEN, on EACH validator Mac before it votes (doc §3):"
+  echo "  scripts/mainnet-genesis.sh verify-local <the same final network.json> --data <this Mac's data dir>"
 }
 
 cmd_check() {
-  local file='' chain_id=''
+  local file='' chain_id='' ceremony=''
   while [ $# -gt 0 ]; do case $1 in
     --chain-id) chain_id=$2; shift 2 ;;
+    --ceremony) ceremony=$2; shift 2 ;;
     -*) die "check: unknown option '$1'" ;;
     *) if [ -n "$file" ]; then die "check: exactly one network.json"; fi; file=$1; shift ;;
   esac; done
   [ -n "$file" ] || usage
   [ -f "$file" ] || die "check: no file at $file"
+  [ -n "$chain_id" ] || die "check: --chain-id <id> is required — the id assemble recorded in ceremony.json (audit 5, A5-4: a check without the intended id used to pass any positive id)"
+  case $chain_id in ''|*[!0-9]*|0) die "--chain-id must be a positive integer, got '$chain_id'" ;; esac
+  [ -n "$ceremony" ] || die "check: --ceremony <ceremony.json> is required — the record assemble wrote next to genesis.json"
+  [ -f "$ceremony" ] || die "check: no ceremony record at $ceremony"
+  # The ceremony record pins the intended chain id (and nothing secret).
+  python3 - "$ceremony" "$chain_id" "$REHEARSAL" <<'PY'
+import json, sys
+cer, want, rehearsal = sys.argv[1], int(sys.argv[2]), sys.argv[3] == "1"
+try:
+    c = json.load(open(cer))
+except Exception as e:
+    sys.exit(f"{cer}: not valid JSON ({e})")
+got = c.get("chain_id")
+if got != want:
+    sys.exit(f"{cer}: this ceremony assembled chain_id {got!r}, but --chain-id says {want}: "
+             "check the file THIS ceremony wrote, not another network.json")
+if not rehearsal and want in (7780, 7799):
+    sys.exit(f"chain id {want} is reserved (testnet 7780, rehearsal 7799): the mainnet launch needs its own id")
+PY
+  if [ "$REHEARSAL" = 0 ]; then
+    case $chain_id in
+      "$TESTNET_CHAIN_ID") die "check: chain id $TESTNET_CHAIN_ID is the running testnet, not a new genesis" ;;
+      "$REHEARSAL_CHAIN_ID") die "check: chain id $REHEARSAL_CHAIN_ID is the rehearsal default, not a launch id" ;;
+    esac
+  fi
   run_check "$file" "$chain_id" final
+}
+
+# Each validator Mac, before it votes: the strict check on the final file it
+# received (transfer corruption included), then this Mac's threshold.json
+# against that file — the same refusal the node itself makes at startup
+# (main.rs committee_keys). Never prints the share.
+cmd_verify_local() {
+  local file='' data=''
+  while [ $# -gt 0 ]; do case $1 in
+    --data) data=$2; shift 2 ;;
+    -*) die "verify-local: unknown option '$1'" ;;
+    *) if [ -n "$file" ]; then die "verify-local: exactly one network.json"; fi; file=$1; shift ;;
+  esac; done
+  [ -n "$file" ] || usage
+  [ -f "$file" ] || die "verify-local: no file at $file"
+  [ -n "$data" ] || die "verify-local: --data <this Mac's data dir> is required (where threshold.json lives)"
+  [ -f "$data/threshold.json" ] || die "verify-local: no $data/threshold.json — run the genesis DKG on this Mac first (doc §3)"
+  echo "== verify-local: the strict rule check, run on THIS Mac against the final file"
+  chain_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["chain_id"])' "$file")
+  run_check "$file" "$chain_id" final
+  echo "== verify-local: this Mac's threshold.json against the final file (never printed)"
+  python3 - "$file" "$data/threshold.json" <<'PY'
+import json, sys
+net, th = json.load(open(sys.argv[1])), json.load(open(sys.argv[2]))
+bad = []
+if th.get("round") != net.get("round"):
+    bad.append(f'round: threshold.json says {th.get("round")!r}, network.json says {net.get("round")!r}')
+for f in ("output", "identity"):
+    a, b = th.get(f), net.get(f)
+    if not isinstance(a, str) or not a:
+        bad.append(f'{f}: threshold.json has none')
+    elif not isinstance(b, str) or not b:
+        bad.append(f'{f}: network.json has none (not a final file)')
+    elif a.lower() != b.lower():
+        bad.append(f'{f}: threshold.json and network.json carry different committees ({a[:16]}… vs {b[:16]}…)')
+if bad:
+    print("FAIL  this Mac's share does not match the final network.json:")
+    for b in bad:
+        print(f"        - {b}")
+    print("        Do not start the node: it will make the same refusal. Get the final network.json")
+    print("        the coordinator checked, or rerun the ceremony for this round.")
+    sys.exit(1)
+print("ok    round, output and identity match — this Mac votes under the committee the final file names")
+PY
+  echo "VERIFY-LOCAL PASS: this Mac's share is the committee the final file carries"
 }
 
 run_check() { # run_check <network.json> [expected chain id] <genesis|final>
@@ -302,9 +399,9 @@ run_check() { # run_check <network.json> [expected chain id] <genesis|final>
   rules=(mainnet-rules --network "$file")
   if [ "$REHEARSAL" = 1 ]; then rules=(mainnet-rules --rehearsal --network "$file"); fi
   if out=$("$A" "${rules[@]}" 2>&1); then
-    verdict "aether mainnet-rules, all 17 rules" 1 "every rule on ($(printf '%s\n' "$out" | grep -c '^ok') ok)$tag"
+    verdict "aether mainnet-rules, the full rule set (18 genesis + 4 final-file rules)" 1 "every rule on ($(printf '%s\n' "$out" | grep -c '^ok') ok; the final-file gate decodes the committee output, seats the roster, pins the identity, refuses revealed shares)$tag"
   else
-    verdict "aether mainnet-rules, all 17 rules" 0 "$mode check failed:$tag"$'\n'"$(printf '%s\n' "$out" | sed 's/^/    /')"
+    verdict "aether mainnet-rules, the full rule set (18 genesis + 4 final-file rules)" 0 "$mode check failed:$tag"$'\n'"$(printf '%s\n' "$out" | sed 's/^/    /')"
   fi
   echo "== the file carries every genesis flag (stage: $stage)"
   out=$(net_verdicts "$file" "$want" "$stage")
@@ -384,7 +481,13 @@ cmd_dry_run() {
   echo "  all four DKGs done; validator 1 wrote $dir/v1/network.json (identity + output)"
   echo
   echo "== [check] on the DKG's network.json (REHEARSAL mode: --rehearsal passed here and ONLY here)"
-  cmd_check "$dir/v1/network.json" --chain-id "$REHEARSAL_CHAIN_ID"
+  cmd_check "$dir/v1/network.json" --chain-id "$REHEARSAL_CHAIN_ID" --ceremony "$dir/coordinator/ceremony.json"
+  echo
+  echo "== [verify-local] on each validator Mac's data dir (what every validator runs before voting; REHEARSAL)"
+  for i in $(seq 1 $N_VALIDATORS); do
+    echo "-- validator $i"
+    cmd_verify_local "$dir/v1/network.json" --data "$dir/v$i"
+  done
   echo
   echo "== coordinator directory must hold no secret (the ceremony's copy rule)"
   bad=$(find "$dir/coordinator" -type f \( -name '*.key' -o -name 'threshold.json' \) | head -3 || true)
@@ -406,6 +509,7 @@ case "${1:-}" in
   keys) shift; cmd_keys "$@" ;;
   assemble) shift; cmd_assemble "$@" ;;
   check) shift; cmd_check "$@" ;;
+  verify-local) shift; cmd_verify_local "$@" ;;
   --dry-run) shift; cmd_dry_run "$@" ;;
   *) usage ;;
 esac

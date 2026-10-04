@@ -14,7 +14,18 @@
 #   6. assemble refuses rehearsal-only flags (--epoch-blocks, --dev-registrar);
 #   7. no secret file ever lands in the coordinator output directory;
 #   8. `check` on the PRE-DKG genesis.json fails (it demands the final,
-#      post-DKG file — the audit's point about checking the real final file).
+#      post-DKG file — the audit's point about checking the real final file);
+#   9. STRICT mainnet-rules refuses the rehearsal chain id — exactly its own
+#      rule — and a real-mode `check` on the 7799 dry file refuses it too
+#      (both at test 2); a new-id copy of the same file then passes the real
+#      mode, proving the refusal was about the id and nothing else;
+#  10. audit 5 A5-4's file — valid structure, `identity: "aa"`,
+#      `output: "bb"`, a new chain id — FAILS the strict gate (it used to
+#      pass 16/16), and a real-mode check with the ceremony record passes on
+#      the untouched file (22 rules: 18 genesis + 4 final-file);
+#  11. verify-local refuses a threshold.json from another round (a validator
+#      must not vote under a committee the final file does not name) and
+#      passes on the matching one.
 # Usage: scripts/test-mainnet-genesis.sh   (env: AETHER_BIN, as in the tool)
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -58,24 +69,31 @@ NET=$WORK/dry/v1/network.json
 [ -f "$NET" ] || { bad "the dry run wrote no final network.json at $NET"; exit 1; }
 
 echo "== 2. STRICT mainnet-rules (never --rehearsal) on the dry run's final file"
-if out=$("$A" mainnet-rules --network "$NET" 2>&1); then
+if out=$("$A" mainnet-rules --rehearsal --network "$NET" 2>&1); then
   n=$(printf '%s\n' "$out" | grep -c '^ok' || true)
-  if [ "$n" = 17 ]; then ok "strict check passes: all 17 rules on"; else bad "strict check passed but printed $n ok lines (want 17)"; fi
+  if [ "$n" = 22 ]; then ok "rehearsal-mode check passes: all 22 rules on (18 genesis + 4 final-file)"; else bad "rehearsal check passed but printed $n ok lines (want 22)"; fi
 else
-  bad "strict check FAILED on the dry run's file:"$'\n'"$out"
+  bad "rehearsal check FAILED on the dry run's file:"$'\n'"$out"
 fi
-if "$G" check "$NET" --chain-id 7799 > "$WORK/check-strict.out" 2>&1; then
-  ok "scripts/mainnet-genesis.sh check (real mode: STRICT, no --rehearsal) passes on the dry run's file"
+if out=$("$A" mainnet-rules --network "$NET" 2>&1); then
+  bad "strict check PASSED on the rehearsal-id file (7799 must be refused outside --rehearsal)"
 else
-  bad "real-mode check failed on the dry run's file:"; sed 's/^/        /' "$WORK/check-strict.out" | tail -8
+  fails=$(printf '%s\n' "$out" | grep -c '^FAIL' || true)
+  if [ "$fails" = 1 ] && printf '%s\n' "$out" | grep -q '^FAIL  chain id'; then
+    ok "strict check refuses the rehearsal chain id: exactly the chain id rule fails"
+  else
+    bad "strict check failed $fails rules on the 7799 file (want exactly 1: chain id)"; printf '%s\n' "$out" | sed 's/^/        /'
+  fi
 fi
+expect_fail "check (real mode) refuses the rehearsal chain id 7799" "$G" check "$NET" --chain-id 7799 --ceremony "$WORK/dry/coordinator/ceremony.json"
+if grep -q "reserved" "$WORK/last.out"; then ok "the refusal says the id is reserved"; else bad "the 7799 refusal does not explain itself"; fi
 echo "  values a rehearsal legitimately shortens: NONE."
 echo "  The dry run assembles with the published policy — epoch 3600 blocks, min streak 24,"
 echo "  draw every 24 epochs (defaults; the tool refuses every timing flag) and a real P-256"
-echo "  registrar key — so the strict 17-rule check passes its file unchanged. The shortened"
-echo "  timing a rehearsal needs (epoch_blocks 40 etc.) and the --rehearsal allowance belong"
-echo "  to scripts/mainnet-rehearsal.sh alone; this tool passes --rehearsal only in --dry-run,"
-echo "  as a label, never to excuse a value."
+echo "  registrar key — so the strict rule check passes its file unchanged (test 10 runs the"
+echo "  real-mode pass on a new-id copy). The shortened timing a rehearsal needs (epoch_blocks"
+echo "  40 etc.) and the --rehearsal allowance belong to scripts/mainnet-rehearsal.sh alone;"
+echo "  this tool passes --rehearsal only in --dry-run, as a label, never to excuse a value."
 
 echo "== 3. a tampered file (one flag flipped: protocol 3 -> 1) FAILS"
 python3 - "$NET" "$WORK/tampered.json" <<'PY'
@@ -84,7 +102,7 @@ n = json.load(open(sys.argv[1]))
 n["protocol"] = 1
 json.dump(n, open(sys.argv[2], "w"), indent=2)
 PY
-expect_fail "check refuses a genesis with protocol 1" "$G" check "$WORK/tampered.json" --chain-id 7799
+expect_fail "check refuses a genesis with protocol 1" "$G" check "$WORK/tampered.json" --chain-id 7799 --ceremony "$WORK/dry/coordinator/ceremony.json"
 if grep -q "^FAIL" "$WORK/last.out"; then ok "the refusal prints FAIL lines (a PASS/FAIL list, not silence)"
 else bad "no FAIL line in the tampered-file refusal"; fi
 
@@ -95,7 +113,7 @@ n = json.load(open(sys.argv[1]))
 n["epoch_blocks"] = 40          # what scripts/mainnet-rehearsal.sh legitimately shortens
 json.dump(n, open(sys.argv[2], "w"), indent=2)
 PY
-expect_fail "check refuses rehearsal-only timing (epoch_blocks 40)" "$G" check "$WORK/shortened.json" --chain-id 7799
+expect_fail "check refuses rehearsal-only timing (epoch_blocks 40)" "$G" check "$WORK/shortened.json" --chain-id 7799 --ceremony "$WORK/dry/coordinator/ceremony.json"
 if grep -q "candidate timing" "$WORK/last.out"; then
   ok "the strict rule check names 'candidate timing' as the off rule"
 else
@@ -147,9 +165,78 @@ fi
 
 echo "== 8. check demands the FINAL (post-DKG) file, not the pre-DKG genesis.json"
 expect_fail "check refuses the pre-DKG genesis.json (no committee identity)" \
-  "$G" check "$WORK/dry/coordinator/genesis.json" --chain-id 7799
+  "$G" check "$WORK/dry/coordinator/genesis.json" --chain-id 7799 --ceremony "$WORK/dry/coordinator/ceremony.json"
 if grep -q "committee identity" "$WORK/last.out"; then ok "the refusal names the missing committee identity"
 else bad "the pre-DKG refusal does not name the committee identity"; fi
+
+echo "== 9. the 7799 refusal was about the id: a new-id copy of the same file passes"
+# The strict refusal itself runs at test 2 (the CLI) and its expect_fail (the
+# script's real-mode check); here a NEW-id copy of the same file passes the
+# real mode — proving the refusal was about the id, not the file.
+python3 - "$NET" "$WORK/final7801.json" "$WORK/ceremony7801.json" <<'PY'
+import json, sys
+n = json.load(open(sys.argv[1]))
+n["chain_id"] = 7801            # a new id: what the real launch assembles
+json.dump(n, open(sys.argv[2], "w"), indent=2)
+json.dump({"chain_id": 7801}, open(sys.argv[3], "w"))
+PY
+if out=$("$A" mainnet-rules --network "$WORK/final7801.json" 2>&1); then
+  n=$(printf '%s\n' "$out" | grep -c '^ok' || true)
+  if [ "$n" = 22 ]; then ok "strict check passes the new-id final file: 22 rules on"; else bad "strict check passed but printed $n ok lines (want 22)"; fi
+else
+  bad "strict check FAILED on a valid new-id final file:"$'\n'"$out"
+fi
+if "$G" check "$WORK/final7801.json" --chain-id 7801 --ceremony "$WORK/ceremony7801.json" > "$WORK/check-7801.out" 2>&1; then
+  ok "real-mode check (strict, --chain-id + --ceremony) passes on the new-id final file"
+else
+  bad "real-mode check failed on the new-id final file:"; sed 's/^/        /' "$WORK/check-7801.out" | tail -8
+fi
+
+echo "== 10. audit 5 A5-4: valid structure, junk committee fields, must FAIL"
+python3 - "$NET" "$WORK/junk.json" "$WORK/ceremony7801.json" <<'PY'
+import json, sys
+n = json.load(open(sys.argv[1]))
+n["chain_id"] = 7801            # the audit's real-ceremony id
+n["identity"] = "aa"            # undecodable junk that used to pass "nonempty"
+n["output"] = "bb"
+json.dump(n, open(sys.argv[2], "w"), indent=2)
+PY
+expect_fail "strict mainnet-rules refuses identity aa / output bb" "$A" mainnet-rules --network "$WORK/junk.json"
+if grep -q "committee output decodes" "$WORK/last.out"; then ok "the refusal names the committee output decodes rule"
+else bad "the junk-fields refusal does not name the final-file rules"; fi
+expect_fail "check (real mode) refuses the junk committee fields" "$G" check "$WORK/junk.json" --chain-id 7801 --ceremony "$WORK/ceremony7801.json"
+if grep -q "^FAIL" "$WORK/last.out"; then ok "the refusal prints FAIL lines (a PASS/FAIL list, not silence)"
+else bad "no FAIL line in the junk-fields refusal"; fi
+# A swapped validator (the DKG seated someone else) fails the seating rule.
+python3 - "$NET" "$WORK/swap.json" "$WORK/ceremony7801.json" <<'PY'
+import json, sys
+n = json.load(open(sys.argv[1]))
+n["chain_id"] = 7801
+n["validators"][3]["key"] = "11" * 32   # not the key the DKG seated
+json.dump(n, open(sys.argv[2], "w"), indent=2)
+PY
+expect_fail "check refuses an output that does not seat the roster" "$G" check "$WORK/swap.json" --chain-id 7801 --ceremony "$WORK/ceremony7801.json"
+if grep -q "output seats the genesis roster" "$WORK/last.out"; then ok "the refusal names the seating rule"
+else bad "the swapped-roster refusal does not name the seating rule"; fi
+
+echo "== 11. verify-local: this Mac's share must match the final file before voting"
+if "$G" verify-local "$WORK/final7801.json" --data "$WORK/dry/v2" > "$WORK/verify-ok.out" 2>&1; then
+  ok "verify-local passes on a validator's own threshold.json"
+else
+  bad "verify-local failed on the matching share:"; sed 's/^/        /' "$WORK/verify-ok.out" | tail -8
+fi
+python3 - "$WORK/dry/v1/threshold.json" "$WORK/mismatch-dir" <<'PY'
+import json, os, sys
+src, dst = sys.argv[1], sys.argv[2]
+os.makedirs(dst, exist_ok=True)
+t = json.load(open(src))
+t["round"] += 1               # a stale round: the committee the final file does not name
+json.dump(t, open(os.path.join(dst, "threshold.json"), "w"), indent=2)
+PY
+expect_fail "verify-local refuses a share from another round" "$G" verify-local "$WORK/final7801.json" --data "$WORK/mismatch-dir"
+if grep -q "round" "$WORK/last.out"; then ok "the refusal names the round mismatch"
+else bad "the mismatch refusal does not name the round"; fi
+expect_fail "verify-local refuses the rehearsal chain id too" "$G" verify-local "$NET" --data "$WORK/dry/v1"
 
 echo
 echo "==================== test results ===================="

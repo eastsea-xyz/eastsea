@@ -30,9 +30,10 @@ aether shadow --from "$ARCHIVE_RPC" --to "$FINALIZED_HEIGHT"
 
 1. **검증자 Mac 4대, 각각**: `scripts/mainnet-genesis.sh keys` — 이 Mac의 검증자 신원을 만들고 공개 항목만 출력한다. **`validator.pub.json` 하나만** 코디네이터(검증자 1 Mac)로 복사한다.
 2. **창업자 Mac**: `scripts/reserve-keys.sh init`(아래 1단계) — 공개 항목 3개를 코디네이터로 복사한다.
-3. **코디네이터**: `scripts/mainnet-genesis.sh assemble --chain-id <새 체인 아이디> --registrar <서명 Mac의 x‖y hex> --reserve-operator <창업자 주소> --reserve <예비 pub>×3 --validator <검증자 pub>×4` — 입력을 전부 검증하고(hex 형식·검증자 4개 상이·예비 키≠검증자 키·P-256 등록기 점) 공표 정책(protocol 3, history 2, node rewards, registry v3, 타이밍 3600/24/24는 기본값 그대로)으로 genesis.json을 만들어 규칙 검사까지 돌린다. 리허설 전용 값(`--epoch-blocks`·`--dev-registrar`·체인 아이디 7780/7799)은 거부한다.
+3. **코디네이터**: `scripts/mainnet-genesis.sh assemble --chain-id <새 체인 아이디> --registrar <서명 Mac의 x‖y hex> --reserve-operator <창업자 주소> --reserve <예비 pub>×3 --validator <검증자 pub>×4` — 입력을 전부 검증하고(hex 형식·검증자 4개 상이·예비 키≠검증자 키·P-256 등록기 점) 공표 정책(protocol 3, history 2, node rewards, registry v3, 타이밍 3600/24/24는 기본값 그대로)으로 genesis.json을 만들어 규칙 검사까지 돌린다. 리허설 전용 값(`--epoch-blocks`·`--dev-registrar`·체인 아이디 7780/7799)은 거부한다. 옆에 `ceremony.json`(공개 기록: 이 세레머니가 조립한 체인 아이디와 검증자 목록)을 남긴다.
 4. **검증자 Mac 4대, 동시에**: genesis.json을 각 Mac으로 복사해(공개 파일 — 어디로든) 아래 3단계의 `aether dkg`를 각자 자기 `--data` 디렉터리로 실행한다.
-5. **코디네이터**: 검증자 1이 DKG 후 쓴 `network.json`으로 `scripts/mainnet-genesis.sh check <network.json> --chain-id <아이디>` — strict `aether mainnet-rules`(`--rehearsal` 절대 없음)와 최종 파일의 제네시스 플래그를 PASS/FAIL 목록으로 검사한다(실패가 하나라도 있으면 0이 아닌 코드). 최종 network.json도 공개 파일이다(지갑·노드가 쓰는 바로 그 파일).
+5. **코디네이터**: 검증자 1이 DKG 후 쓴 `network.json`으로 `scripts/mainnet-genesis.sh check <network.json> --chain-id <아이디> --ceremony <assemble이 만든 ceremony.json>` — strict `aether mainnet-rules`(`--rehearsal` 절대 없음)와 최종 파일의 제네시스 플래그를 PASS/FAIL 목록으로 검사한다(실패가 하나라도 있으면 0이 아닌 코드). `--chain-id`는 필수이고 ceremony.json에 기록된 아이디와 같아야 하며 7780(테스트넷)·7799(리허설)는 거부한다. 최종 network.json도 공개 파일이다(지갑·노드가 쓰는 바로 그 파일).
+6. **검증자 Mac 4대, 각각 투표 전**: 최종 network.json을 받은 뒤 `scripts/mainnet-genesis.sh verify-local <network.json> --data <이 Mac의 데이터 디렉터리>` — 이 Mac에서 strict 규칙 검사를 다시 돌리고(전송 중 변조 포착) 이 Mac의 `threshold.json`(round·output·identity, **share는 절대 출력하지 않는다**)이 그 최종 파일과 같은 위원회를 말하는지 비교한다. 노드 자신도 시작할 때 같은 거부를 한다(main.rs committee_keys: 불일치면 시작 거부).
 
 **절대 복사하지 않는 것**: 각 Mac의 `validator.key`·`node-account.key`·DKG 후의 `threshold.json`(모두 모드 600, 만든 Mac에만 둔다). 코디네이터 디렉터리에는 공개 파일만 있어야 한다. `scripts/test-mainnet-genesis.sh`가 이 규칙 전부 — 변조 파일 거부·중복 검증자 키 거부·리허설 값 거부·코디네이터 비밀 누출 없음 — 를 자동 검사한다.
 
@@ -78,12 +79,13 @@ aether network \
 
 메인넷은 어떤 규칙도 "출시 뒤 업그레이드로 켠다" 없이 제네시스부터 전부 켜져 있어야 한다. 제네시스 프로토콜 필드는 이미 있다(갭 G1 닫힘: `aether network --protocol 3`; 7780처럼 프로토콜 1로 열리면 증명 시장·등록 상한·16석 증가가 꺼진 채 시작하므로 이 값을 생략하지 않는다). 목록은 코드에 하나로 있다(`crates/node/src/mainnet.rs`, `mainnet::check`) — 항목을 추가하면 아래 세 검사가 같이 실패한다:
 
-- `aether mainnet-rules --network genesis.json` — network.json에서 노드와 똑같이 제네시스를 만들어 항목마다 `ok`/`FAIL`을 출력하고, 꺼진 것이 하나라도 있으면 실패한다(DKG 뒤 최종 network.json으로 다시 한 번). 규칙은 17개이며, **실제 출시 검사는 에포크(3600블록)·후보 워밍업(24)·추첨(24에포크)의 공표된 정책 값을 정확히 요구**하고 레지스트라 키가 0이거나 곡선 밖이면 실패한다. 리허설만 `--rehearsal`로 단축 값을 허용하며, 허용했다는 사실이 출력에 `REHEARSAL VALUES`로 남는다.
+- `aether mainnet-rules --network genesis.json` — network.json에서 노드와 똑같이 제네시스를 만들어 항목마다 `ok`/`FAIL`을 출력하고, 꺼진 것이 하나라도 있으면 실패한다(DKG 뒤 최종 network.json으로 다시 한 번). 규칙은 18개 제네시스 규칙 + 최종 파일 게이트 4개이며, **실제 출시 검사는 에포크(3600블록)·후보 워밍업(24)·추첨(24에포크)의 공표된 정책 값을 정확히 요구**하고 레지스트라 키가 0이거나 곡선 밖이면 실패한다. 리허설만 `--rehearsal`로 단축 값을 허용하며, 허용했다는 사실이 출력에 `REHEARSAL VALUES`로 남는다. 최종 파일 게이트는 `output` 문자열을 노드 자신의 디코더로 디코딩해 위원회를 복원하고 로스터 일치·identity=그룹 공개키·노출된 share 거부를 검사한다(감사 5 A5-4: 구조만 그럴듯한 `identity: "aa"`·`output: "bb"` 파일은 여기서 실패한다).
 - `scripts/mainnet-rehearsal.sh`(0단계) — 같은 검사를 PASS 항목으로 돌리고, 살아 있는 네트워크에서 높이 1의 프로토콜과 등록 상한도 확인한다.
 - 단위 테스트(`crates/node/tests/mainnet_rules.rs`) — 메인넷 플래그 제네시스로 모든 항목이 켜져 있는지, 플래그를 하나 빼면 정확히 그 항목이 꺼지는지 확인한다.
 
 | 규칙 | 켜져 있다는 것 |
 |---|---|
+| chain id | 테스트넷(7780)·리허설(7799)가 아닌 새 체인 아이디이다 (리허설에서만 예약 아이디 허용) |
 | protocol from genesis | 높이 1의 프로토콜이 이 바이너리의 최신(지금 3)이다 |
 | proof market | 첫 블록부터 statement 기록·증명 지급이 살아 있다 (프로토콜 2) |
 | registry v3 | 등록기 컨트랙트가 v3 코드로 시작한다 |
@@ -98,6 +100,15 @@ aether network \
 | pruning default | 프루닝이 기본(30일 보존)이다 |
 | no premine, no faucet | 제네시스 잔액이 전부 0이다 |
 | zero-tip acceptance | 첫 블록 base fee가 0이어서 잔액 0 계정이 팁 0으로 거래한다 |
+
+최종 파일 게이트(감사 5 A5-4; DKG 뒤 network.json의 4개 규칙 — pre-DKG 파일은 "아직 게이트 대상 아님"으로 통과):
+
+| 규칙 | 켜져 있다는 것 |
+|---|---|
+| committee output decodes | `output`이 노드 시작 때 쓰는 같은 디코더로 디코딩된다 |
+| output seats the genesis roster | 복원된 플레이어 집합이 검증자 로스터(같은 키·같은 수)와 정확히 일치한다 |
+| identity is the group public key | `identity`가 이 output의 그룹 공개키이다 (지갑이 고정하는 바로 그 키) |
+| no revealed seated share | output에 앉은 검증자의 share가 노출돼 있지 않다 (A4-1의 같은 검사) |
 
 눈으로 확인한다:
 

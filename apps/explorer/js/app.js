@@ -1,6 +1,6 @@
 // Entry point: the header (search, endpoint, theme), the hash router and the
 // polling that keeps the home page and a pending transaction current. The
-// explorer talks to exactly one host — the Aether node whose endpoint the
+// explorer talks to exactly one host — the EastSea node whose endpoint the
 // reader sets — and to nothing else.
 
 import { DEFAULT_ENDPOINT, Node, loadEndpoint, saveEndpoint } from './rpc.js';
@@ -61,7 +61,7 @@ const themeButton = h('button', { class: 'ghost', title: 'Switch theme', onclick
 top.append(
   h('a', { class: 'brand', href: '#/' },
     h('span', { class: 'logo', 'aria-hidden': 'true' }),
-    h('span', { class: 'brand-name' }, 'Aether Explorer')),
+    h('span', { class: 'brand-name' }, 'EastSea Explorer')),
   chainPill,
   h('form', {
     id: 'search',
@@ -103,13 +103,13 @@ top.append(
           },
         }, 'Reset'),
         nodeMsg),
-      h('p', { class: 'small muted' }, 'An Aether node serves JSON-RPC on this Mac at 127.0.0.1:18545 while it runs. Reads only; the explorer signs nothing.'))),
+      h('p', { class: 'small muted' }, 'An EastSea node serves JSON-RPC on this Mac at 127.0.0.1:18545 while it runs. Reads only; the explorer signs nothing.'))),
   themeButton,
 );
 
 foot.append(
   h('p', { class: 'small muted' },
-    'Read-only data from one Aether node, chosen in Settings. Nothing here is light-client verified — pages say ',
+    'Read-only data from one EastSea node, chosen in Settings. Nothing here is light-client verified — pages say ',
     h('em', {}, 'from the node'), ' where the wallet would verify a committee certificate. ',
     'No analytics, no external requests, no prices.'),
 );

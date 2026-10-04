@@ -32,7 +32,7 @@ hash_at() { curl -s -m4 "$RPC" -H 'content-type: application/json' -d "{\"jsonrp
 try: print(json.load(sys.stdin)["result"]["hash"])
 except Exception: print("-")'; }
 say() {
-  osascript -e "display notification \"$2\" with title \"Aether soak\" subtitle \"$1\"" >/dev/null 2>&1
+  osascript -e "display notification \"$2\" with title \"EastSea soak\" subtitle \"$1\"" >/dev/null 2>&1
   echo "$(date -u +%FT%TZ) $1 $2" >> "$LOG_DIR/alerts.log"
 }
 # problem <key> <message>: alert only if <key> was not already open.

@@ -8,7 +8,7 @@ let publicKeys = keys.map { hex($0.publicKey.x963Representation) }
 let archive = Data("approved archive".utf8)
 let archiveHash = ReleaseApproval.digest(archive)
 let manifest: [String: Any] = [
-    "artifacts": [["name": "Aether.dmg", "sha256": archiveHash]],
+    "artifacts": [["name": "EastSea.dmg", "sha256": archiveHash]],
     "build": "42", "chain_id": 9_001, "emergency": false,
     "log_address": "0x0000000000000000000000000000000000007704",
     "platform": "macos-arm64-dmg", "sparkle_ed_signature": "sparkle-test-signature",

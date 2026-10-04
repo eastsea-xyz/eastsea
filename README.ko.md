@@ -7,7 +7,7 @@
 [![Legal Disclaimer](https://img.shields.io/badge/Legal-Disclaimer%20%26%20Terms-red.svg)](DISCLAIMER.md)
 
 > [!IMPORTANT]
-> 동해 Node는 **"있는 그대로(AS IS)"** 제공되는 실험적·비상업적 연구용 소프트웨어입니다. 프로덕션 블록체인이 아니며 감사(audit)를 받지 않았습니다. 모든 토큰(AETH)과 보상은 테스트용 산출물로 **금전적 가치가 전혀 없습니다**. [DISCLAIMER.md](DISCLAIMER.md)를 참고하십시오.
+> 동해 Node는 **"있는 그대로(AS IS)"** 제공되는 실험적·비상업적 연구용 소프트웨어입니다. 프로덕션 블록체인이 아니며 감사(audit)를 받지 않았습니다. 모든 토큰(DBLN)과 보상은 테스트용 산출물로 **금전적 가치가 전혀 없습니다**. [DISCLAIMER.md](DISCLAIMER.md)를 참고하십시오.
 
 ## 개요
 
@@ -54,7 +54,7 @@ aether-agent setup all --apply     # 설치된 모든 에이전트 도구에 MCP
 ```
 
 - **도구:** status, wallet, balance, send, pay_many(트랜잭션 하나), receipt, history.
-- **기본 한도:** 결제당 1 AETH, 24시간당 10 AETH. `aether-agent policy set`으로 변경할 수 있으며, 이때 Touch ID를 요구합니다.
+- **기본 한도:** 결제당 1 DBLN, 24시간당 10 DBLN. `aether-agent policy set`으로 변경할 수 있으며, 이때 Touch ID를 요구합니다.
 - **온체인에서 강제:** 에이전트는 자기 계정의 세션 키로 결제합니다. 컨트랙트가 모든 결제를 한도, 허용된 수신자, 만료 시각과 대조해 검사합니다. 어떤 로컬 파일이나 프로세스도 이를 우회할 수 없습니다. 가스비는 별도의 소액 잔액에서 나갑니다.
 - 자세한 내용: [AGENTS.md](AGENTS.md) 및 [skill 파일](agents/skills/aether-wallet/SKILL.md).
 

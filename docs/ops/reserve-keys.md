@@ -17,7 +17,7 @@
 | 1. 키 만들기 | `scripts/reserve-keys.sh init` | `~/aether-reserve/{1,2,3}`. 기존 키는 덮어쓰지 않는다. 공개 항목과 `aether network … --reserve` 줄을 출력한다 |
 | 2. 제네시스 | `aether network … --node-rewards --registrar <hex> --reserve-operator <창업자 주소> --reserve ~/aether-reserve/1/validator.pub.json …` | 그 뒤 제네시스 DKG |
 | 3. 백업 | `~/aether-reserve/*/validator.key`를 오프라인에 보관. 예비 키가 좌석에 앉아 있으면 **`threshold.json`도**(재공유가 성공할 때마다 다시): 아래 "창업자 Mac을 영구히 잃으면" | 키를 잃으면 그 자리는 투표하지 못한다 |
-| 4. 설치 | `scripts/reserve-keys.sh install <DKG가 쓴 network.json>` | LaunchAgent `com.pipln.aether.reserve.{1,2,3}`. `--print`는 plist만 보여 주고 설치하지 않는다 |
+| 4. 설치 | `scripts/reserve-keys.sh install <DKG가 쓴 network.json>` | LaunchAgent `com.pipln.eastsea.reserve.{1,2,3}`. `--print`는 plist만 보여 주고 설치하지 않는다 |
 | 5. 확인 | `scripts/reserve-keys.sh status` | 에이전트, 높이, `voting`/`following` |
 | 제거 | `scripts/reserve-keys.sh uninstall` | 키와 체인 데이터는 남는다 |
 

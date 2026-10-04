@@ -3,7 +3,7 @@ import { Brand } from './brand.js';
 // (apps/wallet/Sources/Onboarding.swift). Bump `TERMS_VERSION` when the text
 // changes materially, and everyone is asked again.
 
-export const TERMS_VERSION = 3;
+export const TERMS_VERSION = 4;
 export const DISCLAIMER_URL = 'https://github.com/kjaylee/aether-node/blob/main/DISCLAIMER.md';
 
 /** Shown one bullet per line; `link` follows them. */

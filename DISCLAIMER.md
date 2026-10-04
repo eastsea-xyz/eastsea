@@ -15,12 +15,12 @@ EastSea is open-source software built for production use: a Mac app that runs a 
 
 ---
 
-## 2. AETH, Value, and No Financial Advice
+## 2. DBLN, Value, and No Financial Advice
 
-1. **How AETH comes into existence.** AETH is created only by block rewards under the network's public rules. There is no token sale, no premine, and no founder allocation.
-2. **Value is set by the market.** Pipln and the authors do not sell AETH and make no promise or representation about its price, value, liquidity, exchange listing, return, or any way to exchange it for money. Any value AETH may have is determined by the market, not by us.
-3. **Testnet AETH does not carry over.** Balances and rewards on the testnet do not carry over to mainnet.
-4. **Not an offering, not advice.** Nothing in the Software or its documentation is an offer of securities or investment, a financial product, or financial, investment, legal, tax, or accounting advice. Running a node, proving blocks, or holding AETH is your own decision.
+1. **How DBLN comes into existence.** DBLN is created only by block rewards under the network's public rules. There is no token sale, no premine, and no founder allocation.
+2. **Value is set by the market.** Pipln and the authors do not sell DBLN and make no promise or representation about its price, value, liquidity, exchange listing, return, or any way to exchange it for money. Any value DBLN may have is determined by the market, not by us.
+3. **Testnet DBLN does not carry over.** Balances and rewards on the testnet do not carry over to mainnet.
+4. **Not an offering, not advice.** Nothing in the Software or its documentation is an offer of securities or investment, a financial product, or financial, investment, legal, tax, or accounting advice. Running a node, proving blocks, or holding DBLN is your own decision.
 5. **Costs and taxes.** Electricity, hardware wear, network costs, and any taxes on rewards are your responsibility. The app's reward export is a record, not tax advice.
 
 ---
@@ -81,10 +81,10 @@ The legal status of peer-to-peer software, blockchain nodes, and digital assets 
 ### 1. 동해는
 동해는 **실제 운영(production)을 목표로 만든 오픈소스 소프트웨어**입니다(Mac 앱, iPhone 지갑, 브라우저 확장, 노드). 메인넷은 아직 출시되지 않았고, 지금 돌아가는 네트워크는 공개 테스트넷(체인 7780)입니다. 메인넷은 새 제네시스로 시작하는 새 네트워크입니다. 아직 독립 보안 감사를 받지 않았고, 자금에 영향을 주는 버그가 있을 수 있습니다.
 
-### 2. AETH와 가치
-* AETH는 공개된 규칙에 따른 블록 보상으로만 생깁니다. 판매, 사전 발행, 창업자 몫은 없습니다.
-* **가치는 시장이 정합니다.** Pipln과 개발자는 AETH를 팔지 않으며 가격, 가치, 유동성, 거래소 상장, 수익, 현금화 방법을 약속하지 않습니다.
-* 테스트넷 AETH는 메인넷으로 넘어가지 않습니다.
+### 2. DBLN와 가치
+* DBLN는 공개된 규칙에 따른 블록 보상으로만 생깁니다. 판매, 사전 발행, 창업자 몫은 없습니다.
+* **가치는 시장이 정합니다.** Pipln과 개발자는 DBLN를 팔지 않으며 가격, 가치, 유동성, 거래소 상장, 수익, 현금화 방법을 약속하지 않습니다.
+* 테스트넷 DBLN는 메인넷으로 넘어가지 않습니다.
 * 투자 권유, 증권 모집, 금융 상품, 금융·세무 조언이 아닙니다. 전기요금, 장비 소모, 세금은 이용자가 부담합니다.
 
 ### 3. 키와 자금

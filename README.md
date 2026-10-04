@@ -7,7 +7,7 @@
 [![Legal Disclaimer](https://img.shields.io/badge/Legal-Disclaimer%20%26%20Terms-red.svg)](DISCLAIMER.md)
 
 > [!IMPORTANT]
-> EastSea is built for production. **Mainnet has not launched yet**: the network running today is the public testnet (chain 7780), and testnet AETH does not carry over. There is no token sale; the value of AETH is set by the market, and nothing here promises a price or a return. The software is provided **"AS IS"** and has not had an independent security audit yet. Nothing here is investment, legal or tax advice. See [DISCLAIMER.md](DISCLAIMER.md).
+> EastSea is built for production. **Mainnet has not launched yet**: the network running today is the public testnet (chain 7780), and testnet DBLN does not carry over. There is no token sale; the value of DBLN is set by the market, and nothing here promises a price or a return. The software is provided **"AS IS"** and has not had an independent security audit yet. Nothing here is investment, legal or tax advice. See [DISCLAIMER.md](DISCLAIMER.md).
 
 ## What it is
 
@@ -67,7 +67,7 @@ aether-agent setup all --apply     # register the MCP server "aether" with every
 ```
 
 - **Tools:** status, wallet, balance, send, pay_many (one transaction), pay_token (new genesis), receipt, history.
-- **Safe default:** payments stay off until the owner adds a named payee with `aether-agent payee add --name NAME --address 0x...` and Touch ID. The first session lasts seven days, with 1 AETH per payment and 10 AETH per 24 hours. Renew with `aether-agent policy renew`; stop immediately with `aether-agent stop` or **비서 멈추기** in the Mac wallet.
+- **Safe default:** payments stay off until the owner adds a named payee with `aether-agent payee add --name NAME --address 0x...` and Touch ID. The first session lasts seven days, with 1 DBLN per payment and 10 DBLN per 24 hours. Renew with `aether-agent policy renew`; stop immediately with `aether-agent stop` or **비서 멈추기** in the Mac wallet.
 - **On-chain limits:** the contract checks payment caps, approved recipients, and expiry. The owner can explicitly choose `--allow anyone` after a warning. A tricked agent can still spend within its limits, and stopping cannot undo a transaction already submitted. Gas comes from a separate small balance. Token payments require a new-genesis account contract and `aether-agent token allow --address 0x... --per-tx UNITS --per-day UNITS` (token base units, Touch ID). Renewing or replacing a session clears its token permissions; the owner must approve them again.
 - Details: [AGENTS.md](AGENTS.md) and [the skill file](agents/skills/aether-wallet/SKILL.md).
 
@@ -99,7 +99,7 @@ target/debug/aether blocks 10
 
 The app shows the same text (`VotingRules.mainnetRewardsRule`):
 
-> Planned for the future mainnet, which is not live: the rules may change before launch, and after it only by a committee-signed upgrade. No token sale, no premine and no founder allocation; the founder's Macs follow the same rules as everyone's. Half of each block's reward goes to registered Macs that stay online, shared every hour, and half to registered Macs that prove blocks. One operator gets at most 1/16 of each half, and the rest is never issued; once 16 operators are online, all of it is shared. The reward starts at 1 AETH a block and shrinks 15% a year, down to a floor of 0.1 AETH a block. Testnet AETH does not carry over. Nothing here promises a price, a return or a way to cash out.
+> Planned for the future mainnet, which is not live: the rules may change before launch, and after it only by a committee-signed upgrade. No token sale, no premine and no founder allocation; the founder's Macs follow the same rules as everyone's. Half of each block's reward goes to registered Macs that stay online, shared every hour, and half to registered Macs that prove blocks. One operator gets at most 1/16 of each half, and the rest is never issued; once 16 operators are online, all of it is shared. The reward starts at 1 DBLN a block and shrinks 15% a year, down to a floor of 0.1 DBLN a block. Testnet DBLN does not carry over. Nothing here promises a price, a return or a way to cash out.
 
 - **Registration:** a Mac joins through a registration service, currently run by Pipln, that checks an Apple DeviceCheck token with Apple. Apple does not sponsor or endorse EastSea.
 - **Founder reserve keys:** The founder's only special permission: one Mac may run up to 3 reserve validator keys, and only while the network needs them. Hours they serve count as the founder's participation, under the same 1/16 cap as everyone; they add no extra share. (`VotingRules.founderReserveRule`, quoted word for word.)

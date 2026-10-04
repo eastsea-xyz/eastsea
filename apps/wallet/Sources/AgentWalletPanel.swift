@@ -53,7 +53,7 @@ struct AgentWalletPanel: View {
                 let item = history[i]
                 let hash = item["hash"] as? String ?? ""
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("\(status(item)) · \(item["amount"] as? String ?? "—") \(item["asset"] as? String ?? "AETH")")
+                    Text("\(status(item)) · \(item["amount"] as? String ?? "—") \(item["asset"] as? String ?? Brand.coinTicker)")
                         .font(.aeBody)
                     Text(date(item)).font(.aeFootnote).foregroundStyle(.secondary)
                     Text("받는 사람: \(displayNames(item))").font(.aeFootnote)

@@ -110,11 +110,12 @@ struct UpdateTracker {
     private let recordURL: URL?
     private let now: () -> Date
 
-    /// `~/Library/Application Support/Aether/update-state.json`, beside the
+    /// `~/Library/Application Support/EastSea/update-state.json`, beside the
     /// node's own data.
     static var defaultRecordURL: URL? {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("Aether/update-state.json")
+        DataMigration.ensure()
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("EastSea/update-state.json")
     }
 
     /// Reads the persisted record. Corrupt, missing or foreign: idle, and the

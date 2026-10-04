@@ -18,7 +18,7 @@ enum Owner {
                 ? "Existing policy allows any recipient or never expires. Add a named payee with `aether-agent payee add --name NAME --address 0x...` (Touch ID) to restrict recipients and renew the session."
                 : "Already set up. Renew with `aether-agent policy renew` (Touch ID) before expiry."
         } else if let min = Wei(aeth: "0.5"), !(balance < min) {
-            out["next"] = "Payments are off until you add a named payee with `aether-agent payee add --name NAME --address 0x...` (Touch ID). Default limits: 1 AETH/payment, 10 AETH/day, 7 days."
+            out["next"] = "Payments are off until you add a named payee with `aether-agent payee add --name NAME --address 0x...` (Touch ID). Default limits: 1 DBLN/payment, 10 DBLN/day, 7 days."
         } else {
             out["next"] = "Fund \(id.account), then add a named payee with `aether-agent payee add --name NAME --address 0x...` (Touch ID)."
         }

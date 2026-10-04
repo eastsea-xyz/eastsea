@@ -76,7 +76,7 @@ def bundle_inventory(app):
         relative = path.relative_to(app)
         if "_CodeSignature" in relative.parts and relative.name == "CodeResources":
             continue
-        name = "Aether.app/" + relative.as_posix()
+        name = "EastSea.app/" + relative.as_posix()
         if path.is_symlink():
             entries.append({"name": name, "kind": "symlink", "sha256": hashlib.sha256(("symlink:" + str(path.readlink())).encode()).hexdigest()})
         elif path.is_dir():
@@ -128,10 +128,10 @@ def prepare(args):
     sparkle_version = plistlib.loads(sparkle_info.read_bytes()).get("CFBundleShortVersionString", "") if sparkle_info.exists() else ""
     inventory = bundle_inventory(app)
     artifacts = [
-        {"name": "Aether.dmg", "sha256": sha256(args.dmg)},
-        {"name": "Aether.app/Contents/MacOS/Aether", "sha256": executable_sha256(app / "Contents/MacOS/Aether"), "normalization": "remove-codesign"},
-        {"name": "Aether.app/Contents/Helpers/aether", "sha256": executable_sha256(app / "Contents/Helpers/aether"), "normalization": "remove-codesign"},
-        {"name": "Aether.app/Contents/Helpers/aether-agent", "sha256": executable_sha256(app / "Contents/Helpers/aether-agent"), "normalization": "remove-codesign"},
+        {"name": "EastSea.dmg", "sha256": sha256(args.dmg)},
+        {"name": "EastSea.app/Contents/MacOS/EastSea", "sha256": executable_sha256(app / "Contents/MacOS/EastSea"), "normalization": "remove-codesign"},
+        {"name": "EastSea.app/Contents/Helpers/aether", "sha256": executable_sha256(app / "Contents/Helpers/aether"), "normalization": "remove-codesign"},
+        {"name": "EastSea.app/Contents/Helpers/aether-agent", "sha256": executable_sha256(app / "Contents/Helpers/aether-agent"), "normalization": "remove-codesign"},
     ]
     manifest = {
         "artifacts": sorted(artifacts, key=lambda item: item["name"]),
@@ -224,7 +224,7 @@ def combine(args):
         raise ValueError(f"need {required} to 3 distinct builder signatures")
     output = pathlib.Path(args.out)
     output.write_bytes(canonical(sorted(signatures, key=lambda item: item["public_key"])))
-    archive = next(item["sha256"] for item in parsed["artifacts"] if item["name"] == "Aether.dmg")
+    archive = next(item["sha256"] for item in parsed["artifacts"] if item["name"] == "EastSea.dmg")
     print(f"builder signatures: {output} SHA-256 {sha256(output)}")
     print("Approve by submitting this calldata to ReleaseLog " + parsed["log_address"] + ":")
     print("cast calldata 'publish(bytes,bytes32,bytes,bool)' " +
@@ -241,7 +241,7 @@ def finalize(args):
     manifest = json.loads(raw)
     if canonical(manifest) != raw:
         raise ValueError("manifest is not canonical JSON")
-    archive = next(item["sha256"] for item in manifest["artifacts"] if item["name"] == "Aether.dmg")
+    archive = next(item["sha256"] for item in manifest["artifacts"] if item["name"] == "EastSea.dmg")
     if sha256(args.dmg) != archive:
         raise ValueError("ALARM: prepared DMG differs from builder-approved hash")
     inventory = manifest_path.with_suffix(".inventory.json")

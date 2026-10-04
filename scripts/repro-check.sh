@@ -6,7 +6,7 @@
 #   node       target/<profile>/aether          (the validator binary)
 #   ffi        target/<profile>/libaether_ffi.a (the wallet/agent core)
 #   prover     scripts/prover-program.sh's program id + the sidecar binary
-#   extension  dist/aether-extension-<version>.zip
+#   extension  dist/eastsea-extension-<version>.zip
 #
 #   scripts/repro-check.sh                    # all four
 #   scripts/repro-check.sh node extension
@@ -129,7 +129,7 @@ build_side() {
     fi
     if [ "$want_extension" = 1 ]; then
       scripts/build-extension.sh --zip >/dev/null
-      h=$(hash_of "$dir"/dist/aether-extension-*.zip) || exit 1
+      h=$(hash_of "$dir"/dist/eastsea-extension-*.zip) || exit 1
       echo "extension $h" >> "$dir/hashes.txt"
     fi
   ) >"$dir/build.log" 2>&1; then

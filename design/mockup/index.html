@@ -1,0 +1,952 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>EastSea — Design Mockup v2 · Tide Tables</title>
+<!--
+  DESIGN DIRECTION MOCKUP — "Tide Tables / Split Horizon"
+  Date: 2026-10-04
+  Author: site-designer agent
+
+  FONT NOTES:
+    Georgia italic → placeholder for EB Garamond (self-hosted SIL OFL, ~15KB subset)
+    system-ui     → placeholder for Pretendard (self-hosted SIL OFL, ~280KB 2-weight)
+  All other design tokens are final direction.
+
+  This mockup covers:
+    1. Hero section (Concept A — Split Horizon)
+    2. Benefits section (2×2 grid)
+  Remaining sections are documented in design/direction.md.
+
+  COIN NOTE: The SVG coin is hand-authored for direction.
+    Replace with generated master render + SVG trace before ship.
+-->
+<style>
+/* ═══════════════════════════════════════════════════
+   1. DESIGN TOKENS — Tide Tables palette
+   ═══════════════════════════════════════════════════ */
+
+:root {
+  /* Backgrounds */
+  --bg:          #F3EFE3;
+  --bg-raise:    #FDFBF4;
+  --bg-tint:     #EBE5D3;
+
+  /* Text */
+  --ink:         #111C29;
+  --ink-mid:     #3A5068;
+  --ink-soft:    #6A8098;
+
+  /* Structure */
+  --line:        #D2C8A8;
+
+  /* Gold accent */
+  --gold:        #B8871E;
+  --gold-light:  #E5B840;
+  --gold-deep:   #7A5210;
+  --gold-bg:     #F5E6BB;
+
+  /* Teal accent */
+  --teal:        #0A6E68;
+  --teal-light:  #14A89E;
+  --teal-bg:     #DFF4F2;
+
+  /* Hero panel */
+  --hero-bg:     #091522;
+  --hero-bg2:    #0D2135;
+  --hero-ink:    #EDE7DC;
+  --hero-soft:   #7A9AB5;
+
+  /* Coin internal */
+  --coin-center: #F2CC60;
+  --coin-mid:    #C8911A;
+  --coin-rim:    #9A6810;
+  --coin-deep:   #7A4808;
+
+  /* Layout */
+  --gutter: 20px;
+  --maxw: 68rem;
+  --radius-card: 16px;
+
+  /* Fonts */
+  --font-display: Georgia, "Times New Roman", serif;
+  --font-body: system-ui, "Apple SD Gothic Neo", "Noto Sans KR", Helvetica, sans-serif;
+}
+
+/* Dark mode */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:          #070F1B;
+    --bg-raise:    #0B1925;
+    --bg-tint:     #091421;
+    --ink:         #ECE6D8;
+    --ink-mid:     #9AB2C8;
+    --ink-soft:    #6080A0;
+    --line:        #182C40;
+    --gold:        #E8B840;
+    --gold-light:  #F5D070;
+    --gold-deep:   #E8B840;
+    --gold-bg:     #1E1608;
+    --teal:        #4DC4BA;
+    --teal-light:  #70D8D0;
+    --teal-bg:     #051B1A;
+  }
+}
+:root[data-theme="dark"] {
+  --bg:          #070F1B;
+  --bg-raise:    #0B1925;
+  --bg-tint:     #091421;
+  --ink:         #ECE6D8;
+  --ink-mid:     #9AB2C8;
+  --ink-soft:    #6080A0;
+  --line:        #182C40;
+  --gold:        #E8B840;
+  --gold-light:  #F5D070;
+  --gold-deep:   #E8B840;
+  --gold-bg:     #1E1608;
+  --teal:        #4DC4BA;
+  --teal-light:  #70D8D0;
+  --teal-bg:     #051B1A;
+}
+
+/* ═══════════════════════════════════════════════════
+   2. RESET & BASE
+   ═══════════════════════════════════════════════════ */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+body {
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.7;
+  color: var(--ink);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+img, svg { max-width: 100%; display: block; }
+
+/* ═══════════════════════════════════════════════════
+   3. NAVIGATION
+   ═══════════════════════════════════════════════════ */
+
+.site-nav {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 100;
+  padding: 14px var(--gutter);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  transition: background 0.3s ease, backdrop-filter 0.3s ease,
+              border-color 0.3s ease;
+  border-bottom: 1px solid transparent;
+}
+.site-nav.scrolled {
+  background: rgba(9, 21, 34, 0.88);
+  backdrop-filter: blur(16px) saturate(1.4);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  border-bottom-color: rgba(255,255,255,0.06);
+}
+.nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+}
+.nav-brand-mark {
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+}
+.nav-brand-name {
+  font-family: var(--font-body);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--hero-ink);
+}
+.nav-brand-name em {
+  font-style: normal;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--hero-soft);
+  display: block;
+  letter-spacing: 0.02em;
+}
+.nav-actions { display: flex; align-items: center; gap: 12px; }
+.nav-status {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(94,197,186,0.9);
+  background: rgba(94,197,186,0.1);
+  border: 1px solid rgba(94,197,186,0.25);
+  padding: 3px 10px;
+  border-radius: 100px;
+}
+.nav-lang {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--hero-soft);
+  background: transparent;
+  border: 1px solid rgba(255,255,255,0.15);
+  padding: 5px 12px;
+  border-radius: 100px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+.nav-lang:hover { border-color: rgba(255,255,255,0.35); color: var(--hero-ink); }
+
+/* ═══════════════════════════════════════════════════
+   4. HERO — SPLIT HORIZON
+   ═══════════════════════════════════════════════════ */
+
+.hero {
+  position: relative;
+  min-height: 100svh;
+  background: var(--hero-bg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Warm amber glow behind the coin (the "horizon") */
+.hero::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 48% 55% at 72% 48%,
+      rgba(232, 184, 64, 0.09) 0%,
+      rgba(200, 145, 26, 0.05) 35%,
+      transparent 70%),
+    radial-gradient(ellipse 30% 40% at 72% 48%,
+      rgba(242, 204, 96, 0.06) 0%,
+      transparent 60%);
+  pointer-events: none;
+}
+
+/* Subtle grain texture */
+.hero::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+  background-size: 180px 180px;
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.hero-inner {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  max-width: var(--maxw);
+  width: 100%;
+  margin: 0 auto;
+  padding: 120px var(--gutter) 80px;
+  gap: 48px;
+}
+
+/* Text column — 55% */
+.hero-copy {
+  flex: 0 0 55%;
+  max-width: 55%;
+}
+
+/* Coin column — 45% */
+.hero-visual {
+  flex: 0 0 45%;
+  max-width: 45%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+/* Kicker */
+.hero-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: rgba(94, 197, 186, 0.85);
+  margin-bottom: 24px;
+}
+.hero-kicker::before {
+  content: '';
+  width: 20px;
+  height: 1px;
+  background: rgba(94, 197, 186, 0.6);
+  display: block;
+}
+
+/* Hero headline */
+.hero-h1 {
+  margin-bottom: 24px;
+}
+.hero-h1 .line-en {
+  font-family: var(--font-display); /* EB Garamond italic in production */
+  font-style: italic;
+  font-size: clamp(42px, 4.5vw, 70px);
+  font-weight: 400;
+  line-height: 1.10;
+  letter-spacing: -0.025em;
+  color: var(--hero-ink);
+  display: block;
+}
+.hero-h1 .line-ko {
+  font-family: var(--font-body);
+  font-weight: 700;
+  font-size: clamp(34px, 3.8vw, 58px);
+  line-height: 1.15;
+  letter-spacing: -0.03em;
+  color: var(--hero-ink);
+  display: block;
+  margin-top: 4px;
+}
+
+/* Subhead */
+.hero-sub {
+  font-size: 17px;
+  line-height: 1.65;
+  color: var(--hero-soft);
+  margin-bottom: 32px;
+  max-width: 48ch;
+}
+
+/* Status badge */
+.hero-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(154, 181, 197, 0.9);
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.1);
+  padding: 6px 14px;
+  border-radius: 100px;
+  margin-bottom: 36px;
+  letter-spacing: 0.02em;
+}
+.hero-badge .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(94,197,186,0.8);
+  flex-shrink: 0;
+  box-shadow: 0 0 0 3px rgba(94,197,186,0.15);
+}
+
+/* CTAs */
+.hero-ctas {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 13px 26px;
+  border-radius: 100px;
+  font-size: 15px;
+  font-weight: 600;
+  text-decoration: none;
+  border: none;
+  cursor: pointer;
+  letter-spacing: -0.01em;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+.btn:hover { transform: translateY(-1px); }
+.btn-primary {
+  background: var(--gold-light);
+  color: #0A0A0A;
+  box-shadow: 0 4px 20px rgba(232,184,64,0.25), 0 1px 3px rgba(0,0,0,0.3);
+}
+.btn-primary:hover {
+  background: #F5D070;
+  box-shadow: 0 6px 28px rgba(232,184,64,0.35), 0 2px 4px rgba(0,0,0,0.3);
+}
+.btn-ghost {
+  background: transparent;
+  color: var(--hero-ink);
+  border: 1px solid rgba(237,231,220,0.22);
+}
+.btn-ghost:hover { border-color: rgba(237,231,220,0.45); }
+
+/* ── COIN ── */
+.coin-wrap {
+  position: relative;
+  width: 300px;
+  height: 300px;
+  flex-shrink: 0;
+}
+
+/* Ambient glow ring behind coin */
+.coin-glow {
+  position: absolute;
+  inset: -40px;
+  border-radius: 50%;
+  background: radial-gradient(circle,
+    rgba(232,184,64,0.14) 0%,
+    rgba(200,145,26,0.08) 40%,
+    transparent 70%);
+  filter: blur(20px);
+  animation: pulse-glow 4s ease-in-out infinite;
+}
+
+/* Coin light ring pulses */
+.coin-ring {
+  position: absolute;
+  border-radius: 50%;
+  border: 1px solid rgba(232,184,64,0.15);
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%) scale(1);
+  animation: ring-expand 3s ease-out infinite;
+}
+.coin-ring:nth-child(2) { animation-delay: 1.5s; }
+
+@keyframes ring-expand {
+  0%   { width: 300px; height: 300px; opacity: 0.2; }
+  100% { width: 440px; height: 440px; opacity: 0; }
+}
+@keyframes pulse-glow {
+  0%, 100% { opacity: 0.8; }
+  50%       { opacity: 1.2; }
+}
+
+/* Coin float animation */
+.coin-svg-wrap {
+  position: relative;
+  z-index: 2;
+  animation: coin-float 3.8s cubic-bezier(0.37, 0, 0.63, 1) infinite;
+}
+@keyframes coin-float {
+  0%, 100% { transform: translateY(0); }
+  50%       { transform: translateY(-7px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .coin-svg-wrap, .coin-glow, .coin-ring { animation: none; }
+}
+
+/* ── WAVE TRANSITION ── */
+.hero-wave {
+  position: relative;
+  z-index: 2;
+  margin-top: auto;
+}
+.hero-wave svg {
+  display: block;
+  width: 100%;
+}
+
+/* ═══════════════════════════════════════════════════
+   5. BENEFITS SECTION
+   ═══════════════════════════════════════════════════ */
+
+.section-benefits {
+  background: var(--bg);
+  padding: 96px var(--gutter);
+}
+.container {
+  max-width: var(--maxw);
+  margin: 0 auto;
+}
+.section-kicker {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--teal);
+  margin-bottom: 16px;
+}
+.section-h2 {
+  font-family: var(--font-body);
+  font-size: clamp(26px, 3vw, 38px);
+  font-weight: 700;
+  line-height: 1.18;
+  letter-spacing: -0.025em;
+  color: var(--ink);
+  margin-bottom: 56px;
+  max-width: 22ch;
+}
+
+.benefit-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+}
+
+.benefit-card {
+  background: var(--bg-raise);
+  padding: 40px 36px;
+}
+.benefit-card:nth-child(1) { border-radius: var(--radius-card) 0 0 0; }
+.benefit-card:nth-child(2) { border-radius: 0 var(--radius-card) 0 0; }
+.benefit-card:nth-child(3) { border-radius: 0 0 0 var(--radius-card); }
+.benefit-card:nth-child(4) { border-radius: 0 0 var(--radius-card) 0; }
+
+.benefit-icon {
+  width: 44px;
+  height: 44px;
+  color: var(--teal);
+  margin-bottom: 20px;
+}
+.benefit-h3 {
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  margin-bottom: 12px;
+}
+.benefit-p {
+  font-size: 15px;
+  line-height: 1.7;
+  color: var(--ink-mid);
+}
+
+/* ═══════════════════════════════════════════════════
+   6. RESPONSIVE
+   ═══════════════════════════════════════════════════ */
+
+@media (max-width: 800px) {
+  .hero-inner {
+    flex-direction: column;
+    padding-top: 100px;
+    padding-bottom: 0;
+    gap: 40px;
+    align-items: flex-start;
+  }
+  .hero-copy, .hero-visual {
+    flex: none;
+    max-width: 100%;
+    width: 100%;
+  }
+  .hero-visual {
+    justify-content: center;
+    padding-bottom: 40px;
+  }
+  .coin-wrap { width: 240px; height: 240px; }
+  .benefit-grid {
+    grid-template-columns: 1fr;
+  }
+  .benefit-card:nth-child(1) { border-radius: var(--radius-card) var(--radius-card) 0 0; }
+  .benefit-card:nth-child(2) { border-radius: 0; }
+  .benefit-card:nth-child(3) { border-radius: 0; }
+  .benefit-card:nth-child(4) { border-radius: 0 0 var(--radius-card) var(--radius-card); }
+  .section-benefits { padding: 64px var(--gutter); }
+}
+
+@media (min-width: 801px) and (max-width: 1024px) {
+  .hero-inner { padding-top: 100px; }
+  .hero-h1 .line-en { font-size: 50px; }
+  .hero-h1 .line-ko { font-size: 42px; }
+}
+</style>
+</head>
+<body>
+
+<!-- ── NAVIGATION ──────────────────────────────── -->
+<nav class="site-nav" id="nav">
+  <a class="nav-brand" href="#top">
+    <!-- Brand mark: mini coin SVG -->
+    <svg class="nav-brand-mark" viewBox="0 0 30 30" role="img"
+         aria-label="EastSea doubloon mark" focusable="false">
+      <defs>
+        <radialGradient id="nm" cx="40%" cy="35%">
+          <stop offset="0%"   stop-color="#F2CC60"/>
+          <stop offset="100%" stop-color="#9A6810"/>
+        </radialGradient>
+      </defs>
+      <circle cx="15" cy="15" r="14" fill="url(#nm)"/>
+      <circle cx="15" cy="15" r="12" fill="none" stroke="#9A6810" stroke-width="1"/>
+      <!-- Mini sun arc -->
+      <path d="M 9 15 A 6 6 0 0 1 21 15" fill="none" stroke="#7A4808" stroke-width="1.2"
+            stroke-linecap="round"/>
+      <!-- Mini waves -->
+      <path d="M 6 18.5 Q 8.5 16.5 11 18.5 Q 13.5 20.5 16 18.5 Q 18.5 16.5 21 18.5 Q 23 19.5 24 18.5"
+            fill="none" stroke="#7A4808" stroke-width="1.2" stroke-linecap="round"/>
+      <path d="M 7 16.5 Q 9.5 14.8 12 16.5 Q 14.5 18.2 17 16.5 Q 19.5 14.8 22 16.5"
+            fill="none" stroke="#7A4808" stroke-width="0.9" stroke-linecap="round" opacity="0.7"/>
+    </svg>
+    <span class="nav-brand-name">
+      동해
+      <em>EastSea</em>
+    </span>
+  </a>
+  <div class="nav-actions">
+    <span class="nav-status">Testnet</span>
+    <button class="nav-lang" type="button">한글</button>
+  </div>
+</nav>
+
+<!-- ── HERO: SPLIT HORIZON ─────────────────────── -->
+<section class="hero" id="top" aria-labelledby="hero-title">
+
+  <div class="hero-inner">
+
+    <!-- TEXT COLUMN -->
+    <div class="hero-copy">
+      <p class="hero-kicker">A blockchain that runs on your Mac · Coin: Doubloon DBLN</p>
+
+      <h1 class="hero-h1" id="hero-title">
+        <!-- English line: EB Garamond italic in production -->
+        <span class="line-en">Your wallet and your<br>node, on your Mac.</span>
+        <!-- Korean line: Pretendard 700 in production -->
+        <span class="line-ko">지갑도 노드도 내 맥 안에.</span>
+      </h1>
+
+      <p class="hero-sub">
+        EastSea is a blockchain that starts with a single Mac. Touch ID instead
+        of a seed phrase. Your Mac verifies your own balance. Turn on the node
+        switch and it participates in the network.
+      </p>
+
+      <p class="hero-badge">
+        <span class="dot"></span>
+        Public testnet running&ensp;·&ensp;Mainnet not launched&ensp;·&ensp;No token sale
+      </p>
+
+      <div class="hero-ctas">
+        <a class="btn btn-primary" href="#download">See downloads</a>
+        <a class="btn btn-ghost" href="#earn">How rewards work</a>
+      </div>
+    </div><!-- /hero-copy -->
+
+    <!-- COIN COLUMN -->
+    <div class="hero-visual" aria-hidden="true">
+      <div class="coin-wrap">
+        <div class="coin-glow"></div>
+        <div class="coin-ring"></div>
+        <div class="coin-ring"></div>
+
+        <div class="coin-svg-wrap">
+          <!--
+            DOUBLOON SVG — Tide Tables coin design
+            PLACEHOLDER: The motif (dawn + waves) is direction-grade.
+            Production: replace with generated master render + SVG trace.
+          -->
+          <svg viewBox="0 0 300 300" width="300" height="300"
+               xmlns="http://www.w3.org/2000/svg"
+               role="img" aria-label="Doubloon DBLN coin">
+            <defs>
+              <!-- Gold base gradient: bright upper-left → dark rim -->
+              <radialGradient id="g-base" cx="38%" cy="33%" r="65%">
+                <stop offset="0%"   stop-color="#F4D060"/>
+                <stop offset="30%"  stop-color="#D4A428"/>
+                <stop offset="70%"  stop-color="#A07018"/>
+                <stop offset="100%" stop-color="#7A4808"/>
+              </radialGradient>
+
+              <!-- Inner field gradient (slightly darker) -->
+              <radialGradient id="g-field" cx="40%" cy="35%" r="60%">
+                <stop offset="0%"   stop-color="#E8BE48" stop-opacity="0.5"/>
+                <stop offset="100%" stop-color="#6A3C08" stop-opacity="0.5"/>
+              </radialGradient>
+
+              <!-- Specular highlight: small bright spot upper-left -->
+              <radialGradient id="g-spec" cx="32%" cy="28%" r="28%">
+                <stop offset="0%"   stop-color="#FFFBE0" stop-opacity="0.55"/>
+                <stop offset="100%" stop-color="#FFFBE0" stop-opacity="0"/>
+              </radialGradient>
+
+              <!-- Relief emboss: used on the motif paths -->
+              <filter id="f-emboss" x="-10%" y="-10%" width="120%" height="120%">
+                <feGaussianBlur in="SourceAlpha" stdDeviation="1.2" result="blur"/>
+                <feOffset dx="-1" dy="-1" result="shadow-offset"/>
+                <feFlood flood-color="#F4D060" flood-opacity="0.35" result="highlight-color"/>
+                <feComposite in="highlight-color" in2="shadow-offset"
+                             operator="in" result="highlight"/>
+                <feMerge>
+                  <feMergeNode in="SourceGraphic"/>
+                  <feMergeNode in="highlight"/>
+                </feMerge>
+              </filter>
+
+              <!-- Drop shadow for the whole coin -->
+              <filter id="f-drop" x="-18%" y="-10%" width="136%" height="140%">
+                <feDropShadow dx="0" dy="8" stdDeviation="14"
+                              flood-color="#3C1E04" flood-opacity="0.6"/>
+              </filter>
+
+              <!-- Reeded edge pattern -->
+              <pattern id="p-edge" viewBox="0 0 2.62 1" width="2.62"
+                       height="1" patternUnits="userSpaceOnUse"
+                       patternTransform="rotate(90 150 150)">
+                <rect width="1.4" height="1" fill="#9A6810" opacity="0.6"/>
+              </pattern>
+            </defs>
+
+            <!-- ── COIN BODY (drop shadow on this group) ── -->
+            <g filter="url(#f-drop)">
+
+              <!-- Outer reeded edge ring (148px → 142px) -->
+              <circle cx="150" cy="150" r="148" fill="#8A5808"/>
+              <!-- Reeded pattern over it -->
+              <circle cx="150" cy="150" r="148"
+                      fill="none" stroke="url(#p-edge)"
+                      stroke-width="12" opacity="0.5"/>
+
+              <!-- Main coin face -->
+              <circle cx="150" cy="150" r="140" fill="url(#g-base)"/>
+
+              <!-- Inner field overlay -->
+              <circle cx="150" cy="150" r="140" fill="url(#g-field)"/>
+
+              <!-- Outer bezel ring -->
+              <circle cx="150" cy="150" r="135" fill="none"
+                      stroke="#9A6810" stroke-width="2.5"/>
+              <!-- Inner bezel ring -->
+              <circle cx="150" cy="150" r="122" fill="none"
+                      stroke="#9A6810" stroke-width="1.5" opacity="0.6"/>
+
+              <!-- ── RELIEF MOTIF ─────────────────── -->
+              <!--
+                Horizon: y = 162
+                Sun center: (150, 162)
+                Sun radius: 36
+                Rays: 7 spreading from -68° to +68° from vertical
+              -->
+              <g class="relief" filter="url(#f-emboss)">
+
+                <!-- Sun semicircle (upper half) -->
+                <path d="M 114 162 A 36 36 0 0 1 186 162"
+                      fill="none"
+                      stroke="#7A4E08" stroke-width="2.8"
+                      stroke-linecap="round"/>
+
+                <!-- Sun inner ring (smaller arc, inner detail) -->
+                <path d="M 126 162 A 24 24 0 0 1 174 162"
+                      fill="none"
+                      stroke="#7A4E08" stroke-width="1.4"
+                      stroke-linecap="round" opacity="0.55"/>
+
+                <!-- Sun rays: 7 lines, alternating long/short
+                     Angles from 12 o'clock: -68°, -45°, -22°, 0°, +22°, +45°, +68°
+                     From sun edge (36px from center) to ray end
+                     Long rays: +26px, Short rays: +16px from sun edge
+                -->
+
+                <!-- Ray -68° (long, to 62px from center) -->
+                <line x1="116.6" y1="138.7"  x2="86.8"  y2="116.5"
+                      stroke="#7A4E08" stroke-width="2.0" stroke-linecap="round"/>
+                <!-- Ray -45° (short, 52px from center) -->
+                <line x1="124.5" y1="126.5"  x2="113.2" y2="115.2"
+                      stroke="#7A4E08" stroke-width="1.6" stroke-linecap="round"/>
+                <!-- Ray -22° (long, 62px from center) -->
+                <line x1="136.7" y1="129.6"  x2="126.7" y2="105.6"
+                      stroke="#7A4E08" stroke-width="2.0" stroke-linecap="round"/>
+                <!-- Ray 0° straight up (short, 52px from center) -->
+                <line x1="150"   y1="126"    x2="150"   y2="110"
+                      stroke="#7A4E08" stroke-width="1.6" stroke-linecap="round"/>
+                <!-- Ray +22° (long) -->
+                <line x1="163.3" y1="129.6"  x2="173.3" y2="105.6"
+                      stroke="#7A4E08" stroke-width="2.0" stroke-linecap="round"/>
+                <!-- Ray +45° (short) -->
+                <line x1="175.5" y1="126.5"  x2="186.8" y2="115.2"
+                      stroke="#7A4E08" stroke-width="1.6" stroke-linecap="round"/>
+                <!-- Ray +68° (long) -->
+                <line x1="183.4" y1="138.7"  x2="213.2" y2="116.5"
+                      stroke="#7A4E08" stroke-width="2.0" stroke-linecap="round"/>
+
+                <!-- ── OCEAN WAVES (below y=162) ── -->
+
+                <!-- Wave row 1 — nearest, largest arcs (y≈188) -->
+                <path d="M 44 190 Q 62 174 80 190 Q 98 206 116 190
+                         Q 134 174 152 190 Q 170 206 188 190
+                         Q 206 174 224 190 Q 242 206 256 190"
+                      fill="none"
+                      stroke="#7A4E08" stroke-width="2.8"
+                      stroke-linecap="round"/>
+
+                <!-- Wave row 2 — middle distance (y≈175) -->
+                <path d="M 48 176 Q 64 163 80 176 Q 96 189 112 176
+                         Q 128 163 144 176 Q 160 189 176 176
+                         Q 192 163 208 176 Q 224 189 240 176 Q 251 170 258 174"
+                      fill="none"
+                      stroke="#7A4E08" stroke-width="2.0"
+                      stroke-linecap="round"/>
+
+                <!-- Wave row 3 — far distance (y≈167, near horizon) -->
+                <path d="M 52 168 Q 65 160 78 168 Q 91 176 104 168
+                         Q 117 160 130 168 Q 143 176 156 168
+                         Q 169 160 182 168 Q 195 176 208 168
+                         Q 221 160 234 168 Q 244 172 252 168"
+                      fill="none"
+                      stroke="#7A4E08" stroke-width="1.4"
+                      stroke-linecap="round"/>
+
+              </g><!-- /relief -->
+
+              <!-- ── TEXT ON COIN ── -->
+              <!-- Top arc: 동  해 -->
+              <path id="arc-top"
+                    d="M 38 155 A 112 112 0 0 1 262 155"
+                    fill="none"/>
+              <text font-family="system-ui" font-size="13" font-weight="700"
+                    fill="#7A4808" letter-spacing="6">
+                <textPath href="#arc-top" startOffset="27%">동  해</textPath>
+              </text>
+
+              <!-- Bottom arc: D B L N -->
+              <path id="arc-bot"
+                    d="M 262 155 A 112 112 0 0 1 38 155"
+                    fill="none"/>
+              <text font-family="system-ui" font-size="12" font-weight="700"
+                    fill="#7A4808" letter-spacing="5">
+                <textPath href="#arc-bot" startOffset="30%">D B L N</textPath>
+              </text>
+
+              <!-- Specular highlight overlay -->
+              <circle cx="150" cy="150" r="140" fill="url(#g-spec)"/>
+
+            </g><!-- /coin body -->
+          </svg>
+        </div><!-- /coin-svg-wrap -->
+      </div><!-- /coin-wrap -->
+    </div><!-- /hero-visual -->
+
+  </div><!-- /hero-inner -->
+
+  <!-- Wave transition to next section -->
+  <div class="hero-wave" aria-hidden="true">
+    <svg viewBox="0 0 1440 88" preserveAspectRatio="none"
+         xmlns="http://www.w3.org/2000/svg">
+      <path d="M0,48 C180,8 360,80 540,44 C720,8 900,80 1080,44
+               C1260,8 1380,68 1440,48 L1440,88 L0,88 Z"
+            fill="#F3EFE3"/>
+      <path d="M0,68 C200,40 380,80 560,60 C740,40 900,76 1080,60
+               C1260,44 1380,72 1440,62 L1440,88 L0,88 Z"
+            fill="#F3EFE3" opacity="0.7"/>
+    </svg>
+    <!-- Dark mode wave fill -->
+    <style>
+      @media (prefers-color-scheme: dark) {
+        .hero-wave svg path { fill: #070F1B; }
+      }
+      :root[data-theme="dark"] .hero-wave svg path { fill: #070F1B; }
+    </style>
+  </div>
+
+</section><!-- /hero -->
+
+<!-- ── BENEFITS SECTION ────────────────────────── -->
+<section class="section-benefits" id="benefits" aria-labelledby="benefits-title">
+  <div class="container">
+
+    <p class="section-kicker">What you get</p>
+    <h2 class="section-h2" id="benefits-title">Built for the Mac,<br>trusted by you.</h2>
+
+    <div class="benefit-grid">
+
+      <!-- 1. Touch ID -->
+      <article class="benefit-card">
+        <svg class="benefit-icon" viewBox="0 0 44 44"
+             fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true" focusable="false">
+          <path d="M 22 10 A 12 12 0 0 1 34 22 M 22 13.5 A 8.5 8.5 0 0 1 30.5 22
+                   M 22 22 v 0.5"/>
+          <path d="M 12 18 A 10.5 10.5 0 0 0 11 22" opacity="0.45"/>
+          <path d="M 10 22 A 12.5 12.5 0 0 1 12.8 14.5"/>
+          <path d="M 15 33 h 14 M 18 37 h 8"/>
+        </svg>
+        <h3 class="benefit-h3">Your thumb is the key</h3>
+        <p class="benefit-p">
+          No 12-word seed phrase. Your key is born inside the Secure Enclave
+          and never leaves it. Every payment asks for Touch ID — nothing to
+          write down, nothing to lose.
+        </p>
+      </article>
+
+      <!-- 2. Verify -->
+      <article class="benefit-card">
+        <svg class="benefit-icon" viewBox="0 0 44 44"
+             fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true" focusable="false">
+          <path d="M 8 10 h 18 l 10 8 v 16 a 2 2 0 0 1-2 2 H 10 a 2 2 0 0 1-2-2 Z"/>
+          <path d="M 26 10 v 8 h 10" opacity="0.6"/>
+          <path d="M 15 25 l 4 4 8-9"/>
+        </svg>
+        <h3 class="benefit-h3">Your Mac checks the books</h3>
+        <p class="benefit-p">
+          The wallet never asks a server for your balance. It verifies
+          the network's threshold signature and state proof right on
+          your Mac — reading the ledger, not trusting a screen.
+        </p>
+      </article>
+
+      <!-- 3. Node -->
+      <article class="benefit-card">
+        <svg class="benefit-icon" viewBox="0 0 44 44"
+             fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true" focusable="false">
+          <circle cx="22" cy="22" r="11.5"/>
+          <path d="M 16 23 q 3-4.5 6 0 t 6 0"/>
+          <path d="M 22 4 v 5 M 22 35 v 5 M 4 22 h 5 M 35 22 h 5"/>
+          <path d="M 34 10 l-7 7" opacity="0.4"/>
+        </svg>
+        <h3 class="benefit-h3">One switch, network participation</h3>
+        <p class="benefit-p">
+          Turn on the node switch and you're done. No VPN, no open ports —
+          it connects over your home internet. While it's online it participates
+          in the network and receives the protocol's uptime reward.
+        </p>
+      </article>
+
+      <!-- 4. AI Agent -->
+      <article class="benefit-card">
+        <svg class="benefit-icon" viewBox="0 0 44 44"
+             fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true" focusable="false">
+          <rect x="9" y="13" width="26" height="18" rx="4"/>
+          <path d="M 16 9 v 5 M 28 9 v 5"/>
+          <circle cx="17" cy="22" r="2" fill="currentColor" stroke="none"/>
+          <circle cx="27" cy="22" r="2" fill="currentColor" stroke="none"/>
+          <path d="M 18 28 q 4 2 8 0"/>
+        </svg>
+        <h3 class="benefit-h3">An allowance wallet for AI agents</h3>
+        <p class="benefit-p">
+          Hand Claude Code, Codex and other MCP agents a wallet of their own.
+          You set the caps, recipients and expiry with Touch ID — the chain
+          itself enforces every limit.
+        </p>
+      </article>
+
+    </div><!-- /benefit-grid -->
+  </div>
+</section>
+
+<!-- Minimal nav scroll JS -->
+<script>
+(function () {
+  var nav = document.getElementById('nav');
+  function onScroll() {
+    if (window.scrollY > 40) { nav.classList.add('scrolled'); }
+    else { nav.classList.remove('scrolled'); }
+  }
+  window.addEventListener('scroll', onScroll, { passive: true });
+})();
+</script>
+
+</body>
+</html>

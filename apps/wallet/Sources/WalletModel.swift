@@ -58,6 +58,11 @@ final class WalletModel: ObservableObject {
     @Published private(set) var linkedWallets: [String] = []
     @Published private(set) var activityHistoryStart: UInt64?
     @Published private(set) var olderActivityAvailable = false
+    /// Why the history could not be read from the node (nil: it answered).
+    /// The history page says it in plain words instead of showing a stale
+    /// or empty list as if it were complete. (Set from `refreshChainActivity`
+    /// and the design preview.)
+    @Published var historyFailure: HistoryFailure?
     /// A recovery someone started on THIS account (cancel it if it was not you).
     @Published var incomingRecovery: RecoveryStatus?
     /// A recovery this device proposed for another account, waiting for its delay.
@@ -203,6 +208,7 @@ final class WalletModel: ObservableObject {
         activityExhausted = []
         activityHistoryStart = nil
         olderActivityAvailable = false
+        historyFailure = nil
         pendingBalanceRises = []
         activityLoading = false
         tokenScanRunning = false
@@ -812,7 +818,7 @@ final class WalletModel: ObservableObject {
 
     /// The readable text of an FFI error (its message, not the Swift case
     /// reflection `WalletError.Network(message: …)` would print).
-    static func ffiMessage(_ e: Error) -> String {
+    nonisolated static func ffiMessage(_ e: Error) -> String {
         switch e {
         case WalletError.Network(let m), WalletError.Invalid(let m), WalletError.Rejected(let m), WalletError.Verification(let m):
             return m
@@ -904,16 +910,22 @@ final class WalletModel: ObservableObject {
         activityLoading = true
         Task.detached {
             var pages: [(String, ChainHistoryPage)] = []
+            var failures: [HistoryFailure] = []
             for address in addresses {
                 do {
                     let json = try accountHistory(address: address, cursor: older ? cursors[address.lowercased()] : nil, limit: 200)
                     pages.append((address, try ChainHistoryPage.decode(json)))
-                } catch { /* keep the last successful view until a node answers */ }
+                } catch {
+                    // Keep the last successful view on screen, but say why the
+                    // list may be incomplete (an old node, a node that is gone).
+                    failures.append(HistoryFailure.classify(message: WalletModel.ffiMessage(error)))
+                }
             }
             let fetchedPages = pages
             await MainActor.run {
                 guard self.networkGeneration == generation else { return }
                 self.activityLoading = false
+                self.historyFailure = failures.first
                 guard self.address == own else { return }
                 var incomingHashes = Set<String>()
                 for (address, page) in fetchedPages {

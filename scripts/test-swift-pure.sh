@@ -9,6 +9,7 @@ run account-history Brand.swift ChainActivity.swift
 run assets EarningsModel.swift TokenAssets.swift
 run balance-history BalanceHistory.swift
 run earnings EarningsModel.swift
+run history-notice HistoryFailure.swift
 run install-location Brand.swift InstallLocation.swift
 run network-upgrade Brand.swift NetworkUpgrade.swift
 run release-approval ReleaseApproval.swift

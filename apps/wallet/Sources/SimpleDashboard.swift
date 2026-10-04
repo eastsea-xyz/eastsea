@@ -310,6 +310,16 @@ private struct ActivityPage: View {
             LinkedWalletsCard()
             Card {
                 VStack(spacing: 12) {
+                    if let failure = model.historyFailure {
+                        Label {
+                            Text(failure.notice)
+                        } icon: {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                        }
+                        .font(.aeFootnote)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                     ActivityList(limit: Int.max)
                     if model.olderActivityAvailable {
                         Button("Load older activity") { model.loadOlderActivity() }

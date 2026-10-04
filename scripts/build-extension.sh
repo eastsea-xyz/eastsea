@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Build the Aether browser extension wallet (Chrome, Edge, Brave, Arc: Manifest V3).
+# Build the EastSea browser extension wallet (Chrome, Edge, Brave, Arc: Manifest V3).
 #   scripts/build-extension.sh          build apps/extension/wasm (load apps/extension unpacked)
-#   scripts/build-extension.sh --zip    also pack dist/aether-extension-<version>.zip for the stores
+#   scripts/build-extension.sh --zip    also pack dist/eastsea-extension-<version>.zip for the stores
 # The extension builds transactions with crates/wasm (the same Rust rules the app uses)
 # and signs with a P-256 key that never leaves the browser.
 set -euo pipefail
@@ -37,7 +37,7 @@ echo "built apps/extension (load it unpacked from chrome://extensions)"
 if [ "${1:-}" = "--zip" ]; then
   version=$(python3 -c 'import json; print(json.load(open("apps/extension/manifest.json"))["version"])')
   mkdir -p dist
-  out="$PWD/dist/aether-extension-$version.zip"
+  out="$PWD/dist/eastsea-extension-$version.zip"
   rm -f "$out"
   # Deterministic pack (scripts/deterministic-zip.py): sorted entries, fixed
   # timestamp (SOURCE_DATE_EPOCH, UTC), 0644 mode. Plain `zip` records file

@@ -13,7 +13,7 @@ test('the brand and the confirmed coin name are in one place', () => {
 });
 
 test('renamed legal notice requires new consent and keeps its warning', () => {
-  assert.equal(TERMS_VERSION, 3);
+  assert.equal(TERMS_VERSION, 4);
   assert.match(NOTICE_POINTS[0], /^EastSea is built for production\./);
   assert.match(NOTICE_POINTS[0], /provided as is, without warranty/);
   assert.match(NOTICE_POINTS[1], /nothing here promises a price, a return, a listing or a way to cash out/);

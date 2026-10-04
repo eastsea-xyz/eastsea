@@ -189,11 +189,11 @@ function nodePill() {
 async function home(s) {
   const out = h('div');
   const bal = h('div', { class: 'balance' }, '…');
-  const proofNote = h('div', { class: 'small muted' }, developmentNetwork ? 'Dev network · read from the node' : 'Checking AETH balance…');
+  const proofNote = h('div', { class: 'small muted' }, developmentNetwork ? 'Dev network · read from the node' : `Checking ${Brand.coinTicker} balance…`);
   const { node, show } = nodePill();
   const addr = h('button', { class: 'link mono', title: 'Copy address', onclick: async () => { await navigator.clipboard.writeText(s.address); addr.textContent = 'Copied'; setTimeout(() => { addr.textContent = shortAddress(s.address); }, 900); } }, shortAddress(s.address));
-  const load = () => op('account').then((a) => { bal.textContent = `${formatAeth(a.balance)} ${Brand.coinTicker}`; show(a); if (!developmentNetwork) proofNote.textContent = 'AETH balance verified with a certificate and state proof'; })
-    .catch((e) => { bal.textContent = '—'; node.textContent = 'No node'; node.className = 'pill'; proofNote.textContent = 'AETH balance unavailable'; out.replaceChildren(message('error', e.message)); });
+  const load = () => op('account').then((a) => { bal.textContent = `${formatAeth(a.balance)} ${Brand.coinTicker}`; show(a); if (!developmentNetwork) proofNote.textContent = `${Brand.coinTicker} balance verified with a certificate and state proof`; })
+    .catch((e) => { bal.textContent = '—'; node.textContent = 'No node'; node.className = 'pill'; proofNote.textContent = `${Brand.coinTicker} balance unavailable`; out.replaceChildren(message('error', e.message)); });
   load();
   updaters = [load];
 
@@ -401,7 +401,7 @@ async function tokenReviewCard(token, done) {
 
 async function assetsView(s) {
   const aethAmt = h('strong', {}, '…');
-  const proofNote = h('div', { class: 'small muted' }, developmentNetwork ? 'Dev network · read from the node' : 'Checking AETH balance…');
+  const proofNote = h('div', { class: 'small muted' }, developmentNetwork ? 'Dev network · read from the node' : `Checking ${Brand.coinTicker} balance…`);
   const rows = h('div', { class: 'list' });
   const review = h('div', { class: 'list', style: 'gap:10px' });
   const unverified = h('div', { class: 'list' });
@@ -415,10 +415,10 @@ async function assetsView(s) {
     const [acct, assets] = await Promise.allSettled([op('account'), op('assets', { force })]);
     if (acct.status === 'fulfilled') {
       aethAmt.replaceChildren(`${formatAeth(acct.value.balance)} ${Brand.coinTicker}`);
-      if (!developmentNetwork) proofNote.textContent = 'AETH verified · token balances read from the node';
+      if (!developmentNetwork) proofNote.textContent = `${Brand.coinTicker} verified · token balances read from the node`;
     } else {
       aethAmt.replaceChildren('—');
-      proofNote.textContent = 'AETH balance unavailable · token balances read from the node';
+      proofNote.textContent = `${Brand.coinTicker} balance unavailable · token balances read from the node`;
     }
     if (assets.status === 'rejected') {
       note.textContent = 'Could not read tokens from the node. It tries again shortly.';

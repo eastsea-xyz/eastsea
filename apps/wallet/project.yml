@@ -1,6 +1,6 @@
 name: AetherWallet
 options:
-  bundleIdPrefix: com.pipln.aether
+  bundleIdPrefix: com.pipln.eastsea
   deploymentTarget:
     macOS: "14.0"
     iOS: "17.0"
@@ -24,8 +24,8 @@ targets:
     settings:
       base:
         # Distributed outside the App Store by Pipln: Developer ID signing, notarized.
-        PRODUCT_BUNDLE_IDENTIFIER: com.pipln.aether
-        PRODUCT_NAME: Aether
+        PRODUCT_BUNDLE_IDENTIFIER: com.pipln.eastsea
+        PRODUCT_NAME: EastSea
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         DEVELOPMENT_TEAM: 45WU468FZE
         CODE_SIGN_STYLE: Manual
@@ -86,15 +86,15 @@ targets:
       - path: Generated/aether_ffi.swift
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.pipln.aether.ios
-        PRODUCT_NAME: Aether
+        PRODUCT_BUNDLE_IDENTIFIER: com.pipln.eastsea.ios
+        PRODUCT_NAME: EastSea
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         DEVELOPMENT_TEAM: 45WU468FZE
         SWIFT_VERSION: "5.0"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: EastSea
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        # The aether:// URL scheme, merged into the generated Info.plist.
+        # The eastsea:// (and legacy aether://) URL scheme, merged into the generated Info.plist.
         INFOPLIST_FILE: Info-ios.plist
         INFOPLIST_KEY_NSFaceIDUsageDescription: Sign transactions with your device's Secure Enclave key.
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait

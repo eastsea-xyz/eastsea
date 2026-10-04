@@ -614,7 +614,10 @@ final class WalletModel: ObservableObject {
     /// `aether://pay?to=0x…&amount=1.5&memo=…&callback=https://…` from a web page
     /// (no extension needed): the payment is shown for approval, never sent by itself.
     func open(url: URL) {
-        guard url.scheme == "aether", let c = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
+        // The rename kept every existing aether:// payment link alive: both
+        // schemes stay registered and both are parsed the same way.
+        guard url.scheme == "eastsea" || url.scheme == "aether",
+              let c = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
         // A repeated parameter keeps its first value (never a crash on odd links).
         let q = Dictionary((c.queryItems ?? []).compactMap { i in i.value.map { (i.name, $0) } }, uniquingKeysWith: { first, _ in first })
         let action = c.host ?? c.path
@@ -643,7 +646,7 @@ final class WalletModel: ObservableObject {
             }
             agentTransactionHash = hash
         default:
-            note("Ignored an unknown aether:// link")
+            note("Ignored an unknown EastSea link")
         }
     }
 

@@ -9,7 +9,7 @@ enum Terms {
               let network = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return true }
         return (network["chain_id"] as? NSNumber)?.uint64Value == 7780
     }()
-    static let version = isTestnet ? 4 : 5
+    static let version = isTestnet ? 5 : 6
     static let disclaimerURL = URL(string: "https://github.com/kjaylee/aether-node/blob/main/DISCLAIMER.md")!
 }
 

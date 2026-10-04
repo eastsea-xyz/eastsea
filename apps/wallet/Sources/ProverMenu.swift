@@ -120,7 +120,7 @@ struct MenuBarPanel: View {
         Task {
             guard let csv = await node.rewardsCSV() else { return }
             let panel = NSSavePanel()
-            panel.nameFieldStringValue = "aether-rewards.csv"
+            panel.nameFieldStringValue = "eastsea-rewards.csv"
             panel.allowedContentTypes = [.commaSeparatedText]
             if panel.runModal() == .OK, let url = panel.url {
                 try? csv.write(to: url, atomically: true, encoding: .utf8)

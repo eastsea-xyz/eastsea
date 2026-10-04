@@ -381,7 +381,7 @@ private struct RewardsExportCard: View {
                 Spacer(minLength: 8)
                 Button(working ? "Exporting…" : "Export CSV…") { export() }
                     .disabled(working || node.proveAddress.isEmpty)
-                    .help("Saves aether-rewards.csv. The node keeps the records; nothing leaves this Mac.")
+                    .help("Saves eastsea-rewards.csv. The node keeps the records; nothing leaves this Mac.")
             }
         }
     }
@@ -392,7 +392,7 @@ private struct RewardsExportCard: View {
             defer { working = false }
             guard let csv = await node.rewardsCSV() else { return }
             let panel = NSSavePanel()
-            panel.nameFieldStringValue = "aether-rewards.csv"
+            panel.nameFieldStringValue = "eastsea-rewards.csv"
             panel.allowedContentTypes = [.commaSeparatedText]
             if panel.runModal() == .OK, let url = panel.url {
                 try? csv.write(to: url, atomically: true, encoding: .utf8)
@@ -426,7 +426,7 @@ private struct NetworkPage: View {
                     Image(systemName: model.status == nil ? "antenna.radiowaves.left.and.right.slash" : model.chainPausedSince != nil ? "pause.circle.fill" : "checkmark.circle.fill")
                         .font(.system(size: narrow ? 30 : 40)).foregroundStyle(model.status == nil || model.chainPausedSince != nil ? Color.warn : Color.aether)
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(model.status == nil ? "Connecting to \(Brand.project)…" : model.chainPausedSince != nil ? "Network paused" : "Connected to \(Brand.project)")
+                        Text(model.status == nil ? "Connecting to \(Brand.project)\(Terms.isTestnet ? " testnet" : "")…" : model.chainPausedSince != nil ? "Network paused" : "Connected to \(Brand.project)\(Terms.isTestnet ? " testnet" : "")")
                             .font(.aeTitle)
                         Text("Found the validators on the public DHT. Your balance is checked on this device against their group signature.")
                             .font(.aeBody).foregroundStyle(.secondary)

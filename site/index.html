@@ -134,8 +134,8 @@
             <span class="en" lang="en">Your thumb is the key</span>
           </h3>
           <p>
-            <span class="ko" lang="ko">12단어짜리 시드 문구는 없습니다. 키는 맥의 Secure Enclave 안에서 태어나 밖으로 나오지 않고, 결제할 때마다 Touch ID로 확인합니다. 적어 둘 종이도, 잃어버릴 종이도 없어요.</span>
-            <span class="en" lang="en">There is no 12-word seed phrase. Your key is born inside your Mac's Secure Enclave and never leaves it; every payment asks for Touch ID. No paper to write down, no paper to lose.</span>
+            <span class="ko" lang="ko">12단어짜리 시드 문구는 없습니다. 키는 맥의 Secure Enclave 안에서 태어나 밖으로 나오지 않고, 결제할 때마다 Touch ID로 확인합니다. 적어 둘 종이도, 잃어버릴 종이도 없어요. 다만 분명히 짚어 둘 제약이 있습니다: 맥을 잃기 전에 복구 키를 미리 설정해 두어야만 계정을 되찾을 수 있어요.</span>
+            <span class="en" lang="en">There is no 12-word seed phrase. Your key is born inside your Mac's Secure Enclave and never leaves it; every payment asks for Touch ID. No paper to write down, no paper to lose. One plain limit, though: you must set up a recovery key before you need it — without one, nobody can restore the account.</span>
           </p>
         </article>
         <article class="benefit">
@@ -146,12 +146,12 @@
             <path d="M11 20l3.2 3.5 6.3-7" stroke="var(--gold)" stroke-width="1.5"/>
           </svg>
           <h3>
-            <span class="ko" lang="ko">잔액은 서버 말고 내 맥이 확인합니다</span>
-            <span class="en" lang="en">Your Mac checks your money itself</span>
+            <span class="ko" lang="ko">잔액은 내 맥이 직접 확인합니다</span>
+            <span class="en" lang="en">Your Mac checks your balance itself</span>
           </h3>
           <p>
-            <span class="ko" lang="ko">지갑이 잔액을 누군가의 서버에 묻지 않습니다. 네트워크가 합의했다는 서명과 장부 증명을 내 맥 안에서 직접 검사해요. 화면에 뜬 숫자를 믿는 게 아니라, 장부를 직접 읽는 겁니다.</span>
-            <span class="en" lang="en">The wallet never asks someone's server for your balance. It verifies the network's agreed signature and the ledger proof right on your Mac — reading the books instead of trusting a screen.</span>
+            <span class="ko" lang="ko">지갑은 받은 잔액 증명을 내 맥 안에서 직접 검증하도록 설계됐습니다. 네트워크가 합의했다는 서명과 장부 증명을 하나씩 검사해요 — 화면에 뜬 숫자를 믿는 게 아니라, 장부를 직접 읽는 겁니다.</span>
+            <span class="en" lang="en">The wallet is designed to verify the balance proofs it receives right on your Mac. It checks the network's agreed signature and the ledger proof itself — reading the books instead of trusting a screen.</span>
           </p>
         </article>
         <article class="benefit">
@@ -189,15 +189,19 @@
             <span class="en" lang="en">An allowance wallet for your AI agent</span>
           </h3>
           <p>
-            <span class="ko" lang="ko">Claude Code, Codex 같은 AI 에이전트에 지갑을 쥐여 줄 수 있어요. 한도·수신인·기한은 당신이 Touch ID로 정하고, 그 약속은 체인이 직접 지킵니다. 속아 넘어간 에이전트도 정해 둔 한도 안에서만 쓸 수 있죠.</span>
-            <span class="en" lang="en">Hand Claude Code, Codex and other MCP agents a wallet of their own. You set the caps, the recipients and the expiry with Touch ID — and the chain itself enforces the promise. Even a tricked agent can only spend within the limits.</span>
+            <span class="ko" lang="ko">Claude Code, Codex 같은 AI 에이전트에 지갑을 쥐여 주는 기능을 개발 중입니다. 계획대로 완성되면 한도·수신인·기한은 당신이 Touch ID로 정하고, 그 약속은 체인이 지킵니다. 실제 Touch ID 승인과 네트워크 결제는 아직 검증되지 않았습니다.</span>
+            <span class="en" lang="en">We are building a wallet you can hand to Claude Code, Codex and other MCP agents. As designed, you set the caps, the recipients and the expiry with Touch ID — and the chain enforces the promise. Real Touch ID approvals and network payments have not been verified yet.</span>
+          </p>
+          <p class="badge">
+            <span class="ko" lang="ko">개발 중인 기능입니다</span>
+            <span class="en" lang="en">In development</span>
           </p>
         </article>
       </div>
       <!-- Pull-quote: approved copy, Garamond italic in EN -->
       <blockquote class="pull-quote container">
-        <span class="ko" lang="ko">잔액은 서버 말고 내 맥이 확인합니다.</span>
-        <span class="en" lang="en">Your Mac reads the books itself — no server in the middle.</span>
+        <span class="ko" lang="ko">받은 잔액 증명을 내 맥이 직접 검증합니다.</span>
+        <span class="en" lang="en">Your Mac verifies the balance proofs it receives.</span>
       </blockquote>
     </div>
   </section>

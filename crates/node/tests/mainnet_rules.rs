@@ -153,6 +153,7 @@ fn the_mainnet_rule_set_is_on_from_height_1() {
     assert_eq!(
         rules.iter().map(|r| r.name).collect::<Vec<_>>(),
         [
+            "chain id",
             "protocol from genesis",
             "proof market",
             "registry v3",
@@ -184,6 +185,174 @@ fn the_mainnet_rule_set_is_on_from_height_1() {
     let registration = n.register(0);
     step(&mut n, &mut minted, vec![registration]);
     assert_ne!(n.parent.statement, Default::default(), "block 1 records a statement");
+
+    // Audit 5, A5-4: the reserved chain ids (the running testnet, the
+    // rehearsal default) fail exactly their own rule in strict mode, however
+    // correct the rest of the genesis is. The harness shortens timing (a
+    // rehearsal allowance): put the published policy back for the strict run.
+    let mut reserved = cfg.clone();
+    reserved.chain_id = 7_799;
+    reserved.epoch_blocks = 0;
+    reserved.min_streak = None;
+    reserved.draw_epochs = None;
+    let off = mainnet::check_with(&reserved, false).iter().filter(|r| !r.ok).map(|r| r.name).collect::<Vec<_>>();
+    assert_eq!(off, ["chain id"], "only the chain id rule rejects the rehearsal id");
+    let mut testnet = reserved.clone();
+    testnet.chain_id = 7_780;
+    let off = mainnet::check_with(&testnet, false).iter().filter(|r| !r.ok).map(|r| r.name).collect::<Vec<_>>();
+    assert!(off.contains(&"chain id"), "the testnet id fails the chain id rule too: {off:?}");
+}
+
+/// A real DKG output over the four genesis validators, from the tests/dkg.rs
+/// harness pattern run over a perfect in-memory network: exactly the hex pair
+/// `aether dkg` writes into network.json.
+fn ceremony_output() -> (String, String) {
+    use aether_node::block::PublicKey;
+    use aether_node::dkg::{Ceremony, KeyFile, Round, To};
+    use commonware_utils::TryCollect;
+    use rand::SeedableRng as _;
+    use rand_chacha::ChaCha20Rng;
+    use std::collections::VecDeque;
+    let players: Vec<_> = (1..=4u64).map(aether_light::devnet_validator_key).collect();
+    let pks: Vec<PublicKey> = players.iter().map(|k| k.public_key()).collect();
+    let participants: commonware_utils::ordered::Set<PublicKey> = pks.iter().cloned().try_collect().unwrap();
+    let mut queue: VecDeque<(PublicKey, PublicKey, aether_node::dkg::Msg)> = VecDeque::new();
+    let send = |queue: &mut VecDeque<(PublicKey, PublicKey, aether_node::dkg::Msg)>, from: &PublicKey, out: Vec<(To, aether_node::dkg::Msg)>| {
+        for (to, msg) in out {
+            let targets: Vec<PublicKey> = match to {
+                To::One(p) => vec![p],
+                To::All => pks.iter().filter(|p| *p != from).cloned().collect(),
+            };
+            for t in targets {
+                queue.push_back((from.clone(), t, msg.clone()));
+            }
+        }
+    };
+    let mut cs = Vec::new();
+    for (i, k) in players.iter().enumerate() {
+        let (c, out) = Ceremony::start(ChaCha20Rng::seed_from_u64(11), k.clone(), Round::dkg(participants.clone(), 0), None).unwrap();
+        send(&mut queue, &pks[i], out);
+        cs.push(c);
+    }
+    let idx = |p: &PublicKey| pks.iter().position(|x| x == p).unwrap();
+    let mut done = None;
+    for tick in 0..400 {
+        for _ in 0..queue.len() {
+            let Some((from, to, msg)) = queue.pop_front() else { break };
+            let i = idx(&to);
+            send(&mut queue, &to, cs[i].on_message(&from, msg));
+        }
+        for i in 0..pks.len() {
+            let mut out = cs[i].pending_deals();
+            if cs[i].all_acked() || tick > 20 {
+                out.extend(cs[i].close_dealing());
+            }
+            if tick > 60 && cs[i].have_quorum_logs() {
+                if let Some((_, msg)) = cs[i].propose_transcript() {
+                    out.push((To::All, msg));
+                }
+                out.extend(cs[i].tick_agreement());
+            }
+            if done.is_none() {
+                if let Some(digest) = cs[i].certified_transcript() {
+                    let (o, s) = cs[i].finish_decided(&mut ChaCha20Rng::seed_from_u64(7), &digest).unwrap();
+                    done = Some(KeyFile::new(0, &o, &s));
+                }
+            }
+            out.extend(cs[i].rebroadcast());
+            send(&mut queue, &pks[i], out);
+        }
+        if done.is_some() {
+            break;
+        }
+    }
+    let f = done.expect("ceremony completes");
+    (f.output, f.identity)
+}
+
+/// A final network.json in the mainnet shape: the published policy flags and
+/// the committee fields under test.
+fn final_file(chain: u64, round: u64, output: Option<String>, identity: Option<String>) -> aether_node::roster::NetworkFile {
+    use aether_node::roster::{Member, NetworkFile, ReserveFile};
+    let (x, y) = {
+        use aether_crypto::Signer;
+        let key = aether_crypto::P256Signer::from_seed(&[5; 32]).unwrap().public_key();
+        aether_crypto::p256_xy(&key.bytes).unwrap()
+    };
+    let mut registrar = [0u8; 64];
+    registrar[..32].copy_from_slice(&x);
+    registrar[32..].copy_from_slice(&y);
+    NetworkFile {
+        chain_id: chain,
+        validators: (1..=4u64)
+            .map(|i| {
+                let k = aether_light::devnet_validator_key(i);
+                Member { key: hex::encode(k.public_key().as_ref()), node: aether_net::devnet_node_id(i).to_string() }
+            })
+            .collect(),
+        identity,
+        round,
+        output,
+        epochs: vec![],
+        faucet: None,
+        registrar: Some(hex::encode(registrar)),
+        epoch_blocks: None,
+        min_streak: None,
+        draw_epochs: None,
+        history: Some(2),
+        protocol: Some(3),
+        node_rewards: Some(true),
+        reserve: Some(ReserveFile {
+            operator: Address::repeat_byte(0x99),
+            validators: (1..=3)
+                .map(|i| Member { key: hex::encode([i; 32]), node: aether_net::SecretKey::from_bytes(&[i; 32]).public().to_string() })
+                .collect(),
+        }),
+        group: None,
+        max_committee: Some(aether_node::rotation::GROW_UNTIL as u64),
+        genesis_validators: None,
+    }
+}
+
+/// Audit 5, A5-4: the final-file gate. `mainnet-rules` does not stop at
+/// rebuilding the genesis — it decodes the exact committee fields with the
+/// node's own decoder, seats the roster, pins the identity to the group
+/// public key and refuses revealed seated shares. The file the audit built
+/// (valid structure, `identity: "aa"`, `output: "bb"`) must FAIL; a real
+/// ceremony output must PASS; a roster the output does not seat must FAIL.
+#[test]
+fn the_final_file_gate_decodes_the_committee_it_is_given() {
+    use aether_node::mainnet;
+    let names = ["committee output decodes", "output seats the genesis roster", "identity is the group public key", "no revealed seated share"];
+
+    // A real ceremony output passes every final rule.
+    let (output, identity) = ceremony_output();
+    let file = final_file(7_801, 0, Some(output), Some(identity));
+    let rules = mainnet::check_final(&file, false);
+    assert_eq!(rules.iter().map(|r| r.name).collect::<Vec<_>>(), names);
+    assert!(rules.iter().all(|r| r.ok), "{}", mainnet::missing(&rules));
+
+    // The audit's junk fields: valid structure, unusable committee.
+    let junk = final_file(7_801, 0, Some("bb".into()), Some("aa".into()));
+    let rules = mainnet::check_final(&junk, false);
+    assert!(rules.iter().all(|r| !r.ok), "no rule may pass on an undecodable output: {:?}", rules);
+
+    // A DKG over a different player set does not seat this roster.
+    let (output, identity) = ceremony_output();
+    let mut other = final_file(7_801, 0, Some(output), Some(identity));
+    let replacement = aether_light::devnet_validator_key(9);
+    other.validators[3] = aether_node::roster::Member {
+        key: hex::encode(replacement.public_key().as_ref()),
+        node: aether_net::devnet_node_id(9).to_string(),
+    };
+    let off = mainnet::check_final(&other, false).iter().filter(|r| !r.ok).map(|r| r.name).collect::<Vec<_>>();
+    assert!(off.contains(&"output seats the genesis roster"), "a swapped validator fails the seating rule: {off:?}");
+
+    // Pre-DKG is explicitly ok (assemble wrote it); half a final file is not.
+    let pre = final_file(7_801, 0, None, None);
+    assert!(mainnet::check_final(&pre, false).iter().all(|r| r.ok));
+    let half = final_file(7_801, 0, None, Some("aa".into()));
+    assert!(!mainnet::check_final(&half, false).iter().all(|r| r.ok));
 }
 
 #[test]

@@ -838,6 +838,13 @@ pub struct KeyFile {
 }
 
 impl KeyFile {
+    /// True when the output's revealed players include a seated player: the
+    /// A4-1 check, one implementation shared by every gate that refuses such
+    /// an output (the ceremony itself, startup, the mainnet final-file gate).
+    pub fn reveals_seated_share(output: &DkgOutput, seated: &Set<PublicKey>) -> bool {
+        output.revealed().iter().any(|player| seated.position(player).is_some())
+    }
+
     pub fn new(round: u64, output: &DkgOutput, share: &Share) -> Self {
         KeyFile { round, output: hex::encode(output.encode()), identity: hex::encode(output.public().public().encode()), share: hex::encode(share.encode()) }
     }

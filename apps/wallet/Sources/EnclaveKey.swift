@@ -25,10 +25,15 @@ struct EnclaveAccount {
         /// (device locked, a Keychain hiccup after an OS update). Never a
         /// reason to make a new key: that would orphan the wallet's address.
         case keyUnavailable(String)
+        /// Audit 5, A5-7: an unmigrated old Aether key handle is waiting.
+        /// Making a fresh key now would give this Mac a second wallet
+        /// address and strand the first — finish the data move instead.
+        case migrationPending(String)
         var errorDescription: String? {
             switch self {
             case .enclaveUnavailable: return "Secure Enclave is not available on this device"
             case .keyUnavailable(let why): return "The wallet key cannot be opened right now (\(why)). Unlock this device and try again."
+            case .migrationPending(let why): return why
             }
         }
     }
@@ -50,6 +55,7 @@ struct EnclaveAccount {
             }
             return EnclaveAccount(key: .software(k), requiresUserPresence: false)
         }
+        if let why = DataMigration.mayCreateFreshWalletKey() { throw KeyError.migrationPending(why) }
         let k = P256.Signing.PrivateKey()
         try k.rawRepresentation.write(to: url, options: [.withoutOverwriting, .completeFileProtection])
         return EnclaveAccount(key: .software(k), requiresUserPresence: false)
@@ -69,6 +75,7 @@ struct EnclaveAccount {
                 throw KeyError.keyUnavailable(error.localizedDescription)
             }
         }
+        if let why = DataMigration.mayCreateFreshWalletKey() { throw KeyError.migrationPending(why) }
         var flags: SecAccessControlCreateFlags = [.privateKeyUsage]
         if requireUserPresence { flags.insert(.userPresence) }
         var error: Unmanaged<CFError>?

@@ -278,6 +278,14 @@ final class NodeController: ObservableObject {
             state = .failed("This build does not include the node")
             return
         }
+        // Audit 5, A5-7: while the old Aether node data (identity, threshold
+        // share, chain) waits unmigrated, starting fresh here would strand
+        // this Mac's validator identity. The migration itself already ran
+        // (Self.dataDir) — this catches its deferred/failed outcome.
+        if let why = DataMigration.mayStartNode() {
+            state = .failed(why)
+            return
+        }
         do {
             try FileManager.default.createDirectory(at: Self.dataDir, withIntermediateDirectories: true)
         } catch {

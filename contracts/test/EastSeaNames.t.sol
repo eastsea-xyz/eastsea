@@ -21,6 +21,7 @@ contract ReentrantPayer {
     string public rName;
     address public rOwner;
     bytes32 public rSalt;
+    address public rRelayer;
     uint256 public rValue;
     bool public armedCall;
     bool public armedRegister;
@@ -35,16 +36,17 @@ contract ReentrantPayer {
         armedCall = true;
     }
 
-    function armRegister(string calldata n, address o, bytes32 s, uint256 v) external {
+    function armRegister(string calldata n, address o, bytes32 s, address r, uint256 v) external {
         rName = n;
         rOwner = o;
         rSalt = s;
+        rRelayer = r;
         rValue = v;
         armedRegister = true;
     }
 
-    function go(string calldata n, address o, bytes32 s) external payable {
-        names.register{value: msg.value}(n, o, s);
+    function go(string calldata n, address o, bytes32 s, address r) external payable {
+        names.register{value: msg.value}(n, o, s, r);
     }
 
     receive() external payable {
@@ -54,7 +56,7 @@ contract ReentrantPayer {
             if (ok) innerOk = 1;
         } else if (armedRegister) {
             armedRegister = false;
-            try names.register{value: rValue}(rName, rOwner, rSalt) {
+            try names.register{value: rValue}(rName, rOwner, rSalt, rRelayer) {
                 innerOk = 1;
             } catch {
                 innerOk = 2;
@@ -99,6 +101,8 @@ contract EastSeaNamesTest {
 
     EastSeaNames names;
 
+    event CommitmentMade(bytes32 indexed commitment, address indexed committer);
+    event CommitmentCleared(bytes32 indexed commitment, address indexed by);
     event Registered(string name, bytes32 indexed node, address indexed owner, uint64 expires, uint256 fee);
     event Renewed(bytes32 indexed node, uint64 newExpires, uint256 fee);
     event Burned(uint256 amount);
@@ -116,10 +120,18 @@ contract EastSeaNamesTest {
     mapping(bytes32 => uint64) mExpires;
     mapping(bytes32 => address) mPending;
     mapping(bytes32 => address) mAddr;
-    uint256 mFees;
+    uint256 mFees; // full fees of successful registrations/renewals
+    uint256 mBurn; // every burn: fees actually due + every bond
+    uint256 mOrphan; // bonds that never converted into a credited reveal
+
+    /// Cached once in setUp: a `names.COMMIT_BOND()` read after vm.prank /
+    /// expectRevert / expectEmit would consume the pending cheatcode state
+    /// (this forge's prank applies to the very next external call).
+    uint256 bond;
 
     function setUp() public {
         names = new EastSeaNames();
+        bond = names.COMMIT_BOND();
         vm.deal(alice, 1000 ether);
         vm.deal(bob, 1000 ether);
         vm.deal(carol, 1000 ether);
@@ -137,6 +149,8 @@ contract EastSeaNamesTest {
             delete mAddr[node];
         }
         mFees = 0;
+        mBurn = 0;
+        mOrphan = 0;
     }
 
     // ---- helpers ----
@@ -157,13 +171,18 @@ contract EastSeaNamesTest {
         return abi.encodeWithSelector(e);
     }
 
-    function commitFor(string memory name, address owner, bytes32 salt) internal view returns (bytes32) {
-        return keccak256(abi.encodePacked(name, owner, salt));
+    /// The commitment hash, exactly as register recomputes it: the name, the
+    /// future owner, the salt, and the one other account (the relayer,
+    /// address(0) = none) allowed to reveal.
+    function commitFor(string memory name, address owner, bytes32 salt, address relayer) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked(name, owner, salt, relayer));
     }
 
-    /// Commit + age the commitment, so the caller can reveal right away.
+    /// Commit as `owner` (paying the bond) and age the commitment, so
+    /// `owner` can reveal right away.
     function commitAndAge(string memory name, address owner, bytes32 salt) internal {
-        names.commit(commitFor(name, owner, salt));
+        vm.prank(owner);
+        names.commit{value: bond}(commitFor(name, owner, salt, address(0)));
         vm.warp(block.timestamp + names.MIN_COMMIT_AGE());
     }
 
@@ -184,6 +203,238 @@ contract EastSeaNamesTest {
 
     function mLive(bytes32 node) private view returns (bool) {
         return mOwner[node] != address(0) && block.timestamp < uint256(mExpires[node]) + names.GRACE_PERIOD();
+    }
+
+    // ---- audit round 5: A5-3, the commitment is bound to its committer ----
+
+    /// The exact attack sequence. Alice commits and ages exactly
+    /// MIN_COMMIT_AGE; her reveal enters the mempool; Mallory reads its
+    /// arguments, recomputes C, and lands a higher-priority commit(C) before
+    /// the reveal. That re-commit must revert and change nothing, and the
+    /// victim's aged reveal must still succeed.
+    function test_A5_3_RecommitBeforeRevealMustNotResetWindow() public {
+        bytes32 c = commitFor("abc", alice, SALT, address(0));
+        vm.prank(alice);
+        names.commit{value: bond}(c);
+        vm.warp(block.timestamp + names.MIN_COMMIT_AGE());
+
+        vm.prank(eve);
+        vm.expectRevert(err(EastSeaNames.CommitmentActive.selector));
+        names.commit{value: bond}(c);
+
+        vm.prank(alice);
+        names.register{value: 2 ether - bond}("abc", alice, SALT, address(0));
+        assertEq(names.ownerOf(names.nodeFor("abc")), alice);
+        assertEq(names.totalBurned(), 2 ether); // alice's bond + due == the fee
+    }
+
+    /// A different account — neither the committer nor a designated relayer —
+    /// must not be able to reveal someone else's commitment.
+    function test_A5_3_OnlyCommitterOrRelayerMayReveal() public {
+        bytes32 c = commitFor("abc", alice, SALT, address(0));
+        vm.prank(alice);
+        names.commit{value: bond}(c);
+        vm.warp(block.timestamp + names.MIN_COMMIT_AGE());
+
+        vm.prank(eve);
+        vm.expectRevert(err(EastSeaNames.NotCommitter.selector));
+        names.register{value: 2 ether}("abc", alice, SALT, address(0));
+
+        // the failed hijack left everything in place: alice reveals normally
+        vm.prank(alice);
+        names.register{value: 2 ether - bond}("abc", alice, SALT, address(0));
+        assertEq(names.ownerOf(names.nodeFor("abc")), alice);
+    }
+
+    /// Not even the committer themself can move a live commitment's
+    /// timestamp: the window keeps running from the original commit.
+    function test_A5_3_CommitFrozenEvenForItsOwnCommitter() public {
+        bytes32 c = commitFor("abc", alice, SALT, address(0));
+        vm.prank(alice);
+        names.commit{value: bond}(c);
+        vm.warp(block.timestamp + 120);
+
+        vm.prank(alice);
+        vm.expectRevert(err(EastSeaNames.CommitmentActive.selector));
+        names.commit{value: bond}(c);
+
+        vm.prank(alice);
+        names.register{value: 2 ether - bond}("abc", alice, SALT, address(0));
+        assertEq(names.ownerOf(names.nodeFor("abc")), alice);
+    }
+
+    /// A slot past MAX_COMMIT_AGE is dead for revealing anyway; re-committing
+    /// it is a fresh commitment of the new poster, and only theirs.
+    function test_A5_3_RecommitAfterExpiryRebindsCommitter() public {
+        bytes32 c = commitFor("abc", alice, SALT, address(0));
+        vm.prank(alice);
+        names.commit{value: bond}(c);
+        vm.warp(block.timestamp + names.MAX_COMMIT_AGE());
+
+        vm.prank(eve);
+        names.commit{value: bond}(c); // replaces the dead slot
+
+        vm.prank(alice);
+        vm.expectRevert(err(EastSeaNames.NotCommitter.selector));
+        names.register{value: 2 ether}("abc", alice, SALT, address(0));
+
+        vm.warp(block.timestamp + names.MIN_COMMIT_AGE());
+        vm.prank(eve);
+        names.register{value: 2 ether - bond}("abc", alice, SALT, address(0));
+        assertEq(names.ownerOf(names.nodeFor("abc")), alice); // owner stays inside the hash
+    }
+
+    /// The committer may name one relayer inside the commitment hash; that
+    /// relayer (and only that relayer) reveals and pays the FULL fee — the
+    /// bond credit belongs to a self-reveal only.
+    function test_RegisterViaDesignatedRelayer() public {
+        uint256 carolBefore = carol.balance;
+        bytes32 c = commitFor("abcde", carol, SALT, bob);
+        vm.prank(carol);
+        names.commit{value: bond}(c);
+        vm.warp(block.timestamp + names.MIN_COMMIT_AGE());
+
+        vm.prank(eve);
+        vm.expectRevert(err(EastSeaNames.NotCommitter.selector));
+        names.register{value: 0.1 ether}("abcde", carol, SALT, bob);
+
+        uint256 bobBefore = bob.balance;
+        vm.prank(bob);
+        names.register{value: 0.1 ether}("abcde", carol, SALT, bob);
+        assertEq(names.ownerOf(names.nodeFor("abcde")), carol);
+        assertEq(carol.balance, carolBefore - bond); // carol only lost the bond
+        assertEq(bob.balance, bobBefore - 0.1 ether); // the relayer paid the full fee
+        assertEq(names.totalBurned(), 0.1 ether + bond); // fee + uncredited bond
+        assertEq(names.BURN_ADDRESS().balance, 0.11 ether);
+    }
+
+    // ---- audit round 5: A5-1, the commit bond ----
+
+    /// The bond is burned the moment the commitment is posted — never held,
+    /// never refunded — so an unrevealed commitment still paid for its slot.
+    function test_A5_1_CommitBurnsBondImmediately() public {
+        bytes32 c = commitFor("abc", alice, SALT, address(0));
+        vm.expectEmit(true, true, false, true);
+        emit CommitmentMade(c, alice);
+        vm.prank(alice);
+        names.commit{value: bond}(c);
+        assertEq(names.totalBurned(), bond);
+        assertEq(names.BURN_ADDRESS().balance, bond);
+        assertEq(address(names).balance, 0); // burned, not escrowed
+    }
+
+    /// The bond must arrive in exactly one named amount: no free path, and
+    /// no overpay-and-refund path on the spam-sensitive entry point.
+    function test_A5_1_CommitRequiresExactBond() public {
+        bytes32 c = commitFor("abc", alice, SALT, address(0));
+        vm.prank(alice);
+        vm.expectRevert(err(EastSeaNames.WrongBondValue.selector));
+        names.commit{value: 0}(c);
+        vm.prank(alice);
+        vm.expectRevert(err(EastSeaNames.WrongBondValue.selector));
+        names.commit{value: bond + 1}(c);
+        // nothing was written
+        vm.prank(alice);
+        vm.expectRevert(err(EastSeaNames.UnknownCommitment.selector));
+        names.register{value: 2 ether}("abc", alice, SALT, address(0));
+        assertEq(names.totalBurned(), 0);
+        assertEq(address(names).balance, 0);
+    }
+
+    /// A self-reveal pays fee - COMMIT_BOND here after the bond at commit:
+    /// exactly the fee overall. The honest user pays nothing extra.
+    function test_A5_1_BondCreditedOnCommitterReveal() public {
+        vm.warp(1000);
+        uint256 before = alice.balance;
+        vm.prank(alice);
+        names.commit{value: bond}(commitFor("abcde", alice, SALT, address(0)));
+        vm.warp(1060);
+        vm.prank(alice);
+        names.register{value: 0.1 ether - bond}("abcde", alice, SALT, address(0));
+        assertEq(alice.balance, before - 0.1 ether);
+        assertEq(names.totalBurned(), 0.1 ether);
+        assertEq(names.BURN_ADDRESS().balance, 0.1 ether);
+        assertEq(address(names).balance, 0);
+    }
+
+    /// totalBurned == every fee + every bond that never became a credit:
+    /// one credited self-reveal, one relayer reveal, one abandoned
+    /// commitment, one cleared-after-expiry commitment.
+    function test_A5_1_TotalBurnedEqualsFeesPlusUnrefundedBonds() public {
+        // credited self-reveal: contributes exactly its fee
+        commitAndAge("abcde", alice, SALT);
+        vm.prank(alice);
+        names.register{value: 0.1 ether - bond}("abcde", alice, SALT, address(0));
+        // relayer reveal: full fee + the committer's uncredited bond
+        bytes32 c2 = commitFor("abcd", carol, SALT, bob);
+        vm.prank(carol);
+        names.commit{value: bond}(c2);
+        vm.warp(block.timestamp + names.MIN_COMMIT_AGE());
+        vm.prank(bob);
+        names.register{value: 0.5 ether}("abcd", carol, SALT, bob);
+        // abandoned: bond burned, slot left to expire
+        vm.prank(eve);
+        names.commit{value: bond}(commitFor("ab1", eve, SALT, address(0)));
+        // cleared after expiry: bond burned, slot reclaimed
+        bytes32 c4 = commitFor("ab2", eve, SALT, address(0));
+        vm.prank(eve);
+        names.commit{value: bond}(c4);
+        vm.warp(block.timestamp + names.MAX_COMMIT_AGE());
+        vm.prank(alice); // anyone may clear
+        names.clear(c4);
+
+        assertEq(names.totalBurned(), 0.1 ether + 0.5 ether + 3 * bond);
+        assertEq(names.BURN_ADDRESS().balance, names.totalBurned());
+        assertEq(address(names).balance, 0);
+    }
+
+    /// clear() is expiry-gated, permissionless, pays nothing, frees the slot
+    /// for a fresh commitment, and cannot run twice.
+    function test_A5_1_ClearGuardsAndEffects() public {
+        bytes32 c = commitFor("abc", alice, SALT, address(0));
+        vm.prank(alice);
+        names.commit{value: bond}(c);
+
+        // too early — for the committer and for anyone else
+        vm.prank(alice);
+        vm.expectRevert(err(EastSeaNames.CommitmentNotExpired.selector));
+        names.clear(c);
+        vm.prank(eve);
+        vm.expectRevert(err(EastSeaNames.CommitmentNotExpired.selector));
+        names.clear(c);
+
+        vm.warp(block.timestamp + names.MAX_COMMIT_AGE() - 1); // one second to spare
+        vm.prank(eve);
+        vm.expectRevert(err(EastSeaNames.CommitmentNotExpired.selector));
+        names.clear(c);
+
+        vm.warp(block.timestamp + 1); // exactly MAX_COMMIT_AGE old
+        vm.expectEmit(true, true, false, true);
+        emit CommitmentCleared(c, eve);
+        vm.prank(eve); // anyone, not just the committer
+        names.clear(c);
+
+        // the slot is gone: no reveal, no double clear, but a fresh commit works
+        vm.prank(alice);
+        vm.expectRevert(err(EastSeaNames.UnknownCommitment.selector));
+        names.register{value: 2 ether}("abc", alice, SALT, address(0));
+        vm.prank(alice);
+        vm.expectRevert(err(EastSeaNames.UnknownCommitment.selector));
+        names.clear(c);
+        vm.prank(eve);
+        names.commit{value: bond}(c); // the hash is recycled
+    }
+
+    function test_A5_1_ClearUnknownCommitment() public {
+        vm.prank(alice);
+        vm.expectRevert(err(EastSeaNames.UnknownCommitment.selector));
+        names.clear(bytes32(uint256(0xdead)));
+    }
+
+    /// The doc's justification, pinned: one tenth of the lowest fee.
+    function test_CommitBondRatioPinned() public view {
+        assertEq(bond * 10, names.FEE_5_PLUS());
+        assertTrue(bond < names.FEE_5_PLUS());
     }
 
     // ---- name grammar ----
@@ -247,20 +498,20 @@ contract EastSeaNamesTest {
 
     function test_InvalidNameRejectedAtRegister() public {
         vm.prank(alice);
-        names.commit(commitFor("xn--pay", alice, SALT));
+        names.commit{value: bond}(commitFor("xn--pay", alice, SALT, address(0)));
         vm.warp(block.timestamp + names.MIN_COMMIT_AGE());
         vm.prank(alice);
         vm.expectRevert(err(EastSeaNames.InvalidName.selector));
-        names.register{value: 10 ether}("xn--pay", alice, SALT);
+        names.register{value: 10 ether}("xn--pay", alice, SALT, address(0));
     }
 
     function test_ZeroOwnerRejectedAtRegister() public {
         vm.prank(alice);
-        names.commit(commitFor("abc", address(0), SALT));
+        names.commit{value: bond}(commitFor("abc", address(0), SALT, address(0)));
         vm.warp(block.timestamp + names.MIN_COMMIT_AGE());
         vm.prank(alice);
         vm.expectRevert(err(EastSeaNames.InvalidOwner.selector));
-        names.register{value: 10 ether}("abc", address(0), SALT);
+        names.register{value: 10 ether}("abc", address(0), SALT, address(0));
     }
 
     // ---- fees: fixed by length, burned, overpayment refunded ----
@@ -277,13 +528,13 @@ contract EastSeaNamesTest {
 
     function test_RegisterBurnsExactFeeAndRefundsOverpayment() public {
         vm.warp(1000);
-        vm.prank(alice);
-        names.commit(commitFor("abc", alice, SALT));
-        vm.warp(1060);
         uint256 before = alice.balance;
         vm.prank(alice);
-        names.register{value: 2.3 ether}("abc", alice, SALT);
-        assertEq(alice.balance, before - 2 ether);
+        names.commit{value: bond}(commitFor("abc", alice, SALT, address(0)));
+        vm.warp(1060);
+        vm.prank(alice);
+        names.register{value: 2.3 ether}("abc", alice, SALT, address(0));
+        assertEq(alice.balance, before - 2 ether); // bond + due == the fee
         assertEq(names.BURN_ADDRESS().balance, 2 ether);
         assertEq(names.totalBurned(), 2 ether);
         assertEq(address(names).balance, 0);
@@ -291,11 +542,13 @@ contract EastSeaNamesTest {
 
     function test_RegisterUnderpayReverts() public {
         vm.prank(alice);
-        names.commit(commitFor("abc", alice, SALT));
+        names.commit{value: bond}(commitFor("abc", alice, SALT, address(0)));
         vm.warp(block.timestamp + names.MIN_COMMIT_AGE());
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(EastSeaNames.InsufficientFee.selector, 2 ether));
-        names.register{value: 1.9 ether}("abc", alice, SALT);
+        vm.expectRevert(
+            abi.encodeWithSelector(EastSeaNames.InsufficientFee.selector, 2 ether - bond)
+        );
+        names.register{value: 1.9 ether}("abc", alice, SALT, address(0));
     }
 
     // ---- commit-reveal ----
@@ -303,93 +556,93 @@ contract EastSeaNamesTest {
     function test_RegisterRequiresMatchingCommitment() public {
         vm.prank(alice);
         vm.expectRevert(err(EastSeaNames.UnknownCommitment.selector));
-        names.register{value: 2 ether}("abc", alice, SALT);
+        names.register{value: 2 ether}("abc", alice, SALT, address(0));
 
         // a commitment over different parameters does not help
         vm.prank(alice);
-        names.commit(commitFor("abcd", alice, SALT));
+        names.commit{value: bond}(commitFor("abcd", alice, SALT, address(0)));
         vm.warp(block.timestamp + names.MIN_COMMIT_AGE());
         vm.prank(alice);
         vm.expectRevert(err(EastSeaNames.UnknownCommitment.selector));
-        names.register{value: 2 ether}("abc", alice, SALT); // wrong name in hash
+        names.register{value: 2 ether}("abc", alice, SALT, address(0)); // wrong name in hash
         vm.prank(alice);
         vm.expectRevert(err(EastSeaNames.UnknownCommitment.selector));
-        names.register{value: 0.5 ether}("abcd", bob, SALT); // wrong owner in hash
+        names.register{value: 0.5 ether}("abcd", bob, SALT, address(0)); // wrong owner in hash
     }
 
     function test_CommitAgeWindow() public {
         uint256 t0 = block.timestamp;
-        vm.prank(alice);
-        names.commit(commitFor("abc", alice, SALT));
+        vm.prank(bob);
+        names.commit{value: bond}(commitFor("abc", bob, SALT, address(0)));
 
         uint256 minAge = names.MIN_COMMIT_AGE();
         vm.warp(t0 + minAge - 1); // one second too early
-        vm.prank(alice);
+        vm.prank(bob);
         vm.expectRevert(abi.encodeWithSelector(EastSeaNames.CommitTooNew.selector, minAge - 1));
-        names.register{value: 2 ether}("abc", alice, SALT);
+        names.register{value: 2 ether}("abc", bob, SALT, address(0));
 
         vm.warp(t0 + names.MIN_COMMIT_AGE()); // exactly old enough
-        vm.prank(alice);
-        names.register{value: 2 ether}("abc", alice, SALT);
-        assertEq(names.ownerOf(names.nodeFor("abc")), alice);
+        vm.prank(bob);
+        names.register{value: 2 ether - bond}("abc", bob, SALT, address(0));
+        assertEq(names.ownerOf(names.nodeFor("abc")), bob);
 
         // the other edge: a commitment expires after 24 h
         vm.prank(bob);
-        names.commit(commitFor("abd", bob, SALT));
+        names.commit{value: bond}(commitFor("abd", bob, SALT, address(0)));
         vm.warp(block.timestamp + names.MAX_COMMIT_AGE() - 1); // a second to spare
         vm.prank(bob);
-        names.register{value: 2 ether}("abd", bob, SALT); // still revealable
+        names.register{value: 2 ether - bond}("abd", bob, SALT, address(0)); // still revealable
 
         vm.prank(bob);
-        names.commit(commitFor("abe", bob, SALT));
+        names.commit{value: bond}(commitFor("abe", bob, SALT, address(0)));
         vm.warp(block.timestamp + names.MAX_COMMIT_AGE()); // exactly too old
         vm.prank(bob);
         vm.expectRevert(err(EastSeaNames.CommitTooOld.selector));
-        names.register{value: 2 ether}("abe", bob, SALT);
+        names.register{value: 2 ether}("abe", bob, SALT, address(0));
 
-        // re-committing the same hash refreshes the window
+        // re-committing the expired hash opens a fresh window (same account)
         vm.prank(bob);
-        names.commit(commitFor("abe", bob, SALT));
+        names.commit{value: bond}(commitFor("abe", bob, SALT, address(0)));
         vm.warp(block.timestamp + names.MIN_COMMIT_AGE());
         vm.prank(bob);
-        names.register{value: 2 ether}("abe", bob, SALT);
+        names.register{value: 2 ether - bond}("abe", bob, SALT, address(0));
         assertEq(names.ownerOf(names.nodeFor("abe")), bob);
     }
 
     function test_CommitmentSpentOnRegister() public {
         commitAndAge("abc", alice, SALT);
         vm.prank(alice);
-        names.register{value: 2 ether}("abc", alice, SALT);
+        names.register{value: 2 ether - bond}("abc", alice, SALT, address(0));
         // the same commitment is deleted after the reveal: a replay fails
         // before the name is even checked
         vm.prank(alice);
         vm.expectRevert(err(EastSeaNames.UnknownCommitment.selector));
-        names.register{value: 2 ether}("abc", alice, SALT);
+        names.register{value: 2 ether}("abc", alice, SALT, address(0));
     }
 
     function test_FrontRunCannotStealPendingRegistration() public {
         uint256 t0 = block.timestamp;
         vm.prank(alice);
-        names.commit(commitFor("abc", alice, SALT)); // the hash hides the name
+        names.commit{value: bond}(commitFor("abc", alice, SALT, address(0))); // the hash hides the name
         vm.warp(t0 + names.MIN_COMMIT_AGE());
 
         // eve watches the mempool at reveal time and tries to copy it:
         // the victim's salt does not open a commitment bound to eve
         vm.prank(eve);
         vm.expectRevert(err(EastSeaNames.UnknownCommitment.selector));
-        names.register{value: 2 ether}("abc", eve, SALT);
+        names.register{value: 2 ether}("abc", eve, SALT, address(0));
 
         // committing her own hash now and revealing in the same breath is
         // too fast: the commitment must age first, and the victim's reveal
         // (already aged) lands in between
         vm.prank(eve);
-        names.commit(commitFor("abc", eve, bytes32(uint256(0xE1E))));
+        names.commit{value: bond}(commitFor("abc", eve, bytes32(uint256(0xE1E)), address(0)));
         vm.prank(eve);
         vm.expectRevert(abi.encodeWithSelector(EastSeaNames.CommitTooNew.selector, 0));
-        names.register{value: 2 ether}("abc", eve, bytes32(uint256(0xE1E)));
+        names.register{value: 2 ether}("abc", eve, bytes32(uint256(0xE1E)), address(0));
 
         vm.prank(alice);
-        names.register{value: 2 ether}("abc", alice, SALT);
+        names.register{value: 2 ether - bond}("abc", alice, SALT, address(0));
         assertEq(names.ownerOf(names.nodeFor("abc")), alice);
     }
 
@@ -403,17 +656,21 @@ contract EastSeaNamesTest {
         uint64 exp = uint64(5000 + names.MIN_COMMIT_AGE() + 365 days);
         vm.expectEmit(true, true, true, true);
         emit Registered("abc", node, address(this), exp, 2 ether);
-        names.register{value: 2 ether}("abc", address(this), SALT);
+        names.register{value: 2 ether - bond}("abc", address(this), SALT, address(0));
         assertEq(names.ownerOf(node), address(this));
         assertEq(uint256(names.expiresOf(node)), 5000 + names.MIN_COMMIT_AGE() + 365 days);
         assertEq(names.addrOf(node), address(0));
         assertEq(names.pendingOwnerOf(node), address(0));
     }
 
+    /// The committer pays, a different address owns: the owner stays inside
+    /// the hash, so registering FOR someone else still works (A5-3 kept this).
     function test_RegisterForAnotherAddress() public {
-        commitAndAge("abcde", carol, SALT);
-        vm.prank(alice); // the payer is not the owner
-        names.register{value: 0.1 ether}("abcde", carol, SALT);
+        vm.prank(alice); // alice commits and pays; carol will own
+        names.commit{value: bond}(commitFor("abcde", carol, SALT, address(0)));
+        vm.warp(block.timestamp + names.MIN_COMMIT_AGE());
+        vm.prank(alice);
+        names.register{value: 0.1 ether - bond}("abcde", carol, SALT, address(0));
         bytes32 node = names.nodeFor("abcde");
         assertEq(names.ownerOf(node), carol);
 
@@ -426,12 +683,12 @@ contract EastSeaNamesTest {
     function test_RegisterTakenName() public {
         commitAndAge("abc", alice, SALT);
         vm.prank(alice);
-        names.register{value: 2 ether}("abc", alice, SALT);
+        names.register{value: 2 ether - bond}("abc", alice, SALT, address(0));
 
         commitAndAge("abc", bob, SALT);
         vm.prank(bob);
         vm.expectRevert(err(EastSeaNames.NameTaken.selector));
-        names.register{value: 2 ether}("abc", bob, SALT);
+        names.register{value: 2 ether}("abc", bob, SALT, address(0));
     }
 
     // ---- expiry: one year, 30-day grace, then release ----
@@ -441,7 +698,7 @@ contract EastSeaNamesTest {
         bytes32 node = names.nodeFor("abcde");
         commitAndAge("abcde", alice, SALT);
         vm.prank(alice);
-        names.register{value: 0.1 ether}("abcde", alice, SALT);
+        names.register{value: 0.1 ether - bond}("abcde", alice, SALT, address(0));
         vm.prank(alice);
         names.setAddr("abcde", alice);
         uint64 e0 = names.expiresOf(node);
@@ -465,7 +722,7 @@ contract EastSeaNamesTest {
         bytes32 gone = names.nodeFor("abcdef");
         commitAndAge("abcdef", alice, SALT);
         vm.prank(alice);
-        names.register{value: 0.1 ether}("abcdef", alice, SALT);
+        names.register{value: 0.1 ether - bond}("abcdef", alice, SALT, address(0));
         uint64 g0 = names.expiresOf(gone);
         vm.warp(uint256(g0) + names.GRACE_PERIOD()); // released
         assertEq(names.ownerOf(gone), address(0));
@@ -483,7 +740,7 @@ contract EastSeaNamesTest {
         bytes32 node = names.nodeFor("abcde");
         commitAndAge("abcde", alice, SALT);
         vm.prank(alice);
-        names.register{value: 0.1 ether}("abcde", alice, SALT);
+        names.register{value: 0.1 ether - bond}("abcde", alice, SALT, address(0));
         vm.prank(alice);
         names.setAddr("abcde", alice);
         vm.prank(alice);
@@ -494,7 +751,7 @@ contract EastSeaNamesTest {
         vm.warp(uint256(names.expiresOf(node)) + names.GRACE_PERIOD());
         commitAndAge("abcde", bob, SALT); // time passes; commitment ages
         vm.prank(bob);
-        names.register{value: 0.1 ether}("abcde", bob, SALT);
+        names.register{value: 0.1 ether - bond}("abcde", bob, SALT, address(0));
 
         assertEq(names.ownerOf(node), bob);
         assertEq(names.addrOf(node), address(0)); // no stale resolver data
@@ -510,7 +767,7 @@ contract EastSeaNamesTest {
         bytes32 node = names.nodeFor("abcdef");
         commitAndAge("abcdef", alice, SALT);
         vm.prank(alice);
-        names.register{value: 0.1 ether}("abcdef", alice, SALT);
+        names.register{value: 0.1 ether - bond}("abcdef", alice, SALT, address(0));
         uint64 e0 = names.expiresOf(node);
 
         // a stranger pays: ownership does not move, expiry does
@@ -520,7 +777,7 @@ contract EastSeaNamesTest {
         assertEq(uint256(names.expiresOf(node)), uint256(e0) + 365 days); // from the old expiry, not from now
         assertEq(names.ownerOf(node), alice);
         assertEq(names.BURN_ADDRESS().balance, before + 0.1 ether);
-        assertEq(names.totalBurned(), 0.2 ether);
+        assertEq(names.totalBurned(), 0.2 ether); // bond+due (0.1) + renewal (0.1)
         assertEq(address(names).balance, 0);
 
         // during grace the renewal still extends from the expiry date:
@@ -544,7 +801,7 @@ contract EastSeaNamesTest {
         bytes32 node = names.nodeFor("abcde");
         commitAndAge("abcde", alice, SALT);
         vm.prank(alice);
-        names.register{value: 0.1 ether}("abcde", alice, SALT);
+        names.register{value: 0.1 ether - bond}("abcde", alice, SALT, address(0));
 
         vm.prank(alice);
         names.transferPropose("abcde", bob);
@@ -568,7 +825,7 @@ contract EastSeaNamesTest {
         bytes32 node = names.nodeFor("abcde");
         commitAndAge("abcde", alice, SALT);
         vm.prank(alice);
-        names.register{value: 0.1 ether}("abcde", alice, SALT);
+        names.register{value: 0.1 ether - bond}("abcde", alice, SALT, address(0));
 
         // only the owner may propose
         vm.prank(bob);
@@ -608,7 +865,7 @@ contract EastSeaNamesTest {
     function test_SetAddrOwnerOnly() public {
         commitAndAge("abcde", alice, SALT);
         vm.prank(alice);
-        names.register{value: 0.1 ether}("abcde", alice, SALT);
+        names.register{value: 0.1 ether - bond}("abcde", alice, SALT, address(0));
         bytes32 node = names.nodeFor("abcde");
 
         vm.prank(bob);
@@ -627,7 +884,7 @@ contract EastSeaNamesTest {
     function test_TextRecordBounds() public {
         commitAndAge("abcde", alice, SALT);
         vm.prank(alice);
-        names.register{value: 0.1 ether}("abcde", alice, SALT);
+        names.register{value: 0.1 ether - bond}("abcde", alice, SALT, address(0));
         bytes32 node = names.nodeFor("abcde");
 
         vm.prank(alice);
@@ -664,7 +921,7 @@ contract EastSeaNamesTest {
     function test_TextRecordValidation() public {
         commitAndAge("abcde", alice, SALT);
         vm.prank(alice);
-        names.register{value: 0.1 ether}("abcde", alice, SALT);
+        names.register{value: 0.1 ether - bond}("abcde", alice, SALT, address(0));
 
         vm.prank(alice);
         vm.expectRevert(err(EastSeaNames.BadTextKey.selector));
@@ -697,7 +954,7 @@ contract EastSeaNamesTest {
     function test_ReverseRequiresPointback() public {
         commitAndAge("abcde", alice, SALT);
         vm.prank(alice);
-        names.register{value: 0.1 ether}("abcde", alice, SALT);
+        names.register{value: 0.1 ether - bond}("abcde", alice, SALT, address(0));
         bytes32 node = names.nodeFor("abcde");
 
         // no address record yet: nothing points back
@@ -721,7 +978,7 @@ contract EastSeaNamesTest {
     function test_ReverseCannotClaimSomeoneElsAddress() public {
         commitAndAge("abcde", bob, SALT);
         vm.prank(bob);
-        names.register{value: 0.1 ether}("abcde", bob, SALT);
+        names.register{value: 0.1 ether - bond}("abcde", bob, SALT, address(0));
 
         // bob points the name at alice's address...
         vm.prank(bob);
@@ -750,7 +1007,7 @@ contract EastSeaNamesTest {
     function test_ReverseSurvivesTransferUntilForwardMoves() public {
         commitAndAge("abcde", alice, SALT);
         vm.prank(alice);
-        names.register{value: 0.1 ether}("abcde", alice, SALT);
+        names.register{value: 0.1 ether - bond}("abcde", alice, SALT, address(0));
         vm.prank(alice);
         names.setAddr("abcde", alice);
         vm.prank(alice);
@@ -779,20 +1036,22 @@ contract EastSeaNamesTest {
     function test_ReentrantRefundCannotDoubleRegister() public {
         ReentrantPayer payer = new ReentrantPayer(names);
         vm.deal(address(payer), 100 ether);
-        commitAndAge("abc", address(payer), SALT);
+        commitAndAge("abc", address(payer), SALT); // the payer is the committer
         bytes32 node = names.nodeFor("abc");
 
         // during the refund, the payer tries to register "abc" again with
         // different parameters (zero value, so InsufficientFee at best —
         // and UnknownCommitment anyway, the commitment was deleted)
-        payer.armCall(abi.encodeWithSelector(names.register.selector, "abc", address(0xBAD), bytes32(uint256(0x1))));
+        payer.armCall(
+            abi.encodeWithSelector(names.register.selector, "abc", address(0xBAD), bytes32(uint256(0x1)), address(0))
+        );
 
-        payer.go{value: 3 ether}("abc", address(payer), SALT);
+        payer.go{value: 3 ether}("abc", address(payer), SALT, address(0));
 
         assertEq(names.ownerOf(node), address(payer)); // owner unchanged
-        assertEq(names.totalBurned(), 2 ether); // exactly one fee
+        assertEq(names.totalBurned(), 2 ether); // bond + due == exactly one fee
         assertEq(names.BURN_ADDRESS().balance, 2 ether);
-        // the test sent 3 in, 2 burned, 1 refunded: 100 + 3 - 3 + 1
+        // 100 - 0.01 bond + 1.01 refund (3 in, 1.99 due) = 101
         assertEq(address(payer).balance, 101 ether);
         assertTrue(payer.innerOk() != 1); // the re-entrant register did not land
     }
@@ -800,29 +1059,34 @@ contract EastSeaNamesTest {
     function test_ReentrantRefundLegitimateSecondRegister() public {
         ReentrantPayer payer = new ReentrantPayer(names);
         vm.deal(address(payer), 100 ether);
-        commitAndAge("abc", address(payer), SALT);
-        commitAndAge("abd", address(payer), SALT); // a second, aged commitment
+        commitAndAge("abc", address(payer), SALT); // two aged commitments,
+        commitAndAge("abd", address(payer), SALT); // both committed by the payer
 
         // during the first refund, the payer registers the second name with
         // its own value — a legitimate registration, fee and all
-        payer.armRegister("abd", address(payer), SALT, 2 ether);
-        payer.go{value: 2.5 ether}("abc", address(payer), SALT);
+        payer.armRegister("abd", address(payer), SALT, address(0), 2 ether);
+        payer.go{value: 2.5 ether}("abc", address(payer), SALT, address(0));
 
         assertEq(names.ownerOf(names.nodeFor("abc")), address(payer));
         assertEq(names.ownerOf(names.nodeFor("abd")), address(payer));
         assertEq(payer.innerOk(), 1);
         assertEq(names.totalBurned(), 4 ether); // two fees, no more
         assertEq(names.BURN_ADDRESS().balance, 4 ether);
-        // 100 + 2.5 in - 2.5 out + 0.5 outer refund - 2 inner fee + 0 inner refund
+        // payer: 100 - 0.02 bonds + 0.51 outer refund - 2 inner + 0.01 inner
+        // refund = 98.5 — the 0.02 of bonds came back as refund credits
+        // (each due dropped by the bond), so the total matches two fees
         assertEq(address(payer).balance, 98.5 ether);
         assertEq(address(names).balance, 0);
     }
 
     function test_MaliciousOwnerContractIsInert() public {
         StubOwner stub = new StubOwner(names);
-        commitAndAge("abc", address(stub), SALT);
-        vm.prank(alice); // alice pays; the stub owns
-        names.register{value: 2.3 ether}("abc", address(stub), SALT);
+        // alice commits and pays; the stub will own the name
+        vm.prank(alice);
+        names.commit{value: bond}(commitFor("abc", address(stub), SALT, address(0)));
+        vm.warp(block.timestamp + names.MIN_COMMIT_AGE());
+        vm.prank(alice);
+        names.register{value: 2.3 ether}("abc", address(stub), SALT, address(0));
 
         assertEq(names.ownerOf(names.nodeFor("abc")), address(stub));
 
@@ -853,6 +1117,65 @@ contract EastSeaNamesTest {
     /// Dirty alphabet: every third run draws from this, mixing invalid bytes.
     bytes constant DIRTY = "abcdefghijklmnopqrstuvwxyz0123456789--A._ \x80\x7f";
 
+    /// One commit+reveal round for the stateful fuzz (its own stack frame):
+    /// `who` commits and burns the bond; then either `who` reveals (the bond
+    /// is credited: exactly the fee overall) or a DIFFERENT payer reveals as
+    /// the hash's designated relayer (full fee, the bond stays burned).
+    /// Returns the advanced seed.
+    function _fuzzCommitReveal(string memory nm, bytes32 node, address who, uint256 ai, uint256 s)
+        private
+        returns (uint256)
+    {
+        address owner = payers[s % 3];
+        s = s / 3;
+        bytes32 salt = bytes32(s);
+        uint256 mode = s % 2;
+        s = s / 2;
+        uint256 overpay = (s % 2) * 0.07 ether;
+        uint256 fee = names.feeFor(nm);
+        vm.deal(who, who.balance + 5 ether);
+        if (mode == 0) {
+            // who commits and later reveals: due = fee - bond
+            vm.prank(who);
+            try names.commit{value: bond}(commitFor(nm, owner, salt, address(0))) {
+                mBurn += bond;
+                mOrphan += bond;
+                vm.warp(block.timestamp + names.MIN_COMMIT_AGE() + 1);
+                vm.deal(who, who.balance + 5 ether);
+                vm.prank(who);
+                try names.register{value: fee - bond + overpay}(nm, owner, salt, address(0)) {
+                    mOwner[node] = owner;
+                    mExpires[node] = names.expiresOf(node);
+                    delete mPending[node];
+                    delete mAddr[node];
+                    mFees += fee;
+                    mBurn += fee - bond;
+                    mOrphan -= bond;
+                } catch {}
+            } catch {}
+        } else {
+            s = s / 2;
+            address relayer = payers[(ai + 1 + (s % 2)) % 3]; // never == who
+            vm.prank(who);
+            try names.commit{value: bond}(commitFor(nm, owner, salt, relayer)) {
+                mBurn += bond;
+                mOrphan += bond;
+                vm.warp(block.timestamp + names.MIN_COMMIT_AGE() + 1);
+                vm.deal(relayer, relayer.balance + 5 ether);
+                vm.prank(relayer);
+                try names.register{value: fee + overpay}(nm, owner, salt, relayer) {
+                    mOwner[node] = owner;
+                    mExpires[node] = names.expiresOf(node);
+                    delete mPending[node];
+                    delete mAddr[node];
+                    mFees += fee;
+                    mBurn += fee; // the committer's bond stays burned
+                } catch {}
+            } catch {}
+        }
+        return s;
+    }
+
     /// Never accepts a name outside the grammar, never rejects one inside:
     /// the contract must agree with the independently written refValid on
     /// every generated string (length 2-36, hyphen-heavy, sometimes dirty).
@@ -873,11 +1196,12 @@ contract EastSeaNamesTest {
     // ---- fuzz: stateful invariants ----
 
     /// A random interleaving of every operation, mirrored in a test-side
-    /// model. After the run: the burned total equals the sum of fees (and
-    /// equals the burn address balance), every name's owner matches the
-    /// model (a name has at most one owner, exactly the expected one), and
-    /// every reverse claim the views still honor points back at a live
-    /// forward record.
+    /// model. After the run: the burned total equals the sum of fees PLUS
+    /// the bonds that never became a credited reveal (and equals the burn
+    /// address balance, with nothing held by the contract), every name's
+    /// owner matches the model (a name has at most one owner, exactly the
+    /// expected one), and every reverse claim the views still honor points
+    /// back at a live forward record.
     function testFuzz_StateInvariants(uint256 seed) public {
         uint256 s = seed;
         uint256 ops = 1 + (s % 10);
@@ -893,29 +1217,17 @@ contract EastSeaNamesTest {
             bytes32 node = names.nodeFor(nm);
             address who = payers[ai];
             if (op == 0) {
-                // commit, age, register to a random owner, sometimes overpay
-                address owner = payers[s % 3];
-                s = s / 3;
-                bytes32 salt = bytes32(s);
-                names.commit(commitFor(nm, owner, salt));
-                vm.warp(block.timestamp + names.MIN_COMMIT_AGE() + 1);
-                vm.deal(who, who.balance + 5 ether);
-                uint256 value = names.feeFor(nm) + (s % 2) * 0.07 ether;
-                s = s / 2;
-                vm.prank(who);
-                try names.register{value: value}(nm, owner, salt) {
-                    mOwner[node] = owner;
-                    mExpires[node] = names.expiresOf(node);
-                    delete mPending[node];
-                    delete mAddr[node];
-                    mFees += names.feeFor(nm);
-                } catch {}
+                // commit + reveal, as the committer (bond credited) or
+                // through a designated relayer (full fee); sometimes overpay
+                s = _fuzzCommitReveal(nm, node, who, ai, s);
             } else if (op == 1) {
+                uint256 rfee = names.feeFor(nm); // read before the prank
                 vm.deal(who, who.balance + 5 ether);
                 vm.prank(who);
-                try names.renew{value: names.feeFor(nm)}(nm) {
+                try names.renew{value: rfee}(nm) {
                     mExpires[node] = names.expiresOf(node);
                     mFees += names.feeFor(nm);
+                    mBurn += names.feeFor(nm);
                 } catch {}
             } else if (op == 2) {
                 vm.warp(block.timestamp + 1 + (s % 40 days));
@@ -962,9 +1274,12 @@ contract EastSeaNamesTest {
             }
         }
 
-        // 1. every fee ever charged is burned — no more, no less
-        assertEq(names.totalBurned(), mFees);
-        assertEq(names.BURN_ADDRESS().balance, mFees);
+        // 1. every fee ever charged is burned, and every bond that never
+        //    became a credit is burned too — no more, no less, nothing held
+        assertEq(names.totalBurned(), mFees + mOrphan);
+        assertEq(mBurn, mFees + mOrphan);
+        assertEq(names.BURN_ADDRESS().balance, mBurn);
+        assertEq(address(names).balance, 0);
         // 2. ownership matches the model exactly (so at most one owner per
         //    name, and released names show zero)
         for (uint256 i = 0; i < pool.length; i++) {

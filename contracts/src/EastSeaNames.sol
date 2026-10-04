@@ -5,11 +5,14 @@ pragma solidity ^0.8.19;
 /// fixed burn fees, no auction. Immutable, no owner, no admin, no upgrade, no
 /// pause — the same rules for everyone, forever.
 ///
-/// Registration is commit-reveal: `commit(keccak256(name, owner, salt))`, wait
-/// MIN_COMMIT_AGE, then `register(name, owner, salt)` with the fee. The
-/// commitment binds the name AND the owner, so a front-runner watching the
-/// reveal cannot reuse the victim's salt, and their own fresh commitment is
-/// still too young when the victim's already-aged reveal lands.
+/// Registration is commit-reveal: `commit(keccak256(name, owner, salt,
+/// relayer))` with the burned COMMIT_BOND, wait MIN_COMMIT_AGE, then
+/// `register(name, owner, salt, relayer)` with the fee. The commitment binds
+/// the name AND the owner AND the relayer, and its slot is bound to the
+/// committer who posted the bond: an unexpired commitment is frozen — not
+/// even its own committer can rewrite its timestamp — so a front-runner
+/// cannot reset a victim's window by re-committing the same hash (A5-3), and
+/// only the committer or the relayer they designated may reveal.
 ///
 /// The fee is fixed by name length, paid in native AETH, and BURNED (sent to
 /// BURN_ADDRESS). Nobody receives anything: no fee recipient, no treasury, no
@@ -19,6 +22,14 @@ pragma solidity ^0.8.19;
 /// contract. Over-payment is refunded in the same call; state is settled
 /// before either transfer (checks-effects-interactions), so re-entrancy from
 /// the refund finds the commitment already spent.
+///
+/// COMMIT_BOND is burned when the commitment is posted, never refunded, and
+/// credited toward the registration fee when the same committer reveals
+/// within the window — an honest self-reveal pays exactly the fee overall.
+/// It exists so this contract is never a free path for permanent state
+/// writes (A5-1); the chain-level state fee is the real defence against
+/// arbitrary storage-writing contracts. An expired, unrevealed commitment
+/// can be reclaimed by anyone via `clear`.
 ///
 /// Registration lasts REGISTRATION_PERIOD; anyone may renew (a gift to the
 /// owner, priced at the same fee) up to GRACE_PERIOD past expiry, after which
@@ -46,6 +57,10 @@ contract EastSeaNames {
     error UnknownCommitment();
     error CommitTooNew(uint256 age);
     error CommitTooOld();
+    error CommitmentActive();
+    error CommitmentNotExpired();
+    error NotCommitter();
+    error WrongBondValue();
     error NameTaken();
     error Unregistered();
     error Released();
@@ -59,7 +74,8 @@ contract EastSeaNames {
     error TooManyTextRecords();
     error ReverseMismatch();
 
-    event CommitmentMade(bytes32 indexed commitment);
+    event CommitmentMade(bytes32 indexed commitment, address indexed committer);
+    event CommitmentCleared(bytes32 indexed commitment, address indexed by);
     event Registered(string name, bytes32 indexed node, address indexed owner, uint64 expires, uint256 fee);
     event Renewed(bytes32 indexed node, uint64 newExpires, uint256 fee);
     event Burned(uint256 amount);
@@ -86,39 +102,75 @@ contract EastSeaNames {
     uint256 public constant MAX_TEXT_KEYS = 4;
     uint256 public constant TEXT_KEY_MAX_LENGTH = 32;
     uint256 public constant TEXT_VALUE_MAX_LENGTH = 128;
+    /// Burned when a commitment is posted: never refunded, credited toward
+    /// the fee on the committer's own reveal. One tenth of the lowest
+    /// registration fee (FEE_5_PLUS), so an honest self-reveal pays exactly
+    /// the fee overall — see docs/design/26-name-service.md (A5-1).
+    uint256 public constant COMMIT_BOND = 0.01 ether;
 
     uint256 public totalBurned;
-    /// commitment hash => commit timestamp. Anyone may commit for anyone.
-    mapping(bytes32 => uint256) private _commitments;
+    /// commitment hash => (committer, timestamp). The slot is bound to the
+    /// committer who paid its bond; frozen while unexpired (A5-3).
+    mapping(bytes32 => Commitment) private _commitments;
     /// account => node claimed as its primary name.
     mapping(address => bytes32) private _reverse;
     mapping(bytes32 => Record) private _records;
 
-    // ---- commit-reveal ----
-
-    /// Post a commitment (permissionless; re-committing refreshes the window).
-    function commit(bytes32 commitment) external {
-        _commitments[commitment] = block.timestamp;
-        emit CommitmentMade(commitment);
+    struct Commitment {
+        /// Bond payer; only they (or the relayer in the hash) may reveal.
+        address committer;
+        uint64 committedAt;
     }
 
-    /// Reveal: register `name` for `owner` using the salt from the commitment.
-    /// The payer (msg.sender) may be anyone; the fee is burned, any excess is
-    /// refunded to the payer in the same call.
-    function register(string calldata name, address owner, bytes32 salt) external payable {
+    // ---- commit-reveal ----
+
+    /// Post a commitment hash and burn the bond. The hash must be
+    /// `keccak256(name, owner, salt, relayer)`: the relayer is the one other
+    /// account allowed to reveal (address(0) = nobody but the committer);
+    /// `owner` stays inside the hash, so registering FOR someone else works.
+    ///
+    /// An existing unexpired commitment is frozen: re-committing the same
+    /// hash reverts (CommitmentActive) no matter who asks — not even the
+    /// original committer can move its timestamp (A5-3). Only a slot past
+    /// MAX_COMMIT_AGE — dead for revealing anyway — may be replaced, and the
+    /// replacement becomes a fresh commitment of its poster.
+    function commit(bytes32 commitment) external payable {
+        Commitment storage c = _commitments[commitment];
+        if (c.committer != address(0) && block.timestamp - c.committedAt < MAX_COMMIT_AGE) {
+            revert CommitmentActive();
+        }
+        if (msg.value != COMMIT_BOND) revert WrongBondValue();
+        c.committer = msg.sender;
+        c.committedAt = uint64(block.timestamp);
+        totalBurned += COMMIT_BOND;
+        emit CommitmentMade(commitment, msg.sender);
+        emit Burned(COMMIT_BOND);
+        (bool burned,) = BURN_ADDRESS.call{value: COMMIT_BOND}("");
+        if (!burned) revert BurnFailed();
+    }
+
+    /// Reveal: register `name` for `owner` using the salt and relayer from
+    /// the commitment. Only the committer or the designated relayer may
+    /// reveal (the owner can still be anyone — it is inside the hash). The
+    /// committer's burned bond is credited toward the fee, so a self-reveal
+    /// pays fee - COMMIT_BOND here and exactly the fee overall; a relayer
+    /// reveal pays the full fee. Any excess is refunded in the same call.
+    function register(string calldata name, address owner, bytes32 salt, address relayer) external payable {
         if (!isValidName(name)) revert InvalidName();
         if (owner == address(0)) revert InvalidOwner();
-        bytes32 commitment = keccak256(abi.encodePacked(name, owner, salt));
-        uint256 committedAt = _commitments[commitment];
-        if (committedAt == 0) revert UnknownCommitment();
-        uint256 age = block.timestamp - committedAt;
+        bytes32 commitment = keccak256(abi.encodePacked(name, owner, salt, relayer));
+        Commitment storage c = _commitments[commitment];
+        if (c.committer == address(0)) revert UnknownCommitment();
+        if (msg.sender != c.committer && msg.sender != relayer) revert NotCommitter();
+        uint256 age = block.timestamp - c.committedAt;
         if (age < MIN_COMMIT_AGE) revert CommitTooNew(age);
         if (age >= MAX_COMMIT_AGE) revert CommitTooOld();
         bytes32 node = nodeFor(name);
         Record storage r = _records[node];
         if (_live(r)) revert NameTaken();
-        uint256 fee = feeFor(name);
-        if (msg.value < fee) revert InsufficientFee(fee);
+        uint256 fee = feeFor(name); // fee >= FEE_5_PLUS > COMMIT_BOND
+        uint256 due = msg.sender == c.committer ? fee - COMMIT_BOND : fee;
+        if (msg.value < due) revert InsufficientFee(due);
 
         // Effects: everything settles before the transfers, so a re-entrant
         // call from the refund finds its commitment already spent.
@@ -127,18 +179,31 @@ contract EastSeaNames {
         r.owner = owner;
         r.expires = uint64(block.timestamp + REGISTRATION_PERIOD);
         r.name = name;
-        totalBurned += fee;
+        totalBurned += due;
         emit Registered(name, node, owner, r.expires, fee);
-        emit Burned(fee);
+        emit Burned(due);
 
         // Interactions: burn, then refund.
-        (bool burned,) = BURN_ADDRESS.call{value: fee}("");
+        (bool burned,) = BURN_ADDRESS.call{value: due}("");
         if (!burned) revert BurnFailed();
-        uint256 refund = msg.value - fee;
+        uint256 refund = msg.value - due;
         if (refund > 0) {
             (bool ok,) = msg.sender.call{value: refund}("");
             if (!ok) revert RefundFailed();
         }
+    }
+
+    /// Free the storage of a commitment that expired unrevealed (A5-1).
+    /// Anyone may call once the reveal window is over; the slot is deleted
+    /// and nothing is paid out — the bond was already burned, and paying a
+    /// clearer's bounty would need a held (refundable) bond, i.e. a drain
+    /// surface. After a clear the hash is free for a fresh commitment.
+    function clear(bytes32 commitment) external {
+        Commitment storage c = _commitments[commitment];
+        if (c.committer == address(0)) revert UnknownCommitment();
+        if (block.timestamp - c.committedAt < MAX_COMMIT_AGE) revert CommitmentNotExpired();
+        delete _commitments[commitment];
+        emit CommitmentCleared(commitment, msg.sender);
     }
 
     /// Extend by one REGISTRATION_PERIOD from the CURRENT expiry (not from

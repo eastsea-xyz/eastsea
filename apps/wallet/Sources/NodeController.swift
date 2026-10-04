@@ -98,7 +98,7 @@ final class NodeController: ObservableObject {
     @AppStorage("nodeOnlyOnPower") var onlyOnPower = true {
         didSet { if enabled { applyPower() } }
     }
-    /// Open Aether at login (the node then resumes if it was on).
+    /// Open EastSea at login (the node then resumes if it was on).
     var startAtLogin: Bool {
         get { SMAppService.mainApp.status == .enabled }
         set {
@@ -185,7 +185,8 @@ final class NodeController: ObservableObject {
     private var poll: Timer?
 
     static var dataDir: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Aether/node", isDirectory: true)
+        DataMigration.ensure()
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/EastSea/node", isDirectory: true)
     }
 
     private var binary: URL? {
@@ -530,7 +531,7 @@ final class NodeController: ObservableObject {
     func rewardsCSV() async -> String? {
         guard !proveAddress.isEmpty,
               let list = await LocalRPC.call(port: Self.port, method: "aether_rewards", params: [proveAddress, 10_000]) as? [[String: Any]] else { return nil }
-        var csv = "time_utc,kind,proven_block,paid_in_block,amount_aeth\n"
+        var csv = "time_utc,kind,proven_block,paid_in_block,amount_dbln\n"
         let iso = ISO8601DateFormatter()
         for r in list {
             let amount = Wei.exact(LocalRPC.decimal(r["amount"]))

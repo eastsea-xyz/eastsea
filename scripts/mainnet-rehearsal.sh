@@ -12,10 +12,15 @@
 # v2 registration cap, 16-seat growth — no upgrade), history v2, node rewards
 # from genesis, the dev registrar (no Apple DeviceCheck call), the founder's
 # three reserve keys, no faucet and no premine. Four validators, the three
-# reserve keys and two candidate Macs, each only `aether run`. Epochs are 40
-# blocks of at least 1000 ms (the new-genesis consensus floor). Reaching the
-# four-epoch rewards check takes at least ~160 seconds of block time, plus
-# startup, registration and RPC checks; allow about 4-6 minutes end to end.
+# reserve keys and two candidate Macs, each only `aether run`. Epochs are 144
+# blocks of at least 1000 ms. Forty would be faster but squeezes each beacon
+# slot's answer window to a single block (rewards::beacons::layout), a race a
+# busy Mac loses: the 2026-10-04 rehearsal had two Macs answer 11-12 of 12
+# slots every epoch for twenty epochs and earn four payouts between them.
+# 144 blocks open a six-block (~6 s) window; the mainnet's hour-long epochs
+# open a ninety-block one. Reaching the four-epoch rewards check takes at
+# least ~10 minutes of block time, plus startup, registration and RPC checks;
+# allow about 12-15 minutes end to end.
 # Every other parameter keeps its mainnet default. Checks (PASS/FAIL table at the end):
 #   - every mainnet rule is on at genesis (`aether mainnet-rules`, the one
 #     list in crates/node/src/mainnet.rs; docs/ops/mainnet-launch.md §2);
@@ -27,7 +32,7 @@
 #   - the first epochs distribute exactly: the node pool of an epoch is the
 #     epoch's issuance halves (rewards::issuance) and a fresh Mac's operator gets
 #     pool × k × WARMUP_STEPS / (MAX_SHARE × FULL) for the k slots it answered
-#     (docs/design/15-node-rewards.md; k varies with beacon timing in a 40 s epoch);
+#     (docs/design/15-node-rewards.md; k varies with beacon timing in a 144 s epoch);
 #   - the founder's reserve keys stay followers while the committee has four
 #     seats (they only fill seats a committee is short of; audit 1.1);
 #   - history pruning is the mainnet default: on, 30 days.
@@ -36,10 +41,14 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 A="${AETHER_BIN:-${CARGO_TARGET_DIR:-$ROOT/target}/release/aether}"
 [ -x "$A" ] || { echo "no aether binary at $A (build it, or set AETHER_BIN)" >&2; exit 1; }
 CHAIN=${REHEARSAL_CHAIN_ID:-7799}
-EPOCH_BLOCKS=40
+# 144 keeps twelve beacon segments of 12 blocks: a six-block answer window
+# (beacons::layout(144) = segment 12, window 6, span 5), comfortably above a
+# busy Mac's measured answer latency (~0.7 s median, 2.5 s worst). The
+# mainnet default is 3600 (a ninety-block window).
+EPOCH_BLOCKS=144
 BLOCK_MS=1000
 D=${1:-}
-[ -n "$D" ] || { sed -n '2,26p' "$0"; exit 1; }
+[ -n "$D" ] || { sed -n '2,38p' "$0"; exit 1; }
 mkdir -p "$D"
 D=$(cd "$D" && pwd)
 if [ -n "$(ls -A "$D" 2>/dev/null)" ]; then
@@ -215,26 +224,26 @@ cand=$(rpc aether_candidates '[]' "${rpcp[0]}" | jget 'len(d["result"]["candidat
 [ "$cand" = 2 ] && ok "the registry lists both Macs" || bad "the registry lists $cand Macs (want 2)"
 
 echo "== first distributions (an epoch's node pool is its issuance halves)"
-# Day 0 issuance is 1e18 a block: an epoch's pool is 40 × 5e17. Fresh Macs
-# (warm-up level 0) weigh k × 14 for the k slots they answered in the epoch; with
-# fewer than 16 operators the sum stays below the floor MAX_SHARE × FULL
+# Day 0 issuance is 1e18 a block: an epoch's pool is EPOCH_BLOCKS × 5e17. Fresh
+# Macs (warm-up level 0) weigh k × 14 for the k slots they answered in the epoch;
+# with fewer than 16 operators the sum stays below the floor MAX_SHARE × FULL
 # = 16 × (SLOTS × 2 × 14) = 5376 (SLOTS = 12), so an operator gets exactly
-# pool × k × 14 / 5376 (rewards::lib docs). How many slots answer in a 40 s
+# pool × k × 14 / 5376 (rewards::lib docs). How many slots answer in a 144 s
 # epoch depends on timing, so the check is: every operator is paid in every epoch
 # after the first (a partial one: the Macs registered inside it) and each amount
 # is exactly one of the legal values for k = 1..SLOTS.
 # The Macs join late in a slow chain, so wait for the payouts instead of reading
 # at a fixed height: poll until every operator has three full epochs, fail at once
 # on an amount that is not a legal slot share, fail on a timeout with the raw answers.
-if wait_height "${rpcp[0]}" "$(( (h / EPOCH_BLOCKS + 4) * EPOCH_BLOCKS ))" 360; then
-  deadline=$((SECONDS + 600))
+if wait_height "${rpcp[0]}" "$(( (h / EPOCH_BLOCKS + 4) * EPOCH_BLOCKS ))" 900; then
+  deadline=$((SECONDS + 900))
   while :; do
     state=ok detail=""
     for o in "${ops[@]}"; do
       raw=$(rpc aether_rewards "[\"$o\"]" "${rpcp[0]}")
-      res=$(printf '%s' "$raw" | python3 -c '
-import json, sys
-EPOCH, SLOTS, WARM, MAX_SHARE = 40, 12, 14, 16
+      res=$(printf '%s' "$raw" | EPOCH_BLOCKS="$EPOCH_BLOCKS" python3 -c '
+import json, os, sys
+EPOCH, SLOTS, WARM, MAX_SHARE = int(os.environ["EPOCH_BLOCKS"]), 12, 14, 16
 pool = EPOCH * (10**18 // 2)
 legal = {pool * k * WARM // (MAX_SHARE * SLOTS * 2 * WARM) for k in range(1, SLOTS + 1)}
 try:

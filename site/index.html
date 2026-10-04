@@ -13,9 +13,13 @@
 <meta property="og:url" content="https://eastsea.xyz/">
 <meta property="og:locale" content="en_US">
 <meta property="og:locale:alternate" content="ko_KR">
-<meta name="theme-color" content="#f7f4ec" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#f5f0e8" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0b1622" media="(prefers-color-scheme: dark)">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%230b1622'/%3E%3Cpath d='M14 35q7-9 14 0t14 0' fill='none' stroke='%23e2a94f' stroke-width='5' stroke-linecap='round'/%3E%3Cpath d='M20 45q5-6 10 0t10 0' fill='none' stroke='%237fd8cb' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E">
+<meta property="og:image" content="assets/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png">
+<link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png">
 <link rel="stylesheet" href="styles.css">
 <script>
 /* Language: stored choice first (try/catch — storage can be blocked), then navigator.language.
@@ -87,15 +91,15 @@
         </p>
       </div>
       <div class="hero-art" aria-hidden="true">
-        <svg class="coin bob" viewBox="0 0 160 160" focusable="false">
-          <circle cx="80" cy="80" r="72" fill="var(--gold)" stroke="var(--coin-rim)" stroke-width="5"/>
-          <circle cx="80" cy="80" r="60" fill="none" stroke="var(--coin-rim)" stroke-width="2" opacity=".5"/>
-          <path d="M36 78q18-22 36 0t36 0" fill="none" stroke="var(--navy-deep)" stroke-width="9" stroke-linecap="round"/>
-          <path d="M48 102q13-15 26 0t26 0" fill="none" stroke="var(--navy-deep)" stroke-width="7" stroke-linecap="round" opacity=".55"/>
-          <path d="M52 52a42 42 0 0 1 24-12" fill="none" stroke="var(--bg)" stroke-width="6" stroke-linecap="round" opacity=".7"/>
-        </svg>
-        <svg class="spark s1" viewBox="0 0 24 24" focusable="false"><path d="M12 2v6M12 16v6M2 12h6M16 12h6" stroke="var(--hero-gold)" stroke-width="2.4" stroke-linecap="round"/></svg>
-        <svg class="spark s2" viewBox="0 0 24 24" focusable="false"><path d="M12 5v4M12 15v4M5 12h4M15 12h4" stroke="var(--hero-teal)" stroke-width="2.4" stroke-linecap="round"/></svg>
+        <div class="coin-glow"></div>
+        <img class="coin-img"
+             src="assets/coin-512.webp"
+             srcset="assets/coin-256.webp 256w, assets/coin-512.webp 512w, assets/coin-1024.webp 1024w"
+             sizes="(max-width: 640px) 38vw, (max-width: 900px) 36vw, 16vw"
+             width="512" height="512"
+             alt="EastSea Doubloon (DBLN) — gold coin, dawn over waves motif"
+             loading="eager"
+             decoding="async">
       </div>
     </div>
     <svg class="hero-waves" viewBox="0 0 1440 140" preserveAspectRatio="none" aria-hidden="true" focusable="false">

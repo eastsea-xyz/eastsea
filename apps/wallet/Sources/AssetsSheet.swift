@@ -111,9 +111,7 @@ private struct TokenHoldingRow: View {
     var body: some View {
         Button(action: { onSend?() }) {
             HStack(spacing: 12) {
-                Text(String(holding.token.symbol.prefix(1)).uppercased()).font(.aeHeadline).foregroundStyle(.secondary)
-                    .frame(width: 40, height: 40)
-                    .background(.quaternary, in: Circle())
+                TokenIcon(chainId: chainId, address: holding.token.address, symbol: holding.token.symbol, size: 40)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(holding.token.name.isEmpty ? holding.token.symbol : holding.token.name).font(.aeBody.weight(.semibold)).lineLimit(1)
                     // Never the symbol alone: anyone can deploy another "USDT".

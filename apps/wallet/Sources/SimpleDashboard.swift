@@ -1026,19 +1026,34 @@ private struct NetworkCard: View {
 }
 
 private struct ActivityRow: View {
+    @EnvironmentObject var model: WalletModel
     let item: ActivityItem
 
-    private var icon: (String, Color) {
-        switch item.kind {
-        case .sent: ("arrow.up.right.circle.fill", .secondary)
-        case .received: ("arrow.down.left.circle.fill", .green)
-        case .security: ("lock.shield.fill", .secondary)
+    /// What moved: the token's own icon, the coin's doubloon, or the security
+    /// lock. The icon is classified by address only (TokenIconSpec), so a
+    /// look-alike symbol in a title never earns official art here either.
+    @ViewBuilder private var leading: some View {
+        if let token = item.token {
+            TokenIcon(chainId: model.status?.chainId ?? 0, address: token,
+                      symbol: model.tokenCatalog.tokens[token]?.symbol ?? "?")
+        } else if item.kind == .security {
+            Image(systemName: "lock.shield.fill").font(.title2).foregroundStyle(.secondary)
+        } else {
+            // The native coin moved: its doubloon, with the direction kept as
+            // a small arrow (colour plus shape, not colour alone).
+            TokenIcon(chainId: model.status?.chainId ?? 0, address: nil, symbol: Brand.coinTicker)
+                .overlay(alignment: .bottomTrailing) {
+                    Image(systemName: item.kind == .received ? "arrow.down.left.circle.fill" : "arrow.up.right.circle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(item.kind == .received ? Color.green : Color.secondary)
+                        .background(Circle().fill(.background).padding(1))
+                }
         }
     }
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: icon.0).font(.title2).foregroundStyle(icon.1)
+            leading
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.title).font(.aeBody.weight(.medium)).lineLimit(2)
                 Text(item.date, style: .relative).font(.aeFootnote).foregroundStyle(.secondary)
@@ -1094,9 +1109,8 @@ struct TokenRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Text("Æ").font(.aeHeadline).foregroundStyle(.white)
-                .frame(width: 40, height: 40)
-                .background(LinearGradient(colors: [.aether, .pink], startPoint: .topLeading, endPoint: .bottomTrailing), in: Circle())
+            // The native coin's own doubloon; the row is always the coin row.
+            TokenIcon(chainId: 0, address: nil, symbol: symbol, size: 40)
             VStack(alignment: .leading, spacing: 2) {
                 Text(name).font(.aeBody.weight(.semibold))
                 HStack(spacing: 4) {
@@ -1229,6 +1243,10 @@ private struct SendSheet: View {
                     Text(token == nil ? "Amount (each)" : "Amount").font(.aeFootnote).foregroundStyle(.secondary)
                     HStack {
                         TextField("0", text: $model.sendAmount).textFieldStyle(.roundedBorder).font(.aeTitle.monospacedDigit())
+                        // The icon always agrees with the picked asset (by
+                        // address), so a look-alike symbol never shows doubloons.
+                        TokenIcon(chainId: model.status?.chainId ?? 0, address: token?.token.address,
+                                  symbol: token?.token.symbol ?? Brand.coinTicker, size: 20)
                         Text(token?.token.symbol ?? "\(Brand.coinTicker)").foregroundStyle(.secondary)
                         Button("Max") { fillMax() }.buttonStyle(.borderless)
                     }
@@ -1318,18 +1336,31 @@ private struct SendSheet: View {
     }
 
     /// AETH or any held token, labeled with its address — never the symbol alone
-    /// (a spam token can call itself anything).
+    /// (a spam token can call itself anything). The icon next to the label is
+    /// classified by address only, so a mimic's symbol earns it nothing.
     private var assetPicker: some View {
         HStack {
             Text("Asset").font(.aeFootnote).foregroundStyle(.secondary)
             Spacer()
             Menu {
-                Button("\(Brand.coinTicker) · \(Brand.coinName)") { model.sendToken = nil; model.sendAmount = "1" }
+                Button { model.sendToken = nil; model.sendAmount = "1" } label: {
+                    HStack(spacing: 6) {
+                        TokenIcon(chainId: model.status?.chainId ?? 0, address: nil, symbol: Brand.coinTicker, size: 18)
+                        Text("\(Brand.coinTicker) · \(Brand.coinName)")
+                    }
+                }
                 ForEach(model.tokenSections.main) { t in
-                    Button("\(TokenLabel.row(t.token)) · \(t.amount)") { model.sendToken = t; model.sendAmount = "" }
+                    Button { model.sendToken = t; model.sendAmount = "" } label: {
+                        HStack(spacing: 6) {
+                            TokenIcon(chainId: model.status?.chainId ?? 0, address: t.token.address, symbol: t.token.symbol, size: 18)
+                            Text("\(TokenLabel.row(t.token)) · \(t.amount)")
+                        }
+                    }
                 }
             } label: {
                 HStack(spacing: 6) {
+                    TokenIcon(chainId: model.status?.chainId ?? 0, address: token?.token.address,
+                              symbol: token?.token.symbol ?? Brand.coinTicker, size: 20)
                     Text(token.map { TokenLabel.row($0.token) } ?? "\(Brand.coinTicker) · \(Brand.coinName)").font(.aeBody.weight(.semibold))
                     Image(systemName: "chevron.up.chevron.down").font(.aeCaption).foregroundStyle(.secondary)
                 }

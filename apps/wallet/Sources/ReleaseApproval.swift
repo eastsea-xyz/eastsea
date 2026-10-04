@@ -86,7 +86,7 @@ enum ReleaseApproval {
               archiveSha256.lowercased() == proof.archiveSha256.lowercased(),
               manifest.artifacts.count >= 1 && manifest.artifacts.count <= 16,
               Set(manifest.artifacts.map(\.name)).count == manifest.artifacts.count,
-              manifest.artifacts.first(where: { $0.name == "Aether.dmg" })?.sha256.lowercased() == archiveSha256.lowercased(),
+              manifest.artifacts.first(where: { $0.name == "EastSea.dmg" })?.sha256.lowercased() == archiveSha256.lowercased(),
               pinnedKeys.count == 3, Set(pinnedKeys.map { $0.lowercased() }).count == 3,
               proof.publishedBlock > 0, proof.publishedBlock <= proof.stateHeight,
               proof.publishedAt > 0, proof.certifiedTimestampMs / 1000 >= proof.publishedAt else {

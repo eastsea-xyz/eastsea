@@ -34,8 +34,9 @@ struct EnclaveAccount {
     }
 
     private static var storeURL: URL {
+        DataMigration.ensure()
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("AetherWallet", isDirectory: true)
+            .appendingPathComponent("EastSeaWallet", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("enclave-key.dat")
     }

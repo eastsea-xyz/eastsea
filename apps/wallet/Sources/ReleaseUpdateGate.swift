@@ -116,7 +116,7 @@ final class ReleaseUpdateGate {
               let version = item.displayVersionString as String?, !version.isEmpty else {
             throw GateError.unavailable
         }
-        let stem = "Aether-\(version)"
+        let stem = "EastSea-\(version)"
         let base = url.deletingLastPathComponent()
         func fetch(_ suffix: String) async throws -> Data {
             let request = URLRequest(url: base.appendingPathComponent(stem + suffix), timeoutInterval: 30)

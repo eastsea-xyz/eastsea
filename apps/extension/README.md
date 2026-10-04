@@ -6,7 +6,7 @@ A Manifest V3 extension for Chromium browsers (Chrome, Edge, Brave, Arc). It wor
 - **Transactions:** built by `crates/wasm`, the same Rust rules the app and the chain use. The signature is checked against the key before anything is sent.
 - **Pages:** get `window.aether`, an EIP-1193 provider, also announced through EIP-6963 (`rdns: com.pipln.aether`). It does not take over `window.ethereum`.
 - **Approvals:** connecting a site and every transaction open an approval window. The site's origin comes from the browser, not from the page. Only https pages and pages served from this computer can connect.
-- **Assets:** AETH plus the ERC-20 tokens the app also finds (`token-sources.json`: the DEX token factory, its pools and the launchpad, read with `eth_call`s), cached and re-read on open and every 30 s. AETH account balance and nonce are checked against a pinned committee certificate and state proof on the bundled network. Token reads are not proof checked, so each token's decimals, symbol and name are **pinned** on first sight — from endpoints that must agree — and a later read that disagrees is flagged, never used, and pauses that token's sends until the change is reviewed in Assets (the audit-A3 rule); the exact base-unit amount is shown before any token send is signed.
+- **Assets:** DBLN plus the ERC-20 tokens the app also finds (`token-sources.json`: the DEX token factory, its pools and the launchpad, read with `eth_call`s), cached and re-read on open and every 30 s. DBLN account balance and nonce are checked against a pinned committee certificate and state proof on the bundled network. Token reads are not proof checked, so each token's decimals, symbol and name are **pinned** on first sight — from endpoints that must agree — and a later read that disagrees is flagged, never used, and pauses that token's sends until the change is reviewed in Assets (the audit-A3 rule); the exact base-unit amount is shown before any token send is signed.
 - **Network paused:** the popup header shows it when the chain has made no new block for 60 s (the app's rule); a new block clears it.
 - **First run:** a one-time notice with the app's terms risk points (experimental, as-is, key loss, testnet tokens have no value), kept per `TERMS_VERSION`.
 - **Nodes:** nodes added in Settings are tried first, followed by the EastSea app's node on this computer (`127.0.0.1:18545`). There is no built-in remote browser seed yet.
@@ -16,7 +16,7 @@ A Manifest V3 extension for Chromium browsers (Chrome, Edge, Brave, Arc). It wor
 ```bash
 scripts/build-extension.sh          # builds apps/extension/wasm
 # chrome://extensions -> Developer mode -> Load unpacked -> apps/extension
-scripts/build-extension.sh --zip    # dist/aether-extension-<version>.zip for the stores
+scripts/build-extension.sh --zip    # dist/eastsea-extension-<version>.zip for the stores
 ```
 
 The light-client's `blst` and `zstd-sys` C code needs a compiler with a wasm32 target. Apple's system clang cannot build this target; use a wasm-capable clang or Zig C compiler when building on macOS.

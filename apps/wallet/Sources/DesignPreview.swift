@@ -60,10 +60,15 @@ extension WalletModel {
             ActivityItem(date: now.addingTimeInterval(-300), kind: .received, title: "Proof reward · block #184024", amount: 0.5, state: .done),
             ActivityItem(date: now.addingTimeInterval(-3_600), kind: .sent, title: "Sent to 0x12ab…90ab", amount: -2, state: .done),
             ActivityItem(date: now.addingTimeInterval(-60_000), kind: .received, title: "Test \(Brand.coinTicker) from faucet", amount: 10, state: .done),
+            ActivityItem(date: now.addingTimeInterval(-9_000), kind: .sent, title: "Sent 5 USDX · 0x0000…00c1 to 0x12ab…90ab", amount: nil, state: .done,
+                         token: "0x00000000000000000000000000000000000000c1"),
         ]
         tokens = [
             TokenHolding(token: TokenInfo(address: "0x6bc5ded76ccbdc8df35e7cd28b68fed245a74416", symbol: "NEB", name: "Nebula", decimals: 18), balance: "250000000000000000000"),
             TokenHolding(token: TokenInfo(address: "0x961f8add5ae93ff0700be8abd5f9f8ec69ba4347", symbol: "ORB", name: "Orb", decimals: 18), balance: "1500000000000000000"),
+            // Off-list on purpose: the generated dashed glyph next to official art.
+            TokenHolding(token: TokenInfo(address: "0x00000000000000000000000000000000000000c1", symbol: "USDX", name: "Test Dollar", decimals: 6, origin: "dex"), balance: "5000000"),
+            TokenHolding(token: TokenInfo(address: "0x00000000000000000000000000000000000000d4", symbol: "VVDBLN", name: "Doubloon Cash", decimals: 18, origin: "launchpad"), balance: "900000000000000000000"),
         ]
         tokensUpdated = now
     }

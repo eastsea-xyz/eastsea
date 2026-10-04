@@ -78,8 +78,9 @@ enum Tools {
         if let env = ProcessInfo.processInfo.environment["AETHER_NETWORK"], !env.isEmpty { urls.append(URL(fileURLWithPath: env)) }
         urls.append(Paths.network)
         let exe = (Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])).resolvingSymlinksInPath()
-        // …/Aether.app/Contents/Helpers/aether-agent -> …/Aether.app/Contents/Resources/network.json
+        // …/EastSea.app/Contents/Helpers/aether-agent -> …/EastSea.app/Contents/Resources/network.json
         urls.append(exe.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Resources/network.json"))
+        urls.append(URL(fileURLWithPath: "/Applications/EastSea.app/Contents/Resources/network.json"))
         urls.append(URL(fileURLWithPath: "/Applications/Aether.app/Contents/Resources/network.json"))
         return urls
     }

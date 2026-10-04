@@ -20,7 +20,7 @@ KEYS=3
 P2P_BASE=${RESERVE_P2P_BASE:-19200}
 RPC_BASE=${RESERVE_RPC_BASE:-18700}
 LA="$HOME/Library/LaunchAgents"
-label() { echo "com.pipln.aether.reserve.$1"; }
+label() { echo "com.pipln.eastsea.reserve.$1"; }
 p2p() { echo $((P2P_BASE + 2 * $1)); }
 rpc() { echo $((RPC_BASE + $1)); }
 src_bin() { if [ -n "${AETHER_BIN:-}" ]; then echo "$AETHER_BIN"; else command -v aether || true; fi; }
@@ -34,7 +34,7 @@ plist() {  # plist <i> <aether binary>
 <plist version="1.0">
 <dict>
   <key>Label</key><string>$(label "$i")</string>
-  <key>AssociatedBundleIdentifiers</key><array><string>com.pipln.aether</string></array>
+  <key>AssociatedBundleIdentifiers</key><array><string>com.pipln.eastsea</string></array>
   <key>ProgramArguments</key>
   <array>
     <string>/usr/bin/caffeinate</string><string>-s</string>

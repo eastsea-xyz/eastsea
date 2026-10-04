@@ -61,15 +61,15 @@ class ReleaseApprovalScriptTests(unittest.TestCase):
         (ROOT / "tmp").mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir=ROOT / "tmp") as directory:
             directory = pathlib.Path(directory)
-            app = directory / "Aether.app"
-            executable = app / "Contents/MacOS/Aether"
+            app = directory / "EastSea.app"
+            executable = app / "Contents/MacOS/EastSea"
             executable.parent.mkdir(parents=True)
             executable.write_bytes(b"wallet")
             helpers = app / "Contents/Helpers"
             helpers.mkdir()
             (helpers / "aether").write_bytes(b"node")
             (helpers / "aether-agent").write_bytes(b"agent")
-            dmg = directory / "Aether.dmg"
+            dmg = directory / "EastSea.dmg"
             dmg.write_bytes(b"archive")
             manifest = directory / "manifest.json"
             args = Namespace(app=str(app), dmg=str(dmg), chain_id=9001,

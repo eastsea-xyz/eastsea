@@ -456,7 +456,7 @@ const ui = {
     const info = await vault.info();
     const [balance, status] = await Promise.all([wallet.balance(info.address), rpc.call('aether_status', [])]);
     const checked = activeNetwork?.development ? null : rpc.verifiedAccounts.get(info.address.toLowerCase());
-    if (!activeNetwork?.development && !checked) throw new Error('AETH balance was not verified.');
+    if (!activeNetwork?.development && !checked) throw new Error(`${Brand.coinTicker} balance was not verified.`);
     return { address: info.address, balance: balance.toString(), height: checked?.height ?? status.height,
       blockAt: checked?.timestampMs ?? status.timestamp_ms, node: rpc.current };
   },

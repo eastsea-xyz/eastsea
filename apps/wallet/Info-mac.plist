@@ -14,14 +14,15 @@
 	<integer>3600</integer>
 	<key>SUAutomaticallyUpdate</key>
 	<true/>
-	<!-- aether://pay?to=…&amount=…: web pages reach the wallet without an extension. -->
+	<!-- eastsea://pay?to=…&amount=… (and the legacy aether:// links): web pages reach the wallet without an extension. -->
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
 			<key>CFBundleURLName</key>
-			<string>com.pipln.aether.pay</string>
+			<string>com.pipln.eastsea.pay</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
+				<string>eastsea</string>
 				<string>aether</string>
 			</array>
 		</dict>

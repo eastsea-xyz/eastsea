@@ -95,14 +95,21 @@ echo "  real-mode pass on a new-id copy). The shortened timing a rehearsal needs
 echo "  40 etc.) and the --rehearsal allowance belong to scripts/mainnet-rehearsal.sh alone;"
 echo "  this tool passes --rehearsal only in --dry-run, as a label, never to excuse a value."
 
+# Tests 3, 4 and 8 must reach the RULE list, so they use a NEW chain id (the 7799
+# rehearsal id is refused before any rule runs, see test 2).
+python3 - "$WORK/ceremony7801.json" <<'PY'
+import json, sys
+json.dump({"chain_id": 7801}, open(sys.argv[1], "w"))
+PY
 echo "== 3. a tampered file (one flag flipped: protocol 3 -> 1) FAILS"
 python3 - "$NET" "$WORK/tampered.json" <<'PY'
 import json, sys
 n = json.load(open(sys.argv[1]))
 n["protocol"] = 1
+n["chain_id"] = 7801
 json.dump(n, open(sys.argv[2], "w"), indent=2)
 PY
-expect_fail "check refuses a genesis with protocol 1" "$G" check "$WORK/tampered.json" --chain-id 7799 --ceremony "$WORK/dry/coordinator/ceremony.json"
+expect_fail "check refuses a genesis with protocol 1" "$G" check "$WORK/tampered.json" --chain-id 7801 --ceremony "$WORK/ceremony7801.json"
 if grep -q "^FAIL" "$WORK/last.out"; then ok "the refusal prints FAIL lines (a PASS/FAIL list, not silence)"
 else bad "no FAIL line in the tampered-file refusal"; fi
 
@@ -110,10 +117,11 @@ echo "== 4. a rehearsal-only value injected by hand (epoch_blocks 40) FAILS the 
 python3 - "$NET" "$WORK/shortened.json" <<'PY'
 import json, sys
 n = json.load(open(sys.argv[1]))
+n["chain_id"] = 7801
 n["epoch_blocks"] = 40          # what scripts/mainnet-rehearsal.sh legitimately shortens
 json.dump(n, open(sys.argv[2], "w"), indent=2)
 PY
-expect_fail "check refuses rehearsal-only timing (epoch_blocks 40)" "$G" check "$WORK/shortened.json" --chain-id 7799 --ceremony "$WORK/dry/coordinator/ceremony.json"
+expect_fail "check refuses rehearsal-only timing (epoch_blocks 40)" "$G" check "$WORK/shortened.json" --chain-id 7801 --ceremony "$WORK/ceremony7801.json"
 if grep -q "candidate timing" "$WORK/last.out"; then
   ok "the strict rule check names 'candidate timing' as the off rule"
 else
@@ -164,8 +172,14 @@ else
 fi
 
 echo "== 8. check demands the FINAL (post-DKG) file, not the pre-DKG genesis.json"
+python3 - "$WORK/dry/coordinator/genesis.json" "$WORK/predkg7801.json" <<'PY'
+import json, sys
+n = json.load(open(sys.argv[1]))
+n["chain_id"] = 7801
+json.dump(n, open(sys.argv[2], "w"), indent=2)
+PY
 expect_fail "check refuses the pre-DKG genesis.json (no committee identity)" \
-  "$G" check "$WORK/dry/coordinator/genesis.json" --chain-id 7799 --ceremony "$WORK/dry/coordinator/ceremony.json"
+  "$G" check "$WORK/predkg7801.json" --chain-id 7801 --ceremony "$WORK/ceremony7801.json"
 if grep -q "committee identity" "$WORK/last.out"; then ok "the refusal names the missing committee identity"
 else bad "the pre-DKG refusal does not name the committee identity"; fi
 

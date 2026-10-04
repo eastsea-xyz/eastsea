@@ -176,12 +176,23 @@ async fn handle(State(st): State<RpcState>, Json(req): Json<Value>) -> Json<Valu
     Json(handle_value(&st, req).await)
 }
 
+/// The project's new name (docs/design/25-rename.md phase 4): `eastsea_*`
+/// method spellings alias the `aether_*` ones. Rewritten once here, before any
+/// matching, so handlers, responses and error texts stay exactly as they were.
+/// Forwarded calls (`upstream`) go out under the canonical old name too.
+fn normalize_method(method: &str) -> std::borrow::Cow<'_, str> {
+    match method.strip_prefix("eastsea_") {
+        Some(rest) => std::borrow::Cow::Owned(format!("aether_{rest}")),
+        None => std::borrow::Cow::Borrowed(method),
+    }
+}
+
 /// Transport-independent JSON-RPC handling (HTTP on loopback, iroh QUIC publicly).
 pub async fn handle_value(st: &RpcState, req: Value) -> Value {
     let id = req.get("id").cloned().unwrap_or(Value::Null);
-    let method = req.get("method").and_then(Value::as_str).unwrap_or_default().to_string();
+    let method = normalize_method(req.get("method").and_then(Value::as_str).unwrap_or_default());
     let params = req.get("params").cloned().unwrap_or(Value::Array(vec![]));
-    let result = match method.as_str() {
+    let result = match &*method {
         "aether_getFinalized" => finalized(st, &params).await,
         "aether_snapshot" => snapshot_manifest(st).await,
         "aether_registerDevice" => register_device(st, &params).await,
@@ -761,6 +772,75 @@ fn release_entries(state: &aether_execution::WorldState, address: Address, start
         })
         .collect();
     json!({ "count": count, "height": height, "entries": entries })
+}
+
+#[cfg(test)]
+mod alias_tests {
+    use super::*;
+
+    /// docs/design/25-rename.md phase 4: the project is EastSea now, so every
+    /// `aether_*` method must also answer under an `eastsea_*` spelling — with
+    /// byte-identical responses and errors. A chain at genesis is enough: the
+    /// alias may change which spelling reaches a handler, never what it answers.
+    fn bare_state() -> RpcState {
+        let (chain, _) = Chain::new(crate::chain::ChainConfig {
+            chain_id: 7781,
+            limits: aether_types::GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
+            alloc: vec![], fees: false, registrar: None, epoch_blocks: 0,
+            min_streak: None, draw_epochs: None, history_v2: false, protocol: 1,
+            node_rewards: false, committee: vec![], reserve: None, group: 0,
+            max_committee: crate::rotation::GROW_UNTIL,
+        });
+        let (gossip, _) = mpsc::unbounded_channel();
+        RpcState {
+            chain,
+            finality: Finality::Archive(Arc::new(crate::follow::FinalityArchive::default())),
+            gossip,
+            faucet: None,
+            registrar: None,
+            network: None,
+            upstream: None,
+            handoff: None,
+            snapshot: Default::default(),
+            prover: None,
+            shards: None,
+        }
+    }
+
+    async fn call(st: &RpcState, method: &str, params: Value) -> Value {
+        handle_value(st, json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params })).await
+    }
+
+    #[test]
+    fn eastsea_methods_alias_aether_ones() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let st = bare_state();
+        // The same call under both spellings must answer identically.
+        for (method, params) in [
+            ("aether_status", json!([])),
+            ("aether_network", json!([])),
+            ("aether_recentBlocks", json!([])),
+            ("aether_history", json!([])),
+            ("aether_getAccount", json!(["0x0000000000000000000000000000000000000001"])),
+        ] {
+            let old = rt.block_on(call(&st, method, params.clone()));
+            assert!(
+                old.get("error").and_then(|e| e["message"].as_str()).is_none_or(|m| !m.contains("method not found")),
+                "{method} itself must keep working"
+            );
+            let alias = format!("eastsea_{}", &method["aether_".len()..]);
+            let new = rt.block_on(call(&st, &alias, params));
+            assert_eq!(old, new, "{method} and its eastsea_ spelling must answer identically");
+        }
+        // An unknown method stays unknown under the new prefix, and methods
+        // outside the renamed family are untouched.
+        for missing in ["eastsea_nope", "eastsea_"] {
+            let r = rt.block_on(call(&st, missing, json!([])));
+            assert_eq!(r["error"]["code"], -32601, "{missing} must be method-not-found");
+            assert!(r["error"]["message"].as_str().unwrap().contains("method not found"));
+        }
+        assert_eq!(rt.block_on(call(&st, "eth_chainId", json!([])))["result"], "0x1e65");
+    }
 }
 
 #[cfg(test)]

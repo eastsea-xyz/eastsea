@@ -7,7 +7,7 @@ import QuartzCore
 // while the earnings aurora animates — and reports what one resize step costs
 // on the main thread, so a resize change can be measured, not guessed at:
 //
-//   Aether.app/Contents/MacOS/Aether -designPreview -resizeBenchmark \
+//   EastSea.app/Contents/MacOS/EastSea -designPreview -resizeBenchmark \
 //     -nodeEnabled 1 -proveBlocks 1 -proveAddress 0x00
 //
 // Each step times the work itself — `setFrame(…, display: false)`, then laying

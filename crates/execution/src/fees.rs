@@ -31,14 +31,23 @@ pub const UPDATE_QUOTIENT: u64 = 96;
 /// Tip split in percent: proposer, prover escrow, burn.
 pub const TIP_SPLIT: (u64, u64, u64) = (60, 20, 20);
 
-/// New-genesis state growth price. One unit is one code byte; a newly occupied
-/// storage slot or account costs 100 units. This is independent of congestion.
+/// New-genesis persistent-byte and state growth price. New code costs one unit
+/// per byte; a newly occupied storage slot or account costs 100 units.
+/// Archived transaction/receipt bytes cost one unit per 32 bytes.
 pub const STATE_UNIT_PRICE: u128 = 1_000_000_000_000;
 pub const STATE_SLOT_UNITS: u64 = 100;
 pub const STATE_ACCOUNT_UNITS: u64 = 100;
+/// A conservative lower bound for a persisted receipt, including its hash,
+/// status, gas, fee and length fields. Variable bytes are counted separately.
+pub const RECEIPT_BASE_BYTES: u64 = 128;
+/// Address, vector lengths and record/index overhead for each persisted event.
+pub const EVENT_BASE_BYTES: u64 = 64;
+pub const RECEIPT_BYTES_PER_STATE_UNIT: u64 = 32;
 /// Consensus limits for new-genesis transactions, excluding capped system writes.
 pub const MAX_STATE_UNITS_PER_BLOCK: u64 = 100_000;
 pub const MAX_NEW_SLOTS_PER_BLOCK: u64 = 512;
+/// Maximum archived transaction and receipt bytes in a new-genesis block.
+pub const MAX_PERSISTENT_BYTES_PER_BLOCK: u64 = 2 * 1024 * 1024;
 
 /// What a block's fees follow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

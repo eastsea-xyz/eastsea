@@ -970,6 +970,8 @@ fn rollback(chain: &Chain, cp: crate::store::Checkpoint) {
         receipts: vec![],
         tx_hashes: summary.txs.clone(),
         gas: Default::default(),
+        new_slots: 0,
+        persistent_bytes: 0,
         proposer: summary.proposer,
         base_fee: summary.base_fee,
         excess: summary.excess,

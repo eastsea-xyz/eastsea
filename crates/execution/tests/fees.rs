@@ -174,7 +174,7 @@ fn inclusion_lists_never_require_txs_from_settled_accounts() {
     let call = EvmCall { to: Some(Address::repeat_byte(1)), value: U256::from(1u64), input: Bytes::new(), gas_limit: 21_000, delegate: None };
     let tx = sign_call(&s, CHAIN, 0, 5 * GWEI, &call).unwrap();
     let mut c = ctx(base());
-    assert!(can_append(&pre, &c, GasVector::default(), &tx));
+    assert!(can_append(&pre, &c, GasVector::default(), 0, 0, &tx));
     c.fees = Some(FeePolicy { base: base(), proposer: a });
-    assert!(!can_append(&pre, &c, GasVector::default(), &tx), "the proposer's own tx may depend on its fee credit");
+    assert!(!can_append(&pre, &c, GasVector::default(), 0, 0, &tx), "the proposer's own tx may depend on its fee credit");
 }

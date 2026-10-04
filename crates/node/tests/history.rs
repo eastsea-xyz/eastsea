@@ -349,13 +349,15 @@ fn account_history_collects_token_receipts_and_system_rewards() {
             Event { address: Address::repeat_byte(0xef),
                 topics: vec![B256::from_slice(&swap_topic), B256::from(from), B256::from(to)],
                 data: Bytes::from(swap_data) }] };
-    let rows = aether_node::account_history::transaction(&tx, &receipt, 3, 0, 3000, false);
+    let rows = aether_node::account_history::transaction(&tx, &receipt, 3, 0, 3000, false, true);
     assert_eq!(rows.len(), 2);
     let incoming = rows.iter().find(|r| r.address == recipient).unwrap();
     assert_eq!(incoming.kind, "erc20_transfer");
     assert_eq!(incoming.tokens[0].amount, "250");
     assert_eq!(incoming.direction, "in");
-    assert_eq!(incoming.pair_swaps[0].amount1_out, "250");
+    assert!(incoming.pair_swaps.is_empty(), "recipient rows must not duplicate every swap in the sender's call");
+    let outgoing = rows.iter().find(|r| r.address == sender).unwrap();
+    assert_eq!(outgoing.pair_swaps[0].amount1_out, "250");
     let reward = aether_node::account_history::reward(recipient, 4, 0, 4000, U256::from(9), true);
     assert_eq!(reward.kind, "node_reward");
     assert_eq!(reward.value_wei, "9");

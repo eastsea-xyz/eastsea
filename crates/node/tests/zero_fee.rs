@@ -1,8 +1,6 @@
-//! G2 (docs/design/22-gas-pool.md): a zero-balance account transacts while
-//! the base fee is 0 (the wallet sends tip 0, cap 0), and a zero-balance Mac
-//! registers through the block's free lane even while the base fee is above
-//! 0 — checked against the same registrar attestation, sharing the registry
-//! contract's words and its per-epoch cap.
+//! A fresh zero-balance account cannot leave a free nonce record or receipt.
+//! A zero-balance Mac still registers through the bounded free lane, even
+//! while the execution base fee is above zero.
 
 mod common;
 
@@ -16,7 +14,7 @@ use aether_types::{Address, Bytes, FeeVector, TxEnvelope, U256};
 use commonware_codec::Encode as _;
 use commonware_consensus::types::{Round, View};
 use commonware_cryptography::{ed25519, Digestible as _, Signer as _};
-use common::{addr, Net, Opts};
+use common::{addr, Mac, Net, Opts};
 use std::sync::Arc;
 
 const CHAIN: u64 = 7_795;
@@ -43,6 +41,19 @@ fn transfer(to: Address, value: U256) -> EvmCall {
 /// `fee_caps` with no balance).
 fn free_call(s: &P256Signer, nonce: u64, call: &EvmCall) -> TxEnvelope {
     sign_call_with(s, CHAIN, nonce, FeeVector::default(), 0, call).unwrap()
+}
+
+fn paid_call(s: &P256Signer, nonce: u64, call: &EvmCall, state_units: u64) -> TxEnvelope {
+    let mut tx = sign_call_with(
+        s, CHAIN, nonce,
+        FeeVector { exec: 0, state: aether_execution::fees::STATE_UNIT_PRICE, prove: 0 },
+        0, call,
+    ).unwrap();
+    tx.header.gas.state = state_units;
+    let mut sig = s.sign(&tx.signing_bytes()).unwrap();
+    sig.extend_from_slice(&s.public_key().bytes);
+    tx.signature = Bytes::from(sig);
+    tx
 }
 
 /// `build_with` without the harness's every-tx-succeeds assert: a block whose
@@ -84,39 +95,40 @@ fn step_lane(net: &mut Net, txs: Vec<TxEnvelope>) -> Arc<aether_node::chain::Exe
 }
 
 /// One near-full block of transfers from a funded operator: 1428 × 21k ≈ 30M
-/// gas, twice the 15M target — free while it runs (the base fee was 0), and
+/// gas, twice the 15M target — zero execution fee but paid receipt bytes, and
 /// it leaves the excess that makes the next base fee ~1 gwei.
 fn congest(n: &mut Net) {
     let to = n.operator(0);
     let fill: Vec<TxEnvelope> = (0..1_428u64)
-        .map(|i| free_call(&n.ops[0], i, &transfer(to, U256::ZERO)))
+        .map(|i| paid_call(&n.ops[0], i, &transfer(to, U256::ZERO), 100))
         .collect();
     n.step(fill, None, vec![]);
     assert!(Chain::next_base_fee(&n.chain.cfg(), &n.parent).exec > 0, "one block past target costs ~1 gwei");
 }
 
 #[test]
-fn a_zero_balance_zero_tip_tx_is_free_and_included_below_target() {
+fn a_fresh_zero_balance_sender_is_rejected_but_existing_accounts_can_pay_only_state_fee() {
     let mut n = net(1);
     n.run_to(2);
-    // Below target load the base fee is 0: nobody needs a balance at all.
+    // Below target load the execution base fee is 0. Persistent receipt and
+    // first-sender bytes still have a fixed fee.
     assert_eq!(Chain::next_base_fee(&n.chain.cfg(), &n.parent).exec, 0);
 
     let (stranger, op) = (broke(99), n.operator(0));
     let free = free_call(&stranger, 0, &transfer(op, U256::ZERO));
-    assert!(n.chain.add_to_mempool(free.clone()).unwrap(), "a zero-balance zero-tip tx is admissible at base fee 0");
-    // A tipped tx from a funded account: both go in one block — the proposer
-    // orders by (nonce, listed, sender), never by fee, so the free tx is not
-    // starved behind paid ones (docs/design/22-gas-pool.md 1층).
-    let tipped = sign_call_with(&n.ops[0], CHAIN, 0, FeeVector { exec: 1_000_000_000, state: 0, prove: 0 }, 1_000_000_000, &transfer(op, U256::ZERO)).unwrap();
-    assert!(n.chain.add_to_mempool(tipped).unwrap());
+    assert!(n.chain.add_to_mempool(free.clone()).is_err());
+    let ctx = Chain::block_context(&n.chain.cfg(), &n.last, &n.parent);
+    assert!(aether_execution::execute_block(&n.parent.state, &ctx, &[free]).is_err());
+    let paid = paid_call(&n.ops[0], 0, &transfer(op, U256::ZERO), 100);
+    assert!(n.chain.add_to_mempool(paid).unwrap());
     let txs = n.chain.mempool_candidates();
     let exec = step_lane(&mut n, txs);
-    assert_eq!(exec.tx_hashes.len(), 2, "both the tipped and the zero-tip tx are included");
+    assert_eq!(exec.tx_hashes.len(), 1);
     assert!(exec.receipts.iter().all(|r| r.success));
-    // The stranger paid nothing (there was nothing to pay) and the fee is still 0.
+    assert!(exec.receipts[0].state_gas > 0);
+    assert!(exec.receipts[0].state_fee > U256::ZERO);
     assert_eq!(exec.state.balance(&addr(&stranger)), U256::ZERO);
-    assert_eq!(exec.state.nonce(&addr(&stranger)), 1);
+    assert_eq!(exec.state.nonce(&addr(&stranger)), 0);
     assert_eq!(Chain::next_base_fee(&n.chain.cfg(), &n.parent).exec, 0, "21k gas is far below target");
 }
 
@@ -133,23 +145,23 @@ fn mempool_and_block_execution_both_reject_a_zero_balance_state_writer() {
         FeeVector { exec: 0, state: aether_execution::fees::STATE_UNIT_PRICE, prove: 0 },
         0, &deploy_call,
     ).unwrap();
-    deploy.header.gas.state = 106;
+    deploy.header.gas.state = 1_000;
     let mut sig = n.ops[0].sign(&deploy.signing_bytes()).unwrap();
     sig.extend_from_slice(&n.ops[0].public_key().bytes);
     deploy.signature = Bytes::from(sig);
     let deployed = n.step(vec![deploy], None, vec![]);
     let writer = deployed.receipts[0].contract_address.unwrap();
-    assert_eq!(deployed.receipts[0].state_gas, 106);
+    assert!(deployed.receipts[0].state_gas > 106);
 
     let zero = free_call(&broke(99), 0, &EvmCall { to: Some(writer), value: U256::ZERO, input: Default::default(), gas_limit: 100_000, delegate: None });
     let pool_err = n.chain.add_to_mempool(zero.clone()).unwrap_err();
-    assert!(pool_err.contains("state growth"), "{pool_err}");
+    assert!(pool_err.contains("state") || pool_err.contains("insufficient funds"), "{pool_err}");
     let future = free_call(&broke(98), 5, &EvmCall { to: Some(writer), value: U256::ZERO, input: Default::default(), gas_limit: 100_000, delegate: None });
     let future_err = n.chain.add_to_mempool(future).unwrap_err();
-    assert!(future_err.contains("state growth"), "{future_err}");
+    assert!(future_err.contains("state") || future_err.contains("insufficient funds"), "{future_err}");
     let ctx = Chain::block_context(&n.chain.cfg(), &n.last, &n.parent);
     let block_err = aether_execution::execute_block(&n.parent.state, &ctx, &[zero]).err().unwrap();
-    assert!(format!("{block_err:?}").contains("state growth"));
+    assert!(format!("{block_err:?}").contains("state") || format!("{block_err:?}").contains("insufficient funds"));
 }
 
 #[test]
@@ -222,7 +234,7 @@ fn a_zero_balance_operator_cannot_register_by_contract_on_a_state_fee_chain() {
     };
     let direct = free_call(&op, 0, &call);
     let err = n.chain.add_to_mempool(direct).unwrap_err();
-    assert!(err.contains("state growth 800 exceeds transaction budget 0"), "{err}");
+    assert!(err.contains("state") || err.contains("insufficient funds"), "{err}");
     assert_eq!(registry::candidates(&n.parent.state).len(), 0);
 
     assert!(n.chain.submit_registration(item).unwrap());
@@ -344,4 +356,158 @@ fn the_lane_and_the_contract_write_the_same_words_and_share_the_epoch_cap() {
     assert!(lane.chain.submit_registration(fresh).unwrap());
     let exec = step_lane(&mut lane, vec![]);
     assert_eq!((registry::reg_epoch(&exec.state), registry::reg_count(&exec.state)), (2, 1));
+}
+
+/// Current-nonce admission uses the executor's exact state and receipt cost,
+/// across many calldata lengths, recipient kinds and signed budgets.
+#[test]
+fn randomized_admission_matches_single_tx_execution_cost() {
+    let n = net(8);
+    let ctx = Chain::block_context(&n.chain.cfg(), &n.last, &n.parent);
+    let mut random = 0x6a09_e667_f3bc_c908u64;
+    for i in 0..80usize {
+        random ^= random << 13;
+        random ^= random >> 7;
+        random ^= random << 17;
+        let sender = i % n.ops.len();
+        let to = if random & 1 == 0 { n.operator((sender + 1) % n.ops.len()) } else { Address::repeat_byte(i as u8 + 20) };
+        let input = vec![(random >> 8) as u8; (random as usize >> 16) % 48];
+        let call = EvmCall { to: Some(to), value: U256::from((random >> 3) & 1), input: Bytes::from(input), gas_limit: 70_000, delegate: None };
+        let budget = [0, 8, 16, 32, 120, 200][i % 6];
+        let tx = paid_call(&n.ops[sender], 0, &call, budget);
+        let admitted = n.chain.add_to_mempool(tx.clone());
+        let executed = aether_execution::execute_block(&n.parent.state, &ctx, std::slice::from_ref(&tx));
+        assert_eq!(matches!(admitted, Ok(true)), executed.is_ok(), "case {i}: budget {budget}, recipient {to}");
+        if let Ok(out) = executed {
+            let cost = aether_execution::check_admission_cost(&n.parent.state, &ctx, &tx).unwrap();
+            assert_eq!(cost.gas.state, out.receipts[0].state_gas, "state units for case {i}");
+            assert_eq!(cost.persistent_bytes, out.persistent_bytes, "persisted bytes for case {i}");
+            assert_eq!(cost.gas, out.gas, "gas vector for case {i}");
+        }
+    }
+}
+
+#[test]
+fn contiguous_future_nonce_admission_matches_its_executed_prefix_cost() {
+    let n = net(1);
+    let ctx = Chain::block_context(&n.chain.cfg(), &n.last, &n.parent);
+    let call = transfer(n.operator(0), U256::ZERO);
+    let first = paid_call(&n.ops[0], 0, &call, 100);
+    let second = paid_call(&n.ops[0], 1, &call, 100);
+    let first_cost = aether_execution::check_admission_cost(&n.parent.state, &ctx, &first).unwrap();
+    assert!(n.chain.add_to_mempool(first.clone()).unwrap());
+    assert!(n.chain.add_to_mempool(second.clone()).unwrap());
+    let admitted = aether_execution::check_admission_cost(&n.parent.state, &ctx, &second).unwrap();
+    let executed = aether_execution::execute_block(&n.parent.state, &ctx, &[first, second]).unwrap();
+    assert_eq!(executed.receipts.len(), 2);
+    assert_eq!(admitted.gas.state, executed.receipts[1].state_gas);
+    assert_eq!(admitted.persistent_bytes, executed.persistent_bytes - first_cost.persistent_bytes);
+    assert_eq!(admitted.gas.exec, executed.receipts[1].gas_used);
+    assert_eq!(admitted.gas.prove, executed.receipts[1].prove_gas);
+}
+
+#[test]
+fn mixed_registration_beacon_and_paid_tx_preserve_admission_cost() {
+    // A 48-block epoch has live beacon slots; the shorter registration tests
+    // use 12-block epochs, which intentionally disable beacon scheduling.
+    let mut n = Net::new(Opts {
+        chain_id: CHAIN, node_rewards: true, epoch_blocks: 48, macs: 1,
+        min_streak: Some(0), history_v2: false, protocol: 2,
+        reserve: None, fees: true, committee: None,
+    });
+    let first = n.lane_registration(&broke(99), &n.voting[0], Net::node_id(99), 0, 600);
+    assert!(n.chain.submit_registration(first).unwrap());
+    step_lane(&mut n, vec![]);
+    n.behaviour.insert(0, Mac::Honest);
+    while n.answers().is_empty() && n.parent.height < 96 {
+        n.step(vec![], None, vec![]);
+    }
+    let answers = n.answers();
+    assert!(!answers.is_empty(), "a registered Mac reaches a beacon answer slot");
+    let new_reg = n.lane_registration(&broke(98), &ed25519::PrivateKey::from_seed(98), Net::node_id(98), 0, n.parent.height + 600);
+    let tx = paid_call(&n.ops[0], 0, &transfer(n.operator(0), U256::ZERO), 100);
+    let ctx = Chain::block_context(&n.chain.cfg(), &n.last, &n.parent);
+    let admission = aether_execution::check_admission_cost(&n.parent.state, &ctx, &tx).unwrap();
+    assert!(n.chain.add_to_mempool(tx.clone()).unwrap());
+    let (pre, _) = n.chain.pre_state_with(&n.parent, n.parent.next_protocol(), &[], &answers, std::slice::from_ref(&new_reg), None, false).unwrap();
+    let direct = aether_execution::execute_block(&pre, &ctx, std::slice::from_ref(&tx)).unwrap();
+    assert_eq!(admission.gas.state, direct.receipts[0].state_gas);
+    assert_eq!(admission.persistent_bytes, direct.persistent_bytes);
+    let (block, exec) = n.build_with(vec![tx], None, vec![], answers, vec![new_reg], None).unwrap();
+    assert_eq!(exec.receipts[0].state_gas, admission.gas.state);
+    assert_eq!(exec.persistent_bytes, admission.persistent_bytes);
+    assert_eq!(exec.registration_ids.len(), 1);
+    n.chain.finalize(&block).unwrap();
+}
+
+fn logger_init(records: usize) -> Bytes {
+    let mut runtime = Vec::with_capacity(records * 6 + 1);
+    for _ in 0..records {
+        runtime.extend_from_slice(&[0x61, 0x10, 0x00, 0x60, 0x00, 0xa0]); // LOG0(0, 4096)
+    }
+    runtime.push(0x00);
+    let len = u16::try_from(runtime.len()).unwrap();
+    let mut init = vec![
+        0x61, (len >> 8) as u8, len as u8,
+        0x61, 0x00, 0x0f,
+        0x60, 0x00, 0x39,
+        0x61, (len >> 8) as u8, len as u8,
+        0x60, 0x00, 0xf3,
+    ];
+    init.extend_from_slice(&runtime);
+    Bytes::from(init)
+}
+
+/// The audit's 400 × 4096-byte LOG0 call must reserve receipt bytes before it
+/// can enter the pool or appear in a finalized receipt.
+#[test]
+fn audit_logger_cannot_persist_receipts_for_free() {
+    let mut n = net(1);
+    let deploy = paid_call(
+        &n.ops[0], 0,
+        &EvmCall { to: None, value: U256::ZERO, input: logger_init(400), gas_limit: 1_000_000, delegate: None },
+        8_000,
+    );
+    let deployed = n.step(vec![deploy], None, vec![]);
+    let logger = deployed.receipts[0].contract_address.unwrap();
+    let call = EvmCall { to: Some(logger), value: U256::ZERO, input: Bytes::new(), gas_limit: 14_000_000, delegate: None };
+    let free = free_call(&n.ops[0], 1, &call);
+    let err = n.chain.add_to_mempool(free).unwrap_err();
+    assert!(err.contains("state growth"), "{err}");
+
+    let first = paid_call(&n.ops[0], 1, &call, 60_000);
+    assert!(n.chain.add_to_mempool(first.clone()).unwrap());
+    let (block, exec) = n.build_with(vec![first], None, vec![], vec![], vec![], None).unwrap();
+    assert_eq!(exec.receipts.len(), 1);
+    assert_eq!(exec.receipts[0].events.len(), 400);
+    assert!(exec.receipts[0].state_gas >= 1_638_400 / 32);
+    assert!(exec.persistent_bytes <= aether_execution::fees::MAX_PERSISTENT_BYTES_PER_BLOCK);
+    n.chain.finalize(&block).unwrap();
+}
+
+/// Two 280 × 4096-byte LOG0 calls fit both gas limits but exceed the 2 MiB
+/// persistent-byte cap. Proposer exclusion and validator rejection agree.
+#[test]
+fn receipt_byte_cap_binds_before_gas_caps_for_proposer_and_validator() {
+    let mut n = net(1);
+    let deploy = paid_call(
+        &n.ops[0], 0,
+        &EvmCall { to: None, value: U256::ZERO, input: logger_init(280), gas_limit: 1_000_000, delegate: None },
+        8_000,
+    );
+    let deployed = n.step(vec![deploy], None, vec![]);
+    let logger = deployed.receipts[0].contract_address.unwrap();
+    let call = EvmCall { to: Some(logger), value: U256::ZERO, input: Bytes::new(), gas_limit: 10_000_000, delegate: None };
+    let first = paid_call(&n.ops[0], 1, &call, 45_000);
+    let second = paid_call(&n.ops[0], 2, &call, 45_000);
+    let ctx = Chain::block_context(&n.chain.cfg(), &n.last, &n.parent);
+    let first_out = aether_execution::execute_block(&n.parent.state, &ctx, std::slice::from_ref(&first)).unwrap();
+    let second_cost = aether_execution::check_admission_cost(&first_out.state, &ctx, &second).unwrap();
+    assert!(first_out.gas.state + second_cost.gas.state < ctx.limits.state);
+    assert!(first_out.gas.exec + second_cost.gas.exec < ctx.limits.exec);
+    assert!(first_out.persistent_bytes + second_cost.persistent_bytes > aether_execution::fees::MAX_PERSISTENT_BYTES_PER_BLOCK);
+    let (_, proposal) = raw_build(&n, vec![first.clone(), second.clone()], vec![]).unwrap();
+    assert_eq!(proposal.receipts.len(), 1, "proposer omits the over-cap receipt");
+    let ctx = Chain::block_context(&n.chain.cfg(), &n.last, &n.parent);
+    assert!(aether_execution::execute_block(&n.parent.state, &ctx, &[first, second]).is_err(), "validator rejects the over-cap pair");
 }

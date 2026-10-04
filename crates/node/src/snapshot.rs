@@ -212,6 +212,8 @@ impl Snapshot {
             receipts: vec![],
             tx_hashes: vec![],
             gas: Default::default(),
+            new_slots: 0,
+            persistent_bytes: 0,
             proposer: aether_types::Address::ZERO,
             base_fee: Default::default(),
             excess: self.summary.excess,

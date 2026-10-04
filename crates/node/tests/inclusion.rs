@@ -1,10 +1,10 @@
 //! FOCIL inclusion lists: signatures, committee, pool freeze and the append check.
 
-use aether_crypto::P256Signer;
-use aether_execution::{build_block, sign_call, tx_hash, BlockContext, EvmCall, WorldState};
+use aether_crypto::{P256Signer, Signer as _};
+use aether_execution::{build_block, sign_call, sign_call_with, tx_hash, BlockContext, EvmCall, WorldState};
 use aether_node::chain::dev_seed;
 use aether_node::inclusion::{committee, violations, IlError, InclusionList, InclusionPool, FREEZE};
-use aether_types::{Address, Bytes, GasVector, TxEnvelope, U256};
+use aether_types::{Address, Bytes, FeeVector, GasVector, TxEnvelope, U256};
 use commonware_cryptography::{ed25519, Signer as _};
 use std::time::{Duration, Instant};
 
@@ -107,22 +107,70 @@ fn append_check_catches_censorship_but_not_invalid_txs() {
     // A block with only dev 1's tx censors dev 2.
     let (txs, out) = build_block(&pre, &ctx(), vec![listed[0].clone()]);
     let hashes: Vec<_> = txs.iter().map(tx_hash).collect();
-    assert_eq!(violations(&listed, &hashes, false, &out.state, &ctx(), out.gas), vec![tx_hash(&listed[1])]);
+    assert_eq!(violations(&listed, &hashes, false, &out.state, &ctx(), out.gas, out.new_slots, out.persistent_bytes), vec![tx_hash(&listed[1])]);
 
     // Full blocks are exempt.
-    assert!(violations(&listed, &hashes, true, &out.state, &ctx(), out.gas).is_empty());
+    assert!(violations(&listed, &hashes, true, &out.state, &ctx(), out.gas, out.new_slots, out.persistent_bytes).is_empty());
 
     // Including both satisfies the list.
     let (txs, out) = build_block(&pre, &ctx(), listed.clone());
     let hashes: Vec<_> = txs.iter().map(tx_hash).collect();
-    assert!(violations(&listed, &hashes, false, &out.state, &ctx(), out.gas).is_empty());
+    assert!(violations(&listed, &hashes, false, &out.state, &ctx(), out.gas, out.new_slots, out.persistent_bytes).is_empty());
 
     // A listed tx that could not execute (unfunded sender) is not a violation.
     let unfunded = vec![transfer(3, 0, 1)];
     let (_, out) = build_block(&pre, &ctx(), vec![]);
-    assert!(violations(&unfunded, &[], false, &out.state, &ctx(), out.gas).is_empty());
+    assert!(violations(&unfunded, &[], false, &out.state, &ctx(), out.gas, out.new_slots, out.persistent_bytes).is_empty());
 
     // Nor is one whose nonce was already used in this block's ancestry.
     let (_, after) = build_block(&pre, &ctx(), vec![listed[1].clone()]);
-    assert!(violations(&listed[1..], &[], false, &after.state, &ctx(), GasVector::default()).is_empty());
+    assert!(violations(&listed[1..], &[], false, &after.state, &ctx(), GasVector::default(), after.new_slots, after.persistent_bytes).is_empty());
+}
+
+#[test]
+fn append_check_respects_the_persistent_byte_cap() {
+    let pre = funded(&[1]);
+    let call = EvmCall { to: Some(sender(1)), value: U256::ZERO, input: Bytes::new(), gas_limit: 21_000, delegate: None };
+    let s = signer(1);
+    let mut tx = sign_call_with(
+        &s, CHAIN, 0,
+        FeeVector { state: aether_execution::fees::STATE_UNIT_PRICE, ..Default::default() },
+        0, &call,
+    ).unwrap();
+    tx.header.gas.state = 100;
+    let mut signature = s.sign(&tx.signing_bytes()).unwrap();
+    signature.extend_from_slice(&s.public_key().bytes);
+    tx.signature = Bytes::from(signature);
+    let mut paid_ctx = ctx();
+    paid_ctx.limits.state = aether_execution::fees::MAX_STATE_UNITS_PER_BLOCK;
+    let listed = [tx.clone()];
+    assert_eq!(violations(&listed, &[], false, &pre, &paid_ctx, GasVector::default(), 0, 0), vec![tx_hash(&tx)]);
+    assert!(violations(
+        &listed, &[], false, &pre, &paid_ctx, GasVector::default(), 0,
+        aether_execution::fees::MAX_PERSISTENT_BYTES_PER_BLOCK - 1,
+    ).is_empty());
+}
+
+#[test]
+fn append_check_respects_the_cumulative_new_slot_cap() {
+    let mut pre = funded(&[1]);
+    let writer = Address::repeat_byte(0xa6);
+    pre.set_code(writer, Bytes::from_static(&[0x60, 0x01, 0x60, 0x00, 0x55, 0x00])).unwrap();
+    let call = EvmCall { to: Some(writer), value: U256::ZERO, input: Bytes::new(), gas_limit: 100_000, delegate: None };
+    let s = signer(1);
+    let mut tx = sign_call_with(
+        &s, CHAIN, 0,
+        FeeVector { state: aether_execution::fees::STATE_UNIT_PRICE, ..Default::default() },
+        0, &call,
+    ).unwrap();
+    tx.header.gas.state = 300;
+    let mut signature = s.sign(&tx.signing_bytes()).unwrap();
+    signature.extend_from_slice(&s.public_key().bytes);
+    tx.signature = Bytes::from(signature);
+    let mut paid_ctx = ctx();
+    paid_ctx.limits.state = aether_execution::fees::MAX_STATE_UNITS_PER_BLOCK;
+    let listed = [tx.clone()];
+    let limit = aether_execution::fees::MAX_NEW_SLOTS_PER_BLOCK;
+    assert_eq!(violations(&listed, &[], false, &pre, &paid_ctx, GasVector::default(), limit - 1, 0), vec![tx_hash(&tx)]);
+    assert!(violations(&listed, &[], false, &pre, &paid_ctx, GasVector::default(), limit, 0).is_empty());
 }

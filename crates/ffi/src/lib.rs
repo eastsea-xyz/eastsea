@@ -41,7 +41,8 @@ pub struct ChainStatus {
     pub height: u64,
     pub state_root: String,
     pub mempool: u64,
-    /// Estimated fee (wei) of a plain transfer at the next block's base fee plus the tip.
+    /// Maximum estimated fee (wei) of a wallet plain transfer, including two
+    /// possible new accounts and the transaction/receipt bytes on a paid-state genesis.
     pub transfer_fee_wei: String,
     /// Scheduled notices reported by the selected node (JSON array).
     pub upgrades_json: String,
@@ -584,7 +585,8 @@ fn demote_on_failure<T>(read: impl FnOnce() -> R<T>) -> R<T> {
 /// headroom plus a 1 gwei tip (only base + tip is charged). A sender with no
 /// balance, or a chain at its zero floor (below target load the base fee is 0),
 /// sends with tip 0 and exec capped at base × 2 — one base-fee doubling of
-/// headroom — so a new account can transact at all (G2). Older nodes without
+/// headroom. A paid-state genesis also needs a native balance for the sender
+/// account and persisted transaction/receipt bytes. Older nodes without
 /// `base_fee` get the floor.
 fn fee_caps(status: &Value, balance: Option<U256>) -> (FeeVector, u128) {
     const GWEI: u128 = 1_000_000_000;
@@ -605,18 +607,38 @@ fn fee_caps(status: &Value, balance: Option<U256>) -> (FeeVector, u128) {
     )
 }
 
-/// A 21k-gas transfer runs no bytecode (no prove gas): it pays base + tip per
-/// gas, and nothing while the base fee is 0.
+fn check_paid_state_balance(state_price: u128, balance: Option<U256>) -> R<()> {
+    if state_price > 0 {
+        match balance {
+            None => return Err(WalletError::Invalid("Could not read the AETH balance needed to pay this transaction's state fee".into())),
+            Some(b) if b.is_zero() => return Err(WalletError::Invalid("Add AETH before sending: this transaction must pay for its persistent bytes and first-use account".into())),
+            Some(_) => {}
+        }
+    }
+    Ok(())
+}
+
+/// A 21k-gas transfer runs no bytecode (no prove gas). Without certified
+/// account proofs, reserve two possible new accounts (first-use funded sender
+/// and recipient) plus enough units for the wallet's signed P-256 envelope
+/// and fixed receipt. The actual receipt may charge less.
 fn transfer_fee(status: &Value) -> u128 {
     const GWEI: u128 = 1_000_000_000;
+    // Canonical wallet plain transfers plus the 128-byte receipt base fit
+    // within 1024 bytes. State growth charges one unit per 32 persisted bytes.
+    const PLAIN_TRANSFER_PERSISTENT_UNITS: u128 = 32;
     let base = status["base_fee"]["exec"]
         .as_str()
         .and_then(|v| v.parse::<u128>().ok())
         .unwrap_or(0);
-    if base == 0 {
-        return 0;
-    }
-    21_000 * (base + GWEI)
+    let exec = if base == 0 { 0 } else { 21_000u128.saturating_mul(base.saturating_add(GWEI)) };
+    let state_price = status["base_fee"]["state"]
+        .as_str()
+        .and_then(|v| v.parse::<u128>().ok())
+        .unwrap_or(0);
+    let account_units = u128::from(aether_execution::fees::STATE_ACCOUNT_UNITS);
+    let state_units = account_units.saturating_mul(2).saturating_add(PLAIN_TRANSFER_PERSISTENT_UNITS);
+    exec.saturating_add(state_price.saturating_mul(state_units))
 }
 
 /// The node running on this Mac (the app's node switch), if on. Wallet reads then
@@ -1278,6 +1300,7 @@ fn prepare(p256_public_key: &[u8], body: impl FnOnce(Address) -> R<EvmCall>) -> 
     let balance_hex = call("eth_getBalance", json!([from]))?;
     let balance = balance_hex.as_str().and_then(|h| U256::from_str_radix(h.trim_start_matches("0x"), 16).ok());
     let (max_fee, tip) = fee_caps(&status, balance);
+    check_paid_state_balance(max_fee.state, balance)?;
     let nonce_hex = call("eth_getTransactionCount", json!([from]))?;
     let nonce = u64::from_str_radix(nonce_hex.as_str().unwrap_or("0x0").trim_start_matches("0x"), 16).map_err(|e| WalletError::Invalid(e.to_string()))?;
     let call_body = body(from)?;
@@ -1550,6 +1573,42 @@ pub fn devnet_faucet(to: String, value_wei: String) -> R<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transfer_fee_quotes_possible_new_accounts_only_on_paid_state_genesis() {
+        let legacy = json!({ "base_fee": { "exec": "0", "prove": "0" } });
+        assert_eq!(transfer_fee(&legacy), 0);
+
+        let paid_state = json!({ "base_fee": { "exec": "0", "state": "1000000000000", "prove": "0" } });
+        assert_eq!(transfer_fee(&paid_state), 232_000_000_000_000);
+
+        let busy = json!({ "base_fee": { "exec": "1000000000", "state": "1000000000000", "prove": "0" } });
+        assert_eq!(transfer_fee(&busy), 42_000_000_000_000 + 232_000_000_000_000);
+    }
+
+    #[test]
+    fn paid_state_transactions_require_a_native_balance_before_signing() {
+        assert!(check_paid_state_balance(1_000_000_000_000, Some(U256::ZERO)).is_err());
+        assert!(check_paid_state_balance(1_000_000_000_000, None).is_err());
+        assert!(check_paid_state_balance(0, Some(U256::ZERO)).is_ok(), "legacy free transfers remain possible");
+        assert!(check_paid_state_balance(0, None).is_ok(), "legacy missing-balance behavior remains unchanged");
+        assert!(check_paid_state_balance(1_000_000_000_000, Some(U256::from(1))).is_ok());
+    }
+
+    #[test]
+    fn wallet_plain_transfer_fits_persistent_byte_quote() {
+        use aether_types::Canonical;
+        let signer = aether_crypto::P256Signer::from_seed(&[7u8; 32]).unwrap();
+        let call = EvmCall {
+            to: Some(Address::repeat_byte(0x42)),
+            value: U256::from(u128::MAX),
+            input: Bytes::new(),
+            gas_limit: 21_000,
+            delegate: None,
+        };
+        let tx = aether_execution::sign_call_group(&signer, u64::MAX, u64::MAX, u128::MAX, u16::MAX, &call).unwrap();
+        assert!(tx.to_canonical_bytes().len() + 128 <= 32 * 32);
+    }
 
     /// A signature made over SHA-256(message) by an independent P-256 key
     /// (what Secure Enclave produces), including the high-s form, is accepted

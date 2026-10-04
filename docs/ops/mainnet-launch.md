@@ -11,7 +11,7 @@ mkdir -p ./tmp
 scripts/mainnet-rehearsal.sh "$(mktemp -d ./tmp/mainnet-rehearsal.XXXXXX)/rehearsal"
 ```
 
-버리는 로컬 네트워크에 **메인넷과 같은 제네시스 플래그**(새 체인 아이디, `"protocol": 3`, `"history": 2`, node rewards, 등록기, 예비 키 3개, faucet·사전 발행 없음)를 걸고 4검증자+예비키+후보 Mac을 `aether run`만으로 띄워 확인한다: 블록 확정·4검증자 일치, 높이 1의 프로토콜이 3·에포크당 등록 상한 활성, 메인넷 규칙 목록 전부(아래 2단계), 빈 블록 조용(history v2), 사전 발행·faucet 없음, 첫 에포크 분배가 `rewards::issuance`와 정확히 일치(새 Mac pool/32), 예비 키는 4석이 서 있으면 들어오지 않고 팔로워로 남음, 30일 프루닝 기본값, **현재 바이너리의 그림자 재실행 일치**. **PASS가 아니면 다음 단계로 가지지 않는다.** 출시 직전에는 출시에 쓸 바이너리로 다시 한 번.
+버리는 로컬 네트워크에 **메인넷과 같은 제네시스 플래그**(새 체인 아이디, `"protocol": 3`, `"history": 2`, node rewards, 등록기, 예비 키 3개, faucet·사전 발행 없음)를 걸고 4검증자+예비키+후보 Mac을 `aether run`만으로 띄워 확인한다(스크립트가 자체 `ceremony-check.json`을 만들어 모든 `run`에 전달하므로 실전과 같은 시작 바인딩을 그대로 예행한다 — 감사 6): 블록 확정·4검증자 일치, 높이 1의 프로토콜이 3·에포크당 등록 상한 활성, 메인넷 규칙 목록 전부(아래 2단계), 빈 블록 조용(history v2), 사전 발행·faucet 없음, 첫 에포크 분배가 `rewards::issuance`와 정확히 일치(새 Mac pool/32), 예비 키는 4석이 서 있으면 들어오지 않고 팔로워로 남음, 30일 프루닝 기본값, **현재 바이너리의 그림자 재실행 일치**. **PASS가 아니면 다음 단계로 가지지 않는다.** 출시 직전에는 출시에 쓸 바이너리로 다시 한 번.
 
 ## 업그레이드 전 필수: 메인넷 그림자 재실행
 
@@ -32,10 +32,10 @@ aether shadow --from "$ARCHIVE_RPC" --to "$FINALIZED_HEIGHT"
 2. **창업자 Mac**: `scripts/reserve-keys.sh init`(아래 1단계) — 공개 항목 3개를 코디네이터로 복사한다.
 3. **코디네이터**: `scripts/mainnet-genesis.sh assemble --chain-id <새 체인 아이디> --registrar <서명 Mac의 x‖y hex> --reserve-operator <창업자 주소> --reserve <예비 pub>×3 --validator <검증자 pub>×4` — 입력을 전부 검증하고(hex 형식·검증자 4개 상이·예비 키≠검증자 키·P-256 등록기 점) 공표 정책(protocol 3, history 2, node rewards, registry v3, 타이밍 3600/24/24는 기본값 그대로)으로 genesis.json을 만들어 규칙 검사까지 돌린다. 리허설 전용 값(`--epoch-blocks`·`--dev-registrar`·체인 아이디 7780/7799)은 거부한다. 옆에 `ceremony.json`(공개 기록: 이 세레머니가 조립한 체인 아이디와 검증자 목록)을 남긴다.
 4. **검증자 Mac 4대, 동시에**: genesis.json을 각 Mac으로 복사해(공개 파일 — 어디로든) 아래 3단계의 `aether dkg`를 각자 자기 `--data` 디렉터리로 실행한다.
-5. **코디네이터**: 검증자 1이 DKG 후 쓴 `network.json`으로 `scripts/mainnet-genesis.sh check <network.json> --chain-id <아이디> --ceremony <assemble이 만든 ceremony.json>` — strict `aether mainnet-rules`(`--rehearsal` 절대 없음)와 최종 파일의 제네시스 플래그를 PASS/FAIL 목록으로 검사한다(실패가 하나라도 있으면 0이 아닌 코드). `--chain-id`는 필수이고 ceremony.json에 기록된 아이디와 같아야 하며 7780(테스트넷)·7799(리허설)는 거부한다. 최종 network.json도 공개 파일이다(지갑·노드가 쓰는 바로 그 파일).
-6. **검증자 Mac 4대, 각각 투표 전**: 최종 network.json을 받은 뒤 `scripts/mainnet-genesis.sh verify-local <network.json> --data <이 Mac의 데이터 디렉터리>` — 이 Mac에서 strict 규칙 검사를 다시 돌리고(전송 중 변조 포착) 이 Mac의 `threshold.json`(round·output·identity, **share는 절대 출력하지 않는다**)이 그 최종 파일과 같은 위원회를 말하는지 비교한다. 노드 자신도 시작할 때 같은 거부를 한다(main.rs committee_keys: 불일치면 시작 거부).
+5. **코디네이터**: 검증자 1이 DKG 후 쓴 `network.json`으로 `scripts/mainnet-genesis.sh check <network.json> --chain-id <아이디> --ceremony <assemble이 만든 ceremony.json>` — strict `aether mainnet-rules`(`--rehearsal` 절대 없음)와 최종 파일의 제네시스 플래그를 PASS/FAIL 목록으로 검사한다(실패가 하나라도 있으면 0이 아닌 코드). `--chain-id`는 필수이고 ceremony.json에 기록된 아이디와 같아야 하며 7780(테스트넷)·7799(리허설)는 거부한다. 최종 network.json도 공개 파일이다(지갑·노드가 쓰는 바로 그 파일). **PASS하면** 옆에 `ceremony-check.json`(감사 6의 고정 기록: 체인 아이디, DKG 라운드, 위원회 identity, 통과한 최종 파일 **바이트의 sha256**, 불변 제네시스 전체 — 로스터·등록기·규칙 플래그·예비 키)을 남긴다. **이 기록을 최종 network.json과 함께 모든 검증자 Mac으로 복사한다**: 아래 6단계와 노드 시작 바인딩이 이 기록 없이는 새 제네시스 체인에서 투표를 거부한다.
+6. **검증자 Mac 4대, 각각 투표 전**: 최종 network.json과 `ceremony-check.json`을 받은 뒤 `scripts/mainnet-genesis.sh verify-local <network.json> --data <이 Mac의 데이터 디렉터리> --ceremony <ceremony-check.json>` — 기대 체인 아이디를 **기록에서만** 읽어(검사 대상 파일에서 유도하지 않는다: 전송 중 체인 아이디 치환이 자기 승인되던 구멍, 감사 6 A6-3) 이 Mac에서 strict 규칙 검사를 다시 돌리고, 이 Mac의 `threshold.json`·`network.json`을 그 기록에 바인딩한다(`aether mainnet-bind`, **share는 절대 출력하지 않는다**). 같은 체인 아이디·위원회 identity를 가진 채 불변 제네시스가 다른 오래된 로컬 network.json은 "같은 네트워크"가 아니라 **stale로 거부**된다(감사 6 A6-4). 통과하면 기록이 `<data>/ceremony-check.json`에 저장되어, 지갑의 `aether run`(--network·--ceremony 없이 시작)도 다음 시작부터 같은 세레머니에 바인딩된다.
 
-**절대 복사하지 않는 것**: 각 Mac의 `validator.key`·`node-account.key`·DKG 후의 `threshold.json`(모두 모드 600, 만든 Mac에만 둔다). 코디네이터 디렉터리에는 공개 파일만 있어야 한다. `scripts/test-mainnet-genesis.sh`가 이 규칙 전부 — 변조 파일 거부·중복 검증자 키 거부·리허설 값 거부·코디네이터 비밀 누출 없음 — 를 자동 검사한다.
+**절대 복사하지 않는 것**: 각 Mac의 `validator.key`·`node-account.key`·DKG 후의 `threshold.json`(모두 모드 600, 만든 Mac에만 둔다). 코디네이터 디렉터리에는 공개 파일만 있어야 한다. `scripts/test-mainnet-genesis.sh`가 이 규칙 전부 — 변조 파일 거부·중복 검증자 키 거부·리허설 값 거부·코디네이터 비밀 누출 없음·감사 6 바인딩(기록 없는 verify-local 거부, 전송 중 체인 아이디 치환 거부, 같은 로스터·라운드의 다른 output 거부, stale 로컬 제네시스 거부, 노드 시작 거부) — 를 자동 검사한다.
 
 ## 1. 키 세레머니
 
@@ -169,7 +169,7 @@ aether mainnet-rules --network <검증자 1 데이터 디렉터리>/network.json
 
 ## 5. 검증자 가동
 
-- 각 검증자 Mac: `aether run --network <최종 network.json> --data <dir>`을 launchd + `caffeinate -s`로(`scripts/testnet-launchagent.sh` 패턴, 라벨은 메인넷용으로 따로). 데이터 디렉터리는 메인넷 전용으로 새로 만든다(테스트넷 것을 재사용하지 않는다).
+- 각 검증자 Mac: `aether run --network <최종 network.json> --ceremony <ceremony-check.json> --data <dir>`을 launchd + `caffeinate -s`로(`scripts/testnet-launchagent.sh` 패턴, 라벨은 메인넷용으로 따로). 데이터 디렉터리는 메인넷 전용으로 새로 만든다(테스트넷 것을 재사용하지 않는다). 시작할 때 노드는 위 6단계와 같은 바인딩을 스스로 다시 한다(record 대 파일 바이트·이 Mac의 network.json/threshold.json) — 세레머니 기록이 없거나 불일치면 **시작을 거부**하고 verify-local 안내를 출력한다(share 없는 예비 키·후보 Mac도 record의 반쪽에 똑같이 묶인다). 위 6단계가 이미 `<data>/ceremony-check.json`을 저장했으므로 재시작부터는 `--ceremony` 없이 `aether run --data <dir>`만으로 같은 세레머니에 바인딩된다(지갑의 시작 경로가 그렇다).
 - 프로토콜 업그레이드 단계는 없다: 제네시스가 `"protocol": 3`으로 시작해 첫 블록부터 전부 마지막 규칙이다. 출시 뒤의 규칙 변경만 위원회 서명 업그레이드로 한다.
 - 등록기 노드: `--devicecheck-key <.p8 경로> --devicecheck-key-id <KID> --devicecheck-team <팀 아이디> --registrar-signer <서명 Mac의 signer.sock 경로>`를 함께. 서명 키는 노드가 아니라 서명 전용 Mac의 Secure Enclave에 있다([registrar.md](registrar.md)).
 - 창업자 Mac: `scripts/reserve-keys.sh install <최종 network.json>`. 예비 키 3개는 위원회가 4석에 못 미칠 때만 모자란 자리를 채운다 — 제네시스 4석이 서 있으면 하나도 들어오지 않고 팔로워로 남는다([15-node-rewards.md](../design/15-node-rewards.md) "창업자 예비 키"). 사람이 할 일은 없다.

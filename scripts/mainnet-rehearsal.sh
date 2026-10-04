@@ -121,6 +121,11 @@ done
 for p in ${PIDS[@]+"${PIDS[@]}"}; do wait "$p" || { echo "dkg failed (see $D/dkg*.log)" >&2; exit 1; }; done
 PIDS=()
 cp "$D/g1/network.json" "$D/network.json"
+# Audit 6: the rehearsal passes its own ceremony record to every `aether run`
+# (the real launch distributes the one the coordinator's check wrote; here the
+# rehearsal generates it for its own file, so the startup bind is rehearsed
+# end to end instead of being switched off).
+"$A" ceremony-record --network "$D/network.json" --out "$D/ceremony-check.json"
 
 echo "== mainnet rule set (every rule on at height 1; docs/ops/mainnet-launch.md §2)"
 if rules=$("$A" mainnet-rules --rehearsal --network "$D/network.json" 2>&1); then
@@ -134,7 +139,7 @@ mkdir -p "$D/peers"
 for k in "${!names[@]}"; do
   others=""
   for j in "${!names[@]}"; do [ "$j" = "$k" ] || others+="${others:+,}http://127.0.0.1:${rpcp[$j]}"; done
-  args=(run --exit-with-parent --data "$D/${names[$k]}" --network "$D/network.json"
+  args=(run --exit-with-parent --data "$D/${names[$k]}" --network "$D/network.json" --ceremony "$D/ceremony-check.json"
     --port "${p2p[$k]}" --rpc-port "${rpcp[$k]}" --reshare-port "${resh[$k]}"
     --dev-peer-dir "$D/peers" --node-arg=--block-time-ms=$BLOCK_MS
     "--follow-arg=--from-rpc=$others" --reshare-timeout 120)

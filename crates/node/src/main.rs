@@ -143,6 +143,11 @@ enum Cmd {
         /// network.json (validator keys and node ids). Keys come from <data>/validator.key.
         #[arg(long)]
         network: Option<String>,
+        /// The ceremony record (ceremony-check.json) the checked genesis is
+        /// bound to before voting (audit 6). Default: <data>/ceremony-check.json,
+        /// where verify-local stores it.
+        #[arg(long)]
+        ceremony: Option<String>,
         #[arg(long)]
         port: u16,
         #[arg(long)]
@@ -334,6 +339,11 @@ enum Cmd {
         /// network.json to start from (copied into <data> the first time).
         #[arg(long)]
         network: Option<String>,
+        /// The ceremony record (ceremony-check.json) the adopted genesis is
+        /// bound to before voting (audit 6). Default: <data>/ceremony-check.json,
+        /// where verify-local stores it.
+        #[arg(long)]
+        ceremony: Option<String>,
         #[arg(long, default_value_t = 9000)]
         port: u16,
         #[arg(long, default_value_t = 8545)]
@@ -487,6 +497,32 @@ enum Cmd {
         /// minutes). Reported in the output; never use it for the real launch.
         #[arg(long)]
         rehearsal: bool,
+    },
+    /// Write the ceremony record (ceremony-check.json) for a final network.json
+    /// that passed `check` (scripts/mainnet-genesis.sh, audit 6): pins the
+    /// chain id, DKG round, committee identity, the sha256 of the exact bytes
+    /// that passed and the immutable genesis. Public; copy it to every
+    /// validator Mac alongside the final network.json — verify-local and the
+    /// node refuse to vote without it.
+    CeremonyRecord {
+        /// The final network.json that passed check.
+        #[arg(long)]
+        network: String,
+        /// Where to write the record (default: next to the network file).
+        #[arg(long)]
+        out: Option<String>,
+    },
+    /// Bind a data dir to the checked genesis (verify-local's engine, audit 6):
+    /// the final file, this Mac's network.json/threshold.json and the ceremony
+    /// record through one fail-closed comparison. Ok = this Mac votes only
+    /// under the committee the checked file carries.
+    MainnetBind {
+        #[arg(long)]
+        network: String,
+        #[arg(long)]
+        data: String,
+        #[arg(long)]
+        ceremony: Option<String>,
     },
     /// Replay finalized blocks with this binary into an isolated scratch store.
     Shadow {
@@ -642,6 +678,7 @@ fn main() {
             index,
             validators,
             network,
+            ceremony,
             port,
             rpc_port,
             data,
@@ -685,6 +722,12 @@ fn main() {
                 }
             }
             let with_file = network.is_some();
+            // Audit 6, A6-3 + A6-4: a validator votes only under the genesis
+            // the ceremony checked. Before anything starts, bind the checked
+            // --network file, this Mac's network.json/threshold.json and the
+            // ceremony record through one fail-closed comparison; a new
+            // genesis without a record refuses here, with the operator step.
+            bind_to_checked_genesis(network.as_deref(), &data, ceremony.as_deref());
             let network_file = network.as_ref().and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice::<Value>(&b).ok());
             let max_shards = history.max_shards;
             p2p_args(index, validators, network, &data, port, peers, link_base, offline)
@@ -829,7 +872,7 @@ fn main() {
             );
             Ok(())
         })(),
-        Cmd::Run { data, network, port, rpc_port, reshare_port, node_args, follow_args, reshare_timeout, dev_peer_dir, exit_with_parent, resources } => {
+        Cmd::Run { data, network, ceremony, port, rpc_port, reshare_port, node_args, follow_args, reshare_timeout, dev_peer_dir, exit_with_parent, resources } => {
             if exit_with_parent {
                 exit_with_parent_process();
             }
@@ -856,6 +899,13 @@ fn main() {
                     tracing::error!(%e, "aether run: this Mac's identity cannot be loaded; running as a follower");
                 }
                 aether_node::supervisor::adopt_network(&dir, network.as_deref().map(std::path::Path::new))?;
+                // Audit 6: after adopt_network, bind the adopted genesis to
+                // the ceremony record before any child can vote (the record
+                // verify-local stored in the data dir, or --ceremony).
+                if let Err(e) = bind_run_to_ceremony(&dir, ceremony.as_deref()) {
+                    eprintln!("refusing to run: {e}");
+                    std::process::exit(1);
+                }
                 // A committee install a previous run did not finish (red team
                 // #19): complete it before any role decision reads the files.
                 if let Err(e) = aether_node::supervisor::finish_incomplete(&dir) {
@@ -878,6 +928,7 @@ fn main() {
                     follow_args,
                     dev_peer_dir: dev_peer_dir.map(Into::into),
                     reshare_timeout: reshare_timeout.map(Duration::from_secs),
+                    ceremony: ceremony.map(Into::into),
                 }
                 .run()
             })()
@@ -1004,6 +1055,47 @@ fn main() {
             }
             let missing = aether_node::mainnet::missing(&rules);
             (rules.iter().all(|r| r.ok)).then_some(()).ok_or(missing)
+        })(),
+        Cmd::CeremonyRecord { network, out } => (|| {
+            let path = std::path::Path::new(&network);
+            let bytes = std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+            let file = aether_node::roster::NetworkFile::load(path)?;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or_default();
+            let record = aether_node::mainnet::ceremony_record(&file, &bytes, now)?;
+            let out = out.map(Into::into).unwrap_or_else(|| {
+                path.parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .unwrap_or(std::path::Path::new("."))
+                    .join(aether_node::mainnet::CEREMONY_RECORD_FILE)
+            });
+            let body = serde_json::to_vec_pretty(&record).map_err(|e| e.to_string())?;
+            std::fs::write(&out, body).map_err(|e| format!("cannot write {}: {e}", out.display()))?;
+            println!(
+                "ceremony record: {} (chain {}, round {}, identity {}…, sha256 {}… over the checked bytes)",
+                out.display(),
+                record.chain_id,
+                record.round,
+                &record.identity[..record.identity.len().min(16)],
+                &record.digest[..record.digest.len().min(16)]
+            );
+            println!(
+                "  copy it to every validator Mac with the final network.json: verify-local and the node demand it (--ceremony)"
+            );
+            Ok(())
+        })(),
+        Cmd::MainnetBind { network, data, ceremony } => (|| {
+            aether_node::mainnet::bind_data_dir(
+                std::path::Path::new(&data),
+                std::path::Path::new(&network),
+                ceremony.as_deref().map(std::path::Path::new),
+            )?;
+            println!(
+                "BIND PASS: the checked genesis is chain {network}'s ceremony file, and this Mac's share is its committee"
+            );
+            Ok(())
         })(),
         Cmd::Shadow { from, to, network } => run_shadow(&from, to, network.as_deref()),
         Cmd::Status { rpc } => call(&rpc, "aether_status", json!([])).map(|v| println!("{}", pretty(&v))),
@@ -2772,6 +2864,43 @@ fn run_dkg(
 
 /// This validator's threshold share: from `<data>/threshold.json` (DKG) when
 /// present, else the devnet dealer's (insecure: the dealer knows every share).
+/// Audit 6: the one fail-closed bind every path to a consensus signature
+/// reaches — `aether node --network … --data …` (this gate, before anything
+/// starts), `aether run` (after adopt_network, over the adopted file) and
+/// verify-local (`aether mainnet-bind`). A devnet (no --network) and the
+/// legacy testnet chain pass through; a new genesis without the ceremony
+/// record refuses here, naming the operator step.
+fn bind_to_checked_genesis(network: Option<&str>, data: &str, ceremony: Option<&str>) {
+    let Some(network) = network else { return };
+    if let Err(e) = aether_node::mainnet::bind_data_dir(
+        std::path::Path::new(data),
+        std::path::Path::new(network),
+        ceremony.map(std::path::Path::new),
+    ) {
+        eprintln!("refusing to start: {e}");
+        std::process::exit(1);
+    }
+}
+
+/// `aether run`'s half of the audit 6 bind: adopt_network has put the network
+/// in `<data>/network.json` (or refused); bind that file — the one the
+/// supervisor will hand to `aether node` — to the ceremony record. A Mac with
+/// a threshold share gets the full signer's bind; a follower or candidate Mac
+/// (no share to vote with) is still bound to the record's half.
+fn bind_run_to_ceremony(dir: &std::path::Path, ceremony: Option<&str>) -> Result<(), String> {
+    let local = dir.join("network.json");
+    let bytes = std::fs::read(&local).map_err(|e| format!("cannot read {}: {e}", local.display()))?;
+    let file: aether_node::roster::NetworkFile = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("{} is not a network.json: {e}", local.display()))?;
+    if !aether_node::mainnet::new_genesis_chain(&file) {
+        return Ok(());
+    }
+    if dir.join("threshold.json").exists() {
+        return aether_node::mainnet::bind_data_dir(dir, &local, ceremony.map(std::path::Path::new));
+    }
+    aether_node::mainnet::bind_shareless_to_ceremony(&file, &bytes, dir, ceremony.map(std::path::Path::new))
+}
+
 fn committee_keys(
     data: &str,
     validators: &commonware_utils::ordered::Set<PublicKey>,
@@ -2809,29 +2938,11 @@ fn committee_keys(
                 || !aether_node::dkg::KeyFile::reveals_seated_share(&output, validators),
             "threshold.json reveals a seated player's threshold share; do not run consensus with this committee key"
         );
-        // Audit 5, A5-4: a validator votes only with the committee the final
-        // network.json carries. The running testnet (7780) keeps its legacy
-        // behavior; every other chain compares this Mac's threshold.json
-        // against the final file before consensus starts. The gate sits behind
-        // the new-genesis work (a reshare rewrites both files together), and
-        // it is a CLI-side check only — the consensus rules themselves do not
-        // change.
-        if chain_id != aether_node::mainnet::TESTNET_CHAIN_ID {
-            if let Ok(bytes) = std::fs::read(std::path::Path::new(data).join("network.json")) {
-                if let Ok(net) = serde_json::from_slice::<aether_node::roster::NetworkFile>(&bytes) {
-                    if net.chain_id == chain_id {
-                        if let Err(why) = aether_node::mainnet::local_share_matches_network(&file, &net) {
-                            eprintln!(
-                                "refusing to start: this Mac's threshold.json does not match {data}/network.json ({why}).\n\
-                                 Run scripts/mainnet-genesis.sh verify-local on this Mac, then use the final network.json \
-                                 the coordinator checked. Quit; do not vote under a committee key the final file does not carry."
-                            );
-                            std::process::exit(1);
-                        }
-                    }
-                }
-            }
-        }
+        // Audit 5 A5-4's threshold-vs-network.json comparison (and audit 6's
+        // A6-4 finding that its nesting here silently skipped on any missing
+        // file) moved to the one fail-closed bind at startup:
+        // bind_to_checked_genesis → mainnet::bind_data_dir, which every path
+        // to a signature reaches before this point.
         tracing::info!(identity = %file.identity, "committee key from DKG");
         return (output.players().clone(), output.public().clone(), share);
     }

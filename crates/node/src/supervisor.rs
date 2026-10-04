@@ -85,6 +85,10 @@ pub struct Supervisor {
     /// Explicit background reshare deadline. None derives it from the child
     /// protocol bound and the proposed player count.
     pub reshare_timeout: Option<Duration>,
+    /// The ceremony record the child validator binds to at startup (audit 6).
+    /// None falls back to `<data>/ceremony-check.json`, where verify-local
+    /// stores it.
+    pub ceremony: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -374,6 +378,9 @@ impl Supervisor {
                     "--rpc-port",
                     &self.rpc_port.to_string(),
                 ]);
+                if let Some(rec) = &self.ceremony {
+                    cmd.args(["--ceremony", &path_str(rec)]);
+                }
                 if let Some(peers) = self.tcp_peers(&NetworkFile::load(&net)?.validators, me.expect("a validator has its key"), false)
                 {
                     cmd.args(["--peers", &peers, "--offline"]);
@@ -1095,6 +1102,41 @@ pub fn adopt_network(data: &Path, network: Option<&Path>) -> Result<(), String> 
     let theirs = NetworkFile::load(src)?;
     if let Ok(current) = NetworkFile::load(&ours) {
         if current.chain_id == theirs.chain_id && current.identity == theirs.identity {
+            // Audit 6, A6-4: on a new-genesis chain, the same chain id and
+            // committee identity are NOT "the same network" — a local file
+            // whose immutable genesis differs is stale, and keeping it means
+            // voting under a genesis the ceremony did not check. Refuse until
+            // an operator reconciles it on purpose (verify-local with the
+            // coordinator's record, or move the old data aside). A reshare or
+            // handoff evolution of the SAME genesis (new round/output/epochs)
+            // adopts as before, and the legacy testnet id is out of scope.
+            if crate::mainnet::new_genesis_chain(&theirs) {
+                match (
+                    crate::mainnet::record_genesis_of(&current),
+                    crate::mainnet::record_genesis_of(&theirs),
+                ) {
+                    (Ok(a), Ok(b)) if a == b => {}
+                    (Ok(_), Ok(_)) => {
+                        return Err(format!(
+                            "the local network.json is a stale file of chain {}: its immutable \
+                             genesis (roster, registrar, rule flags, reserve) is not the one the \
+                             incoming file carries. Run scripts/mainnet-genesis.sh verify-local \
+                             with the coordinator's record, or move {} aside on purpose; do not \
+                             vote under a genesis the ceremony did not check",
+                            theirs.chain_id,
+                            ours.display()
+                        ));
+                    }
+                    (Err(why), _) | (_, Err(why)) => {
+                        return Err(format!(
+                            "the local network.json cannot be compared against the incoming \
+                             genesis ({why}): not a file a ceremony wrote. Move {} aside on \
+                             purpose and run verify-local with the coordinator's record",
+                            ours.display()
+                        ));
+                    }
+                }
+            }
             return Ok(());
         }
         let secs = std::time::SystemTime::now()
@@ -1284,6 +1326,64 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Audit 6, A6-4: on a new-genesis chain, a local network.json with the
+    /// same chain id and committee identity but a different immutable genesis
+    /// is stale — `aether run` refuses it (an operator reconciles on purpose),
+    /// instead of quietly voting under a genesis the ceremony did not check.
+    /// A reshare/handoff evolution of the SAME genesis (new round, output,
+    /// epochs) keeps adopting, and the legacy testnet id is out of scope.
+    #[test]
+    fn a_stale_local_genesis_is_reconciled_on_purpose_not_kept() {
+        let dir = std::env::temp_dir().join(format!("aether-adopt-stale-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("src.json");
+        let data = dir.join("data");
+        std::fs::create_dir_all(&data).unwrap();
+
+        // A new-genesis final file (history 2 + node rewards, a frozen opening
+        // roster) and a local file that differs only in one genesis field.
+        let mut genesis = file(7_801, "aa");
+        genesis.history = Some(2);
+        genesis.protocol = Some(3);
+        genesis.node_rewards = Some(true);
+        genesis.genesis_validators = Some(vec![Member { key: "01".into(), node: "node".into() }]);
+        assert!(crate::mainnet::new_genesis_chain(&genesis), "the fixture must be inside the new-genesis gate");
+        let mut stale = genesis.clone();
+        stale.registrar = Some("cd".repeat(32));
+
+        std::fs::write(&src, serde_json::to_vec(&genesis).unwrap()).unwrap();
+        adopt_network(&data, Some(&src)).unwrap(); // the first install
+        std::fs::write(&src, serde_json::to_vec(&stale).unwrap()).unwrap();
+        let err = adopt_network(&data, Some(&src)).unwrap_err();
+        assert!(err.contains("genesis"), "{err}");
+        assert_eq!(
+            NetworkFile::load(&data.join("network.json")).unwrap().registrar,
+            None,
+            "the stale local file is neither overwritten nor kept voting"
+        );
+
+        // A reshare evolution of the SAME pinned genesis still adopts.
+        let mut evolved = genesis.clone();
+        evolved.round = 3;
+        evolved.output = Some("cc".into());
+        evolved.epochs.push(crate::roster::EpochStart { height: 100, parent: "aa".into() });
+        std::fs::write(&src, serde_json::to_vec(&evolved).unwrap()).unwrap();
+        adopt_network(&data, Some(&src)).unwrap();
+
+        // The legacy testnet id is out of scope (its files predate genesis pinning).
+        let legacy_data = dir.join("legacy");
+        std::fs::create_dir_all(&legacy_data).unwrap();
+        std::fs::write(&src, serde_json::to_vec(&file(7_780, "aa")).unwrap()).unwrap();
+        adopt_network(&legacy_data, Some(&src)).unwrap();
+        let mut legacy_other = file(7_780, "aa");
+        legacy_other.registrar = Some("cd".repeat(32));
+        std::fs::write(&src, serde_json::to_vec(&legacy_other).unwrap()).unwrap();
+        adopt_network(&legacy_data, Some(&src)).unwrap();
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn sup(dir: &Path) -> Supervisor {
         Supervisor {
             exe: std::env::current_exe().unwrap(),
@@ -1295,6 +1395,7 @@ mod tests {
             follow_args: vec![],
             dev_peer_dir: None,
             reshare_timeout: Some(Duration::from_secs(1)),
+            ceremony: None,
         }
     }
 

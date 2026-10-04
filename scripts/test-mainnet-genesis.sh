@@ -25,7 +25,15 @@
 #      the untouched file (23 rules: 19 genesis + 4 final-file);
 #  11. verify-local refuses a threshold.json from another round (a validator
 #      must not vote under a committee the final file does not name) and
-#      passes on the matching one.
+#      passes with --ceremony on the matching one, storing the record in the
+#      data dir for `aether run`;
+#  12. audit 6 A6-3/A6-4 — the bind behind verify-local and node startup:
+#      no --ceremony is refused; a chain id swapped in transit (7801 -> 7802)
+#      is refused by both; node startup with no record names the operator
+#      step; a missing, malformed, other-chain or stale-genesis (same
+#      id+identity, another history) local network.json is refused, never
+#      skipped; a same-roster-same-round file with another output is refused
+#      by the digest; the matching Mac binds.
 # Usage: scripts/test-mainnet-genesis.sh   (env: AETHER_BIN, as in the tool)
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -234,10 +242,21 @@ if grep -q "output seats the genesis roster" "$WORK/last.out"; then ok "the refu
 else bad "the swapped-roster refusal does not name the seating rule"; fi
 
 echo "== 11. verify-local: this Mac's share must match the final file before voting"
-if "$G" verify-local "$WORK/final7801.json" --data "$WORK/dry/v2" > "$WORK/verify-ok.out" 2>&1; then
-  ok "verify-local passes on a validator's own threshold.json"
+# A validator Mac's data dir for chain 7801: this Mac's own DKG share plus the
+# final file as its network.json (the dry run's dirs are chain 7799; a 7801
+# record must not bind a 7799 local file).
+mkdir -p "$WORK/v7801"
+cp "$WORK/dry/v2/threshold.json" "$WORK/v7801/"
+cp "$WORK/final7801.json" "$WORK/v7801/network.json"
+if "$G" verify-local "$WORK/final7801.json" --data "$WORK/v7801" --ceremony "$WORK/ceremony-check.json" > "$WORK/verify-ok.out" 2>&1; then
+  ok "verify-local passes with the record (--ceremony) and this Mac's own share"
 else
   bad "verify-local failed on the matching share:"; sed 's/^/        /' "$WORK/verify-ok.out" | tail -8
+fi
+if grep -q "VERIFY-LOCAL PASS" "$WORK/verify-ok.out" && [ -f "$WORK/v7801/ceremony-check.json" ]; then
+  ok "the record is stored in the data dir (aether run binds to it on its next start)"
+else
+  bad "verify-local did not pass cleanly or did not store the record in the data dir"
 fi
 python3 - "$WORK/dry/v1/threshold.json" "$WORK/mismatch-dir" <<'PY'
 import json, os, sys
@@ -247,10 +266,83 @@ t = json.load(open(src))
 t["round"] += 1               # a stale round: the committee the final file does not name
 json.dump(t, open(os.path.join(dst, "threshold.json"), "w"), indent=2)
 PY
-expect_fail "verify-local refuses a share from another round" "$G" verify-local "$WORK/final7801.json" --data "$WORK/mismatch-dir"
+cp "$WORK/final7801.json" "$WORK/mismatch-dir/network.json"
+expect_fail "verify-local refuses a share from another round" "$G" verify-local "$WORK/final7801.json" --data "$WORK/mismatch-dir" --ceremony "$WORK/ceremony-check.json"
 if grep -q "round" "$WORK/last.out"; then ok "the refusal names the round mismatch"
 else bad "the mismatch refusal does not name the round"; fi
-expect_fail "verify-local refuses the rehearsal chain id too" "$G" verify-local "$NET" --data "$WORK/dry/v1"
+expect_fail "verify-local refuses the rehearsal chain id too" "$G" verify-local "$NET" --data "$WORK/dry/v1" --ceremony "$WORK/dry/v1/ceremony-check.json"
+
+echo "== 12. audit 6 A6-3/A6-4: no validator votes from a genesis the ceremony did not check"
+# (a) --ceremony is required: the expected chain id comes from the record,
+#     never from the file being verified.
+expect_fail "verify-local without --ceremony is refused" "$G" verify-local "$WORK/final7801.json" --data "$WORK/v7801"
+if grep -q -- "--ceremony" "$WORK/last.out"; then ok "the refusal names the missing --ceremony record"
+else bad "the no-record refusal does not name --ceremony"; fi
+# (b) a chain id swapped in transit (7801 -> 7802): a self-derived id accepted
+#     the swapped file; the record's pinned id refuses it.
+python3 - "$WORK/final7801.json" "$WORK/swapped7802.json" <<'PY'
+import json, sys
+n = json.load(open(sys.argv[1]))
+n["chain_id"] = 7802
+json.dump(n, open(sys.argv[2], "w"), indent=2)
+PY
+expect_fail "verify-local refuses a chain id swapped in transit" "$G" verify-local "$WORK/swapped7802.json" --data "$WORK/v7801" --ceremony "$WORK/ceremony-check.json"
+if grep -q "^FAIL  chain id" "$WORK/last.out"; then ok "the strict check fails the swapped id (pinned by the record)"
+else bad "the transit-swap refusal does not fail the chain id rule"; fi
+expect_fail "the node's own startup bind refuses the swapped file" "$A" mainnet-bind --network "$WORK/swapped7802.json" --data "$WORK/v7801" --ceremony "$WORK/ceremony-check.json"
+if grep -q "7801" "$WORK/last.out" && grep -q "7802" "$WORK/last.out" && grep -q "ceremony" "$WORK/last.out"; then
+  ok "the refusal names both chains and the record (A6-3)"
+else bad "the transit-swap refusal does not name the record-pinned chain"; fi
+# (c) node startup on a new genesis with no record anywhere: the operator step.
+mkdir -p "$WORK/bare7801"
+expect_fail "node startup refuses a new genesis with no ceremony record" "$A" node --network "$WORK/final7801.json" --data "$WORK/bare7801" --port 0 --rpc-port 0
+if grep -q "refusing to start" "$WORK/last.out" && grep -q "verify-local" "$WORK/last.out"; then
+  ok "the startup refusal names the operator step (verify-local --ceremony)"
+else bad "the startup refusal does not explain the operator step"; fi
+# (d) this Mac's local files, against the same record: missing, malformed,
+#     another chain, a stale genesis — each refused, never skipped (A6-4).
+mkdir -p "$WORK/no-local-net"; cp "$WORK/dry/v2/threshold.json" "$WORK/no-local-net/"
+expect_fail "the bind refuses a missing local network.json" "$A" mainnet-bind --network "$WORK/final7801.json" --data "$WORK/no-local-net" --ceremony "$WORK/ceremony-check.json"
+if grep -q "network.json" "$WORK/last.out"; then ok "the refusal names the missing local network.json"
+else bad "the missing-local refusal does not name network.json"; fi
+mkdir -p "$WORK/torn-local-net"; cp "$WORK/dry/v2/threshold.json" "$WORK/torn-local-net/"; printf '{torn write' > "$WORK/torn-local-net/network.json"
+expect_fail "the bind refuses a malformed local network.json" "$A" mainnet-bind --network "$WORK/final7801.json" --data "$WORK/torn-local-net" --ceremony "$WORK/ceremony-check.json"
+python3 - "$WORK/final7801.json" "$WORK/local7802.json" <<'PY'
+import json, sys
+n = json.load(open(sys.argv[1]))
+n["chain_id"] = 7802           # this Mac's local file is from another chain
+json.dump(n, open(sys.argv[2], "w"), indent=2)
+PY
+mkdir -p "$WORK/other-chain"; cp "$WORK/dry/v2/threshold.json" "$WORK/other-chain/"; cp "$WORK/local7802.json" "$WORK/other-chain/network.json"
+expect_fail "the bind refuses a local network.json of another chain" "$A" mainnet-bind --network "$WORK/final7801.json" --data "$WORK/other-chain" --ceremony "$WORK/ceremony-check.json"
+if grep -q "7802" "$WORK/last.out" && grep -q "chain" "$WORK/last.out"; then ok "the refusal names the other chain"
+else bad "the other-chain refusal does not name the chain"; fi
+python3 - "$WORK/final7801.json" "$WORK/stale-genesis.json" <<'PY'
+import json, sys
+n = json.load(open(sys.argv[1]))
+n["history"] = 1               # same id and committee identity, an older rule set
+json.dump(n, open(sys.argv[2], "w"), indent=2)
+PY
+mkdir -p "$WORK/stale-genesis"; cp "$WORK/dry/v2/threshold.json" "$WORK/stale-genesis/"; cp "$WORK/stale-genesis.json" "$WORK/stale-genesis/network.json"
+expect_fail "the bind refuses a stale local genesis (same id+identity, another history)" "$A" mainnet-bind --network "$WORK/final7801.json" --data "$WORK/stale-genesis" --ceremony "$WORK/ceremony-check.json"
+if grep -q "stale" "$WORK/last.out"; then ok "the refusal calls the file stale, not 'the same network' (A6-4)"
+else bad "the stale-genesis refusal does not say stale"; fi
+# (e) same roster and round, a different committee output: the digest refuses.
+python3 - "$WORK/final7801.json" "$WORK/other-output.json" <<'PY'
+import json, sys
+n = json.load(open(sys.argv[1]))
+n["output"] = "ab" * 48
+json.dump(n, open(sys.argv[2], "w"), indent=2)
+PY
+expect_fail "the bind refuses an output the coordinator did not check" "$A" mainnet-bind --network "$WORK/other-output.json" --data "$WORK/v7801" --ceremony "$WORK/ceremony-check.json"
+if grep -q "digest" "$WORK/last.out"; then ok "the refusal names the digest (not the bytes the check passed)"
+else bad "the other-output refusal does not name the digest"; fi
+# (f) and the matching Mac binds — the same call the node makes at startup.
+if "$A" mainnet-bind --network "$WORK/final7801.json" --data "$WORK/v7801" --ceremony "$WORK/ceremony-check.json" > "$WORK/bind-ok.out" 2>&1; then
+  ok "the matching Mac binds (aether mainnet-bind = the node's startup gate)"
+else
+  bad "the matching Mac failed to bind:"; sed 's/^/        /' "$WORK/bind-ok.out" | tail -6
+fi
 
 echo
 echo "==================== test results ===================="

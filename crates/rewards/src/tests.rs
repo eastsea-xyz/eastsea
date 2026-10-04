@@ -505,6 +505,48 @@ fn a_slot_opens_after_its_block_for_a_window_and_is_answered_once() {
     assert_eq!(beacons::beacon(&s, 0).answered(2), 0);
 }
 
+/// The 2026-10-04 rehearsal ran 40-block epochs: `layout` gives each slot an
+/// answer window of a single block, and a busy candidate Mac (a few hundred
+/// milliseconds behind the validators' proposals) loses almost every answer
+/// through no fault of its own — two Macs answered 11-12 of 12 slots an epoch
+/// for twenty epochs and were paid for four. The mainnet's hour-long epochs
+/// open a ninety-block window, so this is the rehearsal's shape, not the
+/// network's; the test pins what the loss is: no catch-up, ever.
+#[test]
+fn an_answer_that_missed_its_window_pays_nothing_and_no_epoch_revisits_it() {
+    // (segment, window, span): forty blocks fit twelve slots only just.
+    assert_eq!(beacons::layout(40), Some((3, 1, 1)), "the rehearsal's one-block window");
+    assert_eq!(beacons::layout(3_600), Some((300, 90, 209)), "the mainnet's ninety-block one");
+    let mut s = WorldState::default();
+    registry::predeploy(&mut s, ([1; 32], [2; 32]), Params { epoch_blocks: 40, min_streak: 0, draw_epochs: 1 }).unwrap();
+    enable(&mut s);
+    enroll(&mut s, 0, operator(0), 0);
+    let c = registry::candidates(&s)[0].clone();
+    blocks(&mut s, 1, 41); // h 40: epoch 1 opens, slot 0 drawn at 41 (span 1: deterministic)
+    blocks(&mut s, 41, 43); // h 42 records slot 0's hash and draws slot 1 at 44
+    // The one in-time answer: block 42 is slot 0's whole window.
+    let due = beacons::check(&s, 42, &c, 0).unwrap();
+    beacons::record(&mut s, &c, &due, false);
+    // Slot 1's window is block 45 alone; a Mac a block late finds it shut —
+    // the exact refusal the rehearsal's candidate logs carry.
+    blocks(&mut s, 43, 46);
+    assert_eq!(beacons::check(&s, 46, &c, 1).unwrap_err(), "slot 1 is not open at height 46");
+    // The epoch ends with ten more slots answered on time by nobody.
+    blocks(&mut s, 46, 80);
+    let d = distribute(&mut s, 80).unwrap();
+    assert_eq!(d.epoch, 1);
+    assert_eq!(beacons::beacon(&s, 0).answered(1), 1);
+    let one_slot = d.pool * U256::from(WARMUP_STEPS) / U256::from(MAX_SHARE * FULL);
+    assert_eq!(d.paid, vec![(operator(0), one_slot)], "one of twelve slots: pool·14/5376");
+    assert_eq!(s.balance(&operator(0)), one_slot);
+    assert_eq!(d.unminted, d.pool - one_slot, "the eleven missed slots' share is never minted");
+    // The next epoch pays only its own answers: nothing comes back for epoch 1.
+    blocks(&mut s, 81, 120);
+    let d2 = distribute(&mut s, 120).unwrap();
+    assert!(d2.paid.is_empty(), "no epoch revisits a missed one");
+    assert_eq!(s.balance(&operator(0)), one_slot, "the balance never moves again");
+}
+
 #[test]
 fn liveness_from_answers_follows_the_contracts_grace_rule() {
     let mut s = slot_network();

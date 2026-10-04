@@ -24,6 +24,18 @@ aether shadow --from "$ARCHIVE_RPC" --to "$FINALIZED_HEIGHT"
 
 매 블록의 상태 루트를 원본의 블록 요약과 대조하고, 거래 순서대로 직렬화한 영수증의 BLAKE3 다이제스트도 대조한다. 이 **영수증 다이제스트는 재실행 검사값**이며 현재 블록 형식에 온체인 영수증 루트는 없다. 첫 불일치에서 높이·필드·양쪽 값을 출력하고 0이 아닌 코드로 끝난다. 업그레이드 전에 이 검사와 `scripts/mainnet-rehearsal.sh`가 모두 PASS여야 한다.
 
+## 스크립트로 하는 세레머니 (Ceremony with the script)
+
+아래 1~3단계(키 세레머니 → network.json → 제네시스 DKG)와 DKG 후 검사는 `scripts/mainnet-genesis.sh`가 그대로 안내한다. 손으로 하기 전에 `scripts/mainnet-genesis.sh --dry-run`으로 한 Mac에서 전 과정을 먼저 예행한다(일회용 키 — REHEARSAL, not a launch file; `--rehearsal`은 오직 이 모드에서만 쓴다). 수순:
+
+1. **검증자 Mac 4대, 각각**: `scripts/mainnet-genesis.sh keys` — 이 Mac의 검증자 신원을 만들고 공개 항목만 출력한다. **`validator.pub.json` 하나만** 코디네이터(검증자 1 Mac)로 복사한다.
+2. **창업자 Mac**: `scripts/reserve-keys.sh init`(아래 1단계) — 공개 항목 3개를 코디네이터로 복사한다.
+3. **코디네이터**: `scripts/mainnet-genesis.sh assemble --chain-id <새 체인 아이디> --registrar <서명 Mac의 x‖y hex> --reserve-operator <창업자 주소> --reserve <예비 pub>×3 --validator <검증자 pub>×4` — 입력을 전부 검증하고(hex 형식·검증자 4개 상이·예비 키≠검증자 키·P-256 등록기 점) 공표 정책(protocol 3, history 2, node rewards, registry v3, 타이밍 3600/24/24는 기본값 그대로)으로 genesis.json을 만들어 규칙 검사까지 돌린다. 리허설 전용 값(`--epoch-blocks`·`--dev-registrar`·체인 아이디 7780/7799)은 거부한다.
+4. **검증자 Mac 4대, 동시에**: genesis.json을 각 Mac으로 복사해(공개 파일 — 어디로든) 아래 3단계의 `aether dkg`를 각자 자기 `--data` 디렉터리로 실행한다.
+5. **코디네이터**: 검증자 1이 DKG 후 쓴 `network.json`으로 `scripts/mainnet-genesis.sh check <network.json> --chain-id <아이디>` — strict `aether mainnet-rules`(`--rehearsal` 절대 없음)와 최종 파일의 제네시스 플래그를 PASS/FAIL 목록으로 검사한다(실패가 하나라도 있으면 0이 아닌 코드). 최종 network.json도 공개 파일이다(지갑·노드가 쓰는 바로 그 파일).
+
+**절대 복사하지 않는 것**: 각 Mac의 `validator.key`·`node-account.key`·DKG 후의 `threshold.json`(모두 모드 600, 만든 Mac에만 둔다). 코디네이터 디렉터리에는 공개 파일만 있어야 한다. `scripts/test-mainnet-genesis.sh`가 이 규칙 전부 — 변조 파일 거부·중복 검증자 키 거부·리허설 값 거부·코디네이터 비밀 누출 없음 — 를 자동 검사한다.
+
 ## 1. 키 세레머니
 
 | 무엇 | 어디서 | 비고 |
@@ -40,7 +52,7 @@ dev 계정(1–10번)은 메인넷 제네시스에서 잔액이 0이다(사전 �
 
 ## 2. network.json
 
-검증자 1번 Mac에서(공개 항목들을 모아; `--registrar`에 넣을 등록기 공개키 hex는 서명 전용 Mac에서 `aether registrar-key --data <dir>`가 출력한 값을 옮겨 적는다):
+검증자 1번 Mac에서(공개 항목들을 모아; `--registrar`에 넣을 등록기 공개키 hex는 서명 전용 Mac에서 `aether-registrar-signer public`이 출력한 x‖y hex를 옮겨 적는다 — 파일 키 `aether registrar-key`는 개발망·예행연습용이다):
 
 ```bash
 aether network \
@@ -58,7 +70,7 @@ aether network \
 ```
 
 - `--faucet`을 주지 않는다: 이 네트워크에는 사전 발행이 없고, 모든 토큰이 발행(보상)으로만 나온다.
-- `--protocol 3`은 제네시스부터 프로토콜 3 규칙(증명 시장, registry v2·에포크당 등록 상한, 16석 증가 추첨)을 켠다. 메인넷은 증명 보상 없이 열리지 않으므로 이 값은 생략하지 않는다(15-node-rewards "구현 순서" 2번: 메인넷은 제네시스부터 이 규칙, 업그레이드 불필요). 7780에는 이 필드가 없다(프로토콜 1 제네시스, 업그레이드로 2·3 도입 — 제네시스가 바뀌지 않는다).
+- `--protocol 3`은 제네시스부터 프로토콜 3 규칙(증명 시장, registry v3·에포크당 등록 상한, 16석 증가 추첨)을 켠다. 메인넷은 증명 보상 없이 열리지 않으므로 이 값은 생략하지 않는다(15-node-rewards "구현 순서" 2번: 메인넷은 제네시스부터 이 규칙, 업그레이드 불필요). 7780에는 이 필드가 없다(프로토콜 1 제네시스, 업그레이드로 2·3 도입 — 제네시스가 바뀌지 않는다).
 - `--history 2`는 새 제네시스에서만 유효하다(7780에는 없다). 빈 블록이 조용해지고 era 파일·30일 프루닝이 기본이 된다.
 - epoch_blocks/min_streak/draw_epochs는 기본값(3600/24/24)을 그대로 쓴다. 리허설에서 줄여 본 것은 시간 단축용 값이다.
 
@@ -74,7 +86,7 @@ aether network \
 |---|---|
 | protocol from genesis | 높이 1의 프로토콜이 이 바이너리의 최신(지금 3)이다 |
 | proof market | 첫 블록부터 statement 기록·증명 지급이 살아 있다 (프로토콜 2) |
-| registry v2 | 등록기 컨트랙트가 v2 코드로 시작한다 |
+| registry v3 | 등록기 컨트랙트가 v3 코드로 시작한다 |
 | registration cap | 에포크당 신규 등록 상한(16)이 온체인에 있다 |
 | 16-seat growth | 검증자 증가 추첨이 16석까지 자란다 (프로토콜 3) |
 | node rewards | 노드 보상이 첫 블록부터 분배된다 |

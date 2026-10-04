@@ -1,25 +1,15 @@
-/* EastSea — site v2 "Tide Tables"
-   Fonts: Pretendard (KR+Latin body/heading), EB Garamond Italic (EN display h1)
+/* EastSea — site v2 "Tide Tables" R3
+   Font: EB Garamond Italic 24 KB (EN display h1 only).
+   Body/headings: system Korean stack — Apple SD Gothic Neo / Noto Sans KR / system-ui.
    No CDN, no third-party requests at runtime, no build step.
-   Palette: parchment cream / deep-sea navy / doubloon gold / teal.
+   Palette: parchment cream #f5f0e8 / deep-sea navy #0e1929 / gold #c9962e / teal #0d6e6a.
    WCAG AA throughout. */
 
 /* ---------- 0 · Fonts ---------- */
+/* Pretendard removed (1.5 MB) — audience is Apple silicon Mac users,
+   system Korean stack renders beautifully without custom fonts.
+   Only EB Garamond Italic (24 KB) is loaded for the EN display h1. */
 
-@font-face {
-  font-family: 'Pretendard';
-  src: url('fonts/Pretendard-Regular.woff2') format('woff2');
-  font-weight: 400;
-  font-style: normal;
-  font-display: swap;
-}
-@font-face {
-  font-family: 'Pretendard';
-  src: url('fonts/Pretendard-Bold.woff2') format('woff2');
-  font-weight: 700;
-  font-style: normal;
-  font-display: swap;
-}
 @font-face {
   font-family: 'EBGaramond';
   src: url('fonts/EBGaramond-Italic.woff2') format('woff2');
@@ -33,10 +23,10 @@
 :root {
   /* Tide Tables — light */
   --bg:        #f5f0e8;   /* old parchment */
-  --bg-raise:  #fdfaf4;   /* card lift */
-  --tint:      #eae5d9;   /* tinted sections */
-  --ink:       #16293a;   /* deep navy ink — 11.4:1 on --bg */
-  --ink-soft:  #4a5c6e;   /* secondary — 5.4:1 on --bg */
+  --bg-raise:  #fdfaf4;
+  --tint:      #eae5d9;
+  --ink:       #16293a;   /* 11.4:1 on --bg */
+  --ink-soft:  #4a5c6e;   /* 5.4:1 on --bg */
   --line:      #d4ccb6;
 
   /* Hero panel */
@@ -46,11 +36,10 @@
   --hero-soft: #a8c0d0;   /* 4.6:1 on --navy */
 
   /* 3-token accents */
-  --gold:      #c9962e;   /* coin / warm accent */
-  --teal:      #0d6e6a;   /* sea / CTA */
-  --amber:     #e2a94f;   /* hover glow, dark mode gold */
+  --gold:      #c9962e;
+  --teal:      #0d6e6a;
+  --amber:     #e2a94f;
 
-  /* Derived */
   --coin-rim:  #a06818;
   --gold-ink:  #7a5410;   /* 4.8:1 on --bg */
   --btn-gold:  #d4a038;
@@ -63,10 +52,14 @@
   --gutter: 16px;
   --maxw:   68rem;
 
-  --font-body:       'Pretendard', -apple-system, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif;
+  /* System Korean + Latin — no @font-face download, zero extra KB */
+  --font-body: 'Apple SD Gothic Neo', 'AppleSDGothicNeo', 'Noto Sans KR',
+               'Malgun Gothic', system-ui, -apple-system, sans-serif;
+
+  /* EB Garamond italic — EN h1 only */
   --font-en-display: 'EBGaramond', Georgia, 'Times New Roman', serif;
 
-  /* legacy alias used in inline SVG brand-mark */
+  /* legacy alias for inline SVG brand-mark */
   --navy-deep: #0e1929;
 }
 
@@ -100,9 +93,8 @@
   }
 }
 
-/* Manual theme override (JS toggle sets data-theme) */
-:root[data-theme="light"]  { color-scheme: light; }
-:root[data-theme="dark"]   { color-scheme: dark; }
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"]  { color-scheme: dark; }
 
 /* ---------- 2 · Base ---------- */
 
@@ -122,16 +114,27 @@ body {
 
 img, svg { max-width: 100%; }
 
+/* Korean word-break: keep syllable blocks intact, balance line lengths */
 h1, h2, h3 {
   line-height: 1.2;
   margin: 0 0 .5em;
   font-family: var(--font-body);
   font-weight: 700;
   letter-spacing: -.02em;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
 }
+
 h2 { font-size: clamp(1.55rem, 1rem + 2.6vw, 2.4rem); }
 h3 { font-size: 1.08rem; }
-p  { margin: 0 0 1em; }
+
+p {
+  margin: 0 0 1em;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
 
 a { color: var(--teal); text-underline-offset: 3px; }
 a:hover { color: var(--gold-ink); }
@@ -202,28 +205,41 @@ html:lang(en) .ko { display: none; }
 /* ---------- 6 · Hero ---------- */
 
 .hero {
-  position: relative; overflow: hidden;
+  position: relative;
+  overflow: visible; /* coin can overlap wave divider */
   background: var(--navy);
   color: var(--hero-ink);
 }
 
-/* Warm amber ambient glow behind the coin */
+/* Warm amber ambient glow behind coin */
 .hero::before {
   content: '';
   position: absolute; inset: 0; z-index: 0;
   background: radial-gradient(
-    ellipse 58% 72% at 72% 44%,
-    rgba(201,150,46,.13) 0%,
-    rgba(201,150,46,.04) 45%,
-    transparent 68%
+    ellipse 60% 80% at 68% 40%,
+    rgba(201,150,46,.16) 0%,
+    rgba(201,150,46,.05) 50%,
+    transparent 72%
   );
   pointer-events: none;
 }
 
+/* Mobile default: flex-column, coin above headline via order: -1 */
 .hero-grid {
   position: relative; z-index: 2;
-  display: grid; gap: 1.5rem;
-  padding-block: clamp(2.8rem, 7vw, 5rem) clamp(5.8rem, 13vw, 9.5rem);
+  display: flex;
+  flex-direction: column;
+  padding-block: clamp(2rem, 5vw, 3.5rem) clamp(5rem, 12vw, 9rem);
+}
+
+/* hero-art order: -1 puts coin before copy in DOM-visual order on mobile */
+.hero-art {
+  order: -1;
+  position: relative;
+  display: flex; align-items: center; justify-content: center;
+  z-index: 4;
+  padding-top: .4rem;
+  padding-bottom: 2rem;
 }
 
 .hero-kicker {
@@ -231,6 +247,7 @@ html:lang(en) .ko { display: none; }
   font-weight: 700; font-size: .76rem;
   letter-spacing: .11em; text-transform: uppercase;
   margin-bottom: 1.2rem;
+  word-break: keep-all;
 }
 
 /* EB Garamond italic for English display headline */
@@ -239,12 +256,13 @@ html:lang(en) #hero-title {
   font-style: italic;
   font-weight: 400;
   letter-spacing: -.01em;
+  word-break: normal; /* EN: normal word-break */
+  text-wrap: balance;
 }
 
 .hero h1 {
   font-size: clamp(2rem, 1.1rem + 5.5vw, 3.9rem);
   margin-bottom: 1.1rem;
-  text-wrap: balance;
   color: var(--hero-ink);
 }
 
@@ -267,50 +285,58 @@ html:lang(en) #hero-title {
   font-size: .81rem;
   font-weight: 600;
   margin-bottom: 1.8rem;
+  word-break: keep-all;
 }
 
 .hero-cta { display: flex; flex-wrap: wrap; gap: .7rem; margin: 0; }
 
 /* ---------- 7 · Coin image ---------- */
 
-.hero-art {
-  position: relative;
-  display: flex; align-items: center; justify-content: center;
-  min-height: 11rem;
-}
-
 .coin-img {
   display: block;
   position: relative; z-index: 2;
-  width: clamp(9rem, 38vw, 14.5rem);
+  /* 360px: 78vw centred; 640px: 50vw; 900px+: up to 520px */
+  width: clamp(14rem, 78vw, 32.5rem);
   height: auto;
-  filter: drop-shadow(0 14px 36px rgba(201,150,46,.4))
-          drop-shadow(0  3px  8px rgba(7,14,24,.7));
+  /* Bright warm gold glow — no darkening filter */
+  filter:
+    drop-shadow(0 0 48px rgba(240,200,90,.6))
+    drop-shadow(0 8px 28px rgba(201,150,46,.5))
+    drop-shadow(0 24px 64px rgba(201,150,46,.25))
+    drop-shadow(0 4px 10px rgba(7,14,24,.4));
 }
 
-/* Ambient radial glow behind the coin */
+/* Ambient radial glow behind coin */
 .coin-glow {
   position: absolute;
-  width: 88%; aspect-ratio: 1;
+  width: 90%; aspect-ratio: 1;
   border-radius: 50%;
   background: radial-gradient(
     circle,
-    rgba(232,199,117,.18) 0%,
-    rgba(201,150,46,.07) 45%,
-    transparent 70%
+    rgba(240,215,110,.24) 0%,
+    rgba(201,150,46,.1)   45%,
+    transparent           72%
   );
   z-index: 1;
   pointer-events: none;
 }
 
-/* Wave divider */
+/* Wave divider — lower z-index so coin can overlap */
 .hero-waves {
   position: absolute; left: 0; right: 0; bottom: -1px;
   width: 100%; height: clamp(4rem, 11vw, 9rem);
-  z-index: 3; display: block;
+  z-index: 2;
+  display: block;
 }
+
 .hero-waves .w1 { fill: color-mix(in srgb, var(--teal) 18%, var(--navy)); }
 .hero-waves .w2 { fill: var(--bg); }
+
+/* Dark mode: teal edge on wave */
+@media (prefers-color-scheme: dark) {
+  .hero-waves .w1 { fill: color-mix(in srgb, #6fcfc5 30%, #070e18); }
+  .hero-waves .w2 { fill: #0b1622; }
+}
 
 /* ---------- 8 · Buttons ---------- */
 
@@ -322,10 +348,7 @@ html:lang(en) #hero-title {
   text-decoration: none;
   border: 2px solid transparent;
 }
-.btn-primary {
-  background: var(--btn-gold);
-  color: var(--btn-ink);
-}
+.btn-primary { background: var(--btn-gold); color: var(--btn-ink); }
 .btn-primary:hover { filter: brightness(1.07); color: var(--btn-ink); }
 .btn-ghost {
   border-color: rgba(111,207,197,.55);
@@ -338,7 +361,8 @@ html:lang(en) #hero-title {
 
 /* ---------- 9 · Sections ---------- */
 
-.section { padding-block: clamp(3rem, 8vw, 5.8rem); }
+/* Generous breathing room between sections */
+.section { padding-block: clamp(4.5rem, 10vw, 7.5rem); }
 .section-tint { background: var(--tint); }
 
 .kicker {
@@ -348,43 +372,61 @@ html:lang(en) #hero-title {
   margin-bottom: .5rem;
 }
 
-.section h2 { margin-bottom: 1.5rem; }
+.section h2 { margin-bottom: 2rem; }
 
 .lede {
   max-width: 46rem;
   font-size: 1.01rem;
   color: var(--ink);
   line-height: 1.74;
-  margin-bottom: 2rem;
+  margin-bottom: 2.2rem;
+}
+
+/* Pull-quote: Garamond italic in EN, bold system KR */
+.pull-quote {
+  font-family: var(--font-en-display);
+  font-style: italic;
+  font-weight: 400;
+  font-size: clamp(1.25rem, .9rem + 1.8vw, 1.8rem);
+  color: var(--ink-soft);
+  line-height: 1.4;
+  max-width: 38rem;
+  margin: 2.8rem 0;
+  padding-left: 1.5rem;
+  border-left: 3px solid var(--gold);
+}
+html:lang(ko) .pull-quote {
+  font-family: var(--font-body);
+  font-style: normal;
+  font-weight: 600;
+  font-size: clamp(1.1rem, .85rem + 1.4vw, 1.5rem);
+  letter-spacing: -.02em;
 }
 
 /* ---------- 10 · Benefits ---------- */
 
 .benefit-grid {
   display: grid;
-  gap: 1.8rem 3rem;
-  margin-top: 2.4rem;
+  gap: 2.6rem 3.2rem;
+  margin-top: 3rem;
 }
 
 .benefit { display: flex; flex-direction: column; }
 
 .benefit .icon {
-  width: 34px; height: 34px;
-  color: var(--teal); margin-bottom: .9rem;
+  width: 40px; height: 40px;
+  margin-bottom: 1.1rem;
   flex-shrink: 0;
 }
-.benefit:nth-child(2) .icon { color: var(--ink-soft); }
-.benefit:nth-child(3) .icon { color: var(--gold); }
-.benefit:nth-child(4) .icon { color: var(--teal); }
 
-.benefit h3 { margin-bottom: .5rem; font-size: 1.04rem; }
-.benefit p  { color: var(--ink-soft); margin: 0; line-height: 1.64; }
+.benefit h3 { margin-bottom: .55rem; font-size: 1.05rem; }
+.benefit p  { color: var(--ink-soft); margin: 0; line-height: 1.66; }
 
 /* ---------- 11 · Rewards ---------- */
 
 .rule-list {
-  list-style: none; margin: 0 0 2.4rem; padding: 0;
-  display: grid; gap: 1.6rem;
+  list-style: none; margin: 0 0 2.6rem; padding: 0;
+  display: grid; gap: 1.9rem;
 }
 .rule-list li {
   border-left: 3px solid var(--gold);
@@ -393,7 +435,7 @@ html:lang(en) #hero-title {
 .rule-list h3 { margin-bottom: .3rem; font-size: 1.04rem; }
 .rule-list p  { color: var(--ink-soft); margin: 0; line-height: 1.64; }
 
-.table-wrap { margin: 0 0 1.8rem; overflow-x: auto; }
+.table-wrap { margin: 0 0 2rem; overflow-x: auto; }
 
 table {
   border-collapse: collapse; width: 100%; max-width: 34rem;
@@ -421,7 +463,7 @@ tbody th { font-weight: 700; white-space: nowrap; }
   max-width: 46rem;
   border: 1px dashed var(--line);
   border-radius: 12px;
-  padding: 1.1rem 1.25rem;
+  padding: 1.2rem 1.4rem;
   background: var(--bg-raise);
 }
 .honest-box p {
@@ -432,7 +474,7 @@ tbody th { font-weight: 700; white-space: nowrap; }
 
 .check-list {
   list-style: none; margin: 0; padding: 0;
-  display: grid; gap: 1.1rem;
+  display: grid; gap: 1.4rem;
 }
 .check-list li {
   position: relative; padding-left: 2.2rem;
@@ -457,7 +499,7 @@ tbody th { font-weight: 700; white-space: nowrap; }
   background: var(--bg-raise);
   border: 1px solid var(--line);
   border-radius: 16px;
-  padding: 1.7rem 1.5rem;
+  padding: 1.8rem 1.6rem;
   box-shadow: var(--shadow-sm);
 }
 .platform .icon { width: 34px; height: 34px; color: var(--teal); margin-bottom: .75rem; }
@@ -479,7 +521,7 @@ tbody th { font-weight: 700; white-space: nowrap; }
 
 /* ---------- 14 · FAQ ---------- */
 
-.faq { display: grid; gap: .8rem; max-width: 46rem; }
+.faq { display: grid; gap: .9rem; max-width: 46rem; }
 
 details {
   background: var(--bg-raise);
@@ -500,8 +542,8 @@ summary::after {
   font-size: 1.5rem; font-weight: 400; line-height: 1;
   color: var(--teal);
 }
-details[open] summary::after  { content: '–'; }
-details[open] summary         { border-bottom: 1px solid var(--line); }
+details[open] summary::after { content: '–'; }
+details[open] summary        { border-bottom: 1px solid var(--line); }
 details p {
   padding: .95rem 1.2rem 1.1rem; margin: 0;
   color: var(--ink-soft); line-height: 1.66;
@@ -529,37 +571,37 @@ details p {
 
   html { scroll-behavior: smooth; }
 
-  /* Coin sinusoidal float — 4s period, small amplitude */
+  /* Coin sinusoidal float — 4.5s period */
   .coin-img {
-    animation: coin-float 4s cubic-bezier(0.37, 0, 0.63, 1) infinite alternate;
+    animation: coin-float 4.5s cubic-bezier(0.37, 0, 0.63, 1) infinite alternate;
   }
   @keyframes coin-float {
-    from { transform: translateY(-6px); }
-    to   { transform: translateY(6px); }
+    from { transform: translateY(-9px); }
+    to   { transform: translateY(9px);  }
   }
 
-  /* Ambient glow breathes with coin */
+  /* Ambient glow breathes */
   .coin-glow {
-    animation: glow-pulse 4s cubic-bezier(0.37, 0, 0.63, 1) infinite alternate;
+    animation: glow-pulse 4.5s cubic-bezier(0.37, 0, 0.63, 1) infinite alternate;
   }
   @keyframes glow-pulse {
-    from { opacity: .55; transform: scale(.9); }
-    to   { opacity: 1;   transform: scale(1.08); }
+    from { opacity: .48; transform: scale(.87); }
+    to   { opacity: 1;   transform: scale(1.12); }
   }
 
-  /* Single slow light sweep — tasteful, once per 8s */
+  /* Slow light sweep across coin — 8s cycle */
   .hero-art::after {
     content: '';
     position: absolute; z-index: 3; pointer-events: none;
-    width: 36%; aspect-ratio: 1; border-radius: 50%;
-    background: radial-gradient(circle, rgba(255,255,255,.12) 0%, transparent 70%);
+    width: 40%; aspect-ratio: 1; border-radius: 50%;
+    background: radial-gradient(circle, rgba(255,255,255,.16) 0%, transparent 70%);
     animation: coin-sweep 8s ease-in-out infinite;
   }
   @keyframes coin-sweep {
-    0%   { opacity: 0; transform: translate(-25%, -10%) scale(.75); }
-    20%  { opacity: 1; transform: translate( 10%,   5%) scale(1);   }
-    45%  { opacity: 0; transform: translate( 30%,  22%) scale(.85); }
-    100% { opacity: 0; transform: translate(-25%, -10%) scale(.75); }
+    0%   { opacity: 0; transform: translate(-28%, -12%) scale(.72); }
+    22%  { opacity: 1; transform: translate( 10%,   5%) scale(1);   }
+    48%  { opacity: 0; transform: translate( 32%,  24%) scale(.82); }
+    100% { opacity: 0; transform: translate(-28%, -12%) scale(.72); }
   }
 
   .btn, #lang-toggle, summary::after {
@@ -572,22 +614,35 @@ details p {
 @media (min-width: 640px) {
   .benefit-grid  { grid-template-columns: 1fr 1fr; }
   .platform-grid { grid-template-columns: 1fr 1fr; }
+  .coin-img { width: clamp(16rem, 52vw, 32.5rem); }
 }
 
 @media (min-width: 900px) {
   .hero-grid {
-    grid-template-columns: 1.1fr .9fr;
-    align-items: center;
-    gap: 2.5rem;
+    display: grid;
+    grid-template-columns: 1.15fr .85fr;
+    align-items: start;
+    gap: 2rem;
+    padding-bottom: clamp(6.5rem, 14vw, 11rem);
   }
-  .hero-art { min-height: 0; }
-  .coin-img  { width: clamp(11rem, 17vw, 15.5rem); }
+  /* coin: right column, large, overlaps wave */
+  .hero-art {
+    order: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    margin-bottom: clamp(-4.5rem, -7vw, -8rem);
+    align-self: end;
+  }
+  .coin-img {
+    /* ~520px at 1280px viewport, up to 32.5rem = 520px */
+    width: clamp(22rem, 38vw, 32.5rem);
+  }
 }
 
 /* print */
 @media print {
   .site-header, .hero-waves, .hero-art, .back-top, #lang-toggle { display: none; }
-  .hero { background: none; color: #000; }
+  .hero { background: none; color: #000; overflow: hidden; }
   body  { background: #fff; }
   details { page-break-inside: avoid; }
 }

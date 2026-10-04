@@ -1074,10 +1074,15 @@ impl Chain {
     /// Execution context of `block` on top of `parent` (base fees derive from the parent's excess).
     pub fn block_context(cfg: &ChainConfig, block: &Block, parent: &Executed) -> BlockContext {
         let proposer = leader_address(&block.context.leader);
+        let state_growth = cfg.node_rewards || cfg.history_v2;
         let fees = cfg.fees.then(|| FeePolicy {
-            base: fees::base_fee(parent.excess, cfg.limits),
+            base: Self::next_base_fee(cfg, parent),
             proposer,
         });
+        let mut limits = cfg.limits;
+        // The legacy state dimension was unlimited and unused. A finite value
+        // activates the fixed state price and consensus cap on new-genesis chains.
+        limits.state = if state_growth { fees::MAX_STATE_UNITS_PER_BLOCK } else { u64::MAX };
         BlockContext {
             chain_id: cfg.chain_id,
             number: block.height().get(),
@@ -1087,18 +1092,22 @@ impl Chain {
             } else {
                 proposer
             },
-            limits: cfg.limits,
+            limits,
             fees,
         }
     }
 
     /// Base fees the child of `parent` pays.
     pub fn next_base_fee(cfg: &ChainConfig, parent: &Executed) -> FeeVector {
-        if cfg.fees {
+        let mut base = if cfg.fees {
             fees::base_fee(parent.excess, cfg.limits)
         } else {
             FeeVector::default()
+        };
+        if cfg.node_rewards || cfg.history_v2 {
+            base.state = fees::STATE_UNIT_PRICE;
         }
+        base
     }
 
     /// Validate and execute `block` on top of `parent`, remembering the result.
@@ -2373,8 +2382,19 @@ impl Chain {
             return Err(format!("tx of group {} on a group-{} chain", tx.header.group(), g.cfg.group));
         }
         let base = Self::next_base_fee(&g.cfg, &g.finalized);
-        if g.cfg.fees {
+        if g.cfg.fees || g.cfg.node_rewards || g.cfg.history_v2 {
             admissible(&tx, state, base)?;
+            if base.state != 0 {
+                let ctx = BlockContext {
+                    chain_id: g.cfg.chain_id,
+                    number: g.finalized.height + 1,
+                    timestamp: g.finalized.timestamp / 1_000 + 1,
+                    beneficiary: if g.cfg.fees { aether_execution::FEE_COLLECTOR } else { Address::ZERO },
+                    limits: GasVector { state: fees::MAX_STATE_UNITS_PER_BLOCK, ..g.cfg.limits },
+                    fees: g.cfg.fees.then_some(FeePolicy { base, proposer: Address::ZERO }),
+                };
+                aether_execution::check_admission(state, &ctx, &tx)?;
+            }
         }
         if g.pending_by_sender
             .get(&tx.header.sender)
@@ -2771,6 +2791,8 @@ impl Chain {
                     success: true,
                     gas_used: 0,
                     prove_gas: 0,
+                    state_gas: 0,
+                    state_fee: U256::ZERO,
                     contract_address: None,
                     logs: 0,
                     output: Default::default(),
@@ -2803,6 +2825,9 @@ impl Chain {
 fn admissible(tx: &TxEnvelope, state: &WorldState, base: FeeVector) -> Result<(), String> {
     if tx.header.max_fee.exec < base.exec || tx.header.max_fee.prove < base.prove {
         return Err("fee caps below the base fee".into());
+    }
+    if base.state != 0 && tx.header.gas.state > 0 && tx.header.max_fee.state < base.state {
+        return Err("state fee cap below the fixed state price".into());
     }
     affordable(tx, state, base)
 }
@@ -2926,7 +2951,7 @@ fn keep_in_pool(
     {
         return false;
     }
-    !fees || affordable(tx, state, base).is_ok()
+    (!fees && base.state == 0) || affordable(tx, state, base).is_ok()
 }
 
 /// The payload decodes, the prove budget covers the gas limit, and the sender's
@@ -2946,7 +2971,8 @@ fn affordable(tx: &TxEnvelope, state: &WorldState, base: FeeVector) -> Result<()
                 .checked_mul(U256::from(base.prove))
                 .and_then(|p| g.checked_add(p))
         })
-        .and_then(|n| n.checked_add(call.value));
+        .and_then(|n| n.checked_add(call.value))
+        .and_then(|n| n.checked_add(U256::from(tx.header.gas.state) * U256::from(base.state)));
     if need.is_none_or(|n| state.balance(&tx.header.sender) < n) {
         return Err("insufficient funds for value, gas and prove budget".into());
     }

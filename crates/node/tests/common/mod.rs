@@ -6,14 +6,14 @@
 
 use aether_crypto::{address_of, P256Signer, Signer};
 use aether_execution::registry::{attestation_message, encode_register, REGISTRY};
-use aether_execution::{sign_call, EvmCall};
+use aether_execution::{sign_call, sign_call_with, EvmCall};
 use aether_light::block::{BeaconAnswer, ProofClaim, Reattestation};
 use aether_node::block::{Block, Context, EPOCH};
 use aether_node::chain::{build_payload, Chain, ChainConfig, ChainError, Executed, Extras, Reserve};
 use aether_node::dkg::{Ceremony, DkgOutput, KeyFile, Msg, Round as KeyRound, To};
 use aether_node::upgrade::SignedUpgrade;
 use aether_rewards::{beacons, DAY_EPOCHS};
-use aether_types::{Address, GasVector, TxEnvelope, U256};
+use aether_types::{Address, FeeVector, GasVector, TxEnvelope, U256};
 use commonware_codec::Encode as _;
 use commonware_consensus::types::{Round, View};
 use commonware_cryptography::bls12381::primitives::group::Share;
@@ -73,6 +73,8 @@ pub struct Net {
     nonces: HashMap<Address, u64>,
     pub parent: Arc<Executed>,
     pub last: Block,
+    /// State fees burned by finalized blocks driven through this harness.
+    pub burned_state: U256,
 }
 
 pub struct Opts {
@@ -127,7 +129,7 @@ impl Net {
             g.verifier = Some(Arc::new(EchoVerifier));
         }
         let parent = chain.lock().finalized.clone();
-        Net { chain, chain_id: o.chain_id, registrar, ops, voting, committee, behaviour: BTreeMap::new(), nonces: HashMap::new(), parent, last: genesis }
+        Net { chain, chain_id: o.chain_id, registrar, ops, voting, committee, behaviour: BTreeMap::new(), nonces: HashMap::new(), parent, last: genesis, burned_state: U256::ZERO }
     }
 
     pub fn voting_key(&self, i: usize) -> [u8; 32] {
@@ -142,7 +144,21 @@ impl Net {
         let a = addr(&self.ops[from]);
         let n = self.nonces.entry(a).or_default();
         let call = EvmCall { to: Some(REGISTRY), value: U256::ZERO, input, gas_limit: 400_000, delegate: None };
-        let tx = sign_call(&self.ops[from], self.chain_id, *n, 1, &call).unwrap();
+        let growth = { let cfg = self.chain.cfg(); cfg.node_rewards || cfg.history_v2 };
+        let tx = if growth {
+            let mut tx = sign_call_with(
+                &self.ops[from], self.chain_id, *n,
+                FeeVector { exec: 1, state: aether_execution::fees::STATE_UNIT_PRICE, prove: 1 },
+                1, &call,
+            ).unwrap();
+            tx.header.gas.state = call.gas_limit / 200 + 100;
+            let mut sig = self.ops[from].sign(&tx.signing_bytes()).unwrap();
+            sig.extend_from_slice(&self.ops[from].public_key().bytes);
+            tx.signature = aether_types::Bytes::from(sig);
+            tx
+        } else {
+            sign_call(&self.ops[from], self.chain_id, *n, 1, &call).unwrap()
+        };
         *n += 1;
         tx
     }
@@ -280,6 +296,7 @@ impl Net {
     pub fn step_with(&mut self, txs: Vec<TxEnvelope>, upgrade: Option<SignedUpgrade>, proofs: Vec<ProofClaim>, answers: Vec<BeaconAnswer>) -> Arc<Executed> {
         let (block, exec) = self.build(txs, upgrade, proofs, answers).unwrap();
         self.chain.finalize(&block).unwrap();
+        self.burned_state += exec.receipts.iter().map(|r| r.state_fee).sum::<U256>();
         self.parent = exec.clone();
         self.last = block;
         exec

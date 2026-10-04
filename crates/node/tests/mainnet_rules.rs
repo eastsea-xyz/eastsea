@@ -167,6 +167,7 @@ fn the_mainnet_rule_set_is_on_from_height_1() {
             "reserve rules",
             "smooth issuance",
             "history v2",
+            "paid state growth",
             "pruning default",
             "no premine, no faucet",
             "zero-tip acceptance",
@@ -198,7 +199,7 @@ fn one_four_and_twenty_operators_get_exact_shares_and_the_rest_is_never_minted()
     // Rewards are the only mint: the whole supply is the premine plus every
     // payout of every block (checked at each stop below, after every step).
     let check = |n: &Net, minted: &U256| {
-        assert_eq!(supply(n, &others), start + *minted, "rewards are the only mint");
+        assert_eq!(supply(n, &others) + n.burned_state, start + *minted, "rewards are the only mint; state fees burn");
     };
 
     // Under history v2 a block with no transactions and no proofs records no
@@ -333,7 +334,7 @@ fn one_four_and_twenty_operators_get_exact_shares_and_the_rest_is_never_minted()
     // thin epochs withheld the rest, and it is never minted later.
     let issued: U256 = (1..=n.parent.height).map(rewards::issuance).sum();
     assert!(minted < issued / U256::from(2u8), "node rewards never exceed their half of the issuance");
-    assert_eq!(supply(&n, &others), start + minted, "the total supply is the premine plus what was minted");
+    assert_eq!(supply(&n, &others) + n.burned_state, start + minted, "the total supply is the premine plus minted rewards minus burned state fees");
 }
 
 #[test]

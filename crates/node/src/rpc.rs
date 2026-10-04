@@ -415,12 +415,16 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
             let g = chain.lock();
             let f = &g.finalized;
             let base = Chain::next_base_fee(&g.cfg, f);
+            let mut base_fee = json!({ "exec": base.exec.to_string(), "prove": base.prove.to_string() });
+            if base.state != 0 {
+                base_fee["state"] = json!(base.state.to_string());
+            }
             // Catching up (a node that slept, or one still starting): the app
             // shows this instead of a height that looks stale.
             let behind = g.net_height.map_or(0, |n| n.saturating_sub(f.height));
             Ok(json!({
                 // Base fees (wei per unit) for the next block: the exec base is burned, prove goes to the prover escrow.
-                "base_fee": { "exec": base.exec.to_string(), "prove": base.prove.to_string() },
+                "base_fee": base_fee,
                 "prover_escrow": f.state.balance(&aether_execution::PROVER_ESCROW),
                 "chain_id": g.cfg.chain_id,
                 "height": f.height,

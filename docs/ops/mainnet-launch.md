@@ -78,7 +78,7 @@ aether network \
 
 메인넷은 어떤 규칙도 "출시 뒤 업그레이드로 켠다" 없이 제네시스부터 전부 켜져 있어야 한다. 제네시스 프로토콜 필드는 이미 있다(갭 G1 닫힘: `aether network --protocol 3`; 7780처럼 프로토콜 1로 열리면 증명 시장·등록 상한·16석 증가가 꺼진 채 시작하므로 이 값을 생략하지 않는다). 목록은 코드에 하나로 있다(`crates/node/src/mainnet.rs`, `mainnet::check`) — 항목을 추가하면 아래 세 검사가 같이 실패한다:
 
-- `aether mainnet-rules --network genesis.json` — network.json에서 노드와 똑같이 제네시스를 만들어 항목마다 `ok`/`FAIL`을 출력하고, 꺼진 것이 하나라도 있으면 실패한다(DKG 뒤 최종 network.json으로 다시 한 번). 규칙은 17개이며, **실제 출시 검사는 에포크(3600블록)·후보 워밍업(24)·추첨(24에포크)의 공표된 정책 값을 정확히 요구**하고 레지스트라 키가 0이거나 곡선 밖이면 실패한다. 리허설만 `--rehearsal`로 단축 값을 허용하며, 허용했다는 사실이 출력에 `REHEARSAL VALUES`로 남는다.
+- `aether mainnet-rules --network genesis.json` — network.json에서 노드와 똑같이 제네시스를 만들어 항목마다 `ok`/`FAIL`을 출력하고, 꺼진 것이 하나라도 있으면 실패한다(DKG 뒤 최종 network.json으로 다시 한 번). 규칙은 18개이며, **실제 출시 검사는 에포크(3600블록)·후보 워밍업(24)·추첨(24에포크)의 공표된 정책 값을 정확히 요구**하고 레지스트라 키가 0이거나 곡선 밖이면 실패한다. 리허설만 `--rehearsal`로 단축 값을 허용하며, 허용했다는 사실이 출력에 `REHEARSAL VALUES`로 남는다.
 - `scripts/mainnet-rehearsal.sh`(0단계) — 같은 검사를 PASS 항목으로 돌리고, 살아 있는 네트워크에서 높이 1의 프로토콜과 등록 상한도 확인한다.
 - 단위 테스트(`crates/node/tests/mainnet_rules.rs`) — 메인넷 플래그 제네시스로 모든 항목이 켜져 있는지, 플래그를 하나 빼면 정확히 그 항목이 꺼지는지 확인한다.
 
@@ -95,9 +95,10 @@ aether network \
 | reserve rules | 창업자 예비 키 3개가 온체인에 있고 독립 운영자 4명 미만에서만 앉는다 |
 | smooth issuance | 발행이 매끄러운 감쇠다: 1 AETH/블록에서 연 15% 감쇠, 0.1 AETH 바닥 |
 | history v2 | 빈 블록이 조용하고 era 파일이 쌓인다 |
+| paid state growth | 새 슬롯·계정당 0.0001 AETH, 코드 바이트당 0.000001 AETH를 소각하고 블록당 새 슬롯을 512개로 제한한다 |
 | pruning default | 프루닝이 기본(30일 보존)이다 |
 | no premine, no faucet | 제네시스 잔액이 전부 0이다 |
-| zero-tip acceptance | 첫 블록 base fee가 0이어서 잔액 0 계정이 팁 0으로 거래한다 |
+| zero-tip acceptance | 첫 블록 실행·증명 base fee가 0이어서 잔액 0 계정의 단순 송금은 팁 0으로 거래한다 |
 
 눈으로 확인한다:
 

@@ -321,7 +321,7 @@ fn account_history_collects_token_receipts_and_system_rewards() {
     let swap_data = [U256::from(10u64), U256::ZERO, U256::ZERO, U256::from(250u64)]
         .into_iter().flat_map(|v| v.to_be_bytes::<32>()).collect::<Vec<_>>();
     let receipt = Receipt { tx_hash: aether_execution::tx_hash(&tx), success: true, gas_used: 50_000,
-        prove_gas: 0, contract_address: None, logs: 2, output: Bytes::new(),
+        prove_gas: 0, state_gas: 0, state_fee: U256::ZERO, contract_address: None, logs: 2, output: Bytes::new(),
         events: vec![Event { address: token,
             topics: vec![B256::from_slice(&topic), B256::from(from), B256::from(to)],
             data: Bytes::from(U256::from(250u64).to_be_bytes::<32>().to_vec()) },

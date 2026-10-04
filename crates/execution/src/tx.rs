@@ -22,6 +22,19 @@ pub struct EvmCall {
     pub delegate: Option<Address>,
 }
 
+/// Wallet default for the signed state budget on a paid-state genesis.
+/// EVM fresh slots cost at least 20k execution gas, account creation 32k,
+/// and deployed code 200 per byte, so one unit per 200 gas plus 100 account
+/// units covers ordinary calls while preserving the zero-balance free path.
+/// Callers with a known storage layout may sign a tighter explicit budget.
+pub fn recommended_state_budget(call: &EvmCall, balance: Option<U256>, state_price: u128) -> u64 {
+    if state_price == 0 || balance.is_none_or(|b| b.is_zero()) { return 0; }
+    if call.to.is_some() && call.input.is_empty() && call.delegate.is_none() {
+        return if call.value.is_zero() { 0 } else { crate::fees::STATE_ACCOUNT_UNITS };
+    }
+    (call.gas_limit / 200).saturating_add(crate::fees::STATE_ACCOUNT_UNITS).min(crate::fees::MAX_STATE_UNITS_PER_BLOCK)
+}
+
 /// Payload trailer tag for `delegate` (absent = no change, keeps old encodings valid).
 const DELEGATE_TAG: u8 = 0xd7;
 

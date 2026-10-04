@@ -598,7 +598,7 @@ fn fee_caps(status: &Value, balance: Option<U256>) -> (FeeVector, u128) {
     (
         FeeVector {
             exec: if free { get("exec") * 2 } else { get("exec") * 2 + GWEI },
-            state: 0,
+            state: status["base_fee"]["state"].as_str().and_then(|v| v.parse().ok()).unwrap_or(0),
             prove: get("prove") * 2,
         },
         if free { 0 } else { GWEI },
@@ -1288,7 +1288,11 @@ fn prepare(p256_public_key: &[u8], body: impl FnOnce(Address) -> R<EvmCall>) -> 
         sender: from,
         nonce,
         // Every interpreted instruction costs at least 1 gas, so prove steps <= gas_limit.
-        gas: GasVector { exec: call_body.gas_limit, state: 0, prove: call_body.gas_limit },
+        gas: GasVector {
+            exec: call_body.gas_limit,
+            state: aether_execution::recommended_state_budget(&call_body, balance, max_fee.state),
+            prove: call_body.gas_limit,
+        },
         max_fee,
         tip,
         payload_commitment: aether_execution::tx::payload_commitment(&payload),

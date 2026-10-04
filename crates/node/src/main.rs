@@ -2926,7 +2926,7 @@ fn fee_caps(status: &Value, tip: u128) -> Result<aether_types::FeeVector, String
     };
     Ok(aether_types::FeeVector {
         exec: get("exec")? * 2 + tip,
-        state: 0,
+        state: status["base_fee"]["state"].as_str().and_then(|v| v.parse().ok()).unwrap_or(0),
         prove: get("prove")? * 2,
     })
 }
@@ -2950,8 +2950,17 @@ fn submit_with_tip(rpc: &str, dev: u8, nonce: Option<u64>, c: EvmCall, wait: boo
                 .map_err(|e| e.to_string())?
         }
     };
-    let tx = sign_call_with(&signer, chain_id, nonce, fee_caps(&status, tip)?, tip, &c)
+    let max_fee = fee_caps(&status, tip)?;
+    let mut tx = sign_call_with(&signer, chain_id, nonce, max_fee, tip, &c)
         .map_err(|e| e.to_string())?;
+    if max_fee.state != 0 {
+        let balance_hex = call(rpc, "eth_getBalance", json!([from]))?;
+        let balance = balance_hex.as_str().and_then(|h| U256::from_str_radix(h.trim_start_matches("0x"), 16).ok());
+        tx.header.gas.state = aether_execution::recommended_state_budget(&c, balance, max_fee.state);
+        let mut sig = signer.sign(&tx.signing_bytes()).map_err(|e| e.to_string())?;
+        sig.extend_from_slice(&signer.public_key().bytes);
+        tx.signature = Bytes::from(sig);
+    }
     let r = call(rpc, "aether_sendTransaction", json!([tx]))?;
     let hash: TxHash = serde_json::from_value(r["hash"].clone()).map_err(|e| e.to_string())?;
     println!("tx {hash}  from {from}  nonce {nonce}  (signed with P-256)");

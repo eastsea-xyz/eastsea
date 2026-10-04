@@ -221,6 +221,17 @@ impl WorldState {
         self.account(a).map(|d| d.nonce).unwrap_or_default()
     }
 
+    /// A read-only admission view for a queued nonce. Earlier pending txs may
+    /// supply that nonce, but are not finalized in the pool's state snapshot.
+    pub(crate) fn with_sender_nonce(&self, sender: Address, nonce: u64) -> Self {
+        let mut simulated = self.clone();
+        let mut basic = simulated.account(&sender).unwrap_or_default();
+        basic.nonce = nonce;
+        let key = basic_data_key(simulated.h(), &sender);
+        simulated.write(vec![(key, Some(basic.encode().expect("code size unchanged")))]);
+        simulated
+    }
+
     pub fn storage(&self, a: &Address, slot: U256) -> U256 {
         self.get(&storage_slot_key(self.h(), a, slot)).map(|v| U256::from_be_bytes(v)).unwrap_or_default()
     }

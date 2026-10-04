@@ -50,6 +50,8 @@ if [ "$what" = all ] || [ "$what" = rehearsal ]; then
   # with the proving sidecar pinned like a release (a second Mac found, on
   # 2026-10-03, that dkg dropped the genesis protocol while every test passed).
   step rehearsal bash -c 'export AETHER_PROVER_PROGRAM=$(scripts/prover-program.sh) && cargo build --release -p aether-node --bin aether && d=$PWD/tmp/rehearsal-bin && mkdir -p $d && cp "$CARGO_TARGET_DIR/release/aether" $d/aether && cp "$CARGO_TARGET_DIR/release/aether-prover" $d/aether-prover && rm -rf tmp/rehearsal-run && AETHER_BIN=$d/aether scripts/mainnet-rehearsal.sh $PWD/tmp/rehearsal-run'
+  # The launch ceremony tool, against the binary the rehearsal just built.
+  step genesis-tool bash -c 'AETHER_BIN=$PWD/tmp/rehearsal-bin/aether scripts/test-mainnet-genesis.sh'
 fi
 
 echo "verify: $fails failed step(s)"

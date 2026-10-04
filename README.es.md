@@ -7,7 +7,7 @@
 [![Legal Disclaimer](https://img.shields.io/badge/Legal-Disclaimer%20%26%20Terms-red.svg)](DISCLAIMER.md)
 
 > [!IMPORTANT]
-> EastSea Node es software de investigación experimental y no comercial, que se ofrece **"TAL CUAL" ("AS IS")**. No es una blockchain de producción y no ha sido auditado. Todos los tokens (AETH) y las recompensas son artefactos de prueba **sin ningún valor monetario**. Consulta [DISCLAIMER.md](DISCLAIMER.md).
+> EastSea Node es software de investigación experimental y no comercial, que se ofrece **"TAL CUAL" ("AS IS")**. No es una blockchain de producción y no ha sido auditado. Todos los tokens (DBLN) y las recompensas son artefactos de prueba **sin ningún valor monetario**. Consulta [DISCLAIMER.md](DISCLAIMER.md).
 
 ## Qué es
 
@@ -54,7 +54,7 @@ aether-agent setup all --apply     # registra el servidor MCP "aether" en todas 
 ```
 
 - **Herramientas:** status, wallet, balance, send, pay_many (una sola transacción), receipt, history.
-- **Límites predeterminados:** 1 AETH por pago y 10 AETH cada 24 horas. Cámbialos con `aether-agent policy set`, que pide Touch ID.
+- **Límites predeterminados:** 1 DBLN por pago y 10 DBLN cada 24 horas. Cámbialos con `aether-agent policy set`, que pide Touch ID.
 - **Aplicado on-chain:** el agente paga con una clave de sesión de su cuenta; el contrato comprueba cada pago frente a los límites, los destinatarios permitidos y la caducidad. Ningún archivo ni proceso local puede saltárselos. El gas sale de un pequeño saldo aparte.
 - Detalles: [AGENTS.md](AGENTS.md) y [el archivo de skill](agents/skills/aether-wallet/SKILL.md).
 

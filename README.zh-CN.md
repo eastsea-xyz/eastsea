@@ -7,7 +7,7 @@
 [![Legal Disclaimer](https://img.shields.io/badge/Legal-Disclaimer%20%26%20Terms-red.svg)](DISCLAIMER.md)
 
 > [!IMPORTANT]
-> EastSea Node 是实验性、非商业的研究软件，按 **"现状"（AS IS）** 提供。它不是生产级区块链，也未经过审计。所有代币（AETH）和奖励都只是测试产物，**没有任何货币价值**。详见 [DISCLAIMER.md](DISCLAIMER.md)。
+> EastSea Node 是实验性、非商业的研究软件，按 **"现状"（AS IS）** 提供。它不是生产级区块链，也未经过审计。所有代币（DBLN）和奖励都只是测试产物，**没有任何货币价值**。详见 [DISCLAIMER.md](DISCLAIMER.md)。
 
 ## 这是什么
 
@@ -54,7 +54,7 @@ aether-agent setup all --apply     # 在你已安装的每个智能体工具中�
 ```
 
 - **工具：** status、wallet、balance、send、pay_many（单笔交易）、receipt、history。
-- **默认限额：** 每笔支付 1 AETH，每 24 小时 10 AETH。用 `aether-agent policy set` 修改，该命令会要求 Touch ID。
+- **默认限额：** 每笔支付 1 DBLN，每 24 小时 10 DBLN。用 `aether-agent policy set` 修改，该命令会要求 Touch ID。
 - **链上强制执行：** 智能体使用其账户的会话密钥付款；合约会根据限额、允许的收款方和有效期检查每一笔支付。任何本地文件或进程都无法绕过这些限制。Gas 费来自一笔单独的小额余额。
 - 详情：[AGENTS.md](AGENTS.md) 和 [技能文件](agents/skills/aether-wallet/SKILL.md)。
 

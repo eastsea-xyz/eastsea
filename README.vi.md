@@ -7,7 +7,7 @@
 [![Legal Disclaimer](https://img.shields.io/badge/Legal-Disclaimer%20%26%20Terms-red.svg)](DISCLAIMER.md)
 
 > [!IMPORTANT]
-> EastSea Node là phần mềm nghiên cứu thử nghiệm, phi thương mại, được cung cấp **"NGUYÊN TRẠNG" (AS IS)**. Đây không phải là blockchain dùng cho môi trường production và chưa được kiểm toán. Mọi token (AETH) và phần thưởng chỉ là sản phẩm thử nghiệm, **không có bất kỳ giá trị tiền tệ nào**. Xem [DISCLAIMER.md](DISCLAIMER.md).
+> EastSea Node là phần mềm nghiên cứu thử nghiệm, phi thương mại, được cung cấp **"NGUYÊN TRẠNG" (AS IS)**. Đây không phải là blockchain dùng cho môi trường production và chưa được kiểm toán. Mọi token (DBLN) và phần thưởng chỉ là sản phẩm thử nghiệm, **không có bất kỳ giá trị tiền tệ nào**. Xem [DISCLAIMER.md](DISCLAIMER.md).
 
 ## Đây là gì
 
@@ -54,7 +54,7 @@ aether-agent setup all --apply     # đăng ký MCP server "aether" với mọi 
 ```
 
 - **Công cụ:** status, wallet, balance, send, pay_many (một giao dịch), receipt, history.
-- **Hạn mức mặc định:** 1 AETH mỗi lần thanh toán và 10 AETH mỗi 24 giờ. Thay đổi bằng `aether-agent policy set`, lệnh này yêu cầu Touch ID.
+- **Hạn mức mặc định:** 1 DBLN mỗi lần thanh toán và 10 DBLN mỗi 24 giờ. Thay đổi bằng `aether-agent policy set`, lệnh này yêu cầu Touch ID.
 - **Thực thi trên chuỗi:** agent thanh toán bằng một session key của tài khoản của nó; hợp đồng kiểm tra mọi khoản thanh toán theo hạn mức, danh sách người nhận được phép và thời hạn hiệu lực. Không tệp hay tiến trình cục bộ nào có thể vượt qua được. Phí gas được lấy từ một khoản số dư nhỏ riêng.
 - Chi tiết: [AGENTS.md](AGENTS.md) và [tệp skill](agents/skills/aether-wallet/SKILL.md).
 

@@ -7,7 +7,7 @@
 [![Legal Disclaimer](https://img.shields.io/badge/Legal-Disclaimer%20%26%20Terms-red.svg)](DISCLAIMER.md)
 
 > [!IMPORTANT]
-> EastSea Node は **「現状のまま（AS IS）」** 提供される、実験的かつ非商用の研究用ソフトウェアです。本番用のブロックチェーンではなく、監査も受けていません。すべてのトークン（AETH）と報酬はテスト用の成果物であり、**金銭的価値は一切ありません**。[DISCLAIMER.md](DISCLAIMER.md) を参照してください。
+> EastSea Node は **「現状のまま（AS IS）」** 提供される、実験的かつ非商用の研究用ソフトウェアです。本番用のブロックチェーンではなく、監査も受けていません。すべてのトークン（DBLN）と報酬はテスト用の成果物であり、**金銭的価値は一切ありません**。[DISCLAIMER.md](DISCLAIMER.md) を参照してください。
 
 ## 概要
 
@@ -54,7 +54,7 @@ aether-agent setup all --apply     # インストール済みのすべてのエ�
 ```
 
 - **ツール：** status、wallet、balance、send、pay_many（1 トランザクション）、receipt、history。
-- **デフォルトの上限：** 1 回の支払いにつき 1 AETH、24 時間あたり 10 AETH。`aether-agent policy set` で変更でき、その際に Touch ID を求められます。
+- **デフォルトの上限：** 1 回の支払いにつき 1 DBLN、24 時間あたり 10 DBLN。`aether-agent policy set` で変更でき、その際に Touch ID を求められます。
 - **オンチェーンで強制：** エージェントは自分のアカウントのセッションキーで支払います。コントラクトがすべての支払いを上限、許可された受取人、有効期限と照合します。ローカルのファイルやプロセスでこれをすり抜けることはできません。ガス代は別枠の少額残高から支払われます。
 - 詳細：[AGENTS.md](AGENTS.md) および [skill ファイル](agents/skills/aether-wallet/SKILL.md)。
 

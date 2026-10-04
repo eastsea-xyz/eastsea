@@ -1,7 +1,7 @@
 //! Shadow replay of a short history-v2 dev chain, including a paid transfer.
 
-use aether_crypto::P256Signer;
-use aether_execution::{EvmCall, sign_call_with};
+use aether_crypto::{P256Signer, Signer as AetherSigner};
+use aether_execution::{EvmCall, recommended_state_budget, sign_call_with};
 use aether_node::block::{Block, Context, EPOCH};
 use aether_node::chain::{Chain, ChainConfig, Extras, build_payload, dev_accounts, dev_seed};
 use aether_node::shadow::{self, Source};
@@ -73,10 +73,19 @@ fn make_chain(dir: &Path) {
             };
             let fees = FeeVector {
                 exec: 100_000_000_000,
-                state: 0,
+                state: aether_execution::fees::STATE_UNIT_PRICE,
                 prove: 100_000_000_000,
             };
-            vec![sign_call_with(&signer, 7792, 0, fees, 1_000_000_000, &call).unwrap()]
+            let mut tx = sign_call_with(&signer, 7792, 0, fees, 1_000_000_000, &call).unwrap();
+            // The faucet is funded: pay for the new account the transfer
+            // creates, so the chain really carries a paid transfer whose fee
+            // rule the changed replay below can flip (state growth 100 units,
+            // burned at the fixed unit price).
+            tx.header.gas.state = recommended_state_budget(&call, Some(U256::from(aether_node::faucet::SUPPLY)), fees.state);
+            let mut signature = AetherSigner::sign(&signer, &tx.signing_bytes()).unwrap();
+            signature.extend_from_slice(&AetherSigner::public_key(&signer).bytes);
+            tx.signature = Bytes::from(signature);
+            vec![tx]
         } else {
             vec![]
         };

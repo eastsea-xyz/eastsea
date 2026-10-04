@@ -12,7 +12,7 @@
 
 use aether_crypto::{address_of, P256Signer, Signer};
 use aether_execution::registry::{attestation_message, encode_register, REGISTRY};
-use aether_execution::{sign_call, EvmCall};
+use aether_execution::{recommended_state_budget, sign_call_with, EvmCall};
 use aether_node::block::{Block, Context, EPOCH};
 use aether_node::chain::{build_payload, Chain, ChainConfig, Extras};
 use aether_node::era;
@@ -22,7 +22,7 @@ use aether_node::rpc::{self, RpcState};
 use aether_node::shards::{self, Shards};
 use aether_node::store::Store;
 use aether_state::mmr::ERA_LEN;
-use aether_types::{GasVector, TxEnvelope, U256};
+use aether_types::{Bytes, FeeVector, GasVector, TxEnvelope, U256};
 use commonware_codec::Encode;
 use commonware_consensus::types::{Height, Round, View};
 use commonware_cryptography::{ed25519, Signer as Ed25519Signer};
@@ -72,14 +72,24 @@ fn node_id(i: u8) -> [u8; 32] {
     *aether_net::SecretKey::from_bytes(&[i + 1; 32]).public().as_bytes()
 }
 
-/// Operator `i` registers its Mac (validator key and node id of the same index).
+/// Operator `i` registers its Mac (validator key and node id of the same index)
+/// through the real registry contract. This genesis has no free registration
+/// lane (that needs node rewards), but the operators are funded, so they sign a
+/// state budget that pays for the words the registration writes.
 fn register_tx(i: u8) -> TxEnvelope {
-    let op = address_of(&operator(i).public_key()).unwrap();
+    let op = operator(i);
+    let op_address = address_of(&op.public_key()).unwrap();
     let key = ed25519::PrivateKey::from_seed(i as u64 + 1).public_key().encode().as_ref().try_into().unwrap();
     let node = node_id(i);
-    let sig = registrar().sign(&attestation_message(CHAIN, op, key, node, op)).unwrap();
-    let call = EvmCall { to: Some(REGISTRY), value: U256::ZERO, input: encode_register(key, node, op, sig[..32].try_into().unwrap(), sig[32..64].try_into().unwrap()), gas_limit: 400_000, delegate: None };
-    sign_call(&operator(i), CHAIN, 0, 1, &call).unwrap()
+    let sig = registrar().sign(&attestation_message(CHAIN, op_address, key, node, op_address)).unwrap();
+    let call = EvmCall { to: Some(REGISTRY), value: U256::ZERO, input: encode_register(key, node, op_address, sig[..32].try_into().unwrap(), sig[32..64].try_into().unwrap()), gas_limit: 400_000, delegate: None };
+    let fees = FeeVector { exec: 1, state: aether_execution::fees::STATE_UNIT_PRICE, prove: 1 };
+    let mut tx = sign_call_with(&op, CHAIN, 0, fees, 1, &call).unwrap();
+    tx.header.gas.state = recommended_state_budget(&call, Some(U256::from(10u128.pow(20))), fees.state);
+    let mut signature = Signer::sign(&op, &tx.signing_bytes()).unwrap();
+    signature.extend_from_slice(&Signer::public_key(&op).bytes);
+    tx.signature = Bytes::from(signature);
+    tx
 }
 
 struct Node {

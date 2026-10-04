@@ -62,7 +62,10 @@ fn operators_whose_macs_answer_are_paid_each_epoch_and_proofs_are_capped() {
     assert_eq!(first.payouts.len(), OPERATORS);
     assert!(first.payouts.iter().all(|(h, _, a)| *h == E && *a == pool0 / U256::from(32u8)));
     let mut minted = pool0 / U256::from(32u8) * U256::from(OPERATORS);
-    assert_eq!(supply(&net, &others), start + minted);
+    // The registrations' state growth is burned at the fixed unit price (like
+    // the execution base fee, no new recipient), so it nets out of the supply:
+    // the harness tracks the receipts' burned state fees for exactly this.
+    assert_eq!(supply(&net, &others), start + minted - net.burned_state);
 
     // Protocol 2 from block E + 1; block E + 2 records its statement.
     net.run_to(E + 2);
@@ -80,7 +83,7 @@ fn operators_whose_macs_answer_are_paid_each_epoch_and_proofs_are_capped() {
     assert_eq!(net.parent.state.balance(&stranger), s0, "no issuance for a prover that registered no Mac");
     assert_eq!(b39.payouts.len(), 2);
     minted += proof_share(E + 1);
-    assert_eq!(supply(&net, &others), start + minted);
+    assert_eq!(supply(&net, &others), start + minted - net.burned_state);
     // Operator 0's cap for epoch 1: proofs of E + 3 and E + 4 land the rest of it...
     let cap = proof_pool(1, E) / U256::from(16u8);
     assert_eq!(cap, proof_share(E + 1) * U256::from(36u8) / U256::from(16u8), "36 blocks' worth, a sixteenth each");
@@ -97,13 +100,13 @@ fn operators_whose_macs_answer_are_paid_each_epoch_and_proofs_are_capped() {
     assert_eq!(net.balance(0) - b0, cap);
     assert_eq!(proofs::prover(&net.parent.state, E + 5), Some(op0));
     minted += cap - proof_share(E + 1);
-    assert_eq!(supply(&net, &others), start + minted);
+    assert_eq!(supply(&net, &others), start + minted - net.burned_state);
 
     // Block 2E pays epoch 1 (everyone answered); then operator 3 goes silent for epoch 2.
     net.run_to(2 * E - 1);
     net.step(vec![], None, vec![]);
     minted += node_pool(1, E) / U256::from(32u8) * U256::from(OPERATORS);
-    assert_eq!(supply(&net, &others), start + minted);
+    assert_eq!(supply(&net, &others), start + minted - net.burned_state);
     net.behaviour.insert(3, Mac::Off);
     net.run_to(3 * E - 1);
     let silent = net.balance(3);
@@ -111,7 +114,7 @@ fn operators_whose_macs_answer_are_paid_each_epoch_and_proofs_are_capped() {
     assert_eq!(net.balance(3), silent, "a silent operator gets nothing");
     assert_eq!(paid.payouts.len(), 3);
     minted += node_pool(2, E) / U256::from(32u8) * U256::from(3u8);
-    assert_eq!(supply(&net, &others), start + minted);
+    assert_eq!(supply(&net, &others), start + minted - net.burned_state);
     // Far less than the issuance so far: few operators, warm-up, caps.
     let issued: U256 = (1..=net.parent.height).map(rewards::issuance).sum();
     assert!(minted * U256::from(4u8) < issued);

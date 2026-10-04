@@ -846,7 +846,9 @@ fn a_candidate_registers_once_and_beacons_every_epoch() {
     let f = net.rpc.len() - 1;
     net.wait_height(f, 3, 60);
 
-    // The node account needs gas money only when fees are above zero (free when uncongested).
+    // This legacy devnet has no free lane; its genesis funds dev account 4,
+    // so the contract registration pays normally.
+    assert_eq!(net.rpc(0, "aether_status", json!([])).unwrap()["free_registration"], false);
     let out = net.cli(&["candidate-register", "--data", data.to_str().unwrap(), "--registrar-rpc", &net.url(0), "--rpc", &net.url(0), "--from-dev", "4"]);
     assert!(out.contains("candidate") && out.contains("success=true"), "{out}");
     let mine = |net: &Net| net.rpc(0, "aether_candidates", json!([])).expect("candidates");
@@ -969,10 +971,12 @@ fn open_voting_nodes_take_over_the_chain_by_themselves() {
     }
     net.wait_height(0, 3, 90);
     // Nobody is funded at genesis: the faucet on g1 funds the sender and the
-    // four operators-to-be (their registrations and tips come out of it).
+    // four operators-to-be (this legacy chain has no free lane, so their
+    // contract registrations and tips come out of it).
     for dev in 1..=5u8 {
         faucet_grant(&net, 0, &dev_address(dev));
     }
+    assert_eq!(net.rpc(0, "aether_status", json!([])).unwrap()["free_registration"], false);
     let aa = "0x00000000000000000000000000000000000000aa";
     net.cli(&["send", "--rpc", &net.url(0), "--from-dev", "1", "--to", aa, "--value", "11", "--wait"]);
 

@@ -168,6 +168,8 @@ else
 fi
 cap=$(rpc aether_candidates '[]' "${rpcp[0]}" | jget 'd["result"]["max_per_epoch"]')
 [ "$cap" = 16 ] && ok "registration cap active at genesis (max_per_epoch $cap)" || bad "no registration cap (max_per_epoch '$cap', want 16)"
+lane=$(rpc aether_status '[]' "${rpcp[0]}" | jget '"yes" if d["result"].get("free_registration") else "no"')
+[ "$lane" = yes ] && ok "free registration lane advertised" || bad "free registration lane unavailable ('$lane')"
 
 echo "== history v2: empty blocks are quiet (no statement, root unchanged)"
 # No candidates are registered yet, so no beacon answers: of the recent empty
@@ -198,12 +200,16 @@ case "$ferr" in
   *) bad "the faucet RPC did not refuse ('$ferr')" ;;
 esac
 
-echo "== registering the two candidate Macs (operators: dev 2 and 3, tip 0)"
-if "$A" candidate-register --data "$D/c1" --registrar-rpc "http://127.0.0.1:${rpcp[0]}" --rpc "http://127.0.0.1:${rpcp[0]}" --from-dev 2 --tip 0 >/dev/null \
-  && "$A" candidate-register --data "$D/c2" --registrar-rpc "http://127.0.0.1:${rpcp[0]}" --rpc "http://127.0.0.1:${rpcp[0]}" --from-dev 3 --tip 0 >/dev/null; then
-  ok "two candidates registered (zero balance, zero fee)"
+echo "== registering the two candidate Macs (operators: dev 2 and 3, free lane)"
+if reg1=$("$A" candidate-register --data "$D/c1" --registrar-rpc "http://127.0.0.1:${rpcp[0]}" --rpc "http://127.0.0.1:${rpcp[0]}" --from-dev 2 2>&1) \
+  && reg2=$("$A" candidate-register --data "$D/c2" --registrar-rpc "http://127.0.0.1:${rpcp[0]}" --rpc "http://127.0.0.1:${rpcp[0]}" --from-dev 3 2>&1); then
+  if [[ "$reg1" == *"success=true  gas=0"* && "$reg2" == *"success=true  gas=0"* ]]; then
+    ok "two candidates registered through the free lane (zero balance, zero gas receipts)"
+  else
+    bad "candidate receipts were not zero gas ($reg1; $reg2)"
+  fi
 else
-  bad "candidate registration failed (see $D/*.log)"
+  bad "candidate registration failed (${reg1:-} ${reg2:-}; see $D/*.log)"
 fi
 cand=$(rpc aether_candidates '[]' "${rpcp[0]}" | jget 'len(d["result"]["candidates"])')
 [ "$cand" = 2 ] && ok "the registry lists both Macs" || bad "the registry lists $cand Macs (want 2)"

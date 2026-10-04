@@ -173,6 +173,8 @@ fn congestion_raises_the_base_fee_and_a_zero_balance_is_refused_the_mempool() {
 #[test]
 fn a_zero_balance_mac_registers_through_the_free_lane_under_congestion() {
     let mut n = net(1);
+    assert_eq!(n.chain.cfg().limits.state, u64::MAX, "genesis config uses the activation sentinel");
+    assert_eq!(Chain::block_context(&n.chain.cfg(), &n.last, &n.parent).limits.state, aether_execution::fees::MAX_STATE_UNITS_PER_BLOCK);
     n.run_to(2);
     congest(&mut n);
 
@@ -204,6 +206,29 @@ fn a_zero_balance_mac_registers_through_the_free_lane_under_congestion() {
     assert!(n.chain.submit_registration(item.clone()).unwrap_err().contains("already registered"));
     assert!(n.chain.registrations_for(&n.parent).is_empty(), "the proposer does not carry it again");
     assert!(raw_build(&n, vec![], vec![item]).is_err(), "a block with a spent item is invalid");
+}
+
+#[test]
+fn a_zero_balance_operator_cannot_register_by_contract_on_a_state_fee_chain() {
+    let mut n = net(1);
+    let op = broke(99);
+    let voting = ed25519::PrivateKey::from_seed(99);
+    let item = n.lane_registration(&op, &voting, Net::node_id(99), 0, n.parent.height + 600);
+    let att: [u8; 64] = item.attestation.as_ref().try_into().unwrap();
+    let call = EvmCall {
+        to: Some(REGISTRY), value: U256::ZERO,
+        input: registry::encode_register(item.validator_key.0, item.node_id.0, item.beaconer, att[..32].try_into().unwrap(), att[32..].try_into().unwrap()),
+        gas_limit: 400_000, delegate: None,
+    };
+    let direct = free_call(&op, 0, &call);
+    let err = n.chain.add_to_mempool(direct).unwrap_err();
+    assert!(err.contains("state growth 800 exceeds transaction budget 0"), "{err}");
+    assert_eq!(registry::candidates(&n.parent.state).len(), 0);
+
+    assert!(n.chain.submit_registration(item).unwrap());
+    let exec = step_lane(&mut n, vec![]);
+    assert_eq!(registry::candidates(&exec.state).len(), 1);
+    assert_eq!(exec.state.balance(&addr(&op)), U256::ZERO);
 }
 
 #[test]
@@ -247,6 +272,7 @@ fn the_lane_and_the_contract_write_the_same_words_and_share_the_epoch_cap() {
     let mut contract = net(2);
     let mut lane = net(2);
     assert_eq!(contract.parent.state.root(), lane.parent.state.root(), "same genesis");
+    assert_eq!(Chain::block_context(&lane.chain.cfg(), &lane.last, &lane.parent).limits.state, aether_execution::fees::MAX_STATE_UNITS_PER_BLOCK);
     contract.run_to(12);
     lane.run_to(12);
 

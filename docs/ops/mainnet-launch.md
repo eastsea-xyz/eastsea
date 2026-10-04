@@ -49,7 +49,7 @@ aether shadow --from "$ARCHIVE_RPC" --to "$FINALIZED_HEIGHT"
 
 모든 `validator.key`·`node-account.key`와 `.p8`은 오프라인(암호화된 외장 드라이브 등)에 백업한다. 잃어버린 검증자 키는 그 자리를 영원히 못 채운다. **등록기 키는 백업할 것이 없다**: 개인 키는 Secure Enclave 밖으로 나오지 않으므로(`registrar.key`는 개발망용), 서명 Mac을 잃으면 위원회 교체로 새 키를 넣는다([registrar.md](registrar.md)).
 
-dev 계정(1–10번)은 메인넷 제네시스에서 잔액이 0이다(사전 발행 0). 후보 등록은 수수료 팁 없이 한다: `aether candidate-register … --tip 0`(기본 base fee가 0인 동안 잔액 0으로 등록된다).
+dev 계정(1–10번)은 메인넷 제네시스에서 잔액이 0이다(사전 발행 0). 후보 등록은 `aether candidate-register …`가 `aether_status.free_registration`을 확인한 뒤 무료 등록 레인으로 제출한다. 운영자가 `aether_registrationNonce`의 논스와 만료 높이를 포함한 relay 메시지에 서명하고, 확정되면 가스 0 영수증을 받는다. 레인이 없는 7780에서는 기존 계약 거래 경로를 사용한다. `--tip 0`만으로는 새 제네시스의 상태 증가 수수료가 면제되지 않는다.
 
 ## 2. network.json
 

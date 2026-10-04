@@ -386,8 +386,7 @@ enum Cmd {
         /// DeviceCheck token (base64) from the Mac app; any text on a dev registrar.
         #[arg(long, default_value = "dev")]
         device_token: String,
-        /// Priority fee (wei) on the registration tx: 0 lets a zero-balance operator
-        /// register on a network with no faucet (mainnet).
+        /// Priority fee (wei) for the legacy contract path; ignored on the free lane.
         #[arg(long, default_value_t = TIP)]
         tip: u128,
     },
@@ -893,11 +892,42 @@ fn main() {
             let part = |k: &str| -> Result<[u8; 32], String> {
                 hex::decode(a[k].as_str().unwrap_or_default()).ok().and_then(|b| b.try_into().ok()).ok_or(format!("registrar gave no {k}"))
             };
-            let input = aether_execution::registry::encode_register(vk, nid, beaconer, part("r")?, part("s")?);
+            let (r, s) = (part("r")?, part("s")?);
             println!("candidate {}  node {}  beacons from {beaconer}", hex::encode(vk), hex::encode(nid));
-            let c = EvmCall { to: Some(aether_execution::registry::REGISTRY), value: U256::ZERO, input, gas_limit: 400_000, delegate: None };
-            let r = submit_with_tip(&rpc, from_dev, None, c, true, tip)?;
-            if r["receipt"]["success"] != json!(true) {
+            let status = call(&rpc, "aether_status", json!([]))?;
+            let receipt = if candidate_registration_uses_lane(&status) {
+                if status["chain_id"].as_u64() != Some(chain_id) {
+                    return Err("registrar and registration RPC are on different chains".into());
+                }
+                let signer = P256Signer::from_seed(&dev_seed(from_dev)).map_err(|e| e.to_string())?;
+                let nonce: u64 = serde_json::from_value(call(&rpc, "aether_registrationNonce", json!([operator]))?)
+                    .map_err(|e| format!("registration nonce: {e}"))?;
+                let expiry = status["height"].as_u64().ok_or("status has no height")?.saturating_add(7_200);
+                let attestation = [r.as_slice(), s.as_slice()].concat();
+                let signature = signer.sign(&aether_execution::registry::relay_message(
+                    chain_id, operator, &vk, &nid, beaconer, &attestation, nonce, expiry,
+                )).map_err(|e| e.to_string())?;
+                let item = aether_light::block::NodeRegistration {
+                    operator,
+                    validator_key: vk.into(),
+                    node_id: nid.into(),
+                    beaconer,
+                    attestation: attestation.into(),
+                    signature: signature.into(),
+                    operator_key: signer.public_key().bytes.into(),
+                    nonce,
+                    expiry,
+                };
+                let sent = call(&rpc, "aether_sendRegistration", json!([item]))?;
+                let hash: TxHash = serde_json::from_value(sent["hash"].clone()).map_err(|e| e.to_string())?;
+                println!("tx {hash}  from {operator}  nonce {nonce}  (signed with P-256)");
+                wait_for_receipt(&rpc, hash)?
+            } else {
+                let input = aether_execution::registry::encode_register(vk, nid, beaconer, r, s);
+                let c = EvmCall { to: Some(aether_execution::registry::REGISTRY), value: U256::ZERO, input, gas_limit: 400_000, delegate: None };
+                submit_with_tip(&rpc, from_dev, None, c, true, tip)?
+            };
+            if receipt["receipt"]["success"] != json!(true) {
                 return Err("registration reverted (this Mac or voting key is already registered?)".into());
             }
             Ok(())
@@ -2949,6 +2979,10 @@ fn dev_address(dev: u8) -> Result<Address, String> {
     aether_crypto::address_of(&s.public_key()).map_err(|e| e.to_string())
 }
 
+fn candidate_registration_uses_lane(status: &Value) -> bool {
+    status["free_registration"].as_bool().unwrap_or(false)
+}
+
 /// Fee caps from the node's next base fees: 2x headroom (~70 full blocks of
 /// growth) plus a 1 gwei tip; only the actual base + tip is charged.
 const TIP: u128 = 1_000_000_000;
@@ -2971,8 +3005,8 @@ fn submit(rpc: &str, dev: u8, nonce: Option<u64>, c: EvmCall, wait: bool) -> Res
     submit_with_tip(rpc, dev, nonce, c, wait, TIP)
 }
 
-/// `submit` with an explicit priority fee: 0 lets a zero-balance account send
-/// (its tx only needs the base fee, which an empty block still covers).
+/// `submit` with an explicit priority fee; a zero tip does not waive base or
+/// state-growth fees on the contract transaction path.
 fn submit_with_tip(rpc: &str, dev: u8, nonce: Option<u64>, c: EvmCall, wait: bool, tip: u128) -> Result<Value, String> {
     let signer = P256Signer::from_seed(&dev_seed(dev)).map_err(|e| e.to_string())?;
     let from = aether_crypto::address_of(&signer.public_key()).map_err(|e| e.to_string())?;
@@ -3003,6 +3037,10 @@ fn submit_with_tip(rpc: &str, dev: u8, nonce: Option<u64>, c: EvmCall, wait: boo
     if !wait {
         return Ok(Value::Null);
     }
+    wait_for_receipt(rpc, hash)
+}
+
+fn wait_for_receipt(rpc: &str, hash: TxHash) -> Result<Value, String> {
     for _ in 0..60 {
         let r = call(rpc, "aether_getReceipt", json!([hash]))?;
         if r.get("receipt").is_some() {
@@ -3129,6 +3167,13 @@ fn print_blocks(v: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn candidate_registration_selects_free_lane_only_when_advertised() {
+        assert!(candidate_registration_uses_lane(&json!({ "free_registration": true })));
+        assert!(!candidate_registration_uses_lane(&json!({ "free_registration": false })));
+        assert!(!candidate_registration_uses_lane(&json!({ "chain_id": 7780 })));
+    }
 
     #[test]
     fn default_reshare_timeout_exceeds_four_player_child_return() {

@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="description" content="EastSea privacy policy: what the node-registration service and the apps collect (Apple DeviceCheck token, IP address at registration), for what purposes, how long it is kept, the transfer to Apple, and your rights. No analytics in the wallet.">
+<title>개인정보 처리방침 · Privacy policy — EastSea</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%230b1622'/%3E%3Cpath d='M14 35q7-9 14 0t14 0' fill='none' stroke='%23e2a94f' stroke-width='5' stroke-linecap='round'/%3E%3Cpath d='M20 45q5-6 10 0t10 0' fill='none' stroke='%237fd8cb' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="styles.css">
+<script>
+/* Language: stored choice first (try/catch — storage can be blocked), then navigator.language.
+   Runs before <body> so the right language paints immediately. No network, no cookies. */
+(function () {
+  var saved = null;
+  try { saved = localStorage.getItem("eastsea-lang"); } catch (e) { /* storage unavailable */ }
+  var lang = (saved === "ko" || saved === "en")
+    ? saved
+    : ((navigator.language || "en").toLowerCase().indexOf("ko") === 0 ? "ko" : "en");
+  document.documentElement.lang = lang;
+})();
+</script>
+</head>
+<body>
+<a class="skip" href="#main">
+  <span class="ko" lang="ko">본문으로 건너뛰기</span>
+  <span class="en" lang="en">Skip to content</span>
+</a>
+
+<header class="site-header">
+  <div class="container header-row">
+    <a class="brand" href="index.html">
+      <svg class="brand-mark" viewBox="0 0 64 64" role="img" aria-label="EastSea doubloon mark" focusable="false">
+        <circle cx="32" cy="32" r="28" fill="var(--gold)" stroke="var(--coin-rim)" stroke-width="3"/>
+        <path d="M15 34q7-9 14 0t14 0" fill="none" stroke="var(--navy-deep)" stroke-width="4.5" stroke-linecap="round"/>
+        <path d="M20 44q5-6 10 0t10 0" fill="none" stroke="var(--navy-deep)" stroke-width="3.5" stroke-linecap="round" opacity=".55"/>
+      </svg>
+      <span class="brand-name">동해<em>EastSea</em></span>
+    </a>
+    <button id="lang-toggle" type="button" aria-label="한국어 · English">
+      <span class="ko" lang="ko">EN</span>
+      <span class="en" lang="en">한글</span>
+    </button>
+  </div>
+</header>
+
+<main id="main">
+
+  <section class="section" aria-labelledby="privacy-title">
+    <div class="container">
+      <p class="kicker">
+        <span class="ko" lang="ko">개인정보</span>
+        <span class="en" lang="en">Privacy</span>
+      </p>
+      <h1 id="privacy-title">
+        <span class="ko" lang="ko">개인정보 처리방침</span>
+        <span class="en" lang="en">Privacy policy</span>
+      </h1>
+      <p class="lede">
+        <span class="ko" lang="ko">주식회사 핀(Pipln, 이하 "회사")은 동해(EastSea) 네트워크의 투표 노드 등록 서비스를 제공하기 위해 최소한의 개인정보만 처리합니다. 이 방침은 무엇을 수집하고, 왜, 얼마나 보관하는지, Apple(미국)으로의 이전, 그리고 이용자의 권리를 설명합니다. 시행일: 2026년 10월 4일.</span>
+        <span class="en" lang="en">Pipln Inc. (the "company") processes the minimum personal data needed to run the registration service for EastSea voting nodes. This policy explains what is collected and why, how long it is kept, the transfer to Apple (USA), and your rights. Effective October 4, 2026.</span>
+      </p>
+
+      <h2>
+        <span class="ko" lang="ko">1. 이 방침이 다루는 것</span>
+        <span class="en" lang="en">1. What this policy covers</span>
+      </h2>
+      <p>
+        <span class="ko" lang="ko">이 방침은 동해 지갑·노드 소프트웨어와, 투표 노드 등록 시 쓰이는 Pipln 등록 서비스의 개인정보 처리를 설명합니다. 이 웹사이트 자체는 쿠키·추적 도구 없이 동작하며, 언어 선택만 여러분 기기의 localStorage에 저장됩니다.</span>
+        <span class="en" lang="en">This policy covers the EastSea wallet and node software, and the Pipln registration service used when you register a voting node. This website itself runs without cookies or trackers; your language choice is stored only in your device's localStorage.</span>
+      </p>
+
+      <h2>
+        <span class="ko" lang="ko">2. 수집하는 항목</span>
+        <span class="en" lang="en">2. What is collected</span>
+      </h2>
+      <p>
+        <span class="ko" lang="ko">투표 노드 등록 요청 시, 등록 서비스는 다음을 받습니다:</span>
+        <span class="en" lang="en">When you register a voting node, the registration service receives:</span>
+      </p>
+      <ul class="check-list">
+        <li>
+          <span class="ko" lang="ko"><strong>네트워크 IP 주소</strong> — 등록 요청 시점의 접속 주소</span>
+          <span class="en" lang="en"><strong>Your network IP address</strong> — the connection address at the moment of registration</span>
+        </li>
+        <li>
+          <span class="ko" lang="ko"><strong>Apple DeviceCheck 기기 확인 토큰</strong> — 기기 정품·중복 등록 확인용 일회성 값</span>
+          <span class="en" lang="en"><strong>The Apple DeviceCheck token</strong> — a one-time value used to check hardware genuineness and duplicate registrations</span>
+        </li>
+        <li>
+          <span class="ko" lang="ko"><strong>노드 식별자(iroh Node ID)와 투표 공개키</strong> — 등록 기록의 공개 구성 요소</span>
+          <span class="en" lang="en"><strong>Your node identifier (iroh Node ID) and voting public key</strong> — the public parts of the registration record</span>
+        </li>
+      </ul>
+      <p>
+        <span class="ko" lang="ko">지갑 개인키(Secure Enclave·브라우저 암호화), 잔액, 거래 기록, 보상 내역은 여러분의 기기에만 있으며 서버로 전송되지 않습니다. 지갑·노드 앱에는 분석 도구가 없고, 사용 통계도 수집·전송하지 않습니다.</span>
+        <span class="en" lang="en">Wallet private keys (Secure Enclave, or encrypted in the browser), balances, transaction history and reward records stay on your device and are never sent to a server. The wallet and node apps contain no analytics; no usage statistics are collected or sent.</span>
+      </p>
+
+      <h2>
+        <span class="ko" lang="ko">3. 수집·이용 목적</span>
+        <span class="en" lang="en">3. Purposes</span>
+      </h2>
+      <p>
+        <span class="ko" lang="ko">1기기 1투표 노드 검증, 시빌(Sybil) 공격 방지 및 부정 등록 차단을 위해서입니다(개인정보보호법 제15조 제1항 제4호에 따른 서비스 이용 계약의 체결 및 이행). 이 외의 목적으로 판매·제공하지 않습니다.</span>
+        <span class="en" lang="en">To verify one voting node per device, and to prevent Sybil attacks and fraudulent registrations (performance of the service contract, under Article 15(1)4 of the Personal Information Protection Act). It is not sold or used for any other purpose.</span>
+      </p>
+
+      <h2>
+        <span class="ko" lang="ko">4. 보유 및 파기</span>
+        <span class="en" lang="en">4. Retention and destruction</span>
+      </h2>
+      <ul class="check-list">
+        <li>
+          <span class="ko" lang="ko"><strong>Apple DeviceCheck 토큰</strong> — 검증 즉시 파기되며 서버에 저장되지 않습니다.</span>
+          <span class="en" lang="en"><strong>Apple DeviceCheck token</strong> — destroyed immediately after verification; never stored on our servers.</span>
+        </li>
+        <li>
+          <span class="ko" lang="ko"><strong>IP 주소 및 등록 로그</strong> — 부정 등록 방지를 위해 등록 완료 후 최대 30일간 보관한 뒤 파기합니다.</span>
+          <span class="en" lang="en"><strong>IP addresses and registration logs</strong> — kept up to 30 days after registration to prevent fraud, then destroyed.</span>
+        </li>
+        <li>
+          <span class="ko" lang="ko"><strong>노드 식별자·투표 공개키</strong> — 네트워크의 공개 등록 기록을 구성하므로, 노드가 등록된 동안 공개적으로 존재합니다.</span>
+          <span class="en" lang="en"><strong>Node identifier and voting public key</strong> — part of the network's public registration record, so they remain public while the node stays registered.</span>
+        </li>
+      </ul>
+
+      <h2>
+        <span class="ko" lang="ko">5. 개인정보의 국외 이전 (Apple)</span>
+        <span class="en" lang="en">5. Cross-border transfer (Apple)</span>
+      </h2>
+      <div class="table-wrap">
+        <table>
+          <caption>
+            <span class="ko" lang="ko">Apple로의 이전 내역</span>
+            <span class="en" lang="en">What is transferred to Apple</span>
+          </caption>
+          <tbody>
+            <tr>
+              <th scope="row"><span class="ko" lang="ko">이전받는 자</span><span class="en" lang="en">Recipient</span></th>
+              <td>Apple Inc. <span class="ko" lang="ko">(미국 캘리포니아주 쿠퍼티노)</span><span class="en" lang="en"> (Cupertino, California, USA)</span></td>
+            </tr>
+            <tr>
+              <th scope="row"><span class="ko" lang="ko">이전 항목</span><span class="en" lang="en">Item</span></th>
+              <td><span class="ko" lang="ko">Apple DeviceCheck 토큰</span><span class="en" lang="en">The Apple DeviceCheck token</span></td>
+            </tr>
+            <tr>
+              <th scope="row"><span class="ko" lang="ko">이전 목적</span><span class="en" lang="en">Purpose</span></th>
+              <td><span class="ko" lang="ko">Apple 하드웨어 정품 및 중복 등록 여부 확인</span><span class="en" lang="en">Checking hardware genuineness and duplicate registrations</span></td>
+            </tr>
+            <tr>
+              <th scope="row"><span class="ko" lang="ko">일시 및 방법</span><span class="en" lang="en">When and how</span></th>
+              <td><span class="ko" lang="ko">노드 등록 요청 시 HTTPS 암호화 통신으로 실시간 전송</span><span class="en" lang="en">At the registration request, in real time over encrypted HTTPS</span></td>
+            </tr>
+            <tr>
+              <th scope="row"><span class="ko" lang="ko">거부 권리</span><span class="en" lang="en">Right to refuse</span></th>
+              <td><span class="ko" lang="ko">거부할 수 있으나, 거부 시 투표 노드 등록은 불가합니다(지갑 이용은 가능)</span><span class="en" lang="en">You may refuse; registration as a voting node is then unavailable (the wallet still works)</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>
+        <span class="ko" lang="ko">6. 이용자의 권리</span>
+        <span class="en" lang="en">6. Your rights</span>
+      </h2>
+      <p>
+        <span class="ko" lang="ko">개인정보보호법 등 관련 법령에 따라, 자신의 개인정보에 대한 열람·정정·삭제·처리 정지 및 동의 철회를 요구할 수 있습니다. 아래 연락처로 요청하시면 법령이 정한 기한 안에 조치하고 결과를 알립니다.</span>
+        <span class="en" lang="en">Under the Personal Information Protection Act and related laws, you may request access to, correction, deletion of, or a halt to the processing of your personal data, and withdraw consent. Requests to the contact below are handled and answered within the statutory period.</span>
+      </p>
+
+      <h2>
+        <span class="ko" lang="ko">7. 문의</span>
+        <span class="en" lang="en">7. Contact</span>
+      </h2>
+      <p>
+        <span class="ko" lang="ko">개인정보 보호책임자: Pipln 개인정보 보호담당자 — <a href="mailto:privacy@eastsea.xyz">privacy@eastsea.xyz</a></span>
+        <span class="en" lang="en">Privacy officer: Pipln privacy officer — <a href="mailto:privacy@eastsea.xyz">privacy@eastsea.xyz</a></span>
+      </p>
+      <aside class="honest-box">
+        <p>
+          <span class="ko" lang="ko">※ 위 이메일 주소는 확정 전 자리표시자입니다(TODO-confirm). 서비스 공개 전 실제 수신 주소로 확정해야 합니다.</span>
+          <span class="en" lang="en">Note: the address above is a placeholder (TODO-confirm). It must be replaced with a working mailbox before public launch.</span>
+        </p>
+      </aside>
+
+      <h2>
+        <span class="ko" lang="ko">8. 방침의 변경</span>
+        <span class="en" lang="en">8. Changes to this policy</span>
+      </h2>
+      <p>
+        <span class="ko" lang="ko">방침이 바뀌면 이 페이지에 게시하고 시행일을 다시 적습니다. 수집 항목이 늘어나는 변경은 앱 안내 화면에도 알립니다.</span>
+        <span class="en" lang="en">If this policy changes, the updated version is published here with a new effective date. Changes that add new categories of collected data are also announced inside the apps.</span>
+      </p>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="container">
+    <p class="legal">
+      <span class="ko" lang="ko">동해는 투자·법률·세무 조언이 아닙니다. 전체 고지와 이용 약관은 저장소의 DISCLAIMER.md에 있습니다.</span>
+      <span class="en" lang="en">EastSea is not investment, legal or tax advice. The full disclaimer and terms live in DISCLAIMER.md in the repository.</span>
+    </p>
+    <p class="copyright">© 2026 Pipln ·
+      <span class="ko" lang="ko">코드는 MIT · Apache-2.0으로 공개됩니다.</span>
+      <span class="en" lang="en">code released under MIT and Apache-2.0.</span>
+    </p>
+    <p class="back-top"><a href="index.html">
+      <span class="ko" lang="ko">← 소개 페이지로</span>
+      <span class="en" lang="en">← Back to the main page</span>
+    </a></p>
+  </div>
+</footer>
+
+<script>
+/* Language toggle. Remembers the choice in localStorage (try/catch: storage can be
+   blocked in private modes). No cookies, no network. */
+(function () {
+  var root = document.documentElement;
+  var btn = document.getElementById("lang-toggle");
+  function apply() {
+    var lang = root.lang === "ko" ? "en" : "ko";
+    root.lang = lang;
+    try { localStorage.setItem("eastsea-lang", lang); } catch (e) { /* storage unavailable */ }
+  }
+  btn.addEventListener("click", apply);
+})();
+</script>
+</body>
+</html>

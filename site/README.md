@@ -10,7 +10,7 @@
 
 제약(지켜야 할 것): 외부 트래커 없음, 서드파티 CDN의 웹폰트·스크립트 없음(시스템
 폰트 스택), 쿠키 없음, 이미지 없음(인라인 SVG뿐). 유일한 상태 저장은 언어 선택
-`localStorage["eastsea-lang"]`(try/catch 감싸짐). 총 용량 약 52KB.
+`localStorage["eastsea-lang"]`(try/catch 감싸짐). 총 용량 약 62KB.
 
 ## 미리보기
 
@@ -75,6 +75,7 @@ python3 -m http.server -d site    # http://localhost:8000
 | FAQ 토큰 세일: 창업자도 같은 규칙으로 맥을 가동해야 보상 | `README.md` §Planned mainnet rules |
 | AI 에이전트 지갑: 한도·수신인·기한을 Touch ID로 설정, 체인이 강제, 속은 에이전트도 한도 내만 | `AGENTS.md`, `agents/skills/aether-wallet/SKILL.md` |
 | 푸터 법적 문구("조언 아님"·as-is·DISCLAIMER.md 안내) | `DISCLAIMER.md` |
+| 푸터·privacy.html 전체(수집 항목·목적·보유·Apple 국외이전·권리·연락처) | `docs/ops/privacy-policy.md`(표준 원본), 메모 §3.4 초안; 등록 수집 사실은 `docs/design/14-registration.md`, `DISCLAIMER.md` §4 |
 | 푸터 상표 문장(권리 주장·등록 준비 중) | `TRADEMARKS.md` |
 
 의도적 생략: `docs/design/15-node-rewards.md`의 AETH 표기(레거시), 보관(sharding)·

@@ -53,7 +53,7 @@ scripts/build-extension.sh        # then load apps/extension unpacked from chrom
 ```
 
 - **No app needed:** the key is made in the browser and encrypted with your password.
-- **Pages:** get `window.aether` (EIP-1193, announced through EIP-6963). EastSea DEX and the launchpad demo use it when it is installed.
+- **Pages:** get `window.aether` (EIP-1193, announced through EIP-6963). The EastSea DEX page uses it when it is installed; so does the open-source launchpad page — community-hosted, not hosted or promoted by Pipln.
 - **Approvals:** connecting a site and every transaction open an approval window.
 - Details: [apps/extension/README.md](apps/extension/README.md).
 

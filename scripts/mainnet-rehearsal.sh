@@ -29,6 +29,7 @@
 #   - blocks finalize and the four validators agree on the state root;
 #   - empty blocks are quiet under history v2 (no statement, root unchanged);
 #   - no premine and no faucet: dev accounts are unfunded, the faucet RPC refuses;
+#   - a submitted block proof is accepted and earns a positive proof reward;
 #   - the first epochs distribute exactly: the node pool of an epoch is the
 #     epoch's issuance halves (rewards::issuance) and a fresh Mac's operator gets
 #     pool × k × WARMUP_STEPS / (MAX_SHARE × FULL) for the k slots it answered
@@ -144,21 +145,36 @@ else
 fi
 
 echo "== aether run × 9 (validators 1-4, reserve keys 5-7, candidates 8-9)"
+[ -x "$(dirname "$A")/aether-prover" ] || { echo "rehearsal needs aether-prover beside $A" >&2; exit 1; }
 mkdir -p "$D/peers"
 for k in "${!names[@]}"; do
   others=""
   for j in "${!names[@]}"; do [ "$j" = "$k" ] || others+="${others:+,}http://127.0.0.1:${rpcp[$j]}"; done
+  # c1 proves through c2 first, exercising the follower relay for both the
+  # program compatibility check and proof submission before a validator.
+  if [ "${names[$k]}" = c1 ]; then others="http://127.0.0.1:${rpcp[8]},$others"; fi
   args=(run --exit-with-parent --data "$D/${names[$k]}" --network "$D/network.json" --ceremony "$D/ceremony-check.json"
     --port "${p2p[$k]}" --rpc-port "${rpcp[$k]}" --reshare-port "${resh[$k]}"
     --dev-peer-dir "$D/peers" --node-arg=--block-time-ms=$BLOCK_MS
     "--follow-arg=--from-rpc=$others" --reshare-timeout 120)
   if [ "${names[$k]}" = g1 ]; then args+=(--node-arg=--dev-registrar); fi
-  RUST_LOG=info,commonware=warn nohup "$A" "${args[@]}" > "$D/${names[$k]}.log" 2>&1 &
+  if [ "${names[$k]}" = c1 ]; then
+    AETHER_PROVE="$founder" RUST_LOG=info,commonware=warn nohup "$A" "${args[@]}" > "$D/${names[$k]}.log" 2>&1 &
+  else
+    RUST_LOG=info,commonware=warn nohup "$A" "${args[@]}" > "$D/${names[$k]}.log" 2>&1 &
+  fi
   PIDS+=($!)
 done
 
 echo "== waiting for finalized blocks"
 if wait_height "${rpcp[0]}" 12 180; then ok "blocks finalize (validator 1 reached height ≥ 12)"; else bad "no finalized blocks (see $D/*.log)"; fi
+program=$(rpc aether_proverProgram '[]' "${rpcp[0]}" | jget 'd["result"]')
+relayed=$(rpc aether_proverProgram '[]' "${rpcp[8]}" | jget 'd["result"]')
+if [[ "$program" =~ ^[0-9a-f]{64}$ ]] && [ "$program" = "$relayed" ]; then
+  ok "a follower relays the validator's proof program ($program)"
+else
+  bad "proof program relay differs (validator '$program', follower '$relayed')"
+fi
 h=$(height "${rpcp[0]}")
 roots=""
 for k in 0 1 2 3; do
@@ -279,6 +295,31 @@ print("%d epochs, amounts %s" % (len(rows), sorted({int(r["amount"], 16) for r i
   fi
 else
   bad "the chain did not reach the next epochs"
+fi
+
+echo "== proof reward (a produced proof must be accepted and paid)"
+deadline=$((SECONDS + 120))
+proof_reward=""
+while [ "$SECONDS" -lt "$deadline" ]; do
+  raw=$(rpc aether_rewards "[\"$founder\",10000]" "${rpcp[0]}")
+  proof_reward=$(printf '%s' "$raw" | python3 -c '
+import json, sys
+try:
+    rows = json.load(sys.stdin)["result"]
+    good = [r for r in rows if r.get("kind") == "proof"
+            and int(r["amount"], 16) > 0
+            and int(r["proven"]) < int(r["height"])]
+    print(f"{len(good)} paid proof(s)" if good else "")
+except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+    print("")
+')
+  [ -n "$proof_reward" ] && break
+  sleep 5
+done
+if [ -n "$proof_reward" ]; then
+  ok "$proof_reward for the founder (kind=proof, positive amount, paid after proven height)"
+else
+  bad "no paid proof reward for founder; prover and verifier logs: $D/g1.log"
 fi
 
 echo "== founder reserve keys stay out of a full (4-seat) committee"

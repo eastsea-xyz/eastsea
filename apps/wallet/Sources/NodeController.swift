@@ -87,8 +87,12 @@ final class NodeController: ObservableObject {
         let last_txs: Int?
         let last_seconds: Double?
         let proofs: UInt64?
+        let proofs_failing: Bool?
+        let acceptance_rate_percent: UInt8?
+        let program_unknown: Bool?
+        let program_mismatch: Bool?
         let error: String?
-        /// Why proving is paused right now ("memory", "pressure", "battery", "disk").
+        /// Why proving is paused right now ("memory", "pressure", "battery", "disk", "program").
         let paused: String?
         /// The sidecar's physical footprint at the last sample, and its cap.
         let memory_bytes: UInt64?

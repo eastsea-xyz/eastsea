@@ -2510,6 +2510,9 @@ fn start_prover(
     };
     let status = aether_node::prover::SharedStatus::default();
     let handle = tokio::runtime::Handle::current();
+    let network_handle = handle.clone();
+    let network_upstream = upstream.clone();
+    let network_chain = chain.clone();
     let target = chain.clone();
     spawn_service(
         chain.clone(),
@@ -2518,6 +2521,18 @@ fn start_prover(
         sidecar,
         payout,
         status.clone(),
+        move || match &network_upstream {
+            Some(up) => {
+                let answer = network_handle.block_on(up.first("aether_proverProgram", json!([])))?;
+                answer
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| "validator does not report its proof program".into())
+            }
+            None => network_chain.lock().verifier.as_ref()
+                .and_then(|v| v.program_id())
+                .ok_or_else(|| "local validator has no proof verifier program".into()),
+        },
         move |claim| match &upstream {
             // The prover thread waits for the validator's answer (and retries on refusal).
             Some(up) => handle

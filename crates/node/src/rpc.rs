@@ -49,6 +49,99 @@ pub struct RpcState {
     /// Set on history v2 networks: the era shards this node holds and checks
     /// (roadmap B5 phase 1).
     pub shards: Option<std::sync::Arc<crate::shards::Shards>>,
+    /// The public read-only gateway mode (`--public-read-only`,
+    /// docs/ops/read-gateway.md): only the reads the explorer uses pass; every
+    /// write, node-local and heavy method is refused, and the caps below apply.
+    /// The bind stays loopback either way — exposure goes through a tunnel.
+    pub public_read_only: bool,
+}
+
+/// What the public read-only gateway lets through `handle_value`: exactly the
+/// reads the explorer calls (apps/explorer/js) plus the light-client reads its
+/// account verification needs. Everything else — the faucet, every send and
+/// registration, snapshots, shards, era chunks — is refused, so a gateway can
+/// never relay a transaction or trigger node-side work.
+const PUBLIC_READ_METHODS: &[&str] = &[
+    "aether_status",
+    "aether_recentBlocks",
+    "aether_candidates",
+    "aether_proverStatus",
+    "aether_getBlock",
+    "aether_getReceipt",
+    "aether_getAccount",
+    "aether_getFinalized",
+    "aether_history",
+    "aether_historyProof",
+    "aether_eraInfo",
+    "aether_eraProof",
+    "aether_rewards",
+    "aether_accountHistory",
+    "eth_blockNumber",
+    "eth_call",
+    "eth_getLogs",
+];
+
+/// Public-gateway caps (docs/research/public-read-access-2026-10-05.md §8a):
+/// a stranger's request may cost at most this much.
+/// Largest request body accepted from the public (HTTP body limit).
+pub const PUBLIC_MAX_BODY: usize = 1 << 20;
+/// Calls per JSON-RPC batch.
+pub const PUBLIC_MAX_BATCH: usize = 8;
+/// Blocks per `eth_getLogs` query (the same window the handler scans).
+pub const PUBLIC_GETLOGS_WINDOW: u64 = 2_000;
+/// Gas an `eth_call` may run (the private answer is the block gas limit).
+pub const PUBLIC_CALL_GAS: u64 = 1_000_000;
+/// Rows per `aether_rewards` answer.
+pub const PUBLIC_REWARDS_LIMIT: u64 = 1_000;
+/// Rows per `aether_accountHistory` page.
+pub const PUBLIC_HISTORY_LIMIT: u64 = 100;
+
+/// The public gateway's gate, run after alias normalization and before any
+/// handler or upstream forwarding: method allowlist first, then the per-method
+/// caps a request states itself.
+fn public_gate(st: &RpcState, method: &str, p: &Value) -> Result<(), (i64, String)> {
+    if !PUBLIC_READ_METHODS.contains(&method) {
+        return Err((-32601, format!("public read-only gateway: {method} is not a public read method (docs/ops/read-gateway.md); writes and node-local methods are refused")));
+    }
+    match method {
+        // A window wider than the node scans is refused, not silently clamped:
+        // the asker learns the cap instead of an answer that pretends completeness.
+        "eth_getLogs" => {
+            let f = p.get(0).cloned().unwrap_or_default();
+            let head = st.chain.lock().finalized.height;
+            // The range the request itself states, before the handler clamps
+            // it to what this node kept: the cap judges the ask, not the answer.
+            let to = block_param(&f, "toBlock", head);
+            let from = block_param(&f, "fromBlock", head);
+            if to.saturating_sub(from) >= PUBLIC_GETLOGS_WINDOW {
+                return Err((-32002, format!("public read-only gateway: eth_getLogs is capped at {PUBLIC_GETLOGS_WINDOW} blocks per query; ask a narrower range")));
+            }
+        }
+        "eth_call" => {
+            if let Some(c) = p.get(0) {
+                let asked = match c.get("gas") {
+                    Some(Value::String(s)) => u64::from_str_radix(s.trim_start_matches("0x"), 16).ok(),
+                    Some(Value::Number(n)) => n.as_u64(),
+                    _ => None,
+                };
+                if asked.is_some_and(|g| g > PUBLIC_CALL_GAS) {
+                    return Err((-32002, format!("public read-only gateway: eth_call gas is capped at {PUBLIC_CALL_GAS}")));
+                }
+            }
+        }
+        "aether_rewards" => {
+            if p.get(1).and_then(Value::as_u64).is_some_and(|l| l > PUBLIC_REWARDS_LIMIT) {
+                return Err((-32002, format!("public read-only gateway: aether_rewards limit is capped at {PUBLIC_REWARDS_LIMIT} rows")));
+            }
+        }
+        "aether_accountHistory" => {
+            if p.get(2).and_then(Value::as_u64).is_some_and(|l| l > PUBLIC_HISTORY_LIMIT) {
+                return Err((-32002, format!("public read-only gateway: aether_accountHistory limit is capped at {PUBLIC_HISTORY_LIMIT} rows")));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// The snapshot being served: (height, serialized bytes). One caller builds;
@@ -162,6 +255,17 @@ pub fn blake3_hex(b: &[u8]) -> String {
 pub async fn serve(addr: SocketAddr, state: RpcState) -> std::io::Result<()> {
     // Loopback only; any origin may ask (web pages and dApps read through this
     // node; every write still needs the user's signature in the wallet).
+    // The public read-only gateway is no exception: it binds loopback too and
+    // reaches the internet only through a cloudflared tunnel
+    // (docs/ops/read-gateway.md). Refusing a non-loopback bind here beats
+    // relying on the operator remembering that at 3 a.m.
+    let public = state.public_read_only;
+    if public && !addr.ip().is_loopback() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("--public-read-only binds loopback only (asked for {addr}); expose it through a tunnel, docs/ops/read-gateway.md"),
+        ));
+    }
     let cors = tower_http::cors::CorsLayer::new()
         .allow_origin(tower_http::cors::Any)
         .allow_methods([axum::http::Method::POST, axum::http::Method::GET, axum::http::Method::OPTIONS])
@@ -173,12 +277,37 @@ pub async fn serve(addr: SocketAddr, state: RpcState) -> std::io::Result<()> {
         .route("/era/{name}", get(serve_era_file))
         .layer(cors)
         .with_state(state);
+    // The public gateway also caps what one request may make this node parse:
+    // an oversized Content-Length is refused at the head, with a 413 the asker
+    // can read; DefaultBodyLimit backstops a chunked or lying body.
+    let app = if public {
+        app.layer(axum::extract::DefaultBodyLimit::max(PUBLIC_MAX_BODY))
+            .layer(axum::middleware::from_fn(public_body_cap))
+    } else {
+        app
+    };
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await
 }
 
 async fn handle(State(st): State<RpcState>, Json(req): Json<Value>) -> Json<Value> {
     Json(handle_value(&st, req).await)
+}
+
+/// The public gateway refuses an oversized request at the header stage, so the
+/// asker gets a readable 413 instead of a connection dropped mid-body.
+async fn public_body_cap(req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    let over = req
+        .headers()
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<usize>().ok())
+        .is_some_and(|n| n > PUBLIC_MAX_BODY);
+    if over {
+        return (axum::http::StatusCode::PAYLOAD_TOO_LARGE, "public read-only gateway: request body is capped at 1 MiB (docs/ops/read-gateway.md)").into_response();
+    }
+    next.run(req).await
 }
 
 /// `GET /era/<file>`: a whole era file from this node's era folder — a
@@ -221,10 +350,39 @@ fn normalize_method(method: &str) -> std::borrow::Cow<'_, str> {
 }
 
 /// Transport-independent JSON-RPC handling (HTTP on loopback, iroh QUIC publicly).
+/// A request array is a batch, answered entry by entry; entries may not nest.
 pub async fn handle_value(st: &RpcState, req: Value) -> Value {
+    if let Value::Array(entries) = &req {
+        if entries.is_empty() {
+            return json!({ "jsonrpc": "2.0", "id": Value::Null, "error": { "code": -32600, "message": "empty batch" } });
+        }
+        if st.public_read_only && entries.len() > PUBLIC_MAX_BATCH {
+            return json!({ "jsonrpc": "2.0", "id": Value::Null,
+                "error": { "code": -32002, "message": format!("public read-only gateway: batches are capped at {PUBLIC_MAX_BATCH} calls") } });
+        }
+        let mut answers = Vec::with_capacity(entries.len());
+        for e in entries {
+            answers.push(match e {
+                Value::Object(_) => single(st, e.clone()).await,
+                _ => json!({ "jsonrpc": "2.0", "id": Value::Null, "error": { "code": -32600, "message": "batch entries must be objects" } }),
+            });
+        }
+        return json!(answers);
+    }
+    single(st, req).await
+}
+
+async fn single(st: &RpcState, req: Value) -> Value {
     let id = req.get("id").cloned().unwrap_or(Value::Null);
     let method = normalize_method(req.get("method").and_then(Value::as_str).unwrap_or_default());
     let params = req.get("params").cloned().unwrap_or(Value::Array(vec![]));
+    // Before any handler or upstream hop: on the public gateway only the
+    // allowlisted reads (within their caps) reach the machinery in RpcState.
+    if st.public_read_only {
+        if let Err((code, msg)) = public_gate(st, &method, &params) {
+            return json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": msg } });
+        }
+    }
     let result = match &*method {
         "aether_getFinalized" => finalized(st, &params).await,
         "aether_getReceiptProof" => receipt_proof(st, &params).await,
@@ -746,7 +904,8 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
         // The newest rewards (at most 10,000 per call; the app asks for all of them for tax records).
         "aether_rewards" => {
             let a: Address = param(p, 0)?;
-            let limit = p.get(1).and_then(Value::as_u64).unwrap_or(1_000).min(10_000) as usize;
+            let cap = if st.public_read_only { PUBLIC_REWARDS_LIMIT } else { 10_000 };
+            let limit = p.get(1).and_then(Value::as_u64).unwrap_or(1_000).min(cap) as usize;
             Ok(json!(chain.recent_rewards(&a, limit)))
         }
         // Rewards, paged: `aether_rewards` answers one newest-first array whose
@@ -763,7 +922,8 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
             let address: Address = param(p, 0)?;
             let cursor = p.get(1).filter(|v| !v.is_null()).map(|v| v.as_str().ok_or((-32602, "cursor must be a string".to_string()))).transpose()?;
             let limit = p.get(2).filter(|v| !v.is_null()).map(|v| v.as_u64().ok_or((-32602, "limit must be a positive integer".to_string()))).transpose()?.unwrap_or(50);
-            if !(1..=200).contains(&limit) { return Err((-32602, "limit must be 1..200".into())); }
+            let cap = if st.public_read_only { PUBLIC_HISTORY_LIMIT } else { 200 };
+            if !(1..=cap).contains(&limit) { return Err((-32602, format!("limit must be 1..{cap}"))); }
             Ok(json!(chain.account_history(&address, cursor, limit as usize).map_err(|e| (-32000, e))?))
         }
         "aether_sendTransaction" => {
@@ -840,7 +1000,7 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
         }
         // Minimal Ethereum-compatible reads.
         "eth_chainId" => Ok(json!(format!("0x{:x}", chain.cfg().chain_id))),
-        "eth_call" => eth_call(chain, p),
+        "eth_call" => eth_call(chain, p, if st.public_read_only { PUBLIC_CALL_GAS } else { PRIVATE_CALL_GAS }),
         "eth_getLogs" => eth_get_logs(chain, p),
         "eth_blockNumber" => Ok(json!(format!("0x{:x}", chain.lock().finalized.height))),
         "eth_getBalance" => {
@@ -887,42 +1047,43 @@ fn release_entries(state: &aether_execution::WorldState, address: Address, start
     json!({ "count": count, "height": height, "entries": entries })
 }
 
+/// A chain at genesis in an `RpcState` with nothing attached — enough to
+/// check routing, gates and errors (shared by the test modules below).
+#[cfg(test)]
+fn bare_state() -> RpcState {
+    let (chain, _) = Chain::new(crate::chain::ChainConfig {
+        chain_id: 7781,
+        limits: aether_types::GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
+        alloc: vec![], fees: false, registrar: None, epoch_blocks: 0,
+        min_streak: None, draw_epochs: None, history_v2: false, protocol: 1,
+        node_rewards: false, committee: vec![], reserve: None, group: 0,
+        max_committee: crate::rotation::GROW_UNTIL,
+    });
+    let (gossip, _) = mpsc::unbounded_channel();
+    RpcState {
+        chain,
+        finality: Finality::Archive(Arc::new(crate::follow::FinalityArchive::default())),
+        gossip,
+        faucet: None,
+        registrar: None,
+        network: None,
+        upstream: None,
+        handoff: None,
+        snapshot: Default::default(),
+        prover: None,
+        shards: None,
+        public_read_only: false,
+    }
+}
+
+#[cfg(test)]
+async fn call(st: &RpcState, method: &str, params: Value) -> Value {
+    handle_value(st, json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params })).await
+}
+
 #[cfg(test)]
 mod alias_tests {
     use super::*;
-
-    /// docs/design/25-rename.md phase 4: the project is EastSea now, so every
-    /// `aether_*` method must also answer under an `eastsea_*` spelling — with
-    /// byte-identical responses and errors. A chain at genesis is enough: the
-    /// alias may change which spelling reaches a handler, never what it answers.
-    fn bare_state() -> RpcState {
-        let (chain, _) = Chain::new(crate::chain::ChainConfig {
-            chain_id: 7781,
-            limits: aether_types::GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
-            alloc: vec![], fees: false, registrar: None, epoch_blocks: 0,
-            min_streak: None, draw_epochs: None, history_v2: false, protocol: 1,
-            node_rewards: false, committee: vec![], reserve: None, group: 0,
-            max_committee: crate::rotation::GROW_UNTIL,
-        });
-        let (gossip, _) = mpsc::unbounded_channel();
-        RpcState {
-            chain,
-            finality: Finality::Archive(Arc::new(crate::follow::FinalityArchive::default())),
-            gossip,
-            faucet: None,
-            registrar: None,
-            network: None,
-            upstream: None,
-            handoff: None,
-            snapshot: Default::default(),
-            prover: None,
-            shards: None,
-        }
-    }
-
-    async fn call(st: &RpcState, method: &str, params: Value) -> Value {
-        handle_value(st, json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params })).await
-    }
 
     #[test]
     fn receipt_proof_includes_ordered_receipts_and_the_height_certificate() {
@@ -1092,6 +1253,7 @@ mod release_tests {
             snapshot: Default::default(),
             prover: None,
             shards: None,
+            public_read_only: false,
         };
         st.snapshot.0.building.store(true, Ordering::Release);
         assert!(cached_snapshot(&st).unwrap_err().1.contains("already running"));
@@ -1112,6 +1274,212 @@ mod release_tests {
         assert_eq!(manifest["result"]["blake3"], blake3_hex(&first.1));
         let chunk = rt.block_on(handle_value(&st, json!({ "id": 3, "method": "aether_snapshotChunk", "params": [first.0, 0] })));
         assert_eq!(hex::decode(chunk["result"]["data"].as_str().unwrap()).unwrap(), *first.1);
+    }
+}
+
+/// The public read-only gateway (docs/research/public-read-access-2026-10-05.md
+/// §8a): allowlist, caps, aliasing and the loopback-only bind.
+#[cfg(test)]
+mod public_read_tests {
+    use super::*;
+
+    fn public_state() -> RpcState {
+        let mut st = bare_state();
+        st.public_read_only = true;
+        st
+    }
+
+    fn gate_error(v: &Value) -> bool {
+        v.get("error").and_then(|e| e["message"].as_str()).is_some_and(|m| m.contains("public read-only gateway"))
+    }
+
+    /// Every write, node-local and heavy method is refused before its handler
+    /// runs — the gateway can neither relay a transaction nor trigger node-side
+    /// work. Aliased spellings are refused too (the gate runs after normalize).
+    #[test]
+    fn every_write_and_node_local_method_is_refused() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let st = public_state();
+        let refused = [
+            // The research doc's refusal list, plus every other non-read method.
+            ("aether_sendTransaction", json!(["00"])),
+            ("aether_faucet", json!(["0x0000000000000000000000000000000000000001"])),
+            ("aether_registerDevice", json!(["t", "0x0000000000000000000000000000000000000001", "00", "00", "0x0000000000000000000000000000000000000001", "00"])),
+            ("aether_sendBeacon", json!([{}])),
+            ("aether_sendRegistration", json!([{}])),
+            ("aether_reattest", json!(["t", "00", 0, "00"])),
+            ("aether_signHandoff", json!([])),
+            ("aether_submitProof", json!([{}])),
+            ("aether_handoff", json!([])),
+            ("aether_snapshot", json!([])),
+            ("aether_snapshotChunk", json!([0, 0])),
+            ("aether_rotation", json!([])),
+            ("aether_network", json!([])),
+            ("aether_proverProgram", json!([])),
+            ("aether_eraChunk", json!([0, 0])),
+            ("aether_shard", json!([0, 0])),
+            ("aether_shardStats", json!([])),
+            ("aether_registrationNonce", json!(["0x0000000000000000000000000000000000000001"])),
+            ("aether_rewardStatus", json!([])),
+            ("aether_rewardsPage", json!(["0x0000000000000000000000000000000000000001"])),
+            ("aether_getReceiptProof", json!(["0x0000000000000000000000000000000000000000000000000000000000000001"])),
+            ("aether_getStorage", json!(["0x0000000000000000000000000000000000000001", "0x0"])),
+            ("aether_getCodeHash", json!(["0x0000000000000000000000000000000000000001"])),
+            ("aether_releaseEntries", json!(["0x0000000000000000000000000000000000000001"])),
+            ("eth_chainId", json!([])),
+            ("eth_getBalance", json!(["0x0000000000000000000000000000000000000001"])),
+            ("eth_getTransactionCount", json!(["0x0000000000000000000000000000000000000001"])),
+            ("eth_getCode", json!(["0x0000000000000000000000000000000000000001"])),
+            ("eastsea_faucet", json!(["0x0000000000000000000000000000000000000001"])),
+            ("eastsea_sendTransaction", json!(["00"])),
+            ("aether_nope", json!([])),
+        ];
+        for (method, params) in refused {
+            let answer = rt.block_on(call(&st, method, params));
+            assert_eq!(answer["error"]["code"], -32601, "{method} must be refused by name");
+            assert!(gate_error(&answer), "{method} must say it was the public gateway that refused");
+        }
+    }
+
+    /// Every allowlisted read reaches its handler: whatever it answers on a
+    /// genesis chain, the public gateway itself never stands in the way.
+    #[test]
+    fn allowlisted_reads_pass_the_gate() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let st = public_state();
+        let reads = [
+            ("aether_status", json!([])),
+            ("aether_recentBlocks", json!([])),
+            ("aether_candidates", json!([])),
+            ("aether_proverStatus", json!([])),
+            ("aether_getBlock", json!([0])),
+            ("aether_getReceipt", json!(["0x0000000000000000000000000000000000000000000000000000000000000001"])),
+            ("aether_getAccount", json!(["0x0000000000000000000000000000000000000001"])),
+            ("aether_getFinalized", json!([0])),
+            ("aether_history", json!([])),
+            ("aether_historyProof", json!([0, 0])),
+            ("aether_eraInfo", json!([0])),
+            ("aether_eraProof", json!([0, 0])),
+            ("aether_rewards", json!(["0x0000000000000000000000000000000000000001"])),
+            ("aether_accountHistory", json!(["0x0000000000000000000000000000000000000001"])),
+            ("eth_blockNumber", json!([])),
+            ("eth_call", json!([{ "to": "0x0000000000000000000000000000000000000001", "data": "0x" }])),
+            ("eth_getLogs", json!([{}])),
+            ("eastsea_status", json!([])),
+        ];
+        for (method, params) in reads {
+            let answer = rt.block_on(call(&st, method, params));
+            assert!(!gate_error(&answer), "{method} is an allowlisted read, the gateway must let it through: {answer}");
+        }
+        // And the reads that must actually answer something on a genesis chain.
+        assert_eq!(rt.block_on(call(&st, "aether_status", json!([])))["result"]["chain_id"], 7781);
+        assert_eq!(rt.block_on(call(&st, "eth_blockNumber", json!([])))["result"], "0x0");
+        assert!(rt.block_on(call(&st, "eth_getLogs", json!([{}])))["result"].is_array());
+        // Off the gateway the same writes keep working (aether_status is not
+        // the check; a refused method must still be reachable privately).
+        let private = bare_state();
+        let answer = rt.block_on(call(&private, "aether_network", json!([])));
+        assert!(answer["error"].is_null(), "privately the gate stays out of the way: {answer}");
+    }
+
+    /// The caps the request states about itself are enforced at the gate, not
+    /// silently clamped: the asker learns the number.
+    #[test]
+    fn caps_are_enforced() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let st = public_state();
+        let addr = json!(["0x0000000000000000000000000000000000000001"]);
+        let over = [
+            // A 8,192-block eth_getLogs window (the cap is 2,000).
+            ("eth_getLogs", json!([{ "fromBlock": "0x0", "toBlock": "0x2000" }])),
+            ("eth_call", json!([{ "to": "0x0000000000000000000000000000000000000001", "gas": format!("0x{:x}", PUBLIC_CALL_GAS + 1) }])),
+            ("aether_rewards", json!([addr, PUBLIC_REWARDS_LIMIT + 1])),
+            ("aether_accountHistory", json!([addr, null, PUBLIC_HISTORY_LIMIT + 1])),
+        ];
+        for (method, params) in over {
+            let answer = rt.block_on(call(&st, method, params));
+            assert_eq!(answer["error"]["code"], -32002, "{method} cap must be a clear error: {answer}");
+            assert!(gate_error(&answer), "{method} cap error must name the gateway: {answer}");
+        }
+        // The explorer's own shape passes: a 1,999-block window under the cap.
+        let answer = rt.block_on(call(&st, "eth_getLogs", json!([{ "fromBlock": "0x0", "toBlock": "0x7cf" }])));
+        assert!(!gate_error(&answer), "a 1,999-block window is the cap the node scans: {answer}");
+        // Batches: capped at PUBLIC_MAX_BATCH calls, and shaped like JSON-RPC.
+        let one = json!({ "jsonrpc": "2.0", "id": 1, "method": "aether_status", "params": [] });
+        let answer = rt.block_on(handle_value(&st, Value::Array(vec![one.clone(); PUBLIC_MAX_BATCH])));
+        assert!(answer.as_array().is_some_and(|a| a.len() == PUBLIC_MAX_BATCH), "8 calls answer one by one: {answer}");
+        let answer = rt.block_on(handle_value(&st, Value::Array(vec![one; PUBLIC_MAX_BATCH + 1])));
+        assert_eq!(answer["error"]["code"], -32002);
+        let answer = rt.block_on(handle_value(&st, json!([])));
+        assert_eq!(answer["error"]["code"], -32600, "an empty batch is invalid JSON-RPC");
+        // Privately a large batch is nobody's business but the caller's.
+        let answer = rt.block_on(handle_value(&bare_state(), Value::Array(vec![json!({ "id": 1, "method": "aether_status", "params": [] }); 20])));
+        assert!(answer.as_array().is_some_and(|a| a.len() == 20), "the batch cap is a public-gateway cap");
+    }
+
+    /// The gateway binds loopback only; exposure is a tunnel's job. This is
+    /// checked at bind time, not documented and hoped for.
+    #[test]
+    fn public_serve_refuses_non_loopback_binds() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let st = public_state();
+        for addr in ["0.0.0.0:18545", "192.0.2.10:18545", "[::]:18545"] {
+            let err = rt.block_on(serve(addr.parse().unwrap(), st.clone())).unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied, "{addr}: {err}");
+        }
+        // Loopback is exactly what the flag serves.
+        let loopback = rt.spawn(serve("127.0.0.1:0".parse().unwrap(), st));
+        rt.block_on(async { tokio::time::sleep(Duration::from_millis(50)).await });
+        assert!(!loopback.is_finished(), "loopback bind must be allowed");
+        loopback.abort();
+    }
+
+    /// One public request may make this node parse at most PUBLIC_MAX_BODY
+    /// (axum's default is 2 MiB; the gateway is tighter).
+    #[test]
+    fn public_serve_caps_the_request_body() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let st = public_state();
+        let addr = {
+            let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let a = probe.local_addr().unwrap();
+            drop(probe);
+            a
+        };
+        rt.spawn(serve(addr, st));
+        rt.block_on(async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let sock = tokio::net::TcpStream::connect(addr).await.expect("gateway is listening");
+            let (mut reader, mut writer) = sock.into_split();
+            let body = format!("{{\"padding\":\"{}\"}}", "a".repeat(PUBLIC_MAX_BODY));
+            let head = format!(
+                "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            writer.write_all(head.as_bytes()).await.unwrap();
+            // Chunked writes so the server gets to answer while we are sending.
+            let sending = tokio::spawn(async move {
+                for chunk in body.as_bytes().chunks(64 * 1024) {
+                    if writer.write_all(chunk).await.is_err() {
+                        break;
+                    }
+                }
+            });
+            let mut seen = Vec::new();
+            let mut buf = [0u8; 1024];
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            while std::time::Instant::now() < deadline && !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                match tokio::time::timeout(Duration::from_secs(5), reader.read(&mut buf)).await {
+                    Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
+                    Ok(Ok(n)) => seen.extend_from_slice(&buf[..n]),
+                }
+            }
+            sending.abort();
+            let status = String::from_utf8_lossy(&seen);
+            let first_line = status.lines().next().unwrap_or_default();
+            assert!(first_line.contains("413") || first_line.contains("400"), "a body over PUBLIC_MAX_BODY must be refused, got: {first_line}");
+        });
     }
 }
 
@@ -1139,8 +1507,11 @@ fn hex_arg(v: &Value, k: &str) -> Result<Option<Vec<u8>>, (i64, String)> {
     }
 }
 
+/// Gas a private `eth_call` may run: the block gas limit.
+const PRIVATE_CALL_GAS: u64 = 1 << 24;
+
 /// eth_call on the finalized state (no fees, nothing committed).
-fn eth_call(chain: &Chain, p: &Value) -> RpcResult {
+fn eth_call(chain: &Chain, p: &Value, gas: u64) -> RpcResult {
     let c = p.get(0).ok_or((-32602, "missing call object".to_string()))?;
     let addr = |k: &str| -> Result<Option<Address>, (i64, String)> {
         c.get(k).and_then(Value::as_str).map(|s| s.parse().map_err(|_| (-32602, format!("{k} is not an address")))).transpose()
@@ -1165,11 +1536,21 @@ fn eth_call(chain: &Chain, p: &Value) -> RpcResult {
         };
         (f.state.clone(), ctx)
     };
-    let r = aether_execution::call(&state, &ctx, from, to, data.into(), value, 1 << 24).map_err(|e| (-32000, e))?;
+    let r = aether_execution::call(&state, &ctx, from, to, data.into(), value, gas).map_err(|e| (-32000, e))?;
     if r.success {
         Ok(json!(format!("0x{}", hex::encode(&r.output))))
     } else {
         Err((3, format!("execution reverted: 0x{}", hex::encode(&r.output))))
+    }
+}
+
+/// An `eth_getLogs` block parameter: "latest" or absent → `default`,
+/// "earliest" → 0, otherwise a hex quantity.
+fn block_param(f: &Value, k: &str, default: u64) -> u64 {
+    match f.get(k).and_then(Value::as_str) {
+        Some("latest") | None => default,
+        Some("earliest") => 0,
+        Some(s) => u64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap_or(default),
     }
 }
 
@@ -1178,15 +1559,8 @@ fn eth_get_logs(chain: &Chain, p: &Value) -> RpcResult {
     let f = p.get(0).cloned().unwrap_or_default();
     let g = chain.lock();
     let head = g.finalized.height;
-    let num = |k: &str, d: u64| -> u64 {
-        match f.get(k).and_then(Value::as_str) {
-            Some("latest") | None => d,
-            Some("earliest") => 0,
-            Some(s) => u64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap_or(d),
-        }
-    };
-    let to = num("toBlock", head).min(head);
-    let from = num("fromBlock", head).max(to.saturating_sub(1999));
+    let to = block_param(&f, "toBlock", head).min(head);
+    let from = block_param(&f, "fromBlock", head).max(to.saturating_sub(1999));
     let addrs: Vec<String> = match f.get("address") {
         Some(Value::String(a)) => vec![a.to_lowercase()],
         Some(Value::Array(v)) => v.iter().filter_map(Value::as_str).map(str::to_lowercase).collect(),

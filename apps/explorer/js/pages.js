@@ -519,8 +519,8 @@ export function notFoundView(ctx, what) {
 /** What a failed fetch looks like on any page. */
 export function errorView(ctx, err) {
   return h('div', { class: 'stack' },
-    h('h2', { class: 'page-title' }, 'The node did not answer'),
+    h('h2', { class: 'page-title' }, 'No source answered'),
     message('error', err?.message || String(err)),
-    message('plain', 'Check the node endpoint in Settings — an EastSea node serves JSON-RPC on 127.0.0.1:18545 while it runs.'),
+    message('plain', 'This page reads your own node at 127.0.0.1:18545 first, then the public gateway (Settings). Install the EastSea app so your node runs, allow local network access when Chrome asks, or check the gateway address.'),
     sourceLine(ctx.node));
 }

@@ -1,9 +1,14 @@
-// Entry point: the header (search, endpoint, theme), the hash router and the
-// polling that keeps the home page and a pending transaction current. The
-// explorer talks to exactly one host — the EastSea node whose endpoint the
-// reader sets — and to nothing else.
+// Entry point: the header (search, sources, theme), the hash router and the
+// polling that keeps the home page and a pending transaction current. Reads go
+// through an ordered list of sources — the visitor's own node first, then the
+// public read-only gateway (docs/ops/read-gateway.md) — and the header badge
+// always says which one answered.
 
-import { DEFAULT_ENDPOINT, Node, loadEndpoint, saveEndpoint } from './rpc.js';
+import {
+  DEFAULT_ENDPOINT, DEFAULT_GATEWAY, FailoverNode,
+  loadEndpoint, saveEndpoint, loadGateway, saveGateway,
+  orderedSources, sourceLabel, localBlockedText,
+} from './rpc.js';
 import { parseTokenSources, tokenInfo, tokenOrigin } from './erc20.js';
 import { resolveSearch } from './search.js';
 import { accountView, blockView, errorView, homeView, notFoundView, tokenView, txView } from './pages.js';
@@ -13,6 +18,7 @@ import { h, loading, message } from './dom.js';
 const view = document.getElementById('view');
 const top = document.getElementById('top');
 const foot = document.getElementById('foot');
+const notice = document.getElementById('notice');
 
 // ---- the context every view reads through ----
 
@@ -56,15 +62,39 @@ const ctx = {
 const searchInput = h('input', { id: 'q', type: 'search', placeholder: 'Height, 0x address or tx hash', 'aria-label': 'Search' });
 const searchMsg = h('span', { id: 'search-msg', class: 'small' });
 const nodeInput = h('input', { id: 'node-url', type: 'url', spellcheck: 'false', 'aria-label': 'Node JSON-RPC endpoint' });
+const gatewayInput = h('input', { id: 'gateway-url', type: 'url', spellcheck: 'false', placeholder: DEFAULT_GATEWAY, 'aria-label': 'Public read gateway' });
 const nodeMsg = h('span', { class: 'small' });
 const chainPill = h('span', { class: 'pill', id: 'chain' }, 'connecting…');
+const sourcePill = h('span', { class: 'pill plain', id: 'source', title: 'Where this page reads from; changes when a source does not answer' });
 const themeButton = h('button', { class: 'ghost', title: 'Switch theme', onclick: cycleTheme }, '◐');
+
+/** The header badge: which source answered the last read. */
+function updateSourcePill(n) {
+  const kind = n.kind === 'node' ? 'good' : n.kind === 'gateway' ? 'warn' : 'plain';
+  sourcePill.className = `pill ${kind}`;
+  sourcePill.title = n.source.url;
+  sourcePill.replaceChildren(sourceLabel(n.source));
+}
+
+/** The plain-language note under the header when the visitor's own node could
+ * not be read (Chrome's local-network prompt denied, Safari's mixed content).
+ * Cleared when the node answers again. */
+function showLocalNotice(show) {
+  notice.replaceChildren(show ? message('warn', localBlockedText()) : []);
+}
+
+/** FailoverNode hands us ({from, to}) whenever the source in use changes. */
+function onSourceChange(n, { from, to } = {}) {
+  updateSourcePill(n);
+  showLocalNotice(from === 'node' && to === 'gateway');
+}
 
 top.append(
   h('a', { class: 'brand', href: '#/' },
     h('span', { class: 'logo', 'aria-hidden': 'true' }),
     h('span', { class: 'brand-name' }, 'EastSea Explorer')),
   chainPill,
+  sourcePill,
   h('form', {
     id: 'search',
     role: 'search',
@@ -85,13 +115,15 @@ top.append(
     h('summary', {}, 'Settings'),
     h('div', { class: 'settings-body' },
       h('label', {}, 'Node JSON-RPC endpoint', nodeInput),
+      h('label', {}, 'Public read gateway (tried after the node)', gatewayInput),
       h('div', { class: 'row tight' },
         h('button', {
           onclick: () => {
             try {
-              const url = saveEndpoint(nodeInput.value, store);
-              connect(url);
-              nodeMsg.replaceChildren(message('ok', `Reading ${url} now.`));
+              const nodeUrl = saveEndpoint(nodeInput.value, store);
+              const gatewayUrl = saveGateway(gatewayInput.value, store);
+              connect();
+              nodeMsg.replaceChildren(message('ok', `Reading ${nodeUrl}${gatewayUrl ? ` then ${gatewayUrl}` : ' (no gateway fallback)'}.`));
             } catch (e) {
               nodeMsg.replaceChildren(message('error', e.message));
             }
@@ -99,19 +131,19 @@ top.append(
         }, 'Save'),
         h('button', {
           onclick: () => {
-            nodeInput.value = DEFAULT_ENDPOINT;
             saveEndpoint(DEFAULT_ENDPOINT, store);
-            connect(DEFAULT_ENDPOINT);
+            saveGateway(DEFAULT_GATEWAY, store);
+            connect();
           },
         }, 'Reset'),
         nodeMsg),
-      h('p', { class: 'small muted' }, 'An EastSea node serves JSON-RPC on this Mac at 127.0.0.1:18545 while it runs. Reads only; the explorer signs nothing.'))),
+      h('p', { class: 'small muted' }, 'An EastSea node serves JSON-RPC on this Mac at 127.0.0.1:18545 while it runs; when this browser cannot reach it, reads fall back to the public gateway — honest but unverified, and never a write. Empty the gateway field to read from your node only.'))),
   themeButton,
 );
 
 foot.append(
   h('p', { class: 'small muted' },
-    'Read-only data from one EastSea node, chosen in Settings. What a committee certificate vouches for is ',
+    'Reads go to your own node first, then to the public gateway (Settings). What a committee certificate vouches for is ',
     h('em', {}, 'marked on the page'), '; everything else is node-read and unverified. ',
     'No analytics, no external requests, no prices.'),
 );
@@ -120,14 +152,19 @@ foot.append(
 // user of it already treats null as "keep the defaults".
 const store = (() => { try { return localStorage; } catch { return null; } })();
 
-// ---- endpoint, chain pill ----
+// ---- sources, chain pill ----
 
-function connect(url) {
-  ctx.node = new Node(url);
+function connect() {
+  const nodeUrl = loadEndpoint(store);
+  const gatewayUrl = loadGateway(store);
+  nodeInput.value = nodeUrl;
+  gatewayInput.value = gatewayUrl || '';
+  ctx.node = new FailoverNode(orderedSources(nodeUrl, gatewayUrl), { onSource: onSourceChange });
   ctx.chainId = null;
   ctx.tokenCache.clear();
   ctx.originCache.clear();
-  nodeInput.value = url;
+  updateSourcePill(ctx.node);
+  showLocalNotice(false);
   chainPill.replaceChildren('connecting…');
   chainPill.classList.remove('good');
   ctx.node.call('aether_status')
@@ -217,4 +254,4 @@ try {
 // Explore tab, else the wasm module when this deployment carries it, else
 // none — pages then badge what was actually verified.
 ctx.verifier = await detectVerifier(window);
-connect(loadEndpoint(store));
+connect();

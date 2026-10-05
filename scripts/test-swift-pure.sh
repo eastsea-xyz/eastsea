@@ -13,9 +13,11 @@ run browser-origin BrowserOriginPolicy.swift
 run browser-permissions SitePermissions.swift
 run browser-routing Brand.swift BrowserPolicy.swift
 run browser-verify Brand.swift BrowserOriginPolicy.swift BrowserPolicy.swift VerifyBridge.swift
+run diagnostic-report Brand.swift Clock.swift NodeWatchdog.swift HealthCheck.swift DiagnosticReport.swift
 run earnings EarningsModel.swift
 run earnings-export Brand.swift EarningsModel.swift ChainActivity.swift EarningsExport.swift
 run fee-confirm EarningsModel.swift
+run health-check Brand.swift Clock.swift NodeWatchdog.swift HealthCheck.swift
 run history-notice HistoryFailure.swift
 run install-location Brand.swift InstallLocation.swift
 run key-exposure KeyExposureNotice.swift
@@ -30,6 +32,7 @@ run token-guard Brand.swift TokenSend.swift TokenAssets.swift EarningsModel.swif
 run token-icon Brand.swift TokenSend.swift TokenAssets.swift EarningsModel.swift TokenGuard.swift TokenIconSpec.swift
 run token-send Brand.swift TokenSend.swift TokenAssets.swift EarningsModel.swift
 run unattended UnattendedDecision.swift
+run update-channel UpdateChannel.swift
 run update-state Brand.swift DataMigration.swift UpdateTracker.swift
 run watchdog Brand.swift Clock.swift NodeWatchdog.swift
 exit $bad

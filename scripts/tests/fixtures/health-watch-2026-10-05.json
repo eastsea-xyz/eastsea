@@ -1,0 +1,12 @@
+{
+  "about": "SYNTHESISED, not recorded: no time series of the testnet's proof rewards around the 2026-10-05 incident was kept. Shape taken from docs/design/32-health-signal.md §0/§4.3 (proof rewards silently 0 for five days: the wallet prover's guest program ID differed from the validators') and from the fix commit 84985ee (2026-10-05 13:29 KST = 04:29Z). The usual rate is the design's 'about 1,900 a day' (~80 an hour); the onset is put off the 10-minute sampling grid on purpose. Block interval and beacon count stay normal, as they did.",
+  "seed": 20261005,
+  "step_s": 600,
+  "onset": "2026-09-30T03:47:00Z",
+  "fix": "2026-10-05T04:29:00Z",
+  "segments": [
+    {"from": "2026-09-22T00:00:00Z", "to": "2026-09-30T03:47:00Z", "proofs_per_hour": 80, "interval_s": 1.0, "beacons": 12},
+    {"from": "2026-09-30T03:47:00Z", "to": "2026-10-05T04:29:00Z", "proofs_per_hour": 0, "interval_s": 1.0, "beacons": 12},
+    {"from": "2026-10-05T04:29:00Z", "to": "2026-10-06T00:00:00Z", "proofs_per_hour": 80, "interval_s": 1.0, "beacons": 12}
+  ]
+}

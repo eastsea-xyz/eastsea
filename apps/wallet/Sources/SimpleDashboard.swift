@@ -215,6 +215,11 @@ private struct HomePage: View {
     var body: some View {
         VStack(spacing: 24) {
             IncomingRecoveryAlert()
+            #if os(macOS)
+            // One sentence and one button when this Mac's node needs the
+            // person (docs/design/32-health-signal.md §4.2).
+            HealthBanner()
+            #endif
             ForEach(model.scheduledUpgrades) { upgrade in
                 UpgradeNoticeCard(upgrade: upgrade)
             }
@@ -1069,6 +1074,20 @@ private struct BalanceCard: View {
 
 private struct VerifiedBadge: View {
     @EnvironmentObject var model: WalletModel
+    #if os(macOS)
+    @EnvironmentObject var health: HealthMonitor
+    #endif
+
+    /// L4 (docs/design/32-health-signal.md): while the disk holds this Mac's
+    /// node half dead, no badge may look healthy — the balance itself is
+    /// still verified through other nodes, and the banner above says what to do.
+    private var halfDead: Bool {
+        #if os(macOS)
+        return !health.healthyBadgeAllowed
+        #else
+        return false
+        #endif
+    }
 
     var body: some View {
         if let keyError = model.keyError {
@@ -1078,6 +1097,11 @@ private struct VerifiedBadge: View {
                 .help("The wallet key lives in this device's Secure Enclave, which only creates keys while the device is unlocked. \(Brand.project) retries by itself.")
         } else if let since = model.chainPausedSince {
             NetworkPausedBadge(since: since)
+        } else if halfDead {
+            Label(HealthCheck.korean ? "저장 공간 부족 · 노드 멈춤" : "Storage low · node paused", systemImage: "externaldrive.fill.badge.exclamationmark")
+                .font(.aeCaption.weight(.semibold)).foregroundStyle(Color.warn)
+                .padding(.horizontal, 10).padding(.vertical, 4)
+                .background(Color.warn.opacity(0.14), in: Capsule())
         } else if model.account != nil && model.verifyError == nil {
             Label("Verified", systemImage: "checkmark.shield.fill")
                 .font(.aeCaption.weight(.semibold)).foregroundStyle(.secondary)

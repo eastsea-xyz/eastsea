@@ -239,11 +239,40 @@ pub fn next_restart(exits: &[ExitNote], now_ms: u64) -> Next {
     Next::Again(Duration::from_millis((FIRST_BACKOFF_MS << quick.saturating_sub(1).min(6)).min(MAX_BACKOFF_MS)))
 }
 
+/// The format `run-state.json` carries. A newer format is refused, not
+/// adopted as empty: reading it as no history would reset the restart
+/// budget — the same reason an unreadable file is an error below.
+const RUN_STATE_VERSION: u32 = 1;
+
+/// The persisted history, in a versioned envelope.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct RunStateRecord {
+    v: u32,
+    exits: Vec<ExitNote>,
+}
+
+/// What `run-state.json` can be on disk: the envelope, or the bare array
+/// this supervisor wrote before the envelope existed.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum RunStateFile {
+    Record(RunStateRecord),
+    Legacy(Vec<ExitNote>),
+}
+
 /// `<data>/run-state.json`: an unreadable history cannot be treated as a
 /// fresh one, since that would let a crash loop reset its restart budget.
 fn load_exits(data: &Path) -> Result<Vec<ExitNote>, String> {
     match std::fs::read(data.join("run-state.json")) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("run-state.json: {e}")),
+        Ok(bytes) => match serde_json::from_slice::<RunStateFile>(&bytes) {
+            Ok(RunStateFile::Record(r)) if r.v > RUN_STATE_VERSION => Err(format!(
+                "run-state.json: format {} is newer than this binary knows ({}); update instead of resetting the restart budget",
+                r.v, RUN_STATE_VERSION
+            )),
+            Ok(RunStateFile::Record(r)) => Ok(r.exits),
+            Ok(RunStateFile::Legacy(exits)) => Ok(exits),
+            Err(e) => Err(format!("run-state.json: {e}")),
+        },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(e) => Err(format!("run-state.json: {e}")),
     }
@@ -452,7 +481,8 @@ impl Supervisor {
                     exits.retain(|e| now_ms().saturating_sub(e.at_ms) <= WINDOW_MS);
                     if let Err(e) = crate::atomic::replace(
                         &self.data.join("run-state.json"),
-                        &serde_json::to_vec(&exits).unwrap_or_default(),
+                        &serde_json::to_vec(&RunStateRecord { v: RUN_STATE_VERSION, exits: exits.clone() })
+                            .unwrap_or_default(),
                         0o644,
                     ) {
                         tracing::error!(%e, "restart history could not be saved; stopping");
@@ -1556,7 +1586,8 @@ mod tests {
         }
     }
 
-    /// The history persists, and a damaged history file is a fresh one.
+    /// The history persists, and a damaged history file is refused — it can
+    /// never silently reset the restart budget.
     #[test]
     fn the_exit_history_survives_a_restart_of_the_supervisor_itself() {
         let dir = std::env::temp_dir().join(format!("aether-runstate-{}", std::process::id()));
@@ -1572,6 +1603,28 @@ mod tests {
         assert_eq!(load_exits(&dir).unwrap(), vec![note], "the next run inherits the backoff");
         std::fs::write(dir.join("run-state.json"), b"{not json").unwrap();
         assert!(load_exits(&dir).is_err(), "a damaged history cannot reset the restart budget");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The history file carries a format version: the envelope round-trips,
+    /// and a format from a newer binary is refused rather than read as
+    /// empty — the restart budget must not reset in that direction either.
+    #[test]
+    fn the_exit_history_is_versioned() {
+        let dir = std::env::temp_dir().join(format!("aether-runstate-v-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let note = exit(now_ms(), 500, 9);
+        let _ = crate::atomic::replace(
+            &dir.join("run-state.json"),
+            &serde_json::to_vec(&RunStateRecord { v: RUN_STATE_VERSION, exits: vec![note] })
+                .unwrap(),
+            0o644,
+        );
+        assert_eq!(load_exits(&dir).unwrap(), vec![note]);
+        std::fs::write(dir.join("run-state.json"), br#"{"v":2,"exits":[]}"#).unwrap();
+        let err = load_exits(&dir).unwrap_err();
+        assert!(err.contains("newer"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

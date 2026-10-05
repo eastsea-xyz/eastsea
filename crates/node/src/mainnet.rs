@@ -138,7 +138,7 @@ pub fn check_with(cfg: &ChainConfig, rehearsal: bool) -> Vec<Rule> {
         rule(
             "beacons",
             aether_rewards::enabled(state) && aether_rewards::beacons::layout(epoch_blocks).is_some(),
-            format!("four liveness beacon slots an epoch of {epoch_blocks} blocks"),
+            format!("twelve liveness beacon slots an epoch of {epoch_blocks} blocks"),
         ),
         rule(
             "re-attestation",

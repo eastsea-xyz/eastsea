@@ -65,14 +65,15 @@ finalized block is **the chain's own block** (`aether head` digest ==
 signature. Once its binary is updated it rejoins, catches up past the
 switch, and agrees on the post-switch state root.
 
-**4. Emergency upgrade.** An upgrade marked `emergency: true` — which
-`aether upgrade-sign` countersigns with each member's ed25519 key —
+**4. Emergency upgrade (B4).** An upgrade marked `emergency: true` — which
+`aether upgrade-sign` countersigns with each member's ed25519 key — needs
+**committee n−f independent approvals** (B4, `upgrade::verify_emergency`):
+3-of-4 activates, 2-of-4 is refused *even with a valid committee BLS
+signature* (the drill strips the countersignature from one partial). It
 activates after the epoch notice (60 blocks on this chain), not the
-604,800-block mainnet notice. Today's rule is **every current committee
-member** must approve: 3-of-4 is refused, 4-of-4 activates at the signed
-height with all four validators restarted mid-flight.
-**TODO(B4)**: the decided-but-unimplemented rule is committee n−f (3-of-4);
-when B4 lands, this section's refusal check flips.
+604,800-block mainnet notice, with all four validators restarted mid-flight.
+The legacy 7780 chain keeps its every-member rule; this drill chain (7795)
+exercises the new-genesis rule.
 
 **5. Bad release, rollback.** A protocol-6 upgrade is signed and on chain
 before anything is installed. Validator 1 then "installs" a release that

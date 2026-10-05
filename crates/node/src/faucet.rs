@@ -8,7 +8,7 @@
 
 use crate::chain::Chain;
 use aether_crypto::{address_of, P256Signer, Signer as _};
-use aether_execution::{sign_call_with, EvmCall};
+use aether_execution::{recommended_state_budget, sign_call_with, EvmCall};
 use aether_types::{Address, Bytes, FeeVector, TxEnvelope, U256};
 use std::collections::HashMap;
 use std::path::Path;
@@ -114,6 +114,32 @@ impl Faucet {
         Ok(Self::from_seed(&seed)?.address)
     }
 
+    /// `sign_call_with` plus the wallet-default state-growth budget, the same
+    /// patch-and-resign `submit_with_tip` (dev accounts) does: on a paid-state
+    /// genesis (`base.state > 0`) the transaction reserves units for the
+    /// accounts and receipts it creates, so it is not refused with "state
+    /// growth exceeds transaction budget 0"; a legacy chain keeps budget 0
+    /// (`recommended_state_budget` returns zero when the state price is zero).
+    fn sign_call_budgeted(
+        signer: &P256Signer,
+        chain_id: u64,
+        nonce: u64,
+        caps: FeeVector,
+        tip: u128,
+        call: &EvmCall,
+        balance: U256,
+    ) -> Result<TxEnvelope, String> {
+        let mut tx = sign_call_with(signer, chain_id, nonce, caps, tip, call).map_err(|e| format!("{e:?}"))?;
+        let budget = recommended_state_budget(call, Some(balance), caps.state);
+        if budget != 0 {
+            tx.header.gas.state = budget;
+            let mut sig = signer.sign(&tx.signing_bytes()).map_err(|e| e.to_string())?;
+            sig.extend_from_slice(&signer.public_key().bytes);
+            tx.signature = Bytes::from(sig);
+        }
+        Ok(tx)
+    }
+
     /// Undo a grant that never reached the mempool, so its nonce is not skipped.
     pub fn cancel(&self, to: Address, tx: &TxEnvelope) {
         let mut st = self.state.lock().expect("faucet lock");
@@ -150,10 +176,13 @@ impl Faucet {
     ) -> Result<TxEnvelope, String> {
         let caps = FeeVector {
             exec: base.exec.saturating_mul(2),
-            state: 0,
+            state: base.state.saturating_mul(2),
             prove: base.prove.saturating_mul(2),
         };
-        sign_call_with(&self.signer, chain_id, nonce, caps, 0, call).map_err(|e| format!("{e:?}"))
+        // The state dimension is a reservation the chain's own affordability
+        // check (admissible) settles against the real balance, so a wallet-style
+        // upper bound is honest here even without knowing the balance.
+        Self::sign_call_budgeted(&self.signer, chain_id, nonce, caps, 0, call, U256::MAX)
     }
 
     /// Sign a grant to `to` if the limits allow it.
@@ -206,10 +235,13 @@ impl Faucet {
         };
         let caps = FeeVector {
             exec: base.exec.max(TIP) * 2 + TIP,
-            state: 0,
+            // The state dimension has no tip: zero on a legacy chain (budget
+            // stays 0, exactly as before), 2x the base price on a paid-state
+            // genesis so the cap survives the base rising before inclusion.
+            state: base.state.saturating_mul(2),
             prove: base.prove.max(TIP) * 2,
         };
-        let tx = sign_call_with(&self.signer, cfg.chain_id, st.next_nonce, caps, TIP, &call)
+        let tx = Self::sign_call_budgeted(&self.signer, cfg.chain_id, st.next_nonce, caps, TIP, &call, U256::from(SUPPLY))
             .map_err(|e| FaucetError::Signing(e.to_string()))?;
         st.next_nonce += 1;
         st.today += 1;
@@ -324,6 +356,32 @@ mod tests {
             .is_ok(),
             "a new day"
         );
+    }
+
+    #[test]
+    fn grants_reserve_state_growth_on_a_paid_state_genesis() {
+        let (f, chain) = setup();
+        let t0 = Instant::now();
+        // A paid-state genesis: a finite state dimension turns the base price on.
+        let mut cfg = chain.cfg().clone();
+        cfg.limits.state = aether_execution::fees::MAX_STATE_UNITS_PER_BLOCK;
+        let paid = Chain::new(cfg).0;
+        let base = Chain::next_base_fee(&paid.cfg(), &paid.lock().finalized);
+        assert!(base.state > 0, "the paid-state fixture must price state");
+        let tx = f.grant(&paid, Address::repeat_byte(7), t0).unwrap();
+        // Execution charges a fresh recipient (100 units) plus the receipt
+        // (16); the wallet default also reserves the sender's first account,
+        // and the price cap must cover the state floor.
+        assert!(
+            tx.header.gas.state >= 116,
+            "state budget {} must cover a fresh recipient",
+            tx.header.gas.state
+        );
+        assert!(tx.header.max_fee.state >= base.state);
+        assert!(aether_execution::validate_stateless(&tx, 9).is_ok());
+        // A legacy chain (zero state price) keeps the old zero budget.
+        let legacy = f.grant(&chain, Address::repeat_byte(8), t0 + Duration::from_secs(2)).unwrap();
+        assert_eq!(legacy.header.gas.state, 0);
     }
 
     #[test]

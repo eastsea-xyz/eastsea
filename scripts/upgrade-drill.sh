@@ -21,10 +21,9 @@
 #      the new rules (exit 3, "UPGRADE REQUIRED" in its log), its last
 #      finalized block is the chain's block (no fork), and it rejoins once
 #      its binary is updated.
-#   4. The emergency path: an upgrade carrying every committee member's
-#      ed25519 approval activates after the epoch notice, not the
-#      604,800-block mainnet notice. Today that rule is 4-of-4 (B4, committee
-#      n-f, is decided but not implemented): 3-of-4 is refused. TODO(B4).
+#   4. The emergency path (B4, committee n-f): an emergency upgrade needs 3
+#      of 4 independent ed25519 approvals — 2-of-4 is refused — and activates
+#      after the epoch notice, not the 604,800-block mainnet notice.
 #   5. A bad new release (a binary that refuses to start) costs quorum but
 #      not the chain: the operator rolls the node back to the previous
 #      release before the switch height, it rejoins, and the switch is clean
@@ -239,10 +238,30 @@ echo "-- funding the founder (dev 1) from the faucet, then deploying ReleaseLog"
 rpc aether_faucet "[\"$founder\"]" "${rpcp[0]}" > "$D/faucet-grant.json"
 granted=$(jget 'd["result"]["amount_wei"]' < "$D/faucet-grant.json")
 [ -n "$granted" ] && ok "faucet granted the founder $granted wei" || bad "faucet grant failed ($(cat "$D/faucet-grant.json"))"
+# The grant is a transaction: wait until it is final and the balance shows up,
+# or the deploy below is refused for insufficient funds while it is in flight.
+end=$((SECONDS + 45)); bal=""
+while [ "$SECONDS" -lt "$end" ]; do
+  bal=$(rpc eth_getBalance "[\"$founder\", \"latest\"]" "${rpcp[0]}" | jget 'int(d["result"], 16)')
+  [ -n "$bal" ] && [ "$bal" != "0" ] && break
+  sleep 1
+done
+# The dev account starts unfunded, so "nonzero" stands in for ">= granted":
+# bash's 64-bit arithmetic overflows above 9.2e18 and a 10e18-wei grant is past it.
+if [ -n "$bal" ] && [ "$bal" != "0" ]; then
+  ok "the grant finalized (balance $bal wei)"
+else
+  bad "the founder's grant never landed (balance ${bal:-?} after 45 s)"
+fi
 RUNTIME_HEX=$(cd contracts && forge inspect ReleaseLog deployedBytecode 2>/dev/null)
 CODE_HEX=$(cd contracts && forge inspect ReleaseLog bytecode 2>/dev/null)
 CODE_HASH=$(cast keccak "$RUNTIME_HEX")
-deploy_out=$("$A" deploy --rpc "http://127.0.0.1:${rpcp[0]}" --from-dev 1 --code "$CODE_HEX" 2>&1)
+deploy_out=""
+for try in 1 2 3; do
+  deploy_out=$("$A" deploy --rpc "http://127.0.0.1:${rpcp[0]}" --from-dev 1 --code "$CODE_HEX" 2>&1 || true)
+  printf '%s\n' "$deploy_out" | grep -q "^contract: " && break
+  sleep 3
+done
 LOGADDR=$(printf '%s\n' "$deploy_out" | awk '/^contract: / {print $2}')
 [ -n "$LOGADDR" ] && ok "ReleaseLog deployed at $LOGADDR (runtime keccak ${CODE_HASH:0:18}…)" || bad "ReleaseLog deploy failed ($deploy_out)"
 
@@ -265,13 +284,12 @@ sign_manifest() { # <pem> <manifest> <out-sig>; Swift-compatible x963 key + raw 
 import hashlib, json, pathlib, sys
 from cryptography.hazmat.primitives.asymmetric import ec, utils
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric.ec import SECP256R1
 pem, manifest, out = sys.argv[1:]
 key = serialization.load_pem_private_key(pathlib.Path(pem).read_bytes(), None)
 data = pathlib.Path(manifest).read_bytes()
 der = key.sign(data, ec.ECDSA(hashes.SHA256()))
 r, s = utils.decode_dss_signature(der)
-n = SECP256R1().order
+n = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551  # the P-256 order
 if s > n // 2:
     s = n - s
 pub = key.public_key().public_bytes(serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
@@ -296,14 +314,14 @@ for i in range(3):
 json.dump(net, open(rel / "release-net.json", "w"))
 PYEOF
 export AETHER_RELEASE_NET=$REL/release-net.json
-APPROVE="python3 scripts/release-approve.py"
+approve() { python3 scripts/release-approve.py "$@"; }
 
 echo "-- ordinary release: prepare, sign, combine"
-"$APPROVE" prepare --chain-id "$CHAIN" --log "$LOGADDR" --version 0.0.0 --build drill \
+approve prepare --chain-id "$CHAIN" --log "$LOGADDR" --version 0.0.0 --build drill \
   --dmg "$REL/EastSea.dmg" --app "$REL/EastSea.app" --sparkle-signature "$(printf 'ab%.0s' $(seq 32))" \
-  --out "$REL/manifest.json" > "$REL/prepare.out"
-for i in 0 1 2; do sign_manifest "$REL/builder$i.pem" "$REL/manifest.json" "$REL/sig$i.json"; done
-if combine_out=$("$APPROVE" combine "$REL/manifest.json" "$REL/sig0.json" "$REL/sig1.json" --out "$REL/signatures.json" 2>&1); then
+  --out "$REL/manifest.json" > "$REL/prepare.out" || true
+for i in 0 1 2; do sign_manifest "$REL/builder$i.pem" "$REL/manifest.json" "$REL/sig$i.json" || true; done
+if combine_out=$(approve combine "$REL/manifest.json" "$REL/sig0.json" "$REL/sig1.json" --out "$REL/signatures.json" 2>&1); then
   ok "2-of-3 builder signatures approve the ordinary release"
 else
   bad "2-of-3 combine failed: $combine_out"
@@ -313,35 +331,35 @@ if scripts/builder-sign verify-bundle "$REL/manifest.json" "$REL/signatures.json
 else
   bad "verify-bundle rejected the 2-of-3 bundle"
 fi
-if "$APPROVE" combine "$REL/manifest.json" "$REL/sig0.json" --out "$REL/one.json" >/dev/null 2>&1; then
+if approve combine "$REL/manifest.json" "$REL/sig0.json" --out "$REL/one.json" >/dev/null 2>&1; then
   bad "1-of-3 builder signature was enough for an ordinary release"
 else
   ok "1-of-3 builder signature is refused"
 fi
-python3 - "$REL" <<'PYEOF'
+python3 - "$REL" <<'PYEOF' || true
 import json, pathlib, sys
 rel = pathlib.Path(sys.argv[1])
 m = json.loads((rel / "manifest.json").read_bytes())
 m["build"] = "tampered"
 (rel / "manifest-tampered.json").write_bytes(json.dumps(m, sort_keys=True, separators=(",", ":")).encode())
 PYEOF
-if "$APPROVE" combine "$REL/manifest-tampered.json" "$REL/sig0.json" "$REL/sig1.json" --out "$REL/t.json" >/dev/null 2>&1; then
+if approve combine "$REL/manifest-tampered.json" "$REL/sig0.json" "$REL/sig1.json" --out "$REL/t.json" >/dev/null 2>&1; then
   bad "a tampered manifest was approved"
 else
   ok "signatures for a different (tampered) manifest are refused"
 fi
 
 echo "-- emergency release: 3-of-3 required"
-"$APPROVE" prepare --chain-id "$CHAIN" --log "$LOGADDR" --version 0.0.0 --build drill \
+approve prepare --chain-id "$CHAIN" --log "$LOGADDR" --version 0.0.0 --build drill \
   --dmg "$REL/EastSea.dmg" --app "$REL/EastSea.app" --sparkle-signature "$(printf 'ab%.0s' $(seq 32))" \
-  --emergency --out "$REL/manifest-e.json" > /dev/null
-for i in 0 1 2; do sign_manifest "$REL/builder$i.pem" "$REL/manifest-e.json" "$REL/sige$i.json"; done
-if "$APPROVE" combine "$REL/manifest-e.json" "$REL/sige0.json" "$REL/sige1.json" --out "$REL/t.json" >/dev/null 2>&1; then
+  --emergency --out "$REL/manifest-e.json" > /dev/null || true
+for i in 0 1 2; do sign_manifest "$REL/builder$i.pem" "$REL/manifest-e.json" "$REL/sige$i.json" || true; done
+if approve combine "$REL/manifest-e.json" "$REL/sige0.json" "$REL/sige1.json" --out "$REL/t.json" >/dev/null 2>&1; then
   bad "2-of-3 builder signatures approved an emergency release"
 else
   ok "emergency needs 3-of-3 builders (2-of-3 refused)"
 fi
-if "$APPROVE" combine "$REL/manifest-e.json" "$REL/sige0.json" "$REL/sige1.json" "$REL/sige2.json" --out "$REL/signatures-e.json" >/dev/null 2>&1; then
+if approve combine "$REL/manifest-e.json" "$REL/sige0.json" "$REL/sige1.json" "$REL/sige2.json" --out "$REL/signatures-e.json" >/dev/null 2>&1; then
   ok "3-of-3 builder signatures approve the emergency release"
 else
   bad "3-of-3 emergency combine failed"
@@ -408,15 +426,19 @@ json.dump({"chain_id": chain, "protocol": 4, "activate_at": at,
                           "blake3": b3, "url": "https://drill.invalid/r4.dmg"}],
            "notes": "drill: scheduled switch to protocol 4"}, sys.stdout)
 PYEOF
-for i in 1 2 3; do "$A" upgrade-sign --data "$D/g$i" --network "$D/network.json" "$D/upgrade4.json" > "$D/p4-$i.json"; done
+for i in 1 2 3; do "$A" upgrade-sign --data "$D/g$i" --network "$D/network.json" "$D/upgrade4.json" > "$D/p4-$i.json" || true; done
 if "$A" upgrade-combine --network "$D/network.json" "$D/p4-1.json" "$D/p4-2.json" > "$D/t.json" 2>&1; then
   bad "2-of-4 committee partials combined into a signature"
 else
   ok "2-of-4 committee partials do not combine (threshold is 3)"
 fi
-"$A" upgrade-combine --network "$D/network.json" "$D/p4-1.json" "$D/p4-2.json" "$D/p4-3.json" > "$D/signed4.json"
-vout=$("$A" upgrade-verify --network "$D/network.json" "$D/signed4.json")
-for i in 1 2 3 4; do mkdir -p "$D/g$i/upgrades"; cp "$D/signed4.json" "$D/g$i/upgrades/protocol-4.json"; done
+if "$A" upgrade-combine --network "$D/network.json" "$D/p4-1.json" "$D/p4-2.json" "$D/p4-3.json" > "$D/signed4.json" 2>"$D/combine4.err"; then
+  vout=$("$A" upgrade-verify --network "$D/network.json" "$D/signed4.json" 2>&1 || true)
+else
+  vout="combine failed: $(tr '\n' ' ' < "$D/combine4.err" 2>/dev/null)"
+  bad "3-of-4 partials did not combine ($vout)"
+fi
+for i in 1 2 3 4; do mkdir -p "$D/g$i/upgrades"; [ -s "$D/signed4.json" ] && cp "$D/signed4.json" "$D/g$i/upgrades/protocol-4.json" || true; done
 sched=""
 end=$((SECONDS + 90))
 while [ "$SECONDS" -lt "$end" ]; do
@@ -472,7 +494,7 @@ case "$log4" in
   *"UPGRADE REQUIRED"*) ok "v4 logged UPGRA REQUIRED before the new rules (grep)" ;;
   *) bad "no UPGRA REQUIRED line in v4's log" ;;
 esac
-head4=$("$A" head --data "$D/g4")
+head4=$("$A" head --data "$D/g4" 2>/dev/null || true)
 h4=$(printf '%s' "$head4" | awk '{print $1}'); r4head=$(printf '%s' "$head4" | awk '{print $2}')
 chain4=$(bfield "$h4" hash "${rpcp[0]}")
 if [ "$h4" -ge $((H1 - 2)) ] && [ "$h4" -le $((H1 - 1)) ] && [ "$r4head" = "$chain4" ]; then
@@ -490,9 +512,11 @@ r1=$(bfield "$((H1 + 2))" state_root "${rpcp[0]}"); r4v=$(bfield "$((H1 + 2))" s
 [ "$r1" = "$r4v" ] && ok "rejoined v4 agrees on the post-switch state root" || bad "v4 root after rejoin differs: $r1 vs $r4v"
 
 # ---------------------------------------------------------------------------
-section "5. emergency upgrade to protocol 5 (epoch notice, 4-of-4 approvals; TODO B4)"
-# Today's rule (upgrade::verify_emergency): EVERY current committee member's
-# ed25519 approval. B4 (n-f of the committee) is decided but not implemented.
+section "5. emergency upgrade to protocol 5 (epoch notice, B4: n-f approvals)"
+# The rule since B4 (upgrade::verify_emergency): n-f independent ed25519
+# approvals from current committee members — 3 of 4 on this chain. 2 approvals
+# cannot pass even with a valid committee BLS signature: the third partial
+# below is the same share signature with its emergency_approval stripped.
 h=$(height "${rpcp[0]}")
 H2=$((h + 75))
 b3r5=$("$A" dev-b3 "$BIN/aether-r5")
@@ -504,20 +528,30 @@ json.dump({"chain_id": chain, "protocol": 5, "activate_at": at, "emergency": Tru
                           "blake3": b3, "url": "https://drill.invalid/r5.dmg"}],
            "notes": "drill: emergency switch to protocol 5"}, sys.stdout)
 PYEOF
-for i in 1 2 3 4; do "$A" upgrade-sign --data "$D/g$i" --network "$D/network.json" "$D/upgrade5.json" > "$D/p5-$i.json"; done
+for i in 1 2 3 4; do "$A" upgrade-sign --data "$D/g$i" --network "$D/network.json" "$D/upgrade5.json" > "$D/p5-$i.json" || true; done
+python3 - "$D/p5-3.json" "$D/p5-3-noed.json" <<'PYEOF' || true
+import json, sys
+p = json.load(open(sys.argv[1]))
+del p["emergency_approval"]  # a BLS partial that did not countersign the emergency
+json.dump(p, open(sys.argv[2], "w"))
+PYEOF
 emsg=""
-if "$A" upgrade-combine --network "$D/network.json" "$D/p5-1.json" "$D/p5-2.json" "$D/p5-3.json" > "$D/t.json" 2>"$D/emergency-3of4.err"; then
-  bad "3-of-4 emergency approvals combined (today every member must approve)"
+if "$A" upgrade-combine --network "$D/network.json" "$D/p5-1.json" "$D/p5-2.json" "$D/p5-3-noed.json" > "$D/t.json" 2>"$D/emergency-2of4.err"; then
+  bad "2-of-4 emergency approvals combined (B4 needs n-f = 3)"
 else
-  emsg=$(cat "$D/emergency-3of4.err")
+  emsg=$(tr '\n' ' ' < "$D/emergency-2of4.err")
   case "$emsg" in
-    *every*member*) ok "3-of-4 emergency approvals refused: '$emsg' (current rule; B4 TODO)" ;;
-    *) ok "3-of-4 emergency approvals refused (B4 TODO)" ;;
+    *at*least*3*) ok "2-of-4 emergency approvals refused: ${emsg:0:60} (B4 n-f)" ;;
+    *) ok "2-of-4 emergency approvals refused (B4 n-f): ${emsg:0:60}" ;;
   esac
 fi
-"$A" upgrade-combine --network "$D/network.json" "$D/p5-1.json" "$D/p5-2.json" "$D/p5-3.json" "$D/p5-4.json" > "$D/signed5.json"
-"$A" upgrade-verify --network "$D/network.json" "$D/signed5.json" > /dev/null
-for i in 1 2 3 4; do cp "$D/signed5.json" "$D/g$i/upgrades/protocol-5.json"; done
+if "$A" upgrade-combine --network "$D/network.json" "$D/p5-1.json" "$D/p5-2.json" "$D/p5-3.json" > "$D/signed5.json" 2>"$D/combine5.err" \
+   && "$A" upgrade-verify --network "$D/network.json" "$D/signed5.json" > /dev/null 2>&1; then
+  ok "3-of-4 emergency approvals combined and verified (B4: committee n-f)"
+else
+  bad "3-of-4 emergency approvals did not combine/verify ($(tr '\n' ' ' < "$D/combine5.err" 2>/dev/null))"
+fi
+for i in 1 2 3 4; do [ -s "$D/signed5.json" ] && cp "$D/signed5.json" "$D/g$i/upgrades/protocol-5.json" || true; done
 sched=no
 end=$((SECONDS + 90))
 while [ "$SECONDS" -lt "$end" ]; do
@@ -551,10 +585,12 @@ json.dump({"chain_id": chain, "protocol": 6, "activate_at": at,
                           "blake3": b3, "url": "https://drill.invalid/r6.dmg"}],
            "notes": "drill: switch to protocol 6 (first build is bad)"}, sys.stdout)
 PYEOF
-for i in 1 2 3; do "$A" upgrade-sign --data "$D/g$i" --network "$D/network.json" "$D/upgrade6.json" > "$D/p6-$i.json"; done
-"$A" upgrade-combine --network "$D/network.json" "$D/p6-1.json" "$D/p6-2.json" "$D/p6-3.json" > "$D/signed6.json"
-"$A" upgrade-verify --network "$D/network.json" "$D/signed6.json" > /dev/null
-for i in 1 2 3 4; do cp "$D/signed6.json" "$D/g$i/upgrades/protocol-6.json"; done
+for i in 1 2 3; do "$A" upgrade-sign --data "$D/g$i" --network "$D/network.json" "$D/upgrade6.json" > "$D/p6-$i.json" || true; done
+if ! "$A" upgrade-combine --network "$D/network.json" "$D/p6-1.json" "$D/p6-2.json" "$D/p6-3.json" > "$D/signed6.json" 2>"$D/combine6.err" \
+   || ! "$A" upgrade-verify --network "$D/network.json" "$D/signed6.json" > /dev/null 2>&1; then
+  bad "protocol-6 partials did not combine/verify ($(tr '\n' ' ' < "$D/combine6.err" 2>/dev/null))"
+fi
+for i in 1 2 3 4; do [ -s "$D/signed6.json" ] && cp "$D/signed6.json" "$D/g$i/upgrades/protocol-6.json" || true; done
 sched=no
 end=$((SECONDS + 90))
 while [ "$SECONDS" -lt "$end" ]; do

@@ -28,6 +28,12 @@ enum DataMigration {
 
     private static let oldAppID = "com.pipln.aether"
     private static let doneKey = "renameMigrationDone"
+    /// The node tree's own completion state (pre-audit 7, H2): set the moment
+    /// the old tree's signing material is quarantined, before the cosmetic
+    /// marker or the preference copy. A wallet-preference step that fails
+    /// after it only delays the done flag — the verified new node may start,
+    /// because nothing signing-related is left to retry.
+    private static let nodeDoneKey = "renameNodeMigrationDone"
     /// The old node's live lock. Never copied (a copied lock file is not a
     /// lock); it moves with a same-volume move, like every other file.
     private static let lockName = "run.lock"
@@ -96,21 +102,56 @@ enum DataMigration {
         defer { if let fd = lockFD { close(fd) } }
 
         var problems: [String] = []
+        var oldTreeRemains = false
         if fm.fileExists(atPath: oldNode.path) {
-            // A tree already at its new home is the resume path of an
-            // interrupted run (or a cross-volume fallback): verified copy,
-            // then the old tree is emptied of its signing material and
-            // marked. A missing one moves outright.
-            let movedIn = fm.fileExists(atPath: newNode.path)
-                ? syncTreeVerified(oldNode, newNode) && quarantineOldSigningMaterial(oldNode) && markOldTreeMigrated(oldNode)
-                : moveTreeVerified(oldNode, newNode)
-            if !movedIn { problems.append("the node data (identity, share, journal, database) did not move or did not verify") }
+            if fm.fileExists(atPath: newNode.path) {
+                // A tree already at its new home is the resume path of an
+                // interrupted run (or a cross-volume fallback): a verified
+                // copy — quarantine happens only at the commit point below,
+                // after every other fallible copy has landed (H2).
+                oldTreeRemains = true
+                if !syncTreeVerified(oldNode, newNode) {
+                    problems.append("the node data (identity, share, journal, database) did not copy or did not verify")
+                }
+            } else {
+                // A missing new tree moves outright; a move that cannot
+                // happen (cross-volume) falls back to the verified copy,
+                // with the same deferred old-tree shutdown.
+                switch moveTreeVerified(oldNode, newNode) {
+                case .moved: break
+                case .copied: oldTreeRemains = true
+                case .failed:
+                    oldTreeRemains = fm.fileExists(atPath: oldNode.path)
+                    problems.append("the node data (identity, share, journal, database) did not move or did not verify")
+                }
+            }
         }
+        // Every fallible non-node copy finishes and verifies BEFORE anything
+        // is quarantined (pre-audit 7, H2): while these can still fail, the
+        // old tree keeps everything its binary signs with, so a disk fault
+        // here strands nobody — the old app still works and the next launch
+        // retries.
         let smallFiles = oldHandles.map {
             (old: $0, new: support.appending(path: "EastSeaWallet/\($0.lastPathComponent)"))
         } + [(old: oldState, new: support.appending(path: "EastSea/update-state.json"))]
         for (old, new) in smallFiles where fm.fileExists(atPath: old.path) {
             if !copyVerified(old, new) { problems.append("\(old.lastPathComponent) did not copy or did not verify") }
+        }
+        if oldTreeRemains && problems.isEmpty {
+            // The commit point: the new tree is verified and every fallible
+            // copy has landed, so the old tree now stops being a signer.
+            // Each step from here is idempotent and retried on the next
+            // launch, and the durable node completion flag goes down the
+            // moment the quarantine finishes — a failure after it (the
+            // marker write, the preference copy, the done flag) leaves a
+            // startable new node and exactly one usable signer.
+            if quarantineOldSigningMaterial(oldNode) {
+                defaults.set(true, forKey: nodeDoneKey)
+                if !markOldTreeMigrated(oldNode) { problems.append("the old tree could not be marked migrated") }
+            } else {
+                problems.append("the old tree's signing material did not move into quarantine "
+                    + "(nothing was stranded: the old app still works); the next launch retries")
+            }
         }
         guard problems.isEmpty else {
             return .failed("migration incomplete: \(problems.joined(separator: "; ")). "
@@ -141,17 +182,16 @@ enum DataMigration {
 
     /// Audit 5, A5-7 and audit 6, A6-5/A6-6: the node must not start while
     /// the old one (identity, threshold share, chain) waits unmigrated —
-    /// not even onto a partially-copied new tree, which is not verified
-    /// until the done flag is set.
+    /// not even onto a partially-copied new tree. The node's own completion
+    /// state (pre-audit 7, H2) is `nodeMigrationComplete`: the verified new
+    /// tree may start once the old tree has stopped being a signer, even if
+    /// a later wallet-preference step still retries.
     static func mayStartNode(support: URL? = nil, defaults: UserDefaults = .standard) -> String? {
         let s = support ?? supportURL
-        if defaults.bool(forKey: doneKey) { return nil }
-        if fm.fileExists(atPath: s.appending(path: "Aether/node").path) {
-            return "the old Aether node data (validator identity, threshold share, chain) has not finished moving "
-                + "into place. Launch the app once more to finish the data move (quit the old Aether app if it "
-                + "asks) — starting now could run two copies of one validator identity."
-        }
-        return nil
+        if nodeMigrationComplete(support: s, defaults: defaults) { return nil }
+        return "the old Aether node data (validator identity, threshold share, chain) has not finished moving "
+            + "into place. Launch the app once more to finish the data move (quit the old Aether app if it "
+            + "asks) — starting now could run two copies of one validator identity."
     }
 
     // MARK: verification
@@ -270,19 +310,24 @@ enum DataMigration {
 
     /// Same-volume move, verified: inventory first, move, inventory again.
     /// A move that cannot happen (cross-volume) falls back to a verified
-    /// copy that leaves the old tree in place, marked migrated.
-    private static func moveTreeVerified(_ old: URL, _ new: URL) -> Bool {
-        guard let before = manifest(of: old) else { return false }
+    /// copy that leaves the old tree in place — its shutdown (quarantine,
+    /// marker) is the commit point in `migrate`, not this function's business
+    /// (pre-audit 7, H2: nothing is quarantined before every fallible copy
+    /// has landed).
+    private enum TreeMove { case moved; case copied; case failed }
+
+    private static func moveTreeVerified(_ old: URL, _ new: URL) -> TreeMove {
+        guard let before = manifest(of: old) else { return .failed }
         do {
             try fm.createDirectory(at: new.deletingLastPathComponent(), withIntermediateDirectories: true)
             try fm.moveItem(at: old, to: new)
         } catch {
             // Cross-volume (or a destination that cannot be replaced): the
-            // verified-copy fallback, with the same old-tree shutdown.
-            return syncTreeVerified(old, new) && quarantineOldSigningMaterial(old) && markOldTreeMigrated(old)
+            // verified-copy fallback; the old tree stays until the commit point.
+            return syncTreeVerified(old, new) ? .copied : .failed
         }
-        guard let after = manifest(of: new) else { return false }
-        return before == after
+        guard let after = manifest(of: new) else { return .failed }
+        return before == after ? .moved : .failed
     }
 
     /// Verified copy of a tree, file by file (the cross-volume fallback and
@@ -370,9 +415,14 @@ enum DataMigration {
     ///
     /// Each item is one rename: interrupted anywhere, the tree has the item
     /// either still in place (the next run moves it) or already quarantined
-    /// — never half-moved. This runs only after the new tree is fully
-    /// verified, and `mayStartNode` keeps the new node off until the done
-    /// flag is set, so at no point can both trees serve the identity.
+    /// — never half-moved. The old binary signs with validator.key AND
+    /// threshold.json together, so they move last and anything already moved
+    /// is rolled back on a failure (pre-audit 7, H2): an unfinished
+    /// quarantine always leaves the old tree a usable signer, never a
+    /// stranded non-signer. This runs only after the new tree and every
+    /// fallible copy are verified, and `mayStartNode` keeps the new node off
+    /// until the quarantine finishes, so at no point can both trees serve
+    /// the identity.
     ///
     /// An OS-wide lock keyed by the validator public key (audit 5, A5-5's
     /// option) was considered and rejected: the old binary predates the
@@ -381,18 +431,52 @@ enum DataMigration {
     /// while removing the material excludes every binary at once.
     private static func quarantineOldSigningMaterial(_ old: URL) -> Bool {
         guard let names = try? fm.contentsOfDirectory(atPath: old.path) else { return false }
-        let targets = names.filter { name in
+        var targets = names.filter { name in
             signingMaterial.contains(name) || signingMaterialPrefixes.contains { name.hasPrefix($0) }
         }
         guard !targets.isEmpty else { return true }   // an interrupted quarantine, already finished
+        // The pair the old binary needs to sign moves last: any failure before
+        // that leaves both in place (and a live failure rolls the rest back).
+        targets.sort { a, _ in a == "validator.key" }
+        targets.sort { a, _ in a == "threshold.json" }
         let q = old.appending(path: "\(quarantinePrefix)\(Int(Date().timeIntervalSince1970 * 1000))")
         do {
             try fm.createDirectory(at: q, withIntermediateDirectories: true)
+            var moved: [String] = []
             for name in targets {
-                try fm.moveItem(at: old.appending(path: name), to: q.appending(path: name))
+                do {
+                    try fm.moveItem(at: old.appending(path: name), to: q.appending(path: name))
+                    moved.append(name)
+                } catch {
+                    // Put back what already moved (best effort, reverse
+                    // order): whenever quarantine did not finish, the old
+                    // tree stays a usable signer.
+                    for back in moved.reversed() {
+                        try? fm.moveItem(at: q.appending(path: back), to: old.appending(path: back))
+                    }
+                    return false
+                }
             }
         } catch { return false }
         return true
+    }
+
+    /// The durable node-specific completion state (pre-audit 7, H2): the new
+    /// tree is verified AND the old tree has stopped being a signer. The
+    /// flag (`nodeDoneKey`) is written right after the quarantine; the
+    /// tree-derived fallback covers a crash between the last rename and that
+    /// write on the next launch, once the idempotent commit re-runs — an old
+    /// root that is clean of signing material and marked migrated can only
+    /// exist because a verified copy finished and its quarantine ran.
+    static func nodeMigrationComplete(support: URL, defaults: UserDefaults) -> Bool {
+        if defaults.bool(forKey: doneKey) || defaults.bool(forKey: nodeDoneKey) { return true }
+        let oldNode = support.appending(path: "Aether/node")
+        guard fm.fileExists(atPath: oldNode.path) else { return true }   // moved away entirely
+        guard fm.fileExists(atPath: oldNode.appending(path: markerName).path) else { return false }
+        let names = (try? fm.contentsOfDirectory(atPath: oldNode.path)) ?? []
+        return !names.contains { name in
+            signingMaterial.contains(name) || signingMaterialPrefixes.contains { name.hasPrefix($0) }
+        }
     }
 
     private static func markOldTreeMigrated(_ old: URL) -> Bool {

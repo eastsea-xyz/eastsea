@@ -33,6 +33,11 @@ RUSTFLAGS="--cfg getrandom_backend=\"wasm_js\" $AETHER_REMAP_FLAGS" \
   wasm-pack build crates/wasm --release --target web --out-dir ../../target/wasm-pkg --no-typescript --no-pack >/dev/null
 mkdir -p apps/extension/wasm
 cp -f target/wasm-pkg/aether_wasm.js target/wasm-pkg/aether_wasm_bg.wasm apps/extension/wasm/
+# The explorer verifies account balances with the same wasm and the same
+# pinned network (apps/explorer/js/verify.js); both are build products here.
+mkdir -p apps/explorer/wasm
+cp -f target/wasm-pkg/aether_wasm.js target/wasm-pkg/aether_wasm_bg.wasm apps/explorer/wasm/
+cp -f apps/extension/network.json apps/explorer/network.json
 echo "built apps/extension (load it unpacked from chrome://extensions)"
 if [ "${1:-}" = "--zip" ]; then
   version=$(python3 -c 'import json; print(json.load(open("apps/extension/manifest.json"))["version"])')

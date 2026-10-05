@@ -203,6 +203,10 @@ enum Cmd {
         /// Exit when the launching process does (`aether run`, the Mac app).
         #[arg(long)]
         exit_with_parent: bool,
+        /// Serve only the explorer's read methods, with caps, and bind loopback
+        /// (docs/ops/read-gateway.md). Exposure is a cloudflared tunnel's job.
+        #[arg(long)]
+        public_read_only: bool,
         #[command(flatten)]
         history: HistoryArgs,
         #[command(flatten)]
@@ -327,6 +331,10 @@ enum Cmd {
         /// hits the storage path of docs/design/24-self-healing.md.
         #[arg(long, hide = true)]
         dev_storage_fault: Option<u64>,
+        /// Serve only the explorer's read methods, with caps, and bind loopback
+        /// (docs/ops/read-gateway.md). Exposure is a cloudflared tunnel's job.
+        #[arg(long)]
+        public_read_only: bool,
         #[command(flatten)]
         history: HistoryArgs,
         #[command(flatten)]
@@ -407,6 +415,11 @@ enum Cmd {
         /// Exit when the launching app does (the Mac app's node switch).
         #[arg(long)]
         exit_with_parent: bool,
+        /// The gateway role for this Mac: whichever child runs (`aether node` or
+        /// `aether follow`) serves only the explorer's read methods with caps,
+        /// on loopback, behind a cloudflared tunnel (docs/ops/read-gateway.md).
+        #[arg(long)]
+        public_read_only: bool,
         #[command(flatten)]
         resources: ResourceArgs,
     },
@@ -745,6 +758,7 @@ fn main() {
             dev_registrar,
             dev_epoch_blocks,
             exit_with_parent,
+            public_read_only,
             history,
             resources,
         } => {
@@ -840,6 +854,7 @@ fn main() {
                         registrar_signer,
                         dev_registrar,
                         network_file,
+                        public_read_only,
                         resources,
                     });
                 })
@@ -895,12 +910,12 @@ fn main() {
             println!("signed by the committee: protocol {} at height {} on chain {}", s.upgrade.protocol, s.upgrade.activate_at, s.upgrade.chain_id);
             Ok(())
         })(),
-        Cmd::Follow { network, from_rpc, data, rpc_port, validators, exit_with_parent, candidate, dev_epoch_blocks, keys, checkpoint, dev_storage_fault, history, resources } => {
+        Cmd::Follow { network, from_rpc, data, rpc_port, validators, exit_with_parent, candidate, dev_epoch_blocks, keys, checkpoint, dev_storage_fault, public_read_only, history, resources } => {
             if exit_with_parent {
                 exit_with_parent_process();
             }
             let keys = candidate.then(|| keys.unwrap_or_else(|| data.clone()));
-            run_follow(network, from_rpc, data, rpc_port, validators, keys, dev_epoch_blocks, checkpoint, dev_storage_fault, history, resources, None, None)
+            run_follow(network, from_rpc, data, rpc_port, validators, keys, dev_epoch_blocks, checkpoint, dev_storage_fault, public_read_only, history, resources, None, None)
         }
         Cmd::Archive { network, from_rpc, data, rpc_port, export_dir, webseed, https_base, bind, export_key, resources } => run_archive(network, from_rpc, data, rpc_port, export_dir, webseed, https_base, bind, export_key, resources),
         Cmd::CandidateInfo { data, operator, chain_id } => (|| {
@@ -922,7 +937,7 @@ fn main() {
             );
             Ok(())
         })(),
-        Cmd::Run { data, network, ceremony, port, rpc_port, reshare_port, node_args, follow_args, reshare_timeout, dev_peer_dir, exit_with_parent, resources } => {
+        Cmd::Run { data, network, ceremony, port, rpc_port, reshare_port, node_args, follow_args, reshare_timeout, dev_peer_dir, exit_with_parent, public_read_only, resources } => {
             if exit_with_parent {
                 exit_with_parent_process();
             }
@@ -977,6 +992,11 @@ fn main() {
                 let (mut node_args, mut follow_args) = (node_args, follow_args);
                 node_args.extend(forwarded.iter().cloned());
                 follow_args.extend(forwarded);
+                // The gateway role carries to whichever child runs.
+                if public_read_only {
+                    node_args.push("--public-read-only".into());
+                    follow_args.push("--public-read-only".into());
+                }
                 aether_node::supervisor::Supervisor {
                     exe: std::env::current_exe().map_err(|e| e.to_string())?,
                     data: dir,
@@ -1816,6 +1836,8 @@ struct NodeArgs {
     history: aether_node::prune::HistoryMode,
     /// Era shards this Mac holds at most (roadmap B5 phase 1).
     max_shards: usize,
+    /// Serve only the explorer's reads with caps (docs/ops/read-gateway.md).
+    public_read_only: bool,
     /// Memory, CPU and disk limits (docs/ops/resource-limits.md).
     resources: ResourceArgs,
 }
@@ -1933,6 +1955,7 @@ fn run_node(a: NodeArgs) {
         network_file,
         history,
         max_shards,
+        public_read_only,
         resources,
     } = a;
     aether_node::supervisor::install_fatal_watch(std::path::PathBuf::from(&data));
@@ -2135,6 +2158,7 @@ fn run_node(a: NodeArgs) {
             snapshot: served_snapshot.clone(),
             prover: None,
             shards: None,
+            public_read_only,
         }));
         // Public access: iroh endpoint published to the BitTorrent Mainline DHT.
         // Wallets find this node by its id alone and verify everything they get;
@@ -2433,6 +2457,7 @@ fn run_node(a: NodeArgs) {
             snapshot: served_snapshot,
             prover,
             shards,
+            public_read_only,
         };
         // Voting machinery is up: swap the endpoint's served state for the
         // full one (marshal-backed finality answers, handoff signing, prover
@@ -2666,6 +2691,7 @@ fn run_follow(
     dev_epoch_blocks: Option<u64>,
     checkpoint: bool,
     dev_storage_fault: Option<u64>,
+    public_read_only: bool,
     history: HistoryArgs,
     resources: ResourceArgs,
     export: Option<aether_node::export::ExportArgs>,
@@ -2849,6 +2875,7 @@ fn run_follow(
             snapshot: Default::default(),
             prover,
             shards,
+            public_read_only,
         };
         // Serve wallets over the public endpoint (the same answers the loopback
         // HTTP server gives; every one is verified by the reader), and announce
@@ -2931,7 +2958,7 @@ fn run_archive(
         drop_era_files: false,
         max_shards: aether_node::shards::DEFAULT_MAX_SHARDS,
     };
-    run_follow(Some(network), from_rpc, data, rpc_port, 4, None, None, true, None, history, resources, Some(export), Some(bind))
+    run_follow(Some(network), from_rpc, data, rpc_port, 4, None, None, true, None, false, history, resources, Some(export), Some(bind))
 }
 
 fn run_dkg(

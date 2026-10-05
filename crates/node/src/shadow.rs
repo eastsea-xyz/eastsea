@@ -177,8 +177,8 @@ fn rpc(
     Ok(response.get("result").cloned().unwrap_or(Value::Null))
 }
 
-/// A replay-only digest, including receipt order and lengths. There is no
-/// receipts-root field in the current block format.
+/// A replay diagnostic digest, including receipt order and lengths. New-genesis
+/// block validity separately uses the canonical `receipt::receipt_root`.
 pub fn receipts_digest(receipts: &[Receipt]) -> String {
     let mut hash = blake3::Hasher::new();
     for receipt in receipts {

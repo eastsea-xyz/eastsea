@@ -156,6 +156,7 @@ pub fn verify(bytes: &[u8], era: u64, anchor: &HistoryAnchor, proof: &MmrProof, 
         digest: String::new(),
         timestamp_ms: 0,
         parent_state_root: B256::ZERO,
+        receipts_root: None,
         history_root: anchor.root,
     };
     aether_light::verify_era_root(&v, era, &e.root, proof).map_err(|e| format!("era {era} is not in the certified history: {e:?}"))?;

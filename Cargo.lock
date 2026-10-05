@@ -150,6 +150,7 @@ dependencies = [
 name = "aether-light"
 version = "0.2.0"
 dependencies = [
+ "aether-execution",
  "aether-hash",
  "aether-state",
  "aether-types",

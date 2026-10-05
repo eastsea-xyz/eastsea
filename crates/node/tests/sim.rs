@@ -14,7 +14,7 @@
 //! seed gives the same chain). `AETHER_SIM_SEEDS` / `AETHER_SIM_SECS` scale the
 //! ignored `soak` test for long runs.
 
-use aether_crypto::P256Signer;
+use aether_crypto::{P256Signer, Signer as _};
 use aether_execution::{sign_call_with, EvmCall};
 use aether_light::block::Handoff;
 use aether_light::{consensus_namespace, devnet_threshold, devnet_validator_key, Scheme};
@@ -297,6 +297,19 @@ fn transfer(from: u8, nonce: u64, to: Address) -> aether_types::TxEnvelope {
     sign_call_with(&signer, 7_777, nonce, fees, 1_000_000_000, &call).expect("sign")
 }
 
+fn transfer_for_rules(from: u8, nonce: u64, to: Address, new_genesis: bool) -> aether_types::TxEnvelope {
+    if !new_genesis { return transfer(from, nonce, to); }
+    let signer = P256Signer::from_seed(&dev_seed(from)).expect("dev key");
+    let call = EvmCall { to: Some(to), value: U256::from(1_000u64), input: Bytes::new(), gas_limit: 21_000, delegate: None };
+    let fees = FeeVector { exec: 100_000_000_000, state: aether_execution::fees::STATE_UNIT_PRICE, prove: 100_000_000_000 };
+    let mut tx = sign_call_with(&signer, 7_777, nonce, fees, 1_000_000_000, &call).expect("sign");
+    tx.header.gas.state = aether_execution::recommended_state_budget(&call, Some(U256::from(10u128.pow(24))), fees.state);
+    let mut signature = signer.sign(&tx.signing_bytes()).expect("sign state budget");
+    signature.extend_from_slice(&signer.public_key().bytes);
+    tx.signature = Bytes::from(signature);
+    tx
+}
+
 /// Puts dev account 5's next tx on an inclusion list that only validators 1
 /// and 3 hold, already past the voters' freeze. Their blocks include it; the
 /// blocks of 2 and 4 leave it out, so 1 and 3 refuse to vote for them.
@@ -432,7 +445,7 @@ fn simulate_with_rules(seed: u64, secs: u64, fault: Fault, new_genesis: bool, bl
                         .nonce(&dev_accounts(4)[from as usize - 1].1);
                     let n = &mut nonces[from as usize - 1];
                     *n = (*n).max(committed);
-                    let tx = transfer(from, *n, bob);
+                    let tx = transfer_for_rules(from, *n, bob, new_genesis);
                     for c in &chains {
                         let _ = c.add_to_mempool(tx.clone());
                     }
@@ -499,6 +512,10 @@ fn new_genesis_notice_needs_seven_days_of_certified_chain_time() {
     // Four real validators, with a proposer configured ten times faster than
     // the consensus floor. Virtual time keeps this test short.
     let out = simulate_with_rules(77, 25, Fault::None, true, 100);
+    // This run exercises the receipt-committing proposal/validation path on
+    // four independent validators with real payments, then checks hash/state
+    // agreement after each validator has re-executed the proposals.
+    check(&out, 3);
     let height = out.heights.iter().copied().min().unwrap();
     assert!(height > 2, "the simulated committee must actually finalize blocks: {out:?}");
     assert!(height < MAINNET_NOTICE_BLOCKS);

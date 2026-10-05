@@ -10,6 +10,7 @@ publish = false
 aether-types.workspace = true
 aether-hash.workspace = true
 aether-state.workspace = true
+aether-execution = { path = "../execution", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 commonware-codec = "=2026.9.0"

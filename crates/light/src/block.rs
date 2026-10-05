@@ -28,6 +28,9 @@ pub struct Payload {
     #[serde(default)]
     pub version: u32,
     pub parent_state_root: B256,
+    /// Receipts from this block; absent on legacy networks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipts_root: Option<B256>,
     /// Merkle Mountain Range root of every earlier block's hash: a certificate
     /// on this block proves all history before it (aether_state::mmr).
     #[serde(default)]

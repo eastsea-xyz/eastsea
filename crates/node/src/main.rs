@@ -3071,7 +3071,7 @@ fn bind_to_checked_genesis(network: Option<&str>, data: &str, ceremony: Option<&
     }
 }
 
-/// The rules `aether mainnet-rules` prints for `file` at `path`: the 19
+/// The rules `aether mainnet-rules` prints for `file` at `path`: the 20
 /// genesis rules and the 4 final-file gates, plus the bundled-record rule
 /// under `--bundle`. A bundle that is not a new genesis (the legacy 7780
 /// testnet app) runs the record rule alone: its network.json is not a launch
@@ -3709,7 +3709,7 @@ mod tests {
     }
 
     /// The release gate flag: `--bundle` adds the bundled-record rule on top
-    /// of the 19 genesis + 4 final-file rules (the ceremony's own first check
+    /// of the 20 genesis + 4 final-file rules (the ceremony's own first check
     /// runs without it — it writes the record only after PASS).
     #[test]
     fn the_release_gate_flag_parses() {
@@ -3724,9 +3724,9 @@ mod tests {
 
     /// The release gate must not break the app build of the legacy testnet: a
     /// bundle that is not a new genesis (the 7780 app, apps/wallet/Resources)
-    /// runs the record rule alone — running the 19 mainnet genesis rules on a
+    /// runs the record rule alone — running the 20 mainnet genesis rules on a
     /// testnet file would fail every testnet app build until the chain id
-    /// changes. A new-genesis bundle still gets the full set (23 + the record).
+    /// changes. A new-genesis bundle still gets the full set (24 + the record).
     #[test]
     fn the_bundle_gate_lets_the_legacy_testnet_app_build() {
         use aether_node::roster::{Member, NetworkFile};
@@ -3770,11 +3770,11 @@ mod tests {
         let net = dir.join("new.json");
         std::fs::write(&net, serde_json::to_vec(&new_genesis).unwrap()).unwrap();
         let rules = mainnet_rules(&new_genesis, &net, false, true).unwrap();
-        assert_eq!(rules.len(), 24, "19 genesis + 4 final-file + the record");
+        assert_eq!(rules.len(), 25, "20 genesis + 4 final-file + the record");
         assert_eq!(rules.last().unwrap().name, "bundled ceremony record");
-        // Without --bundle: the ceremony's own 23.
+        // Without --bundle: the ceremony's own 24.
         let rules = mainnet_rules(&new_genesis, &net, false, false).unwrap();
-        assert_eq!(rules.len(), 23);
+        assert_eq!(rules.len(), 24);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

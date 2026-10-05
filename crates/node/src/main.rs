@@ -289,6 +289,12 @@ enum Cmd {
     /// would stop the node for good (red team #3).
     #[command(hide = true)]
     Protocol,
+    /// BLAKE3 of a file, hex (dev-drill feature): scripts/upgrade-drill.sh
+    /// hashes its simulated releases with it for the committee upgrade's
+    /// releases[] record. No shipped build has this subcommand.
+    #[cfg(feature = "dev-drill")]
+    #[command(hide = true)]
+    DevB3 { file: String },
     /// Generate this validator's keys in <data> (never overwrites). Prints the public entry.
     Keygen {
         #[arg(long)]
@@ -1085,7 +1091,13 @@ fn main() {
             Ok(())
         })(),
         Cmd::Protocol => (|| {
-            println!("{}", aether_node::upgrade::PROTOCOL);
+            println!("{}", aether_node::upgrade::implements());
+            Ok(())
+        })(),
+        #[cfg(feature = "dev-drill")]
+        Cmd::DevB3 { file } => (|| {
+            let bytes = std::fs::read(&file).map_err(|e| format!("read {file}: {e}"))?;
+            println!("{}", hex::encode(blake3::hash(&bytes).as_bytes()));
             Ok(())
         })(),
         Cmd::Reshare { from, to, epoch_end, epoch_end_hash, stage, via_node, port, data, round, peers, link_base, offline, exit_with_parent } => {
@@ -2532,7 +2544,7 @@ fn watch_upgrades(
     identity: aether_light::Identity,
     chain_id: u64,
 ) {
-    use aether_node::upgrade::{load, protocol_at, PROTOCOL};
+    use aether_node::upgrade::{implements, load, protocol_at};
     std::thread::spawn(move || {
         let mut reported = 0;
         loop {
@@ -2555,10 +2567,12 @@ fn watch_upgrades(
                 g.upgrades_known = ups.clone();
                 (g.finalized.height + 2, g.finalized.schedule.clone())
             };
-            // The chain is the authority: an upgrade counts once it is on chain.
-            let need = protocol_at(&on_chain, next);
-            if need > PROTOCOL {
-                tracing::error!(need, have = PROTOCOL, height = next, "UPGRADE REQUIRED: this binary runs protocol {PROTOCOL} but the committee activated {need}; stopping before the new rules apply. Install the signed release.");
+            // The chain is the authority: an upgrade counts once it is on
+            // chain, compared against what this binary claims to run (drill
+            // builds may name a later release; see upgrade::implements).
+            let (need, have) = (protocol_at(&on_chain, next), implements());
+            if need > have {
+                tracing::error!(need, have, height = next, "UPGRADE REQUIRED: this binary runs protocol {have} but the committee activated {need}; stopping before the new rules apply. Install the signed release.");
                 std::process::exit(aether_node::supervisor::EXIT_UPGRADE_REQUIRED);
             }
             std::thread::sleep(Duration::from_millis(500));

@@ -685,7 +685,7 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                 // Protocol upgrades on chain: an app whose node runs an older
                 // protocol than one scheduled looks for its update right away.
                 "protocol": f.next_protocol(),
-                "node_protocol": crate::upgrade::PROTOCOL,
+                "node_protocol": crate::upgrade::implements(),
                 // Informational only: followers compare this verifier's guest
                 // against their prover before submitting proofs.
                 "prover_program": g.verifier.as_ref().and_then(|v| v.program_id()),

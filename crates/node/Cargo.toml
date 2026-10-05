@@ -70,6 +70,16 @@ zstd = "0.13"
 # (`cargo build`, `--release` included) never consult — a shipped binary
 # compiles the seam out entirely.
 test-seam = []
+# Compiles the upgrade-drill hooks (upgrade.rs `implements`/`dev_notice`, the
+# `dev-b3` subcommand) that scripts/upgrade-drill.sh needs to rehearse a
+# protocol switch to a release this tree does not implement: shorten the
+# mainnet upgrade notice and claim a later protocol, both only through
+# AETHER_DEV_* environment variables. Same containment as test-seam: never a
+# default feature, never enabled by another crate's [dependencies]; only the
+# drill build passes it, so every shipped binary (plain `cargo build`,
+# `--release`, the app bundle) compiles the hooks out entirely and ignores the
+# variables.
+dev-drill = []
 
 [dev-dependencies]
 rand_chacha = "0.10"

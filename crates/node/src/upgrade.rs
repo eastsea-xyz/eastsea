@@ -29,6 +29,56 @@ const NAMESPACE: &[u8] = aether_light::UPGRADE_NAMESPACE;
 const EMERGENCY_NAMESPACE: &[u8] = b"aether-upgrade-emergency-v1";
 pub const MAINNET_NOTICE_BLOCKS: u64 = 604_800;
 
+/// The protocol this binary runs (`PROTOCOL`). Drill builds — the only builds
+/// with the `dev-drill` feature, see Cargo.toml — may claim a later protocol
+/// with `AETHER_DEV_PROTOCOL=<n>` so `scripts/upgrade-drill.sh` can rehearse a
+/// committee upgrade to a release this tree does not implement; the value must
+/// be higher than `PROTOCOL` (a drill release is never older) and the rules it
+/// runs are still this tree's, because no code keys on the higher number.
+/// Shipped builds compile the override out and always report `PROTOCOL`.
+pub fn implements() -> u32 {
+    #[cfg(feature = "dev-drill")]
+    {
+        static CACHE: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+        *CACHE.get_or_init(|| parse_dev_protocol(std::env::var("AETHER_DEV_PROTOCOL").ok().as_deref()).unwrap_or(PROTOCOL))
+    }
+    #[cfg(not(feature = "dev-drill"))]
+    {
+        PROTOCOL
+    }
+}
+
+/// `AETHER_DEV_PROTOCOL` is the claimed protocol as plain decimal, accepted
+/// only above `PROTOCOL`; anything else falls back to `PROTOCOL`.
+#[cfg(feature = "dev-drill")]
+fn parse_dev_protocol(value: Option<&str>) -> Option<u32> {
+    let n: u32 = value?.trim().parse().ok()?;
+    (n > PROTOCOL).then_some(n)
+}
+
+/// A rehearsal's replacement for the 604,800-block mainnet notice, from
+/// `AETHER_DEV_UPGRADE_NOTICE=<blocks>` (`admissible_upgrade` reads it on the
+/// scheduled path only). Drill builds only: shipped builds always get `None`
+/// and keep the mainnet notice.
+pub fn dev_notice() -> Option<u64> {
+    #[cfg(feature = "dev-drill")]
+    {
+        static CACHE: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+        *CACHE.get_or_init(|| parse_dev_notice(std::env::var("AETHER_DEV_UPGRADE_NOTICE").ok().as_deref()))
+    }
+    #[cfg(not(feature = "dev-drill"))]
+    {
+        None
+    }
+}
+
+/// `AETHER_DEV_UPGRADE_NOTICE` is the notice in blocks, positive; anything
+/// else means "no override" and the mainnet notice stands.
+#[cfg(feature = "dev-drill")]
+fn parse_dev_notice(value: Option<&str>) -> Option<u64> {
+    value?.trim().parse::<u64>().ok().filter(|n| *n > 0)
+}
+
 pub use aether_light::block::{Release, SignedUpgrade, Upgrade};
 
 /// A protocol activation on chain: from height `at`, protocol `protocol`
@@ -274,5 +324,35 @@ mod tests {
         let partials: Vec<_> = shares.iter().zip(&keys).map(|((_, share), key)| sign_emergency_partial(&u, share, key)).collect();
         verify_emergency(&combine(&sharing, &partials).unwrap(), &committee).unwrap();
         assert_eq!(verify_emergency(&combine(&sharing, &partials[..3]).unwrap(), &committee), Err("emergency upgrade needs every current committee member".into()));
+    }
+
+    #[test]
+    #[cfg(feature = "dev-drill")]
+    fn dev_overrides_only_accept_a_later_protocol_and_a_positive_notice() {
+        // `implements`/`dev_notice` cache their first read, so exercise the
+        // parsers directly instead of setting environment variables.
+        assert_eq!(parse_dev_protocol(None), None);
+        assert_eq!(parse_dev_protocol(Some("3")), None, "not lower or equal");
+        assert_eq!(parse_dev_protocol(Some("2")), None);
+        assert_eq!(parse_dev_protocol(Some("x")), None);
+        assert_eq!(parse_dev_protocol(Some(" 4 ")), Some(4));
+        assert_eq!(parse_dev_protocol(Some("9")), Some(9));
+        assert_eq!(parse_dev_notice(None), None);
+        assert_eq!(parse_dev_notice(Some("0")), None);
+        assert_eq!(parse_dev_notice(Some("-5")), None);
+        assert_eq!(parse_dev_notice(Some(" 30 ")), Some(30));
+    }
+
+    #[test]
+    #[cfg(not(feature = "dev-drill"))]
+    fn shipped_builds_have_no_drill_overrides() {
+        // A shipped binary ignores the variables entirely: same protocol,
+        // same notice, whatever the environment carries.
+        std::env::set_var("AETHER_DEV_PROTOCOL", "9");
+        std::env::set_var("AETHER_DEV_UPGRADE_NOTICE", "10");
+        assert_eq!(implements(), PROTOCOL);
+        assert_eq!(dev_notice(), None);
+        std::env::remove_var("AETHER_DEV_PROTOCOL");
+        std::env::remove_var("AETHER_DEV_UPGRADE_NOTICE");
     }
 }

@@ -1,4 +1,4 @@
-import { Brand } from './lib/brand.js';
+import { Brand, coinTicker, coinName } from './lib/brand.js';
 // The extension's service worker: answers pages (through content.js), opens
 // an approval window for anything that needs the user, and serves the popup.
 // The origin of a page request always comes from Chrome (the port's sender),
@@ -122,11 +122,12 @@ async function activityPage(cursors = null) {
   const linked = (await local.get('linkedWallets')) || [];
   const addresses = own ? [own, ...linked] : linked;
   const selected = cursors ? addresses.filter((a) => Object.hasOwn(cursors, a)) : addresses;
-  let sources = {}, catalog = {};
+  let sources = {}, catalog = {}, ticker = coinTicker(rpc.chainId);
   try {
     const status = await rpc.call('aether_status', []);
     sources = (await tokenSources(status.chain_id)) || {};
     catalog = ((await local.get(`tokenCatalog.${status.chain_id}`)) || {}).tokens || {};
+    ticker = coinTicker(status.chain_id);
   } catch { /* the local pending list still opens without a node */ }
   const pages = await Promise.all(selected.map(async (address) => {
     try {
@@ -134,7 +135,7 @@ async function activityPage(cursors = null) {
       return { address, page };
     } catch { return { address, page: { entries: [], next_cursor: null, history_start: 0 } }; }
   }));
-  const chain = pages.flatMap(({ page }) => (page.entries || []).map((row) => describeHistory(row, { sources, catalog })));
+  const chain = pages.flatMap(({ page }) => (page.entries || []).map((row) => describeHistory(row, { sources, catalog, ticker })));
   const localItems = cursors ? [] : ((await local.get(activityKey())) || []).map((item) => ({ ...item, owner: item.owner || own }));
   return { items: mergeHistory(localItems, chain), cursors: Object.fromEntries(pages.filter(({ page }) => page.next_cursor).map(({ address, page }) => [address, page.next_cursor])),
     starts: Object.fromEntries(pages.map(({ address, page }) => [address, page.history_start])) };
@@ -150,7 +151,7 @@ async function track(hash, base) {
 // ---- approvals ----
 
 async function publishApprovals() {
-  const list = [...approvals.entries()].map(([id, a]) => ({ id, origin: a.origin, kind: a.kind, tx: a.tx, what: a.tx ? describeCall(a.tx) : null, value: a.tx ? weiToAeth(a.tx.value_wei) : null }));
+  const list = [...approvals.entries()].map(([id, a]) => ({ id, origin: a.origin, kind: a.kind, tx: a.tx, what: a.tx ? describeCall(a.tx, { ticker: coinTicker(a.status?.chain_id ?? rpc.chainId) }) : null, value: a.tx ? weiToAeth(a.tx.value_wei) : null }));
   await session.set('approvals', list);
 }
 
@@ -214,7 +215,7 @@ async function approve(id) {
     }
     const hash = await wallet.send(a.tx, { status: a.status });
     a.resolve(hash);
-    const what = describeCall(a.tx);
+    const what = describeCall(a.tx, { ticker: coinTicker(a.status?.chain_id ?? rpc.chainId) });
     // A token approval moves that token: it counts as this wallet's own action
     // for the display policy (swaps go through the router, so they cannot be
     // attributed to a token without a log history).
@@ -406,7 +407,7 @@ async function displaySets(chainId) {
     official,
     hidden: choices.hidden || [],
     shown: choices.shown || [],
-    officialSymbols: [{ symbol: Brand.coinTicker, name: Brand.coinName },
+    officialSymbols: [{ symbol: coinTicker(chainId), name: coinName(chainId) },
       ...official.map((a) => catalog.tokens[a.toLowerCase()]).filter(Boolean).map((t) => ({ symbol: t.symbol, name: t.name }))],
   };
 }
@@ -456,14 +457,14 @@ const ui = {
     const info = await vault.info();
     const [balance, status] = await Promise.all([wallet.balance(info.address), rpc.call('aether_status', [])]);
     const checked = activeNetwork?.development ? null : rpc.verifiedAccounts.get(info.address.toLowerCase());
-    if (!activeNetwork?.development && !checked) throw new Error(`${Brand.coinTicker} balance was not verified.`);
+    if (!activeNetwork?.development && !checked) throw new Error(`${coinTicker(rpc.chainId)} balance was not verified.`);
     return { address: info.address, balance: balance.toString(), height: checked?.height ?? status.height,
       blockAt: checked?.timestampMs ?? status.timestamp_ms, node: rpc.current };
   },
   assets: async ({ force } = {}) => {
     const base = await refreshAssets({ force });
     const status = await rpc.call('aether_status', []).catch(() => null);
-    if (!status) return { ...base, unverified: [], officialSymbols: [{ symbol: Brand.coinTicker, name: Brand.coinName }] };
+    if (!status) return { ...base, unverified: [], officialSymbols: [{ symbol: coinTicker(rpc.chainId), name: coinName(rpc.chainId) }] };
     const sets = await displaySets(status.chain_id);
     const { main, unverified } = splitHoldings(base.tokens, sets);
     return { ...base, tokens: main, unverified, officialSymbols: sets.officialSymbols };
@@ -516,7 +517,7 @@ const ui = {
     }
     const tx = normalizeTx({ to, value: value_wei, data, gas });
     const hash = await wallet.send(tx);
-    track(hash, { title: `Send ${Brand.coinTicker}`, origin: `${Brand.project} Wallet`, value: tx.value_wei, to });
+    track(hash, { title: `Send ${coinTicker(rpc.chainId)}`, origin: `${Brand.project} Wallet`, value: tx.value_wei, to });
     return { hash };
   },
   /** The old and new details behind a "details changed" flag, for the review
@@ -563,7 +564,7 @@ const ui = {
     const info = await vault.info();
     if (!activeNetwork?.development) throw new Error('The faucet is available only on the local development network.');
     const hash = await wallet.faucet(info.address);
-    track(hash, { title: `Test ${Brand.coinTicker} from the faucet`, origin: `${Brand.project} Wallet` });
+    track(hash, { title: `Test ${coinTicker(rpc.chainId)} from the faucet`, origin: `${Brand.project} Wallet` });
     return { hash };
   },
   quote: ({ id }) => quote(id),

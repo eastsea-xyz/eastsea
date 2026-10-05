@@ -195,7 +195,7 @@ struct DryRunError: LocalizedError {
 /// Runs a send as a stateless `eth_call` from this account before anything is
 /// signed. The FFI's `ethCall` cannot say who is calling (from 0x0 every token
 /// transfer reverts on the balance check), so the full call goes to the local
-/// node's loopback port; `plainCall` (the FFI) stands in for plain AETH
+/// node's loopback port; `plainCall` (the FFI) stands in for plain native-coin
 /// transfers when there is no local node — a contract that cannot receive
 /// plain transfers reverts the same way it would on chain. Storage rule: a
 /// dry-run's result is never stored — these checks read public chain data and
@@ -241,8 +241,8 @@ enum SendDryRun {
     }
 }
 
-/// Which tokens the main Assets list shows (token-spam-2026.md §6.1): AETH and
-/// tokens this wallet acquired or moved by its own signed action, or that are
+/// Which tokens the main Assets list shows (token-spam-2026.md §6.1): the native
+/// coin and tokens this wallet acquired or moved by its own signed action, or that are
 /// official (the bundled seed list and wrapped AETH), or that the user chose to
 /// show. Everything else someone sent in goes to the collapsed "Unverified"
 /// section, out of any total. Only the user's choices are stored, on this

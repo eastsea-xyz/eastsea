@@ -65,7 +65,7 @@ extension WalletModel {
         activity = [
             ActivityItem(date: now.addingTimeInterval(-300), kind: .received, title: "Proof reward · block #184024", amount: 0.5, state: .done),
             ActivityItem(date: now.addingTimeInterval(-3_600), kind: .sent, title: "Sent to 0x12ab…90ab", amount: -2, state: .done),
-            ActivityItem(date: now.addingTimeInterval(-60_000), kind: .received, title: "Test \(Brand.coinTicker) from faucet", amount: 10, state: .done),
+            ActivityItem(date: now.addingTimeInterval(-60_000), kind: .received, title: "Test \(Brand.networkCoinTicker) from faucet", amount: 10, state: .done),
             ActivityItem(date: now.addingTimeInterval(-9_000), kind: .sent, title: "Sent 5 USDX · 0x0000…00c1 to 0x12ab…90ab", amount: nil, state: .done,
                          token: "0x00000000000000000000000000000000000000c1"),
         ]

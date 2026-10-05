@@ -238,7 +238,7 @@ enum WeiMath {
         return trim(digits.reversed().map(String.init).joined())
     }
 
-    /// Wei as AETH, for display and the count-up animation (not for sums).
+    /// Wei as a decimal coin amount, for display and the count-up animation (not for sums).
     static func aeth(_ wei: String) -> Double {
         let padded = String(repeating: "0", count: max(0, 19 - wei.count)) + wei
         return Double("\(padded.dropLast(18)).\(padded.suffix(18))") ?? 0

@@ -2,7 +2,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { formatAeth, formatInt, formatRate, formatTokenAmount, localTime, shortHex, timeAgo, toBigInt, txRate, weiToAeth } from '../js/format.js';
+import { coinTicker, formatAeth, formatInt, formatRate, formatTokenAmount, localTime, shortHex, timeAgo, toBigInt, txRate, weiToAeth } from '../js/format.js';
 
 test('toBigInt takes hex, decimal, number and bigint; rejects the rest', () => {
   assert.equal(toBigInt('0x1a'), 26n);
@@ -23,6 +23,12 @@ test('weiToAeth is exact and drops trailing zeros', () => {
   assert.equal(weiToAeth(15n * 10n ** 17n), '1.5');
   assert.equal(weiToAeth(10n ** 17n), '0.1');
   assert.equal(weiToAeth('0x4599ecb2e063c40'), '0.3134562445666704'); // 0x hex, the shape aether_getAccount returns
+});
+
+test('the coin ticker follows the chain (the legacy testnet kept AETH)', () => {
+  assert.equal(coinTicker(7780), 'AETH');
+  assert.equal(coinTicker(7777), 'DBLN');
+  assert.equal(coinTicker(null), 'DBLN'); // before the node answers
 });
 
 test('formatAeth groups thousands and trims to the asked digits', () => {

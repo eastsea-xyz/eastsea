@@ -64,7 +64,7 @@ struct PageTransaction: Equatable {
     /// Gas limit the page asked for (0: the wallet's default).
     let gas: UInt64
 
-    /// A plain AETH transfer: what the send sheet's FeeChanged flow covers.
+    /// A plain native-coin transfer: what the send sheet's FeeChanged flow covers.
     var isPlainTransfer: Bool { data == "0x" && !to.isEmpty }
 
     /// normalizeTx, mirrored. `from` must be the address this page is
@@ -261,17 +261,17 @@ enum ProviderGate {
 enum CallDescribe {
     static func action(to: String, data: String) -> String {
         if to.isEmpty { return "Deploy a contract (\((data.count - 2) / 2) bytes)" }
-        if data == "0x" { return "Send \(Brand.coinTicker)" }
+        if data == "0x" { return "Send \(Brand.networkCoinTicker)" }
         let known: [String: String] = [
             "0xa9059cbb": "Token transfer", "0x095ea7b3": "Token approval (allows spending)", "0x23b872dd": "Token transfer from",
             // EastSea DEX router
-            "0x38ed1739": "Swap tokens", "0xac344b4d": "Swap \(Brand.coinTicker) for tokens", "0x3f070ce1": "Swap tokens for \(Brand.coinTicker)",
-            "0xe8e33700": "Add liquidity", "0xcf2df7c6": "Add liquidity with \(Brand.coinTicker)", "0xbaa2abde": "Remove liquidity",
-            "0x0fb9ca68": "Remove liquidity to \(Brand.coinTicker)", "0xd0e30db0": "Wrap \(Brand.coinTicker)", "0x2e1a7d4d": "Unwrap \(Brand.coinTicker)",
+            "0x38ed1739": "Swap tokens", "0xac344b4d": "Swap \(Brand.networkCoinTicker) for tokens", "0x3f070ce1": "Swap tokens for \(Brand.networkCoinTicker)",
+            "0xe8e33700": "Add liquidity", "0xcf2df7c6": "Add liquidity with \(Brand.networkCoinTicker)", "0xbaa2abde": "Remove liquidity",
+            "0x0fb9ca68": "Remove liquidity to \(Brand.networkCoinTicker)", "0xd0e30db0": "Wrap \(Brand.networkCoinTicker)", "0x2e1a7d4d": "Unwrap \(Brand.networkCoinTicker)",
             "0x3ca6d100": "Create a token", "0xc7ff321d": "Create a token",
             // EastSea launchpad
             "0x42a81515": "Launch a token", "0xcce7ec13": "Buy on the launch curve", "0x6a272462": "Sell on the launch curve",
-            "0x5cf66fe1": "Buy with \(Brand.coinTicker) (graduated pool)", "0xff5b07d8": "Sell for \(Brand.coinTicker) (graduated pool)",
+            "0x5cf66fe1": "Buy with \(Brand.networkCoinTicker) (graduated pool)", "0xff5b07d8": "Sell for \(Brand.networkCoinTicker) (graduated pool)",
         ]
         return known[String(data.prefix(10))] ?? "Contract call \(data.prefix(10))"
     }

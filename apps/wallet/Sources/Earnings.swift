@@ -49,7 +49,7 @@ struct RewardCelebration: Equatable {
 }
 
 enum EarningsText {
-    static let unit = "test \(Brand.coinTicker)"
+    static let unit = "test \(Brand.networkCoinTicker)"
 
     static func aeth(_ wei: String) -> String { Wei.format(wei) }
 
@@ -146,7 +146,7 @@ struct EarningsHero: View {
         HStack(alignment: .center) {
             LivePill(text: pillText, live: work.isLive, beat: work.height, ring: work.isLive && !work.isProving)
             Spacer(minLength: 0)
-            TokenIcon(chainId: 0, address: nil, symbol: Brand.coinTicker, size: 48)
+            TokenIcon(chainId: Brand.networkChainId, address: nil, symbol: Brand.networkCoinTicker, size: 48)
         }
     }
 
@@ -234,7 +234,7 @@ struct EarningsHero: View {
     }
 }
 
-/// "EARNED SO FAR  12.5 test AETH  +1.5 in the last hour", counting up.
+/// "EARNED SO FAR  12.5 test DBLN  +1.5 in the last hour", counting up.
 private struct EarnedBlock: View {
     let summary: EarningsSummary
     let celebration: RewardCelebration?
@@ -414,7 +414,7 @@ private struct ProveCallToAction: View {
                 Image(systemName: "bolt.fill").font(.aeHeadline)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Prove blocks on this Mac's GPU").font(.aeHeadline)
-                    Text("for test \(Brand.coinTicker) rewards").font(.aeCaption.weight(.semibold)).opacity(0.8)
+                    Text("for test \(Brand.networkCoinTicker) rewards").font(.aeCaption.weight(.semibold)).opacity(0.8)
                 }
                 Spacer(minLength: 4)
                 Image(systemName: "chevron.right").font(.aeHeadline)
@@ -425,11 +425,11 @@ private struct ProveCallToAction: View {
             .shadow(color: .black.opacity(0.2), radius: 8, y: 4)
         }
         .buttonStyle(.plain)
-        .help("Uses the GPU and power while on, at your cost. The first valid proof of a block gets a test \(Brand.coinTicker) reward in this wallet.")
+        .help("Uses the GPU and power while on, at your cost. The first valid proof of a block gets a test \(Brand.networkCoinTicker) reward in this wallet.")
     }
 }
 
-/// "+0.5 test AETH" that pops, rises and fades when a reward lands.
+/// "+0.5 test DBLN" that pops, rises and fades when a reward lands.
 private struct FloatingReward: View {
     let celebration: RewardCelebration?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1102,7 +1102,7 @@ struct NodeStatusLine: View {
             Spacer(minLength: 4)
             Button(action: prove) { Label("Prove blocks", systemImage: "bolt.fill") }
                 .buttonStyle(.borderedProminent)
-                .help("Uses the GPU and power while on, at your cost. The first valid proof of a block gets a test \(Brand.coinTicker) reward in this wallet.")
+                .help("Uses the GPU and power while on, at your cost. The first valid proof of a block gets a test \(Brand.networkCoinTicker) reward in this wallet.")
         }
         .padding(.horizontal, 16).padding(.vertical, 12)
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
@@ -1148,7 +1148,7 @@ struct EarningsSidebarBadge: View {
     }
 }
 
-/// One line in the menu-bar panel: "+1.5 test AETH today".
+/// One line in the menu-bar panel: "+1.5 test DBLN today".
 struct EarningsMenuLine: View {
     @EnvironmentObject var node: NodeController
     @EnvironmentObject var earnings: Earnings

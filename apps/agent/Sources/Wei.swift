@@ -1,6 +1,6 @@
 import Foundation
 
-/// Exact AETH amounts (18 decimals) as a 128-bit wei count.
+/// Exact native-coin amounts (18 decimals) as a 128-bit wei count.
 struct Wei: Comparable, CustomStringConvertible {
     let value: UInt128
 
@@ -15,7 +15,7 @@ struct Wei: Comparable, CustomStringConvertible {
         value = v
     }
 
-    /// From an AETH amount like "1.5" (at most 18 decimals).
+    /// From a coin amount like "1.5" (at most 18 decimals).
     init?(aeth s: String) {
         let parts = s.trimmingCharacters(in: .whitespaces).split(separator: ".", omittingEmptySubsequences: false)
         guard (1...2).contains(parts.count), parts.allSatisfy({ $0.allSatisfy(\.isNumber) }) else { return nil }
@@ -31,7 +31,7 @@ struct Wei: Comparable, CustomStringConvertible {
         value = b
     }
 
-    /// Decimal AETH, trailing zeros trimmed.
+    /// Decimal coin amount, trailing zeros trimmed.
     var aeth: String {
         let whole = value / Self.unit
         var frac = String(value % Self.unit)

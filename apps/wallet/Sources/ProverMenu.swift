@@ -10,7 +10,7 @@ struct MenuBarPanel: View {
     @Environment(\.openWindow) private var openWindow
 
     private var balance: String {
-        model.account.map { "\(Amount.text(Double(Wei.format($0.balanceWei)) ?? 0)) \(Brand.coinTicker)" } ?? "…"
+        model.account.map { "\(Amount.text(Double(Wei.format($0.balanceWei)) ?? 0)) \(Brand.networkCoinTicker)" } ?? "…"
     }
 
     var body: some View {
@@ -84,7 +84,7 @@ struct MenuBarPanel: View {
                             .foregroundStyle(.secondary)
                     }
                     if let r = p.last_reward {
-                        Text("Last reward \(Wei.format(LocalRPC.decimal(r))) \(Brand.coinTicker)").foregroundStyle(.green)
+                        Text("Last reward \(Wei.format(LocalRPC.decimal(r))) \(Brand.networkCoinTicker)").foregroundStyle(.green)
                     }
                     if let e = p.error { Text(e).foregroundStyle(.red).lineLimit(2) }
                 }.font(.aeCaption)

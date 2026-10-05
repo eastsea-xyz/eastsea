@@ -147,7 +147,7 @@ contract MerkleDistributorFactory {
 /// ERC-20 batch sends, Disperse-style: approve this contract once, then `send`
 /// moves tokens straight from the caller to each recipient -- it never holds
 /// them. All or nothing: one failing transfer (e.g. the allowance ran out
-/// mid-batch) reverts the whole batch. The native-AETH counterpart is the
+/// mid-batch) reverts the whole batch. The native-DBLN counterpart is the
 /// account's own `execute` (EastSeaAccount), which batches plain transfers.
 contract TokenBatch {
     error LengthMismatch();

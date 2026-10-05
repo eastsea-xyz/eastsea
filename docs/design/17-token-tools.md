@@ -104,7 +104,7 @@
 | `TokenBatch` | Disperse 방식 ERC-20 일괄 전송. 한 번 승인(approve)하면 각 수령인에게 곧장 `transferFrom`으로 보낸다(예치 없음) |
 | `scripts/merkle-build.mjs` | `address,amount` CSV → 정렬된 트리 → 루트·총액·증명 JSON. 의존성 없음(keccak 직접 구현) |
 
-네이티브 AETH 일괄 송금은 이미 계정 자체가 한다(`EastSeaAccount.execute`의 여러 호출). 이 도구는 ERC-20용이다.
+네이티브 DBLN 일괄 송금은 이미 계정 자체가 한다(`EastSeaAccount.execute`의 여러 호출). 이 도구는 ERC-20용이다.
 
 ### 머클 규격
 

@@ -73,10 +73,10 @@ enum BalanceBreakdownText {
         guard !b.itemizesCompletely else { return nil }
         if b.differenceWei.hasPrefix("-") {
             let over = ChainActivity.units(String(b.differenceWei.dropFirst()))
-            return "\(over) \(Brand.coinTicker) more itemized than the balance shows — try again in a moment"
+            return "\(over) \(Brand.networkCoinTicker) more itemized than the balance shows — try again in a moment"
         }
         let missing = ChainActivity.units(b.differenceWei)
-        return "\(missing) \(Brand.coinTicker) not yet itemized — load older activity to account for it"
+        return "\(missing) \(Brand.networkCoinTicker) not yet itemized — load older activity to account for it"
     }
 }
 

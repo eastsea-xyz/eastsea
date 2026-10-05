@@ -4,7 +4,7 @@
 // which is why every page carries its "read from the node" line.
 
 import { card, copyButton, dot, kv, message, pill, sourceLine, table, h } from './dom.js';
-import { formatAeth, formatInt, formatRate, formatTokenAmount, localTime, shortHex, timeAgo, toBigInt, txRate } from './format.js';
+import { coinTicker, formatAeth, formatInt, formatRate, formatTokenAmount, localTime, shortHex, timeAgo, toBigInt, txRate } from './format.js';
 import { TRANSFER_TOPIC, decodeApproval, decodeTransfer, revertReason, wordAddress } from './abi.js';
 import { looksLikeOfficial, officialTokens, originBadge, tokenInfo, tokenOrigin, totalSupply } from './erc20.js';
 import { NOT_COMMITTED } from './verify.js';
@@ -108,7 +108,7 @@ export async function homeView(ctx) {
     ['Chain id', String(status.chain_id)],
     ['Hash function', status.hash_function],
     ['State root', withCopy(ox(status.state_root))],
-    ['Prover escrow', `${formatAeth(status.prover_escrow)} DBLN`],
+    ['Prover escrow', `${formatAeth(status.prover_escrow)} ${coinTicker(status.chain_id)}`],
   ]));
 
   const list = card(`Latest blocks`, table(
@@ -337,7 +337,7 @@ export async function accountView(ctx, address) {
     account.code_size > 0 ? pill(`code · ${formatInt(account.code_size)} bytes`, 'plain') : null,
     token ? h('p', { class: 'small' }, h('a', { href: `#/token/${a}` }, `ERC-20 token ${token.symbol} · view the token page →`)) : null,
     card('State (finalized)', kv([
-      ['Balance', `${formatAeth(account.balance)} DBLN`],
+      ['Balance', `${formatAeth(account.balance)} ${coinTicker(ctx.chainId)}`],
       ['Raw balance', `${toBigInt(account.balance).toString()} wei`],
       ['Nonce', formatInt(account.nonce)],
       ['Code', account.code_size > 0 ? `${formatInt(account.code_size)} bytes` : 'none'],
@@ -346,7 +346,7 @@ export async function accountView(ctx, address) {
     ])),
     sourceLine(ctx.node, `height ${formatInt(account.height)}`));
 
-  const rewardsCard = rewardCard(rewards);
+  const rewardsCard = rewardCard(rewards, coinTicker(ctx.chainId));
   if (rewardsCard) els.append(rewardsCard);
   els.append(await transfersCard(ctx, a));
   return els;
@@ -354,12 +354,12 @@ export async function accountView(ctx, address) {
 
 /** The node keeps reward records per payout address (aether_rewards); an
  * ordinary account simply has none, so the card appears only when there is one. */
-function rewardCard(records) {
+function rewardCard(records, ticker = 'DBLN') {
   if (!records || !records.length) return null;
   const rows = [...records].reverse().map((r) => [
     r.kind === 'node' ? pill('node reward', 'plain') : pill('proof reward', 'plain'),
     r.proven != null ? formatInt(r.proven) : '—',
-    `${formatAeth(r.amount)} DBLN`,
+    `${formatAeth(r.amount)} ${ticker}`,
     blockLink(r.height),
     timeAgo(r.timestamp_ms),
   ]);
@@ -367,7 +367,7 @@ function rewardCard(records) {
 }
 
 /** ERC-20 transfers to and from the address, from `eth_getLogs` (the newest
- * 2,000 blocks — the whole window the node scans). Native DBLN sends emit no
+ * 2,000 blocks — the whole window the node scans). Native-coin sends emit no
  * log and cannot be searched by address on this node; the card says so. */
 async function transfersCard(ctx, address) {
   const word = wordAddress(address);
@@ -391,7 +391,7 @@ async function transfersCard(ctx, address) {
     return true;
   }).slice(0, 25);
 
-  return card('ERC-20 transfers', h('p', { class: 'small muted' }, `Newest ${logsWindow().toLocaleString('en-US')} blocks only (the node's eth_getLogs window); native DBLN transfers emit no events and cannot be searched by address.`),
+  return card('ERC-20 transfers', h('p', { class: 'small muted' }, `Newest ${logsWindow().toLocaleString('en-US')} blocks only (the node's eth_getLogs window); native-coin transfers emit no events and cannot be searched by address.`),
     logs.length ? await transferTable(ctx, logs, address) : h('span', { class: 'muted' }, 'none in that window'));
 }
 

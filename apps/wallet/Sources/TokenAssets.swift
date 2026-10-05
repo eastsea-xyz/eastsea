@@ -3,7 +3,7 @@ import Foundation
 // ERC-20 tokens this wallet holds, found the way the agent's DEX tools find them
 // (apps/agent/Sources/Dex.swift): the DEX token factory, its pools and the launchpad
 // are enumerated with read-only `eth_call`s, then `balanceOf` is asked for each token.
-// Unlike AETH, these balances are the node's answer, not light-client verified.
+// Unlike the native coin, these balances are the node's answer, not light-client verified.
 // Pure values and functions (the reader is passed in), so it is checked without a node
 // (apps/wallet/Tests/assets).
 

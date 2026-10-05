@@ -36,7 +36,7 @@
 | 블록 한도 | exec 30,000,000 / prove 200,000,000(**바이너리 상수 — 프로토콜 스위치 없음**, §3 G6), 블록당 트랜잭션 2,000개(블록 검증) | `main.rs` `chain_config`, `chain.rs` `MAX_TXS_PER_BLOCK` |
 | 트랜잭션 크기 | 128 KiB(로컬 허용 정책, 합의 아님) | `chain.rs` `MAX_TX_BYTES` |
 | 증명 시장 | 블록당 증명 2개·각 128 KiB, 청구 만료 30일 | `proofs.rs` `MAX_PROOFS_PER_BLOCK` 등; 증명기 프로그램 ID는 노드 빌드 시 고정 |
-| 발행(메인넷) | 블록당 1 AETH에서 −15%/년 매끄럽게, 하한 0.1 AETH, 절반 운영자·절반 증명자, 운영자당 1/16 상한, 미분배 몫 미발행 | `crates/rewards/src/lib.rs`(7780용 반감기식은 `proofs.rs`에 별도) |
+| 발행(메인넷) | 블록당 1 DBLN에서 −15%/년 매끄럽게, 하한 0.1 DBLN, 절반 운영자·절반 증명자, 운영자당 1/16 상한, 미분배 몫 미발행 | `crates/rewards/src/lib.rs`(7780용 반감기식은 `proofs.rs`에 별도) |
 | 비컨 | 에포크(3,600블록)를 12슬롯으로, 답 창 90블록, 블록당 답 1,024개, 유예 24에포크, 재인증 매일(DAY_EPOCHS 24) | `rewards/src/beacons.rs` |
 | 등록 | 에포크당 신규 16(**상태 저장 슬롯 7, 세터 없음** — 변경은 U의 시스템 쓰기), 무료 레인 블록당 4항목(payload 규칙), 워밍업 24에포크·추첨 주기 24에포크(상태 저장, 제네시스 세팅) | `crates/execution/src/registry.rs`, `registrations.rs` |
 | 위원회 성장·회전 | 16석까지 성장(`GROW_UNTIL`), 추첨 풀 상한 128, 가동률 문턱 99%/95% | `crates/node/src/rotation.rs` |

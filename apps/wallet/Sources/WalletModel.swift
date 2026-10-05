@@ -406,7 +406,7 @@ final class WalletModel: ObservableObject {
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
                 // Keep the request until the chain confirms it ran: a revert (e.g. the
                 // delay counted from inclusion, not from submission) can be retried.
-                let ok = await self.track(h, label: "Recovered \(Wei.format(pending.request.valueWei)) \(Brand.coinTicker) from \(pending.request.lost.prefix(10))…",
+                let ok = await self.track(h, label: "Recovered \(Wei.format(pending.request.valueWei)) \(Brand.networkCoinTicker) from \(pending.request.lost.prefix(10))…",
                                  item: ActivityItem(kind: .received, title: "Recovered from \(Short.address(pending.request.lost))",
                                                     amount: Double(Wei.format(pending.request.valueWei))))
                 await MainActor.run {
@@ -644,9 +644,10 @@ final class WalletModel: ObservableObject {
         return Set((s.seed + [s.waeth].compactMap { $0 }).map { $0.lowercased() })
     }
 
-    /// Their symbols and names, for the look-alike warning (native AETH first).
+    /// Their symbols and names, for the look-alike warning (the native coin first).
     var officialSymbols: [(symbol: String, name: String)] {
-        [(Brand.coinTicker, Brand.coinName)] + officialTokenAddresses.sorted().compactMap { tokenCatalog.tokens[$0].map { ($0.symbol, $0.name) } }
+        let chain = status?.chainId ?? Brand.networkChainId
+        return [(Brand.coinTicker(chainId: chain), Brand.coinName(chainId: chain))] + officialTokenAddresses.sorted().compactMap { tokenCatalog.tokens[$0].map { ($0.symbol, $0.name) } }
     }
 
     /// Which holdings belong in the main Assets list and which in the collapsed
@@ -797,7 +798,7 @@ final class WalletModel: ObservableObject {
         Task.detached {
             do {
                 let h = try devnetFaucet(to: addr, valueWei: Wei.from(aeth: "10")!)
-                await self.track(h, label: "Faucet 10 \(Brand.coinTicker)", item: ActivityItem(kind: .received, title: "Test \(Brand.coinTicker) from faucet", amount: 10))
+                await self.track(h, label: "Faucet 10 \(Brand.networkCoinTicker)", item: ActivityItem(kind: .received, title: "Test \(Brand.networkCoinTicker) from faucet", amount: 10))
             } catch { await MainActor.run { self.note("Faucet failed: \(error)"); self.busy = false } }
         }
     }
@@ -834,12 +835,12 @@ final class WalletModel: ObservableObject {
                 if recipients.count == 1 {
                     prepared = try prepareTransfer(p256PublicKey: pk, to: recipients[0], valueWei: wei,
                                                    shownFeeWei: shownFeeWei, validators: validatorsNow)
-                    label = "Sent \(Wei.format(wei)) \(Brand.coinTicker) (nonce \(prepared.nonce))"
+                    label = "Sent \(Wei.format(wei)) \(Brand.networkCoinTicker) (nonce \(prepared.nonce))"
                 } else {
                     // All payments in one tx: one signature, all or nothing (EIP-7702 batch).
                     prepared = try prepareBatch(p256PublicKey: pk, payments: recipients.map { Payment(to: $0, valueWei: wei) },
                                                 shownFeeWei: shownFeeWei)
-                    label = "Paid \(recipients.count) recipients \(Wei.format(wei)) \(Brand.coinTicker) each with one signature (nonce \(prepared.nonce))"
+                    label = "Paid \(recipients.count) recipients \(Wei.format(wei)) \(Brand.networkCoinTicker) each with one signature (nonce \(prepared.nonce))"
                 }
                 let sig = try enclave.sign(prepared.signingMessage)   // Secure Enclave, may prompt
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
@@ -1132,7 +1133,7 @@ final class WalletModel: ObservableObject {
                             let matched = page.entries.contains { $0.height == rise.height && $0.direction == "in" }
                             if !matched {
                                 var item = ActivityItem(kind: .received,
-                                    title: "Balance increased by \(ChainActivity.units(rise.wei)) \(Brand.coinTicker) · block #\(rise.height)",
+                                    title: "Balance increased by \(ChainActivity.units(rise.wei)) \(Brand.networkCoinTicker) · block #\(rise.height)",
                                     amount: Double(ChainActivity.units(rise.wei)), state: .done)
                                 item.source = "From the node"
                                 item.owner = own

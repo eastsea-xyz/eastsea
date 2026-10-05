@@ -1,6 +1,12 @@
 // Amounts, numbers and times. BigInt inside, exact decimals at the edges —
 // the same rules as apps/extension/src/lib/units.js (test/format.test.mjs).
 
+/** The coin's ticker on a chain: the legacy 7780 testnet kept AETH, every
+ * other (new-genesis) chain shows DBLN (docs/design/25-rename.md). */
+export function coinTicker(chainId) {
+  return Number(chainId) === 7780 ? 'AETH' : 'DBLN';
+}
+
 const AETH_DECIMALS = 18n;
 const ONE_AETH = 10n ** AETH_DECIMALS;
 
@@ -13,7 +19,7 @@ export function toBigInt(v) {
   throw new Error(`not a non-negative integer: ${String(v).slice(0, 40)}`);
 }
 
-/** Wei -> exact decimal AETH ("1.5"), no trailing zeros. */
+/** Wei -> exact decimal coin amount ("1.5"), no trailing zeros. */
 export function weiToAeth(wei) {
   const w = toBigInt(wei);
   const i = w / ONE_AETH;
@@ -21,7 +27,7 @@ export function weiToAeth(wei) {
   return f ? `${i}.${f}` : `${i}`;
 }
 
-/** Wei -> short readable AETH ("1,234.5678"), at most `digits` fraction digits. */
+/** Wei -> short readable coin amount ("1,234.5678"), at most `digits` fraction digits. */
 export function formatAeth(wei, digits = 4) {
   const [i, f = ''] = weiToAeth(wei).split('.');
   const int = i.replace(/\B(?=(\d{3})+(?!\d))/g, ',');

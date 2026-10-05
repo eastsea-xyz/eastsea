@@ -105,6 +105,13 @@ contract MerkleDistributor {
 contract MerkleDistributorFactory {
     error BadEnd(uint64 ends);
     error BadTotal();
+    /// F-03: the "token" is an EOA, so the raw transferFrom's empty return
+    /// would read as success and a zero-funded campaign would emit Campaign.
+    error NotAContract();
+    /// F-02: the child's balance rose by something other than `total` — a
+    /// fee-on-transfer token that under-delivers, an over-delivering reward
+    /// token, or a dishonest contract that paid nothing at all.
+    error Underfunded(uint256 received, uint256 total);
 
     event Campaign(address distributor, address creator, address token, bytes32 merkleRoot, uint64 ends, uint256 total);
 
@@ -115,14 +122,24 @@ contract MerkleDistributorFactory {
     }
 
     /// `ends` must be in the future (or 0 = no end); `total` is the whole
-    /// campaign, moved from the caller to the new distributor here.
+    /// campaign, moved from the caller to the new distributor here. The
+    /// campaign only counts once the child actually holds `total` (F-02/F-03):
+    /// a shortfall strands tokens no leaf can claim — forever, in a perpetual
+    /// campaign that can never be swept — and a surplus is owed to no one. The
+    /// funded-total check is exact equality, so fee-on-transfer tokens are
+    /// refused here; they still work through TokenBatch, where the sender pays
+    /// the whole amount and the skimmed arrival is the recipient's business.
     function create(IERC20 token, bytes32 merkleRoot, uint64 ends, uint256 total) external returns (MerkleDistributor d) {
         if (ends != 0 && ends <= block.timestamp) revert BadEnd(ends);
         if (total == 0) revert BadTotal();
+        if (address(token).code.length == 0) revert NotAContract();
         bytes32 salt = keccak256(abi.encode(msg.sender, campaigns.length));
         d = new MerkleDistributor{salt: salt}(token, msg.sender, merkleRoot, ends);
-        campaigns.push(d);
+        uint256 before = token.balanceOf(address(d));
         _erc20Move(address(token), abi.encodeWithSelector(IERC20.transferFrom.selector, msg.sender, address(d), total));
+        uint256 received = token.balanceOf(address(d)) - before;
+        if (received != total) revert Underfunded(received, total);
+        campaigns.push(d); // listed only once the funding is proven
         emit Campaign(address(d), msg.sender, address(token), merkleRoot, ends, total);
     }
 }
@@ -134,16 +151,30 @@ contract MerkleDistributorFactory {
 /// account's own `execute` (EastSeaAccount), which batches plain transfers.
 contract TokenBatch {
     error LengthMismatch();
+    /// F-03: the "token" is an EOA, so the raw transferFrom's empty return
+    /// would read as success and Sent would announce a send that never was.
+    error NotAContract();
+    /// F-03: the token reported success but the caller's balance did not
+    /// fall by `total` — the send never happened.
+    error NotMoved(uint256 moved, uint256 total);
 
     event Sent(address indexed token, address indexed from, uint256 recipients, uint256 total);
 
     function send(IERC20 token, address[] calldata to, uint256[] calldata amounts) external {
         if (to.length != amounts.length) revert LengthMismatch();
+        if (address(token).code.length == 0) revert NotAContract();
+        uint256 before = token.balanceOf(msg.sender);
         uint256 total = 0;
         for (uint256 i = 0; i < to.length; i++) {
             _erc20Move(address(token), abi.encodeWithSelector(IERC20.transferFrom.selector, msg.sender, to[i], amounts[i]));
             total += amounts[i];
         }
+        // F-03: Sent is a receipt, not a transfer. A dishonest token can
+        // answer true while moving nothing, so only the caller's falling
+        // balance proves the batch happened. Fee-on-transfer tokens still
+        // pass: the sender pays the whole amount even when arrival is skimmed.
+        uint256 moved = before - token.balanceOf(msg.sender);
+        if (moved != total) revert NotMoved(moved, total);
         emit Sent(address(token), msg.sender, to.length, total);
     }
 }

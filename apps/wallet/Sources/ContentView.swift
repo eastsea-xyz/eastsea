@@ -161,7 +161,7 @@ struct DeveloperView: View {
             HStack {
                 TextField("0x recipient (several: comma-separated, one signature)", text: $model.sendTo).textFieldStyle(.roundedBorder).font(.callout.monospaced())
                 TextField("\(Brand.coinTicker)", text: $model.sendAmount).textFieldStyle(.roundedBorder).frame(width: 80)
-                Button("Send") { model.send() }.keyboardShortcut(.return).disabled(model.busy || model.sendTo.isEmpty)
+                Button("Send") { Task { await model.send() } }.keyboardShortcut(.return).disabled(model.busy || model.sendTo.isEmpty)
             }
         } label: { Text("Send (signed in the Secure Enclave)") }
     }

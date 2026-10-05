@@ -314,7 +314,7 @@ RustBuffer uniffi_aether_ffi_fn_func_prepare_add_recovery_key(RustBuffer p256_pu
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_BATCH
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_BATCH
-RustBuffer uniffi_aether_ffi_fn_func_prepare_batch(RustBuffer p256_public_key, RustBuffer payments, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_aether_ffi_fn_func_prepare_batch(RustBuffer p256_public_key, RustBuffer payments, RustBuffer shown_fee_wei, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_CALL
@@ -399,7 +399,7 @@ RustBuffer uniffi_aether_ffi_fn_func_prepare_stop_sessions(RustBuffer owner_publ
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_TRANSFER
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_TRANSFER
-RustBuffer uniffi_aether_ffi_fn_func_prepare_transfer(RustBuffer p256_public_key, RustBuffer to, RustBuffer value_wei, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_aether_ffi_fn_func_prepare_transfer(RustBuffer p256_public_key, RustBuffer to, RustBuffer value_wei, RustBuffer shown_fee_wei, uint32_t validators, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_RECEIPT

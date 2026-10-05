@@ -723,19 +723,26 @@ final class WalletModel: ObservableObject {
         }
     }
 
-    func send() {
-        guard let enclave else { return }
+    /// Send the sheet's transfer. `shownFeeWei` is the fee maximum the send
+    /// sheet displayed (pre-audit 7, M1): when the same quote computed at
+    /// signature time would cost more, the FFI refuses with `FeeChanged` and
+    /// this returns the reason instead of sending — the sheet stays open,
+    /// re-quotes, and asks the user to confirm the new maximum. Returns nil
+    /// when the transaction was signed and submitted.
+    @discardableResult
+    func send(shownFeeWei: String? = nil) async -> String? {
+        guard let enclave else { return "The wallet key is not ready yet" }
         // A payment link is sent exactly as it asked; otherwise the form's values.
         let (toText, amountText) = paymentRequest.map { ($0.to, $0.amount) } ?? (sendTo, sendAmount)
-        guard let wei = Wei.from(aeth: amountText) else { note("Invalid amount"); return }
+        guard let wei = Wei.from(aeth: amountText) else { note("Invalid amount"); return "Invalid amount" }
         // One or more recipients (comma/space separated); each gets the amount.
         let recipients = toText.split(whereSeparator: { $0 == "," || $0.isWhitespace }).map(String.init).filter { !$0.isEmpty }
-        guard !recipients.isEmpty else { return }
+        guard !recipients.isEmpty else { return "Add a recipient first" }
         let pk = enclave.publicKey
         let callback = paymentRequest?.callback
-        paymentRequest = nil
         busy = true
-        Task.detached {
+        let refused: String? = await Task.detached { [weak self] () -> String? in
+            guard let self else { return nil }
             do {
                 let prepared: PreparedTx
                 let label: String
@@ -744,11 +751,13 @@ final class WalletModel: ObservableObject {
                 let item = ActivityItem(kind: .sent, title: "Sent to \(who)", amount: -each * Double(recipients.count),
                                         recipients: recipients.map { $0.lowercased() })
                 if recipients.count == 1 {
-                    prepared = try prepareTransfer(p256PublicKey: pk, to: recipients[0], valueWei: wei)
+                    prepared = try prepareTransfer(p256PublicKey: pk, to: recipients[0], valueWei: wei,
+                                                   shownFeeWei: shownFeeWei, validators: self.validators)
                     label = "Sent \(Wei.format(wei)) \(Brand.coinTicker) (nonce \(prepared.nonce))"
                 } else {
                     // All payments in one tx: one signature, all or nothing (EIP-7702 batch).
-                    prepared = try prepareBatch(p256PublicKey: pk, payments: recipients.map { Payment(to: $0, valueWei: wei) })
+                    prepared = try prepareBatch(p256PublicKey: pk, payments: recipients.map { Payment(to: $0, valueWei: wei) },
+                                                shownFeeWei: shownFeeWei)
                     label = "Paid \(recipients.count) recipients \(Wei.format(wei)) \(Brand.coinTicker) each with one signature (nonce \(prepared.nonce))"
                 }
                 let sig = try enclave.sign(prepared.signingMessage)   // Secure Enclave, may prompt
@@ -761,8 +770,18 @@ final class WalletModel: ObservableObject {
                     if let u = c.url { await MainActor.run { _ = NSWorkspace.shared.open(u) } }
                     #endif
                 }
-            } catch { await MainActor.run { self.note("Send failed: \(error)"); self.busy = false } }
+                return nil
+            } catch {
+                await MainActor.run { self.note("Send failed: \(error)"); self.busy = false }
+                return WalletModel.ffiMessage(error)
+            }
+        }.value
+        if refused == nil {
+            // Only a submitted send consumes the payment request; a refusal
+            // keeps it so the sheet can ask again under the fresh quote.
+            await MainActor.run { self.paymentRequest = nil }
         }
+        return refused
     }
 
     /// Send the frozen, confirmed intent (audits R2-2/R2-5, ported from the
@@ -833,6 +852,8 @@ final class WalletModel: ObservableObject {
         switch e {
         case WalletError.Network(let m), WalletError.Invalid(let m), WalletError.Rejected(let m), WalletError.Verification(let m):
             return m
+        case WalletError.FeeChanged(let m):
+            return "The network fee changed — \(m). Nothing was sent; check the new fee and send again."
         default:
             return (e as? LocalizedError)?.errorDescription ?? "\(e)"
         }

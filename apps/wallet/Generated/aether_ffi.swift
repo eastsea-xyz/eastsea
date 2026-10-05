@@ -2159,6 +2159,13 @@ enum WalletError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     
     case Rejected(message: String)
     
+    /**
+     * Pre-audit 7, M1: the fee shown on the send sheet no longer covers
+     * this transaction's maximum. Distinct from `Invalid` so the UI can ask
+     * for a fresh confirmation instead of reporting a broken send.
+     */
+    case FeeChanged(message: String)
+    
 
     
 
@@ -2204,6 +2211,10 @@ public struct FfiConverterTypeWalletError: FfiConverterRustBuffer {
             message: try FfiConverterString.read(from: &buf)
         )
         
+        case 5: return .FeeChanged(
+            message: try FfiConverterString.read(from: &buf)
+        )
+        
 
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -2223,6 +2234,8 @@ public struct FfiConverterTypeWalletError: FfiConverterRustBuffer {
             writeInt(&buf, Int32(3))
         case .Rejected(_ /* message is ignored*/):
             writeInt(&buf, Int32(4))
+        case .FeeChanged(_ /* message is ignored*/):
+            writeInt(&buf, Int32(5))
 
         
         }
@@ -2657,20 +2670,25 @@ public func prepareAddRecoveryKey(p256PublicKey: Data, recoveryCode: String)thro
 /**
  * Several payments, all or nothing, under ONE signature (one Touch ID).
  * The account delegates to EastSeaAccount (EIP-7702) in the same tx the first
- * time; afterwards it just calls its own `execute`.
+ * time; afterwards it just calls its own `execute`. `shown_fee_wei` is the
+ * total fee the sheet displayed for the whole batch (pre-audit 7, M1): a
+ * rise before the signature is `FeeChanged`, not a silent spend.
  */
-public func prepareBatch(p256PublicKey: Data, payments: [Payment])throws  -> PreparedTx  {
+public func prepareBatch(p256PublicKey: Data, payments: [Payment], shownFeeWei: String?)throws  -> PreparedTx  {
     return try  FfiConverterTypePreparedTx_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
         uniffiCallStatus in
     uniffi_aether_ffi_fn_func_prepare_batch(
         FfiConverterData.lower(p256PublicKey),
-        FfiConverterSequenceTypePayment.lower(payments),uniffiCallStatus
+        FfiConverterSequenceTypePayment.lower(payments),
+        FfiConverterOptionString.lower(shownFeeWei),uniffiCallStatus
     )
 })
 }
 /**
  * A contract call or deployment a web page asked for (`aether://call`),
  * signed by the Secure Enclave key. `to` empty deploys `data` as init code.
+ * No fee is displayed for a call, so nothing can be stale (pre-audit 7, M1
+ * leaves the shown-fee check to the paths that show one).
  */
 public func prepareCall(p256PublicKey: Data, to: String, valueWei: String, dataHex: String, gasLimit: UInt64)throws  -> PreparedTx  {
     return try  FfiConverterTypePreparedTx_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
@@ -2881,15 +2899,21 @@ public func prepareStopSessions(ownerPublicKey: Data, validators: UInt32)throws 
 })
 }
 /**
- * Build a transfer for the Secure Enclave key to sign.
+ * Build a transfer for the Secure Enclave key to sign. `shown_fee_wei` is
+ * the fee the send sheet displayed (pre-audit 7, M1): when the same quote
+ * computed from the status NOW would cost more, the answer is
+ * `FeeChanged` — no signature is prepared until the user re-confirms the
+ * new maximum. `None` (nothing was displayed) skips the check.
  */
-public func prepareTransfer(p256PublicKey: Data, to: String, valueWei: String)throws  -> PreparedTx  {
+public func prepareTransfer(p256PublicKey: Data, to: String, valueWei: String, shownFeeWei: String?, validators: UInt32)throws  -> PreparedTx  {
     return try  FfiConverterTypePreparedTx_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
         uniffiCallStatus in
     uniffi_aether_ffi_fn_func_prepare_transfer(
         FfiConverterData.lower(p256PublicKey),
         FfiConverterString.lower(to),
-        FfiConverterString.lower(valueWei),uniffiCallStatus
+        FfiConverterString.lower(valueWei),
+        FfiConverterOptionString.lower(shownFeeWei),
+        FfiConverterUInt32.lower(validators),uniffiCallStatus
     )
 })
 }
@@ -2994,7 +3018,9 @@ public func submitSigned(envelopeJson: String, signature: Data, p256PublicKey: D
 /**
  * The send sheet's fee for a plain transfer to `recipient` (audit 6, A6-7):
  * the exec fee plus the possible new-recipient state charge, exact (not a
- * maximum) once the recipient's certified account exists.
+ * maximum) once the recipient's certified account exists. The state price
+ * is validated first (pre-audit 7, M1): on a paid-state chain a status
+ * without one fails closed instead of quoting a free transfer.
  */
 public func transferQuote(recipient: String, validators: UInt32)throws  -> TransferQuote  {
     return try  FfiConverterTypeTransferQuote_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
@@ -3208,10 +3234,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_aether_ffi_checksum_func_prepare_add_recovery_key() != 5161) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_aether_ffi_checksum_func_prepare_batch() != 11440) {
+    if (uniffi_aether_ffi_checksum_func_prepare_batch() != 54675) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_aether_ffi_checksum_func_prepare_call() != 61515) {
+    if (uniffi_aether_ffi_checksum_func_prepare_call() != 24909) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_prepare_cancel_recovery() != 41022) {
@@ -3259,7 +3285,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_aether_ffi_checksum_func_prepare_stop_sessions() != 1252) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_aether_ffi_checksum_func_prepare_transfer() != 24792) {
+    if (uniffi_aether_ffi_checksum_func_prepare_transfer() != 14406) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_receipt() != 21333) {
@@ -3289,7 +3315,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_aether_ffi_checksum_func_submit_signed() != 31125) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_aether_ffi_checksum_func_transfer_quote() != 47018) {
+    if (uniffi_aether_ffi_checksum_func_transfer_quote() != 42768) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_use_devnet_keys() != 43153) {

@@ -1300,6 +1300,16 @@ private struct SendSheet: View {
         return each * Double(max(recipients.count, 1))
     }
 
+    /// The same maximum in exact wei (pre-audit 7, M1): what this sheet has
+    /// displayed is what the signature re-checks against the network at send
+    /// time — a rise since the sheet opened refuses the send and asks for a
+    /// fresh confirmation instead of silently signing above it. nil when no
+    /// AETH fee was displayed (a token send; no status yet).
+    private var shownFeeWei: String? {
+        guard token == nil else { return nil }
+        return WeiMath.shownFeeWei(quoteWei: quote?.feeWei, statusWei: model.status?.transferFeeWei, recipients: recipients.count)
+    }
+
     private var valid: Bool {
         if let t = token {
             guard recipients.count == 1, SendSafety.isValidAddress(recipients[0]),
@@ -1552,8 +1562,19 @@ private struct SendSheet: View {
                 intent = frozen
                 ackUnits = false
             } else {
-                model.send()
-                dismiss()
+                // Pre-audit 7, M1: the sheet stays open when the network fee
+                // rose above what it displayed — the refusal says so, the
+                // quote refreshes, and the user confirms the new maximum.
+                if let why = await model.send(shownFeeWei: shownFeeWei) {
+                    refusal = why
+                    if token == nil, recipients.count == 1, SendSafety.isValidAddress(recipients[0]) {
+                        quote = try? transferQuote(recipient: recipients[0], validators: model.validators)
+                    } else {
+                        quote = nil
+                    }
+                } else {
+                    dismiss()
+                }
             }
         }
     }

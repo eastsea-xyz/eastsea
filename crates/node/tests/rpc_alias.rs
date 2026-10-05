@@ -70,6 +70,7 @@ const METHODS: &[&str] = &[
     "aether_history",
     "aether_historyProof",
     "aether_network",
+    "aether_proverProgram",
     "aether_proverStatus",
     "aether_reattest",
     "aether_recentBlocks",

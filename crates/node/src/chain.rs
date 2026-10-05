@@ -307,6 +307,8 @@ const PROOF_BACKOFF: u64 = 100;
 /// Checks a block proof against a statement commitment (the pinned sidecar in a node).
 pub trait ProofVerifier: Send + Sync {
     fn verify(&self, proof: &[u8], commitment: [u8; 32]) -> bool;
+    /// Non-consensus program identity for compatibility diagnostics.
+    fn program_id(&self) -> Option<String> { None }
     /// Some(answer) when the verifier actually decided; None when it could not
     /// (a transient failure, never to be remembered as a rejection).
     fn decide(&self, proof: &[u8], commitment: [u8; 32]) -> Option<bool> {

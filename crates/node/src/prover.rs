@@ -10,7 +10,7 @@ use crate::chain::{Chain, ProofVerifier};
 use aether_light::block::ProofClaim;
 use aether_types::Address;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -321,6 +321,10 @@ impl Verifier {
 }
 
 impl ProofVerifier for Verifier {
+    fn program_id(&self) -> Option<String> {
+        Some(self.program())
+    }
+
     fn decide(&self, proof: &[u8], commitment: [u8; 32]) -> Option<bool> {
         let mut h = blake3::Hasher::new();
         h.update(&commitment).update(proof);
@@ -364,6 +368,22 @@ pub struct Status {
     pub last_txs: usize,
     pub last_seconds: f64,
     pub proofs: u64,
+    /// Proofs admitted to this node's pool or accepted by the upstream.
+    pub accepted: u64,
+    /// Definite cryptographic refusals (transient transport errors excluded).
+    pub verification_failures: u64,
+    /// Acceptance over the last 16 definite submission outcomes.
+    pub acceptance_rate_percent: Option<u8>,
+    /// At least eight recent outcomes, with fewer than one in four accepted.
+    pub proofs_failing: bool,
+    /// The validator's program differs from this prover.
+    pub program_mismatch: bool,
+    /// The validator's program could not be read yet.
+    pub program_unknown: bool,
+    /// Submission outcomes fell below the acceptance floor.
+    pub acceptance_failing: bool,
+    /// Guest program reported by the validator this follower submits to.
+    pub network_program: Option<String>,
     pub error: Option<String>,
     /// Where rewards go.
     pub payout: Option<Address>,
@@ -378,6 +398,53 @@ pub struct Status {
 }
 
 pub type SharedStatus = Arc<Mutex<Status>>;
+
+#[derive(Default)]
+struct SubmissionHealth {
+    recent: VecDeque<bool>,
+}
+
+impl SubmissionHealth {
+    /// Returns true only when the failing signal first turns on.
+    fn observe(&mut self, result: &Result<(), String>, status: &mut Status) -> bool {
+        let accepted = match result {
+            Ok(()) => {
+                status.accepted += 1;
+                true
+            }
+            Err(e) if verifier_refusal(e) => {
+                status.verification_failures += 1;
+                false
+            }
+            Err(_) => return false,
+        };
+        if self.recent.len() == 16 {
+            self.recent.pop_front();
+        }
+        self.recent.push_back(accepted);
+        let successes = self.recent.iter().filter(|&&ok| ok).count();
+        status.acceptance_rate_percent = Some((100 * successes / self.recent.len()) as u8);
+        let was_failing = status.proofs_failing;
+        status.acceptance_failing = self.recent.len() >= 8 && successes * 4 < self.recent.len();
+        status.proofs_failing = status.program_mismatch || status.acceptance_failing;
+        status.proofs_failing && !was_failing
+    }
+}
+
+fn verifier_refusal(error: &str) -> bool {
+    let mut message = error.to_string();
+    // An HTTP follower may wrap a validator's JSON-RPC error in another
+    // JSON-RPC error. Unwrap only bounded, well-formed server messages.
+    for _ in 0..8 {
+        if matches!(message.as_str(), "the proof does not verify" | "this proof was already refused") {
+            return true;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(&message) else { return false };
+        let Some(next) = v["message"].as_str() else { return false };
+        message = next.to_string();
+    }
+    false
+}
 
 /// A kill waits before the sidecar restarts: a minute, doubling, up to half
 /// an hour (the incident prover ate 14 GB of a 64 GB Mac).
@@ -490,6 +557,7 @@ pub fn spawn_service(
     sidecar: Sidecar,
     prover: Address,
     status: SharedStatus,
+    network_program: impl Fn() -> Result<String, String> + Send + 'static,
     submit: impl Fn(ProofClaim) -> Result<(), String> + Send + 'static,
 ) {
     let program = sidecar.program.clone();
@@ -534,7 +602,20 @@ pub fn spawn_service(
     }
     // Proofs not yet accepted, retried until they are or their block is no longer open.
     let mut unsent: Vec<ProofClaim> = Vec::new();
+    let mut health = SubmissionHealth::default();
+    let mut last_program_check: Option<std::time::Instant> = None;
+    let mut compatible = false;
     std::thread::spawn(move || loop {
+        let interval = std::time::Duration::from_secs(if compatible { 30 } else { 5 });
+        if last_program_check.is_none_or(|checked| checked.elapsed() >= interval) {
+            let program = network_program();
+            compatible = status.lock().map(|mut s| program_health(&mut s, program)).unwrap_or(false);
+            last_program_check = Some(std::time::Instant::now());
+        }
+        if !compatible {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            continue;
+        }
         unsent.retain(|c| chain.proof_open(c.height) && submit(c.clone()).is_err());
         // The system first: memory pressure, swap, battery, or a full disk.
         if let Some(reason) = crate::resources::monitor().and_then(|m| m.proving_pause()) {
@@ -559,8 +640,21 @@ pub fn spawn_service(
             Ok((proof, _, seconds)) => {
                 gate.proved();
                 let claim = ProofClaim { height, prover, proof: hex::encode(proof) };
-                if let Err(e) = submit(claim.clone()) {
-                    tracing::warn!(height, %e, "proof not accepted yet; will retry");
+                let submission = submit(claim.clone());
+                let alert = status.lock().map(|mut s| health.observe(&submission, &mut s)).unwrap_or(false);
+                if alert {
+                    tracing::warn!(
+                        height,
+                        acceptance_rate_percent = status.lock().ok().and_then(|s| s.acceptance_rate_percent),
+                        "proofs failing: recent proof acceptance rate fell below 25%"
+                    );
+                }
+                if let Err(e) = submission {
+                    if verifier_refusal(&e) {
+                        tracing::warn!(height, %e, "proof rejected by verifier; will retry while the claim is open");
+                    } else {
+                        tracing::warn!(height, %e, "proof not accepted yet; will retry");
+                    }
                     unsent.push(claim);
                 }
                 status
@@ -587,6 +681,39 @@ pub fn spawn_service(
             }
         }
     });
+}
+
+/// A local pin only says the node and its own sidecar match. Followers must
+/// also agree with the validators' verifier program before spending work on a
+/// proof. Missing/old RPC answers fail closed until compatibility is known.
+fn program_health(status: &mut Status, network: Result<String, String>) -> bool {
+    let was_program_paused = status.paused.as_deref() == Some("program");
+    status.network_program = network.as_ref().ok().cloned();
+    status.program_mismatch = network.as_ref().is_ok_and(|program| program != &status.program);
+    status.program_unknown = network.is_err();
+    let problem = match network {
+        Ok(ref program) if program == &status.program => None,
+        Ok(program) => Some(format!("proof program mismatch: local {}, validator {program}", status.program)),
+        Err(e) => Some(format!("cannot confirm validator proof program: {e}")),
+    };
+    if let Some(problem) = problem {
+        if !was_program_paused {
+            tracing::warn!(%problem, "proving paused until validator program is confirmed compatible");
+        }
+        status.paused = Some("program".into());
+        status.error = Some(problem);
+        status.proofs_failing = status.program_mismatch || status.acceptance_failing;
+        return false;
+    }
+    if status.paused.as_deref() == Some("program") {
+        status.paused = None;
+        status.error = None;
+        tracing::info!(program = %status.program, "validator proof program matches; proving resumed");
+    }
+    status.program_mismatch = false;
+    status.program_unknown = false;
+    status.proofs_failing = status.acceptance_failing;
+    true
 }
 
 /// Mark proving paused for `reason`, logged when the reason changes.
@@ -616,6 +743,70 @@ fn next_job(chain: &Chain, prover: Address) -> Option<(u64, usize, aether_provin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_verifier_refusals_make_proving_unhealthy_until_acceptance_recovers() {
+        let mut health = SubmissionHealth::default();
+        let mut status = Status::default();
+        for _ in 0..7 {
+            assert!(!health.observe(&Err("the proof does not verify".into()), &mut status));
+        }
+        assert!(!status.proofs_failing);
+        assert!(health.observe(&Err("the proof does not verify".into()), &mut status));
+        assert!(status.proofs_failing);
+        assert_eq!(status.acceptance_rate_percent, Some(0));
+        assert_eq!(status.verification_failures, 8);
+        for _ in 0..8 {
+            health.observe(&Ok(()), &mut status);
+        }
+        assert!(!status.proofs_failing);
+        assert_eq!(status.accepted, 8);
+        assert_eq!(status.acceptance_rate_percent, Some(50));
+    }
+
+    #[test]
+    fn transient_submission_errors_do_not_count_as_verifier_refusals() {
+        let mut health = SubmissionHealth::default();
+        let mut status = Status::default();
+        for _ in 0..20 {
+            health.observe(&Err("busy; try again shortly".into()), &mut status);
+        }
+        assert_eq!(status.acceptance_rate_percent, None);
+        assert_eq!(status.verification_failures, 0);
+        assert!(!status.proofs_failing);
+    }
+
+    #[test]
+    fn follower_rpc_refusal_counts_as_a_verification_failure() {
+        let wrapped = r#"{"code":-32000,"message":"the proof does not verify"}"#;
+        assert!(verifier_refusal(wrapped));
+        let relayed = serde_json::json!({"code": -32000, "message": wrapped}).to_string();
+        assert!(verifier_refusal(&relayed));
+        assert!(!verifier_refusal(r#"{"code":-32000,"message":"busy; try again shortly"}"#));
+        let mut health = SubmissionHealth::default();
+        let mut status = Status::default();
+        for _ in 0..8 {
+            health.observe(&Err(wrapped.into()), &mut status);
+        }
+        assert!(status.proofs_failing);
+        assert_eq!(status.verification_failures, 8);
+    }
+
+    #[test]
+    fn follower_pauses_on_a_different_or_unknown_validator_program() {
+        let mut status = Status { program: "local".into(), running: true, ..Status::default() };
+        assert!(!program_health(&mut status, Ok("validator".into())));
+        assert_eq!(status.paused.as_deref(), Some("program"));
+        assert!(status.proofs_failing);
+        assert_eq!(status.network_program.as_deref(), Some("validator"));
+        assert!(!program_health(&mut status, Err("old validator RPC".into())));
+        assert_eq!(status.network_program, None);
+        assert!(status.program_unknown);
+        assert!(!status.program_mismatch);
+        assert!(program_health(&mut status, Ok("local".into())));
+        assert_eq!(status.paused, None);
+        assert!(!status.proofs_failing);
+    }
 
     /// A fake prover that speaks the sidecar handshake and then balloons past
     /// any small cap — enough like the 14 GB incident to test the watchdog.

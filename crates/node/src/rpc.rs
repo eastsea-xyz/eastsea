@@ -208,6 +208,13 @@ pub async fn handle_value(st: &RpcState, req: Value) -> Value {
             _ => st.upstream.as_ref().expect("checked").first(&method, json!([true])).await.map_err(|e| (-32000, e)),
         },
         "aether_network" => Ok(st.network.clone().unwrap_or(Value::Null)),
+        // One forwarded hop reaches a validator even when a follower is the
+        // first RPC peer; a forwarded follower returns null so upstream tries
+        // another peer instead of cycling indefinitely.
+        "aether_proverProgram" if st.upstream.is_some() => match params.get(0) {
+            Some(Value::Bool(true)) => Ok(Value::Null),
+            _ => st.upstream.as_ref().expect("checked").first("aether_proverProgram", json!([true])).await.map_err(|e| (-32000, e)),
+        },
         "aether_submitProof" => submit_proof(st, &params).await,
         // A pruned height (roadmap B4) or one whose cache copy the memory
         // budget dropped: read back from the era file, fetched and verified first if needed.
@@ -447,6 +454,9 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                 // protocol than one scheduled looks for its update right away.
                 "protocol": f.next_protocol(),
                 "node_protocol": crate::upgrade::PROTOCOL,
+                // Informational only: followers compare this verifier's guest
+                // against their prover before submitting proofs.
+                "prover_program": g.verifier.as_ref().and_then(|v| v.program_id()),
                 "newest_scheduled": f.schedule.iter().map(|a| a.protocol).max().unwrap_or(1),
                 // Activations on chain as (protocol, at-height) pairs: a genesis
                 // above protocol 1 carries its own at height 0, so `[3, 0]` here
@@ -619,11 +629,15 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                 // How far proving trails the chain, and the last reward received.
                 let head = chain.finalized_height();
                 v["lag"] = json!(status.last_height.map(|h| head.saturating_sub(h)));
-                v["last_reward"] = status.payout.and_then(|a| chain.rewards(&a).last().and_then(|r| r.get("amount").cloned())).unwrap_or(Value::Null);
+                v["last_reward"] = status.payout
+                    .map(|a| last_proof_reward(chain.rewards(&a)))
+                    .unwrap_or(Value::Null);
                 v
             }
             None => json!({ "running": false }),
         }),
+        "aether_proverProgram" => Ok(chain.lock().verifier.as_ref()
+            .and_then(|v| v.program_id()).map_or(Value::Null, Value::String)),
         // Node rewards at a glance (docs/design/15-node-rewards.md): how many
         // operators shared the last epoch's pool, and with `[operator]` that
         // operator's Macs, expected share, and what the last distribution paid.
@@ -756,6 +770,13 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
     }
 }
 
+fn last_proof_reward(rows: Vec<Value>) -> Value {
+    rows.into_iter().rev()
+        .find(|r| r["kind"] == "proof")
+        .and_then(|r| r.get("amount").cloned())
+        .unwrap_or(Value::Null)
+}
+
 fn release_entries(state: &aether_execution::WorldState, address: Address, start: u64, limit: u64, height: u64) -> Value {
     let count = state.storage(&address, U256::ZERO).min(U256::from(u64::MAX)).to::<u64>();
     let base = U256::from_be_bytes(alloy_primitives::keccak256([0u8; 32]).0);
@@ -812,6 +833,31 @@ mod alias_tests {
 
     async fn call(st: &RpcState, method: &str, params: Value) -> Value {
         handle_value(st, json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params })).await
+    }
+
+    #[test]
+    fn status_advertises_the_verifier_program_for_follower_compatibility() {
+        struct Pinned;
+        impl crate::chain::ProofVerifier for Pinned {
+            fn verify(&self, _: &[u8], _: [u8; 32]) -> bool { true }
+            fn program_id(&self) -> Option<String> { Some("validator-program".into()) }
+        }
+        let st = bare_state();
+        st.chain.lock().verifier = Some(Arc::new(Pinned));
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let answer = rt.block_on(call(&st, "aether_status", json!([])));
+        assert_eq!(answer["result"]["prover_program"], "validator-program");
+        let program = rt.block_on(call(&st, "aether_proverProgram", json!([])));
+        assert_eq!(program["result"], "validator-program");
+    }
+
+    #[test]
+    fn last_prover_reward_ignores_newer_node_rewards() {
+        let rows = vec![
+            json!({"kind": "proof", "amount": "0x10"}),
+            json!({"kind": "node", "amount": "0x20"}),
+        ];
+        assert_eq!(last_proof_reward(rows), "0x10");
     }
 
     #[test]

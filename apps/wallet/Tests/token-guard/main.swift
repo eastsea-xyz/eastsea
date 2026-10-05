@@ -44,8 +44,14 @@ for (chain, table) in KnownTokens.tokens {
     }
 }
 check(KnownTokens.native[7780]?.decimals == 18, "the native entry is 18 decimals")
-check(KnownTokens.native[7780]?.symbol == Brand.coinTicker && KnownTokens.native[7780]?.name == Brand.coinName,
-      "the native entry follows the brand, not the node")
+check(KnownTokens.native[7780]?.symbol == "AETH" && KnownTokens.native[7780]?.name == "Test AETH",
+      "the legacy 7780 testnet kept its own coin label")
+check(Brand.coinTicker(chainId: 7780) == "AETH" && Brand.coinName(chainId: 7780) == "Test AETH",
+      "the brand labels the legacy testnet AETH")
+check(Brand.coinTicker(chainId: 0) == "DBLN" && Brand.coinName(chainId: 0) == "Doubloon",
+      "a new-genesis chain is labeled DBLN/Doubloon")
+check(KnownTokens.native[7780]?.symbol == Brand.coinTicker(chainId: 7780),
+      "the native entry follows the per-chain label, not the node")
 
 // ---- 2. lookups ignore case and stay per chain ----
 let waethEntry = KnownTokens.knownToken(chainId: 7780, address: waeth)
@@ -105,14 +111,16 @@ guard let nativeAt = js.range(of: "export const NATIVE_COINS"),
     print("FAIL knownTokens.js does not have the expected NATIVE_COINS section"); exit(1)
 }
 let nativeSection = String(js[nativeAt.lowerBound..<knownConstAt.lowerBound])
-let nativeMatches = jsMatches(#"(\d+): Object\.freeze\(\{ symbol: Brand\.coinTicker, name: Brand\.coinName, decimals: (\d+) \}\)"#, in: nativeSection)
+let nativeMatches = jsMatches(#"(\d+): Object\.freeze\(\{ symbol: '([^']+)', name: '([^']+)', decimals: (\d+) \}\)"#, in: nativeSection)
 check(nativeMatches.count == KnownTokens.native.count, "same native chain count as the extension")
 for m in nativeMatches {
     let ns = nativeSection as NSString
     let chain = UInt64(ns.substring(with: m.range(at: 1)))!
-    let decimals = Int(ns.substring(with: m.range(at: 2)))!
-    check(KnownTokens.native[chain] == KnownToken(symbol: Brand.coinTicker, name: Brand.coinName, decimals: decimals),
+    let decimals = Int(ns.substring(with: m.range(at: 4)))!
+    check(KnownTokens.native[chain] == KnownToken(symbol: ns.substring(with: m.range(at: 2)), name: ns.substring(with: m.range(at: 3)), decimals: decimals),
           "native entry for chain \(chain) matches the extension's")
+    check(KnownTokens.native[chain]?.symbol == Brand.coinTicker(chainId: chain),
+          "the extension's native label for chain \(chain) follows the per-chain brand")
 }
 
 // ---- 4. every address the wallet itself ships as a source token is on the list ----

@@ -266,9 +266,9 @@ fn paid_growth_probes(cfg: &ChainConfig, genesis: &crate::chain::Executed) -> bo
         && aether_execution::fees::MAX_PAID_STORED_BYTES_PER_BLOCK <= 32 * 1024 * 1024
 }
 
-/// The published issuance schedule: 1 AETH a block at height 0, decaying
+/// The published issuance schedule: 1 DBLN a block at height 0, decaying
 /// smoothly (−15% a year, well under a tenth of a percent a day, never a
-/// halving step) and floored at 0.1 AETH (docs/design/15-node-rewards.md).
+/// halving step) and floored at 0.1 DBLN (docs/design/15-node-rewards.md).
 fn smooth_issuance() -> Rule {
     use aether_rewards::{issuance, DAY_BLOCKS, TAIL};
     let full = issuance(0);
@@ -283,7 +283,7 @@ fn smooth_issuance() -> Rule {
     Rule {
         name: "smooth issuance",
         ok,
-        detail: format!("1 AETH a block, −15%/year ({year} after a year), floored at 0.1 AETH"),
+        detail: format!("1 DBLN a block, −15%/year ({year} after a year), floored at 0.1 DBLN"),
     }
 }
 

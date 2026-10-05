@@ -35,7 +35,7 @@ enum KnownTokens {
     /// denomination table is complete). The app always shows the native amount
     /// at 18 decimals, independent of any node answer.
     static let native: [UInt64: KnownToken] = [
-        7780: KnownToken(symbol: Brand.coinTicker, name: Brand.coinName, decimals: 18),
+        7780: KnownToken(symbol: Brand.coinTicker(chainId: 7780), name: Brand.coinName(chainId: 7780), decimals: 18),
     ]
 
     /// Known ERC-20 tokens, by chain id and lowercase address. Chain 7780

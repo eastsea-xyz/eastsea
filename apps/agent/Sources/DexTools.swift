@@ -2,20 +2,23 @@ import Foundation
 
 /// The DEX tools (read-only; see Dex.swift).
 extension Dex {
-    static let specs: [Tools.Spec] = [
-        Tools.Spec(name: "dex_pools", description: "Aether DEX pools: pair address, the two tokens, reserves, and the price of token0 in token1. Read-only.",
+    static let specs: [Tools.Spec] = {
+        let t = Tools.coinTicker
+        return [
+        Tools.Spec(name: "dex_pools", description: "EastSea DEX pools: pair address, the two tokens, reserves, and the price of token0 in token1. Read-only.",
                    schema: Tools.object([:]), readOnly: true) { _ in try pools() },
-        Tools.Spec(name: "dex_token_info", description: "A DEX token's symbol, name, decimals, total supply, and the agent account's balance of it. token: 0x address or symbol (e.g. \"NEB\"); \"AETH\" is the native coin. Read-only.",
-                   schema: Tools.object(["token": Tools.prop("string", "0x address or symbol; AETH = native"),
+        Tools.Spec(name: "dex_token_info", description: "A DEX token's symbol, name, decimals, total supply, and the agent account's balance of it. token: 0x address or symbol (e.g. \"NEB\"); \"\(t)\" (legacy \"AETH\") is the native coin. Read-only.",
+                   schema: Tools.object(["token": Tools.prop("string", "0x address or symbol; \(t) = native"),
                                          "holder": Tools.prop("string", "optional 0x address to show the balance of instead of the agent's")],
                                         required: ["token"]), readOnly: true) { a in try tokenInfo(a) },
-        Tools.Spec(name: "dex_quote", description: "Estimate a swap on the Aether DEX without making it: best route (direct, or one hop through AETH or a main DEX token), expected output, price impact, and the minimum received at the slippage (default 0.5%). Amounts are decimal token units. Agents cannot swap yet.",
-                   schema: Tools.object(["from": Tools.prop("string", "token to sell: 0x address or symbol; AETH = native"),
-                                         "to": Tools.prop("string", "token to buy: 0x address or symbol; AETH = native"),
+        Tools.Spec(name: "dex_quote", description: "Estimate a swap on the EastSea DEX without making it: best route (direct, or one hop through \(t) or a main DEX token), expected output, price impact, and the minimum received at the slippage (default 0.5%). Amounts are decimal token units. Agents cannot swap yet.",
+                   schema: Tools.object(["from": Tools.prop("string", "token to sell: 0x address or symbol; \(t) = native"),
+                                         "to": Tools.prop("string", "token to buy: 0x address or symbol; \(t) = native"),
                                          "amount": Tools.prop("string", "amount of `from`, decimal, e.g. \"1.5\""),
                                          "slippage_percent": Tools.prop("string", "tolerance for minimum_received, default 0.5")],
                                         required: ["from", "to", "amount"]), readOnly: true) { a in try quote(a) },
     ]
+    }()
 
     static func pools() throws -> [String: Any] {
         let r = Reader(try deployment())
@@ -28,13 +31,13 @@ extension Dex {
             let res = try read(pair, ABI.call(Sel.getReserves))
             let (r0, r1) = (try ABI.uint(res, at: 0), try ABI.uint(res, at: 1))
             let (x0, x1) = (real(r0, t0.decimals), real(r1, t1.decimals))
-            list.append(["pair": pair, "token0": describe(t0), "token1": describe(t1),
+            list.append(["pair": pair, "token0": describe(t0, chainId: r.dep.chainId), "token1": describe(t1, chainId: r.dep.chainId),
                          "reserve0": r0.units(t0.decimals), "reserve1": r1.units(t1.decimals),
                          "price_token1_per_token0": x0 > 0 ? number(x1 / x0) : "n/a",
                          "price_token0_per_token1": x1 > 0 ? number(x0 / x1) : "n/a"])
         }
         var out: [String: Any] = ["network": r.dep.network, "chain_id": r.dep.chainId, "count": n, "pools": list,
-                                  "note": "AETH in a pool is WAETH (wrapped AETH, 1:1). " + readNote]
+                                  "note": "\(Coin.ticker(r.dep.chainId)) in a pool is WAETH (wrapped 1:1). " + readNote]
         if n > UInt64(maxPools) { out["truncated_to"] = maxPools }
         return out
     }
@@ -87,18 +90,18 @@ extension Dex {
         guard (0...50).contains(slippage) else { throw AgentError.input("slippage_percent must be between 0 and 50") }
         let r = Reader(try deployment())
         let from = try r.resolve(f), to = try r.resolve(t)
-        guard !same(from.address, to.address) else { throw AgentError.input("from and to are the same token (AETH and WAETH are 1:1)") }
+        guard !same(from.address, to.address) else { throw AgentError.input("from and to are the same token (\(Coin.ticker(r.dep.chainId)) and WAETH are 1:1)") }
         guard let amountIn = U256(units: amt, decimals: from.decimals), !amountIn.isZero else {
             throw AgentError.input("amount \"\(amt)\" is not a positive \(from.symbol) amount (at most \(from.decimals) decimals)")
         }
-        // Direct, or one hop through AETH (WAETH) or a seed token of the deployment.
+        // Direct, or one hop through the native coin (WAETH) or a seed token of the deployment.
         let hubs = [r.dep.waeth] + r.dep.seed.values.sorted()
         let paths = [[from.address, to.address]] + hubs
             .filter { !same($0, from.address) && !same($0, to.address) }
             .map { [from.address, $0, to.address] }
         let routes = paths.compactMap { try? route($0, amountIn: amountIn, reader: r) }.sorted { $1.out < $0.out }
         guard let best = routes.first, !best.out.isZero else {
-            throw AgentError.io("no pool route from \(from.symbol) to \(to.symbol) (direct, or one hop through AETH or a main DEX token)")
+            throw AgentError.io("no pool route from \(from.symbol) to \(to.symbol) (direct, or one hop through \(Coin.ticker(r.dep.chainId)) or a main DEX token)")
         }
         let bps = UInt64((slippage * 100).rounded())
         let minOut = (best.out.multiplied(by: 10_000 - bps) ?? best.out).divided(by: 10_000).quotient
@@ -108,7 +111,7 @@ extension Dex {
         let symbols = try best.path.enumerated().map { i, p -> String in
             i == 0 ? from.symbol : i == hops ? to.symbol : try r.token(p).symbol
         }
-        return ["from": describe(from), "to": describe(to), "amount_in": amountIn.units(from.decimals),
+        return ["from": describe(from, chainId: r.dep.chainId), "to": describe(to, chainId: r.dep.chainId), "amount_in": amountIn.units(from.decimals),
                 "expected_out": best.out.units(to.decimals), "minimum_received": minOut.units(to.decimals),
                 "slippage_percent": number(slippage), "route": symbols, "route_addresses": best.path,
                 "price_impact_percent": number((impact * 10_000).rounded() / 10_000),

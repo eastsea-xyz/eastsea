@@ -1,6 +1,6 @@
 import Foundation
 
-// aether-agent: the Aether wallet for AI agents on a Mac.
+// aether-agent: the EastSea wallet for AI agents on a Mac.
 //   aether-agent mcp                 MCP server on stdio (for agent harnesses)
 //   aether-agent <tool> [--k v ...]  the same tools as a JSON CLI
 //   aether-agent init | policy ...   owner setup (Touch ID)
@@ -15,7 +15,7 @@ Owner (changes ask for Touch ID; limits are enforced by the account contract):
   payee list | pending                   approved payees / requests from the agent
   stop                                   revoke the agent session with Touch ID
   policy show
-  policy set [--per-tx X] [--per-day Y] [--allow 0x..,0x..|anyone] [--expires-days N] [--gas AETH]
+  policy set [--per-tx X] [--per-day Y] [--allow 0x..,0x..|anyone] [--expires-days N] [--gas \(Tools.coinTicker)]
   policy renew [--days 7]                renew the session with Touch ID
   token allow --address 0x.. --per-tx UNITS --per-day UNITS  (new-genesis only)
 
@@ -31,8 +31,8 @@ Agents (JSON out):
 
 DEX (read-only; nothing is signed):
   dex-pools
-  dex-token-info --token NEB|0x..|AETH [--holder 0x..]
-  dex-quote --from AETH --to NEB --amount 1 [--slippage-percent 0.5]
+  dex-token-info --token NEB|0x..|DBLN|AETH [--holder 0x..]
+  dex-quote --from \(Tools.coinTicker) --to NEB --amount 1 [--slippage-percent 0.5]
 
 Environment: AETHER_NETWORK=<network.json>  AETHER_LOCAL_NODE=<port> (read through 127.0.0.1:<port>)
 

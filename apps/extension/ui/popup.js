@@ -1,4 +1,4 @@
-import { Brand } from '../src/lib/brand.js';
+import { Brand, coinTicker, coinName } from '../src/lib/brand.js';
 // Popup (toolbar button) and approval window (?approve=<id>). Every action goes
 // to the service worker; this page never holds the key. Page-supplied text
 // (origins, call data) is only ever set as text, never as HTML.
@@ -8,7 +8,7 @@ import { erc20TransferCalldata, formatTokenAmount, formatTokenAmountExact, group
 import { buildSendIntent } from '../src/lib/sendIntent.js';
 import { addressRisk, looksLikeOfficial, tokenLabel, tokenShort } from '../src/lib/safety.js';
 import { nextPauseState, pausedLine, PAUSE_HELP } from '../src/lib/pause.js';
-import { TERMS_VERSION, DISCLAIMER_URL, NOTICE_POINTS } from '../src/lib/terms.js';
+import { TERMS_VERSION, DISCLAIMER_URL, noticePoints } from '../src/lib/terms.js';
 import { mergeHistory } from '../src/lib/history.js';
 
 const params = new URLSearchParams(location.search);
@@ -79,7 +79,7 @@ function noticeView() {
   btn.addEventListener('click', action(btn, out, async () => { await op('acceptTerms'); refresh(); }));
   render(header(), h('div', { class: 'card notice' },
     h('h2', {}, `Before you use ${Brand.project}`),
-    ...NOTICE_POINTS.map((p) => h('p', { class: 'small' }, p)),
+    ...noticePoints(defaultChainId).map((p) => h('p', { class: 'small' }, p)),
     h('a', { class: 'small', href: DISCLAIMER_URL, target: '_blank', rel: 'noreferrer' }, 'Read the full terms and disclaimer'),
     btn,
     out));
@@ -97,7 +97,7 @@ function onboarding() {
   };
   const form = h('form', { class: 'card' },
     h('h2', {}, 'Create a wallet'),
-    h('p', { class: 'muted small' }, `A new key is made in this browser and encrypted with your password. It works without the ${Brand.project} app. ${defaultChainId === 7780 ? `This is the testnet; its ${Brand.coinTicker} does not carry over to mainnet. ` : ''}Provided as is and not yet independently audited.`),
+    h('p', { class: 'muted small' }, `A new key is made in this browser and encrypted with your password. It works without the ${Brand.project} app. ${defaultChainId === 7780 ? `This is the testnet; its ${coinTicker(defaultChainId)} does not carry over to mainnet. ` : ''}Provided as is and not yet independently audited.`),
     h('label', {}, 'Password', pw),
     h('label', {}, 'Password again', pw2),
     create,
@@ -140,13 +140,13 @@ async function approvalView(s) {
   } else {
     const fee = h('span', { class: 'muted' }, '…');
     // The same status snapshot is used for signing, so this is the cap that gets signed.
-    const loadFee = () => op('quote', { id: approveId }).then((w) => fee.replaceChildren(`up to ${formatAeth(w, 6)} ${Brand.coinTicker}`)).catch((e) => fee.replaceChildren(`unknown (${e.message})`));
+    const loadFee = () => op('quote', { id: approveId }).then((w) => fee.replaceChildren(`up to ${formatAeth(w, 6)} ${coinTicker(defaultChainId)}`)).catch((e) => fee.replaceChildren(`unknown (${e.message})`));
     loadFee();
     retryFee = loadFee;
     body.push(h('div', { class: 'kv' },
       h('span', {}, 'Action'), h('strong', {}, a.what),
       h('span', {}, 'To'), h('span', { class: 'mono' }, a.tx.to || '(new contract)'),
-      h('span', {}, 'Sends'), h('strong', {}, `${a.value} ${Brand.coinTicker}`),
+      h('span', {}, 'Sends'), h('strong', {}, `${a.value} ${coinTicker(defaultChainId)}`),
       h('span', {}, 'Network fee'), fee,
       h('span', {}, 'From'), h('span', { class: 'mono' }, s.address)));
     if (a.tx.data !== '0x') body.push(h('details', {}, h('summary', { class: 'small muted' }, 'Call data'), h('div', { class: 'mono muted', style: 'max-height:120px;overflow:auto' }, a.tx.data)));
@@ -189,18 +189,18 @@ function nodePill() {
 async function home(s) {
   const out = h('div');
   const bal = h('div', { class: 'balance' }, '…');
-  const proofNote = h('div', { class: 'small muted' }, developmentNetwork ? 'Dev network · read from the node' : `Checking ${Brand.coinTicker} balance…`);
+  const proofNote = h('div', { class: 'small muted' }, developmentNetwork ? 'Dev network · read from the node' : `Checking ${coinTicker(defaultChainId)} balance…`);
   const { node, show } = nodePill();
   const addr = h('button', { class: 'link mono', title: 'Copy address', onclick: async () => { await navigator.clipboard.writeText(s.address); addr.textContent = 'Copied'; setTimeout(() => { addr.textContent = shortAddress(s.address); }, 900); } }, shortAddress(s.address));
-  const load = () => op('account').then((a) => { bal.textContent = `${formatAeth(a.balance)} ${Brand.coinTicker}`; show(a); if (!developmentNetwork) proofNote.textContent = `${Brand.coinTicker} balance verified with a certificate and state proof`; })
-    .catch((e) => { bal.textContent = '—'; node.textContent = 'No node'; node.className = 'pill'; proofNote.textContent = `${Brand.coinTicker} balance unavailable`; out.replaceChildren(message('error', e.message)); });
+  const load = () => op('account').then((a) => { bal.textContent = `${formatAeth(a.balance)} ${coinTicker(defaultChainId)}`; show(a); if (!developmentNetwork) proofNote.textContent = `${coinTicker(defaultChainId)} balance verified with a certificate and state proof`; })
+    .catch((e) => { bal.textContent = '—'; node.textContent = 'No node'; node.className = 'pill'; proofNote.textContent = `${coinTicker(defaultChainId)} balance unavailable`; out.replaceChildren(message('error', e.message)); });
   load();
   updaters = [load];
 
   // ---- the send form: AETH or any held token, with the send-flow checks of
   // token-spam-2026.md §6 (look-alike recipient, first send, dry-run) ----
   const to = h('input', { placeholder: '0x… recipient', spellcheck: 'false' });
-  const amount = h('input', { placeholder: `Amount in ${Brand.coinTicker}`, inputmode: 'decimal' });
+  const amount = h('input', { placeholder: `Amount in ${coinTicker(defaultChainId)}`, inputmode: 'decimal' });
   const max = h('button', { type: 'button', class: 'link small' }, 'Max');
   const assetPick = h('select');
   const warnBox = h('div');
@@ -250,12 +250,12 @@ async function home(s) {
       holdings = t.tokens || [];
       officialSymbols = t.officialSymbols || [];
     } catch { holdings = []; }
-    assetPick.replaceChildren(h('option', { value: '' }, `${Brand.coinTicker} · ${Brand.coinName}`),
+    assetPick.replaceChildren(h('option', { value: '' }, `${coinTicker(defaultChainId)} · ${coinName(defaultChainId)}`),
       ...holdings.map((x) => h('option', { value: x.token.address }, `${tokenLabel(x.token)} · ${formatTokenAmount(x.balance, x.token.decimals)}`)));
   };
   assetPick.addEventListener('change', () => {
     asset = holdings.find((x) => x.token.address === assetPick.value) || null;
-    amount.placeholder = asset ? `Amount in ${asset.token.symbol}` : `Amount in ${Brand.coinTicker}`;
+    amount.placeholder = asset ? `Amount in ${asset.token.symbol}` : `Amount in ${coinTicker(defaultChainId)}`;
     warnings();
   });
   max.addEventListener('click', () => {
@@ -329,7 +329,7 @@ async function home(s) {
       const check = await op('sendCheck', { recipient, to: recipient, value_wei: wei.toString(), data: '0x' });
       if (check.dry.state === 'reverted') throw new Error(`Not sent — this transfer would fail: ${check.dry.message}`);
       const r = await op('send', { to: recipient, value_wei: wei.toString() });
-      out.replaceChildren(message('ok', `Sent ${weiToAeth(wei)} ${Brand.coinTicker} · ${shortAddress(r.hash)}`));
+      out.replaceChildren(message('ok', `Sent ${weiToAeth(wei)} ${coinTicker(defaultChainId)} · ${shortAddress(r.hash)}`));
       sendForm.hidden = true;
     }
   }));
@@ -401,7 +401,7 @@ async function tokenReviewCard(token, done) {
 
 async function assetsView(s) {
   const aethAmt = h('strong', {}, '…');
-  const proofNote = h('div', { class: 'small muted' }, developmentNetwork ? 'Dev network · read from the node' : `Checking ${Brand.coinTicker} balance…`);
+  const proofNote = h('div', { class: 'small muted' }, developmentNetwork ? 'Dev network · read from the node' : `Checking ${coinTicker(defaultChainId)} balance…`);
   const rows = h('div', { class: 'list' });
   const review = h('div', { class: 'list', style: 'gap:10px' });
   const unverified = h('div', { class: 'list' });
@@ -414,11 +414,11 @@ async function assetsView(s) {
   const load = async (force) => {
     const [acct, assets] = await Promise.allSettled([op('account'), op('assets', { force })]);
     if (acct.status === 'fulfilled') {
-      aethAmt.replaceChildren(`${formatAeth(acct.value.balance)} ${Brand.coinTicker}`);
-      if (!developmentNetwork) proofNote.textContent = `${Brand.coinTicker} verified · token balances read from the node`;
+      aethAmt.replaceChildren(`${formatAeth(acct.value.balance)} ${coinTicker(defaultChainId)}`);
+      if (!developmentNetwork) proofNote.textContent = `${coinTicker(defaultChainId)} verified · token balances read from the node`;
     } else {
       aethAmt.replaceChildren('—');
-      proofNote.textContent = `${Brand.coinTicker} balance unavailable · token balances read from the node`;
+      proofNote.textContent = `${coinTicker(defaultChainId)} balance unavailable · token balances read from the node`;
     }
     if (assets.status === 'rejected') {
       note.textContent = 'Could not read tokens from the node. It tries again shortly.';
@@ -452,8 +452,8 @@ async function assetsView(s) {
     proofNote,
     h('div', { class: 'item', title: s.address },
       h('span', { class: 'avatar', 'aria-hidden': 'true' }, Brand.project[0]),
-      h('div', { class: 'grow' }, h('div', {}, Brand.coinName), h('div', { class: 'small muted mono' }, shortAddress(s.address))),
-      aethAmt, ' ', h('span', { class: 'muted' }, Brand.coinTicker)),
+      h('div', { class: 'grow' }, h('div', {}, coinName(defaultChainId)), h('div', { class: 'small muted mono' }, shortAddress(s.address))),
+      aethAmt, ' ', h('span', { class: 'muted' }, coinTicker(defaultChainId))),
     h('h2', {}, 'Tokens'),
     review, rows, unverifiedBox, note, updated)];
 }
@@ -465,7 +465,7 @@ async function activity() {
   const draw = () => rows.replaceChildren(...(items.length ? items.map((a) => h('div', { class: 'item' },
     h('span', { class: `dot ${a.state}`, title: a.state }),
     h('div', { class: 'grow' }, h('div', {}, a.title), h('div', { class: 'small muted' }, `${a.origin} · ${new Date(a.at).toLocaleString()}`), h('div', { class: 'mono muted', title: a.hash }, shortAddress(a.hash))),
-    a.value && a.value !== '0' && !a.title.startsWith('Swapped') ? h('div', { class: 'small' }, `${formatAeth(a.value)} ${Brand.coinTicker}`) : null))
+    a.value && a.value !== '0' && !a.title.startsWith('Swapped') ? h('div', { class: 'small' }, `${formatAeth(a.value)} ${coinTicker(defaultChainId)}`) : null))
     : [h('p', { class: 'muted' }, 'No transactions yet.')]));
   draw();
   const more = h('button', { type: 'button' }, 'Load older');
@@ -530,7 +530,7 @@ function settingsView(s) {
     if (developerMode.checked !== s.developerMode || (network.value === 'development') !== s.developmentNetwork) refresh();
   }));
   const developerOut = h('div');
-  const faucet = h('button', { type: 'button' }, `Get test ${Brand.coinTicker}`);
+  const faucet = h('button', { type: 'button' }, `Get test ${coinTicker(defaultChainId)}`);
   faucet.addEventListener('click', action(faucet, developerOut, async () => {
     const r = await op('faucet');
     developerOut.replaceChildren(message('ok', `Faucet sent · ${shortAddress(r.hash)}. The balance updates when it is final.`));

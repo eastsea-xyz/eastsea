@@ -11,9 +11,9 @@
 //! Whatever a cap or a missing operator leaves is never minted.
 //!
 //! Issuance (these networks only; 7780 keeps the yearly halving of
-//! `proofs::issuance`): 1 AETH per block, lowered a little every day so that it
+//! `proofs::issuance`): 1 DBLN per block, lowered a little every day so that it
 //! falls 15% a year (about half every 4.3 years, no halving cliff), down to a
-//! floor of 0.1 AETH per block that stays (reached after about 14.2 years).
+//! floor of 0.1 DBLN per block that stays (reached after about 14.2 years).
 //!
 //! ```text
 //! issuance(h) = max(ISSUE_0 × DAILY^(h / DAY_BLOCKS), TAIL)     DAILY = 0.85^(1/365)
@@ -81,7 +81,7 @@ pub const NEUTRAL_BELOW_PERCENT: u64 = 70;
 pub const DAY_BLOCKS: u64 = 86_400;
 /// 0.85^(1/365) in 1e18 fixed point (rounded down): 15% less issuance a year.
 pub const DAILY: u128 = 999_554_841_771_249_391;
-/// The floor: 0.1 AETH per block, forever.
+/// The floor: 0.1 DBLN per block, forever.
 pub const TAIL: u128 = proofs::ISSUE_0 / 10;
 const WAD: u128 = 1_000_000_000_000_000_000;
 

@@ -12,6 +12,7 @@ const base = { address: own, height: 7, tx_index: 0, tx_hash: '0xabc', timestamp
 
 test('native receive and router swap are readable, with token identity', () => {
   assert.match(describeHistory(base).title, /Received 5 DBLN from/);
+  assert.match(describeHistory(base, { ticker: 'AETH' }).title, /Received 5 AETH from/);
   const swap = { ...base, address: own, from: own, to: router, kind: 'contract_call', method: '0xac344b4d',
     value_wei: '10000000000000000000', tokens: [{ token, from: router, to: own, amount: '250000000000000000000' }],
     pair_swaps: [{ pair: router, amount0_in: '10', amount1_in: '0', amount0_out: '0', amount1_out: '250' }] };

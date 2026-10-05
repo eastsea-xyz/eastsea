@@ -72,7 +72,7 @@ enum Owner {
             return try apply(perTx: Wei(decimal: s.perPaymentWei)?.aeth ?? "1", perDay: Wei(decimal: s.perDayWei)?.aeth ?? "10",
                              allow: s.allow, expires: UInt64(Date().timeIntervalSince1970 + days * 86_400), gas: "0")
         default:
-            throw AgentError.input("policy show | set [--per-tx X] [--per-day Y] [--allow 0x..,0x..|anyone] [--expires-days 1..30] [--gas AETH] | renew")
+            throw AgentError.input("policy show | set [--per-tx X] [--per-day Y] [--allow 0x..,0x..|anyone] [--expires-days 1..30] [--gas \(Tools.coinTicker)] | renew")
         }
     }
 

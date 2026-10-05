@@ -14,7 +14,7 @@ pragma solidity ^0.8.19;
 /// cannot reset a victim's window by re-committing the same hash (A5-3), and
 /// only the committer or the relayer they designated may reveal.
 ///
-/// The fee is fixed by name length, paid in native AETH, and BURNED (sent to
+/// The fee is fixed by name length, paid in native DBLN, and BURNED (sent to
 /// BURN_ADDRESS). Nobody receives anything: no fee recipient, no treasury, no
 /// premium or reserved names (12-launch-plan.md 원칙: 비수탁, 수수료 0). The burn
 /// address is 0x…dEaD — the ecosystem's keyless convention; address(0) is
@@ -87,7 +87,7 @@ contract EastSeaNames {
 
     /// Keyless, codeless, nobody's. address(0) is reserved for "unset".
     address payable public constant BURN_ADDRESS = payable(0x000000000000000000000000000000000000dEaD);
-    /// Short names are scarce, so they cost more to squat. 3 chars: 2, 4: 0.5, 5+: 0.1 AETH.
+    /// Short names are scarce, so they cost more to squat. 3 chars: 2, 4: 0.5, 5+: 0.1 DBLN.
     uint256 public constant FEE_3 = 2 ether;
     uint256 public constant FEE_4 = 0.5 ether;
     uint256 public constant FEE_5_PLUS = 0.1 ether;

@@ -130,8 +130,8 @@ python3 -m http.server -d site    # http://localhost:8000
 | privacy.html 전체(수집 항목·목적·보유·Apple 이전·권리) | 오늘 사실(등록 서비스 운영 기준) | `docs/ops/privacy-policy.md`, `docs/design/14-registration.md`, `DISCLAIMER.md` §4 |
 | 푸터 상표 문장(권리 주장·등록 준비 중) | 오늘 사실 | `TRADEMARKS.md` |
 
-의도적 생략: `docs/design/15-node-rewards.md`의 AETH 표기(레거시), 보관(sharding)·
-증명 시장 상세, 예비 키·워밍업 세부 식, 발행 감쇠 곡선 수치, 감사 라운드 횟수. 소비자 페이지 범위 밖.
+의도적 생략: 보관(sharding)·증명 시장 상세, 예비 키·워밍업 세부 식, 발행 감쇠 곡선
+수치, 감사 라운드 횟수. 소비자 페이지 범위 밖.
 "오늘 사실 (비공개 빌드의 구현)"은 지금 팀 빌드에서 구현돼 있으나 앱이 비공개라
 외부 이용자가 당장 확인할 수 없음을 뜻한다.
 

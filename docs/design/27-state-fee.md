@@ -3,7 +3,7 @@
 `node_rewards || history_v2` activates these rules from genesis. Chain 7780
 has neither flag and retains its old unlimited, unused state-gas dimension and
 fee behavior. The new-genesis limit is 100,000 state units per block. One
-unit burns `1_000_000_000_000` wei (0.000001 AETH), even when execution and
+unit burns `1_000_000_000_000` wei (0.000001 DBLN), even when execution and
 proving base fees are zero. The signed `header.gas.state` reserves the maximum
 before EVM execution; unused funds return to the sender.
 
@@ -83,14 +83,14 @@ cannot finalize it or persist its bytes unless the prefix and all fees pass.
 The receipt remains stored for wallet queries, including zero-value and
 zero-tip transactions, because its bytes are priced. A normal ERC-20 Transfer
 event has three topics and 32 data bytes: 64+96+32 = 192 metered bytes,
-costing six units (0.000006 AETH) beyond the transaction and receipt base.
+costing six units (0.000006 DBLN) beyond the transaction and receipt base.
 The audit's 400 × 4,096-byte `LOG0` call pays for over 1.6 MiB of event bytes.
 A 480-event call fits near the logical cap; repeated calls cannot exceed it.
 The
 audit's 714 fresh senders require at least 71,400 units for accounts plus
 transaction/receipt units; zero-balance senders cannot reserve that fee and
 fail both admission and execution. The full 100,000-unit state budget burns
-at most 0.1 AETH/block.
+at most 0.1 DBLN/block.
 
 No product flow needs an account-less sender's zero-value plain transfer.
 Mac onboarding uses the bounded free registration lane and leaves its wallet

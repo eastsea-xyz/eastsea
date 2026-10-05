@@ -14,20 +14,22 @@ enum Tools {
         let run: (Args) throws -> [String: Any]
     }
 
-    static let all: [Spec] = [
+    static let all: [Spec] = {
+        let t = coinTicker, tn = coinTestName
+        return [
         Spec(name: "aether_status", description: "Network status: latest block, validators, the fee of a plain transfer, and how this Mac reaches the network.",
              schema: object([:]), readOnly: true) { _ in try status() },
         Spec(name: "aether_wallet", description: "The agent's account: address, balance (verified on this Mac against the validators' signature), gas balance, the spending limits the account contract enforces, and how much is left today.",
              schema: object([:]), readOnly: true) { _ in try wallet() },
         Spec(name: "aether_balance", description: "Verified balance and nonce of any address.",
              schema: object(["address": prop("string", "0x address")], required: ["address"]), readOnly: true) { a in try balance(a) },
-        Spec(name: "aether_send", description: "Pay AETH from the agent's account and wait for finality (~seconds). The account contract enforces the owner's limits (per payment, per 24 h, recipients). Use dry_run to check without paying.",
-             schema: object(["to": prop("string", "0x recipient"), "amount": prop("string", "AETH, decimal, e.g. \"0.5\""),
+        Spec(name: "aether_send", description: "Pay \(t) from the agent's account and wait for finality (~seconds). The account contract enforces the owner's limits (per payment, per 24 h, recipients). Use dry_run to check without paying.",
+             schema: object(["to": prop("string", "0x recipient"), "amount": prop("string", "\(t), decimal, e.g. \"0.5\""),
                              "purpose": prop("string", "why the owner asked for this payment"),
                              "dry_run": prop("boolean", "only check limits and fee")], required: ["to", "amount", "purpose"]), readOnly: false) { a in try send(a) },
         Spec(name: "aether_pay_many", description: "Pay several recipients in ONE transaction (all or nothing). Checked against the spending limits as one total.",
              schema: object(["payments": ["type": "array", "description": "list of {to, amount}",
-                                          "items": object(["to": prop("string", "0x recipient"), "amount": prop("string", "AETH")], required: ["to", "amount"])],
+                                          "items": object(["to": prop("string", "0x recipient"), "amount": prop("string", "\(t)")], required: ["to", "amount"])],
                              "purpose": prop("string", "why the owner asked for these payments"),
                              "dry_run": prop("boolean", "only check limits")], required: ["payments", "purpose"]), readOnly: false) { a in try payMany(a) },
         Spec(name: "aether_pay_token", description: "Pay one owner-listed ERC-20 token to an allowed payee. Token caps are in that token's base units and enforced on chain. Requires a new-genesis account contract.",
@@ -38,27 +40,40 @@ enum Tools {
              schema: object(["hash": prop("string", "0x tx hash")], required: ["hash"]), readOnly: true) { a in try receiptTool(a) },
         Spec(name: "aether_history", description: "Payments this agent made (newest first).",
              schema: object(["limit": prop("integer", "max entries, default 20")]), readOnly: true) { a in try history(a) },
-        Spec(name: "aether_get_test_tokens", description: "Testnet only: receive 10 test AETH (no value) into the agent's account (rate-limited by the network).",
+        Spec(name: "aether_get_test_tokens", description: "Testnet only: receive 10 \(tn) (no value) into the agent's account (rate-limited by the network).",
              schema: object([:]), readOnly: false) { _ in try testTokens() },
-    ] + Dex.specs
+        ] + Dex.specs
+    }()
 
     // MARK: setup shared by every tool
 
     private static var validators: UInt32 = 4
+    private static var chainId: UInt64?
+    private static var fileRead = false
     private static var configured = false
 
     /// The app's node on this Mac, when its switch is on (the wallet uses it too).
     static let appNodePort: UInt16 = 18545
 
-    static func configure() {
-        guard !configured else { return }
-        configured = true
+    /// Read the network file (validators, committee key, chain id). Idempotent,
+    /// and no node is contacted — so tool specs can interpolate the coin's
+    /// ticker before any RPC happens.
+    static func configureFromFile() {
+        guard !fileRead else { return }
+        fileRead = true
         for url in networkCandidates() {
             if let json = try? String(contentsOf: url, encoding: .utf8), let n = try? configureNetwork(networkJson: json) {
                 validators = n
+                chainId = configuredChainId()
                 break
             }
         }
+    }
+
+    static func configure() {
+        configureFromFile()
+        guard !configured else { return }
+        configured = true
         // AETHER_LOCAL_NODE=<port> reads through that node on 127.0.0.1. Otherwise, like
         // the wallet, ask the app's node when it runs (it verifies every block itself;
         // the certificates and proofs are still checked here).
@@ -86,6 +101,12 @@ enum Tools {
     }
 
     static var validatorCount: UInt32 { configure(); return validators }
+
+    /// The coin's ticker on the configured chain (reads the network file only).
+    static var coinTicker: String { configureFromFile(); return Coin.ticker(chainId) }
+
+    /// The testnet coin's name on the configured chain.
+    static var coinTestName: String { configureFromFile(); return Coin.testName(chainId) }
 
     /// The agent's account (owner key's address) and its gas payer (agent key's address).
     struct Identity {
@@ -200,31 +221,32 @@ enum Tools {
     private static func pay(_ payments: [(String, String)], purpose: String, dryRun: Bool) throws -> [String: Any] {
         configure()
         let id = try identity()
+        let t = Coin.ticker(chainId)
         var total = Wei.zero
         var parsed: [Payment] = []
         for (to, amt) in payments {
             guard ABI.isAddress(to) else { throw AgentError.input("\(to) is not a 0x address") }
-            guard let w = Wei(aeth: amt), w.value > 0 else { throw AgentError.input("amount \"\(amt)\" is not a positive AETH amount") }
+            guard let w = Wei(aeth: amt), w.value > 0 else { throw AgentError.input("amount \"\(amt)\" is not a positive \(t) amount") }
             parsed.append(Payment(to: to, valueWei: w.description))
             guard let t = total.adding(w) else { throw AgentError.input("the amounts add up to more than any balance") }
             total = t
         }
         guard let s = try session(id) else {
-            for (to, amt) in payments { try requestPayee(to, purpose: purpose, amount: amt, asset: "AETH") }
+            for (to, amt) in payments { try requestPayee(to, purpose: purpose, amount: amt, asset: t) }
             throw AgentError.policy("agent stopped or no active session; approval request saved for the owner. Nothing was sent")
         }
         guard s.expires == 0 || s.expires > UInt64(Date().timeIntervalSince1970) else {
             throw AgentError.policy("the session expired; the owner must run `aether-agent policy renew` with Touch ID")
         }
         for (to, amt) in payments {
-            try checkPayee(to, session: s, purpose: purpose, amount: amt, asset: "AETH")
+            try checkPayee(to, session: s, purpose: purpose, amount: amt, asset: t)
         }
         let perPayment = Wei(decimal: s.perPaymentWei) ?? .zero
-        if perPayment < total { throw AgentError.policy("\(total.aeth) AETH is over the per-payment limit of \(aeth(s.perPaymentWei)) AETH") }
+        if perPayment < total { throw AgentError.policy("\(total.aeth) \(t) is over the per-payment limit of \(aeth(s.perPaymentWei)) \(t)") }
         let left = Wei(decimal: s.leftWei) ?? .zero
-        if left < total { throw AgentError.policy("only \(left.aeth) AETH may be paid now (limit \(aeth(s.perDayWei)) AETH in any 24 h)") }
+        if left < total { throw AgentError.policy("only \(left.aeth) \(t) may be paid now (limit \(aeth(s.perDayWei)) \(t) in any 24 h)") }
         let acc = try verifiedAccount(address: id.account, validators: validators)
-        if (Wei(decimal: acc.balanceWei) ?? .zero) < total { throw AgentError.policy("the account holds \(aeth(acc.balanceWei)) AETH") }
+        if (Wei(decimal: acc.balanceWei) ?? .zero) < total { throw AgentError.policy("the account holds \(aeth(acc.balanceWei)) \(t)") }
         if dryRun {
             return ["ok": true, "would_pay_aeth": total.aeth, "left_after_aeth": Wei(value: left.value - total.value).aeth]
         }
@@ -236,7 +258,7 @@ enum Tools {
         let hash = try submitSigned(envelopeJson: prepared.envelopeJson, signature: txSig.rawRepresentation, p256PublicKey: id.agentKey)
         try History.submit(PendingPayment(date: Date(), to: parsed.map(\.to), totalWei: total.description, hash: hash,
                                           purpose: purpose, payeeNames: parsed.map { Payees.name($0.to) ?? $0.to },
-                                          asset: "AETH", amount: total.aeth))
+                                          asset: t, amount: total.aeth))
         var out: [String: Any] = ["hash": hash, "paid_aeth": total.aeth, "recipients": parsed.count]
         if let r = waitForReceipt(hash) {
             out["final"] = true
@@ -321,7 +343,7 @@ enum Tools {
         let f = ISO8601DateFormatter()
         let items = History.load().prefix(max(1, limit)).map { e -> [String: Any] in
             ["date": f.string(from: e.date), "to": e.to, "payee_names": e.payeeNames ?? e.to,
-             "amount": e.amount ?? aeth(e.totalWei), "asset": e.asset ?? "AETH", "status": e.status ?? "legacy (unverified)",
+             "amount": e.amount ?? aeth(e.totalWei), "asset": e.asset ?? Coin.ticker(chainId), "status": e.status ?? "legacy (unverified)",
              "purpose": e.purpose ?? "not recorded", "hash": e.hash, "tx_link": e.txLink ?? "aether://tx?hash=\(e.hash)"]
         }
         return ["payments": Array(items)]

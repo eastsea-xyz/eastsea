@@ -6,16 +6,19 @@ import Foundation
 enum MCPServer {
     static let protocolVersion = "2025-06-18"
 
-    static let instructions = """
-    Aether wallet for this agent. The agent pays from its own account with a key held in this Mac's Secure Enclave \
+    static let instructions = {
+        let t = Tools.coinTicker
+        return """
+    EastSea wallet for this agent. The agent pays from its own account with a key held in this Mac's Secure Enclave \
     (it cannot be exported). The account contract checks the owner's limits on chain (per payment, per 24 h, \
     allowed recipients, expiry); a tricked agent can still spend within them. Only the owner can change them, with Touch ID. Balances are verified on this Mac \
     against the validators' threshold signature. If a payment is refused, tell the human the limit and that they can \
     change it with `aether-agent policy set`; do not retry around it. Every payment needs a truthful purpose. \
     New payees require owner approval, and the owner can stop the session with `aether-agent stop`. Use dry_run when unsure. \
-    Amounts are decimal AETH strings. The dex_* tools only read the Aether DEX (pools, tokens, quotes); a quote is an \
+    Amounts are decimal \(t) strings. The dex_* tools only read the EastSea DEX (pools, tokens, quotes); a quote is an \
     estimate, and agents cannot swap yet.
     """
+    }()
 
     static func run() {
         while let line = readLine(strippingNewline: true) {
@@ -37,7 +40,7 @@ enum MCPServer {
         case "initialize":
             return ok(["protocolVersion": params["protocolVersion"] as? String ?? protocolVersion,
                        "capabilities": ["tools": ["listChanged": false]],
-                       "serverInfo": ["name": "aether", "title": "Aether Wallet", "version": Version.string],
+                       "serverInfo": ["name": "aether", "title": "EastSea Wallet", "version": Version.string],
                        "instructions": instructions])
         case "ping":
             return ok([:])

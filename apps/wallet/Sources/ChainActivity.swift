@@ -1,7 +1,7 @@
 import Foundation
 
 // The node's finalized activity index is display data. VerifiedAccount remains
-// the only source of the AETH balance shown by the wallet.
+// the only source of the native-coin balance shown by the wallet.
 struct ChainHistoryPage: Decodable, Sendable {
     let entries: [ChainHistoryEntry]
     let nextCursor: String?
@@ -113,37 +113,37 @@ enum ChainActivity {
             let amount = token.map { units(move.amount, decimals: $0.decimals) } ?? "\(move.amount) base units"
             return "\(amount) \(name)\(warning)"
         }
-        if row.kind == "node_reward" { return "Node reward \(amount) \(Brand.coinTicker)" }
-        if row.kind == "proof_reward" { return "Proof reward \(amount) \(Brand.coinTicker)" }
+        if row.kind == "node_reward" { return "Node reward \(amount) \(Brand.networkCoinTicker)" }
+        if row.kind == "proof_reward" { return "Proof reward \(amount) \(Brand.networkCoinTicker)" }
         if row.kind == "registration" { return "Registered a voting node" }
         if !row.success { return "Failed call \(short(row.to ?? row.address)) (method \(row.method ?? "0x"))" }
         if row.kind == "deploy" { return "Deployed contract \(short(row.contractAddress ?? row.address))" }
         if contract == "router", row.pairSwaps?.isEmpty == false,
            ["0x38ed1739", "0xac344b4d", "0x3f070ce1"].contains(row.method ?? "") {
-            let spent = outgoing.first.map(tokenText) ?? "\(amount) \(Brand.coinTicker)"
+            let spent = outgoing.first.map(tokenText) ?? "\(amount) \(Brand.networkCoinTicker)"
             let nativeIn = names.waeth.flatMap { waeth in
                 row.nativePayoutSource?.lowercased() == waeth.lowercased()
-                    ? row.nativeReceivedWei.map { "\(units($0)) \(Brand.coinTicker)" } : nil
+                    ? row.nativeReceivedWei.map { "\(units($0)) \(Brand.networkCoinTicker)" } : nil
             }
-            let got = incoming.last.map(tokenText) ?? nativeIn ?? "\(Brand.coinTicker)"
+            let got = incoming.last.map(tokenText) ?? nativeIn ?? "\(Brand.networkCoinTicker)"
             return "Swapped \(spent) → \(got)"
         }
         if contract == "router", ["0xe8e33700", "0xcf2df7c6"].contains(row.method ?? "") { return "Added liquidity" }
         if contract == "router", ["0xbaa2abde", "0x0fb9ca68"].contains(row.method ?? "") { return "Removed liquidity" }
         if contract == "launchpad", row.method == "0x42a81515" { return "Launched a token" }
-        if contract == "launchpad", row.method == "0xcce7ec13" { return "Bought on launchpad · \(incoming.first.map(tokenText) ?? "\(amount) \(Brand.coinTicker)")" }
+        if contract == "launchpad", row.method == "0xcce7ec13" { return "Bought on launchpad · \(incoming.first.map(tokenText) ?? "\(amount) \(Brand.networkCoinTicker)")" }
         if contract == "launchpad", row.method == "0x6a272462" { return "Sold on launchpad · \(outgoing.first.map(tokenText) ?? "token")" }
         if contract == "factory", ["0x3ca6d100", "0xc7ff321d"].contains(row.method ?? "") { return "Created a token" }
         if row.method == "0x095ea7b3" {
             let action = row.approvalAmount == "0" ? "Revoked" : "Approved"
             return "\(action) token \(tokenShort(row.to ?? row.address))\(row.approvalSpender.map { " for \(short($0))" } ?? "")"
         }
-        if row.kind == "native_transfer", from != me { return "Received \(amount) \(Brand.coinTicker) from \(short(row.from ?? ""))" }
-        if row.kind == "native_transfer" { return "Sent \(amount) \(Brand.coinTicker) to \(short(row.to ?? ""))" }
+        if row.kind == "native_transfer", from != me { return "Received \(amount) \(Brand.networkCoinTicker) from \(short(row.from ?? ""))" }
+        if row.kind == "native_transfer" { return "Sent \(amount) \(Brand.networkCoinTicker) to \(short(row.to ?? ""))" }
         if let receipt = incoming.first, from != me { return "Received \(tokenText(receipt)) from \(short(receipt.from))" }
         if let sent = outgoing.first, row.method == "0xa9059cbb" { return "Sent \(tokenText(sent)) to \(short(sent.to))" }
         let deltas = outgoing.map { "−\(tokenText($0))" } + incoming.map { "+\(tokenText($0))" }
-        let native = row.valueWei != "0" ? ["−\(amount) \(Brand.coinTicker)"] : []
+        let native = row.valueWei != "0" ? ["−\(amount) \(Brand.networkCoinTicker)"] : []
         let changes = (native + deltas).isEmpty ? "" : " · \((native + deltas).joined(separator: ", "))"
         return "Contract call \(short(row.to ?? row.address)) (method \(row.method ?? "0x"))\(changes)"
     }

@@ -17,8 +17,9 @@ import Foundation
 /// The kind of mark a token carries: bundled art for the official few, a
 /// deterministic generated glyph for everything else.
 enum TokenIconKind: Equatable {
-    /// The chain's native coin (DBLN): a gold doubloon.
-    case nativeCoin
+    /// The chain's native coin (DBLN on new-genesis chains, test AETH on the
+    /// legacy 7780 testnet): a gold doubloon either way.
+    case nativeCoin(ticker: String)
     /// A token on the shipped trust list. The symbol is the LIST's (the
     /// node's claim of it is irrelevant to the art).
     case official(symbol: String)
@@ -42,7 +43,7 @@ struct TokenIconSpec: Equatable {
     /// colour ("WAETH, verified", "Unverified token").
     var accessibilityLabel: String {
         switch kind {
-        case .nativeCoin: return "\(Brand.coinTicker), verified"
+        case .nativeCoin(let ticker): return "\(ticker), verified"
         case .official(let symbol): return "\(symbol), verified"
         case .generated: return "Unverified token"
         }
@@ -53,7 +54,7 @@ struct TokenIconSpec: Equatable {
     /// unknown falls to the generated glyph. `symbol` only names the token in
     /// the generated letter — it can never promote a token to official art.
     static func of(chainId: UInt64, address: String?, symbol: String) -> TokenIconSpec {
-        guard let address, !address.isEmpty else { return TokenIconSpec(kind: .nativeCoin) }
+        guard let address, !address.isEmpty else { return TokenIconSpec(kind: .nativeCoin(ticker: Brand.coinTicker(chainId: chainId))) }
         if let known = KnownTokens.knownToken(chainId: chainId, address: address) {
             return TokenIconSpec(kind: .official(symbol: known.symbol))
         }

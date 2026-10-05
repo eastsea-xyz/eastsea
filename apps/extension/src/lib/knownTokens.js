@@ -18,13 +18,13 @@
 // ships. Test test/known-tokens.test.mjs checks the shape and that the list
 // covers the addresses this repo itself ships as token sources.
 
-import { Brand } from './brand.js';
-
 /** The native coin of each chain (not an ERC-20; recorded so the trusted
  * denomination table is complete). The extension always shows the native
- * amount at 18 decimals (lib/units.js), independent of any RPC answer. */
+ * amount at 18 decimals (lib/units.js), independent of any RPC answer.
+ * Chain 7780 is the legacy testnet, whose coin stayed AETH; new-genesis
+ * chains show DBLN (lib/brand.js coinTicker). */
 export const NATIVE_COINS = Object.freeze({
-  7780: Object.freeze({ symbol: Brand.coinTicker, name: Brand.coinName, decimals: 18 }),
+  7780: Object.freeze({ symbol: 'AETH', name: 'Test AETH', decimals: 18 }),
 });
 
 /** Known ERC-20 tokens, by chain id and lowercase address.

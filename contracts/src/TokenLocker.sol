@@ -21,6 +21,10 @@ pragma solidity ^0.8.19;
 /// Both measure balance deltas rather than requested amounts, so fee-on-transfer
 /// tokens lock and vest what actually arrived, and both settle their state
 /// before moving tokens, so a re-entering token contract finds nothing left.
+/// Every state-changing entry additionally runs under a reentrancy guard
+/// (audit F-01): a callback-capable token interrupting a deposit could
+/// otherwise double-credit a nested record or shrink the delta the outer
+/// deposit credits.
 
 /// Escrow plumbing shared by the two contracts: pull tokens measuring what
 /// actually arrived, and pay out tolerating tokens that return no bool.
@@ -30,6 +34,23 @@ abstract contract TokenEscrow {
     error NothingArrived();
     /// Not a contract, or not the shape of an ERC-20 we can read.
     error BadToken();
+    /// A token callback tried to re-enter an escrow entry mid-flight (F-01).
+    error Reentered();
+
+    /// Reentrancy latch. A callback-capable token can interrupt `_pull` and
+    /// re-enter before the deposit is credited: the nested record plus the
+    /// outer call's whole-delta credit double-count the same tokens, and a
+    /// payout mid-pull shrinks the delta the outer deposit records. Every
+    /// state-changing entry of both escrows runs under this guard, so a
+    /// callback finds the escrow closed for the duration of the transfer.
+    uint256 private _busy;
+
+    modifier nonReentrant() {
+        if (_busy != 0) revert Reentered();
+        _busy = 1;
+        _;
+        _busy = 0;
+    }
 
     /// Pull `amount` from the caller, returning what actually arrived.
     function _pull(address token, uint256 amount) internal returns (uint256 received) {
@@ -86,7 +107,11 @@ contract TokenLocker is TokenEscrow {
 
     /// Deposit `amount` of `token` (pulled from the caller) for `beneficiary`
     /// until `unlockAt`. Anyone may lock for anyone; the caller is the creator.
-    function lock(address token, address beneficiary, uint256 amount, uint64 unlockAt) external returns (uint256 id) {
+    function lock(address token, address beneficiary, uint256 amount, uint64 unlockAt)
+        external
+        nonReentrant
+        returns (uint256 id)
+    {
         if (beneficiary == address(0) || unlockAt <= block.timestamp) revert BadLock();
         uint256 received = _pull(token, amount);
         id = locks.length;
@@ -97,7 +122,7 @@ contract TokenLocker is TokenEscrow {
 
     /// Push a lock's unlock time later. Only its creator or beneficiary may,
     /// and only while the lock still holds tokens.
-    function extend(uint256 id, uint64 newUnlockAt) external {
+    function extend(uint256 id, uint64 newUnlockAt) external nonReentrant {
         Lock storage l = _lockAt(id);
         if (l.amount == 0) revert AlreadyWithdrawn(id);
         if (msg.sender != l.creator && msg.sender != l.beneficiary) revert OnlyCreatorOrBeneficiary();
@@ -107,7 +132,7 @@ contract TokenLocker is TokenEscrow {
     }
 
     /// The beneficiary takes the whole lock once it has unlocked.
-    function withdraw(uint256 id) external {
+    function withdraw(uint256 id) external nonReentrant {
         Lock storage l = _lockAt(id);
         if (msg.sender != l.beneficiary) revert OnlyBeneficiary();
         uint256 amount = l.amount;
@@ -129,11 +154,44 @@ contract TokenLocker is TokenEscrow {
     }
 
     /// Every lock ever made for `beneficiary`, spent ones included.
+    ///
+    /// Deprecated for new consumers (audit F-04): this array grows without
+    /// bound — anyone may bury a beneficiary under dust locks — so returning
+    /// it whole can exceed gas budgets. New code reads `lockCountOf` and walks
+    /// `lockIdsOfPage`. Kept for callers already deployed against it.
     function lockIdsOf(address beneficiary) external view returns (uint256[] memory) {
         return _idsOf[beneficiary];
     }
 
+    /// F-04: how many locks (spent ones included) `beneficiary` ever had.
+    function lockCountOf(address beneficiary) external view returns (uint256) {
+        return _idsOf[beneficiary].length;
+    }
+
+    /// F-04: one bounded page of `beneficiary`'s lock ids, oldest first.
+    /// Anyone can bury a beneficiary's history under unlimited dust locks, so
+    /// on-chain consumers read the count and walk bounded pages instead of
+    /// scanning the whole history at once.
+    function lockIdsOfPage(address beneficiary, uint256 offset, uint256 limit)
+        external
+        view
+        returns (uint256[] memory page)
+    {
+        uint256[] memory ids = _idsOf[beneficiary];
+        if (offset >= ids.length) return page;
+        uint256 n = ids.length - offset;
+        if (n > limit) n = limit;
+        page = new uint256[](n);
+        for (uint256 i = 0; i < n; i++) page[i] = ids[offset + i];
+    }
+
     /// `beneficiary`'s tokens of `token` still sitting in this escrow.
+    ///
+    /// F-04: scans the beneficiary's whole history, which a dust griefer can
+    /// inflate without bound — at some cardinality this call exceeds gas or
+    /// latency budgets. Indexers and the launchpad badge should compute the
+    /// aggregate from bounded pages (`lockIdsOfPage`) off chain; nothing
+    /// security-relevant should hang on this single unbounded call.
     function lockedTotal(address beneficiary, address token) external view returns (uint256 total) {
         uint256[] memory ids = _idsOf[beneficiary];
         for (uint256 i = 0; i < ids.length; i++) {
@@ -144,6 +202,8 @@ contract TokenLocker is TokenEscrow {
 
     /// The latest unlock time among those locks: the "creator's tokens locked
     /// until …" badge. Zero when nothing is locked.
+    ///
+    /// F-04: same whole-history scan (and caveat) as `lockedTotal`.
     function lockedUntil(address beneficiary, address token) external view returns (uint64 until) {
         uint256[] memory ids = _idsOf[beneficiary];
         for (uint256 i = 0; i < ids.length; i++) {
@@ -212,7 +272,7 @@ contract TokenVesting is TokenEscrow {
         uint64 cliff,
         uint64 duration,
         bool cancelable
-    ) external returns (uint256 id) {
+    ) external nonReentrant returns (uint256 id) {
         if (beneficiary == address(0) || duration == 0 || cliff > duration) revert BadStream();
         uint256 received = _pull(token, amount);
         id = streams.length;
@@ -238,7 +298,7 @@ contract TokenVesting is TokenEscrow {
     }
 
     /// The beneficiary claims everything vested and not yet claimed.
-    function claim(uint256 id) external {
+    function claim(uint256 id) external nonReentrant {
         Stream storage s = _streamAt(id);
         if (msg.sender != s.beneficiary) revert OnlyBeneficiary();
         uint256 amount = claimable(id);
@@ -250,7 +310,7 @@ contract TokenVesting is TokenEscrow {
 
     /// The creator ends a cancelable stream: the vested part goes to the
     /// beneficiary, the unvested part back to the creator.
-    function cancel(uint256 id) external {
+    function cancel(uint256 id) external nonReentrant {
         Stream storage s = _streamAt(id);
         if (msg.sender != s.creator) revert OnlyCreator();
         if (!s.cancelable) revert NotCancelable();
@@ -276,8 +336,34 @@ contract TokenVesting is TokenEscrow {
         return _streamAt(id);
     }
 
+    /// Every stream ever made for `beneficiary`, settled ones included.
+    ///
+    /// Deprecated for new consumers (audit F-04), like the locker's
+    /// `lockIdsOf`: the array grows without bound. New code reads
+    /// `streamCountOf` and walks `streamIdsOfPage`.
     function streamIdsOf(address beneficiary) external view returns (uint256[] memory) {
         return _idsOf[beneficiary];
+    }
+
+    /// F-04: how many streams (settled ones included) `beneficiary` ever had.
+    function streamCountOf(address beneficiary) external view returns (uint256) {
+        return _idsOf[beneficiary].length;
+    }
+
+    /// F-04: one bounded page of `beneficiary`'s stream ids, oldest first —
+    /// the bounded counterpart of `streamIdsOf`, whose array grows without
+    /// bound and should not be returned whole to on-chain consumers.
+    function streamIdsOfPage(address beneficiary, uint256 offset, uint256 limit)
+        external
+        view
+        returns (uint256[] memory page)
+    {
+        uint256[] memory ids = _idsOf[beneficiary];
+        if (offset >= ids.length) return page;
+        uint256 n = ids.length - offset;
+        if (n > limit) n = limit;
+        page = new uint256[](n);
+        for (uint256 i = 0; i < n; i++) page[i] = ids[offset + i];
     }
 
     function _streamAt(uint256 id) private view returns (Stream storage s) {

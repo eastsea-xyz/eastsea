@@ -578,4 +578,92 @@ contract TokenLockerTest {
         vm.expectRevert(err(TokenVesting.Unknown.selector));
         vesting.vested(0);
     }
+
+    // ---- F-04: bounded pages instead of one unbounded history scan ----
+
+    function test_LockIdsOfPageWalksTheHistory() public {
+        for (uint256 i = 0; i < 5; i++) {
+            lockAs(creator, address(token), beneficiary, 1e18, uint64(block.timestamp + DAY));
+            lockAs(creator, address(token), stranger, 1e18, uint64(block.timestamp + DAY)); // not the beneficiary's
+        }
+        assertEq(locker.lockCountOf(beneficiary), 5);
+
+        // the whole history in one page: the beneficiary's own ids, oldest first
+        uint256[] memory all = locker.lockIdsOfPage(beneficiary, 0, 100);
+        assertEq(all.length, 5);
+        assertEq(all[0], 0);
+        assertEq(all[4], 8);
+
+        // a bounded page in the middle
+        uint256[] memory mid = locker.lockIdsOfPage(beneficiary, 2, 2);
+        assertEq(mid.length, 2);
+        assertEq(mid[0], 4);
+        assertEq(mid[1], 6);
+
+        // a limit past the end returns only what is left
+        uint256[] memory tail = locker.lockIdsOfPage(beneficiary, 4, 10);
+        assertEq(tail.length, 1);
+        assertEq(tail[0], 8);
+
+        // past the end, a zero limit, or an unknown beneficiary: nothing, not a revert
+        assertEq(locker.lockIdsOfPage(beneficiary, 5, 10).length, 0);
+        assertEq(locker.lockIdsOfPage(beneficiary, 0, 0).length, 0);
+        assertEq(locker.lockIdsOfPage(address(0x1234), 0, 100).length, 0);
+    }
+
+    function test_StreamIdsOfPageWalksTheHistory() public {
+        for (uint256 i = 0; i < 4; i++) {
+            vestAs(creator, address(token), beneficiary, 1e18, uint64(block.timestamp), 0, 30 * DAY, false);
+        }
+        assertEq(vesting.streamCountOf(beneficiary), 4);
+
+        uint256[] memory first = vesting.streamIdsOfPage(beneficiary, 0, 2);
+        assertEq(first.length, 2);
+        assertEq(first[0], 0);
+        assertEq(first[1], 1);
+
+        uint256[] memory rest = vesting.streamIdsOfPage(beneficiary, 2, 50);
+        assertEq(rest.length, 2);
+        assertEq(rest[0], 2);
+        assertEq(rest[1], 3);
+
+        assertEq(vesting.streamIdsOfPage(beneficiary, 4, 50).length, 0);
+        assertEq(vesting.streamIdsOfPage(address(0x1234), 0, 50).length, 0);
+    }
+
+    /// The F-04 regression: a griefer buries the beneficiary's real lock under
+    /// hundreds of spent dust locks, and a paged walk still reads the badge
+    /// (total locked, latest unlock) from the contract's own records.
+    function test_DustGriefedHistoryStillWalkable() public {
+        lockAs(creator, address(token), beneficiary, 1000e18, uint64(block.timestamp + 90 * DAY));
+        token.mint(stranger, 1_000e18); // anyone may lock for anyone: the griefer included
+        vm.prank(stranger);
+        token.approve(address(locker), type(uint256).max);
+        for (uint256 i = 0; i < 300; i++) {
+            lockAs(stranger, address(token), beneficiary, 1, uint64(block.timestamp + DAY)); // dust
+        }
+
+        // the earliest dust is spent but still listed
+        vm.warp(block.timestamp + 2 * DAY);
+        for (uint256 i = 1; i <= 10; i++) {
+            vm.prank(beneficiary);
+            locker.withdraw(i);
+        }
+
+        uint256 total = 0;
+        uint64 latest = 0;
+        for (uint256 off = 0; off < locker.lockCountOf(beneficiary); off += 50) {
+            uint256[] memory page = locker.lockIdsOfPage(beneficiary, off, 50);
+            for (uint256 i = 0; i < page.length; i++) {
+                TokenLocker.Lock memory l = locker.lockAt(page[i]);
+                if (l.amount != 0 && l.token == address(token)) {
+                    total += l.amount;
+                    if (l.unlockAt > latest) latest = l.unlockAt;
+                }
+            }
+        }
+        assertEq(total, locker.lockedTotal(beneficiary, address(token)));
+        assertEq(uint256(latest), uint256(locker.lockedUntil(beneficiary, address(token))));
+        assertEq(total, 1000e18 + 290); // the real lock plus the 290 unspent dust
+    }
 }

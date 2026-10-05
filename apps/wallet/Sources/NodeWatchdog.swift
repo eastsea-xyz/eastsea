@@ -41,6 +41,23 @@ struct NodeWatchdog {
         case rollback
     }
 
+    /// The wallet's read route for one poll, and what vouches for it.
+    struct Route: Equatable {
+        /// Read through this Mac's node (`true`) or through the validators.
+        let useLocal: Bool
+        /// `useLocal` was decided without the remote view (it could not
+        /// answer): provisional — the UI says so, and a frozen local height
+        /// releases it.
+        let networkPending: Bool
+
+        /// The validators, cross-checked by the wallet's own verified view.
+        static let remote = Route(useLocal: false, networkPending: false)
+        /// This Mac's node, confirmed against that view.
+        static let local = Route(useLocal: true, networkPending: false)
+        /// This Mac's node, held only while the view cannot answer.
+        static let localPending = Route(useLocal: true, networkPending: true)
+    }
+
     /// Why the node kept dying, in words a person can act on (layer 4).
     enum Failure: Equatable {
         case diskFull
@@ -134,33 +151,96 @@ struct NodeWatchdog {
     private var stalled = false
     private var behindPolls = 0
     private var caughtUpPolls = 0
+    /// The pending regime's own state (the remote view is unavailable):
+    /// consecutive healthy polls toward the three that select local anyway,
+    /// and the local height's freeze clock — the only cross-check left.
+    private var pendingHealthyPolls = 0
+    private var pendingLastHeight: UInt64?
+    private var pendingFrozenSince: MonotonicInstant?
 
     /// The wallet's local read route. An unresponsive status RPC yields the
     /// route immediately; five verified lag observations yield it too. Three
     /// verified caught-up observations are needed before returning to local.
-    mutating func useLocalNode(local: UInt64?, network: UInt64?, responsive: Bool, currentlyLocal: Bool) -> Bool {
-        guard responsive, let local, let network else {
-            behindPolls = 0
-            caughtUpPolls = 0
-            return false
-        }
-        let behind = network > local && network - local > 2
-        if currentlyLocal {
-            caughtUpPolls = 0
-            behindPolls = behind ? behindPolls + 1 : 0
-            if behindPolls >= 5 {
+    ///
+    /// With no remote view at all (`network == nil` — the incident of
+    /// 2026-10-05: after a reboot every validator read times out for
+    /// minutes, so `authenticatedRemoteHeight()` cannot answer, while the
+    /// bundled node on this Mac answers in 20 ms, verified and caught up), a
+    /// healthy local node may serve reads after three healthy polls —
+    /// returned with `networkPending`, because nothing outside this Mac
+    /// confirms it yet. It keeps the route only while responsive and moving:
+    /// a height frozen `stallAfter` with no cross-check to tell a partition
+    /// from a pause steps back to the validators, counters reset.
+    ///
+    /// Red team #17, preserved: the remote comparison stays authoritative
+    /// whenever it is available — "unavailable" is not "behind", and the
+    /// moment the view answers again the usual five behind observations (or
+    /// one dead RPC) release the route exactly as before. What Swift cannot
+    /// see, Rust still guards: the verified read path (crates/ffi
+    /// `check_freshness`, `MAX_ANCHOR_AGE_MS` = 10 min) refuses stale
+    /// certified state a partitioned local node might serve — the local node
+    /// is never compared against itself.
+    mutating func useLocalNode(local: UInt64?, network: UInt64?, responsive: Bool, currentlyLocal: Bool, at: MonotonicInstant) -> Route {
+        if let network {
+            // The view answered: today's rules exactly, and none of the
+            // pending regime's timing survives into it.
+            pendingHealthyPolls = 0
+            pendingLastHeight = nil
+            pendingFrozenSince = nil
+            guard responsive, let local else {
                 behindPolls = 0
-                return false
+                caughtUpPolls = 0
+                return .remote
             }
-            return true
+            let behind = network > local && network - local > 2
+            if currentlyLocal {
+                caughtUpPolls = 0
+                behindPolls = behind ? behindPolls + 1 : 0
+                if behindPolls >= 5 {
+                    behindPolls = 0
+                    return .remote
+                }
+                return .local
+            }
+            behindPolls = 0
+            caughtUpPolls = behind ? 0 : caughtUpPolls + 1
+            if caughtUpPolls >= 3 {
+                caughtUpPolls = 0
+                return .local
+            }
+            return .remote
         }
+        // No remote view: the verified-route counters are meaningless without
+        // it — they start over when it returns.
         behindPolls = 0
-        caughtUpPolls = behind ? 0 : caughtUpPolls + 1
-        if caughtUpPolls >= 3 {
-            caughtUpPolls = 0
-            return true
+        caughtUpPolls = 0
+        guard responsive, let local, local > 0 else {
+            pendingHealthyPolls = 0
+            pendingLastHeight = nil
+            pendingFrozenSince = nil
+            return .remote
         }
-        return false
+        if local != pendingLastHeight {
+            pendingLastHeight = local
+            pendingFrozenSince = nil
+        } else {
+            pendingFrozenSince = pendingFrozenSince ?? at
+        }
+        if currentlyLocal {
+            // Already riding this Mac's node without the view: keep it while
+            // it answers and moves. A height frozen past `stallAfter` with
+            // nothing to vouch for it is a partition until proven otherwise —
+            // never camp on a stalled node with no cross-check.
+            if let frozen = pendingFrozenSince, at.elapsed(since: frozen) >= Self.stallAfter {
+                pendingHealthyPolls = 0
+                pendingLastHeight = nil
+                pendingFrozenSince = nil
+                return .remote
+            }
+            return .localPending
+        }
+        pendingHealthyPolls += 1
+        return pendingHealthyPolls >= 3 ? .localPending : .remote
     }
 
     /// The node process is running as of `at` (monotonic: the injected
@@ -266,6 +346,9 @@ struct NodeWatchdog {
         lastActivity = nil
         behindPolls = 0
         caughtUpPolls = 0
+        pendingHealthyPolls = 0
+        pendingLastHeight = nil
+        pendingFrozenSince = nil
         frozenSince = nil
         stalled = false
     }

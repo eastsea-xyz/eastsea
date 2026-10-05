@@ -596,6 +596,16 @@ pub async fn rpc_call(
     }
 }
 
+/// How long one connect attempt to a known node may take.
+const CONNECT_ATTEMPT: Duration = Duration::from_secs(20);
+/// How long one whole scan for a live node may take (the incident of
+/// 2026-10-05: after a reboot every validator had moved, each attempt burned
+/// its full 20 s, and four of them under the client's lock made every queued
+/// read wait 80 s — repeatedly, because nothing bounded the scan as a whole).
+/// A scan that exhausts the budget fails; the next scan starts where this one
+/// stopped, so one dead node is not retried forever while the rest go untried.
+const CONNECT_SCAN: Duration = Duration::from_secs(20);
+
 /// A client talking to any of a set of known nodes, located via the DHT.
 pub struct RpcClient {
     endpoint: Endpoint,
@@ -603,6 +613,9 @@ pub struct RpcClient {
     current: tokio::sync::Mutex<Option<(EndpointId, Connection)>>,
     /// Where the next connection attempt starts in `nodes` (moved by `rotate`).
     start: std::sync::atomic::AtomicUsize,
+    /// One attempt's and one scan's budget (tests shrink both).
+    attempt: Duration,
+    scan: Duration,
 }
 
 impl RpcClient {
@@ -619,6 +632,8 @@ impl RpcClient {
             nodes: nodes.into_iter().map(EndpointAddr::from).collect(),
             current: tokio::sync::Mutex::new(None),
             start: std::sync::atomic::AtomicUsize::new(0),
+            attempt: CONNECT_ATTEMPT,
+            scan: CONNECT_SCAN,
         }
     }
 
@@ -629,7 +644,17 @@ impl RpcClient {
             nodes: addrs,
             current: tokio::sync::Mutex::new(None),
             start: std::sync::atomic::AtomicUsize::new(0),
+            attempt: CONNECT_ATTEMPT,
+            scan: CONNECT_SCAN,
         })
+    }
+
+    /// Shrink the connect budgets (tests only; production uses the defaults).
+    #[cfg(test)]
+    fn with_connect_timeouts(mut self, attempt: Duration, scan: Duration) -> Self {
+        self.attempt = attempt;
+        self.scan = scan;
+        self
     }
 
     /// The endpoint all calls go out on (shared with the wallet read spread).
@@ -649,6 +674,11 @@ impl RpcClient {
         self.start.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// A live connection, scanning `nodes` when the cached one is gone. The
+    /// whole scan — not just each attempt — is bounded by `scan`, and every
+    /// node it got through moves `start` past itself, so a later scan begins
+    /// at the next candidate instead of re-dialing the same dead one (the
+    /// incident of 2026-10-05).
     async fn connection(&self) -> Result<(EndpointId, Connection)> {
         let mut cur = self.current.lock().await;
         if let Some((id, c)) = cur.as_ref() {
@@ -657,16 +687,30 @@ impl RpcClient {
             }
         }
         let mut last = anyhow!("no nodes configured");
+        let n = self.nodes.len();
         let start = self.start.load(std::sync::atomic::Ordering::Relaxed);
-        for addr in self.nodes.iter().cycle().skip(start % self.nodes.len().max(1)).take(self.nodes.len()) {
-            match tokio::time::timeout(Duration::from_secs(20), self.endpoint.connect(addr.clone(), ALPN_RPC)).await {
+        let deadline = tokio::time::Instant::now() + self.scan;
+        let mut tried = 0;
+        for i in 0..n {
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if left.is_zero() {
+                last = anyhow!("connect: scan budget of {} ms exhausted", self.scan.as_millis());
+                break;
+            }
+            let addr = &self.nodes[(start + i) % n];
+            tried = i + 1;
+            match tokio::time::timeout(self.attempt.min(left), self.endpoint.connect(addr.clone(), ALPN_RPC)).await {
                 Ok(Ok(c)) => {
+                    self.start.store((start + i) % n, std::sync::atomic::Ordering::Relaxed);
                     *cur = Some((addr.id, c.clone()));
                     return Ok((addr.id, c));
                 }
                 Ok(Err(e)) => last = anyhow!("connect {}: {e}", addr.id.fmt_short()),
                 Err(_) => last = anyhow!("connect {}: timed out", addr.id.fmt_short()),
             }
+        }
+        if tried > 0 {
+            self.start.store((start + tried) % n, std::sync::atomic::Ordering::Relaxed);
         }
         Err(last)
     }
@@ -1061,5 +1105,51 @@ mod tests {
         announcer_ep.close().await;
         reader.endpoint().close().await;
         let _ = router.shutdown().await;
+    }
+
+    /// The incident of 2026-10-05: after a reboot every validator had come
+    /// back on a new address, every connect attempt burned its full 20 s, and
+    /// a scan of four under the client's lock queued every read behind 80 s —
+    /// again and again, because nothing bounded the scan as a whole. The scan
+    /// now has its own budget (the call returns promptly even with far more
+    /// dead nodes than the budget covers), and a budget-exhausted scan moves
+    /// `start` past every node it got through, so the next one begins at the
+    /// next candidate — a dead first validator is not re-dialed forever while
+    /// the rest go untried.
+    #[tokio::test]
+    async fn a_scan_for_a_live_node_is_bounded_and_round_robins() {
+        // TEST-NET-1: packets go nowhere, so each attempt runs its full budget.
+        let blackhole = |i: u8| {
+            EndpointAddr::from_parts(
+                SecretKey::from_bytes(&[i; 32]).public(),
+                [TransportAddr::Ip(SocketAddr::new(
+                    IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+                    1,
+                ))],
+            )
+        };
+        let client = RpcClient::with_addrs(vec![blackhole(1), blackhole(2), blackhole(3), blackhole(4)])
+            .await
+            .unwrap()
+            .with_connect_timeouts(Duration::from_millis(200), Duration::from_millis(260));
+        for scan in 0..3 {
+            let t = Instant::now();
+            let err = client.connection().await.unwrap_err().to_string();
+            assert!(err.contains("connect"), "{err}");
+            assert!(
+                t.elapsed() < Duration::from_secs(2),
+                "scan {scan} took {:?}; the whole scan is bounded, not just each attempt",
+                t.elapsed()
+            );
+            let start = client.start.load(std::sync::atomic::Ordering::Relaxed);
+            assert!(start > 0 || scan > 0, "a dead first node must not be retried forever");
+        }
+        // The cached-connection path is untouched: a scan cannot lock the
+        // client for longer than its budget, so `describe` (and any queued
+        // `call`) waits behind at most one bounded scan.
+        let t = Instant::now();
+        let _ = client.describe().await;
+        assert!(t.elapsed() < Duration::from_secs(2), "waiting on the scan lock is bounded too");
+        client.endpoint().close().await;
     }
 }

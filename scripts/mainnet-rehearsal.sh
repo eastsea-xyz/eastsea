@@ -108,9 +108,18 @@ founder=$("$A" dev-accounts | awk '$1 == "dev" && $2 == 1 {print $3}')
 ops=($("$A" dev-accounts | awk '$1 == "dev" && ($2 == 2 || $2 == 3) {print $3}'))
 [ "${#ops[@]}" = 2 ] || { echo "could not read the dev accounts" >&2; exit 1; }
 
-echo "== genesis (chain $CHAIN, protocol 3, history 2, node rewards, dev registrar, reserve keys, no faucet)"
+echo "== throwaway app builder keys (the release pin, checklist B6; the launch uses the builder Macs' keys)"
+bkeys=()
+for i in 1 2 3; do
+  k=$(openssl ecparam -name prime256v1 -genkey -noout 2>/dev/null | openssl ec -pubout -outform DER 2>/dev/null | tail -c 65 | xxd -p -c 65)
+  [ "${#k}" = 130 ] || { echo "could not make a throwaway P-256 key with openssl" >&2; exit 1; }
+  bkeys+=("$k")
+done
+printf '{"builder_keys": ["%s", "%s", "%s"]}\n' "${bkeys[@]}" > "$D/release.json"
+
+echo "== genesis (chain $CHAIN, protocol 3, history 2, node rewards, dev registrar, reserve keys, release pin, no faucet)"
 "$A" network --chain-id "$CHAIN" --protocol 3 --epoch-blocks "$EPOCH_BLOCKS" --history 2 --node-rewards --dev-registrar \
-  --reserve-operator "$founder" \
+  --reserve-operator "$founder" --release "$D/release.json" \
   --reserve "$D/r1/validator.pub.json" --reserve "$D/r2/validator.pub.json" --reserve "$D/r3/validator.pub.json" \
   "$D"/g1/validator.pub.json "$D"/g2/validator.pub.json "$D"/g3/validator.pub.json "$D"/g4/validator.pub.json \
   > "$D/genesis.json"

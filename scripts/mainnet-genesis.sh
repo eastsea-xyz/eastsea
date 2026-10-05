@@ -9,12 +9,17 @@
 #       coordinator; the secrets never leave this Mac.
 #   scripts/mainnet-genesis.sh assemble \
 #       --chain-id <new id> --registrar <x‖y hex from the signer Mac> \
-#       --reserve-operator <founder address> \
+#       --reserve-operator <founder address> --release <release.json> \
 #       --reserve <pub.json> ×3 --validator <pub.json> ×4 [--out <dir>]
 #       COORDINATOR: validates every input, builds genesis.json with the
 #       published policy (protocol 3, history 2, node rewards, registry v3,
 #       epoch 3600 blocks / min streak 24 / draw every 24 epochs as defaults —
 #       no timing flag is ever passed) and refuses rehearsal-only values.
+#       --release names the three app builders' P-256 keys
+#       ({"builder_keys": [...]}, from each builder Mac's `builder-sign init`):
+#       genesis.json carries the app's release-approval pin (ReleaseLog
+#       predeploy, its code hash, the keys, 2/3 normal, 3/3 emergency —
+#       docs/design/19, checklist B6) through the DKG into the shipped file.
 #   scripts/mainnet-genesis.sh check <network.json> --chain-id <id> --ceremony <ceremony.json>
 #       COORDINATOR, after the DKG: `aether mainnet-rules --network <file>`
 #       STRICT (never --rehearsal) plus every genesis flag still carried by the
@@ -69,7 +74,7 @@ REHEARSAL_CHAIN_ID=7799    # scripts/mainnet-rehearsal.sh's default: rehearsal-o
 REHEARSAL=0   # 1 only under --dry-run: --rehearsal may be passed there and nowhere else
 
 die() { echo "error: $*" >&2; exit 1; }
-usage() { sed -n '2,44p' "$0"; exit 1; }
+usage() { sed -n '2,49p' "$0"; exit 1; }
 fp() { printf '%s…' "${1:0:16}"; }
 mode_of() { stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"; }
 
@@ -96,6 +101,18 @@ if not (isinstance(n, str) and n and not re.search(r"\s", n)):
     sys.exit(f'{p}: "node" must be this Mac\'s iroh node id (non-empty, no whitespace), got {n!r}')
 print(k.lower(), n)
 PY
+}
+
+# A throwaway release config for the dry run: three fresh P-256 keys nobody
+# keeps (REHEARSAL only — the launch uses the builder Macs' Secure Enclave keys).
+throwaway_release() { # throwaway_release <out.json>
+  local keys=() k i
+  for i in 1 2 3; do
+    k=$(openssl ecparam -name prime256v1 -genkey -noout 2>/dev/null | openssl ec -pubout -outform DER 2>/dev/null | tail -c 65 | xxd -p -c 65)
+    [ "${#k}" = 130 ] || die "could not make a throwaway P-256 key with openssl"
+    keys+=("$k")
+  done
+  printf '{"builder_keys": ["%s", "%s", "%s"]}\n' "${keys[@]}" > "$1"
 }
 
 # Structural checks of a network.json, one verdict line each: "ok|name|detail"
@@ -155,6 +172,13 @@ else:
     line(n.get("identity") is None, "pre-DKG (identity not there yet)",
          "no committee identity yet — the genesis DKG writes it (doc §3)" if n.get("identity") is None
          else 'already has an "identity": not the fresh pre-DKG file assemble writes')
+rel = n.get("release") or {}
+keys = rel.get("builder_keys") or []
+line(rel.get("log") == "0x0000000000000000000000000000000000007705" and len(keys) == 3
+     and len({k.lower() for k in keys}) == 3 and rel.get("threshold") == 2 and rel.get("emergency_threshold") == 3,
+     "release pin (checklist B6)",
+     "the app trusts only ReleaseLog 0x…7705 and the three builder keys, 2/3 normal, 3/3 emergency" if rel
+     else 'no "release": the app would refuse every update — assemble with --release <release.json>')
 line(n.get("group") in (None, 0), "group 0", f'"group" is {n.get("group")!r}, want absent or 0')
 line(n.get("max_committee") in (None, 16), "committee ceiling 16",
      f'"max_committee" is {n.get("max_committee")!r}, want absent or 16 (the growth target)')
@@ -197,13 +221,14 @@ use it (its public entry is $data/validator.pub.json) or move the whole director
 }
 
 cmd_assemble() {
-  local chain_id='' registrar='' rop='' out=mainnet-genesis
+  local chain_id='' registrar='' rop='' release='' out=mainnet-genesis
   local vals resv net_args vkeys vnodes rkeys i j kn
   vals=() resv=() net_args=() vkeys=() vnodes=() rkeys=()
   while [ $# -gt 0 ]; do case $1 in
     --chain-id) chain_id=$2; shift 2 ;;
     --registrar) registrar=$2; shift 2 ;;
     --reserve-operator) rop=$2; shift 2 ;;
+    --release) release=$2; shift 2 ;;
     --validator) vals+=("$2"); shift 2 ;;
     --reserve) resv+=("$2"); shift 2 ;;
     --out) out=$2; shift 2 ;;
@@ -222,6 +247,8 @@ Secure Enclave key: pass its x‖y hex (\`aether-registrar-signer public\`, docs
   [ -n "$chain_id" ] || die "assemble: --chain-id <new chain id> is required"
   [ -n "$registrar" ] || die "assemble: --registrar <x‖y hex> is required"
   [ -n "$rop" ] || die "assemble: --reserve-operator <founder address> is required"
+  [ -n "$release" ] || die "assemble: --release <release.json> is required — {\"builder_keys\": [three 04‖x‖y hex keys]} from the three builder Macs' builder-sign init (docs/design/19; without it the app can never update)"
+  [ -f "$release" ] || die "assemble: no release config at $release"
   case $chain_id in ''|*[!0-9]*|0) die "--chain-id must be a positive integer, got '$chain_id'" ;; esac
   if [ "$REHEARSAL" = 0 ]; then
     if [ "$chain_id" = "$TESTNET_CHAIN_ID" ]; then die "--chain-id $TESTNET_CHAIN_ID is the running testnet: a new genesis needs a new chain id."; fi
@@ -272,7 +299,7 @@ Secure Enclave key: pass its x‖y hex (\`aether-registrar-signer public\`, docs
   # Exactly the doc §2 command: no --epoch-blocks/--min-streak/--draw-epochs
   # (the published defaults apply), no --faucet, no --dev-registrar.
   net_args=(network --chain-id "$chain_id" --protocol "$PROTOCOL" --history "$HISTORY" --node-rewards
-    --registrar "$registrar" --reserve-operator "$rop")
+    --registrar "$registrar" --reserve-operator "$rop" --release "$release")
   for i in $(seq 1 $N_RESERVE); do net_args+=(--reserve "${resv[$((i - 1))]}"); done
   for i in $(seq 1 $N_VALIDATORS); do net_args+=("${vals[$((i - 1))]}"); done
   "$A" "${net_args[@]}" > "$out/genesis.json"
@@ -287,6 +314,14 @@ Secure Enclave key: pass its x‖y hex (\`aether-registrar-signer public\`, docs
   for i in $(seq 1 $N_RESERVE); do echo "  reserve key $i      $(fp "${rkeys[$((i - 1))]}")"; done
   echo "  registrar x‖y     $(fp "$registrar")"
   echo "  reserve operator  $rop"
+  python3 - "$out/genesis.json" <<'PY'
+import json, sys
+r = json.load(open(sys.argv[1]))["release"]
+print(f"  release log       {r['log']} (code hash {r['code_hash'][:18]}…)")
+for i, k in enumerate(r["builder_keys"], 1):
+    print(f"  builder key {i}     {k[:16]}…")
+print(f"  release rule      {r['threshold']}/3 normal, {r['emergency_threshold']}/3 emergency")
+PY
   echo "  timing            epoch $EPOCH_BLOCKS blocks · min streak $MIN_STREAK · draw every $DRAW_EPOCHS epochs (defaults, untouched)"
   echo
   python3 - "$out/ceremony.json" "$chain_id" "$registrar" "$rop" \
@@ -421,9 +456,9 @@ run_check() { # run_check <network.json> [expected chain id] <genesis|final>
   rules=(mainnet-rules --network "$file")
   if [ "$REHEARSAL" = 1 ]; then rules=(mainnet-rules --rehearsal --network "$file"); fi
   if out=$("$A" "${rules[@]}" 2>&1); then
-    verdict "aether mainnet-rules, the full rule set (20 genesis + 4 final-file rules)" 1 "every rule on ($(printf '%s\n' "$out" | grep -c '^ok') ok; the final-file gate decodes the committee output, seats the roster, pins the identity, refuses revealed shares)$tag"
+    verdict "aether mainnet-rules, the full rule set (20 genesis + release pin + 4 final-file rules)" 1 "every rule on ($(printf '%s\n' "$out" | grep -c '^ok') ok; the final-file gate decodes the committee output, seats the roster, pins the identity, refuses revealed shares)$tag"
   else
-    verdict "aether mainnet-rules, the full rule set (20 genesis + 4 final-file rules)" 0 "$mode check failed:$tag"$'\n'"$(printf '%s\n' "$out" | sed 's/^/    /')"
+    verdict "aether mainnet-rules, the full rule set (20 genesis + release pin + 4 final-file rules)" 0 "$mode check failed:$tag"$'\n'"$(printf '%s\n' "$out" | sed 's/^/    /')"
   fi
   echo "== the file carries every genesis flag (stage: $stage)"
   out=$(net_verdicts "$file" "$want" "$stage")
@@ -470,6 +505,10 @@ cmd_dry_run() {
   founder=$("$A" dev-accounts | awk '$1 == "dev" && $2 == 1 {print $3}')
   [ -n "$founder" ] || die "could not read a dev address for the dry run's --reserve-operator"
   echo "  throwaway registrar $(fp "$registrar_hex"), throwaway reserve operator $founder (dev 1)"
+  echo "== throwaway builder keys (what the three builder Macs' builder-sign init print; throwaway here)"
+  mkdir -p "$dir/coordinator"
+  throwaway_release "$dir/coordinator/release.json"
+  echo "  three throwaway builder keys in $dir/coordinator/release.json"
   echo "== the copy step: ONLY the public halves move to the coordinator"
   mkdir -p "$dir/coordinator/pub"
   for i in $(seq 1 $N_VALIDATORS); do cp "$dir/v$i/validator.pub.json" "$dir/coordinator/pub/v$i.pub.json"; done
@@ -478,7 +517,7 @@ cmd_dry_run() {
   echo
   echo "== [assemble] on the coordinator (REHEARSAL: chain id $REHEARSAL_CHAIN_ID, throwaway inputs)"
   local as_args
-  as_args=(--chain-id "$REHEARSAL_CHAIN_ID" --registrar "$registrar_hex" --reserve-operator "$founder" --out "$dir/coordinator")
+  as_args=(--chain-id "$REHEARSAL_CHAIN_ID" --registrar "$registrar_hex" --reserve-operator "$founder" --release "$dir/coordinator/release.json" --out "$dir/coordinator")
   for i in $(seq 1 $N_RESERVE); do as_args+=(--reserve "$dir/coordinator/pub/r$i.pub.json"); done
   for i in $(seq 1 $N_VALIDATORS); do as_args+=(--validator "$dir/coordinator/pub/v$i.pub.json"); done
   cmd_assemble "${as_args[@]}"

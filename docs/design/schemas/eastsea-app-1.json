@@ -55,8 +55,8 @@
       "items": { "$ref": "#/$defs/locale" }
     },
     "category": {
-      "description": "Fixed list. defi-trading and token-issuance never enter ranked or featured slots and are hidden on iOS.",
-      "enum": ["payments", "names", "social", "games", "tools", "data", "nft-media", "defi-trading", "token-issuance", "other"]
+      "description": "Publisher's self-declaration. It is not the basis for financial or gambling treatment: the wallet computes a functional classification itself (docs/design/31-app-registry.md section 15.1). defi-trading, token-issuance and gambling apps are never shown when users browse, search by keyword or ask an AI. An exact name search returns only a fact card.",
+      "enum": ["payments", "names", "social", "games", "tools", "data", "nft-media", "defi-trading", "token-issuance", "gambling", "other"]
     },
     "tags": {
       "type": "array",
@@ -113,7 +113,7 @@
       }
     },
     "mirrors": {
-      "description": "https URL templates containing {sha256}. Sources are untrusted; every byte is hash-checked.",
+      "description": "https URL templates containing {sha256}, run by the publisher (who also handles copyright notices for them). Sources are untrusted; every byte is hash-checked.",
       "type": "array",
       "maxItems": 8,
       "uniqueItems": true,
@@ -215,11 +215,11 @@
       }
     },
     "age_rating": {
-      "description": "Apple age bands. Missing is treated as 18+ on iOS.",
+      "description": "Apple age bands. Missing is treated as 18+ on every platform. Apps the wallet classifies as financial, gambling or p2e-cashout are treated as 18+ whatever this field says.",
       "enum": ["4+", "9+", "13+", "16+", "18+"]
     },
     "commerce": {
-      "description": "What the app sells. digital (including features unlocked by owning an NFT) is hidden on iOS.",
+      "description": "What the app sells (digital includes features unlocked by owning an NFT). The wallet never draws purchase buttons or prices. When this is not none, it shows that Pipln is not a party to the sale.",
       "enum": ["none", "physical", "p2p", "digital"],
       "default": "none"
     },
@@ -231,7 +231,7 @@
       "items": { "type": "string", "pattern": "^[A-Z]{2}$" }
     },
     "noindex": {
-      "description": "Exclude from search, landing pages and lists; open only by direct link or bound name.",
+      "description": "Exclude from browse lists, keyword search and generated landing pages; open only by direct link or bound name.",
       "type": "boolean",
       "default": false
     },

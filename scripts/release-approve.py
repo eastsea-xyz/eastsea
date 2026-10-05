@@ -98,24 +98,40 @@ def command(*argv):
     return subprocess.check_output(argv, text=True).strip()
 
 
+RUNTIME_HEX = ROOT / "crates/execution/src/release_log.bin.hex"
+
+
 def contract_hash(_args):
+    """Recompile ReleaseLog and compare it with the runtime a new genesis predeploys."""
     bytecode = subprocess.check_output(["forge", "inspect", "ReleaseLog", "deployedBytecode"],
         cwd=ROOT / "contracts", text=True).strip()
-    print("ReleaseLog runtime code hash: " + command("cast", "keccak", bytecode))
+    code_hash = command("cast", "keccak", bytecode)
+    print("ReleaseLog runtime code hash: " + code_hash)
+    embedded = "0x" + RUNTIME_HEX.read_text().strip().lower()
+    if bytecode.lower() != embedded:
+        raise ValueError("the compiled ReleaseLog differs from crates/execution/src/release_log.bin.hex "
+                         "(the code a new genesis predeploys): rebuild from the release tag, never edit the pin")
+    print("matches the new-genesis predeploy at 0x0000000000000000000000000000000000007705")
 
 
 def pinned_builders(manifest):
+    """The builder keys the bundled network.json pins (its `release` object, checklist B6)."""
     network = json.loads(NETWORK.read_bytes())
-    keys = network.get("builder_keys")
-    if network.get("chain_id") != manifest["chain_id"] or network.get("release_log", "").lower() != manifest["log_address"].lower():
+    pin = network.get("release")
+    if not isinstance(pin, dict):
+        raise ValueError('bundled network.json has no "release" pin: this chain cannot approve releases')
+    keys = pin.get("builder_keys")
+    if network.get("chain_id") != manifest["chain_id"] or str(pin.get("log", "")).lower() != manifest["log_address"].lower():
         raise ValueError("bundled network.json does not pin this chain and ReleaseLog")
-    if not isinstance(keys, list) or len(keys) != 3 or len(set(k.lower() for k in keys)) != 3:
+    if not isinstance(keys, list) or len(keys) != 3 or len(set(str(k).lower() for k in keys)) != 3:
         raise ValueError("bundled network.json must pin three distinct builder keys")
-    code_hash = network.get("release_log_code_hash", "")
+    code_hash = pin.get("code_hash", "")
     if not isinstance(code_hash, str) or not code_hash.startswith("0x") or len(code_hash) != 66 or not all(c in "0123456789abcdefABCDEF" for c in code_hash[2:]):
         raise ValueError("bundled network.json must pin the ReleaseLog runtime code hash")
-    if any(len(key) != 130 or not all(c in "0123456789abcdefABCDEF" for c in key) for key in keys):
+    if any(not isinstance(key, str) or len(key) != 130 or not key.lower().startswith("04") or not all(c in "0123456789abcdefABCDEF" for c in key) for key in keys):
         raise ValueError("builder keys must be three 65-byte P-256 public keys")
+    if pin.get("threshold") != 2 or pin.get("emergency_threshold") != 3:
+        raise ValueError("the release pin must keep the 2/3 normal and 3/3 emergency rule (docs/design/19)")
     return set(k.lower() for k in keys)
 
 

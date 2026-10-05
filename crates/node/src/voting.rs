@@ -66,10 +66,18 @@ where
     type Digest = Digest;
 
     async fn propose(&mut self, context: Self::Context) -> oneshot::Receiver<Self::Digest> {
+        if !crate::resources::disk_ok() {
+            // A closed proposal receiver means this round has no local block.
+            let (_tx, rx) = oneshot::channel();
+            return rx;
+        }
         self.inner.propose(context).await
     }
 
     async fn verify(&mut self, context: Self::Context, digest: Self::Digest) -> oneshot::Receiver<bool> {
+        if !crate::resources::disk_ok() {
+            return refused_vote();
+        }
         let verdict = self.inner.verify(context.clone(), digest).await;
         let marshal = self.marshal.clone();
         let round = context.round;
@@ -80,25 +88,41 @@ where
         spawner.spawn(move |_| async move {
             // A closed verdict means verification can never conclude: close ours too.
             let Ok(valid) = verdict.await else { return };
+            if !crate::resources::disk_ok() {
+                let _ = tx.send(false);
+                return;
+            }
             if !valid || reproposal {
                 let _ = tx.send(valid);
                 return;
             }
             if durable(&marshal, round, digest).await {
-                let _ = tx.send(true);
+                let _ = tx.send(crate::resources::disk_ok());
             }
         });
         rx
     }
 }
 
+fn refused_vote() -> oneshot::Receiver<bool> {
+    let (tx, rx) = oneshot::channel();
+    let _ = tx.send(false);
+    rx
+}
+
 /// Persists the (already verified, so locally held) block for `round` and
 /// waits for the sync. A duplicate of the adapter's own write is a no-op whose
 /// sync covers the original. False only when marshal is shutting down.
 async fn durable(marshal: &Mailbox<Scheme, Standard<Block>>, round: Round, digest: Digest) -> bool {
+    if !crate::resources::disk_ok() {
+        return false;
+    }
     let Ok(block) = marshal.subscribe_by_digest(digest, DigestFallback::Wait).await else {
         return false;
     };
+    if !crate::resources::disk_ok() {
+        return false;
+    }
     marshal.verified(round, block).await
 }
 
@@ -108,6 +132,9 @@ where
     A: CertifiableAutomaton<Context = Context<Digest, PublicKey>, Digest = Digest>,
 {
     async fn certify(&mut self, round: Round, digest: Self::Digest) -> oneshot::Receiver<bool> {
+        if !crate::resources::disk_ok() {
+            return refused_vote();
+        }
         self.inner.certify(round, digest).await
     }
 }

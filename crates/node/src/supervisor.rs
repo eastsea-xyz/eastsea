@@ -37,6 +37,308 @@ pub const EXIT_NO_VERIFIER: i32 = 5;
 /// them. "Already running" is a state to surface, never a crash to restart.
 pub const EXIT_LOCKED: i32 = 7;
 
+/// A critical node task died. The child must not keep answering RPC as if it
+/// were participating; unlike an untrusted vote journal this is restartable.
+pub const EXIT_FATAL_TASK: i32 = 9;
+/// A marshal cache failed to open. The supervisor quarantines only that
+/// rebuildable cache before restarting the child.
+pub const EXIT_REBUILDABLE_CACHE: i32 = 10;
+/// Data-volume floor reached: the supervisor waits for free space before
+/// restarting the child. No consensus journal writes happen while it waits.
+pub const EXIT_DISK_LOW: i32 = 12;
+pub const CACHE_REPAIR_REQUEST: &str = "cache-repair-request";
+
+fn rebuildable_panic(message: &str) -> Option<&str> {
+    let name = message.strip_prefix("failed to initialize ")?.strip_suffix(" archive")?;
+    ["verified", "notarized", "certified", "notarizations", "finalizations"].contains(&name).then_some(name)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum PanicAction<'a> {
+    WaitForDisk,
+    RepairCache(&'a str),
+    Restart,
+}
+
+fn panic_action<'a>(message: &'a str, source: &str, free: Option<u64>, min: u64) -> PanicAction<'a> {
+    // Commonware's archive panic discards the I/O cause. Space, rather than
+    // the message alone, decides whether an archive needs repair. A journal
+    // write failure at ENOSPC must never be treated as journal corruption.
+    if min > 0 {
+        match free {
+            Some(bytes) if bytes < min => return PanicAction::WaitForDisk,
+            None => return PanicAction::WaitForDisk,
+            _ => {}
+        }
+    }
+    // `marshal/standard` uses the same "finalizations archive" panic for a
+    // non-cache finalized store. Only core/cache.rs initializes the delivery
+    // caches whose partitions can be rebuilt from peers.
+    if !source.ends_with("marshal/core/cache.rs") {
+        return PanicAction::Restart;
+    }
+    rebuildable_panic(message).map_or(PanicAction::Restart, PanicAction::RepairCache)
+}
+
+fn disk_wait_needed(code: Option<i32>, data_disk_low: bool) -> bool {
+    code == Some(EXIT_DISK_LOW)
+        || (data_disk_low && matches!(code, Some(crate::store::EXIT_STORAGE | EXIT_FATAL_TASK)))
+}
+
+fn probe_writer(mut writer: impl std::io::Write) -> std::io::Result<()> {
+    writer.write_all(b"[aether] log writer alive\n")?;
+    writer.flush()
+}
+
+fn require_writer_alive(writer: impl std::io::Write) {
+    if let Err(e) = probe_writer(writer) {
+        // This message may itself fail, but the exit is still observed by the
+        // parent. Never leave a half-alive validator serving RPC.
+        let _ = std::io::Write::write_all(&mut std::io::stdout(), format!("log writer failed: {e}\n").as_bytes());
+        std::process::exit(EXIT_FATAL_TASK);
+    }
+}
+
+fn write_cache_repair_request(data: &Path, cache: &str) -> std::io::Result<()> {
+    // A pre-existing request (including a symlink) is never overwritten. In
+    // particular, a malformed data directory must not turn a cache panic into
+    // a write to a key, threshold share, or vote journal.
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let path = data.join(CACHE_REPAIR_REQUEST);
+    let mut file = options.open(&path)?;
+    let result = std::io::Write::write_all(&mut file, cache.as_bytes())
+        .and_then(|_| file.sync_all());
+    if result.is_err() {
+        let _ = std::fs::remove_file(path);
+    }
+    result
+}
+
+fn panic_free_disk(data: &Path) -> Option<u64> {
+    #[cfg(test)]
+    if let Ok(value) = std::env::var("AETHER_TEST_PANIC_FREE_DISK") {
+        return value.parse().ok();
+    }
+    crate::resources::free_disk(data)
+}
+
+/// Only a regular stderr file has a volume we can measure. Pipes and sockets
+/// are still covered by the writer probe, but their destination is elsewhere.
+#[cfg(unix)]
+fn free_log_disk() -> Option<u64> {
+    let mut file: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(libc::STDERR_FILENO, &mut file) } != 0
+        || file.st_mode & libc::S_IFMT != libc::S_IFREG
+    {
+        return None;
+    }
+    let mut fs: libc::statfs = unsafe { std::mem::zeroed() };
+    (unsafe { libc::fstatfs(libc::STDERR_FILENO, &mut fs) } == 0)
+        .then(|| (fs.f_bavail as u64).saturating_mul(fs.f_bsize as u64))
+}
+
+#[cfg(not(unix))]
+fn free_log_disk() -> Option<u64> { None }
+
+/// Install in node/follow children before starting runtime tasks. Commonware
+/// catches and logs task panics, leaving RPC alive; a process-wide hook makes
+/// critical task loss observable to `aether run` instead. A direct stderr
+/// probe also catches tracing-subscriber's swallowed writer errors.
+pub fn install_fatal_watch(data: PathBuf) {
+    std::panic::set_hook(Box::new(move |info| {
+        let message = info.payload().downcast_ref::<String>().map(String::as_str)
+            .or_else(|| info.payload().downcast_ref::<&str>().copied()).unwrap_or("non-string panic");
+        let _ = std::io::Write::write_all(&mut std::io::stderr(), format!("fatal node task panic: {message} at {:?}\n", info.location()).as_bytes());
+        exit_for_fatal_panic(&data, message, info.location().map_or("", |loc| loc.file()));
+    }));
+    std::thread::Builder::new().name("log-writer-watch".into()).spawn(|| loop {
+        std::thread::sleep(Duration::from_secs(15));
+        require_writer_alive(std::io::stderr());
+    }).expect("start log writer watch");
+}
+
+fn exit_for_fatal_panic(data: &Path, message: &str, source: &str) -> ! {
+    let min = crate::resources::monitor()
+        .map(|monitor| monitor.limits.min_free_disk)
+        .unwrap_or(crate::resources::Limits::default().min_free_disk);
+    match panic_action(message, source, panic_free_disk(data), min) {
+        PanicAction::WaitForDisk => std::process::exit(EXIT_DISK_LOW),
+        PanicAction::RepairCache(cache) => {
+            if write_cache_repair_request(data, cache).is_ok() {
+                std::process::exit(EXIT_REBUILDABLE_CACHE);
+            }
+        }
+        PanicAction::Restart => {}
+    }
+    std::process::exit(EXIT_FATAL_TASK);
+}
+
+const CACHE_QUARANTINE_KEEP: usize = 3;
+const CACHE_QUARANTINE_MAX_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Only marshal's per-epoch delivery caches are rebuildable from peer blocks.
+/// Archive names and partition suffixes are fixed by commonware's cache.rs.
+fn cache_partition(name: &str, cache: &str, prefix: &str) -> bool {
+    const CACHES: [&str; 5] = ["verified", "notarized", "certified", "notarizations", "finalizations"];
+    const PARTS: [&str; 3] = ["metadata", "key", "value"];
+    CACHES.iter().any(|kind| {
+        if kind != &cache { return false; }
+        PARTS.iter().any(|part| {
+            let suffix = format!("-{kind}-{part}");
+            let Some(stem) = name.strip_suffix(&suffix) else { return false };
+            let Some((partition, epoch)) = stem.rsplit_once("-cache-") else { return false };
+            partition == prefix && epoch.parse::<u64>().is_ok()
+        })
+    })
+}
+
+fn dir_size(path: &Path) -> Result<u64, String> {
+    let mut size = 0u64;
+    for item in std::fs::read_dir(path).map_err(|e| e.to_string())? {
+        let item = item.map_err(|e| e.to_string())?;
+        let meta = std::fs::symlink_metadata(item.path()).map_err(|e| e.to_string())?;
+        if meta.file_type().is_symlink() { return Err("symlink inside marshal quarantine".into()); }
+        size = size.saturating_add(if meta.is_dir() { dir_size(&item.path())? } else { meta.len() });
+    }
+    Ok(size)
+}
+
+fn prune_cache_quarantine(root: &Path) -> Result<(), String> {
+    let mut dirs = Vec::new();
+    for entry in std::fs::read_dir(root).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if entry.file_name().to_string_lossy().starts_with("pending-") { continue; }
+        if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+            dirs.push(entry);
+        }
+    }
+    dirs.sort_by_key(|e| e.file_name());
+    let mut total = dirs.iter().try_fold(0u64, |sum, d| dir_size(&d.path()).map(|n| sum.saturating_add(n)))?;
+    while dirs.len() > CACHE_QUARANTINE_KEEP || total > CACHE_QUARANTINE_MAX_BYTES {
+        let old = dirs.remove(0);
+        let bytes = dir_size(&old.path())?;
+        std::fs::remove_dir_all(old.path()).map_err(|e| e.to_string())?;
+        total = total.saturating_sub(bytes);
+    }
+    Ok(())
+}
+
+/// Consume a child's exact repair request. A missing or forged request cannot
+/// cause a journal, identity, share or state store to be moved.
+fn repair_cache(data: &Path) -> Result<bool, String> {
+    repair_cache_with(data, |from, to| std::fs::rename(from, to))
+}
+
+fn repair_cache_with(
+    data: &Path,
+    mut rename: impl FnMut(&Path, &Path) -> std::io::Result<()>,
+) -> Result<bool, String> {
+    let request = data.join(CACHE_REPAIR_REQUEST);
+    let request_meta = match std::fs::symlink_metadata(&request) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e.to_string()),
+    };
+    if !request_meta.is_file() || request_meta.file_type().is_symlink() || request_meta.len() > 32 {
+        return Err("cache repair request is not a regular file".into());
+    }
+    let cache = match std::fs::read_to_string(&request) {
+        Ok(s) => s,
+        Err(e) => return Err(e.to_string()),
+    };
+    let cache = cache.trim();
+    if !["verified", "notarized", "certified", "notarizations", "finalizations"].contains(&cache) {
+        return Err(format!("unrecognized cache repair request: {cache}"));
+    }
+    let prefix = match std::fs::read_to_string(data.join("partition")) {
+        Ok(prefix) if !prefix.trim().is_empty() => prefix.trim().to_owned(),
+        Ok(_) => return Err("empty partition prefix".into()),
+        // The node also accepts older data dirs without a partition marker.
+        // Use the same legacy lookup as main::partition_prefix so repair can
+        // find the archive that actually failed in those directories.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::read_dir(data).map_err(|e| e.to_string())?
+                .filter_map(|e| e.ok()?.file_name().into_string().ok())
+                .find_map(|name| name.strip_suffix("-blocks-metadata").map(str::to_owned))
+                .unwrap_or_else(|| "aether".into())
+        }
+        Err(e) => return Err(e.to_string()),
+    };
+    let mut parts = Vec::new();
+    for entry in std::fs::read_dir(data).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if entry.file_name().to_str().is_some_and(|n| cache_partition(n, cache, &prefix)) {
+            if !entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+                return Err("marshal cache partition is not a real directory".into());
+            }
+            parts.push(entry);
+        }
+    }
+    let root = data.join("quarantine").join("marshal-cache");
+    for parent in [data.join("quarantine"), root.clone()] {
+        match std::fs::symlink_metadata(&parent) {
+            Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {}
+            Ok(_) => return Err("marshal quarantine path is not a real directory".into()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::create_dir(&parent).map_err(|e| e.to_string())?;
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    // A fixed pending directory makes each rename resumable after a crash or
+    // an injected I/O failure. The request remains until all parts are moved.
+    let pending = root.join(format!("pending-{cache}"));
+    match std::fs::symlink_metadata(&pending) {
+        Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {}
+        Ok(_) => return Err("pending marshal quarantine is not a real directory".into()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if parts.is_empty() {
+                // A crash after the final directory rename but before request
+                // removal leaves a harmless stale request. Verify that a
+                // completed batch of this cache exists before clearing it.
+                let completed = std::fs::read_dir(&root).map_err(|e| e.to_string())?
+                    .filter_map(Result::ok)
+                    .filter(|e| e.file_name().to_string_lossy().chars().next().is_some_and(|c| c.is_ascii_digit()))
+                    .any(|batch| std::fs::read_dir(batch.path()).ok().is_some_and(|entries| {
+                        entries.filter_map(Result::ok).any(|part| part.file_name().to_str()
+                            .is_some_and(|name| cache_partition(name, cache, &prefix)))
+                    }));
+                if !completed { return Err(format!("no {cache} marshal cache partition to repair")); }
+                std::fs::remove_file(&request).map_err(|e| e.to_string())?;
+                return Ok(true);
+            }
+            std::fs::create_dir(&pending).map_err(|e| e.to_string())?;
+        }
+        Err(e) => return Err(e.to_string()),
+    }
+    let mut moved = false;
+    for entry in std::fs::read_dir(&pending).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if !entry.file_type().map_err(|e| e.to_string())?.is_dir()
+            || !entry.file_name().to_str().is_some_and(|n| cache_partition(n, cache, &prefix)) {
+            return Err("unexpected entry in pending marshal quarantine".into());
+        }
+        moved = true;
+    }
+    for part in parts {
+        rename(&part.path(), &pending.join(part.file_name())).map_err(|e| e.to_string())?;
+        moved = true;
+    }
+    if !moved { return Err(format!("no {cache} marshal cache partition to repair")); }
+    let aside = root.join(format!("{:020}-{}", now_ms(), std::process::id()));
+    rename(&pending, &aside).map_err(|e| e.to_string())?;
+    std::fs::remove_file(request).map_err(|e| e.to_string())?;
+    prune_cache_quarantine(&root)?;
+    tracing::warn!(cache, path = %aside.display(), "quarantined rebuildable marshal cache; restarting to refetch from peers");
+    Ok(true)
+}
+
 /// Written when a validator refuses to resume voting (the engine's
 /// [`crate::engine::EXIT_JOURNAL`], red team #4): it holds the committee
 /// round the refusal belongs to. Voting stays off for that round — a lost
@@ -209,6 +511,9 @@ pub enum Next {
 /// [`MAX_EXITS_IN_WINDOW`] inside it ends the run.
 const WINDOW_MS: u64 = 10 * 60 * 1_000;
 const MAX_EXITS_IN_WINDOW: usize = 3;
+// A follower stalls for ten minutes before each exit, so the ordinary ten
+// minute crash window can never catch a persistent transport failure.
+const STALL_WINDOW_MS: u64 = 60 * 60 * 1_000;
 /// A child that lived this long made progress; its exit does not deepen the
 /// backoff (a real crash loop never gets here).
 const PROGRESS_MS: u64 = 5 * 60 * 1_000;
@@ -230,6 +535,11 @@ pub fn next_restart(exits: &[ExitNote], now_ms: u64) -> Next {
     let recent = exits.iter().filter(|e| now_ms.saturating_sub(e.at_ms) <= WINDOW_MS).count();
     if recent > MAX_EXITS_IN_WINDOW {
         return Next::Stop(last.code.unwrap_or(1));
+    }
+    let stalled = exits.iter().filter(|e| e.code == Some(crate::follow::EXIT_STALLED)
+        && now_ms.saturating_sub(e.at_ms) <= STALL_WINDOW_MS).count();
+    if last.code == Some(crate::follow::EXIT_STALLED) && stalled > MAX_EXITS_IN_WINDOW {
+        return Next::Stop(crate::follow::EXIT_STALLED);
     }
     let quick = exits
         .iter()
@@ -310,6 +620,43 @@ impl Anchor {
 }
 
 impl Supervisor {
+    fn min_free_disk(&self) -> u64 {
+        self.node_args.iter().chain(&self.follow_args)
+            .find_map(|arg| arg.strip_prefix("--min-free-disk="))
+            .and_then(|s| if s == "auto" { None } else { crate::resources::parse_size(s).ok() })
+            .unwrap_or(crate::resources::Limits::default().min_free_disk)
+    }
+
+    fn disk_low(&self) -> bool {
+        let min = self.min_free_disk();
+        min > 0 && crate::resources::free_disk(&self.data).is_none_or(|free| free < min)
+    }
+
+    fn log_disk_low(&self) -> bool {
+        let min = self.min_free_disk();
+        min > 0 && free_log_disk().is_some_and(|free| free < min)
+    }
+
+    fn wait_for_log_disk(&self, recovering: bool) {
+        let min = self.min_free_disk();
+        if min == 0 { return; }
+        let resume = if recovering { min.saturating_add(crate::resources::DISK_RESUME) } else { min };
+        let mut warned = false;
+        while let Some(free) = free_log_disk() {
+            if free >= resume { break; }
+            if !warned {
+                tracing::warn!(free, resume, "log volume almost full: waiting before starting the node child");
+                warned = true;
+            }
+            std::thread::sleep(Duration::from_secs(15));
+        }
+        if warned { tracing::info!("log volume space recovered: restarting node child"); }
+    }
+
+    fn wait_for_disk(&self, recovering: bool) {
+        wait_for_data_disk(&self.data, self.min_free_disk(), recovering);
+    }
+
     fn network_path(&self) -> PathBuf {
         self.data.join("network.json")
     }
@@ -445,6 +792,10 @@ impl Supervisor {
     /// 1 s → 60 s, and a child that keeps dying inside ten minutes ends
     /// `aether run` with the child's own exit code instead of looping.
     pub fn run(&self) -> Result<(), String> {
+        // Key creation for a first run can write to this volume. Check it
+        // before even loading the local identity, not only before children.
+        self.wait_for_disk(false);
+        self.wait_for_log_disk(false);
         let mut me = self.my_key();
         if let (Some(dir), Some(me)) = (&self.dev_peer_dir, &me) {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -459,12 +810,29 @@ impl Supervisor {
             std::process::exit(crate::store::EXIT_STORAGE);
         });
         loop {
+            self.wait_for_disk(false);
+            self.wait_for_log_disk(false);
             // A completed handoff must be installed before any child reads
             // network.json or its share. If disk failure prevents that, keep
             // the validator stopped rather than starting with a mixed pair.
             if let Err(e) = finish_incomplete(&self.data) {
                 tracing::error!(%e, "a completed handoff cannot be installed; keeping the signer stopped");
                 std::process::exit(crate::store::EXIT_STORAGE);
+            }
+            if self.data.join(CACHE_REPAIR_REQUEST).exists() {
+                // The parent may itself have stopped after the child wrote a
+                // request or partway through the quarantine. Finish that
+                // exact repair before opening the same corrupt archive again.
+                let mut prospective = exits.clone();
+                prospective.push(ExitNote { started_ms: now_ms(), at_ms: now_ms(), code: Some(EXIT_REBUILDABLE_CACHE) });
+                if let Next::Stop(code) = next_restart(&prospective, now_ms()) {
+                    return Err(format!("cache repair restart budget exhausted (exit {code})"));
+                }
+                match repair_cache(&self.data) {
+                    Ok(true) => {}
+                    Ok(false) => return Err("cache repair request disappeared before repair".into()),
+                    Err(e) => return Err(format!("pending marshal cache repair: {e}")),
+                }
             }
             let role = self.role(me.as_deref())?;
             let started_ms = now_ms();
@@ -477,8 +845,57 @@ impl Supervisor {
                     let _ = std::fs::remove_file(self.data.join("run-state.json"));
                 }
                 Watched::Exited(status) => {
+                    // A sudden ENOSPC can beat the two-second resource sample.
+                    // Storage exit 4 is retryable once this volume has room;
+                    // other storage failures retain the existing stop policy.
+                    let data_disk_low = self.disk_low();
+                    let wait_for_space = disk_wait_needed(status.code(), data_disk_low);
+                    if wait_for_space {
+                        self.wait_for_disk(true);
+                        // Waiting for space is the recovery action. Do not
+                        // spend the crash budget or try to persist restart
+                        // history onto the full volume.
+                        continue;
+                    }
+                    if status.code() == Some(EXIT_FATAL_TASK) && self.log_disk_low() {
+                        self.wait_for_log_disk(true);
+                        continue;
+                    }
+                    if status.code() == Some(EXIT_REBUILDABLE_CACHE) {
+                        // The panic requested a cache repair before another
+                        // process filled the disk. Preserve the request until
+                        // quarantine can create its destination safely.
+                        if data_disk_low { self.wait_for_disk(true); }
+                        // Refuse another destructive cache move once the persisted
+                        // crash budget is exhausted, even if the request is valid.
+                        let mut prospective = exits.clone();
+                        prospective.push(ExitNote { started_ms, at_ms: now_ms(), code: status.code() });
+                        if let Next::Stop(code) = next_restart(&prospective, now_ms()) {
+                            tracing::error!(code, "marshal cache restart budget exhausted; preserving cache");
+                            std::process::exit(code);
+                        }
+                        let mut repaired = false;
+                        for attempt in 1..=3 {
+                            if self.disk_low() { self.wait_for_disk(true); }
+                            match repair_cache(&self.data) {
+                                Ok(true) => { repaired = true; break; }
+                                Ok(false) => {
+                                    tracing::error!("cache repair exit had no request; stopping");
+                                    break;
+                                }
+                                Err(e) => {
+                                    tracing::error!(%e, attempt, "marshal cache repair attempt failed");
+                                    std::thread::sleep(Duration::from_secs(5));
+                                }
+                            }
+                        }
+                        if !repaired {
+                            tracing::error!("marshal cache repair could not complete; preserving pending quarantine and stopping");
+                            std::process::exit(crate::store::EXIT_STORAGE);
+                        }
+                    }
                     exits.push(ExitNote { started_ms, at_ms: now_ms(), code: status.code() });
-                    exits.retain(|e| now_ms().saturating_sub(e.at_ms) <= WINDOW_MS);
+                    exits.retain(|e| now_ms().saturating_sub(e.at_ms) <= STALL_WINDOW_MS);
                     if let Err(e) = crate::atomic::replace(
                         &self.data.join("run-state.json"),
                         &serde_json::to_vec(&RunStateRecord { v: RUN_STATE_VERSION, exits: exits.clone() })
@@ -494,6 +911,9 @@ impl Supervisor {
                             std::thread::sleep(d);
                         }
                         Next::Stop(code) => {
+                            if code == crate::follow::EXIT_STALLED {
+                                tracing::error!("follower could not make verified progress after four stalls within an hour; check upstream reachability and the preceding fetch errors");
+                            }
                             tracing::error!(
                                 code,
                                 exits = exits.len(),
@@ -984,6 +1404,23 @@ impl Supervisor {
 
 }
 
+/// Also used by `aether run` before its first key, network, or lock write.
+pub fn wait_for_data_disk(data: &Path, min: u64, recovering: bool) {
+    if min == 0 { return; }
+    let resume = if recovering { min.saturating_add(crate::resources::DISK_RESUME) } else { min };
+    let mut warned = false;
+    loop {
+        let free = crate::resources::free_disk(data);
+        if free.is_some_and(|bytes| bytes >= resume) { break; }
+        if !warned {
+            tracing::warn!(?free, resume, "disk almost full or unreadable: node stopped before writes; waiting for space");
+            warned = true;
+        }
+        std::thread::sleep(Duration::from_secs(15));
+    }
+    if warned { tracing::info!("disk space recovered: resuming node startup"); }
+}
+
 /// Swap a prepared generation in (red team #19): the share first, then
 /// `network.json`, the pointer every role decision reads against. A seated
 /// member's new one, or none (a member that leaves drops its share, so no
@@ -1221,6 +1658,253 @@ fn rpc_call(url: &str, method: &str, params: Value) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_log_write_is_detected() {
+        struct Full;
+        impl std::io::Write for Full {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> { Err(std::io::Error::from_raw_os_error(28)) }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        assert_eq!(probe_writer(Full).unwrap_err().raw_os_error(), Some(28));
+    }
+
+    #[test]
+    fn enospc_in_log_writer_exits_the_node() {
+        const CHILD: &str = "AETHER_TEST_LOG_ENOSPC_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            struct Full;
+            impl std::io::Write for Full {
+                fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                    Err(std::io::Error::from_raw_os_error(libc::ENOSPC))
+                }
+                fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+            }
+            require_writer_alive(Full);
+            unreachable!("a dead logger must stop the node");
+        }
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "supervisor::tests::enospc_in_log_writer_exits_the_node"])
+            .env(CHILD, "1")
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(EXIT_FATAL_TASK));
+    }
+
+    #[test]
+    fn cache_names_match_only_this_nodes_marshal_archives() {
+        assert!(cache_partition("custom-cache-42-certified-key", "certified", "custom"));
+        assert!(cache_partition("aether-cache-cache-0-verified-key", "verified", "aether-cache"));
+        for name in ["other-cache-42-certified-key", "custom-cache-metadata",
+            "custom-consensus-r42", "custom-cache-x-certified-key",
+            "custom-cache-18446744073709551616-certified-key"] {
+            assert!(!cache_partition(name, "certified", "custom"), "{name}");
+        }
+        assert!(!cache_partition("custom-cache-42-verified-key", "certified", "custom"));
+    }
+
+    #[test]
+    fn enospc_on_vote_journal_or_cache_open_waits_without_repair() {
+        let enospc = std::io::Error::from_raw_os_error(libc::ENOSPC);
+        let journal = format!("unable to sync journal: Runtime(Io({enospc}))");
+        let cache = "src/marshal/core/cache.rs";
+        assert_eq!(panic_action(&journal, "src/simplex/voter/actor.rs", Some(0), 5 * crate::resources::GB), PanicAction::WaitForDisk);
+        assert_eq!(panic_action("failed to initialize verified archive", cache, Some(0), 5 * crate::resources::GB), PanicAction::WaitForDisk);
+        assert_eq!(panic_action(&journal, "src/simplex/voter/actor.rs", Some(10 * crate::resources::GB), 5 * crate::resources::GB), PanicAction::Restart);
+        assert_eq!(panic_action("failed to initialize verified archive", cache, Some(10 * crate::resources::GB), 5 * crate::resources::GB), PanicAction::RepairCache("verified"));
+        assert_eq!(panic_action("failed to initialize verified archive", cache, None, 5 * crate::resources::GB), PanicAction::WaitForDisk);
+        assert_eq!(panic_action("failed to initialize finalizations archive", "src/marshal/standard/mod.rs", Some(10 * crate::resources::GB), 5 * crate::resources::GB), PanicAction::Restart,
+            "the finalized-by-height archive is not a rebuildable marshal cache");
+        assert!(disk_wait_needed(Some(EXIT_DISK_LOW), false), "the child saw low space before the parent sampled recovery");
+        assert!(disk_wait_needed(Some(crate::store::EXIT_STORAGE), true));
+        assert!(disk_wait_needed(Some(EXIT_FATAL_TASK), true));
+        assert!(!disk_wait_needed(Some(crate::store::EXIT_STORAGE), false));
+    }
+
+    #[test]
+    fn panicked_task_exits_instead_of_leaving_rpc_alive() {
+        const CHILD: &str = "AETHER_TEST_FATAL_TASK_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+            install_fatal_watch(root.join("tmp"));
+            std::thread::spawn(|| panic!("injected consensus task panic")).join().unwrap();
+            unreachable!("the panic hook must exit before the task can join");
+        }
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "supervisor::tests::panicked_task_exits_instead_of_leaving_rpc_alive"])
+            .env(CHILD, "1")
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(EXIT_FATAL_TASK));
+    }
+
+    #[test]
+    fn journal_and_archive_enospc_exit_for_disk_wait_without_quarantining() {
+        const CHILD: &str = "AETHER_TEST_DISK_PANIC_CHILD";
+        if let Ok(kind) = std::env::var(CHILD) {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+            install_fatal_watch(root.join("tmp"));
+            if kind == "journal" {
+                panic!("unable to open journal: Runtime(WriteFailed): No space left on device");
+            }
+            panic!("failed to initialize verified archive");
+        }
+        for kind in ["journal", "archive"] {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "supervisor::tests::journal_and_archive_enospc_exit_for_disk_wait_without_quarantining"])
+                .env(CHILD, kind)
+                .env("AETHER_TEST_PANIC_FREE_DISK", "0")
+                .status()
+                .unwrap();
+            assert_eq!(status.code(), Some(EXIT_DISK_LOW), "{kind}");
+        }
+    }
+
+    #[test]
+    fn cache_recovery_uses_the_persisted_restart_budget() {
+        let now = 1_000_000;
+        let exits: Vec<_> = (0..4).map(|n| ExitNote {
+            started_ms: now - 4_000 + n * 1_000,
+            at_ms: now - 3_500 + n * 1_000,
+            code: Some(EXIT_REBUILDABLE_CACHE),
+        }).collect();
+        assert!(matches!(next_restart(&exits[..3], now), Next::Again(_)));
+        assert_eq!(next_restart(&exits, now), Next::Stop(EXIT_REBUILDABLE_CACHE));
+    }
+
+    #[test]
+    fn repeated_ten_minute_follower_stalls_exhaust_the_hourly_budget() {
+        let now = 4_000_000;
+        let exits: Vec<_> = (0..4).map(|n| ExitNote {
+            started_ms: now - (4 - n) * 11 * 60 * 1_000,
+            at_ms: now - (3 - n) * 11 * 60 * 1_000,
+            code: Some(crate::follow::EXIT_STALLED),
+        }).collect();
+        assert!(matches!(next_restart(&exits[..3], now), Next::Again(_)));
+        assert_eq!(next_restart(&exits, now), Next::Stop(crate::follow::EXIT_STALLED));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cache_recovery_refuses_symlinked_partitions() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+        let data = root.join("tmp").join(format!("cache-link-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(data.join("votes")).unwrap();
+        std::fs::write(data.join("votes/part"), b"preserve").unwrap();
+        std::os::unix::fs::symlink(data.join("votes"), data.join("aether-cache-0-verified-key")).unwrap();
+        std::fs::write(data.join(CACHE_REPAIR_REQUEST), b"verified").unwrap();
+        assert!(repair_cache(&data).is_err());
+        assert_eq!(std::fs::read(data.join("votes/part")).unwrap(), b"preserve");
+        assert!(data.join(CACHE_REPAIR_REQUEST).exists());
+        std::fs::remove_dir_all(data).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cache_request_never_overwrites_a_share_through_a_symlink() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+        let data = root.join("tmp").join(format!("cache-request-link-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(data.join("threshold.json"), b"secret share").unwrap();
+        std::os::unix::fs::symlink(data.join("threshold.json"), data.join(CACHE_REPAIR_REQUEST)).unwrap();
+        assert!(write_cache_repair_request(&data, "verified").is_err());
+        assert!(repair_cache(&data).is_err());
+        assert_eq!(std::fs::read(data.join("threshold.json")).unwrap(), b"secret share");
+        std::fs::remove_dir_all(data).unwrap();
+    }
+
+    #[test]
+    fn interrupted_cache_quarantine_resumes_without_moving_a_vote_journal() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+        let data = root.join("tmp").join(format!("cache-partial-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(data.join("partition"), b"aether-cache").unwrap();
+        for part in ["metadata", "key", "value"] {
+            let dir = data.join(format!("aether-cache-cache-0-verified-{part}"));
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::write(dir.join("part"), b"corrupt").unwrap();
+        }
+        std::fs::create_dir(data.join("aether-consensus-r7")).unwrap();
+        std::fs::write(data.join("aether-consensus-r7/part"), b"journal").unwrap();
+        write_cache_repair_request(&data, "verified").unwrap();
+        let mut moves = 0;
+        assert!(repair_cache_with(&data, |from, to| {
+            moves += 1;
+            if moves == 2 { return Err(std::io::Error::from_raw_os_error(libc::ENOSPC)); }
+            std::fs::rename(from, to)
+        }).is_err());
+        assert!(data.join("quarantine/marshal-cache/pending-verified").exists());
+        assert!(repair_cache(&data).unwrap());
+        assert!(!data.join(CACHE_REPAIR_REQUEST).exists());
+        assert!(!data.join("aether-cache-cache-0-verified-value").exists());
+        assert_eq!(std::fs::read(data.join("aether-consensus-r7/part")).unwrap(), b"journal");
+        std::fs::remove_dir_all(data).unwrap();
+    }
+
+    #[test]
+    fn corrupt_marshal_cache_is_quarantined_without_touching_votes_or_keys() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+        let data = root.join("tmp").join(format!("cache-repair-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(data.join("partition"), b"aether-cache").unwrap();
+        for name in ["aether-cache-cache-0-verified-metadata", "aether-cache-cache-0-verified-key", "aether-cache-cache-0-verified-value", "aether-consensus-r7", "aether-cache-cache-0-finalizations-value"] {
+            std::fs::create_dir(data.join(name)).unwrap();
+            std::fs::write(data.join(name).join("part"), b"data").unwrap();
+        }
+        std::fs::write(data.join("threshold.json"), b"share").unwrap();
+        std::fs::write(data.join(CACHE_REPAIR_REQUEST), b"verified").unwrap();
+        assert!(repair_cache(&data).unwrap());
+        assert!(data.join("aether-consensus-r7/part").exists());
+        assert!(data.join("threshold.json").exists());
+        assert!(data.join("aether-cache-cache-0-finalizations-value/part").exists());
+        assert!(!data.join("aether-cache-cache-0-verified-value").exists());
+        let aside = std::fs::read_dir(data.join("quarantine/marshal-cache")).unwrap().next().unwrap().unwrap().path();
+        assert!(aside.join("aether-cache-cache-0-verified-value/part").exists());
+        assert!(!aside.join("aether-consensus-r7").exists());
+        assert_eq!(rebuildable_panic("failed to initialize verified archive"), Some("verified"));
+        assert_eq!(rebuildable_panic("unable to open journal"), None);
+        std::fs::remove_dir_all(data).unwrap();
+    }
+
+    #[test]
+    fn corrupt_archive_panic_requests_repair_and_preserves_the_vote_journal() {
+        const CHILD: &str = "AETHER_TEST_CORRUPT_CACHE_CHILD";
+        if let Some(data) = std::env::var_os(CHILD) {
+            exit_for_fatal_panic(&PathBuf::from(data), "failed to initialize verified archive", "src/marshal/core/cache.rs");
+        }
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+        let data = root.join("tmp").join(format!("cache-panic-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(data.join("aether-cache-cache-0-verified-key")).unwrap();
+        std::fs::write(data.join("partition"), b"aether-cache").unwrap();
+        std::fs::write(data.join("aether-cache-cache-0-verified-key/part"), b"corrupt").unwrap();
+        std::fs::write(data.join("vote-journal"), b"preserve").unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "supervisor::tests::corrupt_archive_panic_requests_repair_and_preserves_the_vote_journal"])
+            .env(CHILD, &data)
+            .env("AETHER_TEST_PANIC_FREE_DISK", (10 * crate::resources::GB).to_string())
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(EXIT_REBUILDABLE_CACHE));
+        assert_eq!(std::fs::read_to_string(data.join(CACHE_REPAIR_REQUEST)).unwrap(), "verified");
+        assert!(repair_cache(&data).unwrap());
+        assert!(!data.join("aether-cache-cache-0-verified-key").exists());
+        assert_eq!(std::fs::read(data.join("vote-journal")).unwrap(), b"preserve");
+        std::fs::remove_dir_all(data).unwrap();
+    }
+
+    #[test]
+    fn legacy_partition_prefix_is_recovered_without_a_marker() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+        let data = root.join("tmp").join(format!("cache-legacy-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(data.join("node-1-blocks-metadata")).unwrap();
+        std::fs::create_dir(data.join("node-1-cache-0-verified-value")).unwrap();
+        std::fs::write(data.join("node-1-cache-0-verified-value/part"), b"corrupt").unwrap();
+        std::fs::write(data.join(CACHE_REPAIR_REQUEST), b"verified").unwrap();
+        assert!(repair_cache(&data).unwrap());
+        assert!(data.join("node-1-blocks-metadata").exists());
+        assert!(!data.join("node-1-cache-0-verified-value").exists());
+        std::fs::remove_dir_all(data).unwrap();
+    }
 
     #[test]
     fn shipped_reshare_timeout_covers_child_and_share_readiness() {

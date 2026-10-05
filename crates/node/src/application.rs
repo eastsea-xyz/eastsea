@@ -110,7 +110,7 @@ where
     type Input = ();
 
     async fn propose(&mut self, (rt, context): (E, Self::Context), mut ancestry: impl Ancestry<Self::Block>, _input: ()) -> Option<Self::Block> {
-        if !self.proposals_enabled.load(Ordering::SeqCst) {
+        if !self.proposals_enabled.load(Ordering::SeqCst) || !crate::resources::disk_ok() {
             return None;
         }
         let parent_block = ancestry.next().await?;
@@ -126,6 +126,9 @@ where
         if now < min_ts {
             rt.sleep_until(SystemTime::UNIX_EPOCH + Duration::from_millis(min_ts)).await;
             now = rt.current().epoch_millis();
+        }
+        if !crate::resources::disk_ok() {
+            return None;
         }
         let ts = now.max(min_ts);
         if ts > MAX_BLOCK_TIMESTAMP_MS {
@@ -191,12 +194,18 @@ where
         };
         let seed = payload.seed.as_ref().map(|s| std::sync::Arc::new((height.get(), s.clone()))).or_else(|| parent.seed.clone());
         let schedule = payload.upgrade.as_ref().map(|u| crate::chain::scheduled(&parent.schedule, &u.upgrade)).unwrap_or_else(|| parent.schedule.clone());
+        if !crate::resources::disk_ok() {
+            return None;
+        }
         self.chain.remember(&block, &parent, &ctx, out, tx_hashes, pending, seed, schedule, statement, payouts, registration_ids);
         info!(height = %height, txs = payload.txs.len(), "proposed");
         Some(block)
     }
 
     async fn verify(&mut self, (rt, _): (E, Self::Context), mut ancestry: impl Ancestry<Self::Block>) -> bool {
+        if !crate::resources::disk_ok() {
+            return false;
+        }
         let Some(block) = ancestry.next().await else { return false };
         let Some(parent_block) = ancestry.next().await else { return false };
         if !valid_block_timestamp(block.timestamp, parent_block.timestamp, mainnet_rules(&self.chain)) {
@@ -223,6 +232,9 @@ where
         };
         match executed {
             Ok(exec) => {
+                if !crate::resources::disk_ok() {
+                    return false;
+                }
                 // FOCIL: refuse to notarize a block that censors listed txs.
                 let ctx = Chain::block_context(&self.chain.cfg(), &block, &parent);
                 let missing = self.chain.inclusion_violations(&exec, &ctx, std::time::Instant::now());
@@ -245,6 +257,15 @@ impl Reporter for Application {
 
     fn report(&mut self, activity: Self::Activity) -> Feedback {
         if let Update::Block(block, ack) = activity {
+            // Dropping an unacknowledged Update::Block makes marshal exit. Keep
+            // its delivery pending, without touching the state store, until
+            // the monitor sees enough free space to resume safely.
+            if !crate::resources::disk_ok() {
+                tracing::warn!(height = %block.height(), "disk almost full: waiting before finalized state commit");
+                while !crate::resources::disk_ok() {
+                    std::thread::sleep(Duration::from_secs(2));
+                }
+            }
             match self.chain.finalize(&block) {
                 Ok(()) => {
                     let g = self.chain.lock();

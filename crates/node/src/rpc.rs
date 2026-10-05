@@ -418,6 +418,7 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
     let chain = &st.chain;
     match method {
         "aether_status" => {
+            let resources = crate::resources::monitor().map(|m| m.status_value()).unwrap_or(Value::Null);
             let g = chain.lock();
             let f = &g.finalized;
             let base = Chain::next_base_fee(&g.cfg, f);
@@ -466,9 +467,11 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                 // The free registration lane (G2): wallets see it and register
                 // without needing a balance for a paid contract call.
                 "free_registration": aether_rewards::enabled(&f.state),
-                // This node's resource state (docs/ops/resource-limits.md):
-                // the disk guard the app shows as "디스크 공간 부족".
-                "resources": crate::resources::monitor().map(|m| m.status_value()).unwrap_or(Value::Null),
+                // Keep the status at top level for wallets that only inspect
+                // the standard status fields, with measurements under resources.
+                "disk_almost_full": resources["disk_almost_full"].as_bool().unwrap_or(false),
+                "disk_status": resources["disk_status"].as_str().unwrap_or("unknown"),
+                "resources": resources,
                 // The faucet this node runs, when it runs one: wallets label
                 // grants from this address as "faucet" in the balance breakdown.
                 "faucet": st.faucet.as_ref().map(|f| json!(f.address)).unwrap_or(Value::Null),

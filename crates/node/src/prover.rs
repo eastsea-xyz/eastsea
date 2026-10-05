@@ -14,6 +14,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// SHA-256 of the guest ELF the protocol proves with, set by the release build
@@ -112,6 +113,21 @@ impl Sidecar {
     fn start(bin: &Path, dir: &Path, tuned: bool) -> Result<Self, String> {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         let mut cmd = Command::new(bin);
+        #[cfg(all(test, unix))]
+        {
+            // macOS may provenance-scan a freshly written executable script
+            // for longer than SPAWN_TIMEOUT. Tests run their fake sidecars
+            // through the system shell; shipped sidecar binaries use the
+            // direct executable path above.
+            let script = std::fs::File::open(bin).ok().is_some_and(|mut file| {
+                let mut first = [0u8; 2];
+                std::io::Read::read_exact(&mut file, &mut first).is_ok() && first == *b"#!"
+            });
+            if script {
+                cmd = Command::new("/bin/sh");
+                cmd.arg(bin);
+            }
+        }
         cmd.arg("serve")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -276,7 +292,9 @@ fn from_hex32(s: &str) -> Result<[u8; 32], String> {
 /// The consensus verifier: the verifying sidecar, with answers cached (a block's
 /// proofs are checked when proposed, verified and finalized).
 pub struct Verifier {
-    sidecar: Mutex<Arc<Sidecar>>,
+    sidecar: Arc<Mutex<Arc<Sidecar>>>,
+    in_flight: Arc<AtomicUsize>,
+    running: Arc<AtomicBool>,
     bin: PathBuf,
     dir: PathBuf,
     seen: Mutex<HashMap<[u8; 32], bool>>,
@@ -287,7 +305,70 @@ impl Verifier {
     /// delivered at start-up may carry proofs).
     pub fn start(bin: &Path, dir: &Path) -> Result<Self, String> {
         let sidecar = Arc::new(Sidecar::spawn(bin, dir)?);
-        Ok(Verifier { sidecar: Mutex::new(sidecar), bin: bin.to_path_buf(), dir: dir.to_path_buf(), seen: Mutex::new(HashMap::new()) })
+        let verifier = Verifier {
+            sidecar: Arc::new(Mutex::new(sidecar)),
+            in_flight: Arc::new(AtomicUsize::new(0)),
+            running: Arc::new(AtomicBool::new(true)),
+            bin: bin.to_path_buf(),
+            dir: dir.to_path_buf(),
+            seen: Mutex::new(HashMap::new()),
+        };
+        verifier.monitor_sidecar();
+        Ok(verifier)
+    }
+
+    /// Detect a verifier that exits while no proof is being checked. A request
+    /// owns the normal one-retry recovery path, so the monitor does not inspect
+    /// its child until that request has finished (including replacement).
+    fn monitor_sidecar(&self) {
+        let sidecar = Arc::downgrade(&self.sidecar);
+        let in_flight = self.in_flight.clone();
+        let running = self.running.clone();
+        std::thread::spawn(move || {
+            const INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+            loop {
+                std::thread::sleep(INTERVAL);
+                if !running.load(Ordering::SeqCst) {
+                    break;
+                }
+                let Some(sidecar) = sidecar.upgrade() else { break };
+                let current = match sidecar.try_lock() {
+                    Ok(current) => current,
+                    Err(std::sync::TryLockError::WouldBlock) => continue,
+                    Err(std::sync::TryLockError::Poisoned(_)) => {
+                        if !running.load(Ordering::SeqCst) { break; }
+                        tracing::error!("proof verifier slot lock poisoned");
+                        std::process::exit(crate::supervisor::EXIT_FATAL_TASK);
+                    }
+                };
+                // Holding the slot excludes a new request until this check is
+                // complete. Existing requests are allowed to retry in ask().
+                if in_flight.load(Ordering::SeqCst) != 0 {
+                    continue;
+                }
+                let mut io = match current.io.try_lock() {
+                    Ok(io) => io,
+                    Err(std::sync::TryLockError::WouldBlock) => continue,
+                    Err(std::sync::TryLockError::Poisoned(_)) => {
+                        if !running.load(Ordering::SeqCst) { break; }
+                        tracing::error!("proof verifier I/O lock poisoned");
+                        std::process::exit(crate::supervisor::EXIT_FATAL_TASK);
+                    }
+                };
+                let failure = match io.child.try_wait() {
+                    Ok(None) => None,
+                    Ok(Some(status)) => Some(format!("proof verifier sidecar exited while idle: {status}")),
+                    Err(e) => Some(format!("cannot check proof verifier sidecar: {e}")),
+                };
+                if let Some(reason) = failure {
+                    if running.load(Ordering::SeqCst) {
+                        tracing::error!(%reason, "proof verifier unavailable");
+                        std::process::exit(crate::supervisor::EXIT_FATAL_TASK);
+                    }
+                    break;
+                }
+            }
+        });
     }
 
     pub fn program(&self) -> String {
@@ -298,9 +379,13 @@ impl Verifier {
     /// again once. An invalid proof is an answer — it is never re-asked.
     fn ask(&self, proof: &[u8], commitment: [u8; 32]) -> Verified {
         let current = match self.sidecar.lock() {
-            Ok(s) => s.clone(),
+            Ok(s) => {
+                self.in_flight.fetch_add(1, Ordering::SeqCst);
+                s.clone()
+            }
             Err(_) => return Verified::Unavailable("verifier lock poisoned".into()),
         };
+        let _request = VerifierRequest(&self.in_flight);
         match current.verify(proof, commitment) {
             Verified::Unavailable(e) => {
                 tracing::warn!(%e, "proof verifier stopped; starting a new one");
@@ -317,6 +402,20 @@ impl Verifier {
             }
             answered => answered,
         }
+    }
+}
+
+struct VerifierRequest<'a>(&'a AtomicUsize);
+
+impl Drop for VerifierRequest<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl Drop for Verifier {
+    fn drop(&mut self) {
+        self.running.store(false, Ordering::SeqCst);
     }
 }
 
@@ -347,7 +446,10 @@ impl ProofVerifier for Verifier {
             Verified::Invalid => Some(false),
             Verified::Unavailable(e) => {
                 tracing::error!(%e, "proof verifier unavailable; refusing to judge");
-                None
+                // No verifier means this validator cannot participate safely.
+                // The supervisor must restart the whole child, not leave a
+                // live RPC endpoint attached to a permanently failing voter.
+                std::process::exit(crate::supervisor::EXIT_FATAL_TASK);
             }
         }
     }
@@ -1049,12 +1151,57 @@ mod sidecar_fault_tests {
             &dir,
         )
         .unwrap();
-        assert_eq!(v.decide(b"another proof", commit), None, "no verdict after the retry");
+        assert!(matches!(v.ask(b"another proof", commit), Verified::Unavailable(_)), "no verdict after the retry");
         assert_eq!(
             std::fs::read_to_string(dir.join("unreadable.asks")).unwrap(),
             "ask\nask\n",
             "one ask on the dead sidecar, one on its replacement"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_dead_verifier_exits_instead_of_serving_rpc_without_proofs() {
+        const CHILD: &str = "AETHER_TEST_DEAD_VERIFIER_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let dir = scratch("fatal-verifier-child");
+            let script = fake_prover(&dir, "exit 1");
+            let verifier = Verifier::start(&script, &dir).unwrap();
+            let _ = verifier.decide(b"proof", [7; 32]);
+            unreachable!("an unavailable verifier must exit");
+        }
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "prover::sidecar_fault_tests::a_dead_verifier_exits_instead_of_serving_rpc_without_proofs"])
+            .env(CHILD, "1")
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(crate::supervisor::EXIT_FATAL_TASK));
+    }
+
+    #[test]
+    fn an_idle_verifier_exit_stops_the_node_without_a_proof_request() {
+        const CHILD: &str = "AETHER_TEST_IDLE_VERIFIER_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let dir = scratch("idle-verifier-child");
+            let script = dir.join("idle-exit.sh");
+            std::fs::write(
+                &script,
+                format!(
+                    "#!/bin/sh\necho '{{\"guest_elf_sha256\":\"{}\"}}'\nsleep 1\nexit 1\n",
+                    PROGRAM.unwrap_or("any-program")
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let _verifier = Verifier::start(&script, &dir).unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            panic!("the idle verifier monitor did not stop the node");
+        }
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "prover::sidecar_fault_tests::an_idle_verifier_exit_stops_the_node_without_a_proof_request"])
+            .env(CHILD, "1")
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(crate::supervisor::EXIT_FATAL_TASK));
     }
 }

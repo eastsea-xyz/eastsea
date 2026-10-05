@@ -90,8 +90,9 @@ struct ResourceArgs {
     /// receipts). Default: a quarter of the RAM, at least 2 GB.
     #[arg(long = "max-memory", value_name = "SIZE")]
     max_memory: Option<String>,
-    /// Below this much free space on the data volume, no new era files or
-    /// shards are written and proving pauses. Default: 5 GB. 0 = off.
+    /// Below this free-space floor, the node stops before further consensus
+    /// and store writes; aether run resumes it after space returns. Default:
+    /// 5 GB. 0 = off.
     #[arg(long = "min-free-disk", value_name = "SIZE")]
     min_free_disk: Option<String>,
 }
@@ -889,6 +890,9 @@ fn main() {
                 .init();
             (|| {
                 let dir = std::path::PathBuf::from(&data);
+                // The first-run key and network setup below can write before
+                // Supervisor::run starts. Wait on this volume first too.
+                aether_node::supervisor::wait_for_data_disk(&dir, resources.limits()?.min_free_disk, false);
                 std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
                 // One data directory, one `aether` (red team #12): a second
                 // app's run stops before touching anything, with its own exit
@@ -1890,6 +1894,7 @@ fn run_node(a: NodeArgs) {
         max_shards,
         resources,
     } = a;
+    aether_node::supervisor::install_fatal_watch(std::path::PathBuf::from(&data));
     // Resource limits (docs/ops/resource-limits.md), before the chain opens:
     // the open itself trims the history caches under the budget, and the
     // watchdog starts watching disk, pressure and battery from here on.
@@ -2283,7 +2288,19 @@ fn run_node(a: NodeArgs) {
         .await;
         let marshal_mailbox = engine.mailbox.clone();
         engine.start(pending, recovered, resolver, broadcast, marshal_resolver);
-        network.start();
+        let network_task = network.start();
+        tokio::spawn(async move {
+            let result = network_task.await;
+            tracing::error!(?result, "validator network task stopped; restarting the node");
+            std::process::exit(aether_node::supervisor::EXIT_FATAL_TASK);
+        });
+        if let Some(ep) = endpoint.clone().filter(|_| links) {
+            let me = p2p.keys.node_secret.public();
+            let nodes: Vec<_> = p2p.roster.nodes.iter().copied().filter(|n| *n != me).collect();
+            if !nodes.is_empty() {
+                tokio::spawn(validator_progress_watch(chain.clone(), ep, nodes));
+            }
+        }
         match &history {
             aether_node::prune::HistoryMode::Prune(r) => {
                 tracing::info!(retain_blocks = r.blocks, keep_era_files = r.keep_era_files, "pruning history older than the retention window");
@@ -2387,7 +2404,41 @@ fn run_node(a: NodeArgs) {
         if let Err(e) = rpc::serve(rpc_addr, rpc_state).await {
             tracing::error!(?e, "rpc server stopped");
         }
+        std::process::exit(aether_node::supervisor::EXIT_FATAL_TASK);
     });
+}
+
+/// Restart a validator whose finalized head stays frozen while another
+/// committee member advances. A healthy network-wide halt is not diagnosed
+/// by peer height alone; engine task death is caught independently.
+async fn validator_progress_watch(chain: Chain, endpoint: aether_net::Endpoint, peers: Vec<aether_net::EndpointId>) {
+    let mut height = chain.finalized_height();
+    let mut since = std::time::Instant::now();
+    loop {
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        let ours = chain.finalized_height();
+        if ours != height || aether_node::resources::monitor().is_some_and(|m| m.disk_low()) {
+            height = ours;
+            since = std::time::Instant::now();
+            continue;
+        }
+        if since.elapsed() < Duration::from_secs(5 * 60) { continue; }
+        let reports = aether_node::follow::roster_heights(&endpoint, &peers).await;
+        // A single peer's RPC height is an unauthenticated claim about its
+        // chain. Require two distinct committee members before restarting;
+        // one faulty member cannot exhaust our supervisor's crash budget.
+        let heights: Vec<u64> = reports.iter().map(|(_, h)| *h).collect();
+        if validator_is_stalled(ours, &heights, since.elapsed()) {
+            let ahead = heights.iter().filter(|h| **h > ours.saturating_add(aether_node::follow::BEHIND_MARGIN)).count();
+            tracing::error!(ours, ahead_peers = ahead, frozen_seconds = since.elapsed().as_secs(), "validator finalized height stalled while committee peers advanced; restarting");
+            std::process::exit(aether_node::supervisor::EXIT_FATAL_TASK);
+        }
+    }
+}
+
+fn validator_is_stalled(ours: u64, peers: &[u64], unchanged: Duration) -> bool {
+    unchanged >= Duration::from_secs(5 * 60)
+        && peers.iter().filter(|peer| **peer > ours.saturating_add(aether_node::follow::BEHIND_MARGIN)).count() >= 2
 }
 
 /// Stop (rather than fork off with old rules) one block before a committee-signed
@@ -2450,6 +2501,7 @@ fn install_verifier(chain: &Chain, data: &str, follower: bool) {
         chain.lock().verifier = Some(std::sync::Arc::new(Certified));
         return;
     }
+    let mut sidecar_start_failed = false;
     match find_binary().map(|bin| {
         Verifier::start(
             &bin,
@@ -2461,6 +2513,7 @@ fn install_verifier(chain: &Chain, data: &str, follower: bool) {
             chain.lock().verifier = Some(std::sync::Arc::new(v));
         }
         Some(Err(e)) => {
+            sidecar_start_failed = true;
             tracing::error!(%e, "no proof verifier: this validator cannot vote for blocks carrying proofs")
         }
         None => tracing::error!(
@@ -2472,9 +2525,13 @@ fn install_verifier(chain: &Chain, data: &str, follower: bool) {
     let g = chain.lock();
     if g.verifier.is_none() && g.finalized.schedule.iter().any(|a| a.protocol >= 2) {
         tracing::error!("protocol 2 is scheduled and this validator has no working proof verifier (aether-prover): stopping");
-        // Exit codes: 3 upgrade required, 4 storage (store::EXIT_STORAGE),
-        // 5 this one — the app restarts with backoff for none of them.
-        std::process::exit(aether_node::supervisor::EXIT_NO_VERIFIER);
+        // A missing binary needs installation (5). A configured sidecar that
+        // fails to start may recover after a restart (9, bounded by aether run).
+        std::process::exit(if sidecar_start_failed {
+            aether_node::supervisor::EXIT_FATAL_TASK
+        } else {
+            aether_node::supervisor::EXIT_NO_VERIFIER
+        });
     }
 }
 
@@ -2580,6 +2637,7 @@ fn run_follow(
         )
         .init();
     // Resource limits before the chain opens (the caches trim under the budget).
+    aether_node::supervisor::install_fatal_watch(std::path::PathBuf::from(&data));
     aether_node::resources::install(resources.limits()?, std::path::Path::new(&data).to_path_buf());
     // A network.json with no faucet funds nobody (mainnet: 사전 발행 0).
     let dev_alloc = network.is_none();
@@ -2705,7 +2763,12 @@ fn run_follow(
             .as_ref()
             .and_then(|dir| aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(dir)).ok())
             .map(|k| hex::encode(k.validator_key()));
-        tokio::spawn(follow::run(chain.clone(), upstream.clone(), set, archive.clone(), joining));
+        let follow_task = tokio::spawn(follow::run(chain.clone(), upstream.clone(), set, archive.clone(), joining));
+        tokio::spawn(async move {
+            let result = follow_task.await;
+            tracing::error!(?result, "follower task stopped; restarting the node");
+            std::process::exit(aether_node::supervisor::EXIT_FATAL_TASK);
+        });
         if let aether_node::prune::HistoryMode::Prune(r) = &history {
             tokio::spawn(aether_node::prune::run(chain.clone(), r.clone(), None));
         }
@@ -2768,7 +2831,9 @@ fn run_follow(
             });
             router
         });
-        rpc::serve(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), rpc_port), st).await.map_err(|e| e.to_string())
+        let result = rpc::serve(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), rpc_port), st).await;
+        tracing::error!(?result, "follower RPC server stopped; restarting the node");
+        std::process::exit(aether_node::supervisor::EXIT_FATAL_TASK)
     })
 }
 
@@ -3374,6 +3439,15 @@ fn print_blocks(v: &Value) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn validator_liveness_requires_a_peer_ahead_and_a_frozen_local_head() {
+        use super::validator_is_stalled;
+        use std::time::Duration;
+        let five_minutes = Duration::from_secs(5 * 60);
+        assert!(!validator_is_stalled(100, &[10_000, 10_000], five_minutes - Duration::from_secs(1)));
+        assert!(!validator_is_stalled(100, &[100, 10_000], five_minutes), "one lying peer cannot force a restart");
+        assert!(validator_is_stalled(100, &[100, 10_000, 10_001], five_minutes));
+    }
     use super::*;
 
     #[test]

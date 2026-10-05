@@ -66,6 +66,12 @@ contract EastSeaVault {
     error OverDailyLimit(uint256 spent, uint256 limit);
     error TransferFailed();
     error TokenTransferFailed();
+    /// F-03: the withdrawal "token" has no code, or is not shaped like an
+    /// ERC-20 whose balanceOf can be read.
+    error BadToken();
+    /// F-03: the transfer reported success but `to` received less than the
+    /// signed amount (a no-pay or fee-on-transfer token).
+    error ShortDelivery(uint256 received, uint256 expected);
 
     event WithdrawalProposed(uint256 indexed id, address token, address indexed to, uint256 amount);
     event SettingsProposed(uint256 indexed id, Key[] newOwners, uint8 newThreshold, uint128 newDailyLimit, uint64 newDelay);
@@ -190,6 +196,9 @@ contract EastSeaVault {
         Key memory k = _ownerAt(ownerIndex);
         id = ++proposalCount;
         if (!_verify(withdrawDigest(id, token, to, amount), r, s, k)) revert BadSignature();
+        // F-03: refuse a no-code "token" at the door, so owners cannot queue
+        // (and later "execute") a withdrawal that can never pay anything.
+        if (token != address(0) && token.code.length == 0) revert BadToken();
         Proposal storage p = _proposals[id];
         p.kind = Kind.Withdraw;
         p.epoch = queueEra;
@@ -268,8 +277,16 @@ contract EastSeaVault {
                 (bool ok,) = to.call{value: amount}("");
                 if (!ok) revert TransferFailed();
             } else {
+                // F-03: an event is a receipt, not a transfer. Measure what
+                // `to` actually received: a dishonest token can answer true
+                // while moving nothing, and only the balance delta proves the
+                // payment happened. Fee-on-transfer tokens are refused here —
+                // a vault pays exactly what its owners signed.
+                uint256 before = _balanceOfAt(token, to);
                 (bool ok, bytes memory out) = token.call(abi.encodeWithSelector(bytes4(0xa9059cbb), to, amount)); // transfer(address,uint256)
                 if (!ok || (out.length != 0 && !abi.decode(out, (bool)))) revert TokenTransferFailed();
+                uint256 received = _balanceOfAt(token, to) - before;
+                if (received != amount) revert ShortDelivery(received, amount);
             }
             emit WithdrawalExecuted(id, token, to, amount);
         } else {
@@ -333,6 +350,14 @@ contract EastSeaVault {
     function _verify(bytes32 digest, bytes32 r, bytes32 s, Key memory k) private view returns (bool) {
         (bool ok, bytes memory out) = P256VERIFY.staticcall(abi.encodePacked(digest, r, s, k.x, k.y));
         return ok && out.length == 32 && abi.decode(out, (uint256)) == 1;
+    }
+
+    /// F-03: read a token balance through a staticcall, so a no-code address
+    /// (or a non-ERC-20) fails cleanly instead of reading as zero.
+    function _balanceOfAt(address token, address who) private view returns (uint256 balance) {
+        (bool ok, bytes memory out) = token.staticcall(abi.encodeWithSelector(bytes4(0x70a08231), who)); // balanceOf(address)
+        if (!ok || out.length != 32) revert BadToken();
+        balance = abi.decode(out, (uint256));
     }
 }
 

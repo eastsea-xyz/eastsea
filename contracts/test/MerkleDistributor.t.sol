@@ -90,6 +90,90 @@ contract Actor {
     }
 }
 
+/// A fee-on-transfer token: every move skims 1% to a collector (F-02).
+contract FeeOnTransferToken {
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    function mint(address to, uint256 v) external {
+        balanceOf[to] += v;
+    }
+
+    function approve(address spender, uint256 v) external returns (bool) {
+        allowance[msg.sender][spender] = v;
+        return true;
+    }
+
+    function transfer(address to, uint256 v) external returns (bool) {
+        _skim(msg.sender, to, v);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 v) external returns (bool) {
+        allowance[from][msg.sender] -= v;
+        _skim(from, to, v);
+        return true;
+    }
+
+    function _skim(address from, address to, uint256 v) private {
+        uint256 fee = v / 100;
+        balanceOf[from] -= v;
+        balanceOf[to] += v - fee;
+        balanceOf[address(0xFEE)] += fee;
+    }
+}
+
+/// A dishonest token (F-03): every call reports success, balanceOf is
+/// honest, but no balance ever moves.
+contract LiarToken {
+    mapping(address => uint256) public balanceOf;
+
+    function mint(address to, uint256 v) external {
+        balanceOf[to] += v;
+    }
+
+    function approve(address, uint256) external pure returns (bool) {
+        return true;
+    }
+
+    function transfer(address, uint256) external pure returns (bool) {
+        return true;
+    }
+
+    function transferFrom(address, address, uint256) external pure returns (bool) {
+        return true;
+    }
+}
+
+/// An over-delivering token (F-02): every arrival pays 1% interest, so the
+/// campaign would hold more than its tree promises.
+contract BonusToken {
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    function mint(address to, uint256 v) external {
+        balanceOf[to] += v;
+    }
+
+    function approve(address spender, uint256 v) external returns (bool) {
+        allowance[msg.sender][spender] = v;
+        return true;
+    }
+
+    function transfer(address to, uint256 v) external returns (bool) {
+        balanceOf[msg.sender] -= v;
+        balanceOf[to] += v + v / 100;
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 v) external returns (bool) {
+        allowance[from][msg.sender] -= v;
+        balanceOf[from] -= v;
+        balanceOf[to] += v + v / 100;
+        return true;
+    }
+}
+
 contract MerkleDistributorTest is Test {
     Vm constant vm = Vm(0x7109709ECfa91a80626fF3989D68f67F5b1DD12D);
 
@@ -386,6 +470,125 @@ contract MerkleDistributorTest is Test {
             revertedWith(r, TokenBatch.LengthMismatch.selector, "mismatched arrays");
         }
         eq(token.balanceOf(address(this)), 1_000, "nothing moved");
+    }
+
+    // ---- F-02/F-03: funding that does not arrive must not create a campaign ----
+
+    /// A perpetual campaign (ends == 0) funded with a 1%-fee token delivers
+    /// 990 of 1_000 promised tokens: every leaf claim would revert and, with
+    /// no end time, the 990 received tokens could never be swept back.
+    function testFeeOnTransferFundingIsRefused() external {
+        FeeOnTransferToken fee = new FeeOnTransferToken();
+        fee.mint(address(this), 1_000);
+        fee.approve(address(factory), 1_000);
+        Entry[] memory e = new Entry[](1);
+        e[0] = Entry(0, address(0x5), 1_000);
+        (bytes32 root,) = build(leaves(e));
+
+        try factory.create(IERC20(address(fee)), root, 0, 1_000) {
+            revert("expected a revert");
+        } catch (bytes memory r) {
+            revertedWith(r, MerkleDistributorFactory.Underfunded.selector, "a campaign is funded in full or not at all");
+        }
+        eq(factory.count(), 0, "no campaign was left behind");
+    }
+
+    /// The funded-total check is EQUALITY, not a minimum: a reward token
+    /// over-delivering on arrival strands a surplus no leaf can claim, so it
+    /// is refused just the same. (Under this policy a fee-on-transfer token
+    /// can never fund a campaign — creators use a standard token.)
+    function testCreateRefusesAnOverdeliveringToken() external {
+        BonusToken bonus = new BonusToken();
+        bonus.mint(address(this), 1_000);
+        bonus.approve(address(factory), 1_000);
+        Entry[] memory e = new Entry[](1);
+        e[0] = Entry(0, address(0x5), 100);
+        (bytes32 root,) = build(leaves(e));
+
+        try factory.create(IERC20(address(bonus)), root, 0, 100) {
+            revert("expected a revert");
+        } catch (bytes memory r) {
+            revertedWith(r, MerkleDistributorFactory.Underfunded.selector, "a surplus is owed to no leaf");
+        }
+        eq(factory.count(), 0, "no campaign was left behind");
+    }
+
+    /// An EOA passed as the token: the raw transferFrom "succeeds" (empty
+    /// return) and a zero-funded campaign would emit Campaign (F-03).
+    function testCreateRefusesATokenWithoutCode() external {
+        Entry[] memory e = new Entry[](1);
+        e[0] = Entry(0, address(0x5), 100);
+        (bytes32 root,) = build(leaves(e));
+
+        try factory.create(IERC20(address(0xDEAD)), root, 0, 100) {
+            revert("expected a revert");
+        } catch (bytes memory r) {
+            revertedWith(r, MerkleDistributorFactory.NotAContract.selector, "an EOA is not a token");
+        }
+        eq(factory.count(), 0, "no campaign was left behind");
+    }
+
+    /// A contract that reports success and pays nothing: only the balance
+    /// delta exposes it (F-03).
+    function testCreateRefusesATokenThatPaysNothing() external {
+        LiarToken liar = new LiarToken();
+        liar.mint(address(this), 1_000);
+        liar.approve(address(factory), 1_000);
+        Entry[] memory e = new Entry[](1);
+        e[0] = Entry(0, address(0x5), 100);
+        (bytes32 root,) = build(leaves(e));
+
+        try factory.create(IERC20(address(liar)), root, 0, 100) {
+            revert("expected a revert");
+        } catch (bytes memory r) {
+            revertedWith(r, MerkleDistributorFactory.Underfunded.selector, "nothing arrived, so nothing is funded");
+        }
+        eq(factory.count(), 0, "no campaign was left behind");
+    }
+
+    // ---- F-03: TokenBatch must not announce sends that never happened ----
+
+    function testBatchSendRefusesATokenWithoutCode() external {
+        address[] memory to = new address[](1);
+        to[0] = address(0x1);
+        uint256[] memory amount = new uint256[](1);
+        amount[0] = 100;
+        try batch.send(IERC20(address(0xDEAD)), to, amount) {
+            revert("expected a revert");
+        } catch (bytes memory r) {
+            revertedWith(r, TokenBatch.NotAContract.selector, "an EOA is not a token");
+        }
+    }
+
+    function testBatchSendRefusesATokenThatMovesNothing() external {
+        LiarToken liar = new LiarToken();
+        liar.mint(address(this), 1_000);
+        liar.approve(address(batch), 1_000);
+        address[] memory to = new address[](1);
+        to[0] = address(0x1);
+        uint256[] memory amount = new uint256[](1);
+        amount[0] = 100;
+        try batch.send(IERC20(address(liar)), to, amount) {
+            revert("expected a revert");
+        } catch (bytes memory r) {
+            revertedWith(r, TokenBatch.NotMoved.selector, "a send that moves nothing is not a send");
+        }
+        eq(liar.balanceOf(address(this)), 1_000, "the sender kept everything");
+    }
+
+    /// Fee tokens stay usable: the sender pays the whole amount even when
+    /// the recipient's share is skimmed on arrival.
+    function testBatchSendAcceptsFeeOnTransferToken() external {
+        FeeOnTransferToken fee = new FeeOnTransferToken();
+        fee.mint(address(this), 1_000);
+        fee.approve(address(batch), 1_000);
+        address[] memory to = new address[](1);
+        to[0] = address(0x1);
+        uint256[] memory amount = new uint256[](1);
+        amount[0] = 100;
+        batch.send(IERC20(address(fee)), to, amount);
+        eq(fee.balanceOf(address(this)), 900, "the sender paid the whole amount");
+        eq(fee.balanceOf(address(0x1)), 99, "the recipient got what the token delivered");
     }
 
     // ---- the CLI's output, verified on chain ----

@@ -687,7 +687,7 @@ impl Chain {
             seed_ready: None,
             deprioritize: None,
             store: None,
-            protocol: crate::upgrade::PROTOCOL,
+            protocol: crate::upgrade::implements(),
             migrate: aether_execution::forks::activate,
             upgrades_known: Vec::new(),
             upgrade_notices: Vec::new(),
@@ -2160,7 +2160,9 @@ impl Chain {
             return Err("ordinary upgrade carries emergency approvals".into());
         }
         let notice = if mainnet_rules && !u.emergency {
-            crate::upgrade::MAINNET_NOTICE_BLOCKS
+            // Drill builds (dev-drill feature) may shorten this through
+            // AETHER_DEV_UPGRADE_NOTICE; shipped builds always get None here.
+            crate::upgrade::dev_notice().unwrap_or(crate::upgrade::MAINNET_NOTICE_BLOCKS)
         } else {
             Self::notice(&parent.state, cfg.epoch_blocks)
         };

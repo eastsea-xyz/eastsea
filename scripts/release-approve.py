@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 import json
+import os
 import pathlib
 import plistlib
 import shutil
@@ -15,7 +16,11 @@ import tempfile
 import xml.etree.ElementTree as ET
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-NETWORK = ROOT / "apps/wallet/Resources/network.json"
+# The pinned production network.json (builder keys + release log contract).
+# AETHER_RELEASE_NET repoints the pin at another network.json — a rehearsal
+# (scripts/upgrade-drill.sh) needs its own builders and contract address; the
+# default is untouched so production runs never read the environment.
+NETWORK = pathlib.Path(os.environ.get("AETHER_RELEASE_NET", ROOT / "apps/wallet/Resources/network.json"))
 
 
 def sha256(path):

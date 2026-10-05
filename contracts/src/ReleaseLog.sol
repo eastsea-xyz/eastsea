@@ -3,6 +3,15 @@ pragma solidity ^0.8.19;
 
 /// Append-only transparency log for Mac releases. Anyone can publish; clients
 /// decide trust by checking the builder signatures against their pinned keys.
+///
+/// The log has no notion of authorization: `publish` is permissionless, so a
+/// `Published` event or a stored entry is only a receipt that *someone logged
+/// something* — anyone can post any manifest and any signature bytes, marked
+/// emergency or not. An event is never evidence that a release was approved.
+/// Consumers trust only what they verify themselves: the ReleaseLog runtime
+/// code hash, storage proofs under a committee-certified state root, and
+/// builder signatures against pinned public keys
+/// (docs/design/19-release-approval.md; audit F-07, 2026-10-05).
 contract ReleaseLog {
     struct Entry {
         bytes32 manifestHash;
@@ -15,6 +24,8 @@ contract ReleaseLog {
 
     Entry[] public entries;
 
+    /// A receipt that an entry was appended — by anyone, about anything.
+    /// Discovery only (explorers, `eth_getLogs`); not an approval signal.
     event Published(
         uint256 indexed index,
         bytes32 indexed manifestHash,
@@ -35,6 +46,9 @@ contract ReleaseLog {
 
     /// The full payload is logged as an event; its hashes and publication
     /// metadata remain in storage for light-client Merkle proof verification.
+    /// A client that must trust an entry reads the storage slots through
+    /// proofs (the wallet's `verified_release`) — the event alone proves
+    /// nothing beyond that this function was called.
     function publish(bytes calldata manifest, bytes32 archiveSha256, bytes calldata builderSigs, bool emergency) external returns (uint256 index) {
         if (manifest.length == 0) revert EmptyManifest();
         if (builderSigs.length == 0) revert EmptySignatures();

@@ -12,6 +12,7 @@ run balance-history BalanceHistory.swift
 run browser-origin BrowserOriginPolicy.swift
 run browser-permissions SitePermissions.swift
 run browser-routing Brand.swift BrowserPolicy.swift
+run browser-verify Brand.swift BrowserOriginPolicy.swift BrowserPolicy.swift VerifyBridge.swift
 run earnings EarningsModel.swift
 run earnings-export Brand.swift EarningsModel.swift ChainActivity.swift EarningsExport.swift
 run fee-confirm EarningsModel.swift

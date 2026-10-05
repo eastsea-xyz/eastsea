@@ -99,7 +99,8 @@ final class BrowserController: NSObject, ObservableObject {
             ucc.addUserScript(WKUserScript(source: Self.explorerBootstrap(port: port),
                                            injectionTime: .atDocumentStart, forMainFrameOnly: true))
         }
-        ucc.addScriptMessageHandler(WeakReplyBridge(controller: self), contentWorld: .page, name: "aether")
+        ucc.addScriptMessageHandler(WeakReplyBridge(controller: self, route: Self.providerRoute), contentWorld: .page, name: "aether")
+        ucc.addScriptMessageHandler(WeakReplyBridge(controller: self, route: Self.verifyRoute), contentWorld: .page, name: "eastsea")
         if let host = wantExternal {
             config.websiteDataStore = .nonPersistent()
             externalHost = host
@@ -339,6 +340,98 @@ final class BrowserController: NSObject, ObservableObject {
         }
     }
 
+    // MARK: - The verify bridge
+
+    /// The static entry points the weak bridge boxes hand messages to.
+    private static func providerRoute(_ controller: BrowserController, _ message: WKScriptMessage,
+                                      replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
+        controller.handleBridgeMessage(message, replyHandler: replyHandler)
+    }
+
+    private static func verifyRoute(_ controller: BrowserController, _ message: WKScriptMessage,
+                                    replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
+        controller.handleVerifyMessage(message, replyHandler: replyHandler)
+    }
+
+    /// The {result}/{error} envelope both bridges resolve the page's promise
+    /// with; the reply's error channel stays nil (see handleBridgeMessage).
+    fileprivate static func envelope(_ replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void)
+        -> (Result<Any?, ProviderError>) -> Void {
+        { result in
+            switch result {
+            case .success(let value):
+                replyHandler(["result": value ?? NSNull()], nil)
+            case .failure(let e):
+                replyHandler(["error": ["code": e.code, "message": e.message]], nil)
+            }
+        }
+    }
+
+    /// `window.eastsea.verify` (Resources/provider.js): a bundled or connected
+    /// page's block / account / receipt check, answered by the native verifier
+    /// — the certificate checks of VerifyBridge in Rust, not the wasm module a
+    /// public page would load (docs/design/09-wallet.md "인앱 브라우저").
+    fileprivate func handleVerifyMessage(_ message: WKScriptMessage,
+                                         replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
+        let reply = Self.envelope(replyHandler)
+        guard let model else {
+            reply(.failure(ProviderError(code: ProviderErrorCode.internalError, message: "The wallet is not ready.")))
+            return
+        }
+        // The provider lives in the main frame only; a subframe asking is a
+        // page trying to look like its parent.
+        guard message.frameInfo.isMainFrame else {
+            reply(.failure(ProviderError(code: ProviderErrorCode.locked,
+                                         message: "This frame cannot talk to the EastSea wallet provider.")))
+            return
+        }
+        guard let body = message.body as? [String: Any] else {
+            reply(.failure(ProviderError(code: ProviderErrorCode.params, message: "expected {what, param}")))
+            return
+        }
+        // The same lock rule the provider answers under: nothing while locked.
+        if let locked = ProviderGate.check(locked: model.exploreLocked) {
+            reply(.failure(locked))
+            return
+        }
+        // Bundled pages always; an external page only over https, and only
+        // while its origin is connected to an account (VerifyBridge.allows).
+        let origin = message.frameInfo.securityOrigin
+        let key = BrowserOriginPolicy.permissionKey(scheme: origin.protocol, host: origin.host, port: Int(origin.port))
+        guard VerifyBridge.allows(scheme: origin.protocol, connected: model.connectedSiteAddress(origin: key) != nil) else {
+            reply(.failure(ProviderError(code: ProviderErrorCode.unsupported,
+                                         message: "This page cannot use EastSea verification.")))
+            return
+        }
+        switch VerifyBridge.parse(body) {
+        case .failure(let e):
+            reply(.failure(e))
+        case .success(.receipt):
+            // No block commits to receipts yet, so this is the one honest
+            // answer any verifier could give (VerifyBridge.Verdict.notCommitted).
+            reply(.success(VerifyBridge.Verdict.notCommitted.asDictionary()))
+        case .success(.account(let address)):
+            let validators = model.validators
+            Task.detached {
+                do {
+                    let account = try verifiedAccount(address: address, validators: validators)
+                    await MainActor.run { reply(.success(VerifyBridge.Verdict.certified(height: account.certifiedBlock).asDictionary())) }
+                } catch {
+                    await MainActor.run { reply(.success(VerifyBridge.Verdict.refused(WalletModel.ffiMessage(error)).asDictionary())) }
+                }
+            }
+        case .success(.block(let height)):
+            Task.detached {
+                do {
+                    let block = try verifiedBlock(height: height)
+                    await MainActor.run { reply(.success(VerifyBridge.Verdict.certified(height: block.height).asDictionary())) }
+                } catch {
+                    await MainActor.run { reply(.success(VerifyBridge.Verdict.refused(WalletModel.ffiMessage(error)).asDictionary())) }
+                }
+            }
+        }
+    }
+
     private func enqueue(_ kind: PendingAsk.Kind, id: Any?, reply: @escaping (Result<Any?, ProviderError>) -> Void) {
         let pending = PendingAsk(id: (id as? String).map { "ask-\($0)" } ?? UUID().uuidString,
                                  kind: kind, reply: reply)
@@ -425,13 +518,19 @@ final class BrowserController: NSObject, ObservableObject {
 }
 
 /// `addScriptMessageHandler` keeps a strong reference; this box keeps the
-/// controller weak so the tab can go away without a cycle.
+/// controller weak so the tab can go away without a cycle. `route` is which
+/// bridge it answers (a static method reference, so the box captures nothing).
 @MainActor
 private final class WeakReplyBridge: NSObject, WKScriptMessageHandlerWithReply {
     weak var controller: BrowserController?
+    private let route: @MainActor (BrowserController, WKScriptMessage,
+                                   @escaping @MainActor @Sendable (Any?, String?) -> Void) -> Void
 
-    init(controller: BrowserController) {
+    init(controller: BrowserController,
+         route: @escaping @MainActor (BrowserController, WKScriptMessage,
+                                      @escaping @MainActor @Sendable (Any?, String?) -> Void) -> Void) {
         self.controller = controller
+        self.route = route
         super.init()
     }
 
@@ -442,7 +541,7 @@ private final class WeakReplyBridge: NSObject, WKScriptMessageHandlerWithReply {
             replyHandler(["error": ["code": ProviderErrorCode.internalError, "message": "the tab is gone"]], nil)
             return
         }
-        controller.handleBridgeMessage(message, replyHandler: replyHandler)
+        route(controller, message, replyHandler)
     }
 }
 

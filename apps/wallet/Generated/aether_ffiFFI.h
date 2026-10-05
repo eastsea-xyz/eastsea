@@ -468,6 +468,11 @@ void uniffi_aether_ffi_fn_func_use_local_node(RustBuffer port, RustCallStatus *_
 RustBuffer uniffi_aether_ffi_fn_func_verified_account(RustBuffer address, uint32_t validators, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_VERIFIED_BLOCK
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_VERIFIED_BLOCK
+RustBuffer uniffi_aether_ffi_fn_func_verified_block(uint64_t height, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_VERIFIED_HEIGHT
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_VERIFIED_HEIGHT
 uint64_t uniffi_aether_ffi_fn_func_verified_height(RustCallStatus *_Nonnull out_status
@@ -1042,6 +1047,12 @@ uint16_t uniffi_aether_ffi_checksum_func_use_local_node(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_VERIFIED_ACCOUNT
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_VERIFIED_ACCOUNT
 uint16_t uniffi_aether_ffi_checksum_func_verified_account(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_VERIFIED_BLOCK
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_VERIFIED_BLOCK
+uint16_t uniffi_aether_ffi_checksum_func_verified_block(void
     
 );
 #endif

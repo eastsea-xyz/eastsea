@@ -7,6 +7,7 @@ import { card, copyButton, dot, kv, message, pill, sourceLine, table, h } from '
 import { formatAeth, formatInt, formatRate, formatTokenAmount, localTime, shortHex, timeAgo, toBigInt, txRate } from './format.js';
 import { TRANSFER_TOPIC, decodeApproval, decodeTransfer, revertReason, wordAddress } from './abi.js';
 import { looksLikeOfficial, officialTokens, originBadge, tokenInfo, tokenOrigin, totalSupply } from './erc20.js';
+import { NOT_COMMITTED } from './verify.js';
 
 // ---- little shared builders ----
 
@@ -53,6 +54,15 @@ function logsWindow() {
 
 function hexHeight(n) {
   return `0x${Math.max(0, Number(n)).toString(16)}`;
+}
+
+/** The committee-certificate badge. Only a verified answer earns it; a
+ * verifier this page has that refused says why; with no verifier at all the
+ * row stays quiet — the source line already says the page is not verified. */
+function certificateBadge(ctx, v) {
+  if (v?.verified) return pill('verified by committee certificate', 'good');
+  if (ctx.verifier?.kind === 'none') return null;
+  return pill(`not verified${v?.reason ? ` — ${v.reason}` : ''}`, 'plain');
 }
 
 async function headHeight(ctx) {
@@ -139,6 +149,7 @@ export async function blockView(ctx, height) {
   if (!block) return unknownBlock(ctx, height);
 
   const proof = proofCard(height, prover);
+  const certificate = await ctx.verifier?.block(ctx.node, height);
   const rows = await blockTxs(ctx, block);
   const prev = h('a', { href: `#/block/${height - 1}` }, `← ${formatInt(height - 1)}`);
   const next = h('a', { href: `#/block/${height + 1}` }, `${formatInt(height + 1)} →`);
@@ -153,6 +164,7 @@ export async function blockView(ctx, height) {
     card('Header', kv([
       ['Height', formatInt(block.height)],
       ['Status', h('span', { class: 'row tight' }, pill('finalized', 'good'), h('span', { class: 'muted small' }, 'served by this node'))],
+      ['Certificate', certificateBadge(ctx, certificate)],
       ['Hash', hashValue(ox(block.hash))],
       ['Parent', hashValue(ox(block.parent))],
       ['Proposer', addrLink(block.proposer)],
@@ -251,6 +263,9 @@ export async function txView(ctx, hash) {
   const receipt = r.receipt;
   const created = receipt.contract_address;
   const failedWhy = !receipt.success && /^0x08c379a0/.test(String(receipt.output)) ? ` — ${revertReason(String(receipt.output))}` : '';
+  // No block commits to receipts yet (crates/light block.rs): every verifier
+  // answers "not committed", and the row says so instead of pretending.
+  const proof = await ctx.verifier?.receipt(ctx.node, hash);
 
   return h('div', { class: 'stack' },
     h('h2', { class: 'page-title' }, 'Transaction'),
@@ -258,6 +273,8 @@ export async function txView(ctx, hash) {
     card('Receipt', kv([
       ['Status', receipt.success ? dot('done', 'success') : dot('failed', `failed${failedWhy}`)],
       ['Block', h('span', { class: 'row tight' }, blockLink(r.height), h('span', { class: 'muted small' }, '(finalized)'))],
+      ['Certificate', h('span', { class: 'row tight' }, certificateBadge(ctx, proof),
+        proof?.reason === NOT_COMMITTED ? h('span', { class: 'muted small' }, 'no block commits to receipts yet') : null)],
       ['Gas used', `${formatInt(receipt.gas_used)} exec · ${formatInt(receipt.prove_gas)} prove`],
       ['Logs', formatInt(receipt.logs)],
       ['Contract created', created ? h('span', { class: 'row tight' }, addrLink(created), pill('creation', 'good')) : '—'],
@@ -312,6 +329,7 @@ export async function accountView(ctx, address) {
     tokenInfo(a, ctx.read),
     ctx.node.call('aether_rewards', [a, 10]).catch(() => []),
   ]);
+  const certificate = await ctx.verifier?.account(ctx.node, a);
 
   const els = h('div', { class: 'stack' },
     h('h2', { class: 'page-title' }, account.code_size > 0 ? 'Contract' : 'Account'),
@@ -324,6 +342,7 @@ export async function accountView(ctx, address) {
       ['Nonce', formatInt(account.nonce)],
       ['Code', account.code_size > 0 ? `${formatInt(account.code_size)} bytes` : 'none'],
       ['At', h('span', { class: 'row tight' }, blockLink(account.height), h('span', { class: 'muted small' }, `state root ${shortHex(ox(account.state_root), 10, 6)}`))],
+      ['Certificate', certificateBadge(ctx, certificate)],
     ])),
     sourceLine(ctx.node, `height ${formatInt(account.height)}`));
 

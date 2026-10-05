@@ -7,6 +7,7 @@ import { DEFAULT_ENDPOINT, Node, loadEndpoint, saveEndpoint } from './rpc.js';
 import { parseTokenSources, tokenInfo, tokenOrigin } from './erc20.js';
 import { resolveSearch } from './search.js';
 import { accountView, blockView, errorView, homeView, notFoundView, tokenView, txView } from './pages.js';
+import { detectVerifier } from './verify.js';
 import { h, loading, message } from './dom.js';
 
 const view = document.getElementById('view');
@@ -18,6 +19,7 @@ const foot = document.getElementById('foot');
 const ctx = {
   node: null,
   chainId: null, // set once the node answers aether_status
+  verifier: null, // set once at boot: {kind, block, account, receipt} (verify.js)
   pollNow: false, // the current page asked to be re-checked (a pending tx)
   tokenCache: new Map(),
   originCache: new Map(),
@@ -109,8 +111,8 @@ top.append(
 
 foot.append(
   h('p', { class: 'small muted' },
-    'Read-only data from one EastSea node, chosen in Settings. Nothing here is light-client verified — pages say ',
-    h('em', {}, 'from the node'), ' where the wallet would verify a committee certificate. ',
+    'Read-only data from one EastSea node, chosen in Settings. What a committee certificate vouches for is ',
+    h('em', {}, 'marked on the page'), '; everything else is node-read and unverified. ',
     'No analytics, no external requests, no prices.'),
 );
 
@@ -211,4 +213,8 @@ applyTheme();
 try {
   ctx.sourcesRaw = await (await fetch('token-sources.json')).json();
 } catch { /* no sources: origin falls back to "not in any list" */ }
+// The verifier before the first render: the app's native bridge inside the
+// Explore tab, else the wasm module when this deployment carries it, else
+// none — pages then badge what was actually verified.
+ctx.verifier = await detectVerifier(window);
 connect(loadEndpoint(store));

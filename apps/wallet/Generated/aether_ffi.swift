@@ -685,6 +685,68 @@ public func FfiConverterTypeBlockInfo_lower(_ value: BlockInfo) -> RustBuffer {
 }
 
 
+/**
+ * A block whose finality a committee certificate proves. No state in it:
+ * history, not a balance (see [`verified_block`]).
+ */
+public struct CertifiedBlock: Equatable, Hashable {
+    public var height: UInt64
+    public var digest: String
+    public var timestampMs: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(height: UInt64, digest: String, timestampMs: UInt64) {
+        self.height = height
+        self.digest = digest
+        self.timestampMs = timestampMs
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension CertifiedBlock: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCertifiedBlock: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CertifiedBlock {
+        return
+            try CertifiedBlock(
+                height: FfiConverterUInt64.read(from: &buf), 
+                digest: FfiConverterString.read(from: &buf), 
+                timestampMs: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CertifiedBlock, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.height, into: &buf)
+        FfiConverterString.write(value.digest, into: &buf)
+        FfiConverterUInt64.write(value.timestampMs, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCertifiedBlock_lift(_ buf: RustBuffer) throws -> CertifiedBlock {
+    return try FfiConverterTypeCertifiedBlock.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCertifiedBlock_lower(_ value: CertifiedBlock) -> RustBuffer {
+    return FfiConverterTypeCertifiedBlock.lower(value)
+}
+
+
 public struct ChainStatus: Equatable, Hashable {
     public var chainId: UInt64
     public var height: UInt64
@@ -3064,6 +3126,23 @@ public func verifiedAccount(address: String, validators: UInt32)throws  -> Verif
 })
 }
 /**
+ * Block `height` proven finalized by a committee certificate — the same
+ * checks an anchor passes (identity, chain, certificate-for-this-block),
+ * asked of a single height for the explorer's block page instead of a state
+ * read. Two anchor rules deliberately do not apply: an old height is not
+ * refused as stale (a 10-minute-old certificate is exactly what history is),
+ * and it does not move the verified-height floor (that floor catches a node
+ * replaying state as current, not one serving the past as the past).
+ */
+public func verifiedBlock(height: UInt64)throws  -> CertifiedBlock  {
+    return try  FfiConverterTypeCertifiedBlock_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_verified_block(
+        FfiConverterUInt64.lower(height),uniffiCallStatus
+    )
+})
+}
+/**
  * The highest block height this process verified a certificate for, on the
  * chain this wallet is configured for (0 before the first one).
  */
@@ -3325,6 +3404,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_verified_account() != 47692) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_verified_block() != 14612) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_verified_height() != 9164) {

@@ -19,8 +19,9 @@ const SUPPORTED = new Set([
 ]);
 
 // Runs one of the scripts in a fake page. `replies` maps a method to what the
-// native side would answer ({ result } or { error: { code, message } }).
-function run(src, replies = new Map()) {
+// native side would answer ({ result } or { error: { code, message } });
+// `verify` does the same for the eastsea handler, keyed by `what`.
+function run(src, replies = new Map(), verify = new Map()) {
   const announced = [];
   const bridgeCalls = [];
   let initialized = false;
@@ -33,6 +34,7 @@ function run(src, replies = new Map()) {
     webkit: {
       messageHandlers: {
         aether: { postMessage: (m) => { bridgeCalls.push(m); return Promise.resolve(replies.get(m.method) ?? { result: null }); } },
+        eastsea: { postMessage: (m) => { bridgeCalls.push(m); return Promise.resolve(verify.get(m.what) ?? { result: null }); } },
       },
     },
   };
@@ -144,4 +146,43 @@ test('both scripts are idempotent on a double inject', () => {
     vm.runInContext(src, sandbox); // a second copy must not replace the provider
     assert.equal(sandbox.window.aether, first);
   }
+});
+
+// ---- window.eastsea.verify: the native verification surface ----
+
+test('window.eastsea.verify posts {what, param} and resolves with the verdict', async () => {
+  const verify = new Map([
+    ['block', { result: { verified: true, height: 6, reason: '' } }],
+    ['account', { result: { verified: false, reason: 'certificate: expired' } }],
+  ]);
+  const { sandbox, bridgeCalls } = run(providerSrc, new Map(), verify);
+  const v = sandbox.window.eastsea.verify;
+  for (const k of ['block', 'account', 'receipt']) assert.equal(typeof v[k], 'function', `${k} is a function`);
+  assert.deepEqual(await v.block(6), { verified: true, height: 6, reason: '' });
+  assert.deepEqual(await v.account('0x00000000000000000000000000000000000000aa'), { verified: false, reason: 'certificate: expired' });
+  const call = bridgeCalls.find((m) => m.what === 'block');
+  assert.ok(call, 'the eastsea bridge saw the ask');
+  assert.match(call.id, /^eastsea-/, 'its own id space');
+  assert.equal(call.param, 6);
+});
+
+test('window.eastsea.verify keeps the wallet\'s error codes and refuses without a handler', async () => {
+  const verify = new Map([
+    ['receipt', { error: { code: 4200, message: 'This page cannot use EastSea verification.' } }],
+  ]);
+  const { sandbox } = run(providerSrc, new Map(), verify);
+  await assert.rejects(sandbox.window.eastsea.verify.receipt(`0x${'ab'.repeat(32)}`), (e) => e.code === 4200);
+  delete sandbox.window.webkit.messageHandlers.eastsea;
+  await assert.rejects(sandbox.window.eastsea.verify.block(6), (e) => e.code === 4100);
+});
+
+test('window.eastsea is frozen and idempotent, and never touches window.aether', () => {
+  const { sandbox } = run(providerSrc);
+  const firstEastsea = sandbox.window.eastsea;
+  const firstAether = sandbox.window.aether;
+  assert.equal(Object.isFrozen(firstEastsea), true);
+  assert.equal(Object.isFrozen(firstEastsea.verify), true);
+  vm.runInContext(providerSrc, sandbox); // a second copy must not replace either surface
+  assert.equal(sandbox.window.eastsea, firstEastsea);
+  assert.equal(sandbox.window.aether, firstAether);
 });

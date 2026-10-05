@@ -1496,6 +1496,54 @@ fn verified_account_at(address: String, validators: u32) -> R<VerifiedAccount> {
     })
 }
 
+/// A block whose finality a committee certificate proves. No state in it:
+/// history, not a balance (see [`verified_block`]).
+#[derive(uniffi::Record)]
+pub struct CertifiedBlock {
+    pub height: u64,
+    pub digest: String,
+    pub timestamp_ms: u64,
+}
+
+/// Block `height` proven finalized by a committee certificate — the same
+/// checks an anchor passes (identity, chain, certificate-for-this-block),
+/// asked of a single height for the explorer's block page instead of a state
+/// read. Two anchor rules deliberately do not apply: an old height is not
+/// refused as stale (a 10-minute-old certificate is exactly what history is),
+/// and it does not move the verified-height floor (that floor catches a node
+/// replaying state as current, not one serving the past as the past).
+#[uniffi::export]
+pub fn verified_block(height: u64) -> R<CertifiedBlock> {
+    let set = trusted_set(validator_count())?;
+    let generation = NETWORK_GENERATION.load(std::sync::atomic::Ordering::SeqCst);
+    for _ in 0..40 {
+        let v = call("aether_getFinalized", json!([height]))?;
+        if !v.is_null() {
+            let block = from_hex(v["block"].as_str().unwrap_or_default()).map_err(|e| WalletError::Verification(e.to_string()))?;
+            let fin = from_hex(v["finalization"].as_str().unwrap_or_default()).map_err(|e| WalletError::Verification(e.to_string()))?;
+            let links = v["links"]
+                .as_array()
+                .map(|a| a.iter().map(|l| from_hex(l.as_str().unwrap_or_default())).collect::<Result<Vec<_>, _>>())
+                .transpose()
+                .map_err(|e| WalletError::Verification(e.to_string()))?
+                .unwrap_or_default();
+            let chain = expected_chain(&call("aether_status", json!([]))?)?;
+            let vb = verify_finalized_chain(&set, &block, &fin, &links).map_err(|e| WalletError::Verification(format!("certificate: {e}")))?;
+            if vb.height != height {
+                return Err(WalletError::Verification(format!("asked for block {height}, got one for {}", vb.height)));
+            }
+            check_anchor_chain(&block, &links, chain)?;
+            let _network = NET.lock().expect("network lock");
+            if generation != NETWORK_GENERATION.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(WalletError::Verification("network changed during verification".into()));
+            }
+            return Ok(CertifiedBlock { height: vb.height, digest: vb.digest, timestamp_ms: vb.timestamp_ms });
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    Err(WalletError::Network(format!("block {height} not finalized yet")))
+}
+
 /// Build a transfer for the Secure Enclave key to sign. `shown_fee_wei` is
 /// the fee the send sheet displayed (pre-audit 7, M1): when the same quote
 /// computed from the status NOW would cost more, the answer is

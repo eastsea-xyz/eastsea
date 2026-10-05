@@ -65,4 +65,39 @@
   window.addEventListener('eip6963:requestProvider', announce);
   announce();
   window.dispatchEvent(new Event('aether#initialized'));
+
+  // window.eastsea: the verification surface only the app's own pages get a
+  // working answer from. block / account / receipt resolve with the wallet's
+  // native verdict {verified, height?, reason} — the Rust verifier, ≈0.68 ms
+  // a committee certificate where the wasm module a public page loads takes
+  // ≈11.7 (docs/research/wasm-speed-2026-10-05.md). Its own handler name so
+  // the provider surface above keeps meaning one thing. The origin rule
+  // (VerifyBridge.allows) is enforced on the Swift side: a page that is not
+  // bundled and not connected gets a rejection, never a verdict.
+  (() => {
+    if (window.eastsea && window.eastsea.verify) return;
+    const handler = () => window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.eastsea;
+    const err = (code, message) => Object.assign(new Error(message), { code });
+    let seq = 0;
+    const ask = (what, param) => {
+      const h = handler();
+      if (!h) return Promise.reject(err(4100, 'This page is not talking to the EastSea wallet.'));
+      const id = `eastsea-${Date.now().toString(36)}-${(seq += 1)}`;
+      return h.postMessage({ id, what, param }).then(
+        (m) => {
+          if (m && m.error) return Promise.reject(err(m.error.code ?? -32603, m.error.message || 'the wallet refused the request'));
+          return m ? m.result : undefined;
+        },
+        (e) => Promise.reject(err(-32603, (e && e.message) || 'the wallet did not answer')),
+      );
+    };
+    const eastsea = Object.freeze({
+      verify: Object.freeze({
+        block: (height) => ask('block', height),
+        account: (address) => ask('account', address),
+        receipt: (txHash) => ask('receipt', txHash),
+      }),
+    });
+    Object.defineProperty(window, 'eastsea', { value: eastsea, writable: false, configurable: false });
+  })();
 })();

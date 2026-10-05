@@ -349,7 +349,7 @@ fn account_history_collects_token_receipts_and_system_rewards() {
             Event { address: Address::repeat_byte(0xef),
                 topics: vec![B256::from_slice(&swap_topic), B256::from(from), B256::from(to)],
                 data: Bytes::from(swap_data) }] };
-    let rows = aether_node::account_history::transaction(&tx, &receipt, 3, 0, 3000, false, true);
+    let rows = aether_node::account_history::transaction(&tx, &receipt, 3, 0, 3000, U256::ZERO, false, true);
     assert_eq!(rows.len(), 2);
     let incoming = rows.iter().find(|r| r.address == recipient).unwrap();
     assert_eq!(incoming.kind, "erc20_transfer");

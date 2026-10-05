@@ -291,8 +291,11 @@ fn funded_source_pays_for_transfer_and_deployed_code() {
     let transfer = source.transfer();
     assert_eq!(transfer.header.max_fee.state, aether_execution::fees::STATE_UNIT_PRICE);
     assert!(transfer.header.gas.state >= aether_execution::fees::STATE_ACCOUNT_UNITS);
+    let transfer_budget = transfer.header.gas.state;
     let paid = source.step(vec![transfer]);
-    assert_eq!(paid.receipts[0].state_gas, aether_execution::fees::STATE_ACCOUNT_UNITS);
+    // The new recipient account plus, since audit 6, its persisted bytes.
+    assert!(paid.receipts[0].state_gas > aether_execution::fees::STATE_ACCOUNT_UNITS);
+    assert!(paid.receipts[0].state_gas <= transfer_budget);
     assert!(paid.receipts[0].state_fee > U256::ZERO);
 
     let mut init = hex::decode("600a600c600039600a6000f3").unwrap();

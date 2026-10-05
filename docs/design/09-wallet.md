@@ -164,3 +164,25 @@ Aether.app (SwiftUI)
 - 상태 줄: 증명 사이드카의 현재 메모리(`aether_proverStatus`의 `memory_bytes`/`memory_cap`), `paused == "memory"`면 "메모리 부족으로 일시 정지", `aether_status`의 `resources.disk_low`면 "디스크 공간 부족".
 
 선택은 UserDefaults(`proverMemory`·`proverCores`·`proverOnBattery`)에 저장되고, 노드를 (재)시작할 때 `ProverFlags.build`가 플래그로 만들어 `aether run`에 붙인다. 기본값(자동·절반·배터리 거부)은 플래그를 하나도 안 붙인다 — 노드 스스로 안전한 기본값(RAM의 25%, 코어의 절반)을 고르고, 플래그를 모르는 옛 노드 번들이어도 시작에 실패하지 않는다. **심플 모드에는 예산 조절 UI가 없다**(개발자 모드에서만 보인다): 노드의 안전한 기본값이 그대로 적용되고, 증명 토글과 경고("메모리 부족으로 일시 정지"·"디스크 공간 부족")는 심플 모드에서도 보인다 — 전기·발열을 쓰는 스위치를 숨기거나 문제를 조용히 넘기지 않는다. 메뉴 막대의 증명 상태에는 일시 정지 이유가 영어로 한 줄 더 붙는다.
+
+## 인앱 브라우저(Explore 탭) — 구현됨 (2026-10-05)
+
+창업자(2026-10-05): "지갑에 브라우저가 있어야 하는 것 아닌가?" — 공개 HTTPS 탐색기는 사용자의 로컬 노드를 못 읽는다(Chrome 로컬 네트워크 접근 프롬프트, Safari 혼합 콘텐츠 — [docs/research/public-read-access-2026-10-05.md](../research/public-read-access-2026-10-05.md) §3.4). iOS에는 확장이 없고, dApp(이름 서비스, 이후 DEX·런치패드)에는 사이너가 필요하다. `Sources/ExploreTab.swift`·`BrowserController.swift`.
+
+**탭 구성.** 사이드바(macOS)·하단 탭(iOS)에 Explore가 붙는다. 홈은 큐레이티드 항목 두 개 — 블록 탐색기(번들)와 프로젝트 사이트. 주소창은 스킴 없는 입력을 `https://` 호스트로 취급한다.
+
+**번들 탐색기.** `apps/explorer`를 앱 리소스로 복사해(postBuildScript `Bundle explorer`, test/·package.json·README.md 제외) `eastsea-page://` 개인 스킵으로 서빙한다(`BundledPageScheme`). `file://`에 문을 열지 않고, 경로 탐색(`..`)은 거부하며(`BundledPagePath`), 모든 응답에 CSP가 붙는다 — `default-src 'none'; script-src 'self'; …; connect-src 'self' http://127.0.0.1:18545 http://127.0.0.1:18546`. 탐색기의 노드 엔드포인트(`localStorage` `aether-explorer.node`)는 매 로드마다 이 앱의 노드 포트(통상 18545, 개발망 18546)로 지정된다: 노드가 임의 오리진을 허용하므로 페이지가 직접 fetch한다.
+
+**프로바이더.** `Resources/provider.js`를 `WKUserScript`(documentStart, 메인 프레임만)로 주입한다 — 확장의 `apps/extension/src/inpage.js` 표면을 WebKit 브리지(`WKScriptMessageHandlerWithReply`, 이름 `aether`)로 옮긴 것이고, `window.ethereum`은 takeover하지 않는다(동해 계정은 P-256). **메서드 집합은 확장의 것과 정확히 같다**(`apps/extension/src/lib/methods.js`의 READ ∪ ACCOUNT ∪ SEND + background가 직접 답하는 `eth_chainId`·`wallet_disconnect`·`aether_disconnect`): `personal_sign`·`eth_signTypedData_v4`·`wallet_switchEthereumChain`·`eth_getTransactionReceipt`는 확장이 답하지 않으므로 여기서도 **4200으로 거부**한다(receipt는 `aether_getReceipt`가 담당). 집합 일치는 `apps/extension/test/wallet-provider.test.mjs`가 지킨다. 오리진별 미응답 요청 상한도 확장과 같은 3개(-32002).
+
+**읽기 라우팅.** 검증 경로(FFI)가 노드 응답 형태를 그대로 재현하는 것만 FFI로 답한다 — `eth_blockNumber`·`eth_getBalance`·`net_version`·`aether_accountHistory`, 그리고 `from` 없는 `eth_call`. 나머지(`eth_estimateGas`·`eth_gasPrice`·`eth_getCode`·`eth_getLogs`·`eth_getStorageAt`·`eth_getTransactionCount`, `from` 있는 `eth_call`, `aether_getAccount`, 그리고 형태가 더 풍부한 `aether_status`·`aether_getReceipt`)는 이 맥의 노드 `http://127.0.0.1:<port>`에 그대로 전달하며 "미검증"으로 표시된다.
+
+**서명 요청.** `eth_requestAccounts`(연결)와 `eth_sendTransaction`(전송)은 항상 네이티브 확인 시트를 연다 — 오리진, `CallDescribe`의 액션 문장, 받는 주소, 정확한 금액·수수료, 캘리데이터. 트랜잭션 정규화는 확장의 `normalizeTx`를 그대로 미러했다(`PageTransaction.parse`: value null → 0, gas null → 0, 16진·십진 문자열·safe 정수, `to` 없으면 생성 규칙, 가스 상한 10,000,000). 일반 전송은 전송 시트와 같은 FeeChanged 흐름을 지난다 — 시트가 보여준 수수료 상한(`shownFeeWei`)이 서명 시점 견적보다 낙찰되면 FFI가 거부하고, 시트는 새 최대치를 다시 묻는다. 자동 승인은 없다. 승인하면 해시가 페이지로 돌아가고, 확정은 활동 피드가 따른다.
+
+**오리진 권한.** 연결은 오리진(`scheme://host[:port]`, 기본 포트 생략)별로 저장되고(`SitePermissions`, UserDefaults `explore.sites`) 보안 페이지의 "Connected sites"에서 철회한다. 권한은 주소를 이름 짓는다 — 계정을 바꾸면 연결은 즉시 무효다. `from`이 연결된 주소가 아닌 전송은 4100으로 거부된다.
+
+**잠금.** 열쇠가 없거나(`enclave == nil`) 열쇠 오류가 있으면(`keyError != nil`) **모든** 메서드가 4100으로 거부된다 — 읽기 포함. 확장의 vault가 잠긴 동안 아무것도 답하지 않는 것과 같다.
+
+**탐색 정책.** 번들 페이지와 `https`만 연다. `http`(대문자 표기 포함), `file:`, `about:`, `javascript:` 등은 경고 없이 거부되고 이유가 주소창 아래 한 줄로 나온다. 처음 보는 외부 사이트는 일회성 경고를 지나야 하고(기기별 한 번, UserDefaults `explore.acknowledged`), 큐레이티드 도메인의 유사 도메인(`eeastsea.xyz`, `eastsea.xyz.evil.com`)과 punycode(`xn--`)는 경고에서 따로 강조된다 — 확장 `safety.js`의 fold·편집거리 규칙을 `BrowserOriginPolicy`가 미러한다. 새 창·팝업은 없고 전부 같은 탭에서 열린다.
+
+**데이터 격리.** 외부 사이트는 호스트가 바뀔 때마다 새 `WKWebsiteDataStore.nonPersistent()` 웹뷰에서 연다 — 쿠키·저장소가 사이트끼리 만나지 않고, 탭을 닫으면 사라진다. 번들 페이지만 앱의 기본 스토어를 공유한다.

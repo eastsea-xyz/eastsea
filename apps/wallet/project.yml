@@ -86,6 +86,17 @@ targets:
             cp -f "$SRCROOT/Helpers/$s" "$H/"
             chmod 755 "$H/$s"
           done
+      - name: Bundle explorer
+        basedOnDependencyAnalysis: false
+        script: |
+          # The Explore tab serves apps/explorer from inside the app bundle
+          # under a private scheme (BundledPageScheme): copy the pages, leave
+          # the toolchain behind.
+          set -euo pipefail
+          DEST="$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/Explorer"
+          mkdir -p "$DEST"
+          rsync -a --delete --exclude test/ --exclude package.json --exclude README.md \
+            "$SRCROOT/../../apps/explorer/" "$DEST/"
   AetherWalletIOS:
     type: application
     platform: iOS
@@ -119,3 +130,14 @@ targets:
         "OTHER_LDFLAGS[sdk=iphonesimulator*]": -Wl,-reproducible $(SRCROOT)/../../target/aarch64-apple-ios-sim/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework Network
         "OTHER_LDFLAGS[sdk=iphoneos*]": -Wl,-reproducible $(SRCROOT)/../../target/aarch64-apple-ios/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework Network
         "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
+    postBuildScripts:
+      - name: Bundle explorer
+        basedOnDependencyAnalysis: false
+        script: |
+          # Same as the Mac target: the Explore tab serves apps/explorer from
+          # inside the app bundle under a private scheme (BundledPageScheme).
+          set -euo pipefail
+          DEST="$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/Explorer"
+          mkdir -p "$DEST"
+          rsync -a --delete --exclude test/ --exclude package.json --exclude README.md \
+            "$SRCROOT/../../apps/explorer/" "$DEST/"

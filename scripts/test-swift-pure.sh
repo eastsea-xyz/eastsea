@@ -9,6 +9,9 @@ run account-history Brand.swift ChainActivity.swift
 run assets EarningsModel.swift TokenAssets.swift
 run balance-sources Brand.swift EarningsModel.swift ChainActivity.swift BalanceBreakdown.swift EarningsExport.swift
 run balance-history BalanceHistory.swift
+run browser-origin BrowserOriginPolicy.swift
+run browser-permissions SitePermissions.swift
+run browser-routing Brand.swift BrowserPolicy.swift
 run earnings EarningsModel.swift
 run earnings-export Brand.swift EarningsModel.swift ChainActivity.swift EarningsExport.swift
 run fee-confirm EarningsModel.swift

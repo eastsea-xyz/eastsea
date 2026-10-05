@@ -8,6 +8,8 @@ import SwiftUI
 /// live in Developer mode.
 struct SimpleDashboard: View {
     @EnvironmentObject var model: WalletModel
+    /// The Explore tab's browser, owned here so it survives page switches.
+    @StateObject private var browser = BrowserController()
     @State private var page: Page? = .home
     @State private var sheet: Sheet?
     @AppStorage("acceptedTerms") private var acceptedTerms = 0
@@ -23,11 +25,12 @@ struct SimpleDashboard: View {
     #endif
 
     enum Page: String, CaseIterable, Identifiable {
-        case home = "Home", activity = "Activity", network = "Network", security = "Security"
+        case home = "Home", explore = "Explore", activity = "Activity", network = "Network", security = "Security"
         var id: String { rawValue }
         var icon: String {
             switch self {
             case .home: "house.fill"
+            case .explore: "safari.fill"
             case .activity: "clock.arrow.circlepath"
             case .network: "point.3.connected.trianglepath.dotted"
             case .security: "lock.shield.fill"
@@ -43,6 +46,8 @@ struct SimpleDashboard: View {
     var body: some View {
         shell
             .tint(.aether)
+            .environmentObject(browser)
+            .onAppear { browser.attach(model: model) }
             .sheet(item: $sheet) { s in
                 VStack(spacing: 0) {
                     if model.developmentNetwork {
@@ -108,16 +113,24 @@ struct SimpleDashboard: View {
             .safeAreaInset(edge: .bottom) { SidebarStatus().padding(12) }
             .toolbar(removing: compact ? .sidebarToggle : nil)
         } detail: {
-            ScrollView {
-                // Same gutter left and right, content kept to a readable width.
-                pageView(page ?? .home)
-                    .frame(maxWidth: 760)
-                    .padding(.horizontal, compact ? 16 : 24)
-                    .padding(.vertical, 24)
-                    .frame(maxWidth: .infinity)
+            Group {
+                if page == .explore {
+                    // A web view fills the page: no scroller on top of it.
+                    pageView(.explore)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView {
+                        // Same gutter left and right, content kept to a readable width.
+                        pageView(page ?? .home)
+                            .frame(maxWidth: 760)
+                            .padding(.horizontal, compact ? 16 : 24)
+                            .padding(.vertical, 24)
+                            .frame(maxWidth: .infinity)
+                    }
+                    // The scroller never sits on top of a card.
+                    .scrollIndicators(.hidden)
+                }
             }
-            // The scroller never sits on top of a card.
-            .scrollIndicators(.hidden)
             .measuringNarrowLayout()
             .navigationTitle(page?.rawValue ?? "Home")
             .toolbar {
@@ -149,9 +162,15 @@ struct SimpleDashboard: View {
         TabView(selection: Binding(get: { page ?? .home }, set: { page = $0 })) {
             ForEach(Page.allCases) { p in
                 NavigationStack {
-                    ScrollView { pageView(p).padding(16) }
-                        .measuringNarrowLayout()
-                        .navigationTitle(p == .home ? "" : p.rawValue)
+                    Group {
+                        if p == .explore {
+                            pageView(p).frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else {
+                            ScrollView { pageView(p).padding(16) }
+                        }
+                    }
+                    .measuringNarrowLayout()
+                    .navigationTitle(p == .home ? "" : p.rawValue)
                 }
                 .tabItem { Label(p.rawValue, systemImage: p.icon) }
                 .tag(p)
@@ -163,6 +182,7 @@ struct SimpleDashboard: View {
     @ViewBuilder private func pageView(_ p: Page) -> some View {
         switch p {
         case .home: HomePage(sheet: $sheet, showActivity: { page = .activity }, showNetwork: { page = .network })
+        case .explore: ExplorePage()
         case .activity: ActivityPage()
         case .network: NetworkPage()
         case .security: SecurityPage()
@@ -481,7 +501,9 @@ private struct RewardDaysCard: View {
 
 private struct NetworkPage: View {
     @EnvironmentObject var model: WalletModel
+    #if os(macOS)
     @EnvironmentObject var node: NodeController
+    #endif
 
     @Environment(\.narrowLayout) private var narrow
 
@@ -503,7 +525,11 @@ private struct NetworkPage: View {
             : model.chainPausedSince != nil
                 ? "Network paused"
                 : "Connected to \(Brand.project)\(Terms.isTestnet ? " testnet" : "")"
+        #if os(macOS)
         return base + (model.status != nil && node.networkCheckPending ? node.pendingRouteNote : "")
+        #else
+        return base
+        #endif
     }
 
     var body: some View {
@@ -677,6 +703,7 @@ private struct SecurityPage: View {
             #if os(macOS)
             Card { AgentWalletPanel() }
             #endif
+            ConnectedSitesSection()
             Card { RecoveryPanel() }
         }
     }

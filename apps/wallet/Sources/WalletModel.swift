@@ -83,12 +83,91 @@ final class WalletModel: ObservableObject {
     /// When `tokens` was last read (nil: never, for this account).
     @Published var tokensUpdated: Date?
     @Published var tokensError: String?
+    /// Sites the Explore tab is connected to (per-origin grants, revocable in
+    /// Security). Kept per device, like the other Explore-tab state.
+    @Published private(set) var sitePermissions = SitePermissionStore()
     /// Since when the chain has made no new block (nil while it moves). Light
     /// verification needs the next block and a recent certificate, so a paused chain
     /// cannot verify: the last verified balance stays on screen meanwhile.
     @Published var chainPausedSince: Date?
     private func setVerifyError(_ e: String?) {
         if verifyError != e { verifyError = e }
+    }
+
+    // MARK: Explore tab (the in-app browser)
+
+    /// While this is true, the Explore tab's provider answers nothing — reads
+    /// included — exactly as the extension's vault does while locked.
+    var exploreLocked: Bool { enclave == nil || keyError != nil }
+
+    /// The port this Mac's own node serves JSON-RPC on (the dev network gets
+    /// its own port). The Explore tab's unverified reads go here.
+    var nodeRpcPort: UInt16 { developmentNetwork ? developmentPort : 18545 }
+
+    /// The address a site may see, nil unless this exact origin was granted
+    /// the account the wallet holds right now (a switched account disconnects
+    /// every site — the grant names an address, not "whatever is active").
+    func connectedSiteAddress(origin: String) -> String? {
+        guard !exploreLocked else { return nil }
+        return sitePermissions.connectedAddress(origin: origin, current: address)
+    }
+
+    /// Remember (or replace) a site's grant after the user approved the sheet.
+    func grantSitePermission(origin: String, address: String) {
+        sitePermissions.grant(origin: origin, address: address)
+        sitePermissions.save()
+    }
+
+    /// Forget one site's grant (the site's next request asks again).
+    func revokeSitePermission(origin: String) {
+        sitePermissions.revoke(origin: origin)
+        sitePermissions.save()
+    }
+
+    /// Forget every site (Security's "Disconnect all").
+    func revokeAllSitePermissions() {
+        sitePermissions.revokeAll()
+        sitePermissions.save()
+    }
+
+    /// Sign and submit a page's transaction after the sheet was approved.
+    /// A plain transfer reuses the send sheet's FeeChanged flow: `shownFeeWei`
+    /// is the maximum the sheet displayed, and a rise since then refuses the
+    /// send instead of silently signing above it. A contract call runs with
+    /// the gas the page asked for (its default when it asked for none).
+    /// Returns the tx hash once submitted (the page watches it with
+    /// aether_getReceipt); a refusal comes back as text and nothing is signed.
+    func sendPageTransaction(_ tx: PageTransaction, origin: String, title: String,
+                             shownFeeWei: String?) async -> (hash: String?, refusal: String?) {
+        guard let enclave else { return (nil, "The wallet key is not ready yet") }
+        let pk = enclave.publicKey
+        let validatorsNow = validators
+        let action = CallDescribe.action(to: tx.to, data: tx.data)
+        let who = tx.to.isEmpty ? "a new contract" : Short.address(tx.to)
+        let item = ActivityItem(kind: .sent, title: "\(action) at \(origin)",
+                                amount: Double(Wei.format(tx.valueWei)).map { -$0 },
+                                recipients: tx.to.isEmpty ? [] : [tx.to.lowercased()])
+        do {
+            let prepared: PreparedTx
+            if tx.isPlainTransfer {
+                prepared = try prepareTransfer(p256PublicKey: pk, to: tx.to, valueWei: tx.valueWei,
+                                               shownFeeWei: shownFeeWei, validators: validatorsNow)
+            } else {
+                let gas: UInt64 = tx.gas == 0 ? 3_000_000 : tx.gas
+                prepared = try prepareCall(p256PublicKey: pk, to: tx.to, valueWei: tx.valueWei,
+                                           dataHex: tx.data, gasLimit: gas)
+            }
+            let sig = try enclave.sign(prepared.signingMessage)   // Secure Enclave, may prompt
+            let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
+            note("\(title): \(action) to \(who) submitted \(h.prefix(14))…")
+            // The page gets its hash now; finality lands in the activity feed.
+            Task.detached { await self.track(h, label: "\(title): \(action) to \(who)", item: item) }
+            return (h, nil)
+        } catch {
+            let refusal = WalletModel.ffiMessage(error)
+            note("\(title) was not sent: \(refusal)")
+            return (nil, refusal)
+        }
     }
 
     private var refreshes = 0
@@ -907,6 +986,7 @@ final class WalletModel: ObservableObject {
             return (ts > 0 && ts < Double(Timestamp.secondsEraBound) / 1_000) ? item.with(date: Date(timeIntervalSince1970: ts * 1_000)) : item
         }
         linkedWallets = d.stringArray(forKey: linkedKey) ?? []
+        _ = sitePermissions.load(defaults: d)
     }
 
     private func save() {

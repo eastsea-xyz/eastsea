@@ -522,6 +522,9 @@ final class NodeController: ObservableObject {
         if !keepSwitch {
             powerTimer?.invalidate()
             powerTimer = nil
+            // Switched off on purpose: the last crash loop is no longer an
+            // incident to show (the health banner reads this).
+            stoppedFailure = nil
         }
         poll?.invalidate()
         tokenTimer?.invalidate()

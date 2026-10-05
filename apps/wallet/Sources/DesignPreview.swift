@@ -49,7 +49,7 @@ extension WalletModel {
         let v = DesignPreview.variant, empty = v == "empty"
         address = "0x5397a1c0De4b1b8F6A3cB2d1E0f9C7a6B5d4E502"
         let now = Date()
-        status = ChainStatus(chainId: 7780, height: 184_210, stateRoot: "0x", mempool: 0, transferFeeWei: "21000000000000", upgradesJson: "[]", supportedProtocol: 3)
+        status = ChainStatus(chainId: 7780, height: 184_210, stateRoot: "0x", mempool: 0, transferFeeWei: "21000000000000", upgradesJson: "[]", supportedProtocol: 3, faucet: nil)
         account = VerifiedAccount(address: address, balanceWei: empty ? "0" : "12500000000000000000", nonce: 3,
                                   stateHeight: 184_209, certifiedBlock: 184_210, stateRoot: "0x", validators: 4)
         if v == "paused" { chainPausedSince = now.addingTimeInterval(-240) }

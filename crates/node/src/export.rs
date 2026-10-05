@@ -155,7 +155,7 @@ fn ben_decode_at(b: &[u8]) -> Result<(Ben, &[u8]), String> {
 }
 
 fn sha1(b: &[u8]) -> [u8; 20] {
-    use sha1::{Digest as _, Sha1};
+    use ::sha1::{Digest as _, Sha1};
     let mut h = Sha1::new();
     h.update(b);
     h.finalize()[..].try_into().expect("sha1 is 20 bytes")

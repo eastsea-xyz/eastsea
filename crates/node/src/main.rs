@@ -87,7 +87,7 @@ struct ResourceArgs {
     #[arg(long = "prover-on-battery")]
     prover_on_battery: bool,
     /// Budget for this node's own in-memory history caches (summaries,
-    /// receipts). Default: a quarter of the RAM, at least 2 GB.
+    /// receipts). Default: an eighth of the RAM, between 1 GB and 4 GB.
     #[arg(long = "max-memory", value_name = "SIZE")]
     max_memory: Option<String>,
     /// Below this free-space floor, the node stops before further consensus

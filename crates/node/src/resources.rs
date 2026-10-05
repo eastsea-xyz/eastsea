@@ -473,12 +473,33 @@ pub fn parse_size(s: &str) -> Result<u64, String> {
 
 /// The default prover cap: a quarter of the RAM, at least 4 GB.
 pub fn default_prover_cap() -> u64 {
-    (physical_ram() / 4).max(4 * GB)
+    prover_cap_for(physical_ram())
 }
+
+/// [`default_prover_cap`] for a machine with `ram` bytes of RAM.
+pub fn prover_cap_for(ram: u64) -> u64 {
+    (ram / 4).max(4 * GB)
+}
+
+/// Floor of the default history-cache budget.
+pub const CACHE_BUDGET_MIN: u64 = GB;
+/// Ceiling of the default history-cache budget.
+pub const CACHE_BUDGET_MAX: u64 = 4 * GB;
 
 /// The default budget for the node's own in-memory history caches.
 pub fn default_cache_budget() -> u64 {
-    (physical_ram() / 4).max(2 * GB)
+    cache_budget_for(physical_ram())
+}
+
+/// [`default_cache_budget`] for a machine with `ram` bytes of RAM: an eighth
+/// of the RAM, between 1 GB and 4 GB. A consumer Mac runs the user's other
+/// apps, and often several nodes at once (the wallet's follower plus
+/// validators), and each node takes this whole budget for itself. The old
+/// quarter of the RAM gave 16 GB per node on a 64 GB Mac. Trimming only drops
+/// sealed eras whose files are on disk, so a small budget costs era-file reads
+/// for old heights and never loses data. `--max-memory` still overrides it.
+pub fn cache_budget_for(ram: u64) -> u64 {
+    (ram / 8).clamp(CACHE_BUDGET_MIN, CACHE_BUDGET_MAX)
 }
 
 /// Everything the resource flags configure (docs/ops/resource-limits.md).
@@ -796,10 +817,12 @@ mod tests {
         let _seam = SEAM.lock().unwrap_or_else(|e| e.into_inner());
         set_test_readings(Some(PRESSURE_CRITICAL), None);
         assert!(snapshot_memory_budget().unwrap_err().contains("critical"));
-        set_test_readings(Some(PRESSURE_WARN), Some(8 * GB));
-        assert_eq!(snapshot_memory_budget().unwrap(), 2 * GB, "warn with pinned headroom budgets normally");
-        assert!(snapshot_build_gate(2 * GB).is_ok(), "a fitting estimate builds under pinned warn");
-        assert!(snapshot_build_gate(2 * GB + 1).is_err(), "a non-fitting estimate refuses under pinned warn");
+        // A quarter of 4 GB is 1 GB, the default budget's floor, so the
+        // result does not depend on this host's RAM.
+        set_test_readings(Some(PRESSURE_WARN), Some(4 * GB));
+        assert_eq!(snapshot_memory_budget().unwrap(), GB, "warn with pinned headroom budgets normally");
+        assert!(snapshot_build_gate(GB).is_ok(), "a fitting estimate builds under pinned warn");
+        assert!(snapshot_build_gate(GB + 1).is_err(), "a non-fitting estimate refuses under pinned warn");
         clear_test_readings();
         set_test_readings(None, Some(4 * GB));
         assert_eq!(snapshot_memory_budget().unwrap(), GB, "a pinned available memory alone also pins the budget");
@@ -832,6 +855,39 @@ mod tests {
         );
         assert_eq!(parse_swapusage("total = 0B  used = 0B  free = 0B").unwrap(), (0, 0));
         assert!(parse_swapusage("total = 1.00M").is_none(), "no used value");
+    }
+
+    /// The default cache budget per machine size: an eighth of the RAM,
+    /// between 1 GB and 4 GB, so several nodes on one consumer Mac fit.
+    #[test]
+    fn the_cache_budget_is_an_eighth_of_the_ram_between_1_and_4_gb() {
+        assert_eq!(cache_budget_for(8 * GB), GB);
+        assert_eq!(cache_budget_for(16 * GB), 2 * GB);
+        assert_eq!(cache_budget_for(24 * GB), 3 * GB);
+        assert_eq!(cache_budget_for(64 * GB), 4 * GB);
+        assert_eq!(cache_budget_for(128 * GB), 4 * GB);
+        assert_eq!(cache_budget_for(4 * GB), GB, "the 1 GB floor holds on small machines");
+        assert_eq!(cache_budget_for(0), GB, "an unreadable RAM size still gets the floor");
+        assert_eq!(default_cache_budget(), cache_budget_for(physical_ram()));
+        assert_eq!(Limits::default().max_memory, default_cache_budget());
+    }
+
+    /// The prover cap is unchanged: a quarter of the RAM, at least 4 GB.
+    #[test]
+    fn the_prover_cap_is_a_quarter_of_the_ram_at_least_4_gb() {
+        assert_eq!(prover_cap_for(8 * GB), 4 * GB);
+        assert_eq!(prover_cap_for(16 * GB), 4 * GB);
+        assert_eq!(prover_cap_for(24 * GB), 6 * GB);
+        assert_eq!(prover_cap_for(64 * GB), 16 * GB);
+        assert_eq!(default_prover_cap(), prover_cap_for(physical_ram()));
+    }
+
+    /// `--max-memory` overrides the default in both directions.
+    #[test]
+    fn max_memory_overrides_the_default_budget() {
+        assert_eq!(Limits::resolve(None, None, false, Some("16"), None).unwrap().max_memory, 16 * GB);
+        assert_eq!(Limits::resolve(None, None, false, Some("256M"), None).unwrap().max_memory, 256 * 1024 * 1024);
+        assert_eq!(Limits::resolve(None, None, false, Some("auto"), None).unwrap().max_memory, default_cache_budget());
     }
 
     #[test]

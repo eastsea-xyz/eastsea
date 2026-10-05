@@ -229,6 +229,7 @@ fn a_network_file_never_seats_a_validator_that_is_also_a_reserve_key() {
         protocol: None,
         group: None,
         max_committee: None,
+        release: None,
     };
     assert!(file(vec![member(9)]).genesis().is_ok(), "a reserve key of its own is fine");
     assert_eq!(file(vec![member(1)]).genesis().unwrap_err(), "validator 1: its key is also a reserve key");

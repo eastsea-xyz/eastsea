@@ -322,6 +322,56 @@ fn smooth_issuance() -> Rule {
     }
 }
 
+/// The release pin (checklist B6, docs/design/19-release-approval.md): the
+/// network.json the app ships must name what its updater trusts — the
+/// ReleaseLog this genesis predeploys, that code's runtime hash, and three
+/// builder keys under the 2/3 (emergency 3/3) rule. The wallet has no
+/// compiled-in fallback for a new genesis, so a missing pin would mean an
+/// app that can never update; a wrong address or code hash, the same. Checked
+/// against the genesis state `cfg` builds, so the pin cannot name code the
+/// chain does not hold. `mainnet-rules` prints it after the 20 genesis rules.
+pub fn check_release(cfg: &ChainConfig, pin: Option<&crate::roster::ReleasePin>) -> Rule {
+    use aether_execution::release_log;
+    let rule = |ok: bool, detail: String| Rule { name: "release pin", ok, detail };
+    let Some(pin) = pin else {
+        return rule(
+            false,
+            "network.json has no \"release\" pin: the app would refuse every update (aether network --release <release.json>)".into(),
+        );
+    };
+    if let Err(e) = pin.validate() {
+        return rule(false, e);
+    }
+    let state = cfg.genesis_state();
+    let want_address = format!("{:#x}", release_log::ADDRESS);
+    if !pin.log.eq_ignore_ascii_case(&want_address) {
+        return rule(false, format!("release.log {} is not this genesis's ReleaseLog ({want_address})", pin.log));
+    }
+    let held = state.code_hash(&release_log::ADDRESS);
+    let held_hex = format!("{held:#x}");
+    if state.code(&release_log::ADDRESS) != release_log::code() {
+        return rule(false, format!("this genesis holds no ReleaseLog code at {want_address} (code hash {held_hex})"));
+    }
+    if !pin.code_hash.eq_ignore_ascii_case(&held_hex) {
+        return rule(
+            false,
+            format!("release.code_hash {} does not match the ReleaseLog runtime code this genesis holds ({held_hex})", pin.code_hash),
+        );
+    }
+    rule(
+        true,
+        format!(
+            "the app trusts only ReleaseLog {want_address} (code hash {}…) and builders {}: {}/{} normal, {}/{} emergency",
+            &held_hex[..18],
+            pin.builder_keys.iter().map(|k| format!("{}…", &k[..k.len().min(12)])).collect::<Vec<_>>().join(", "),
+            pin.threshold,
+            release_log::BUILDERS,
+            pin.emergency_threshold,
+            release_log::BUILDERS
+        ),
+    )
+}
+
 /// The final-file gate (audit 5, A5-4): the four rules that only a network
 /// the genesis DKG actually wrote can satisfy. `check` rebuilds a genesis and
 /// checks its flags; these decode the exact `output` string with the same
@@ -329,7 +379,7 @@ fn smooth_issuance() -> Rule {
 /// public key and refuse revealed seated shares. A pre-DKG file (identity and
 /// output both absent, what `assemble` writes) passes with a pre-DKG detail —
 /// the assemble-time gate is `check`; a file carrying only one of the two
-/// fields fails. `mainnet-rules` prints these after the 20 genesis rules.
+/// fields fails. `mainnet-rules` prints these after the 20 genesis rules and the release pin.
 pub fn check_final(file: &crate::roster::NetworkFile, rehearsal: bool) -> Vec<Rule> {
     let rule = |name: &'static str, ok: bool, detail: String| Rule { name, ok, detail };
     let n = file.validators.len() as u32;
@@ -478,6 +528,10 @@ pub struct RecordGenesis {
     pub reserve: Option<crate::roster::ReserveFile>,
     pub group: Option<u16>,
     pub max_committee: Option<u64>,
+    /// The app's release-approval pin (checklist B6): an evolved file must
+    /// keep the builder keys and ReleaseLog the ceremony checked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release: Option<crate::roster::ReleasePin>,
 }
 
 /// What the coordinator's `check` writes after PASS (`aether
@@ -532,6 +586,12 @@ pub fn record_genesis_of(file: &crate::roster::NetworkFile) -> Result<RecordGene
         }),
         group: file.group,
         max_committee: file.max_committee,
+        release: file.release.clone().map(|p| crate::roster::ReleasePin {
+            log: p.log.to_ascii_lowercase(),
+            code_hash: p.code_hash.to_ascii_lowercase(),
+            builder_keys: p.builder_keys.iter().map(|k| k.to_ascii_lowercase()).collect(),
+            ..p
+        }),
     })
 }
 
@@ -1142,6 +1202,7 @@ mod tests {
             group: None,
             max_committee: Some(crate::rotation::GROW_UNTIL as u64),
             genesis_validators: Some(validators),
+            release: None,
         }
     }
 
@@ -1657,5 +1718,138 @@ mod tests {
         assert!(rule.ok, "{}", rule.detail);
         assert!(rule.detail.contains(TESTNET_CHAIN_ID.to_string().as_str()), "the ok names which app needs no record: {}", rule.detail);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Three builder keys as `builder-sign init` prints them (bare 04‖x‖y hex).
+    fn builder_keys() -> Vec<String> {
+        use aether_crypto::Signer as _;
+        (1..=3u8)
+            .map(|i| {
+                let key = aether_crypto::P256Signer::from_seed(&[0x40 + i; 32]).unwrap().public_key();
+                let (x, y) = aether_crypto::p256_xy(&key.bytes).unwrap();
+                format!("04{}{}", hex::encode(x), hex::encode(y))
+            })
+            .collect()
+    }
+
+    /// Checklist B6: the release pin rule — present and right passes; missing,
+    /// a mismatched code hash, another address, a bad key set or another
+    /// threshold fails, each naming what is wrong.
+    #[test]
+    fn the_release_pin_rule_demands_the_genesis_release_log() {
+        use crate::roster::ReleasePin;
+        let cfg = mainnet();
+        let pin = ReleasePin::for_builders(&builder_keys()).unwrap();
+        assert_eq!(pin.log, "0x0000000000000000000000000000000000007705");
+        assert_eq!(pin.code_hash, format!("{:#x}", aether_execution::release_log::code_hash()));
+        assert_eq!((pin.threshold, pin.emergency_threshold), (2, 3));
+        let ok = check_release(&cfg, Some(&pin));
+        assert!(ok.ok, "{}", ok.detail);
+        assert_eq!(ok.name, "release pin");
+
+        let missing = check_release(&cfg, None);
+        assert!(!missing.ok && missing.detail.contains("no \"release\" pin"), "{}", missing.detail);
+
+        let mismatched = ReleasePin { code_hash: format!("0x{}", "ab".repeat(32)), ..pin.clone() };
+        let r = check_release(&cfg, Some(&mismatched));
+        assert!(!r.ok && r.detail.contains("does not match the ReleaseLog runtime code"), "{}", r.detail);
+
+        let elsewhere = ReleasePin { log: format!("{:#x}", Address::repeat_byte(0x77)), ..pin.clone() };
+        let r = check_release(&cfg, Some(&elsewhere));
+        assert!(!r.ok && r.detail.contains("is not this genesis's ReleaseLog"), "{}", r.detail);
+
+        let mut two = pin.clone();
+        two.builder_keys.pop();
+        assert!(!check_release(&cfg, Some(&two)).ok);
+        let mut twice = pin.clone();
+        twice.builder_keys[2] = twice.builder_keys[0].clone();
+        assert!(check_release(&cfg, Some(&twice)).detail.contains("the same builder key twice"));
+        let mut off_curve = pin.clone();
+        off_curve.builder_keys[1] = format!("04{}", "11".repeat(64));
+        assert!(!check_release(&cfg, Some(&off_curve)).ok);
+        let lax = ReleasePin { emergency_threshold: 2, ..pin.clone() };
+        assert!(!check_release(&cfg, Some(&lax)).ok, "an emergency release stays 3/3 (B4 changed only the protocol quorum)");
+
+        // A genesis without the predeploy (7780's shape) cannot satisfy a pin.
+        let mut legacy = mainnet();
+        legacy.node_rewards = false;
+        legacy.history_v2 = false;
+        let r = check_release(&legacy, Some(&pin));
+        assert!(!r.ok && r.detail.contains("holds no ReleaseLog code"), "{}", r.detail);
+    }
+
+    /// The pin rides through every file a ceremony writes: the DKG's
+    /// (`carry_genesis` from `genesis()`), a reshare's (`keep_genesis`), and
+    /// the record's immutable genesis.
+    #[test]
+    fn the_release_pin_survives_the_ceremony_files() {
+        let pin = crate::roster::ReleasePin::for_builders(&builder_keys()).unwrap();
+        let mut file = final_file(0, None, None);
+        file.release = Some(pin.clone());
+        let genesis = file.genesis().unwrap();
+        assert_eq!(genesis.release.as_ref(), Some(&pin));
+        let mut dkg = crate::roster::Roster::devnet(4).to_file(file.chain_id);
+        dkg.carry_genesis(&genesis);
+        assert_eq!(dkg.release.as_ref(), Some(&pin));
+        let mut reshare = crate::roster::Roster::devnet(4).to_file(file.chain_id);
+        reshare.keep_genesis(&file);
+        assert_eq!(reshare.release.as_ref(), Some(&pin));
+        assert_eq!(record_genesis_of(&file).unwrap().release, Some(pin.clone()));
+        let mut swapped = file.clone();
+        swapped.release.as_mut().unwrap().builder_keys.reverse();
+        assert_ne!(record_genesis_of(&swapped).unwrap(), record_genesis_of(&file).unwrap(), "an evolved file cannot swap the builders");
+        let json = serde_json::to_value(&file).unwrap();
+        assert_eq!(json["release"]["log"], "0x0000000000000000000000000000000000007705");
+        assert_eq!(json["release"]["builder_keys"].as_array().unwrap().len(), 3);
+        assert_eq!(json["release"]["threshold"], 2);
+        assert_eq!(json["release"]["emergency_threshold"], 3);
+        // Only a new genesis holds the predeploy a pin names.
+        let mut old = file.clone();
+        old.node_rewards = None;
+        old.reserve = None;
+        assert!(old.genesis().unwrap_err().contains("only a new genesis"));
+    }
+
+    /// `aether network --release <file>`: the config names the builders; any
+    /// address, code hash or threshold it adds must be the predeploy's.
+    #[test]
+    fn a_release_config_writes_the_pin_or_is_refused() {
+        use crate::roster::ReleasePin;
+        let keys = builder_keys();
+        let pin = ReleasePin::from_config(serde_json::json!({ "builder_keys": keys }).to_string().as_bytes()).unwrap();
+        assert_eq!(pin, ReleasePin::for_builders(&keys).unwrap());
+        let full = serde_json::json!({
+            "builder_keys": keys, "log": pin.log.to_uppercase().replace("0X", "0x"),
+            "code_hash": pin.code_hash, "threshold": 2, "emergency_threshold": 3,
+        });
+        assert_eq!(ReleasePin::from_config(full.to_string().as_bytes()).unwrap(), pin);
+        let wrong_hash = serde_json::json!({ "builder_keys": keys, "code_hash": format!("0x{}", "cd".repeat(32)) });
+        assert!(ReleasePin::from_config(wrong_hash.to_string().as_bytes()).unwrap_err().contains("is not the ReleaseLog runtime"));
+        let wrong_log = serde_json::json!({ "builder_keys": keys, "log": format!("{:#x}", Address::repeat_byte(1)) });
+        assert!(ReleasePin::from_config(wrong_log.to_string().as_bytes()).is_err());
+        let typo = serde_json::json!({ "builder_keys": keys, "treshold": 1 });
+        assert!(ReleasePin::from_config(typo.to_string().as_bytes()).is_err(), "unknown fields are refused");
+        let prefixed = serde_json::json!({ "builder_keys": keys.iter().map(|k| format!("0x{k}")).collect::<Vec<_>>() });
+        assert_eq!(ReleasePin::from_config(prefixed.to_string().as_bytes()).unwrap(), pin, "a 0x prefix is normalized away");
+    }
+
+    /// The 7780 file ships unchanged: byte-identical to the pinned digest, no
+    /// release pin when parsed or re-serialized, and its genesis holds no
+    /// ReleaseLog — the app keeps the legacy Sparkle path there.
+    #[test]
+    fn the_7780_network_file_is_unchanged_and_has_no_pin() {
+        let bytes = include_bytes!("../../../apps/wallet/Resources/network.json");
+        assert!(shipped_legacy_network(bytes), "apps/wallet/Resources/network.json must stay byte-identical");
+        assert!(!String::from_utf8_lossy(bytes).contains("\"release\""));
+        let file: crate::roster::NetworkFile = serde_json::from_slice(bytes).unwrap();
+        assert_eq!(file.chain_id, TESTNET_CHAIN_ID);
+        assert!(file.release.is_none());
+        assert!(serde_json::to_value(&file).unwrap().get("release").is_none(), "None is never written");
+        let genesis = file.genesis().unwrap();
+        assert!(genesis.release.is_none());
+        let mut cfg = mainnet();
+        cfg.node_rewards = genesis.node_rewards;
+        cfg.history_v2 = genesis.history >= 2;
+        assert!(cfg.genesis_state().code(&aether_execution::release_log::ADDRESS).is_empty());
     }
 }

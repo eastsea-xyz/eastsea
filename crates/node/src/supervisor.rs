@@ -2004,6 +2004,7 @@ mod tests {
             group: None,
             max_committee: None,
             genesis_validators: Some(vec![]),
+            release: None,
         }
     }
 

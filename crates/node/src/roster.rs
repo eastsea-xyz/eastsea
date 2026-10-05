@@ -99,6 +99,137 @@ pub struct NetworkFile {
     /// network` freezes it here and ceremonies carry it on (`keep_genesis`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub genesis_validators: Option<Vec<Member>>,
+    /// The Mac app's release-approval pin (docs/design/19-release-approval.md,
+    /// checklist B6): the ReleaseLog predeploy, its runtime code hash and the
+    /// three builder keys the updater trusts. Required on a new genesis (the
+    /// mainnet rule "release pin"); absent on 7780, whose file stays
+    /// byte-identical and keeps the legacy Sparkle-only update path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release: Option<ReleasePin>,
+}
+
+/// `network.json` `release`: what the wallet's updater trusts, and nothing
+/// else — no compiled-in fallback exists for a new-genesis chain.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReleasePin {
+    /// ReleaseLog address (0x + 40 hex): the new-genesis predeploy.
+    pub log: String,
+    /// keccak256 of its runtime code (0x + 64 hex).
+    pub code_hash: String,
+    /// The three builders' P-256 keys, uncompressed SEC1 (04‖x‖y, 130 hex).
+    pub builder_keys: Vec<String>,
+    /// Builder signatures a normal release needs (2).
+    pub threshold: u8,
+    /// Builder signatures an emergency release needs (3).
+    pub emergency_threshold: u8,
+}
+
+impl ReleasePin {
+    /// The pin for `builder_keys` on a new genesis: the predeploy address and
+    /// code hash, the fixed 2-of-3 / 3-of-3 rule, keys lowercased.
+    pub fn for_builders(builder_keys: &[String]) -> Result<Self, String> {
+        let pin = ReleasePin {
+            log: format!("{:#x}", aether_execution::release_log::ADDRESS),
+            code_hash: format!("{:#x}", aether_execution::release_log::code_hash()),
+            builder_keys: builder_keys.iter().map(|k| k.trim_start_matches("0x").to_ascii_lowercase()).collect(),
+            threshold: aether_execution::release_log::THRESHOLD,
+            emergency_threshold: aether_execution::release_log::EMERGENCY_THRESHOLD,
+        };
+        pin.validate()?;
+        Ok(pin)
+    }
+
+    /// The pin from a release config file (`aether network --release`):
+    /// `{"builder_keys": [three 04‖x‖y hex keys]}`. It may also name `log`,
+    /// `code_hash`, `threshold` and `emergency_threshold` (e.g. copied from
+    /// `scripts/release-approve.py contract-hash`); each must then equal the
+    /// new-genesis predeploy and the 2/3, 3/3 rule — a config that expects
+    /// another ReleaseLog is refused, never silently replaced.
+    pub fn from_config(bytes: &[u8]) -> Result<Self, String> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Config {
+            builder_keys: Vec<String>,
+            log: Option<String>,
+            code_hash: Option<String>,
+            threshold: Option<u8>,
+            emergency_threshold: Option<u8>,
+        }
+        let c: Config = serde_json::from_slice(bytes).map_err(|e| format!("release config: {e}"))?;
+        let pin = Self::for_builders(&c.builder_keys)?;
+        if let Some(log) = c.log.filter(|l| !l.eq_ignore_ascii_case(&pin.log)) {
+            return Err(format!("release config: log {log} is not the new-genesis ReleaseLog {}", pin.log));
+        }
+        if let Some(hash) = c.code_hash.filter(|h| !h.eq_ignore_ascii_case(&pin.code_hash)) {
+            return Err(format!(
+                "release config: code_hash {hash} is not the ReleaseLog runtime this binary predeploys ({}); rebuild from the release tag",
+                pin.code_hash
+            ));
+        }
+        if c.threshold.is_some_and(|t| t != pin.threshold) || c.emergency_threshold.is_some_and(|t| t != pin.emergency_threshold) {
+            return Err("release config: thresholds are 2 (normal) and 3 (emergency), docs/design/19".into());
+        }
+        Ok(pin)
+    }
+
+    /// Shape checks a node and `aether network` apply to any pin: hex sizes,
+    /// three distinct builder keys on the P-256 curve, the 2/3 and 3/3 rule.
+    /// Whether the address and code hash are the genesis's ReleaseLog is the
+    /// mainnet rule "release pin" (it builds the genesis state).
+    pub fn validate(&self) -> Result<(), String> {
+        let hex_of = |s: &str, bytes: usize, what: &str| -> Result<Vec<u8>, String> {
+            let body = s.strip_prefix("0x").ok_or_else(|| format!("release.{what}: 0x-prefixed hex"))?;
+            let b = hex::decode(body).map_err(|e| format!("release.{what}: {e}"))?;
+            if b.len() != bytes {
+                return Err(format!("release.{what}: {bytes} bytes, got {}", b.len()));
+            }
+            Ok(b)
+        };
+        hex_of(&self.log, 20, "log")?;
+        if hex_of(&self.code_hash, 32, "code_hash")?.iter().all(|b| *b == 0) {
+            return Err("release.code_hash: the zero hash pins no code".into());
+        }
+        if self.builder_keys.len() != aether_execution::release_log::BUILDERS {
+            return Err(format!(
+                "release.builder_keys: exactly {} builder keys, got {}",
+                aether_execution::release_log::BUILDERS,
+                self.builder_keys.len()
+            ));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for (i, key) in self.builder_keys.iter().enumerate() {
+            // Bare hex, as `builder-sign init` prints it and the app reads it.
+            let b = hex::decode(key).map_err(|e| format!("release.builder_keys[{i}]: {e} (bare 04‖x‖y hex, no 0x)"))?;
+            let valid = b.len() == 65
+                && b[0] == 4
+                && aether_crypto::p256_point_is_valid(
+                    b[1..33].try_into().expect("32 bytes"),
+                    b[33..65].try_into().expect("32 bytes"),
+                );
+            if !valid {
+                return Err(format!(
+                    "release.builder_keys[{i}]: not an uncompressed P-256 public key (04‖x‖y, on the curve; `builder-sign init` prints one)"
+                ));
+            }
+            if !seen.insert(b) {
+                return Err(format!("release.builder_keys[{i}]: the same builder key twice (three different Macs sign)"));
+            }
+        }
+        if self.threshold != aether_execution::release_log::THRESHOLD
+            || self.emergency_threshold != aether_execution::release_log::EMERGENCY_THRESHOLD
+        {
+            return Err(format!(
+                "release: thresholds are {}/{} normal and {}/{} emergency (docs/design/19), got {} and {}",
+                aether_execution::release_log::THRESHOLD,
+                aether_execution::release_log::BUILDERS,
+                aether_execution::release_log::EMERGENCY_THRESHOLD,
+                aether_execution::release_log::BUILDERS,
+                self.threshold,
+                self.emergency_threshold
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// The founder's reserve keys in a network file: up to three validator
@@ -134,6 +265,9 @@ pub struct Genesis {
     pub group: u16,
     /// The committee ceiling (`ChainConfig::max_committee`).
     pub max_committee: usize,
+    /// The app's release-approval pin (not consensus: the wallet reads it).
+    /// Carried here so the DKG's file keeps it (`carry_genesis`).
+    pub release: Option<ReleasePin>,
 }
 
 /// Upper bounds a genesis may name for the voting-node epoch and the draw window
@@ -159,6 +293,7 @@ impl Default for Genesis {
             reserve: None,
             group: 0,
             max_committee: crate::rotation::GROW_UNTIL,
+            release: None,
         }
     }
 }
@@ -212,6 +347,12 @@ impl NetworkFile {
         // A genesis may name the protocol it starts under, 1 (the testnet's
         // genesis) up to the newest this binary runs; anything else is a typo,
         // not a default to round.
+        if let Some(pin) = &self.release {
+            if !(self.node_rewards.unwrap_or(false) && self.history.unwrap_or(0) >= 2) {
+                return Err("release: only a new genesis (node rewards, history v2) has the ReleaseLog predeploy to pin".into());
+            }
+            pin.validate()?;
+        }
         let protocol = match self.protocol {
             None => 1,
             Some(p) if (1..=crate::upgrade::PROTOCOL).contains(&p) => p,
@@ -231,6 +372,7 @@ impl NetworkFile {
             group: self.group.unwrap_or(0),
             max_committee: max_committee as usize,
             committee: self.committee()?,
+            release: self.release.clone(),
             reserve: match &self.reserve {
                 None => None,
                 Some(r) => {
@@ -314,6 +456,7 @@ impl NetworkFile {
         self.max_committee = (g.max_committee != crate::rotation::GROW_UNTIL).then_some(g.max_committee as u64);
         // The roster the network opened with, frozen: handoffs rewrite `validators`.
         self.genesis_validators = Some(g.committee.iter().map(|(key, node)| Member { key: key.clone(), node: node.clone() }).collect());
+        self.release = g.release.clone();
     }
 
     /// Carry genesis facts into a file written by a ceremony (dkg, reshare).
@@ -330,6 +473,7 @@ impl NetworkFile {
         self.group = from.group.or(self.group);
         self.max_committee = from.max_committee.or(self.max_committee);
         self.genesis_validators = from.genesis_validators.clone().or(self.genesis_validators.take());
+        self.release = from.release.clone().or(self.release.take());
     }
 }
 
@@ -456,6 +600,7 @@ impl Roster {
             group: None,
             max_committee: None,
             genesis_validators: None,
+            release: None,
         }
     }
 }
@@ -673,6 +818,7 @@ mod group_tests {
             group,
             max_committee,
             genesis_validators: None,
+            release: None,
         }
     }
 

@@ -56,7 +56,7 @@
 | 송금 수수료 최대치 표시·재확인 | ✅ |
 | 기록 보관 용량 설정 | ✅ |
 | 내장 브라우저(탐색 탭, dApp 연결, 서명 확인) | ✅ |
-| 네이티브 검증 연결(앱 안 탐색기 → Rust 검증) | 🔄 |
+| 네이티브 검증 연결(앱 안 탐색기 → Rust 검증) | ✅ 병합(2026-10-06) |
 | 확장 지갑: 잔액 0 송신 안내 | ⏳ |
 | EIP-7702 원래 키 노출 시 안내(F-05) | ⏳ |
 | 이름 정리(AETH→DBLN, 문서·화면) | 🔄 |
@@ -66,11 +66,11 @@
 | 항목 | 상태 |
 |---|---|
 | 소개 사이트·블록 탐색기 Cloudflare Pages 배포 | ✅ (`eastsea-site.pages.dev`, `eastsea-explorer.pages.dev`) |
-| 하위 도메인 chain/explorer.eastsea.xyz | 🧑 DNS CNAME 2줄 |
-| 읽기 전용 관문(`--public-read-only`) + 탐색기 출처 표시 | 🔄 |
+| 하위 도메인 chain/explorer.eastsea.xyz | ✅ CNAME 생성(리드, 2026-10-05) |
+| 읽기 전용 관문(`--public-read-only`) + 탐색기 출처 표시 | 🔄 구현·테스트 끝, 포맷 없이 재정리 중 |
 | 정적 인증 이력 피드·브라우저 블록 검증·iroh-wasm | ⏳ 베타 뒤 |
 | 앱 레지스트리 설계·스키마·법률 검토 반영 | ✅ |
-| 법률 검토 레드팀 반박 | 🔄 |
+| 법률 검토 레드팀 반박 | ✅ |
 | 레지스트리 1단계(계약·게시 CLI·노드 색인·탐색기를 첫 앱으로) | ⏳ |
 | 계약 감사(F-01~F-08) 수정 | ✅ |
 | DEX·런치패드 | ⬜ 계약 소스 없음, 외부 팀도 레지스트리로 올릴 수 있게 |
@@ -81,7 +81,7 @@
 
 ## G. 사용자 몫 🧑
 
-1. Cloudflare DNS: `chain` → `eastsea-site.pages.dev`, `explorer` → `eastsea-explorer.pages.dev`
+1. ~~Cloudflare DNS~~ — 리드가 키체인 키로 처리함
 2. 72시간 소크용 Mac 켜기(jay-macbookpro, jayui-mac-studio)
 3. (선택) 테스트넷 검증자 로그인 없이 시작: `sudo scripts/install-validator-daemons.sh`
 4. 상표 출원 결제(특허로)

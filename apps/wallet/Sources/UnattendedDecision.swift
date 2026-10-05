@@ -9,12 +9,15 @@ enum UnattendedDecision {
     /// arguments, so a restart never changes behavior — except the app's own
     /// child also gets `--exit-with-parent` (the daemon has no parent that
     /// dies; the app's child must never outlive the app). This is the single
-    /// source for both (Tests/unattended).
+    /// source for both (Tests/unattended). `storageFlag` is the resolved
+    /// history-storage budget (설정 ▸ 역사 보관, `StorageSetting.flag`),
+    /// appended last so the flag order stays stable.
     static func nodeArgv(dataDir: String, rpcPort: UInt16, p2pPort: UInt16,
-                         networkPath: String?, proverFlags: [String]) -> [String] {
+                         networkPath: String?, proverFlags: [String], storageFlag: String? = nil) -> [String] {
         var out = ["run", "--data", dataDir, "--rpc-port", String(rpcPort), "--port", String(p2pPort)]
         if let networkPath { out += ["--network", networkPath] }
         out += proverFlags
+        if let storageFlag { out += [storageFlag] }
         return out
     }
 

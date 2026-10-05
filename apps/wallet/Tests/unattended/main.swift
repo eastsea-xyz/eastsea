@@ -27,6 +27,19 @@ check(UnattendedDecision.nodeArgv(dataDir: "/tmp/n", rpcPort: 1, p2pPort: 2, net
     == ["run", "--data", "/tmp/n", "--rpc-port", "1", "--port", "2"],
       "a nil network path leaves --network out")
 
+// The history-storage budget rides the same argv (설정 ▸ 역사 보관): last, so
+// the order everything else depends on does not move.
+check(UnattendedDecision.nodeArgv(dataDir: "/tmp/n", rpcPort: 1, p2pPort: 2, networkPath: nil, proverFlags: [],
+                                  storageFlag: "--max-shards=128")
+    == ["run", "--data", "/tmp/n", "--rpc-port", "1", "--port", "2", "--max-shards=128"],
+      "a storage flag rides last")
+check(UnattendedDecision.nodeArgv(dataDir: "/tmp/n", rpcPort: 1, p2pPort: 2, networkPath: nil, proverFlags: ["--prover-threads=8"],
+                                  storageFlag: "--max-shards=0").last == "--max-shards=0",
+      "the off flag rides last too, after the prover flags")
+check(!UnattendedDecision.nodeArgv(dataDir: "/tmp/n", rpcPort: 1, p2pPort: 2, networkPath: nil, proverFlags: [])
+    .contains { $0.hasPrefix("--max-shards") },
+      "no storage flag passed means the node's own default holds")
+
 // The switch's default: a Mac in or entering the voting set keeps running
 // through restarts by default; a follower does not; a user who ever moved
 // the switch owns the choice from then on.

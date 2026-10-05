@@ -18,6 +18,7 @@ run network-upgrade Brand.swift NetworkUpgrade.swift
 run release-approval ReleaseApproval.swift
 run rename-migration DataMigration.swift
 run resources ProverFlags.swift
+run storage StorageSetting.swift UnattendedDecision.swift
 run reward-status EarningsModel.swift
 run proving-badge EarningsModel.swift
 run token-guard Brand.swift TokenSend.swift TokenAssets.swift EarningsModel.swift TokenGuard.swift

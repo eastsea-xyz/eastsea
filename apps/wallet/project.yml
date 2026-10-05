@@ -74,6 +74,18 @@ targets:
             cp -f "$t" "$H/"
             codesign --force --options runtime --timestamp=none --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$H/$name"
           done
+          # The unattended-restart daemon (docs/design/29-unattended-restart.md):
+          # SMAppService.daemon registers the plist from Contents/Library/LaunchDaemons,
+          # whose BundleProgram is the root stub; the stub and the user wrapper it drops
+          # to live beside the node binary in Contents/Helpers.
+          D="$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Library/LaunchDaemons"
+          mkdir -p "$D"
+          cp -f "$SRCROOT/Daemons/com.pipln.eastsea.node.plist" "$D/"
+          chmod 644 "$D/com.pipln.eastsea.node.plist"
+          for s in eastsea-node-daemon.sh eastsea-node-wrapper.sh; do
+            cp -f "$SRCROOT/Helpers/$s" "$H/"
+            chmod 755 "$H/$s"
+          done
   AetherWalletIOS:
     type: application
     platform: iOS

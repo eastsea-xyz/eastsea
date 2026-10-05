@@ -20,6 +20,7 @@ run reward-status EarningsModel.swift
 run token-guard Brand.swift TokenSend.swift TokenAssets.swift EarningsModel.swift TokenGuard.swift
 run token-icon Brand.swift TokenSend.swift TokenAssets.swift EarningsModel.swift TokenGuard.swift TokenIconSpec.swift
 run token-send Brand.swift TokenSend.swift TokenAssets.swift EarningsModel.swift
+run unattended UnattendedDecision.swift
 run update-state Brand.swift DataMigration.swift UpdateTracker.swift
 run watchdog Brand.swift Clock.swift NodeWatchdog.swift
 exit $bad

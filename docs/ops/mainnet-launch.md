@@ -98,7 +98,7 @@ aether network \
 | smooth issuance | 발행이 매끄러운 감쇠다: 1 AETH/블록에서 연 15% 감쇠, 0.1 AETH 바닥 |
 | history v2 | 빈 블록이 조용하고 era 파일이 쌓인다 |
 | receipt commitments | 높이 1부터 각 블록이 자신의 실행 영수증 루트를 커밋하고 검증자가 재실행해 검사한다 |
-| paid state growth | 새 슬롯·계정당 0.0001 AETH, 코드 바이트당 0.000001 AETH를 소각하고 블록당 새 슬롯을 512개로 제한한다 |
+| paid state growth | 상태 가격 하한 10^12 wei, 100,000유닛 버스트·블록당 32유닛 재충전·혼잡 시 가격 상승. 전체 블록 payload(증명·비콘·BAL 포함)는 8 MiB 버스트·4 KiB/블록 재충전으로 별도 제한; 유료 행 16× + 아카이브 4사본 허용치의 합은 버스트 포함 3 GB/일 이하. 새 슬롯 512개/블록; [디스크 산식·보관 한계](../design/27-state-fee.md) |
 | pruning default | 프루닝이 기본(30일 보존)이다 |
 | no premine, no faucet | 제네시스 잔액이 전부 0이다 |
 | zero-tip acceptance | 첫 블록 실행·증명 base fee가 0이어서 잔액 0 계정의 단순 송금은 팁 0으로 거래한다 |

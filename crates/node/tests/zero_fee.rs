@@ -521,6 +521,7 @@ fn log_heavy_block_stored_rows_fit_the_pinned_expansion_bound() {
         timestamp_ms: block.timestamp, proposer: n.operator(0), state_root: exec.state.root(),
         parent_state_root: n.parent.state.root(), txs: exec.tx_hashes.clone(), gas_used: exec.gas.exec,
         prove_gas: exec.gas.prove, base_fee: FeeVector::default(), excess: Default::default(),
+        archive_excess: 0,
     };
     let diff = exec.state.journal();
     let staged = block.encode();

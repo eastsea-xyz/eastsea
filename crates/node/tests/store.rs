@@ -42,6 +42,7 @@ fn summary(height: u64, s: &WorldState) -> BlockSummary {
         prove_gas: 0,
         base_fee: Default::default(),
         excess: Default::default(),
+        archive_excess: 0,
     }
 }
 

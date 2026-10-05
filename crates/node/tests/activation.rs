@@ -107,7 +107,7 @@ fn mainnet(protocol: u32) -> (Chain, Block) {
 }
 
 #[test]
-fn new_genesis_requires_seven_days_except_unanimous_emergencies() {
+fn new_genesis_requires_seven_days_except_committee_quorum_emergencies() {
     let (chain, genesis) = mainnet(3);
     let (_, sharing, shares) = aether_light::devnet_threshold(4);
     let parent = chain.lock().finalized.clone();
@@ -125,30 +125,60 @@ fn new_genesis_requires_seven_days_except_unanimous_emergencies() {
     emergency.emergency = true;
     let keys: Vec<_> = (1..=4).map(aether_light::devnet_validator_key).collect();
     let approvals: Vec<_> = shares.iter().zip(&keys).map(|((_, share), key)| sign_emergency_partial(&emergency, share, key)).collect();
-    let unanimous = combine(&sharing, &approvals).unwrap();
-    chain.lock().upgrades_known = vec![unanimous.clone()];
-    assert!(chain.upgrade_for(&parent).is_some(), "unanimous approval permits a one-epoch emergency");
-    let emergency_block = propose(&chain, &parent, &genesis, Some(unanimous));
+    let quorum = combine(&sharing, &approvals[..3]).unwrap();
+    chain.lock().upgrades_known = vec![quorum.clone()];
+    assert!(chain.upgrade_for(&parent).is_some(), "3-of-4 approval permits a one-epoch emergency");
+    let emergency_block = propose(&chain, &parent, &genesis, Some(quorum.clone()));
     assert!(chain.execute(&emergency_block, &parent).is_ok());
     let mut premature = emergency.clone();
     premature.activate_at = EPOCH_BLOCKS;
     let early_approvals: Vec<_> = shares.iter().zip(&keys).map(|((_, share), key)| sign_emergency_partial(&premature, share, key)).collect();
     chain.lock().upgrades_known = vec![combine(&sharing, &early_approvals).unwrap()];
     assert!(chain.upgrade_for(&parent).is_none(), "even an emergency waits one epoch");
-    chain.lock().upgrades_known = vec![combine(&sharing, &approvals[..3]).unwrap()];
-    assert!(chain.upgrade_for(&parent).is_none(), "threshold alone cannot shorten notice");
+    let early_block = propose_unchecked(&chain, &parent, &genesis, combine(&sharing, &early_approvals).unwrap());
+    assert!(matches!(chain.execute(&early_block, &parent), Err(ChainError::Protocol(_))), "validators enforce the emergency notice too");
+    let mut two = quorum.clone();
+    two.emergency_approvals.truncate(2);
+    chain.lock().upgrades_known = vec![two.clone()];
+    assert!(chain.upgrade_for(&parent).is_none(), "2-of-4 approvals cannot shorten notice");
+    let refused = propose_unchecked(&chain, &parent, &genesis, two);
+    assert!(matches!(chain.execute(&refused, &parent), Err(ChainError::Protocol(_))), "validators refuse 2-of-4 too");
 
-    let (legacy, _) = node(3);
+    let mut legacy_cfg = config();
+    legacy_cfg.chain_id = 7_780;
+    let (legacy, legacy_genesis) = Chain::new(legacy_cfg);
+    legacy.lock().identity = Some(*sharing.public());
     let old_parent = legacy.lock().finalized.clone();
-    legacy.lock().upgrades_known = vec![combine(&sharing, &approvals).unwrap()];
-    assert!(legacy.upgrade_for(&old_parent).is_none(), "legacy networks reject the emergency flag");
+    let mut legacy_upgrade = emergency.clone();
+    legacy_upgrade.chain_id = 7_780;
+    let legacy_approvals: Vec<_> = shares.iter().zip(&keys).map(|((_, share), key)| sign_emergency_partial(&legacy_upgrade, share, key)).collect();
+    for approvals in [&legacy_approvals[..3], &legacy_approvals[..]] {
+        let legacy_emergency = combine(&sharing, approvals).unwrap();
+        legacy.lock().upgrades_known = vec![legacy_emergency.clone()];
+        assert!(legacy.upgrade_for(&old_parent).is_none(), "7780 rejects the emergency flag at either approval count");
+        let legacy_block = propose_unchecked(&legacy, &old_parent, &legacy_genesis, legacy_emergency);
+        assert!(matches!(legacy.execute(&legacy_block, &old_parent), Err(ChainError::Protocol(_))));
+    }
     let legacy_snapshot = Snapshot::of(&legacy);
     assert_eq!(legacy_snapshot.to_bytes(), postcard::to_allocvec(&legacy_snapshot).unwrap(), "legacy snapshot bytes stay unchanged");
 
-    advance(&chain, parent, &emergency_block);
+    let mut parent = advance(&chain, parent, &emergency_block);
     let snapshot = Snapshot::from_bytes(&Snapshot::of(&chain).to_bytes()).unwrap();
     assert_eq!(snapshot.upgrade_notices.len(), 1);
     assert!(snapshot.upgrade_notices[0].upgrade.emergency);
+    assert_eq!(snapshot.upgrade_notices[0].emergency_approvals.len(), 3);
+
+    // The emergency is carried at height 1 and runs only at 1 + one epoch.
+    // Simulate installing the approved next-protocol binary before activation.
+    chain.lock().protocol = 4;
+    let mut previous = emergency_block;
+    for height in 2..=EPOCH_BLOCKS + 1 {
+        let block = propose(&chain, &parent, &previous, None);
+        assert_eq!(block.payload().unwrap().version, if height <= EPOCH_BLOCKS { 3 } else { 4 });
+        parent = advance(&chain, parent, &block);
+        previous = block;
+    }
+    assert_eq!(aether_node::upgrade::protocol_at(&parent.schedule, parent.height), 4);
 }
 
 /// A block on `parent` built the way a proposer builds it.

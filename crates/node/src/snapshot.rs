@@ -91,29 +91,41 @@ impl Snapshot {
 
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut legacy = postcard::to_allocvec(self).expect("snapshot serializes");
-        if !self.schedule.first().is_some_and(|a| a.at == 0 && a.protocol > 1) {
+        if self.summary.archive_excess == 0
+            && !self.schedule.first().is_some_and(|a| a.at == 0 && a.protocol > 1) {
             return legacy;
         }
-        let notices = serde_json::to_vec(&self.upgrade_notices).expect("notices serialize");
+        let archive_excess = self.summary.archive_excess;
+        let notices = if archive_excess == 0 {
+            serde_json::to_vec(&self.upgrade_notices)
+        } else {
+            serde_json::to_vec(&(archive_excess, &self.upgrade_notices))
+        }.expect("notices serialize");
         let n = legacy.len();
         // Prepend the envelope in place; a second full-sized Vec would double
         // the serialized state's live memory until this function returned.
         legacy.reserve(8 + notices.len());
         legacy.resize(n + 8, 0);
         legacy.copy_within(0..n, 8);
-        legacy[..4].copy_from_slice(b"AUN2");
+        legacy[..4].copy_from_slice(if archive_excess == 0 { b"AUN2" } else { b"AUN3" });
         legacy[4..8].copy_from_slice(&(n as u32).to_be_bytes());
         legacy.extend_from_slice(&notices);
         legacy
     }
 
     pub fn from_bytes(b: &[u8]) -> Result<Snapshot, String> {
-        if b.starts_with(b"AUN2") {
+        if b.starts_with(b"AUN2") || b.starts_with(b"AUN3") {
             let size = b.get(4..8).ok_or("snapshot notice header")?;
             let n = u32::from_be_bytes(size.try_into().expect("four bytes")) as usize;
             let body = b.get(8..8 + n).ok_or("snapshot notice body")?;
             let mut snap: Snapshot = postcard::from_bytes(body).map_err(|e| format!("snapshot: {e}"))?;
-            snap.upgrade_notices = serde_json::from_slice(&b[8 + n..]).map_err(|e| format!("snapshot notices: {e}"))?;
+            if b.starts_with(b"AUN3") {
+                let (debt, notices) = serde_json::from_slice(&b[8 + n..]).map_err(|e| format!("snapshot archive metadata: {e}"))?;
+                snap.summary.archive_excess = debt;
+                snap.upgrade_notices = notices;
+            } else {
+                snap.upgrade_notices = serde_json::from_slice(&b[8 + n..]).map_err(|e| format!("snapshot notices: {e}"))?;
+            }
             Ok(snap)
         } else {
             postcard::from_bytes(b).map_err(|e| format!("snapshot: {e}"))
@@ -140,8 +152,12 @@ impl Snapshot {
         if B256::from(self.history.root(&h)) != payload.history_root || self.history.leaves != self.summary.height + 1 {
             return Err("snapshot history does not match the certified history root".into());
         }
+        if self.summary.archive_excess > aether_execution::fees::MAX_ENCODED_PAYLOAD_BYTES
+            || (!(cfg.node_rewards || cfg.history_v2) && self.summary.archive_excess != 0) {
+            return Err("snapshot archive debt is outside this chain's bounds".into());
+        }
         // Everything outside the tree: fee excess, pending handoff, seed, protocol schedule, certified by the next block.
-        if crate::chain::meta_digest(&self.summary.excess, self.handoff.as_ref(), self.seed.as_ref(), &self.schedule, &self.statement) != payload.parent_meta {
+        if crate::chain::meta_digest_with_archive(&self.summary.excess, self.handoff.as_ref(), self.seed.as_ref(), &self.schedule, &self.statement, self.summary.archive_excess) != payload.parent_meta {
             return Err("snapshot metadata does not match the certified block".into());
         }
         for notice in &self.upgrade_notices {
@@ -193,6 +209,7 @@ impl Snapshot {
             prove_gas: 0,
             base_fee: Default::default(),
             excess: self.summary.excess,
+            archive_excess: self.summary.archive_excess,
         }
     }
 
@@ -214,9 +231,11 @@ impl Snapshot {
             gas: Default::default(),
             new_slots: 0,
             persistent_bytes: 0,
+            settlement: aether_execution::fees::Settlement::default(),
             proposer: aether_types::Address::ZERO,
             base_fee: Default::default(),
             excess: self.summary.excess,
+            archive_excess: self.summary.archive_excess,
             handoff: self.handoff.clone().map(Arc::new),
             seed: self.seed.clone().map(Arc::new),
             history: Arc::new(self.history.clone()),

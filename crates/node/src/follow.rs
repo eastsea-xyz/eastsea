@@ -1062,6 +1062,8 @@ fn rollback(chain: &Chain, cp: crate::store::Checkpoint) {
         proposer: summary.proposer,
         base_fee: summary.base_fee,
         excess: summary.excess,
+        archive_excess: summary.archive_excess,
+        settlement: Default::default(),
         handoff: cp.handoff.map(std::sync::Arc::new),
         seed: cp.seed.map(std::sync::Arc::new),
         history: std::sync::Arc::new(cp.history),

@@ -1,0 +1,312 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://eastsea.xyz/schemas/eastsea-app-1.json",
+  "title": "EastSea app manifest (eastsea-app/1)",
+  "description": "Off-chain manifest of an app in AppRegistry. Its sha256 (over the exact file bytes, max 64 KiB, UTF-8 without BOM) is the on-chain manifestHash. See docs/design/31-app-registry.md section 3. Text fields are written by the publisher and are untrusted.",
+  "type": "object",
+  "required": ["schema", "app_id", "version", "name", "description", "category", "icon", "bundle"],
+  "additionalProperties": false,
+  "patternProperties": {
+    "^x-[a-z0-9-]{1,32}$": {
+      "description": "Extension field. Wallets ignore it."
+    }
+  },
+  "properties": {
+    "schema": {
+      "const": "eastsea-app/1"
+    },
+    "app_id": {
+      "description": "keccak256(abi.encode(publisherAtCreation, slug)). Must equal the registry appId this manifest is released under.",
+      "$ref": "#/$defs/bytes32"
+    },
+    "version": {
+      "description": "SemVer 2.0. Must be strictly greater than the previous active release's version.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "name": { "$ref": "#/$defs/displayName" },
+    "subtitle": { "$ref": "#/$defs/subtitle" },
+    "description": { "$ref": "#/$defs/shortText" },
+    "long_description": {
+      "type": "string",
+      "maxLength": 4000,
+      "pattern": "^[^\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F\\u200B-\\u200F\\u202A-\\u202E\\u2066-\\u2069\\uFEFF]*$"
+    },
+    "localized": {
+      "description": "Per-locale overrides keyed by BCP 47 tag.",
+      "type": "object",
+      "maxProperties": 32,
+      "propertyNames": { "$ref": "#/$defs/locale" },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": { "$ref": "#/$defs/displayName" },
+          "subtitle": { "$ref": "#/$defs/subtitle" },
+          "description": { "$ref": "#/$defs/shortText" }
+        }
+      }
+    },
+    "locales": {
+      "type": "array",
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/locale" }
+    },
+    "category": {
+      "description": "Fixed list. defi-trading and token-issuance never enter ranked or featured slots and are hidden on iOS.",
+      "enum": ["payments", "names", "social", "games", "tools", "data", "nft-media", "defi-trading", "token-issuance", "other"]
+    },
+    "tags": {
+      "type": "array",
+      "maxItems": 5,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[a-z0-9-]{1,20}$" }
+    },
+    "icon": {
+      "description": "Path of a 512x512 PNG inside the bundle. External URLs are not allowed.",
+      "allOf": [
+        { "$ref": "#/$defs/bundlePath" },
+        { "pattern": "\\.png$" }
+      ]
+    },
+    "screenshots": {
+      "type": "array",
+      "maxItems": 6,
+      "items": {
+        "allOf": [
+          { "$ref": "#/$defs/bundlePath" },
+          { "pattern": "\\.png$" }
+        ]
+      }
+    },
+    "entry": {
+      "description": "Start page inside the bundle. Default index.html.",
+      "default": "index.html",
+      "allOf": [
+        { "$ref": "#/$defs/bundlePath" },
+        { "pattern": "\\.html$" }
+      ]
+    },
+    "bundle": {
+      "type": "object",
+      "required": ["format", "sha256", "size", "files"],
+      "additionalProperties": false,
+      "properties": {
+        "format": { "const": "eastsea-bundle/1" },
+        "sha256": {
+          "description": "sha256 of the canonical bundle index bytes. Must equal the on-chain bundleHash.",
+          "$ref": "#/$defs/bytes32"
+        },
+        "size": {
+          "description": "Total bytes of all files (max 25 MiB).",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 26214400
+        },
+        "files": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2000
+        }
+      }
+    },
+    "mirrors": {
+      "description": "https URL templates containing {sha256}. Sources are untrusted; every byte is hash-checked.",
+      "type": "array",
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "maxLength": 256,
+        "pattern": "^https://[^\\s]*\\{sha256\\}[^\\s]*$"
+      }
+    },
+    "name_binding": {
+      "description": "EastSeaNames name. Shown as @name only when the name's text record `app` also equals app_id.",
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 32,
+      "pattern": "^(?!-)(?!..--)[a-z0-9-]*[a-z0-9]$"
+    },
+    "contracts": {
+      "description": "Every contract this app calls. Calls to undeclared addresses trigger a strong warning.",
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "required": ["address", "label"],
+        "additionalProperties": false,
+        "properties": {
+          "address": { "$ref": "#/$defs/address" },
+          "label": { "type": "string", "minLength": 1, "maxLength": 32 },
+          "source_url": { "$ref": "#/$defs/httpsUrl" },
+          "brake": {
+            "description": "Address implementing IEastSeaBrake, or \"none\". The wallet checks it itself; this field is only a hint.",
+            "oneOf": [
+              { "$ref": "#/$defs/address" },
+              { "const": "none" }
+            ]
+          }
+        }
+      }
+    },
+    "connect": {
+      "description": "https origins the app may fetch (CSP connect-src). No wildcards, IP literals, localhost or paths.",
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "maxLength": 253,
+        "pattern": "^https://(?!localhost(?::|$))(?![0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+(?::|$))(?!\\[)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+(?::[0-9]{1,5})?$"
+      }
+    },
+    "permissions": {
+      "description": "Provider capabilities the app may request. EIP-7702 delegation is never grantable.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": ["accounts", "send", "sign-message", "sign-typed", "approve-tokens", "wasm", "open-external"]
+      }
+    },
+    "payees": {
+      "description": "Addresses agents may be asked to pay. A claim, not an approval: the owner still approves each payee with Touch ID.",
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/address" }
+    },
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "summary": {
+          "type": "string",
+          "maxLength": 280
+        },
+        "actions": {
+          "description": "Declared contract calls (display only in v1).",
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "required": ["id", "contract", "function"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string", "pattern": "^[a-z0-9-]{1,32}$" },
+              "contract": { "$ref": "#/$defs/address" },
+              "function": {
+                "description": "Solidity function signature, e.g. pay(address,uint256).",
+                "type": "string",
+                "maxLength": 256,
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*\\([A-Za-z0-9_,\\[\\]() ]*\\)$"
+              },
+              "max_value_wei": {
+                "description": "Upper bound of native value per call, decimal wei string.",
+                "type": "string",
+                "pattern": "^(0|[1-9][0-9]{0,77})$"
+              },
+              "description": { "type": "string", "maxLength": 280 }
+            }
+          }
+        }
+      }
+    },
+    "age_rating": {
+      "description": "Apple age bands. Missing is treated as 18+ on iOS.",
+      "enum": ["4+", "9+", "13+", "16+", "18+"]
+    },
+    "commerce": {
+      "description": "What the app sells. digital (including features unlocked by owning an NFT) is hidden on iOS.",
+      "enum": ["none", "physical", "p2p", "digital"],
+      "default": "none"
+    },
+    "regions_excluded": {
+      "description": "ISO 3166-1 alpha-2 codes where the publisher does not offer the app.",
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[A-Z]{2}$" }
+    },
+    "noindex": {
+      "description": "Exclude from search, landing pages and lists; open only by direct link or bound name.",
+      "type": "boolean",
+      "default": false
+    },
+    "source_repo": { "$ref": "#/$defs/httpsUrl" },
+    "repro": {
+      "description": "How to rebuild the bundle for the source-match badge.",
+      "type": "object",
+      "required": ["commit", "command"],
+      "additionalProperties": false,
+      "properties": {
+        "commit": { "type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$" },
+        "command": { "type": "string", "maxLength": 256 },
+        "builder": { "type": "string", "maxLength": 128 }
+      }
+    },
+    "support": {
+      "type": "string",
+      "maxLength": 256,
+      "pattern": "^(mailto:[^\\s@]+@[^\\s@]+|https://[^\\s]+)$"
+    },
+    "privacy": { "$ref": "#/$defs/httpsUrl" },
+    "terms": { "$ref": "#/$defs/httpsUrl" },
+    "publisher": {
+      "description": "Publisher's self-description. Not an identity claim.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "display": { "type": "string", "maxLength": 64 },
+        "url": { "$ref": "#/$defs/httpsUrl" }
+      }
+    }
+  },
+  "$defs": {
+    "bytes32": {
+      "type": "string",
+      "pattern": "^0x[0-9a-f]{64}$"
+    },
+    "address": {
+      "description": "Lowercase 0x address (wallets compare case-insensitively; lowercase keeps the manifest canonical).",
+      "type": "string",
+      "pattern": "^0x[0-9a-f]{40}$"
+    },
+    "locale": {
+      "type": "string",
+      "pattern": "^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$"
+    },
+    "httpsUrl": {
+      "type": "string",
+      "maxLength": 256,
+      "pattern": "^https://[^\\s]+$"
+    },
+    "bundlePath": {
+      "description": "Path inside the bundle index: [A-Za-z0-9._/-], no leading slash, no empty, '.' or '..' segments.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "^(?!/)(?!.*//)(?!(?:.*/)?\\.{1,2}(?:/|$))[A-Za-z0-9._/-]+$"
+    },
+    "displayName": {
+      "description": "1-32 characters. Control, zero-width and bidi override characters are rejected.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32,
+      "pattern": "^[^\\s\\u0000-\\u001F\\u007F\\u200B-\\u200F\\u202A-\\u202E\\u2066-\\u2069\\uFEFF](?:[^\\u0000-\\u001F\\u007F\\u200B-\\u200F\\u202A-\\u202E\\u2066-\\u2069\\uFEFF]*[^\\s\\u0000-\\u001F\\u007F\\u200B-\\u200F\\u202A-\\u202E\\u2066-\\u2069\\uFEFF])?$"
+    },
+    "subtitle": {
+      "type": "string",
+      "maxLength": 30,
+      "pattern": "^[^\\u0000-\\u001F\\u007F\\u200B-\\u200F\\u202A-\\u202E\\u2066-\\u2069\\uFEFF]*$"
+    },
+    "shortText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 170,
+      "pattern": "^[^\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F\\u200B-\\u200F\\u202A-\\u202E\\u2066-\\u2069\\uFEFF]*$"
+    }
+  }
+}

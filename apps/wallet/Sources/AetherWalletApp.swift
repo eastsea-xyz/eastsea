@@ -406,6 +406,13 @@ final class Updates: ObservableObject {
 }
 
 extension AppDelegate: SPUUpdaterDelegate {
+    /// The canary ring (docs/design/32-health-signal.md §5.2): channel items
+    /// are offered only to a Mac set to `updateChannel = canary`. The release
+    /// gate below applies to them unchanged.
+    func allowedChannels(for updater: SPUUpdater) -> Set<String> {
+        UpdateChannel.allowedChannels()
+    }
+
     func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
         Task { @MainActor [weak self] in
             guard let self else { return }

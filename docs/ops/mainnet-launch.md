@@ -29,8 +29,8 @@ aether shadow --from "$ARCHIVE_RPC" --to "$FINALIZED_HEIGHT"
 아래 1~3단계(키 세레머니 → network.json → 제네시스 DKG)와 DKG 후 검사는 `scripts/mainnet-genesis.sh`가 그대로 안내한다. 손으로 하기 전에 `scripts/mainnet-genesis.sh --dry-run`으로 한 Mac에서 전 과정을 먼저 예행한다(일회용 키 — REHEARSAL, not a launch file; `--rehearsal`은 오직 이 모드에서만 쓴다). 수순:
 
 1. **검증자 Mac 4대, 각각**: `scripts/mainnet-genesis.sh keys` — 이 Mac의 검증자 신원을 만들고 공개 항목만 출력한다. **`validator.pub.json` 하나만** 코디네이터(검증자 1 Mac)로 복사한다.
-2. **창업자 Mac**: `scripts/reserve-keys.sh init`(아래 1단계) — 공개 항목 3개를 코디네이터로 복사한다.
-3. **코디네이터**: `scripts/mainnet-genesis.sh assemble --chain-id <새 체인 아이디> --registrar <서명 Mac의 x‖y hex> --reserve-operator <창업자 주소> --reserve <예비 pub>×3 --validator <검증자 pub>×4` — 입력을 전부 검증하고(hex 형식·검증자 4개 상이·예비 키≠검증자 키·P-256 등록기 점) 공표 정책(protocol 3, history 2, node rewards, registry v3, 타이밍 3600/24/24는 기본값 그대로)으로 genesis.json을 만들어 규칙 검사까지 돌린다. 리허설 전용 값(`--epoch-blocks`·`--dev-registrar`·체인 아이디 7780/7799)은 거부한다. 옆에 `ceremony.json`(공개 기록: 이 세레머니가 조립한 체인 아이디와 검증자 목록)을 남긴다.
+2. **창업자 Mac**: `scripts/reserve-keys.sh init`(아래 1단계) — 공개 항목 3개를 코디네이터로 복사한다. **빌더 Mac 3대**: 각자 `scripts/builder-sign init`이 출력한 공개키(04‖x‖y hex)를 코디네이터로 보내고, 코디네이터는 `release.json`(`{"builder_keys": ["04…", "04…", "04…"]}`)을 만든다(아래 1단계, 앱 릴리스 승인 핀).
+3. **코디네이터**: `scripts/mainnet-genesis.sh assemble --chain-id <새 체인 아이디> --registrar <서명 Mac의 x‖y hex> --reserve-operator <창업자 주소> --release <release.json> --reserve <예비 pub>×3 --validator <검증자 pub>×4` — 입력을 전부 검증하고(`--release`가 없으면 거부: 핀 없는 앱은 영영 업데이트를 받지 못한다)(hex 형식·검증자 4개 상이·예비 키≠검증자 키·P-256 등록기 점) 공표 정책(protocol 3, history 2, node rewards, registry v3, 타이밍 3600/24/24는 기본값 그대로)으로 genesis.json을 만들어 규칙 검사까지 돌린다. 리허설 전용 값(`--epoch-blocks`·`--dev-registrar`·체인 아이디 7780/7799)은 거부한다. 옆에 `ceremony.json`(공개 기록: 이 세레머니가 조립한 체인 아이디와 검증자 목록)을 남긴다.
 4. **검증자 Mac 4대, 동시에**: genesis.json을 각 Mac으로 복사해(공개 파일 — 어디로든) 아래 3단계의 `aether dkg`를 각자 자기 `--data` 디렉터리로 실행한다.
 5. **코디네이터**: 검증자 1이 DKG 후 쓴 `network.json`으로 `scripts/mainnet-genesis.sh check <network.json> --chain-id <아이디> --ceremony <assemble이 만든 ceremony.json>` — strict `aether mainnet-rules`(`--rehearsal` 절대 없음)와 최종 파일의 제네시스 플래그를 PASS/FAIL 목록으로 검사한다(실패가 하나라도 있으면 0이 아닌 코드). `--chain-id`는 필수이고 ceremony.json에 기록된 아이디와 같아야 하며 7780(테스트넷)·7799(리허설)는 거부한다. 최종 network.json도 공개 파일이다(지갑·노드가 쓰는 바로 그 파일). **PASS하면** 옆에 `ceremony-check.json`(감사 6의 고정 기록: 체인 아이디, DKG 라운드, 위원회 identity, 통과한 최종 파일 **바이트의 sha256**, 불변 제네시스 전체 — 로스터·등록기·규칙 플래그·예비 키)을 남긴다. **이 기록을 최종 network.json과 함께 모든 검증자 Mac으로 복사한다**: 아래 6단계와 노드 시작 바인딩이 이 기록 없이는 새 제네시스 체인에서 투표를 거부한다.
 6. **검증자 Mac 4대, 각각 투표 전**: 최종 network.json과 `ceremony-check.json`을 받은 뒤 `scripts/mainnet-genesis.sh verify-local <network.json> --data <이 Mac의 데이터 디렉터리> --ceremony <ceremony-check.json>` — 기대 체인 아이디를 **기록에서만** 읽어(검사 대상 파일에서 유도하지 않는다: 전송 중 체인 아이디 치환이 자기 승인되던 구멍, 감사 6 A6-3) 이 Mac에서 strict 규칙 검사를 다시 돌리고, 이 Mac의 `threshold.json`·`network.json`을 그 기록에 바인딩한다(`aether mainnet-bind`, **share는 절대 출력하지 않는다**). 같은 체인 아이디·위원회 identity를 가진 채 불변 제네시스가 다른 오래된 로컬 network.json은 "같은 네트워크"가 아니라 **stale로 거부**된다(감사 6 A6-4). 통과하면 기록이 `<data>/ceremony-check.json`에 저장되어, 지갑의 `aether run`(--network·--ceremony 없이 시작)도 다음 시작부터 같은 세레머니에 바인딩된다.
@@ -46,6 +46,7 @@ aether shadow --from "$ARCHIVE_RPC" --to "$FINALIZED_HEIGHT"
 | 등록기 키 | 서명 전용 Mac, `aether-registrar-signer init` | P-256, Secure Enclave. 등록·재인증 서명에 쓴다(`aether run … --registrar-signer <socket>`). 절차는 [registrar.md](registrar.md). `aether registrar-key`(파일 키)는 개발망·예행연습용으로만 남는다 |
 | DeviceCheck 키 | Apple 개발자 계정의 `.p8` | `~/.config/aether/devicecheck/`. **메인넷 등록기는 반드시 Apple 키**. 리허설의 `--dev-registrar`는 시험 전용이다 |
 | faucet 키 | (없음) | 메인넷은 faucet이 없다. 만들지 않는다 |
+| 앱 빌더 키 ×3 | 서로 다른 빌더 Mac 3대, 각각 `scripts/builder-sign init` | P-256, Secure Enclave. 공개키만 `release.json`으로 모은다. network.json의 `release` 핀이 되어 앱이 이 세 키의 2/3(긴급 3/3) 서명만 믿는다([19-release-approval.md](../design/19-release-approval.md)). 제네시스 뒤에는 바꿀 수 없다(바꾸려면 구 키로 승인된 앱 릴리스가 새 키를 실어 와야 한다) |
 
 모든 `validator.key`·`node-account.key`와 `.p8`은 오프라인(암호화된 외장 드라이브 등)에 백업한다. 잃어버린 검증자 키는 그 자리를 영원히 못 채운다. **등록기 키는 백업할 것이 없다**: 개인 키는 Secure Enclave 밖으로 나오지 않으므로(`registrar.key`는 개발망용), 서명 Mac을 잃으면 위원회 교체로 새 키를 넣는다([registrar.md](registrar.md)).
 
@@ -66,6 +67,7 @@ aether network \
   --reserve ~/aether-reserve/1/validator.pub.json \
   --reserve ~/aether-reserve/2/validator.pub.json \
   --reserve ~/aether-reserve/3/validator.pub.json \
+  --release release.json \
   <검증자 1의 validator.pub.json> <검증자 2의> <검증자 3의> <검증자 4의> \
   > genesis.json
 ```
@@ -73,13 +75,14 @@ aether network \
 - `--faucet`을 주지 않는다: 이 네트워크에는 사전 발행이 없고, 모든 토큰이 발행(보상)으로만 나온다.
 - `--protocol 3`은 제네시스부터 프로토콜 3 규칙(증명 시장, registry v3·에포크당 등록 상한, 16석 증가 추첨)을 켠다. 메인넷은 증명 보상 없이 열리지 않으므로 이 값은 생략하지 않는다(15-node-rewards "구현 순서" 2번: 메인넷은 제네시스부터 이 규칙, 업그레이드 불필요). 7780에는 이 필드가 없다(프로토콜 1 제네시스, 업그레이드로 2·3 도입 — 제네시스가 바뀌지 않는다).
 - `--history 2`는 새 제네시스에서만 유효하다(7780에는 없다). 빈 블록이 조용해지고 era 파일·30일 프루닝이 기본이 된다.
+- `--release release.json`은 앱의 릴리스 승인 핀(B6)을 쓴다: 새 제네시스가 `0x…7705`에 사전 배포하는 ReleaseLog 주소, 그 런타임 코드 해시(`0x4417ad70…`), 빌더 키 3개, 2/3·긴급 3/3. 설정 파일에는 `builder_keys`만 있으면 되고, `log`·`code_hash`·임계값을 적었다면 이 바이너리의 사전 배포 값과 같아야 한다. 사전에 `scripts/release-approve.py contract-hash`로 계약을 다시 컴파일해 사전 배포 바이트와 같은지 확인한다. 7780 파일에는 이 필드가 없다.
 - epoch_blocks/min_streak/draw_epochs는 기본값(3600/24/24)을 그대로 쓴다. 리허설에서 줄여 본 것은 시간 단축용 값이다.
 
 ### 메인넷 규칙 목록 (높이 1부터 켜져 있어야 하는 규칙)
 
 메인넷은 어떤 규칙도 "출시 뒤 업그레이드로 켠다" 없이 제네시스부터 전부 켜져 있어야 한다. 제네시스 프로토콜 필드는 이미 있다(갭 G1 닫힘: `aether network --protocol 3`; 7780처럼 프로토콜 1로 열리면 증명 시장·등록 상한·16석 증가가 꺼진 채 시작하므로 이 값을 생략하지 않는다). 목록은 코드에 하나로 있다(`crates/node/src/mainnet.rs`, `mainnet::check`) — 항목을 추가하면 아래 세 검사가 같이 실패한다:
 
-- `aether mainnet-rules --network genesis.json` — network.json에서 노드와 똑같이 제네시스를 만들어 항목마다 `ok`/`FAIL`을 출력하고, 꺼진 것이 하나라도 있으면 실패한다(DKG 뒤 최종 network.json으로 다시 한 번). 규칙은 20개 제네시스 규칙 + 최종 파일 게이트 4개이며, **실제 출시 검사는 에포크(3600블록)·후보 워밍업(24)·추첨(24에포크)의 공표된 정책 값을 정확히 요구**하고 레지스트라 키가 0이거나 곡선 밖이면 실패한다. 리허설만 `--rehearsal`로 단축 값을 허용하며, 허용했다는 사실이 출력에 `REHEARSAL VALUES`로 남는다. 최종 파일 게이트는 `output` 문자열을 노드 자신의 디코더로 디코딩해 위원회를 복원하고 로스터 일치·identity=그룹 공개키·노출된 share 거부를 검사한다(감사 5 A5-4: 구조만 그럴듯한 `identity: "aa"`·`output: "bb"` 파일은 여기서 실패한다). `--bundle`을 붙이면 25번째 규칙 "bundled ceremony record"가 추가된다 — network.json **옆의** `ceremony-check.json`이 그 파일의 정확한 바이트를 pin하는지 검사하는 릴리스 게이트(6단계). 세레머니 자신의 check는 기본 24규칙으로 돈다: 기록은 PASS **뒤에** 쓰여지므로.
+- `aether mainnet-rules --network genesis.json` — network.json에서 노드와 똑같이 제네시스를 만들어 항목마다 `ok`/`FAIL`을 출력하고, 꺼진 것이 하나라도 있으면 실패한다(DKG 뒤 최종 network.json으로 다시 한 번). 규칙은 20개 제네시스 규칙 + 릴리스 승인 핀 1개 + 최종 파일 게이트 4개이며, **실제 출시 검사는 에포크(3600블록)·후보 워밍업(24)·추첨(24에포크)의 공표된 정책 값을 정확히 요구**하고 레지스트라 키가 0이거나 곡선 밖이면 실패한다. 리허설만 `--rehearsal`로 단축 값을 허용하며, 허용했다는 사실이 출력에 `REHEARSAL VALUES`로 남는다. 최종 파일 게이트는 `output` 문자열을 노드 자신의 디코더로 디코딩해 위원회를 복원하고 로스터 일치·identity=그룹 공개키·노출된 share 거부를 검사한다(감사 5 A5-4: 구조만 그럴듯한 `identity: "aa"`·`output: "bb"` 파일은 여기서 실패한다). `--bundle`을 붙이면 26번째 규칙 "bundled ceremony record"가 추가된다 — network.json **옆의** `ceremony-check.json`이 그 파일의 정확한 바이트를 pin하는지 검사하는 릴리스 게이트(6단계). 세레머니 자신의 check는 기본 25규칙으로 돈다: 기록은 PASS **뒤에** 쓰여지므로.
 - `scripts/mainnet-rehearsal.sh`(0단계) — 같은 검사를 PASS 항목으로 돌리고, 살아 있는 네트워크에서 높이 1의 프로토콜과 등록 상한도 확인한다.
 - 단위 테스트(`crates/node/tests/mainnet_rules.rs`) — 메인넷 플래그 제네시스로 모든 항목이 켜져 있는지, 플래그를 하나 빼면 정확히 그 항목이 꺼지는지 확인한다.
 
@@ -102,6 +105,7 @@ aether network \
 | pruning default | 프루닝이 기본(30일 보존)이다 |
 | no premine, no faucet | 제네시스 잔액이 전부 0이다 |
 | zero-tip acceptance | 첫 블록 실행·증명 base fee가 0이어서 잔액 0 계정의 단순 송금은 팁 0으로 거래한다 |
+| release pin | network.json `release`가 이 제네시스의 ReleaseLog(`0x…7705`)와 그 상태가 가진 런타임 코드 해시, 서로 다른 곡선 위 P-256 빌더 키 3개, 2/3·긴급 3/3을 고정한다 (없거나 해시가 다르면 FAIL — 앱이 업데이트를 하나도 받을 수 없다) |
 
 최종 파일 게이트(감사 5 A5-4; DKG 뒤 network.json의 4개 규칙 — pre-DKG 파일은 "아직 게이트 대상 아님"으로 통과):
 
@@ -124,6 +128,9 @@ assert n.get("history") == 2 and n.get("node_rewards") is True
 assert n.get("faucet") is None, "faucet이 있으면 안 된다"
 assert len(n.get("reserve", {}).get("validators", [])) == 3
 assert len(n["validators"]) == 4
+r = n["release"]
+assert r["log"] == "0x0000000000000000000000000000000000007705" and len(r["builder_keys"]) == 3
+assert (r["threshold"], r["emergency_threshold"]) == (2, 3)
 PY
 aether mainnet-rules --network genesis.json
 ```
@@ -148,6 +155,7 @@ n = json.load(open("<검증자 1 데이터 디렉터리>/network.json"))
 assert n.get("protocol") == 3 and n.get("history") == 2 and n.get("node_rewards") is True
 assert n.get("faucet") is None and n.get("epoch_blocks") is None
 assert len(n.get("reserve", {}).get("validators", [])) == 3
+assert len(n["release"]["builder_keys"]) == 3, "DKG가 릴리스 승인 핀을 그대로 옮겨야 한다"
 PY
 aether mainnet-rules --network <검증자 1 데이터 디렉터리>/network.json
 ```
@@ -160,6 +168,7 @@ aether mainnet-rules --network <검증자 1 데이터 디렉터리>/network.json
 
 - 체인 아이디가 의도한 값이다.
 - 검증자 4개 키 지문과 예비 키 3개 지문이 키 세레머니 결과와 일치한다.
+- 앱 빌더 키 3개의 지문이 세 빌더 Mac의 `builder-sign init` 출력과 일치한다(network.json `release.builder_keys`).
 - 등록기 키 지문이 일치한다(`aether-registrar-signer public`의 x‖y가 `aether network --registrar`에 넣은 값과 같다). DeviceCheck `.p8`이 레지스트라 노드에 있고, 서명 전용 Mac의 도우미가 `serve` 중이다([registrar.md](registrar.md)).
 - `"protocol": 3`(제네시스부터 증명 시장·등록 상한·16석 증가), `"history": 2`, node rewards 켜짐, faucet 없음, 사전 발행 없음(2단계 검증 출력과 `aether mainnet-rules` 전 항목 ok).
 - 리허설(0단계)이 이 바이너리로 PASS했다.
@@ -179,7 +188,8 @@ aether mainnet-rules --network <검증자 1 데이터 디렉터리>/network.json
 ## 6. 앱 번들 업데이트
 
 - `apps/wallet/Resources/network.json`을 최종 network.json으로 바꾸고, **코디네이터의 check가 그 옆에 남긴 `ceremony-check.json`을 같이 번들한다** — 이 쌍이 소비자 Mac의 시작 경로 전부다: 지갑 앱은 `--network`만 넘기고 `aether run`이 옆의 기록을 찾아 바인딩·저장한다(5단계). 최종 파일의 바이트가 조금이라도 다시 쓰여지면 기록의 digest가 어긋나므로, check를 통과한 그 파일을 그대로 복사한다.
-- 게이트: `aether mainnet-rules --bundle --network apps/wallet/Resources/network.json` — 25번째 규칙 "bundled ceremony record"가 번들 쌍을 검사한다(기록 누락·다른 세레머니의 기록·digest 불일치 FAIL). `scripts/build-wallet.sh`가 **모든 앱 빌드에 이 게이트를 자동으로** 돌리므로, 이 게이트를 통과하지 못한 새 제네시스 빌드는 앱이 만들어지지 않는다. 기록 없는 7780 예외는 코드에 고정된 배포 파일의 **전체 SHA256과 바이트 단위로 일치할 때만** 통과한다. 체인 아이디나 제네시스 플래그만 7780처럼 바꾼 파일은 거부한다.
+- 이 파일의 `release` 핀이 앱의 업데이트 신뢰 전부다: 지갑은 이 ReleaseLog·코드 해시·빌더 키만 믿고, 핀이 없거나 틀리면 업데이트를 끈다(컴파일된 기본값 없음). 7780 파일은 바이트 그대로 두고 기존 Sparkle 경로를 쓴다.
+- 게이트: `aether mainnet-rules --bundle --network apps/wallet/Resources/network.json` — 26번째 규칙 "bundled ceremony record"가 번들 쌍을 검사한다(기록 누락·다른 세레머니의 기록·digest 불일치 FAIL). `scripts/build-wallet.sh`가 **모든 앱 빌드에 이 게이트를 자동으로** 돌리므로, 이 게이트를 통과하지 못한 새 제네시스 빌드는 앱이 만들어지지 않는다. 기록 없는 7780 예외는 코드에 고정된 배포 파일의 **전체 SHA256과 바이트 단위로 일치할 때만** 통과한다. 체인 아이디나 제네시스 플래그만 7780처럼 바꾼 파일은 거부한다.
 - 체인 아이디가 바뀌므로 앱의 표시명·설명에서 "테스트넷" 문구를 뺀다.
 - 앱은 faucet이 없는 네트워크임을 사용자에게 그대로 보여 준다(에어드랍 안내 문구 없음).
 

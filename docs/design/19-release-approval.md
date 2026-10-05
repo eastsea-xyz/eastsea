@@ -14,9 +14,21 @@
 
 서명 대상은 도메인 구분(`AetherRelease/v1`), 체인 ID, ReleaseLog 주소, 플랫폼, 버전, 빌드, `emergency`, 이름순으로 정렬한 아티팩트 이름과 32바이트 SHA-256으로 이루어진 결정적 바이트열의 SHA-256이다. JSON의 키 순서, 공백, URL, 서명 배열 순서는 서명 결과에 영향을 주지 않는다. 빌더 서명은 P-256 ECDSA `(r,s)` 고정 64바이트 형식이며 가능한 경우 low-s로 정규화한다. 한 공개키의 중복 서명은 한 표로만 센다. 버전/빌드/플랫폼/아티팩트 이름의 길이와 아티팩트 수, 전체 페이로드 크기를 제한한다.
 
-`contracts/src/ReleaseLog.sol`은 순차 번호별 항목을 저장하고 `Published` 이벤트를 낸다. `publish`는 누구나 호출할 수 있으나 기존 항목을 바꾸거나 지울 수 없다. 저장 항목에는 매니페스트 SHA-256, 압축물 SHA-256, 서명 묶음 SHA-256, `block.number`, 게시 시각과 긴급 표시가 있다. 원본 매니페스트와 서명은 이벤트와 배포 파일에 남기며, 앱은 이 파일의 해시를 증명된 저장 값과 비교한다. 앱은 RPC가 돌려준 문자열이나 이벤트만 믿지 않고, **계약 런타임 코드 해시**, 항목 개수와 해당 항목 슬롯을 EIP-7864 증명으로 확인한다. 증명 루트는 **항목을 포함한 블록의 다음 인증 블록**의 `parent_state_root`다. 게시 높이와 시각은 계약 코드가 기록한 저장 값으로 읽는다. 앱에 번들된 `network.json`은 `release_log`, `release_log_code_hash`, `builder_keys` 세 공개키를 고정한다. 이 값이 없는 신규 네트워크에서는 설치를 거부한다. 조회에는 식별자를 지정하므로 원격 서버가 다른 항목을 돌려주더라도 해시·서명 검사가 실패한다.
+`contracts/src/ReleaseLog.sol`은 순차 번호별 항목을 저장하고 `Published` 이벤트를 낸다. `publish`는 누구나 호출할 수 있으나 기존 항목을 바꾸거나 지울 수 없다. 저장 항목에는 매니페스트 SHA-256, 압축물 SHA-256, 서명 묶음 SHA-256, `block.number`, 게시 시각과 긴급 표시가 있다. 원본 매니페스트와 서명은 이벤트와 배포 파일에 남기며, 앱은 이 파일의 해시를 증명된 저장 값과 비교한다. 앱은 RPC가 돌려준 문자열이나 이벤트만 믿지 않고, **계약 런타임 코드 해시**, 항목 개수와 해당 항목 슬롯을 EIP-7864 증명으로 확인한다. 증명 루트는 **항목을 포함한 블록의 다음 인증 블록**의 `parent_state_root`다. 게시 높이와 시각은 계약 코드가 기록한 저장 값으로 읽는다. 앱에 번들된 `network.json`은 `release` 객체 하나로 승인 조건을 고정한다(체크리스트 B6):
 
-계약을 배포한 뒤 `scripts/release-approve.py contract-hash`로 로컬 컴파일 결과의 런타임 코드 해시를 구하고, 배포 주소의 검증된 코드 해시와 일치할 때만 두 값을 앱의 새 네트워크 파일에 고정한다. 7780의 기존 `network.json`에는 이 필드를 추가하지 않는다.
+```json
+"release": {
+  "log": "0x0000000000000000000000000000000000007705",
+  "code_hash": "0x4417ad7040420fe3547cdc3fdcd0fa0a690ba2f65e98af851a5e9fa5589db1ec",
+  "builder_keys": ["04…", "04…", "04…"],
+  "threshold": 2,
+  "emergency_threshold": 3
+}
+```
+
+`builder_keys`는 세 빌더 Mac의 `builder-sign init`이 출력한 비압축 P-256 공개키(04‖x‖y, 0x 없는 hex)이며 서로 달라야 하고 곡선 위의 점이어야 한다. `threshold`·`emergency_threshold`는 이 문서의 2/3·3/3 규칙을 그대로 적은 것이고 다른 값은 거부한다(B4는 프로토콜 긴급 정족수만 바꿨다). 지갑(`ReleaseTrust.parse`)은 `release`가 있으면 체인과 상관없이 그 주소·코드 해시·키만 믿는다. `release`가 없으면 7777/7780만 기존 Sparkle 경로를 쓰고, 그 밖의 체인은 업데이트를 끈다(`Updates are off: this app has no valid release approval keys.`). 앱 안에 컴파일된 기본값은 없고, 형식이 틀린 핀도 구형 경로로 내려가지 않는다. 예전 초안의 최상위 `release_log`·`release_log_code_hash`·`builder_keys` 필드는 핀으로 인정하지 않는다. 조회에는 식별자를 지정하므로 원격 서버가 다른 항목을 돌려주더라도 해시·서명 검사가 실패한다.
+
+**ReleaseLog는 새 제네시스의 사전 배포 계약이다.** 세레머니 기록(`ceremony-check.json`)이 최종 network.json의 바이트를 고정하므로, 출시 뒤에 배포한 계약의 주소를 나중에 파일에 넣을 수 없다. 그래서 node rewards + history v2 제네시스는 `0x…7705`에 ReleaseLog 런타임 코드(`crates/execution/src/release_log.bin.hex`, solc 0.8.19·optimizer 200)를 생성자 없이 넣는다. 계약에 생성자 상태·관리자가 없으므로 이것이 배포 전부다. 주소와 코드 해시가 제네시스 전에 정해지므로 `aether network --release <release.json>`(세레머니에서는 `scripts/mainnet-genesis.sh assemble --release`)이 `{"builder_keys": [...]}` 설정 파일에서 핀을 써 넣고, DKG(`carry_genesis`)·리셰어(`keep_genesis`)·세레머니 기록(`RecordGenesis.release`)이 그대로 옮긴다. 설정 파일이 `log`·`code_hash`·임계값을 적었다면 사전 배포 값과 같아야 하며 다르면 거부한다. 메인넷 규칙 "release pin"(`mainnet::check_release`)은 핀이 없거나, 키 3개가 아니거나, 주소가 사전 배포 주소가 아니거나, 코드 해시가 제네시스 상태가 가진 코드와 다르면 실패한다. `scripts/release-approve.py contract-hash`는 계약을 다시 컴파일해 해시를 출력하고, 사전 배포 바이트와 다르면 실패한다. 7780의 기존 `network.json`은 바이트 단위로 그대로이며(사전 배포도 없다) 이 필드를 추가하지 않는다.
 
 노드는 `aether_releaseEntries(<ReleaseLog 주소>, <시작 번호>, <최대 64개>)`로 현재 상태의 공개 항목을 열거한다. 이 응답은 탐색기·운영자의 **발견용**이며 자체로 승인 증거가 아니다. 앱은 고른 번호를 `verified_release`로 다시 읽어 코드 해시·저장소 증명·위원회 인증서를 확인한다. `Published` 이벤트도 `eth_getLogs`를 통해 탐색기가 색인할 수 있다.
 

@@ -4,35 +4,17 @@ import Foundation
 import Sparkle
 
 /// Pins are read from the network.json inside the *currently running* signed
-/// app. Replacing that file in a proposed update cannot relax this gate.
-struct ReleaseTrust {
-    let chainId: UInt64
-    let logAddress: String
-    let codeHash: String
-    let builderKeys: [String]
-
+/// app. Replacing that file in a proposed update cannot relax this gate. The
+/// parsing and the no-fallback rule live in `ReleaseTrust.parse` (pure).
+extension ReleaseTrust {
     static let current = load()
 
     static func bundled() -> ReleaseTrust? { current }
 
     private static func load() -> ReleaseTrust? {
         guard let url = Bundle.main.url(forResource: "network", withExtension: "json"),
-              let data = try? Data(contentsOf: url),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let chainId = json["chain_id"] as? UInt64 else { return nil }
-        if chainId == 7_777 || chainId == 7_780 {
-            return ReleaseTrust(chainId: chainId, logAddress: "", codeHash: "", builderKeys: [])
-        }
-        guard let log = json["release_log"] as? String,
-              log.hasPrefix("0x"),
-              ReleaseApproval.bytes(String(log.dropFirst(2)))?.count == 20,
-              let codeHash = json["release_log_code_hash"] as? String,
-              codeHash.hasPrefix("0x"),
-              ReleaseApproval.bytes(String(codeHash.dropFirst(2)))?.count == 32,
-              let keys = json["builder_keys"] as? [String], keys.count == 3,
-              Set(keys.map { $0.lowercased() }).count == 3,
-              keys.allSatisfy({ $0.lowercased().hasPrefix("04") && ReleaseApproval.bytes($0)?.count == 65 }) else { return nil }
-        return ReleaseTrust(chainId: chainId, logAddress: log, codeHash: codeHash, builderKeys: keys)
+              let data = try? Data(contentsOf: url) else { return nil }
+        return parse(data)
     }
 }
 
@@ -67,7 +49,7 @@ final class ReleaseUpdateGate {
 
     func mayProceed(_ item: SUAppcastItem) -> Bool {
         guard let trust = ReleaseTrust.bundled() else { return false }
-        if trust.chainId == 7_777 || trust.chainId == 7_780 { return true }
+        if trust.legacy { return true }
         guard configuredChainId() == trust.chainId else { return false }
         guard let signature = Self.sparkleSignature(item) else { return false }
         lock.lock()
@@ -78,10 +60,10 @@ final class ReleaseUpdateGate {
     func inspect(_ item: SUAppcastItem, validators: UInt32,
                  finished: @escaping (PendingRelease?, String?, Bool) -> Void) {
         guard let trust = ReleaseTrust.bundled() else {
-            finished(nil, "This update is not approved on chain yet", false)
+            finished(nil, ReleaseTrust.missingPin, false)
             return
         }
-        if trust.chainId == 7_777 || trust.chainId == 7_780 { return }
+        if trust.legacy { return }
         guard configuredChainId() == trust.chainId else {
             finished(nil, "This update is not approved on chain yet", false)
             return

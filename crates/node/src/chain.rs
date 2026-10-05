@@ -183,6 +183,11 @@ impl ChainConfig {
             s.set_code(aether_rewards::REWARDS, aether_rewards::randomness_code())
                 .expect("randomness predeploy");
             aether_rewards::set_max_committee(&mut s, self.max_committee as u64);
+            // The app-release log (docs/design/19, checklist B6): at a fixed
+            // address with known code, so the shipped network.json can pin
+            // both before the ceremony record freezes its bytes.
+            s.set_code(aether_execution::release_log::ADDRESS, aether_execution::release_log::code())
+                .expect("release log predeploy");
         }
         if let Some(key) = self.registrar {
             let d = aether_execution::registry::Params::default();

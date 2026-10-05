@@ -22,7 +22,7 @@
 #  10. audit 5 A5-4's file — valid structure, `identity: "aa"`,
 #      `output: "bb"`, a new chain id — FAILS the strict gate (it used to
 #      pass 16/16), and a real-mode check with the ceremony record passes on
-#      the untouched file (24 rules: 20 genesis + 4 final-file);
+#      the untouched file (25 rules: 20 genesis + release pin + 4 final-file);
 #  11. verify-local refuses a threshold.json from another round (a validator
 #      must not vote under a committee the final file does not name) and
 #      passes with --ceremony on the matching one, storing the record in the
@@ -44,8 +44,13 @@
 #  14. the release gate: `aether mainnet-rules --bundle` demands the
 #      coordinator's record next to the network.json, pinning its exact
 #      bytes — missing or mismatching bundled records FAIL the gate, the
-#      matching pair passes (25 rules), and the legacy testnet bundle
+#      matching pair passes (26 rules), and the legacy testnet bundle
 #      (apps/wallet/Resources, chain 7780) passes with no record.
+#  15. checklist B6, the release pin: the DKG's final file carries the
+#      `release` object assemble wrote (ReleaseLog 0x…7705, its code hash,
+#      the three builder keys, 2/3 and 3/3); assemble refuses to run without
+#      --release; a final file with the pin removed or its code hash changed
+#      FAILS the strict gate naming "release pin".
 # Usage: scripts/test-mainnet-genesis.sh   (env: AETHER_BIN, as in the tool)
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -91,7 +96,7 @@ NET=$WORK/dry/v1/network.json
 echo "== 2. STRICT mainnet-rules (never --rehearsal) on the dry run's final file"
 if out=$("$A" mainnet-rules --rehearsal --network "$NET" 2>&1); then
   n=$(printf '%s\n' "$out" | grep -c '^ok' || true)
-  if [ "$n" = 24 ]; then ok "rehearsal-mode check passes: all 24 rules on (20 genesis + 4 final-file)"; else bad "rehearsal check passed but printed $n ok lines (want 24)"; fi
+  if [ "$n" = 25 ]; then ok "rehearsal-mode check passes: all 25 rules on (20 genesis + release pin + 4 final-file)"; else bad "rehearsal check passed but printed $n ok lines (want 25)"; fi
 else
   bad "rehearsal check FAILED on the dry run's file:"$'\n'"$out"
 fi
@@ -158,7 +163,7 @@ else
   bad "could not read the dry run's registrar key ('$reg') or the dev-1 address ('$founder')"
 fi
 expect_fail "assemble refuses two validators with one key" "$G" assemble \
-  --chain-id 7801 --registrar "$reg" --reserve-operator "$founder" \
+  --chain-id 7801 --registrar "$reg" --reserve-operator "$founder" --release "$WORK/dry/coordinator/release.json" \
   --reserve "$WORK/dry/coordinator/pub/r1.pub.json" --reserve "$WORK/dry/coordinator/pub/r2.pub.json" \
   --reserve "$WORK/dry/coordinator/pub/r3.pub.json" \
   --validator "$WORK/dry/coordinator/pub/v1.pub.json" --validator "$WORK/dup-v2.pub.json" \
@@ -216,7 +221,7 @@ json.dump({"chain_id": 7801}, open(sys.argv[3], "w"))
 PY
 if out=$("$A" mainnet-rules --network "$WORK/final7801.json" 2>&1); then
   n=$(printf '%s\n' "$out" | grep -c '^ok' || true)
-  if [ "$n" = 24 ]; then ok "strict check passes the new-id final file: 24 rules on"; else bad "strict check passed but printed $n ok lines (want 24)"; fi
+  if [ "$n" = 25 ]; then ok "strict check passes the new-id final file: 25 rules on"; else bad "strict check passed but printed $n ok lines (want 25)"; fi
 else
   bad "strict check FAILED on a valid new-id final file:"$'\n'"$out"
 fi
@@ -436,7 +441,7 @@ fi
 echo "== 14. the release gate: mainnet-rules --bundle pins the bundled record to the file"
 if out=$("$A" mainnet-rules --bundle --network "$WORK/bundle/network.json" 2>&1); then
   n=$(printf '%s\n' "$out" | grep -c '^ok' || true)
-  if [ "$n" = 25 ]; then ok "the bundled pair passes the gate: 25 rules on (24 + the record)"; else bad "the gate passed but printed $n ok lines (want 25)"; fi
+  if [ "$n" = 26 ]; then ok "the bundled pair passes the gate: 26 rules on (25 + the record)"; else bad "the gate passed but printed $n ok lines (want 26)"; fi
 else
   bad "the gate failed on the matching bundled pair:"$'\n'"$out"
 fi
@@ -456,6 +461,43 @@ if out=$("$A" mainnet-rules --bundle --network "$ROOT/apps/wallet/Resources/netw
 else
   bad "the legacy 7780 bundle failed the gate:"$'\n'"$out"
 fi
+
+echo "== 15. checklist B6: the release pin rides from assemble to the final file, and the gate demands it"
+if python3 - "$NET" "$WORK/dry/coordinator/release.json" <<'PY'
+import json, sys
+n, cfg = json.load(open(sys.argv[1])), json.load(open(sys.argv[2]))
+r = n["release"]
+assert r["log"] == "0x0000000000000000000000000000000000007705", r["log"]
+assert r["code_hash"] == "0x4417ad7040420fe3547cdc3fdcd0fa0a690ba2f65e98af851a5e9fa5589db1ec", r["code_hash"]
+assert r["builder_keys"] == [k.lower() for k in cfg["builder_keys"]]
+assert (r["threshold"], r["emergency_threshold"]) == (2, 3)
+PY
+then ok "the DKG's final file carries the release pin assemble wrote (ReleaseLog, code hash, the three keys, 2/3 and 3/3)"
+else bad "the final file does not carry the release pin from the release config"; fi
+expect_fail "assemble refuses to run without --release" "$G" assemble \
+  --chain-id 7801 --registrar "$reg" --reserve-operator "$founder" \
+  --reserve "$WORK/dry/coordinator/pub/r1.pub.json" --reserve "$WORK/dry/coordinator/pub/r2.pub.json" \
+  --reserve "$WORK/dry/coordinator/pub/r3.pub.json" \
+  --validator "$WORK/dry/coordinator/pub/v1.pub.json" --validator "$WORK/dry/coordinator/pub/v2.pub.json" \
+  --validator "$WORK/dry/coordinator/pub/v3.pub.json" --validator "$WORK/dry/coordinator/pub/v4.pub.json" \
+  --out "$WORK/norelease"
+if grep -q "\-\-release" "$WORK/last.out"; then ok "the refusal names --release"
+else bad "the missing-release refusal does not name --release"; fi
+python3 - "$WORK/final7801.json" "$WORK/nopin.json" "$WORK/badhash.json" <<'PY'
+import json, sys
+n = json.load(open(sys.argv[1]))
+bad = json.loads(json.dumps(n))
+del n["release"]
+json.dump(n, open(sys.argv[2], "w"), indent=2)
+bad["release"]["code_hash"] = "0x" + "ab" * 32
+json.dump(bad, open(sys.argv[3], "w"), indent=2)
+PY
+expect_fail "strict mainnet-rules refuses a final file with no release pin" "$A" mainnet-rules --network "$WORK/nopin.json"
+if grep -q "FAIL  release pin" "$WORK/last.out"; then ok "the refusal names the release pin rule"
+else bad "the missing-pin refusal does not name the release pin rule"; fi
+expect_fail "strict mainnet-rules refuses a mismatched ReleaseLog code hash" "$A" mainnet-rules --network "$WORK/badhash.json"
+if grep -q "does not match the ReleaseLog runtime code" "$WORK/last.out"; then ok "the refusal says the code hash does not match"
+else bad "the mismatched-hash refusal does not explain itself"; fi
 
 echo
 echo "==================== test results ===================="

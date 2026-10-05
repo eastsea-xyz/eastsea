@@ -8,6 +8,7 @@ mod parallel;
 pub mod proofs;
 pub mod receipt;
 pub mod registry;
+pub mod release_log;
 pub mod tx;
 pub mod world;
 

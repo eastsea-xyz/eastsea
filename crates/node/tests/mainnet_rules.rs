@@ -313,6 +313,7 @@ fn final_file(chain: u64, round: u64, output: Option<String>, identity: Option<S
         group: None,
         max_committee: Some(aether_node::rotation::GROW_UNTIL as u64),
         genesis_validators: None,
+        release: None,
     }
 }
 

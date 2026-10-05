@@ -536,6 +536,12 @@ enum Cmd {
         /// (default 16, at least 4, at most 128).
         #[arg(long)]
         max_committee: Option<u64>,
+        /// Release config (JSON, `{"builder_keys": [three 04‖x‖y hex]}`): writes the app's
+        /// release-approval pin — the ReleaseLog predeploy, its code hash, the builder keys,
+        /// 2/3 normal and 3/3 emergency (docs/design/19). A new genesis needs it (mainnet rule
+        /// "release pin"); 7780 never has one.
+        #[arg(long)]
+        release: Option<String>,
         members: Vec<String>,
     },
     /// List the public development accounts (funded at genesis; never use for value).
@@ -1093,14 +1099,20 @@ fn main() {
             };
             reshare(&from, &to, boundary, port, data, round, peers, link_base, offline, via_node)
         }
-        Cmd::Network { chain_id, faucet, registrar, dev_registrar, epoch_blocks, min_streak, draw_epochs, node_rewards, history, protocol, reserve, reserve_operator, group, max_committee, members } => {
+        Cmd::Network { chain_id, faucet, registrar, dev_registrar, epoch_blocks, min_streak, draw_epochs, node_rewards, history, protocol, reserve, reserve_operator, group, max_committee, release, members } => (|| {
+            let release = match release {
+                None => None,
+                Some(p) => Some(aether_node::roster::ReleasePin::from_config(
+                    &std::fs::read(&p).map_err(|e| format!("{p}: {e}"))?,
+                )?),
+            };
             let registrar = match (registrar, dev_registrar) {
                 (None, true) => Some(dev_registrar_hex()),
                 (r, _) => r,
             };
             let reserve = reserve_operator.map(|op| (op, reserve));
-            assemble_network(chain_id, faucet, registrar, (epoch_blocks, min_streak, draw_epochs), (history, protocol, group, max_committee), (node_rewards, reserve), &members)
-        }
+            assemble_network(chain_id, faucet, registrar, (epoch_blocks, min_streak, draw_epochs), (history, protocol, group, max_committee), (node_rewards, reserve), release, &members)
+        })(),
         Cmd::RegistrarKey { data } => (|| {
             // Idempotent: an existing key is kept (and its public half printed).
             let path = std::path::Path::new(&data).join("registrar.key");
@@ -1759,6 +1771,7 @@ fn assemble_network(
     voting: VotingParams,
     format: (Option<u32>, Option<u32>, Option<u16>, Option<u64>),
     rewards: (bool, Option<(Address, Vec<String>)>),
+    release: Option<aether_node::roster::ReleasePin>,
     members: &[String],
 ) -> Result<(), String> {
     let (epoch_blocks, min_streak, draw_epochs) = voting;
@@ -1803,6 +1816,7 @@ fn assemble_network(
         reserve,
         group,
         max_committee,
+        release,
     };
     aether_node::roster::Roster::from_file(&file)?;
     file.genesis()?;
@@ -3099,7 +3113,7 @@ fn bind_to_checked_genesis(network: Option<&str>, data: &str, ceremony: Option<&
 }
 
 /// The rules `aether mainnet-rules` prints for `file` at `path`: the 20
-/// genesis rules and the 4 final-file gates, plus the bundled-record rule
+/// genesis rules, the release pin and the 4 final-file gates, plus the bundled-record rule
 /// under `--bundle`. A bundle that is not a new genesis (the legacy 7780
 /// testnet app) runs the record rule alone: its network.json is not a launch
 /// candidate, and the only thing the release gate asks of it is that it ship
@@ -3119,7 +3133,11 @@ fn mainnet_rules(
     }
     let genesis = file.genesis()?;
     let chain_id = file.chain_id;
-    let mut rules = aether_node::mainnet::check_with(&chain_config(chain_id, &genesis, false), rehearsal);
+    let cfg = chain_config(chain_id, &genesis, false);
+    let mut rules = aether_node::mainnet::check_with(&cfg, rehearsal);
+    // Checklist B6: what the app's updater trusts (no rehearsal allowance —
+    // a throwaway builder key set satisfies it).
+    rules.push(aether_node::mainnet::check_release(&cfg, file.release.as_ref()));
     // Audit 5, A5-4: the strict gate also decodes the exact committee
     // fields the file carries (or names the file pre-DKG).
     rules.extend(aether_node::mainnet::check_final(file, rehearsal));
@@ -3611,6 +3629,7 @@ mod tests {
             group: None,
             max_committee: None,
             genesis_validators: Some(vec![Member { key: "01".into(), node: "node".into() }]),
+            release: None,
         };
         let dir = std::env::temp_dir().join(format!("aether-runbind-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -3736,7 +3755,7 @@ mod tests {
     }
 
     /// The release gate flag: `--bundle` adds the bundled-record rule on top
-    /// of the 20 genesis + 4 final-file rules (the ceremony's own first check
+    /// of the 20 genesis + release pin + 4 final-file rules (the ceremony's own first check
     /// runs without it — it writes the record only after PASS).
     #[test]
     fn the_release_gate_flag_parses() {
@@ -3753,7 +3772,7 @@ mod tests {
     /// bundle that is not a new genesis (the 7780 app, apps/wallet/Resources)
     /// runs the record rule alone — running the 20 mainnet genesis rules on a
     /// testnet file would fail every testnet app build until the chain id
-    /// changes. A new-genesis bundle still gets the full set (24 + the record).
+    /// changes. A new-genesis bundle still gets the full set (25 + the record).
     #[test]
     fn the_bundle_gate_lets_the_legacy_testnet_app_build() {
         use aether_node::roster::{Member, NetworkFile};
@@ -3776,6 +3795,7 @@ mod tests {
             group: None,
             max_committee: None,
             genesis_validators: genesis.then_some(vec![Member { key: "11".repeat(32), node: aether_net::devnet_node_id(1).to_string() }]),
+            release: None,
         };
         let dir = std::env::temp_dir().join(format!("aether-gate-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -3797,11 +3817,14 @@ mod tests {
         let net = dir.join("new.json");
         std::fs::write(&net, serde_json::to_vec(&new_genesis).unwrap()).unwrap();
         let rules = mainnet_rules(&new_genesis, &net, false, true).unwrap();
-        assert_eq!(rules.len(), 25, "20 genesis + 4 final-file + the record");
+        assert_eq!(rules.len(), 26, "20 genesis + release pin + 4 final-file + the record");
         assert_eq!(rules.last().unwrap().name, "bundled ceremony record");
-        // Without --bundle: the ceremony's own 24.
+        // Without --bundle: the ceremony's own 25, the release pin right after
+        // the genesis rules — and failing here, where the file has none.
         let rules = mainnet_rules(&new_genesis, &net, false, false).unwrap();
-        assert_eq!(rules.len(), 24);
+        assert_eq!(rules.len(), 25);
+        assert_eq!(rules[20].name, "release pin");
+        assert!(!rules[20].ok, "a new genesis without a release pin fails the launch check");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

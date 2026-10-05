@@ -515,7 +515,7 @@ fn log_heavy_block_stored_rows_fit_the_pinned_expansion_bound() {
     let store = Store::open(&dir.join("state.redb")).unwrap();
     let before = store.stats().unwrap();
     let receipt = &exec.receipts[0];
-    let history = aether_node::account_history::transaction(&tx, receipt, block.height.get(), 0, block.timestamp, false, true);
+    let history = aether_node::account_history::transaction(&tx, receipt, block.height.get(), 0, block.timestamp, aether_types::U256::ZERO, false, true);
     let summary = BlockSummary {
         height: block.height.get(), hash: hex::encode(block.digest()), parent: hex::encode(n.last.digest()),
         timestamp_ms: block.timestamp, proposer: n.operator(0), state_root: exec.state.root(),

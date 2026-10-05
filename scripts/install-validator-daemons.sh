@@ -81,12 +81,14 @@ for src in "$agents"/com.pipln.aether.testnet.*.plist; do
     if [ "$dry" = 1 ]; then
       echo "would: launchctl bootout system $dst"
       echo "would: rm $dst"
+      echo "would: launchctl enable gui/$uid/$label"
     else
       echo "booting out: $label"
       launchctl bootout system "$dst" 2>/dev/null || echo "  (not loaded)"
       rm -f "$dst"
       echo "removed: $dst"
-      echo "the user LaunchAgent is untouched; to return to it: launchctl bootstrap gui/$uid $src"
+      launchctl enable "gui/$uid/$label"
+      echo "the user LaunchAgent is enabled again; to start it now: launchctl bootstrap gui/$uid $src"
     fi
     continue
   fi
@@ -115,11 +117,15 @@ for src in "$agents"/com.pipln.aether.testnet.*.plist; do
 
   if [ "$dry" = 1 ]; then
     echo "would: launchctl bootout gui/$uid $src   (keep one node per data directory)"
+    echo "would: launchctl disable gui/$uid/$label   (so the next login does not start the agent copy again)"
     echo "would: launchctl bootstrap system $dst"
     echo "would: launchctl kickstart -k system/$label"
   else
     echo "booting out the agent copy: $label"
     launchctl bootout "gui/$uid" "$src" 2>/dev/null || echo "  (not loaded)"
+    # Disabled, not just booted out: otherwise the next login loads the agent
+    # again and it fights the daemon for the data directory's run.lock.
+    launchctl disable "gui/$uid/$label"
     launchctl bootout system "$dst" 2>/dev/null
     launchctl bootstrap system "$dst"
     launchctl kickstart -k "system/$label"

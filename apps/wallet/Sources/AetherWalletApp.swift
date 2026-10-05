@@ -123,6 +123,7 @@ struct SettingsView: View {
                 .font(.caption).foregroundStyle(.secondary)
             Toggle("Open \(Brand.project) at login", isOn: Binding(get: { node.startAtLogin }, set: { node.startAtLogin = $0 }))
             UnattendedSection()
+            HistoryStorageSection()
             ResourcesSection()
             Text("Your node verifies every block itself and your wallet asks it instead of the network. Quitting \(Brand.project) stops it.")
                 .font(.caption).foregroundStyle(.secondary)
@@ -307,6 +308,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // survived the reboot, the node's run.lock exit turns into attach.
         unattended.nodeEnabled = node.enabled
         unattended.wrongLocation = node.wrongLocation
+        unattended.storageShards = node.storageShards
         node.unattended = unattended
         unattended.refreshStatus()
         unattended.refreshPower()

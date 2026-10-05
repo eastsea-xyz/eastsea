@@ -85,6 +85,58 @@ final class NodeController: ObservableObject {
     }
     /// What the prover did last (from the node's `aether_proverStatus`).
     @Published private(set) var prover: ProverStatus?
+    /// 설정 ▸ 역사 보관 (docs/design/15-node-rewards.md "C. 보관"): how much
+    /// of the network's past this Mac keeps, in the user's words. The choice
+    /// maps to the node's `--max-shards` (`StorageSetting`) and applies on
+    /// the node's next start; the daemon's marker follows the change at once,
+    /// so an unattended restart runs with the same budget. Nothing is lost by
+    /// lowering it — the node drops only the shards beyond its assignment.
+    @AppStorage("historyStorage") var historyStorage = StorageSetting.defaultChoice {
+        didSet { pushStorageSetting() }
+    }
+    /// What this Mac keeps right now and how it has been checking out
+    /// (`aether_shardStats`): the honest line the 역사 보관 setting stands on.
+    @Published private(set) var history: HistoryKept?
+
+    /// The shard budget both nodes (this app's child and the daemon's) run
+    /// with: the stored choice resolved against the registry (a registered
+    /// Mac has no "off") and the data volume's free space. One resolver feeds
+    /// `start` and the daemon's marker, so the two argvs cannot drift.
+    var storageShards: Int {
+        StorageSetting.resolve(choice: historyStorage,
+                               registered: voting?.registered == true,
+                               freeBytes: StorageSetting.freeBytes(atPath: Self.dataDir.path))
+    }
+
+    /// What this Mac keeps of the network's past, for one line in Settings.
+    /// `passPercent` is this Mac's own row in `aether_shardStats` when it has
+    /// been checked, else the pass rate this Mac observed across the network's
+    /// holders — phase 1 keeps challenge results only where they were asked.
+    struct HistoryKept: Equatable, Sendable {
+        let bytes: UInt64
+        let shards: Int
+        let windowDays: Int
+        let passPercent: Int?
+    }
+
+    private struct ShardStatsJSON: Decodable {
+        let cap: Int?
+        let window_days: Int?
+        let held: [Held]?
+        let held_bytes: UInt64?
+        let me: String?
+        let candidates: [Candidate]?
+        struct Held: Decodable { let era: UInt64; let shard: UInt32 }
+        struct Candidate: Decodable { let node: String; let checked: Int; let ok: Int; let failed: Int }
+    }
+
+    /// Hand the resolved budget to the daemon (its marker is written without
+    /// the node's registry view) and rewrite the marker right away: a reboot
+    /// before the node's next start must not resurrect the old budget.
+    private func pushStorageSetting() {
+        unattended?.storageShards = storageShards
+        unattended?.syncMarker()
+    }
     /// The node's data volume is below its free-space floor (`aether_status`):
     /// no new era files or shards, proving paused — shown as "디스크 공간 부족".
     @Published private(set) var diskLow = false
@@ -350,7 +402,8 @@ final class NodeController: ObservableObject {
             p2pPort: Self.p2pPort,
             networkPath: Bundle.main.url(forResource: "network", withExtension: "json")?.path,
             proverFlags: ProverFlags.build(memory: proverMemory, cores: proverCores, battery: proverOnBattery,
-                                           activeProcessors: ProcessInfo.processInfo.activeProcessorCount))
+                                           activeProcessors: ProcessInfo.processInfo.activeProcessorCount),
+            storageFlag: StorageSetting.flag(shards: storageShards))
         args += ["--exit-with-parent"]
         unattended?.nodeSwitchedOn()
         let p = Process()
@@ -597,7 +650,10 @@ final class NodeController: ObservableObject {
                 // The unattended-restart default follows the registry: a Mac
                 // in or entering the voting set keeps running through
                 // restarts unless the user chose otherwise (docs/design/29).
-                if let status { self.unattended?.applyDefault(registered: status.registered) }
+                if let status {
+                    self.unattended?.applyDefault(registered: status.registered)
+                    self.unattended?.storageShards = self.storageShards
+                }
                 self.applyDuty()
             }
         }
@@ -682,6 +738,35 @@ final class NodeController: ObservableObject {
         }
     }
 
+    /// Last `aether_shardStats` read (throttled: the call lists the shard
+    /// directory, and the Settings line it feeds does not change by the second).
+    private var lastShardStatsCheck = MonotonicInstant.distantPast
+
+    private func refreshHistoryKept() {
+        guard clock.now.elapsed(since: lastShardStatsCheck) > 30 else { return }
+        lastShardStatsCheck = clock.now
+        let port = Self.port
+        Task.detached {
+            // The me row is this Mac as others have checked it; before anyone
+            // has, the honest fallback is the pass rate this Mac observed
+            // about the network's holders (that is all phase 1 records).
+            let v = await LocalRPC.call(port: port, method: "aether_shardStats", params: []) as? [String: Any]
+            let kept = v.flatMap { try? JSONSerialization.data(withJSONObject: $0) }
+                .flatMap { try? JSONDecoder().decode(ShardStatsJSON.self, from: $0) }
+                .map { s in
+                    let rows = s.candidates ?? []
+                    let mine = s.me.flatMap { me in rows.first { $0.node.lowercased() == me.lowercased() && $0.checked > 0 } }
+                    let checked = mine?.checked ?? rows.reduce(0) { $0 + $1.checked }
+                    let ok = mine?.ok ?? rows.reduce(0) { $0 + $1.ok }
+                    return HistoryKept(bytes: s.held_bytes ?? 0,
+                                       shards: s.held?.count ?? 0,
+                                       windowDays: s.window_days ?? 7,
+                                       passPercent: checked > 0 ? Int((Double(ok) / Double(checked) * 100).rounded()) : nil)
+                }
+            await MainActor.run { if self.history != kept { self.history = kept } }
+        }
+    }
+
     /// Rewards this Mac earned, as the same EarningsCSV document the Earnings
     /// screen exports — the menu bar has no screen state of its own, so it
     /// reads the rows fresh from the node instead (same file, same columns).
@@ -759,6 +844,7 @@ final class NodeController: ObservableObject {
         refreshVoting()
         applyDuty()
         refreshProver()
+        refreshHistoryKept()
         refreshUpgrade()
         refreshDisk()
         guard !checkInFlight else { return }

@@ -15,14 +15,14 @@ struct ChainHistoryPage: Decodable, Sendable {
     }
 }
 
-struct ChainTokenMove: Decodable, Equatable, Sendable {
+struct ChainTokenMove: Codable, Equatable, Sendable {
     let token: String
     let from: String
     let to: String
     let amount: String
 }
 
-struct ChainPairSwap: Decodable, Equatable, Sendable {
+struct ChainPairSwap: Codable, Equatable, Sendable {
     let pair: String
     let amount0In: String
     let amount1In: String
@@ -30,7 +30,7 @@ struct ChainPairSwap: Decodable, Equatable, Sendable {
     let amount1Out: String
 }
 
-struct ChainHistoryEntry: Decodable, Equatable, Sendable {
+struct ChainHistoryEntry: Codable, Equatable, Sendable {
     let address: String
     let height: UInt64
     let txIndex: UInt32

@@ -740,6 +740,8 @@ final class WalletModel: ObservableObject {
         guard !recipients.isEmpty else { return "Add a recipient first" }
         let pk = enclave.publicKey
         let callback = paymentRequest?.callback
+        // Read main-actor state before detaching; the closure only signs.
+        let validatorsNow = validators
         busy = true
         let refused: String? = await Task.detached { [weak self] () -> String? in
             guard let self else { return nil }
@@ -752,7 +754,7 @@ final class WalletModel: ObservableObject {
                                         recipients: recipients.map { $0.lowercased() })
                 if recipients.count == 1 {
                     prepared = try prepareTransfer(p256PublicKey: pk, to: recipients[0], valueWei: wei,
-                                                   shownFeeWei: shownFeeWei, validators: self.validators)
+                                                   shownFeeWei: shownFeeWei, validators: validatorsNow)
                     label = "Sent \(Wei.format(wei)) \(Brand.coinTicker) (nonce \(prepared.nonce))"
                 } else {
                     // All payments in one tx: one signature, all or nothing (EIP-7702 batch).

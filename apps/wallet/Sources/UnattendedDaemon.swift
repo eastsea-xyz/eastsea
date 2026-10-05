@@ -52,6 +52,11 @@ final class UnattendedDaemon: ObservableObject {
     /// user keeps the node switch off, or from a place the app cannot live in.
     var nodeEnabled = false
     var wrongLocation = false
+    /// The history-storage shard budget the daemon's node runs with (설정 ▸
+    /// 역사 보관), resolved by the node controller — the same value its own
+    /// child starts with — and pushed whenever the setting or the registry
+    /// view changes. `nil` until then: the node's own default holds.
+    var storageShards: Int?
 
     private var service: SMAppService { SMAppService.daemon(plistName: Self.plistName) }
 
@@ -124,7 +129,8 @@ final class UnattendedDaemon: ObservableObject {
                         proverFlags: ProverFlags.build(memory: UserDefaults.standard.string(forKey: "proverMemory") ?? "auto",
                                                        cores: UserDefaults.standard.string(forKey: "proverCores") ?? "half",
                                                        battery: UserDefaults.standard.bool(forKey: "proverOnBattery"),
-                                                       activeProcessors: ProcessInfo.processInfo.activeProcessorCount)),
+                                                       activeProcessors: ProcessInfo.processInfo.activeProcessorCount),
+                                                       storageFlag: StorageSetting.flag(shards: storageShards ?? StorageSetting.defaultShards)),
                      proveAddress: UserDefaults.standard.string(forKey: "proveAddress"))
     }
 

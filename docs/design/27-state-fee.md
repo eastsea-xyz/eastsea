@@ -9,8 +9,9 @@ before EVM execution; unused funds return to the sender.
 
 ## Authoritative persistence inventory
 
-The table counts logical payloads and indexes, excluding redb page and Merkle
-tree overhead. “Window” means the default 30-day history-v2 retention, rounded
+The table inventories logical payloads and indexes. The paid archive rows also
+have the stored key/value bound below; redb page and Merkle tree overhead are
+excluded. “Window” means the default 30-day history-v2 retention, rounded
 to complete 8,192-block eras; an archive node keeps the row indefinitely.
 The operator can configure another window or drop old era files. A wire limit
 alone bounds size, but does not price long-lived archive growth.
@@ -23,10 +24,10 @@ download file is temporary and installs into the same state/code tables.
 | State tree basic account record, **including the sender's first nonce account**, recipient and contract accounts | Transaction pays 100 units/new account. Issuance funds protocol prover/operator credits. | Transaction portion: 100,000 units, hence at most 1,000 otherwise empty accounts. Protocol: at most two proof claims/block and at most 100,000 visible registered operators at an epoch payout. | Until removed; no routine state pruning. |
 | State tree storage keys and 32-byte values | Transaction pays 100 units/newly occupied slot. System registry, beacon, proof and reward words are protocol subsidy (below). | At most 512 transaction-created slots/block; system bounds below. | Until cleared; no routine state pruning. |
 | State tree code hash/chunks and `CODE` blobs | Transaction pays one unit/new code byte, plus a new-account charge. | 100,000 priced code bytes/block, further limited by EVM gas/code deposit. | Tree chunks until replacement/deletion; historical `CODE` blobs remain indefinitely. |
-| Canonical signed transaction envelope, calldata, and the transaction copy in staged blocks and era files | Transaction pays one unit/32 canonical bytes, rounded with its receipt. | Combined signed-transaction/receipt meter: 2 MiB/block; block wire cap: 8 MiB. | Staged until seal; era file kept by default, optionally dropped after pruning. |
-| `RECEIPTS`: fixed fields, return/revert output, event addresses, topics and data | Transaction pays for 128 fixed bytes/receipt, 64/event, output bytes, 32/topic and data bytes, at one unit/32 bytes. | Same combined 2 MiB/block cap, plus EVM gas limits. | Window; archive indefinitely. |
+| Canonical signed transaction envelope, calldata, and the transaction copy in staged blocks and era files | Transaction pays one unit/32 canonical bytes, rounded with its receipt. | Combined logical signed-transaction/receipt meter: 2 MiB/block; its 16× stored-byte allowance bounds paid key/value rows to 32 MiB/block. Block wire cap: 8 MiB. | Staged until seal; era file kept by default, optionally dropped after pruning. |
+| `RECEIPTS`: fixed fields, return/revert output, event addresses, topics and data | Transaction pays for 128 fixed bytes/receipt, 64/event, output bytes, 32/topic and data bytes, at one unit/32 bytes. | Same combined 2 MiB logical and 32 MiB stored-byte bound, plus EVM gas limits. A 480 × 4,096-byte LOG0 block measured **3,973,691 stored / 1,997,287 metered = 1.990×** across receipt, activity/index, summary and staged block rows; the bound is 16×. | Window; archive indefinitely. |
 | `BLOCKS` summary, transaction-hash index, block links and state root | Transaction envelope and receipt-base charges cover transaction-dependent rows; fixed header is protocol overhead. | One summary/block and at most 2,000 transactions; 8 MiB wire cap. | Window; archive indefinitely. |
-| `ACCOUNT_HISTORY` sender/recipient/token activity and `ACCOUNT_BLOCK_KEYS` (32-byte reverse key/row) | Transaction base pays the sender row; value recipients require a paid account or transfer; extra token rows require metered events. Reward/registration rows are protocol subsidy. | At most 2,000 transaction base rows, recipient rows and at most two address rows per recognized Transfer event; event count and serialized row data are linear in the 2 MiB metered event/receipt cap. Swap details attach to one sender row. | Window; archive indefinitely. |
+| `ACCOUNT_HISTORY` sender/recipient/token activity and `ACCOUNT_BLOCK_KEYS` (32-byte reverse key/row) | Transaction base pays the sender row; value recipients require a paid account or transfer; extra token rows require metered events. Reward/registration rows are protocol subsidy. | At most 2,000 transaction base rows, recipient rows and at most two address rows per recognized Transfer event; event count and serialized row data are within the shared 16× allowance on the 2 MiB logical meter. Swap details attach to one sender row. | Window; archive indefinitely. |
 | `ERA_BLOCKS` staged encoded block, sealed `.aera` file, permanent `ERA_ROOTS` | Signed transaction bytes priced above; bounded proof/beacon/registration/handoff/seed payload is protocol subsidy. | One encoded block of at most 8 MiB/height; one 32-byte root/8,192 blocks. | Staged until seal; era file default indefinitely or dropped after pruning; root permanently. |
 | Marshal finalized block/certificate and follower `PROOFS` finality certificate | Consensus protocol subsidy, independent of a transaction. | One block/certificate per height, block at most 8 MiB; committee size at most 128. | Window; archive indefinitely. |
 | `REWARDS` prover tax rows and reward account-history rows | Issuance for valid proof claims, not a transaction sender. | At most two claims/block, each decoded proof at most 128 KiB; at most two prover rows/block. Epoch operator payout sees at most 100,000 registered candidates. | Tax rows indefinitely; account history window. |
@@ -41,6 +42,21 @@ before activation**. Paid registry contract calls beyond the free lane's
 100,000-entry limit still pay transaction state units; reward/beacon system
 processing sees at most the first 100,000 candidates.
 
+The paid-row expansion allowance is 16 stored key/value bytes per logical
+metered byte (`MAX_STORED_BYTES_PER_METERED_BYTE`). The bound covers the
+`RECEIPTS`, `ACCOUNT_HISTORY`, `ACCOUNT_BLOCK_KEYS`, `BLOCKS` transaction hash,
+and staged transaction copy: receipt JSON hex needs two characters per binary
+byte and at most 68 per 32-byte topic; its fixed fields fit within 16× the
+128-byte receipt floor. A history base row and reverse key fit within 16× a
+signed envelope. Each decoded batch recipient occupies at least one 96-byte
+ABI tuple and adds at most one row. A recognized Transfer event has 192
+logical bytes and adds at most two address rows and token movements; a Swap
+event's 288 logical bytes add detail only to the sender row. Those bounded
+JSON rows and the signed transaction's staged copy fit inside the remaining
+16× allowance. Protocol entries listed separately above do not consume this
+transaction budget. The redb regression test measures key and value bytes,
+not allocated pages or fragmentation.
+
 ## Transaction price and common cap
 
 The executor counts the final revm state difference against the transaction's
@@ -53,7 +69,9 @@ For each transaction, *persistent bytes* are its canonical signed envelope
 length plus 128 receipt bytes, its return/revert output length, and for each
 event 64 framing/address bytes + 32 bytes/topic + data length. The charge is
 `ceil(persistent_bytes / 32)` state units. A zero-topic, zero-data `LOG0`
-therefore has a price. The sum may not exceed **2 MiB per block**. Proposer
+therefore has a price. The logical sum may not exceed **2 MiB per block**:
+the 16× expansion bound then caps paid redb key/value payloads at
+**32 MiB per block**. Proposer
 selection, validator execution, FOCIL append checks, admission of a single
 transaction and proving replay use the same executor rule. A transaction
 over the byte cap or its signed state budget is invalid.
@@ -66,8 +84,9 @@ The receipt remains stored for wallet queries, including zero-value and
 zero-tip transactions, because its bytes are priced. A normal ERC-20 Transfer
 event has three topics and 32 data bytes: 64+96+32 = 192 metered bytes,
 costing six units (0.000006 AETH) beyond the transaction and receipt base.
-The audit's 400 × 4,096-byte `LOG0` call must therefore pay for over 1.6 MiB
-of event bytes, and repeated calls cannot exceed the 2 MiB block cap. The
+The audit's 400 × 4,096-byte `LOG0` call pays for over 1.6 MiB of event bytes.
+A 480-event call fits near the logical cap; repeated calls cannot exceed it.
+The
 audit's 714 fresh senders require at least 71,400 units for accounts plus
 transaction/receipt units; zero-balance senders cannot reserve that fee and
 fail both admission and execution. The full 100,000-unit state budget burns

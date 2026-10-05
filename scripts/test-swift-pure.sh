@@ -16,6 +16,7 @@ run browser-verify Brand.swift BrowserOriginPolicy.swift BrowserPolicy.swift Ver
 run earnings EarningsModel.swift
 run earnings-export Brand.swift EarningsModel.swift ChainActivity.swift EarningsExport.swift
 run fee-confirm EarningsModel.swift
+run health-check Brand.swift Clock.swift NodeWatchdog.swift HealthCheck.swift
 run history-notice HistoryFailure.swift
 run install-location Brand.swift InstallLocation.swift
 run key-exposure KeyExposureNotice.swift

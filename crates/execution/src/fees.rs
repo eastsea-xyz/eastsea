@@ -46,8 +46,19 @@ pub const RECEIPT_BYTES_PER_STATE_UNIT: u64 = 32;
 /// Consensus limits for new-genesis transactions, excluding capped system writes.
 pub const MAX_STATE_UNITS_PER_BLOCK: u64 = 100_000;
 pub const MAX_NEW_SLOTS_PER_BLOCK: u64 = 512;
-/// Maximum archived transaction and receipt bytes in a new-genesis block.
+/// Upper bound for transaction-dependent redb key/value bytes per logical
+/// metered byte. Receipt JSON hex doubles binary output/data and expands each
+/// topic; account-history JSON and its reverse index can add rows per decoded
+/// batch recipient or Transfer event. The 16x allowance covers those rows as
+/// well as the signed transaction's staged copy and summary hash. It excludes
+/// separately bounded protocol records and redb page/fragmentation overhead.
+pub const MAX_STORED_BYTES_PER_METERED_BYTE: u64 = 16;
+/// Maximum logical archived transaction and receipt bytes in a new-genesis block.
 pub const MAX_PERSISTENT_BYTES_PER_BLOCK: u64 = 2 * 1024 * 1024;
+/// Bound on the paid redb key/value representation at the logical block cap.
+/// Separately bounded protocol records are not charged against it.
+pub const MAX_PAID_STORED_BYTES_PER_BLOCK: u64 =
+    MAX_PERSISTENT_BYTES_PER_BLOCK * MAX_STORED_BYTES_PER_METERED_BYTE;
 
 /// What a block's fees follow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

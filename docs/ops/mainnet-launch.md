@@ -178,7 +178,7 @@ aether mainnet-rules --network <검증자 1 데이터 디렉터리>/network.json
 ## 6. 앱 번들 업데이트
 
 - `apps/wallet/Resources/network.json`을 최종 network.json으로 바꾸고, **코디네이터의 check가 그 옆에 남긴 `ceremony-check.json`을 같이 번들한다** — 이 쌍이 소비자 Mac의 시작 경로 전부다: 지갑 앱은 `--network`만 넘기고 `aether run`이 옆의 기록을 찾아 바인딩·저장한다(5단계). 최종 파일의 바이트가 조금이라도 다시 쓰여지면 기록의 digest가 어긋나므로, check를 통과한 그 파일을 그대로 복사한다.
-- 게이트: `aether mainnet-rules --bundle --network apps/wallet/Resources/network.json` — 24번째 규칙 "bundled ceremony record"가 번들 쌍을 검사한다(기록 누락·다른 세레머니의 기록·digest 불일치 FAIL). `scripts/build-wallet.sh`가 **모든 앱 빌드에 이 게이트를 자동으로** 돌리므로, 이 게이트를 통과하지 못한 새 제네시스 빌드는 앱이 만들어지지 않는다. 7780 테스트넷 번들은 새 제네시스가 아니므로 기록 없이 통과한다.
+- 게이트: `aether mainnet-rules --bundle --network apps/wallet/Resources/network.json` — 24번째 규칙 "bundled ceremony record"가 번들 쌍을 검사한다(기록 누락·다른 세레머니의 기록·digest 불일치 FAIL). `scripts/build-wallet.sh`가 **모든 앱 빌드에 이 게이트를 자동으로** 돌리므로, 이 게이트를 통과하지 못한 새 제네시스 빌드는 앱이 만들어지지 않는다. 기록 없는 7780 예외는 코드에 고정된 배포 파일의 **전체 SHA256과 바이트 단위로 일치할 때만** 통과한다. 체인 아이디나 제네시스 플래그만 7780처럼 바꾼 파일은 거부한다.
 - 체인 아이디가 바뀌므로 앱의 표시명·설명에서 "테스트넷" 문구를 뺀다.
 - 앱은 faucet이 없는 네트워크임을 사용자에게 그대로 보여 준다(에어드랍 안내 문구 없음).
 

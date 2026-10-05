@@ -906,7 +906,14 @@ fn main() {
                 if let Err(e) = aether_node::candidate::CandidateKeys::load_or_create(&dir) {
                     tracing::error!(%e, "aether run: this Mac's identity cannot be loaded; running as a follower");
                 }
+                bind_incoming_network(&dir, network.as_deref(), ceremony.as_deref())?;
                 aether_node::supervisor::adopt_network(&dir, network.as_deref().map(std::path::Path::new))?;
+                // A committee install a previous run did not finish (red team
+                // #19): complete it before the ceremony bind or any role decision reads the files.
+                if let Err(e) = aether_node::supervisor::finish_incomplete(&dir) {
+                    eprintln!("a completed handoff cannot be installed: {e}");
+                    std::process::exit(aether_node::store::EXIT_STORAGE);
+                }
                 // Audit 6: after adopt_network, bind the adopted genesis to
                 // the ceremony record before any child can vote (the record
                 // verify-local stored in the data dir, --ceremony, or the one
@@ -919,12 +926,6 @@ fn main() {
                         std::process::exit(1);
                     }
                 };
-                // A committee install a previous run did not finish (red team
-                // #19): complete it before any role decision reads the files.
-                if let Err(e) = aether_node::supervisor::finish_incomplete(&dir) {
-                    eprintln!("a completed handoff cannot be installed: {e}");
-                    std::process::exit(aether_node::store::EXIT_STORAGE);
-                }
                 // The same resource limits for whichever child runs (the
                 // supervisor adds them to both `aether node` and `aether follow`).
                 let forwarded = resources.forward();
@@ -2880,10 +2881,12 @@ fn run_dkg(
 /// legacy testnet chain pass through; a new genesis without the ceremony
 /// record refuses here, naming the operator step.
 fn bind_to_checked_genesis(network: Option<&str>, data: &str, ceremony: Option<&str>) {
-    let Some(network) = network else { return };
+    // Without --network this command builds the explicit local devnet; it
+    // does not consume a network.json from the data directory.
+    let Some(checked) = network.map(std::path::Path::new) else { return };
     if let Err(e) = aether_node::mainnet::bind_data_dir(
         std::path::Path::new(data),
-        std::path::Path::new(network),
+        checked,
         ceremony.map(std::path::Path::new),
     ) {
         eprintln!("refusing to start: {e}");
@@ -2904,9 +2907,11 @@ fn mainnet_rules(
     rehearsal: bool,
     bundle: bool,
 ) -> Result<Vec<aether_node::mainnet::Rule>, String> {
-    if bundle && !aether_node::mainnet::new_genesis_chain(file) {
+    if bundle {
         let bytes = std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-        return Ok(vec![aether_node::mainnet::check_bundle(path, file, &bytes)]);
+        if aether_node::mainnet::shipped_legacy_network(&bytes) {
+            return Ok(vec![aether_node::mainnet::check_bundle(path, file, &bytes)]);
+        }
     }
     let genesis = file.genesis()?;
     let chain_id = file.chain_id;
@@ -2934,6 +2939,25 @@ fn mainnet_rules(
 /// with) is bound to the record's half and follows with a warning when no
 /// record is reachable at all. The resolved record is returned for the
 /// supervisor to pass the child as --ceremony.
+/// Validate an incoming file before adoption can move its stored pin or share.
+fn bind_incoming_network(
+    dir: &std::path::Path,
+    network: Option<&str>,
+    ceremony: Option<&str>,
+) -> Result<(), String> {
+    let Some(path) = network.map(std::path::Path::new) else { return Ok(()) };
+    let bytes = std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let file = serde_json::from_slice(&bytes).map_err(|e| format!("{} is not a network.json: {e}", path.display()))?;
+    if let Some(record) = aether_node::mainnet::resolve_ceremony_record(
+        ceremony.map(std::path::Path::new), dir, Some(path),
+    ) {
+        aether_node::mainnet::bind_network_to_record(&file, &bytes, &aether_node::mainnet::load_ceremony_record(&record)?)?;
+    } else if dir.join("threshold.json").exists() && !aether_node::mainnet::shipped_legacy_network(&bytes) {
+        return Err("no ceremony record: verify-local must bind the incoming network before a signer can adopt it".into());
+    }
+    Ok(())
+}
+
 fn bind_run_to_ceremony(
     dir: &std::path::Path,
     network: Option<&str>,
@@ -2943,14 +2967,14 @@ fn bind_run_to_ceremony(
     let bytes = std::fs::read(&local).map_err(|e| format!("cannot read {}: {e}", local.display()))?;
     let file: aether_node::roster::NetworkFile = serde_json::from_slice(&bytes)
         .map_err(|e| format!("{} is not a network.json: {e}", local.display()))?;
-    if !aether_node::mainnet::new_genesis_chain(&file) {
-        return Ok(None);
-    }
     let record = aether_node::mainnet::resolve_ceremony_record(
         ceremony.map(std::path::Path::new),
         dir,
         network.map(std::path::Path::new),
     );
+    if record.is_none() && aether_node::mainnet::shipped_legacy_network(&bytes) {
+        return Ok(None);
+    }
     if dir.join("threshold.json").exists() {
         aether_node::mainnet::bind_data_dir(dir, &local, record.as_deref())?;
     } else {
@@ -3399,6 +3423,23 @@ mod tests {
         assert_eq!(resolved, Some(bundle.join("ceremony-check.json")));
         assert!(data.join("ceremony-check.json").exists(), "stored: starts without --network bind too");
 
+        // Stored records stay authoritative when all activation flags or the id change.
+        for (tag, mut altered) in [("rewards", final_file.clone()), ("history", final_file.clone()), ("chain", final_file.clone())] {
+            match tag {
+                "rewards" => { altered.node_rewards = Some(false); altered.history = None; }
+                "history" => { altered.history = Some(1); altered.node_rewards = None; }
+                _ => altered.chain_id = 7_780,
+            }
+            std::fs::write(data.join("network.json"), serde_json::to_vec(&altered).unwrap()).unwrap();
+            assert!(bind_run_to_ceremony(&data, None, None).is_err(), "{tag} cannot bypass the stored ceremony");
+        }
+        std::fs::write(data.join("network.json"), &final_bytes).unwrap();
+        let mut incoming = final_file.clone(); incoming.chain_id = 7_780;
+        std::fs::write(bundle.join("altered.json"), serde_json::to_vec(&incoming).unwrap()).unwrap();
+        let incoming_path = bundle.join("altered.json").to_string_lossy().into_owned();
+        assert!(bind_incoming_network(&data, Some(&incoming_path), None).is_err(), "adoption cannot move the existing record aside before checking it");
+        assert!(data.join("ceremony-check.json").exists());
+
         // A shareless Mac with no record anywhere follows (warns, not refuses).
         let bare = dir.join("bare");
         std::fs::create_dir_all(&bare).unwrap();
@@ -3440,6 +3481,26 @@ mod tests {
             .expect("a reshare-seated Mac restarts on the bundled record alone");
         assert_eq!(resolved, Some(bundle.join("ceremony-check.json")));
         assert!(seated.join("ceremony-check.json").exists(), "stored: the next start needs no --network either");
+        // Recovery can replace both active files. The final bind must inspect
+        // the recovered generation, including its immutable rule flags.
+        let generation = seated.join("gen/6");
+        std::fs::create_dir_all(&generation).unwrap();
+        let mut recovered = new_genesis(6);
+        recovered.node_rewards = None;
+        recovered.history = None;
+        std::fs::write(generation.join("network.json"), serde_json::to_vec(&recovered).unwrap()).unwrap();
+        let mut recovered_share: aether_node::dkg::KeyFile = serde_json::from_slice(&std::fs::read(seated.join("threshold.json")).unwrap()).unwrap();
+        recovered_share.round = 6;
+        std::fs::write(generation.join("threshold.json"), serde_json::to_vec(&recovered_share).unwrap()).unwrap();
+        std::fs::write(generation.join(".installed"), b"").unwrap();
+        aether_node::supervisor::finish_incomplete(&seated).unwrap();
+        assert!(bind_run_to_ceremony(&seated, None, None).is_err(), "the recovered handoff cannot change the pinned genesis");
+        recovered.node_rewards = Some(true);
+        recovered.history = Some(2);
+        std::fs::write(generation.join("network.json"), serde_json::to_vec(&recovered).unwrap()).unwrap();
+        aether_node::supervisor::finish_incomplete(&seated).unwrap();
+        bind_run_to_ceremony(&seated, None, None).expect("a recovered reshare of the pinned genesis restarts");
+
 
         // The genesis validator with no record anywhere still refuses.
         let signer = dir.join("signer");
@@ -3507,13 +3568,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        // The legacy 7780 bundle: the record rule alone, ok (ships no record).
-        let legacy = file(aether_node::mainnet::TESTNET_CHAIN_ID, false);
+        // Only the exact shipped legacy file bypasses the ceremony record.
+        let legacy_bytes = include_bytes!("../../../apps/wallet/Resources/network.json");
+        let legacy: NetworkFile = serde_json::from_slice(legacy_bytes).unwrap();
         let net = dir.join("legacy.json");
-        std::fs::write(&net, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        std::fs::write(&net, legacy_bytes).unwrap();
         let rules = mainnet_rules(&legacy, &net, false, true)
             .expect("the legacy testnet bundle is not a launch candidate; the gate only asks that it ship no record");
-        assert_eq!(rules.len(), 1, "no mainnet genesis rules for a testnet bundle: {:?}", rules.iter().map(|r| r.name.clone()).collect::<Vec<_>>());
+        assert_eq!(rules.len(), 1, "no mainnet genesis rules for a testnet bundle: {:?}", rules.iter().map(|r| r.name).collect::<Vec<_>>());
         assert_eq!(rules[0].name, "bundled ceremony record");
         assert!(rules[0].ok, "{}", rules[0].detail);
 

@@ -1099,7 +1099,12 @@ pub fn adopt_network(data: &Path, network: Option<&Path>) -> Result<(), String> 
             Err("first run: pass --network <network.json>".into())
         };
     };
-    let theirs = NetworkFile::load(src)?;
+    let incoming = std::fs::read(src).map_err(|e| format!("{}: {e}", src.display()))?;
+    let theirs: NetworkFile = serde_json::from_slice(&incoming)
+        .map_err(|e| format!("{} is not a network.json: {e}", src.display()))?;
+    if let Some(record) = crate::mainnet::resolve_ceremony_record(None, data, Some(src)) {
+        crate::mainnet::bind_network_to_record(&theirs, &incoming, &crate::mainnet::load_ceremony_record(&record)?)?;
+    }
     if let Ok(current) = NetworkFile::load(&ours) {
         if current.chain_id == theirs.chain_id && current.identity == theirs.identity {
             // Audit 6, A6-4: on a new-genesis chain, the same chain id and
@@ -1110,7 +1115,7 @@ pub fn adopt_network(data: &Path, network: Option<&Path>) -> Result<(), String> 
             // coordinator's record, or move the old data aside). A reshare or
             // handoff evolution of the SAME genesis (new round/output/epochs)
             // adopts as before, and the legacy testnet id is out of scope.
-            if crate::mainnet::new_genesis_chain(&theirs) {
+            if !crate::mainnet::shipped_legacy_network(&incoming) {
                 match (
                     crate::mainnet::record_genesis_of(&current),
                     crate::mainnet::record_genesis_of(&theirs),
@@ -1284,8 +1289,26 @@ mod tests {
             reserve: None,
             group: None,
             max_committee: None,
-            genesis_validators: None,
+            genesis_validators: Some(vec![]),
         }
+    }
+
+    #[test]
+    fn h1_adoption_checks_stored_record_before_moving_it() {
+        let dir = std::env::temp_dir().join(format!("aether-adopt-pin-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("incoming.json");
+        let checked = file(7_801, "aa");
+        let bytes = serde_json::to_vec(&checked).unwrap();
+        std::fs::write(dir.join("network.json"), &bytes).unwrap();
+        let record = crate::mainnet::ceremony_record(&checked, &bytes, 1).unwrap();
+        std::fs::write(dir.join(crate::mainnet::CEREMONY_RECORD_FILE), serde_json::to_vec(&record).unwrap()).unwrap();
+        let mut altered = checked.clone(); altered.chain_id = 7_780;
+        std::fs::write(&src, serde_json::to_vec(&altered).unwrap()).unwrap();
+        assert!(adopt_network(&dir, Some(&src)).is_err());
+        assert_eq!(std::fs::read(dir.join("network.json")).unwrap(), bytes);
+        assert!(dir.join(crate::mainnet::CEREMONY_RECORD_FILE).exists());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -1348,7 +1371,7 @@ mod tests {
         genesis.protocol = Some(3);
         genesis.node_rewards = Some(true);
         genesis.genesis_validators = Some(vec![Member { key: "01".into(), node: "node".into() }]);
-        assert!(crate::mainnet::new_genesis_chain(&genesis), "the fixture must be inside the new-genesis gate");
+        assert!(genesis.genesis_validators.is_some(), "the fixture carries its frozen genesis");
         let mut stale = genesis.clone();
         stale.registrar = Some("cd".repeat(32));
 
@@ -1371,7 +1394,7 @@ mod tests {
         std::fs::write(&src, serde_json::to_vec(&evolved).unwrap()).unwrap();
         adopt_network(&data, Some(&src)).unwrap();
 
-        // The legacy testnet id is out of scope (its files predate genesis pinning).
+        // Merely using the legacy id does not exempt an altered file.
         let legacy_data = dir.join("legacy");
         std::fs::create_dir_all(&legacy_data).unwrap();
         std::fs::write(&src, serde_json::to_vec(&file(7_780, "aa")).unwrap()).unwrap();
@@ -1379,7 +1402,7 @@ mod tests {
         let mut legacy_other = file(7_780, "aa");
         legacy_other.registrar = Some("cd".repeat(32));
         std::fs::write(&src, serde_json::to_vec(&legacy_other).unwrap()).unwrap();
-        adopt_network(&legacy_data, Some(&src)).unwrap();
+        assert!(adopt_network(&legacy_data, Some(&src)).is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

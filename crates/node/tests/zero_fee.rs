@@ -10,6 +10,8 @@ use aether_execution::{sign_call_with, EvmCall};
 use aether_light::block::NodeRegistration;
 use aether_node::block::{Block, Context, EPOCH};
 use aether_node::chain::{build_payload, Chain, ChainError, Extras};
+use aether_node::chain::BlockSummary;
+use aether_node::store::{Commit, Staged, Store};
 use aether_types::{Address, Bytes, FeeVector, TxEnvelope, U256};
 use commonware_codec::Encode as _;
 use commonware_consensus::types::{Round, View};
@@ -483,6 +485,62 @@ fn audit_logger_cannot_persist_receipts_for_free() {
     assert!(exec.receipts[0].state_gas >= 1_638_400 / 32);
     assert!(exec.persistent_bytes <= aether_execution::fees::MAX_PERSISTENT_BYTES_PER_BLOCK);
     n.chain.finalize(&block).unwrap();
+}
+
+/// A nearly full LOG0 block is the worst case for JSON hex expansion. Measure
+/// the key/value bytes actually committed by redb, including activity indexes.
+#[test]
+fn log_heavy_block_stored_rows_fit_the_pinned_expansion_bound() {
+    assert!(aether_execution::fees::MAX_PERSISTENT_BYTES_PER_BLOCK
+        * aether_execution::fees::MAX_STORED_BYTES_PER_METERED_BYTE
+        <= 32 * 1024 * 1024);
+    let mut n = net(1);
+    let deploy = paid_call(
+        &n.ops[0], 0,
+        &EvmCall { to: None, value: U256::ZERO, input: logger_init(480), gas_limit: 1_000_000, delegate: None },
+        8_000,
+    );
+    let deployed = n.step(vec![deploy], None, vec![]);
+    let logger = deployed.receipts[0].contract_address.unwrap();
+    let call = EvmCall { to: Some(logger), value: U256::ZERO, input: Bytes::new(), gas_limit: 16_777_216, delegate: None };
+    let tx = paid_call(&n.ops[0], 1, &call, 90_000);
+    let ctx = Chain::block_context(&n.chain.cfg(), &n.last, &n.parent);
+    aether_execution::check_admission_cost(&n.parent.state, &ctx, &tx).expect("near-cap logger must be individually valid");
+    let (block, exec) = n.build_with(vec![tx.clone()], None, vec![], vec![], vec![], None).unwrap();
+    assert_eq!(exec.receipts[0].events.len(), 480);
+    assert!(exec.persistent_bytes > 1_900_000, "exercise a near-cap block");
+
+    let dir = std::env::current_dir().unwrap().join("tmp").join(format!("m2-stored-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("state.redb")).unwrap();
+    let before = store.stats().unwrap();
+    let receipt = &exec.receipts[0];
+    let history = aether_node::account_history::transaction(&tx, receipt, block.height.get(), 0, block.timestamp, false, true);
+    let summary = BlockSummary {
+        height: block.height.get(), hash: hex::encode(block.digest()), parent: hex::encode(n.last.digest()),
+        timestamp_ms: block.timestamp, proposer: n.operator(0), state_root: exec.state.root(),
+        parent_state_root: n.parent.state.root(), txs: exec.tx_hashes.clone(), gas_used: exec.gas.exec,
+        prove_gas: exec.gas.prove, base_fee: FeeVector::default(), excess: Default::default(),
+    };
+    let diff = exec.state.journal();
+    let staged = block.encode();
+    store.commit_with_history(Commit {
+        height: summary.height, digest: [7; 32], root: exec.state.root(), diff: &diff,
+        summary: &summary, receipts: vec![(exec.tx_hashes[0], receipt)], handoff: None,
+        seed: None, history: &exec.history, schedule: &exec.schedule, upgrade_notices: &[],
+        statement: &exec.statement, staged: Some(Staged { block: &staged, era_start: None }),
+    }, &history, false).unwrap();
+    let after = store.stats().unwrap();
+    let stored = ["receipts", "account_history", "account_block_keys", "blocks", "era_blocks"].iter().map(|name| {
+        let old = before.tables.iter().find(|t| t.name == *name).unwrap().stored;
+        after.tables.iter().find(|t| t.name == *name).unwrap().stored - old
+    }).sum::<u64>();
+    eprintln!("M2 log-heavy stored={stored} metered={} ratio={:.3}", exec.persistent_bytes, stored as f64 / exec.persistent_bytes as f64);
+    assert!(stored <= aether_execution::fees::MAX_PAID_STORED_BYTES_PER_BLOCK);
+    assert!(stored <= exec.persistent_bytes * aether_execution::fees::MAX_STORED_BYTES_PER_METERED_BYTE,
+        "stored {stored} vs metered {}", exec.persistent_bytes);
+    drop(store);
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 /// Two 280 × 4096-byte LOG0 calls fit both gas limits but exceed the 2 MiB

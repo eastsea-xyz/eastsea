@@ -260,7 +260,10 @@ fn paid_growth_probes(cfg: &ChainConfig, genesis: &crate::chain::Executed) -> bo
     let (Some(plain_receipt), Some(log_receipt)) = (plain_out.receipts.first(), log_out.receipts.first()) else { return false };
     log_receipt.events.len() == 1
         && log_receipt.state_gas > plain_receipt.state_gas
-        && aether_execution::fees::MAX_PERSISTENT_BYTES_PER_BLOCK <= 2 * 1024 * 1024
+        && aether_execution::fees::MAX_PERSISTENT_BYTES_PER_BLOCK
+            * aether_execution::fees::MAX_STORED_BYTES_PER_METERED_BYTE
+            <= aether_execution::fees::MAX_PAID_STORED_BYTES_PER_BLOCK
+        && aether_execution::fees::MAX_PAID_STORED_BYTES_PER_BLOCK <= 32 * 1024 * 1024
 }
 
 /// The published issuance schedule: 1 AETH a block at height 0, decaying
@@ -541,13 +544,11 @@ pub fn load_ceremony_record(path: &std::path::Path) -> Result<CeremonyRecord, St
     Ok(record)
 }
 
-/// Whether `file` is a genesis-ceremony chain: the new-genesis rule set is on
-/// (node rewards or history v2) and it is not the legacy testnet id, whose
-/// files predate genesis pinning. Rehearsal ids are inside the gate — a
-/// rehearsal passes its own record.
-pub fn new_genesis_chain(file: &crate::roster::NetworkFile) -> bool {
-    file.chain_id != TESTNET_CHAIN_ID
-        && (file.node_rewards.unwrap_or(false) || file.history.unwrap_or(0) >= 2)
+/// The only recordless public-network exception is the exact shipped 7780
+/// file. Neither a reserved chain id nor mutable rule flags prove its origin.
+pub fn shipped_legacy_network(bytes: &[u8]) -> bool {
+    hex::encode(Sha256::digest(bytes))
+        == "26faa6bca43e2c1f458ccd4051edb92665efe8939a3ef60652ab92c528b7b9cc"
 }
 
 /// The record-vs-file half of the bind: version, chain id (A6-3 — the
@@ -764,7 +765,8 @@ pub fn resolve_ceremony_record(
 /// app ships no record and passes.
 pub fn check_bundle(path: &std::path::Path, file: &crate::roster::NetworkFile, bytes: &[u8]) -> Rule {
     let name = "bundled ceremony record";
-    if !new_genesis_chain(file) {
+    let sibling = path.parent().map(|dir| dir.join(CEREMONY_RECORD_FILE));
+    if !sibling.as_ref().is_some_and(|record| record.exists()) && shipped_legacy_network(bytes) {
         return Rule {
             name,
             ok: true,
@@ -852,10 +854,16 @@ pub fn bind_data_dir(
         .map_err(|e| format!("cannot read {}: {e}", checked.display()))?;
     let checked_file: crate::roster::NetworkFile = serde_json::from_slice(&checked_bytes)
         .map_err(|e| format!("{} is not a network.json: {e}", checked.display()))?;
-    if !new_genesis_chain(&checked_file) {
+    let resolved = resolve_ceremony_record(ceremony, data, Some(checked));
+    if resolved.is_none() && shipped_legacy_network(&checked_bytes) {
+        let local = data.join("network.json");
+        let local_bytes = std::fs::read(&local).map_err(|e| format!("cannot read {}: {e}", local.display()))?;
+        if !shipped_legacy_network(&local_bytes) {
+            return Err("the local network.json is not the exact shipped 7780 file: verify-local must bind it to a ceremony record".into());
+        }
         return Ok(());
     }
-    let record_path = ceremony.map_or_else(|| data.join(CEREMONY_RECORD_FILE), std::path::Path::to_path_buf);
+    let record_path = resolved.unwrap_or_else(|| data.join(CEREMONY_RECORD_FILE));
     if !record_path.exists() {
         return Err(format!(
             "chain {}: no ceremony record at {} and none was passed: a validator may not start voting on a new genesis without the record the coordinator's check wrote.\n  Run scripts/mainnet-genesis.sh verify-local <final network.json> --data {} --ceremony <{CEREMONY_RECORD_FILE}> on this Mac first (it stores the record in the data dir), then start the node",
@@ -1443,6 +1451,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn h1_record_gate_survives_mutable_flags_and_chain_id() {
+        let (output, identity) = ceremony_output();
+        let checked = final_file(0, Some(output.clone()), Some(identity.clone()));
+        let (bytes, record) = record_for(&checked);
+        let share = crate::dkg::KeyFile { round: 0, output, identity, share: "00".into() };
+        let dir = bind_dir("h1-flags", &share, &checked);
+        std::fs::write(dir.join(CEREMONY_RECORD_FILE), serde_json::to_vec(&record).unwrap()).unwrap();
+        let mut cases = Vec::new();
+        let mut rewards = checked.clone(); rewards.node_rewards = Some(false); rewards.history = Some(1); cases.push(rewards);
+        let mut history = checked.clone(); history.history = Some(1); history.node_rewards = None; cases.push(history);
+        let mut swapped = checked.clone(); swapped.chain_id = TESTNET_CHAIN_ID; cases.push(swapped);
+        for altered in cases {
+            std::fs::write(dir.join("final.json"), serde_json::to_vec(&altered).unwrap()).unwrap();
+            assert!(bind_data_dir(&dir, &dir.join("final.json"), None).is_err(), "mutable fields must not bypass the stored record");
+        }
+        std::fs::remove_file(dir.join(CEREMONY_RECORD_FILE)).unwrap();
+        std::fs::write(dir.join("final.json"), &bytes).unwrap();
+        let mut disabled = checked.clone(); disabled.node_rewards = None; disabled.history = None;
+        std::fs::write(dir.join("final.json"), serde_json::to_vec(&disabled).unwrap()).unwrap();
+        assert!(bind_data_dir(&dir, &dir.join("final.json"), None).is_err(), "a signer cannot disable the requirement with file flags");
+        let legacy: crate::roster::NetworkFile = serde_json::from_slice(include_bytes!("../tests/fixtures/legacy-7780-network.json")).unwrap();
+        std::fs::write(dir.join("final.json"), include_bytes!("../tests/fixtures/legacy-7780-network.json")).unwrap();
+        assert!(bind_data_dir(&dir, &dir.join("final.json"), None).is_err(), "a pristine incoming legacy file cannot excuse another local genesis");
+        std::fs::write(dir.join("network.json"), include_bytes!("../tests/fixtures/legacy-7780-network.json")).unwrap();
+        bind_data_dir(&dir, &dir.join("final.json"), None).expect("the shipped 7780 remains usable");
+        let mut forged = legacy; forged.faucet = None;
+        std::fs::write(dir.join("final.json"), serde_json::to_vec(&forged).unwrap()).unwrap();
+        assert!(bind_data_dir(&dir, &dir.join("final.json"), None).is_err(), "7780 alone does not identify the shipped genesis");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     /// A follower or candidate Mac (no threshold.json — no share to vote with)
     /// is still bound to the record's half: the same refusals, minus the share.
     #[test]
@@ -1564,12 +1604,18 @@ mod tests {
         let rule = check_bundle(&net, &checked, &bytes);
         assert!(!rule.ok && rule.detail.contains("7802"), "{}", rule.detail);
 
-        // The legacy testnet app ships no record and passes.
-        let mut legacy = checked.clone();
-        legacy.chain_id = TESTNET_CHAIN_ID;
-        legacy.node_rewards = None;
-        legacy.history = None;
-        let rule = check_bundle(&net, &legacy, b"{}");
+        // Mutable flags and the reserved id cannot bypass the bundled record.
+        let mut downgraded = checked.clone();
+        downgraded.node_rewards = None;
+        downgraded.history = None;
+        assert!(!check_bundle(&net, &downgraded, &serde_json::to_vec(&downgraded).unwrap()).ok);
+        downgraded.chain_id = TESTNET_CHAIN_ID;
+        assert!(!check_bundle(&net, &downgraded, &serde_json::to_vec(&downgraded).unwrap()).ok);
+        // The real shipped legacy testnet app needs no record.
+        std::fs::remove_file(dir.join(CEREMONY_RECORD_FILE)).unwrap();
+        let bytes = include_bytes!("../tests/fixtures/legacy-7780-network.json");
+        let legacy = serde_json::from_slice(bytes).unwrap();
+        let rule = check_bundle(&net, &legacy, bytes);
         assert!(rule.ok, "{}", rule.detail);
         assert!(rule.detail.contains(TESTNET_CHAIN_ID.to_string().as_str()), "the ok names which app needs no record: {}", rule.detail);
         let _ = std::fs::remove_dir_all(&dir);

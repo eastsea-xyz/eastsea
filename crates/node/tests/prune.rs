@@ -187,6 +187,7 @@ fn assert_history_proof(chain: &Chain, blocks: &[Block], height: u64, anchor: u6
         digest: String::new(),
         timestamp_ms: 0,
         parent_state_root: B256::ZERO,
+        receipts_root: None,
         history_root: blocks[anchor as usize].payload().unwrap().history_root,
     };
     let (old, _) = aether_light::verify_old_block(&v, &blocks[height as usize].encode(), &proof).unwrap();

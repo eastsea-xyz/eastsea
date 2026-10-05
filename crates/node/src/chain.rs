@@ -586,6 +586,7 @@ pub struct Chain(pub Arc<Mutex<Inner>>);
 #[derive(Debug)]
 pub enum ChainError {
     BadPayload,
+    ReceiptsRootMismatch,
     ParentRootMismatch,
     Exec(String),
     BalMismatch,
@@ -1190,6 +1191,13 @@ impl Chain {
         let ctx = Self::block_context(&cfg, block, parent);
         let mut out = execute_block(&pre, &ctx, &payload.txs)
             .map_err(|e| ChainError::Exec(format!("{e:?}")))?;
+        // New-genesis certificates bind the result of this block's execution,
+        // not a delayed result in its child. Legacy 7780 carries no such field.
+        let expected_receipts_root = (cfg.node_rewards || cfg.history_v2)
+            .then(|| aether_execution::receipt::receipt_root(&out.receipts));
+        if payload.receipts_root != expected_receipts_root {
+            return Err(ChainError::ReceiptsRootMismatch);
+        }
         // Protocol-1 blocks keep no statement (their metadata stays protocol-1).
         let statement = if records_statement(&cfg, &payload) {
             statement(&ctx, &payload.txs, &pre, &out)
@@ -3216,6 +3224,11 @@ pub fn build_payload(
     // Another group's tx never belongs in this block (the chain would refuse it).
     let candidates = candidates.into_iter().filter(|tx| tx.header.group() == group).collect();
     let (txs, out) = aether_execution::build_block(pre, ctx, candidates);
+    // `block_context` sets the finite state dimension under exactly the
+    // node_rewards || history_v2 new-genesis gate; keep builder and validator
+    // on the same rule without changing the existing test helper signature.
+    let receipts_root = (ctx.limits.state == fees::MAX_STATE_UNITS_PER_BLOCK)
+        .then(|| aether_execution::receipt::receipt_root(&out.receipts));
     let history_root = B256::from(parent.history.root(&ChainHasher::new()));
     let parent_meta = parent.meta_digest();
     let Extras {
@@ -3232,6 +3245,7 @@ pub fn build_payload(
         parent_state_root: parent.state.root(),
         history_root,
         parent_meta,
+        receipts_root,
         txs,
         bal: out.bal.clone(),
         gas: out.gas,

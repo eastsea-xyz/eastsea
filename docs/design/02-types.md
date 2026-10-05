@@ -44,6 +44,7 @@ pub struct BlockHeader {
     pub timestamp: u64,
     pub proposer: ValidatorId,
     pub tx_root: Hash,             // body.txs 머클
+    pub receipts_root: Option<Hash>, // 새 제네시스: 현재 블록 실행 영수증의 BLAKE3 머클 루트
     pub bal_root: Hash,            // body.bal 머클
     pub inclusion_list_root: Hash, // FOCIL 위원회 포함 목록
     pub exec_target: u64,          // 이 블록이 실행·증명해야 하는 과거 블록 높이 (= height - lag)
@@ -59,7 +60,12 @@ pub struct BlockBody {
 }
 ```
 
-- **순서 먼저:** 합의는 `txs`, `bal`, `inclusion_list`만 확정한다. `state_root_at`은 lag 블록 전의 결과다.
+- 합의는 `txs`, `bal`, `inclusion_list`와 새 제네시스의 현재 블록 `receipts_root`를 확정한다. 제안자는 제안 전에 현재 블록을 실행하고, 검증자는 재실행으로 영수증 루트를 대조한다. `state_root_at`은 lag 블록 전의 결과다.
+- 영수증 커밋은 기존 새 제네시스 게이트(`node_rewards || history_v2`)로 높이 1부터 활성화한다. 제네시스 자체에는 필드가 없고, 테스트넷 7780의 기존 블록·해시·커밋 바이트는 그대로 유지한다.
+- 실제 합의 블록은 `crates/light/src/block.rs`의 `Payload`를 인코딩하며, 위 `BlockHeader`는 설계상의 형태다. 실제 필드는 `Option<B256>`이고 `None`일 때 직렬화에서 빠진다.
+- 실제 `Payload`는 트랜잭션 배열 전체를 블록 해시에 넣으며 별도 `tx_root` 머클 트리는 아직 없다. 영수증 트리는 기존 체인 해시 계열인 `aether_hash::Blake3`를 사용한다.
+- 각 해시는 원시 `blake3::hash`가 아닌 체인의 keyed `aether_hash::Blake3::hash_bytes`를 사용한다. BLAKE3 머클 트리의 정규 인코딩(`aether/receipt/v1`)은 `tx_hash` 32바이트, 성공 여부 1바이트, `gas_used`/`prove_gas`/`state_gas` 각 8바이트 big-endian, `state_fee` 32바이트 big-endian, 계약 주소의 유무 1바이트와 있을 때 주소 20바이트, `logs` 8바이트 big-endian, 길이가 붙은 `output`, 이벤트 개수와 각 이벤트의 주소·topic 개수·각 topic·길이가 붙은 data 순서다. 개수와 길이는 모두 8바이트 big-endian이다.
+- Leaf는 `aether/receipt-leaf/v1` + 블록 안 거래 인덱스(8바이트 big-endian) + 정규 영수증 길이와 바이트의 BLAKE3다. 부모는 `aether/receipt-node/v1` + 왼쪽/오른쪽 32바이트 해시의 BLAKE3이며, 홀수 레벨의 마지막 노드는 자기 자신과 짝짓는다. 최종 루트는 `aether/receipts-root/v1` + 영수증 개수(8바이트 big-endian) + 꼭대기 해시의 BLAKE3다. 빈 블록의 루트는 0이고 새 제네시스에서는 `Some(0)`으로 실린다. 개별 영수증은 거래 인덱스와 형식까지 검증하는 머클 경로로 인증된 블록 루트에 대조한다.
 - `exec_target = height - LAG`, LAG는 1 또는 2 (S4에서 확정).
 
 ## BAL (Block-level Access List, EIP-7928 의미론)

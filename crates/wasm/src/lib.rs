@@ -196,6 +196,75 @@ pub fn verified_account(
         "timestamp_ms": anchor.timestamp_ms }))
 }
 
+fn check_receipt_transaction(payload: &aether_light::block::Payload, index: usize, receipt: &aether_execution::Receipt) -> Result<(), String> {
+    let tx = payload.txs.get(index).ok_or("receipt index is outside the certified transaction list")?;
+    if receipt.tx_hash != aether_execution::tx_hash(tx) {
+        return Err("receipt transaction differs from certified transaction".into());
+    }
+    Ok(())
+}
+
+/// Verify a receipt answer against its own certified block and the pinned network.
+/// Certified inclusion remains valid regardless of the receipt block timestamp.
+pub fn verified_receipt(
+    network: &Value,
+    status: &Value,
+    answer: &Value,
+    finalized: &Value,
+    minimum_height: u64,
+    _now_ms: u64,
+) -> Result<Value, String> {
+    let chain = network["chain_id"].as_u64().ok_or("network chain_id")?;
+    if status["chain_id"].as_u64() != Some(chain) {
+        return Err("node chain differs from pinned network".into());
+    }
+    let group = match network.get("group") {
+        None | Some(Value::Null) => 0,
+        Some(v) => v.as_u64().and_then(|n| u16::try_from(n).ok()).ok_or("network group")?,
+    };
+    let set = ValidatorSet::from_hex(network["identity"].as_str().ok_or("network identity")?)
+        .map_err(|e| format!("identity: {e}"))?.with_group(group);
+    if answer.get("certified_block") != Some(finalized) {
+        return Err("receipt certified block differs from finalized answer".into());
+    }
+    let height = answer["height"].as_u64().ok_or("receipt height")?;
+    if height < minimum_height {
+        return Err("finalized blocks never go back".into());
+    }
+    if finalized["height"].as_u64() != Some(height) {
+        return Err("finalized answer is for another height".into());
+    }
+    let block = from_hex(finalized["block"].as_str().ok_or("finalized block")?).map_err(|e| e.to_string())?;
+    let certificate = from_hex(finalized["finalization"].as_str().ok_or("finalization")?).map_err(|e| e.to_string())?;
+    let links = finalized["links"].as_array().ok_or("finalized links")?
+        .iter().map(|v| from_hex(v.as_str().ok_or("link")?).map_err(|e| e.to_string()))
+        .collect::<Result<Vec<_>, String>>()?;
+    let anchor = verify_finalized_chain(&set, &block, &certificate, &links).map_err(|e| format!("certificate: {e}"))?;
+    if anchor.height != height {
+        return Err("certificate is for another height".into());
+    }
+    for bytes in std::iter::once(block.as_slice()).chain(links.iter().map(Vec::as_slice)) {
+        let decoded = aether_light::block::Block::decode_cfg(bytes, &aether_light::block::Block::codec_config(aether_light::MAX_BLOCK_BYTES))
+            .map_err(|e| format!("block: {e}"))?;
+        let payload = decoded.payload().ok_or("block payload")?;
+        if payload.txs.iter().any(|tx| tx.header.chain_id != chain)
+            || payload.upgrade.iter().any(|u| u.upgrade.chain_id != chain) {
+            return Err("certificate commits to another chain".into());
+        }
+    }
+    let index = answer["index"].as_u64().and_then(|n| usize::try_from(n).ok()).ok_or("receipt index")?;
+    let receipt: aether_execution::Receipt = serde_json::from_value(answer["receipt"].clone())
+        .map_err(|e| format!("receipt: {e}"))?;
+    let proof: aether_execution::receipt::ReceiptProof = serde_json::from_value(answer["proof"].clone())
+        .map_err(|e| format!("proof: {e}"))?;
+    aether_light::verify_receipt(&anchor, index, &receipt, &proof).map_err(|e| format!("proof: {e}"))?;
+    let decoded = aether_light::block::Block::decode_cfg(block.as_slice(), &aether_light::block::Block::codec_config(aether_light::MAX_BLOCK_BYTES))
+        .map_err(|e| format!("block: {e}"))?;
+    check_receipt_transaction(&decoded.payload().ok_or("block payload")?, index, &receipt)?;
+    Ok(json!({ "receipt": receipt, "index": index, "height": height,
+        "certified_block": anchor.height, "timestamp_ms": anchor.timestamp_ms }))
+}
+
 // ---- JavaScript API (JSON strings in and out) ----
 
 /// Verify one account answer. All JSON is untrusted except bundled `network_json`.
@@ -207,6 +276,17 @@ pub fn verify_account_js(network_json: &str, status_json: &str, account_json: &s
     let account = serde_json::from_str(account_json).map_err(err)?;
     let finalized = serde_json::from_str(finalized_json).map_err(err)?;
     Ok(verified_account(&network, &status, &account, &finalized, address, minimum_height, now_ms).map_err(err)?.to_string())
+}
+
+/// Verify a receipt inclusion answer. Only bundled `network_json` is trusted.
+#[wasm_bindgen(js_name = verifyReceipt)]
+pub fn verify_receipt_js(network_json: &str, status_json: &str, receipt_json: &str,
+    finalized_json: &str, minimum_height: u64, now_ms: u64) -> Result<String, JsError> {
+    let network = serde_json::from_str(network_json).map_err(err)?;
+    let status = serde_json::from_str(status_json).map_err(err)?;
+    let receipt = serde_json::from_str(receipt_json).map_err(err)?;
+    let finalized = serde_json::from_str(finalized_json).map_err(err)?;
+    Ok(verified_receipt(&network, &status, &receipt, &finalized, minimum_height, now_ms).map_err(err)?.to_string())
 }
 
 /// Checksummed account address for a P-256 public key (raw SEC1 bytes).
@@ -285,6 +365,90 @@ mod tests {
         let mut bad = finalized.clone();
         bad["finalization"] = json!("00");
         assert!(verified_account(&network, &status, &account, &bad, address, 0, anchor.timestamp_ms).is_err());
+    }
+
+    #[test]
+    fn receipt_answers_require_a_certificate_height_and_committed_root() {
+        use aether_execution::{receipt::receipt_proof, Receipt};
+        use aether_types::B256;
+        let f: Value = serde_json::from_str(include_str!("../../light/tests/fixtures/devnet4.json")).unwrap();
+        let set = ValidatorSet::devnet(4);
+        let block = from_hex(f["anchor_block"].as_str().unwrap()).unwrap();
+        let certificate = from_hex(f["anchor_finalization"].as_str().unwrap()).unwrap();
+        let anchor = verify_finalized(&set, &block, &certificate).unwrap();
+        let receipt = Receipt { tx_hash: B256::repeat_byte(1), success: true, gas_used: 21_000,
+            prove_gas: 0, state_gas: 0, state_fee: U256::ZERO, contract_address: None,
+            logs: 0, output: Bytes::new(), events: vec![] };
+        let proof = receipt_proof(std::slice::from_ref(&receipt), 0).unwrap();
+        let network = json!({"chain_id": 7777, "identity": set.identity_hex()});
+        let status = json!({"chain_id": 7777});
+        let mut answer = json!({"height": anchor.height, "index": 0, "receipt": receipt, "proof": proof});
+        let finalized = json!({"height": anchor.height, "block": f["anchor_block"],
+            "finalization": f["anchor_finalization"], "links": []});
+        answer["certified_block"] = finalized.clone();
+        let check = |answer: &Value, finalized: &Value, minimum| {
+            verified_receipt(&network, &status, answer, finalized, minimum, anchor.timestamp_ms)
+        };
+        assert!(check(&answer, &finalized, 0).unwrap_err().contains("RootNotCommitted"));
+        // This legacy certificate has no receipt commitment, but its age must
+        // not reject historical inclusion before commitment verification.
+        assert!(verified_receipt(&network, &status, &answer, &finalized, 0, u64::MAX)
+            .unwrap_err().contains("RootNotCommitted"));
+        assert!(check(&answer, &finalized, anchor.height + 1).unwrap_err().contains("never go back"));
+        let mut wrong_height = answer.clone();
+        wrong_height["height"] = json!(anchor.height - 1);
+        assert!(check(&wrong_height, &finalized, 0).unwrap_err().contains("another height"));
+        let mut bad_certificate = finalized.clone();
+        bad_certificate["finalization"] = json!("00");
+        let mut bad_answer = answer.clone();
+        bad_answer["certified_block"] = bad_certificate.clone();
+        assert!(check(&bad_answer, &bad_certificate, 0).unwrap_err().contains("certificate"));
+        assert!(check(&answer, &bad_certificate, 0).unwrap_err().contains("differs"));
+    }
+
+    #[test]
+    fn verify_receipt_js_round_trips_a_certified_receipt_and_rejects_forged_logs() {
+        let f: Value = serde_json::from_str(include_str!("../../light/tests/fixtures/receipt-devnet4.json")).unwrap();
+        let network = json!({"chain_id": f["chain_id"], "identity": f["identity"]});
+        let status = json!({"chain_id": f["chain_id"]});
+        let finalized = json!({"height": f["height"], "block": f["block"],
+            "finalization": f["finalization"], "links": []});
+        let mut answer = json!({"height": f["height"], "index": 0,
+            "receipt": f["receipt"], "proof": f["proof"], "certified_block": finalized});
+        verified_receipt(&network, &status, &answer, &finalized, 0, u64::MAX).unwrap();
+        let verified = verify_receipt_js(&network.to_string(), &status.to_string(),
+            &answer.to_string(), &finalized.to_string(), 0, u64::MAX).unwrap();
+        let verified: Value = serde_json::from_str(&verified).unwrap();
+        assert_eq!(verified["receipt"], f["receipt"]);
+        assert_eq!(verified["certified_block"], f["height"]);
+
+        answer["receipt"]["logs"] = json!(1);
+        assert!(verified_receipt(&network, &status, &answer, &finalized, 0, u64::MAX).is_err());
+        answer["receipt"] = f["receipt"].clone();
+        answer["proof"]["count"] = json!(2);
+        assert!(verified_receipt(&network, &status, &answer, &finalized, 0, u64::MAX).is_err());
+    }
+
+    #[test]
+    fn receipt_index_and_hash_must_match_the_certified_transaction() {
+        use aether_execution::Receipt;
+        use aether_types::B256;
+        let req = Request { to: "", value_wei: "0", data_hex: "0x6000", gas_limit: 0, balance_wei: "" };
+        let prepared = prepare_tx(&pubkey(&key()), &status(), 7780, 0, &req).unwrap();
+        let tx: TxEnvelope = serde_json::from_value(prepared["envelope"].clone()).unwrap();
+        let receipt = Receipt { tx_hash: aether_execution::tx_hash(&tx), success: true, gas_used: 21_000,
+            prove_gas: 0, state_gas: 0, state_fee: U256::ZERO, contract_address: None,
+            logs: 0, output: Bytes::new(), events: vec![] };
+        let payload = aether_light::block::Payload { txs: vec![tx], ..Default::default() };
+        let mut historical_anchor = aether_light::VerifiedBlock { height: 6, digest: String::new(),
+            timestamp_ms: 1, parent_state_root: B256::ZERO, receipts_root: None, history_root: B256::ZERO };
+        historical_anchor.receipts_root = Some(aether_execution::receipt::receipt_root(std::slice::from_ref(&receipt)));
+        let proof = aether_execution::receipt::receipt_proof(std::slice::from_ref(&receipt), 0).unwrap();
+        aether_light::verify_receipt(&historical_anchor, 0, &receipt, &proof).unwrap();
+        check_receipt_transaction(&payload, 0, &receipt).unwrap();
+        assert!(check_receipt_transaction(&payload, 1, &receipt).is_err());
+        let forged = Receipt { tx_hash: B256::ZERO, ..receipt };
+        assert!(check_receipt_transaction(&payload, 0, &forged).unwrap_err().contains("differs"));
     }
 
     fn status() -> Value {

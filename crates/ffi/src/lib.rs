@@ -2732,7 +2732,7 @@ mod release_tests {
             state.set_storage(address, *slot, value);
         }
         let anchor = VerifiedBlock { height: 201, digest: String::new(), timestamp_ms: 1_000_001_000,
-            parent_state_root: state.root(), history_root: aether_types::B256::ZERO };
+            parent_state_root: state.root(), receipts_root: None, history_root: aether_types::B256::ZERO };
         let repo = state.repo();
         let code = repo.prove(&[code_hash_key(repo.hasher(), &address)]).remove(0);
         assert_eq!(aether_light::verify_code_hash(&anchor, &address, &code).unwrap(), Some(state.code_hash(&address)));

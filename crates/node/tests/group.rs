@@ -98,6 +98,24 @@ fn wrong_group_tx_is_refused_by_the_pool_and_by_blocks() {
     let ok = build(&chain, &parent, &genesis, vec![ours.clone()], 3, None);
     let exec = chain.execute(&ok, &parent).unwrap();
     assert_eq!(exec.tx_hashes.len(), 1, "the group-3 tx ran");
+    assert_eq!(ok.payload().unwrap().receipts_root,
+        Some(aether_execution::receipt::receipt_root(&exec.receipts)));
+    // A proposer cannot claim another execution outcome, including a forged
+    // log, while keeping the same transactions and state transition.
+    let mut forged_receipts = exec.receipts.clone();
+    forged_receipts[0].logs += 1;
+    forged_receipts[0].events.push(aether_execution::Event {
+        address: Address::repeat_byte(0xcc),
+        topics: vec![aether_types::B256::repeat_byte(0xdd)],
+        data: Bytes::from_static(b"forged transfer"),
+    });
+    let mut forged_payload = ok.payload().unwrap();
+    forged_payload.receipts_root = Some(aether_execution::receipt::receipt_root(&forged_receipts));
+    let forged = Block::new(ok.context.clone(), ok.parent, ok.height, ok.timestamp, forged_payload.to_bytes());
+    assert!(matches!(chain.execute(&forged, &parent), Err(ChainError::ReceiptsRootMismatch)));
+    forged_payload.receipts_root = None;
+    let missing = Block::new(ok.context.clone(), ok.parent, ok.height, ok.timestamp, forged_payload.to_bytes());
+    assert!(matches!(chain.execute(&missing, &parent), Err(ChainError::ReceiptsRootMismatch)));
     chain.finalize(&ok).unwrap();
     assert_eq!(chain.lock().mempool.len(), 0, "the block's tx left the pool");
 
@@ -130,7 +148,15 @@ fn a_group_zero_chain_keeps_the_7780_rules() {
     assert_eq!(tx.header.group(), 0);
     assert_eq!(chain.add_to_mempool(tx.clone()), Ok(true));
     let block = build(&chain, &parent, &genesis, vec![tx], 0, None);
-    assert_eq!(chain.execute(&block, &parent).unwrap().tx_hashes.len(), 1);
+    let legacy = chain.execute(&block, &parent).unwrap();
+    assert_eq!(legacy.tx_hashes.len(), 1);
+    assert_eq!(block.payload().unwrap().receipts_root, None);
+    assert!(!String::from_utf8_lossy(&block.data).contains("receipts_root"));
+    // Even a correct root is forbidden on 7780, preserving its block bytes.
+    let mut changed = block.payload().unwrap();
+    changed.receipts_root = Some(aether_execution::receipt::receipt_root(&legacy.receipts));
+    let changed = Block::new(block.context.clone(), block.parent, block.height, block.timestamp, changed.to_bytes());
+    assert!(matches!(chain.execute(&changed, &parent), Err(ChainError::ReceiptsRootMismatch)));
     // A group-3 tx does not run on the 7780-format chain.
     let foreign = sign_call_group(&signer(), 7780, 1, 1, 3, &transfer(1)).unwrap();
     let err = chain.add_to_mempool(foreign.clone()).unwrap_err();

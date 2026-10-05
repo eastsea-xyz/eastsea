@@ -217,7 +217,7 @@ mod history {
         }
         let leaves = blocks.iter().map(|b| mmr::leaf(&h, b.height.get(), &digest(b))).collect();
         // What `verify_finalized` returns for block n (its certificate is checked elsewhere).
-        let anchor = VerifiedBlock { height: n, digest: String::new(), timestamp_ms: 0, parent_state_root: B256::ZERO, history_root: B256::from(mmr.root(&h)) };
+        let anchor = VerifiedBlock { height: n, digest: String::new(), timestamp_ms: 0, parent_state_root: B256::ZERO, receipts_root: None, history_root: B256::from(mmr.root(&h)) };
         (blocks, leaves, anchor)
     }
 
@@ -252,4 +252,100 @@ mod history {
         let early = VerifiedBlock { height: ERA_LEN - 1, ..anchor.clone() };
         assert!(verify_era_root(&early, 0, &idx.eras[0], &proof).is_err());
     }
+}
+
+#[test]
+fn receipt_proofs_require_the_committed_root_index_and_complete_receipt() {
+    use aether_execution::{receipt::{receipt_proof, receipt_root}, Receipt};
+    use aether_light::verify_receipt;
+    let f = fixture();
+    let mut anchor = verify_finalized(&ValidatorSet::devnet(4), &bytes(&f, "anchor_block"), &bytes(&f, "anchor_finalization")).unwrap();
+    let receipt = Receipt { tx_hash: B256::repeat_byte(1), success: true, gas_used: 21_000,
+        prove_gas: 3, state_gas: 0, state_fee: U256::ZERO, contract_address: None,
+        logs: 0, output: aether_types::Bytes::new(), events: vec![] };
+    let other = Receipt { tx_hash: B256::repeat_byte(2), ..receipt.clone() };
+    let receipts = vec![receipt.clone(), other];
+    let proof = receipt_proof(&receipts, 0).unwrap();
+    assert_eq!(verify_receipt(&anchor, 0, &receipt, &proof), Err(LightError::RootNotCommitted));
+    anchor.receipts_root = Some(receipt_root(&receipts));
+    verify_receipt(&anchor, 0, &receipt, &proof).unwrap();
+    assert!(verify_receipt(&anchor, 1, &receipt, &proof).is_err());
+    let forged = Receipt { success: false, ..receipt.clone() };
+    assert!(verify_receipt(&anchor, 0, &forged, &proof).is_err());
+    let mut truncated = proof.clone();
+    truncated.siblings.clear();
+    assert!(verify_receipt(&anchor, 0, &receipt, &truncated).is_err());
+    anchor.receipts_root = Some(B256::ZERO);
+    assert!(verify_receipt(&anchor, 0, &receipt, &proof).is_err());
+}
+
+#[test]
+fn adding_a_receipt_root_changes_the_certified_block_digest() {
+    use aether_light::block::Block;
+    use commonware_codec::{Decode, Encode};
+    let f = fixture();
+    let original = bytes(&f, "anchor_block");
+    let block = Block::decode_cfg(original.as_slice(), &Block::codec_config(aether_light::MAX_BLOCK_BYTES)).unwrap();
+    let mut payload = block.payload().unwrap();
+    assert_eq!(payload.receipts_root, None);
+    assert!(!std::str::from_utf8(&payload.to_bytes()).unwrap().contains("receipts_root"));
+    assert_eq!(block.encode().as_ref(), original.as_slice(), "legacy block hash input must stay identical");
+    payload.receipts_root = Some(B256::repeat_byte(7));
+    let changed = Block::new(block.context.clone(), block.parent, block.height, block.timestamp, payload.to_bytes());
+    assert_eq!(changed.payload().unwrap().receipts_root, payload.receipts_root);
+    assert_eq!(verify_finalized(&ValidatorSet::devnet(4), &changed.encode(), &bytes(&f, "anchor_finalization")),
+        Err(LightError::CertificateForDifferentBlock));
+}
+
+#[test]
+fn receipt_root_is_extracted_only_after_its_block_is_certified() {
+    use aether_execution::{receipt::{receipt_proof, receipt_root}, Receipt};
+    use aether_light::{block::Block, consensus_namespace, devnet_threshold, devnet_validator_key, verify_receipt, Scheme};
+    use commonware_codec::{Decode, Encode};
+    use commonware_consensus::simplex::types::{Finalization, Finalize, Proposal};
+    use commonware_cryptography::{Digestible, Signer};
+    use commonware_parallel::Sequential;
+    use commonware_utils::non_empty;
+    let f = fixture();
+    let original = bytes(&f, "anchor_block");
+    let block = Block::decode_cfg(original.as_slice(), &Block::codec_config(aether_light::MAX_BLOCK_BYTES)).unwrap();
+    let tx = aether_types::TxEnvelope {
+        header: aether_types::TxHeader {
+            chain_id: 7777, sender: Address::ZERO, nonce: 0,
+            gas: Default::default(), max_fee: Default::default(), tip: 0,
+            payload_commitment: B256::ZERO, scheme: aether_types::SignerScheme::P256, group: None,
+        },
+        payload: aether_types::TxPayload::Plain(aether_types::Bytes::new()),
+        signature: aether_types::Bytes::new(),
+    };
+    let receipt = Receipt { tx_hash: aether_execution::tx_hash(&tx), success: true, gas_used: 21_000,
+        prove_gas: 0, state_gas: 0, state_fee: U256::ZERO, contract_address: None,
+        logs: 0, output: aether_types::Bytes::new(), events: vec![] };
+    let receipts = vec![receipt.clone()];
+    let mut payload = block.payload().unwrap();
+    payload.txs = vec![tx];
+    payload.receipts_root = Some(receipt_root(&receipts));
+    let block = Block::new(block.context.clone(), block.parent, block.height, block.timestamp, payload.to_bytes());
+    let (participants, polynomial, shares) = devnet_threshold(4);
+    let signers: Vec<_> = (1..=3).map(|i| {
+        let me = devnet_validator_key(i).public_key();
+        let share = shares.iter().find(|(pk, _)| *pk == me).unwrap().1.clone();
+        Scheme::signer(&consensus_namespace(), participants.clone(), polynomial.clone(), share).unwrap()
+    }).collect();
+    let votes: Vec<_> = signers.iter().map(|signer| Finalize::sign(signer,
+        Proposal::new(block.context.round, block.context.parent.0, block.digest())).unwrap()).collect();
+    let certificate = Finalization::from_owned_finalizes(&signers[0], non_empty![@votes.into_iter()], &Sequential).unwrap();
+    let anchor = verify_finalized(&ValidatorSet::devnet(4), &block.encode(), &certificate.encode()).unwrap();
+    assert_eq!(anchor.receipts_root, payload.receipts_root);
+    verify_receipt(&anchor, 0, &receipt, &receipt_proof(&receipts, 0).unwrap()).unwrap();
+    let expected: Value = serde_json::from_str(include_str!("fixtures/receipt-devnet4.json")).unwrap();
+    assert_eq!(expected, serde_json::json!({
+        "chain_id": 7777,
+        "identity": ValidatorSet::devnet(4).identity_hex(),
+        "height": anchor.height,
+        "block": aether_light::to_hex(&block.encode()),
+        "finalization": aether_light::to_hex(&certificate.encode()),
+        "receipt": receipt,
+        "proof": receipt_proof(&receipts, 0).unwrap(),
+    }), "certified receipt fixture must remain byte-identical");
 }

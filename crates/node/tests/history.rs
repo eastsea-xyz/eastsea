@@ -443,6 +443,7 @@ fn history_proofs_cross_era_boundaries() {
             digest: String::new(),
             timestamp_ms: 0,
             parent_state_root: B256::ZERO,
+            receipts_root: None,
             history_root: anchor_block.payload().unwrap().history_root,
         };
         let hash: B256 = format!("0x{hash}").parse().unwrap();

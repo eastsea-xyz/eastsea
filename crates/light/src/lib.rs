@@ -16,6 +16,7 @@
 //! No RPC answer is trusted on its own.
 
 pub mod block;
+pub use aether_execution::receipt::ReceiptProof;
 
 use aether_hash::ChainHasher;
 use aether_state::layout::{basic_data_key, code_hash_key, storage_slot_key, BasicData};
@@ -188,6 +189,8 @@ pub struct VerifiedBlock {
     pub timestamp_ms: u64,
     /// State root after executing the parent (height - 1).
     pub parent_state_root: B256,
+    /// Receipt root from this block, when the protocol commits it.
+    pub receipts_root: Option<B256>,
     /// MMR root of blocks 0..height (aether_state::mmr): inclusion proofs of any earlier block.
     pub history_root: B256,
 }
@@ -239,6 +242,7 @@ pub fn verify_finalized_chain(set: &ValidatorSet, block_bytes: &[u8], finalizati
         digest: format!("{}", block.digest()),
         timestamp_ms: block.timestamp,
         parent_state_root: payload.parent_state_root,
+        receipts_root: payload.receipts_root,
         history_root: payload.history_root,
     })
 }
@@ -255,6 +259,22 @@ pub fn verify_account(anchor: &VerifiedBlock, address: &Address, proof: &Proof) 
     let h = ChainHasher::new();
     check_proof(proof, basic_data_key(&h, address), &anchor.parent_state_root)?;
     Ok(proof.value.map(|v| BasicData::decode(&v)))
+}
+
+/// A transaction receipt proven against the root committed by its certified block.
+/// Legacy certified blocks without a receipt commitment cannot prove receipts.
+pub fn verify_receipt(
+    certified_block: &VerifiedBlock,
+    index: usize,
+    receipt: &aether_execution::Receipt,
+    proof: &ReceiptProof,
+) -> Result<(), LightError> {
+    let root = certified_block.receipts_root.ok_or(LightError::RootNotCommitted)?;
+    if aether_execution::receipt::verify_receipt(root, index, receipt, proof) {
+        Ok(())
+    } else {
+        Err(LightError::ProofInvalid("receipt inclusion".into()))
+    }
 }
 
 /// Storage slot proven against a certified root.
@@ -300,6 +320,7 @@ pub fn verify_old_block(anchor: &VerifiedBlock, block_bytes: &[u8], proof: &aeth
         digest: format!("{}", b.digest()),
         timestamp_ms: b.timestamp,
         parent_state_root: payload.parent_state_root,
+        receipts_root: payload.receipts_root,
         history_root: payload.history_root,
     };
     Ok((v, payload))

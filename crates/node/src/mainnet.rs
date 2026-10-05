@@ -161,6 +161,11 @@ pub fn check_with(cfg: &ChainConfig, rehearsal: bool) -> Vec<Rule> {
         smooth_issuance(),
         rule("history v2", cfg.history_v2, "quiet empty blocks, era files, history proofs over them".into()),
         rule(
+            "receipt commitments",
+            cfg.node_rewards || cfg.history_v2,
+            "from height 1, each block commits its own execution receipts; validators reexecute and compare the root".into(),
+        ),
+        rule(
             "paid state growth",
             (cfg.node_rewards || cfg.history_v2)
                 && state_limit == aether_execution::fees::MAX_STATE_UNITS_PER_BLOCK
@@ -294,7 +299,7 @@ fn smooth_issuance() -> Rule {
 /// public key and refuse revealed seated shares. A pre-DKG file (identity and
 /// output both absent, what `assemble` writes) passes with a pre-DKG detail —
 /// the assemble-time gate is `check`; a file carrying only one of the two
-/// fields fails. `mainnet-rules` prints these after the 18 genesis rules.
+/// fields fails. `mainnet-rules` prints these after the 20 genesis rules.
 pub fn check_final(file: &crate::roster::NetworkFile, rehearsal: bool) -> Vec<Rule> {
     let rule = |name: &'static str, ok: bool, detail: String| Rule { name, ok, detail };
     let n = file.validators.len() as u32;
@@ -960,7 +965,7 @@ mod tests {
     }
 
     /// The names `check` returns, in order: docs/ops/mainnet-launch.md's table.
-    const NAMES: [&str; 19] = [
+    const NAMES: [&str; 20] = [
         "chain id",
         "protocol from genesis",
         "proof market",
@@ -976,6 +981,7 @@ mod tests {
         "reserve rules",
         "smooth issuance",
         "history v2",
+        "receipt commitments",
         "paid state growth",
         "pruning default",
         "no premine, no faucet",
@@ -1042,7 +1048,9 @@ mod tests {
         let mut legacy = mainnet();
         legacy.node_rewards = false;
         legacy.history_v2 = false;
-        assert!(off(legacy).contains(&"paid state growth"));
+        let legacy_off = off(legacy);
+        assert!(legacy_off.contains(&"paid state growth"));
+        assert!(legacy_off.contains(&"receipt commitments"));
         // The reserve keys are a genesis parameter.
         let mut none = mainnet();
         none.reserve = None;

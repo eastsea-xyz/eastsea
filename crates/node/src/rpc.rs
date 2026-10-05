@@ -193,6 +193,7 @@ pub async fn handle_value(st: &RpcState, req: Value) -> Value {
     let params = req.get("params").cloned().unwrap_or(Value::Array(vec![]));
     let result = match &*method {
         "aether_getFinalized" => finalized(st, &params).await,
+        "aether_getReceiptProof" => receipt_proof(st, &params).await,
         "aether_snapshot" => snapshot_manifest(st).await,
         "aether_registerDevice" => register_device(st, &params).await,
         "aether_sendBeacon" => send_beacon(st, &params).await,
@@ -231,6 +232,44 @@ pub async fn handle_value(st: &RpcState, req: Value) -> Value {
 }
 
 type RpcResult = Result<Value, (i64, String)>;
+
+/// A finalized receipt with its inclusion proof and the block certificate.
+async fn receipt_proof(st: &RpcState, p: &Value) -> RpcResult {
+    use commonware_codec::Decode;
+    let hash: TxHash = param(p, 0)?;
+    let (height, index, receipt, receipts) = {
+        let g = st.chain.lock();
+        let Some((height, receipt)) = g.receipts.get(&hash) else {
+            return Ok(if g.mempool.contains_key(&hash) { json!({ "pending": true }) } else { Value::Null });
+        };
+        let unavailable = || (-32000, "receipt proof unavailable on this node".to_string());
+        let block = g.blocks.get(height).ok_or_else(unavailable)?;
+        let index = block.txs.iter().position(|h| h == &hash).ok_or_else(unavailable)?;
+        let receipts = block.txs.iter().map(|h| {
+            g.receipts.get(h).filter(|(h, _)| h == height).map(|(_, r)| r.clone())
+        }).collect::<Option<Vec<_>>>().ok_or_else(unavailable)?;
+        (*height, index, receipt.clone(), receipts)
+    };
+    // Hashing the complete block's receipts can take longer than a map lookup.
+    // Leave the chain lock before constructing the path so RPC cannot delay a vote.
+    let proof = aether_execution::receipt::receipt_proof(&receipts, index)
+        .ok_or((-32000, "receipt proof unavailable on this node".to_string()))?;
+    let root = aether_execution::receipt::receipt_root(&receipts);
+    let certified_block = finalized(st, &json!([height])).await?;
+    if certified_block.is_null() {
+        return Err((-32000, "receipt certificate unavailable on this node".into()));
+    }
+    let bytes = certified_block["block"].as_str().and_then(|b| aether_light::from_hex(b).ok())
+        .ok_or((-32000, "invalid receipt certificate block".to_string()))?;
+    let block = crate::block::Block::decode_cfg(bytes.as_slice(), &crate::block::Block::codec_config(aether_light::MAX_BLOCK_BYTES))
+        .map_err(|_| (-32000, "invalid receipt certificate block".to_string()))?;
+    let committed = block.payload().and_then(|payload| payload.receipts_root)
+        .ok_or((-32000, "receipt proofs unavailable for legacy blocks".to_string()))?;
+    if block.height.get() != height || committed != root {
+        return Err((-32000, "stored receipts do not match certified block".into()));
+    }
+    Ok(json!({ "height": height, "index": index, "receipt": receipt, "proof": proof, "certified_block": certified_block }))
+}
 
 /// Codec bytes of finalized block `h` and its finalization certificate.
 /// Light clients verify both themselves; nothing here needs to be trusted.
@@ -846,6 +885,66 @@ mod alias_tests {
 
     async fn call(st: &RpcState, method: &str, params: Value) -> Value {
         handle_value(st, json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params })).await
+    }
+
+    #[test]
+    fn receipt_proof_includes_ordered_receipts_and_the_height_certificate() {
+        use commonware_codec::Encode;
+        let st = bare_state();
+        let receipts: Vec<aether_execution::Receipt> = (1u8..=3).map(|byte| aether_execution::Receipt {
+            tx_hash: aether_types::B256::repeat_byte(byte), success: true,
+            gas_used: 21_000, prove_gas: 0, state_gas: 0, state_fee: U256::ZERO,
+            contract_address: None, logs: 0, output: Default::default(), events: vec![],
+        }).collect();
+        let height = 1;
+        {
+            let mut g = st.chain.lock();
+            g.blocks.insert(height, crate::chain::BlockSummary {
+                height, hash: "block".into(), parent: "parent".into(), timestamp_ms: 0,
+                proposer: Address::ZERO, state_root: Default::default(), parent_state_root: Default::default(),
+                txs: receipts.iter().map(|r| r.tx_hash).collect(), gas_used: 63_000, prove_gas: 0,
+                base_fee: Default::default(), excess: Default::default(),
+            });
+            // Insertion order deliberately differs from block execution order.
+            for receipt in receipts.iter().rev() {
+                g.receipts.insert(receipt.tx_hash, (height, receipt.clone()));
+            }
+        }
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let params = json!([receipts[1].tx_hash]);
+        assert_eq!(rt.block_on(call(&st, "aether_getReceiptProof", params.clone()))["error"]["code"], -32000);
+        let genesis = crate::block::Block::genesis(7781, Default::default());
+        let payload = crate::block::Payload {
+            receipts_root: Some(aether_execution::receipt::receipt_root(&receipts)),
+            ..Default::default()
+        };
+        let block = crate::block::Block::new(genesis.context, genesis.parent,
+            commonware_consensus::types::Height::new(height), 1_000, payload.to_bytes());
+        let certificate = json!({ "height": height, "block": aether_light::to_hex(&block.encode()), "finalization": "0x02", "links": [] });
+        if let Finality::Archive(archive) = &st.finality { archive.insert(height, certificate.clone()); }
+        let answer = rt.block_on(call(&st, "aether_getReceiptProof", params.clone()));
+        let result = &answer["result"];
+        assert_eq!(result["height"], height);
+        assert_eq!(result["index"], 1);
+        assert_eq!(result["receipt"], json!(receipts[1]));
+        assert_eq!(result["proof"], json!(aether_execution::receipt::receipt_proof(&receipts, 1).unwrap()));
+        assert_eq!(result["certified_block"], certificate);
+        assert_eq!(answer, rt.block_on(call(&st, "eastsea_getReceiptProof", params.clone())));
+        assert_eq!(rt.block_on(call(&st, "aether_getReceipt", params))["result"], json!({ "height": height, "receipt": receipts[1] }));
+        assert_eq!(rt.block_on(call(&st, "aether_getReceiptProof", json!([aether_types::B256::ZERO])))["result"], Value::Null);
+        st.chain.lock().receipts.get_mut(&receipts[1].tx_hash).unwrap().1.success = false;
+        let corrupt = rt.block_on(call(&st, "aether_getReceiptProof", json!([receipts[1].tx_hash])));
+        assert_eq!(corrupt["error"]["message"], "stored receipts do not match certified block");
+        st.chain.lock().receipts.get_mut(&receipts[1].tx_hash).unwrap().1.success = true;
+        if let Finality::Archive(archive) = &st.finality {
+            let mut legacy = certificate.clone();
+            legacy["block"] = json!(aether_light::to_hex(&crate::block::Block::genesis(7781, Default::default()).encode()));
+            archive.insert(height, legacy);
+        }
+        let legacy = rt.block_on(call(&st, "aether_getReceiptProof", json!([receipts[1].tx_hash])));
+        assert_eq!(legacy["error"]["message"], "receipt proofs unavailable for legacy blocks");
+        st.chain.lock().receipts.remove(&receipts[0].tx_hash);
+        assert_eq!(rt.block_on(call(&st, "aether_getReceiptProof", json!([receipts[1].tx_hash])))["error"]["code"], -32000);
     }
 
     #[test]

@@ -168,6 +168,7 @@ fn the_mainnet_rule_set_is_on_from_height_1() {
             "reserve rules",
             "smooth issuance",
             "history v2",
+            "receipt commitments",
             "paid state growth",
             "pruning default",
             "no premine, no faucet",

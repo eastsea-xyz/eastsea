@@ -22,7 +22,7 @@
 #  10. audit 5 A5-4's file — valid structure, `identity: "aa"`,
 #      `output: "bb"`, a new chain id — FAILS the strict gate (it used to
 #      pass 16/16), and a real-mode check with the ceremony record passes on
-#      the untouched file (23 rules: 19 genesis + 4 final-file);
+#      the untouched file (24 rules: 20 genesis + 4 final-file);
 #  11. verify-local refuses a threshold.json from another round (a validator
 #      must not vote under a committee the final file does not name) and
 #      passes with --ceremony on the matching one, storing the record in the
@@ -44,7 +44,7 @@
 #  14. the release gate: `aether mainnet-rules --bundle` demands the
 #      coordinator's record next to the network.json, pinning its exact
 #      bytes — missing or mismatching bundled records FAIL the gate, the
-#      matching pair passes (24 rules), and the legacy testnet bundle
+#      matching pair passes (25 rules), and the legacy testnet bundle
 #      (apps/wallet/Resources, chain 7780) passes with no record.
 # Usage: scripts/test-mainnet-genesis.sh   (env: AETHER_BIN, as in the tool)
 set -euo pipefail
@@ -91,7 +91,7 @@ NET=$WORK/dry/v1/network.json
 echo "== 2. STRICT mainnet-rules (never --rehearsal) on the dry run's final file"
 if out=$("$A" mainnet-rules --rehearsal --network "$NET" 2>&1); then
   n=$(printf '%s\n' "$out" | grep -c '^ok' || true)
-  if [ "$n" = 23 ]; then ok "rehearsal-mode check passes: all 23 rules on (19 genesis + 4 final-file)"; else bad "rehearsal check passed but printed $n ok lines (want 23)"; fi
+  if [ "$n" = 24 ]; then ok "rehearsal-mode check passes: all 24 rules on (20 genesis + 4 final-file)"; else bad "rehearsal check passed but printed $n ok lines (want 24)"; fi
 else
   bad "rehearsal check FAILED on the dry run's file:"$'\n'"$out"
 fi
@@ -216,7 +216,7 @@ json.dump({"chain_id": 7801}, open(sys.argv[3], "w"))
 PY
 if out=$("$A" mainnet-rules --network "$WORK/final7801.json" 2>&1); then
   n=$(printf '%s\n' "$out" | grep -c '^ok' || true)
-  if [ "$n" = 23 ]; then ok "strict check passes the new-id final file: 23 rules on"; else bad "strict check passed but printed $n ok lines (want 23)"; fi
+  if [ "$n" = 24 ]; then ok "strict check passes the new-id final file: 24 rules on"; else bad "strict check passed but printed $n ok lines (want 24)"; fi
 else
   bad "strict check FAILED on a valid new-id final file:"$'\n'"$out"
 fi
@@ -436,7 +436,7 @@ fi
 echo "== 14. the release gate: mainnet-rules --bundle pins the bundled record to the file"
 if out=$("$A" mainnet-rules --bundle --network "$WORK/bundle/network.json" 2>&1); then
   n=$(printf '%s\n' "$out" | grep -c '^ok' || true)
-  if [ "$n" = 24 ]; then ok "the bundled pair passes the gate: 24 rules on (23 + the record)"; else bad "the gate passed but printed $n ok lines (want 24)"; fi
+  if [ "$n" = 25 ]; then ok "the bundled pair passes the gate: 25 rules on (24 + the record)"; else bad "the gate passed but printed $n ok lines (want 25)"; fi
 else
   bad "the gate failed on the matching bundled pair:"$'\n'"$out"
 fi

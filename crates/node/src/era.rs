@@ -26,7 +26,9 @@
 //! (the index into the bodies stream), and the 32-byte values that are not
 //! recomputable: parent state roots and parent metadata hashes only when they
 //! change, history roots and context parents only when they differ from the
-//! recomputed ones. Heights are implicit, parent hashes are the previous
+//! recomputed ones. A receipts root, when present, follows that block's explicit
+//! history root in the history column (flag bit 6); absent roots add no bytes.
+//! Heights are implicit, parent hashes are the previous
 //! block's hash, history roots follow from the MMR. Bodies (transactions,
 //! access list, rare extras) are JSON, compressed together.
 //!
@@ -57,6 +59,7 @@ const HISTORY_EXPLICIT: u8 = 1 << 2;
 const HAS_BODY: u8 = 1 << 3;
 const RAW_PAYLOAD: u8 = 1 << 4;
 const CONTEXT_PARENT_EXPLICIT: u8 = 1 << 5;
+const HAS_RECEIPTS: u8 = 1 << 6;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum EraError {
@@ -285,6 +288,10 @@ pub fn write(start: &Mmr, blocks: &[Block]) -> Result<Vec<u8>, EraError> {
                     flags |= HISTORY_EXPLICIT;
                     cols.histories.extend_from_slice(p.history_root.as_slice());
                 }
+                if let Some(root) = p.receipts_root {
+                    flags |= HAS_RECEIPTS;
+                    cols.histories.extend_from_slice(root.as_slice());
+                }
                 for g in [p.gas.exec, p.gas.state, p.gas.prove] {
                     put_varint(&mut cols.gas, g);
                 }
@@ -414,6 +421,9 @@ pub fn read(bytes: &[u8], expected_root: Option<&H32>) -> Result<Era, EraError> 
     let flags = col()?;
     let (epochs, views, parent_views, leader_ix, timestamps, versions, gas, body_lens) = (col()?, col()?, col()?, col()?, col()?, col()?, col()?, col()?);
     let (state_roots, metas, histories, context_parents) = (col()?, col()?, col()?, col()?);
+    if !cc.b.is_empty() {
+        return Err(EraError::Corrupt("trailing columns"));
+    }
     if flags.len() as u64 != count {
         return Err(EraError::Corrupt("flags"));
     }
@@ -429,6 +439,11 @@ pub fn read(bytes: &[u8], expected_root: Option<&H32>) -> Result<Era, EraError> 
     let mut parent = first_parent;
     let add = |base: i64, d: u64| base.checked_add(unzigzag(d)).filter(|v| *v >= 0).ok_or(EraError::Corrupt("delta"));
     for (i, &f) in flags.iter().enumerate() {
+        if f & !(STATE_ROOT_CHANGED | META_CHANGED | HISTORY_EXPLICIT | HAS_BODY | RAW_PAYLOAD | CONTEXT_PARENT_EXPLICIT | HAS_RECEIPTS) != 0
+            || f & RAW_PAYLOAD != 0 && (f & HAS_BODY == 0 || f & (STATE_ROOT_CHANGED | META_CHANGED | HISTORY_EXPLICIT | HAS_RECEIPTS) != 0)
+        {
+            return Err(EraError::Corrupt("flags"));
+        }
         let height = first_height + i as u64;
         epoch = add(epoch, epochs.varint()?)?;
         view = add(view, views.varint()?)?;
@@ -449,6 +464,7 @@ pub fn read(bytes: &[u8], expected_root: Option<&H32>) -> Result<Era, EraError> 
                 meta = B256::from(metas.h32()?);
             }
             let history_root = if f & HISTORY_EXPLICIT != 0 { B256::from(histories.h32()?) } else { B256::from(mmr.root(&h)) };
+            let receipts_root = if f & HAS_RECEIPTS != 0 { Some(B256::from(histories.h32()?)) } else { None };
             let g = GasVector { exec: gas.varint()?, state: gas.varint()?, prove: gas.varint()? };
             let body = if f & HAS_BODY != 0 {
                 let n = body_lens.varint()? as usize;
@@ -460,6 +476,7 @@ pub fn read(bytes: &[u8], expected_root: Option<&H32>) -> Result<Era, EraError> 
                 version: u32::try_from(version).map_err(|_| EraError::Corrupt("version"))?,
                 parent_state_root: state_root,
                 history_root,
+                receipts_root,
                 parent_meta: meta,
                 txs: body.txs,
                 bal: body.bal,
@@ -572,6 +589,15 @@ mod tests {
     /// A synthetic chain: 4 rotating leaders, ~1 s blocks with jitter, the history
     /// root each node would put in, state roots that change when `changes(h)`.
     fn chain(eras: u64, changes: impl Fn(u64) -> bool, body: impl Fn(u64) -> Option<Vec<TxEnvelope>>) -> (Vec<Block>, Vec<Mmr>) {
+        chain_with_receipts(eras, changes, body, |_| None)
+    }
+
+    fn chain_with_receipts(
+        eras: u64,
+        changes: impl Fn(u64) -> bool,
+        body: impl Fn(u64) -> Option<Vec<TxEnvelope>>,
+        receipts: impl Fn(u64) -> Option<B256>,
+    ) -> (Vec<Block>, Vec<Mmr>) {
         let h = ChainHasher::new();
         let leaders: Vec<PublicKey> = (0..4).map(|i| ed25519::PrivateKey::from_seed(i).public_key()).collect();
         let genesis = Block::genesis(7, B256::repeat_byte(1));
@@ -589,6 +615,7 @@ mod tests {
                 version: if height < 100 { 1 } else { 2 },
                 parent_state_root: root,
                 history_root: B256::from(mmr.root(&h)),
+                receipts_root: receipts(height),
                 parent_meta: B256::repeat_byte((height / 5000) as u8),
                 gas: GasVector { exec: 21_000 * txs.len() as u64, ..Default::default() },
                 txs,
@@ -613,6 +640,71 @@ mod tests {
     fn era_of(blocks: &[Block], mmrs: &[Mmr], e: u64) -> Vec<u8> {
         let (a, b) = ((e * ERA_LEN) as usize, ((e + 1) * ERA_LEN) as usize);
         write(&mmrs[a], &blocks[a..b]).unwrap()
+    }
+
+    /// Rewrite the compressed columns while retaining the bodies and claimed root.
+    fn alter_columns(bytes: &[u8], alter: impl FnOnce(&mut Vec<Vec<u8>>)) -> Vec<u8> {
+        let mut c = Cursor { b: bytes };
+        c.take(8 + 8 + 4 + 8).unwrap();
+        let peaks = c.u8().unwrap() as usize;
+        c.take(peaks * 33 + 32).unwrap();
+        let leaders = c.varint().unwrap() as usize;
+        c.take(leaders * 32).unwrap();
+        let prefix = bytes.len() - c.b.len();
+        let columns = stream(&mut c).unwrap();
+        let suffix = c.b;
+        let mut cc = Cursor { b: &columns };
+        let mut cols = Vec::new();
+        while !cc.b.is_empty() {
+            let len = cc.varint().unwrap() as usize;
+            cols.push(cc.take(len).unwrap().to_vec());
+        }
+        alter(&mut cols);
+        let mut columns = Vec::new();
+        for col in cols {
+            put_varint(&mut columns, col.len() as u64);
+            columns.extend_from_slice(&col);
+        }
+        let z = zstd::bulk::compress(&columns, ZSTD_LEVEL).unwrap();
+        let mut out = bytes[..prefix].to_vec();
+        out.extend_from_slice(&(z.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(columns.len() as u32).to_le_bytes());
+        out.extend_from_slice(&z);
+        out.extend_from_slice(suffix);
+        out
+    }
+
+    #[test]
+    fn receipts_roots_round_trip_without_json_bodies() {
+        let (blocks, mmrs) = chain_with_receipts(1, |_| false, |_| None, |height| {
+            match height % 3 {
+                0 => None,
+                1 => Some(B256::ZERO),
+                _ => Some(B256::repeat_byte(42)),
+            }
+        });
+        let bytes = era_of(&blocks, &mmrs, 0);
+        let era = read(&bytes, None).unwrap();
+        assert_eq!(era.blocks, blocks);
+        assert_eq!(write(&era.start, &era.blocks).unwrap(), bytes);
+        alter_columns(&bytes, |cols| {
+            assert!(cols[0].iter().all(|flags| flags & HAS_BODY == 0));
+            assert!(cols[0].iter().any(|flags| flags & HAS_RECEIPTS != 0));
+        });
+        let truncated = alter_columns(&bytes, |cols| { cols[11].pop(); });
+        assert_eq!(read(&truncated, None).unwrap_err(), EraError::Corrupt("truncated"));
+        let unknown_flag = alter_columns(&bytes, |cols| cols[0][1] |= 1 << 7);
+        assert_eq!(read(&unknown_flag, None).unwrap_err(), EraError::Corrupt("flags"));
+        let raw_with_root = alter_columns(&bytes, |cols| cols[0][1] |= RAW_PAYLOAD | HAS_BODY);
+        assert_eq!(read(&raw_with_root, None).unwrap_err(), EraError::Corrupt("flags"));
+        let extra_column = alter_columns(&bytes, |cols| cols.push(vec![]));
+        assert_eq!(read(&extra_column, None).unwrap_err(), EraError::Corrupt("trailing columns"));
+        let (legacy, legacy_mmrs) = chain(1, |_| false, |_| None);
+        let legacy_bytes = era_of(&legacy, &legacy_mmrs, 0);
+        alter_columns(&legacy_bytes, |cols| {
+            assert!(cols[0].iter().all(|flags| flags & HAS_RECEIPTS == 0));
+            assert!(cols[11].is_empty());
+        });
     }
 
     #[test]

@@ -717,6 +717,10 @@ final class Earnings: ObservableObject {
     @Published private(set) var firstHeight: UInt64?
     /// The chain's node-rewards standing (`aether_rewardStatus`), for the Network page.
     @Published private(set) var status: RewardStatus?
+    /// How many rewards the node says exist for this address in total (nil:
+    /// not reported). Below `entries.count` nothing is missing; above it, the
+    /// cards say "N of M" instead of quietly showing a capped list.
+    @Published private(set) var totalOnChain: Int?
 
     static let pollSeconds: TimeInterval = 20
     /// The node returns at most this many (the newest).
@@ -825,10 +829,14 @@ final class Earnings: ObservableObject {
         let addr = address
         Task { @MainActor in
             defer { fetching = false }
-            guard let rows = await LocalRPC.call(port: NodeController.port, method: "aether_rewards", params: [addr, Self.limit]) as? [[String: Any]],
-                  addr == address else { return }
+            // Every page, not one flat read: the node caps a single response,
+            // and a history longer than that cap would silently lose its tail
+            // (the founder's 2,583 rewards ran past the default page size).
+            let (rows, total) = await NodeController.allRewards(port: NodeController.port, address: addr)
+            guard addr == address, !rows.isEmpty || (total ?? 0) == 0 else { return }
             let list = rows.compactMap(RewardEntry.init(json:))
             entries = list
+            totalOnChain = total
             apply(EarningsSummary.aggregate(list, now: Date()))
         }
     }
@@ -899,6 +907,11 @@ private struct EarningsExportCard: View {
                     Text("Every reward this Mac earned, as this app saw it — time, kind and the exact amount — for your own records. This is not tax advice.")
                         .font(.aeBody).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                    if let total = earnings.totalOnChain, total > earnings.entries.count {
+                        Text("The node counts \(total) rewards; \(earnings.entries.count) were read. The numbers here cover only what was read.")
+                            .font(.aeFootnote).foregroundStyle(Color.warn)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 Spacer(minLength: 8)
                 Button("Export CSV…") { export() }

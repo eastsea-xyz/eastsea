@@ -35,6 +35,12 @@ pub struct Entry {
     pub from: Option<Address>,
     pub to: Option<Address>,
     pub value_wei: String,
+    /// What the transaction cost its sender on top of any value moved:
+    /// exec gas (gas_used × effective exec price) + prove fee + state fee, in
+    /// wei. Zero on every row but the sender's; "0" in rows indexed before
+    /// fees were recorded. The wallet itemizes its balance from this column.
+    #[serde(default = "zero_wei")]
+    pub fee_wei: String,
     pub method: Option<String>,
     pub approval_amount: Option<String>,
     pub approval_spender: Option<Address>,
@@ -63,6 +69,10 @@ const TRANSFER: [u8; 32] = [
     0xdd, 0xf2, 0x52, 0xad, 0x1b, 0xe2, 0xc8, 0x9b, 0x69, 0xc2, 0xb0, 0x68, 0xfc, 0x37, 0x8d, 0xaa,
     0x95, 0x2b, 0xa7, 0xf1, 0x63, 0xc4, 0xa1, 0x16, 0x28, 0xf5, 0x5a, 0x4d, 0xf5, 0x23, 0xb3, 0xef,
 ];
+
+fn zero_wei() -> String {
+    "0".into()
+}
 const WITHDRAWAL: [u8; 32] = [
     0x7f, 0xcf, 0x53, 0x2c, 0x15, 0xf0, 0xa6, 0xdb, 0x0b, 0xd6, 0xd0, 0xe0, 0x38, 0xbe, 0xa7, 0x1d,
     0x30, 0xd8, 0x08, 0xc7, 0xd9, 0x8c, 0xb3, 0xbf, 0x72, 0x68, 0xa9, 0x5b, 0xf5, 0x08, 0x1b, 0x65,
@@ -102,12 +112,15 @@ fn pair_swap(event: &aether_execution::Event) -> Option<PairSwap> {
 
 /// `compact_swaps` is enabled only for a new genesis. Legacy history keeps
 /// Swap details on every address row for byte-for-byte chain-7780 compatibility.
+/// `fee_wei` is the whole charge the sender paid for this transaction (exec +
+/// prove + state fee): it lands on the sender's row only.
 pub fn transaction(
     tx: &TxEnvelope,
     receipt: &Receipt,
     height: u64,
     index: u32,
     timestamp_ms: u64,
+    fee_wei: U256,
     is_aether_account: bool,
     compact_swaps: bool,
 ) -> Vec<Entry> {
@@ -215,6 +228,7 @@ pub fn transaction(
                 value_wei: (if native_value > U256::ZERO { native_value } else if address == sender && native_sent > U256::ZERO {
                     native_sent
                 } else { value }).to_string(),
+                fee_wei: if address == sender { fee_wei.to_string() } else { "0".into() },
                 method: method.clone(),
                 approval_amount: approval
                     .map(|c| U256::from_be_slice(&c.input[36..68]).to_string()),
@@ -252,6 +266,7 @@ pub fn reward(
         from: None,
         to: Some(address),
         value_wei: amount.to_string(),
+        fee_wei: "0".into(),
         method: None,
         approval_amount: None,
         approval_spender: None,
@@ -282,6 +297,7 @@ pub fn registration(
         from: Some(address),
         to: None,
         value_wei: "0".into(),
+        fee_wei: "0".into(),
         method: None,
         approval_amount: None,
         approval_spender: None,
@@ -344,7 +360,7 @@ mod tests {
             output: Bytes::new(),
             events,
         };
-        (sender, transaction(&tx, &receipt, 1, 0, 1_000, false, compact_swaps))
+        (sender, transaction(&tx, &receipt, 1, 0, 1_000, U256::from(1_234_567_890u128), false, compact_swaps))
     }
 
     #[test]
@@ -366,5 +382,17 @@ mod tests {
         let (_, rows) = history_with_events(2, false);
         assert_eq!(rows.len(), 3);
         assert!(rows.iter().all(|row| row.pair_swaps.len() == 2));
+    }
+
+    #[test]
+    fn fee_lands_on_the_sender_row_only_and_old_rows_still_decode() {
+        let (sender, rows) = history_with_events(2, false);
+        assert_eq!(rows.iter().find(|r| r.address == sender).unwrap().fee_wei, "1234567890");
+        assert!(rows.iter().filter(|r| r.address != sender).all(|r| r.fee_wei == "0"));
+        // Rows indexed before the column existed deserialize with "0".
+        let mut v = serde_json::to_value(&rows[0]).unwrap();
+        v.as_object_mut().unwrap().remove("fee_wei");
+        let old: Entry = serde_json::from_value(v).unwrap();
+        assert_eq!(old.fee_wei, "0");
     }
 }

@@ -28,6 +28,26 @@ enum EarningsCSV {
         return rows.joined(separator: "\n") + "\n"
     }
 
+    /// One activity export: every history row this wallet loaded for its own
+    /// address — rewards, transfers in and out, fees — oldest first
+    /// (spreadsheet order). Same rules as the earnings export: exact amounts,
+    /// no guessed times (a seconds timestamp from the legacy chain is scaled
+    /// back to milliseconds first; a missing one stays empty).
+    static func activityDocument(_ entries: [ChainHistoryEntry]) -> String {
+        var rows = [
+            "# EastSea activity export — every history row this app loaded for this account, not tax advice.",
+            "# time_utc is the block's time as the node reported it (ISO 8601, UTC); the column is empty when the node reported none.",
+            "# fee_dbln is what the transaction cost its sender (exec + prove + state fee): only the sender's row carries one, and rows written before the column existed export it empty.",
+            "block_height,time_utc,kind,direction,from,to,value_dbln,value_base_units,fee_dbln,tx",
+        ]
+        for e in entries.sorted(by: { ($0.height, $0.txIndex) < ($1.height, $1.txIndex) }) {
+            rows.append([String(e.height), iso(Timestamp.normalizeMs(e.timestampMs)), e.kind, e.direction,
+                         e.from ?? "", e.to ?? "", dbln(e.valueWei), e.valueWei, e.feeWei.map(dbln) ?? "", e.txHash]
+                .map(field).joined(separator: ","))
+        }
+        return rows.joined(separator: "\n") + "\n"
+    }
+
     /// One CSV field, quoted only when it contains a character that would
     /// break the row (RFC 4180); a quote inside is doubled.
     static func field(_ s: String) -> String {

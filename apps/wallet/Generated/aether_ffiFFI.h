@@ -259,6 +259,11 @@ RustBuffer uniffi_aether_ffi_fn_func_authenticated_remote_height(RustCallStatus 
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_BALANCE_SOURCES
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_BALANCE_SOURCES
+RustBuffer uniffi_aether_ffi_fn_func_balance_sources(RustBuffer entries_json, RustBuffer balance_wei, RustBuffer faucet, RustBuffer waeth, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_CHAIN_STATUS
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_CHAIN_STATUS
 RustBuffer uniffi_aether_ffi_fn_func_chain_status(RustCallStatus *_Nonnull out_status
@@ -415,6 +420,11 @@ RustBuffer uniffi_aether_ffi_fn_func_recovery_key_code(RustBuffer p256_public_ke
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_RECOVERY_STATUS
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_RECOVERY_STATUS
 RustBuffer uniffi_aether_ffi_fn_func_recovery_status(RustBuffer account, uint32_t validators, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_REWARDS_PAGE
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_REWARDS_PAGE
+RustBuffer uniffi_aether_ffi_fn_func_rewards_page(RustBuffer address, RustBuffer cursor, uint32_t limit, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_SESSION_STATUS
@@ -789,6 +799,12 @@ uint16_t uniffi_aether_ffi_checksum_func_authenticated_remote_height(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_BALANCE_SOURCES
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_BALANCE_SOURCES
+uint16_t uniffi_aether_ffi_checksum_func_balance_sources(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_CHAIN_STATUS
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_CHAIN_STATUS
 uint16_t uniffi_aether_ffi_checksum_func_chain_status(void
@@ -972,6 +988,12 @@ uint16_t uniffi_aether_ffi_checksum_func_recovery_key_code(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_RECOVERY_STATUS
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_RECOVERY_STATUS
 uint16_t uniffi_aether_ffi_checksum_func_recovery_status(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_REWARDS_PAGE
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_REWARDS_PAGE
+uint16_t uniffi_aether_ffi_checksum_func_rewards_page(void
     
 );
 #endif

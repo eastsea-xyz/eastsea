@@ -63,6 +63,11 @@ final class WalletModel: ObservableObject {
     /// or empty list as if it were complete. (Set from `refreshChainActivity`
     /// and the design preview.)
     @Published var historyFailure: HistoryFailure?
+    /// "Where does my balance come from?": the exact-wei itemization of this
+    /// account's own history against the certificate-verified balance. Nil
+    /// until the first page of history has landed (and on a network too old
+    /// to answer it — the Activity page then shows no breakdown card).
+    @Published private(set) var breakdown: BalanceBreakdown?
     /// A recovery someone started on THIS account (cancel it if it was not you).
     @Published var incomingRecovery: RecoveryStatus?
     /// A recovery this device proposed for another account, waiting for its delay.
@@ -95,6 +100,10 @@ final class WalletModel: ObservableObject {
     private var lastActivityHeight: UInt64?
     private var activityCursors: [String: String] = [:]
     private var activityExhausted: Set<String> = []
+    /// This account's own history rows as the node reported them, merged
+    /// across pages (the feed below is display data; the balance breakdown
+    /// and the full CSV are itemized from these). Keyed by tx and address.
+    private var chainRows: [String: ChainHistoryEntry] = [:]
     private var pendingBalanceRises: [(height: UInt64, wei: String)] = []
     /// Tokens known on this chain, kept between scans (also feeds the look-alike
     /// and provenance checks with official metadata).
@@ -206,6 +215,8 @@ final class WalletModel: ObservableObject {
         lastActivityHeight = nil
         activityCursors = [:]
         activityExhausted = []
+        chainRows = [:]
+        breakdown = nil
         activityHistoryStart = nil
         olderActivityAvailable = false
         historyFailure = nil
@@ -865,6 +876,13 @@ final class WalletModel: ObservableObject {
         }
         history = d.data(forKey: historyKey).flatMap { try? JSONDecoder().decode([BalancePoint].self, from: $0) } ?? []
         activity = d.data(forKey: activityKey).flatMap { try? JSONDecoder().decode([ActivityItem].self, from: $0) } ?? []
+        // Backups from the 7780 chain carry reward times as seconds where the
+        // feed wants milliseconds ("last one 56y ago"): scale those back up so
+        // the day a payment happened is the day it happened.
+        activity = activity.map { item in
+            let ts = item.date.timeIntervalSince1970
+            return (ts > 0 && ts < Double(Timestamp.secondsEraBound) / 1_000) ? item.with(date: Date(timeIntervalSince1970: ts * 1_000)) : item
+        }
         linkedWallets = d.stringArray(forKey: linkedKey) ?? []
     }
 
@@ -895,6 +913,17 @@ final class WalletModel: ObservableObject {
     }
 
     func loadOlderActivity() { refreshChainActivity(older: true) }
+
+    /// This account's own history rows as reported (oldest-first pages merged,
+    /// newest data winning): what the balance breakdown and the CSV itemize.
+    var ownHistoryRows: [ChainHistoryEntry] {
+        chainRows.values.sorted { ($0.height, $0.txIndex) > ($1.height, $1.txIndex) }
+    }
+
+    /// The reward rows of that history, for the day-by-day grouping.
+    var rewardHistoryRows: [ChainHistoryEntry] {
+        ownHistoryRows.filter { $0.kind == "proof_reward" || $0.kind == "node_reward" }
+    }
 
     private func refreshChainActivity(older: Bool = false) {
         guard !activityLoading, !address.isEmpty else { return }
@@ -959,7 +988,9 @@ final class WalletModel: ObservableObject {
                         let title = ChainActivity.title(row, names: names)
                         let amount = ["native_transfer", "node_reward", "proof_reward"].contains(row.kind)
                             ? (Double(ChainActivity.units(row.valueWei)).map { row.direction == "out" ? -$0 : $0 }) : nil
-                        var item = ActivityItem(date: Date(timeIntervalSince1970: TimeInterval(row.timestampMs) / 1_000),
+                        // A missing time renders as nothing, never as 1970; a
+                        // seconds value (pre-fix rows) is scaled back to ms.
+                        var item = ActivityItem(date: Timestamp.date(fromMs: row.timestampMs) ?? .distantPast,
                                                 kind: row.direction == "in" ? .received : (row.kind == "contract_call" || row.kind == "deploy" ? .security : .sent),
                                                 title: title, amount: amount, state: row.success ? .done : .failed)
                         item.hash = row.txHash
@@ -988,6 +1019,11 @@ final class WalletModel: ObservableObject {
                         } else { self.activity.append(item) }
                     }
                     if key == own.lowercased() {
+                        // The exact rows behind the itemization (merged across
+                        // pages, newest data winning any identity collision).
+                        for row in page.entries {
+                            self.chainRows["\(row.txHash.lowercased()):\(key)"] = row
+                        }
                         let oldest = page.entries.last?.height ?? page.historyStart
                         for rise in self.pendingBalanceRises where page.indexedHeight >= rise.height && rise.height >= oldest {
                             let matched = page.entries.contains { $0.height == rise.height && $0.direction == "in" }
@@ -1007,6 +1043,35 @@ final class WalletModel: ObservableObject {
                 self.olderActivityAvailable = !self.activityCursors.isEmpty
                 self.activity.sort { $0.date > $1.date }
                 self.save()
+                self.refreshBreakdown()
+            }
+        }
+    }
+
+    /// Itemize where this account's balance comes from — every loaded history
+    /// row summed against the certificate-verified balance, in exact wei inside
+    /// the Rust core (`balance_sources`; integer math only). Runs after each
+    /// history merge, including "load older", so the card's "not yet itemized"
+    /// remainder shrinks as older pages land. A network too old to answer keeps
+    /// the last good breakdown on screen instead of showing a wrong zero-sum.
+    private func refreshBreakdown() {
+        let own = address
+        let key = own.lowercased()
+        guard !key.isEmpty, !chainRows.isEmpty, let balance = account?.balanceWei else { return }
+        let rows = Array(chainRows.values)
+        let generation = networkGeneration
+        let faucet = status?.faucet
+        let waeth = status.flatMap { TokenSources.bundled(chainId: $0.chainId)?.waeth }
+        Task.detached {
+            let encoder = JSONEncoder()
+            encoder.keyEncodingStrategy = .convertToSnakeCase
+            guard let data = try? encoder.encode(rows),
+                  let json = String(data: data, encoding: .utf8),
+                  let answer = try? balanceSources(entriesJson: json, balanceWei: balance, faucet: faucet, waeth: waeth),
+                  let parsed = try? BalanceBreakdown.decode(answer) else { return }
+            await MainActor.run {
+                guard self.networkGeneration == generation else { return }
+                self.breakdown = parsed
             }
         }
     }
@@ -1054,6 +1119,16 @@ struct ActivityItem: Codable, Identifiable, Equatable {
         c.state = state
         return c
     }
+
+    func with(date: Date) -> ActivityItem {
+        var c = self
+        c.date = date
+        return c
+    }
+
+    /// The node named a time for this row (a missing time is rendered as
+    /// nothing, never as an epoch countdown).
+    var timeKnown: Bool { date.timeIntervalSince1970 > 86_400 }
 
     func with(hash: String) -> ActivityItem {
         var c = self

@@ -48,6 +48,9 @@ pub struct ChainStatus {
     pub upgrades_json: String,
     /// Highest chain protocol this wallet build knows how to display and submit to.
     pub supported_protocol: u32,
+    /// The node's faucet, when it has one — so the wallet can name test grants
+    /// in the balance breakdown instead of counting them as ordinary received.
+    pub faucet: Option<String>,
 }
 
 #[derive(uniffi::Record)]
@@ -1017,6 +1020,7 @@ pub fn chain_status() -> R<ChainStatus> {
         upgrades_json: scheduled_upgrade_json(&v),
         // Bump with the bundled node/light-client release, not with a remote node's version.
         supported_protocol: 3,
+        faucet: v["faucet"].as_str().map(str::to_string),
     })
 }
 
@@ -1758,6 +1762,135 @@ pub fn account_history(address: String, cursor: Option<String>, limit: u32) -> R
     Ok(result.to_string())
 }
 
+/// One page of an address's reward records (`aether_rewardsPage`), newest
+/// first, with the cursor that continues older and the total count — so the
+/// wallet can load every reward and say "N of M" instead of silently keeping
+/// only the newest 1,000.
+#[uniffi::export]
+pub fn rewards_page(address: String, cursor: Option<String>, limit: u32) -> R<String> {
+    let address: Address = address.parse().map_err(|_| WalletError::Invalid("address".into()))?;
+    if !(1..=10_000).contains(&limit) { return Err(WalletError::Invalid("limit must be 1..10000".into())); }
+    let result = call("aether_rewardsPage", json!([address, cursor, limit]))?;
+    Ok(result.to_string())
+}
+
+/// One account-history row, as far as the balance breakdown cares. Fields the
+/// node adds later are ignored; fields the wallet needs default to nothing.
+#[derive(serde::Deserialize)]
+struct HistoryRow {
+    #[serde(default)]
+    direction: String,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    value_wei: String,
+    #[serde(default)]
+    fee_wei: String,
+    success: bool,
+    #[serde(default)]
+    from: Option<String>,
+    #[serde(default)]
+    native_received_wei: Option<String>,
+    #[serde(default)]
+    native_payout_source: Option<String>,
+}
+
+fn wei_of(s: &str, what: &str) -> R<U256> {
+    U256::from_str_radix(s.trim(), 10).map_err(|_| WalletError::Invalid(format!("history row {what} is not wei: {s:?}")))
+}
+
+fn same_address(a: &str, b: &str) -> bool {
+    a.trim().eq_ignore_ascii_case(b.trim())
+}
+
+/// "Where does my balance come from?", answered in exact wei. `entries_json`
+/// is every account-history row of one address (the wallet pages until the
+/// cursor is exhausted), `balance_wei` the certificate-verified balance, and
+/// `faucet`/`waeth` the addresses this network's grants and wrapped-coin
+/// payouts come from (nil when there is no such contract). Returns per-source
+/// totals and the difference between the itemized net and the verified
+/// balance: zero when every coin is accounted for, the honest remainder
+/// (pruned history, rows not yet loaded) when it is not. Integer math only —
+/// no floating point anywhere in the reconciliation.
+#[uniffi::export]
+pub fn balance_sources(entries_json: String, balance_wei: String, faucet: Option<String>, waeth: Option<String>) -> R<String> {
+    let rows: Vec<HistoryRow> = serde_json::from_str(&entries_json)
+        .map_err(|e| WalletError::Invalid(format!("history rows are not readable: {e}")))?;
+    let balance = wei_of(&balance_wei, "balance")?;
+    let mut proof_rewards = U256::ZERO;
+    let mut node_rewards = U256::ZERO;
+    let mut faucet_in = U256::ZERO;
+    let mut received = U256::ZERO;
+    let mut unwrapped = U256::ZERO;
+    let mut sent = U256::ZERO;
+    let mut fees = U256::ZERO;
+    for row in &rows {
+        let fee = wei_of(&row.fee_wei, "fee")?;
+        fees = fees.saturating_add(fee);
+        match row.kind.as_str() {
+            "proof_reward" => {
+                proof_rewards = proof_rewards.saturating_add(wei_of(&row.value_wei, "value")?);
+                continue;
+            }
+            "node_reward" => {
+                node_rewards = node_rewards.saturating_add(wei_of(&row.value_wei, "value")?);
+                continue;
+            }
+            _ => {}
+        }
+        // A wrapped-coin payout the wallet's own contract list vouches for.
+        // Anything else claiming to pay native coin stays out of the sums, so
+        // it surfaces in the not-yet-itemized difference instead of silently
+        // padding "received".
+        if let (Some(amount), Some(source)) = (row.native_received_wei.as_deref(), row.native_payout_source.as_deref()) {
+            if waeth.as_deref().is_some_and(|w| same_address(source, w)) {
+                unwrapped = unwrapped.saturating_add(wei_of(amount, "native payout")?);
+            }
+        }
+        let value = wei_of(&row.value_wei, "value")?;
+        if !row.success {
+            continue; // Nothing moved; the fee above is all it cost.
+        }
+        if row.direction == "in" && row.kind == "native_transfer" {
+            if faucet.as_deref().is_some_and(|f| row.from.as_deref().is_some_and(|from| same_address(from, f))) {
+                faucet_in = faucet_in.saturating_add(value);
+            } else {
+                received = received.saturating_add(value);
+            }
+        } else if row.direction == "out" {
+            sent = sent.saturating_add(value);
+        }
+    }
+    let total_in = proof_rewards.saturating_add(node_rewards).saturating_add(faucet_in).saturating_add(received).saturating_add(unwrapped);
+    let total_out = sent.saturating_add(fees);
+    // balance + total_out − total_in, kept exact even when the rows over- or
+    // under-count the balance (pruned history under, mid-index over).
+    let difference;
+    let mut itemizes = false;
+    if total_in <= balance.saturating_add(total_out) {
+        difference = balance.saturating_add(total_out).saturating_sub(total_in).to_string();
+        itemizes = difference == "0";
+    } else {
+        difference = format!("-{}", total_in.saturating_sub(balance).saturating_sub(total_out));
+    }
+    Ok(json!({
+        "proof_rewards_wei": proof_rewards.to_string(),
+        "node_rewards_wei": node_rewards.to_string(),
+        "faucet_wei": faucet_in.to_string(),
+        "received_wei": received.to_string(),
+        "unwrapped_wei": unwrapped.to_string(),
+        "sent_wei": sent.to_string(),
+        "fees_wei": fees.to_string(),
+        "total_in_wei": total_in.to_string(),
+        "total_out_wei": total_out.to_string(),
+        "balance_wei": balance.to_string(),
+        "difference_wei": difference,
+        "itemizes_completely": itemizes,
+        "rows": rows.len(),
+    })
+    .to_string())
+}
+
 #[cfg(test)]
 mod account_history_tests {
     use super::*;
@@ -1765,8 +1898,72 @@ mod account_history_tests {
     #[test]
     fn history_is_a_follower_read_and_rejects_bad_inputs_locally() {
         assert!(!needs_a_validator("aether_accountHistory"));
+        assert!(!needs_a_validator("aether_rewardsPage"));
         assert!(account_history("not an address".into(), None, 50).is_err());
         assert!(account_history(format!("{:#x}", Address::ZERO), None, 201).is_err());
+        assert!(rewards_page(format!("{:#x}", Address::ZERO), None, 0).is_err());
+        assert!(rewards_page(format!("{:#x}", Address::ZERO), None, 10_001).is_err());
+    }
+
+    /// The founder's testnet balance, in miniature: rewards, a faucet grant,
+    /// a transfer out and its fee must add up to the verified balance exactly.
+    #[test]
+    fn balance_sources_itemizes_every_wei() {
+        let entries = r#"[
+            {"kind":"proof_reward","direction":"in","value_wei":"1000000000000000000","fee_wei":"0","success":true},
+            {"kind":"proof_reward","direction":"in","value_wei":"500000000000000000","fee_wei":"0","success":true},
+            {"kind":"node_reward","direction":"in","value_wei":"2000000000000000000","fee_wei":"0","success":true},
+            {"kind":"native_transfer","direction":"in","from":"0x00000000000000000000000000000000000fauc0","value_wei":"1000000000000000000","fee_wei":"0","success":true},
+            {"kind":"native_transfer","direction":"in","from":"0x1111000000000000000000000000000000001111","value_wei":"300000000000000000","fee_wei":"0","success":true},
+            {"kind":"native_transfer","direction":"out","to":"0x2222000000000000000000000000000000002222","value_wei":"100000000000000000","fee_wei":"1500000000000000","success":true},
+            {"kind":"contract_call","direction":"out","to":"0x3333000000000000000000000000000000003333","value_wei":"50000000000000000","fee_wei":"2500000000000000","success":true},
+            {"kind":"native_transfer","direction":"out","to":"0x4444000000000000000000000000000000004444","value_wei":"900000000000000000","fee_wei":"750000000000000","success":false},
+            {"kind":"native_transfer","direction":"in","from":"0xwaethcontract0000000000000000000000000000","value_wei":"0","fee_wei":"0","native_received_wei":"700000000000000000","native_payout_source":"0xwaethcontract0000000000000000000000000000","success":true}
+        ]"#;
+        let out = balance_sources(
+            entries.to_string(),
+            // 1.0 + 0.5 + 2.0 + 1.0 + 0.3 + 0.7 − 0.1 − 0.05 − fees(0.0015+0.0025+0.00075)
+            "5345250000000000000".to_string(),
+            Some("0x00000000000000000000000000000000000fauc0".into()),
+            Some("0xwaethcontract0000000000000000000000000000".into()),
+        )
+        .unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["proof_rewards_wei"], "1500000000000000000");
+        assert_eq!(v["node_rewards_wei"], "2000000000000000000");
+        assert_eq!(v["faucet_wei"], "1000000000000000000");
+        assert_eq!(v["received_wei"], "300000000000000000");
+        assert_eq!(v["unwrapped_wei"], "700000000000000000");
+        assert_eq!(v["sent_wei"], "150000000000000000");
+        assert_eq!(v["fees_wei"], "4750000000000000");
+        assert_eq!(v["difference_wei"], "0");
+        assert_eq!(v["itemizes_completely"], true);
+        assert_eq!(v["rows"], 9);
+    }
+
+    /// Pruned or not-yet-loaded history leaves an honest gap, never a silent one.
+    #[test]
+    fn balance_sources_reports_what_is_not_itemized() {
+        let entries = r#"[
+            {"kind":"proof_reward","direction":"in","value_wei":"1000000000000000000","fee_wei":"0","success":true}
+        ]"#;
+        let out = balance_sources(entries.to_string(), "3000000000000000000".to_string(), None, None).unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["difference_wei"], "2000000000000000000");
+        assert_eq!(v["itemizes_completely"], false);
+        // Rows that claim more than the balance has report a negative gap
+        // rather than wrapping around.
+        let over = balance_sources(entries.to_string(), "100000000000000000".to_string(), None, None).unwrap();
+        let v: Value = serde_json::from_str(&over).unwrap();
+        assert_eq!(v["difference_wei"], "-900000000000000000");
+        assert_eq!(v["itemizes_completely"], false);
+    }
+
+    #[test]
+    fn balance_sources_rejects_inputs_it_cannot_sum_exactly() {
+        assert!(balance_sources("not json".into(), "1".into(), None, None).is_err());
+        assert!(balance_sources("[]".into(), "0x10".into(), None, None).is_err());
+        assert!(balance_sources(r#"[{"kind":"native_transfer","direction":"in","value_wei":"1.5","fee_wei":"0","success":true}]"#.into(), "2".into(), None, None).is_err());
     }
 }
 

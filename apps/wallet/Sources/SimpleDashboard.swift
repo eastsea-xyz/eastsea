@@ -308,6 +308,7 @@ private struct ActivityPage: View {
     var body: some View {
         VStack(spacing: 12) {
             LinkedWalletsCard()
+            BalanceBreakdownCard()
             Card {
                 VStack(spacing: 12) {
                     if let failure = model.historyFailure {
@@ -330,6 +331,7 @@ private struct ActivityPage: View {
                     }
                 }
             }
+            RewardDaysCard()
         }
     }
 }
@@ -362,6 +364,116 @@ struct LinkedWalletsCard: View {
                 }
                 if invalid { Text("Enter a new, valid 0x address (up to 8 linked wallets).")
                     .font(.aeFootnote).foregroundStyle(.red) }
+            }
+        }
+    }
+}
+
+/// "Where your balance comes from": every source the loaded history can name,
+/// summed in exact wei (the Rust core does the arithmetic; this only shows
+/// it). When the sources add up to the verified balance it says so; when they
+/// do not, it says that — older pages not yet loaded — instead of quietly
+/// pretending.
+private struct BalanceBreakdownCard: View {
+    @EnvironmentObject var model: WalletModel
+
+    var body: some View {
+        if let b = model.breakdown {
+            let lines = BalanceBreakdownText.lines(b)
+            if !lines.isEmpty {
+                Card {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text("Where your balance comes from").font(.aeHeadline)
+                            Spacer(minLength: 8)
+                            #if os(macOS)
+                            Button("Export CSV…") { export() }
+                                .font(.aeFootnote)
+                                .help("Saves every history row this wallet has loaded — time, kind, amount and fee, exact — as a CSV file.")
+                            #endif
+                        }
+                        ForEach(lines) { line in
+                            HStack {
+                                Text(line.name).font(.aeBody)
+                                Spacer(minLength: 8)
+                                Text("\(line.negative ? "−" : "+")\(ChainActivity.units(line.wei)) \(Brand.coinTicker)")
+                                    .font(.aeBody.monospacedDigit())
+                                    .foregroundStyle(line.negative ? Color.secondary : Color.green)
+                            }
+                        }
+                        if let note = BalanceBreakdownText.notYetItemized(b) {
+                            Label(note, systemImage: "exclamationmark.circle")
+                                .font(.aeFootnote).foregroundStyle(.secondary)
+                        } else {
+                            Label("Adds up to your verified balance", systemImage: "checkmark.seal.fill")
+                                .font(.aeFootnote).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Every loaded history row, exact, for the user's own records.
+    private func export() {
+        #if os(macOS)
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "eastsea-activity.csv"
+        panel.allowedContentTypes = [.commaSeparatedText]
+        if panel.runModal() == .OK, let url = panel.url {
+            try? EarningsCSV.activityDocument(model.ownHistoryRows).write(to: url, atomically: true, encoding: .utf8)
+        }
+        #endif
+    }
+}
+
+/// Rewards by day: the count and the exact sum per calendar day, the blocks
+/// underneath. Two and a half thousand proof rewards collapse into one honest
+/// line per day instead of an unbounded feed.
+private struct RewardDaysCard: View {
+    @EnvironmentObject var model: WalletModel
+
+    var body: some View {
+        let days = RewardDays.group(model.rewardHistoryRows)
+        if !days.isEmpty {
+            Card {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Rewards by day").font(.aeHeadline)
+                    Text("What the chain paid, grouped by its own block times. Expand a day for every reward in it.")
+                        .font(.aeFootnote).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    ForEach(days.prefix(14)) { day in
+                        DisclosureGroup {
+                            VStack(spacing: 4) {
+                                ForEach(day.rows, id: \.txHash) { row in
+                                    HStack {
+                                        Text("block #\(row.height)").font(.aeFootnote.monospacedDigit())
+                                        if let time = Timestamp.date(fromMs: row.timestampMs) {
+                                            Text(time.formatted(date: .omitted, time: .shortened))
+                                                .font(.aeFootnote).foregroundStyle(.secondary)
+                                        }
+                                        Spacer(minLength: 8)
+                                        Text("+\(ChainActivity.units(row.valueWei))")
+                                            .font(.aeFootnote.monospacedDigit()).foregroundStyle(.green)
+                                    }
+                                }
+                            }
+                            .padding(.vertical, 4)
+                        } label: {
+                            HStack {
+                                Text(day.day.map { $0.formatted(date: .abbreviated, time: .omitted) } ?? "Time unknown")
+                                    .font(.aeBody.weight(.medium))
+                                Spacer(minLength: 8)
+                                Text("\(day.count) reward\(day.count == 1 ? "" : "s") · +\(ChainActivity.units(day.totalWei)) \(Brand.coinTicker)")
+                                    .font(.aeFootnote.monospacedDigit()).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    if days.count > 14 {
+                        Text("Showing the newest 14 days — load older activity for the rest.")
+                            .font(.aeFootnote).foregroundStyle(.secondary)
+                    }
+                }
             }
         }
     }
@@ -1034,8 +1146,10 @@ private struct ActivityRow: View {
             leading
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.title).font(.aeBody.weight(.medium)).lineLimit(2)
-                Text(item.date, style: .relative).font(.aeFootnote).foregroundStyle(.secondary)
-                    + Text(" ago").font(.aeFootnote).foregroundStyle(.secondary)
+                if item.timeKnown {
+                    Text(item.date, style: .relative).font(.aeFootnote).foregroundStyle(.secondary)
+                        + Text(" ago").font(.aeFootnote).foregroundStyle(.secondary)
+                }
                 if let source = item.source {
                     Text("\(source) · \(ChainActivity.short(item.owner ?? ""))")
                         .font(.aeFootnote).foregroundStyle(.secondary)

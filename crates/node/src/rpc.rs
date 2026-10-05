@@ -459,6 +459,9 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                 // This node's resource state (docs/ops/resource-limits.md):
                 // the disk guard the app shows as "디스크 공간 부족".
                 "resources": crate::resources::monitor().map(|m| m.status_value()).unwrap_or(Value::Null),
+                // The faucet this node runs, when it runs one: wallets label
+                // grants from this address as "faucet" in the balance breakdown.
+                "faucet": st.faucet.as_ref().map(|f| json!(f.address)).unwrap_or(Value::Null),
             }))
         }
         // The next relay nonce a free-lane registration of `operator` must
@@ -655,6 +658,16 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
             let a: Address = param(p, 0)?;
             let limit = p.get(1).and_then(Value::as_u64).unwrap_or(1_000).min(10_000) as usize;
             Ok(json!(chain.recent_rewards(&a, limit)))
+        }
+        // Rewards, paged: `aether_rewards` answers one newest-first array whose
+        // default limit (1,000) once hid the rest of a long history behind a
+        // silent cut. This one hands out pages with a cursor and the total
+        // count, so a wallet can load everything and say "N of M".
+        "aether_rewardsPage" => {
+            let a: Address = param(p, 0)?;
+            let cursor = p.get(1).filter(|v| !v.is_null()).map(|v| v.as_str().ok_or((-32602, "cursor must be a string".to_string()))).transpose()?;
+            let limit = p.get(2).and_then(Value::as_u64).unwrap_or(1_000).min(10_000) as usize;
+            Ok(chain.rewards_page(&a, cursor.as_deref(), limit).map_err(|e| (-32000, e))?)
         }
         "aether_accountHistory" => {
             let address: Address = param(p, 0)?;

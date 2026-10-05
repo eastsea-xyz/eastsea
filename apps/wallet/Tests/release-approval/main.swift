@@ -63,3 +63,47 @@ let emergencyProof = ReleaseProof(manifestSha256: ReleaseApproval.digest(emergen
 assert(decision(emergencyData, emergencySigs, emergencyProof) == .ready,
        "3/3 emergency release can install immediately")
 print("release approval policy: 5 cases passed")
+
+// Checklist B6: what the shipped network.json pins.
+func network(_ fields: [String: Any]) -> Data {
+    (try? JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys])) ?? Data()
+}
+let codeHash = "0x4417ad7040420fe3547cdc3fdcd0fa0a690ba2f65e98af851a5e9fa5589db1ec"
+let releaseLog = "0x0000000000000000000000000000000000007705"
+func pin(_ change: (inout [String: Any]) -> Void = { _ in }) -> [String: Any] {
+    var value: [String: Any] = ["log": releaseLog, "code_hash": codeHash, "builder_keys": publicKeys,
+                                "threshold": 2, "emergency_threshold": 3]
+    change(&value)
+    return value
+}
+let shipped = try Data(contentsOf: URL(fileURLWithPath: "apps/wallet/Resources/network.json"))
+assert(ReleaseTrust.parse(shipped)?.legacy == true, "the shipped 7780 file keeps the legacy Sparkle path")
+assert(ReleaseTrust.parse(network(["chain_id": 7_777]))?.legacy == true, "7777 too")
+assert(ReleaseTrust.parse(network(["chain_id": 9_001])) == nil,
+       "a new chain without a pin has no compiled-in fallback: updates stay off")
+let pinned = ReleaseTrust.parse(network(["chain_id": 9_001, "release": pin()]))
+assert(pinned == ReleaseTrust(chainId: 9_001, logAddress: releaseLog, codeHash: codeHash,
+                              builderKeys: publicKeys, legacy: false), "a valid pin is trusted as written")
+assert(ReleaseTrust.parse(network(["chain_id": 7_780, "release": pin()]))?.legacy == false,
+       "a pin, where present, is enforced even on 7780")
+let flat = network(["chain_id": 9_001, "release_log": releaseLog, "release_log_code_hash": codeHash,
+                        "builder_keys": publicKeys])
+assert(ReleaseTrust.parse(flat) == nil, "only the release object pins (no flat-field fallback)")
+let broken: [(String, [String: Any])] = [
+    ("two keys", pin { $0["builder_keys"] = Array(publicKeys.prefix(2)) }),
+    ("a key twice", pin { $0["builder_keys"] = [publicKeys[0], publicKeys[1], publicKeys[0].uppercased()] }),
+    ("off-curve key", pin { $0["builder_keys"] = [publicKeys[0], publicKeys[1], "04" + String(repeating: "11", count: 64)] }),
+    ("1-of-3", pin { $0["threshold"] = 1 }),
+    ("2-of-3 emergency", pin { $0["emergency_threshold"] = 2 }),
+    ("zero code hash", pin { $0["code_hash"] = "0x" + String(repeating: "0", count: 64) }),
+    ("short code hash", pin { $0["code_hash"] = "0x1234" }),
+    ("bare log", pin { $0["log"] = String(releaseLog.dropFirst(2)) }),
+    ("no keys", pin { $0.removeValue(forKey: "builder_keys") }),
+]
+for (why, value) in broken {
+    assert(ReleaseTrust.parse(network(["chain_id": 9_001, "release": value])) == nil, "refuses \(why)")
+}
+assert(ReleaseTrust.parse(network(["chain_id": 7_780, "release": "yes"])) == nil,
+       "a malformed pin never falls back to the legacy path")
+assert(!ReleaseTrust.missingPin.isEmpty)
+print("release trust pin: \(6 + broken.count + 1) cases passed")

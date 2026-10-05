@@ -48,6 +48,56 @@ enum ReleaseDecision: Equatable {
     case rejected
 }
 
+/// What the app's own network.json says the updater trusts (docs/design/19,
+/// checklist B6). A file with a `release` pin trusts only that ReleaseLog
+/// address, its runtime code hash and those three builder keys under the
+/// 2/3 (emergency 3/3) rule. Only the legacy testnets 7777/7780 — whose file
+/// carries no pin — keep the plain Sparkle path. Anything else, including a
+/// new chain with a missing or malformed pin, yields nil: there is no
+/// compiled-in fallback, so updates stay off (fail closed).
+struct ReleaseTrust: Equatable {
+    let chainId: UInt64
+    let logAddress: String
+    let codeHash: String
+    let builderKeys: [String]
+    /// 7777/7780 without a pin: Sparkle EdDSA only (docs/design/19 "구형 네트워크").
+    let legacy: Bool
+
+    /// Shown when the bundled file pins nothing usable.
+    static let missingPin = "Updates are off: this app has no valid release approval keys."
+    static let threshold = 2
+    static let emergencyThreshold = 3
+
+    static func parse(_ data: Data) -> ReleaseTrust? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let chainId = json["chain_id"] as? UInt64 else { return nil }
+        guard let release = json["release"] else {
+            if chainId == 7_777 || chainId == 7_780 {
+                return ReleaseTrust(chainId: chainId, logAddress: "", codeHash: "", builderKeys: [], legacy: true)
+            }
+            return nil
+        }
+        func hex(_ value: Any?, bytes count: Int) -> String? {
+            guard let text = value as? String, text.hasPrefix("0x"),
+                  ReleaseApproval.bytes(String(text.dropFirst(2)))?.count == count else { return nil }
+            return text
+        }
+        guard let pin = release as? [String: Any],
+              let log = hex(pin["log"], bytes: 20),
+              let codeHash = hex(pin["code_hash"], bytes: 32),
+              ReleaseApproval.bytes(String(codeHash.dropFirst(2)))?.contains(where: { $0 != 0 }) == true,
+              let keys = pin["builder_keys"] as? [String], keys.count == 3,
+              Set(keys.map { $0.lowercased() }).count == 3,
+              keys.allSatisfy({ key in
+                  guard key.lowercased().hasPrefix("04"), let raw = ReleaseApproval.bytes(key), raw.count == 65 else { return false }
+                  return (try? P256.Signing.PublicKey(x963Representation: raw)) != nil
+              }),
+              (pin["threshold"] as? Int) == threshold,
+              (pin["emergency_threshold"] as? Int) == emergencyThreshold else { return nil }
+        return ReleaseTrust(chainId: chainId, logAddress: log, codeHash: codeHash, builderKeys: keys, legacy: false)
+    }
+}
+
 /// Pure installation policy. The caller must hash the actual archive bytes it
 /// downloaded and bind Sparkle's appcast signature to the signed manifest.
 enum ReleaseApproval {

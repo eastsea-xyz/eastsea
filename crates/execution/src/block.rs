@@ -11,7 +11,7 @@
 use crate::fees::{
     settle, FeePolicy, Settlement, EVENT_BASE_BYTES, FEE_COLLECTOR, MAX_NEW_SLOTS_PER_BLOCK,
     MAX_PERSISTENT_BYTES_PER_BLOCK, MAX_STATE_UNITS_PER_BLOCK, PROVER_ESCROW,
-    RECEIPT_BASE_BYTES, RECEIPT_BYTES_PER_STATE_UNIT, STATE_ACCOUNT_UNITS, STATE_SLOT_UNITS, STATE_UNIT_PRICE,
+    RECEIPT_BASE_BYTES, RECEIPT_BYTES_PER_STATE_UNIT, STATE_ACCOUNT_UNITS, STATE_SLOT_UNITS,
 };
 use crate::parallel::Scheduler;
 use crate::tx::{tx_hash, validate_stateless, EvmCall};
@@ -208,7 +208,14 @@ pub(crate) struct TxRun {
 
 /// The legacy state limit was unused and always unlimited. The node replaces
 /// it with this finite consensus limit only for a new-genesis configuration.
-fn state_growth_enabled(ctx: &BlockContext) -> bool { ctx.limits.state == MAX_STATE_UNITS_PER_BLOCK }
+fn state_growth_enabled(ctx: &BlockContext) -> bool { ctx.limits.state <= MAX_STATE_UNITS_PER_BLOCK }
+
+fn state_price(ctx: &BlockContext) -> u128 {
+    // A new-genesis context carries remaining burst capacity even when the
+    // execution/proving fee switch is off. Never waive the state surcharge.
+    let floor = crate::fees::state_base_fee(MAX_STATE_UNITS_PER_BLOCK.saturating_sub(ctx.limits.state));
+    ctx.fees.map_or(floor, |fees| fees.base.state.max(floor))
+}
 
 /// Count the committed difference, including constructor writes, rather than
 /// SSTORE opcodes. A set-then-clear, revert, or destroyed account adds nothing.
@@ -370,7 +377,7 @@ pub(crate) fn run_validated(state: &WorldState, ctx: &BlockContext, tx: &TxEnvel
     if new_slots > MAX_NEW_SLOTS_PER_BLOCK {
         return Err(format!("new storage slots {new_slots} exceed transaction limit {MAX_NEW_SLOTS_PER_BLOCK}"));
     }
-    let state_fee = U256::from(state_gas) * U256::from(if state_enabled { STATE_UNIT_PRICE } else { 0 });
+    let state_fee = U256::from(state_gas) * U256::from(if state_enabled { state_price(ctx) } else { 0 });
     let prove_fee = match &ctx.fees {
         Some(f) => settle_prove(&mut changes, f, tx, prove_gas, prove_reserve),
         None => U256::ZERO,
@@ -409,13 +416,16 @@ fn check_budget(state: &WorldState, ctx: &BlockContext, tx: &TxEnvelope, call: &
         U256::from(tx.header.gas.prove) * U256::from(f.base.prove)
     } else { U256::ZERO };
     let growth = if state_growth_enabled(ctx) {
-        if tx.header.gas.state > ctx.limits.state {
+        // The signed budget can exceed today's remaining capacity: only the
+        // actual committed usage consumes it. Wallet estimates remain valid.
+        if tx.header.gas.state > MAX_STATE_UNITS_PER_BLOCK {
             return Err("transaction state budget exceeds block limit".into());
         }
-        if tx.header.gas.state > 0 && tx.header.max_fee.state < STATE_UNIT_PRICE {
-            return Err("state fee cap below the fixed state price".into());
+        let price = state_price(ctx);
+        if tx.header.gas.state > 0 && tx.header.max_fee.state < price {
+            return Err("state fee cap below the state base price".into());
         }
-        U256::from(tx.header.gas.state) * U256::from(STATE_UNIT_PRICE)
+        U256::from(tx.header.gas.state) * U256::from(price)
     } else { U256::ZERO };
     let need = U256::from(call.gas_limit) * U256::from(tx.header.max_fee.exec) + prove + growth;
     match need.checked_add(call.value) {
@@ -494,7 +504,7 @@ fn record_bal(bal: &mut BalBuilder, pre: &WorldState, index: u32, changes: &revm
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Acc {
     bal: BalBuilder,
     receipts: Vec<Receipt>,
@@ -523,7 +533,10 @@ impl Acc {
         let mut settlement = match &ctx.fees {
             Some(f) => {
                 let pre = [FEE_COLLECTOR, f.proposer, PROVER_ESCROW].map(|a| (a, state.balance(&a)));
-                let s = settle(&mut state, f, self.prove_fees);
+                let fee_bal_before = [FEE_COLLECTOR, f.proposer, PROVER_ESCROW]
+                    .map(|a| self.bal.account_accesses(a));
+                let mut s = settle(&mut state, f, self.prove_fees);
+                s.fee_bal_before = fee_bal_before;
                 for (a, before) in pre {
                     if state.balance(&a) != before {
                         self.bal.touch_account(a);
@@ -542,6 +555,46 @@ impl Acc {
 /// Proposer: execute candidates in order, keep the valid ones that fit the limits.
 pub fn build_block(pre: &WorldState, ctx: &BlockContext, candidates: Vec<TxEnvelope>) -> (Vec<TxEnvelope>, BlockOutcome) {
     build_block_with(pre, ctx, candidates, true)
+}
+
+/// Proposer selection with an additional budget check on each tentative block.
+/// The callback sees the exact settled outcome, while accepted candidates keep
+/// their unsettled state for the next transaction. Rejected candidates cannot
+/// advance nonces, spend balances or contribute accesses to the final block.
+pub fn build_block_filtered(
+    pre: &WorldState,
+    ctx: &BlockContext,
+    candidates: Vec<TxEnvelope>,
+    mut accept: impl FnMut(&[TxEnvelope], &BlockOutcome) -> bool,
+) -> (Vec<TxEnvelope>, BlockOutcome) {
+    let mut state = pre.clone();
+    state.clear_journal();
+    let (mut acc, mut included) = (Acc::default(), Vec::new());
+    let mut sched = Scheduler::new(pre, ctx, &candidates, true);
+    for (i, tx) in candidates.into_iter().enumerate() {
+        let Ok(run) = sched.run(i, &state, ctx, &tx) else { continue };
+        if !matches!(acc.total.checked_add(run.gas), Some(t) if t.fits(&ctx.limits)) { continue; }
+        if state_growth_enabled(ctx) && (
+            acc.new_slots.checked_add(run.new_slots).is_none_or(|n| n > MAX_NEW_SLOTS_PER_BLOCK)
+            || acc.persistent_bytes.checked_add(run.persistent_bytes).is_none_or(|n| n > MAX_PERSISTENT_BYTES_PER_BLOCK)
+        ) { continue; }
+
+        // Invalidate speculative reads before consuming `run`. A rejected
+        // candidate only causes conservative re-execution of later candidates.
+        sched.committing(&state, &run.changes);
+        let mut next_state = state.clone();
+        let mut next_acc = acc.clone();
+        if next_acc.apply(&mut next_state, run).is_err() { continue; }
+        let preview = next_acc.clone().finish(next_state.clone(), ctx);
+        included.push(tx);
+        if accept(&included, &preview) {
+            state = next_state;
+            acc = next_acc;
+        } else {
+            included.pop();
+        }
+    }
+    (included, acc.finish(state, ctx))
 }
 
 /// `build_block` without speculation (reference for differential tests).
@@ -590,6 +643,65 @@ pub fn can_append(post: &WorldState, ctx: &BlockContext, used: GasVector, used_n
         ))
 }
 
+/// Incremental FOCIL archive-budget preview, executing only the appended tx.
+/// `post` is the settled state; its preceding settlement is reversed before
+/// execution so contracts observe the prospective block's unsettled balances.
+/// Fee-recipient senders remain excluded exactly as in `can_append`.
+/// `previous.settlement` must be the actual execution settlement. The preview
+/// extends its gas, receipts and BAL without replaying the preceding txs.
+pub fn append_block_preview(
+    post: &WorldState,
+    ctx: &BlockContext,
+    previous: &BlockOutcome,
+    tx: &TxEnvelope,
+) -> Option<BlockOutcome> {
+    let mut state = post.clone();
+    if let Some(f) = &ctx.fees {
+        if [f.proposer, PROVER_ESCROW, FEE_COLLECTOR].contains(&tx.header.sender) { return None; }
+        // Restore both balances and existence, including aliased recipients.
+        // Balance-only reversal would leave a newly created empty escrow and
+        // undercharge a subsequent transfer that creates that account.
+        for (address, before) in [FEE_COLLECTOR, f.proposer, PROVER_ESCROW]
+            .into_iter().zip(previous.settlement.fee_accounts_before)
+        {
+            state.restore_account(address, before).ok()?;
+        }
+    }
+    let run = run_tx(&state, ctx, tx).ok()?;
+    if !matches!(previous.gas.checked_add(run.gas), Some(t) if t.fits(&ctx.limits)) { return None; }
+    if state_growth_enabled(ctx) && (
+        previous.new_slots.checked_add(run.new_slots).is_none_or(|n| n > MAX_NEW_SLOTS_PER_BLOCK)
+        || previous.persistent_bytes.checked_add(run.persistent_bytes).is_none_or(|n| n > MAX_PERSISTENT_BYTES_PER_BLOCK)
+    ) { return None; }
+
+    let mut bal = BalBuilder::default();
+    for account in &previous.bal.accounts {
+        let (present, balance_touched) = ctx.fees.and_then(|f| {
+            [FEE_COLLECTOR, f.proposer, PROVER_ESCROW].into_iter()
+                .position(|a| a == account.address)
+                .map(|i| previous.settlement.fee_bal_before[i])
+        }).unwrap_or((true, account.balance_touched));
+        if !present { continue; }
+        bal.touch_account(account.address);
+        for key in &account.reads { bal.read(account.address, *key); }
+        for (key, index) in &account.writes { bal.write(account.address, *key, *index); }
+        if balance_touched { bal.balance(account.address); }
+        if account.nonce_touched { bal.nonce(account.address); }
+        if account.code_touched { bal.code(account.address); }
+    }
+    let mut acc = Acc {
+        bal,
+        receipts: previous.receipts.clone(),
+        total: previous.gas,
+        prove_fees: previous.settlement.prove_fees,
+        state_fees: previous.settlement.burned_state,
+        new_slots: previous.new_slots,
+        persistent_bytes: previous.persistent_bytes,
+    };
+    acc.apply(&mut state, run).ok()?;
+    Some(acc.finish(state, ctx))
+}
+
 /// Validator: every tx must be valid and the whole block must fit the limits.
 pub fn execute_block(pre: &WorldState, ctx: &BlockContext, txs: &[TxEnvelope]) -> Result<BlockOutcome, ExecError> {
     execute_block_with(pre, ctx, txs, true)
@@ -626,6 +738,167 @@ fn execute_block_with(pre: &WorldState, ctx: &BlockContext, txs: &[TxEnvelope], 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aether_crypto::{P256Signer, Signer};
+    use aether_types::FeeVector;
+
+    fn preview_context(proposer: Address) -> BlockContext {
+        BlockContext {
+            chain_id: 7_781,
+            number: 1,
+            timestamp: 1,
+            beneficiary: FEE_COLLECTOR,
+            limits: GasVector { exec: 30_000_000, state: MAX_STATE_UNITS_PER_BLOCK, prove: 200_000_000 },
+            fees: Some(FeePolicy {
+                base: FeeVector { exec: 3, state: crate::fees::STATE_UNIT_PRICE, prove: 5 },
+                proposer,
+            }),
+        }
+    }
+
+    fn preview_tx(signer: &P256Signer, ctx: &BlockContext, nonce: u64, to: Address) -> TxEnvelope {
+        let call = EvmCall {
+            to: Some(to), value: U256::from(11), input: Bytes::new(), gas_limit: 100_000, delegate: None,
+        };
+        let mut tx = crate::tx::sign_call_with(
+            signer, ctx.chain_id, nonce,
+            FeeVector { exec: 5, state: crate::fees::STATE_UNIT_PRICE, prove: 5 }, 2, &call,
+        ).unwrap();
+        tx.header.gas.state = 10_000;
+        let mut signature = signer.sign(&tx.signing_bytes()).unwrap();
+        signature.extend_from_slice(&signer.public_key().bytes);
+        tx.signature = Bytes::from(signature);
+        tx
+    }
+
+    fn assert_same_outcome(actual: &BlockOutcome, expected: &BlockOutcome) {
+        assert_eq!(actual.state.root(), expected.state.root());
+        assert_eq!(actual.bal, expected.bal);
+        assert_eq!(actual.receipts, expected.receipts);
+        assert_eq!(actual.gas, expected.gas);
+        assert_eq!(actual.new_slots, expected.new_slots);
+        assert_eq!(actual.persistent_bytes, expected.persistent_bytes);
+        assert_eq!(actual.settlement, expected.settlement);
+    }
+
+    #[test]
+    fn filtered_previews_match_execution_and_rejection_preserves_nonce() {
+        let signer = P256Signer::from_seed(&[42; 32]).unwrap();
+        let sender = aether_crypto::address_of(&signer.public_key()).unwrap();
+        let proposer = Address::repeat_byte(0xbe);
+        let receiver = Address::repeat_byte(0x44);
+        let writer = Address::repeat_byte(0x77);
+        let ctx = preview_context(proposer);
+        let mut pre = WorldState::default();
+        pre.set_balance(sender, U256::from(10u128.pow(21))).unwrap();
+        // Rejected candidate would add a contract account and a storage key.
+        pre.set_code(writer, Bytes::from_static(&[0x60, 0x01, 0x60, 0x00, 0x55, 0x00])).unwrap();
+        let first = preview_tx(&signer, &ctx, 0, receiver);
+        let rejected = preview_tx(&signer, &ctx, 1, writer);
+        let replacement = preview_tx(&signer, &ctx, 1, receiver);
+        let last = preview_tx(&signer, &ctx, 2, receiver);
+        let bal_cap = execute_block(&pre, &ctx, std::slice::from_ref(&first)).unwrap().bal.to_canonical_bytes().len();
+        let candidates = vec![first.clone(), rejected, replacement.clone(), last.clone()];
+        let mut previews = 0;
+        let (included, outcome) = build_block_filtered(&pre, &ctx, candidates, |txs, preview| {
+            previews += 1;
+            assert_same_outcome(preview, &execute_block(&pre, &ctx, txs).unwrap());
+            preview.bal.to_canonical_bytes().len() <= bal_cap
+        });
+        assert_eq!(previews, 4);
+        assert_eq!(included, vec![first, replacement, last]);
+        assert_eq!(outcome.state.nonce(&sender), 3);
+        assert_same_outcome(&outcome, &execute_block(&pre, &ctx, &included).unwrap());
+        assert_same_outcome(&outcome, &build_block(&pre, &ctx, included).1);
+    }
+
+    #[test]
+    fn append_preview_matches_full_block_with_fee_balance_reads_and_aliases() {
+        let signer = P256Signer::from_seed(&[43; 32]).unwrap();
+        let sender = aether_crypto::address_of(&signer.public_key()).unwrap();
+        let reader = Address::repeat_byte(0x78);
+        for proposer in [Address::repeat_byte(0xbe), PROVER_ESCROW, FEE_COLLECTOR] {
+            let ctx = preview_context(proposer);
+            let mut pre = WorldState::default();
+            pre.set_balance(sender, U256::from(10u128.pow(21))).unwrap();
+            pre.set_balance(proposer, U256::from(17)).unwrap();
+            // Store the proposer's BALANCE; observing settled credits here
+            // instead of the in-block balance would produce a different root.
+            let mut code = vec![0x73];
+            code.extend_from_slice(proposer.as_slice());
+            code.extend_from_slice(&[0x31, 0x60, 0x00, 0x55, 0x00]);
+            pre.set_code(reader, Bytes::from(code)).unwrap();
+            // A direct payment to the collector is part of the settlement's
+            // actual tips, independently of receipt-derived priority fees.
+            let first = preview_tx(&signer, &ctx, 0, FEE_COLLECTOR);
+            let second = preview_tx(&signer, &ctx, 1, reader);
+            let previous = execute_block(&pre, &ctx, std::slice::from_ref(&first)).unwrap();
+            let preview = append_block_preview(&previous.state, &ctx, &previous, &second).unwrap();
+            assert_same_outcome(&preview, &execute_block(&pre, &ctx, &[first.clone(), second]).unwrap());
+            let escrow_payment = preview_tx(&signer, &ctx, 1, PROVER_ESCROW);
+            let preview = append_block_preview(&previous.state, &ctx, &previous, &escrow_payment).unwrap();
+            assert_same_outcome(&preview, &execute_block(&pre, &ctx, &[first, escrow_payment]).unwrap());
+        }
+    }
+
+    #[test]
+    fn append_preview_removes_settlement_only_bal_touches_when_tips_are_drained() {
+        let signer = P256Signer::from_seed(&[45; 32]).unwrap();
+        let sender = aether_crypto::address_of(&signer.public_key()).unwrap();
+        let proposer = Address::repeat_byte(0xbe);
+        let receiver = Address::repeat_byte(0x46);
+        let drain_receiver = Address::repeat_byte(0x47);
+        let ctx = preview_context(proposer);
+        let mut pre = WorldState::default();
+        pre.set_balance(sender, U256::from(10u128.pow(21))).unwrap();
+        let mut drain = vec![0x73];
+        drain.extend_from_slice(drain_receiver.as_slice());
+        drain.push(0xff); // SELFDESTRUCT transfers the collector's whole balance.
+        pre.set_code(FEE_COLLECTOR, Bytes::from(drain)).unwrap();
+        let first = preview_tx(&signer, &ctx, 0, receiver);
+        let previous = execute_block(&pre, &ctx, std::slice::from_ref(&first)).unwrap();
+        assert!(previous.bal.accounts.iter().any(|a| a.address == proposer));
+        assert_eq!(previous.settlement.fee_bal_before[1], (false, false));
+
+        let mut appended = preview_tx(&signer, &ctx, 1, FEE_COLLECTOR);
+        appended.header.max_fee.exec = ctx.fees.unwrap().base.exec;
+        appended.header.tip = 0;
+        let mut signature = signer.sign(&appended.signing_bytes()).unwrap();
+        signature.extend_from_slice(&signer.public_key().bytes);
+        appended.signature = Bytes::from(signature);
+        let preview = append_block_preview(&previous.state, &ctx, &previous, &appended).unwrap();
+        let expected = execute_block(&pre, &ctx, &[first, appended]).unwrap();
+        assert!(!expected.bal.accounts.iter().any(|a| a.address == proposer));
+        assert!(expected.settlement.tips.is_zero());
+        assert_same_outcome(&preview, &expected);
+    }
+
+    #[test]
+    fn append_preview_enforces_cumulative_limits_and_system_sender_exclusion() {
+        let signer = P256Signer::from_seed(&[44; 32]).unwrap();
+        let sender = aether_crypto::address_of(&signer.public_key()).unwrap();
+        let ctx = preview_context(sender);
+        let mut pre = WorldState::default();
+        pre.set_balance(sender, U256::from(10u128.pow(21))).unwrap();
+        let tx = preview_tx(&signer, &ctx, 0, Address::repeat_byte(0x45));
+        let previous = execute_block(&pre, &ctx, &[]).unwrap();
+        assert!(append_block_preview(&previous.state, &ctx, &previous, &tx).is_none());
+
+        let ctx = preview_context(Address::repeat_byte(0xbe));
+        let previous = execute_block(&pre, &ctx, &[]).unwrap();
+        assert!(append_block_preview(&previous.state, &ctx, &previous, &tx).is_some());
+        let mut bounded = previous.clone();
+        bounded.gas.exec = ctx.limits.exec;
+        assert!(append_block_preview(&bounded.state, &ctx, &bounded, &tx).is_none());
+        bounded = previous.clone();
+        bounded.gas.state = ctx.limits.state;
+        assert!(append_block_preview(&bounded.state, &ctx, &bounded, &tx).is_none());
+        bounded = previous.clone();
+        bounded.new_slots = MAX_NEW_SLOTS_PER_BLOCK + 1;
+        assert!(append_block_preview(&bounded.state, &ctx, &bounded, &tx).is_none());
+        bounded = previous;
+        bounded.persistent_bytes = MAX_PERSISTENT_BYTES_PER_BLOCK;
+        assert!(append_block_preview(&bounded.state, &ctx, &bounded, &tx).is_none());
+    }
 
     #[test]
     fn new_nonce_only_sender_is_charged_as_an_account() {

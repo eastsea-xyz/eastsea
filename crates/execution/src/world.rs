@@ -274,6 +274,16 @@ impl WorldState {
         Ok(())
     }
 
+    /// Restore only the account header changed by fee settlement. A missing
+    /// header must remain missing for account-growth and EXTCODEHASH checks.
+    pub(crate) fn restore_account(&mut self, a: Address, before: Option<BasicData>) -> Result<(), StateError> {
+        let value = before.map(|data| data.encode()).transpose()
+            .map_err(|_| StateError::BalanceOverflow(a))?;
+        let key = basic_data_key(self.h(), &a);
+        self.write(vec![(key, value)]);
+        Ok(())
+    }
+
     /// Apply revm's post-transaction account changes to the tree.
     pub(crate) fn commit(&mut self, changes: &revm::state::EvmState) -> Result<(), StateError> {
         #[allow(clippy::clone_on_copy)] // Copy for BLAKE3, not for Poseidon2 (measurement feature)

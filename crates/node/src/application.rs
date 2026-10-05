@@ -139,7 +139,7 @@ where
         let cfg = self.chain.cfg();
         let skeleton = Block::new(context.clone(), parent_block.digest(), height, ts, bytes::Bytes::new());
         let ctx = Chain::block_context(&cfg, &skeleton, &parent);
-        let extras = Extras {
+        let mut extras = Extras {
             handoff: self.chain.handoff_for(&parent),
             seed: self.chain.seed_for(&parent),
             upgrade: self.chain.upgrade_for(&parent),
@@ -148,6 +148,10 @@ where
             group: cfg.group,
             registrations: self.chain.registrations_for(&parent),
         };
+        let saving_for_control = extras.fit_archive_budget(&parent, cfg.node_rewards || cfg.history_v2);
+        if saving_for_control {
+            warn!(height = %height, "deferring control payload until archive budget refills");
+        }
         // Under the parent's next protocol, with its one-time changes if it activates here.
         let attempt = self.chain.pre_state_with(&parent, parent.next_protocol(), &extras.proofs, &extras.beacons, &extras.registrations, extras.seed.as_ref(), false);
         let mut extras = extras;
@@ -176,7 +180,13 @@ where
                 return None;
             }
         };
-        let (payload, mut out) = build_payload(&parent, &pre, &ctx, self.chain.mempool_candidates(), extras);
+        let candidates = if saving_for_control { vec![] } else { self.chain.mempool_candidates() };
+        let (payload, mut out) = build_payload(&parent, &pre, &ctx, candidates, extras);
+        if (cfg.node_rewards || cfg.history_v2)
+            && payload.to_bytes().len() as u64 > crate::chain::payload_archive_limit(&parent, &payload) {
+            warn!(height = %height, "empty/control payload exceeds archive budget; not proposing");
+            return None;
+        }
         let statement = if crate::chain::records_statement(&cfg, &payload) { crate::chain::statement(&ctx, &payload.txs, &pre, &out) } else { [0; 32] };
         crate::chain::with_activation(&pre, &mut out);
         drop(pre);
@@ -237,7 +247,8 @@ where
                 }
                 // FOCIL: refuse to notarize a block that censors listed txs.
                 let ctx = Chain::block_context(&self.chain.cfg(), &block, &parent);
-                let missing = self.chain.inclusion_violations(&exec, &ctx, std::time::Instant::now());
+                let payload = block.payload().expect("executed canonical payload");
+                let missing = self.chain.inclusion_violations_in_payload(&exec, &ctx, std::time::Instant::now(), &parent, &payload);
                 if !missing.is_empty() {
                     warn!(height = %block.height(), missing = missing.len(), first = %missing[0], "inclusion list violated; not voting");
                     return false;

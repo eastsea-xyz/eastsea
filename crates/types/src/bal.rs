@@ -66,12 +66,12 @@ impl BlockAccessList {
 }
 
 /// Collects accesses during execution and produces a canonical BAL.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct BalBuilder {
     accounts: BTreeMap<Address, Acc>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Acc {
     reads: BTreeSet<StorageKey>,
     writes: BTreeMap<StorageKey, TxIndex>,
@@ -81,6 +81,12 @@ struct Acc {
 }
 
 impl BalBuilder {
+    /// Account presence and balance access before protocol settlement adds
+    /// its own touches. Used to restore a block's execution-only accesses.
+    pub fn account_accesses(&self, a: Address) -> (bool, bool) {
+        self.accounts.get(&a).map_or((false, false), |acc| (true, acc.balance))
+    }
+
     pub fn touch_account(&mut self, a: Address) {
         self.accounts.entry(a).or_default();
     }

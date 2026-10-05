@@ -32,6 +32,8 @@ pub const RESUME_AFTER: Duration = Duration::from_secs(5 * 60);
 
 /// Free space that must return before disk-guarded writes resume (min + this).
 pub const DISK_RESUME: u64 = 2 * GB;
+/// Warn wallets before the hard participation floor is reached.
+pub const DISK_WARN_AHEAD: u64 = 3 * GB;
 
 /// How often the watchdog samples the system.
 const CHECK: Duration = Duration::from_secs(2);
@@ -433,10 +435,17 @@ pub fn on_battery() -> bool {
 #[cfg(unix)]
 pub fn free_disk(dir: &Path) -> Option<u64> {
     use std::os::unix::ffi::OsStrExt;
-    let path = std::ffi::CString::new(dir.as_os_str().as_bytes()).ok()?;
-    let mut st: libc::statfs = unsafe { std::mem::zeroed() };
-    let ok = unsafe { libc::statfs(path.as_ptr(), &mut st) } == 0;
-    ok.then(|| st.f_bavail as u64 * st.f_bsize as u64)
+    // The data directory may not exist yet when the initial sample runs.
+    // Its nearest existing ancestor is on the volume the directory will use.
+    let absolute = if dir.is_absolute() { dir.to_path_buf() } else { std::env::current_dir().ok()?.join(dir) };
+    for ancestor in absolute.ancestors() {
+        let path = std::ffi::CString::new(ancestor.as_os_str().as_bytes()).ok()?;
+        let mut st: libc::statfs = unsafe { std::mem::zeroed() };
+        if unsafe { libc::statfs(path.as_ptr(), &mut st) } == 0 {
+            return Some(st.f_bavail as u64 * st.f_bsize as u64);
+        }
+    }
+    None
 }
 
 #[cfg(not(unix))]
@@ -483,8 +492,8 @@ pub struct Limits {
     pub prover_on_battery: bool,
     /// Budget for this node's own in-memory history caches (summaries, receipts).
     pub max_memory: u64,
-    /// Free-space floor for the data volume: below it no new era files or
-    /// shards are written and proving pauses. 0 disables the guard.
+    /// Free-space floor for the data volume: below it consensus participation,
+    /// finalized commits, new era/shard files, and proving pause. 0 disables the guard.
     pub min_free_disk: u64,
 }
 
@@ -541,6 +550,7 @@ pub struct Sample {
 struct State {
     free_disk: Option<u64>,
     disk_low: bool,
+    disk_warned: bool,
     pressure: Option<u8>,
     battery: bool,
     swap_permille: Option<u16>,
@@ -564,14 +574,27 @@ impl Monitor {
     /// logged here, once each. `now` is a parameter so tests can move time.
     pub fn apply(&self, s: Sample, now: Instant) {
         let mut st = self.state.lock().expect("resource state");
+        if s.free_disk.is_none() && self.limits.min_free_disk > 0 && st.free_disk.is_some() {
+            tracing::error!("data volume free space could not be measured; pausing writes");
+        }
+        st.free_disk = s.free_disk;
+        if s.free_disk.is_none() && self.limits.min_free_disk > 0 {
+            st.disk_low = true;
+            st.disk_warned = false;
+        }
         if let Some(free) = s.free_disk {
-            st.free_disk = Some(free);
+            let warning = self.limits.min_free_disk > 0
+                && free < self.limits.min_free_disk.saturating_add(DISK_WARN_AHEAD);
+            if warning && !st.disk_warned {
+                tracing::warn!(free, floor = self.limits.min_free_disk, "disk almost full: free space is approaching the node's write floor");
+            }
+            st.disk_warned = warning;
             if self.limits.min_free_disk > 0 && free < self.limits.min_free_disk && !st.disk_low {
                 st.disk_low = true;
-                tracing::warn!(free, min = self.limits.min_free_disk, "disk below the free-space floor: writing no new era files or shards, proving paused");
-            } else if free >= self.limits.min_free_disk + DISK_RESUME && st.disk_low {
+                tracing::warn!(free, min = self.limits.min_free_disk, "disk almost full: consensus participation, finalized commits, history writes and proving paused");
+            } else if free >= self.limits.min_free_disk.saturating_add(DISK_RESUME) && st.disk_low {
                 st.disk_low = false;
-                tracing::info!(free, "disk above the floor again: history writes and proving resume");
+                tracing::info!(free, "disk space recovered: consensus participation, finalized commits, history writes and proving resume");
             }
         }
         if s.pressure.is_some() {
@@ -618,9 +641,14 @@ impl Monitor {
         }
     }
 
-    /// Whether new era/shard files may be written.
+    /// Whether the data volume is below its configured free-space floor.
     pub fn disk_low(&self) -> bool {
-        self.state.lock().expect("resource state").disk_low
+        let st = self.state.lock().expect("resource state");
+        self.limits.min_free_disk > 0 && (st.disk_low || st.free_disk.is_none())
+    }
+
+    pub fn disk_warned(&self) -> bool {
+        self.state.lock().expect("resource state").disk_warned
     }
 
     /// Why proving is paused system-wide (None: it may run).
@@ -636,10 +664,17 @@ impl Monitor {
     /// The `aether_status` view of this node's resources.
     pub fn status_value(&self) -> Value {
         let st = self.state.lock().expect("resource state");
+        let paused = self.limits.min_free_disk > 0 && (st.disk_low || st.free_disk.is_none());
         json!({
             "disk_free": st.free_disk,
-            "disk_low": st.disk_low,
+            // The shipping wallet reads disk_low to show its disk warning.
+            // Raise it at the early warning threshold, before writes pause.
+            "disk_low": paused || st.disk_warned,
+            "disk_paused": paused,
+            "disk_status": if st.free_disk.is_none() { "unknown" } else if st.disk_low { "paused" } else if st.disk_warned { "almost_full" } else { "ok" },
+            "disk_almost_full": st.disk_warned,
             "min_free_disk": self.limits.min_free_disk,
+            "resume_free_disk": self.limits.min_free_disk.saturating_add(DISK_RESUME),
             "proving_paused": st.proving,
         })
     }
@@ -656,6 +691,10 @@ impl Monitor {
                 battery: on_battery(),
                 swap_permille: swap_usage().map(|(used, total)| if total > 0 { (used * 1000 / total) as u16 } else { 0 }),
             }, Instant::now());
+            if self.disk_low() {
+                tracing::error!("disk write floor reached: stopping node child before journal and archive writes; supervisor will resume when space returns");
+                std::process::exit(crate::supervisor::EXIT_DISK_LOW);
+            }
             {
                 let mut st = self.state.lock().expect("resource state");
                 if st.footprint_logged.is_none_or(|t| t.elapsed() >= FOOTPRINT_EVERY) {
@@ -677,6 +716,13 @@ static MONITOR: RwLock<Option<Arc<Monitor>>> = RwLock::new(None);
 /// follow commands each call it once, before the chain opens.
 pub fn install(limits: Limits, dir: impl Into<PathBuf>) -> Arc<Monitor> {
     let m = Arc::new(Monitor { limits, dir: dir.into(), state: Mutex::new(State::default()) });
+    // Chain and marshal open immediately after install. Sample synchronously so
+    // they cannot begin writing during the watchdog's first scheduling delay.
+    m.apply(Sample { free_disk: free_disk(&m.dir), ..Default::default() }, Instant::now());
+    if m.disk_low() {
+        tracing::error!("disk write floor reached before startup: stopping child until supervisor sees free space");
+        std::process::exit(crate::supervisor::EXIT_DISK_LOW);
+    }
     *MONITOR.write().expect("resource monitor") = Some(m.clone());
     let watchdog = m.clone();
     std::thread::Builder::new()
@@ -691,14 +737,28 @@ pub fn monitor() -> Option<Arc<Monitor>> {
     MONITOR.read().expect("resource monitor").clone()
 }
 
-/// Whether new history/shard files may be written (no monitor: always).
+/// Whether new writes on the data volume may begin (no monitor: always).
 pub fn disk_ok() -> bool {
-    monitor().is_none_or(|m| !m.disk_low())
+    monitor().is_none_or(|m| {
+        // A decision to vote or commit must see fresh space, even if another
+        // process filled the volume between the watchdog's two-second samples.
+        let free = free_disk(&m.dir);
+        if free.is_none() && m.limits.min_free_disk > 0 { return false; }
+        let battery = m.state.lock().expect("resource state").battery;
+        m.apply(Sample { free_disk: free, battery, ..Default::default() }, Instant::now());
+        !m.disk_low()
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_new_relative_data_dir_still_has_a_measurable_volume() {
+        assert!(free_disk(Path::new("new-node-that-does-not-exist")).is_some_and(|bytes| bytes > 0));
+    }
 
     #[test]
     fn snapshots_use_a_quarter_of_free_memory_and_the_configured_cap() {
@@ -795,16 +855,30 @@ mod tests {
     fn the_disk_guard_trips_and_resumes_with_hysteresis() {
         let m = monitor_with(Limits { min_free_disk: 5 * GB, ..Limits::default() });
         let now = Instant::now();
+        assert!(m.disk_low(), "unknown initial disk space fails closed");
+        m.apply(Sample { free_disk: Some(6 * GB), ..Default::default() }, now);
+        assert!(m.disk_warned(), "wallet gets an early warning before the write floor");
+        assert_eq!(m.status_value()["disk_low"], true);
+        assert_eq!(m.status_value()["disk_paused"], false);
         assert!(!m.disk_low());
         m.apply(Sample { free_disk: Some(5 * GB - 1), ..Default::default() }, now);
         assert!(m.disk_low(), "below the floor: no new history files");
+        assert_eq!(m.status_value()["disk_status"], "paused");
+        assert_eq!(m.status_value()["disk_paused"], true);
+        assert_eq!(m.status_value()["resume_free_disk"], 7 * GB);
         assert_eq!(m.proving_pause(), Some("disk"));
         m.apply(Sample { free_disk: Some(6 * GB), ..Default::default() }, now);
         assert!(m.disk_low(), "above the floor but below floor+2 GB: still holding");
         assert_eq!(m.proving_pause(), Some("disk"));
         m.apply(Sample { free_disk: Some(7 * GB), ..Default::default() }, now);
         assert!(!m.disk_low(), "floor + 2 GB: writes resume");
+        assert_eq!(m.status_value()["disk_status"], "almost_full", "warning remains until the extra margin returns");
+        m.apply(Sample { free_disk: Some(8 * GB), ..Default::default() }, now);
+        assert_eq!(m.status_value()["disk_status"], "ok");
         assert_eq!(m.proving_pause(), None, "and proving is no longer paused for the disk");
+        m.apply(Sample::default(), now);
+        assert!(m.disk_low(), "a failed volume measurement pauses writes");
+        assert_eq!(m.status_value()["disk_status"], "unknown");
         // A guard turned off (0) never trips.
         let off = monitor_with(Limits { min_free_disk: 0, ..Limits::default() });
         off.apply(Sample { free_disk: Some(0), ..Default::default() }, now);
@@ -813,7 +887,9 @@ mod tests {
 
     #[test]
     fn proving_pauses_immediately_and_resumes_after_five_normal_minutes() {
-        let m = monitor_with(Limits::default());
+        // This test isolates memory/battery behavior; unknown disk readings
+        // now fail closed when the disk guard is enabled.
+        let m = monitor_with(Limits { min_free_disk: 0, ..Limits::default() });
         let t0 = Instant::now();
         m.apply(Sample { pressure: Some(PRESSURE_WARN), ..Default::default() }, t0);
         assert_eq!(m.proving_pause(), Some("pressure"));
@@ -823,7 +899,7 @@ mod tests {
         // Battery alone pauses unless allowed.
         m.apply(Sample { pressure: Some(PRESSURE_NORMAL), swap_permille: Some(0), battery: true, ..Default::default() }, t0);
         assert_eq!(m.proving_pause(), Some("battery"));
-        let allowed = monitor_with(Limits { prover_on_battery: true, ..Limits::default() });
+        let allowed = monitor_with(Limits { prover_on_battery: true, min_free_disk: 0, ..Limits::default() });
         allowed.apply(Sample { battery: true, ..Default::default() }, t0);
         assert_eq!(allowed.proving_pause(), None);
         // Normal again: only after five uninterrupted minutes does proving

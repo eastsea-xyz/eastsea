@@ -30,6 +30,12 @@ use tracing::{info, warn};
 /// How far behind the network a node jumps to a certified snapshot instead of
 /// replaying (~30 min of 1 s blocks).
 pub const JUMP_BEHIND: u64 = 2_000;
+/// A follower that cannot make verified progress for this long gives its
+/// supervisor a chance to rebuild the transport. This also covers a peer
+/// connection that never returns a height after a restart.
+const STALL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// Restartable follower failure (unlike storage, identity or protocol exits).
+pub const EXIT_STALLED: i32 = 11;
 /// Marks a storage failure in a follow error, so the loop heals the store
 /// instead of retrying the same block on a dead database (the incident of
 /// 2026-09-29: a full disk, and 288 retries of one block).
@@ -674,6 +680,41 @@ fn error_backoff(err: &str) -> Duration {
     }
 }
 
+/// A successful status answer is not progress when it advertises blocks we
+/// cannot fetch. An unknown network height is likewise not evidence of being
+/// at the tip: poc-m3 kept timing out at the same height for days.
+struct StallWatch {
+    since: Option<std::time::Instant>,
+    height: u64,
+    failures: u64,
+}
+
+impl StallWatch {
+    fn new(height: u64) -> Self {
+        Self { since: None, height, failures: 0 }
+    }
+
+    fn reset(&mut self, height: u64) {
+        *self = Self::new(height);
+    }
+
+    /// Called after attempts and while one is pending. The caller resets the
+    /// clock on active snapshot work before it checks a pending attempt.
+    fn observe(&mut self, now: std::time::Instant, height: u64, net: Option<u64>, failed: bool) -> bool {
+        if height > self.height || (!failed && net.is_some_and(|n| n <= height)) {
+            self.reset(height);
+            return false;
+        }
+        self.height = height;
+        self.failures += u64::from(failed);
+        if !failed && !net.is_some_and(|n| n > height) {
+            return false;
+        }
+        // One slow request or a short outage should not restart a healthy Mac.
+        now.duration_since(*self.since.get_or_insert(now)) >= STALL_TIMEOUT
+    }
+}
+
 /// Follow the chain forever: verify, execute and persist each next block.
 /// `joining`: this Mac's voting key when it is a candidate. When a finalized
 /// handoff seats it, the follower stops before the switch height (for up to
@@ -688,10 +729,20 @@ pub async fn run(
     const HOLD: Duration = Duration::from_secs(120);
     let mut last_log = 0;
     let mut held_since: Option<std::time::Instant> = None;
+    let mut stall = StallWatch::new(chain.finalized_height());
     // One height per round while idle at the tip (as before); a full batch
     // while there is a backlog to fetch.
     let mut window = 1u64;
     loop {
+        if !crate::resources::disk_ok() {
+            // The disk guard has paused writes. Freeing space is recovery;
+            // restarting the transport would only waste the restart budget.
+            stall.reset(chain.finalized_height());
+            crate::chain::set_stage(Some("disk"));
+            window = 1;
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            continue;
+        }
         // A handoff that seats this Mac: never run past its switch height
         // (`aether run` adopts this follower's state there), and hold once it
         // is reached.
@@ -701,6 +752,9 @@ pub async fn run(
             Hold::Seated => {
                 held_since.get_or_insert_with(std::time::Instant::now);
                 if held_since.unwrap().elapsed() < HOLD {
+                    // Waiting for the supervisor is intentional, not a
+                    // transport failure. Resume with a fresh stall budget.
+                    stall.reset(chain.finalized_height());
                     window = 1;
                     tokio::time::sleep(Duration::from_millis(500)).await;
                     continue;
@@ -709,7 +763,7 @@ pub async fn run(
                 u64::MAX
             }
         };
-        match advance(
+        let mut attempt = Box::pin(advance(
             &chain,
             &upstream,
             &set,
@@ -717,9 +771,41 @@ pub async fn run(
             cap,
             window,
             &mut last_log,
-        )
-        .await
-        {
+        ));
+        let mut activity = crate::chain::activity();
+        let result = loop {
+            tokio::select! {
+                result = &mut attempt => break result,
+                _ = tokio::time::sleep(Duration::from_secs(30)) => {
+                    let height = chain.finalized_height();
+                    if !crate::resources::disk_ok() {
+                        stall.reset(height);
+                        break Err("disk almost full; pausing follow".into());
+                    }
+                    let current_activity = crate::chain::activity();
+                    if crate::chain::stage() == Some("snapshot") && current_activity != activity {
+                        stall.reset(height);
+                    } else if stall.observe(std::time::Instant::now(), height, chain.lock().net_height, true) {
+                        tracing::error!(height, failures = stall.failures,
+                            "follower upstream call made no verified progress for ten minutes; restarting its transport");
+                        std::process::exit(EXIT_STALLED);
+                    }
+                    activity = current_activity;
+                }
+            }
+        };
+        let height = chain.finalized_height();
+        let net = chain.lock().net_height;
+        let storage_failure = matches!(&result, Err(e) if e.starts_with(STORE_FAILED));
+        if storage_failure || !crate::resources::disk_ok() {
+            // Storage has its own recovery path; low space pauses the loop.
+            stall.reset(height);
+        } else if stall.observe(std::time::Instant::now(), height, net, result.is_err()) {
+            tracing::error!(height, ?net, failures = stall.failures, last_error = ?result.as_ref().err(),
+                "follower made no verified progress for ten minutes; restarting its transport");
+            std::process::exit(EXIT_STALLED);
+        }
+        match result {
             Ok(0) => {
                 window = 1;
                 tokio::time::sleep(Duration::from_millis(400)).await;
@@ -800,6 +886,7 @@ async fn advance(
                     return Ok(to - ours);
                 }
                 Err(e) => {
+                    crate::chain::set_stage(None);
                     warn!(from = ours, %e, "could not jump to a certified snapshot; replaying instead")
                 }
             }
@@ -1157,10 +1244,10 @@ pub async fn roster_heights(
     let asked = futures::future::join_all(nodes.iter().map(|n| async move {
         let addr = aether_net::EndpointAddr::from(*n);
         match aether_net::connect_rpc(endpoint, &addr, Duration::from_secs(10)).await {
-            Ok(conn) => match aether_net::rpc_call(&conn, "aether_status", json!([])).await {
-                Ok(v) => v["height"].as_u64().map(|h| (*n, h)),
-                Err(e) => {
-                    tracing::debug!(peer = %n, %e, "answered no height");
+            Ok(conn) => match tokio::time::timeout(Duration::from_secs(10), aether_net::rpc_call(&conn, "aether_status", json!([]))).await {
+                Ok(Ok(v)) => v["height"].as_u64().map(|h| (*n, h)),
+                answer => {
+                    tracing::debug!(peer = %n, ?answer, "answered no height");
                     None
                 }
             },
@@ -1407,6 +1494,70 @@ pub async fn forward(upstream: std::sync::Arc<Upstream>, mut rx: tokio::sync::mp
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_upstream_timeouts_at_one_height_restart_the_follower() {
+        let start = std::time::Instant::now();
+        let mut watch = StallWatch::new(144_651);
+        // poc-m3 never obtained a status after restarting; it repeatedly
+        // timed out connecting to four peers for block 144652.
+        assert!(!watch.observe(start, 144_651, None, true));
+        assert!(!watch.observe(start + Duration::from_secs(9 * 60), 144_651, None, true));
+        assert!(watch.observe(start + STALL_TIMEOUT, 144_651, None, true));
+        assert_eq!(EXIT_STALLED, 11);
+    }
+
+    #[test]
+    fn an_upstream_call_that_never_returns_is_also_stalled() {
+        let start = std::time::Instant::now();
+        let mut watch = StallWatch::new(144_651);
+        // The pending-call watchdog samples every 30 seconds, even if
+        // `advance` never returns from a transport call.
+        for tick in 0..20 {
+            assert!(!watch.observe(start + Duration::from_secs(tick * 30), 144_651, None, true));
+        }
+        assert!(watch.observe(start + STALL_TIMEOUT, 144_651, None, true));
+    }
+
+    #[test]
+    fn successful_status_with_missing_blocks_does_not_hide_a_stall() {
+        let start = std::time::Instant::now();
+        let mut watch = StallWatch::new(100);
+        // pipeline logs fetch errors and returns Ok(last). Each round can
+        // therefore succeed without obtaining any advertised block.
+        for seconds in [0, 30, 300, 599] {
+            assert!(!watch.observe(start + Duration::from_secs(seconds), 100, Some(200), false));
+        }
+        assert!(watch.observe(start + STALL_TIMEOUT, 100, Some(200), false));
+    }
+
+    #[test]
+    fn intentional_pause_resets_the_transport_failure_budget() {
+        let start = std::time::Instant::now();
+        let mut watch = StallWatch::new(100);
+        assert!(!watch.observe(start, 100, None, true));
+        // Disk/storage recovery or a handoff hold can last beyond the
+        // transport timeout, and storage recovery may roll height back.
+        watch.reset(99);
+        let resumed = start + STALL_TIMEOUT * 2;
+        assert!(!watch.observe(resumed, 99, None, true));
+        assert!(!watch.observe(resumed + STALL_TIMEOUT - Duration::from_secs(1), 99, None, true));
+        assert!(watch.observe(resumed + STALL_TIMEOUT, 99, None, true));
+    }
+
+    #[test]
+    fn verified_progress_and_a_confirmed_tip_clear_the_stall_clock() {
+        let start = std::time::Instant::now();
+        let mut watch = StallWatch::new(100);
+        assert!(!watch.observe(start, 100, Some(10_000), false));
+        assert!(!watch.observe(start + Duration::from_secs(9 * 60), 100, Some(10_000), false));
+        // A status response alone did not resolve the gap.
+        assert!(watch.observe(start + STALL_TIMEOUT, 100, Some(10_000), false));
+        assert!(!watch.observe(start + STALL_TIMEOUT + Duration::from_secs(1), 101, Some(10_000), false));
+        assert!(!watch.observe(start + STALL_TIMEOUT * 2, 101, Some(101), false));
+        assert!(!watch.observe(start + STALL_TIMEOUT * 2 + Duration::from_secs(1), 101, None, true));
+        assert!(watch.observe(start + STALL_TIMEOUT * 3 + Duration::from_secs(1), 101, None, true));
+    }
 
     #[test]
     fn snapshot_chunk_rejects_wrong_length_before_decoding() {

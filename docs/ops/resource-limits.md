@@ -51,12 +51,10 @@
 
 ## 디스크 가드 (`--min-free-disk`)
 
-- 데이터 볼륨의 여유(`statfs` `f_bavail`)가 최소값 아래로 내려가면: **새 era 파일 봉인과 샤드 쓰기를 멈추고**(스토어의 다른 쓰기는 그대로) 증명을 일시 정지하고, 경고를 로그에 남긴다.
-- 블록은 스토어에 staged로 남는다 — 다음 시작 때 `seal_pending`이 따라잡고, `prune::cutoff`는 봉인 안 된 era를 잘라내지 않으므로 아무것도 잃지 않는다. 샤드 정리(공간을 ** freeing**)는 계속 허용한다.
-- 최소값 + 2 GB 이상 올라와야 재개한다(경계에서 깜빡이지 않게 하는 히스테리시스).
-- `aether_status`의 `resources` 객체: `disk_free`, `disk_low`, `min_free_disk`, `proving_paused`. 지갑은 `disk_low`를 보고 "디스크 공간 부족"을 보여 준다.
-
-스토어 오류 복구(자가 치유)는 이 문서의 범위가 아니다 — 별도 작업.
+- 데이터 볼륨의 여유(`statfs` `f_bavail`)가 최소값 + 3 GB 아래로 내려가면 로그와 `aether_status`에 `almost_full` 경고를 남긴다.
+- 최소값 아래에서는 새 합의 투표·최종 상태 저장·era 파일·샤드 쓰기와 증명을 중지한다. 노드 자식은 코드 12로 종료하고 `aether run`은 디스크가 회복될 때까지 기다린다. 투표 저널은 삭제하거나 다시 만들지 않는다.
+- 최소값 + 2 GB 이상 올라와야 자식을 재시작한다(경계에서 깜빡이지 않게 하는 히스테리시스). 저널 또는 아카이브 쓰기가 샘플 사이에 ENOSPC로 실패해도 동일한 대기 경로를 탄다.
+- `aether_status`의 최상위 `disk_status`(`ok`/`almost_full`/`paused`/`unknown`)와 `disk_almost_full`, 그리고 `resources`의 `disk_free`, `disk_low`, `disk_paused`, `min_free_disk`, `resume_free_disk`, `proving_paused`로 조기 경고와 중지 상태를 확인할 수 있다. 기존 지갑은 `resources.disk_low`를 읽으므로 이 값은 조기 경고부터 켜지고, 실제 쓰기 중지는 `disk_paused`로 구분한다.
 
 ## 확인 방법
 

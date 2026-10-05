@@ -151,3 +151,62 @@ Commonware 버그는 아니다. `Deferred`의 계약(certify는 결정적이어�
 
 - 스톨이 길어지면 저널 섹션은 계속 쌓인다(뷰당 하나, 확정 전엔 못 지운다). fd 예산은 이제 65 536(또는 하드 한도)까지고 시작 로그·실행 중 경고(한도 절반)로 보이지만, 아주 긴 스톨 뒤 재시작은 여전히 파일 수만큼 fd를 쓴다. 경고가 뜨면 확정을 회복하거나 위원회를 돌려 새 라운드의 저널로 다시 시작한다.
 - 소프트 한도는 `kern.maxfilesperproc`보다 크게 못 올린다.
+
+
+## Supervised disk and task recovery
+
+`aether run` stops a child whose critical task panics (exit 9), including a
+failed stderr write or flush detected by its periodic writer probe. These
+exits use the persisted restart budget: backoff increases and the fourth exit
+within ten minutes stops the supervisor. The writer probe detects ENOSPC even
+when the log destination is on a different volume from node data. When stderr
+is a regular file, the supervisor also waits for its volume's free space and
+restarts automatically. A pipe or socket does not reveal the downstream log
+volume, so failures there retain the bounded restart behavior.
+A verifier sidecar that is installed but fails to start also takes the bounded
+restart path; a missing sidecar binary still requires installation (exit 5).
+
+A low data-volume exit (12), or storage exit 4 while the data volume is below
+its configured floor, waits for free space with a resume margin before retry.
+Other storage failures remain terminal. Disk waiting does not erase restart
+history or consume the crash budget; recovery waits for the resume margin.
+
+Commonware 2026.9.0 marshal uses per-epoch prunable archives named
+`<partition>-cache-<epoch>-<kind>-<part>`, where kinds are `verified`,
+`notarized`, `certified`, `notarizations`, and `finalizations`, and parts are
+`metadata`, `key`, and `value`. An exact archive-initialization panic requests
+exit 10 only when its source is Commonware's `marshal/core/cache.rs`; the same
+wording from `marshal/standard` can refer to a non-cache finalized archive.
+The supervisor moves only that kind's archives for this node's partition to
+`quarantine/marshal-cache/`. The child then initializes fresh caches and resumes
+peer resolution and finalized-store recovery. Recovery still depends on local
+finalized data or available peers; quarantining a cache is not a guarantee that
+missing blocks remain available. The cache manager metadata, finalized stores,
+consensus vote journal, keys, and threshold shares are preserved. Ambiguous
+metadata panics are not eligible for cache quarantine.
+
+Quarantine rejects symlinked partitions and destination paths. Retention is
+bounded to three batches and 512 MiB. Cache recovery uses the same persisted
+crash budget and stops before moving another batch when that budget is exhausted.
+A failed or missing repair request stops rather than widening the repair scope.
+The repair request is created without following an existing path, so it cannot
+overwrite a share or journal through a symlink. Moves resume from a validated
+`pending-<kind>` quarantine directory after an interrupted attempt; a failed
+move is retried three times before the supervisor stops with the pending data
+preserved. A later `aether run` start checks for that pending request before
+opening the child, still subject to the persisted restart budget.
+
+### Follower transport stall (poc-m3, 2026-10-02)
+
+The running follower remained at finalized height 144,651. Its `node.log`
+repeatedly reported connection timeouts to all four roster peers while
+requesting block 144,652; the same log later reported an iroh
+`RemoteStateActor panicked`. The logs establish a transport stall, although
+they do not establish why every connection timed out. A snapshot jump cannot
+start until an upstream status request succeeds. The follower now restarts its
+transport after ten minutes without verified progress, including when an
+upstream call never returns. It logs the height, known network height, failure
+count, and last error before exit 11. A deliberate disk pause, store recovery,
+or handoff hold does not spend that stall interval. Repeated exits remain
+bounded to three restarts per hour by the supervisor and report the terminal
+error if the network remains unavailable.

@@ -587,6 +587,9 @@ where
         } else {
             warn!("engine stopped");
         }
+        // The RPC server has its own lifetime. A dead voting engine must
+        // never leave it serving healthy-looking status indefinitely.
+        std::process::exit(crate::supervisor::EXIT_FATAL_TASK);
     }
 }
 

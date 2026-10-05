@@ -15,6 +15,8 @@ use crate::upgrade;
 use aether_execution::registry;
 use aether_types::{Address, Bytes, FeeVector, U256};
 use commonware_codec::Encode as _;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// One item of the list: the rule, and whether the genesis has it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -333,7 +335,7 @@ pub fn check_final(file: &crate::roster::NetworkFile, rehearsal: bool) -> Vec<Ru
         "committee output decodes",
         decoded.is_some(),
         match (&decoded, hex::decode(both.1)) {
-            (Some(d), _) => format!("the output decodes for {n} players with the same decoder the node's startup uses"),
+            (Some(_), _) => format!("the output decodes for {n} players with the same decoder the node's startup uses"),
             (None, Ok(_)) => format!("the output is valid hex but does not decode as a DKG output for {n} players"),
             (None, Err(_)) => "the output is not even hex (try the network.json the DKG wrote, not a hand-edited one)".to_string(),
         },
@@ -394,6 +396,498 @@ pub fn local_share_matches_network(key: &crate::dkg::KeyFile, file: &crate::rost
     }
     if !key.identity.eq_ignore_ascii_case(identity) {
         return Err("threshold.json holds a different committee identity than network.json: vote only under the committee the final file names".to_string());
+    }
+    Ok(())
+}
+
+// ===== audit 6, A6-3 + A6-4: the ceremony record every signer binds to =====
+//
+// The class of defects: a validator ends up voting from a genesis that is not
+// the one the ceremony checked — a chain id swapped in transit (A6-3), a stale
+// local network.json kept because its id and committee identity happen to
+// match (A6-4), any file whose bytes differ from the ones the coordinator
+// checked. The fix is one fail-closed bind: the coordinator's `check` writes
+// an independent record pinning the whole immutable genesis, the exact bytes
+// it passed, and every path to a consensus signature (`aether node --network`,
+// `aether run`, verify-local) refuses to start without passing that record
+// and this Mac's files through it.
+
+/// Where a data dir keeps its copy of the ceremony record (verify-local
+/// stores it here; `aether run`, which starts with no --network and no
+/// --ceremony, binds against this copy).
+pub const CEREMONY_RECORD_FILE: &str = "ceremony-check.json";
+/// The only record format this binary binds to.
+pub const CEREMONY_RECORD_VERSION: u64 = 1;
+
+/// The immutable genesis, as the ceremony record pins it: every field a
+/// genesis fixes for the chain's life, normalized (hex lowercase). Not
+/// pinned: `validators` (a committee the chain itself rotates), `round`,
+/// `output`, `epochs` — those evolve by reshare/handoff, and the bind
+/// compares them against this Mac's own files instead.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordGenesis {
+    /// The opening roster the DKG froze (`genesis_validators`): the set the
+    /// committee output must seat. Absent on a file the DKG never wrote.
+    pub validators: Vec<crate::roster::Member>,
+    pub faucet: Option<aether_types::Address>,
+    pub registrar: Option<String>,
+    pub epoch_blocks: Option<u64>,
+    pub min_streak: Option<u64>,
+    pub draw_epochs: Option<u64>,
+    pub history: Option<u32>,
+    pub protocol: Option<u32>,
+    pub node_rewards: Option<bool>,
+    pub reserve: Option<crate::roster::ReserveFile>,
+    pub group: Option<u16>,
+    pub max_committee: Option<u64>,
+}
+
+/// What the coordinator's `check` writes after PASS (`aether
+/// ceremony-record`): the chain this ceremony assembled, the DKG round it
+/// ran, the committee identity it pinned, the sha256 of the exact final-file
+/// bytes that passed, and the immutable genesis above. Public — it names
+/// what was checked, never a secret.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CeremonyRecord {
+    pub version: u64,
+    pub chain_id: u64,
+    /// Unix seconds the check passed.
+    pub checked: u64,
+    /// sha256 over the final network.json bytes that passed, lowercase hex.
+    pub digest: String,
+    /// The DKG round the ceremony ran.
+    pub round: u64,
+    /// The committee identity the ceremony pinned (immutable for the chain's life).
+    pub identity: String,
+    /// The immutable genesis a signer may vote under.
+    pub genesis: RecordGenesis,
+}
+
+fn lower_hex(s: &Option<String>) -> Option<String> {
+    s.as_ref().map(|h| h.to_ascii_lowercase())
+}
+
+/// The immutable genesis of `file`, normalized for comparison. `Err` on a
+/// file with no frozen opening roster (`genesis_validators`) — the DKG
+/// always writes one, so its absence means the file was not written by a
+/// ceremony.
+pub fn record_genesis_of(file: &crate::roster::NetworkFile) -> Result<RecordGenesis, String> {
+    Ok(RecordGenesis {
+        validators: file.genesis_validators.clone().ok_or(
+            "no frozen opening roster (genesis_validators): not a network.json the DKG wrote",
+        )?,
+        faucet: file.faucet,
+        registrar: lower_hex(&file.registrar),
+        epoch_blocks: file.epoch_blocks,
+        min_streak: file.min_streak,
+        draw_epochs: file.draw_epochs,
+        history: file.history,
+        protocol: file.protocol,
+        node_rewards: file.node_rewards,
+        reserve: file.reserve.clone().map(|r| crate::roster::ReserveFile {
+            operator: r.operator,
+            validators: r
+                .validators
+                .into_iter()
+                .map(|m| crate::roster::Member { key: m.key.to_ascii_lowercase(), node: m.node })
+                .collect(),
+        }),
+        group: file.group,
+        max_committee: file.max_committee,
+    })
+}
+
+/// Build the record for a final file that passed `check`. Only a final file
+/// (committee identity present, frozen roster present) gets one.
+pub fn ceremony_record(
+    file: &crate::roster::NetworkFile,
+    bytes: &[u8],
+    checked_unix: u64,
+) -> Result<CeremonyRecord, String> {
+    let identity = file
+        .identity
+        .clone()
+        .filter(|s| !s.is_empty())
+        .ok_or("no committee identity: a record is only taken from a final file the DKG wrote (run check first)")?;
+    Ok(CeremonyRecord {
+        version: CEREMONY_RECORD_VERSION,
+        chain_id: file.chain_id,
+        checked: checked_unix,
+        digest: hex::encode(Sha256::digest(bytes)),
+        round: file.round,
+        identity: identity.to_ascii_lowercase(),
+        genesis: record_genesis_of(file)?,
+    })
+}
+
+/// Read and version-check a ceremony record. A missing, unreadable or
+/// malformed record is an error — never a skip.
+pub fn load_ceremony_record(path: &std::path::Path) -> Result<CeremonyRecord, String> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| format!("cannot read the ceremony record {}: {e}", path.display()))?;
+    let record: CeremonyRecord = serde_json::from_slice(&bytes).map_err(|e| {
+        format!(
+            "{} is not a ceremony record this binary can read ({e}): use the {CEREMONY_RECORD_FILE} the coordinator's check wrote",
+            path.display()
+        )
+    })?;
+    if record.version != CEREMONY_RECORD_VERSION {
+        return Err(format!(
+            "ceremony record {} carries version {}, this binary binds version {CEREMONY_RECORD_VERSION}: use the record this ceremony's check wrote",
+            path.display(),
+            record.version
+        ));
+    }
+    Ok(record)
+}
+
+/// Whether `file` is a genesis-ceremony chain: the new-genesis rule set is on
+/// (node rewards or history v2) and it is not the legacy testnet id, whose
+/// files predate genesis pinning. Rehearsal ids are inside the gate — a
+/// rehearsal passes its own record.
+pub fn new_genesis_chain(file: &crate::roster::NetworkFile) -> bool {
+    file.chain_id != TESTNET_CHAIN_ID
+        && (file.node_rewards.unwrap_or(false) || file.history.unwrap_or(0) >= 2)
+}
+
+/// The record-vs-file half of the bind: version, chain id (A6-3 — the
+/// expected id comes from the record, never from the file being verified),
+/// committee identity, and what pins the bytes at this round (the exact
+/// digest at the ceremony's round; the immutable genesis for a later one).
+/// A follower or candidate Mac — no share to vote with — is held to this
+/// half; a signer goes on through `bind_to_ceremony`.
+pub fn bind_network_to_record(
+    checked: &crate::roster::NetworkFile,
+    checked_bytes: &[u8],
+    record: &CeremonyRecord,
+) -> Result<(), String> {
+    if record.version != CEREMONY_RECORD_VERSION {
+        return Err(format!(
+            "ceremony record version {} is not {CEREMONY_RECORD_VERSION}: use the record this ceremony's check wrote",
+            record.version
+        ));
+    }
+    // A6-3: a file swapped in transit must be refused, not self-accepted.
+    if checked.chain_id != record.chain_id {
+        return Err(format!(
+            "the ceremony record pins chain {} but this network.json says chain {}: a file swapped in transit (or another ceremony's file) is not the checked genesis. Get the final network.json the coordinator checked and run scripts/mainnet-genesis.sh verify-local with --ceremony",
+            record.chain_id, checked.chain_id
+        ));
+    }
+    let checked_identity = checked.identity.as_deref().filter(|s| !s.is_empty()).ok_or(
+        "the network.json to start from has no committee identity: not the final file the DKG wrote",
+    )?;
+    if !checked_identity.eq_ignore_ascii_case(&record.identity) {
+        return Err(format!(
+            "the committee identity {}… is not the one the ceremony record pins ({}…): vote only under the committee the ceremony checked",
+            &checked_identity[..checked_identity.len().min(16)],
+            &record.identity[..record.identity.len().min(16)]
+        ));
+    }
+    // The round decides what pins the checked file: the ceremony's own round
+    // demands the exact bytes; a later round is an evolution, pinned by the
+    // immutable genesis.
+    match checked.round.cmp(&record.round) {
+        std::cmp::Ordering::Equal => {
+            let digest = hex::encode(Sha256::digest(checked_bytes));
+            if !digest.eq_ignore_ascii_case(&record.digest) {
+                return Err(format!(
+                    "digest mismatch: these bytes are not the final network.json the coordinator checked (sha256 {}…, the record pins {}…). Copy the checked file unchanged — do not reformat or edit it",
+                    &digest[..digest.len().min(16)],
+                    &record.digest[..record.digest.len().min(16)]
+                ));
+            }
+        }
+        std::cmp::Ordering::Greater => {
+            let evolved = record_genesis_of(checked).map_err(|why| {
+                format!("the evolved network.json to start from has no frozen genesis ({why}): not a file a reshare wrote")
+            })?;
+            if evolved != record.genesis {
+                return Err(
+                    "the evolved network.json to start from carries another immutable genesis than the ceremony checked: not an evolution, another chain".to_string(),
+                );
+            }
+        }
+        std::cmp::Ordering::Less => {
+            return Err(format!(
+                "round {} predates the ceremony's round {}: an old committee's file, not this ceremony's",
+                checked.round, record.round
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The one fail-closed bind a signer passes. `checked`/`checked_bytes` is the
+/// final network file this start is bound to (the CLI --network file, or the
+/// adopted `<data>/network.json`); `local_threshold`/`local_network` are this
+/// Mac's own files (a reshare rewrites both together); `record` is the
+/// coordinator's independent pin. Any missing, malformed or differing input
+/// is `Err`. Ok means: the bytes the coordinator checked are this genesis,
+/// and this Mac's share belongs to the committee of the file it starts from.
+pub fn bind_to_ceremony(
+    checked: &crate::roster::NetworkFile,
+    checked_bytes: &[u8],
+    record: &CeremonyRecord,
+    local_threshold: &crate::dkg::KeyFile,
+    local_network: &crate::roster::NetworkFile,
+) -> Result<(), String> {
+    bind_network_to_record(checked, checked_bytes, record)?;
+    // A6-4: a local network.json is only "the same network" when its whole
+    // immutable genesis is — the same id and committee identity are not
+    // enough for a stale file to be kept.
+    if local_network.chain_id != record.chain_id {
+        return Err(format!(
+            "the local network.json is chain {}, not the ceremony's chain {}: a file from another chain. Move it aside and run verify-local with the coordinator's record",
+            local_network.chain_id, record.chain_id
+        ));
+    }
+    if !local_network
+        .identity
+        .as_deref()
+        .unwrap_or_default()
+        .eq_ignore_ascii_case(&record.identity)
+    {
+        return Err(
+            "the local network.json names another committee identity than the ceremony record: a stale file. Reconcile on purpose (verify-local with the coordinator's record, or move the old data aside)".to_string(),
+        );
+    }
+    let local_genesis = record_genesis_of(local_network).map_err(|why| {
+        format!(
+            "stale local network.json: its genesis is not the one the ceremony checked ({why}). Reconcile on purpose (verify-local with the coordinator's record, or move the old data aside); do not vote under an unchecked genesis"
+        )
+    })?;
+    if local_genesis != record.genesis {
+        return Err(
+            "stale local network.json: its immutable genesis (roster, registrar, rule flags, reserve) differs from the one the ceremony checked. Reconcile on purpose (verify-local with the coordinator's record, or move the old data aside); do not vote under an unchecked genesis".to_string(),
+        );
+    }
+    // The file this start is bound to must name the committee this Mac's
+    // share belongs to (a reshare rewrites the local file and the share
+    // together, so the legit evolution always lines up here).
+    if checked.round != local_network.round
+        || !checked
+            .output
+            .as_deref()
+            .unwrap_or_default()
+            .eq_ignore_ascii_case(local_network.output.as_deref().unwrap_or_default())
+    {
+        return Err(format!(
+            "the network.json to start from (round {}) is not this Mac's committee (local round {}): start from the file this Mac's dkg/reshare wrote",
+            checked.round, local_network.round
+        ));
+    }
+    // A5-4's check, kept inside the bind: the share votes only under the
+    // committee the local file carries.
+    local_share_matches_network(local_threshold, local_network)?;
+    Ok(())
+}
+
+/// The bind a follower or candidate Mac passes (`aether run` on a Mac with no
+/// threshold.json — no share to vote with): its adopted network file against
+/// the record's half. It serves wallets the chain the ceremony checked, so it
+/// is bound to the same genesis; only the share comparison is a signer's.
+/// A record that was named but is missing fails closed on it; a Mac with no
+/// record anywhere and no share cannot vote (it verifies blocks by
+/// certificate; a wrong genesis shows up as a chain that never syncs), so it
+/// keeps following with a warning instead of stranding every consumer Mac.
+/// On a successful bind the record is stored in the data dir, like
+/// verify-local does — the next start (and a later reshare seat) binds even
+/// without the --network file it came from.
+pub fn bind_shareless_to_ceremony(
+    file: &crate::roster::NetworkFile,
+    bytes: &[u8],
+    data: &std::path::Path,
+    ceremony: Option<&std::path::Path>,
+) -> Result<(), String> {
+    let record_path = ceremony.map_or_else(|| data.join(CEREMONY_RECORD_FILE), std::path::Path::to_path_buf);
+    if !record_path.exists() {
+        if ceremony.is_some() {
+            return Err(format!(
+                "chain {}: no ceremony record at {}: this start was told to bind to that record and it is missing.\n  Copy the {CEREMONY_RECORD_FILE} the coordinator's check wrote next to the network.json, then start again",
+                file.chain_id,
+                record_path.display()
+            ));
+        }
+        tracing::warn!(
+            chain = file.chain_id,
+            "no ceremony record for chain {} on this Mac and none was passed: a Mac with no \
+             share cannot vote (it verifies blocks by certificate), so it keeps following. The \
+             release build ships {CEREMONY_RECORD_FILE} next to the bundled network.json — \
+             install it to pin the checked genesis; a wrong genesis only ever fails to sync",
+            file.chain_id
+        );
+        return Ok(());
+    }
+    let record = load_ceremony_record(&record_path)?;
+    bind_network_to_record(file, bytes, &record)?;
+    let stored = data.join(CEREMONY_RECORD_FILE);
+    if stored != record_path {
+        let bytes = serde_json::to_vec_pretty(&record).map_err(|e| e.to_string())?;
+        std::fs::write(&stored, bytes)
+            .map_err(|e| format!("cannot store the ceremony record at {}: {e}", stored.display()))?;
+    }
+    Ok(())
+}
+
+/// The record a start binds to, in fail-closed order: the explicit
+/// --ceremony (passed through even when missing — the load then errors on the
+/// named file, never silently falls through to another record), the copy
+/// verify-local stored in the data dir, and the record next to the --network
+/// file. The coordinator's check writes `ceremony-check.json` next to the
+/// final network.json it passed, and the wallet app ships the same pair next
+/// to its bundled network.json — that pair is how a consumer Mac receives the
+/// record without any manual step. `None` means none was found.
+pub fn resolve_ceremony_record(
+    ceremony: Option<&std::path::Path>,
+    data: &std::path::Path,
+    network: Option<&std::path::Path>,
+) -> Option<std::path::PathBuf> {
+    if let Some(path) = ceremony {
+        return Some(path.to_path_buf());
+    }
+    let stored = data.join(CEREMONY_RECORD_FILE);
+    if stored.exists() {
+        return Some(stored);
+    }
+    network
+        .and_then(|n| n.parent())
+        .map(|dir| dir.join(CEREMONY_RECORD_FILE))
+        .filter(|sibling| sibling.exists())
+}
+
+/// The release gate (`aether mainnet-rules --bundle`): a new-genesis app
+/// build must ship the coordinator's record next to the network.json it
+/// bundles, pinning that file's exact bytes — a consumer Mac receives the
+/// genesis through this pair, so no build may hand it an unchecked one (or
+/// another ceremony's, or a file edited after the check). The legacy testnet
+/// app ships no record and passes.
+pub fn check_bundle(path: &std::path::Path, file: &crate::roster::NetworkFile, bytes: &[u8]) -> Rule {
+    let name = "bundled ceremony record";
+    if !new_genesis_chain(file) {
+        return Rule {
+            name,
+            ok: true,
+            detail: format!(
+                "chain {} is not a new genesis: this app build ships no record (the {TESTNET_CHAIN_ID} testnet app never does)",
+                file.chain_id
+            ),
+        };
+    }
+    let Some(sibling) = path.parent().map(|dir| dir.join(CEREMONY_RECORD_FILE)) else {
+        return Rule {
+            name,
+            ok: false,
+            detail: format!("no {} next to {}: a new-genesis app build must ship the record the coordinator's check wrote", CEREMONY_RECORD_FILE, path.display()),
+        };
+    };
+    if !sibling.exists() {
+        return Rule {
+            name,
+            ok: false,
+            detail: format!(
+                "no {} next to {}: a new-genesis app build must ship the record the coordinator's check wrote next to the network.json",
+                CEREMONY_RECORD_FILE,
+                path.display()
+            ),
+        };
+    }
+    let record = match load_ceremony_record(&sibling) {
+        Ok(record) => record,
+        Err(why) => return Rule { name, ok: false, detail: why },
+    };
+    if record.chain_id != file.chain_id {
+        return Rule {
+            name,
+            ok: false,
+            detail: format!(
+                "the bundled {} pins chain {} but the bundled network.json is chain {}: ship the record and the network.json from the same check, not another ceremony's",
+                CEREMONY_RECORD_FILE,
+                record.chain_id,
+                file.chain_id
+            ),
+        };
+    }
+    let digest = hex::encode(Sha256::digest(bytes));
+    if !digest.eq_ignore_ascii_case(&record.digest) {
+        return Rule {
+            name,
+            ok: false,
+            detail: format!(
+                "digest mismatch: the bundled {} pins other bytes (sha256 {}…; the bundled file is {}…): ship the record and the network.json from the same check — the exact bytes, unchanged",
+                CEREMONY_RECORD_FILE,
+                &record.digest[..record.digest.len().min(16)],
+                &digest[..digest.len().min(16)]
+            ),
+        };
+    }
+    Rule {
+        name,
+        ok: true,
+        detail: format!(
+            "{} next to the bundled file pins its exact bytes (chain {}, round {}, identity {}…)",
+            CEREMONY_RECORD_FILE,
+            file.chain_id,
+            record.round,
+            &record.identity[..record.identity.len().min(16)]
+        ),
+    }
+}
+
+/// The bind every path to a signature calls: `aether node --network … --data
+/// …` (before anything starts), `aether run` (after adopt_network, over the
+/// adopted file) and verify-local (`aether mainnet-bind`). Reads the checked
+/// file, this Mac's network.json/threshold.json and the ceremony record
+/// (explicit, or the copy verify-local left in the data dir), and runs them
+/// through `bind_to_ceremony`. On success the record is (re)stored in the
+/// data dir, so the wallet's `aether run` — which starts with no --network
+/// and no --ceremony — binds to the same ceremony next time. Legacy chains
+/// (the 7780 testnet, devnets without --network) pass through untouched.
+pub fn bind_data_dir(
+    data: &std::path::Path,
+    checked: &std::path::Path,
+    ceremony: Option<&std::path::Path>,
+) -> Result<(), String> {
+    let checked_bytes = std::fs::read(checked)
+        .map_err(|e| format!("cannot read {}: {e}", checked.display()))?;
+    let checked_file: crate::roster::NetworkFile = serde_json::from_slice(&checked_bytes)
+        .map_err(|e| format!("{} is not a network.json: {e}", checked.display()))?;
+    if !new_genesis_chain(&checked_file) {
+        return Ok(());
+    }
+    let record_path = ceremony.map_or_else(|| data.join(CEREMONY_RECORD_FILE), std::path::Path::to_path_buf);
+    if !record_path.exists() {
+        return Err(format!(
+            "chain {}: no ceremony record at {} and none was passed: a validator may not start voting on a new genesis without the record the coordinator's check wrote.\n  Run scripts/mainnet-genesis.sh verify-local <final network.json> --data {} --ceremony <{CEREMONY_RECORD_FILE}> on this Mac first (it stores the record in the data dir), then start the node",
+            checked_file.chain_id,
+            record_path.display(),
+            data.display()
+        ));
+    }
+    let record = load_ceremony_record(&record_path)?;
+    let local_bytes = std::fs::read(data.join("network.json")).map_err(|e| {
+        format!(
+            "cannot read {}/network.json ({e}): this Mac must hold the network.json its dkg/reshare wrote before it can vote",
+            data.display()
+        )
+    })?;
+    let local_network: crate::roster::NetworkFile = serde_json::from_slice(&local_bytes)
+        .map_err(|e| {
+            format!(
+                "{}/network.json is malformed ({e}): restore the file this Mac's dkg/reshare wrote",
+                data.display()
+            )
+        })?;
+    let threshold_bytes = std::fs::read(data.join("threshold.json"))
+        .map_err(|e| format!("no threshold.json in {}: {e} — this Mac holds no committee share for this chain", data.display()))?;
+    let local_threshold: crate::dkg::KeyFile = serde_json::from_slice(&threshold_bytes)
+        .map_err(|e| format!("{}/threshold.json is malformed ({e})", data.display()))?;
+    bind_to_ceremony(&checked_file, &checked_bytes, &record, &local_threshold, &local_network)?;
+    let stored = data.join(CEREMONY_RECORD_FILE);
+    if stored != record_path {
+        let bytes = serde_json::to_vec_pretty(&record).map_err(|e| e.to_string())?;
+        std::fs::write(&stored, bytes)
+            .map_err(|e| format!("cannot store the ceremony record at {}: {e}", stored.display()))?;
     }
     Ok(())
 }
@@ -558,24 +1052,26 @@ mod tests {
 
     /// A final network.json in the mainnet shape (four validators, a real
     /// registrar, the published policy), with the committee fields `run_dkg`
-    /// writes: `output`, `identity`, `round`.
+    /// writes: `output`, `identity`, `round` — and the opening roster
+    /// `carry_genesis` freezes into `genesis_validators`.
     fn final_file(round: u64, output: Option<String>, identity: Option<String>) -> crate::roster::NetworkFile {
         use commonware_cryptography::Signer as _;
         let (rx, ry) = real_registrar();
         let mut registrar = [0u8; 64];
         registrar[..32].copy_from_slice(&rx);
         registrar[32..].copy_from_slice(&ry);
+        let validators = (1..=4u64)
+            .map(|i| {
+                let k = aether_light::devnet_validator_key(i);
+                crate::roster::Member {
+                    key: hex::encode(k.public_key().as_ref()),
+                    node: aether_net::devnet_node_id(i).to_string(),
+                }
+            })
+            .collect::<Vec<_>>();
         crate::roster::NetworkFile {
             chain_id: 7_801,
-            validators: (1..=4u64)
-                .map(|i| {
-                    let k = aether_light::devnet_validator_key(i);
-                    crate::roster::Member {
-                        key: hex::encode(k.public_key().as_ref()),
-                        node: aether_net::devnet_node_id(i).to_string(),
-                    }
-                })
-                .collect(),
+            validators: validators.clone(),
             identity,
             round,
             output,
@@ -599,7 +1095,7 @@ mod tests {
             }),
             group: None,
             max_committee: Some(crate::rotation::GROW_UNTIL as u64),
-            genesis_validators: None,
+            genesis_validators: Some(validators),
         }
     }
 
@@ -756,5 +1252,326 @@ mod tests {
         // A network file with no committee output cannot be voted under either.
         let pre = final_file(0, None, None);
         assert!(local_share_matches_network(&kf(0, output, identity), &pre).is_err());
+    }
+
+    // ===== audit 6, A6-3 + A6-4: binding the signer to the checked genesis =====
+
+    /// The bytes a ceremony record is taken over, and the record itself, as the
+    /// coordinator's `check` writes it after PASS (`aether ceremony-record`).
+    fn record_for(file: &crate::roster::NetworkFile) -> (Vec<u8>, CeremonyRecord) {
+        let bytes = serde_json::to_vec_pretty(file).unwrap();
+        let record = ceremony_record(file, &bytes, 1_759_000_000).unwrap();
+        (bytes, record)
+    }
+
+    /// A validator Mac's data dir holding exactly these two files.
+    fn bind_dir(tag: &str, threshold: &crate::dkg::KeyFile, network: &crate::roster::NetworkFile) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("aether-bind-{tag}-{}-{}", std::process::id(), network.round));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("threshold.json"), serde_json::to_vec(threshold).unwrap()).unwrap();
+        std::fs::write(dir.join("network.json"), serde_json::to_vec_pretty(network).unwrap()).unwrap();
+        dir
+    }
+
+    /// The happy path, both files this Mac actually holds: the checked final
+    /// file itself, and a later reshare/handoff evolution of it — the pinned
+    /// immutable genesis and the local share's match against the local file are
+    /// what carry, never byte equality.
+    #[test]
+    fn the_signer_binds_to_the_genesis_the_ceremony_checked() {
+        let (output, identity) = ceremony_output();
+        let checked = final_file(0, Some(output.clone()), Some(identity.clone()));
+        let (bytes, record) = record_for(&checked);
+        let share = crate::dkg::KeyFile { round: 0, output: output.clone(), identity: identity.clone(), share: "00".into() };
+        bind_to_ceremony(&checked, &bytes, &record, &share, &checked)
+            .expect("a Mac holding the checked file and its share binds");
+        // A Mac whose local file the chain itself evolved (round 3, a new
+        // output, an epoch start) still binds to the round-0 record: the
+        // immutable genesis is what carries, and a later round is an
+        // evolution this Mac took part in (its share moved with it).
+        let mut evolved = final_file(0, Some(output.clone()), Some(identity.clone()));
+        evolved.round = 3;
+        evolved.output = Some("a".repeat(96));
+        evolved.epochs.push(crate::roster::EpochStart { height: 100, parent: "aa".into() });
+        let evolved_bytes = serde_json::to_vec_pretty(&evolved).unwrap();
+        let evolved_share = crate::dkg::KeyFile { round: 3, output: evolved.output.clone().unwrap(), identity: identity.clone(), share: "00".into() };
+        bind_to_ceremony(&evolved, &evolved_bytes, &record, &evolved_share, &evolved)
+            .expect("an evolution of the checked genesis binds to its record");
+        // Starting from the ORIGINAL round-0 file while holding a round-3
+        // share is refused: the node would vote under a committee this Mac's
+        // key does not match (the file it starts from must be its own file).
+        assert!(bind_to_ceremony(&checked, &bytes, &record, &evolved_share, &evolved).is_err());
+        // But not a record from a LATER ceremony this file predates: a round
+        // older than the record's is not an evolution, it is another committee.
+        let older = final_file(0, Some(output), Some(identity));
+        let older_bytes = serde_json::to_vec_pretty(&older).unwrap();
+        let record9 = CeremonyRecord { round: 9, ..record.clone() };
+        assert!(bind_to_ceremony(&older, &older_bytes, &record9, &share, &older).is_err(), "a round older than the record's");
+    }
+
+    /// A6-3: the coordinator checked chain 7801; the file this Mac received
+    /// says 7802. The expected id comes from the record, never from the file
+    /// being verified — the swap must be refused, not self-accepted.
+    #[test]
+    fn binding_refuses_a_chain_id_swapped_in_transit() {
+        let (output, identity) = ceremony_output();
+        let checked = final_file(0, Some(output.clone()), Some(identity.clone()));
+        let (bytes, record) = record_for(&checked);
+        let mut swapped = checked.clone();
+        swapped.chain_id = 7_802;
+        let share = crate::dkg::KeyFile { round: 0, output, identity, share: "00".into() };
+        let swapped_bytes = serde_json::to_vec_pretty(&swapped).unwrap();
+        let err = bind_to_ceremony(&swapped, &swapped_bytes, &record, &share, &swapped).unwrap_err();
+        assert!(err.contains("7801") && err.contains("7802"), "{err}");
+        assert!(err.contains("ceremony"), "the refusal names the ceremony record: {err}");
+    }
+
+    /// Same roster, same round, a different committee output: not the bytes the
+    /// coordinator checked (digest), and a local share for that other committee
+    /// is refused even when every other field lines up.
+    #[test]
+    fn binding_refuses_an_output_the_coordinator_did_not_check() {
+        let (output, identity) = ceremony_output();
+        let checked = final_file(0, Some(output.clone()), Some(identity.clone()));
+        let (bytes, record) = record_for(&checked);
+        let share = crate::dkg::KeyFile { round: 0, output: output.clone(), identity: identity.clone(), share: "00".into() };
+        // The file itself was swapped for another output: digest mismatch.
+        let mut other = checked.clone();
+        other.output = Some("b".repeat(96));
+        let other_bytes = serde_json::to_vec_pretty(&other).unwrap();
+        let other_share = crate::dkg::KeyFile { round: 0, output: other.output.clone().unwrap(), identity, share: "00".into() };
+        let err = bind_to_ceremony(&other, &other_bytes, &record, &other_share, &other).unwrap_err();
+        assert!(err.contains("digest"), "{err}");
+        // The Mac's own share is for another committee of the same roster and
+        // round (the A6-4 sequence): refused against the local file it votes with.
+        let err = bind_to_ceremony(&checked, &bytes, &record, &other_share, &checked).unwrap_err();
+        assert!(err.contains("output"), "a different public polynomial must not vote: {err}");
+        // Sanity of the refusal's premise: the matching share, on the other
+        // hand, does bind (covered above — here only the mismatch is refused).
+        assert!(local_share_matches_network(&share, &checked).is_ok());
+    }
+
+    /// A6-4: a local network.json with the same chain id and committee identity
+    /// but a different immutable genesis (one flag off) is stale, not kept: the
+    /// Mac would vote under a genesis the ceremony did not check.
+    #[test]
+    fn binding_refuses_a_stale_local_genesis() {
+        let (output, identity) = ceremony_output();
+        let checked = final_file(0, Some(output.clone()), Some(identity.clone()));
+        let (bytes, record) = record_for(&checked);
+        let share = crate::dkg::KeyFile { round: 0, output, identity, share: "00".into() };
+        for stale in [
+            { let mut f = checked.clone(); f.history = Some(1); f },        // an older rule set
+            { let mut f = checked.clone(); f.registrar = Some("cd".repeat(32)); f }, // another registrar
+            { let mut f = checked.clone(); f.genesis_validators = None; f }, // no frozen opening roster
+        ] {
+            let err = bind_to_ceremony(&checked, &bytes, &record, &share, &stale).unwrap_err();
+            assert!(err.contains("stale"), "a same-id file with another genesis must be called stale: {err}");
+        }
+        // And a local file for another chain id outright.
+        let mut other_chain = checked.clone();
+        other_chain.chain_id = 7_802;
+        let err = bind_to_ceremony(&checked, &bytes, &record, &share, &other_chain).unwrap_err();
+        assert!(err.contains("7802") && err.contains("chain"), "{err}");
+    }
+
+    /// The record file itself: a version this binary does not know, or bytes
+    /// that are not the format, are errors — never a skip.
+    #[test]
+    fn a_bad_ceremony_record_is_refused() {
+        let (output, identity) = ceremony_output();
+        let checked = final_file(0, Some(output.clone()), Some(identity.clone()));
+        let (bytes, mut record) = record_for(&checked);
+        let share = crate::dkg::KeyFile { round: 0, output, identity, share: "00".into() };
+        record.version = 2;
+        assert!(bind_to_ceremony(&checked, &bytes, &record, &share, &checked)
+            .unwrap_err()
+            .contains("version"));
+        let dir = std::env::temp_dir().join(format!("aether-record-{}-{}", std::process::id(), std::thread::current().name().unwrap_or("t")));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("ceremony-check.json"), b"{not json").unwrap();
+        assert!(load_ceremony_record(&dir.join("ceremony-check.json")).is_err(), "not JSON");
+        std::fs::write(dir.join("ceremony-check.json"), br#"{"chain_id": 7801}"#).unwrap();
+        assert!(load_ceremony_record(&dir.join("ceremony-check.json")).is_err(), "a chain id alone is not a record");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// bind_data_dir — what `aether node`, `aether run` and verify-local all
+    /// call before voting: a missing, malformed or absent local network.json is
+    /// an error (A6-4's silent skip), and a chain with no record at all names
+    /// the operator step instead of starting unbound.
+    #[test]
+    fn bind_data_dir_fails_closed_on_every_broken_input() {
+        let (output, identity) = ceremony_output();
+        let checked = final_file(0, Some(output.clone()), Some(identity.clone()));
+        let (bytes, record) = record_for(&checked);
+        let share = crate::dkg::KeyFile { round: 0, output, identity, share: "00".into() };
+        let dir = bind_dir("inputs", &share, &checked);
+        std::fs::write(dir.join("final.json"), &bytes).unwrap();
+        std::fs::write(dir.join("record.json"), serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+
+        // The good bind, explicit record: passes and KEEPS the record in the
+        // data dir, so the wallet's `aether run` (no --network, no --ceremony)
+        // binds to the same ceremony on its next start.
+        bind_data_dir(&dir, &dir.join("final.json"), Some(&dir.join("record.json"))).unwrap();
+        assert!(dir.join(CEREMONY_RECORD_FILE).exists(), "the record is persisted for the run path");
+        let persisted = load_ceremony_record(&dir.join(CEREMONY_RECORD_FILE)).unwrap();
+        assert_eq!(persisted.chain_id, record.chain_id);
+        // And that persisted record alone (no --ceremony) binds again.
+        bind_data_dir(&dir, &dir.join("final.json"), None).unwrap();
+
+        // No record anywhere: the operator step, not a silent unbound start.
+        std::fs::remove_file(dir.join(CEREMONY_RECORD_FILE)).unwrap();
+        std::fs::remove_file(dir.join("record.json")).unwrap();
+        let err = bind_data_dir(&dir, &dir.join("final.json"), None).unwrap_err();
+        assert!(err.contains("verify-local") && err.contains("ceremony"), "{err}");
+
+        // A local network.json that is absent or malformed is an error, never a skip.
+        std::fs::write(dir.join("record.json"), serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+        std::fs::remove_file(dir.join("network.json")).unwrap();
+        assert!(bind_data_dir(&dir, &dir.join("final.json"), Some(&dir.join("record.json")))
+            .unwrap_err()
+            .contains("network.json"));
+        std::fs::write(dir.join("network.json"), b"{torn write").unwrap();
+        assert!(bind_data_dir(&dir, &dir.join("final.json"), Some(&dir.join("record.json"))).is_err());
+        std::fs::write(dir.join("network.json"), &bytes).unwrap();
+        // A malformed threshold is an error too.
+        std::fs::write(dir.join("threshold.json"), b"{torn").unwrap();
+        assert!(bind_data_dir(&dir, &dir.join("final.json"), Some(&dir.join("record.json"))).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A follower or candidate Mac (no threshold.json — no share to vote with)
+    /// is still bound to the record's half: the same refusals, minus the share.
+    #[test]
+    fn a_shareless_mac_is_bound_to_the_record_half() {
+        let (output, identity) = ceremony_output();
+        let checked = final_file(0, Some(output), Some(identity));
+        let (bytes, record) = record_for(&checked);
+        let dir = std::env::temp_dir().join(format!("aether-shareless-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("record.json"), serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+        bind_shareless_to_ceremony(&checked, &bytes, &dir, Some(&dir.join("record.json")))
+            .expect("a follower Mac binds its file to the record");
+        assert!(dir.join(CEREMONY_RECORD_FILE).exists(), "the bound record is stored for the next start (the wallet's run passes no --ceremony)");
+        // A chain id swapped in transit is refused even with no share at stake.
+        let mut swapped = checked.clone();
+        swapped.chain_id = 7_802;
+        let swapped_bytes = serde_json::to_vec_pretty(&swapped).unwrap();
+        let err = bind_shareless_to_ceremony(&swapped, &swapped_bytes, &dir, Some(&dir.join("record.json")))
+            .unwrap_err();
+        assert!(err.contains("7802"), "{err}");
+        // A record that was named but is not on disk fails closed on it.
+        let err = bind_shareless_to_ceremony(&checked, &bytes, &dir, Some(&dir.join("missing.json")))
+            .unwrap_err();
+        assert!(err.contains("no ceremony record"), "{err}");
+        // No record anywhere: a Mac with no share cannot vote (it verifies
+        // blocks by certificate), so it keeps following with a warning — a
+        // consumer Mac must never be stranded for lacking a public file.
+        bind_shareless_to_ceremony(&checked, &bytes, &dir, None)
+            .expect("a shareless Mac follows without a record instead of refusing to run");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Where a start finds its record, in fail-closed order: the explicit
+    /// --ceremony (named, so a missing one fails at the read, never a silent
+    /// fallthrough to some other record), the copy verify-local stored in the
+    /// data dir, and the record shipped next to the --network file (the
+    /// coordinator's check writes it there; the wallet app bundles the pair).
+    #[test]
+    fn the_record_a_start_binds_to_is_explicit_then_stored_then_bundled() {
+        let dir = std::env::temp_dir().join(format!("aether-resolve-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let bundle = dir.join("bundle");
+        std::fs::create_dir_all(&bundle).unwrap();
+        let explicit = dir.join("explicit.json");
+        std::fs::write(&explicit, b"{}").unwrap();
+
+        // Nothing anywhere: None.
+        assert_eq!(resolve_ceremony_record(None, &dir, Some(&bundle.join("network.json"))), None);
+        // A record next to the network file: the bundled pair.
+        std::fs::write(bundle.join(CEREMONY_RECORD_FILE), b"{}").unwrap();
+        assert_eq!(
+            resolve_ceremony_record(None, &dir, Some(&bundle.join("network.json"))),
+            Some(bundle.join(CEREMONY_RECORD_FILE))
+        );
+        // The data-dir copy beats the bundled one.
+        std::fs::write(dir.join(CEREMONY_RECORD_FILE), b"{}").unwrap();
+        assert_eq!(
+            resolve_ceremony_record(None, &dir, Some(&bundle.join("network.json"))),
+            Some(dir.join(CEREMONY_RECORD_FILE))
+        );
+        assert_eq!(
+            resolve_ceremony_record(None, &dir, None),
+            Some(dir.join(CEREMONY_RECORD_FILE)),
+            "no --network file to look beside: the stored copy still carries"
+        );
+        // The explicit record beats everything, even a missing one: naming it
+        // must fail closed on that file, not fall through to another record.
+        assert_eq!(
+            resolve_ceremony_record(Some(&explicit), &dir, Some(&bundle.join("network.json"))),
+            Some(explicit)
+        );
+        assert_eq!(
+            resolve_ceremony_record(Some(&dir.join("missing.json")), &dir, None),
+            Some(dir.join("missing.json"))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The release gate (`aether mainnet-rules --bundle`): a new-genesis app
+    /// build must ship the coordinator's record next to the network.json it
+    /// bundles, pinning the exact bytes — no Mac can be handed an unchecked
+    /// genesis through an app update. The legacy testnet app ships none.
+    #[test]
+    fn the_app_bundle_gate_pins_the_bundled_record_to_the_file() {
+        let dir = std::env::temp_dir().join(format!("aether-bundle-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (output, identity) = ceremony_output();
+        let checked = final_file(0, Some(output), Some(identity));
+        let (bytes, record) = record_for(&checked);
+        let net = dir.join("network.json");
+        std::fs::write(&net, &bytes).unwrap();
+
+        // No record beside the bundled file: FAIL, naming what to ship.
+        let rule = check_bundle(&net, &checked, &bytes);
+        assert_eq!(rule.name, "bundled ceremony record");
+        assert!(!rule.ok, "{}", rule.detail);
+        assert!(rule.detail.contains(CEREMONY_RECORD_FILE), "the refusal names the missing file: {}", rule.detail);
+
+        // The coordinator's record beside it: the digest carries.
+        std::fs::write(dir.join(CEREMONY_RECORD_FILE), serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+        let ok = check_bundle(&net, &checked, &bytes);
+        assert!(ok.ok, "{}", ok.detail);
+
+        // A record pinning other bytes (a network.json changed after the
+        // check) is not the pair the app may ship.
+        let mut edited = checked.clone();
+        edited.round = 4; // same genesis, other bytes than the record was taken over
+        let edited_bytes = serde_json::to_vec_pretty(&edited).unwrap();
+        let rule = check_bundle(&net, &edited, &edited_bytes);
+        assert!(!rule.ok, "{}", rule.detail);
+        assert!(rule.detail.contains("digest"), "{}", rule.detail);
+
+        // Another ceremony's record (its chain id) is refused.
+        let mut other_chain = record.clone();
+        other_chain.chain_id = 7_802;
+        std::fs::write(dir.join(CEREMONY_RECORD_FILE), serde_json::to_vec_pretty(&other_chain).unwrap()).unwrap();
+        let rule = check_bundle(&net, &checked, &bytes);
+        assert!(!rule.ok && rule.detail.contains("7802"), "{}", rule.detail);
+
+        // The legacy testnet app ships no record and passes.
+        let mut legacy = checked.clone();
+        legacy.chain_id = TESTNET_CHAIN_ID;
+        legacy.node_rewards = None;
+        legacy.history = None;
+        let rule = check_bundle(&net, &legacy, b"{}");
+        assert!(rule.ok, "{}", rule.detail);
+        assert!(rule.detail.contains(TESTNET_CHAIN_ID.to_string().as_str()), "the ok names which app needs no record: {}", rule.detail);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

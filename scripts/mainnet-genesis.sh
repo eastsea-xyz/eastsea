@@ -21,13 +21,21 @@
 #       final file — the failure mode docs/ops/mainnet-launch.md §3 warns
 #       about. --chain-id is required and must equal the id assemble recorded
 #       in ceremony.json (a rehearsal/testnet id is refused outside --dry-run).
-#       PASS/FAIL list; nonzero exit on any failure.
-#   scripts/mainnet-genesis.sh verify-local <network.json> --data <dir>
-#       EACH validator Mac, before it votes: re-runs the strict check on the
-#       final file it received, then compares this Mac's threshold.json
-#       (round, output, identity) against that file — the node makes the same
-#       refusal at startup (main.rs committee_keys). Refuses the rehearsal
-#       and testnet chain ids like `check` does.
+#       PASS/FAIL list; nonzero exit on any failure. On PASS it also writes
+#       ceremony-check.json next to the file (aether ceremony-record): the
+#       pin — chain id, DKG round, committee identity, the sha256 of the exact
+#       bytes that passed, the immutable genesis — every validator Mac binds
+#       to before it votes (audit 6, A6-3/A6-4). Public; copy it together
+#       with the final network.json.
+#   scripts/mainnet-genesis.sh verify-local <network.json> --data <dir> --ceremony <ceremony-check.json>
+#       EACH validator Mac, before it votes: re-runs the strict check with the
+#       chain id pinned by the RECORD — never read from the file being
+#       verified, so a file swapped in transit cannot self-accept (A6-3) —
+#       then binds this Mac to the checked genesis (aether mainnet-bind: the
+#       record vs the file's bytes, vs this Mac's network.json/threshold.json;
+#       the node makes the same refusal at startup). Stores the record at
+#       <data>/ceremony-check.json, so `aether run` binds to the same
+#       ceremony. Refuses the rehearsal and testnet chain ids like `check`.
 #   scripts/mainnet-genesis.sh --dry-run [<dir>]
 #       every subcommand on one machine with throwaway keys in a temp
 #       dir, the genesis DKG over loopback included. REHEARSAL, not a launch
@@ -61,7 +69,7 @@ REHEARSAL_CHAIN_ID=7799    # scripts/mainnet-rehearsal.sh's default: rehearsal-o
 REHEARSAL=0   # 1 only under --dry-run: --rehearsal may be passed there and nowhere else
 
 die() { echo "error: $*" >&2; exit 1; }
-usage() { sed -n '2,36p' "$0"; exit 1; }
+usage() { sed -n '2,44p' "$0"; exit 1; }
 fp() { printf '%s…' "${1:0:16}"; }
 mode_of() { stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"; }
 
@@ -303,8 +311,10 @@ PY
   echo "    --peers 1@<ip1>:<port>,2@<ip2>:<port>,3@<ip3>:<port>,4@<ip4>:<port>"
   echo "THEN copy validator 1's <data>/network.json back here and run the strict final check:"
   echo "  scripts/mainnet-genesis.sh check <network.json> --chain-id $chain_id --ceremony $out/ceremony.json"
+  echo "  (on PASS it writes ceremony-check.json next to the file — the record every Mac binds to)"
   echo "THEN, on EACH validator Mac before it votes (doc §3):"
-  echo "  scripts/mainnet-genesis.sh verify-local <the same final network.json> --data <this Mac's data dir>"
+  echo "  scripts/mainnet-genesis.sh verify-local <the same final network.json> \\"
+  echo "    --data <this Mac's data dir> --ceremony <ceremony-check.json from the coordinator>"
 }
 
 cmd_check() {
@@ -342,17 +352,37 @@ PY
       "$REHEARSAL_CHAIN_ID") die "check: chain id $REHEARSAL_CHAIN_ID is the rehearsal default, not a launch id" ;;
     esac
   fi
-  run_check "$file" "$chain_id" final
+  run_check "$file" "$chain_id" final || die "check failed: no ceremony record is written"
+  # Audit 6, A6-3/A6-4: the independent pin every validator Mac binds to
+  # before it votes — the coordinator's own tool cannot take it from the file
+  # being checked (that is the transit-swap hole), so it derives it here, from
+  # the bytes that just passed, and writes it next to the file.
+  local rec
+  rec="$(dirname "$file")/ceremony-check.json"
+  "$A" ceremony-record --network "$file" --out "$rec"
+  echo
+  echo "== ceremony record: $rec"
+  echo "    PUBLIC (no secret). Copy it TOGETHER with the final network.json to every"
+  echo "    validator Mac: verify-local --ceremony and the node's startup bind refuse"
+  echo "    to vote without it (audit 6: no validator votes from a genesis the"
+  echo "    ceremony did not check)."
+  echo "    The app bundle ships the same pair: copy BOTH unchanged into"
+  echo "    apps/wallet/Resources/ for the release build (docs/ops/mainnet-launch.md"
+  echo "    6단계) — scripts/build-wallet.sh runs mainnet-rules --bundle on it, so a"
+  echo "    build without the matching record does not ship."
 }
 
 # Each validator Mac, before it votes: the strict check on the final file it
-# received (transfer corruption included), then this Mac's threshold.json
-# against that file — the same refusal the node itself makes at startup
-# (main.rs committee_keys). Never prints the share.
+# received, with the chain id pinned by the coordinator's RECORD (never taken
+# from the file being verified — that is A6-3's transit-swap hole), then the
+# one fail-closed bind (aether mainnet-bind): the record against the file's
+# exact bytes, this Mac's network.json and threshold.json. The node makes the
+# same refusal at startup. Never prints the share.
 cmd_verify_local() {
-  local file='' data=''
+  local file='' data='' ceremony=''
   while [ $# -gt 0 ]; do case $1 in
     --data) data=$2; shift 2 ;;
+    --ceremony) ceremony=$2; shift 2 ;;
     -*) die "verify-local: unknown option '$1'" ;;
     *) if [ -n "$file" ]; then die "verify-local: exactly one network.json"; fi; file=$1; shift ;;
   esac; done
@@ -360,34 +390,26 @@ cmd_verify_local() {
   [ -f "$file" ] || die "verify-local: no file at $file"
   [ -n "$data" ] || die "verify-local: --data <this Mac's data dir> is required (where threshold.json lives)"
   [ -f "$data/threshold.json" ] || die "verify-local: no $data/threshold.json — run the genesis DKG on this Mac first (doc §3)"
+  [ -n "$ceremony" ] || die "verify-local: --ceremony <ceremony-check.json> is required — the record the coordinator's check wrote next to the final network.json. Audit 6, A6-3: the expected chain id comes from the record, never from the file being verified."
+  [ -f "$ceremony" ] || die "verify-local: no ceremony record at $ceremony"
   echo "== verify-local: the strict rule check, run on THIS Mac against the final file"
-  chain_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["chain_id"])' "$file")
+  # A6-3: the expected chain id comes from the RECORD, never from the file
+  # being verified — a file swapped in transit cannot self-accept.
+  chain_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["chain_id"])' "$ceremony")
+  case $chain_id in ''|*[!0-9]*) die "$ceremony: no chain_id — not a ceremony record (regenerate it with check)" ;; esac
   run_check "$file" "$chain_id" final
-  echo "== verify-local: this Mac's threshold.json against the final file (never printed)"
-  python3 - "$file" "$data/threshold.json" <<'PY'
-import json, sys
-net, th = json.load(open(sys.argv[1])), json.load(open(sys.argv[2]))
-bad = []
-if th.get("round") != net.get("round"):
-    bad.append(f'round: threshold.json says {th.get("round")!r}, network.json says {net.get("round")!r}')
-for f in ("output", "identity"):
-    a, b = th.get(f), net.get(f)
-    if not isinstance(a, str) or not a:
-        bad.append(f'{f}: threshold.json has none')
-    elif not isinstance(b, str) or not b:
-        bad.append(f'{f}: network.json has none (not a final file)')
-    elif a.lower() != b.lower():
-        bad.append(f'{f}: threshold.json and network.json carry different committees ({a[:16]}… vs {b[:16]}…)')
-if bad:
-    print("FAIL  this Mac's share does not match the final network.json:")
-    for b in bad:
-        print(f"        - {b}")
-    print("        Do not start the node: it will make the same refusal. Get the final network.json")
-    print("        the coordinator checked, or rerun the ceremony for this round.")
-    sys.exit(1)
-print("ok    round, output and identity match — this Mac votes under the committee the final file names")
-PY
-  echo "VERIFY-LOCAL PASS: this Mac's share is the committee the final file carries"
+  echo "== verify-local: binding this Mac to the checked genesis (never prints the share)"
+  "$A" mainnet-bind --network "$file" --data "$data" --ceremony "$ceremony"
+  # Keep the record with the data: the wallet's `aether run` (no --network,
+  # no --ceremony) binds against this copy on its next start. The coordinator
+  # may be validator 1 itself, whose check already wrote the record into this
+  # data dir — then it is already in place (cp refuses to copy onto itself).
+  if ! cp "$ceremony" "$data/ceremony-check.json" 2>/dev/null \
+     && ! cmp -s "$ceremony" "$data/ceremony-check.json"; then
+    die "cannot store the record at $data/ceremony-check.json"
+  fi
+  echo "VERIFY-LOCAL PASS: this Mac votes under the committee of the genesis the ceremony checked"
+  echo "  (the record is stored at $data/ceremony-check.json; aether run binds to it)"
 }
 
 run_check() { # run_check <network.json> [expected chain id] <genesis|final>
@@ -486,7 +508,7 @@ cmd_dry_run() {
   echo "== [verify-local] on each validator Mac's data dir (what every validator runs before voting; REHEARSAL)"
   for i in $(seq 1 $N_VALIDATORS); do
     echo "-- validator $i"
-    cmd_verify_local "$dir/v1/network.json" --data "$dir/v$i"
+    cmd_verify_local "$dir/v1/network.json" --data "$dir/v$i" --ceremony "$dir/v1/ceremony-check.json"
   done
   echo
   echo "== coordinator directory must hold no secret (the ceremony's copy rule)"

@@ -50,9 +50,22 @@ final class NodeController: ObservableObject {
                 startIfAllowed()
             } else {
                 stop()
+                // The node switch off must stop the daemon's node too, and
+                // keep it stopped across the next restart: the marker goes
+                // away (docs/design/29).
+                unattended?.nodeSwitchedOff()
             }
         }
     }
+    /// The unattended-restart half of the feature (docs/design/29): set by
+    /// the app at launch. The node tells it when it runs (marker in sync) and
+    /// hands it the daemon's node to stop when the user turns the node off.
+    var unattended: UnattendedDaemon?
+    /// Attached to the daemon-started node (unattended restart): it answers on
+    /// the node's RPC port and holds `run.lock`, and this app did not start
+    /// it. One node per data dir — while attached, `process` is nil and the
+    /// app never starts a second one.
+    @Published private(set) var attached = false
     /// Prove blocks on this Mac's GPU for rewards (protocol 2); paid to `proveAddress`.
     @AppStorage("proveBlocks") var prove = false {
         didSet { restartIfRunning() }
@@ -164,6 +177,12 @@ final class NodeController: ObservableObject {
     /// Start or pause for the power source; called every 30 s while the switch is on.
     private func applyPower() {
         guard enabled else { return }
+        if attached {
+            // Unattended beats the adapter rule (docs/design/29): the daemon's
+            // node keeps a voting Mac alive through restarts, on battery too.
+            state = .running
+            return
+        }
         if automaticRestartBlocked && watchdog.lastFailure == .diskFull,
            let attrs = try? FileManager.default.attributesOfFileSystem(forPath: Self.dataDir.path),
            let free = attrs[.systemFreeSize] as? NSNumber,
@@ -212,6 +231,14 @@ final class NodeController: ObservableObject {
         return FileManager.default.isExecutableFile(atPath: helper.path) ? helper : nil
     }
 
+    /// The bundled node binary for anything outside this controller that
+    /// needs the very binary the app runs (the unattended marker). The
+    /// rollback choice (`aether.prev`) stays private to `binary`.
+    static var helperBinaryURL: URL? {
+        let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/aether")
+        return FileManager.default.isExecutableFile(atPath: helper.path) ? helper : nil
+    }
+
     #if DEBUG
     /// Design preview: looks like a running node, runs nothing.
     func loadPreview() {
@@ -225,6 +252,10 @@ final class NodeController: ObservableObject {
     private var watchdog = NodeWatchdog()
     /// A watchdog-ordered restart is pending (its backoff is running).
     private var restartTimer: Timer?
+    /// Consecutive polls the attached (daemon-started) node did not answer
+    /// (docs/design/29): a few are a restart under the daemon, five take the
+    /// data directory back.
+    private var attachMisses = 0
     /// A terminal watchdog decision must also gate the periodic power timer.
     private var automaticRestartBlocked = false
     /// The last update's binary kept beside the current one: rolled back to
@@ -311,12 +342,17 @@ final class NodeController: ObservableObject {
         announceAvailability(leaving: Self.onBattery)
         loadCandidate(binary)
         nextCandidateRetry = clock.now.advanced(by: 60)
-        var args = ["run", "--data", Self.dataDir.path, "--rpc-port", String(Self.port), "--port", String(Self.p2pPort), "--exit-with-parent"]
-        if let network = Bundle.main.url(forResource: "network", withExtension: "json") {
-            args += ["--network", network.path]
-        }
-        args += ProverFlags.build(memory: proverMemory, cores: proverCores, battery: proverOnBattery,
-                                  activeProcessors: ProcessInfo.processInfo.activeProcessorCount)
+        // The same argv the daemon would run (UnattendedDecision.nodeArgv is
+        // the single source), plus the app-child-only --exit-with-parent.
+        var args = UnattendedDecision.nodeArgv(
+            dataDir: Self.dataDir.path,
+            rpcPort: Self.port,
+            p2pPort: Self.p2pPort,
+            networkPath: Bundle.main.url(forResource: "network", withExtension: "json")?.path,
+            proverFlags: ProverFlags.build(memory: proverMemory, cores: proverCores, battery: proverOnBattery,
+                                           activeProcessors: ProcessInfo.processInfo.activeProcessorCount))
+        args += ["--exit-with-parent"]
+        unattended?.nodeSwitchedOn()
         let p = Process()
         p.executableURL = binary
         p.arguments = args
@@ -378,6 +414,23 @@ final class NodeController: ObservableObject {
     }
 
     func stop(keepSwitch: Bool = false) {
+        if attached {
+            // Detach only: the daemon's node is the point of the unattended
+            // restart — quitting the app must not stop it (docs/design/29).
+            // The node switch being turned off stops it (`nodeSwitchedOff`).
+            attached = false
+            poll?.invalidate()
+            tokenTimer?.invalidate()
+            restartTimer?.invalidate()
+            poll = nil
+            restartTimer = nil
+            switched = false
+            watchdog.invalidate()
+            if !UserDefaults.standard.bool(forKey: "useDevelopmentNetwork") { useLocalNode(port: nil) }
+            state = .off
+            applyDuty()
+            return
+        }
         if !keepSwitch {
             powerTimer?.invalidate()
             powerTimer = nil
@@ -418,6 +471,25 @@ final class NodeController: ObservableObject {
         networkCheckPending = false
         if !UserDefaults.standard.bool(forKey: "useDevelopmentNetwork") { useLocalNode(port: nil) }  // the wallet reads other nodes from this moment on
         applyDuty()
+        if status == UnattendedDecision.lockExitCode {
+            // One data directory, one node (`run.lock`, red team #12): the
+            // daemon's node of the unattended restart already runs it
+            // (docs/design/29). Attach to it when it answers on RPC; if
+            // nothing does, the holder is dying — start our own again.
+            let port = Self.port
+            Task.detached {
+                let alive = await Self.nodeAnswersRpc(port: port)
+                await MainActor.run {
+                    guard self.enabled, self.process == nil, !self.automaticRestartBlocked else { return }
+                    if UnattendedDecision.afterLockExit(rpcAlive: alive) == .attach {
+                        self.attachToRunningNode()
+                    } else {
+                        self.start()
+                    }
+                }
+            }
+            return
+        }
         switch watchdog.exited(clock.now, code: status, signaled: proc.terminationReason == .uncaughtSignal, log: nodeLogTail()) {
         case .restart(let after):
             // Restart with backoff (docs/design/24-self-healing.md layer 2):
@@ -522,6 +594,10 @@ final class NodeController: ObservableObject {
             await MainActor.run {
                 // Published only when it changed: the poll runs every 2 s.
                 if let status, self.voting != status { self.voting = status }
+                // The unattended-restart default follows the registry: a Mac
+                // in or entering the voting set keeps running through
+                // restarts unless the user chose otherwise (docs/design/29).
+                if let status { self.unattended?.applyDefault(registered: status.registered) }
                 self.applyDuty()
             }
         }
@@ -535,10 +611,62 @@ final class NodeController: ObservableObject {
     private var checkInFlight = false
 
     private func restartIfRunning() {
+        if attached {
+            // A stall in the node we are attached to: take it over. The
+            // watchdog's layer-2 rule applies no matter who started the node
+            // (docs/design/24): stop the daemon's node, then start our own.
+            unattended?.stopDaemonNode()
+            watchdog.restarting()
+            let timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] t in
+                Task { @MainActor in
+                    guard let self, self.enabled, self.process == nil else { t.invalidate(); return }
+                    if self.attached { self.attached = false }
+                    self.start()
+                    t.invalidate()
+                }
+            }
+            restartTimer = timer
+            return
+        }
         guard process != nil else { return }
         stop(keepSwitch: true)
         watchdog.restarting()
         start()
+    }
+
+    /// Attach to the daemon-started node (unattended restart,
+    /// docs/design/29): it holds `run.lock` and answers on the node's RPC
+    /// port. The app monitors it exactly like its own — height, voting duty,
+    /// DeviceCheck tokens, stall detection — without ever starting a second
+    /// node on the same data directory.
+    private func attachToRunningNode() {
+        attached = true
+        attachMisses = 0
+        switched = false
+        state = .running
+        if candidate == nil, let binary {
+            loadCandidate(binary)
+            nextCandidateRetry = clock.now.advanced(by: 60)
+        }
+        watchdog.started(clock.now)
+        watchSleep()
+        refreshDeviceToken()
+        tokenTimer?.invalidate()
+        tokenTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refreshDeviceToken() }
+        }
+        poll?.invalidate()
+        poll = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.check() }
+        }
+        applyDuty()
+    }
+
+    /// Whether a node answers on `port` (the daemon's node when the app opens
+    /// after an unattended restart). Synchronous for callers off the main
+    /// actor.
+    nonisolated static func nodeAnswersRpc(port: UInt16) async -> Bool {
+        await LocalRPC.call(port: port, method: "aether_status", params: []) != nil
     }
 
     private func refreshProver() {
@@ -651,7 +779,20 @@ final class NodeController: ObservableObject {
             let activity = (status?["activity"] as? NSNumber)?.uint64Value
             await MainActor.run {
                 self.checkInFlight = false
-                guard self.process != nil else { return }
+                guard self.process != nil || self.attached else { return }
+                if self.attached, status == nil {
+                    // The attached (daemon-started) node stopped answering:
+                    // after a short grace (it may be restarting under the
+                    // daemon), take the data directory back and run our own.
+                    self.attachMisses += 1
+                    if self.attachMisses >= 5, self.enabled, self.process == nil {
+                        self.attached = false
+                        self.attachMisses = 0
+                        self.start()
+                    }
+                    return
+                }
+                if self.attached { self.attachMisses = 0 }
                 let route = self.watchdog.useLocalNode(
                     local: statusHeight, network: network,
                     responsive: status != nil, currentlyLocal: self.switched,
@@ -741,8 +882,10 @@ final class NodeController: ObservableObject {
 // MARK: validator duty (docs/design/13-roadmap.md F, P0)
 
 extension NodeController {
-    /// This Mac's node runs and the network has it in the voting set.
-    var isValidator: Bool { process != nil && voting?.voting == true }
+    /// This Mac's node runs and the network has it in the voting set. The
+    /// daemon-started node counts the same (docs/design/29): attached is
+    /// running.
+    var isValidator: Bool { (process != nil || attached) && voting?.voting == true }
 
     /// Keep the Mac awake while it signs blocks: a sleeping member is a missing
     /// vote, and a third of them asleep pauses the network. On battery with

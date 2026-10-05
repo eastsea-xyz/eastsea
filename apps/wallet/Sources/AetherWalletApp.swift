@@ -9,6 +9,9 @@ struct AetherWalletApp: App {
     @StateObject private var model = WalletModel()
     #if os(macOS)
     @StateObject private var node = NodeController()
+    /// The unattended-restart half of the node (docs/design/29): the
+    /// LaunchDaemon registration, its marker, and the honest power facts.
+    @StateObject private var unattended = UnattendedDaemon()
     @StateObject private var earnings = Earnings()
     /// Views pause their continuous animations while a window is live-resizing.
     @StateObject private var resizeMonitor = WindowResizeMonitor()
@@ -22,10 +25,11 @@ struct AetherWalletApp: App {
             ContentView()
                 .environmentObject(model)
                 .environmentObject(node)
+                .environmentObject(unattended)
                 .environmentObject(appDelegate.updates)
                 .environmentObject(earnings)
                 .onAppear {
-                    appDelegate.start(node: node, model: model)
+                    appDelegate.start(node: node, model: model, unattended: unattended)
                     earnings.attach(node, operatorAddress: { model.address })
                     NSApp.setActivationPolicy(.regular)
                     #if DEBUG
@@ -78,13 +82,13 @@ struct AetherWalletApp: App {
         #endif
         #if os(macOS)
         Settings {
-            SettingsView().environmentObject(node).environmentObject(model).environmentObject(appDelegate.updates)
+            SettingsView().environmentObject(node).environmentObject(model).environmentObject(unattended).environmentObject(appDelegate.updates)
         }
         // Always in the menu bar: balance, node and prover at a glance; the window opens from here.
         MenuBarExtra {
             MenuBarPanel().environmentObject(model).environmentObject(node).environmentObject(earnings)
                 .onAppear {
-                    appDelegate.start(node: node, model: model)
+                    appDelegate.start(node: node, model: model, unattended: unattended)
                     earnings.attach(node, operatorAddress: { model.address })
                 }
         } label: {
@@ -101,6 +105,7 @@ struct SettingsView: View {
     @EnvironmentObject var node: NodeController
     @EnvironmentObject var model: WalletModel
     @EnvironmentObject var updates: Updates
+    @EnvironmentObject var unattended: UnattendedDaemon
     @AppStorage("developerMode") private var developerMode = false
     @AppStorage("useDevelopmentNetwork") private var useDevelopmentNetwork = false
     @AppStorage("developmentNetworkPort") private var developmentNetworkPort = 18546
@@ -117,6 +122,7 @@ struct SettingsView: View {
             Label(node.awakeNote, systemImage: node.keepsAwake ? "sun.max.fill" : "moon.zzz")
                 .font(.caption).foregroundStyle(.secondary)
             Toggle("Open \(Brand.project) at login", isOn: Binding(get: { node.startAtLogin }, set: { node.startAtLogin = $0 }))
+            UnattendedSection()
             ResourcesSection()
             Text("Your node verifies every block itself and your wallet asks it instead of the network. Quitting \(Brand.project) stops it.")
                 .font(.caption).foregroundStyle(.secondary)
@@ -170,6 +176,49 @@ struct SettingsView: View {
     }
 }
 
+/// Settings ▸ the "keep this Mac's node running after restarts" switch
+/// (docs/design/29-unattended-restart.md): the toggle, the one-time system
+/// approval it needs, and the honest power sentences — what comes back after
+/// a power cut, and where macOS itself stops (FileVault).
+struct UnattendedSection: View {
+    @EnvironmentObject var node: NodeController
+    @EnvironmentObject var unattended: UnattendedDaemon
+
+    var body: some View {
+        Group {
+            Toggle("Keep this Mac's node running after restarts", isOn: $unattended.enabled)
+                .help("After a reboot the node — and this Mac's vote — come back by themselves, without anyone logging in, everywhere macOS allows it. A FileVault cold boot waits for one unlock first.")
+            switch unattended.status {
+            case .needsApproval:
+                Label("Registered. Allow EastSea in System Settings ▸ Login Items — until then the daemon does not run.", systemImage: "hand.raised")
+                    .font(.caption).foregroundStyle(.orange)
+                Button("Open System Settings") { unattended.openApprovalPane() }
+            case .failed(let why):
+                Label(why, systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.orange)
+            case .off, .approved:
+                EmptyView()
+            }
+            if unattended.enabled {
+                Label("This Mac is in, or can enter, the voting set: that is why this is on by default. While nobody is logged in the node keeps verifying and voting; daily reward re-attestation resumes when the app is open again.", systemImage: "arrow.clockwise")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            ForEach(UnattendedDecision.powerLines(unattended.power), id: \.self) { line in
+                Label(line, systemImage: "bolt")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .onAppear {
+            // The user approves outside the app; re-read both facts whenever
+            // Settings appears (docs/design/29).
+            unattended.refreshStatus()
+            unattended.refreshPower()
+        }
+    }
+}
+
 /// Aether lives in the menu bar: closing the window keeps it (and its node)
 /// running; Quit stops both.
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -206,7 +255,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Once per launch, from whichever appears first (window or menu-bar panel).
-    @MainActor func start(node: NodeController, model: WalletModel) {
+    @MainActor func start(node: NodeController, model: WalletModel, unattended: UnattendedDaemon) {
         guard !started else { return }
         started = true
         #if DEBUG
@@ -252,6 +301,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             UserDefaults.standard.set(true, forKey: "loginItemDefaultApplied")
             node.startAtLogin = true
         }
+        // The unattended-restart half (docs/design/29): the node owns the
+        // switch, this owns the daemon. Wire them before the node resumes,
+        // so its first start already writes the marker — and if a daemon node
+        // survived the reboot, the node's run.lock exit turns into attach.
+        unattended.nodeEnabled = node.enabled
+        unattended.wrongLocation = node.wrongLocation
+        node.unattended = unattended
+        unattended.refreshStatus()
+        unattended.refreshPower()
         node.restore()
     }
 

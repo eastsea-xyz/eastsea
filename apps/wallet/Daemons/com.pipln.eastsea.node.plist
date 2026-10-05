@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.pipln.eastsea.node</string>
+	<key>BundleProgram</key>
+	<string>Helpers/eastsea-node-daemon.sh</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ThrottleInterval</key>
+	<integer>30</integer>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>Comment</key>
+	<string>EastSea unattended restart (docs/design/29-unattended-restart.md). The root stub waits for the app's opt-in marker unattended.plist in a user's node data directory, then runs the node as that user. Approved once by the user in System Settings &gt; Login Items.</string>
+</dict>
+</plist>

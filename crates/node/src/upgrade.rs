@@ -19,6 +19,7 @@ use commonware_cryptography::bls12381::primitives::sharing::Sharing;
 use commonware_cryptography::bls12381::primitives::variant::{MinSig, PartialSignature};
 use commonware_parallel::Sequential;
 use commonware_cryptography::{ed25519, Signer as _, Verifier as _};
+use commonware_utils::{Faults as _, N3f1};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -152,10 +153,20 @@ pub fn combine(sharing: &Sharing<MinSig>, partials: &[PartialUpgrade]) -> Result
     Ok(SignedUpgrade { upgrade: first.upgrade.clone(), signature: hex::encode(sig.encode()), emergency_approvals })
 }
 
-/// An emergency needs one independent approval from every current voting key.
+/// New-genesis emergencies need n-f independent approvals from current voting
+/// keys, using the committee's BFT fault model. Legacy 7780 retains unanimity
+/// here; its consensus admission still refuses the emergency flag entirely.
 pub fn verify_emergency(s: &SignedUpgrade, committee: &[(String, String)]) -> Result<(), String> {
-    if committee.is_empty() || s.emergency_approvals.len() != committee.len() {
+    if s.upgrade.chain_id == 7_780 && (committee.is_empty() || s.emergency_approvals.len() != committee.len()) {
         return Err("emergency upgrade needs every current committee member".into());
+    }
+    if committee.is_empty() {
+        return Err("emergency upgrade needs a current committee".into());
+    }
+    let members = u32::try_from(committee.len()).map_err(|_| "committee is too large")?;
+    let required = if s.upgrade.chain_id == 7_780 { members } else { N3f1::quorum(members) } as usize;
+    if s.emergency_approvals.len() < required || s.emergency_approvals.len() > committee.len() {
+        return Err(format!("emergency upgrade needs at least {required} current committee members"));
     }
     let mut remaining: std::collections::HashSet<_> = committee.iter().map(|m| m.0.as_str()).collect();
     if remaining.len() != committee.len() { return Err("duplicate committee key".into()); }
@@ -268,7 +279,7 @@ mod tests {
     }
 
     #[test]
-    fn emergency_requires_every_current_member_and_binds_the_upgrade() {
+    fn emergency_requires_a_current_committee_quorum_and_binds_the_upgrade() {
         let (_, sharing, shares) = aether_light::devnet_threshold(4);
         let keys: Vec<_> = (1..=4).map(aether_light::devnet_validator_key).collect();
         let committee: Vec<_> = keys.iter().map(|key| (hex::encode(key.public_key().encode()), String::new())).collect();
@@ -279,13 +290,40 @@ mod tests {
         verify(sharing.public(), &all).unwrap();
         verify_emergency(&all, &committee).unwrap();
         let three = combine(&sharing, &partials[..3]).unwrap();
-        assert!(verify_emergency(&three, &committee).is_err());
+        verify_emergency(&three, &committee).unwrap();
+        assert!(combine(&sharing, &partials[..2]).is_err(), "two BLS shares cannot sign");
+        let mut two = three.clone();
+        two.emergency_approvals.truncate(2);
+        assert!(verify_emergency(&two, &committee).is_err(), "two independent approvals are insufficient even with a valid BLS signature");
+        assert!(verify_emergency(&three, &[]).is_err());
         let mut changed = all.clone();
         changed.emergency_approvals[0].1 = all.emergency_approvals[1].1.clone();
         assert!(verify_emergency(&changed, &committee).is_err());
         changed = all.clone();
         changed.emergency_approvals[0].0 = all.emergency_approvals[1].0.clone();
         assert!(verify_emergency(&changed, &committee).is_err());
+        changed = three.clone();
+        changed.upgrade.activate_at += 1;
+        assert!(verify_emergency(&changed, &committee).is_err());
+        let mut duplicate_committee = committee.clone();
+        duplicate_committee[3] = duplicate_committee[0].clone();
+        assert!(verify_emergency(&three, &duplicate_committee).is_err());
+        let mut foreign_committee = committee.clone();
+        foreign_committee[0].0 = hex::encode(aether_light::devnet_validator_key(5).public_key().encode());
+        assert!(verify_emergency(&three, &foreign_committee).is_err());
+    }
+
+    #[test]
+    fn legacy_7780_emergency_verification_still_requires_every_member() {
+        let (_, sharing, shares) = aether_light::devnet_threshold(4);
+        let keys: Vec<_> = (1..=4).map(aether_light::devnet_validator_key).collect();
+        let committee: Vec<_> = keys.iter().map(|key| (hex::encode(key.public_key().encode()), String::new())).collect();
+        let mut u = upgrade(4, 100);
+        u.chain_id = 7_780;
+        u.emergency = true;
+        let partials: Vec<_> = shares.iter().zip(&keys).map(|((_, share), key)| sign_emergency_partial(&u, share, key)).collect();
+        verify_emergency(&combine(&sharing, &partials).unwrap(), &committee).unwrap();
+        assert_eq!(verify_emergency(&combine(&sharing, &partials[..3]).unwrap(), &committee), Err("emergency upgrade needs every current committee member".into()));
     }
 
     #[test]

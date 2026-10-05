@@ -18,6 +18,7 @@ run earnings-export Brand.swift EarningsModel.swift ChainActivity.swift Earnings
 run fee-confirm EarningsModel.swift
 run history-notice HistoryFailure.swift
 run install-location Brand.swift InstallLocation.swift
+run key-exposure KeyExposureNotice.swift
 run network-upgrade Brand.swift NetworkUpgrade.swift
 run release-approval ReleaseApproval.swift
 run rename-migration DataMigration.swift

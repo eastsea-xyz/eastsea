@@ -135,7 +135,7 @@ struct DeveloperView: View {
                     Button { Clipboard.copy(model.address) }
                         label: { Image(systemName: "doc.on.doc") }.buttonStyle(.borderless)
                 }
-                Text(model.account.map { "\(Wei.format($0.balanceWei)) \(Brand.coinTicker)" } ?? "…")
+                Text(model.account.map { "\(Wei.format($0.balanceWei)) \(Brand.networkCoinTicker)" } ?? "…")
                     .font(.system(size: 34, weight: .semibold, design: .rounded))
                 if let a = model.account, model.verifyError == nil {
                     Label("Verified by this device", systemImage: "checkmark.seal.fill").foregroundStyle(.green).font(.headline)
@@ -149,7 +149,7 @@ struct DeveloperView: View {
                     Label(model.keyLabel, systemImage: "lock.shield").font(.caption)
                     Spacer()
                     if model.developmentNetwork {
-                        Button("Get 10 test \(Brand.coinTicker)") { model.faucet() }.disabled(model.busy || model.address.isEmpty)
+                        Button("Get 10 test \(Brand.networkCoinTicker)") { model.faucet() }.disabled(model.busy || model.address.isEmpty)
                     }
                 }
             }.frame(maxWidth: .infinity, alignment: .leading)
@@ -160,7 +160,7 @@ struct DeveloperView: View {
         GroupBox {
             HStack {
                 TextField("0x recipient (several: comma-separated, one signature)", text: $model.sendTo).textFieldStyle(.roundedBorder).font(.callout.monospaced())
-                TextField("\(Brand.coinTicker)", text: $model.sendAmount).textFieldStyle(.roundedBorder).frame(width: 80)
+                TextField("\(Brand.networkCoinTicker)", text: $model.sendAmount).textFieldStyle(.roundedBorder).frame(width: 80)
                 Button("Send") { Task { await model.send() } }.keyboardShortcut(.return).disabled(model.busy || model.sendTo.isEmpty)
             }
         } label: { Text("Send (signed in the Secure Enclave)") }
@@ -186,9 +186,12 @@ struct DeveloperView: View {
                     TextField("0x lost account (that trusts this device)", text: $model.lostInput).textFieldStyle(.roundedBorder).font(.caption.monospaced())
                     Button("Propose recovery") { model.recover() }.disabled(model.busy || model.lostInput.isEmpty || model.outgoingRecovery != nil)
                 }
+                // F-05: recovery saves a lost key, never a stolen one.
+                Text(KeyExposureNotice.recovery.text).font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
                 if let p = model.outgoingRecovery {
                     HStack {
-                        Text("Pending: \(Wei.format(p.request.valueWei)) \(Brand.coinTicker) from \(p.request.lost.prefix(10))… · ready \(p.readyAt.formatted())").font(.caption)
+                        Text("Pending: \(Wei.format(p.request.valueWei)) \(Brand.networkCoinTicker) from \(p.request.lost.prefix(10))… · ready \(p.readyAt.formatted())").font(.caption)
                         Spacer()
                         Button("Finish") { model.finishRecovery() }.disabled(model.busy || !p.isReady)
                     }

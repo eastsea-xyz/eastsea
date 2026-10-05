@@ -3,7 +3,8 @@
 //! - Exec and prove base fees have EIP-4844-style exponential updates from
 //!   the parent's excess. `base_exec` is burned (revm does not credit it);
 //!   `base_prove` pays provers through the escrow. New-genesis state growth
-//!   instead has the fixed burned price below, even at zero exec/prove base.
+//!   has a burned floor price and a congestion surcharge, even at zero
+//!   exec/prove base. A rolling state-unit budget bounds sustained disk growth.
 //! - Priority fees (tips) collect at `FEE_COLLECTOR` during the block and are
 //!   split at the end: 60% proposer, 20% prover escrow, 20% burned (the burn
 //!   floor makes self-paid fake tips cost the proposer).
@@ -45,6 +46,17 @@ pub const EVENT_BASE_BYTES: u64 = 64;
 pub const RECEIPT_BYTES_PER_STATE_UNIT: u64 = 32;
 /// Consensus limits for new-genesis transactions, excluding capped system writes.
 pub const MAX_STATE_UNITS_PER_BLOCK: u64 = 100_000;
+/// Refill of the rolling new-genesis growth budget per finalized block (1 s).
+/// A unit buys at most 32 archived logical bytes, hence at most 512 paid
+/// stored bytes. 32 units/s bounds sustained paid rows to 1.416 GB/day,
+/// plus a one-time 51.2 MB burst. Code/accounts/slots share this budget.
+/// Retune through a committee-approved protocol upgrade; see design/27.
+pub const STATE_UNITS_PER_BLOCK: u64 = 32;
+/// Ordinary bursts keep the existing price. Congestion pricing begins after
+/// half the 100,000-unit bucket is consumed; another 12,500 units multiplies
+/// the floor by approximately e. The hard budget holds regardless of price.
+pub const STATE_PRICE_FREE_BURST: u64 = MAX_STATE_UNITS_PER_BLOCK / 2;
+pub const STATE_PRICE_UPDATE_UNITS: u64 = MAX_STATE_UNITS_PER_BLOCK / 8;
 pub const MAX_NEW_SLOTS_PER_BLOCK: u64 = 512;
 /// Upper bound for transaction-dependent redb key/value bytes per logical
 /// metered byte. Receipt JSON hex doubles binary output/data and expands each
@@ -53,12 +65,53 @@ pub const MAX_NEW_SLOTS_PER_BLOCK: u64 = 512;
 /// well as the signed transaction's staged copy and summary hash. It excludes
 /// separately bounded protocol records and redb page/fragmentation overhead.
 pub const MAX_STORED_BYTES_PER_METERED_BYTE: u64 = 16;
-/// Maximum logical archived transaction and receipt bytes in a new-genesis block.
+/// Maximum logical archived bytes in a new-genesis burst block. Sustained
+/// growth is additionally bounded by the rolling state-unit budget above.
 pub const MAX_PERSISTENT_BYTES_PER_BLOCK: u64 = 2 * 1024 * 1024;
 /// Bound on the paid redb key/value representation at the logical block cap.
 /// Separately bounded protocol records are not charged against it.
 pub const MAX_PAID_STORED_BYTES_PER_BLOCK: u64 =
     MAX_PERSISTENT_BYTES_PER_BLOCK * MAX_STORED_BYTES_PER_METERED_BYTE;
+
+/// Independent new-genesis archive budget, including all canonical payload
+/// bytes: transaction envelopes, BAL, proofs and subsidized control traffic.
+/// Retune only at a version-gated committee-approved protocol upgrade.
+pub const MAX_ENCODED_PAYLOAD_BYTES: u64 = 8 << 20;
+pub const ENCODED_PAYLOAD_BYTES_PER_BLOCK: u64 = 4096;
+/// Planning allowance for staged/era and consensus archive copies.
+pub const MAX_ARCHIVE_COPIES: u64 = 4;
+/// Protected burst space for bounded handoff/seed/upgrade control payloads.
+pub const CONTROL_ARCHIVE_RESERVE: u64 = 256 << 10;
+
+pub fn encoded_payload_limit(excess: u64) -> u64 {
+    MAX_ENCODED_PAYLOAD_BYTES.saturating_sub(excess)
+}
+
+pub fn next_archive_excess(excess: u64, used: u64) -> u64 {
+    excess.saturating_add(used).saturating_sub(ENCODED_PAYLOAD_BYTES_PER_BLOCK)
+}
+
+/// Unspent burst capacity for the child of a finalized block. Encoding this
+/// in the existing context's state limit also binds the prover to the budget,
+/// without adding fields to legacy blocks, snapshots or proof statements.
+pub fn state_block_limit(excess: u64) -> u64 {
+    MAX_STATE_UNITS_PER_BLOCK.saturating_sub(excess)
+}
+
+/// Debt after a block. Refill is per height, never wall time or transaction.
+pub fn next_state_excess(excess: u64, used: u64) -> u64 {
+    excess.saturating_add(used).saturating_sub(STATE_UNITS_PER_BLOCK)
+}
+
+/// Burned state base price: unchanged for ordinary bursts, exponential under
+/// sustained use, with an unconditional nonzero floor.
+pub fn state_base_fee(excess: u64) -> u128 {
+    fake_exponential(
+        STATE_UNIT_PRICE,
+        excess.saturating_sub(STATE_PRICE_FREE_BURST) as u128,
+        STATE_PRICE_UPDATE_UNITS as u128,
+    )
+}
 
 /// What a block's fees follow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -84,35 +137,57 @@ pub fn fake_exponential(factor: u128, numerator: u128, denominator: u128) -> u12
     output / denominator
 }
 
-/// Excess after a block that used `used` on top of `excess` (targets = half the limits).
+/// Excess after a block: exec/prove target half their limits; state debt
+/// consumes actual units and refills by the fixed per-height allowance.
 pub fn next_excess(excess: GasVector, used: GasVector, limits: GasVector) -> GasVector {
     let step = |e: u64, u: u64, l: u64| e.saturating_add(u).saturating_sub(l / 2);
-    GasVector { exec: step(excess.exec, used.exec, limits.exec), state: 0, prove: step(excess.prove, used.prove, limits.prove) }
+    GasVector {
+        exec: step(excess.exec, used.exec, limits.exec),
+        state: if limits.state <= MAX_STATE_UNITS_PER_BLOCK && limits.state != 0 {
+            next_state_excess(excess.state, used.state)
+        } else { 0 },
+        prove: step(excess.prove, used.prove, limits.prove),
+    }
 }
 
-/// Base fees for a block with accumulated `excess` (0 when there is none).
+/// Base fees for a block with accumulated `excess`. Exec/prove are zero when
+/// there is none; a finite nonzero state dimension has the growth floor.
 pub fn base_fee(excess: GasVector, limits: GasVector) -> FeeVector {
     let dim = |scale: u128, e: u64, l: u64| {
         let target = (l / 2).max(1) as u128;
         fake_exponential(scale, e as u128, target * UPDATE_QUOTIENT as u128).saturating_sub(scale)
     };
-    FeeVector { exec: dim(SCALE.exec, excess.exec, limits.exec), state: 0, prove: dim(SCALE.prove, excess.prove, limits.prove) }
+    FeeVector {
+        exec: dim(SCALE.exec, excess.exec, limits.exec),
+        state: if limits.state > 0 && limits.state <= MAX_STATE_UNITS_PER_BLOCK {
+            state_base_fee(excess.state)
+        } else { 0 },
+        prove: dim(SCALE.prove, excess.prove, limits.prove),
+    }
 }
 
 /// Where a block's fees went (for receipts and tests).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Settlement {
+    /// Memory-only snapshots for exact incremental append previews, including
+    /// whether settlement created an otherwise absent fee account.
+    pub fee_accounts_before: [Option<aether_state::layout::BasicData>; 3],
+    /// Account-presence and balance-touch flags before settlement adds BAL
+    /// entries; populated by the block accumulator, never serialized.
+    pub fee_bal_before: [(bool, bool); 3],
     pub tips: U256,
     pub to_proposer: U256,
     pub to_escrow: U256,
     pub burned_tips: U256,
     pub prove_fees: U256,
-    /// Fixed state growth fees, removed from circulation like exec base fees.
+    /// State growth fees, removed from circulation like exec base fees.
     pub burned_state: U256,
 }
 
 /// End of block: split collected tips and move prove fees to the escrow.
 pub fn settle(state: &mut WorldState, policy: &FeePolicy, prove_fees: U256) -> Settlement {
+    let fee_accounts_before = [FEE_COLLECTOR, policy.proposer, PROVER_ESCROW]
+        .map(|address| state.account(&address));
     let tips = state.balance(&FEE_COLLECTOR);
     let (p, e, _) = TIP_SPLIT;
     let to_proposer = tips * U256::from(p) / U256::from(100u64);
@@ -128,12 +203,61 @@ pub fn settle(state: &mut WorldState, policy: &FeePolicy, prove_fees: U256) -> S
         let eb = state.balance(&PROVER_ESCROW) + credit;
         state.set_balance(PROVER_ESCROW, eb).expect("escrow balance fits");
     }
-    Settlement { tips, to_proposer, to_escrow: credit, burned_tips, prove_fees, burned_state: U256::ZERO }
+    Settlement { fee_accounts_before, fee_bal_before: [(false, false); 3], tips, to_proposer, to_escrow: credit, burned_tips, prove_fees, burned_state: U256::ZERO }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn encoded_archive_budget_bounds_sustained_system_payloads() {
+        let mut debt = 0;
+        let mut total = 0u64;
+        for heights in 1..=86_400 {
+            let used = encoded_payload_limit(debt);
+            total += used;
+            debt = next_archive_excess(debt, used);
+            assert!(total <= MAX_ENCODED_PAYLOAD_BYTES + heights * ENCODED_PAYLOAD_BYTES_PER_BLOCK);
+            assert_eq!(encoded_payload_limit(debt), ENCODED_PAYLOAD_BYTES_PER_BLOCK);
+        }
+        let combined_day = (32 * 512 + ENCODED_PAYLOAD_BYTES_PER_BLOCK * MAX_ARCHIVE_COPIES) * 86_400
+            + MAX_STATE_UNITS_PER_BLOCK * 512 + MAX_ENCODED_PAYLOAD_BYTES * MAX_ARCHIVE_COPIES;
+        assert_eq!(combined_day, 2_915_909_632);
+        assert_eq!(encoded_payload_limit(u64::MAX), 0);
+    }
+
+    #[test]
+    fn rolling_budget_bounds_every_interval_and_price_recovers() {
+        let mut debt = 0;
+        let mut used = 0u64;
+        // Spend all available capacity, including the first full burst, then
+        // sustain full blocks. No number of empty/cheap txs resets the debt.
+        for blocks in 1..=86_400u64 {
+            let available = state_block_limit(debt);
+            used += available;
+            debt = next_state_excess(debt, available);
+            assert!(used <= MAX_STATE_UNITS_PER_BLOCK + blocks * STATE_UNITS_PER_BLOCK);
+            assert_eq!(state_block_limit(debt), STATE_UNITS_PER_BLOCK);
+        }
+        assert!(state_base_fee(debt) > 50 * STATE_UNIT_PRICE);
+        for _ in 0..MAX_STATE_UNITS_PER_BLOCK.div_ceil(STATE_UNITS_PER_BLOCK) {
+            debt = next_state_excess(debt, 0);
+        }
+        assert_eq!(debt, 0);
+        assert_eq!(state_base_fee(debt), STATE_UNIT_PRICE);
+        assert_eq!(state_block_limit(u64::MAX), 0);
+    }
+
+    #[test]
+    fn legacy_fee_dimensions_never_acquire_state_debt_or_price() {
+        let used = GasVector { state: MAX_STATE_UNITS_PER_BLOCK, ..Default::default() };
+        for state in [0, u64::MAX] {
+            let limits = GasVector { exec: 30_000_000, state, prove: 200_000_000 };
+            assert_eq!(next_excess(GasVector::default(), used, limits).state, 0);
+            assert_eq!(base_fee(used, limits).state, 0);
+        }
+    }
 
     #[test]
     fn base_fee_is_zero_until_congested_then_exponential() {

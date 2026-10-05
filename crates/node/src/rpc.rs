@@ -1102,6 +1102,7 @@ mod alias_tests {
                 proposer: Address::ZERO, state_root: Default::default(), parent_state_root: Default::default(),
                 txs: receipts.iter().map(|r| r.tx_hash).collect(), gas_used: 63_000, prove_gas: 0,
                 base_fee: Default::default(), excess: Default::default(),
+                archive_excess: 0,
             });
             // Insertion order deliberately differs from block execution order.
             for receipt in receipts.iter().rev() {

@@ -26,6 +26,7 @@
 		3A048B1773EDB624E715846E /* AetherWalletApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39176493D3D105EBB072F17C /* AetherWalletApp.swift */; };
 		3AC43B5C7DC2040EF4F6C514 /* TokenIconSpec.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA90633BCF8B2E2533B5D308 /* TokenIconSpec.swift */; };
 		3C5180BEE4BF629CA69AF4CE /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B38A846EB23F0C4A52BF8A78 /* ContentView.swift */; };
+		3D01E58CDF2270BE5A32BD72 /* KeyExposureNotice.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3F0D8C24FB04C8F14C379CF /* KeyExposureNotice.swift */; };
 		3EF6E8CB8686359FE5CEA244 /* ChainActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87BD832EE8990B2380C0EF86 /* ChainActivity.swift */; };
 		3EFB40E8AE60667378C4B952 /* AetherWalletApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39176493D3D105EBB072F17C /* AetherWalletApp.swift */; };
 		415E400DBB608473EC203768 /* StorageSetting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87218A83DA7401CDA0D1E56E /* StorageSetting.swift */; };
@@ -78,6 +79,7 @@
 		A06B8561C7215FC2C69FA9FE /* ExploreTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99CD9ED9C56D37F24017E7D1 /* ExploreTab.swift */; };
 		A079B1CBD1001C06EF207650 /* ReleaseApproval.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4C9843D1CF8E29F627927D /* ReleaseApproval.swift */; };
 		A27B00DA220487FD3B94FFAF /* Onboarding.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65F2514912728847B547AC0A /* Onboarding.swift */; };
+		A2A5F0B2C7CAB05F6D6A44A8 /* KeyExposureNotice.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3F0D8C24FB04C8F14C379CF /* KeyExposureNotice.swift */; };
 		A51800452172EB3E988FBA9D /* ExploreTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99CD9ED9C56D37F24017E7D1 /* ExploreTab.swift */; };
 		A6411E9B1827C2B1B6D286AE /* ProverFlags.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94E4B4A2A4BDBBBBC6A12600 /* ProverFlags.swift */; };
 		A98EABE0AC6AB4C359623E7E /* BalanceBreakdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1F6F75149EAAFD83802065B /* BalanceBreakdown.swift */; };
@@ -162,6 +164,7 @@
 		99CD9ED9C56D37F24017E7D1 /* ExploreTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExploreTab.swift; sourceTree = "<group>"; };
 		9D1303552378BB828A2C9D21 /* ReleaseUpdateGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReleaseUpdateGate.swift; sourceTree = "<group>"; };
 		9DEBCE5EA044F272C9EA406C /* ProverMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProverMenu.swift; sourceTree = "<group>"; };
+		A3F0D8C24FB04C8F14C379CF /* KeyExposureNotice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyExposureNotice.swift; sourceTree = "<group>"; };
 		A704EDECAB63A4DB0D4A9DA8 /* TokenIconView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenIconView.swift; sourceTree = "<group>"; };
 		AA017029CBA36810DE47F6DE /* TokenGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenGuard.swift; sourceTree = "<group>"; };
 		AB4C9843D1CF8E29F627927D /* ReleaseApproval.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReleaseApproval.swift; sourceTree = "<group>"; };
@@ -249,6 +252,7 @@
 				99CD9ED9C56D37F24017E7D1 /* ExploreTab.swift */,
 				00DD67BEC1D35753ED7EDE91 /* HistoryFailure.swift */,
 				AD1FD85FD2537EBDD04207CB /* InstallLocation.swift */,
+				A3F0D8C24FB04C8F14C379CF /* KeyExposureNotice.swift */,
 				745EAC0E04873F8FD0F29BC2 /* LiveResize.swift */,
 				2B632CFC2DA1179CC9EAD01D /* NetworkPaused.swift */,
 				BAF12832C2145F7B5553F13A /* NetworkUpgrade.swift */,
@@ -489,6 +493,7 @@
 				A51800452172EB3E988FBA9D /* ExploreTab.swift in Sources */,
 				FF361C80FF7E5900898C7CF8 /* HistoryFailure.swift in Sources */,
 				4AD619C1DDE268E9CF2A4342 /* InstallLocation.swift in Sources */,
+				3D01E58CDF2270BE5A32BD72 /* KeyExposureNotice.swift in Sources */,
 				0155654A1EB68833738F6615 /* LiveResize.swift in Sources */,
 				ADEEA18CEEC7A29BDFBB47BB /* NetworkPaused.swift in Sources */,
 				D011EF063EAF0FD0463BB20F /* NetworkUpgrade.swift in Sources */,
@@ -548,6 +553,7 @@
 				A06B8561C7215FC2C69FA9FE /* ExploreTab.swift in Sources */,
 				8F39B9B1308D1AD3DCFA4437 /* HistoryFailure.swift in Sources */,
 				4B99F9F3618F840AF9C56A88 /* InstallLocation.swift in Sources */,
+				A2A5F0B2C7CAB05F6D6A44A8 /* KeyExposureNotice.swift in Sources */,
 				E5EBCFC648FC784DB287530F /* LiveResize.swift in Sources */,
 				E079A96A7F6CAAB46E4B9D8B /* NetworkPaused.swift in Sources */,
 				BD73509462322EA695D98A0D /* NetworkUpgrade.swift in Sources */,

@@ -2,6 +2,22 @@
 // envelope (the chain's own rules), the vault signs, wasm checks and attaches.
 
 import { hex } from './vault.js';
+import { LEGACY_TESTNET_CHAIN_ID } from './brand.js';
+
+/** Shown when a paid-state chain would reject the send for want of coins. */
+export const ADD_COINS_FIRST = 'Add native coins before sending: this transaction must pay for its persistent bytes and first-use account';
+
+/**
+ * Every chain but the legacy 7780 testnet charges for persistent state, as the
+ * app's FFI decides (`state_price_for`). There a zero balance signs a state
+ * budget of 0, which the chain rejects (A6-2), so refuse before signing.
+ * `balance` is null when it could not be read.
+ */
+export function checkPaidStateBalance(chainId, balance) {
+  if (Number(chainId) === LEGACY_TESTNET_CHAIN_ID) return;
+  if (balance === null) throw new Error("Could not read the balance needed to pay this transaction's state fee");
+  if (balance === 0n) throw new Error(ADD_COINS_FIRST);
+}
 
 export class Wallet {
   /** `wasm`: {prepareTx, attachSignature}; `rpc`: Rpc; `vault`: Vault. */
@@ -47,8 +63,10 @@ export class Wallet {
     const nonce = await this.nonceFor(info.address);
     // The balance decides the tip (G2): a zero balance sends with none, so a
     // new account can transact while the base fee is 0.
-    const balance = await this.balance(info.address).catch(() => 0n);
+    const read = await this.balance(info.address).catch(() => null);
     if (Number(status.chain_id) !== chainId || this.rpc.chainId !== chainId) throw new Error('The node is on another chain.');
+    checkPaidStateBalance(chainId, read);
+    const balance = read ?? 0n;
     const prepared = JSON.parse(this.wasm.prepareTx(hex.dec(info.publicKey), JSON.stringify(status), BigInt(chainId), BigInt(nonce), JSON.stringify({ ...tx, balance_wei: balance.toString() })));
     const sig = await this.vault.sign(hex.dec(prepared.signing_message));
     if (this.rpc.chainId !== chainId) throw new Error('The wallet network changed before the transaction was sent.');

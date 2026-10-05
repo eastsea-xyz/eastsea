@@ -165,7 +165,8 @@ pub struct Upgrade {
     pub protocol: u32,
     /// First height the new rules apply to.
     pub activate_at: u64,
-    /// Short notice is permitted only with every current validator's approval.
+    /// New-genesis short notice needs n-f current validator approvals; legacy
+    /// chains do not admit emergency upgrades.
     #[serde(default, skip_serializing_if = "is_false")]
     pub emergency: bool,
     pub releases: Vec<Release>,

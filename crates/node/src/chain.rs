@@ -263,11 +263,15 @@ pub struct Executed {
     pub new_slots: u64,
     /// Transaction and receipt bytes counted against this block's persistence cap.
     pub persistent_bytes: u64,
+    /// Exact execution settlement for incremental archive append checks.
+    pub settlement: fees::Settlement,
     pub proposer: Address,
     /// Base fees this block paid.
     pub base_fee: FeeVector,
     /// Fee-market excess after this block (its child's base fee derives from it).
     pub excess: GasVector,
+    /// Independent encoded-payload debt; zero on legacy chains and genesis.
+    pub archive_excess: u64,
     /// The latest committee handoff in this block's ancestry (inclusive).
     pub handoff: Option<Arc<crate::handoff::Pending>>,
     /// The latest draw seed in this block's ancestry (inclusive), with the height that carried it.
@@ -379,12 +383,13 @@ pub fn meta_digest(
 
 impl Executed {
     pub fn meta_digest(&self) -> B256 {
-        meta_digest(
+        meta_digest_with_archive(
             &self.excess,
             self.handoff.as_deref(),
             self.seed.as_deref(),
             &self.schedule,
             &self.statement,
+            self.archive_excess,
         )
     }
 
@@ -411,6 +416,28 @@ pub struct BlockSummary {
     pub base_fee: FeeVector,
     #[serde(default)]
     pub excess: GasVector,
+    /// Stored through versioned store/snapshot envelopes; legacy postcard
+    /// summaries retain their exact field layout.
+    #[serde(skip)]
+    pub archive_excess: u64,
+}
+
+/// Preserve the legacy metadata commitment when archive debt is zero, and
+/// certify nonzero debt without changing legacy payload/proof statement fields.
+pub fn meta_digest_with_archive(
+    excess: &GasVector,
+    handoff: Option<&crate::handoff::Pending>,
+    seed: Option<&(u64, aether_light::block::Seed)>,
+    schedule: &[crate::upgrade::Activation],
+    statement: &Statement,
+    archive_excess: u64,
+) -> B256 {
+    let legacy = meta_digest(excess, handoff, seed, schedule, statement);
+    if archive_excess == 0 {
+        return legacy;
+    }
+    let bytes = serde_json::to_vec(&(legacy, archive_excess)).expect("metadata serializes");
+    B256::from(aether_hash::Hasher::hash_bytes(&ChainHasher::new(), &bytes))
 }
 
 /// A summary's rough share of the history caches: itself plus each tx hash.
@@ -630,9 +657,11 @@ impl Chain {
             gas: GasVector::default(),
             new_slots: 0,
             persistent_bytes: 0,
+            settlement: fees::Settlement::default(),
             proposer: Address::ZERO,
             base_fee: FeeVector::default(),
             excess: GasVector::default(),
+            archive_excess: 0,
             handoff: None,
             seed: None,
             history: Arc::new(aether_state::mmr::Mmr::default().append(
@@ -745,9 +774,11 @@ impl Chain {
                     gas: GasVector::default(),
                     new_slots: 0,
                     persistent_bytes: 0,
+                    settlement: fees::Settlement::default(),
                     proposer: summary.as_ref().map(|b| b.proposer).unwrap_or_default(),
                     base_fee: summary.as_ref().map(|b| b.base_fee).unwrap_or_default(),
                     excess: summary.as_ref().map(|b| b.excess).unwrap_or_default(),
+                    archive_excess: summary.as_ref().map(|b| b.archive_excess).unwrap_or_default(),
                     handoff: cp.handoff.map(Arc::new),
                     seed: cp.seed.map(Arc::new),
                     history: Arc::new(cp.history),
@@ -1095,8 +1126,8 @@ impl Chain {
         });
         let mut limits = cfg.limits;
         // The legacy state dimension was unlimited and unused. A finite value
-        // activates the fixed state price and consensus cap on new-genesis chains.
-        limits.state = if state_growth { fees::MAX_STATE_UNITS_PER_BLOCK } else { u64::MAX };
+        // activates state pricing and the rolling disk budget on new-genesis chains.
+        limits.state = if state_growth { fees::state_block_limit(parent.excess.state) } else { u64::MAX };
         BlockContext {
             chain_id: cfg.chain_id,
             number: block.height().get(),
@@ -1119,7 +1150,7 @@ impl Chain {
             FeeVector::default()
         };
         if cfg.node_rewards || cfg.history_v2 {
-            base.state = fees::STATE_UNIT_PRICE;
+            base.state = fees::state_base_fee(parent.excess.state);
         }
         base
     }
@@ -1171,6 +1202,12 @@ impl Chain {
         // group's certificate covers the payload (group included), so a block
         // of another group never finalizes here even before this check.
         let cfg = self.cfg();
+        if (cfg.node_rewards || cfg.history_v2)
+            && (!controls_within_archive_reserve(&payload)
+                || block.data.len() as u64 > payload_archive_limit(parent, &payload))
+        {
+            return Err(ChainError::Protocol("encoded payload exceeds archive growth budget".into()));
+        }
         if payload.group != cfg.group {
             return Err(ChainError::WrongGroup);
         }
@@ -2253,13 +2290,18 @@ impl Chain {
         registration_ids: Vec<TxHash>,
     ) -> Arc<Executed> {
         let escrow = out.settlement.to_escrow;
-        let (base_fee, excess) = match &ctx.fees {
+        let (base_fee, mut excess) = match &ctx.fees {
             Some(f) => (
                 f.base,
                 fees::next_excess(parent.excess, out.gas, ctx.limits),
             ),
             None => (FeeVector::default(), GasVector::default()),
         };
+        // State growth is charged and bounded even on a new-genesis devnet
+        // with execution/proving fees disabled. Legacy metadata stays zero.
+        if ctx.limits.state <= fees::MAX_STATE_UNITS_PER_BLOCK {
+            excess.state = fees::next_state_excess(parent.excess.state, out.gas.state);
+        }
         let exec = Arc::new(Executed {
             height: block.height().get(),
             digest: block.digest(),
@@ -2270,9 +2312,13 @@ impl Chain {
             gas: out.gas,
             new_slots: out.new_slots,
             persistent_bytes: out.persistent_bytes,
+            settlement: out.settlement,
             proposer: leader_address(&block.context.leader),
             base_fee,
             excess,
+            archive_excess: if ctx.limits.state <= fees::MAX_STATE_UNITS_PER_BLOCK {
+                fees::next_archive_excess(parent.archive_excess, block.data.len() as u64)
+            } else { 0 },
             handoff,
             seed,
             history: Arc::new(parent.history.append(
@@ -2393,6 +2439,52 @@ impl Chain {
         inclusion::violations(&listed, &exec.tx_hashes, full, &exec.state, ctx, exec.gas, exec.new_slots, exec.persistent_bytes)
     }
 
+    /// Archive-aware FOCIL append check. Execute only the prospective listed
+    /// transaction and merge the exact BAL/gas/receipt commitment so all its
+    /// encoded bytes must fit the same certified archive capacity.
+    pub fn inclusion_violations_in_payload(
+        &self,
+        exec: &Executed,
+        ctx: &BlockContext,
+        now: Instant,
+        parent: &Executed,
+        payload: &Payload,
+    ) -> Vec<TxHash> {
+        if ctx.limits.state > fees::MAX_STATE_UNITS_PER_BLOCK {
+            return self.inclusion_violations(exec, ctx, now);
+        }
+        let listed = {
+            let g = self.lock();
+            if g.censor.is_some() || exec.tx_hashes.len() >= MAX_TXS_PER_BLOCK {
+                return vec![];
+            }
+            let present: std::collections::HashSet<_> = exec.tx_hashes.iter().collect();
+            g.inclusion.enforceable(now).into_iter()
+                .filter(|tx| tx.header.group() == g.cfg.group
+                    && !present.contains(&aether_execution::tx_hash(tx)))
+                .collect::<Vec<_>>()
+        };
+        let previous = BlockOutcome {
+            state: exec.state.clone(),
+            bal: payload.bal.clone(),
+            receipts: exec.receipts.clone(),
+            gas: exec.gas,
+            persistent_bytes: exec.persistent_bytes,
+            new_slots: exec.new_slots,
+            settlement: exec.settlement,
+        };
+        listed.into_iter().filter_map(|tx| {
+            let out = aether_execution::block::append_block_preview(&exec.state, ctx, &previous, &tx)?;
+            let mut appended = payload.clone();
+            appended.txs.push(tx.clone());
+            appended.bal = out.bal;
+            appended.gas = out.gas;
+            appended.receipts_root = Some(aether_execution::receipt::receipt_root(&out.receipts));
+            (appended.to_bytes().len() as u64 <= payload_archive_limit(parent, &appended))
+                .then(|| aether_execution::tx_hash(&tx))
+        }).collect()
+    }
+
     /// Returns false if the pool is full or the tx is already known.
     /// Admit a (signature-checked) tx: `Ok(true)` if new, `Ok(false)` if already
     /// known, `Err` if it could never execute or the pool is full, so txs that
@@ -2427,7 +2519,7 @@ impl Chain {
                     number: g.finalized.height + 1,
                     timestamp: g.finalized.timestamp / 1_000 + 1,
                     beneficiary: if g.cfg.fees { aether_execution::FEE_COLLECTOR } else { Address::ZERO },
-                    limits: GasVector { state: fees::MAX_STATE_UNITS_PER_BLOCK, ..g.cfg.limits },
+                    limits: GasVector { state: fees::state_block_limit(g.finalized.excess.state), ..g.cfg.limits },
                     fees: g.cfg.fees.then_some(FeePolicy { base, proposer: Address::ZERO }),
                 };
                 aether_execution::check_admission(state, &ctx, &tx)?;
@@ -2883,7 +2975,7 @@ fn admissible(tx: &TxEnvelope, state: &WorldState, base: FeeVector) -> Result<()
         return Err("fee caps below the base fee".into());
     }
     if base.state != 0 && tx.header.gas.state > 0 && tx.header.max_fee.state < base.state {
-        return Err("state fee cap below the fixed state price".into());
+        return Err("state fee cap below the state base price".into());
     }
     affordable(tx, state, base)
 }
@@ -3091,6 +3183,7 @@ fn summary(block: &Block, e: &Executed, parent_state_root: B256) -> BlockSummary
         prove_gas: e.gas.prove,
         base_fee: e.base_fee,
         excess: e.excess,
+        archive_excess: e.archive_excess,
     }
 }
 
@@ -3201,7 +3294,7 @@ fn keep<T: Serialize + ?Sized>(store: &Option<Arc<Store>>, key: &str, value: &T)
 }
 
 /// What a proposal carries besides transactions.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Extras {
     pub handoff: Option<aether_light::block::Handoff>,
     pub seed: Option<aether_light::block::Seed>,
@@ -3223,43 +3316,166 @@ pub fn build_payload(
     extras: Extras,
 ) -> (Payload, aether_execution::BlockOutcome) {
     let group = extras.group;
-    // Another group's tx never belongs in this block (the chain would refuse it).
-    let candidates = candidates.into_iter().filter(|tx| tx.header.group() == group).collect();
-    let (txs, out) = aether_execution::build_block(pre, ctx, candidates);
-    // `block_context` sets the finite state dimension under exactly the
-    // node_rewards || history_v2 new-genesis gate; keep builder and validator
-    // on the same rule without changing the existing test helper signature.
-    let receipts_root = (ctx.limits.state == fees::MAX_STATE_UNITS_PER_BLOCK)
-        .then(|| aether_execution::receipt::receipt_root(&out.receipts));
-    let history_root = B256::from(parent.history.root(&ChainHasher::new()));
-    let parent_meta = parent.meta_digest();
-    let Extras {
-        handoff,
-        seed,
-        upgrade,
-        proofs,
-        beacons,
-        registrations,
-        ..
-    } = extras;
-    let payload = Payload {
+    let candidates: Vec<_> = candidates.into_iter().filter(|tx| tx.header.group() == group).collect();
+    let metered = ctx.limits.state <= fees::MAX_STATE_UNITS_PER_BLOCK;
+    // Ordinary blocks keep the existing execution path and serialize once.
+    // Only archive congestion needs incremental, exact payload selection.
+    let (txs, out) = aether_execution::build_block(pre, ctx, candidates.clone());
+    let payload = payload_with(parent, txs, &out, extras.clone(), metered);
+    if !metered || payload.to_bytes().len() as u64 <= payload_archive_limit(parent, &payload) {
+        return (payload, out);
+    }
+    let (txs, out) = aether_execution::block::build_block_filtered(pre, ctx, candidates, |txs, out| {
+        let trial = payload_with(parent, txs.to_vec(), out, extras.clone(), true);
+        trial.to_bytes().len() as u64 <= payload_archive_limit(parent, &trial)
+    });
+    (payload_with(parent, txs, &out, extras, metered), out)
+}
+
+fn payload_with(
+    parent: &Executed,
+    txs: Vec<TxEnvelope>,
+    out: &BlockOutcome,
+    extras: Extras,
+    metered: bool,
+) -> Payload {
+    Payload {
         version: parent.next_protocol(),
         parent_state_root: parent.state.root(),
-        history_root,
-        parent_meta,
-        receipts_root,
+        history_root: B256::from(parent.history.root(&ChainHasher::new())),
+        parent_meta: parent.meta_digest(),
+        receipts_root: metered.then(|| aether_execution::receipt::receipt_root(&out.receipts)),
         txs,
         bal: out.bal.clone(),
         gas: out.gas,
-        handoff,
-        seed,
-        upgrade,
-        proofs,
-        beacons,
-        group,
-        registrations,
-    };
-    (payload, out)
+        handoff: extras.handoff,
+        seed: extras.seed,
+        upgrade: extras.upgrade,
+        proofs: extras.proofs,
+        beacons: extras.beacons,
+        group: extras.group,
+        registrations: extras.registrations,
+    }
+}
+
+/// Consensus archive capacity, with a certified reserve for control traffic.
+/// Below the reserve, a block without controls can only carry the canonical
+/// empty payload. Such blocks always leave room to refill rather than letting
+/// optional traffic or small transactions indefinitely starve an upgrade.
+pub fn payload_archive_limit(parent: &Executed, payload: &Payload) -> u64 {
+    let available = fees::encoded_payload_limit(parent.archive_excess);
+    if payload.handoff.is_some() || payload.seed.is_some() || payload.upgrade.is_some() {
+        return available;
+    }
+    let mut empty = archive_control_payload(payload);
+    empty.handoff = None;
+    empty.seed = None;
+    empty.upgrade = None;
+    available.saturating_sub(fees::CONTROL_ARCHIVE_RESERVE)
+        .max(empty.to_bytes().len() as u64)
+        .min(available)
+}
+
+fn archive_control_payload(payload: &Payload) -> Payload {
+    let mut control = payload.clone();
+    control.txs.clear();
+    control.proofs.clear();
+    control.beacons.clear();
+    control.registrations.clear();
+    control.bal = Default::default();
+    control.gas = GasVector::default();
+    control.receipts_root = payload.receipts_root.map(|_| aether_execution::receipt::receipt_root(&[]));
+    control
+}
+
+/// Every individual control item must fit the protected reserve, including
+/// its empty header. Combined controls may use the full available bucket.
+/// This is a hard liveness bound, independent of committee-signed contents.
+fn controls_within_archive_reserve(payload: &Payload) -> bool {
+    let base = archive_control_payload(payload);
+    let mut handoff = base.clone();
+    handoff.seed = None;
+    handoff.upgrade = None;
+    let mut seed = base.clone();
+    seed.handoff = None;
+    seed.upgrade = None;
+    let mut upgrade = base;
+    upgrade.handoff = None;
+    upgrade.seed = None;
+    [handoff, seed, upgrade].iter().all(|p| p.to_bytes().len() as u64 <= fees::CONTROL_ARCHIVE_RESERVE)
+}
+
+impl Extras {
+    /// Select control traffic before optional system writes are applied. When
+    /// a control item cannot fit, save capacity using an empty proposal until
+    /// it can: optional proof traffic cannot starve a handoff or upgrade.
+    pub fn fit_archive_budget(&mut self, parent: &Executed, metered: bool) -> bool {
+        if !metered { return false; }
+        let projected = |extras: &Self| Payload {
+            version: parent.next_protocol(),
+            parent_state_root: parent.state.root(),
+            history_root: B256::from(parent.history.root(&ChainHasher::new())),
+            parent_meta: parent.meta_digest(),
+            receipts_root: Some(B256::ZERO),
+            txs: vec![],
+            bal: Default::default(),
+            gas: GasVector::default(),
+            handoff: extras.handoff.clone(),
+            seed: extras.seed.clone(),
+            upgrade: extras.upgrade.clone(),
+            proofs: extras.proofs.clone(),
+            beacons: extras.beacons.clone(),
+            group: extras.group,
+            registrations: extras.registrations.clone(),
+        };
+        if !controls_within_archive_reserve(&projected(self)) {
+            // Such a signed control is invalid under this protocol; waiting
+            // cannot make it fit the protected reserve. Keep proposing and
+            // report the actionable need to sign a smaller control payload.
+            tracing::warn!("control payload exceeds protected archive reserve; dropping from proposal");
+            let mut one = self.clone();
+            one.handoff = None;
+            one.seed = None;
+            if !controls_within_archive_reserve(&projected(&one)) { self.upgrade = None; }
+            one = self.clone();
+            one.upgrade = None;
+            one.seed = None;
+            if !controls_within_archive_reserve(&projected(&one)) { self.handoff = None; }
+            one = self.clone();
+            one.upgrade = None;
+            one.handoff = None;
+            if !controls_within_archive_reserve(&projected(&one)) { self.seed = None; }
+        }
+        let fits = |extras: &Self| {
+            let payload = projected(extras);
+            payload.to_bytes().len() as u64 <= payload_archive_limit(parent, &payload)
+        };
+        while !fits(self) {
+            if self.proofs.pop().is_some() { continue; }
+            if self.beacons.pop().is_some() { continue; }
+            if self.registrations.pop().is_some() { continue; }
+            // Independent upgrades go first. A handoff can require this same
+            // block's seed to commit its roster, so retain that pair or publish
+            // the seed alone and allow the handoff at the following height.
+            let mut single = self.clone();
+            single.handoff = None;
+            single.seed = None;
+            if single.upgrade.is_some() && fits(&single) { *self = single; return false; }
+            single = self.clone();
+            single.upgrade = None;
+            if single.handoff.is_some() && fits(&single) { *self = single; return false; }
+            single.handoff = None;
+            if single.seed.is_some() && fits(&single) { *self = single; return false; }
+            // Every remaining valid individual control fits the reserve, so
+            // inability to fit implies capacity is below it. Empty blocks are
+            // then also the only FOCIL-valid no-control proposal and refill.
+            self.handoff = None;
+            self.seed = None;
+            self.upgrade = None;
+            return true;
+        }
+        false
+    }
 }
 
 /// An activation block's persisted diff starts with the activation's writes
@@ -3419,6 +3635,47 @@ mod pool_tests {
             group: 0,
             max_committee: crate::rotation::GROW_UNTIL,
         }
+    }
+
+    #[test]
+    fn archive_reserve_refills_with_empty_blocks_and_selects_fitting_control() {
+        let mut config = cfg(vec![]);
+        config.chain_id = 7_778;
+        config.protocol = 3;
+        config.history_v2 = true;
+        let (chain, genesis) = Chain::new(config);
+        let mut parent = (*chain.get(&genesis.digest()).unwrap()).clone();
+        parent.archive_excess = fees::MAX_ENCODED_PAYLOAD_BYTES - 40_000;
+        let upgrade = crate::upgrade::SignedUpgrade {
+            upgrade: aether_light::block::Upgrade {
+                chain_id: 7_778, protocol: 4, activate_at: 604_800,
+                emergency: false,
+                releases: (0..16).map(|_| aether_light::block::Release {
+                    platform: "p".repeat(512), version: "v".repeat(512),
+                    blake3: "ab".repeat(32), url: "u".repeat(512),
+                }).collect(),
+                notes: "n".repeat(512), registrar: None,
+            },
+            signature: "ab".repeat(48), emergency_approvals: vec![],
+        };
+        let handoff = aether_light::block::Handoff {
+            round: 1, output: "ab".repeat(30_000), members: vec![], ready: vec![],
+            signature: "ab".repeat(48),
+        };
+        let mut extras = Extras { upgrade: Some(upgrade), handoff: Some(handoff), ..Default::default() };
+        assert!(!extras.fit_archive_budget(&parent, true));
+        assert!(extras.upgrade.is_some(), "a fitting upgrade is not blocked by the combined controls");
+        assert!(extras.handoff.is_none(), "the larger handoff stays deferred");
+
+        let ctx = Chain::block_context(&chain.cfg(), &genesis, &parent);
+        let out = execute_block(&parent.state, &ctx, &[]).unwrap();
+        let empty = payload_with(&parent, vec![], &out, Extras::default(), true);
+        assert_eq!(payload_archive_limit(&parent, &empty), empty.to_bytes().len() as u64);
+        assert!((empty.to_bytes().len() as u64) < fees::ENCODED_PAYLOAD_BYTES_PER_BLOCK);
+        assert!(fees::next_archive_excess(parent.archive_excess, empty.to_bytes().len() as u64) < parent.archive_excess);
+        let mut oversized = empty.clone();
+        oversized.seed = Some(aether_light::block::Seed { draw: 1, signature: "x".repeat(fees::CONTROL_ARCHIVE_RESERVE as usize) });
+        assert!(!controls_within_archive_reserve(&oversized));
     }
 
     #[test]

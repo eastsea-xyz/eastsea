@@ -371,6 +371,7 @@ pub struct Staged<'a> {
 /// start with `{`); both are read, new rows are packed (roadmap B1: JSON
 /// summaries were ~590 of the ~680 bytes each empty block added).
 const PACKED: u8 = 0xa1;
+const PACKED_ARCHIVE: u8 = 0xa2;
 /// Files below this are not worth compacting at start-up.
 const COMPACT_MIN_FILE: u64 = 32 << 20;
 
@@ -392,6 +393,38 @@ struct Packed {
     excess: (u64, u64, u64),
 }
 
+fn packed_summary(v: &[u8]) -> Option<(Packed, u64)> {
+    match v.first().copied()? {
+        PACKED => postcard::from_bytes(&v[1..]).ok().map(|p| (p, 0)),
+        PACKED_ARCHIVE => postcard::from_bytes(&v[1..]).ok(),
+        _ => None,
+    }
+}
+
+fn packed_bytes(p: &Packed, archive_excess: u64) -> Result<Vec<u8>, StoreError> {
+    let mut out = vec![if archive_excess == 0 { PACKED } else { PACKED_ARCHIVE }];
+    let body = if archive_excess == 0 {
+        postcard::to_allocvec(p)
+    } else {
+        postcard::to_allocvec(&(p, archive_excess))
+    }.map_err(|e| StoreError::Db(e.to_string()))?;
+    out.extend(body);
+    Ok(out)
+}
+
+fn json_summary(v: &[u8]) -> Option<BlockSummary> {
+    #[derive(serde::Deserialize)]
+    struct ArchiveMetadata {
+        #[serde(default)]
+        archive_excess: u64,
+    }
+    // Decode directly: a JSON Value cannot represent every u128 fee and
+    // would turn large legacy values into rounded floating-point numbers.
+    let mut s: BlockSummary = serde_json::from_slice(v).ok()?;
+    s.archive_excess = serde_json::from_slice::<ArchiveMetadata>(v).ok()?.archive_excess;
+    Some(s)
+}
+
 fn hex32(s: &str) -> Option<[u8; 32]> {
     let b: [u8; 32] = hex::decode(s).ok()?.try_into().ok()?;
     // Only a string that comes back byte for byte is packed.
@@ -400,17 +433,27 @@ fn hex32(s: &str) -> Option<[u8; 32]> {
 
 /// The hash and state root a summary row links its successor to.
 fn summary_links(v: &[u8]) -> Option<(String, B256)> {
-    if v.first() == Some(&PACKED) {
-        let p: Packed = postcard::from_bytes(&v[1..]).ok()?;
+    if matches!(v.first(), Some(&PACKED) | Some(&PACKED_ARCHIVE)) {
+        let (p, _) = packed_summary(v)?;
         return Some((hex::encode(p.hash), B256::from(p.state_root)));
     }
-    let s: BlockSummary = serde_json::from_slice(v).ok()?;
+    let s = json_summary(v)?;
     Some((s.hash, s.state_root))
 }
 
 fn encode_summary(s: &BlockSummary, previous: Option<&(String, B256)>) -> Result<Vec<u8>, StoreError> {
     let (Some(hash), Some(parent)) = (hex32(&s.hash), hex32(&s.parent)) else {
-        return serde_json::to_vec(s).map_err(|e| StoreError::Db(e.to_string()));
+        if s.archive_excess == 0 {
+            return serde_json::to_vec(s).map_err(|e| StoreError::Db(e.to_string()));
+        }
+        #[derive(Serialize)]
+        struct WithArchiveDebt<'a> {
+            #[serde(flatten)]
+            summary: &'a BlockSummary,
+            archive_excess: u64,
+        }
+        return serde_json::to_vec(&WithArchiveDebt { summary: s, archive_excess: s.archive_excess })
+            .map_err(|e| StoreError::Db(e.to_string()));
     };
     let p = Packed {
         hash,
@@ -425,17 +468,15 @@ fn encode_summary(s: &BlockSummary, previous: Option<&(String, B256)>) -> Result
         base_fee: (s.base_fee.exec, s.base_fee.state, s.base_fee.prove),
         excess: (s.excess.exec, s.excess.state, s.excess.prove),
     };
-    let mut out = vec![PACKED];
-    out.extend(postcard::to_allocvec(&p).map_err(|e| StoreError::Db(e.to_string()))?);
-    Ok(out)
+    packed_bytes(&p, s.archive_excess)
 }
 
 /// Decode a summary row (packed or JSON); `previous` is the row one height below.
 fn decode_summary(v: &[u8], height: u64, previous: Option<&BlockSummary>) -> Option<BlockSummary> {
-    if v.first() != Some(&PACKED) {
-        return serde_json::from_slice(v).ok();
+    if !matches!(v.first(), Some(&PACKED) | Some(&PACKED_ARCHIVE)) {
+        return json_summary(v);
     }
-    let p: Packed = postcard::from_bytes(&v[1..]).ok()?;
+    let (p, archive_excess) = packed_summary(v)?;
     let parent = match p.parent {
         Some(d) => hex::encode(d),
         None => previous?.hash.clone(),
@@ -457,35 +498,34 @@ fn decode_summary(v: &[u8], height: u64, previous: Option<&BlockSummary>) -> Opt
         prove_gas: p.prove_gas,
         base_fee: aether_types::FeeVector { exec: p.base_fee.0, state: p.base_fee.1, prove: p.base_fee.2 },
         excess: aether_types::GasVector { exec: p.excess.0, state: p.excess.1, prove: p.excess.2 },
+        archive_excess,
     })
 }
 
 /// Transaction hashes a summary row names (their receipts go with the row).
 fn summary_txs(v: &[u8]) -> Option<Vec<[u8; 32]>> {
-    if v.first() == Some(&PACKED) {
-        let p: Packed = postcard::from_bytes(&v[1..]).ok()?;
+    if matches!(v.first(), Some(&PACKED) | Some(&PACKED_ARCHIVE)) {
+        let (p, _) = packed_summary(v)?;
         return Some(p.txs);
     }
-    let s: BlockSummary = serde_json::from_slice(v).ok()?;
+    let s = json_summary(v)?;
     Some(s.txs.iter().map(|t| t.0).collect())
 }
 
 /// A packed row with the links to its predecessor written out, so it decodes
 /// on its own once the rows below it are pruned. JSON rows never elide links.
 fn unelide(v: &[u8], previous: &(String, B256)) -> Option<Vec<u8>> {
-    if v.first() != Some(&PACKED) {
+    if !matches!(v.first(), Some(&PACKED) | Some(&PACKED_ARCHIVE)) {
         return Some(v.to_vec());
     }
-    let mut p: Packed = postcard::from_bytes(&v[1..]).ok()?;
+    let (mut p, archive_excess) = packed_summary(v)?;
     if p.parent.is_none() {
         p.parent = Some(hex32(&previous.0)?);
     }
     if p.parent_state_root.is_none() {
         p.parent_state_root = Some(previous.1 .0);
     }
-    let mut out = vec![PACKED];
-    out.extend(postcard::to_allocvec(&p).ok()?);
-    Some(out)
+    packed_bytes(&p, archive_excess).ok()
 }
 
 /// One table's share of the file.
@@ -1398,11 +1438,32 @@ mod tests {
             prove_gas: 5,
             base_fee: FeeVector { exec: 7, state: 8, prove: 1 << 100 },
             excess: GasVector { exec: 1, state: 2, prove: 3 },
+            archive_excess: 0,
         }
     }
 
     fn same(a: &BlockSummary, b: &BlockSummary) {
         assert_eq!(format!("{a:?}"), format!("{b:?}"));
+    }
+
+    #[test]
+    fn archive_debt_round_trips_without_changing_legacy_packed_rows() {
+        let legacy = summary(0, &hex::encode([0xee; 32]), B256::ZERO);
+        let legacy_bytes = encode_summary(&legacy, None).unwrap();
+        assert_eq!(legacy_bytes[0], PACKED);
+        let mut current = summary(1, &legacy.hash, legacy.state_root);
+        current.archive_excess = 123_456;
+        let bytes = encode_summary(&current, summary_links(&legacy_bytes).as_ref()).unwrap();
+        assert_eq!(bytes[0], PACKED_ARCHIVE);
+        same(&decode_summary(&bytes, 1, Some(&legacy)).unwrap(), &current);
+        assert_eq!(summary_txs(&bytes).unwrap(), current.txs.iter().map(|h| h.0).collect::<Vec<_>>());
+        let standalone = unelide(&bytes, &(legacy.hash.clone(), legacy.state_root)).unwrap();
+        same(&decode_summary(&standalone, 1, None).unwrap(), &current);
+        current.hash = "not hex".into();
+        let json = encode_summary(&current, None).unwrap();
+        same(&decode_summary(&json, 1, None).unwrap(), &current);
+        current.archive_excess = 0;
+        assert_eq!(encode_summary(&current, None).unwrap(), serde_json::to_vec(&current).unwrap());
     }
 
     #[test]

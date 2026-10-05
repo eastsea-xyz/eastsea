@@ -2,9 +2,11 @@
 
 `node_rewards || history_v2` activates these rules from genesis. Chain 7780
 has neither flag and retains its old unlimited, unused state-gas dimension and
-fee behavior. The new-genesis limit is 100,000 state units per block. One
-unit burns `1_000_000_000_000` wei (0.000001 AETH), even when execution and
-proving base fees are zero. The signed `header.gas.state` reserves the maximum
+fee behavior. New genesis has a **100,000-unit burst bucket**, refilled by **32 units per
+finalized block** (one second). The actual block limit is the remaining bucket,
+not a fresh 100,000 units every second. One unit burns at least
+`1_000_000_000_000` wei (0.000001 DBLN), even when execution and proving
+base fees are zero; sustained demand raises that price. The signed `header.gas.state` reserves the maximum
 before EVM execution; unused funds return to the sender.
 
 ## Authoritative persistence inventory
@@ -54,7 +56,8 @@ logical bytes and adds at most two address rows and token movements; a Swap
 event's 288 logical bytes add detail only to the sender row. Those bounded
 JSON rows and the signed transaction's staged copy fit inside the remaining
 16× allowance. Protocol entries listed separately above do not consume this
-transaction budget. The redb regression test measures key and value bytes,
+transaction budget, but every canonical block payload byte consumes the independent
+archive budget below, including proof blobs, beacons, registrations and BAL. The redb regression test measures key and value bytes,
 not allocated pages or fragmentation.
 
 ## Transaction price and common cap
@@ -83,14 +86,14 @@ cannot finalize it or persist its bytes unless the prefix and all fees pass.
 The receipt remains stored for wallet queries, including zero-value and
 zero-tip transactions, because its bytes are priced. A normal ERC-20 Transfer
 event has three topics and 32 data bytes: 64+96+32 = 192 metered bytes,
-costing six units (0.000006 AETH) beyond the transaction and receipt base.
+costing six units (0.000006 DBLN) beyond the transaction and receipt base.
 The audit's 400 × 4,096-byte `LOG0` call pays for over 1.6 MiB of event bytes.
 A 480-event call fits near the logical cap; repeated calls cannot exceed it.
 The
 audit's 714 fresh senders require at least 71,400 units for accounts plus
 transaction/receipt units; zero-balance senders cannot reserve that fee and
-fail both admission and execution. The full 100,000-unit state budget burns
-at most 0.1 AETH/block.
+fail both admission and execution. An unused full 100,000-unit burst budget costs 0.1 DBLN at the floor.
+It cannot be consumed again until it refills, and congested blocks pay more.
 
 No product flow needs an account-less sender's zero-value plain transfer.
 Mac onboarding uses the bounded free registration lane and leaves its wallet
@@ -104,3 +107,154 @@ report the actual units and burned fee.
 The name service still needs its separate commitment bond and committer
 binding: this generic growth fee does not compensate the service for abandoned
 commitments.
+
+
+## B5: consumer disk envelope and congestion price (2026-10-05)
+
+A per-block cap alone was insufficient: 2 MiB/second permits 181.19 GB/day
+(168.75 GiB) of logical transaction/receipt data and, at 16×, 2.899 TB/day
+of paid stored key/value rows. Receipt-only spam could buy that rate for
+about 5,662 DBLN/day at the floor. A beta has no reliable market price to make
+that cost a disk defense. The hard rolling budget now holds even for a funded
+attacker willing to pay any fee.
+
+Let `B = 100,000`, `R = 32`, `d = parent.excess.state`, and `u` be the block's
+actual state units. A block requires `u <= B - d` and records
+`d' = max(0, d + u - R)`. Debt is certified in existing parent metadata and
+persisted in block summaries/snapshots; an empty block replenishes R, restarting
+never replenishes anything, and wall-clock gaps do not mint budget. In any N
+consecutive blocks, `sum(u) <= B + R*N`. All code, accounts, slots and archived
+bytes share that inequality. Rounding the archive charge up only tightens it.
+
+| Payload envelope at one block/second | Per block/burst | Per day | Per 30 days | Per 365 days |
+|---|---:|---:|---:|---:|
+| Paid logical archive, if all units buy 32 bytes | Existing 2 MiB block cap; sustained 1,024 B/s | 88.474 MB steady + at most 3.20 MB initial burst | 2.657 GB including burst | 32.296 GB including burst |
+| Paid stored archive key/value rows at 16× | Existing 32 MiB block cap; sustained 16,384 B/s | 1.416 GB steady; **1.467 GB including burst** | **42.519 GB including burst** | 516.737 GB including burst |
+| Permanent new code, if all units buy code bytes | Up to 100,000 priced bytes in initial burst; sustained 32 B/s | 2.765 MB steady | 83.044 MB including burst | **1.009 GB including burst** |
+| Permanent state: conservative 16× storage planning allowance | 1.6 MB initial burst; sustained 512 B/s | 44.237 MB steady | 1.329 GB including burst | **16.148 GB including burst** |
+
+MB/GB/TB here are decimal. The archive and permanent maxima are alternatives,
+not additive: both spend the same bucket. Slots/accounts cost 100 units rather
+than one; at most about 27,648 new slots or accounts/day are sustainable, with
+the existing 512-slot block cap still enforced. The node stores 32-byte tree
+keys and 32-byte values, plus code by hash (31 code bytes per tree chunk);
+16× for permanent state is a conservative planning allowance, not a new
+assertion about filesystem allocation. The paid archive 16× bound remains the
+existing representation bound and redb regression measurement.
+
+An independent **8 MiB encoded-payload bucket**, refilled by **4,096 bytes
+per finalized height**, closes the unpaid system-payload gap. It measures the
+entire canonical payload: signed transactions, BAL, proofs, beacons,
+registrations, committee handoffs, seeds, upgrade notices and fixed headers.
+Validator execution checks its available budget **before system pre-state
+writes**. The proposer selects/defer extras before applying those writes,
+selects transactions with an incremental executor callback over each tentative
+block outcome so rejected candidates commit no state and BAL, gas and receipts
+remain correct. No full-block replay is needed per rejected candidate. The paid state fee/context/proof
+statement are unchanged by this independent envelope.
+
+With archive debt `a`, a block must fit `8 MiB - a` and records
+`a' = max(0, a + canonical_payload_bytes - 4096)`. Genesis starts at zero.
+Nonzero debt is authenticated by the child's `parent_meta`, persisted in
+versioned packed summaries and snapshot envelopes, and restored on restart.
+Zero debt retains the legacy packed summary/postcard and metadata encodings;
+chain 7780 never charges archive debt. Neither restarts nor wall time refill it.
+In N consecutive heights total payload bytes are at most `8 MiB + 4096*N`.
+The original 8 MiB wire-sized burst preserves log-heavy ordinary transactions.
+
+**256 KiB of burst capacity is reserved for committee control fields**
+(handoff, seed or upgrade). Without any such field, the effective cap is the
+larger of the canonical empty payload size and `available - 256 KiB`, never
+more than available. Below that reserve, only empty blocks fit, allowing the
+bucket to refill; optional proof/beacon traffic and small transactions cannot
+starve an urgent upgrade. Control fields take priority over optional entries.
+Each individual control item, including its empty header, must fit the 256 KiB
+reserve; validator execution enforces this regardless of committee signatures.
+Combined controls may use the whole available bucket. If the combination does
+not fit, the proposer first carries a fitting upgrade alone, then a fitting
+handoff/seed pair, or the seed alone so the handoff can follow. Deferral never
+waits for a control larger than the protected reserve: such an item is invalid
+and must be signed in a smaller form or changed by a version-gated upgrade.
+The upgrade's 16 releases × four 512-byte fields × worst-case six-character
+JSON escapes, plus notes, 128 emergency approval pairs and fixed framing, fit
+below 256 KiB; normally encoded handoffs/seeds are much smaller, and the
+individual bound also constrains unusual DKG output encodings.
+FOCIL append checks include the prospective transaction's exact BAL and payload
+bytes and the same reserve rule. They execute only the prospective appended
+transaction, restoring the prior exact fee settlement before merging BAL, gas
+and receipts; the full inclusion-list obligation is retained. Proof claims have a 32 KiB decoded minimum,
+128 KiB maximum; their hexadecimal payload encoding means roughly 16–64 seconds
+of refill per claim before header overhead, even though the burst can hold more.
+
+| Encoded archive planning envelope (one block/second) | Burst | Per day | Per 30 days | Per 365 days |
+|---|---:|---:|---:|---:|
+| Complete canonical payload | 8.389 MB; 4,096 B/s steady | 353.894 MB steady | 10.625 GB including burst | 129.180 GB including burst |
+| Four physical payload copies (staged/era plus consensus archive allowance) | 33.554 MB; 16,384 B/s steady | 1.416 GB steady; 1.449 GB including burst | 42.501 GB including burst | 516.719 GB including burst |
+| Paid rows plus four payload copies, conservatively double-counting paid transaction bytes | 84.754 MB combined burst | **2.831 GB steady; 2.916 GB including burst** | **85.019 GB including bursts** | **1.033 TB including bursts** |
+
+The four-copy allowance is a conservative bound on simultaneously retained
+payload representations, not a promise about allocated filesystem pages.
+Fixed certificates, permanent system records from the inventory, redb page
+fragmentation and transient snapshots still require operator headroom. The
+100,000-entry candidate registry, epoch registration cap and protocol-specific
+system-state bounds remain necessary; encoded archive metering does not price
+those state writes. A roughly 85 GB 30-day payload envelope can fit a consumer
+Mac with 100–500 GB free while leaving space for permanent state and overhead.
+The lower end requires monitoring/free-space stops and actual era deletion:
+the default history policy retains sealed eras after pruning query tables.
+Keeping all eras permanently instead admits the annual 1.033 TB archive
+figure; the paid permanent-state envelope remains the table above. Operators
+must configure era-file deletion to enforce a 30-day retained payload window.
+A full 8 MiB archive burst needs 2,048 heights (34 minutes 8 seconds) to refill
+before subtracting the required empty header bytes; real empty blocks recover
+slightly slower because their bytes are counted too.
+
+State price uses the existing fee vector and proof context; the independent
+archive budget only adds authenticated metadata in versioned store/snapshot
+envelopes:
+
+`base_state = fake_exponential(10^12, max(0, d - 50,000), 12,500)`.
+
+It stays at the old floor through 50,000 units of burst debt. At debt 62,500,
+75,000 and near 100,000 it is approximately 2.72×, 7.39× and 54.46× the
+floor. The proposer/admission context and stateless proof statement carry both
+the remaining capacity and fee vector. All execution paths reserve at the
+current price, reject a lower signed cap, refund unused reservation and burn
+actual units times price. The state floor and surcharge apply even when a
+new-genesis devnet disables execution/proving fees.
+
+Transfers, ERC-20 calls, swaps, names and the audited 12,588-unit vault deploy
+retain their accounting and floor costs during ordinary use. A full bucket
+admits several such deployments; three consecutive 12,588-unit samples leave debt below the 50,000-unit
+price-free burst. A fourth still pays the floor, then raises the next price
+slightly as debt passes that threshold. A 12,588-unit burst recovers
+in at most 394 empty heights, and the whole bucket in at most 3,125 heights
+(52 minutes 5 seconds). Signed budgets may still be 100,000: consensus checks
+actual committed units against remaining capacity, so a conservative wallet
+estimate does not reject a small transfer. Congestion deliberately delays large
+bursts until capacity returns or a smaller transaction is selected.
+
+### Retuning after launch (G4)
+
+Parameters live together in `crates/execution/src/fees.rs`: burst capacity,
+refill, price-free burst, exponential denominator, floor price and the existing
+byte/slot/expansion caps, encoded archive burst/refill, control reserve and
+four-copy planning allowance. The launch checklist also checks the paid-row envelope
+including burst stays below **1.5 GB/day** and the combined paid-plus-archive
+planning envelope stays below **3 GB/day** and verifies that state price rises.
+We keep constants for this pre-genesis change: moving parameters into registry
+storage would require new authenticated update payloads, migration defaults,
+witness/context plumbing and replay rules. It is not a cheap local parameter
+write, and an unauthenticated registry setter must not acquire consensus power.
+
+Retune with a committee-signed protocol upgrade and matching binaries, using
+the normal **604,800-block notice**, or the B4 emergency **n−f approval plus
+one-epoch notice** for an urgent disk defense. Update the constants, disk math,
+launch policy and differential/replay tests together; increase protocol version
+and activate the changed rule at the scheduled height, never silently replace
+the running protocol's rules. The encoded archive constants and control reserve
+require the same version gate; a binary-only constant edit is not an activation. If a future bounded registry parameter mechanism
+is introduced, migrate existing debt conservatively (never reset/replenish it),
+bind values to certified state and proof contexts, and retain hard ceilings on
+refill, burst, byte expansion and minimum price. **Chain 7780 keeps zero state
+debt/price, unused unlimited state gas, and its pinned genesis/receipt bytes.**

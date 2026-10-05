@@ -183,9 +183,9 @@ private struct ProviderAskSheet: View {
                 VStack(alignment: .leading, spacing: 8) {
                     row("Action", CallDescribe.action(to: tx.to, data: tx.data))
                     if !tx.to.isEmpty { row("To", tx.to) }
-                    row("Amount", tx.valueWei == "0" ? "—" : "\(Wei.format(tx.valueWei)) \(Brand.coinTicker)")
+                    row("Amount", tx.valueWei == "0" ? "—" : "\(Wei.format(tx.valueWei)) \(Brand.networkCoinTicker)")
                     if tx.isPlainTransfer {
-                        row("Fee (maximum)", feeWei.map { "\(Wei.format($0)) \(Brand.coinTicker)" } ?? "the network's fee at send time")
+                        row("Fee (maximum)", feeWei.map { "\(Wei.format($0)) \(Brand.networkCoinTicker)" } ?? "the network's fee at send time")
                     }
                     row("Gas", tx.gas == 0 ? "the wallet's default" : "\(tx.gas)")
                     if tx.data != "0x" {

@@ -1,6 +1,6 @@
 import Foundation
 
-/// Read-only Aether DEX tools: pools, token facts, swap quotes. They read the
+/// Read-only EastSea DEX tools: pools, token facts, swap quotes. They read the
 /// contracts with `eth_call` through the node the agent already uses and never
 /// sign anything. Contract addresses come from the deployment files bundled at
 /// build time (apps/agent/Resources/dex), keyed by chain id.
@@ -30,7 +30,7 @@ enum Dex {
     }
 
     struct Token {
-        let address: String  // WAETH's address for native AETH
+        let address: String  // WAETH's address for the native coin
         let symbol: String
         let name: String
         let decimals: Int
@@ -46,7 +46,7 @@ enum Dex {
               let c = v["contracts"] as? [String: String],
               let waeth = c["WAETH"], let tf = c["TokenFactory"], let pf = c["PairFactory"], let router = c["Router"] else {
             let known = DexDeployments.byChainId.keys.sorted().map(String.init).joined(separator: ", ")
-            throw AgentError.io("no Aether DEX is known on chain \(chain) (this agent knows chains: \(known))")
+            throw AgentError.io("no EastSea DEX is known on chain \(chain) (this agent knows chains: \(known))")
         }
         let node = try chainStatus().chainId
         guard node == chain else { throw AgentError.io("the node is on chain \(node), but this agent is configured for chain \(chain)") }
@@ -83,10 +83,13 @@ enum Dex {
             return t
         }
 
-        /// "AETH" (native), "WAETH", a 0x address, or a symbol (deployment seed list first, then the token factory).
+        /// The native coin's ticker (legacy "AETH" still answers), "WAETH", a 0x
+        /// address, or a symbol (deployment seed list first, then the token factory).
         func resolve(_ input: String) throws -> Token {
             let s = input.trimmingCharacters(in: .whitespaces)
-            if s.uppercased() == "AETH" { return Token(address: dep.waeth, symbol: "AETH", name: "Aether", decimals: 18, native: true) }
+            if s.uppercased() == Coin.ticker(dep.chainId) || s.uppercased() == "AETH" {
+                return Token(address: dep.waeth, symbol: Coin.ticker(dep.chainId), name: Coin.name(dep.chainId), decimals: 18, native: true)
+            }
             if s.uppercased() == "WAETH" { return try token(dep.waeth) }
             if ABI.isAddress(s) { return try token(s) }
             if let a = dep.seed.first(where: { $0.key.uppercased() == s.uppercased() })?.value { return try token(a) }
@@ -117,8 +120,8 @@ enum Dex {
         }
     }
 
-    static func describe(_ t: Token) -> [String: Any] {
-        t.native ? ["symbol": "AETH", "address": "native"] : ["symbol": t.symbol, "address": t.address]
+    static func describe(_ t: Token, chainId: UInt64) -> [String: Any] {
+        t.native ? ["symbol": Coin.ticker(chainId), "address": "native"] : ["symbol": t.symbol, "address": t.address]
     }
 
     /// Price as a plain decimal string (8 significant digits).

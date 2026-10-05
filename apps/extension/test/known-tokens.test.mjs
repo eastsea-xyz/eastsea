@@ -9,7 +9,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { Brand } from '../src/lib/brand.js';
+import { Brand, coinTicker, coinName } from '../src/lib/brand.js';
 import { NATIVE_COINS, KNOWN_TOKENS, knownToken } from '../src/lib/knownTokens.js';
 
 const ADDRESS = /^0x[0-9a-f]{40}$/;
@@ -55,10 +55,15 @@ test('the table is frozen, and lookups hand out copies', () => {
   assert.equal(knownToken(7780, '0xa2521982a17474cb2f8741c85de653b5282d72b0').decimals, 18);
 });
 
-test('the native entry follows the brand, not the node', () => {
-  assert.equal(NATIVE_COINS[7780].symbol, Brand.coinTicker);
-  assert.equal(NATIVE_COINS[7780].name, Brand.coinName);
+test('the native entry follows the chain, not the node', () => {
+  assert.equal(NATIVE_COINS[7780].symbol, 'AETH');
+  assert.equal(NATIVE_COINS[7780].name, 'Test AETH');
   assert.ok(Number.isSafeInteger(NATIVE_COINS[7780].decimals));
+  // The per-chain brand agrees: the legacy testnet kept AETH, a new-genesis
+  // chain is DBLN.
+  assert.equal(NATIVE_COINS[7780].symbol, coinTicker(7780));
+  assert.equal(NATIVE_COINS[7780].name, coinName(7780));
+  assert.equal(coinTicker(7777), 'DBLN');
 });
 
 test('every address the wallet ships as a source token is on the list', async () => {

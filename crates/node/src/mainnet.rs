@@ -173,11 +173,14 @@ pub fn check_with(cfg: &ChainConfig, rehearsal: bool) -> Vec<Rule> {
                 && aether_execution::fees::STATE_ACCOUNT_UNITS > 0
                 && aether_execution::fees::RECEIPT_BYTES_PER_STATE_UNIT > 0
                 && aether_execution::fees::EVENT_BASE_BYTES > 0
+                && economic_disk_bound()
                 && paid_growth_probes(cfg, &genesis),
             format!(
-                "{} wei per state unit; {} units per new slot or account (including the sender); event bytes have a nonzero price and a receipt-byte block cap; at most {} new slots per block",
+                "{} wei per state unit at the floor, rising with congestion; {} units per new slot or account; {} burst units with {} units/block refill; entire encoded payload has an 8 MiB burst and 4 KiB/block refill (combined archive allowance below 3 GB/day including bursts); at most {} new slots per block",
                 aether_execution::fees::STATE_UNIT_PRICE,
                 aether_execution::fees::STATE_SLOT_UNITS,
+                aether_execution::fees::MAX_STATE_UNITS_PER_BLOCK,
+                aether_execution::fees::STATE_UNITS_PER_BLOCK,
                 aether_execution::fees::MAX_NEW_SLOTS_PER_BLOCK
             ),
         ),
@@ -206,6 +209,33 @@ pub fn check_with(cfg: &ChainConfig, rehearsal: bool) -> Vec<Rule> {
             "the first block's exec/prove base fees are 0; an already funded account can transact with zero tip".into(),
         ),
     ]
+}
+
+/// Launch policy includes a numerical disk envelope, not just a nonzero fee.
+/// At most burst + refill * heights units can be consumed in any interval.
+fn economic_disk_bound() -> bool {
+    use aether_execution::fees;
+    let daily_units = fees::MAX_STATE_UNITS_PER_BLOCK as u128
+        + 86_400 * fees::STATE_UNITS_PER_BLOCK as u128;
+    let daily_stored = daily_units * fees::RECEIPT_BYTES_PER_STATE_UNIT as u128
+        * fees::MAX_STORED_BYTES_PER_METERED_BYTE as u128;
+    let daily_archive = (fees::MAX_ENCODED_PAYLOAD_BYTES as u128
+        + 86_400 * fees::ENCODED_PAYLOAD_BYTES_PER_BLOCK as u128)
+        * fees::MAX_ARCHIVE_COPIES as u128;
+    fees::STATE_UNITS_PER_BLOCK > 0
+        && fees::STATE_UNITS_PER_BLOCK < fees::MAX_STATE_UNITS_PER_BLOCK
+        && daily_stored <= 1_500_000_000
+        && fees::ENCODED_PAYLOAD_BYTES_PER_BLOCK >= 1024
+        && fees::ENCODED_PAYLOAD_BYTES_PER_BLOCK < fees::MAX_ENCODED_PAYLOAD_BYTES
+        && fees::MAX_ARCHIVE_COPIES >= 4
+        && fees::CONTROL_ARCHIVE_RESERVE < fees::MAX_ENCODED_PAYLOAD_BYTES
+        && daily_stored + daily_archive <= 3_000_000_000
+        && fees::encoded_payload_limit(fees::MAX_ENCODED_PAYLOAD_BYTES
+            - fees::ENCODED_PAYLOAD_BYTES_PER_BLOCK) == fees::ENCODED_PAYLOAD_BYTES_PER_BLOCK
+        && fees::state_block_limit(fees::MAX_STATE_UNITS_PER_BLOCK - fees::STATE_UNITS_PER_BLOCK)
+            == fees::STATE_UNITS_PER_BLOCK
+        && fees::state_base_fee(fees::STATE_PRICE_FREE_BURST) == fees::STATE_UNIT_PRICE
+        && fees::state_base_fee(fees::STATE_PRICE_FREE_BURST + 1) > fees::STATE_UNIT_PRICE
 }
 
 /// Exercise the two audit-6 escape routes against the genesis executor. The
@@ -271,9 +301,9 @@ fn paid_growth_probes(cfg: &ChainConfig, genesis: &crate::chain::Executed) -> bo
         && aether_execution::fees::MAX_PAID_STORED_BYTES_PER_BLOCK <= 32 * 1024 * 1024
 }
 
-/// The published issuance schedule: 1 AETH a block at height 0, decaying
+/// The published issuance schedule: 1 DBLN a block at height 0, decaying
 /// smoothly (−15% a year, well under a tenth of a percent a day, never a
-/// halving step) and floored at 0.1 AETH (docs/design/15-node-rewards.md).
+/// halving step) and floored at 0.1 DBLN (docs/design/15-node-rewards.md).
 fn smooth_issuance() -> Rule {
     use aether_rewards::{issuance, DAY_BLOCKS, TAIL};
     let full = issuance(0);
@@ -288,7 +318,7 @@ fn smooth_issuance() -> Rule {
     Rule {
         name: "smooth issuance",
         ok,
-        detail: format!("1 AETH a block, −15%/year ({year} after a year), floored at 0.1 AETH"),
+        detail: format!("1 DBLN a block, −15%/year ({year} after a year), floored at 0.1 DBLN"),
     }
 }
 

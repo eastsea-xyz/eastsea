@@ -770,8 +770,8 @@ fn fee_caps(status: &Value, balance: Option<U256>, state_price: u128) -> (FeeVec
 fn check_paid_state_balance(state_price: u128, balance: Option<U256>) -> R<()> {
     if state_price > 0 {
         match balance {
-            None => return Err(WalletError::Invalid("Could not read the AETH balance needed to pay this transaction's state fee".into())),
-            Some(b) if b.is_zero() => return Err(WalletError::Invalid("Add AETH before sending: this transaction must pay for its persistent bytes and first-use account".into())),
+            None => return Err(WalletError::Invalid("Could not read the balance needed to pay this transaction's state fee".into())),
+            Some(b) if b.is_zero() => return Err(WalletError::Invalid("Add native coins before sending: this transaction must pay for its persistent bytes and first-use account".into())),
             Some(_) => {}
         }
     }

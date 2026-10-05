@@ -262,12 +262,12 @@ private struct HomePage: View {
     @ViewBuilder private var balanceText: some View {
         if model.account == nil, model.chainPausedSince != nil {
             // Paused before anything could be verified: nothing to show yet.
-            Text("– \(Brand.coinTicker)").font(.display).foregroundStyle(.secondary)
+            Text("– \(Brand.networkCoinTicker)").font(.display).foregroundStyle(.secondary)
         } else if model.account == nil {
             // Loading: a soft shimmer where the balance will appear.
             ShimmerBar().frame(maxWidth: 220).frame(height: 52)
         } else {
-            Text("\(Amount.text(balance)) \(Brand.coinTicker)")
+            Text("\(Amount.text(balance)) \(Brand.networkCoinTicker)")
                 .font(.display)
                 .monospacedDigit()
                 .lineLimit(1)
@@ -291,7 +291,7 @@ private struct HomePage: View {
 }
 
 #if os(iOS)
-/// "● Node rewards · +0.5 AETH ›" — the one line iPhone Home gives rewards,
+/// "● Node rewards · +0.5 DBLN ›" — the one line iPhone Home gives rewards,
 /// only once the wallet has received some (they come from a Mac's node).
 private struct NodeRewardsLine: View {
     @EnvironmentObject var model: WalletModel
@@ -308,7 +308,7 @@ private struct NodeRewardsLine: View {
             Button(action: showActivity) {
                 HStack(spacing: 8) {
                     Circle().fill(Color.aether).frame(width: 8, height: 8)
-                    Text("Node rewards · +\(Amount.text(total)) \(Brand.coinTicker)")
+                    Text("Node rewards · +\(Amount.text(total)) \(Brand.networkCoinTicker)")
                     Spacer(minLength: 4)
                     Image(systemName: "chevron.right").foregroundStyle(.tertiary)
                 }
@@ -416,7 +416,7 @@ private struct BalanceBreakdownCard: View {
                             HStack {
                                 Text(line.name).font(.aeBody)
                                 Spacer(minLength: 8)
-                                Text("\(line.negative ? "−" : "+")\(ChainActivity.units(line.wei)) \(Brand.coinTicker)")
+                                Text("\(line.negative ? "−" : "+")\(ChainActivity.units(line.wei)) \(Brand.networkCoinTicker)")
                                     .font(.aeBody.monospacedDigit())
                                     .foregroundStyle(line.negative ? Color.secondary : Color.green)
                             }
@@ -484,7 +484,7 @@ private struct RewardDaysCard: View {
                                 Text(day.day.map { $0.formatted(date: .abbreviated, time: .omitted) } ?? "Time unknown")
                                     .font(.aeBody.weight(.medium))
                                 Spacer(minLength: 8)
-                                Text("\(day.count) reward\(day.count == 1 ? "" : "s") · +\(ChainActivity.units(day.totalWei)) \(Brand.coinTicker)")
+                                Text("\(day.count) reward\(day.count == 1 ? "" : "s") · +\(ChainActivity.units(day.totalWei)) \(Brand.networkCoinTicker)")
                                     .font(.aeFootnote.monospacedDigit()).foregroundStyle(.secondary)
                             }
                         }
@@ -676,6 +676,9 @@ private struct SecurityPage: View {
                         Text("Protected by this device").font(.aeHeadline)
                         Text("Your key was created inside the Secure Enclave and can never be copied out. Every payment asks for Touch ID or your password. If you lose every device and have no recovery set up, nobody can restore the funds.")
                             .font(.aeBody).foregroundStyle(.secondary)
+                        // F-05: recovery never revokes a stolen original key.
+                        Text(KeyExposureNotice.keyCustody.text).font(.aeFootnote).foregroundStyle(Color.warn)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
@@ -1020,7 +1023,7 @@ private struct BalanceCard: View {
         let period = range == .all ? "total" : "in \(range.rawValue)"
         if let first = points.first, points.count > 1, balance != first.aeth {
             let d = balance - first.aeth
-            Label("\(d > 0 ? "+" : "")\(Amount.text(d)) \(Brand.coinTicker) \(period)", systemImage: d > 0 ? "arrow.up.right" : "arrow.down.right")
+            Label("\(d > 0 ? "+" : "")\(Amount.text(d)) \(Brand.networkCoinTicker) \(period)", systemImage: d > 0 ? "arrow.up.right" : "arrow.down.right")
                 .font(.aeBody.weight(.medium))
                 .foregroundStyle(d > 0 ? Color.green : Color.secondary)
         } else if points.count > 1 {
@@ -1033,10 +1036,10 @@ private struct BalanceCard: View {
     @ViewBuilder private var chart: some View {
         if points.count > 1 {
             Chart(points) { p in
-                AreaMark(x: .value("Time", p.date), y: .value("\(Brand.coinTicker)", p.aeth))
+                AreaMark(x: .value("Time", p.date), y: .value("\(Brand.networkCoinTicker)", p.aeth))
                     .interpolationMethod(.stepEnd)
                     .foregroundStyle(.linearGradient(colors: [.aether.opacity(0.35), .aether.opacity(0.02)], startPoint: .top, endPoint: .bottom))
-                LineMark(x: .value("Time", p.date), y: .value("\(Brand.coinTicker)", p.aeth))
+                LineMark(x: .value("Time", p.date), y: .value("\(Brand.networkCoinTicker)", p.aeth))
                     .interpolationMethod(.stepEnd)
                     .lineStyle(StrokeStyle(lineWidth: 2.5))
                     .foregroundStyle(Color.aether)
@@ -1158,7 +1161,7 @@ private struct ActivityRow: View {
         } else {
             // The native coin moved: its doubloon, with the direction kept as
             // a small arrow (colour plus shape, not colour alone).
-            TokenIcon(chainId: model.status?.chainId ?? 0, address: nil, symbol: Brand.coinTicker)
+            TokenIcon(chainId: model.status?.chainId ?? 0, address: nil, symbol: Brand.networkCoinTicker)
                 .overlay(alignment: .bottomTrailing) {
                     Image(systemName: item.kind == .received ? "arrow.down.left.circle.fill" : "arrow.up.right.circle.fill")
                         .font(.system(size: 11))
@@ -1229,7 +1232,7 @@ struct TokenRow: View {
     var body: some View {
         HStack(spacing: 12) {
             // The native coin's own doubloon; the row is always the coin row.
-            TokenIcon(chainId: 0, address: nil, symbol: symbol, size: 40)
+            TokenIcon(chainId: Brand.networkChainId, address: nil, symbol: symbol, size: 40)
             VStack(alignment: .leading, spacing: 2) {
                 Text(name).font(.aeBody.weight(.semibold))
                 HStack(spacing: 4) {
@@ -1302,12 +1305,12 @@ private struct SendSheet: View {
     /// token send, or several recipients, keep `nil` (the status maximum).
     @State private var quote: TransferQuote?
 
-    /// The token being sent (nil: AETH). A payment link always sends AETH.
+    /// The token being sent (nil: the native coin). A payment link always sends the native coin.
     private var token: TokenHolding? { model.paymentRequest == nil ? model.sendToken : nil }
     private var amount: Double? { Double(model.paymentRequest?.amount ?? model.sendAmount) }
     private var balance: Double { model.account.flatMap { Double(Wei.format($0.balanceWei)) } ?? 0 }
     private var recipient: String { model.paymentRequest?.to ?? model.sendTo }
-    /// One address for a token send; AETH keeps its comma-separated list.
+    /// One address for a token send; the native coin keeps its comma-separated list.
     private var recipients: [String] {
         recipient.split(whereSeparator: { $0 == "," || $0.isWhitespace }).map(String.init).filter { !$0.isEmpty }
     }
@@ -1331,7 +1334,7 @@ private struct SendSheet: View {
     /// displayed is what the signature re-checks against the network at send
     /// time — a rise since the sheet opened refuses the send and asks for a
     /// fresh confirmation instead of silently signing above it. nil when no
-    /// AETH fee was displayed (a token send; no status yet).
+    /// native-coin fee was displayed (a token send; no status yet).
     private var shownFeeWei: String? {
         guard token == nil else { return nil }
         return WeiMath.shownFeeWei(quoteWei: quote?.feeWei, statusWei: model.status?.transferFeeWei, recipients: recipients.count)
@@ -1373,7 +1376,7 @@ private struct SendSheet: View {
                     Text(r.to).font(.aeBody.monospaced()).textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                     Text("Amount").font(.aeFootnote).foregroundStyle(.secondary).padding(.top, 6)
-                    Text("\(r.amount) \(Brand.coinTicker)").font(.aeTitle.monospacedDigit())
+                    Text("\(r.amount) \(Brand.networkCoinTicker)").font(.aeTitle.monospacedDigit())
                 }
             } else {
                 assetPicker
@@ -1389,8 +1392,8 @@ private struct SendSheet: View {
                         // The icon always agrees with the picked asset (by
                         // address), so a look-alike symbol never shows doubloons.
                         TokenIcon(chainId: model.status?.chainId ?? 0, address: token?.token.address,
-                                  symbol: token?.token.symbol ?? Brand.coinTicker, size: 20)
-                        Text(token?.token.symbol ?? "\(Brand.coinTicker)").foregroundStyle(.secondary)
+                                  symbol: token?.token.symbol ?? Brand.networkCoinTicker, size: 20)
+                        Text(token?.token.symbol ?? "\(Brand.networkCoinTicker)").foregroundStyle(.secondary)
                         Button("Max") { fillMax() }.buttonStyle(.borderless)
                     }
                 }
@@ -1411,7 +1414,7 @@ private struct SendSheet: View {
                     }
                     Text("· \(TokenLabel.short(t.token.address))").monospaced().foregroundStyle(.secondary)
                 } else {
-                    Text("\(Amount.text(balance)) \(Brand.coinTicker)").monospacedDigit()
+                    Text("\(Amount.text(balance)) \(Brand.networkCoinTicker)").monospacedDigit()
                 }
             }.font(.aeBody)
             if let s = model.status {
@@ -1464,8 +1467,8 @@ private struct SendSheet: View {
     }
 
     private var title: String {
-        if model.paymentRequest != nil { return "Send \(Brand.coinTicker)" }
-        return token.map { "Send \($0.token.symbol)" } ?? "Send \(Brand.coinTicker)"
+        if model.paymentRequest != nil { return "Send \(Brand.networkCoinTicker)" }
+        return token.map { "Send \($0.token.symbol)" } ?? "Send \(Brand.networkCoinTicker)"
     }
 
     /// The form's note about the units the amount field is parsed under (audit
@@ -1494,7 +1497,7 @@ private struct SendSheet: View {
         }
     }
 
-    /// AETH or any held token, labeled with its address — never the symbol alone
+    /// The native coin or any held token, labeled with its address — never the symbol alone
     /// (a spam token can call itself anything). The icon next to the label is
     /// classified by address only, so a mimic's symbol earns it nothing.
     private var assetPicker: some View {
@@ -1504,8 +1507,8 @@ private struct SendSheet: View {
             Menu {
                 Button { model.sendToken = nil; model.sendAmount = "1" } label: {
                     HStack(spacing: 6) {
-                        TokenIcon(chainId: model.status?.chainId ?? 0, address: nil, symbol: Brand.coinTicker, size: 18)
-                        Text("\(Brand.coinTicker) · \(Brand.coinName)")
+                        TokenIcon(chainId: model.status?.chainId ?? 0, address: nil, symbol: Brand.networkCoinTicker, size: 18)
+                        Text("\(Brand.networkCoinTicker) · \(Brand.networkCoinName)")
                     }
                 }
                 ForEach(model.tokenSections.main) { t in
@@ -1519,8 +1522,8 @@ private struct SendSheet: View {
             } label: {
                 HStack(spacing: 6) {
                     TokenIcon(chainId: model.status?.chainId ?? 0, address: token?.token.address,
-                              symbol: token?.token.symbol ?? Brand.coinTicker, size: 20)
-                    Text(token.map { TokenLabel.row($0.token) } ?? "\(Brand.coinTicker) · \(Brand.coinName)").font(.aeBody.weight(.semibold))
+                              symbol: token?.token.symbol ?? Brand.networkCoinTicker, size: 20)
+                    Text(token.map { TokenLabel.row($0.token) } ?? "\(Brand.networkCoinTicker) · \(Brand.networkCoinName)").font(.aeBody.weight(.semibold))
                     Image(systemName: "chevron.up.chevron.down").font(.aeCaption).foregroundStyle(.secondary)
                 }
             }
@@ -1551,7 +1554,7 @@ private struct SendSheet: View {
 
     /// Dry-run first, then sign: an `eth_call` of the same transfer from this
     /// account, so a honeypot or a blocked transfer is refused before Touch ID
-    /// (multi-recipient AETH sends skip it; the batch cannot be replayed as one call).
+    /// (multi-recipient native-coin sends skip it; the batch cannot be replayed as one call).
     /// A token send freezes its intent here (audit R2-5) — the amount text is
     /// parsed once, under the decimals this sheet showed it under — and the
     /// confirm card signs exactly that, never a re-read of the form.
@@ -1695,7 +1698,7 @@ private struct CallSheet: View {
                     .background(Color.warn.opacity(0.14), in: RoundedRectangle(cornerRadius: Radius.inner))
                 row("Action", r.method)
                 if !r.to.isEmpty { row("Contract", r.to, mono: true) }
-                row("Sends", "\(r.value) \(Brand.coinTicker)")
+                row("Sends", "\(r.value) \(Brand.networkCoinTicker)")
                 if let m = r.memo { row("Note", m) }
                 DisclosureGroup("Call data (\((r.data.count - 2) / 2) bytes)") {
                     ScrollView { Text(r.data).font(.aeFootnote.monospaced()).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
@@ -1766,7 +1769,7 @@ private struct ReceiveSheet: View {
 
     var body: some View {
         VStack(spacing: 16) {
-            Text("Receive \(Brand.coinTicker)").font(.aeTitle)
+            Text("Receive \(Brand.networkCoinTicker)").font(.aeTitle)
             QRCode(text: model.address).frame(maxWidth: 200, maxHeight: 200).aspectRatio(1, contentMode: .fit)
             Text(model.address).font(.aeBody.monospaced()).multilineTextAlignment(.center).textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1793,6 +1796,9 @@ private struct RecoveryPanel: View {
             Text("Recovery device").font(.aeHeadline)
             Text("If you lose this device, a second device you trust (your other Mac or iPhone) can move your funds to itself.")
                 .font(.aeBody).foregroundStyle(.secondary)
+            // F-05: recovery saves a lost key, never a stolen one.
+            Label(KeyExposureNotice.recovery.text, systemImage: "exclamationmark.triangle").font(.aeFootnote).foregroundStyle(Color.warn)
+                .fixedSize(horizontal: false, vertical: true)
             step(1, "On the other device, copy its code", "Open \(Brand.project) there, tap Recovery device, and copy \"This device's code\".")
             HStack {
                 TextField("Paste the other device's code", text: $model.guardianInput).textFieldStyle(.roundedBorder).font(.aeFootnote.monospaced())
@@ -1814,7 +1820,7 @@ private struct RecoveryPanel: View {
             if let p = model.outgoingRecovery {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Recovering \(Short.address(p.request.lost)): \(Wei.format(p.request.valueWei)) \(Brand.coinTicker)").font(.aeBody.weight(.medium))
+                        Text("Recovering \(Short.address(p.request.lost)): \(Wei.format(p.request.valueWei)) \(Brand.networkCoinTicker)").font(.aeBody.weight(.medium))
                         Text(p.isReady ? "Ready to finish" : "Can finish \(p.readyAt.formatted(date: .abbreviated, time: .shortened))")
                             .font(.aeFootnote).foregroundStyle(p.isReady ? Color.aether : .secondary)
                     }
@@ -1875,10 +1881,10 @@ enum Amount {
         v.formatted(.number.precision(.fractionLength(0...4)))
     }
 
-    /// Fee in AETH with enough digits to be non-zero.
+    /// Fee in the native coin with enough digits to be non-zero.
     static func fee(_ wei: String) -> String {
         let aeth = (Double(wei) ?? 0) / 1e18
         if aeth == 0 { return "free" }
-        return "\(aeth.formatted(.number.precision(.significantDigits(1...3)))) \(Brand.coinTicker)"
+        return "\(aeth.formatted(.number.precision(.significantDigits(1...3)))) \(Brand.networkCoinTicker)"
     }
 }

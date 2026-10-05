@@ -114,7 +114,7 @@ fn issuance_falls_15_percent_a_year_to_a_floor_of_a_tenth() {
         assert!(now <= last, "day {day}");
         last = now;
     }
-    // Whole schedule before the floor: ~31.5M × (1 − 0.1) / 0.1625 ≈ 175M AETH,
+    // Whole schedule before the floor: ~31.5M × (1 − 0.1) / 0.1625 ≈ 175M DBLN,
     // the first year about 29M of it.
     let first_year: f64 = (0..365).map(|d| aeth(d * DAY_BLOCKS + 1) * DAY_BLOCKS as f64).sum();
     assert!((28.0e6..30.0e6).contains(&first_year), "{first_year}");

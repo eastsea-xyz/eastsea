@@ -220,7 +220,7 @@ private struct GeneratedGlyphArt: View {
 struct TokenIconPreviewRow: View {
     var body: some View {
         HStack(spacing: 14) {
-            TokenIcon(chainId: 7780, address: nil, symbol: Brand.coinTicker, size: 40)
+            TokenIcon(chainId: 7780, address: nil, symbol: Brand.coinTicker(chainId: 7780), size: 40)
             TokenIcon(chainId: 7780, address: "0xa2521982a17474cb2f8741c85de653b5282d72b0", symbol: "WAETH", size: 40)
             TokenIcon(chainId: 7780, address: "0x6bc5ded76ccbdc8df35e7cd28b68fed245a74416", symbol: "NEB", size: 40)
             TokenIcon(chainId: 7780, address: "0x961f8add5ae93ff0700be8abd5f9f8ec69ba4347", symbol: "ORB", size: 40)

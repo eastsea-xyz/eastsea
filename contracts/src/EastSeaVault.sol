@@ -7,7 +7,7 @@ pragma solidity ^0.8.19;
 /// M-of-N threshold, like EastSeaAccount's guardian keys.
 ///
 /// Money leaves two ways:
-///   - `spend`: ONE owner's signature moves native AETH at once, within the
+///   - `spend`: ONE owner's signature moves native DBLN at once, within the
 ///     vault-wide daily limit (any 24 hours, UTC-day accounting as in
 ///     EastSeaAccount's session keys).
 ///   - the queue: anything else (amounts over the limit, ERC-20 transfers)
@@ -46,7 +46,7 @@ contract EastSeaVault {
         /// 0 until the threshold is reached; then executable after this time.
         uint64 readyAt;
         // ---- withdrawals ----
-        /// address(0) = native AETH.
+        /// address(0) = native DBLN.
         address token;
         address to;
         uint256 amount;
@@ -162,9 +162,9 @@ contract EastSeaVault {
         return sha256(abi.encode(block.chainid, address(this), CANCEL_TAG, nonce, id));
     }
 
-    // ---- one owner, native AETH, within the daily limit ----
+    // ---- one owner, native DBLN, within the daily limit ----
 
-    /// One owner's signature moves `amount` AETH to `to` at once, if the
+    /// One owner's signature moves `amount` DBLN to `to` at once, if the
     /// vault's last 24 hours stay within `dailyLimit`. Anyone may relay.
     function spend(address to, uint256 amount, uint256 ownerIndex, bytes32 r, bytes32 s) external {
         Key memory k = _ownerAt(ownerIndex);

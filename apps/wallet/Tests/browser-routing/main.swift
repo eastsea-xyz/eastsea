@@ -105,11 +105,11 @@ for v in ["0", "1", "1000000000000000000", "999848293841", "34028236692093846346
 }
 
 // The confirmation sheet's Action line (describeCall, mirrored).
-check(CallDescribe.action(to: TO, data: "0x") == "Send \(Brand.coinTicker)", "plain transfer")
+check(CallDescribe.action(to: TO, data: "0x") == "Send AETH", "plain transfer")
 check(CallDescribe.action(to: TO, data: "0x38ed1739aa") == "Swap tokens", "swap")
 check(CallDescribe.action(to: TO, data: "0xcce7ec13") == "Buy on the launch curve", "launch buy")
-check(CallDescribe.action(to: TO, data: "0x5cf66fe1") == "Buy with \(Brand.coinTicker) (graduated pool)", "graduated buy")
-check(CallDescribe.action(to: TO, data: "0xac344b4d") == "Swap \(Brand.coinTicker) for tokens", "swap for tokens")
+check(CallDescribe.action(to: TO, data: "0x5cf66fe1") == "Buy with AETH (graduated pool)", "graduated buy")
+check(CallDescribe.action(to: TO, data: "0xac344b4d") == "Swap AETH for tokens", "swap for tokens")
 check(CallDescribe.action(to: "", data: "0x60006001") == "Deploy a contract (4 bytes)", "deploy")
 check(CallDescribe.action(to: TO, data: "0x12345678").hasPrefix("Contract call 0x12345678"), "unknown selector")
 

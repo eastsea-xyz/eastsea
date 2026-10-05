@@ -15,14 +15,14 @@ struct ChainHistoryPage: Decodable, Sendable {
     }
 }
 
-struct ChainTokenMove: Decodable, Sendable {
+struct ChainTokenMove: Decodable, Equatable, Sendable {
     let token: String
     let from: String
     let to: String
     let amount: String
 }
 
-struct ChainPairSwap: Decodable, Sendable {
+struct ChainPairSwap: Decodable, Equatable, Sendable {
     let pair: String
     let amount0In: String
     let amount1In: String
@@ -30,7 +30,7 @@ struct ChainPairSwap: Decodable, Sendable {
     let amount1Out: String
 }
 
-struct ChainHistoryEntry: Decodable, Sendable {
+struct ChainHistoryEntry: Decodable, Equatable, Sendable {
     let address: String
     let height: UInt64
     let txIndex: UInt32
@@ -41,6 +41,9 @@ struct ChainHistoryEntry: Decodable, Sendable {
     let from: String?
     let to: String?
     let valueWei: String
+    /// What this tx cost its sender (exec + prove + state fee). Nil in rows
+    /// written before the column existed; "0" on every row but the sender's.
+    let feeWei: String?
     let method: String?
     let approvalAmount: String?
     let approvalSpender: String?

@@ -558,9 +558,39 @@ final class NodeController: ObservableObject {
     /// screen exports — the menu bar has no screen state of its own, so it
     /// reads the rows fresh from the node instead (same file, same columns).
     func rewardsCSV() async -> String? {
-        guard !proveAddress.isEmpty,
-              let list = await LocalRPC.call(port: Self.port, method: "aether_rewards", params: [proveAddress, 10_000]) as? [[String: Any]] else { return nil }
-        return EarningsCSV.document(list.compactMap(RewardEntry.init(json:)))
+        guard !proveAddress.isEmpty else { return nil }
+        let (rows, _) = await Self.allRewards(port: Self.port, address: proveAddress)
+        guard !rows.isEmpty else { return nil }
+        return EarningsCSV.document(rows.compactMap(RewardEntry.init(json:)))
+    }
+
+    /// Every reward row the node holds for `address`, paged through with
+    /// cursors — a single flat read is capped by the node's default limit and
+    /// would quietly drop the tail of a long history (the founder's 2,583
+    /// rewards did not fit one page). `total` is the count the node reports
+    /// for the address, so the caller can show "N of M" instead of a silent
+    /// cap. An older node without the paged method falls back to the flat
+    /// list.
+    nonisolated static func allRewards(port: UInt16, address: String) async -> ([[String: Any]], Int?) {
+        var rows: [[String: Any]] = []
+        var total: Int?
+        var cursor: String?
+        while true {
+            guard let page = await LocalRPC.call(port: port, method: "aether_rewardsPage",
+                                                 params: [address, cursor ?? NSNull(), 10_000]) as? [String: Any],
+                  let batch = page["rewards"] as? [[String: Any]] else {
+                if cursor == nil,
+                   let flat = await LocalRPC.call(port: port, method: "aether_rewards", params: [address, 10_000]) as? [[String: Any]] {
+                    return (flat, flat.count)
+                }
+                return (rows, total)
+            }
+            rows.append(contentsOf: batch)
+            total = (page["total"] as? NSNumber)?.intValue ?? total
+            guard let next = page["next_cursor"] as? String, !next.isEmpty, rows.count < 100_000 else { break }
+            cursor = next
+        }
+        return (rows, total)
     }
 
     private func refreshUpgrade() {

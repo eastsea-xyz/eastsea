@@ -7,9 +7,10 @@ run() { n=$1; shift; files=(); for f in "$@"; do files+=("$W/$f"); done
   if swiftc -o tmp/sw-$n "${files[@]}" $T/$n/main.swift 2>tmp/sw-$n.err && AETHER_AGENT_TEST_TMP=$PWD/tmp ./tmp/sw-$n > tmp/sw-$n.out 2>&1; then echo "OK   $n"; else echo "FAIL $n :: $(head -c 160 tmp/sw-$n.err | tr '\n' ' ') $(tail -2 tmp/sw-$n.out | tr '\n' ' ')"; bad=$((bad+1)); fi; }
 run account-history Brand.swift ChainActivity.swift
 run assets EarningsModel.swift TokenAssets.swift
+run balance-sources Brand.swift EarningsModel.swift ChainActivity.swift BalanceBreakdown.swift EarningsExport.swift
 run balance-history BalanceHistory.swift
 run earnings EarningsModel.swift
-run earnings-export EarningsModel.swift EarningsExport.swift
+run earnings-export Brand.swift EarningsModel.swift ChainActivity.swift EarningsExport.swift
 run history-notice HistoryFailure.swift
 run install-location Brand.swift InstallLocation.swift
 run network-upgrade Brand.swift NetworkUpgrade.swift

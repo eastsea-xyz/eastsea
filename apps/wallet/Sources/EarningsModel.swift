@@ -14,6 +14,26 @@ enum ProvingBadgeText {
 // Pure values and functions only, so the numbers the hero card shows can be checked
 // without a node, a window or a clock.
 
+/// Block timestamps as this wallet renders them. A missing time (0) renders
+/// as nothing — never as 1970 ("56y ago"); a value in seconds instead of
+/// milliseconds (rows written before the units were fixed on the legacy
+/// 7780 chain) is scaled back up, because real block times in milliseconds
+/// are thirteen digits and in seconds ten.
+enum Timestamp {
+    /// Any real block time in ms is far above this; any seconds value is below it.
+    static let secondsEraBound: UInt64 = 1_000_000_000_000
+
+    static func normalizeMs(_ ms: UInt64) -> UInt64 {
+        (ms > 0 && ms < secondsEraBound) ? ms * 1_000 : ms
+    }
+
+    /// nil when the node reported no time at all (the caller shows nothing).
+    static func date(fromMs ms: UInt64) -> Date? {
+        let n = normalizeMs(ms)
+        return n > 0 ? Date(timeIntervalSince1970: Double(n) / 1_000) : nil
+    }
+}
+
 /// One reward the chain paid to this Mac's prover address.
 struct RewardEntry: Equatable, Sendable {
     /// The block whose proof earned it.
@@ -37,9 +57,11 @@ struct RewardEntry: Equatable, Sendable {
         self.proven = Self.uint(row["proven"]) ?? 0
         self.amountWei = WeiMath.decimal(row["amount"])
         self.height = height
-        let ms = Self.uint(row["timestamp_ms"]) ?? 0
+        // A seconds value (legacy 7780 rows) is scaled back to ms; a missing
+        // time (0) has no date at all — never 1970 ("56y ago").
+        let ms = Timestamp.normalizeMs(Self.uint(row["timestamp_ms"]) ?? 0)
         self.timestampMs = ms
-        self.time = Date(timeIntervalSince1970: Double(ms) / 1000)
+        self.time = Timestamp.date(fromMs: ms) ?? .distantPast
         if let k = row["kind"] as? String, k == "node" || k == "proof" {
             self.kind = k
         } else {
@@ -47,13 +69,14 @@ struct RewardEntry: Equatable, Sendable {
         }
     }
 
-    init(proven: UInt64, amountWei: String, height: UInt64, time: Date, kind: String? = nil, timestampMs: UInt64 = 0) {
+    init(proven: UInt64, amountWei: String, height: UInt64, time: Date, kind: String? = nil, timestampMs: UInt64? = nil) {
         self.proven = proven
         self.amountWei = amountWei
         self.height = height
         self.time = time
         self.kind = kind ?? (proven == height ? "node" : "proof")
-        self.timestampMs = timestampMs
+        // A time implies its own milliseconds (only a node row can carry none).
+        self.timestampMs = timestampMs ?? UInt64(max(0, time.timeIntervalSince1970) * 1000)
     }
 
     private static func uint(_ v: Any?) -> UInt64? {
@@ -127,7 +150,10 @@ struct EarningsSummary: Equatable, Sendable {
         }
         s.count = entries.count
         if let newest = entries.max(by: { ($0.height, $0.time) < ($1.height, $1.time) }) {
-            s.lastRewardAt = newest.time
+            // "Last reward …" only ever names a real time; a row the node sent
+            // without one keeps its amount and height (the "new reward" check)
+            // but never a 1970 date.
+            s.lastRewardAt = newest.timestampMs > 0 ? newest.time : nil
             s.lastRewardWei = newest.amountWei
             s.latestHeight = newest.height
         }

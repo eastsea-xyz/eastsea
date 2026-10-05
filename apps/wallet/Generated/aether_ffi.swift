@@ -691,10 +691,8 @@ public struct ChainStatus: Equatable, Hashable {
     public var stateRoot: String
     public var mempool: UInt64
     /**
-     * Maximum fee (wei) of a plain transfer: the exec fee plus the charge a
-     * recipient without an account pays (100 state units at the fixed
-     * price). A recipient whose certified account exists pays no such
-     * charge — `transfer_quote` says which case applies (audit 6, A6-7).
+     * Maximum estimated fee (wei) of a wallet plain transfer, including two
+     * possible new accounts and the transaction/receipt bytes on a paid-state genesis.
      */
     public var transferFeeWei: String
     /**
@@ -705,22 +703,29 @@ public struct ChainStatus: Equatable, Hashable {
      * Highest chain protocol this wallet build knows how to display and submit to.
      */
     public var supportedProtocol: UInt32
+    /**
+     * The node's faucet, when it has one — so the wallet can name test grants
+     * in the balance breakdown instead of counting them as ordinary received.
+     */
+    public var faucet: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
     public init(chainId: UInt64, height: UInt64, stateRoot: String, mempool: UInt64, 
         /**
-         * Maximum fee (wei) of a plain transfer: the exec fee plus the charge a
-         * recipient without an account pays (100 state units at the fixed
-         * price). A recipient whose certified account exists pays no such
-         * charge — `transfer_quote` says which case applies (audit 6, A6-7).
+         * Maximum estimated fee (wei) of a wallet plain transfer, including two
+         * possible new accounts and the transaction/receipt bytes on a paid-state genesis.
          */transferFeeWei: String, 
         /**
          * Scheduled notices reported by the selected node (JSON array).
          */upgradesJson: String, 
         /**
          * Highest chain protocol this wallet build knows how to display and submit to.
-         */supportedProtocol: UInt32) {
+         */supportedProtocol: UInt32, 
+        /**
+         * The node's faucet, when it has one — so the wallet can name test grants
+         * in the balance breakdown instead of counting them as ordinary received.
+         */faucet: String?) {
         self.chainId = chainId
         self.height = height
         self.stateRoot = stateRoot
@@ -728,6 +733,7 @@ public struct ChainStatus: Equatable, Hashable {
         self.transferFeeWei = transferFeeWei
         self.upgradesJson = upgradesJson
         self.supportedProtocol = supportedProtocol
+        self.faucet = faucet
     }
 
     
@@ -752,7 +758,8 @@ public struct FfiConverterTypeChainStatus: FfiConverterRustBuffer {
                 mempool: FfiConverterUInt64.read(from: &buf), 
                 transferFeeWei: FfiConverterString.read(from: &buf), 
                 upgradesJson: FfiConverterString.read(from: &buf), 
-                supportedProtocol: FfiConverterUInt32.read(from: &buf)
+                supportedProtocol: FfiConverterUInt32.read(from: &buf), 
+                faucet: FfiConverterOptionString.read(from: &buf)
         )
     }
 
@@ -764,6 +771,7 @@ public struct FfiConverterTypeChainStatus: FfiConverterRustBuffer {
         FfiConverterString.write(value.transferFeeWei, into: &buf)
         FfiConverterString.write(value.upgradesJson, into: &buf)
         FfiConverterUInt32.write(value.supportedProtocol, into: &buf)
+        FfiConverterOptionString.write(value.faucet, into: &buf)
     }
 }
 
@@ -2518,6 +2526,28 @@ public func authenticatedRemoteHeight()throws  -> UInt64?  {
     )
 })
 }
+/**
+ * "Where does my balance come from?", answered in exact wei. `entries_json`
+ * is every account-history row of one address (the wallet pages until the
+ * cursor is exhausted), `balance_wei` the certificate-verified balance, and
+ * `faucet`/`waeth` the addresses this network's grants and wrapped-coin
+ * payouts come from (nil when there is no such contract). Returns per-source
+ * totals and the difference between the itemized net and the verified
+ * balance: zero when every coin is accounted for, the honest remainder
+ * (pruned history, rows not yet loaded) when it is not. Integer math only —
+ * no floating point anywhere in the reconciliation.
+ */
+public func balanceSources(entriesJson: String, balanceWei: String, faucet: String?, waeth: String?)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_balance_sources(
+        FfiConverterString.lower(entriesJson),
+        FfiConverterString.lower(balanceWei),
+        FfiConverterOptionString.lower(faucet),
+        FfiConverterOptionString.lower(waeth),uniffiCallStatus
+    )
+})
+}
 public func chainStatus()throws  -> ChainStatus  {
     return try  FfiConverterTypeChainStatus_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
         uniffiCallStatus in
@@ -2900,6 +2930,22 @@ public func recoveryStatus(account: String, validators: UInt32)throws  -> Recove
     )
 })
 }
+/**
+ * One page of an address's reward records (`aether_rewardsPage`), newest
+ * first, with the cursor that continues older and the total count — so the
+ * wallet can load every reward and say "N of M" instead of silently keeping
+ * only the newest 1,000.
+ */
+public func rewardsPage(address: String, cursor: String?, limit: UInt32)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_rewards_page(
+        FfiConverterString.lower(address),
+        FfiConverterOptionString.lower(cursor),
+        FfiConverterUInt32.lower(limit),uniffiCallStatus
+    )
+})
+}
 public func sessionStatus(account: String, validators: UInt32)throws  -> SessionStatus  {
     return try  FfiConverterTypeSessionStatus_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
         uniffiCallStatus in
@@ -3132,6 +3178,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_aether_ffi_checksum_func_authenticated_remote_height() != 44901) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_aether_ffi_checksum_func_balance_sources() != 9870) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_aether_ffi_checksum_func_chain_status() != 33626) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -3223,6 +3272,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_recovery_status() != 60275) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_rewards_page() != 45777) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_session_status() != 62054) {

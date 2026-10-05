@@ -15,7 +15,7 @@ use aether_types::{Address, Canonical, FeeVector, GasVector, SignerScheme, TxEnv
 use commonware_consensus::Heightable;
 use commonware_cryptography::{sha256::Digest, Digestible};
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -1843,6 +1843,18 @@ impl Chain {
             .collect()
     }
 
+    /// One page of `prover`'s reward records, newest first, with the cursor
+    /// that continues older and how many exist in total (`aether_rewardsPage`).
+    pub fn rewards_page(&self, prover: &Address, before: Option<&str>, limit: usize) -> Result<Value, String> {
+        let store = self.lock().store.clone().ok_or("this node keeps no reward records")?;
+        let (rows, next_cursor, total) = store.rewards_page(&prover.0 .0, before, limit).map_err(|e| e.to_string())?;
+        Ok(json!({
+            "rewards": rows.iter().filter_map(|r| serde_json::from_slice::<Value>(r).ok()).collect::<Vec<_>>(),
+            "next_cursor": next_cursor,
+            "total": total,
+        }))
+    }
+
     /// Node-sourced account activity. This is a display index, not a proof of
     /// account balance; callers continue to verify balances separately.
     pub fn account_history(&self, address: &Address, before: Option<&str>, limit: usize) -> Result<crate::account_history::Page, String> {
@@ -2525,6 +2537,10 @@ impl Chain {
                 }
                 by_sender
             };
+            let fees_on = {
+                let g = self.lock();
+                g.cfg.fees
+            };
             for (index, (tx, receipt)) in payload.txs.iter().zip(&exec.receipts).enumerate() {
                 if let aether_types::TxPayload::Plain(bytes) = &tx.payload {
                     if let Ok(call) = aether_execution::EvmCall::decode(bytes) {
@@ -2534,14 +2550,29 @@ impl Chain {
                     }
                 }
                 let is_aether_account = account_delegations.get(&tx.header.sender).copied().unwrap_or(false);
-                account_rows.extend(crate::account_history::transaction(tx, receipt, exec.height, index as u32, exec.timestamp, is_aether_account, compact_swaps));
+                // What this tx cost its sender, from the receipt: exec gas at
+                // the price it paid (EIP-1559 under a fee policy, the cap
+                // otherwise), the prove fee, and the state fee — the wallet's
+                // balance breakdown itemizes every wei of it.
+                let exec_price = if fees_on {
+                    tx.header.tip.saturating_add(exec.base_fee.exec).min(tx.header.max_fee.exec)
+                } else {
+                    tx.header.max_fee.exec
+                };
+                let prove_price = if fees_on { exec.base_fee.prove } else { 0 };
+                let fee_wei = U256::from(receipt.gas_used) * U256::from(exec_price)
+                    + U256::from(receipt.prove_gas) * U256::from(prove_price)
+                    + receipt.state_fee;
+                // Block time is milliseconds; `exec.timestamp` is the seconds
+                // the EVM wants, and writing it as ms put every row in 1970.
+                account_rows.extend(crate::account_history::transaction(tx, receipt, exec.height, index as u32, block.timestamp, fee_wei, is_aether_account, compact_swaps));
             }
             for (index, (proven, address, amount)) in exec.payouts.iter().enumerate() {
-                account_rows.push(crate::account_history::reward(*address, exec.height, payload.txs.len() as u32 + index as u32, exec.timestamp, *amount, *proven == exec.height));
+                account_rows.push(crate::account_history::reward(*address, exec.height, payload.txs.len() as u32 + index as u32, block.timestamp, *amount, *proven == exec.height));
             }
             for (index, registration) in payload.registrations.iter().enumerate() {
                 account_rows.push(crate::account_history::registration(registration.operator, exec.height,
-                    (payload.txs.len() + exec.payouts.len() + index) as u32, exec.timestamp,
+                    (payload.txs.len() + exec.payouts.len() + index) as u32, block.timestamp,
                     crate::registrations::id(registration)));
             }
             let write = Commit {
@@ -2749,7 +2780,7 @@ impl Chain {
             } else {
                 "proof"
             };
-            let record = serde_json::json!({ "kind": kind, "proven": proven, "amount": amount, "height": exec.height, "timestamp_ms": exec.timestamp });
+            let record = serde_json::json!({ "kind": kind, "proven": proven, "amount": amount, "height": exec.height, "timestamp_ms": exec.timestamp * 1_000 });
             if let Some(Err(e)) = g.store.as_ref().map(|s| {
                 s.put_reward(
                     &prover.0 .0,

@@ -791,6 +791,51 @@ impl Store {
         Ok(out)
     }
 
+    /// One page of `prover`'s rewards, newest first. `before` is a cursor this
+    /// table handed out (hex of the last key served); the page that follows it
+    /// continues strictly older. `total` is every reward recorded for `prover`,
+    /// so a wallet can say "N of M" instead of silently truncating.
+    pub fn rewards_page(
+        &self,
+        prover: &[u8; 20],
+        before: Option<&str>,
+        limit: usize,
+    ) -> Result<(Vec<Vec<u8>>, Option<String>, u64), StoreError> {
+        let tx = self.read_tx()?;
+        let t = tx.open_table(REWARDS).map_err(dberr)?;
+        let mut start = prover.to_vec();
+        start.extend_from_slice(&[0; 16]);
+        let mut end = prover.to_vec();
+        end.extend_from_slice(&[0xff; 16]);
+        let upper = match before {
+            Some(cursor) => {
+                let key = hex::decode(cursor.strip_prefix("0x").unwrap_or(cursor))
+                    .map_err(|_| StoreError::Db("invalid rewards cursor".into()))?;
+                if key.len() != 36 || !key.starts_with(prover) {
+                    return Err(StoreError::Db("rewards cursor belongs to another address".into()));
+                }
+                key
+            }
+            None => end.clone(),
+        };
+        let mut total = 0u64;
+        for row in t.range(start.as_slice()..=end.as_slice()).map_err(dberr)? {
+            row.map_err(dberr)?;
+            total += 1;
+        }
+        let mut rows = Vec::new();
+        let mut next_cursor = None;
+        for row in t.range(start.as_slice()..upper.as_slice()).map_err(dberr)?.rev() {
+            let (key, value) = row.map_err(dberr)?;
+            if rows.len() == limit {
+                next_cursor = Some(hex::encode(key.value()));
+                break;
+            }
+            rows.push(value.value().to_vec());
+        }
+        Ok((rows, next_cursor, total))
+    }
+
     /// Newest account activity, with an exclusive opaque cursor. Rows are
     /// returned from one read transaction, so pagination cannot see a half
     /// committed block. The index begins at `history_start` on upgraded stores.

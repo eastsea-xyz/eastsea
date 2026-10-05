@@ -17,7 +17,7 @@
 | A1 | 감사 6라운드 발견(Critical 2, High 3, Medium 2) | ✅ 수정·병합 | — |
 | A2 | 사전 레드팀 H1·H2·M1·M2 | ✅ 수정·병합 | — |
 | A3 | 감사 7라운드(새 동결 태그) | ⬜ | 아래 B 항목이 모두 들어간 뒤 `consensus-freeze-7` 태그 → Codex gpt-6.1-sol 감사 |
-| A4 | 업그레이드 훈련 스크립트(`scripts/upgrade-drill.sh`) | ⬜ | 리허설 체인에서 2/3 배포·3/3 긴급·예약 프로토콜 전환·미갱신 노드 |
+| A4 | 업그레이드 훈련 스크립트(`scripts/upgrade-drill.sh`) | 🔄 GLM | 리허설 체인에서 2/3 배포·3/3 긴급·예약 프로토콜 전환·미갱신 노드 |
 | A5 | 72시간 소크(서로 다른 Mac) | 🧑⬜ | jay-macbookpro, jayui-mac-studio 켜기 필요 |
 | A6 | 전체 검증 깨끗하게 1회 | 🟡 | 오늘 실패는 프로세스 띄우는 테스트 17개(과부하 추정) + 문서 테스트 1개(수정함). Mac이 한가할 때 재실행 |
 | A7 | 새 코드로 리허설 재실행 | ⬜ | 영수증 커밋·바인딩 변경 뒤 미실행 |
@@ -67,7 +67,7 @@
 |---|---|
 | 소개 사이트·블록 탐색기 Cloudflare Pages 배포 | ✅ (`eastsea-site.pages.dev`, `eastsea-explorer.pages.dev`) |
 | 하위 도메인 chain/explorer.eastsea.xyz | ✅ CNAME 생성(리드, 2026-10-05) |
-| 읽기 전용 관문(`--public-read-only`) + 탐색기 출처 표시 | 🔄 구현·테스트 끝, 포맷 없이 재정리 중 |
+| 읽기 전용 관문(`--public-read-only`) + 탐색기 출처 표시 | ✅ 병합(89a09f2) |
 | 정적 인증 이력 피드·브라우저 블록 검증·iroh-wasm | ⏳ 베타 뒤 |
 | 앱 레지스트리 설계·스키마·법률 검토 반영 | ✅ |
 | 법률 검토 레드팀 반박 | ✅ |

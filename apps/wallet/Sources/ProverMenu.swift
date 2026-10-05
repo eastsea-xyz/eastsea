@@ -7,6 +7,8 @@ import UniformTypeIdentifiers
 struct MenuBarPanel: View {
     @EnvironmentObject var model: WalletModel
     @EnvironmentObject var node: NodeController
+    /// Layer 1 of the health signal: the menu bar is one of its three places.
+    @EnvironmentObject var health: HealthMonitor
     @Environment(\.openWindow) private var openWindow
 
     private var balance: String {
@@ -32,6 +34,10 @@ struct MenuBarPanel: View {
                     TimelineView(.periodic(from: .now, by: 30)) { tl in
                         Text(NetworkPausedText.line(since: since, now: tl.date))
                     }
+                } else if !health.healthyBadgeAllowed {
+                    // L4: never "Verified" on a half-dead node (docs/design/32).
+                    Image(systemName: "externaldrive.fill.badge.exclamationmark").foregroundStyle(Color.warn)
+                    Text(HealthCheck.korean ? "저장 공간 부족 · 노드 멈춤" : "Storage low · node paused")
                 } else if model.account != nil && model.verifyError == nil {
                     Image(systemName: "checkmark.shield.fill")
                     Text("Verified on this Mac")
@@ -42,6 +48,13 @@ struct MenuBarPanel: View {
             }
             .font(.aeCaption).foregroundStyle(.secondary)
             .help(model.chainPausedSince != nil ? NetworkPausedText.help : "")
+            if let alert = health.alert {
+                // The banner's sentence, where a person looks without opening
+                // the window (design §4.2: the five silent days began with a
+                // warning only the open menu showed).
+                Text(alert.sentence).font(.aeCaption).foregroundStyle(Color.warn)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Divider()
             Toggle("Node on this Mac", isOn: $node.enabled).toggleStyle(.switch).font(.aeBody)
             if node.enabled {

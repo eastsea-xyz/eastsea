@@ -140,6 +140,26 @@ final class NodeController: ObservableObject {
     /// The node's data volume is below its free-space floor (`aether_status`):
     /// no new era files or shards, proving paused — shown as "디스크 공간 부족".
     @Published private(set) var diskLow = false
+    /// The two halves of `disk_low` (`aether_status` ▸ resources), for the
+    /// health checks (docs/design/32-health-signal.md L3/L4): within 3 GB of
+    /// the floor, and below it — writes held, the node's part paused. A node
+    /// too old to tell them apart reports `disk_low` only, read as paused:
+    /// the healthy badge must never show on a half-dead node by mistake.
+    @Published private(set) var diskAlmostFull = false
+    @Published private(set) var diskPaused = false
+    /// Why the watchdog stopped restarting (layer 4), until the next start.
+    @Published private(set) var stoppedFailure: NodeWatchdog.Failure?
+    /// Stall restarts so far: the health check counts them (L5).
+    @Published private(set) var stallRestarts = 0
+    /// The node's RPC answered the latest poll, and has answered at least once
+    /// since the node started (L6 tells a silent node from a starting one).
+    @Published private(set) var rpcAnswering = true
+    @Published private(set) var answeredSinceStart = false
+    /// The chain needs a newer node than this app carries (exit 3/5, or a
+    /// scheduled protocol above the node's own): L8.
+    @Published private(set) var upgradeRequired = false
+    /// The protocol this app's node runs, as it last said (diagnostics).
+    private(set) var nodeProtocol: UInt64?
     /// Called when the chain schedules a protocol this app's node does not run
     /// (or the node stopped for it): look for the signed update right away.
     var onUpgradeNeeded: (() -> Void)?
@@ -156,6 +176,8 @@ final class NodeController: ObservableObject {
         let acceptance_rate_percent: UInt8?
         let program_unknown: Bool?
         let program_mismatch: Bool?
+        /// The validators' guest program ID (the diagnostics' first 8 digits).
+        let network_program: String?
         let error: String?
         /// Why proving is paused right now ("memory", "pressure", "battery", "disk", "program").
         let paused: String?
@@ -259,6 +281,16 @@ final class NodeController: ObservableObject {
         guard !UserDefaults.standard.bool(forKey: "useDevelopmentNetwork") else { return }
         useLocalNode(port: switched ? Self.port : nil)
     }
+    /// The health check's L6 (docs/design/32-health-signal.md): the process
+    /// lives but its RPC has been silent for 30 s — restart it, once per
+    /// incident; the watchdog's backoff governs everything after.
+    func restartUnresponsive() {
+        restartIfRunning()
+    }
+
+    /// The newest protocol the chain has scheduled, as last heard (diagnostics).
+    var newestScheduledProtocol: UInt64? { scheduledProtocol }
+
     /// Validator-to-validator port, used only while this Mac is voting.
     static let p2pPort: UInt16 = 19_101
     private(set) var process: Process?
@@ -312,7 +344,7 @@ final class NodeController: ObservableObject {
     private var automaticRestartBlocked = false
     /// The last update's binary kept beside the current one: rolled back to
     /// when the new one cannot start (docs/design/24-self-healing.md layer 2).
-    private var usePreviousBinary = false
+    @Published private(set) var usePreviousBinary = false
     /// The "this Mac's node key cannot be read" notice went out (once per
     /// bout; red team #5 — a person must restore the key).
     private var identityNoticePosted = false
@@ -432,6 +464,9 @@ final class NodeController: ObservableObject {
         }
         process = p
         watchdog.started(clock.now)
+        stoppedFailure = nil
+        answeredSinceStart = false
+        rpcAnswering = true
         state = .starting
         watchSleep()
         poll = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
@@ -517,7 +552,10 @@ final class NodeController: ObservableObject {
         // Stopped on purpose, or an older process (after a restart) finishing late.
         guard let current = process, current === proc else { return }
         let status = proc.terminationStatus
-        if status == 3 || status == 5 { onUpgradeNeeded?() }  // UPGRADE REQUIRED / no proof verifier (see `watch_upgrades`, `install_verifier`)
+        if status == 3 || status == 5 {  // UPGRADE REQUIRED / no proof verifier (see `watch_upgrades`, `install_verifier`)
+            upgradeRequired = true
+            onUpgradeNeeded?()
+        }
         process = nil
         poll?.invalidate()
         switched = false
@@ -560,6 +598,7 @@ final class NodeController: ObservableObject {
         case .stop(let failure):
             // Too many deaths: stop restarting, one plain sentence (layer 4).
             automaticRestartBlocked = true
+            stoppedFailure = failure
             state = .failed(failure.sentence)
         case .rollback:
             // The updated binary cannot start: back to the previous one —
@@ -581,6 +620,7 @@ final class NodeController: ObservableObject {
                             self.start()
                         } else {
                             self.automaticRestartBlocked = true
+                            self.stoppedFailure = .upgradeNeeded
                             self.state = .failed(NodeWatchdog.Failure.upgradeNeeded.sentence)
                             self.upgradeAsked = true
                             self.onUpgradeNeeded?()
@@ -589,6 +629,7 @@ final class NodeController: ObservableObject {
                 }
             } else {
                 automaticRestartBlocked = true
+                stoppedFailure = .other
                 state = .failed(NodeWatchdog.Failure.other.sentence)
             }
         case .none:
@@ -705,6 +746,8 @@ final class NodeController: ObservableObject {
             nextCandidateRetry = clock.now.advanced(by: 60)
         }
         watchdog.started(clock.now)
+        answeredSinceStart = false
+        rpcAnswering = true
         watchSleep()
         refreshDeviceToken()
         tokenTimer?.invalidate()
@@ -815,6 +858,7 @@ final class NodeController: ObservableObject {
                   let mine = (s["node_protocol"] as? NSNumber)?.intValue, newest > mine else { return }
             await MainActor.run {
                 self.upgradeAsked = true
+                self.upgradeRequired = true
                 self.onUpgradeNeeded?()
             }
         }
@@ -826,13 +870,22 @@ final class NodeController: ObservableObject {
     private func refreshDisk() {
         guard state == .running || state == .starting else {
             if diskLow { diskLow = false }
+            if diskAlmostFull { diskAlmostFull = false }
+            if diskPaused { diskPaused = false }
             return
         }
         let port = Self.port
         Task.detached {
             let status = await LocalRPC.call(port: port, method: "aether_status", params: []) as? [String: Any]
-            let low = ((status?["resources"] as? [String: Any])?["disk_low"] as? Bool) ?? false
-            await MainActor.run { if self.diskLow != low { self.diskLow = low } }
+            let resources = status?["resources"] as? [String: Any]
+            let low = (resources?["disk_low"] as? Bool) ?? false
+            let paused = (resources?["disk_paused"] as? Bool) ?? low
+            let almost = (resources?["disk_almost_full"] as? Bool) ?? false
+            await MainActor.run {
+                if self.diskLow != low { self.diskLow = low }
+                if self.diskPaused != paused { self.diskPaused = paused }
+                if self.diskAlmostFull != almost { self.diskAlmostFull = almost }
+            }
         }
     }
 
@@ -879,6 +932,10 @@ final class NodeController: ObservableObject {
                     return
                 }
                 if self.attached { self.attachMisses = 0 }
+                let answered = status != nil
+                if self.rpcAnswering != answered { self.rpcAnswering = answered }
+                if answered, !self.answeredSinceStart { self.answeredSinceStart = true }
+                if let mine = (status?["node_protocol"] as? NSNumber)?.uint64Value { self.nodeProtocol = mine }
                 let route = self.watchdog.useLocalNode(
                     local: statusHeight, network: network,
                     responsive: status != nil, currentlyLocal: self.switched,
@@ -911,6 +968,7 @@ final class NodeController: ObservableObject {
                 // 2026-09-29 looked exactly like this, and "끊김" told the
                 // user nothing.
                 if case .restart = self.watchdog.polled(self.clock.now, local: local, network: network, activity: activity, voting: self.isValidator) {
+                    self.stallRestarts += 1
                     self.restartIfRunning()
                 }
             }

@@ -269,6 +269,20 @@ final class WalletModel: ObservableObject {
         }
     }
 
+    /// The health check's L2 (docs/design/32-health-signal.md §4.2): stuck on
+    /// "connecting" for 90 s, or the person pressed [다시 시도]. Configuring
+    /// the same bundled network again drops the cached client, so the next
+    /// read looks the validators and follower Macs up afresh (DHT, new remote
+    /// node list) instead of waiting on the ones found before the network
+    /// came up. The verified-height floor starts over exactly as at launch;
+    /// the committee key is the bundled one either way. The Mac's own node
+    /// route is restored by the caller (`NodeController.refreshWalletRoute`).
+    func rediscover() {
+        guard !busy, !developmentNetwork else { return }
+        note("Looking the network up again")
+        pinCommittee()
+    }
+
     func selectNetwork(development: Bool, port: UInt16 = 18546) {
         guard !development || UserDefaults.standard.bool(forKey: "developerMode") else { return }
         if development == developmentNetwork && (!development || port == developmentPort) { return }

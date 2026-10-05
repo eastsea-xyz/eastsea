@@ -27,6 +27,7 @@ struct AetherWalletApp: App {
                 .environmentObject(node)
                 .environmentObject(unattended)
                 .environmentObject(appDelegate.updates)
+                .environmentObject(appDelegate.health)
                 .environmentObject(earnings)
                 .onAppear {
                     appDelegate.start(node: node, model: model, unattended: unattended)
@@ -87,6 +88,7 @@ struct AetherWalletApp: App {
         // Always in the menu bar: balance, node and prover at a glance; the window opens from here.
         MenuBarExtra {
             MenuBarPanel().environmentObject(model).environmentObject(node).environmentObject(earnings)
+                .environmentObject(appDelegate.health)
                 .onAppear {
                     appDelegate.start(node: node, model: model, unattended: unattended)
                     earnings.attach(node, operatorAddress: { model.address })
@@ -230,6 +232,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     lazy var updater = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: self, userDriverDelegate: nil)
     /// What the Network page shows: when updates were last checked, and a Check button.
     @MainActor lazy var updates = Updates(updater)
+    /// Layer 1 of the health signal (docs/design/32-health-signal.md §4.2):
+    /// the banner, the notifications, the 90 s re-discovery.
+    @MainActor lazy var health = HealthMonitor()
     private var started = false
     /// Tells a validator Mac when the network pauses and resumes.
     private var pauseWatch: AnyCancellable?
@@ -313,6 +318,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         unattended.refreshStatus()
         unattended.refreshPower()
         node.restore()
+        health.start(node: node, model: model, updateComing: { [weak self] in
+            switch self?.tracker.state {
+            case .found?, .downloading?, .verified?, .installing?: return true
+            default: return false
+            }
+        }, updateUnhealthy: { [weak self] in
+            self?.tracker.state.failedCause == .health
+        }, openUpdates: { [weak self] in
+            self?.updates.check()
+        })
     }
 
     func applicationWillTerminate(_ notification: Notification) {

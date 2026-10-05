@@ -318,7 +318,7 @@ pub fn swap_usage() -> Option<(u64, u64)> {
     #[cfg(target_os = "macos")]
     let raw = sysctl_string(b"vm.swapusage\0");
     #[cfg(not(target_os = "macos"))]
-    let raw = None;
+    let raw: Option<&str> = None;
     raw.as_deref().and_then(parse_swapusage)
 }
 

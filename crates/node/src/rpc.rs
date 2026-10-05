@@ -8,7 +8,7 @@ use aether_execution::validate_stateless;
 use aether_state::layout::{basic_data_key, code_hash_key, storage_slot_key};
 use aether_state::StateRepository;
 use aether_types::{Address, TxEnvelope, TxHash, U256};
-use axum::{extract::State, routing::post, Json, Router};
+use axum::{extract::State, routing::get, routing::post, Json, Router};
 use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -164,15 +164,49 @@ pub async fn serve(addr: SocketAddr, state: RpcState) -> std::io::Result<()> {
     // node; every write still needs the user's signature in the wallet).
     let cors = tower_http::cors::CorsLayer::new()
         .allow_origin(tower_http::cors::Any)
-        .allow_methods([axum::http::Method::POST, axum::http::Method::OPTIONS])
+        .allow_methods([axum::http::Method::POST, axum::http::Method::GET, axum::http::Method::OPTIONS])
         .allow_headers([axum::http::header::CONTENT_TYPE]);
-    let app = Router::new().route("/", post(handle)).layer(cors).with_state(state);
+    let app = Router::new()
+        .route("/", post(handle))
+        // Era files as plain GETs (roadmap B6): the same bytes `aether_eraChunk`
+        // hands out hex-encoded, for torrent webseeds and curl.
+        .route("/era/{name}", get(serve_era_file))
+        .layer(cors)
+        .with_state(state);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await
 }
 
 async fn handle(State(st): State<RpcState>, Json(req): Json<Value>) -> Json<Value> {
     Json(handle_value(&st, req).await)
+}
+
+/// `GET /era/<file>`: a whole era file from this node's era folder — a
+/// webseed (the export manifest's first mirror). Names are exactly
+/// `era-<eight digits>.aera`; anything else is a 404, never a path.
+async fn serve_era_file(State(st): State<RpcState>, axum::extract::Path(name): axum::extract::Path<String>) -> axum::response::Response {
+    use axum::http::{header, StatusCode};
+    use axum::response::IntoResponse;
+    let era = name
+        .strip_prefix("era-")
+        .and_then(|n| n.strip_suffix(".aera"))
+        .filter(|n| n.len() == 8 && n.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|n| n.parse::<u64>().ok());
+    let bytes = era.and_then(|_| {
+        let store = st.chain.store()?;
+        let path = store.era_dir().join(&name);
+        std::fs::metadata(&path).ok().filter(|m| m.is_file() && m.len() <= crate::era_net::MAX_ERA_FILE as u64)?;
+        std::fs::read(path).ok()
+    });
+    match bytes {
+        Some(b) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/octet-stream"), (header::CONTENT_LENGTH, b.len().to_string().as_str())],
+            b,
+        )
+            .into_response(),
+        None => (StatusCode::NOT_FOUND, "no such era here").into_response(),
+    }
 }
 
 /// The project's new name (docs/design/25-rename.md phase 4): `eastsea_*`

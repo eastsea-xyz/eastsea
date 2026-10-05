@@ -331,6 +331,46 @@ enum Cmd {
         #[command(flatten)]
         resources: ResourceArgs,
     },
+    /// Keep everything, forever (roadmap B6): a follower that never prunes,
+    /// serves old blocks and eras to pruned peers (`aether_eraInfo`,
+    /// `aether_eraChunk`, `aether_eraProof`, `GET /era/<file>`), and writes
+    /// every completed era as a static, torrent-ready file set a mirror
+    /// (the NAS, GitHub Releases) can serve as-is. No voting, no proving, no
+    /// registration: this is the box history lives on.
+    Archive {
+        /// network.json of the chain to archive.
+        #[arg(long)]
+        network: String,
+        /// Validators' RPC URLs to pull from (default: find them on the Mainline DHT).
+        #[arg(long, value_delimiter = ',')]
+        from_rpc: Vec<String>,
+        #[arg(long)]
+        data: String,
+        #[arg(long, default_value_t = 8545)]
+        rpc_port: u16,
+        /// Directory the era file set is written to (served by a mirror).
+        #[arg(long)]
+        export_dir: String,
+        /// Extra webseed URL for the torrents: a bare URL gets the file name
+        /// appended, `~name~` takes it where it falls (a GitHub Releases
+        /// placeholder, for example).
+        #[arg(long = "webseed", value_delimiter = ',')]
+        webseed: Vec<String>,
+        /// This node's public base URL (http://host:port) for the manifest's
+        /// Https mirror and first webseed; its `/era/<file>` serves the bytes.
+        #[arg(long)]
+        https_base: Option<String>,
+        /// Address the RPC (and webseed) server listens on. An archive node is
+        /// a server others fetch from, so it listens everywhere by default,
+        /// unlike a follower's loopback-only RPC.
+        #[arg(long, default_value = "0.0.0.0")]
+        bind: IpAddr,
+        /// Ed25519 key signing the manifests (hex seed; created when missing).
+        #[arg(long)]
+        export_key: Option<String>,
+        #[command(flatten)]
+        resources: ResourceArgs,
+    },
     /// Keep this Mac in the network: validator while in the voting set, verifying
     /// follower and candidate otherwise; rotations are followed automatically.
     Run {
@@ -859,8 +899,9 @@ fn main() {
                 exit_with_parent_process();
             }
             let keys = candidate.then(|| keys.unwrap_or_else(|| data.clone()));
-            run_follow(network, from_rpc, data, rpc_port, validators, keys, dev_epoch_blocks, checkpoint, dev_storage_fault, history, resources)
+            run_follow(network, from_rpc, data, rpc_port, validators, keys, dev_epoch_blocks, checkpoint, dev_storage_fault, history, resources, None, None)
         }
+        Cmd::Archive { network, from_rpc, data, rpc_port, export_dir, webseed, https_base, bind, export_key, resources } => run_archive(network, from_rpc, data, rpc_port, export_dir, webseed, https_base, bind, export_key, resources),
         Cmd::CandidateInfo { data, operator, chain_id } => (|| {
             let dir = std::path::Path::new(&data);
             let k = match aether_node::candidate::CandidateKeys::load_or_create(dir) {
@@ -2570,6 +2611,9 @@ fn run_follow(
     dev_storage_fault: Option<u64>,
     history: HistoryArgs,
     resources: ResourceArgs,
+    export: Option<aether_node::export::ExportArgs>,
+    // Where the RPC server listens (None: loopback, a follower's default).
+    bind: Option<IpAddr>,
 ) -> Result<(), String> {
     use aether_node::follow::{self, FinalityArchive, Upstream};
     use std::sync::Arc;
@@ -2613,7 +2657,13 @@ fn run_follow(
     // Followers run at the network's 1 s block time.
     let max_shards = history.max_shards;
     let history_v2 = cfg.history_v2;
-    let history = history.mode(cfg.history_v2, 1000)?;
+    // An archive node keeps everything by definition (roadmap B6): whatever
+    // the flags say, it never prunes what it exists to hold.
+    let history = if export.is_some() {
+        aether_node::prune::HistoryMode::Archive
+    } else {
+        history.mode(cfg.history_v2, 1000)?
+    };
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -2711,13 +2761,19 @@ fn run_follow(
         }
         // Era shards (roadmap B5 phase 1): a follower fetches the eras it is
         // owed shards of over the B4 path when it no longer keeps their files.
-        let shards = history_v2.then(|| {
+        // An archive node holds whole era files — it has no shard duty.
+        let shards = (history_v2 && export.is_none()).then(|| {
             let s = std::sync::Arc::new(aether_node::shards::Shards::new(std::path::Path::new(&data), shard_me, max_shards));
             tokio::spawn(aether_node::shards::run(chain.clone(), Some(upstream.clone()), s.clone()));
             s
         });
+        // Era export (roadmap B6): every sealed era, re-verified against this
+        // node's certified history index, written as a static file set.
+        if let Some(args) = &export {
+            tokio::spawn(aether_node::export::run(chain.clone(), args.clone()));
+        }
         tracing::info!(height = chain.finalized_height(), rpc_port, "following (not a validator): every block is verified and re-executed here");
-        let prover = start_prover(&chain, &data, Some(upstream.clone()));
+        let prover = if export.is_none() { start_prover(&chain, &data, Some(upstream.clone())) } else { None };
         let st = RpcState {
             chain,
             finality: aether_node::rpc::Finality::Archive(archive),
@@ -2768,8 +2824,49 @@ fn run_follow(
             });
             router
         });
-        rpc::serve(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), rpc_port), st).await.map_err(|e| e.to_string())
+        let listen = bind.unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST));
+        rpc::serve(SocketAddr::new(listen, rpc_port), st).await.map_err(|e| e.to_string())
     })
+}
+
+/// `aether archive` (roadmap B6): a follower that keeps everything, serves
+/// old eras, and writes every sealed era out as a static, torrent-ready set.
+#[allow(clippy::too_many_arguments)]
+fn run_archive(
+    network: String,
+    from_rpc: Vec<String>,
+    data: String,
+    rpc_port: u16,
+    export_dir: String,
+    webseed: Vec<String>,
+    https_base: Option<String>,
+    bind: IpAddr,
+    export_key: Option<String>,
+    resources: ResourceArgs,
+) -> Result<(), String> {
+    let export = aether_node::export::ExportArgs {
+        dir: std::path::PathBuf::from(&export_dir),
+        webseeds: webseed,
+        https_base,
+        sign_key: std::path::PathBuf::from(export_key.unwrap_or_else(|| format!("{data}/archive-export.key"))),
+    };
+    std::fs::create_dir_all(&export.dir).map_err(|e| format!("{}: {e}", export.dir.display()))?;
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "info,commonware=warn".into()),
+        )
+        .init();
+    tracing::info!(dir = %export.dir.display(), "era export set (roadmap B6): era files, manifests, torrents, index");
+    // A fresh archive starts from a certified snapshot like any follower;
+    // the flags say prune, the mode ignores them (history = Archive).
+    let history = HistoryArgs {
+        history: None,
+        retain_days: aether_node::prune::DEFAULT_RETAIN_DAYS,
+        drop_era_files: false,
+        max_shards: aether_node::shards::DEFAULT_MAX_SHARDS,
+    };
+    run_follow(Some(network), from_rpc, data, rpc_port, 4, None, None, true, None, history, resources, Some(export), Some(bind))
 }
 
 fn run_dkg(

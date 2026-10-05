@@ -126,6 +126,8 @@
 		7D01D011D9124E6871B728F9 /* HealthCheck.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE484FB93F7723332A850D59 /* HealthCheck.swift */; };
 		B448882CA84B3343982AF0AA /* UpdateChannel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 421FB5EE224CF8EFA171F82E /* UpdateChannel.swift */; };
 		86A71E0E657BD3627FF828D5 /* UpdateChannel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 421FB5EE224CF8EFA171F82E /* UpdateChannel.swift */; };
+		20809ECA2955D2E7E9A64454 /* DiagnosticReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 792793E625447498F1ED1916 /* DiagnosticReport.swift */; };
+		BE9435D6CB5682BAA21529E3 /* DiagnosticReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 792793E625447498F1ED1916 /* DiagnosticReport.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -190,6 +192,7 @@
 		FE00FF7FDD47F623CE4B55A0 /* TokenSend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenSend.swift; sourceTree = "<group>"; };
 		CE484FB93F7723332A850D59 /* HealthCheck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthCheck.swift; sourceTree = "<group>"; };
 		421FB5EE224CF8EFA171F82E /* UpdateChannel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateChannel.swift; sourceTree = "<group>"; };
+		792793E625447498F1ED1916 /* DiagnosticReport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticReport.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -264,6 +267,7 @@
 				BAF12832C2145F7B5553F13A /* NetworkUpgrade.swift */,
 				64A5EE5BA6294827128D61F5 /* NodeController.swift */,
 				51F3FF6BB1FEAEB9503220A4 /* NodeWatchdog.swift */,
+				792793E625447498F1ED1916 /* DiagnosticReport.swift */,
 				421FB5EE224CF8EFA171F82E /* UpdateChannel.swift */,
 				CE484FB93F7723332A850D59 /* HealthCheck.swift */,
 				65F2514912728847B547AC0A /* Onboarding.swift */,
@@ -507,6 +511,7 @@
 				D011EF063EAF0FD0463BB20F /* NetworkUpgrade.swift in Sources */,
 				6B328300B9C16A284BC72EDD /* NodeController.swift in Sources */,
 				2120D978A2E422529EDEAA37 /* NodeWatchdog.swift in Sources */,
+				20809ECA2955D2E7E9A64454 /* DiagnosticReport.swift in Sources */,
 				B448882CA84B3343982AF0AA /* UpdateChannel.swift in Sources */,
 				5E806AD4CE7D32B69C12916F /* HealthCheck.swift in Sources */,
 				A27B00DA220487FD3B94FFAF /* Onboarding.swift in Sources */,
@@ -569,6 +574,7 @@
 				BD73509462322EA695D98A0D /* NetworkUpgrade.swift in Sources */,
 				8C21512BBE06AA542E27EBA1 /* NodeController.swift in Sources */,
 				554F88B6BC236C874C2227E1 /* NodeWatchdog.swift in Sources */,
+				BE9435D6CB5682BAA21529E3 /* DiagnosticReport.swift in Sources */,
 				86A71E0E657BD3627FF828D5 /* UpdateChannel.swift in Sources */,
 				7D01D011D9124E6871B728F9 /* HealthCheck.swift in Sources */,
 				E202B9DDD9BDC75A9D6CA697 /* Onboarding.swift in Sources */,

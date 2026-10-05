@@ -117,17 +117,127 @@ struct Net {
 
 static NET: std::sync::Mutex<Option<Result<std::sync::Arc<Net>, String>>> = std::sync::Mutex::new(None);
 static NETWORK_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Held only while one thread builds the client, so a build (bind + first
+/// discovery) can never hold `NET` itself — `anchor`'s generation check
+/// locks `NET` briefly and must not queue behind a network build.
+static NET_BUILD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Building the client is bounded too: a reboot morning's cold discovery
+/// (the incident of 2026-10-05) must not wedge every remote read behind it.
+const DEFAULT_NET_BUILD_TIMEOUT: Duration = Duration::from_secs(20);
+/// One remote read's whole budget — followers, rotation and the validator
+/// fallback included. A healthy network answers in milliseconds; anything
+/// still running at this deadline is stuck, and the read says so instead of
+/// hanging the caller (the incident's `recent_blocks`/`connection`/
+/// `verified_account` threads, blocked without end).
+const DEFAULT_READ_DEADLINE: Duration = Duration::from_secs(35);
+/// The on-demand check behind `authenticated_remote_height`: short, because
+/// the wallet's route decision waits on it every poll.
+const DEFAULT_REMOTE_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
+/// After this many consecutive failed remote reads the client is rebuilt
+/// from scratch — fresh bind, fresh discovery, no cached state — because a
+/// client that keeps failing is stuck on stale addresses (the validators
+/// restarted on new ones), and `rotate` only re-dials the same list.
+const DEFAULT_REBUILD_AFTER: u32 = 6;
+/// A rebuild redoes discovery, which is exactly what a transient outage does
+/// not need: never more often than this.
+const DEFAULT_REBUILD_EVERY: Duration = Duration::from_secs(30);
+
+/// The budgets above, overridable so a test's black-holed validator costs
+/// milliseconds instead of its production minutes (crate-private: the
+/// uniffi surface does not change).
+#[derive(Clone, Copy)]
+struct Budgets {
+    net_build: Duration,
+    read: Duration,
+    remote_check: Duration,
+    rebuild_after: u32,
+    rebuild_every: Duration,
+}
+
+static BUDGETS: std::sync::Mutex<Option<Budgets>> = std::sync::Mutex::new(None);
+
+fn budgets() -> Budgets {
+    BUDGETS.lock().expect("budgets lock").unwrap_or(Budgets {
+        net_build: DEFAULT_NET_BUILD_TIMEOUT,
+        read: DEFAULT_READ_DEADLINE,
+        remote_check: DEFAULT_REMOTE_CHECK_TIMEOUT,
+        rebuild_after: DEFAULT_REBUILD_AFTER,
+        rebuild_every: DEFAULT_REBUILD_EVERY,
+    })
+}
+
+/// Consecutive remote reads that ended in a network error, and when the
+/// stuck client was last rebuilt because of them (plus how many rebuilds
+/// happened — the tests' evidence).
+static REMOTE_FAILURES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static LAST_REBUILD: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+static REBUILDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A remote read succeeded: the network path is alive again.
+fn note_remote_success() {
+    REMOTE_FAILURES.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A remote read failed (timeout, no route). After enough in a row, drop the
+/// whole client — endpoint, DHT session, cached relay paths — so the next
+/// read redoes discovery from scratch instead of re-dialing dead addresses
+/// forever.
+fn note_remote_failure() {
+    let n = REMOTE_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    if n < budgets().rebuild_after {
+        return;
+    }
+    let b = budgets();
+    let mut last = LAST_REBUILD.lock().expect("rebuild lock");
+    if last.is_some_and(|t| t.elapsed() < b.rebuild_every) {
+        return;
+    }
+    *last = Some(std::time::Instant::now());
+    drop(last);
+    REMOTE_FAILURES.store(0, std::sync::atomic::Ordering::Relaxed);
+    REBUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    // In-flight readers keep their `Arc<Net>` and finish; every new read
+    // builds a fresh client.
+    *NET.lock().expect("network lock") = None;
+}
+
+/// The network client, built at most once at a time. While a build is in
+/// flight, other callers fail fast ("still connecting") instead of stacking
+/// behind it — the caller retries on its next poll, and a wallet with a
+/// healthy local node switches to it meanwhile (the incident of 2026-10-05:
+/// every remote read queued behind one unbounded build, and the UI showed
+/// "Connecting" for as long as the network stayed cold).
 fn net() -> R<std::sync::Arc<Net>> {
+    if let Some(cached) = NET.lock().expect("network lock").clone() {
+        return cached.map_err(WalletError::Network);
+    }
+    let Ok(_building) = NET_BUILD.try_lock() else {
+        return Err(WalletError::Network("the network client is still connecting".into()));
+    };
+    if let Some(cached) = NET.lock().expect("network lock").clone() {
+        return cached.map_err(WalletError::Network);
+    }
+    let (generation, built) = build_net();
     let mut cached = NET.lock().expect("network lock");
-    cached.get_or_insert_with(|| {
-        let generation = NETWORK_GENERATION.load(std::sync::atomic::Ordering::SeqCst);
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| e.to_string())?;
-        let pinned = PINNED_SERVERS.lock().expect("pinned servers lock").clone();
-        let built: std::result::Result<_, String> = rt.block_on(async {
+    if generation != NETWORK_GENERATION.load(std::sync::atomic::Ordering::SeqCst) {
+        // Reconfigured while building: this client belongs to a network the
+        // wallet no longer uses. Store nothing; the next call builds fresh.
+        return Err(WalletError::Network("the network changed while connecting; retrying".into()));
+    }
+    *cached = Some(built.clone());
+    built.map_err(WalletError::Network)
+}
+
+fn build_net() -> (u64, Result<std::sync::Arc<Net>, String>) {
+    let generation = NETWORK_GENERATION.load(std::sync::atomic::Ordering::SeqCst);
+    let rt = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+        Ok(rt) => rt,
+        Err(e) => return (generation, Err(e.to_string())),
+    };
+    let pinned = PINNED_SERVERS.lock().expect("pinned servers lock").clone();
+    let built: std::result::Result<_, String> = rt.block_on(async {
+        tokio::time::timeout(budgets().net_build, async {
             let client = match &pinned {
                 Some((_, validators)) => {
                     aether_net::RpcClient::with_addrs(validators.clone()).await
@@ -149,34 +259,37 @@ fn net() -> R<std::sync::Arc<Net>> {
             let pinned_followers = pinned.as_ref().map(|(f, _)| f.clone()).unwrap_or_default();
             let endpoint = client.endpoint().clone();
             Ok((client, Spread::on(endpoint, pinned_followers)))
+        })
+        .await
+        .map_err(|_| "discovery did not answer in time; will retry".to_string())?
+    });
+    let (client, spread) = match built {
+        Ok(v) => v,
+        Err(e) => return (generation, Err(e)),
+    };
+    let (client, spread) = (std::sync::Arc::new(client), std::sync::Arc::new(spread));
+    // Ask the validators every few minutes which follower Macs serve
+    // wallets (nothing to ask when the servers were pinned: tests).
+    if pinned.is_none() {
+        let (spread, refresh) = (spread.clone(), client.clone());
+        rt.spawn(async move {
+            loop {
+                spread.discover(&refresh).await;
+                tokio::time::sleep(Duration::from_secs(5 * 60)).await;
+            }
         });
-        let (client, spread) = built?;
-        let (client, spread) = (std::sync::Arc::new(client), std::sync::Arc::new(spread));
-        // Ask the validators every few minutes which follower Macs serve
-        // wallets (nothing to ask when the servers were pinned: tests).
-        if pinned.is_none() {
-            let (spread, refresh) = (spread.clone(), client.clone());
-            rt.spawn(async move {
-                loop {
-                    spread.discover(&refresh).await;
-                    tokio::time::sleep(Duration::from_secs(5 * 60)).await;
-                }
-            });
-            // And every 30 s, the newest finalized height off a validator's
-            // own certificate: the bar a serving node's anchor must not lag
-            // far behind (red-team 2026-09-29 §3).
-            let refresh = client.clone();
-            rt.spawn(async move {
-                loop {
-                    refresh_finalized_height(&refresh, generation).await;
-                    tokio::time::sleep(Duration::from_secs(30)).await;
-                }
-            });
-        }
-        Ok(std::sync::Arc::new(Net { rt, generation, client, spread }))
-    })
-    .clone()
-    .map_err(WalletError::Network)
+        // And every 30 s, the newest finalized height off a validator's
+        // own certificate: the bar a serving node's anchor must not lag
+        // far behind (red-team 2026-09-29 §3).
+        let refresh = client.clone();
+        rt.spawn(async move {
+            loop {
+                refresh_finalized_height(&refresh, generation).await;
+                tokio::time::sleep(Duration::from_secs(30)).await;
+            }
+        });
+    }
+    (generation, Ok(std::sync::Arc::new(Net { rt, generation, client, spread })))
 }
 
 // ---------------- wallet reads spread over follower Macs ----------------
@@ -678,12 +791,29 @@ fn call(method: &str, params: Value) -> R<Value> {
         return local_call(port, method, params);
     }
     let n = net()?;
-    let v = if needs_a_validator(method) {
-        n.rt.block_on(n.client.call(method, params))
-    } else {
-        n.rt.block_on(n.read(method, params))
+    // The whole read — followers, rotation, validator fallback — runs under
+    // one deadline: a stuck path returns an error the caller can show and
+    // retry, never a thread parked inside the FFI call (2026-10-05).
+    // The timeout future is built inside `block_on`: constructing a timer
+    // outside the runtime ("no reactor running") is a panic, not an error.
+    let v = n.rt.block_on(async {
+        tokio::time::timeout(budgets().read, async {
+            if needs_a_validator(method) {
+                n.client.call(method, params).await
+            } else {
+                n.read(method, params).await
+            }
+        })
+        .await
+    });
+    let v = match v {
+        Ok(v) => v,
+        Err(_) => Err(anyhow::anyhow!(
+            "timed out after {} ms waiting for the network",
+            budgets().read.as_millis()
+        )),
     };
-    v.map_err(|e| {
+    let out = v.map_err(|e| {
         let m = e.to_string();
         if m.contains("connect")
             || m.contains("timed out")
@@ -694,7 +824,13 @@ fn call(method: &str, params: Value) -> R<Value> {
         } else {
             WalletError::Rejected(m)
         }
-    })
+    });
+    match &out {
+        Ok(_) => note_remote_success(),
+        Err(WalletError::Network(_)) => note_remote_failure(),
+        Err(_) => {}
+    }
+    out
 }
 
 /// How the wallet currently reaches the network (for display).
@@ -1097,7 +1233,19 @@ pub fn authenticated_remote_height() -> R<Option<u64>> {
         .map(|(_, height, _)| *height) {
         return Ok(Some(height));
     }
-    remote.rt.block_on(refresh_finalized_height(&remote.client, remote.generation));
+    // Bounded, because the route decision waits on this every poll: a cold
+    // network (the incident of 2026-10-05) answers "unknown" in seconds, and
+    // the wallet proceeds on its local node with the check marked pending
+    // instead of camping on "Connecting" for minutes.
+    if remote
+        .rt
+        .block_on(async {
+            tokio::time::timeout(budgets().remote_check, refresh_finalized_height(&remote.client, remote.generation)).await
+        })
+        .is_err()
+    {
+        note_remote_failure();
+    }
     Ok(recent_checked_height(chain))
 }
 
@@ -1609,6 +1757,108 @@ mod tests {
         *CHAIN_ID.lock().expect("chain id lock") = 7_777;
         VERIFIED_HEIGHT.lock().expect("verified height lock").clear();
         CHECKED_HEIGHT.lock().expect("checked height lock").clear();
+        // The client, its pinned servers and its failure bookkeeping are as
+        // process-global as the rest: every test starts from none of them.
+        *NET.lock().expect("network lock") = None;
+        *PINNED_SERVERS.lock().expect("pinned servers lock") = None;
+        *NODES.lock().expect("nodes lock") = None;
+        *LOCAL_NODE.lock().expect("local node lock") = None;
+        REMOTE_FAILURES.store(0, std::sync::atomic::Ordering::Relaxed);
+        *LAST_REBUILD.lock().expect("rebuild lock") = None;
+        REBUILDS.store(0, std::sync::atomic::Ordering::Relaxed);
+        *BUDGETS.lock().expect("budgets lock") = None;
+    }
+
+    /// A validator that never answers: TEST-NET-1 (packets go nowhere), so
+    /// every connect attempt runs its full budget — the incident network of
+    /// 2026-10-05, where the validators had all restarted on new addresses.
+    fn dead_validator() -> PinnedServer {
+        PinnedServer { node: "ae7b4bb59d9c18f830fed15a23fafec37029ee1de4df398b2154f312b9c1a23e".into(), socket: "192.0.2.1:1".into() }
+    }
+
+    /// The incident of 2026-10-05, reproduced: no validator answers, and the
+    /// read still returns in its budget instead of parking the caller's
+    /// thread inside the FFI call for minutes (`recent_blocks`,
+    /// `connection`, `verified_account` were all stuck exactly there).
+    #[test]
+    fn remote_reads_are_bounded_when_nothing_answers() {
+        let _g = config();
+        reset_network();
+        pin_servers(vec![], vec![dead_validator()]).unwrap();
+        *BUDGETS.lock().expect("budgets lock") = Some(Budgets {
+            net_build: Duration::from_secs(5),
+            read: Duration::from_millis(700),
+            remote_check: Duration::from_millis(500),
+            rebuild_after: u32::MAX,
+            rebuild_every: Duration::from_secs(30),
+        });
+        let t = std::time::Instant::now();
+        let err = chain_status().err().expect("a dead network fails the read").to_string();
+        assert!(
+            t.elapsed() < Duration::from_secs(8),
+            "a read against a dead network returned in {:?}, not minutes",
+            t.elapsed()
+        );
+        assert!(err.contains("timed out") || err.contains("connect"), "{err}");
+    }
+
+    /// A client that keeps failing is stuck on stale addresses: after enough
+    /// consecutive failures it is dropped and rebuilt — a different client,
+    /// which redoes discovery — rather than re-dialing the same dead list
+    /// forever. (Rebuild disabled in the bounded test above so the two stay
+    /// independent; here it is the thing under test.)
+    #[test]
+    fn a_stuck_client_is_rebuilt_after_repeated_failures() {
+        let _g = config();
+        reset_network();
+        pin_servers(vec![], vec![dead_validator()]).unwrap();
+        *BUDGETS.lock().expect("budgets lock") = Some(Budgets {
+            net_build: Duration::from_secs(5),
+            read: Duration::from_millis(300),
+            remote_check: Duration::from_millis(300),
+            rebuild_after: 2,
+            rebuild_every: Duration::from_millis(50),
+        });
+        let before = net().unwrap();
+        for _ in 0..2 {
+            assert!(chain_status().is_err(), "a dead network fails the read");
+        }
+        assert_eq!(
+            REBUILDS.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "two consecutive failed reads rebuilt the stuck client"
+        );
+        let after = net().unwrap();
+        assert!(
+            !std::sync::Arc::ptr_eq(&before, &after),
+            "the rebuild is a fresh client, not the same one re-dialed"
+        );
+    }
+
+    /// The watchdog's remote view answers quickly even when the validators
+    /// are unreachable: the route decision polls it, so it must say "unknown"
+    /// in seconds — the wallet then reads through its local node with the
+    /// check marked pending instead of camping on "Connecting".
+    #[test]
+    fn authenticated_remote_height_answers_fast_when_validators_are_gone() {
+        let _g = config();
+        reset_network();
+        use_devnet_keys(); // so the refresh gets as far as the network call
+        pin_servers(vec![], vec![dead_validator()]).unwrap();
+        *BUDGETS.lock().expect("budgets lock") = Some(Budgets {
+            net_build: Duration::from_secs(5),
+            read: Duration::from_millis(500),
+            remote_check: Duration::from_millis(400),
+            rebuild_after: u32::MAX,
+            rebuild_every: Duration::from_secs(30),
+        });
+        let t = std::time::Instant::now();
+        assert_eq!(authenticated_remote_height().unwrap(), None);
+        assert!(
+            t.elapsed() < Duration::from_secs(5),
+            "the remote check took {:?} against a dead network",
+            t.elapsed()
+        );
     }
 
     fn network_json(identity: Option<&str>, devnet: bool) -> String {

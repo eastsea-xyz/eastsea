@@ -28,6 +28,11 @@ final class NodeController: ObservableObject {
 
     @Published private(set) var state: State = .off
     @Published private(set) var height: UInt64 = 0
+    /// The wallet is reading through this Mac's node without the remote
+    /// cross-check (the view `authenticatedRemoteHeight()` reads could not
+    /// answer — the incident of 2026-10-05): the route is provisional, the
+    /// UI says so, and the watchdog releases it if the node stalls.
+    @Published private(set) var networkCheckPending = false
     /// This Mac's voting-node identity (keys live in the node's data folder).
     @Published private(set) var candidate: Candidate?
     /// The registry's view of this Mac (refreshed while the node runs).
@@ -187,6 +192,13 @@ final class NodeController: ObservableObject {
     static var dataDir: URL {
         DataMigration.ensure()
         return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/EastSea/node", isDirectory: true)
+    }
+
+    /// The note the Connected status appends while `networkCheckPending`:
+    /// one phrase, ko/en, localized like `NodeWatchdog.Failure.sentence`.
+    var pendingRouteNote: String {
+        let ko = Locale.preferredLanguages.first?.hasPrefix("ko") ?? false
+        return ko ? "· 이 Mac의 노드 사용 (네트워크 확인 대기)" : "· via this Mac's node; network check pending"
     }
 
     private var binary: URL? {
@@ -372,6 +384,7 @@ final class NodeController: ObservableObject {
         poll = nil
         restartTimer = nil
         switched = false
+        networkCheckPending = false
         watchdog.invalidate()
         if !UserDefaults.standard.bool(forKey: "useDevelopmentNetwork") { useLocalNode(port: nil) }
         if let p = process, p.isRunning { p.terminate() }
@@ -398,6 +411,7 @@ final class NodeController: ObservableObject {
         process = nil
         poll?.invalidate()
         switched = false
+        networkCheckPending = false
         if !UserDefaults.standard.bool(forKey: "useDevelopmentNetwork") { useLocalNode(port: nil) }  // the wallet reads other nodes from this moment on
         applyDuty()
         switch watchdog.exited(clock.now, code: status, signaled: proc.terminationReason == .uncaughtSignal, log: nodeLogTail()) {
@@ -511,6 +525,10 @@ final class NodeController: ObservableObject {
 
     /// Switch the wallet to the local node once it has caught up with the network.
     private var switched = false
+    /// One `check()` read at a time: a slow remote check must not stack
+    /// detached tasks behind the 2 s poll (the incident's pile-up) — the
+    /// first tick after one lands re-reads everything fresh.
+    private var checkInFlight = false
 
     private func restartIfRunning() {
         guard process != nil else { return }
@@ -581,6 +599,8 @@ final class NodeController: ObservableObject {
         refreshProver()
         refreshUpgrade()
         refreshDisk()
+        guard !checkInFlight else { return }
+        checkInFlight = true
         let port = Self.port, switched = self.switched
         Task.detached {
             // One reading of the local node covers all three feeds: its
@@ -596,10 +616,16 @@ final class NodeController: ObservableObject {
             let network = try? authenticatedRemoteHeight()
             let activity = (status?["activity"] as? NSNumber)?.uint64Value
             await MainActor.run {
+                self.checkInFlight = false
                 guard self.process != nil else { return }
-                let useLocal = self.watchdog.useLocalNode(
+                let route = self.watchdog.useLocalNode(
                     local: statusHeight, network: network,
-                    responsive: status != nil, currentlyLocal: self.switched)
+                    responsive: status != nil, currentlyLocal: self.switched,
+                    at: self.clock.now)
+                if self.networkCheckPending != route.networkPending {
+                    self.networkCheckPending = route.networkPending
+                }
+                let useLocal = route.useLocal
                 if self.switched != useLocal {
                     self.switched = useLocal
                     if !UserDefaults.standard.bool(forKey: "useDevelopmentNetwork") { useLocalNode(port: useLocal ? port : nil) }
@@ -655,6 +681,7 @@ final class NodeController: ObservableObject {
                     guard let self, self.process != nil else { return }
                     self.watchdog.invalidate()
                     self.switched = false
+                    self.networkCheckPending = false
                     if !UserDefaults.standard.bool(forKey: "useDevelopmentNetwork") { useLocalNode(port: nil) }
                     self.state = .starting
                 }
@@ -665,6 +692,7 @@ final class NodeController: ObservableObject {
                     guard let self, self.process != nil else { return }
                     self.watchdog.invalidate()
                     self.switched = false
+                    self.networkCheckPending = false
                     if !UserDefaults.standard.bool(forKey: "useDevelopmentNetwork") { useLocalNode(port: nil) }
                     self.state = .starting
                     self.check()

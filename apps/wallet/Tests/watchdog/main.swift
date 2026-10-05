@@ -208,22 +208,101 @@ check(NodeWatchdog.rollbackAllowed(prevProtocol: 4, chainScheduled: 3), "an even
 // Red team #14/#17: a dead status RPC releases the local route immediately;
 // a live but stale node releases it after five verified lag observations.
 var route = NodeWatchdog()
-check(!route.useLocalNode(local: 100, network: 100, responsive: true, currentlyLocal: false), "one caught-up poll is insufficient")
-check(!route.useLocalNode(local: 100, network: 100, responsive: true, currentlyLocal: false), "two caught-up polls are insufficient")
-check(route.useLocalNode(local: 100, network: 100, responsive: true, currentlyLocal: false), "three verified caught-up polls select local")
-for _ in 1...4 {
-    check(route.useLocalNode(local: 100, network: 200, responsive: true, currentlyLocal: true), "brief verified lag does not flap")
+check(route.useLocalNode(local: 100, network: 100, responsive: true, currentlyLocal: false, at: t0.advanced(by: 2)) == .remote, "one caught-up poll is insufficient")
+check(route.useLocalNode(local: 100, network: 100, responsive: true, currentlyLocal: false, at: t0.advanced(by: 4)) == .remote, "two caught-up polls are insufficient")
+check(route.useLocalNode(local: 100, network: 100, responsive: true, currentlyLocal: false, at: t0.advanced(by: 6)) == .local, "three verified caught-up polls select local")
+for i in 1...4 {
+    check(route.useLocalNode(local: 100, network: 200, responsive: true, currentlyLocal: true, at: t0.advanced(by: 6 + Double(i) * 2)) == .local, "brief verified lag does not flap")
 }
-check(!route.useLocalNode(local: 100, network: 200, responsive: true, currentlyLocal: true), "five lag polls yield local")
-check(!route.useLocalNode(local: 100, network: 200, responsive: false, currentlyLocal: true), "an unresponsive RPC yields local immediately")
-check(!route.useLocalNode(local: nil, network: 200, responsive: false, currentlyLocal: true), "a dead RPC without height still yields local")
+check(route.useLocalNode(local: 100, network: 200, responsive: true, currentlyLocal: true, at: t0.advanced(by: 16)) == .remote, "five lag polls yield local")
+check(route.useLocalNode(local: 100, network: 200, responsive: false, currentlyLocal: true, at: t0.advanced(by: 18)) == .remote, "an unresponsive RPC yields local immediately")
+check(route.useLocalNode(local: nil, network: 200, responsive: false, currentlyLocal: true, at: t0.advanced(by: 20)) == .remote, "a dead RPC without height still yields local")
 
-// Red team #9: after wake, a prior local selection is stale. The route stays
-// remote until a fresh certified remote height supports three observations.
+// Red team #9: after wake, a prior local selection is stale — the controller
+// releases the route on the wake, and every streak (verified or pending)
+// starts from zero. A remote view that answers again is re-earned the
+// verified way; a missing one takes three fresh healthy polls like below.
 var wakeRoute = NodeWatchdog()
-for _ in 1...3 { _ = wakeRoute.useLocalNode(local: 100, network: 100, responsive: true, currentlyLocal: false) }
+for i in 1...3 { _ = wakeRoute.useLocalNode(local: 100, network: 100, responsive: true, currentlyLocal: false, at: t0.advanced(by: Double(i) * 2)) }
 wakeRoute.invalidate()
-check(!wakeRoute.useLocalNode(local: 100, network: nil, responsive: true, currentlyLocal: true), "wake without an authenticated height releases local")
-check(!wakeRoute.useLocalNode(local: 100, network: 100, responsive: true, currentlyLocal: false), "the first post-wake certificate is only the first readiness poll")
+check(wakeRoute.useLocalNode(local: 100, network: 100, responsive: true, currentlyLocal: false, at: t0.advanced(by: 200)) == .remote, "the first post-wake certificate is only the first readiness poll")
+check(wakeRoute.useLocalNode(local: 100, network: nil, responsive: true, currentlyLocal: false, at: t0.advanced(by: 202)) == .remote, "the first healthy poll without a remote view is also only the first of three")
+
+// The incident of 2026-10-05: after a reboot every validator read times out
+// for minutes, so `authenticatedRemoteHeight()` cannot answer, while the
+// bundled node on this Mac answers in 20 ms — verified and caught up. The
+// wallet used to camp on "Connecting" for the whole outage (a nil remote view
+// read as "behind"); now the healthy local node serves reads after three
+// healthy polls, marked network-check-pending.
+var incident = NodeWatchdog()
+check(incident.useLocalNode(local: 2_000, network: nil, responsive: true, currentlyLocal: false, at: t0.advanced(by: 2)) == .remote, "no remote view: one healthy poll is not enough")
+check(incident.useLocalNode(local: 2_000, network: nil, responsive: true, currentlyLocal: false, at: t0.advanced(by: 4)) == .remote, "no remote view: two healthy polls are not enough")
+check(incident.useLocalNode(local: 2_000, network: nil, responsive: true, currentlyLocal: false, at: t0.advanced(by: 6)) == .localPending, "the third healthy poll selects this Mac's node, marked network-check-pending")
+for secs in stride(from: 8.0, through: 58, by: 2) {
+    check(incident.useLocalNode(local: 2_000 + UInt64(secs / 2), network: nil, responsive: true, currentlyLocal: true, at: t0.advanced(by: secs)) == .localPending, "pending on a node that keeps moving (\(Int(secs)) s): stay local")
+}
+// The local node goes quiet — a partition looks exactly like this, and with
+// no cross-check nothing can vouch for it: pending may not camp on a stalled
+// node. Sixty frozen seconds step back to the validators.
+for secs in stride(from: 60.0, through: 118, by: 2) {
+    check(incident.useLocalNode(local: 2_029, network: nil, responsive: true, currentlyLocal: true, at: t0.advanced(by: secs)) == .localPending, "frozen \(Int(secs - 60)) s with no cross-check: the last seconds of patience")
+}
+check(incident.useLocalNode(local: 2_029, network: nil, responsive: true, currentlyLocal: true, at: t0.advanced(by: 120)) == .remote, "frozen 60 s while pending: step back to remote")
+check(incident.useLocalNode(local: 2_029, network: nil, responsive: true, currentlyLocal: false, at: t0.advanced(by: 122)) == .remote, "after the step-back the streak starts over (poll 1)")
+check(incident.useLocalNode(local: 2_029, network: nil, responsive: true, currentlyLocal: false, at: t0.advanced(by: 124)) == .remote, "poll 2 of the fresh streak")
+check(incident.useLocalNode(local: 2_029, network: nil, responsive: true, currentlyLocal: false, at: t0.advanced(by: 126)) == .localPending, "poll 3: local again — the node may have recovered")
+// Red team #17, preserved: the moment the remote view can answer again, it is
+// authoritative again — "unavailable" never becomes "ahead". A pending local
+// selection the certificates call behind yields to the same five
+// observations as ever, and the pending mark clears on the very first answer.
+check(incident.useLocalNode(local: 2_029, network: 2_129, responsive: true, currentlyLocal: true, at: t0.advanced(by: 128)) == .local, "the remote view returns calling this node behind: the pending mark clears at once")
+for i in 1...3 {
+    check(incident.useLocalNode(local: 2_029, network: 2_129, responsive: true, currentlyLocal: true, at: t0.advanced(by: 128 + Double(i) * 2)) == .local, "verified lag \(i + 1)/5: brief lag does not flap")
+}
+check(incident.useLocalNode(local: 2_029, network: 2_129, responsive: true, currentlyLocal: true, at: t0.advanced(by: 136)) == .remote, "five verified lag observations yield local")
+check(incident.useLocalNode(local: 2_029, network: 2_029, responsive: true, currentlyLocal: false, at: t0.advanced(by: 138)) == .remote, "a view that returns healthy re-earns local the verified way (poll 1)")
+check(incident.useLocalNode(local: 2_029, network: 2_029, responsive: true, currentlyLocal: false, at: t0.advanced(by: 140)) == .remote, "verified poll 2")
+check(incident.useLocalNode(local: 2_029, network: 2_029, responsive: true, currentlyLocal: false, at: t0.advanced(by: 142)) == .local, "verified poll 3: local, and no longer pending")
+
+// A node still at height 0 is starting, not a read route — healthy polls at
+// genesis never select local, with or without a remote view.
+var genesis = NodeWatchdog()
+for i in 1...3 {
+    check(genesis.useLocalNode(local: 0, network: nil, responsive: true, currentlyLocal: false, at: t0.advanced(by: Double(i) * 2)) == .remote, "height 0, poll \(i): a starting node is not a read route")
+}
+
+// A local node that stops answering (or reports no height) never holds the
+// route, and a broken streak resets: local is re-earned after three fresh
+// healthy polls, not on the first one back.
+var unresp = NodeWatchdog()
+_ = unresp.useLocalNode(local: 500, network: nil, responsive: true, currentlyLocal: false, at: t0.advanced(by: 2))
+_ = unresp.useLocalNode(local: 500, network: nil, responsive: true, currentlyLocal: false, at: t0.advanced(by: 4))
+check(unresp.useLocalNode(local: 500, network: nil, responsive: false, currentlyLocal: false, at: t0.advanced(by: 6)) == .remote, "an unresponsive node is never a read route")
+check(unresp.useLocalNode(local: 500, network: nil, responsive: true, currentlyLocal: false, at: t0.advanced(by: 8)) == .remote, "the streak restarted with the outage (poll 1)")
+check(unresp.useLocalNode(local: 500, network: nil, responsive: true, currentlyLocal: false, at: t0.advanced(by: 10)) == .remote, "poll 2 after the outage")
+check(unresp.useLocalNode(local: 500, network: nil, responsive: true, currentlyLocal: false, at: t0.advanced(by: 12)) == .localPending, "poll 3: three fresh healthy polls, local again")
+var heightless = NodeWatchdog()
+_ = heightless.useLocalNode(local: 500, network: nil, responsive: true, currentlyLocal: false, at: t0.advanced(by: 2))
+check(heightless.useLocalNode(local: nil, network: nil, responsive: true, currentlyLocal: false, at: t0.advanced(by: 4)) == .remote, "a status RPC that answers without a height is not healthy")
+check(heightless.useLocalNode(local: 500, network: nil, responsive: true, currentlyLocal: false, at: t0.advanced(by: 6)) == .remote, "the heightless poll reset the streak (poll 1)")
+check(heightless.useLocalNode(local: 500, network: nil, responsive: true, currentlyLocal: false, at: t0.advanced(by: 8)) == .remote, "poll 2")
+check(heightless.useLocalNode(local: 500, network: nil, responsive: true, currentlyLocal: false, at: t0.advanced(by: 10)) == .localPending, "poll 3: local again")
+
+// Red team #9 in the pending regime: a sleep invalidates the pending timing
+// too. A freeze counted before the sleep must not fire on the strength of
+// it — only 60 genuinely awake, frozen seconds do.
+var pendingWake = NodeWatchdog()
+_ = pendingWake.useLocalNode(local: 700, network: nil, responsive: true, currentlyLocal: false, at: t0.advanced(by: 2))
+_ = pendingWake.useLocalNode(local: 700, network: nil, responsive: true, currentlyLocal: false, at: t0.advanced(by: 4))
+check(pendingWake.useLocalNode(local: 700, network: nil, responsive: true, currentlyLocal: false, at: t0.advanced(by: 6)) == .localPending, "three healthy polls: local, pending")
+for secs in stride(from: 8.0, through: 60, by: 2) {
+    check(pendingWake.useLocalNode(local: 700, network: nil, responsive: true, currentlyLocal: true, at: t0.advanced(by: secs)) == .localPending, "frozen \(Int(secs - 4)) s before the sleep: still inside the 60 s")
+}
+pendingWake.invalidate()
+check(pendingWake.useLocalNode(local: 700, network: nil, responsive: true, currentlyLocal: true, at: t0.advanced(by: 400)) == .localPending, "the wake forgets the 56-s-old freeze: the clock starts over")
+for secs in stride(from: 402.0, through: 458, by: 2) {
+    check(pendingWake.useLocalNode(local: 700, network: nil, responsive: true, currentlyLocal: true, at: t0.advanced(by: secs)) == .localPending, "freshly frozen \(Int(secs - 400)) s after the wake: wait")
+}
+check(pendingWake.useLocalNode(local: 700, network: nil, responsive: true, currentlyLocal: true, at: t0.advanced(by: 462)) == .remote, "and 60 genuinely frozen seconds still step back to remote")
 
 print("watchdog: all checks passed")

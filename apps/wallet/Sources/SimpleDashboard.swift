@@ -369,6 +369,7 @@ struct LinkedWalletsCard: View {
 
 private struct NetworkPage: View {
     @EnvironmentObject var model: WalletModel
+    @EnvironmentObject var node: NodeController
 
     @Environment(\.narrowLayout) private var narrow
 
@@ -381,6 +382,18 @@ private struct NetworkPage: View {
         return String(format: "%.1f s", s)
     }
 
+    /// The status title; "Connected" while the wallet reads through this
+    /// Mac's node without the remote cross-check says so — the route is
+    /// provisional (the incident of 2026-10-05's honest middle state).
+    private var statusTitle: String {
+        let base = model.status == nil
+            ? "Connecting to \(Brand.project)\(Terms.isTestnet ? " testnet" : "")…"
+            : model.chainPausedSince != nil
+                ? "Network paused"
+                : "Connected to \(Brand.project)\(Terms.isTestnet ? " testnet" : "")"
+        return base + (model.status != nil && node.networkCheckPending ? node.pendingRouteNote : "")
+    }
+
     var body: some View {
         VStack(spacing: 16) {
             ForEach(model.scheduledUpgrades) { upgrade in
@@ -391,7 +404,7 @@ private struct NetworkPage: View {
                     Image(systemName: model.status == nil ? "antenna.radiowaves.left.and.right.slash" : model.chainPausedSince != nil ? "pause.circle.fill" : "checkmark.circle.fill")
                         .font(.system(size: narrow ? 30 : 40)).foregroundStyle(model.status == nil || model.chainPausedSince != nil ? Color.warn : Color.aether)
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(model.status == nil ? "Connecting to \(Brand.project)\(Terms.isTestnet ? " testnet" : "")…" : model.chainPausedSince != nil ? "Network paused" : "Connected to \(Brand.project)\(Terms.isTestnet ? " testnet" : "")")
+                        Text(statusTitle)
                             .font(.aeTitle)
                         Text("Found the validators on the public DHT. Your balance is checked on this device against their group signature.")
                             .font(.aeBody).foregroundStyle(.secondary)
@@ -779,7 +792,7 @@ private struct SidebarStatus: View {
         switch node.state {
         case .off: return "Off"
         case .starting: return node.height > 0 ? "Catching up" : "Starting…"
-        case .running: return "Verifying blocks"
+        case .running: return "Verifying blocks" + (node.networkCheckPending ? node.pendingRouteNote : "")
         case .waitingForPower: return "Paused on battery"
         case .failed(let m): return m
         }

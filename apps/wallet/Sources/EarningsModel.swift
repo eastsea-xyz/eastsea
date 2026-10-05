@@ -205,6 +205,17 @@ enum WeiMath {
         return a == b ? 0 : (a < b ? -1 : 1)
     }
 
+    /// The fee maximum the send sheet displayed (pre-audit 7, M1): the quoted
+    /// maximum per recipient — the status maximum when there is no quote —
+    /// times the recipient count, since each fresh address can add its own
+    /// account charge. Exact wei (integer addition, never a double), so what
+    /// the signature re-checks is exactly what was shown. nil when nothing
+    /// was displayed (no quote and no status).
+    static func shownFeeWei(quoteWei: String?, statusWei: String?, recipients: Int) -> String? {
+        guard let each = quoteWei ?? statusWei else { return nil }
+        return (1..<max(recipients, 1)).reduce(each) { sum, _ in add(sum, each) }
+    }
+
     /// A U256 from JSON ("0x…" hex, a decimal string or a number) as decimal wei.
     static func decimal(_ v: Any?) -> String {
         if let n = v as? NSNumber { return n.stringValue }

@@ -11,6 +11,7 @@ run balance-sources Brand.swift EarningsModel.swift ChainActivity.swift BalanceB
 run balance-history BalanceHistory.swift
 run earnings EarningsModel.swift
 run earnings-export Brand.swift EarningsModel.swift ChainActivity.swift EarningsExport.swift
+run fee-confirm EarningsModel.swift
 run history-notice HistoryFailure.swift
 run install-location Brand.swift InstallLocation.swift
 run network-upgrade Brand.swift NetworkUpgrade.swift

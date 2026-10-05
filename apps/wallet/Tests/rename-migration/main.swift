@@ -392,4 +392,102 @@ do {
     cleanup(root, d)
 }
 
+// 12. Pre-audit 7, H2: a failure AFTER the old tree's quarantine (here the
+//     migrated marker cannot be written — a directory squats on its name)
+//     must not strand the new node. The node's own completion state is set,
+//     the new node may start, exactly one usable signer remains, and the
+//     next launch finishes the cosmetic tail and sets done.
+do {
+    let (root, d) = makeOldSupport()
+    let oldNode = root.appending(path: "Aether/node")
+    let newNode = root.appending(path: "EastSea/node")
+    // Force the copy path, as in scenario 7.
+    try? FileManager.default.createDirectory(at: newNode, withIntermediateDirectories: true)
+    try? "x".write(to: newNode.appending(path: "data.db"), atomically: true, encoding: .utf8)
+    // The marker write after the quarantine will fail: a plain file write
+    // cannot replace a directory squatting on the marker's name.
+    try? FileManager.default.createDirectory(at: oldNode.appending(path: "MIGRATED-TO-EASTSEA"),
+                                             withIntermediateDirectories: true)
+    let outcome = DataMigration.migrate(support: root, defaults: d)
+    if case .failed(let why) = outcome {
+        expect(why.contains("marked migrated"), "the post-quarantine marker failure reports itself: \(why)")
+    } else {
+        expect(false, "a marker write failure after the quarantine must fail the run: \(outcome)")
+    }
+    expect(!doneFlag(d), "done is not set while the marker tail is pending")
+    expect(d.bool(forKey: "renameNodeMigrationDone"), "the node's own completion state IS set (the quarantine finished)")
+    expect(DataMigration.mayStartNode(support: root, defaults: d) == nil,
+           "H2: the verified new node may start after the quarantine, marker or no marker")
+    // Exactly one usable signer: the old tree cannot, the new tree can.
+    expect(oldBinaryView(oldNode).canSign == false, "the quarantined old tree cannot sign")
+    expect(FileManager.default.fileExists(atPath: newNode.appending(path: "validator.key").path)
+        && FileManager.default.fileExists(atPath: newNode.appending(path: "threshold.json").path),
+           "the new tree holds the signing pair (the one usable signer)")
+    // The next launch clears the obstacle and finishes the tail.
+    try? FileManager.default.removeItem(at: oldNode.appending(path: "MIGRATED-TO-EASTSEA"))
+    expect(DataMigration.migrate(support: root, defaults: d) == .done, "the next launch finishes the tail")
+    expect(doneFlag(d), "done is set once the tail completes")
+    cleanup(root, d)
+}
+
+// 13. Pre-audit 7, H2: a failure BEFORE the quarantine (here the wallet key
+//     handle cannot be copied — the destination folder is unreadable) must
+//     leave the old app a usable signer and keep the new node off. Nothing
+//     is quarantined while anything fallible can still fail.
+do {
+    let (root, d) = makeOldSupport()
+    let oldNode = root.appending(path: "Aether/node")
+    let newNode = root.appending(path: "EastSea/node")
+    // Force the copy path, then break the small-file copy: the destination
+    // folder exists but cannot be written into.
+    try? FileManager.default.createDirectory(at: newNode, withIntermediateDirectories: true)
+    try? "x".write(to: newNode.appending(path: "data.db"), atomically: true, encoding: .utf8)
+    try? FileManager.default.createDirectory(at: root.appending(path: "EastSeaWallet"),
+                                             withIntermediateDirectories: true)
+    try? FileManager.default.setAttributes([.posixPermissions: 0],
+                                           ofItemAtPath: root.appending(path: "EastSeaWallet").path)
+    let outcome = DataMigration.migrate(support: root, defaults: d)
+    if case .failed(let why) = outcome {
+        expect(why.contains("did not copy"), "the pre-quarantine copy failure reports itself: \(why)")
+    } else {
+        expect(false, "a small-file copy failure must fail the run: \(outcome)")
+    }
+    expect(!doneFlag(d), "done is not set")
+    expect(!d.bool(forKey: "renameNodeMigrationDone"), "the node completion state is not set: nothing was quarantined")
+    expect(oldBinaryView(oldNode).canSign, "H2: the old tree is still a usable signer (nothing was stranded)")
+    expect(DataMigration.mayStartNode(support: root, defaults: d) != nil,
+           "the new node stays off while the old signer lives (A6-5)")
+    let quarantines = ((try? FileManager.default.contentsOfDirectory(atPath: oldNode.path)) ?? [])
+        .filter { $0.hasPrefix("eastsea-quarantine-") }
+    expect(quarantines.isEmpty, "no quarantine happened before the fallible copies finished")
+    // Repair and retry: everything completes.
+    try? FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                           ofItemAtPath: root.appending(path: "EastSeaWallet").path)
+    expect(DataMigration.migrate(support: root, defaults: d) == .done, "the repaired retry completes")
+    expect(oldBinaryView(oldNode).canSign == false, "after the full run the old tree no longer signs")
+    cleanup(root, d)
+}
+
+// 14. Pre-audit 7, H2, the crash window: the process dies between the last
+//     quarantine rename and the flag write. On the next launch the state is
+//     read from the trees themselves — a marked, signer-clean old root and
+//     a verified new tree let the node start, and the idempotent re-run
+//     finishes the migration.
+do {
+    let (root, d) = makeOldSupport()
+    let newNode = root.appending(path: "EastSea/node")
+    // Force the copy path and run the migration to completion…
+    try? FileManager.default.createDirectory(at: newNode, withIntermediateDirectories: true)
+    try? "x".write(to: newNode.appending(path: "data.db"), atomically: true, encoding: .utf8)
+    expect(DataMigration.migrate(support: root, defaults: d) == .done, "the migration completes first")
+    // …then simulate the crash: neither flag made it to disk.
+    d.removeObject(forKey: "renameMigrationDone")
+    d.removeObject(forKey: "renameNodeMigrationDone")
+    expect(DataMigration.mayStartNode(support: root, defaults: d) == nil,
+           "the crash window heals: a marked, signer-clean old tree lets the verified node start")
+    expect(DataMigration.migrate(support: root, defaults: d) == .done, "the re-run finishes idempotently")
+    expect(doneFlag(d), "done is set again after the heal")
+    cleanup(root, d)
+}
+
 exit(Int32(failures))

@@ -76,7 +76,9 @@ fn answer(mode: &Mode, req: Value, served: &Arc<Mutex<Vec<String>>>) -> Value {
     let result = match method.as_str() {
         "aether_status" => json!({
             "chain_id": chain, "height": 6, "state_root": f["state_root"], "mempool": 0,
-            "base_fee": { "exec": "1000000000", "prove": "0" },
+            // A paid-state chain reports its state price (pre-audit 7, M1);
+            // the legacy 7780 mode ignores it.
+            "base_fee": { "exec": "1000000000", "state": "1000000000000", "prove": "0" },
         }),
         "aether_getAccount" => json!({
             "address": f["address"], "balance": f["balance"], "nonce": 0,

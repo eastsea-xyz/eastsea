@@ -676,6 +676,9 @@ private struct SecurityPage: View {
                         Text("Protected by this device").font(.aeHeadline)
                         Text("Your key was created inside the Secure Enclave and can never be copied out. Every payment asks for Touch ID or your password. If you lose every device and have no recovery set up, nobody can restore the funds.")
                             .font(.aeBody).foregroundStyle(.secondary)
+                        // F-05: recovery never revokes a stolen original key.
+                        Text(KeyExposureNotice.keyCustody.text).font(.aeFootnote).foregroundStyle(Color.warn)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
@@ -1793,6 +1796,9 @@ private struct RecoveryPanel: View {
             Text("Recovery device").font(.aeHeadline)
             Text("If you lose this device, a second device you trust (your other Mac or iPhone) can move your funds to itself.")
                 .font(.aeBody).foregroundStyle(.secondary)
+            // F-05: recovery saves a lost key, never a stolen one.
+            Label(KeyExposureNotice.recovery.text, systemImage: "exclamationmark.triangle").font(.aeFootnote).foregroundStyle(Color.warn)
+                .fixedSize(horizontal: false, vertical: true)
             step(1, "On the other device, copy its code", "Open \(Brand.project) there, tap Recovery device, and copy \"This device's code\".")
             HStack {
                 TextField("Paste the other device's code", text: $model.guardianInput).textFieldStyle(.roundedBorder).font(.aeFootnote.monospaced())

@@ -186,6 +186,9 @@ struct DeveloperView: View {
                     TextField("0x lost account (that trusts this device)", text: $model.lostInput).textFieldStyle(.roundedBorder).font(.caption.monospaced())
                     Button("Propose recovery") { model.recover() }.disabled(model.busy || model.lostInput.isEmpty || model.outgoingRecovery != nil)
                 }
+                // F-05: recovery saves a lost key, never a stolen one.
+                Text(KeyExposureNotice.recovery.text).font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
                 if let p = model.outgoingRecovery {
                     HStack {
                         Text("Pending: \(Wei.format(p.request.valueWei)) \(Brand.networkCoinTicker) from \(p.request.lost.prefix(10))… · ready \(p.readyAt.formatted())").font(.caption)

@@ -64,16 +64,23 @@ struct MenuBarPanel: View {
             }
             if node.prove, let p = node.prover {
                 VStack(alignment: .leading, spacing: 2) {
+                    if !p.running { Text("Prover not running").foregroundStyle(.red) }
                     if let h = p.proving { Text("Proving block #\(h)…") }
                     if let h = p.last_height {
                         Text("Proved block #\(h) · \(p.last_txs ?? 0) tx · \(Int((p.last_seconds ?? 0).rounded())) s")
                     }
                     Text("\(p.proofs ?? 0) proofs this session\(p.lag.map { " · \($0) blocks behind" } ?? "")")
+                    if p.proofs_failing == true {
+                        Text(p.program_mismatch == true
+                             ? "Proofs failing · proof program mismatch"
+                             : (p.acceptance_rate_percent.map { "Proofs failing · \($0)% accepted recently" } ?? "Proofs failing"))
+                            .foregroundStyle(.red)
+                    }
                     if let paused = p.paused {
                         // docs/ops/resource-limits.md: the node's own words for why it holds proving.
                         Text(paused == "memory"
                              ? "Paused: over the memory cap, waiting out its pause"
-                             : "Paused: \(paused == "pressure" ? "system memory pressure" : paused == "battery" ? "on battery" : "disk space low")")
+                             : "Paused: \(paused == "program" ? (p.program_unknown == true ? "cannot confirm validator proof program" : "proof program differs from validators") : paused == "pressure" ? "system memory pressure" : paused == "battery" ? "on battery" : "disk space low")")
                             .foregroundStyle(.secondary)
                     }
                     if let r = p.last_reward {

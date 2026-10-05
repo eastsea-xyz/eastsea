@@ -17,6 +17,7 @@ run release-approval ReleaseApproval.swift
 run rename-migration DataMigration.swift
 run resources ProverFlags.swift
 run reward-status EarningsModel.swift
+run proving-badge EarningsModel.swift
 run token-guard Brand.swift TokenSend.swift TokenAssets.swift EarningsModel.swift TokenGuard.swift
 run token-icon Brand.swift TokenSend.swift TokenAssets.swift EarningsModel.swift TokenGuard.swift TokenIconSpec.swift
 run token-send Brand.swift TokenSend.swift TokenAssets.swift EarningsModel.swift

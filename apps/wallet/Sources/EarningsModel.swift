@@ -1,5 +1,15 @@
 import Foundation
 
+enum ProvingBadgeText {
+    static func failing(reported: Bool, proverRunning: Bool?, runningSeconds: TimeInterval?) -> Bool {
+        reported || proverRunning == false || (proverRunning == nil && (runningSeconds ?? 0) >= 15)
+    }
+
+    static func line(proofsFailing: Bool, today: String) -> String {
+        proofsFailing ? "Proofs failing" : "Proving · +\(today) today"
+    }
+}
+
 // What this Mac has earned, from the node's own reward records (`aether_rewards`).
 // Pure values and functions only, so the numbers the hero card shows can be checked
 // without a node, a window or a clock.

@@ -31,6 +31,7 @@ struct NodeWork: Equatable {
     var runningSince: Date?
     /// Proofs made on the GPU this session.
     var proofs: UInt64 = 0
+    var proofsFailing = false
     /// Consecutive hours online as a registered voting node (nil: not registered).
     var streakHours: UInt64?
     var votingNow = false
@@ -672,7 +673,7 @@ struct EarningsBadge: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Circle().fill(work.isLive ? EarnInk.mint : .orange).frame(width: 7, height: 7)
+            Circle().fill(work.isLive && !work.proofsFailing ? EarnInk.mint : .orange).frame(width: 7, height: 7)
                 .keyframeAnimator(initialValue: 1.0, trigger: work.height) { v, s in v.scaleEffect(s) } keyframes: { _ in
                     KeyframeTrack {
                         SpringKeyframe(1.7, duration: 0.12)
@@ -693,7 +694,7 @@ struct EarningsBadge: View {
     /// Fits the sidebar (170–190 pt) without an ellipsis; the cards keep the full wording.
     private var line: String {
         switch work.phase {
-        case .proving: "Proving · +\(EarningsText.aeth(summary.todayWei)) today"
+        case .proving: ProvingBadgeText.line(proofsFailing: work.proofsFailing, today: EarningsText.aeth(summary.todayWei))
         case .verifying: "Working · \(work.blocksVerified) blocks"
         case .starting: "Starting…"
         case .paused: "Paused"
@@ -765,10 +766,20 @@ final class Earnings: ObservableObject {
     /// What the node is doing, for the views.
     func work(_ node: NodeController, canProve: Bool) -> NodeWork {
         var w = NodeWork(phase: phase(node))
+        if node.prover?.program_unknown == true && node.prover?.paused == "program" {
+            w.phase = .paused("Cannot confirm the validator proof program.")
+        }
         w.height = node.height
         w.blocksVerified = firstHeight.map { node.height > $0 ? node.height - $0 : 0 } ?? 0
         w.runningSince = runningSince
         w.proofs = node.prover?.proofs ?? 0
+        if w.isProving {
+            w.proofsFailing = ProvingBadgeText.failing(
+                reported: node.prover?.proofs_failing ?? false,
+                proverRunning: node.prover?.running,
+                runningSeconds: runningSince.map { Date().timeIntervalSince($0) }
+            )
+        }
         if let v = node.voting, v.registered {
             w.streakHours = v.streak
             w.votingNow = v.voting

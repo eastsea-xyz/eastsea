@@ -36,6 +36,13 @@ abstract contract TokenEscrow {
     error BadToken();
     /// A token callback tried to re-enter an escrow entry mid-flight (F-01).
     error Reentered();
+    /// A page request above `MAX_PAGE` (PA7-07).
+    error PageTooLarge(uint256 limit, uint256 max);
+
+    /// PA7-07: the most ids one `…IdsOfPage` call returns. A larger `limit`
+    /// reverts instead of being silently clamped, so a walker that steps its
+    /// offset by `limit` can never skip ids.
+    uint256 public constant MAX_PAGE = 500;
 
     /// Reentrancy latch. A callback-capable token can interrupt `_pull` and
     /// re-enter before the deposit is credited: the nested record plus the
@@ -50,6 +57,23 @@ abstract contract TokenEscrow {
         _busy = 1;
         _;
         _busy = 0;
+    }
+
+    /// PA7-07: ids[offset, offset+limit) of a beneficiary's history. `ids`
+    /// stays a storage reference and only the requested slice is read, so a
+    /// page costs O(limit) no matter how many dust entries a griefer appended.
+    function _page(uint256[] storage ids, uint256 offset, uint256 limit)
+        internal
+        view
+        returns (uint256[] memory page)
+    {
+        if (limit > MAX_PAGE) revert PageTooLarge(limit, MAX_PAGE);
+        uint256 len = ids.length;
+        if (offset >= len) return page;
+        uint256 n = len - offset;
+        if (n > limit) n = limit;
+        page = new uint256[](n);
+        for (uint256 i = 0; i < n; i++) page[i] = ids[offset + i];
     }
 
     /// Pull `amount` from the caller, returning what actually arrived.
@@ -171,18 +195,14 @@ contract TokenLocker is TokenEscrow {
     /// F-04: one bounded page of `beneficiary`'s lock ids, oldest first.
     /// Anyone can bury a beneficiary's history under unlimited dust locks, so
     /// on-chain consumers read the count and walk bounded pages instead of
-    /// scanning the whole history at once.
+    /// scanning the whole history at once. PA7-07: costs O(limit) whatever the
+    /// history size; `limit` above `MAX_PAGE` reverts with `PageTooLarge`.
     function lockIdsOfPage(address beneficiary, uint256 offset, uint256 limit)
         external
         view
         returns (uint256[] memory page)
     {
-        uint256[] memory ids = _idsOf[beneficiary];
-        if (offset >= ids.length) return page;
-        uint256 n = ids.length - offset;
-        if (n > limit) n = limit;
-        page = new uint256[](n);
-        for (uint256 i = 0; i < n; i++) page[i] = ids[offset + i];
+        page = _page(_idsOf[beneficiary], offset, limit);
     }
 
     /// `beneficiary`'s tokens of `token` still sitting in this escrow.
@@ -193,8 +213,9 @@ contract TokenLocker is TokenEscrow {
     /// aggregate from bounded pages (`lockIdsOfPage`) off chain; nothing
     /// security-relevant should hang on this single unbounded call.
     function lockedTotal(address beneficiary, address token) external view returns (uint256 total) {
-        uint256[] memory ids = _idsOf[beneficiary];
-        for (uint256 i = 0; i < ids.length; i++) {
+        uint256[] storage ids = _idsOf[beneficiary];
+        uint256 len = ids.length;
+        for (uint256 i = 0; i < len; i++) {
             Lock storage l = locks[ids[i]];
             if (l.amount != 0 && l.token == token) total += l.amount;
         }
@@ -205,8 +226,9 @@ contract TokenLocker is TokenEscrow {
     ///
     /// F-04: same whole-history scan (and caveat) as `lockedTotal`.
     function lockedUntil(address beneficiary, address token) external view returns (uint64 until) {
-        uint256[] memory ids = _idsOf[beneficiary];
-        for (uint256 i = 0; i < ids.length; i++) {
+        uint256[] storage ids = _idsOf[beneficiary];
+        uint256 len = ids.length;
+        for (uint256 i = 0; i < len; i++) {
             Lock storage l = locks[ids[i]];
             if (l.amount != 0 && l.token == token && l.unlockAt > until) until = l.unlockAt;
         }
@@ -352,18 +374,14 @@ contract TokenVesting is TokenEscrow {
 
     /// F-04: one bounded page of `beneficiary`'s stream ids, oldest first —
     /// the bounded counterpart of `streamIdsOf`, whose array grows without
-    /// bound and should not be returned whole to on-chain consumers.
+    /// bound and should not be returned whole to on-chain consumers. Same
+    /// O(limit) cost and `MAX_PAGE` cap as `lockIdsOfPage` (PA7-07).
     function streamIdsOfPage(address beneficiary, uint256 offset, uint256 limit)
         external
         view
         returns (uint256[] memory page)
     {
-        uint256[] memory ids = _idsOf[beneficiary];
-        if (offset >= ids.length) return page;
-        uint256 n = ids.length - offset;
-        if (n > limit) n = limit;
-        page = new uint256[](n);
-        for (uint256 i = 0; i < n; i++) page[i] = ids[offset + i];
+        page = _page(_idsOf[beneficiary], offset, limit);
     }
 
     function _streamAt(uint256 id) private view returns (Stream storage s) {

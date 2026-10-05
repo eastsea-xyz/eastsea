@@ -666,4 +666,70 @@ contract TokenLockerTest {
         assertEq(uint256(latest), uint256(locker.lockedUntil(beneficiary, address(token))));
         assertEq(total, 1000e18 + 290); // the real lock plus the 290 unspent dust
     }
+
+    // ---- PA7-07: a page costs O(limit), not O(lifetime history) ----
+
+    /// Slack for the gas difference between two same-shape page reads. The
+    /// old whole-array copy cost ~2_000 gas per extra historical id, so 1_950
+    /// extra ids would blow through this by orders of magnitude.
+    uint256 private constant PAGE_GAS_SLACK = 1_000;
+
+    function _growLocks(uint256 target) internal {
+        while (locker.lockCountOf(beneficiary) < target) {
+            lockAs(creator, address(token), beneficiary, 1, uint64(block.timestamp + DAY));
+        }
+    }
+
+    function _lockPageGas(uint256 offset, uint256 limit) internal view returns (uint256 used, uint256 len) {
+        uint256 before = gasleft();
+        uint256[] memory page = locker.lockIdsOfPage(beneficiary, offset, limit);
+        used = before - gasleft();
+        len = page.length;
+    }
+
+    function test_LockIdsOfPageGasIsBoundedAsHistoryGrows() public {
+        _growLocks(50);
+        (uint256 small, uint256 lenSmall) = _lockPageGas(0, 10);
+        _growLocks(2_000);
+        (uint256 big, uint256 lenBig) = _lockPageGas(0, 10);
+        (uint256 tail, uint256 lenTail) = _lockPageGas(1_990, 10);
+
+        assertEq(lenSmall, 10);
+        assertEq(lenBig, 10);
+        assertEq(lenTail, 10);
+        uint256 growth = big > small ? big - small : small - big;
+        assertTrue(growth < PAGE_GAS_SLACK);
+        uint256 shift = tail > big ? tail - big : big - tail;
+        assertTrue(shift < PAGE_GAS_SLACK); // the last page costs what the first does
+    }
+
+    function test_StreamIdsOfPageGasIsBoundedAsHistoryGrows() public {
+        uint64 start = uint64(block.timestamp);
+        for (uint256 i = 0; i < 50; i++) vestAs(creator, address(token), beneficiary, 1, start, 0, DAY, false);
+        uint256 before = gasleft();
+        assertEq(vesting.streamIdsOfPage(beneficiary, 0, 10).length, 10);
+        uint256 small = before - gasleft();
+
+        for (uint256 i = 50; i < 2_000; i++) vestAs(creator, address(token), beneficiary, 1, start, 0, DAY, false);
+        before = gasleft();
+        assertEq(vesting.streamIdsOfPage(beneficiary, 0, 10).length, 10);
+        uint256 big = before - gasleft();
+
+        uint256 growth = big > small ? big - small : small - big;
+        assertTrue(growth < PAGE_GAS_SLACK);
+    }
+
+    function test_PageLimitAboveMaxReverts() public {
+        uint256 max = locker.MAX_PAGE();
+        assertEq(max, vesting.MAX_PAGE());
+        // at the cap: fine, even for an empty history
+        assertEq(locker.lockIdsOfPage(beneficiary, 0, max).length, 0);
+        assertEq(vesting.streamIdsOfPage(beneficiary, 0, max).length, 0);
+
+        bytes memory tooLarge = abi.encodeWithSelector(TokenEscrow.PageTooLarge.selector, max + 1, max);
+        vm.expectRevert(tooLarge);
+        locker.lockIdsOfPage(beneficiary, 0, max + 1);
+        vm.expectRevert(tooLarge);
+        vesting.streamIdsOfPage(beneficiary, 0, max + 1);
+    }
 }

@@ -384,7 +384,10 @@ mod tests {
         let pk = pubkey(&k);
         let contract = Request { to: "0x7777777777777777777777777777777777777777", value_wei: "0", data_hex: "0x01", gas_limit: 100_000, balance_wei: "1000000000000000000" };
         let prepared = prepare_tx(&pk, &status, 7801, 0, &contract).unwrap();
-        assert_eq!(prepared["envelope"]["header"]["gas"]["state"], 600);
+        // 600 units for the call's possible new state plus, since audit 6
+        // (A6-1/A6-2), one unit per 32 persisted transaction/receipt bytes.
+        let state = prepared["envelope"]["header"]["gas"]["state"].as_u64().unwrap();
+        assert!((601..700).contains(&state), "state budget {state}");
         assert_eq!(prepared["envelope"]["header"]["max_fee"]["state"].as_u64(), Some(1_000_000_000_000));
         let free = Request { to: "0x7777777777777777777777777777777777777777", value_wei: "0", data_hex: "", gas_limit: 21_000, balance_wei: "0" };
         let prepared = prepare_tx(&pk, &status, 7801, 0, &free).unwrap();

@@ -623,6 +623,13 @@ pub fn bind_to_ceremony(
 /// threshold.json — no share to vote with): its adopted network file against
 /// the record's half. It serves wallets the chain the ceremony checked, so it
 /// is bound to the same genesis; only the share comparison is a signer's.
+/// A record that was named but is missing fails closed on it; a Mac with no
+/// record anywhere and no share cannot vote (it verifies blocks by
+/// certificate; a wrong genesis shows up as a chain that never syncs), so it
+/// keeps following with a warning instead of stranding every consumer Mac.
+/// On a successful bind the record is stored in the data dir, like
+/// verify-local does — the next start (and a later reshare seat) binds even
+/// without the --network file it came from.
 pub fn bind_shareless_to_ceremony(
     file: &crate::roster::NetworkFile,
     bytes: &[u8],
@@ -631,15 +638,136 @@ pub fn bind_shareless_to_ceremony(
 ) -> Result<(), String> {
     let record_path = ceremony.map_or_else(|| data.join(CEREMONY_RECORD_FILE), std::path::Path::to_path_buf);
     if !record_path.exists() {
-        return Err(format!(
-            "chain {}: no ceremony record at {} and none was passed: a Mac may not serve a new genesis without the record the coordinator's check wrote.\n  Run scripts/mainnet-genesis.sh verify-local <final network.json> --data {} --ceremony <{CEREMONY_RECORD_FILE}> on this Mac first (it stores the record in the data dir), then start the node",
-            file.chain_id,
-            record_path.display(),
-            data.display()
-        ));
+        if ceremony.is_some() {
+            return Err(format!(
+                "chain {}: no ceremony record at {}: this start was told to bind to that record and it is missing.\n  Copy the {CEREMONY_RECORD_FILE} the coordinator's check wrote next to the network.json, then start again",
+                file.chain_id,
+                record_path.display()
+            ));
+        }
+        tracing::warn!(
+            chain = file.chain_id,
+            "no ceremony record for chain {} on this Mac and none was passed: a Mac with no \
+             share cannot vote (it verifies blocks by certificate), so it keeps following. The \
+             release build ships {CEREMONY_RECORD_FILE} next to the bundled network.json — \
+             install it to pin the checked genesis; a wrong genesis only ever fails to sync",
+            file.chain_id
+        );
+        return Ok(());
     }
     let record = load_ceremony_record(&record_path)?;
-    bind_network_to_record(file, bytes, &record)
+    bind_network_to_record(file, bytes, &record)?;
+    let stored = data.join(CEREMONY_RECORD_FILE);
+    if stored != record_path {
+        let bytes = serde_json::to_vec_pretty(&record).map_err(|e| e.to_string())?;
+        std::fs::write(&stored, bytes)
+            .map_err(|e| format!("cannot store the ceremony record at {}: {e}", stored.display()))?;
+    }
+    Ok(())
+}
+
+/// The record a start binds to, in fail-closed order: the explicit
+/// --ceremony (passed through even when missing — the load then errors on the
+/// named file, never silently falls through to another record), the copy
+/// verify-local stored in the data dir, and the record next to the --network
+/// file. The coordinator's check writes `ceremony-check.json` next to the
+/// final network.json it passed, and the wallet app ships the same pair next
+/// to its bundled network.json — that pair is how a consumer Mac receives the
+/// record without any manual step. `None` means none was found.
+pub fn resolve_ceremony_record(
+    ceremony: Option<&std::path::Path>,
+    data: &std::path::Path,
+    network: Option<&std::path::Path>,
+) -> Option<std::path::PathBuf> {
+    if let Some(path) = ceremony {
+        return Some(path.to_path_buf());
+    }
+    let stored = data.join(CEREMONY_RECORD_FILE);
+    if stored.exists() {
+        return Some(stored);
+    }
+    network
+        .and_then(|n| n.parent())
+        .map(|dir| dir.join(CEREMONY_RECORD_FILE))
+        .filter(|sibling| sibling.exists())
+}
+
+/// The release gate (`aether mainnet-rules --bundle`): a new-genesis app
+/// build must ship the coordinator's record next to the network.json it
+/// bundles, pinning that file's exact bytes — a consumer Mac receives the
+/// genesis through this pair, so no build may hand it an unchecked one (or
+/// another ceremony's, or a file edited after the check). The legacy testnet
+/// app ships no record and passes.
+pub fn check_bundle(path: &std::path::Path, file: &crate::roster::NetworkFile, bytes: &[u8]) -> Rule {
+    let name = "bundled ceremony record";
+    if !new_genesis_chain(file) {
+        return Rule {
+            name,
+            ok: true,
+            detail: format!(
+                "chain {} is not a new genesis: this app build ships no record (the {TESTNET_CHAIN_ID} testnet app never does)",
+                file.chain_id
+            ),
+        };
+    }
+    let Some(sibling) = path.parent().map(|dir| dir.join(CEREMONY_RECORD_FILE)) else {
+        return Rule {
+            name,
+            ok: false,
+            detail: format!("no {} next to {}: a new-genesis app build must ship the record the coordinator's check wrote", CEREMONY_RECORD_FILE, path.display()),
+        };
+    };
+    if !sibling.exists() {
+        return Rule {
+            name,
+            ok: false,
+            detail: format!(
+                "no {} next to {}: a new-genesis app build must ship the record the coordinator's check wrote next to the network.json",
+                CEREMONY_RECORD_FILE,
+                path.display()
+            ),
+        };
+    }
+    let record = match load_ceremony_record(&sibling) {
+        Ok(record) => record,
+        Err(why) => return Rule { name, ok: false, detail: why },
+    };
+    if record.chain_id != file.chain_id {
+        return Rule {
+            name,
+            ok: false,
+            detail: format!(
+                "the bundled {} pins chain {} but the bundled network.json is chain {}: ship the record and the network.json from the same check, not another ceremony's",
+                CEREMONY_RECORD_FILE,
+                record.chain_id,
+                file.chain_id
+            ),
+        };
+    }
+    let digest = hex::encode(Sha256::digest(bytes));
+    if !digest.eq_ignore_ascii_case(&record.digest) {
+        return Rule {
+            name,
+            ok: false,
+            detail: format!(
+                "digest mismatch: the bundled {} pins other bytes (sha256 {}…; the bundled file is {}…): ship the record and the network.json from the same check — the exact bytes, unchanged",
+                CEREMONY_RECORD_FILE,
+                &record.digest[..record.digest.len().min(16)],
+                &digest[..digest.len().min(16)]
+            ),
+        };
+    }
+    Rule {
+        name,
+        ok: true,
+        detail: format!(
+            "{} next to the bundled file pins its exact bytes (chain {}, round {}, identity {}…)",
+            CEREMONY_RECORD_FILE,
+            file.chain_id,
+            record.round,
+            &record.identity[..record.identity.len().min(16)]
+        ),
+    }
 }
 
 /// The bind every path to a signature calls: `aether node --network … --data
@@ -1264,6 +1392,7 @@ mod tests {
         std::fs::write(dir.join("record.json"), serde_json::to_vec_pretty(&record).unwrap()).unwrap();
         bind_shareless_to_ceremony(&checked, &bytes, &dir, Some(&dir.join("record.json")))
             .expect("a follower Mac binds its file to the record");
+        assert!(dir.join(CEREMONY_RECORD_FILE).exists(), "the bound record is stored for the next start (the wallet's run passes no --ceremony)");
         // A chain id swapped in transit is refused even with no share at stake.
         let mut swapped = checked.clone();
         swapped.chain_id = 7_802;
@@ -1271,9 +1400,114 @@ mod tests {
         let err = bind_shareless_to_ceremony(&swapped, &swapped_bytes, &dir, Some(&dir.join("record.json")))
             .unwrap_err();
         assert!(err.contains("7802"), "{err}");
-        // No record: the operator step, not a silent unbound start.
-        let err = bind_shareless_to_ceremony(&checked, &bytes, &dir, None).unwrap_err();
-        assert!(err.contains("verify-local") && err.contains("ceremony"), "{err}");
+        // A record that was named but is not on disk fails closed on it.
+        let err = bind_shareless_to_ceremony(&checked, &bytes, &dir, Some(&dir.join("missing.json")))
+            .unwrap_err();
+        assert!(err.contains("no ceremony record"), "{err}");
+        // No record anywhere: a Mac with no share cannot vote (it verifies
+        // blocks by certificate), so it keeps following with a warning — a
+        // consumer Mac must never be stranded for lacking a public file.
+        bind_shareless_to_ceremony(&checked, &bytes, &dir, None)
+            .expect("a shareless Mac follows without a record instead of refusing to run");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Where a start finds its record, in fail-closed order: the explicit
+    /// --ceremony (named, so a missing one fails at the read, never a silent
+    /// fallthrough to some other record), the copy verify-local stored in the
+    /// data dir, and the record shipped next to the --network file (the
+    /// coordinator's check writes it there; the wallet app bundles the pair).
+    #[test]
+    fn the_record_a_start_binds_to_is_explicit_then_stored_then_bundled() {
+        let dir = std::env::temp_dir().join(format!("aether-resolve-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let bundle = dir.join("bundle");
+        std::fs::create_dir_all(&bundle).unwrap();
+        let explicit = dir.join("explicit.json");
+        std::fs::write(&explicit, b"{}").unwrap();
+
+        // Nothing anywhere: None.
+        assert_eq!(resolve_ceremony_record(None, &dir, Some(&bundle.join("network.json"))), None);
+        // A record next to the network file: the bundled pair.
+        std::fs::write(bundle.join(CEREMONY_RECORD_FILE), b"{}").unwrap();
+        assert_eq!(
+            resolve_ceremony_record(None, &dir, Some(&bundle.join("network.json"))),
+            Some(bundle.join(CEREMONY_RECORD_FILE))
+        );
+        // The data-dir copy beats the bundled one.
+        std::fs::write(dir.join(CEREMONY_RECORD_FILE), b"{}").unwrap();
+        assert_eq!(
+            resolve_ceremony_record(None, &dir, Some(&bundle.join("network.json"))),
+            Some(dir.join(CEREMONY_RECORD_FILE))
+        );
+        assert_eq!(
+            resolve_ceremony_record(None, &dir, None),
+            Some(dir.join(CEREMONY_RECORD_FILE)),
+            "no --network file to look beside: the stored copy still carries"
+        );
+        // The explicit record beats everything, even a missing one: naming it
+        // must fail closed on that file, not fall through to another record.
+        assert_eq!(
+            resolve_ceremony_record(Some(&explicit), &dir, Some(&bundle.join("network.json"))),
+            Some(explicit)
+        );
+        assert_eq!(
+            resolve_ceremony_record(Some(&dir.join("missing.json")), &dir, None),
+            Some(dir.join("missing.json"))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The release gate (`aether mainnet-rules --bundle`): a new-genesis app
+    /// build must ship the coordinator's record next to the network.json it
+    /// bundles, pinning the exact bytes — no Mac can be handed an unchecked
+    /// genesis through an app update. The legacy testnet app ships none.
+    #[test]
+    fn the_app_bundle_gate_pins_the_bundled_record_to_the_file() {
+        let dir = std::env::temp_dir().join(format!("aether-bundle-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (output, identity) = ceremony_output();
+        let checked = final_file(0, Some(output), Some(identity));
+        let (bytes, record) = record_for(&checked);
+        let net = dir.join("network.json");
+        std::fs::write(&net, &bytes).unwrap();
+
+        // No record beside the bundled file: FAIL, naming what to ship.
+        let rule = check_bundle(&net, &checked, &bytes);
+        assert_eq!(rule.name, "bundled ceremony record");
+        assert!(!rule.ok, "{}", rule.detail);
+        assert!(rule.detail.contains(CEREMONY_RECORD_FILE), "the refusal names the missing file: {}", rule.detail);
+
+        // The coordinator's record beside it: the digest carries.
+        std::fs::write(dir.join(CEREMONY_RECORD_FILE), serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+        let ok = check_bundle(&net, &checked, &bytes);
+        assert!(ok.ok, "{}", ok.detail);
+
+        // A record pinning other bytes (a network.json changed after the
+        // check) is not the pair the app may ship.
+        let mut edited = checked.clone();
+        edited.round = 4; // same genesis, other bytes than the record was taken over
+        let edited_bytes = serde_json::to_vec_pretty(&edited).unwrap();
+        let rule = check_bundle(&net, &edited, &edited_bytes);
+        assert!(!rule.ok, "{}", rule.detail);
+        assert!(rule.detail.contains("digest"), "{}", rule.detail);
+
+        // Another ceremony's record (its chain id) is refused.
+        let mut other_chain = record.clone();
+        other_chain.chain_id = 7_802;
+        std::fs::write(dir.join(CEREMONY_RECORD_FILE), serde_json::to_vec_pretty(&other_chain).unwrap()).unwrap();
+        let rule = check_bundle(&net, &checked, &bytes);
+        assert!(!rule.ok && rule.detail.contains("7802"), "{}", rule.detail);
+
+        // The legacy testnet app ships no record and passes.
+        let mut legacy = checked.clone();
+        legacy.chain_id = TESTNET_CHAIN_ID;
+        legacy.node_rewards = None;
+        legacy.history = None;
+        let rule = check_bundle(&net, &legacy, b"{}");
+        assert!(rule.ok, "{}", rule.detail);
+        assert!(rule.detail.contains(TESTNET_CHAIN_ID.to_string().as_str()), "the ok names which app needs no record: {}", rule.detail);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

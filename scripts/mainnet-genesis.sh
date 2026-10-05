@@ -366,6 +366,10 @@ PY
   echo "    validator Mac: verify-local --ceremony and the node's startup bind refuse"
   echo "    to vote without it (audit 6: no validator votes from a genesis the"
   echo "    ceremony did not check)."
+  echo "    The app bundle ships the same pair: copy BOTH unchanged into"
+  echo "    apps/wallet/Resources/ for the release build (docs/ops/mainnet-launch.md"
+  echo "    6단계) — scripts/build-wallet.sh runs mainnet-rules --bundle on it, so a"
+  echo "    build without the matching record does not ship."
 }
 
 # Each validator Mac, before it votes: the strict check on the final file it

@@ -27,6 +27,19 @@ case "$target" in
   ios)    IPHONEOS_DEPLOYMENT_TARGET=17.0 cargo build -p aether-ffi --release --locked --target aarch64-apple-ios ;;
   *) echo "usage: $0 [macos|ios-sim|ios]"; exit 1 ;;
 esac
+# Release gate (audit 6): the app bundles Resources/network.json, and on a
+# new-genesis chain that file must ship with the coordinator's
+# ceremony-check.json beside it, pinning its exact bytes — no app build may
+# hand a consumer Mac an unchecked genesis. The 7780 testnet bundle ships no
+# record and passes (not a new genesis).
+if gate=$(cargo run -q --release --locked -p aether-node --bin aether -- \
+  mainnet-rules --bundle --network apps/wallet/Resources/network.json 2>&1); then
+  echo "bundled ceremony record gate: $(printf '%s\n' "$gate" | tail -1)"
+else
+  printf '%s\n' "$gate" | sed 's/^/  /' >&2
+  echo "the app bundle fails the ceremony-record gate — see docs/ops/mainnet-launch.md 6단계" >&2
+  exit 1
+fi
 # The node carries the linker's UUID, which follows the build directory: rewrite
 # it from the code, so the copy the app embeds is the same bytes anywhere.
 [ "$target" = macos ] && aether_repro_fix_uuid target/release/aether

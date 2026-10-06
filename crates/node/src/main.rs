@@ -2971,13 +2971,9 @@ fn run_archive(
         sign_key: std::path::PathBuf::from(export_key.unwrap_or_else(|| format!("{data}/archive-export.key"))),
     };
     std::fs::create_dir_all(&export.dir).map_err(|e| format!("{}: {e}", export.dir.display()))?;
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,commonware=warn".into()),
-        )
-        .init();
-    tracing::info!(dir = %export.dir.display(), "era export set (roadmap B6): era files, manifests, torrents, index");
+    // run_follow installs the tracing subscriber; a second install here panicked
+    // at startup ("a global default trace dispatcher has already been set").
+    eprintln!("era export set (roadmap B6) in {}: era files, manifests, torrents, index", export.dir.display());
     // A fresh archive starts from a certified snapshot like any follower;
     // the flags say prune, the mode ignores them (history = Archive).
     let history = HistoryArgs {

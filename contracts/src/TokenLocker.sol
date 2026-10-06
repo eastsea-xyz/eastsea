@@ -392,6 +392,12 @@ contract TokenVesting is TokenEscrow {
     function _vestedNow(Stream storage s) private view returns (uint256) {
         if (block.timestamp < s.cliffEnd) return 0;
         if (block.timestamp >= s.end) return s.deposited;
-        return s.deposited * (block.timestamp - s.start) / (s.end - s.start);
+        uint256 elapsed = block.timestamp - s.start;
+        uint256 duration = s.end - s.start;
+        // Splitting the deposit preserves floor(deposited * elapsed / duration)
+        // without overflowing for a valid uint256-sized deposit. Here elapsed
+        // is below duration and both fit uint64, so the remainder product fits
+        // uint128; the quotient product and final sum cannot exceed deposited.
+        return (s.deposited / duration) * elapsed + ((s.deposited % duration) * elapsed) / duration;
     }
 }

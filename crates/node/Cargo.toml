@@ -83,6 +83,9 @@ dev-drill = []
 
 [dev-dependencies]
 rand_chacha = "0.10"
+# Tests drive a Router by hand (oneshot) to hold responses outstanding —
+# axum pulls tower in but does not re-export its ServiceExt.
+tower = "0.5"
 # The reserve-hardening tests capture the chain's overdue warning (finding 6).
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Lets this crate's integration tests reach the test-only seam in resources.rs

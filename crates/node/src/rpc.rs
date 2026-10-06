@@ -352,10 +352,29 @@ impl Drop for BudgetSlot {
     }
 }
 
-/// `GET /era/<file>`: a whole era file from this node's era folder — a
-/// webseed (the export manifest's first mirror). Names are exactly
+/// The era-file body keeps its transfer permit for the response's whole
+/// lifetime (pre-audit 7b PA7B-03): the permit used to be a local the handler
+/// dropped on return, so the budget counted handler executions while the
+/// unsent body still held the whole era buffer — a slow mirror could keep
+/// many whole-file responses outstanding at once. The body now owns the slot:
+/// it is given back only when the bytes are consumed or the response is
+/// dropped, so at most [`MAX_ERA_TRANSFERS`] whole era files exist per node.
+struct EraStream {
+    chunk: Option<bytes::Bytes>,
+    _permit: BudgetSlot,
+}
+
+impl futures::Stream for EraStream {
+    type Item = Result<bytes::Bytes, std::io::Error>;
+    fn poll_next(mut self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
+        std::task::Poll::Ready(self.chunk.take().map(Ok))
+    }
+}
+
+/// The era-file response, split out of the handler so tests can hold
+/// responses outstanding without a socket. `name` is exactly
 /// `era-<eight digits>.aera`; anything else is a 404, never a path.
-async fn serve_era_file(State(st): State<RpcState>, axum::extract::Path(name): axum::extract::Path<String>) -> axum::response::Response {
+fn era_file_response(st: &RpcState, name: &str) -> axum::response::Response {
     use axum::http::{header, StatusCode};
     use axum::response::IntoResponse;
     // Defense in depth (PA7-03): the public gateway does not register this
@@ -364,9 +383,6 @@ async fn serve_era_file(State(st): State<RpcState>, axum::extract::Path(name): a
     if st.public_read_only {
         return (StatusCode::NOT_FOUND, "no such era here").into_response();
     }
-    let Some(_transfer) = BudgetSlot::acquire(&ERA_TRANSFERS, MAX_ERA_TRANSFERS) else {
-        return (StatusCode::SERVICE_UNAVAILABLE, "era transfer budget busy; retry shortly").into_response();
-    };
     let era = name
         .strip_prefix("era-")
         .and_then(|n| n.strip_suffix(".aera"))
@@ -374,19 +390,32 @@ async fn serve_era_file(State(st): State<RpcState>, axum::extract::Path(name): a
         .and_then(|n| n.parse::<u64>().ok());
     let bytes = era.and_then(|_| {
         let store = st.chain.store()?;
-        let path = store.era_dir().join(&name);
+        let path = store.era_dir().join(name);
         std::fs::metadata(&path).ok().filter(|m| m.is_file() && m.len() <= crate::era_net::MAX_ERA_FILE as u64)?;
         std::fs::read(path).ok()
     });
-    match bytes {
-        Some(b) => (
-            StatusCode::OK,
-            [(header::CONTENT_TYPE, "application/octet-stream"), (header::CONTENT_LENGTH, b.len().to_string().as_str())],
-            b,
-        )
-            .into_response(),
-        None => (StatusCode::NOT_FOUND, "no such era here").into_response(),
-    }
+    let Some(bytes) = bytes else {
+        return (StatusCode::NOT_FOUND, "no such era here").into_response();
+    };
+    let Some(transfer) = BudgetSlot::acquire(&ERA_TRANSFERS, MAX_ERA_TRANSFERS) else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "era transfer budget busy; retry shortly").into_response();
+    };
+    let len = bytes.len();
+    let mut response = axum::response::Response::new(axum::body::Body::from_stream(EraStream {
+        chunk: Some(bytes::Bytes::from(bytes)),
+        _permit: transfer,
+    }));
+    *response.status_mut() = StatusCode::OK;
+    let headers = response.headers_mut();
+    headers.insert(header::CONTENT_TYPE, header::HeaderValue::from_static("application/octet-stream"));
+    headers.insert(header::CONTENT_LENGTH, header::HeaderValue::from(len));
+    response
+}
+
+/// `GET /era/<file>`: a whole era file from this node's era folder — a
+/// webseed (the export manifest's first mirror).
+async fn serve_era_file(State(st): State<RpcState>, axum::extract::Path(name): axum::extract::Path<String>) -> axum::response::Response {
+    era_file_response(&st, &name)
 }
 
 /// The project's new name (docs/design/25-rename.md phase 4): `eastsea_*`
@@ -1761,6 +1790,71 @@ mod public_read_tests {
             assert!(text.lines().next().unwrap_or_default().contains("200"), "the private webseed still serves it: {text}");
             assert_eq!(&private[private.len() - era.len()..], &era[..], "the private answer carries the exact era bytes");
         });
+    }
+
+    /// An era transfer's permit lasts for the whole response's lifetime
+    /// (pre-audit 7b PA7B-03): the permit used to be a local the handler
+    /// dropped on return, so the budget counted handler executions while the
+    /// unsent bodies — whole era files — were still buffered in the returned
+    /// responses: MAX_ERA_TRANSFERS "finished" handlers could all hand their
+    /// permits back and the node would buffer a fifth, a sixth… whole-file
+    /// body at once. The body now owns the slot: four outstanding responses
+    /// exhaust the budget (the fifth GET is refused 503), and dropping ONE
+    /// response — the bytes consumed or the connection gone — gives the slot
+    /// back. The old code answered the fifth transfer with 200.
+    #[test]
+    fn an_era_transfer_permit_lasts_for_the_response_lifetime() {
+        use tower::util::ServiceExt;
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let dir = std::env::temp_dir().join(format!("aether-rpc-era-permit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = crate::store::Store::open(&dir.join("db.redb")).unwrap();
+        std::fs::create_dir_all(store.era_dir()).unwrap();
+        let era: Vec<u8> = (0..4096u32).map(|i| i as u8).collect();
+        std::fs::write(store.era_dir().join("era-00000003.aera"), &era).unwrap();
+        let (chain, _) = crate::chain::Chain::open(crate::chain::ChainConfig {
+            chain_id: 7781,
+            limits: aether_types::GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
+            alloc: vec![], fees: false, registrar: None, epoch_blocks: 0,
+            min_streak: None, draw_epochs: None, history_v2: false, protocol: 1,
+            node_rewards: false, committee: vec![], reserve: None, group: 0,
+            max_committee: crate::rotation::GROW_UNTIL,
+        }, store).unwrap();
+        let (gossip, _) = mpsc::unbounded_channel();
+        let st = RpcState {
+            chain,
+            finality: Finality::Archive(Arc::new(crate::follow::FinalityArchive::default())),
+            gossip,
+            faucet: None, registrar: None, network: None, upstream: None,
+            handoff: None, snapshot: Default::default(), prover: None,
+            shards: None, public_read_only: false,
+        };
+        let app = Router::new().route("/era/{name}", get(serve_era_file)).with_state(st);
+        rt.block_on(async {
+            let ask = || Request::builder().uri("/era/era-00000003.aera").body(Body::empty()).unwrap();
+            // MAX_ERA_TRANSFERS whole-era responses held outstanding, their
+            // bodies never consumed: each one keeps its transfer permit.
+            let mut held: Vec<axum::response::Response> = Vec::new();
+            for _ in 0..MAX_ERA_TRANSFERS {
+                let r = app.clone().oneshot(ask()).await.unwrap();
+                assert_eq!(r.status(), StatusCode::OK);
+                held.push(r);
+            }
+            // The budget is full of OUTSTANDING transfers, not finished
+            // handlers: the fifth whole-file GET is refused.
+            let refused = app.clone().oneshot(ask()).await.unwrap();
+            assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE, "four whole-era responses outstanding must exhaust the transfer budget");
+            // Dropping one response releases its permit with the buffered
+            // bytes — the next transfer fits again.
+            held.pop();
+            let again = app.clone().oneshot(ask()).await.unwrap();
+            assert_eq!(again.status(), StatusCode::OK, "a dropped response gives its transfer permit back");
+            let bytes = axum::body::to_bytes(again.into_body(), usize::MAX).await.unwrap();
+            assert_eq!(&bytes[..], &era[..], "the body still carries the exact era bytes");
+        });
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

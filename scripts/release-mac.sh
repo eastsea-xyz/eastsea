@@ -108,20 +108,30 @@ fi
 # The legacy feed, taken from the bridge's own release and checked to list the
 # bridge (an Aether.app DMG, >= 0.6.7): without it, publishing this release as
 # latest would leave every Aether 0.6.6 reading a feed it cannot install from.
-bridge_tag=${AETHER_BRIDGE_TAG:-app-v0.6.7}
+# AETHER_LEGACY_FEED=frozen (founder 2026-10-07: retire 0.6.6, no bridge):
+# re-attach 0.6.6's own feed, which lists only Aether <= 0.6.6, so Aether
+# offers no update at all instead of an EastSea it cannot install.
+if [ "${AETHER_LEGACY_FEED:-bridge}" = frozen ]; then
+  bridge_tag=app-v0.6.6; want=frozen
+else
+  bridge_tag=${AETHER_BRIDGE_TAG:-app-v0.6.7}; want=bridge
+fi
 rm -rf tmp/bridge-feed && mkdir -p tmp/bridge-feed
 gh release download "$bridge_tag" --repo "$repo" --pattern appcast.xml --dir tmp/bridge-feed
-python3 - tmp/bridge-feed/appcast.xml <<'PY'
+python3 - tmp/bridge-feed/appcast.xml "$want" <<'PY'
 import sys, xml.etree.ElementTree as ET
 ns = {"sparkle": "http://www.andymatuschak.org/xml-namespaces/sparkle"}
 items = ET.parse(sys.argv[1]).getroot().findall("./channel/item")
-assert items, "the bridge feed has no item"
+assert items, "the legacy feed has no item"
 for it in items:
     url = it.find("enclosure").get("url")
-    short = it.find("sparkle:shortVersionString", ns).text
+    short = tuple(map(int, it.find("sparkle:shortVersionString", ns).text.split(".")))
     assert "/Aether-" in url and url.endswith(".dmg"), f"legacy feed item is not an Aether.app DMG: {url}"
-    assert tuple(map(int, short.split("."))) >= (0, 6, 7), f"legacy feed item {short} is not the bridge"
-print("legacy feed lists the bridge:", ", ".join(i.find("sparkle:shortVersionString", ns).text for i in items))
+    if sys.argv[2] == "frozen":
+        assert short <= (0, 6, 6), f"frozen legacy feed offers {short}, newer than 0.6.6"
+    else:
+        assert short >= (0, 6, 7), f"legacy feed item {short} is not the bridge"
+print(f"legacy feed ({sys.argv[2]}):", ", ".join(i.find("sparkle:shortVersionString", ns).text for i in items))
 PY
 cp tmp/bridge-feed/appcast.xml dist/appcast.xml
 assets=("$dmg" dist/eastsea-appcast.xml dist/appcast.xml)

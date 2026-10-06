@@ -353,23 +353,17 @@ impl Drop for BudgetSlot {
 }
 
 /// The era-file body keeps its transfer permit for the response's whole
-/// lifetime (pre-audit 7b PA7B-03): the permit used to be a local the handler
-/// dropped on return, so the budget counted handler executions while the
-/// unsent body still held the whole era buffer — a slow mirror could keep
-/// many whole-file responses outstanding at once. The body now owns the slot:
-/// it is given back only when the bytes are consumed or the response is
-/// dropped, so at most [`MAX_ERA_TRANSFERS`] whole era files exist per node.
-struct EraStream {
-    chunk: Option<bytes::Bytes>,
-    _permit: BudgetSlot,
-}
-
-impl futures::Stream for EraStream {
-    type Item = Result<bytes::Bytes, std::io::Error>;
-    fn poll_next(mut self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
-        std::task::Poll::Ready(self.chunk.take().map(Ok))
-    }
-}
+/// lifetime (pre-audit 7b PA7B-03) and streams in bounded chunks (audit 7
+/// A7-5). The old body was a single whole-file `Bytes` — the handler read
+/// the entire era into memory before the first byte went out — and its
+/// permit was a local the handler dropped on return, so the budget counted
+/// handler executions while the unsent bodies still held whole era buffers
+/// (a slow mirror could keep many whole-file responses outstanding at once).
+/// The permit now rides the stream's state: it is given back only when the
+/// bytes are consumed or the response is dropped, so at most
+/// [`MAX_ERA_TRANSFERS`] transfers exist per node, each holding at most
+/// `era_net::ERA_CHUNK` of the file at a time, read on tokio's blocking
+/// pool (off the async runtime).
 
 /// The era-file response, split out of the handler so tests can hold
 /// responses outstanding without a socket. `name` is exactly
@@ -388,23 +382,47 @@ fn era_file_response(st: &RpcState, name: &str) -> axum::response::Response {
         .and_then(|n| n.strip_suffix(".aera"))
         .filter(|n| n.len() == 8 && n.bytes().all(|b| b.is_ascii_digit()))
         .and_then(|n| n.parse::<u64>().ok());
-    let bytes = era.and_then(|_| {
-        let store = st.chain.store()?;
-        let path = store.era_dir().join(name);
-        std::fs::metadata(&path).ok().filter(|m| m.is_file() && m.len() <= crate::era_net::MAX_ERA_FILE as u64)?;
-        std::fs::read(path).ok()
-    });
-    let Some(bytes) = bytes else {
+    if era.is_none() {
         return (StatusCode::NOT_FOUND, "no such era here").into_response();
-    };
+    }
+    // The transfer permit comes before ANY file I/O (audit 7 A7-5): the old
+    // handler read the whole file first and asked for the permit after, so a
+    // node already streaming four transfers still did a fifth whole-file
+    // read just to answer 503 — the refused request was the expensive one.
+    // With the budget full, the refusal costs zero file reads.
     let Some(transfer) = BudgetSlot::acquire(&ERA_TRANSFERS, MAX_ERA_TRANSFERS) else {
         return (StatusCode::SERVICE_UNAVAILABLE, "era transfer budget busy; retry shortly").into_response();
     };
-    let len = bytes.len();
-    let mut response = axum::response::Response::new(axum::body::Body::from_stream(EraStream {
-        chunk: Some(bytes::Bytes::from(bytes)),
-        _permit: transfer,
-    }));
+    // Existence and size from metadata alone (a 404 needs no read). The
+    // permit drops on these early returns and rides the body below.
+    let file = st.chain.store().and_then(|s| {
+        let path = s.era_dir().join(name);
+        let m = std::fs::metadata(&path).ok().filter(|m| m.is_file() && m.len() <= crate::era_net::MAX_ERA_FILE as u64)?;
+        std::fs::File::open(&path).ok().map(|f| (f, m.len()))
+    });
+    let Some((file, len)) = file else {
+        return (StatusCode::NOT_FOUND, "no such era here").into_response();
+    };
+    let stream = futures::stream::unfold(
+        (tokio::fs::File::from_std(file), len, transfer),
+        |(mut file, remaining, permit)| async move {
+            if remaining == 0 {
+                return None;
+            }
+            let want = remaining.min(crate::era_net::ERA_CHUNK as u64) as usize;
+            let mut buf = vec![0u8; want];
+            match tokio::io::AsyncReadExt::read(&mut file, &mut buf).await {
+                // The file shrank under us: the body ends early (the stated
+                // content-length makes the receiver notice, not a lie).
+                Ok(0) => None,
+                Ok(n) => Some((Ok(bytes::Bytes::from(buf[..n].to_vec())), (file, remaining - n as u64, permit))),
+                // A read error ends the stream after this item; the state's
+                // remaining=0 makes the next poll the last.
+                Err(e) => Some((Err(e), (file, 0, permit))),
+            }
+        },
+    );
+    let mut response = axum::response::Response::new(axum::body::Body::from_stream(stream));
     *response.status_mut() = StatusCode::OK;
     let headers = response.headers_mut();
     headers.insert(header::CONTENT_TYPE, header::HeaderValue::from_static("application/octet-stream"));
@@ -1994,6 +2012,85 @@ mod public_read_tests {
             assert_eq!(again.status(), StatusCode::OK, "a dropped response gives its transfer permit back");
             let bytes = axum::body::to_bytes(again.into_body(), usize::MAX).await.unwrap();
             assert_eq!(&bytes[..], &era[..], "the body still carries the exact era bytes");
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Audit 7 A7-5: the transfer permit comes before ANY file I/O. The
+    /// old handler read the whole era file (metadata AND a whole-file
+    /// `read`) before asking for the permit — a node already streaming
+    /// four transfers still did a fifth whole-file read just to answer
+    /// 503, so the refused request was the expensive one. With the budget
+    /// full, a GET is refused before the file is even looked for — an era
+    /// that does not exist answers the busy 503, not the 404 the
+    /// read-first path gave — and an admitted transfer streams in bounded
+    /// chunks across several `ERA_CHUNK`s, exactly.
+    #[test]
+    fn a_full_transfer_budget_refuses_before_reading_the_file() {
+        use tower::util::ServiceExt;
+        use axum::body::Body;
+        use axum::http::{header, Request, StatusCode};
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let dir = std::env::temp_dir().join(format!("aether-rpc-era-noread-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = crate::store::Store::open(&dir.join("db.redb")).unwrap();
+        std::fs::create_dir_all(store.era_dir()).unwrap();
+        // 3 MiB: several ERA_CHUNK (1 MiB) boundaries must cross intact.
+        let era: Vec<u8> = (0..3usize << 20).map(|i| (i * 31 % 251) as u8).collect();
+        std::fs::write(store.era_dir().join("era-00000007.aera"), &era).unwrap();
+        let (chain, _) = crate::chain::Chain::open(crate::chain::ChainConfig {
+            chain_id: 7782,
+            limits: aether_types::GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
+            alloc: vec![], fees: false, registrar: None, epoch_blocks: 0,
+            min_streak: None, draw_epochs: None, history_v2: false, protocol: 1,
+            node_rewards: false, committee: vec![], reserve: None, group: 0,
+            max_committee: crate::rotation::GROW_UNTIL,
+        }, store).unwrap();
+        let (gossip, _) = mpsc::unbounded_channel();
+        let st = RpcState {
+            chain,
+            finality: Finality::Archive(Arc::new(crate::follow::FinalityArchive::default())),
+            gossip,
+            faucet: None, registrar: None, network: None, upstream: None,
+            handoff: None, snapshot: Default::default(), prover: None,
+            shards: None, public_read_only: false,
+        };
+        let app = Router::new().route("/era/{name}", get(serve_era_file)).with_state(st);
+        rt.block_on(async {
+            // The budget is full of OTHER transfers (not this test's
+            // responses): every slot is held.
+            let full: Vec<BudgetSlot> = (0..MAX_ERA_TRANSFERS)
+                .map(|_| BudgetSlot::acquire(&ERA_TRANSFERS, MAX_ERA_TRANSFERS).expect("the budget starts empty"))
+                .collect();
+            // An era that does not exist: the read-first path answered 404
+            // (its whole-file `read` found nothing). The permit-first path
+            // answers the busy 503 — the file was never looked for, so a
+            // refused GET costs zero file reads.
+            let ask = |name: &str| {
+                app.clone().oneshot(
+                    Request::builder().uri(format!("/era/{name}")).body(Body::empty()).unwrap(),
+                )
+            };
+            let missing = ask("era-00000009.aera").await.unwrap();
+            assert_eq!(missing.status(), StatusCode::SERVICE_UNAVAILABLE, "the busy budget refuses before the file is read");
+            // The same for an era that DOES exist: the refusal does the
+            // no work at all, whatever the disk holds.
+            let present = ask("era-00000007.aera").await.unwrap();
+            assert_eq!(present.status(), StatusCode::SERVICE_UNAVAILABLE, "an existing file is not read into a refused response either");
+            drop(full);
+            // With the budget free again the file transfers — in bounded
+            // chunks (3 MiB over 1 MiB chunks), exactly, with the length
+            // from its metadata.
+            let ok = ask("era-00000007.aera").await.unwrap();
+            assert_eq!(ok.status(), StatusCode::OK);
+            assert_eq!(
+                ok.headers().get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()),
+                Some("3145728"),
+                "the length comes from metadata, not from reading the file"
+            );
+            let bytes = axum::body::to_bytes(ok.into_body(), usize::MAX).await.unwrap();
+            assert_eq!(bytes.len(), 3 << 20);
+            assert_eq!(&bytes[..], &era[..], "several chunks stream the exact file");
         });
         let _ = std::fs::remove_dir_all(&dir);
     }

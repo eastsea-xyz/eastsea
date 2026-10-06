@@ -79,7 +79,8 @@ contract Editions1155 is ERC1155, ERC2981, SimpleBrake, ReentrancyGuard {
     {
         if (bytes(name_).length == 0 || bytes(name_).length > NAME_MAX) revert NameTooLong();
         if (cap == 0 || cap > type(uint48).max) revert BadEditionParams();
-        if (maxPerWallet == 0 || maxPerWallet > cap) revert BadEditionParams();
+        if (maxPerWallet == 0 || maxPerWallet > cap || maxPerWallet > type(uint32).max) revert BadEditionParams();
+        if (price > type(uint128).max) revert BadEditionParams();
         if (feeBps > FEE_CAP_BPS) revert BadEditionParams();
 
         editionId = _nextEditionId++;

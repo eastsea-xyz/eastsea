@@ -40,6 +40,17 @@ else
   echo "the app bundle fails the ceremony-record gate — see docs/ops/mainnet-launch.md 6단계" >&2
   exit 1
 fi
+# Release gate (audit 7 note): the drill and test seams must be compiled out of
+# the node the app ships. A dev-drill build has the hidden `dev-b3` subcommand
+# and the AETHER_DEV_* variable names; a test-seam build has set_test_readings.
+if [ "$target" = macos ]; then
+  if target/release/aether dev-b3 /dev/null >/dev/null 2>&1 \
+    || strings target/release/aether | grep -qE 'AETHER_DEV_(PROTOCOL|UPGRADE_NOTICE)|set_test_readings'; then
+    echo "target/release/aether contains dev-drill or test-seam code — a shipped node must not (crates/node/Cargo.toml [features])" >&2
+    exit 1
+  fi
+  echo "dev feature gate: node binary has no dev-drill / test-seam code"
+fi
 # The node carries the linker's UUID, which follows the build directory: rewrite
 # it from the code, so the copy the app embeds is the same bytes anywhere.
 [ "$target" = macos ] && aether_repro_fix_uuid target/release/aether

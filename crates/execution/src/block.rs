@@ -284,6 +284,29 @@ pub fn check_admission(state: &WorldState, ctx: &BlockContext, tx: &TxEnvelope) 
 /// Admission's exact transaction cost from the block executor. A caller that
 /// knows the proposed block's current totals can apply the same cumulative
 /// limits as `execute_block`.
+/// The wallet-facing reason a transaction does not fit the next block. Only
+/// the text differs by dimension; the fit rule itself is `GasVector::fits`.
+/// A spent B5 state budget is temporary (it refills per height), unlike an
+/// exec/prove overrun, so it must not read like "too big, never".
+fn admission_limit_error(gas: &GasVector, limits: &GasVector) -> String {
+    if gas.exec <= limits.exec && gas.prove <= limits.prove && gas.state > limits.state {
+        if gas.state > MAX_STATE_UNITS_PER_BLOCK {
+            return format!(
+                "state budget: this transaction needs {} state units, more than any block can take ({MAX_STATE_UNITS_PER_BLOCK}); split it",
+                gas.state
+            );
+        }
+        let blocks = (gas.state - limits.state).div_ceil(crate::fees::STATE_UNITS_PER_BLOCK);
+        return format!(
+            "state budget: this transaction needs {} state units and {} are available right now; the budget refills {} per block, retry in about {blocks} blocks",
+            gas.state,
+            limits.state,
+            crate::fees::STATE_UNITS_PER_BLOCK
+        );
+    }
+    "transaction exceeds block gas limit".into()
+}
+
 pub fn check_admission_cost(state: &WorldState, ctx: &BlockContext, tx: &TxEnvelope) -> Result<AdmissionCost, String> {
     let run = if tx.header.nonce > state.nonce(&tx.header.sender) {
         let simulated = state.with_sender_nonce(tx.header.sender, tx.header.nonce);
@@ -292,7 +315,7 @@ pub fn check_admission_cost(state: &WorldState, ctx: &BlockContext, tx: &TxEnvel
         run_tx(state, ctx, tx)?
     };
     if !run.gas.fits(&ctx.limits) {
-        return Err("transaction exceeds block gas limit".into());
+        return Err(admission_limit_error(&run.gas, &ctx.limits));
     }
     Ok(AdmissionCost { gas: run.gas, persistent_bytes: run.persistent_bytes, new_slots: run.new_slots })
 }

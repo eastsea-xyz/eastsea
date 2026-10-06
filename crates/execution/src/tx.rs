@@ -22,6 +22,28 @@ pub struct EvmCall {
     pub delegate: Option<Address>,
 }
 
+/// Exec gas a wallet signs for a plain value transfer (no calldata) to an
+/// address without code: the intrinsic cost, nothing to run.
+pub const PLAIN_TRANSFER_GAS: u64 = 21_000;
+/// Exec gas for a plain value transfer to an address WITH code: a contract's
+/// `receive()`, or an account delegated by EIP-7702 (`0xef0100 ‖ target`,
+/// e.g. after the wallet's own batch/guardian features), where loading the
+/// delegate and running its receive cost more than the intrinsic 21,000.
+/// Found live (docs/research/contracts-live-2026-10-06.md): 21,000 to such a
+/// recipient is included, fails out of gas and still pays its fee. Unused gas
+/// is not charged; the quote stays a maximum.
+pub const CODE_RECIPIENT_TRANSFER_GAS: u64 = 100_000;
+
+/// The exec gas limit for a plain transfer, from the recipient's code as the
+/// node reports it (`eth_getCode`; empty for an ordinary account).
+pub fn plain_transfer_gas_limit(recipient_code: &[u8]) -> u64 {
+    if recipient_code.is_empty() {
+        PLAIN_TRANSFER_GAS
+    } else {
+        CODE_RECIPIENT_TRANSFER_GAS
+    }
+}
+
 /// Wallet default for the signed state budget on a paid-state genesis.
 /// EVM fresh slots cost at least 20k execution gas, account creation 32k,
 /// and deployed code 200 per byte. One unit per 200 gas covers normal log

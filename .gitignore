@@ -29,3 +29,6 @@ docs/.pdca-snapshots/
 
 # The Aether -> EastSea bridge build (scripts/build-bridge.sh)
 /apps/bridge/build/
+
+# scripts/contracts-live.sh installs its node drivers at run time
+scripts/contracts-live/node_modules/

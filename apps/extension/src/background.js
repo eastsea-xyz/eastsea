@@ -9,7 +9,7 @@ import { Vault, DEFAULT_LOCK_MINUTES } from './lib/vault.js';
 import { Rpc, RpcError, DEFAULT_RPCS } from './lib/rpc.js';
 import { networkSettings } from './lib/network.js';
 import { Wallet } from './lib/wallet.js';
-import { READ_METHODS, SEND_METHODS, normalizeTx, describeCall, originAllowed } from './lib/methods.js';
+import { READ_METHODS, SEND_METHODS, normalizeTx, withTransferGas, describeCall, originAllowed } from './lib/methods.js';
 import { weiToAeth } from './lib/units.js';
 import { parseTokenSources, scanTokens, formatTokenAmount, call, SEL, wordAddress, uintAt, emptyCatalog } from './lib/tokens.js';
 import { sameTokenMetadata, pinnedTokenInfo, foldObserved, acceptChanged, catalogWithPins, denominationOf } from './lib/tokenPin.js';
@@ -191,6 +191,15 @@ chrome.windows.onRemoved.addListener((windowId) => {
  * The fee cap shown in the approval window, from one `aether_status` snapshot
  * that the signed transaction then uses too (what was shown is what is signed).
  */
+/** A plain transfer to code needs more than 21,000 gas (lib/methods.js
+ * withTransferGas); ask the node once, before the fee is quoted and signed.
+ * An unreachable node leaves the tx as it was (the old default). */
+async function sizedTransfer(tx) {
+  if (tx.gas || !tx.to || tx.data !== '0x') return tx;
+  const code = await rpc.call('eth_getCode', [tx.to, 'latest']).catch(() => '0x');
+  return withTransferGas(tx, code);
+}
+
 async function quote(id) {
   const a = approvals.get(id);
   if (!a || a.kind !== 'send') throw new Error('This request is no longer waiting.');
@@ -254,6 +263,7 @@ async function pageRequest(origin, method, params = []) {
     if (raw.from && raw.from.toLowerCase() !== address.toLowerCase()) throw err(4100, '`from` is not the connected account.');
     let tx;
     try { tx = normalizeTx(raw); } catch (e) { throw err(-32602, e.message); }
+    tx = await sizedTransfer(tx);
     return askUser(origin, 'send', tx);
   }
   if (READ_METHODS.has(method)) return rpc.call(method, params);
@@ -515,7 +525,7 @@ const ui = {
       track(hash, { title: `Sent ${formatTokenAmount(units, decimals)} ${symbol} to ${tokenShort(to)}`, origin: `${Brand.project} Wallet`, value: 0, to, token: address });
       return { hash };
     }
-    const tx = normalizeTx({ to, value: value_wei, data, gas });
+    const tx = await sizedTransfer(normalizeTx({ to, value: value_wei, data, gas }));
     const hash = await wallet.send(tx);
     track(hash, { title: `Send ${coinTicker(rpc.chainId)}`, origin: `${Brand.project} Wallet`, value: tx.value_wei, to });
     return { hash };

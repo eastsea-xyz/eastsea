@@ -111,8 +111,8 @@ fn public_gate(st: &RpcState, method: &str, p: &Value) -> Result<(), (i64, Strin
             let head = st.chain.lock().finalized.height;
             // The range the request itself states, before the handler clamps
             // it to what this node kept: the cap judges the ask, not the answer.
-            let to = block_param(&f, "toBlock", head);
-            let from = block_param(&f, "fromBlock", head);
+            let to = block_param(&f, "toBlock", head).map_err(|e| (-32602, format!("public read-only gateway: {e}")))?;
+            let from = block_param(&f, "fromBlock", head).map_err(|e| (-32602, format!("public read-only gateway: {e}")))?;
             // An inverted ask is refused here, at the gate (pre-audit 7
             // PA7-02): the handler answers inverted ranges with an error, and
             // the gate holds strangers to the same shape it asks of them.
@@ -1641,6 +1641,29 @@ mod public_read_tests {
         assert!(gate_error(&gate), "{gate}");
     }
 
+    /// Live run 2026-10-06: a malformed block tag used to read as "latest", so
+    /// the toolbox frontends' `head - 5000` on a chain younger than 5,000
+    /// blocks ("0x-e7f") silently scanned only the newest block. It is now a
+    /// clear invalid-params error, on the node and at the public gate alike;
+    /// the standard tags and hex quantities still work.
+    #[test]
+    fn malformed_getlogs_block_tags_are_errors_not_latest() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let st = bare_state();
+        for bad in [json!("0x-e7f"), json!("0x"), json!("12"), json!("0xzz"), json!("yesterday"), json!(12)] {
+            let r = rt.block_on(call(&st, "eth_getLogs", json!([{ "fromBlock": bad, "toBlock": "latest" }])));
+            assert_eq!(r["error"]["code"], -32602, "fromBlock {bad}: {r}");
+            let r = rt.block_on(call(&st, "eth_getLogs", json!([{ "fromBlock": "0x0", "toBlock": bad }])));
+            assert_eq!(r["error"]["code"], -32602, "toBlock {bad}: {r}");
+        }
+        for good in ["latest", "earliest", "finalized", "safe", "pending", "0x0"] {
+            let r = rt.block_on(call(&st, "eth_getLogs", json!([{ "fromBlock": "earliest", "toBlock": good }])));
+            assert!(r["result"].is_array(), "{good}: {r}");
+        }
+        let gate = rt.block_on(call(&public_state(), "eth_getLogs", json!([{ "fromBlock": "0x-e7f" }])));
+        assert_eq!(gate["error"]["code"], -32602, "{gate}");
+    }
+
     /// An out-of-domain era is an ordinary error, never an overflow panic
     /// (pre-audit 7b PA7B-02): `aether_eraProof` is public-allowlisted and
     /// takes a caller-supplied `u64` era; with overflow checks on (debug
@@ -2393,13 +2416,25 @@ async fn eth_call(st: &RpcState, p: &Value, gas: u64) -> RpcResult {
     }
 }
 
-/// An `eth_getLogs` block parameter: "latest" or absent → `default`,
-/// "earliest" → 0, otherwise a hex quantity.
-fn block_param(f: &Value, k: &str, default: u64) -> u64 {
-    match f.get(k).and_then(Value::as_str) {
-        Some("latest") | None => default,
-        Some("earliest") => 0,
-        Some(s) => u64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap_or(default),
+/// An `eth_getLogs` block parameter: "latest"/"finalized"/"safe"/"pending" or
+/// absent → `default`, "earliest" → 0, otherwise a 0x hex quantity. Anything
+/// else is an error: it used to fall back to `default` (the head), so a
+/// malformed `fromBlock` — e.g. the toolbox frontends' `head - 5000` on a
+/// chain younger than 5,000 blocks, which serializes as "0x-…" — silently
+/// became "only the newest block" (live run 2026-10-06).
+fn block_param(f: &Value, k: &str, default: u64) -> Result<u64, String> {
+    match f.get(k) {
+        None | Some(Value::Null) => Ok(default),
+        Some(Value::String(s)) => match s.as_str() {
+            "latest" | "finalized" | "safe" | "pending" => Ok(default),
+            "earliest" => Ok(0),
+            q => q
+                .strip_prefix("0x")
+                .filter(|h| !h.is_empty() && h.bytes().all(|b| b.is_ascii_hexdigit()))
+                .and_then(|h| u64::from_str_radix(h, 16).ok())
+                .ok_or_else(|| format!("eth_getLogs: {k} {q:?} is not a block number (a 0x hex quantity, \"latest\" or \"earliest\")")),
+        },
+        Some(other) => Err(format!("eth_getLogs: {k} {other} is not a block number (a 0x hex quantity, \"latest\" or \"earliest\")")),
     }
 }
 
@@ -2413,8 +2448,8 @@ fn eth_get_logs(chain: &Chain, p: &Value) -> RpcResult {
     // BTreeMap range below, whose inverted bounds abort the process (the
     // fatal-panic supervisor path turns that into a node restart, pre-audit 7
     // PA7-02).
-    let asked_to = block_param(&f, "toBlock", head);
-    let asked_from = block_param(&f, "fromBlock", head);
+    let asked_to = block_param(&f, "toBlock", head).map_err(|e| (-32602, e))?;
+    let asked_from = block_param(&f, "fromBlock", head).map_err(|e| (-32602, e))?;
     if asked_from > asked_to {
         return Err((-32602, format!("eth_getLogs: fromBlock {asked_from} is above toBlock {asked_to}")));
     }

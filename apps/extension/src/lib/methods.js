@@ -34,6 +34,22 @@ export function normalizeTx(tx) {
   return { to, value_wei: value.toString(), data: data.toLowerCase(), gas };
 }
 
+/** Exec gas for a plain value transfer to an address with code (a contract's
+ * receive(), or an account delegated by EIP-7702): the wasm builder's default
+ * 21,000 for `data: '0x'` cannot run any code, so such a send was included,
+ * failed out of gas and still paid its fee (live run 2026-10-06). Mirrors
+ * crates/execution `CODE_RECIPIENT_TRANSFER_GAS`. */
+export const CODE_RECIPIENT_TRANSFER_GAS = 100_000;
+
+/** A normalized tx with the transfer gas sized from the recipient's code
+ * (`eth_getCode` answer). Only an unset gas on a plain value transfer changes;
+ * a page's explicit gas, a call and a deployment are left as they are. */
+export function withTransferGas(tx, recipientCode) {
+  if (tx.gas || !tx.to || tx.data !== '0x') return tx;
+  const code = typeof recipientCode === 'string' ? recipientCode : '0x';
+  return code === '0x' || code === '' ? tx : { ...tx, gas: CODE_RECIPIENT_TRANSFER_GAS };
+}
+
 function quantity(v, what) {
   if (typeof v === 'string' && /^0x[0-9a-fA-F]+$/.test(v)) return BigInt(v);
   if (typeof v === 'string' && /^\d+$/.test(v)) return BigInt(v);

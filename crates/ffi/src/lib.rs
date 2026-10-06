@@ -800,6 +800,12 @@ pub struct TransferQuote {
 /// (pre-audit 7, M1) — 0 on the legacy chain, the fixed unit price (or the
 /// report, if higher) on a paid-state genesis.
 fn transfer_maximum(status: &Value, recipient_exists: Option<bool>, state_price: u128) -> u128 {
+    transfer_maximum_with_gas(status, recipient_exists, state_price, aether_execution::tx::PLAIN_TRANSFER_GAS)
+}
+
+/// `transfer_maximum` for a transfer signing `gas` exec gas (more than 21,000
+/// when the recipient has code; see `recipient_transfer_gas`).
+fn transfer_maximum_with_gas(status: &Value, recipient_exists: Option<bool>, state_price: u128, gas: u64) -> u128 {
     const GWEI: u128 = 1_000_000_000;
     // Canonical wallet plain transfers plus the 128-byte receipt base fit
     // within 1024 bytes. State growth charges one unit per 32 persisted bytes.
@@ -808,7 +814,7 @@ fn transfer_maximum(status: &Value, recipient_exists: Option<bool>, state_price:
         .as_str()
         .and_then(|v| v.parse::<u128>().ok())
         .unwrap_or(0);
-    let exec = if base == 0 { 0 } else { 21_000u128.saturating_mul(base.saturating_add(GWEI)) };
+    let exec = if base == 0 { 0 } else { u128::from(gas).saturating_mul(base.saturating_add(GWEI)) };
     let account = u128::from(aether_execution::fees::STATE_ACCOUNT_UNITS).saturating_mul(state_price);
     // A recipient without a certified account pays one new account (A6-7).
     let charge = if recipient_exists == Some(true) { 0 } else { account };
@@ -820,8 +826,12 @@ fn transfer_maximum(status: &Value, recipient_exists: Option<bool>, state_price:
 }
 
 fn quote_from_status(status: &Value, recipient_exists: Option<bool>, state_price: u128) -> TransferQuote {
+    quote_from_status_with_gas(status, recipient_exists, state_price, aether_execution::tx::PLAIN_TRANSFER_GAS)
+}
+
+fn quote_from_status_with_gas(status: &Value, recipient_exists: Option<bool>, state_price: u128, gas: u64) -> TransferQuote {
     TransferQuote {
-        fee_wei: transfer_maximum(status, recipient_exists, state_price).to_string(),
+        fee_wei: transfer_maximum_with_gas(status, recipient_exists, state_price, gas).to_string(),
         new_recipient_charge_wei: if recipient_exists == Some(true) {
             "0".into()
         } else {
@@ -829,6 +839,20 @@ fn quote_from_status(status: &Value, recipient_exists: Option<bool>, state_price
         },
         fee_is_maximum: true,
     }
+}
+
+/// Exec gas for a plain transfer to `to`: 21,000 for an ordinary account,
+/// more when the node reports code there (a contract's receive(), or an
+/// account 7702-delegated by this wallet's own batch/guardian features —
+/// 21,000 there is included, fails out of gas and is still charged; live
+/// run 2026-10-06). An unreachable lookup keeps 21,000, the old behaviour.
+fn recipient_transfer_gas(to: &Address) -> u64 {
+    let code = call("eth_getCode", json!([to.to_checksum(None), "latest"]))
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .and_then(|h| alloy_primitives::hex::decode(h.trim_start_matches("0x")).ok())
+        .unwrap_or_default();
+    aether_execution::plain_transfer_gas_limit(&code)
 }
 
 /// Whether `address` holds a non-empty account in certified state (empty
@@ -851,7 +875,7 @@ pub fn transfer_quote(recipient: String, validators: u32) -> R<TransferQuote> {
     let status = call("aether_status", json!([]))?;
     let state_price = validated_state_price(&status)?;
     let exists = certified_recipient_exists(&a.to_checksum(None), validators);
-    Ok(quote_from_status(&status, exists, state_price))
+    Ok(quote_from_status_with_gas(&status, exists, state_price, recipient_transfer_gas(&a)))
 }
 
 /// A U256 the way this chain's JSON may spell it: a decimal string, a 0x-hex
@@ -1559,13 +1583,15 @@ pub fn prepare_transfer(
 ) -> R<PreparedTx> {
     let to: Address = to.parse().map_err(|_| WalletError::Invalid("recipient address".into()))?;
     let value: U256 = value_wei.parse().map_err(|_| WalletError::Invalid("amount".into()))?;
+    // One lookup feeds both the re-quoted maximum and the signed limit.
+    let gas = recipient_transfer_gas(&to);
     prepare(&p256_public_key, shown_fee_wei.as_deref(), |status, state_price| {
         // The same inputs the displayed quote used: this snapshot and the
         // recipient's certified existence NOW (a cleared account re-adds the
         // charge; a newly created one drops it).
         let exists = certified_recipient_exists(&to.to_checksum(None), validators);
-        Ok(transfer_maximum(status, exists, state_price))
-    }, |_| Ok(EvmCall { to: Some(to), value, input: Bytes::new(), gas_limit: 21_000, delegate: None }))
+        Ok(transfer_maximum_with_gas(status, exists, state_price, gas))
+    }, |_| Ok(EvmCall { to: Some(to), value, input: Bytes::new(), gas_limit: gas, delegate: None }))
 }
 
 /// A contract call or deployment a web page asked for (`aether://call`),
@@ -2531,6 +2557,35 @@ mod tests {
 
         let busy = json!({ "base_fee": { "exec": "1000000000", "state": "1000000000000", "prove": "0" } });
         assert_eq!(fee(&quote_from_status(&busy, Some(false), aether_execution::fees::STATE_UNIT_PRICE)), 42_000_000_000_000 + 232_000_000_000_000);
+    }
+
+    /// Live run 2026-10-06: a send to a recipient with code (a contract's
+    /// receive(), or an account this wallet 7702-delegated for batch/guardian
+    /// features) signs the larger code limit, and the displayed maximum and
+    /// the re-quote in `prepare_transfer` price that same limit, so the
+    /// shown-fee check (pre-audit 7, M1) compares like with like.
+    #[test]
+    fn a_transfer_to_code_is_quoted_and_signed_with_the_code_gas_limit() {
+        use aether_execution::tx::{CODE_RECIPIENT_TRANSFER_GAS, PLAIN_TRANSFER_GAS};
+        let fee = |q: &TransferQuote| q.fee_wei.parse::<u128>().unwrap();
+        let price = aether_execution::fees::STATE_UNIT_PRICE;
+        let busy = json!({ "base_fee": { "exec": "1000000000", "state": "1000000000000", "prove": "0" } });
+        let plain = quote_from_status_with_gas(&busy, Some(false), price, PLAIN_TRANSFER_GAS);
+        assert_eq!(fee(&plain), fee(&quote_from_status(&busy, Some(false), price)), "ordinary recipients unchanged");
+        let code = quote_from_status_with_gas(&busy, Some(false), price, CODE_RECIPIENT_TRANSFER_GAS);
+        assert_eq!(fee(&code), 100_000 * 2_000_000_000 + 232_000_000_000_000);
+        // With no exec base fee (today's new genesis) the larger limit costs nothing extra.
+        let paid = json!({ "base_fee": { "exec": "0", "state": "1000000000000", "prove": "0" } });
+        assert_eq!(
+            fee(&quote_from_status_with_gas(&paid, None, price, CODE_RECIPIENT_TRANSFER_GAS)),
+            fee(&quote_from_status(&paid, None, price))
+        );
+        // The signed envelope still fits the persisted-byte quote at the larger limit.
+        use aether_types::Canonical;
+        let signer = aether_crypto::P256Signer::from_seed(&[7u8; 32]).unwrap();
+        let call = EvmCall { to: Some(Address::repeat_byte(0x42)), value: U256::from(u128::MAX), input: Bytes::new(), gas_limit: CODE_RECIPIENT_TRANSFER_GAS, delegate: None };
+        let tx = aether_execution::sign_call_group(&signer, u64::MAX, u64::MAX, u128::MAX, u16::MAX, &call).unwrap();
+        assert!(tx.to_canonical_bytes().len() + 128 <= 32 * 32);
     }
 
     /// Pre-audit 7, M1: a paid-state chain charges a state fee whatever the

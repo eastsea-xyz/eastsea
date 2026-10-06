@@ -1623,16 +1623,65 @@ mod public_read_tests {
         assert!(answer["error"].is_null(), "a budgeted public call answers once a slot is free: {answer}");
     }
 
+    /// A cancelled handler keeps its execution slot until its execution ends
+    /// (pre-audit 7b PA7B-05): spawn_blocking work cannot be aborted and
+    /// outlives a dropped join handle, so the old code — the permit a local
+    /// of the async frame — handed the slot back the moment the caller went
+    /// away (the budget read empty while the admitted execution kept
+    /// burning gas). The slot now moves into the worker with the closure:
+    /// cancel mid-flight (poll once, drop the future) and the budget stays
+    /// taken until the gas loop actually finishes.
+    #[test]
+    fn a_cancelled_call_keeps_its_execution_slot_until_the_worker_ends() {
+        use std::future::Future as _;
+        let _calls = claim_call_budget();
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let st = public_state();
+        // A contract that burns its whole gas budget in a JUMP loop
+        // (JUMPDEST / PUSH1 0 / JUMP-to-0).
+        let loop_addr: Address = "0x0000000000000000000000000000000000000b0b".parse().unwrap();
+        {
+            let mut g = st.chain.lock();
+            let exec = std::sync::Arc::make_mut(&mut g.finalized);
+            exec.state.set_code(loop_addr, aether_types::Bytes::from(vec![0x5b, 0x60, 0x00, 0x56])).unwrap();
+        }
+        let before = PUBLIC_CALLS.load(Ordering::Acquire);
+        let ask = json!([{ "to": format!("{loop_addr:#x}"), "data": "0x" }]);
+        let mut fut = Box::pin(eth_call(&st, &ask, PUBLIC_CALL_GAS));
+        // Poll by hand (no runtime task): the future must be pending — the
+        // execution runs off the async frame — without ever finishing here.
+        let _enter = rt.enter();
+        let waker = std::task::Waker::noop();
+        let mut cx = std::task::Context::from_waker(&waker);
+        assert!(fut.as_mut().poll(&mut cx).is_pending(), "the execution runs off the async frame");
+        drop(fut); // the caller cancels: the join handle is gone
+        assert_eq!(
+            PUBLIC_CALLS.load(Ordering::Acquire), before + 1,
+            "a cancelled call's execution slot is held until its execution ends"
+        );
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while PUBLIC_CALLS.load(Ordering::Acquire) != before && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(PUBLIC_CALLS.load(Ordering::Acquire), before, "the slot is given back when the worker finishes");
+    }
+
     /// A large finalized state answers public calls from the SHARED snapshot
-    /// (pre-audit 7 PA7-05): the call path takes an Arc clone under the
-    /// mutex, so preparation cost no longer grows with the state — and the
+    /// (pre-audit 7 PA7-05, distinguishing assertion from pass 2 PA7B-05):
+    /// while a call is in flight, the worker holds a REFERENCE to the shared
+    /// finalized snapshot — observed as the Arc's strong count rising with
+    /// the call outstanding — so preparation cost does not grow with the
+    /// state. The old preparation deep-copied the whole WorldState under the
+    /// chain mutex: no extra reference, the count stayed flat here. The
     /// answer is still correct against the state the calls share.
     #[test]
     fn a_large_state_answers_calls_from_the_shared_finalized_snapshot() {
+        use std::future::Future as _;
         let _calls = claim_call_budget();
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let st = public_state();
         const ACCOUNTS: u32 = 20_000;
+        let loop_addr: Address = "0x0000000000000000000000000000000000000b0b".parse().unwrap();
         {
             let mut g = st.chain.lock();
             let exec = std::sync::Arc::make_mut(&mut g.finalized);
@@ -1641,6 +1690,30 @@ mod public_read_tests {
                 b[0..4].copy_from_slice(&i.to_be_bytes());
                 exec.state.set_balance(aether_types::Address::new(b), U256::from(i)).unwrap();
             }
+            // The observation below needs a call observably in flight: a
+            // contract that burns its whole gas budget in a JUMP loop.
+            exec.state.set_code(loop_addr, aether_types::Bytes::from(vec![0x5b, 0x60, 0x00, 0x56])).unwrap();
+        }
+        let baseline = { let g = st.chain.lock(); std::sync::Arc::strong_count(&g.finalized) };
+        {
+            let _enter = rt.enter();
+            let ask = json!([{ "to": format!("{loop_addr:#x}"), "data": "0x" }]);
+            let mut fut = Box::pin(eth_call(&st, &ask, PUBLIC_CALL_GAS));
+            let waker = std::task::Waker::noop();
+            let mut cx = std::task::Context::from_waker(&waker);
+            assert!(fut.as_mut().poll(&mut cx).is_pending(), "the execution runs off the async frame");
+            let in_flight = { let g = st.chain.lock(); std::sync::Arc::strong_count(&g.finalized) };
+            assert!(
+                in_flight > baseline,
+                "an in-flight call holds the shared finalized snapshot by reference (count {in_flight} > {baseline}), never a deep copy"
+            );
+            drop(fut);
+        }
+        // The cancelled worker still holds its snapshot until it ends; wait it
+        // out so the shared budget is clean for the correctness checks below.
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while PUBLIC_CALLS.load(Ordering::Acquire) > 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
         }
         // A call whose answer depends on the big state: sending value from a
         // funded account reads its balance out of the shared snapshot.
@@ -1924,15 +1997,21 @@ async fn eth_call(st: &RpcState, p: &Value, gas: u64) -> RpcResult {
         limits: cfg.limits,
         fees: None,
     };
-    // The budget is held for the whole execution (released on drop with the
-    // blocking task); a stranger arriving while it is full is told to retry.
-    let _budget = if st.public_read_only {
+    // The budget is acquired here and MOVED INTO the blocking closure
+    // (pre-audit 7b PA7B-05): a started blocking task cannot be aborted and
+    // outlives a dropped join handle, so a slot owned by this async frame was
+    // released the moment a cancelled handler dropped it — while the execution
+    // it admitted kept running. Inside the worker it survives cancellation
+    // and is given back only when the execution ends. A stranger arriving
+    // while it is full is told to retry.
+    let budget = if st.public_read_only {
         BudgetSlot::acquire(&PUBLIC_CALLS, MAX_PUBLIC_CALLS)
             .ok_or((-32002, "public read-only gateway: too many concurrent eth_call executions; retry shortly".to_string()))?
     } else {
         BudgetSlot::acquire(&PUBLIC_CALLS, usize::MAX).expect("usize::MAX budget never refuses")
     };
     let r = tokio::task::spawn_blocking(move || {
+        let _held = budget;
         aether_execution::call(&exec.state, &ctx, from, to, data.into(), value, gas)
     })
     .await

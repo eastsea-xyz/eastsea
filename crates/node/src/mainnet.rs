@@ -86,6 +86,15 @@ pub fn check_with(cfg: &ChainConfig, rehearsal: bool) -> Vec<Rule> {
             "the voting-node registry starts as the v3 code".into(),
         ),
         rule(
+            "standard predeploys",
+            aether_execution::predeploys::installed(|a| state.code(a)),
+            format!(
+                "the CREATE2 deployer ({:#x}) and Multicall3 ({:#x}) hold their exact Ethereum mainnet runtime code",
+                aether_execution::predeploys::CREATE2_DEPLOYER,
+                aether_execution::predeploys::MULTICALL3
+            ),
+        ),
+        rule(
             "registrar key",
             cfg.registrar.is_some_and(|(x, y)| aether_crypto::p256_point_is_valid(&x, &y)),
             "the registrar is a real, nonzero P-256 key on the curve (a zero or made-up key would silently disable registration)".into(),
@@ -329,7 +338,7 @@ fn smooth_issuance() -> Rule {
 /// compiled-in fallback for a new genesis, so a missing pin would mean an
 /// app that can never update; a wrong address or code hash, the same. Checked
 /// against the genesis state `cfg` builds, so the pin cannot name code the
-/// chain does not hold. `mainnet-rules` prints it after the 20 genesis rules.
+/// chain does not hold. `mainnet-rules` prints it after the 21 genesis rules.
 pub fn check_release(cfg: &ChainConfig, pin: Option<&crate::roster::ReleasePin>) -> Rule {
     use aether_execution::release_log;
     let rule = |ok: bool, detail: String| Rule { name: "release pin", ok, detail };
@@ -379,7 +388,7 @@ pub fn check_release(cfg: &ChainConfig, pin: Option<&crate::roster::ReleasePin>)
 /// public key and refuse revealed seated shares. A pre-DKG file (identity and
 /// output both absent, what `assemble` writes) passes with a pre-DKG detail —
 /// the assemble-time gate is `check`; a file carrying only one of the two
-/// fields fails. `mainnet-rules` prints these after the 20 genesis rules and the release pin.
+/// fields fails. `mainnet-rules` prints these after the 21 genesis rules and the release pin.
 pub fn check_final(file: &crate::roster::NetworkFile, rehearsal: bool) -> Vec<Rule> {
     let rule = |name: &'static str, ok: bool, detail: String| Rule { name, ok, detail };
     let n = file.validators.len() as u32;
@@ -1055,11 +1064,12 @@ mod tests {
     }
 
     /// The names `check` returns, in order: docs/ops/mainnet-launch.md's table.
-    const NAMES: [&str; 20] = [
+    const NAMES: [&str; 21] = [
         "chain id",
         "protocol from genesis",
         "proof market",
         "registry v3",
+        "standard predeploys",
         "registrar key",
         "registration cap",
         "16-seat growth",
@@ -1130,11 +1140,11 @@ mod tests {
         // Rewards off takes the epoch machinery with it.
         let mut cold = mainnet();
         cold.node_rewards = false;
-        assert_eq!(off(cold), ["registry v3", "node rewards", "beacons", "re-attestation", "reserve rules"]);
+        assert_eq!(off(cold), ["registry v3", "standard predeploys", "node rewards", "beacons", "re-attestation", "reserve rules"]);
         // History v1 keeps every block by default.
         let mut v1 = mainnet();
         v1.history_v2 = false;
-        assert_eq!(off(v1), ["registry v3", "history v2", "pruning default"]);
+        assert_eq!(off(v1), ["registry v3", "standard predeploys", "history v2", "pruning default"]);
         let mut legacy = mainnet();
         legacy.node_rewards = false;
         legacy.history_v2 = false;
@@ -1836,6 +1846,33 @@ mod tests {
     /// The 7780 file ships unchanged: byte-identical to the pinned digest, no
     /// release pin when parsed or re-serialized, and its genesis holds no
     /// ReleaseLog — the app keeps the legacy Sparkle path there.
+    #[test]
+    fn standard_predeploys_are_on_a_new_genesis_only() {
+        use aether_execution::predeploys::{self, CREATE2_DEPLOYER, CREATE2_DEPLOYER_CODE_HASH, MULTICALL3, MULTICALL3_CODE_HASH};
+        let state = mainnet().genesis_state();
+        assert_eq!(
+            format!("{:#x}", state.code_hash(&CREATE2_DEPLOYER)),
+            "0x2fa86add0aed31f33a762c9d88e807c475bd51d0f52bd0955754b2608f7e4989"
+        );
+        assert_eq!(
+            format!("{:#x}", state.code_hash(&MULTICALL3)),
+            "0xd5c15df687b16f2ff992fc8d767b4216323184a2bbc6ee2f9c398c318e770891"
+        );
+        assert_eq!(state.code_hash(&CREATE2_DEPLOYER), CREATE2_DEPLOYER_CODE_HASH);
+        assert_eq!(state.code_hash(&MULTICALL3), MULTICALL3_CODE_HASH);
+        // The shipped 7780 file builds a genesis without either.
+        let file: crate::roster::NetworkFile =
+            serde_json::from_slice(include_bytes!("../../../apps/wallet/Resources/network.json")).unwrap();
+        let genesis = file.genesis().unwrap();
+        let mut legacy = mainnet();
+        legacy.node_rewards = genesis.node_rewards;
+        legacy.history_v2 = genesis.history >= 2;
+        let state = legacy.genesis_state();
+        assert!(state.code(&CREATE2_DEPLOYER).is_empty());
+        assert!(state.code(&MULTICALL3).is_empty());
+        assert!(!predeploys::installed(|a| state.code(a)));
+    }
+
     #[test]
     fn the_7780_network_file_is_unchanged_and_has_no_pin() {
         let bytes = include_bytes!("../../../apps/wallet/Resources/network.json");

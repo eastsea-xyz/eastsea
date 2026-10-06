@@ -3130,7 +3130,7 @@ fn bind_to_checked_genesis(network: Option<&str>, data: &str, ceremony: Option<&
     }
 }
 
-/// The rules `aether mainnet-rules` prints for `file` at `path`: the 20
+/// The rules `aether mainnet-rules` prints for `file` at `path`: the 21
 /// genesis rules, the release pin and the 4 final-file gates, plus the bundled-record rule
 /// under `--bundle`. A bundle that is not a new genesis (the legacy 7780
 /// testnet app) runs the record rule alone: its network.json is not a launch
@@ -3773,7 +3773,7 @@ mod tests {
     }
 
     /// The release gate flag: `--bundle` adds the bundled-record rule on top
-    /// of the 20 genesis + release pin + 4 final-file rules (the ceremony's own first check
+    /// of the 21 genesis + release pin + 4 final-file rules (the ceremony's own first check
     /// runs without it — it writes the record only after PASS).
     #[test]
     fn the_release_gate_flag_parses() {
@@ -3788,9 +3788,9 @@ mod tests {
 
     /// The release gate must not break the app build of the legacy testnet: a
     /// bundle that is not a new genesis (the 7780 app, apps/wallet/Resources)
-    /// runs the record rule alone — running the 20 mainnet genesis rules on a
+    /// runs the record rule alone — running the 21 mainnet genesis rules on a
     /// testnet file would fail every testnet app build until the chain id
-    /// changes. A new-genesis bundle still gets the full set (25 + the record).
+    /// changes. A new-genesis bundle still gets the full set (26 + the record).
     #[test]
     fn the_bundle_gate_lets_the_legacy_testnet_app_build() {
         use aether_node::roster::{Member, NetworkFile};
@@ -3835,14 +3835,14 @@ mod tests {
         let net = dir.join("new.json");
         std::fs::write(&net, serde_json::to_vec(&new_genesis).unwrap()).unwrap();
         let rules = mainnet_rules(&new_genesis, &net, false, true).unwrap();
-        assert_eq!(rules.len(), 26, "20 genesis + release pin + 4 final-file + the record");
+        assert_eq!(rules.len(), 27, "21 genesis + release pin + 4 final-file + the record");
         assert_eq!(rules.last().unwrap().name, "bundled ceremony record");
-        // Without --bundle: the ceremony's own 25, the release pin right after
+        // Without --bundle: the ceremony's own 26, the release pin right after
         // the genesis rules — and failing here, where the file has none.
         let rules = mainnet_rules(&new_genesis, &net, false, false).unwrap();
-        assert_eq!(rules.len(), 25);
-        assert_eq!(rules[20].name, "release pin");
-        assert!(!rules[20].ok, "a new genesis without a release pin fails the launch check");
+        assert_eq!(rules.len(), 26);
+        assert_eq!(rules[21].name, "release pin");
+        assert!(!rules[21].ok, "a new genesis without a release pin fails the launch check");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

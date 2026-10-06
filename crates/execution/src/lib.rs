@@ -5,6 +5,7 @@ pub mod block;
 pub mod fees;
 pub mod forks;
 mod parallel;
+pub mod predeploys;
 pub mod proofs;
 pub mod receipt;
 pub mod registry;

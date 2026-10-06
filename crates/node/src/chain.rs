@@ -188,6 +188,13 @@ impl ChainConfig {
             // both before the ceremony record freezes its bytes.
             s.set_code(aether_execution::release_log::ADDRESS, aether_execution::release_log::code())
                 .expect("release log predeploy");
+            // Standard Ethereum predeploys (clone catalog §0 B3): the CREATE2
+            // deployer and Multicall3 at their Ethereum addresses with their
+            // exact mainnet runtime code, so deterministic deployments and
+            // multicall tooling work unchanged.
+            for (address, code, _) in aether_execution::predeploys::all() {
+                s.set_code(address, code).expect("standard predeploy");
+            }
         }
         if let Some(key) = self.registrar {
             let d = aether_execution::registry::Params::default();

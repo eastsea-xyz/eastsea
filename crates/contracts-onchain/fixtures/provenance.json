@@ -17,7 +17,7 @@
     "toolbox/TokenTimeLock: permit replacing fully withdrawn grants",
     "toolbox/FixedPriceMarket: ignore royalties without a payable receiver"
   ],
-  "artifacts_sha256": "e4085642fc5308b8c0ad04de39a32e07e0f4eda111ec60722dbf25a7e60b4b8a",
+  "artifacts_sha256": "91a18d010aacde2789bbfac7462d5580ace12fafbdc185268029a7d9c3995ae5",
   "sources": {
     "contracts/base/AllowanceAccount.sol": "d9b3eaf1546341f1e91028b6173cc1cbdd9eb8a68fff3bff1a9ee9d1a8b3419d",
     "contracts/base/P256Fallback.sol": "a0052c9c70ef16782897463435beea4da8e9c7ef2bb203f7671f2d550b380bb4",
@@ -37,7 +37,12 @@
     "crates/contracts-onchain/fixtures/support/src/MarketNFT.sol": "1e1c8a17dd37cdcfbb63b2c214acba46dbad223c9387494ec99c322ac6ad9f5c",
     "crates/contracts-onchain/fixtures/support/src/NativeCallback.sol": "e17bab445bda1cba852188bce4acc9b1e2048bc4e16355d61fcf1011d4938a0b",
     "crates/contracts-onchain/fixtures/support/src/SignatureCheckerProbe.sol": "5c1347680a2736a595456a2b6aba1d4108441f66941a131a1d746d1bf3c7be49",
+    "crates/contracts-onchain/fixtures/support/src/SignedIntentBook.sol": "06866282339206ca5d251ebaad6fda12aaefc754c5695c18f16023b9bbcf23b1",
     "crates/contracts-onchain/fixtures/support/src/TestToken.sol": "ace3192ec351443d0340d631feaa4ce4c05b451f1d836466433bd9db6cec196b",
+    "crates/contracts-onchain/fixtures/support/src/brake/BrakeReferenceVault.sol": "27cc7433f10814cd55125156d62b30a70c64d22d538c3bb8d4cc9ce926f10f5e",
+    "crates/contracts-onchain/fixtures/support/src/brake/IEastSeaLocalBrake.sol": "8dc824822100e57f65f805e7f029cb3a55089d7e67f57f9e20aa959c8e1e2d02",
+    "crates/contracts-onchain/fixtures/support/src/brake/LocalBrake.sol": "935a062fced81aace123883b6ad999bc54b42c1a83c212e75515acdc49f3090d",
+    "crates/contracts-onchain/fixtures/support/src/brake/SeizableToken.sol": "6bf91d35dbc8dddccae4783ed499cc3357272769ff7f0b4a93c7fb690cf14bcc",
     "crates/contracts-onchain/fixtures/toolbox/foundry.toml": "677a60eb5203afed75475dccd34110b3c7ae5dfae9fa68bb4eaf781c378798c5",
     "crates/contracts-onchain/fixtures/toolbox/lib/openzeppelin-contracts/LICENSE": "8b3fddff3cff904ab9bd7c48a9288fb08ab4f47b179c07af6df7886b12cb04d6",
     "crates/contracts-onchain/fixtures/toolbox/lib/openzeppelin-contracts/contracts/interfaces/IERC1271.sol": "599887e85d375f463f30e3c4cf139ea541e73c7b3535eb040da5e8d8145a4f14",

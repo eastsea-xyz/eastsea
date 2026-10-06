@@ -33,8 +33,16 @@ See [fixture provenance and compiler settings](fixtures/README.md) and the
 The report distinguishes unexecuted Rust cases from passing Foundry evidence.
 Do not claim complete chain coverage until the guarded Rust run succeeds.
 
+The harness is a library (`aether_contracts_onchain::harness`), so a
+Foundry-built contract can be measured from any test in this package. The
+A0 workflow recorder, schema, account recipes (P-256 self batch, added-owner
+relay, ERC-1271) and the deterministic local brake interface are documented in
+[RECORDER.md](RECORDER.md). The runner writes workflow records to
+`tmp/contracts-onchain-workflows.jsonl` and summarizes them in the report.
+
 The test modules cover core escrow/distribution, identity/delegation/vaults,
-assets/names, payments, DeFi/governance, the ERC721 market, and chain resource
-limits. The harness centralizes replay, nonce, wallet-budget, archive-fee and
+assets/names, payments, DeFi/governance, the ERC721 market, chain resource
+limits, the A0 recorder workflows and the reference brake. The harness
+centralizes replay, nonce, wallet-budget, archive-fee and
 rollback assertions. Repeated deployment configurations produce cost ranges;
 fits/day estimates are state-budget upper bounds, not throughput promises.

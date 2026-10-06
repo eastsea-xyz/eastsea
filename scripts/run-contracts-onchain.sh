@@ -11,6 +11,8 @@ export RAYON_NUM_THREADS=4
 export CARGO_PROFILE_DEV_DEBUG=0
 export CARGO_PROFILE_TEST_DEBUG=0
 export CONTRACTS_ONCHAIN_METRICS="$CONTRACTS_ROOT/tmp/contracts-onchain-metrics.jsonl"
+# A0 workflow records (crates/contracts-onchain/RECORDER.md), one JSON per line.
+export CONTRACTS_ONCHAIN_WORKFLOWS="$CONTRACTS_ROOT/tmp/contracts-onchain-workflows.jsonl"
 WITH_NODE=false
 case "${1:-}" in
     '') ;;
@@ -47,7 +49,21 @@ resource_guard
 python3 scripts/generate-contract-fixtures.py --offline
 resource_guard
 : > "$CONTRACTS_ONCHAIN_METRICS"
+: > "$CONTRACTS_ONCHAIN_WORKFLOWS"
+# Library unit tests and the executor suite, which includes the A0 recorder,
+# brake, P-256 batch/relay and ERC-1271 workflow tests (recorder::, brake::).
+cargo test -p aether-contracts-onchain -j 4 --lib -- --test-threads=1 2>&1 | tee "$TMPDIR/contracts-onchain-lib-test.txt"
 cargo test -p aether-contracts-onchain -j 4 --test contracts_onchain -- --test-threads=1 --nocapture 2>&1 | tee "$TMPDIR/contracts-onchain-test.txt"
+for module in recorder brake; do
+    if ! grep -q "^test $module::.* ok$" "$TMPDIR/contracts-onchain-test.txt"; then
+        echo "No passing $module:: tests in the executor suite." >&2
+        exit 1
+    fi
+done
+if [[ ! -s "$CONTRACTS_ONCHAIN_WORKFLOWS" ]]; then
+    echo 'The recorder tests wrote no workflow records.' >&2
+    exit 1
+fi
 if "$WITH_NODE"; then
     resource_guard
     cargo test -p aether-node -j 4 --test state_budget --test zero_fee -- --test-threads=1 2>&1 | tee "$TMPDIR/contracts-onchain-node-test.txt"
@@ -56,7 +72,7 @@ FORGE=$(command -v forge || true)
 if [[ -z "$FORGE" ]]; then FORGE="$HOME/.foundry/bin/forge"; fi
 "$FORGE" test --root "$CONTRACTS_ROOT/contracts" --offline --threads 4 2>&1 | tee "$TMPDIR/contracts-onchain-forge-core.txt"
 "$FORGE" test --root "$CONTRACTS_ROOT/crates/contracts-onchain/fixtures/toolbox" --offline --threads 4 2>&1 | tee "$TMPDIR/contracts-onchain-forge-toolbox.txt"
-python3 scripts/contracts-onchain-report.py --metrics "$CONTRACTS_ONCHAIN_METRICS"
+python3 scripts/contracts-onchain-report.py --metrics "$CONTRACTS_ONCHAIN_METRICS" --workflows "$CONTRACTS_ONCHAIN_WORKFLOWS"
 # Preserve the checked-in report and gitignored Foundry artifacts; remove all
 # task scratch and Rust build products only after the report has been written.
 python3 - <<'PY'

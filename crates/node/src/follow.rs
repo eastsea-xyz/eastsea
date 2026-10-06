@@ -350,7 +350,8 @@ impl Upstream {
     /// source stuck at (or lying about) a low tip must not hide an honest
     /// ahead-of-us alternative behind "first answer wins". So on a
     /// not-ahead answer every remaining HTTP source is asked too and the
-    /// highest claim wins. Iroh's client asks its own peer set.
+    /// highest claim wins. The iroh client corroborates across its own peer
+    /// set the same way (PA7B-06), moving to the peer with the best claim.
     pub async fn net_height(&self, ours: u64) -> Result<u64, String> {
         let ask_one = |v: Value| -> Result<u64, String> {
             v["height"].as_u64().ok_or_else(|| "no upstream height".to_string())
@@ -359,7 +360,34 @@ impl Upstream {
             Upstream::Iroh(c, _) => {
                 let v = c.call("aether_status", json!([])).await.map_err(|e| e.to_string())?;
                 crate::chain::tick();
-                ask_one(v)
+                let h = ask_one(v)?;
+                if h > ours {
+                    return Ok(h);
+                }
+                // Not ahead: this peer's claim is unsigned — a peer stuck at
+                // (or lying about) a low tip must not hide an honest
+                // ahead-of-us one behind "first answer wins" (PA7-06 gave
+                // HTTP sources this; the default follower transport gets it
+                // too, PA7B-06). Ask every OTHER peer directly, keep the
+                // highest claim, and move to the peer that made it so the
+                // next reads start there.
+                let mut best = h;
+                let mut best_at: Option<usize> = None;
+                for (i, v) in c.ask_others("aether_status", json!([])).await {
+                    let Ok(h2) = ask_one(v) else { continue };
+                    crate::chain::tick();
+                    if h2 > best {
+                        best = h2;
+                        best_at = Some(i);
+                    }
+                }
+                if best > ours {
+                    if let Some(i) = best_at {
+                        c.rotate_to(i).await;
+                    }
+                    return Ok(best);
+                }
+                Ok(best)
             }
             Upstream::Http(urls) => {
                 let mut best: Option<u64> = None;
@@ -1652,6 +1680,53 @@ mod tests {
         // …and a lone low answer is still the best claim there is — returned
         // as the (unsigned) height, with the stall clock the safety net.
         assert_eq!(Upstream::Http(vec![low]).net_height(ours).await.unwrap(), 100);
+    }
+
+    /// The same corroboration on the DEFAULT follower transport (pre-audit 7b
+    /// PA7B-06): the iroh `net_height` used to take the current peer's claim
+    /// alone, so a caught-up follower parked on a peer stuck at a low tip
+    /// believed the network was there too — no catch-up, no rotation,
+    /// indefinitely, while HTTP sources already corroborated (PA7-06). The
+    /// iroh path now asks every OTHER peer directly, keeps the highest claim,
+    /// and moves the client to the peer that made it. The old code returned
+    /// the stale peer's 100 here and never moved.
+    #[tokio::test]
+    async fn an_iroh_follower_corroborates_height_across_alternate_peers() {
+        let status_server = |height: u64| async move {
+            let secret = aether_net::SecretKey::generate();
+            let id = secret.public();
+            let server = aether_net::Endpoint::builder(iroh::endpoint::presets::Minimal)
+                .relay_mode(iroh::RelayMode::Disabled)
+                .alpns(vec![aether_net::ALPN_RPC.to_vec()])
+                .secret_key(secret)
+                .bind()
+                .await
+                .unwrap();
+            let port = server.bound_sockets().into_iter().find(|a| a.is_ipv4()).expect("an IPv4 socket").port();
+            let router = aether_net::serve_rpc(server, move |req: Value| async move {
+                json!({ "jsonrpc": "2.0", "id": req["id"], "result": { "height": height } })
+            });
+            let addr = aether_net::EndpointAddr::from_parts(
+                id,
+                [aether_net::TransportAddr::Ip(std::net::SocketAddr::from((
+                    std::net::Ipv4Addr::LOCALHOST,
+                    port,
+                )))],
+            );
+            (addr, router)
+        };
+        // The stale peer is first: the client connects there (start = 0) and
+        // its answer says we are AT the tip (100) — not ahead, so every other
+        // peer must be asked before that claim is believed.
+        let (stale, _stale_router) = status_server(100).await;
+        let (ahead, _ahead_router) = status_server(200).await;
+        let client = aether_net::RpcClient::with_addrs(vec![stale, ahead]).await.unwrap();
+        let up = Upstream::Iroh(client, Default::default());
+        assert_eq!(up.net_height(100).await, Ok(200), "the honest peer's 200 must beat the stale peer's 100");
+        // And the client moved to it: the next ask answers from the honest
+        // peer outright (a fresh scan starts there), never touching the
+        // stale one first again.
+        assert_eq!(up.net_height(150).await, Ok(200), "the client rotates to the peer with the best claim");
     }
 
     #[test]

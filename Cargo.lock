@@ -220,6 +220,7 @@ dependencies = [
  "futures",
  "governor",
  "hex",
+ "iroh",
  "libc",
  "p256 0.14.0",
  "postcard",

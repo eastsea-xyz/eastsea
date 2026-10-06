@@ -91,3 +91,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Lets this crate's integration tests reach the test-only seam in resources.rs
 # (tokio does the same self-reference for its test-util features).
 aether-node = { path = ".", features = ["test-seam"] }
+# The follower-transport test (follow.rs) stands up local-only iroh endpoints
+# (no relay, no DHT) — the same version aether-net uses.
+iroh = { version = "=1.2.0" }

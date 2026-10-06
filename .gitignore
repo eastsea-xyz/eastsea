@@ -26,3 +26,6 @@ docs/.pdca-snapshots/
 
 # release-mac.sh scratch (mounted DMG, TMPDIR)
 /tmp/
+
+# scripts/contracts-live.sh installs its node drivers at run time
+scripts/contracts-live/node_modules/

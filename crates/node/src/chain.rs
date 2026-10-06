@@ -1658,6 +1658,13 @@ impl Chain {
         Some(pick)
     }
 
+    /// A proving attempt at `height` failed for the prover's own sake — its
+    /// sidecar died or could not be talked to, not the block — so the height
+    /// may be picked again once the sidecar is replaced.
+    pub fn retry_proof(&self, height: u64) {
+        self.lock().attempted.remove(&height);
+    }
+
     /// Inclusion proof of block `height` under the history root of block
     /// `anchor` (which commits blocks 0..anchor), and the block's hash. Reads
     /// the era roots plus at most two eras' block hashes under the lock; the

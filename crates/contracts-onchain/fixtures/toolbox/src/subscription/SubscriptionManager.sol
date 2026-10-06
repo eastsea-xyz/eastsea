@@ -71,6 +71,7 @@ contract SubscriptionManager is SimpleBrake, ReentrancyGuard {
     error PayoutFailed();
     error NothingToSettle();
     error NothingToClaim();
+    error AmountTooLarge();
 
     event Subscribed(address indexed user, uint256 paid, uint256 secondsAdded, uint64 newExpiry);
     event Cancelled(address indexed user, uint256 refund, uint64 oldExpiry);
@@ -104,6 +105,12 @@ contract SubscriptionManager is SimpleBrake, ReentrancyGuard {
         // 기존 만료가 미래면 이어서, 과거(또는 없으면)면 지금부터
         uint64 base = s.expiry > block.timestamp ? s.expiry : uint64(block.timestamp);
         uint256 value = secondsToAdd * ratePerSecond;
+        // Both packed fields must represent the complete payment. Solidity's
+        // narrowing casts silently discard high bits; truncating contributed
+        // while increasing refundReserve would leave unreleasable principal.
+        if (secondsToAdd > uint256(type(uint64).max) - base || value > uint256(type(uint88).max) - s.contributed) {
+            revert AmountTooLarge();
+        }
         uint64 newExpiry = base + uint64(secondsToAdd);
 
         s.expiry = newExpiry;

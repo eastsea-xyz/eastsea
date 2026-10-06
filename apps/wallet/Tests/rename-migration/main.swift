@@ -597,6 +597,9 @@ do {
     try? "minted-account".write(to: newNode.appending(path: "node-account.key"), atomically: true, encoding: .utf8)
     try? "minted:0xnew".write(to: root.appending(path: "EastSea/node.identity"), atomically: true, encoding: .utf8)
     try? "aabb:0xold".write(to: root.appending(path: "Aether/node.identity"), atomically: true, encoding: .utf8)
+    // …and a second wallet key handle minted the same way.
+    try? fm.createDirectory(at: root.appending(path: "EastSeaWallet"), withIntermediateDirectories: true)
+    try? "minted-handle".write(to: root.appending(path: "EastSeaWallet/enclave-key.dat"), atomically: true, encoding: .utf8)
     d.set(true, forKey: "renameMigrationDone")
     expect(DataMigration.mayStartNode(support: root, defaults: d) != nil,
            "B4: an old root that still holds an identity keeps the node off, flag or not")
@@ -616,6 +619,11 @@ do {
         .filter { $0.hasPrefix("node.identity.eastsea-replaced-") }
     expect(guards.count == 1, "the guard that pinned the minted identity is kept aside: \(guards)")
     expect(oldBinaryView(root.appending(path: "Aether/node")).canSign == false, "exactly one signer: the old tree is quarantined")
+    expect((try? String(contentsOf: root.appending(path: "EastSeaWallet/enclave-key.dat"), encoding: .utf8)) == "enclave-handle",
+           "B4: the old wallet key (the first address) is the wallet again")
+    let handles = (try? fm.contentsOfDirectory(atPath: root.appending(path: "EastSeaWallet").path)) ?? []
+    expect(handles.contains { $0.hasPrefix("enclave-key.dat.eastsea-replaced-") },
+           "the minted handle is kept aside (its Secure Enclave key stays usable by hand): \(handles)")
     cleanup(root, d)
 }
 

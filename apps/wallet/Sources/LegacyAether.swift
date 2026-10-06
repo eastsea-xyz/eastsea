@@ -92,13 +92,15 @@ enum LegacyAether {
         // A clean quit lets the old node (its child) exit and release run.lock.
         DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
             NSWorkspace.shared.recycle(copies.map(\.url)) { _, error in
-                if let error {
-                    let fail = NSAlert()
-                    fail.messageText = q.title
-                    fail.informativeText = error.localizedDescription
-                    fail.runModal()
+                DispatchQueue.main.async {
+                    if let error {
+                        let fail = NSAlert()
+                        fail.messageText = q.title
+                        fail.informativeText = error.localizedDescription
+                        fail.runModal()
+                    }
+                    done()
                 }
-                done()
             }
         }
     }

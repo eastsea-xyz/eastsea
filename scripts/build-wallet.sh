@@ -73,6 +73,9 @@ fi
 # under set -u, while an empty "$@" expands to nothing.
 set --
 if [ -n "${OTHER_SWIFT_FLAGS:-}" ]; then set -- "OTHER_SWIFT_FLAGS=$OTHER_SWIFT_FLAGS"; fi
+# WALLET_ADHOC=1: a local check build signed ad hoc (no Developer ID needed);
+# the postBuild script signs the helpers with the same identity.
+if [ "${WALLET_ADHOC:-0}" = 1 ]; then set -- "$@" CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM=; fi
 case "$target" in
   macos)  xcodebuild -project AetherWallet.xcodeproj -scheme AetherWallet -configuration Release -derivedDataPath build "$@" build | grep -E "BUILD|error:" ;;
   ios-sim) xcodebuild -project AetherWallet.xcodeproj -scheme AetherWalletIOS -sdk iphonesimulator -configuration Debug -derivedDataPath build CODE_SIGNING_ALLOWED=NO build | grep -E "BUILD|error:" ;;

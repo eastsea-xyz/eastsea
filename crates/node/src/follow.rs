@@ -965,6 +965,13 @@ async fn advance(
     let mut window = window.max(1);
     loop {
         let ours = chain.finalized_height();
+        // The stored answer dies with the probe that earned it (audit 7
+        // A7-3): a follower at its upstream's tip keeps `Some(H)` here, and
+        // when the probe then fails, both watchdog paths used to keep
+        // feeding that stale at-tip answer to `StallWatch`, whose exemption
+        // reset the clock forever. Forget it first; a successful probe
+        // stores a fresh answer right below.
+        chain.lock().net_height = None;
         // The height this round fetches toward is corroborated across
         // sources (PA7-06): a single false-low-tip answer used to cap the
         // fetch at our own height, so a round "succeeded" fetching nothing.
@@ -1767,6 +1774,54 @@ mod tests {
         // peer outright (a fresh scan starts there), never touching the
         // stale one first again.
         assert_eq!(up.net_height(150).await, Ok(200), "the client rotates to the peer with the best claim");
+    }
+
+    /// Audit 7 A7-3: the stored network height must never outlive the probe
+    /// that earned it. A follower at its upstream's tip H keeps
+    /// `net_height = Some(H)`; when every later status request fails,
+    /// `advance` returned early without touching the field, and both the
+    /// pending-attempt watchdog and the completed-error path kept feeding
+    /// `Some(H)` to `StallWatch` — whose at-tip exemption (PA7B-07) reset
+    /// the clock on every observation, so the ten-minute transport restart
+    /// never fired however long the failure lasted. The round now forgets
+    /// the stored answer before it probes: a failed round observes `None`
+    /// (the clock runs), and a successful at-tip round re-stores a fresh
+    /// answer below (the healthy-pause exemption itself is untouched — see
+    /// `a_genuine_chain_pause_is_survived_and_resumed`).
+    #[tokio::test]
+    async fn a_failed_height_probe_does_not_inherit_an_old_at_tip_answer() {
+        let config = crate::chain::ChainConfig {
+            chain_id: 7783,
+            limits: aether_types::GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
+            alloc: vec![], fees: false, registrar: None, epoch_blocks: 0,
+            min_streak: None, draw_epochs: None, history_v2: true, protocol: 2,
+            node_rewards: false, committee: vec![], reserve: None, group: 0,
+            max_committee: crate::rotation::GROW_UNTIL,
+        };
+        let (chain, _) = crate::chain::Chain::new(config);
+        // The follower reached its upstream's tip at genesis and stored the
+        // corroborated at-tip answer…
+        chain.lock().net_height = Some(0);
+        // …then every status request fails (nothing listens there).
+        let err = advance(
+            &chain,
+            &Upstream::Http(vec!["http://127.0.0.1:9".into()]),
+            &aether_light::ValidatorSet::devnet(4),
+            None,
+            u64::MAX,
+            1,
+            &mut 0,
+            true,
+        )
+        .await
+        .unwrap_err();
+        assert!(!err.is_empty(), "the dead upstream must fail the round");
+        // The failed round must not leave the old at-tip answer behind for
+        // the watchdog to keep exempting the stall with.
+        assert_eq!(
+            chain.lock().net_height, None,
+            "a failed height probe must not inherit an old at-tip answer"
+        );
     }
 
     #[test]

@@ -113,6 +113,12 @@ fn public_gate(st: &RpcState, method: &str, p: &Value) -> Result<(), (i64, Strin
             // it to what this node kept: the cap judges the ask, not the answer.
             let to = block_param(&f, "toBlock", head);
             let from = block_param(&f, "fromBlock", head);
+            // An inverted ask is refused here, at the gate (pre-audit 7
+            // PA7-02): the handler answers inverted ranges with an error, and
+            // the gate holds strangers to the same shape it asks of them.
+            if from > to {
+                return Err((-32602, format!("public read-only gateway: eth_getLogs fromBlock {from} is above toBlock {to}")));
+            }
             if to.saturating_sub(from) >= PUBLIC_GETLOGS_WINDOW {
                 return Err((-32002, format!("public read-only gateway: eth_getLogs is capped at {PUBLIC_GETLOGS_WINDOW} blocks per query; ask a narrower range")));
             }
@@ -1418,6 +1424,31 @@ mod public_read_tests {
         assert!(answer.as_array().is_some_and(|a| a.len() == 20), "the batch cap is a public-gateway cap");
     }
 
+    /// An inverted or wholly-future eth_getLogs range is answered, never fed
+    /// to the block range scan: BTreeMap::range with from > to aborts the
+    /// process, which the fatal-panic watch turns into a node exit (pre-audit
+    /// 7 PA7-02). The old code panicked on both shapes here.
+    #[test]
+    fn reversed_and_future_getlogs_ranges_error_or_empty_never_panic() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        // A genesis chain: head is 0, so any height above it is the future.
+        let st = bare_state();
+        let inverted = rt.block_on(call(&st, "eth_getLogs", json!([{ "fromBlock": "0x64", "toBlock": "0x32" }])));
+        assert_eq!(inverted["error"]["code"], -32602, "an inverted range is a clear error: {inverted}");
+        let future = rt.block_on(call(&st, "eth_getLogs", json!([{ "fromBlock": "0x3e8", "toBlock": "0x7d0" }])));
+        assert!(future["result"].as_array().is_some_and(|a| a.is_empty()), "a wholly-future range is an empty answer, not a panic: {future}");
+        // fromBlock above head with toBlock defaulted to head: still an error,
+        // never a silent clamp-to-empty.
+        let ahead = rt.block_on(call(&st, "eth_getLogs", json!([{ "fromBlock": "0x3e8" }])));
+        assert_eq!(ahead["error"]["code"], -32602, "{ahead}");
+        // The public gateway refuses the inverted ask at the gate too, with
+        // the same shape it demands of every other request.
+        let pub_st = public_state();
+        let gate = rt.block_on(call(&pub_st, "eth_getLogs", json!([{ "fromBlock": "0x64", "toBlock": "0x32" }])));
+        assert_eq!(gate["error"]["code"], -32602, "{gate}");
+        assert!(gate_error(&gate), "{gate}");
+    }
+
     /// The gateway binds loopback only; exposure is a tunnel's job. This is
     /// checked at bind time, not documented and hoped for.
     #[test]
@@ -1560,8 +1591,24 @@ fn eth_get_logs(chain: &Chain, p: &Value) -> RpcResult {
     let f = p.get(0).cloned().unwrap_or_default();
     let g = chain.lock();
     let head = g.finalized.height;
-    let to = block_param(&f, "toBlock", head).min(head);
-    let from = block_param(&f, "fromBlock", head).max(to.saturating_sub(1999));
+    // The range as the request states it, before any clamping. An inverted ask
+    // is a malformed request answered with an error — never handed to the
+    // BTreeMap range below, whose inverted bounds abort the process (the
+    // fatal-panic supervisor path turns that into a node restart, pre-audit 7
+    // PA7-02).
+    let asked_to = block_param(&f, "toBlock", head);
+    let asked_from = block_param(&f, "fromBlock", head);
+    if asked_from > asked_to {
+        return Err((-32602, format!("eth_getLogs: fromBlock {asked_from} is above toBlock {asked_to}")));
+    }
+    let to = asked_to.min(head);
+    let from = asked_from.max(to.saturating_sub(1999));
+    if from > to {
+        // asked_from <= asked_to and `to` clamped below asked_from: the whole
+        // ask sits above this node's head. No block exists there yet, so the
+        // complete answer is empty — not an error, and never a panic.
+        return Ok(json!([]));
+    }
     let addrs: Vec<String> = match f.get("address") {
         Some(Value::String(a)) => vec![a.to_lowercase()],
         Some(Value::Array(v)) => v.iter().filter_map(Value::as_str).map(str::to_lowercase).collect(),

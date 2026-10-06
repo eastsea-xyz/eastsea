@@ -574,9 +574,16 @@ async fn old_block(st: &RpcState, p: &Value) -> RpcResult {
         tokio::task::spawn_blocking(move || c.old_block(h)).await.map_err(|e| (-32000, e.to_string()))?
     };
     if let (Err(_), Some(up)) = (&read, &st.upstream) {
-        let era = h / aether_state::mmr::ERA_LEN;
-        crate::era_net::fetch_into(&chain, up, era).await.map_err(|e| (-32000, e))?;
-        read = tokio::task::spawn_blocking(move || chain.old_block(h)).await.map_err(|e| (-32000, e.to_string()))?;
+        // Public history reads stay local-only (pre-audit 7 PA7-04): fetching
+        // the era would save a whole file this node deliberately pruned, one
+        // stranger's request at a time — the pruned error below already tells
+        // clients where history lives (eraInfo / eraChunk / eraProof). Private
+        // nodes and followers keep the self-healing fetch.
+        if !st.public_read_only {
+            let era = h / aether_state::mmr::ERA_LEN;
+            crate::era_net::fetch_into(&chain, up, era).await.map_err(|e| (-32000, e))?;
+            read = tokio::task::spawn_blocking(move || chain.old_block(h)).await.map_err(|e| (-32000, e.to_string()))?;
+        }
     }
     let b = read.map_err(|e| (-32001, e))?;
     let payload = b.payload().ok_or((-32000, "block payload".to_string()))?;
@@ -1492,6 +1499,35 @@ mod public_read_tests {
         let gate = rt.block_on(call(&pub_st, "eth_getLogs", json!([{ "fromBlock": "0x64", "toBlock": "0x32" }])));
         assert_eq!(gate["error"]["code"], -32602, "{gate}");
         assert!(gate_error(&gate), "{gate}");
+    }
+
+    /// A public history read never fetches an era from upstream (pre-audit 7
+    /// PA7-04): old_block's self-healing fetch calls fetch_into, which SAVES
+    /// the whole era file into this node's store — a stranger asking for
+    /// pruned heights would undo the pruning one era at a time. On the
+    /// gateway the answer is the local-only pruned error. The old code
+    /// fetched (here: connection refused to a dead upstream → -32000).
+    #[test]
+    fn public_reads_never_fetch_history_from_upstream() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let mut st = public_state();
+        // A pruned height whose era this node does not hold, and an upstream
+        // that cannot answer (port 9 discards): if the fetch ran at all, the
+        // call would fail with the upstream error instead of "pruned".
+        st.upstream = Some(Arc::new(crate::follow::Upstream::Http(vec!["http://127.0.0.1:9".into()])));
+        st.chain.lock().pruned_below = aether_state::mmr::ERA_LEN * 3;
+        let answer = rt.block_on(call(&st, "aether_getBlock", json!([100])));
+        // The code is the claim: -32001 is old_block's local refusal ("no
+        // store" on this bare chain, "pruned" on a real one); a fetch that ran
+        // against the dead upstream would surface -32000 instead.
+        assert_eq!(answer["error"]["code"], -32001, "the public answer is the local refusal, not an upstream fetch error: {answer}");
+        // Privately the same ask still self-heals (the fetch runs; a dead
+        // upstream surfaces its own error, never a fake "pruned" answer).
+        let mut private = bare_state();
+        private.upstream = Some(Arc::new(crate::follow::Upstream::Http(vec!["http://127.0.0.1:9".into()])));
+        private.chain.lock().pruned_below = aether_state::mmr::ERA_LEN * 3;
+        let answer = rt.block_on(call(&private, "aether_getBlock", json!([100])));
+        assert_eq!(answer["error"]["code"], -32000, "privately the fetch runs and its failure is the upstream's, not a pruned refusal: {answer}");
     }
 
     /// The gateway binds loopback only; exposure is a tunnel's job. This is

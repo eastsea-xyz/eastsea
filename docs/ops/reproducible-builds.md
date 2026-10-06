@@ -125,7 +125,7 @@ cargo/Xcode 없이 빠르게 돈다. 여섯 묶음:
 3. `repro-app-check.sh`가 서명만 다른 두 번들, `LC_UUID`만 다른 두 번들을 "재현됨", 코드가 다른 두 번들을 "다름"(종료 코드 1)으로 판정하는지.
 4. `aether_repro_fix_uuid`가 `LC_UUID`만 다른 같은 코드 두 빌드를 **비트 동일**하게 만들고, 결과가 여전히 실행되고, `dwarfdump`가 새 UUID를 읽어 주는지. 두 번 돌려도 바이트가 그대로인지(멱등), 없는 파일에는 실패하는지.
 5. `macho-uuid.py`가 `dwarfdump`가 읽는 UUID와 같은 값을 읽고, `zero`가 정확히 16바이트만 건드리고, `rebuild`가 파일 내용에 따라 정해지고 멱등이며, `-no_uuid`로 링크해 UUID가 아예 없는 바이너리에는 실패하는지(조용히 넘어가지 않는다).
-6. `guest-stage.sh`가 스테이지를 두 표기(`/tmp`와 물리 `/private/tmp`) 모두 remap하고, 있는 항목만 링크하며, 자기가 만들지 않은 파일은 덮어쓰지 않고, 체크아웃이 바뀌면 따라가고, `apps/prover`는 심링크가 아닌 실제 디렉터리로 두고, 스테이지 자신을 체크아웃으로 주면(populate·enter 양쪽) 링크를 자기 자신으로 돌리지 않는지. 락이 두 빌드를 직렬화하고, 중첩 빌드는 기다리지도 부모 락을 풀지도 않으며, 죽은 소유자의 락은 회수하는지.
+6. `guest-stage.sh`가 스테이지를 두 표기(`/tmp`와 물리 `/private/tmp`) 모두 remap하고, 있는 항목만 링크하며, 자기가 만들지 않은 파일을 덮어쓰지 않고, 체크아웃이 바뀌면 따라가고, `apps/prover`는 심링크가 아닌 실제 디렉터리로 두고, 스테이지 자신을 체크아웃으로 주면(populate·enter 양쪽) 링크를 자기 자신으로 돌리지 않는지. 핀된 Jolt·Akita 리비전을 `git archive`로 스테이지에 스냅샷하고(`scripts/jolt-fork.lock` 검증 포함), 두 매니페스트의 포크 참조를 **스테이지의 절대 경로**로 다시 쓰며(상대 참조나 물리 `/private/tmp` 표기로는 cargo가 포크의 워크스페이스 상속을 잘못된 루트에서 풀어 빌드가 죽는다 — 1.94/1.95/1.98.1 양쪽 Mac에서 재현), 핀을 벗어난 포크·CLI는 거부하고 더러운 작업 트리는 무시하는지. 락이 두 빌드를 직렬화하고, 중첩 빌드는 기다리지도 부모 락을 풀지도 않으며, 죽은 소유자의 락은 회수하는지.
 
 ```bash
 scripts/test-repro-scripts.sh
@@ -145,11 +145,11 @@ scripts/test-reproducibility.sh   # ZIP·Mach-O 개념 검증(기존)
 - **확장 wasm의 clang.** `ext-remote`가 wasm에 BLS 검증(`blst`, C 코드)을 넣은 뒤로 확장 빌드에는 wasm32 백엔드가 있는 clang이 필요하다(Apple clang에는 없다). `build-extension.sh`는 `CC_wasm32_unknown_unknown`이 없으면 Homebrew `llvm`(없으면 `llvm@21`, `@20`, `@19`)을 찾고, 없으면 오류로 멈춘다. clang 버전이 다르면 wasm 바이트가 달라질 수 있는데 **아직 버전을 고정하지도, 두 Mac에서 같은 해시가 나오는지 재지도 않았다.** 확장 ZIP의 재현성은 그때까지 미확인이다.
 - **툴체인·SDK 버전.** 같은 Xcode/rustc/zlib이어야 같은 바이트가 나온다. `rust-toolchain.toml`은 Rust를 고정하지만 Xcode 버전은 아직 고정하지 않는다(Tier 2 검증에는 링커 버전이 영향을 준다). `-Wl,-reproducible`은 이 저장소가 확인한 Xcode 26.6(ld-1267)에서 동작한다 — 더 오래된 링커는 이 플래그를 모를 수 있다.
 - **제3자 크레이트의 컴파일 자체가 비결정적일 수 있다.** 위의 `uniffi_bindgen`이 그런 예다(같은 입력·같은 플래그로 매번 다른 바이트). 이 저장소가 고칠 수 없는 코드지만 재현성은 저장소 전체의 성질이므로, 의존성을 추가하거나 기능을 켤 때마다 `repro-check.sh`로 확인한다 — 특히 **도구 상자 크레이트가 라이브러리 그래프로 딸려 들어오지 않는지**를 본다.
-- **Jolt 포크의 위치와 리비전.** `apps/prover`는 Jolt·Akita를 `/Volumes/workspace/aether-jolt` 아래에서 **절대 경로**로 링크하고(`Cargo.toml`의 `[patch."https://github.com/…"]` 항목 11개 포함), 그 경로는 Aether 체크아웃의 경로와 똑같이 `-C metadata` 해시에 들어간다. 즉 포크가 다른 경로에 있으면 **증명 프로그램 ID가 달라진다** — remap은 이 해시에 닿지 않는다. 이 저장소가 고정할 수 있는 것은 자기 체크아웃 경로뿐이므로(`scripts/guest-stage.sh`), 포크는 **릴리스 문서에 적은 경로에 두고** 릴리스마다 포크 커밋을 함께 기록한다(포크 리비전이 다르면 ID가 달라지는 것은 당연하다).
+- **Jolt 포크의 리비전은 이제 고정, 위치는 무관.** `scripts/jolt-fork.lock`이 jolt·akita 양쪽의 커밋과 `git archive` 내용 해시를 기록하고, `guest-stage.sh`는 핀과 다른 HEAD·내용 해시의 포크를 거부한 뒤 핀 리비전을 `<stage>/aether-jolt`로 스냅샷한다(커밋 단위라 더러운 작업 트리는 새지 않는다). 스테이지의 두 매니페스트는 포크를 **스테이지의 절대 경로**(`<stage>/aether-jolt`)로 참조한다 — 이 문자열이 모든 빌더에서 같으므로 프로그램 ID는 (Aether 소스, 핀된 포크 커밋)에만 달리고 포크·체크아웃의 위치는 더 이상 들어가지 않는다(checklist B7, 2026-10-06 두 Mac·포크 2경로·체크아웃 2경로로 확인). 참조가 스테이지의 절대 경로여야 하는 것은 cargo의 사정이다: 상대 경로나 물리 `/private/tmp` 표기로는 포크의 워크스페이스 상속이 잘못된 루트에서 풀려 빌드가 죽는다(1.94/1.95/1.98.1, 양쪽 Mac에서 재현). **남은 한계:** (a) 스테이지 경로 그 자체는 ID의 입력이다 — `AETHER_GUEST_STAGE`를 바꾸거나 기본값이 아른 경로에서 빌드하면 다른 ID가 나온다(전부 기본값을 쓰면 문제없다). (b) macOS는 `/tmp`를 `/private/tmp`로 정규화하고 Linux는 그렇지 않으므로, 두 OS에서 같은 커밋을 빌드해도 cargo가 해시에 넣는 문자열이 갈라질 수 있다 — 프로그램 ID 교차 검증은 아직 macOS끼리만 실증됐다.
 
 ## 릴리스 절차
 
 1. `scripts/test-repro-scripts.sh` (빠른 확인).
-2. `scripts/repro-check.sh all` — 다섯 항목(노드·FFI·프로그램 ID·사이드카·확장)이 두 디렉터리에서 같은 바이트로 나오는지. 통과한 해시를 릴리스 노트에 적고, 증명 프로그램 ID와 함께 Jolt 포크의 **경로와 커밋**(위 "Jolt 포크의 위치와 리비전")을 적는다.
+2. `scripts/repro-check.sh all` — 다섯 항목(노드·FFI·프로그램 ID·사이드카·확장)이 두 디렉터리에서 같은 바이트로 나오는지. 통과한 해시를 릴리스 노트에 적고, 증명 프로그램 ID와 함께 `scripts/jolt-fork.lock`의 포크 커밋(위 "Jolt 포크의 리비전은 이제 고정")을 적는다 — 포크의 경로는 더 이상 적을 것이 없다.
 3. `scripts/repro-app-check.sh` — 앱을 두 번 빌드해 서명 제거 + `LC_UUID` 0으로 비운 Mach-O 해시 대조(`LC_UUID`는 값만 함께 출력).
 4. iOS는 미서명 아카이브 해시 + `LC_UUID`만 공개하고 "App Store 바이너리는 검증 불가"를 명시한다.

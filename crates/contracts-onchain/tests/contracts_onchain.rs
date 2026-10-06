@@ -2,6 +2,8 @@
 mod account;
 #[path = "contracts_onchain/assets.rs"]
 mod assets;
+#[path = "contracts_onchain/brake.rs"]
+mod brake;
 #[path = "contracts_onchain/core_flows.rs"]
 mod core_flows;
 #[path = "contracts_onchain/defi.rs"]
@@ -14,5 +16,7 @@ mod identity;
 mod market;
 #[path = "contracts_onchain/payments.rs"]
 mod payments;
+#[path = "contracts_onchain/recorder.rs"]
+mod recorder;
 #[path = "contracts_onchain/resources.rs"]
 mod resources;

@@ -1,0 +1,809 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "eastsea.workflow-record/v1",
+  "title": "EastSea native workflow cost record (MEASUREMENTS.md cost, user and throughput records)",
+  "description": "Emitted by aether_contracts_onchain::Harness::end_workflow. One record per user workflow (a sequence of transactions) on the real executor. Canonical copy: aether-node crates/contracts-onchain/schema/workflow-record.v1.schema.json, to be copied to eastsea-toolbox/native/ once agreed.",
+  "$defs": {
+    "totals": {
+      "type": "object",
+      "properties": {
+        "transactions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "failed_transactions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "exec_gas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "prove_gas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "state_units": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "new_accounts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "new_slots": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "code_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "archive_units": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "envelope_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "receipt_metered_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "bal_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "user_transactions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "relayer_transactions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fee_paid_wei": {
+          "type": "string",
+          "pattern": "^[0-9]+$",
+          "description": "wei, decimal string"
+        },
+        "fee_floor_wei": {
+          "type": "string",
+          "pattern": "^[0-9]+$",
+          "description": "wei, decimal string"
+        },
+        "fee_congestion_wei": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/congestion_total"
+          }
+        }
+      },
+      "required": [
+        "transactions",
+        "failed_transactions",
+        "exec_gas",
+        "prove_gas",
+        "state_units",
+        "new_accounts",
+        "new_slots",
+        "code_bytes",
+        "archive_units",
+        "envelope_bytes",
+        "receipt_metered_bytes",
+        "bal_bytes",
+        "user_transactions",
+        "relayer_transactions",
+        "fee_paid_wei",
+        "fee_floor_wei",
+        "fee_congestion_wei"
+      ]
+    },
+    "b5": {
+      "type": "object",
+      "properties": {
+        "units_per_workflow": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_transaction_units": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fits_in_one_transaction_budget": {
+          "type": "boolean"
+        },
+        "burst": {
+          "type": "object",
+          "properties": {
+            "bucket_units": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "workflows_from_full_bucket": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "recovery_heights_to_full_bucket": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "recovery_heights_per_workflow": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "bucket_units",
+            "workflows_from_full_bucket",
+            "recovery_heights_to_full_bucket",
+            "recovery_heights_per_workflow"
+          ]
+        },
+        "sustained_per_day": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {
+            "$ref": "#/$defs/sustained"
+          }
+        },
+        "heights_per_day": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "caveat": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "units_per_workflow",
+        "max_transaction_units",
+        "fits_in_one_transaction_budget",
+        "burst",
+        "sustained_per_day",
+        "heights_per_day",
+        "caveat"
+      ]
+    },
+    "step": {
+      "type": "object",
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "actor": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sender": {
+          "type": "string",
+          "pattern": "^0x[0-9a-fA-F]{40}$"
+        },
+        "signer_role": {
+          "enum": [
+            "user",
+            "relayer"
+          ]
+        },
+        "expected_success": {
+          "type": "boolean"
+        },
+        "success": {
+          "type": "boolean"
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "waited_heights": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tx_hash": {
+          "type": "string",
+          "pattern": "^0x[0-9a-f]{64}$"
+        },
+        "exec_gas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "prove_gas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "state_units": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "units": {
+          "type": "object",
+          "properties": {
+            "new_accounts": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "new_slots": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "code_bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "archive_units": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "new_accounts",
+            "new_slots",
+            "code_bytes",
+            "archive_units"
+          ],
+          "description": "state_units = 100*new_accounts + 100*new_slots + code_bytes + archive_units (asserted)"
+        },
+        "bytes": {
+          "type": "object",
+          "properties": {
+            "envelope": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "receipt_metered": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "receipt_canonical": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "bal": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "block_payload_lower_bound": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "output": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "event_data": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "envelope",
+            "receipt_metered",
+            "receipt_canonical",
+            "bal",
+            "block_payload_lower_bound",
+            "output",
+            "event_data"
+          ]
+        },
+        "events": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "event_topics": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "signed_state_budget": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fee": {
+          "type": "object",
+          "properties": {
+            "state_price_wei": {
+              "type": "string",
+              "pattern": "^[0-9]+$",
+              "description": "wei, decimal string"
+            },
+            "paid_wei": {
+              "type": "string",
+              "pattern": "^[0-9]+$",
+              "description": "wei, decimal string"
+            },
+            "floor_wei": {
+              "type": "string",
+              "pattern": "^[0-9]+$",
+              "description": "wei, decimal string"
+            },
+            "congestion_wei": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "state_debt": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "fee_wei": {
+                    "type": "string",
+                    "pattern": "^[0-9]+$",
+                    "description": "wei, decimal string"
+                  }
+                },
+                "required": [
+                  "state_debt",
+                  "fee_wei"
+                ]
+              }
+            }
+          },
+          "required": [
+            "state_price_wei",
+            "paid_wei",
+            "floor_wei",
+            "congestion_wei"
+          ]
+        },
+        "receipt_evidence": {
+          "type": "object",
+          "properties": {
+            "receipt_root": {
+              "type": "string",
+              "pattern": "^0x[0-9a-f]{64}$"
+            },
+            "index": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "proof_verified": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "receipt_root",
+            "index",
+            "proof_verified"
+          ]
+        },
+        "created": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^0x[0-9a-fA-F]{40}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "code_changes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "address": {
+                "type": "string",
+                "pattern": "^0x[0-9a-fA-F]{40}$"
+              },
+              "code_hash": {
+                "type": "string",
+                "pattern": "^0x[0-9a-f]{64}$"
+              },
+              "bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "delegate": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^0x[0-9a-fA-F]{40}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "delegate_code_hash": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^0x[0-9a-f]{64}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "address",
+              "code_hash",
+              "bytes",
+              "delegate",
+              "delegate_code_hash"
+            ]
+          }
+        }
+      },
+      "required": [
+        "label",
+        "phase",
+        "actor",
+        "sender",
+        "signer_role",
+        "expected_success",
+        "success",
+        "height",
+        "waited_heights",
+        "tx_hash",
+        "exec_gas",
+        "prove_gas",
+        "state_units",
+        "units",
+        "bytes",
+        "events",
+        "event_topics",
+        "signed_state_budget",
+        "fee",
+        "receipt_evidence",
+        "created",
+        "code_changes"
+      ]
+    },
+    "sustained": {
+      "type": "object",
+      "properties": {
+        "refill_share_percent": {
+          "enum": [
+            10,
+            50,
+            100
+          ]
+        },
+        "workflows_per_day": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "binding_limit": {
+          "enum": [
+            "state_refill",
+            "encoded_payload_refill",
+            "exec_gas",
+            "prove_gas",
+            "new_slots",
+            "persistent_bytes",
+            "transactions",
+            "none"
+          ]
+        },
+        "ceilings": {
+          "type": "object",
+          "propertyNames": {
+            "enum": [
+              "state_refill",
+              "encoded_payload_refill",
+              "exec_gas",
+              "prove_gas",
+              "new_slots",
+              "persistent_bytes",
+              "transactions"
+            ]
+          },
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "required": [
+        "refill_share_percent",
+        "workflows_per_day",
+        "binding_limit",
+        "ceilings"
+      ]
+    },
+    "congestion_total": {
+      "type": "object",
+      "properties": {
+        "state_debt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "state_price_wei": {
+          "type": "string",
+          "pattern": "^[0-9]+$",
+          "description": "wei, decimal string"
+        },
+        "fee_wei": {
+          "type": "string",
+          "pattern": "^[0-9]+$",
+          "description": "wei, decimal string"
+        }
+      },
+      "required": [
+        "state_debt",
+        "state_price_wei",
+        "fee_wei"
+      ]
+    }
+  },
+  "type": "object",
+  "properties": {
+    "schema": {
+      "const": "eastsea.workflow-record/v1"
+    },
+    "workflow": {
+      "type": "string"
+    },
+    "notes": {
+      "type": "string"
+    },
+    "environment": {
+      "type": "object",
+      "properties": {
+        "executor": {
+          "type": "string"
+        },
+        "chain_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "genesis": {
+          "type": "string"
+        },
+        "fee_vector": {
+          "type": "object",
+          "properties": {
+            "exec_wei": {
+              "type": "string",
+              "pattern": "^[0-9]+$",
+              "description": "wei, decimal string"
+            },
+            "prove_wei": {
+              "type": "string",
+              "pattern": "^[0-9]+$",
+              "description": "wei, decimal string"
+            },
+            "state_floor_wei": {
+              "type": "string",
+              "pattern": "^[0-9]+$",
+              "description": "wei, decimal string"
+            }
+          },
+          "required": [
+            "exec_wei",
+            "prove_wei",
+            "state_floor_wei"
+          ]
+        },
+        "block_limits": {
+          "type": "object",
+          "properties": {
+            "exec": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "prove": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "state_bucket": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "exec",
+            "prove",
+            "state_bucket"
+          ]
+        },
+        "account_runtime_code_hash": {
+          "type": "string",
+          "pattern": "^0x[0-9a-f]{64}$"
+        },
+        "artifacts_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "executor",
+        "chain_id",
+        "genesis",
+        "fee_vector",
+        "block_limits",
+        "account_runtime_code_hash",
+        "artifacts_sha256"
+      ]
+    },
+    "users": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "signatures": {
+      "type": "object",
+      "properties": {
+        "user_transaction": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "user_typed_message": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "user_total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "relayer_transaction": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "warm_user_total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "typed_messages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "actor": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "label": {
+                "type": "string"
+              },
+              "phase": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "actor",
+              "label",
+              "phase"
+            ]
+          }
+        }
+      },
+      "required": [
+        "user_transaction",
+        "user_typed_message",
+        "user_total",
+        "relayer_transaction",
+        "warm_user_total",
+        "typed_messages"
+      ]
+    },
+    "phases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "phase": {
+            "type": "string"
+          },
+          "totals": {
+            "$ref": "#/$defs/totals"
+          }
+        },
+        "required": [
+          "phase",
+          "totals"
+        ]
+      }
+    },
+    "totals": {
+      "type": "object",
+      "properties": {
+        "cold": {
+          "$ref": "#/$defs/totals"
+        },
+        "warm": {
+          "$ref": "#/$defs/totals"
+        }
+      },
+      "required": [
+        "cold",
+        "warm"
+      ]
+    },
+    "failures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "phase": {
+            "type": "string"
+          },
+          "expected": {
+            "type": "boolean"
+          },
+          "payer_role": {
+            "enum": [
+              "user",
+              "relayer"
+            ]
+          },
+          "state_units": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "exec_gas": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "fee_paid_wei": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "wei, decimal string"
+          },
+          "fee_floor_wei": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "wei, decimal string"
+          }
+        },
+        "required": [
+          "label",
+          "phase",
+          "expected",
+          "payer_role",
+          "state_units",
+          "exec_gas",
+          "fee_paid_wei",
+          "fee_floor_wei"
+        ]
+      }
+    },
+    "b5": {
+      "type": "object",
+      "properties": {
+        "cold": {
+          "$ref": "#/$defs/b5"
+        },
+        "warm": {
+          "$ref": "#/$defs/b5"
+        }
+      },
+      "required": [
+        "cold",
+        "warm"
+      ]
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/step"
+      }
+    }
+  },
+  "required": [
+    "schema",
+    "workflow",
+    "notes",
+    "environment",
+    "users",
+    "signatures",
+    "phases",
+    "totals",
+    "failures",
+    "b5",
+    "steps"
+  ]
+}

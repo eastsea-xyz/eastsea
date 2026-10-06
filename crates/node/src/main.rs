@@ -700,6 +700,9 @@ enum Cmd {
         from_dev: u8,
         #[arg(long)]
         code: String,
+        /// Exec gas limit to sign (default 3,000,000; the wallet path sets it per call).
+        #[arg(long)]
+        gas: Option<u64>,
     },
     /// Call a contract with calldata (hex).
     Call {
@@ -711,6 +714,12 @@ enum Cmd {
         to: Address,
         #[arg(long, default_value = "")]
         data: String,
+        /// Native value to send with the call, wei (the wallet path carries value with data).
+        #[arg(long)]
+        value: Option<U256>,
+        /// Exec gas limit to sign (default 1,000,000).
+        #[arg(long)]
+        gas: Option<u64>,
         #[arg(long)]
         wait: bool,
     },
@@ -1286,17 +1295,17 @@ fn main() {
             println!("then: aether recover --rpc {rpc} --guardian-dev {relay} --lost {lost} --finish {me}:{balance}");
             Ok(())
         })(),
-        Cmd::Deploy { rpc, from_dev, code } => (|| {
+        Cmd::Deploy { rpc, from_dev, code, gas } => (|| {
             let input = Bytes::from(hex::decode(code.trim_start_matches("0x")).map_err(|e| e.to_string())?);
-            let r = submit(&rpc, from_dev, None, EvmCall { to: None, value: U256::ZERO, input, gas_limit: 3_000_000, delegate: None }, true)?;
+            let r = submit(&rpc, from_dev, None, EvmCall { to: None, value: U256::ZERO, input, gas_limit: gas.unwrap_or(3_000_000), delegate: None }, true)?;
             if let Some(a) = r.pointer("/receipt/contract_address") {
                 println!("contract: {}", a.as_str().unwrap_or_default());
             }
             Ok(())
         })(),
-        Cmd::Call { rpc, from_dev, to, data, wait } => (|| {
+        Cmd::Call { rpc, from_dev, to, data, value, gas, wait } => (|| {
             let input = Bytes::from(hex::decode(data.trim_start_matches("0x")).map_err(|e| e.to_string())?);
-            submit(&rpc, from_dev, None, EvmCall { to: Some(to), value: U256::ZERO, input, gas_limit: 1_000_000, delegate: None }, wait).map(|_| ())
+            submit(&rpc, from_dev, None, EvmCall { to: Some(to), value: value.unwrap_or(U256::ZERO), input, gas_limit: gas.unwrap_or(1_000_000), delegate: None }, wait).map(|_| ())
         })(),
         Cmd::Balance { address, rpc, validators, identity } => trusted(validators, identity).and_then(|set| verified_balance(&rpc, address, &set)),
         Cmd::Storage { address, slot, rpc, validators, identity } => trusted(validators, identity).and_then(|set| verified_storage(&rpc, address, slot, &set)),
@@ -3615,6 +3624,35 @@ mod tests {
         assert!(candidate_registration_uses_lane(&json!({ "free_registration": true })));
         assert!(!candidate_registration_uses_lane(&json!({ "free_registration": false })));
         assert!(!candidate_registration_uses_lane(&json!({ "chain_id": 7780 })));
+    }
+
+    /// The wallet path (crates/ffi) signs value-carrying contract calls and a
+    /// per-call exec gas cap. The CLI's `call`/`deploy` must accept both, or
+    /// every payable example contract is uncallable and the account contract's
+    /// own deploy (3.4 M exec gas) cannot be submitted from the reference
+    /// client. Defaults stay 1 M / 3 M and value 0.
+    #[test]
+    fn call_and_deploy_accept_value_and_gas_flags() {
+        let call = Cli::try_parse_from([
+            "aether", "call", "--rpc", "http://127.0.0.1:1", "--from-dev", "2",
+            "--to", "0x0000000000000000000000000000000000000001", "--data", "0xabcdef",
+            "--value", "5", "--gas", "2000000", "--wait",
+        ]).expect("call parses --value and --gas");
+        match call.cmd {
+            Cmd::Call { value: Some(v), gas: Some(g), wait: true, .. } => {
+                assert_eq!(v, U256::from(5u64));
+                assert_eq!(g, 2_000_000);
+            }
+            _ => panic!("call parsed into another command"),
+        }
+        let deploy = Cli::try_parse_from([
+            "aether", "deploy", "--rpc", "http://127.0.0.1:1", "--from-dev", "2",
+            "--code", "0x600a", "--gas", "4000000",
+        ]).expect("deploy parses --gas");
+        match deploy.cmd {
+            Cmd::Deploy { gas: Some(4_000_000), .. } => {}
+            _ => panic!("deploy parsed into another command"),
+        }
     }
 
     /// Audit 6, the run path's liveness half (the follow-up to f12495a):

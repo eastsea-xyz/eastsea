@@ -436,6 +436,7 @@ async fn single(st: &RpcState, req: Value) -> Value {
     }
     let result = match &*method {
         "aether_getFinalized" => finalized(st, &params).await,
+        "eth_call" => eth_call(st, &params, if st.public_read_only { PUBLIC_CALL_GAS } else { PRIVATE_CALL_GAS }).await,
         "aether_getReceiptProof" => receipt_proof(st, &params).await,
         "aether_snapshot" => snapshot_manifest(st).await,
         "aether_registerDevice" => register_device(st, &params).await,
@@ -1058,7 +1059,6 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
         }
         // Minimal Ethereum-compatible reads.
         "eth_chainId" => Ok(json!(format!("0x{:x}", chain.cfg().chain_id))),
-        "eth_call" => eth_call(chain, p, if st.public_read_only { PUBLIC_CALL_GAS } else { PRIVATE_CALL_GAS }),
         "eth_getLogs" => eth_get_logs(chain, p),
         "eth_blockNumber" => Ok(json!(format!("0x{:x}", chain.lock().finalized.height))),
         "eth_getBalance" => {
@@ -1352,6 +1352,14 @@ mod public_read_tests {
         v.get("error").and_then(|e| e["message"].as_str()).is_some_and(|m| m.contains("public read-only gateway"))
     }
 
+    /// Tests that fire a real eth_call share PUBLIC_CALLS — a process-global
+    /// budget — with the test that fills it on purpose. Claim this lock for
+    /// the whole test so the two cannot flake on each other.
+    fn claim_call_budget() -> std::sync::MutexGuard<'static, ()> {
+        static CLAIM: Mutex<()> = Mutex::new(());
+        CLAIM.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Every write, node-local and heavy method is refused before its handler
     /// runs — the gateway can neither relay a transaction nor trigger node-side
     /// work. Aliased spellings are refused too (the gate runs after normalize).
@@ -1404,6 +1412,7 @@ mod public_read_tests {
     /// genesis chain, the public gateway itself never stands in the way.
     #[test]
     fn allowlisted_reads_pass_the_gate() {
+        let _calls = claim_call_budget();
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let st = public_state();
         let reads = [
@@ -1528,6 +1537,72 @@ mod public_read_tests {
         private.chain.lock().pruned_below = aether_state::mmr::ERA_LEN * 3;
         let answer = rt.block_on(call(&private, "aether_getBlock", json!([100])));
         assert_eq!(answer["error"]["code"], -32000, "privately the fetch runs and its failure is the upstream's, not a pruned refusal: {answer}");
+    }
+
+    /// Simultaneous public eth_calls are bounded (pre-audit 7 PA7-05): the
+    /// gas cap bounds one call's EVM work; the execution budget bounds how
+    /// many run at once. With the budget deliberately full, a public call is
+    /// refused with a busy error — the old code had no such bound: every
+    /// overlapping call deep-copied the whole WorldState under the chain
+    /// mutex, and only their individual gas said anything.
+    #[test]
+    fn public_eth_call_execution_is_capped() {
+        let _calls = claim_call_budget();
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let st = public_state();
+        let ask = json!([{ "to": "0x0000000000000000000000000000000000000001", "data": "0x" }]);
+        // The budget already exhausted by MAX_PUBLIC_CALLS in-flight calls.
+        PUBLIC_CALLS.store(MAX_PUBLIC_CALLS, Ordering::Release);
+        let answer = rt.block_on(call(&st, "eth_call", ask.clone()));
+        assert_eq!(answer["error"]["code"], -32002, "{answer}");
+        assert!(gate_error(&answer), "the busy refusal names the gateway: {answer}");
+        // Privately the same ask never waits on the public budget.
+        let private = bare_state();
+        let answer = rt.block_on(call(&private, "eth_call", ask.clone()));
+        assert!(answer["error"].is_null(), "private calls are not budgeted: {answer}");
+        // With the budget free again the public call goes through.
+        PUBLIC_CALLS.store(0, Ordering::Release);
+        let answer = rt.block_on(call(&st, "eth_call", ask));
+        assert!(answer["error"].is_null(), "a budgeted public call answers once a slot is free: {answer}");
+    }
+
+    /// A large finalized state answers public calls from the SHARED snapshot
+    /// (pre-audit 7 PA7-05): the call path takes an Arc clone under the
+    /// mutex, so preparation cost no longer grows with the state — and the
+    /// answer is still correct against the state the calls share.
+    #[test]
+    fn a_large_state_answers_calls_from_the_shared_finalized_snapshot() {
+        let _calls = claim_call_budget();
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let st = public_state();
+        const ACCOUNTS: u32 = 20_000;
+        {
+            let mut g = st.chain.lock();
+            let exec = std::sync::Arc::make_mut(&mut g.finalized);
+            for i in 0..ACCOUNTS {
+                let mut b = [0u8; 20];
+                b[0..4].copy_from_slice(&i.to_be_bytes());
+                exec.state.set_balance(aether_types::Address::new(b), U256::from(i)).unwrap();
+            }
+        }
+        // A call whose answer depends on the big state: sending value from a
+        // funded account reads its balance out of the shared snapshot.
+        let mut b = [0u8; 20];
+        b[0..4].copy_from_slice(&7_777u32.to_be_bytes());
+        let funded_addr = aether_types::Address::new(b);
+        let funded = format!("{funded_addr:#x}");
+        let ask = json!([{ "from": funded, "to": "0x0000000000000000000000000000000000000001", "value": "0x1" }]);
+        let answer = rt.block_on(call(&st, "eth_call", ask));
+        assert!(answer["error"].is_null(), "a large shared state still answers: {answer}");
+        // And a read of the same shared snapshot the call executed against:
+        // eth_getBalance is not on the public allowlist, so the identical
+        // chain is read through a private-mode clone of the same RpcState.
+        let mut private = st.clone();
+        private.public_read_only = false;
+        assert_eq!(
+            rt.block_on(call(&private, "eth_getBalance", json!([funded])))["result"],
+            json!(format!("0x{:x}", 7_777)),
+        );
     }
 
     /// The gateway binds loopback only; exposure is a tunnel's job. This is
@@ -1688,8 +1763,20 @@ fn hex_arg(v: &Value, k: &str) -> Result<Option<Vec<u8>>, (i64, String)> {
 /// Gas a private `eth_call` may run: the block gas limit.
 const PRIVATE_CALL_GAS: u64 = 1 << 24;
 
+/// Concurrent public eth_call executions (pre-audit 7 PA7-05): the gas cap
+/// bounds one call's EVM work; this bounds how many strangers' calls execute
+/// at once, so overlapping calls cannot stack revm instances on the machine
+/// whatever each one's gas says.
+const MAX_PUBLIC_CALLS: usize = 4;
+static PUBLIC_CALLS: AtomicUsize = AtomicUsize::new(0);
+
 /// eth_call on the finalized state (no fees, nothing committed).
-fn eth_call(chain: &Chain, p: &Value, gas: u64) -> RpcResult {
+/// The state is the SHARED immutable snapshot (an Arc clone under the
+/// mutex, never a deep copy of the tree — a call does not mutate it), and
+/// public execution is both budgeted and moved off the async runtime
+/// (pre-audit 7 PA7-05: the old path copied the whole WorldState under the
+/// chain mutex for every call, cheap EVM or not).
+async fn eth_call(st: &RpcState, p: &Value, gas: u64) -> RpcResult {
     let c = p.get(0).ok_or((-32602, "missing call object".to_string()))?;
     let addr = |k: &str| -> Result<Option<Address>, (i64, String)> {
         c.get(k).and_then(Value::as_str).map(|s| s.parse().map_err(|_| (-32602, format!("{k} is not an address")))).transpose()
@@ -1701,20 +1788,34 @@ fn eth_call(chain: &Chain, p: &Value, gas: u64) -> RpcResult {
         Some(v) => U256::from_str_radix(v.trim_start_matches("0x"), 16).map_err(|_| (-32602, "value".to_string()))?,
         None => U256::ZERO,
     };
-    let (state, ctx) = {
-        let g = chain.lock();
-        let f = &g.finalized;
-        let ctx = aether_execution::BlockContext {
-            chain_id: g.cfg.chain_id,
-            number: f.height + 1,
-            timestamp: f.timestamp / 1000,
-            beneficiary: Address::ZERO,
-            limits: g.cfg.limits,
-            fees: None,
-        };
-        (f.state.clone(), ctx)
+    // The finalized snapshot by Arc, and the small config — the lock is held
+    // for two pointer-ish clones, not a walk of the state tree.
+    let (exec, cfg) = {
+        let g = st.chain.lock();
+        (g.finalized.clone(), g.cfg.clone())
     };
-    let r = aether_execution::call(&state, &ctx, from, to, data.into(), value, gas).map_err(|e| (-32000, e))?;
+    let ctx = aether_execution::BlockContext {
+        chain_id: cfg.chain_id,
+        number: exec.height + 1,
+        timestamp: exec.timestamp / 1000,
+        beneficiary: Address::ZERO,
+        limits: cfg.limits,
+        fees: None,
+    };
+    // The budget is held for the whole execution (released on drop with the
+    // blocking task); a stranger arriving while it is full is told to retry.
+    let _budget = if st.public_read_only {
+        BudgetSlot::acquire(&PUBLIC_CALLS, MAX_PUBLIC_CALLS)
+            .ok_or((-32002, "public read-only gateway: too many concurrent eth_call executions; retry shortly".to_string()))?
+    } else {
+        BudgetSlot::acquire(&PUBLIC_CALLS, usize::MAX).expect("usize::MAX budget never refuses")
+    };
+    let r = tokio::task::spawn_blocking(move || {
+        aether_execution::call(&exec.state, &ctx, from, to, data.into(), value, gas)
+    })
+    .await
+    .map_err(|e| (-32000, e.to_string()))?
+    .map_err(|e| (-32000, e))?;
     if r.success {
         Ok(json!(format!("0x{}", hex::encode(&r.output))))
     } else {

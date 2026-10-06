@@ -102,6 +102,18 @@ Aether.app (SwiftUI)
 - 완전한 폐기는 이 설계 밖이다. 계정 권한 구조 자체를 바꿔야 하므로 새 위임 대상 설계에서 다루고, 그렇게 해도 이미 위임된 기존 계정은 소급되지 않는다.
 
 
+### ERC-1271 서명·토큰 수신 훅 — 새 제네시스 (2026-10-06, 클론 카탈로그 §0 B1·B2)
+
+새 제네시스의 위임 대상 코드(`aether_account_v2.bin.hex`, 0x…7702)에만 들어간다. 7780의 계정 코드는 바이트 단위로 그대로다.
+
+- **`isValidSignature(bytes32 hash, bytes sig)` → `0x1626ba7e`**: Permit2·Seaport·OpenZeppelin `SignatureChecker`처럼 계정의 "서명"을 묻는 컨트랙트에 답한다. `sig`는 `r ‖ s ‖ x ‖ y`(128바이트) P-256 서명이고 검증은 P256VERIFY(0x100). 형식이 틀리거나 무효면 되돌리지 않고 `0xffffffff`.
+- **서명 대상(계정·체인 바인딩)**: 키는 `hash`를 그대로 서명하지 않는다. EIP-712 메시지 `"\x19\x01" ‖ domainSeparator ‖ keccak256(abi.encode(keccak256("Contents(bytes32 contents)"), hash))`를 서명하며, 도메인은 `{name "EastSeaAccount", version "2", chainId, verifyingContract = 계정 주소}`다. P256VERIFY에 넣는 다이제스트는 이 66바이트의 SHA-256 — 다른 계정 서명과 같이 Secure Enclave `signature(for: message)`가 그대로 만든다(`signatureMessage(hash)`·`signatureDigest(hash)` 뷰로 확인). 그래서 같은 키가 소유한 두 계정 사이, 두 체인 사이에서 서명을 재사용할 수 없다.
+- **누가 서명할 수 있나(기본 거부)**: 소유자 키만. (1) 계정의 원래 SE 키 — 체인 주소 `keccak256(0x01 ‖ 압축 공개키)[12:]`(`aether_crypto::address_of`)가 이 계정인 키, 등록 불필요; (2) 복구가 추가한 소유자 키(`owners`) — 이미 `ownerExecute`로 무엇이든 할 수 있으므로 새 권한이 아니다. **세션 키(AI 비서 포함)와 가디언은 언제나 거부**한다: 세션 키의 권한은 한도 안의 지급뿐이고 어떤 세션 한도도 메시지 서명을 허락하지 않으며, 가디언은 지연 복구 제안만 한다. 1271 서명은 Permit2 승인처럼 한도 밖에서 토큰을 옮기게 할 수 있으므로 세션 키에 주면 한도가 무의미해진다. 세션에 이 권한을 주려면 별도 명시 한도를 설계해야 한다(현재 없음).
+- **low-s만**: 체인의 다른 P-256 서명과 같이 `s ≤ n/2`만 받는다(같은 메시지에 서명이 하나뿐).
+- **구형 셀렉터** `isValidSignature(bytes data, bytes sig)` → `0x20c13b0b`: `data`가 정확히 32바이트(해시)일 때만 표준형과 같은 검사, 그 밖의 길이는 무효 — 두 형식이 서명 대상을 다르게 해석할 수 없다.
+- **토큰 수신 훅**: `onERC721Received`·`onERC1155Received`·`onERC1155BatchReceived`가 각자 셀렉터를 돌려준다 — 위임 계정도 `safeTransferFrom`·`_safeMint`·ERC-1155 전송을 받는다(위임 뒤엔 코드가 있어 훅이 없으면 거부됐다). 받기는 지출이 아니므로 상태 변경·권한 없음. ERC-165 `supportsInterface`: `0x01ffc9a7`(165), `0x1626ba7e`(1271), `0x150b7a02`(721 수신), `0x4e2312e0`(1155 수신).
+- 검증: Foundry `EastSeaAccount1271.t.sol`(실제 P256VERIFY, 원래 키·소유자 키 유효, 다른 해시·잘린 서명·high-s·다른 계정·다른 체인·세션·가디언·구형 셀렉터), 툴박스 `AccountReceiver.t.sol`(OZ ERC721/1155 safe 전송, 고정된 v2 바이트 그대로), Rust 실행기 `contracts_onchain::account`(7702 위임 P-256 계정이 NFT를 `safeTransferFrom`으로 받고, OZ `SignatureChecker.isValidSignatureNow`가 그 계정 키의 1271 서명만 받는다 — 주소 파생을 `address_of`와 대조).
+
 ## Mac 앱 동작 — 구현됨 (2026-09-27)
 
 - 첫 실행 때 버튼 없이 Secure Enclave 키를 만들고 바로 대시보드를 연다.

@@ -16,7 +16,7 @@ SCOPES = {
     "AtomicSwapEVM": "same complete swap lifecycle and errors as AtomicSwap",
     "CommitteeRegistry": "signed attestation, registrar/caller/duplicate/cap/epoch/beacon; predeploy v2 compatibility",
     "CommitteeRegistryV3": "registration, beacon, leaving/back, epochs, reserve sentinel, registrar rotation/revocation",
-    "EastSeaAccount": "7702, owner/session/recovery mutations, P-256 signatures, limits, expiry, replay, revoke, F-05",
+    "EastSeaAccount": "7702, owner/session/recovery mutations, P-256 signatures, limits, expiry, replay, revoke, F-05, ERC-1271, NFT receive",
     "EastSeaNames": "commit/reveal min/max age, register/clear/renew, transfer, records/reverse, grace, refund callbacks",
     "EastSeaVault": "signed spend/proposal/approve/cancel/execute/settings, quorum/delay/nonce, token/native callbacks",
     "EastSeaVaultFactory": "predict/create, deterministic address, duplicate salt, invalid owner configuration",
@@ -51,6 +51,7 @@ SCOPES = {
     "NativeCallback": "test instrument: native/NFT receive failure and callback forwarding/reentry observation",
     "TestToken": "test instrument: ERC20 fee/false-return/transfer callback observation",
     "MarketNFT": "test instrument: ERC721 royalties/ERC165 failures and transfer failures",
+    "SignatureCheckerProbe": "test instrument: OZ SignatureChecker (Permit2-style ERC-1271) against a delegated P-256 account",
 }
 
 

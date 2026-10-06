@@ -1,3 +1,5 @@
+#[path = "contracts_onchain/account.rs"]
+mod account;
 #[path = "contracts_onchain/assets.rs"]
 mod assets;
 #[path = "contracts_onchain/core_flows.rs"]

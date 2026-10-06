@@ -16,6 +16,21 @@ fn account_code_is_token_capable_only_on_new_genesis() {
     assert_ne!(aether_account_code(), aether_execution::aether_account_code_v2());
 }
 
+/// Code-hash pins. 7780's account code must stay byte-identical forever; the
+/// new-genesis code is frozen at the genesis ceremony, so any change to
+/// contracts/src/EastSeaAccount.sol must move this pin on purpose (regenerate
+/// with `forge inspect EastSeaAccount deployedBytecode`, solc 0.8.19, 200 runs).
+#[test]
+fn account_code_hashes_are_pinned() {
+    let hash = |code: Bytes| format!("{:#x}", alloy_primitives::keccak256(code));
+    assert_eq!(hash(aether_account_code()), "0x0b9ba7215eb4aee404f884d94f74c5d5279cdfa5dc7cb85b028c045cf17a9433", "7780 account code");
+    assert_eq!(
+        hash(aether_execution::aether_account_code_v2()),
+        "0xdeaca4e6cc9787c233aeec5034a8884cf5ced4c6899299b3e76027a03f85288a",
+        "new-genesis account code (ERC-1271, receiver hooks)"
+    );
+}
+
 fn seed(b: u8) -> [u8; 32] {
     let mut s = [0u8; 32];
     s[0] = 0x77;

@@ -7,3 +7,5 @@ evm_version = "paris"
 optimizer = true
 optimizer_runs = 200
 remappings = ["openzeppelin/=lib/openzeppelin-contracts/contracts/"]
+# AccountReceiver.t.sol runs the account code a new genesis predeploys.
+fs_permissions = [{ access = "read", path = "../../../execution/src/aether_account_v2.bin.hex" }]

@@ -48,10 +48,15 @@ pub enum Mode { StaticDag(Dag), Dynamic }
 
 ## revm 통합
 
-- `revm 43.0.1`, `alloy-evm`으로 블록 실행 glue.
-- Inspector 두 개: `ProveGasInspector`(opcode·프리컴파일별 사이클 계량), `AccessListInspector`(BAL 수집).
-- 프리컴파일 화이트리스트: `0x01 ecrecover`, `0x02 sha256`, `0x05 modexp(크기 상한)`, `0x06-0x08 bn254`, `0x09 blake2f`, `0x100 P256VERIFY`. keccak은 opcode. 나머지는 비활성.
-- 해시 opcode 가스는 EIP-7667 배수 적용. 상태 가스는 EIP-8037.
+- `revm 43.0.3`을 직접 쓴다(alloy-evm glue 없음). 블록 실행과 eth_call 모두 revm `Context::mainnet()` 기본 빌더이며(`crates/execution/src/block.rs`) 포크를 명시적으로 고르지 않는다 — revm 43의 기본 스펙 **OSAKA**가 그대로 적용된다. `BlockContext`에 스펙 선택 필드가 없으므로 모든 높이가 같은 규칙을 적용한다.
+- 계량기: `ProveGasMeter`가 해석된 EVM 명령 1개당 1단위를 센다(자리표시자 — 아래 Known gap).
+- 프리컴파일: Osaka 전체 세트가 표준 가스로 활성이다 — `0x01`–`0x11`(ECRECOVER, SHA-256, RIPEMD-160, IDENTITY, MODEXP, BN254 add/mul/pairing, BLAKE2F, KZG point evaluation, BLS12-381 G1/G2 add·MSM·pairing, Fp→G1·Fp2→G2 매핑)와 `0x100` P256VERIFY. keccak은 opcode. 비활성 프리컴파일 주소는 없다.
+- 실행 가스는 Osaka 표준 스케줄이다. EIP-7667 해시 가스 배수도 EIP-8037 상태 가스도 적용하지 않는다 — 상태 성장·보관 바이트는 EastSea 고유의 별도 계량으로 처리한다. MODEXP는 EIP-7823 오퍼랜드 상한(1,024바이트)과 EIP-7883 재가격을, P256VERIFY는 6,900 가스를 쓴다.
+- 트랜잭션당 선언 가스 상한은 EIP-7825의 16,777,216. 초과 선언은 실제 사용량과 무관하게 유효하지 않은 tx다.
+- 코드 크기 상한은 revm 기본값: 런타임 코드 24,576바이트(EIP-170), initcode 49,152바이트(EIP-3860).
+- 환경값: PREVRANDAO와 BLOCKHASH는 항상 0이다. 난수·과거 블록 해시에 의존하는 앱은 BLS 비컨(commit-reveal) 기반 자체 소스를 써야 한다.
+
+**Known gap.** prove-gas 계량기는 아직 해석된 EVM 명령 수만 센다 — 프리컴파일 암호 연산, tx 서명 검증, witness 재구성·상태 해싱 비용은 prove-gas에 잡히지 않는다(리뷰 H1: `docs/research/precompiles-proving-2026-10-06.md`). 받아들여진 블록이 게스트 트레이스 한도 안에 든다는 보장이 없으므로 베타 기간 증명 보상은 best-effort다. 측정 기반 비용 산정과 블록 게이트는 출시 후 수정 큐에 있다(`docs/design/30-post-launch-fixability.md`).
 
 ## prove-gas
 

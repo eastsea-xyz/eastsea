@@ -31,6 +31,9 @@ struct Net {
     rpc: Vec<u16>,
     procs: Vec<Option<Child>>,
     extra: Vec<Vec<String>>,
+    /// Where node `i`'s stdout and stderr are captured, so a node that never
+    /// answers can show why in the panic (a startup refusal prints to stderr).
+    logs: Vec<PathBuf>,
 }
 
 impl Net {
@@ -54,7 +57,30 @@ impl Net {
 
     fn prepared(dir: PathBuf, p2p: Vec<u16>, rpc: Vec<u16>, extra: Vec<Vec<String>>) -> Net {
         let n = extra.len();
-        Net { dir, p2p, rpc, procs: (0..n).map(|_| None).collect(), extra }
+        let logs = (0..n).map(|i| dir.join((i + 1).to_string()).join("node.log")).collect();
+        Net { dir, p2p, rpc, procs: (0..n).map(|_| None).collect(), extra, logs }
+    }
+
+    /// Node `i`'s data dir (validators are numbered 1..n; a later-joined
+    /// follower may override `logs[i]` with its own file).
+    fn data(&self, i: usize) -> PathBuf {
+        self.dir.join((i + 1).to_string())
+    }
+
+    /// Spawn a node with both output streams captured into its node.log: a
+    /// refusal to start (e.g. the ceremony bind) prints on stderr, and the
+    /// panic of a node that never answers shows its last lines.
+    fn capture(&self, i: usize, mut cmd: Command) -> Child {
+        let log = self.logs.get(i).cloned().unwrap_or_else(|| self.data(i).join("node.log"));
+        if let Some(parent) = log.parent() {
+            std::fs::create_dir_all(parent).expect("create the node.log directory");
+        }
+        let file = std::fs::OpenOptions::new().create(true).append(true).open(&log).expect("open node.log");
+        cmd.env("RUST_LOG", "warn")
+            .stdout(file.try_clone().expect("clone node.log"))
+            .stderr(file)
+            .spawn()
+            .expect("spawn validator")
     }
 
     fn peers(&self, i: usize) -> String {
@@ -65,29 +91,23 @@ impl Net {
         let mut cmd = Command::new(BIN);
         cmd.args(["node", "--index", &(i + 1).to_string(), "--validators", &self.p2p.len().to_string()])
             .args(["--port", &self.p2p[i].to_string(), "--rpc-port", &self.rpc[i].to_string()])
-            .args(["--data", self.dir.join((i + 1).to_string()).to_str().unwrap()])
-            .args(["--block-time-ms", "500"])
-            .env("RUST_LOG", "warn")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .args(["--data", self.data(i).to_str().unwrap()])
+            .args(["--block-time-ms", "500"]);
         // Plain TCP between validators and no public endpoint: offline, and
         // never publishes devnet node ids to the DHT.
         let peers: Vec<String> = (0..self.p2p.len()).filter(|j| *j != i).map(|j| format!("{}@127.0.0.1:{}", j + 1, self.p2p[j])).collect();
         cmd.args(["--peers", &peers.join(","), "--offline"]).args(&self.extra[i]);
-        self.procs[i] = Some(cmd.spawn().expect("spawn validator"));
+        self.procs[i] = Some(self.capture(i, cmd));
     }
 
     /// Like `spawn`, but identity comes from --network in `extra` and <data>/validator.key.
     fn spawn_with_network(&mut self, i: usize) {
         let mut cmd = Command::new(BIN);
         cmd.args(["node", "--port", &self.p2p[i].to_string(), "--rpc-port", &self.rpc[i].to_string()])
-            .args(["--data", self.dir.join((i + 1).to_string()).to_str().unwrap()])
+            .args(["--data", self.data(i).to_str().unwrap()])
             .args(["--block-time-ms", "500", "--peers", &self.peers(i), "--offline"])
-            .args(&self.extra[i])
-            .env("RUST_LOG", "warn")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        self.procs[i] = Some(cmd.spawn().expect("spawn validator"));
+            .args(&self.extra[i]);
+        self.procs[i] = Some(self.capture(i, cmd));
     }
 
     fn kill(&mut self, i: usize) {
@@ -99,6 +119,23 @@ impl Net {
 
     fn url(&self, i: usize) -> String {
         format!("http://127.0.0.1:{}", self.rpc[i])
+    }
+
+    /// The last lines of node `i`'s captured log, for a panic message: a node
+    /// that refused to start (or stalled) says why there.
+    fn log_tail(&self, i: usize) -> String {
+        let path = self.logs.get(i).cloned().unwrap_or_else(|| self.data(i).join("node.log"));
+        match std::fs::read_to_string(&path) {
+            Ok(log) if log.trim().is_empty() => {
+                format!("\n--- {} is empty: the node printed nothing ---", path.display())
+            }
+            Ok(log) => {
+                let lines: Vec<&str> = log.lines().collect();
+                let tail: Vec<&str> = lines.iter().skip(lines.len().saturating_sub(24)).copied().collect();
+                format!("\n--- last lines of {} ---\n{}", path.display(), tail.join("\n"))
+            }
+            Err(_) => format!("\n--- no captured log at {} ---", path.display()),
+        }
     }
 
     fn rpc(&self, i: usize, method: &str, params: Value) -> Option<Value> {
@@ -139,10 +176,11 @@ impl Net {
             };
             if now >= deadline {
                 panic!(
-                    "node {i} did not reach height {h} (at {}) after {}s{}",
+                    "node {i} did not reach height {h} (at {}) after {}s{}{}",
                     height.unwrap_or(0),
                     now.duration_since(start).as_secs(),
-                    if answered.is_none() { "; its RPC never answered" } else { "" }
+                    if answered.is_none() { "; its RPC never answered" } else { "" },
+                    self.log_tail(i)
                 );
             }
             std::thread::sleep(Duration::from_millis(200));
@@ -517,6 +555,16 @@ fn locally_generated_keys_network_file_dkg_and_consensus() {
     let identity = written["identity"].as_str().expect("identity in network.json").to_string();
     assert_eq!(written["validators"].as_array().unwrap().len(), n);
 
+    // 3.5 The ceremony's record, made the way the real ceremony makes it: the
+    // coordinator's check writes ceremony-check.json over validator 1's final
+    // file, and every Mac binds to it (verify-local) before its node starts
+    // voting — no validator votes from a genesis the ceremony did not check.
+    let final_net = data(0).join("network.json");
+    let record = coordinator_check(final_net.to_str().unwrap());
+    for i in 0..n {
+        verify_local(final_net.to_str().unwrap(), data(i).to_str().unwrap(), &record);
+    }
+
     // 4. consensus from the network file (spawn passes only --network, no --index).
     for i in 0..n {
         net.spawn_with_network(i);
@@ -593,12 +641,44 @@ fn run_ok(args: &[&str]) -> String {
     String::from_utf8(out.stdout).unwrap()
 }
 
+/// The coordinator's step after the DKG (scripts/mainnet-genesis.sh `check`
+/// on PASS): write ceremony-check.json next to the final network.json — the
+/// pin over the exact bytes that passed — with the same `aether
+/// ceremony-record` command the script runs. Returns the record's path.
+fn coordinator_check(final_net: &str) -> String {
+    let record = std::path::Path::new(final_net)
+        .parent()
+        .unwrap()
+        .join("ceremony-check.json");
+    run_ok(&["ceremony-record", "--network", final_net, "--out", record.to_str().unwrap()]);
+    record.to_str().unwrap().to_string()
+}
+
+/// Each validator Mac's step before it votes (scripts/mainnet-genesis.sh
+/// `verify-local`): the same `aether mainnet-bind` the script runs — the
+/// record against the final file's bytes and this Mac's network.json and
+/// threshold.json — which also stores the record in the data dir, where the
+/// node's startup bind finds it (audit 6, A6-3/A6-4).
+fn verify_local(final_net: &str, data: &str, record: &str) {
+    run_ok(&["mainnet-bind", "--network", final_net, "--data", data, "--ceremony", record]);
+    assert!(
+        std::path::Path::new(data).join("ceremony-check.json").exists(),
+        "verify-local must store the record in {data}'s data dir"
+    );
+}
+
 fn spawn_quiet(args: &[String]) -> Child {
-    Command::new(BIN).args(args).env("RUST_LOG", "warn").stdout(Stdio::piped()).stderr(Stdio::null()).spawn().expect("spawn")
+    Command::new(BIN).args(args).env("RUST_LOG", "warn").stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().expect("spawn")
 }
 
 fn spawn_logged(log: std::fs::File, args: &[String]) -> Child {
-    Command::new(BIN).args(args).env("RUST_LOG", "warn").stdout(log).stderr(Stdio::null()).spawn().expect("spawn")
+    Command::new(BIN)
+        .args(args)
+        .env("RUST_LOG", "warn")
+        .stdout(log.try_clone().expect("clone the log"))
+        .stderr(log)
+        .spawn()
+        .expect("spawn")
 }
 
 fn tcp_peers(ports: &[u16], me: usize) -> String {
@@ -653,10 +733,17 @@ fn validator_rotation_continues_the_chain_under_the_same_identity() {
         })
         .collect();
     for c in dkg {
-        assert!(c.wait_with_output().unwrap().status.success());
+        let out = c.wait_with_output().unwrap();
+        assert!(out.status.success(), "dkg failed: {}", String::from_utf8_lossy(&out.stderr));
     }
     std::fs::copy(format!("{}/network.json", d(1)), path("A-final.json")).unwrap();
     let identity = serde_json::from_slice::<Value>(&std::fs::read(path("A-final.json")).unwrap()).unwrap()["identity"].as_str().unwrap().to_string();
+    // The ceremony's record over committee A's final file, and each member's
+    // verify-local before it votes (the node makes the same bind at startup).
+    let record = coordinator_check(&path("A-final.json"));
+    for i in 1..=4 {
+        verify_local(&path("A-final.json"), &d(i), &record);
+    }
 
     // Committee A runs; pay 0xaa.
     let p2p: Vec<u16> = (0..4).map(|_| free_port()).collect();
@@ -731,6 +818,11 @@ fn validator_rotation_continues_the_chain_under_the_same_identity() {
                 "--network".into(),
                 // The network.json reshare wrote: epoch schedule and identity.
                 format!("{}/network.json", d(k + 2)),
+                // The round-0 record still binds: a reshare's file is an
+                // evolution of the checked genesis, pinned by the immutable
+                // genesis the record carries.
+                "--ceremony".into(),
+                record.clone(),
                 "--port".into(),
                 b.p2p[k].to_string(),
                 "--rpc-port".into(),
@@ -746,6 +838,7 @@ fn validator_rotation_continues_the_chain_under_the_same_identity() {
         ));
     }
     b.procs = procs.into_iter().map(Some).collect();
+    b.logs = (0..4).map(|k| dir.join(format!("nodeB{k}.log"))).collect();
     let boundary: u64 = end_h.parse().unwrap();
     for k in 0..4 {
         b.wait_height(k, boundary + 5, 90);
@@ -781,6 +874,7 @@ fn a_follower_verifies_everything_and_serves_a_wallet() {
         spawn_logged(log, &["follow".into(), "--from-rpc".into(), from, "--data".into(), data.to_str().unwrap().into(), "--rpc-port".into(), port.to_string()]);
     net.rpc.push(port);
     net.procs.push(Some(child));
+    net.logs.push(net.dir.join("follower.log"));
     let f = net.rpc.len() - 1;
     let target = net.height(0) + 2;
     net.wait_height(f, target, 60);
@@ -843,6 +937,7 @@ fn a_candidate_registers_once_and_beacons_every_epoch() {
     ];
     net.procs.push(Some(spawn_logged(log, &args)));
     net.rpc.push(port);
+    net.logs.push(net.dir.join("candidate.log"));
     let f = net.rpc.len() - 1;
     net.wait_height(f, 3, 60);
 
@@ -924,12 +1019,17 @@ fn open_voting_nodes_take_over_the_chain_by_themselves() {
         })
         .collect();
     for c in dkg {
-        assert!(c.wait_with_output().unwrap().status.success());
+        let out = c.wait_with_output().unwrap();
+        assert!(out.status.success(), "dkg failed: {}", String::from_utf8_lossy(&out.stderr));
     }
     std::fs::copy(format!("{}/network.json", d("g1")), d("A-final.json")).unwrap();
     let a_final = serde_json::from_slice::<Value>(&std::fs::read(d("A-final.json")).unwrap()).unwrap();
     assert_eq!(a_final["epoch_blocks"], json!(40), "the ceremony keeps the genesis epoch length");
     let identity = a_final["identity"].as_str().unwrap().to_string();
+    // The ceremony's record over the final file; every Mac's `aether run`
+    // binds to it (the supervisor hands the same record to the node it
+    // starts, and each voting Mac binds before it votes).
+    let record = coordinator_check(&d("A-final.json"));
 
     // Eight Macs, each running only `aether run`.
     let names: Vec<&str> = genesis_set.iter().chain(candidates.iter()).copied().collect();
@@ -937,6 +1037,7 @@ fn open_voting_nodes_take_over_the_chain_by_themselves() {
     let rpc: Vec<u16> = (0..8).map(|_| free_port()).collect();
     let reshare: Vec<u16> = (0..8).map(|_| free_port()).collect();
     let mut net = Net::prepared(dir.clone(), p2p.clone(), rpc.clone(), vec![vec![]; 8]);
+    net.logs = names.iter().map(|name| dir.join(format!("{name}.log"))).collect();
     for (k, name) in names.iter().enumerate() {
         let others: Vec<String> = (0..8).filter(|j| *j != k).map(|j| format!("http://127.0.0.1:{}", rpc[j])).collect();
         let mut a: Vec<String> = vec![
@@ -945,6 +1046,8 @@ fn open_voting_nodes_take_over_the_chain_by_themselves() {
             d(name),
             "--network".into(),
             d("A-final.json"),
+            "--ceremony".into(),
+            record.clone(),
             "--port".into(),
             p2p[k].to_string(),
             "--rpc-port".into(),
@@ -966,7 +1069,7 @@ fn open_voting_nodes_take_over_the_chain_by_themselves() {
             a.push(format!("--node-arg=--faucet-key={}/faucet.key", d("g1")));
         }
         let log = std::fs::File::create(dir.join(format!("{name}.log"))).unwrap();
-        let child = Command::new(BIN).args(&a).env("RUST_LOG", "info,commonware=warn").stdout(log).stderr(Stdio::null()).spawn().expect("spawn run");
+        let child = Command::new(BIN).args(&a).env("RUST_LOG", "info,commonware=warn").stdout(log.try_clone().unwrap()).stderr(log).spawn().expect("spawn run");
         net.procs[k] = Some(child);
     }
     net.wait_height(0, 3, 90);
@@ -1097,11 +1200,15 @@ fn founder_reserve_keys_stay_followers_over_a_full_committee() {
         })
         .collect();
     for c in dkg {
-        assert!(c.wait_with_output().unwrap().status.success());
+        let out = c.wait_with_output().unwrap();
+        assert!(out.status.success(), "dkg failed: {}", String::from_utf8_lossy(&out.stderr));
     }
     std::fs::copy(format!("{}/network.json", d("g1")), d("A-final.json")).unwrap();
     let a_final = serde_json::from_slice::<Value>(&std::fs::read(d("A-final.json")).unwrap()).unwrap();
     assert_eq!(a_final["reserve"]["validators"].as_array().map(Vec::len), Some(3), "the ceremony keeps the reserve keys");
+    // The ceremony's record over the final file; every Mac's `aether run`
+    // binds to it before voting or following.
+    let record = coordinator_check(&d("A-final.json"));
 
     // Seven processes on "one Mac", each only `aether run` (the reserve keys as in scripts/reserve-keys.sh).
     let names: Vec<&str> = genesis_set.iter().chain(reserve.iter()).copied().collect();
@@ -1110,6 +1217,7 @@ fn founder_reserve_keys_stay_followers_over_a_full_committee() {
     let rpc: Vec<u16> = (0..n).map(|_| free_port()).collect();
     let resh: Vec<u16> = (0..n).map(|_| free_port()).collect();
     let mut net = Net::prepared(dir.clone(), p2p.clone(), rpc.clone(), vec![vec![]; n]);
+    net.logs = names.iter().map(|name| dir.join(format!("{name}.log"))).collect();
     for (k, name) in names.iter().enumerate() {
         let others: Vec<String> = (0..n).filter(|j| *j != k).map(|j| format!("http://127.0.0.1:{}", rpc[j])).collect();
         let a: Vec<String> = vec![
@@ -1118,6 +1226,8 @@ fn founder_reserve_keys_stay_followers_over_a_full_committee() {
             d(name),
             "--network".into(),
             d("A-final.json"),
+            "--ceremony".into(),
+            record.clone(),
             "--port".into(),
             p2p[k].to_string(),
             "--rpc-port".into(),
@@ -1132,7 +1242,7 @@ fn founder_reserve_keys_stay_followers_over_a_full_committee() {
             "120".into(),
         ];
         let log = std::fs::File::create(dir.join(format!("{name}.log"))).unwrap();
-        let child = Command::new(BIN).args(&a).env("RUST_LOG", "info,commonware=warn").stdout(log).stderr(Stdio::null()).spawn().expect("spawn run");
+        let child = Command::new(BIN).args(&a).env("RUST_LOG", "info,commonware=warn").stdout(log.try_clone().unwrap()).stderr(log).spawn().expect("spawn run");
         net.procs[k] = Some(child);
     }
     net.wait_height(0, 3, 90);
@@ -1260,6 +1370,7 @@ fn a_late_mac_starts_from_a_certified_snapshot() {
     ];
     net.procs.push(Some(spawn_logged(log, &args)));
     net.rpc.push(port);
+    net.logs.push(net.dir.join("late.log"));
     let f = net.rpc.len() - 1;
     net.wait_height(f, joined_at + 5, 60);
     assert_agree(&net, &[0, f], joined_at + 5);

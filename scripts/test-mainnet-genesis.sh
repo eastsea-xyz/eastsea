@@ -574,6 +574,72 @@ PY
 else
   bad "could not make three fresh builder keys for the substitution test"
 fi
+# (d) the reserve ENDPOINT IDS substituted with other valid ones, every
+#     reserve key and the operator kept (PA7B-01, pass 2): the roster still
+#     parses (fresh keygen EndpointIds are valid curve points, no validator
+#     overlap), so only the intent comparison can catch the swapped endpoints.
+#     (A bytewise XOR is NOT enough for this scenario: an arbitrary 32 bytes
+#     fails iroh's on-curve check, so the strict rules would catch it first.)
+for i in 1 2 3; do "$A" keygen --data "$WORK/fresh$i" >/dev/null; done
+python3 - "$WORK/final7801.json" "$WORK/other-reserve-nodes.json" \
+  "$WORK/fresh1/validator.pub.json" "$WORK/fresh2/validator.pub.json" "$WORK/fresh3/validator.pub.json" <<'PY'
+import json, sys
+n = json.load(open(sys.argv[1]))
+nodes = [json.load(open(p))["node"] for p in sys.argv[3:]]   # other VALID endpoint ids
+for v, node in zip((n.get("reserve") or {}).get("validators", []), nodes):
+    v["node"] = node
+json.dump(n, open(sys.argv[2], "w"), indent=2)
+PY
+if out=$("$A" mainnet-rules --network "$WORK/other-reserve-nodes.json" 2>&1); then
+  ok "setup: the substituted reserve node ids PASS every strict rule — only the intent comparison can catch them (PA7B-01)"
+else
+  bad "setup: the substituted reserve node ids already fail strict rules, so the scenario is unreachable:"$'\n'"$out"
+fi
+expect_fail "check refuses valid-but-substituted reserve node ids" \
+  "$G" check "$WORK/other-reserve-nodes.json" --chain-id 7801 --ceremony "$WORK/ceremony7801.json"
+if grep -q "reserve roster" "$WORK/last.out"; then ok "the refusal names the reserve roster"
+else bad "the substituted-reserve-nodes refusal does not name it"; fi
+# (e) the reserve KEYS substituted with other valid ones (fresh keygen keys —
+#     ed25519 parsing is on-curve too), endpoints kept: same hole from the key side.
+python3 - "$WORK/final7801.json" "$WORK/other-reserve-keys.json" \
+  "$WORK/fresh1/validator.pub.json" "$WORK/fresh2/validator.pub.json" "$WORK/fresh3/validator.pub.json" <<'PY'
+import json, sys
+n = json.load(open(sys.argv[1]))
+keys = [json.load(open(p))["key"].lower() for p in sys.argv[3:]]   # other VALID ed25519 keys
+for v, k in zip((n.get("reserve") or {}).get("validators", []), keys):
+    v["key"] = k
+json.dump(n, open(sys.argv[2], "w"), indent=2)
+PY
+if out=$("$A" mainnet-rules --network "$WORK/other-reserve-keys.json" 2>&1); then
+  ok "setup: the substituted reserve keys PASS every strict rule — only the intent comparison can catch them (PA7B-01)"
+else
+  bad "setup: the substituted reserve keys already fail strict rules, so the scenario is unreachable:"$'\n'"$out"
+fi
+expect_fail "check refuses valid-but-substituted reserve keys" \
+  "$G" check "$WORK/other-reserve-keys.json" --chain-id 7801 --ceremony "$WORK/ceremony7801.json"
+if grep -q "reserve roster" "$WORK/last.out"; then ok "the refusal names the reserve roster for keys too"
+else bad "the substituted-reserve-keys refusal does not name it"; fi
+# (f) the reserve OPERATOR replaced by another valid address: the accounting
+#     rule checks it is an address, never that it is the assembled one.
+python3 - "$WORK/final7801.json" "$WORK/other-reserve-operator.json" <<'PY'
+import json, sys
+n = json.load(open(sys.argv[1]))
+op = n["reserve"]["operator"]
+op = op[2:] if op.startswith("0x") else op
+b = bytearray(bytes.fromhex(op))
+b[19] ^= 0xff
+n["reserve"]["operator"] = ("0x" if n["reserve"]["operator"].startswith("0x") else "") + b.hex()
+json.dump(n, open(sys.argv[2], "w"), indent=2)
+PY
+if out=$("$A" mainnet-rules --network "$WORK/other-reserve-operator.json" 2>&1); then
+  ok "setup: the substituted reserve operator PASSES every strict rule — only the intent comparison can catch it (PA7B-01)"
+else
+  bad "setup: the substituted reserve operator already fails strict rules, so the scenario is unreachable:"$'\n'"$out"
+fi
+expect_fail "check refuses a valid-but-substituted reserve operator" \
+  "$G" check "$WORK/other-reserve-operator.json" --chain-id 7801 --ceremony "$WORK/ceremony7801.json"
+if grep -q "reserve operator replaced" "$WORK/last.out"; then ok "the refusal names the replaced reserve operator"
+else bad "the substituted-operator refusal does not name it"; fi
 
 echo
 echo "==================== test results ===================="

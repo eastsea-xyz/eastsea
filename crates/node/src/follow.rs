@@ -796,6 +796,68 @@ impl StallWatch {
     }
 }
 
+/// Audit 7 A7-4: a status height is a fetch hint, not a fact — the same
+/// evidence rule the validator startup gate applies (`StartupEvidence`
+/// below, with the same bounded attempts and quarantine). A source
+/// claiming a height ahead of the honest tip — a bug, a lie, a stale cache
+/// — wins `net_height` outright, the fetch can certify nothing past the
+/// real tip, and every round then observes `Some(H')` while adopting
+/// nothing: the stall clock ran through a genuine pause, the follower
+/// exited 11 every ten minutes, and the supervisor's four-per-hour stop
+/// ended it for good while an honest source was configured all along. A
+/// round that adopts nothing against an ahead claim is one more
+/// unsupported fetch of that claim; after [`CLAIM_FETCH_ATTEMPTS`] such
+/// rounds the height is quarantined for [`CLAIM_QUARANTINE`] and reads as
+/// "at our own height", so the corroborated at-tip exemption
+/// (`StallWatch`) keeps the pause free. The quarantine is per height: an
+/// honest source resuming at a DIFFERENT height is never clamped, and the
+/// quarantine expires so the claim is re-checked, not ignored forever.
+#[derive(Default)]
+struct AheadClaims {
+    /// The last ahead claim no source could certify, and how many rounds it
+    /// has now survived unsupported.
+    claim: Option<(u64, u8)>,
+    quarantined_until: Option<std::time::Instant>,
+}
+
+impl AheadClaims {
+    /// The height this round may act on. A quarantined claim reads as
+    /// at-tip (our own height); every other height — a different, possibly
+    /// honest ahead claim, or this one after the quarantine expires —
+    /// passes through untouched.
+    fn trusted(&self, claimed: u64, ours: u64, now: std::time::Instant) -> u64 {
+        if claimed > ours
+            && self.claim.is_some_and(|(h, _)| h == claimed)
+            && self.quarantined_until.is_some_and(|until| now < until)
+        {
+            return ours;
+        }
+        claimed
+    }
+
+    /// One round's verdict on `claimed`: certified blocks at or past it
+    /// clear the claim; anything else is another unsupported fetch of it.
+    fn record(&mut self, claimed: u64, verified: bool, now: std::time::Instant) {
+        if verified {
+            self.claim = None;
+            self.quarantined_until = None;
+            return;
+        }
+        // An expired quarantine restarts the count: the claim gets its
+        // bounded fetches again rather than an instant re-quarantine.
+        let rounds = match self.claim {
+            _ if self.quarantined_until.is_some_and(|until| now >= until) => 0,
+            Some((h, n)) if h == claimed => n,
+            _ => 0,
+        };
+        let rounds = rounds.saturating_add(1);
+        if rounds >= CLAIM_FETCH_ATTEMPTS {
+            self.quarantined_until = now.checked_add(CLAIM_QUARANTINE);
+        }
+        self.claim = Some((claimed, rounds));
+    }
+}
+
 /// Follow the chain forever: verify, execute and persist each next block.
 /// `joining`: this Mac's voting key when it is a candidate. When a finalized
 /// handoff seats it, the follower stops before the switch height (for up to
@@ -815,6 +877,10 @@ pub async fn run(
     let mut last_log = 0;
     let mut held_since: Option<std::time::Instant> = None;
     let mut stall = StallWatch::new(chain.finalized_height());
+    // The ahead-claim evidence outlives every round (audit 7 A7-4): a claim
+    // that keeps failing its fetches stays quarantined across restarts of
+    // this loop, not just within one round.
+    let mut claims = AheadClaims::default();
     // One height per round while idle at the tip (as before); a full batch
     // while there is a backlog to fetch.
     let mut window = 1u64;
@@ -853,6 +919,7 @@ pub async fn run(
             &upstream,
             &set,
             Some(&archive),
+            &mut claims,
             cap,
             window,
             &mut last_log,
@@ -948,11 +1015,16 @@ fn hold_cap(chain: &Chain, joining: Option<&str>) -> Hold {
 /// `allow_jump`: false for an archive node, which must replay its gap — a
 /// snapshot jump keeps no per-block history, so the history index era export
 /// needs would stay gone forever (audit 7 A7-1).
+/// `claims` (audit 7 A7-4) carries the ahead-claim evidence across rounds:
+/// a claimed height nothing can certify is quarantined and reads as at-tip,
+/// so it cannot spend the follower's restart budget through the stall
+/// watchdog while the committee is simply paused.
 async fn advance(
     chain: &Chain,
     upstream: &Upstream,
     set: &ValidatorSet,
     archive: Option<&FinalityArchive>,
+    claims: &mut AheadClaims,
     cap: u64,
     window: u64,
     last_log: &mut u64,
@@ -975,7 +1047,13 @@ async fn advance(
         // The height this round fetches toward is corroborated across
         // sources (PA7-06): a single false-low-tip answer used to cap the
         // fetch at our own height, so a round "succeeded" fetching nothing.
-        let net = upstream.net_height(ours).await?;
+        let hint = upstream.net_height(ours).await?;
+        // The claimed height is a fetch hint, not a fact (audit 7 A7-4):
+        // what this round OBSERVES (and jumps toward) is the trusted
+        // reading, while the pipeline below still fetches toward the
+        // CLAIMED height — a quarantined lie must not hide an honest
+        // source's real progress behind it.
+        let net = claims.trusted(hint, ours, std::time::Instant::now());
         chain.lock().net_height = Some(net);
         if allow_jump && net > ours + JUMP_BEHIND && adopted == 0 {
             match jump(chain, upstream, set).await {
@@ -983,6 +1061,9 @@ async fn advance(
                     info!(from = ours, to, skipped = to - ours - 1, "jumped to a certified snapshot (the gap's blocks stay fetchable from era files)");
                     log_follow(chain, last_log);
                     chain.set_relaxed(false);
+                    // The jump certified blocks at and past the claim: it
+                    // was real (audit 7 A7-4).
+                    claims.record(hint, true, std::time::Instant::now());
                     return Ok(to - ours);
                 }
                 Err(e) => {
@@ -997,7 +1078,7 @@ async fn advance(
             set,
             archive,
             ours + 1,
-            net.min(cap),
+            hint.min(cap),
             window,
         )
         .await?;
@@ -1010,6 +1091,16 @@ async fn advance(
         // keep going without asking for the height again.
         if window == 1 || last < ours + window {
             chain.set_relaxed(false);
+            // This round adopted nothing while a source still claimed more
+            // (audit 7 A7-4): the claim survived another fetch unsupported.
+            if adopted == 0 && hint > ours {
+                claims.record(hint, false, std::time::Instant::now());
+                warn!(
+                    claimed = hint,
+                    height = ours,
+                    "an ahead status claim certified no block; treating it as at-tip until it does (audit 7 A7-4)"
+                );
+            }
             return Ok(adopted);
         }
         window = PIPELINE;
@@ -1210,9 +1301,10 @@ pub async fn catch_up(
     let mut last_log = 0;
     let mut window = PIPELINE;
     let mut knew_height = false;
+    let mut claims = AheadClaims::default();
     loop {
         let ours = chain.finalized_height();
-        if let Err(e) = advance(chain, upstream, set, None, u64::MAX, window, &mut last_log, true).await {
+        if let Err(e) = advance(chain, upstream, set, None, &mut claims, u64::MAX, window, &mut last_log, true).await {
             if e.starts_with(STORE_FAILED) {
                 recover(chain).await;
             } else {
@@ -1808,6 +1900,7 @@ mod tests {
             &Upstream::Http(vec!["http://127.0.0.1:9".into()]),
             &aether_light::ValidatorSet::devnet(4),
             None,
+            &mut AheadClaims::default(),
             u64::MAX,
             1,
             &mut 0,
@@ -1821,6 +1914,90 @@ mod tests {
         assert_eq!(
             chain.lock().net_height, None,
             "a failed height probe must not inherit an old at-tip answer"
+        );
+    }
+
+    /// Audit 7 A7-4: a status height is a fetch hint, not a fact. The
+    /// committee paused at H, the honest sources stay at H, and one source
+    /// claims a height far above it. `net_height` prefers an ahead answer,
+    /// the fetch cannot certify any block past the real tip, so every round
+    /// adopted nothing while observing `Some(H')` — the stall clock ran,
+    /// the follower exited 11 every ten minutes, and the supervisor's
+    /// four-per-hour stop ended it for good while an honest source was
+    /// configured all along. Two rounds that adopt nothing against an ahead
+    /// claim quarantine that height for a minute: while quarantined it
+    /// reads as "at our own height", so the corroborated at-tip exemption
+    /// keeps the pause free — and a DIFFERENT ahead height (the honest
+    /// source resuming) is never clamped.
+    #[tokio::test]
+    async fn a_false_ahead_claim_during_a_pause_does_not_stall_the_follower() {
+        let status_server = |height: u64| async move {
+            let app = axum::Router::new().route("/", axum::routing::post(move |body: axum::body::Bytes| async move {
+                let v: Value = serde_json::from_slice(&body).unwrap_or_default();
+                let id = v.get("id").cloned().unwrap_or(Value::Null);
+                // A status answer claims its height; nothing past it is
+                // certified (the committee paused, so there is nothing).
+                let result = if v.get("method").and_then(Value::as_str) == Some("aether_status") {
+                    json!({ "height": height })
+                } else {
+                    Value::Null
+                };
+                axum::Json(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
+            }));
+            let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = probe.local_addr().unwrap();
+            drop(probe);
+            let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+            tokio::spawn(async move { axum::serve(listener, app).await });
+            format!("http://{addr}")
+        };
+        // The lying source is listed first: its ahead answer is what
+        // `net_height` takes (an ahead claim wins outright), and the honest
+        // source sits at our own height (genesis).
+        let (liar, honest) = (status_server(10_000).await, status_server(0).await);
+        let up = Upstream::Http(vec![liar, honest]);
+        let config = crate::chain::ChainConfig {
+            chain_id: 7784,
+            limits: aether_types::GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
+            alloc: vec![], fees: false, registrar: None, epoch_blocks: 0,
+            min_streak: None, draw_epochs: None, history_v2: true, protocol: 2,
+            node_rewards: false, committee: vec![], reserve: None, group: 0,
+            max_committee: crate::rotation::GROW_UNTIL,
+        };
+        let (chain, _) = crate::chain::Chain::new(config);
+        let set = aether_light::ValidatorSet::devnet(4);
+        let mut claims = AheadClaims::default();
+        async fn round(
+            chain: &Chain,
+            up: &Upstream,
+            set: &ValidatorSet,
+            claims: &mut AheadClaims,
+        ) -> Result<u64, String> {
+            advance(chain, up, set, None, claims, u64::MAX, 1, &mut 0, false).await
+        }
+        // Two rounds adopt nothing against the unsupported claim…
+        for _ in 0..2 {
+            assert_eq!(round(&chain, &up, &set, &mut claims).await.unwrap(), 0);
+            assert_eq!(
+                chain.lock().net_height, Some(10_000),
+                "before quarantine the claim is still acted on"
+            );
+        }
+        // …so the third round treats it as at-tip: the stored height the
+        // stall watchdog sees is OUR height, and the pause costs nothing.
+        assert_eq!(round(&chain, &up, &set, &mut claims).await.unwrap(), 0);
+        assert_eq!(
+            chain.lock().net_height, Some(0),
+            "a quarantined unsupported claim must read as at-tip, not as a forever-away tip"
+        );
+        // The quarantine is per height: an honest source resuming (a new,
+        // different height ahead of us) is never clamped by the old lie.
+        assert_eq!(claims.trusted(1, 0, std::time::Instant::now()), 1);
+        // And it expires, so a claim gets re-checked rather than being
+        // believed or ignored forever.
+        assert_eq!(
+            claims.trusted(10_000, 0, std::time::Instant::now() + CLAIM_QUARANTINE + Duration::from_secs(1)),
+            10_000
         );
     }
 

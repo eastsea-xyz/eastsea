@@ -10,6 +10,7 @@ uniffi::setup_scaffolding!();
 
 mod atomic_swap;
 mod paper;
+mod tx_status;
 use aether_crypto::{address_of, PublicKey};
 use aether_execution::EvmCall;
 use aether_light::{from_hex, verify_account, verify_finalized_chain, ValidatorSet, VerifiedBlock};
@@ -17,6 +18,7 @@ use aether_state::Proof;
 use aether_types::{Address, Bytes, FeeVector, GasVector, SignerScheme, TxEnvelope, TxHash, TxHeader, TxPayload, U256};
 pub use atomic_swap::*;
 pub use paper::*;
+pub use tx_status::*;
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -743,7 +745,10 @@ fn state_price_for(chain: u64, status: &Value) -> R<u128> {
 
 /// Fee caps from the node's next base fees, the sender's balance and the
 /// validated state price (pre-audit 7, M1): 2x headroom plus a 1 gwei tip
-/// (only base + tip is charged). A sender with no balance, or a chain at its
+/// (only base + tip is charged). The state cap has the same 2x headroom over
+/// the validated price (contracts-live bug #5: a cap at today's price left
+/// every queued transfer unincludable after a burst); the quote prices that
+/// signed cap, so the maximum shown is the maximum signed. A sender with no balance, or a chain at its
 /// zero floor (below target load the base fee is 0), sends with tip 0 and
 /// exec capped at base × 2 — one base-fee doubling of headroom. A paid-state
 /// genesis also needs a native balance for the sender account and persisted
@@ -760,7 +765,7 @@ fn fee_caps(status: &Value, balance: Option<U256>, state_price: u128) -> (FeeVec
     (
         FeeVector {
             exec: if free { get("exec") * 2 } else { get("exec") * 2 + GWEI },
-            state: state_price,
+            state: aether_execution::fees::signed_state_cap(state_price),
             prove: get("prove") * 2,
         },
         if free { 0 } else { GWEI },
@@ -815,13 +820,16 @@ fn transfer_maximum_with_gas(status: &Value, recipient_exists: Option<bool>, sta
         .and_then(|v| v.parse::<u128>().ok())
         .unwrap_or(0);
     let exec = if base == 0 { 0 } else { u128::from(gas).saturating_mul(base.saturating_add(GWEI)) };
-    let account = u128::from(aether_execution::fees::STATE_ACCOUNT_UNITS).saturating_mul(state_price);
+    // Priced at the signed state cap, not today's price (bug #5): the
+    // maximum shown is the maximum the signature allows (pre-audit 7, M1).
+    let cap = aether_execution::fees::signed_state_cap(state_price);
+    let account = u128::from(aether_execution::fees::STATE_ACCOUNT_UNITS).saturating_mul(cap);
     // A recipient without a certified account pays one new account (A6-7).
     let charge = if recipient_exists == Some(true) { 0 } else { account };
     // Always reserved: a possible first-use sender account (audit 6, A6-2) and
     // the persisted transaction/receipt bytes, both upper bounds — so the quote
     // is always a maximum; the receipt shows the actual charge.
-    let fixed = account.saturating_add(PLAIN_TRANSFER_PERSISTENT_UNITS.saturating_mul(state_price));
+    let fixed = account.saturating_add(PLAIN_TRANSFER_PERSISTENT_UNITS.saturating_mul(cap));
     exec.saturating_add(charge).saturating_add(fixed)
 }
 
@@ -835,7 +843,9 @@ fn quote_from_status_with_gas(status: &Value, recipient_exists: Option<bool>, st
         new_recipient_charge_wei: if recipient_exists == Some(true) {
             "0".into()
         } else {
-            u128::from(aether_execution::fees::STATE_ACCOUNT_UNITS).saturating_mul(state_price).to_string()
+            u128::from(aether_execution::fees::STATE_ACCOUNT_UNITS)
+                .saturating_mul(aether_execution::fees::signed_state_cap(state_price))
+                .to_string()
         },
         fee_is_maximum: true,
     }
@@ -1594,6 +1604,28 @@ pub fn prepare_transfer(
     }, |_| Ok(EvmCall { to: Some(to), value, input: Bytes::new(), gas_limit: gas, delegate: None }))
 }
 
+/// "새 가격으로 다시 보내기" (contracts-live bug #5): the same transfer
+/// again at the dropped transaction's `nonce`, with a fresh fee and the
+/// normal shown-fee check. The same nonce means at most one of the two can
+/// ever run, even if another node still holds the old one.
+#[uniffi::export]
+pub fn prepare_transfer_at(
+    p256_public_key: Vec<u8>,
+    to: String,
+    value_wei: String,
+    shown_fee_wei: Option<String>,
+    validators: u32,
+    nonce: u64,
+) -> R<PreparedTx> {
+    let to: Address = to.parse().map_err(|_| WalletError::Invalid("recipient address".into()))?;
+    let value: U256 = value_wei.parse().map_err(|_| WalletError::Invalid("amount".into()))?;
+    let gas = recipient_transfer_gas(&to);
+    prepare_at(&p256_public_key, Some(nonce), shown_fee_wei.as_deref(), |status, state_price| {
+        let exists = certified_recipient_exists(&to.to_checksum(None), validators);
+        Ok(transfer_maximum_with_gas(status, exists, state_price, gas))
+    }, |_| Ok(EvmCall { to: Some(to), value, input: Bytes::new(), gas_limit: gas, delegate: None }))
+}
+
 /// A contract call or deployment a web page asked for (`aether://call`),
 /// signed by the Secure Enclave key. `to` empty deploys `data` as init code.
 /// No fee is displayed for a call, so nothing can be stale (pre-audit 7, M1
@@ -1676,6 +1708,19 @@ fn prepare(
     fresh_maximum: impl FnOnce(&Value, u128) -> R<u128>,
     body: impl FnOnce(Address) -> R<EvmCall>,
 ) -> R<PreparedTx> {
+    prepare_at(p256_public_key, None, shown_fee_wei, fresh_maximum, body)
+}
+
+/// `prepare` at an explicit `nonce` (a resend of a dropped transaction) or,
+/// with `None`, the sender's next nonce: after this process's newest queued
+/// transaction while it is pending, else the chain's (bug #5, decision 5).
+fn prepare_at(
+    p256_public_key: &[u8],
+    nonce: Option<u64>,
+    shown_fee_wei: Option<&str>,
+    fresh_maximum: impl FnOnce(&Value, u128) -> R<u128>,
+    body: impl FnOnce(Address) -> R<EvmCall>,
+) -> R<PreparedTx> {
     let pk = p256_key(p256_public_key)?;
     let from = address_of(&pk).map_err(|e| WalletError::Invalid(e.to_string()))?;
     let status = call("aether_status", json!([]))?;
@@ -1688,8 +1733,20 @@ fn prepare(
     let (max_fee, tip) = fee_caps(&status, balance, state_price);
     check_paid_state_balance(state_price, balance)?;
     ensure_shown_fee_covers(fresh_maximum(&status, state_price)?, shown_fee_wei)?;
-    let nonce_hex = call("eth_getTransactionCount", json!([from]))?;
-    let nonce = u64::from_str_radix(nonce_hex.as_str().unwrap_or("0x0").trim_start_matches("0x"), 16).map_err(|e| WalletError::Invalid(e.to_string()))?;
+    let nonce = match nonce {
+        None => tx_status::nonce_for(from)?,
+        Some(n) => {
+            let hex = call("eth_getTransactionCount", json!([from]))?;
+            let used = u64::from_str_radix(hex.as_str().unwrap_or("0x0").trim_start_matches("0x"), 16)
+                .map_err(|e| WalletError::Invalid(e.to_string()))?;
+            if n < used {
+                return Err(WalletError::Invalid(format!(
+                    "nonce {n} is already used on chain (next is {used}): that transaction can no longer be sent again"
+                )));
+            }
+            n
+        }
+    };
     let call_body = body(from)?;
     let payload = call_body.encode();
     let group = *GROUP.lock().expect("group lock");
@@ -1856,8 +1913,12 @@ pub fn submit_signed(envelope_json: String, signature: Vec<u8>, p256_public_key:
     aether_crypto::verify(&pk, &env.signing_bytes(), &bytes).map_err(|e| WalletError::Invalid(format!("signature does not match key: {e}")))?;
     bytes.extend_from_slice(&pk.bytes);
     env.signature = Bytes::from(bytes);
-    let v = call("aether_sendTransaction", json!([env]))?;
-    let h: TxHash = parse(&v["hash"], "hash")?;
+    // One submit at a time per process, never past a refused or dropped
+    // nonce (contracts-live bug #5, decision 5).
+    let h = tx_status::submit_in_order(env.header.sender, env.header.nonce, || {
+        let v = call("aether_sendTransaction", json!([env]))?;
+        parse(&v["hash"], "hash")
+    })?;
     Ok(format!("{h}"))
 }
 
@@ -2547,16 +2608,38 @@ mod tests {
 
         let paid = json!({ "base_fee": { "exec": "0", "state": "1000000000000", "prove": "0" } });
         let q = quote_from_status(&paid, None, aether_execution::fees::STATE_UNIT_PRICE);
-        assert_eq!(fee(&q), 232_000_000_000_000, "recipient 100 + sender 100 + bytes 32 units");
-        assert_eq!(q.new_recipient_charge_wei.parse::<u128>().unwrap(), 100_000_000_000_000);
+        // Every state unit at the signed cap, twice the price (bug #5).
+        assert_eq!(fee(&q), 464_000_000_000_000, "recipient 100 + sender 100 + bytes 32 units at the 2x cap");
+        assert_eq!(q.new_recipient_charge_wei.parse::<u128>().unwrap(), 200_000_000_000_000);
         assert!(q.fee_is_maximum);
         let q = quote_from_status(&paid, Some(true), aether_execution::fees::STATE_UNIT_PRICE);
-        assert_eq!(fee(&q), 132_000_000_000_000, "an existing recipient pays no account charge");
+        assert_eq!(fee(&q), 264_000_000_000_000, "an existing recipient pays no account charge");
         assert_eq!(q.new_recipient_charge_wei, "0");
         assert!(q.fee_is_maximum, "sender account and bytes stay upper bounds");
 
         let busy = json!({ "base_fee": { "exec": "1000000000", "state": "1000000000000", "prove": "0" } });
-        assert_eq!(fee(&quote_from_status(&busy, Some(false), aether_execution::fees::STATE_UNIT_PRICE)), 42_000_000_000_000 + 232_000_000_000_000);
+        assert_eq!(fee(&quote_from_status(&busy, Some(false), aether_execution::fees::STATE_UNIT_PRICE)), 42_000_000_000_000 + 464_000_000_000_000);
+    }
+
+    /// Contracts-live bug #5: the wallet signed the state cap at today's
+    /// price, so after a burst every queued transfer was under the price.
+    /// The cap now has 2x headroom, and the shown maximum prices exactly that
+    /// signed cap (pre-audit 7, M1: what was shown is what is signed).
+    #[test]
+    fn the_state_cap_has_headroom_and_the_shown_maximum_prices_it() {
+        use aether_execution::fees::STATE_UNIT_PRICE;
+        let paid = json!({ "base_fee": { "exec": "0", "state": "1000000000000", "prove": "0" } });
+        let (caps, _) = fee_caps(&paid, Some(U256::from(1u64)), STATE_UNIT_PRICE);
+        assert_eq!(caps.state, 2 * STATE_UNIT_PRICE, "one doubling of the state price stays includable");
+        let shown: u128 = quote_from_status(&paid, None, STATE_UNIT_PRICE).fee_wei.parse().unwrap();
+        assert_eq!(shown, (100 + 100 + 32) * caps.state, "every state unit of the maximum at the signed cap");
+        // A risen price is quoted and capped from the same snapshot.
+        let busy = json!({ "base_fee": { "exec": "0", "state": "43000000000000", "prove": "0" } });
+        let price = state_price_for(7_777, &busy).unwrap();
+        let (caps, _) = fee_caps(&busy, Some(U256::from(1u64)), price);
+        assert_eq!(caps.state, 86 * STATE_UNIT_PRICE);
+        let shown: u128 = quote_from_status(&busy, None, price).fee_wei.parse().unwrap();
+        assert_eq!(shown, 232 * caps.state);
     }
 
     /// Live run 2026-10-06: a send to a recipient with code (a contract's
@@ -2573,7 +2656,7 @@ mod tests {
         let plain = quote_from_status_with_gas(&busy, Some(false), price, PLAIN_TRANSFER_GAS);
         assert_eq!(fee(&plain), fee(&quote_from_status(&busy, Some(false), price)), "ordinary recipients unchanged");
         let code = quote_from_status_with_gas(&busy, Some(false), price, CODE_RECIPIENT_TRANSFER_GAS);
-        assert_eq!(fee(&code), 100_000 * 2_000_000_000 + 232_000_000_000_000);
+        assert_eq!(fee(&code), 100_000 * 2_000_000_000 + 464_000_000_000_000);
         // With no exec base fee (today's new genesis) the larger limit costs nothing extra.
         let paid = json!({ "base_fee": { "exec": "0", "state": "1000000000000", "prove": "0" } });
         assert_eq!(
@@ -2643,7 +2726,7 @@ mod tests {
         use aether_execution::{fees::STATE_UNIT_PRICE, fees::STATE_ACCOUNT_UNITS, recommended_state_budget};
         let status = json!({ "base_fee": { "exec": "0", "prove": "0" } });
         let (caps, _tip) = fee_caps(&status, Some(U256::from(1_000u64)), STATE_UNIT_PRICE);
-        assert_eq!(caps.state, STATE_UNIT_PRICE, "the state cap must meet the fixed state price floor");
+        assert_eq!(caps.state, 2 * STATE_UNIT_PRICE, "the state cap is twice the fixed state price floor (bug #5 headroom)");
         // The budget a funded transfer then signs (tx.rs) covers a new account.
         let call = EvmCall {
             to: Some(Address::ZERO),

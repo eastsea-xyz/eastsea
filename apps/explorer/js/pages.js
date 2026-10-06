@@ -4,7 +4,7 @@
 // which is why every page carries its "read from the node" line.
 
 import { card, copyButton, dot, kv, message, pill, sourceLine, table, h } from './dom.js';
-import { coinTicker, formatAeth, formatInt, formatRate, formatTokenAmount, localTime, shortHex, timeAgo, toBigInt, txRate } from './format.js';
+import { coinTicker, formatAeth, formatInt, formatRate, formatTokenAmount, localTime, notIncludedText, shortHex, timeAgo, toBigInt, txRate } from './format.js';
 import { TRANSFER_TOPIC, decodeApproval, decodeTransfer, revertReason, wordAddress } from './abi.js';
 import { looksLikeOfficial, officialTokens, originBadge, tokenInfo, tokenOrigin, totalSupply } from './erc20.js';
 import { NOT_COMMITTED } from './verify.js';
@@ -253,10 +253,22 @@ export async function txView(ctx, hash) {
   }
   if (r.pending) {
     ctx.pollNow = true;
+    const why = notIncludedText(r.waiting);
     return h('div', { class: 'stack' },
       h('h2', { class: 'page-title' }, 'Transaction'),
       withCopy(hash),
-      card('Status', dot('pending', 'In the mempool — waiting for a block. This page re-checks while it is open.')),
+      card('Status', dot('pending', why
+        ? `In the mempool — not in a block yet: ${why}. This page re-checks while it is open.`
+        : 'In the mempool — waiting for a block. This page re-checks while it is open.')),
+      sourceLine(ctx.node));
+  }
+  // Left the mempool without a block (bug #5): say why; nothing was charged.
+  if (r.status === 'dropped') {
+    ctx.pollNow = false;
+    return h('div', { class: 'stack' },
+      h('h2', { class: 'page-title' }, 'Transaction'),
+      withCopy(hash),
+      card('Status', dot('failed', `Dropped from the mempool without being included — ${notIncludedText(r.reason) ?? 'no reason given'}. Nothing was charged.`)),
       sourceLine(ctx.node));
   }
   ctx.pollNow = false;

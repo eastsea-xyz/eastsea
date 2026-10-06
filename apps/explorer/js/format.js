@@ -98,3 +98,24 @@ export function formatRate(x) {
   if (x == null) return '—';
   return String(Math.round(x * 100) / 100);
 }
+
+/// Why a transaction is not in a block, from `aether_getReceipt`'s `waiting`
+/// (still pending) or `reason` (dropped) — contracts-live bug #5. Null when
+/// the node gave no reason (an older node, or a pending tx that only waits
+/// for its turn).
+export function notIncludedText(why) {
+  if (!why || typeof why.kind !== 'string') return null;
+  switch (why.kind) {
+    case 'state_price_above_cap': {
+      const wait = Number.isFinite(why.blocks) ? `; about ${formatInt(why.blocks)} blocks until it falls to the cap` : '';
+      return `the state price (${formatAeth(why.price, 6)} per unit) is above this transaction's cap (${formatAeth(why.cap, 6)})${wait}`;
+    }
+    case 'fee_cap_below_base': return "the base fee is above this transaction's fee cap";
+    case 'nonce_gap': return `an earlier nonce of the sender (${why.expected}) has not arrived`;
+    case 'expired': return 'it waited the whole mempool lifetime (10 minutes)';
+    case 'replaced': return 'another transaction with the same nonce was included';
+    case 'evicted': return 'a higher-paying transaction took its place in a full mempool';
+    case 'unaffordable': return "the sender's balance no longer covers it";
+    default: return why.kind.replace(/_/g, ' ');
+  }
+}

@@ -11,7 +11,7 @@ use aether_types::{Address, TxEnvelope, TxHash, U256};
 use axum::{extract::State, routing::get, routing::post, Json, Router};
 use serde_json::{json, Value};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -276,13 +276,18 @@ pub async fn serve(addr: SocketAddr, state: RpcState) -> std::io::Result<()> {
         .allow_origin(tower_http::cors::Any)
         .allow_methods([axum::http::Method::POST, axum::http::Method::GET, axum::http::Method::OPTIONS])
         .allow_headers([axum::http::header::CONTENT_TYPE]);
-    let app = Router::new()
-        .route("/", post(handle))
+    let mut app = Router::new().route("/", post(handle));
+    if !public {
         // Era files as plain GETs (roadmap B6): the same bytes `aether_eraChunk`
-        // hands out hex-encoded, for torrent webseeds and curl.
-        .route("/era/{name}", get(serve_era_file))
-        .layer(cors)
-        .with_state(state);
+        // hands out hex-encoded, for torrent webseeds and curl — a node's own
+        // first webseed, on its private (loopback/tunnel) listener. The public
+        // read-only gateway never registers the route (pre-audit 7 PA7-03):
+        // serving one buffers a whole era file with no public-side need for
+        // it, a stranger's lever the explorer never uses; intentional
+        // webseeding belongs to an export node's own listener.
+        app = app.route("/era/{name}", get(serve_era_file));
+    }
+    let app = app.layer(cors).with_state(state);
     // The public gateway also caps what one request may make this node parse:
     // an oversized Content-Length is refused at the head, with a 413 the asker
     // can read; DefaultBodyLimit backstops a chunked or lying body.
@@ -316,12 +321,52 @@ async fn public_body_cap(req: axum::extract::Request, next: axum::middleware::Ne
     next.run(req).await
 }
 
+/// Concurrent `/era/` transfers this node serves at once (pre-audit 7
+/// PA7-03): each one buffers a whole era file, so even the private,
+/// loopback-only listener a webseed tunnels through serves a bounded number —
+/// a mirror hammering it cannot turn the node into an era-file faucet that
+/// crowds out everything else.
+const MAX_ERA_TRANSFERS: usize = 4;
+static ERA_TRANSFERS: AtomicUsize = AtomicUsize::new(0);
+
+/// A counted slot in a global budget: acquire-or-refuse (a CAS loop), given
+/// back on drop. The gateway's bounded-execution budgets share this shape.
+struct BudgetSlot(&'static AtomicUsize);
+impl BudgetSlot {
+    fn acquire(counter: &'static AtomicUsize, max: usize) -> Option<Self> {
+        let mut n = counter.load(Ordering::Acquire);
+        loop {
+            if n >= max {
+                return None;
+            }
+            match counter.compare_exchange(n, n + 1, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return Some(BudgetSlot(counter)),
+                Err(now) => n = now,
+            }
+        }
+    }
+}
+impl Drop for BudgetSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 /// `GET /era/<file>`: a whole era file from this node's era folder — a
 /// webseed (the export manifest's first mirror). Names are exactly
 /// `era-<eight digits>.aera`; anything else is a 404, never a path.
 async fn serve_era_file(State(st): State<RpcState>, axum::extract::Path(name): axum::extract::Path<String>) -> axum::response::Response {
     use axum::http::{header, StatusCode};
     use axum::response::IntoResponse;
+    // Defense in depth (PA7-03): the public gateway does not register this
+    // route; if a future route table ever re-adds it, the handler still
+    // refuses rather than serving era files to strangers.
+    if st.public_read_only {
+        return (StatusCode::NOT_FOUND, "no such era here").into_response();
+    }
+    let Some(_transfer) = BudgetSlot::acquire(&ERA_TRANSFERS, MAX_ERA_TRANSFERS) else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "era transfer budget busy; retry shortly").into_response();
+    };
     let era = name
         .strip_prefix("era-")
         .and_then(|n| n.strip_suffix(".aera"))
@@ -1511,6 +1556,71 @@ mod public_read_tests {
             let status = String::from_utf8_lossy(&seen);
             let first_line = status.lines().next().unwrap_or_default();
             assert!(first_line.contains("413") || first_line.contains("400"), "a body over PUBLIC_MAX_BODY must be refused, got: {first_line}");
+        });
+    }
+
+    /// The public gateway never serves era files (pre-audit 7 PA7-03): `/era/`
+    /// is a webseed's route, for the node's own private listener. On the
+    /// gateway it is not registered at all, so no stranger's GET can make
+    /// this node buffer and ship a whole era file; privately the same GET
+    /// still serves the bytes, proving the refusal is the gateway's, not the
+    /// store being empty. The old code registered the route in public mode
+    /// and served the bytes.
+    #[test]
+    fn public_gateway_serves_no_era_files() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let dir = std::env::temp_dir().join(format!("aether-rpc-era-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = crate::store::Store::open(&dir.join("db.redb")).unwrap();
+        std::fs::create_dir_all(store.era_dir()).unwrap();
+        let era: Vec<u8> = (0..4096u32).map(|i| i as u8).collect();
+        std::fs::write(store.era_dir().join("era-00000003.aera"), &era).unwrap();
+        let (chain, _) = crate::chain::Chain::open(crate::chain::ChainConfig {
+            chain_id: 7781,
+            limits: aether_types::GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
+            alloc: vec![], fees: false, registrar: None, epoch_blocks: 0,
+            min_streak: None, draw_epochs: None, history_v2: false, protocol: 1,
+            node_rewards: false, committee: vec![], reserve: None, group: 0,
+            max_committee: crate::rotation::GROW_UNTIL,
+        }, store).unwrap();
+        let state = |public: bool| {
+            let (gossip, _) = mpsc::unbounded_channel();
+            RpcState {
+                chain: chain.clone(),
+                finality: Finality::Archive(Arc::new(crate::follow::FinalityArchive::default())),
+                gossip,
+                faucet: None, registrar: None, network: None, upstream: None,
+                handoff: None, snapshot: Default::default(), prover: None,
+                shards: None, public_read_only: public,
+            }
+        };
+        let free = || {
+            let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let a = probe.local_addr().unwrap();
+            drop(probe);
+            a
+        };
+        let (pub_addr, priv_addr) = (free(), free());
+        rt.spawn(serve(pub_addr, state(true)));
+        rt.spawn(serve(priv_addr, state(false)));
+        let ask = |addr: std::net::SocketAddr| async move {
+            let mut sock = tokio::net::TcpStream::connect(addr).await.expect("listener is up");
+            sock.write_all(b"GET /era/era-00000003.aera HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").await.unwrap();
+            let mut buf = Vec::new();
+            sock.read_to_end(&mut buf).await.unwrap();
+            buf
+        };
+        rt.block_on(async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let public = ask(pub_addr).await;
+            let status = String::from_utf8_lossy(&public).lines().next().unwrap_or_default().to_string();
+            assert!(status.contains("404"), "the public gateway must not serve era files: {status}");
+            assert!(!public.windows(64).any(|w| w == &era[..64]), "no era bytes in the public answer");
+            let private = ask(priv_addr).await;
+            let text = String::from_utf8_lossy(&private);
+            assert!(text.lines().next().unwrap_or_default().contains("200"), "the private webseed still serves it: {text}");
+            assert_eq!(&private[private.len() - era.len()..], &era[..], "the private answer carries the exact era bytes");
         });
     }
 }

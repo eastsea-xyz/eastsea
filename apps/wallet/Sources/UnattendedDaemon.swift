@@ -116,7 +116,9 @@ final class UnattendedDaemon: ObservableObject {
     /// single source of what the daemon runs: the same argv the app's own node
     /// takes (minus `--exit-with-parent`), so a restart changes nothing.
     func syncMarker() {
-        guard enabled, nodeEnabled, !wrongLocation else {
+        // The marker makes the root daemon run the node — past the app's own
+        // start gate — so it obeys the same gate (release-070 review, B4).
+        guard enabled, nodeEnabled, !wrongLocation, DataMigration.mayStartNode() == nil else {
             Marker.remove()
             return
         }

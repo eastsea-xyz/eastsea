@@ -5,13 +5,24 @@ import Foundation
 /// first-launch migration: bring the old data forward, **verified** — the
 /// done flag is set only after every precious item (the wallet key handles,
 /// the validator identity and threshold share, the vote journal, the node
-/// database) exists at its new home and matches the old copy (audit 5,
-/// A5-5) — every file by content, however large (audit 6, A6-6). A failed
-/// or deferred run leaves the old data exactly where it was and retries on
-/// the next launch; nothing is ever deleted except by a successful
-/// same-volume move of the (large) chain data (A5-7). A tree that had to be
-/// copied (cross-volume) is left behind but emptied of everything its old
-/// binary could sign with (audit 6, A6-5).
+/// database) exists at its new home and checks out (audit 5, A5-5).
+///
+/// How the node tree checks out depends on the path it takes, chosen
+/// explicitly by comparing volume identifiers (release-070 review, M2):
+/// - same volume: one atomic `rename(2)` of the whole tree, checked by a
+///   name → size manifest before and after (a rename moves no bytes, so there
+///   is nothing to hash). Nothing is ever deleted: the old name simply stops
+///   existing at the instant the new one appears.
+/// - different volumes (or a resume over an existing new tree): a copy that
+///   is SHA-256-checked file by file, however large (audit 6, A6-6). The old
+///   tree is then left in place but emptied of everything its old binary
+///   could sign with (audit 6, A6-5) — moved into a quarantine directory
+///   inside it, never deleted.
+/// A failed or deferred run leaves the old data where it was and retries on
+/// the next launch. A done flag never outvotes the disk (release-070 review,
+/// B4): while old data still lacks its new counterpart, the migration runs
+/// again and the identity gates stay shut. The slow (hashing) path runs off
+/// the main thread with visible progress (M1); every run is serialized (L2).
 enum DataMigration {
     enum Outcome: Equatable {
         /// No old install found (fresh install): nothing to move.
@@ -24,10 +35,13 @@ enum DataMigration {
         /// Something failed or did not verify: the old data is intact, the
         /// done flag is NOT set, the next launch retries.
         case failed(String)
+        /// The verified copy is running in the background (M1): the gates
+        /// stay shut until it finishes, and the app shows its progress.
+        case running(String)
     }
 
-    private static let oldAppID = "com.pipln.aether"
-    private static let doneKey = "renameMigrationDone"
+    static let oldAppID = "com.pipln.aether"
+    static let doneKey = "renameMigrationDone"
     /// The node tree's own completion state (pre-audit 7, H2): set the moment
     /// the old tree's signing material is quarantined, before the cosmetic
     /// marker or the preference copy. A wallet-preference step that fails
@@ -46,39 +60,68 @@ enum DataMigration {
     /// journals its consensus would resume from.
     private static let signingMaterial = ["validator.key", "validator.pub.json", "node-account.key", "threshold.json"]
     private static let signingMaterialPrefixes = ["aether-consensus", "dkg-agreement-", "vote-epoch-"]
+    /// Signing material below the root (release-070 review, L1): the
+    /// follower's own endpoint key. Left behind, the old app would publish a
+    /// second endpoint under this Mac's wallet node id.
+    private static let nestedSigningMaterial = ["follow/wallet-node.key"]
+    /// The node's sibling identity guard (candidate.rs `registered_identity`):
+    /// `<data dir>.identity`, beside the tree, surviving its deletion.
+    private static let identityGuardSuffix = ".identity"
+    /// A conflicting identity found in the new tree (one minted there while a
+    /// stale done flag hid the old one, B4) is set aside under this prefix —
+    /// recoverable by hand, never deleted.
+    private static let replacedPrefix = "eastsea-replaced-"
     /// Quarantined signing material lives in the old tree, under this
     /// prefix: recoverable by hand, and invisible to the node — the
     /// identity marks (candidate.rs) and the network sweep (supervisor.rs)
     /// never look inside a subdirectory for a key.
     private static let quarantinePrefix = "eastsea-quarantine-"
 
-    private static var fm: FileManager { FileManager.default }
+    static var fm: FileManager { FileManager.default }
 
     /// Where the app keeps its data (the sandboxed Application Support).
     static var supportURL: URL {
         fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
     }
 
-    /// Idempotent: the first caller runs the migration, later calls return.
+    /// Idempotent and serialized (L2): the first caller runs the migration,
+    /// concurrent callers wait for it (off the main thread) or get its
+    /// `.running` state (on the main thread, which must never block on the
+    /// hashing path — M1). Once a run in this process settled, later calls
+    /// return at once.
     @discardableResult
     static func ensure() -> Outcome {
-        migrate(support: supportURL, defaults: UserDefaults.standard)
+        Thread.isMainThread ? Runner.shared.ensureFromMain() : Runner.shared.runNow()
     }
 
     /// The migration proper, on injectable roots so the pure-Swift test can
     /// run it against throwaway directories and its own defaults domain.
-    static func migrate(support: URL, defaults: UserDefaults) -> Outcome {
-        guard !defaults.bool(forKey: doneKey) else { return .done }
+    /// `oldPreferencesDomain` is the old app's defaults domain (a test passes
+    /// one that does not exist, so no real preferences are copied into its
+    /// throwaway suite); `forceCopy` takes the cross-volume path on one
+    /// volume; `meter` receives the bytes the verified-copy path works through.
+    static func migrate(support: URL, defaults: UserDefaults, oldPreferencesDomain: String = oldAppID,
+                        forceCopy: Bool = false, meter: ProgressMeter? = nil) -> Outcome {
+        // B4: the flag is a cache of what the disk says, never a substitute.
+        // A flag left over from an earlier build (or data moved back by hand)
+        // with old data still lacking its new counterpart means: run again.
+        let stale = unmigratedOldData(support: support)
+        if defaults.bool(forKey: doneKey) {
+            if stale.isEmpty { return .done }
+            defaults.removeObject(forKey: doneKey)
+            if stale.contains(oldNodeItem) { defaults.removeObject(forKey: nodeDoneKey) }
+        }
         let oldNode = support.appending(path: "Aether/node")
         let newNode = support.appending(path: "EastSea/node")
-        let oldHandles = ["enclave-key.dat", "simulator-software-key.dat"]
-            .map { support.appending(path: "AetherWallet/\($0)") }
+        let oldHandles = walletHandleNames.map { support.appending(path: "AetherWallet/\($0)") }
         let oldState = support.appending(path: "Aether/update-state.json")
+        let oldGuard = support.appending(path: "Aether/node\(identityGuardSuffix)")
         let hasOld = fm.fileExists(atPath: oldNode.path)
             || oldHandles.contains { fm.fileExists(atPath: $0.path) }
             || fm.fileExists(atPath: oldState.path)
+            || fm.fileExists(atPath: oldGuard.path)
         if !hasOld {
-            copyOldPreferences(into: defaults)
+            copyOldPreferences(from: oldPreferencesDomain, into: defaults)
             defaults.set(true, forKey: doneKey)
             return .noOldData
         }
@@ -110,14 +153,15 @@ enum DataMigration {
                 // copy — quarantine happens only at the commit point below,
                 // after every other fallible copy has landed (H2).
                 oldTreeRemains = true
-                if !syncTreeVerified(oldNode, newNode) {
+                setAsideConflictingIdentity(old: oldNode, new: newNode, support: support)
+                if !syncTreeVerified(oldNode, newNode, meter: meter) {
                     problems.append("the node data (identity, share, journal, database) did not copy or did not verify")
                 }
             } else {
-                // A missing new tree moves outright; a move that cannot
-                // happen (cross-volume) falls back to the verified copy,
-                // with the same deferred old-tree shutdown.
-                switch moveTreeVerified(oldNode, newNode) {
+                // A missing new tree moves outright on one volume; across
+                // volumes it takes the verified copy, with the same deferred
+                // old-tree shutdown (M2: decided by volume identifiers).
+                switch moveTreeVerified(oldNode, newNode, forceCopy: forceCopy, meter: meter) {
                 case .moved: break
                 case .copied: oldTreeRemains = true
                 case .failed:
@@ -131,10 +175,15 @@ enum DataMigration {
         // old tree keeps everything its binary signs with, so a disk fault
         // here strands nobody — the old app still works and the next launch
         // retries.
+        // The wallet key handles must arrive exactly; the update record and
+        // the identity guard only need to exist (an existing one is the new
+        // app's own, newer state — never overwritten).
         let smallFiles = oldHandles.map {
-            (old: $0, new: support.appending(path: "EastSeaWallet/\($0.lastPathComponent)"))
-        } + [(old: oldState, new: support.appending(path: "EastSea/update-state.json"))]
-        for (old, new) in smallFiles where fm.fileExists(atPath: old.path) {
+            (old: $0, new: support.appending(path: "EastSeaWallet/\($0.lastPathComponent)"), exact: true)
+        } + [(old: oldState, new: support.appending(path: "EastSea/update-state.json"), exact: false),
+             (old: oldGuard, new: support.appending(path: "EastSea/node\(identityGuardSuffix)"), exact: false)]
+        for (old, new, exact) in smallFiles where fm.fileExists(atPath: old.path) {
+            if !exact && fm.fileExists(atPath: new.path) { continue }
             if !copyVerified(old, new) { problems.append("\(old.lastPathComponent) did not copy or did not verify") }
         }
         if oldTreeRemains && problems.isEmpty {
@@ -157,18 +206,78 @@ enum DataMigration {
             return .failed("migration incomplete: \(problems.joined(separator: "; ")). "
                 + "Nothing was deleted; the next launch retries.")
         }
-        copyOldPreferences(into: defaults)
+        copyOldPreferences(from: oldPreferencesDomain, into: defaults)
         defaults.set(true, forKey: doneKey)
         return .done
     }
 
+    // MARK: what is still waiting (B4)
+
+    private static let walletHandleNames = ["enclave-key.dat", "simulator-software-key.dat"]
+    /// `unmigratedOldData` names, for the callers that branch on them.
+    static let oldNodeItem = "Aether/node"
+    static let oldIdentityGuardItem = "Aether/node.identity"
+
+    /// Old data that still lacks its new counterpart, read from the disk
+    /// alone — never from a flag (release-070 review, B4). Empty once the
+    /// migration really happened (or there never was old data):
+    /// - `Aether/node` while it still holds an identity (a finished migration
+    ///   never leaves one at the old root: a same-volume move takes the whole
+    ///   tree, a copy quarantines it), or while it exists with no new tree
+    ///   and no migrated marker. An identity-less old tree beside an existing
+    ///   new one is the old app re-run as a follower, not data to move.
+    /// - an old wallet key handle with no handle at the new home.
+    /// - the old identity guard `Aether/node.identity` while the new home has
+    ///   neither its own guard nor an identity: a node started there now
+    ///   would mint a new validator identity.
+    static func unmigratedOldData(support: URL) -> [String] {
+        var out: [String] = []
+        if oldNodeUnmigrated(support) { out.append(oldNodeItem) }
+        for name in walletHandleNames {
+            let old = support.appending(path: "AetherWallet/\(name)")
+            let new = support.appending(path: "EastSeaWallet/\(name)")
+            if fm.fileExists(atPath: old.path) && !fm.fileExists(atPath: new.path) { out.append("AetherWallet/\(name)") }
+        }
+        let oldGuard = support.appending(path: "Aether/node\(identityGuardSuffix)")
+        let newGuard = support.appending(path: "EastSea/node\(identityGuardSuffix)")
+        if fm.fileExists(atPath: oldGuard.path) && !fm.fileExists(atPath: newGuard.path)
+            && !holdsIdentity(support.appending(path: "EastSea/node")) {
+            out.append(oldIdentityGuardItem)
+        }
+        return out
+    }
+
+    private static func oldNodeUnmigrated(_ support: URL) -> Bool {
+        let old = support.appending(path: "Aether/node")
+        guard fm.fileExists(atPath: old.path) else { return false }
+        if holdsIdentity(old) { return true }
+        return !fm.fileExists(atPath: support.appending(path: "EastSea/node").path)
+            && !fm.fileExists(atPath: old.appending(path: markerName).path)
+    }
+
+    /// Whether a node root holds identity material at the names the node
+    /// itself reads (the validator key and its public file, the account key,
+    /// the threshold share, the vote journals).
+    private static func holdsIdentity(_ root: URL) -> Bool {
+        let names = (try? fm.contentsOfDirectory(atPath: root.path)) ?? []
+        return names.contains(where: isRootSigningMaterial)
+    }
+
+    private static func isRootSigningMaterial(_ name: String) -> Bool {
+        signingMaterial.contains(name) || signingMaterialPrefixes.contains { name.hasPrefix($0) }
+    }
+
+    // MARK: the gates
+
     /// Audit 5, A5-7: while an unmigrated old identity exists, making a fresh
     /// one would strand it (a second wallet address; a validator that can
     /// never vote). `nil` = allowed. `loadOrCreate` refuses on a message.
-    static func mayCreateFreshWalletKey(support: URL? = nil, defaults: UserDefaults = .standard) -> String? {
+    /// No done flag can open this gate (B4): only the handle's arrival can.
+    static func mayCreateFreshWalletKey(support: URL? = nil, defaults: UserDefaults = .standard,
+                                        runner: Runner? = nil) -> String? {
+        if (runner ?? (support == nil ? Runner.shared : nil))?.isRunning == true { return movingSentence }
         let s = support ?? supportURL
-        if defaults.bool(forKey: doneKey) { return nil }
-        for name in ["enclave-key.dat", "simulator-software-key.dat"] {
+        for name in walletHandleNames {
             let old = s.appending(path: "AetherWallet/\(name)")
             let new = s.appending(path: "EastSeaWallet/\(name)")
             if fm.fileExists(atPath: old.path) && !fm.fileExists(atPath: new.path) {
@@ -182,17 +291,29 @@ enum DataMigration {
 
     /// Audit 5, A5-7 and audit 6, A6-5/A6-6: the node must not start while
     /// the old one (identity, threshold share, chain) waits unmigrated —
-    /// not even onto a partially-copied new tree. The node's own completion
-    /// state (pre-audit 7, H2) is `nodeMigrationComplete`: the verified new
-    /// tree may start once the old tree has stopped being a signer, even if
-    /// a later wallet-preference step still retries.
-    static func mayStartNode(support: URL? = nil, defaults: UserDefaults = .standard) -> String? {
+    /// not even onto a partially-copied new tree, and not while a stale done
+    /// flag says otherwise (B4). The node's own completion state (pre-audit
+    /// 7, H2) is `nodeMigrationComplete`: the verified new tree may start
+    /// once the old tree has stopped being a signer, even if a later
+    /// wallet-preference step still retries. Everything that can mint a
+    /// validator identity in the new home (the node, `candidate-info`, the
+    /// unattended daemon's marker) asks this first.
+    static func mayStartNode(support: URL? = nil, defaults: UserDefaults = .standard,
+                             runner: Runner? = nil) -> String? {
+        if (runner ?? (support == nil ? Runner.shared : nil))?.isRunning == true { return movingSentence }
         let s = support ?? supportURL
+        if unmigratedOldData(support: s).contains(oldIdentityGuardItem) {
+            return "this Mac had a validator identity under the old Aether app that has not reached EastSea yet. "
+                + "Launch the app once more to finish the data move — starting now would make a second identity."
+        }
         if nodeMigrationComplete(support: s, defaults: defaults) { return nil }
         return "the old Aether node data (validator identity, threshold share, chain) has not finished moving "
             + "into place. Launch the app once more to finish the data move (quit the old Aether app if it "
             + "asks) — starting now could run two copies of one validator identity."
     }
+
+    static let movingSentence = "EastSea is moving your data over from Aether. This takes a moment; "
+        + "the wallet and the node start as soon as it is done."
 
     // MARK: verification
 
@@ -200,9 +321,9 @@ enum DataMigration {
     /// SHA-256 — any size, no cutoff: a same-size different-content file is
     /// caught however big it is (audit 6, A6-6). The comparison behind
     /// every "done".
-    static func fileMatches(_ old: URL, _ new: URL) -> Bool {
+    static func fileMatches(_ old: URL, _ new: URL, meter: ProgressMeter? = nil) -> Bool {
         guard let a = size(of: old), let b = size(of: new), a == b else { return false }
-        guard let ha = streamSHA256(old), let hb = streamSHA256(new) else { return false }
+        guard let ha = streamSHA256(old, meter: meter), let hb = streamSHA256(new, meter: meter) else { return false }
         return ha == hb
     }
 
@@ -210,13 +331,14 @@ enum DataMigration {
     /// size limit and never the whole file in memory — the chain database
     /// is gigabytes. `nil` on any read error: a digest of "whatever we
     /// managed to read" would be a false match waiting to happen.
-    private static func streamSHA256(_ url: URL) -> String? {
+    private static func streamSHA256(_ url: URL, meter: ProgressMeter? = nil) -> String? {
         var sha = SHA256()
         do {
             let fh = try FileHandle(forReadingFrom: url)
             defer { try? fh.close() }
             while let chunk = try fh.read(upToCount: 1 << 20) {   // nil = end of file
                 sha.update(chunk)
+                meter?.add(Int64(chunk.count))
             }
         } catch { return nil }
         return sha.finalHex()
@@ -308,48 +430,77 @@ enum DataMigration {
         (try? fm.attributesOfItem(atPath: url.path))?[.size] as? Int64
     }
 
-    /// Same-volume move, verified: inventory first, move, inventory again.
-    /// A move that cannot happen (cross-volume) falls back to a verified
-    /// copy that leaves the old tree in place — its shutdown (quarantine,
-    /// marker) is the commit point in `migrate`, not this function's business
-    /// (pre-audit 7, H2: nothing is quarantined before every fallible copy
-    /// has landed).
+    /// The node tree's move, verified (M2). The path is chosen up front by
+    /// comparing volume identifiers, not discovered by a failing move:
+    /// `FileManager.moveItem` does NOT fail across volumes — it copies and
+    /// then deletes the source, checked by nothing. So:
+    /// - same volume: `rename(2)`, atomic, inventoried before and after;
+    /// - different (or unknown) volumes, or `forceCopy`: the SHA-256-verified
+    ///   copy, leaving the old tree in place. Its shutdown (quarantine,
+    ///   marker) is the commit point in `migrate`, not this function's
+    ///   business (pre-audit 7, H2: nothing is quarantined before every
+    ///   fallible copy has landed).
+    /// A rename that fails anyway (EXDEV from a mount the identifiers did not
+    /// show, a destination that appeared meanwhile) moved nothing — rename is
+    /// all or nothing — and takes the verified copy too.
     private enum TreeMove { case moved; case copied; case failed }
 
-    private static func moveTreeVerified(_ old: URL, _ new: URL) -> TreeMove {
+    private static func moveTreeVerified(_ old: URL, _ new: URL, forceCopy: Bool, meter: ProgressMeter?) -> TreeMove {
         guard let before = manifest(of: old) else { return .failed }
         do {
             try fm.createDirectory(at: new.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try fm.moveItem(at: old, to: new)
-        } catch {
-            // Cross-volume (or a destination that cannot be replaced): the
-            // verified-copy fallback; the old tree stays until the commit point.
-            return syncTreeVerified(old, new) ? .copied : .failed
+        } catch { return .failed }
+        let oneVolume = !forceCopy && sameVolume(old, new.deletingLastPathComponent()) == true
+        guard oneVolume, rename(old.path, new.path) == 0 else {
+            meter?.expect(copyWork(before))
+            return syncTreeVerified(old, new, meter: meter) ? .copied : .failed
         }
         guard let after = manifest(of: new) else { return .failed }
         return before == after ? .moved : .failed
     }
 
-    /// Verified copy of a tree, file by file (the cross-volume fallback and
-    /// the resume path of an interrupted earlier run). Already-correct files
-    /// are kept; a file that does not match is replaced and re-verified;
-    /// `run.lock` is never copied. True only when every file the old tree
-    /// vouches for is at the new home with the size it had.
-    static func syncTreeVerified(_ old: URL, _ new: URL) -> Bool {
+    /// Whether two existing paths live on one volume, by the volume
+    /// identifiers Foundation reports. `nil` when either cannot be read —
+    /// callers treat that as "different" and take the verified copy.
+    static func sameVolume(_ a: URL, _ b: URL) -> Bool? {
+        func id(_ u: URL) -> NSObject? {
+            (try? u.resourceValues(forKeys: [.volumeIdentifierKey]))?.volumeIdentifier as? NSObject
+        }
+        guard let x = id(a), let y = id(b) else { return nil }
+        return x.isEqual(y)
+    }
+
+    /// The bytes a verified copy of `entries` works through: each file is
+    /// copied once and hashed on both sides.
+    private static func copyWork(_ entries: [String: Int64]) -> Int64 {
+        entries.filter { $0.key != lockName && !$0.key.hasPrefix(quarantinePrefix) }.values.reduce(0, +) * 3
+    }
+
+    /// Verified copy of a tree, file by file (the cross-volume path and the
+    /// resume path of an interrupted earlier run). Already-correct files
+    /// are kept; a file that does not match is replaced and re-verified by
+    /// SHA-256; `run.lock` is never copied. True only when every file the old
+    /// tree vouches for is at the new home with the content it had.
+    static func syncTreeVerified(_ old: URL, _ new: URL, meter: ProgressMeter? = nil) -> Bool {
         guard let entries = manifest(of: old) else { return false }
+        if let meter, meter.total == 0 { meter.expect(copyWork(entries)) }
         // The old tree's live lock is never copied, and its quarantine
         // directories are recovery copies for a human — not cargo for the
         // new home (they can appear mid-resume, after the copy already ran).
         func syncable(_ rel: String) -> Bool { rel != lockName && !rel.hasPrefix(quarantinePrefix) }
         for (rel, bytes) in entries where syncable(rel) {
             let o = old.appending(path: rel), n = new.appending(path: rel)
-            if let have = size(of: n), have == bytes, fileMatches(o, n) { continue }
+            if let have = size(of: n), have == bytes, fileMatches(o, n, meter: meter) {
+                meter?.add(bytes)   // no copy needed
+                continue
+            }
             do {
                 try fm.createDirectory(at: n.deletingLastPathComponent(), withIntermediateDirectories: true)
                 if fm.fileExists(atPath: n.path) { try fm.removeItem(at: n) }   // a partial earlier attempt
                 try fm.copyItem(at: o, to: n)
             } catch { return false }
-            if !fileMatches(o, n) { return false }
+            meter?.add(bytes)
+            if !fileMatches(o, n, meter: meter) { return false }
         }
         guard let copied = manifest(of: new) else { return false }
         // Contents were hash-checked file by file above; here every old file
@@ -361,14 +512,60 @@ enum DataMigration {
     }
 
     /// Copy one small precious file unless a verified copy is already there.
+    /// The copy lands under a temporary name and is renamed into place only
+    /// once it verifies: a reader (the key loader, running while a slow
+    /// migration works in the background) sees no file or the whole file,
+    /// never half of one. A different file already in place is set aside
+    /// beside it, never deleted.
     private static func copyVerified(_ old: URL, _ new: URL) -> Bool {
         if fileMatches(old, new) { return true }
+        let dir = new.deletingLastPathComponent()
+        let temp = dir.appending(path: ".\(new.lastPathComponent).migrating-\(UUID().uuidString)")
         do {
-            try fm.createDirectory(at: new.deletingLastPathComponent(), withIntermediateDirectories: true)
-            if fm.fileExists(atPath: new.path) { try fm.removeItem(at: new) }
-            try fm.copyItem(at: old, to: new)
-        } catch { return false }
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            try fm.copyItem(at: old, to: temp)
+        } catch {
+            try? fm.removeItem(at: temp)
+            return false
+        }
+        guard fileMatches(old, temp) else {
+            try? fm.removeItem(at: temp)
+            return false
+        }
+        if fm.fileExists(atPath: new.path) {
+            let aside = dir.appending(path: "\(new.lastPathComponent).\(replacedPrefix)\(Int(Date().timeIntervalSince1970 * 1000))")
+            guard (try? fm.moveItem(at: new, to: aside)) != nil else {
+                try? fm.removeItem(at: temp)
+                return false
+            }
+        }
+        guard rename(temp.path, new.path) == 0 else {
+            try? fm.removeItem(at: temp)
+            return false
+        }
         return fileMatches(old, new)
+    }
+
+    /// B4, the resume path after a stale done flag: the new tree may already
+    /// hold a DIFFERENT validator identity, minted there while the flag hid
+    /// the old one. The old identity is the one the chain knows (registered,
+    /// staked), so it wins; the new tree's identity material — and the new
+    /// identity guard that pins it — is set aside inside the new tree, where
+    /// the node never looks for keys, and kept for a human to recover. A new
+    /// tree whose key matches (our own interrupted copy) is left alone.
+    private static func setAsideConflictingIdentity(old: URL, new: URL, support: URL) {
+        let oldKey = old.appending(path: "validator.key"), newKey = new.appending(path: "validator.key")
+        guard fm.fileExists(atPath: oldKey.path), fm.fileExists(atPath: newKey.path),
+              !fileMatches(oldKey, newKey) else { return }
+        let stamp = Int(Date().timeIntervalSince1970 * 1000)
+        let aside = new.appending(path: "\(replacedPrefix)\(stamp)")
+        guard (try? fm.createDirectory(at: aside, withIntermediateDirectories: true)) != nil else { return }
+        let names = ((try? fm.contentsOfDirectory(atPath: new.path)) ?? []).filter(isRootSigningMaterial)
+        for name in names { try? fm.moveItem(at: new.appending(path: name), to: aside.appending(path: name)) }
+        let newGuard = support.appending(path: "EastSea/node\(identityGuardSuffix)")
+        if fm.fileExists(atPath: newGuard.path) {
+            try? fm.moveItem(at: newGuard, to: support.appending(path: "EastSea/node\(identityGuardSuffix).\(replacedPrefix)\(stamp)"))
+        }
     }
 
     /// Every file under `root`, as `relative path → size` (the tree's
@@ -431,9 +628,8 @@ enum DataMigration {
     /// while removing the material excludes every binary at once.
     private static func quarantineOldSigningMaterial(_ old: URL) -> Bool {
         guard let names = try? fm.contentsOfDirectory(atPath: old.path) else { return false }
-        var targets = names.filter { name in
-            signingMaterial.contains(name) || signingMaterialPrefixes.contains { name.hasPrefix($0) }
-        }
+        var targets = names.filter(isRootSigningMaterial)
+            + nestedSigningMaterial.filter { fm.fileExists(atPath: old.appending(path: $0).path) }
         guard !targets.isEmpty else { return true }   // an interrupted quarantine, already finished
         // The pair the old binary needs to sign moves last: any failure before
         // that leaves both in place (and a live failure rolls the rest back).
@@ -445,6 +641,8 @@ enum DataMigration {
             var moved: [String] = []
             for name in targets {
                 do {
+                    try fm.createDirectory(at: q.appending(path: name).deletingLastPathComponent(),
+                                           withIntermediateDirectories: true)
                     try fm.moveItem(at: old.appending(path: name), to: q.appending(path: name))
                     moved.append(name)
                 } catch {
@@ -469,14 +667,15 @@ enum DataMigration {
     /// root that is clean of signing material and marked migrated can only
     /// exist because a verified copy finished and its quarantine ran.
     static func nodeMigrationComplete(support: URL, defaults: UserDefaults) -> Bool {
+        // B4: an old root that still holds an identity is unmigrated whatever
+        // the flags say.
+        if oldNodeUnmigrated(support) { return false }
         if defaults.bool(forKey: doneKey) || defaults.bool(forKey: nodeDoneKey) { return true }
         let oldNode = support.appending(path: "Aether/node")
         guard fm.fileExists(atPath: oldNode.path) else { return true }   // moved away entirely
         guard fm.fileExists(atPath: oldNode.appending(path: markerName).path) else { return false }
-        let names = (try? fm.contentsOfDirectory(atPath: oldNode.path)) ?? []
-        return !names.contains { name in
-            signingMaterial.contains(name) || signingMaterialPrefixes.contains { name.hasPrefix($0) }
-        }
+        return !holdsIdentity(oldNode)
+            && !nestedSigningMaterial.contains { fm.fileExists(atPath: oldNode.appending(path: $0).path) }
     }
 
     private static func markOldTreeMigrated(_ old: URL) -> Bool {
@@ -521,7 +720,7 @@ enum DataMigration {
     /// The bundle-id change also moves the UserDefaults domain. Copy the old
     /// domain's keys once (the node on/off switch, terms acceptance, mode),
     /// leaving anything the new install has already written in place.
-    private static func copyOldPreferences(into defaults: UserDefaults) {
+    private static func copyOldPreferences(from oldAppID: String, into defaults: UserDefaults) {
         guard let keys = CFPreferencesCopyKeyList(oldAppID as CFString,
                                                   kCFPreferencesCurrentUser,
                                                   kCFPreferencesAnyHost) as? [String] else { return }
@@ -529,6 +728,142 @@ enum DataMigration {
             guard let value = CFPreferencesCopyValue(key as CFString, oldAppID as CFString,
                                                      kCFPreferencesCurrentUser, kCFPreferencesAnyHost) else { continue }
             defaults.set(value, forKey: key)
+        }
+    }
+
+    // MARK: running it (M1, L2)
+
+    /// Counts the bytes the verified-copy path works through and reports a
+    /// fraction, at most every 64 MiB (and at the end), from whatever thread
+    /// does the work.
+    final class ProgressMeter {
+        private let lock = NSLock()
+        private(set) var total: Int64 = 0
+        private var done: Int64 = 0
+        private var reported: Int64 = 0
+        private let report: (Double) -> Void
+
+        init(report: @escaping (Double) -> Void) { self.report = report }
+
+        func expect(_ bytes: Int64) {
+            lock.lock(); total = max(total, bytes); lock.unlock()
+        }
+
+        func add(_ bytes: Int64) {
+            lock.lock()
+            done += bytes
+            let due = done - reported >= 64 << 20
+            if due { reported = done }
+            let fraction = total > 0 ? min(1, Double(done) / Double(total)) : 0
+            lock.unlock()
+            if due { report(fraction) }
+        }
+    }
+
+    /// One migration at a time per support root, and the main thread never
+    /// waits on the slow path (M1):
+    /// - `runNow` (any thread but main) runs `migrate` under a lock, so two
+    ///   concurrent callers no longer race for the old run.lock and the same
+    ///   files (L2) — the second waits and then sees the first one's result;
+    /// - `ensureFromMain` runs the fast cases inline (nothing to do, a
+    ///   same-volume rename: milliseconds) and starts the verified copy — a
+    ///   cross-volume move or the resume over an existing new tree, which
+    ///   hashes every byte — on a background queue, answering `.running`
+    ///   meanwhile. `onProgress` and `onFinish` tell the app (any thread).
+    /// Once a run reached `.done`/`.noOldData`, the process never runs it
+    /// again.
+    final class Runner {
+        static let shared = Runner(support: DataMigration.supportURL, defaults: .standard)
+
+        let support: URL
+        let defaults: UserDefaults
+        let oldPreferencesDomain: String
+        let forceCopy: Bool
+        /// The verified copy's progress, 0…1.
+        var onProgress: ((Double) -> Void)?
+        /// Every background run's outcome.
+        var onFinish: ((Outcome) -> Void)?
+
+        private let runLock = NSLock()
+        private let stateLock = NSLock()
+        private var running = false
+        private var settled = false
+
+        init(support: URL, defaults: UserDefaults, oldPreferencesDomain: String = DataMigration.oldAppID,
+             forceCopy: Bool = false) {
+            self.support = support
+            self.defaults = defaults
+            self.oldPreferencesDomain = oldPreferencesDomain
+            self.forceCopy = forceCopy
+        }
+
+        /// A migration is working right now (the gates stay shut).
+        var isRunning: Bool { stateLock.lock(); defer { stateLock.unlock() }; return running }
+        private var isSettled: Bool { stateLock.lock(); defer { stateLock.unlock() }; return settled }
+
+        /// Run (or wait for the run in progress), serialized.
+        func runNow() -> Outcome {
+            runLock.lock()
+            defer { runLock.unlock() }
+            return runHoldingLock()
+        }
+
+        private func runHoldingLock() -> Outcome {
+            if isSettled { return .done }
+            setRunning(true)
+            defer { setRunning(false) }
+            let meter = ProgressMeter { [weak self] in self?.onProgress?($0) }
+            let outcome = DataMigration.migrate(support: support, defaults: defaults,
+                                                oldPreferencesDomain: oldPreferencesDomain,
+                                                forceCopy: forceCopy, meter: meter)
+            if outcome == .done || outcome == .noOldData {
+                stateLock.lock(); settled = true; stateLock.unlock()
+            }
+            return outcome
+        }
+
+        /// From the main thread: never blocks on a slow run.
+        func ensureFromMain() -> Outcome {
+            if isSettled { return .done }
+            if !expectsLongRun() {
+                // Fast path; but if a background run holds the lock, do not wait.
+                guard runLock.try() else { return .running(DataMigration.movingSentence) }
+                defer { runLock.unlock() }
+                return runHoldingLock()
+            }
+            start()
+            return .running(DataMigration.movingSentence)
+        }
+
+        /// Start the background run unless one is already going.
+        func start() {
+            stateLock.lock()
+            let busy = running || settled
+            if !busy { running = true }   // claimed now: no second start, gates shut at once
+            stateLock.unlock()
+            guard !busy else { return }
+            DispatchQueue.global(qos: .userInitiated).async { [self] in
+                runLock.lock()
+                let outcome = runHoldingLock()   // keeps the claim; clears it when done
+                runLock.unlock()
+                onFinish?(outcome)
+            }
+        }
+
+        private func setRunning(_ on: Bool) { stateLock.lock(); running = on; stateLock.unlock() }
+
+        /// The hashing path is ahead: an old node tree that must be copied
+        /// (another volume) or resumed over an existing new tree.
+        func expectsLongRun() -> Bool {
+            if defaults.bool(forKey: DataMigration.doneKey) && DataMigration.unmigratedOldData(support: support).isEmpty {
+                return false
+            }
+            let old = support.appending(path: "Aether/node")
+            guard DataMigration.fm.fileExists(atPath: old.path) else { return false }
+            let eastSea = support.appending(path: "EastSea")
+            if DataMigration.fm.fileExists(atPath: eastSea.appending(path: "node").path) { return true }
+            let target = DataMigration.fm.fileExists(atPath: eastSea.path) ? eastSea : support
+            return forceCopy || DataMigration.sameVolume(old, target) != true
         }
     }
 }

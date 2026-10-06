@@ -18,7 +18,7 @@
 | A2 | 사전 레드팀 H1·H2·M1·M2 | ✅ 수정·병합 | — |
 | A3 | 감사 7라운드(새 동결 태그) | ⬜ | 아래 B 항목이 모두 들어간 뒤 `consensus-freeze-7` 태그 → Codex gpt-6.1-sol 감사 |
 | A4 | 업그레이드 훈련 스크립트(`scripts/upgrade-drill.sh`) | ✅ 2026-10-06 초록 완주 — 42 PASS / 0 FAIL, 379 s(2/3 배포·3/3 긴급·예약 전환·미갱신 노드 정지·재합류·B4 3-of-4·롤백 전부 증명) | — (운용 문서 `docs/ops/upgrade-drill.md`, 실행 로그 `.claude/team/upgrade-drill-run.log`) |
-| A5 | 72시간 소크(서로 다른 Mac) | 🧑⬜ | jay-macbookpro, jayui-mac-studio 켜기 필요 |
+| A5 | 72시간 소크(서로 다른 Mac) | 🔄 2026-10-06 10:05 v4를 맥북프로2(poc-m3)로 이전, 2대 Mac으로 시작 | 세 번째 Mac(jay-macbookpro 또는 jayui-mac-studio) 추가 권장 |
 | A6 | 전체 검증 깨끗하게 1회 | 🟡 | 오늘 실패는 프로세스 띄우는 테스트 17개(과부하 추정) + 문서 테스트 1개(수정함). Mac이 한가할 때 재실행 |
 | A7 | 새 코드로 리허설 재실행 | ⬜ | 영수증 커밋·바인딩 변경 뒤 미실행 |
 

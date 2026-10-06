@@ -165,6 +165,9 @@ contract FixedPriceMarket is SimpleBrake, ReentrancyGuard {
                 }
             } catch {}
         }
+        // An unset recipient cannot pull its credit. Treat malformed optional
+        // royalty metadata as no royalty so sale proceeds remain withdrawable.
+        if (royaltyReceiver == address(0)) royalty = 0;
         if (royalty > l.price) royalty = l.price; // 악의적 과다 로열티 클램프
         sellerAmount = l.price - royalty;
     }

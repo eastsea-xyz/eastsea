@@ -552,3 +552,55 @@ fn audit_714_fresh_senders_cannot_make_unpaid_accounts() {
     assert_eq!(proposed.state.root(), state.root());
     assert!(proposed.receipts.is_empty());
 }
+
+/// Live run 2026-10-06 (docs/research/contracts-live-2026-10-06.md): once the
+/// B5 burst is spent, a deploy that needs more state units than the rolling
+/// budget has left was refused with "transaction exceeds block gas limit" —
+/// the same words as a genuinely oversized transaction, so a wallet could not
+/// tell "too big, never" from "busy, retry shortly". Admission now names the
+/// state budget, what the tx needs, what is left and how long the refill takes.
+#[test]
+fn a_spent_state_budget_refusal_says_state_budget_and_when_to_retry() {
+    let s = signer(9);
+    let mut state = WorldState::default();
+    state
+        .set_balance(addr(&s), U256::from(10u128.pow(20)))
+        .unwrap();
+    state.set_code(WRITER, Bytes::from_static(WRITE)).unwrap();
+    // A spent budget also means the exponential state surcharge (fees.rs
+    // `state_base_fee`), so the wallet signs a cap above it, as the CLI does
+    // from the node's quoted base fee.
+    let call = EvmCall {
+        to: Some(WRITER),
+        value: U256::ZERO,
+        input: Bytes::from(U256::from(1u64).to_be_bytes::<32>().to_vec()),
+        gas_limit: 100_000,
+        delegate: None,
+    };
+    let fees = FeeVector { exec: 0, state: 1_000 * PRICE, prove: 0 };
+    let mut tx = sign_call_with(&s, CHAIN, 0, fees, 0, &call).unwrap();
+    tx.header.gas.state = 200;
+    let mut sig = s.sign(&tx.signing_bytes()).unwrap();
+    sig.extend_from_slice(&s.public_key().bytes);
+    tx.signature = Bytes::from(sig);
+    let need = aether_execution::check_admission_cost(&state, &ctx(1), &tx)
+        .unwrap()
+        .gas
+        .state;
+
+    let mut spent = ctx(1);
+    spent.limits.state = need - 40;
+    let err = aether_execution::check_admission_cost(&state, &spent, &tx).unwrap_err();
+    assert!(err.contains("state budget"), "{err}");
+    assert!(!err.contains("block gas limit"), "{err}");
+    assert!(err.contains(&format!("needs {need} state units")), "{err}");
+    assert!(err.contains(&format!("{} are available", need - 40)), "{err}");
+    // 40 missing units at 32 per block: two blocks of refill.
+    assert!(err.contains("about 2 blocks"), "{err}");
+
+    // An exec-gas overrun is never worded as a temporary state budget.
+    let mut tight = ctx(1);
+    tight.limits.exec = 1_000;
+    let err = aether_execution::check_admission_cost(&state, &tight, &tx).unwrap_err();
+    assert!(!err.contains("state budget"), "{err}");
+}

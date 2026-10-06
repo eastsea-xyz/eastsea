@@ -6,7 +6,9 @@
 // under B5 state-budget pressure:
 //   1. block production never stops (height keeps advancing while the burst drains),
 //   2. refused/queued transactions are classified (included, in-block refusal,
-//      client-side refusal, never seen) instead of disappearing,
+//      client-side refusal, pending or dropped WITH the node's reason) instead
+//      of disappearing — a hash the node can say nothing about is a silent
+//      loss and fails the run (contracts-live bug #5),
 //   3. the wallet-facing error text a user would read is captured verbatim.
 // Writes tmp/live/stress.json.
 
@@ -113,16 +115,25 @@ async function main() {
   clearInterval(sampler);
 
   // ---------------------------------------------------------------- drain
-  // Poll receipts until every submitted hash resolves or 5 minutes pass; the
-  // first poll that sees a receipt approximates its inclusion time.
-  const seen = new Map(); // hash -> {t}
-  const deadline = Date.now() + Number(process.env.STRESS_DRAIN_MS || 600_000);
+  // Poll until every submitted hash is included or dropped (the node keeps a
+  // reason for each drop), or the window ends; the first poll that sees a
+  // receipt approximates its inclusion time. The default window is the
+  // 10-minute mempool TTL plus a minute, so every under-priced tx is seen
+  // leaving with its reason rather than vanishing just after the window.
+  const seen = new Map(); // hash -> {t, r}: included
+  const dropped = new Map(); // hash -> {t, r}: left the pool, with a reason
+  const last = new Map(); // hash -> the node's latest answer
+  const deadline = Date.now() + Number(process.env.STRESS_DRAIN_MS || 660_000);
   while (Date.now() < deadline) {
-    const missing = subs.filter((s) => s.hash && !seen.has(s.hash));
+    const missing = subs.filter((s) => s.hash && !seen.has(s.hash) && !dropped.has(s.hash));
     if (!missing.length) break;
     try {
       const batch = await Promise.all(missing.map(async (s) => ({ s, r: await rpc('aether_getReceipt', [s.hash]) })));
-      for (const { s, r } of batch) if (r && r.receipt) seen.set(s.hash, { t: Date.now(), r });
+      for (const { s, r } of batch) {
+        last.set(s.hash, r);
+        if (r && r.receipt) seen.set(s.hash, { t: Date.now(), r });
+        else if (r && r.status === 'dropped') dropped.set(s.hash, { t: Date.now(), r });
+      }
     } catch { /* retry next round */ }
     samples.push({ t: Date.now(), h: await height().catch(() => null) });
     await sleep(3000);
@@ -133,15 +144,34 @@ async function main() {
   log(`drained: height ${h0}→${hFinal}, dev1 nonce ${n0}→${nFinal}, receipts ${seen.size}/${subs.filter((s) => s.hash).length}`);
 
   // ---------------------------------------------------------------- classify
+  // One last look at what is still unresolved, so its state is current.
+  for (const s of subs) {
+    if (!s.hash || seen.has(s.hash) || dropped.has(s.hash)) continue;
+    const r = await rpc('aether_getReceipt', [s.hash]).catch(() => last.get(s.hash) ?? null);
+    last.set(s.hash, r);
+    if (r && r.receipt) seen.set(s.hash, { t: Date.now(), r });
+    else if (r && r.status === 'dropped') dropped.set(s.hash, { t: Date.now(), r });
+  }
+  // Bug #5's verdict: every hash ends included, dropped with a reason, or
+  // pending with what it waits for. Null — the node knows nothing — is silent.
+  const fate = (s) => {
+    if (!s.hash) return s.code !== 0 ? 'client-refused' : 'no-hash';
+    const rec = seen.get(s.hash)?.r;
+    if (rec) return rec.receipt.success === true ? 'included' : 'in-block-refused';
+    const d = dropped.get(s.hash)?.r;
+    if (d) return `dropped:${d.reason?.kind ?? 'no-reason'}`;
+    const p = last.get(s.hash);
+    if (p && (p.status === 'pending' || p.pending)) return `pending:${p.waiting?.kind ?? 'its-turn'}`;
+    return 'silent';
+  };
   const receipts = [];
   for (const s of subs) {
     const hit = s.hash ? seen.get(s.hash) : undefined;
     const rec = hit?.r;
+    const why = s.hash ? (dropped.get(s.hash)?.r?.reason ?? last.get(s.hash)?.waiting ?? null) : null;
     receipts.push({
       kind: s.kind, dev: s.dev ?? 1, nonce: Number(s.nonce), to: s.addr ?? null,
-      outcome: !s.hash && s.code !== 0 ? 'client-refused'
-        : !s.hash ? 'no-hash'
-        : rec ? (rec.receipt.success === true ? 'included' : 'in-block-refused') : 'never-included',
+      outcome: fate(s), reason: why,
       exit: s.code, hash: s.hash, height: rec ? Number(rec.height) : null,
       gas: rec ? Number(rec.receipt.gas_used ?? rec.receipt.gas ?? 0) : null,
       stateGas: rec ? Number(rec.receipt.state_gas ?? 0) : null,
@@ -181,6 +211,8 @@ async function main() {
   const maxStallSec = Math.round(maxStallMs / 100) / 10;
   const histogram = {};
   for (const r of receipts) if (r.height != null) histogram[r.height] = (histogram[r.height] || 0) + 1;
+  const silent = receipts.filter((r) => r.outcome === 'silent' || r.outcome === 'no-hash' || r.outcome === 'dropped:no-reason').length;
+  const refusedWithoutText = receipts.filter((r) => r.outcome === 'client-refused' && !(r.stderr || r.stdout)).length;
   const heightsAdvanced = hFinal > h0 && nFinal >= n0 && (nFinal - n0) >= subs.filter((s) => s.hash && seen.has(s.hash)).length;
 
   const verdict = {
@@ -189,7 +221,7 @@ async function main() {
     heightBefore: h0, heightAfter: hFinal, mempoolAfterDrain: pendingAfterDrain,
     nonceBefore: Number(n0), nonceAfter: Number(nFinal),
     submitted: subs.length, withHash: subs.filter((s) => s.hash).length,
-    receipts: seen.size, counts,
+    receipts: seen.size, dropped: dropped.size, counts, silentLosses: silent, refusedWithoutText,
     perHeightHistogram: Object.fromEntries(Object.entries(histogram).sort((a, b) => a[0] - b[0])),
     errorTexts: Object.values(errors),
     drainSeconds: Math.round((Date.now() - submittedAll) / 1000),
@@ -202,11 +234,12 @@ async function main() {
   }, null, 2));
   log(`stress → ${OUT}`);
 
-  // Queued-but-not-yet-included (B5 refill) is the designed outcome, not a
-  // failure; a stalled chain or a tx the CLI accepted but lost is.
-  const bad = !verdict.blocksNeverStopped || (counts['no-hash'] ?? 0) > 0;
+  // Queued-but-not-yet-included (B5 refill) and dropped-with-a-reason are
+  // designed outcomes; a stalled chain, a tx the node lost without a word
+  // (bug #5), or a refusal without text is a failure.
+  const bad = !verdict.blocksNeverStopped || silent > 0 || refusedWithoutText > 0;
   if (bad) {
-    console.log('STRESS FAIL:', JSON.stringify({ blocksNeverStopped: verdict.blocksNeverStopped, counts }));
+    console.log('STRESS FAIL:', JSON.stringify({ blocksNeverStopped: verdict.blocksNeverStopped, silent, refusedWithoutText, counts }));
     process.exitCode = 1;
   }
 }

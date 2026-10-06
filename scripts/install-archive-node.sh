@@ -66,12 +66,13 @@ printf "#!/bin/sh\n# zig cc wrapper. The target goes AFTER the caller arguments:
 printf "#!/bin/sh\nexec \"\$(dirname \"\$0\")/zig/zig\" c++ \"\$@\" -target x86_64-linux-gnu\n" > zigcxx
 printf "#!/bin/sh\nexec \"\$(dirname \"\$0\")/zig/zig\" ar \"\$@\"\n" > zigar
 chmod +x zigcc zigcxx zigar
-echo \"int main(){return 0;}\" > zig-probe.c
+echo "int main(){return 0;}" > zig-probe.c
 ./zigcc -o zig-probe zig-probe.c && ./zig-probe && rm -f zig-probe zig-probe.c
-echo "zig cc ok: $($BASE/toolchain/zig/zig version)"'
+echo "zig cc ok: $(zig/zig version)"'
 
 echo "==> network.json"
-scp -q "$NETWORK" "$HOST:$BASE/network-$CHAIN.json"
+# Through ssh, not scp: the NAS SFTP server refuses writes into ~/AI (as rsync does).
+ssh "$HOST" "cat > $BASE/network-$CHAIN.json" < "$NETWORK"
 
 echo "==> runner"
 ssh "$HOST" "cat > $BASE/run-archive.sh" <<'RUNNER'

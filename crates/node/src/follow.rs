@@ -800,12 +800,16 @@ impl StallWatch {
 /// `joining`: this Mac's voting key when it is a candidate. When a finalized
 /// handoff seats it, the follower stops before the switch height (for up to
 /// `HOLD`), so `aether run` can start it as a voting node from that block.
+/// `no_jump`: an archive node replays the gap instead of snapshot-jumping —
+/// a jump keeps only certified facts of the snapshot block, so the store
+/// loses the history index era export needs (audit 7 A7-1).
 pub async fn run(
     chain: Chain,
     upstream: std::sync::Arc<Upstream>,
     set: ValidatorSet,
     archive: std::sync::Arc<FinalityArchive>,
     joining: Option<String>,
+    no_jump: bool,
 ) {
     const HOLD: Duration = Duration::from_secs(120);
     let mut last_log = 0;
@@ -852,6 +856,7 @@ pub async fn run(
             cap,
             window,
             &mut last_log,
+            !no_jump,
         ));
         let mut activity = crate::chain::activity();
         let result = loop {
@@ -940,6 +945,9 @@ fn hold_cap(chain: &Chain, joining: Option<&str>) -> Hold {
 /// (each costs one height round trip and one batch; the last batch of a
 /// backlog stops where the network's tip answers nothing). Returns how many
 /// blocks were adopted (0: at the tip, or an error is being retried).
+/// `allow_jump`: false for an archive node, which must replay its gap — a
+/// snapshot jump keeps no per-block history, so the history index era export
+/// needs would stay gone forever (audit 7 A7-1).
 async fn advance(
     chain: &Chain,
     upstream: &Upstream,
@@ -948,6 +956,7 @@ async fn advance(
     cap: u64,
     window: u64,
     last_log: &mut u64,
+    allow_jump: bool,
 ) -> Result<u64, String> {
     // Each round starts unnamed (red team #2): a stage that still holds names
     // itself again below; one that has finished does not linger in aether_status.
@@ -961,7 +970,7 @@ async fn advance(
         // fetch at our own height, so a round "succeeded" fetching nothing.
         let net = upstream.net_height(ours).await?;
         chain.lock().net_height = Some(net);
-        if net > ours + JUMP_BEHIND && adopted == 0 {
+        if allow_jump && net > ours + JUMP_BEHIND && adopted == 0 {
             match jump(chain, upstream, set).await {
                 Ok(to) => {
                     info!(from = ours, to, skipped = to - ours - 1, "jumped to a certified snapshot (the gap's blocks stay fetchable from era files)");
@@ -1196,7 +1205,7 @@ pub async fn catch_up(
     let mut knew_height = false;
     loop {
         let ours = chain.finalized_height();
-        if let Err(e) = advance(chain, upstream, set, None, u64::MAX, window, &mut last_log).await {
+        if let Err(e) = advance(chain, upstream, set, None, u64::MAX, window, &mut last_log, true).await {
             if e.starts_with(STORE_FAILED) {
                 recover(chain).await;
             } else {

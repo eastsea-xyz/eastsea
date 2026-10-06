@@ -572,7 +572,18 @@ fn blake3_of(b: &[u8]) -> String {
 
 /// Export newly sealed eras every [`INTERVAL`] (the archive node's background
 /// task; `once` is the testable half).
+///
+/// A history-v1 chain (the legacy 7780 testnet) cannot carry the history
+/// index every pass needs, so an export task on one used to fail every pass
+/// and retry forever (audit 7 A7-1). Say why once and stop instead.
 pub async fn run(chain: Chain, args: ExportArgs) {
+    if !chain.cfg().history_v2 {
+        tracing::error!(
+            chain_id = chain.cfg().chain_id,
+            "era export needs history v2; this chain keeps legacy history, so nothing will export (docs/ops/archive-node.md)"
+        );
+        return;
+    }
     loop {
         let (c, a) = (chain.clone(), args.clone());
         match tokio::task::spawn_blocking(move || once(&c, &a)).await {
@@ -588,6 +599,47 @@ pub async fn run(chain: Chain, args: ExportArgs) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Audit 7 A7-1: the export loop must not spin forever on a chain that
+    /// cannot carry a history index. The OLD `run` retried `once` every
+    /// 30 s regardless, so an archive on a history-v1 chain (or one left
+    /// index-less by a snapshot start) kept a busy export task alive with no
+    /// path to success. The NEW gate reports once and returns; `once` —
+    /// which the fixtures below drive directly — is unchanged.
+    #[test]
+    fn run_reports_once_and_stops_on_a_chain_without_history_v2() {
+        use aether_state::mmr::EraIndex;
+        use aether_types::GasVector;
+        let dir = std::env::temp_dir().join(format!("aether-export-gate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = crate::store::Store::open(&dir.join("db.redb")).unwrap();
+        let (chain, _) = Chain::open(
+            crate::chain::ChainConfig {
+                chain_id: 7781,
+                limits: GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
+                alloc: vec![], fees: false, registrar: None, epoch_blocks: 0,
+                min_streak: None, draw_epochs: None, history_v2: false, protocol: 1,
+                node_rewards: false, committee: vec![], reserve: None, group: 0,
+                max_committee: crate::rotation::GROW_UNTIL,
+            },
+            store,
+        )
+        .unwrap();
+        // Even a present index must not matter: the flag is what the gate reads
+        // (a snapshot-started archive has `None` here, but the flag is the
+        // earlier, cleaner boundary).
+        chain.lock().history_index = Some(std::sync::Arc::new(EraIndex { eras: vec![], open: vec![] }));
+        let args = ExportArgs { dir: dir.join("out"), webseeds: vec![], https_base: None, sign_key: dir.join("sign.key") };
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let finished = rt.block_on(async move {
+            tokio::time::timeout(std::time::Duration::from_secs(5), run(chain, args)).await
+        });
+        assert!(finished.is_ok(), "run() must return on a history-v1 chain instead of retrying forever");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn bencode_round_trips_the_torrent_shapes() {

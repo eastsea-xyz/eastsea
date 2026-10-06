@@ -47,6 +47,8 @@ resource_guard() {
 
 resource_guard
 python3 scripts/generate-contract-fixtures.py --offline
+# B0-B2 head-to-head fixtures (fixtures/native, fixtures/gpl): separate manifests.
+python3 scripts/generate-native-fixtures.py --offline
 resource_guard
 : > "$CONTRACTS_ONCHAIN_METRICS"
 : > "$CONTRACTS_ONCHAIN_WORKFLOWS"

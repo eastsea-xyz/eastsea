@@ -64,7 +64,7 @@ async function main() {
   log(`artifacts: ${Object.keys(art).length} contracts from ${ARTIFACTS}`);
 
   const results = [];
-  const ctx = { art, log, results };
+  const ctx = { art, log, results, addresses: {} };
   const t0 = performance.now();
 
   // dev1 holds the genesis faucet supply; dev2/dev3 are funded by plain
@@ -73,7 +73,7 @@ async function main() {
   log(`dev1 ${D[1]}\n     dev2 ${D[2]}\n     dev3 ${D[3]}`);
   for (const i of [2, 3]) {
     const r = await send({ dev: 1, to: D[i], value: 10n ** 24n });
-    results.push({ kind: 'transfer', label: `fund dev${i}`, ...r });
+    results.push({ kind: 'transfer', ...r, label: `fund dev${i}` });
     if (!r.ok || r.success !== true) throw new Error(`funding dev${i} failed`);
   }
 
@@ -113,7 +113,8 @@ async function main() {
       height: r.height, success: r.success, gas: r.gas, proveGas: r.proveGas,
       stateGas: r.stateGas, stateFee: r.stateFee, contractAddress: r.contractAddress,
       logs: r.logs, cliMs: r.cliMs, submittedMs: r.submittedMs, finalizedMs: r.finalizedMs,
-      stdout: r.stdout, stderr: r.stderr, error: r.error, expected: r.expected,
+      stdout: r.stdout, stderr: r.stderr, error: r.error, expected: r.expected, revert: r.revert,
+      budgetRetries: r.budgetRetries, budgetWaitMs: r.budgetWaitMs, budgetRefusal: r.budgetRefusal,
     })),
     logCounts,
     addresses: ctx.deployed,

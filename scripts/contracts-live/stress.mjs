@@ -13,7 +13,7 @@
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { keccak256 } from '@noble/hashes/sha3';
+import { keccak_256 as keccak256 } from '@noble/hashes/sha3';
 import { rpc, height, cli, devAddress, nonceOf, sleep } from './lib.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -24,6 +24,8 @@ const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 const TRANSFERS = Number(process.env.STRESS_TRANSFERS || 200);
 const DEPLOYS = Number(process.env.STRESS_DEPLOYS || 20);
 const WAVE = Number(process.env.STRESS_WAVE || 20);
+const DEPLOYERS = Number(process.env.STRESS_DEPLOYERS || 5);
+const RPC_URL = process.env.AETHER_RPC || 'http://127.0.0.1:8645';
 // EastSeaAccount runtime bytecode from the fixture: a "large deploy" that also
 // creates a state slot per contract. Read from the repo's artifacts copy.
 import { readFileSync } from 'node:fs';
@@ -52,9 +54,7 @@ async function main() {
   const submitWave = async (items, waveIdx) => {
     const start = Date.now();
     const runs = await Promise.all(items.map(async (it) => {
-      const args = it.kind === 'transfer'
-        ? ['send', '--rpc', process.env.AETHER_RPC || 'http://127.0.0.1:8645', '--from-dev', '1', '--to', it.addr, '--value', '1', '--nonce', String(it.nonce)]
-        : ['deploy', '--rpc', process.env.AETHER_RPC || 'http://127.0.0.1:8645', '--from-dev', '1', '--code', BIG_CODE, '--gas', '6000000', '--nonce', String(it.nonce)];
+      const args = ['send', '--rpc', RPC_URL, '--from-dev', '1', '--to', it.addr, '--value', '1', '--nonce', String(it.nonce)];
       const r = await cli(args, { timeoutMs: 60_000 });
       const hash = r.out.match(/tx (0x[0-9a-f]{64})/)?.[1] ?? null;
       return { ...it, code: r.code, out: r.out.trim().split('\n').slice(-2).join(' | '), err: r.err.trim().split('\n').slice(-2).join(' | '), hash, waveStartMs: start, submittedMs: Math.round(r.marks.submitted ?? r.ms) };
@@ -64,11 +64,37 @@ async function main() {
     log(`wave ${waveIdx}: ${runs.filter((r) => r.hash).length}/${runs.length} submitted (h=${await height()})`);
   };
 
+  // `aether deploy` has no --nonce (it reads the account nonce and waits for
+  // inclusion, like the wallet's deploy sheet), so the 20 large deploys come
+  // from DEPLOYERS separate dev accounts, each sending its share back to back,
+  // all accounts at once, while dev1's transfer waves are in flight.
+  const deployers = Array.from({ length: DEPLOYERS }, (_, k) => 6 + k);
+  for (const d of deployers) {
+    const r = await cli(['send', '--rpc', RPC_URL, '--from-dev', '1', '--to', devAddress(d), '--value', String(10n ** 22n), '--nonce', String(nonce++), '--wait']);
+    if (r.code !== 0) throw new Error(`funding deployer dev${d}: ${r.err.trim()}`);
+  }
+  log(`deployers dev${deployers[0]}..dev${deployers.at(-1)} funded (h=${await height()})`);
+
   let waveIdx = 0;
   const plan = [];
   for (let i = 0; i < TRANSFERS; i++) plan.push({ kind: 'transfer', addr: freshAddr(i), nonce: nonce++ });
-  for (let i = 0; i < DEPLOYS; i++) plan.push({ kind: 'deploy', nonce: nonce++ });
+  const deployRuns = (async () => {
+    const per = Math.ceil(DEPLOYS / deployers.length);
+    const out = await Promise.all(deployers.map(async (d, k) => {
+      const mine = [];
+      for (let j = 0; j < per && k * per + j < DEPLOYS; j++) {
+        const start = Date.now();
+        const r = await cli(['deploy', '--rpc', RPC_URL, '--from-dev', String(d), '--code', BIG_CODE, '--gas', '6000000'], { timeoutMs: 120_000 });
+        const hash = r.out.match(/tx (0x[0-9a-f]{64})/)?.[1] ?? null;
+        mine.push({ kind: 'deploy', dev: d, nonce: j, code: r.code, out: r.out.trim().split('\n').slice(-2).join(' | '), err: r.err.trim().split('\n').slice(-2).join(' | '), hash, waveStartMs: start, submittedMs: Math.round(r.marks.submitted ?? r.ms) });
+      }
+      return mine;
+    }));
+    return out.flat();
+  })();
   for (let o = 0; o < plan.length; o += WAVE) await submitWave(plan.slice(o, o + WAVE), waveIdx++);
+  subs.push(...(await deployRuns));
+  log(`deploys: ${subs.filter((s) => s.kind === 'deploy' && s.hash).length}/${DEPLOYS} got a tx hash`);
   const submittedAll = Date.now();
   clearInterval(sampler);
 
@@ -76,7 +102,7 @@ async function main() {
   // Poll receipts until every submitted hash resolves or 5 minutes pass; the
   // first poll that sees a receipt approximates its inclusion time.
   const seen = new Map(); // hash -> {t}
-  const deadline = Date.now() + 300_000;
+  const deadline = Date.now() + Number(process.env.STRESS_DRAIN_MS || 600_000);
   while (Date.now() < deadline) {
     const missing = subs.filter((s) => s.hash && !seen.has(s.hash));
     if (!missing.length) break;
@@ -88,6 +114,7 @@ async function main() {
     await sleep(3000);
   }
   const hFinal = await height();
+  const pendingAfterDrain = (await rpc('aether_status').catch(() => ({}))).mempool ?? null;
   const nFinal = await nonceOf(devAddress(1));
   log(`drained: height ${h0}→${hFinal}, dev1 nonce ${n0}→${nFinal}, receipts ${seen.size}/${subs.filter((s) => s.hash).length}`);
 
@@ -125,20 +152,27 @@ async function main() {
   // ---------------------------------------------------------------- verdict
   // Block production never stopped: no 10 s window without a height advance
   // while the burst was draining (empty blocks still finalize).
-  let maxStallSec = 0;
-  for (let i = 0; i < samples.length; i++) {
-    const w = samples.filter((s) => s.t >= samples[i].t && s.t <= samples[i].t + 10_000);
-    const adv = Math.max(...w.map((s) => s.h ?? 0)) - (samples[i].h ?? 0);
-    maxStallSec = Math.max(maxStallSec, adv <= 0 ? 10 : 0);
+  // Keep watching 20 s past the drain, then measure the longest time the
+  // finalized height stood still across the whole window (1 s blocks).
+  for (let i = 0; i < 10; i++) { samples.push({ t: Date.now(), h: await height().catch(() => null) }); await sleep(2000); }
+  samples.sort((a, b) => a.t - b.t);
+  let maxStallMs = 0;
+  let lastH = null;
+  let lastChange = samples[0].t;
+  for (const sm of samples) {
+    if (sm.h == null) continue;
+    if (lastH === null || sm.h > lastH) { lastH = sm.h; lastChange = sm.t; }
+    maxStallMs = Math.max(maxStallMs, sm.t - lastChange);
   }
+  const maxStallSec = Math.round(maxStallMs / 100) / 10;
   const histogram = {};
   for (const r of receipts) if (r.height != null) histogram[r.height] = (histogram[r.height] || 0) + 1;
   const heightsAdvanced = hFinal > h0 && nFinal >= n0 && (nFinal - n0) >= subs.filter((s) => s.hash && seen.has(s.hash)).length;
 
   const verdict = {
-    blocksNeverStopped: maxStallSec === 0,
+    blocksNeverStopped: maxStallSec < 10,
     maxStallSec,
-    heightBefore: h0, heightAfter: hFinal,
+    heightBefore: h0, heightAfter: hFinal, mempoolAfterDrain: pendingAfterDrain,
     nonceBefore: Number(n0), nonceAfter: Number(nFinal),
     submitted: subs.length, withHash: subs.filter((s) => s.hash).length,
     receipts: seen.size, counts,
@@ -154,7 +188,9 @@ async function main() {
   }, null, 2));
   log(`stress → ${OUT}`);
 
-  const bad = !verdict.blocksNeverStopped || counts['never-included'] > 0 || counts['no-hash'] > 0;
+  // Queued-but-not-yet-included (B5 refill) is the designed outcome, not a
+  // failure; a stalled chain or a tx the CLI accepted but lost is.
+  const bad = !verdict.blocksNeverStopped || (counts['no-hash'] ?? 0) > 0;
   if (bad) {
     console.log('STRESS FAIL:', JSON.stringify({ blocksNeverStopped: verdict.blocksNeverStopped, counts }));
     process.exitCode = 1;

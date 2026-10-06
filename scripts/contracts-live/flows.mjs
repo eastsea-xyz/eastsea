@@ -10,12 +10,12 @@
 // multisig/DAO/permit) are computed locally over digests the contracts
 // publish.
 
-import { keccak256 } from '@noble/hashes/sha3';
-import { sha256 } from '@noble/hashes/sha256';
-import { Wallet, getCreateAddress } from 'ethers';
+import { keccak_256 as keccak256 } from '@noble/hashes/sha3';
+import { sha256 } from '@noble/hashes/sha2';
+import { Wallet, getCreateAddress, keccak256 as keccakHex } from 'ethers';
 import {
   call, deploy, send, ethCall, iface, coder, devAddress, devKeyXY, devSignDigest,
-  nonceOf, sleep, nowSec, CHAIN_ID,
+  nonceOf, sleep, nowSec, CHAIN_ID, decodeRevert, cliTx,
 } from './lib.mjs';
 
 const E = coder();
@@ -61,13 +61,13 @@ export async function runFlows(ctx) {
 
   const I = (name) => iface(art[name].abi);
   const enc = (name, fn, ...args) => I(name).encodeFunctionData(fn, args);
-  const ctor = (name, args) => art[name].bytecode + I(name).encodeDeploy(args).slice(10);
+  const ctor = (name, args) => art[name].bytecode + I(name).encodeDeploy(args).slice(2);
   const view = async (name, fn, args = []) => ethCall(deployed[name], I(name).encodeFunctionData(fn, args), { from: D[1] });
 
   const step = async (kind, label, fn) => {
     try {
       const r = await fn();
-      results.push({ kind, label, ...(r || {}) });
+      results.push({ kind, ...(r || {}), label });
       return r;
     } catch (e) {
       results.push({ kind, label, ok: false, error: String((e && e.message) || e) });
@@ -75,18 +75,23 @@ export async function runFlows(ctx) {
       return null;
     }
   };
+  // Every custom error/Error(string) any fixture can raise, for reading a
+  // receipt's revert output back the way a wallet would show it.
+  const ERRORS = iface(Object.values(art).flatMap((a) => a.abi.filter((f) => f.type === 'error'))
+    .filter((f, i, all) => all.findIndex((g) => g.name === f.name && JSON.stringify(g.inputs) === JSON.stringify(f.inputs)) === i));
+  const decodeAny = (out) => (out && out !== '0x' ? decodeRevert(ERRORS, out) : null);
   const must = (label, r) => {
     if (!r || r.ok !== true || r.success !== true) {
-      throw new Error(`${label}: unexpected receipt ${JSON.stringify({ ok: r && r.ok, success: r && r.success, stderr: r && r.stderr })}`);
+      throw new Error(`${label}: unexpected receipt ${JSON.stringify({ ok: r && r.ok, success: r && r.success, revert: decodeAny(r && r.output), stderr: r && r.stderr, stdout: r && r.stdout })}`);
     }
     return r;
   };
   /// The one deliberate on-chain revert per contract: included, success=false.
-  const expectRevert = (label, p) =>
+  const expectRevert = (label, thunk) =>
     step('revert', label, async () => {
-      const r = await p;
+      const r = await thunk();
       const good = !!r && r.ok === true && r.success === false && r.height != null;
-      return { ...r, ok: good, expected: 'revert' };
+      return { ...r, ok: good, expected: 'revert', revert: decodeAny(r && r.output) };
     });
 
   // ------------------------------------------------------------------ support
@@ -106,11 +111,12 @@ export async function runFlows(ctx) {
     deployed.TT2 = r.contractAddress;
     return r;
   });
-  await step('call', 'TestToken.mint dev2/dev3', async () => {
+  await step('call', 'TestToken.mint dev1/dev2/dev3', async () => {
     must('mint2', await call({ dev: 1, to: deployed['support/TestToken'], data: enc('support/TestToken', 'mint', D[2], 1_000_000n * 10n ** 18n) }));
-    return must('mint3', await call({ dev: 1, to: deployed['support/TestToken'], data: enc('support/TestToken', 'mint', D[3], 1_000_000n * 10n ** 18n) }));
+    must('mint3', await call({ dev: 1, to: deployed['support/TestToken'], data: enc('support/TestToken', 'mint', D[3], 1_000_000n * 10n ** 18n) }));
+    return must('mint1', await call({ dev: 1, to: deployed['support/TestToken'], data: enc('support/TestToken', 'mint', D[1], 1_000_000n * 10n ** 18n) }));
   });
-  await expectRevert('support/TestToken.transfer over balance', call({ dev: 2, to: deployed['support/TestToken'], data: enc('support/TestToken', 'transfer', D[3], 1_000_001n * 10n ** 18n) }));
+  await expectRevert('support/TestToken.transfer over balance', async () => call({ dev: 2, to: deployed['support/TestToken'], data: enc('support/TestToken', 'transfer', D[3], 1_000_001n * 10n ** 18n) }));
   await step('deploy', 'support/NativeCallback (bonus)', async () => {
     const r = must('NativeCallback', await deploy({ dev: 1, code: art['support/NativeCallback'].bytecode }));
     deployed['support/NativeCallback'] = r.contractAddress;
@@ -130,7 +136,7 @@ export async function runFlows(ctx) {
   const lock = (name, hl) => enc(name, 'lock', D[2], hl, BigInt(nowSec() + 3600), addr0, 10n ** 15n);
   await step('call', 'AtomicSwap.lock native', async () =>
     must('lock', await call({ dev: 1, to: deployed['core/AtomicSwap'], data: lock('core/AtomicSwap', hash.sha), value: 10n ** 15n })));
-  await expectRevert('AtomicSwap.claim wrong preimage', call({ dev: 2, to: deployed['core/AtomicSwap'], data: enc('core/AtomicSwap', 'claim', 0n, u8(Buffer.from('wrong'))) }));
+  await expectRevert('AtomicSwap.claim wrong preimage', async () => call({ dev: 2, to: deployed['core/AtomicSwap'], data: enc('core/AtomicSwap', 'claim', 0n, u8(Buffer.from('wrong'))) }));
   await step('call', 'AtomicSwap.claim correct preimage', async () =>
     must('claim', await call({ dev: 2, to: deployed['core/AtomicSwap'], data: enc('core/AtomicSwap', 'claim', 0n, u8(secret)) })));
 
@@ -140,10 +146,10 @@ export async function runFlows(ctx) {
     return r;
   });
   await step('call', 'AtomicSwapEVM.lock native', async () =>
-    must('lock', await call({ dev: 1, to: deployed['core/AtomicSwapEVM'], data: lock('core/AtomicSwapEVM', hash.kec), value: 10n ** 15n })));
+    must('lock', await call({ dev: 1, to: deployed['core/AtomicSwapEVM'], data: lock('core/AtomicSwapEVM', hash.sha), value: 10n ** 15n })));
   await step('call', 'AtomicSwapEVM.claim', async () =>
     must('claim', await call({ dev: 2, to: deployed['core/AtomicSwapEVM'], data: enc('core/AtomicSwapEVM', 'claim', 0n, u8(secret)) })));
-  await expectRevert('AtomicSwapEVM.claim twice', call({ dev: 1, to: deployed['core/AtomicSwapEVM'], data: enc('core/AtomicSwapEVM', 'claim', 0n, u8(secret)) }));
+  await expectRevert('AtomicSwapEVM.claim twice', async () => call({ dev: 1, to: deployed['core/AtomicSwapEVM'], data: enc('core/AtomicSwapEVM', 'claim', 0n, u8(secret)) }));
 
   // A user-deployed registry has empty genesis registrar slots, so every
   // register reverts BadAttestation by design. The real flow (predeploy with
@@ -154,10 +160,15 @@ export async function runFlows(ctx) {
       deployed[name] = r.contractAddress;
       return r;
     });
-    await expectRevert(`${name}.register without genesis registrar`, call({ dev: 1, to: deployed[name], data: enc(name, 'register', '0x' + 'ab'.repeat(32), '0x' + 'cd'.repeat(32), D[2], '0x' + '11'.repeat(32), '0x' + '22'.repeat(32)) }));
-    await expectRevert(`${name}.beacon unknown`, call({ dev: 1, to: deployed[name], data: enc(name, 'beacon', '0x' + 'ee'.repeat(32)) }));
+    await expectRevert(`${name}.register without genesis registrar`, async () => call({ dev: 1, to: deployed[name], data: enc(name, 'register', '0x' + 'ab'.repeat(32), '0x' + 'cd'.repeat(32), D[2], '0x' + '11'.repeat(32), '0x' + '22'.repeat(32)) }));
+    await expectRevert(`${name}.beacon unknown`, async () => call({ dev: 1, to: deployed[name], data: enc(name, 'beacon', '0x' + 'ee'.repeat(32)) }));
   }
 
+  // EastSeaAccount is an EIP-7702 delegation target: `execute` is onlySelf,
+  // so a plain deployed copy can only be deployed and refuse outsiders. The
+  // live user flow runs the wallet's own 7702 path against the protocol's
+  // pinned EastSeaAccount: `aether batch` (delegate + pay two recipients in
+  // one signed tx) and `aether set-guardian` (recovery key), from dev4.
   await step('deploy', 'core/EastSeaAccount', async () => {
     // 3.4 M exec gas in-process; the CLI's 3 M default must be raised, the
     // way the wallet app sizes gas per call.
@@ -165,12 +176,24 @@ export async function runFlows(ctx) {
     deployed['core/EastSeaAccount'] = r.contractAddress;
     return r;
   });
-  await step('call', 'EastSeaAccount fund + execute native transfer', async () => {
-    must('fund', await send({ dev: 1, to: deployed['core/EastSeaAccount'], value: 2n * 10n ** 15n }));
-    const data = enc('core/EastSeaAccount', 'execute', [[[D[2], 10n ** 15n, '0x']]]); // Call{to,value,data} by position
-    return must('execute', await call({ dev: 1, to: deployed['core/EastSeaAccount'], data, value: 10n ** 15n }));
+  await expectRevert('EastSeaAccount.execute on the bare copy (OnlySelf)', async () => call({ dev: 1, to: deployed['core/EastSeaAccount'], data: enc('core/EastSeaAccount', 'execute', [[D[2], 1n, '0x']]) }));
+  D[4] = devAddress(4);
+  // A payable call, not `aether send`: on a rerun dev4 is already delegated
+  // and a 21,000-gas transfer to it fails (the finding recorded below).
+  await step('transfer', 'fund dev4 (7702 account)', async () => must('fund4', await call({ dev: 1, to: D[4], data: '0x', value: 10n ** 21n })));
+  await step('call', 'EastSeaAccount 7702: aether batch dev4 → dev2,dev3', async () =>
+    must('batch', await cliTx('batch', ['--from-dev', '4', '--to', `${D[2]},${D[3]}`, '--value', String(10n ** 15n), '--wait'])));
+  // Finding: once an account is delegated to EastSeaAccount (the wallet's own
+  // batch/guardian features do this), the wallet transfer path's fixed
+  // 21,000 exec gas cannot pay for the delegated receive(): included, failed,
+  // fee charged. Recorded as an expected revert so the report carries it.
+  await expectRevert('aether send (21,000 gas) to the 7702-delegated dev4', async () =>
+    send({ dev: 1, to: D[4], value: 10n ** 15n }));
+  await step('call', 'EastSeaAccount 7702: aether set-guardian dev4 ← dev5', async () => {
+    const r = await cliTx('set-guardian', ['--from-dev', '4', '--guardian-dev', '5', '--delay', '3600']);
+    // set-guardian waits itself; a receipt-less success still counts if the CLI exited 0
+    return r.success === undefined ? { ...r, success: r.ok } : r;
   });
-  await expectRevert('EastSeaAccount.execute by non-owner', call({ dev: 3, to: deployed['core/EastSeaAccount'], data: enc('core/EastSeaAccount', 'execute', [[[D[3], 1n, '0x']]]), value: 1n }));
 
   // Names: both variants commit first, share one 65 s maturity wait, then
   // register + setReverse. The toolbox copy feeds NameGatedDrop later.
@@ -193,19 +216,25 @@ export async function runFlows(ctx) {
   };
   await namesFlow('core/EastSeaNames', 'live', 1);
   await namesFlow('toolbox/EastSeaNames', 'toolive', 2);
-  await expectRevert('EastSeaNames.register before MIN_COMMIT_AGE', call({ dev: 1, to: deployed['core/EastSeaNames'], data: enc('core/EastSeaNames', 'register', 'live', ctx.names['core/EastSeaNames'].owner, ctx.names['core/EastSeaNames'].salt, addr0), value: 9n * 10n ** 16n }));
+  await expectRevert('EastSeaNames.register before MIN_COMMIT_AGE', async () => call({ dev: 1, to: deployed['core/EastSeaNames'], data: enc('core/EastSeaNames', 'register', 'live', ctx.names['core/EastSeaNames'].owner, ctx.names['core/EastSeaNames'].salt, addr0), value: 10n ** 18n }));
   log('  waiting 65 s for the name commitments to mature');
   await sleep(65_000);
   const register = async (name, label) => {
     const st = ctx.names[name];
+    const who = label === 'live' ? 1 : 2;
+    // The wallet quotes the contract's own fee (overpayment is refunded).
+    const fee = BigInt(await view(name, 'feeFor', [label]));
+    st.fee = fee;
     await step('call', `${name}.register "${label}"`, async () =>
-      must('register', await call({ dev: label === 'live' ? 1 : 2, to: deployed[name], data: enc(name, 'register', label, st.owner, st.salt, addr0), value: 9n * 10n ** 16n })));
-    await step('call', `${name}.setReverse`, async () =>
-      must('setReverse', await call({ dev: label === 'live' ? 1 : 2, to: deployed[name], data: enc(name, 'setReverse', label) })));
+      must('register', await call({ dev: who, to: deployed[name], data: enc(name, 'register', label, st.owner, st.salt, addr0), value: fee })));
+    await step('call', `${name}.setAddr + setReverse`, async () => {
+      must('setAddr', await call({ dev: who, to: deployed[name], data: enc(name, 'setAddr', label, st.owner) }));
+      return must('setReverse', await call({ dev: who, to: deployed[name], data: enc(name, 'setReverse', label) }));
+    });
   };
   await register('core/EastSeaNames', 'live');
   await register('toolbox/EastSeaNames', 'toolive');
-  await expectRevert('EastSeaNames.register the same name again', call({ dev: 1, to: deployed['core/EastSeaNames'], data: enc('core/EastSeaNames', 'register', 'live', ctx.names['core/EastSeaNames'].owner, ctx.names['core/EastSeaNames'].salt, addr0), value: 9n * 10n ** 16n }));
+  await expectRevert('EastSeaNames.register the same name again', async () => call({ dev: 1, to: deployed['core/EastSeaNames'], data: enc('core/EastSeaNames', 'register', 'live', ctx.names['core/EastSeaNames'].owner, ctx.names['core/EastSeaNames'].salt, addr0), value: 10n ** 18n }));
 
   // Vault: owners are P-256 keys; spend signs the contract's own digest.
   await step('deploy', 'core/EastSeaVault', async () => {
@@ -215,8 +244,14 @@ export async function runFlows(ctx) {
     deployed['core/EastSeaVault'] = r.contractAddress;
     return r;
   });
+  // Finding (docs/research/contracts-live-2026-10-06.md): the wallet's
+  // transfer path signs exactly 21,000 exec gas (`aether send`, ffi
+  // `prepare_transfer`), so a plain send to a contract whose receive() runs
+  // any code is included and fails out of gas, fee charged.
+  await expectRevert('aether send (21,000 gas transfer path) to EastSeaVault receive()', async () =>
+    send({ dev: 1, to: deployed['core/EastSeaVault'], value: 10n ** 15n }));
   await step('call', 'EastSeaVault deposit + owner-signed spend', async () => {
-    must('deposit', await send({ dev: 1, to: deployed['core/EastSeaVault'], value: 3n * 10n ** 15n }));
+    must('deposit', await call({ dev: 1, to: deployed['core/EastSeaVault'], data: '0x', value: 3n * 10n ** 15n }));
     const amount = 10n ** 15n;
     const digest = await view('core/EastSeaVault', 'spendDigest', [D[2], amount, 0n]);
     const sig = devSignDigest(1, digest);
@@ -228,7 +263,7 @@ export async function runFlows(ctx) {
     const amount = 10n ** 15n;
     const digest = await view('core/EastSeaVault', 'spendDigest', [D[2], amount, 0n]);
     const sig = devSignDigest(1, digest);
-    await expectRevert('EastSeaVault.spend replay (stale nonce)', call({ dev: 1, to: deployed['core/EastSeaVault'], data: enc('core/EastSeaVault', 'spend', D[2], amount, 0n, sig.r, sig.s) }));
+    await expectRevert('EastSeaVault.spend replay (stale nonce)', async () => call({ dev: 1, to: deployed['core/EastSeaVault'], data: enc('core/EastSeaVault', 'spend', D[2], amount, 0n, sig.r, sig.s) }));
   }
 
   await step('deploy', 'core/EastSeaVaultFactory', async () => {
@@ -237,11 +272,11 @@ export async function runFlows(ctx) {
     return r;
   });
   const fsalt = '0x' + Buffer.from(keccak256(Buffer.from('factory-salt'))).toString('hex');
-  const vkey = () => [[devKeyXY(1).x, devKeyXY(1).y], 1, 10n ** 18n, 86_400n];
+  const vkey = () => [[[devKeyXY(1).x, devKeyXY(1).y]], 1, 10n ** 18n, 86_400n];
   await step('view', 'VaultFactory.predict', async () => ({ ok: true, value: await view('core/EastSeaVaultFactory', 'predict', [...vkey(), fsalt]) }));
   await step('call', 'VaultFactory.create', async () =>
     must('create', await call({ dev: 1, to: deployed['core/EastSeaVaultFactory'], data: enc('core/EastSeaVaultFactory', 'create', ...vkey(), fsalt), gas: 6_000_000 })));
-  await expectRevert('VaultFactory.create duplicate salt', call({ dev: 1, to: deployed['core/EastSeaVaultFactory'], data: enc('core/EastSeaVaultFactory', 'create', ...vkey(), fsalt), gas: 6_000_000 }));
+  await expectRevert('VaultFactory.create duplicate salt', async () => call({ dev: 1, to: deployed['core/EastSeaVaultFactory'], data: enc('core/EastSeaVaultFactory', 'create', ...vkey(), fsalt), gas: 6_000_000 }));
 
   // MerkleDistributor: leaf = keccak(index ‖ account ‖ amount), packed.
   await step('deploy', 'core/MerkleDistributor', async () => {
@@ -259,7 +294,7 @@ export async function runFlows(ctx) {
     must('fund', await call({ dev: 1, to: deployed['support/TestToken'], data: enc('support/TestToken', 'transfer', deployed['core/MerkleDistributor'], 2n * 10n ** 18n) }));
     return must('claim', await call({ dev: 3, to: deployed['core/MerkleDistributor'], data: enc('core/MerkleDistributor', 'claim', 0n, D[2], 10n ** 18n, merkleProof(ctx.merkle.leaves, 0)) }));
   });
-  await expectRevert('MerkleDistributor.claim twice', call({ dev: 1, to: deployed['core/MerkleDistributor'], data: enc('core/MerkleDistributor', 'claim', 0n, D[2], 10n ** 18n, merkleProof(ctx.merkle.leaves, 0)) }));
+  await expectRevert('MerkleDistributor.claim twice', async () => call({ dev: 1, to: deployed['core/MerkleDistributor'], data: enc('core/MerkleDistributor', 'claim', 0n, D[2], 10n ** 18n, merkleProof(ctx.merkle.leaves, 0)) }));
 
   await step('deploy', 'core/MerkleDistributorFactory', async () => {
     const r = must('deploy', await deploy({ dev: 1, code: art['core/MerkleDistributorFactory'].bytecode }));
@@ -267,7 +302,7 @@ export async function runFlows(ctx) {
     return r;
   });
   const mdArgs = () => [deployed['support/TestToken'], u8(merkleRoot(ctx.merkle.leaves)), BigInt(nowSec() + 3600), 10n ** 17n];
-  await expectRevert('MerkleDistributorFactory.create without allowance', call({ dev: 1, to: deployed['core/MerkleDistributorFactory'], data: enc('core/MerkleDistributorFactory', 'create', ...mdArgs()) }));
+  await expectRevert('MerkleDistributorFactory.create without allowance', async () => call({ dev: 1, to: deployed['core/MerkleDistributorFactory'], data: enc('core/MerkleDistributorFactory', 'create', ...mdArgs()) }));
   await step('call', 'MerkleDistributorFactory approve + create', async () => {
     must('approve', await call({ dev: 1, to: deployed['support/TestToken'], data: enc('support/TestToken', 'approve', deployed['core/MerkleDistributorFactory'], 10n ** 18n) }));
     return must('create', await call({ dev: 1, to: deployed['core/MerkleDistributorFactory'], data: enc('core/MerkleDistributorFactory', 'create', ...mdArgs()), gas: 6_000_000 }));
@@ -287,7 +322,7 @@ export async function runFlows(ctx) {
     deployed['core/ReleaseLog'] = r.contractAddress;
     return r;
   });
-  await expectRevert('ReleaseLog.publish empty manifest', call({ dev: 1, to: deployed['core/ReleaseLog'], data: enc('core/ReleaseLog', 'publish', '0x', '0x' + 'ab'.repeat(32), '0x' + 'cd'.repeat(64), false) }));
+  await expectRevert('ReleaseLog.publish empty manifest', async () => call({ dev: 1, to: deployed['core/ReleaseLog'], data: enc('core/ReleaseLog', 'publish', '0x', '0x' + 'ab'.repeat(32), '0x' + 'cd'.repeat(64), false) }));
   await step('call', 'ReleaseLog.publish', async () =>
     must('publish', await call({ dev: 1, to: deployed['core/ReleaseLog'], data: enc('core/ReleaseLog', 'publish', '0x' + 'ee'.repeat(64), '0x' + 'ab'.repeat(32), '0x' + 'cd'.repeat(64), false) })));
 
@@ -296,9 +331,11 @@ export async function runFlows(ctx) {
     deployed['core/TokenBatch'] = r.contractAddress;
     return r;
   });
-  await step('call', 'TokenBatch.send native ×2', async () =>
-    must('send', await call({ dev: 1, to: deployed['core/TokenBatch'], data: enc('core/TokenBatch', 'send', addr0, [D[2], D[3]], [10n ** 15n, 10n ** 15n]), value: 2n * 10n ** 15n })));
-  await expectRevert('TokenBatch.send length mismatch', call({ dev: 1, to: deployed['core/TokenBatch'], data: enc('core/TokenBatch', 'send', addr0, [D[2]], [10n ** 15n, 10n ** 15n]), value: 2n * 10n ** 15n }));
+  await step('call', 'TokenBatch approve + send TestToken ×2', async () => {
+    must('approve', await call({ dev: 1, to: deployed['support/TestToken'], data: enc('support/TestToken', 'approve', deployed['core/TokenBatch'], 10n ** 18n) }));
+    return must('send', await call({ dev: 1, to: deployed['core/TokenBatch'], data: enc('core/TokenBatch', 'send', deployed['support/TestToken'], [D[2], D[3]], [10n ** 15n, 10n ** 15n]) }));
+  });
+  await expectRevert('TokenBatch.send length mismatch', async () => call({ dev: 1, to: deployed['core/TokenBatch'], data: enc('core/TokenBatch', 'send', deployed['support/TestToken'], [D[2]], [10n ** 15n, 10n ** 15n]) }));
 
   await step('deploy', 'core/TokenLocker', async () => {
     const r = must('deploy', await deploy({ dev: 1, code: art['core/TokenLocker'].bytecode }));
@@ -309,8 +346,8 @@ export async function runFlows(ctx) {
     must('approve', await call({ dev: 1, to: deployed['support/TestToken'], data: enc('support/TestToken', 'approve', deployed['core/TokenLocker'], 10n ** 18n) }));
     return must('lock', await call({ dev: 1, to: deployed['core/TokenLocker'], data: enc('core/TokenLocker', 'lock', deployed['support/TestToken'], D[2], 10n ** 17n, BigInt(nowSec() + 40)) }));
   });
-  await expectRevert('TokenLocker.withdraw before unlock', call({ dev: 2, to: deployed['core/TokenLocker'], data: enc('core/TokenLocker', 'withdraw', 0n) }));
-  await expectRevert('TokenLocker.lock zero beneficiary', call({ dev: 1, to: deployed['core/TokenLocker'], data: enc('core/TokenLocker', 'lock', deployed['support/TestToken'], addr0, 1n, BigInt(nowSec() + 60)) }));
+  await expectRevert('TokenLocker.withdraw before unlock', async () => call({ dev: 2, to: deployed['core/TokenLocker'], data: enc('core/TokenLocker', 'withdraw', 0n) }));
+  await expectRevert('TokenLocker.lock zero beneficiary', async () => call({ dev: 1, to: deployed['core/TokenLocker'], data: enc('core/TokenLocker', 'lock', deployed['support/TestToken'], addr0, 1n, BigInt(nowSec() + 60)) }));
 
   await step('deploy', 'core/TokenVesting', async () => {
     const r = must('deploy', await deploy({ dev: 1, code: art['core/TokenVesting'].bytecode }));
@@ -321,8 +358,8 @@ export async function runFlows(ctx) {
     must('approve', await call({ dev: 1, to: deployed['support/TestToken'], data: enc('support/TestToken', 'approve', deployed['core/TokenVesting'], 10n ** 18n) }));
     return must('create', await call({ dev: 1, to: deployed['core/TokenVesting'], data: enc('core/TokenVesting', 'create', deployed['support/TestToken'], D[2], 10n ** 17n, BigInt(nowSec()), 20n, 40n, false) }));
   });
-  await expectRevert('TokenVesting.claim before cliff', call({ dev: 2, to: deployed['core/TokenVesting'], data: enc('core/TokenVesting', 'claim', 0n) }));
-  await expectRevert('TokenVesting.create zero duration', call({ dev: 1, to: deployed['core/TokenVesting'], data: enc('core/TokenVesting', 'create', deployed['support/TestToken'], D[2], 1n, BigInt(nowSec()), 0n, 0n, false) }));
+  await expectRevert('TokenVesting.claim before cliff', async () => call({ dev: 2, to: deployed['core/TokenVesting'], data: enc('core/TokenVesting', 'claim', 0n) }));
+  await expectRevert('TokenVesting.create zero duration', async () => call({ dev: 1, to: deployed['core/TokenVesting'], data: enc('core/TokenVesting', 'create', deployed['support/TestToken'], D[2], 1n, BigInt(nowSec()), 0n, 0n, false) }));
 
   // ------------------------------------------------------------------ toolbox
   await step('deploy', 'toolbox/AgentVending', async () => {
@@ -332,8 +369,8 @@ export async function runFlows(ctx) {
   });
   await step('call', 'AgentVending.order', async () =>
     must('order', await call({ dev: 3, to: deployed['toolbox/AgentVending'], data: enc('toolbox/AgentVending', 'order', '0x' + 'aa'.repeat(32)), value: 10n ** 15n })));
-  await expectRevert('AgentVending.order wrong price', call({ dev: 3, to: deployed['toolbox/AgentVending'], data: enc('toolbox/AgentVending', 'order', '0x' + 'bb'.repeat(32)), value: 10n ** 14n }));
-  await expectRevert('AgentVending.deliver by non-agent', call({ dev: 3, to: deployed['toolbox/AgentVending'], data: enc('toolbox/AgentVending', 'deliver', 1n, '0x' + 'cc'.repeat(32)) }));
+  await expectRevert('AgentVending.order wrong price', async () => call({ dev: 3, to: deployed['toolbox/AgentVending'], data: enc('toolbox/AgentVending', 'order', '0x' + 'bb'.repeat(32)), value: 10n ** 14n }));
+  await expectRevert('AgentVending.deliver by non-agent', async () => call({ dev: 3, to: deployed['toolbox/AgentVending'], data: enc('toolbox/AgentVending', 'deliver', 1n, '0x' + 'cc'.repeat(32)) }));
   await step('call', 'AgentVending.deliver by agent', async () =>
     must('deliver', await call({ dev: 2, to: deployed['toolbox/AgentVending'], data: enc('toolbox/AgentVending', 'deliver', 1n, '0x' + 'cc'.repeat(32)) })));
 
@@ -344,7 +381,7 @@ export async function runFlows(ctx) {
   });
   await step('call', 'Crowdfund.contribute', async () =>
     must('contribute', await call({ dev: 3, to: deployed['toolbox/AllOrNothingCrowdfund'], data: enc('toolbox/AllOrNothingCrowdfund', 'contribute'), value: 15n * 10n ** 14n })));
-  await expectRevert('Crowdfund.refund while open', call({ dev: 3, to: deployed['toolbox/AllOrNothingCrowdfund'], data: enc('toolbox/AllOrNothingCrowdfund', 'refund') }));
+  await expectRevert('Crowdfund.refund while open', async () => call({ dev: 3, to: deployed['toolbox/AllOrNothingCrowdfund'], data: enc('toolbox/AllOrNothingCrowdfund', 'refund') }));
   await step('call', 'Crowdfund.contribute reach goal', async () =>
     must('contribute2', await call({ dev: 3, to: deployed['toolbox/AllOrNothingCrowdfund'], data: enc('toolbox/AllOrNothingCrowdfund', 'contribute'), value: 5n * 10n ** 14n })));
   ctx.deadlines ??= {};
@@ -367,8 +404,8 @@ export async function runFlows(ctx) {
   });
   await step('call', 'AmmPair.sync on empty pair', async () =>
     must('sync', await call({ dev: 1, to: deployed['toolbox/AmmPair'], data: enc('toolbox/AmmPair', 'sync') })));
-  await expectRevert('AmmPair.mint empty', call({ dev: 1, to: deployed['toolbox/AmmPair'], data: enc('toolbox/AmmPair', 'mint', D[1]) }));
-  await expectRevert('AmmFactory.createPair identical tokens', call({ dev: 1, to: deployed['toolbox/AmmFactory'], data: enc('toolbox/AmmFactory', 'createPair', deployed['support/TestToken'], deployed['support/TestToken']) }));
+  await expectRevert('AmmPair.mint empty', async () => call({ dev: 1, to: deployed['toolbox/AmmPair'], data: enc('toolbox/AmmPair', 'mint', D[1]) }));
+  await expectRevert('AmmFactory.createPair identical tokens', async () => call({ dev: 1, to: deployed['toolbox/AmmFactory'], data: enc('toolbox/AmmFactory', 'createPair', deployed['support/TestToken'], deployed['support/TestToken']) }));
   await step('deploy', 'toolbox/AmmRouter', async () => {
     const r = must('deploy', await deploy({ dev: 1, code: ctor('toolbox/AmmRouter', [deployed['toolbox/AmmFactory']]) }));
     deployed['toolbox/AmmRouter'] = r.contractAddress;
@@ -387,7 +424,7 @@ export async function runFlows(ctx) {
   await step('view', 'AmmRouter.getAmountsOut', async () => ({ ok: true, value: await view('toolbox/AmmRouter', 'getAmountsOut', [10n ** 18n, [deployed['support/TestToken'], deployed.TT2].sort()]) }));
   await step('call', 'AmmRouter.swapExactTokensForTokens', async () =>
     must('swap', await call({ dev: 1, to: deployed['toolbox/AmmRouter'], data: enc('toolbox/AmmRouter', 'swapExactTokensForTokens', 10n ** 18n, 1n, [deployed['support/TestToken'], deployed.TT2].sort(), D[2], 2n ** 64n - 1n), gas: 6_000_000 })));
-  await expectRevert('AmmRouter.swap path too short', call({ dev: 1, to: deployed['toolbox/AmmRouter'], data: enc('toolbox/AmmRouter', 'swapExactTokensForTokens', 10n ** 18n, 1n, [deployed['support/TestToken']], D[2], 2n ** 64n - 1n) }));
+  await expectRevert('AmmRouter.swap path too short', async () => call({ dev: 1, to: deployed['toolbox/AmmRouter'], data: enc('toolbox/AmmRouter', 'swapExactTokensForTokens', 10n ** 18n, 1n, [deployed['support/TestToken']], D[2], 2n ** 64n - 1n) }));
 
   await step('deploy', 'toolbox/BondingLaunchpad', async () => {
     // LaunchConfig in ABI declaration order (ethers v6 codes tuples by
@@ -398,14 +435,14 @@ export async function runFlows(ctx) {
     const r = must('deploy', await deploy({ dev: 1, code: ctor('toolbox/BondingLaunchpad', [D[1], deployed['support/TestToken'], deployed['toolbox/AmmFactory'], cfg]), gas: 8_000_000 }));
     deployed['toolbox/BondingLaunchpad'] = r.contractAddress;
     const curve = await view('toolbox/BondingLaunchpad', 'curveToken');
-    deployed.curveToken = curve;
+    deployed.curveToken = '0x' + curve.slice(-40);
     return r;
   });
   await step('call', 'Launchpad buy (snipe window)', async () => {
     must('approve', await call({ dev: 2, to: deployed['support/TestToken'], data: enc('support/TestToken', 'approve', deployed['toolbox/BondingLaunchpad'], 2n * 10n ** 70n) }));
     return must('buy', await call({ dev: 2, to: deployed['toolbox/BondingLaunchpad'], data: enc('toolbox/BondingLaunchpad', 'buy', 2n * 10n ** 19n, 1n), gas: 6_000_000 }));
   });
-  await expectRevert('Launchpad.buy zero input', call({ dev: 2, to: deployed['toolbox/BondingLaunchpad'], data: enc('toolbox/BondingLaunchpad', 'buy', 0n, 0n) }));
+  await expectRevert('Launchpad.buy zero input', async () => call({ dev: 2, to: deployed['toolbox/BondingLaunchpad'], data: enc('toolbox/BondingLaunchpad', 'buy', 0n, 0n) }));
   await step('call', 'Launchpad.sell', async () => {
     must('approveCurve', await call({ dev: 2, to: deployed.curveToken, data: enc('support/TestToken', 'approve', deployed['toolbox/BondingLaunchpad'], 2n * 10n ** 70n) }));
     return must('sell', await call({ dev: 2, to: deployed['toolbox/BondingLaunchpad'], data: enc('toolbox/BondingLaunchpad', 'sell', 10n ** 18n, 1n), gas: 6_000_000 }));
@@ -423,11 +460,11 @@ export async function runFlows(ctx) {
     must('enter1', await call({ dev: 2, to: deployed['toolbox/CommitRevealRaffle'], data: enc('toolbox/CommitRevealRaffle', 'enter'), value: 10n ** 15n }));
     return must('enter2', await call({ dev: 3, to: deployed['toolbox/CommitRevealRaffle'], data: enc('toolbox/CommitRevealRaffle', 'enter'), value: 10n ** 15n }));
   });
-  await expectRevert('Raffle.enter wrong ticket value', call({ dev: 2, to: deployed['toolbox/CommitRevealRaffle'], data: enc('toolbox/CommitRevealRaffle', 'enter'), value: 10n ** 14n }));
-  await expectRevert('Raffle.reveal before close', call({ dev: 1, to: deployed['toolbox/CommitRevealRaffle'], data: enc('toolbox/CommitRevealRaffle', 'reveal', ctx.raffleSeed) }));
+  await expectRevert('Raffle.enter wrong ticket value', async () => call({ dev: 2, to: deployed['toolbox/CommitRevealRaffle'], data: enc('toolbox/CommitRevealRaffle', 'enter'), value: 10n ** 14n }));
+  await expectRevert('Raffle.reveal before close', async () => call({ dev: 1, to: deployed['toolbox/CommitRevealRaffle'], data: enc('toolbox/CommitRevealRaffle', 'reveal', ctx.raffleSeed) }));
   log('  waiting 26 s for the raffle entry window');
   await sleep(26_000);
-  await expectRevert('Raffle.reveal wrong seed', call({ dev: 1, to: deployed['toolbox/CommitRevealRaffle'], data: enc('toolbox/CommitRevealRaffle', 'reveal', '0x' + '99'.repeat(32)) }));
+  await expectRevert('Raffle.reveal wrong seed', async () => call({ dev: 1, to: deployed['toolbox/CommitRevealRaffle'], data: enc('toolbox/CommitRevealRaffle', 'reveal', '0x' + '99'.repeat(32)) }));
   await step('call', 'Raffle.reveal + payout', async () =>
     must('reveal', await call({ dev: 1, to: deployed['toolbox/CommitRevealRaffle'], data: enc('toolbox/CommitRevealRaffle', 'reveal', ctx.raffleSeed) })));
 
@@ -440,8 +477,8 @@ export async function runFlows(ctx) {
     must('createEdition', await call({ dev: 1, to: deployed['toolbox/Editions1155'], data: enc('toolbox/Editions1155', 'createEdition', 'live-edition', 3n, 1n, 10n ** 15n, 100n) }));
     return must('mint', await call({ dev: 2, to: deployed['toolbox/Editions1155'], data: enc('toolbox/Editions1155', 'mint', 1n), value: 10n ** 15n }));
   });
-  await expectRevert('Editions.mint unknown edition', call({ dev: 2, to: deployed['toolbox/Editions1155'], data: enc('toolbox/Editions1155', 'mint', 99n), value: 10n ** 15n }));
-  await expectRevert('Editions.mint over wallet cap', call({ dev: 2, to: deployed['toolbox/Editions1155'], data: enc('toolbox/Editions1155', 'mint', 1n), value: 10n ** 15n }));
+  await expectRevert('Editions.mint unknown edition', async () => call({ dev: 2, to: deployed['toolbox/Editions1155'], data: enc('toolbox/Editions1155', 'mint', 99n), value: 10n ** 15n }));
+  await expectRevert('Editions.mint over wallet cap', async () => call({ dev: 2, to: deployed['toolbox/Editions1155'], data: enc('toolbox/Editions1155', 'mint', 1n), value: 10n ** 15n }));
 
   await step('deploy', 'toolbox/FixedPriceMarket', async () => {
     const r = must('deploy', await deploy({ dev: 1, code: ctor('toolbox/FixedPriceMarket', [D[1]]) }));
@@ -455,7 +492,7 @@ export async function runFlows(ctx) {
     must('buy', await call({ dev: 3, to: deployed['toolbox/FixedPriceMarket'], data: enc('toolbox/FixedPriceMarket', 'buy', 1n), value: 10n ** 15n }));
     return must('withdraw', await call({ dev: 2, to: deployed['toolbox/FixedPriceMarket'], data: enc('toolbox/FixedPriceMarket', 'withdraw') }));
   });
-  await expectRevert('Market.buy twice', call({ dev: 2, to: deployed['toolbox/FixedPriceMarket'], data: enc('toolbox/FixedPriceMarket', 'buy', 1n), value: 10n ** 15n }));
+  await expectRevert('Market.buy twice', async () => call({ dev: 2, to: deployed['toolbox/FixedPriceMarket'], data: enc('toolbox/FixedPriceMarket', 'buy', 1n), value: 10n ** 15n }));
 
   // FixedSupplyToken with a real EIP-2612 permit: a secp256k1 holder signs,
   // dev3 pulls with transferFrom.
@@ -471,14 +508,14 @@ export async function runFlows(ctx) {
     const nonce = await view('toolbox/FixedSupplyToken', 'nonces', [holder.address]);
     const value = 40n * 10n ** 18n;
     const deadline = BigInt(nowSec() + 3600);
-    const PERMIT_TYPEHASH = '0x' + Buffer.from(keccak256(Buffer.from('Permit(address owner,address spender,uint256 value,uint256 deadline,uint8 v,bytes32 r,bytes32 s)'))).toString('hex');
-    const structHash = Buffer.from(keccak256(E.encode(['bytes32', 'address', 'address', 'uint256', 'uint256', 'uint256'], [PERMIT_TYPEHASH, holder.address, D[3], value, BigInt(nonce), deadline])));
+    const PERMIT_TYPEHASH = '0x' + Buffer.from(keccak256(Buffer.from('Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)'))).toString('hex');
+    const structHash = Buffer.from(keccakHex(E.encode(['bytes32', 'address', 'address', 'uint256', 'uint256', 'uint256'], [PERMIT_TYPEHASH, holder.address, D[3], value, BigInt(nonce), deadline])).slice(2), 'hex');
     const digest = Buffer.from(keccak256(Buffer.concat([Buffer.from('1901', 'hex'), Buffer.from(domain.slice(2), 'hex'), structHash])));
     const sig = holder.signingKey.sign(digest);
-    must('permit', await call({ dev: 1, to: deployed['toolbox/FixedSupplyToken'], data: enc('toolbox/FixedSupplyToken', 'permit', holder.address, D[3], value, deadline, sig.v, '0x' + sig.r.toString(16).padStart(64, '0'), '0x' + sig.s.toString(16).padStart(64, '0')) }));
+    must('permit', await call({ dev: 1, to: deployed['toolbox/FixedSupplyToken'], data: enc('toolbox/FixedSupplyToken', 'permit', holder.address, D[3], value, deadline, sig.v, sig.r, sig.s) }));
     return must('transferFrom', await call({ dev: 3, to: deployed['toolbox/FixedSupplyToken'], data: enc('toolbox/FixedSupplyToken', 'transferFrom', holder.address, D[3], value) }));
   });
-  await expectRevert('FixedSupplyToken.transferFrom over allowance', call({ dev: 3, to: deployed['toolbox/FixedSupplyToken'], data: enc('toolbox/FixedSupplyToken', 'transferFrom', deployed['toolbox/FixedSupplyToken'], D[3], 1n) }));
+  await expectRevert('FixedSupplyToken.transferFrom over allowance', async () => call({ dev: 3, to: deployed['toolbox/FixedSupplyToken'], data: enc('toolbox/FixedSupplyToken', 'transferFrom', deployed['toolbox/FixedSupplyToken'], D[3], 1n) }));
 
   await step('deploy', 'toolbox/InvoiceBook', async () => {
     const r = must('deploy', await deploy({ dev: 1, code: ctor('toolbox/InvoiceBook', [D[1], D[2]]) }));
@@ -489,11 +526,11 @@ export async function runFlows(ctx) {
     must('issue', await call({ dev: 2, to: deployed['toolbox/InvoiceBook'], data: enc('toolbox/InvoiceBook', 'issue', 10n ** 15n, 60n, 'live-invoice-1') }));
     return must('settle', await call({ dev: 3, to: deployed['toolbox/InvoiceBook'], data: enc('toolbox/InvoiceBook', 'settle', 1n), value: 10n ** 15n }));
   });
-  await expectRevert('InvoiceBook.issue by non-payee', call({ dev: 3, to: deployed['toolbox/InvoiceBook'], data: enc('toolbox/InvoiceBook', 'issue', 1n, 60n, 'x') }));
+  await expectRevert('InvoiceBook.issue by non-payee', async () => call({ dev: 3, to: deployed['toolbox/InvoiceBook'], data: enc('toolbox/InvoiceBook', 'issue', 1n, 60n, 'x') }));
 
   await step('deploy', 'toolbox/LinearVesting', async () => {
     const token = deployed['support/TestToken'];
-    const predicted = getCreateAddress(D[1], Number((await nonceOf(D[1])) + 1n));
+    const predicted = getCreateAddress({ from: D[1], nonce: Number((await nonceOf(D[1])) + 1n) });
     must('approve', await call({ dev: 1, to: token, data: enc('support/TestToken', 'approve', predicted, 10n ** 18n) }));
     const r = must('deploy', await deploy({ dev: 1, code: ctor('toolbox/LinearVesting', [token, D[2], 10n ** 17n, 20n, 40n]) }));
     deployed['toolbox/LinearVesting'] = r.contractAddress;
@@ -502,7 +539,7 @@ export async function runFlows(ctx) {
   });
   await step('call', 'LinearVesting.claim early (pays zero)', async () =>
     must('claim0', await call({ dev: 2, to: deployed['toolbox/LinearVesting'], data: enc('toolbox/LinearVesting', 'claim') })));
-  await expectRevert('LinearVesting.deploy zero beneficiary', deploy({ dev: 1, code: ctor('toolbox/LinearVesting', [deployed['support/TestToken'], addr0, 1n, 0n, 1n]) }));
+  await expectRevert('LinearVesting.deploy zero beneficiary', async () => deploy({ dev: 1, code: ctor('toolbox/LinearVesting', [deployed['support/TestToken'], addr0, 1n, 0n, 1n]) }));
 
   await step('deploy', 'toolbox/MerkleAirdrop', async () => {
     const root = u8(keccak256(Buffer.concat([Buffer.from(D[2].slice(2), 'hex'), pad32(10n ** 15n)])));
@@ -511,10 +548,10 @@ export async function runFlows(ctx) {
     return r;
   });
   await step('call', 'MerkleAirdrop fund + claim', async () => {
-    must('fund', await send({ dev: 1, to: deployed['toolbox/MerkleAirdrop'], value: 2n * 10n ** 15n }));
+    must('fund', await call({ dev: 1, to: deployed['toolbox/MerkleAirdrop'], data: '0x', value: 2n * 10n ** 15n }));
     return must('claim', await call({ dev: 2, to: deployed['toolbox/MerkleAirdrop'], data: enc('toolbox/MerkleAirdrop', 'claim', 10n ** 15n, []) }));
   });
-  await expectRevert('MerkleAirdrop.claim twice', call({ dev: 2, to: deployed['toolbox/MerkleAirdrop'], data: enc('toolbox/MerkleAirdrop', 'claim', 10n ** 15n, []) }));
+  await expectRevert('MerkleAirdrop.claim twice', async () => call({ dev: 2, to: deployed['toolbox/MerkleAirdrop'], data: enc('toolbox/MerkleAirdrop', 'claim', 10n ** 15n, []) }));
 
   await step('deploy', 'toolbox/MilestoneEscrow', async () => {
     const r = must('deploy', await deploy({ dev: 1, code: ctor('toolbox/MilestoneEscrow', [D[1]]) }));
@@ -526,7 +563,7 @@ export async function runFlows(ctx) {
     must('approve', await call({ dev: 3, to: deployed['toolbox/MilestoneEscrow'], data: enc('toolbox/MilestoneEscrow', 'approveMilestone', 1n, 0n, 10n ** 15n) }));
     return must('sellerWithdraw', await call({ dev: 2, to: deployed['toolbox/MilestoneEscrow'], data: enc('toolbox/MilestoneEscrow', 'sellerWithdraw', 1n) }));
   });
-  await expectRevert('Escrow.sellerWithdraw nothing approved', call({ dev: 2, to: deployed['toolbox/MilestoneEscrow'], data: enc('toolbox/MilestoneEscrow', 'sellerWithdraw', 1n) }));
+  await expectRevert('Escrow.sellerWithdraw nothing approved', async () => call({ dev: 2, to: deployed['toolbox/MilestoneEscrow'], data: enc('toolbox/MilestoneEscrow', 'sellerWithdraw', 1n) }));
 
   await step('deploy', 'toolbox/OnchainNFT', async () => {
     const r = must('deploy', await deploy({ dev: 1, code: ctor('toolbox/OnchainNFT', ['LiveArt', 'LART', 5n, 500n, D[1]]) }));
@@ -535,10 +572,10 @@ export async function runFlows(ctx) {
   });
   await step('call', 'OnchainNFT mint + transfer + view', async () => {
     must('mint', await call({ dev: 1, to: deployed['toolbox/OnchainNFT'], data: enc('toolbox/OnchainNFT', 'mint', D[2], 1, 2, 3, 4) }));
-    must('transfer', await call({ dev: 2, to: deployed['toolbox/OnchainNFT'], data: enc('toolbox/OnchainNFT', 'safeTransferFrom', D[2], D[3], 1n) }));
+    must('transfer', await call({ dev: 2, to: deployed['toolbox/OnchainNFT'], data: enc('toolbox/OnchainNFT', 'safeTransferFrom(address,address,uint256)', D[2], D[3], 1n) }));
     return { ok: true, tokenURI: await view('toolbox/OnchainNFT', 'tokenURI', [1n]) };
   });
-  await expectRevert('OnchainNFT.mint by non-creator', call({ dev: 2, to: deployed['toolbox/OnchainNFT'], data: enc('toolbox/OnchainNFT', 'mint', D[2], 1, 1, 1, 1) }));
+  await expectRevert('OnchainNFT.mint by non-creator', async () => call({ dev: 2, to: deployed['toolbox/OnchainNFT'], data: enc('toolbox/OnchainNFT', 'mint', D[2], 1, 1, 1, 1) }));
 
   await step('deploy', 'toolbox/RewardDistributor', async () => {
     const r = must('deploy', await deploy({ dev: 1, code: ctor('toolbox/RewardDistributor', [D[1], deployed['support/TestToken'], deployed.TT2]) }));
@@ -553,7 +590,7 @@ export async function runFlows(ctx) {
     must('stake', await call({ dev: 2, to: deployed['toolbox/RewardDistributor'], data: enc('toolbox/RewardDistributor', 'stake', 10n ** 19n) }));
     return must('unstake', await call({ dev: 2, to: deployed['toolbox/RewardDistributor'], data: enc('toolbox/RewardDistributor', 'unstake', 10n ** 18n) }));
   });
-  await expectRevert('Rewards.unstake over balance', call({ dev: 2, to: deployed['toolbox/RewardDistributor'], data: enc('toolbox/RewardDistributor', 'unstake', 10n ** 25n) }));
+  await expectRevert('Rewards.unstake over balance', async () => call({ dev: 2, to: deployed['toolbox/RewardDistributor'], data: enc('toolbox/RewardDistributor', 'unstake', 10n ** 25n) }));
 
   // SimpleDAO: secp voter with votes-token weight; short periods so the
   // live run does not wait 2000 s.
@@ -565,25 +602,25 @@ export async function runFlows(ctx) {
   // Vote signature = personal_sign over the contract's own getVoteHash(id).
   const daoSig = async (id) => {
     const voteHash = await view('toolbox/SimpleDAO', 'getVoteHash', [id]);
-    return ctx.daoVoter.signMessage(Buffer.from(voteHash.slice(2), 'hex'));
+    return ctx.daoVoter.signingKey.sign(voteHash).serialized; // already \x19-prefixed by the contract
   };
   await step('call', 'SimpleDAO fund + propose', async () => {
-    must('fund', await send({ dev: 1, to: deployed['toolbox/SimpleDAO'], value: 10n ** 15n }));
+    must('fund', await call({ dev: 1, to: deployed['toolbox/SimpleDAO'], data: '0x', value: 10n ** 15n }));
     const voter = secp('dao-voter');
     ctx.daoVoter = voter;
     must('votes', await call({ dev: 1, to: deployed['support/TestToken'], data: enc('support/TestToken', 'mint', voter.address, 100n * 10n ** 18n) }));
     const target = D[3];
     const value = 10n ** 15n;
-    const execHash = '0x' + Buffer.from(keccak256(E.encode(['address', 'uint256', 'bytes'], [target, value, '0x']))).toString('hex');
+    const execHash = keccakHex(E.encode(['address', 'uint256', 'bytes'], [target, value, '0x']));
     ctx.dao = { target, value, execHash };
     return must('propose', await call({ dev: 1, to: deployed['toolbox/SimpleDAO'], data: enc('toolbox/SimpleDAO', 'propose', execHash) }));
   });
-  await expectRevert('SimpleDAO.execute during voting', call({ dev: 1, to: deployed['toolbox/SimpleDAO'], data: enc('toolbox/SimpleDAO', 'execute', 1n, ctx.dao.target, ctx.dao.value, '0x', [await daoSig(1n)]), gas: 2_000_000 }));
+  await expectRevert('SimpleDAO.execute during voting', async () => call({ dev: 1, to: deployed['toolbox/SimpleDAO'], data: enc('toolbox/SimpleDAO', 'execute', 1n, ctx.dao.target, ctx.dao.value, '0x', [await daoSig(1n)]), gas: 2_000_000 }));
   log('  waiting 65 s for the DAO vote + timelock');
   await sleep(65_000);
   await step('call', 'SimpleDAO.execute after timelock', async () =>
     must('execute', await call({ dev: 1, to: deployed['toolbox/SimpleDAO'], data: enc('toolbox/SimpleDAO', 'execute', 1n, ctx.dao.target, ctx.dao.value, '0x', [await daoSig(1n)]), gas: 2_000_000 })));
-  await expectRevert('SimpleDAO.execute wrong target (hash mismatch)', call({ dev: 1, to: deployed['toolbox/SimpleDAO'], data: enc('toolbox/SimpleDAO', 'execute', 1n, D[2], ctx.dao.value, '0x', [await daoSig(1n)]), gas: 2_000_000 }));
+  await expectRevert('SimpleDAO.execute wrong target (hash mismatch)', async () => call({ dev: 1, to: deployed['toolbox/SimpleDAO'], data: enc('toolbox/SimpleDAO', 'execute', 1n, D[2], ctx.dao.value, '0x', [await daoSig(1n)]), gas: 2_000_000 }));
 
   // SimpleMultisig: two secp owners, threshold 2, signatures sorted by owner.
   await step('deploy', 'toolbox/SimpleMultisig', async () => {
@@ -596,16 +633,16 @@ export async function runFlows(ctx) {
   });
   await step('call', 'SimpleMultisig fund + execute payout', async () => {
     const w = deployed['toolbox/SimpleMultisig'];
-    must('fund', await send({ dev: 1, to: w, value: 10n ** 15n }));
+    must('fund', await call({ dev: 1, to: w, data: '0x', value: 10n ** 15n }));
     const { a, b } = ctx.msig;
     // The contract publishes the exact hash the owners must personal_sign.
     const txHash = await view('toolbox/SimpleMultisig', 'getTransactionHash', [D[3], 10n ** 15n, '0x', 7n]);
-    const sigOf = (k) => k.signMessage(Buffer.from(txHash.slice(2), 'hex'));
+    const sigOf = async (k) => k.signingKey.sign(txHash).serialized; // already \x19-prefixed by the contract
     const sigs = await Promise.all([a, b].sort((x, y) => (x.address < y.address ? -1 : 1)).map(sigOf));
     ctx.msigInput = enc('toolbox/SimpleMultisig', 'execute', D[3], 10n ** 15n, '0x', 7n, sigs);
     return must('execute', await call({ dev: 1, to: w, data: ctx.msigInput }));
   });
-  await expectRevert('SimpleMultisig.execute replay', call({ dev: 1, to: deployed['toolbox/SimpleMultisig'], data: ctx.msigInput }));
+  await expectRevert('SimpleMultisig.execute replay', async () => call({ dev: 1, to: deployed['toolbox/SimpleMultisig'], data: ctx.msigInput }));
 
   await step('deploy', 'toolbox/SubscriptionManager', async () => {
     const r = must('deploy', await deploy({ dev: 1, code: ctor('toolbox/SubscriptionManager', [D[1], D[2], 2n]) }));
@@ -616,7 +653,7 @@ export async function runFlows(ctx) {
     must('subscribe', await call({ dev: 3, to: deployed['toolbox/SubscriptionManager'], data: enc('toolbox/SubscriptionManager', 'subscribe'), value: 2n * 10n ** 15n }));
     return must('cancel', await call({ dev: 3, to: deployed['toolbox/SubscriptionManager'], data: enc('toolbox/SubscriptionManager', 'cancel') }));
   });
-  await expectRevert('Subscription.subscribe payment too small', call({ dev: 3, to: deployed['toolbox/SubscriptionManager'], data: enc('toolbox/SubscriptionManager', 'subscribe'), value: 1n }));
+  await expectRevert('Subscription.subscribe payment too small', async () => call({ dev: 3, to: deployed['toolbox/SubscriptionManager'], data: enc('toolbox/SubscriptionManager', 'subscribe'), value: 1n }));
   await step('call', 'Subscription.claimRevenue', async () =>
     must('claimRevenue', await call({ dev: 2, to: deployed['toolbox/SubscriptionManager'], data: enc('toolbox/SubscriptionManager', 'claimRevenue') })));
 
@@ -627,9 +664,9 @@ export async function runFlows(ctx) {
   });
   await step('call', 'TokenTimeLock lockFor', async () => {
     must('approve', await call({ dev: 1, to: deployed['support/TestToken'], data: enc('support/TestToken', 'approve', deployed['toolbox/TokenTimeLock'], 10n ** 18n) }));
-    return must('lockFor', await call({ dev: 1, to: deployed['toolbox/TokenTimeLock'], data: enc('toolbox/TokenTimeLock', 'lockFor', D[2], 10n ** 17n, BigInt(nowSec()), 40n) }));
+    return must('lockFor', await call({ dev: 1, to: deployed['toolbox/TokenTimeLock'], data: enc('toolbox/TokenTimeLock', 'lockFor', D[2], 10n ** 17n, 20n, 40n) }));
   });
-  await expectRevert('TokenTimeLock.release early', call({ dev: 2, to: deployed['toolbox/TokenTimeLock'], data: enc('toolbox/TokenTimeLock', 'release') }));
+  await expectRevert('TokenTimeLock.release early', async () => call({ dev: 2, to: deployed['toolbox/TokenTimeLock'], data: enc('toolbox/TokenTimeLock', 'release') }));
   log('  waiting 41 s for the timelock to mature');
   await sleep(41_000);
   await step('call', 'TokenTimeLock.release', async () =>
@@ -643,11 +680,11 @@ export async function runFlows(ctx) {
     return r;
   });
   await step('call', 'NameGatedDrop fund + claim', async () => {
-    must('fund', await send({ dev: 1, to: deployed['toolbox/NameGatedDrop'], value: 2n * 10n ** 15n }));
+    must('fund', await call({ dev: 1, to: deployed['toolbox/NameGatedDrop'], data: '0x', value: 2n * 10n ** 15n }));
     return must('claim', await call({ dev: 2, to: deployed['toolbox/NameGatedDrop'], data: enc('toolbox/NameGatedDrop', 'claim') }));
   });
-  await expectRevert('NameGatedDrop.claim without primary name', call({ dev: 3, to: deployed['toolbox/NameGatedDrop'], data: enc('toolbox/NameGatedDrop', 'claim') }));
-  await expectRevert('NameGatedDrop.claim twice', call({ dev: 2, to: deployed['toolbox/NameGatedDrop'], data: enc('toolbox/NameGatedDrop', 'claim') }));
+  await expectRevert('NameGatedDrop.claim without primary name', async () => call({ dev: 3, to: deployed['toolbox/NameGatedDrop'], data: enc('toolbox/NameGatedDrop', 'claim') }));
+  await expectRevert('NameGatedDrop.claim twice', async () => call({ dev: 2, to: deployed['toolbox/NameGatedDrop'], data: enc('toolbox/NameGatedDrop', 'claim') }));
 
   // Late claims that only needed time: TokenVesting (cliff 20 s, duration 40)
   // and TokenLocker (unlock at +40 s) matured during the DAO/timelock waits.

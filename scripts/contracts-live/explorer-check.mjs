@@ -11,7 +11,7 @@
 // The page content is read from the DOM (innerText), not judged from pixels.
 
 import { createServer } from 'node:http';
-import { readFile, mkdirSync, writeFileSync } from 'node:fs';
+import { readFile, readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
@@ -39,7 +39,7 @@ const server = createServer((req, res) => {
 await new Promise((r) => server.listen(PORT, '127.0.0.1', r));
 log(`serving ${ROOT} at ${BASE}`);
 
-const results = JSON.parse((await readFile(resolve(HERE, '../../tmp/live/results.json'))));
+const results = JSON.parse(readFileSync(resolve(HERE, '../../tmp/live/results.json'), 'utf8'));
 const steps = results.steps || [];
 const addr = results.addresses || {};
 const pick = (label, want = { ok: true }) => steps.find((s) => s.label === label && s.ok === want.ok)
@@ -58,6 +58,9 @@ await page.addInitScript(([url]) => {
   // The explorer keeps its node URL in localStorage; set it before any script
   // runs so the very first render reads the local chain, not the default 18545.
   localStorage.setItem('aether-explorer.node', url);
+  // Gateway fallback off: every view must come from the local chain, never
+  // from rpc.eastsea.xyz (an empty saved value is the explorer's "off").
+  localStorage.setItem('aether-explorer.gateway', '');
 }, [RPC]);
 
 const text = async () => (await page.locator('#view').innerText().catch(() => '')) + '\n'
@@ -73,16 +76,17 @@ const open = async (hash, name) => {
 try {
   // 1. Home: finalized height ≥ the flows' end height, and the chain id line.
   const home = await open('', 'home');
-  const hMatch = home.match(/Finalized height\D*(\d+)/) || home.match(/finalized height\D*(\d+)/);
-  check('home shows a finalized height ≥ flows end',
-    !!hMatch && Number(hMatch[1]) >= results.endHeight, hMatch?.[1]);
+  const hMatch = home.match(/Finalized height\D*([\d,]+)/i);
+  const homeHeight = hMatch ? Number(hMatch[1].replace(/,/g, '')) : NaN;
+  check('home shows a finalized height ≥ flows end', homeHeight >= results.endHeight, `${homeHeight} vs ${results.endHeight}`);
   check('home names the chain (7796)', /7796/.test(home), '');
 
   // 2. The block that carries a known successful call.
   const okTx = pick('AtomicSwap.claim correct preimage') || steps.find((s) => s.ok && s.hash && s.height);
   if (okTx?.height) {
     const b = await open(`/block/${okTx.height}`, 'block');
-    check(`block ${okTx.height} lists the claim tx`, b.includes(okTx.hash.slice(0, 18)), okTx.hash.slice(0, 18));
+    // The block table shows hashes shortened as 0x12345678…abcdef.
+    check(`block ${okTx.height} lists ${okTx.label}`, b.includes(okTx.hash.slice(0, 10)) && b.includes(okTx.hash.slice(-6)), okTx.hash.slice(0, 10));
   }
 
   // 3. A deploy tx: Contract created row + creation pill.
@@ -107,7 +111,31 @@ try {
   const tr = pick('MerkleDistributor fund + sponsored claim') || steps.find((s) => s.ok && s.hash && s.logs > 0 && !s.contractAddress);
   if (tr) {
     const t = await open(`/tx/${tr.hash}`, 'tx-transfer');
-    check('token tx decodes a Transfer event', /Transfer\(/.test(t), tr.label);
+    check('token tx decodes a Transfer event (pill + from/to)', /Events \(\d+\)/.test(t) && /Transfer/.test(t) && /from 0x/.test(t), tr.label);
+  }
+
+  // 5b. The five most user-facing examples: the deploy tx and the main user
+  // call of each, read back as a wallet user would (status, block, logs).
+  const userFacing = [
+    ['toolbox/FixedSupplyToken (standalone)', 'FixedSupplyToken transfer + permit + transferFrom'],
+    ['toolbox/OnchainNFT', 'OnchainNFT mint + transfer + view'],
+    ['toolbox/FixedPriceMarket', 'Market list + buy + withdraw'],
+    ['core/EastSeaNames', 'core/EastSeaNames.register "live"'],
+    ['toolbox/AmmRouter', 'AmmRouter.swapExactTokensForTokens'],
+  ];
+  for (const [depLabel, callLabel] of userFacing) {
+    const d = steps.find((x) => x.label === depLabel && x.hash);
+    const c = steps.find((x) => x.label === callLabel && x.hash);
+    for (const [what, st] of [['deploy', d], ['call', c]]) {
+      if (!st) { check(`${depLabel} ${what}: step recorded`, false, 'no tx in results'); continue; }
+      const name = `${depLabel.split('/').pop().split(' ')[0]}-${what}`;
+      const t = await open(`/tx/${st.hash}`, name);
+      const wantStatus = st.success === true ? /success/ : /failed/;
+      const logsM = t.match(/Logs\s*(\d+)/);
+      check(`${depLabel} ${what}: tx page status + block ${st.height}`, wantStatus.test(t) && t.includes(String(st.height)), st.label);
+      check(`${depLabel} ${what}: logs ${st.logs ?? 0} match the receipt`, !!logsM && Number(logsM[1]) === Number(st.logs ?? 0), logsM?.[1]);
+      if (what === 'deploy') check(`${depLabel} deploy: Contract created ${st.contractAddress?.slice(0, 10)}`, /Contract created/.test(t) && t.toLowerCase().includes((st.contractAddress || 'x').slice(2, 8)), '');
+    }
   }
 
   // 6. The dev1 account page: a positive balance in 동해.

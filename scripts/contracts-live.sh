@@ -16,6 +16,12 @@
 #   dapp       drive 3 toolbox frontends through an EIP-1193 shim (dapp-check.mjs)
 #   stress     200 fresh-account transfers + 20 large deploys (stress.mjs)
 #   stop       stop the validators (results stay in tmp/live)
+#   reset      wipe the chain dirs (the default run restarts a fresh genesis for stress)
+#
+# Environment: KEEP=1 leaves validators running between invocations; FAST=1
+# starts a legacy (free-state, no B5) genesis for debugging the drivers only.
+# A full default run takes ~2 h: after the 100,000-unit burst the 41
+# deployments wait on the 32-units-per-block refill (see the report).
 #
 # Everything the run creates — chain data, keys, logs, node_modules, ports —
 # lives under <worktree>/tmp on loopback only. Nothing here touches
@@ -37,8 +43,11 @@ A="$BIN/aether"
 SRV="$ROOT/scripts/contracts-live"
 
 PIDS=()
+# KEEP=1 leaves the validators running when this invocation exits, so phases
+# can be run one at a time (`KEEP=1 scripts/contracts-live.sh bin deps chain`,
+# then `scripts/contracts-live.sh flows ...`); `stop` halts them via the pid files.
 cleanup() {
-  if [ ${#PIDS[@]} -gt 0 ]; then
+  if [ "${KEEP:-0}" != 1 ] && [ ${#PIDS[@]} -gt 0 ]; then
     kill "${PIDS[@]}" 2>/dev/null || true
     sleep 2
     kill -9 "${PIDS[@]}" 2>/dev/null || true
@@ -68,12 +77,24 @@ port_free() { ! lsof -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
 phase_bin() {
   say "bin: staging aether + aether-prover (the node needs the prover beside it)"
   mkdir -p "$BIN"
-  for b in aether aether-prover; do
-    src="$ROOT/tmp/target.noindex/release/$b"
-    [ -x "$src" ] || fail "$src missing — build first: cargo build --release -p aether-node -p aether-proving"
-    [ "$BIN/$b" -nt "$src" ] || cp "$src" "$BIN/$b"
-  done
-  "$A" --version >/dev/null 2>&1 || "$A" --help >/dev/null || fail "$A does not run"
+  # The node: this worktree's build. The prover sidecar: this worktree's build
+  # if present, else AETHER_PROVER_SRC, else the lead lane's rehearsal staging
+  # (same lead-merge lineage; this run only VERIFIES — no node has AETHER_PROVE —
+  # and verification is input-less, so any sidecar of the same interface works).
+  cp -p "$ROOT/tmp/target.noindex/release/aether" "$BIN/aether" 2>/dev/null \
+    || [ -x "$BIN/aether" ] || fail "build aether first: cargo build --release -p aether-node"
+  if [ -x "$ROOT/tmp/target.noindex/release/aether-prover" ]; then
+    cp -p "$ROOT/tmp/target.noindex/release/aether-prover" "$BIN/aether-prover"
+  elif [ -n "${AETHER_PROVER_SRC:-}" ] && [ -x "$AETHER_PROVER_SRC" ]; then
+    cp -p "$AETHER_PROVER_SRC" "$BIN/aether-prover"; echo "prover: $AETHER_PROVER_SRC"
+  elif [ -x "$ROOT/../lead/tmp/rehearsal-bin/aether-prover" ]; then
+    cp -p "$ROOT/../lead/tmp/rehearsal-bin/aether-prover" "$BIN/aether-prover"
+    echo "prover: lead rehearsal staging (verify-only run — no AETHER_PROVE anywhere)"
+  else
+    fail "no aether-prover: build apps/prover or point AETHER_PROVER_SRC at one"
+  fi
+  "$A" --help >/dev/null 2>&1 || fail "$A does not run"
+  "$BIN/aether-prover" info >/dev/null 2>&1 || fail "$BIN/aether-prover does not run"
 }
 
 phase_deps() {
@@ -101,8 +122,18 @@ phase_chain() {
     dev1=$("$A" dev-accounts | awk '$2 == 1 {print $3}')
     [ "${#dev1}" = 42 ] || fail "could not read dev1 from aether dev-accounts"
     echo "faucet → dev1 $dev1"
+    # The measured run is a new-genesis chain: history v2 + node rewards turn
+    # on paid state and the B5 rolling budget (100,000-unit burst, 32 units
+    # refilled per height). FAST=1 is for debugging the drivers only: a legacy
+    # genesis without them, where state is free and unmetered — its numbers
+    # are NOT B5 numbers and the report never uses them.
+    growth=(--history 2 --node-rewards)
+    if [ "${FAST:-0}" = 1 ]; then
+      growth=()
+      echo "FAST=1: legacy genesis, NO paid state / B5 — driver debugging only, not a measurement"
+    fi
     "$A" network --chain-id "$CHAIN" --protocol 3 --epoch-blocks "$EPOCH_BLOCKS" \
-      --history 2 --node-rewards --dev-registrar --faucet "$dev1" \
+      ${growth[@]+"${growth[@]}"} --dev-registrar --faucet "$dev1" \
       "$CG"/g1/validator.pub.json "$CG"/g2/validator.pub.json \
       "$CG"/g3/validator.pub.json "$CG"/g4/validator.pub.json > "$CG/genesis.json"
     say "dkg (loopback tcp)"
@@ -117,13 +148,20 @@ phase_chain() {
     for p in "${dkgpids[@]}"; do wait "$p" || fail "dkg failed (see $D/dkg*.log)"; done
     PIDS=()
   }
+  # Audit 6: a validator binds to the coordinator's ceremony record before it
+  # votes on a new genesis. Like scripts/mainnet-rehearsal.sh, this run writes
+  # the record for its own final network.json and passes it to every node, so
+  # the startup bind runs instead of being switched off.
+  [ -f "$CG/network.json" ] || cp "$CG/g1/network.json" "$CG/network.json"
+  [ -f "$CG/ceremony-check.json" ] \
+    || "$A" ceremony-record --network "$CG/network.json" --out "$CG/ceremony-check.json" >/dev/null
 
   say "validators (loopback tcp, offline; node 1 also runs the dev registrar)"
-  [ -f "$CG/g1/network.json" ] || fail "no $CG/g1/network.json — dkg did not run"
+  [ -f "$CG/network.json" ] || fail "no $CG/network.json — dkg did not run"
   for i in 1 2 3 4; do
     peers=""
     for j in 1 2 3 4; do [ "$j" = "$i" ] || peers+="${peers:+,}$j@127.0.0.1:$((8710 + j))"; done
-    args=(node --network "$CG/g$i/network.json" --port $((8710 + i)) --rpc-port $((8644 + i))
+    args=(node --network "$CG/network.json" --ceremony "$CG/ceremony-check.json" --port $((8710 + i)) --rpc-port $((8644 + i))
       --data "$CG/g$i" --peers "$peers" --offline --block-time-ms "$BLOCK_MS")
     [ "$i" = 1 ] && args+=(--dev-registrar)   # chain has a faucet: allowed, prints a notice
     RUST_LOG=info,commonware=warn nohup "$A" "${args[@]}" > "$D/node$i.log" 2>&1 &
@@ -137,6 +175,7 @@ phase_chain() {
 
 phase_registrar() {
   say "registrar: the real registry flow (aether candidate-register, dev registrar)"
+  [ "${FAST:-0}" = 1 ] && { echo "FAST=1: legacy genesis has no free registration — skipped"; return; }
   [ -d "$CG/c1" ] || { "$A" keygen --data "$CG/c1" >/dev/null; }
   out=$("$A" candidate-register --data "$CG/c1" --registrar-rpc "$RPC" --rpc "$RPC" --from-dev 2 2>&1) \
     || fail "candidate-register failed: $out"
@@ -167,22 +206,35 @@ phase_stress() {
 
 phase_stop() {
   say "stop: halting the validators (results stay in $D)"
-  for i in 1 2 3 4; do
-    [ -f "$D/node$i.pid" ] && kill "$(cat "$D/node$i.pid")" 2>/dev/null || true
+  pids=()
+  for i in 1 2 3 4; do [ -f "$D/node$i.pid" ] && pids+=("$(cat "$D/node$i.pid")"); done
+  [ ${#pids[@]} -gt 0 ] && kill "${pids[@]}" 2>/dev/null || true
+  for _ in $(seq 1 15); do
+    alive=0; for p in ${pids[@]+"${pids[@]}"}; do kill -0 "$p" 2>/dev/null && alive=1; done
+    [ "$alive" = 0 ] && break; sleep 1
   done
-  sleep 2
+  [ ${#pids[@]} -gt 0 ] && kill -9 "${pids[@]}" 2>/dev/null || true
+  rm -f "$D"/node*.pid
   PIDS=()
   echo "stopped."
+}
+
+phase_reset() {
+  say "reset: wipe the chain so the next 'chain' phase starts a fresh genesis (full B5 burst)"
+  rm -rf "$CG" "$D"/node*.pid
+  echo "wiped $CG"
 }
 
 # ------------------------------------------------------------------ main
 
 PHASES=("${@:-all}")
-[ "${PHASES[0]}" = all ] && PHASES=(bin deps chain registrar flows explorer dapp stress stop)
+# The stress burst runs on its own fresh genesis so it meets a full 100,000-unit
+# burst rather than the debt the 41 deployments left behind.
+[ "${PHASES[0]}" = all ] && PHASES=(bin deps chain registrar flows explorer dapp stop reset bin chain stress stop)
 for p in "${PHASES[@]}"; do
   case "$p" in
-    bin|deps|chain|registrar|flows|explorer|dapp|stress|stop) "phase_$p" ;;
-    *) fail "unknown phase '$p' (bin deps chain registrar flows explorer dapp stress stop | all)" ;;
+    bin|deps|chain|registrar|flows|explorer|dapp|stress|stop|reset) "phase_$p" ;;
+    *) fail "unknown phase '$p' (bin deps chain registrar flows explorer dapp stress stop reset | all)" ;;
   esac
 done
 say "done: phases ${PHASES[*]} — outputs in $D"

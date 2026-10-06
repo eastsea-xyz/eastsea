@@ -9,8 +9,8 @@
 // (vault spend, registry attestation) over digests the contracts publish.
 
 import { spawn } from 'node:child_process';
-import { keccak256 } from '@noble/hashes/sha3';
-import { sha256 } from '@noble/hashes/sha256';
+import { keccak_256 as keccak256 } from '@noble/hashes/sha3';
+import { sha256 } from '@noble/hashes/sha2';
 import { p256 } from '@noble/curves/p256';
 import { Interface, AbiCoder } from 'ethers';
 
@@ -54,10 +54,12 @@ export function devSeed(i) {
   return s;
 }
 
-/// The dev account's address: keccak256(uncompressed P-256 point)[12..].
+/// The dev account's address, crates/crypto `address_of` for a P-256 key:
+/// keccak256(scheme byte 1 ‖ SEC1 compressed point)[12..] — not the
+/// Ethereum uncompressed-xy rule, which only secp256k1 keys use.
 export function devAddress(i) {
-  const pub = p256.getPublicKey(devSeed(i), false); // 65 bytes, 04‖x‖y
-  return '0x' + Buffer.from(keccak256(pub).slice(12)).toString('hex');
+  const pub = p256.getPublicKey(devSeed(i), true); // 33 bytes, 02/03‖x
+  return '0x' + Buffer.from(keccak256(Buffer.concat([Buffer.from([1]), pub])).slice(12)).toString('hex');
 }
 
 /// A dev key's public halves, the way EastSeaVault/Account owners are stored.
@@ -73,7 +75,7 @@ export function devKeyXY(i) {
 /// `P256Signer::sign` (crates/crypto/src/lib.rs).
 export function devSignDigest(i, digestHex) {
   const digest = Buffer.from(digestHex.replace(/^0x/, ''), 'hex');
-  const sig = p256.sign(digest, devSeed(i), { prehash: true, lowS: true });
+  const sig = p256.sign(digest, devSeed(i), { prehash: false, lowS: true });
   return {
     r: '0x' + sig.r.toString(16).padStart(64, '0'),
     s: '0x' + sig.s.toString(16).padStart(64, '0'),
@@ -153,8 +155,25 @@ export function cli(args, { timeoutMs = 120_000 } = {}) {
 
 /// One wallet-path transaction: run the CLI subcommand, then read the receipt
 /// back over RPC. Returns a uniform record for the report.
+export async function cliTx(sub, extra, opts) { return tx(sub, extra, opts); }
+/// B5 admission refusal: the transaction needs more state units than the
+/// rolling budget has left right now (the pre-fix node says "exceeds block gas
+/// limit"; the fixed one says "state budget"). A wallet waits for the
+/// per-height refill and resubmits; so does this driver, and records the wait.
+const BUDGET_REFUSAL = /exceeds block gas limit|state budget/;
+export const BUDGET_WAIT_MAX_MS = Number(process.env.BUDGET_WAIT_MAX_MS || 30 * 60_000);
+
 async function tx(sub, extra, { label = '' } = {}) {
-  const run = await cli([sub, '--rpc', RPC, ...extra]);
+  const tStart = performance.now();
+  let run = await cli([sub, '--rpc', RPC, ...extra]);
+  let budgetRetries = 0;
+  let firstRefusal = null;
+  while (run.code !== 0 && BUDGET_REFUSAL.test(run.err) && performance.now() - tStart < BUDGET_WAIT_MAX_MS) {
+    firstRefusal ??= run.err.trim().split('\n').pop();
+    budgetRetries++;
+    await sleep(15_000);
+    run = await cli([sub, '--rpc', RPC, ...extra]);
+  }
   const hashM = run.out.match(/tx (0x[0-9a-f]{64})/);
   const hash = hashM ? hashM[1] : null;
   const record = {
@@ -167,6 +186,9 @@ async function tx(sub, extra, { label = '' } = {}) {
     finalizedMs: run.marks.finalized != null ? Math.round(run.marks.finalized) : null,
     stdout: run.out.trim().split('\n').slice(-3).join(' | '),
     stderr: run.err.trim().split('\n').slice(-3).join(' | '),
+    budgetRetries,
+    budgetWaitMs: budgetRetries ? Math.round(performance.now() - tStart - run.ms) : 0,
+    budgetRefusal: firstRefusal,
   };
   if (hash) {
     try {

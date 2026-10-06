@@ -12,11 +12,11 @@
 // alternative signing code exists in this file.
 
 import { createServer } from 'node:http';
-import { readFile, mkdirSync, writeFileSync } from 'node:fs';
+import { readFile, readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
-import { RPC, BIN, rpc, cli } from './lib.mjs';
+import { RPC, BIN, rpc, cliTx } from './lib.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const TOOLBOX = process.env.TOOLBOX || '/Volumes/workspace/eastsea-toolbox';
@@ -30,7 +30,9 @@ const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png' };
 const server = createServer((req, res) => {
   const path = req.url.split('?')[0].split('#')[0];
-  const file = join(TOOLBOX, path === '/' ? 'apps/token/index.html' : path.replace(/^\//, ''));
+  const rel = path === '/' ? 'apps/token/index.html' : path.replace(/^\//, '') + (path.endsWith('/') ? 'index.html' : '');
+  const file = join(TOOLBOX, rel);
+  if (!file.startsWith(TOOLBOX)) { res.writeHead(403); res.end(); return; }
   readFile(file, (e, b) => {
     if (e) { res.writeHead(404); res.end('not found'); return; }
     res.writeHead(200, { 'content-type': MIME[extname(file)] || 'text/plain' });
@@ -40,7 +42,7 @@ const server = createServer((req, res) => {
 await new Promise((r) => server.listen(PORT, '127.0.0.1', r));
 log(`serving ${TOOLBOX} at ${BASE}`);
 
-const results = JSON.parse(await readFile(resolve(HERE, '../../tmp/live/results.json')));
+const results = JSON.parse(readFileSync(resolve(HERE, '../../tmp/live/results.json'), 'utf8'));
 const dev = results.dev || {}; // { '1': addr, '2': addr, '3': addr }
 const addrOf = (i) => dev[String(i)] || Object.values(dev)[i - 1];
 const devIndex = Object.fromEntries(Object.entries(dev).map(([i, a]) => [a.toLowerCase(), Number(i)]));
@@ -67,12 +69,12 @@ const shimRequest = async (method, params) => {
     const p = params[0];
     const idx = devIndex[String(p.from || '').toLowerCase()];
     if (!idx) throw new Error(`shim: unknown account ${p.from}`);
-    const args = ['call', '--rpc', RPC, '--from-dev', String(idx), '--to', p.to, '--data', p.data || '0x', '--gas', '2000000', '--wait'];
-    if (p.value != null) args.push('--value', String(BigInt(p.value)));
-    const r = await cli(args, { timeoutMs: 90_000 });
-    const hash = r.out.match(/tx (0x[0-9a-f]{64})/)?.[1];
-    if (!hash) throw new Error(`shim: CLI refused: ${(r.err || r.out).trim().split('\n').pop()}`);
-    return hash;
+    const args = ['--from-dev', String(idx), '--to', p.to, '--data', p.data || '0x', '--gas', '2000000', '--wait'];
+    if (p.value != null && BigInt(p.value) !== 0n) args.push('--value', String(BigInt(p.value)));
+    // cliTx: the wallet path, waiting out a spent B5 budget like the wallet would.
+    const r = await cliTx('call', args);
+    if (!r.hash) throw new Error(`shim: CLI refused: ${r.stderr || r.stdout}`);
+    return r.hash;
   }
   return rpc(method, params); // eth_call, eth_blockNumber, eth_getLogs, …
 };
@@ -105,6 +107,14 @@ const acctText = () => page.locator('#acct').innerText().catch(() => '');
 const chainText = () => page.locator('#chain').innerText().catch(() => '');
 /// Submit the form whose signature text (e.g. 'transfer(address,uint256)')
 /// identifies it, filling its inputs in order; returns the form's result line.
+/// The frontends print "전송됨: <hash>" as soon as the wallet returns a hash;
+/// they never read the receipt. The check does, the way a careful user would.
+const receiptOk = async (text) => {
+  const h = text.match(/0x[0-9a-f]{64}/i)?.[0];
+  if (!h) return 'no hash';
+  const r = await rpc('aether_getReceipt', [h]).catch(() => null);
+  return r?.receipt ? `success=${r.receipt.success} h=${r.height} logs=${r.receipt.logs}` : 'no receipt';
+};
 const runForm = async (sigText, values, ms = 90_000) => {
   const form = page.locator('form').filter({ hasText: sigText }).first();
   const inputs = form.locator('input');
@@ -130,6 +140,8 @@ try {
     check('token: eth_call view totalSupply', /\d/.test(supply), supply.slice(0, 40));
     const sent = await runForm('transfer(address,uint256)', [addrOf(3), '1']);
     check('token: transfer write via CLI path (전송됨: 0x…)', /전송됨:\s*0x[0-9a-f]{64}/i.test(sent), sent.slice(0, 80));
+    const tr = await receiptOk(sent);
+    check('token: transfer receipt success with 1 log', /success=true .* logs=1/.test(tr), tr);
     await page.locator('#load-logs').click();
     await page.waitForTimeout(800);
     const logs = await page.locator('#logs').innerText().catch(() => '');
@@ -144,6 +156,8 @@ try {
     // createEdition('dapp-edition', cap 2, wallet-cap 1, price 0.001, feeBps 100)
     const made = await runForm('createEdition(string,uint256,uint256,uint256,uint16)', ['dapp-edition', '2', '1', '1000000000000000', '100']);
     check('nft: createEdition write', /전송됨:\s*0x[0-9a-f]{64}/i.test(made), made.slice(0, 80));
+    const mr = await receiptOk(made);
+    check('nft: createEdition receipt success', /success=true/.test(mr), mr);
     const ed = await runForm('editionOf(uint256)', ['2']);
     check('nft: editionOf(2) view after create', /\d/.test(ed), ed.slice(0, 50));
     await page.screenshot({ path: join(SHOTS, 'dapp-nft-after.png') }).catch(() => {});
@@ -160,6 +174,8 @@ try {
     const claimed = await runForm('claim()', []);
     const hashM = claimed.match(/0x[0-9a-f]{64}/i);
     check('names: claim write submitted (hash returned)', !!hashM, claimed.slice(0, 80));
+    // UX finding: the page shows the same green 전송됨 for a tx that failed.
+    check('names: page text for the FAILED claim (recorded verbatim)', true, claimed.slice(0, 90));
     if (hashM) {
       const rec = await rpc('aether_getReceipt', [hashM[0]]);
       const ok = rec?.receipt?.success === false; // double-claim must refuse

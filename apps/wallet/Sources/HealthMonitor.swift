@@ -90,6 +90,10 @@ final class HealthMonitor: ObservableObject {
         o.proofsFailing = prover?.proofs_failing == true
         o.proverPausedForProgram = prover?.paused == "program"
         o.lastReward = prover?.last_reward
+        // The stalled prover (L1): the node's own error, with the lag the
+        // chain is ahead of it.
+        o.proverError = prover?.error != nil
+        o.proverLag = prover?.lag ?? 0
         // The app has no layer-0 view of other provers' rewards yet: the
         // six-hour cross-check stays off until it does (health-watch.py
         // watches that from outside meanwhile).

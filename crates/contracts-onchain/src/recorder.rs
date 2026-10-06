@@ -495,3 +495,51 @@ pub(crate) fn environment(state: &WorldState, ctx: &BlockContext) -> Value {
         "artifacts_sha256": provenance["artifacts_sha256"],
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aether_types::{FeeVector, GasVector};
+
+    fn ctx() -> BlockContext {
+        BlockContext {
+            chain_id: 1,
+            number: 1,
+            timestamp: 1,
+            beneficiary: FEE_COLLECTOR,
+            limits: GasVector { exec: 30_000_000, state: fees::MAX_STATE_UNITS_PER_BLOCK, prove: 200_000_000 },
+            fees: Some(fees::FeePolicy {
+                base: FeeVector { exec: 0, state: fees::STATE_UNIT_PRICE, prove: 0 },
+                proposer: Address::ZERO,
+            }),
+        }
+    }
+
+    #[test]
+    fn plan_figures_are_reproduced() {
+        // PLAN.md: a 500 u whole workflow at 10% of refill -> 552/day, state-bound.
+        let t = Totals { transactions: 1, state_units: 500, envelope_bytes: 300, exec_gas: 50_000, ..Default::default() };
+        let c = sustained_ceiling(&t, &ctx(), 10);
+        assert_eq!((c.per_day, c.binding), (552, "state_refill"));
+        // MEASUREMENTS.md table: 100% refill, 500 u -> 5,529; 1,000 u -> 2,764.
+        assert_eq!(sustained_ceiling(&t, &ctx(), 100).per_day, 5_529);
+        let t = Totals { state_units: 1_000, ..t };
+        assert_eq!(sustained_ceiling(&t, &ctx(), 100).per_day, 2_764);
+    }
+
+    #[test]
+    fn a_slot_heavy_workflow_binds_on_new_slots() {
+        // 4 slots but only 1 unit is impossible on chain; it isolates the dimension.
+        let t = Totals { transactions: 1, state_units: 1, new_slots: 512 * 2, ..Default::default() };
+        let c = sustained_ceiling(&t, &ctx(), 100);
+        assert_eq!((c.per_day, c.binding), (HEIGHTS_PER_DAY / 2, "new_slots"));
+    }
+
+    #[test]
+    fn congestion_prices_match_primitives() {
+        // PRIMITIVES.md: ~2.72x / 7.39x floor at debt 62,500 / 75,000. Near
+        // 100,000 it quotes 54.46x; the executor gives 54.59x at 99,999 (e^4 = 54.598).
+        let x: Vec<u128> = CONGESTION_DEBTS.iter().map(|d| fees::state_base_fee(*d) * 100 / fees::STATE_UNIT_PRICE).collect();
+        assert_eq!(x, [271, 738, 5_459]);
+    }
+}

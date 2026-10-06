@@ -112,6 +112,14 @@ Measured capacity: `AIRDROP_CAPACITY sampled_burst=128 units=16868 slots=129 byt
 Measured capacity: `NFT_CAPACITY burst=170 units=56780 slots=510 bytes=181390 state_day_upper_bound=8577`.
 <!-- CONTRACTS-ONCHAIN-TABLE:END -->
 
+## A0 workflow records
+
+`crates/contracts-onchain/src/recorder.rs` records whole user workflows (native plan A0); see `crates/contracts-onchain/RECORDER.md`. Each record follows `crates/contracts-onchain/schema/workflow-record.v1.schema.json`. The runner writes the raw JSONL to `tmp/contracts-onchain-workflows.jsonl` and summarizes it here. Cold totals include setup (delegation, owner setup) and failed attempts; warm totals exclude the setup phase. Per-day figures are upper bounds at nominal one-second heights for the workflow alone.
+
+<!-- CONTRACTS-ONCHAIN-WORKFLOWS:BEGIN -->
+NOT RUN: no workflow records yet.
+<!-- CONTRACTS-ONCHAIN-WORKFLOWS:END -->
+
 ## Capacity and protocol boundaries
 
 The NFT capacity test sends 600 candidate mints to previously absent recipient accounts, compares the accepted burst with replay, and expects three new slots/mint: at most 170 mints before the 512-slot cap. The run measured exactly **170** mints (510 new slots, 56,780 state units) in the burst block; the slot cap, not the state budget, binds. The native airdrop test has 128 independent pre-funded claimants and genuine sorted Merkle proofs, measures the burst, then tests nine claims fitting one unit below the ten-claim cost and ten fitting after one refill. Both print measured units/bytes/slots and a paid-state daily upper bound.

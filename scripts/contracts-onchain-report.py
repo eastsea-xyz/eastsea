@@ -11,6 +11,8 @@ REPORT = ROOT / "docs/research/contracts-onchain-2026-10-06.md"
 FIXTURES = ROOT / "crates/contracts-onchain/fixtures/artifacts.json"
 BEGIN = "<!-- CONTRACTS-ONCHAIN-TABLE:BEGIN -->"
 END = "<!-- CONTRACTS-ONCHAIN-TABLE:END -->"
+WORKFLOWS_BEGIN = "<!-- CONTRACTS-ONCHAIN-WORKFLOWS:BEGIN -->"
+WORKFLOWS_END = "<!-- CONTRACTS-ONCHAIN-WORKFLOWS:END -->"
 SCOPES = {
     "AtomicSwap": "lock/claim/refund; native/ERC20, SHA-256, timeout, fees, failed payouts, callbacks",
     "AtomicSwapEVM": "same complete swap lifecycle and errors as AtomicSwap",
@@ -116,6 +118,27 @@ def common_actions(rows):
     return lines
 
 
+def dbln(wei):
+    return f"{int(wei) / 10**18:.6f}"
+
+
+def workflow_lines(path, verified):
+    """Summary table of A0 workflow records (schema eastsea.workflow-record/v1)."""
+    records = [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path and path.exists() else []
+    if not records:
+        return ["NOT RUN: no workflow records yet."]
+    status = "verified complete Rust run" if verified else "NOT VERIFIED (no complete passing Rust transcript)"
+    lines = [f"{len(records)} workflow records; status: {status}.\n",
+             "| Workflow | Txs (failed) | User tx sigs | Typed sigs | Relayer txs | Cold units | Warm units | Cold floor fee (DBLN) | Failure fees (DBLN) | Warm/day at 10% / 50% / 100% refill (binding) |",
+             "|---|---:|---:|---:|---:|---:|---:|---:|---:|---|"]
+    for r in records:
+        cold, warm, sig = r["totals"]["cold"], r["totals"]["warm"], r["signatures"]
+        failure_fee = sum(int(f["fee_paid_wei"]) for f in r["failures"])
+        per_day = " / ".join(f"{s['workflows_per_day']:,} ({s['binding_limit']})" for s in r["b5"]["warm"]["sustained_per_day"])
+        lines.append(f"| `{r['workflow']}` | {cold['transactions']} ({cold['failed_transactions']}) | {sig['user_transaction']} | {sig['user_typed_message']} | {sig['relayer_transaction']} | {cold['state_units']} | {warm['state_units']} | {dbln(cold['fee_floor_wei'])} | {dbln(failure_fee)} | {per_day} |")
+    return lines
+
+
 def display(values):
     values = sorted(set(int(v) for v in values))
     return str(values[0]) if len(values) == 1 else f"{values[0]}–{values[-1]}"
@@ -124,6 +147,7 @@ def display(values):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--metrics", type=Path)
+    parser.add_argument("--workflows", type=Path)
     args = parser.parse_args()
     manifest = json.loads(FIXTURES.read_text())
     grouped = defaultdict(list)
@@ -164,7 +188,10 @@ def main():
     lines += [END]
     report = REPORT.read_text()
     start, stop = report.index(BEGIN), report.index(END) + len(END)
-    REPORT.write_text(report[:start] + "\n".join(lines) + report[stop:])
+    report = report[:start] + "\n".join(lines) + report[stop:]
+    start, stop = report.index(WORKFLOWS_BEGIN), report.index(WORKFLOWS_END) + len(WORKFLOWS_END)
+    report = report[:start] + "\n".join([WORKFLOWS_BEGIN, *workflow_lines(args.workflows, verified), WORKFLOWS_END]) + report[stop:]
+    REPORT.write_text(report)
     print(f"Updated {REPORT.relative_to(ROOT)}; Rust results verified={verified}")
 
 

@@ -1788,8 +1788,13 @@ impl Chain {
         {
             // `anchor` counts blocks: up to the whole finalized chain (the history
             // root the next block will commit, what a peer at the same head holds).
+            // `era` is caller-supplied (`aether_eraProof`, public-allowlisted):
+            // saturate the addition too — with overflow checks on, `era + 1`
+            // panicked on the maximum era before the multiply ran, and the
+            // process-wide hook turned an out-of-domain ask into a node exit
+            // (pre-audit 7b PA7B-02).
             let g = self.lock();
-            if anchor > g.finalized.height + 1 || (era + 1).saturating_mul(ERA_LEN) > anchor {
+            if anchor > g.finalized.height + 1 || era.saturating_add(1).saturating_mul(ERA_LEN) > anchor {
                 return Err("need a complete era below anchor <= finalized height + 1".into());
             }
         }

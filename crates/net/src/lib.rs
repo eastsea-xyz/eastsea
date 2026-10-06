@@ -674,6 +674,46 @@ impl RpcClient {
         self.start.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Drop the current node and prefer node `i` of `nodes` next. A recovery
+    /// path that already knows which peer had the answer (pre-audit 7b
+    /// PA7B-06) moves straight to it instead of one step at a time.
+    pub async fn rotate_to(&self, i: usize) {
+        *self.current.lock().await = None;
+        if !self.nodes.is_empty() {
+            self.start.store(i % self.nodes.len(), std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Ask every node EXCEPT the current one, each on its own connection
+    /// attempt bounded by `attempt` (pre-audit 7b PA7B-06): corroborating a
+    /// claim across peers needs the peers the client is not already talking
+    /// to. Answers come back as (index into `nodes`, value); a node that
+    /// fails to connect or answer is simply absent — the caller keeps what
+    /// it already has. The current node is not touched, so a corroborated
+    /// answer never disturbs a connection other reads are using.
+    pub async fn ask_others(&self, method: &str, params: Value) -> Vec<(usize, Value)> {
+        let skip = self
+            .current
+            .lock()
+            .await
+            .as_ref()
+            .and_then(|(id, _)| self.nodes.iter().position(|a| a.id == *id));
+        let mut out = Vec::new();
+        for (i, addr) in self.nodes.iter().enumerate() {
+            if Some(i) == skip {
+                continue;
+            }
+            let connected = match tokio::time::timeout(self.attempt, self.endpoint.connect(addr.clone(), ALPN_RPC)).await {
+                Ok(Ok(c)) => c,
+                _ => continue,
+            };
+            if let Ok(v) = rpc_call(&connected, method, params.clone()).await {
+                out.push((i, v));
+            }
+        }
+        out
+    }
+
     /// A live connection, scanning `nodes` when the cached one is gone. The
     /// whole scan — not just each attempt — is bounded by `scan`, and every
     /// node it got through moves `start` past itself, so a later scan begins

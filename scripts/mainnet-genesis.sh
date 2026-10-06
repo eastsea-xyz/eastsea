@@ -339,7 +339,10 @@ json.dump({
     "registrar": (g.get("registrar") or "").lower(),
     "reserve_operator": ((g.get("reserve") or {}).get("operator") or "").lower(),
     "validators": [{"key": v["key"].lower(), "node": v["node"]} for v in g["validators"]],
-    "reserve": [{"key": v["key"].lower()} for v in (g.get("reserve") or {}).get("validators", [])],
+    # The reserve is recorded as a complete {key, node} roster (pre-audit 7b
+    # PA7B-01): keys alone would accept a final file whose reserve endpoints
+    # were swapped for other valid ids — a delay to the intended fallback.
+    "reserve": [{"key": v["key"].lower(), "node": v["node"]} for v in (g.get("reserve") or {}).get("validators", [])],
     "protocol": g.get("protocol"),
     "history": g.get("history"),
     "node_rewards": g.get("node_rewards"),
@@ -457,9 +460,11 @@ if roster(n.get("validators")) != want:
     bad.append("the opening roster (validators) is not the one assembled")
 if roster(n.get("genesis_validators")) != want:
     bad.append("genesis_validators is not the one assembled")
-if [lower(v.get("key")) for v in ((n.get("reserve") or {}).get("validators") or [])] \
-        != [lower(v.get("key")) for v in c["reserve"]]:
-    bad.append("the reserve keys are not the ones assembled")
+# The reserve is compared as a complete {key, node} roster (pre-audit 7b
+# PA7B-01): keys alone let a substituted reserve endpoint id — valid,
+# curve-checked, not the one assembled — ride the ceremony through.
+if roster((n.get("reserve") or {}).get("validators")) != roster(c["reserve"]):
+    bad.append("the reserve roster (keys and node ids) is not the one assembled")
 for flag in ("protocol", "history", "node_rewards"):
     if n.get(flag) != c[flag]:
         bad.append(f"{flag} is {n.get(flag)!r}, the ceremony assembled {c[flag]!r}")

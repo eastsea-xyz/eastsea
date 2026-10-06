@@ -350,7 +350,8 @@ impl Upstream {
     /// source stuck at (or lying about) a low tip must not hide an honest
     /// ahead-of-us alternative behind "first answer wins". So on a
     /// not-ahead answer every remaining HTTP source is asked too and the
-    /// highest claim wins. Iroh's client asks its own peer set.
+    /// highest claim wins. The iroh client corroborates across its own peer
+    /// set the same way (PA7B-06), moving to the peer with the best claim.
     pub async fn net_height(&self, ours: u64) -> Result<u64, String> {
         let ask_one = |v: Value| -> Result<u64, String> {
             v["height"].as_u64().ok_or_else(|| "no upstream height".to_string())
@@ -359,7 +360,34 @@ impl Upstream {
             Upstream::Iroh(c, _) => {
                 let v = c.call("aether_status", json!([])).await.map_err(|e| e.to_string())?;
                 crate::chain::tick();
-                ask_one(v)
+                let h = ask_one(v)?;
+                if h > ours {
+                    return Ok(h);
+                }
+                // Not ahead: this peer's claim is unsigned — a peer stuck at
+                // (or lying about) a low tip must not hide an honest
+                // ahead-of-us one behind "first answer wins" (PA7-06 gave
+                // HTTP sources this; the default follower transport gets it
+                // too, PA7B-06). Ask every OTHER peer directly, keep the
+                // highest claim, and move to the peer that made it so the
+                // next reads start there.
+                let mut best = h;
+                let mut best_at: Option<usize> = None;
+                for (i, v) in c.ask_others("aether_status", json!([])).await {
+                    let Ok(h2) = ask_one(v) else { continue };
+                    crate::chain::tick();
+                    if h2 > best {
+                        best = h2;
+                        best_at = Some(i);
+                    }
+                }
+                if best > ours {
+                    if let Some(i) = best_at {
+                        c.rotate_to(i).await;
+                    }
+                    return Ok(best);
+                }
+                Ok(best)
             }
             Upstream::Http(urls) => {
                 let mut best: Option<u64> = None;
@@ -741,8 +769,23 @@ impl StallWatch {
     /// the clock running (pre-audit 7 PA7-06: a false-low-tip source used to
     /// erase the stall history on every answer, hiding the stall from the
     /// ten-minute self-heal for as long as it kept answering).
+    ///
+    /// A corroborated at-tip answer is the other case: `net_height` returns
+    /// the HIGHEST claim across every source (PA7-06 corroborated the HTTP
+    /// sources, PA7B-06 the default transport), so net == our height means
+    /// every reachable source agrees the chain itself is at our height —
+    /// the committee halting for maintenance or an outage, not a failure to
+    /// follow available progress (pre-audit 7b PA7B-07). Waiting at such a
+    /// tip clears the clock instead of spending it: a caught-up follower
+    /// used to exit every stall window through a genuine pause, and the
+    /// fourth exit in an hour made the supervisor stop permanently — the
+    /// follower never resumed when consensus did.
     fn observe(&mut self, now: std::time::Instant, height: u64, net: Option<u64>, failed: bool) -> bool {
         if height > self.height {
+            self.reset(height);
+            return false;
+        }
+        if net == Some(height) {
             self.reset(height);
             return false;
         }
@@ -1589,7 +1632,7 @@ mod tests {
     }
 
     #[test]
-    fn verified_progress_clears_the_stall_clock_and_an_unsigned_tip_answer_does_not() {
+    fn verified_progress_clears_the_stall_clock_and_an_unfetched_ahead_claim_does_not() {
         let start = std::time::Instant::now();
         let mut watch = StallWatch::new(100);
         assert!(!watch.observe(start, 100, Some(10_000), false));
@@ -1597,31 +1640,47 @@ mod tests {
         // A status response alone did not resolve the gap.
         assert!(watch.observe(start + STALL_TIMEOUT, 100, Some(10_000), false));
         assert!(!watch.observe(start + STALL_TIMEOUT + Duration::from_secs(1), 101, Some(10_000), false));
-        // An unsigned status claiming we are at the tip (net == ours) is not
-        // a confirmed tip (pre-audit 7 PA7-06): the old code reset the clock
-        // on it, so a source answering "nothing new" hid every stall. The
-        // clock keeps running through such answers…
+        // An at-tip answer where every source agrees (net == ours, the
+        // highest claim across sources) is a corroborated pause: the clock
+        // waits (PA7B-07), however long the pause runs — including windows
+        // that would have exited while the committee was simply halted
+        // (post-PA7-06 code kept the clock running through every such
+        // answer, four exits an hour exhausting the restart budget).
         assert!(!watch.observe(start + STALL_TIMEOUT * 2, 101, Some(101), false));
-        // …so ten minutes after the last VERIFIED progress the self-heal
-        // fires even though an upstream kept answering the whole time.
-        assert!(watch.observe(start + STALL_TIMEOUT * 3 + Duration::from_secs(1), 101, Some(101), false));
+        assert!(!watch.observe(start + STALL_TIMEOUT * 4, 101, Some(101), false));
     }
 
-    /// PA7-06's own scenario, on its own: a source that keeps answering
-    /// "you are at the tip" — successful rounds, no failures, no ahead
-    /// claim — never resets the stall clock. On the old code every such
-    /// answer called `reset`, and the follower sat "healthy" forever.
+    /// PA7B-07's own scenario: a genuine chain pause — the committee halted
+    /// for maintenance or an outage, every source agreeing the network is at
+    /// our height (net_height corroborates the HIGHEST claim, so an honest
+    /// ahead source would have said more) — is waiting, not a stall. The
+    /// post-PA7-06 clock ran through every such answer: a caught-up follower
+    /// exited every ten minutes of the pause, the fourth exit in an hour
+    /// stopped the supervisor permanently, and when consensus resumed the
+    /// follower was gone. Waiting now costs nothing, and recovery is the
+    /// ordinary two: the first new block is verified progress, and a REAL
+    /// stall afterwards (no corroboration at all) still fires within one
+    /// window.
     #[test]
-    fn a_false_low_tip_source_never_resets_the_stall_clock() {
+    fn a_genuine_chain_pause_is_survived_and_resumed() {
         let start = std::time::Instant::now();
         let mut watch = StallWatch::new(100);
-        for seconds in [0u64, 60, 300, 599] {
-            assert!(!watch.observe(start + Duration::from_secs(seconds), 100, Some(100), false));
+        // Forty minutes of honest pause, well past the stall window — and a
+        // failed round inside it (transport blips happen during halts too).
+        assert!(!watch.observe(start, 100, Some(100), true));
+        for seconds in [60u64, 600, 1_800, 2_400] {
+            assert!(
+                !watch.observe(start + Duration::from_secs(seconds), 100, Some(100), false),
+                "an honest pause of {seconds}s is waiting, not a stall"
+            );
         }
-        assert!(
-            watch.observe(start + STALL_TIMEOUT, 100, Some(100), false),
-            "ten minutes of nothing-new answers is a stall the self-heal must see"
-        );
+        // Consensus resumes: the first adopted block is verified progress
+        // and clears the clock the ordinary way.
+        assert!(!watch.observe(start + Duration::from_secs(2_401), 101, Some(200), false));
+        // And a real stall after the pause — no source answering at all —
+        // fires within one window of the last verified progress.
+        assert!(!watch.observe(start + Duration::from_secs(2_402), 101, None, true));
+        assert!(watch.observe(start + Duration::from_secs(2_402) + STALL_TIMEOUT, 101, None, true));
     }
 
     /// The corroborated height (PA7-06): a not-ahead answer does not win
@@ -1652,6 +1711,53 @@ mod tests {
         // …and a lone low answer is still the best claim there is — returned
         // as the (unsigned) height, with the stall clock the safety net.
         assert_eq!(Upstream::Http(vec![low]).net_height(ours).await.unwrap(), 100);
+    }
+
+    /// The same corroboration on the DEFAULT follower transport (pre-audit 7b
+    /// PA7B-06): the iroh `net_height` used to take the current peer's claim
+    /// alone, so a caught-up follower parked on a peer stuck at a low tip
+    /// believed the network was there too — no catch-up, no rotation,
+    /// indefinitely, while HTTP sources already corroborated (PA7-06). The
+    /// iroh path now asks every OTHER peer directly, keeps the highest claim,
+    /// and moves the client to the peer that made it. The old code returned
+    /// the stale peer's 100 here and never moved.
+    #[tokio::test]
+    async fn an_iroh_follower_corroborates_height_across_alternate_peers() {
+        let status_server = |height: u64| async move {
+            let secret = aether_net::SecretKey::generate();
+            let id = secret.public();
+            let server = aether_net::Endpoint::builder(iroh::endpoint::presets::Minimal)
+                .relay_mode(iroh::RelayMode::Disabled)
+                .alpns(vec![aether_net::ALPN_RPC.to_vec()])
+                .secret_key(secret)
+                .bind()
+                .await
+                .unwrap();
+            let port = server.bound_sockets().into_iter().find(|a| a.is_ipv4()).expect("an IPv4 socket").port();
+            let router = aether_net::serve_rpc(server, move |req: Value| async move {
+                json!({ "jsonrpc": "2.0", "id": req["id"], "result": { "height": height } })
+            });
+            let addr = aether_net::EndpointAddr::from_parts(
+                id,
+                [aether_net::TransportAddr::Ip(std::net::SocketAddr::from((
+                    std::net::Ipv4Addr::LOCALHOST,
+                    port,
+                )))],
+            );
+            (addr, router)
+        };
+        // The stale peer is first: the client connects there (start = 0) and
+        // its answer says we are AT the tip (100) — not ahead, so every other
+        // peer must be asked before that claim is believed.
+        let (stale, _stale_router) = status_server(100).await;
+        let (ahead, _ahead_router) = status_server(200).await;
+        let client = aether_net::RpcClient::with_addrs(vec![stale, ahead]).await.unwrap();
+        let up = Upstream::Iroh(client, Default::default());
+        assert_eq!(up.net_height(100).await, Ok(200), "the honest peer's 200 must beat the stale peer's 100");
+        // And the client moved to it: the next ask answers from the honest
+        // peer outright (a fresh scan starts there), never touching the
+        // stale one first again.
+        assert_eq!(up.net_height(150).await, Ok(200), "the client rotates to the peer with the best claim");
     }
 
     #[test]

@@ -61,10 +61,23 @@ mv -f apps/wallet/Generated/aether_ffiFFI.modulemap apps/wallet/Generated/module
 # The macOS app embeds the node and the agent CLI (Contents/Helpers).
 [ "$target" = macos ] && scripts/build-agent.sh >/dev/null
 cd apps/wallet && xcodegen generate >/dev/null
-swift_flags=()
-if [ -n "${OTHER_SWIFT_FLAGS:-}" ]; then swift_flags+=("OTHER_SWIFT_FLAGS=$OTHER_SWIFT_FLAGS"); fi
+# WALLET_CLEAN_BUILD=1 (package-mac.sh): build into a clean derived-data
+# directory. A reused one keeps the previous build's bundle, and with it a
+# stale Helpers/aether.prev from whatever was built there last. Only the
+# resolved Swift packages are kept (they are pinned by Package.resolved).
+if [ "${WALLET_CLEAN_BUILD:-0}" = 1 ] && [ -d build ]; then
+  find build -mindepth 1 -maxdepth 1 ! -name SourcePackages -exec rm -rf {} +
+fi
+# The optional extra build setting travels as the positional parameters, not
+# an array: macOS's /bin/bash 3.2 treats "${empty[@]}" as an unbound variable
+# under set -u, while an empty "$@" expands to nothing.
+set --
+if [ -n "${OTHER_SWIFT_FLAGS:-}" ]; then set -- "OTHER_SWIFT_FLAGS=$OTHER_SWIFT_FLAGS"; fi
+# WALLET_ADHOC=1: a local check build signed ad hoc (no Developer ID needed);
+# the postBuild script signs the helpers with the same identity.
+if [ "${WALLET_ADHOC:-0}" = 1 ]; then set -- "$@" CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM=; fi
 case "$target" in
-  macos)  xcodebuild -project AetherWallet.xcodeproj -scheme AetherWallet -configuration Release -derivedDataPath build "${swift_flags[@]}" build | grep -E "BUILD|error:" ;;
+  macos)  xcodebuild -project AetherWallet.xcodeproj -scheme AetherWallet -configuration Release -derivedDataPath build "$@" build | grep -E "BUILD|error:" ;;
   ios-sim) xcodebuild -project AetherWallet.xcodeproj -scheme AetherWalletIOS -sdk iphonesimulator -configuration Debug -derivedDataPath build CODE_SIGNING_ALLOWED=NO build | grep -E "BUILD|error:" ;;
   ios)    xcodebuild -project AetherWallet.xcodeproj -scheme AetherWalletIOS -sdk iphoneos -destination 'generic/platform=iOS' -configuration Release -derivedDataPath build CODE_SIGNING_ALLOWED=NO build | grep -E "BUILD|error:" ;;
 esac

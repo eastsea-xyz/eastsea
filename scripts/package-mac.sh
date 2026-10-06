@@ -14,7 +14,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 version=${AETHER_VERSION:-$(git describe --tags --always --dirty)}
-scripts/build-wallet.sh macos >/dev/null
+# A release always builds from a clean derived-data directory (no stale
+# Helpers/aether.prev or other leftovers from an earlier build in apps/wallet/build).
+WALLET_CLEAN_BUILD=1 scripts/build-wallet.sh macos >/dev/null
 src="apps/wallet/build/Build/Products/Release/EastSea.app"
 [ -d "$src" ] || { echo "build failed: $src missing"; exit 1; }
 
@@ -37,6 +39,9 @@ if [ -n "${SIGN_IDENTITY:-}" ]; then
   codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$app"
 fi
 codesign --verify --deep --strict "$app"
+# The unattended daemon's BundleProgram must exist in the bundle we ship.
+prog=$(/usr/libexec/PlistBuddy -c 'Print :BundleProgram' "$app/Contents/Library/LaunchDaemons/com.pipln.eastsea.node.plist")
+[ -x "$app/$prog" ] || { echo "daemon BundleProgram $prog missing from $app"; exit 1; }
 
 ln -s /Applications "$stage/Applications"
 mkdir -p dist

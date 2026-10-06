@@ -15,7 +15,7 @@ import SwiftUI
 final class UnattendedDaemon: ObservableObject {
     /// The daemon plist shipped in the app bundle
     /// (`Contents/Library/LaunchDaemons`). Its `BundleProgram` is the root
-    /// stub `Helpers/eastsea-node-daemon.sh`, which waits for the marker and
+    /// stub `Contents/Resources/eastsea-node-daemon.sh`, which waits for the marker and
     /// runs the node as the marker's user — the plist is static in the signed
     /// bundle, so per-user choices travel in the marker instead.
     static let plistName = "com.pipln.eastsea.node.plist"
@@ -116,7 +116,9 @@ final class UnattendedDaemon: ObservableObject {
     /// single source of what the daemon runs: the same argv the app's own node
     /// takes (minus `--exit-with-parent`), so a restart changes nothing.
     func syncMarker() {
-        guard enabled, nodeEnabled, !wrongLocation else {
+        // The marker makes the root daemon run the node — past the app's own
+        // start gate — so it obeys the same gate (release-070 review, B4).
+        guard enabled, nodeEnabled, !wrongLocation, DataMigration.mayStartNode() == nil else {
             Marker.remove()
             return
         }

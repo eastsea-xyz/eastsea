@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The legacy feed every Aether <= 0.6.6 reads. It lists only this bridge;
+	     EastSea 0.7.0+ lives on eastsea-appcast.xml (scripts/release-mac.sh). -->
+	<key>SUFeedURL</key>
+	<string>https://github.com/kjaylee/aether-node/releases/latest/download/appcast.xml</string>
+	<!-- The same EdDSA key as Aether and EastSea: Sparkle checks bridge updates
+	     with it, and the bridge checks the EastSea download with it. -->
+	<key>SUPublicEDKey</key>
+	<string>owZzXbcYSAs74399TEZ7qMetNlTCsZqgj7rNYO9ny6E=</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUScheduledCheckInterval</key>
+	<integer>3600</integer>
+	<key>SUAutomaticallyUpdate</key>
+	<true/>
+</dict>
+</plist>

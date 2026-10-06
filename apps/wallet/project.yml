@@ -34,8 +34,10 @@ targets:
         SWIFT_VERSION: "5.0"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: EastSea
-        MARKETING_VERSION: 0.6.6
-        CURRENT_PROJECT_VERSION: 11
+        MARKETING_VERSION: 0.7.0
+        # Build numbers never repeat across the product line: Aether 0.6.6 shipped
+        # build 11 and the Aether 0.6.7 bridge (apps/bridge) ships build 12.
+        CURRENT_PROJECT_VERSION: 13
         # Sparkle keys (feed URL, EdDSA public key) merged into the generated Info.plist.
         INFOPLIST_FILE: Info-mac.plist
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.finance
@@ -76,16 +78,23 @@ targets:
           done
           # The unattended-restart daemon (docs/design/29-unattended-restart.md):
           # SMAppService.daemon registers the plist from Contents/Library/LaunchDaemons,
-          # whose BundleProgram is the root stub; the stub and the user wrapper it drops
-          # to live beside the node binary in Contents/Helpers.
+          # whose BundleProgram (relative to the bundle root) is the root stub. The stub
+          # and the user wrapper it drops to are shell scripts, so they live in
+          # Contents/Resources, sealed by the app's own signature: Contents/Helpers is a
+          # code location, where every file must carry its own signature
+          # (codesign --verify --deep --strict, notarization).
           D="$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Library/LaunchDaemons"
-          mkdir -p "$D"
+          R="$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources"
+          mkdir -p "$D" "$R"
           cp -f "$SRCROOT/Daemons/com.pipln.eastsea.node.plist" "$D/"
           chmod 644 "$D/com.pipln.eastsea.node.plist"
           for s in eastsea-node-daemon.sh eastsea-node-wrapper.sh; do
-            cp -f "$SRCROOT/Helpers/$s" "$H/"
-            chmod 755 "$H/$s"
+            rm -f "$H/$s"   # an older build placed them in Helpers
+            cp -f "$SRCROOT/Helpers/$s" "$R/"
+            chmod 755 "$R/$s"
           done
+          prog=$(/usr/libexec/PlistBuddy -c 'Print :BundleProgram' "$D/com.pipln.eastsea.node.plist")
+          [ -x "$BUILT_PRODUCTS_DIR/$WRAPPER_NAME/$prog" ] || { echo "error: daemon BundleProgram $prog is not in the bundle"; exit 1; }
       - name: Bundle explorer
         basedOnDependencyAnalysis: false
         script: |

@@ -5,6 +5,12 @@
 #   scripts/release-mac.sh [--draft]            # legacy 7780 release
 # Version and build number come from apps/wallet/project.yml (MARKETING_VERSION,
 # CURRENT_PROJECT_VERSION); bump the build number for every release.
+# Feeds (release-070 review B2): EastSea 0.7.0+ reads eastsea-appcast.xml, which
+# this script writes. appcast.xml is the LEGACY feed every Aether <= 0.6.6
+# reads; its Sparkle can only install Aether.app, so that file must list the
+# Aether bridge (scripts/release-bridge.sh) and never an EastSea. Every release
+# here re-attaches the bridge release's appcast.xml, because both feeds are read
+# from whichever release is `latest`.
 # Needs: Developer ID (Pipln), ASC API key (~/.config/app-store-release/env.sh),
 # the Sparkle EdDSA key in the login keychain (account "aether-pipln"), gh.
 set -euo pipefail
@@ -50,7 +56,7 @@ if [ -n "${AETHER_RELEASE_LOG:-}" ]; then
   scripts/release-approve.py prepare --chain-id "$AETHER_RELEASE_CHAIN_ID" \
     --log "$AETHER_RELEASE_LOG" --version "$version" --build "$build" \
     --dmg "$dmg" --app "$PWD/tmp/release-mount/EastSea.app" --sparkle-signature "$sparkle_sig" --source-tag "$tag" \
-    --out "$manifest" "${emergency[@]}"
+    --out "$manifest" ${emergency[@]+"${emergency[@]}"}
   hdiutil detach -quiet "$PWD/tmp/release-mount"
   trap - EXIT
   if [ "${#emergency[@]}" -eq 0 ]; then
@@ -61,7 +67,7 @@ if [ -n "${AETHER_RELEASE_LOG:-}" ]; then
 fi
 
 url="https://github.com/$repo/releases/download/$tag/EastSea-$version.dmg"
-cat > dist/appcast.xml <<XML
+cat > dist/eastsea-appcast.xml <<XML
 <?xml version="1.0" encoding="utf-8"?>
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
   <channel>
@@ -99,11 +105,30 @@ if [ "$mode" = --prepare ] || { [ -n "${AETHER_RELEASE_LOG:-}" ] && [ "$mode" !=
   echo "Prepared artifacts only. Publish the manifest on chain, then run --publish-prepared with AETHER_RELEASE_INDEX."
   exit 0
 fi
-assets=("$dmg" dist/appcast.xml)
+# The legacy feed, taken from the bridge's own release and checked to list the
+# bridge (an Aether.app DMG, >= 0.6.7): without it, publishing this release as
+# latest would leave every Aether 0.6.6 reading a feed it cannot install from.
+bridge_tag=${AETHER_BRIDGE_TAG:-app-v0.6.7}
+rm -rf tmp/bridge-feed && mkdir -p tmp/bridge-feed
+gh release download "$bridge_tag" --repo "$repo" --pattern appcast.xml --dir tmp/bridge-feed
+python3 - tmp/bridge-feed/appcast.xml <<'PY'
+import sys, xml.etree.ElementTree as ET
+ns = {"sparkle": "http://www.andymatuschak.org/xml-namespaces/sparkle"}
+items = ET.parse(sys.argv[1]).getroot().findall("./channel/item")
+assert items, "the bridge feed has no item"
+for it in items:
+    url = it.find("enclosure").get("url")
+    short = it.find("sparkle:shortVersionString", ns).text
+    assert "/Aether-" in url and url.endswith(".dmg"), f"legacy feed item is not an Aether.app DMG: {url}"
+    assert tuple(map(int, short.split("."))) >= (0, 6, 7), f"legacy feed item {short} is not the bridge"
+print("legacy feed lists the bridge:", ", ".join(i.find("sparkle:shortVersionString", ns).text for i in items))
+PY
+cp tmp/bridge-feed/appcast.xml dist/appcast.xml
+assets=("$dmg" dist/eastsea-appcast.xml dist/appcast.xml)
 if [ "$mode" = --publish-prepared ]; then
   : "${AETHER_RELEASE_INDEX:?set the finalized ReleaseLog entry index}"
   scripts/release-approve.py finalize --manifest "$manifest" --signatures "$builder_sigs" \
-    --dmg "$dmg" --appcast dist/appcast.xml --version "$version" --build "$build" \
+    --dmg "$dmg" --appcast dist/eastsea-appcast.xml --version "$version" --build "$build" \
     --index "$AETHER_RELEASE_INDEX" --out "$release_index"
   assets+=("$manifest" "$builder_sigs" "$release_index")
   assets+=("${manifest%.json}.inventory.json")
@@ -136,5 +161,5 @@ fi
 
 draft=()
 if [ "$mode" = --draft ]; then draft=(--draft); fi
-gh release create "$tag" "${assets[@]}" --repo "$repo" --verify-tag --title "EastSea $version (testnet)" --notes "$notes" --latest "${draft[@]}"
+gh release create "$tag" "${assets[@]}" --repo "$repo" --verify-tag --title "EastSea $version (testnet)" --notes "$notes" --latest ${draft[@]+"${draft[@]}"}
 echo "released $tag"

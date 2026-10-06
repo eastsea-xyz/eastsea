@@ -59,6 +59,7 @@
 		6A942349D098A6F0D8ABB7ED /* HealthCheck.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CA691B4DF93F089CF5537C7 /* HealthCheck.swift */; };
 		6B328300B9C16A284BC72EDD /* NodeController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64A5EE5BA6294827128D61F5 /* NodeController.swift */; };
 		6C4577D2528A352950E8F964 /* BalanceBreakdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1F6F75149EAAFD83802065B /* BalanceBreakdown.swift */; };
+		70F6C8ECC3BF1C0417A68F22 /* LegacyAether.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4FCD5C102108D57C735EB29 /* LegacyAether.swift */; };
 		744ABDE9795D713D6D3CA46F /* token-sources.json in Resources */ = {isa = PBXBuildFile; fileRef = 2928FB2C0B82AF8C35E97D99 /* token-sources.json */; };
 		75F66F94438EF25449852272 /* Brand.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32CECEE6B3B88424FB7E6774 /* Brand.swift */; };
 		78F7EAB34432E58DC6020678 /* SitePermissions.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA1AC5002239A0EB65FCB064 /* SitePermissions.swift */; };
@@ -92,6 +93,8 @@
 		A9AB518F8F246CB2A0974398 /* Earnings.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6C1B75440E8A6A577BD467E /* Earnings.swift */; };
 		ADEEA18CEEC7A29BDFBB47BB /* NetworkPaused.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B632CFC2DA1179CC9EAD01D /* NetworkPaused.swift */; };
 		B09AF857DAA27B923B147708 /* TokenIconView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A704EDECAB63A4DB0D4A9DA8 /* TokenIconView.swift */; };
+		B13D7EAF6140AAD7327799F6 /* MigrationStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CA7F0040DAE7F5B39B01A7D /* MigrationStatus.swift */; };
+		B27CF1ADEDE50A70BC71AEDD /* LegacyAether.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4FCD5C102108D57C735EB29 /* LegacyAether.swift */; };
 		B6002ECF68746BC997F245B2 /* ProverFlags.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94E4B4A2A4BDBBBBC6A12600 /* ProverFlags.swift */; };
 		B638706A5CFC03350AB5758D /* DataMigration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CA1040C5885E62AF6B0AAC4 /* DataMigration.swift */; };
 		B9FE4AC0F31F034459785359 /* SitePermissions.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA1AC5002239A0EB65FCB064 /* SitePermissions.swift */; };
@@ -126,6 +129,7 @@
 		F0B3BB5AE45A3595EC6EB117 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 54084C88C38E2484A2641DE4 /* Assets.xcassets */; };
 		F3667C9BCD3B016F232A69D8 /* ProverMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DEBCE5EA044F272C9EA406C /* ProverMenu.swift */; };
 		F5D803ED94B649009D54712A /* DesignPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 260B382C7E1D4499BE9AE870 /* DesignPreview.swift */; };
+		F7FF2B4A81D1B0E7CCBC9D98 /* MigrationStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CA7F0040DAE7F5B39B01A7D /* MigrationStatus.swift */; };
 		F9D2A177F2CFE05346206EDB /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 54084C88C38E2484A2641DE4 /* Assets.xcassets */; };
 		FE6BCD03689259294F5B9945 /* SimpleDashboard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BCD0FCE195D7296CBCA13E9 /* SimpleDashboard.swift */; };
 		FF361C80FF7E5900898C7CF8 /* HistoryFailure.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00DD67BEC1D35753ED7EDE91 /* HistoryFailure.swift */; };
@@ -160,6 +164,7 @@
 		55E7E86166A7CE6D29E6C709 /* AdaptiveLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdaptiveLayout.swift; sourceTree = "<group>"; };
 		64A5EE5BA6294827128D61F5 /* NodeController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeController.swift; sourceTree = "<group>"; };
 		65F2514912728847B547AC0A /* Onboarding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Onboarding.swift; sourceTree = "<group>"; };
+		6CA7F0040DAE7F5B39B01A7D /* MigrationStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MigrationStatus.swift; sourceTree = "<group>"; };
 		716005AD711FCD432A9A487C /* UnattendedDecision.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnattendedDecision.swift; sourceTree = "<group>"; };
 		7205378BF9586CD3564801A2 /* BrowserController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserController.swift; sourceTree = "<group>"; };
 		745EAC0E04873F8FD0F29BC2 /* LiveResize.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveResize.swift; sourceTree = "<group>"; };
@@ -193,6 +198,7 @@
 		C56EEFC753370BDE2960BE52 /* ResourcesSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResourcesSettings.swift; sourceTree = "<group>"; };
 		C6C1B75440E8A6A577BD467E /* Earnings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Earnings.swift; sourceTree = "<group>"; };
 		D1F6F75149EAAFD83802065B /* BalanceBreakdown.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BalanceBreakdown.swift; sourceTree = "<group>"; };
+		D4FCD5C102108D57C735EB29 /* LegacyAether.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LegacyAether.swift; sourceTree = "<group>"; };
 		E3A8FA742CB5B69B0DF19B00 /* UnattendedDaemon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnattendedDaemon.swift; sourceTree = "<group>"; };
 		E5D7C676A4030F20E37C58E7 /* TokenAssets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenAssets.swift; sourceTree = "<group>"; };
 		FE00FF7FDD47F623CE4B55A0 /* TokenSend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenSend.swift; sourceTree = "<group>"; };
@@ -268,7 +274,9 @@
 				00DD67BEC1D35753ED7EDE91 /* HistoryFailure.swift */,
 				AD1FD85FD2537EBDD04207CB /* InstallLocation.swift */,
 				A3F0D8C24FB04C8F14C379CF /* KeyExposureNotice.swift */,
+				D4FCD5C102108D57C735EB29 /* LegacyAether.swift */,
 				745EAC0E04873F8FD0F29BC2 /* LiveResize.swift */,
+				6CA7F0040DAE7F5B39B01A7D /* MigrationStatus.swift */,
 				2B632CFC2DA1179CC9EAD01D /* NetworkPaused.swift */,
 				BAF12832C2145F7B5553F13A /* NetworkUpgrade.swift */,
 				64A5EE5BA6294827128D61F5 /* NodeController.swift */,
@@ -477,7 +485,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "# The app carries its node (`aether follow`) and the agent CLI in Contents/Helpers,\n# signed like the app so the bundle verifies and notarizes as one.\nset -euo pipefail\nH=\"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Helpers\"\nmkdir -p \"$H\"\nfor t in \"$SRCROOT/../../target/release/aether\" \"$SRCROOT/../../target/agent/aether-agent\" \"$SRCROOT/../../apps/prover/target/release/aether-prover\"; do\n  [ -x \"$t\" ] || continue\n  name=\"$(basename \"$t\")\"\n  # Keep the node's previous binary one update back (as aether.prev):\n  # if the new one cannot start, the app runs it instead\n  # (docs/design/24-self-healing.md layer 2, upgrade rollback).\n  if [ \"$name\" = \"aether\" ] && [ -x \"$H/aether\" ] && ! cmp -s \"$H/aether\" \"$t\"; then\n    cp -f \"$H/aether\" \"$H/aether.prev\"\n    codesign --force --options runtime --timestamp=none --sign \"${EXPANDED_CODE_SIGN_IDENTITY:--}\" \"$H/aether.prev\"\n  fi\n  cp -f \"$t\" \"$H/\"\n  codesign --force --options runtime --timestamp=none --sign \"${EXPANDED_CODE_SIGN_IDENTITY:--}\" \"$H/$name\"\ndone\n# The unattended-restart daemon (docs/design/29-unattended-restart.md):\n# SMAppService.daemon registers the plist from Contents/Library/LaunchDaemons,\n# whose BundleProgram is the root stub; the stub and the user wrapper it drops\n# to live beside the node binary in Contents/Helpers.\nD=\"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Library/LaunchDaemons\"\nmkdir -p \"$D\"\ncp -f \"$SRCROOT/Daemons/com.pipln.eastsea.node.plist\" \"$D/\"\nchmod 644 \"$D/com.pipln.eastsea.node.plist\"\nfor s in eastsea-node-daemon.sh eastsea-node-wrapper.sh; do\n  cp -f \"$SRCROOT/Helpers/$s\" \"$H/\"\n  chmod 755 \"$H/$s\"\ndone\n";
+			shellScript = "# The app carries its node (`aether follow`) and the agent CLI in Contents/Helpers,\n# signed like the app so the bundle verifies and notarizes as one.\nset -euo pipefail\nH=\"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Helpers\"\nmkdir -p \"$H\"\nfor t in \"$SRCROOT/../../target/release/aether\" \"$SRCROOT/../../target/agent/aether-agent\" \"$SRCROOT/../../apps/prover/target/release/aether-prover\"; do\n  [ -x \"$t\" ] || continue\n  name=\"$(basename \"$t\")\"\n  # Keep the node's previous binary one update back (as aether.prev):\n  # if the new one cannot start, the app runs it instead\n  # (docs/design/24-self-healing.md layer 2, upgrade rollback).\n  if [ \"$name\" = \"aether\" ] && [ -x \"$H/aether\" ] && ! cmp -s \"$H/aether\" \"$t\"; then\n    cp -f \"$H/aether\" \"$H/aether.prev\"\n    codesign --force --options runtime --timestamp=none --sign \"${EXPANDED_CODE_SIGN_IDENTITY:--}\" \"$H/aether.prev\"\n  fi\n  cp -f \"$t\" \"$H/\"\n  codesign --force --options runtime --timestamp=none --sign \"${EXPANDED_CODE_SIGN_IDENTITY:--}\" \"$H/$name\"\ndone\n# The unattended-restart daemon (docs/design/29-unattended-restart.md):\n# SMAppService.daemon registers the plist from Contents/Library/LaunchDaemons,\n# whose BundleProgram (relative to the bundle root) is the root stub. The stub\n# and the user wrapper it drops to are shell scripts, so they live in\n# Contents/Resources, sealed by the app's own signature: Contents/Helpers is a\n# code location, where every file must carry its own signature\n# (codesign --verify --deep --strict, notarization).\nD=\"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Library/LaunchDaemons\"\nR=\"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources\"\nmkdir -p \"$D\" \"$R\"\ncp -f \"$SRCROOT/Daemons/com.pipln.eastsea.node.plist\" \"$D/\"\nchmod 644 \"$D/com.pipln.eastsea.node.plist\"\nfor s in eastsea-node-daemon.sh eastsea-node-wrapper.sh; do\n  rm -f \"$H/$s\"   # an older build placed them in Helpers\n  cp -f \"$SRCROOT/Helpers/$s\" \"$R/\"\n  chmod 755 \"$R/$s\"\ndone\nprog=$(/usr/libexec/PlistBuddy -c 'Print :BundleProgram' \"$D/com.pipln.eastsea.node.plist\")\n[ -x \"$BUILT_PRODUCTS_DIR/$WRAPPER_NAME/$prog\" ] || { echo \"error: daemon BundleProgram $prog is not in the bundle\"; exit 1; }\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -513,7 +521,9 @@
 				FF361C80FF7E5900898C7CF8 /* HistoryFailure.swift in Sources */,
 				4AD619C1DDE268E9CF2A4342 /* InstallLocation.swift in Sources */,
 				3D01E58CDF2270BE5A32BD72 /* KeyExposureNotice.swift in Sources */,
+				70F6C8ECC3BF1C0417A68F22 /* LegacyAether.swift in Sources */,
 				0155654A1EB68833738F6615 /* LiveResize.swift in Sources */,
+				B13D7EAF6140AAD7327799F6 /* MigrationStatus.swift in Sources */,
 				ADEEA18CEEC7A29BDFBB47BB /* NetworkPaused.swift in Sources */,
 				D011EF063EAF0FD0463BB20F /* NetworkUpgrade.swift in Sources */,
 				6B328300B9C16A284BC72EDD /* NodeController.swift in Sources */,
@@ -577,7 +587,9 @@
 				8F39B9B1308D1AD3DCFA4437 /* HistoryFailure.swift in Sources */,
 				4B99F9F3618F840AF9C56A88 /* InstallLocation.swift in Sources */,
 				A2A5F0B2C7CAB05F6D6A44A8 /* KeyExposureNotice.swift in Sources */,
+				B27CF1ADEDE50A70BC71AEDD /* LegacyAether.swift in Sources */,
 				E5EBCFC648FC784DB287530F /* LiveResize.swift in Sources */,
+				F7FF2B4A81D1B0E7CCBC9D98 /* MigrationStatus.swift in Sources */,
 				E079A96A7F6CAAB46E4B9D8B /* NetworkPaused.swift in Sources */,
 				BD73509462322EA695D98A0D /* NetworkUpgrade.swift in Sources */,
 				8C21512BBE06AA542E27EBA1 /* NodeController.swift in Sources */,
@@ -714,7 +726,7 @@
 				CODE_SIGN_IDENTITY = "Developer ID Application: Pipln (45WU468FZE)";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 11;
+				CURRENT_PROJECT_VERSION = 13;
 				DEVELOPMENT_TEAM = 45WU468FZE;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -727,7 +739,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.6.6;
+				MARKETING_VERSION = 0.7.0;
 				OTHER_LDFLAGS = "-Wl,-reproducible $(SRCROOT)/../../target/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework OpenDirectory -framework IOKit";
 				OTHER_SWIFT_FLAGS = "-file-prefix-map $(SRCROOT)=/aether-node -debug-prefix-map $(SRCROOT)=/aether-node";
 				PRODUCT_BUNDLE_IDENTIFIER = com.pipln.eastsea;
@@ -833,7 +845,7 @@
 				CODE_SIGN_IDENTITY = "Developer ID Application: Pipln (45WU468FZE)";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 11;
+				CURRENT_PROJECT_VERSION = 13;
 				DEVELOPMENT_TEAM = 45WU468FZE;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -846,7 +858,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.6.6;
+				MARKETING_VERSION = 0.7.0;
 				OTHER_LDFLAGS = "-Wl,-reproducible $(SRCROOT)/../../target/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework OpenDirectory -framework IOKit";
 				OTHER_SWIFT_FLAGS = "-file-prefix-map $(SRCROOT)=/aether-node -debug-prefix-map $(SRCROOT)=/aether-node";
 				PRODUCT_BUNDLE_IDENTIFIER = com.pipln.eastsea;

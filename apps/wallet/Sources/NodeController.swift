@@ -396,6 +396,13 @@ final class NodeController: ObservableObject {
         if enabled { startIfAllowed() }
     }
 
+    /// The data move from Aether finished (M1): a start the gate refused
+    /// while it ran is retried now rather than at the next 30 s power tick.
+    func migrationFinished() {
+        guard enabled, process == nil else { return }
+        applyPower()
+    }
+
     func start() {
         guard !wrongLocation else {
             // Red team #10: from a DMG/Downloads/read-only place the node's
@@ -411,8 +418,12 @@ final class NodeController: ObservableObject {
         }
         // Audit 5, A5-7: while the old Aether node data (identity, threshold
         // share, chain) waits unmigrated, starting fresh here would strand
-        // this Mac's validator identity. The migration itself already ran
-        // (Self.dataDir) — this catches its deferred/failed outcome.
+        // this Mac's validator identity. The migration itself already ran or
+        // is running (Self.dataDir) — this catches its running, deferred or
+        // failed state; `migrationFinished` retries once it is done.
+        // Retry a deferred move first (the old app may have quit since): a
+        // no-op once settled, a cheap lock probe while the old app runs.
+        DataMigration.ensure()
         if let why = DataMigration.mayStartNode() {
             state = .failed(why)
             return
@@ -642,7 +653,7 @@ final class NodeController: ObservableObject {
 
     /// Read (or create) this Mac's voting-node keys with the bundled helper.
     private func loadCandidate(_ binary: URL) {
-        guard candidate == nil else { return }
+        guard candidate == nil, DataMigration.mayStartNode() == nil else { return }
         let p = Process(), out = Pipe()
         p.executableURL = binary
         p.arguments = ["candidate-info", "--data", Self.dataDir.path]
@@ -670,6 +681,9 @@ final class NodeController: ObservableObject {
     /// The voting key's signature asking to be registered under `account` (the wallet, as operator).
     func ownership(account: String, chainId: UInt64) -> String? {
         guard let binary else { return nil }
+        // `candidate-info` mints keys in an empty data directory: never while
+        // an old identity waits unmigrated (release-070 review, B4).
+        guard DataMigration.mayStartNode() == nil else { return nil }
         let p = Process(), out = Pipe()
         p.executableURL = binary
         p.arguments = ["candidate-info", "--data", Self.dataDir.path, "--operator", account, "--chain-id", String(chainId)]

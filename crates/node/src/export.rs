@@ -408,21 +408,46 @@ pub fn once(chain: &Chain, args: &ExportArgs) -> Result<usize, String> {
             continue;
         }
         processed += 1;
-        let bytes = match file_info(&dst) {
-            // Already exported and unchanged: reuse the bytes for the sidecars.
-            Some((size, blake3)) if size < crate::era_net::MAX_ERA_FILE as u64 => match std::fs::read(&dst) {
-                Ok(b) if crate::rpc::blake3_hex(&b) == blake3 => b,
-                _ => std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?,
-            },
-            _ => std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?,
+        // The canonical source is the only origin of an export (pre-audit 7
+        // PA7-09): the old code hashed the destination, reread it and
+        // compared the two — the destination verifying itself — so a
+        // corrupted copy passed as "unchanged" and was fed to era::read,
+        // failing the whole pass. Now the bytes always come from the store,
+        // and the copy is rewritten whenever it differs from them.
+        let Some((src_size, _)) = fingerprint(&path) else {
+            tracing::warn!(era, "canonical era unreadable; skipped this pass");
+            continue;
+        };
+        if src_size >= crate::era_net::MAX_ERA_FILE as u64 {
+            tracing::warn!(era, src_size, "canonical era over MAX_ERA_FILE; skipped this pass");
+            continue;
+        }
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(era, %e, "canonical era unreadable; skipped this pass");
+                continue;
+            }
         };
         let blake3 = crate::rpc::blake3_hex(&bytes);
-        // The set never publishes anything the node itself could not verify.
-        let decoded = crate::era::read(&bytes, Some(&root)).map_err(|e| format!("era {era}: {e}"))?;
+        // The set never publishes anything the node itself could not verify —
+        // and one era that cannot be verified no longer stops the pass
+        // (pre-audit 7 PA7-09): it is skipped with a warning and retried
+        // next pass, while the other eras still export.
+        let decoded = match crate::era::read(&bytes, Some(&root)) {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!(era, %e, "era does not verify against its history root; skipped this pass");
+                continue;
+            }
+        };
         if decoded.index != era {
-            return Err(format!("file {} is era {}", name, decoded.index));
+            tracing::warn!(era, decoded = decoded.index, "era file number disagrees with its name; skipped this pass");
+            continue;
         }
-        if file_info(&dst).map(|(_, b)| b != blake3).unwrap_or(true) {
+        let copy_ok = fingerprint(&dst).is_some_and(|(s, _)| s == bytes.len() as u64)
+            && std::fs::read(&dst).map(|b| crate::rpc::blake3_hex(&b) == blake3).unwrap_or(false);
+        if !copy_ok {
             write_atomically(&dst, &bytes)?;
             written += 1;
         }
@@ -735,6 +760,53 @@ mod tests {
             std::fs::set_permissions(p, perm).unwrap();
         }
         assert_eq!(second.unwrap(), 0, "an unchanged pass writes nothing");
+        let _ = std::fs::remove_dir_all(args.dir.parent().unwrap());
+    }
+
+    /// A damaged export copy is rewritten from the canonical source
+    /// (pre-audit 7 PA7-09): the old verification compared the destination
+    /// with itself (hash the file, reread it, compare), so a corrupted copy
+    /// verified as "unchanged", was fed to era::read and killed the pass.
+    #[test]
+    fn a_damaged_destination_is_rewritten_from_the_canonical_source() {
+        let (chain, args) = export_fixture("damage");
+        once(&chain, &args).unwrap();
+        let dst = args.dir.join(crate::era::file_name(0));
+        let good = std::fs::read(&dst).unwrap();
+        std::fs::write(&dst, &good[..good.len() - 8]).unwrap();
+        let n = once(&chain, &args).unwrap();
+        assert!(n >= 1, "the damaged copy is rewritten: {n}");
+        assert_eq!(std::fs::read(&dst).unwrap(), good, "the copy is the canonical bytes again");
+        let index: serde_json::Value = serde_json::from_slice(&std::fs::read(args.dir.join("index.json")).unwrap()).unwrap();
+        let e0 = index["eras"].as_array().unwrap().iter().find(|e| e["era"] == 0).unwrap();
+        assert_eq!(e0["blake3"], crate::rpc::blake3_hex(&good));
+        let _ = std::fs::remove_dir_all(args.dir.parent().unwrap());
+    }
+
+    /// One era's failure never stops the pass (pre-audit 7 PA7-09): a
+    /// corrupt canonical era is skipped with a warning and retried next
+    /// pass — the other eras still export and the index still lists them.
+    /// The old code aborted the whole pass with `?` on the first bad era,
+    /// and did so again every 30 seconds.
+    #[test]
+    fn one_unreadable_era_does_not_stop_the_pass() {
+        let (chain, args) = export_fixture("isolate");
+        once(&chain, &args).unwrap();
+        let store = chain.store().unwrap();
+        // Break era 1's magic: era::read refuses the file outright, and the
+        // export copy is damaged too, so neither copy can answer this pass.
+        let src = store.era_dir().join(crate::era::file_name(1));
+        let mut bytes = std::fs::read(&src).unwrap();
+        bytes[0] ^= 0xff;
+        std::fs::write(&src, &bytes).unwrap();
+        std::fs::write(args.dir.join(crate::era::file_name(1)), b"corrupt").unwrap();
+        once(&chain, &args).unwrap();
+        let index: serde_json::Value = serde_json::from_slice(&std::fs::read(args.dir.join("index.json")).unwrap()).unwrap();
+        let eras: Vec<u64> = index["eras"].as_array().unwrap().iter().map(|e| e["era"].as_u64().unwrap()).collect();
+        assert_eq!(eras, vec![0], "era 1 is skipped with a warning; era 0 stays exported and listed");
+        // And the damage stays contained: era 0's copy is still the canonical bytes.
+        let src0 = std::fs::read(store.era_dir().join(crate::era::file_name(0))).unwrap();
+        assert_eq!(std::fs::read(args.dir.join(crate::era::file_name(0))).unwrap(), src0);
         let _ = std::fs::remove_dir_all(args.dir.parent().unwrap());
     }
 }

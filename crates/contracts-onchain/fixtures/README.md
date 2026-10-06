@@ -85,3 +85,14 @@ interface behavior: mode 0 omits ERC-2981 support; mode 1 quotes the configured
 receiver/amount; mode 2 rejects interface detection; mode 3 rejects royaltyInfo.
 It shares the already-vendored OpenZeppelin ERC-721 dependency. These support
 contracts are test instruments, not production-contract candidates.
+
+`support/brake/IEastSeaLocalBrake.sol` is the deterministic local entry brake
+interface of the native plan (step 3): guardian always zero, a predicate that
+reads only chain state, a permissionless nonreverting `tripBrake()` latch that
+is monotonic, entries that re-check the predicate, and exits that never check
+the brake. `LocalBrake` is the abstract reference base and
+`support/BrakeReferenceVault` its reference test contract; `brakeSpec()` returns
+the SHA-256 of `BrakeReferenceVault.sol`, pinned at deployment.
+`support/SeizableToken` lets anyone seize balances so a test can create the
+vault's backing deficit. `support/SignedIntentBook` is a state-changing ERC-1271
+consumer (OpenZeppelin `SignatureChecker`) for relayed owner-key approvals.

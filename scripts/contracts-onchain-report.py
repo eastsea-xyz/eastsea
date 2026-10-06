@@ -52,6 +52,9 @@ SCOPES = {
     "TestToken": "test instrument: ERC20 fee/false-return/transfer callback observation",
     "MarketNFT": "test instrument: ERC721 royalties/ERC165 failures and transfer failures",
     "SignatureCheckerProbe": "test instrument: OZ SignatureChecker (Permit2-style ERC-1271) against a delegated P-256 account",
+    "SignedIntentBook": "test instrument: state-changing ERC-1271 consumer (OZ SignatureChecker), relayed owner-key approvals, replay record",
+    "BrakeReferenceVault": "reference local deterministic entry brake: deficit/code/unreadable predicate, permissionless latch, entry halted, exit open",
+    "SeizableToken": "test instrument: ERC20 with an open issuer seizure to reproduce a vault backing deficit",
 }
 
 

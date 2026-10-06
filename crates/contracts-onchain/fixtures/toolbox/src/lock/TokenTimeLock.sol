@@ -72,7 +72,8 @@ contract TokenTimeLock is SimpleBrake, ReentrancyGuard {
         if (amount == 0) revert ZeroAmount();
         if (durationSec == 0 || cliffSec > durationSec) revert ZeroDuration();
         if (amount > _MAX_UINT128) revert AmountTooLarge(amount);
-        if (locks[beneficiary].amount != 0) revert AlreadyLocked(beneficiary);
+        Lock storage existing = locks[beneficiary];
+        if (existing.amount != 0 && existing.released < existing.amount) revert AlreadyLocked(beneficiary);
 
         SafeToken.pullExact(token, msg.sender, amount); // F-02: 정확한 금액
         locks[beneficiary] = Lock(uint128(amount), 0, uint48(block.timestamp), uint48(cliffSec), uint48(durationSec));

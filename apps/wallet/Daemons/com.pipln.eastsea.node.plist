@@ -5,7 +5,7 @@
 	<key>Label</key>
 	<string>com.pipln.eastsea.node</string>
 	<key>BundleProgram</key>
-	<string>Helpers/eastsea-node-daemon.sh</string>
+	<string>Contents/Resources/eastsea-node-daemon.sh</string>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>

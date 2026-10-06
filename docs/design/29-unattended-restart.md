@@ -82,7 +82,7 @@ FileVault가 꺼져 있고 이 옵션이 켜져 있어야 정전 후 무인 부�
         (FileVault 잠금과 옵트인 안 함을 구분할 수 없어, 없어도 포기하지
         않고 조용히 기다린다 — exit 0으로 물러나면 KeepAlive가 재시작하지
         않아 그 부팅 내내 데몬이 죽어 있게 된다)
-  발견 → sudo -u <마커의 사용자> Helpers/eastsea-node-wrapper.sh
+  발견 → sudo -u <마커의 사용자> Contents/Resources/eastsea-node-wrapper.sh
   래퍼: caffeinate -s -w $$ (무인 검증 Mac은 자지 않는다)
         $$를 <data>/unattended.pid에 기록 (앱이 정지시킬 수 있게)
         exec <binary> run --data … [마커의 인자] >> node.log   ← 사용자 계정

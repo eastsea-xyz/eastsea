@@ -15,7 +15,7 @@ import SwiftUI
 final class UnattendedDaemon: ObservableObject {
     /// The daemon plist shipped in the app bundle
     /// (`Contents/Library/LaunchDaemons`). Its `BundleProgram` is the root
-    /// stub `Helpers/eastsea-node-daemon.sh`, which waits for the marker and
+    /// stub `Contents/Resources/eastsea-node-daemon.sh`, which waits for the marker and
     /// runs the node as the marker's user — the plist is static in the signed
     /// bundle, so per-user choices travel in the marker instead.
     static let plistName = "com.pipln.eastsea.node.plist"

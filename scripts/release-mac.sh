@@ -50,7 +50,7 @@ if [ -n "${AETHER_RELEASE_LOG:-}" ]; then
   scripts/release-approve.py prepare --chain-id "$AETHER_RELEASE_CHAIN_ID" \
     --log "$AETHER_RELEASE_LOG" --version "$version" --build "$build" \
     --dmg "$dmg" --app "$PWD/tmp/release-mount/EastSea.app" --sparkle-signature "$sparkle_sig" --source-tag "$tag" \
-    --out "$manifest" "${emergency[@]}"
+    --out "$manifest" ${emergency[@]+"${emergency[@]}"}
   hdiutil detach -quiet "$PWD/tmp/release-mount"
   trap - EXIT
   if [ "${#emergency[@]}" -eq 0 ]; then
@@ -136,5 +136,5 @@ fi
 
 draft=()
 if [ "$mode" = --draft ]; then draft=(--draft); fi
-gh release create "$tag" "${assets[@]}" --repo "$repo" --verify-tag --title "EastSea $version (testnet)" --notes "$notes" --latest "${draft[@]}"
+gh release create "$tag" "${assets[@]}" --repo "$repo" --verify-tag --title "EastSea $version (testnet)" --notes "$notes" --latest ${draft[@]+"${draft[@]}"}
 echo "released $tag"

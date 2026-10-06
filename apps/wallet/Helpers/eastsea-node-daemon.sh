@@ -36,7 +36,7 @@ while true; do
       "/Users/$user/"*) ;;
       *) continue ;;
     esac
-    wrapper="$bundle/Contents/Helpers/eastsea-node-wrapper.sh"
+    wrapper="$bundle/Contents/Resources/eastsea-node-wrapper.sh"
     [ -x "$wrapper" ] || continue
     /usr/bin/sudo -u "$user" /bin/bash "$wrapper" "$marker" &
     child=$!

@@ -466,7 +466,14 @@ pub fn once(chain: &Chain, args: &ExportArgs) -> Result<usize, String> {
         let copy_ok = fingerprint(&dst).is_some_and(|(s, _)| s == bytes.len() as u64)
             && std::fs::read(&dst).map(|b| crate::rpc::blake3_hex(&b) == blake3).unwrap_or(false);
         if !copy_ok {
-            write_atomically(&dst, &bytes)?;
+            // One unwritable destination must not stop the pass (pre-audit
+            // 7b PA7B-09): the era is skipped and retried next pass while
+            // the others still export. Global failures (the directory, the
+            // key, the index, the cursor) still fail the whole pass.
+            if let Err(e) = write_atomically(&dst, &bytes) {
+                tracing::warn!(era, %e, "cannot write the era copy; skipped this pass");
+                continue;
+            }
             written += 1;
         }
         // Webseeds and the Https mirror: this node first, the configured ones after.
@@ -475,7 +482,10 @@ pub fn once(chain: &Chain, args: &ExportArgs) -> Result<usize, String> {
         let (torrent_bytes, info_hash) = torrent(&name, &bytes, &urls, PIECE_LEN);
         let magnet = magnet(&info_hash, &name, &urls);
         if file_info(&torrent_path).map(|(_, b)| b != blake3_of(&torrent_bytes)).unwrap_or(true) {
-            write_atomically(&torrent_path, &torrent_bytes)?;
+            if let Err(e) = write_atomically(&torrent_path, &torrent_bytes) {
+                tracing::warn!(era, %e, "cannot write the torrent sidecar; skipped this pass");
+                continue;
+            }
             written += 1;
         }
         let mut mirrors = Vec::new();
@@ -496,7 +506,10 @@ pub fn once(chain: &Chain, args: &ExportArgs) -> Result<usize, String> {
         sign_manifest(&mut m, &seed);
         let manifest_bytes = serde_json::to_vec_pretty(&m).map_err(|e| e.to_string())?;
         if std::fs::read(&manifest_path).ok().as_deref() != Some(manifest_bytes.as_slice()) {
-            write_atomically(&manifest_path, &manifest_bytes)?;
+            if let Err(e) = write_atomically(&manifest_path, &manifest_bytes) {
+                tracing::warn!(era, %e, "cannot write the manifest sidecar; skipped this pass");
+                continue;
+            }
             written += 1;
         }
         // Record what this pass verified, so the next one can skip by
@@ -865,6 +878,27 @@ mod tests {
         assert!(args.dir.join(crate::era::file_name(8)).exists(),
             "era 8 exports on the second pass even though eras 0-7 stay damaged");
         assert!(args.dir.join(crate::era::file_name(9)).exists(), "era 9 too");
+        let _ = std::fs::remove_dir_all(args.dir.parent().unwrap());
+    }
+
+    /// One era's output path being broken never stops the pass either
+    /// (pre-audit 7b PA7B-09): the era copy, torrent and manifest writes
+    /// used to abort the whole pass with `?`, so a single unwritable
+    /// destination path — a directory where the copy belongs, say — left
+    /// every other era unexported and retried the same failure every 30
+    /// seconds. The era is skipped with a warning and retried next pass;
+    /// the others still export and the index still lists them.
+    #[test]
+    fn an_unwritable_output_path_does_not_stop_the_pass() {
+        let (chain, args) = export_fixture("blocked");
+        // Block era 0's destination with a directory: the atomic rename
+        // cannot put a file there, so the copy write fails.
+        std::fs::create_dir_all(args.dir.join(crate::era::file_name(0))).unwrap();
+        assert!(once(&chain, &args).is_ok(), "the pass completes");
+        assert!(args.dir.join(crate::era::file_name(1)).exists(), "era 1 still exports");
+        let index: serde_json::Value = serde_json::from_slice(&std::fs::read(args.dir.join("index.json")).unwrap()).unwrap();
+        let eras: Vec<u64> = index["eras"].as_array().unwrap().iter().map(|e| e["era"].as_u64().unwrap()).collect();
+        assert_eq!(eras, vec![1], "era 0 is skipped; era 1 is exported and listed");
         let _ = std::fs::remove_dir_all(args.dir.parent().unwrap());
     }
 }

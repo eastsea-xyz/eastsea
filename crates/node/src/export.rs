@@ -30,7 +30,9 @@ use aether_state::mmr::ERA_LEN;
 use aether_types::{Manifest, ManifestKind, Mirror};
 use commonware_codec::{DecodeExt, Encode as _};
 use commonware_cryptography::{ed25519, Signer as _};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// How often the exporter looks for newly sealed eras.
@@ -282,10 +284,58 @@ fn file_info(path: &Path) -> Option<(u64, String)> {
     Some((bytes.len() as u64, crate::rpc::blake3_hex(&bytes)))
 }
 
+/// Cursor shape version: bump when the record changes (an old file is then
+/// discarded, which only costs one full pass).
+const STATE_VERSION: u32 = 1;
+/// At most this many eras are (re)processed in one pass (pre-audit 7
+/// PA7-08): the pass runs every 30 seconds beside following and serving, so
+/// a backlog larger than this — a fresh archive node, changed arguments —
+/// continues in the next pass instead of monopolizing the disk now.
+const MAX_ERAS_PER_PASS: usize = 8;
+
+/// A file's cheap fingerprint: metadata only, nothing read.
+fn fingerprint(path: &Path) -> Option<(u64, u64)> {
+    let m = std::fs::metadata(path).ok()?;
+    let d = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some((m.len(), d.as_nanos() as u64))
+}
+
+/// One era a previous pass fully verified and exported (pre-audit 7
+/// PA7-08): enough to prove "unchanged" by metadata alone and to rebuild
+/// the index entry without reading the file. The magnet is recorded because
+/// it is the SHA-1 of the torrent, not derivable from the era's blake3.
+#[derive(Serialize, Deserialize)]
+struct Exported {
+    /// (size, mtime_ns) of the canonical source when it was verified.
+    src: (u64, u64),
+    /// (size, mtime_ns) of the exported copy.
+    dst: (u64, u64),
+    /// (size, mtime_ns) of the .torrent and .json sidecars.
+    torrent: (u64, u64),
+    manifest: (u64, u64),
+    blake3: String,
+    size: u64,
+    magnet: String,
+}
+
+/// The exporter's cursor: which eras were fully processed under which
+/// arguments. The arguments are fingerprinted too — the derived files name
+/// the signer and every mirror, so a change of any of them must void the
+/// whole cursor rather than quietly reuse stale sidecars.
+#[derive(Serialize, Deserialize)]
+struct ExportState {
+    version: u32,
+    args: String,
+    eras: BTreeMap<u64, Exported>,
+}
+
 /// Export every sealed era this node keeps to `args.dir`. Each era is fully
 /// re-verified (`era::read`) against the root this node's history index holds
-/// before anything is written; an era already exported with the same blake3
-/// is left alone. Returns how many era file sets were written.
+/// before anything is written. A pass reads only what is new or changed
+/// since the last one (pre-audit 7 PA7-08): verified eras are recorded in a
+/// cursor (`.export-state.json`) by metadata fingerprint and skipped without
+/// a single read, and at most [`MAX_ERAS_PER_PASS`] eras are processed per
+/// pass. Returns how many era file sets were written.
 pub fn once(chain: &Chain, args: &ExportArgs) -> Result<usize, String> {
     let store = chain.store().ok_or("no store")?;
     let chain_id = chain.cfg().chain_id;
@@ -306,8 +356,17 @@ pub fn once(chain: &Chain, args: &ExportArgs) -> Result<usize, String> {
         return Ok(0);
     }
     let (seed, signer) = load_or_create_key(&args.sign_key)?;
+    let args_fp = format!("{signer}|{}|{}", args.https_base.as_deref().unwrap_or(""), args.webseeds.join("\n"));
+    let state_path = args.dir.join(".export-state.json");
+    let mut state = std::fs::read(&state_path)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<ExportState>(&b).ok())
+        .filter(|s| s.version == STATE_VERSION && s.args == args_fp)
+        .unwrap_or(ExportState { version: STATE_VERSION, args: args_fp, eras: BTreeMap::new() });
     let mut written = 0usize;
     let mut index = Vec::with_capacity(files.len());
+    let mut processed = 0usize;
+    let mut kept = BTreeSet::new();
     for (era, path) in files {
         let Some(root) = roots.get(era as usize).copied() else {
             tracing::warn!(era, "sealed era with no root in the history index; skipped");
@@ -315,6 +374,40 @@ pub fn once(chain: &Chain, args: &ExportArgs) -> Result<usize, String> {
         };
         let name = crate::era::file_name(era);
         let dst = args.dir.join(&name);
+        let torrent_path = args.dir.join(format!("{name}.torrent"));
+        let manifest_path = args.dir.join(format!("{name}.json"));
+        let first = era * ERA_LEN;
+        // Unchanged since a previous pass verified and exported it (pre-audit
+        // 7 PA7-08): source, copy and both sidecars all match their recorded
+        // fingerprints, so this pass reads nothing. The index entry is rebuilt
+        // from the cursor — the root from the history index, the magnet from
+        // the record.
+        if let Some(done) = state.eras.get(&era).filter(|d| {
+            fingerprint(&path) == Some(d.src)
+                && fingerprint(&dst) == Some(d.dst)
+                && fingerprint(&torrent_path) == Some(d.torrent)
+                && fingerprint(&manifest_path) == Some(d.manifest)
+        }) {
+            kept.insert(era);
+            index.push(json!({
+                "era": era,
+                "first": first,
+                "last": first + ERA_LEN - 1,
+                "root": hex::encode(root),
+                "blake3": done.blake3,
+                "size": done.size,
+                "file": name,
+                "manifest": format!("{name}.json"),
+                "torrent": format!("{name}.torrent"),
+                "magnet": done.magnet,
+            }));
+            continue;
+        }
+        if processed >= MAX_ERAS_PER_PASS {
+            tracing::warn!(era, processed, "export pass is full; this era continues in the next pass");
+            continue;
+        }
+        processed += 1;
         let bytes = match file_info(&dst) {
             // Already exported and unchanged: reuse the bytes for the sidecars.
             Some((size, blake3)) if size < crate::era_net::MAX_ERA_FILE as u64 => match std::fs::read(&dst) {
@@ -338,12 +431,10 @@ pub fn once(chain: &Chain, args: &ExportArgs) -> Result<usize, String> {
         urls.extend(args.webseeds.iter().map(|w| webseed_url(w, &name)));
         let (torrent_bytes, info_hash) = torrent(&name, &bytes, &urls, PIECE_LEN);
         let magnet = magnet(&info_hash, &name, &urls);
-        let torrent_path = args.dir.join(format!("{name}.torrent"));
         if file_info(&torrent_path).map(|(_, b)| b != blake3_of(&torrent_bytes)).unwrap_or(true) {
             write_atomically(&torrent_path, &torrent_bytes)?;
             written += 1;
         }
-        let first = era * ERA_LEN;
         let mut mirrors = Vec::new();
         if let Some(base) = &args.https_base {
             mirrors.push(Mirror::Https { url: webseed_url(&format!("{base}/era"), &name) });
@@ -360,12 +451,24 @@ pub fn once(chain: &Chain, args: &ExportArgs) -> Result<usize, String> {
             signature: String::new(),
         };
         sign_manifest(&mut m, &seed);
-        let manifest_path = args.dir.join(format!("{name}.json"));
         let manifest_bytes = serde_json::to_vec_pretty(&m).map_err(|e| e.to_string())?;
         if std::fs::read(&manifest_path).ok().as_deref() != Some(manifest_bytes.as_slice()) {
             write_atomically(&manifest_path, &manifest_bytes)?;
             written += 1;
         }
+        // Record what this pass verified, so the next one can skip by
+        // metadata (an unreadable fingerprint records (0,0), which never
+        // matches — the era is simply reprocessed next pass).
+        state.eras.insert(era, Exported {
+            src: fingerprint(&path).unwrap_or_default(),
+            dst: fingerprint(&dst).unwrap_or_default(),
+            torrent: fingerprint(&torrent_path).unwrap_or_default(),
+            manifest: fingerprint(&manifest_path).unwrap_or_default(),
+            blake3: blake3.clone(),
+            size: bytes.len() as u64,
+            magnet: magnet.clone(),
+        });
+        kept.insert(era);
         index.push(json!({
             "era": era,
             "first": first,
@@ -379,6 +482,9 @@ pub fn once(chain: &Chain, args: &ExportArgs) -> Result<usize, String> {
             "magnet": magnet,
         }));
     }
+    // Eras whose sources are gone (pruned, moved) leave the cursor with
+    // them: the file set and its record stay in step.
+    state.eras.retain(|e, _| kept.contains(e));
     let index_doc = json!({
         "version": 1,
         "chain_id": chain_id,
@@ -392,6 +498,7 @@ pub fn once(chain: &Chain, args: &ExportArgs) -> Result<usize, String> {
         write_atomically(&index_path, &index_bytes)?;
         written += 1;
     }
+    write_atomically(&state_path, &serde_json::to_vec_pretty(&state).map_err(|e| e.to_string())?)?;
     Ok(written)
 }
 
@@ -521,5 +628,113 @@ mod tests {
         assert!(!verify_manifest(&tampered, &signer));
         let (_, other) = load_or_create_key(&std::env::temp_dir().join(format!("aether-export-key2-{}", std::process::id()))).unwrap();
         assert!(!verify_manifest(&m, &other));
+    }
+
+    /// Two sealed eras in a store, roots in the chain's history index — the
+    /// exporter's whole input. The same synthetic chain era's own tests
+    /// build, trimmed to what `once` reads.
+    fn export_fixture(tag: &str) -> (Chain, ExportArgs) {
+        use crate::block::{Block, Context, Payload, PublicKey};
+        use aether_hash::ChainHasher;
+        use aether_state::mmr::{EraIndex, Mmr};
+        use aether_types::{B256, GasVector};
+        use commonware_consensus::types::{Epoch, Height, Round, View};
+        use commonware_cryptography::{ed25519, sha256::Digest, Digestible, Hasher as _};
+
+        fn digest_of(d: &Digest) -> aether_hash::Digest {
+            d.as_ref().try_into().expect("sha256 digest is 32 bytes")
+        }
+
+        let dir = std::env::temp_dir().join(format!("aether-export-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = crate::store::Store::open(&dir.join("db.redb")).unwrap();
+        std::fs::create_dir_all(store.era_dir()).unwrap();
+        let h = ChainHasher::new();
+        let leaders: Vec<PublicKey> = (0..4).map(|i| ed25519::PrivateKey::from_seed(i).public_key()).collect();
+        let genesis = Block::genesis(7781, B256::repeat_byte(1));
+        let (mut blocks, mut mmrs) = (vec![genesis.clone()], vec![Mmr::default()]);
+        let mut mmr = Mmr::default().append(&h, 0, &digest_of(&genesis.digest()));
+        for height in 1..2 * ERA_LEN {
+            mmrs.push(mmr.clone());
+            let prev = blocks.last().unwrap();
+            let state_root = B256::from(digest_of(&commonware_cryptography::Sha256::hash(&[height.to_be_bytes().as_slice()])));
+            let payload = Payload {
+                version: 2,
+                parent_state_root: state_root,
+                history_root: B256::from(mmr.root(&h)),
+                receipts_root: None,
+                parent_meta: B256::repeat_byte((height / 5000) as u8),
+                gas: GasVector::default(),
+                txs: vec![],
+                ..Default::default()
+            };
+            let view = height + height / 1000;
+            let context = Context {
+                round: Round::new(Epoch::zero(), View::new(view)),
+                leader: leaders[(view % 4) as usize].clone(),
+                parent: (View::new(prev.context.round.view().get()), prev.digest()),
+            };
+            let b = Block::new(context, prev.digest(), Height::new(height), 1_790_000_000_000 + height * 1000, payload.to_bytes());
+            mmr = mmr.append(&h, height, &digest_of(&b.digest()));
+            blocks.push(b);
+        }
+        mmrs.push(mmr);
+        let mut roots = Vec::new();
+        for era in 0..2u64 {
+            let (a, b) = ((era * ERA_LEN) as usize, ((era + 1) * ERA_LEN) as usize);
+            let bytes = crate::era::write(&mmrs[a], &blocks[a..b]).unwrap();
+            std::fs::write(store.era_dir().join(crate::era::file_name(era)), &bytes).unwrap();
+            roots.push(crate::era::read(&bytes, None).unwrap().root);
+        }
+        let (chain, _) = Chain::open(crate::chain::ChainConfig {
+            chain_id: 7781,
+            limits: GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
+            alloc: vec![], fees: false, registrar: None, epoch_blocks: 0,
+            min_streak: None, draw_epochs: None, history_v2: false, protocol: 1,
+            node_rewards: false, committee: vec![], reserve: None, group: 0,
+            max_committee: crate::rotation::GROW_UNTIL,
+        }, store).unwrap();
+        chain.lock().history_index = Some(std::sync::Arc::new(EraIndex { eras: roots, open: vec![] }));
+        let args = ExportArgs {
+            dir: dir.join("out"),
+            webseeds: vec!["http://mirror.example/eras".into()],
+            https_base: None,
+            sign_key: dir.join("sign.key"),
+        };
+        (chain, args)
+    }
+
+    /// An unchanged pass reads nothing (pre-audit 7 PA7-08): once both eras
+    /// are exported, making every canonical source and exported copy
+    /// unreadable changes nothing — the pass still answers Ok and rewrites
+    /// no file, because it never opens what it already verified. The old
+    /// code reread every file each pass (each copy three times over) and
+    /// failed here.
+    #[test]
+    fn unchanged_eras_are_never_reread_between_passes() {
+        let (chain, args) = export_fixture("cursor");
+        assert!(once(&chain, &args).unwrap() > 0, "the first pass exports both eras");
+        use std::os::unix::fs::PermissionsExt;
+        let mut touched = Vec::new();
+        let store = chain.store().unwrap();
+        for era in 0..2u64 {
+            touched.push(store.era_dir().join(crate::era::file_name(era)));
+            touched.push(args.dir.join(crate::era::file_name(era)));
+        }
+        for p in &touched {
+            let mut perm = std::fs::metadata(p).unwrap().permissions();
+            perm.set_mode(0o000);
+            std::fs::set_permissions(p, perm).unwrap();
+        }
+        // Metadata is still readable (only open() is refused): a pass that
+        // trusts its cursor never opens these; the old one did and errored.
+        let second = once(&chain, &args);
+        for p in &touched {
+            let mut perm = std::fs::metadata(p).unwrap().permissions();
+            perm.set_mode(0o644);
+            std::fs::set_permissions(p, perm).unwrap();
+        }
+        assert_eq!(second.unwrap(), 0, "an unchanged pass writes nothing");
+        let _ = std::fs::remove_dir_all(args.dir.parent().unwrap());
     }
 }

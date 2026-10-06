@@ -486,7 +486,7 @@ fn a_network_cut_heals_into_a_catch_up() {
     let (url, cut) = serve_cut(&rpc_state(&src), &rt);
 
     let fol = chain_on(config(CHAIN), Store::open(&dir_fol.join("state.redb")).unwrap());
-    rt.spawn(follow::run(fol.chain.clone(), Arc::new(Upstream::Http(vec![url.clone()])), set(), fol.archive.clone(), None));
+    rt.spawn(follow::run(fol.chain.clone(), Arc::new(Upstream::Http(vec![url.clone()])), set(), fol.archive.clone(), None, false));
     wait_until("caught up to 20", || fol.chain.finalized_height() >= 20);
     std::thread::sleep(Duration::from_millis(500)); // settled at the tip
 

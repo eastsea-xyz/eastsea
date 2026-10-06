@@ -69,6 +69,9 @@ contract SimpleMultisig {
         domainSeparator = keccak256(abi.encode(block.chainid, address(this)));
     }
 
+    /// @notice Accept native funds for subsequently authorized payouts.
+    receive() external payable {}
+
     // ---------------------------------------------------------------- 실행
 
     /// @notice 서명 묶음이 임계치를 충족하면 임의 호출을 실행한다.

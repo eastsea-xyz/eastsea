@@ -548,6 +548,29 @@ fn verifier_refusal(error: &str) -> bool {
     false
 }
 
+/// How long the prover may find nothing to prove before it says why.
+const IDLE_NOTICE: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Errors already reported, so a retry loop warns once per distinct reason
+/// (bounded: the oldest is forgotten past 32) instead of never or every 5 s.
+#[derive(Default)]
+struct DistinctErrors {
+    seen: VecDeque<String>,
+}
+
+impl DistinctErrors {
+    fn first_time(&mut self, error: &str) -> bool {
+        if self.seen.iter().any(|e| e == error) {
+            return false;
+        }
+        if self.seen.len() == 32 {
+            self.seen.pop_front();
+        }
+        self.seen.push_back(error.to_string());
+        true
+    }
+}
+
 /// A kill waits before the sidecar restarts: a minute, doubling, up to half
 /// an hour (the incident prover ate 14 GB of a 64 GB Mac).
 fn backoff_secs(kills: u32) -> std::time::Duration {
@@ -704,6 +727,8 @@ pub fn spawn_service(
     }
     // Proofs not yet accepted, retried until they are or their block is no longer open.
     let mut unsent: Vec<ProofClaim> = Vec::new();
+    let mut retry_errors = DistinctErrors::default();
+    let (mut idle_since, mut idle_logged) = (std::time::Instant::now(), false);
     let mut health = SubmissionHealth::default();
     let mut last_program_check: Option<std::time::Instant> = None;
     let mut compatible = false;
@@ -718,7 +743,23 @@ pub fn spawn_service(
             std::thread::sleep(std::time::Duration::from_secs(5));
             continue;
         }
-        unsent.retain(|c| chain.proof_open(c.height) && submit(c.clone()).is_err());
+        unsent.retain(|c| {
+            if !chain.proof_open(c.height) {
+                return false;
+            }
+            match submit(c.clone()) {
+                Ok(()) => {
+                    tracing::info!(height = c.height, "proof accepted on retry");
+                    false
+                }
+                Err(e) => {
+                    if retry_errors.first_time(&e) {
+                        tracing::warn!(height = c.height, %e, "proof retry not accepted; will retry while the claim is open");
+                    }
+                    true
+                }
+            }
+        });
         // The system first: memory pressure, swap, battery, or a full disk.
         if let Some(reason) = crate::resources::monitor().and_then(|m| m.proving_pause()) {
             pause(&status, reason);
@@ -732,12 +773,36 @@ pub fn spawn_service(
         }
         status.lock().map(|mut s| s.paused = None).ok();
         gate.ensure();
-        let Some((height, txs, input)) = next_job(&chain, prover) else {
+        let job = match next_job(&chain, prover) {
+            Ok(job) => job,
+            Err((height, e)) => {
+                tracing::warn!(height, %e, "cannot build a proof job for this block; skipping it");
+                status.lock().map(|mut s| s.error = Some(format!("block {height}: {e}"))).ok();
+                None
+            }
+        };
+        let Some((height, txs, input)) = job else {
+            // Nothing provable: say so once per long stretch, never silently forever.
+            if idle_since.elapsed() >= IDLE_NOTICE && !idle_logged {
+                idle_logged = true;
+                tracing::info!(
+                    minutes = idle_since.elapsed().as_secs() / 60,
+                    "no block to prove yet: only finalized blocks with transactions record a statement to prove"
+                );
+            }
             std::thread::sleep(std::time::Duration::from_secs(if unsent.is_empty() { 1 } else { 5 }));
             continue;
         };
+        (idle_since, idle_logged) = (std::time::Instant::now(), false);
         status.lock().map(|mut s| s.proving = Some(height)).ok();
-        let bytes = postcard::to_allocvec(&input).expect("input encodes");
+        let bytes = match crate::prover_input::encode(&input) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                tracing::warn!(height, %e, "cannot hand this block to the prover; skipping it");
+                status.lock().map(|mut s| (s.proving, s.error) = (None, Some(format!("block {height}: {e}")))).ok();
+                continue;
+            }
+        };
         match gate.current().prove(&bytes) {
             Ok((proof, _, seconds)) => {
                 gate.proved();
@@ -831,15 +896,26 @@ fn pause(status: &SharedStatus, reason: &str) {
         .ok();
 }
 
-/// The newest finalized block still unproven whose parent state this node holds.
-fn next_job(chain: &Chain, prover: Address) -> Option<(u64, usize, aether_proving::block::BlockInput)> {
-    let (exec, parent, block) = chain.provable()?;
-    let payload = block.payload()?;
-    let (pre, _) = chain.pre_state_with(&parent, payload.version, &payload.proofs, &payload.beacons, &payload.registrations, payload.seed.as_ref(), true).ok()?;
+pub(crate) type Job = (u64, usize, aether_proving::block::BlockInput);
+
+/// The newest finalized block still unproven whose parent state this node
+/// holds. `Ok(None)`: nothing to prove right now. `Err`: a block was picked
+/// but no prover input could be built for it (never silent: the caller logs it).
+pub(crate) fn next_job(chain: &Chain, prover: Address) -> Result<Option<Job>, (u64, String)> {
+    let Some((exec, parent, block)) = chain.provable() else { return Ok(None) };
+    let height = exec.height;
+    let payload = block.payload().ok_or((height, "block payload does not decode".to_string()))?;
+    let (pre, _) = chain
+        .pre_state_with(&parent, payload.version, &payload.proofs, &payload.beacons, &payload.registrations, payload.seed.as_ref(), true)
+        .map_err(|e| (height, format!("pre-state: {e:?}")))?;
     let ctx = Chain::block_context(&chain.cfg(), &block, &parent);
-    let input = aether_proving::block::input(&pre, &ctx, &payload.txs, &[], prover).ok()?;
-    debug_assert_eq!(aether_proving::block::execute(&input).ok()?.commitment(), exec.statement.commitment);
-    Some((exec.height, payload.txs.len(), input))
+    let input = aether_proving::block::input(&pre, &ctx, &payload.txs, &[], prover)
+        .map_err(|e| (height, format!("prover input: {e:?}")))?;
+    let statement = aether_proving::block::execute(&input).map_err(|e| (height, format!("witness replay: {e:?}")))?;
+    if statement.commitment() != exec.statement.commitment {
+        return Err((height, "the prover input does not restate the block's recorded statement".to_string()));
+    }
+    Ok(Some((height, payload.txs.len(), input)))
 }
 
 #[cfg(test)]
@@ -892,6 +968,18 @@ mod tests {
         }
         assert!(status.proofs_failing);
         assert_eq!(status.verification_failures, 8);
+    }
+
+    #[test]
+    fn a_retried_submission_error_is_reported_once_per_distinct_reason() {
+        let mut seen = DistinctErrors::default();
+        assert!(seen.first_time("error sending request"), "the first failure is reported");
+        assert!(!seen.first_time("error sending request"), "the same reason every 5 s is not");
+        assert!(seen.first_time("the proof does not verify"), "a new reason is reported");
+        for i in 0..32 {
+            seen.first_time(&format!("reason {i}"));
+        }
+        assert!(seen.first_time("error sending request"), "bounded memory: an old reason is reported again");
     }
 
     #[test]

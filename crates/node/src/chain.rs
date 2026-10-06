@@ -3871,6 +3871,71 @@ mod pool_tests {
         (block, exec)
     }
 
+    /// The 2026-10-06 rehearsal failure: a new-genesis (history v2) chain
+    /// whose blocks carry only system writes (beacon answers, free-lane
+    /// registrations) records no statement, so a prover has nothing to prove
+    /// and no proof reward can ever be paid. The first block with a paid
+    /// transaction is provable, and its prover input restates exactly the
+    /// statement the chain recorded.
+    #[test]
+    fn a_quiet_history_v2_chain_has_nothing_to_prove_until_a_transaction_lands() {
+        let key = aether_crypto::P256Signer::from_seed(&[7; 32]).unwrap();
+        let sender = aether_crypto::address_of(&aether_crypto::Signer::public_key(&key)).unwrap();
+        let mut config = cfg(vec![(sender, U256::from(10u128.pow(21)))]);
+        config.protocol = 3;
+        config.history_v2 = true;
+        let (chain, genesis) = Chain::new(config);
+        let prover = Address::repeat_byte(0xc1);
+        let mut parent = chain.get(&genesis.digest()).unwrap();
+        let mut last = genesis.clone();
+        for _ in 0..4 {
+            let (block, exec) = build(&chain, &parent, &last, vec![]);
+            chain.finalize(&block).unwrap();
+            assert_eq!(exec.statement, Statement::default(), "an empty v2 block records no statement");
+            (parent, last) = (exec, block);
+        }
+        assert!(
+            matches!(crate::prover::next_job(&chain, prover), Ok(None)),
+            "only empty blocks: nothing to prove"
+        );
+        // A paid transfer with a state budget, as `aether send` signs one on a new genesis.
+        let mut transfer = transfers(&key, 0..1).remove(0);
+        transfer.header.gas.state = 1_000;
+        transfer.header.max_fee.state = Chain::next_base_fee(&chain.cfg(), &parent).state;
+        let mut sig = aether_crypto::Signer::sign(&key, &transfer.signing_bytes()).unwrap();
+        sig.extend_from_slice(&aether_crypto::Signer::public_key(&key).bytes);
+        transfer.signature = Bytes::from(sig);
+        let (block, exec) = build(&chain, &parent, &last, vec![transfer]);
+        chain.finalize(&block).unwrap();
+        assert_eq!(exec.tx_hashes.len(), 1, "the transfer landed");
+        assert_ne!(exec.statement, Statement::default(), "a block with a transaction records a statement");
+        let (height, txs, input) = crate::prover::next_job(&chain, prover)
+            .expect("the input builds")
+            .expect("the transfer's block is provable");
+        assert_eq!((height, txs), (block.height().get(), 1));
+        // The sidecar and its guest decode the bytes the node hands over
+        // (postcard::from_bytes::<BlockInput>, apps/prover): the plain derive
+        // drops an ungrouped tx's `group` and cannot be read back.
+        assert!(
+            postcard::from_bytes::<aether_proving::block::BlockInput>(&postcard::to_allocvec(&input).unwrap()).is_err(),
+            "the derive's bytes are what the 2026-10-06 sidecar refused"
+        );
+        let bytes = crate::prover_input::encode(&input).expect("the prover input encodes");
+        let back: aether_proving::block::BlockInput = postcard::from_bytes(&bytes).expect("the sidecar decodes it");
+        assert_eq!(back.txs, input.txs);
+        assert_eq!(
+            aether_proving::block::output(&back).unwrap(),
+            aether_proving::block::claim(exec.statement.commitment, prover),
+            "the guest's output from the decoded input is the claim validators check"
+        );
+        assert_eq!(
+            aether_proving::block::execute(&input).unwrap().commitment(),
+            exec.statement.commitment,
+            "the proof would state what the chain recorded"
+        );
+        assert!(matches!(crate::prover::next_job(&chain, prover), Ok(None)), "each block is taken once");
+    }
+
     #[test]
     fn a_tx_its_sender_can_no_longer_pay_for_leaves_the_pool() {
         let a = Address::repeat_byte(1);

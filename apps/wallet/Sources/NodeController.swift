@@ -421,6 +421,9 @@ final class NodeController: ObservableObject {
         // this Mac's validator identity. The migration itself already ran or
         // is running (Self.dataDir) — this catches its running, deferred or
         // failed state; `migrationFinished` retries once it is done.
+        // Retry a deferred move first (the old app may have quit since): a
+        // no-op once settled, a cheap lock probe while the old app runs.
+        DataMigration.ensure()
         if let why = DataMigration.mayStartNode() {
             state = .failed(why)
             return

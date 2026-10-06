@@ -781,6 +781,8 @@ enum DataMigration {
         let forceCopy: Bool
         /// The verified copy's progress, 0…1.
         var onProgress: ((Double) -> Void)?
+        /// A background run started (the app shows its progress).
+        var onStart: (() -> Void)?
         /// Every background run's outcome.
         var onFinish: ((Outcome) -> Void)?
 
@@ -842,6 +844,7 @@ enum DataMigration {
             if !busy { running = true }   // claimed now: no second start, gates shut at once
             stateLock.unlock()
             guard !busy else { return }
+            onStart?()
             DispatchQueue.global(qos: .userInitiated).async { [self] in
                 runLock.lock()
                 let outcome = runHoldingLock()   // keeps the claim; clears it when done

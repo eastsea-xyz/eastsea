@@ -38,6 +38,8 @@ struct AetherWalletApp: App {
                     #endif
                 }
                 .environment(\.liveResize, resizeMonitor.active)
+                // The Aether → EastSea data move, while it runs (M1).
+                .overlay { MigrationOverlay(status: appDelegate.migration) }
                 // Closing the window keeps Aether in the menu bar (the node keeps running).
                 .onDisappear { NSApp.setActivationPolicy(.accessory) }
                 .onOpenURL { model.open(url: $0) }
@@ -225,6 +227,10 @@ struct UnattendedSection: View {
 /// Aether lives in the menu bar: closing the window keeps it (and its node)
 /// running; Quit stops both.
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// First, before anything below calls `DataMigration.ensure()` (the
+    /// tracker does, during this object's own initialisation): the move's
+    /// progress and outcome must reach the window (release-070 review, M1).
+    let migration = MigrationStatus.shared
     weak var node: NodeController?
     weak var model: WalletModel?
     private let releaseGate = ReleaseUpdateGate()
@@ -318,6 +324,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         unattended.refreshStatus()
         unattended.refreshPower()
         node.restore()
+        // A slow data move finishing in the background (M1) lets the node
+        // start at once instead of at the next 30 s power tick.
+        migration.onFinish = { [weak node] _ in
+            MainActor.assumeIsolated { node?.migrationFinished() }
+        }
+        // An old Aether (<= 0.6.6) beside EastSea opens at login, holds the
+        // old data's run.lock and runs a second node (B2): ask once to quit
+        // it and move it to the Trash, then retry the move it was blocking.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            LegacyAether.offerRemoval {
+                DataMigration.Runner.shared.start()
+            }
+        }
         health.start(node: node, model: model, updateComing: { [weak self] in
             switch self?.tracker.state {
             case .found?, .downloading?, .verified?, .installing?: return true

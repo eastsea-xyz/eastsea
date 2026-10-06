@@ -21,6 +21,7 @@ run health-check Brand.swift Clock.swift NodeWatchdog.swift HealthCheck.swift
 run history-notice HistoryFailure.swift
 run install-location Brand.swift InstallLocation.swift
 run key-exposure KeyExposureNotice.swift
+run legacy-aether Brand.swift LegacyAether.swift
 run network-upgrade Brand.swift NetworkUpgrade.swift
 run release-approval ReleaseApproval.swift
 run rename-migration DataMigration.swift

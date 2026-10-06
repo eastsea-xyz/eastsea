@@ -36,7 +36,7 @@ enum Tools {
              schema: object(["token": prop("string", "token 0x address"), "to": prop("string", "payee 0x address"),
                              "amount": prop("string", "decimal token amount"), "purpose": prop("string", "why the owner asked for this payment"),
                              "dry_run": prop("boolean", "only check policy")], required: ["token", "to", "amount", "purpose"]), readOnly: false) { a in try payToken(a) },
-        Spec(name: "aether_receipt", description: "Whether a transaction is final, in which block, and if it succeeded.",
+        Spec(name: "aether_receipt", description: "Whether a transaction is final, in which block, and if it succeeded; if not in a block, whether it is pending (and what it waits for) or was dropped (and why).",
              schema: object(["hash": prop("string", "0x tx hash")], required: ["hash"]), readOnly: true) { a in try receiptTool(a) },
         Spec(name: "aether_history", description: "Payments this agent made (newest first).",
              schema: object(["limit": prop("integer", "max entries, default 20")]), readOnly: true) { a in try history(a) },
@@ -260,7 +260,8 @@ enum Tools {
                                           purpose: purpose, payeeNames: parsed.map { Payees.name($0.to) ?? $0.to },
                                           asset: t, amount: total.aeth))
         var out: [String: Any] = ["hash": hash, "paid_aeth": total.aeth, "recipients": parsed.count]
-        if let r = waitForReceipt(hash) {
+        let (receipt, status) = waitForReceipt(hash)
+        if let r = receipt {
             out["final"] = true
             out["success"] = r.success
             out["block"] = r.height
@@ -268,7 +269,7 @@ enum Tools {
             if !r.success { out["note"] = "the account contract refused it (limits or recipients changed?); nothing was paid" }
         } else {
             out["final"] = false
-            out["note"] = "not final after 30 s; check with aether_receipt"
+            out.merge(try notIncluded(hash, status)) { _, new in new }
         }
         return out
     }
@@ -312,23 +313,59 @@ enum Tools {
         let hash = try submitSigned(envelopeJson: prepared.envelopeJson, signature: txSig.rawRepresentation, p256PublicKey: id.agentKey)
         try History.submit(PendingPayment(date: Date(), to: [to], totalWei: "0", hash: hash, purpose: why,
                                           payeeNames: [Payees.name(to) ?? to], asset: "\(token.symbol) · \(token.address)", amount: amount))
-        guard let r = waitForReceipt(hash) else { return ["hash": hash, "final": false, "note": "check aether_receipt"] }
+        let (receipt, status) = waitForReceipt(hash)
+        guard let r = receipt else {
+            return (try notIncluded(hash, status)).merging(["hash": hash, "final": false]) { _, new in new }
+        }
         try History.finalize(hash: hash, success: r.success)
         return ["hash": hash, "final": true, "success": r.success, "block": r.height, "amount": amount, "token": token.address]
     }
 
-    private static func waitForReceipt(_ hash: String) -> TxReceipt? {
+    /// Up to 30 s for the receipt; stops early when the network dropped it.
+    /// Returns the receipt, or the last status (what it waits for, or why it
+    /// was dropped — contracts-live bug #5).
+    private static func waitForReceipt(_ hash: String) -> (TxReceipt?, TxStatus?) {
+        var last: TxStatus?
         for _ in 0..<60 {
-            if let r = try? receipt(txHash: hash) { return r }
+            if let st = try? txStatus(txHash: hash) {
+                last = st
+                if let r = st.receipt { return (r, st) }
+                if st.state == "dropped" { return (nil, st) }
+            }
             Thread.sleep(forTimeInterval: 0.5)
         }
-        return nil
+        return (nil, last)
+    }
+
+    /// The tool result for a transaction that is not in a block: whether it is
+    /// still pending (and what it waits for) or was dropped (and why), in the
+    /// same words the wallet shows. A drop is final: nothing was paid.
+    private static func notIncluded(_ hash: String, _ st: TxStatus?) throws -> [String: Any] {
+        guard let st else { return ["status": "unknown", "note": "no answer from the network; check with aether_receipt"] }
+        var out: [String: Any] = ["status": st.state, "why": st.detail, "why_ko": st.message]
+        if let reason = st.reason { out["reason"] = reason }
+        switch st.state {
+        case "dropped":
+            try History.finalize(hash: hash, success: false)
+            out["note"] = st.canResend
+                ? "not included and nothing was paid; it can be sent again with a fresh fee"
+                : "not included and nothing was paid"
+            out["can_resend"] = st.canResend
+        case "pending":
+            out["note"] = "still waiting for a block; check with aether_receipt"
+        default:
+            out["note"] = "the network has no record of it; check with aether_receipt"
+        }
+        return out
     }
 
     static func receiptTool(_ a: Args) throws -> [String: Any] {
         configure()
         guard let h = a["hash"] as? String else { throw AgentError.input("hash") }
-        guard let r = try receipt(txHash: h) else { return ["hash": h, "final": false] }
+        let st = try txStatus(txHash: h)
+        guard let r = st.receipt else {
+            return (try notIncluded(h, st)).merging(["hash": h, "final": false]) { _, new in new }
+        }
         try History.finalize(hash: h, success: r.success)
         return ["hash": h, "final": true, "success": r.success, "block": r.height, "gas_used": r.gasUsed,
                 "tx_link": "aether://tx?hash=\(h)"]
@@ -337,7 +374,9 @@ enum Tools {
     static func history(_ a: Args) throws -> [String: Any] {
         configure()
         for item in History.pending() {
-            if let r = try? receipt(txHash: item.hash) { try History.finalize(hash: item.hash, success: r.success) }
+            guard let st = try? txStatus(txHash: item.hash) else { continue }
+            if let r = st.receipt { try History.finalize(hash: item.hash, success: r.success) }
+            else if st.state == "dropped" { try History.finalize(hash: item.hash, success: false) }   // bug #5: never paid
         }
         let limit = (a["limit"] as? Int) ?? Int(a["limit"] as? String ?? "") ?? 20
         let f = ISO8601DateFormatter()
@@ -353,7 +392,7 @@ enum Tools {
         configure()
         let id = try identity()
         let hash = try devnetFaucet(to: id.account, valueWei: "0")
-        let r = waitForReceipt(hash)
+        let (r, _) = waitForReceipt(hash)
         return ["hash": hash, "to": id.account, "received_aeth": "10", "final": r != nil,
                 "next": "Test tokens are in the agent account. Its gas payer needs gas too: the owner's `aether-agent policy set` sends some."]
     }

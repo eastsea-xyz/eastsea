@@ -27,6 +27,7 @@ run network-upgrade Brand.swift NetworkUpgrade.swift
 run release-approval ReleaseApproval.swift
 run rename-migration DataMigration.swift
 run resources ProverFlags.swift
+run resend ResendIntent.swift
 run storage StorageSetting.swift UnattendedDecision.swift
 run reward-status EarningsModel.swift
 run proving-badge EarningsModel.swift

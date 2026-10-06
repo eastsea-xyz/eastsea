@@ -35,6 +35,11 @@ repo="$(cd -P "$script_dir/../.." && pwd -P)"
 # stage pins that path — and is shared mutable state, so this locks it.
 . "$repo/scripts/guest-stage.sh"
 stage="$(aether_guest_stage_path)"
+# The guest ELF is the program the proofs are about: it must be built by the
+# jolt CLI of the pinned fork revision (scripts/jolt-fork.lock), or a different
+# CLI could change it. Checked here (standalone run) — the nested run through
+# prover-program.sh checks it before the host build starts.
+aether_jolt_cli_check "$jolt_cmd"
 # build.rs runs this script while the host prover build is already staged, so
 # cargo hands it the *stage* as the package root and `../..` above is the stage,
 # not a checkout (a manual run from $stage/apps/prover looks the same). There the
@@ -47,7 +52,14 @@ else
 fi
 # Under the stage, so the string does not depend on how this script was reached.
 target_dir="${GUEST_TARGET_DIR:-$stage/apps/prover/target-guest/aether-prover-guest-prove_block}"
-jolt_src="$(cd "${JOLT_SRC:-/Volumes/workspace/aether-jolt/jolt}" && pwd)"
+# The guest's jolt sources are the stage's snapshot copy, so the fork's own
+# location no longer needs to exist here; the remap below stays for anything
+# that still reports it (an explicit JOLT_SRC keeps the old loud failure).
+if [ -n "${JOLT_SRC:-}" ]; then
+  jolt_src="$(cd "$JOLT_SRC" && pwd)"
+else
+  jolt_src="$(cd "$(aether_jolt_source)/jolt" 2>/dev/null && pwd -P || true)"
+fi
 sysroot="$(rustc --print sysroot)"
 # One timestamp and zeroed archive dates, as in the host build
 # (scripts/repro-env.sh): the embedded ELF's hash is the program id, so it must
@@ -60,7 +72,9 @@ repo_remap=""
 if [ -n "$repo" ]; then repo_remap=" --remap-path-prefix=$repo=/aether"; fi
 # (rustc applies the last matching prefix, so the nested target dir goes last;
 # the stage is remapped in both spellings — see scripts/repro-env.sh.)
-export ZEROOS_GUEST_RUSTFLAGS="$(aether_guest_stage_remap /aether)$repo_remap --remap-path-prefix=$jolt_src=/jolt --remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=$sysroot=/rustc --remap-path-prefix=$target_dir=/target"
+jolt_remap=""
+[ -n "$jolt_src" ] && jolt_remap=" --remap-path-prefix=$jolt_src=/jolt"
+export ZEROOS_GUEST_RUSTFLAGS="$(aether_guest_stage_remap /aether)$repo_remap$jolt_remap --remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=$sysroot=/rustc --remap-path-prefix=$target_dir=/target"
 
 # From the stage: the guest manifest, its `guest` member and every path
 # dependency are then seen under one fixed path.

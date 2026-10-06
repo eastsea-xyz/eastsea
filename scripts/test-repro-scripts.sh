@@ -21,9 +21,11 @@
 #    (it is what makes 3 work) and rebuilds it from the file (4).
 # 6. guest-stage.sh, the fixed path both prover builds go through, links the
 #    checkout without ever clobbering a foreign file or linking it to itself
-#    (build.rs reaches the stage from inside it), and serialises two builds that
-#    share it (nested ones included) — the piece that keeps the proving program
-#    id off the checkout path.
+#    (build.rs reaches the stage from inside it), snapshots the pinned Jolt fork
+#    in with the manifests rewritten to it (B7: the id depends on the fork's
+#    contents, not its location), and serialises two builds that share it
+#    (nested ones included) — the pieces that keep the proving program id off
+#    the checkout path and the fork path.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 repo="$PWD"
@@ -265,8 +267,28 @@ echo "=== [6/6] guest-stage.sh ==="
 stage="$tmp/stage"
 mkdir -p "$stage"
 stage_real="$(cd -P "$stage" && pwd -P)"
+# A miniature fork stands in for aether-jolt: two git repos whose pinned
+# revisions are recorded in a fixture lock file. AETHER_JOLT_LOCK redirects the
+# pin the stage verifies against, exactly what a hermetic test needs.
+fork="$tmp/fork"
+mkdir -p "$fork/jolt/jolt-sdk" "$fork/akita/crates/akita-algebra"
+printf '[package]\nname = "jolt-sdk"\nversion = "0.1.0"\n' >"$fork/jolt/jolt-sdk/Cargo.toml"
+printf '[package]\nname = "akita-algebra"\nversion = "0.1.0"\n' >"$fork/akita/crates/akita-algebra/Cargo.toml"
+for r in jolt akita; do
+  git -C "$fork/$r" init -q
+  git -C "$fork/$r" add -A
+  git -C "$fork/$r" -c user.name=test -c user.email=test@example.com commit -qm "pin"
+done
+lock="$tmp/jolt-fork.lock"
+{
+  echo "jolt-commit=$(git -C "$fork/jolt" rev-parse HEAD)"
+  echo "jolt-archive-sha256=$(git -C "$fork/jolt" archive --format=tar HEAD | shasum -a 256 | cut -d' ' -f1)"
+  echo "akita-commit=$(git -C "$fork/akita" rev-parse HEAD)"
+  echo "akita-archive-sha256=$(git -C "$fork/akita" archive --format=tar HEAD | shasum -a 256 | cut -d' ' -f1)"
+} >"$lock"
 run_stage() { # run_stage SHELL-BODY [ARG...]
-  AETHER_GUEST_STAGE="$stage" bash -c ". '$repo/scripts/guest-stage.sh'; $1" _ "${@:2}"
+  AETHER_GUEST_STAGE="$stage" AETHER_JOLT="$fork" AETHER_JOLT_LOCK="$lock" \
+    bash -c ". '$repo/scripts/guest-stage.sh'; $1" _ "${@:2}"
 }
 # Both spellings of the stage go to the same place: cargo hands rustc whichever
 # one it happens to have (macOS /tmp -> /private/tmp), and a missing one leaks
@@ -313,6 +335,102 @@ run_stage 'AETHER_GUEST_STAGE_LOCKED=1 aether_guest_stage_enter "$1"' "$stage" |
 [ "$(readlink "$stage/Cargo.toml")" = "$tree_b_real/Cargo.toml" ] ||
   fail "entering from inside the stage pointed it at itself"
 pass "links what exists, idempotent, follows the tree, never links to itself"
+
+# B7: the fork — pinned revision, staged copy, rewritten manifests. With
+# manifests present, populate copies them (not links: they must differ from the
+# checkout's, which keep the absolute fork path for the developer workflow) with
+# every fork reference moved inside the stage, and snapshots the pinned fork.
+mkdir -p "$tree_a/apps/prover/guest/src" "$tree_a/apps/prover/src"
+cat >"$tree_a/apps/prover/Cargo.toml" <<EOF
+[package]
+name = "aether-prover"
+[dependencies]
+jolt-sdk = { path = "/Volumes/workspace/aether-jolt/jolt/jolt-sdk" }
+[patch."https://github.com/markosg04/akita"]
+akita-algebra = { path = "/Volumes/workspace/aether-jolt/akita/crates/akita-algebra" }
+EOF
+cat >"$tree_a/apps/prover/guest/Cargo.toml" <<EOF
+[package]
+name = "aether-prover-guest"
+[dependencies]
+jolt = { package = "jolt-sdk", path = "/Volumes/workspace/aether-jolt/jolt/jolt-sdk" }
+EOF
+printf 'fn main() {}\n' >"$tree_a/apps/prover/src/main.rs"
+run_stage 'aether_guest_stage_populate "$1"' "$tree_a" || fail "populate failed with manifests"
+[ -f "$stage/apps/prover/Cargo.toml" ] && [ ! -L "$stage/apps/prover/Cargo.toml" ] ||
+  fail "the staged prover manifest is not a copy"
+grep -q 'path = "../../aether-jolt/jolt/jolt-sdk"' "$stage/apps/prover/Cargo.toml" ||
+  fail "the staged prover manifest does not reference the staged fork"
+grep -q 'path = "../../aether-jolt/akita/crates/akita-algebra"' "$stage/apps/prover/Cargo.toml" ||
+  fail "a [patch] fork reference was not rewritten"
+[ -d "$stage/apps/prover/guest" ] && [ ! -L "$stage/apps/prover/guest" ] ||
+  fail "guest must be a real directory (its manifest is rewritten)"
+grep -q 'path = "../../../aether-jolt/jolt/jolt-sdk"' "$stage/apps/prover/guest/Cargo.toml" ||
+  fail "the staged guest manifest was not rewritten"
+[ -f "$stage/aether-jolt/jolt/jolt-sdk/Cargo.toml" ] || fail "the pinned fork was not snapshotted"
+[ -f "$stage/aether-jolt/.aether-stage-snapshot" ] || fail "the snapshot is not marked"
+# Idempotent: the copies do not churn between builds (mtime is a cargo input).
+sum_before="$(shasum -a 256 "$stage/apps/prover/Cargo.toml" | cut -d' ' -f1)"
+run_stage 'aether_guest_stage_populate "$1"' "$tree_a" || fail "the second populate failed"
+[ "$(shasum -a 256 "$stage/apps/prover/Cargo.toml" | cut -d' ' -f1)" = "$sum_before" ] ||
+  fail "populate is not idempotent on the manifest"
+pass "copies the manifests with the fork staged, snapshots the pinned fork"
+
+# AETHER_JOLT is a developer override, not a second program id: the fork staged
+# from a copy at another path is the same snapshot.
+fork2="$tmp/fork-elsewhere"
+mkdir -p "$fork2"
+cp -R "$fork/jolt" "$fork2/jolt"
+cp -R "$fork/akita" "$fork2/akita"
+rm -rf "$stage/aether-jolt"
+AETHER_GUEST_STAGE="$stage" AETHER_JOLT="$fork2" AETHER_JOLT_LOCK="$lock" \
+  bash -c ". '$repo/scripts/guest-stage.sh'; aether_guest_stage_populate \"\$1\"" _ "$tree_a" ||
+  fail "populate refused a fork at another path"
+[ -f "$stage/aether-jolt/jolt/jolt-sdk/Cargo.toml" ] ||
+  fail "the stage did not snapshot the fork from the override path"
+pass "stages the same snapshot from a fork at another path"
+
+# A fork that moved past the pin is refused, not silently built into an id
+# nobody else can reproduce.
+printf 'moved on\n' >>"$fork/jolt/jolt-sdk/Cargo.toml"
+git -C "$fork/jolt" add -A
+git -C "$fork/jolt" -c user.name=test -c user.email=test@example.com commit -qm "moved"
+if run_stage 'aether_guest_stage_populate "$1"' "$tree_a" >/dev/null 2>&1; then
+  fail "populate accepted a fork at an unpinned commit"
+fi
+git -C "$fork/jolt" reset -q --hard HEAD~1
+# Uncommitted changes do not reach the snapshot (it is taken by commit), and do
+# not break the build either: the dirty filetree is simply not what is staged.
+rm -rf "$stage/aether-jolt"
+printf 'dirty\n' >>"$fork/jolt/jolt-sdk/Cargo.toml"
+run_stage 'aether_guest_stage_populate "$1"' "$tree_a" || fail "a dirty fork worktree broke populate"
+if grep -q '^dirty$' "$stage/aether-jolt/jolt/jolt-sdk/Cargo.toml"; then
+  fail "uncommitted changes leaked into the snapshot"
+fi
+git -C "$fork/jolt" checkout -q -- jolt-sdk/Cargo.toml
+pass "refuses an unpinned fork, ignores a dirty worktree"
+
+# The jolt CLI must be one built from the pinned revision: --version names the
+# commit (however many digits that build's git abbreviated to), and anything
+# else is refused with the fix.
+jolt_good="$tmp/jolt-good"
+printf '#!/bin/sh\necho "jolt 0.1.0 (%s 2026-10-06)"\n' \
+  "$(git -C "$fork/jolt" rev-parse --short=7 HEAD)" >"$jolt_good"
+chmod +x "$jolt_good"
+run_stage 'aether_jolt_cli_check "$1"' "$jolt_good" || fail "the pinned CLI was refused"
+for bad_hash in deadbeef0 nohash; do
+  jolt_bad="$tmp/jolt-$bad_hash"
+  if [ "$bad_hash" = nohash ]; then
+    printf '#!/bin/sh\necho "jolt 0.1.0"\n' >"$jolt_bad"
+  else
+    printf '#!/bin/sh\necho "jolt 0.1.0 (%s 2026-10-06)"\n' "$bad_hash" >"$jolt_bad"
+  fi
+  chmod +x "$jolt_bad"
+  if run_stage 'aether_jolt_cli_check "$1"' "$jolt_bad" >/dev/null 2>&1; then
+    fail "a jolt CLI named '$bad_hash' passed the pin check"
+  fi
+done
+pass "checks the jolt CLI against the pin"
 
 # A real file where a link belongs means someone else owns that path: refuse,
 # and leave it there.

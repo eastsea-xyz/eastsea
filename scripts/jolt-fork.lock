@@ -1,0 +1,10 @@
+# Jolt fork pin for the proving program build (checklist B7).
+# The program id is a function of (Aether source, these revisions): the stage
+# snapshots each repo by `git archive <commit>` and refuses a fork whose HEAD
+# or whose archive hash differs. To move the pin, update the commits and their
+# `git archive --format=tar <commit> | shasum -a 256` hashes — and remember
+# the program id moves with it.
+jolt-commit=617ddd153b6154032e7c43e5301befc8cb4f8127
+jolt-archive-sha256=7848d8f429e6827744beb38b643d58c7a3cadee0195b67c8167a559c40f60d14
+akita-commit=2ed65f4dbf6e025b10025ca7583bce6aacc74561
+akita-archive-sha256=8a2a01f326685d2e869dc1754f90ae20c1e8b5de4cea317e7c129f03128df783

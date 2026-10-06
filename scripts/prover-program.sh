@@ -13,6 +13,9 @@ export PATH="$HOME/.cargo/bin:$PATH"
 . scripts/guest-stage.sh
 jolt="${AETHER_JOLT:-/Volumes/workspace/aether-jolt}"
 [ -d "$jolt/jolt" ] || { echo "the Jolt fork (aether-jolt/jolt) is needed to build the prover" >&2; exit 1; }
+# The CLI drives the guest build; one built from another revision of the fork
+# could change the id, so it has to match the pin (scripts/jolt-fork.lock).
+aether_jolt_cli_check "${JOLT_PATH:-jolt}"
 # cargo hashes the path of every dependency that lives outside the workspace
 # root of the invocation — for apps/prover, which is its own workspace root,
 # that is every Aether crate — so the checkout's path would otherwise land in

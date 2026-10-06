@@ -6,10 +6,15 @@ everything, forever, and hand old history back on demand. That someone is the
 archive node — `aether archive` — by convention on the NAS (`poc-nas`), where
 the disk is.
 
-It is a follower with three differences:
+It is a follower with four differences:
 
 - **It never prunes.** Whatever the history flags say, the mode forces
   `HistoryMode::Archive`.
+- **It replays from genesis — no snapshots, ever.** A snapshot start (or a
+  later snapshot jump) keeps only certified facts of the snapshot block, so
+  the store would never carry the history index era export needs (audit 7
+  A7-1). Startup checkpoints are off and the follower never jumps: it replays
+  the gap instead. Slower to sync, complete forever after.
 - **It serves old history.** `aether_eraInfo` / `aether_eraChunk` /
   `aether_eraProof` answer from its complete store, and `GET /era/<file>`
   serves whole era files over HTTP (its RPC binds `0.0.0.0`, not loopback —
@@ -168,5 +173,6 @@ end-to-end path (export set → prune → fetch from the archive's HTTP → veri
   below the floor no new era files are written and the export pauses rather
   than filling the volume. The NAS pool has terabytes; check with
   `ssh poc-nas df -h ~/AI` before pointing a new chain at it.
-- Losing the data dir means re-syncing from genesis (or a certified
-  snapshot); the export set itself is the durable copy mirrors hold.
+- Losing the data dir means re-syncing from genesis (an archive never uses a
+  snapshot — see above); the export set itself is the durable copy mirrors
+  hold.

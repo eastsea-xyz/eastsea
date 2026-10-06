@@ -2776,6 +2776,12 @@ fn run_follow(
     } else {
         history.mode(cfg.history_v2, 1000)?
     };
+    // An archive must own every block from genesis: a checkpoint start
+    // installs a snapshot whose store has no history index, and the exporter
+    // needs that index forever after (audit 7 A7-1). `follow::run` below also
+    // refuses to snapshot-jump for the same reason; this gate covers the
+    // startup path, that one the falling-behind path.
+    let checkpoint = checkpoint && export.is_none();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -2867,7 +2873,7 @@ fn run_follow(
             .as_ref()
             .and_then(|dir| aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(dir)).ok())
             .map(|k| hex::encode(k.validator_key()));
-        let follow_task = tokio::spawn(follow::run(chain.clone(), upstream.clone(), set, archive.clone(), joining));
+        let follow_task = tokio::spawn(follow::run(chain.clone(), upstream.clone(), set, archive.clone(), joining, export.is_some()));
         tokio::spawn(async move {
             let result = follow_task.await;
             tracing::error!(?result, "follower task stopped; restarting the node");
@@ -2974,15 +2980,17 @@ fn run_archive(
     // run_follow installs the tracing subscriber; a second install here panicked
     // at startup ("a global default trace dispatcher has already been set").
     eprintln!("era export set (roadmap B6) in {}: era files, manifests, torrents, index", export.dir.display());
-    // A fresh archive starts from a certified snapshot like any follower;
-    // the flags say prune, the mode ignores them (history = Archive).
+    // A fresh archive replays from genesis like any follower with a store to
+    // build (checkpoint off: a snapshot start leaves no history index, and the
+    // exporter needs one forever after — audit 7 A7-1); the flags say prune,
+    // the mode ignores them (history = Archive).
     let history = HistoryArgs {
         history: None,
         retain_days: aether_node::prune::DEFAULT_RETAIN_DAYS,
         drop_era_files: false,
         max_shards: aether_node::shards::DEFAULT_MAX_SHARDS,
     };
-    run_follow(Some(network), from_rpc, data, rpc_port, 4, None, None, true, None, false, history, resources, Some(export), Some(bind))
+    run_follow(Some(network), from_rpc, data, rpc_port, 4, None, None, false, None, false, history, resources, Some(export), Some(bind))
 }
 
 fn run_dkg(

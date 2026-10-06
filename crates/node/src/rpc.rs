@@ -353,23 +353,17 @@ impl Drop for BudgetSlot {
 }
 
 /// The era-file body keeps its transfer permit for the response's whole
-/// lifetime (pre-audit 7b PA7B-03): the permit used to be a local the handler
-/// dropped on return, so the budget counted handler executions while the
-/// unsent body still held the whole era buffer — a slow mirror could keep
-/// many whole-file responses outstanding at once. The body now owns the slot:
-/// it is given back only when the bytes are consumed or the response is
-/// dropped, so at most [`MAX_ERA_TRANSFERS`] whole era files exist per node.
-struct EraStream {
-    chunk: Option<bytes::Bytes>,
-    _permit: BudgetSlot,
-}
-
-impl futures::Stream for EraStream {
-    type Item = Result<bytes::Bytes, std::io::Error>;
-    fn poll_next(mut self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
-        std::task::Poll::Ready(self.chunk.take().map(Ok))
-    }
-}
+/// lifetime (pre-audit 7b PA7B-03) and streams in bounded chunks (audit 7
+/// A7-5). The old body was a single whole-file `Bytes` — the handler read
+/// the entire era into memory before the first byte went out — and its
+/// permit was a local the handler dropped on return, so the budget counted
+/// handler executions while the unsent bodies still held whole era buffers
+/// (a slow mirror could keep many whole-file responses outstanding at once).
+/// The permit now rides the stream's state: it is given back only when the
+/// bytes are consumed or the response is dropped, so at most
+/// [`MAX_ERA_TRANSFERS`] transfers exist per node, each holding at most
+/// `era_net::ERA_CHUNK` of the file at a time, read on tokio's blocking
+/// pool (off the async runtime).
 
 /// The era-file response, split out of the handler so tests can hold
 /// responses outstanding without a socket. `name` is exactly
@@ -388,23 +382,47 @@ fn era_file_response(st: &RpcState, name: &str) -> axum::response::Response {
         .and_then(|n| n.strip_suffix(".aera"))
         .filter(|n| n.len() == 8 && n.bytes().all(|b| b.is_ascii_digit()))
         .and_then(|n| n.parse::<u64>().ok());
-    let bytes = era.and_then(|_| {
-        let store = st.chain.store()?;
-        let path = store.era_dir().join(name);
-        std::fs::metadata(&path).ok().filter(|m| m.is_file() && m.len() <= crate::era_net::MAX_ERA_FILE as u64)?;
-        std::fs::read(path).ok()
-    });
-    let Some(bytes) = bytes else {
+    if era.is_none() {
         return (StatusCode::NOT_FOUND, "no such era here").into_response();
-    };
+    }
+    // The transfer permit comes before ANY file I/O (audit 7 A7-5): the old
+    // handler read the whole file first and asked for the permit after, so a
+    // node already streaming four transfers still did a fifth whole-file
+    // read just to answer 503 — the refused request was the expensive one.
+    // With the budget full, the refusal costs zero file reads.
     let Some(transfer) = BudgetSlot::acquire(&ERA_TRANSFERS, MAX_ERA_TRANSFERS) else {
         return (StatusCode::SERVICE_UNAVAILABLE, "era transfer budget busy; retry shortly").into_response();
     };
-    let len = bytes.len();
-    let mut response = axum::response::Response::new(axum::body::Body::from_stream(EraStream {
-        chunk: Some(bytes::Bytes::from(bytes)),
-        _permit: transfer,
-    }));
+    // Existence and size from metadata alone (a 404 needs no read). The
+    // permit drops on these early returns and rides the body below.
+    let file = st.chain.store().and_then(|s| {
+        let path = s.era_dir().join(name);
+        let m = std::fs::metadata(&path).ok().filter(|m| m.is_file() && m.len() <= crate::era_net::MAX_ERA_FILE as u64)?;
+        std::fs::File::open(&path).ok().map(|f| (f, m.len()))
+    });
+    let Some((file, len)) = file else {
+        return (StatusCode::NOT_FOUND, "no such era here").into_response();
+    };
+    let stream = futures::stream::unfold(
+        (tokio::fs::File::from_std(file), len, transfer),
+        |(mut file, remaining, permit)| async move {
+            if remaining == 0 {
+                return None;
+            }
+            let want = remaining.min(crate::era_net::ERA_CHUNK as u64) as usize;
+            let mut buf = vec![0u8; want];
+            match tokio::io::AsyncReadExt::read(&mut file, &mut buf).await {
+                // The file shrank under us: the body ends early (the stated
+                // content-length makes the receiver notice, not a lie).
+                Ok(0) => None,
+                Ok(n) => Some((Ok(bytes::Bytes::from(buf[..n].to_vec())), (file, remaining - n as u64, permit))),
+                // A read error ends the stream after this item; the state's
+                // remaining=0 makes the next poll the last.
+                Err(e) => Some((Err(e), (file, 0, permit))),
+            }
+        },
+    );
+    let mut response = axum::response::Response::new(axum::body::Body::from_stream(stream));
     *response.status_mut() = StatusCode::OK;
     let headers = response.headers_mut();
     headers.insert(header::CONTENT_TYPE, header::HeaderValue::from_static("application/octet-stream"));
@@ -469,6 +487,9 @@ async fn single(st: &RpcState, req: Value) -> Value {
         "aether_getReceiptProof" => receipt_proof(st, &params).await,
         "aether_historyProof" => history_proof(st, &params).await,
         "aether_eraProof" => era_proof(st, &params).await,
+        // A cache miss streams and hashes a whole era file — the same class
+        // of retained-history work the routes above meter (audit 7 A7-6).
+        "aether_eraInfo" => era_info(st, &params).await,
         "aether_snapshot" => snapshot_manifest(st).await,
         "aether_registerDevice" => register_device(st, &params).await,
         "aether_sendBeacon" => send_beacon(st, &params).await,
@@ -715,6 +736,25 @@ async fn era_proof(st: &RpcState, p: &Value) -> RpcResult {
     Ok(json!({ "era": era, "anchor": anchor, "proof": proof }))
 }
 
+/// `aether_eraInfo` behind the history budget and off the runtime (audit 7
+/// A7-6): a metadata answer is tiny, but a cache miss streams and hashes a
+/// whole era file synchronously — the exact work the old-block and proof
+/// routes already meter, and this dispatch used to run it inline with no
+/// slot. The work runs on a blocking worker that owns its permit (and the
+/// hash pass itself is single-flight in `era_net`), so strangers cannot
+/// stack hash passes on the runtime whatever the metadata cache keeps.
+async fn era_info(st: &RpcState, p: &Value) -> RpcResult {
+    let era: u64 = param(p, 0)?;
+    let chain = st.chain.clone();
+    let budget = history_slot(st)?;
+    tokio::task::spawn_blocking(move || {
+        let _held = budget;
+        chain.store().map(|s| crate::era_net::info(&s, era)).unwrap_or(Value::Null)
+    })
+    .await
+    .map_err(|e| (-32000, e.to_string()))
+}
+
 /// `[device_token (base64), operator, validator_key (hex 32), node_id (hex 32), beaconer, ownership (hex)]`
 /// (`ownership`: the voting key's signature, `aether candidate-info --operator`)
 /// → the registrar's attestation (r, s) to submit to the registry contract.
@@ -933,10 +973,6 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
             Ok(json!({ "pruned_below": g.pruned_below, "head": g.finalized.height, "complete_eras": eras, "era_len": aether_state::mmr::ERA_LEN }))
         }
         // Era files, served to peers that pruned them or never had them (`era_net`).
-        "aether_eraInfo" => {
-            let era: u64 = param(p, 0)?;
-            Ok(chain.store().map(|s| crate::era_net::info(&s, era)).unwrap_or(Value::Null))
-        }
         "aether_eraChunk" => {
             let era: u64 = param(p, 0)?;
             let index: usize = param(p, 1)?;
@@ -1998,6 +2034,85 @@ mod public_read_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Audit 7 A7-5: the transfer permit comes before ANY file I/O. The
+    /// old handler read the whole era file (metadata AND a whole-file
+    /// `read`) before asking for the permit — a node already streaming
+    /// four transfers still did a fifth whole-file read just to answer
+    /// 503, so the refused request was the expensive one. With the budget
+    /// full, a GET is refused before the file is even looked for — an era
+    /// that does not exist answers the busy 503, not the 404 the
+    /// read-first path gave — and an admitted transfer streams in bounded
+    /// chunks across several `ERA_CHUNK`s, exactly.
+    #[test]
+    fn a_full_transfer_budget_refuses_before_reading_the_file() {
+        use tower::util::ServiceExt;
+        use axum::body::Body;
+        use axum::http::{header, Request, StatusCode};
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let dir = std::env::temp_dir().join(format!("aether-rpc-era-noread-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = crate::store::Store::open(&dir.join("db.redb")).unwrap();
+        std::fs::create_dir_all(store.era_dir()).unwrap();
+        // 3 MiB: several ERA_CHUNK (1 MiB) boundaries must cross intact.
+        let era: Vec<u8> = (0..3usize << 20).map(|i| (i * 31 % 251) as u8).collect();
+        std::fs::write(store.era_dir().join("era-00000007.aera"), &era).unwrap();
+        let (chain, _) = crate::chain::Chain::open(crate::chain::ChainConfig {
+            chain_id: 7782,
+            limits: aether_types::GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
+            alloc: vec![], fees: false, registrar: None, epoch_blocks: 0,
+            min_streak: None, draw_epochs: None, history_v2: false, protocol: 1,
+            node_rewards: false, committee: vec![], reserve: None, group: 0,
+            max_committee: crate::rotation::GROW_UNTIL,
+        }, store).unwrap();
+        let (gossip, _) = mpsc::unbounded_channel();
+        let st = RpcState {
+            chain,
+            finality: Finality::Archive(Arc::new(crate::follow::FinalityArchive::default())),
+            gossip,
+            faucet: None, registrar: None, network: None, upstream: None,
+            handoff: None, snapshot: Default::default(), prover: None,
+            shards: None, public_read_only: false,
+        };
+        let app = Router::new().route("/era/{name}", get(serve_era_file)).with_state(st);
+        rt.block_on(async {
+            // The budget is full of OTHER transfers (not this test's
+            // responses): every slot is held.
+            let full: Vec<BudgetSlot> = (0..MAX_ERA_TRANSFERS)
+                .map(|_| BudgetSlot::acquire(&ERA_TRANSFERS, MAX_ERA_TRANSFERS).expect("the budget starts empty"))
+                .collect();
+            // An era that does not exist: the read-first path answered 404
+            // (its whole-file `read` found nothing). The permit-first path
+            // answers the busy 503 — the file was never looked for, so a
+            // refused GET costs zero file reads.
+            let ask = |name: &str| {
+                app.clone().oneshot(
+                    Request::builder().uri(format!("/era/{name}")).body(Body::empty()).unwrap(),
+                )
+            };
+            let missing = ask("era-00000009.aera").await.unwrap();
+            assert_eq!(missing.status(), StatusCode::SERVICE_UNAVAILABLE, "the busy budget refuses before the file is read");
+            // The same for an era that DOES exist: the refusal does the
+            // no work at all, whatever the disk holds.
+            let present = ask("era-00000007.aera").await.unwrap();
+            assert_eq!(present.status(), StatusCode::SERVICE_UNAVAILABLE, "an existing file is not read into a refused response either");
+            drop(full);
+            // With the budget free again the file transfers — in bounded
+            // chunks (3 MiB over 1 MiB chunks), exactly, with the length
+            // from its metadata.
+            let ok = ask("era-00000007.aera").await.unwrap();
+            assert_eq!(ok.status(), StatusCode::OK);
+            assert_eq!(
+                ok.headers().get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()),
+                Some("3145728"),
+                "the length comes from metadata, not from reading the file"
+            );
+            let bytes = axum::body::to_bytes(ok.into_body(), usize::MAX).await.unwrap();
+            assert_eq!(bytes.len(), 3 << 20);
+            assert_eq!(&bytes[..], &era[..], "several chunks stream the exact file");
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Public history reconstruction is capped (pre-audit 7b PA7B-04): a
     /// pruned `aether_getBlock`, `aether_historyProof` and `aether_eraProof`
     /// each re-read era files back from disk, and one stranger's request
@@ -2044,6 +2159,124 @@ mod public_read_tests {
             assert_ne!(answer["error"]["code"], -32002, "{method} privately never waits on the public budget: {answer}");
             assert!(!gate_error(&answer), "{method} privately is not the gateway's refusal: {answer}");
         }
+    }
+
+    /// Audit 7 A7-6: public `aether_eraInfo` goes through the history budget.
+    /// A cache miss streams and hashes a whole era file — exactly the class
+    /// of retained-history work the old-block and proof routes already meter
+    /// — but this dispatch ran synchronously on the runtime with no slot, so
+    /// a gateway holding more eras than the metadata cache keeps could stack
+    /// whole-file hash passes while every other route refused excess. With
+    /// the budget full, a MISS (an era file this node really keeps) is the
+    /// busy gateway error; freed, the same ask answers the real metadata.
+    /// The old code answered the miss immediately — no error at all.
+    #[test]
+    fn public_era_info_takes_a_history_slot_before_hashing() {
+        struct ResetBudget;
+        impl Drop for ResetBudget {
+            fn drop(&mut self) {
+                HISTORY_WORK.store(0, Ordering::Release);
+            }
+        }
+        let _history = claim_history_budget();
+        let _reset = ResetBudget;
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let dir = std::env::temp_dir().join(format!("aether-rpc-era-info-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = crate::store::Store::open(&dir.join("db.redb")).unwrap();
+        std::fs::create_dir_all(store.era_dir()).unwrap();
+        let bytes: Vec<u8> = (0..4096u32).map(|i| i as u8).collect();
+        std::fs::write(store.era_dir().join("era-00000005.aera"), &bytes).unwrap();
+        let (chain, _) = crate::chain::Chain::open(crate::chain::ChainConfig {
+            chain_id: 7783,
+            limits: aether_types::GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
+            alloc: vec![], fees: false, registrar: None, epoch_blocks: 0,
+            min_streak: None, draw_epochs: None, history_v2: false, protocol: 1,
+            node_rewards: false, committee: vec![], reserve: None, group: 0,
+            max_committee: crate::rotation::GROW_UNTIL,
+        }, store).unwrap();
+        let (gossip, _) = mpsc::unbounded_channel();
+        let mut st = RpcState {
+            chain,
+            finality: Finality::Archive(Arc::new(crate::follow::FinalityArchive::default())),
+            gossip,
+            faucet: None, registrar: None, network: None, upstream: None,
+            handoff: None, snapshot: Default::default(), prover: None,
+            shards: None, public_read_only: true,
+        };
+        st.chain.lock().pruned_below = aether_state::mmr::ERA_LEN * 3;
+        // The budget already exhausted by other strangers' reconstructions:
+        // the era IS kept here, so the old code hashed it and answered.
+        HISTORY_WORK.store(MAX_HISTORY_WORK, Ordering::Release);
+        let busy = rt.block_on(call(&st, "aether_eraInfo", json!([5])));
+        assert_eq!(busy["error"]["code"], -32002, "a miss must wait for a history slot, not hash on the runtime: {busy}");
+        assert!(gate_error(&busy), "the busy refusal names the gateway: {busy}");
+        // Freed, the same miss answers the real metadata (size, BLAKE3).
+        HISTORY_WORK.store(0, Ordering::Release);
+        let ok = rt.block_on(call(&st, "aether_eraInfo", json!([5])));
+        assert!(ok["error"].is_null(), "a budgeted miss answers once a slot is free: {ok}");
+        assert_eq!(ok["result"]["size"], json!(bytes.len()));
+        assert_eq!(ok["result"]["blake3"], json!(blake3_hex(&bytes)));
+        // Privately the same ask never waits on the public budget.
+        let mut private = st.clone();
+        private.public_read_only = false;
+        HISTORY_WORK.store(MAX_HISTORY_WORK, Ordering::Release);
+        let answer = rt.block_on(call(&private, "aether_eraInfo", json!([5])));
+        assert!(answer["error"].is_null(), "privately eraInfo is not the gateway's to refuse: {answer}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Audit 7 A7-6: simultaneous same-era misses answer identically (the
+    /// hash pass is single-flight in era_net; whichever caller waits for the
+    /// gate returns the filled cache entry). Overlapping public asks on one
+    /// uncached era must coalesce to one answer, never deadlock, and never
+    /// disagree with each other.
+    #[test]
+    fn simultaneous_era_info_misses_answer_identically() {
+        let _history = claim_history_budget();
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let dir = std::env::temp_dir().join(format!("aether-rpc-era-race-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = crate::store::Store::open(&dir.join("db.redb")).unwrap();
+        std::fs::create_dir_all(store.era_dir()).unwrap();
+        let bytes: Vec<u8> = (0..2usize * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+        std::fs::write(store.era_dir().join("era-00000011.aera"), &bytes).unwrap();
+        let (chain, _) = crate::chain::Chain::open(crate::chain::ChainConfig {
+            chain_id: 7784,
+            limits: aether_types::GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
+            alloc: vec![], fees: false, registrar: None, epoch_blocks: 0,
+            min_streak: None, draw_epochs: None, history_v2: false, protocol: 1,
+            node_rewards: false, committee: vec![], reserve: None, group: 0,
+            max_committee: crate::rotation::GROW_UNTIL,
+        }, store).unwrap();
+        let (gossip, _) = mpsc::unbounded_channel();
+        let st = RpcState {
+            chain,
+            finality: Finality::Archive(Arc::new(crate::follow::FinalityArchive::default())),
+            gossip,
+            faucet: None, registrar: None, network: None, upstream: None,
+            handoff: None, snapshot: Default::default(), prover: None,
+            shards: None, public_read_only: false,
+        };
+        rt.block_on(async {
+            let a = tokio::spawn({
+                let st = st.clone();
+                async move { call(&st, "aether_eraInfo", json!([11])).await }
+            });
+            let b = tokio::spawn({
+                let st = st.clone();
+                async move { call(&st, "aether_eraInfo", json!([11])).await }
+            });
+            let c = call(&st, "aether_eraInfo", json!([11])).await;
+            let (a, b) = (a.await.unwrap(), b.await.unwrap());
+            assert!(a["error"].is_null() && b["error"].is_null() && c["error"].is_null(),
+                "three overlapping asks all answer: {a} {b} {c}");
+            assert_eq!(a, b, "overlapping misses never disagree");
+            assert_eq!(b, c);
+            assert_eq!(a["result"]["size"], json!(bytes.len()));
+            assert_eq!(a["result"]["blake3"], json!(blake3_hex(&bytes)));
+        });
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

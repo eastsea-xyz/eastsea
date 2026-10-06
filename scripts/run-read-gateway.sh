@@ -9,6 +9,11 @@
 #      Creates the named tunnel on first use; without DNS permissions it prints
 #      the CNAME the operator must add by hand.
 #
+# The runner stays in the foreground of --apply and SUPERVISES the follower
+# (audit 7 A7-2): `aether follow` exits on purpose (11: stalled transport,
+# 12: disk floor) expecting a restart owner, and this loop is it — the same
+# policy `aether run`'s supervisor applies (crates/node/src/supervisor.rs).
+#
 # SAFETY: the default is a dry-run. It starts nothing, contacts no network, and
 # changes no files — it prints the plan (commands, config.yml, DNS records).
 # This script never writes to a validator's data directory; give it its own
@@ -102,7 +107,8 @@ if [ "$APPLY" -ne 1 ]; then
   say "Nothing was started and nothing was written. Re-run with --apply to:"
   say "  1. create/find tunnel '$TUNNEL' and write $CONFIG"
   say "  2. try 'tunnel route dns' (or print the CNAME to add by hand)"
-  say "  3. start the follower and cloudflared in the background (logs under $DATA_DIR/logs)"
+  say "  3. start cloudflared and supervise the follower in the foreground —"
+  say "     it restarts after a stall/crash exit with the same read-only args (logs under $DATA_DIR/logs)"
   say "Read docs/ops/read-gateway.md first — it lists what the gateway refuses,"
   say "the caps, the Cloudflare rate-limit rule to add, and how to verify it all."
   exit 0
@@ -149,17 +155,104 @@ if ! "$CLOUDFLARED" tunnel route dns "$TUNNEL" "$HOSTNAME" 2>&1; then
   say "  $HOSTNAME  CNAME  $TUNNEL_ID.cfargotunnel.com  (proxied)"
 fi
 
-nohup "$AETHER" follow "${FOLLOW_ARGS[@]}" \
-  > "$DATA_DIR/logs/follower.log" 2>&1 &
-echo $! > "$DATA_DIR/logs/follower.pid"
-nohup "$CLOUDFLARED" tunnel --config "$CONFIG" run "$TUNNEL" \
-  > "$DATA_DIR/logs/cloudflared.log" 2>&1 &
-echo $! > "$DATA_DIR/logs/cloudflared.pid"
+# ---- the follower: this runner is its restart owner (audit 7 A7-2) ----
+# `aether follow` exits on purpose expecting a supervisor: 11 restarts a
+# transport that made no verified progress for ten minutes, 12 waits for disk
+# space. `aether run` has that supervisor in-process; a bare `nohup` follow —
+# what this runner used to do — leaves the first stall exit dead with the
+# tunnel still up against a dead origin. So --apply stays in the foreground
+# and applies the same policy as the node supervisor: bounded backoff that
+# starts over after five minutes of life, a stop for codes no restart fixes
+# (3 upgrade, 4 storage, 5 verifier, 6 identity, 7 locked), a stop after four
+# stall exits in an hour, and a clean stop on exit 0. FOLLOW_ARGS above — the
+# read-only allowlist and the loopback bind — is reused verbatim on every
+# restart: the gateway never comes back wider than it went down.
 
-section "running"
-say "follower   pid $(cat "$DATA_DIR/logs/follower.pid")  (log: $DATA_DIR/logs/follower.log)"
-say "cloudflared pid $(cat "$DATA_DIR/logs/cloudflared.pid")  (log: $DATA_DIR/logs/cloudflared.log)"
-say "check: curl -s https://$HOSTNAME -X POST -H 'Content-Type: application/json' \\"
-say "        -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"aether_status\",\"params\":[]}'"
-say "and a write must be refused:"
-say "  -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"aether_sendTransaction\",\"params\":[]}'  -> -32601"
+nohup "$CLOUDFLARED" tunnel --config "$CONFIG" run "$TUNNEL" \
+  >> "$DATA_DIR/logs/cloudflared.log" 2>&1 &
+CF_PID=$!
+echo "$CF_PID" > "$DATA_DIR/logs/cloudflared.pid"
+cleanup() { if kill -0 "$CF_PID" 2>/dev/null; then kill "$CF_PID" 2>/dev/null || true; fi; return 0; }
+trap cleanup EXIT
+
+# The tunnel is the only exposure; if it dies the runner brings it back
+# before the next follower start.
+ensure_tunnel() {
+  if ! kill -0 "$CF_PID" 2>/dev/null; then
+    say "[gateway] cloudflared is down; restarting the tunnel"
+    nohup "$CLOUDFLARED" tunnel --config "$CONFIG" run "$TUNNEL" \
+      >> "$DATA_DIR/logs/cloudflared.log" 2>&1 &
+    CF_PID=$!
+    echo "$CF_PID" > "$DATA_DIR/logs/cloudflared.pid"
+  fi
+  return 0
+}
+
+# Keep the follower log bounded (~10 MB), as the archive runner does.
+trim_follower_log() {
+  local f="$DATA_DIR/logs/follower.log" size
+  if [ -f "$f" ]; then
+    size=$(wc -c < "$f" 2>/dev/null || echo 0)
+    if [ "${size:-0}" -gt 10485760 ]; then
+      if tail -c 2097152 "$f" > "$f.part"; then mv "$f.part" "$f"; fi
+    fi
+  fi
+  return 0
+}
+
+section "supervising the follower"
+say "follower log : $DATA_DIR/logs/follower.log"
+say "cloudflared  : pid $CF_PID (log: $DATA_DIR/logs/cloudflared.log)"
+say "this console : restarts and stops (Ctrl-C stops the gateway)"
+n=0
+backoff=1
+stalls=""   # epoch seconds of recent stall (11) exits, for the hour window
+while :; do
+  n=$((n + 1))
+  ensure_tunnel
+  trim_follower_log
+  started=$(date +%s)
+  code=0
+  "$AETHER" follow "${FOLLOW_ARGS[@]}" >> "$DATA_DIR/logs/follower.log" 2>&1 || code=$?
+  lived=$(( $(date +%s) - started ))
+  case "$code" in
+    0)
+      say "[gateway] follower exited 0 after ${lived}s — deliberate stop; gateway down"
+      exit 0
+      ;;
+    3|4|5|6|7)
+      say "[gateway] follower exited $code after ${lived}s — no restart fixes this (docs/ops/read-gateway.md); stopping"
+      exit "$code"
+      ;;
+    12)
+      say "[gateway] follower exited 12 (disk floor) after ${lived}s; waiting 30s for space"
+      sleep 30
+      ;;
+    11)
+      now=$(date +%s)
+      keep=""
+      for t in $stalls; do
+        if [ $((now - t)) -lt 3600 ]; then keep="$keep $t"; fi
+      done
+      stalls="$keep $now"
+      set -- $stalls
+      if [ "$#" -ge 4 ]; then
+        say "[gateway] four stall exits within an hour — stopping (the supervisor's own policy); see $DATA_DIR/logs/follower.log"
+        exit 11
+      fi
+      say "[gateway] follower stalled (exit 11) after ${lived}s; restart #$n in ${backoff}s"
+      sleep "$backoff"
+      backoff=$((backoff * 2))
+      if [ "$backoff" -gt 60 ]; then backoff=60; fi
+      ;;
+    *)
+      say "[gateway] follower exited $code after ${lived}s; restart #$n in ${backoff}s"
+      sleep "$backoff"
+      backoff=$((backoff * 2))
+      if [ "$backoff" -gt 60 ]; then backoff=60; fi
+      ;;
+  esac
+  # Five minutes of life between exits is progress, not a crash loop (the
+  # supervisor's PROGRESS_MS): the backoff starts over.
+  if [ "$lived" -ge 300 ]; then backoff=1; fi
+done

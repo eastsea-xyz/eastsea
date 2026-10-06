@@ -58,6 +58,8 @@ scripts/run-read-gateway.sh --apply \
   --network <네트워크의 network.json> --from-rpc <검증자 RPC>
 ```
 
+`--apply`는 뒤로 물러나지 않고 포그라운드의 감독 루프로 실행된다(아래 "감독과 재시작").
+
 - `--data`는 **게이트웨이 전용 디렉터리**여야 한다(기본 `/Volumes/workspace/eastsea-read-gateway`).
   검증자의 데이터 디렉터리를 공유하지 않는다.
 - 터널: named tunnel `eastsea-read`을 찾고 없으면 만든다. `cloudflared tunnel route dns`에 실패하면(존 DNS
@@ -69,7 +71,40 @@ scripts/run-read-gateway.sh --apply \
 
 - Cloudflare에 레이트 리밋 규칙 1개를 둔다: 같은 IP 10초 창(연구 §8(a)-3, [CF5]). 이 규칙은 대시보드에서
   수동으로 만든다(스크립트가 건드리지 않는다).
-- 로그는 `<data>/logs/`(`follower.log`, `cloudflared.log`), pid 파일이 함께 생긴다.
+- 로그는 `<data>/logs/`(`follower.log`, `cloudflared.log`, `cloudflared.pid`). follower는 러너의
+  직속 자식으로 감독된다(아래).
+
+## 감독과 재시작 (A7-2)
+
+`--apply`는 백그라운드로 떠나보내는 스크립트가 아니라 **감독 루프 그 자체**다. `aether follow`는 스스로
+종료할 때가 있다 — 스톨 와치독(10분간 검증된 진행 없음)이 전송 계층을 재시작하려 exit 11로 나가고,
+디스크 여유가 바닥나면 exit 12로 기다린다. `aether run`에는 in-process 슈퍼바이저
+(`crates/node/src/supervisor.rs`)가 있지만 게이트웨이는 `follow`를 직접 돌리므로 **재시작 소유자는 이
+러너**다. 예전의 nohup 방식은 아무도 재시작하지 않았다: 첫 스톨 종료 뒤 터널만 살아 있는 죽은 오리진이
+남았고, 업스트림이 회복돼도 게이트웨이는 돌아오지 않았다 (audit 7 A7-2).
+
+정책은 노드 슈퍼바이저와 같다:
+
+| follower 종료 코드 | 러너의 행동 |
+|---|---|
+| 0 | 의도적 정지로 보고 종료 (cloudflared도 함께 정리) |
+| 3 업그레이드 필요 · 4 저장소 · 5 검증자 없음 · 6 신원 · 7 잠김 | 재시작으로 고칠 수 없는 코드: 그 코드로 종료 — 운영자가 봐야 한다 |
+| 12 디스크 바닥 | 30초 기다렸다 재시작 |
+| 11 스톨 | 백오프(1s → 2배, 최대 60s) 후 재시작; **1시간 창에 4번이면 정지** |
+| 9 치명적 태스크 · 10 재생성 가능한 캐시 · 기타 | 백오프 후 재시작 |
+
+- 살아 있던 시간이 5분 이상이면 진행 중이었던 것으로 보고 백오프는 다시 1초부터(슈퍼바이저 `PROGRESS_MS`).
+- cloudflared가 죽었으면 follower 재시작 전에 터널을 다시 띄운다.
+- **매 재시작 동일한 인자**(`--public-read-only`, loopback bind)를 그대로 쓴다 — 게이트웨이가 꺼졌다가
+  더 넓게 열려 돌아오는 일은 없다.
+- 러너가 종료하면(정지 코드든 Ctrl-C든) cloudflared도 함께 정리된다.
+
+러너는 포그라운드에서 돌며 재시작·정지를 콘솔에 출력한다(`scripts/tests/test_read_gateway.py`가 이
+정책을 지킨다). 로그아웃 후에도 유지하려면:
+
+```bash
+nohup scripts/run-read-gateway.sh --apply ... >> /Volumes/workspace/eastsea-read-gateway/logs/runner.log 2>&1 &
+```
 
 ## 킨 뒤 확인 (1분 체크리스트)
 

@@ -670,6 +670,59 @@ fn a_follower_that_slept_jumps_to_a_certified_snapshot() {
     let _ = std::fs::remove_dir_all(&dir_fol);
 }
 
+/// Audit 7 A7-1: an archive node must never trade its history for speed. The
+/// ordinary follower above jumps to the certified snapshot and loses the gap
+/// (fine — history comes back from era files); an archive that jumps has no
+/// history index afterward, and era export — its whole purpose — fails
+/// forever. `follow::run` with `no_jump` replays the gap instead: slower, but
+/// the store ends up with the network's full history index and every block,
+/// which is what it exists to hold. `run_archive` also starts it with
+/// `--checkpoint` off, so a fresh archive replays from genesis too.
+#[test]
+fn an_archive_replays_the_gap_instead_of_snapshot_jumping() {
+    pin_snapshot_gate();
+    let (dir_src, dir_fol) = (tmp("archive-src"), tmp("archive-follower"));
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mut src = Node::start(&dir_src);
+    src.run_to(5_100, |h| h % 500 == 0);
+    let st = rpc_state(&src, None);
+    let (url, calls) = serve(&st, &rt, Duration::ZERO);
+
+    let follower = Node::start(&dir_fol);
+    let archive = std::sync::Arc::new(FinalityArchive::new(follower.chain.store()));
+    let task = rt.spawn(follow::run(
+        follower.chain.clone(),
+        std::sync::Arc::new(Upstream::Http(vec![url])),
+        set(),
+        archive,
+        None,
+        true, // no_jump: the archive policy
+    ));
+    wait_until("the archive replays the gap to the tip", || {
+        follower.chain.finalized_height() == 5_100
+    });
+    task.abort();
+    assert!(
+        calls.lock().unwrap().iter().all(|m| m != "aether_snapshot"),
+        "an archive never asks for a snapshot"
+    );
+    {
+        let theirs = src.chain.lock().history_index.as_ref().expect("the source built one").eras.clone();
+        let g = follower.chain.lock();
+        assert!(g.blocks.contains_key(&1), "replay keeps the early blocks");
+        let index = g.history_index.as_ref().expect("a full replay carries the history index");
+        assert_eq!(index.eras, theirs, "the same era roots as the network");
+    }
+    assert_eq!(
+        follower.chain.lock().finalized.state.root(),
+        src.chain.lock().finalized.state.root(),
+        "the same state root as the network"
+    );
+    drop((src, follower, st));
+    let _ = std::fs::remove_dir_all(&dir_src);
+    let _ = std::fs::remove_dir_all(&dir_fol);
+}
+
 /// A snapshot that does not check against the certified chain — a state the
 /// network never finalized — is refused, and the follower replays instead.
 #[test]

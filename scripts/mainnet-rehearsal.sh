@@ -29,7 +29,8 @@
 #   - blocks finalize and the four validators agree on the state root;
 #   - empty blocks are quiet under history v2 (no statement, root unchanged);
 #   - no premine and no faucet: dev accounts are unfunded, the faucet RPC refuses;
-#   - a submitted block proof is accepted and earns a positive proof reward;
+#   - a paid transfer lands, and the block proof a follower makes of it is
+#     accepted and earns a positive proof reward;
 #   - the first epochs distribute exactly: the node pool of an epoch is the
 #     epoch's issuance halves (rewards::issuance) and a fresh Mac's operator gets
 #     pool × k × WARMUP_STEPS / (MAX_SHARE × FULL) for the k slots it answered
@@ -307,7 +308,19 @@ else
 fi
 
 echo "== proof reward (a produced proof must be accepted and paid)"
-deadline=$((SECONDS + 120))
+# Under history v2 only a block with transactions records a statement to prove:
+# beacon answers and free-lane registrations are system writes, so until now
+# the chain has had nothing to prove (the 2026-10-06 failure: c1 proved
+# nothing for 800 blocks, silently). One paid transfer from an operator's node
+# reward gives c1 a block to prove; the proof then goes through c2 to a
+# validator and must be paid.
+if sent=$("$A" send --rpc "http://127.0.0.1:${rpcp[0]}" --from-dev 2 --to "${ops[1]}" --value 1 --wait 2>&1) \
+  && [[ "$sent" == *"success=true"* ]]; then
+  ok "an operator paid a transfer from its node reward (a block with a statement to prove)"
+else
+  bad "the operator's transfer did not land: $sent"
+fi
+deadline=$((SECONDS + 600))
 proof_reward=""
 while [ "$SECONDS" -lt "$deadline" ]; do
   raw=$(rpc aether_rewards "[\"$founder\",10000]" "${rpcp[0]}")
@@ -328,7 +341,7 @@ done
 if [ -n "$proof_reward" ]; then
   ok "$proof_reward for the founder (kind=proof, positive amount, paid after proven height)"
 else
-  bad "no paid proof reward for founder; prover and verifier logs: $D/g1.log"
+  bad "no paid proof reward for founder; prover $D/c1.log, verifier $D/g1.log; c1 prover status: $(rpc aether_proverStatus '[]' "${rpcp[7]}" | head -c 800)"
 fi
 
 echo "== founder reserve keys stay out of a full (4-seat) committee"

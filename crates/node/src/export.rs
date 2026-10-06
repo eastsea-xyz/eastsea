@@ -327,6 +327,11 @@ struct ExportState {
     version: u32,
     args: String,
     eras: BTreeMap<u64, Exported>,
+    /// Where the next pass's scan starts, as an offset into the era-file
+    /// list (pre-audit 7b PA7B-08). Old state files predate it and default
+    /// to 0 (oldest-first, the old behavior) for one pass.
+    #[serde(default)]
+    scan: u64,
 }
 
 /// Export every sealed era this node keeps to `args.dir`. Each era is fully
@@ -362,12 +367,24 @@ pub fn once(chain: &Chain, args: &ExportArgs) -> Result<usize, String> {
         .ok()
         .and_then(|b| serde_json::from_slice::<ExportState>(&b).ok())
         .filter(|s| s.version == STATE_VERSION && s.args == args_fp)
-        .unwrap_or(ExportState { version: STATE_VERSION, args: args_fp, eras: BTreeMap::new() });
+        .unwrap_or(ExportState { version: STATE_VERSION, args: args_fp, eras: BTreeMap::new(), scan: 0 });
+    // Fair failure isolation between passes (pre-audit 7b PA7B-08): a pass
+    // always began at the oldest era, so a persistently damaged prefix
+    // consumed every pass's processing budget before the healthy eras behind
+    // it — eight unreadable early eras starved the rest forever. Each pass
+    // now starts where the previous one's heavy work stopped, so failures
+    // rotate through the list instead of stacking at the front.
+    let total = files.len();
+    let scan_start = (state.scan as usize) % total;
+    files.rotate_left(scan_start);
     let mut written = 0usize;
     let mut index = Vec::with_capacity(files.len());
     let mut processed = 0usize;
     let mut kept = BTreeSet::new();
-    for (era, path) in files {
+    // The rotated offset of the last era this pass spent budget on; the
+    // next pass's scan starts after it (PA7B-08).
+    let mut last_heavy: Option<usize> = None;
+    for (i, (era, path)) in files.into_iter().enumerate() {
         let Some(root) = roots.get(era as usize).copied() else {
             tracing::warn!(era, "sealed era with no root in the history index; skipped");
             continue;
@@ -408,6 +425,7 @@ pub fn once(chain: &Chain, args: &ExportArgs) -> Result<usize, String> {
             continue;
         }
         processed += 1;
+        last_heavy = Some(i);
         // The canonical source is the only origin of an export (pre-audit 7
         // PA7-09): the old code hashed the destination, reread it and
         // compared the two — the destination verifying itself — so a
@@ -510,6 +528,14 @@ pub fn once(chain: &Chain, args: &ExportArgs) -> Result<usize, String> {
     // Eras whose sources are gone (pruned, moved) leave the cursor with
     // them: the file set and its record stay in step.
     state.eras.retain(|e, _| kept.contains(e));
+    // Where the next pass picks up (PA7B-08): after the last era this one
+    // spent budget on, so a failing prefix hands the budget over. A pass
+    // with no heavy work at all (everything already exported) keeps the
+    // cursor where it was — there is nothing to hand over.
+    state.scan = match last_heavy {
+        Some(i) => ((scan_start + i + 1) % total) as u64,
+        None => state.scan,
+    };
     let index_doc = json!({
         "version": 1,
         "chain_id": chain_id,
@@ -659,6 +685,12 @@ mod tests {
     /// exporter's whole input. The same synthetic chain era's own tests
     /// build, trimmed to what `once` reads.
     fn export_fixture(tag: &str) -> (Chain, ExportArgs) {
+        export_fixture_n(tag, 2)
+    }
+
+    /// The same fixture with `eras` sealed eras (the starvation test of
+    /// PA7B-08 needs more than one pass's budget of them).
+    fn export_fixture_n(tag: &str, eras: u64) -> (Chain, ExportArgs) {
         use crate::block::{Block, Context, Payload, PublicKey};
         use aether_hash::ChainHasher;
         use aether_state::mmr::{EraIndex, Mmr};
@@ -679,7 +711,7 @@ mod tests {
         let genesis = Block::genesis(7781, B256::repeat_byte(1));
         let (mut blocks, mut mmrs) = (vec![genesis.clone()], vec![Mmr::default()]);
         let mut mmr = Mmr::default().append(&h, 0, &digest_of(&genesis.digest()));
-        for height in 1..2 * ERA_LEN {
+        for height in 1..eras * ERA_LEN {
             mmrs.push(mmr.clone());
             let prev = blocks.last().unwrap();
             let state_root = B256::from(digest_of(&commonware_cryptography::Sha256::hash(&[height.to_be_bytes().as_slice()])));
@@ -705,7 +737,7 @@ mod tests {
         }
         mmrs.push(mmr);
         let mut roots = Vec::new();
-        for era in 0..2u64 {
+        for era in 0..eras {
             let (a, b) = ((era * ERA_LEN) as usize, ((era + 1) * ERA_LEN) as usize);
             let bytes = crate::era::write(&mmrs[a], &blocks[a..b]).unwrap();
             std::fs::write(store.era_dir().join(crate::era::file_name(era)), &bytes).unwrap();
@@ -807,6 +839,32 @@ mod tests {
         // And the damage stays contained: era 0's copy is still the canonical bytes.
         let src0 = std::fs::read(store.era_dir().join(crate::era::file_name(0))).unwrap();
         assert_eq!(std::fs::read(args.dir.join(crate::era::file_name(0))).unwrap(), src0);
+        let _ = std::fs::remove_dir_all(args.dir.parent().unwrap());
+    }
+
+    /// A persistently damaged prefix cannot starve the healthy eras behind
+    /// it (pre-audit 7b PA7B-08): every pass restarted its scan at the
+    /// oldest era, so one pass's budget of unreadable early eras consumed
+    /// the whole of every pass — eight damaged eras meant the healthy ones
+    /// behind them never exported, every 30 seconds, forever. The scan
+    /// cursor now hands over to the era after the last one a pass spent
+    /// budget on, so failures rotate through the list: pass two starts
+    /// where pass one's heavy work stopped, and eras 8 and 9 export.
+    #[test]
+    fn a_damaged_prefix_rotates_the_scan_instead_of_starving_later_eras() {
+        let (chain, args) = export_fixture_n("starve", 10);
+        let store = chain.store().unwrap();
+        // Exactly one pass's budget of damaged sources; eras 8 and 9 stay
+        // healthy behind them. The damage is verifiable-against-the-root
+        // garbage: each era still costs the pass its budget before failing.
+        for era in 0..8u64 {
+            std::fs::write(store.era_dir().join(crate::era::file_name(era)), b"damaged beyond repair").unwrap();
+        }
+        once(&chain, &args).unwrap(); // pass 1: the budget goes to 0..8
+        once(&chain, &args).unwrap(); // pass 2: starts after pass 1's heavy work
+        assert!(args.dir.join(crate::era::file_name(8)).exists(),
+            "era 8 exports on the second pass even though eras 0-7 stay damaged");
+        assert!(args.dir.join(crate::era::file_name(9)).exists(), "era 9 too");
         let _ = std::fs::remove_dir_all(args.dir.parent().unwrap());
     }
 }

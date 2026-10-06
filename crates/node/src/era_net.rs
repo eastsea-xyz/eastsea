@@ -71,20 +71,42 @@ fn kept_file(store: &crate::store::Store, era: u64) -> Option<(PathBuf, u64, Sys
     Some((path, m.len(), m.modified().ok()?))
 }
 
+/// One hash pass at a time (audit 7 A7-6): the cache mutex is released while
+/// a file is hashed, so overlapping misses each streamed the whole file
+/// independently — on the public gateway a run of uncached eras stacked
+/// whole-file hash passes while every other history route refused excess.
+/// A caller that misses the cache takes this gate, re-checks the cache (the
+/// pass it waited for may have filled it), and only then reads the file.
+/// Different files serialize too: the pass itself is the work being gated.
+static HASH_GATE: Mutex<()> = Mutex::new(());
+
+/// A still-valid cache hit for this file, moved to the MRU end; a stale
+/// entry (length or mtime moved) is dropped so the caller recomputes.
+fn cached_hash(path: &Path, len: u64, modified: SystemTime) -> Option<String> {
+    let mut cache = ERA_INFO.lock().expect("era info cache");
+    let i = cache.iter().position(|(p, _)| p == path)?;
+    if cache[i].1.len != len || cache[i].1.modified != modified {
+        cache.remove(i); // the file moved on: recompute
+        return None;
+    }
+    let hash = cache[i].1.blake3.clone();
+    let entry = cache.remove(i); // most recently used last
+    cache.push(entry);
+    Some(hash)
+}
+
 /// The era file's BLAKE3, hashed in bounded windows (never the whole file in
 /// memory) and cached per path while its length and mtime hold.
 fn blake3_of(path: &Path, len: u64, modified: SystemTime) -> Option<String> {
-    {
-        let mut cache = ERA_INFO.lock().expect("era info cache");
-        if let Some(i) = cache.iter().position(|(p, _)| p == path) {
-            if cache[i].1.len == len && cache[i].1.modified == modified {
-                let hash = cache[i].1.blake3.clone();
-                let entry = cache.remove(i); // most recently used last
-                cache.push(entry);
-                return Some(hash);
-            }
-            cache.remove(i); // the file moved on: recompute
-        }
+    if let Some(hit) = cached_hash(path, len, modified) {
+        return Some(hit);
+    }
+    // Single flight: wait for any in-flight pass, then re-check — a waiter
+    // for this very file returns the hash the pass just filled in instead of
+    // streaming the file again (audit 7 A7-6).
+    let _pass = HASH_GATE.lock().expect("era hash gate");
+    if let Some(hit) = cached_hash(path, len, modified) {
+        return Some(hit);
     }
     let mut f = std::fs::File::open(path).ok()?;
     let mut hasher = blake3::Hasher::new();
@@ -98,6 +120,9 @@ fn blake3_of(path: &Path, len: u64, modified: SystemTime) -> Option<String> {
     }
     let hash = hasher.finalize().to_hex().to_string();
     let mut cache = ERA_INFO.lock().expect("era info cache");
+    if let Some(i) = cache.iter().position(|(p, _)| p == path) {
+        cache.remove(i); // a waiter may have pushed the same path meanwhile
+    }
     if cache.len() >= ERA_CACHE {
         cache.remove(0);
     }
@@ -275,5 +300,35 @@ mod tests {
         assert_eq!(second["size"], json!(longer.len()));
         assert_ne!(second["blake3"], first["blake3"]);
         assert_eq!(second["blake3"], json!(crate::rpc::blake3_hex(&longer)));
+    }
+
+    /// Audit 7 A7-6, the coalescing point itself: a miss that waits at the
+    /// hash gate returns the entry the pass it waited for filled — without
+    /// reading the file again. The first pass is simulated by holding the
+    /// gate and filling the cache while the waiter stands at it; the file is
+    /// then DELETED, so any answer at all proves the waiter never opened it
+    /// (the first lookup missed, before the fill).
+    #[test]
+    fn a_waited_miss_returns_the_hash_the_first_pass_filled() {
+        let s = store("gate");
+        let bytes = file(&s, 21, 4096);
+        let path = s.era_dir().join(era::file_name(21));
+        let (len, modified) = (bytes.len() as u64, std::fs::metadata(&path).unwrap().modified().unwrap());
+        // The first pass holds the gate (hashing some other file).
+        let gate = HASH_GATE.lock().expect("era hash gate");
+        let waiter = std::thread::spawn({
+            let path = path.clone();
+            move || blake3_of(&path, len, modified)
+        });
+        // The waiter misses the (empty) cache and blocks at the gate; the
+        // first pass finishes — the cache now holds this file's hash.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        ERA_INFO.lock().expect("era info cache")
+            .push((path.clone(), CachedEra { len, modified, blake3: "first-pass".into() }));
+        std::fs::remove_file(&path).unwrap();
+        drop(gate);
+        // The waiter wakes, re-checks the cache, and answers the filled
+        // hash. With the file gone, re-hashing would answer None.
+        assert_eq!(waiter.join().unwrap().as_deref(), Some("first-pass"));
     }
 }

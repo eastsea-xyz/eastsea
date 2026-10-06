@@ -1,0 +1,9 @@
+[profile.default]
+src = "src"
+out = "out"
+cache_path = "cache"
+solc_version = "0.8.24"
+evm_version = "paris"
+optimizer = true
+optimizer_runs = 200
+remappings = ["openzeppelin/=lib/openzeppelin-contracts/contracts/"]

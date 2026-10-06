@@ -1,0 +1,16 @@
+[package]
+name = "aether-contracts-onchain"
+description = "Foundry contract fixtures exercised by the EastSea block executor"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+aether-execution.workspace = true
+aether-types.workspace = true
+aether-crypto.workspace = true
+aether-state.workspace = true
+alloy-primitives.workspace = true
+alloy-sol-types = { version = "=1.7.3", default-features = false }
+serde_json.workspace = true

@@ -183,12 +183,11 @@ export async function runFlows(ctx) {
   await step('transfer', 'fund dev4 (7702 account)', async () => must('fund4', await call({ dev: 1, to: D[4], data: '0x', value: 10n ** 21n })));
   await step('call', 'EastSeaAccount 7702: aether batch dev4 → dev2,dev3', async () =>
     must('batch', await cliTx('batch', ['--from-dev', '4', '--to', `${D[2]},${D[3]}`, '--value', String(10n ** 15n), '--wait'])));
-  // Finding: once an account is delegated to EastSeaAccount (the wallet's own
-  // batch/guardian features do this), the wallet transfer path's fixed
-  // 21,000 exec gas cannot pay for the delegated receive(): included, failed,
-  // fee charged. Recorded as an expected revert so the report carries it.
-  await expectRevert('aether send (21,000 gas) to the 7702-delegated dev4', async () =>
-    send({ dev: 1, to: D[4], value: 10n ** 15n }));
+  // Regression: once an account is delegated to EastSeaAccount (the wallet's
+  // own batch/guardian features do this), a 21,000-gas transfer to it fails;
+  // the fixed transfer path signs enough for the delegated receive().
+  await step('call', 'aether send (wallet transfer path) to the 7702-delegated dev4', async () =>
+    must('send', await send({ dev: 1, to: D[4], value: 10n ** 15n })));
   await step('call', 'EastSeaAccount 7702: aether set-guardian dev4 ← dev5', async () => {
     const r = await cliTx('set-guardian', ['--from-dev', '4', '--guardian-dev', '5', '--delay', '3600']);
     // set-guardian waits itself; a receipt-less success still counts if the CLI exited 0
@@ -244,12 +243,12 @@ export async function runFlows(ctx) {
     deployed['core/EastSeaVault'] = r.contractAddress;
     return r;
   });
-  // Finding (docs/research/contracts-live-2026-10-06.md): the wallet's
-  // transfer path signs exactly 21,000 exec gas (`aether send`, ffi
-  // `prepare_transfer`), so a plain send to a contract whose receive() runs
-  // any code is included and fails out of gas, fee charged.
-  await expectRevert('aether send (21,000 gas transfer path) to EastSeaVault receive()', async () =>
-    send({ dev: 1, to: deployed['core/EastSeaVault'], value: 10n ** 15n }));
+  // Regression (docs/research/contracts-live-2026-10-06.md): the wallet
+  // transfer path used to sign exactly 21,000 exec gas, so a plain send to a
+  // contract whose receive() runs any code was included and failed out of
+  // gas, fee charged. Fixed wallets size the limit from the recipient's code.
+  await step('call', 'aether send (wallet transfer path) to EastSeaVault receive()', async () =>
+    must('send', await send({ dev: 1, to: deployed['core/EastSeaVault'], value: 10n ** 15n })));
   await step('call', 'EastSeaVault deposit + owner-signed spend', async () => {
     must('deposit', await call({ dev: 1, to: deployed['core/EastSeaVault'], data: '0x', value: 3n * 10n ** 15n }));
     const amount = 10n ** 15n;
@@ -354,9 +353,13 @@ export async function runFlows(ctx) {
     deployed['core/TokenVesting'] = r.contractAddress;
     return r;
   });
+  // Cliff 300 s / duration 600 s: long enough that a B5 budget wait before
+  // the create (its start is encoded before any retry) cannot carry the
+  // "before cliff" claim past the cliff, short enough that the late claim at
+  // the end of even a FAST run finds the stream vested.
   await step('call', 'TokenVesting approve + create stream', async () => {
     must('approve', await call({ dev: 1, to: deployed['support/TestToken'], data: enc('support/TestToken', 'approve', deployed['core/TokenVesting'], 10n ** 18n) }));
-    return must('create', await call({ dev: 1, to: deployed['core/TokenVesting'], data: enc('core/TokenVesting', 'create', deployed['support/TestToken'], D[2], 10n ** 17n, BigInt(nowSec()), 20n, 40n, false) }));
+    return must('create', await call({ dev: 1, to: deployed['core/TokenVesting'], data: enc('core/TokenVesting', 'create', deployed['support/TestToken'], D[2], 10n ** 17n, BigInt(nowSec()), 300n, 600n, false) }));
   });
   await expectRevert('TokenVesting.claim before cliff', async () => call({ dev: 2, to: deployed['core/TokenVesting'], data: enc('core/TokenVesting', 'claim', 0n) }));
   await expectRevert('TokenVesting.create zero duration', async () => call({ dev: 1, to: deployed['core/TokenVesting'], data: enc('core/TokenVesting', 'create', deployed['support/TestToken'], D[2], 1n, BigInt(nowSec()), 0n, 0n, false) }));
@@ -572,8 +575,9 @@ export async function runFlows(ctx) {
   });
   await step('call', 'OnchainNFT mint + transfer + view', async () => {
     must('mint', await call({ dev: 1, to: deployed['toolbox/OnchainNFT'], data: enc('toolbox/OnchainNFT', 'mint', D[2], 1, 2, 3, 4) }));
-    must('transfer', await call({ dev: 2, to: deployed['toolbox/OnchainNFT'], data: enc('toolbox/OnchainNFT', 'safeTransferFrom(address,address,uint256)', D[2], D[3], 1n) }));
-    return { ok: true, tokenURI: await view('toolbox/OnchainNFT', 'tokenURI', [1n]) };
+    const t = must('transfer', await call({ dev: 2, to: deployed['toolbox/OnchainNFT'], data: enc('toolbox/OnchainNFT', 'safeTransferFrom(address,address,uint256)', D[2], D[3], 1n) }));
+    const uri = await view('toolbox/OnchainNFT', 'tokenURI', [1n]);
+    return { ...t, tokenURILength: uri.length };
   });
   await expectRevert('OnchainNFT.mint by non-creator', async () => call({ dev: 2, to: deployed['toolbox/OnchainNFT'], data: enc('toolbox/OnchainNFT', 'mint', D[2], 1, 1, 1, 1) }));
 
@@ -686,7 +690,7 @@ export async function runFlows(ctx) {
   await expectRevert('NameGatedDrop.claim without primary name', async () => call({ dev: 3, to: deployed['toolbox/NameGatedDrop'], data: enc('toolbox/NameGatedDrop', 'claim') }));
   await expectRevert('NameGatedDrop.claim twice', async () => call({ dev: 2, to: deployed['toolbox/NameGatedDrop'], data: enc('toolbox/NameGatedDrop', 'claim') }));
 
-  // Late claims that only needed time: TokenVesting (cliff 20 s, duration 40)
+  // Late claims that only needed time: TokenVesting (cliff 300 s, duration 600)
   // and TokenLocker (unlock at +40 s) matured during the DAO/timelock waits.
   await step('call', 'TokenVesting.claim vested half', async () =>
     must('claim', await call({ dev: 2, to: deployed['core/TokenVesting'], data: enc('core/TokenVesting', 'claim', 0n) })));

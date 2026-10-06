@@ -111,7 +111,7 @@ try {
   const tr = pick('MerkleDistributor fund + sponsored claim') || steps.find((s) => s.ok && s.hash && s.logs > 0 && !s.contractAddress);
   if (tr) {
     const t = await open(`/tx/${tr.hash}`, 'tx-transfer');
-    check('token tx decodes a Transfer event (pill + from/to)', /Events \(\d+\)/.test(t) && /Transfer/.test(t) && /from 0x/.test(t), tr.label);
+    check('token tx decodes a Transfer event (pill + from/to)', /Events \(\d+\)/.test(t) && /Transfer/.test(t) && /from\s+0x/.test(t), tr.label);
   }
 
   // 5b. The five most user-facing examples: the deploy tx and the main user
@@ -125,16 +125,19 @@ try {
   ];
   for (const [depLabel, callLabel] of userFacing) {
     const d = steps.find((x) => x.label === depLabel && x.hash);
-    const c = steps.find((x) => x.label === callLabel && x.hash);
+    const short = depLabel.split('/').pop().split(' ')[0];
+    const c = steps.find((x) => x.label === callLabel && x.hash)
+      ?? steps.find((x) => x.hash && x.kind !== 'deploy' && x.label?.startsWith(short));
     for (const [what, st] of [['deploy', d], ['call', c]]) {
       if (!st) { check(`${depLabel} ${what}: step recorded`, false, 'no tx in results'); continue; }
       const name = `${depLabel.split('/').pop().split(' ')[0]}-${what}`;
       const t = await open(`/tx/${st.hash}`, name);
+      const flat = t.replace(/(\d),(?=\d{3})/g, '$1'); // the page groups digits: 3,835
       const wantStatus = st.success === true ? /success/ : /failed/;
       const logsM = t.match(/Logs\s*(\d+)/);
-      check(`${depLabel} ${what}: tx page status + block ${st.height}`, wantStatus.test(t) && t.includes(String(st.height)), st.label);
+      check(`${depLabel} ${what}: tx page status + block ${st.height}`, wantStatus.test(t) && new RegExp(`Block\\s+${st.height}\\b`).test(flat), st.label);
       check(`${depLabel} ${what}: logs ${st.logs ?? 0} match the receipt`, !!logsM && Number(logsM[1]) === Number(st.logs ?? 0), logsM?.[1]);
-      if (what === 'deploy') check(`${depLabel} deploy: Contract created ${st.contractAddress?.slice(0, 10)}`, /Contract created/.test(t) && t.toLowerCase().includes((st.contractAddress || 'x').slice(2, 8)), '');
+      if (what === 'deploy') check(`${depLabel} deploy: Contract created ${st.contractAddress?.slice(0, 10)}`, /Contract created/.test(t) && t.toLowerCase().includes((st.contractAddress || 'x').slice(0, 6)) && t.toLowerCase().includes((st.contractAddress || 'x').slice(-4)), '');
     }
   }
 

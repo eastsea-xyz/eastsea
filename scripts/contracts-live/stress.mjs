@@ -25,6 +25,11 @@ const TRANSFERS = Number(process.env.STRESS_TRANSFERS || 200);
 const DEPLOYS = Number(process.env.STRESS_DEPLOYS || 20);
 const WAVE = Number(process.env.STRESS_WAVE || 20);
 const DEPLOYERS = Number(process.env.STRESS_DEPLOYERS || 5);
+// The node keeps at most 64 pending transactions per sender (chain.rs
+// MAX_PER_SENDER); one sender would measure that cap, not B5. The transfers
+// are spread over dev1..dev4 (≤ 50 each), so every one of them reaches the
+// state-budget check.
+const SENDERS = Number(process.env.STRESS_SENDERS || 4);
 const RPC_URL = process.env.AETHER_RPC || 'http://127.0.0.1:8645';
 // EastSeaAccount runtime bytecode from the fixture: a "large deploy" that also
 // creates a state slot per contract. Read from the repo's artifacts copy.
@@ -54,7 +59,7 @@ async function main() {
   const submitWave = async (items, waveIdx) => {
     const start = Date.now();
     const runs = await Promise.all(items.map(async (it) => {
-      const args = ['send', '--rpc', RPC_URL, '--from-dev', '1', '--to', it.addr, '--value', '1', '--nonce', String(it.nonce)];
+      const args = ['send', '--rpc', RPC_URL, '--from-dev', String(it.dev), '--to', it.addr, '--value', '1', '--nonce', String(it.nonce)];
       const r = await cli(args, { timeoutMs: 60_000 });
       const hash = r.out.match(/tx (0x[0-9a-f]{64})/)?.[1] ?? null;
       return { ...it, code: r.code, out: r.out.trim().split('\n').slice(-2).join(' | '), err: r.err.trim().split('\n').slice(-2).join(' | '), hash, waveStartMs: start, submittedMs: Math.round(r.marks.submitted ?? r.ms) };
@@ -77,7 +82,16 @@ async function main() {
 
   let waveIdx = 0;
   const plan = [];
-  for (let i = 0; i < TRANSFERS; i++) plan.push({ kind: 'transfer', addr: freshAddr(i), nonce: nonce++ });
+  const senderNonce = { 1: nonce };
+  for (let d = 2; d <= SENDERS; d++) {
+    const r = await cli(['send', '--rpc', RPC_URL, '--from-dev', '1', '--to', devAddress(d), '--value', String(10n ** 21n), '--nonce', String(senderNonce[1]++), '--wait']);
+    if (r.code !== 0) throw new Error(`funding sender dev${d}: ${r.err.trim()}`);
+    senderNonce[d] = await nonceOf(devAddress(d));
+  }
+  for (let i = 0; i < TRANSFERS; i++) {
+    const dev = 1 + (i % SENDERS);
+    plan.push({ kind: 'transfer', dev, addr: freshAddr(i), nonce: senderNonce[dev]++ });
+  }
   const deployRuns = (async () => {
     const per = Math.ceil(DEPLOYS / deployers.length);
     const out = await Promise.all(deployers.map(async (d, k) => {
@@ -115,7 +129,7 @@ async function main() {
   }
   const hFinal = await height();
   const pendingAfterDrain = (await rpc('aether_status').catch(() => ({}))).mempool ?? null;
-  const nFinal = await nonceOf(devAddress(1));
+  const nFinal = await nonceOf(devAddress(1)); // dev1 only (the other senders are in the receipts)
   log(`drained: height ${h0}→${hFinal}, dev1 nonce ${n0}→${nFinal}, receipts ${seen.size}/${subs.filter((s) => s.hash).length}`);
 
   // ---------------------------------------------------------------- classify
@@ -124,7 +138,7 @@ async function main() {
     const hit = s.hash ? seen.get(s.hash) : undefined;
     const rec = hit?.r;
     receipts.push({
-      kind: s.kind, nonce: Number(s.nonce), to: s.addr ?? null,
+      kind: s.kind, dev: s.dev ?? 1, nonce: Number(s.nonce), to: s.addr ?? null,
       outcome: !s.hash && s.code !== 0 ? 'client-refused'
         : !s.hash ? 'no-hash'
         : rec ? (rec.receipt.success === true ? 'included' : 'in-block-refused') : 'never-included',

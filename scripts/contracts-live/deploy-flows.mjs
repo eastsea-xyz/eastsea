@@ -84,13 +84,31 @@ async function main() {
   const deployed = Object.entries(ctx.deployed || {}).filter(([, a]) => typeof a === 'string' && a.startsWith('0x'));
   const latest = await height();
   const logCounts = {};
+  // The node scans at most the newest 2,000 blocks per eth_getLogs query
+  // (crates/node/src/rpc.rs) and clamps a wider ask without saying so, so a
+  // whole-run query silently misses everything older. Walk the run in
+  // 2,000-block windows, the way a correct client must.
+  const WINDOW = 2000;
   for (const [name, addr] of deployed) {
     try {
-      const logs = await getLogs({ fromBlock: '0x1', toBlock: '0x' + latest.toString(16), address: addr });
-      logCounts[name] = Array.isArray(logs) ? logs.length : 0;
+      let n = 0;
+      for (let from = 1; from <= latest; from += WINDOW) {
+        const to = Math.min(latest, from + WINDOW - 1);
+        const logs = await getLogs({ fromBlock: '0x' + from.toString(16), toBlock: '0x' + to.toString(16), address: addr });
+        n += Array.isArray(logs) ? logs.length : 0;
+      }
+      logCounts[name] = n;
     } catch (e) {
       logCounts[name] = `error: ${e.message}`;
     }
+  }
+  // The silent clamp itself, recorded: one whole-range ask for the first
+  // contract that logged, against the windowed total.
+  const probe = deployed.find(([name]) => typeof logCounts[name] === 'number' && logCounts[name] > 0);
+  if (probe) {
+    const wide = await getLogs({ fromBlock: '0x1', toBlock: '0x' + latest.toString(16), address: probe[1] }).catch((e) => ({ error: e.message }));
+    ctx.getLogsClamp = { contract: probe[0], blocks: latest, windowed: logCounts[probe[0]], wholeRange: Array.isArray(wide) ? wide.length : wide };
+    log(`eth_getLogs whole-range ask for ${probe[0]}: ${JSON.stringify(ctx.getLogsClamp)}`);
   }
   const withLogs = Object.values(logCounts).filter((n) => typeof n === 'number' && n > 0).length;
   log(`eth_getLogs: ${withLogs}/${deployed.length} deployed contracts emitted events`);
@@ -117,6 +135,7 @@ async function main() {
       budgetRetries: r.budgetRetries, budgetWaitMs: r.budgetWaitMs, budgetRefusal: r.budgetRefusal,
     })),
     logCounts,
+    getLogsClamp: ctx.getLogsClamp ?? null,
     addresses: ctx.deployed,
     dev: ctx.addresses && ctx.addresses.dev,
   }, null, 2));

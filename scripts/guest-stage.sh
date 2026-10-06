@@ -30,6 +30,14 @@
 # The caller's build must remap the stage prefix (`aether_guest_stage_remap`) to
 # keep the path out of the ELF's panic locations.
 #
+# The fork is part of the stage too (checklist B7): <stage>/aether-jolt holds a
+# copy of the pinned Jolt·Akita revisions (see scripts/jolt-fork.lock), and the
+# staged apps/prover manifests point at it by the stage's absolute path, so the
+# metadata hash — and with it the program id — depends on the fork's *contents*
+# and never on where the fork or the checkout live. AETHER_JOLT selects the
+# fork to snapshot (default: the canonical checkout path); a fork whose HEAD or
+# archive hash differs from the pin is refused, not built.
+#
 # Only cargo's *inputs* go through here: outputs stay in the real tree
 # (`<stage>/apps/prover/target` and `target-guest` are links into the checkout),
 # which is why a build that runs through the stage leaves no copy behind. A build
@@ -43,6 +51,139 @@ set -euo pipefail
 # per-checkout path would be hashed into the metadata again.
 aether_guest_stage_path() {
   printf '%s\n' "${AETHER_GUEST_STAGE:-/tmp/aether-guest-stage}"
+}
+
+# --- The Jolt fork: pinned revision, staged copy (checklist B7) ------------
+#
+# The proving program id used to follow the fork's location too: the manifests
+# referenced /Volumes/workspace/aether-jolt absolutely, so a builder whose fork
+# lived anywhere else either failed to read it or hashed a different path into
+# the metadata (a second program id for the same source). The stage now holds
+# its own copy: the manifests it hands cargo point at <stage>/aether-jolt, and
+# the copy is snapshotted by commit from $AETHER_JOLT and verified against
+# scripts/jolt-fork.lock. The id then depends on the fork's contents — its
+# pinned commits — and on nothing else about where anyone keeps it.
+# AETHER_JOLT_LOCK overrides the pin file (tests use it with a fixture).
+
+aether_jolt_source() {
+  printf '%s\n' "${AETHER_JOLT:-/Volumes/workspace/aether-jolt}"
+}
+
+_aether_jolt_lock_path() {
+  printf '%s\n' "${AETHER_JOLT_LOCK:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/jolt-fork.lock}"
+}
+
+# Echo the pinned value for $1 (jolt-commit, jolt-archive-sha256, akita-commit,
+# akita-archive-sha256); fails when the lock file or the key is missing.
+_aether_jolt_pin() {
+  local lock value
+  lock="$(_aether_jolt_lock_path)"
+  [ -f "$lock" ] || { echo "guest-stage: Jolt fork pin not found: $lock" >&2; return 1; }
+  value="$(grep -E "^$1=" "$lock" | tail -n 1 | cut -d= -f2-)"
+  [ -n "$value" ] || { echo "guest-stage: no '$1=' in $lock" >&2; return 1; }
+  printf '%s\n' "$value"
+}
+
+# The jolt CLI drives the guest build, so it must be built from the pinned fork
+# revision or a different CLI could change the guest ELF. Its --version names
+# the commit it was built from (the fork's build.rs reads git), abbreviated to
+# however many digits that build's git chose — compare over the CLI's own
+# length so a small clone (shorter abbreviations) still matches the pin.
+aether_jolt_cli_check() {
+  local cmd="$1" want out hash
+  local re='\(([0-9a-f]{7,})[) ]'
+  want="$(_aether_jolt_pin jolt-commit)" || return 1
+  if ! out="$("$cmd" --version 2>&1)"; then
+    echo "guest-stage: cannot run the jolt CLI: $cmd --version: $out" >&2
+    return 1
+  fi
+  if ! [[ $out =~ $re ]]; then
+    echo "guest-stage: $cmd --version does not name a commit: $out" >&2
+    echo "  install the pinned CLI: cargo install --path $(aether_jolt_source)/jolt --locked" >&2
+    return 1
+  fi
+  hash="${BASH_REMATCH[1]}"
+  if [ "${want:0:${#hash}}" != "$hash" ]; then
+    echo "guest-stage: the jolt CLI is from commit $hash but the fork is pinned at $want" >&2
+    echo "  install the pinned CLI: cargo install --path $(aether_jolt_source)/jolt --locked" >&2
+    return 1
+  fi
+}
+
+# Verify the fork at $1 against the pin and snapshot the pinned revisions into
+# <stage>/aether-jolt (git archive: the committed contents only, so a dirty
+# worktree cannot leak into the program id). Extraction is skipped when the
+# stage already holds exactly this commit pair; the commits and their archive
+# hashes are still verified, so a fork that moved is refused either way.
+aether_guest_stage_fork() {
+  local fork="$1" stage dir marker want_j want_a have sum
+  stage="$(aether_guest_stage_path)"
+  dir="$stage/aether-jolt"
+  marker="$dir/.aether-stage-snapshot"
+  want_j="$(_aether_jolt_pin jolt-commit)" || return 1
+  want_a="$(_aether_jolt_pin akita-commit)" || return 1
+  for repo in jolt akita; do
+    case "$repo" in jolt) want="$want_j" ;; akita) want="$want_a" ;; esac
+    if ! have="$(git -C "$fork/$repo" rev-parse HEAD 2>/dev/null)"; then
+      echo "guest-stage: $fork/$repo is not a git checkout" >&2
+      echo "  clone the pinned fork (see scripts/jolt-fork.lock) and point AETHER_JOLT at it" >&2
+      return 1
+    fi
+    if [ "$have" != "$want" ]; then
+      echo "guest-stage: the $repo fork at $fork/$repo is at $have, but the prover pins $want" >&2
+      echo "  check out the pinned commit, or update scripts/jolt-fork.lock (the program id changes with it)" >&2
+      return 1
+    fi
+    sum="$(git -C "$fork/$repo" archive --format=tar "$want" | shasum -a 256 | cut -d' ' -f1)"
+    if [ "$sum" != "$(_aether_jolt_pin "$repo-archive-sha256")" ]; then
+      echo "guest-stage: the $repo fork's content does not match its pinned commit: archive of $want hashes to $sum" >&2
+      return 1
+    fi
+  done
+  if [ -f "$marker" ] && [ "$(cat "$marker")" = "$want_j $want_a" ]; then return 0; fi
+  if [ -e "$dir" ] && [ ! -f "$marker" ]; then
+    echo "guest-stage: $dir already exists and is not our snapshot; remove it" >&2
+    return 1
+  fi
+  rm -rf "$dir"
+  mkdir -p "$dir/jolt" "$dir/akita"
+  git -C "$fork/jolt" archive --format=tar "$want_j" | tar -x -C "$dir/jolt"
+  git -C "$fork/akita" archive --format=tar "$want_a" | tar -x -C "$dir/akita"
+  echo "$want_j $want_a" >"$marker"
+}
+
+# Copy the checkout's manifest $1 to the staged path $2 with every fork
+# reference rewritten to $3 — the staged fork's absolute path, in the same
+# spelling as the stage itself (aether_guest_stage_path). A copy, not a link:
+# it must differ from the checkout's file, which keeps the developer workflow
+# (an absolute fork path that cargo resolves directly) working where it is.
+# The reference must be absolute, and in the caller's spelling: with a
+# relative one (../../aether-jolt), or the physical /private/tmp spelling
+# when the build runs through /tmp, cargo resolves the fork's workspace
+# inheritance against the wrong root and dies inheriting `bincode` from
+# apps/prover's workspace — reproduced with 1.94/1.95/1.98.1, on both Macs.
+_aether_guest_stage_manifest() {
+  local src="$1" staged="$2" prefix="$3" fork tmp bad
+  [ -f "$src" ] || return 0
+  [ -L "$staged" ] && rm "$staged" # a stage from before the rewrite holds a link
+  if [ -e "$staged" ] && [ ! -f "$staged" ]; then
+    echo "guest-stage: $staged is not a file; refusing to replace it" >&2
+    return 1
+  fi
+  fork="$(aether_jolt_source)"
+  tmp="$(mktemp)"
+  sed -e "s|/Volumes/workspace/aether-jolt|$prefix|g" -e "s|$fork|$prefix|g" "$src" >"$tmp" || { rm -f "$tmp"; return 1; }
+  # Whatever fork path the manifest grew, it must be the staged copy: anything
+  # else would put some builder's path in the id.
+  bad="$(grep -E 'aether-jolt' "$tmp" | grep -vF "$prefix" || true)"
+  if [ -n "$bad" ]; then
+    echo "guest-stage: $src references the Jolt fork at a path the stage cannot rewrite:" >&2
+    printf '%s\n' "$bad" | sed 's/^/  /' >&2
+    rm -f "$tmp"
+    return 1
+  fi
+  if [ -f "$staged" ] && cmp -s "$tmp" "$staged"; then rm -f "$tmp"; return 0; fi
+  mv "$tmp" "$staged"
 }
 
 # --remap-path-prefix for the stage, in both spellings (given and physical:
@@ -111,14 +252,18 @@ _aether_guest_stage_link() {
 
 # Mirror $1 into the real directory $2, entry by entry, skipping what a build
 # writes back (target/, .git/, and apps/, which is handled a level down so that
-# apps/prover ends up a real directory rather than a link).
+# apps/prover ends up a real directory rather than a link). Any further names
+# name entries this level stages itself (the manifests, rewritten below).
 _aether_guest_stage_mirror() {
-  local source="$1" target="$2" entry base
+  local source="$1" target="$2"
+  shift 2
+  local entry base skip
   mkdir -p "$target"
   for entry in "$source"/* "$source"/.[!.]*; do
     [ -e "$entry" ] || continue
     base="$(basename "$entry")"
     case "$base" in .git | apps | target | target-*) continue ;; esac
+    for skip in "$@"; do [ "$base" = "$skip" ] && continue 2; done
     _aether_guest_stage_link "$target/$base" "$entry"
   done
 }
@@ -131,7 +276,7 @@ aether_guest_stage_populate() {
   # A build that reaches the stage from inside it — the nested build.rs ->
   # build-guest.sh call, whose cargo hands it the stage path as the package root,
   # and a manual run from $stage/apps/prover — names the stage as its checkout.
-  # Linking that would point every entry at itself (`crates -> crates`), and the
+  # Linking would point every entry at itself (`crates -> crates`), and the
   # build would find no workspace root at all. The stage already names the real
   # tree there: leave it as it is.
   if [ "$root" = "$stage_real" ]; then return 0; fi
@@ -142,8 +287,18 @@ aether_guest_stage_populate() {
   # apps/prover is a real directory holding links: it *is* the workspace root of
   # the prover build, and a root that is itself a symlink would hand the real
   # checkout's path to anything that resolves it (the Jolt CLI walks the
-  # workspace), which is the path the metadata hash is made of.
-  _aether_guest_stage_mirror "$root/apps/prover" "$stage/apps/prover"
+  # workspace), which is the path the metadata hash is made of. guest/ is a real
+  # directory for the same reason — its manifest is one of the rewritten copies
+  # — and the two manifests are copies with the fork referenced by the stage's
+  # absolute path (B7), so the id follows the pinned snapshot, not the fork's
+  # location.
+  _aether_guest_stage_mirror "$root/apps/prover" "$stage/apps/prover" guest Cargo.toml
+  if [ -L "$stage/apps/prover/guest" ]; then rm "$stage/apps/prover/guest"; fi # an older stage's link
+  mkdir -p "$stage/apps/prover/guest"
+  _aether_guest_stage_mirror "$root/apps/prover/guest" "$stage/apps/prover/guest" Cargo.toml
+  _aether_guest_stage_manifest "$root/apps/prover/Cargo.toml" "$stage/apps/prover/Cargo.toml" "$stage/aether-jolt"
+  _aether_guest_stage_manifest "$root/apps/prover/guest/Cargo.toml" "$stage/apps/prover/guest/Cargo.toml" "$stage/aether-jolt"
+  aether_guest_stage_fork "$(aether_jolt_source)"
   # Build outputs stay in the checkout, so a build through the stage leaves the
   # artifacts where the tree expects them.
   mkdir -p "$root/apps/prover/target" "$root/apps/prover/target-guest"

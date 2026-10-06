@@ -359,13 +359,13 @@ printf 'fn main() {}\n' >"$tree_a/apps/prover/src/main.rs"
 run_stage 'aether_guest_stage_populate "$1"' "$tree_a" || fail "populate failed with manifests"
 [ -f "$stage/apps/prover/Cargo.toml" ] && [ ! -L "$stage/apps/prover/Cargo.toml" ] ||
   fail "the staged prover manifest is not a copy"
-grep -q 'path = "../../aether-jolt/jolt/jolt-sdk"' "$stage/apps/prover/Cargo.toml" ||
+grep -q "path = \"$stage/aether-jolt/jolt/jolt-sdk\"" "$stage/apps/prover/Cargo.toml" ||
   fail "the staged prover manifest does not reference the staged fork"
-grep -q 'path = "../../aether-jolt/akita/crates/akita-algebra"' "$stage/apps/prover/Cargo.toml" ||
+grep -q "path = \"$stage/aether-jolt/akita/crates/akita-algebra\"" "$stage/apps/prover/Cargo.toml" ||
   fail "a [patch] fork reference was not rewritten"
 [ -d "$stage/apps/prover/guest" ] && [ ! -L "$stage/apps/prover/guest" ] ||
   fail "guest must be a real directory (its manifest is rewritten)"
-grep -q 'path = "../../../aether-jolt/jolt/jolt-sdk"' "$stage/apps/prover/guest/Cargo.toml" ||
+grep -q "path = \"$stage/aether-jolt/jolt/jolt-sdk\"" "$stage/apps/prover/guest/Cargo.toml" ||
   fail "the staged guest manifest was not rewritten"
 [ -f "$stage/aether-jolt/jolt/jolt-sdk/Cargo.toml" ] || fail "the pinned fork was not snapshotted"
 [ -f "$stage/aether-jolt/.aether-stage-snapshot" ] || fail "the snapshot is not marked"

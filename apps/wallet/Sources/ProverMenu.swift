@@ -93,7 +93,7 @@ struct MenuBarPanel: View {
                         // docs/ops/resource-limits.md: the node's own words for why it holds proving.
                         Text(paused == "memory"
                              ? "Paused: over the memory cap, waiting out its pause"
-                             : "Paused: \(paused == "program" ? (p.program_unknown == true ? "cannot confirm validator proof program" : "proof program differs from validators") : paused == "pressure" ? "system memory pressure" : paused == "battery" ? "on battery" : "disk space low")")
+                             : "Paused: \(paused == "program" ? (p.program_unknown == true ? "cannot confirm validator proof program" : "proof program differs from validators") : paused == "stalled" ? "the prover stopped answering; it restarts itself" : paused == "pressure" ? "system memory pressure" : paused == "battery" ? "on battery" : "disk space low")")
                             .foregroundStyle(.secondary)
                     }
                     if let r = p.last_reward {

@@ -41,6 +41,10 @@ struct HealthCheck {
         /// L1: proofs are refused (acceptance below 1/4), or proving earns
         /// nothing for six hours while other proofs are paid.
         case proofsRejected
+        /// L1: proving is stuck on the node's own error while the chain
+        /// moves on (the stalled sidecar of the 2026-10-06 incident: a
+        /// broken pipe, rewards stopped for two hours, only the lag grew).
+        case proverStalled
         /// L9: the update did not get healthy and the node went back to the
         /// previous binary.
         case updateRolledBack
@@ -56,7 +60,7 @@ struct HealthCheck {
         /// The design table's row, for tests and the diagnostics text.
         var row: String {
             switch self {
-            case .programMismatch, .proofsRejected: return "L1"
+            case .programMismatch, .proofsRejected, .proverStalled: return "L1"
             case .connectionStuck: return "L2"
             case .diskAlmostFull: return "L3"
             case .diskPaused: return "L4"
@@ -74,6 +78,7 @@ struct HealthCheck {
             switch self {
             case .programMismatch: return "prover_program_mismatch"
             case .proofsRejected: return "proof_rejected"
+            case .proverStalled: return "prover_stalled"
             case .connectionStuck, .nodeUnresponsive: return "rpc_unreachable"
             case .diskAlmostFull: return nil
             case .diskPaused: return "disk_floor_pause"
@@ -118,6 +123,11 @@ struct HealthCheck {
         var proverPausedForProgram = false
         /// `last_reward` as the node reports it: only its changes matter.
         var lastReward: String?
+        /// `aether_proverStatus.error` is set: the node itself says proving
+        /// fails (the 2026-10-06 incident sat on "sidecar: Broken pipe").
+        var proverError = false
+        /// Blocks the chain is ahead of the last proof made here (`lag`).
+        var proverLag: UInt64 = 0
         /// Layer 0 (§4.1): other provers' proofs are being paid. Nil when the
         /// app cannot tell; the six-hour cross-check then stays off.
         var networkProofsRewarded: Bool?
@@ -165,6 +175,11 @@ struct HealthCheck {
     /// L1's cross-check: proving this long without a new reward while other
     /// proofs are paid (the layer-0 threshold too).
     static let rewardSilenceAfter: TimeInterval = 6 * 3600
+    /// L1: the node's own proving error, with the lag growing, this long is
+    /// a stalled prover — long enough that a retrying node recovers first,
+    /// short enough that the two-hour silence of the 2026-10-06 incident
+    /// cannot repeat unnoticed.
+    static let proverStallAfter: TimeInterval = 600
     /// L5: a stall restart this recent keeps the issue up; two within
     /// `stallWindow` is "keeps stalling".
     static let stallQuiet: TimeInterval = 600
@@ -181,6 +196,7 @@ struct HealthCheck {
         switch issue {
         case .connectionStuck: return connectionAlertAfter
         case .nodeUnresponsive: return unresponsiveAfter
+        case .proverStalled: return proverStallAfter
         default: return 0
         }
     }
@@ -201,6 +217,10 @@ struct HealthCheck {
     /// L1 cross-check: since when this Mac has proved without a new reward.
     private var rewardSilentSince: MonotonicInstant?
     private var lastRewardSeen: String?
+    /// L1: the lag when the node's proving error began (nil: no error). The
+    /// stall is "the error holds while the chain moves on", so a proof that
+    /// landed (the lag fell) starts a fresh count.
+    private var proverLagWhenErrored: UInt64?
     /// Every raise, for the diagnostics' 24-hour failure counts.
     private var raised: [(kind: String, at: MonotonicInstant)] = []
 
@@ -215,6 +235,7 @@ struct HealthCheck {
         lastObserved = at
         last = o
         trackReward(o, at: at)
+        trackProver(o)
         stallRestarts.removeAll { at.elapsed(since: $0) > Self.stallWindow }
         raised.removeAll { at.elapsed(since: $0.at) > Self.failureWindow }
 
@@ -306,6 +327,19 @@ struct HealthCheck {
         }
     }
 
+    /// The node's own proving error: remembered with the lag it began at, so
+    /// the stall is "the error holds while the chain moves on" — an error
+    /// that clears, or a lag that falls (a proof landed), starts over.
+    private mutating func trackProver(_ o: Observation) {
+        if o.proving, o.proverError {
+            if proverLagWhenErrored == nil || o.proverLag < proverLagWhenErrored! {
+                proverLagWhenErrored = o.proverLag
+            }
+        } else {
+            proverLagWhenErrored = nil
+        }
+    }
+
     // MARK: conditions
 
     private func holds(_ issue: Issue, _ o: Observation, at: MonotonicInstant) -> Bool {
@@ -326,6 +360,14 @@ struct HealthCheck {
             // pays other provers — rejected without the node knowing why.
             guard o.networkProofsRewarded == true, let since = rewardSilentSince else { return false }
             return at.elapsed(since: since) >= Self.rewardSilenceAfter
+        case .proverStalled:
+            // The node says proving fails, and the chain keeps moving ahead
+            // of it — the stall of the 2026-10-06 incident, where the lag
+            // was the only thing growing. An error without a growing lag is
+            // not a stall (the chain may simply be quiet, or a retry is
+            // under way and about to clear it).
+            guard o.proving, o.proverError, let since = proverLagWhenErrored else { return false }
+            return o.proverLag > since
         case .updateRolledBack:
             return o.rolledBack
         case .followerStuck:
@@ -377,7 +419,7 @@ struct HealthCheck {
         case .programMismatch, .proofsRejected, .upgradeRequired: return .checkForUpdates
         case .connectionStuck: return last.internetReachable == false ? nil : .retryConnection
         case .diskAlmostFull, .diskPaused: return .openStorage
-        case .crashLoop: return .copyDiagnostics
+        case .crashLoop, .proverStalled: return .copyDiagnostics
         case .followerStuck, .nodeUnresponsive, .updateRolledBack: return nil
         }
     }
@@ -398,6 +440,9 @@ struct HealthCheck {
             }
             return ko ? "보상 증명이 거절되고 있어요. 고친 버전이 나오면 업데이트를 알려 드릴게요."
                 : "Your reward proofs are being rejected. You will be told as soon as a fixed version is out."
+        case .proverStalled:
+            return ko ? "보상 증명이 멈춰 있어요. 이 Mac이 저절로 다시 시도하고 있어요. 오래 계속되면 앱을 다시 열어 주세요."
+                : "Reward proofs have stopped. This Mac is retrying by itself; if it keeps up, please reopen the app."
         case .connectionStuck:
             if o.internetReachable == false {
                 return ko ? "인터넷에 연결되지 않았어요. 연결되면 저절로 이어져요."
@@ -441,6 +486,8 @@ struct HealthCheck {
         switch issue {
         case .programMismatch, .proofsRejected:
             return ko ? "해결됐어요. 보상 증명이 다시 받아들여지고 있어요." : "Resolved: reward proofs are being accepted again."
+        case .proverStalled:
+            return ko ? "해결됐어요. 보상 증명이 다시 만들어지고 있어요." : "Resolved: reward proofs are being made again."
         case .connectionStuck:
             return ko ? "해결됐어요. 네트워크에 다시 연결됐어요." : "Resolved: connected to the network again."
         case .diskAlmostFull, .diskPaused:

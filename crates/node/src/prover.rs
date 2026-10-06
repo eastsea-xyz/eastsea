@@ -214,7 +214,12 @@ impl Sidecar {
                 let _ = io.child.wait();
                 return Err("the sidecar exited (no answer in time)".into());
             }
-            Err(_) => return Err("the sidecar exited".into()),
+            Err(_) => {
+                // Dead or killed: reap it, so the kill is final.
+                let _ = io.child.kill();
+                let _ = io.child.wait();
+                return Err("the sidecar exited".into());
+            }
         };
         let v: Value = serde_json::from_str(&line).map_err(|e| format!("sidecar reply: {e}"))?;
         if v["ok"].as_bool() == Some(true) {
@@ -489,7 +494,8 @@ pub struct Status {
     pub error: Option<String>,
     /// Where rewards go.
     pub payout: Option<Address>,
-    /// Why proving is paused right now ("memory", "pressure", "battery", "disk").
+    /// Why proving is paused right now ("memory", "stalled", "program",
+    /// "pressure", "battery", "disk").
     pub paused: Option<String>,
     /// The sidecar's physical footprint at the last watchdog sample.
     pub memory_bytes: Option<u64>,
@@ -571,10 +577,30 @@ impl DistinctErrors {
     }
 }
 
-/// A kill waits before the sidecar restarts: a minute, doubling, up to half
-/// an hour (the incident prover ate 14 GB of a 64 GB Mac).
+/// A kill waits before the sidecar restarts: a minute, doubling, up to five
+/// minutes (the incident prover ate 14 GB of a 64 GB Mac; the cap used to be
+/// half an hour, which is longer than any stall should ever hold rewards back).
 fn backoff_secs(kills: u32) -> std::time::Duration {
-    std::time::Duration::from_secs((60u64 << kills.saturating_sub(1).min(5)).min(1800))
+    std::time::Duration::from_secs((60u64 << kills.saturating_sub(1).min(5)).min(300))
+}
+
+/// The hang timeout, overridable for the fault tests (hidden, like
+/// `AETHER_VERIFY_TIMEOUT_MS`): `AETHER_PROVER_HANG_MS=<ms>`.
+fn hang_timeout() -> std::time::Duration {
+    std::env::var("AETHER_PROVER_HANG_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map_or(PROVE_TIMEOUT, std::time::Duration::from_millis)
+}
+
+/// A proving error that means the sidecar itself is gone or untalkable-to —
+/// a broken pipe on write, an exit or EOF on read, a lock poisoned by a
+/// panicked request, a reply line that is not JSON — not a complaint about
+/// the block. The service replaces such a sidecar and gives the height
+/// back; writing to a dead pipe forever is the incident of 2026-10-06 (two
+/// hours of "sidecar: Broken pipe", the lag climbing to 6,657 blocks).
+fn sidecar_unusable(error: &str) -> bool {
+    error.starts_with("sidecar") || error.starts_with("the sidecar")
 }
 
 /// The proving sidecar under the memory watchdog: the service proves with it,
@@ -589,9 +615,17 @@ struct Gate {
     dead: std::sync::atomic::AtomicBool,
     /// The footprint cap (0: no watching; the prover never runs then).
     cap: u64,
-    /// Memory kills since the last proof that came back.
+    /// Kills since the last proof that came back (memory, hangs, deaths).
     kills: std::sync::atomic::AtomicU32,
-    backoff_until: Mutex<Option<std::time::Instant>>,
+    /// The back-off being waited out, and why ("memory", "stalled"): the
+    /// status says the reason while proving waits.
+    wait: Mutex<Option<(std::time::Instant, &'static str)>>,
+    /// The proof now in flight and since when (None: idle) — the watchdog's
+    /// hang check counts from here. A request would sit out its own
+    /// half-hour timeout on a silent sidecar; the watchdog kills it hung.
+    proving_since: Mutex<Option<std::time::Instant>>,
+    /// How long a proof may run before the watchdog kills it as hung.
+    hang: std::time::Duration,
 }
 
 impl Gate {
@@ -610,7 +644,8 @@ impl Gate {
         }
         let kills = self.kills.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         let wait = backoff_secs(kills);
-        *self.backoff_until.lock().expect("prover gate") = Some(std::time::Instant::now() + wait);
+        *self.wait.lock().expect("prover gate") =
+            Some((std::time::Instant::now() + wait, "memory"));
         tracing::warn!(
             memory_bytes = memory,
             cap = self.cap,
@@ -630,6 +665,39 @@ impl Gate {
             .ok();
     }
 
+    /// A proof that has run too long without an answer: the sidecar is hung
+    /// (alive, stdout open, saying nothing), so it is killed by pid — the
+    /// in-flight request then sees the pipe close — and the replacement
+    /// waits out the growing back-off, paused as "stalled".
+    fn check_hang(&self, status: &SharedStatus) {
+        let Some(started) = *self.proving_since.lock().expect("prover gate") else { return };
+        if started.elapsed() < self.hang || self.dead.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        let kills = self.kills.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let wait = backoff_secs(kills);
+        *self.wait.lock().expect("prover gate") =
+            Some((std::time::Instant::now() + wait, "stalled"));
+        tracing::warn!(
+            elapsed_secs = started.elapsed().as_secs(),
+            kills,
+            backoff_secs = wait.as_secs(),
+            "prover not answering: killed; it restarts after a growing back-off"
+        );
+        self.current().kill_hard();
+        self.dead.store(true, std::sync::atomic::Ordering::Relaxed);
+        status
+            .lock()
+            .map(|mut s| {
+                s.proving = None;
+                s.paused = Some("stalled".into());
+                s.error = Some(
+                    "the prover stopped answering; it was stopped and restarts after a back-off".into(),
+                );
+            })
+            .ok();
+    }
+
     /// Critical system pressure: kill the running proof too, without a memory
     /// back-off (the monitor's own pause keeps new jobs from starting).
     fn kill_running(&self) {
@@ -644,14 +712,49 @@ impl Gate {
     /// A proof came back: the next memory kill backs off from a minute again.
     fn proved(&self) {
         self.kills.store(0, std::sync::atomic::Ordering::Relaxed);
-        *self.backoff_until.lock().expect("prover gate") = None;
+        *self.wait.lock().expect("prover gate") = None;
     }
 
-    fn blocked(&self) -> bool {
-        self.backoff_until
-            .lock()
-            .expect("prover gate")
-            .is_some_and(|t| std::time::Instant::now() < t)
+    /// The back-off being waited out, and why; None when proving is free to go.
+    fn blocked(&self) -> Option<&'static str> {
+        let waited = self.wait.lock().expect("prover gate");
+        match &*waited {
+            Some((until, reason)) if std::time::Instant::now() < *until => Some(reason),
+            _ => None,
+        }
+    }
+
+    /// The sidecar died or its pipe broke under a request: the process is
+    /// stopped — a broken pipe can leave it alive — and the next round
+    /// replaces it. The first deaths restart at once; if it keeps dying (a
+    /// crash-looping binary), the restart waits out the growing back-off.
+    fn died(&self) {
+        self.current().kill_hard();
+        if self.dead.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            return; // the watchdog already counted this death and set its back-off
+        }
+        let kills = self.kills.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        if kills >= 2 {
+            let wait = backoff_secs(kills);
+            *self.wait.lock().expect("prover gate") =
+                Some((std::time::Instant::now() + wait, "stalled"));
+            tracing::warn!(
+                kills,
+                backoff_secs = wait.as_secs(),
+                "the prover keeps dying; its restart waits out a growing back-off"
+            );
+        }
+    }
+
+    /// The service is proving with the sidecar now; the watchdog's hang check
+    /// counts from here.
+    fn proving(&self) {
+        *self.proving_since.lock().expect("prover gate") = Some(std::time::Instant::now());
+    }
+
+    /// No proof is in flight — answered, failed, or given up.
+    fn idle(&self) {
+        *self.proving_since.lock().expect("prover gate") = None;
     }
 
     /// Restart a dead sidecar once the back-off allows.
@@ -695,7 +798,9 @@ pub fn spawn_service(
         sidecar: Mutex::new(Arc::new(sidecar)),
         dead: std::sync::atomic::AtomicBool::new(false),
         kills: std::sync::atomic::AtomicU32::new(0),
-        backoff_until: Mutex::new(None),
+        wait: Mutex::new(None),
+        proving_since: Mutex::new(None),
+        hang: hang_timeout(),
     });
     let threads = crate::resources::monitor()
         .map(|m| m.limits.prover_threads)
@@ -721,6 +826,7 @@ pub fn spawn_service(
                 if crate::resources::monitor().is_some_and(|m| m.critical()) {
                     gate.kill_running();
                 }
+                gate.check_hang(&status);
                 gate.check(&status);
             })
             .expect("start the prover watchdog");
@@ -766,8 +872,8 @@ pub fn spawn_service(
             std::thread::sleep(std::time::Duration::from_secs(5));
             continue;
         }
-        if gate.blocked() {
-            pause(&status, "memory");
+        if let Some(reason) = gate.blocked() {
+            pause(&status, reason);
             std::thread::sleep(std::time::Duration::from_secs(5));
             continue;
         }
@@ -803,7 +909,10 @@ pub fn spawn_service(
                 continue;
             }
         };
-        match gate.current().prove(&bytes) {
+        gate.proving();
+        let proven = gate.current().prove(&bytes);
+        gate.idle();
+        match proven {
             Ok((proof, _, seconds)) => {
                 gate.proved();
                 let claim = ProofClaim { height, prover, proof: hex::encode(proof) };
@@ -828,6 +937,7 @@ pub fn spawn_service(
                     .lock()
                     .map(|mut s| {
                         s.proving = None;
+                        s.paused = None;
                         s.last_height = Some(height);
                         s.last_txs = txs;
                         s.last_seconds = seconds;
@@ -840,9 +950,14 @@ pub fn spawn_service(
             Err(e) => {
                 status.lock().map(|mut s| (s.proving, s.error) = (None, Some(e.clone()))).ok();
                 tracing::warn!(height, %e, "proving failed");
-                if e.contains("exited") {
-                    // The loop restarts it — after the back-off, if the watchdog killed it.
-                    gate.dead.store(true, std::sync::atomic::Ordering::Relaxed);
+                if sidecar_unusable(&e) {
+                    // The sidecar, not the block, failed: stop it (a broken
+                    // pipe can leave the process alive), let the next round
+                    // replace it, and give the height back — the incident's
+                    // lag was every skipped block piling up behind one dead
+                    // pipe.
+                    gate.died();
+                    chain.retry_proof(height);
                 }
                 std::thread::sleep(std::time::Duration::from_secs(5));
             }
@@ -1035,7 +1150,9 @@ mod tests {
             dead: std::sync::atomic::AtomicBool::new(false),
             cap,
             kills: std::sync::atomic::AtomicU32::new(0),
-            backoff_until: Mutex::new(None),
+            wait: Mutex::new(None),
+            proving_since: Mutex::new(None),
+            hang: PROVE_TIMEOUT,
         }
     }
 
@@ -1056,9 +1173,22 @@ mod tests {
     }
 
     #[test]
-    fn the_backoff_grows_a_minute_at_a_time_to_half_an_hour() {
+    fn the_backoff_grows_a_minute_at_a_time_to_five_minutes() {
         let secs = |k: u32| backoff_secs(k).as_secs();
-        assert_eq!([1, 2, 3, 4, 5, 6, 7, 50].map(secs), [60, 120, 240, 480, 960, 1800, 1800, 1800]);
+        assert_eq!([1, 2, 3, 4, 5, 6, 7, 50].map(secs), [60, 120, 240, 300, 300, 300, 300, 300]);
+    }
+
+    #[test]
+    fn only_transport_errors_replace_the_sidecar() {
+        // The incident's own message, and every way the pipe can die.
+        assert!(sidecar_unusable("sidecar: Broken pipe (os error 32)"));
+        assert!(sidecar_unusable("the sidecar exited"));
+        assert!(sidecar_unusable("the sidecar exited (no answer in time)"));
+        assert!(sidecar_unusable("sidecar lock poisoned"));
+        assert!(sidecar_unusable("sidecar reply: expected ident at line 1 column 1"));
+        // The sidecar answered — a block- or disk-level problem keeps it.
+        assert!(!sidecar_unusable("read /tmp/1-2.proof: No such file or directory"));
+        assert!(!sidecar_unusable("bad commitment"));
     }
 
     /// The watchdog kills a sidecar past its memory cap by pid (without the io
@@ -1093,7 +1223,8 @@ mod tests {
         // back-off blocks the next start.
         g.check(&status);
         assert!(g.dead.load(std::sync::atomic::Ordering::Relaxed));
-        assert!(g.blocked(), "a memory kill waits out its back-off");
+        assert!(g.blocked().is_some(), "a memory kill waits out its back-off");
+        assert_eq!(g.blocked(), Some("memory"), "the wait says why");
         let s = status.lock().unwrap();
         assert_eq!(s.paused.as_deref(), Some("memory"));
         assert!(s.memory_bytes.unwrap() > CAP);
@@ -1108,7 +1239,7 @@ mod tests {
 
         // A proof that comes back resets the back-off ladder...
         g.proved();
-        assert!(!g.blocked());
+        assert!(g.blocked().is_none());
         // ...and `ensure` restarts a dead sidecar once the back-off allows.
         g.ensure();
         assert!(!g.dead.load(std::sync::atomic::Ordering::Relaxed));
@@ -1291,5 +1422,253 @@ mod sidecar_fault_tests {
             .status()
             .unwrap();
         assert_eq!(status.code(), Some(crate::supervisor::EXIT_FATAL_TASK));
+    }
+}
+
+/// Fault injection on the proving service loop itself (the incident of
+/// 2026-10-06: `aether_proverStatus` answered `sidecar: Broken pipe (os
+/// error 32)` for two hours while rewards stopped — the service kept
+/// writing to a sidecar that was already gone). Each test drives the real
+/// `spawn_service` on a chain whose blocks record statements, against a
+/// fake sidecar that fails once and then behaves: the fault must be
+/// detected, the sidecar replaced, the same block still proven, and the
+/// status error cleared.
+#[cfg(test)]
+mod service_fault_tests {
+    use super::*;
+    use crate::block::{Block, Context, EPOCH};
+    use crate::chain::{build_payload, Chain, ChainConfig, Executed, Extras};
+    use aether_types::{Address, GasVector};
+    use commonware_consensus::types::{Round, View};
+    use commonware_cryptography::{ed25519, Digestible as _, Signer as _};
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex};
+
+    /// Protocol 2 from genesis: every block after it records a statement.
+    fn config() -> ChainConfig {
+        ChainConfig {
+            chain_id: 7_793,
+            limits: GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
+            alloc: vec![],
+            fees: false,
+            registrar: Some(([1; 32], [2; 32])),
+            epoch_blocks: 10,
+            min_streak: None,
+            draw_epochs: None,
+            history_v2: false,
+            protocol: 2,
+            node_rewards: false,
+            committee: vec![],
+            reserve: None,
+            group: 0,
+            max_committee: crate::rotation::GROW_UNTIL,
+        }
+    }
+
+    fn propose(chain: &Chain, parent: &Executed, parent_block: &Block) -> Block {
+        let height = parent_block.height.next();
+        let leader = ed25519::PrivateKey::from_seed(1).public_key();
+        let context = Context {
+            round: Round::new(EPOCH, View::new(height.get())),
+            leader,
+            parent: (View::new(height.get() - 1), parent_block.digest()),
+        };
+        let ts = height.get() * 1_000;
+        let skeleton = Block::new(context.clone(), parent_block.digest(), height, ts, bytes::Bytes::new());
+        let ctx = Chain::block_context(&chain.cfg(), &skeleton, parent);
+        let (pre, _) = chain
+            .pre_state(parent, parent.next_protocol(), &[], None, false)
+            .unwrap();
+        let (payload, _) = build_payload(parent, &pre, &ctx, vec![], Extras::default());
+        Block::new(context, parent_block.digest(), height, ts, payload.to_bytes())
+    }
+
+    /// A chain with `n` finalized protocol-2 blocks after genesis, every one
+    /// of them a provable job for the service.
+    fn proving_chain(n: u64) -> Chain {
+        let (chain, genesis) = Chain::new(config());
+        {
+            let (_, sharing, _) = aether_light::devnet_threshold(4);
+            let mut g = chain.lock();
+            g.identity = Some(*sharing.public());
+            g.protocol = 2;
+        }
+        let mut parent = chain.lock().finalized.clone();
+        let mut last = genesis;
+        for _ in 0..n {
+            let b = propose(&chain, &parent, &last);
+            let exec = chain.execute(&b, &parent).unwrap();
+            chain.finalize(&b).unwrap();
+            last = b;
+            parent = exec;
+        }
+        chain
+    }
+
+    /// The fake `aether-prover serve`: prints the info line, then answers
+    /// every prove request (the proof file and ok reply the real one
+    /// writes). Its first prove plays a fault: `before` runs instead of
+    /// answering (the sidecar kills itself, or hangs), `after` runs once the
+    /// first answer is out (the pipe breaks while the sidecar idles). The
+    /// marker file survives the process, so a replacement sidecar behaves.
+    fn fake(dir: &Path, before: &str, after: &str) -> PathBuf {
+        let program = PROGRAM.unwrap_or("any-program");
+        let path = dir.join(format!("fake-prover-{}", unique()));
+        let marker = path.with_extension("served");
+        let script = r#"#!/bin/sh
+echo '{"guest_elf_sha256":"@PROGRAM@"}'
+answer() {
+  out=$(printf '%s' "$line" | sed -n 's/.*"out":"\([^"]*\)".*/\1/p')
+  printf 'proof-by-the-fake' > "$out"
+  echo '{"ok":true,"commitment":"@COMMITMENT@","seconds":0.1}'
+}
+while IFS= read -r line; do
+  case "$line" in *prove*)
+    if [ ! -f "@MARKER@" ]; then
+      : > "@MARKER@"
+      @BEFORE@
+      answer
+      @AFTER@
+    else
+      answer
+    fi
+    ;;
+  *) echo '{"ok":false,"error":"no such command"}' ;;
+  esac
+done
+"#
+        .replace("@PROGRAM@", program)
+        .replace("@COMMITMENT@", &"ab".repeat(32))
+        .replace("@BEFORE@", before)
+        .replace("@AFTER@", after)
+        .replace("@MARKER@", &marker.display().to_string());
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("aether-prover-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// `spawn_service` on `chain`, already holding its first sidecar; the
+    /// network always reports the program the fake speaks, and every
+    /// submission is accepted. Returns the status and the heights whose
+    /// proofs were submitted.
+    fn service(chain: &Chain, bin: PathBuf, sidecar: Sidecar, dir: PathBuf) -> (SharedStatus, Arc<Mutex<Vec<u64>>>) {
+        let status = SharedStatus::default();
+        let claims = Arc::new(Mutex::new(Vec::new()));
+        let submitted = claims.clone();
+        let program = sidecar.program.clone();
+        spawn_service(
+            chain.clone(),
+            bin,
+            dir,
+            sidecar,
+            Address::repeat_byte(0x77),
+            status.clone(),
+            move || Ok(program.clone()),
+            move |claim| {
+                submitted.lock().unwrap().push(claim.height);
+                Ok(())
+            },
+        );
+        (status, claims)
+    }
+
+    fn wait_for(what: &str, seconds: u64, mut ok: impl FnMut() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
+        while !ok() {
+            assert!(std::time::Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+
+    /// (1) The sidecar is killed mid-proof: the job it was holding must not
+    /// be lost — the service replaces the sidecar and proves that block.
+    #[test]
+    fn a_sidecar_killed_mid_proof_is_replaced_and_the_block_still_proven() {
+        let dir = scratch("svc-kill");
+        let chain = proving_chain(1);
+        let bin = fake(&dir, "kill -9 $$", "");
+        let sidecar = Sidecar::spawn_prover(&bin, &dir).expect("the fake prover starts");
+        let (status, claims) = service(&chain, bin, sidecar, dir.clone());
+        wait_for("the kill to be reported", 30, || status.lock().unwrap().error.is_some());
+        wait_for("the same block proven after the kill", 30, || {
+            claims.lock().unwrap().contains(&1)
+        });
+        let s = status.lock().unwrap();
+        assert_eq!(s.proofs, 1);
+        assert_eq!(s.last_height, Some(1));
+        assert_eq!(s.error, None, "a successful proof clears the status error");
+        assert_eq!(s.paused, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (2) The incident itself: the sidecar's stdin closes while it idles
+    /// between proofs, so the next request hits a broken pipe — in
+    /// production `sidecar: Broken pipe (os error 32)` for two hours, the
+    /// lag climbing to 6,657 blocks. The dead pipe must be replaced, not
+    /// written to forever.
+    #[test]
+    fn a_broken_pipe_is_replaced_and_proving_resumes() {
+        let dir = scratch("svc-pipe");
+        let chain = proving_chain(2);
+        let bin = fake(&dir, "", "exec 0<&-; sleep 300");
+        let sidecar = Sidecar::spawn_prover(&bin, &dir).expect("the fake prover starts");
+        let (status, claims) = service(&chain, bin, sidecar, dir.clone());
+        wait_for("the first proof", 30, || !claims.lock().unwrap().is_empty());
+        wait_for("the broken pipe to be reported", 30, || {
+            status.lock().unwrap().error.as_deref().is_some_and(|e| e.contains("pipe"))
+        });
+        wait_for("proving to resume past the broken pipe", 30, || {
+            claims.lock().unwrap().len() >= 2
+        });
+        let s = status.lock().unwrap();
+        assert_eq!(s.proofs, 2);
+        assert_eq!(s.error, None, "a successful proof clears the status error");
+        assert_eq!(s.paused, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (3) A sidecar that hangs mid-proof — alive, stdout open, never
+    /// answering — must not sit out the half-hour request timeout: the
+    /// watchdog kills it, and proving resumes once the back-off allows.
+    /// The hang blocks in the shell itself (`read`, a builtin): the real
+    /// sidecar is one process, so its death must close the pipe — a child
+    /// sleep would outlive the kill and hold it open.
+    #[test]
+    fn a_hung_sidecar_is_killed_by_the_watchdog_and_proving_resumes() {
+        let dir = scratch("svc-hang");
+        std::env::set_var("AETHER_PROVER_HANG_MS", "3000");
+        let chain = proving_chain(1);
+        let bin = fake(&dir, "read x", "");
+        let sidecar = Sidecar::spawn_prover(&bin, &dir).expect("the fake prover starts");
+        let hung = sidecar.pid;
+        let (status, claims) = service(&chain, bin, sidecar, dir.clone());
+        // The hang is detected in seconds and the process is really gone.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while crate::resources::footprint(hung).is_some_and(|m| m > 0) {
+            assert!(std::time::Instant::now() < deadline, "the hung sidecar was not killed");
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        // Proving waits out the kill's back-off (paused says why)…
+        wait_for("proving paused while the replacement waits out its back-off", 30, || {
+            status.lock().unwrap().paused.as_deref() == Some("stalled")
+        });
+        // …then the same block is proven and the error clears.
+        wait_for("the hung block proven after the watchdog kill", 120, || {
+            claims.lock().unwrap().contains(&1)
+        });
+        let s = status.lock().unwrap();
+        assert_eq!(s.proofs, 1);
+        assert_eq!(s.error, None);
+        assert_eq!(s.paused, None);
+        std::env::remove_var("AETHER_PROVER_HANG_MS");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

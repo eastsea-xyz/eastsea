@@ -52,7 +52,7 @@ enum DiagnosticReport {
 
     /// The closed failure kinds of §2.4; anything else is counted as `other`.
     static let failureKinds = [
-        "proof_rejected", "prover_program_mismatch", "disk_floor_pause", "disk_full",
+        "proof_rejected", "prover_program_mismatch", "prover_stalled", "disk_floor_pause", "disk_full",
         "follower_stuck", "rpc_unreachable", "crash_loop", "upgrade_required", "update_unhealthy",
     ]
 

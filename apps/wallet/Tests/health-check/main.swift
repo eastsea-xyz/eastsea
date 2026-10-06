@@ -311,4 +311,48 @@ check(counts.failureCounts()["prover_program_mismatch"] == 2, "two mismatch inci
 check(counts.failureCounts()["rpc_unreachable"] == 1, "the silent node counted as rpc_unreachable")
 check(counts.failureCounts()["disk_floor_pause"] == nil, "nothing counted that did not happen")
 
+// MARK: L1 — the stalled prover (2026-10-06 incident)
+
+// The node answered `sidecar: Broken pipe (os error 32)` for two hours while
+// the lag grew to 6,657 blocks and rewards stopped. The node's own error,
+// with the chain moving ahead of it, is a stall the person must hear about —
+// after ten minutes, not two hours, and only while the lag actually grows.
+var stalled = proving
+stalled.proverError = true
+stalled.proverLag = 120
+var l1stall = HealthCheck()
+_ = l1stall.observe(stalled, at: at(0))
+stalled.proverLag = 6_657
+ev = run(&l1stall, stalled, from: 2, to: 602)
+check(raises(ev, .proverStalled) == 1, "L1: a proving error with the lag growing is a stall, raised once")
+check(ev.first { $0.1 == .raised(.proverStalled) }!.0 >= HealthCheck.proverStallAfter, "…after ten minutes of it")
+check(l1stall.alert(ko: true)?.sentence == "보상 증명이 멈춰 있어요. 이 Mac이 저절로 다시 시도하고 있어요. 오래 계속되면 앱을 다시 열어 주세요.",
+      "the stalled sentence says it plainly")
+check(l1stall.alert(ko: false)?.sentence == "Reward proofs have stopped. This Mac is retrying by itself; if it keeps up, please reopen the app.",
+      "the English sentence too")
+check(l1stall.action(.proverStalled) == .copyDiagnostics, "L1 stall: [진단 복사]")
+check(l1stall.failureCounts()["prover_stalled"] == 1, "the stall counts as its own failure kind")
+// The node recovered (its restart cleared the error): resolved once.
+stalled.proverError = false
+ev = run(&l1stall, stalled, from: 604, to: 640)
+check(resolves(ev, .proverStalled) == 1, "L1: the error clearing resolves the stall")
+check(HealthCheck.resolvedSentence(.proverStalled, ko: true).hasPrefix("해결됐어요"), "L1 stall resolution says 해결됐어요")
+// An error without a growing lag is not a stall (a quiet chain, or a retry
+// about to clear it)…
+var frozen = HealthCheck()
+var quiet = stalled
+quiet.proverError = true
+quiet.proverLag = 300
+check(run(&frozen, quiet, from: 0, to: 700).filter { $0.1 == .raised(.proverStalled) }.isEmpty,
+      "an error with a frozen lag is not a stall")
+// …and a proof that landed (the lag fell) starts the count over.
+var recovered = HealthCheck()
+_ = recovered.observe(quiet, at: at(0))
+_ = recovered.observe(quiet, at: at(2))
+quiet.proverLag = 100
+_ = recovered.observe(quiet, at: at(4))
+quiet.proverLag = 200
+ev = run(&recovered, quiet, from: 6, to: 700)
+check(raises(ev, .proverStalled) == 1, "…but the stall counts again from the proof that landed")
+
 print("health-check: all checks passed")

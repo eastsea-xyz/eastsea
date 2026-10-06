@@ -33,7 +33,7 @@ Time-sensitive flows advance block context and execute empty refill blocks. Once
 Every row includes successful paid deployment and undersized-budget refusal where its constructor is exercised. Randomness has no state-changing API. The descriptions enumerate implemented scenarios, not a proved exhaustive branch-coverage claim. Individual labels and selector assertions live in the test source; runtime records are produced under `tmp/` and consumed by the report generator. `unmeasured` means no passing real-executor evidence exists yet.
 
 <!-- CONTRACTS-ONCHAIN-TABLE:BEGIN -->
-Inventory: **42 compiled fixtures; 68 Rust test functions**. Status is verified complete Rust run.
+Inventory: **45 compiled fixtures; 75 Rust test functions**. Status is verified complete Rust run.
 
 Gas, state units, bytes and floor fee below describe successful wallet-budget deployments. Multiple constructor configurations are shown as ranges. Fits/block is a **ceiling** from execution, state, new-slot and logical receipt limits; the independent encoded-payload limit can lower it.
 
@@ -43,7 +43,7 @@ Gas, state units, bytes and floor fee below describe successful wallet-budget de
 | `core/AtomicSwapEVM` | same complete swap lifecycle and errors as AtomicSwap | PASS (33 records) | 791255 | 3747 | 7333 | 3747000000000000 | 26 |
 | `core/CommitteeRegistry` | signed attestation, registrar/caller/duplicate/cap/epoch/beacon; predeploy v2 compatibility | PASS (13 records) | 698818 | 3292 | 6477 | 3292000000000000 | 30 |
 | `core/CommitteeRegistryV3` | registration, beacon, leaving/back, epochs, reserve sentinel, registrar rotation/revocation | PASS (34 records) | 868772 | 4128 | 8051 | 4128000000000000 | 24 |
-| `core/EastSeaAccount` | 7702, owner/session/recovery mutations, P-256 signatures, limits, expiry, replay, revoke, F-05, ERC-1271, NFT receive | PASS (136 records) | 3829321 | 18689 | 35459 | 18689000000000000 | 5 |
+| `core/EastSeaAccount` | 7702, owner/session/recovery mutations, P-256 signatures, limits, expiry, replay, revoke, F-05, ERC-1271, NFT receive | PASS (147 records) | 3829321 | 18689 | 35459 | 18689000000000000 | 5 |
 | `core/EastSeaNames` | commit/reveal min/max age, register/clear/renew, transfer, records/reverse, grace, refund callbacks | PASS (93 records) | 1971055 | 9552 | 18261 | 9552000000000000 | 10 |
 | `core/EastSeaVault` | signed spend/proposal/approve/cancel/execute/settings, quorum/delay/nonce, token/native callbacks | PASS (53 records) | 2276562–2323067 | 10952–11154 | 21564–21628 | 10952000000000000–11154000000000000 | 8–9 |
 | `core/EastSeaVaultFactory` | predict/create, deterministic address, duplicate salt, invalid owner configuration | PASS (7 records) | 2666661 | 12979 | 24711 | 12979000000000000 | 7 |
@@ -54,9 +54,12 @@ Gas, state units, bytes and floor fee below describe successful wallet-budget de
 | `core/TokenBatch` | send; shape/zero/allowance/failure/taxed/self-recipient/delta checks, atomicity | PASS (14 records) | 368349 | 1666 | 3417 | 1666000000000000 | 60 |
 | `core/TokenLocker` | lock/extend/withdraw, caller/amount/token/time, taxed deposits, callbacks, retry | PASS (26 records) | 1022015 | 4882 | 9471 | 4882000000000000 | 20 |
 | `core/TokenVesting` | create/claim/cancel, cliff/end/permissions, taxed deposit, callbacks, uint256-max arithmetic | PASS (37 records) | 1163223 | 5575 | 10775 | 5575000000000000 | 17 |
+| `support/BrakeReferenceVault` | reference local deterministic entry brake: deficit/code/unreadable predicate, permissionless latch, entry halted, exit open | PASS (13 records) | 649918 | 3044 | 6254 | 3044000000000000 | 32 |
 | `support/MarketNFT` | test instrument: ERC721 royalties/ERC165 failures and transfer failures | PASS (34 records) | 1173045 | 5573 | 10664 | 5573000000000000 | 17 |
 | `support/NativeCallback` | test instrument: native/NFT receive failure and callback forwarding/reentry observation | PASS (143 records) | 822929 | 3905 | 7631 | 3905000000000000 | 25 |
+| `support/SeizableToken` | test instrument: ERC20 with an open issuer seizure to reproduce a vault backing deficit | PASS (14 records) | 350204 | 1577 | 3249 | 1577000000000000 | 63 |
 | `support/SignatureCheckerProbe` | test instrument: OZ SignatureChecker (Permit2-style ERC-1271) against a delegated P-256 account | PASS (4 records) | 303259 | 1346 | 2815 | 1346000000000000 | 74 |
+| `support/SignedIntentBook` | test instrument: state-changing ERC-1271 consumer (OZ SignatureChecker), relayed owner-key approvals, replay record | PASS (8 records) | 404594 | 1845 | 3753 | 1845000000000000 | 54 |
 | `support/TestToken` | test instrument: ERC20 fee/false-return/transfer callback observation | PASS (179 records) | 936507–956431 | 4442–4542 | 8837 | 4442000000000000–4542000000000000 | 22 |
 | `toolbox/AgentVending` | order/deliver/refund, role/amount/hash/deadline/double-pay, brake, callbacks | PASS (39 records) | 723128 | 3404 | 7028 | 3404000000000000 | 29 |
 | `toolbox/AllOrNothingCrowdfund` | contribute/refund/withdraw, failed/successful rounds, deadlines, brake, callbacks | PASS (41 records) | 767036 | 3622 | 7555 | 3622000000000000 | 27 |
@@ -117,7 +120,17 @@ Measured capacity: `NFT_CAPACITY burst=170 units=56780 slots=510 bytes=181390 st
 `crates/contracts-onchain/src/recorder.rs` records whole user workflows (native plan A0); see `crates/contracts-onchain/RECORDER.md`. Each record follows `crates/contracts-onchain/schema/workflow-record.v1.schema.json`. The runner writes the raw JSONL to `tmp/contracts-onchain-workflows.jsonl` and summarizes it here. Cold totals include setup (delegation, owner setup) and failed attempts; warm totals exclude the setup phase. Per-day figures are upper bounds at nominal one-second heights for the workflow alone.
 
 <!-- CONTRACTS-ONCHAIN-WORKFLOWS:BEGIN -->
-NOT RUN: no workflow records yet.
+7 workflow records; status: verified complete Rust run.
+
+| Workflow | Txs (failed) | User tx sigs | Typed sigs | Relayer txs | Cold units | Warm units | Cold floor fee (DBLN) | Failure fees (DBLN) | Warm/day at 10% / 50% / 100% refill (binding) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| `brake/reference-vault-latch` | 13 (3) | 8 | 0 | 5 | 898 | 898 | 0.000898 | 0.000054 | 307 (state_refill) / 1,539 (state_refill) / 3,078 (state_refill) |
+| `example/token-mint-transfer` | 3 (0) | 3 | 0 | 0 | 1926 | 349 | 0.001926 | 0.000000 | 792 (state_refill) / 3,961 (state_refill) / 7,922 (state_refill) |
+| `p256-added-owner-relay/pay-fresh-recipient` | 6 (2) | 2 | 3 | 4 | 694 | 314 | 0.000694 | 0.000052 | 880 (state_refill) / 4,402 (state_refill) / 8,805 (state_refill) |
+| `p256-erc1271/relayed-signed-intent` | 5 (3) | 1 | 1 | 4 | 247 | 202 | 0.000247 | 0.000072 | 1,368 (state_refill) / 6,843 (state_refill) / 13,687 (state_refill) |
+| `p256-self-batch/native-new+native-existing+erc20-new-holder` | 3 (1) | 3 | 0 | 0 | 327 | 282 | 0.000327 | 0.000036 | 980 (state_refill) / 4,902 (state_refill) / 9,804 (state_refill) |
+| `p256-separate-transactions/native-new+native-existing+erc20-new-holder` | 3 (0) | 3 | 0 | 0 | 257 | 257 | 0.000257 | 0.000000 | 1,075 (state_refill) / 5,378 (state_refill) / 10,757 (state_refill) |
+| `schema/drift` | 1 (0) | 1 | 0 | 0 | 16 | 16 | 0.000016 | 0.000000 | 17,280 (state_refill) / 86,400 (state_refill) / 172,800 (state_refill) |
 <!-- CONTRACTS-ONCHAIN-WORKFLOWS:END -->
 
 ## Capacity and protocol boundaries

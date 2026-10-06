@@ -4,6 +4,10 @@ out = "out"
 solc_version = "0.8.19"
 optimizer = true
 optimizer_runs = 200
+# The chain runs revm's OSAKA spec, which has the P256VERIFY precompile
+# (0x100) the account and its tests verify signatures with. solc 0.8.19 still
+# emits Paris-target bytecode, so the deployed bytes are unchanged.
+evm_version = "osaka"
 
 # Tests read the merkle fixture built by scripts/merkle-build.mjs.
 fs_permissions = [{ access = "read", path = "./test"}]

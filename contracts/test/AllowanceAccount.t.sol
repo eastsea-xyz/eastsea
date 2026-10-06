@@ -2,7 +2,8 @@
 pragma solidity ^0.8.19;
 
 import {AllowanceAccount} from "../base/AllowanceAccount.sol";
-import {LibP256, MockP256Verify} from "./EastSeaVault.t.sol";
+import {LibP256} from "./EastSeaVault.t.sol";
+import {P256Fallback} from "../base/P256Fallback.sol";
 
 interface VmAllowance {
     function warp(uint256) external;
@@ -123,10 +124,18 @@ contract AllowanceAccountTest {
     }
 
     function testP256FallbackAcceptReject() public {
-        setGuardian(); // No code at 0x100: actual Solidity fallback.
+        // This forge runs osaka, so 0x100 is the real precompile: it accepts a
+        // valid signature, and a rejection (empty output) drops to the
+        // Solidity fallback, which must reject too. The fallback's accept path
+        // (Anvil/older EVMs without 0x100) is checked on the library directly.
+        setGuardian();
         uint64 expiry = uint64(block.timestamp + 1 hours);
         bytes memory data = abi.encodeCall(account.cancelRecovery, ());
         bytes32 digest = account.ownerDigest(address(account), 0, data, 1, expiry);
+        (bytes32 r, bytes32 s) = LibP256.sign(OWNER, digest, 0x2002);
+        (bytes32 x, bytes32 y) = LibP256.derivePub(OWNER);
+        require(P256Fallback.verify(digest, r, s, x, y), "fallback accepts a valid signature");
+        require(!P256Fallback.verify(bytes32(uint256(digest) ^ 1), r, s, x, y), "fallback rejects another digest");
         bytes memory wrongSignature = sign(AGENT, digest);
         vm.expectRevert(abi.encodeWithSelector(AllowanceAccount.Unauthorized.selector));
         account.execute(address(account), 0, data, expiry, wrongSignature);
@@ -134,7 +143,6 @@ contract AllowanceAccountTest {
     }
 
     function testPrecompilePathAndHighSRejected() public {
-        vm.etch(address(0x100), type(MockP256Verify).runtimeCode);
         setGuardian();
         bytes memory data = abi.encodeCall(account.setGuardian, (key(GUARDIAN)));
         uint64 expiry = uint64(block.timestamp + 1 hours);

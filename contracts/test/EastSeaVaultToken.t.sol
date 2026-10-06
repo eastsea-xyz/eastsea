@@ -7,7 +7,7 @@ pragma solidity ^0.8.19;
 // execution the recipient's balance must actually rise by the amount.
 
 import {EastSeaVault, EastSeaVaultFactory} from "../src/EastSeaVault.sol";
-import {LibP256, MockP256Verify, Vm} from "./EastSeaVault.t.sol";
+import {LibP256, Vm} from "./EastSeaVault.t.sol";
 
 /// A dishonest token: has code, answers true, never moves a balance.
 contract VaultLiarToken {
@@ -49,8 +49,6 @@ contract EastSeaVaultTokenTest {
     address recipient = address(0xBEEF);
 
     function setUp() public {
-        // This forge's EVM predates RIP-7212: install an equivalent verifier at 0x100.
-        vm.etch(address(0x100), type(MockP256Verify).runtimeCode);
         factory = new EastSeaVaultFactory();
         EastSeaVault.Key[] memory ks = new EastSeaVault.Key[](2);
         (bytes32 x0, bytes32 y0) = LibP256.derivePub(D0);

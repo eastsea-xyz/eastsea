@@ -33,7 +33,7 @@ Time-sensitive flows advance block context and execute empty refill blocks. Once
 Every row includes successful paid deployment and undersized-budget refusal where its constructor is exercised. Randomness has no state-changing API. The descriptions enumerate implemented scenarios, not a proved exhaustive branch-coverage claim. Individual labels and selector assertions live in the test source; runtime records are produced under `tmp/` and consumed by the report generator. `unmeasured` means no passing real-executor evidence exists yet.
 
 <!-- CONTRACTS-ONCHAIN-TABLE:BEGIN -->
-Inventory: **41 compiled fixtures; 66 Rust test functions**. Status is verified complete Rust run.
+Inventory: **42 compiled fixtures; 68 Rust test functions**. Status is verified complete Rust run.
 
 Gas, state units, bytes and floor fee below describe successful wallet-budget deployments. Multiple constructor configurations are shown as ranges. Fits/block is a **ceiling** from execution, state, new-slot and logical receipt limits; the independent encoded-payload limit can lower it.
 
@@ -43,7 +43,7 @@ Gas, state units, bytes and floor fee below describe successful wallet-budget de
 | `core/AtomicSwapEVM` | same complete swap lifecycle and errors as AtomicSwap | PASS (33 records) | 791255 | 3747 | 7333 | 3747000000000000 | 26 |
 | `core/CommitteeRegistry` | signed attestation, registrar/caller/duplicate/cap/epoch/beacon; predeploy v2 compatibility | PASS (13 records) | 698818 | 3292 | 6477 | 3292000000000000 | 30 |
 | `core/CommitteeRegistryV3` | registration, beacon, leaving/back, epochs, reserve sentinel, registrar rotation/revocation | PASS (34 records) | 868772 | 4128 | 8051 | 4128000000000000 | 24 |
-| `core/EastSeaAccount` | 7702, owner/session/recovery mutations, P-256 signatures, limits, expiry, replay, revoke, F-05 | PASS (133 records) | 3404536 | 16599 | 31525 | 16599000000000000 | 6 |
+| `core/EastSeaAccount` | 7702, owner/session/recovery mutations, P-256 signatures, limits, expiry, replay, revoke, F-05, ERC-1271, NFT receive | PASS (136 records) | 3829321 | 18689 | 35459 | 18689000000000000 | 5 |
 | `core/EastSeaNames` | commit/reveal min/max age, register/clear/renew, transfer, records/reverse, grace, refund callbacks | PASS (93 records) | 1971055 | 9552 | 18261 | 9552000000000000 | 10 |
 | `core/EastSeaVault` | signed spend/proposal/approve/cancel/execute/settings, quorum/delay/nonce, token/native callbacks | PASS (53 records) | 2276562–2323067 | 10952–11154 | 21564–21628 | 10952000000000000–11154000000000000 | 8–9 |
 | `core/EastSeaVaultFactory` | predict/create, deterministic address, duplicate salt, invalid owner configuration | PASS (7 records) | 2666661 | 12979 | 24711 | 12979000000000000 | 7 |
@@ -54,8 +54,9 @@ Gas, state units, bytes and floor fee below describe successful wallet-budget de
 | `core/TokenBatch` | send; shape/zero/allowance/failure/taxed/self-recipient/delta checks, atomicity | PASS (14 records) | 368349 | 1666 | 3417 | 1666000000000000 | 60 |
 | `core/TokenLocker` | lock/extend/withdraw, caller/amount/token/time, taxed deposits, callbacks, retry | PASS (26 records) | 1022015 | 4882 | 9471 | 4882000000000000 | 20 |
 | `core/TokenVesting` | create/claim/cancel, cliff/end/permissions, taxed deposit, callbacks, uint256-max arithmetic | PASS (37 records) | 1163223 | 5575 | 10775 | 5575000000000000 | 17 |
-| `support/MarketNFT` | test instrument: ERC721 royalties/ERC165 failures and transfer failures | PASS (30 records) | 1173045 | 5573 | 10664 | 5573000000000000 | 17 |
+| `support/MarketNFT` | test instrument: ERC721 royalties/ERC165 failures and transfer failures | PASS (34 records) | 1173045 | 5573 | 10664 | 5573000000000000 | 17 |
 | `support/NativeCallback` | test instrument: native/NFT receive failure and callback forwarding/reentry observation | PASS (143 records) | 822929 | 3905 | 7631 | 3905000000000000 | 25 |
+| `support/SignatureCheckerProbe` | test instrument: OZ SignatureChecker (Permit2-style ERC-1271) against a delegated P-256 account | PASS (4 records) | 303259 | 1346 | 2815 | 1346000000000000 | 74 |
 | `support/TestToken` | test instrument: ERC20 fee/false-return/transfer callback observation | PASS (179 records) | 936507–956431 | 4442–4542 | 8837 | 4442000000000000–4542000000000000 | 22 |
 | `toolbox/AgentVending` | order/deliver/refund, role/amount/hash/deadline/double-pay, brake, callbacks | PASS (39 records) | 723128 | 3404 | 7028 | 3404000000000000 | 29 |
 | `toolbox/AllOrNothingCrowdfund` | contribute/refund/withdraw, failed/successful rounds, deadlines, brake, callbacks | PASS (41 records) | 767036 | 3622 | 7555 | 3622000000000000 | 27 |
@@ -81,7 +82,7 @@ Gas, state units, bytes and floor fee below describe successful wallet-budget de
 | `toolbox/SubscriptionManager` | subscribe/cancel/settleExpired/claimRevenue, dust/reserves/time/brake/callbacks, uint64/uint88 bounds | PASS (57 records) | 832023–832143 | 3942 | 7914 | 3942000000000000 | 25 |
 | `toolbox/TokenTimeLock` | lockFor/release, cliff/linear/end, recipient/amount/token/brake, completed-grant reuse | PASS (30 records) | 907159 | 4292 | 8450 | 4292000000000000 | 23 |
 
-Largest measured deployment: `core/EastSeaAccount` at 16,599 state units, 16.6% of the 100,000-unit burst (3,404,536 exec gas, 31,525 persisted bytes).
+Largest measured deployment: `core/EastSeaAccount` at 18,689 state units, 18.7% of the 100,000-unit burst (3,829,321 exec gas, 35,459 persisted bytes).
 
 Common actions (worst measured record of each case). Burst fits/block applies to a block with the full 100,000-unit state budget; sustained/day is the 32-unit-per-height refill (2,764,800 units/day) divided by state units, an upper bound only.
 

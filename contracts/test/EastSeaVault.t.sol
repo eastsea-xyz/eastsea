@@ -13,9 +13,9 @@ interface Vm {
 }
 
 /// P-256 for the roles the tests play: deriving owner keys and signing digests
-/// (the Secure Enclave's job in production), and the verification the 0x100
-/// precompile does — this forge's EVM predates RIP-7212, so setUp etches
-/// MockP256Verify there. Pinned against independently generated vectors in
+/// (the Secure Enclave's job in production); verification itself runs on the
+/// real P256VERIFY precompile at 0x100 (the forge EVM runs osaka, like the
+/// chain). Pinned against independently generated vectors in
 /// test_P256KnownVector. Jacobian arithmetic (EFD dbl-2001-b / add-2007-bl),
 /// inverses through the modexp precompile.
 library LibP256 {
@@ -157,19 +157,6 @@ library LibP256 {
     }
 }
 
-/// Stand-in for the RIP-7212 precompile: same input (digest, r, s, x, y) and
-/// output (32-byte 1/0) as the vault expects at address 0x100.
-contract MockP256Verify {
-    // Not "view": fallbacks may not be. The vault calls this in a static
-    // context, and nothing here writes state.
-    fallback(bytes calldata input) external returns (bytes memory) {
-        require(input.length == 160, "bad input");
-        (bytes32 digest, bytes32 r, bytes32 s, bytes32 x, bytes32 y) =
-            abi.decode(input, (bytes32, bytes32, bytes32, bytes32, bytes32));
-        return abi.encode(LibP256.verify(digest, r, s, x, y) ? 1 : 0);
-    }
-}
-
 contract ERC20Mock {
     mapping(address => uint256) public balanceOf;
 
@@ -243,8 +230,6 @@ contract EastSeaVaultTest {
     event Spent(uint256 indexed nonce, address indexed to, uint256 amount, uint256 indexed ownerIndex, uint128 spentToday);
 
     function setUp() public {
-        // This forge's EVM predates RIP-7212: install an equivalent verifier at 0x100.
-        vm.etch(address(0x100), type(MockP256Verify).runtimeCode);
         factory = new EastSeaVaultFactory();
         vault = EastSeaVault(payable(factory.create(_owners(), 2, 1 ether, 48 hours, bytes32(uint256(0x51)))));
         vm.deal(address(vault), 100 ether);
@@ -337,11 +322,14 @@ contract EastSeaVaultTest {
         // tampered digest (a different message) must fail
         assertTrue(!LibP256.verify(bytes32(uint256(z) + 1), r, s, px, py));
 
-        // ... and through the etched 0x100, which is what the vault actually calls
+        // ... and through the real 0x100 precompile, which is what the vault actually calls
         (bool ok, bytes memory out) = address(0x100).staticcall(abi.encodePacked(z, r, s, px, py));
-        assertTrue(ok && abi.decode(out, (uint256)) == 1);
+        assertTrue(ok && out.length == 32 && abi.decode(out, (uint256)) == 1);
+        // a tampered digest fails; the precompile answers a rejection with
+        // empty return data, which the vault's `out.length == 32` check reads
+        // as "not verified"
         (ok, out) = address(0x100).staticcall(abi.encodePacked(bytes32(uint256(z) + 1), r, s, px, py));
-        assertTrue(ok && abi.decode(out, (uint256)) == 0);
+        assertTrue(ok && (out.length != 32 || abi.decode(out, (uint256)) == 0));
     }
 
     // ---- one owner, within the daily limit ----

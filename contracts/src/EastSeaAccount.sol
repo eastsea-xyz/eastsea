@@ -15,6 +15,18 @@ pragma solidity ^0.8.19;
 /// Session keys pay native transfers or explicitly configured ERC-20 transfers.
 /// A compromised agent may still spend within the owner's limits.
 ///
+/// ERC-1271 (docs/design/09-wallet.md): `isValidSignature` accepts only owner
+/// keys — the account's original device key (recognised because its chain
+/// address IS this account) and the keys recovery added as owners. The signed
+/// message is bound to this account and chain through an EIP-712 domain, so one
+/// key's signature cannot be replayed for another account or chain. Default
+/// deny for every other key: a guardian may only propose recovery and a
+/// session key may only pay inside its limits, so both are refused here even
+/// though the account stores their public keys.
+///
+/// Token receiver hooks (ERC-721/ERC-1155) let delegated accounts receive
+/// `safeTransferFrom`, `_safeMint` and ERC-1155 sends like any wallet.
+///
 /// Limit: EIP-7702 cannot revoke the account's original key. Recovery is for a
 /// lost key; whoever holds a stolen original key can still move funds.
 contract EastSeaAccount {
@@ -76,6 +88,20 @@ contract EastSeaAccount {
     uint256 constant MAX_SESSIONS = 8;
     uint256 constant MAX_ALLOWED = 16;
     bytes4 constant TRANSFER_SELECTOR = 0xa9059cbb;
+    /// ERC-1271 magic values: the standard `isValidSignature(bytes32,bytes)`
+    /// selector and the pre-standard `isValidSignature(bytes,bytes)` one.
+    bytes4 constant ERC1271_MAGIC = 0x1626ba7e;
+    bytes4 constant ERC1271_LEGACY_MAGIC = 0x20c13b0b;
+    bytes4 constant ERC1271_INVALID = 0xffffffff;
+    bytes32 constant EIP712_DOMAIN_TYPEHASH =
+        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+    bytes32 constant SIG_NAME_HASH = keccak256("EastSeaAccount");
+    bytes32 constant SIG_VERSION_HASH = keccak256("2");
+    /// Typed-data shell that wraps whatever hash a verifier passes, so the
+    /// digest an owner key signs always names this account and chain.
+    bytes32 constant SIG_CONTENTS_TYPEHASH = keccak256("Contents(bytes32 contents)");
+    /// Half the P-256 group order: larger `s` values are the malleable twin.
+    uint256 constant P256_N_HALF = 0x7fffffff800000007fffffffffffffffde737d56d38bcf4279dce5617e3192a8;
 
     /// Storage lives in the delegating account itself, so use a namespaced slot
     /// (ERC-7201) no other code at this address will collide with:
@@ -476,6 +502,105 @@ contract EastSeaAccount {
             if (allow[i] == to) return true;
         }
         return false;
+    }
+
+    // ---- ERC-1271 signatures by owner keys (Permit2, Seaport, ... relays) ----
+
+    /// The EIP-712 message an owner key signs for `hash`:
+    /// "\x19\x01" ‖ domainSeparator ‖ keccak256(abi.encode(CONTENTS_TYPEHASH, hash)),
+    /// with domain {name "EastSeaAccount", version "2", chainId, verifyingContract
+    /// = this account}. It names one account on one chain, so a signature made
+    /// for account A (or chain 1) is worthless for account B (or chain 137) even
+    /// when both share an owner key.
+    function signatureMessage(bytes32 hash) public view returns (bytes memory) {
+        bytes32 domainSeparator =
+            keccak256(abi.encode(EIP712_DOMAIN_TYPEHASH, SIG_NAME_HASH, SIG_VERSION_HASH, block.chainid, address(this)));
+        return abi.encodePacked("\x19\x01", domainSeparator, keccak256(abi.encode(SIG_CONTENTS_TYPEHASH, hash)));
+    }
+
+    /// The digest P256VERIFY checks: SHA-256 of `signatureMessage(hash)`. Like
+    /// `ownerDigest` and `sessionDigest`, this is what the Secure Enclave's
+    /// `signature(for: message)` signs (ECDSA over SHA-256 of the message).
+    function signatureDigest(bytes32 hash) public view returns (bytes32) {
+        return sha256(signatureMessage(hash));
+    }
+
+    /// ERC-1271. Valid only for a low-s P-256 signature by an owner key:
+    /// - the account's original device key: the key whose chain address
+    ///   keccak256(0x01 ‖ SEC1-compressed key)[12:] (crates/crypto `address_of`)
+    ///   is this account — no registration needed; or
+    /// - a key recovery added as an owner (it can already drive any call via
+    ///   `ownerExecute`, so signing messages is no new power).
+    /// Default deny for everyone else: guardians may only propose a delayed
+    /// recovery and session keys may only pay inside their limits, and no
+    /// session limit grants message signing, so a guardian or session key
+    /// signature is always refused even though the account stores those keys.
+    /// A signature blob is `r ‖ s ‖ x ‖ y` (128 bytes); anything else returns
+    /// `0xffffffff` instead of reverting, so OZ `SignatureChecker` callers see a
+    /// plain invalid.
+    function isValidSignature(bytes32 hash, bytes calldata signature) external view returns (bytes4) {
+        return _checkSignature(hash, signature) ? ERC1271_MAGIC : ERC1271_INVALID;
+    }
+
+    /// The pre-standard `isValidSignature(bytes,bytes)` (selector and magic
+    /// 0x20c13b0b). The data must be the 32-byte hash, exactly as the standard
+    /// form takes it (Safe's convention for 32-byte data); other lengths are
+    /// invalid, so the two forms can never disagree about what was signed.
+    function isValidSignature(bytes calldata data, bytes calldata signature) external view returns (bytes4) {
+        if (data.length != 32) return ERC1271_INVALID;
+        return _checkSignature(bytes32(data), signature) ? ERC1271_LEGACY_MAGIC : ERC1271_INVALID;
+    }
+
+    function _checkSignature(bytes32 hash, bytes calldata signature) private view returns (bool) {
+        if (signature.length != 128) return false;
+        bytes32 s = bytes32(signature[32:64]);
+        // Low-s only, like every P-256 signature the chain accepts: one
+        // signature per message, so no verifier can be shown a second "fresh" one.
+        if (uint256(s) > P256_N_HALF) return false;
+        Key memory k = Key(bytes32(signature[64:96]), bytes32(signature[96:128]));
+        // P256VERIFY also rejects a point that is not on the curve.
+        if (!_verify(signatureDigest(hash), bytes32(signature[0:32]), s, k)) return false;
+        if (_p256Address(k) == address(this)) return true;
+        State storage st = _state();
+        for (uint256 i = 0; i < st.owners.length; i++) {
+            if (st.owners[i].x == k.x && st.owners[i].y == k.y) return true;
+        }
+        return false;
+    }
+
+    /// The chain address of a P-256 key: keccak256(scheme 0x01 ‖ 0x02/0x03 by
+    /// y's parity ‖ x)[12:] — the 33-byte compressed key the envelope carries.
+    function _p256Address(Key memory k) private pure returns (address) {
+        bytes1 prefix = uint256(k.y) & 1 == 0 ? bytes1(0x02) : bytes1(0x03);
+        return address(uint160(uint256(keccak256(abi.encodePacked(uint8(1), prefix, k.x)))));
+    }
+
+    // ---- token receiver hooks (ERC-721 / ERC-1155 safe transfers) ----
+
+    /// Pure hooks: a delegated account accepts NFTs and ERC-1155s sent with
+    /// `safeTransferFrom` / `safeBatchTransferFrom` and `_safeMint`. They
+    /// change no state and authorise nothing — receiving is not spending.
+    function onERC721Received(address, address, uint256, bytes calldata) external pure returns (bytes4) {
+        return 0x150b7a02; // this.onERC721Received.selector
+    }
+
+    function onERC1155Received(address, address, uint256, uint256, bytes calldata) external pure returns (bytes4) {
+        return 0xf23a6e61; // this.onERC1155Received.selector
+    }
+
+    function onERC1155BatchReceived(address, address, uint256[] calldata, uint256[] calldata, bytes calldata)
+        external
+        pure
+        returns (bytes4)
+    {
+        return 0xbc197c81; // this.onERC1155BatchReceived.selector
+    }
+
+    /// ERC-165: ERC-165 itself, ERC-1271, and the ERC-721/ERC-1155 receiver
+    /// interfaces (0x4e2312e0 covers both ERC-1155 hooks).
+    function supportsInterface(bytes4 interfaceId) external pure returns (bool) {
+        return interfaceId == 0x01ffc9a7 || interfaceId == 0x1626ba7e || interfaceId == 0x150b7a02
+            || interfaceId == 0x4e2312e0;
     }
 
     receive() external payable {}

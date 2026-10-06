@@ -467,6 +467,8 @@ async fn single(st: &RpcState, req: Value) -> Value {
         "aether_getFinalized" => finalized(st, &params).await,
         "eth_call" => eth_call(st, &params, if st.public_read_only { PUBLIC_CALL_GAS } else { PRIVATE_CALL_GAS }).await,
         "aether_getReceiptProof" => receipt_proof(st, &params).await,
+        "aether_historyProof" => history_proof(st, &params).await,
+        "aether_eraProof" => era_proof(st, &params).await,
         "aether_snapshot" => snapshot_manifest(st).await,
         "aether_registerDevice" => register_device(st, &params).await,
         "aether_sendBeacon" => send_beacon(st, &params).await,
@@ -599,9 +601,19 @@ async fn old_block(st: &RpcState, p: &Value) -> RpcResult {
     use commonware_cryptography::Digestible;
     let h: u64 = param(p, 0)?;
     let chain = st.chain.clone();
+    // Every re-read of a pruned block below runs on a blocking worker that
+    // carries a history-budget slot (pre-audit 7b PA7B-04): reconstructing
+    // retained history decompresses era files back into memory, and the
+    // public gateway bounds how many strangers may trigger that at once.
     let mut read = {
         let c = chain.clone();
-        tokio::task::spawn_blocking(move || c.old_block(h)).await.map_err(|e| (-32000, e.to_string()))?
+        let budget = history_slot(st)?;
+        tokio::task::spawn_blocking(move || {
+            let _held = budget;
+            c.old_block(h)
+        })
+        .await
+        .map_err(|e| (-32000, e.to_string()))?
     };
     if let (Err(_), Some(up)) = (&read, &st.upstream) {
         // Public history reads stay local-only (pre-audit 7 PA7-04): fetching
@@ -612,7 +624,13 @@ async fn old_block(st: &RpcState, p: &Value) -> RpcResult {
         if !st.public_read_only {
             let era = h / aether_state::mmr::ERA_LEN;
             crate::era_net::fetch_into(&chain, up, era).await.map_err(|e| (-32000, e))?;
-            read = tokio::task::spawn_blocking(move || chain.old_block(h)).await.map_err(|e| (-32000, e.to_string()))?;
+            let budget = history_slot(st)?;
+            read = tokio::task::spawn_blocking(move || {
+                let _held = budget;
+                chain.old_block(h)
+            })
+            .await
+            .map_err(|e| (-32000, e.to_string()))?;
         }
     }
     let b = read.map_err(|e| (-32001, e))?;
@@ -624,8 +642,22 @@ async fn old_block(st: &RpcState, p: &Value) -> RpcResult {
     let state_root = match state_root {
         Some(r) => Some(r),
         None => {
+            // Best-effort enrichment (the answer stands without it): it still
+            // re-reads an era file, so it takes the budget too, and a spent
+            // budget skips it rather than failing the whole answer.
             let c = st.chain.clone();
-            tokio::task::spawn_blocking(move || c.old_block(h + 1)).await.ok().and_then(Result::ok).and_then(|n| n.payload()).map(|p| p.parent_state_root)
+            match history_slot(st) {
+                Ok(budget) => tokio::task::spawn_blocking(move || {
+                    let _held = budget;
+                    c.old_block(h + 1)
+                })
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .and_then(|n| n.payload())
+                .map(|p| p.parent_state_root),
+                Err(_) => None,
+            }
         }
     };
     Ok(json!({
@@ -642,6 +674,45 @@ async fn old_block(st: &RpcState, p: &Value) -> RpcResult {
         "pruned": true,
         "block": aether_light::to_hex(&b.encode()),
     }))
+}
+
+/// Inclusion of block `height` in the history under block `anchor`'s
+/// history root (`aether_light::verify_history`). Async (pre-audit 7b
+/// PA7B-04): proving under an anchor re-reads retained history from disk,
+/// so the work runs on a blocking worker that carries a history-budget
+/// slot — on the public gateway a spent budget is a busy error, never a
+/// queue of strangers' era-file reads.
+async fn history_proof(st: &RpcState, p: &Value) -> RpcResult {
+    let height: u64 = param(p, 0)?;
+    let anchor: u64 = param(p, 1)?;
+    let chain = st.chain.clone();
+    let budget = history_slot(st)?;
+    let (proof, hash) = tokio::task::spawn_blocking(move || {
+        let _held = budget;
+        chain.history_proof(height, anchor)
+    })
+    .await
+    .map_err(|e| (-32000, e.to_string()))?
+    .map_err(|e| (if e.starts_with("need") { -32602 } else { -32000 }, e))?;
+    Ok(json!({ "height": height, "hash": hash, "anchor": anchor, "proof": proof }))
+}
+
+/// The era's root under block `anchor`'s history root
+/// (`aether_light::verify_era_root`), on the same budgeted worker as
+/// `history_proof` (pre-audit 7b PA7B-04).
+async fn era_proof(st: &RpcState, p: &Value) -> RpcResult {
+    let era: u64 = param(p, 0)?;
+    let anchor: u64 = param(p, 1)?;
+    let chain = st.chain.clone();
+    let budget = history_slot(st)?;
+    let proof = tokio::task::spawn_blocking(move || {
+        let _held = budget;
+        chain.era_proof(era, anchor)
+    })
+    .await
+    .map_err(|e| (-32000, e.to_string()))?
+    .map_err(|e| (if e.starts_with("need") { -32602 } else { -32000 }, e))?;
+    Ok(json!({ "era": era, "anchor": anchor, "proof": proof }))
 }
 
 /// `[device_token (base64), operator, validator_key (hex 32), node_id (hex 32), beaconer, ownership (hex)]`
@@ -855,15 +926,6 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
             let end = (start + SNAPSHOT_CHUNK).min(bytes.len());
             Ok(json!({ "data": hex::encode(&bytes[start..end]) }))
         }
-        // Inclusion of block `height` in the history under block `anchor`'s
-        // history root (`aether_light::verify_history`).
-        "aether_historyProof" => {
-            let height: u64 = param(p, 0)?;
-            let anchor: u64 = param(p, 1)?;
-            let code = |e: &String| if e.starts_with("need") { -32602 } else { -32000 };
-            let (proof, hash) = chain.history_proof(height, anchor).map_err(|e| (code(&e), e))?;
-            Ok(json!({ "height": height, "hash": hash, "anchor": anchor, "proof": proof }))
-        }
         // What history this node keeps (roadmap B4).
         "aether_history" => {
             let g = chain.lock();
@@ -880,13 +942,6 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
             let index: usize = param(p, 1)?;
             let s = chain.store().ok_or((-32000, "no store".to_string()))?;
             crate::era_net::chunk(&s, era, index).map_err(|e| (-32000, e))
-        }
-        // The era's root under block `anchor`'s history root (`aether_light::verify_era_root`).
-        "aether_eraProof" => {
-            let era: u64 = param(p, 0)?;
-            let anchor: u64 = param(p, 1)?;
-            let proof = chain.era_proof(era, anchor).map_err(|e| (if e.starts_with("need") { -32602 } else { -32000 }, e))?;
-            Ok(json!({ "era": era, "anchor": anchor, "proof": proof }))
         }
         // This node's shard of an era (roadmap B5 phase 1): the shard bytes,
         // their commitment and the candidate answering. A peer checks the
@@ -1389,6 +1444,16 @@ mod public_read_tests {
         CLAIM.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Same discipline for HISTORY_WORK (pre-audit 7b PA7B-04): every test
+    /// that fires a history-reconstructing read (a pruned getBlock, a
+    /// historyProof, an eraProof) shares the budget with the test that fills
+    /// it on purpose. Always claim the CALL budget first when a test needs
+    /// both — one ordering, no cross-lock deadlock.
+    fn claim_history_budget() -> std::sync::MutexGuard<'static, ()> {
+        static CLAIM: Mutex<()> = Mutex::new(());
+        CLAIM.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Every write, node-local and heavy method is refused before its handler
     /// runs — the gateway can neither relay a transaction nor trigger node-side
     /// work. Aliased spellings are refused too (the gate runs after normalize).
@@ -1442,6 +1507,7 @@ mod public_read_tests {
     #[test]
     fn allowlisted_reads_pass_the_gate() {
         let _calls = claim_call_budget();
+        let _history = claim_history_budget();
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let st = public_state();
         let reads = [
@@ -1547,6 +1613,7 @@ mod public_read_tests {
     /// process-wide panic hook turns that into a node exit, not an error.
     #[test]
     fn a_maximum_era_proof_ask_errors_rather_than_panicking() {
+        let _history = claim_history_budget();
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         // The public gateway is the boundary an out-of-domain ask actually
         // crosses; privately the same era must answer the same error.
@@ -1575,6 +1642,7 @@ mod public_read_tests {
     /// fetched (here: connection refused to a dead upstream → -32000).
     #[test]
     fn public_reads_never_fetch_history_from_upstream() {
+        let _history = claim_history_budget();
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let mut st = public_state();
         // A pruned height whose era this node does not hold, and an upstream
@@ -1929,6 +1997,54 @@ mod public_read_tests {
         });
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// Public history reconstruction is capped (pre-audit 7b PA7B-04): a
+    /// pruned `aether_getBlock`, `aether_historyProof` and `aether_eraProof`
+    /// each re-read era files back from disk, and one stranger's request
+    /// triggers it — the old code ran as many at once as strangers asked,
+    /// stacking whole-era decompressions on the machine. With the budget
+    /// deliberately full, every one of the three is refused with a busy
+    /// gateway error; privately the same asks never wait on the public
+    /// budget.
+    #[test]
+    fn public_history_reconstruction_is_capped() {
+        struct ResetBudget;
+        impl Drop for ResetBudget {
+            fn drop(&mut self) {
+                HISTORY_WORK.store(0, Ordering::Release);
+            }
+        }
+        // Share the serialization with every other history-budget test: this
+        // one fills HISTORY_WORK on purpose, and without the claim it races
+        // any test firing a history read in parallel.
+        let _history = claim_history_budget();
+        let _reset = ResetBudget;
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let mut st = public_state();
+        st.chain.lock().pruned_below = aether_state::mmr::ERA_LEN * 3;
+        HISTORY_WORK.store(MAX_HISTORY_WORK, Ordering::Release);
+        // The three history-reconstructing reads, all refused while the
+        // budget is full of other strangers' reconstructions.
+        let reads = [
+            ("aether_getBlock", json!([100])),
+            ("aether_historyProof", json!([0, 0])),
+            ("aether_eraProof", json!([0, 0])),
+        ];
+        for (method, params) in &reads {
+            let answer = rt.block_on(call(&st, method, params.clone()));
+            assert_eq!(answer["error"]["code"], -32002, "{method} must be refused while the history budget is full: {answer}");
+            assert!(gate_error(&answer), "{method} busy refusal names the gateway: {answer}");
+        }
+        // Privately the same asks run unbounded (their answers on this bare
+        // chain are its usual local errors, never the public busy gate).
+        let mut private = bare_state();
+        private.chain.lock().pruned_below = aether_state::mmr::ERA_LEN * 3;
+        for (method, params) in &reads {
+            let answer = rt.block_on(call(&private, method, params.clone()));
+            assert_ne!(answer["error"]["code"], -32002, "{method} privately never waits on the public budget: {answer}");
+            assert!(!gate_error(&answer), "{method} privately is not the gateway's refusal: {answer}");
+        }
+    }
 }
 
 /// A block proof: validators verify it and keep it for their proposals;
@@ -1964,6 +2080,26 @@ const PRIVATE_CALL_GAS: u64 = 1 << 24;
 /// whatever each one's gas says.
 const MAX_PUBLIC_CALLS: usize = 4;
 static PUBLIC_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+/// Concurrent public retained-history reconstructions (pre-audit 7b
+/// PA7B-04): a pruned `aether_getBlock`, an `aether_historyProof` and an
+/// `aether_eraProof` each re-read era files from disk (decompressing whole
+/// eras back into memory), work one stranger's request triggers — so the
+/// gateway bounds how many run at once; privately the node does its own
+/// reading unbounded, as before.
+const MAX_HISTORY_WORK: usize = 4;
+static HISTORY_WORK: AtomicUsize = AtomicUsize::new(0);
+
+/// A slot in the public history budget: acquire-or-refuse on the gateway,
+/// never a wait on the private listener.
+fn history_slot(st: &RpcState) -> Result<BudgetSlot, (i64, String)> {
+    if st.public_read_only {
+        BudgetSlot::acquire(&HISTORY_WORK, MAX_HISTORY_WORK)
+            .ok_or((-32002, "public read-only gateway: too many concurrent history reconstructions; retry shortly".to_string()))
+    } else {
+        Ok(BudgetSlot::acquire(&HISTORY_WORK, usize::MAX).expect("usize::MAX budget never refuses"))
+    }
+}
 
 /// eth_call on the finalized state (no fees, nothing committed).
 /// The state is the SHARED immutable snapshot (an Arc clone under the

@@ -20,3 +20,11 @@ mod payments;
 mod recorder;
 #[path = "contracts_onchain/resources.rs"]
 mod resources;
+#[path = "contracts_onchain/native_b_common.rs"]
+mod native_b_common;
+#[path = "contracts_onchain/native_b_claims.rs"]
+mod native_b_claims;
+#[path = "contracts_onchain/native_b_streams.rs"]
+mod native_b_streams;
+#[path = "contracts_onchain/native_b_escrow.rs"]
+mod native_b_escrow;

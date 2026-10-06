@@ -1,0 +1,14 @@
+# Uniswap MerkleDistributor, unmodified, with the upstream compiler settings
+# (hardhat.config.ts at the pinned commit): solc 0.8.17, optimizer 5,000.
+# GPL-3.0-or-later: see LICENSE and README.md in this folder.
+[profile.default]
+src = "src"
+out = "out"
+cache_path = "cache"
+solc_version = "0.8.17"
+optimizer = true
+optimizer_runs = 5000
+remappings = ["@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/"]
+
+[lint]
+lint_on_build = false

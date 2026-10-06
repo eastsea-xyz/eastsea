@@ -1510,6 +1510,34 @@ mod public_read_tests {
         assert!(gate_error(&gate), "{gate}");
     }
 
+    /// An out-of-domain era is an ordinary error, never an overflow panic
+    /// (pre-audit 7b PA7B-02): `aether_eraProof` is public-allowlisted and
+    /// takes a caller-supplied `u64` era; with overflow checks on (debug
+    /// builds, `--release` with checks), the old `(era + 1) * ERA_LEN`
+    /// panicked on the maximum era before any proof work ran — and the
+    /// process-wide panic hook turns that into a node exit, not an error.
+    #[test]
+    fn a_maximum_era_proof_ask_errors_rather_than_panicking() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        // The public gateway is the boundary an out-of-domain ask actually
+        // crosses; privately the same era must answer the same error.
+        for st in [public_state(), bare_state()] {
+            let answer = rt.block_on(call(&st, "aether_eraProof", json!([u64::MAX, 0])));
+            assert_eq!(
+                answer["error"]["code"], -32602,
+                "the maximum era is out of domain — an error, never a panic: {answer}"
+            );
+            // One below the boundary behaves the same: any era whose end
+            // overflows u64 is rejected before the multiply matters.
+            let near = rt.block_on(call(&st, "aether_eraProof", json!([u64::MAX - 1, 0])));
+            assert!(near["error"].is_object(), "an overflowing era errors, never panics: {near}");
+        }
+        // An anchor at its own maximum is refused by the head check first.
+        let st = public_state();
+        let answer = rt.block_on(call(&st, "aether_eraProof", json!([0, u64::MAX])));
+        assert_eq!(answer["error"]["code"], -32602, "{answer}");
+    }
+
     /// A public history read never fetches an era from upstream (pre-audit 7
     /// PA7-04): old_block's self-healing fetch calls fetch_into, which SAVES
     /// the whole era file into this node's store — a stranger asking for

@@ -604,3 +604,35 @@ fn a_spent_state_budget_refusal_says_state_budget_and_when_to_retry() {
     let err = aether_execution::check_admission_cost(&state, &tight, &tx).unwrap_err();
     assert!(!err.contains("state budget"), "{err}");
 }
+
+/// Live run 2026-10-06: the wallet transfer path signed exactly 21,000 exec
+/// gas whatever the recipient, so a plain send to a contract with a receive()
+/// — or to an account the wallet itself had 7702-delegated to EastSeaAccount —
+/// was included, failed out of gas and was charged. The wallet now sizes the
+/// limit from the recipient's code.
+#[test]
+fn a_plain_transfer_to_code_needs_more_than_21000_and_the_wallet_signs_it() {
+    use aether_execution::plain_transfer_gas_limit;
+    // PUSH1 1 PUSH1 0 STOP: six gas of code, like an empty Solidity receive().
+    const RECEIVER: Address = Address::repeat_byte(0x55);
+    const CODE: &[u8] = &[0x60, 0x01, 0x60, 0x00, 0x00];
+    let s = signer(11);
+    let mut state = WorldState::default();
+    state
+        .set_balance(addr(&s), U256::from(10u128.pow(20)))
+        .unwrap();
+    state.set_code(RECEIVER, Bytes::from_static(CODE)).unwrap();
+
+    assert_eq!(plain_transfer_gas_limit(&[]), 21_000, "an ordinary account keeps the intrinsic limit");
+    let delegated = [&[0xef, 0x01, 0x00][..], &[0x77; 20][..]].concat();
+    assert!(plain_transfer_gas_limit(&delegated) > 21_000, "a 7702-delegated account has code");
+
+    let short = signed(&s, 0, 200, Some(RECEIVER), Bytes::new(), 21_000);
+    let out = execute_block(&state, &ctx(1), std::slice::from_ref(&short)).unwrap();
+    assert!(!out.receipts[0].success, "21,000 cannot run any recipient code");
+
+    let gas = plain_transfer_gas_limit(CODE);
+    let sized = signed(&s, 1, 200, Some(RECEIVER), Bytes::new(), gas);
+    let out = execute_block(&out.state, &ctx(2), std::slice::from_ref(&sized)).unwrap();
+    assert!(out.receipts[0].success, "the code-sized limit pays for the recipient's code");
+}

@@ -1209,7 +1209,15 @@ fn main() {
         Cmd::Status { rpc } => call(&rpc, "aether_status", json!([])).map(|v| println!("{}", pretty(&v))),
         Cmd::Blocks { rpc, n } => call(&rpc, "aether_recentBlocks", json!([n])).map(|v| print_blocks(&v)),
         Cmd::Send { rpc, from_dev, to, value, nonce, wait } => {
-            submit(&rpc, from_dev, nonce, EvmCall { to: Some(to), value, input: Bytes::new(), gas_limit: 21_000, delegate: None }, wait).map(|_| ())
+            // Like the wallet (ffi `prepare_transfer`): a recipient with code —
+            // a contract's receive() or a 7702-delegated account — needs more
+            // than the intrinsic 21,000, or the transfer fails and still pays.
+            let code = call(&rpc, "eth_getCode", json!([to, "latest"]))
+                .ok()
+                .and_then(|v| v.as_str().and_then(|h| alloy_primitives::hex::decode(h.trim_start_matches("0x")).ok()))
+                .unwrap_or_default();
+            let gas_limit = aether_execution::plain_transfer_gas_limit(&code);
+            submit(&rpc, from_dev, nonce, EvmCall { to: Some(to), value, input: Bytes::new(), gas_limit, delegate: None }, wait).map(|_| ())
         }
         Cmd::Batch { rpc, from_dev, to, value, wait } => (|| {
             let signer = P256Signer::from_seed(&dev_seed(from_dev)).map_err(|e| e.to_string())?;

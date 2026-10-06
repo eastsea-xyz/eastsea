@@ -18,7 +18,7 @@ pub use block::{
     ProveGasMeter, Receipt,
 };
 pub use fees::{FeePolicy, Settlement, FEE_COLLECTOR, PROVER_ESCROW};
-pub use tx::{recommended_state_budget, sign_call, sign_call_group, sign_call_with, tx_hash, validate_stateless, EvmCall, TxError};
+pub use tx::{plain_transfer_gas_limit, recommended_state_budget, sign_call, sign_call_group, sign_call_with, tx_hash, validate_stateless, EvmCall, TxError};
 pub use world::{ChainHasher, Journal, StateError, StateWitness, WorldState};
 
 /// Where the account contract lives (predeployed at genesis). Accounts delegate

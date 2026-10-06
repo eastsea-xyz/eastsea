@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeTx, describeCall, originAllowed, MAX_GAS } from '../src/lib/methods.js';
+import { normalizeTx, withTransferGas, CODE_RECIPIENT_TRANSFER_GAS, describeCall, originAllowed, MAX_GAS } from '../src/lib/methods.js';
 
 const TO = '0x00000000000000000000000000000000000000aa';
 
@@ -38,4 +38,17 @@ test('only https and this computer may connect', () => {
   assert.ok(!originAllowed('http://evil.example'));
   assert.ok(!originAllowed('file:///tmp/x.html'));
   assert.ok(!originAllowed('null'));
+});
+
+test('a plain transfer to code gets more than the 21,000 default (live run 2026-10-06)', () => {
+  const plain = normalizeTx({ to: TO, value: '0x1' });
+  assert.equal(plain.gas, 0, 'unset: the builder would sign 21,000');
+  assert.equal(withTransferGas(plain, '0x').gas, 0, 'an ordinary account keeps the default');
+  assert.equal(withTransferGas(plain, '0x6080604052').gas, CODE_RECIPIENT_TRANSFER_GAS, 'a contract receive()');
+  const delegated = '0xef0100' + '77'.repeat(20);
+  assert.equal(withTransferGas(plain, delegated).gas, CODE_RECIPIENT_TRANSFER_GAS, 'a 7702-delegated account');
+  assert.equal(withTransferGas({ ...plain, gas: 30_000 }, '0x60').gas, 30_000, "a page's explicit gas wins");
+  const call = normalizeTx({ to: TO, data: '0xa9059cbb' });
+  assert.equal(withTransferGas(call, '0x60').gas, 0, 'calls keep the builder default');
+  assert.equal(withTransferGas(plain, undefined).gas, 0, 'no answer: unchanged');
 });

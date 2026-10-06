@@ -18,6 +18,7 @@
 		16504A4054237817545767F0 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B38A846EB23F0C4A52BF8A78 /* ContentView.swift */; };
 		1B66F9FC578D265748C295D1 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = B60F2ADE6BD15611D4BD0811 /* Theme.swift */; };
 		1BA7A78F249B5426DD6B684F /* BalanceHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82F0B4CA90E38B66B43592E6 /* BalanceHistory.swift */; };
+		1CC133C57B599BA2B10B7D4A /* ResendIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 424591AA2690FB9457CF62DA /* ResendIntent.swift */; };
 		1FFA6C892411F8AE3F9469F0 /* BrowserController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7205378BF9586CD3564801A2 /* BrowserController.swift */; };
 		2120D978A2E422529EDEAA37 /* NodeWatchdog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51F3FF6BB1FEAEB9503220A4 /* NodeWatchdog.swift */; };
 		25F80E2C53EE43CAED9D6337 /* UnattendedDaemon.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3A8FA742CB5B69B0DF19B00 /* UnattendedDaemon.swift */; };
@@ -89,6 +90,7 @@
 		A2A5F0B2C7CAB05F6D6A44A8 /* KeyExposureNotice.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3F0D8C24FB04C8F14C379CF /* KeyExposureNotice.swift */; };
 		A51800452172EB3E988FBA9D /* ExploreTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99CD9ED9C56D37F24017E7D1 /* ExploreTab.swift */; };
 		A6411E9B1827C2B1B6D286AE /* ProverFlags.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94E4B4A2A4BDBBBBC6A12600 /* ProverFlags.swift */; };
+		A92FEDE9AA150A6ACA8C92A2 /* ResendIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 424591AA2690FB9457CF62DA /* ResendIntent.swift */; };
 		A98EABE0AC6AB4C359623E7E /* BalanceBreakdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1F6F75149EAAFD83802065B /* BalanceBreakdown.swift */; };
 		A9AB518F8F246CB2A0974398 /* Earnings.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6C1B75440E8A6A577BD467E /* Earnings.swift */; };
 		ADEEA18CEEC7A29BDFBB47BB /* NetworkPaused.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B632CFC2DA1179CC9EAD01D /* NetworkPaused.swift */; };
@@ -157,6 +159,7 @@
 		3C192196B8C44174CC74F27E /* Clock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Clock.swift; sourceTree = "<group>"; };
 		3CA691B4DF93F089CF5537C7 /* HealthCheck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthCheck.swift; sourceTree = "<group>"; };
 		407C3252EC0DD6F886E76AE7 /* BundledPageScheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BundledPageScheme.swift; sourceTree = "<group>"; };
+		424591AA2690FB9457CF62DA /* ResendIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResendIntent.swift; sourceTree = "<group>"; };
 		462C807FB20A46B9919AE925 /* Spinners.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Spinners.swift; sourceTree = "<group>"; };
 		4BC12AF79B32D90A48860251 /* aether_ffi.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = aether_ffi.swift; sourceTree = "<group>"; };
 		51F3FF6BB1FEAEB9503220A4 /* NodeWatchdog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeWatchdog.swift; sourceTree = "<group>"; };
@@ -286,6 +289,7 @@
 				9DEBCE5EA044F272C9EA406C /* ProverMenu.swift */,
 				AB4C9843D1CF8E29F627927D /* ReleaseApproval.swift */,
 				9D1303552378BB828A2C9D21 /* ReleaseUpdateGate.swift */,
+				424591AA2690FB9457CF62DA /* ResendIntent.swift */,
 				C3A70AF889C5ACB1DDB2AF45 /* ResizeBenchmark.swift */,
 				C56EEFC753370BDE2960BE52 /* ResourcesSettings.swift */,
 				0BCD0FCE195D7296CBCA13E9 /* SimpleDashboard.swift */,
@@ -533,6 +537,7 @@
 				5D11F92088FEABAA0085ADCD /* ProverMenu.swift in Sources */,
 				A079B1CBD1001C06EF207650 /* ReleaseApproval.swift in Sources */,
 				3A02CDFD35AF42A3DBBCE824 /* ReleaseUpdateGate.swift in Sources */,
+				1CC133C57B599BA2B10B7D4A /* ResendIntent.swift in Sources */,
 				E8E7A825FBFD8C349EA8E74A /* ResizeBenchmark.swift in Sources */,
 				BCEB55E80C0536BE08E67EE7 /* ResourcesSettings.swift in Sources */,
 				FE6BCD03689259294F5B9945 /* SimpleDashboard.swift in Sources */,
@@ -599,6 +604,7 @@
 				F3667C9BCD3B016F232A69D8 /* ProverMenu.swift in Sources */,
 				7B0B4C28ED2F1AEF39804016 /* ReleaseApproval.swift in Sources */,
 				0C3F5D5E82BA80E5FBCEFB6A /* ReleaseUpdateGate.swift in Sources */,
+				A92FEDE9AA150A6ACA8C92A2 /* ResendIntent.swift in Sources */,
 				5EE841156B2F7713648B6E61 /* ResizeBenchmark.swift in Sources */,
 				83AC088B8D445053FDE07957 /* ResourcesSettings.swift in Sources */,
 				BC44AAFBB810E5183CBF737E /* SimpleDashboard.swift in Sources */,

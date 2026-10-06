@@ -29,8 +29,10 @@ Chrome.
     that loses user fees, a misleading refusal text, and a silent wrong
     `eth_getLogs` answer.
   - The fourth was the harness itself.
-  - One stays open and needs a policy decision: queued transactions are
-    silently dropped once the B5 price rises.
+  - The fifth, queued transactions silently dropped once the B5 price
+    rises, is now visible and recoverable (branch `claude/b5-stuck-tx`,
+    see "Stress"): every transaction ends included, refused with a message,
+    or pending/dropped with a reason.
 - No consensus rule was changed. The protocol observations are under
   "Consensus-level observations".
 
@@ -288,7 +290,7 @@ How to read the table:
 | 1 | **High** (users lose fees) | **Every wallet path signs exactly 21,000 exec gas for a plain transfer, whatever the recipient.** This covers the app (`crates/ffi` `prepare_transfer`), the extension (wasm builder default for `data: 0x`) and `aether send`. A send to a contract with a `receive()` (EastSeaVault, the toolbox multisig, airdrop, DAO and drop pools) is included, fails out of gas, and still pays its fee. Worse: once a user turns on **batch payments or recovery guardians**, the wallet delegates their account to EastSeaAccount (EIP-7702). From then on **every ordinary transfer to that user fails**. Live evidence (run 1, pre-fix binary): `aether send` to EastSeaVault and to the batch-delegated dev4 were both `success=false gas=21000`. | `4234a31`: `plain_transfer_gas_limit` (execution) signs 100,000 when `eth_getCode` shows code, else 21,000. Applied in the app (quote and signed limit agree, so the M1 shown-fee check holds), the extension and the CLI. Tests: execution (21,000 to code fails, the sized limit succeeds, a 7702 designator counts as code), ffi (quote and envelope size), extension (`withTransferGas`). In run 2 both sends succeed. |
 | 2 | Medium (wallet-facing text) | When the B5 budget is spent, admission refused with **"transaction exceeds block gas limit"**. These are the same words as for a transaction that can never fit, so users and wallets cannot tell "too big" from "busy, retry in a few minutes". | `d0af1c6`: admission now says `state budget: this transaction needs N state units and M are available right now; the budget refills 32 per block, retry in about K blocks`, or that it exceeds any block. Only the text changed; the fit rule is untouched. Seen verbatim in the stress run (below). Test in `crates/execution/tests/state_growth.rs`. |
 | 3 | Medium (silent wrong answer) | A malformed `eth_getLogs` block tag fell back to `latest`. The toolbox frontends ask `fromBlock: head − 5000`. On a chain younger than 5,000 blocks (the first 83 minutes of any new genesis, mainnet included) that is `"0x-e7f"`, so the node silently scanned **only the newest block**. The frontends then showed "no events in the last 5,000 blocks". | `e5370a4`: a malformed tag is `-32602` on the node and at the public gate. The standard tags and hex quantities are unchanged. Test in `rpc::public_read_tests`. The toolbox itself still needs to clamp `fromBlock` at 0 and ask ≤ 2,000 blocks; that repo was not written to. |
-| 5 | **High, open** | Queued transactions whose state fee cap falls below the rising B5 price are never includable. They are held until the 10-minute mempool TTL and then dropped without any error. 78 of 200 accepted transfers in the stress burst never ran. | Not fixed: it is a fee-display and mempool-policy decision. See "Stress". |
+| 5 | **High** | Queued transactions whose state fee cap falls below the rising B5 price are never includable. They are held until the 10-minute mempool TTL and then dropped without any error. 78 of 200 accepted transfers in the stress burst never ran. | `claude/b5-stuck-tx`, no consensus change: 2x state-cap headroom in the app and CLI (the shown maximum prices the signed cap), mempool tombstones with the reason, `aether_getReceipt` `pending`/`dropped` status, wallet and agent reasons with a same-nonce resend, per-sender submit order. Rerun: 0 silent losses (see "Stress"). |
 | 4 | Low (harness) | The first harness commit had never run on a node. Problems found:<br>• nodes refused to start (no ceremony record);<br>• dev addresses used the secp256k1 rule instead of `keccak(1 ‖ compressed P-256)`;<br>• constructor arguments lost 4 bytes;<br>• `@noble/hashes` hashed ABI hex *strings* as UTF-8;<br>• vault digests were hashed twice;<br>• DAO and multisig hashes were double-prefixed;<br>• about a dozen ABI and argument mistakes;<br>• `readFile` misuse;<br>• regexes that did not match the explorer DOM. | `1cae3f4`, `70f063c`. FAST=1 (legacy free-state genesis) exists only to debug drivers in about 10 minutes. Its numbers are never used here. |
 
 Commits on `glm/contracts-live`, after the previous coder's `6ef7ae3`, in
@@ -303,18 +305,38 @@ order:
 
 ## Stress: B5 under a burst
 
-This ran on a fresh genesis with the fixed binary (run 2). The burst was 200
-transfers to never-seen accounts from dev1–dev4 (50 each, submitted in waves
-of 20 within about 0.2 s) and 20 EastSeaAccount deploys (16,599 units each)
-from dev6–dev10. The drain window was 10 minutes, and the chain was watched
-for a further 20 s.
+The burst is 200 transfers to never-seen accounts from dev1–dev4 (50 each,
+submitted in waves of 20 within about 0.4 s) and 20 EastSeaAccount deploys
+from dev6–dev10, on a fresh genesis. The drain window is the 10-minute
+mempool TTL plus a minute, and the chain is watched for a further 20 s.
+`stress.mjs` polls `aether_getReceipt` for every hash until it is included
+or dropped, and fails the run if any hash ends with no answer (a silent loss)
+or any refusal has no text.
 
-| What | Result |
-|---|---|
-| Block production | Never stopped. The longest time the finalized height stood still was 0 s at 2 s sampling. Height went 3 → 616 during the window. |
-| Included | 127 transactions, **all in one block (17)**: 122 transfers and 5 deploys, 97,147 state units. That is the 100,000-unit burst spent in a single block. Each was included 1.4–1.6 s after submission. |
-| Refused at admission | 15 deploys. Every refusal had the new text: `rejected: state budget: this transaction needs 16599 state units and 2341 are available right now; the budget refills 32 per block, retry in about 446 blocks`. |
-| Accepted but never included | **78 transfers.** The RPC returned a hash, but they were never included, and the mempool was empty after the window. See bug #5 below. |
+The same harness ran twice on 2026-10-07: once with the pre-fix binary
+(branch base `fa78208`), where the new silent-loss check fails as it should,
+and once with the fix.
+
+| What | Run 2 (2026-10-06) | Pre-fix binary, new harness | With the fix (`claude/b5-stuck-tx`) |
+|---|---|---|---|
+| Block production | Never stopped (max stall 0 s), height 3 → 616 | Never stopped (max stall 0 s), height 5 → 706 | Never stopped (max stall 3 s at 2 s sampling), height 5 → 578 |
+| Included | 127: 122 transfers + 5 deploys, 97,147 state units, one block | 57: 52 transfers + 5 deploys, 99,477 units (blocks 19–20) | 57: 52 transfers + 5 deploys, 99,477 units, one block (22), 2.6–2.7 s after submission |
+| Refused at admission, with text | 15 deploys | 13 deploys | 15 deploys (`needs 18689 state units and 75 are available right now; the budget refills 32 per block, retry in about 582 blocks`) |
+| Dropped with a reason | — | 0 | **148 transfers, all `state_price_above_cap`** (cap 2,000,000,000,000, price 13,242,614,489,368 when the TTL expired them) |
+| Accepted, never included, no reason (silent) | **78 transfers** | **150** (148 transfers + 2 deploys) → `STRESS FAIL` | **0** |
+| Mempool after the window | empty | empty | empty |
+
+**Why fewer transfers landed.** EastSeaAccount grew from 15,546 to 17,513
+bytes on lead-merge after run 2 (ERC-1271, `ff6b31a`), so each deploy now
+costs 18,689 state units. The five deploys that fit took 93,445 of the
+100,000-unit burst, leaving room for 52 transfers of 116 units. The rest
+met a state price of about 52x the floor after the burst block (debt
+~99,500 units), still 13x when the TTL expired them. The 2x headroom does not reach that: the price falls to 2x
+the floor only after about 1,200 one-second blocks
+(`fees::blocks_until_state_price_at_most`), past the 10-minute TTL. So they
+were still dropped, but every one with its reason, which the wallet turns
+into "네트워크가 붐벼 수수료가 이 거래에 허용한 최대치보다 올라 처리되지
+않았어요. 돈은 빠져나가지 않았어요. 새 가격으로 다시 보낼 수 있어요."
 
 Run 1 (single sender, pre-fix binary) instead showed these behaviours:
 
@@ -324,12 +346,14 @@ Run 1 (single sender, pre-fix binary) instead showed these behaviours:
   gas limit`, which is bug #2.
 - **A dropped transaction behind a nonce gap.** Because waves race each other,
   nonce 68 was refused while nonce 69 was accepted. Nonce 69 then sat behind
-  the gap until the 10-minute mempool TTL dropped it.
+  the gap until the 10-minute mempool TTL dropped it. Such a drop is now
+  recorded as `nonce_gap {expected: 68}`, and the wallet and agent submit
+  path no longer sends N+1 after N was refused (see below).
 
-### Bug #5 (open, High): queued transactions are silently dropped when the B5 price rises
+### Bug #5 (High, now visible and recoverable): queued transactions were silently dropped when the B5 price rose
 
-**What happens.** Wallets sign the state fee cap at the *current* base price,
-with no headroom:
+**What happened (run 2).** Wallets signed the state fee cap at the *current*
+base price, with no headroom:
 
 - the CLI `fee_caps` copies `base_fee.state`;
 - the app's `fee_caps` reserves the floor `STATE_UNIT_PRICE`.
@@ -345,22 +369,35 @@ unincludable until the 10-minute `MEMPOOL_TTL` drops them. They arrived at
 18:40:23, the window closed at 18:50:25, and the mempool was empty at
 18:50:45.
 
-**What the user sees.** The wallet showed a transaction hash. The transaction
-never runs, and no error is ever returned.
+**What the user saw.** The wallet showed a transaction hash. The transaction
+never ran, and no error was ever returned.
 
-**Not fixed here.** Choosing state-cap headroom changes the fee the send sheet
-displays (the pre-audit 7 M1 "what was shown is what is signed" check).
-Keeping under-priced transactions changes mempool policy. Both are decisions
-for the lead.
+**What changed (`claude/b5-stuck-tx`; no consensus rule, `fees.rs`
+pricing or state root changed).**
 
-**Options:**
-
-- sign `max_fee.state` with headroom up to the B5 ceiling price for the
-  transaction's state units;
-- let the builder or proposer reject them at once with a reason, instead of
-  holding them silently for 10 minutes;
-- have `aether_getReceipt` / `aether_status` say "dropped: fee cap below the
-  state price" so wallets can re-sign.
+1. **Headroom.** The app (`crates/ffi` `fee_caps`) and the CLI sign
+   `max_fee.state = 2 × max(price, STATE_UNIT_PRICE)`
+   (`fees::signed_state_cap`), like the exec cap. The charge is still the
+   actual price. The send sheet's maximum prices every state unit at that
+   signed cap, so the maximum shown is the maximum signed (pre-audit 7 M1).
+2. **Tombstones.** When a transaction leaves a node's mempool without a
+   block, the node remembers `hash → reason` (4,096 entries, LRU, memory
+   only): `state_price_above_cap {cap, price}`, `nonce_gap {expected}`,
+   `expired`, `replaced`, `evicted`, `fee_cap_below_base`, `unaffordable`.
+   The rule that drops it is unchanged.
+3. **Pending visibility.** `aether_getReceipt` keeps `{height, receipt}`
+   and `{pending: true}`, and adds `status: "pending"` with `waiting` (for a
+   state cap: the price, the cap and the estimated blocks until the refill
+   brings the price to the cap) or `status: "dropped"` with `reason` and
+   `resendable`. An unknown hash is still `null`.
+4. **Wallet and agent.** The activity row says in plain Korean what a
+   pending send waits for, or why it was dropped, for the whole TTL. A drop
+   that a fresh fee can fix offers "새 가격으로 다시 보내기": the normal send
+   sheet, filled in, signed at the same nonce. `aether-agent` returns the
+   same `status`, `reason`, `why` and `why_ko`.
+5. **Submit order.** The ffi submits one transaction at a time per process
+   and refuses one whose nonce sits above a refused or dropped one, so
+   nonce N+1 is never queued behind a gap.
 
 **Reproduce:** `scripts/contracts-live.sh reset bin chain stress stop`.
 

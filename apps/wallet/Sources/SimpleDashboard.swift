@@ -89,6 +89,8 @@ struct SimpleDashboard: View {
             .onChange(of: model.connectRequest) { _, r in if r != nil { sheet = .connect } }
             // A payment link (aether://pay?...) opens the send sheet, filled in, for approval.
             .onChange(of: model.paymentRequest) { _, r in if r != nil { model.sendToken = nil; sheet = .send } }
+            // "새 가격으로 다시 보내기": the normal send sheet, filled in (bug #5).
+            .onChange(of: model.resendRequest) { _, r in if r != nil { sheet = .send } }
             .onChange(of: model.agentTransactionHash) { _, hash in if hash != nil { page = .security } }
             #if os(macOS)
             // Once the node has caught up and this Mac is not registered, ask once.
@@ -1208,6 +1210,18 @@ private struct ActivityRow: View {
                     Text("\(source) · \(ChainActivity.short(item.owner ?? ""))")
                         .font(.aeFootnote).foregroundStyle(.secondary)
                 }
+                // Why it is waiting or why it did not go through (bug #5).
+                if let why = item.why, item.state != .done {
+                    Text(why).font(.aeFootnote)
+                        .foregroundStyle(item.state == .failed ? Color.red : Color.warn)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if item.state == .failed, item.resend != nil {
+                    Button("새 가격으로 다시 보내기") { model.beginResend(item) }
+                        .buttonStyle(.borderless)
+                        .font(.aeFootnote.weight(.semibold))
+                        .disabled(model.busy || model.account == nil)
+                }
             }
             Spacer(minLength: 8)
             VStack(alignment: .trailing, spacing: 2) {
@@ -1377,11 +1391,24 @@ private struct SendSheet: View {
     }
 
     var body: some View {
-        if let frozen = intent {
-            confirmCard(frozen)
-        } else {
-            form
+        Group {
+            if let frozen = intent {
+                confirmCard(frozen)
+            } else {
+                form
+            }
         }
+        // A resend applies to this sheet only (bug #5).
+        .onDisappear { model.resend = nil }
+    }
+
+    /// The dropped transfer this sheet re-sends at its nonce, while the form
+    /// still holds exactly that transfer.
+    private var resending: ActivityItem.Resend? {
+        guard token == nil, recipients.count == 1, let r = model.resend,
+              let wei = Wei.from(aeth: model.paymentRequest?.amount ?? model.sendAmount),
+              r.matches(to: recipients[0], valueWei: wei) else { return nil }
+        return r
     }
 
     private var form: some View {
@@ -1453,6 +1480,11 @@ private struct SendSheet: View {
                         Text("≤ \(Amount.fee(quote?.feeWei ?? s.transferFeeWei))").monospacedDigit()
                     }
                 }.font(.aeBody)
+            }
+            if let r = resending {
+                Label("처리되지 않은 거래(순서 번호 \(r.nonce))를 지금 가격으로 다시 보내요. 같은 번호라 둘 중 하나만 처리돼요.",
+                      systemImage: "arrow.clockwise")
+                    .font(.aeFootnote).foregroundStyle(.secondary)
             }
             denominationNote
             warnings

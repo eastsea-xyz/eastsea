@@ -36,5 +36,6 @@ pub mod shadow;
 pub mod snapshot;
 pub mod store;
 pub mod supervisor;
+pub mod tombstone;
 pub mod upgrade;
 pub mod voting;

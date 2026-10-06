@@ -113,6 +113,44 @@ pub fn state_base_fee(excess: u64) -> u128 {
     )
 }
 
+/// Headroom wallets sign over the state price, as they do over the exec base
+/// fee (contracts-live bug #5): a tx queued behind a burst stays includable
+/// through one doubling of the price. Only the actual price is charged.
+pub const STATE_CAP_HEADROOM: u128 = 2;
+
+/// The `max_fee.state` a wallet signs for a reported state `price`:
+/// `STATE_CAP_HEADROOM × max(price, STATE_UNIT_PRICE)`. A chain that prices no
+/// state (reported 0: the legacy chain) signs 0. Wallet policy, not consensus.
+pub fn signed_state_cap(price: u128) -> u128 {
+    if price == 0 {
+        return 0;
+    }
+    price.max(STATE_UNIT_PRICE).saturating_mul(STATE_CAP_HEADROOM)
+}
+
+/// Blocks until the state price falls to `cap` or below, if no further state
+/// is used: the debt refills `STATE_UNITS_PER_BLOCK` per height and the price
+/// is `state_base_fee(debt)`. `Some(0)` when it already is; `None` when the
+/// cap is under the floor, which no refill reaches. A wallet-facing estimate
+/// read from the same math the chain prices with — never a consensus input.
+pub fn blocks_until_state_price_at_most(excess: u64, cap: u128) -> Option<u64> {
+    if state_base_fee(excess) <= cap {
+        return Some(0);
+    }
+    if cap < STATE_UNIT_PRICE {
+        return None;
+    }
+    // The price only falls as the debt falls, so the first height that meets
+    // the cap is a binary search over the refill steps left.
+    let (mut lo, mut hi) = (0u64, excess.div_ceil(STATE_UNITS_PER_BLOCK));
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        let debt = excess.saturating_sub(mid.saturating_mul(STATE_UNITS_PER_BLOCK));
+        if state_base_fee(debt) <= cap { hi = mid } else { lo = mid + 1 }
+    }
+    Some(lo)
+}
+
 /// What a block's fees follow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FeePolicy {
@@ -247,6 +285,35 @@ mod tests {
         assert_eq!(debt, 0);
         assert_eq!(state_base_fee(debt), STATE_UNIT_PRICE);
         assert_eq!(state_block_limit(u64::MAX), 0);
+    }
+
+    /// Contracts-live bug #5: a pending transaction whose state cap is under
+    /// the price must be told how long the refill takes to bring it back.
+    #[test]
+    fn state_price_wait_follows_the_refill() {
+        assert_eq!(blocks_until_state_price_at_most(0, STATE_UNIT_PRICE), Some(0));
+        assert_eq!(blocks_until_state_price_at_most(90_000, STATE_UNIT_PRICE - 1), None, "under the floor: never");
+        // The stress run's burst block left ~97,000 units of debt (~43x the floor).
+        let debt = 97_147;
+        assert!(state_base_fee(debt) > 40 * STATE_UNIT_PRICE);
+        let cap = 2 * STATE_UNIT_PRICE;
+        let k = blocks_until_state_price_at_most(debt, cap).expect("a cap above the floor is reached");
+        assert!(state_base_fee(debt - k * STATE_UNITS_PER_BLOCK) <= cap, "met after k blocks");
+        assert!(state_base_fee(debt - (k - 1) * STATE_UNITS_PER_BLOCK) > cap, "not one block sooner");
+        // e^((d - 50,000)/12,500) <= 2 at d <= ~58,664: ~1,200 one-second blocks.
+        assert!((1_150..1_250).contains(&k), "{k}");
+        // At the floor price the debt has to fall to the free burst.
+        let floor = blocks_until_state_price_at_most(debt, STATE_UNIT_PRICE).unwrap();
+        assert_eq!(floor, (debt - STATE_PRICE_FREE_BURST).div_ceil(STATE_UNITS_PER_BLOCK));
+    }
+
+    #[test]
+    fn wallets_sign_twice_the_state_price_never_under_the_floor() {
+        assert_eq!(signed_state_cap(0), 0, "a chain without state pricing signs no state cap");
+        assert_eq!(signed_state_cap(1), 2 * STATE_UNIT_PRICE, "a stale report below the floor signs twice the floor");
+        assert_eq!(signed_state_cap(STATE_UNIT_PRICE), 2 * STATE_UNIT_PRICE);
+        assert_eq!(signed_state_cap(43 * STATE_UNIT_PRICE), 86 * STATE_UNIT_PRICE);
+        assert_eq!(signed_state_cap(u128::MAX), u128::MAX);
     }
 
     #[test]

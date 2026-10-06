@@ -402,6 +402,11 @@ RustBuffer uniffi_aether_ffi_fn_func_prepare_stop_sessions(RustBuffer owner_publ
 RustBuffer uniffi_aether_ffi_fn_func_prepare_transfer(RustBuffer p256_public_key, RustBuffer to, RustBuffer value_wei, RustBuffer shown_fee_wei, uint32_t validators, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_TRANSFER_AT
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PREPARE_TRANSFER_AT
+RustBuffer uniffi_aether_ffi_fn_func_prepare_transfer_at(RustBuffer p256_public_key, RustBuffer to, RustBuffer value_wei, RustBuffer shown_fee_wei, uint32_t validators, uint64_t nonce, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_RECEIPT
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_RECEIPT
 RustBuffer uniffi_aether_ffi_fn_func_receipt(RustBuffer tx_hash, RustCallStatus *_Nonnull out_status
@@ -524,6 +529,11 @@ RustBuffer uniffi_aether_ffi_fn_func_paper_key_public(RustBuffer words, RustCall
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PAPER_KEY_SIGN
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_PAPER_KEY_SIGN
 RustBuffer uniffi_aether_ffi_fn_func_paper_key_sign(RustBuffer words, RustBuffer message, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_TX_STATUS
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_TX_STATUS
+RustBuffer uniffi_aether_ffi_fn_func_tx_status(RustBuffer tx_hash, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_FFI_AETHER_FFI_RUSTBUFFER_ALLOC
@@ -972,6 +982,12 @@ uint16_t uniffi_aether_ffi_checksum_func_prepare_transfer(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_TRANSFER_AT
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PREPARE_TRANSFER_AT
+uint16_t uniffi_aether_ffi_checksum_func_prepare_transfer_at(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_RECEIPT
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_RECEIPT
 uint16_t uniffi_aether_ffi_checksum_func_receipt(void
@@ -1113,6 +1129,12 @@ uint16_t uniffi_aether_ffi_checksum_func_paper_key_public(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PAPER_KEY_SIGN
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_PAPER_KEY_SIGN
 uint16_t uniffi_aether_ffi_checksum_func_paper_key_sign(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_TX_STATUS
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_TX_STATUS
+uint16_t uniffi_aether_ffi_checksum_func_tx_status(void
     
 );
 #endif

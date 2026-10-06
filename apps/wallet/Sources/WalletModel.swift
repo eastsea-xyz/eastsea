@@ -43,6 +43,12 @@ final class WalletModel: ObservableObject {
     @Published var log: [String] = []
     @Published var sendTo = ""
     @Published var sendAmount = "1"
+    /// "새 가격으로 다시 보내기" (contracts-live bug #5): the dropped transfer
+    /// the send sheet is re-sending, at its nonce. Applies only while the
+    /// sheet's recipient and amount are still exactly that transfer's.
+    @Published var resend: ActivityItem.Resend?
+    /// Bumped to open the send sheet for a resend.
+    @Published var resendRequest: UUID?
     @Published var recoveryCode = ""
     @Published var keyLabel = "Key in Secure Enclave"
     @Published var guardianInput = ""
@@ -836,6 +842,7 @@ final class WalletModel: ObservableObject {
         let callback = paymentRequest?.callback
         // Read main-actor state before detaching; the closure only signs.
         let validatorsNow = validators
+        let resending = paymentRequest == nil ? resend : nil
         busy = true
         let refused: String? = await Task.detached { [weak self] () -> String? in
             guard let self else { return nil }
@@ -844,11 +851,19 @@ final class WalletModel: ObservableObject {
                 let label: String
                 let each = Double(Wei.format(wei)) ?? 0
                 let who = recipients.count == 1 ? Short.address(recipients[0]) : "\(recipients.count) people"
-                let item = ActivityItem(kind: .sent, title: "Sent to \(who)", amount: -each * Double(recipients.count),
+                var item = ActivityItem(kind: .sent, title: "Sent to \(who)", amount: -each * Double(recipients.count),
                                         recipients: recipients.map { $0.lowercased() })
                 if recipients.count == 1 {
-                    prepared = try prepareTransfer(p256PublicKey: pk, to: recipients[0], valueWei: wei,
-                                                   shownFeeWei: shownFeeWei, validators: validatorsNow)
+                    // A resend of a dropped transfer signs its nonce again with a
+                    // fresh fee (bug #5), so at most one of the two can ever run.
+                    if let r = resending, r.matches(to: recipients[0], valueWei: wei) {
+                        prepared = try prepareTransferAt(p256PublicKey: pk, to: recipients[0], valueWei: wei,
+                                                         shownFeeWei: shownFeeWei, validators: validatorsNow, nonce: r.nonce)
+                    } else {
+                        prepared = try prepareTransfer(p256PublicKey: pk, to: recipients[0], valueWei: wei,
+                                                       shownFeeWei: shownFeeWei, validators: validatorsNow)
+                    }
+                    item.resend = ActivityItem.Resend(to: recipients[0], valueWei: wei, nonce: prepared.nonce)
                     label = "Sent \(Wei.format(wei)) \(Brand.networkCoinTicker) (nonce \(prepared.nonce))"
                 } else {
                     // All payments in one tx: one signature, all or nothing (EIP-7702 batch).
@@ -858,13 +873,20 @@ final class WalletModel: ObservableObject {
                 }
                 let sig = try enclave.sign(prepared.signingMessage)   // Secure Enclave, may prompt
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
-                let ok = await self.track(h, label: label, item: item)
-                // A web page that asked for this payment hears back (https only).
-                if let back = callback, var c = URLComponents(url: back, resolvingAgainstBaseURL: false) {
-                    c.queryItems = (c.queryItems ?? []) + [URLQueryItem(name: "tx", value: h), URLQueryItem(name: "status", value: ok ? "success" : "failed")]
-                    #if os(macOS)
-                    if let u = c.url { await MainActor.run { _ = NSWorkspace.shared.open(u) } }
-                    #endif
+                // Submitted: the sheet closes now and the activity row follows
+                // the transaction — up to the network's 10-minute mempool
+                // lifetime, with its reason while it waits (bug #5).
+                let tracked = item
+                Task.detached { [weak self] in
+                    guard let self else { return }
+                    let ok = await self.track(h, label: label, item: tracked)
+                    // A web page that asked for this payment hears back (https only).
+                    if let back = callback, var c = URLComponents(url: back, resolvingAgainstBaseURL: false) {
+                        c.queryItems = (c.queryItems ?? []) + [URLQueryItem(name: "tx", value: h), URLQueryItem(name: "status", value: ok ? "success" : "failed")]
+                        #if os(macOS)
+                        if let u = c.url { await MainActor.run { _ = NSWorkspace.shared.open(u) } }
+                        #endif
+                    }
                 }
                 return nil
             } catch {
@@ -875,7 +897,7 @@ final class WalletModel: ObservableObject {
         if refused == nil {
             // Only a submitted send consumes the payment request; a refusal
             // keeps it so the sheet can ask again under the fresh quote.
-            await MainActor.run { self.paymentRequest = nil }
+            await MainActor.run { self.paymentRequest = nil; self.resend = nil }
         }
         return refused
     }
@@ -955,7 +977,10 @@ final class WalletModel: ObservableObject {
         }
     }
 
-    /// Wait for finality; returns whether the tx succeeded.
+    /// Wait for finality; returns whether the tx succeeded. While it is not
+    /// in a block the row says why, in plain words (contracts-live bug #5):
+    /// what a pending tx waits for, or why the network dropped it — never a
+    /// silent "Failed". Waits out the network's 10-minute mempool lifetime.
     @discardableResult
     private func track(_ hash: String, label: String, item: ActivityItem) async -> Bool {
         await MainActor.run {
@@ -963,20 +988,71 @@ final class WalletModel: ObservableObject {
             self.activity.insert(item.with(state: .pending).with(hash: hash), at: 0)
             self.save()
         }
-        for _ in 0..<60 {
-            if let r = try? receipt(txHash: hash) {
+        let start = Date()
+        var shownWhy: String?
+        var unknownSince: Date?
+        while Date().timeIntervalSince(start) < Self.trackLimit {
+            let st = try? txStatus(txHash: hash)
+            switch st?.state {
+            case "included":
+                guard let st, let r = st.receipt else { break }
                 await MainActor.run {
-                    self.settle(item.id, state: r.success ? .done : .failed)
+                    self.settle(item.id, state: r.success ? .done : .failed, why: r.success ? nil : st.message)
                     self.note("\(label) finalized in block \(r.height) (\(r.success ? "success" : "failed"), gas \(r.gasUsed)\(r.stateFeeWei != "0" ? ", state fee \(Amount.fee(r.stateFeeWei))" : ""))")
                     self.busy = false
                     self.refresh()
                 }
                 return r.success
+            case "dropped":
+                guard let st else { break }
+                await MainActor.run {
+                    self.settle(item.id, state: .failed, why: st.message, canResend: st.canResend)
+                    self.note("\(label): not included — \(st.detail)")
+                    self.busy = false
+                }
+                return false
+            case "pending":
+                unknownSince = nil
+                if let st, st.reason != nil, st.message != shownWhy {
+                    shownWhy = st.message
+                    await MainActor.run { self.explain(item.id, why: st.message); self.note("\(label): \(st.detail)") }
+                }
+            default:
+                // A node that has not heard of it yet, or a read that failed.
+                unknownSince = unknownSince ?? Date()
+                if let since = unknownSince, Date().timeIntervalSince(since) > 60 {
+                    let why = st?.message ?? "네트워크에서 이 거래를 찾지 못했어요."
+                    await MainActor.run { self.settle(item.id, state: .failed, why: why); self.note("\(label): \(st?.detail ?? "no answer from the network")"); self.busy = false }
+                    return false
+                }
             }
-            try? await Task.sleep(nanoseconds: 500_000_000)
+            let waited = Date().timeIntervalSince(start)
+            if waited > 30 { await MainActor.run { self.busy = false } }
+            try? await Task.sleep(nanoseconds: waited < 30 ? 500_000_000 : 3_000_000_000)
         }
-        await MainActor.run { self.settle(item.id, state: .failed); self.note("\(label): not finalized after 30s"); self.busy = false }
+        await MainActor.run {
+            self.settle(item.id, state: .failed, why: shownWhy ?? "오래 기다려도 처리되지 않았어요.")
+            self.note("\(label): not finalized after \(Int(Self.trackLimit / 60)) minutes")
+            self.busy = false
+        }
         return false
+    }
+
+    /// How long `track` follows a transaction: the node's mempool lifetime
+    /// (10 minutes) plus a minute, so a drop is seen with its reason.
+    private static let trackLimit: TimeInterval = 11 * 60
+
+    /// "새 가격으로 다시 보내기": open the send sheet filled with the dropped
+    /// transfer, so it goes through the normal quote and confirmation and is
+    /// signed at the same nonce with a fresh fee. Never re-signs by itself.
+    func beginResend(_ item: ActivityItem) {
+        guard let r = item.resend, item.state == .failed else { return }
+        paymentRequest = nil
+        sendToken = nil
+        sendTo = r.to
+        sendAmount = Wei.exact(r.valueWei)
+        resend = r
+        resendRequest = UUID()
     }
 
     // MARK: dashboard data (kept per account in UserDefaults)
@@ -1204,9 +1280,21 @@ final class WalletModel: ObservableObject {
         save()
     }
 
-    private func settle(_ id: UUID, state: ActivityItem.State) {
+    private func settle(_ id: UUID, state: ActivityItem.State, why: String? = nil, canResend: Bool = false) {
         if let i = activity.firstIndex(where: { $0.id == id }) {
-            activity[i] = activity[i].with(state: state)
+            var settled = activity[i].with(state: state)
+            settled.why = why
+            // Only a drop a fresh fee can fix keeps what a resend needs.
+            if !(state == .failed && canResend) { settled.resend = nil }
+            activity[i] = settled
+            save()
+        }
+    }
+
+    /// A pending row's current reason (it is still waiting).
+    private func explain(_ id: UUID, why: String) {
+        if let i = activity.firstIndex(where: { $0.id == id }), activity[i].state == .pending {
+            activity[i].why = why
             save()
         }
     }
@@ -1231,6 +1319,14 @@ struct ActivityItem: Codable, Identifiable, Equatable {
     var hash: String? = nil
     var source: String? = nil
     var owner: String? = nil
+    /// Why this row is pending or failed, in plain words (contracts-live
+    /// bug #5): the network's answer, never a bare "Failed".
+    var why: String? = nil
+    /// What a "새 가격으로 다시 보내기" needs: a plain transfer's recipient,
+    /// exact amount and nonce. Kept only while the drop can be fixed by a resend.
+    var resend: Resend? = nil
+
+    typealias Resend = ResendIntent
 
     func with(state: State) -> ActivityItem {
         var c = self

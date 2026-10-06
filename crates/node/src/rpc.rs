@@ -1158,14 +1158,29 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
             let f = &g.finalized;
             Ok(release_entries(&f.state, a, start, limit, f.height))
         }
+        // Included: `{height, receipt}` as always. Not included (bug #5): a
+        // pending tx says what it waits for (`waiting`, null when only its
+        // turn), and one that left the pool says why (`status: "dropped"`,
+        // `reason`). A hash this node never saw, or forgot, stays null.
         "aether_getReceipt" => {
             let h: TxHash = param(p, 0)?;
-            let g = chain.lock();
-            match g.receipts.get(&h) {
-                Some((height, r)) => Ok(json!({ "height": height, "receipt": r })),
-                None if g.mempool.contains_key(&h) => Ok(json!({ "pending": true })),
-                None => Ok(Value::Null),
+            let mut g = chain.lock();
+            if let Some((height, r)) = g.receipts.get(&h) {
+                return Ok(json!({ "height": height, "receipt": r }));
             }
+            if let Some(tx) = g.mempool.get(&h) {
+                let waiting = crate::chain::pending_reason(&g, tx);
+                return Ok(json!({ "pending": true, "status": "pending", "waiting": waiting }));
+            }
+            Ok(match g.tombstones.get(&h) {
+                Some(reason) => json!({
+                    "pending": false,
+                    "status": "dropped",
+                    "reason": reason,
+                    "resendable": reason.resendable(),
+                }),
+                None => Value::Null,
+            })
         }
         "aether_getBlock" => {
             let height: u64 = param(p, 0)?;
@@ -1322,6 +1337,62 @@ mod alias_tests {
         assert_eq!(legacy["error"]["message"], "receipt proofs unavailable for legacy blocks");
         st.chain.lock().receipts.remove(&receipts[0].tx_hash);
         assert_eq!(rt.block_on(call(&st, "aether_getReceiptProof", json!([receipts[1].tx_hash])))["error"]["code"], -32000);
+    }
+
+    /// Contracts-live bug #5: a hash a wallet holds always says what became
+    /// of it — pending with what it waits for, or dropped with why — while the
+    /// included shape and the unknown null stay as they were.
+    #[test]
+    fn get_receipt_says_why_a_tx_is_not_in_a_block() {
+        use crate::tombstone::Reason;
+        let st = bare_state();
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let sender = Address::repeat_byte(0x42);
+        let cap = 2 * aether_execution::fees::STATE_UNIT_PRICE;
+        let mut tx = aether_execution::sign_call(
+            &aether_crypto::P256Signer::from_seed(&[3; 32]).unwrap(),
+            7781,
+            0,
+            1,
+            &aether_execution::EvmCall { to: Some(Address::repeat_byte(0xaa)), value: U256::from(1u64), input: Default::default(), gas_limit: 21_000, delegate: None },
+        )
+        .unwrap();
+        tx.header.sender = sender;
+        tx.header.gas.state = 300;
+        tx.header.max_fee.state = cap;
+        let pending = aether_execution::tx_hash(&tx);
+        let debt = 97_147;
+        {
+            let mut g = st.chain.lock();
+            g.cfg.history_v2 = true;
+            let mut head = (*g.finalized).clone();
+            head.excess.state = debt;
+            g.finalized = Arc::new(head);
+            g.mempool.insert(pending, tx);
+        }
+        let price = aether_execution::fees::state_base_fee(debt);
+        let r = rt.block_on(call(&st, "aether_getReceipt", json!([pending])))["result"].clone();
+        assert_eq!(r["pending"], true, "the old field stays for existing callers");
+        assert_eq!(r["status"], "pending");
+        assert_eq!(r["waiting"]["kind"], "state_price_above_cap");
+        assert_eq!(r["waiting"]["cap"], cap.to_string());
+        assert_eq!(r["waiting"]["price"], price.to_string());
+        assert_eq!(
+            r["waiting"]["blocks"].as_u64(),
+            aether_execution::fees::blocks_until_state_price_at_most(debt, cap)
+        );
+
+        let dropped = aether_types::B256::repeat_byte(0xd0);
+        st.chain.lock().tombstones.record(dropped, Reason::StatePriceAboveCap { cap: cap.to_string(), price: price.to_string(), blocks: None });
+        let r = rt.block_on(call(&st, "aether_getReceipt", json!([dropped])))["result"].clone();
+        assert_eq!(r["status"], "dropped");
+        assert_eq!(r["pending"], false);
+        assert_eq!(r["reason"], json!({ "kind": "state_price_above_cap", "cap": cap.to_string(), "price": price.to_string() }));
+        assert_eq!(r["resendable"], true);
+        assert_eq!(r.get("receipt"), None, "a receipt-only caller still sees no receipt");
+
+        let unknown = aether_types::B256::repeat_byte(0xee);
+        assert_eq!(rt.block_on(call(&st, "aether_getReceipt", json!([unknown])))["result"], Value::Null);
     }
 
     #[test]

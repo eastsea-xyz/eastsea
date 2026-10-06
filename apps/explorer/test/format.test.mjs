@@ -2,7 +2,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { coinTicker, formatAeth, formatInt, formatRate, formatTokenAmount, localTime, shortHex, timeAgo, toBigInt, txRate, weiToAeth } from '../js/format.js';
+import { coinTicker, formatAeth, formatInt, formatRate, formatTokenAmount, localTime, notIncludedText, shortHex, timeAgo, toBigInt, txRate, weiToAeth } from '../js/format.js';
 
 test('toBigInt takes hex, decimal, number and bigint; rejects the rest', () => {
   assert.equal(toBigInt('0x1a'), 26n);
@@ -94,4 +94,15 @@ test('formatRate rounds to two decimals and passes null through', () => {
   assert.equal(formatRate(123.4), '123.4');
   assert.equal(formatRate(123.6), '123.6');
   assert.equal(formatRate(null), '—');
+});
+
+test('notIncludedText says why a transaction is not in a block (bug #5)', () => {
+  const stuck = notIncludedText({ kind: 'state_price_above_cap', cap: '2000000000000', price: '43000000000000', blocks: 1200 });
+  assert.match(stuck, /state price/);
+  assert.match(stuck, /1,200 blocks/);
+  assert.equal(notIncludedText({ kind: 'nonce_gap', expected: 4 }), 'an earlier nonce of the sender (4) has not arrived');
+  assert.match(notIncludedText({ kind: 'replaced' }), /same nonce/);
+  assert.equal(notIncludedText({ kind: 'something_new' }), 'something new');
+  assert.equal(notIncludedText(null), null);
+  assert.equal(notIncludedText({}), null);
 });

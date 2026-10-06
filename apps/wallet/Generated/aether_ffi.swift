@@ -1757,6 +1757,113 @@ public func FfiConverterTypeTxReceipt_lower(_ value: TxReceipt) -> RustBuffer {
 }
 
 
+/**
+ * What became of a submitted transaction.
+ */
+public struct TxStatus: Equatable, Hashable {
+    /**
+     * "included", "pending", "dropped" or "unknown" (the node has no record).
+     */
+    public var state: String
+    /**
+     * The node's reason (`state_price_above_cap`, `nonce_gap`, `expired`, …):
+     * what a pending one waits for, or why a dropped one left.
+     */
+    public var reason: String?
+    /**
+     * One plain Korean sentence for the person who sent it.
+     */
+    public var message: String
+    /**
+     * The same answer in English, with the numbers, for agents and logs.
+     */
+    public var detail: String
+    /**
+     * Dropped for a reason that signing again with the same nonce and a
+     * fresh fee can fix ("새 가격으로 다시 보내기").
+     */
+    public var canResend: Bool
+    public var receipt: TxReceipt?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * "included", "pending", "dropped" or "unknown" (the node has no record).
+         */state: String, 
+        /**
+         * The node's reason (`state_price_above_cap`, `nonce_gap`, `expired`, …):
+         * what a pending one waits for, or why a dropped one left.
+         */reason: String?, 
+        /**
+         * One plain Korean sentence for the person who sent it.
+         */message: String, 
+        /**
+         * The same answer in English, with the numbers, for agents and logs.
+         */detail: String, 
+        /**
+         * Dropped for a reason that signing again with the same nonce and a
+         * fresh fee can fix ("새 가격으로 다시 보내기").
+         */canResend: Bool, receipt: TxReceipt?) {
+        self.state = state
+        self.reason = reason
+        self.message = message
+        self.detail = detail
+        self.canResend = canResend
+        self.receipt = receipt
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension TxStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTxStatus: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TxStatus {
+        return
+            try TxStatus(
+                state: FfiConverterString.read(from: &buf), 
+                reason: FfiConverterOptionString.read(from: &buf), 
+                message: FfiConverterString.read(from: &buf), 
+                detail: FfiConverterString.read(from: &buf), 
+                canResend: FfiConverterBool.read(from: &buf), 
+                receipt: FfiConverterOptionTypeTxReceipt.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: TxStatus, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.state, into: &buf)
+        FfiConverterOptionString.write(value.reason, into: &buf)
+        FfiConverterString.write(value.message, into: &buf)
+        FfiConverterString.write(value.detail, into: &buf)
+        FfiConverterBool.write(value.canResend, into: &buf)
+        FfiConverterOptionTypeTxReceipt.write(value.receipt, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTxStatus_lift(_ buf: RustBuffer) throws -> TxStatus {
+    return try FfiConverterTypeTxStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTxStatus_lower(_ value: TxStatus) -> RustBuffer {
+    return FfiConverterTypeTxStatus.lower(value)
+}
+
+
 public struct VerifiedAccount: Equatable, Hashable {
     public var address: String
     public var balanceWei: String
@@ -2979,6 +3086,25 @@ public func prepareTransfer(p256PublicKey: Data, to: String, valueWei: String, s
     )
 })
 }
+/**
+ * "새 가격으로 다시 보내기" (contracts-live bug #5): the same transfer
+ * again at the dropped transaction's `nonce`, with a fresh fee and the
+ * normal shown-fee check. The same nonce means at most one of the two can
+ * ever run, even if another node still holds the old one.
+ */
+public func prepareTransferAt(p256PublicKey: Data, to: String, valueWei: String, shownFeeWei: String?, validators: UInt32, nonce: UInt64)throws  -> PreparedTx  {
+    return try  FfiConverterTypePreparedTx_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_prepare_transfer_at(
+        FfiConverterData.lower(p256PublicKey),
+        FfiConverterString.lower(to),
+        FfiConverterString.lower(valueWei),
+        FfiConverterOptionString.lower(shownFeeWei),
+        FfiConverterUInt32.lower(validators),
+        FfiConverterUInt64.lower(nonce),uniffiCallStatus
+    )
+})
+}
 public func receipt(txHash: String)throws  -> TxReceipt?  {
     return try  FfiConverterOptionTypeTxReceipt.lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
         uniffiCallStatus in
@@ -3258,6 +3384,18 @@ public func paperKeySign(words: String, message: Data)throws  -> Data  {
     )
 })
 }
+/**
+ * Ask the node what became of `tx_hash` (never an error for a hash it
+ * does not know: that is `unknown`).
+ */
+public func txStatus(txHash: String)throws  -> TxStatus  {
+    return try  FfiConverterTypeTxStatus_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_tx_status(
+        FfiConverterString.lower(txHash),uniffiCallStatus
+    )
+})
+}
 
 private enum InitializationResult {
     case ok
@@ -3367,6 +3505,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_aether_ffi_checksum_func_prepare_transfer() != 14406) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_aether_ffi_checksum_func_prepare_transfer_at() != 37031) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_aether_ffi_checksum_func_receipt() != 21333) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -3437,6 +3578,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_paper_key_sign() != 17714) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_tx_status() != 39950) {
         return InitializationResult.apiChecksumMismatch
     }
 

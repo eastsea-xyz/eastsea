@@ -3434,7 +3434,10 @@ fn candidate_registration_uses_lane(status: &Value) -> bool {
 }
 
 /// Fee caps from the node's next base fees: 2x headroom (~70 full blocks of
-/// growth) plus a 1 gwei tip; only the actual base + tip is charged.
+/// growth) plus a 1 gwei tip; only the actual base + tip is charged. The
+/// state cap has the same 2x headroom over the B5 price, never under the
+/// floor (contracts-live bug #5: a cap at today's price leaves a queued tx
+/// unincludable after the next burst).
 const TIP: u128 = 1_000_000_000;
 
 fn fee_caps(status: &Value, tip: u128) -> Result<aether_types::FeeVector, String> {
@@ -3444,9 +3447,10 @@ fn fee_caps(status: &Value, tip: u128) -> Result<aether_types::FeeVector, String
             .and_then(|v| v.parse::<u128>().ok())
             .ok_or(format!("status has no base_fee.{k}"))
     };
+    let state_price = status["base_fee"]["state"].as_str().and_then(|v| v.parse().ok()).unwrap_or(0);
     Ok(aether_types::FeeVector {
         exec: get("exec")? * 2 + tip,
-        state: status["base_fee"]["state"].as_str().and_then(|v| v.parse().ok()).unwrap_or(0),
+        state: aether_execution::fees::signed_state_cap(state_price),
         prove: get("prove")? * 2,
     })
 }
@@ -3500,6 +3504,10 @@ fn wait_for_receipt(rpc: &str, hash: TxHash) -> Result<Value, String> {
                 r["height"], rc["success"], rc["gas_used"], rc["prove_gas"]
             );
             return Ok(r);
+        }
+        // Bug #5: a tx that left the pool says why instead of timing out.
+        if r["status"] == "dropped" {
+            return Err(format!("not included: dropped from the mempool ({})", r["reason"]));
         }
         std::thread::sleep(Duration::from_millis(500));
     }
@@ -3626,6 +3634,18 @@ mod tests {
         assert!(validator_is_stalled(100, &[100, 10_000, 10_001], five_minutes));
     }
     use super::*;
+
+    /// Contracts-live bug #5: `aether send` signed the state cap at the
+    /// current price, so the next burst left it unincludable.
+    #[test]
+    fn cli_state_cap_has_headroom_over_the_state_price() {
+        use aether_execution::fees::STATE_UNIT_PRICE;
+        let status = |state: &str| json!({ "base_fee": { "exec": "0", "prove": "0", "state": state } });
+        assert_eq!(fee_caps(&status(&STATE_UNIT_PRICE.to_string()), TIP).unwrap().state, 2 * STATE_UNIT_PRICE);
+        assert_eq!(fee_caps(&status(&(43 * STATE_UNIT_PRICE).to_string()), TIP).unwrap().state, 86 * STATE_UNIT_PRICE);
+        assert_eq!(fee_caps(&status("0"), TIP).unwrap().state, 0, "a chain without state pricing");
+        assert_eq!(fee_caps(&json!({ "base_fee": { "exec": "0", "prove": "0" } }), TIP).unwrap().state, 0);
+    }
 
     #[test]
     fn candidate_registration_selects_free_lane_only_when_advertised() {

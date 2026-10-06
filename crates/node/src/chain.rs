@@ -6,6 +6,7 @@
 use crate::block::{Block, Payload, PublicKey};
 use crate::inclusion::{self, InclusionPool};
 use crate::store::{Commit, Store, StoreError};
+use crate::tombstone::{Reason as DropReason, Tombstones};
 use aether_crypto::{address_of, PublicKey as AetherPk};
 use aether_execution::{
     execute_block, fees, BlockContext, BlockOutcome, FeePolicy, Receipt, WorldState,
@@ -529,6 +530,9 @@ pub struct Inner {
     /// them — A3-3): the free lane's share of the byte budget, kept in step
     /// with `free_in_pool`.
     free_mempool_bytes: usize,
+    /// Why each recent tx left the pool without a block (bug #5): bounded,
+    /// node-local memory that `aether_getReceipt` answers from.
+    pub tombstones: Tombstones,
     /// Txs named by inclusion lists (FOCIL).
     pub inclusion: InclusionPool,
     /// Devnet fault injection: act as a proposer that censors this sender and
@@ -704,6 +708,7 @@ impl Chain {
             mempool_bytes: 0,
             free_in_pool: 0,
             free_mempool_bytes: 0,
+            tombstones: Tombstones::default(),
             inclusion: InclusionPool::default(),
             censor: None,
             committee: Default::default(),
@@ -2595,6 +2600,7 @@ impl Chain {
         g.sizes.insert(h, size);
         g.mempool_bytes += size;
         g.arrivals.insert(h, Instant::now());
+        g.tombstones.forget(&h);
         Ok(true)
     }
 
@@ -2740,6 +2746,7 @@ impl Chain {
             let old = g.receipts.insert(*h, (exec.height, r.clone())).map(|(_, r)| receipt_bytes(&r));
             g.caches_bytes = g.caches_bytes.saturating_add(rb).saturating_sub(old.unwrap_or(0));
             g.mempool.remove(h);
+            g.tombstones.forget(h);
             if let Some(s) = g.sizes.remove(h) {
                 g.mempool_bytes -= s;
             }
@@ -2755,9 +2762,20 @@ impl Chain {
         let now = Instant::now();
         let inner = &mut *g;
         let arrivals = &inner.arrivals;
-        inner
-            .mempool
-            .retain(|h, tx| keep_in_pool(tx, arrivals.get(h).copied(), now, &state, base, fees));
+        // Every departure leaves a tombstone with its reason (bug #5): a
+        // wallet that holds the hash learns what happened instead of nothing.
+        let gaps = first_missing_nonces(&inner.mempool, &state);
+        let tombstones = &mut inner.tombstones;
+        inner.mempool.retain(|h, tx| {
+            let gap = gaps.get(&tx.header.sender).copied().filter(|e| tx.header.nonce > *e);
+            match drop_reason(tx, arrivals.get(h).copied(), now, &state, base, fees, gap) {
+                None => true,
+                Some(reason) => {
+                    tombstones.record(*h, reason);
+                    false
+                }
+            }
+        });
         inner.arrivals.retain(|h, _| inner.mempool.contains_key(h));
         // The byte budget follows the pool: sizes of txs that left give their
         // bytes back, so the budget never leaks by a dropped tx.
@@ -3081,6 +3099,7 @@ fn evict_for(g: &mut Inner, tx: &TxEnvelope, base: FeeVector, size: usize) -> bo
     // for the newcomer's room.
     for (_, _, h, sender) in candidates.into_iter().take(take) {
         let evicted = g.mempool.remove(&h).expect("a candidate is pending");
+        g.tombstones.record(h, DropReason::Evicted);
         let freed = g.sizes.remove(&h).unwrap_or_default();
         g.mempool_bytes -= freed;
         g.arrivals.remove(&h);
@@ -3103,6 +3122,7 @@ fn evict_for(g: &mut Inner, tx: &TxEnvelope, base: FeeVector, size: usize) -> bo
 /// for `MEMPOOL_FEE_WAIT` (not the whole TTL, R2-6): the base fee falls by a
 /// target per empty block, so a wait worth making is over in well under a
 /// minute, and past it the entry stops holding paying capacity.
+#[cfg(test)]
 fn keep_in_pool(
     tx: &TxEnvelope,
     arrived: Option<Instant>,
@@ -3111,19 +3131,106 @@ fn keep_in_pool(
     base: FeeVector,
     fees: bool,
 ) -> bool {
+    drop_reason(tx, arrived, now, state, base, fees, None).is_none()
+}
+
+/// `keep_in_pool`'s rule, answering why a tx leaves (None: it stays). The
+/// rule is unchanged by bug #5; only the reason is now kept. `gap` is the
+/// first nonce its sender is missing, when this tx's nonce is beyond it.
+/// A TTL departure names what it waited for: a state cap under the B5 price
+/// first (the stress run's 78 silent drops), then a nonce gap, then exec or
+/// prove caps under the base fee.
+fn drop_reason(
+    tx: &TxEnvelope,
+    arrived: Option<Instant>,
+    now: Instant,
+    state: &WorldState,
+    base: FeeVector,
+    fees: bool,
+    gap: Option<u64>,
+) -> Option<DropReason> {
     if tx.header.nonce < state.nonce(&tx.header.sender) {
-        return false;
+        return Some(DropReason::Replaced);
     }
-    if arrived.is_some_and(|t| now.saturating_duration_since(t) >= MEMPOOL_TTL) {
-        return false;
+    let waited = |d: Duration| arrived.is_some_and(|t| now.saturating_duration_since(t) >= d);
+    let below_exec = fees && (tx.header.max_fee.exec < base.exec || tx.header.max_fee.prove < base.prove);
+    if waited(MEMPOOL_TTL) {
+        return Some(if let Some(r) = state_price_wait(tx, base, None) {
+            r
+        } else if let Some(expected) = gap {
+            DropReason::NonceGap { expected }
+        } else if below_exec {
+            DropReason::FeeCapBelowBase
+        } else {
+            DropReason::Expired
+        });
     }
-    if fees
-        && (tx.header.max_fee.exec < base.exec || tx.header.max_fee.prove < base.prove)
-        && arrived.is_some_and(|t| now.saturating_duration_since(t) >= MEMPOOL_FEE_WAIT)
-    {
-        return false;
+    if below_exec && waited(MEMPOOL_FEE_WAIT) {
+        return Some(DropReason::FeeCapBelowBase);
     }
-    (!fees && base.state == 0) || affordable(tx, state, base).is_ok()
+    if (!fees && base.state == 0) || affordable(tx, state, base).is_ok() {
+        None
+    } else {
+        Some(DropReason::Unaffordable)
+    }
+}
+
+/// `StatePriceAboveCap` when the tx's signed state cap is under the B5
+/// price it would pay now; `excess` (the state debt) adds the refill estimate.
+fn state_price_wait(tx: &TxEnvelope, base: FeeVector, excess: Option<u64>) -> Option<DropReason> {
+    let cap = tx.header.max_fee.state;
+    (base.state != 0 && tx.header.gas.state > 0 && cap < base.state).then(|| DropReason::StatePriceAboveCap {
+        cap: cap.to_string(),
+        price: base.state.to_string(),
+        blocks: excess.and_then(|e| fees::blocks_until_state_price_at_most(e, cap)),
+    })
+}
+
+/// Each pending sender's first nonce that neither the chain nor the pool
+/// has: its txs above it wait behind a gap.
+fn first_missing_nonces(pool: &BTreeMap<TxHash, TxEnvelope>, state: &WorldState) -> HashMap<Address, u64> {
+    let mut nonces: HashMap<Address, std::collections::BTreeSet<u64>> = HashMap::new();
+    for t in pool.values() {
+        nonces.entry(t.header.sender).or_default().insert(t.header.nonce);
+    }
+    nonces
+        .into_iter()
+        .map(|(sender, set)| {
+            let mut next = state.nonce(&sender);
+            while set.contains(&next) {
+                next += 1;
+            }
+            (sender, next)
+        })
+        .collect()
+}
+
+/// Why a pending tx is not in a block yet, at the next block's prices
+/// (bug #5): its state cap under the B5 price (with the refill estimate), a
+/// nonce gap before it, or exec/prove caps under the base fee. None: nothing
+/// holds it back but its turn.
+pub fn pending_reason(g: &Inner, tx: &TxEnvelope) -> Option<DropReason> {
+    let base = Chain::next_base_fee(&g.cfg, &g.finalized);
+    if let Some(r) = state_price_wait(tx, base, Some(g.finalized.excess.state)) {
+        return Some(r);
+    }
+    let state = &g.finalized.state;
+    let mut next = state.nonce(&tx.header.sender);
+    let mine: std::collections::BTreeSet<u64> = g
+        .mempool
+        .values()
+        .filter(|t| t.header.sender == tx.header.sender)
+        .map(|t| t.header.nonce)
+        .collect();
+    while mine.contains(&next) {
+        next += 1;
+    }
+    if tx.header.nonce > next {
+        return Some(DropReason::NonceGap { expected: next });
+    }
+    let fees = g.cfg.fees;
+    (fees && (tx.header.max_fee.exec < base.exec || tx.header.max_fee.prove < base.prove))
+        .then_some(DropReason::FeeCapBelowBase)
 }
 
 /// The payload decodes, the prove budget covers the gas limit, and the sender's
@@ -4018,6 +4125,121 @@ mod pool_tests {
             keep_in_pool(&t, Some(now), now, &state, high, true),
             "but an already pending one may wait for the fee to fall"
         );
+    }
+
+    /// A transfer signed with a state cap, as a wallet signs it on a paid-state chain.
+    fn capped(sender: Address, nonce: u64, state_cap: u128) -> TxEnvelope {
+        let mut t = tx(sender, nonce, 1);
+        t.header.gas.state = 300;
+        t.header.max_fee.state = state_cap;
+        t
+    }
+
+    /// Contracts-live bug #5: the stress run's 78 transfers sat under the
+    /// risen B5 price until the TTL and vanished with no reason anywhere.
+    /// The rule that drops them is unchanged; the reason is now named.
+    #[test]
+    fn a_tx_the_state_price_outran_leaves_with_that_reason() {
+        let a = Address::repeat_byte(4);
+        let cap = 2 * fees::STATE_UNIT_PRICE;
+        let t = capped(a, 0, cap);
+        let state = funded(a, 10u128.pow(20));
+        let price = fees::state_base_fee(97_147); // after the stress burst block
+        let base = FeeVector { exec: 0, state: price, prove: 0 };
+        let t0 = Instant::now();
+        assert_eq!(drop_reason(&t, Some(t0), t0 + MEMPOOL_TTL / 2, &state, base, true, None), None, "it still waits");
+        assert_eq!(
+            drop_reason(&t, Some(t0), t0 + MEMPOOL_TTL, &state, base, true, Some(0)),
+            Some(DropReason::StatePriceAboveCap { cap: cap.to_string(), price: price.to_string(), blocks: None }),
+            "the price, not the gap, is what it waited for"
+        );
+        // A tx whose cap meets the price leaves at the TTL for other reasons.
+        let paid = FeeVector { state: fees::STATE_UNIT_PRICE, ..base };
+        assert_eq!(drop_reason(&t, Some(t0), t0 + MEMPOOL_TTL, &state, paid, true, Some(3)), Some(DropReason::NonceGap { expected: 3 }));
+        assert_eq!(drop_reason(&t, Some(t0), t0 + MEMPOOL_TTL, &state, paid, true, None), Some(DropReason::Expired));
+        // The balance went elsewhere.
+        assert_eq!(drop_reason(&t, Some(t0), t0, &funded(a, 10), paid, true, None), Some(DropReason::Unaffordable));
+    }
+
+    #[test]
+    fn a_nonce_gap_is_the_first_nonce_neither_chain_nor_pool_has() {
+        let (a, b) = (Address::repeat_byte(5), Address::repeat_byte(6));
+        let state = funded(a, 1);
+        let pool: BTreeMap<TxHash, TxEnvelope> = [tx(a, 0, 1), tx(a, 1, 1), tx(a, 3, 1), tx(b, 1, 1)]
+            .into_iter()
+            .map(|t| (aether_execution::tx_hash(&t), t))
+            .collect();
+        let gaps = first_missing_nonces(&pool, &state);
+        assert_eq!(gaps[&a], 2, "0 and 1 run; 3 waits for 2");
+        assert_eq!(gaps[&b], 0, "b's nonce 1 waits for 0");
+    }
+
+    /// A pending tx under the state price says so over RPC, with the price,
+    /// its cap and how many blocks the refill needs (bug #5).
+    #[test]
+    fn a_pending_tx_says_what_it_waits_for() {
+        let a = Address::repeat_byte(8);
+        let (chain, _) = Chain::new(cfg(vec![(a, U256::from(10u128.pow(22)))]));
+        let mut g = chain.lock();
+        g.cfg.history_v2 = true; // a paid-state genesis prices state
+        let mut head = (*g.finalized).clone();
+        head.excess.state = 97_147;
+        g.finalized = Arc::new(head);
+        let cap = 2 * fees::STATE_UNIT_PRICE;
+        let stuck = capped(a, 0, cap);
+        let price = fees::state_base_fee(97_147);
+        assert_eq!(
+            pending_reason(&g, &stuck),
+            Some(DropReason::StatePriceAboveCap {
+                cap: cap.to_string(),
+                price: price.to_string(),
+                blocks: fees::blocks_until_state_price_at_most(97_147, cap),
+            })
+        );
+        let blocks = fees::blocks_until_state_price_at_most(97_147, cap).unwrap();
+        assert!(blocks > 1_000, "{blocks}");
+        // Behind a gap: nonce 1 with nonce 0 nowhere.
+        let behind = capped(a, 1, price);
+        assert_eq!(pending_reason(&g, &behind), Some(DropReason::NonceGap { expected: 0 }));
+        g.mempool.insert(aether_execution::tx_hash(&stuck), stuck.clone());
+        assert_eq!(pending_reason(&g, &behind), None, "nonce 0 is pending: only its turn holds it");
+    }
+
+    /// Departures at finalization leave tombstones: a gapped tx past the TTL
+    /// (`nonce_gap`) and a same-nonce twin of an included tx (`replaced`);
+    /// the included tx itself has a receipt, never a tombstone.
+    #[test]
+    fn finalized_departures_leave_tombstones() {
+        let key = aether_crypto::P256Signer::from_seed(&[9; 32]).unwrap();
+        let a = address_of(&aether_crypto::Signer::public_key(&key)).unwrap();
+        let (chain, genesis) = Chain::new(cfg(vec![(a, U256::from(10u128.pow(22)))]));
+        let parent = chain.get(&genesis.digest()).unwrap();
+        let landing = transfers(&key, 0..1).remove(0);
+        // Its twin: nonce 0 again, another payload.
+        let twin = aether_execution::sign_call(&key, 7780, 0, 1, &EvmCall {
+            to: Some(Address::repeat_byte(0xbb)),
+            value: U256::from(2),
+            input: Bytes::new(),
+            gas_limit: 21_000,
+            delegate: None,
+        })
+        .unwrap();
+        // Nonce 5 of the same sender, waiting past the TTL behind nonces 1..4.
+        let gapped = transfers(&key, 5..6).remove(0);
+        let (hl, ht, hg) = (aether_execution::tx_hash(&landing), aether_execution::tx_hash(&twin), aether_execution::tx_hash(&gapped));
+        for t in [&landing, &twin, &gapped] {
+            assert_eq!(chain.add_to_mempool(t.clone()), Ok(true));
+        }
+        chain.lock().arrivals.insert(hg, Instant::now() - MEMPOOL_TTL);
+        let (block, exec) = build(&chain, &parent, &genesis, vec![landing]);
+        assert_eq!(exec.tx_hashes, vec![hl]);
+        chain.finalize(&block).unwrap();
+        let mut g = chain.lock();
+        assert!(g.mempool.is_empty(), "the twin and the gapped tx left, as before");
+        assert_eq!(g.tombstones.get(&ht), Some(DropReason::Replaced));
+        assert_eq!(g.tombstones.get(&hg), Some(DropReason::NonceGap { expected: 1 }));
+        assert_eq!(g.tombstones.get(&hl), None, "included: a receipt, no tombstone");
+        assert!(g.receipts.contains_key(&hl));
     }
 
     #[test]

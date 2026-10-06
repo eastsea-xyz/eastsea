@@ -343,6 +343,48 @@ impl Upstream {
     pub async fn call(&self, method: &str, params: Value) -> Result<Value, String> {
         self.ask(method, params, |v| Ok(Some(v))).await.map(|v| v.unwrap_or(Value::Null))
     }
+
+    /// The network's finalized height, corroborated (pre-audit 7 PA7-06):
+    /// the first answer AHEAD of `ours` is evidence enough and wins outright,
+    /// but an answer claiming we are at the tip is an unsigned claim — a
+    /// source stuck at (or lying about) a low tip must not hide an honest
+    /// ahead-of-us alternative behind "first answer wins". So on a
+    /// not-ahead answer every remaining HTTP source is asked too and the
+    /// highest claim wins. Iroh's client asks its own peer set.
+    pub async fn net_height(&self, ours: u64) -> Result<u64, String> {
+        let ask_one = |v: Value| -> Result<u64, String> {
+            v["height"].as_u64().ok_or_else(|| "no upstream height".to_string())
+        };
+        match self {
+            Upstream::Iroh(c, _) => {
+                let v = c.call("aether_status", json!([])).await.map_err(|e| e.to_string())?;
+                crate::chain::tick();
+                ask_one(v)
+            }
+            Upstream::Http(urls) => {
+                let mut best: Option<u64> = None;
+                let mut last_err = String::from("no upstream");
+                for url in urls {
+                    match http_call(url, "aether_status", &json!([])).await {
+                        Ok(v) => match ask_one(v) {
+                            Ok(h) => {
+                                crate::chain::tick();
+                                // Ahead of us and of every claim so far: stop
+                                // asking, this is the corroborated answer.
+                                if h > ours && best.is_none_or(|b| h > b) {
+                                    return Ok(h);
+                                }
+                                best = Some(best.map_or(h, |b| b.max(h)));
+                            }
+                            Err(e) => last_err = e,
+                        },
+                        Err(e) => last_err = e,
+                    }
+                }
+                best.ok_or(last_err)
+            }
+        }
+    }
 }
 
 /// One pooled client for every upstream call: a follower catching up asks
@@ -371,13 +413,6 @@ async fn http_call(url: &str, method: &str, params: &Value) -> Result<Value, Str
         Some(e) => Err(e.to_string()),
         None => Ok(v.get("result").cloned().unwrap_or(Value::Null)),
     }
-}
-
-/// The network's finalized height, from the first source that answers.
-async fn net_height(upstream: &Upstream) -> Result<u64, String> {
-    upstream.first("aether_status", json!([])).await?["height"]
-        .as_u64()
-        .ok_or_else(|| "no upstream height".into())
 }
 
 /// The margin a snapshot recovery keeps free on top of the snapshot itself
@@ -700,16 +735,19 @@ impl StallWatch {
 
     /// Called after attempts and while one is pending. The caller resets the
     /// clock on active snapshot work before it checks a pending attempt.
+    /// Only VERIFIED progress (an adopted block, `height > self.height`)
+    /// clears the clock; every round without it — including a round that
+    /// "succeeded" against an unsigned status claiming nothing new — keeps
+    /// the clock running (pre-audit 7 PA7-06: a false-low-tip source used to
+    /// erase the stall history on every answer, hiding the stall from the
+    /// ten-minute self-heal for as long as it kept answering).
     fn observe(&mut self, now: std::time::Instant, height: u64, net: Option<u64>, failed: bool) -> bool {
-        if height > self.height || (!failed && net.is_some_and(|n| n <= height)) {
+        if height > self.height {
             self.reset(height);
             return false;
         }
         self.height = height;
         self.failures += u64::from(failed);
-        if !failed && !net.is_some_and(|n| n > height) {
-            return false;
-        }
         // One slow request or a short outage should not restart a healthy Mac.
         now.duration_since(*self.since.get_or_insert(now)) >= STALL_TIMEOUT
     }
@@ -874,9 +912,12 @@ async fn advance(
     let mut adopted = 0u64;
     let mut window = window.max(1);
     loop {
-        let net = net_height(upstream).await?;
-        chain.lock().net_height = Some(net);
         let ours = chain.finalized_height();
+        // The height this round fetches toward is corroborated across
+        // sources (PA7-06): a single false-low-tip answer used to cap the
+        // fetch at our own height, so a round "succeeded" fetching nothing.
+        let net = upstream.net_height(ours).await?;
+        chain.lock().net_height = Some(net);
         if net > ours + JUMP_BEHIND && adopted == 0 {
             match jump(chain, upstream, set).await {
                 Ok(to) => {
@@ -1548,7 +1589,7 @@ mod tests {
     }
 
     #[test]
-    fn verified_progress_and_a_confirmed_tip_clear_the_stall_clock() {
+    fn verified_progress_clears_the_stall_clock_and_an_unsigned_tip_answer_does_not() {
         let start = std::time::Instant::now();
         let mut watch = StallWatch::new(100);
         assert!(!watch.observe(start, 100, Some(10_000), false));
@@ -1556,9 +1597,61 @@ mod tests {
         // A status response alone did not resolve the gap.
         assert!(watch.observe(start + STALL_TIMEOUT, 100, Some(10_000), false));
         assert!(!watch.observe(start + STALL_TIMEOUT + Duration::from_secs(1), 101, Some(10_000), false));
+        // An unsigned status claiming we are at the tip (net == ours) is not
+        // a confirmed tip (pre-audit 7 PA7-06): the old code reset the clock
+        // on it, so a source answering "nothing new" hid every stall. The
+        // clock keeps running through such answers…
         assert!(!watch.observe(start + STALL_TIMEOUT * 2, 101, Some(101), false));
-        assert!(!watch.observe(start + STALL_TIMEOUT * 2 + Duration::from_secs(1), 101, None, true));
-        assert!(watch.observe(start + STALL_TIMEOUT * 3 + Duration::from_secs(1), 101, None, true));
+        // …so ten minutes after the last VERIFIED progress the self-heal
+        // fires even though an upstream kept answering the whole time.
+        assert!(watch.observe(start + STALL_TIMEOUT * 3 + Duration::from_secs(1), 101, Some(101), false));
+    }
+
+    /// PA7-06's own scenario, on its own: a source that keeps answering
+    /// "you are at the tip" — successful rounds, no failures, no ahead
+    /// claim — never resets the stall clock. On the old code every such
+    /// answer called `reset`, and the follower sat "healthy" forever.
+    #[test]
+    fn a_false_low_tip_source_never_resets_the_stall_clock() {
+        let start = std::time::Instant::now();
+        let mut watch = StallWatch::new(100);
+        for seconds in [0u64, 60, 300, 599] {
+            assert!(!watch.observe(start + Duration::from_secs(seconds), 100, Some(100), false));
+        }
+        assert!(
+            watch.observe(start + STALL_TIMEOUT, 100, Some(100), false),
+            "ten minutes of nothing-new answers is a stall the self-heal must see"
+        );
+    }
+
+    /// The corroborated height (PA7-06): a not-ahead answer does not win
+    /// outright — the remaining sources are asked, and an honest ahead source
+    /// corrects a false-low-tip one in either order. The old `first`-based
+    /// height returned the low source's 100 and the round fetched nothing.
+    #[tokio::test]
+    async fn a_false_low_tip_is_corroborated_across_alternative_sources() {
+        let spawn_status = |height: u64| async move {
+            let app = axum::Router::new().route("/", axum::routing::post(move |body: axum::body::Bytes| async move {
+                let v: Value = serde_json::from_slice(&body).unwrap_or_default();
+                let id = v.get("id").cloned().unwrap_or(Value::Null);
+                axum::Json(json!({ "jsonrpc": "2.0", "id": id, "result": { "height": height } }))
+            }));
+            let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = probe.local_addr().unwrap();
+            drop(probe);
+            let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+            tokio::spawn(async move { axum::serve(listener, app).await });
+            format!("http://{addr}")
+        };
+        let (low, ahead) = (spawn_status(100).await, spawn_status(200).await);
+        let ours = 100u64;
+        // The stuck source listed first is where the old code stopped.
+        assert_eq!(Upstream::Http(vec![low.clone(), ahead.clone()]).net_height(ours).await.unwrap(), 200);
+        // An ahead answer first still wins outright…
+        assert_eq!(Upstream::Http(vec![ahead.clone(), low.clone()]).net_height(ours).await.unwrap(), 200);
+        // …and a lone low answer is still the best claim there is — returned
+        // as the (unsigned) height, with the stall clock the safety net.
+        assert_eq!(Upstream::Http(vec![low]).net_height(ours).await.unwrap(), 100);
     }
 
     #[test]

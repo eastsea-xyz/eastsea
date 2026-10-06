@@ -865,12 +865,18 @@ impl Store {
         }
         let mut rows = Vec::new();
         let mut next_cursor = None;
+        let mut last_served: Option<Vec<u8>> = None;
         for row in t.range(start.as_slice()..upper.as_slice()).map_err(dberr)?.rev() {
             let (key, value) = row.map_err(dberr)?;
             if rows.len() == limit {
-                next_cursor = Some(hex::encode(key.value()));
+                // The cursor is the last SERVED row's key (pre-audit 7b
+                // PA7B-10): the next page's range bound is exclusive, so the
+                // old cursor — the first unserved key — made the next page
+                // skip that record for good, one loss per page boundary.
+                next_cursor = last_served.map(hex::encode);
                 break;
             }
+            last_served = Some(key.value().to_vec());
             rows.push(value.value().to_vec());
         }
         Ok((rows, next_cursor, total))
@@ -1947,6 +1953,55 @@ mod tests {
         }
         let e = refuse(&path).to_string();
         assert!(e.contains("does not reach"), "a version with no registered steps cannot open: {e}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Walking rewards pages serves every record exactly once (pre-audit 7b
+    /// PA7B-10): the cursor is the last SERVED key. The old cursor — the first
+    /// unserved key, combined with the next page's exclusive bound — dropped
+    /// one record at every page boundary (five records, limit two: pages
+    /// [5,4] then [2,1], record 3 gone for good), while `total` still claimed 5.
+    #[test]
+    fn rewards_pages_walk_every_record_exactly_once() {
+        let dir = dir_for("rewards-page");
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::open(&dir.join("state.redb")).unwrap();
+        let prover = [7u8; 20];
+        for height in 1..=5u64 {
+            store.put_reward(&prover, height, height, &height.to_be_bytes()).unwrap();
+        }
+        // Newest first, two per page: [5,4] [3,2] [1], cursor None at the end.
+        let mut seen: Vec<u64> = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut pages = 0;
+        loop {
+            let (rows, next, total) = store.rewards_page(&prover, cursor.as_deref(), 2).unwrap();
+            assert_eq!(total, 5, "the total is the whole history");
+            pages += 1;
+            for r in &rows {
+                seen.push(u64::from_be_bytes(r[..8].try_into().unwrap()));
+            }
+            match next {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+            assert!(pages < 10, "the walk must end");
+        }
+        assert_eq!(seen, vec![5, 4, 3, 2, 1], "two-row pages lose nothing at a boundary (old code lost 3)");
+        // One row per page: a boundary at every page, nothing lost anywhere.
+        let mut seen: Vec<u64> = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let (rows, next, total) = store.rewards_page(&prover, cursor.as_deref(), 1).unwrap();
+            assert_eq!(total, 5);
+            assert_eq!(rows.len(), 1, "every page is full until the last");
+            seen.push(u64::from_be_bytes(rows[0][..8].try_into().unwrap()));
+            match next {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+        assert_eq!(seen, vec![5, 4, 3, 2, 1], "one-row pages walk the whole history too");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

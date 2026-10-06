@@ -61,8 +61,9 @@ const owns = (name, label) => {
   if (name === 'core/CommitteeRegistry' && label.startsWith('core/CommitteeRegistryV3')) return false;
   if (name === 'core/AtomicSwap' && label.includes('AtomicSwapEVM')) return false;
   if (name === 'core/MerkleDistributor' && label.includes('MerkleDistributorFactory')) return false;
-  if (name === 'core/EastSeaVault' && label.startsWith('VaultFactory')) return false;
+  if (name === 'core/EastSeaVault' && (label.startsWith('VaultFactory') || label.startsWith('core/EastSeaVaultFactory'))) return false;
   if (name === 'core/EastSeaNames' && label.startsWith('toolbox/')) return false;
+  if (name === 'toolbox/EastSeaNames' && !label.startsWith('toolbox/')) return false;
   if (name === 'toolbox/AmmPair' && label.startsWith('toolbox/AmmPair') === false && label.startsWith('AmmPair.') === false) return false;
   return keys.some((k) => label.startsWith(k));
 };
@@ -101,3 +102,5 @@ console.log('|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|');
 for (const row of rows) console.log(`| ${row.join(' | ')} |`);
 const unowned = steps.filter((s) => s.label && !names.some((n) => owns(n, s.label)));
 console.log(`\nSteps: ${totOk}/${totAll} ok across the 41 fixtures; ${unowned.length} other steps (${unowned.map((s) => s.label).join(', ')}).`);
+const multi = steps.filter((s) => s.label && names.filter((n) => owns(n, s.label)).length > 1);
+if (multi.length) console.log(`Shared by two contracts' rows: ${multi.map((s) => `${s.label} (${names.filter((n) => owns(n, s.label)).join(' + ')})`).join('; ')}.`);

@@ -156,6 +156,7 @@ fn rpc_state(chain: Chain, upstream: Option<Arc<Upstream>>) -> RpcState {
         snapshot: Default::default(),
         prover: None,
         shards: None,
+        public_read_only: false,
     }
 }
 

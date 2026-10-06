@@ -43,6 +43,7 @@ fn state() -> RpcState {
         snapshot: Default::default(),
         prover: None,
         shards: None,
+        public_read_only: false,
     }
 }
 

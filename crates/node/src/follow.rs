@@ -265,7 +265,7 @@ where
         let end = ((index + 1) * chunk as u64).min(size as u64);
         (end - index * chunk as u64) as usize
     };
-    let mut fetch_chunk = fetch_chunk;
+    let fetch_chunk = fetch_chunk;
     futures::stream::iter(0..size.div_ceil(chunk) as u64)
         .map(move |index| fetch_chunk(index, take(index)))
         .buffered(SNAPSHOT_PARALLEL)

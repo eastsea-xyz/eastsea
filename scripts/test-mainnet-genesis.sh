@@ -51,6 +51,12 @@
 #      the three builder keys, 2/3 and 3/3); assemble refuses to run without
 #      --release; a final file with the pin removed or its code hash changed
 #      FAILS the strict gate naming "release pin".
+#  16. pre-audit 7 PA7-01, the assembly-intent boundary: a chain-id-only
+#      ceremony record is refused as incomplete; a final file whose registrar
+#      was replaced with ANOTHER VALID P-256 key — every strict rule still
+#      passes — is refused by the intent comparison, and so is one whose
+#      builder approval set was replaced with three other valid keys (the
+#      release rules check shape, never intended identity).
 # Usage: scripts/test-mainnet-genesis.sh   (env: AETHER_BIN, as in the tool)
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -121,10 +127,14 @@ echo "  40 etc.) and the --rehearsal allowance belong to scripts/mainnet-rehears
 echo "  this tool passes --rehearsal only in --dry-run, as a label, never to excuse a value."
 
 # Tests 3, 4 and 8 must reach the RULE list, so they use a NEW chain id (the 7799
-# rehearsal id is refused before any rule runs, see test 2).
-python3 - "$WORK/ceremony7801.json" <<'PY'
+# rehearsal id is refused before any rule runs, see test 2). The ceremony
+# record is the dry run's COMPLETE assembly policy with the new id — since
+# pre-audit 7 (PA7-01) a chain-id-only record is refused as incomplete (test 16).
+python3 - "$WORK/dry/coordinator/ceremony.json" "$WORK/ceremony7801.json" <<'PY'
 import json, sys
-json.dump({"chain_id": 7801}, open(sys.argv[1], "w"))
+c = json.load(open(sys.argv[1]))
+c["chain_id"] = 7801            # a new id: what the real launch assembles
+json.dump(c, open(sys.argv[2], "w"), indent=2)
 PY
 echo "== 3. a tampered file (one flag flipped: protocol 3 -> 1) FAILS"
 python3 - "$NET" "$WORK/tampered.json" <<'PY'
@@ -212,12 +222,11 @@ echo "== 9. the 7799 refusal was about the id: a new-id copy of the same file pa
 # The strict refusal itself runs at test 2 (the CLI) and its expect_fail (the
 # script's real-mode check); here a NEW-id copy of the same file passes the
 # real mode — proving the refusal was about the id, not the file.
-python3 - "$NET" "$WORK/final7801.json" "$WORK/ceremony7801.json" <<'PY'
+python3 - "$NET" "$WORK/final7801.json" <<'PY'
 import json, sys
 n = json.load(open(sys.argv[1]))
 n["chain_id"] = 7801            # a new id: what the real launch assembles
 json.dump(n, open(sys.argv[2], "w"), indent=2)
-json.dump({"chain_id": 7801}, open(sys.argv[3], "w"))
 PY
 if out=$("$A" mainnet-rules --network "$WORK/final7801.json" 2>&1); then
   n=$(printf '%s\n' "$out" | grep -c '^ok' || true)
@@ -311,8 +320,14 @@ if grep -q "7801" "$WORK/last.out" && grep -q "7802" "$WORK/last.out" && grep -q
   ok "the refusal names both chains and the record (A6-3)"
 else bad "the transit-swap refusal does not name the record-pinned chain"; fi
 # (c) node startup on a new genesis with no record anywhere: the operator step.
+# The --network file must sit alone: the record also resolves from next to it
+# (the app-bundle pair), and test 9's check left ceremony-check.json beside
+# $WORK/final7801.json — with that, this start is refused for a missing LOCAL
+# network.json instead of the missing record, a different scenario.
+mkdir -p "$WORK/nowhere7801"
+cp "$WORK/final7801.json" "$WORK/nowhere7801/network.json"
 mkdir -p "$WORK/bare7801"
-expect_fail "node startup refuses a new genesis with no ceremony record" "$A" node --network "$WORK/final7801.json" --data "$WORK/bare7801" --port 0 --rpc-port 0
+expect_fail "node startup refuses a new genesis with no ceremony record" "$A" node --network "$WORK/nowhere7801/network.json" --data "$WORK/bare7801" --port 0 --rpc-port 0
 if grep -q "refusing to start" "$WORK/last.out" && grep -q "verify-local" "$WORK/last.out"; then
   ok "the startup refusal names the operator step (verify-local --ceremony)"
 else bad "the startup refusal does not explain the operator step"; fi
@@ -408,7 +423,10 @@ json.dump(n, open(sys.argv[2], "w"), indent=2)
 PY
 cp "$WORK/ceremony-check.json" "$WORK/bundle3/ceremony-check.json"
 rc=0; "$A" run --data "$WORK/consumer3" --network "$WORK/bundle3/network.json" --port 0 --rpc-port 0 --exit-with-parent --min-free-disk=0 > "$WORK/run-consumer3.log" 2>&1 || rc=$?
-if [ "$rc" != 0 ] && grep -q "refusing to run" "$WORK/run-consumer3.log" && grep -q "digest" "$WORK/run-consumer3.log"; then
+# The incoming-file bind refuses through the top-level error path ("error:
+# digest mismatch: …"); the "refusing to run" wrap is the later, adopted-file
+# stage. Either way the refusal must name the digest.
+if [ "$rc" != 0 ] && grep -q "digest mismatch" "$WORK/run-consumer3.log"; then
   ok "run refuses a bundled record that pins other bytes (names the digest)"
 else
   bad "the mismatching bundled record was not refused (rc=$rc):"; sed 's/^/        /' "$WORK/run-consumer3.log" | head -6
@@ -498,6 +516,64 @@ else bad "the missing-pin refusal does not name the release pin rule"; fi
 expect_fail "strict mainnet-rules refuses a mismatched ReleaseLog code hash" "$A" mainnet-rules --network "$WORK/badhash.json"
 if grep -q "does not match the ReleaseLog runtime code" "$WORK/last.out"; then ok "the refusal says the code hash does not match"
 else bad "the mismatched-hash refusal does not explain itself"; fi
+
+echo "== 16. pre-audit 7 PA7-01: the final file must be what this ceremony ASSEMBLED"
+# (a) a chain-id-only record proves nothing about intent: refused as incomplete.
+printf '{"chain_id": 7801}\n' > "$WORK/ceremony-only-id.json"
+expect_fail "check refuses an incomplete (chain-id-only) ceremony record" \
+  "$G" check "$WORK/final7801.json" --chain-id 7801 --ceremony "$WORK/ceremony-only-id.json"
+if grep -q "incomplete assembly record" "$WORK/last.out"; then ok "the refusal says the assembly record is incomplete"
+else bad "the incomplete-record refusal does not say incomplete"; fi
+# (b) another VALID registrar: curve-checked (every strict rule passes), so
+#     only the intent comparison can catch the substitution (PA7-01).
+"$A" registrar-key --data "$WORK/other-registrar" > "$WORK/other-registrar.out"
+other_reg=$(awk 'NR == 1 && $1 == "registrar" && $2 == "key" {print $3}' "$WORK/other-registrar.out")
+if [ "${#other_reg}" = 128 ]; then
+  python3 - "$WORK/final7801.json" "$WORK/other-registrar.json" "$other_reg" <<'PY'
+import json, sys
+n = json.load(open(sys.argv[1]))
+n["registrar"] = sys.argv[3]    # another valid P-256 key — not the one assembled
+json.dump(n, open(sys.argv[2], "w"), indent=2)
+PY
+  if out=$("$A" mainnet-rules --network "$WORK/other-registrar.json" 2>&1); then
+    ok "setup: the substituted registrar PASSES every strict rule — only the intent comparison can catch it (PA7-01)"
+  else
+    bad "setup: the substituted registrar already fails strict rules, so the scenario is unreachable:"$'\n'"$out"
+  fi
+  expect_fail "check refuses a valid-but-substituted registrar" \
+    "$G" check "$WORK/other-registrar.json" --chain-id 7801 --ceremony "$WORK/ceremony7801.json"
+  if grep -q "registrar replaced" "$WORK/last.out"; then ok "the refusal names the replaced registrar"
+  else bad "the substituted-registrar refusal does not name it"; fi
+else
+  bad "could not make a second valid registrar key for the substitution test"
+fi
+# (c) another VALID builder set (three fresh P-256 keys): the release rules
+#     check shape, log, code hash, 2/3 and 3/3 — never intended identity.
+others=() k=
+for i in 1 2 3; do
+  k=$(openssl ecparam -name prime256v1 -genkey -noout 2>/dev/null | openssl ec -pubout -outform DER 2>/dev/null | tail -c 65 | xxd -p -c 65)
+  if [ "${#k}" != 130 ]; then break; fi
+  others+=("$k")
+done
+if [ "${#others[@]}" = 3 ]; then
+  python3 - "$WORK/final7801.json" "$WORK/other-builders.json" "${others[@]}" <<'PY'
+import json, sys
+n = json.load(open(sys.argv[1]))
+n["release"]["builder_keys"] = sys.argv[3:]   # three other valid keys
+json.dump(n, open(sys.argv[2], "w"), indent=2)
+PY
+  if out=$("$A" mainnet-rules --network "$WORK/other-builders.json" 2>&1); then
+    ok "setup: the substituted builder set PASSES every strict rule — only the intent comparison can catch it (PA7-01)"
+  else
+    bad "setup: the substituted builder set already fails strict rules, so the scenario is unreachable:"$'\n'"$out"
+  fi
+  expect_fail "check refuses a valid-but-substituted builder set" \
+    "$G" check "$WORK/other-builders.json" --chain-id 7801 --ceremony "$WORK/ceremony7801.json"
+  if grep -q "release pin replaced" "$WORK/last.out"; then ok "the refusal names the replaced release pin"
+  else bad "the substituted-builders refusal does not name it"; fi
+else
+  bad "could not make three fresh builder keys for the substitution test"
+fi
 
 echo
 echo "==================== test results ===================="

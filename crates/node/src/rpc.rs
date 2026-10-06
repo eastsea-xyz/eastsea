@@ -11,7 +11,7 @@ use aether_types::{Address, TxEnvelope, TxHash, U256};
 use axum::{extract::State, routing::get, routing::post, Json, Router};
 use serde_json::{json, Value};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -113,6 +113,12 @@ fn public_gate(st: &RpcState, method: &str, p: &Value) -> Result<(), (i64, Strin
             // it to what this node kept: the cap judges the ask, not the answer.
             let to = block_param(&f, "toBlock", head);
             let from = block_param(&f, "fromBlock", head);
+            // An inverted ask is refused here, at the gate (pre-audit 7
+            // PA7-02): the handler answers inverted ranges with an error, and
+            // the gate holds strangers to the same shape it asks of them.
+            if from > to {
+                return Err((-32602, format!("public read-only gateway: eth_getLogs fromBlock {from} is above toBlock {to}")));
+            }
             if to.saturating_sub(from) >= PUBLIC_GETLOGS_WINDOW {
                 return Err((-32002, format!("public read-only gateway: eth_getLogs is capped at {PUBLIC_GETLOGS_WINDOW} blocks per query; ask a narrower range")));
             }
@@ -270,13 +276,18 @@ pub async fn serve(addr: SocketAddr, state: RpcState) -> std::io::Result<()> {
         .allow_origin(tower_http::cors::Any)
         .allow_methods([axum::http::Method::POST, axum::http::Method::GET, axum::http::Method::OPTIONS])
         .allow_headers([axum::http::header::CONTENT_TYPE]);
-    let app = Router::new()
-        .route("/", post(handle))
+    let mut app = Router::new().route("/", post(handle));
+    if !public {
         // Era files as plain GETs (roadmap B6): the same bytes `aether_eraChunk`
-        // hands out hex-encoded, for torrent webseeds and curl.
-        .route("/era/{name}", get(serve_era_file))
-        .layer(cors)
-        .with_state(state);
+        // hands out hex-encoded, for torrent webseeds and curl — a node's own
+        // first webseed, on its private (loopback/tunnel) listener. The public
+        // read-only gateway never registers the route (pre-audit 7 PA7-03):
+        // serving one buffers a whole era file with no public-side need for
+        // it, a stranger's lever the explorer never uses; intentional
+        // webseeding belongs to an export node's own listener.
+        app = app.route("/era/{name}", get(serve_era_file));
+    }
+    let app = app.layer(cors).with_state(state);
     // The public gateway also caps what one request may make this node parse:
     // an oversized Content-Length is refused at the head, with a 413 the asker
     // can read; DefaultBodyLimit backstops a chunked or lying body.
@@ -310,12 +321,52 @@ async fn public_body_cap(req: axum::extract::Request, next: axum::middleware::Ne
     next.run(req).await
 }
 
+/// Concurrent `/era/` transfers this node serves at once (pre-audit 7
+/// PA7-03): each one buffers a whole era file, so even the private,
+/// loopback-only listener a webseed tunnels through serves a bounded number —
+/// a mirror hammering it cannot turn the node into an era-file faucet that
+/// crowds out everything else.
+const MAX_ERA_TRANSFERS: usize = 4;
+static ERA_TRANSFERS: AtomicUsize = AtomicUsize::new(0);
+
+/// A counted slot in a global budget: acquire-or-refuse (a CAS loop), given
+/// back on drop. The gateway's bounded-execution budgets share this shape.
+struct BudgetSlot(&'static AtomicUsize);
+impl BudgetSlot {
+    fn acquire(counter: &'static AtomicUsize, max: usize) -> Option<Self> {
+        let mut n = counter.load(Ordering::Acquire);
+        loop {
+            if n >= max {
+                return None;
+            }
+            match counter.compare_exchange(n, n + 1, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return Some(BudgetSlot(counter)),
+                Err(now) => n = now,
+            }
+        }
+    }
+}
+impl Drop for BudgetSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 /// `GET /era/<file>`: a whole era file from this node's era folder — a
 /// webseed (the export manifest's first mirror). Names are exactly
 /// `era-<eight digits>.aera`; anything else is a 404, never a path.
 async fn serve_era_file(State(st): State<RpcState>, axum::extract::Path(name): axum::extract::Path<String>) -> axum::response::Response {
     use axum::http::{header, StatusCode};
     use axum::response::IntoResponse;
+    // Defense in depth (PA7-03): the public gateway does not register this
+    // route; if a future route table ever re-adds it, the handler still
+    // refuses rather than serving era files to strangers.
+    if st.public_read_only {
+        return (StatusCode::NOT_FOUND, "no such era here").into_response();
+    }
+    let Some(_transfer) = BudgetSlot::acquire(&ERA_TRANSFERS, MAX_ERA_TRANSFERS) else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "era transfer budget busy; retry shortly").into_response();
+    };
     let era = name
         .strip_prefix("era-")
         .and_then(|n| n.strip_suffix(".aera"))
@@ -385,6 +436,7 @@ async fn single(st: &RpcState, req: Value) -> Value {
     }
     let result = match &*method {
         "aether_getFinalized" => finalized(st, &params).await,
+        "eth_call" => eth_call(st, &params, if st.public_read_only { PUBLIC_CALL_GAS } else { PRIVATE_CALL_GAS }).await,
         "aether_getReceiptProof" => receipt_proof(st, &params).await,
         "aether_snapshot" => snapshot_manifest(st).await,
         "aether_registerDevice" => register_device(st, &params).await,
@@ -523,9 +575,16 @@ async fn old_block(st: &RpcState, p: &Value) -> RpcResult {
         tokio::task::spawn_blocking(move || c.old_block(h)).await.map_err(|e| (-32000, e.to_string()))?
     };
     if let (Err(_), Some(up)) = (&read, &st.upstream) {
-        let era = h / aether_state::mmr::ERA_LEN;
-        crate::era_net::fetch_into(&chain, up, era).await.map_err(|e| (-32000, e))?;
-        read = tokio::task::spawn_blocking(move || chain.old_block(h)).await.map_err(|e| (-32000, e.to_string()))?;
+        // Public history reads stay local-only (pre-audit 7 PA7-04): fetching
+        // the era would save a whole file this node deliberately pruned, one
+        // stranger's request at a time — the pruned error below already tells
+        // clients where history lives (eraInfo / eraChunk / eraProof). Private
+        // nodes and followers keep the self-healing fetch.
+        if !st.public_read_only {
+            let era = h / aether_state::mmr::ERA_LEN;
+            crate::era_net::fetch_into(&chain, up, era).await.map_err(|e| (-32000, e))?;
+            read = tokio::task::spawn_blocking(move || chain.old_block(h)).await.map_err(|e| (-32000, e.to_string()))?;
+        }
     }
     let b = read.map_err(|e| (-32001, e))?;
     let payload = b.payload().ok_or((-32000, "block payload".to_string()))?;
@@ -1000,7 +1059,6 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
         }
         // Minimal Ethereum-compatible reads.
         "eth_chainId" => Ok(json!(format!("0x{:x}", chain.cfg().chain_id))),
-        "eth_call" => eth_call(chain, p, if st.public_read_only { PUBLIC_CALL_GAS } else { PRIVATE_CALL_GAS }),
         "eth_getLogs" => eth_get_logs(chain, p),
         "eth_blockNumber" => Ok(json!(format!("0x{:x}", chain.lock().finalized.height))),
         "eth_getBalance" => {
@@ -1294,6 +1352,14 @@ mod public_read_tests {
         v.get("error").and_then(|e| e["message"].as_str()).is_some_and(|m| m.contains("public read-only gateway"))
     }
 
+    /// Tests that fire a real eth_call share PUBLIC_CALLS — a process-global
+    /// budget — with the test that fills it on purpose. Claim this lock for
+    /// the whole test so the two cannot flake on each other.
+    fn claim_call_budget() -> std::sync::MutexGuard<'static, ()> {
+        static CLAIM: Mutex<()> = Mutex::new(());
+        CLAIM.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Every write, node-local and heavy method is refused before its handler
     /// runs — the gateway can neither relay a transaction nor trigger node-side
     /// work. Aliased spellings are refused too (the gate runs after normalize).
@@ -1346,6 +1412,7 @@ mod public_read_tests {
     /// genesis chain, the public gateway itself never stands in the way.
     #[test]
     fn allowlisted_reads_pass_the_gate() {
+        let _calls = claim_call_budget();
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let st = public_state();
         let reads = [
@@ -1418,6 +1485,126 @@ mod public_read_tests {
         assert!(answer.as_array().is_some_and(|a| a.len() == 20), "the batch cap is a public-gateway cap");
     }
 
+    /// An inverted or wholly-future eth_getLogs range is answered, never fed
+    /// to the block range scan: BTreeMap::range with from > to aborts the
+    /// process, which the fatal-panic watch turns into a node exit (pre-audit
+    /// 7 PA7-02). The old code panicked on both shapes here.
+    #[test]
+    fn reversed_and_future_getlogs_ranges_error_or_empty_never_panic() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        // A genesis chain: head is 0, so any height above it is the future.
+        let st = bare_state();
+        let inverted = rt.block_on(call(&st, "eth_getLogs", json!([{ "fromBlock": "0x64", "toBlock": "0x32" }])));
+        assert_eq!(inverted["error"]["code"], -32602, "an inverted range is a clear error: {inverted}");
+        let future = rt.block_on(call(&st, "eth_getLogs", json!([{ "fromBlock": "0x3e8", "toBlock": "0x7d0" }])));
+        assert!(future["result"].as_array().is_some_and(|a| a.is_empty()), "a wholly-future range is an empty answer, not a panic: {future}");
+        // fromBlock above head with toBlock defaulted to head: still an error,
+        // never a silent clamp-to-empty.
+        let ahead = rt.block_on(call(&st, "eth_getLogs", json!([{ "fromBlock": "0x3e8" }])));
+        assert_eq!(ahead["error"]["code"], -32602, "{ahead}");
+        // The public gateway refuses the inverted ask at the gate too, with
+        // the same shape it demands of every other request.
+        let pub_st = public_state();
+        let gate = rt.block_on(call(&pub_st, "eth_getLogs", json!([{ "fromBlock": "0x64", "toBlock": "0x32" }])));
+        assert_eq!(gate["error"]["code"], -32602, "{gate}");
+        assert!(gate_error(&gate), "{gate}");
+    }
+
+    /// A public history read never fetches an era from upstream (pre-audit 7
+    /// PA7-04): old_block's self-healing fetch calls fetch_into, which SAVES
+    /// the whole era file into this node's store — a stranger asking for
+    /// pruned heights would undo the pruning one era at a time. On the
+    /// gateway the answer is the local-only pruned error. The old code
+    /// fetched (here: connection refused to a dead upstream → -32000).
+    #[test]
+    fn public_reads_never_fetch_history_from_upstream() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let mut st = public_state();
+        // A pruned height whose era this node does not hold, and an upstream
+        // that cannot answer (port 9 discards): if the fetch ran at all, the
+        // call would fail with the upstream error instead of "pruned".
+        st.upstream = Some(Arc::new(crate::follow::Upstream::Http(vec!["http://127.0.0.1:9".into()])));
+        st.chain.lock().pruned_below = aether_state::mmr::ERA_LEN * 3;
+        let answer = rt.block_on(call(&st, "aether_getBlock", json!([100])));
+        // The code is the claim: -32001 is old_block's local refusal ("no
+        // store" on this bare chain, "pruned" on a real one); a fetch that ran
+        // against the dead upstream would surface -32000 instead.
+        assert_eq!(answer["error"]["code"], -32001, "the public answer is the local refusal, not an upstream fetch error: {answer}");
+        // Privately the same ask still self-heals (the fetch runs; a dead
+        // upstream surfaces its own error, never a fake "pruned" answer).
+        let mut private = bare_state();
+        private.upstream = Some(Arc::new(crate::follow::Upstream::Http(vec!["http://127.0.0.1:9".into()])));
+        private.chain.lock().pruned_below = aether_state::mmr::ERA_LEN * 3;
+        let answer = rt.block_on(call(&private, "aether_getBlock", json!([100])));
+        assert_eq!(answer["error"]["code"], -32000, "privately the fetch runs and its failure is the upstream's, not a pruned refusal: {answer}");
+    }
+
+    /// Simultaneous public eth_calls are bounded (pre-audit 7 PA7-05): the
+    /// gas cap bounds one call's EVM work; the execution budget bounds how
+    /// many run at once. With the budget deliberately full, a public call is
+    /// refused with a busy error — the old code had no such bound: every
+    /// overlapping call deep-copied the whole WorldState under the chain
+    /// mutex, and only their individual gas said anything.
+    #[test]
+    fn public_eth_call_execution_is_capped() {
+        let _calls = claim_call_budget();
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let st = public_state();
+        let ask = json!([{ "to": "0x0000000000000000000000000000000000000001", "data": "0x" }]);
+        // The budget already exhausted by MAX_PUBLIC_CALLS in-flight calls.
+        PUBLIC_CALLS.store(MAX_PUBLIC_CALLS, Ordering::Release);
+        let answer = rt.block_on(call(&st, "eth_call", ask.clone()));
+        assert_eq!(answer["error"]["code"], -32002, "{answer}");
+        assert!(gate_error(&answer), "the busy refusal names the gateway: {answer}");
+        // Privately the same ask never waits on the public budget.
+        let private = bare_state();
+        let answer = rt.block_on(call(&private, "eth_call", ask.clone()));
+        assert!(answer["error"].is_null(), "private calls are not budgeted: {answer}");
+        // With the budget free again the public call goes through.
+        PUBLIC_CALLS.store(0, Ordering::Release);
+        let answer = rt.block_on(call(&st, "eth_call", ask));
+        assert!(answer["error"].is_null(), "a budgeted public call answers once a slot is free: {answer}");
+    }
+
+    /// A large finalized state answers public calls from the SHARED snapshot
+    /// (pre-audit 7 PA7-05): the call path takes an Arc clone under the
+    /// mutex, so preparation cost no longer grows with the state — and the
+    /// answer is still correct against the state the calls share.
+    #[test]
+    fn a_large_state_answers_calls_from_the_shared_finalized_snapshot() {
+        let _calls = claim_call_budget();
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let st = public_state();
+        const ACCOUNTS: u32 = 20_000;
+        {
+            let mut g = st.chain.lock();
+            let exec = std::sync::Arc::make_mut(&mut g.finalized);
+            for i in 0..ACCOUNTS {
+                let mut b = [0u8; 20];
+                b[0..4].copy_from_slice(&i.to_be_bytes());
+                exec.state.set_balance(aether_types::Address::new(b), U256::from(i)).unwrap();
+            }
+        }
+        // A call whose answer depends on the big state: sending value from a
+        // funded account reads its balance out of the shared snapshot.
+        let mut b = [0u8; 20];
+        b[0..4].copy_from_slice(&7_777u32.to_be_bytes());
+        let funded_addr = aether_types::Address::new(b);
+        let funded = format!("{funded_addr:#x}");
+        let ask = json!([{ "from": funded, "to": "0x0000000000000000000000000000000000000001", "value": "0x1" }]);
+        let answer = rt.block_on(call(&st, "eth_call", ask));
+        assert!(answer["error"].is_null(), "a large shared state still answers: {answer}");
+        // And a read of the same shared snapshot the call executed against:
+        // eth_getBalance is not on the public allowlist, so the identical
+        // chain is read through a private-mode clone of the same RpcState.
+        let mut private = st.clone();
+        private.public_read_only = false;
+        assert_eq!(
+            rt.block_on(call(&private, "eth_getBalance", json!([funded])))["result"],
+            json!(format!("0x{:x}", 7_777)),
+        );
+    }
+
     /// The gateway binds loopback only; exposure is a tunnel's job. This is
     /// checked at bind time, not documented and hoped for.
     #[test]
@@ -1482,6 +1669,71 @@ mod public_read_tests {
             assert!(first_line.contains("413") || first_line.contains("400"), "a body over PUBLIC_MAX_BODY must be refused, got: {first_line}");
         });
     }
+
+    /// The public gateway never serves era files (pre-audit 7 PA7-03): `/era/`
+    /// is a webseed's route, for the node's own private listener. On the
+    /// gateway it is not registered at all, so no stranger's GET can make
+    /// this node buffer and ship a whole era file; privately the same GET
+    /// still serves the bytes, proving the refusal is the gateway's, not the
+    /// store being empty. The old code registered the route in public mode
+    /// and served the bytes.
+    #[test]
+    fn public_gateway_serves_no_era_files() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let dir = std::env::temp_dir().join(format!("aether-rpc-era-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = crate::store::Store::open(&dir.join("db.redb")).unwrap();
+        std::fs::create_dir_all(store.era_dir()).unwrap();
+        let era: Vec<u8> = (0..4096u32).map(|i| i as u8).collect();
+        std::fs::write(store.era_dir().join("era-00000003.aera"), &era).unwrap();
+        let (chain, _) = crate::chain::Chain::open(crate::chain::ChainConfig {
+            chain_id: 7781,
+            limits: aether_types::GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
+            alloc: vec![], fees: false, registrar: None, epoch_blocks: 0,
+            min_streak: None, draw_epochs: None, history_v2: false, protocol: 1,
+            node_rewards: false, committee: vec![], reserve: None, group: 0,
+            max_committee: crate::rotation::GROW_UNTIL,
+        }, store).unwrap();
+        let state = |public: bool| {
+            let (gossip, _) = mpsc::unbounded_channel();
+            RpcState {
+                chain: chain.clone(),
+                finality: Finality::Archive(Arc::new(crate::follow::FinalityArchive::default())),
+                gossip,
+                faucet: None, registrar: None, network: None, upstream: None,
+                handoff: None, snapshot: Default::default(), prover: None,
+                shards: None, public_read_only: public,
+            }
+        };
+        let free = || {
+            let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let a = probe.local_addr().unwrap();
+            drop(probe);
+            a
+        };
+        let (pub_addr, priv_addr) = (free(), free());
+        rt.spawn(serve(pub_addr, state(true)));
+        rt.spawn(serve(priv_addr, state(false)));
+        let ask = |addr: std::net::SocketAddr| async move {
+            let mut sock = tokio::net::TcpStream::connect(addr).await.expect("listener is up");
+            sock.write_all(b"GET /era/era-00000003.aera HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").await.unwrap();
+            let mut buf = Vec::new();
+            sock.read_to_end(&mut buf).await.unwrap();
+            buf
+        };
+        rt.block_on(async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let public = ask(pub_addr).await;
+            let status = String::from_utf8_lossy(&public).lines().next().unwrap_or_default().to_string();
+            assert!(status.contains("404"), "the public gateway must not serve era files: {status}");
+            assert!(!public.windows(64).any(|w| w == &era[..64]), "no era bytes in the public answer");
+            let private = ask(priv_addr).await;
+            let text = String::from_utf8_lossy(&private);
+            assert!(text.lines().next().unwrap_or_default().contains("200"), "the private webseed still serves it: {text}");
+            assert_eq!(&private[private.len() - era.len()..], &era[..], "the private answer carries the exact era bytes");
+        });
+    }
 }
 
 /// A block proof: validators verify it and keep it for their proposals;
@@ -1511,8 +1763,20 @@ fn hex_arg(v: &Value, k: &str) -> Result<Option<Vec<u8>>, (i64, String)> {
 /// Gas a private `eth_call` may run: the block gas limit.
 const PRIVATE_CALL_GAS: u64 = 1 << 24;
 
+/// Concurrent public eth_call executions (pre-audit 7 PA7-05): the gas cap
+/// bounds one call's EVM work; this bounds how many strangers' calls execute
+/// at once, so overlapping calls cannot stack revm instances on the machine
+/// whatever each one's gas says.
+const MAX_PUBLIC_CALLS: usize = 4;
+static PUBLIC_CALLS: AtomicUsize = AtomicUsize::new(0);
+
 /// eth_call on the finalized state (no fees, nothing committed).
-fn eth_call(chain: &Chain, p: &Value, gas: u64) -> RpcResult {
+/// The state is the SHARED immutable snapshot (an Arc clone under the
+/// mutex, never a deep copy of the tree — a call does not mutate it), and
+/// public execution is both budgeted and moved off the async runtime
+/// (pre-audit 7 PA7-05: the old path copied the whole WorldState under the
+/// chain mutex for every call, cheap EVM or not).
+async fn eth_call(st: &RpcState, p: &Value, gas: u64) -> RpcResult {
     let c = p.get(0).ok_or((-32602, "missing call object".to_string()))?;
     let addr = |k: &str| -> Result<Option<Address>, (i64, String)> {
         c.get(k).and_then(Value::as_str).map(|s| s.parse().map_err(|_| (-32602, format!("{k} is not an address")))).transpose()
@@ -1524,20 +1788,34 @@ fn eth_call(chain: &Chain, p: &Value, gas: u64) -> RpcResult {
         Some(v) => U256::from_str_radix(v.trim_start_matches("0x"), 16).map_err(|_| (-32602, "value".to_string()))?,
         None => U256::ZERO,
     };
-    let (state, ctx) = {
-        let g = chain.lock();
-        let f = &g.finalized;
-        let ctx = aether_execution::BlockContext {
-            chain_id: g.cfg.chain_id,
-            number: f.height + 1,
-            timestamp: f.timestamp / 1000,
-            beneficiary: Address::ZERO,
-            limits: g.cfg.limits,
-            fees: None,
-        };
-        (f.state.clone(), ctx)
+    // The finalized snapshot by Arc, and the small config — the lock is held
+    // for two pointer-ish clones, not a walk of the state tree.
+    let (exec, cfg) = {
+        let g = st.chain.lock();
+        (g.finalized.clone(), g.cfg.clone())
     };
-    let r = aether_execution::call(&state, &ctx, from, to, data.into(), value, gas).map_err(|e| (-32000, e))?;
+    let ctx = aether_execution::BlockContext {
+        chain_id: cfg.chain_id,
+        number: exec.height + 1,
+        timestamp: exec.timestamp / 1000,
+        beneficiary: Address::ZERO,
+        limits: cfg.limits,
+        fees: None,
+    };
+    // The budget is held for the whole execution (released on drop with the
+    // blocking task); a stranger arriving while it is full is told to retry.
+    let _budget = if st.public_read_only {
+        BudgetSlot::acquire(&PUBLIC_CALLS, MAX_PUBLIC_CALLS)
+            .ok_or((-32002, "public read-only gateway: too many concurrent eth_call executions; retry shortly".to_string()))?
+    } else {
+        BudgetSlot::acquire(&PUBLIC_CALLS, usize::MAX).expect("usize::MAX budget never refuses")
+    };
+    let r = tokio::task::spawn_blocking(move || {
+        aether_execution::call(&exec.state, &ctx, from, to, data.into(), value, gas)
+    })
+    .await
+    .map_err(|e| (-32000, e.to_string()))?
+    .map_err(|e| (-32000, e))?;
     if r.success {
         Ok(json!(format!("0x{}", hex::encode(&r.output))))
     } else {
@@ -1560,8 +1838,24 @@ fn eth_get_logs(chain: &Chain, p: &Value) -> RpcResult {
     let f = p.get(0).cloned().unwrap_or_default();
     let g = chain.lock();
     let head = g.finalized.height;
-    let to = block_param(&f, "toBlock", head).min(head);
-    let from = block_param(&f, "fromBlock", head).max(to.saturating_sub(1999));
+    // The range as the request states it, before any clamping. An inverted ask
+    // is a malformed request answered with an error — never handed to the
+    // BTreeMap range below, whose inverted bounds abort the process (the
+    // fatal-panic supervisor path turns that into a node restart, pre-audit 7
+    // PA7-02).
+    let asked_to = block_param(&f, "toBlock", head);
+    let asked_from = block_param(&f, "fromBlock", head);
+    if asked_from > asked_to {
+        return Err((-32602, format!("eth_getLogs: fromBlock {asked_from} is above toBlock {asked_to}")));
+    }
+    let to = asked_to.min(head);
+    let from = asked_from.max(to.saturating_sub(1999));
+    if from > to {
+        // asked_from <= asked_to and `to` clamped below asked_from: the whole
+        // ask sits above this node's head. No block exists there yet, so the
+        // complete answer is empty — not an error, and never a panic.
+        return Ok(json!([]));
+    }
     let addrs: Vec<String> = match f.get("address") {
         Some(Value::String(a)) => vec![a.to_lowercase()],
         Some(Value::Array(v)) => v.iter().filter_map(Value::as_str).map(str::to_lowercase).collect(),

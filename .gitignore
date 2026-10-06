@@ -26,3 +26,6 @@ docs/.pdca-snapshots/
 
 # release-mac.sh scratch (mounted DMG, TMPDIR)
 /tmp/
+
+# The Aether -> EastSea bridge build (scripts/build-bridge.sh)
+/apps/bridge/build/

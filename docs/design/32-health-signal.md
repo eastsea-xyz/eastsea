@@ -212,7 +212,7 @@
 - **채널**: appcast 항목에 `<sparkle:channel>canary</sparkle:channel>`. 채널 표시가 있는 항목은 그 채널을 허용한 클라이언트만 본다. 앱은 `SPUUpdaterDelegate.allowedChannels(for:)`에서 설정 "새 버전 먼저 받기"가 켜져 있을 때만 `["canary"]`를 돌려준다. 이미 깔린 앱은 채널 항목을 무시하므로 배포 피드만 바꿔도 안전하다.
 - **단계 배포**: 일반 항목에 `<sparkle:phasedRolloutInterval>21600</sparkle:phasedRolloutInterval>`(6시간). Sparkle은 기기마다 로컬 무작위 그룹(7개)을 정해 두고, 그룹 *g*는 `pubDate + g × 간격`부터 자동 업데이트 대상이 된다. 그룹 번호는 기기 밖으로 나가지 않는다. 사용자가 직접 "업데이트 확인"을 누르면 단계와 무관하게 받는다(Sparkle 동작). 그 경우에도 게이트는 그대로 적용된다.
 - **긴급**: `<sparkle:criticalUpdate>`를 달면 단계 배포를 무시한다. 채널 표시도 없다.
-- **피드 구조**: `SUFeedURL`은 `releases/latest/download/appcast.xml`이다. 그래서 최신 GitHub 릴리스의 appcast 한 파일에 **현재 일반 항목(채널 없음) + 새 카나리 항목**을 함께 적는다. 새 버전은 GitHub *prerelease*로 올려 `latest`를 바꾸지 않고, 카나리 항목의 `enclosure`가 그 prerelease의 DMG를 가리키게 한다. 승격할 때 새 버전을 `latest`로 바꾸고 단계 값이 붙은 일반 항목으로 appcast를 다시 쓴다. `scripts/release-mac.sh`가 지금은 항목 하나짜리 appcast를 쓰므로 바꿔야 한다(§6 O3).
+- **피드 구조**: `SUFeedURL`은 `releases/latest/download/eastsea-appcast.xml`이다(0.7.0부터. `appcast.xml`은 Aether 0.6.6 이하가 읽는 레거시 피드로, Aether 0.6.7 브리지만 싣는다 — `scripts/release-bridge.sh`). 그래서 최신 GitHub 릴리스의 appcast 한 파일에 **현재 일반 항목(채널 없음) + 새 카나리 항목**을 함께 적는다. 새 버전은 GitHub *prerelease*로 올려 `latest`를 바꾸지 않고, 카나리 항목의 `enclosure`가 그 prerelease의 DMG를 가리키게 한다. 승격할 때 새 버전을 `latest`로 바꾸고 단계 값이 붙은 일반 항목으로 appcast를 다시 쓴다. `scripts/release-mac.sh`가 지금은 항목 하나짜리 appcast를 쓰므로 바꿔야 한다(§6 O3).
 - **미러**: 누구든 appcast·DMG를 미러할 수 있다. 다만 클라이언트 피드 URL은 Info.plist에 고정이라 미러는 사람이 받는 경로다. 장기적으로는 단계 일정을 체인 시각으로 게이트 안에서 계산해 피드 호스트의 역할마저 없애는 안을 둔다(§6 단계 3).
 
 ### 5.3 시간표 (일반 릴리스, 2/3)

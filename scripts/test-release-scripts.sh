@@ -13,14 +13,17 @@
 #    places there, and that place is not a code location (Contents/Helpers,
 #    Contents/MacOS), where an unsigned shell script fails
 #    `codesign --verify --deep --strict`.
+# 3. The two Sparkle feeds stay apart: EastSea reads eastsea-appcast.xml, the
+#    Aether bridge (and every shipped Aether <= 0.6.6) reads appcast.xml, and
+#    release-mac.sh writes EastSea's items only to eastsea-appcast.xml.
 set -eu
 cd "$(dirname "$0")/.."
 bad=0
 fail() { echo "FAIL: $*" >&2; bad=$((bad + 1)); }
 pass() { echo "ok: $*"; }
 
-echo "=== [1/2] empty arrays under bash 3.2 set -u ==="
-for f in scripts/build-wallet.sh scripts/package-mac.sh scripts/release-mac.sh; do
+echo "=== [1/3] empty arrays under bash 3.2 set -u ==="
+for f in scripts/build-wallet.sh scripts/package-mac.sh scripts/release-mac.sh scripts/build-bridge.sh scripts/release-bridge.sh; do
   [ -f "$f" ] || continue
   /bin/bash -n "$f" || fail "$f does not parse under /bin/bash $BASH_VERSION"
   for name in $(grep -oE '(^|[^A-Za-z0-9_])[A-Za-z_][A-Za-z0-9_]*=\(\)' "$f" | sed -E 's/^[^A-Za-z_]//; s/=\(\)$//' | sort -u); do
@@ -36,7 +39,7 @@ out=$(/bin/bash -c 'set -u; a=(); f() { echo $#; }; f ${a[@]+"${a[@]}"}; a=(x "y
 [ "$out" = "0 2 " ] && pass "guarded expansion: empty -> 0 args, two -> 2 args" || fail "guarded expansion gave '$out'"
 [ "$bad" -eq 0 ] && pass "no unguarded empty-array expansion in the release scripts"
 
-echo "=== [2/2] daemon BundleProgram ==="
+echo "=== [2/3] daemon BundleProgram ==="
 plist=apps/wallet/Daemons/com.pipln.eastsea.node.plist
 prog=$(/usr/libexec/PlistBuddy -c 'Print :BundleProgram' "$plist")
 case "$prog" in
@@ -52,5 +55,26 @@ grep -q 'R="$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources"' apps/wallet/pr
 grep -q 'wrapper="$bundle/Contents/Resources/eastsea-node-wrapper.sh"' apps/wallet/Helpers/eastsea-node-daemon.sh \
   && pass "the root stub looks for the wrapper in Contents/Resources" \
   || fail "the root stub looks for the wrapper somewhere the build does not put it"
+
+echo "=== [3/3] Sparkle feeds ==="
+feed() { /usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$1"; }
+east=$(feed apps/wallet/Info-mac.plist)
+case "$east" in
+  */eastsea-appcast.xml) pass "EastSea reads its own feed ($east)" ;;
+  *) fail "EastSea must not read the legacy appcast.xml that Aether 0.6.6 reads (got $east)" ;;
+esac
+if [ -f apps/bridge/Info.plist ]; then
+  bridge=$(feed apps/bridge/Info.plist)
+  case "$bridge" in
+    */releases/latest/download/appcast.xml) pass "the bridge reads the legacy feed ($bridge)" ;;
+    *) fail "the bridge must stay on the legacy feed (got $bridge)" ;;
+  esac
+else
+  fail "apps/bridge/Info.plist is missing"
+fi
+grep -q 'cat > dist/eastsea-appcast.xml' scripts/release-mac.sh \
+  && ! grep -q 'cat > dist/appcast.xml' scripts/release-mac.sh \
+  && pass "release-mac.sh writes EastSea items only to eastsea-appcast.xml" \
+  || fail "release-mac.sh must write EastSea items to eastsea-appcast.xml, never to appcast.xml"
 
 exit "$bad"

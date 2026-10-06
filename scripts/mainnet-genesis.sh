@@ -324,21 +324,35 @@ print(f"  release rule      {r['threshold']}/3 normal, {r['emergency_threshold']
 PY
   echo "  timing            epoch $EPOCH_BLOCKS blocks · min streak $MIN_STREAK · draw every $DRAW_EPOCHS epochs (defaults, untouched)"
   echo
-  python3 - "$out/ceremony.json" "$chain_id" "$registrar" "$rop" \
-    "${vkeys[@]}" "${vnodes[@]}" "${rkeys[@]}" <<'PY'
+  # Pre-audit 7 (PA7-01): the COMPLETE intended policy, read back from the
+  # genesis just assembled — `check` compares the DKG's final file against it
+  # field by field, so a valid-but-substituted registrar, roster, reserve or
+  # builder approval set cannot ride the ceremony through (the strict rules
+  # check shape and policy compliance, never intended identity).
+  python3 - "$out/genesis.json" "$out/ceremony.json" <<'PY'
 import datetime, json, sys
-out, chain_id, registrar, rop = sys.argv[1:5]
-keys, nodes, reserve = sys.argv[5:9], sys.argv[9:13], sys.argv[13:16]
+g = json.load(open(sys.argv[1]))
+rel = g.get("release") or {}
 json.dump({
-    "chain_id": int(chain_id),
+    "chain_id": g["chain_id"],
     "assembled": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
-    "registrar": registrar,
-    "reserve_operator": rop,
-    "validators": [{"key": k, "node": n} for k, n in zip(keys, nodes)],
-    "reserve": [{"key": k} for k in sys.argv[13:16]],
-}, open(out, "w"), indent=2)
+    "registrar": (g.get("registrar") or "").lower(),
+    "reserve_operator": ((g.get("reserve") or {}).get("operator") or "").lower(),
+    "validators": [{"key": v["key"].lower(), "node": v["node"]} for v in g["validators"]],
+    "reserve": [{"key": v["key"].lower()} for v in (g.get("reserve") or {}).get("validators", [])],
+    "protocol": g.get("protocol"),
+    "history": g.get("history"),
+    "node_rewards": g.get("node_rewards"),
+    "release": {
+        "log": (rel.get("log") or "").lower(),
+        "code_hash": (rel.get("code_hash") or "").lower(),
+        "builder_keys": [(k or "").lower() for k in (rel.get("builder_keys") or [])],
+        "threshold": rel.get("threshold"),
+        "emergency_threshold": rel.get("emergency_threshold"),
+    },
+}, open(sys.argv[2], "w"), indent=2)
 PY
-  echo "== ceremony record: $out/ceremony.json (public: the id this ceremony runs under — check and verify-local compare against it)"
+  echo "== ceremony record: $out/ceremony.json (public: the COMPLETE intended policy — check compares the DKG's final file against it)"
   echo
   echo "NEXT — the genesis DKG (doc §3): copy $out/genesis.json to all $N_VALIDATORS validator Macs and run ON ALL FOUR AT ONCE,"
   echo "each on its own Mac with its own --data dir from \`mainnet-genesis.sh keys\`:"
@@ -388,6 +402,78 @@ PY
     esac
   fi
   run_check "$file" "$chain_id" final || die "check failed: no ceremony record is written"
+  # Pre-audit 7 (PA7-01): the rules above check that the final file is a VALID
+  # mainnet genesis — not that it is THIS ceremony's. Before pinning it as the
+  # record every Mac binds to, compare it against the intended assembly policy
+  # the coordinator fixed at assemble: registrar, roster, reserve, the release
+  # builder approval set, every rule flag. Only the DKG-generated fields
+  # (identity, output, round, epochs) may differ. An incomplete ceremony.json
+  # proves nothing about intent and is refused. This original-policy boundary
+  # stays separate from the later byte-exact record binding (mainnet-bind).
+  python3 - "$ceremony" "$file" <<'PY' || die "the final network.json is NOT the genesis this ceremony assembled — do not launch it"
+import json, sys
+
+cer, net = sys.argv[1], sys.argv[2]
+def die(msg):
+    sys.exit(msg)
+
+try:
+    c = json.load(open(cer))
+except Exception as e:
+    die(f"{cer}: not valid JSON ({e})")
+try:
+    n = json.load(open(net))
+except Exception as e:
+    die(f"{net}: not valid JSON ({e})")
+
+# A chain id alone proves nothing about intent: refuse records that do not
+# carry the complete policy assemble wrote (a bare {"chain_id": …} used to
+# pass this gate, pre-audit 7 PA7-01).
+need = ("chain_id", "registrar", "reserve_operator", "validators", "reserve",
+        "protocol", "history", "node_rewards", "release")
+missing = [f for f in need if f not in c]
+if missing:
+    die(f"{cer}: incomplete assembly record — no {', '.join(missing)}; regenerate it "
+        "(assemble writes the complete intended policy next to genesis.json)")
+rel = c["release"]
+missing = [f for f in ("log", "code_hash", "builder_keys", "threshold", "emergency_threshold") if f not in rel]
+if missing:
+    die(f"{cer}: incomplete assembly record — release has no {', '.join(missing)}")
+
+def lower(s):
+    return (s or "").lower()
+
+def roster(vs):
+    return [{"key": lower(v.get("key")), "node": v.get("node")} for v in (vs or [])]
+
+bad = []
+if lower(n.get("registrar")) != lower(c["registrar"]):
+    bad.append(f"registrar replaced: assembled with {lower(c['registrar'])[:16]}…, "
+               f"the final file carries {lower(n.get('registrar'))[:16]}…")
+if lower((n.get("reserve") or {}).get("operator")) != lower(c["reserve_operator"]):
+    bad.append("reserve operator replaced")
+want = roster(c["validators"])
+if roster(n.get("validators")) != want:
+    bad.append("the opening roster (validators) is not the one assembled")
+if roster(n.get("genesis_validators")) != want:
+    bad.append("genesis_validators is not the one assembled")
+if [lower(v.get("key")) for v in ((n.get("reserve") or {}).get("validators") or [])] \
+        != [lower(v.get("key")) for v in c["reserve"]]:
+    bad.append("the reserve keys are not the ones assembled")
+for flag in ("protocol", "history", "node_rewards"):
+    if n.get(flag) != c[flag]:
+        bad.append(f"{flag} is {n.get(flag)!r}, the ceremony assembled {c[flag]!r}")
+
+def pin(r):
+    return {"log": lower(r.get("log")), "code_hash": lower(r.get("code_hash")),
+            "builder_keys": [lower(k) for k in (r.get("builder_keys") or [])],
+            "threshold": r.get("threshold"), "emergency_threshold": r.get("emergency_threshold")}
+if pin(n.get("release") or {}) != pin(rel):
+    bad.append("release pin replaced (the ReleaseLog, code hash or builder approval set "
+               "the ceremony assembled is not what the final file carries)")
+if bad:
+    die("the final network.json differs from the assembly intent: " + "; ".join(bad))
+PY
   # Audit 6, A6-3/A6-4: the independent pin every validator Mac binds to
   # before it votes — the coordinator's own tool cannot take it from the file
   # being checked (that is the transit-swap hole), so it derives it here, from

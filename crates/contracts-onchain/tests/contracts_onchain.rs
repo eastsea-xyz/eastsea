@@ -1,0 +1,16 @@
+#[path = "contracts_onchain/assets.rs"]
+mod assets;
+#[path = "contracts_onchain/core_flows.rs"]
+mod core_flows;
+#[path = "contracts_onchain/defi.rs"]
+mod defi;
+#[path = "contracts_onchain/harness.rs"]
+mod harness;
+#[path = "contracts_onchain/identity.rs"]
+mod identity;
+#[path = "contracts_onchain/market.rs"]
+mod market;
+#[path = "contracts_onchain/payments.rs"]
+mod payments;
+#[path = "contracts_onchain/resources.rs"]
+mod resources;

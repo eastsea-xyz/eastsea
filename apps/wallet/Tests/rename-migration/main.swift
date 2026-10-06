@@ -13,7 +13,24 @@ func expect(_ ok: Bool, _ what: String) {
     if !ok { failures += 1 }
 }
 
-var suites: [String] = []
+/// The test's defaults: in memory only. A real `UserDefaults(suiteName:)`
+/// leaves a plist in ~/Library/Preferences even after removePersistentDomain
+/// (cfprefsd writes the emptied domain back, asynchronously) — ~580 of them
+/// had piled up, some holding copies of the real Aether preferences. Every
+/// accessor the migration uses is answered here; nothing reaches cfprefsd.
+final class MemoryDefaults: UserDefaults {
+    private var store: [String: Any] = [:]
+    private let lock = NSLock()
+    init() { super.init(suiteName: nil)! }
+    override func object(forKey key: String) -> Any? { lock.lock(); defer { lock.unlock() }; return store[key] }
+    override func set(_ value: Any?, forKey key: String) {
+        lock.lock(); defer { lock.unlock() }
+        if let value { store[key] = value } else { store.removeValue(forKey: key) }
+    }
+    override func set(_ value: Bool, forKey key: String) { set(value as Any?, forKey: key) }
+    override func bool(forKey key: String) -> Bool { (object(forKey: key) as? Bool) ?? false }
+    override func removeObject(forKey key: String) { set(nil as Any?, forKey: key) }
+}
 /// A fresh temp root standing in for Application Support, pre-populated with
 /// an old Aether install: the node tree (identity, threshold, journal, DB,
 /// run.lock), the wallet key handle and the update-state file.
@@ -43,9 +60,7 @@ func makeOldSupport() -> (root: URL, defaults: UserDefaults) {
     try? FileManager.default.createDirectory(at: root.appending(path: "AetherWallet"), withIntermediateDirectories: true)
     try? "enclave-handle".write(to: root.appending(path: "AetherWallet/enclave-key.dat"), atomically: true, encoding: .utf8)
     try? "{}".write(to: root.appending(path: "Aether/update-state.json"), atomically: true, encoding: .utf8)
-    let suite = "rename-migration-test-\(UUID().uuidString)"
-    suites.append(suite)
-    return (root, UserDefaults(suiteName: suite)!)
+    return (root, MemoryDefaults())
 }
 func doneFlag(_ d: UserDefaults) -> Bool { d.bool(forKey: "renameMigrationDone") }
 /// No real preferences ever reach a test suite: the "old app" domain the
@@ -56,22 +71,18 @@ func migrate(_ root: URL, _ d: UserDefaults, forceCopy: Bool = false,
              meter: DataMigration.ProgressMeter? = nil) -> DataMigration.Outcome {
     DataMigration.migrate(support: root, defaults: d, oldPreferencesDomain: noOldDomain, forceCopy: forceCopy, meter: meter)
 }
-/// The suite's plist file: removePersistentDomain empties the domain but
-/// leaves the file in ~/Library/Preferences, so delete it too.
-func suitePlist(_ suite: String) -> URL {
-    FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Preferences/\(suite).plist")
-}
-func dropSuites() {
-    for s in suites {
-        UserDefaults.standard.removePersistentDomain(forName: s)
-        CFPreferencesAppSynchronize(s as CFString)
-        try? FileManager.default.removeItem(at: suitePlist(s))
-    }
-}
 func cleanup(_ root: URL, _ d: UserDefaults) {
     try? FileManager.default.removeItem(at: root)
-    dropSuites()
 }
+/// Every preferences plist this test binary could have caused: none may
+/// exist after it (its own domain, or a suite named like the old test's).
+let prefsDir = FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Preferences")
+func ownPlists() -> Set<String> {
+    let names = (try? FileManager.default.contentsOfDirectory(atPath: prefsDir.path)) ?? []
+    let me = Bundle.main.bundleIdentifier ?? ProcessInfo.processInfo.processName
+    return Set(names.filter { $0.hasPrefix("rename-migration-test-") || $0 == "\(me).plist" })
+}
+let plistsBefore = ownPlists()
 
 // 0. the hash the verification leans on (FIPS 180-4 vectors).
 do {
@@ -744,9 +755,9 @@ do {
     cleanup(root, d)
 }
 
-// Test hygiene: no suite plist from this run survives it.
-dropSuites()
-let leftover = suites.filter { FileManager.default.fileExists(atPath: suitePlist($0).path) }
-expect(leftover.isEmpty, "every test defaults suite's plist was deleted: \(leftover)")
+// Test hygiene: this run wrote no preferences plist at all.
+Thread.sleep(forTimeInterval: 1)   // cfprefsd writes asynchronously
+let leftover = ownPlists().subtracting(plistsBefore)
+expect(leftover.isEmpty, "no preferences plist was written by this run: \(leftover)")
 
 exit(Int32(failures))

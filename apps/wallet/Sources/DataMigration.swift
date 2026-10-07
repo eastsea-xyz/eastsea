@@ -573,13 +573,20 @@ enum DataMigration {
     /// are kept; a file that does not match is replaced and re-verified by
     /// SHA-256; `run.lock` is never copied. True only when every file the old
     /// tree vouches for is at the new home with the content it had.
-    static func syncTreeVerified(_ old: URL, _ new: URL, meter: ProgressMeter? = nil) -> Bool {
+    static func syncTreeVerified(_ old: URL, _ new: URL, meter: ProgressMeter? = nil,
+                                 excluding: Set<String> = []) -> Bool {
         guard let entries = manifest(of: old) else { return false }
-        if let meter, meter.total == 0 { meter.expect(copyWork(entries)) }
         // The old tree's live lock is never copied, and its quarantine
         // directories are recovery copies for a human — not cargo for the
         // new home (they can appear mid-resume, after the copy already ran).
-        func syncable(_ rel: String) -> Bool { rel != lockName && !rel.hasPrefix(quarantinePrefix) }
+        func syncable(_ rel: String) -> Bool {
+            rel != lockName && !rel.hasPrefix(quarantinePrefix)
+                && !rel.split(separator: "/").contains { excluding.contains(String($0)) }
+        }
+        // Exclude names before any file is read or copied. Normal identity
+        // migration uses the empty default; storage moves keep endpoint keys
+        // internal, including nested keys and interrupted private staging.
+        if let meter, meter.total == 0 { meter.expect(copyWork(entries.filter { syncable($0.key) })) }
         for (rel, bytes) in entries where syncable(rel) {
             let o = old.appending(path: rel), n = new.appending(path: rel)
             if let have = size(of: n), have == bytes, fileMatches(o, n, meter: meter) {
@@ -855,9 +862,13 @@ enum DataMigration {
         private(set) var total: Int64 = 0
         private var done: Int64 = 0
         private var reported: Int64 = 0
+        private let reportEvery: Int64
         private let report: (Double) -> Void
 
-        init(report: @escaping (Double) -> Void) { self.report = report }
+        init(reportEvery: Int64 = 64 << 20, report: @escaping (Double) -> Void) {
+            self.reportEvery = max(1, reportEvery)
+            self.report = report
+        }
 
         func expect(_ bytes: Int64) {
             lock.lock(); total = max(total, bytes); lock.unlock()
@@ -866,7 +877,7 @@ enum DataMigration {
         func add(_ bytes: Int64) {
             lock.lock()
             done += bytes
-            let due = done - reported >= 64 << 20
+            let due = done - reported >= reportEvery
             if due { reported = done }
             let fraction = total > 0 ? min(1, Double(done) / Double(total)) : 0
             lock.unlock()

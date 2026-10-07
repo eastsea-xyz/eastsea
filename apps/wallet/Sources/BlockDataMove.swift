@@ -173,7 +173,8 @@ enum BlockDataMove {
                 for d in dirs {
                     let staged = stage.appendingPathComponent(d)
                     try fm.createDirectory(at: staged, withIntermediateDirectories: false)
-                    guard DataMigration.syncTreeVerified(source.appendingPathComponent(d), staged, meter: meter) else { throw Failure.copy }
+                    guard DataMigration.syncTreeVerified(source.appendingPathComponent(d), staged, meter: meter,
+                                                               excluding: BlockDataLocation.keepInternal) else { throw Failure.copy }
                     var directories = [staged]
                     guard let entries = fm.enumerator(at: staged, includingPropertiesForKeys: nil) else { throw Failure.persistence }
                     for case let file as URL in entries {
@@ -234,11 +235,6 @@ enum BlockDataMove {
             guard syncDirectory(final), syncDirectory(target) else { throw Failure.persistence }
         }
         guard identity(source) == r.sourceID, identity(target) == r.targetID else { throw Failure.unavailable }
-        // R07 will exclude keys during copying itself; this preserves the
-        // current endpoint-key behavior until its separate regression/fix.
-        for d in r.directories {
-            for key in BlockDataLocation.keepInternal { try? fm.removeItem(at: target.appendingPathComponent(d).appendingPathComponent(key)) }
-        }
         // Never recursively delete replay paths: unexpected leftovers survive.
         if identity(stage) == r.stagingID {
             if let dirs = fm.enumerator(at: stage, includingPropertiesForKeys: nil) {

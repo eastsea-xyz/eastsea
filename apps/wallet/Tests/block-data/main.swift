@@ -355,6 +355,74 @@ if let fd = execFD {
     close(fd)
 }
 
+
+// R07. A round trip back into the default key-only follow directory must
+// preserve the exact internal endpoint key, never regenerate its identity.
+try? FileManager.default.removeItem(at: recordURL)
+let internalFollow = NodeController.dataDir.appendingPathComponent("follow")
+try FileManager.default.createDirectory(at: internalFollow, withIntermediateDirectories: true)
+let internalKey = internalFollow.appendingPathComponent("wallet-node.key")
+let internalState = internalFollow.appendingPathComponent("state.db")
+let keyBytes = Data("internal-endpoint-key".utf8)
+try keyBytes.write(to: internalKey)
+try Data("round-trip-state".utf8).write(to: internalState)
+let roundTripTarget = moveFixture.appendingPathComponent("r07-round-trip-target")
+let roundTripMover = NodeController()
+roundTripMover.moveBlockData(to: roundTripTarget)
+try await waitForMove(roundTripMover)
+check(roundTripMover.chainDataPath == roundTripTarget.path
+      && (try? Data(contentsOf: internalKey)) == keyBytes,
+      "R07 outward move leaves the endpoint identity on the internal disk")
+roundTripMover.finishBlockDataMove()
+let cleanupEnd = Date().addingTimeInterval(5)
+while FileManager.default.fileExists(atPath: internalState.path) && Date() < cleanupEnd {
+    try await Task.sleep(nanoseconds: 10_000_000)
+}
+check(!FileManager.default.fileExists(atPath: internalState.path),
+      "R07 fixture cleanup leaves the default follow directory key-only")
+roundTripMover.moveBlockData(to: nil)
+try await waitForMove(roundTripMover)
+check(roundTripMover.chainDataPath.isEmpty && (try? Data(contentsOf: internalKey)) == keyBytes,
+      "R07 round trip preserves the preexisting internal endpoint key")
+check((try? Data(contentsOf: internalState)) == Data("round-trip-state".utf8),
+      "R07 round trip returns block data beside the original endpoint key")
+
+// Inspect private staging on synchronous progress, then force source
+// verification to fail. A key must never be copied even temporarily.
+try? FileManager.default.removeItem(at: recordURL)
+let keySource = moveFixture.appendingPathComponent("r07-key-source")
+let keyTarget = moveFixture.appendingPathComponent("r07-key-target")
+let keyFollow = keySource.appendingPathComponent("follow")
+try FileManager.default.createDirectory(at: keyFollow.appendingPathComponent("nested"), withIntermediateDirectories: true)
+let keyDB = keyFollow.appendingPathComponent("state.db")
+try Data("verified-before-fault".utf8).write(to: keyDB)
+try Data("private-endpoint-key".utf8).write(to: keyFollow.appendingPathComponent("wallet-node.key"))
+try Data("nested-private-key".utf8).write(to: keyFollow.appendingPathComponent("nested/wallet-node.key"))
+func containsEndpointKey(_ root: URL) -> Bool {
+    guard let entries = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else { return false }
+    return entries.compactMap { $0 as? URL }.contains { $0.lastPathComponent == "wallet-node.key" }
+}
+var progressHasNoKeys: [Bool] = []
+var faultInjected = false
+let keyMeter = DataMigration.ProgressMeter(reportEvery: 1) { fraction in
+    progressHasNoKeys.append(!containsEndpointKey(keyTarget))
+    if fraction > 0, !faultInjected {
+        faultInjected = true
+        try? Data("changed-after-snapshot".utf8).write(to: keyDB, options: .atomic)
+    }
+}
+let keySourceID = BlockDataMove.identity(keySource)!
+var copyFailed = false
+do {
+    _ = try BlockDataMove.copy(source: keySource, target: keyTarget, sourceID: keySourceID,
+                              internalRoot: NodeController.dataDir, preservingInternalKeys: false, meter: keyMeter)
+} catch { copyFailed = true }
+check(faultInjected && copyFailed, "R07 fixture fails after staging at the verification boundary")
+check(!progressHasNoKeys.isEmpty && progressHasNoKeys.allSatisfy { $0 } && !containsEndpointKey(keyTarget),
+      "R07 progress and failed staging never expose an endpoint key on the external destination")
+check((try? Data(contentsOf: keyFollow.appendingPathComponent("wallet-node.key"))) == Data("private-endpoint-key".utf8),
+      "R07 failed copy retains its source endpoint key")
+
 }
 #endif
 

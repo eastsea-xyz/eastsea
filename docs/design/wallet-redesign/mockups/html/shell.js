@@ -1,10 +1,10 @@
 // Shared Mac sidebar (spec.md §3 IA). <aside class="sidebar" data-active="home" data-lang="en"></aside>
 const L = {
   en: { wallet: 'Wallet', home: 'Home', activity: 'Activity', explore: 'Explore', mac: 'This Mac', node: 'Node & rewards',
-        protect: 'Protection', security: 'Security', agents: 'AI agents', nodeOn: 'Node on this Mac', verifying: 'Verifying blocks',
+        protect: 'Protection', security: 'Security', agents: 'AI agent payments', nodeOn: 'Node on this Mac', verifying: 'Verifying blocks',
         connected: 'Connected', block: 'Checked just now' },
   ko: { wallet: '지갑', home: '홈', activity: '활동', explore: '둘러보기', mac: '이 Mac', node: '노드와 보상',
-        protect: '보호', security: '보안', agents: 'AI 비서', nodeOn: '이 Mac의 노드', verifying: '블록 확인 중',
+        protect: '보호', security: '보안', agents: 'AI 에이전트 결제', nodeOn: '이 Mac의 노드', verifying: '블록 확인 중',
         connected: '연결됨', block: '방금 확인함' },
 };
 const icon = n => `<svg><use href="#i-${n}"/></svg>`;

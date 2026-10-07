@@ -96,7 +96,8 @@ Build these from spec §5, each with a `#Preview` in light and dark: `ESButtonSt
 - `ConnectedSitesSection` (ExploreTab.swift) is restyled into an `ESGroup`.
 - Sidebar amber dot when recovery is not set (the same flag).
 
-### B4. AI agents: `AgentWalletPanel.swift` → `AgentsPage`
+### B4. AI agent payments: `AgentWalletPanel.swift` → `AgentsPage`
+- Title and sidebar label come from the l10n lane's keys: "AI agent payments" / "AI 에이전트 결제". Do not reintroduce "AI 비서"; body copy says 에이전트.
 - Same data and helper commands. Only the layout changes, to spec §4.7: a request card (gold border) per `payee-requests.json` row, a session group, a history group and the empty state.
 - "Stop all agents" moves to the toolbar (danger). The session limits shown come from the helper's display files; if the limits are not in them yet, show "—" and leave a TODO for the agent lane.
 - Sidebar amber dot while requests exist.

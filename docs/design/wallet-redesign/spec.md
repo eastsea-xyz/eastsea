@@ -37,7 +37,7 @@ THIS MAC
   Node & rewards
 PROTECTION
   Security            [amber dot = recovery not set]
-  AI agents           [amber dot = payee request]
+  AI agent payments   [amber dot = payee request]
 ───────────────
 Node on this Mac   [switch]   Verifying blocks
 ● Connected · Checked just now
@@ -48,7 +48,7 @@ Node on this Mac   [switch]   Verifying blocks
 | Network page: status card, 5 stat tiles, network chart | **Removed.** Connection status → sidebar foot. Tiles and chart → Developer mode (Settings ▸ Developer, or ⌘⇧D shows them as a section at the bottom of Node) | Consumers don't need block time, fee or mempool (P5) |
 | Network page: `NodeEarningsCard`, `NodeCard`, `RewardStandingCard` | **Node & rewards** page | One place for the node |
 | Network page: `UpdateCard` | Settings window ▸ General, plus the "Check for Updates…" menu item (already exists) | Updates install by themselves |
-| Security: 3 paragraph cards + `PaperKeyPanel` + `RecoveryPanel` + `AgentWalletPanel` + `ConnectedSitesSection` | **Security** = status list (3 protections) + Recovery group + Connected sites. **AI agents** is its own page | Status first, actions one click away |
+| Security: 3 paragraph cards + `PaperKeyPanel` + `RecoveryPanel` + `AgentWalletPanel` + `ConnectedSitesSection` | **Security** = status list (3 protections) + Recovery group + Connected sites. **AI agent payments** is its own page | Status first, actions one click away |
 | Activity: `LinkedWalletsCard`, `BalanceBreakdownCard`, `RewardDaysCard` above/below the list | Activity = filter chips + day-grouped list + inspector. Linked wallets → toolbar menu "Show history for…". Breakdown → Home rail "Where it came from" disclosure, or Activity toolbar ▸ Summary. Reward days → collapsed into one "Node rewards" row per day | The list is the page |
 | Home: `HomeEarnings` hero card (Mac) | Home rail "Node rewards" mini card (Mac wide) or one `NodeLine` (narrow, iPhone) | Rewards explain the balance (Apple Cash), they never compete with it |
 | Home: `BalanceCard` chart | Removed from Home v1. It returns later as a sparkline inside the plate (spec §11 Q3) | A flat 170 pt chart was a fake signal |
@@ -109,8 +109,8 @@ A segmented control ("Address" / "Ask for an amount"), then a branded QR: navy d
 - Footnote: who sees your addresses (one sentence, `text-subtle`).
 - `KeyExposureNotice` texts move into the sheets where they apply (recovery explains it saves a lost key, not a stolen one).
 
-### 4.7 AI agents (Mac) — `08-agents.png`
-- Toolbar: "Stop all agents" (danger text, needs Touch ID).
+### 4.7 AI agent payments (Mac) — `08-agents.png`
+- Page title: "AI agent payments" / "AI 에이전트 결제" (the l10n lane's name; it replaces "AI 비서" everywhere, including body copy: 비서 → 에이전트). Toolbar: "Stop all agents" / "모든 에이전트 멈추기" (danger text, needs Touch ID).
 - **Payee request card** (gold 1 pt border and 4 pt gold halo, at the top only while requests exist): agent tile, "Claude Code wants to add a new recipient", the line "Until you allow it, not a single coin can go there", a key/value grid (recipient, requested amount, purpose), and the buttons [Decline] [Touch ID Allow]. The name field for the payee is prefilled from the request and stays editable.
 - **Active session** group: agent, expiry, "key in this Mac's Secure Enclave", [Change limits], and a 3-cell strip: per payment · spent today with meter · approved recipients.
 - **Agent history** group: rows written as sentences ("Paid Shop · Claude Code"), with the purpose in quotes.
@@ -261,7 +261,7 @@ Retired: `AuroraBackground`, `ConfettiBurst`, `FloatingReward`, `EarningsHero` k
   - Row title: ko ≤ 18, en ≤ 32, then truncated with the address in the middle.
   - Row sub line: ko ≤ 34, en ≤ 60, two lines max for warn/danger.
   - Banner: bold lead ≤ ko 14 / en 28, then one sentence.
-  - Sidebar items: ko ≤ 6, en ≤ 16.
+  - Sidebar items: ko ≤ 9, en ≤ 18 (the longest is "AI 에이전트 결제" / "AI agent payments").
 - English runs about 1.6–1.9× longer than Korean in characters, but at the same pt size it sets about 1.1–1.3× as wide. Layouts are checked in **English** for width and **Korean** for line breaks (keep-all).
 - Numbers are never translated. The ticker stays `DBLN`. Korean puts the time phrase after the value ("오늘 +1.5").
 - Key strings:
@@ -279,7 +279,7 @@ Retired: `AuroraBackground`, `ConfettiBurst`, `FloatingReward`, `EarningsHero` k
 | recovery.notice | Set up recovery. If this Mac is lost, nobody can bring the funds back. | 복구 방법을 정해 두세요. 이 Mac을 잃어버리면 누구도 자금을 되찾아 줄 수 없어요. |
 | onboarding.hero | Your money, on your Mac. | 내 돈을, 내 Mac에서. |
 
-These go into the l10n lane's `Localizable.xcstrings`. English strings here are the source; for AI agents, Korean is the source until that page is localised.
+These go into the l10n lane's `Localizable.xcstrings`. English strings here are the source; for AI agent payments, Korean is the source until that page is localised.
 
 ## 11. Light and dark
 

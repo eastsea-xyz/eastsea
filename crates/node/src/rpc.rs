@@ -893,6 +893,7 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                 // above protocol 1 carries its own at height 0, so `[3, 0]` here
                 // is how a rehearsal knows the rules were on from the start.
                 "schedule": f.schedule.iter().map(|a| json!([a.protocol, a.at])).collect::<Vec<_>>(),
+                "upgrade_metadata": crate::chain::upgrade_metadata(&g),
                 "upcoming_upgrades": g.upgrade_notices,
                 // The free registration lane (G2): wallets see it and register
                 // without needing a balance for a paid contract call.
@@ -1170,6 +1171,17 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
         // `reason`). A hash this node never saw, or forgot, stays null.
         "aether_getReceipt" => {
             let h: TxHash = param(p, 0)?;
+            let cached = chain.lock().receipts.get(&h).cloned();
+            if let Some((height, receipt)) = cached {
+                return Ok(json!({ "height": height, "receipt": receipt }));
+            }
+            // Disk I/O stays outside the chain lock. A missing cache entry
+            // must not hide a durable receipt, even behind a local tombstone.
+            if let Some(store) = chain.store() {
+                if let Some((height, receipt)) = store.receipt(&h).map_err(|e| (-32000, e.to_string()))? {
+                    return Ok(json!({ "height": height, "receipt": receipt }));
+                }
+            }
             // Only lookups and a bounded copy under the chain lock (B5 review
             // round 2, finding 4): a pending tx's facts come from its
             // sender's index, and its reason is computed after the lock.
@@ -1306,6 +1318,58 @@ async fn call(st: &RpcState, method: &str, params: Value) -> Value {
 mod alias_tests {
     use super::*;
 
+    /// R16: evicting a finalized receipt's cache entry must not hide the
+    /// durable receipt from a wallet returning after an offline payment.
+    #[test]
+    fn r16_get_receipt_reads_the_durable_receipt_after_cache_eviction() {
+        let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tmp/redteam-fix-b");
+        std::fs::create_dir_all(&base).unwrap();
+        let suffix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = base.join(format!("r16-receipt-{}-{suffix}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        let mut st = bare_state();
+        let store = crate::store::Store::open(&dir.join("db.redb")).unwrap();
+        let (chain, _) = crate::chain::Chain::open(st.chain.cfg(), store).unwrap();
+        st.chain = chain;
+        let state = st.chain.lock().finalized.clone();
+        let height = 1;
+        let hash = TxHash::repeat_byte(0x16);
+        let receipt = aether_execution::Receipt {
+            tx_hash: hash, success: true, gas_used: 21_000, prove_gas: 0,
+            state_gas: 0, state_fee: U256::ZERO, contract_address: None,
+            logs: 0, output: Default::default(), events: vec![],
+        };
+        let summary = crate::chain::BlockSummary {
+            height, hash: format!("{}", aether_types::B256::repeat_byte(0x17)), parent: "genesis".into(),
+            timestamp_ms: 1_000, proposer: Address::ZERO, state_root: state.state.root(),
+            parent_state_root: state.state.root(), txs: vec![hash], gas_used: 21_000,
+            prove_gas: 0, base_fee: Default::default(), excess: Default::default(), archive_excess: 0,
+        };
+        let store = st.chain.store().unwrap();
+        store.commit(crate::store::Commit {
+            height, digest: [0x17; 32], root: state.state.root(), diff: state.state.journal(),
+            summary: &summary, receipts: vec![(hash, &receipt)], handoff: None, seed: None,
+            history: &state.history, schedule: &Default::default(), upgrade_notices: &[],
+            statement: &Default::default(), staged: None,
+        }).unwrap();
+        st.chain.lock().receipts.insert(hash, (height, receipt.clone()));
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let expected = json!({ "height": height, "receipt": receipt });
+        assert_eq!(rt.block_on(call(&st, "aether_getReceipt", json!([hash])))["result"], expected);
+        st.chain.lock().receipts.clear();
+        assert_eq!(
+            rt.block_on(call(&st, "aether_getReceipt", json!([hash])))["result"],
+            expected,
+            "R16: clearing the memory cache must not hide a committed successful payment receipt"
+        );
+        assert_eq!(rt.block_on(call(&st, "eastsea_getReceipt", json!([hash])))["result"], expected);
+        assert!(rt.block_on(call(&st, "aether_getReceipt", json!([TxHash::repeat_byte(0xff)])))["result"].is_null());
+        drop(store);
+        drop(state);
+        drop(st);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn receipt_proof_includes_ordered_receipts_and_the_height_certificate() {
         use commonware_codec::Encode;
@@ -1421,6 +1485,58 @@ mod alias_tests {
 
         let unknown = aether_types::B256::repeat_byte(0xee);
         assert_eq!(rt.block_on(call(&st, "aether_getReceipt", json!([unknown])))["result"], Value::Null);
+    }
+
+    #[test]
+    fn status_requires_a_finalized_parent_metadata_witness_for_upgrades() {
+        use commonware_consensus::types::{Round, View};
+        use commonware_cryptography::{ed25519, Digestible, Signer};
+
+        let mut st = bare_state();
+        let (chain, genesis) = Chain::new(st.chain.cfg());
+        st.chain = chain;
+        let parent = st.chain.lock().finalized.clone();
+        let height = genesis.height.next();
+        let context = crate::block::Context {
+            round: Round::new(crate::block::EPOCH, View::new(height.get())),
+            leader: ed25519::PrivateKey::from_seed(1).public_key(),
+            parent: (View::new(0), genesis.digest()),
+        };
+        let skeleton = crate::block::Block::new(
+            context.clone(), genesis.digest(), height, 1_000, bytes::Bytes::new(),
+        );
+        let ctx = Chain::block_context(&st.chain.cfg(), &skeleton, &parent);
+        let (payload, _) = crate::chain::build_payload(
+            &parent, &parent.state, &ctx, vec![], Default::default(),
+        );
+        let block = crate::block::Block::new(
+            context, genesis.digest(), height, 1_000, payload.to_bytes(),
+        );
+        st.chain.execute(&block, &parent).unwrap();
+        st.chain.finalize(&block).unwrap();
+
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let status = rt.block_on(call(&st, "aether_status", json!([])));
+        let witness = &status["result"]["upgrade_metadata"];
+        assert_eq!(witness["height"], 0,
+            "the upgrade schedule is committed in the finalized head's parent metadata");
+        assert_eq!(witness["archive_excess"], 0);
+        let encoded = aether_light::from_hex(witness["encoded"].as_str().unwrap()).unwrap();
+        let digest = aether_types::B256::from(aether_hash::Hasher::hash_bytes(
+            &aether_hash::ChainHasher::new(), &encoded,
+        ));
+        assert_eq!(digest, block.payload().unwrap().parent_meta);
+        let metadata: Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(metadata[3], json!([]), "the exact metadata carries the parent schedule");
+    }
+
+    #[test]
+    fn status_marks_upgrade_metadata_unavailable_at_genesis() {
+        let st = bare_state();
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let status = rt.block_on(call(&st, "aether_status", json!([])));
+        assert_eq!(status["result"].get("upgrade_metadata"), Some(&Value::Null),
+            "no finalized parent means no metadata witness");
     }
 
     #[test]

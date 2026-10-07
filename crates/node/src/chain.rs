@@ -368,14 +368,14 @@ pub fn stage() -> Option<&'static str> {
     STAGE.lock().ok().and_then(|s| *s)
 }
 
-/// Hash of the chain metadata a block leaves outside the state tree.
-pub fn meta_digest(
+/// Exact preimage of the chain metadata a block leaves outside the state tree.
+pub fn meta_bytes(
     excess: &GasVector,
     handoff: Option<&crate::handoff::Pending>,
     seed: Option<&(u64, aether_light::block::Seed)>,
     schedule: &[crate::upgrade::Activation],
     statement: &Statement,
-) -> B256 {
+) -> Vec<u8> {
     // Protocol-1 encoding until an activation carries a registrar or a statement
     // is recorded: binaries of either protocol agree on protocol-1 blocks.
     let schedule: Vec<Value> = schedule
@@ -385,13 +385,23 @@ pub fn meta_digest(
             Some(r) => serde_json::json!([a.protocol, a.at, r]),
         })
         .collect();
-    let bytes = if *statement == Statement::default() {
+    if *statement == Statement::default() {
         serde_json::to_vec(&(excess, handoff, seed, schedule))
     } else {
         serde_json::to_vec(&(excess, handoff, seed, schedule, statement))
     }
-    .expect("metadata serializes");
-    B256::from(aether_hash::Hasher::hash_bytes(&ChainHasher::new(), &bytes))
+    .expect("metadata serializes")
+}
+
+/// Hash of the chain metadata a block leaves outside the state tree.
+pub fn meta_digest(
+    excess: &GasVector,
+    handoff: Option<&crate::handoff::Pending>,
+    seed: Option<&(u64, aether_light::block::Seed)>,
+    schedule: &[crate::upgrade::Activation],
+    statement: &Statement,
+) -> B256 {
+    aether_light::chain_meta_digest(&meta_bytes(excess, handoff, seed, schedule, statement), 0)
 }
 
 impl Executed {
@@ -445,12 +455,27 @@ pub fn meta_digest_with_archive(
     statement: &Statement,
     archive_excess: u64,
 ) -> B256 {
-    let legacy = meta_digest(excess, handoff, seed, schedule, statement);
-    if archive_excess == 0 {
-        return legacy;
+    aether_light::chain_meta_digest(&meta_bytes(excess, handoff, seed, schedule, statement), archive_excess)
+}
+
+/// Parent metadata authenticated by the finalized head's payload. A restored
+/// checkpoint may not retain its parent yet; no witness is served in that case.
+pub fn upgrade_metadata(g: &Inner) -> Option<Value> {
+    let head = g.recent.back().filter(|b|
+        b.digest() == g.finalized.digest && b.height.get() == g.finalized.height
+    )?;
+    let parent = g.executed.get(&head.parent)?;
+    if parent.height.checked_add(1) != Some(g.finalized.height) {
+        return None;
     }
-    let bytes = serde_json::to_vec(&(legacy, archive_excess)).expect("metadata serializes");
-    B256::from(aether_hash::Hasher::hash_bytes(&ChainHasher::new(), &bytes))
+    let encoded = meta_bytes(
+        &parent.excess, parent.handoff.as_deref(), parent.seed.as_deref(),
+        &parent.schedule, &parent.statement,
+    );
+    Some(serde_json::json!({
+        "height": parent.height, "encoded": aether_light::to_hex(&encoded),
+        "archive_excess": parent.archive_excess,
+    }))
 }
 
 /// A summary's rough share of the history caches: itself plus each tx hash.
@@ -3178,7 +3203,14 @@ fn drop_reason(
     if below_exec && waited(MEMPOOL_FEE_WAIT) {
         return Some(DropReason::FeeCapBelowBase);
     }
-    if (!fees && base.state == 0) || affordable(tx, state, base).is_ok() {
+    // A retained envelope waits when a price exceeds its signed cap. That
+    // unchargeable price cannot turn a covered budget into a balance loss.
+    let payable = FeeVector {
+        prove: base.prove.min(tx.header.max_fee.prove),
+        state: base.state.min(tx.header.max_fee.state),
+        ..base
+    };
+    if (!fees && base.state == 0) || affordable(tx, state, payable).is_ok() {
         None
     } else {
         Some(DropReason::Unaffordable)
@@ -4217,6 +4249,67 @@ mod pool_tests {
         t.header.gas.state = 300;
         t.header.max_fee.state = state_cap;
         t
+    }
+
+    #[test]
+    fn r14_a_state_price_rise_keeps_a_signed_budget_affordable_tx_pending() {
+        let a = Address::repeat_byte(4);
+        let cap = 2 * fees::STATE_UNIT_PRICE;
+        let mut t = capped(a, 0, cap);
+        t.header.max_fee.prove = GWEI;
+        let signed_budget = u128::from(t.header.gas.exec) * t.header.max_fee.exec
+            + u128::from(t.header.gas.prove) * t.header.max_fee.prove
+            + u128::from(t.header.gas.state) * cap
+            + 1;
+        let state = funded(a, signed_budget);
+        let paid = FeeVector { exec: GWEI, state: cap, prove: GWEI };
+        assert!(admissible(&t, &state, paid).is_ok(), "the complete signed maximum is affordable");
+        let price = fees::state_base_fee(97_147);
+        assert!(price > cap);
+        let high = FeeVector { state: price, ..paid };
+        let t0 = Instant::now();
+        assert_eq!(
+            drop_reason(&t, Some(t0), t0 + MEMPOOL_TTL / 2, &state, high, true, None),
+            None,
+            "R14: an unchargeable state price must not drop a signed-budget-affordable transaction"
+        );
+        assert_eq!(drop_reason(&t, Some(t0), t0 + MEMPOOL_TTL / 2, &state, paid, true, None), None,
+            "the transaction is retained when the price refills to its cap");
+        assert_eq!(
+            drop_reason(&t, Some(t0), t0 + MEMPOOL_TTL, &state, high, true, None),
+            Some(DropReason::StatePriceAboveCap { cap: cap.to_string(), price: price.to_string(), blocks: None }),
+            "the existing TTL still applies to fee-cap waiting"
+        );
+        assert_eq!(
+            drop_reason(&t, Some(t0), t0, &funded(a, signed_budget - 1), high, true, None),
+            Some(DropReason::Unaffordable),
+            "a real balance loss is still detected while the state price is high"
+        );
+    }
+
+    #[test]
+    fn r14_a_prove_price_rise_keeps_a_signed_budget_affordable_tx_pending() {
+        let a = Address::repeat_byte(4);
+        let mut t = tx(a, 0, 1);
+        t.header.max_fee.prove = GWEI;
+        let signed_budget = u128::from(t.header.gas.exec) * t.header.max_fee.exec
+            + u128::from(t.header.gas.prove) * t.header.max_fee.prove
+            + 1;
+        let state = funded(a, signed_budget);
+        let paid = FeeVector { exec: GWEI, state: 0, prove: GWEI };
+        assert!(admissible(&t, &state, paid).is_ok());
+        let high = FeeVector { prove: 2 * GWEI, ..paid };
+        let t0 = Instant::now();
+        assert_eq!(
+            drop_reason(&t, Some(t0), t0, &state, high, true, None),
+            None,
+            "R14: an unchargeable prove price must not drop a signed-budget-affordable transaction"
+        );
+        assert_eq!(
+            drop_reason(&t, Some(t0), t0 + MEMPOOL_FEE_WAIT, &state, high, true, None),
+            Some(DropReason::FeeCapBelowBase),
+            "the existing exec/prove fee waiting limit still applies"
+        );
     }
 
     /// Contracts-live bug #5: the stress run's 78 transfers sat under the

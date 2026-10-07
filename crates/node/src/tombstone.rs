@@ -21,7 +21,8 @@ pub const TOMBSTONES: usize = 4096;
 pub enum Reason {
     /// The B5 state price is above the transaction's signed state cap. While
     /// it waits, `blocks` estimates how many blocks the refill needs to bring
-    /// the price to the cap, if no more state is used (None: never).
+    /// the price to the cap, if no more state is used. None also means
+    /// no estimate was requested; it is not a permanent-failure verdict.
     StatePriceAboveCap {
         cap: String,
         price: String,

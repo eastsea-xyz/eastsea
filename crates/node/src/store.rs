@@ -806,6 +806,15 @@ impl Store {
         Ok(t.get(key).map_err(dberr)?.map(|v| v.value().to_vec()))
     }
 
+    /// A committed receipt remains available after its memory cache is evicted.
+    pub fn receipt(&self, hash: &TxHash) -> Result<Option<(u64, Receipt)>, StoreError> {
+        let tx = self.read_tx()?;
+        let receipts = tx.open_table(RECEIPTS).map_err(dberr)?;
+        receipts.get(hash.as_slice()).map_err(dberr)?
+            .map(|value| serde_json::from_slice(value.value()).map_err(|_| StoreError::Corrupt("receipt")))
+            .transpose()
+    }
+
     /// Record a reward paid to `prover` in block `height` (one per proven block: `proven`).
     pub fn put_reward(&self, prover: &[u8; 20], height: u64, proven: u64, record: &[u8]) -> Result<(), StoreError> {
         let mut key = prover.to_vec();

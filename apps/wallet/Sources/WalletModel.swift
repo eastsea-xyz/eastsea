@@ -19,7 +19,7 @@ final class WalletModel: ObservableObject {
     @Published var status: ChainStatus?
     var scheduledUpgrades: [NetworkUpgrade] {
         guard let status else { return [] }
-        return NetworkUpgrade.parse(status.upgradesJson, height: status.height)
+        return NetworkUpgrade.parse(status.upgradesJson, height: max(status.height, (try? verifiedHeight()) ?? 0))
     }
     @Published var blocks: [BlockInfo] = []
     @Published var verifyError: String?
@@ -179,6 +179,7 @@ final class WalletModel: ObservableObject {
     }
 
     private var refreshes = 0
+    private var refreshInFlight = false
     private var networkGeneration: UInt64 = 0
     private var lastHeight: UInt64?
     private var heightChangedAt: Date?
@@ -524,6 +525,8 @@ final class WalletModel: ObservableObject {
     }
 
     func refresh() {
+        guard !refreshInFlight else { return }
+        refreshInFlight = true
         if enclave == nil, Date().timeIntervalSince(lastKeyAttempt) > 5 { loadKey() }
         let addr = address, n = validators, generation = networkGeneration
         refreshes += 1
@@ -545,6 +548,7 @@ final class WalletModel: ObservableObject {
             }
             let verified = acc, readError = err
             await MainActor.run {
+                self.refreshInFlight = false
                 guard self.networkGeneration == generation else { return }
                 // Published only when something actually changed: an unchanged set
                 // would still invalidate every view watching this model (the whole
@@ -808,9 +812,16 @@ final class WalletModel: ObservableObject {
                 let sig = try enclave.sign(prepared.signingMessage)
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
                 let title = r.to.isEmpty ? String(localized: "Deployed a contract") : String(localized: "Called \(Short.address(r.to))")
-                let ok = await self.track(h, label: title,
-                                          item: ActivityItem(kind: .sent, title: title, amount: nil, token: token))
-                await MainActor.run { if let cb = r.callback { self.reply(cb, ["tx": h, "status": ok ? "success" : "failed"]) } }
+                var item = ActivityItem(kind: .sent, title: title, amount: nil, token: token)
+                item.nonce = prepared.nonce
+                let outcome = await self.follow(h, label: title, item: item)
+                await MainActor.run {
+                    if let cb = r.callback {
+                        var items = ["tx": h, "status": TxTrack.callbackStatus(outcome)]
+                        if !TxTrack.isFinal(outcome) { items["note"] = TxTrack.notIncludedNote }
+                        self.reply(cb, items)
+                    }
+                }
             } catch { await MainActor.run { self.note("Call failed: \(error)"); self.busy = false } }
         }
     }

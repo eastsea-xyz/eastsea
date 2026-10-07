@@ -22,7 +22,7 @@
 //! finding 3).
 
 use crate::{call, TxReceipt, WalletError, R};
-use aether_types::{Address, TxHash, U256};
+use aether_types::{Address, TxEnvelope, TxHash, TxPayload};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Mutex;
@@ -63,9 +63,9 @@ pub fn tx_status(tx_hash: String) -> R<TxStatus> {
 }
 
 /// `tx_status` for a send whose sender and nonce the caller kept (a wallet
-/// row after a restart, an agent's pending history): when the chain nonce has
-/// moved past `nonce` and no node has this hash's receipt, another transaction
-/// used the nonce — `replaced`, final. Until then a drop stays not-final.
+/// row after a restart, an agent's pending history). A consumed nonce without
+/// a receipt leaves its result unresolved; replacement needs a receipt for
+/// a different envelope this process recorded using that nonce.
 #[uniffi::export]
 pub fn tx_status_for(tx_hash: String, sender: String, nonce: u64) -> R<TxStatus> {
     let h: TxHash = tx_hash.parse().map_err(|_| WalletError::Invalid("tx hash".into()))?;
@@ -74,39 +74,67 @@ pub fn tx_status_for(tx_hash: String, sender: String, nonce: u64) -> R<TxStatus>
 }
 
 fn status_with_context(h: TxHash, context: Option<(Address, u64)>) -> R<TxStatus> {
-    // The nonce is read BEFORE the receipt: a nonce that moved past ours
-    // while the receipt is still unseen can then only mean another tx used it
-    // (read the other way round, our own inclusion in between would look so).
+    let deadline = std::time::Instant::now() + crate::budgets().read;
+    // Read the nonce before receipts so an inclusion during this lookup can
+    // still resolve its row. Nonce advancement alone cannot identify a tx.
     let chain = match context {
         Some((sender, _)) => chain_nonce(sender).ok(),
         None => None,
     };
-    let st = status_of(&crate::receipt_answer(h, false)?);
+    let st = status_for_hash(&crate::receipt_answer_until(h, false, deadline)?, h);
     if st.is_final {
+        book().confirm_included(&h);
+        return Ok(st);
+    }
+    let (Some((sender, nonce)), Some(chain)) = (context, chain) else { return Ok(st) };
+    if chain <= nonce {
+        return Ok(st);
+    }
+    // A durable or later receipt for the original always wins. A failed read
+    // does not turn the absence of a receipt into a final replacement either.
+    if let Ok(answer) = crate::receipt_answer_until(h, true, deadline) {
+        let again = status_for_hash(&answer, h);
+        if again.is_final {
+            book().confirm_included(&h);
+            return Ok(again);
+        }
+    }
+    if book().confirmed_replacement(h, sender, nonce) {
         book().settled(&h);
-        return Ok(st);
+        return Ok(replaced(nonce, chain));
     }
-    let (Some((_, nonce)), Some(chain)) = (context, chain) else { return Ok(st) };
-    if !nonce_used_elsewhere(chain, nonce, false) {
-        return Ok(st);
+    let candidates = book().replacement_candidates(h, sender, nonce);
+    for other in candidates {
+        if std::time::Instant::now() >= deadline { break; }
+        let included = crate::receipt_answer_until(other, true, deadline).ok()
+            .is_some_and(|answer| status_for_hash(&answer, other).receipt.is_some());
+        if nonce_used_elsewhere(chain, nonce, included) {
+            book().confirm_included(&other);
+            book().settled(&h);
+            return Ok(replaced(nonce, chain));
+        }
     }
-    // Every path once more before calling it replaced: a receipt anywhere wins.
-    let again = status_of(&crate::receipt_answer(h, true)?);
-    let out = if again.is_final { again } else { replaced(nonce, chain) };
-    book().settled(&h);
-    Ok(out)
+    Ok(TxStatus {
+        state: "unknown".into(),
+        reason: Some("receipt_unavailable".into()),
+        message: "거래 순서 번호는 사용됐지만 이 거래의 처리 결과를 아직 확인하지 못했어요.".into(),
+        detail: format!("unresolved: nonce {nonce} is consumed (next nonce {chain}), but no receipt identifies this transaction or a recorded replacement"),
+        can_resend: false,
+        receipt: None,
+        is_final: false,
+    })
 }
 
-/// The chain's nonce moved past ours and no receipt names our hash.
-pub(crate) fn nonce_used_elsewhere(chain_nonce: u64, nonce: u64, included: bool) -> bool {
-    !included && chain_nonce > nonce
+/// A different recorded envelope has a receipt and consumed this nonce.
+pub(crate) fn nonce_used_elsewhere(chain_nonce: u64, nonce: u64, different_tx_included: bool) -> bool {
+    different_tx_included && chain_nonce > nonce
 }
 
 fn replaced(nonce: u64, chain: u64) -> TxStatus {
     TxStatus {
         state: "replaced".into(),
         reason: Some("nonce_used".into()),
-        message: format!("같은 순서 번호({nonce})로 보낸 다른 거래가 체인에 기록됐어요. 이 거래는 처리되지 않으며, 이 거래로 빠져나간 돈은 없어요."),
+        message: format!("같은 순서 번호({nonce})를 사용한 다른 거래가 체인에 기록됐어요. 이 거래는 이제 실행될 수 없어요."),
         detail: format!("replaced: nonce {nonce} is used on chain (the account's next nonce is {chain}) by another transaction; this one can no longer run"),
         can_resend: false,
         receipt: None,
@@ -130,23 +158,25 @@ fn wait_text(blocks: u64) -> String {
 /// node saw, never a permanent failure.
 pub const NOT_RECORDED: &str = "처리되지 않았어요 (아직 체인에 기록되지 않음)";
 
+fn status_for_hash(value: &Value, expected: TxHash) -> TxStatus {
+    if value["receipt"].get("tx_hash").is_some_and(|hash|
+        hash.as_str().and_then(|s| s.parse::<TxHash>().ok()) != Some(expected)) {
+        return status_of(&Value::Null);
+    }
+    status_of(value)
+}
+
 /// The pure half of `tx_status`: the node's answer, in words.
 pub(crate) fn status_of(v: &Value) -> TxStatus {
-    if v.get("receipt").is_some() {
-        let r = &v["receipt"];
-        let success = r["success"].as_bool().unwrap_or(false);
+    if let Some(receipt) = parsed_receipt(v) {
+        let success = receipt.success;
         return TxStatus {
             state: "included".into(),
             reason: None,
             message: if success { "완료됐어요.".into() } else { "블록에 들어갔지만 실행이 실패했어요.".into() },
             detail: format!("included in block {} ({})", v["height"], if success { "success" } else { "failed" }),
             can_resend: false,
-            receipt: Some(TxReceipt {
-                height: v["height"].as_u64().unwrap_or_default(),
-                success,
-                gas_used: r["gas_used"].as_u64().unwrap_or_default(),
-                state_fee_wei: crate::u256_of_json(&r["state_fee"]).unwrap_or(U256::ZERO).to_string(),
-            }),
+            receipt: Some(receipt),
             is_final: true,
         };
     }
@@ -212,8 +242,8 @@ pub(crate) fn status_of(v: &Value) -> TxStatus {
                 "dropped by this node: a higher-paying transaction took its place in a full mempool (not on chain yet)".into(),
             ),
             "replaced" => (
-                format!("같은 순서 번호로 보낸 다른 거래가 먼저 처리돼 이 거래는 {NOT_RECORDED}."),
-                "dropped by this node: another transaction with the same nonce was included there".into(),
+                format!("이 노드에서 거래 순서 번호가 이미 사용된 것으로 확인됐지만, 이 거래의 처리 결과는 아직 확인되지 않았어요. {NOT_RECORDED}."),
+                "dropped by this node: the nonce is consumed, but this transaction's receipt is unresolved".into(),
             ),
             "unaffordable" => (
                 format!("잔액이 부족해 {NOT_RECORDED}."),
@@ -235,6 +265,16 @@ pub(crate) fn status_of(v: &Value) -> TxStatus {
     }
 }
 
+fn parsed_receipt(value: &Value) -> Option<TxReceipt> {
+    let receipt = value["receipt"].as_object()?;
+    Some(TxReceipt {
+        height: value["height"].as_u64()?,
+        success: receipt.get("success")?.as_bool()?,
+        gas_used: receipt.get("gas_used")?.as_u64()?,
+        state_fee_wei: crate::u256_of_json(receipt.get("state_fee")?)?.to_string(),
+    })
+}
+
 // ---------------- what this process sent (round 2, findings 2, 3, 5) ----------------
 
 /// At most this many unsettled sends are remembered (oldest forgotten first).
@@ -249,6 +289,8 @@ const MAX_QUEUED: usize = 64;
 pub(crate) struct Sent {
     pub sender: Address,
     pub nonce: u64,
+    /// The transaction nonce plus any self-delegation authorization nonce.
+    pub nonce_consumption: u64,
     /// The validator that accepted it (None: this Mac's own node, or unknown).
     pub admitter: Option<aether_net::EndpointId>,
 }
@@ -260,10 +302,37 @@ pub(crate) struct Sent {
 pub(crate) struct Book {
     pub sent: HashMap<TxHash, Sent>,
     order: VecDeque<TxHash>,
-    queued: BTreeMap<Address, BTreeMap<u64, TxHash>>,
+    queued: BTreeMap<Address, BTreeMap<u64, (TxHash, u64)>>,
+    confirmed: VecDeque<(TxHash, Sent)>,
 }
 
 impl Book {
+    /// Only the envelope's transaction nonce is proved by its receipt.
+    /// Authorization slots may be ignored, so do not infer replacement from
+    /// their reserved range. A local tombstone alone is also insufficient.
+    fn replacement_candidates(&self, original: TxHash, sender: Address, nonce: u64) -> Vec<TxHash> {
+        self.order.iter().rev().filter_map(|hash| {
+            let sent = self.sent.get(hash)?;
+            (*hash != original && sent.sender == sender && sent.nonce == nonce)
+                .then_some(*hash)
+        }).take(16).collect()
+    }
+
+    fn confirmed_replacement(&self, original: TxHash, sender: Address, nonce: u64) -> bool {
+        self.confirmed.iter().rev().any(|(hash, sent)|
+            *hash != original && sent.sender == sender && sent.nonce == nonce)
+    }
+
+    /// Preserve bounded inclusion evidence when polling removes a sent row.
+    /// A final replacement is never recorded here as if it were included.
+    fn confirm_included(&mut self, hash: &TxHash) {
+        if let Some(sent) = self.sent.get(hash).copied() {
+            self.confirmed.retain(|(old, _)| old != hash);
+            self.confirmed.push_back((*hash, sent));
+            while self.confirmed.len() > MAX_SENT { self.confirmed.pop_front(); }
+        }
+        self.settled(hash);
+    }
     /// Remember a submission.
     pub fn record(&mut self, h: TxHash, sent: Sent) {
         if self.sent.insert(h, sent).is_none() {
@@ -281,7 +350,7 @@ impl Book {
             }
         }
         let q = self.queued.entry(sent.sender).or_default();
-        q.insert(sent.nonce, h);
+        q.insert(sent.nonce, (h, sent.nonce_consumption));
         while q.len() > MAX_QUEUED {
             q.pop_first();
         }
@@ -292,7 +361,7 @@ impl Book {
         if let Some(s) = self.sent.remove(h) {
             self.order.retain(|o| o != h);
             if let Some(q) = self.queued.get_mut(&s.sender) {
-                if q.get(&s.nonce) == Some(h) {
+                if q.get(&s.nonce).is_some_and(|(queued, _)| queued == h) {
                     q.remove(&s.nonce);
                 }
             }
@@ -300,7 +369,7 @@ impl Book {
     }
 
     /// `sender`'s queue from `chain_nonce` up (lower nonces are on chain).
-    pub fn queue_from(&mut self, sender: Address, chain_nonce: u64) -> BTreeMap<u64, TxHash> {
+    pub fn queue_from(&mut self, sender: Address, chain_nonce: u64) -> BTreeMap<u64, (TxHash, u64)> {
         let Some(q) = self.queued.get_mut(&sender) else { return BTreeMap::new() };
         *q = q.split_off(&chain_nonce);
         q.clone()
@@ -344,13 +413,14 @@ static SUBMIT: Mutex<()> = Mutex::new(());
 /// of this process's queued sends that are still pending, starting at the
 /// chain's next nonce. An older send that dropped ends the run there, even
 /// while a younger one still waits (it waits behind that very gap).
-pub(crate) fn next_in_sequence(chain_nonce: u64, queued: &BTreeMap<u64, TxHash>, mut pending: impl FnMut(&TxHash) -> bool) -> u64 {
+pub(crate) fn next_in_sequence(chain_nonce: u64, queued: &BTreeMap<u64, (TxHash, u64)>, mut pending: impl FnMut(&TxHash) -> bool) -> u64 {
     let mut next = chain_nonce;
-    while let Some(h) = queued.get(&next) {
+    while let Some((h, consumed)) = queued.get(&next) {
         if !pending(h) {
             break;
         }
-        next += 1;
+        let Some(after) = next.checked_add(*consumed) else { return u64::MAX };
+        next = after;
     }
     next
 }
@@ -388,23 +458,46 @@ pub(crate) fn nonce_for(from: Address) -> R<u64> {
 /// the unbroken pending run; on success the hash, its nonce and the
 /// validator that admitted it are remembered until a chain fact settles it.
 pub(crate) fn submit_in_order(
-    from: Address,
-    nonce: u64,
+    env: &TxEnvelope,
     send: impl FnOnce() -> R<(TxHash, Option<aether_net::EndpointId>)>,
 ) -> R<TxHash> {
+    let (from, nonce) = (env.header.sender, env.header.nonce);
+    let nonce_consumption = nonce_consumption(&env.payload)?;
+    if nonce.checked_add(nonce_consumption).is_none() {
+        return Err(WalletError::Invalid("transaction exhausts the account nonce range".into()));
+    }
     let _serial = SUBMIT.lock().unwrap_or_else(|p| p.into_inner());
     let next = nonce_for(from)?;
     if let Some(why) = gap_refusal(nonce, next) {
         return Err(WalletError::Rejected(why));
     }
     let (h, admitter) = send()?;
-    book().record(h, Sent { sender: from, nonce, admitter });
+    book().record(h, Sent { sender: from, nonce, nonce_consumption, admitter });
     Ok(h)
+}
+
+/// Execution applies a self-authorization at `nonce + 1`, even when the
+/// call reuses or clears an existing delegation. Read the signed payload.
+fn nonce_consumption(payload: &TxPayload) -> R<u64> {
+    let TxPayload::Plain(bytes) = payload else {
+        return Err(WalletError::Invalid("encrypted transaction payload not supported".into()));
+    };
+    let call = aether_execution::EvmCall::decode(bytes).map_err(|e| WalletError::Invalid(format!("transaction payload: {e:?}")))?;
+    Ok(1 + u64::from(call.delegate.is_some()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aether_types::U256;
+
+    #[test]
+    fn r16_malformed_receipts_are_not_chain_facts() {
+        for receipt in [Value::Null, json!({}), json!({ "success": true })] {
+            let status = status_of(&json!({ "height": 12, "receipt": receipt }));
+            assert!(!status.is_final && status.receipt.is_none(), "R16: a malformed receipt cannot finalize or replace a payment");
+        }
+    }
 
     /// Contracts-live bug #5: a pending tx under the risen state price, and
     /// the same tx once the TTL dropped it, each come back with a reason.
@@ -461,10 +554,10 @@ mod tests {
             "waiting": { "kind": "state_price_above_cap", "cap": "2", "price": "4", "blocks": 30 } }));
         assert!(!pending.message.contains("취소"), "{}", pending.message);
 
-        // The nonce moved past ours with no receipt for our hash: final.
-        assert!(nonce_used_elsewhere(8, 7, false));
+        // A consumed nonce and no receipt do not identify a replacement.
+        assert!(!nonce_used_elsewhere(8, 7, false));
         assert!(!nonce_used_elsewhere(7, 7, false), "the nonce is still free: a drop can still be resent or land");
-        assert!(!nonce_used_elsewhere(8, 7, true), "our own receipt is inclusion, not replacement");
+        assert!(nonce_used_elsewhere(8, 7, true), "a receipt for a different known envelope proves replacement");
         let r = replaced(7, 8);
         assert!(r.is_final && r.state == "replaced" && !r.can_resend);
         assert!(r.message.contains("7") && r.detail.contains("nonce 7"), "{}", r.detail);
@@ -477,7 +570,7 @@ mod tests {
     #[test]
     fn an_older_drop_under_a_pending_successor_holds_the_next_send() {
         let (h5, h6) = (TxHash::repeat_byte(5), TxHash::repeat_byte(6));
-        let queue: BTreeMap<u64, TxHash> = [(5, h5), (6, h6)].into_iter().collect();
+        let queue: BTreeMap<u64, (TxHash, u64)> = [(5, (h5, 1)), (6, (h6, 1))].into_iter().collect();
         let next = next_in_sequence(5, &queue, |h| *h == h6);
         assert_eq!(next, 5, "nonce 5 dropped: the run ends there");
         assert!(gap_refusal(7, next).is_some(), "N+2 would wait behind the missing N");
@@ -488,12 +581,37 @@ mod tests {
         assert_eq!(next_in_sequence(7, &queue, |_| true), 7);
     }
 
+    /// R15: a self-delegating batch consumes the transaction nonce and the
+    /// authorization nonce before its successor can execute.
+    #[test]
+    fn pending_delegated_batch_reserves_its_authorization_nonce() {
+        let sender = Address::repeat_byte(0xa1);
+        let batch = crate::batch_call(sender, &[(Address::repeat_byte(0xb2), U256::from(1), Default::default())]);
+        assert!(batch.delegate.is_some(), "the fixture must self-authorize delegation");
+        let mut b = Book::default();
+        let consumed = nonce_consumption(&TxPayload::Plain(batch.encode().into())).unwrap();
+        b.record(TxHash::repeat_byte(5), Sent { sender, nonce: 5, nonce_consumption: consumed, admitter: None });
+        let queue = b.queue_from(sender, 5);
+        assert_eq!(
+            next_in_sequence(5, &queue, |_| true),
+            7,
+            "R15: a pending delegated batch reserves both nonce 5 and its authorization nonce 6"
+        );
+        assert_eq!(next_in_sequence(5, &queue, |_| false), 5, "a dropped batch reserves neither nonce");
+        b.record(TxHash::repeat_byte(7), Sent { sender, nonce: 7, nonce_consumption: 1, admitter: None });
+        assert_eq!(next_in_sequence(5, &b.queue_from(sender, 5), |_| true), 8, "ordinary sends continue after both batch nonces");
+        // Re-signing at the batch's starting nonce replaces the entire queued
+        // envelope; a normal transfer no longer reserves its authorization.
+        b.record(TxHash::repeat_byte(6), Sent { sender, nonce: 5, nonce_consumption: 1, admitter: None });
+        assert_eq!(next_in_sequence(5, &b.queue_from(sender, 5), |_| true), 6);
+    }
+
     /// Bug #5 decision 5 (kept): nonces follow this process's queued txs, and
     /// a submit that would sit behind a refused or dropped nonce is refused.
     #[test]
     fn submits_never_queue_behind_a_gap() {
         let h = TxHash::repeat_byte(1);
-        let one: BTreeMap<u64, TxHash> = [(5, h)].into_iter().collect();
+        let one: BTreeMap<u64, (TxHash, u64)> = [(5, (h, 1))].into_iter().collect();
         assert_eq!(next_in_sequence(5, &BTreeMap::new(), |_| true), 5);
         assert_eq!(next_in_sequence(5, &one, |_| true), 6, "nonce 5 is queued: the next send takes 6");
         assert_eq!(next_in_sequence(5, &one, |_| false), 5, "nonce 5 was dropped: take it again");
@@ -512,7 +630,7 @@ mod tests {
         for n in 0..(MAX_QUEUED as u64 + 10) {
             let mut bytes = [0u8; 32];
             bytes[..8].copy_from_slice(&n.to_be_bytes());
-            b.record(TxHash::from(bytes), Sent { sender: a, nonce: n, admitter: None });
+            b.record(TxHash::from(bytes), Sent { sender: a, nonce: n, nonce_consumption: 1, admitter: None });
         }
         assert_eq!(b.queue_from(a, 0).len(), MAX_QUEUED, "one sender's queue stays within the node's per-sender limit");
         assert_eq!(b.queue_from(a, 70).len(), 4, "nonces below the chain nonce are on chain");
@@ -521,11 +639,11 @@ mod tests {
             bytes[..8].copy_from_slice(&i.to_be_bytes());
             let mut sender = [0u8; 20];
             sender[0] = (i % 40) as u8;
-            b.record(TxHash::from(bytes), Sent { sender: Address::from(sender), nonce: i, admitter: None });
+            b.record(TxHash::from(bytes), Sent { sender: Address::from(sender), nonce: i, nonce_consumption: 1, admitter: None });
         }
         assert!(b.sent.len() <= MAX_SENT && b.queued.len() <= MAX_SENDERS, "{} sends, {} senders", b.sent.len(), b.queued.len());
         let h = TxHash::repeat_byte(0x77);
-        b.record(h, Sent { sender: a, nonce: 200, admitter: None });
+        b.record(h, Sent { sender: a, nonce: 200, nonce_consumption: 1, admitter: None });
         assert!(b.sent.contains_key(&h));
         b.settled(&h);
         assert!(!b.sent.contains_key(&h) && b.admitter_of(&h).is_none());

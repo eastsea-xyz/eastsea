@@ -881,6 +881,26 @@ fn a_genesis_above_protocol_1_runs_the_activated_rules_from_height_0() {
     assert_eq!(registry::max_per_epoch(&sp.state), registry::MAX_PER_EPOCH);
 }
 
+/// A finalized head authenticates its parent's scheduled upgrades.
+#[test]
+fn a_finalized_head_authenticates_the_parents_upgrade_schedule() {
+    let (chain, genesis) = node(2);
+    let parent = chain.lock().finalized.clone();
+    let notice = propose(&chain, &parent, &genesis, Some(signed(2, 50)));
+    let parent = advance(&chain, parent, &notice);
+    let head = propose(&chain, &parent, &notice, None);
+    advance(&chain, parent, &head);
+
+    let witness = aether_node::chain::upgrade_metadata(&chain.lock()).unwrap();
+    assert_eq!(witness["height"], 1);
+    let encoded = aether_light::from_hex(witness["encoded"].as_str().unwrap()).unwrap();
+    assert_eq!(aether_light::chain_meta_digest(&encoded, witness["archive_excess"].as_u64().unwrap()),
+        head.payload().unwrap().parent_meta);
+    let metadata: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(metadata[3], serde_json::json!([[2, 50]]),
+        "only the finalized parent schedule is authenticated by this witness");
+}
+
 /// The testnet's genesis is byte-identical: a config without the protocol field
 /// (0/`Default`, read as 1) builds the same genesis block, state and metadata as
 /// before the field existed, and schedules nothing.

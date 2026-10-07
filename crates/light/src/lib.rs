@@ -45,6 +45,17 @@ pub const NAMESPACE: &[u8] = b"_AETHER_DEVNET_V1";
 /// Upper bound on an encoded block (txs + BAL).
 pub const MAX_BLOCK_BYTES: u32 = 8 * 1024 * 1024;
 
+/// Hash the exact chain metadata preimage committed by a child block.
+/// Zero archive debt preserves the legacy commitment byte for byte.
+pub fn chain_meta_digest(preimage: &[u8], archive_excess: u64) -> B256 {
+    let legacy = B256::from(aether_hash::Hasher::hash_bytes(&ChainHasher::new(), preimage));
+    if archive_excess == 0 {
+        return legacy;
+    }
+    let bytes = serde_json::to_vec(&(legacy, archive_excess)).expect("metadata serializes");
+    B256::from(aether_hash::Hasher::hash_bytes(&ChainHasher::new(), &bytes))
+}
+
 pub fn consensus_namespace() -> Vec<u8> {
     consensus_namespace_of(0)
 }
@@ -367,5 +378,26 @@ mod hex_tests {
         assert!(from_hex("€a").is_err());
         assert!(from_hex("0xzz").is_err());
         assert_eq!(from_hex("0x0aFf").unwrap(), vec![0x0a, 0xff]);
+    }
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::*;
+
+    const GENESIS_METADATA: &[u8] = b"[{\"exec\":0,\"state\":0,\"prove\":0},null,null,[]]";
+
+    #[test]
+    fn chain_metadata_preserves_the_pinned_legacy_commitment() {
+        assert_eq!(chain_meta_digest(GENESIS_METADATA, 0),
+            "0xea886ae2e6344e3483e621fa828b21acb29258864f6274985a18988c0c39535f".parse::<B256>().unwrap());
+    }
+
+    #[test]
+    fn chain_metadata_commits_nonzero_archive_debt_with_the_legacy_suffix() {
+        let suffix = b"[\"0xea886ae2e6344e3483e621fa828b21acb29258864f6274985a18988c0c39535f\",7]";
+        let expected = B256::from(aether_hash::Hasher::hash_bytes(&ChainHasher::new(), suffix));
+        assert_eq!(chain_meta_digest(GENESIS_METADATA, 7), expected);
+        assert_ne!(chain_meta_digest(GENESIS_METADATA, 7), chain_meta_digest(GENESIS_METADATA, 0));
     }
 }

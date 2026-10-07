@@ -195,10 +195,19 @@ mod tests {
     use std::os::unix::net::UnixListener;
 
     fn temp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("aether-signer-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+        // macOS limits a Unix socket's entire pathname to 103 bytes. Keep
+        // fixtures short enough for a worktree's mandatory ./tmp directory.
+        // Claim a fresh name rather than deleting a prior process's fixture.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        loop {
+            let next = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let dir = std::env::temp_dir().join(format!("sg-{tag}-{:x}-{next:x}", std::process::id()));
+            match std::fs::create_dir(&dir) {
+                Ok(()) => return dir,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("cannot create signer fixture: {error}"),
+            }
+        }
     }
 
     /// A stand-in for `aether-registrar-signer`: answers every connection with

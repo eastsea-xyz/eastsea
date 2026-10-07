@@ -2416,7 +2416,7 @@ exec "$AETHER_R06_EXE" --exact supervisor::tests::r06_fixture_writer --nocapture
         let dir = PathBuf::from(std::env::var_os("AETHER_R06_DIR").unwrap());
         let late = std::env::var("AETHER_R06_MODE").as_deref() == Ok("late");
         if late {
-            std::fs::write(dir.join("late-start-ready"), b"waiting").unwrap();
+            crate::atomic::replace(&dir.join("late-start-ready"), b"waiting", 0o600).unwrap();
             r06_wait_file(&dir.join("start"));
         }
         let mode = std::env::var("AETHER_R06_MODE").unwrap_or_default();
@@ -2440,7 +2440,7 @@ exec "$AETHER_R06_EXE" --exact supervisor::tests::r06_fixture_writer --nocapture
                 assert_eq!(crate::rpc::writer_lease_status_for_test()["writer_lease_protocol"], json!(0),
                     "R11 malformed payload cannot attest writer safety");
             }
-            std::fs::write(dir.join("adoption-result"), outcome).unwrap();
+            crate::atomic::replace(&dir.join("adoption-result"), outcome.as_bytes(), 0o600).unwrap();
             return;
         }
         let lease = adoption.expect("the real writer spawn delivers a valid lease");
@@ -2451,12 +2451,12 @@ exec "$AETHER_R06_EXE" --exact supervisor::tests::r06_fixture_writer --nocapture
             drop(lease);
             assert_eq!(crate::rpc::writer_lease_status_for_test()["writer_lease_protocol"], json!(0),
                 "R11 dropped guard cannot leave a stale safety attestation");
-            std::fs::write(dir.join("capability-result"), b"passed").unwrap();
+            crate::atomic::replace(&dir.join("capability-result"), b"passed", 0o600).unwrap();
             return;
         }
         let expected = lease.expected_parent();
         if late && !expected_parent_is_current(expected) {
-            std::fs::write(dir.join("late-rejected"), b"rejected").unwrap();
+            crate::atomic::replace(&dir.join("late-rejected"), b"rejected", 0o600).unwrap();
             return;
         }
         let fd = lease._file.as_raw_fd();
@@ -2465,7 +2465,7 @@ exec "$AETHER_R06_EXE" --exact supervisor::tests::r06_fixture_writer --nocapture
         assert!(Command::new("/bin/sh").args(["-c", &format!("test ! -e /dev/fd/{fd}")])
             .env_remove(WRITER_LEASE_ENV).status().unwrap().success(),
             "R06 unrelated prover exec must not inherit the writer lease");
-        std::fs::write(dir.join("writer-ready"), std::process::id().to_string()).unwrap();
+        crate::atomic::replace(&dir.join("writer-ready"), std::process::id().to_string().as_bytes(), 0o600).unwrap();
         let deadline = Instant::now() + Duration::from_secs(15);
         while dir.exists() && !dir.join("stop").exists() && Instant::now() < deadline {
             let _ = std::fs::write(dir.join("writer-heartbeat"), b"still writing");

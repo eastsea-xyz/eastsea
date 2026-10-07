@@ -155,46 +155,43 @@ extension NodeController {
             daemon.resumeRespawn()
             return
         }
-        // Stop whichever node runs on it: ours, or the daemon's we attached to.
-        if attached { unattended?.stopDaemonNode() }
-        stop(keepSwitch: true)
         let dataDir = Self.dataDir
-        Task.detached {
-            // Hold exclusive ownership through verification and durable
-            // publication; observing an unlocked instant cannot fence writers.
-            guard let moveFD = await BlockDataMove.holdRunLock(in: dataDir, timeout: Self.storageMoveLockTimeout) else {
+        Task { @MainActor in
+            // A released parent lock cannot prove legacy children are gone.
+            // Fresh signed lease preflight precedes every source shutdown.
+            guard let moveFD = await self.acquireStorageMoveOwnership() else {
+                self.storageMoveError = String(localized: "The running node could not be stopped safely. The move was cancelled; the block data is still where it was.")
+                self.storageMovePercent = nil
+                self.unattended?.resumeRespawn()
+                self.applyPower()
+                return
+            }
+            Task.detached {
+                let total = BlockDataLocation.movedDirs.reduce(UInt64(0)) { $0 + Self.treeBytes(source.appendingPathComponent($1)) }
+                let meter = DataMigration.ProgressMeter { f in
+                    Task { @MainActor in
+                        if self.storageMovePercent != nil { self.storageMovePercent = min(99, Int(f * 100)) }
+                    }
+                }
+                meter.expect(Int64(total) * 3)
+                let copied = (try? BlockDataMove.copy(source: source, target: target, sourceID: sourceID,
+                                                     internalRoot: dataDir, preservingInternalKeys: dest == nil, meter: meter)) != nil
                 await MainActor.run {
-                    self.storageMoveError = String(localized: "The node is still using the block data. The move was cancelled; the block data is still where it was.")
+                    if copied {
+                        self.chainDataPath = dest?.path ?? ""
+                        self.logEvent("storage", "copied and verified \(NodeStopReason.gb(total)); the node now uses \(target.path)")
+                    } else {
+                        // Nothing switched: the old copy is untouched and stays in use.
+                        self.storageMoveError = String(localized: "The move did not complete: the copy did not verify or space ran out. The block data is still where it was.")
+                        self.logEvent("storage", "move failed; staying on \(source.path)")
+                    }
+                    // The durable record and UI selection are settled. Release
+                    // before either daemon or app tries to start the replacement.
+                    close(moveFD)
                     self.storageMovePercent = nil
                     self.unattended?.resumeRespawn()
                     self.applyPower()
                 }
-                return
-            }
-            let total = BlockDataLocation.movedDirs.reduce(UInt64(0)) { $0 + Self.treeBytes(source.appendingPathComponent($1)) }
-            let meter = DataMigration.ProgressMeter { f in
-                Task { @MainActor in
-                    if self.storageMovePercent != nil { self.storageMovePercent = min(99, Int(f * 100)) }
-                }
-            }
-            meter.expect(Int64(total) * 3)
-            let copied = (try? BlockDataMove.copy(source: source, target: target, sourceID: sourceID,
-                                                 internalRoot: dataDir, preservingInternalKeys: dest == nil, meter: meter)) != nil
-            await MainActor.run {
-                if copied {
-                    self.chainDataPath = dest?.path ?? ""
-                    self.logEvent("storage", "copied and verified \(NodeStopReason.gb(total)); the node now uses \(target.path)")
-                } else {
-                    // Nothing switched: the old copy is untouched and stays in use.
-                    self.storageMoveError = String(localized: "The move did not complete: the copy did not verify or space ran out. The block data is still where it was.")
-                    self.logEvent("storage", "move failed; staying on \(source.path)")
-                }
-                // The durable record and UI selection are settled. Release
-                // before either daemon or app tries to start the replacement.
-                close(moveFD)
-                self.storageMovePercent = nil
-                self.unattended?.resumeRespawn()
-                self.applyPower()
             }
         }
     }

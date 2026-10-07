@@ -2,7 +2,8 @@
 # Package the macOS app as a drag-to-install DMG (EastSea.app + an Applications shortcut).
 #
 #   scripts/package-mac.sh
-#       Local build, signed with the development identity from project.yml.
+#       AETHER_PREVIOUS_APP=/path/to/previous/EastSea.app is required.
+#       Local build, re-sealed with the build signing identity (or ad hoc).
 #   SIGN_IDENTITY="Developer ID Application: <Team> (<TEAMID>)" scripts/package-mac.sh
 #       Release: re-sign the helpers, app and DMG with Developer ID (hardened runtime,
 #       secure timestamp). Notarization then needs either
@@ -14,6 +15,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 version=${AETHER_VERSION:-$(git describe --tags --always --dirty)}
+mkdir -p "$PWD/tmp"
+export TMPDIR="$PWD/tmp"
+: "${AETHER_PREVIOUS_APP:?set AETHER_PREVIOUS_APP to a signed previous EastSea.app for rollback}"
 # A release always builds from a clean derived-data directory (no stale
 # Helpers/aether.prev or other leftovers from an earlier build in apps/wallet/build).
 WALLET_CLEAN_BUILD=1 scripts/build-wallet.sh macos >/dev/null
@@ -24,24 +28,36 @@ src="apps/wallet/build/Build/Products/Release/EastSea.app"
 # AETHER_PROVER_GATE_OVERRIDE for a coordinated release, recorded).
 scripts/prover-gate.sh "$src"
 
-stage=$(mktemp -d)
+stage=$(mktemp -d "$TMPDIR/package-mac.XXXXXX")
 trap 'rm -rf "${stage:?}"' EXIT
 app="$stage/EastSea.app"
 cp -R "$src" "$app"
-
-if [ -n "${SIGN_IDENTITY:-}" ]; then
-  # Inside out: helpers and Sparkle's nested code first, then the app bundle.
-  for h in "$app/Contents/Helpers/"*; do
-    codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$h"
-  done
-  sp="$app/Contents/Frameworks/Sparkle.framework"
-  if [ -d "$sp" ]; then
-    for x in "$sp"/Versions/B/XPCServices/*.xpc "$sp/Versions/B/Autoupdate" "$sp/Versions/B/Updater.app" "$sp"; do
-      [ -e "$x" ] && codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$x"
-    done
-  fi
-  codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$app"
+scripts/package-rollback.sh "$AETHER_PREVIOUS_APP" "$app"
+# Adding rollback code changes the resource seal, so local packages also
+# need a new app signature. Reuse the build identity (ad hoc if none).
+identity=${SIGN_IDENTITY:-}
+timestamp=--timestamp
+if [ -z "$identity" ]; then
+  identity=$(codesign -dv --verbose=4 "$src" 2>&1 | sed -n 's/^Authority=//p' | head -1)
+  identity=${identity:--}
+  timestamp=--timestamp=none
 fi
+
+# Inside out: current helpers, the isolated rollback code bundle, Sparkle,
+# then the app. A code bundle gives the old node an adjacent matching prover
+# without mixing its runtime dependencies with the replacement helpers.
+for h in "$app/Contents/Helpers/"*; do
+  [ -f "$h" ] && codesign --force --options runtime "$timestamp" --sign "$identity" "$h"
+done
+codesign --force --options runtime "$timestamp" --preserve-metadata=entitlements,flags \
+  --sign "$identity" "$app/Contents/Helpers/NodeRollback.bundle"
+sp="$app/Contents/Frameworks/Sparkle.framework"
+if [ -d "$sp" ]; then
+  for x in "$sp"/Versions/B/XPCServices/*.xpc "$sp/Versions/B/Autoupdate" "$sp/Versions/B/Updater.app" "$sp"; do
+    [ -e "$x" ] && codesign --force --options runtime "$timestamp" --sign "$identity" "$x"
+  done
+fi
+codesign --force --options runtime "$timestamp" --sign "$identity" "$app"
 codesign --verify --deep --strict "$app"
 # The unattended daemon's BundleProgram must exist in the bundle we ship.
 prog=$(/usr/libexec/PlistBuddy -c 'Print :BundleProgram' "$app/Contents/Library/LaunchDaemons/com.pipln.eastsea.node.plist")

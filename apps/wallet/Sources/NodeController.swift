@@ -294,6 +294,41 @@ final class NodeController: ObservableObject {
         return pid == releaseVerifiedPID && pid == binding.rootPID
     }
 
+    /// Claim the storage source only after proving a current writer lease.
+    /// The marker is already suspended; the caller owns the returned fd.
+    func acquireStorageMoveOwnership() async -> Int32? {
+        guard storageMovePercent != nil, !updateInProgress, !Task.isCancelled else { return nil }
+        let ownPID = process?.processIdentifier
+        let daemonPID = unattended?.runningNodePID
+        let wasAttached = attached
+        if let ownPID, let daemonPID, ownPID != daemonPID { return nil }
+        if let rootPID = ownPID ?? daemonPID {
+            guard let expected = Self.helperBinaryURL,
+                  let sample = await LocalRPC.callVerified(rootPID: rootPID, port: Self.port, expected: expected,
+                                                          method: "aether_status", params: []),
+                  NodeReleaseIdentity.hasWriterLease(status: sample.value),
+                  !Task.isCancelled, !updateInProgress, storageMovePercent != nil,
+                  process?.processIdentifier == ownPID, unattended?.runningNodePID == daemonPID,
+                  attached == wasAttached,
+                  NodeReleaseIdentity.matches(binding: sample.binding, port: Self.port, expected: expected) else { return nil }
+            stop(keepSwitch: true)
+            if let daemonPID { unattended?.stopDaemonNode(expectedPID: daemonPID) }
+            guard let fd = await BlockDataMove.holdRunLock(in: Self.dataDir, timeout: Self.storageMoveLockTimeout) else { return nil }
+            guard !Task.isCancelled, !updateInProgress, storageMovePercent != nil else { close(fd); return nil }
+            return fd
+        }
+        // No claimed parent is not proof of absence. Never wait for an
+        // unknown parent to disappear and leave an unleased child writing.
+        guard !wasAttached, await LocalRPC.endpointIsAbsent(port: Self.port),
+              !Task.isCancelled, !updateInProgress, storageMovePercent != nil,
+              process == nil, unattended?.runningNodePID == nil, !attached,
+              let fd = await BlockDataMove.holdRunLock(in: Self.dataDir, timeout: 0) else { return nil }
+        guard !Task.isCancelled, !updateInProgress, storageMovePercent != nil,
+              process == nil, unattended?.runningNodePID == nil, !attached else { close(fd); return nil }
+        stop(keepSwitch: true)
+        return fd
+    }
+
     func prepareForUpdate() async -> Bool {
         guard !updateInProgress else { return updateRunLock != nil }
         guard storageMovePercent == nil else { return false }
@@ -426,7 +461,7 @@ final class NodeController: ObservableObject {
     /// reason when the node does not run. Nothing else may leave the switch
     /// on with no node and no reason (the founder's 0.7.0 report).
     func applyPower() {
-        guard !updateInProgress else { return }
+        guard !updateInProgress, storageMovePercent == nil else { return }
         // The daemon's approval changes outside the app (System Settings):
         // re-read it on every tick, so its sentence appears and goes by itself.
         unattended?.refreshStatus()
@@ -664,7 +699,7 @@ final class NodeController: ObservableObject {
 
     private var binary: URL? {
         let helpers = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers")
-        let name = usePreviousBinary ? "aether.prev" : "aether"
+        let name = usePreviousBinary ? "NodeRollback.bundle/Contents/MacOS/aether.prev" : "aether"
         let helper = helpers.appendingPathComponent(name)
         return FileManager.default.isExecutableFile(atPath: helper.path) ? helper : nil
     }
@@ -792,7 +827,7 @@ final class NodeController: ObservableObject {
     }
 
     func start() {
-        guard !updateInProgress else { return }
+        guard !updateInProgress, storageMovePercent == nil else { return }
         runningReleaseVerified = false
         #if WALLET_SCREENS
         // The screens renderer (scripts/wallet-screens.sh) never touches the real data.
@@ -1068,7 +1103,7 @@ final class NodeController: ObservableObject {
             // #3): an old binary on a chain it cannot read stops the node for
             // good, which is worse than the crash loop this was meant to fix.
             // Otherwise voting stops and the update is asked for again.
-            let prev = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/aether.prev")
+            let prev = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/NodeRollback.bundle/Contents/MacOS/aether.prev")
             if !usePreviousBinary, FileManager.default.isExecutableFile(atPath: prev.path) {
                 let scheduled = scheduledProtocol
                 Task.detached {
@@ -1261,6 +1296,7 @@ final class NodeController: ObservableObject {
     private var checkInFlight = false
 
     private func restartIfRunning() {
+        guard !updateInProgress, storageMovePercent == nil else { return }
         if attached {
             // A stall in the node we are attached to: take it over. The
             // watchdog's layer-2 rule applies no matter who started the node

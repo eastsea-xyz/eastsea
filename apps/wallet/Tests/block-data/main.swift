@@ -20,6 +20,11 @@ final class MoveMemoryDefaults: UserDefaults {
     override func removeObject(forKey key: String) { set(nil as Any?, forKey: key) }
 }
 
+final class MoveProcessStub {
+    let processIdentifier: Int32
+    init(_ pid: Int32) { processIdentifier = pid }
+}
+
 // Exercise the real mover against fixtures, without starting a node or app.
 @MainActor final class NodeController {
     nonisolated static let storageMoveLockTimeout: TimeInterval = 0.05
@@ -37,6 +42,11 @@ final class MoveMemoryDefaults: UserDefaults {
     var storageMovePercent: Int?
     var storageMoveError: String?
     var attached = false
+    var process: MoveProcessStub?
+    var storageLeaseVerified = true
+    var storageBindingMatches = true
+    var storageEndpointAbsent = true
+    var storagePreflightCalls = 0
     var unattended: MoveDaemonStub? = MoveDaemonStub()
     var archive = false
     var mountObservers: [NSObjectProtocol] = []
@@ -45,6 +55,28 @@ final class MoveMemoryDefaults: UserDefaults {
     func stop(keepSwitch: Bool) {
         markerAtStops.append(unattended?.markerEnabled ?? false)
         stops += 1
+        process = nil
+        attached = false
+    }
+    // The real mover must request this seam before stopping any parent.
+    // Production uses signed fresh RPC/binding checks; fixture controls only
+    // their attested outcome and real owned descriptor lifetime.
+    func acquireStorageMoveOwnership() async -> Int32? {
+        storagePreflightCalls += 1
+        let ownPID = process?.processIdentifier
+        let daemonPID = unattended?.runningNodePID
+        if let ownPID, let daemonPID, ownPID != daemonPID { return nil }
+        if ownPID != nil || daemonPID != nil || attached {
+            guard storageLeaseVerified, storageBindingMatches,
+                  ownPID != nil || daemonPID != nil else { return nil }
+            stop(keepSwitch: true)
+            if let daemonPID { unattended?.stopDaemonNode(expectedPID: daemonPID) }
+            return await BlockDataMove.holdRunLock(in: Self.dataDir, timeout: Self.storageMoveLockTimeout)
+        }
+        guard storageEndpointAbsent else { return nil }
+        guard let fd = await BlockDataMove.holdRunLock(in: Self.dataDir, timeout: 0) else { return nil }
+        stop(keepSwitch: true)
+        return fd
     }
     func logEvent(_ event: String, _ message: String) {}
     func applyPower() {}
@@ -58,6 +90,8 @@ final class MoveMemoryDefaults: UserDefaults {
 }
 @MainActor final class MoveDaemonStub {
     var markerEnabled = true
+    var runningNodePID: Int32?
+    var onStop: (() -> Void)?
     var suspensionSucceeds = true
     var suspensions = 0
     var pauseCalls = 0
@@ -74,7 +108,12 @@ final class MoveMemoryDefaults: UserDefaults {
         suspensions = max(0, suspensions - 1)
         syncMarker()
     }
-    func stopDaemonNode() { markerAtDaemonStops.append(markerEnabled) }
+    func stopDaemonNode(expectedPID: Int32? = nil) {
+        if let expectedPID, expectedPID != runningNodePID { return }
+        markerAtDaemonStops.append(markerEnabled)
+        onStop?()
+        runningNodePID = nil
+    }
     func syncMarker() { markerEnabled = suspensions == 0 }
 }
 enum HealthCheck { static let korean = false }
@@ -430,6 +469,80 @@ check(staleMover.chainDataPath == freshTarget.path && (try? Data(contentsOf: fre
 check((try? Data(contentsOf: staleTarget.appendingPathComponent("follow/state.db"))) == Data("before-crash".utf8),
       "R03 abandoning a stale move retains its earlier copied cargo")
 
+
+// R06 legacy writer: the parent's stop releases its real lock while an
+// unleased child remains a writer. Attestation must precede even that stop.
+try? FileManager.default.removeItem(at: recordURL)
+let legacySource = moveFixture.appendingPathComponent("r06-legacy-source")
+let legacyTarget = moveFixture.appendingPathComponent("r06-legacy-target")
+try FileManager.default.createDirectory(at: legacySource.appendingPathComponent("follow"), withIntermediateDirectories: true)
+let legacyDB = legacySource.appendingPathComponent("follow/state.db")
+try Data("legacy-writer-data".utf8).write(to: legacyDB)
+var legacyParentFD: Int32? = open(NodeController.dataDir.appendingPathComponent("run.lock").path, O_RDWR | O_CREAT, 0o600)
+check(legacyParentFD != nil && legacyParentFD! >= 0 && flock(legacyParentFD!, LOCK_EX | LOCK_NB) == 0,
+      "R06 legacy fixture holds the parent's lock")
+let legacyMover = NodeController()
+legacyMover.attached = true
+legacyMover.chainDataPath = legacySource.path
+legacyMover.storageLeaseVerified = false
+legacyMover.unattended?.runningNodePID = 54
+legacyMover.unattended?.onStop = {
+    if let fd = legacyParentFD { close(fd); legacyParentFD = nil }
+    // A valid snapshot may still verify even though this child survives.
+    try? Data("legacy-child-survives-parent".utf8).write(to: legacyDB)
+}
+legacyMover.moveBlockData(to: legacyTarget)
+try await waitForMove(legacyMover)
+check(legacyMover.stops == 0 && legacyMover.unattended?.markerAtDaemonStops.isEmpty == true,
+      "R06 unleased daemon is never stopped before live storage preflight")
+check(legacyMover.chainDataPath == legacySource.path && legacyMover.storageMoveError != nil
+      && !FileManager.default.fileExists(atPath: legacyTarget.path)
+      && !FileManager.default.fileExists(atPath: recordURL.path),
+      "R06 legacy writer cannot publish a copy or cleanup authorization")
+if let fd = legacyParentFD { close(fd); legacyParentFD = nil }
+
+// Previous/rollback own process and a replaced attested listener also defer.
+for (tag, lease, binding) in [("previous", false, true), ("listener-replaced", true, false)] {
+    let candidateSource = moveFixture.appendingPathComponent("r06-\(tag)-source")
+    let candidateTarget = moveFixture.appendingPathComponent("r06-\(tag)-target")
+    try FileManager.default.createDirectory(at: candidateSource.appendingPathComponent("follow"), withIntermediateDirectories: true)
+    try Data("owned-history".utf8).write(to: candidateSource.appendingPathComponent("follow/state.db"))
+    let candidateMover = NodeController()
+    candidateMover.process = MoveProcessStub(55)
+    candidateMover.storageLeaseVerified = lease
+    candidateMover.storageBindingMatches = binding
+    candidateMover.chainDataPath = candidateSource.path
+    candidateMover.moveBlockData(to: candidateTarget)
+    try await waitForMove(candidateMover)
+    check(candidateMover.stops == 0 && candidateMover.chainDataPath == candidateSource.path
+          && candidateMover.storageMoveError != nil && !FileManager.default.fileExists(atPath: candidateTarget.path),
+          "R06 \(tag) writer defers without stopping or copying")
+}
+let unknownMover = NodeController()
+unknownMover.chainDataPath = legacySource.path
+unknownMover.storageEndpointAbsent = false
+unknownMover.moveBlockData(to: moveFixture.appendingPathComponent("r06-unknown-target"))
+try await waitForMove(unknownMover)
+check(unknownMover.stops == 0 && unknownMover.chainDataPath == legacySource.path && unknownMover.storageMoveError != nil,
+      "R06 unclaimed live runtime defers before any stop or copy")
+
+// No claimed PID and a refused endpoint must still defer on an unknown
+// held lock; waiting for its parent to exit would not prove child quiescence.
+let unknownHolderFD = open(NodeController.dataDir.appendingPathComponent("run.lock").path, O_RDWR | O_CREAT, 0o600)
+check(unknownHolderFD >= 0 && flock(unknownHolderFD, LOCK_EX | LOCK_NB) == 0,
+      "R06 unknown holder fixture owns the lock without claiming a PID")
+let unknownHolder = NodeController()
+unknownHolder.chainDataPath = legacySource.path
+unknownHolder.storageEndpointAbsent = true
+let unknownHolderTarget = moveFixture.appendingPathComponent("r06-unknown-held-lock-target")
+unknownHolder.moveBlockData(to: unknownHolderTarget)
+try await waitForMove(unknownHolder)
+check(unknownHolder.stops == 0 && unknownHolder.chainDataPath == legacySource.path
+      && unknownHolder.storageMoveError != nil && !FileManager.default.fileExists(atPath: unknownHolderTarget.path)
+      && NodeController.lockHeld(in: NodeController.dataDir),
+      "R06 unknown holder is never stopped or awaited before storage copy")
+close(unknownHolderFD)
+
 // R06. The actual mover pauses daemon respawn before either node stops and
 // retains ownership during copy, selection publication and commit.
 try? FileManager.default.removeItem(at: recordURL)
@@ -439,12 +552,13 @@ try FileManager.default.createDirectory(at: fencedSource.appendingPathComponent(
 try Data(repeating: 0x31, count: 256 * 1024).write(to: fencedSource.appendingPathComponent("follow/state.db"))
 let fencedMover = NodeController()
 fencedMover.attached = true
+fencedMover.unattended?.runningNodePID = 42
 fencedMover.chainDataPath = fencedSource.path
 fencedMover.moveBlockData(to: fencedTarget)
+try await waitForMove(fencedMover)
 check(fencedMover.markerAtStops == [false]
       && fencedMover.unattended?.markerAtDaemonStops == [false],
       "R06 daemon respawn is suspended before stopping either node")
-try await waitForMove(fencedMover)
 check(fencedMover.chainDataPath == fencedTarget.path, "R06 fenced copy commits its destination")
 check(fencedMover.selectionLockChecks == [true],
       "R06 exclusive run.lock is retained through copy publication and selection commit")
@@ -465,6 +579,7 @@ let busyFD = open(NodeController.dataDir.appendingPathComponent("run.lock").path
 check(busyFD >= 0 && flock(busyFD, LOCK_EX | LOCK_NB) == 0, "R06 fixture owns the live writer lock")
 let timeoutMover = NodeController()
 timeoutMover.attached = true
+timeoutMover.unattended?.runningNodePID = 43
 timeoutMover.chainDataPath = timeoutSource.path
 timeoutMover.moveBlockData(to: timeoutTarget)
 try await waitForMove(timeoutMover)

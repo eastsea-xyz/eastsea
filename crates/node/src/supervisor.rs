@@ -409,6 +409,107 @@ fn voting_paused(data: &Path, round: u64) -> bool {
         .is_some_and(|r| r >= round)
 }
 
+
+/// A writer receives only this bounded descriptor slot and its file identity.
+/// The borrowed parent File stays alive across spawn; no global raw fd exists.
+pub const WRITER_LEASE_ENV: &str = "AETHER_SUPERVISOR_WRITER_LEASE";
+const WRITER_LEASE_MIN_FD: i32 = 198;
+const WRITER_LEASE_MAX_FD: i32 = 255;
+
+pub struct WriterLease {
+    _file: std::fs::File,
+    parent: u32,
+}
+
+impl WriterLease {
+    pub fn expected_parent(&self) -> u32 { self.parent }
+}
+
+/// Adopt once, at process entry before unrelated worker/prover launches.
+/// The writer owns the inherited open-file description until it exits.
+pub fn inherited_writer_lease() -> Result<Option<WriterLease>, String> {
+    use std::os::unix::io::FromRawFd as _;
+    let Some(value) = std::env::var_os(WRITER_LEASE_ENV) else { return Ok(None) };
+    let value = value.into_string().map_err(|_| "writer lease is not UTF-8")?;
+    if value.len() > 128 { return Err("writer lease is oversized".into()); }
+    let fields: Vec<&str> = value.split(':').collect();
+    if fields.len() != 5 || fields[0] != "1" { return Err("writer lease format is invalid".into()); }
+    let fd = fields[1].parse::<i32>().map_err(|_| "writer lease descriptor is invalid")?;
+    if !(WRITER_LEASE_MIN_FD..=WRITER_LEASE_MAX_FD).contains(&fd) {
+        return Err("writer lease descriptor is outside the reserved range".into());
+    }
+    let device = fields[2].parse::<u64>().map_err(|_| "writer lease device is invalid")?;
+    let inode = fields[3].parse::<u64>().map_err(|_| "writer lease inode is invalid")?;
+    let parent = fields[4].parse::<u32>().map_err(|_| "writer lease parent is invalid")?;
+    if parent <= 1 { return Err("writer lease parent is not a supervisor".into()); }
+    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags < 0 || unsafe { libc::fstat(fd, &mut stat) } != 0
+        || (stat.st_mode & libc::S_IFMT) != libc::S_IFREG
+        || stat.st_dev as u64 != device || stat.st_ino as u64 != inode {
+        return Err("writer lease does not match its inherited file".into());
+    }
+    // This is the same open-file description as the parent's exclusive lock.
+    if unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err("writer lease is not exclusively owned".into());
+    }
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } != 0 {
+        return Err("writer lease cannot be protected from unrelated exec".into());
+    }
+    let confirmed = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if confirmed < 0 || confirmed & libc::FD_CLOEXEC == 0 {
+        return Err("writer lease close-on-exec was not established".into());
+    }
+    // The validated descriptor is exclusively this process's inherited
+    // channel; the startup caller retains this sole Rust owner.
+    let file = unsafe { std::fs::File::from_raw_fd(fd) };
+    Ok(Some(WriterLease { _file: file, parent }))
+}
+
+pub fn expected_parent_is_current(expected: u32) -> bool {
+    expected > 1 && std::os::unix::process::parent_id() == expected
+}
+
+/// Command and reservation never escape this function. The original File
+/// borrow remains valid until fork/exec has duplicated its description.
+fn spawn_with_writer_lease(mut command: Command, lock: &std::fs::File) -> Result<Child, String> {
+    use std::os::unix::fs::MetadataExt as _;
+    use std::os::unix::io::{AsRawFd as _, FromRawFd as _};
+    use std::os::unix::process::CommandExt as _;
+    let metadata = lock.metadata().map_err(|e| format!("writer lease metadata: {e}"))?;
+    if !metadata.is_file() { return Err("writer lease must be a regular file".into()); }
+    let source_fd = lock.as_raw_fd();
+    // Occupy the slot before Command allocates its exec-error pipe. This
+    // prevents dup2 from overwriting that pipe on a descriptor-heavy node.
+    let reserved_fd = unsafe { libc::fcntl(source_fd, libc::F_DUPFD_CLOEXEC, WRITER_LEASE_MIN_FD) };
+    if reserved_fd < 0 { return Err(format!("reserve writer lease: {}", std::io::Error::last_os_error())); }
+    let reservation = unsafe { std::fs::File::from_raw_fd(reserved_fd) };
+    if reserved_fd > WRITER_LEASE_MAX_FD { return Err("no bounded writer lease slot is available".into()); }
+    command.env(WRITER_LEASE_ENV, format!("1:{reserved_fd}:{}:{}:{}",
+        metadata.dev(), metadata.ino(), std::process::id()));
+    unsafe {
+        command.pre_exec(move || {
+            // Async-signal-safe syscalls only; both fd owners remain alive
+            // in the parent until spawn returns.
+            if libc::dup2(source_fd, reserved_fd) < 0 { return Err(std::io::Error::last_os_error()); }
+            let flags = libc::fcntl(reserved_fd, libc::F_GETFD);
+            if flags < 0 || libc::fcntl(reserved_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if source_fd != reserved_fd {
+                let original_flags = libc::fcntl(source_fd, libc::F_GETFD);
+                if original_flags < 0 || libc::fcntl(source_fd, libc::F_SETFD, original_flags | libc::FD_CLOEXEC) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            Ok(())
+        });
+    }
+    let child = command.spawn().map_err(|e| format!("spawn writer: {e}"));
+    drop(reservation); // only the child retains the scoped duplicate
+    child
+}
+
 pub struct Supervisor {
     /// The `aether` binary to run children with.
     pub exe: PathBuf,
@@ -902,7 +1003,7 @@ impl Supervisor {
         Some(list.join(","))
     }
 
-    fn spawn(&self, role: Role, me: Option<&str>) -> Result<Child, String> {
+    fn spawn(&self, role: Role, me: Option<&str>, lock: &std::fs::File) -> Result<Child, String> {
         let mut cmd = Command::new(&self.exe);
         let net = self.network_path();
         match role {
@@ -943,7 +1044,7 @@ impl Supervisor {
             }
         }
         tracing::info!(?role, "aether run: starting");
-        cmd.spawn()
+        spawn_with_writer_lease(cmd, lock)
             .map_err(|e| format!("spawn {}: {e}", self.exe.display()))
     }
 
@@ -952,7 +1053,7 @@ impl Supervisor {
     /// history persists in `<data>/run-state.json`, a restart backs off
     /// 1 s → 60 s, and a child that keeps dying inside ten minutes ends
     /// `aether run` with the child's own exit code instead of looping.
-    pub fn run(&self) -> Result<(), String> {
+    pub fn run(&self, lock: &std::fs::File) -> Result<(), String> {
         // Key creation for a first run can write to this volume. Check it
         // before even loading the local identity, not only before children.
         self.wait_for_disk(false);
@@ -997,9 +1098,9 @@ impl Supervisor {
             }
             let role = self.role(me.as_deref())?;
             let started_ms = now_ms();
-            let mut child = self.spawn(role, me.as_deref())?;
+            let mut child = self.spawn(role, me.as_deref(), lock)?;
             set_wake_target(Some(child.id()));
-            let watched = self.watch(&mut child, role, me.as_deref());
+            let watched = self.watch(&mut child, role, me.as_deref(), lock);
             // The child may be reaped already: never signal a pid that can
             // be reused by an unrelated process.
             set_wake_target(None);
@@ -1098,7 +1199,7 @@ impl Supervisor {
 
     /// Watch the child; ends after installing a handoff (restart in the new
     /// role) or when the child exits on its own.
-    fn watch(&self, child: &mut Child, role: Role, me: Option<&str>) -> Watched {
+    fn watch(&self, child: &mut Child, role: Role, me: Option<&str>, lock: &std::fs::File) -> Watched {
         let rpc = self.rpc();
         let strict_reshare = NetworkFile::load(&self.network_path()).is_ok_and(|net| net.chain_id != 7_780);
         let mut reshare: Option<Reshare> = None;
@@ -1149,7 +1250,7 @@ impl Supervisor {
                     };
                     if let Some(attempt) = attempt.filter(|attempt| !rot.is_null() && involved && Some(*attempt) != attempted) {
                         attempted = Some(attempt);
-                        match self.start_reshare(role, me.expect("involved means keyed"), &rot, attempt) {
+                        match self.start_reshare(role, me.expect("involved means keyed"), &rot, attempt, lock) {
                             Ok(c) => {
                                 reshare = Some(Reshare {
                                     child: c,
@@ -1201,7 +1302,7 @@ impl Supervisor {
                 let seated = me.is_some_and(|key| proposal["next"].as_array()
                     .is_some_and(|members| members.iter().any(|member| member["key"] == key)));
                 if role != Role::Candidate || seated {
-                    match self.start_reshare(role, me.expect("a resharing member has its key"), &proposal, attempt) {
+                    match self.start_reshare(role, me.expect("a resharing member has its key"), &proposal, attempt, lock) {
                         Ok(child) => {
                             reshare = Some(Reshare {
                                 child,
@@ -1329,7 +1430,7 @@ impl Supervisor {
         Some((proposal, attempt))
     }
 
-    fn start_reshare(&self, role: Role, me: &str, rot: &Value, attempt: u64) -> Result<Child, String> {
+    fn start_reshare(&self, role: Role, me: &str, rot: &Value, attempt: u64, lock: &std::fs::File) -> Result<Child, String> {
         let ours = NetworkFile::load(&self.network_path())?;
         let from: NetworkFile = match role {
             Role::Validator | Role::Paused => ours.clone(),
@@ -1428,7 +1529,7 @@ impl Supervisor {
             members = next.len(),
             "aether run: resharing to the proposed voting set in the background"
         );
-        cmd.spawn().map_err(|e| e.to_string())
+        spawn_with_writer_lease(cmd, lock)
     }
 
     /// Take this Mac's role in the new voting set: files only; the caller restarts.
@@ -1682,7 +1783,8 @@ fn stop(reshare: &mut Option<Reshare>) {
 /// Hold `<data>/run.lock` exclusively for the whole run (red team #12): two
 /// apps must never run one node between them. The lock lives in the open
 /// file description, so keep the returned file for as long as `aether run`
-/// runs; the children never re-take it (they are this run's own).
+/// runs. Writer exec receives a scoped duplicate of this same description,
+/// so parent exit cannot release ownership while a writer is still alive.
 pub fn lock_data_dir(data: &Path) -> Result<std::fs::File, String> {
     use std::os::unix::io::AsRawFd as _;
     std::fs::create_dir_all(data).map_err(|e| e.to_string())?;
@@ -2200,6 +2302,139 @@ fn rpc_call(url: &str, method: &str, params: Value) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Task-owned subprocess fixtures for the actual supervisor spawn path.
+    // Helper tests return immediately unless a scoped Command selects a role.
+    struct R06NativeFixture(PathBuf);
+    impl Drop for R06NativeFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::write(self.0.join("stop"), b"stop");
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    struct R06NativeParent(Child);
+    impl Drop for R06NativeParent {
+        fn drop(&mut self) {
+            if self.0.try_wait().ok().flatten().is_none() {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+    }
+    fn r06_wait_file(path: &Path) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !path.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(path.exists(), "R06 fixture did not reach {}", path.display());
+    }
+    fn r06_fixture(mode: &str) -> (R06NativeFixture, R06NativeParent) {
+        use std::os::unix::fs::PermissionsExt as _;
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().join("tmp");
+        std::fs::create_dir_all(&root).unwrap();
+        let dir = root.join(format!("r06-native-{mode}-{}-{}", std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+        std::fs::create_dir(&dir).unwrap();
+        let fixture = R06NativeFixture(dir.clone());
+        std::fs::create_dir(dir.join("node")).unwrap();
+        let script = dir.join("writer.sh");
+        std::fs::write(&script, b"#!/bin/sh\nexport AETHER_R06_ROLE=writer\nexec \"$AETHER_R06_EXE\" --exact supervisor::tests::r06_fixture_writer --nocapture\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let parent = Command::new(&exe)
+            .args(["--exact", "supervisor::tests::r06_fixture_parent", "--nocapture"])
+            .env("AETHER_R06_ROLE", "parent")
+            .env("AETHER_R06_MODE", mode)
+            .env("AETHER_R06_DIR", &dir)
+            .env("AETHER_R06_EXE", &exe)
+            .spawn().unwrap();
+        (fixture, R06NativeParent(parent))
+    }
+
+    #[test]
+    fn r06_fixture_parent() {
+        if std::env::var("AETHER_R06_ROLE").as_deref() != Ok("parent") { return; }
+        let dir = PathBuf::from(std::env::var_os("AETHER_R06_DIR").unwrap());
+        let lock = lock_data_dir(&dir.join("node")).unwrap();
+        let mut options = sup(&dir.join("node"));
+        options.exe = dir.join("writer.sh");
+        let mut child = options.spawn(Role::Keyless, None, &lock).unwrap();
+        // Keep the parent's lock until the outer test deliberately SIGKILLs
+        // this process. The writer exits by fixture marker or hard deadline.
+        let _keep_parent_lock = lock;
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while dir.exists() && !dir.join("stop").exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn r06_fixture_writer() {
+        if std::env::var("AETHER_R06_ROLE").as_deref() != Ok("writer") { return; }
+        use std::os::unix::io::AsRawFd as _;
+        let dir = PathBuf::from(std::env::var_os("AETHER_R06_DIR").unwrap());
+        let late = std::env::var("AETHER_R06_MODE").as_deref() == Ok("late");
+        if late {
+            std::fs::write(dir.join("late-start-ready"), b"waiting").unwrap();
+            r06_wait_file(&dir.join("start"));
+        }
+        let lease = inherited_writer_lease().expect("the real writer spawn delivers a valid lease");
+        let lease = lease.expect("every supervisor writer receives its lease");
+        let expected = lease.expected_parent();
+        if late && !expected_parent_is_current(expected) {
+            std::fs::write(dir.join("late-rejected"), b"rejected").unwrap();
+            return;
+        }
+        let fd = lease._file.as_raw_fd();
+        assert!(unsafe { libc::fcntl(fd, libc::F_GETFD) } & libc::FD_CLOEXEC != 0,
+            "R06 writer owns its lease close-on-exec before prover descendants");
+        assert!(Command::new("/bin/sh").args(["-c", &format!("test ! -e /dev/fd/{fd}")])
+            .env_remove(WRITER_LEASE_ENV).status().unwrap().success(),
+            "R06 unrelated prover exec must not inherit the writer lease");
+        std::fs::write(dir.join("writer-ready"), std::process::id().to_string()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while dir.exists() && !dir.join("stop").exists() && Instant::now() < deadline {
+            let _ = std::fs::write(dir.join("writer-heartbeat"), b"still writing");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn r06_writer_lease_survives_supervisor_sigkill() {
+        let (fixture, mut parent) = r06_fixture("normal");
+        r06_wait_file(&fixture.0.join("writer-ready"));
+        parent.0.kill().unwrap();
+        parent.0.wait().unwrap();
+        assert!(lock_data_dir(&fixture.0.join("node")).is_err(),
+            "R06 writer lease must keep run.lock busy after supervisor SIGKILL");
+        std::fs::write(fixture.0.join("stop"), b"stop").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while lock_data_dir(&fixture.0.join("node")).is_err() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(lock_data_dir(&fixture.0.join("node")).is_ok(),
+            "R06 writer lease must release after the last writer exits");
+    }
+
+    #[test]
+    fn r06_late_writer_rejects_dead_supervisor() {
+        let (fixture, mut parent) = r06_fixture("late");
+        r06_wait_file(&fixture.0.join("late-start-ready"));
+        parent.0.kill().unwrap();
+        parent.0.wait().unwrap();
+        std::fs::write(fixture.0.join("start"), b"start").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !fixture.0.join("late-rejected").exists() && Instant::now() < deadline {
+            if fixture.0.join("writer-ready").exists() { break; }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(fixture.0.join("late-rejected").exists() && !fixture.0.join("writer-heartbeat").exists(),
+            "R06 late writer must reject a supervisor already gone before startup");
+    }
+
 
     #[test]
     fn failed_log_write_is_detected() {

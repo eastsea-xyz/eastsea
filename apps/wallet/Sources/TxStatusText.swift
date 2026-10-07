@@ -10,14 +10,14 @@ enum TxStatusText {
     static func sentence(state: String, reason: String?, success: Bool?, message: String,
                          ko: Bool = Bundle.main.preferredLocalizations.first?.hasPrefix("ko") ?? false) -> String {
         if ko { return message }
-        let kept = "No money left your wallet."
+        let notRecorded = "This payment is not recorded on chain yet."
         switch state {
         case "included":
             return success == true ? "Done." : "It made it into a block, but running it failed."
         case "pending":
             switch reason {
             case "state_price_above_cap"?:
-                return "The network is busy: the fee right now is above the most this payment allows. It goes through once the fee comes down. If it still waits after 10 minutes it is cancelled, and no money leaves your wallet."
+                return "The network is busy: the fee right now is above the most this payment allows. Waiting for the fee to come down. If it is still waiting after 10 minutes, you may need to send it again at the current fee."
             case "nonce_gap"?: return "Waiting for an earlier payment to go through first."
             case "fee_cap_below_base"?: return "The network fee went up for a moment. Waiting for it to come down."
             default: return "Processing."
@@ -25,21 +25,21 @@ enum TxStatusText {
         case "dropped":
             switch reason {
             case "state_price_above_cap"?:
-                return "The network got busy and the fee rose above the most this payment allows, so it did not go through. \(kept) You can send it again at the current fee."
+                return "The network got busy and the fee rose above the most this payment allows. \(notRecorded) You can send it again at the current fee."
             case "fee_cap_below_base"?:
-                return "The network fee went up, so it did not go through. \(kept) You can send it again at the current fee."
+                return "The network fee went up. \(notRecorded) You can send it again at the current fee."
             case "nonce_gap"?:
-                return "An earlier payment did not go through, so this one did not either. \(kept) You can send it again."
+                return "It was waiting for an earlier payment. \(notRecorded) You can send it again."
             case "expired"?:
-                return "It waited too long and was cancelled. \(kept) You can send it again."
+                return "It waited for a long time. \(notRecorded) You can send it again."
             case "evicted"?:
-                return "The network's queue was full, so it did not go through. \(kept) You can send it again."
+                return "The network's queue was full. \(notRecorded) You can send it again."
             case "replaced"?:
-                return "Another payment with the same number went through instead. No money left through this one."
+                return "Another payment with the same number may have taken its place. \(notRecorded)"
             case "unaffordable"?:
-                return "The balance was too low, so it did not go through. \(kept)"
+                return "The balance was too low when this payment was checked. \(notRecorded)"
             default:
-                return "It did not go through. \(kept)"
+                return notRecorded
             }
         default:
             return unknown(ko: ko)
@@ -53,6 +53,6 @@ enum TxStatusText {
 
     /// The wallet stopped waiting.
     static func timedOut(ko: Bool = Bundle.main.preferredLocalizations.first?.hasPrefix("ko") ?? false) -> String {
-        ko ? "오래 기다려도 처리되지 않았어요." : "It waited a long time and did not go through."
+        ko ? "오래 기다렸지만 처리 결과를 아직 확인하지 못했어요." : "It waited a long time. The outcome is still unconfirmed."
     }
 }

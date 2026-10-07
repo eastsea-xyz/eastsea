@@ -28,4 +28,27 @@ check(!TxStatusText.sentence(state: "dropped", reason: "replaced", success: nil,
       "a replaced one does not offer a resend")
 check(hangul(TxStatusText.unknown(ko: true)) && !hangul(TxStatusText.unknown(ko: false)), "unknown in each language")
 check(hangul(TxStatusText.timedOut(ko: true)) && !hangul(TxStatusText.timedOut(ko: false)), "timed out in each language")
+
+// A local queue result is not a final chain fact. It must not promise that the
+// transaction was cancelled, failed permanently, or could not spend money.
+let finalClaims = ["cancel", "no money", "nothing was spent", "did not go through", "didn't go through", "will not", "failed"]
+for reason in ["state_price_above_cap", "nonce_gap", "fee_cap_below_base", "something new"] {
+    let en = TxStatusText.sentence(state: "pending", reason: reason, success: nil, message: ko, ko: false)
+    check(!finalClaims.contains { en.lowercased().contains($0) }, "pending copy keeps the outcome unresolved: \(reason): \(en)")
+}
+for reason in ["state_price_above_cap", "fee_cap_below_base", "nonce_gap", "expired", "evicted", "replaced", "unaffordable", "something new"] {
+    let en = TxStatusText.sentence(state: "dropped", reason: reason, success: nil, message: ko, ko: false)
+    check(en.contains("not recorded") && en.contains("yet"), "a local drop says it is not recorded yet: \(reason): \(en)")
+    check(!finalClaims.contains { en.lowercased().contains($0) }, "local drop copy does not promise a final outcome: \(reason): \(en)")
+    let unresolvedKo = "이 거래는 아직 체인에 기록되지 않았어요."
+    check(TxStatusText.sentence(state: "dropped", reason: reason, success: nil, message: unresolvedKo, ko: true) == unresolvedKo,
+          "Korean local-drop copy keeps the core's unresolved sentence: \(reason)")
+}
+let localReplacement = TxStatusText.sentence(state: "dropped", reason: "replaced", success: nil, message: ko, ko: false)
+check(!localReplacement.contains("went through instead") && !localReplacement.contains("used on chain"),
+      "a local replacement hint does not claim a proven chain replacement")
+let timedOutEn = TxStatusText.timedOut(ko: false)
+check(!finalClaims.contains { timedOutEn.lowercased().contains($0) }, "a timeout does not claim the payment failed: \(timedOutEn)")
+check(timedOutEn.contains("unconfirmed") || timedOutEn.contains("yet"), "a timeout leaves the outcome unconfirmed")
+check(TxStatusText.timedOut(ko: true).contains("아직"), "Korean timeout copy also leaves the outcome unconfirmed")
 print("tx-status-text ok")

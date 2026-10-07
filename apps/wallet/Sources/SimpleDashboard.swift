@@ -43,8 +43,21 @@ struct SimpleDashboard: View {
         var id: String { rawValue }
     }
 
+    /// A quiet update waits while the send or call sheet is open (UpdateWindow).
+    /// Kept out of `body`, which is at the type checker's limit.
+    private var shellTrackingSheet: some View {
+        shell.onChange(of: sheet) { (_: Sheet?, s: Sheet?) in noteSheet(s) }
+    }
+
+    private func noteSheet(_ s: Sheet?) {
+        switch s {
+        case .send?, .call?: model.sendSheetOpen = true
+        default: model.sendSheetOpen = false
+        }
+    }
+
     var body: some View {
-        shell
+        shellTrackingSheet
             .tint(.aether)
             .environmentObject(browser)
             .onAppear { browser.attach(model: model) }
@@ -85,7 +98,6 @@ struct SimpleDashboard: View {
                 if let s = UserDefaults.standard.string(forKey: "previewSheet").flatMap(Sheet.init(rawValue:)) { sheet = s }
             }
             #endif
-            .onChange(of: sheet) { _, s in model.sendSheetOpen = s == .send || s == .call }
             .onChange(of: model.callRequest) { _, r in if r != nil { sheet = .call } }
             .onChange(of: model.connectRequest) { _, r in if r != nil { sheet = .connect } }
             // A payment link (aether://pay?...) opens the send sheet, filled in, for approval.

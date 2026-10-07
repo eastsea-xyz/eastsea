@@ -59,7 +59,7 @@
 
 ## 운영 체크리스트
 
-- [ ] privacy@eastsea.xyz 사서함 개설 및 수신 확인(TODO-confirm 해소)
+- [x] privacy@eastsea.xyz 사서함 개설: 2026-10-07 Cloudflare Email Routing → 대표 Gmail 전달 (외부 계정 수신 확인 남음)
 - [ ] 등록 서버에서 실제 파기·보관 정책이 이 문서와 일치하는지 확인(토큰 미저장, IP·로그 30일)
 - [ ] 변호사 검토 후 §3의 법적 근거 표현(제15조 제1항 제4호) 확정
 - [ ] 공개 시점에 `site/privacy.html`과 이 문서의 시행일 일치 확인

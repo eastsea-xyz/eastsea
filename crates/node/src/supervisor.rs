@@ -962,6 +962,7 @@ impl Supervisor {
             }
         }
         tracing::info!(?role, "aether run: starting");
+        inherit_run_lock(&mut cmd, &self.data)?;
         cmd.spawn()
             .map_err(|e| format!("spawn {}: {e}", self.exe.display()))
     }
@@ -1451,6 +1452,7 @@ impl Supervisor {
             members = next.len(),
             "aether run: resharing to the proposed voting set in the background"
         );
+        inherit_run_lock(&mut cmd, &self.data)?;
         cmd.spawn().map_err(|e| e.to_string())
     }
 
@@ -1724,6 +1726,59 @@ pub fn lock_data_dir(data: &Path) -> Result<std::fs::File, String> {
     }
 }
 
+const RUN_LOCK_FD: &str = "AETHER_RUN_LOCK_FD";
+static RUN_LOCK: std::sync::OnceLock<(PathBuf, std::fs::File)> = std::sync::OnceLock::new();
+
+pub fn install_run_lock(data: &Path, lock: &std::fs::File) -> Result<(), String> {
+    let path = std::fs::canonicalize(data).map_err(|e| e.to_string())?;
+    let file = lock.try_clone().map_err(|e| e.to_string())?;
+    RUN_LOCK.set((path, file)).map_err(|_| "the CLI already holds a run lock".into())
+}
+
+fn inherit_run_lock(cmd: &mut Command, data: &Path) -> Result<(), String> {
+    use std::os::unix::{io::AsRawFd as _, process::CommandExt as _};
+    let Some((path, lock)) = RUN_LOCK.get() else { return Ok(()) };
+    if *path != std::fs::canonicalize(data).map_err(|e| e.to_string())? {
+        return Err("child key directory differs from the supervisor's run.lock".into());
+    }
+    let inherited = lock.try_clone().map_err(|e| e.to_string())?;
+    let fd = inherited.as_raw_fd();
+    cmd.env(RUN_LOCK_FD, fd.to_string());
+    // Only the child's descriptor table changes. Its open-file description
+    // shares the parent's flock, and stays locked if the parent dies first.
+    unsafe { cmd.pre_exec(move || {
+        let flags = libc::fcntl(inherited.as_raw_fd(), libc::F_GETFD);
+        if flags < 0 || libc::fcntl(inherited.as_raw_fd(), libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }); }
+    Ok(())
+}
+
+/// A lifetime flag is not lock authority. Accept only a real inherited file
+/// description for this directory that can prove it owns the exclusive flock.
+pub fn lock_or_inherit_data_dir(data: &Path) -> Result<std::fs::File, String> {
+    use std::os::unix::{fs::MetadataExt as _, io::FromRawFd as _};
+    let Some(raw) = std::env::var_os(RUN_LOCK_FD) else { return lock_data_dir(data) };
+    let fd: i32 = raw.to_str().and_then(|s| s.parse().ok()).filter(|fd| *fd >= 3)
+        .ok_or("invalid inherited run.lock descriptor")?;
+    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(fd, &mut stat) } != 0 { return Err("inherited run.lock descriptor is not open".into()); }
+    let saved = std::fs::symlink_metadata(data.join("run.lock")).map_err(|e| e.to_string())?;
+    if !saved.is_file() || saved.dev() != stat.st_dev as u64 || saved.ino() != stat.st_ino as u64 {
+        return Err("inherited descriptor is not this data directory's run.lock".into());
+    }
+    if unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err("another aether holds run.lock; inherited descriptor does not own it".into());
+    }
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    Ok(unsafe { std::fs::File::from_raw_fd(fd) })
+}
+
 /// Overwrite a secret file, then remove it.
 fn erase(path: &Path) -> Result<(), String> {
     let Ok(len) = std::fs::metadata(path).map(|m| m.len()) else {
@@ -1740,7 +1795,7 @@ fn write_secret(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 /// Keys that identify this Mac; everything else in <data> belongs to one network.
-const KEEP_ACROSS_NETWORKS: [&str; 6] = ["validator.key", "validator.pub.json", "node-account.key", "key-binding.json", "key-creation.json", "run.lock"];
+const KEEP_ACROSS_NETWORKS: [&str; 7] = ["validator.key", "validator.pub.json", "node-account.key", "key-binding.json", "key-creation.json", "key-rebind.log", "run.lock"];
 
 /// Put `network` in `<data>/network.json`: the first time, or when it is a
 /// different network (a testnet reset: other chain id or committee identity).
@@ -2608,6 +2663,7 @@ mod tests {
             assert_eq!(next_restart(&[exit(NOW, 1_000, code)], NOW), Next::Stop(code));
         }
     }
+
 
     /// The history persists, and a damaged history file is refused — it can
     /// never silently reset the restart budget.

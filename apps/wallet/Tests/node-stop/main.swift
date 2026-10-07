@@ -125,6 +125,52 @@ f = NodeResumeFacts(); f.processRunning = true; f.confirmingMac = true
 check(NodeResume.decide(f) == .keepRunning, "an unavailable read keeps the node running")
 f.processRunning = false; f.attached = true; f.lockHeldByOther = true
 check(NodeResume.decide(f) == .keepRunning, "an attached node waiting to confirm this Mac is kept alive")
+
+// Rebinding is limited to a confirmed stop screen, and the CLI approval does
+// not exist unless the typed identity matches and owner authentication succeeds.
+check(NodeStopReason.keyElsewhere.copy(ko: false).action == .rebindKeys, "the confirmed mismatch exposes owner rebind")
+check(NodeStopReason.keyElsewhere.copy(ko: false).actionLabel == "Rebind Node Keys…", "confirmed mismatch names the owner recovery action")
+check(NodeKeyRebind.canOffer(reason: .keyElsewhere, processRunning: false, attached: false, lockHeld: false), "a stopped mismatched node can request owner recovery")
+for reason in [NodeStopReason.waitingForMacConfirmation, .identityLost, .switchedOff, .needsAttention(.storage)] {
+    check(!NodeKeyRebind.canOffer(reason: reason, processRunning: false, attached: false, lockHeld: false), "\(reason.code) cannot offer rebind")
+}
+check(!NodeKeyRebind.canOffer(reason: nil, processRunning: false, attached: false, lockHeld: false), "healthy/off-screen paths cannot offer rebind")
+check(!NodeKeyRebind.canOffer(reason: .keyElsewhere, processRunning: true, attached: false, lockHeld: false), "an owned running process refuses rebind")
+check(!NodeKeyRebind.canOffer(reason: .keyElsewhere, processRunning: false, attached: true, lockHeld: false), "an attached running node refuses rebind")
+check(!NodeKeyRebind.canOffer(reason: .keyElsewhere, processRunning: false, attached: false, lockHeld: true), "another process holding run.lock refuses rebind")
+check(NodeKeyRebind.warning(ko: false) == "Only do this if you moved this Mac's node on purpose; running the same keys on two Macs gets the validator slashed.", "the owner sees the full slashing warning")
+check(NodeKeyRebind.warning(ko: true).contains("의도적으로") && NodeKeyRebind.warning(ko: true).contains("슬래싱"), "Korean warning explains intentional moves and slashing")
+let validator = String(repeating: "ab", count: 32)
+let publicEntry = Data(("{\"key\":\"" + validator + "\",\"node\":\"public-node\"}").utf8)
+check((try? NodeKeyRebind.validatorAddress(in: publicEntry)) == validator, "rebind reads the validator identity from the public entry")
+check((try? NodeKeyRebind.validatorAddress(in: Data("{\"key\":\"wallet-account\"}".utf8))) == nil, "wallet-account-shaped addresses cannot authorize validator rebind")
+check(NodeKeyRebind.normalized("0x" + validator.uppercased()) == validator, "hex case and optional 0x describe the same validator bytes")
+check(NodeKeyRebind.normalized(validator + "\nother-input") == nil, "a confirmation cannot inject another terminal line")
+var ownerCalls = 0
+do {
+    _ = try NodeKeyRebind.authorize(validatorAddress: validator, typedAddress: String(repeating: "cd", count: 32), dataDirectory: "fixture/node") { _ in ownerCalls += 1 }
+    check(false, "a different validator cannot obtain an approval")
+} catch NodeKeyRebind.Refusal.confirmationDidNotMatch {} catch { check(false, "wrong-address refusal is typed: \(error)") }
+check(ownerCalls == 0, "a mistyped address refuses before owner authentication")
+enum OwnerCancelled: Error { case refused }
+var approvalAfterCancellation: NodeKeyRebind.Approval?
+do {
+    approvalAfterCancellation = try NodeKeyRebind.authorize(validatorAddress: validator, typedAddress: validator, dataDirectory: "fixture/node") { _ in
+        ownerCalls += 1
+        throw OwnerCancelled.refused
+    }
+    check(false, "cancelled owner authentication cannot approve a rebind")
+} catch OwnerCancelled.refused {} catch { check(false, "owner-auth failure is preserved: \(error)") }
+check(ownerCalls == 1 && approvalAfterCancellation == nil, "owner authentication failure creates no CLI approval")
+var localApprovalMessage = Data()
+let approved = try! NodeKeyRebind.authorize(validatorAddress: validator, typedAddress: "0x" + validator.uppercased(), dataDirectory: "fixture/node") { message in
+    ownerCalls += 1
+    localApprovalMessage = message
+}
+check(ownerCalls == 2 && approved.validatorAddress == validator, "the correct identity and successful owner authentication approve rebind")
+check(approved.dataDirectory == "fixture/node", "owner approval stays bound to its node data directory")
+check(approved.confirmationLine == "0x" + validator.uppercased() + "\n", "the terminal receives the address the owner actually typed")
+check(String(decoding: localApprovalMessage, as: UTF8.self).hasPrefix("Aether local node key rebind approval v1\nvalidator: " + validator + "\ndata: fixture/node\nchallenge: "), "owner approval is domain-separated and bound to this identity and directory")
 for bad in [NodeWatchdog.Failure.database, .handoff, .storage] {
     f = NodeResumeFacts(); f.blocked = bad; f.blockedForSeconds = 100_000
     check(NodeResume.decide(f) == .wait(.needsAttention(bad)), "\(bad) needs a person, even after hours")

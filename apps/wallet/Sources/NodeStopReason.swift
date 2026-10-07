@@ -99,6 +99,7 @@ enum NodeStopAction: Equatable {
     case chooseDisk
     case openPrivacySettings
     case copyDiagnostics
+    case rebindKeys
 }
 
 /// What a reason says, in the app's language.
@@ -230,7 +231,7 @@ extension NodeStopReason {
             return NodeStopCopy(title: ko ? "다른 Mac의 노드 키" : "Node keys from another Mac",
                                 detail: ko ? "이 노드의 키가 다른 Mac에서 옮겨 왔어요. 원래 Mac에 복원하거나, 노드를 의도적으로 옮겼다면 이 Mac에 키를 다시 연결해 주세요."
                                     : "This node's keys came from another Mac. Restore them on the original Mac, or rebind them here if you intentionally moved this node.",
-                                resume: "", action: .copyDiagnostics, actionLabel: ko ? "진단 정보 복사" : "Copy Diagnostics")
+                                resume: "", action: .rebindKeys, actionLabel: ko ? "노드 키 다시 연결…" : "Rebind Node Keys…")
         case .launchFailed(let why):
             return NodeStopCopy(title: ko ? "노드를 시작하지 못함" : "The node could not start",
                                 detail: (ko ? "macOS가 노드 실행을 거부했어요: " : "macOS refused to launch the node: ") + why,
@@ -267,6 +268,85 @@ enum NodeMacConfirmation {
             if line.contains("Mac key binding confirmed") { waiting = false }
         }
         return waiting
+    }
+}
+
+/// Rebinding is an owner action for a proven mismatch. A successful owner
+/// authentication creates the only approval the terminal runner accepts.
+/// The approval is local: its message cannot be submitted as a transaction.
+enum NodeKeyRebind {
+    struct Approval: Sendable {
+        let validatorAddress: String
+        let dataDirectory: String
+        let confirmationLine: String
+        fileprivate init(validatorAddress: String, dataDirectory: String, confirmationLine: String) {
+            self.validatorAddress = validatorAddress
+            self.dataDirectory = dataDirectory
+            self.confirmationLine = confirmationLine
+        }
+    }
+
+    enum Refusal: LocalizedError {
+        case invalidValidatorAddress
+        case confirmationDidNotMatch
+        case ownerKeyUnavailable
+        case nodeRunning
+
+        var errorDescription: String? {
+            let ko = Locale.preferredLanguages.first?.hasPrefix("ko") ?? false
+            switch self {
+            case .invalidValidatorAddress:
+                return ko ? "검증인 주소를 읽을 수 없어요. 키를 복원한 뒤 다시 시도해 주세요."
+                    : "The validator address cannot be read. Restore the keys and try again."
+            case .confirmationDidNotMatch:
+                return ko ? "입력한 검증인 주소가 일치하지 않아요. 키는 바뀌지 않았어요."
+                    : "The typed validator address did not match. The keys were not changed."
+            case .ownerKeyUnavailable:
+                return ko ? "소유자 인증을 할 수 없어요. 지갑 키를 사용할 수 있을 때 다시 시도해 주세요."
+                    : "Owner authentication is unavailable. Try again when the wallet key is ready."
+            case .nodeRunning:
+                return ko ? "노드가 실행 중이에요. 노드를 완전히 종료한 뒤 다시 시도해 주세요."
+                    : "The node is running. Wait for it to stop completely and try again."
+            }
+        }
+    }
+
+    static func canOffer(reason: NodeStopReason?, processRunning: Bool, attached: Bool, lockHeld: Bool) -> Bool {
+        reason == .keyElsewhere && !processRunning && !attached && !lockHeld
+    }
+
+    static func warning(ko: Bool) -> String {
+        ko ? "이 Mac의 노드를 의도적으로 옮긴 경우에만 진행하세요. 같은 키를 두 Mac에서 실행하면 검증인이 슬래싱됩니다."
+            : "Only do this if you moved this Mac's node on purpose; running the same keys on two Macs gets the validator slashed."
+    }
+
+    /// The validator address is its 32-byte Ed25519 public key, not the
+    /// wallet account. Read only the public entry; never open private keys.
+    static func validatorAddress(in data: Data) throws -> String {
+        struct PublicEntry: Decodable { let key: String }
+        guard data.count <= 4_096,
+              let entry = try? JSONDecoder().decode(PublicEntry.self, from: data),
+              let address = normalized(entry.key) else { throw Refusal.invalidValidatorAddress }
+        return address
+    }
+
+    static func normalized(_ address: String) -> String? {
+        var text = address.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if text.hasPrefix("0x") { text.removeFirst(2) }
+        guard text.utf8.count == 64,
+              text.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else { return nil }
+        return text
+    }
+
+    static func authorize(validatorAddress: String, typedAddress: String, dataDirectory: String,
+                          authenticate: (Data) throws -> Void) throws -> Approval {
+        guard let address = normalized(validatorAddress) else { throw Refusal.invalidValidatorAddress }
+        guard normalized(typedAddress) == address else { throw Refusal.confirmationDidNotMatch }
+        let message = Data(("Aether local node key rebind approval v1\n"
+                            + "validator: \(address)\ndata: \(dataDirectory)\nchallenge: \(UUID().uuidString)\n").utf8)
+        try authenticate(message)
+        return Approval(validatorAddress: address, dataDirectory: dataDirectory,
+                        confirmationLine: typedAddress.trimmingCharacters(in: .whitespacesAndNewlines) + "\n")
     }
 }
 

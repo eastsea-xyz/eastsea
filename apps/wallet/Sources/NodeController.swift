@@ -36,6 +36,11 @@ final class NodeController: ObservableObject {
     /// An unavailable hardware read pauses signatures inside the live node.
     /// It is allowed to retry without a watchdog restart.
     @Published private(set) var confirmingMac = false
+    @Published private(set) var keyRebindInProgress = false
+    @Published private(set) var keyRebindError: String?
+    /// Wired to the wallet's existing owner key; there is no unauthenticated
+    /// fallback when that key is locked or the owner cancels Touch ID.
+    var authorizeKeyRebind: ((String, String, String) async throws -> NodeKeyRebind.Approval)?
     /// The last stop, as `node-status.log` recorded it (diagnostics).
     var lastStopLine: String? { UserDefaults.standard.string(forKey: "nodeLastStop") }
     /// The code last written to `node-status.log` (one line per change).
@@ -365,6 +370,64 @@ final class NodeController: ObservableObject {
         case .copyDiagnostics:
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(statusLogTail(), forType: .string)
+        case .rebindKeys:
+            rebindNodeKeys()
+        }
+    }
+
+    /// Owner recovery exists only for a stopped node with a proven mismatch.
+    /// The CLI takes run.lock itself too, closing the race after this UI check.
+    private func rebindNodeKeys() {
+        guard !keyRebindInProgress,
+              NodeKeyRebind.canOffer(reason: stopReason, processRunning: process != nil,
+                                     attached: attached, lockHeld: Self.lockHeld(in: Self.dataDir)) else { return }
+        let ko = HealthCheck.korean, dir = Self.dataDir
+        keyRebindError = nil
+        do {
+            guard let binary, let authenticate = authorizeKeyRebind else { throw NodeKeyRebind.Refusal.ownerKeyUnavailable }
+            let address = try NodeKeyRebind.validatorAddress(in: Data(contentsOf: dir.appendingPathComponent("validator.pub.json")))
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = ko ? "이 Mac에 노드 키를 다시 연결할까요?" : "Rebind these node keys to this Mac?"
+            alert.informativeText = NodeKeyRebind.warning(ko: ko) + "\n\n"
+                + (ko ? "확인하려면 다음 검증인 주소를 직접 입력해 주세요:\n" : "Type this validator address to confirm:\n") + address
+            alert.addButton(withTitle: ko ? "소유자 인증 후 다시 연결" : "Authenticate Owner and Rebind")
+            alert.addButton(withTitle: ko ? "취소" : "Cancel")
+            let field = NSTextField(string: "")
+            field.frame = NSRect(x: 0, y: 0, width: 540, height: 24)
+            field.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+            field.placeholderString = ko ? "검증인 주소 입력" : "Type the validator address"
+            alert.accessoryView = field
+            alert.window.initialFirstResponder = field
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            let typed = field.stringValue
+            guard NodeKeyRebind.normalized(typed) == address else { throw NodeKeyRebind.Refusal.confirmationDidNotMatch }
+            keyRebindInProgress = true
+            Task {
+                defer { keyRebindInProgress = false }
+                do {
+                    let approval = try await authenticate(address, typed, dir.path)
+                    guard NodeKeyRebind.canOffer(reason: stopReason, processRunning: process != nil,
+                                                 attached: attached, lockHeld: Self.lockHeld(in: dir)) else {
+                        throw NodeKeyRebind.Refusal.nodeRunning
+                    }
+                    let result = try await Task.detached {
+                        try NodeKeyRebindCommand.run(binary: binary, dataDirectory: dir, approval: approval)
+                    }.value
+                    logEvent("key_rebind", result)
+                    candidate = nil
+                    identityNoticePosted = false
+                    nextCandidateRetry = clock.now
+                    unblock()
+                    applyPower()
+                } catch {
+                    keyRebindError = error.localizedDescription
+                    logEvent("key_rebind_refused", error.localizedDescription)
+                }
+            }
+        } catch {
+            keyRebindError = error.localizedDescription
+            logEvent("key_rebind_refused", error.localizedDescription)
         }
     }
     /// The Node page opens the block-data location picker when a stop reason's

@@ -1,6 +1,7 @@
 //! Hardware binding for this Mac's node keys (design 36, N1).
 
 use std::path::Path;
+use commonware_cryptography::Signer as _;
 
 pub mod signing;
 
@@ -128,6 +129,84 @@ pub fn check(dir: &Path, public: &crate::block::PublicKey) -> Result<Checked, St
     // Startup/legacy-load marker also clears a stale wait in an appended log.
     eprintln!("Mac key binding confirmed");
     Ok(checked)
+}
+
+/// Owner recovery is deliberately separate from verification: normal starts
+/// never change a committed binding. CLI and wallet must present a terminal
+/// and require the owner to type this validator's public address.
+pub fn rebind_interactive(dir: &Path) -> Result<(), String> {
+    use std::io::{IsTerminal as _, Write as _};
+    use std::os::unix::fs::MetadataExt as _;
+    let owner = unsafe { libc::geteuid() };
+    for path in [dir.to_path_buf(), dir.join(crate::roster::KEY_FILE)] {
+        let meta = std::fs::symlink_metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        if meta.file_type().is_symlink() || meta.uid() != owner || (path != dir && !meta.is_file()) {
+            return Err(format!("{} must belong to the interactive node owner", path.display()));
+        }
+        if path != dir && meta.mode() & 0o077 != 0 {
+            return Err(format!("{} must be owner-only (chmod 600)", path.display()));
+        }
+    }
+    // Hold both locks until publication and audit completion. The lock check
+    // happens before prompting and also closes the race with a new run.
+    let _running = crate::supervisor::lock_data_dir(dir)?;
+    let _creation = crate::roster::lock_key_creation(dir)?;
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        return Err("keys rebind requires an interactive terminal; type the validator address to confirm".into());
+    }
+    if dir.join(crate::roster::CREATION_FILE).exists() {
+        return Err("finish or restore the staged key creation before rebinding".into());
+    }
+    let keys = crate::roster::LocalKeys::load_unchecked(dir)?;
+    let public: [u8; 32] = keys.signer.public_key().as_ref().try_into().expect("Ed25519 public key");
+    let path = dir.join(BINDING_FILE);
+    let before = read_binding(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let record: Record = serde_json::from_slice(&before).map_err(|e| format!("{}: {e}; restore the original binding", path.display()))?;
+    if hex::decode(&record.validator_pub).ok().as_deref() != Some(public.as_slice())
+        || hex::decode(&record.platform_uuid_hash).ok().is_none_or(|h| h.len() != 32)
+        || record.created_at == 0 {
+        return Err("the stored binding is invalid; restore the original key and binding before rebinding".into());
+    }
+    let uuid = platform_uuid().map_err(|e| e.to_string())?;
+    let address = hex::encode(public);
+    println!("Only do this if you moved this Mac's node on purpose; running the same keys on two Macs gets the validator slashed.");
+    println!("Validator address: {address}");
+    print!("Type the validator address to bind these keys to this Mac: ");
+    std::io::stdout().flush().map_err(|e| e.to_string())?;
+    let mut typed = String::new();
+    std::io::stdin().read_line(&mut typed).map_err(|e| e.to_string())?;
+    let typed = typed.trim();
+    let typed = typed.strip_prefix("0x").or_else(|| typed.strip_prefix("0X")).unwrap_or(typed);
+    if hex::decode(typed).ok().as_deref() != Some(public.as_slice()) {
+        return Err("validator address confirmation did not match; binding unchanged".into());
+    }
+    // Read the ID again after the potentially long owner prompt. A failed
+    // read cannot authorize a new binding, even after typed confirmation.
+    let latest = platform_uuid().map_err(|e| e.to_string())?;
+    if latest != uuid { return Err("this Mac's hardware ID changed during confirmation; binding unchanged".into()); }
+    let new_hash = hex::encode(uuid_hash(&uuid));
+    let audit = format!("validator={address} owner_uid={owner} old={} -> new={new_hash}", record.platform_uuid_hash);
+    append_rebind_audit(dir, &format!("authorized {audit}\n"))?;
+    crate::atomic::replace(&path, &record_bytes(&public, &uuid).map_err(|e| e.to_string())?, 0o600)?;
+    append_rebind_audit(dir, &format!("committed {audit}\n"))
+        .map_err(|e| format!("binding changed durably, but audit completion failed: {e}"))?;
+    println!("Mac key binding confirmed; rebound {audit}");
+    Ok(())
+}
+
+fn append_rebind_audit(dir: &Path, entry: &str) -> Result<(), String> {
+    use std::io::Write as _;
+    use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
+    let path = dir.join("key-rebind.log");
+    let mut log = std::fs::OpenOptions::new().append(true).create(true).mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let meta = log.metadata().map_err(|e| format!("{}: {e}", path.display()))?;
+    if !meta.is_file() || meta.uid() != unsafe { libc::geteuid() } || meta.mode() & 0o077 != 0 {
+        return Err(format!("{} must be a regular owner-only audit file", path.display()));
+    }
+    log.write_all(entry.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))?;
+    log.sync_all().map_err(|e| format!("{}: {e}", path.display()))?;
+    crate::atomic::sync_parent(&path)
 }
 
 fn platform_uuid() -> Result<String, BindingError> {

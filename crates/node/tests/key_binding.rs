@@ -15,6 +15,253 @@ impl Drop for Dir {
 }
 
 #[test]
+fn unavailable_hardware_read_keeps_the_real_node_running_without_votes() {
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+    let root = Dir(workspace.join("tmp").join(format!("aether-key-binding-unavailable-{}", std::process::id())));
+    let data = root.0.join("node");
+    aether_node::roster::LocalKeys::devnet(1).save(&data).unwrap();
+    let key_before = std::fs::read(data.join("validator.key")).unwrap();
+    let binding_before = std::fs::read(data.join("key-binding.json")).unwrap();
+    let log_path = root.0.join("unavailable.log");
+    let log = std::fs::File::create(&log_path).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_aether"))
+        .args(["node", "--offline", "--port", "0", "--rpc-port", "0"])
+        .arg("--data").arg(&data)
+        .arg("--network").arg(data.join("network.json"))
+        .env("AETHER_TEST_PLATFORM_UUID", "")
+        .stdout(Stdio::from(log.try_clone().unwrap())).stderr(Stdio::from(log))
+        .spawn().unwrap();
+    std::thread::sleep(Duration::from_secs(2));
+    let status = child.try_wait().unwrap();
+    if status.is_none() { child.kill().unwrap(); child.wait().unwrap(); }
+    let output = std::fs::read_to_string(log_path).unwrap();
+    assert!(status.is_none(), "unavailable hardware reads must keep the node alive, got {status:?}: {output}");
+    assert!(output.contains("waiting to confirm this Mac"), "{output}");
+    assert!(!data.join("vote-epoch-0.seen").exists(), "unknown identity must never authorize a vote");
+    assert_eq!(std::fs::read(data.join("validator.key")).unwrap(), key_before);
+    assert_eq!(std::fs::read(data.join("key-binding.json")).unwrap(), binding_before);
+}
+
+#[test]
+fn first_install_resumes_the_same_staged_identity_at_every_crash_boundary() {
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+    let root = Dir(workspace.join("tmp").join(format!("aether-key-creation-crash-{}", std::process::id())));
+    for boundary in ["staged", "binding", "validator", "account", "public", "committed"] {
+        let data = root.0.join(boundary);
+        let killed = Command::new(env!("CARGO_BIN_EXE_aether"))
+            .args(["keygen", "--data"]).arg(&data)
+            .env("AETHER_TEST_PLATFORM_UUID", "MAC-A")
+            .env("AETHER_TEST_KEY_CREATION_CRASH", boundary).output().unwrap();
+        assert_eq!(killed.status.code(), Some(86), "{boundary}: {}", String::from_utf8_lossy(&killed.stderr));
+        let pending = data.join(aether_node::roster::CREATION_FILE);
+        let (expected_key, expected_account): (serde_json::Value, String) = if pending.exists() {
+            let stage: serde_json::Value = serde_json::from_slice(&std::fs::read(&pending).unwrap()).unwrap();
+            assert_eq!(stage["version"], 1);
+            (stage["keys"].clone(), stage["account"].as_str().unwrap().to_owned())
+        } else {
+            (serde_json::from_slice(&std::fs::read(data.join("validator.key")).unwrap()).unwrap(), std::fs::read_to_string(data.join("node-account.key")).unwrap())
+        };
+        let resumed = Command::new(env!("CARGO_BIN_EXE_aether"))
+            .args(["candidate-info", "--data"]).arg(&data)
+            .env("AETHER_TEST_PLATFORM_UUID", "MAC-A").output().unwrap();
+        assert!(resumed.status.success(), "{boundary}: {}", String::from_utf8_lossy(&resumed.stderr));
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&std::fs::read(data.join("validator.key")).unwrap()).unwrap(), expected_key, "{boundary}: recovery must preserve the originally staged key");
+        assert!(!pending.exists(), "completed transaction is retired durably");
+        assert!(data.join("node-account.key").exists());
+        assert_eq!(std::fs::read_to_string(data.join("node-account.key")).unwrap(), expected_account,
+            "{boundary}: recovery must preserve the originally staged account key");
+        assert!(data.join("key-binding.json").exists());
+        let before = std::fs::read(data.join("key-binding.json")).unwrap();
+        let again = Command::new(env!("CARGO_BIN_EXE_aether"))
+            .args(["candidate-info", "--data"]).arg(&data)
+            .env("AETHER_TEST_PLATFORM_UUID", "MAC-A").output().unwrap();
+        assert!(again.status.success());
+        assert_eq!(std::fs::read(data.join("key-binding.json")).unwrap(), before);
+    }
+}
+
+#[test]
+fn first_install_recovers_after_binding_publication() {
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+    let root = Dir(workspace.join("tmp").join(format!("aether-key-crash-binding-{}", std::process::id())));
+    let data = root.0.join("node");
+    let killed = Command::new(env!("CARGO_BIN_EXE_aether"))
+        .args(["keygen", "--data"]).arg(&data)
+        .env("AETHER_TEST_PLATFORM_UUID", "MAC-A").env("AETHER_TEST_KEY_CREATION_CRASH", "binding").output().unwrap();
+    assert_eq!(killed.status.code(), Some(86));
+    let resumed = Command::new(env!("CARGO_BIN_EXE_aether"))
+        .args(["candidate-info", "--data"]).arg(&data)
+        .env("AETHER_TEST_PLATFORM_UUID", "MAC-A").output().unwrap();
+    assert!(resumed.status.success(), "recovery after binding publication must preserve the staged identity: {:?}: {}",
+        resumed.status.code(), String::from_utf8_lossy(&resumed.stderr));
+}
+
+#[test]
+fn concurrent_first_starts_publish_one_complete_identity() {
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+    let root = Dir(workspace.join("tmp").join(format!("aether-key-creation-concurrent-{}", std::process::id())));
+    let data = root.0.join("node");
+    let children: Vec<_> = (0..8).map(|_| Command::new(env!("CARGO_BIN_EXE_aether"))
+        .args(["candidate-info", "--data"]).arg(&data)
+        .env("AETHER_TEST_PLATFORM_UUID", "MAC-A")
+        .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()).collect();
+    let mut identities = Vec::new();
+    for child in children {
+        let result = child.wait_with_output().unwrap();
+        assert!(result.status.success(), "concurrent first start must load the winner: {}", String::from_utf8_lossy(&result.stderr));
+        identities.push(serde_json::from_slice::<serde_json::Value>(&result.stdout).unwrap());
+    }
+    assert!(identities.windows(2).all(|w| w[0] == w[1]), "all starts must share the same validator and account");
+    assert!(!data.join(aether_node::roster::CREATION_FILE).exists());
+    use std::os::unix::fs::PermissionsExt as _;
+    for file in ["validator.key", "node-account.key", "key-binding.json"] {
+        assert_eq!(std::fs::metadata(data.join(file)).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+}
+
+#[test]
+fn a_crash_during_staging_never_publishes_a_partial_binding_or_key() {
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+    let root = Dir(workspace.join("tmp").join(format!("aether-key-creation-partial-{}", std::process::id())));
+    let data = root.0.join("node");
+    let killed = Command::new(env!("CARGO_BIN_EXE_aether"))
+        .args(["keygen", "--data"]).arg(&data)
+        .env("AETHER_TEST_PLATFORM_UUID", "MAC-A").env("AETHER_TEST_KEY_CREATION_CRASH", "partial-stage").output().unwrap();
+    assert_eq!(killed.status.code(), Some(86));
+    for file in ["validator.key", "key-binding.json", aether_node::roster::CREATION_FILE] {
+        assert!(!data.join(file).exists(), "{file} was published before its staging fsync");
+    }
+    let resumed = Command::new(env!("CARGO_BIN_EXE_aether"))
+        .args(["candidate-info", "--data"]).arg(&data)
+        .env("AETHER_TEST_PLATFORM_UUID", "MAC-A").output().unwrap();
+    assert!(resumed.status.success(), "a partial temporary transaction is ignored: {}", String::from_utf8_lossy(&resumed.stderr));
+}
+
+fn rebind_in_terminal(data: &Path, uuid: &str, confirmation: &str) -> (Option<i32>, String) {
+    use std::io::{Read as _, Write as _};
+    use std::os::unix::io::FromRawFd as _;
+    let (mut master, mut slave) = (-1, -1);
+    assert_eq!(unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null(), std::ptr::null()) }, 0);
+    for fd in [master, slave] { assert_eq!(unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) }, 0); }
+    let mut master = unsafe { std::fs::File::from_raw_fd(master) };
+    let slave = unsafe { std::fs::File::from_raw_fd(slave) };
+    let mut child = Command::new(env!("CARGO_BIN_EXE_aether"))
+        .args(["keys", "rebind", "--data"]).arg(data)
+        .env("AETHER_TEST_PLATFORM_UUID", uuid)
+        .stdin(Stdio::from(slave.try_clone().unwrap())).stdout(Stdio::from(slave.try_clone().unwrap())).stderr(Stdio::from(slave.try_clone().unwrap()))
+        .spawn().unwrap();
+    drop(slave);
+    master.write_all(format!("{confirmation}\n").as_bytes()).unwrap();
+    let reader = std::thread::spawn(move || {
+        let mut output = Vec::new();
+        // PTYs on Darwin terminate reads with EIO after the last slave closes.
+        let _ = master.read_to_end(&mut output);
+        String::from_utf8_lossy(&output).into_owned()
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() { break status; }
+        if Instant::now() > deadline { child.kill().unwrap(); break child.wait().unwrap(); }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    (status.code(), reader.join().unwrap())
+}
+
+#[test]
+fn owner_rebind_is_atomic_audited_and_accepts_the_moved_keys() {
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+    let root = Dir(workspace.join("tmp").join(format!("aether-key-rebind-{}", std::process::id())));
+    let data = root.0.join("node");
+    let created = Command::new(env!("CARGO_BIN_EXE_aether"))
+        .args(["candidate-info", "--data"]).arg(&data).env("AETHER_TEST_PLATFORM_UUID", "MAC-A").output().unwrap();
+    assert!(created.status.success());
+    let info: serde_json::Value = serde_json::from_slice(&created.stdout).unwrap();
+    let address = info["validator_key"].as_str().unwrap();
+    let old = std::fs::read(data.join("key-binding.json")).unwrap();
+    let key = std::fs::read(data.join("validator.key")).unwrap();
+    let account = std::fs::read(data.join("node-account.key")).unwrap();
+    let (code, output) = rebind_in_terminal(&data, "MAC-B", address);
+    assert_eq!(code, Some(0), "owner rebind should succeed: {output}");
+    assert!(output.contains("gets the validator slashed"));
+    let new = std::fs::read(data.join("key-binding.json")).unwrap();
+    assert_ne!(new, old);
+    assert_eq!(std::fs::read(data.join("validator.key")).unwrap(), key);
+    assert_eq!(std::fs::read(data.join("node-account.key")).unwrap(), account);
+    let audit = std::fs::read_to_string(data.join("key-rebind.log")).unwrap();
+    for hash in [hex::encode(Sha256::digest(b"eastsea.bindMAC-A")), hex::encode(Sha256::digest(b"eastsea.bindMAC-B"))] {
+        assert!(output.contains(&hash)); assert!(audit.contains(&hash));
+    }
+    assert!(audit.contains("committed"));
+    let accepted = Command::new(env!("CARGO_BIN_EXE_aether"))
+        .args(["candidate-info", "--data"]).arg(&data).env("AETHER_TEST_PLATFORM_UUID", "MAC-B").output().unwrap();
+    assert!(accepted.status.success());
+    let refused = Command::new(env!("CARGO_BIN_EXE_aether"))
+        .args(["candidate-info", "--data"]).arg(&data).env("AETHER_TEST_PLATFORM_UUID", "MAC-A").output().unwrap();
+    assert_eq!(refused.status.code(), Some(15), "retired Mac remains refused");
+}
+
+#[test]
+fn owner_rebind_refuses_running_unconfirmed_and_noninteractive_requests() {
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+    let root = Dir(workspace.join("tmp").join(format!("aether-key-rebind-refuse-{}", std::process::id())));
+    let data = root.0.join("node");
+    let created = Command::new(env!("CARGO_BIN_EXE_aether"))
+        .args(["candidate-info", "--data"]).arg(&data).env("AETHER_TEST_PLATFORM_UUID", "MAC-A").output().unwrap();
+    assert!(created.status.success());
+    let info: serde_json::Value = serde_json::from_slice(&created.stdout).unwrap();
+    let address = info["validator_key"].as_str().unwrap();
+    let old = std::fs::read(data.join("key-binding.json")).unwrap();
+    let lock = aether_node::supervisor::lock_data_dir(&data).unwrap();
+    let (code, output) = rebind_in_terminal(&data, "MAC-B", address);
+    assert_ne!(code, Some(0));
+    assert!(output.contains("run.lock"), "running refusal must precede confirmation: {output}");
+    drop(lock);
+    let (code, output) = rebind_in_terminal(&data, "MAC-B", "yes");
+    assert_ne!(code, Some(0)); assert!(output.contains("confirmation did not match"));
+    let piped = Command::new(env!("CARGO_BIN_EXE_aether"))
+        .args(["keys", "rebind", "--data"]).arg(&data).env("AETHER_TEST_PLATFORM_UUID", "MAC-B").output().unwrap();
+    assert!(!piped.status.success());
+    assert!(String::from_utf8_lossy(&piped.stderr).contains("interactive terminal"));
+    assert_eq!(std::fs::read(data.join("key-binding.json")).unwrap(), old);
+    assert!(!data.join("key-rebind.log").exists(), "refused requests never authorize a transition");
+}
+
+#[test]
+fn parent_lifetime_flag_does_not_bypass_the_running_node_lock() {
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+    let root = Dir(workspace.join("tmp").join(format!("aether-key-rebind-parent-{}", std::process::id())));
+    let data = root.0.join("node");
+    aether_node::roster::LocalKeys::devnet(1).save(&data).unwrap();
+    let _lock = aether_node::supervisor::lock_data_dir(&data).unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_aether"))
+        .args(["node", "--offline", "--port", "0", "--rpc-port", "0", "--exit-with-parent"])
+        .arg("--data").arg(&data).env_remove("AETHER_RUN_LOCK_FD").output().unwrap();
+    assert_eq!(result.status.code(), Some(aether_node::supervisor::EXIT_LOCKED),
+        "a lifetime flag must not stand in for actual inherited run.lock ownership");
+    assert!(String::from_utf8_lossy(&result.stderr).contains("run.lock"));
+}
+
+#[test]
+fn owner_rebind_refuses_a_fifo_audit_path_without_changing_the_binding() {
+    use std::os::unix::ffi::OsStrExt as _;
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+    let root = Dir(workspace.join("tmp").join(format!("aether-key-rebind-audit-{}", std::process::id())));
+    let data = root.0.join("node");
+    let created = Command::new(env!("CARGO_BIN_EXE_aether"))
+        .args(["candidate-info", "--data"]).arg(&data).env("AETHER_TEST_PLATFORM_UUID", "MAC-A").output().unwrap();
+    assert!(created.status.success());
+    let info: serde_json::Value = serde_json::from_slice(&created.stdout).unwrap();
+    let path = std::ffi::CString::new(data.join("key-rebind.log").as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+    let before = std::fs::read(data.join("key-binding.json")).unwrap();
+    let started = Instant::now();
+    let (code, output) = rebind_in_terminal(&data, "MAC-B", info["validator_key"].as_str().unwrap());
+    assert!(started.elapsed() < Duration::from_secs(5), "audit open must not block: {output}");
+    assert!(code.is_some_and(|code| code != 0));
+    assert_eq!(std::fs::read(data.join("key-binding.json")).unwrap(), before);
+}
+
+#[test]
 fn key_binding_copied_data_directory_on_another_mac_refuses_to_vote() {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -183,124 +430,34 @@ fn key_binding_legacy_key_is_bound_once_and_logged() {
 }
 
 #[test]
-fn unavailable_hardware_read_keeps_the_real_node_running_without_votes() {
+fn owner_rebind_refuses_a_live_node_while_hardware_verification_waits() {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
-    let root = Dir(workspace.join("tmp").join(format!("aether-key-binding-unavailable-{}", std::process::id())));
+    let root = Dir(workspace.join("tmp").join(format!("aether-key-rebind-live-{}", std::process::id())));
     let data = root.0.join("node");
-    aether_node::roster::LocalKeys::devnet(1).save(&data).unwrap();
-    let key_before = std::fs::read(data.join("validator.key")).unwrap();
-    let binding_before = std::fs::read(data.join("key-binding.json")).unwrap();
-    let log_path = root.0.join("unavailable.log");
+    let created = Command::new(env!("CARGO_BIN_EXE_aether"))
+        .args(["candidate-info", "--data"]).arg(&data).env("AETHER_TEST_PLATFORM_UUID", "MAC-A").output().unwrap();
+    assert!(created.status.success());
+    let info: serde_json::Value = serde_json::from_slice(&created.stdout).unwrap();
+    let log_path = root.0.join("waiting.log");
     let log = std::fs::File::create(&log_path).unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_aether"))
-        .args(["node", "--offline", "--port", "0", "--rpc-port", "0"])
-        .arg("--data").arg(&data)
-        .arg("--network").arg(data.join("network.json"))
+    let mut node = Command::new(env!("CARGO_BIN_EXE_aether"))
+        .args(["node", "--offline", "--port", "0", "--rpc-port", "0", "--exit-with-parent"])
+        .arg("--data").arg(&data).env_remove("AETHER_RUN_LOCK_FD")
         .env("AETHER_TEST_PLATFORM_UUID", "")
-        .stdout(Stdio::from(log.try_clone().unwrap())).stderr(Stdio::from(log))
-        .spawn().unwrap();
-    std::thread::sleep(Duration::from_secs(2));
-    let status = child.try_wait().unwrap();
-    if status.is_none() { child.kill().unwrap(); child.wait().unwrap(); }
-    let output = std::fs::read_to_string(log_path).unwrap();
-    assert!(status.is_none(), "unavailable hardware reads must keep the node alive, got {status:?}: {output}");
-    assert!(output.contains("waiting to confirm this Mac"), "{output}");
-    assert!(!data.join("vote-epoch-0.seen").exists(), "unknown identity must never authorize a vote");
-    assert_eq!(std::fs::read(data.join("validator.key")).unwrap(), key_before);
-    assert_eq!(std::fs::read(data.join("key-binding.json")).unwrap(), binding_before);
-}
-
-#[test]
-fn first_install_resumes_the_same_staged_identity_at_every_crash_boundary() {
-    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
-    let root = Dir(workspace.join("tmp").join(format!("aether-key-creation-crash-{}", std::process::id())));
-    for boundary in ["staged", "binding", "validator", "account", "public", "committed"] {
-        let data = root.0.join(boundary);
-        let killed = Command::new(env!("CARGO_BIN_EXE_aether"))
-            .args(["keygen", "--data"]).arg(&data)
-            .env("AETHER_TEST_PLATFORM_UUID", "MAC-A")
-            .env("AETHER_TEST_KEY_CREATION_CRASH", boundary).output().unwrap();
-        assert_eq!(killed.status.code(), Some(86), "{boundary}: {}", String::from_utf8_lossy(&killed.stderr));
-        let pending = data.join(aether_node::roster::CREATION_FILE);
-        let (expected_key, expected_account): (serde_json::Value, String) = if pending.exists() {
-            let stage: serde_json::Value = serde_json::from_slice(&std::fs::read(&pending).unwrap()).unwrap();
-            assert_eq!(stage["version"], 1);
-            (stage["keys"].clone(), stage["account"].as_str().unwrap().to_owned())
-        } else {
-            (serde_json::from_slice(&std::fs::read(data.join("validator.key")).unwrap()).unwrap(), std::fs::read_to_string(data.join("node-account.key")).unwrap())
-        };
-        let resumed = Command::new(env!("CARGO_BIN_EXE_aether"))
-            .args(["candidate-info", "--data"]).arg(&data)
-            .env("AETHER_TEST_PLATFORM_UUID", "MAC-A").output().unwrap();
-        assert!(resumed.status.success(), "{boundary}: {}", String::from_utf8_lossy(&resumed.stderr));
-        assert_eq!(serde_json::from_slice::<serde_json::Value>(&std::fs::read(data.join("validator.key")).unwrap()).unwrap(), expected_key, "{boundary}: recovery must preserve the originally staged key");
-        assert!(!pending.exists(), "completed transaction is retired durably");
-        assert!(data.join("node-account.key").exists());
-        assert_eq!(std::fs::read_to_string(data.join("node-account.key")).unwrap(), expected_account,
-            "{boundary}: recovery must preserve the originally staged account key");
-        assert!(data.join("key-binding.json").exists());
-        let before = std::fs::read(data.join("key-binding.json")).unwrap();
-        let again = Command::new(env!("CARGO_BIN_EXE_aether"))
-            .args(["candidate-info", "--data"]).arg(&data)
-            .env("AETHER_TEST_PLATFORM_UUID", "MAC-A").output().unwrap();
-        assert!(again.status.success());
-        assert_eq!(std::fs::read(data.join("key-binding.json")).unwrap(), before);
-    }
-}
-
-#[test]
-fn first_install_recovers_after_binding_publication() {
-    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
-    let root = Dir(workspace.join("tmp").join(format!("aether-key-crash-binding-{}", std::process::id())));
-    let data = root.0.join("node");
-    let killed = Command::new(env!("CARGO_BIN_EXE_aether"))
-        .args(["keygen", "--data"]).arg(&data)
-        .env("AETHER_TEST_PLATFORM_UUID", "MAC-A").env("AETHER_TEST_KEY_CREATION_CRASH", "binding").output().unwrap();
-    assert_eq!(killed.status.code(), Some(86));
-    let resumed = Command::new(env!("CARGO_BIN_EXE_aether"))
-        .args(["candidate-info", "--data"]).arg(&data)
-        .env("AETHER_TEST_PLATFORM_UUID", "MAC-A").output().unwrap();
-    assert!(resumed.status.success(), "recovery after binding publication must preserve the staged identity: {:?}: {}",
-        resumed.status.code(), String::from_utf8_lossy(&resumed.stderr));
-}
-
-#[test]
-fn concurrent_first_starts_publish_one_complete_identity() {
-    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
-    let root = Dir(workspace.join("tmp").join(format!("aether-key-creation-concurrent-{}", std::process::id())));
-    let data = root.0.join("node");
-    let children: Vec<_> = (0..8).map(|_| Command::new(env!("CARGO_BIN_EXE_aether"))
-        .args(["candidate-info", "--data"]).arg(&data)
-        .env("AETHER_TEST_PLATFORM_UUID", "MAC-A")
-        .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()).collect();
-    let mut identities = Vec::new();
-    for child in children {
-        let result = child.wait_with_output().unwrap();
-        assert!(result.status.success(), "concurrent first start must load the winner: {}", String::from_utf8_lossy(&result.stderr));
-        identities.push(serde_json::from_slice::<serde_json::Value>(&result.stdout).unwrap());
-    }
-    assert!(identities.windows(2).all(|w| w[0] == w[1]), "all starts must share the same validator and account");
-    assert!(!data.join(aether_node::roster::CREATION_FILE).exists());
-    use std::os::unix::fs::PermissionsExt as _;
-    for file in ["validator.key", "node-account.key", "key-binding.json"] {
-        assert_eq!(std::fs::metadata(data.join(file)).unwrap().permissions().mode() & 0o777, 0o600);
-    }
-}
-
-#[test]
-fn a_crash_during_staging_never_publishes_a_partial_binding_or_key() {
-    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
-    let root = Dir(workspace.join("tmp").join(format!("aether-key-creation-partial-{}", std::process::id())));
-    let data = root.0.join("node");
-    let killed = Command::new(env!("CARGO_BIN_EXE_aether"))
-        .args(["keygen", "--data"]).arg(&data)
-        .env("AETHER_TEST_PLATFORM_UUID", "MAC-A").env("AETHER_TEST_KEY_CREATION_CRASH", "partial-stage").output().unwrap();
-    assert_eq!(killed.status.code(), Some(86));
-    for file in ["validator.key", "key-binding.json", aether_node::roster::CREATION_FILE] {
-        assert!(!data.join(file).exists(), "{file} was published before its staging fsync");
-    }
-    let resumed = Command::new(env!("CARGO_BIN_EXE_aether"))
-        .args(["candidate-info", "--data"]).arg(&data)
-        .env("AETHER_TEST_PLATFORM_UUID", "MAC-A").output().unwrap();
-    assert!(resumed.status.success(), "a partial temporary transaction is ignored: {}", String::from_utf8_lossy(&resumed.stderr));
+        .stdout(Stdio::from(log.try_clone().unwrap())).stderr(Stdio::from(log)).spawn().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let waiting = loop {
+        if std::fs::read_to_string(&log_path).unwrap().contains("waiting to confirm this Mac") { break true; }
+        if node.try_wait().unwrap().is_some() || Instant::now() > deadline { break false; }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let (code, output) = if waiting {
+        rebind_in_terminal(&data, "MAC-B", info["validator_key"].as_str().unwrap())
+    } else { (None, std::fs::read_to_string(log_path).unwrap()) };
+    let still_running = node.try_wait().unwrap().is_none();
+    if still_running { node.kill().unwrap(); node.wait().unwrap(); }
+    assert!(waiting, "the actual node must reach its live verification wait: {output}");
+    assert!(still_running, "a refused owner action must not terminate the waiting node");
+    assert!(code.is_some_and(|code| code != 0));
+    assert!(output.contains("run.lock"), "owner rebind must refuse an actual running node: {output}");
 }

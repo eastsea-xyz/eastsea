@@ -315,6 +315,11 @@ enum Cmd {
         #[arg(long)]
         data: String,
     },
+    /// Owner-only key recovery (never runs automatically).
+    Keys {
+        #[command(subcommand)]
+        command: KeysCmd,
+    },
     /// Follow the chain without being a validator: verify every certificate,
     /// re-execute every block, and serve wallets on this machine.
     Follow {
@@ -793,6 +798,16 @@ enum Cmd {
     },
 }
 
+#[derive(Subcommand)]
+enum KeysCmd {
+    /// Bind existing validator keys to this Mac after an intentional move.
+    /// Requires a stopped node and typing its validator address in a terminal.
+    Rebind {
+        #[arg(long)]
+        data: String,
+    },
+}
+
 fn main() {
     let cli = Cli::parse();
     let res = match cli.cmd {
@@ -825,6 +840,10 @@ fn main() {
             if exit_with_parent {
                 exit_with_parent_process();
             }
+            let _direct_lock = aether_node::supervisor::lock_or_inherit_data_dir(std::path::Path::new(&data)).unwrap_or_else(|e| {
+                    eprintln!("{e}");
+                    std::process::exit(aether_node::supervisor::EXIT_LOCKED);
+                });
             // A seated validator whose key file is gone or unreadable stops
             // with its own exit code (red team #5): it must not be replaced by
             // a devnet stand-in or a fresh identity.
@@ -915,6 +934,7 @@ fn main() {
                 })
         }
         Cmd::Keygen { data } => keygen(&data),
+        Cmd::Keys { command: KeysCmd::Rebind { data } } => aether_node::key_binding::rebind_interactive(std::path::Path::new(&data)),
         Cmd::UpgradeSign { data, network, upgrade } => (|| {
             use aether_node::upgrade::{sign_emergency_partial, sign_partial, Upgrade};
             let keys = load_signing_keys(std::path::Path::new(&data))?;
@@ -970,6 +990,10 @@ fn main() {
                 exit_with_parent_process();
             }
             let keys = candidate.then(|| keys.unwrap_or_else(|| data.clone()));
+            let _direct_lock = keys.as_deref().map(|keys| aether_node::supervisor::lock_or_inherit_data_dir(std::path::Path::new(keys)).unwrap_or_else(|e| {
+                    eprintln!("{e}");
+                    std::process::exit(aether_node::supervisor::EXIT_LOCKED);
+                }));
             let export = follow_export(archive_export, &data);
             if let Some(e) = &export {
                 if let Err(err) = std::fs::create_dir_all(&e.dir) {
@@ -1052,6 +1076,7 @@ fn main() {
                         std::process::exit(aether_node::supervisor::EXIT_LOCKED);
                     }
                 };
+                aether_node::supervisor::install_run_lock(&dir, &_lock)?;
                 // First install: create the keys. A directory that ever held an
                 // identity refuses instead (red team #5) — and `aether run`
                 // goes on as a follower without them, never a new identity.
@@ -1188,6 +1213,9 @@ fn main() {
             if exit_with_parent {
                 exit_with_parent_process();
             }
+            let _run_lock = aether_node::supervisor::lock_or_inherit_data_dir(std::path::Path::new(&data)).unwrap_or_else(|e| {
+                eprintln!("{e}"); std::process::exit(aether_node::supervisor::EXIT_LOCKED);
+            });
             let boundary = match (stage, epoch_end, epoch_end_hash) {
                 (true, _, _) => None,
                 (false, Some(h), Some(parent)) => Some(aether_node::roster::EpochStart { height: h + 1, parent }),
@@ -1393,6 +1421,9 @@ fn main() {
         Cmd::Balance { address, rpc, validators, identity } => trusted(validators, identity).and_then(|set| verified_balance(&rpc, address, &set)),
         Cmd::Storage { address, slot, rpc, validators, identity } => trusted(validators, identity).and_then(|set| verified_storage(&rpc, address, slot, &set)),
         Cmd::Dkg { index, validators, network, port, data, peers, link_base, offline, round } => {
+            let _run_lock = aether_node::supervisor::lock_or_inherit_data_dir(std::path::Path::new(&data)).unwrap_or_else(|e| {
+                eprintln!("{e}"); std::process::exit(aether_node::supervisor::EXIT_LOCKED);
+            });
             p2p_args(index, validators, network, &data, port, peers, link_base, offline)
                 .map(|(p2p, chain_id, _, _, genesis)| run_dkg(p2p, chain_id, data, round, genesis))
         }

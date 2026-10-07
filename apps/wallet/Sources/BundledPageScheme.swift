@@ -29,13 +29,13 @@ final class BundledPageScheme: NSObject, WKURLSchemeHandler {
               let rel = BundledPagePath.safePath(dir: url.host ?? "", path: url.path),
               let mime = BundledPagePath.mimeType(for: rel) else {
             task.didFailWithError(NSError(domain: NSURLErrorDomain, code: NSURLErrorBadURL,
-                                          userInfo: [NSLocalizedDescriptionKey: "This page is not part of the app."]))
+                                          userInfo: [NSLocalizedDescriptionKey: String(localized: "This page is not part of the app.")]))
             return
         }
         let file = root.appendingPathComponent(rel)
         guard let data = try? Data(contentsOf: file) else {
             task.didFailWithError(NSError(domain: NSURLErrorDomain, code: NSURLErrorFileDoesNotExist,
-                                          userInfo: [NSLocalizedDescriptionKey: "This page is not part of the app."]))
+                                          userInfo: [NSLocalizedDescriptionKey: String(localized: "This page is not part of the app.")]))
             return
         }
         let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1",

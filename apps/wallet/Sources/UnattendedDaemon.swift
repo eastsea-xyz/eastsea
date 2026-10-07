@@ -71,7 +71,7 @@ final class UnattendedDaemon: ObservableObject {
         switch service.status {
         case .enabled: status = .approved
         case .requiresApproval, .notRegistered: status = .needsApproval
-        case .notFound: status = .failed("Daemon support missing from this build")
+        case .notFound: status = .failed(String(localized: "This build of the app cannot keep the node running after restarts."))
         default: status = .off
         }
     }
@@ -82,11 +82,15 @@ final class UnattendedDaemon: ObservableObject {
     }
 
     private func applyEnabledChange() {
+        #if WALLET_SCREENS
+        // The screens renderer (scripts/wallet-screens.sh) never touches the real data.
+        return 
+        #endif
         if enabled {
             do {
                 if service.status == .notRegistered { try service.register() }
             } catch {
-                status = .failed("Daemon: \(error.localizedDescription)")
+                status = .failed(String(localized: "Could not keep the node running after restarts: \(error.localizedDescription)"))
                 return
             }
         } else {
@@ -116,6 +120,9 @@ final class UnattendedDaemon: ObservableObject {
     /// single source of what the daemon runs: the same argv the app's own node
     /// takes (minus `--exit-with-parent`), so a restart changes nothing.
     func syncMarker() {
+        #if WALLET_SCREENS
+        return
+        #endif
         // The marker makes the root daemon run the node — past the app's own
         // start gate — so it obeys the same gate (release-070 review, B4).
         guard enabled, nodeEnabled, !wrongLocation, DataMigration.mayStartNode() == nil else {
@@ -148,6 +155,9 @@ final class UnattendedDaemon: ObservableObject {
     /// after the next restart either — the marker goes away, and a daemon
     /// node that is running stops (docs/design/29).
     func nodeSwitchedOff() {
+        #if WALLET_SCREENS
+        return
+        #endif
         nodeEnabled = false
         syncMarker()
         stopDaemonNode()
@@ -181,6 +191,9 @@ final class UnattendedDaemon: ObservableObject {
     /// Only the wrapper's own pid file, and only a process that still is the
     /// node/wrapper binary — never an arbitrary recycled pid.
     func stopDaemonNode() {
+        #if WALLET_SCREENS
+        return
+        #endif
         guard let pid = Marker.pid(), Self.processIsOurs(pid) else { return }
         kill(pid, SIGTERM)
     }

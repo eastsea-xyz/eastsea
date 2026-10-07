@@ -235,7 +235,7 @@ enum SendDryRun {
         // An ERC-20 transfer answers a bool true; a token that answers nothing
         // or false did not confirm the transfer.
         if !(data.isEmpty || data == "0x"), result != "0x" + String(repeating: "0", count: 63) + "1" {
-            return .reverted("the token contract did not confirm the transfer")
+            return .reverted(String(localized: "the token contract did not confirm the transfer"))
         }
         return .ok
     }

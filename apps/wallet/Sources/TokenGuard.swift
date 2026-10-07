@@ -111,15 +111,15 @@ enum TokenGuardError: Error, Equatable {
 extension TokenGuardError: LocalizedError {
     var errorDescription: String? {
         switch self {
-        case .tokenNotAddress: return "the token is not an address"
-        case .recipientNotAddress: return "the recipient is not an address"
-        case .unusableDecimals: return "the token’s decimals are not usable"
-        case .unusableAmount: return "the amount is not a plain number like 1.5"
-        case .unusableBaseUnits: return "The confirmed amount is not a usable number of base units."
-        case .staleIntent: return "This token’s details changed since the send was confirmed. Close this and confirm the send again."
-        case .listDecimals: return "This token’s units come from the list shipped with the wallet; confirm the send again."
-        case .needsAcknowledgement: return "This token is not on the wallet’s trusted list, so sending it needs your confirmation of the exact number of units."
-        case .unconfirmed: return "This token’s details are not confirmed yet. Open Assets and let the wallet confirm them first."
+        case .tokenNotAddress: return String(localized: "the token is not an address")
+        case .recipientNotAddress: return String(localized: "the recipient is not an address")
+        case .unusableDecimals: return String(localized: "the token’s decimals are not usable")
+        case .unusableAmount: return String(localized: "the amount is not a plain number like 1.5")
+        case .unusableBaseUnits: return String(localized: "The confirmed amount is not a usable number of base units.")
+        case .staleIntent: return String(localized: "This token’s details changed since the send was confirmed. Close this and confirm the send again.")
+        case .listDecimals: return String(localized: "This token’s units come from the list shipped with the wallet; confirm the send again.")
+        case .needsAcknowledgement: return String(localized: "This token is not on the wallet’s trusted list, so sending it needs your confirmation of the exact number of units.")
+        case .unconfirmed: return String(localized: "This token’s details are not confirmed yet. Open Assets and let the wallet confirm them first.")
         }
     }
 }

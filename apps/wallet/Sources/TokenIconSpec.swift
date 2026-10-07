@@ -43,9 +43,9 @@ struct TokenIconSpec: Equatable {
     /// colour ("WAETH, verified", "Unverified token").
     var accessibilityLabel: String {
         switch kind {
-        case .nativeCoin(let ticker): return "\(ticker), verified"
-        case .official(let symbol): return "\(symbol), verified"
-        case .generated: return "Unverified token"
+        case .nativeCoin(let ticker): return String(localized: "\(ticker), verified")
+        case .official(let symbol): return String(localized: "\(symbol), verified")
+        case .generated: return String(localized: "Unverified token")
         }
     }
 

@@ -31,8 +31,8 @@ struct EnclaveAccount {
         case migrationPending(String)
         var errorDescription: String? {
             switch self {
-            case .enclaveUnavailable: return "Secure Enclave is not available on this device"
-            case .keyUnavailable(let why): return "The wallet key cannot be opened right now (\(why)). Unlock this device and try again."
+            case .enclaveUnavailable: return String(localized: "This device has no Secure Enclave to keep the wallet key in.")
+            case .keyUnavailable: return String(localized: "The wallet key cannot be opened right now. Unlock this device and try again.")
             case .migrationPending(let why): return why
             }
         }
@@ -47,6 +47,9 @@ struct EnclaveAccount {
     }
 
     static func loadOrCreate(requireUserPresence: Bool) throws -> EnclaveAccount {
+        #if WALLET_SCREENS
+        fatalError("the screens renderer never opens the keychain")
+        #endif
         #if targetEnvironment(simulator)
         let url = storeURL.deletingLastPathComponent().appendingPathComponent("simulator-software-key.dat")
         if FileManager.default.fileExists(atPath: url.path) {

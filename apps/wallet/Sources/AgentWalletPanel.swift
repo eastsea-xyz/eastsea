@@ -3,8 +3,11 @@ import AppKit
 import Foundation
 import SwiftUI
 
-/// The Mac wallet reads only the agent's local display files. Every change is
-/// made by its bundled helper, which asks for the owner's Touch ID/password.
+/// "AI agent payments": AI agents on this Mac (Claude Code, Codex, any MCP
+/// client) pay from this wallet through the bundled agent helper, only within
+/// the limits the owner set with Touch ID — the account contract enforces them
+/// on chain. The Mac wallet reads only the agent's local display files. Every
+/// change is made by the helper, which asks for the owner's Touch ID/password.
 struct AgentWalletPanel: View {
     @EnvironmentObject private var model: WalletModel
     @State private var history: [[String: Any]] = []
@@ -20,35 +23,44 @@ struct AgentWalletPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("AI 비서").font(.aeHeadline)
-                Spacer()
-                Button("비서 멈추기") { command(["stop"]) }
-                    .disabled(working).accessibilityLabel("비서 멈추기")
+            HStack(alignment: .top, spacing: 14) {
+                Image(systemName: "sparkles").font(.system(size: 30)).foregroundStyle(Color.aether)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("AI agent payments").font(.aeHeadline)
+                    Text("AI agents on this Mac, like Claude Code or Codex, can pay from this wallet — only to payees you approve and within the limits you set with Touch ID. The network refuses anything over those limits.")
+                        .font(.aeBody).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
-            Text("멈추기는 Touch ID로 세션을 체인에서 제거합니다. 이미 제출한 거래는 취소되지 않습니다.")
-                .font(.aeFootnote).foregroundStyle(.secondary)
+            HStack(alignment: .firstTextBaseline) {
+                Text("Stopping takes the agents' permission to pay away at once, with Touch ID. Payments already sent stay sent.")
+                    .font(.aeFootnote).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                Button("Stop agent payments") { command(["stop"]) }
+                    .disabled(working)
+            }
             if !requests.isEmpty {
-                Text("새 수취인 승인 요청").font(.aeHeadline)
+                Text("Payees waiting for your approval").font(.aeHeadline)
                 ForEach(requests.indices, id: \.self) { i in
                     let r = requests[i]
                     let address = r["address"] as? String ?? ""
                     VStack(alignment: .leading, spacing: 5) {
                         Text(address).font(.aeFootnote.monospaced()).textSelection(.enabled)
-                        Text("목적: \(r["purpose"] as? String ?? "—")").font(.aeFootnote)
-                        Text("요청 금액: \(r["amount"] as? String ?? "—") \(r["asset"] as? String ?? "")").font(.aeFootnote)
+                        Text("Purpose: \(r["purpose"] as? String ?? "—")").font(.aeFootnote)
+                        Text("Amount asked: \(r["amount"] as? String ?? "—") \(r["asset"] as? String ?? "")").font(.aeFootnote)
                         HStack {
-                            TextField("수취인 이름", text: Binding(get: { newNames[address] ?? "" }, set: { newNames[address] = $0 }))
+                            TextField("Payee name", text: Binding(get: { newNames[address] ?? "" }, set: { newNames[address] = $0 }))
                                 .textFieldStyle(.roundedBorder)
-                            Button("Touch ID로 허용") {
+                            Button("Allow with Touch ID") {
                                 command(["payee", "add", "--name", newNames[address] ?? "", "--address", address])
                             }.disabled(working || (newNames[address] ?? "").trimmingCharacters(in: .whitespaces).isEmpty)
                         }
                     }
                 }
             }
-            Text("비서 사용 내역").font(.aeHeadline)
-            if history.isEmpty { Text("확정된 사용 내역이 없습니다.").font(.aeFootnote).foregroundStyle(.secondary) }
+            Text("Agent payments so far").font(.aeHeadline)
+            if history.isEmpty { Text("No agent payments yet.").font(.aeFootnote).foregroundStyle(.secondary) }
             ForEach(history.indices, id: \.self) { i in
                 let item = history[i]
                 let hash = item["hash"] as? String ?? ""
@@ -56,9 +68,9 @@ struct AgentWalletPanel: View {
                     Text("\(status(item)) · \(item["amount"] as? String ?? "—") \(item["asset"] as? String ?? Brand.networkCoinTicker)")
                         .font(.aeBody)
                     Text(date(item)).font(.aeFootnote).foregroundStyle(.secondary)
-                    Text("받는 사람: \(displayNames(item))").font(.aeFootnote)
-                    Text("목적: \(item["purpose"] as? String ?? "기록 없음")").font(.aeFootnote)
-                    Button("거래 확인 · \(hash.prefix(12))…") { command(["receipt", "--hash", hash]) }
+                    Text("To: \(displayNames(item))").font(.aeFootnote)
+                    Text("Purpose: \(item["purpose"] as? String ?? String(localized: "not recorded"))").font(.aeFootnote)
+                    Button("Show receipt · \(String(hash.prefix(12)))…") { command(["receipt", "--hash", hash]) }
                         .font(.aeFootnote).disabled(working || hash.isEmpty)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -86,9 +98,9 @@ struct AgentWalletPanel: View {
 
     private func status(_ item: [String: Any]) -> String {
         switch item["status"] as? String {
-        case "confirmed": return "확정"
-        case "failed": return "실패"
-        default: return "이전 기록 · 확인 필요"
+        case "confirmed": return String(localized: "Confirmed")
+        case "failed": return String(localized: "Failed")
+        default: return String(localized: "Older record · not confirmed")
         }
     }
 
@@ -98,10 +110,30 @@ struct AgentWalletPanel: View {
     }
 
     private func rows(_ file: String) -> [[String: Any]] {
+        #if DEBUG
+        if DesignPreview.on { return Self.previewRows[file] ?? [] }
+        #endif
         guard let data = try? Data(contentsOf: home.appendingPathComponent(file)),
               let values = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
         return values
     }
+
+    #if DEBUG
+    /// Design preview: one payee waiting and two past payments.
+    static let previewRows: [String: [[String: Any]]] = [
+        "payee-requests.json": [["address": "0x4be1c0de00000000000000000000000000009a7f", "purpose": AppLanguage.korean ? "서버 호스팅" : "Server hosting",
+                                 "amount": "3", "asset": Brand.networkCoinTicker]],
+        "history.json": [
+            ["hash": "0x9f2c41d7aa00000000000000000000000000000000000000000000000000beef", "status": "confirmed",
+             "amount": "1.5", "asset": Brand.networkCoinTicker, "date": Date().addingTimeInterval(-7_200).timeIntervalSince1970,
+             "to": ["0x12ab00000000000000000000000000000000090ab"], "payeeNames": ["Shop"], "purpose": AppLanguage.korean ? "API 사용료" : "API credits"],
+            ["hash": "0x1c0ffee000000000000000000000000000000000000000000000000000000042", "status": "failed",
+             "amount": "0.2", "asset": Brand.networkCoinTicker, "date": Date().addingTimeInterval(-90_000).timeIntervalSince1970,
+             "to": ["0x12ab00000000000000000000000000000000090ab"], "payeeNames": ["Shop"]],
+        ],
+        "payees.json": [["address": "0x12ab00000000000000000000000000000000090ab", "name": "Shop"]],
+    ]
+    #endif
 
     private func reload() {
         history = rows("history.json")
@@ -130,7 +162,7 @@ struct AgentWalletPanel: View {
                     process.waitUntilExit()
                     result = String(decoding: data, as: UTF8.self)
                 } catch { result = "\(error)" }
-            } else { result = "이 앱 빌드에는 aether-agent 도우미가 없습니다." }
+            } else { result = String(localized: "This build of the app does not include the agent helper.") }
             await MainActor.run {
                 message = result.trimmingCharacters(in: .whitespacesAndNewlines)
                 working = false

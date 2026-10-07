@@ -66,7 +66,7 @@ struct AssetsSheet: View {
     /// with the address always in sight.
     private var unverifiedTokens: some View {
         VStack(alignment: .leading, spacing: 12) {
-            DisclosureGroup("Unverified (\(sections.unverified.count))", isExpanded: $unverifiedOpen) {
+            DisclosureGroup(String(localized: "Unverified (\(sections.unverified.count))"), isExpanded: $unverifiedOpen) {
                 VStack(alignment: .leading, spacing: 0) {
                     Text("Someone sent these to you. Nothing you signed ever touched them — anyone can create a token, so check the contract address before trusting one.")
                         .font(.aeFootnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -97,7 +97,8 @@ struct AssetsSheet: View {
 
     private func updated(now: Date) -> String {
         guard let at = model.tokensUpdated else { return "" }
-        return now.timeIntervalSince(at) < 45 ? "Tokens updated just now" : "Tokens updated \(RelativeDateTimeFormatter().localizedString(for: at, relativeTo: now))"
+        return now.timeIntervalSince(at) < 45 ? String(localized: "Tokens updated just now")
+            : String(localized: "Tokens updated \(RelativeDateTimeFormatter().localizedString(for: at, relativeTo: now))")
     }
 }
 

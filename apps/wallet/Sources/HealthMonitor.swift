@@ -43,6 +43,15 @@ final class HealthMonitor: ObservableObject {
         self.clock = clock
     }
 
+    #if DEBUG
+    /// Design preview: the banner for `issue`, as the check would raise it.
+    func loadPreview(issue: HealthCheck.Issue) {
+        let c = HealthCheck()
+        alert = HealthCheck.Alert(issue: issue, sentence: c.sentence(issue), action: c.action(issue))
+        healthyBadgeAllowed = issue != .diskPaused
+    }
+    #endif
+
     /// Once per launch, beside the node and the update tracker.
     func start(node: NodeController, model: WalletModel, updateComing: @escaping @MainActor () -> Bool,
                updateUnhealthy: @escaping @MainActor () -> Bool, openUpdates: @escaping @MainActor () -> Void) {
@@ -217,8 +226,7 @@ struct HealthBanner: View {
                                 copied = true
                             }
                             .buttonStyle(.borderless).font(.aeFootnote)
-                            .help(HealthCheck.korean ? "주소·잔액·노드 ID 없이, 이 Mac 밖으로 보내지 않고 클립보드에만 복사해요."
-                                  : "Copies to the clipboard only — no address, balance or node ID, nothing sent from this Mac.")
+                            .help("Copies to the clipboard only — no address, balance or node ID, nothing sent from this Mac.")
                         }
                     }
                 }

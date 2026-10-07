@@ -260,19 +260,19 @@ enum ProviderGate {
 /// raw calldata under a disclosure).
 enum CallDescribe {
     static func action(to: String, data: String) -> String {
-        if to.isEmpty { return "Deploy a contract (\((data.count - 2) / 2) bytes)" }
-        if data == "0x" { return "Send \(Brand.networkCoinTicker)" }
+        if to.isEmpty { return String(localized: "Deploy a contract (\((data.count - 2) / 2) bytes)") }
+        if data == "0x" { return String(localized: "Send \(Brand.networkCoinTicker)") }
         let known: [String: String] = [
-            "0xa9059cbb": "Token transfer", "0x095ea7b3": "Token approval (allows spending)", "0x23b872dd": "Token transfer from",
+            "0xa9059cbb": String(localized: "Token transfer"), "0x095ea7b3": String(localized: "Token approval (allows spending)"), "0x23b872dd": String(localized: "Token transfer from"),
             // EastSea DEX router
-            "0x38ed1739": "Swap tokens", "0xac344b4d": "Swap \(Brand.networkCoinTicker) for tokens", "0x3f070ce1": "Swap tokens for \(Brand.networkCoinTicker)",
-            "0xe8e33700": "Add liquidity", "0xcf2df7c6": "Add liquidity with \(Brand.networkCoinTicker)", "0xbaa2abde": "Remove liquidity",
-            "0x0fb9ca68": "Remove liquidity to \(Brand.networkCoinTicker)", "0xd0e30db0": "Wrap \(Brand.networkCoinTicker)", "0x2e1a7d4d": "Unwrap \(Brand.networkCoinTicker)",
-            "0x3ca6d100": "Create a token", "0xc7ff321d": "Create a token",
+            "0x38ed1739": String(localized: "Swap tokens"), "0xac344b4d": String(localized: "Swap \(Brand.networkCoinTicker) for tokens"), "0x3f070ce1": String(localized: "Swap tokens for \(Brand.networkCoinTicker)"),
+            "0xe8e33700": String(localized: "Add liquidity"), "0xcf2df7c6": String(localized: "Add liquidity with \(Brand.networkCoinTicker)"), "0xbaa2abde": String(localized: "Remove liquidity"),
+            "0x0fb9ca68": String(localized: "Remove liquidity to \(Brand.networkCoinTicker)"), "0xd0e30db0": String(localized: "Wrap \(Brand.networkCoinTicker)"), "0x2e1a7d4d": String(localized: "Unwrap \(Brand.networkCoinTicker)"),
+            "0x3ca6d100": String(localized: "Create a token"), "0xc7ff321d": String(localized: "Create a token"),
             // EastSea launchpad
-            "0x42a81515": "Launch a token", "0xcce7ec13": "Buy on the launch curve", "0x6a272462": "Sell on the launch curve",
-            "0x5cf66fe1": "Buy with \(Brand.networkCoinTicker) (graduated pool)", "0xff5b07d8": "Sell for \(Brand.networkCoinTicker) (graduated pool)",
+            "0x42a81515": String(localized: "Launch a token"), "0xcce7ec13": String(localized: "Buy on the launch curve"), "0x6a272462": String(localized: "Sell on the launch curve"),
+            "0x5cf66fe1": String(localized: "Buy with \(Brand.networkCoinTicker) (graduated pool)"), "0xff5b07d8": String(localized: "Sell for \(Brand.networkCoinTicker) (graduated pool)"),
         ]
-        return known[String(data.prefix(10))] ?? "Contract call \(data.prefix(10))"
+        return known[String(data.prefix(10))] ?? String(localized: "Contract call \(String(data.prefix(10)))")
     }
 }

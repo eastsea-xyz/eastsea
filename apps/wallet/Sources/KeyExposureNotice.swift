@@ -25,6 +25,7 @@ enum KeyExposureNotice {
         }
     }
 
-    /// In the app's language (Korean when the first preferred language is).
-    var text: String { text(korean: Locale.preferredLanguages.first?.hasPrefix("ko") ?? false) }
+    /// In the language the app itself is shown in (its bundle localization), so a
+    /// Korean-preferring Mac never sees one Korean line in an English screen.
+    var text: String { text(korean: Bundle.main.preferredLocalizations.first?.hasPrefix("ko") ?? false) }
 }

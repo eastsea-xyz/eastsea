@@ -30,11 +30,11 @@ enum BrowserOriginPolicy {
     static func classify(_ url: URL) -> Classification {
         let scheme = url.scheme?.lowercased() ?? ""
         if scheme == bundledScheme { return .bundled }
-        guard let host = url.host, !host.isEmpty else { return .blocked(why: "That is not a web address.") }
+        guard let host = url.host, !host.isEmpty else { return .blocked(why: String(localized: "That is not a web address.")) }
         guard scheme == "https" else {
             return .blocked(why: scheme == "http"
-                ? "This address is http, not https. Explore only opens secure pages."
-                : "Explore only opens https pages (and the explorer bundled with the app).")
+                ? String(localized: "This address is http, not https. Explore only opens secure pages.")
+                : String(localized: "Explore only opens https pages (and the explorer bundled with the app)."))
         }
         let lookalike = looksLikeCurated(host)
         let punycode = host.lowercased().split(separator: ".").contains { $0.hasPrefix("xn--") }

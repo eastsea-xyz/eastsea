@@ -44,10 +44,10 @@ for (chain, table) in KnownTokens.tokens {
     }
 }
 check(KnownTokens.native[7780]?.decimals == 18, "the native entry is 18 decimals")
-check(KnownTokens.native[7780]?.symbol == "AETH" && KnownTokens.native[7780]?.name == "Test AETH",
-      "the legacy 7780 testnet kept its own coin label")
-check(Brand.coinTicker(chainId: 7780) == "AETH" && Brand.coinName(chainId: 7780) == "Test AETH",
-      "the brand labels the legacy testnet AETH")
+check(KnownTokens.native[7780]?.symbol == "DBLN" && KnownTokens.native[7780]?.name == "Doubloon",
+      "the legacy 7780 testnet's coin is shown as DBLN too: no screen carries the old brand")
+check(Brand.coinTicker(chainId: 7780) == "DBLN" && Brand.coinName(chainId: 7780) == "Doubloon",
+      "the brand labels the legacy testnet DBLN")
 check(Brand.coinTicker(chainId: 0) == "DBLN" && Brand.coinName(chainId: 0) == "Doubloon",
       "a new-genesis chain is labeled DBLN/Doubloon")
 check(KnownTokens.native[7780]?.symbol == Brand.coinTicker(chainId: 7780),

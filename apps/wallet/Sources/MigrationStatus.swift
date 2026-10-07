@@ -20,6 +20,15 @@ final class MigrationStatus: ObservableObject {
     /// sentence, until dismissed. The gates keep the node and new keys off.
     @Published var problem: String?
 
+    #if DEBUG
+    /// Design preview: the overlay mid-move, or after a move that did not finish.
+    func loadPreview(moving: Bool, problem: String?) {
+        self.moving = moving
+        fraction = moving ? 0.42 : 0
+        self.problem = problem
+    }
+    #endif
+
     /// Called on the main queue after every background run.
     var onFinish: ((DataMigration.Outcome) -> Void)?
 
@@ -55,11 +64,10 @@ struct MigrationOverlay: View {
     var body: some View {
         if status.moving {
             card {
-                Text("Moving your data from Aether to EastSea").font(.headline)
+                Text("Moving your data from Aether to \(Brand.name)").font(.headline)
                 ProgressView(value: status.fraction)
                     .frame(width: 280)
-                Text("Your wallet and node data are copied and checked, byte by byte. This can take a few minutes. "
-                     + "Keep EastSea open; if it is closed, the move picks up where it left off next time.")
+                Text("Your wallet and node data are copied and checked, byte by byte. This can take a few minutes. Keep \(Brand.name) open; if it is closed, the move picks up where it left off next time.")
                     .font(.caption).foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .frame(width: 320)

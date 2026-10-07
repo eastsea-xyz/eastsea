@@ -6,7 +6,7 @@ enum ProvingBadgeText {
     }
 
     static func line(proofsFailing: Bool, today: String) -> String {
-        proofsFailing ? "Proofs failing" : "Proving · +\(today) today"
+        proofsFailing ? String(localized: "Proofs failing") : String(localized: "Proving · +\(today) today")
     }
 }
 

@@ -22,7 +22,7 @@ struct MenuBarPanel: View {
                     .font(.caption.bold()).foregroundStyle(.orange)
             }
             HStack {
-                Text("\(Brand.project)").font(.headline)
+                Text(Brand.name).font(.headline)
                 Spacer()
                 Text(Short.address(model.address)).font(.caption.monospaced()).foregroundStyle(.secondary)
             }
@@ -37,13 +37,13 @@ struct MenuBarPanel: View {
                 } else if !health.healthyBadgeAllowed {
                     // L4: never "Verified" on a half-dead node (docs/design/32).
                     Image(systemName: "externaldrive.fill.badge.exclamationmark").foregroundStyle(Color.warn)
-                    Text(HealthCheck.korean ? "저장 공간 부족 · 노드 멈춤" : "Storage low · node paused")
+                    Text("Storage low · node paused")
                 } else if model.account != nil && model.verifyError == nil {
                     Image(systemName: "checkmark.shield.fill")
                     Text("Verified on this Mac")
                 } else {
                     OrbitSpinner().frame(width: 12, height: 12)
-                    Text(model.networkOutdated ? "Updating the app…" : "Verifying…")
+                    Text(model.networkOutdated ? String(localized: "Updating the app…") : String(localized: "Verifying…"))
                 }
             }
             .font(.aeCaption).foregroundStyle(.secondary)
@@ -78,22 +78,21 @@ struct MenuBarPanel: View {
             if node.prove, let p = node.prover {
                 VStack(alignment: .leading, spacing: 2) {
                     if !p.running { Text("Prover not running").foregroundStyle(.red) }
-                    if let h = p.proving { Text("Proving block #\(h)…") }
+                    if let h = p.proving { Text("Proving block #\(String(h))…") }
                     if let h = p.last_height {
-                        Text("Proved block #\(h) · \(p.last_txs ?? 0) tx · \(Int((p.last_seconds ?? 0).rounded())) s")
+                        Text("Proved block #\(String(h)) · \(p.last_txs ?? 0) tx · \(Int((p.last_seconds ?? 0).rounded())) s")
                     }
-                    Text("\(p.proofs ?? 0) proofs this session\(p.lag.map { " · \($0) blocks behind" } ?? "")")
+                    Text(p.lag.map { String(localized: "\(p.proofs ?? 0) proofs this session · \($0) blocks behind") }
+                         ?? String(localized: "\(p.proofs ?? 0) proofs this session"))
                     if p.proofs_failing == true {
                         Text(p.program_mismatch == true
-                             ? "Proofs failing · proof program mismatch"
-                             : (p.acceptance_rate_percent.map { "Proofs failing · \($0)% accepted recently" } ?? "Proofs failing"))
+                             ? String(localized: "Proofs failing · this Mac proves with a different program than the network")
+                             : (p.acceptance_rate_percent.map { String(localized: "Proofs failing · \($0)% accepted recently") } ?? String(localized: "Proofs failing")))
                             .foregroundStyle(.red)
                     }
                     if let paused = p.paused {
                         // docs/ops/resource-limits.md: the node's own words for why it holds proving.
-                        Text(paused == "memory"
-                             ? "Paused: over the memory cap, waiting out its pause"
-                             : "Paused: \(paused == "program" ? (p.program_unknown == true ? "cannot confirm validator proof program" : "proof program differs from validators") : paused == "stalled" ? "the prover stopped answering; it restarts itself" : paused == "pressure" ? "system memory pressure" : paused == "battery" ? "on battery" : "disk space low")")
+                        Text(Self.pausedText(paused, programUnknown: p.program_unknown == true))
                             .foregroundStyle(.secondary)
                     }
                     if let r = p.last_reward {
@@ -104,7 +103,7 @@ struct MenuBarPanel: View {
             }
             Divider()
             HStack {
-                Button("Open \(Brand.project)") {
+                Button("Open \(Brand.name)") {
                     NSApp.setActivationPolicy(.regular)
                     openWindow(id: "main")
                     NSApp.activate(ignoringOtherApps: true)
@@ -116,7 +115,7 @@ struct MenuBarPanel: View {
                 Spacer()
                 Menu {
                     if node.prove { Button("Export Reward Records…") { exportRewards() } }
-                    Button("Quit \(Brand.project)") { NSApp.terminate(nil) }
+                    Button("Quit \(Brand.name)") { NSApp.terminate(nil) }
                 } label: { Image(systemName: "ellipsis.circle") }
                     .menuStyle(.borderlessButton).fixedSize()
             }
@@ -128,11 +127,25 @@ struct MenuBarPanel: View {
     private var nodeLine: String {
         if node.wrongLocation { return InstallLocation.moveSentence }
         switch node.state {
-        case .off: return "Off"
-        case .starting: return node.height > 0 ? "Catching up · block #\(node.height)" : "Starting…"
-        case .running: return "Verifying · block #\(node.height)"
-        case .waitingForPower: return "Paused until the Mac is on power"
+        case .off: return String(localized: "Off")
+        case .starting: return node.height > 0 ? String(localized: "Catching up · block #\(String(node.height))") : String(localized: "Starting…")
+        case .running: return String(localized: "Verifying · block #\(String(node.height))")
+        case .waitingForPower: return String(localized: "Paused until the Mac is on power")
         case .failed(let e): return e
+        }
+    }
+
+    /// Why proving holds, in the node's own categories (docs/ops/resource-limits.md).
+    private static func pausedText(_ paused: String, programUnknown: Bool) -> String {
+        switch paused {
+        case "memory": String(localized: "Paused: over the memory limit, waiting a moment before trying again")
+        case "program": programUnknown
+            ? String(localized: "Paused: cannot confirm which proving program the network uses")
+            : String(localized: "Paused: this Mac's proving program differs from the network's")
+        case "stalled": String(localized: "Paused: the prover stopped answering; it restarts itself")
+        case "pressure": String(localized: "Paused: this Mac is short on memory")
+        case "battery": String(localized: "Paused: on battery")
+        default: String(localized: "Paused: disk space low")
         }
     }
 

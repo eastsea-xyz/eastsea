@@ -51,15 +51,15 @@ enum BalanceBreakdownText {
     /// card never lists what never happened).
     static func lines(_ b: BalanceBreakdown) -> [BalanceSourceLine] {
         let inflow = [
-            ("Proof rewards", b.proofRewardsWei),
-            ("Node rewards", b.nodeRewardsWei),
-            ("Received", b.receivedWei),
-            ("Faucet", b.faucetWei),
-            ("Unwrapped", b.unwrappedWei),
+            (String(localized: "Proof rewards"), b.proofRewardsWei),
+            (String(localized: "Node rewards"), b.nodeRewardsWei),
+            (String(localized: "Received"), b.receivedWei),
+            (String(localized: "Faucet"), b.faucetWei),
+            (String(localized: "Unwrapped"), b.unwrappedWei),
         ]
         let outflow = [
-            ("Sent", b.sentWei),
-            ("Fees", b.feesWei),
+            (String(localized: "Sent"), b.sentWei),
+            (String(localized: "Fees"), b.feesWei),
         ]
         return (inflow.map { ($0.0, $0.1, false) } + outflow.map { ($0.0, $0.1, true) })
             .filter { $0.1 != "0" }
@@ -73,10 +73,10 @@ enum BalanceBreakdownText {
         guard !b.itemizesCompletely else { return nil }
         if b.differenceWei.hasPrefix("-") {
             let over = ChainActivity.units(String(b.differenceWei.dropFirst()))
-            return "\(over) \(Brand.networkCoinTicker) more itemized than the balance shows — try again in a moment"
+            return String(localized: "\(over) \(Brand.networkCoinTicker) more itemized than the balance shows — try again in a moment")
         }
         let missing = ChainActivity.units(b.differenceWei)
-        return "\(missing) \(Brand.networkCoinTicker) not yet itemized — load older activity to account for it"
+        return String(localized: "\(missing) \(Brand.networkCoinTicker) not yet itemized — load older activity to account for it")
     }
 }
 

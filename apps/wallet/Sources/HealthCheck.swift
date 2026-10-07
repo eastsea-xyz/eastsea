@@ -412,7 +412,7 @@ struct HealthCheck {
     }
 
     /// The app's language, as `NodeWatchdog.Failure.sentence` decides it.
-    static var korean: Bool { Locale.preferredLanguages.first?.hasPrefix("ko") ?? false }
+    static var korean: Bool { Bundle.main.preferredLocalizations.first?.hasPrefix("ko") ?? false }
 
     func action(_ issue: Issue) -> Action? {
         switch issue {

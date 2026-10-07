@@ -43,9 +43,9 @@ enum LegacyAether {
 
     /// What the user is asked, in their language.
     static func question(ko: Bool) -> (title: String, body: String, confirm: String, later: String) {
-        ko ? ("이전 Aether 앱이 아직 이 Mac에 있습니다",
-              "\(Brand.projectKo)가 Aether를 대신합니다. Aether가 남아 있으면 로그인할 때 열려 이전 데이터를 붙잡고 노드를 하나 더 돌립니다. "
-                + "Aether를 종료하고 휴지통으로 옮길까요? 데이터는 지우지 않습니다 — 지갑과 노드 데이터는 \(Brand.projectKo)가 옮겨 둡니다.",
+        ko ? ("이전 Aether 앱이 아직 이 Mac에 있어요",
+              "\(Brand.projectKo)가 Aether를 대신해요. Aether가 남아 있으면 로그인할 때 열려서 이전 데이터를 붙잡고 노드를 하나 더 돌려요. "
+                + "Aether를 종료하고 휴지통으로 옮길까요? 데이터는 지우지 않아요. 지갑과 노드 데이터는 \(Brand.projectKo)가 옮겨 둬요.",
               "Aether 종료 후 휴지통으로", "나중에")
            : ("The old Aether app is still on this Mac",
               "\(Brand.project) replaces Aether. While Aether is installed it opens at login, holds on to the old data "
@@ -79,9 +79,13 @@ enum LegacyAether {
     /// Ask once per launch; on yes, quit every copy and move its bundle to
     /// the Trash (recoverable), then call `done` (the migration retries).
     static func offerRemoval(done: @escaping () -> Void) {
+        #if WALLET_SCREENS
+        // The screens renderer (scripts/wallet-screens.sh) never touches the real data.
+        return 
+        #endif
         let copies = nodeRunningCopies()
         guard !copies.isEmpty else { return }
-        let q = question(ko: Locale.preferredLanguages.first?.hasPrefix("ko") ?? false)
+        let q = question(ko: Bundle.main.preferredLocalizations.first?.hasPrefix("ko") ?? false)
         let alert = NSAlert()
         alert.messageText = q.title
         alert.informativeText = q.body + "\n\n" + copies.map { $0.url.path }.joined(separator: "\n")

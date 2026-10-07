@@ -65,11 +65,11 @@ final class ReleaseUpdateGate {
         }
         if trust.legacy { return }
         guard configuredChainId() == trust.chainId else {
-            finished(nil, "This update is not approved on chain yet", false)
+            finished(nil, String(localized: "This update is not approved by the network yet."), false)
             return
         }
         guard let signature = Self.sparkleSignature(item) else {
-            finished(nil, "This update is not approved on chain yet", false)
+            finished(nil, String(localized: "This update is not approved by the network yet."), false)
             return
         }
         let key = Self.itemKey(item, signature: signature)
@@ -87,7 +87,7 @@ final class ReleaseUpdateGate {
                 DispatchQueue.main.async { finished(result.0, result.1, result.2) }
             } catch {
                 _ = self?.lock.withLock { self?.checking.remove(key) }
-                DispatchQueue.main.async { finished(nil, "This update is not approved on chain yet", false) }
+                DispatchQueue.main.async { finished(nil, String(localized: "This update is not approved by the network yet."), false) }
             }
         }
     }
@@ -130,8 +130,8 @@ final class ReleaseUpdateGate {
             availableAt: entry.emergency || readyAt.overflow ? nil : Date(timeIntervalSince1970: TimeInterval(readyAt.partialValue)),
             emergency: entry.emergency)
         switch decide(entry.archiveSha256) {
-        case .pending: return (pending, "This update is not approved on chain yet", false)
-        case .rejected: return (nil, "This update is not approved on chain yet", false)
+        case .pending: return (pending, String(localized: "This update is not approved by the network yet."), false)
+        case .rejected: return (nil, String(localized: "This update is not approved by the network yet."), false)
         case .ready: break
         }
         // The URL is untrusted. Hash the archive before Sparkle's own download;
@@ -145,7 +145,7 @@ final class ReleaseUpdateGate {
         var hasher = SHA256()
         while let part = try handle.read(upToCount: 1024 * 1024), !part.isEmpty { hasher.update(data: part) }
         let archiveHash = Data(hasher.finalize()).map { String(format: "%02x", $0) }.joined()
-        guard decide(archiveHash) == .ready else { return (nil, "This update is not approved on chain yet", false) }
+        guard decide(archiveHash) == .ready else { return (nil, String(localized: "This update is not approved by the network yet."), false) }
         return (pending, nil, true)
     }
 

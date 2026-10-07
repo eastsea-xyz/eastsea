@@ -40,7 +40,7 @@ struct InstallLocation {
 
     /// One plain sentence (layer 4): what to do, in the app's language.
     static var moveSentence: String {
-        let ko = Locale.preferredLanguages.first?.hasPrefix("ko") ?? false
+        let ko = Bundle.main.preferredLocalizations.first?.hasPrefix("ko") ?? false
         return ko ? "\(Brand.projectKo)를 응용 프로그램 폴더로 옮긴 뒤 실행해 주세요."
             : "Move \(Brand.project) to your Applications folder to run it."
     }

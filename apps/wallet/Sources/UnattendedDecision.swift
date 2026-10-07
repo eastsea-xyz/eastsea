@@ -87,24 +87,26 @@ enum UnattendedDecision {
 
     /// The honest sentences about what happens after a power cut, in the app's
     /// language. Nothing here offers to change a setting the app cannot
-    /// change; where a person must act, it says where.
-    static func powerLines(_ facts: PowerFacts) -> [String] {
-        let ko = Locale.preferredLanguages.first?.hasPrefix("ko") ?? false
+    /// change; where a person must act, it says where. `ko` defaults to the
+    /// language the app bundle is shown in, so these lines never differ from
+    /// the screen around them.
+    static func powerLines(_ facts: PowerFacts,
+                           ko: Bool = Bundle.main.preferredLocalizations.first?.hasPrefix("ko") ?? false) -> [String] {
         switch (facts.fileVault, facts.autorestart) {
         case (true?, _):
             return [ko
-                ? "FileVault가 켜져 있어요. 정전이 나면 이 Mac은 잠금 화면에서 기다려요 — 한 번 잠금을 풀면 노드가 저절로 돌아옵니다. macOS 업데이트로 재시작하면 잠금 없이 돌아옵니다."
+                ? "FileVault가 켜져 있어요. 정전이 나면 이 Mac은 잠금 화면에서 기다려요 — 한 번 잠금을 풀면 노드가 저절로 돌아와요. macOS 업데이트로 재시동하면 잠금 없이 돌아와요."
                 : "FileVault is on. After a power cut this Mac waits at the unlock screen; unlock it once and the node comes back by itself. macOS update restarts come back unlocked."]
         case (false?, true?):
             return [ko
-                ? "정전이 나도 이 Mac은 저절로 켜지고, 로그인 없이 노드가 돌아옵니다."
+                ? "정전이 나도 이 Mac은 저절로 켜지고, 로그인 없이 노드가 돌아와요."
                 : "After a power cut this Mac starts up by itself and the node comes back without anyone logging in."]
         case (false?, _):
             return [ko
                 ? "정전 후 자동 켜기가 꺼져 있어요. 시스템 설정 ▸ 배터리(또는 에너지)에서 '정전 후 자동으로 켜기'를 켜 주세요."
                 : "\"Start up automatically after a power failure\" is off. Turn it on in System Settings ▸ Battery (or Energy).",
                 ko
-                ? "그 전까지는 정전 후 이 Mac을 직접 켜 주세요. 켜면 로그인 없이 노드가 돌아옵니다."
+                ? "그 전까지는 정전 후 이 Mac을 직접 켜 주세요. 켜면 로그인 없이 노드가 돌아와요."
                 : "Until then, turn this Mac on by hand after a power cut; the node then comes back without logging in."]
         default:
             return [ko

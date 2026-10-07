@@ -23,9 +23,9 @@ func spec(_ address: String?, _ symbol: String, chain: UInt64 = chain) -> TokenI
 }
 
 // ---- 1. the native coin ----
-check(spec(nil, Brand.coinTicker).kind == .nativeCoin(ticker: "AETH"), "no address is the native coin")
-check(spec("", Brand.coinTicker).kind == .nativeCoin(ticker: "AETH"), "an empty address is the native coin")
-check(spec(nil, "Whatever A Node Claims").kind == .nativeCoin(ticker: "AETH"), "the coin ignores any symbol claim")
+check(spec(nil, Brand.coinTicker).kind == .nativeCoin(ticker: "DBLN"), "no address is the native coin")
+check(spec("", Brand.coinTicker).kind == .nativeCoin(ticker: "DBLN"), "an empty address is the native coin")
+check(spec(nil, "Whatever A Node Claims").kind == .nativeCoin(ticker: "DBLN"), "the coin ignores any symbol claim")
 
 // ---- 2. official tokens are recognized by address only ----
 check(spec(waeth, "WAETH").kind == .official(symbol: "WAETH"), "the WAETH address gets WAETH art")
@@ -79,7 +79,7 @@ check(rgbA == TokenIconSpec.rgb(seed: TokenIconSpec.seed(of: usdx)), "the same s
 
 // ---- 7. accessibility: verification is said out loud ----
 check(spec(waeth, "WAETH").accessibilityLabel == "WAETH, verified", "official tokens say their name and verified")
-check(spec(nil, "AETH").accessibilityLabel == "AETH, verified", "the legacy testnet coin says its own ticker and verified")
+check(spec(nil, "AETH").accessibilityLabel == "DBLN, verified", "the legacy testnet coin is labeled DBLN and verified, whatever symbol is claimed")
 check(spec(nil, "AETH", chain: 7777).accessibilityLabel == "DBLN, verified", "a new-genesis coin says DBLN")
 check(spec(usdx, "USDX").accessibilityLabel == "Unverified token", "unknown tokens say unverified")
 

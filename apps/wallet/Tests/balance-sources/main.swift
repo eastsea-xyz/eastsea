@@ -57,7 +57,7 @@ let gapJSON = """
 """
 if let gap = try? BalanceBreakdown.decode(gapJSON) {
     let note = BalanceBreakdownText.notYetItemized(gap)
-    expect("remainder is named", note == "2 AETH not yet itemized — load older activity to account for it", note ?? "nil")
+    expect("remainder is named", note == "2 DBLN not yet itemized — load older activity to account for it", note ?? "nil")
     expect("remainder keeps its units", BalanceBreakdownText.lines(gap).count == 1)
 }
 // A negative difference (rows claiming more than the balance holds) is said
@@ -69,7 +69,7 @@ let overJSON = """
 """
 if let over = try? BalanceBreakdown.decode(overJSON) {
     let note = BalanceBreakdownText.notYetItemized(over)
-    expect("over-count named as such", note == "0.9 AETH more itemized than the balance shows — try again in a moment", note ?? "nil")
+    expect("over-count named as such", note == "0.9 DBLN more itemized than the balance shows — try again in a moment", note ?? "nil")
 }
 
 // MARK: - reward rows and day grouping

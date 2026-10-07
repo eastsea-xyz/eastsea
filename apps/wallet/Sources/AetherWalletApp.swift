@@ -20,7 +20,7 @@ struct AetherWalletApp: App {
     #endif
 
     var body: some Scene {
-        WindowGroup("\(Brand.project)", id: "main") {
+        WindowGroup(Brand.name, id: "main") {
             #if os(macOS)
             ContentView()
                 .environmentObject(model)
@@ -81,6 +81,7 @@ struct AetherWalletApp: App {
                 Toggle("Developer Mode", isOn: $developerMode)
                     .keyboardShortcut("d", modifiers: [.command, .shift])
             }
+            CommandMenu("Go") { PageCommands() }
         }
         #endif
         #if os(macOS)
@@ -104,122 +105,16 @@ struct AetherWalletApp: App {
 }
 
 #if os(macOS)
-/// Aether ▸ Settings: how the node runs on this Mac.
-struct SettingsView: View {
-    @EnvironmentObject var node: NodeController
-    @EnvironmentObject var model: WalletModel
-    @EnvironmentObject var updates: Updates
-    @EnvironmentObject var unattended: UnattendedDaemon
-    @AppStorage("developerMode") private var developerMode = false
-    @AppStorage("useDevelopmentNetwork") private var useDevelopmentNetwork = false
-    @AppStorage("developmentNetworkPort") private var developmentNetworkPort = 18546
+/// Go ▸ Home … Security, ⌘1…⌘5: every page is one shortcut away, whatever
+/// the window's width or whether its sidebar shows.
+struct PageCommands: View {
+    @FocusedBinding(\.dashboardPage) private var page
 
     var body: some View {
-        Form {
-            if model.developmentNetwork {
-                Text("Dev network · 127.0.0.1:\(developmentNetworkPort)")
-                    .font(.caption.bold()).foregroundStyle(.orange)
-            }
-            Toggle("Run a node on this Mac", isOn: $node.enabled)
-            Toggle("Only while on the power adapter", isOn: $node.onlyOnPower)
-                .help("On a laptop, pause the node on battery and resume on power.")
-            Label(node.awakeNote, systemImage: node.keepsAwake ? "sun.max.fill" : "moon.zzz")
-                .font(.caption).foregroundStyle(.secondary)
-            Toggle("Open \(Brand.project) at login", isOn: Binding(get: { node.startAtLogin }, set: { node.startAtLogin = $0 }))
-            UnattendedSection()
-            HistoryStorageSection()
-            ResourcesSection()
-            Text("Your node verifies every block itself and your wallet asks it instead of the network. Quitting \(Brand.project) stops it.")
-                .font(.caption).foregroundStyle(.secondary)
-            // Honest power ranges (docs/research/mac-power-cost-2026.md): the node is
-            // cheap; GPU proving is the costly part. No won figure — electricity
-            // prices vary, and the range is the honest statement.
-            Text("Power: roughly 5–6 W while only verifying (about 4 kWh a month); proving on the GPU adds roughly 28–50 W (about 20–36 kWh a month).")
-                .font(.caption).foregroundStyle(.secondary)
-            Divider()
-            Toggle("Developer mode (proofs, state roots, raw logs)", isOn: $developerMode)
-                .help("Also in View ▸ Developer Mode (⇧⌘D)")
-            if developerMode {
-                Picker("Network", selection: $useDevelopmentNetwork) {
-                    Text("Default").tag(false)
-                    Text("Local development network").tag(true)
-                }
-                Stepper("Local RPC: http://127.0.0.1:\(developmentNetworkPort)", value: $developmentNetworkPort, in: 1024...65535)
-                    .disabled(!useDevelopmentNetwork)
-            }
-            if let pending = updates.pendingRelease {
-                Divider()
-                Text("Approved release \(pending.version) (\(pending.build))")
-                Text("SHA-256: \(pending.fingerprint)")
-                    .font(.caption.monospaced()).fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-                Text("Published in block \(pending.publishedBlock)")
-                    .font(.caption).foregroundStyle(.secondary)
-                if pending.emergency {
-                    Label("Emergency release · all three builders signed", systemImage: "exclamationmark.shield")
-                } else if let date = pending.availableAt {
-                    Text("Installable after \(date.formatted())")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            if let issue = updates.approvalIssue {
-                Text(issue).font(.caption).foregroundStyle(.orange)
-            }
-        }
-        .onChange(of: useDevelopmentNetwork) { _, dev in
-            model.selectNetwork(development: dev, port: UInt16(developmentNetworkPort))
-            if !dev { node.refreshWalletRoute() }
-        }
-        .onChange(of: developmentNetworkPort) { _, port in
-            if useDevelopmentNetwork { model.selectNetwork(development: true, port: UInt16(port)) }
-        }
-        .onChange(of: developerMode) { _, enabled in
-            if !enabled { useDevelopmentNetwork = false; model.selectNetwork(development: false); node.refreshWalletRoute() }
-        }
-        .padding(20)
-        .frame(width: 420)
-    }
-}
-
-/// Settings ▸ the "keep this Mac's node running after restarts" switch
-/// (docs/design/29-unattended-restart.md): the toggle, the one-time system
-/// approval it needs, and the honest power sentences — what comes back after
-/// a power cut, and where macOS itself stops (FileVault).
-struct UnattendedSection: View {
-    @EnvironmentObject var node: NodeController
-    @EnvironmentObject var unattended: UnattendedDaemon
-
-    var body: some View {
-        Group {
-            Toggle("Keep this Mac's node running after restarts", isOn: $unattended.enabled)
-                .help("After a reboot the node — and this Mac's vote — come back by themselves, without anyone logging in, everywhere macOS allows it. A FileVault cold boot waits for one unlock first.")
-            switch unattended.status {
-            case .needsApproval:
-                Label("Registered. Allow EastSea in System Settings ▸ Login Items — until then the daemon does not run.", systemImage: "hand.raised")
-                    .font(.caption).foregroundStyle(.orange)
-                Button("Open System Settings") { unattended.openApprovalPane() }
-            case .failed(let why):
-                Label(why, systemImage: "exclamationmark.triangle")
-                    .font(.caption).foregroundStyle(.orange)
-            case .off, .approved:
-                EmptyView()
-            }
-            if unattended.enabled {
-                Label("This Mac is in, or can enter, the voting set: that is why this is on by default. While nobody is logged in the node keeps verifying and voting; daily reward re-attestation resumes when the app is open again.", systemImage: "arrow.clockwise")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            ForEach(UnattendedDecision.powerLines(unattended.power), id: \.self) { line in
-                Label(line, systemImage: "bolt")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .onAppear {
-            // The user approves outside the app; re-read both facts whenever
-            // Settings appears (docs/design/29).
-            unattended.refreshStatus()
-            unattended.refreshPower()
+        ForEach(Array(SimpleDashboard.Page.allCases.enumerated()), id: \.element) { i, p in
+            Button(p.title) { page = p }
+                .keyboardShortcut(KeyEquivalent(Character("\(i + 1)")), modifiers: .command)
+                .disabled(page == nil)
         }
     }
 }
@@ -377,68 +272,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 }
 
-/// Link the bundled `aether` and `aether-agent` into ~/.local/bin.
-enum CommandLineTools {
-    static func install() {
-        // Red team #10: a symlink into a bundle that disappears (a DMG, a
-        // translocated copy) is a command line that breaks at the next
-        // unmount — the move sentence says what to do instead.
-        guard InstallLocation.currentIsRunnable else {
-            let alert = NSAlert()
-            alert.messageText = InstallLocation.moveSentence
-            alert.informativeText = Brand.project + " is running from a temporary place."
-            alert.runModal()
-            return
-        }
-        let helpers = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers")
-        let bin = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin")
-        var done: [String] = []
-        do {
-            try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
-            for tool in ["aether", "aether-agent"] {
-                let src = helpers.appendingPathComponent(tool)
-                guard FileManager.default.isExecutableFile(atPath: src.path) else { continue }
-                let dst = bin.appendingPathComponent(tool)
-                try? FileManager.default.removeItem(at: dst)
-                try FileManager.default.createSymbolicLink(at: dst, withDestinationURL: src)
-                done.append(dst.path)
-            }
-        } catch {
-            done.append("failed: \(error.localizedDescription)")
-        }
-        let alert = NSAlert()
-        alert.messageText = done.isEmpty ? "No command-line tools in this build" : "Command-line tools installed"
-        alert.informativeText = done.joined(separator: "\n") + "\n\nMake sure ~/.local/bin is on your PATH."
-        alert.runModal()
-    }
-}
-/// The app's update state for the UI (Sparkle does the checking and installing).
-@MainActor
-final class Updates: ObservableObject {
-    private let controller: SPUStandardUpdaterController
-    @Published var pendingRelease: PendingRelease?
-    @Published var approvalIssue: String?
-    /// The update tracker's one honest sentence (red team #11): a failure and
-    /// what happens next, or the post-update health check in progress.
-    @Published var installNotice: String?
-
-    init(_ controller: SPUStandardUpdaterController) {
-        self.controller = controller
-    }
-
-    var lastCheck: Date? { controller.updater.lastUpdateCheckDate }
-    var version: String {
-        let info = Bundle.main.infoDictionary
-        return "\(info?["CFBundleShortVersionString"] as? String ?? "?") (\(info?["CFBundleVersion"] as? String ?? "?"))"
-    }
-
-    /// Check now, showing Sparkle's window (up to date, or the new version).
-    func check() {
-        controller.checkForUpdates(nil)
-        objectWillChange.send()
-    }
-}
-
 extension AppDelegate: SPUUpdaterDelegate {
     /// The canary ring (docs/design/32-health-signal.md §5.2): channel items
     /// are offered only to a Mac set to `updateChannel = canary`. The release
@@ -488,7 +321,7 @@ extension AppDelegate: SPUUpdaterDelegate {
         }
         Task { @MainActor [weak self] in self?.startReleasePreflight(item) }
         throw NSError(domain: "AetherReleaseApproval", code: 1,
-            userInfo: [NSLocalizedDescriptionKey: "This update is not approved on chain yet"])
+            userInfo: [NSLocalizedDescriptionKey: String(localized: "This update is not approved by the network yet.")])
     }
 
     /// Sparkle gave up on this cycle (download error, verification failure,

@@ -70,8 +70,8 @@ pub fn create_key_binding(data: &Path, public: &crate::block::PublicKey) -> Resu
 
 /// Files that are this Mac's identity: they live in `--data` (the key
 /// directory, the internal disk) and nowhere else.
-pub const KEY_FILES: [&str; 6] = [
-    "validator.key", "validator.pub.json", "node-account.key", "threshold.json", "wallet-node.key", "key-binding.json",
+pub const KEY_FILES: [&str; 7] = [
+    "validator.key", "validator.pub.json", "node-account.key", "threshold.json", "wallet-node.key", "key-binding.json", "key-creation.json",
 ];
 
 /// Key files at the top level of the chain-data directory or of its
@@ -1740,7 +1740,7 @@ fn write_secret(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 /// Keys that identify this Mac; everything else in <data> belongs to one network.
-const KEEP_ACROSS_NETWORKS: [&str; 5] = ["validator.key", "validator.pub.json", "node-account.key", "key-binding.json", "run.lock"];
+const KEEP_ACROSS_NETWORKS: [&str; 6] = ["validator.key", "validator.pub.json", "node-account.key", "key-binding.json", "key-creation.json", "run.lock"];
 
 /// Put `network` in `<data>/network.json`: the first time, or when it is a
 /// different network (a testnet reset: other chain id or committee identity).

@@ -60,6 +60,18 @@ pub fn sync_parent(path: &Path) -> Result<(), String> {
     d.sync_all().map_err(|e| format!("{}: {e}", dir.display()))
 }
 
+/// Persist every newly created ancestor as well as the files inside it. An
+/// fsynced staging file is insufficient if its new data directory can vanish.
+pub(crate) fn create_dir_all_durable(dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    // An earlier failed sync can leave visible directories too; existence
+    // alone must not bypass durability on the retry. Sync up to the root.
+    let absolute = std::fs::canonicalize(dir).map_err(|e| e.to_string())?;
+    let mut next = absolute.as_path();
+    while let Some(parent) = next.parent() { sync_parent(next)?; next = parent; }
+    Ok(())
+}
+
 #[cfg(test)]
 thread_local! { static FAIL_SYNC: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) }; }
 
@@ -94,7 +106,7 @@ fn publish_once(tmp: &Path, path: &Path) -> std::io::Result<()> {
 
 fn write(path: &Path, bytes: &[u8], mode: u32, exclusive: bool) -> Result<(), CreateError> {
     let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    create_dir_all_durable(dir)?;
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
     let tmp = dir.join(format!(".{name}.new-{}-{}-{}", std::process::id(),
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
@@ -105,6 +117,13 @@ fn write(path: &Path, bytes: &[u8], mode: u32, exclusive: bool) -> Result<(), Cr
             .create_new(true)
             .mode(mode)
             .open(&tmp)?;
+        #[cfg(all(feature = "test-seam", debug_assertions))]
+        if path.file_name().is_some_and(|name| name == crate::roster::CREATION_FILE)
+            && std::env::var("AETHER_TEST_KEY_CREATION_CRASH").ok().as_deref() == Some("partial-stage") {
+            f.write_all(&bytes[..bytes.len() / 2])?;
+            f.sync_all()?;
+            std::process::exit(86);
+        }
         f.write_all(bytes)?;
         f.sync_all()?;
         Ok(())
@@ -141,6 +160,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn a_new_data_directory_requires_its_parent_to_be_synced() {
+        let root = tmp("new-directory-sync");
+        let path = root.join("new-data").join("validator.key");
+        fail_sync_for_test(Some(&root));
+        let result = create(&path, b"secret", 0o600);
+        fail_sync_for_test(None);
+        assert!(result.is_err(), "a new data directory must not mask its parent fsync failure");
+        assert!(!path.exists(), "no identity may be published before its directory is durable");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

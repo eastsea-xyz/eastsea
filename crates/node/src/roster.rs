@@ -619,6 +619,86 @@ struct KeyFileJson {
     node: String,
 }
 
+pub const CREATION_FILE: &str = "key-creation.json";
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KeyCreation {
+    version: u32,
+    keys: KeyFileJson,
+    binding: Vec<u8>,
+    account: Option<String>,
+}
+
+/// Serialize first-install publication, including candidate-info and direct
+/// keygen callers that do not own run.lock. The sibling lock survives a lost
+/// data directory, just like the original-identity marker.
+pub(crate) fn lock_key_creation(dir: &Path) -> Result<std::fs::File, String> {
+    use std::os::unix::{fs::OpenOptionsExt as _, io::AsRawFd as _};
+    crate::atomic::create_dir_all_durable(dir)?;
+    let path = dir.with_extension("keys.lock");
+    let file = std::fs::OpenOptions::new().write(true).create(true).truncate(false)
+        .mode(0o600).open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err(format!("{}: {}", path.display(), std::io::Error::last_os_error()));
+    }
+    Ok(file)
+}
+
+fn creation_boundary(_point: &str) {
+    #[cfg(all(feature = "test-seam", debug_assertions))]
+    if std::env::var("AETHER_TEST_KEY_CREATION_CRASH").ok().as_deref() == Some(_point) {
+        // Process-kill simulation: leave exactly the durable state at this
+        // boundary; no unwinding or cleanup can repair it for the next start.
+        std::process::exit(86);
+    }
+}
+
+fn publish_identity_file(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
+    match crate::atomic::create_once(path, bytes, mode) {
+        Ok(()) => Ok(()),
+        Err(crate::atomic::CreateError::AlreadyExists) => {
+            let saved = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            if saved != bytes { return Err(format!("{} conflicts with the staged identity; restore the original keys", path.display())); }
+            crate::atomic::sync_parent(path)
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+fn resume_creation_locked(dir: &Path) -> Result<bool, String> {
+    let path = dir.join(CREATION_FILE);
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    let transaction: KeyCreation = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("{}: corrupt staged identity: {e}; no new key is generated", path.display()))?;
+    if transaction.version != 1 { return Err(format!("{}: unsupported staged identity version; no new key is generated", path.display())); }
+    let keys = LocalKeys::decode_key(&transaction.keys)?;
+    // Validate every staged field before publishing anything. A copied or
+    // corrupt transaction is never converted to a different local identity.
+    if let Some(seed) = &transaction.account {
+        let seed: [u8; 32] = hex::decode(seed).map_err(|e| e.to_string())?.try_into().map_err(|_| "staged account key length")?;
+        crate::faucet::Faucet::from_seed(&seed)?;
+    }
+    crate::key_binding::publish_prepared(dir, &keys.signer.public_key(), &transaction.binding)?;
+    creation_boundary("binding");
+    publish_identity_file(&dir.join(KEY_FILE), &serde_json::to_vec_pretty(&transaction.keys).map_err(|e| e.to_string())?, 0o600)?;
+    creation_boundary("validator");
+    if let Some(seed) = &transaction.account {
+        publish_identity_file(&dir.join(crate::candidate::ACCOUNT_FILE), seed.as_bytes(), 0o600)?;
+    }
+    creation_boundary("account");
+    publish_identity_file(&dir.join(PUBLIC_FILE), &serde_json::to_vec_pretty(&keys.public()).map_err(|e| e.to_string())?, 0o644)?;
+    creation_boundary("public");
+    std::fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    crate::atomic::sync_parent(&path)?;
+    creation_boundary("committed");
+    Ok(true)
+}
+
 impl LocalKeys {
     pub fn devnet(i: u64) -> Self {
         LocalKeys {
@@ -647,6 +727,12 @@ impl LocalKeys {
 
     /// Load `<dir>/validator.key`.
     pub fn load(dir: &Path) -> Result<Self, String> {
+        let _lock = lock_key_creation(dir)?;
+        resume_creation_locked(dir)?;
+        Self::load_bound(dir)
+    }
+
+    pub(crate) fn load_unchecked(dir: &Path) -> Result<Self, String> {
         let path = dir.join(KEY_FILE);
         let bytes = std::fs::read(&path).map_err(|e| {
             format!(
@@ -657,47 +743,80 @@ impl LocalKeys {
         })?;
         let j: KeyFileJson =
             serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
-        let c = hex::decode(j.consensus).map_err(|e| e.to_string())?;
+        Self::decode_key(&j)
+    }
+
+    fn decode_key(j: &KeyFileJson) -> Result<Self, String> {
+        let c = hex::decode(&j.consensus).map_err(|e| e.to_string())?;
         let signer = ed25519::PrivateKey::decode(c.as_slice())
             .map_err(|e| format!("consensus key: {e:?}"))?;
-        let n: [u8; 32] = hex::decode(j.node)
+        let n: [u8; 32] = hex::decode(&j.node)
             .map_err(|e| e.to_string())?
             .try_into()
             .map_err(|_| "node key length".to_string())?;
-        if crate::key_binding::check(dir, &signer.public_key())? == crate::key_binding::Checked::Created {
+        Ok(Self { signer, node_secret: SecretKey::from_bytes(&n), binding: None })
+    }
+
+    fn load_bound(dir: &Path) -> Result<Self, String> {
+        let mut keys = Self::load_unchecked(dir)?;
+        if crate::key_binding::check(dir, &keys.signer.public_key())? == crate::key_binding::Checked::Created {
             // CLI preflight runs before a tracing subscriber is installed.
             // Stderr reaches the supervisor/app log even during that preflight.
             eprintln!("warning: created missing hardware binding for an existing node key on this Mac: {}", dir.join(crate::key_binding::BINDING_FILE).display());
         }
-        let binding = Some(crate::key_binding::Guard::for_validator(dir, &signer.public_key()));
-        Ok(LocalKeys {
-            signer,
-            node_secret: SecretKey::from_bytes(&n),
-            binding,
-        })
+        keys.binding = Some(crate::key_binding::Guard::for_validator(dir, &keys.signer.public_key()));
+        Ok(keys)
     }
 
     /// Write `<dir>/validator.key` (mode 600) and `<dir>/validator.pub.json`. Refuses to overwrite.
     pub fn save(&self, dir: &Path) -> Result<(), String> {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        let _lock = lock_key_creation(dir)?;
+        resume_creation_locked(dir)?;
+        self.save_locked(dir, None)
+    }
+
+    fn save_locked(&self, dir: &Path, account: Option<String>) -> Result<(), String> {
         let path = dir.join(KEY_FILE);
         if path.exists() {
             return Err(format!("{} exists (keys are never overwritten)", path.display()));
         }
-        crate::supervisor::create_key_binding(dir, &self.signer.public_key())?;
-        let j = KeyFileJson {
-            consensus: hex::encode(self.signer.encode()),
-            node: hex::encode(self.node_secret.to_bytes()),
+        if dir.join(crate::key_binding::BINDING_FILE).exists() {
+            crate::key_binding::check(dir, &self.signer.public_key())?;
+        }
+        let transaction = KeyCreation {
+            version: 1,
+            keys: KeyFileJson { consensus: hex::encode(self.signer.encode()), node: hex::encode(self.node_secret.to_bytes()) },
+            binding: crate::key_binding::prepare_creation(&self.signer.public_key())?,
+            account,
         };
-        // Atomic replacement (red team #5): a crash or a full disk mid-write
-        // leaves no truncated key file a later start would treat as lost.
-        crate::atomic::create(&path, &serde_json::to_vec_pretty(&j).expect("json"), 0o600)?;
-        crate::atomic::replace(
-            &dir.join(PUBLIC_FILE),
-            &serde_json::to_vec_pretty(&self.public()).expect("json"),
-            0o644,
-        )?;
+        // Both secrets and the hardware binding are durable before either
+        // final name exists. Every interrupted publication resumes this key.
+        crate::atomic::create(&dir.join(CREATION_FILE), &serde_json::to_vec(&transaction).map_err(|e| e.to_string())?, 0o600)?;
+        creation_boundary("staged");
+        resume_creation_locked(dir)?;
         Ok(())
+    }
+
+    pub fn create_candidate(dir: &Path) -> Result<Self, String> {
+        let _lock = lock_key_creation(dir)?;
+        if resume_creation_locked(dir)? { return Self::load_bound(dir); }
+        let keys = Self::generate();
+        keys.save_locked(dir, Some(hex::encode(rand::random::<[u8; 32]>())))?;
+        Self::load_bound(dir)
+    }
+
+    pub(crate) fn load_or_create_candidate(dir: &Path) -> Result<Self, String> {
+        let _lock = lock_key_creation(dir)?;
+        resume_creation_locked(dir)?;
+        match Self::load_bound(dir) {
+            Ok(keys) => Ok(keys),
+            Err(e) if crate::candidate::registered_identity(dir) => Err(format!("{e}; this Mac already had an identity, so no new key is generated. Voting stays off until {}/{} is restored from a backup", dir.display(), KEY_FILE)),
+            Err(_) => {
+                let keys = Self::generate();
+                keys.save_locked(dir, Some(hex::encode(rand::random::<[u8; 32]>())))?;
+                Self::load_bound(dir)
+            }
+        }
     }
 
     pub fn check_binding(&self) {

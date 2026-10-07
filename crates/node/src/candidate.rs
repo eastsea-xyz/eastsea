@@ -61,6 +61,7 @@ pub fn registered_identity(dir: &Path) -> bool {
         crate::roster::PUBLIC_FILE,
         ACCOUNT_FILE,
         crate::key_binding::BINDING_FILE,
+        crate::roster::CREATION_FILE,
         "network.json",
         "threshold.json",
     ];
@@ -100,29 +101,10 @@ impl CandidateKeys {
     /// identity is refused, not replaced (red team #5): the chain knows the
     /// registered key, and a fresh one would silently vote as someone else.
     pub fn load_or_create(dir: &Path) -> Result<Self, String> {
-        let (keys, first_install) = match LocalKeys::load(dir) {
-            Ok(k) => (k, false),
-            Err(e) => {
-                if registered_identity(dir) {
-                    return Err(format!(
-                        "{e}; this Mac already had an identity, so no new key is generated. \
-                         Voting stays off until {}/{} is restored from a backup (or this Mac \
-                         is unregistered and a new identity is registered on purpose)",
-                        dir.display(),
-                        crate::roster::KEY_FILE
-                    ));
-                }
-                let k = LocalKeys::generate();
-                k.save(dir)?;
-                (LocalKeys::load(dir)?, true)
-            }
-        };
+        let keys = LocalKeys::load_or_create_candidate(dir)?;
         let account_path = dir.join(ACCOUNT_FILE);
         if !account_path.exists() {
-            if !first_install {
-                return Err(format!("{} is missing from an existing identity; restore it from a backup instead of replacing it", account_path.display()));
-            }
-            Faucet::generate(&account_path)?;
+            return Err(format!("{} is missing from an existing identity; restore it from a backup instead of replacing it", account_path.display()));
         }
         let candidate = CandidateKeys { keys, account: Faucet::load(&account_path)?, dir: dir.to_path_buf() };
         // This sibling survives deletion of the entire node data directory.
@@ -134,10 +116,15 @@ impl CandidateKeys {
             Ok(saved) if saved == fingerprint => {}
             Ok(_) => return Err(format!("{} does not match this Mac's original identity; restore the original keys", marker.display())),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                if let Err(write) = crate::atomic::create(&marker, fingerprint.as_bytes(), 0o600) {
-                    if std::fs::read_to_string(&marker).ok().as_deref() != Some(fingerprint.as_str()) {
-                        return Err(format!("{}: {write}", marker.display()));
+                match crate::atomic::create_once(&marker, fingerprint.as_bytes(), 0o600) {
+                    Ok(()) => {}
+                    Err(crate::atomic::CreateError::AlreadyExists) => {
+                        if std::fs::read_to_string(&marker).ok().as_deref() != Some(fingerprint.as_str()) {
+                            return Err(format!("{} conflicts with this identity", marker.display()));
+                        }
+                        crate::atomic::sync_parent(&marker)?;
                     }
+                    Err(e) => return Err(format!("{}: {e}", marker.display())),
                 }
             }
             Err(e) => return Err(format!("{}: {e}", marker.display())),

@@ -209,3 +209,98 @@ fn unavailable_hardware_read_keeps_the_real_node_running_without_votes() {
     assert_eq!(std::fs::read(data.join("validator.key")).unwrap(), key_before);
     assert_eq!(std::fs::read(data.join("key-binding.json")).unwrap(), binding_before);
 }
+
+#[test]
+fn first_install_resumes_the_same_staged_identity_at_every_crash_boundary() {
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+    let root = Dir(workspace.join("tmp").join(format!("aether-key-creation-crash-{}", std::process::id())));
+    for boundary in ["staged", "binding", "validator", "account", "public", "committed"] {
+        let data = root.0.join(boundary);
+        let killed = Command::new(env!("CARGO_BIN_EXE_aether"))
+            .args(["keygen", "--data"]).arg(&data)
+            .env("AETHER_TEST_PLATFORM_UUID", "MAC-A")
+            .env("AETHER_TEST_KEY_CREATION_CRASH", boundary).output().unwrap();
+        assert_eq!(killed.status.code(), Some(86), "{boundary}: {}", String::from_utf8_lossy(&killed.stderr));
+        let pending = data.join(aether_node::roster::CREATION_FILE);
+        let (expected_key, expected_account): (serde_json::Value, String) = if pending.exists() {
+            let stage: serde_json::Value = serde_json::from_slice(&std::fs::read(&pending).unwrap()).unwrap();
+            assert_eq!(stage["version"], 1);
+            (stage["keys"].clone(), stage["account"].as_str().unwrap().to_owned())
+        } else {
+            (serde_json::from_slice(&std::fs::read(data.join("validator.key")).unwrap()).unwrap(), std::fs::read_to_string(data.join("node-account.key")).unwrap())
+        };
+        let resumed = Command::new(env!("CARGO_BIN_EXE_aether"))
+            .args(["candidate-info", "--data"]).arg(&data)
+            .env("AETHER_TEST_PLATFORM_UUID", "MAC-A").output().unwrap();
+        assert!(resumed.status.success(), "{boundary}: {}", String::from_utf8_lossy(&resumed.stderr));
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&std::fs::read(data.join("validator.key")).unwrap()).unwrap(), expected_key, "{boundary}: recovery must preserve the originally staged key");
+        assert!(!pending.exists(), "completed transaction is retired durably");
+        assert!(data.join("node-account.key").exists());
+        assert_eq!(std::fs::read_to_string(data.join("node-account.key")).unwrap(), expected_account,
+            "{boundary}: recovery must preserve the originally staged account key");
+        assert!(data.join("key-binding.json").exists());
+        let before = std::fs::read(data.join("key-binding.json")).unwrap();
+        let again = Command::new(env!("CARGO_BIN_EXE_aether"))
+            .args(["candidate-info", "--data"]).arg(&data)
+            .env("AETHER_TEST_PLATFORM_UUID", "MAC-A").output().unwrap();
+        assert!(again.status.success());
+        assert_eq!(std::fs::read(data.join("key-binding.json")).unwrap(), before);
+    }
+}
+
+#[test]
+fn first_install_recovers_after_binding_publication() {
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+    let root = Dir(workspace.join("tmp").join(format!("aether-key-crash-binding-{}", std::process::id())));
+    let data = root.0.join("node");
+    let killed = Command::new(env!("CARGO_BIN_EXE_aether"))
+        .args(["keygen", "--data"]).arg(&data)
+        .env("AETHER_TEST_PLATFORM_UUID", "MAC-A").env("AETHER_TEST_KEY_CREATION_CRASH", "binding").output().unwrap();
+    assert_eq!(killed.status.code(), Some(86));
+    let resumed = Command::new(env!("CARGO_BIN_EXE_aether"))
+        .args(["candidate-info", "--data"]).arg(&data)
+        .env("AETHER_TEST_PLATFORM_UUID", "MAC-A").output().unwrap();
+    assert!(resumed.status.success(), "recovery after binding publication must preserve the staged identity: {:?}: {}",
+        resumed.status.code(), String::from_utf8_lossy(&resumed.stderr));
+}
+
+#[test]
+fn concurrent_first_starts_publish_one_complete_identity() {
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+    let root = Dir(workspace.join("tmp").join(format!("aether-key-creation-concurrent-{}", std::process::id())));
+    let data = root.0.join("node");
+    let children: Vec<_> = (0..8).map(|_| Command::new(env!("CARGO_BIN_EXE_aether"))
+        .args(["candidate-info", "--data"]).arg(&data)
+        .env("AETHER_TEST_PLATFORM_UUID", "MAC-A")
+        .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()).collect();
+    let mut identities = Vec::new();
+    for child in children {
+        let result = child.wait_with_output().unwrap();
+        assert!(result.status.success(), "concurrent first start must load the winner: {}", String::from_utf8_lossy(&result.stderr));
+        identities.push(serde_json::from_slice::<serde_json::Value>(&result.stdout).unwrap());
+    }
+    assert!(identities.windows(2).all(|w| w[0] == w[1]), "all starts must share the same validator and account");
+    assert!(!data.join(aether_node::roster::CREATION_FILE).exists());
+    use std::os::unix::fs::PermissionsExt as _;
+    for file in ["validator.key", "node-account.key", "key-binding.json"] {
+        assert_eq!(std::fs::metadata(data.join(file)).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+}
+
+#[test]
+fn a_crash_during_staging_never_publishes_a_partial_binding_or_key() {
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+    let root = Dir(workspace.join("tmp").join(format!("aether-key-creation-partial-{}", std::process::id())));
+    let data = root.0.join("node");
+    let killed = Command::new(env!("CARGO_BIN_EXE_aether"))
+        .args(["keygen", "--data"]).arg(&data)
+        .env("AETHER_TEST_PLATFORM_UUID", "MAC-A").env("AETHER_TEST_KEY_CREATION_CRASH", "partial-stage").output().unwrap();
+    assert_eq!(killed.status.code(), Some(86));
+    for file in ["validator.key", "key-binding.json", aether_node::roster::CREATION_FILE] {
+        assert!(!data.join(file).exists(), "{file} was published before its staging fsync");
+    }
+    let resumed = Command::new(env!("CARGO_BIN_EXE_aether"))
+        .args(["candidate-info", "--data"]).arg(&data)
+        .env("AETHER_TEST_PLATFORM_UUID", "MAC-A").output().unwrap();
+    assert!(resumed.status.success(), "a partial temporary transaction is ignored: {}", String::from_utf8_lossy(&resumed.stderr));
+}

@@ -249,6 +249,38 @@ fn uuid_hash(uuid: &str) -> [u8; 32] {
     hash.finalize().into()
 }
 
+fn record_bytes(public: &[u8; 32], uuid: &str) -> Result<Vec<u8>, BindingError> {
+    let record = Record {
+        validator_pub: hex::encode(public),
+        platform_uuid_hash: hex::encode(uuid_hash(uuid)),
+        created_at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .map_err(storage)?.as_secs(),
+    };
+    serde_json::to_vec_pretty(&record).map_err(storage)
+}
+
+pub(crate) fn prepare_creation(public: &crate::block::PublicKey) -> Result<Vec<u8>, String> {
+    let public = public.as_ref().try_into().expect("Ed25519 public key");
+    wait_for_confirmation(|| record_bytes(&public, &platform_uuid()?)).map_err(|e| e.to_string())
+}
+
+pub(crate) fn publish_prepared(dir: &Path, public: &crate::block::PublicKey, bytes: &[u8]) -> Result<(), String> {
+    let public = public.as_ref().try_into().expect("Ed25519 public key");
+    let path = dir.join(BINDING_FILE);
+    wait_for_confirmation(|| {
+        let uuid = platform_uuid()?;
+        validate(&path, bytes, &public, &uuid)?;
+        match crate::atomic::create_once(&path, bytes, 0o600) {
+            Ok(()) => Ok(()),
+            Err(crate::atomic::CreateError::AlreadyExists) => {
+                check_existing_with_uuid(dir, &public, &uuid)?;
+                crate::atomic::sync_parent(&path).map_err(storage)
+            }
+            Err(e) => Err(storage(e)),
+        }
+    }).map_err(|e| e.to_string())
+}
+
 fn read_binding(path: &Path) -> Result<Vec<u8>, std::io::Error> {
     use std::io::Read as _;
     use std::os::unix::fs::OpenOptionsExt as _;
@@ -318,15 +350,7 @@ fn check_with_uuid(dir: &Path, public: &[u8; 32], uuid: &str) -> Result<Checked,
             Ok(Checked::Existing)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let record = Record {
-                validator_pub: hex::encode(public),
-                platform_uuid_hash: hex::encode(uuid_hash(uuid)),
-                created_at: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_err(storage)?
-                    .as_secs(),
-            };
-            let bytes = serde_json::to_vec_pretty(&record).map_err(storage)?;
+            let bytes = record_bytes(public, uuid)?;
             match crate::atomic::create_once(&path, &bytes, 0o600) {
                 Ok(()) => Ok(Checked::Created),
                 // Another creator may have won. Accept only its matching
@@ -396,6 +420,16 @@ mod tests {
     }
 
     #[test]
+    fn an_existing_visible_binding_still_requires_durable_publication() {
+        let dir = Dir::new("visible-sync-failure");
+        binding(&dir.0, &[1; 32], "MAC-A");
+        crate::atomic::fail_sync_for_test(Some(&dir.0));
+        let result = check_with_uuid(&dir.0, &[1; 32], "MAC-A");
+        crate::atomic::fail_sync_for_test(None);
+        assert!(result.is_err(), "a reader racing publication must confirm directory durability");
+    }
+
+    #[test]
     fn unavailable_confirmation_retries_with_bounded_backoff_without_authorizing_signing() {
         let mut attempts = 0;
         let mut delays = Vec::new();
@@ -417,16 +451,6 @@ mod tests {
         assert!(matches!(check_with_uuid(&dir.0, &[1; 32], ""), Err(BindingError::Unavailable(_))));
         assert!(matches!(check_with_uuid(&dir.0, &[2; 32], "MAC-A"), Err(BindingError::Invalid(_))));
         assert!(matches!(check_with_uuid(&dir.0, &[1; 32], "MAC-B"), Err(BindingError::Mismatch(_))));
-    }
-
-    #[test]
-    fn an_existing_visible_binding_still_requires_durable_publication() {
-        let dir = Dir::new("visible-sync-failure");
-        binding(&dir.0, &[1; 32], "MAC-A");
-        crate::atomic::fail_sync_for_test(Some(&dir.0));
-        let result = check_with_uuid(&dir.0, &[1; 32], "MAC-A");
-        crate::atomic::fail_sync_for_test(None);
-        assert!(result.is_err(), "a reader racing publication must confirm directory durability");
     }
 
     #[test]

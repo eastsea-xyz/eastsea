@@ -775,10 +775,19 @@ private struct NodeCard: View {
                     Spacer()
                     Toggle("", isOn: $node.enabled).toggleStyle(.switch).labelsHidden()
                 }
+                if node.enabled, let reason = node.stopReason, reason != .switchedOff {
+                    // Why it is not running, when it resumes, one button —
+                    // the same reason the sidebar, menu and banner show.
+                    Divider()
+                    NodeStopRow(reason: reason)
+                }
+                UnattendedApprovalLine()
                 if node.enabled, let c = node.candidate {
                     Divider()
                     VotingNodeRow(candidate: c)
                 }
+                Divider()
+                BlockDataSection()
             }
         }
     }
@@ -903,7 +912,8 @@ private struct SidebarStatus: View {
             Toggle(isOn: $node.enabled) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Node on this Mac").font(.aeCaption.weight(.semibold))
-                    Text(nodeLine).font(.aeCaption).foregroundStyle(.secondary).lineLimit(2)
+                    Text(nodeLine).font(.aeCaption).foregroundStyle(node.stopReason?.isIncident == true ? Color.warn : Color.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .toggleStyle(.switch)
@@ -937,12 +947,13 @@ private struct SidebarStatus: View {
     /// Short on purpose: the sidebar is 170–190 pt, and the block number (which
     /// the "Connected" line below already shows) is what got truncated here.
     private var nodeLine: String {
-        if node.wrongLocation { return InstallLocation.moveSentence }
+        // One reason, the same everywhere (NodeStopReason): never a bare "paused".
+        if let reason = node.stopReason { return reason.copy(ko: HealthCheck.korean).title }
         switch node.state {
-        case .off: return "Off"
+        case .off: return HealthCheck.korean ? "꺼져 있음" : "Off"
         case .starting: return node.height > 0 ? "Catching up" : "Starting…"
         case .running: return "Verifying blocks" + (node.networkCheckPending ? node.pendingRouteNote : "")
-        case .waitingForPower: return "Paused on battery"
+        case .waitingForPower: return NodeStopReason.onBattery.copy(ko: HealthCheck.korean).title
         case .failed(let m): return m
         }
     }
@@ -1083,6 +1094,15 @@ private struct VerifiedBadge: View {
     /// L4 (docs/design/32-health-signal.md): while the disk holds this Mac's
     /// node half dead, no badge may look healthy — the balance itself is
     /// still verified through other nodes, and the banner above says what to do.
+    /// The badge's words: the node's own stop reason, the same everywhere.
+    private var pausedBadgeTitle: String {
+        #if os(macOS)
+        return health.pausedBadgeTitle
+        #else
+        return ""
+        #endif
+    }
+
     private var halfDead: Bool {
         #if os(macOS)
         return !health.healthyBadgeAllowed
@@ -1100,7 +1120,7 @@ private struct VerifiedBadge: View {
         } else if let since = model.chainPausedSince {
             NetworkPausedBadge(since: since)
         } else if halfDead {
-            Label(HealthCheck.korean ? "저장 공간 부족 · 노드 멈춤" : "Storage low · node paused", systemImage: "externaldrive.fill.badge.exclamationmark")
+            Label(pausedBadgeTitle, systemImage: "externaldrive.fill.badge.exclamationmark")
                 .font(.aeCaption.weight(.semibold)).foregroundStyle(Color.warn)
                 .padding(.horizontal, 10).padding(.vertical, 4)
                 .background(Color.warn.opacity(0.14), in: Capsule())

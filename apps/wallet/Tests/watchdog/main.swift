@@ -2,6 +2,7 @@
 // events NodeController sees. Pure logic, no app:
 //   swiftc -o ./tmp/watchdog-check apps/wallet/Sources/Brand.swift apps/wallet/Sources/Clock.swift apps/wallet/Sources/NodeWatchdog.swift apps/wallet/Tests/watchdog/main.swift && ./tmp/watchdog-check
 import Foundation
+let NodeResumeBytesFromNode: UInt64 = 7 * 1_073_741_824  // crates/node resources.rs min_free_disk + DISK_RESUME
 func check(_ c: Bool, _ m: String) { if !c { print("FAIL", m); exit(1) } }
 check(Brand.project == "EastSea" && Brand.projectKo == "동해", "project names are localized")
 check(Brand.coinName == "Doubloon" && Brand.coinTicker == "DBLN", "coin name is the current brand")
@@ -36,9 +37,11 @@ full.started(t0)
 check(full.exited(t0.advanced(by: 3), code: 4, log: "No space left on device") == .stop(.diskFull), "a persistent full disk stops after the first exhausted recovery")
 check(!NodeWatchdog.storageRecovered(freeBytes: nil), "unknown free space never resumes a storage crash loop")
 check(!NodeWatchdog.storageRecovered(freeBytes: NodeWatchdog.diskResumeBytes - 1), "one byte below the resume threshold stays stopped")
-check(NodeWatchdog.storageRecovered(freeBytes: NodeWatchdog.diskResumeBytes), "a restored 10 GB reserve permits a restart")
+check(NodeWatchdog.storageRecovered(freeBytes: NodeWatchdog.diskResumeBytes), "the node's 7 GB resume level permits a restart")
+check(NodeWatchdog.diskResumeBytes == NodeResumeBytesFromNode, "the app resumes at the node's level, not its own")
+check(NodeWatchdog.classify(code: 12, signaled: false, log: "") == .diskFull, "exit 12 (EXIT_DISK_LOW) is a full disk")
 if case let .stop(f) = stopped {
-    check(f.sentence.contains("10"), "the sentence says what to do (free space)")
+    check(f.sentence.contains("7 GB"), "the sentence says what to do (free space, at the node's 7 GB)")
 }
 
 // Deaths older than ten minutes do not count toward the stop.
@@ -136,7 +139,12 @@ failedStorage.started(t0)
 check(failedStorage.exited(t0.advanced(by: 3), code: 4, log: "permission denied") == .stop(.storage), "a persistent storage condition does not restart every 30 seconds")
 check(NodeWatchdog.classify(code: 1, signaled: false, log: "memory allocation of 4 GiB failed") == .other, "an unclear log is neither disk nor database")
 check(NodeWatchdog.classify(code: 1, signaled: false, log: "out of memory") == .memory, "OOM text → memory")
-check(NodeWatchdog.classify(code: 0, signaled: true, log: "") == .memory, "a signal death (kill) → memory")
+check(NodeWatchdog.classify(code: 9, signaled: true, log: "") == .memory, "a SIGKILL death (the OOM killer) → memory")
+// SIGUSR1 (30) killed the 0.7.0 supervisor, which had no handler for the
+// app's availability wake-up (the founder's MacBook, 2026-10-07T04:39Z):
+// telling the person to close apps for it was wrong. Only SIGKILL is memory.
+check(NodeWatchdog.classify(code: 30, signaled: true, log: "") == .other, "a SIGUSR1 death is not a memory problem")
+check(NodeWatchdog.classify(code: 15, signaled: true, log: "") == .other, "a SIGTERM death is not a memory problem")
 check(NodeWatchdog.classify(code: 1, signaled: false, log: "connection refused") == .network, "network text")
 // The sentences stay plain: no log paths, no jargon, whatever the language.
 for f in [NodeWatchdog.Failure.diskFull, .database, .handoff, .storage, .memory, .network, .other, .upgradeNeeded, .identityLost, .alreadyRunning] {

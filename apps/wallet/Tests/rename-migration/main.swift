@@ -763,6 +763,79 @@ do {
     cleanup(root, d)
 }
 
+// 24. The founder's MacBook (2026-10-07): EastSea 0.7.0 launched while
+//     Aether 0.6.6 still held the old run.lock, so the move deferred and the
+//     node switch (copied with the old preferences only at the end of the
+//     move) read off when the node resumed at launch. 0.6.6 then quit; the
+//     next main-thread `ensure()` finished the move inline — the fast path —
+//     and told nobody: no onFinish, so the node was never asked to start.
+//     The "quit the old app" button's own retry found the run settled and was
+//     a no-op, silent too. Every run that settles reports it, and a start()
+//     that finds the run already settled reports .done.
+do {
+    expect(Thread.isMainThread, "this test runs on the main thread")
+    let (root, d) = makeOldSupport()
+    let runner = DataMigration.Runner(support: root, defaults: d, oldPreferencesDomain: noOldDomain)
+    var reported: [DataMigration.Outcome] = []
+    runner.onFinish = { reported.append($0) }
+    let fd = open(root.appending(path: "Aether/node/run.lock").path, O_RDWR)
+    _ = flock(fd, LOCK_EX | LOCK_NB)
+    if case .deferred = runner.ensureFromMain() { expect(true, "the old app's lock defers the move") }
+    else { expect(false, "a held lock must defer") }
+    close(fd)
+    expect(runner.ensureFromMain() == .done, "once it quits, an inline run completes the move")
+    expect(reported.count == 2 && reported.last == .done, "the deferral and then the inline settle are each reported once: \(reported)")
+    let settledReport = DispatchSemaphore(value: 0)
+    runner.onFinish = { reported.append($0); settledReport.signal() }
+    runner.start()
+    _ = settledReport.wait(timeout: .now() + 5)
+    expect(reported.count == 3 && reported.last == .done, "a start() after the run settled still reports .done: \(reported)")
+    cleanup(root, d)
+}
+
+// 25–29. poc-m3 (2026-10-07, migration-stall-pocm3.md §5): a 0.6.6 → 0.7.1
+//     move ran while the screen was locked. The node tree moved, but the
+//     wallet handle (complete file protection) could not be read, the run
+//     returned .failed before the preferences copy, nodeEnabled never
+//     arrived, and nothing said so. chmod 000 stands in for the lock (EACCES
+//     here, EPERM under protection: both are "unreadable").
+do {
+    expect(Thread.isMainThread, "this test runs on the main thread")
+    let (root, d) = makeOldSupport()
+    let handle = root.appending(path: "AetherWallet/enclave-key.dat")
+    chmod(handle.path, 0o000)
+    let outcome = DataMigration.migrate(support: root, defaults: d, oldPreferencesDomain: noOldDomain,
+                                        oldPreferences: ["acceptedTerms": 3, "nodeEnabled": true])
+    if case .waitingForUnlock(let why) = outcome {
+        expect(why.contains("Unlock"), "25: a locked handle waits for unlock and says so: \(why)")
+    } else {
+        expect(false, "25: a locked handle must wait for unlock, not fail: \(outcome)")
+    }
+    expect(FileManager.default.fileExists(atPath: handle.path)
+           && !FileManager.default.fileExists(atPath: root.appending(path: "EastSeaWallet/enclave-key.dat").path),
+           "25: the old handle stays, no new one")
+    expect(!doneFlag(d) && DataMigration.mayCreateFreshWalletKey(support: root, defaults: d) != nil,
+           "25: not done, and no fresh wallet key meanwhile")
+    expect(FileManager.default.fileExists(atPath: root.appending(path: "EastSea/node/validator.key").path), "25: the node tree moved")
+    expect(d.bool(forKey: "nodeEnabled") && (d.object(forKey: "acceptedTerms") as? Int) == 3,
+           "26: the preferences arrive even while the wallet handle waits")
+    let idle = DataMigration.Runner(support: root, defaults: d, oldPreferencesDomain: noOldDomain)
+    expect(DataMigration.mayStartNode(support: root, defaults: d, runner: idle) == nil, "27: the moved node may start whatever the wallet does")
+    var outcomes: [DataMigration.Outcome] = []
+    idle.onFinish = { outcomes.append($0) }
+    let inline = idle.ensureFromMain()
+    if case .waitingForUnlock = inline, outcomes.count == 1, case .waitingForUnlock = outcomes[0] {
+        expect(true, "28: an inline outcome that did not settle is reported")
+    } else {
+        expect(false, "28: an inline waitingForUnlock must reach onFinish: \(inline) \(outcomes)")
+    }
+    chmod(handle.path, 0o644)   // the unlock
+    expect(idle.ensureFromMain() == .done, "29: after the unlock the move completes")
+    expect(DataMigration.fileMatches(handle, root.appending(path: "EastSeaWallet/enclave-key.dat")) && doneFlag(d),
+           "29: the handle arrived byte for byte, and the move is done")
+    cleanup(root, d)
+}
+
 // Test hygiene: this run wrote no preferences plist at all.
 Thread.sleep(forTimeInterval: 1)   // cfprefsd writes asynchronously
 let leftover = ownPlists().subtracting(plistsBefore)

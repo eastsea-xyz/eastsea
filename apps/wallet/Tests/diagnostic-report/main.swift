@@ -36,6 +36,12 @@ check(lines.contains("os: macos-15"), "OS major only")
 check(lines.contains("failures: proof_rejected 2-5, prover_program_mismatch 6+"), "failure buckets, sorted")
 check(!text.contains(":00") && !text.contains("12:"), "no time of day anywhere")
 check(DiagnosticReport.text(s, ko: true).hasPrefix("동해 진단 정보"), "Korean header")
+// Remote diagnosis (the founder's MacBook, 2026-10-07): the stop reason travels in the copy.
+var stopped = s
+stopped.nodeStop = "disk_missing"; stopped.lastStop = "crash_loop"
+check(DiagnosticReport.text(stopped, ko: false).contains("node_stop: disk_missing")
+      && DiagnosticReport.text(stopped, ko: false).contains("last_stop: crash_loop"), "the stop reasons are in the copy (codes only)")
+check(DiagnosticReport.text(s, ko: false).contains("node_stop: none"), "none when running")
 
 // Buckets at their edges (§2.2).
 check(DiagnosticReport.lag(local: 100, network: 100) == "0", "lag 0")
@@ -143,7 +149,7 @@ for round in 0..<2_000 {
         }
         // Only the closed set of keys, one per line.
         let keys = out.split(separator: "\n").dropFirst().map { $0.split(separator: ":").first.map(String.init) ?? "" }
-        check(Set(keys).isSubset(of: ["v", "day", "app", "release", "protocol", "prover_program", "role", "lag", "finalized_age", "os", "failures"]),
+        check(Set(keys).isSubset(of: ["v", "day", "app", "release", "protocol", "prover_program", "role", "lag", "finalized_age", "os", "failures", "node_stop", "last_stop"]),
               "round \(round): only layer-2 field names, got \(keys)")
         check(out.utf8.count < 1_024, "round \(round): the text stays short")
     }

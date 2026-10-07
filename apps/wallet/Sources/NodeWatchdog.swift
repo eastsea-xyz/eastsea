@@ -81,8 +81,8 @@ struct NodeWatchdog {
             let ko = Locale.preferredLanguages.first?.hasPrefix("ko") ?? false
             switch self {
             case .diskFull:
-                return ko ? "디스크 공간이 부족해요. 10GB 비우면 노드가 저절로 다시 시작합니다."
-                    : "The disk is full. Free 10 GB and the node restarts by itself."
+                return ko ? "저장 공간이 부족해요. 남은 공간이 7 GB가 되면 노드가 저절로 다시 시작해요."
+                    : "Storage is full. The node restarts by itself once 7 GB is free."
             case .database:
                 return ko ? "노드 데이터가 계속 손상됩니다. 백업에서 복원하거나 지원에 문의해 주세요."
                     : "The node's data keeps getting damaged. Restore it from a backup or contact support."
@@ -125,7 +125,8 @@ struct NodeWatchdog {
     /// Restart backoff bounds.
     static let firstBackoff: TimeInterval = 1
     static let maxBackoff: TimeInterval = 60
-    static let diskResumeBytes: UInt64 = 10 * 1_024 * 1_024 * 1_024
+    /// The node's own resume level (resources.rs: 5 GB floor + 2 GB).
+    static let diskResumeBytes: UInt64 = 7 * 1_024 * 1_024 * 1_024
 
     static func storageRecovered(freeBytes: UInt64?) -> Bool {
         freeBytes.map { $0 >= diskResumeBytes } ?? false
@@ -374,9 +375,14 @@ struct NodeWatchdog {
     /// saying "my disk or my database"; the log tail tells them apart, because
     /// one asks the user to free space and the other to reinstall.
     static func classify(code: Int32, signaled: Bool, log: String) -> Failure {
-        if signaled || code == 137 { return .memory }
+        // SIGKILL (9, or 137 through a shell) is how macOS ends a process
+        // over memory. Any other signal (SIGTERM, the SIGUSR1 a 0.7.0
+        // supervisor died of) is not a memory problem.
+        if (signaled && code == 9) || code == 137 { return .memory }
         let tail = log.suffix(8_192).lowercased()
-        if tail.contains("enospc") || tail.contains("no space left") {
+        // 12 is the node's own "the disk is below its floor" exit
+        // (supervisor.rs EXIT_DISK_LOW): a full disk, whatever the log says.
+        if code == 12 || tail.contains("enospc") || tail.contains("no space left") {
             return .diskFull
         }
         if code == 4 {

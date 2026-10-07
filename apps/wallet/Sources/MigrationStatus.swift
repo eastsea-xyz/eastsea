@@ -19,6 +19,10 @@ final class MigrationStatus: ObservableObject {
     /// A finished run that did not complete (deferred or failed): its
     /// sentence, until dismissed. The gates keep the node and new keys off.
     @Published var problem: String?
+    /// The move waits for the Mac to be unlocked (the wallet handle has
+    /// complete file protection): the unlock card, no OK button, gone by
+    /// itself once the move finishes.
+    @Published private(set) var waitingForUnlock = false
 
     /// Called on the main queue after every background run.
     var onFinish: ((DataMigration.Outcome) -> Void)?
@@ -33,17 +37,54 @@ final class MigrationStatus: ObservableObject {
             }
         }
         runner.onProgress = { [weak self] f in DispatchQueue.main.async { self?.fraction = f } }
+        // The screen unlocking is when a protected wallet handle becomes
+        // readable again: retry the move then (never a silent stall).
+        DistributedNotificationCenter.default().addObserver(forName: Notification.Name("com.apple.screenIsUnlocked"),
+                                                            object: nil, queue: .main) { _ in
+            // On the main thread: a no-op once settled, the fast path inline
+            // (reported once), or the background copy.
+            DataMigration.ensure()
+        }
         runner.onFinish = { [weak self] outcome in
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.moving = false
                 switch outcome {
-                case .deferred(let why), .failed(let why): self.problem = why
-                case .done, .noOldData, .running: self.problem = nil
+                case .deferred(let why), .failed(let why):
+                    self.problem = why
+                    self.waitingForUnlock = false
+                case .waitingForUnlock:
+                    self.problem = nil
+                    self.waitingForUnlock = true
+                case .done, .noOldData, .running:
+                    self.problem = nil
+                    self.waitingForUnlock = false
                 }
+                Self.log(outcome)
                 self.onFinish?(outcome)
             }
         }
+    }
+}
+
+extension MigrationStatus {
+    /// One line per migration outcome: in the node's node-status.log (when
+    /// the node folder exists) and in EastSea/migration.log — the next stall
+    /// leaves a file to read.
+    static func log(_ outcome: DataMigration.Outcome) {
+        let text: String
+        switch outcome {
+        case .noOldData: text = "no old data"
+        case .done: text = "done"
+        case .deferred(let w): text = "deferred: \(w)"
+        case .failed(let w): text = "failed: \(w)"
+        case .running: text = "running"
+        case .waitingForUnlock: text = "waiting for unlock (the wallet handle is protected while the Mac is locked)"
+        }
+        let line = NodeStatusLog.line(at: Date(), event: "migration", detail: text, facts: nil)
+        let support = DataMigration.supportURL
+        NodeStatusLog.append(line, in: support.appending(path: "EastSea/node"))
+        NodeStatusLog.append(line, in: support.appending(path: "EastSea"), fileName: "migration.log")
     }
 }
 
@@ -53,7 +94,17 @@ struct MigrationOverlay: View {
     @ObservedObject var status: MigrationStatus
 
     var body: some View {
-        if status.moving {
+        if status.waitingForUnlock {
+            let ko = HealthCheck.korean
+            card {
+                Text(ko ? "지갑을 마저 옮기려면 이 Mac의 잠금을 풀어 주세요" : "Unlock this Mac to finish moving your wallet").font(.headline)
+                Text(ko ? "노드 데이터는 이미 동해로 옮겼습니다. 지갑 키 파일은 Mac 잠금이 풀려 있을 때만 읽을 수 있어서 아직 옮기지 못했습니다. 잠금을 풀면 몇 초 안에 동해가 알아서 마칩니다. 지운 것은 없으며 지갑은 안전합니다."
+                     : "Your node data has already moved to EastSea. Your wallet key file can only be read while this Mac is unlocked, so it has not moved yet. Unlock the Mac and EastSea finishes by itself within a few seconds. Nothing was deleted; your wallet is safe.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(width: 320)
+            }
+        } else if status.moving {
             card {
                 Text("Moving your data from Aether to EastSea").font(.headline)
                 ProgressView(value: status.fraction)
@@ -66,8 +117,8 @@ struct MigrationOverlay: View {
             }
         } else if let problem = status.problem {
             card {
-                Text("Your data has not moved yet").font(.headline)
-                Text(problem)
+                Text(HealthCheck.korean ? "데이터 이동이 아직 끝나지 않았습니다" : "Your data has not finished moving").font(.headline)
+                Text(problem + (HealthCheck.korean ? " 동해가 알아서 다시 시도해요. 지운 것은 없어요." : " EastSea retries by itself; nothing was deleted."))
                     .font(.caption).foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .frame(width: 320)

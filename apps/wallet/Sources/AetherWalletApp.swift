@@ -89,7 +89,7 @@ struct AetherWalletApp: App {
         }
         // Always in the menu bar: balance, node and prover at a glance; the window opens from here.
         MenuBarExtra {
-            MenuBarPanel().environmentObject(model).environmentObject(node).environmentObject(earnings)
+            MenuBarPanel().environmentObject(model).environmentObject(node).environmentObject(earnings).environmentObject(unattended)
                 .environmentObject(appDelegate.health)
                 .onAppear {
                     appDelegate.start(node: node, model: model, unattended: unattended)

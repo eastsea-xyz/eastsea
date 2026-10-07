@@ -37,6 +37,7 @@ fn unavailable_hardware_read_keeps_the_real_node_running_without_votes() {
     let output = std::fs::read_to_string(log_path).unwrap();
     assert!(status.is_none(), "unavailable hardware reads must keep the node alive, got {status:?}: {output}");
     assert!(output.contains("waiting to confirm this Mac"), "{output}");
+    assert!(!data.join(aether_node::key_binding::REFUSAL_FILE).exists(), "an unavailable read never records a terminal mismatch");
     assert!(!data.join("vote-epoch-0.seen").exists(), "unknown identity must never authorize a vote");
     assert_eq!(std::fs::read(data.join("validator.key")).unwrap(), key_before);
     assert_eq!(std::fs::read(data.join("key-binding.json")).unwrap(), binding_before);
@@ -180,6 +181,10 @@ fn owner_rebind_is_atomic_audited_and_accepts_the_moved_keys() {
     let old = std::fs::read(data.join("key-binding.json")).unwrap();
     let key = std::fs::read(data.join("validator.key")).unwrap();
     let account = std::fs::read(data.join("node-account.key")).unwrap();
+    let mismatch = Command::new(env!("CARGO_BIN_EXE_aether"))
+        .args(["candidate-info", "--data"]).arg(&data).env("AETHER_TEST_PLATFORM_UUID", "MAC-B").output().unwrap();
+    assert_eq!(mismatch.status.code(), Some(15));
+    assert!(data.join(aether_node::key_binding::REFUSAL_FILE).exists());
     let (code, output) = rebind_in_terminal(&data, "MAC-B", address);
     assert_eq!(code, Some(0), "owner rebind should succeed: {output}");
     assert!(output.contains("gets the validator slashed"));
@@ -192,6 +197,7 @@ fn owner_rebind_is_atomic_audited_and_accepts_the_moved_keys() {
         assert!(output.contains(&hash)); assert!(audit.contains(&hash));
     }
     assert!(audit.contains("committed"));
+    assert!(!data.join(aether_node::key_binding::REFUSAL_FILE).exists(), "only successful owner recovery clears terminal refusal");
     let accepted = Command::new(env!("CARGO_BIN_EXE_aether"))
         .args(["candidate-info", "--data"]).arg(&data).env("AETHER_TEST_PLATFORM_UUID", "MAC-B").output().unwrap();
     assert!(accepted.status.success());
@@ -239,6 +245,39 @@ fn parent_lifetime_flag_does_not_bypass_the_running_node_lock() {
     assert_eq!(result.status.code(), Some(aether_node::supervisor::EXIT_LOCKED),
         "a lifetime flag must not stand in for actual inherited run.lock ownership");
     assert!(String::from_utf8_lossy(&result.stderr).contains("run.lock"));
+}
+
+#[test]
+fn owner_rebind_refuses_a_live_node_while_hardware_verification_waits() {
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+    let root = Dir(workspace.join("tmp").join(format!("aether-key-rebind-live-{}", std::process::id())));
+    let data = root.0.join("node");
+    let created = Command::new(env!("CARGO_BIN_EXE_aether"))
+        .args(["candidate-info", "--data"]).arg(&data).env("AETHER_TEST_PLATFORM_UUID", "MAC-A").output().unwrap();
+    assert!(created.status.success());
+    let info: serde_json::Value = serde_json::from_slice(&created.stdout).unwrap();
+    let log_path = root.0.join("waiting.log");
+    let log = std::fs::File::create(&log_path).unwrap();
+    let mut node = Command::new(env!("CARGO_BIN_EXE_aether"))
+        .args(["node", "--offline", "--port", "0", "--rpc-port", "0", "--exit-with-parent"])
+        .arg("--data").arg(&data).env_remove("AETHER_RUN_LOCK_FD")
+        .env("AETHER_TEST_PLATFORM_UUID", "")
+        .stdout(Stdio::from(log.try_clone().unwrap())).stderr(Stdio::from(log)).spawn().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let waiting = loop {
+        if std::fs::read_to_string(&log_path).unwrap().contains("waiting to confirm this Mac") { break true; }
+        if node.try_wait().unwrap().is_some() || Instant::now() > deadline { break false; }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let (code, output) = if waiting {
+        rebind_in_terminal(&data, "MAC-B", info["validator_key"].as_str().unwrap())
+    } else { (None, std::fs::read_to_string(log_path).unwrap()) };
+    let still_running = node.try_wait().unwrap().is_none();
+    if still_running { node.kill().unwrap(); node.wait().unwrap(); }
+    assert!(waiting, "the actual node must reach its live verification wait: {output}");
+    assert!(still_running, "a refused owner action must not terminate the waiting node");
+    assert!(code.is_some_and(|code| code != 0));
+    assert!(output.contains("run.lock"), "owner rebind must refuse an actual running node: {output}");
 }
 
 #[test]
@@ -331,6 +370,8 @@ fn key_binding_copied_data_directory_on_another_mac_refuses_to_vote() {
         output.contains("another Mac"),
         "the refusal must be a plain error line: {output}"
     );
+    assert!(copied.join(aether_node::key_binding::REFUSAL_FILE).exists(),
+        "a terminal refusal must survive attached-wallet and app restarts");
     assert!(
         !copied.join("vote-epoch-0.seen").exists(),
         "no voting engine was entered"
@@ -427,37 +468,4 @@ fn key_binding_legacy_key_is_bound_once_and_logged() {
         !output.contains("created missing hardware binding"),
         "{output}"
     );
-}
-
-#[test]
-fn owner_rebind_refuses_a_live_node_while_hardware_verification_waits() {
-    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
-    let root = Dir(workspace.join("tmp").join(format!("aether-key-rebind-live-{}", std::process::id())));
-    let data = root.0.join("node");
-    let created = Command::new(env!("CARGO_BIN_EXE_aether"))
-        .args(["candidate-info", "--data"]).arg(&data).env("AETHER_TEST_PLATFORM_UUID", "MAC-A").output().unwrap();
-    assert!(created.status.success());
-    let info: serde_json::Value = serde_json::from_slice(&created.stdout).unwrap();
-    let log_path = root.0.join("waiting.log");
-    let log = std::fs::File::create(&log_path).unwrap();
-    let mut node = Command::new(env!("CARGO_BIN_EXE_aether"))
-        .args(["node", "--offline", "--port", "0", "--rpc-port", "0", "--exit-with-parent"])
-        .arg("--data").arg(&data).env_remove("AETHER_RUN_LOCK_FD")
-        .env("AETHER_TEST_PLATFORM_UUID", "")
-        .stdout(Stdio::from(log.try_clone().unwrap())).stderr(Stdio::from(log)).spawn().unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let waiting = loop {
-        if std::fs::read_to_string(&log_path).unwrap().contains("waiting to confirm this Mac") { break true; }
-        if node.try_wait().unwrap().is_some() || Instant::now() > deadline { break false; }
-        std::thread::sleep(Duration::from_millis(20));
-    };
-    let (code, output) = if waiting {
-        rebind_in_terminal(&data, "MAC-B", info["validator_key"].as_str().unwrap())
-    } else { (None, std::fs::read_to_string(log_path).unwrap()) };
-    let still_running = node.try_wait().unwrap().is_none();
-    if still_running { node.kill().unwrap(); node.wait().unwrap(); }
-    assert!(waiting, "the actual node must reach its live verification wait: {output}");
-    assert!(still_running, "a refused owner action must not terminate the waiting node");
-    assert!(code.is_some_and(|code| code != 0));
-    assert!(output.contains("run.lock"), "owner rebind must refuse an actual running node: {output}");
 }

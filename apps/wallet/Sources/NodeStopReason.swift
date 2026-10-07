@@ -271,6 +271,16 @@ enum NodeMacConfirmation {
     }
 }
 
+/// Written by the node only after a successful hardware read proves a
+/// mismatch. It survives daemon/app exits and is removed only by owner rebind.
+enum NodeBindingRefusal {
+    static let fileName = "key-binding-refused"
+
+    static func exists(in dataDirectory: URL) -> Bool {
+        FileManager.default.fileExists(atPath: dataDirectory.appendingPathComponent(fileName).path)
+    }
+}
+
 /// Rebinding is an owner action for a proven mismatch. A successful owner
 /// authentication creates the only approval the terminal runner accepts.
 /// The approval is local: its message cannot be submitted as a transaction.
@@ -387,6 +397,9 @@ struct NodeResumeFacts: Equatable {
     var isValidator = false
     /// The watchdog's terminal decision, and how long ago it was made.
     var blocked: NodeWatchdog.Failure?
+    /// A proven mismatch persisted by the node, including exits the wallet
+    /// did not observe because it was attached to the unattended daemon.
+    var keyBindingRefused = false
     var blockedForSeconds: Int = 0
     /// Free space on the volume that holds the block data, and its name
     /// (nil: the internal disk).
@@ -422,6 +435,9 @@ enum NodeResume {
 
     static func decide(_ f: NodeResumeFacts) -> NodeResumeDecision {
         guard f.enabled else { return .wait(.switchedOff) }
+        // This must precede attached takeover, retry timers and crash-loop
+        // recovery. A terminal refusal does not expire when the app relaunches.
+        if f.keyBindingRefused || f.blocked == .keyElsewhere { return .wait(.keyElsewhere) }
         if f.wrongLocation { return .wait(.wrongLocation) }
         // Attached to a node someone else started: it is alive exactly while
         // it holds run.lock. Once nobody does, it is gone — take the data
@@ -491,6 +507,7 @@ enum NodeStatusLog {
             case .chosen(let v, let m, let w): storage = "\(v)(mounted=\(m),writable=\(w))"
             }
             s += " | enabled=\(f.enabled) proc=\(f.processRunning) confirmingMac=\(f.confirmingMac) attached=\(f.attached) lockOther=\(f.lockHeldByOther)"
+                + " keyBindingRefused=\(f.keyBindingRefused)"
                 + " battery=\(f.onBattery) onlyOnPower=\(f.onlyOnPower) blocked=\(f.blocked.map { "\($0)" } ?? "-")"
                 + " blockedFor=\(f.blockedForSeconds)s restartIn=\(f.restartInSeconds.map(String.init) ?? "-")"
                 + " free=\(free) storage=\(storage) migrating=\(f.migrating) gate=\(f.migrationGate == nil ? "open" : "shut")"

@@ -10,7 +10,7 @@
 # Each key runs `aether run`: a verifying follower while the chain leaves it out
 # of the voting set, a validator once the rules seat it (fewer than 4
 # independent operators); it reshares and hands over by itself either way.
-# `caffeinate -s` wraps each one: the Mac does not sleep while on power.
+# The launchd wrapper keeps the Mac awake on power; exit 15 stops restarts.
 # Env: AETHER_RESERVE (default ~/aether-reserve), AETHER_BIN (default: aether on PATH),
 #      RESERVE_P2P_BASE (19200: key i uses base+2i and base+2i+1 for reshares),
 #      RESERVE_RPC_BASE (18700: key i uses base+i), SIGN_IDENTITY.
@@ -37,7 +37,7 @@ plist() {  # plist <i> <aether binary>
   <key>AssociatedBundleIdentifiers</key><array><string>com.pipln.eastsea</string></array>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/bin/caffeinate</string><string>-s</string>
+    <string>/bin/bash</string><string>$R/bin/aether-launchd-wrapper.sh</string>
     <string>$a</string><string>run</string>
     <string>--network</string><string>$R/network.json</string>
     <string>--data</string><string>$R/$i</string>
@@ -46,7 +46,7 @@ plist() {  # plist <i> <aether binary>
     <string>--exit-with-parent</string>
   </array>
   <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
   <key>ThrottleInterval</key><integer>10</integer>
   <key>StandardOutPath</key><string>$R/reserve$i.log</string>
   <key>StandardErrorPath</key><string>$R/reserve$i.log</string>
@@ -101,6 +101,8 @@ PY
     s=$(src_bin); [ -x "$s" ] || { echo "no aether binary: set AETHER_BIN or put aether on PATH" >&2; exit 1; }
     # launchd cannot run binaries from an external volume reliably: keep a copy under $R.
     mkdir -p "$R/bin" "$LA"
+    cp -f "$(dirname "$0")/aether-launchd-wrapper.sh" "$R/bin/aether-launchd-wrapper.sh"
+    chmod 755 "$R/bin/aether-launchd-wrapper.sh"
     cp -f "$s" "$a"
     codesign --force --options runtime --timestamp --sign "${SIGN_IDENTITY:-Developer ID Application: Pipln (45WU468FZE)}" "$a"
     cp -f "$net" "$R/network.json"

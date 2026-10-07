@@ -300,6 +300,7 @@ final class NodeController: ObservableObject {
         // re-read it on every tick, so its sentence appears and goes by itself.
         unattended?.refreshStatus()
         guard enabled else { refreshStopReason(); return }
+        if refusePersistedBindingMismatch() { return }
         if !attached, process != nil, onlyOnPower, Self.onBattery, !isValidator {
             // Keep voting until the announced handoff lands (isValidator).
             stop(keepSwitch: true)
@@ -335,6 +336,7 @@ final class NodeController: ObservableObject {
     /// Clear the watchdog's terminal decision (the switch turned on, a retry
     /// is due, or the person pressed the button).
     private func unblock() {
+        if refusePersistedBindingMismatch() { return }
         automaticRestartBlocked = false
         blockedAt = nil
         stoppedFailure = nil
@@ -346,6 +348,27 @@ final class NodeController: ObservableObject {
         automaticRestartBlocked = true
         blockedAt = clock.now
         stoppedFailure = failure
+    }
+
+    /// The daemon maps terminal exit 15 to a successful outer exit so launchd
+    /// does not retry it. The persisted marker is how an attached or relaunched
+    /// wallet observes that same terminal decision without spawning again.
+    @discardableResult
+    private func refusePersistedBindingMismatch() -> Bool {
+        guard NodeBindingRefusal.exists(in: Self.dataDir) else { return false }
+        restartTimer?.invalidate()
+        restartTimer = nil
+        if attached, !Self.lockHeld(in: Self.dataDir) {
+            logEvent("detach", "the attached node released run.lock after a key-binding refusal; owner recovery is required")
+            detachFromGoneNode()
+        }
+        confirmingMac = false
+        if stoppedFailure != .keyElsewhere || !automaticRestartBlocked { block(.keyElsewhere) }
+        let title = NodeStopReason.keyElsewhere.copy(ko: HealthCheck.korean).title
+        if state != .failed(title) { state = .failed(title) }
+        applyDuty()
+        refreshStopReason()
+        return true
     }
 
     /// The reason's one button.
@@ -456,6 +479,7 @@ final class NodeController: ObservableObject {
         f.onBattery = Self.onBattery
         f.isValidator = isValidator
         f.blocked = automaticRestartBlocked ? (stoppedFailure ?? .other) : nil
+        f.keyBindingRefused = NodeBindingRefusal.exists(in: Self.dataDir)
         f.blockedForSeconds = blockedAt.map { Int(clock.now.elapsed(since: $0)) } ?? 0
         f.storage = blockDataStorageState()
         if case .chosen(let volume, let mounted, _) = f.storage {
@@ -474,6 +498,8 @@ final class NodeController: ObservableObject {
         var facts = given
         if !enabled {
             reason = .switchedOff
+        } else if NodeBindingRefusal.exists(in: Self.dataDir) {
+            reason = .keyElsewhere
         } else if process != nil || attached {
             if confirmingMac {
                 reason = .waitingForMacConfirmation
@@ -699,6 +725,7 @@ final class NodeController: ObservableObject {
     }
 
     func start() {
+        if refusePersistedBindingMismatch() { return }
         guard !wrongLocation else {
             // Red team #10: from a DMG/Downloads/read-only place the node's
             // data would point into a bundle that disappears. One sentence;
@@ -1126,6 +1153,7 @@ final class NodeController: ObservableObject {
     /// DeviceCheck tokens, stall detection — without ever starting a second
     /// node on the same data directory.
     private func attachToRunningNode() {
+        if refusePersistedBindingMismatch() { return }
         attached = true
         attachMisses = 0
         switched = false
@@ -1276,6 +1304,7 @@ final class NodeController: ObservableObject {
     }
 
     private func check() {
+        if refusePersistedBindingMismatch() { return }
         refreshMacConfirmation()
         // The node owns verification retries. Restarting it while a read is
         // unavailable would reset its backoff and erase the calm waiting state.
@@ -1312,6 +1341,7 @@ final class NodeController: ObservableObject {
             await MainActor.run {
                 self.checkInFlight = false
                 guard self.process != nil || self.attached else { return }
+                if self.refusePersistedBindingMismatch() { return }
                 guard !self.confirmingMac else { return }
                 if self.attached, status == nil {
                     // The attached (daemon-started) node stopped answering:
@@ -1319,9 +1349,9 @@ final class NodeController: ObservableObject {
                     // daemon), take the data directory back and run our own.
                     self.attachMisses += 1
                     if self.attachMisses >= 5, self.enabled, self.process == nil {
-                        self.attached = false
-                        self.attachMisses = 0
-                        self.start()
+                        // The start gate checks the refusal marker and the
+                        // run.lock holder again before taking over this data.
+                        self.applyPower()
                     }
                     return
                 }

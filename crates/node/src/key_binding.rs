@@ -6,6 +6,7 @@ use commonware_cryptography::Signer as _;
 pub mod signing;
 
 pub const BINDING_FILE: &str = "key-binding.json";
+pub const REFUSAL_FILE: &str = "key-binding-refused";
 pub const EXIT_KEY_ELSEWHERE: i32 = 15;
 const REFUSAL: &str = "key binding refused:";
 
@@ -45,6 +46,7 @@ impl Guard {
     pub fn check_or_exit(&self) {
         if let Err(error) = wait_for_confirmation(|| platform_uuid()
             .and_then(|uuid| check_existing_with_uuid(&self.dir, &self.public, &uuid))) {
+            persist_mismatch(&self.dir, &error);
             eprintln!("error: {error}");
             std::process::exit(match error {
                 BindingError::Mismatch(_) => EXIT_KEY_ELSEWHERE,
@@ -99,6 +101,19 @@ fn storage(reason: impl std::fmt::Display) -> BindingError {
     BindingError::Storage(reason.to_string())
 }
 
+fn persist_mismatch(dir: &Path, error: &BindingError) {
+    if matches!(error, BindingError::Mismatch(_)) {
+        if let Err(e) = crate::atomic::replace(&dir.join(REFUSAL_FILE), error.to_string().as_bytes(), 0o600) {
+            eprintln!("error: could not persist terminal hardware mismatch: {e}");
+        }
+    }
+}
+
+fn report_error(dir: &Path, error: BindingError) -> String {
+    persist_mismatch(dir, &error);
+    error.to_string()
+}
+
 fn wait_for_confirmation<T>(read: impl FnMut() -> Result<T, BindingError>) -> Result<T, BindingError> {
     retry_confirmation(read, std::thread::sleep)
 }
@@ -125,7 +140,7 @@ fn retry_confirmation<T>(mut read: impl FnMut() -> Result<T, BindingError>, mut 
 pub fn check(dir: &Path, public: &crate::block::PublicKey) -> Result<Checked, String> {
     let public = public.as_ref().try_into().expect("Ed25519 public key");
     let checked = wait_for_confirmation(|| check_with_uuid(dir, &public, &platform_uuid()?))
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| report_error(dir, e))?;
     // Startup/legacy-load marker also clears a stale wait in an appended log.
     eprintln!("Mac key binding confirmed");
     Ok(checked)
@@ -190,6 +205,11 @@ pub fn rebind_interactive(dir: &Path) -> Result<(), String> {
     crate::atomic::replace(&path, &record_bytes(&public, &uuid).map_err(|e| e.to_string())?, 0o600)?;
     append_rebind_audit(dir, &format!("committed {audit}\n"))
         .map_err(|e| format!("binding changed durably, but audit completion failed: {e}"))?;
+    match std::fs::remove_file(dir.join(REFUSAL_FILE)) {
+        Ok(()) => crate::atomic::sync_parent(&dir.join(REFUSAL_FILE))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("binding changed durably, but terminal-refusal marker could not be cleared: {e}")),
+    }
     println!("Mac key binding confirmed; rebound {audit}");
     Ok(())
 }
@@ -357,7 +377,7 @@ pub(crate) fn publish_prepared(dir: &Path, public: &crate::block::PublicKey, byt
             }
             Err(e) => Err(storage(e)),
         }
-    }).map_err(|e| e.to_string())
+    }).map_err(|e| report_error(dir, e))
 }
 
 fn read_binding(path: &Path) -> Result<Vec<u8>, std::io::Error> {

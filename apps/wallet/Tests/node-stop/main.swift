@@ -126,6 +126,40 @@ check(NodeResume.decide(f) == .keepRunning, "an unavailable read keeps the node 
 f.processRunning = false; f.attached = true; f.lockHeldByOther = true
 check(NodeResume.decide(f) == .keepRunning, "an attached node waiting to confirm this Mac is kept alive")
 
+// The unattended wrapper hides the child's terminal exit from an attached
+// wallet, and a new wallet process has no watchdog memory. The node's persisted
+// proven-mismatch marker must block both paths before they can start a child.
+f = NodeResumeFacts(); f.attached = true; f.blocked = .keyElsewhere; f.lockHeldByOther = false
+check(NodeResume.decide(f) == .wait(.keyElsewhere), "a terminal watchdog refusal prevents attached takeover after run.lock is released")
+guard let markerTempRoot = ProcessInfo.processInfo.environment["AETHER_AGENT_TEST_TMP"] else {
+    check(false, "AETHER_AGENT_TEST_TMP is required for the persisted-refusal fixture")
+    exit(1)
+}
+let markerDirectory = URL(fileURLWithPath: markerTempRoot)
+    .appendingPathComponent("key-binding-refusal-\(UUID().uuidString)", isDirectory: true)
+do {
+    try FileManager.default.createDirectory(at: markerDirectory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: markerDirectory) }
+    check(!NodeBindingRefusal.exists(in: markerDirectory), "an unavailable read has no persisted mismatch marker")
+    try Data("proven mismatch\n".utf8).write(to: markerDirectory.appendingPathComponent(NodeBindingRefusal.fileName))
+    f = NodeResumeFacts(); f.keyBindingRefused = NodeBindingRefusal.exists(in: markerDirectory)
+    check(f.blocked == nil && NodeResume.decide(f) == .wait(.keyElsewhere), "an app relaunch with no watchdog memory refuses an automatic start")
+    f.attached = true; f.lockHeldByOther = false
+    check(NodeResume.decide(f) == .wait(.keyElsewhere), "an attached daemon's persisted exit 15 prevents takeover after its lock releases")
+    f.lockHeldByOther = true
+    check(NodeResume.decide(f) == .wait(.keyElsewhere), "a terminal refusal prevents another start while the dying daemon still holds run.lock")
+    f = NodeResumeFacts(); f.keyBindingRefused = true; f.restartInSeconds = 1
+    check(NodeResume.decide(f) == .wait(.keyElsewhere), "persisted refusal wins over an already scheduled watchdog restart")
+    f.restartInSeconds = nil; f.blocked = .memory; f.blockedForSeconds = 86_400
+    check(NodeResume.decide(f) == .wait(.keyElsewhere), "persisted refusal never expires through crash-loop recovery")
+    // Only successful owner rebind clears this file; the wallet merely reads it.
+    try FileManager.default.removeItem(at: markerDirectory.appendingPathComponent(NodeBindingRefusal.fileName))
+    f = NodeResumeFacts(); f.keyBindingRefused = NodeBindingRefusal.exists(in: markerDirectory)
+    check(NodeResume.decide(f) == .start(detach: false), "successful owner rebind permits a new start after clearing persisted refusal")
+    f.processRunning = true; f.confirmingMac = true
+    check(NodeResume.decide(f) == .keepRunning, "unavailable verification without a mismatch marker keeps the node alive")
+} catch { check(false, "persisted-refusal fixture: \(error)") }
+
 // Rebinding is limited to a confirmed stop screen, and the CLI approval does
 // not exist unless the typed identity matches and owner authentication succeeds.
 check(NodeStopReason.keyElsewhere.copy(ko: false).action == .rebindKeys, "the confirmed mismatch exposes owner rebind")

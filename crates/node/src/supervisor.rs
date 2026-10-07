@@ -1031,6 +1031,12 @@ impl Supervisor {
                     let _ = std::fs::remove_file(self.data.join("run-state.json"));
                 }
                 Watched::Exited(status) => {
+                    // A terminal mismatch must reach the outer daemon even
+                    // when restart-history persistence or disk reads fail.
+                    if status.code() == Some(EXIT_KEY_ELSEWHERE) {
+                        tracing::error!("key binding refused (exit 15); owner recovery required");
+                        std::process::exit(EXIT_KEY_ELSEWHERE);
+                    }
                     // A sudden ENOSPC can beat the two-second resource sample.
                     // Storage exit 4 is retryable once this volume has room;
                     // other storage failures retain the existing stop policy.
@@ -1795,7 +1801,7 @@ fn write_secret(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 /// Keys that identify this Mac; everything else in <data> belongs to one network.
-const KEEP_ACROSS_NETWORKS: [&str; 7] = ["validator.key", "validator.pub.json", "node-account.key", "key-binding.json", "key-creation.json", "key-rebind.log", "run.lock"];
+const KEEP_ACROSS_NETWORKS: [&str; 8] = ["validator.key", "validator.pub.json", "node-account.key", "key-binding.json", "key-creation.json", "key-rebind.log", "key-binding-refused", "run.lock"];
 
 /// Put `network` in `<data>/network.json`: the first time, or when it is a
 /// different network (a testnet reset: other chain id or committee identity).
@@ -2659,11 +2665,18 @@ mod tests {
             EXIT_NO_VERIFIER,
             crate::candidate::EXIT_IDENTITY,
             EXIT_LOCKED,
+            EXIT_KEY_ELSEWHERE,
         ] {
             assert_eq!(next_restart(&[exit(NOW, 1_000, code)], NOW), Next::Stop(code));
         }
     }
 
+    #[test]
+    fn hardware_mismatch_exit_is_terminal_but_sigterm_is_retryable() {
+        let note = ExitNote { started_ms: 0, at_ms: 1_000, code: Some(EXIT_KEY_ELSEWHERE) };
+        assert_eq!(next_restart(&[note], 1_000), Next::Stop(EXIT_KEY_ELSEWHERE));
+        assert!(matches!(next_restart(&[ExitNote { code: None, ..note }], 1_000), Next::Again(_)));
+    }
 
     /// The history persists, and a damaged history file is refused — it can
     /// never silently reset the restart budget.

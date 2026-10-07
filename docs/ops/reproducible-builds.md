@@ -31,7 +31,7 @@
 
 호스트 링크에는 추가로 `-C link-arg=-Wl,-reproducible`을 준다(`build-wallet.sh`·`build-agent.sh`·`testnet-*.sh`·`repro-check.sh`). wasm 링크에는 주지 않는다(wasm-ld가 모를 수 있다).
 
-증명 프로그램 ID는 **게스트 ELF의 SHA-256**이다(`apps/prover/src/program.rs`). 게스트는 `apps/prover/build-guest.sh`가 jolt CLI로 빌드하며, 여기서도 같은 remap과 `SOURCE_DATE_EPOCH`/`ZERO_AR_DATE`를 적용한다. 루트 워크스페이스의 `codegen-units`는 게스트에 닿지 않으므로 `apps/prover/Cargo.toml`에 따로 둔다.
+증명 프로그램 ID는 **게스트 ELF의 SHA-256**이다(`apps/prover/src/program.rs`). 게스트는 `apps/prover/build-guest.sh`가 jolt CLI로 빌드하며, 여기서도 같은 remap과 `ZERO_AR_DATE`를 적용한다. 단 `SOURCE_DATE_EPOCH`는 커밋 시각이 아니라 **상수** `AETHER_GUEST_SOURCE_DATE_EPOCH`(`scripts/guest-stage.sh`, 1767225600)이며 호출자가 내보낸 값은 무시한다. 프로그램 ID는 검증자가 검증하는 프로토콜 산출물이라, 게스트 입력이 바뀔 때만 움직여야 한다(2026-10-07 High: 커밋마다 바뀌어 9-29 이후 출시 앱의 증명이 하나도 검증되지 않음). 그 입력은 `scripts/guest-inputs.py`가 하나의 다이제스트로 정의한다: 게스트 의존 폐포의 Aether 크레이트 소스 트리 해시, 그 폐포의 `apps/prover/Cargo.lock` 항목, 빌드가 읽는 매니페스트(`apps/prover/Cargo.toml`, 루트 `[workspace.*]` 표), `build-guest.sh`, `rust-toolchain.toml`, `rustc -vV`, `scripts/jolt-fork.lock`, 스테이지 경로. `scripts/prover-program.sh`는 ID 옆에 이 다이제스트를 출력한다. `scripts/test-program-id.sh`가 문서·지갑·노드만 바꾼 커밋은 같은 ID, aether-execution 변경은 다른 ID임을 확인한다(`--build`: 실제 게스트 빌드 두 번). 출시 게이트 `scripts/prover-gate.sh`(package-mac.sh가 실행)는 앱의 `aether-prover info` 프로그램이 번들 네트워크 검증자의 `aether_proverProgram`과 다르면 패키징을 거부한다(조율된 출시는 `AETHER_PROVER_GATE_OVERRIDE`, 빌드 로그에 기록). 루트 워크스페이스의 `codegen-units`는 게스트에 닿지 않으므로 `apps/prover/Cargo.toml`에 따로 둔다.
 
 ### 증명 프로그램 ID와 고정 경로 (`scripts/guest-stage.sh`)
 

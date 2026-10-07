@@ -289,6 +289,21 @@ enum Cmd {
     /// would stop the node for good (red team #3).
     #[command(hide = true)]
     Protocol,
+    /// The proof program the validators of <network> verify with, by their
+    /// `aether_proverProgram` answer (validators that predate it: the program
+    /// compiled in for their chain). Hidden: the release gate
+    /// (scripts/prover-gate.sh) refuses to package an app whose prover differs.
+    #[command(hide = true)]
+    ValidatorProgram {
+        #[arg(long)]
+        network: String,
+        /// Ask these HTTP JSON-RPC endpoints instead of the validators over iroh.
+        #[arg(long)]
+        rpc: Vec<String>,
+        /// Seconds to wait for an answer.
+        #[arg(long, default_value_t = 30)]
+        timeout: u64,
+    },
     /// BLAKE3 of a file, hex (dev-drill feature): scripts/upgrade-drill.sh
     /// hashes its simulated releases with it for the committee upgrade's
     /// releases[] record. No shipped build has this subcommand.
@@ -1103,6 +1118,7 @@ fn main() {
             println!("{}", aether_node::upgrade::implements());
             Ok(())
         })(),
+        Cmd::ValidatorProgram { network, rpc, timeout } => validator_program(&network, rpc, timeout),
         #[cfg(feature = "dev-drill")]
         Cmd::DevB3 { file } => (|| {
             let bytes = std::fs::read(&file).map_err(|e| format!("read {file}: {e}"))?;
@@ -2692,11 +2708,17 @@ fn start_prover(
         status.clone(),
         move || match &network_upstream {
             Some(up) => {
-                let answer = network_handle.block_on(up.first("aether_proverProgram", json!([])))?;
-                answer
-                    .as_str()
-                    .map(str::to_owned)
-                    .ok_or_else(|| "validator does not report its proof program".into())
+                // Validators from before the RPC answer "method not found"; on a
+                // chain whose old program is known that maps to it (a definite
+                // mismatch or match instead of "cannot confirm").
+                let chain_id = network_chain.lock().cfg.chain_id;
+                let answer = network_handle.block_on(up.first("aether_proverProgram", json!([]))).and_then(|answer| {
+                    answer
+                        .as_str()
+                        .map(str::to_owned)
+                        .ok_or_else(|| "validator does not report its proof program".into())
+                });
+                aether_node::prover::network_program(chain_id, answer)
             }
             None => network_chain.lock().verifier.as_ref()
                 .and_then(|v| v.program_id())
@@ -2712,6 +2734,35 @@ fn start_prover(
     );
     tracing::info!(%payout, "proving blocks (rewards to this address)");
     Some(status)
+}
+
+/// `aether validator-program`: what the network's validators verify proofs
+/// with, read the way a follower reads it before proving (`start_prover`).
+fn validator_program(network: &str, rpc: Vec<String>, timeout: u64) -> Result<(), String> {
+    use aether_node::follow::Upstream;
+    let file = aether_node::roster::NetworkFile::load(std::path::Path::new(network))?;
+    let chain_id = file.chain_id;
+    let nodes = aether_node::roster::Roster::from_file(&file)?.nodes;
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(|e| e.to_string())?;
+    let answer = rt.block_on(async move {
+        let up = if rpc.is_empty() {
+            let ep = aether_net::bind(None, vec![aether_net::ALPN_RPC.to_vec()]).await.map_err(|e| e.to_string())?;
+            Upstream::Iroh(aether_net::RpcClient::with_endpoint(ep, nodes), Default::default())
+        } else {
+            Upstream::Http(rpc)
+        };
+        tokio::time::timeout(Duration::from_secs(timeout), up.first("aether_proverProgram", json!([])))
+            .await
+            .map_err(|_| format!("no validator answered aether_proverProgram within {timeout}s"))
+    })?;
+    let answer = answer.and_then(|v| v.as_str().map(str::to_owned).ok_or_else(|| "validator does not report its proof program".to_string()));
+    let predates = matches!(&answer, Err(e) if e.contains("method not found: aether_proverProgram"));
+    let program = aether_node::prover::network_program(chain_id, answer)?;
+    if predates {
+        eprintln!("chain {chain_id}: the validators predate aether_proverProgram; this is the program known for them");
+    }
+    println!("{program}");
+    Ok(())
 }
 
 /// Leave no orphan: stop when the parent process is gone (reparented to launchd).

@@ -33,4 +33,7 @@ aether_repro_rustflags "--remap-path-prefix=$(cd "$jolt" && pwd)=/jolt$(aether_g
 # it ships as it is built: rewrite the UUID from the code here, once.
 bin="${CARGO_TARGET_DIR:-$stage/apps/prover/target}/release/aether-prover"
 aether_repro_fix_uuid "$bin"
+# The id is a function of the guest's inputs alone (scripts/guest-inputs.py);
+# name them beside it, so two builds that disagree can be told apart at once.
+echo "prover-program: guest inputs $(python3 scripts/guest-inputs.py "$(pwd -P)")" >&2
 "$bin" info | python3 -c 'import json,sys; print(json.load(sys.stdin)["guest_elf_sha256"])'

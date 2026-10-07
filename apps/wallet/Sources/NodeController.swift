@@ -33,6 +33,9 @@ final class NodeController: ObservableObject {
     /// the sidebar, the Node page, the menu and the health banner all show
     /// (nil while it runs normally). See `NodeStopReason`.
     @Published private(set) var stopReason: NodeStopReason?
+    /// An unavailable hardware read pauses signatures inside the live node.
+    /// It is allowed to retry without a watchdog restart.
+    @Published private(set) var confirmingMac = false
     /// The last stop, as `node-status.log` recorded it (diagnostics).
     var lastStopLine: String? { UserDefaults.standard.string(forKey: "nodeLastStop") }
     /// The code last written to `node-status.log` (one line per change).
@@ -378,6 +381,7 @@ final class NodeController: ObservableObject {
         f.migrationGate = f.migrating ? nil : DataMigration.mayStartNode()
         f.movingStoragePercent = storageMovePercent
         f.processRunning = process != nil
+        f.confirmingMac = confirmingMac
         f.attached = attached
         f.lockHeldByOther = process == nil && Self.lockHeld(in: Self.dataDir)
         if !f.lockHeldByOther { lockRefused = false }
@@ -408,7 +412,9 @@ final class NodeController: ObservableObject {
         if !enabled {
             reason = .switchedOff
         } else if process != nil || attached {
-            if diskPaused {
+            if confirmingMac {
+                reason = .waitingForMacConfirmation
+            } else if diskPaused {
                 // Running, but below the node's write floor: the node waits
                 // for space by itself — say how much, on which disk.
                 let f = facts ?? resumeFacts()
@@ -470,7 +476,9 @@ final class NodeController: ObservableObject {
 
     /// The node we were attached to is gone: forget it before starting ours.
     private func detachFromGoneNode() {
+        stopCandidateRead()
         attached = false
+        confirmingMac = false
         attachMisses = 0
         poll?.invalidate()
         poll = nil
@@ -660,8 +668,7 @@ final class NodeController: ObservableObject {
             return
         }
         announceAvailability(leaving: Self.onBattery)
-        loadCandidate(binary)
-        nextCandidateRetry = clock.now.advanced(by: 60)
+        nextCandidateRetry = clock.now
         // The same argv the daemon would run (UnattendedDecision.nodeArgv is
         // the single source), plus the app-child-only --exit-with-parent.
         var args = UnattendedDecision.nodeArgv(
@@ -704,6 +711,7 @@ final class NodeController: ObservableObject {
         launchError = nil
         lockRefused = false
         process = p
+        confirmingMac = false
         // Design 36 N3: the keys never ride a Time Machine backup onto
         // another Mac (sticky exclusion; idempotent and cheap).
         let keyDir = Self.dataDir
@@ -747,11 +755,13 @@ final class NodeController: ObservableObject {
     }
 
     func stop(keepSwitch: Bool = false) {
+        stopCandidateRead()
         if attached {
             // Detach only: the daemon's node is the point of the unattended
             // restart — quitting the app must not stop it (docs/design/29).
             // The node switch being turned off stops it (`nodeSwitchedOff`).
             attached = false
+            confirmingMac = false
             poll?.invalidate()
             tokenTimer?.invalidate()
             restartTimer?.invalidate()
@@ -782,6 +792,7 @@ final class NodeController: ObservableObject {
         if !UserDefaults.standard.bool(forKey: "useDevelopmentNetwork") { useLocalNode(port: nil) }
         if let p = process, p.isRunning { p.terminate() }
         process = nil
+        confirmingMac = false
         state = .off
         applyDuty()
     }
@@ -796,9 +807,22 @@ final class NodeController: ObservableObject {
         return String(data: h.readDataToEndOfFile(), encoding: .utf8) ?? ""
     }
 
+    /// The latest transition wins; once both markers leave the bounded tail,
+    /// retain the state until another transition. Re-reading the tail also
+    /// handles a marker that was only partly written at the previous poll.
+    private func refreshMacConfirmation() {
+        let waiting = NodeMacConfirmation.waiting(in: nodeLogTail(65_536), previously: confirmingMac)
+        if confirmingMac != waiting {
+            confirmingMac = waiting
+            watchdog.invalidate()
+            refreshStopReason()
+        }
+    }
+
     private func exited(_ proc: Process) {
         // Stopped on purpose, or an older process (after a restart) finishing late.
         guard let current = process, current === proc else { return }
+        stopCandidateRead()
         let status = proc.terminationStatus
         let signaled = proc.terminationReason == .uncaughtSignal
         let afterWake = signaled && status == SIGUSR1 && (lastWakeSignal.map { Date().timeIntervalSince($0) < 5 } ?? false)
@@ -808,6 +832,7 @@ final class NodeController: ObservableObject {
             onUpgradeNeeded?()
         }
         process = nil
+        confirmingMac = false
         poll?.invalidate()
         switched = false
         networkCheckPending = false
@@ -909,31 +934,54 @@ final class NodeController: ObservableObject {
         }
     }
 
+    private var candidateProcess: Process?
+
+    private func stopCandidateRead() {
+        if let p = candidateProcess, p.isRunning { p.terminate() }
+        candidateProcess = nil
+    }
+
     /// Read (or create) this Mac's voting-node keys with the bundled helper.
+    /// Hardware verification can wait indefinitely; it must not hold the
+    /// main actor or delay launching the node that reports the waiting state.
     private func loadCandidate(_ binary: URL) {
-        guard candidate == nil, DataMigration.mayStartNode() == nil else { return }
+        guard candidate == nil, candidateProcess == nil, !confirmingMac, answeredSinceStart,
+              DataMigration.mayStartNode() == nil else { return }
+        // RPC only starts after the node's identity setup. Waiting for it
+        // avoids racing another candidate-info against fresh key creation.
         let p = Process(), out = Pipe()
         p.executableURL = binary
         p.arguments = ["candidate-info", "--data", Self.dataDir.path]
         p.standardOutput = out
         guard (try? p.run()) != nil else { return }
-        p.waitUntilExit()
-        if p.terminationStatus == 6 {
-            // The node key cannot be read (red team #5): the helper refuses to
-            // mint a replacement identity, and so does the app — a person
-            // restores the key from a backup. The node (keyless) still runs
-            // and the wallet still works; this says why it does not vote.
-            if !identityNoticePosted {
-                identityNoticePosted = true
-                LocalNotice.post(title: "\(Brand.project)", body: NodeWatchdog.Failure.identityLost.sentence)
+        candidateProcess = p
+        Task.detached {
+            p.waitUntilExit()
+            let code = p.terminationStatus
+            let entry: Candidate?
+            if code == 0,
+               let v = try? JSONSerialization.jsonObject(with: out.fileHandleForReading.readDataToEndOfFile()) as? [String: Any],
+               let key = v["validator_key"] as? String, let node = v["node_id"] as? String,
+               let beaconer = v["beaconer"] as? String {
+                entry = Candidate(validatorKey: key, nodeId: node, beaconer: beaconer)
+            } else {
+                entry = nil
             }
-            return
+            await MainActor.run {
+                guard self.candidateProcess === p else { return }
+                self.candidateProcess = nil
+                if code == 6 {
+                    // Missing/unreadable keys never mint a replacement identity.
+                    if !self.identityNoticePosted {
+                        self.identityNoticePosted = true
+                        LocalNotice.post(title: "\(Brand.project)", body: NodeWatchdog.Failure.identityLost.sentence)
+                    }
+                    return
+                }
+                self.identityNoticePosted = false
+                if let entry { self.candidate = entry }
+            }
         }
-        identityNoticePosted = false
-        guard p.terminationStatus == 0,
-              let v = try? JSONSerialization.jsonObject(with: out.fileHandleForReading.readDataToEndOfFile()) as? [String: Any],
-              let key = v["validator_key"] as? String, let node = v["node_id"] as? String, let beaconer = v["beaconer"] as? String else { return }
-        candidate = Candidate(validatorKey: key, nodeId: node, beaconer: beaconer)
     }
 
     /// The voting key's signature asking to be registered under `account` (the wallet, as operator).
@@ -1019,10 +1067,7 @@ final class NodeController: ObservableObject {
         attachMisses = 0
         switched = false
         state = .running
-        if candidate == nil, let binary {
-            loadCandidate(binary)
-            nextCandidateRetry = clock.now.advanced(by: 60)
-        }
+        nextCandidateRetry = clock.now
         watchdog.started(clock.now)
         answeredSinceStart = false
         rpcAnswering = true
@@ -1168,7 +1213,14 @@ final class NodeController: ObservableObject {
     }
 
     private func check() {
-        if candidate == nil, clock.now >= nextCandidateRetry {
+        refreshMacConfirmation()
+        // The node owns verification retries. Restarting it while a read is
+        // unavailable would reset its backoff and erase the calm waiting state.
+        if confirmingMac {
+            refreshStopReason()
+            return
+        }
+        if candidate == nil, answeredSinceStart, clock.now >= nextCandidateRetry {
             nextCandidateRetry = clock.now.advanced(by: 60)
             if let binary { loadCandidate(binary) }
         }
@@ -1197,6 +1249,7 @@ final class NodeController: ObservableObject {
             await MainActor.run {
                 self.checkInFlight = false
                 guard self.process != nil || self.attached else { return }
+                guard !self.confirmingMac else { return }
                 if self.attached, status == nil {
                     // The attached (daemon-started) node stopped answering:
                     // after a short grace (it may be restarting under the

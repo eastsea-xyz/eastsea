@@ -73,7 +73,7 @@ struct NodeWatchdog {
         /// This Mac's node key is gone or unreadable: the node refuses to mint
         /// a new identity, and so must the app — a person restores the key.
         case identityLost
-        /// Copied keys or a hardware binding this Mac cannot verify (exit 15).
+        /// A successful read proved the keys are bound to another Mac (exit 15).
         case keyElsewhere
         /// Another Aether already runs this node's data directory.
         case alreadyRunning

@@ -103,6 +103,28 @@ f = NodeResumeFacts(); f.blocked = .keyElsewhere; f.blockedForSeconds = 86_400
 check(NodeResume.decide(f) == .wait(.keyElsewhere), "hardware binding needs attention even after the crash retry window")
 check(NodeStopReason.keyElsewhere.copy(ko: true).detail.contains("이 노드의 키가 다른 Mac에서 옮겨 왔어요"), "copied-key reason explains the stop in Korean")
 check(NodeStopReason.keyElsewhere.copy(ko: false).detail.contains("This node's keys came from another Mac"), "copied-key reason explains the stop in English")
+check(NodeStopReason.keyElsewhere.copy(ko: false).detail.contains("Restore") && NodeStopReason.keyElsewhere.copy(ko: false).detail.contains("rebind"), "confirmed mismatch offers restore or explicit rebind, preserving the identity")
+check(NodeStopReason.keyElsewhere.copy(ko: true).detail.contains("복원") && NodeStopReason.keyElsewhere.copy(ko: true).detail.contains("다시 연결"), "confirmed mismatch offers restore or explicit rebind in Korean")
+
+// An unavailable read is a live node waiting, never a proven mismatch or a
+// request to change identities. Its log markers recover without a restart.
+for ko in [false, true] {
+    let waiting = NodeStopReason.waitingForMacConfirmation.copy(ko: ko)
+    check(!NodeStopReason.waitingForMacConfirmation.isIncident, "Mac confirmation is a calm waiting state")
+    check(waiting.action == nil && waiting.actionLabel == nil, "an unavailable read has no owner recovery action")
+    check(!waiting.detail.contains("another Mac") && !waiting.detail.contains("다른 Mac"), "unknown verification does not assert another Mac")
+    check(waiting.resume.contains(ko ? "저절로" : "by itself"), "Mac confirmation says it retries by itself")
+}
+check(NodeStopReason.waitingForMacConfirmation.copy(ko: false).title == "Waiting to confirm this Mac", "unavailable-read English title")
+check(NodeStopReason.waitingForMacConfirmation.copy(ko: true).title == "이 Mac 확인 대기", "unavailable-read Korean title")
+check(NodeMacConfirmation.waiting(in: "waiting to confirm this Mac: IOKit lookup unavailable"), "an unavailable hardware read enters the waiting state")
+check(NodeMacConfirmation.waiting(in: "still working", previously: true), "unrelated logs preserve a pending confirmation")
+check(!NodeMacConfirmation.waiting(in: "waiting to confirm this Mac\nMac key binding confirmed"), "a successful retry clears the waiting state")
+check(NodeMacConfirmation.waiting(in: "Mac key binding confirmed\nwaiting to confirm this Mac"), "the latest binding transition wins")
+f = NodeResumeFacts(); f.processRunning = true; f.confirmingMac = true
+check(NodeResume.decide(f) == .keepRunning, "an unavailable read keeps the node running")
+f.processRunning = false; f.attached = true; f.lockHeldByOther = true
+check(NodeResume.decide(f) == .keepRunning, "an attached node waiting to confirm this Mac is kept alive")
 for bad in [NodeWatchdog.Failure.database, .handoff, .storage] {
     f = NodeResumeFacts(); f.blocked = bad; f.blockedForSeconds = 100_000
     check(NodeResume.decide(f) == .wait(.needsAttention(bad)), "\(bad) needs a person, even after hours")
@@ -124,7 +146,7 @@ let all: [NodeStopReason] = [.switchedOff, .onBattery, .wrongLocation, .noHelper
                              .otherNodeRunning, .diskFull(freeBytes: GiB, resumeBytes: 7 * GiB, volume: nil),
                              .diskMissing(volume: "v"), .diskNoAccess(volume: "v"), .restarting(inSeconds: 3),
                              .crashLoop(.other, retryInSeconds: 300), .needsAttention(.database), .upgradeNeeded,
-                             .identityLost, .launchFailed("e"), .movingStorage(percent: 5)]
+                             .identityLost, .waitingForMacConfirmation, .keyElsewhere, .launchFailed("e"), .movingStorage(percent: 5)]
 var codes = Set<String>()
 for r in all {
     codes.insert(r.code)
@@ -134,7 +156,7 @@ for r in all {
         check(c.title.count <= 40, "\(r.code) title fits the sidebar: \(c.title)")
         check((c.action == nil) == (c.actionLabel == nil), "\(r.code) button has a label")
         check(!c.paragraph.lowercased().contains("rpc") && !c.paragraph.contains("exit "), "\(r.code) has no jargon")
-        if r.isIncident && r != .identityLost && r != .wrongLocation && r != .noHelper {
+        if r.isIncident && r != .identityLost && r != .keyElsewhere && r != .wrongLocation && r != .noHelper {
             check(!c.resume.isEmpty, "\(r.code) says when it resumes (ko=\(ko))")
         }
     }

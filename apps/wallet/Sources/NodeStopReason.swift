@@ -42,7 +42,9 @@ enum NodeStopReason: Equatable {
     case upgradeNeeded
     /// This Mac's node key cannot be read.
     case identityLost
-    /// This Mac cannot verify the node keys' hardware binding.
+    /// The node is alive and retrying an unavailable Mac-identity read.
+    case waitingForMacConfirmation
+    /// A successful identity read proved these keys are bound to another Mac.
     case keyElsewhere
     /// The process could not even be launched (an OS error).
     case launchFailed(String)
@@ -67,6 +69,7 @@ enum NodeStopReason: Equatable {
         case .needsAttention: return "needs_attention"
         case .upgradeNeeded: return "upgrade_needed"
         case .identityLost: return "identity_lost"
+        case .waitingForMacConfirmation: return "waiting_for_mac_confirmation"
         case .keyElsewhere: return "key_elsewhere"
         case .launchFailed: return "launch_failed"
         case .movingStorage: return "moving_storage"
@@ -79,7 +82,7 @@ enum NodeStopReason: Equatable {
     /// not raised as incidents.
     var isIncident: Bool {
         switch self {
-        case .switchedOff, .onBattery, .migrating, .restarting, .movingStorage: return false
+        case .switchedOff, .onBattery, .migrating, .restarting, .movingStorage, .waitingForMacConfirmation: return false
         default: return true
         }
     }
@@ -217,10 +220,16 @@ extension NodeStopReason {
             return NodeStopCopy(title: ko ? "노드 키를 읽을 수 없음" : "Node key unreadable",
                                 detail: NodeWatchdog.Failure.identityLost.sentence,
                                 resume: "", action: .copyDiagnostics, actionLabel: ko ? "진단 정보 복사" : "Copy Diagnostics")
+        case .waitingForMacConfirmation:
+            return NodeStopCopy(title: ko ? "이 Mac 확인 대기" : "Waiting to confirm this Mac",
+                                detail: ko ? "지금은 이 Mac의 노드 키를 확인할 수 없어요. 노드는 실행 중이며 확인될 때까지 서명을 기다려요."
+                                    : "This Mac's node keys cannot be confirmed right now. The node keeps running and waits before signing.",
+                                resume: ko ? "저절로 다시 확인해요. 따로 할 일은 없어요." : "It checks again by itself. No action is needed.",
+                                action: nil, actionLabel: nil)
         case .keyElsewhere:
             return NodeStopCopy(title: ko ? "다른 Mac의 노드 키" : "Node keys from another Mac",
-                                detail: ko ? "이 노드의 키가 다른 Mac에서 옮겨 왔어요. 원래 Mac에서 실행하거나 이 Mac에 새 노드를 등록해 주세요."
-                                    : "This node's keys came from another Mac. Use the original Mac or register a new node on this Mac.",
+                                detail: ko ? "이 노드의 키가 다른 Mac에서 옮겨 왔어요. 원래 Mac에 복원하거나, 노드를 의도적으로 옮겼다면 이 Mac에 키를 다시 연결해 주세요."
+                                    : "This node's keys came from another Mac. Restore them on the original Mac, or rebind them here if you intentionally moved this node.",
                                 resume: "", action: .copyDiagnostics, actionLabel: ko ? "진단 정보 복사" : "Copy Diagnostics")
         case .launchFailed(let why):
             return NodeStopCopy(title: ko ? "노드를 시작하지 못함" : "The node could not start",
@@ -247,6 +256,20 @@ extension NodeStopReason {
     }
 }
 
+/// The node reports an unavailable read while staying alive. These markers
+/// are state transitions, not exit reasons; unrelated output retains the
+/// previous state until a successful retry confirms this Mac.
+enum NodeMacConfirmation {
+    static func waiting(in log: String, previously: Bool = false) -> Bool {
+        var waiting = previously
+        for line in log.split(separator: "\n") {
+            if line.contains("waiting to confirm this Mac") { waiting = true }
+            if line.contains("Mac key binding confirmed") { waiting = false }
+        }
+        return waiting
+    }
+}
+
 /// Where the block data lives, as the start gate sees it.
 enum NodeStorageState: Equatable {
     /// Application Support on the internal disk.
@@ -267,6 +290,8 @@ struct NodeResumeFacts: Equatable {
     var movingStoragePercent: Int?
     /// Our own child process is alive.
     var processRunning = false
+    /// The alive node has paused signing while it retries Mac verification.
+    var confirmingMac = false
     /// Attached to a node someone else started (the unattended daemon's).
     var attached = false
     /// `run.lock` is held by a process that is not our child: an exclusive
@@ -385,7 +410,7 @@ enum NodeStatusLog {
             case .standard: storage = "internal"
             case .chosen(let v, let m, let w): storage = "\(v)(mounted=\(m),writable=\(w))"
             }
-            s += " | enabled=\(f.enabled) proc=\(f.processRunning) attached=\(f.attached) lockOther=\(f.lockHeldByOther)"
+            s += " | enabled=\(f.enabled) proc=\(f.processRunning) confirmingMac=\(f.confirmingMac) attached=\(f.attached) lockOther=\(f.lockHeldByOther)"
                 + " battery=\(f.onBattery) onlyOnPower=\(f.onlyOnPower) blocked=\(f.blocked.map { "\($0)" } ?? "-")"
                 + " blockedFor=\(f.blockedForSeconds)s restartIn=\(f.restartInSeconds.map(String.init) ?? "-")"
                 + " free=\(free) storage=\(storage) migrating=\(f.migrating) gate=\(f.migrationGate == nil ? "open" : "shut")"

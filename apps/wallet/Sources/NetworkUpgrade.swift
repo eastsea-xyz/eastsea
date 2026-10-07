@@ -26,7 +26,7 @@ struct NetworkUpgrade: Decodable, Equatable, Identifiable {
     }
 
     func notice(height: UInt64) -> String {
-        "Network upgrade to protocol \(`protocol`) in \(daysLeft(height: height)) days: \(notes)"
+        String(localized: "Network upgrade to protocol \(`protocol`) in \(daysLeft(height: height)) days: \(notes)")
     }
 
     func requiresAppUpdate(supportedProtocol: UInt32) -> Bool {
@@ -36,6 +36,6 @@ struct NetworkUpgrade: Decodable, Equatable, Identifiable {
     func updateDeadline(height: UInt64, now: Date) -> String {
         let remaining = activateAt - min(height, activateAt)
         let estimated = now.addingTimeInterval(TimeInterval(remaining))
-        return "Update \(Brand.project) before \(estimated.formatted(date: .abbreviated, time: .shortened)) (estimated)"
+        return String(localized: "Update \(Brand.name) before \(estimated.formatted(date: .abbreviated, time: .shortened)) (estimated)")
     }
 }

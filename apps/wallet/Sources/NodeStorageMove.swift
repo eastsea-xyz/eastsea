@@ -79,7 +79,7 @@ extension NodeController {
             return BlockDataLocation.sentence(.inUse, ko: ko)
         }
         guard let v = Self.volume(of: picked) else {
-            return ko ? "이 위치를 읽을 수 없어요. 다른 폴더를 골라 주세요." : "This place cannot be read. Pick another folder."
+            return String(localized: "This place cannot be read. Pick another folder.")
         }
         // Design 36 N3: never under an iCloud-synced folder (a second copy).
         if let why = KeySafety.iCloudRefusal(path: picked.path, home: FileManager.default.homeDirectoryForCurrentUser.path,
@@ -110,9 +110,8 @@ extension NodeController {
         panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
         panel.directoryURL = URL(fileURLWithPath: "/Volumes", isDirectory: true)
-        panel.prompt = ko ? "여기에 저장" : "Store Here"
-        panel.message = ko ? "블록 데이터를 둘 폴더를 고르세요. 그 안에 ‘\(BlockDataLocation.folderName)’ 폴더를 만들어요. 키는 이 Mac에 그대로 남아요."
-            : "Pick a folder for the block data. A “\(BlockDataLocation.folderName)” folder is made inside it. The keys stay on this Mac."
+        panel.prompt = String(localized: "Store Here")
+        panel.message = String(localized: "Pick a folder for the block data. A “\(BlockDataLocation.folderName)” folder is made inside it. The keys stay on this Mac.")
         guard panel.runModal() == .OK, let url = panel.url else { return }
         if let why = problem(with: url) {
             storageMoveError = why
@@ -169,8 +168,7 @@ extension NodeController {
                     // Nothing switched: the old copy is untouched and stays in use.
                     for d in dirs where dest != nil { try? fm.removeItem(at: target.appendingPathComponent(d)) }
                     if creating, let dest { try? fm.removeItem(at: dest) }
-                    self.storageMoveError = ko ? "옮기지 못했어요. 복사한 내용이 원본과 맞지 않거나 공간이 모자라요. 블록 데이터는 원래 자리에 그대로 있어요."
-                        : "The move did not complete: the copy did not verify or space ran out. The block data is still where it was."
+                    self.storageMoveError = String(localized: "The move did not complete: the copy did not verify or space ran out. The block data is still where it was.")
                     self.logEvent("storage", "move failed; staying on \(source.path)")
                 }
                 self.storageMovePercent = nil

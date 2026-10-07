@@ -21,10 +21,10 @@
 /** The native coin of each chain (not an ERC-20; recorded so the trusted
  * denomination table is complete). The extension always shows the native
  * amount at 18 decimals (lib/units.js), independent of any RPC answer.
- * Chain 7780 is the legacy testnet, whose coin stayed AETH; new-genesis
- * chains show DBLN (lib/brand.js coinTicker). */
+ * Chain 7780 is the legacy testnet; its coin is shown as DBLN ("Test
+ * Doubloon") like every chain's (lib/brand.js). */
 export const NATIVE_COINS = Object.freeze({
-  7780: Object.freeze({ symbol: 'AETH', name: 'Test AETH', decimals: 18 }),
+  7780: Object.freeze({ symbol: 'DBLN', name: 'Test Doubloon', decimals: 18 }),
 });
 
 /** Known ERC-20 tokens, by chain id and lowercase address.
@@ -47,4 +47,19 @@ export const KNOWN_TOKENS = Object.freeze({
 export function knownToken(chainId, address) {
   const entry = KNOWN_TOKENS[Number(chainId)]?.[String(address || '').toLowerCase()];
   return entry ? { ...entry } : null;
+}
+
+/** Display names for tokens whose on-chain name still carries the retired
+ * AETH label. The contract's own symbol and name never change (they live in
+ * the contract, and the denomination checks compare against them); only what
+ * a person reads does. */
+export const DISPLAY_NAMES = Object.freeze({
+  7780: Object.freeze({
+    '0xa2521982a17474cb2f8741c85de653b5282d72b0': 'Wrapped test DBLN',
+  }),
+});
+
+/** The name to show for a token: the display name when there is one. */
+export function displayTokenName(chainId, address, name) {
+  return DISPLAY_NAMES[Number(chainId)]?.[String(address || '').toLowerCase()] ?? name;
 }

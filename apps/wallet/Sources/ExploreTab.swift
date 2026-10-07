@@ -8,6 +8,9 @@ import WebKit
 struct ExplorePage: View {
     @EnvironmentObject var model: WalletModel
     @EnvironmentObject var browser: BrowserController
+    /// Back to Home, always in the address bar: a page in the full-bleed
+    /// web view must never be a dead end (founder report on 0.7.0).
+    var goHome: (() -> Void)?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -39,6 +42,11 @@ struct ExplorePage: View {
 
     private var addressBar: some View {
         HStack(spacing: 8) {
+            if let goHome {
+                Button(action: goHome) { Label("Home", systemImage: "house.fill") }
+                    .buttonStyle(.bordered)
+                    .help("Back to Home")
+            }
             #if os(macOS)
             if browser.canGoBack {
                 Button { browser.goBack() } label: { Image(systemName: "chevron.left") }
@@ -90,7 +98,7 @@ struct ExplorePage: View {
                         } label: {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(domain).font(.aeHeadline)
-                                Text("The \(Brand.project) site.").font(.aeBody).foregroundStyle(.secondary)
+                                Text("The \(Brand.name) website.").font(.aeBody).foregroundStyle(.secondary)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
@@ -112,7 +120,8 @@ private struct WebViewHolder: View {
         #if os(macOS)
         WebViewRepresentable(webView: webView)
         #else
-        WebViewRepresentable(webView: webView).ignoresSafeArea(edges: .bottom)
+        // Inside the safe area, so the tab bar stays visible over the page.
+        WebViewRepresentable(webView: webView)
         #endif
     }
 }
@@ -132,18 +141,23 @@ private struct WebViewRepresentable: UIViewRepresentable {
 #endif
 
 /// The one-time warning before an unknown https site first loads.
-private struct SiteWarningSheet: View {
+struct SiteWarningSheet: View {
     let warning: BrowserController.SiteWarning
     @ObservedObject var browser: BrowserController
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Open this site in Explore?").font(.aeTitle)
-            Text("You are about to open **\(warning.host)**. Explore shows pages like any browser: the site's content is the site's, not \(Brand.project)'s.")
+            Text("You are about to open **\(warning.host)**. Explore shows pages like any browser: the site's content is the site's, not \(Brand.name)'s.")
                 .font(.aeBody)
             if let like = warning.lookalike {
-                Label("This address looks like **\(like)** but is not it. Check every letter before you connect a wallet.", systemImage: "exclamationmark.triangle.fill")
-                    .font(.aeBody).foregroundStyle(Color.warn)
+                // Label's title does not render Markdown; Text does (the bold host).
+                Label {
+                    Text("This address looks like **\(like)** but is not it. Check every letter before you connect a wallet.")
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                }
+                .font(.aeBody).foregroundStyle(Color.warn)
             }
             if warning.punycode {
                 Label("This address mixes in characters that can hide inside look-alike letters.", systemImage: "character.cursor.ibeam")
@@ -164,7 +178,7 @@ private struct SiteWarningSheet: View {
 /// The confirmation sheet for a page's provider request: a connect, or a
 /// transaction. Nothing is answered until the user decides, and a locked
 /// wallet never shows this at all (the bridge refused it outright).
-private struct ProviderAskSheet: View {
+struct ProviderAskSheet: View {
     let ask: BrowserController.PendingAsk
     @EnvironmentObject var model: WalletModel
     @ObservedObject var browser: BrowserController
@@ -181,13 +195,13 @@ private struct ProviderAskSheet: View {
             case .send(let origin, let host, let tx, let feeWei):
                 Text("\(host.isEmpty ? origin : host) asks to send").font(.aeTitle)
                 VStack(alignment: .leading, spacing: 8) {
-                    row("Action", CallDescribe.action(to: tx.to, data: tx.data))
-                    if !tx.to.isEmpty { row("To", tx.to) }
+                    row("Action", CallDescribe.action(to: tx.to, data: tx.data), mono: false)
+                    if !tx.to.isEmpty { row("To", tx.to, mono: true) }
                     row("Amount", tx.valueWei == "0" ? "—" : "\(Wei.format(tx.valueWei)) \(Brand.networkCoinTicker)")
                     if tx.isPlainTransfer {
-                        row("Fee (maximum)", feeWei.map { "\(Wei.format($0)) \(Brand.networkCoinTicker)" } ?? "the network's fee at send time")
+                        row("Fee (maximum)", feeWei.map { "\(Wei.format($0)) \(Brand.networkCoinTicker)" } ?? String(localized: "the network's fee at send time"))
                     }
-                    row("Gas", tx.gas == 0 ? "the wallet's default" : "\(tx.gas)")
+                    row("Gas", tx.gas == 0 ? String(localized: "the wallet's default") : "\(tx.gas)")
                     if tx.data != "0x" {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Calldata").font(.aeFootnote).foregroundStyle(.secondary)
@@ -204,17 +218,18 @@ private struct ProviderAskSheet: View {
             HStack {
                 Spacer()
                 Button("Refuse", role: .cancel) { browser.refuseAsk() }.keyboardShortcut(.cancelAction)
-                Button(ask.kind.isConnect ? "Connect" : "Send") { browser.approveAsk() }
+                Button(ask.kind.isConnect ? String(localized: "Connect") : String(localized: "Send")) { browser.approveAsk() }
                     .keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
             }
         }
         .padding(20)
     }
 
-    private func row(_ label: String, _ value: String) -> some View {
+    /// Addresses in a fixed-width face (easier to compare), words in the body face.
+    private func row(_ label: LocalizedStringKey, _ value: String, mono: Bool = false) -> some View {
         HStack(alignment: .top) {
             Text(label).font(.aeFootnote).foregroundStyle(.secondary).frame(width: 110, alignment: .leading)
-            Text(value).font(.aeBody.monospaced()).textSelection(.enabled)
+            Text(value).font(mono ? .aeBody.monospaced() : .aeBody.monospacedDigit()).textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
@@ -234,8 +249,8 @@ struct ConnectedSitesSection: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Connected sites").font(.aeHeadline)
                         Text(model.sitePermissions.sites.isEmpty
-                             ? "No site can see your address. When the Explore tab connects one, it appears here."
-                             : "These sites may ask about your address. Disconnecting takes effect the next time they ask.")
+                             ? String(localized: "No site can see your address. When the Explore tab connects one, it appears here.")
+                             : String(localized: "These sites may ask about your address. Disconnecting takes effect the next time they ask."))
                             .font(.aeBody).foregroundStyle(.secondary)
                     }
                 }

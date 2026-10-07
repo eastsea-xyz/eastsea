@@ -78,13 +78,13 @@ struct NodeWatchdog {
 
         /// One sentence, in the app's language: what happened and what to do.
         var sentence: String {
-            let ko = Locale.preferredLanguages.first?.hasPrefix("ko") ?? false
+            let ko = Bundle.main.preferredLocalizations.first?.hasPrefix("ko") ?? false
             switch self {
             case .diskFull:
                 return ko ? "저장 공간이 부족해요. 남은 공간이 7 GB가 되면 노드가 저절로 다시 시작해요."
                     : "Storage is full. The node restarts by itself once 7 GB is free."
             case .database:
-                return ko ? "노드 데이터가 계속 손상됩니다. 백업에서 복원하거나 지원에 문의해 주세요."
+                return ko ? "노드 데이터가 계속 손상돼요. 백업에서 복원하거나 지원에 문의해 주세요."
                     : "The node's data keeps getting damaged. Restore it from a backup or contact support."
             case .handoff:
                 return ko ? "노드 인계 데이터를 복구할 수 없어요. 백업에서 복원해 주세요."
@@ -99,13 +99,13 @@ struct NodeWatchdog {
                 return ko ? "네트워크에 연결할 수 없어요. 인터넷 연결을 확인해 주세요."
                     : "No network connection. Please check the internet."
             case .other:
-                return ko ? "노드가 계속 종료됩니다. 앱을 다시 실행해 주세요."
+                return ko ? "노드가 계속 멈춰요. 앱을 다시 실행해 주세요."
                     : "The node keeps stopping. Please restart the app."
             case .upgradeNeeded:
                 return ko ? "이 버전으로는 체인을 실행할 수 없어요. 앱을 업데이트해 주세요."
                     : "This version can no longer run the chain. Please update the app."
             case .identityLost:
-                return ko ? "이 Mac의 노드 키를 읽을 수 없어요. 백업에서 키를 되찾으면 노드가 다시 투표합니다."
+                return ko ? "이 Mac의 노드 키를 읽을 수 없어요. 백업에서 키를 되찾으면 노드가 다시 투표해요."
                     : "This Mac's node key cannot be read. Restore it from a backup and the node votes again."
             case .alreadyRunning:
                 return ko ? "다른 \(Brand.projectKo)가 이미 이 노드를 실행하고 있어요. 그 앱에서 노드를 켜 주세요."

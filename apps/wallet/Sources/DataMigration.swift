@@ -98,6 +98,10 @@ enum DataMigration {
     /// return at once.
     @discardableResult
     static func ensure() -> Outcome {
+        #if WALLET_SCREENS
+        // The screens renderer (scripts/wallet-screens.sh) never touches the real data.
+        return .noOldData
+        #endif
         Thread.isMainThread ? Runner.shared.ensureFromMain() : Runner.shared.runNow()
     }
 
@@ -147,10 +151,14 @@ enum DataMigration {
             case .held(let fd):
                 lockFD = fd
             case .busy:
-                return .deferred("Quit the old Aether app first — it is running (it holds the old data's run.lock). "
+                return .deferred(ko
+                    ? "먼저 이전 Aether 앱을 종료해 주세요. 지금 실행 중이라 데이터를 옮길 수 없어요. 아무것도 옮기지 않았고, 다음에 앱을 열 때 옮겨요."
+                    : "Quit the old Aether app first — it is running (it holds the old data's run.lock). "
                     + "Nothing was moved; the move happens on the next launch.")
             case .broken(let why):
-                return .failed("cannot lock the old data directory (\(why)); nothing was changed — "
+                return .failed(ko
+                    ? "이전 데이터 폴더를 열지 못했어요. 아무것도 바꾸지 않았고, 다음에 앱을 열 때 다시 시도해요."
+                    : "cannot lock the old data directory (\(why)); nothing was changed — "
                     + "the next launch retries")
             }
         }
@@ -236,7 +244,9 @@ enum DataMigration {
             if problems.count == unreadable.count {
                 return .waitingForUnlock(unlockSentence)
             }
-            return .failed("migration incomplete: \(problems.joined(separator: "; ")). "
+            return .failed(ko
+                ? "데이터 옮기기를 끝내지 못했어요. 지운 것은 없고, 다음에 앱을 열 때 다시 시도해요."
+                : "migration incomplete: \(problems.joined(separator: "; ")). "
                 + "Nothing was deleted; the next launch retries.")
         }
         copyPreferences()
@@ -314,9 +324,11 @@ enum DataMigration {
             let old = s.appending(path: "AetherWallet/\(name)")
             let new = s.appending(path: "EastSeaWallet/\(name)")
             if fm.fileExists(atPath: old.path) && !fm.fileExists(atPath: new.path) {
-                return "the old Aether wallet key is still waiting to move into place. Launch the app again to "
-                    + "finish the data move (if it says to quit the old Aether app, quit it first) — a new key now "
-                    + "would give this Mac a second wallet address and strand the first."
+                return ko
+                    ? "이전 Aether 지갑 키를 아직 옮기는 중이에요. 앱을 한 번 더 열어 옮기기를 끝내 주세요(이전 Aether 앱을 종료하라고 하면 먼저 종료해 주세요). 지금 새 키를 만들면 지갑 주소가 둘이 되어 처음 주소를 쓸 수 없게 돼요."
+                    : "Your old Aether wallet key has not moved over yet. Open the app once more to finish the move "
+                    + "(if it asks you to quit the old Aether app, quit it first). A new key now would give this Mac "
+                    + "a second wallet address and leave the first one behind."
             }
         }
         return nil
@@ -336,17 +348,27 @@ enum DataMigration {
         if (runner ?? (support == nil ? Runner.shared : nil))?.isRunning == true { return movingSentence }
         let s = support ?? supportURL
         if unmigratedOldData(support: s).contains(oldIdentityGuardItem) {
-            return "this Mac had a validator identity under the old Aether app that has not reached EastSea yet. "
-                + "Launch the app once more to finish the data move — starting now would make a second identity."
+            return ko
+                ? "이전 Aether 앱의 노드 정보가 아직 옮겨지지 않았어요. 앱을 한 번 더 열어 옮기기를 끝내 주세요. 지금 시작하면 노드가 둘이 돼요."
+                : "This Mac's node identity from the old Aether app has not moved over yet. "
+                + "Open the app once more to finish the move. Starting now would make a second node."
         }
         if nodeMigrationComplete(support: s, defaults: defaults) { return nil }
-        return "the old Aether node data (validator identity, threshold share, chain) has not finished moving "
-            + "into place. Launch the app once more to finish the data move (quit the old Aether app if it "
-            + "asks) — starting now could run two copies of one validator identity."
+        return ko
+            ? "이전 Aether 노드 데이터를 아직 다 옮기지 못했어요. 앱을 한 번 더 열어 옮기기를 끝내 주세요(이전 Aether 앱을 종료하라고 하면 종료해 주세요). 지금 시작하면 같은 노드가 둘 돌 수 있어요."
+            : "Your old Aether node data has not finished moving over. Open the app once more to finish the move "
+            + "(quit the old Aether app if it asks). Starting now could run the same node twice."
     }
 
-    static let movingSentence = "EastSea is moving your data over from Aether. This takes a moment; "
-        + "the wallet and the node start as soon as it is done."
+    static var movingSentence: String {
+        ko ? "동해가 Aether의 데이터를 옮기고 있어요. 잠시면 끝나고, 끝나는 대로 지갑과 노드가 시작돼요."
+            : "EastSea is moving your data over from Aether. This takes a moment; "
+            + "the wallet and the node start as soon as it is done."
+    }
+
+    /// The app's language (its bundle localization), for the sentences a
+    /// person reads; the technical details stay in English logs.
+    private static var ko: Bool { Bundle.main.preferredLocalizations.first?.hasPrefix("ko") ?? false }
 
     // MARK: verification
 
@@ -904,6 +926,9 @@ enum DataMigration {
 
         /// Start the background run unless one is already going.
         func start() {
+            #if WALLET_SCREENS
+            return
+            #endif
             stateLock.lock()
             let busy = running || settled
             let alreadySettled = settled

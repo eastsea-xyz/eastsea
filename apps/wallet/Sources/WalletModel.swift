@@ -9,7 +9,7 @@ import DeviceCheck
 
 @MainActor
 final class WalletModel: ObservableObject {
-    @Published var connectionInfo = "Looking up validators on the Mainline DHT…"
+    @Published var connectionInfo = String(localized: "Looking for the network…")
     @Published private(set) var developmentNetwork = false
     @Published private(set) var developmentPort: UInt16 = 18546
     @Published private(set) var networkChainId: UInt64 = 0
@@ -52,7 +52,7 @@ final class WalletModel: ObservableObject {
     /// Bumped to open the send sheet for a resend.
     @Published var resendRequest: UUID?
     @Published var recoveryCode = ""
-    @Published var keyLabel = "Key in Secure Enclave"
+    @Published var keyLabel = String(localized: "Key in the Secure Enclave")
     @Published var guardianInput = ""
     @Published var lostInput = ""
     /// Freshly generated recovery words, shown once until registered or dismissed.
@@ -147,7 +147,7 @@ final class WalletModel: ObservableObject {
     /// aether_getReceipt); a refusal comes back as text and nothing is signed.
     func sendPageTransaction(_ tx: PageTransaction, origin: String, title: String,
                              shownFeeWei: String?) async -> (hash: String?, refusal: String?) {
-        guard let enclave else { return (nil, "The wallet key is not ready yet") }
+        guard let enclave else { return (nil, String(localized: "The wallet key is not ready yet.")) }
         let pk = enclave.publicKey
         let validatorsNow = validators
         let action = CallDescribe.action(to: tx.to, data: tx.data)
@@ -234,7 +234,7 @@ final class WalletModel: ObservableObject {
             outgoingRecovery = PendingRecovery.load()
             loadTokens()
             recoveryCode = try recoveryKeyCode(p256PublicKey: acct.publicKey)
-            keyLabel = acct.isSecureEnclave ? "Key in Secure Enclave" : "Simulator: software key (no Secure Enclave)"
+            keyLabel = acct.isSecureEnclave ? String(localized: "Key in the Secure Enclave") : String(localized: "Simulator: software key (no Secure Enclave)")
             note(acct.isSecureEnclave ? "Secure Enclave key ready. Signing asks for Touch ID / Face ID or your passcode." : "Simulator: software key (no Secure Enclave here). Use a real device for hardware-bound keys.")
         } catch {
             let locked = (error as NSError).code == Int(errSecInteractionNotAllowed)
@@ -242,13 +242,12 @@ final class WalletModel: ObservableObject {
                 // The old handle is still moving (often: waiting for an
                 // unlock, poc-m3 2026-10-07) — not a key failure.
                 let ko = Locale.preferredLanguages.first?.hasPrefix("ko") ?? false
-                keyError = ko ? "지갑을 Aether에서 옮기는 중입니다. Mac 잠금을 풀면 마무리됩니다 — 지갑은 안전합니다."
-                    : "Your wallet is still moving over from Aether. Unlock this Mac to finish — your wallet is safe."
+                keyError = String(localized: "Your wallet is still moving over from Aether. Unlock this Mac to finish — your wallet is safe.")
             } else if case EnclaveAccount.KeyError.keyUnavailable = error {
                 // The wallet exists but cannot be opened yet; retried from `refresh`.
-                keyError = "Unlock this device to open your wallet. Your wallet is safe."
+                keyError = String(localized: "Unlock this device to open your wallet. Your wallet is safe.")
             } else {
-                keyError = locked ? "Unlock this device to create your wallet key." : "Could not create the wallet key: \(error.localizedDescription)"
+                keyError = locked ? String(localized: "Unlock this device to create your wallet key.") : String(localized: "Could not create the wallet key: \(error.localizedDescription)")
             }
             note("Key error: \(error.localizedDescription)")
         }
@@ -350,7 +349,7 @@ final class WalletModel: ObservableObject {
                 let prepared = try prepareAddRecoveryKey(p256PublicKey: pk, recoveryCode: code)
                 let sig = try enclave.sign(prepared.signingMessage)
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
-                await self.track(h, label: "Recovery key set to \(code.prefix(12))…", item: ActivityItem(kind: .security, title: "Recovery device added", amount: nil))
+                await self.track(h, label: "Recovery key set to \(code.prefix(12))…", item: ActivityItem(kind: .security, title: String(localized: "Recovery device added"), amount: nil))
             } catch { await MainActor.run { self.note("Set recovery key failed: \(error)"); self.busy = false } }
         }
     }
@@ -373,7 +372,7 @@ final class WalletModel: ObservableObject {
                 let sig = try enclave.sign(prepared.signingMessage)
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
                 await MainActor.run { self.paperWords = nil }
-                await self.track(h, label: "Recovery words registered as a recovery key", item: ActivityItem(kind: .security, title: "Recovery words added", amount: nil))
+                await self.track(h, label: "Recovery words registered as a recovery key", item: ActivityItem(kind: .security, title: String(localized: "Recovery words added"), amount: nil))
             } catch { await MainActor.run { self.note("Registering recovery words failed: \(error)"); self.busy = false } }
         }
     }
@@ -395,7 +394,7 @@ final class WalletModel: ObservableObject {
                 let pending = PendingRecovery(request: request, readyAt: Date().addingTimeInterval(TimeInterval(request.delaySeconds)))
                 await MainActor.run { self.outgoingRecovery = pending; pending.save(); self.paperWordsInput = "" }
                 await self.track(h, label: "Recovery of \(lost.prefix(10))… proposed with recovery words; funds can move after \(pending.readyAt.formatted())",
-                                 item: ActivityItem(kind: .security, title: "Recovery started for \(Short.address(lost))", amount: nil))
+                                 item: ActivityItem(kind: .security, title: String(localized: "Recovery started for \(Short.address(lost))"), amount: nil))
             } catch { await MainActor.run { self.note("Recovery with words failed: \(error)"); self.busy = false } }
         }
     }
@@ -417,7 +416,7 @@ final class WalletModel: ObservableObject {
                 let pending = PendingRecovery(request: request, readyAt: Date().addingTimeInterval(TimeInterval(request.delaySeconds)))
                 await MainActor.run { self.outgoingRecovery = pending; pending.save() }
                 await self.track(h, label: "Recovery of \(lost.prefix(10))… proposed; funds can move after \(pending.readyAt.formatted())",
-                                 item: ActivityItem(kind: .security, title: "Recovery started for \(Short.address(lost))", amount: nil))
+                                 item: ActivityItem(kind: .security, title: String(localized: "Recovery started for \(Short.address(lost))"), amount: nil))
             } catch { await MainActor.run { self.note("Recovery failed: \(error)"); self.busy = false } }
         }
     }
@@ -435,7 +434,7 @@ final class WalletModel: ObservableObject {
                 // Keep the request until the chain confirms it ran: a revert (e.g. the
                 // delay counted from inclusion, not from submission) can be retried.
                 let ok = await self.track(h, label: "Recovered \(Wei.format(pending.request.valueWei)) \(Brand.networkCoinTicker) from \(pending.request.lost.prefix(10))…",
-                                 item: ActivityItem(kind: .received, title: "Recovered from \(Short.address(pending.request.lost))",
+                                 item: ActivityItem(kind: .received, title: String(localized: "Recovered from \(Short.address(pending.request.lost))"),
                                                     amount: Double(Wei.format(pending.request.valueWei))))
                 await MainActor.run {
                     if ok {
@@ -460,7 +459,7 @@ final class WalletModel: ObservableObject {
                 let sig = try enclave.sign(prepared.signingMessage)
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
                 await MainActor.run { self.incomingRecovery = nil }
-                await self.track(h, label: "Cancelled a recovery of this account", item: ActivityItem(kind: .security, title: "Recovery cancelled", amount: nil))
+                await self.track(h, label: "Cancelled a recovery of this account", item: ActivityItem(kind: .security, title: String(localized: "Recovery cancelled"), amount: nil))
             } catch { await MainActor.run { self.note("Cancel failed: \(error)"); self.busy = false } }
         }
     }
@@ -478,7 +477,7 @@ final class WalletModel: ObservableObject {
                 let sig = try enclave.sign(prepared.signingMessage)
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
                 await MainActor.run { self.incomingRecovery = nil }
-                await self.track(h, label: "Removed every recovery key", item: ActivityItem(kind: .security, title: "Recovery keys removed", amount: nil))
+                await self.track(h, label: "Removed every recovery key", item: ActivityItem(kind: .security, title: String(localized: "Recovery keys removed"), amount: nil))
             } catch { await MainActor.run { self.note("Remove recovery keys failed: \(error)"); self.busy = false } }
         }
     }
@@ -491,7 +490,7 @@ final class WalletModel: ObservableObject {
         guard let enclave else { return }
         guard let chainId = status?.chainId, let ownership = node.ownership(account: address, chainId: chainId) else {
             note("Voting-node registration: the node's keys are not ready yet")
-            registration = .failed("The node is still starting. Try again in a minute.")
+            registration = .failed(String(localized: "The node is still starting. Try again in a minute."))
             return
         }
         let pk = enclave.publicKey
@@ -504,8 +503,8 @@ final class WalletModel: ObservableObject {
                 let prepared = try prepareRegisterNode(p256PublicKey: pk, deviceToken: token, validatorKey: c.validatorKey, nodeId: c.nodeId, beaconer: c.beaconer, ownership: ownership)
                 let sig = try enclave.sign(prepared.signingMessage)
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
-                let ok = await self.track(h, label: "This Mac is registered as a voting node", item: ActivityItem(kind: .security, title: "Mac joined as a voting node", amount: nil))
-                await MainActor.run { self.registration = ok ? nil : .failed("The registration transaction did not go through. Try again.") }
+                let ok = await self.track(h, label: "This Mac is registered as a voting node", item: ActivityItem(kind: .security, title: String(localized: "Mac joined as a voting node"), amount: nil))
+                await MainActor.run { self.registration = ok ? nil : .failed(String(localized: "The registration did not go through. Try again.")) }
             } catch {
                 let reason = (error as? LocalizedError)?.errorDescription ?? "\(error)"
                 await MainActor.run {
@@ -566,7 +565,7 @@ final class WalletModel: ObservableObject {
                 // already verified; the FFI refuses it (finalized blocks never go back). That
                 // is not an error to show: keep the newer verified balance.
                 let behindNode = readError?.contains("finalized blocks never go back") == true && self.account != nil
-                if st == nil { self.setVerifyError("No validator reachable yet (\(conn))") } else if let readError, !behindNode { self.setVerifyError(readError) }
+                if st == nil { self.setVerifyError(String(localized: "The network cannot be reached yet.")) } else if let readError, !behindNode { self.setVerifyError(readError) }
                 self.trackChainProgress(st, blocks: bl)
                 self.trackVerification()
                 self.refreshTokens()
@@ -676,7 +675,11 @@ final class WalletModel: ObservableObject {
     /// Their symbols and names, for the look-alike warning (the native coin first).
     var officialSymbols: [(symbol: String, name: String)] {
         let chain = status?.chainId ?? Brand.networkChainId
-        return [(Brand.coinTicker(chainId: chain), Brand.coinName(chainId: chain))] + officialTokenAddresses.sorted().compactMap { tokenCatalog.tokens[$0].map { ($0.symbol, $0.name) } }
+        // The legacy testnet's old coin label stays on the look-alike list:
+        // a token calling itself "AETH" there still mimics the native coin.
+        let legacy: [(symbol: String, name: String)] = chain == Brand.legacyTestnetChainId ? [("AETH", "Test AETH")] : []
+        return [(Brand.coinTicker(chainId: chain), Brand.coinName(chainId: chain))] + legacy
+            + officialTokenAddresses.sorted().compactMap { tokenCatalog.tokens[$0].map { ($0.symbol, $0.name) } }
     }
 
     /// Which holdings belong in the main Assets list and which in the collapsed
@@ -804,7 +807,7 @@ final class WalletModel: ObservableObject {
                 let prepared = try prepareCall(p256PublicKey: pk, to: r.to, valueWei: wei, dataHex: r.data, gasLimit: r.gas)
                 let sig = try enclave.sign(prepared.signingMessage)
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
-                let title = r.to.isEmpty ? "Deployed a contract" : "Called \(Short.address(r.to))"
+                let title = r.to.isEmpty ? String(localized: "Deployed a contract") : String(localized: "Called \(Short.address(r.to))")
                 let ok = await self.track(h, label: title,
                                           item: ActivityItem(kind: .sent, title: title, amount: nil, token: token))
                 await MainActor.run { if let cb = r.callback { self.reply(cb, ["tx": h, "status": ok ? "success" : "failed"]) } }
@@ -827,7 +830,7 @@ final class WalletModel: ObservableObject {
         Task.detached {
             do {
                 let h = try devnetFaucet(to: addr, valueWei: Wei.from(aeth: "10")!)
-                await self.track(h, label: "Faucet 10 \(Brand.networkCoinTicker)", item: ActivityItem(kind: .received, title: "Test \(Brand.networkCoinTicker) from faucet", amount: 10))
+                await self.track(h, label: "Faucet 10 \(Brand.networkCoinTicker)", item: ActivityItem(kind: .received, title: String(localized: "Test \(Brand.networkCoinTicker) from the faucet"), amount: 10))
             } catch { await MainActor.run { self.note("Faucet failed: \(error)"); self.busy = false } }
         }
     }
@@ -840,13 +843,13 @@ final class WalletModel: ObservableObject {
     /// when the transaction was signed and submitted.
     @discardableResult
     func send(shownFeeWei: String? = nil) async -> String? {
-        guard let enclave else { return "The wallet key is not ready yet" }
+        guard let enclave else { return String(localized: "The wallet key is not ready yet.") }
         // A payment link is sent exactly as it asked; otherwise the form's values.
         let (toText, amountText) = paymentRequest.map { ($0.to, $0.amount) } ?? (sendTo, sendAmount)
-        guard let wei = Wei.from(aeth: amountText) else { note("Invalid amount"); return "Invalid amount" }
+        guard let wei = Wei.from(aeth: amountText) else { note("Invalid amount"); return String(localized: "Check the amount: it is not a number this wallet can send.") }
         // One or more recipients (comma/space separated); each gets the amount.
         let recipients = toText.split(whereSeparator: { $0 == "," || $0.isWhitespace }).map(String.init).filter { !$0.isEmpty }
-        guard !recipients.isEmpty else { return "Add a recipient first" }
+        guard !recipients.isEmpty else { return String(localized: "Add a recipient first.") }
         let pk = enclave.publicKey
         let callback = paymentRequest?.callback
         // Read main-actor state before detaching; the closure only signs.
@@ -859,8 +862,8 @@ final class WalletModel: ObservableObject {
                 let prepared: PreparedTx
                 let label: String
                 let each = Double(Wei.format(wei)) ?? 0
-                let who = recipients.count == 1 ? Short.address(recipients[0]) : "\(recipients.count) people"
-                var item = ActivityItem(kind: .sent, title: "Sent to \(who)", amount: -each * Double(recipients.count),
+                let who = recipients.count == 1 ? Short.address(recipients[0]) : String(localized: "\(recipients.count) people")
+                var item = ActivityItem(kind: .sent, title: String(localized: "Sent to \(who)"), amount: -each * Double(recipients.count),
                                         recipients: recipients.map { $0.lowercased() })
                 if recipients.count == 1 {
                     // A resend of a dropped transfer signs its nonce again with a
@@ -923,10 +926,10 @@ final class WalletModel: ObservableObject {
     /// under whatever decimals are stored later. Returns nil when the send was
     /// started; otherwise the refusal to show (the send sheet stays open).
     func sendTokenTx(_ intent: SendIntent) -> String? {
-        guard let enclave else { return "The wallet key is not ready yet" }
+        guard let enclave else { return String(localized: "The wallet key is not ready yet.") }
         guard let chain = status?.chainId else {
             note("Not sent — the network is not ready yet")
-            return "The network is not ready yet."
+            return String(localized: "The network is not ready yet.")
         }
         let known = KnownTokens.knownToken(chainId: chain, address: intent.token.address)
         let current = tokens.first { $0.token.address == intent.token.address }
@@ -942,11 +945,11 @@ final class WalletModel: ObservableObject {
         }
         guard let holding = current, WeiMath.compare(intent.baseUnits, holding.balance) <= 0 else {
             note("Not sent — this wallet now holds less than the confirmed amount")
-            return "This wallet now holds less than the confirmed amount."
+            return String(localized: "This wallet now holds less than the confirmed amount.")
         }
         let symbol = TokenDenomination.of(chainId: chain, address: intent.token.address, claimed: current?.token).symbol ?? "?"
         let shown = TokenAmount.exact(intent.baseUnits, decimals: intent.token.decimals)
-        let item = ActivityItem(kind: .sent, title: "Sent \(shown) \(symbol) to \(TokenLabel.short(intent.recipient))",
+        let item = ActivityItem(kind: .sent, title: String(localized: "Sent \(shown) \(symbol) to \(TokenLabel.short(intent.recipient))"),
                                 amount: nil, recipients: [intent.recipient.lowercased()], token: intent.token.address)
         let pk = enclave.publicKey
         sendToken = nil
@@ -984,10 +987,20 @@ final class WalletModel: ObservableObject {
     /// reflection `WalletError.Network(message: …)` would print).
     nonisolated static func ffiMessage(_ e: Error) -> String {
         switch e {
-        case WalletError.Network(let m), WalletError.Invalid(let m), WalletError.Rejected(let m), WalletError.Verification(let m):
-            return m
+        // The core's own words are English and technical: a Korean screen
+        // gets one plain sentence per kind instead of a mixed-language line.
+        case WalletError.Network(let m):
+            return AppLanguage.korean ? "네트워크에 연결하지 못했어요. 잠시 뒤 다시 해 주세요." : m
+        case WalletError.Invalid(let m):
+            return AppLanguage.korean ? "입력한 내용이 올바르지 않아요. 주소와 금액을 다시 확인해 주세요." : m
+        case WalletError.Rejected(let m):
+            return AppLanguage.korean ? "네트워크가 이 거래를 받지 않았어요. 잔액과 수수료를 확인하고 다시 해 주세요." : m
+        case WalletError.Verification(let m):
+            return AppLanguage.korean ? "이 기기에서 확인하지 못했어요. 잠시 뒤 다시 해 주세요." : m
         case WalletError.FeeChanged(let m):
-            return "The network fee changed — \(m). Nothing was sent; check the new fee and send again."
+            return (AppLanguage.korean
+                ? "네트워크 수수료가 바뀌었어요. 보내지 않았으니 새 수수료를 확인하고 다시 보내 주세요."
+                : "The network fee changed — \(m). Nothing was sent; check the new fee and send again.")
         default:
             return (e as? LocalizedError)?.errorDescription ?? "\(e)"
         }
@@ -1028,7 +1041,7 @@ final class WalletModel: ObservableObject {
             switch row {
             case .done, .failed:
                 await MainActor.run {
-                    self.settle(item.id, state: row == .done ? .done : .failed, why: row == .done ? nil : st?.message)
+                    self.settle(item.id, state: row == .done ? .done : .failed, why: row == .done ? nil : st.map(TxStatusText.sentence))
                     if let r = st?.receipt {
                         self.note("\(label) finalized in block \(r.height) (\(r.success ? "success" : "failed"), gas \(r.gasUsed)\(r.stateFeeWei != "0" ? ", state fee \(Amount.fee(r.stateFeeWei))" : ""))")
                     } else {
@@ -1039,18 +1052,18 @@ final class WalletModel: ObservableObject {
                 }
                 return row
             case .notIncluded:
-                if let st, lastRow != .notIncluded || st.message != shownWhy {
-                    shownWhy = st.message
+                if let st, lastRow != .notIncluded || TxStatusText.sentence(st) != shownWhy {
+                    shownWhy = TxStatusText.sentence(st)
                     await MainActor.run {
-                        self.settle(item.id, state: .notIncluded, why: st.message, canResend: st.canResend)
+                        self.settle(item.id, state: .notIncluded, why: TxStatusText.sentence(st), canResend: st.canResend)
                         self.note("\(label): not included yet — \(st.detail)")
                         self.busy = false
                     }
                 }
             case .pending:
-                if let st, st.state == "pending", st.reason != nil || lastRow == .notIncluded, st.message != shownWhy {
-                    shownWhy = st.message
-                    await MainActor.run { self.explain(item.id, why: st.message); self.note("\(label): \(st.detail)") }
+                if let st, st.state == "pending", st.reason != nil || lastRow == .notIncluded, TxStatusText.sentence(st) != shownWhy {
+                    shownWhy = TxStatusText.sentence(st)
+                    await MainActor.run { self.explain(item.id, why: TxStatusText.sentence(st)); self.note("\(label): \(st.detail)") }
                 }
             }
             lastRow = row
@@ -1060,7 +1073,7 @@ final class WalletModel: ObservableObject {
         }
         // Out of time without a chain fact: not on chain yet — never "failed".
         await MainActor.run {
-            self.settle(item.id, state: .notIncluded, why: last?.message ?? TxTrack.notIncludedNote,
+            self.settle(item.id, state: .notIncluded, why: last.map(TxStatusText.sentence) ?? TxTrack.notIncludedNote,
                         canResend: last?.canResend ?? false)
             self.note("\(label): not on chain after \(Int(Self.trackLimit / 60)) minutes; it stays open until the chain settles it")
             self.busy = false
@@ -1088,9 +1101,9 @@ final class WalletModel: ObservableObject {
                 await MainActor.run {
                     guard let self else { return }
                     switch row {
-                    case .done, .failed: self.settle(id, state: row == .done ? .done : .failed, why: row == .done ? nil : st.message)
-                    case .notIncluded: self.settle(id, state: .notIncluded, why: st.message, canResend: st.canResend)
-                    case .pending: self.explain(id, why: st.message)
+                    case .done, .failed: self.settle(id, state: row == .done ? .done : .failed, why: row == .done ? nil : TxStatusText.sentence(st))
+                    case .notIncluded: self.settle(id, state: .notIncluded, why: TxStatusText.sentence(st), canResend: st.canResend)
+                    case .pending: self.explain(id, why: TxStatusText.sentence(st))
                     }
                 }
             }
@@ -1233,7 +1246,7 @@ final class WalletModel: ObservableObject {
                         } else {
                             for row in notice!.consume(page.entries) where incomingHashes.insert(row.txHash.lowercased()).inserted {
                                 #if os(macOS)
-                                LocalNotice.post(title: "Payment received", body: ChainActivity.title(row, names: names))
+                                LocalNotice.post(title: String(localized: "Payment received"), body: ChainActivity.title(row, names: names))
                                 #endif
                             }
                         }
@@ -1250,7 +1263,7 @@ final class WalletModel: ObservableObject {
                                                 kind: row.direction == "in" ? .received : (row.kind == "contract_call" || row.kind == "deploy" ? .security : .sent),
                                                 title: title, amount: amount, state: row.success ? .done : .failed)
                         item.hash = row.txHash
-                        item.source = "From the node"
+                        item.source = String(localized: "From the node")
                         item.owner = row.address
                         if key == own.lowercased(), row.direction == "out" {
                             item.recipients = row.kind == "native_transfer" ? row.to.map { [$0.lowercased()] }
@@ -1285,9 +1298,9 @@ final class WalletModel: ObservableObject {
                             let matched = page.entries.contains { $0.height == rise.height && $0.direction == "in" }
                             if !matched {
                                 var item = ActivityItem(kind: .received,
-                                    title: "Balance increased by \(ChainActivity.units(rise.wei)) \(Brand.networkCoinTicker) · block #\(rise.height)",
+                                    title: String(localized: "Balance increased by \(ChainActivity.units(rise.wei)) \(Brand.networkCoinTicker) · block #\(String(rise.height))"),
                                     amount: Double(ChainActivity.units(rise.wei)), state: .done)
-                                item.source = "From the node"
+                                item.source = String(localized: "From the node")
                                 item.owner = own
                                 item.hash = "balance:\(rise.height):\(own.lowercased())"
                                 if !self.activity.contains(where: { $0.hash == item.hash }) { self.activity.append(item) }
@@ -1420,7 +1433,7 @@ struct ActivityItem: Codable, Identifiable, Equatable {
     }
 
     /// A node reward this wallet received (iPhone Home shows those as one line).
-    var isNodeReward: Bool { kind == .received && title.hasPrefix("Proof reward") }
+    var isNodeReward: Bool { kind == .received && (title.hasPrefix("Proof reward") || title.hasPrefix(String(localized: "Proof reward"))) }
 }
 
 /// The user's own choices about which tokens to show, kept on this device only
@@ -1495,9 +1508,16 @@ struct PendingRecovery {
     static func clear() { UserDefaults.standard.removeObject(forKey: key) }
 }
 
+extension TxStatusText {
+    /// The sentence for one `tx_status` answer.
+    static func sentence(_ st: TxStatus) -> String {
+        sentence(state: st.state, reason: st.reason, success: st.receipt?.success, message: st.message)
+    }
+}
+
 enum NodeRegistrationError: LocalizedError {
     case unsupported
-    var errorDescription: String? { "This Mac cannot create a DeviceCheck token (needs a signed \(Brand.project) app on a real Mac)." }
+    var errorDescription: String? { String(localized: "This Mac cannot prove it is a real Mac to Apple right now (it needs the signed \(Brand.name) app on a real Mac).") }
 }
 
 /// Where a voting-node registration stands, for the Network page.
@@ -1526,12 +1546,12 @@ struct CallRequest: Equatable {
 
     /// What the call does, when its 4-byte selector is a well-known one.
     var method: String {
-        if to.isEmpty { return "Deploy a contract (\((data.count - 2) / 2) bytes)" }
+        if to.isEmpty { return String(localized: "Deploy a contract (\((data.count - 2) / 2) bytes)") }
         let known: [String: String] = [
-            "0xa9059cbb": "Token transfer", "0x095ea7b3": "Token approval (allows spending)", "0x23b872dd": "Token transfer from",
-            "0x38ed1739": "Swap tokens", "0xe8e33700": "Add liquidity", "0xbaa2abde": "Remove liquidity",
+            "0xa9059cbb": String(localized: "Token transfer"), "0x095ea7b3": String(localized: "Token approval (allows spending)"), "0x23b872dd": String(localized: "Token transfer from"),
+            "0x38ed1739": String(localized: "Swap tokens"), "0xe8e33700": String(localized: "Add liquidity"), "0xbaa2abde": String(localized: "Remove liquidity"),
         ]
-        return known[String(data.prefix(10)).lowercased()] ?? "Contract call \(data.prefix(10))"
+        return known[String(data.prefix(10)).lowercased()] ?? String(localized: "Contract call \(String(data.prefix(10)))")
     }
 }
 
@@ -1540,3 +1560,25 @@ struct ConnectRequest: Equatable {
     let origin: String
     let callback: URL
 }
+
+#if DEBUG
+extension WalletModel {
+    /// Design preview only (DesignPreview.loadPreview): the sample state whose
+    /// setters are private to this file.
+    func loadPreviewExtras() {
+        breakdown = try? BalanceBreakdown.decode("""
+            {"proof_rewards_wei":"2500000000000000000","node_rewards_wei":"0","faucet_wei":"10000000000000000000",
+             "received_wei":"0","unwrapped_wei":"0","sent_wei":"0","fees_wei":"42000000000000",
+             "total_in_wei":"12500000000000000000","total_out_wei":"42000000000000","balance_wei":"12500000000000000000",
+             "difference_wei":"42000000000000","itemizes_completely":false,"rows":5}
+            """)
+        sitePermissions.grant(origin: "https://eastsea.xyz", address: address)
+        if UserDefaults.standard.string(forKey: "previewIncomingRecovery") == "1" {
+            incomingRecovery = RecoveryStatus(guardians: 1, threshold: 1, delaySeconds: 172_800, pending: true,
+                                              readyAt: UInt64(Date().addingTimeInterval(150_000).timeIntervalSince1970))
+        }
+        recoveryCode = "ae1q7m3kx9w2c8v4r6t0y5u1p3s7d9f2g4h6j8k0l"
+        keyLabel = String(localized: "Key in the Secure Enclave")
+    }
+}
+#endif

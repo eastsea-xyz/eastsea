@@ -56,11 +56,11 @@ test('the table is frozen, and lookups hand out copies', () => {
 });
 
 test('the native entry follows the chain, not the node', () => {
-  assert.equal(NATIVE_COINS[7780].symbol, 'AETH');
-  assert.equal(NATIVE_COINS[7780].name, 'Test AETH');
+  assert.equal(NATIVE_COINS[7780].symbol, 'DBLN');
+  assert.equal(NATIVE_COINS[7780].name, 'Test Doubloon');
   assert.ok(Number.isSafeInteger(NATIVE_COINS[7780].decimals));
-  // The per-chain brand agrees: the legacy testnet kept AETH, a new-genesis
-  // chain is DBLN.
+  // The per-chain brand agrees: DBLN on every chain, "Test Doubloon" on the
+  // legacy testnet.
   assert.equal(NATIVE_COINS[7780].symbol, coinTicker(7780));
   assert.equal(NATIVE_COINS[7780].name, coinName(7780));
   assert.equal(coinTicker(7777), 'DBLN');
@@ -79,4 +79,13 @@ test('every address the wallet ships as a source token is on the list', async ()
       assert.ok(Number.isSafeInteger(known.decimals));
     }
   }
+});
+
+test('WAETH keeps its contract symbol but reads as wrapped test DBLN', async () => {
+  const { displayTokenName, knownToken: kt } = await import('../src/lib/knownTokens.js');
+  const waeth = '0xa2521982a17474cb2f8741c85de653b5282d72b0';
+  assert.equal(kt(7780, waeth).symbol, 'WAETH');            // the contract's own
+  assert.equal(displayTokenName(7780, waeth, 'Wrapped AETH'), 'Wrapped test DBLN');
+  assert.equal(displayTokenName(7780, waeth.toUpperCase().replace('0X', '0x'), 'Wrapped AETH'), 'Wrapped test DBLN');
+  assert.equal(displayTokenName(7780, '0x6bc5ded76ccbdc8df35e7cd28b68fed245a74416', 'Test Nebula'), 'Test Nebula');
 });

@@ -27,6 +27,16 @@ struct SimpleDashboard: View {
     enum Page: String, CaseIterable, Identifiable {
         case home = "Home", explore = "Explore", activity = "Activity", network = "Network", security = "Security"
         var id: String { rawValue }
+        /// The page's name as the sidebar, tab bar and window title show it.
+        var title: String {
+            switch self {
+            case .home: String(localized: "Home")
+            case .explore: String(localized: "Explore")
+            case .activity: String(localized: "Activity")
+            case .network: String(localized: "Network")
+            case .security: String(localized: "Security")
+            }
+        }
         var icon: String {
             switch self {
             case .home: "house.fill"
@@ -43,66 +53,32 @@ struct SimpleDashboard: View {
         var id: String { rawValue }
     }
 
-    /// A quiet update waits while the send or call sheet is open (UpdateWindow).
-    /// Kept out of `body`, which is at the type checker's limit.
-    private var shellTrackingSheet: some View {
-        shell.onChange(of: sheet) { (_: Sheet?, s: Sheet?) in noteSheet(s) }
-    }
-
-    private func noteSheet(_ s: Sheet?) {
-        switch s {
-        case .send?, .call?: model.sendSheetOpen = true
-        default: model.sendSheetOpen = false
-        }
-    }
-
     var body: some View {
-        shellTrackingSheet
+        routing(base)
+    }
+
+    /// The window and its sheets.
+    private var base: some View {
+        shell
             .tint(.aether)
             .environmentObject(browser)
             .onAppear { browser.attach(model: model) }
-            .sheet(item: $sheet) { s in
-                VStack(spacing: 0) {
-                    if model.developmentNetwork {
-                        Text("Dev network · 127.0.0.1")
-                            .font(.caption.bold()).frame(maxWidth: .infinity)
-                            .padding(.vertical, 5).background(.orange).foregroundStyle(.black)
-                    }
-                    switch s {
-                    case .send: SendSheet()
-                    case .receive: ReceiveSheet()
-                    case .assets: AssetsSheet(onSend: { t in model.sendToken = t; sheet = .send })
-                    case .call: CallSheet()
-                    case .connect: ConnectSheet()
-                    case .votingInvite:
-                        #if os(macOS)
-                        VotingNodeInvite(join: {
-                            inviteAnswered = true
-                            sheet = nil
-                            if let c = node.candidate { model.registerNode(c, node: node) }
-                        }, later: {
-                            inviteAnswered = true
-                            sheet = nil
-                        })
-                        #else
-                        EmptyView()
-                        #endif
-                    }
-                }
-            }
+            .sheet(item: $sheet) { s in sheetContent(s) }
             #if DEBUG
-            // `-previewSheet assets` / `-previewPage network` (with -designPreview) for screenshots.
-            .onAppear {
-                guard DesignPreview.on else { return }
-                if let p = UserDefaults.standard.string(forKey: "previewPage").flatMap({ Page(rawValue: $0.capitalized) }) { page = p }
-                if let s = UserDefaults.standard.string(forKey: "previewSheet").flatMap(Sheet.init(rawValue:)) { sheet = s }
-            }
+            .onAppear { applyPreview() }
             #endif
+    }
+
+    /// Requests from links, pages and the node open the right sheet or page
+    /// (split from `body` so the type checker stays fast).
+    private func routing<V: View>(_ v: V) -> some View {
+        v
+            .onChange(of: sheet) { _, s in model.sendSheetOpen = Self.isSigningSheet(s) }
             .onChange(of: model.callRequest) { _, r in if r != nil { sheet = .call } }
             .onChange(of: model.connectRequest) { _, r in if r != nil { sheet = .connect } }
             // A payment link (aether://pay?...) opens the send sheet, filled in, for approval.
             .onChange(of: model.paymentRequest) { _, r in if r != nil { model.sendToken = nil; sheet = .send } }
-            // "새 가격으로 다시 보내기": the normal send sheet, filled in (bug #5).
+            // "Send again at the current fee": the normal send sheet, filled in (bug #5).
             .onChange(of: model.resendRequest) { _, r in if r != nil { sheet = .send } }
             .onChange(of: model.agentTransactionHash) { _, hash in if hash != nil { page = .security } }
             #if os(macOS)
@@ -111,6 +87,54 @@ struct SimpleDashboard: View {
             .onChange(of: node.state) { _, _ in inviteIfReady() }
             #endif
     }
+
+    private static func isSigningSheet(_ s: Sheet?) -> Bool {
+        s == .send || s == .call
+    }
+
+    /// The sheet for `s` (kept out of `body` so the type checker stays fast).
+    @ViewBuilder private func sheetContent(_ s: Sheet) -> some View {
+        VStack(spacing: 0) {
+            if model.developmentNetwork {
+                Text("Dev network · 127.0.0.1")
+                    .font(.caption.bold()).frame(maxWidth: .infinity)
+                    .padding(.vertical, 5).background(.orange).foregroundStyle(.black)
+            }
+            switch s {
+            case .send: SendSheet()
+            case .receive: ReceiveSheet()
+            case .assets: AssetsSheet(onSend: { t in model.sendToken = t; sheet = .send })
+            case .call: CallSheet()
+            case .connect: ConnectSheet()
+            case .votingInvite:
+                #if os(macOS)
+                VotingNodeInvite(join: {
+                    inviteAnswered = true
+                    sheet = nil
+                    if let c = node.candidate { model.registerNode(c, node: node) }
+                }, later: {
+                    inviteAnswered = true
+                    sheet = nil
+                })
+                #else
+                EmptyView()
+                #endif
+            }
+        }
+    }
+
+    #if DEBUG
+    /// `-previewSheet assets` / `-previewPage network` (with -designPreview) for screenshots.
+    private func applyPreview() {
+        guard DesignPreview.on else { return }
+        if let p = UserDefaults.standard.string(forKey: "previewPage").flatMap({ Page(rawValue: $0.capitalized) }) { page = p }
+        if let s = UserDefaults.standard.string(forKey: "previewSheet").flatMap(Sheet.init(rawValue:)) { sheet = s }
+        #if os(macOS)
+        if UserDefaults.standard.string(forKey: "previewSidebar") == "hidden" { columns = .detailOnly }
+        #endif
+        if UserDefaults.standard.string(forKey: "previewExplorer") == "open" { browser.openExplorer() }
+    }
+    #endif
 
     #if os(macOS)
     private func inviteIfReady() {
@@ -122,7 +146,7 @@ struct SimpleDashboard: View {
     private var shell: some View {
         NavigationSplitView(columnVisibility: $columns) {
             List(Page.allCases, selection: $page) { p in
-                Label(p.rawValue, systemImage: p.icon).tag(p)
+                Label(p.title, systemImage: p.icon).tag(p)
             }
             .navigationSplitViewColumnWidth(min: 170, ideal: 190)
             .safeAreaInset(edge: .bottom) { SidebarStatus().padding(12) }
@@ -147,14 +171,19 @@ struct SimpleDashboard: View {
                 }
             }
             .measuringNarrowLayout()
-            .navigationTitle(page?.rawValue ?? "Home")
+            .navigationTitle(page?.title ?? SimpleDashboard.Page.home.title)
+            // The way to every page whenever the sidebar is not on screen:
+            // a narrow window, or a wide one with the sidebar collapsed
+            // (founder report on 0.7.0: no way back to Home from Explore).
             .toolbar {
-                if compact {
+                if compact || columns == .detailOnly {
                     ToolbarItem(placement: .principal) { pagePicker }
                 }
             }
         }
         .frame(minWidth: 380, minHeight: 520)
+        // View ▸ ⌘1…⌘5 (AetherWalletApp's Go menu) switch pages from anywhere.
+        .focusedSceneValue(\.dashboardPage, Binding(get: { page ?? .home }, set: { page = $0 }))
         .onGeometryChange(for: Bool.self) { $0.size.width < LayoutWidth.compactWindow } action: { narrow in
             compact = narrow
             columns = narrow ? .detailOnly : .all
@@ -165,7 +194,7 @@ struct SimpleDashboard: View {
     private var pagePicker: some View {
         Picker("Page", selection: Binding(get: { page ?? .home }, set: { page = $0 })) {
             ForEach(Page.allCases) { p in
-                Image(systemName: p.icon).help(p.rawValue).tag(p)
+                Image(systemName: p.icon).help(p.title).tag(p)
             }
         }
         .pickerStyle(.segmented)
@@ -185,9 +214,11 @@ struct SimpleDashboard: View {
                         }
                     }
                     .measuringNarrowLayout()
-                    .navigationTitle(p == .home ? "" : p.rawValue)
+                    .navigationTitle(p == .home ? "" : p.title)
                 }
-                .tabItem { Label(p.rawValue, systemImage: p.icon) }
+                // The tab bar stays solid over Explore's web view: it is the way back.
+                .toolbarBackground(.visible, for: .tabBar)
+                .tabItem { Label(p.title, systemImage: p.icon) }
                 .tag(p)
             }
         }
@@ -197,11 +228,23 @@ struct SimpleDashboard: View {
     @ViewBuilder private func pageView(_ p: Page) -> some View {
         switch p {
         case .home: HomePage(sheet: $sheet, showActivity: { page = .activity }, showNetwork: { page = .network })
-        case .explore: ExplorePage()
+        case .explore: ExplorePage(goHome: { page = .home })
         case .activity: ActivityPage()
         case .network: NetworkPage()
         case .security: SecurityPage()
         }
+    }
+}
+
+/// The page the frontmost dashboard shows, for the Go menu's ⌘1…⌘5.
+struct DashboardPageKey: FocusedValueKey {
+    typealias Value = Binding<SimpleDashboard.Page>
+}
+
+extension FocusedValues {
+    var dashboardPage: Binding<SimpleDashboard.Page>? {
+        get { self[DashboardPageKey.self] }
+        set { self[DashboardPageKey.self] = newValue }
     }
 }
 
@@ -212,7 +255,7 @@ extension Color {
 
 // MARK: - Pages
 
-private struct HomePage: View {
+struct HomePage: View {
     @EnvironmentObject var model: WalletModel
     @Binding var sheet: SimpleDashboard.Sheet?
     let showActivity: () -> Void
@@ -343,7 +386,7 @@ private struct NodeRewardsLine: View {
 }
 #endif
 
-private struct ActivityPage: View {
+struct ActivityPage: View {
     @EnvironmentObject var model: WalletModel
     var body: some View {
         VStack(spacing: 12) {
@@ -366,7 +409,7 @@ private struct ActivityPage: View {
                         Button("Load older activity") { model.loadOlderActivity() }
                     }
                     if let first = model.activityHistoryStart, first > 0 {
-                        Text("This node's retained history starts at block #\(first).")
+                        Text("This node's retained history starts at block #\(String(first)).")
                             .font(.aeFootnote).foregroundStyle(.secondary)
                     }
                 }
@@ -487,7 +530,7 @@ private struct RewardDaysCard: View {
                             VStack(spacing: 4) {
                                 ForEach(day.rows, id: \.txHash) { row in
                                     HStack {
-                                        Text("block #\(row.height)").font(.aeFootnote.monospacedDigit())
+                                        Text("block #\(String(row.height))").font(.aeFootnote.monospacedDigit())
                                         if let time = Timestamp.date(fromMs: row.timestampMs) {
                                             Text(time.formatted(date: .omitted, time: .shortened))
                                                 .font(.aeFootnote).foregroundStyle(.secondary)
@@ -501,10 +544,10 @@ private struct RewardDaysCard: View {
                             .padding(.vertical, 4)
                         } label: {
                             HStack {
-                                Text(day.day.map { $0.formatted(date: .abbreviated, time: .omitted) } ?? "Time unknown")
+                                Text(day.day.map { $0.formatted(date: .abbreviated, time: .omitted) } ?? String(localized: "Time unknown"))
                                     .font(.aeBody.weight(.medium))
                                 Spacer(minLength: 8)
-                                Text("\(day.count) reward\(day.count == 1 ? "" : "s") · +\(ChainActivity.units(day.totalWei)) \(Brand.networkCoinTicker)")
+                                Text("\(day.count) rewards · +\(ChainActivity.units(day.totalWei)) \(Brand.networkCoinTicker)")
                                     .font(.aeFootnote.monospacedDigit()).foregroundStyle(.secondary)
                             }
                         }
@@ -519,7 +562,7 @@ private struct RewardDaysCard: View {
     }
 }
 
-private struct NetworkPage: View {
+struct NetworkPage: View {
     @EnvironmentObject var model: WalletModel
     #if os(macOS)
     @EnvironmentObject var node: NodeController
@@ -533,7 +576,7 @@ private struct NetworkPage: View {
               let last = model.blocks.max(by: { $0.height < $1.height }),
               model.blocks.count > 1, last.timestampMs > first.timestampMs else { return "—" }
         let s = Double(last.timestampMs - first.timestampMs) / 1000 / Double(model.blocks.count - 1)
-        return String(format: "%.1f s", s)
+        return String(localized: "\(s.formatted(.number.precision(.fractionLength(1)))) s")
     }
 
     /// The status title; "Connected" while the wallet reads through this
@@ -541,12 +584,12 @@ private struct NetworkPage: View {
     /// provisional (the incident of 2026-10-05's honest middle state).
     private var statusTitle: String {
         let base = model.status == nil
-            ? "Connecting to \(Brand.project)\(Terms.isTestnet ? " testnet" : "")…"
+            ? (Terms.isTestnet ? String(localized: "Connecting to the \(Brand.name) testnet…") : String(localized: "Connecting to \(Brand.name)…"))
             : model.chainPausedSince != nil
-                ? "Network paused"
-                : "Connected to \(Brand.project)\(Terms.isTestnet ? " testnet" : "")"
+                ? String(localized: "Network paused")
+                : (Terms.isTestnet ? String(localized: "Connected to the \(Brand.name) testnet") : String(localized: "Connected to \(Brand.name)"))
         #if os(macOS)
-        return base + (model.status != nil && node.networkCheckPending ? node.pendingRouteNote : "")
+        return base + (model.status != nil && node.networkCheckPending ? " " + node.pendingRouteNote : "")
         #else
         return base
         #endif
@@ -564,17 +607,17 @@ private struct NetworkPage: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(statusTitle)
                             .font(.aeTitle)
-                        Text("Found the validators on the public DHT. Your balance is checked on this device against their group signature.")
+                        Text("Found the Macs that sign blocks. Your balance is checked on this device against their signature.")
                             .font(.aeBody).foregroundStyle(.secondary)
                     }
                 }
             }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: narrow ? 130 : 150), spacing: 12)], spacing: 12) {
-                Tile(value: model.status.map { "#\($0.height)" } ?? "—", label: "Latest block", icon: "cube")
-                Tile(value: "\(model.validators)", label: "Validators", icon: "person.3.fill")
+                Tile(value: model.status.map { "#\(String($0.height))" } ?? "—", label: "Latest block", icon: "cube")
+                Tile(value: "\(model.validators)", label: "Signing Macs", icon: "person.3.fill")
                 Tile(value: blockTime, label: "Block time", icon: "timer")
                 Tile(value: model.status.map { Amount.fee($0.transferFeeWei) } ?? "—", label: "Transfer fee (max)", icon: "flame")
-                Tile(value: model.status.map { "\($0.mempool)" } ?? "—", label: "Waiting txs", icon: "tray.full")
+                Tile(value: model.status.map { "\($0.mempool)" } ?? "—", label: "Waiting transactions", icon: "tray.full")
             }
             NetworkCard()
             #if os(macOS)
@@ -607,7 +650,7 @@ private struct UpgradeNoticeCard: View {
                         Text(upgrade.updateDeadline(height: status.height, now: Date()))
                             .font(.aeHeadline)
                     } else {
-                        Text("This version of \(Brand.project) supports protocol \(upgrade.protocol).")
+                        Text("This version of \(Brand.name) supports protocol \(upgrade.protocol).")
                             .font(.aeFootnote)
                     }
                 }
@@ -640,7 +683,7 @@ private struct DeveloperModeCard: View {
                     Text("Default").tag(false)
                     Text("Local development network").tag(true)
                 }
-                Stepper("http://127.0.0.1:\(developmentNetworkPort)", value: $developmentNetworkPort, in: 1024...65535)
+                Stepper(value: $developmentNetworkPort, in: 1024...65535) { Text(verbatim: "http://127.0.0.1:\(developmentNetworkPort)") }
                     .disabled(!useDevelopmentNetwork)
             }
         }
@@ -685,7 +728,7 @@ private struct IncomingRecoveryAlert: View {
     }
 }
 
-private struct SecurityPage: View {
+struct SecurityPage: View {
     var body: some View {
         VStack(spacing: 16) {
             IncomingRecoveryAlert()
@@ -696,6 +739,7 @@ private struct SecurityPage: View {
                         Text("Protected by this device").font(.aeHeadline)
                         Text("Your key was created inside the Secure Enclave and can never be copied out. Every payment asks for Touch ID or your password. If you lose every device and have no recovery set up, nobody can restore the funds.")
                             .font(.aeBody).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                         // F-05: recovery never revokes a stolen original key.
                         Text(KeyExposureNotice.keyCustody.text).font(.aeFootnote).foregroundStyle(Color.warn)
                             .fixedSize(horizontal: false, vertical: true)
@@ -707,8 +751,9 @@ private struct SecurityPage: View {
                     Image(systemName: "checkmark.shield").font(.system(size: 34)).foregroundStyle(Color.aether)
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Checks before you send").font(.aeHeadline)
-                        Text("Before a transfer is signed, \(Brand.project) compares the recipient with addresses you sent to before (a look-alike asks you to confirm the whole address), notes first-time sends, and tries the transfer on the node so a token that refuses transfers is caught first. These checks read public chain data and settings on this device. Nothing new is written on chain.")
+                        Text("Before a transfer is signed, \(Brand.name) compares the recipient with addresses you sent to before (a look-alike asks you to confirm the whole address), notes first-time sends, and tries the transfer on the node so a token that refuses transfers is caught first. These checks read public chain data and settings on this device. Nothing new is written on chain.")
                             .font(.aeBody).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
@@ -717,8 +762,9 @@ private struct SecurityPage: View {
                     Image(systemName: "eye").font(.system(size: 34)).foregroundStyle(Color.aether)
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Who sees your addresses").font(.aeHeadline)
-                        Text("Balance reads are answered by other Macs running \(Brand.project) nodes, and those nodes see the addresses this wallet looks up. On a Mac with its own node switched on (Network page), reads stay on this Mac. Either way every balance is verified here, so a serving node can be slow or stale, never wrong.")
+                        Text("Balance reads are answered by other Macs running \(Brand.name) nodes, and those nodes see the addresses this wallet looks up. On a Mac with its own node switched on (Network page), reads stay on this Mac. Either way every balance is verified here, so a serving node can be slow or stale, never wrong.")
                             .font(.aeBody).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
@@ -742,6 +788,7 @@ private struct PaperKeyPanel: View {
             Text("Recovery words").font(.aeHeadline)
             Text("Your key never leaves this device, so there is no seed phrase to back up. Instead, write down 24 recovery words: if you lose every device, they move your funds to a new Mac after a 48-hour safety delay. If someone else finds them, they can only start that delay, and any of your devices can cancel it.")
                 .font(.aeBody).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             if let words = model.paperWords {
                 let list = words.split(separator: " ").map(String.init)
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: narrow ? 2 : 4), alignment: .leading, spacing: 6) {
@@ -782,7 +829,7 @@ private struct NodeCard: View {
                     Image(systemName: "server.rack").font(.system(size: 30)).foregroundStyle(Color.aether)
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Run a node on this Mac").font(.aeHeadline)
-                        Text("Your Mac checks every block itself and your wallet asks it instead of the network. It stops when you quit \(Brand.project).")
+                        Text("Your Mac checks every block itself and your wallet asks it instead of the network. It stops when you quit \(Brand.name).")
                             .font(.aeBody).foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -816,7 +863,7 @@ private struct UpdateCard: View {
             HStack(alignment: .center, spacing: 14) {
                 Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 26)).foregroundStyle(Color.aether)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("\(Brand.project) \(updates.version)").font(.aeHeadline)
+                    Text("\(Brand.name) \(updates.version)").font(.aeHeadline)
                     // Re-read every half minute so "checked 1 hour ago" stays true.
                     TimelineView(.periodic(from: .now, by: 30)) { context in
                         Text(checked(at: context.date)).font(.aeBody).foregroundStyle(.secondary)
@@ -835,9 +882,9 @@ private struct UpdateCard: View {
     }
 
     private func checked(at now: Date) -> String {
-        guard let last = updates.lastCheck else { return "Updates install by themselves. Not checked yet." }
+        guard let last = updates.lastCheck else { return String(localized: "Updates install by themselves. Not checked yet.") }
         let ago = RelativeDateTimeFormatter().localizedString(for: last, relativeTo: now)
-        return "Updates install by themselves. Last checked \(ago)."
+        return String(localized: "Updates install by themselves. Last checked \(ago).")
     }
 }
 
@@ -864,7 +911,7 @@ private struct VotingNodeRow: View {
                 case nil:
                     EmptyView()
                 }
-                DisclosureGroup(Terms.isTestnet ? "Planned mainnet rules" : "Network reward rules") {
+                DisclosureGroup(Terms.isTestnet ? String(localized: "Planned mainnet rules") : String(localized: "Network reward rules")) {
                     Text(VotingRules.mainnetRewardsRule + " " + VotingRules.founderReserveRule).font(.aeFootnote).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -872,7 +919,7 @@ private struct VotingNodeRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             if node.voting?.registered == false, model.registration != .working {
-                Button(model.registration == nil ? "Join" : "Try again") { model.registerNode(candidate, node: node) }
+                Button(model.registration == nil ? String(localized: "Join") : String(localized: "Try again")) { model.registerNode(candidate, node: node) }
                     .buttonStyle(.borderedProminent)
                     .disabled(model.busy)
                     .help("Registers this Mac with Apple DeviceCheck (one Mac, one voting node) and signs with Touch ID.")
@@ -890,22 +937,22 @@ private struct VotingNodeRow: View {
 
     private var title: String {
         switch node.voting {
-        case .some(let v) where v.voting: "Voting · this Mac signs blocks"
-        case .some(let v) where v.registered: "Candidate · \(min(v.streak, VotingRules.minStreakEpochs)) of \(VotingRules.minStreakEpochs) hours online"
-        case .some: "Become a voting node"
-        case .none: "Voting node"
+        case .some(let v) where v.voting: String(localized: "Voting · this Mac signs blocks")
+        case .some(let v) where v.registered: String(localized: "Candidate · \(min(v.streak, VotingRules.minStreakEpochs)) of \(VotingRules.minStreakEpochs) hours online")
+        case .some: String(localized: "Become a voting node")
+        case .none: String(localized: "Voting node")
         }
     }
 
     private var detail: String {
         switch node.voting {
-        case .some(let v) where v.voting: "Picked by the network for its long uptime. Keep the node on: stopping hands the seat to the next Mac."
+        case .some(let v) where v.voting: String(localized: "Picked by the network for its long uptime. Keep the node on: stopping hands the seat to the next Mac.")
         case .some(let v) where v.registered:
             v.candidates < VotingRules.minCandidates
-                ? "Your Mac proves it is online every hour, for free. The network starts drawing voting Macs once \(VotingRules.minCandidates) Macs are registered (\(v.candidates) so far) and each has been online \(VotingRules.minStreakEpochs) hours in a row."
-                : "Your Mac proves it is online every hour, for free. After \(VotingRules.minStreakEpochs) hours in a row it enters the daily draw of voting Macs (\(v.candidates) registered)."
-        case .some: "One Mac, one voting node. Your Mac proves it is alive every epoch; the longest-running Macs are picked to sign blocks, and no single operator address can hold a third of the seats."
-        case .none: "Checking the network…"
+                ? String(localized: "Your Mac proves it is online every hour, for free. The network starts drawing voting Macs once \(VotingRules.minCandidates) Macs are registered (\(v.candidates) so far) and each has been online \(VotingRules.minStreakEpochs) hours in a row.")
+                : String(localized: "Your Mac proves it is online every hour, for free. After \(VotingRules.minStreakEpochs) hours in a row it enters the daily draw of voting Macs (\(v.candidates) registered).")
+        case .some: String(localized: "One Mac, one voting node. Your Mac proves it is online every hour; the longest-running Macs are picked to sign blocks, and no single operator address can hold a third of the seats.")
+        case .none: String(localized: "Checking the network…")
         }
     }
 }
@@ -948,8 +995,8 @@ private struct SidebarStatus: View {
             HStack(spacing: 8) {
                 Circle().fill(model.status == nil || model.chainPausedSince != nil ? Color.warn : Color.aether).frame(width: 8, height: 8)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(model.status == nil ? "Connecting" : model.chainPausedSince != nil ? "Network paused" : "Connected").font(.aeCaption.weight(.semibold))
-                    Text(model.status.map { "Block #\($0.height)" } ?? "Searching DHT…").font(.aeCaption).foregroundStyle(.secondary)
+                    Text(model.status == nil ? String(localized: "Connecting") : model.chainPausedSince != nil ? String(localized: "Network paused") : String(localized: "Connected")).font(.aeCaption.weight(.semibold))
+                    Text(model.status.map { String(localized: "Block #\(String($0.height))") } ?? String(localized: "Looking for the network…")).font(.aeCaption).foregroundStyle(.secondary)
                 }
                 Spacer()
             }
@@ -963,9 +1010,9 @@ private struct SidebarStatus: View {
         // One reason, the same everywhere (NodeStopReason): never a bare "paused".
         if let reason = node.stopReason { return reason.copy(ko: HealthCheck.korean).title }
         switch node.state {
-        case .off: return HealthCheck.korean ? "꺼져 있음" : "Off"
-        case .starting: return node.height > 0 ? "Catching up" : "Starting…"
-        case .running: return "Verifying blocks" + (node.networkCheckPending ? node.pendingRouteNote : "")
+        case .off: return String(localized: "Off")
+        case .starting: return node.height > 0 ? String(localized: "Catching up") : String(localized: "Starting…")
+        case .running: return String(localized: "Verifying blocks") + (node.networkCheckPending ? " " + node.pendingRouteNote : "")
         case .waitingForPower: return NodeStopReason.onBattery.copy(ko: HealthCheck.korean).title
         case .failed(let m): return m
         }
@@ -1000,6 +1047,15 @@ private struct BalanceCard: View {
     enum Range: String, CaseIterable, Identifiable {
         case hour = "1H", day = "1D", week = "1W", all = "All"
         var id: String { rawValue }
+        /// The segment's label: "1H"…, "1시간"… in Korean.
+        var label: String {
+            switch self {
+            case .hour: String(localized: "1H")
+            case .day: String(localized: "1D")
+            case .week: String(localized: "1W")
+            case .all: String(localized: "All")
+            }
+        }
         var seconds: TimeInterval? {
             switch self {
             case .hour: 3_600
@@ -1043,7 +1099,7 @@ private struct BalanceCard: View {
 
     private var rangePicker: some View {
         Picker("Range", selection: $range) {
-            ForEach(Range.allCases) { Text($0.rawValue).tag($0) }
+            ForEach(Range.allCases) { Text($0.label).tag($0) }
         }
         .pickerStyle(.segmented)
         .labelsHidden()
@@ -1051,14 +1107,16 @@ private struct BalanceCard: View {
     }
 
     @ViewBuilder private var change: some View {
-        let period = range == .all ? "total" : "in \(range.rawValue)"
         if let first = points.first, points.count > 1, balance != first.aeth {
             let d = balance - first.aeth
-            Label("\(d > 0 ? "+" : "")\(Amount.text(d)) \(Brand.networkCoinTicker) \(period)", systemImage: d > 0 ? "arrow.up.right" : "arrow.down.right")
+            let amount = "\(d > 0 ? "+" : "")\(Amount.text(d)) \(Brand.networkCoinTicker)"
+            Label(range == .all ? String(localized: "\(amount) in total") : String(localized: "\(amount) in the last \(range.label)"),
+                  systemImage: d > 0 ? "arrow.up.right" : "arrow.down.right")
                 .font(.aeBody.weight(.medium))
                 .foregroundStyle(d > 0 ? Color.green : Color.secondary)
         } else if points.count > 1 {
-            Text("No change \(period)").font(.aeBody).foregroundStyle(.secondary)
+            Text(range == .all ? String(localized: "No change in total") : String(localized: "No change in the last \(range.label)"))
+                .font(.aeBody).foregroundStyle(.secondary)
         } else {
             Text("Your balance history appears here as it changes.").font(.aeBody).foregroundStyle(.secondary)
         }
@@ -1129,7 +1187,7 @@ private struct VerifiedBadge: View {
             Label(keyError, systemImage: "lock.fill")
                 .font(.aeCaption.weight(.semibold)).foregroundStyle(Color.warn)
                 .padding(.horizontal, 10).padding(.vertical, 4)
-                .help("The wallet key lives in this device's Secure Enclave, which only creates keys while the device is unlocked. \(Brand.project) retries by itself.")
+                .help("The wallet key lives in this device's Secure Enclave, which only creates keys while the device is unlocked. \(Brand.name) retries by itself.")
         } else if let since = model.chainPausedSince {
             NetworkPausedBadge(since: since)
         } else if halfDead {
@@ -1152,12 +1210,12 @@ private struct VerifiedBadge: View {
             let slow = model.verifyFailingSince.map { Date().timeIntervalSince($0) > 20 } ?? false
             HStack(spacing: 7) {
                 OrbitSpinner().frame(width: 13, height: 13)
-                Text(model.status == nil ? "Connecting" : slow ? "Still verifying" : "Verifying")
+                Text(model.status == nil ? String(localized: "Connecting") : slow ? String(localized: "Still verifying") : String(localized: "Verifying"))
             }
             .font(.aeCaption.weight(.semibold)).foregroundStyle(Color.aether)
             .padding(.horizontal, 11).padding(.vertical, 5)
             .background(Color.aether.opacity(0.10), in: Capsule())
-            .help(model.verifyError ?? "Checking the balance against the validators' signature on this device.")
+            .help(model.verifyError ?? String(localized: "Checking the balance against the validators' signature on this device."))
         }
     }
 }
@@ -1236,8 +1294,7 @@ private struct ActivityRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.title).font(.aeBody.weight(.medium)).lineLimit(2)
                 if item.timeKnown {
-                    Text(item.date, style: .relative).font(.aeFootnote).foregroundStyle(.secondary)
-                        + Text(" ago").font(.aeFootnote).foregroundStyle(.secondary)
+                    Text(item.date, format: .relative(presentation: .named)).font(.aeFootnote).foregroundStyle(.secondary)
                 }
                 if let source = item.source {
                     Text("\(source) · \(ChainActivity.short(item.owner ?? ""))")
@@ -1250,7 +1307,7 @@ private struct ActivityRow: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if item.state == .notIncluded || item.state == .failed, item.resend != nil {
-                    Button("새 가격으로 다시 보내기") { model.beginResend(item) }
+                    Button("Send again at the current fee") { model.beginResend(item) }
                         .buttonStyle(.borderless)
                         .font(.aeFootnote.weight(.semibold))
                         .disabled(model.busy || model.account == nil)
@@ -1276,7 +1333,7 @@ private struct ActivityRow: View {
 
 
 private struct RoundAction: View {
-    let title: String
+    let title: LocalizedStringKey
     let icon: String
     let action: () -> Void
     @Environment(\.isEnabled) private var enabled
@@ -1321,7 +1378,7 @@ struct TokenRow: View {
 
 private struct Tile: View {
     let value: String
-    let label: String
+    let label: LocalizedStringKey
     let icon: String
 
     var body: some View {
@@ -1357,7 +1414,7 @@ private struct ActivityList: View {
 
 // MARK: - Sheets
 
-private struct SendSheet: View {
+struct SendSheet: View {
     @EnvironmentObject var model: WalletModel
     @Environment(\.dismiss) private var dismiss
     /// The send flow's checks (docs/research/token-spam-2026.md §6.3). Nothing
@@ -1452,7 +1509,7 @@ private struct SendSheet: View {
         VStack(alignment: .leading, spacing: 16) {
             Text(title).font(.aeTitle)
             if let r = model.paymentRequest {
-                Label(r.memo.map { "A page asked for this payment: \($0)" } ?? "A page asked for this payment. Check the address and amount.", systemImage: "link")
+                Label(r.memo.map { String(localized: "A page asked for this payment: \($0)") } ?? String(localized: "A page asked for this payment. Check the address and amount."), systemImage: "link")
                     .font(.aeBody).foregroundStyle(Color.warn)
                     .padding(10).frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color.warn.opacity(0.14), in: RoundedRectangle(cornerRadius: Radius.inner))
@@ -1470,11 +1527,11 @@ private struct SendSheet: View {
                 assetPicker
                 VStack(alignment: .leading, spacing: 6) {
                     Text("To").font(.aeFootnote).foregroundStyle(.secondary)
-                    TextField(token == nil ? "0x… (several: separate with commas)" : "0x…", text: $model.sendTo)
+                    TextField(token == nil ? String(localized: "0x… (several: separate with commas)") : "0x…", text: $model.sendTo)
                         .textFieldStyle(.roundedBorder).font(.aeBody.monospaced())
                 }
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(token == nil ? "Amount (each)" : "Amount").font(.aeFootnote).foregroundStyle(.secondary)
+                    Text(token == nil ? String(localized: "Amount (each)") : String(localized: "Amount")).font(.aeFootnote).foregroundStyle(.secondary)
                     HStack {
                         TextField("0", text: $model.sendAmount).textFieldStyle(.roundedBorder).font(.aeTitle.monospacedDigit())
                         // The icon always agrees with the picked asset (by
@@ -1519,7 +1576,7 @@ private struct SendSheet: View {
                 }.font(.aeBody)
             }
             if let r = resending {
-                Label("처리되지 않은 거래(순서 번호 \(r.nonce))를 지금 가격으로 다시 보내요. 같은 번호라 둘 중 하나만 처리돼요.",
+                Label("This resends the payment that did not go through (number \(r.nonce)) at the current fee. Both share that number, so only one of them can go through.",
                       systemImage: "arrow.clockwise")
                     .font(.aeFootnote).foregroundStyle(.secondary)
             }
@@ -1539,7 +1596,7 @@ private struct SendSheet: View {
                 }.keyboardShortcut(.cancelAction)
                 Spacer()
                 Button { send() } label: {
-                    Label(checking ? "Checking…" : "Send", systemImage: "touchid").frame(minWidth: 100)
+                    Label(checking ? String(localized: "Checking…") : String(localized: "Send"), systemImage: "touchid").frame(minWidth: 100)
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
@@ -1565,8 +1622,8 @@ private struct SendSheet: View {
     }
 
     private var title: String {
-        if model.paymentRequest != nil { return "Send \(Brand.networkCoinTicker)" }
-        return token.map { "Send \($0.token.symbol)" } ?? "Send \(Brand.networkCoinTicker)"
+        if model.paymentRequest != nil { return String(localized: "Send \(Brand.networkCoinTicker)") }
+        return token.map { String(localized: "Send \($0.token.symbol)") } ?? String(localized: "Send \(Brand.networkCoinTicker)")
     }
 
     /// The form's note about the units the amount field is parsed under (audit
@@ -1710,13 +1767,13 @@ private struct SendSheet: View {
     private func confirmCard(_ frozen: SendIntent) -> some View {
         let now = TokenDenomination.of(chainId: model.status?.chainId ?? 0, address: frozen.token.address,
                                        claimed: model.tokens.first { $0.token.address == frozen.token.address }?.token)
-        let symbol = now.symbol ?? "units"
+        let symbol = now.symbol ?? String(localized: "units")
         return VStack(alignment: .leading, spacing: 16) {
             Text("Confirm the send").font(.aeTitle)
             VStack(alignment: .leading, spacing: 6) {
-                row("You will send", "\(SendIntent.grouped(frozen.baseUnits)) units", mono: true)
+                row("You will send", String(localized: "\(SendIntent.grouped(frozen.baseUnits)) units"), mono: true)
                 row("Shown as", "\(TokenAmount.exact(frozen.baseUnits, decimals: frozen.token.decimals)) \(symbol)")
-                row("Decimals", "\(frozen.token.decimals) \(frozen.token.trusted ? "(shipped list)" : "(unverified claim)")")
+                row("Decimals", frozen.token.trusted ? String(localized: "\(frozen.token.decimals) (from the wallet's list)") : String(localized: "\(frozen.token.decimals) (the token's own claim)"))
                 row("To", frozen.recipient, mono: true)
                 row("Token", TokenLabel.row(TokenInfo(address: frozen.token.address, symbol: now.symbol ?? "?",
                                                       name: now.name ?? "", decimals: frozen.token.decimals, origin: nil)), mono: true)
@@ -1767,7 +1824,7 @@ private struct SendSheet: View {
         .sheetScroll()
     }
 
-    private func row(_ k: String, _ v: String, mono: Bool = false) -> some View {
+    private func row(_ k: LocalizedStringKey, _ v: String, mono: Bool = false) -> some View {
         HStack(alignment: .top) {
             Text(k).foregroundStyle(.secondary).frame(width: 88, alignment: .leading)
             Text(v).font(mono ? .body.monospaced() : .body).textSelection(.enabled)
@@ -1778,7 +1835,7 @@ private struct SendSheet: View {
 }
 
 /// A page asks to sign a contract call: what it does, where to, how much; Touch ID to approve.
-private struct CallSheet: View {
+struct CallSheet: View {
     @EnvironmentObject var model: WalletModel
     @Environment(\.dismiss) private var dismiss
 
@@ -1786,7 +1843,7 @@ private struct CallSheet: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Approve a request").font(.aeTitle)
             if let r = model.callRequest {
-                Label("\(r.origin ?? "A page") asks you to sign this. Check it before you approve.", systemImage: "link")
+                Label(r.origin.map { String(localized: "\($0) asks you to sign this. Check it before you approve.") } ?? String(localized: "A page asks you to sign this. Check it before you approve."), systemImage: "link")
                     .font(.aeBody).foregroundStyle(Color.warn)
                     .padding(10).frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color.warn.opacity(0.14), in: RoundedRectangle(cornerRadius: Radius.inner))
@@ -1794,7 +1851,7 @@ private struct CallSheet: View {
                 if !r.to.isEmpty { row("Contract", r.to, mono: true) }
                 row("Sends", "\(r.value) \(Brand.networkCoinTicker)")
                 if let m = r.memo { row("Note", m) }
-                DisclosureGroup("Call data (\((r.data.count - 2) / 2) bytes)") {
+                DisclosureGroup(String(localized: "Call data (\((r.data.count - 2) / 2) bytes)")) {
                     ScrollView { Text(r.data).font(.aeFootnote.monospaced()).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
                         .frame(maxHeight: 120)
                 }.font(.aeFootnote)
@@ -1818,7 +1875,7 @@ private struct CallSheet: View {
         .sheetScroll()
     }
 
-    private func row(_ k: String, _ v: String, mono: Bool = false) -> some View {
+    private func row(_ k: LocalizedStringKey, _ v: String, mono: Bool = false) -> some View {
         HStack(alignment: .top) {
             Text(k).foregroundStyle(.secondary).frame(width: 72, alignment: .leading)
             Text(v).font(mono ? .body.monospaced() : .body).textSelection(.enabled)
@@ -1829,14 +1886,15 @@ private struct CallSheet: View {
 }
 
 /// A page asks for this wallet's address.
-private struct ConnectSheet: View {
+struct ConnectSheet: View {
     @EnvironmentObject var model: WalletModel
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Connect").font(.aeTitle)
-            Text("\(model.connectRequest?.origin ?? "A page") wants to see your address \(Short.address(model.address)). It cannot move funds: every payment or call still asks you here.")
+            Text(model.connectRequest.map { String(localized: "\($0.origin) wants to see your address \(Short.address(model.address)). It cannot move funds: every payment or call still asks you here.") }
+                 ?? String(localized: "A page wants to see your address \(Short.address(model.address)). It cannot move funds: every payment or call still asks you here."))
                 .font(.aeBody).foregroundStyle(.secondary)
             HStack {
                 Button("Cancel") {
@@ -1856,7 +1914,7 @@ private struct ConnectSheet: View {
     }
 }
 
-private struct ReceiveSheet: View {
+struct ReceiveSheet: View {
     @EnvironmentObject var model: WalletModel
     @Environment(\.dismiss) private var dismiss
     @State private var copied = false
@@ -1871,7 +1929,7 @@ private struct ReceiveSheet: View {
                 Button {
                     Clipboard.copy(model.address)
                     copied = true
-                } label: { Label(copied ? "Copied" : "Copy address", systemImage: copied ? "checkmark" : "doc.on.doc") }
+                } label: { Label(copied ? String(localized: "Copied") : String(localized: "Copy address"), systemImage: copied ? "checkmark" : "doc.on.doc") }
                     .buttonStyle(.borderedProminent)
                 Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
             }
@@ -1893,7 +1951,7 @@ private struct RecoveryPanel: View {
             // F-05: recovery saves a lost key, never a stolen one.
             Label(KeyExposureNotice.recovery.text, systemImage: "exclamationmark.triangle").font(.aeFootnote).foregroundStyle(Color.warn)
                 .fixedSize(horizontal: false, vertical: true)
-            step(1, "On the other device, copy its code", "Open \(Brand.project) there, tap Recovery device, and copy \"This device's code\".")
+            step(1, "On the other device, copy its code", "Open \(Brand.name) there, go to Security ▸ Recovery device, and copy \"This device's code\".")
             HStack {
                 TextField("Paste the other device's code", text: $model.guardianInput).textFieldStyle(.roundedBorder).font(.aeFootnote.monospaced())
                 Button("Trust it") { model.setRecoveryKey() }.buttonStyle(.borderedProminent).disabled(model.busy || model.guardianInput.isEmpty)
@@ -1915,7 +1973,7 @@ private struct RecoveryPanel: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Recovering \(Short.address(p.request.lost)): \(Wei.format(p.request.valueWei)) \(Brand.networkCoinTicker)").font(.aeBody.weight(.medium))
-                        Text(p.isReady ? "Ready to finish" : "Can finish \(p.readyAt.formatted(date: .abbreviated, time: .shortened))")
+                        Text(p.isReady ? String(localized: "Ready to finish") : String(localized: "Can finish \(p.readyAt.formatted(date: .abbreviated, time: .shortened))"))
                             .font(.aeFootnote).foregroundStyle(p.isReady ? Color.aether : .secondary)
                     }
                     Spacer()
@@ -1936,12 +1994,13 @@ private struct RecoveryPanel: View {
         }
     }
 
-    private func step(_ n: Int, _ title: String, _ detail: String) -> some View {
+    private func step(_ n: Int, _ title: LocalizedStringKey, _ detail: LocalizedStringKey) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Text("\(n)").font(.aeFootnote.bold()).frame(width: 22, height: 22).background(Color.aether.opacity(0.15), in: Circle())
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.aeBody.weight(.semibold))
                 Text(detail).font(.aeFootnote).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -1978,7 +2037,7 @@ enum Amount {
     /// Fee in the native coin with enough digits to be non-zero.
     static func fee(_ wei: String) -> String {
         let aeth = (Double(wei) ?? 0) / 1e18
-        if aeth == 0 { return "free" }
+        if aeth == 0 { return String(localized: "free") }
         return "\(aeth.formatted(.number.precision(.significantDigits(1...3)))) \(Brand.networkCoinTicker)"
     }
 }

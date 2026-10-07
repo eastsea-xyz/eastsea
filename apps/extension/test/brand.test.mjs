@@ -12,13 +12,13 @@ test('the brand and the confirmed coin name are in one place', () => {
   assert.equal(describeCall({ to: '0x1', data: '0x' }), `Send ${Brand.coinTicker}`);
 });
 
-test('the legacy 7780 testnet kept its own coin label', () => {
-  assert.equal(coinTicker(7780), 'AETH');
-  assert.equal(coinName(7780), 'Test AETH');
+test('the legacy 7780 testnet shows DBLN too (the AETH label is retired)', () => {
+  assert.equal(coinTicker(7780), 'DBLN');
+  assert.equal(coinName(7780), 'Test Doubloon');
   assert.equal(coinTicker(7777), 'DBLN');
   assert.equal(coinName(7777), 'Doubloon');
-  assert.equal(describeCall({ to: '0x1', data: '0x' }, { ticker: coinTicker(7780) }), 'Send AETH');
-  assert.equal(describeCall({ to: '0x1', data: '0xd0e30db0' }, { ticker: coinTicker(7780) }), 'Wrap AETH');
+  assert.equal(describeCall({ to: '0x1', data: '0x' }, { ticker: coinTicker(7780) }), 'Send DBLN');
+  assert.equal(describeCall({ to: '0x1', data: '0xd0e30db0' }, { ticker: coinTicker(7780) }), 'Wrap DBLN');
 });
 
 test('renamed legal notice requires new consent and keeps its warning', () => {
@@ -28,6 +28,7 @@ test('renamed legal notice requires new consent and keeps its warning', () => {
   assert.match(points[0], /its DBLN does not carry over/);
   assert.match(points[0], /provided as is, without warranty/);
   assert.match(points[1], /nothing here promises a price, a return, a listing or a way to cash out/);
-  // The legacy testnet's notice names its own coin.
-  assert.match(noticePoints(7780)[0], /its AETH does not carry over/);
+  // The legacy testnet's notice names the coin as everyone sees it.
+  assert.match(noticePoints(7780)[0], /its DBLN does not carry over/);
+  assert.doesNotMatch(noticePoints(7780).join(' '), /\bAETH\b/);
 });

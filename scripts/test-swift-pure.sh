@@ -40,6 +40,7 @@ run token-guard Brand.swift TokenSend.swift TokenAssets.swift EarningsModel.swif
 run token-icon Brand.swift TokenSend.swift TokenAssets.swift EarningsModel.swift TokenGuard.swift TokenIconSpec.swift
 run token-send Brand.swift TokenSend.swift TokenAssets.swift EarningsModel.swift
 run unattended UnattendedDecision.swift
+run tx-status-text TxStatusText.swift
 run update-channel UpdateChannel.swift
 run update-state Brand.swift DataMigration.swift UpdateTracker.swift
 run update-window UpdateWindow.swift

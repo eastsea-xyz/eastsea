@@ -132,7 +132,7 @@ final class BrowserController: NSObject, ObservableObject {
         guard !raw.isEmpty else { return }
         let withScheme = raw.contains("://") ? raw : "https://\(raw)"
         guard let url = URL(string: withScheme) else {
-            notice = "That is not a web address."
+            notice = String(localized: "That is not a web address.")
             return
         }
         load(url)
@@ -172,7 +172,7 @@ final class BrowserController: NSObject, ObservableObject {
 
     func refuseWarning() {
         warning = nil
-        notice = "Not opened."
+        notice = String(localized: "Not opened.")
     }
 
     // MARK: - Sheet answers
@@ -585,7 +585,7 @@ extension BrowserController: WKNavigationDelegate, WKUIDelegate {
     /// trailing slash theater.
     private func urlBarText(_ url: URL) -> String {
         if url.scheme?.lowercased() == BrowserOriginPolicy.bundledScheme {
-            return url.host == "explorer" ? "Block explorer" : (url.host ?? "")
+            return url.host == "explorer" ? String(localized: "Block explorer") : (url.host ?? "")
         }
         return url.absoluteString
     }

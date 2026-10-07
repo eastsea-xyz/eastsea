@@ -25,8 +25,8 @@ test('weiToAeth is exact and drops trailing zeros', () => {
   assert.equal(weiToAeth('0x4599ecb2e063c40'), '0.3134562445666704'); // 0x hex, the shape aether_getAccount returns
 });
 
-test('the coin ticker follows the chain (the legacy testnet kept AETH)', () => {
-  assert.equal(coinTicker(7780), 'AETH');
+test('the coin is DBLN on every chain (the AETH label is retired)', () => {
+  assert.equal(coinTicker(7780), 'DBLN');
   assert.equal(coinTicker(7777), 'DBLN');
   assert.equal(coinTicker(null), 'DBLN'); // before the node answers
 });
@@ -114,4 +114,10 @@ test('a dropped hash reads "not on chain yet", never a permanent failure (B5 rou
   assert.match(t, /whole mempool lifetime/);
   assert.doesNotMatch(t, /Nothing was charged|failed|permanent/i);
   assert.match(droppedText(null), /no reason given/);
+});
+
+test('WAETH reads as wrapped test DBLN; other names pass through', async () => {
+  const { displayTokenName } = await import('../js/format.js');
+  assert.equal(displayTokenName('0xA2521982A17474CB2F8741C85DE653B5282D72B0', 'Wrapped AETH'), 'Wrapped test DBLN');
+  assert.equal(displayTokenName('0x6bc5ded76ccbdc8df35e7cd28b68fed245a74416', 'Test Nebula'), 'Test Nebula');
 });

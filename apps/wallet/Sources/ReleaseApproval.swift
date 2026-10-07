@@ -64,7 +64,7 @@ struct ReleaseTrust: Equatable {
     let legacy: Bool
 
     /// Shown when the bundled file pins nothing usable.
-    static let missingPin = "Updates are off: this app has no valid release approval keys."
+    static var missingPin: String { String(localized: "Updates are off: this copy of the app cannot check which updates the network approved.") }
     static let threshold = 2
     static let emergencyThreshold = 3
 

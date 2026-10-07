@@ -71,7 +71,7 @@ final class UnattendedDaemon: ObservableObject {
             switch service.status {
             case .enabled: status = .approved
             case .requiresApproval, .notRegistered: status = .needsApproval
-            case .notFound: status = .failed("Daemon support missing from this build")
+            case .notFound: status = .failed(String(localized: "This build of the app cannot keep the node running after restarts."))
             default: status = .off
             }
         }
@@ -96,12 +96,10 @@ final class UnattendedDaemon: ObservableObject {
     /// the app meanwhile.
     var approvalSentence: String? {
         if enabled, blockDataOnExternalDisk {
-            return HealthCheck.korean ? "블록 데이터가 외장 디스크에 있어서, 재시동 뒤에는 앱을 열 때 노드가 시작돼요."
-                : "The block data is on an external disk, so after a restart the node starts when the app opens."
+            return String(localized: "The block data is on an external disk, so after a restart the node starts when the app opens.")
         }
         guard enabled, status == .needsApproval else { return nil }
-        return HealthCheck.korean ? "Mac이 잠겨 있거나 재시동해도 노드를 계속 돌리려면 ‘백그라운드 허용’을 켜 주세요. 그때까지는 앱 안에서 돌아요."
-            : "To keep the node running while the Mac is locked or after a restart, turn on “Allow in the Background”. Until then it runs inside the app."
+        return String(localized: "To keep the node running while the Mac is locked or after a restart, turn on “Allow in the Background”. Until then it runs inside the app.")
     }
 
     /// The system-settings pane where the user approves the daemon.
@@ -110,11 +108,15 @@ final class UnattendedDaemon: ObservableObject {
     }
 
     private func applyEnabledChange() {
+        #if WALLET_SCREENS
+        // The screens renderer (scripts/wallet-screens.sh) never touches the real data.
+        return 
+        #endif
         if enabled {
             do {
                 if service.status == .notRegistered { try service.register() }
             } catch {
-                status = .failed("Daemon: \(error.localizedDescription)")
+                status = .failed(String(localized: "Could not keep the node running after restarts: \(error.localizedDescription)"))
                 return
             }
         } else {
@@ -144,6 +146,9 @@ final class UnattendedDaemon: ObservableObject {
     /// single source of what the daemon runs: the same argv the app's own node
     /// takes (minus `--exit-with-parent`), so a restart changes nothing.
     func syncMarker() {
+        #if WALLET_SCREENS
+        return
+        #endif
         // The marker makes the root daemon run the node — past the app's own
         // start gate — so it obeys the same gate (release-070 review, B4).
         guard enabled, nodeEnabled, !wrongLocation, DataMigration.mayStartNode() == nil else {
@@ -186,6 +191,9 @@ final class UnattendedDaemon: ObservableObject {
     /// after the next restart either — the marker goes away, and a daemon
     /// node that is running stops (docs/design/29).
     func nodeSwitchedOff() {
+        #if WALLET_SCREENS
+        return
+        #endif
         nodeEnabled = false
         syncMarker()
         stopDaemonNode()
@@ -219,6 +227,9 @@ final class UnattendedDaemon: ObservableObject {
     /// Only the wrapper's own pid file, and only a process that still is the
     /// node/wrapper binary — never an arbitrary recycled pid.
     func stopDaemonNode() {
+        #if WALLET_SCREENS
+        return
+        #endif
         guard let pid = Marker.pid(), Self.processIsOurs(pid) else { return }
         kill(pid, SIGTERM)
     }

@@ -107,17 +107,17 @@ enum ChainActivity {
             names.tokenFactory.map({ to == $0.lowercased() }) == true ? "factory" : ""
         func tokenText(_ move: ChainTokenMove) -> String {
             let token = names.tokens[move.token.lowercased()]
-            let symbol = token?.symbol ?? "Token"
+            let symbol = token?.symbol ?? String(localized: "Token")
             let name = "\(symbol) · \(tokenShort(move.token))"
-            let warning = token?.origin == "launchpad" ? " (Launchpad · unverified)" : token == nil ? " (unverified)" : ""
-            let amount = token.map { units(move.amount, decimals: $0.decimals) } ?? "\(move.amount) base units"
+            let warning = token?.origin == "launchpad" ? " " + String(localized: "(Launchpad · unverified)") : token == nil ? " " + String(localized: "(unverified)") : ""
+            let amount = token.map { units(move.amount, decimals: $0.decimals) } ?? String(localized: "\(move.amount) base units")
             return "\(amount) \(name)\(warning)"
         }
-        if row.kind == "node_reward" { return "Node reward \(amount) \(Brand.networkCoinTicker)" }
-        if row.kind == "proof_reward" { return "Proof reward \(amount) \(Brand.networkCoinTicker)" }
-        if row.kind == "registration" { return "Registered a voting node" }
-        if !row.success { return "Failed call \(short(row.to ?? row.address)) (method \(row.method ?? "0x"))" }
-        if row.kind == "deploy" { return "Deployed contract \(short(row.contractAddress ?? row.address))" }
+        if row.kind == "node_reward" { return String(localized: "Node reward \(amount) \(Brand.networkCoinTicker)") }
+        if row.kind == "proof_reward" { return String(localized: "Proof reward \(amount) \(Brand.networkCoinTicker)") }
+        if row.kind == "registration" { return String(localized: "Registered a voting node") }
+        if !row.success { return String(localized: "Failed call to \(short(row.to ?? row.address))") }
+        if row.kind == "deploy" { return String(localized: "Deployed contract \(short(row.contractAddress ?? row.address))") }
         if contract == "router", row.pairSwaps?.isEmpty == false,
            ["0x38ed1739", "0xac344b4d", "0x3f070ce1"].contains(row.method ?? "") {
             let spent = outgoing.first.map(tokenText) ?? "\(amount) \(Brand.networkCoinTicker)"
@@ -126,26 +126,31 @@ enum ChainActivity {
                     ? row.nativeReceivedWei.map { "\(units($0)) \(Brand.networkCoinTicker)" } : nil
             }
             let got = incoming.last.map(tokenText) ?? nativeIn ?? "\(Brand.networkCoinTicker)"
-            return "Swapped \(spent) → \(got)"
+            return String(localized: "Swapped \(spent) → \(got)")
         }
-        if contract == "router", ["0xe8e33700", "0xcf2df7c6"].contains(row.method ?? "") { return "Added liquidity" }
-        if contract == "router", ["0xbaa2abde", "0x0fb9ca68"].contains(row.method ?? "") { return "Removed liquidity" }
-        if contract == "launchpad", row.method == "0x42a81515" { return "Launched a token" }
-        if contract == "launchpad", row.method == "0xcce7ec13" { return "Bought on launchpad · \(incoming.first.map(tokenText) ?? "\(amount) \(Brand.networkCoinTicker)")" }
-        if contract == "launchpad", row.method == "0x6a272462" { return "Sold on launchpad · \(outgoing.first.map(tokenText) ?? "token")" }
-        if contract == "factory", ["0x3ca6d100", "0xc7ff321d"].contains(row.method ?? "") { return "Created a token" }
+        if contract == "router", ["0xe8e33700", "0xcf2df7c6"].contains(row.method ?? "") { return String(localized: "Added liquidity") }
+        if contract == "router", ["0xbaa2abde", "0x0fb9ca68"].contains(row.method ?? "") { return String(localized: "Removed liquidity") }
+        if contract == "launchpad", row.method == "0x42a81515" { return String(localized: "Launched a token") }
+        if contract == "launchpad", row.method == "0xcce7ec13" { return String(localized: "Bought on launchpad · \(incoming.first.map(tokenText) ?? "\(amount) \(Brand.networkCoinTicker)")") }
+        if contract == "launchpad", row.method == "0x6a272462" { return String(localized: "Sold on launchpad · \(outgoing.first.map(tokenText) ?? String(localized: "token"))") }
+        if contract == "factory", ["0x3ca6d100", "0xc7ff321d"].contains(row.method ?? "") { return String(localized: "Created a token") }
         if row.method == "0x095ea7b3" {
-            let action = row.approvalAmount == "0" ? "Revoked" : "Approved"
-            return "\(action) token \(tokenShort(row.to ?? row.address))\(row.approvalSpender.map { " for \(short($0))" } ?? "")"
+            let token = tokenShort(row.to ?? row.address)
+            switch (row.approvalAmount == "0", row.approvalSpender.map(short)) {
+            case (true, let spender?): return String(localized: "Revoked token \(token) for \(spender)")
+            case (true, nil): return String(localized: "Revoked token \(token)")
+            case (false, let spender?): return String(localized: "Approved token \(token) for \(spender)")
+            case (false, nil): return String(localized: "Approved token \(token)")
+            }
         }
-        if row.kind == "native_transfer", from != me { return "Received \(amount) \(Brand.networkCoinTicker) from \(short(row.from ?? ""))" }
-        if row.kind == "native_transfer" { return "Sent \(amount) \(Brand.networkCoinTicker) to \(short(row.to ?? ""))" }
-        if let receipt = incoming.first, from != me { return "Received \(tokenText(receipt)) from \(short(receipt.from))" }
-        if let sent = outgoing.first, row.method == "0xa9059cbb" { return "Sent \(tokenText(sent)) to \(short(sent.to))" }
+        if row.kind == "native_transfer", from != me { return String(localized: "Received \(amount) \(Brand.networkCoinTicker) from \(short(row.from ?? ""))") }
+        if row.kind == "native_transfer" { return String(localized: "Sent \(amount) \(Brand.networkCoinTicker) to \(short(row.to ?? ""))") }
+        if let receipt = incoming.first, from != me { return String(localized: "Received \(tokenText(receipt)) from \(short(receipt.from))") }
+        if let sent = outgoing.first, row.method == "0xa9059cbb" { return String(localized: "Sent \(tokenText(sent)) to \(short(sent.to))") }
         let deltas = outgoing.map { "−\(tokenText($0))" } + incoming.map { "+\(tokenText($0))" }
         let native = row.valueWei != "0" ? ["−\(amount) \(Brand.networkCoinTicker)"] : []
         let changes = (native + deltas).isEmpty ? "" : " · \((native + deltas).joined(separator: ", "))"
-        return "Contract call \(short(row.to ?? row.address)) (method \(row.method ?? "0x"))\(changes)"
+        return String(localized: "Contract call \(short(row.to ?? row.address))") + changes
     }
 
     static func validLinkedAddress(_ value: String, own: String, existing: [String]) -> String? {

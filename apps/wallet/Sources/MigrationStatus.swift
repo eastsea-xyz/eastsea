@@ -24,6 +24,15 @@ final class MigrationStatus: ObservableObject {
     /// itself once the move finishes.
     @Published private(set) var waitingForUnlock = false
 
+    #if DEBUG
+    /// Design preview: the overlay mid-move, or after a move that did not finish.
+    func loadPreview(moving: Bool, problem: String?) {
+        self.moving = moving
+        fraction = moving ? 0.42 : 0
+        self.problem = problem
+    }
+    #endif
+
     /// Called on the main queue after every background run.
     var onFinish: ((DataMigration.Outcome) -> Void)?
 
@@ -97,28 +106,26 @@ struct MigrationOverlay: View {
         if status.waitingForUnlock {
             let ko = HealthCheck.korean
             card {
-                Text(ko ? "지갑을 마저 옮기려면 이 Mac의 잠금을 풀어 주세요" : "Unlock this Mac to finish moving your wallet").font(.headline)
-                Text(ko ? "노드 데이터는 이미 동해로 옮겼습니다. 지갑 키 파일은 Mac 잠금이 풀려 있을 때만 읽을 수 있어서 아직 옮기지 못했습니다. 잠금을 풀면 몇 초 안에 동해가 알아서 마칩니다. 지운 것은 없으며 지갑은 안전합니다."
-                     : "Your node data has already moved to EastSea. Your wallet key file can only be read while this Mac is unlocked, so it has not moved yet. Unlock the Mac and EastSea finishes by itself within a few seconds. Nothing was deleted; your wallet is safe.")
+                Text(String(localized: "Unlock this Mac to finish moving your wallet")).font(.headline)
+                Text(String(localized: "Your node data has already moved to EastSea. Your wallet key file can only be read while this Mac is unlocked, so it has not moved yet. Unlock the Mac and EastSea finishes by itself within a few seconds. Nothing was deleted; your wallet is safe."))
                     .font(.caption).foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .frame(width: 320)
             }
         } else if status.moving {
             card {
-                Text("Moving your data from Aether to EastSea").font(.headline)
+                Text("Moving your data from Aether to \(Brand.name)").font(.headline)
                 ProgressView(value: status.fraction)
                     .frame(width: 280)
-                Text("Your wallet and node data are copied and checked, byte by byte. This can take a few minutes. "
-                     + "Keep EastSea open; if it is closed, the move picks up where it left off next time.")
+                Text("Your wallet and node data are copied and checked, byte by byte. This can take a few minutes. Keep \(Brand.name) open; if it is closed, the move picks up where it left off next time.")
                     .font(.caption).foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .frame(width: 320)
             }
         } else if let problem = status.problem {
             card {
-                Text(HealthCheck.korean ? "데이터 이동이 아직 끝나지 않았습니다" : "Your data has not finished moving").font(.headline)
-                Text(problem + (HealthCheck.korean ? " 동해가 알아서 다시 시도해요. 지운 것은 없어요." : " EastSea retries by itself; nothing was deleted."))
+                Text(String(localized: "Your data has not finished moving")).font(.headline)
+                Text(problem + (String(localized: " EastSea retries by itself; nothing was deleted.")))
                     .font(.caption).foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .frame(width: 320)

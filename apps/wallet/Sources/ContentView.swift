@@ -109,9 +109,11 @@ struct DeveloperView: View {
         HStack {
             Image(systemName: "cube.transparent").font(.title)
             VStack(alignment: .leading) {
-                Text("\(Brand.project) Wallet").font(.title2.bold())
+                Text("\(Brand.name) Wallet").font(.title2.bold())
                 if let s = model.status {
-                    Text("\(model.developmentNetwork ? "devnet" : "chain") \(s.chainId) · height \(s.height) · \(model.validators) validators")
+                    Text(model.developmentNetwork
+                         ? String(localized: "devnet \(String(s.chainId)) · height \(String(s.height)) · \(model.validators) validators")
+                         : String(localized: "chain \(String(s.chainId)) · height \(String(s.height)) · \(model.validators) validators"))
                         .font(.caption).foregroundStyle(.secondary)
                 } else {
                     Text("connecting…").font(.caption).foregroundStyle(.secondary)
@@ -139,7 +141,7 @@ struct DeveloperView: View {
                     .font(.system(size: 34, weight: .semibold, design: .rounded))
                 if let a = model.account, model.verifyError == nil {
                     Label("Verified by this device", systemImage: "checkmark.seal.fill").foregroundStyle(.green).font(.headline)
-                    Text("Block \(a.certifiedBlock) finality: one BLS threshold signature from a \(a.validators)-validator committee, checked against its group key · state root \(a.stateRoot.prefix(12))… · EIP-7864 proof for this address")
+                    Text("Block \(String(a.certifiedBlock)) finality: one BLS threshold signature from a \(a.validators)-validator committee, checked against its group key · state root \(a.stateRoot.prefix(12))… · EIP-7864 proof for this address")
                         .font(.caption).foregroundStyle(.secondary)
                 } else if let e = model.verifyError {
                     Label("Not verified", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange).font(.headline)
@@ -219,7 +221,7 @@ struct DeveloperView: View {
                             ForEach(model.activity) { item in
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(item.title).font(.callout)
-                                    Text("\(item.source ?? "On this device") · \(item.date.formatted()) · \(item.hash ?? "")")
+                                    Text("\(item.source ?? String(localized: "On this device")) · \(item.date.formatted()) · \(item.hash ?? "")")
                                         .font(.caption).foregroundStyle(.secondary)
                                 }
                                 Divider()
@@ -242,7 +244,7 @@ struct DeveloperView: View {
                 ForEach(model.blocks, id: \.height) { b in
                 VStack(alignment: .leading, spacing: 2) {
                     HStack {
-                        Text("#\(b.height)").font(.callout.bold().monospacedDigit())
+                        Text("#\(String(b.height))").font(.callout.bold().monospacedDigit())
                         Spacer()
                         Text("\(b.txs) tx").font(.caption).foregroundStyle(b.txs > 0 ? .primary : .secondary)
                     }

@@ -1,0 +1,65 @@
+# scripts/wallet-l10n.py lint: what may stay an English literal outside the String Catalog.
+#
+# file: — files whose sentences are written as ko/en pairs chosen by the app's
+# bundle localization (AppLanguage / Bundle.main.preferredLocalizations), each
+# pair covered by its pure test in both languages; or files that only hold
+# machine text.
+file: HealthCheck.swift         # banner sentences, ko/en pairs (Tests/health-check)
+file: HealthMonitor.swift       # banner buttons, ko/en pairs
+file: NodeWatchdog.swift        # failure sentences, ko/en pairs; node log patterns (Tests/watchdog)
+file: KeyExposureNotice.swift   # ko/en pairs (Tests/key-exposure)
+file: LegacyAether.swift        # ko/en pairs (Tests/legacy-aether)
+file: InstallLocation.swift     # ko/en pair (Tests/install-location)
+file: DiagnosticReport.swift    # a support report: key: value lines, title as a ko/en pair
+file: TxStatusText.swift        # ko/en pairs (Tests/tx-status-text)
+file: UnattendedDecision.swift  # ko/en pairs (Tests/unattended)
+file: DataMigration.swift       # sentences as ko/en pairs; the rest is the English technical log (Tests/rename-migration)
+file: EarningsExport.swift      # CSV file content: column names and comment lines stay English
+file: ResizeBenchmark.swift     # debug-only benchmark log
+file: Spinners.swift            # debug-only gallery
+#
+# text: — single literals that are data or match machine text, never shown as UI words.
+text: Test Dollar
+text: Doubloon Cash
+text: Test Nebula
+text: Test Orbit
+text: Test Comet
+text: Wrapped AETH
+text: Test AETH
+text: Server hosting
+text: API credits
+text: Coffee beans · order 1042
+text: Swap on the EastSea DEX
+text: unreadable simulator key
+text: method not found
+text: local node:
+text: timed out
+text: The send failed.
+text: the node refused the read
+text: the tab is gone
+text: not committed
+text: a new contract
+text: local devnet keys
+text: missing identity
+text: chain id
+text: Sent \(Wei.format(wei)) \(Brand.networkCoinTicker) (nonce \(prepared.nonce))
+text: Paid \(recipients.count) recipients \(Wei.format(wei)) \(Brand.networkCoinTicker) each with one signature (nonce \(prepared.nonce))
+#
+# From the node-status-storage and silent-install lanes: model files whose
+# sentences are ko/en pairs (copy(ko:), line(_:ko:), lines(ko:)) checked in
+# both languages by their pure tests; the screens pass the app's language.
+file: NodeStopReason.swift      # stop-reason copy (Tests/node-stop-reason)
+file: BlockDataLocation.swift   # storage location and archive copy (Tests)
+file: KeySafety.swift           # key-folder refusals (Tests)
+file: ProverMenuText.swift      # menu-bar prover lines (Tests)
+file: TxTrack.swift             # not-included note as a ko/en pair (Tests/tx-track)
+file: UpdateWindow.swift        # why an install waits: log reasons, never shown
+# Node and migration log lines (node-status.log, migration log), never on screen.
+text: no old data
+text: waiting for unlock (the wallet handle is protected while the Mac is locked)
+text: the node runs
+text: run.lock is held and the holder does not answer
+text: the node refused: node keys found in the block-data folder \(chainDataPath)
+text:  (died of the app's SIGUSR1 wake-up: an older node without the handler)
+text: moving block data from \(source.path) to \(target.path)
+text: Test Doubloon     # Brand.coinName on 7780 (English); Korean screens use networkCoinName (테스트 더블룬)

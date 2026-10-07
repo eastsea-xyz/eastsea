@@ -21,5 +21,6 @@ check("the callback never reports a drop as failed", TxTrack.callbackStatus(.not
 check("the callback reports a pending tx as pending", TxTrack.callbackStatus(.pending) == "pending")
 check("the callback's failed is a chain fact", TxTrack.callbackStatus(.failed) == "failed")
 check("only chain facts are final", TxTrack.isFinal(.done) && TxTrack.isFinal(.failed) && !TxTrack.isFinal(.notIncluded) && !TxTrack.isFinal(.pending))
-check("the words say not recorded yet", TxTrack.notIncludedNote == "처리되지 않았어요 (아직 체인에 기록되지 않음)")
+// In the bundle's language: a bare test binary is English.
+check("the words say not recorded yet", TxTrack.notIncludedNote == "Not processed (not on chain yet)")
 print("tx-track: all ok")

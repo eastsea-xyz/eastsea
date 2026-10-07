@@ -28,47 +28,52 @@ struct HistoryStorageSection: View {
     }
 
     var body: some View {
-        Section("역사 보관") {
-            Picker("보관 용량", selection: choice) {
+        Section("Network history") {
+            Picker("Keep up to", selection: choice) {
                 if !registered {
-                    Text("보관 안 함").tag("off")
+                    Text("Nothing").tag("off")
                 }
                 ForEach(StorageSetting.choicesGB, id: \.self) { gb in
-                    Text(gb == 50 ? "50 GB (기본)" : "\(gb) GB")
+                    Text(gb == 50 ? String(localized: "50 GB (default)") : "\(gb) GB")
                         .tag(String(gb))
                         .disabled(!StorageSetting.allows(gb: gb, freeBytes: freeBytes ?? 0,
                                                          heldBytes: Int(node.history?.bytes ?? 0)))
                 }
-                Text("남는 공간 사용" + (freeBytes.map(StorageSetting.freeSpaceReserve(freeBytes:)).map { " (\(gb($0)) 남김)" } ?? ""))
+                Text(freeBytes.map(StorageSetting.freeSpaceReserve(freeBytes:)).map { String(localized: "All free space (keeps \(gb($0)) free)") }
+                     ?? String(localized: "All free space"))
                     .tag("free")
             }
-            .help("Your Mac keeps a share of the network's past so anyone can check it. Keeping more, for longer, earns more once storage rewards are switched on.")
-            Text("이 Mac이 네트워크의 과거를 나눠 보관해서 누구나 검증할 수 있게 해요. 더 많이, 더 오래 보관할수록 보관 보상이 켜진 뒤 더 많이 받아요.")
+            Text("Your Mac keeps a share of the network's past so anyone can check it. Keeping more, for longer, earns more once storage rewards are switched on.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("보관 보상은 아직 켜져 있지 않아요. 나중에 있을 프로토콜 업그레이드(2단계)로 켜지며, 약속된 금액은 없어요.")
+            Text("Storage rewards are not on yet. A later network upgrade turns them on, and no amount is promised.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             if let freeBytes {
-                Text("데이터 볼륨 남은 공간: \(gb(freeBytes))")
+                Text("Free space on this disk: \(gb(freeBytes))")
                     .font(.caption).foregroundStyle(.secondary)
             }
             if refusedCurrent {
-                Label("이 크기는 남은 공간보다 커요. 20 GB은 남겨 두려고 해요 — 더 작은 크기를 골라 주세요.",
+                Label("This is more than the free space allows: 20 GB always stays free. Pick a smaller size.",
                       systemImage: "exclamationmark.triangle")
                     .font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            Text("바꾼 용량은 노드가 다음에 시작될 때 적용돼요. 보관하던 데이터는 사라지지 않고, 줄이면 배정을 넘는 만큼만 지워요.")
+            Text("A new size applies the next time the node starts. Nothing kept is lost; a smaller size deletes only what goes over it.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             if let kept = node.history {
                 if kept.shards == 0 {
-                    Text("아직 보관 중인 역사가 없어요")
+                    Text("No network history kept yet")
                         .font(.caption).foregroundStyle(.secondary)
                 } else {
-                    let rate = kept.passPercent.map { " · 최근 \(kept.windowDays)일 확인 통과 \($0)%" } ?? ""
-                    Text("지금 \(gb(Int(min(kept.bytes, UInt64(Int.max)))))의 역사를 보관 중\(rate)")
+                    let size = gb(Int(min(kept.bytes, UInt64(Int.max))))
+                    Text("Keeping \(size) of network history now")
                         .font(.caption).foregroundStyle(.secondary)
+                    if let pct = kept.passPercent {
+                        Text("\(pct)% of checks passed in the last \(kept.windowDays) days")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
             }
         }

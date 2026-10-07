@@ -241,7 +241,7 @@ final class NodeController: ObservableObject {
             do {
                 if newValue { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
             } catch {
-                state = .failed("Login item: \(error.localizedDescription)")
+                state = .failed(String(localized: "Could not change Open at Login: \(error.localizedDescription)"))
             }
             objectWillChange.send()
         }
@@ -275,6 +275,10 @@ final class NodeController: ObservableObject {
     }
 
     private func startIfAllowed() {
+        #if WALLET_SCREENS
+        // The screens renderer (scripts/wallet-screens.sh) never touches the real data.
+        return 
+        #endif
         powerTimer?.invalidate()
         powerTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.applyPower() }
@@ -507,6 +511,11 @@ final class NodeController: ObservableObject {
     private var poll: Timer?
 
     static var dataDir: URL {
+        #if WALLET_SCREENS
+        // The screens renderer: a folder that does not exist, so nothing it
+        // logs or reads ever lands in the real node folder.
+        return FileManager.default.temporaryDirectory.appendingPathComponent("wallet-screens-no-node", isDirectory: true)
+        #endif
         DataMigration.ensure()
         return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/EastSea/node", isDirectory: true)
     }
@@ -514,8 +523,7 @@ final class NodeController: ObservableObject {
     /// The note the Connected status appends while `networkCheckPending`:
     /// one phrase, ko/en, localized like `NodeWatchdog.Failure.sentence`.
     var pendingRouteNote: String {
-        let ko = Locale.preferredLanguages.first?.hasPrefix("ko") ?? false
-        return ko ? "· 이 Mac의 노드 사용 (네트워크 확인 대기)" : "· via this Mac's node; network check pending"
+        return String(localized: "· via this Mac's node; network check pending")
     }
 
     private var binary: URL? {
@@ -538,6 +546,22 @@ final class NodeController: ObservableObject {
     func loadPreview() {
         state = .running
         height = 184_210
+        #if WALLET_SCREENS
+        // The screens renderer lives in DerivedData, which is no place to run
+        // from; the sample is a Mac that runs EastSea from Applications.
+        wrongLocation = UserDefaults.standard.string(forKey: "previewWrongLocation") == "1"
+        if wrongLocation { state = .failed(InstallLocation.moveSentence) }
+        candidate = Candidate(validatorKey: "0xpreview", nodeId: "preview", beaconer: "0xpreview")
+        voting = VotingNodeStatus(registered: true, streak: 5, lastEpoch: 7_675, epoch: 7_676, voting: false, candidates: 3)
+        history = HistoryKept(bytes: 12_884_901_888, shards: 12, windowDays: 7, passPercent: 98)
+        if prove {
+            prover = ProverStatus(running: true, proving: 184_211, last_height: 184_209, last_txs: 3, last_seconds: 41.6,
+                                  proofs: 57, proofs_failing: false, acceptance_rate_percent: 100, program_unknown: false,
+                                  program_mismatch: false, network_program: nil, error: nil, paused: nil,
+                                  memory_bytes: 5_690_000_000, memory_cap: 6_442_450_944, lag: 2,
+                                  last_reward: "0x6f05b59d3b20000")
+        }
+        #endif
     }
     #endif
 
@@ -611,6 +635,10 @@ final class NodeController: ObservableObject {
 
     /// Resume the user's choice at launch.
     func restore() {
+        #if WALLET_SCREENS
+        // The screens renderer (scripts/wallet-screens.sh) never touches the real data.
+        return
+        #endif
         // The gate's timer runs whether or not the switch reads on at launch:
         // a switch that turns on behind our back (the old app's preferences
         // copied at the end of the data move — the founder's MacBook) is
@@ -628,6 +656,10 @@ final class NodeController: ObservableObject {
     }
 
     func start() {
+        #if WALLET_SCREENS
+        // The screens renderer (scripts/wallet-screens.sh) never touches the real data.
+        return 
+        #endif
         guard !wrongLocation else {
             // Red team #10: from a DMG/Downloads/read-only place the node's
             // data would point into a bundle that disappears. One sentence;
@@ -637,7 +669,7 @@ final class NodeController: ObservableObject {
         }
         guard process == nil else { return }
         guard let binary else {
-            state = .failed("This build does not include the node")
+            state = .failed(String(localized: "This build of the app does not include the node."))
             return
         }
         // Audit 5, A5-7: while the old Aether node data (identity, threshold
@@ -861,7 +893,7 @@ final class NodeController: ObservableObject {
             // Restart with backoff (docs/design/24-self-healing.md layer 2):
             // the wallet is on remote nodes already, so a few seconds cost
             // nothing but a crash loop.
-            state = .failed("The node stopped (exit \(status)); restarting it")
+            state = .failed(String(localized: "The node stopped. Restarting it…"))
             watchdog.restarting()
             restartTimer = Timer.scheduledTimer(withTimeInterval: max(after, 0.05), repeats: false) { [weak self] _ in
                 Task { @MainActor in
@@ -889,7 +921,7 @@ final class NodeController: ObservableObject {
                         guard self.enabled, self.process == nil else { return }
                         if NodeWatchdog.rollbackAllowed(prevProtocol: prevProtocol, chainScheduled: scheduled) {
                             self.usePreviousBinary = true
-                            self.state = .failed("업데이트 뒤 노드가 시작되지 않아 이전 버전으로 되돌렸습니다")
+                            self.state = .failed(String(localized: "The node did not start after the update, so the previous version is running again."))
                             self.watchdog.restarting()
                             self.start()
                         } else {
@@ -905,7 +937,7 @@ final class NodeController: ObservableObject {
                 state = .failed(NodeWatchdog.Failure.other.sentence)
             }
         case .none:
-            state = .failed("The node stopped (exit \(status)); see \(Self.dataDir.appendingPathComponent("node.log").path)")
+            state = .failed(String(localized: "The node stopped. Copy Diagnostics on Home shows why."))
         }
     }
 
@@ -925,7 +957,7 @@ final class NodeController: ObservableObject {
             // and the wallet still works; this says why it does not vote.
             if !identityNoticePosted {
                 identityNoticePosted = true
-                LocalNotice.post(title: "\(Brand.project)", body: NodeWatchdog.Failure.identityLost.sentence)
+                LocalNotice.post(title: Brand.name, body: NodeWatchdog.Failure.identityLost.sentence)
             }
             return
         }
@@ -1321,10 +1353,10 @@ extension NodeController {
 
     /// One line for Settings: what Aether does about sleep.
     var awakeNote: String {
-        if keepsAwake { return "This Mac signs blocks now: \(Brand.project) keeps it from sleeping (the display can still sleep)." }
+        if keepsAwake { return String(localized: "This Mac signs blocks now: \(Brand.name) keeps it from sleeping (the display can still sleep).") }
         return onlyOnPower
-            ? "While this Mac signs blocks on power, \(Brand.project) keeps it from sleeping."
-            : "While this Mac signs blocks, \(Brand.project) keeps it from sleeping, on battery too."
+            ? String(localized: "While this Mac signs blocks on power, \(Brand.name) keeps it from sleeping.")
+            : String(localized: "While this Mac signs blocks, \(Brand.name) keeps it from sleeping, on battery too.")
     }
 
     /// Take or release the no-idle-sleep assertion to match `keepsAwake`.
@@ -1341,11 +1373,11 @@ extension NodeController {
     func networkPaused(since: Date?) {
         if since != nil, isValidator, !pauseNotified {
             pauseNotified = true
-            LocalNotice.post(title: "The network is paused",
-                             body: "No block has been finalized for a minute. Keep this Mac awake and online: it is one of the Macs that sign blocks.")
+            LocalNotice.post(title: String(localized: "The network is paused"),
+                             body: String(localized: "No new block for a minute. Keep this Mac awake and online: it is one of the Macs that sign blocks."))
         } else if since == nil, pauseNotified {
             pauseNotified = false
-            LocalNotice.post(title: "The network is running again", body: "Blocks are being finalized again.")
+            LocalNotice.post(title: String(localized: "The network is running again"), body: String(localized: "New blocks are coming in again."))
         }
     }
 }

@@ -43,6 +43,15 @@ final class HealthMonitor: ObservableObject {
         self.clock = clock
     }
 
+    #if DEBUG
+    /// Design preview: the banner for `issue`, as the check would raise it.
+    func loadPreview(issue: HealthCheck.Issue) {
+        let c = HealthCheck()
+        alert = HealthCheck.Alert(issue: issue, sentence: c.sentence(issue), action: c.action(issue))
+        healthyBadgeAllowed = issue != .diskPaused
+    }
+    #endif
+
     /// Once per launch, beside the node and the update tracker.
     func start(node: NodeController, model: WalletModel, updateComing: @escaping @MainActor () -> Bool,
                updateUnhealthy: @escaping @MainActor () -> Bool, openUpdates: @escaping @MainActor () -> Void) {
@@ -141,7 +150,7 @@ final class HealthMonitor: ObservableObject {
     /// stop reason, else the disk pause.
     var pausedBadgeTitle: String {
         node?.stopReason.map { $0.copy(ko: HealthCheck.korean).title }
-            ?? (HealthCheck.korean ? "저장 공간 부족 · 노드 쉬는 중" : "Storage low · node resting")
+            ?? (String(localized: "Storage low · node resting"))
     }
 
     /// The stop reason's own button label (L10's banner shows it).
@@ -200,11 +209,11 @@ extension HealthCheck.Action {
     /// The banner button's words, in the app's language.
     func label(ko: Bool = HealthCheck.korean) -> String {
         switch self {
-        case .checkForUpdates: return ko ? "업데이트 확인" : "Check for Updates"
-        case .retryConnection: return ko ? "다시 시도" : "Try Again"
-        case .openStorage: return ko ? "저장 공간 관리 열기" : "Open Storage Settings"
-        case .copyDiagnostics: return ko ? "진단 정보 복사" : "Copy Diagnostics"
-        case .fixNode: return ko ? "해결하기" : "Fix"
+        case .checkForUpdates: return String(localized: "Check for Updates")
+        case .retryConnection: return String(localized: "Try Again")
+        case .openStorage: return String(localized: "Open Storage Settings")
+        case .copyDiagnostics: return String(localized: "Copy Diagnostics")
+        case .fixNode: return String(localized: "Fix")
         }
     }
 }
@@ -228,14 +237,13 @@ struct HealthBanner: View {
                                 .buttonStyle(.borderedProminent).tint(Color.warn)
                         }
                         if alert.action != .copyDiagnostics {
-                            Button(copied ? (HealthCheck.korean ? "복사했어요" : "Copied")
+                            Button(copied ? (String(localized: "Copied"))
                                           : HealthCheck.Action.copyDiagnostics.label()) {
                                 health.copyDiagnostics()
                                 copied = true
                             }
                             .buttonStyle(.borderless).font(.aeFootnote)
-                            .help(HealthCheck.korean ? "주소·잔액·노드 ID 없이, 이 Mac 밖으로 보내지 않고 클립보드에만 복사해요."
-                                  : "Copies to the clipboard only — no address, balance or node ID, nothing sent from this Mac.")
+                            .help("Copies to the clipboard only — no address, balance or node ID, nothing sent from this Mac.")
                         }
                     }
                 }

@@ -22,6 +22,16 @@ struct NodeWork: Equatable {
         /// Proving blocks on the GPU: the first valid proof of a block is paid.
         case proving
         case paused(String)
+
+        /// The live pill's word.
+        var pillText: String {
+            switch self {
+            case .proving: String(localized: "PROVING")
+            case .verifying: String(localized: "WORKING")
+            case .starting: String(localized: "STARTING")
+            case .paused: String(localized: "PAUSED")
+            }
+        }
     }
 
     var phase: Phase
@@ -49,7 +59,7 @@ struct RewardCelebration: Equatable {
 }
 
 enum EarningsText {
-    static let unit = "test \(Brand.networkCoinTicker)"
+    static var unit: String { String(localized: "test \(Brand.networkCoinTicker)") }
 
     static func aeth(_ wei: String) -> String { Wei.format(wei) }
 
@@ -57,7 +67,7 @@ enum EarningsText {
     static func ago(_ date: Date, now: Date) -> String {
         let f = RelativeDateTimeFormatter()
         f.unitsStyle = .abbreviated
-        return now.timeIntervalSince(date) < 45 ? "just now" : f.localizedString(for: date, relativeTo: now)
+        return now.timeIntervalSince(date) < 45 ? String(localized: "just now") : f.localizedString(for: date, relativeTo: now)
     }
 
     /// "3h 12m".
@@ -151,12 +161,7 @@ struct EarningsHero: View {
     }
 
     private var pillText: String {
-        switch work.phase {
-        case .proving: "PROVING"
-        case .verifying: "WORKING"
-        case .starting: "STARTING"
-        case .paused: "PAUSED"
-        }
+        work.phase.pillText
     }
 
     @ViewBuilder private var tiles: some View {
@@ -165,17 +170,18 @@ struct EarningsHero: View {
                 if summary.todayWei != "0" {
                     StatTile(label: "Today", value: "+\(EarningsText.aeth(summary.todayWei))", unit: EarningsText.unit)
                 }
-                StatTile(label: "Received", value: "\(summary.count)", unit: summary.count == 1 ? "reward" : "rewards")
+                StatTile(label: "Received", value: "\(summary.count)", unit: summary.count == 1 ? String(localized: "reward") : String(localized: "rewards"))
                 TimelineView(.periodic(from: .now, by: 30)) { tl in
-                    StatTile(label: "Last reward", value: summary.lastRewardAt.map { EarningsText.ago($0, now: tl.date) } ?? "none yet",
-                             unit: summary.latestHeight.map { "in block #\($0)" } ?? "keep proving")
+                    StatTile(label: "Last reward", value: summary.lastRewardAt.map { EarningsText.ago($0, now: tl.date) } ?? String(localized: "none yet"),
+                             unit: summary.latestHeight.map { String(localized: "in block #\(String($0))") } ?? String(localized: "keep proving"))
                 }
             } else {
                 TimelineView(.periodic(from: .now, by: 30)) { tl in
-                    StatTile(label: "Online", value: work.runningSince.map { EarningsText.duration(tl.date.timeIntervalSince($0)) } ?? "–", unit: "this session")
+                    StatTile(label: "Online", value: work.runningSince.map { EarningsText.duration(tl.date.timeIntervalSince($0)) } ?? "–", unit: String(localized: "this session"))
                 }
-                StatTile(label: work.votingNow ? "Voting" : "Streak", value: streakValue, unit: work.streakHours == nil ? "not registered" : "hours online")
-                StatTile(label: "Latest block", value: work.height > 0 ? "#\(work.height)" : "–", unit: "checked here")
+                StatTile(label: work.votingNow ? "Voting" : "Streak", value: streakValue,
+                         unit: work.streakHours == nil ? String(localized: "not registered") : String(localized: "hours online"))
+                StatTile(label: "Latest block", value: work.height > 0 ? "#\(String(work.height))" : "–", unit: String(localized: "checked here"))
             }
         }
         .fixedSize(horizontal: false, vertical: true)
@@ -183,7 +189,7 @@ struct EarningsHero: View {
 
     private var streakValue: String {
         guard let s = work.streakHours else { return "–" }
-        return work.votingNow ? "\(s) h" : "\(min(s, VotingRules.minStreakEpochs))/\(VotingRules.minStreakEpochs)"
+        return work.votingNow ? String(localized: "\(s) h") : "\(min(s, VotingRules.minStreakEpochs))/\(VotingRules.minStreakEpochs)"
     }
 
     @ViewBuilder private var footer: some View {
@@ -206,7 +212,7 @@ struct EarningsHero: View {
 
     /// " · 57 proofs this session" (nothing before the first one).
     private var proofsText: String {
-        work.proofs == 0 ? "" : " · \(work.proofs) \(work.proofs == 1 ? "proof" : "proofs") this session"
+        work.proofs == 0 ? "" : " · " + String(localized: "\(work.proofs) proofs this session")
     }
 
     private var footerIcon: String {
@@ -221,13 +227,13 @@ struct EarningsHero: View {
     private var footerText: String {
         switch work.phase {
         case .proving where summary.count > 0:
-            "This Mac's GPU is proving blocks\(proofsText). Every amount here was paid on chain."
+            String(localized: "This Mac's GPU is proving blocks\(proofsText). Every amount here was paid on chain.")
         case .proving:
-            "This Mac's GPU is proving blocks\(proofsText). The first valid proof of a block gets a reward."
+            String(localized: "This Mac's GPU is proving blocks\(proofsText). The first valid proof of a block gets a reward.")
         case .verifying:
-            "Your Mac checks every block itself. Checking alone earns no reward."
+            String(localized: "Your Mac checks every block itself. Checking alone earns no reward.")
         case .starting:
-            work.height > 0 ? "Catching up with the network · block #\(work.height)" : "Starting the node…"
+            work.height > 0 ? String(localized: "Catching up with the network · block #\(String(work.height))") : String(localized: "Starting the node…")
         case .paused(let why):
             why
         }
@@ -261,7 +267,7 @@ private struct VerifiedBlock: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Blocks verified this session").font(.aeFootnote.weight(.semibold)).foregroundStyle(.white.opacity(0.85))
-            BigNumber(value: Double(work.blocksVerified), decimals: 0, unit: work.blocksVerified == 1 ? "block" : "blocks", glow: EarnInk.sky)
+            BigNumber(value: Double(work.blocksVerified), decimals: 0, unit: work.blocksVerified == 1 ? String(localized: "block") : String(localized: "blocks"), glow: EarnInk.sky)
         }
     }
 }
@@ -327,7 +333,7 @@ private struct HourDelta: View {
         let some = wei != "0"
         HStack(spacing: 6) {
             Image(systemName: some ? "plus.circle.fill" : "clock")
-            Text(some ? "+\(EarningsText.aeth(wei)) \(EarningsText.unit) in the last hour" : "Nothing in the last hour")
+            Text(some ? String(localized: "+\(EarningsText.aeth(wei)) \(EarningsText.unit) in the last hour") : String(localized: "Nothing in the last hour"))
         }
         .font(.aeBody.weight(.bold))
         .foregroundStyle(some ? EarnInk.night : .white.opacity(0.9))
@@ -338,7 +344,7 @@ private struct HourDelta: View {
 
 /// A frosted tile on the aurora.
 private struct StatTile: View {
-    let label: String
+    let label: LocalizedStringKey
     let value: String
     let unit: String?
     @Environment(\.narrowLayout) private var narrow
@@ -388,7 +394,8 @@ struct LivePill: View {
                     SpringKeyframe(1.0, duration: 0.3)
                 }
             }
-            Text(text).font(.aeCaption.weight(.heavy)).tracking(1.5)
+            // Letter-spacing suits capitals, not Hangul.
+            Text(text).font(.aeCaption.weight(.heavy)).tracking(AppLanguage.korean ? 0 : 1.5)
         }
         .padding(.horizontal, 12).padding(.vertical, 6)
         .background(.black.opacity(0.25), in: Capsule())
@@ -680,7 +687,7 @@ struct EarningsBadge: View {
                         SpringKeyframe(1.0, duration: 0.3)
                     }
                 }
-            Text(line).lineLimit(1).minimumScaleFactor(0.75)
+            Text(line).lineLimit(1).minimumScaleFactor(0.6)
         }
         .font(.aeCaption.weight(.bold))
         .foregroundStyle(.white)
@@ -695,9 +702,9 @@ struct EarningsBadge: View {
     private var line: String {
         switch work.phase {
         case .proving: ProvingBadgeText.line(proofsFailing: work.proofsFailing, today: EarningsText.aeth(summary.todayWei))
-        case .verifying: "Working · \(work.blocksVerified) blocks"
-        case .starting: "Starting…"
-        case .paused: "Paused"
+        case .verifying: String(localized: "Working · \(work.blocksVerified) blocks")
+        case .starting: String(localized: "Starting…")
+        case .paused: String(localized: "Paused")
         }
     }
 }
@@ -773,9 +780,7 @@ final class Earnings: ObservableObject {
         if node.prover?.paused == "program" {
             // Plain words (prover-070-mismatch.md C): no program ids, no
             // "validator proof program" — those stay in developer mode.
-            w.phase = .paused(HealthCheck.korean
-                ? "이 Mac은 지금 블록 증명을 쉬고 있어요. 네트워크가 이 버전의 증명을 아직 확인하지 못해서예요. 잃는 건 없어요."
-                : "This Mac is resting from proving blocks for now: the network cannot check this version's proofs yet. Nothing is lost.")
+            w.phase = .paused(String(localized: "This Mac is resting from proving blocks for now: the network cannot check this version's proofs yet. Nothing is lost."))
         }
         w.height = node.height
         w.blocksVerified = firstHeight.map { node.height > $0 ? node.height - $0 : 0 } ?? 0
@@ -802,11 +807,11 @@ final class Earnings: ObservableObject {
             return .paused(reason.copy(ko: HealthCheck.korean).paragraph)
         }
         switch node.state {
-        case .running: node.prove ? .proving : .verifying
-        case .starting: .starting
-        case .waitingForPower: .paused("Paused on battery. It resumes on the power adapter.")
-        case .off: .paused("The node is off.")
-        case .failed(let why): .paused(why)
+        case .running: return node.prove ? .proving : .verifying
+        case .starting: return .starting
+        case .waitingForPower: return .paused(String(localized: "Paused on battery. It resumes on the power adapter."))
+        case .off: return .paused(String(localized: "The node is off."))
+        case .failed(let why): return .paused(why)
         }
     }
 
@@ -969,7 +974,9 @@ struct RewardStandingCard: View {
                             .font(.aeBody).foregroundStyle(.secondary)
                     }
                     if let share = s.expectedShareWei, share != "0" {
-                        Text("Last hour: +\(EarningsText.aeth(share)) \(EarningsText.unit)\(s.capped ? " · capped at 1/\(s.maxShare)" : "")")
+                        Text(s.capped
+                             ? String(localized: "Last hour: +\(EarningsText.aeth(share)) \(EarningsText.unit) · capped at 1/\(s.maxShare)")
+                             : String(localized: "Last hour: +\(EarningsText.aeth(share)) \(EarningsText.unit)"))
                             .font(.aeBody).foregroundStyle(.secondary)
                     }
                 }
@@ -1019,12 +1026,7 @@ private struct HomeEarningsCard: View {
     @State private var visible = true
 
     private var pillText: String {
-        switch work.phase {
-        case .proving: "PROVING"
-        case .verifying: "WORKING"
-        case .starting: "STARTING"
-        case .paused: "PAUSED"
-        }
+        work.phase.pillText
     }
 
     var body: some View {
@@ -1078,9 +1080,9 @@ private struct HomeEarningsCard: View {
     /// "+12 today · 24 rewards · last one 3m ago" — what the number is made of.
     private var facts: String {
         var parts: [String] = []
-        if summary.todayWei != "0" { parts.append("+\(EarningsText.aeth(summary.todayWei)) today") }
-        parts.append("\(summary.count) \(summary.count == 1 ? "reward" : "rewards")")
-        if let at = summary.lastRewardAt { parts.append("last one \(EarningsText.ago(at, now: Date()))") }
+        if summary.todayWei != "0" { parts.append(String(localized: "+\(EarningsText.aeth(summary.todayWei)) today")) }
+        parts.append(String(localized: "\(summary.count) rewards"))
+        if let at = summary.lastRewardAt { parts.append(String(localized: "last one \(EarningsText.ago(at, now: Date()))")) }
         return parts.joined(separator: " · ")
     }
 }
@@ -1136,9 +1138,9 @@ struct NodeStatusLine: View {
 
     private var text: String {
         switch work.phase {
-        case .verifying: "This Mac is verifying blocks"
-        case .proving: "This Mac is proving blocks · no reward yet"
-        case .starting: work.height > 0 ? "Node catching up · block #\(work.height)" : "Node starting…"
+        case .verifying: String(localized: "This Mac is verifying blocks")
+        case .proving: String(localized: "This Mac is proving blocks · no reward yet")
+        case .starting: work.height > 0 ? String(localized: "Node catching up · block #\(String(work.height))") : String(localized: "Node starting…")
         case .paused(let why): why
         }
     }

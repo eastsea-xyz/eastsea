@@ -24,14 +24,14 @@ enum VotingRules {
     /// README.md "Planned mainnet rules" quotes this word for word.
     static var mainnetRewardsRule: String {
         let timing = Terms.isTestnet
-            ? "Planned for the future mainnet, which is not live: the rules may change before launch, and after it only by a committee-signed upgrade. "
-            : "These rules run from mainnet genesis and can change only by a committee-signed upgrade. "
-        let testnet = Terms.isTestnet ? "Testnet \(Brand.networkCoinTicker) does not carry over. " : ""
-        return timing + "No token sale, no premine and no founder allocation; the founder's Macs follow the same rules as everyone's. Half of each block's reward goes to registered Macs that stay online, shared every hour, and half to registered Macs that prove blocks. One operator gets at most 1/\(mainnetIssuanceOperators) of each half, and the rest is never issued; once \(mainnetIssuanceOperators) operators are online, all of it is shared. The reward starts at 1 \(Brand.networkCoinTicker) a block and shrinks 15% a year, down to a floor of 0.1 \(Brand.networkCoinTicker) a block. " + testnet + "Nothing here promises a price, a return or a way to cash out."
+            ? String(localized: "Planned for the future mainnet, which is not live: the rules may change before launch, and after it only by a committee-signed upgrade.")
+            : String(localized: "These rules run from mainnet genesis and can change only by a committee-signed upgrade.")
+        let testnet = Terms.isTestnet ? String(localized: "Testnet \(Brand.networkCoinTicker) does not carry over.") + " " : ""
+        return timing + " " + String(localized: "No token sale, no premine and no founder allocation; the founder's Macs follow the same rules as everyone's. Half of each block's reward goes to registered Macs that stay online, shared every hour, and half to registered Macs that prove blocks. One operator gets at most 1/\(mainnetIssuanceOperators) of each half, and the rest is never issued; once \(mainnetIssuanceOperators) operators are online, all of it is shared. The reward starts at 1 \(Brand.networkCoinTicker) a block and shrinks 15% a year, down to a floor of 0.1 \(Brand.networkCoinTicker) a block.") + " " + testnet + String(localized: "Nothing here promises a price, a return or a way to cash out.")
     }
     /// The founder's one exception (docs/design/12-launch-plan.md "창업자 Mac 안전망").
     /// README.md "Planned mainnet rules" quotes this word for word.
-    static let founderReserveRule = "The founder's only special permission: one Mac may run up to 3 reserve validator keys, and only while the network needs them. Hours they serve count as the founder's participation, under the same 1/16 cap as everyone; they add no extra share."
+    static var founderReserveRule: String { String(localized: "The founder's only special permission: one Mac may run up to 3 reserve validator keys, and only while the network needs them. Hours they serve count as the founder's participation, under the same 1/16 cap as everyone; they add no extra share.") }
 }
 
 private struct Bullet: View {
@@ -47,7 +47,7 @@ private struct Bullet: View {
     }
 }
 
-/// First launch: what Aether is, and that using it is the user's own risk.
+/// First launch: what EastSea is, and that using it is the user's own risk.
 struct TermsSheet: View {
     let accept: () -> Void
     @AppStorage("useDevelopmentNetwork") private var useDevelopmentNetwork = false
@@ -60,15 +60,15 @@ struct TermsSheet: View {
                         .font(.caption.bold()).foregroundStyle(.orange)
                 }
                 Image(systemName: "exclamationmark.shield.fill").font(.system(size: 34)).foregroundStyle(Color.warn)
-                Text("Before you use \(Brand.project)").font(.title2.bold())
+                Text("Before you use \(Brand.name)").font(.title2.bold())
                 Bullet(icon: "hammer", text: Terms.isTestnet
-                       ? "\(Brand.project) is built for production. Mainnet has not launched yet; the network running today is the public testnet, and its \(Brand.networkCoinTicker) does not carry over. It is provided as is, without warranty, and has not had an independent security audit yet."
-                       : "\(Brand.project) is on mainnet. It is provided as is, without warranty, and has not had an independent security audit yet.")
-                Bullet(icon: "chart.line.uptrend.xyaxis", text: "There is no token sale. The value of \(Brand.networkCoinTicker) is set by the market; nothing here promises a price, a return, a listing or a way to cash out.")
-                Bullet(icon: "person.fill.checkmark", text: "You use \(Brand.project), and run its node, at your own risk and responsibility, including power and hardware costs, taxes, and following the laws where you live.")
+                       ? String(localized: "\(Brand.name) is built for production. Mainnet has not launched yet; the network running today is the public testnet, and its \(Brand.networkCoinTicker) does not carry over. It is provided as is, without warranty, and has not had an independent security audit yet.")
+                       : String(localized: "\(Brand.name) is on mainnet. It is provided as is, without warranty, and has not had an independent security audit yet."))
+                Bullet(icon: "chart.line.uptrend.xyaxis", text: String(localized: "There is no token sale. The value of \(Brand.networkCoinTicker) is set by the market; nothing here promises a price, a return, a listing or a way to cash out."))
+                Bullet(icon: "person.fill.checkmark", text: String(localized: "You use \(Brand.name), and run its node, at your own risk and responsibility, including power and hardware costs, taxes, and following the laws where you live."))
                 Bullet(icon: "person.3.fill", text: VotingRules.mainnetRewardsRule)
-                Bullet(icon: "network", text: "Running \(Brand.project) shows your IP address to other nodes and the public DHT. Joining as a voting node sends an Apple DeviceCheck token to the registration service, currently run by Pipln, which checks it with Apple. Addresses and transactions are public on chain.")
-                Bullet(icon: "key.fill", text: "Your key stays on this device. If you lose the device and have not set up a recovery key, nobody can restore the account.")
+                Bullet(icon: "network", text: String(localized: "Running \(Brand.name) shows your IP address to other nodes and the public DHT. Joining as a voting node sends an Apple DeviceCheck token to the registration service, currently run by Pipln, which checks it with Apple. Addresses and transactions are public on chain."))
+                Bullet(icon: "key.fill", text: String(localized: "Your key stays on this device. If you lose the device and have not set up a recovery key, nobody can restore the account."))
                 Link("Read the full terms and disclaimer", destination: Terms.disclaimerURL).font(.callout)
                 HStack {
                     #if os(macOS)
@@ -96,11 +96,11 @@ struct VotingNodeInvite: View {
         VStack(alignment: .leading, spacing: 14) {
             Image(systemName: "person.badge.plus").font(.system(size: 30)).foregroundStyle(Color.aether)
             Text("Join the network as a voting node?").font(.title3.bold())
-            Bullet(icon: "clock", text: "Your Mac proves it is online every hour. After \(VotingRules.minStreakEpochs) hours in a row it can be drawn to sign blocks.")
-            Bullet(icon: "bolt", text: "Keep \(Brand.project) running. A signing Mac that goes offline hands its seat to the next one. It uses some network, CPU and power.")
-            Bullet(icon: "iphone.and.arrow.forward", text: "Registration sends an Apple DeviceCheck token to the registration service, currently run by Pipln, which checks with Apple that this is a real Mac: one Mac, one voting node. Touch ID signs it.")
+            Bullet(icon: "clock", text: String(localized: "Your Mac proves it is online every hour. After \(VotingRules.minStreakEpochs) hours in a row it can be drawn to sign blocks."))
+            Bullet(icon: "bolt", text: String(localized: "Keep \(Brand.name) running. A signing Mac that goes offline hands its seat to the next one. It uses some network, CPU and power."))
+            Bullet(icon: "iphone.and.arrow.forward", text: String(localized: "Registration sends an Apple DeviceCheck token to the registration service, currently run by Pipln, which checks with Apple that this is a real Mac: one Mac, one voting node. Touch ID signs it."))
             Bullet(icon: "person.3.fill", text: VotingRules.mainnetRewardsRule)
-            Bullet(icon: "person.fill.checkmark", text: "Running a voting node is your choice and your responsibility. You can turn the node off anytime.")
+            Bullet(icon: "person.fill.checkmark", text: String(localized: "Running a voting node is your choice and your responsibility. You can turn the node off anytime."))
             HStack {
                 Button("Not now", action: later)
                 Spacer()

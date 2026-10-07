@@ -19,43 +19,43 @@ struct ResourcesSection: View {
     }
 
     var body: some View {
-        Section("리소스") {
-            Toggle("증명(Prover) 사용", isOn: Binding(get: { node.prove }, set: {
+        Section("Resources") {
+            Toggle("Prove blocks on this Mac", isOn: Binding(get: { node.prove }, set: {
                 if $0 { node.proveAddress = model.address }
                 node.prove = $0
             }))
             .disabled(model.address.isEmpty)
             .help("Your node proves recent blocks with Metal. The first valid proof of a block gets a test \(Brand.networkCoinTicker) reward in this wallet.")
             if developerMode {
-                Picker("최대 메모리", selection: $node.proverMemory) {
-                    Text("자동 (RAM의 25%)").tag("auto")
+                Picker("Memory limit", selection: $node.proverMemory) {
+                    Text("Automatic (25% of memory)").tag("auto")
                     Text("4 GB").tag("4")
                     Text("8 GB").tag("8")
                     Text("16 GB").tag("16")
-                    Text("끄기").tag("off")
+                    Text("Off").tag("off")
                 }
-                .help("The prover is stopped past this memory and restarted after a pause that doubles each time (a minute to half an hour). 끄기 stops proving entirely.")
-                Picker("최대 CPU", selection: $node.proverCores) {
-                    Text("절반").tag("half")
-                    Text("전부").tag("all")
+                .help("Proving stops when it uses more memory than this and starts again after a pause that doubles each time (a minute up to half an hour). Off stops proving entirely.")
+                Picker("CPU limit", selection: $node.proverCores) {
+                    Text("Half").tag("half")
+                    Text("All").tag("all")
                 }
                 .help("Proving also runs at a lower scheduler priority, so the node and this Mac's work come first.")
-                Toggle("배터리에서 증명 허용", isOn: $node.proverOnBattery)
+                Toggle("Prove on battery", isOn: $node.proverOnBattery)
                     .help("Off: proving pauses on battery and resumes five minutes after the power adapter returns.")
             } else {
                 Text("Proving uses at most a quarter of this Mac's memory and half its cores; it stops itself there. Developer mode (⇧⌘D) adds the budgets.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             if let p = node.prover, p.running {
-                Text("현재 메모리 \(gbytes(p.memory_bytes)) / \(gbytes(p.memory_cap))")
+                Text("Memory now: \(gbytes(p.memory_bytes)) of \(gbytes(p.memory_cap))")
                     .font(.caption).foregroundStyle(.secondary)
             }
             if node.prover?.paused == "memory" {
-                Label("메모리 부족으로 일시 정지", systemImage: "exclamationmark.triangle")
+                Label("Paused: not enough memory", systemImage: "exclamationmark.triangle")
                     .font(.caption).foregroundStyle(.secondary)
             }
             if node.diskLow {
-                Label("디스크 공간 부족", systemImage: "externaldrive.badge.exclamationmark")
+                Label("Disk space low", systemImage: "externaldrive.badge.exclamationmark")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }

@@ -80,18 +80,30 @@ check(UnattendedDecision.fileVault(from: "") == nil, "anything else reads as unk
 // cannot keep. FileVault on — the unlock screen waits; FileVault off with
 // autorestart — nothing to do; FileVault off without — where to turn it on;
 // unreadable — say so instead of guessing.
-let ko = Locale.preferredLanguages.first?.hasPrefix("ko") ?? false
-let fv = UnattendedDecision.powerLines(UnattendedDecision.PowerFacts(fileVault: true, autorestart: true))
-check(fv.count == 1 && fv[0].contains("FileVault"), "FileVault on says so in one sentence")
-check(UnattendedDecision.powerLines(UnattendedDecision.PowerFacts(fileVault: true, autorestart: false)) == fv,
-      "FileVault on decides the sentence regardless of autorestart")
-let bothOff = UnattendedDecision.powerLines(UnattendedDecision.PowerFacts(fileVault: false, autorestart: false))
-check(bothOff.count == 2 && bothOff[0].contains(ko ? "시스템 설정" : "System Settings"),
-      "autorestart off says where to turn it on")
-check(bothOff[1].contains(ko ? "직접" : "by hand"), "and what to do until then")
-check(UnattendedDecision.powerLines(UnattendedDecision.PowerFacts(fileVault: false, autorestart: nil)).count == 2,
-      "an unreadable autorestart is treated as off, never guessed as on")
-check(UnattendedDecision.powerLines(UnattendedDecision.PowerFacts(fileVault: false, autorestart: true)).count == 1,
-      "FileVault off with autorestart on is the one nothing-to-do row")
-check(UnattendedDecision.powerLines(UnattendedDecision.PowerFacts(fileVault: nil, autorestart: true)).count == 1,
-      "unreadable power facts say just that")
+// Both languages, explicitly: the app picks one from its bundle localization
+// (never from the Mac's language list), and each must stand on its own.
+for ko in [false, true] {
+    let fv = UnattendedDecision.powerLines(UnattendedDecision.PowerFacts(fileVault: true, autorestart: true), ko: ko)
+    check(fv.count == 1 && fv[0].contains("FileVault"), "FileVault on says so in one sentence (ko: \(ko))")
+    check(UnattendedDecision.powerLines(UnattendedDecision.PowerFacts(fileVault: true, autorestart: false), ko: ko) == fv,
+          "FileVault on decides the sentence regardless of autorestart (ko: \(ko))")
+    let bothOff = UnattendedDecision.powerLines(UnattendedDecision.PowerFacts(fileVault: false, autorestart: false), ko: ko)
+    check(bothOff.count == 2 && bothOff[0].contains(ko ? "시스템 설정" : "System Settings"),
+          "autorestart off says where to turn it on (ko: \(ko))")
+    check(bothOff[1].contains(ko ? "직접" : "by hand"), "and what to do until then (ko: \(ko))")
+    // One language per line: no Hangul in English, and Korean lines are Korean.
+    let hangul = { (s: String) in s.unicodeScalars.contains { (0xAC00...0xD7A3).contains($0.value) } }
+    for line in fv + bothOff { check(hangul(line) == ko, "each line is in the asked language only (ko: \(ko)): \(line)") }
+    check(UnattendedDecision.powerLines(UnattendedDecision.PowerFacts(fileVault: false, autorestart: nil), ko: ko).count == 2,
+          "an unreadable autorestart is treated as off, never guessed as on")
+    check(UnattendedDecision.powerLines(UnattendedDecision.PowerFacts(fileVault: false, autorestart: true), ko: ko).count == 1,
+          "FileVault off with autorestart on is the one nothing-to-do row")
+    check(UnattendedDecision.powerLines(UnattendedDecision.PowerFacts(fileVault: nil, autorestart: true), ko: ko).count == 1,
+          "unreadable power facts say just that")
+}
+// The default follows the bundle's localization: a bare test binary has none
+// but its development language, so it reads English whatever this Mac prefers.
+check(UnattendedDecision.powerLines(UnattendedDecision.PowerFacts(fileVault: false, autorestart: false))
+      == UnattendedDecision.powerLines(UnattendedDecision.PowerFacts(fileVault: false, autorestart: false),
+                                       ko: Bundle.main.preferredLocalizations.first?.hasPrefix("ko") ?? false),
+      "the default language is the bundle's, not Locale.preferredLanguages")

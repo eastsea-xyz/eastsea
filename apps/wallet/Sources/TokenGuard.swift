@@ -35,6 +35,8 @@ enum KnownTokens {
     /// denomination table is complete). The app always shows the native amount
     /// at 18 decimals, independent of any node answer.
     static let native: [UInt64: KnownToken] = [
+        // The native coin has no on-chain symbol: its record is the label
+        // every screen shows (Brand), as in the extension's list.
         7780: KnownToken(symbol: Brand.coinTicker(chainId: 7780), name: Brand.coinName(chainId: 7780), decimals: 18),
     ]
 
@@ -51,6 +53,15 @@ enum KnownTokens {
             "0xc91367bac92c6de822de8afd0f34ff19fd8f7670": KnownToken(symbol: "CMT", name: "Test Comet", decimals: 18),
         ],
     ]
+
+    /// What a person reads for a token whose on-chain name still carries the
+    /// retired AETH label (WAETH's contract says "Wrapped AETH"). The
+    /// contract's symbol and name stay what they are — the denomination
+    /// checks compare against them; only the display changes.
+    static func displayName(chainId: UInt64, address: String, name: String) -> String {
+        chainId == 7780 && address.lowercased() == "0xa2521982a17474cb2f8741c85de653b5282d72b0"
+            ? String(localized: "Wrapped test DBLN") : name
+    }
 
     /// The shipped entry for `address` on `chainId`, or nil (address matched
     /// case-insensitively; lookups never throw).
@@ -111,15 +122,15 @@ enum TokenGuardError: Error, Equatable {
 extension TokenGuardError: LocalizedError {
     var errorDescription: String? {
         switch self {
-        case .tokenNotAddress: return "the token is not an address"
-        case .recipientNotAddress: return "the recipient is not an address"
-        case .unusableDecimals: return "the token’s decimals are not usable"
-        case .unusableAmount: return "the amount is not a plain number like 1.5"
-        case .unusableBaseUnits: return "The confirmed amount is not a usable number of base units."
-        case .staleIntent: return "This token’s details changed since the send was confirmed. Close this and confirm the send again."
-        case .listDecimals: return "This token’s units come from the list shipped with the wallet; confirm the send again."
-        case .needsAcknowledgement: return "This token is not on the wallet’s trusted list, so sending it needs your confirmation of the exact number of units."
-        case .unconfirmed: return "This token’s details are not confirmed yet. Open Assets and let the wallet confirm them first."
+        case .tokenNotAddress: return String(localized: "the token is not an address")
+        case .recipientNotAddress: return String(localized: "the recipient is not an address")
+        case .unusableDecimals: return String(localized: "the token’s decimals are not usable")
+        case .unusableAmount: return String(localized: "the amount is not a plain number like 1.5")
+        case .unusableBaseUnits: return String(localized: "The confirmed amount is not a usable number of base units.")
+        case .staleIntent: return String(localized: "This token’s details changed since the send was confirmed. Close this and confirm the send again.")
+        case .listDecimals: return String(localized: "This token’s units come from the list shipped with the wallet; confirm the send again.")
+        case .needsAcknowledgement: return String(localized: "This token is not on the wallet’s trusted list, so sending it needs your confirmation of the exact number of units.")
+        case .unconfirmed: return String(localized: "This token’s details are not confirmed yet. Open Assets and let the wallet confirm them first.")
         }
     }
 }

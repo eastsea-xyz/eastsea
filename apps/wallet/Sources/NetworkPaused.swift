@@ -2,13 +2,13 @@ import SwiftUI
 
 /// Said the same way wherever the verification state shows (Home, menu bar).
 enum NetworkPausedText {
-    static let help = "The network has not made a new block for a while, so there is nothing new to verify. The balance shown is the last one this device verified; a pause by itself does not move funds. It updates by itself when blocks resume."
+    static var help: String { String(localized: "The network has not made a new block for a while, so there is nothing new to verify. The balance shown is the last one this device verified; a pause by itself does not move funds. It updates by itself when blocks resume.") }
 
     /// "Network paused · last block 3 min ago".
     static func line(since: Date, now: Date) -> String {
         let minutes = max(1, Int(now.timeIntervalSince(since) / 60))
-        let ago = minutes < 120 ? "\(minutes) min ago" : "\(minutes / 60) h ago"
-        return "Network paused · last block \(ago)"
+        let ago = minutes < 120 ? String(localized: "\(minutes) min ago") : String(localized: "\(minutes / 60) h ago")
+        return String(localized: "Network paused · last block \(ago)")
     }
 }
 

@@ -1,6 +1,10 @@
 name: AetherWallet
 options:
   bundleIdPrefix: com.pipln.eastsea
+  # English is the source language; Korean is a full localization
+  # (Resources/Localizable.xcstrings). The app shows one of the two per Mac,
+  # by its bundle localization (AppLanguage), never a mix.
+  developmentLanguage: en
   deploymentTarget:
     macOS: "14.0"
     iOS: "17.0"
@@ -34,6 +38,11 @@ targets:
         SWIFT_VERSION: "5.0"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: EastSea
+        # Localization: every SwiftUI literal and String(localized:) goes to
+        # Resources/Localizable.xcstrings (en + ko); scripts/check-wallet-l10n.sh
+        # fails the build when a user-visible string has no Korean.
+        SWIFT_EMIT_LOC_STRINGS: YES
+        LOCALIZATION_PREFERS_STRING_CATALOGS: YES
         MARKETING_VERSION: 0.7.1
         # Build numbers never repeat across the product line: Aether 0.6.6 shipped
         # build 11 and the Aether 0.6.7 bridge (apps/bridge) ships build 12.
@@ -54,6 +63,13 @@ targets:
         # Swift records the source and object paths it was given.
         OTHER_SWIFT_FLAGS: -file-prefix-map $(SRCROOT)=/aether-node -debug-prefix-map $(SRCROOT)=/aether-node
         ARCHS: arm64
+    postCompileScripts:
+      - name: Check Korean translations
+        basedOnDependencyAnalysis: false
+        script: |
+          # Every string the compiler extracted from this target's sources must
+          # be in Resources/Localizable.xcstrings with a Korean translation.
+          "$SRCROOT/../../scripts/check-wallet-l10n.sh" --stringsdata "$OBJECT_FILE_DIR_normal/$NATIVE_ARCH_ACTUAL"
     postBuildScripts:
       - name: Embed node and agent
         basedOnDependencyAnalysis: false
@@ -125,6 +141,11 @@ targets:
         SWIFT_VERSION: "5.0"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: EastSea
+        # Localization: every SwiftUI literal and String(localized:) goes to
+        # Resources/Localizable.xcstrings (en + ko); scripts/check-wallet-l10n.sh
+        # fails the build when a user-visible string has no Korean.
+        SWIFT_EMIT_LOC_STRINGS: YES
+        LOCALIZATION_PREFERS_STRING_CATALOGS: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         # The eastsea:// (and legacy aether://) URL scheme, merged into the generated Info.plist.
         INFOPLIST_FILE: Info-ios.plist
@@ -150,3 +171,41 @@ targets:
           mkdir -p "$DEST"
           rsync -a --delete --exclude test/ --exclude package.json --exclude README.md \
             "$SRCROOT/../../apps/explorer/" "$DEST/"
+  # The product QA renderer (scripts/wallet-screens.sh): every screen and sheet
+  # to PNG with the design-preview sample data. Its own app and bundle id; built
+  # with WALLET_SCREENS, which compiles out the data move, the node start and
+  # the keychain. Never shipped.
+  WalletScreens:
+    type: application
+    platform: macOS
+    dependencies:
+      - package: Sparkle
+    sources:
+      - path: Sources
+        excludes: ["**/.omc/**", ".omc/**", "AetherWalletApp.swift"]
+      - path: Resources
+        buildPhase: resources
+      - Assets.xcassets
+      - path: Generated/aether_ffi.swift
+      - path: Screens
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.pipln.eastsea.screens
+        PRODUCT_NAME: WalletScreens
+        MARKETING_VERSION: 0.7.0
+        CURRENT_PROJECT_VERSION: 13
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_LSUIElement: YES
+        SWIFT_EMIT_LOC_STRINGS: YES
+        LOCALIZATION_PREFERS_STRING_CATALOGS: YES
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        DEVELOPMENT_TEAM: ""
+        PROVISIONING_PROFILE_SPECIFIER: ""
+        ENABLE_HARDENED_RUNTIME: NO
+        SWIFT_VERSION: "5.0"
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG WALLET_SCREENS
+        SWIFT_INCLUDE_PATHS: $(SRCROOT)/Generated
+        HEADER_SEARCH_PATHS: $(SRCROOT)/Generated
+        OTHER_LDFLAGS: $(SRCROOT)/../../target/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework OpenDirectory -framework IOKit
+        ARCHS: arm64

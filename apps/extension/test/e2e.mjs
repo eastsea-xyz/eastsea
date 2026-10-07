@@ -44,12 +44,12 @@ try {
   await popup.getByRole('checkbox', { name: 'Developer mode' }).check();
   await popup.getByRole('button', { name: 'Save' }).click();
   await popup.locator('details').filter({ hasText: 'Developer mode' }).locator('summary').click();
-  await popup.getByRole('button', { name: /Get test AETH/ }).click();
+  await popup.getByRole('button', { name: /Get test DBLN/ }).click();
   await popup.locator('.msg').first().waitFor({ timeout: 20000 });
   console.log('faucet msg:', await popup.locator('.msg').first().innerText());
   await popup.waitForTimeout(3500);
   await popup.reload();
-  await popup.getByText(/10 AETH/).waitFor({ timeout: 20000 });
+  await popup.getByText(/10 DBLN/).waitFor({ timeout: 20000 });
   await popup.screenshot({ path: SHOTS + '2-home.png' });
 
   const page = await ctx.newPage();
@@ -82,11 +82,11 @@ try {
   if (rej !== 4001) fail('reject should be 4001, got ' + rej);
   console.log('rejected ->', rej);
 
-  // A contract call with value: WAETH.deposit(0.25 AETH).
+  // A contract call with value: WAETH.deposit(0.25 DBLN).
   const sendWinP = ctx.waitForEvent('page');
   const hashP = page.evaluate((to) => window.aether.request({ method: 'eth_sendTransaction', params: [{ to, value: '0x3782dace9d90000', data: '0xd0e30db0' }] }), WAETH);
   const sendWin = await sendWinP;
-  await sendWin.getByText('Wrap AETH').waitFor();
+  await sendWin.getByText('Wrap DBLN').waitFor();
   await sendWin.getByText(/up to/).waitFor({ timeout: 10000 }).catch(() => {});
   await sendWin.screenshot({ path: SHOTS + '4-approve-call.png' });
   await sendWin.getByRole('button', { name: 'Approve' }).click();
@@ -108,7 +108,7 @@ try {
   // Popup shows activity and the connected site.
   await popup.reload();
   await popup.getByRole('button', { name: 'Activity' }).click();
-  await popup.getByText('Wrap AETH').waitFor({ timeout: 20000 });
+  await popup.getByText('Wrap DBLN').waitFor({ timeout: 20000 });
   await popup.waitForTimeout(1500);
   await popup.getByRole('button', { name: 'Activity' }).click();
   await popup.screenshot({ path: SHOTS + '5-activity.png' });

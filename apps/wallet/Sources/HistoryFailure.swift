@@ -33,11 +33,11 @@ enum HistoryFailure: Equatable {
     var notice: String {
         switch self {
         case .unsupportedNode:
-            "This node cannot show your full history yet. Update the node or switch to another node."
+            String(localized: "This node cannot show your full history yet. Update the node or switch to another node.")
         case .unreachable:
-            "The history could not be read from the node just now, so this list may be out of date or incomplete."
+            String(localized: "The history could not be read from the node just now, so this list may be out of date or incomplete.")
         case .refused:
-            "This node refused the history request, so this list may be incomplete."
+            String(localized: "This node refused the history request, so this list may be incomplete.")
         }
     }
 }

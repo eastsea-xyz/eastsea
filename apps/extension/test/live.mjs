@@ -1,6 +1,6 @@
 // Live check against a running testnet (not part of `npm test`):
 //   node test/live.mjs [rpc-url] [WAETH address]
-// Makes a fresh browser-style key, takes faucet AETH, sends AETH, then calls a
+// Makes a fresh browser-style key, takes faucet DBLN, sends DBLN, then calls a
 // contract with value (WAETH.deposit), all through the extension's own code.
 import { Vault } from '../src/lib/vault.js';
 import { Wallet } from '../src/lib/wallet.js';
@@ -24,7 +24,7 @@ const step = async (label, hash) => {
 
 await step('faucet', await w.faucet(me));
 console.log('balance', weiToAeth(await w.balance(me)));
-await step('send 0.1 AETH', await w.send({ to: '0x000000000000000000000000000000000000dEaD', value_wei: '100000000000000000', data: '0x', gas: 0 }));
+await step('send 0.1 DBLN', await w.send({ to: '0x000000000000000000000000000000000000dEaD', value_wei: '100000000000000000', data: '0x', gas: 0 }));
 if (waeth) {
   await step('WAETH.deposit 0.2', await w.send({ to: waeth, value_wei: '200000000000000000', data: '0xd0e30db0', gas: 100000 }));
   const bal = await rpc.call('eth_call', [{ to: waeth, data: `0x70a08231${me.slice(2).toLowerCase().padStart(64, '0')}` }, 'latest']);

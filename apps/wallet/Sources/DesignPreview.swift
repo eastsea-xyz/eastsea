@@ -5,7 +5,12 @@ import SwiftUI
 /// for screenshots. No keys are made, nothing is read from the network and no node
 /// is started. On the Mac, `-previewWidth 420` sizes the window.
 enum DesignPreview {
+    #if WALLET_SCREENS
+    /// The screens renderer (scripts/wallet-screens.sh) is always a preview.
+    static var on: Bool { true }
+    #else
     static var on: Bool { ProcessInfo.processInfo.arguments.contains("-designPreview") }
+    #endif
     static var variant: String { UserDefaults.standard.string(forKey: "designPreview") ?? "rewards" }
     /// `-rewardStatus 1`: the Network page's node-rewards standing card (the
     /// testnet would answer enabled:false and show nothing).
@@ -53,6 +58,13 @@ extension WalletModel {
         account = VerifiedAccount(address: address, balanceWei: empty ? "0" : "12500000000000000000", nonce: 3,
                                   stateHeight: 184_209, certifiedBlock: 184_210, stateRoot: "0x", validators: 4)
         if v == "paused" { chainPausedSince = now.addingTimeInterval(-240) }
+        // 24 finalized blocks, one a second, a few with transactions.
+        let tip = UInt64(184_210)
+        blocks = (0..<24).map { i in
+            let h = tip - UInt64(i)
+            return BlockInfo(height: h, txs: [0, 0, 3, 0, 1, 0, 0, 5][i % 8], gasUsed: 0, stateRoot: "0x" + String(repeating: "ab", count: 16),
+                             proposer: "0x5397a1c0", timestampMs: UInt64(now.timeIntervalSince1970 * 1000) - UInt64(i) * 1_000)
+        }
         if DesignPreview.historyNotice {
             historyFailure = .unsupportedNode
         }
@@ -62,16 +74,30 @@ extension WalletModel {
         }
         history = [BalancePoint(date: now.addingTimeInterval(-80_000), aeth: 0), BalancePoint(date: now.addingTimeInterval(-60_000), aeth: 10),
                    BalancePoint(date: now.addingTimeInterval(-30_000), aeth: 8), BalancePoint(date: now.addingTimeInterval(-3_000), aeth: 12.5)]
+        // The same titles the app builds for real rows (ChainActivity.title,
+        // WalletModel.send), so the screens show the real wording.
+        let ticker = Brand.networkCoinTicker
+        var failed = ActivityItem(date: now.addingTimeInterval(-1_200), kind: .sent, title: String(localized: "Sent to \("0x77c4…1d2e")"),
+                                  amount: -1, state: .failed)
+        failed.why = TxStatusText.sentence(state: "dropped", reason: "expired", success: nil,
+                                           message: "오래 기다려도 처리되지 않아 취소됐어요. 돈은 빠져나가지 않았어요. 다시 보낼 수 있어요.")
+        failed.resend = ActivityItem.Resend(to: "0x77c4000000000000000000000000000000001d2e", valueWei: "1000000000000000000", nonce: 4)
+        var reward = ActivityItem(date: now.addingTimeInterval(-300), kind: .received,
+                                  title: String(localized: "Proof reward \("0.5") \(ticker)"), amount: 0.5, state: .done)
+        reward.source = String(localized: "From the node")
+        reward.owner = address
         activity = [
-            ActivityItem(date: now.addingTimeInterval(-300), kind: .received, title: "Proof reward · block #184024", amount: 0.5, state: .done),
-            ActivityItem(date: now.addingTimeInterval(-3_600), kind: .sent, title: "Sent to 0x12ab…90ab", amount: -2, state: .done),
-            ActivityItem(date: now.addingTimeInterval(-60_000), kind: .received, title: "Test \(Brand.networkCoinTicker) from faucet", amount: 10, state: .done),
-            ActivityItem(date: now.addingTimeInterval(-9_000), kind: .sent, title: "Sent 5 USDX · 0x0000…00c1 to 0x12ab…90ab", amount: nil, state: .done,
+            reward,
+            failed,
+            ActivityItem(date: now.addingTimeInterval(-3_600), kind: .sent, title: String(localized: "Sent to \("0x12ab…90ab")"), amount: -2, state: .done),
+            ActivityItem(date: now.addingTimeInterval(-9_000), kind: .sent, title: String(localized: "Sent \("5") \("USDX") to \("0x12ab…90ab")"), amount: nil, state: .done,
                          token: "0x00000000000000000000000000000000000000c1"),
+            ActivityItem(date: now.addingTimeInterval(-60_000), kind: .received, title: String(localized: "Test \(ticker) from the faucet"), amount: 10, state: .done),
         ]
+        loadPreviewExtras()
         tokens = [
-            TokenHolding(token: TokenInfo(address: "0x6bc5ded76ccbdc8df35e7cd28b68fed245a74416", symbol: "NEB", name: "Nebula", decimals: 18), balance: "250000000000000000000"),
-            TokenHolding(token: TokenInfo(address: "0x961f8add5ae93ff0700be8abd5f9f8ec69ba4347", symbol: "ORB", name: "Orb", decimals: 18), balance: "1500000000000000000"),
+            TokenHolding(token: TokenInfo(address: "0x6bc5ded76ccbdc8df35e7cd28b68fed245a74416", symbol: "NEB", name: "Test Nebula", decimals: 18), balance: "250000000000000000000"),
+            TokenHolding(token: TokenInfo(address: "0x961f8add5ae93ff0700be8abd5f9f8ec69ba4347", symbol: "ORB", name: "Test Orbit", decimals: 18), balance: "1500000000000000000"),
             // Off-list on purpose: the generated dashed glyph next to official art.
             TokenHolding(token: TokenInfo(address: "0x00000000000000000000000000000000000000c1", symbol: "USDX", name: "Test Dollar", decimals: 6, origin: "dex"), balance: "5000000"),
             TokenHolding(token: TokenInfo(address: "0x00000000000000000000000000000000000000d4", symbol: "VVDBLN", name: "Doubloon Cash", decimals: 18, origin: "launchpad"), balance: "900000000000000000000"),

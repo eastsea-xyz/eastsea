@@ -16,7 +16,7 @@ let json = """
 """
 let page = try ChainHistoryPage.decode(json)
 check(page.entries.count == 1 && page.historyStart == 3, "decode page")
-check(ChainActivity.title(page.entries[0], names: ChainNames()) == "Received 5 AETH from \(ChainActivity.short(other))", "received AETH")
+check(ChainActivity.title(page.entries[0], names: ChainNames()) == "Received 5 DBLN from \(ChainActivity.short(other))", "received DBLN")
 check(ChainActivity.historyKey(hash: "0xABC", address: own) == ChainActivity.historyKey(hash: "0xabc", address: own.uppercased()), "same wallet dedupes a hash")
 check(ChainActivity.historyKey(hash: "0xabc", address: own) != ChainActivity.historyKey(hash: "0xabc", address: other), "linked wallets keep both sides of a transaction")
 
@@ -30,7 +30,7 @@ let swapJSON = """
 """
 let swap = try ChainHistoryPage.decode(swapJSON).entries[0]
 let names = ChainNames(router: router, tokens: [token: ChainTokenName(symbol: "NEB", decimals: 18, origin: "seed")])
-check(ChainActivity.title(swap, names: names).hasPrefix("Swapped 10 AETH → 250 NEB ·"), "swap title")
+check(ChainActivity.title(swap, names: names).hasPrefix("Swapped 10 DBLN → 250 NEB ·"), "swap title")
 let revoke = try ChainHistoryPage.decode(swapJSON
     .replacingOccurrences(of: "0xac344b4d", with: "0x095ea7b3")
     .replacingOccurrences(of: "\"contract_address\":null", with: "\"approval_amount\":\"0\",\"approval_spender\":\"\(other)\",\"contract_address\":null")).entries[0]

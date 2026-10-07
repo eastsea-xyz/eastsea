@@ -343,19 +343,19 @@ struct UpdateTracker {
         case .idle, .found, .downloading, .verified, .installing, .healthy:
             return nil
         case .awaitingHealth(let version, _, _):
-            return "Updated to \(version). \(Brand.project) is checking that this Mac's node is healthy…"
+            return String(localized: "Updated to \(version). \(Brand.name) is checking that this Mac's node is healthy…")
         case .failed(let cause, let attempts, let nextRetryAt):
             switch cause {
             case .network:
-                return "The update could not be downloaded. \(Brand.project) will try again by itself."
+                return String(localized: "The update could not be downloaded. \(Brand.name) will try again by itself.")
             case .gate:
-                return "This update is not approved by the network. \(Brand.project) left it alone and waits for the next approved release."
+                return String(localized: "This update is not approved by the network. \(Brand.name) left it alone and waits for the next approved release.")
             case .install:
                 return nextRetryAt == nil
-                    ? "The update could not be installed after \(Self.maxInstallAttempts) tries. Download \(Brand.project) again from its website and replace this app."
-                    : "The update could not be installed (try \(attempts) of \(Self.maxInstallAttempts)). \(Brand.project) will try again by itself."
+                    ? String(localized: "The update could not be installed after \(Self.maxInstallAttempts) tries. Download \(Brand.name) again from its website and replace this app.")
+                    : String(localized: "The update could not be installed (try \(attempts) of \(Self.maxInstallAttempts)). \(Brand.name) will try again by itself.")
             case .health:
-                return "The update finished, but this Mac's node did not get healthy in time. \(Brand.project) recorded it; the node keeps healing itself as before."
+                return String(localized: "The update finished, but this Mac's node did not get healthy in time. \(Brand.name) recorded it; the node keeps healing itself as before.")
             }
         }
     }

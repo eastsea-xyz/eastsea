@@ -24,9 +24,9 @@ test('known selectors are named for the approval screen', () => {
   assert.equal(describeCall({ to: TO, data: '0x38ed1739aa' }), 'Swap tokens');
   assert.equal(describeCall({ to: TO, data: '0xcce7ec13' }), 'Buy on the launch curve');
   assert.equal(describeCall({ to: TO, data: '0x5cf66fe1' }), 'Buy with DBLN (graduated pool)');
-  // The chain's own ticker: the legacy 7780 testnet kept AETH.
-  assert.equal(describeCall({ to: TO, data: '0x' }, { ticker: 'AETH' }), 'Send AETH');
-  assert.equal(describeCall({ to: TO, data: '0xd0e30db0' }, { ticker: 'AETH' }), 'Wrap AETH');
+  // The ticker the caller passes names the coin.
+  assert.equal(describeCall({ to: TO, data: '0x' }, { ticker: 'DBLN' }), 'Send DBLN');
+  assert.equal(describeCall({ to: TO, data: '0xd0e30db0' }, { ticker: 'DBLN' }), 'Wrap DBLN');
   assert.match(describeCall({ to: '', data: '0x6000' }), /Deploy/);
   assert.match(describeCall({ to: TO, data: '0x12345678' }), /0x12345678/);
 });

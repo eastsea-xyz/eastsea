@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { aethToWei, weiToAeth, formatAeth, toBigInt } from '../src/lib/units.js';
 
-test('AETH and wei convert exactly both ways', () => {
+test('DBLN and wei convert exactly both ways', () => {
   assert.equal(aethToWei('1.5'), 1_500_000_000_000_000_000n);
   assert.equal(aethToWei('.25'), 250_000_000_000_000_000n);
   assert.equal(aethToWei('0.000000000000000001'), 1n);

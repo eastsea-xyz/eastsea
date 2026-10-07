@@ -18,6 +18,6 @@ expect(!LegacyAether.runsNode(version: "0.6.7"), "the 0.6.7 bridge runs no node"
 expect(!LegacyAether.runsNode(version: "0.6.8"), "a later bridge fix runs no node")
 expect(LegacyAether.runsNode(version: nil) && LegacyAether.runsNode(version: ""), "an unreadable version is treated as old")
 let en = LegacyAether.question(ko: false), ko = LegacyAether.question(ko: true)
-expect(en.body.contains("No data is deleted") && ko.body.contains("데이터는 지우지 않습니다"),
+expect(en.body.contains("No data is deleted") && ko.body.contains("데이터는 지우지 않아요"),
        "the question says the data stays, in both languages")
 exit(Int32(failures))

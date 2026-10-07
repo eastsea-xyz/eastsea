@@ -23,7 +23,7 @@ struct MenuBarPanel: View {
                     .font(.caption.bold()).foregroundStyle(.orange)
             }
             HStack {
-                Text("\(Brand.project)").font(.headline)
+                Text(Brand.name).font(.headline)
                 Spacer()
                 Text(Short.address(model.address)).font(.caption.monospaced()).foregroundStyle(.secondary)
             }
@@ -44,7 +44,7 @@ struct MenuBarPanel: View {
                     Text("Verified on this Mac")
                 } else {
                     OrbitSpinner().frame(width: 12, height: 12)
-                    Text(model.networkOutdated ? "Updating the app…" : "Verifying…")
+                    Text(model.networkOutdated ? String(localized: "Updating the app…") : String(localized: "Verifying…"))
                 }
             }
             .font(.aeCaption).foregroundStyle(.secondary)
@@ -57,7 +57,7 @@ struct MenuBarPanel: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Divider()
-            Toggle(ko ? "이 Mac의 노드" : "Node on this Mac", isOn: $node.enabled).toggleStyle(.switch).font(.aeBody)
+            Toggle(String(localized: "Node on this Mac"), isOn: $node.enabled).toggleStyle(.switch).font(.aeBody)
             if let reason = node.stopReason, reason != .switchedOff {
                 // The same one reason as the sidebar, the Node page and the
                 // banner — wrapped, never cut off with "…".
@@ -81,7 +81,7 @@ struct MenuBarPanel: View {
                     }
                     if developerMode, let detail = ProverMenuText.details(facts) {
                         // Raw node words and program ids: developer mode only.
-                        DisclosureGroup(ko ? "자세히" : "Details") {
+                        DisclosureGroup("Details") {
                             Text(detail).font(.caption.monospaced()).foregroundStyle(.secondary)
                                 .textSelection(.enabled)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -91,7 +91,7 @@ struct MenuBarPanel: View {
             }
             Divider()
             HStack {
-                Button("Open \(Brand.project)") {
+                Button("Open \(Brand.name)") {
                     NSApp.setActivationPolicy(.regular)
                     openWindow(id: "main")
                     NSApp.activate(ignoringOtherApps: true)
@@ -103,7 +103,7 @@ struct MenuBarPanel: View {
                 Spacer()
                 Menu {
                     if node.prove { Button("Export Reward Records…") { exportRewards() } }
-                    Button("Quit \(Brand.project)") { NSApp.terminate(nil) }
+                    Button("Quit \(Brand.name)") { NSApp.terminate(nil) }
                 } label: { Image(systemName: "ellipsis.circle") }
                     .menuStyle(.borderlessButton).fixedSize()
             }
@@ -117,11 +117,25 @@ struct MenuBarPanel: View {
     /// A running node in plain words (no block numbers in the menu).
     private var nodeLine: String {
         switch node.state {
-        case .off: return ko ? "꺼져 있음" : "Off"
-        case .starting: return node.height > 0 ? (ko ? "네트워크를 따라잡는 중" : "Catching up with the network") : (ko ? "시작하는 중…" : "Starting…")
-        case .running: return ko ? "블록을 이 Mac에서 직접 확인하는 중" : "Checking every block on this Mac"
+        case .off: return String(localized: "Off")
+        case .starting: return node.height > 0 ? String(localized: "Catching up with the network") : String(localized: "Starting…")
+        case .running: return String(localized: "Checking every block on this Mac")
         case .waitingForPower: return NodeStopReason.onBattery.copy(ko: ko).title
         case .failed(let e): return e
+        }
+    }
+
+    /// Why proving holds, in the node's own categories (docs/ops/resource-limits.md).
+    private static func pausedText(_ paused: String, programUnknown: Bool) -> String {
+        switch paused {
+        case "memory": String(localized: "Paused: over the memory limit, waiting a moment before trying again")
+        case "program": programUnknown
+            ? String(localized: "Paused: cannot confirm which proving program the network uses")
+            : String(localized: "Paused: this Mac's proving program differs from the network's")
+        case "stalled": String(localized: "Paused: the prover stopped answering; it restarts itself")
+        case "pressure": String(localized: "Paused: this Mac is short on memory")
+        case "battery": String(localized: "Paused: on battery")
+        default: String(localized: "Paused: disk space low")
         }
     }
 

@@ -3,6 +3,7 @@ import AppKit
 import Darwin
 import Sparkle
 import SwiftUI
+import Vision
 
 /// The product QA renderer (scripts/wallet-screens.sh): every screen and sheet
 /// of the Mac wallet drawn to PNG with the design-preview sample data, in the
@@ -74,7 +75,7 @@ final class Renderer {
     init(out: URL, only: String?) {
         self.out = out
         self.only = only
-        lang = (Bundle.main.preferredLocalizations.first ?? "en").hasPrefix("ko") ? "ko" : "en"
+        lang = AppLanguage.identifier
         try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
     }
 
@@ -93,7 +94,7 @@ final class Renderer {
     }
 
     func renderAll() {
-        for dark in [false, true] {
+        for dark in (["en", "ko"].contains(lang) ? [false, true] : [false]) {
             // Pages, as the detail column shows them (760 pt readable width).
             page("home", dark) { HomePage(sheet: .constant(nil), showActivity: {}, showNetwork: {}) }
             page("home-empty", dark, ["designPreview": "empty"]) { HomePage(sheet: .constant(nil), showActivity: {}, showNetwork: {}) }
@@ -182,7 +183,7 @@ final class Renderer {
                 MigrationOverlay(status: MigrationStatus.shared).frame(height: 360)
             }
             alert("alert-legacy-aether", dark) {
-                let q = LegacyAether.question(ko: AppLanguage.korean)
+                let q = LegacyAether.question()
                 let a = NSAlert()
                 a.messageText = q.title
                 a.informativeText = q.body + "\n\n/Applications/Aether.app"
@@ -194,6 +195,7 @@ final class Renderer {
                 let a = NSAlert()
                 a.messageText = InstallLocation.moveSentence
                 a.informativeText = String(localized: "\(Brand.name) is running from a temporary place.")
+                a.addButton(withTitle: String(localized: "OK"))
                 return a
             }
         }
@@ -329,21 +331,51 @@ final class Renderer {
     private func writeImage(_ image: CGImage, name: String, dark: Bool) {
         let rep = NSBitmapImageRep(cgImage: image)
         guard let png = rep.representation(using: .png, properties: [:]) else { failed += 1; return }
-        do { try png.write(to: file(name, dark)); written += 1 } catch { failed += 1 }
+        do {
+            try png.write(to: file(name, dark))
+            try writeText(image, name: name, dark: dark)
+            written += 1
+        } catch {
+            print("could not write \(name): \(error)")
+            failed += 1
+        }
+    }
+
+    /// Visible text from the exact pixels being saved, including SwiftUI and
+    /// embedded web content. No accessibility permission or real app is used.
+    /// Keep the boxes/confidence for reviewing a language-check failure.
+    private func writeText(_ image: CGImage, name: String, dark: Bool) throws {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = false
+        request.automaticallyDetectsLanguage = true
+        let languageNames = ["en": "en-US", "ko": "ko-KR", "ja": "ja-JP", "zh-Hans": "zh-Hans", "zh-Hant": "zh-Hant"]
+        let supported = try request.supportedRecognitionLanguages()
+        let preferred = [languageNames[lang] ?? "en-US", "en-US", "ko-KR", "ja-JP", "zh-Hans", "zh-Hant"]
+        var recognitionLanguages: [String] = []
+        for language in preferred where supported.contains(language) && !recognitionLanguages.contains(language) {
+            recognitionLanguages.append(language)
+        }
+        request.recognitionLanguages = recognitionLanguages
+        try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
+        let lines: [[String: Any]] = (request.results ?? []).compactMap { observation in
+            guard let candidate = observation.topCandidates(1).first else { return nil }
+            let box = observation.boundingBox
+            return ["text": candidate.string, "confidence": candidate.confidence,
+                    "box": [box.origin.x, box.origin.y, box.width, box.height]]
+        }
+        let payload: [String: Any] = ["screen": name, "language": lang, "appearance": dark ? "dark" : "light",
+                                      "engine": "Vision", "lines": lines]
+        let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
+        try data.write(to: file(name, dark).deletingPathExtension().appendingPathExtension("text.json"))
     }
 
     private func write(_ view: NSView, name: String, dark: Bool) {
         view.layoutSubtreeIfNeeded()
         guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { failed += 1; return }
         view.cacheDisplay(in: view.bounds, to: rep)
-        guard let png = rep.representation(using: .png, properties: [:]) else { failed += 1; return }
-        do {
-            try png.write(to: file(name, dark))
-            written += 1
-        } catch {
-            print("could not write \(name): \(error)")
-            failed += 1
-        }
+        guard let image = rep.cgImage else { failed += 1; return }
+        writeImage(image, name: name, dark: dark)
     }
 }
 #endif

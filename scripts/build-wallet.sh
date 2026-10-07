@@ -6,6 +6,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:$PATH"
+# Every temporary artifact and build waits stay inside the active checkout.
+mkdir -p "$PWD/tmp"
+export TMPDIR="$PWD/tmp"
 target=${1:-macos}
 # Release artifacts must be byte-identical wherever the checkout lives (gap G5).
 . scripts/repro-env.sh
@@ -55,7 +58,9 @@ fi
 # it from the code, so the copy the app embeds is the same bytes anywhere.
 [ "$target" = macos ] && aether_repro_fix_uuid target/release/aether
 # Bindings come from the host (macOS) build of the same crate.
-[ -f target/release/libaether_ffi.dylib ] || MACOSX_DEPLOYMENT_TARGET=14.0 cargo build -p aether-ffi --release --locked
+if [ ! -f target/release/libaether_ffi.dylib ]; then
+  MACOSX_DEPLOYMENT_TARGET=14.0 cargo build -p aether-ffi --release --locked
+fi
 cargo run -q --locked -p aether-ffi --features bindgen --bin uniffi-bindgen -- generate --library target/release/libaether_ffi.dylib --language swift --out-dir apps/wallet/Generated
 mv -f apps/wallet/Generated/aether_ffiFFI.modulemap apps/wallet/Generated/module.modulemap
 # The macOS app embeds the node and the agent CLI (Contents/Helpers).

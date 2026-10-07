@@ -243,7 +243,8 @@ final class NodeController: ObservableObject {
             do {
                 if newValue { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
             } catch {
-                state = .failed(String(localized: "Could not change Open at Login: \(error.localizedDescription)"))
+                logEvent("login", "failed: \(error.localizedDescription)")
+                state = .failed(String(localized: "Could not change Open at Login. Please try again."))
             }
             objectWillChange.send()
         }
@@ -460,7 +461,7 @@ final class NodeController: ObservableObject {
             case .onBattery: state = .waitingForPower
             case .restarting: break   // the watchdog's own line stays
             default:
-                let title = reason.copy(ko: HealthCheck.korean).title
+                let title = reason.copy().title
                 if state != .failed(title) { state = .failed(title) }
             }
         }
@@ -580,7 +581,7 @@ final class NodeController: ObservableObject {
         let first = lastLoggedCode == nil
         lastLoggedCode = code
         if first && reason == .switchedOff { return }   // a switched-off app at launch is not news
-        let en = reason?.copy(ko: false)
+        let en = reason?.copy(locale: Locale(identifier: "en"), bundle: AppLanguage.bundle(for: "en"))
         let detail = en.map { "\($0.title). \($0.paragraph)" } ?? "the node runs"
         let line = NodeStatusLog.line(at: Date(), event: reason == nil ? "running" : "stopped \(code)", detail: detail, facts: facts)
         NodeStatusLog.append(line, in: Self.dataDir)
@@ -831,7 +832,8 @@ final class NodeController: ObservableObject {
             try FileManager.default.createDirectory(at: Self.dataDir, withIntermediateDirectories: true)
         } catch {
             launchError = error.localizedDescription
-            state = .failed(error.localizedDescription)
+            logEvent("launch", "failed: \(error.localizedDescription)")
+            state = .failed(NodeStopReason.launchFailed(error.localizedDescription).copy().detail)
             return
         }
         announceAvailability(leaving: Self.onBattery)
@@ -873,7 +875,7 @@ final class NodeController: ObservableObject {
         } catch {
             launchError = error.localizedDescription
             logEvent("launch", "failed: \(error.localizedDescription)")
-            state = .failed(error.localizedDescription)
+            state = .failed(NodeStopReason.launchFailed(error.localizedDescription).copy().detail)
             return
         }
         launchError = nil

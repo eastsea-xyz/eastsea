@@ -39,11 +39,11 @@ struct InstallLocation {
     }
 
     /// One plain sentence (layer 4): what to do, in the app's language.
-    static var moveSentence: String {
-        let ko = Bundle.main.preferredLocalizations.first?.hasPrefix("ko") ?? false
-        return ko ? "\(Brand.projectKo)를 응용 프로그램 폴더로 옮긴 뒤 실행해 주세요."
-            : "Move \(Brand.project) to your Applications folder to run it."
+    static func moveSentence(locale: Locale = .current, bundle: Bundle = .main) -> String {
+        String(localized: "Move EastSea to your Applications folder to run it.", bundle: bundle, locale: locale)
     }
+
+    static var moveSentence: String { moveSentence() }
 
     #if os(macOS)
     /// The verdict for this running app. An unreadable volume flag fails open

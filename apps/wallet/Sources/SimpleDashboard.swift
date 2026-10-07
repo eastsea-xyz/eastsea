@@ -1008,12 +1008,12 @@ private struct SidebarStatus: View {
     /// the "Connected" line below already shows) is what got truncated here.
     private var nodeLine: String {
         // One reason, the same everywhere (NodeStopReason): never a bare "paused".
-        if let reason = node.stopReason { return reason.copy(ko: HealthCheck.korean).title }
+        if let reason = node.stopReason { return reason.copy().title }
         switch node.state {
         case .off: return String(localized: "Off")
         case .starting: return node.height > 0 ? String(localized: "Catching up") : String(localized: "Starting…")
         case .running: return String(localized: "Verifying blocks") + (node.networkCheckPending ? " " + node.pendingRouteNote : "")
-        case .waitingForPower: return NodeStopReason.onBattery.copy(ko: HealthCheck.korean).title
+        case .waitingForPower: return NodeStopReason.onBattery.copy().title
         case .failed(let m): return m
         }
     }
@@ -1729,7 +1729,7 @@ struct SendSheet: View {
                 refusal = e.errorDescription
                 return
             } catch {
-                refusal = "\(error)"
+                refusal = WalletModel.ffiMessage(error)
                 return
             }
         }
@@ -1740,7 +1740,8 @@ struct SendSheet: View {
             let outcome = dry ? await WalletModel.dryRun(from: model.address, to: callTo, valueWei: value, data: data) : .unchecked
             checking = false
             if case .reverted(let why) = outcome {
-                refusal = why
+                model.note("Dry run refused: \(why)")
+                refusal = String(localized: "This transaction could not run. Nothing was sent.")
                 return
             }
             if let frozen {

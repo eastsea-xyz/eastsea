@@ -4,7 +4,16 @@
 // forever on a state it could recover from by itself.
 //   scripts/test-swift-pure.sh   (run node-stop)
 import Foundation
+
+// A system error is a diagnostic, not app-language copy.
+for language in ["en", "ko", "ja", "zh-Hans", "zh-Hant"] {
+    let copy = NodeStopReason.launchFailed("raw English launch error").copy(
+        locale: walletTestLocale(language), bundle: walletTestBundle(language))
+    check(!copy.detail.contains("raw English"), "launch diagnostics stay out of the \(language) screen")
+}
 func check(_ c: Bool, _ m: String) { if !c { print("FAIL", m); exit(1) } }
+let enLocale = walletTestLocale("en"), enBundle = walletTestBundle("en")
+let koLocale = walletTestLocale("ko"), koBundle = walletTestBundle("ko")
 let GiB: UInt64 = 1_073_741_824
 
 // MARK: the founder's MacBook (2026-10-07)
@@ -51,13 +60,13 @@ check(NodeResume.decide(f) == .wait(.diskFull(freeBytes: f.freeBytes!, resumeByt
       "below the resume level: wait with the exact numbers")
 f.freeBytes = 7 * GiB
 check(NodeResume.decide(f) == .start(detach: false), "at the node's own resume level (7 GB): start")
-let disk = NodeStopReason.diskFull(freeBytes: UInt64(6.1 * Double(GiB)), resumeBytes: 7 * GiB, volume: nil).copy(ko: true)
+let disk = NodeStopReason.diskFull(freeBytes: UInt64(6.1 * Double(GiB)), resumeBytes: 7 * GiB, volume: nil).copy(locale: koLocale, bundle: koBundle)
 check(disk.detail == "저장 공간 6.1 GB 남음. 약 0.9 GB만 더 비워 주세요.", "ko disk detail: \(disk.detail)")
 check(disk.resume == "7.0 GB가 되면 저절로 다시 시작해요.", "ko disk resume: \(disk.resume)")
 check(disk.action == .openStorage, "the disk reason's button opens storage")
 check(NodeStopReason.need(free: 3 * GiB, resume: 7 * GiB) == "4 GB", "whole gigabytes above 1 GB")
 check(NodeStopReason.need(free: UInt64(6.95 * Double(GiB)), resume: 7 * GiB) == "0.1 GB", "never says 0.0")
-let ext = NodeStopReason.diskFull(freeBytes: 2 * GiB, resumeBytes: 7 * GiB, volume: "외장 SSD").copy(ko: true)
+let ext = NodeStopReason.diskFull(freeBytes: 2 * GiB, resumeBytes: 7 * GiB, volume: "외장 SSD").copy(locale: koLocale, bundle: koBundle)
 check(ext.detail.hasPrefix("‘외장 SSD’ 저장 공간 2.0 GB 남음"), "the chosen volume is named: \(ext.detail)")
 
 // MARK: the chosen block-data disk
@@ -69,9 +78,9 @@ f.storage = .chosen(volume: "Archive", mounted: true, writable: false)
 check(NodeResume.decide(f) == .wait(.diskNoAccess(volume: "Archive")), "no permission: say where to allow it")
 f.storage = .chosen(volume: "Archive", mounted: true, writable: true)
 check(NodeResume.decide(f) == .start(detach: false), "disk back: start")
-let missing = NodeStopReason.diskMissing(volume: "Archive").copy(ko: false)
+let missing = NodeStopReason.diskMissing(volume: "Archive").copy(locale: enLocale, bundle: enBundle)
 check(missing.title == "Disk “Archive” not connected" && missing.action == .chooseDisk, "missing-disk copy")
-check(NodeStopReason.diskMissing(volume: "외장").copy(ko: true).title == "‘외장’ 디스크가 연결되지 않음", "ko missing-disk title")
+check(NodeStopReason.diskMissing(volume: "외장").copy(locale: koLocale, bundle: koBundle).title == "‘외장’ 디스크가 연결되지 않음", "ko missing-disk title")
 
 // MARK: every other path, in order
 
@@ -124,20 +133,20 @@ let all: [NodeStopReason] = [.switchedOff, .onBattery, .wrongLocation, .noHelper
 var codes = Set<String>()
 for r in all {
     codes.insert(r.code)
-    for ko in [true, false] {
-        let c = r.copy(ko: ko)
-        check(!c.title.isEmpty && !c.detail.isEmpty, "\(r.code) has a title and a detail (ko=\(ko))")
+    for language in ["en", "ko", "ja"] {
+        let c = r.copy(locale: walletTestLocale(language), bundle: walletTestBundle(language))
+        check(!c.title.isEmpty && !c.detail.isEmpty, "\(r.code) has a title and a detail (language=\(language))")
         check(c.title.count <= 40, "\(r.code) title fits the sidebar: \(c.title)")
         check((c.action == nil) == (c.actionLabel == nil), "\(r.code) button has a label")
         check(!c.paragraph.lowercased().contains("rpc") && !c.paragraph.contains("exit "), "\(r.code) has no jargon")
         if r.isIncident && r != .identityLost && r != .wrongLocation && r != .noHelper {
-            check(!c.resume.isEmpty, "\(r.code) says when it resumes (ko=\(ko))")
+            check(!c.resume.isEmpty, "\(r.code) says when it resumes (language=\(language))")
         }
     }
 }
 check(codes.count == all.count, "codes are unique")
-check(NodeStopReason.crashLoop(.other, retryInSeconds: 540).copy(ko: true).resume == "9분 뒤 저절로 다시 시도해요.", "minutes")
-check(NodeStopReason.restarting(inSeconds: 4).copy(ko: false).resume == "Starting in 4 s.", "seconds")
+check(NodeStopReason.crashLoop(.other, retryInSeconds: 540).copy(locale: koLocale, bundle: koBundle).resume == "9분 뒤 저절로 다시 시도해요.", "minutes")
+check(NodeStopReason.restarting(inSeconds: 4).copy(locale: enLocale, bundle: enBundle).resume == "Starting in 4 s.", "seconds")
 check(!NodeStopReason.onBattery.isIncident && NodeStopReason.otherNodeRunning.isIncident, "incident flags")
 
 // MARK: node-status.log

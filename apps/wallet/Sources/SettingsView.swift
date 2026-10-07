@@ -13,6 +13,12 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            HStack {
+                Text("Language")
+                Spacer()
+                Text(verbatim: AppLanguage.nativeName).foregroundStyle(.secondary)
+                Button("Change in System Settings…", action: openLanguageSettings)
+            }
             if model.developmentNetwork {
                 Text("Dev network · 127.0.0.1:\(String(developmentNetworkPort))")
                     .font(.caption.bold()).foregroundStyle(.orange)
@@ -76,6 +82,14 @@ struct SettingsView: View {
         }
         .padding(20)
         .frame(width: 420)
+    }
+
+    private func openLanguageSettings() {
+        let workspace = NSWorkspace.shared
+        let settings = URL(string: "x-apple.systempreferences:com.apple.Localization-Settings.extension")!
+        if !workspace.open(settings) {
+            workspace.open(URL(fileURLWithPath: "/System/Library/PreferencePanes/Localization.prefPane"))
+        }
     }
 }
 

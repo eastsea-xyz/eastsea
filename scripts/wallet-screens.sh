@@ -14,10 +14,12 @@ cd "$(dirname "$0")/.."
 only=${1:-}
 out="$PWD/tmp/screens"
 cd apps/wallet && xcodegen generate >/dev/null
+log="$out.build.log"; mkdir -p "$(dirname "$log")"
 xcodebuild -project AetherWallet.xcodeproj -scheme WalletScreens -configuration Debug -derivedDataPath build \
-  CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= build | grep -E "BUILD|error:" || true
+  CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= build > "$log" 2>&1 || true
+# Never render with a stale renderer: a failed build stops here.
+grep -q '\*\* BUILD SUCCEEDED \*\*' "$log" || { grep -E "error:" "$log" | head -20 >&2; echo "the screens renderer did not build ($log)" >&2; exit 1; }
 bin=build/Build/Products/Debug/WalletScreens.app/Contents/MacOS/WalletScreens
-[ -x "$bin" ] || { echo "the screens renderer did not build" >&2; exit 1; }
 [ -n "$only" ] || rm -rf "$out"
 mkdir -p "$out"
 home=$(mktemp -d "${TMPDIR:-/tmp}/wallet-screens-home.XXXXXX")
@@ -29,3 +31,5 @@ for lang in en ko; do
   HOME="$home" CFFIXED_USER_HOME="$home" "$bin" "${args[@]}"
 done
 echo "screens: $(ls "$out"/*.png | wc -l | tr -d ' ') PNGs in tmp/screens"
+# Every Korean render must read Korean (scripts/check-wallet-screens-language.py).
+/usr/bin/python3 ../../scripts/check-wallet-screens-language.py "$out"

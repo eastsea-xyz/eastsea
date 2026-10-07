@@ -559,7 +559,7 @@ final class NodeController: ObservableObject {
                                   proofs: 57, proofs_failing: false, acceptance_rate_percent: 100, program_unknown: false,
                                   program_mismatch: false, network_program: nil, error: nil, paused: nil,
                                   memory_bytes: 5_690_000_000, memory_cap: 6_442_450_944, lag: 2,
-                                  last_reward: "0x6f05b59d3b20000")
+                                  last_reward: "0x6f05b59d3b20000", last_reward_stale: false)
         }
         #endif
     }

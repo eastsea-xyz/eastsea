@@ -44,11 +44,19 @@ const BUSY_MAX_WAIT: Duration = Duration::from_secs(2);
 static NO_RANGE: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 
 fn range_supported(key: &str) -> bool {
-    !NO_RANGE.lock().expect("range support").as_ref().is_some_and(|s| s.contains(key))
+    !NO_RANGE
+        .lock()
+        .expect("range support")
+        .as_ref()
+        .is_some_and(|s| s.contains(key))
 }
 
 fn note_no_range(key: String) {
-    NO_RANGE.lock().expect("range support").get_or_insert_with(HashSet::new).insert(key);
+    NO_RANGE
+        .lock()
+        .expect("range support")
+        .get_or_insert_with(HashSet::new)
+        .insert(key);
 }
 
 /// Whether a refusal means "this method does not exist here" (an older
@@ -63,16 +71,27 @@ pub fn is_busy(e: &str) -> bool {
 }
 
 /// How long to wait after the `attempt`-th busy answer (0-based): the
-/// server's hint when it sent one, else an exponential backoff.
+/// server's hint when it sent one, else an exponential backoff. Both are
+/// bounded: a peer's hint must not suspend following indefinitely.
 fn busy_wait(e: &str, attempt: u32) -> Duration {
     aether_net::busy_retry_after(e)
-        .unwrap_or_else(|| BUSY_FIRST_WAIT.saturating_mul(1 << attempt.min(8)).min(BUSY_MAX_WAIT))
+        .unwrap_or_else(|| {
+            BUSY_FIRST_WAIT
+                .saturating_mul(1 << attempt.min(8))
+                .min(BUSY_MAX_WAIT)
+        })
         .max(Duration::from_millis(5))
+        .min(BUSY_MAX_WAIT)
 }
 
 /// One request to source `i`, waiting out "server busy" (bounded): a full
 /// server is asked again, not abandoned, and its connection is kept.
-pub async fn call_patient(up: &Upstream, i: usize, method: &str, params: &Value) -> Result<Value, String> {
+pub async fn call_patient(
+    up: &Upstream,
+    i: usize,
+    method: &str,
+    params: &Value,
+) -> Result<Value, String> {
     let mut attempt = 0;
     loop {
         match up.call_at(i, method, params.clone()).await {
@@ -87,9 +106,15 @@ pub async fn call_patient(up: &Upstream, i: usize, method: &str, params: &Value)
 
 /// [`check`] on the blocking pool: a certificate is a pairing, and a span's
 /// worth of them verifies in parallel instead of one by one on the runtime.
-async fn check_off_thread(set: &ValidatorSet, h: u64, v: Value) -> Result<Option<Certified>, String> {
+async fn check_off_thread(
+    set: &ValidatorSet,
+    h: u64,
+    v: Value,
+) -> Result<Option<Certified>, String> {
     let set = set.clone();
-    tokio::task::spawn_blocking(move || check(&set, h, v)).await.map_err(|e| format!("certificate check: {e}"))?
+    tokio::task::spawn_blocking(move || check(&set, h, v))
+        .await
+        .map_err(|e| format!("certificate check: {e}"))?
 }
 
 /// Request slots per source: no source ever sees more than its share at once.
@@ -97,11 +122,18 @@ pub struct Slots(Vec<tokio::sync::Semaphore>);
 
 impl Slots {
     pub fn new(sources: usize, per_source: usize) -> Self {
-        Slots((0..sources.max(1)).map(|_| tokio::sync::Semaphore::new(per_source.max(1))).collect())
+        Slots(
+            (0..sources.max(1))
+                .map(|_| tokio::sync::Semaphore::new(per_source.max(1)))
+                .collect(),
+        )
     }
 
     async fn take(&self, i: usize) -> tokio::sync::SemaphorePermit<'_> {
-        self.0[i % self.0.len()].acquire().await.expect("slots are never closed")
+        self.0[i % self.0.len()]
+            .acquire()
+            .await
+            .expect("slots are never closed")
     }
 }
 
@@ -128,7 +160,14 @@ pub type Certified = (Block, Value);
 /// others in turn. The longest verified prefix wins; when no source gave any
 /// block, the last error comes back (a "pruned" one sends the caller to the
 /// era file, as before).
-pub async fn fetch_span(up: &Upstream, set: &ValidatorSet, slots: &Slots, k: usize, from: u64, to: u64) -> Result<Vec<Certified>, String> {
+pub async fn fetch_span(
+    up: &Upstream,
+    set: &ValidatorSet,
+    slots: &Slots,
+    k: usize,
+    from: u64,
+    to: u64,
+) -> Result<Vec<Certified>, String> {
     let n = up.sources();
     if n == 0 {
         return Err("no upstream".into());
@@ -161,39 +200,71 @@ pub async fn fetch_span(up: &Upstream, set: &ValidatorSet, slots: &Slots, k: usi
 }
 
 /// [`fetch_span`] from source `i` alone.
-async fn fetch_span_from(up: &Upstream, set: &ValidatorSet, slots: &Slots, i: usize, from: u64, to: u64) -> Result<Vec<Certified>, String> {
+async fn fetch_span_from(
+    up: &Upstream,
+    set: &ValidatorSet,
+    slots: &Slots,
+    i: usize,
+    from: u64,
+    to: u64,
+) -> Result<Vec<Certified>, String> {
     let key = up.source_key(i);
+    let mut out = Vec::new();
     if to > from && range_supported(&key) {
-        let answer = {
-            let _slot = slots.take(i).await;
-            call_patient(up, i, "aether_getFinalizedRange", &json!([from, to - from + 1])).await
-        };
-        match answer {
-            Ok(Value::Array(items)) => {
-                let checked = futures::future::join_all((from..=to).zip(items).map(|(h, v)| check_off_thread(set, h, v))).await;
-                let mut out = Vec::with_capacity(checked.len());
-                for c in checked {
-                    match c? {
-                        Some(b) => out.push(b),
-                        None => break,
+        let mut cursor = from;
+        while cursor <= to {
+            let answer = {
+                let _slot = slots.take(i).await;
+                call_patient(
+                    up,
+                    i,
+                    "aether_getFinalizedRange",
+                    &json!([cursor, to - cursor + 1]),
+                )
+                .await
+            };
+            match answer {
+                Ok(Value::Array(items)) => {
+                    if items.is_empty() {
+                        return Ok(out);
                     }
+                    let checked = futures::future::join_all(
+                        (cursor..=to)
+                            .zip(items)
+                            .map(|(h, v)| check_off_thread(set, h, v)),
+                    )
+                    .await;
+                    for c in checked {
+                        match c? {
+                            Some(b) => out.push(b),
+                            None => return Ok(out),
+                        }
+                    }
+                    if out.len() as u64 == to - from + 1 {
+                        return Ok(out);
+                    }
+                    // A byte-budget-limited response is only a prefix. Obtain
+                    // its suffix too, so the descending walk can reach its anchor.
+                    cursor = from + out.len() as u64;
                 }
-                return Ok(out);
+                Ok(other) if other.is_null() => return Ok(out),
+                Ok(_) => return Err("a block range answer that is not a list".into()),
+                Err(e) if unknown_method(&e) => {
+                    note_no_range(key);
+                    break;
+                }
+                Err(_) if !out.is_empty() => return Ok(out),
+                Err(e) => return Err(e),
             }
-            Ok(other) if other.is_null() => return Ok(Vec::new()),
-            Ok(_) => return Err("a block range answer that is not a list".into()),
-            Err(e) if unknown_method(&e) => note_no_range(key),
-            Err(e) => return Err(e),
         }
     }
-    let singles = (from..=to).map(|h| async move {
+    let singles = (from + out.len() as u64..=to).map(|h| async move {
         let v = {
             let _slot = slots.take(i).await;
             call_patient(up, i, "aether_getFinalized", &json!([h])).await?
         };
         check_off_thread(set, h, v).await
     });
-    let mut out = Vec::new();
     for r in futures::future::join_all(singles).await {
         match r {
             Ok(Some(b)) => out.push(b),
@@ -220,7 +291,17 @@ mod tests {
     #[test]
     fn busy_waits_follow_the_hint_else_back_off() {
         let hinted = format!("{}; retry_after_ms=32", aether_net::BUSY);
-        assert_eq!(busy_wait(&hinted, 5), Duration::from_millis(32), "the server's hint wins");
+        assert_eq!(
+            busy_wait(&hinted, 5),
+            Duration::from_millis(32),
+            "the server's hint wins"
+        );
+        let oversized = format!("{}; retry_after_ms={}", aether_net::BUSY, u64::MAX);
+        assert_eq!(
+            busy_wait(&oversized, 0),
+            BUSY_MAX_WAIT,
+            "peer hints cannot overflow the sleep deadline or hold catch-up indefinitely"
+        );
         let old = aether_net::BUSY;
         assert_eq!(busy_wait(old, 0), BUSY_FIRST_WAIT);
         assert_eq!(busy_wait(old, 1), BUSY_FIRST_WAIT * 2);
@@ -230,7 +311,9 @@ mod tests {
 
     #[test]
     fn an_unknown_method_marks_the_source_as_singles_only() {
-        assert!(unknown_method("{\"code\":-32601,\"message\":\"method not found: aether_getFinalizedRange\"}"));
+        assert!(unknown_method(
+            "{\"code\":-32601,\"message\":\"method not found: aether_getFinalizedRange\"}"
+        ));
         assert!(!unknown_method("server busy"));
         let key = "http://spread-test.invalid".to_string();
         assert!(range_supported(&key));

@@ -96,6 +96,10 @@ impl FinalityArchive {
         }
     }
 
+    pub(crate) fn store(&self) -> Option<&crate::store::Store> {
+        self.store.as_deref()
+    }
+
     pub fn get(&self, height: u64) -> Option<Value> {
         match &self.store {
             Some(s) => s.proof(height).ok().flatten().and_then(|b| serde_json::from_slice(&b).ok()),
@@ -587,9 +591,6 @@ enum Stop {
     MovedOn(String),
     /// That source cannot serve one now: try the next.
     Source(String),
-    /// No source would do (the guard refused, or the snapshot is too close):
-    /// stop, the caller replays.
-    Done(String),
 }
 
 /// A source's manifest, waiting while it builds one (bounded).
@@ -622,9 +623,10 @@ async fn download_from(
     let (height, size, want, chunk) = manifest_limits(&v).map_err(Stop::Source)?;
     // Too close to be worth a download: decided on the manifest, before any chunk.
     if let Some(above) = above.filter(|a| height <= *a) {
-        return Err(Stop::Done(format!("the snapshot at {height} is not past {above}; replaying instead")));
+        return Err(Stop::Source(format!("the snapshot at {height} is not past {above}; replaying instead")));
     }
-    guard(size as u64).map_err(Stop::Done)?;
+    // A smaller snapshot on another source may fit this host's budget.
+    guard(size as u64).map_err(Stop::Source)?;
     // The one stage whose work is not blocks: name it, so a frozen height
     // during the download reads as progress, not as a stall (red team #2).
     crate::chain::set_stage(Some("snapshot"));
@@ -677,7 +679,6 @@ async fn download_with(
                     last = e;
                     break;
                 }
-                Err(Stop::Done(e)) => return Err(e),
             }
         }
     }
@@ -869,7 +870,9 @@ async fn jump(chain: &Chain, upstream: &Upstream, set: &ValidatorSet) -> Result<
     let state = snap.check(&next, &chain.cfg(), set.identity())?;
     // The old state's keys go with the swap, so the store ends up holding exactly the snapshot.
     let old: Vec<([u8; 32], [u8; 32])> = chain.lock().finalized.state.repo().entries().collect();
-    snap.install_over(&store, &state, old)?;
+    let gap = crate::backfill::merged(chain, ours + 1, h - 1);
+    let metadata = crate::backfill::encode(gap);
+    snap.install_over_with_meta(&store, &state, old, Some((crate::backfill::META, &metadata)))?;
     let (exec, summary) = snap.head(state);
     chain.adopt(exec, summary);
     chain.lock().upgrade_notices = snap.upgrade_notices;
@@ -1045,10 +1048,10 @@ pub async fn run(
         }
     }
     loop {
-        if let Some((from, to)) = claims.jumped.take() {
-            // An unfinished backfill is folded into the new plan.
+        if claims.jumped.take().is_some() {
+            // The snapshot commit already folded in the unfinished plan.
             drop(backfilling.take());
-            if let Some(gap) = crate::backfill::plan(&chain, from + 1, to.saturating_sub(1)) {
+            if let Some(gap) = crate::backfill::stored(&chain) {
                 backfilling = Some(spawn_backfill(&chain, &upstream, &set, &archive, gap));
             }
         }
@@ -1934,7 +1937,7 @@ mod tests {
         let manifests = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
         let chunks = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
         let first = {
-            let (manifests, chunks) = (manifests.clone(), chunks.clone());
+            let (manifests, chunks, digest) = (manifests.clone(), chunks.clone(), digest.clone());
             mock_source(move |req| {
                 use std::sync::atomic::Ordering::SeqCst;
                 let err = |m: String| json!({ "jsonrpc": "2.0", "id": req["id"], "error": { "code": -32000, "message": m } });
@@ -1962,6 +1965,9 @@ mod tests {
                 if req["method"] == "aether_snapshotChunk" {
                     asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 }
+                if req["method"] == "aether_snapshot" {
+                    return json!({ "jsonrpc": "2.0", "id": req["id"], "result": { "height": height, "size": size, "blake3": digest, "chunk": 1 << 20 } });
+                }
                 json!({ "jsonrpc": "2.0", "id": req["id"], "error": { "code": -32000, "message": "snapshot moved on to height 99" } })
             })
             .await
@@ -1979,6 +1985,50 @@ mod tests {
         assert!(refused.contains("not past"), "{refused}");
         assert_eq!(chunks.load(std::sync::atomic::Ordering::SeqCst), before, "decided on the manifest alone");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_refused_snapshot_source_does_not_hide_a_usable_one() {
+        let cfg = crate::chain::ChainConfig {
+            chain_id: 7784,
+            limits: aether_types::GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
+            alloc: vec![], fees: false, registrar: None, epoch_blocks: 0,
+            min_streak: None, draw_epochs: None, history_v2: true, protocol: 1,
+            node_rewards: false, committee: vec![], reserve: None, group: 0,
+            max_committee: crate::rotation::GROW_UNTIL,
+        };
+        let (chain, _) = crate::chain::Chain::new(cfg);
+        // This test exercises download source selection only. Adoption still
+        // checks the decoded snapshot against the next certified block.
+        let mut snapshot = crate::snapshot::Snapshot::of(&chain);
+        snapshot.summary.height = 10;
+        let bytes = snapshot.to_bytes();
+        let (size, digest) = (bytes.len(), blake3::hash(&bytes).to_hex().to_string());
+        let stale_digest = digest.clone();
+        let stale = mock_source(move |req| {
+            assert_eq!(req["method"], "aether_snapshot", "stale manifest must not download chunks");
+            json!({ "id": req["id"], "result": { "height": 0, "size": size, "blake3": stale_digest, "chunk": 1 << 20 } })
+        }).await;
+        let fresh = mock_source(move |req| {
+            if req["method"] == "aether_snapshot" {
+                json!({ "id": req["id"], "result": { "height": 10, "size": size, "blake3": digest, "chunk": 1 << 20 } })
+            } else {
+                json!({ "id": req["id"], "result": { "data": hex::encode(&bytes) } })
+            }
+        }).await;
+        let dir = std::env::temp_dir().join(format!("aether-stale-snapshot-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let snap = download_with(&Upstream::Http(vec![stale, fresh.clone()]), &dir, Some(1), &|_| Ok(())).await.expect("try the fresh source after a stale manifest");
+        assert_eq!(snap.summary.height, 10);
+        let oversized = mock_source(move |req| {
+            assert_eq!(req["method"], "aether_snapshot", "refused size must not download chunks");
+            json!({ "id": req["id"], "result": { "height": 10, "size": size * 2, "blake3": "00".repeat(32), "chunk": 1 << 20 } })
+        }).await;
+        let snap = download_with(&Upstream::Http(vec![oversized, fresh]), &dir, None, &|wire| {
+            if wire <= size as u64 { Ok(()) } else { Err("snapshot exceeds this host's budget".into()) }
+        }).await.expect("a smaller snapshot on another peer still fits");
+        assert_eq!(snap.summary.height, 10);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

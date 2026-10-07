@@ -585,6 +585,11 @@ fn a_follower_that_slept_jumps_to_a_certified_snapshot() {
         .unwrap();
     assert_eq!(adopted, 5_100, "most of it by the jump, the rest replayed");
     assert_eq!(follower.chain.finalized_height(), 5_100);
+    assert_eq!(
+        aether_node::backfill::stored(&follower.chain),
+        Some(aether_node::backfill::Gap { low: 1, high: 4_999 }),
+        "the snapshot commit records the gap even before the outer follow loop runs"
+    );
     let root = src.chain.lock().finalized.state.root();
     assert_eq!(
         follower.chain.lock().finalized.state.root(),
@@ -1683,4 +1688,114 @@ fn a_follower_10k_behind_a_moving_chain_jumps_first_then_backfills() {
     stop.store(true, Ordering::SeqCst);
     drop(producer.join().unwrap());
     let _ = std::fs::remove_dir_all(&dir_src);
+}
+
+/// A range response is allowed to end at its byte budget. The descending
+/// walk must still obtain the upper suffix before linking and serving it.
+#[test]
+fn backfill_finishes_when_range_answers_are_size_limited() {
+    pin_snapshot_gate();
+    let dir_src = tmp("short-range-src");
+    let dir_fol = tmp("short-range-follower");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mut src = Node::start(&dir_src);
+    src.run_to(64, |_| false);
+    let snapshot = aether_node::snapshot::Snapshot::of(&src.chain);
+    src.step(vec![]);
+    let follower = Node::start(&dir_fol);
+    let state = snapshot.check(&src.blocks[65], &config(), set().identity()).unwrap();
+    snapshot.install_over(&follower.chain.store().unwrap(), &state, follower.chain.lock().finalized.state.repo().entries().collect::<Vec<_>>()).unwrap();
+    let (head, summary) = snapshot.head(state);
+    follower.chain.adopt(head, summary);
+    let archive = Arc::new(FinalityArchive::new(follower.chain.store()));
+    let st = rpc_state(&src, None);
+    let app = Router::new().route("/", post(|State(st): State<RpcState>, Json(req): Json<Value>| async move {
+        let limited = req["method"] == "aether_getFinalizedRange";
+        let mut response = rpc::handle_value(&st, req).await;
+        if limited {
+            if let Some(items) = response["result"].as_array_mut() {
+                items.truncate(3); // Model the wire budget without multi-MiB fixtures.
+            }
+        }
+        Json(response)
+    })).with_state(st);
+    let listener = rt.block_on(tokio::net::TcpListener::bind(("127.0.0.1", 0))).unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    rt.spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let gap = aether_node::backfill::plan(&follower.chain, 1, 63).unwrap();
+    let task = rt.spawn(aether_node::backfill::run(follower.chain.clone(), Arc::new(Upstream::Http(vec![url])), set(), archive.clone(), gap));
+    let finished = rt.block_on(async { tokio::time::timeout(Duration::from_secs(30), task).await });
+    assert!(finished.is_ok(), "short range responses must not stall backfill");
+    for h in [1, 31, 63, 64] {
+        assert_eq!(archive.get(h), src.archive.get(h), "certified, linked block {h}");
+    }
+    assert!(aether_node::backfill::stored(&follower.chain).is_none());
+    drop(follower);
+    drop(src);
+    drop(rt);
+    std::fs::remove_dir_all(dir_src).unwrap();
+    std::fs::remove_dir_all(dir_fol).unwrap();
+}
+
+/// Run the monitor in a separate process: its pinned disk readings must not
+/// pause other catch-up tests running in this integration-test executable.
+#[test]
+fn backfill_respects_disk_floor_after_an_inflight_fetch() {
+    const CHILD: &str = "AETHER_BACKFILL_DISK_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "backfill_respects_disk_floor_after_an_inflight_fetch", "--nocapture"])
+            .env(CHILD, "1")
+            .output().unwrap();
+        assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        return;
+    }
+    let dir_src = tmp("disk-backfill-src");
+    let dir_fol = tmp("disk-backfill-follower");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mut src = Node::start(&dir_src);
+    src.run_to(32, |_| false);
+    let snapshot = aether_node::snapshot::Snapshot::of(&src.chain);
+    src.step(vec![]);
+    let follower = Node::start(&dir_fol);
+    let state = snapshot.check(&src.blocks[33], &config(), set().identity()).unwrap();
+    snapshot.install_over(&follower.chain.store().unwrap(), &state, follower.chain.lock().finalized.state.repo().entries().collect::<Vec<_>>()).unwrap();
+    let (head, summary) = snapshot.head(state);
+    follower.chain.adopt(head, summary);
+    let archive = Arc::new(FinalityArchive::new(follower.chain.store()));
+    let reached = Arc::new(AtomicBool::new(false));
+    let go = Arc::new(tokio::sync::Notify::new());
+    let st = rpc_state(&src, None);
+    let app = {
+        let (reached, go) = (reached.clone(), go.clone());
+        Router::new().route("/", post(move |Json(req): Json<Value>| {
+            let (st, reached, go) = (st.clone(), reached.clone(), go.clone());
+            async move {
+                if req["method"] == "aether_getFinalizedRange" && !reached.swap(true, Ordering::SeqCst) {
+                    go.notified().await;
+                }
+                Json(rpc::handle_value(&st, req).await)
+            }
+        }))
+    };
+    let listener = rt.block_on(tokio::net::TcpListener::bind(("127.0.0.1", 0))).unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    rt.spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let gap = aether_node::backfill::plan(&follower.chain, 1, 31).unwrap();
+    aether_node::resources::install_test_monitor(aether_node::resources::Limits::default(), &dir_fol);
+    let task = rt.spawn(aether_node::backfill::run(follower.chain.clone(), Arc::new(Upstream::Http(vec![url])), set(), archive.clone(), gap));
+    wait_until("backfill request in flight", || reached.load(Ordering::SeqCst));
+    aether_node::resources::set_test_free_disk(Some(0));
+    go.notify_one();
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(archive.get(32).is_none(), "no archival write after the disk floor trips in flight");
+    assert_eq!(aether_node::backfill::stored(&follower.chain), Some(gap), "paused backfill keeps its durable cursor");
+    aether_node::resources::set_test_free_disk(Some(20 << 30));
+    rt.block_on(async { tokio::time::timeout(Duration::from_secs(30), task).await }).expect("backfill resumes after space frees").unwrap();
+    assert_eq!(archive.get(1), src.archive.get(1));
+    drop(follower);
+    drop(src);
+    drop(rt);
+    std::fs::remove_dir_all(dir_src).unwrap();
+    std::fs::remove_dir_all(dir_fol).unwrap();
 }

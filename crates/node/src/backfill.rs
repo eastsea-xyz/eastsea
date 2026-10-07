@@ -38,7 +38,7 @@ const PER_SOURCE: usize = 2;
 /// Blocks kept behind the tip: the pruning design's retention window.
 pub const RETAIN_BLOCKS: u64 = crate::prune::DEFAULT_RETAIN_DAYS * 86_400;
 /// Store meta key of the persisted plan.
-const META: &str = "backfill";
+pub(crate) const META: &str = "backfill";
 /// How long to wait after a round that fetched nothing before asking again.
 const RETRY: Duration = Duration::from_secs(2);
 
@@ -82,13 +82,16 @@ pub fn floor(high: u64) -> u64 {
 pub fn stored(chain: &Chain) -> Option<Gap> {
     let bytes = chain.store()?.meta(META).ok()??;
     let v: Value = serde_json::from_slice(&bytes).ok()?;
-    let gap = Gap { low: v["low"].as_u64()?, high: v["high"].as_u64()? };
+    let gap = Gap {
+        low: v["low"].as_u64()?,
+        high: v["high"].as_u64()?,
+    };
     (gap.low <= gap.high).then_some(gap)
 }
 
 fn persist(chain: &Chain, gap: Option<Gap>) {
     let Some(store) = chain.store() else { return };
-    let bytes = gap.map_or_else(Vec::new, |g| json!({ "low": g.low, "high": g.high }).to_string().into_bytes());
+    let bytes = encode(gap);
     if let Err(e) = store.put_meta(META, &bytes) {
         warn!(?e, "could not keep the backfill plan");
     }
@@ -97,15 +100,49 @@ fn persist(chain: &Chain, gap: Option<Gap>) {
 /// Plan the backfill of `low..=high` (the heights a jump skipped), merged
 /// with an unfinished plan, bounded by the retention window. Persisted.
 pub fn plan(chain: &Chain, low: u64, high: u64) -> Option<Gap> {
+    let gap = merged(chain, low, high);
+    persist(chain, gap);
+    gap
+}
+
+pub(crate) fn encode(gap: Option<Gap>) -> Vec<u8> {
+    gap.map_or_else(Vec::new, |g| {
+        json!({ "low": g.low, "high": g.high })
+            .to_string()
+            .into_bytes()
+    })
+}
+
+/// Compute the plan without writing: a jump commits it with its snapshot.
+pub(crate) fn merged(chain: &Chain, low: u64, high: u64) -> Option<Gap> {
     let (mut low, mut high) = (low, high);
     if let Some(old) = stored(chain) {
         low = low.min(old.low);
         high = high.max(old.high);
     }
-    let gap = Gap { low: low.max(floor(high)), high };
-    let gap = (gap.low <= gap.high).then_some(gap);
-    persist(chain, gap);
-    gap
+    let gap = Gap {
+        low: low.max(floor(high)),
+        high,
+    };
+    (gap.low <= gap.high).then_some(gap)
+}
+
+async fn wait_for_disk() {
+    while !crate::resources::disk_ok() {
+        tokio::time::sleep(RETRY).await;
+    }
+}
+
+async fn advance_cursor(
+    chain: &Chain,
+    old: Gap,
+    next: Option<Gap>,
+) -> Result<bool, crate::store::StoreError> {
+    wait_for_disk().await;
+    match chain.store() {
+        Some(store) => store.compare_put_meta(META, &encode(Some(old)), &encode(next)),
+        None => Ok(true),
+    }
 }
 
 /// The hash of block `h` from what this node already trusts: its own block
@@ -120,20 +157,41 @@ fn hash_of(chain: &Chain, archive: &FinalityArchive, h: u64) -> Option<String> {
     }
     let proof = archive.get(h)?;
     let bytes = aether_light::from_hex(proof["block"].as_str()?).ok()?;
-    let block = crate::block::Block::decode_cfg(bytes.as_slice(), &crate::block::Block::codec_config(aether_light::MAX_BLOCK_BYTES)).ok()?;
+    let block = crate::block::Block::decode_cfg(
+        bytes.as_slice(),
+        &crate::block::Block::codec_config(aether_light::MAX_BLOCK_BYTES),
+    )
+    .ok()?;
     Some(format!("{}", block.digest()))
 }
 
 /// Fill `gap`, newest to oldest (see the module docs). Returns the lowest
 /// height filled (`gap.high + 1` when nothing was).
-pub async fn run(chain: Chain, upstream: Arc<Upstream>, set: ValidatorSet, archive: Arc<FinalityArchive>, gap: Gap) -> u64 {
-    info!(low = gap.low, high = gap.high, "backfilling the gap's certified blocks, newest first");
+pub async fn run(
+    chain: Chain,
+    upstream: Arc<Upstream>,
+    set: ValidatorSet,
+    archive: Arc<FinalityArchive>,
+    gap: Gap,
+) -> u64 {
+    info!(
+        low = gap.low,
+        high = gap.high,
+        "backfilling the gap's certified blocks, newest first"
+    );
     let slots = Slots::new(upstream.sources(), PER_SOURCE);
     // The walk starts AT the trusted block above the gap: the first block
     // fetched must hash to what this node already trusts there.
     let anchor = gap.high + 1;
-    let mut expected = hash_of(&chain, &archive, anchor);
-    let mut next = if expected.is_some() { anchor } else { gap.high };
+    let Some(mut expected) = hash_of(&chain, &archive, anchor) else {
+        warn!(
+            anchor,
+            "backfill has no trusted anchor; keeping its plan for recovery"
+        );
+        return anchor;
+    };
+    let mut next = anchor;
+    let mut durable = gap;
     let mut k = 0usize;
     set_status(Some((gap.low, gap.high, next)));
     while next >= gap.low {
@@ -142,6 +200,7 @@ pub async fn run(chain: Chain, upstream: Arc<Upstream>, set: ValidatorSet, archi
             tokio::time::sleep(Duration::from_secs(1)).await;
             continue;
         }
+        wait_for_disk().await;
         let a = next.saturating_sub(RANGE - 1).max(gap.low);
         k += 1;
         let blocks = match fetch_span(&upstream, &set, &slots, k, a, next).await {
@@ -151,8 +210,19 @@ pub async fn run(chain: Chain, upstream: Arc<Upstream>, set: ValidatorSet, archi
                 continue;
             }
             Err(e) if e.contains("pruned") => {
-                info!(height = next, "the network pruned below here; the era files hold the rest");
-                break;
+                info!(
+                    height = next,
+                    "the network pruned below here; the era files hold the rest"
+                );
+                match advance_cursor(&chain, durable, None).await {
+                    Ok(true) => break,
+                    Ok(false) => return next + 1,
+                    Err(e) => {
+                        warn!(%e, "could not finish the backfill plan");
+                        tokio::time::sleep(RETRY).await;
+                        continue;
+                    }
+                }
             }
             Err(e) => {
                 warn!(height = next, %e, "backfill");
@@ -161,26 +231,58 @@ pub async fn run(chain: Chain, upstream: Arc<Upstream>, set: ValidatorSet, archi
             }
         };
         // Newest first, each the exact parent the block above it names.
-        for (block, proof) in blocks.into_iter().rev() {
+        let mut parent = expected.clone();
+        for (block, _) in blocks.iter().rev() {
             let h = block.height.get();
             let digest = format!("{}", block.digest());
-            if expected.as_ref().is_some_and(|e| *e != digest) {
-                tracing::error!(height = h, %digest, expected = ?expected, "a certified block does not link to the chain above it; backfill stopped");
+            if parent != digest {
+                tracing::error!(height = h, %digest, expected = %parent, "a certified block does not link to the chain above it; backfill stopped");
                 set_status(None);
                 return h + 1;
             }
-            archive.insert(h, proof);
-            expected = Some(format!("{}", block.parent));
+            parent = format!("{}", block.parent);
         }
-        if a == gap.low {
-            next = a.saturating_sub(1);
-            break;
+        let remaining = (a > gap.low).then_some(Gap {
+            low: gap.low,
+            high: a - 1,
+        });
+        // Space can disappear while the network request is in flight. The
+        // verified span and its cursor fsync together, including under a
+        // concurrent foreground reopen after a storage fault.
+        wait_for_disk().await;
+        let committed = if let Some(store) = archive.store() {
+            let proofs: Vec<_> = blocks
+                .iter()
+                .map(|(b, p)| (b.height.get(), p.to_string().into_bytes()))
+                .collect();
+            store.compare_put_proofs_and_meta(
+                META,
+                &encode(Some(durable)),
+                &encode(remaining),
+                &proofs,
+            )
+        } else {
+            for (block, proof) in blocks {
+                archive.insert(block.height.get(), proof);
+            }
+            advance_cursor(&chain, durable, remaining).await
+        };
+        match committed {
+            Ok(true) => {}
+            // A new jump replaced this plan while its request was in flight.
+            Ok(false) => return next + 1,
+            Err(e) => {
+                warn!(%e, "could not advance the backfill cursor; retrying the span");
+                tokio::time::sleep(RETRY).await;
+                continue;
+            }
         }
         next = a - 1;
+        expected = parent;
+        let Some(remaining) = remaining else { break };
+        durable = remaining;
         set_status(Some((gap.low, gap.high, next)));
-        persist(&chain, Some(Gap { low: gap.low, high: next }));
     }
-    persist(&chain, None);
     set_status(None);
     info!(low = next + 1, high = gap.high, "backfill finished");
     next + 1

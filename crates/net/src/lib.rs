@@ -900,9 +900,18 @@ impl RpcClient {
             Ok(v) => Ok(v),
             Err(RpcError::Server { message, .. }) => Err(anyhow!(message)),
             Err(RpcError::Transport(e)) => {
-                self.pool.lock().expect("rpc pool").remove(&i);
+                self.drop_failed_connection(i, &conn);
                 Err(e)
             }
+        }
+    }
+
+    fn drop_failed_connection(&self, i: usize, failed: &Connection) {
+        let mut pool = self.pool.lock().expect("rpc pool");
+        // Another call may have replaced this connection while the failing
+        // stream was still pending. Its delayed error must not evict that one.
+        if pool.get(&i).is_some_and(|current| current.stable_id() == failed.stable_id()) {
+            pool.remove(&i);
         }
     }
 
@@ -1253,6 +1262,34 @@ mod tests {
             .expect("the limit was released");
         assert_eq!(again["result"], "pong");
         client.close().await;
+        let _ = router.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_delayed_failure_keeps_the_replacement_pooled_connection() {
+        let server = Endpoint::builder(presets::Minimal)
+            .relay_mode(iroh::RelayMode::Disabled)
+            .alpns(vec![ALPN_RPC.to_vec()]).bind().await.unwrap();
+        let port = server.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap().port();
+        let addr = EndpointAddr::from_parts(server.id(), [TransportAddr::Ip(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port))]);
+        let router = serve(server, |req| async move {
+            serde_json::json!({ "jsonrpc": "2.0", "id": req["id"], "result": "pong" })
+        }, None, None);
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(iroh::RelayMode::Disabled).bind().await.unwrap();
+        let client = RpcClient::with_endpoint(endpoint.clone(), vec![]);
+        let old = endpoint.connect(addr.clone(), ALPN_RPC).await.unwrap();
+        client.pool.lock().unwrap().insert(0, old.clone());
+        client.drop_failed_connection(0, &old); // First failed call removes A.
+        let replacement = endpoint.connect(addr, ALPN_RPC).await.unwrap();
+        assert_ne!(old.stable_id(), replacement.stable_id());
+        client.pool.lock().unwrap().insert(0, replacement.clone());
+        client.drop_failed_connection(0, &old); // A second A failure arrives late.
+        assert_eq!(client.pool.lock().unwrap()[&0].stable_id(), replacement.stable_id());
+        assert_eq!(rpc_call(&replacement, "ping", serde_json::json!([])).await.unwrap(), "pong");
+        client.drop_failed_connection(0, &replacement);
+        assert!(client.pool.lock().unwrap().is_empty(), "its own failure still removes it");
+        endpoint.close().await;
         let _ = router.shutdown().await;
     }
 

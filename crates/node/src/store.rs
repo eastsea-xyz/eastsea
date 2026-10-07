@@ -794,6 +794,32 @@ impl Store {
         tx.commit().map_err(dberr)
     }
 
+    /// Advance a background cursor only while it still owns the recorded
+    /// plan. A newer snapshot must not be overwritten by an older backfill.
+    pub fn compare_put_meta(&self, key: &str, expected: &[u8], value: &[u8]) -> Result<bool, StoreError> {
+        self.compare_put_proofs_and_meta(key, expected, value, &[])
+    }
+
+    /// Proofs and their backfill cursor are one durable commit. Reopening
+    /// after an I/O fault can never retain the cursor while losing its span.
+    pub fn compare_put_proofs_and_meta(&self, key: &str, expected: &[u8], value: &[u8], proofs: &[(u64, Vec<u8>)]) -> Result<bool, StoreError> {
+        let mut tx = self.write_tx()?;
+        tx.set_durability(redb::Durability::Immediate).map_err(dberr)?;
+        {
+            let mut meta = tx.open_table(META).map_err(dberr)?;
+            if meta.get(key).map_err(dberr)?.as_ref().map(|v| v.value()) != Some(expected) {
+                return Ok(false);
+            }
+            let mut archive = tx.open_table(PROOFS).map_err(dberr)?;
+            for (height, proof) in proofs {
+                archive.insert(*height, proof.as_slice()).map_err(dberr)?;
+            }
+            meta.insert(key, value).map_err(dberr)?;
+        }
+        tx.commit().map_err(dberr)?;
+        Ok(true)
+    }
+
     /// The database file (its directory is where a recovery's space is
     /// checked, `crate::follow::require_space`).
     pub fn path(&self) -> &Path {
@@ -1151,11 +1177,17 @@ impl Store {
 
     /// Persist one finalized block atomically (durable: the commit fsyncs).
     pub fn commit(&self, c: Commit<'_>) -> Result<(), StoreError> {
-        self.write(c, &[], redb::Durability::Immediate, false)
+        self.write(c, &[], redb::Durability::Immediate, false, None)
+    }
+
+    /// Install a checked snapshot and its recovery plan in the same durable
+    /// transaction, so no restart can see the new head without its gap.
+    pub(crate) fn commit_with_meta(&self, c: Commit<'_>, key: &str, value: &[u8]) -> Result<(), StoreError> {
+        self.write(c, &[], redb::Durability::Immediate, false, Some((key, value)))
     }
 
     pub fn commit_with_history(&self, c: Commit<'_>, history: &[crate::account_history::Entry], relaxed: bool) -> Result<(), StoreError> {
-        self.write(c, history, if relaxed { redb::Durability::None } else { redb::Durability::Immediate }, true)
+        self.write(c, history, if relaxed { redb::Durability::None } else { redb::Durability::Immediate }, true, None)
     }
 
     /// The same write without the fsync, while a certified backlog is being
@@ -1163,10 +1195,10 @@ impl Store {
     /// commit, so a crash loses only the blocks after the last one — every
     /// block is re-fetchable, so they simply replay.
     pub fn commit_relaxed(&self, c: Commit<'_>) -> Result<(), StoreError> {
-        self.write(c, &[], redb::Durability::None, false)
+        self.write(c, &[], redb::Durability::None, false, None)
     }
 
-    fn write(&self, c: Commit<'_>, history: &[crate::account_history::Entry], durability: redb::Durability, indexing: bool) -> Result<(), StoreError> {
+    fn write(&self, c: Commit<'_>, history: &[crate::account_history::Entry], durability: redb::Durability, indexing: bool, metadata: Option<(&str, &[u8])>) -> Result<(), StoreError> {
         let mut tx = self.write_tx()?;
         tx.set_durability(durability).map_err(dberr)?;
         {
@@ -1205,6 +1237,9 @@ impl Store {
                 tx.open_table(ACCOUNT_BLOCK_KEYS).map_err(dberr)?.insert(c.height, keys.as_slice()).map_err(dberr)?;
             }
             let mut meta = tx.open_table(META).map_err(dberr)?;
+            if let Some((key, value)) = metadata {
+                meta.insert(key, value).map_err(dberr)?;
+            }
             if indexing && meta.get(ACCOUNT_HISTORY_SINCE).map_err(dberr)?.is_none() {
                 meta.insert(ACCOUNT_HISTORY_SINCE, c.height.to_be_bytes().as_slice()).map_err(dberr)?;
             }
@@ -1576,6 +1611,44 @@ mod tests {
             "what was written after the re-open is on disk"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn backfill_proofs_and_cursor_survive_recovery_together() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let dir = dir_for("backfill-atomic");
+        let path = dir.join("state.redb");
+        let full = Arc::new(AtomicBool::new(false));
+        let store = Store::open_with(&path, {
+            let full = full.clone();
+            Arc::new(move |p| {
+                let full = full.clone();
+                open_on_a_full_disk(p, Arc::new(move || full.load(Ordering::SeqCst)))
+            })
+        }).unwrap();
+        let (before, after) = (b"remaining=32".as_slice(), b"remaining=0".as_slice());
+        store.put_meta("backfill", before).unwrap();
+        let proofs = vec![(31, b"certified-31".to_vec()), (32, b"certified-32".to_vec())];
+        full.store(true, Ordering::SeqCst);
+        assert!(store.compare_put_proofs_and_meta("backfill", before, after, &proofs).is_err());
+        full.store(false, Ordering::SeqCst);
+        store.reopen().unwrap();
+        assert_eq!(store.meta("backfill").unwrap().as_deref(), Some(before));
+        assert!(store.proof(31).unwrap().is_none() && store.proof(32).unwrap().is_none(), "a failed span has no partial proof or cursor commit");
+        assert!(store.compare_put_proofs_and_meta("backfill", before, after, &proofs).unwrap());
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.meta("backfill").unwrap().as_deref(), Some(after));
+        for (h, proof) in &proofs {
+            assert_eq!(store.proof(*h).unwrap().as_deref(), Some(proof.as_slice()));
+        }
+        // An older task cannot overwrite a later jump's plan or insert rows.
+        store.put_meta("backfill", b"new jump").unwrap();
+        assert!(!store.compare_put_proofs_and_meta("backfill", after, b"", &[(33, b"old task".to_vec())]).unwrap());
+        assert_eq!(store.meta("backfill").unwrap().as_deref(), Some(b"new jump".as_slice()));
+        assert!(store.proof(33).unwrap().is_none());
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// A disk that stays full is not looped on: the recovery tries its

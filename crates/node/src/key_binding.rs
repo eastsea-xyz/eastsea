@@ -250,6 +250,7 @@ fn check_with_uuid(dir: &Path, public: &[u8; 32], uuid: &str) -> Result<Checked,
     match read_binding(&path) {
         Ok(bytes) => {
             validate(&path, &bytes, public, uuid)?;
+            crate::atomic::sync_parent(&path).map_err(error)?;
             Ok(Checked::Existing)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -262,15 +263,17 @@ fn check_with_uuid(dir: &Path, public: &[u8; 32], uuid: &str) -> Result<Checked,
                     .as_secs(),
             };
             let bytes = serde_json::to_vec_pretty(&record).map_err(error)?;
-            match crate::atomic::create(&path, &bytes, 0o600) {
+            match crate::atomic::create_once(&path, &bytes, 0o600) {
                 Ok(()) => Ok(Checked::Created),
                 // Another creator may have won. Accept only its matching
                 // binding, never overwrite it or ignore a mismatching winner.
-                Err(write) => {
-                    let saved = read_binding(&path).map_err(|_| error(write))?;
+                Err(crate::atomic::CreateError::AlreadyExists) => {
+                    let saved = read_binding(&path).map_err(error)?;
                     validate(&path, &saved, public, uuid)?;
+                    crate::atomic::sync_parent(&path).map_err(error)?;
                     Ok(Checked::Existing)
                 }
+                Err(write) => Err(error(write)),
             }
         }
         Err(e) => Err(error(format!("{}: {e}", path.display()))),
@@ -315,6 +318,26 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn binding_publication_does_not_hide_directory_sync_failure() {
+        let dir = Dir::new("sync-failure");
+        crate::atomic::fail_sync_for_test(Some(&dir.0));
+        let result = check_with_uuid(&dir.0, &[1; 32], "MAC-A");
+        crate::atomic::fail_sync_for_test(None);
+        assert!(dir.0.join(BINDING_FILE).exists(), "the fault is after publication");
+        assert!(result.is_err(), "a visible record must not mask failed durable publication");
+    }
+
+    #[test]
+    fn an_existing_visible_binding_still_requires_durable_publication() {
+        let dir = Dir::new("visible-sync-failure");
+        binding(&dir.0, &[1; 32], "MAC-A");
+        crate::atomic::fail_sync_for_test(Some(&dir.0));
+        let result = check_with_uuid(&dir.0, &[1; 32], "MAC-A");
+        crate::atomic::fail_sync_for_test(None);
+        assert!(result.is_err(), "a reader racing publication must confirm directory durability");
     }
 
     #[test]

@@ -27,6 +27,8 @@ stage="$(aether_guest_stage_path)"
 # The host links jolt-sdk and akita from the Jolt fork by absolute path, so
 # remap that tree too or the host binary follows the fork's location.
 aether_repro_rustflags "--remap-path-prefix=$(cd "$jolt" && pwd)=/jolt$(aether_guest_stage_remap /aether-node)"
+compile_guard="$HOME/.claude/playbooks/aether-team/wait-compile.sh"
+if [ -x "$compile_guard" ]; then "$compile_guard"; fi
 (cd "$stage/apps/prover" && MACOSX_DEPLOYMENT_TARGET=14.0 cargo build -q --release --locked) >&2
 # The binary lands in CARGO_TARGET_DIR when one is set (shared build dirs). Like
 # the node it carries the linker's UUID, which follows the build directory, and

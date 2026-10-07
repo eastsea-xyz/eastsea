@@ -104,7 +104,6 @@ struct MigrationOverlay: View {
 
     var body: some View {
         if status.waitingForUnlock {
-            let ko = HealthCheck.korean
             card {
                 Text(String(localized: "Unlock this Mac to finish moving your wallet")).font(.headline)
                 Text(String(localized: "Your node data has already moved to EastSea. Your wallet key file can only be read while this Mac is unlocked, so it has not moved yet. Unlock the Mac and EastSea finishes by itself within a few seconds. Nothing was deleted; your wallet is safe."))

@@ -71,11 +71,11 @@ struct MenuBarPanel: View {
             if node.prove, let p = node.prover {
                 VStack(alignment: .leading, spacing: 4) {
                     let facts = ProverFacts(p)
-                    let line = ProverMenuText.line(facts, ko: ko)
+                    let line = ProverMenuText.line(facts)
                     Text(line.text)
                         .foregroundStyle(line.warn ? Color.warn : Color.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    if let reward = ProverMenuText.reward(facts, ko: ko) {
+                    if let reward = ProverMenuText.reward(facts) {
                         Text(reward).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -112,7 +112,6 @@ struct MenuBarPanel: View {
         .frame(width: 300)
     }
 
-    private var ko: Bool { HealthCheck.korean }
 
     /// A running node in plain words (no block numbers in the menu).
     private var nodeLine: String {
@@ -120,7 +119,7 @@ struct MenuBarPanel: View {
         case .off: return String(localized: "Off")
         case .starting: return node.height > 0 ? String(localized: "Catching up with the network") : String(localized: "Starting…")
         case .running: return String(localized: "Checking every block on this Mac")
-        case .waitingForPower: return NodeStopReason.onBattery.copy(ko: ko).title
+        case .waitingForPower: return NodeStopReason.onBattery.copy().title
         case .failed(let e): return e
         }
     }

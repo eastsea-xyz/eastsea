@@ -6,6 +6,13 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:$PATH"
+# Every temporary artifact and build waits stay inside the active checkout.
+mkdir -p "$PWD/tmp"
+export TMPDIR="$PWD/tmp"
+wait_compile() {
+  local guard="$HOME/.claude/playbooks/aether-team/wait-compile.sh"
+  if [ -x "$guard" ]; then "$guard"; fi
+}
 target=${1:-macos}
 # Release artifacts must be byte-identical wherever the checkout lives (gap G5).
 . scripts/repro-env.sh
@@ -21,6 +28,7 @@ if [ "$target" = macos ]; then
   export AETHER_PROVER_PROGRAM
   echo "proving program $AETHER_PROVER_PROGRAM"
 fi
+wait_compile
 case "$target" in
   macos)  MACOSX_DEPLOYMENT_TARGET=14.0 cargo build -p aether-ffi -p aether-node --release --locked ;;
   ios-sim) IPHONEOS_DEPLOYMENT_TARGET=17.0 cargo build -p aether-ffi --release --locked --target aarch64-apple-ios-sim ;;
@@ -32,6 +40,7 @@ esac
 # ceremony-check.json beside it, pinning its exact bytes — no app build may
 # hand a consumer Mac an unchecked genesis. The 7780 testnet bundle ships no
 # record and passes (not a new genesis).
+wait_compile
 if gate=$(cargo run -q --release --locked -p aether-node --bin aether -- \
   mainnet-rules --bundle --network apps/wallet/Resources/network.json 2>&1); then
   echo "bundled ceremony record gate: $(printf '%s\n' "$gate" | tail -1)"
@@ -55,7 +64,11 @@ fi
 # it from the code, so the copy the app embeds is the same bytes anywhere.
 [ "$target" = macos ] && aether_repro_fix_uuid target/release/aether
 # Bindings come from the host (macOS) build of the same crate.
-[ -f target/release/libaether_ffi.dylib ] || MACOSX_DEPLOYMENT_TARGET=14.0 cargo build -p aether-ffi --release --locked
+if [ ! -f target/release/libaether_ffi.dylib ]; then
+  wait_compile
+  MACOSX_DEPLOYMENT_TARGET=14.0 cargo build -p aether-ffi --release --locked
+fi
+wait_compile
 cargo run -q --locked -p aether-ffi --features bindgen --bin uniffi-bindgen -- generate --library target/release/libaether_ffi.dylib --language swift --out-dir apps/wallet/Generated
 mv -f apps/wallet/Generated/aether_ffiFFI.modulemap apps/wallet/Generated/module.modulemap
 # The macOS app embeds the node and the agent CLI (Contents/Helpers).
@@ -76,6 +89,7 @@ if [ -n "${OTHER_SWIFT_FLAGS:-}" ]; then set -- "OTHER_SWIFT_FLAGS=$OTHER_SWIFT_
 # WALLET_ADHOC=1: a local check build signed ad hoc (no Developer ID needed);
 # the postBuild script signs the helpers with the same identity.
 if [ "${WALLET_ADHOC:-0}" = 1 ]; then set -- "$@" CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM=; fi
+wait_compile
 case "$target" in
   macos)  xcodebuild -project AetherWallet.xcodeproj -scheme AetherWallet -configuration Release -derivedDataPath build "$@" build | grep -E "BUILD|error:" ;;
   ios-sim) xcodebuild -project AetherWallet.xcodeproj -scheme AetherWalletIOS -sdk iphonesimulator -configuration Debug -derivedDataPath build CODE_SIGNING_ALLOWED=NO build | grep -E "BUILD|error:" ;;

@@ -69,7 +69,7 @@ func doneFlag(_ d: UserDefaults) -> Bool { d.bool(forKey: "renameMigrationDone")
 let noOldDomain = "rename-migration-test-no-old-app-\(UUID().uuidString)"
 func migrate(_ root: URL, _ d: UserDefaults, forceCopy: Bool = false,
              meter: DataMigration.ProgressMeter? = nil) -> DataMigration.Outcome {
-    DataMigration.migrate(support: root, defaults: d, oldPreferencesDomain: noOldDomain, forceCopy: forceCopy, meter: meter)
+    DataMigration.migrate(support: root, defaults: d, oldPreferencesDomain: noOldDomain, forceCopy: forceCopy, meter: meter, locale: walletTestLocale("en"), bundle: walletTestBundle("en"))
 }
 func cleanup(_ root: URL, _ d: UserDefaults) {
     try? FileManager.default.removeItem(at: root)
@@ -196,20 +196,20 @@ do {
 // 5. No fresh identities while an old one waits (audit A5-7).
 do {
     let (root, d) = makeOldSupport()
-    if let why = DataMigration.mayCreateFreshWalletKey(support: root, defaults: d) {
+    if let why = DataMigration.mayCreateFreshWalletKey(support: root, defaults: d, locale: walletTestLocale("en"), bundle: walletTestBundle("en")) {
         expect(why.count > 20, "creating a new wallet key is refused while the old handle waits: \(why)")
     } else {
         expect(false, "a new wallet key must be refused while the old handle is unmigrated")
     }
-    if let why = DataMigration.mayStartNode(support: root, defaults: d) {
+    if let why = DataMigration.mayStartNode(support: root, defaults: d, locale: walletTestLocale("en"), bundle: walletTestBundle("en")) {
         expect(why.count > 20, "starting the node is refused while the old identity waits: \(why)")
     } else {
         expect(false, "the node must not start while the old identity is unmigrated")
     }
     _ = migrate(root, d)
-    expect(DataMigration.mayCreateFreshWalletKey(support: root, defaults: d) == nil,
+    expect(DataMigration.mayCreateFreshWalletKey(support: root, defaults: d, locale: walletTestLocale("en"), bundle: walletTestBundle("en")) == nil,
            "after a verified migration a new key may be made (fresh installs)")
-    expect(DataMigration.mayStartNode(support: root, defaults: d) == nil,
+    expect(DataMigration.mayStartNode(support: root, defaults: d, locale: walletTestLocale("en"), bundle: walletTestBundle("en")) == nil,
            "after a verified migration the node may start")
     cleanup(root, d)
 }
@@ -218,9 +218,9 @@ do {
     let (root, d) = makeOldSupport()
     try? FileManager.default.removeItem(at: root.appending(path: "Aether"))
     try? FileManager.default.removeItem(at: root.appending(path: "AetherWallet"))
-    expect(DataMigration.mayCreateFreshWalletKey(support: root, defaults: d) == nil,
+    expect(DataMigration.mayCreateFreshWalletKey(support: root, defaults: d, locale: walletTestLocale("en"), bundle: walletTestBundle("en")) == nil,
            "no old data: a fresh key is allowed")
-    expect(DataMigration.mayStartNode(support: root, defaults: d) == nil, "no old data: the node may start")
+    expect(DataMigration.mayStartNode(support: root, defaults: d, locale: walletTestLocale("en"), bundle: walletTestBundle("en")) == nil, "no old data: the node may start")
     expect(migrate(root, d) == DataMigration.Outcome.noOldData,
            "no old data: the migration says so and is done")
     expect(doneFlag(d), "a fresh install is marked done (nothing to retry)")
@@ -238,7 +238,7 @@ do {
                                                 withDestinationPath: elsewhere.path)
     let outcome = migrate(root, d)
     if case .failed(let why) = outcome {
-        expect(why.lowercased().contains("symbolic"), "a symlinked destination is refused with a reason: \(why)")
+        expect(why.contains("Remove the link"), "a symlinked destination is refused with a reason: \(why)")
     } else {
         expect(false, "a symlinked destination must fail the migration: \(outcome)")
     }
@@ -374,15 +374,15 @@ do {
     // A half-copied tree from an interrupted run.
     try? FileManager.default.createDirectory(at: newNode, withIntermediateDirectories: true)
     try? "chain-da".write(to: newNode.appending(path: "data.db"), atomically: true, encoding: .utf8)
-    expect(DataMigration.mayStartNode(support: root, defaults: d) != nil,
+    expect(DataMigration.mayStartNode(support: root, defaults: d, locale: walletTestLocale("en"), bundle: walletTestBundle("en")) != nil,
            "a partial destination tree still refuses the node start")
     // So does an empty placeholder directory.
     try? FileManager.default.removeItem(at: newNode.appending(path: "data.db"))
-    expect(DataMigration.mayStartNode(support: root, defaults: d) != nil,
+    expect(DataMigration.mayStartNode(support: root, defaults: d, locale: walletTestLocale("en"), bundle: walletTestBundle("en")) != nil,
            "an empty destination directory still refuses the node start")
     // The same-volume completion clears the refusal.
     expect(migrate(root, d) == .done, "the migration completes over the placeholder")
-    expect(DataMigration.mayStartNode(support: root, defaults: d) == nil, "a completed migration allows the node")
+    expect(DataMigration.mayStartNode(support: root, defaults: d, locale: walletTestLocale("en"), bundle: walletTestBundle("en")) == nil, "a completed migration allows the node")
     cleanup(root, d)
 }
 
@@ -401,7 +401,7 @@ do {
     let half = oldNode.appending(path: "eastsea-quarantine-12345")
     try? FileManager.default.createDirectory(at: half, withIntermediateDirectories: true)
     try? FileManager.default.moveItem(at: oldNode.appending(path: "validator.key"), to: half.appending(path: "validator.key"))
-    expect(DataMigration.mayStartNode(support: root, defaults: d) != nil,
+    expect(DataMigration.mayStartNode(support: root, defaults: d, locale: walletTestLocale("en"), bundle: walletTestBundle("en")) != nil,
            "a half-quarantined old tree still refuses the node start")
     expect(oldBinaryView(oldNode).canSign == false, "with the key gone the old binary already cannot sign")
     let outcome = migrate(root, d)
@@ -448,13 +448,13 @@ do {
                                              withIntermediateDirectories: true)
     let outcome = migrate(root, d)
     if case .failed(let why) = outcome {
-        expect(why.contains("marked migrated"), "the post-quarantine marker failure reports itself: \(why)")
+        expect(why.contains("The data move could not be completed"), "the post-quarantine marker failure reports itself: \(why)")
     } else {
         expect(false, "a marker write failure after the quarantine must fail the run: \(outcome)")
     }
     expect(!doneFlag(d), "done is not set while the marker tail is pending")
     expect(d.bool(forKey: "renameNodeMigrationDone"), "the node's own completion state IS set (the quarantine finished)")
-    expect(DataMigration.mayStartNode(support: root, defaults: d) == nil,
+    expect(DataMigration.mayStartNode(support: root, defaults: d, locale: walletTestLocale("en"), bundle: walletTestBundle("en")) == nil,
            "H2: the verified new node may start after the quarantine, marker or no marker")
     // Exactly one usable signer: the old tree cannot, the new tree can.
     expect(oldBinaryView(oldNode).canSign == false, "the quarantined old tree cannot sign")
@@ -486,14 +486,14 @@ do {
                                            ofItemAtPath: root.appending(path: "EastSeaWallet").path)
     let outcome = migrate(root, d)
     if case .failed(let why) = outcome {
-        expect(why.contains("did not copy"), "the pre-quarantine copy failure reports itself: \(why)")
+        expect(why.contains("The data move could not be completed"), "the pre-quarantine copy failure reports itself: \(why)")
     } else {
         expect(false, "a small-file copy failure must fail the run: \(outcome)")
     }
     expect(!doneFlag(d), "done is not set")
     expect(!d.bool(forKey: "renameNodeMigrationDone"), "the node completion state is not set: nothing was quarantined")
     expect(oldBinaryView(oldNode).canSign, "H2: the old tree is still a usable signer (nothing was stranded)")
-    expect(DataMigration.mayStartNode(support: root, defaults: d) != nil,
+    expect(DataMigration.mayStartNode(support: root, defaults: d, locale: walletTestLocale("en"), bundle: walletTestBundle("en")) != nil,
            "the new node stays off while the old signer lives (A6-5)")
     let quarantines = ((try? FileManager.default.contentsOfDirectory(atPath: oldNode.path)) ?? [])
         .filter { $0.hasPrefix("eastsea-quarantine-") }
@@ -521,7 +521,7 @@ do {
     // …then simulate the crash: neither flag made it to disk.
     d.removeObject(forKey: "renameMigrationDone")
     d.removeObject(forKey: "renameNodeMigrationDone")
-    expect(DataMigration.mayStartNode(support: root, defaults: d) == nil,
+    expect(DataMigration.mayStartNode(support: root, defaults: d, locale: walletTestLocale("en"), bundle: walletTestBundle("en")) == nil,
            "the crash window heals: a marked, signer-clean old tree lets the verified node start")
     expect(migrate(root, d) == .done, "the re-run finishes idempotently")
     expect(doneFlag(d), "done is set again after the heal")
@@ -542,9 +542,9 @@ do {
     let waiting = DataMigration.unmigratedOldData(support: root)
     expect(waiting.contains("Aether/node") && waiting.contains("AetherWallet/enclave-key.dat")
            && waiting.contains("Aether/node.identity"), "B4: the disk says the old data is unmigrated: \(waiting)")
-    expect(DataMigration.mayCreateFreshWalletKey(support: root, defaults: d) != nil,
+    expect(DataMigration.mayCreateFreshWalletKey(support: root, defaults: d, locale: walletTestLocale("en"), bundle: walletTestBundle("en")) != nil,
            "B4: a stale done flag does not let a new wallet key be minted over an unmigrated old one")
-    expect(DataMigration.mayStartNode(support: root, defaults: d) != nil,
+    expect(DataMigration.mayStartNode(support: root, defaults: d, locale: walletTestLocale("en"), bundle: walletTestBundle("en")) != nil,
            "B4: a stale done flag does not let the node (and candidate-info) mint a new validator identity")
     let outcome = migrate(root, d)
     expect(outcome == .done, "B4: the migration runs despite the stale flag: \(outcome)")
@@ -557,8 +557,8 @@ do {
            "B4: the identity guard came along, so the new node can never mint a fresh identity there")
     expect(fm.fileExists(atPath: root.appending(path: "Aether/node.identity").path), "the old identity guard stays")
     expect(DataMigration.unmigratedOldData(support: root).isEmpty, "nothing is waiting any more")
-    expect(DataMigration.mayCreateFreshWalletKey(support: root, defaults: d) == nil
-           && DataMigration.mayStartNode(support: root, defaults: d) == nil, "after the real migration both gates open")
+    expect(DataMigration.mayCreateFreshWalletKey(support: root, defaults: d, locale: walletTestLocale("en"), bundle: walletTestBundle("en")) == nil
+           && DataMigration.mayStartNode(support: root, defaults: d, locale: walletTestLocale("en"), bundle: walletTestBundle("en")) == nil, "after the real migration both gates open")
     expect(doneFlag(d), "done is set again, now truthfully")
     cleanup(root, d)
 }
@@ -575,8 +575,8 @@ do {
     if case .deferred = outcome { expect(true, "B4: a stale flag with the old app running defers") }
     else { expect(false, "B4: a stale flag with the old app running must defer: \(outcome)") }
     expect(!doneFlag(d) && !d.bool(forKey: "renameNodeMigrationDone"), "B4: the stale flags are gone")
-    expect(DataMigration.mayStartNode(support: root, defaults: d) != nil
-           && DataMigration.mayCreateFreshWalletKey(support: root, defaults: d) != nil,
+    expect(DataMigration.mayStartNode(support: root, defaults: d, locale: walletTestLocale("en"), bundle: walletTestBundle("en")) != nil
+           && DataMigration.mayCreateFreshWalletKey(support: root, defaults: d, locale: walletTestLocale("en"), bundle: walletTestBundle("en")) != nil,
            "B4: both gates stay shut while the deferred move waits")
     close(fd)
     expect(migrate(root, d) == .done, "once the old app quits, the move completes")
@@ -601,7 +601,7 @@ do {
     try? fm.createDirectory(at: root.appending(path: "EastSeaWallet"), withIntermediateDirectories: true)
     try? "minted-handle".write(to: root.appending(path: "EastSeaWallet/enclave-key.dat"), atomically: true, encoding: .utf8)
     d.set(true, forKey: "renameMigrationDone")
-    expect(DataMigration.mayStartNode(support: root, defaults: d) != nil,
+    expect(DataMigration.mayStartNode(support: root, defaults: d, locale: walletTestLocale("en"), bundle: walletTestBundle("en")) != nil,
            "B4: an old root that still holds an identity keeps the node off, flag or not")
     expect(migrate(root, d) == .done, "B4: the resumed migration completes over the minted identity")
     expect((try? String(contentsOf: newNode.appending(path: "validator.key"), encoding: .utf8)) == "validator-key-bytes",
@@ -641,10 +641,10 @@ do {
     try? fm.createDirectory(at: root.appending(path: "EastSea/node"), withIntermediateDirectories: true)
     d.set(true, forKey: "renameMigrationDone")
     expect(DataMigration.unmigratedOldData(support: root) == ["Aether/node.identity"], "B4: the lone guard is noticed")
-    expect(DataMigration.mayStartNode(support: root, defaults: d) != nil, "B4: no node start that would mint a second identity")
+    expect(DataMigration.mayStartNode(support: root, defaults: d, locale: walletTestLocale("en"), bundle: walletTestBundle("en")) != nil, "B4: no node start that would mint a second identity")
     expect(migrate(root, d) == .done, "the guard-only migration completes")
     expect(fm.fileExists(atPath: root.appending(path: "EastSea/node.identity").path), "the guard now sits beside the new tree")
-    expect(DataMigration.mayStartNode(support: root, defaults: d) == nil, "the gate opens: the node's own guard takes over")
+    expect(DataMigration.mayStartNode(support: root, defaults: d, locale: walletTestLocale("en"), bundle: walletTestBundle("en")) == nil, "the gate opens: the node's own guard takes over")
     cleanup(root, d)
 }
 
@@ -664,7 +664,7 @@ do {
     expect(migrate(root, d) == .done, "the flag holds")
     expect((try? String(contentsOf: root.appending(path: "EastSea/node/follow/state.redb"), encoding: .utf8)) == "follow-db",
            "the new tree is untouched by the old app's resync")
-    expect(DataMigration.mayStartNode(support: root, defaults: d) == nil, "the node may start")
+    expect(DataMigration.mayStartNode(support: root, defaults: d, locale: walletTestLocale("en"), bundle: walletTestBundle("en")) == nil, "the node may start")
     cleanup(root, d)
 }
 
@@ -702,7 +702,7 @@ do {
 //     the old run.lock, none a .failed from racing over the same files).
 do {
     let (root, d) = makeOldSupport()
-    let runner = DataMigration.Runner(support: root, defaults: d, oldPreferencesDomain: noOldDomain)
+    let runner = DataMigration.Runner(support: root, defaults: d, oldPreferencesDomain: noOldDomain, locale: walletTestLocale("en"), bundle: walletTestBundle("en"))
     let results = NSMutableArray()
     DispatchQueue.concurrentPerform(iterations: 8) { _ in
         let o = runner.runNow()
@@ -721,7 +721,7 @@ do {
     expect(Thread.isMainThread, "this test runs on the main thread")
     let (root, d) = makeOldSupport()
     try? Data(repeating: 0x33, count: 8 << 20).write(to: root.appending(path: "Aether/node/state.redb"))
-    let runner = DataMigration.Runner(support: root, defaults: d, oldPreferencesDomain: noOldDomain, forceCopy: true)
+    let runner = DataMigration.Runner(support: root, defaults: d, oldPreferencesDomain: noOldDomain, forceCopy: true, locale: walletTestLocale("en"), bundle: walletTestBundle("en"))
     expect(runner.expectsLongRun(), "a copy across volumes is the long path")
     let finished = DispatchSemaphore(value: 0)
     var final: DataMigration.Outcome?
@@ -732,8 +732,8 @@ do {
     if case .running = first { expect(true, "M1: the main thread gets .running at once (\(Int(returnedIn * 1000)) ms)") }
     else { expect(false, "M1: the main thread must not run the slow path inline: \(first)") }
     if runner.isRunning {
-        expect(DataMigration.mayStartNode(support: root, defaults: d, runner: runner) == DataMigration.movingSentence
-               && DataMigration.mayCreateFreshWalletKey(support: root, defaults: d, runner: runner) == DataMigration.movingSentence,
+        expect(DataMigration.mayStartNode(support: root, defaults: d, runner: runner, locale: walletTestLocale("en"), bundle: walletTestBundle("en")) == DataMigration.movingSentence(locale: walletTestLocale("en"), bundle: walletTestBundle("en"))
+               && DataMigration.mayCreateFreshWalletKey(support: root, defaults: d, runner: runner, locale: walletTestLocale("en"), bundle: walletTestBundle("en")) == DataMigration.movingSentence(locale: walletTestLocale("en"), bundle: walletTestBundle("en")),
                "M1: both gates say the data is moving while it moves")
     }
     if case .running = runner.ensureFromMain() { expect(true, "a second call does not start a second run") }
@@ -741,7 +741,7 @@ do {
     expect(finished.wait(timeout: .now() + 60) == .success, "the background run finishes")
     expect(final == .done, "M1: the background run's outcome is reported: \(String(describing: final))")
     expect(!runner.isRunning && runner.ensureFromMain() == .done, "after it, the process is settled")
-    expect(DataMigration.mayStartNode(support: root, defaults: d, runner: runner) == nil, "the gates open after the run")
+    expect(DataMigration.mayStartNode(support: root, defaults: d, runner: runner, locale: walletTestLocale("en"), bundle: walletTestBundle("en")) == nil, "the gates open after the run")
     cleanup(root, d)
 }
 
@@ -775,7 +775,7 @@ do {
 do {
     expect(Thread.isMainThread, "this test runs on the main thread")
     let (root, d) = makeOldSupport()
-    let runner = DataMigration.Runner(support: root, defaults: d, oldPreferencesDomain: noOldDomain)
+    let runner = DataMigration.Runner(support: root, defaults: d, oldPreferencesDomain: noOldDomain, locale: walletTestLocale("en"), bundle: walletTestBundle("en"))
     var reported: [DataMigration.Outcome] = []
     runner.onFinish = { reported.append($0) }
     let fd = open(root.appending(path: "Aether/node/run.lock").path, O_RDWR)
@@ -805,7 +805,7 @@ do {
     let handle = root.appending(path: "AetherWallet/enclave-key.dat")
     chmod(handle.path, 0o000)
     let outcome = DataMigration.migrate(support: root, defaults: d, oldPreferencesDomain: noOldDomain,
-                                        oldPreferences: ["acceptedTerms": 3, "nodeEnabled": true])
+                                        oldPreferences: ["acceptedTerms": 3, "nodeEnabled": true], locale: walletTestLocale("en"), bundle: walletTestBundle("en"))
     if case .waitingForUnlock(let why) = outcome {
         expect(why.contains("Unlock"), "25: a locked handle waits for unlock and says so: \(why)")
     } else {
@@ -814,13 +814,13 @@ do {
     expect(FileManager.default.fileExists(atPath: handle.path)
            && !FileManager.default.fileExists(atPath: root.appending(path: "EastSeaWallet/enclave-key.dat").path),
            "25: the old handle stays, no new one")
-    expect(!doneFlag(d) && DataMigration.mayCreateFreshWalletKey(support: root, defaults: d) != nil,
+    expect(!doneFlag(d) && DataMigration.mayCreateFreshWalletKey(support: root, defaults: d, locale: walletTestLocale("en"), bundle: walletTestBundle("en")) != nil,
            "25: not done, and no fresh wallet key meanwhile")
     expect(FileManager.default.fileExists(atPath: root.appending(path: "EastSea/node/validator.key").path), "25: the node tree moved")
     expect(d.bool(forKey: "nodeEnabled") && (d.object(forKey: "acceptedTerms") as? Int) == 3,
            "26: the preferences arrive even while the wallet handle waits")
-    let idle = DataMigration.Runner(support: root, defaults: d, oldPreferencesDomain: noOldDomain)
-    expect(DataMigration.mayStartNode(support: root, defaults: d, runner: idle) == nil, "27: the moved node may start whatever the wallet does")
+    let idle = DataMigration.Runner(support: root, defaults: d, oldPreferencesDomain: noOldDomain, locale: walletTestLocale("en"), bundle: walletTestBundle("en"))
+    expect(DataMigration.mayStartNode(support: root, defaults: d, runner: idle, locale: walletTestLocale("en"), bundle: walletTestBundle("en")) == nil, "27: the moved node may start whatever the wallet does")
     var outcomes: [DataMigration.Outcome] = []
     idle.onFinish = { outcomes.append($0) }
     let inline = idle.ensureFromMain()
@@ -835,6 +835,14 @@ do {
            "29: the handle arrived byte for byte, and the move is done")
     cleanup(root, d)
 }
+
+// Migration notices accept a requested language without depending on this Mac.
+expect(DataMigration.movingSentence(locale: walletTestLocale("en"), bundle: walletTestBundle("en"))
+       == "EastSea is moving your data over from Aether. This takes a moment; the wallet and the node start as soon as it is done.", "the reviewed English moving sentence")
+expect(DataMigration.movingSentence(locale: walletTestLocale("ko"), bundle: walletTestBundle("ko"))
+       == "동해가 Aether의 데이터를 옮기고 있어요. 잠시면 끝나고, 끝나는 대로 지갑과 노드가 시작돼요.", "the reviewed Korean moving sentence")
+expect(DataMigration.movingSentence(locale: walletTestLocale("ja"), bundle: walletTestBundle("ja"))
+       == "EastSeaがAetherからデータを移しています。少しお待ちください。終わるとウォレットとノードが起動します。", "the Japanese moving sentence")
 
 // Test hygiene: this run wrote no preferences plist at all.
 Thread.sleep(forTimeInterval: 1)   // cfprefsd writes asynchronously

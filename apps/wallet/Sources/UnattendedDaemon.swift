@@ -116,7 +116,10 @@ final class UnattendedDaemon: ObservableObject {
             do {
                 if service.status == .notRegistered { try service.register() }
             } catch {
-                status = .failed(String(localized: "Could not keep the node running after restarts: \(error.localizedDescription)"))
+                NodeStatusLog.append(NodeStatusLog.line(at: Date(), event: "unattended_registration_failed",
+                                                       detail: error.localizedDescription, facts: nil),
+                                     in: NodeController.dataDir)
+                status = .failed(String(localized: "Could not keep the node running after restarts."))
                 return
             }
         } else {

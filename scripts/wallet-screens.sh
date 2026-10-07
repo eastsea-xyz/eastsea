@@ -1,35 +1,52 @@
 #!/usr/bin/env bash
-# Product QA: render every Mac wallet screen and sheet to PNG with the design
-# preview's sample data, in Korean and English, light and dark:
-#   tmp/screens/<screen>-<ko|en>-<light|dark>.png
-#   scripts/wallet-screens.sh            all screens
-#   scripts/wallet-screens.sh sheet-     only the screens whose name starts so
-# The renderer is its own app (WalletScreens, built with WALLET_SCREENS): it
-# never starts a node, never reads or moves the real data folder, never opens
-# the keychain, and runs with HOME pointed at a throwaway folder. It never
-# launches EastSea.app. Needs the core library: scripts/build-wallet.sh first.
+# Product QA renders every wallet screen with isolated fixtures: all five
+# languages in light mode, plus English/Korean dark mode. Each PNG has visible
+# text from Vision OCR next to it for check-wallet-screens-language.py.
+#   scripts/wallet-screens.sh [screen-prefix]
+# Never launches EastSea.app or reads its real data, node, or keychain.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+mkdir -p "$root/tmp"
+export TMPDIR="$root/tmp"
 [ -f target/release/libaether_ffi.a ] || { echo "no target/release/libaether_ffi.a: run scripts/build-wallet.sh first" >&2; exit 1; }
 only=${1:-}
-out="$PWD/tmp/screens"
-cd apps/wallet && xcodegen generate >/dev/null
-log="$out.build.log"; mkdir -p "$(dirname "$log")"
-xcodebuild -project AetherWallet.xcodeproj -scheme WalletScreens -configuration Debug -derivedDataPath build \
-  CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= build > "$log" 2>&1 || true
-# Never render with a stale renderer: a failed build stops here.
-grep -q '\*\* BUILD SUCCEEDED \*\*' "$log" || { grep -E "error:" "$log" | head -20 >&2; echo "the screens renderer did not build ($log)" >&2; exit 1; }
-bin=build/Build/Products/Debug/WalletScreens.app/Contents/MacOS/WalletScreens
-[ -n "$only" ] || rm -rf "$out"
+out="$root/tmp/screens"
+compile_guard="$HOME/.claude/playbooks/aether-team/wait-compile.sh"
+
+cd "$root/apps/wallet"
+xcodegen generate >/dev/null
+if [ -x "$compile_guard" ]; then "$compile_guard"; fi
+xcodebuild -project AetherWallet.xcodeproj -scheme WalletScreens -configuration Debug \
+  -derivedDataPath "$root/tmp/wallet-screens-build" \
+  CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= build >"$root/tmp/wallet-screens-build.log" 2>&1 || {
+    tail -80 "$root/tmp/wallet-screens-build.log" >&2
+    exit 1
+  }
+bin="$root/tmp/wallet-screens-build/Build/Products/Debug/WalletScreens.app/Contents/MacOS/WalletScreens"
+[ -x "$bin" ] || { echo "the screens renderer did not build" >&2; exit 1; }
 mkdir -p "$out"
-home=$(mktemp -d "${TMPDIR:-/tmp}/wallet-screens-home.XXXXXX")
-trap 'rm -rf "$home"' EXIT
-for lang in en ko; do
-  locale=$([ "$lang" = ko ] && echo ko_KR || echo en_US)
+if [ -z "$only" ]; then
+  shopt -s nullglob
+  rm -f "$out"/*.png "$out"/*.text.json "$out"/*.txt
+fi
+fixture_home=$(mktemp -d "$root/tmp/wallet-screens-home.XXXXXX")
+trap 'rm -rf "$fixture_home"' EXIT
+for lang in en ko ja zh-Hans zh-Hant; do
+  case "$lang" in
+    en) locale=en_US ;;
+    ko) locale=ko_KR ;;
+    ja) locale=ja_JP ;;
+    zh-Hans) locale=zh_CN ;;
+    zh-Hant) locale=zh_TW ;;
+  esac
   args=(-AppleLanguages "($lang)" -AppleLocale "$locale" -out "$out")
   [ -n "$only" ] && args+=(-only "$only")
-  HOME="$home" CFFIXED_USER_HOME="$home" "$bin" "${args[@]}"
+  # CoreFoundation/NSHomeDirectory/UserDefaults use the throwaway home;
+  # HOME itself is not reassigned. WALLET_SCREENS compiles out real-data work.
+  CFFIXED_USER_HOME="$fixture_home" "$bin" "${args[@]}"
 done
-echo "screens: $(ls "$out"/*.png | wc -l | tr -d ' ') PNGs in tmp/screens"
-# Every Korean render must read Korean (scripts/check-wallet-screens-language.py).
-/usr/bin/python3 ../../scripts/check-wallet-screens-language.py "$out"
+cd "$root"
+check_args=(--out "$out")
+[ -n "$only" ] && check_args+=(--only "$only")
+/usr/bin/python3 scripts/check-wallet-screens-language.py "${check_args[@]}"

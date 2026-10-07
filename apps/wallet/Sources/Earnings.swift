@@ -394,8 +394,8 @@ struct LivePill: View {
                     SpringKeyframe(1.0, duration: 0.3)
                 }
             }
-            // Letter-spacing suits capitals, not Hangul.
-            Text(text).font(.aeCaption.weight(.heavy)).tracking(AppLanguage.korean ? 0 : 1.5)
+            // Natural spacing stays readable in every supported script.
+            Text(text).font(.aeCaption.weight(.heavy))
         }
         .padding(.horizontal, 12).padding(.vertical, 6)
         .background(.black.opacity(0.25), in: Capsule())
@@ -804,7 +804,7 @@ final class Earnings: ObservableObject {
     private func phase(_ node: NodeController) -> NodeWork.Phase {
         // The one stop reason, the same as the sidebar and the menu.
         if let reason = node.stopReason, node.state != .running, node.state != .starting {
-            return .paused(reason.copy(ko: HealthCheck.korean).paragraph)
+            return .paused(reason.copy().paragraph)
         }
         switch node.state {
         case .running: return node.prove ? .proving : .verifying

@@ -22,5 +22,7 @@ check("the callback reports a pending tx as pending", TxTrack.callbackStatus(.pe
 check("the callback's failed is a chain fact", TxTrack.callbackStatus(.failed) == "failed")
 check("only chain facts are final", TxTrack.isFinal(.done) && TxTrack.isFinal(.failed) && !TxTrack.isFinal(.notIncluded) && !TxTrack.isFinal(.pending))
 // In the bundle's language: a bare test binary is English.
-check("the words say not recorded yet", TxTrack.notIncludedNote == "Not processed (not on chain yet)")
+check("the words say not recorded yet", TxTrack.notIncludedNote(locale: walletTestLocale("en"), bundle: walletTestBundle("en")) == "Not processed (not on chain yet)")
+check("the Korean note keeps its reviewed text", TxTrack.notIncludedNote(locale: walletTestLocale("ko"), bundle: walletTestBundle("ko")) == "처리되지 않았어요 (아직 체인에 기록되지 않음)")
+check("the Japanese note stays provisional", TxTrack.notIncludedNote(locale: walletTestLocale("ja"), bundle: walletTestBundle("ja")) == "未処理です（まだチェーンに記録されていません）")
 print("tx-track: all ok")

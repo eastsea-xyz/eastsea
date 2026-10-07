@@ -75,24 +75,20 @@ enum BlockDataLocation {
         }
     }
 
-    static func sentence(_ p: Problem, ko: Bool) -> String {
+    static func sentence(_ p: Problem, locale: Locale = .current, bundle: Bundle = .main) -> String {
         switch p {
         case .networkShare:
-            return ko ? "네트워크 공유 폴더에는 둘 수 없어요. 이 Mac에 직접 연결된 디스크를 골라 주세요."
-                : "A network share cannot hold the block data. Pick a disk connected to this Mac."
+            return String(localized: "A network share cannot hold the block data. Pick a disk connected to this Mac.", bundle: bundle, locale: locale)
         case .unsupportedFormat(let f):
-            // Why (exFAT/FAT have no journaling or file locks the database
-            // needs) and the fix, which erases the disk — said plainly.
-            return ko ? "이 디스크는 블록 저장에 안전하지 않은 형식(\(formatName(f)))이에요. 디스크 유틸리티에서 APFS로 지우면 쓸 수 있어요 (디스크 안의 파일은 지워져요)."
-                : "This disk's format (\(formatName(f))) is not safe for block data. Erase it as APFS in Disk Utility to use it (this deletes the files on the disk)."
+            let format = formatName(f)
+            return String(localized: "This disk's format (\(format)) is not safe for block data. Erase it as APFS in Disk Utility to use it (this deletes the files on the disk).", bundle: bundle, locale: locale)
         case .readOnly:
-            return ko ? "이 디스크는 읽기 전용이에요. 쓸 수 있는 디스크를 골라 주세요."
-                : "This disk is read-only. Pick one that can be written to."
+            return String(localized: "This disk is read-only. Pick one that can be written to.", bundle: bundle, locale: locale)
         case .notEnoughSpace(let free, let needed):
-            return ko ? "공간이 부족해요: \(NodeStopReason.gb(free)) 남음, \(NodeStopReason.gb(needed)) 필요해요."
-                : "Not enough space: \(NodeStopReason.gb(free)) free, \(NodeStopReason.gb(needed)) needed."
+            let freeSpace = NodeStopReason.gb(free), neededSpace = NodeStopReason.gb(needed)
+            return String(localized: "Not enough space: \(freeSpace) free, \(neededSpace) needed.", bundle: bundle, locale: locale)
         case .inUse:
-            return ko ? "이미 이 위치를 쓰고 있어요." : "The block data is already there."
+            return String(localized: "The block data is already there.", bundle: bundle, locale: locale)
         }
     }
 
@@ -136,19 +132,14 @@ struct ArchiveRequirements: Equatable {
     /// growth plus the node's resume margin.
     var recommendedFreeBytes: UInt64 { sizeNowBytes + perYearBytes + NodeResume.resumeBytes }
 
-    func lines(ko: Bool) -> [String] {
+    func lines(locale: Locale = .current, bundle: Bundle = .main) -> [String] {
         let now = NodeStopReason.gb(sizeNowBytes), month = NodeStopReason.gb(perMonthBytes)
         let rec = NodeStopReason.gb(recommendedFreeBytes)
-        return ko ? [
-            "지금 전체 기록은 약 \(now)이고, 한 달에 약 \(month)씩 늘어나요.",
-            "\(rec) 이상 비어 있는 보조 디스크(외장 SSD 등)를 권해요. 위의 ‘블록 데이터 위치’에서 고를 수 있어요.",
-            "처음부터 모든 블록을 다시 확인하므로 첫 동기화에 몇 시간에서 며칠이 걸려요. 그동안 지갑은 그대로 써요.",
-            "보관에 대한 보상은 없어요. 네트워크의 전체 기록을 누구나 검증할 수 있게 돕는 선택이에요.",
-        ] : [
-            "The full history is about \(now) today and grows by about \(month) a month.",
-            "A secondary disk (an external SSD, say) with at least \(rec) free is recommended. Pick it under Block data location above.",
-            "Every block is re-checked from the very first, so the first sync takes hours to days. The wallet keeps working meanwhile.",
-            "There is no reward for keeping it. It helps anyone verify the network's whole history.",
+        return [
+            String(localized: "The full history is about \(now) today and grows by about \(month) a month.", bundle: bundle, locale: locale),
+            String(localized: "A secondary disk (an external SSD, say) with at least \(rec) free is recommended. Pick it under Block data location above.", bundle: bundle, locale: locale),
+            String(localized: "Every block is re-checked from the very first, so the first sync takes hours to days. The wallet keeps working meanwhile.", bundle: bundle, locale: locale),
+            String(localized: "There is no reward for keeping it. It helps anyone verify the network's whole history.", bundle: bundle, locale: locale),
         ]
     }
 }

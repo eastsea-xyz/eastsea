@@ -5,11 +5,19 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:$PATH"
+mkdir -p "$PWD/tmp"
+export TMPDIR="$PWD/tmp"
+wait_compile() {
+  local guard="$HOME/.claude/playbooks/aether-team/wait-compile.sh"
+  if [ -x "$guard" ]; then "$guard"; fi
+}
 # The agent ships inside the app bundle: same bytes wherever the checkout lives.
 . scripts/repro-env.sh
 aether_repro_rustflags
 aether_repro_link_flags
+wait_compile
 MACOSX_DEPLOYMENT_TARGET=15.0 cargo build -p aether-ffi --release --locked
+wait_compile
 cargo run -q --locked -p aether-ffi --features bindgen --bin uniffi-bindgen -- generate --library target/release/libaether_ffi.dylib --language swift --out-dir apps/wallet/Generated
 mv -f apps/wallet/Generated/aether_ffiFFI.modulemap apps/wallet/Generated/module.modulemap
 out=target/agent
@@ -30,6 +38,7 @@ for path in sorted(glob.glob("apps/agent/Resources/dex/*.json")):
 body = "\n".join(rows) if rows else "        :"
 open(sys.argv[1], "w", encoding="utf-8").write("enum DexDeployments {\n    static let byChainId: [UInt64: String] = [\n" + body + "\n    ]\n}\n")
 PY
+wait_compile
 swiftc -O -target arm64-apple-macos15.0 -module-name AetherAgent \
   -file-prefix-map "$PWD"=/aether-node -debug-prefix-map "$PWD"=/aether-node \
   -I apps/wallet/Generated -Xcc -fmodule-map-file=apps/wallet/Generated/module.modulemap \

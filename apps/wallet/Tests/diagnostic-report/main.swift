@@ -4,6 +4,8 @@
 //   swiftc -o ./tmp/diagnostic-report apps/wallet/Sources/Brand.swift apps/wallet/Sources/Clock.swift apps/wallet/Sources/NodeWatchdog.swift apps/wallet/Sources/HealthCheck.swift apps/wallet/Sources/DiagnosticReport.swift apps/wallet/Tests/diagnostic-report/main.swift && ./tmp/diagnostic-report
 import Foundation
 func check(_ c: Bool, _ m: String) { if !c { print("FAIL", m); exit(1) } }
+let enLocale = walletTestLocale("en"), enBundle = walletTestBundle("en")
+let koLocale = walletTestLocale("ko"), koBundle = walletTestBundle("ko")
 
 // MARK: the fields, by example (design §2.3)
 
@@ -21,7 +23,7 @@ s.finalizedAge = 4
 s.osMajor = 15
 s.failures = ["prover_program_mismatch": 7, "proof_rejected": 3]
 s.now = Date(timeIntervalSince1970: 1_791_288_000)  // 2026-10-06 12:00 UTC
-let text = DiagnosticReport.text(s, ko: false)
+let text = DiagnosticReport.text(s, locale: enLocale, bundle: enBundle)
 let lines = text.split(separator: "\n").map(String.init)
 check(lines.contains("v: 1"), "format version")
 check(lines.contains("day: 2026-10-06"), "the UTC day, no time of day")
@@ -35,13 +37,13 @@ check(lines.contains("finalized_age: <1m"), "finalized age bucket")
 check(lines.contains("os: macos-15"), "OS major only")
 check(lines.contains("failures: proof_rejected 2-5, prover_program_mismatch 6+"), "failure buckets, sorted")
 check(!text.contains(":00") && !text.contains("12:"), "no time of day anywhere")
-check(DiagnosticReport.text(s, ko: true).hasPrefix("동해 진단 정보"), "Korean header")
+check(DiagnosticReport.text(s, locale: koLocale, bundle: koBundle).hasPrefix("동해 진단 정보"), "Korean header")
 // Remote diagnosis (the founder's MacBook, 2026-10-07): the stop reason travels in the copy.
 var stopped = s
 stopped.nodeStop = "disk_missing"; stopped.lastStop = "crash_loop"
-check(DiagnosticReport.text(stopped, ko: false).contains("node_stop: disk_missing")
-      && DiagnosticReport.text(stopped, ko: false).contains("last_stop: crash_loop"), "the stop reasons are in the copy (codes only)")
-check(DiagnosticReport.text(s, ko: false).contains("node_stop: none"), "none when running")
+check(DiagnosticReport.text(stopped, locale: enLocale, bundle: enBundle).contains("node_stop: disk_missing")
+      && DiagnosticReport.text(stopped, locale: enLocale, bundle: enBundle).contains("last_stop: crash_loop"), "the stop reasons are in the copy (codes only)")
+check(DiagnosticReport.text(s, locale: enLocale, bundle: enBundle).contains("node_stop: none"), "none when running")
 
 // Buckets at their edges (§2.2).
 check(DiagnosticReport.lag(local: 100, network: 100) == "0", "lag 0")
@@ -63,7 +65,7 @@ check(DiagnosticReport.failures(["zero": 0]) == "none", "zero counts are not fai
 
 var dev = s
 dev.publicBuild = false
-check(DiagnosticReport.text(dev).contains("app: custom") && DiagnosticReport.text(dev).contains("prover_program: custom"), "a development build is custom")
+check(DiagnosticReport.text(dev, locale: enLocale, bundle: enBundle).contains("app: custom") && DiagnosticReport.text(dev, locale: enLocale, bundle: enBundle).contains("prover_program: custom"), "a development build is custom")
 for odd in ["1.4.2-beta", "v1.4", "", "1..2", "1.2.3.4.5", "12345.1", "0x1234"] {
     var v = s
     v.appVersion = odd
@@ -75,8 +77,8 @@ check(DiagnosticReport.program(mismatched) == "unknown", "on a mismatch this Mac
 var noNode = s
 noNode.nodeRunning = false
 noNode.proving = false
-check(DiagnosticReport.text(noNode).contains("role: wallet\n") && DiagnosticReport.text(noNode).contains("lag: unknown"), "wallet only: no node roles, lag unknown")
-check(!DiagnosticReport.text(noNode).contains("prover_program:"), "no prover line without proving")
+check(DiagnosticReport.text(noNode, locale: enLocale, bundle: enBundle).contains("role: wallet\n") && DiagnosticReport.text(noNode, locale: enLocale, bundle: enBundle).contains("lag: unknown"), "wallet only: no node roles, lag unknown")
+check(!DiagnosticReport.text(noNode, locale: enLocale, bundle: enBundle).contains("prover_program:"), "no prover line without proving")
 
 // MARK: property: nothing identifying ever reaches the text
 
@@ -136,8 +138,8 @@ for round in 0..<2_000 {
     }
     r.networkProgram = [address, nodeId, "0x" + nodeId, rng.hex(64)][Int(rng.int(0...3))]
     r.failures = [address: 2, nodeId: 1, balance: 9, "crash_loop": Int(rng.int(0...8))]
-    for ko in [true, false] {
-        let out = DiagnosticReport.text(r, ko: ko)
+    for language in ["en", "ko", "ja"] {
+        let out = DiagnosticReport.text(r, locale: walletTestLocale(language), bundle: walletTestBundle(language))
         let lowered = out.lowercased()
         for secret in [address, String(address.dropFirst(2)), balance, nodeId] {
             for w in windows(secret) {

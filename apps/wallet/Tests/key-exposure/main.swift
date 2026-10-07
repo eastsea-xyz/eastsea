@@ -8,7 +8,7 @@ func check(_ ok: Bool, _ name: String) {
 }
 
 for notice in [KeyExposureNotice.recovery, .keyCustody] {
-    let en = notice.text(korean: false), ko = notice.text(korean: true)
+    let en = notice.text(locale: walletTestLocale("en"), bundle: walletTestBundle("en")), ko = notice.text(locale: walletTestLocale("ko"), bundle: walletTestBundle("ko"))
     check(en.contains("move all your funds to a new account") || en.contains("Move all your funds to a new account"), "\(notice) en says to move funds to a new account")
     check(en.contains("not lock") || en.contains("cannot lock"), "\(notice) en says recovery does not lock the key out")
     check(ko.contains("새 계정으로 옮기세요"), "\(notice) ko says to move funds to a new account")
@@ -16,5 +16,7 @@ for notice in [KeyExposureNotice.recovery, .keyCustody] {
     check(!ko.replacingOccurrences(of: "Mac", with: "").contains(where: { $0.isASCII && $0.isLetter }), "\(notice) ko has no untranslated English")
     // Never the false comfort the audit warns about.
     check(!en.localizedCaseInsensitiveContains("recovery revokes") && !en.localizedCaseInsensitiveContains("recovery locks"), "\(notice) en never claims recovery revokes the key")
-    check(notice.text == en || notice.text == ko, "\(notice) current language picks one of the two")
+    let ja = notice.text(locale: walletTestLocale("ja"), bundle: walletTestBundle("ja"))
+    check(ja.contains("新しいアカウント") && ja.contains("キー"), "\(notice) Japanese keeps the key-exposure warning")
+    check(!ja.unicodeScalars.contains { (0xAC00...0xD7A3).contains($0.value) }, "\(notice) Japanese has no Korean")
 }

@@ -241,13 +241,12 @@ final class WalletModel: ObservableObject {
             if case EnclaveAccount.KeyError.migrationPending = error {
                 // The old handle is still moving (often: waiting for an
                 // unlock, poc-m3 2026-10-07) — not a key failure.
-                let ko = Locale.preferredLanguages.first?.hasPrefix("ko") ?? false
                 keyError = String(localized: "Your wallet is still moving over from Aether. Unlock this Mac to finish — your wallet is safe.")
             } else if case EnclaveAccount.KeyError.keyUnavailable = error {
                 // The wallet exists but cannot be opened yet; retried from `refresh`.
                 keyError = String(localized: "Unlock this device to open your wallet. Your wallet is safe.")
             } else {
-                keyError = locked ? String(localized: "Unlock this device to create your wallet key.") : String(localized: "Could not create the wallet key: \(error.localizedDescription)")
+                keyError = locked ? String(localized: "Unlock this device to create your wallet key.") : String(localized: "Could not create the wallet key. Please try again.")
             }
             note("Key error: \(error.localizedDescription)")
         }
@@ -506,7 +505,7 @@ final class WalletModel: ObservableObject {
                 let ok = await self.track(h, label: "This Mac is registered as a voting node", item: ActivityItem(kind: .security, title: String(localized: "Mac joined as a voting node"), amount: nil))
                 await MainActor.run { self.registration = ok ? nil : .failed(String(localized: "The registration did not go through. Try again.")) }
             } catch {
-                let reason = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+                let reason = (error as? NodeRegistrationError)?.errorDescription ?? WalletModel.ffiMessage(error)
                 await MainActor.run {
                     self.note("Voting-node registration failed: \(error)")
                     self.registration = .failed(reason)
@@ -941,7 +940,7 @@ final class WalletModel: ObservableObject {
             return e.errorDescription
         } catch {
             note("Not sent — \(error)")
-            return "\(error)"
+            return WalletModel.ffiMessage(error)
         }
         guard let holding = current, WeiMath.compare(intent.baseUnits, holding.balance) <= 0 else {
             note("Not sent — this wallet now holds less than the confirmed amount")
@@ -987,22 +986,20 @@ final class WalletModel: ObservableObject {
     /// reflection `WalletError.Network(message: …)` would print).
     nonisolated static func ffiMessage(_ e: Error) -> String {
         switch e {
-        // The core's own words are English and technical: a Korean screen
-        // gets one plain sentence per kind instead of a mixed-language line.
-        case WalletError.Network(let m):
-            return AppLanguage.korean ? "네트워크에 연결하지 못했어요. 잠시 뒤 다시 해 주세요." : m
-        case WalletError.Invalid(let m):
-            return AppLanguage.korean ? "입력한 내용이 올바르지 않아요. 주소와 금액을 다시 확인해 주세요." : m
-        case WalletError.Rejected(let m):
-            return AppLanguage.korean ? "네트워크가 이 거래를 받지 않았어요. 잔액과 수수료를 확인하고 다시 해 주세요." : m
-        case WalletError.Verification(let m):
-            return AppLanguage.korean ? "이 기기에서 확인하지 못했어요. 잠시 뒤 다시 해 주세요." : m
-        case WalletError.FeeChanged(let m):
-            return (AppLanguage.korean
-                ? "네트워크 수수료가 바뀌었어요. 보내지 않았으니 새 수수료를 확인하고 다시 보내 주세요."
-                : "The network fee changed — \(m). Nothing was sent; check the new fee and send again.")
+        // The core's diagnostics stay in logs. Screens use the catalog's
+        // plain sentence for each kind, in the app's selected language.
+        case WalletError.Network:
+            return String(localized: "Could not connect to the network. Please try again shortly.")
+        case WalletError.Invalid:
+            return String(localized: "The details are not valid. Check the address and amount.")
+        case WalletError.Rejected:
+            return String(localized: "The network did not accept this transaction. Check your balance and fee, then try again.")
+        case WalletError.Verification:
+            return String(localized: "This device could not verify it. Please try again shortly.")
+        case WalletError.FeeChanged:
+            return String(localized: "The network fee changed. Nothing was sent; check the new fee and send again.")
         default:
-            return (e as? LocalizedError)?.errorDescription ?? "\(e)"
+            return String(localized: "Could not complete this step. Please try again.")
         }
     }
 
@@ -1216,7 +1213,8 @@ final class WalletModel: ObservableObject {
                 } catch {
                     // Keep the last successful view on screen, but say why the
                     // list may be incomplete (an old node, a node that is gone).
-                    failures.append(HistoryFailure.classify(message: WalletModel.ffiMessage(error)))
+                    // Classify the backend fact before turning it into display copy.
+                    failures.append(HistoryFailure.classify(message: String(describing: error)))
                 }
             }
             let fetchedPages = pages

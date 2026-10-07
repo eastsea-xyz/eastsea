@@ -18,11 +18,11 @@ enum BridgePlan {
     static let minimumEastSea = "0.7.0"
     /// EastSea's own Sparkle feed (0.7.0+). Never the legacy appcast.xml,
     /// which lists this bridge.
-    static let feedURL = URL(string: "https://github.com/kjaylee/aether-node/releases/latest/download/eastsea-appcast.xml")!
-    static let releasesPage = URL(string: "https://github.com/kjaylee/aether-node/releases/latest")!
+    static let feedURL = URL(string: "https://github.com/eastsea-xyz/eastsea/releases/latest/download/eastsea-appcast.xml")!
+    static let releasesPage = URL(string: "https://github.com/eastsea-xyz/eastsea/releases/latest")!
     /// Downloads come only from this repository's release assets.
     static let downloadHost = "github.com"
-    static let downloadPathPrefix = "/kjaylee/aether-node/releases/download/"
+    static let downloadPathPrefix = "/eastsea-xyz/eastsea/releases/download/"
 
     /// The code requirement EastSea must meet before it is installed or
     /// launched: Apple-anchored Developer ID (the intermediate and leaf

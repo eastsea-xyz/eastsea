@@ -22,14 +22,14 @@ let feed = """
       <sparkle:version>13</sparkle:version>
       <sparkle:shortVersionString>0.7.0</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-      <enclosure url="https://github.com/kjaylee/aether-node/releases/download/app-v0.7.0/EastSea-0.7.0.dmg" type="application/octet-stream" sparkle:edSignature="c2ln" length="123" />
+      <enclosure url="https://github.com/eastsea-xyz/eastsea/releases/download/app-v0.7.0/EastSea-0.7.0.dmg" type="application/octet-stream" sparkle:edSignature="c2ln" length="123" />
     </item>
     <item>
       <title>EastSea 0.7.1 canary</title>
       <sparkle:version>14</sparkle:version>
       <sparkle:shortVersionString>0.7.1</sparkle:shortVersionString>
       <sparkle:channel>canary</sparkle:channel>
-      <enclosure url="https://github.com/kjaylee/aether-node/releases/download/app-v0.7.1/EastSea-0.7.1.dmg" sparkle:edSignature="c2ln" length="5" />
+      <enclosure url="https://github.com/eastsea-xyz/eastsea/releases/download/app-v0.7.1/EastSea-0.7.1.dmg" sparkle:edSignature="c2ln" length="5" />
     </item>
     <item>
       <title>Elsewhere</title>
@@ -41,7 +41,7 @@ let feed = """
       <title>Aether bridge (wrong feed)</title>
       <sparkle:version>12</sparkle:version>
       <sparkle:shortVersionString>0.6.7</sparkle:shortVersionString>
-      <enclosure url="https://github.com/kjaylee/aether-node/releases/download/app-v0.6.7/Aether-0.6.7.dmg" sparkle:edSignature="c2ln" length="5" />
+      <enclosure url="https://github.com/eastsea-xyz/eastsea/releases/download/app-v0.6.7/Aether-0.6.7.dmg" sparkle:edSignature="c2ln" length="5" />
     </item>
   </channel>
 </rss>
@@ -59,7 +59,7 @@ expect(BridgePlan.parseAppcast(Data("not xml".utf8)).isEmpty, "garbage is no fee
 // Enclosure-attribute style (what generate_appcast writes) parses the same.
 let attrStyle = """
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><item>
-<enclosure url="https://github.com/kjaylee/aether-node/releases/download/app-v0.7.2/EastSea-0.7.2.dmg" sparkle:version="15" sparkle:shortVersionString="0.7.2" sparkle:edSignature="c2ln" length="9"/>
+<enclosure url="https://github.com/eastsea-xyz/eastsea/releases/download/app-v0.7.2/EastSea-0.7.2.dmg" sparkle:version="15" sparkle:shortVersionString="0.7.2" sparkle:edSignature="c2ln" length="9"/>
 </item></channel></rss>
 """
 expect(BridgePlan.choose(BridgePlan.parseAppcast(Data(attrStyle.utf8)), systemVersion: "14.0")?.build == "15",
@@ -67,11 +67,11 @@ expect(BridgePlan.choose(BridgePlan.parseAppcast(Data(attrStyle.utf8)), systemVe
 
 // 2. Downloads only from this repository's releases, over https.
 for (url, ok) in [
-    ("https://github.com/kjaylee/aether-node/releases/download/app-v0.7.0/EastSea-0.7.0.dmg", true),
-    ("http://github.com/kjaylee/aether-node/releases/download/app-v0.7.0/EastSea-0.7.0.dmg", false),
+    ("https://github.com/eastsea-xyz/eastsea/releases/download/app-v0.7.0/EastSea-0.7.0.dmg", true),
+    ("http://github.com/eastsea-xyz/eastsea/releases/download/app-v0.7.0/EastSea-0.7.0.dmg", false),
     ("https://github.com/someone/aether-node/releases/download/app-v0.7.0/EastSea-0.7.0.dmg", false),
-    ("https://github.com.evil.example/kjaylee/aether-node/releases/download/x/EastSea.dmg", false),
-    ("https://github.com/kjaylee/aether-node/releases/download/app-v0.7.0/EastSea-0.7.0.zip", false),
+    ("https://github.com.evil.example/eastsea-xyz/eastsea/releases/download/x/EastSea.dmg", false),
+    ("https://github.com/eastsea-xyz/eastsea/releases/download/app-v0.7.0/EastSea-0.7.0.zip", false),
 ] {
     expect(BridgePlan.isAllowedDownload(URL(string: url)!) == ok, "\(ok ? "accepts" : "refuses") \(url)")
 }

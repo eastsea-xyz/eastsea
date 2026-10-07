@@ -5,7 +5,7 @@ import SwiftUI
 enum Terms {
     static let isTestnet: Bool = Brand.networkChainId == Brand.legacyTestnetChainId
     static let version = isTestnet ? 5 : 6
-    static let disclaimerURL = URL(string: "https://github.com/kjaylee/aether-node/blob/main/DISCLAIMER.md")!
+    static let disclaimerURL = URL(string: "https://github.com/eastsea-xyz/eastsea/blob/main/DISCLAIMER.md")!
 }
 
 /// The chain's voting-set rules, as shown to the user (registry params and

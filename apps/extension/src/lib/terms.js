@@ -4,7 +4,7 @@ import { Brand, coinTicker } from './brand.js';
 // changes materially, and everyone is asked again.
 
 export const TERMS_VERSION = 4;
-export const DISCLAIMER_URL = 'https://github.com/kjaylee/aether-node/blob/main/DISCLAIMER.md';
+export const DISCLAIMER_URL = 'https://github.com/eastsea-xyz/eastsea/blob/main/DISCLAIMER.md';
 
 /** Shown one bullet per line; `link` follows them. `chainId` picks the coin's
  * ticker (the legacy 7780 testnet kept AETH; default: the new coin, DBLN). */

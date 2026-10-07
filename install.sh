@@ -2,7 +2,7 @@
 # ==============================================================================
 # Aether Sovereign Node - 1-Line macOS Auto Installer
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/kjaylee/aether-node/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/eastsea-xyz/eastsea/main/install.sh | bash
 # ==============================================================================
 set -e
 
@@ -26,7 +26,7 @@ fi
 INSTALL_DIR="/Applications"
 APP_NAME="Aether Node.app"
 APP_TARGET="$INSTALL_DIR/$APP_NAME"
-REPO="kjaylee/aether-node"
+REPO="eastsea-xyz/eastsea"
 RELEASE_TAG="v0.1.0"
 DMG_URL="https://github.com/$REPO/releases/download/$RELEASE_TAG/Aether-Node-v0.1.0-macOS.dmg"
 TMP_DIR="$(mktemp -d)"

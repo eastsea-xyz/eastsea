@@ -5,7 +5,7 @@
 	<!-- The legacy feed every Aether <= 0.6.6 reads. It lists only this bridge;
 	     EastSea 0.7.0+ lives on eastsea-appcast.xml (scripts/release-mac.sh). -->
 	<key>SUFeedURL</key>
-	<string>https://github.com/kjaylee/aether-node/releases/latest/download/appcast.xml</string>
+	<string>https://github.com/eastsea-xyz/eastsea/releases/latest/download/appcast.xml</string>
 	<!-- The same EdDSA key as Aether and EastSea: Sparkle checks bridge updates
 	     with it, and the bridge checks the EastSea download with it. -->
 	<key>SUPublicEDKey</key>

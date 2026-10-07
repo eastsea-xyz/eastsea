@@ -13,6 +13,7 @@
 # from whichever release is `latest`.
 # Needs: Developer ID (Pipln), ASC API key (~/.config/app-store-release/env.sh),
 # the Sparkle EdDSA key in the login keychain (account "aether-pipln"), gh.
+# A Terms.version change needs TERMS_BUMP_REASON (dist/release-gates.log).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p tmp
@@ -41,6 +42,10 @@ if [ -n "${AETHER_RELEASE_LOG:-}" ]; then
   export OTHER_SWIFT_FLAGS="${OTHER_SWIFT_FLAGS:+$OTHER_SWIFT_FLAGS }-debug-prefix-map $PWD=/aether-src"
 fi
 AETHER_VERSION="$version" SIGN_IDENTITY="Developer ID Application: Pipln (45WU468FZE)" scripts/package-mac.sh
+# Same app to macOS as the previous release (bundle id, team, designated
+# requirement), and no silent Terms bump: otherwise refuse before anything is
+# signed for Sparkle or published (scripts/release-identity-gate.sh).
+scripts/release-identity-gate.sh release "$dmg" "$tag" "$repo"
 sign=apps/wallet/build/SourcePackages/artifacts/sparkle/Sparkle/bin/sign_update
 attrs=$("$sign" --account aether-pipln "$dmg")   # sparkle:edSignature="…" length="…"
 echo "DMG SHA-256: $(shasum -a 256 "$dmg" | awk '{print $1}')  $dmg"

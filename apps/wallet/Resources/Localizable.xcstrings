@@ -1193,6 +1193,16 @@
         }
       }
     },
+    "Block data" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "블록 데이터"
+          }
+        }
+      }
+    },
     "Block data location" : {
       "localizations" : {
         "ko" : {
@@ -3535,6 +3545,16 @@
         }
       }
     },
+    "Pick a folder outside the current block data. The two locations cannot contain each other." : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "현재 블록 데이터 폴더 밖의 폴더를 선택하세요. 두 폴더는 서로를 포함할 수 없어요."
+          }
+        }
+      }
+    },
     "Picked by the network for its long uptime. Keep the node on: stopping hands the seat to the next Mac." : {
       "localizations" : {
         "ko" : {
@@ -4646,6 +4666,16 @@
         }
       }
     },
+    "The block-data move record could not be read. Keep both copies and retry after reconnecting the disk." : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "블록 데이터 이동 기록을 읽을 수 없어요. 두 사본을 모두 보관하고 디스크를 다시 연결한 뒤 재시도하세요."
+          }
+        }
+      }
+    },
     "The confirmed amount is not a usable number of base units." : {
       "localizations" : {
         "ko" : {
@@ -4746,6 +4776,16 @@
         }
       }
     },
+    "The node could not pause automatic restarts. The block data is still where it was." : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "노드의 자동 재시작을 일시 중지할 수 없어요. 블록 데이터는 원래 위치에 그대로 있어요."
+          }
+        }
+      }
+    },
     "The node counts %lld rewards; %lld were read. The numbers here cover only what was read." : {
       "localizations" : {
         "ko" : {
@@ -4842,6 +4882,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "등록이 처리되지 않았어요. 다시 해 주세요."
+          }
+        }
+      }
+    },
+    "The running node could not be stopped safely. The move was cancelled; the block data is still where it was." : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "실행 중인 노드를 안전하게 중지하지 못했어요. 이동을 취소했으며 블록 데이터는 원래 위치에 그대로 있어요."
+          }
+        }
+      }
+    },
+    "The source disk is unavailable. Reconnect it before moving the block data." : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "원본 디스크를 사용할 수 없어요. 블록 데이터를 옮기기 전에 디스크를 다시 연결하세요."
           }
         }
       }
@@ -5152,6 +5212,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "이 기기의 복구 키 코드"
+          }
+        }
+      }
+    },
+    "This folder already holds block data. Pick an empty folder; existing data will be kept." : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이 폴더에 이미 블록 데이터가 있어요. 비어 있는 폴더를 선택하세요. 기존 데이터는 그대로 보관돼요."
           }
         }
       }

@@ -54,7 +54,9 @@ cleanup_rollback_release() {
   if [ -n "$rollback_work" ]; then rm -rf "${rollback_work:?}"; rollback_work=""; fi
 }
 if [ -z "${AETHER_PREVIOUS_APP:-}" ]; then
-  rollback_work=$(mktemp -d "$PWD/tmp/rollback-release.XXXXXX")
+  # System temp, not the worktree: hdiutil refuses (EPERM) to mount a
+  # downloaded DMG on a mountpoint inside the external workspace volume.
+  rollback_work=$(mktemp -d "${TMPDIR:-/tmp}/rollback-release.XXXXXX")
   trap cleanup_rollback_release EXIT
   mkdir "$rollback_work/mount"
   prev_tag=${PREV_RELEASE_TAG:-}

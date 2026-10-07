@@ -767,6 +767,55 @@ impl RpcClient {
         }
     }
 
+    /// `call`, also naming the node that answered: a wallet remembers which
+    /// validator admitted its transaction, so it can ask that node — the only
+    /// one sure to know it while pending — what became of it (B5 review
+    /// round 2, finding 2).
+    pub async fn call_tracked(&self, method: &str, params: Value) -> Result<(EndpointId, Value)> {
+        let (id, conn) = self.connection().await?;
+        match rpc_call(&conn, method, params).await {
+            Ok(v) => Ok((id, v)),
+            Err(RpcError::Server { message, .. }) => Err(anyhow!(message)),
+            Err(RpcError::Transport(e)) => {
+                *self.current.lock().await = None;
+                Err(e)
+            }
+        }
+    }
+
+    /// Ask one known node by id: on the current connection when it is that
+    /// node, else on a connection of its own (one attempt, bounded by the
+    /// connect budget) that leaves the current one untouched. An id outside
+    /// `nodes` is refused: this never dials an arbitrary peer.
+    pub async fn call_node(&self, id: EndpointId, method: &str, params: Value) -> Result<Value> {
+        let current = self
+            .current
+            .lock()
+            .await
+            .as_ref()
+            .filter(|(c, conn)| *c == id && conn.close_reason().is_none())
+            .map(|(_, conn)| conn.clone());
+        let conn = match current {
+            Some(c) => c,
+            None => {
+                let addr = self
+                    .nodes
+                    .iter()
+                    .find(|a| a.id == id)
+                    .ok_or_else(|| anyhow!("node {} is not one of this client's nodes", id.fmt_short()))?;
+                tokio::time::timeout(self.attempt, self.endpoint.connect(addr.clone(), ALPN_RPC))
+                    .await
+                    .map_err(|_| anyhow!("connect {}: timed out", id.fmt_short()))?
+                    .map_err(|e| anyhow!("connect {}: {e}", id.fmt_short()))?
+            }
+        };
+        match rpc_call(&conn, method, params).await {
+            Ok(v) => Ok(v),
+            Err(RpcError::Server { message, .. }) => Err(anyhow!(message)),
+            Err(RpcError::Transport(e)) => Err(e),
+        }
+    }
+
     /// Human-readable description of the current path (for UIs).
     pub async fn describe(&self) -> String {
         let cur = self.current.lock().await;

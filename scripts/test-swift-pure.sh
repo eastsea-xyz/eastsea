@@ -28,6 +28,7 @@ run release-approval ReleaseApproval.swift
 run rename-migration DataMigration.swift
 run resources ProverFlags.swift
 run resend ResendIntent.swift
+run tx-track TxTrack.swift
 run storage StorageSetting.swift UnattendedDecision.swift
 run reward-status EarningsModel.swift
 run proving-badge EarningsModel.swift
@@ -38,6 +39,9 @@ run unattended UnattendedDecision.swift
 run update-channel UpdateChannel.swift
 run update-state Brand.swift DataMigration.swift UpdateTracker.swift
 run watchdog Brand.swift Clock.swift NodeWatchdog.swift
+# The agent's payment history (aether-agent): pending context, drops, receipts.
+W=apps/agent/Sources; T=apps/agent/Tests
+run history History.swift AgentPolicy.swift
 # The Aether -> EastSea bridge app.
 W=apps/bridge/Sources; T=apps/bridge/Tests
 run bridge-plan BridgePlan.swift

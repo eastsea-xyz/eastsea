@@ -264,6 +264,11 @@ RustBuffer uniffi_aether_ffi_fn_func_authenticated_remote_height(RustCallStatus 
 RustBuffer uniffi_aether_ffi_fn_func_balance_sources(RustBuffer entries_json, RustBuffer balance_wei, RustBuffer faucet, RustBuffer waeth, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_BATCH_QUOTE
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_BATCH_QUOTE
+RustBuffer uniffi_aether_ffi_fn_func_batch_quote(RustBuffer payments, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_CHAIN_STATUS
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_CHAIN_STATUS
 RustBuffer uniffi_aether_ffi_fn_func_chain_status(RustCallStatus *_Nonnull out_status
@@ -534,6 +539,11 @@ RustBuffer uniffi_aether_ffi_fn_func_paper_key_sign(RustBuffer words, RustBuffer
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_TX_STATUS
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_TX_STATUS
 RustBuffer uniffi_aether_ffi_fn_func_tx_status(RustBuffer tx_hash, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_TX_STATUS_FOR
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_FN_FUNC_TX_STATUS_FOR
+RustBuffer uniffi_aether_ffi_fn_func_tx_status_for(RustBuffer tx_hash, RustBuffer sender, uint64_t nonce, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_FFI_AETHER_FFI_RUSTBUFFER_ALLOC
@@ -817,6 +827,12 @@ uint16_t uniffi_aether_ffi_checksum_func_authenticated_remote_height(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_BALANCE_SOURCES
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_BALANCE_SOURCES
 uint16_t uniffi_aether_ffi_checksum_func_balance_sources(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_BATCH_QUOTE
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_BATCH_QUOTE
+uint16_t uniffi_aether_ffi_checksum_func_batch_quote(void
     
 );
 #endif
@@ -1135,6 +1151,12 @@ uint16_t uniffi_aether_ffi_checksum_func_paper_key_sign(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_TX_STATUS
 #define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_TX_STATUS
 uint16_t uniffi_aether_ffi_checksum_func_tx_status(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_TX_STATUS_FOR
+#define UNIFFI_FFIDEF_UNIFFI_AETHER_FFI_CHECKSUM_FUNC_TX_STATUS_FOR
+uint16_t uniffi_aether_ffi_checksum_func_tx_status_for(void
     
 );
 #endif

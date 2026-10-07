@@ -258,7 +258,7 @@ enum Tools {
         let hash = try submitSigned(envelopeJson: prepared.envelopeJson, signature: txSig.rawRepresentation, p256PublicKey: id.agentKey)
         try History.submit(PendingPayment(date: Date(), to: parsed.map(\.to), totalWei: total.description, hash: hash,
                                           purpose: purpose, payeeNames: parsed.map { Payees.name($0.to) ?? $0.to },
-                                          asset: t, amount: total.aeth))
+                                          asset: t, amount: total.aeth, sender: prepared.from, nonce: prepared.nonce))
         var out: [String: Any] = ["hash": hash, "paid_aeth": total.aeth, "recipients": parsed.count]
         let (receipt, status) = waitForReceipt(hash)
         if let r = receipt {
@@ -312,49 +312,55 @@ enum Tools {
         let txSig = try agent.signature(for: prepared.signingMessage)
         let hash = try submitSigned(envelopeJson: prepared.envelopeJson, signature: txSig.rawRepresentation, p256PublicKey: id.agentKey)
         try History.submit(PendingPayment(date: Date(), to: [to], totalWei: "0", hash: hash, purpose: why,
-                                          payeeNames: [Payees.name(to) ?? to], asset: "\(token.symbol) · \(token.address)", amount: amount))
+                                          payeeNames: [Payees.name(to) ?? to], asset: "\(token.symbol) · \(token.address)", amount: amount,
+                                          sender: prepared.from, nonce: prepared.nonce))
         let (receipt, status) = waitForReceipt(hash)
         guard let r = receipt else {
-            return (try notIncluded(hash, status)).merging(["hash": hash, "final": false]) { _, new in new }
+            return (try notIncluded(hash, status)).merging(["hash": hash, "final": status?.isFinal ?? false]) { _, new in new }
         }
         try History.finalize(hash: hash, success: r.success)
         return ["hash": hash, "final": true, "success": r.success, "block": r.height, "amount": amount, "token": token.address]
     }
 
-    /// Up to 30 s for the receipt; stops early when the network dropped it.
-    /// Returns the receipt, or the last status (what it waits for, or why it
-    /// was dropped — contracts-live bug #5).
+    /// Up to 30 s for the receipt; stops early on a chain fact or when a node
+    /// dropped it. Returns the receipt, or the last status (what it waits
+    /// for, or why a node dropped it — contracts-live bug #5).
     private static func waitForReceipt(_ hash: String) -> (TxReceipt?, TxStatus?) {
         var last: TxStatus?
         for _ in 0..<60 {
             if let st = try? txStatus(txHash: hash) {
                 last = st
                 if let r = st.receipt { return (r, st) }
-                if st.state == "dropped" { return (nil, st) }
+                if st.isFinal || st.state == "dropped" { return (nil, st) }
             }
             Thread.sleep(forTimeInterval: 0.5)
         }
         return (nil, last)
     }
 
-    /// The tool result for a transaction that is not in a block: whether it is
-    /// still pending (and what it waits for) or was dropped (and why), in the
-    /// same words the wallet shows. A drop is final: nothing was paid.
+    /// The tool result for a transaction that is not in a block, in the same
+    /// words the wallet shows. A node-local drop is not final (B5 review round
+    /// 2, finding 5): another node may still include it, so the history entry
+    /// stays pending with the reason, and a later receipt settles it. Only a
+    /// chain fact is final — here, its nonce used by another transaction.
     private static func notIncluded(_ hash: String, _ st: TxStatus?) throws -> [String: Any] {
         guard let st else { return ["status": "unknown", "note": "no answer from the network; check with aether_receipt"] }
-        var out: [String: Any] = ["status": st.state, "why": st.detail, "why_ko": st.message]
+        var out: [String: Any] = ["status": st.state, "why": st.detail, "why_ko": st.message, "final": st.isFinal]
         if let reason = st.reason { out["reason"] = reason }
         switch st.state {
-        case "dropped":
+        case "replaced":
             try History.finalize(hash: hash, success: false)
+            out["note"] = "its nonce was used on chain by another transaction: this one can no longer run, and nothing was paid by it"
+        case "dropped":
+            try History.markNotIncluded(hash: hash, why: st.message)
             out["note"] = st.canResend
-                ? "not included and nothing was paid; it can be sent again with a fresh fee"
-                : "not included and nothing was paid"
+                ? "not on chain yet: a node dropped it, which is not a permanent failure (another node may still include it); it can be sent again at the same nonce with a fresh fee, and aether_history settles it on a receipt or when its nonce is used"
+                : "not on chain yet: a node dropped it, which is not a permanent failure; aether_history settles it on a receipt or when its nonce is used"
             out["can_resend"] = st.canResend
         case "pending":
             out["note"] = "still waiting for a block; check with aether_receipt"
         default:
-            out["note"] = "the network has no record of it; check with aether_receipt"
+            out["note"] = "not on chain yet: no node has a record of it right now; check with aether_receipt"
         }
         return out
     }
@@ -362,21 +368,29 @@ enum Tools {
     static func receiptTool(_ a: Args) throws -> [String: Any] {
         configure()
         guard let h = a["hash"] as? String else { throw AgentError.input("hash") }
-        let st = try txStatus(txHash: h)
+        let mine = History.pending().first { $0.hash.caseInsensitiveCompare(h) == .orderedSame }
+        let st = try status(h, sender: mine?.sender, nonce: mine?.nonce)
         guard let r = st.receipt else {
-            return (try notIncluded(h, st)).merging(["hash": h, "final": false]) { _, new in new }
+            return (try notIncluded(h, st)).merging(["hash": h, "final": st.isFinal]) { _, new in new }
         }
         try History.finalize(hash: h, success: r.success)
         return ["hash": h, "final": true, "success": r.success, "block": r.height, "gas_used": r.gasUsed,
                 "tx_link": "aether://tx?hash=\(h)"]
     }
 
+    /// A payment's status, reconciled against its nonce when the entry kept it.
+    private static func status(_ hash: String, sender: String?, nonce: UInt64?) throws -> TxStatus {
+        if let sender, let nonce { return try txStatusFor(txHash: hash, sender: sender, nonce: nonce) }
+        return try txStatus(txHash: hash)
+    }
+
     static func history(_ a: Args) throws -> [String: Any] {
         configure()
         for item in History.pending() {
-            guard let st = try? txStatus(txHash: item.hash) else { continue }
+            guard let st = try? status(item.hash, sender: item.sender, nonce: item.nonce) else { continue }
             if let r = st.receipt { try History.finalize(hash: item.hash, success: r.success) }
-            else if st.state == "dropped" { try History.finalize(hash: item.hash, success: false) }   // bug #5: never paid
+            else if st.state == "replaced" { try History.finalize(hash: item.hash, success: false) }   // nonce used by another tx
+            else if st.state == "dropped" { try History.markNotIncluded(hash: item.hash, why: st.message) }   // not final (round 2)
         }
         let limit = (a["limit"] as? Int) ?? Int(a["limit"] as? String ?? "") ?? 20
         let f = ISO8601DateFormatter()
@@ -385,7 +399,13 @@ enum Tools {
              "amount": e.amount ?? aeth(e.totalWei), "asset": e.asset ?? Coin.ticker(chainId), "status": e.status ?? "legacy (unverified)",
              "purpose": e.purpose ?? "not recorded", "hash": e.hash, "tx_link": e.txLink ?? "aether://tx?hash=\(e.hash)"]
         }
-        return ["payments": Array(items)]
+        let open = History.pending().prefix(max(1, limit)).map { p -> [String: Any] in
+            var row: [String: Any] = ["date": f.string(from: p.date), "to": p.to, "amount": p.amount, "asset": p.asset,
+                                      "purpose": p.purpose, "hash": p.hash, "status": p.notIncluded == nil ? "pending" : "not_on_chain_yet"]
+            if let why = p.notIncluded { row["why_ko"] = why }
+            return row
+        }
+        return ["payments": Array(items), "unsettled": Array(open)]
     }
 
     static func testTokens() throws -> [String: Any] {

@@ -44,8 +44,11 @@ python3 -m http.server -d site                  # 미리보기 http://localhost:
 - **다크 모드:** `prefers-color-scheme`를 따른다. tokens.css에는 `[data-theme]` 강제 지정도 들어 있다.
   - 낮(light)은 종이와 남색, 밤(dark)은 "밤바다"이며 주 버튼이 금색이 된다.
 - **히어로 장면:** 해, 수평선, 판화 물결은 SVG와 CSS로 그린다. 지갑 창은 HTML/CSS 그림이다.
-  - 앱에 실제로 있는 화면과 문구만 쓴다 (apps/wallet/Sources의 "Account 1", "Recent activity", "Node on this Mac" 등).
-  - 금액은 예시라고 캡션에 밝혀 둔다.
+  - 승인된 지갑 리디자인 목업(`docs/design/wallet-redesign/mockups/01-dashboard-en.png`, `02-dashboard-ko.png`)을 그대로 옮겼다:
+    사이드바, 코인이 든 남색 잔액 판, 같은 행 스타일, 같은 토큰 아이콘(더블룬 flat 마크, WAETH 공식 아트, 점선 링 + "?" 배지의 생성 글리프).
+  - 창 안 문구는 모두 한국어·영어 두 벌이 있다. 체인 용어(블록 번호 등)는 쓰지 않는다 (지갑 스펙 P5).
+  - 금액과 토큰은 예시라고 캡션에 밝혀 둔다.
+  - 창 안은 앱과 같은 Apple 시스템 글꼴(SF Pro, Apple SD Gothic Neo)을 쓴다.
 - **모션:** `prefers-reduced-motion: no-preference`일 때만 켜진다.
   - 해가 떠오르고, 햇살이 나타나고, 물결이 천천히 흐르고, 창이 떠오르고, 상단 점이 깜박인다.
 - **외부 요청:** 없다 (CDN·분석·쿠키 0).
@@ -78,6 +81,18 @@ python3 -m http.server -d site                  # 미리보기 http://localhost:
 - **이름 정리:** 보이는 문구에서 Aether와 AETH를 없앴다. 남은 것은 CLI 이름 `aether-agent`뿐이며 사이트 본문에는 쓰지 않는다.
 - **상표 문장:** Apple, Mac, Touch ID 상표 고지를 추가했다.
 
+## 2026-10-07 리드 리뷰 반영 (2차)
+
+- **언어 섞임 제거:** 히어로 앱 그림과 "작동 방식" 네 개의 작은 화면에 있던 영어 문구를 모두 한국어·영어 두 벌로 바꿨다.
+  - 대상: 계정, 잔액 확인, 보내기·받기·자산, 최근 활동, 노드 스위치, 보내기 확인, 에이전트 한도 등.
+  - 다운로드 카드 제목은 "Mac용 EastSea"로 바꿨다.
+- **지갑 리디자인과 일치:** 히어로 창을 승인된 대시보드 목업(사이드바, 잔액 판, 행, 토큰 아이콘)과 같게 다시 그렸다.
+- **체인 용어 제거 (P5):**
+  - "block #184,233" → "이 Mac에서 확인함 · 방금 / Verified on this Mac · just now"
+  - 증명 카드: "committee signature / state proof / block #" → "네트워크가 합의한 서명 / 장부에서 가져온 증명 / 이 Mac에서 직접 계산"
+  - 02장 본문: "검증자 위원회의 서명·상태 증명" → "네트워크가 합의했다는 서명과 장부의 증명"
+  - 03장 본문: "체인을 따라가며 모든 블록을 다시 실행" → "네트워크의 모든 거래를 직접 다시 계산해 확인"
+
 ## 사실 ↔ 출처 매핑 (리드 검토용)
 
 페이지의 모든 주장은 아래 레포 파일이나 공개 릴리스에서 나온다. **그 밖의 사실은 없다.**
@@ -95,7 +110,7 @@ python3 -m http.server -d site                  # 미리보기 http://localhost:
 | 누구나 0.7.0으로 테스트넷 연결, 테스트 DBLN 받기 | 오늘 사실 | 릴리스 본문, `apps/wallet/Sources/ContentView.swift` ("Get 10 test …") |
 | 시드 문구 없음, Secure Enclave + Touch ID, 복구 키(다른 Apple 기기) 미설정 시 복구 불가 | 오늘 사실 | `README.md` §What it is |
 | 잔액마다 위원회 서명 + 상태 증명을 맥에서 검증 | 오늘 사실 | `README.md` (BLS threshold, EIP-7864) |
-| 노드 스위치: 체인 추종, 모든 블록 재실행 | 오늘 사실 | eastsea-xyz/eastsea README, `apps/wallet/Sources/NodeController.swift` |
+| 노드 스위치: 네트워크의 모든 거래를 다시 계산해 확인(= 체인 추종, 모든 블록 재실행) | 오늘 사실 | eastsea-xyz/eastsea README, `apps/wallet/Sources/NodeController.swift` |
 | VPN·포트 없이 집 인터넷(DHT + QUIC 홀펀칭) | 오늘 사실 | `README.md` |
 | AI 에이전트 결제: 수신인 승인 전 결제 꺼짐, 체인이 한도 집행, 기본 1/10 DBLN·7일 | 오늘 사실(테스트넷) | `README.md` §Wallet for AI agents, `AGENTS.md` |
 | 지갑 무분석, 등록 외 개인정보 수집 없음 | 오늘 사실 | `DISCLAIMER.md` §4 item 5 |

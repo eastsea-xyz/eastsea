@@ -41,6 +41,7 @@
 </script>
 </head>
 <body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><symbol id="i-home" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10.5 12 4l8 6.5V19a1 1 0 0 1-1 1h-4.5v-5.5h-5V20H5a1 1 0 0 1-1-1z"/></symbol><symbol id="i-activity" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><path d="M12 7.5V12l3 2"/></symbol><symbol id="i-explore" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><path d="m15.5 8.5-2 5-5 2 2-5z"/></symbol><symbol id="i-node" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="10.5" rx="1.6"/><path d="M9 19h6M12 15.5V19"/></symbol><symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5 5 6v5.5c0 4.3 3 7.6 7 9 4-1.4 7-4.7 7-9V6z"/><path d="m9 12 2.2 2.2L15.5 10"/></symbol><symbol id="i-agent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="13" rx="3"/><path d="m8 10 2.5 2L8 14M12.5 14.5H16"/></symbol><symbol id="i-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17 17 7M9 7h8v8"/></symbol><symbol id="i-receive" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M17 7 7 17M15 17H7V9"/></symbol><symbol id="i-assets" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m12 4 8 4-8 4-8-4z"/><path d="m4 12 8 4 8-4M4 16l8 4 8-4"/></symbol><symbol id="i-touchid" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7.5 6.5A7 7 0 0 1 19 12v1.5M5 10a7 7 0 0 0-.2 1.8V14M8.5 19.5c.9-1.6 1.3-3.4 1.3-5.5V12a2.2 2.2 0 0 1 4.4 0v2c0 1.2-.1 2.4-.4 3.5M12 12v2c0 2.6-.6 4.6-1.6 6.2M16.6 16.8c-.2 1.2-.6 2.3-1 3.3M12 7.8A4.2 4.2 0 0 1 16.2 12v.8"/></symbol><symbol id="i-checkseal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 2.2 1.6 2.7-.1.8 2.6 2.2 1.6-.9 2.6.9 2.6-2.2 1.6-.8 2.6-2.7-.1L12 21l-2.2-1.6-2.7.1-.8-2.6L4.1 15.3l.9-2.6-.9-2.6 2.2-1.6.8-2.6 2.7.1z"/><path d="m8.8 12.2 2.2 2.2 4.2-4.4"/></symbol><symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol><symbol id="i-key" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="8.5" cy="12" r="3.5"/><path d="M12 12h8.5M17.5 12v3M20 12v2"/></symbol></svg>
 <a class="skip" href="#main"><span class="ko" lang="ko">본문으로 건너뛰기</span><span class="en" lang="en">Skip to content</span></a>
 
 <!-- Honest notice: always visible, first thing on the page -->
@@ -56,7 +57,7 @@
 
 <header class="site-header">
   <div class="wrap header-row">
-    <a class="brand" href="#top" aria-label="EastSea 동해">
+    <a class="brand" href="#top" aria-label="동해 EastSea">
       <svg class="mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
         <circle cx="16" cy="16" r="14.5" fill="#E8BF59"/>
         <g fill="#0D2135">
@@ -132,45 +133,86 @@
 
     <figure class="shot wrap">
       <div class="window" role="img" aria-labelledby="shot-cap">
-        <div class="titlebar">
+        <aside class="w-side">
           <span class="lights"><i></i><i></i><i></i></span>
-          <span class="title">EastSea</span>
-          <span class="chip chip-warn">Testnet</span>
-        </div>
-        <div class="win-body">
-          <div class="pane-main">
-            <p class="w-label">Account 1</p>
-            <p class="w-balance"><span class="num">1,284.50</span> <span class="unit">DBLN</span></p>
-            <p class="w-verified"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>Verified on this Mac · block #184,233</p>
-            <div class="w-actions"><span class="w-btn w-btn-primary">Send</span><span class="w-btn">Receive</span></div>
-            <svg class="w-chart" viewBox="0 0 300 64" preserveAspectRatio="none" aria-hidden="true">
-              <path d="M0 52 L30 50 L60 51 L90 44 L120 45 L150 38 L180 39 L210 30 L240 31 L270 22 L300 18" fill="none" stroke="var(--c-accent)" stroke-width="1.6"/>
-              <path d="M0 52 L30 50 L60 51 L90 44 L120 45 L150 38 L180 39 L210 30 L240 31 L270 22 L300 18 L300 64 L0 64Z" fill="var(--c-accent)" opacity=".08"/>
-            </svg>
-            <p class="w-h">Recent activity</p>
-            <ul class="w-list">
-              <li><span class="coin-dot" aria-hidden="true"></span><span class="w-what">Node rewards<small>block #184,180</small></span><span class="w-amt pos">+0.42 DBLN</span></li>
-              <li><span class="coin-dot" aria-hidden="true"></span><span class="w-what">Received<small>from 0x8f3e…a21c</small></span><span class="w-amt pos">+25.00 DBLN</span></li>
-              <li><span class="coin-dot" aria-hidden="true"></span><span class="w-what">Sent<small>to 0x41b0…9d07</small></span><span class="w-amt">−8.00 DBLN</span></li>
-            </ul>
+          <p class="w-side-h"><span class="ko" lang="ko">지갑</span><span class="en" lang="en">Wallet</span></p>
+          <p class="w-nav on"><svg><use href="#i-home"/></svg><span class="ko" lang="ko">홈</span><span class="en" lang="en">Home</span></p>
+          <p class="w-nav"><svg><use href="#i-activity"/></svg><span class="ko" lang="ko">활동</span><span class="en" lang="en">Activity</span><em>1</em></p>
+          <p class="w-nav"><svg><use href="#i-explore"/></svg><span class="ko" lang="ko">둘러보기</span><span class="en" lang="en">Explore</span></p>
+          <p class="w-side-h"><span class="ko" lang="ko">이 Mac</span><span class="en" lang="en">This Mac</span></p>
+          <p class="w-nav"><svg><use href="#i-node"/></svg><span class="ko" lang="ko">노드와 보상</span><span class="en" lang="en">Node &amp; rewards</span></p>
+          <p class="w-side-h"><span class="ko" lang="ko">보호</span><span class="en" lang="en">Protection</span></p>
+          <p class="w-nav"><svg><use href="#i-shield"/></svg><span class="ko" lang="ko">보안</span><span class="en" lang="en">Security</span></p>
+          <p class="w-nav"><svg><use href="#i-agent"/></svg><span class="ko" lang="ko">AI 에이전트 결제</span><span class="en" lang="en">AI agent payments</span></p>
+          <div class="w-side-foot">
+            <div class="w-foot-row"><div><b><span class="ko" lang="ko">이 Mac의 노드</span><span class="en" lang="en">Node on this Mac</span></b><small><span class="ko" lang="ko">켜져 있어요</span><span class="en" lang="en">On</span></small></div><span class="switch on"><i></i></span></div>
+            <div class="w-foot-row"><span class="live"></span><div><b><span class="ko" lang="ko">연결됨</span><span class="en" lang="en">Connected</span></b><small><span class="ko" lang="ko">방금 확인함</span><span class="en" lang="en">Checked just now</span></small></div></div>
           </div>
-          <div class="pane-side">
-            <div class="w-card">
-              <p class="w-card-h">Node on this Mac</p>
-              <span class="switch on" aria-hidden="true"><i></i></span>
-              <p class="w-card-p">Following the chain. Every block is re-executed here.</p>
-            </div>
-            <div class="w-card">
-              <p class="w-card-h">Protected by this device</p>
-              <svg class="touch" viewBox="0 0 32 32" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M6 10a12 12 0 0 1 20 0"/><path d="M8.5 13.5a7.5 7.5 0 0 1 15 0v3"/><path d="M11.5 14a4.5 4.5 0 0 1 9 0v4.5c0 2.5-1 4.5-2.5 6"/><path d="M16 14v5c0 3-1 5.5-3 7.5"/><path d="M8.5 17v1.5c0 2.5-.6 4.3-1.5 5.5"/><path d="M23.5 20c0 2.5-.6 4.5-1.6 6.2"/></g></svg>
-              <p class="w-card-p">Secure Enclave key · Touch ID</p>
+        </aside>
+        <div class="w-main">
+          <div class="w-toolbar">
+            <span class="lights lights-alt"><i></i><i></i><i></i></span>
+            <b><span class="ko" lang="ko">홈</span><span class="en" lang="en">Home</span></b>
+            <span class="chip-warn"><span class="ko" lang="ko">테스트넷</span><span class="en" lang="en">Testnet</span></span>
+          </div>
+          <div class="w-content">
+            <div class="w-home">
+              <div class="w-col">
+                <div class="plate">
+                  <svg class="plate-waves" viewBox="0 0 900 220" preserveAspectRatio="none" fill="none" stroke="rgba(232,191,89,.2)" stroke-width="1"><path d="M0 40 Q30 34 60 40 T120 40 T180 40 T240 40 T300 40 T360 40 T420 40 T480 40 T540 40 T600 40 T660 40 T720 40 T780 40 T840 40 T900 40"/><path d="M0 66 Q34 59 69 66 T138 66 T207 66 T276 66 T345 66 T414 66 T483 66 T552 66 T621 66 T690 66 T759 66 T828 66 T897 66"/><path d="M0 91 Q39 83 78 91 T156 91 T234 91 T312 91 T390 91 T468 91 T546 91 T624 91 T702 91 T780 91 T858 91 T936 91"/><path d="M0 117 Q43 108 87 117 T174 117 T261 117 T348 117 T435 117 T522 117 T609 117 T696 117 T783 117 T870 117 T957 117"/><path d="M0 143 Q48 133 96 143 T192 143 T288 143 T384 143 T480 143 T576 143 T672 143 T768 143 T864 143 T960 143"/><path d="M0 169 Q52 158 105 169 T210 169 T315 169 T420 169 T525 169 T630 169 T735 169 T840 169 T945 169"/><path d="M0 194 Q57 182 114 194 T228 194 T342 194 T456 194 T570 194 T684 194 T798 194 T912 194"/></svg>
+                  <img class="plate-coin" src="assets/coin-256.webp" srcset="assets/coin-256.webp 256w, assets/coin-512.webp 512w" sizes="190px" width="256" height="256" alt="">
+                  <p class="plate-acct"><span class="ko" lang="ko">계정 1</span><span class="en" lang="en">Account 1</span> · <span class="mono">0x5397…E502</span></p>
+                  <p class="plate-amt">12.5 <small>DBLN</small></p>
+                  <p class="plate-ver"><svg><use href="#i-checkseal"/></svg><span class="ko" lang="ko">이 Mac에서 확인함 · 방금</span><span class="en" lang="en">Verified on this Mac · just now</span></p>
+                </div>
+                <div class="w-actions">
+                  <span class="w-act primary"><svg><use href="#i-touchid"/></svg><span class="ko" lang="ko">보내기</span><span class="en" lang="en">Send</span></span>
+                  <span class="w-act"><svg><use href="#i-receive"/></svg><span class="ko" lang="ko">받기</span><span class="en" lang="en">Receive</span></span>
+                  <span class="w-act"><svg><use href="#i-assets"/></svg><span class="ko" lang="ko">자산</span><span class="en" lang="en">Assets</span></span>
+                </div>
+                <div class="w-sec"><b><span class="ko" lang="ko">최근 활동</span><span class="en" lang="en">Recent activity</span></b><span><span class="ko" lang="ko">모두 보기</span><span class="en" lang="en">See all</span></span></div>
+                <div class="w-group">
+                  <div class="w-row">
+                    <span class="ti"><img src="assets/dbln-flat.svg" alt=""><span class="b wn"><i><svg><use href="#i-send"/></svg></i></span></span>
+                    <span class="w-t"><b><span class="ko" lang="ko">미나에게 보냄</span><span class="en" lang="en">Sent to Mina</span></b><small><span class="ring"></span><span class="ko" lang="ko">확인 중 · 보통 10초 안에 끝나요</span><span class="en" lang="en">Confirming · usually under 10 seconds</span></small></span>
+                    <span class="w-r"><b>−2.0</b><small>DBLN</small></span>
+                  </div>
+                  <div class="w-row">
+                    <span class="ti"><img src="assets/dbln-flat.svg" alt=""><span class="b in"><i><svg><use href="#i-receive"/></svg></i></span></span>
+                    <span class="w-t"><b><span class="ko" lang="ko">노드 보상</span><span class="en" lang="en">Node rewards</span></b><small><span class="ko" lang="ko">오늘 · 이 Mac이 받은 보상 24건</span><span class="en" lang="en">Today · 24 rewards from this Mac</span></small></span>
+                    <span class="w-r"><b class="pos">+1.5</b><small>DBLN</small></span>
+                  </div>
+                  <div class="w-row">
+                    <span class="ti"><img src="assets/dbln-flat.svg" alt=""><span class="b in"><i><svg><use href="#i-receive"/></svg></i></span></span>
+                    <span class="w-t"><b><span class="ko" lang="ko"><span class="mono">0x8f2a…41c9</span>에게서 받음</span><span class="en" lang="en">Received from <span class="mono">0x8f2a…41c9</span></span></b><small><span class="ko" lang="ko">어제 21:04</span><span class="en" lang="en">Yesterday, 21:04</span></small></span>
+                    <span class="w-r"><b class="pos">+10.0</b><small>DBLN</small></span>
+                  </div>
+                </div>
+              </div>
+              <div class="w-rail">
+                <div class="w-group">
+                  <p class="w-mini-h"><span class="ko" lang="ko">자산</span><span class="en" lang="en">Assets</span></p>
+                  <div class="w-asset"><img src="assets/dbln-flat.svg" alt=""><span class="w-t"><b><span class="ko" lang="ko">더블룬</span><span class="en" lang="en">Doubloon</span></b><small>DBLN</small></span><b class="w-v">12.5</b></div>
+                  <div class="w-asset"><img src="assets/token-waeth.webp" alt=""><span class="w-t"><b><span class="ko" lang="ko">래핑된 ETH</span><span class="en" lang="en">Wrapped ETH</span></b><small>WAETH</small></span><b class="w-v">0.42</b></div>
+                  <div class="w-asset"><span class="gen">M</span><span class="w-t"><b>MOON</b><small><span class="ko" lang="ko">확인 안 된 토큰</span><span class="en" lang="en">Unverified</span> · <span class="mono">0x77e1…</span></small></span><b class="w-v dim">1,000</b></div>
+                </div>
+                <div class="w-group">
+                  <p class="w-mini-h"><span class="ko" lang="ko">노드 보상</span><span class="en" lang="en">Node rewards</span></p>
+                  <div class="w-earn">
+                    <p class="w-earn-n">+1.5 <small><span class="ko" lang="ko">DBLN 오늘</span><span class="en" lang="en">DBLN today</span></small></p>
+                    <p class="w-earn-s"><span class="ko" lang="ko">이 Mac이 6시간째 켜져 있어요</span><span class="en" lang="en">This Mac has been online 6 h</span></p>
+                    <div class="bars"><i style="height:30%"></i><i style="height:45%"></i><i class="z"></i><i style="height:60%"></i><i style="height:52%"></i><i style="height:70%"></i><i style="height:66%"></i><i style="height:80%"></i><i style="height:58%"></i><i style="height:75%"></i><i style="height:90%"></i><i style="height:84%"></i></div>
+                  </div>
+                </div>
+                <div class="w-note"><svg><use href="#i-key"/></svg><p><b><span class="ko" lang="ko">복구 방법을 정해 두세요.</span><span class="en" lang="en">Set up recovery.</span></b> <span class="ko" lang="ko">이 Mac을 잃어버리면 누구도 자금을 되찾아 줄 수 없어요.</span><span class="en" lang="en">If this Mac is lost, nobody can bring the funds back.</span></p></div>
+              </div>
             </div>
           </div>
         </div>
       </div>
       <figcaption id="shot-cap" class="caption">
-        <span class="ko" lang="ko">EastSea 앱을 그린 그림입니다. 테스트넷 화면이며, 표시된 금액은 예시이고 테스트 DBLN에는 가치가 없습니다.</span>
-        <span class="en" lang="en">An illustration of the EastSea app on the testnet. The amounts are examples; test DBLN has no value.</span>
+        <span class="ko" lang="ko">테스트넷용 EastSea 앱 홈 화면을 그린 그림입니다. 금액과 토큰은 예시이며, 테스트 DBLN에는 가치가 없습니다.</span>
+        <span class="en" lang="en">An illustration of the EastSea app's home screen on the testnet. The amounts and tokens are examples; test DBLN has no value.</span>
       </figcaption>
     </figure>
   </div>
@@ -232,11 +274,11 @@
       </div>
       <div class="vignette" aria-hidden="true">
         <div class="v-sheet">
-          <p class="v-k">Confirm the send</p>
-          <p class="v-amt">25.00 <span>DBLN</span></p>
-          <p class="v-row"><span>To</span><span class="mono">0x8f3e…a21c</span></p>
-          <p class="v-row"><span>Network fee</span><span class="mono">≤ 0.0004 DBLN</span></p>
-          <div class="v-touch"><svg viewBox="0 0 32 32"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M6 10a12 12 0 0 1 20 0"/><path d="M8.5 13.5a7.5 7.5 0 0 1 15 0v3"/><path d="M11.5 14a4.5 4.5 0 0 1 9 0v4.5c0 2.5-1 4.5-2.5 6"/><path d="M16 14v5c0 3-1 5.5-3 7.5"/><path d="M8.5 17v1.5c0 2.5-.6 4.3-1.5 5.5"/><path d="M23.5 20c0 2.5-.6 4.5-1.6 6.2"/></g></svg><span>Touch ID to pay</span></div>
+          <p class="v-k"><span class="ko" lang="ko">보내기 확인</span><span class="en" lang="en">Confirm the send</span></p>
+          <p class="v-amt">2.0 <span>DBLN</span></p>
+          <p class="v-row"><span><span class="ko" lang="ko">받는 사람</span><span class="en" lang="en">To</span></span><span><span class="ko" lang="ko">미나</span><span class="en" lang="en">Mina</span> · <span class="mono">0x8f2a…41c9</span></span></p>
+          <p class="v-row"><span><span class="ko" lang="ko">수수료</span><span class="en" lang="en">Fee</span></span><span class="mono">≤ 0.0004 DBLN</span></p>
+          <div class="v-touch"><svg viewBox="0 0 32 32"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M6 10a12 12 0 0 1 20 0"/><path d="M8.5 13.5a7.5 7.5 0 0 1 15 0v3"/><path d="M11.5 14a4.5 4.5 0 0 1 9 0v4.5c0 2.5-1 4.5-2.5 6"/><path d="M16 14v5c0 3-1 5.5-3 7.5"/><path d="M8.5 17v1.5c0 2.5-.6 4.3-1.5 5.5"/><path d="M23.5 20c0 2.5-.6 4.5-1.6 6.2"/></g></svg><span><span class="ko" lang="ko">Touch ID로 보내기</span><span class="en" lang="en">Pay with Touch ID</span></span></div>
         </div>
       </div>
     </article>
@@ -245,14 +287,14 @@
       <p class="chapter-no">02</p>
       <div class="chapter-text">
         <h3 class="h3"><span class="ko" lang="ko">화면을 믿지 않고, 장부를 직접 읽습니다</span><span class="en" lang="en">It reads the books instead of trusting a screen</span></h3>
-        <p><span class="ko" lang="ko">지갑은 잔액마다 검증자 위원회의 서명과 장부 증명을 내 맥에서 검사합니다. 답해 준 노드가 느리거나 오래된 값을 줄 수는 있어도, 틀린 값을 통과시키지는 않습니다.</span><span class="en" lang="en">For every balance, the wallet checks the validator committee's signature and a state proof on your Mac. A serving node can be slow or stale, but it cannot slip a wrong number past your Mac.</span></p>
+        <p><span class="ko" lang="ko">지갑은 잔액마다 네트워크가 합의했다는 서명과 장부의 증명을 내 맥에서 직접 검사합니다. 답해 준 노드가 느리거나 오래된 값을 줄 수는 있어도, 틀린 값을 통과시키지는 않습니다.</span><span class="en" lang="en">For every balance, the wallet checks the network's agreed signature and a proof from the ledger, right on your Mac. A serving node can be slow or stale, but it cannot slip a wrong number past your Mac.</span></p>
       </div>
       <div class="vignette" aria-hidden="true">
-        <div class="v-proof mono">
-          <p><span class="ok">✓</span> committee signature <span class="dim">BLS threshold</span></p>
-          <p><span class="ok">✓</span> state proof <span class="dim">EIP-7864</span></p>
-          <p><span class="ok">✓</span> block <span class="dim">#184,233</span></p>
-          <p class="v-proof-total">balance verified on this Mac</p>
+        <div class="v-proof">
+          <p><span class="ok">✓</span> <span class="ko" lang="ko">네트워크가 합의한 서명</span><span class="en" lang="en">The network's agreed signature</span></p>
+          <p><span class="ok">✓</span> <span class="ko" lang="ko">장부에서 가져온 증명</span><span class="en" lang="en">A proof from the ledger</span></p>
+          <p><span class="ok">✓</span> <span class="ko" lang="ko">이 Mac에서 직접 계산</span><span class="en" lang="en">Checked on this Mac</span></p>
+          <p class="v-proof-total"><span class="ko" lang="ko">잔액 12.5 DBLN · 방금 확인함</span><span class="en" lang="en">Balance 12.5 DBLN · verified just now</span></p>
         </div>
       </div>
     </article>
@@ -261,12 +303,12 @@
       <p class="chapter-no">03</p>
       <div class="chapter-text">
         <h3 class="h3"><span class="ko" lang="ko">스위치 하나로 노드가 됩니다</span><span class="en" lang="en">One switch makes it a node</span></h3>
-        <p><span class="ko" lang="ko">노드 스위치를 켜면 내 맥이 체인을 따라가며 모든 블록을 직접 다시 실행합니다. VPN도, 열어 둘 포트도 필요 없이 집 인터넷 그대로 연결됩니다.</span><span class="en" lang="en">Turn on the node switch and your Mac follows the chain, re-executing every block itself. No VPN and no open ports: it connects over your home internet as it is.</span></p>
+        <p><span class="ko" lang="ko">노드 스위치를 켜면 내 맥이 네트워크의 모든 거래를 직접 다시 계산해 확인합니다. VPN도, 열어 둘 포트도 필요 없이 집 인터넷 그대로 연결됩니다.</span><span class="en" lang="en">Turn on the node switch and your Mac re-checks every transaction on the network itself. No VPN and no open ports: it connects over your home internet as it is.</span></p>
       </div>
       <div class="vignette" aria-hidden="true">
         <div class="v-node">
-          <div class="v-node-row"><span>Run a node on this Mac</span><span class="switch on"><i></i></span></div>
-          <div class="v-node-meta mono"><span>No VPN</span><span>No open ports</span><span>Home internet</span></div>
+          <div class="v-node-row"><span><span class="ko" lang="ko">이 Mac에서 노드 켜기</span><span class="en" lang="en">Run a node on this Mac</span></span><span class="switch on"><i></i></span></div>
+          <div class="v-node-meta"><span><span class="ko" lang="ko">VPN 필요 없음</span><span class="en" lang="en">No VPN</span></span><span><span class="ko" lang="ko">포트 설정 없음</span><span class="en" lang="en">No open ports</span></span><span><span class="ko" lang="ko">집 인터넷 그대로</span><span class="en" lang="en">Home internet</span></span></div>
         </div>
       </div>
     </article>
@@ -280,11 +322,11 @@
       </div>
       <div class="vignette" aria-hidden="true">
         <div class="v-agent">
-          <p class="v-k">Agent session</p>
-          <p class="v-row"><span>Per payment</span><span class="mono">1 DBLN</span></p>
-          <p class="v-row"><span>Per 24 hours</span><span class="mono">10 DBLN</span></p>
-          <p class="v-row"><span>Payees</span><span class="mono">Shop</span></p>
-          <p class="v-row"><span>Expires</span><span class="mono">in 7 days</span></p>
+          <p class="v-k"><span class="ko" lang="ko">AI 에이전트 결제 한도</span><span class="en" lang="en">AI agent payment limits</span></p>
+          <p class="v-row"><span><span class="ko" lang="ko">한 번에</span><span class="en" lang="en">Per payment</span></span><span class="mono">1 DBLN</span></p>
+          <p class="v-row"><span><span class="ko" lang="ko">24시간 동안</span><span class="en" lang="en">Per 24 hours</span></span><span class="mono">10 DBLN</span></p>
+          <p class="v-row"><span><span class="ko" lang="ko">받는 곳</span><span class="en" lang="en">Payees</span></span><span><span class="ko" lang="ko">상점 1곳</span><span class="en" lang="en">1 shop</span></span></p>
+          <p class="v-row"><span><span class="ko" lang="ko">끝나는 때</span><span class="en" lang="en">Expires</span></span><span><span class="ko" lang="ko">7일 뒤</span><span class="en" lang="en">in 7 days</span></span></p>
         </div>
       </div>
     </article>
@@ -397,8 +439,8 @@
       <article class="get-main">
         <img class="app-icon" src="assets/app-icon-192.webp" width="96" height="96" alt="">
         <div>
-          <h3 class="h3">EastSea for Mac</h3>
-          <p class="mono get-meta">0.7.0 · Apple silicon · macOS 14+</p>
+          <h3 class="h3"><span class="ko" lang="ko">Mac용 EastSea</span><span class="en" lang="en">EastSea for Mac</span></h3>
+          <p class="mono get-meta">0.7.0 · <span class="ko" lang="ko">Apple 실리콘</span><span class="en" lang="en">Apple silicon</span> · macOS 14+</p>
           <p><span class="ko" lang="ko">지갑과 노드가 한 앱에. Touch ID 결제, 잔액 그래프, 노드 스위치, 테스트 DBLN 받기까지 들어 있습니다.</span><span class="en" lang="en">Wallet and node in one app: Touch ID payments, a balance chart, the node switch, and free test DBLN to try it with.</span></p>
           <a class="btn btn-primary" href="https://github.com/eastsea-xyz/eastsea/releases/latest"><span class="ko" lang="ko">GitHub에서 내려받기</span><span class="en" lang="en">Download from GitHub</span></a>
           <p class="fine"><span class="ko" lang="ko">테스트넷 전용 빌드입니다. 테스트 DBLN에는 가치가 없습니다.</span><span class="en" lang="en">Testnet build. Test DBLN has no value.</span></p>

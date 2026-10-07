@@ -3437,7 +3437,9 @@ fn candidate_registration_uses_lane(status: &Value) -> bool {
 /// growth) plus a 1 gwei tip; only the actual base + tip is charged. The
 /// state cap has the same 2x headroom over the B5 price, never under the
 /// floor (contracts-live bug #5: a cap at today's price leaves a queued tx
-/// unincludable after the next burst).
+/// unincludable after the next burst). Only the legacy 7780 chain signs a
+/// zero state cap; elsewhere a 0 or missing price takes the floor, and a
+/// malformed one is refused (round 2, finding 6).
 const TIP: u128 = 1_000_000_000;
 
 fn fee_caps(status: &Value, tip: u128) -> Result<aether_types::FeeVector, String> {
@@ -3447,7 +3449,14 @@ fn fee_caps(status: &Value, tip: u128) -> Result<aether_types::FeeVector, String
             .and_then(|v| v.parse::<u128>().ok())
             .ok_or(format!("status has no base_fee.{k}"))
     };
-    let state_price = status["base_fee"]["state"].as_str().and_then(|v| v.parse().ok()).unwrap_or(0);
+    // The app's rule (B5 review round 2, finding 6): a zero state cap only on
+    // the known stateless legacy chain. Elsewhere a zero or missing report
+    // clamps to the fixed unit price — the spec's "clamp" branch, so a test
+    // devnet whose node omits the field still sends (a cap and budget are
+    // harmless where state is unpriced) — and a malformed one is refused.
+    let chain = status["chain_id"].as_u64().ok_or("status has no chain_id")?;
+    let reported = status["base_fee"].get("state").map_or(Some("0"), Value::as_str);
+    let state_price = aether_execution::tx::wallet_state_price(chain, reported)?;
     Ok(aether_types::FeeVector {
         exec: get("exec")? * 2 + tip,
         state: aether_execution::fees::signed_state_cap(state_price),
@@ -3636,15 +3645,31 @@ mod tests {
     use super::*;
 
     /// Contracts-live bug #5: `aether send` signed the state cap at the
-    /// current price, so the next burst left it unincludable.
+    /// current price, so the next burst left it unincludable. Round 2,
+    /// finding 6: a zero cap only on the known stateless legacy chain (as the
+    /// app's `state_price_for` decides). On a paid chain a stale or faulty
+    /// "0" or a missing price clamps to the floor — before the fix it signed
+    /// `max_fee.state = 0` and skipped the state budget — and a malformed
+    /// price is refused rather than signed as free.
     #[test]
-    fn cli_state_cap_has_headroom_over_the_state_price() {
+    fn cli_state_cap_has_headroom_and_zero_only_on_the_legacy_chain() {
         use aether_execution::fees::STATE_UNIT_PRICE;
-        let status = |state: &str| json!({ "base_fee": { "exec": "0", "prove": "0", "state": state } });
-        assert_eq!(fee_caps(&status(&STATE_UNIT_PRICE.to_string()), TIP).unwrap().state, 2 * STATE_UNIT_PRICE);
-        assert_eq!(fee_caps(&status(&(43 * STATE_UNIT_PRICE).to_string()), TIP).unwrap().state, 86 * STATE_UNIT_PRICE);
-        assert_eq!(fee_caps(&status("0"), TIP).unwrap().state, 0, "a chain without state pricing");
-        assert_eq!(fee_caps(&json!({ "base_fee": { "exec": "0", "prove": "0" } }), TIP).unwrap().state, 0);
+        let status = |chain: u64, state: Option<&str>| match state {
+            Some(p) => json!({ "chain_id": chain, "base_fee": { "exec": "0", "prove": "0", "state": p } }),
+            None => json!({ "chain_id": chain, "base_fee": { "exec": "0", "prove": "0" } }),
+        };
+        let price = STATE_UNIT_PRICE.to_string();
+        assert_eq!(fee_caps(&status(7796, Some(&price)), TIP).unwrap().state, 2 * STATE_UNIT_PRICE);
+        assert_eq!(fee_caps(&status(7796, Some(&(43 * STATE_UNIT_PRICE).to_string())), TIP).unwrap().state, 86 * STATE_UNIT_PRICE);
+        assert_eq!(fee_caps(&status(7796, Some("0")), TIP).unwrap().state, 2 * STATE_UNIT_PRICE, "a paid chain's zero report clamps to the floor");
+        assert_eq!(fee_caps(&status(7796, None), TIP).unwrap().state, 2 * STATE_UNIT_PRICE, "a missing price takes the floor, never 0");
+        assert!(fee_caps(&status(7796, Some("free")), TIP).is_err(), "a malformed price is not a zero");
+        assert!(fee_caps(&json!({ "chain_id": 7796, "base_fee": { "exec": "0", "prove": "0", "state": 5 } }), TIP).is_err(), "a non-string price is malformed");
+        // The legacy stateless chain keeps its zero cap, whatever is reported.
+        for state in [Some("0"), None, Some("3000000000000")] {
+            assert_eq!(fee_caps(&status(7780, state), TIP).unwrap().state, 0);
+        }
+        assert!(fee_caps(&json!({ "base_fee": { "exec": "0", "prove": "0", "state": "0" } }), TIP).is_err(), "no chain id, no exception");
     }
 
     #[test]

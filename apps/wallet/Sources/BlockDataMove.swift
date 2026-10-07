@@ -33,6 +33,40 @@ enum BlockDataMove {
     }
     enum Failure: Error { case unavailable, occupied, invalidRecord, copy, persistence }
 
+
+    /// Own the internal node lock until the caller closes the returned fd.
+    /// An installer or replacement node must never inherit this descriptor.
+    static func holdRunLock(in dir: URL, timeout: TimeInterval = 60) async -> Int32? {
+        guard timeout.isFinite, timeout >= 0, let rootID = identity(dir) else { return nil }
+        let lockURL = dir.appendingPathComponent("run.lock")
+        let fd = open(lockURL.path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { return nil }
+        let flags = fcntl(fd, F_GETFD)
+        var descriptor = stat()
+        guard flags >= 0, fcntl(fd, F_SETFD, flags | FD_CLOEXEC) == 0 else { close(fd); return nil }
+        let confirmedFlags = fcntl(fd, F_GETFD)
+        guard confirmedFlags >= 0, (confirmedFlags & FD_CLOEXEC) != 0,
+              fstat(fd, &descriptor) == 0, (descriptor.st_mode & S_IFMT) == S_IFREG,
+              let lockID = identity(lockURL, directory: false),
+              lockID.device == UInt64(UInt32(bitPattern: descriptor.st_dev)),
+              lockID.inode == UInt64(descriptor.st_ino) else { close(fd); return nil }
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        while !Task.isCancelled {
+            guard identity(dir) == rootID, identity(lockURL, directory: false) == lockID else { break }
+            if flock(fd, LOCK_EX | LOCK_NB) == 0 {
+                guard identity(dir) == rootID, identity(lockURL, directory: false) == lockID else { break }
+                return fd
+            }
+            guard errno == EWOULDBLOCK || errno == EAGAIN || errno == EINTR else { break }
+            let remaining = deadline - ProcessInfo.processInfo.systemUptime
+            guard remaining > 0 else { break }
+            do { try await Task.sleep(nanoseconds: UInt64(min(0.05, remaining) * 1_000_000_000)) }
+            catch { break }
+        }
+        close(fd)
+        return nil
+    }
+
     static func identity(_ url: URL, directory: Bool = true) -> Identity? {
         var st = stat()
         guard lstat(url.path, &st) == 0,

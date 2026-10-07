@@ -17,6 +17,8 @@ import UserNotifications
 /// validators directly (still verifying everything).
 @MainActor
 final class NodeController: ObservableObject {
+    nonisolated static let storageMoveLockTimeout: TimeInterval = 60
+    nonisolated static var storageMoveDefaults: UserDefaults { .standard }
     enum State: Equatable {
         case off
         case starting

@@ -147,13 +147,30 @@ extension NodeController {
         storageMoveOffersDiskUtility = false
         storageMovePercent = 0
         logEvent("storage", "moving block data from \(source.path) to \(target.path)")
+        // Suspend before shutdown: the daemon may otherwise restart the
+        // source while a large database copy is still working.
+        if let daemon = unattended, !daemon.suspendRespawn() {
+            storageMoveError = String(localized: "The node could not pause automatic restarts. The block data is still where it was.")
+            storageMovePercent = nil
+            daemon.resumeRespawn()
+            return
+        }
         // Stop whichever node runs on it: ours, or the daemon's we attached to.
         if attached { unattended?.stopDaemonNode() }
         stop(keepSwitch: true)
         let dataDir = Self.dataDir
         Task.detached {
-            // The node lets go of run.lock when it has really exited.
-            for _ in 0..<120 where Self.lockHeld(in: dataDir) { try? await Task.sleep(nanoseconds: 500_000_000) }
+            // Hold exclusive ownership through verification and durable
+            // publication; observing an unlocked instant cannot fence writers.
+            guard let moveFD = await BlockDataMove.holdRunLock(in: dataDir, timeout: Self.storageMoveLockTimeout) else {
+                await MainActor.run {
+                    self.storageMoveError = String(localized: "The node is still using the block data. The move was cancelled; the block data is still where it was.")
+                    self.storageMovePercent = nil
+                    self.unattended?.resumeRespawn()
+                    self.applyPower()
+                }
+                return
+            }
             let total = BlockDataLocation.movedDirs.reduce(UInt64(0)) { $0 + Self.treeBytes(source.appendingPathComponent($1)) }
             let meter = DataMigration.ProgressMeter { f in
                 Task { @MainActor in
@@ -172,8 +189,11 @@ extension NodeController {
                     self.storageMoveError = String(localized: "The move did not complete: the copy did not verify or space ran out. The block data is still where it was.")
                     self.logEvent("storage", "move failed; staying on \(source.path)")
                 }
+                // The durable record and UI selection are settled. Release
+                // before either daemon or app tries to start the replacement.
+                close(moveFD)
                 self.storageMovePercent = nil
-                self.unattended?.syncMarker()
+                self.unattended?.resumeRespawn()
                 self.applyPower()
             }
         }
@@ -183,7 +203,7 @@ extension NodeController {
     /// (its block-data folders only — never the keys, never anything else).
     func finishBlockDataMove() {
         // Legacy path-only records carry no proof and authorize no deletion.
-        UserDefaults.standard.removeObject(forKey: Self.cleanupKey)
+        Self.storageMoveDefaults.removeObject(forKey: Self.cleanupKey)
         let target = BlockDataLocation.resolvedRoot(chainRoot), internalRoot = Self.dataDir
         Task.detached { BlockDataMove.cleanup(confirmedTarget: target, internalRoot: internalRoot) }
     }

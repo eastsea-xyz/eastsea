@@ -6,11 +6,32 @@ import Foundation
 #if os(macOS)
 import AppKit
 
+// Legacy cleanup preferences stay in memory; fixtures never write cfprefsd.
+final class MoveMemoryDefaults: UserDefaults {
+    private let lock = NSLock()
+    private var values: [String: Any] = [:]
+    init() { super.init(suiteName: nil)! }
+    override func object(forKey key: String) -> Any? { lock.lock(); defer { lock.unlock() }; return values[key] }
+    override func set(_ value: Any?, forKey key: String) {
+        lock.lock(); defer { lock.unlock() }
+        if let value { values[key] = value } else { values.removeValue(forKey: key) }
+    }
+    override func set(_ value: Bool, forKey key: String) { set(value as Any?, forKey: key) }
+    override func removeObject(forKey key: String) { set(nil as Any?, forKey: key) }
+}
+
 // Exercise the real mover against fixtures, without starting a node or app.
 @MainActor final class NodeController {
+    nonisolated static let storageMoveLockTimeout: TimeInterval = 0.05
+    nonisolated static let storageMoveDefaults = MoveMemoryDefaults()
     nonisolated static let dataDir = URL(fileURLWithPath: ProcessInfo.processInfo.environment["AETHER_AGENT_TEST_TMP"]!)
         .appendingPathComponent("block-data-internal-\(UUID().uuidString)")
-    var chainDataPath = ""
+    var selectionLockChecks: [Bool] = []
+    var chainDataPath = "" {
+        didSet {
+            if stops > 0, chainDataPath != oldValue { selectionLockChecks.append(Self.lockHeld(in: Self.dataDir)) }
+        }
+    }
     var storageMoveOffersDiskUtility = false
     var storageMovePercent: Int?
     var storageMoveError: String?
@@ -19,7 +40,11 @@ import AppKit
     var archive = false
     var mountObservers: [NSObjectProtocol] = []
     var stops = 0
-    func stop(keepSwitch: Bool) { stops += 1 }
+    var markerAtStops: [Bool] = []
+    func stop(keepSwitch: Bool) {
+        markerAtStops.append(unattended?.markerEnabled ?? false)
+        stops += 1
+    }
     func logEvent(_ event: String, _ message: String) {}
     func applyPower() {}
     nonisolated static func lockHeld(in dir: URL) -> Bool {
@@ -31,8 +56,25 @@ import AppKit
     }
 }
 @MainActor final class MoveDaemonStub {
-    func stopDaemonNode() {}
-    func syncMarker() {}
+    var markerEnabled = true
+    var suspensionSucceeds = true
+    var suspensions = 0
+    var pauseCalls = 0
+    var resumeCalls = 0
+    var markerAtDaemonStops: [Bool] = []
+    @discardableResult func suspendRespawn() -> Bool {
+        pauseCalls += 1
+        suspensions += 1
+        if suspensionSucceeds { markerEnabled = false }
+        return suspensionSucceeds
+    }
+    func resumeRespawn() {
+        resumeCalls += 1
+        suspensions = max(0, suspensions - 1)
+        syncMarker()
+    }
+    func stopDaemonNode() { markerAtDaemonStops.append(markerEnabled) }
+    func syncMarker() { markerEnabled = suspensions == 0 }
 }
 enum HealthCheck { static let korean = false }
 #endif
@@ -115,7 +157,7 @@ try FileManager.default.createDirectory(at: authoritative, withIntermediateDirec
 let sentinel = authoritative.appendingPathComponent("state.db")
 try Data("authoritative".utf8).write(to: sentinel)
 mover.chainDataPath = authoritative.path
-UserDefaults.standard.set(nestedSource.path, forKey: NodeController.cleanupKey)
+NodeController.storageMoveDefaults.set(nestedSource.path, forKey: NodeController.cleanupKey)
 mover.finishBlockDataMove()
 try await Task.sleep(nanoseconds: 100_000_000)
 check(FileManager.default.fileExists(atPath: sentinel.path), "R01 cleanup rechecks ancestry")
@@ -227,6 +269,92 @@ check(staleMover.chainDataPath == freshTarget.path && (try? Data(contentsOf: fre
       "R03 an advanced source can safely abandon stale publication and move afresh")
 check((try? Data(contentsOf: staleTarget.appendingPathComponent("follow/state.db"))) == Data("before-crash".utf8),
       "R03 abandoning a stale move retains its earlier copied cargo")
+
+// R06. The actual mover pauses daemon respawn before either node stops and
+// retains ownership during copy, selection publication and commit.
+try? FileManager.default.removeItem(at: recordURL)
+let fencedSource = moveFixture.appendingPathComponent("r06-source")
+let fencedTarget = moveFixture.appendingPathComponent("r06-target")
+try FileManager.default.createDirectory(at: fencedSource.appendingPathComponent("follow"), withIntermediateDirectories: true)
+try Data(repeating: 0x31, count: 256 * 1024).write(to: fencedSource.appendingPathComponent("follow/state.db"))
+let fencedMover = NodeController()
+fencedMover.attached = true
+fencedMover.chainDataPath = fencedSource.path
+fencedMover.moveBlockData(to: fencedTarget)
+check(fencedMover.markerAtStops == [false]
+      && fencedMover.unattended?.markerAtDaemonStops == [false],
+      "R06 daemon respawn is suspended before stopping either node")
+try await waitForMove(fencedMover)
+check(fencedMover.chainDataPath == fencedTarget.path, "R06 fenced copy commits its destination")
+check(fencedMover.selectionLockChecks == [true],
+      "R06 exclusive run.lock is retained through copy publication and selection commit")
+check(!NodeController.lockHeld(in: NodeController.dataDir)
+      && fencedMover.unattended?.resumeCalls == 1
+      && fencedMover.unattended?.markerEnabled == true,
+      "R06 ownership is released and daemon respawn resumes after commit")
+
+// A live writer that does not exit must time out before any copying or
+// publication; resuming the marker preserves the original source choice.
+try? FileManager.default.removeItem(at: recordURL)
+let timeoutSource = moveFixture.appendingPathComponent("r06-timeout-source")
+let timeoutTarget = moveFixture.appendingPathComponent("r06-timeout-target")
+try FileManager.default.createDirectory(at: timeoutSource.appendingPathComponent("follow"), withIntermediateDirectories: true)
+let timeoutDB = timeoutSource.appendingPathComponent("follow/state.db")
+try Data("writer-owned".utf8).write(to: timeoutDB)
+let busyFD = open(NodeController.dataDir.appendingPathComponent("run.lock").path, O_RDWR | O_CREAT, 0o600)
+check(busyFD >= 0 && flock(busyFD, LOCK_EX | LOCK_NB) == 0, "R06 fixture owns the live writer lock")
+let timeoutMover = NodeController()
+timeoutMover.attached = true
+timeoutMover.chainDataPath = timeoutSource.path
+timeoutMover.moveBlockData(to: timeoutTarget)
+try await waitForMove(timeoutMover)
+check(timeoutMover.chainDataPath == timeoutSource.path && timeoutMover.storageMoveError != nil,
+      "R06 lock timeout never switches source selection")
+check(!FileManager.default.fileExists(atPath: timeoutTarget.path)
+      && !FileManager.default.fileExists(atPath: recordURL.path)
+      && (try? Data(contentsOf: timeoutDB)) == Data("writer-owned".utf8),
+      "R06 lock timeout creates no copy or cleanup authorization")
+check(NodeController.lockHeld(in: NodeController.dataDir)
+      && timeoutMover.unattended?.resumeCalls == 1
+      && timeoutMover.unattended?.markerEnabled == true,
+      "R06 timeout keeps the writer lock and resumes the original daemon choice")
+close(busyFD)
+
+// A copy failure still balances suspension and releases only our descriptor.
+let failureSource = moveFixture.appendingPathComponent("r06-failure-source")
+let failureTarget = moveFixture.appendingPathComponent("r06-failure-target")
+try FileManager.default.createDirectory(at: failureSource.appendingPathComponent("follow"), withIntermediateDirectories: true)
+try FileManager.default.createSymbolicLink(at: failureSource.appendingPathComponent("follow/unreadable"),
+                                         withDestinationURL: moveFixture.appendingPathComponent("r06-missing-file"))
+let copyFailureMover = NodeController()
+copyFailureMover.chainDataPath = failureSource.path
+copyFailureMover.moveBlockData(to: failureTarget)
+try await waitForMove(copyFailureMover)
+check(copyFailureMover.chainDataPath == failureSource.path && copyFailureMover.storageMoveError != nil
+      && copyFailureMover.unattended?.resumeCalls == 1
+      && !NodeController.lockHeld(in: NodeController.dataDir),
+      "R06 failed copy preserves source and resumes daemon after releasing ownership")
+
+// If the marker cannot be durably removed, stop nothing and copy nothing.
+let pauseFailureMover = NodeController()
+pauseFailureMover.chainDataPath = timeoutSource.path
+pauseFailureMover.unattended?.suspensionSucceeds = false
+pauseFailureMover.moveBlockData(to: moveFixture.appendingPathComponent("r06-pause-failure-target"))
+try await waitForMove(pauseFailureMover)
+check(pauseFailureMover.stops == 0 && pauseFailureMover.storageMoveError != nil
+      && pauseFailureMover.chainDataPath == timeoutSource.path
+      && pauseFailureMover.unattended?.resumeCalls == 1,
+      "R06 failed marker suspension leaves the running source untouched")
+
+
+// The descriptor used by the R11 installer must close on exec.
+let execFD = await BlockDataMove.holdRunLock(in: NodeController.dataDir, timeout: 0.05)
+check(execFD != nil, "R06 shared lock helper returns owned descriptor")
+if let fd = execFD {
+    check((fcntl(fd, F_GETFD) & FD_CLOEXEC) != 0, "R06 installer children cannot inherit the move lock")
+    close(fd)
+}
+
 }
 #endif
 

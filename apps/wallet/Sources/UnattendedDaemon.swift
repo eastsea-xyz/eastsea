@@ -47,6 +47,24 @@ final class UnattendedDaemon: ObservableObject {
     @AppStorage("unattendedUserChose") private var userChose = false
     /// A default-on change is not the user's hand (see `applyDefault`).
     private var applyingDefault = false
+    /// Storage moves and quiet updates may overlap; neither may restore
+    /// respawn while the other still owns its suspension.
+    private var respawnSuspensions = 0
+
+    @discardableResult
+    func suspendRespawn() -> Bool {
+        #if WALLET_SCREENS
+        return true
+        #endif
+        respawnSuspensions += 1
+        return Marker.remove()
+    }
+
+    func resumeRespawn() {
+        guard respawnSuspensions > 0 else { return }
+        respawnSuspensions -= 1
+        syncMarker()
+    }
 
     /// Set by the app: the marker must not point a daemon at a node while the
     /// user keeps the node switch off, or from a place the app cannot live in.
@@ -151,7 +169,7 @@ final class UnattendedDaemon: ObservableObject {
         #endif
         // The marker makes the root daemon run the node — past the app's own
         // start gate — so it obeys the same gate (release-070 review, B4).
-        guard enabled, nodeEnabled, !wrongLocation, DataMigration.mayStartNode() == nil else {
+        guard respawnSuspensions == 0, enabled, nodeEnabled, !wrongLocation, DataMigration.mayStartNode() == nil else {
             Marker.remove()
             return
         }
@@ -266,8 +284,15 @@ private enum Marker {
         }
     }
 
-    static func remove() {
-        try? FileManager.default.removeItem(at: url)
+    @discardableResult
+    static func remove() -> Bool {
+        // Persist the absence before releasing the source writer. A reboot
+        // must not resurrect a marker naming the pre-move chain-data path.
+        guard unlink(url.path) == 0 || errno == ENOENT else { return false }
+        let fd = open(url.deletingLastPathComponent().path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        return fsync(fd) == 0
     }
 
     /// The pid the daemon's wrapper recorded (`unattended.pid` in the data

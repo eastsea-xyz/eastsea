@@ -32,3 +32,6 @@ docs/.pdca-snapshots/
 
 # scripts/contracts-live.sh installs its node drivers at run time
 scripts/contracts-live/node_modules/
+
+# Python bytecode from script tests
+__pycache__/

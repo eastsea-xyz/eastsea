@@ -14,6 +14,8 @@ enum TxStatusText {
         switch state {
         case "included":
             return success == true ? "Done." : "It made it into a block, but running it failed."
+        case "replaced":
+            return "Another transaction used this account's transaction number on chain. This transaction can no longer be processed."
         case "pending":
             switch reason {
             case "state_price_above_cap"?:

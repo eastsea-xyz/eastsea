@@ -14,7 +14,7 @@ let cases: [(String, String?)] = [
     ("included", nil), ("pending", "state_price_above_cap"), ("pending", "nonce_gap"), ("pending", "fee_cap_below_base"),
     ("pending", nil), ("dropped", "state_price_above_cap"), ("dropped", "fee_cap_below_base"), ("dropped", "nonce_gap"),
     ("dropped", "expired"), ("dropped", "evicted"), ("dropped", "replaced"), ("dropped", "unaffordable"),
-    ("dropped", "something new"), ("unknown", nil),
+    ("dropped", "something new"), ("unknown", nil), ("replaced", "nonce_used"),
 ]
 for (state, reason) in cases {
     let en = TxStatusText.sentence(state: state, reason: reason, success: false, message: ko, ko: false)
@@ -51,4 +51,26 @@ let timedOutEn = TxStatusText.timedOut(ko: false)
 check(!finalClaims.contains { timedOutEn.lowercased().contains($0) }, "a timeout does not claim the payment failed: \(timedOutEn)")
 check(timedOutEn.contains("unconfirmed") || timedOutEn.contains("yet"), "a timeout leaves the outcome unconfirmed")
 check(TxStatusText.timedOut(ko: true).contains("아직"), "Korean timeout copy also leaves the outcome unconfirmed")
+
+// A top-level replacement is a proven use of the sender's number on chain,
+// unlike a local dropped/replaced hint. It says nothing about other uses of
+// the transaction's authorizations or the account's money.
+let confirmedReplacementKo = "보낸 계정의 같은 순서 번호(7)를 다른 거래가 체인에서 사용했어요. 이 거래는 더 이상 처리될 수 없어요."
+let confirmedReplacementEn = TxStatusText.sentence(state: "replaced", reason: "nonce_used", success: nil,
+                                                  message: confirmedReplacementKo, ko: false)
+check(confirmedReplacementEn != TxStatusText.unknown(ko: false),
+      "top-level replaced has a distinct English sentence: \(confirmedReplacementEn)")
+check(confirmedReplacementEn.contains("Another") && confirmedReplacementEn.contains("account") &&
+      confirmedReplacementEn.contains("number") && confirmedReplacementEn.contains("on chain"),
+      "confirmed replacement identifies another transaction's use of the sending account's number on chain")
+check(!confirmedReplacementEn.contains("yet") && !confirmedReplacementEn.contains("may"),
+      "proven replacement is final, rather than an unresolved local hint")
+check(!["no money", "nothing was spent", "nothing left"].contains { confirmedReplacementEn.lowercased().contains($0) },
+      "a proven replacement does not make a broader no-spend promise")
+let confirmedReplacementKoText = TxStatusText.sentence(state: "replaced", reason: "nonce_used", success: nil,
+                                                      message: confirmedReplacementKo, ko: true)
+check(confirmedReplacementKoText == confirmedReplacementKo,
+      "Korean proven-replacement copy preserves the core's chain fact")
+check(localReplacement.contains("yet") && localReplacement != confirmedReplacementEn,
+      "local dropped/replaced remains unresolved and distinct from proven replacement")
 print("tx-status-text ok")

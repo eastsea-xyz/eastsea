@@ -290,3 +290,36 @@ W2 together, then T1 as their merge gate, then W3, N3, N5, W4 and W5.
 - **Deadline override.** Near an activation, the liveness condition gives way.
   The worst case is one planned restart during an unplanned outage, which is
   better than a Mac that misses the activation.
+
+## Founder decision 2026-10-07: the chain announces updates, not polling
+
+"자동업데이트를 polling하지말고, 온체인에 넣어." Wallets stop polling the appcast
+on a timer. The announcement is the chain itself:
+
+1. **Trigger.** Every node already follows finalized blocks. When a block contains
+   an approved ReleaseLog entry (2/3 builder signatures, manifest hash, protocol,
+   artifact size), the node records it and exposes it in
+   `aether_status.release` (`{version, build, manifest_hash, approved_at_height,
+   install_after_height}`). The app reacts to that change, the same way it reacts
+   to `newest_scheduled`. There is no timer and no network call to GitHub until a
+   release exists on chain.
+2. **Fetch.** The manifest names the artifact by hash. The app fetches it from any
+   source: the GitHub release URL, a webseed, or peers over the same P2P path as
+   era files. It never trusts the source, only the hash in the on-chain manifest.
+3. **Verify.** The DMG hash equals the manifest hash. The Sparkle EdDSA signature
+   matches the key pinned in the bundle. The 72 h wait has passed
+   (`install_after_height`). The release pin in network.json matches. Any failure
+   means no install, with one plain sentence shown to the user.
+4. **Install quietly.** Sparkle performs the install (it handles replace and
+   relaunch), driven by `SPUUpdater` with the verified item. There is no scheduled
+   check. The node restarts in its chain-assigned slot (seat i, see above), so
+   validators never drop below quorum.
+5. **Legacy chains (7780/7777) have no ReleaseLog.** They keep the current
+   appcast check until mainnet. A mainnet build turns polling off entirely
+   (`SUEnableAutomaticChecks = false`, and `SUScheduledCheckInterval` is unused).
+
+Lane tasks:
+- **U1 (node):** a ReleaseLog watcher in follow/chain → `aether_status.release`, with tests.
+- **U2 (wallet):** `UpdateChannel` and `ReleaseUpdateGate` driven by `aether_status.release`, with a Sparkle item built from the verified manifest. Polling stays off on new-genesis chains.
+- **U3:** artifact fetch by hash from GitHub, webseed or peer.
+- **U4:** a fault test. A forged or unapproved entry, a hash mismatch, or an early install must each refuse with a sentence. A real entry must install without any prompt.

@@ -405,6 +405,16 @@
         }
       }
     },
+    "%lld%% of checks passed in the last %lld days" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "최근 %2$lld일 확인 통과율 %1$lld%%"
+          }
+        }
+      }
+    },
     "%lld. %@" : {
       "localizations" : {
         "ko" : {
@@ -2340,16 +2350,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "지금 네트워크 기록 %@를 보관 중"
-          }
-        }
-      }
-    },
-    "Keeping %@ of network history now · %lld%% of checks passed in the last %lld days" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "지금 네트워크 기록 %1$@를 보관 중 · 최근 %3$lld일 확인 통과율 %2$lld%%"
           }
         }
       }
@@ -4901,7 +4901,7 @@
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "**%@**처럼 보이지만 다른 주소예요. 지갑을 연결하기 전에 글자를 하나하나 확인해 주세요."
+            "value" : "**%@** 주소처럼 보이지만 다른 주소예요. 지갑을 연결하기 전에 글자를 하나하나 확인해 주세요."
           }
         }
       }
@@ -5071,7 +5071,7 @@
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "이 사이트가 이 지갑의 주소를 묻고 있어요. 허락하면 주소 **%@**만 보여 줘요. 키나 잔액은 보여 주지 않아요."
+            "value" : "이 사이트가 이 지갑의 주소를 묻고 있어요. 허락하면 주소 **%@** 하나만 보여 줘요. 키나 잔액은 보여 주지 않아요."
           }
         }
       }

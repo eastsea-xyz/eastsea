@@ -68,10 +68,12 @@ struct HistoryStorageSection: View {
                         .font(.caption).foregroundStyle(.secondary)
                 } else {
                     let size = gb(Int(min(kept.bytes, UInt64(Int.max))))
-                    Text(kept.passPercent.map { String(localized: "Keeping \(size) of network history now · \($0)% of checks passed in the last \(kept.windowDays) days") }
-                         ?? String(localized: "Keeping \(size) of network history now"))
+                    Text("Keeping \(size) of network history now")
                         .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    if let pct = kept.passPercent {
+                        Text("\(pct)% of checks passed in the last \(kept.windowDays) days")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
             }
         }

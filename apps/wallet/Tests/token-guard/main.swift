@@ -44,14 +44,16 @@ for (chain, table) in KnownTokens.tokens {
     }
 }
 check(KnownTokens.native[7780]?.decimals == 18, "the native entry is 18 decimals")
-check(KnownTokens.native[7780]?.symbol == "DBLN" && KnownTokens.native[7780]?.name == "Doubloon",
-      "the legacy 7780 testnet's coin is shown as DBLN too: no screen carries the old brand")
+check(KnownTokens.native[7780]?.symbol == "AETH" && KnownTokens.native[7780]?.name == "Test AETH",
+      "the legacy 7780 testnet's own coin record is unchanged (the extension's list matches it)")
 check(Brand.coinTicker(chainId: 7780) == "DBLN" && Brand.coinName(chainId: 7780) == "Doubloon",
       "the brand labels the legacy testnet DBLN")
 check(Brand.coinTicker(chainId: 0) == "DBLN" && Brand.coinName(chainId: 0) == "Doubloon",
       "a new-genesis chain is labeled DBLN/Doubloon")
-check(KnownTokens.native[7780]?.symbol == Brand.coinTicker(chainId: 7780),
-      "the native entry follows the per-chain label, not the node")
+// The record keeps the chain's own symbol (the extension's list matches it);
+// what the wallet's screens call the coin is Brand's label, DBLN everywhere.
+check(KnownTokens.native[7780]?.symbol == "AETH" && Brand.coinTicker(chainId: 7780) == "DBLN",
+      "the native record stays the chain's own; the display label is DBLN")
 
 // ---- 2. lookups ignore case and stay per chain ----
 let waethEntry = KnownTokens.knownToken(chainId: 7780, address: waeth)
@@ -119,7 +121,9 @@ for m in nativeMatches {
     let decimals = Int(ns.substring(with: m.range(at: 4)))!
     check(KnownTokens.native[chain] == KnownToken(symbol: ns.substring(with: m.range(at: 2)), name: ns.substring(with: m.range(at: 3)), decimals: decimals),
           "native entry for chain \(chain) matches the extension's")
-    check(KnownTokens.native[chain]?.symbol == Brand.coinTicker(chainId: chain),
+    // The legacy 7780 testnet is the one exception: the wallet's screens say
+    // DBLN (no old brand on screen), the chain record and the extension keep AETH.
+    check(KnownTokens.native[chain]?.symbol == Brand.coinTicker(chainId: chain) || chain == Brand.legacyTestnetChainId,
           "the extension's native label for chain \(chain) follows the per-chain brand")
 }
 

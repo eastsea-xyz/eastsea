@@ -687,7 +687,7 @@ struct EarningsBadge: View {
                         SpringKeyframe(1.0, duration: 0.3)
                     }
                 }
-            Text(line).lineLimit(1).minimumScaleFactor(0.75)
+            Text(line).lineLimit(1).minimumScaleFactor(0.6)
         }
         .font(.aeCaption.weight(.bold))
         .foregroundStyle(.white)

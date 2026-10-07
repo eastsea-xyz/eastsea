@@ -293,9 +293,9 @@ enum DataMigration {
             if fm.fileExists(atPath: old.path) && !fm.fileExists(atPath: new.path) {
                 return ko
                     ? "이전 Aether 지갑 키를 아직 옮기는 중이에요. 앱을 한 번 더 열어 옮기기를 끝내 주세요(이전 Aether 앱을 종료하라고 하면 먼저 종료해 주세요). 지금 새 키를 만들면 지갑 주소가 둘이 되어 처음 주소를 쓸 수 없게 돼요."
-                    : "the old Aether wallet key is still waiting to move into place. Launch the app again to "
-                    + "finish the data move (if it says to quit the old Aether app, quit it first) — a new key now "
-                    + "would give this Mac a second wallet address and strand the first."
+                    : "Your old Aether wallet key has not moved over yet. Open the app once more to finish the move "
+                    + "(if it asks you to quit the old Aether app, quit it first). A new key now would give this Mac "
+                    + "a second wallet address and leave the first one behind."
             }
         }
         return nil
@@ -317,15 +317,14 @@ enum DataMigration {
         if unmigratedOldData(support: s).contains(oldIdentityGuardItem) {
             return ko
                 ? "이전 Aether 앱의 노드 정보가 아직 옮겨지지 않았어요. 앱을 한 번 더 열어 옮기기를 끝내 주세요. 지금 시작하면 노드가 둘이 돼요."
-                : "this Mac had a validator identity under the old Aether app that has not reached EastSea yet. "
-                + "Launch the app once more to finish the data move — starting now would make a second identity."
+                : "This Mac's node identity from the old Aether app has not moved over yet. "
+                + "Open the app once more to finish the move. Starting now would make a second node."
         }
         if nodeMigrationComplete(support: s, defaults: defaults) { return nil }
         return ko
             ? "이전 Aether 노드 데이터를 아직 다 옮기지 못했어요. 앱을 한 번 더 열어 옮기기를 끝내 주세요(이전 Aether 앱을 종료하라고 하면 종료해 주세요). 지금 시작하면 같은 노드가 둘 돌 수 있어요."
-            : "the old Aether node data (validator identity, threshold share, chain) has not finished moving "
-            + "into place. Launch the app once more to finish the data move (quit the old Aether app if it "
-            + "asks) — starting now could run two copies of one validator identity."
+            : "Your old Aether node data has not finished moving over. Open the app once more to finish the move "
+            + "(quit the old Aether app if it asks). Starting now could run the same node twice."
     }
 
     static var movingSentence: String {

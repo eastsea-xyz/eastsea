@@ -16,6 +16,7 @@ let looky = "0x00000000000000000000000000000000000000d4"   // not on any list
 // The official list exactly as WalletModel.officialSymbols builds it.
 let official: [(symbol: String, name: String)] =
     [(Brand.coinTicker(chainId: chain), Brand.coinName(chainId: chain))] +
+    (chain == Brand.legacyTestnetChainId ? [("AETH", "Test AETH")] : []) +
     KnownTokens.tokens[chain]!.values.sorted { $0.symbol < $1.symbol }.map { ($0.symbol, $0.name) }
 
 func spec(_ address: String?, _ symbol: String, chain: UInt64 = chain) -> TokenIconSpec {

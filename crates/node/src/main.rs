@@ -356,6 +356,17 @@ enum Cmd {
         /// (docs/ops/read-gateway.md). Exposure is a cloudflared tunnel's job.
         #[arg(long)]
         public_read_only: bool,
+        /// Archive mode under `aether run --archive`: keep everything like
+        /// `aether archive` (archive history, no snapshot start, no snapshot
+        /// jump) and write the era file set to this directory. The RPC stays
+        /// on loopback and candidate beacons keep working.
+        #[arg(long)]
+        archive_export: Option<String>,
+        /// This Mac's wallet-server endpoint key (default: <data>/wallet-node.key).
+        /// `aether run` keeps it on the internal disk when the chain data
+        /// lives elsewhere, so the node id never changes with the disk.
+        #[arg(long)]
+        node_key: Option<String>,
         #[command(flatten)]
         history: HistoryArgs,
         #[command(flatten)]
@@ -406,6 +417,19 @@ enum Cmd {
     Run {
         #[arg(long)]
         data: String,
+        /// Where the bulky chain data goes (a secondary disk): the follower's
+        /// `follow` (or `archive`) directory lives in <chain-data>; keys,
+        /// network.json, run.lock and the validator's journals stay in
+        /// <data>. The directory must exist: a missing one (an unplugged
+        /// disk) exits 13 instead of filling the internal disk.
+        #[arg(long)]
+        chain_data: Option<String>,
+        /// Keep the full history like `aether archive`: replay from genesis,
+        /// never a snapshot jump, era files exported, in <chain dir>/archive
+        /// (apart from `follow`, so turning it off returns to a normal
+        /// follower and the archive can be kept or deleted).
+        #[arg(long)]
+        archive: bool,
         /// network.json to start from (copied into <data> the first time).
         #[arg(long)]
         network: Option<String>,
@@ -946,12 +970,20 @@ fn main() {
             println!("signed by the committee: protocol {} at height {} on chain {}", s.upgrade.protocol, s.upgrade.activate_at, s.upgrade.chain_id);
             Ok(())
         })(),
-        Cmd::Follow { network, from_rpc, data, rpc_port, validators, exit_with_parent, candidate, dev_epoch_blocks, keys, checkpoint, dev_storage_fault, public_read_only, history, resources } => {
+        Cmd::Follow { network, from_rpc, data, rpc_port, validators, exit_with_parent, candidate, dev_epoch_blocks, keys, checkpoint, dev_storage_fault, public_read_only, archive_export, node_key, history, resources } => {
             if exit_with_parent {
                 exit_with_parent_process();
             }
             let keys = candidate.then(|| keys.unwrap_or_else(|| data.clone()));
-            run_follow(network, from_rpc, data, rpc_port, validators, keys, dev_epoch_blocks, checkpoint, dev_storage_fault, public_read_only, history, resources, None, None)
+            let export = follow_export(archive_export, &data);
+            if let Some(e) = &export {
+                if let Err(err) = std::fs::create_dir_all(&e.dir) {
+                    eprintln!("{}: {err}", e.dir.display());
+                    std::process::exit(1);
+                }
+            }
+            let node_key = node_key.map(std::path::PathBuf::from).unwrap_or_else(|| std::path::Path::new(&data).join("wallet-node.key"));
+            run_follow(network, from_rpc, data, rpc_port, validators, keys, dev_epoch_blocks, checkpoint, dev_storage_fault, public_read_only, history, resources, export, None, node_key)
         }
         Cmd::Archive { network, from_rpc, data, rpc_port, export_dir, webseed, https_base, bind, export_key, resources } => run_archive(network, from_rpc, data, rpc_port, export_dir, webseed, https_base, bind, export_key, resources),
         Cmd::CandidateInfo { data, operator, chain_id } => (|| {
@@ -973,7 +1005,9 @@ fn main() {
             );
             Ok(())
         })(),
-        Cmd::Run { data, network, ceremony, port, rpc_port, reshare_port, node_args, follow_args, reshare_timeout, dev_peer_dir, exit_with_parent, public_read_only, resources } => {
+        Cmd::Run { data, chain_data, archive, network, ceremony, port, rpc_port, reshare_port, node_args, follow_args, reshare_timeout, dev_peer_dir, exit_with_parent, public_read_only, resources } => {
+            // First: the app's wake signal must never end the supervisor.
+            aether_node::supervisor::install_wake_forwarding();
             if exit_with_parent {
                 exit_with_parent_process();
             }
@@ -982,9 +1016,35 @@ fn main() {
                 .init();
             (|| {
                 let dir = std::path::PathBuf::from(&data);
+                // A chain-data disk that is not connected: stop before any
+                // write at all (never create its /Volumes path — that would
+                // re-sync the chain onto the internal disk).
+                if let Some(chain) = chain_data.as_deref().map(std::path::Path::new) {
+                    if !chain.is_dir() {
+                        eprintln!("the chain data directory {} does not exist (the disk is not connected); stopping without writing anything", chain.display());
+                        std::process::exit(aether_node::supervisor::EXIT_CHAIN_DATA_MISSING);
+                    }
+                }
+                // Keys must stay on this Mac (design 36 §6.2): never read them
+                // from the chain-data disk, and never run with the key
+                // directory itself on a removable or network volume.
+                if let Some(chain) = chain_data.as_deref().map(std::path::Path::new) {
+                    let found = aether_node::supervisor::keys_in_chain_data(chain);
+                    if !found.is_empty() {
+                        eprintln!("keys must stay on this Mac: key files found in the chain data directory ({}); refusing to start",
+                            found.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "));
+                        std::process::exit(aether_node::supervisor::EXIT_KEYS_ON_CHAIN_DATA);
+                    }
+                }
+                if aether_node::supervisor::keys_on_external_data(&dir, aether_node::supervisor::volume_is_external(&dir)) {
+                    eprintln!("keys must stay on this Mac: the key directory {} is on a removable or network volume; refusing to start", dir.display());
+                    std::process::exit(aether_node::supervisor::EXIT_KEYS_ON_CHAIN_DATA);
+                }
                 // The first-run key and network setup below can write before
-                // Supervisor::run starts. Wait on this volume first too.
-                aether_node::supervisor::wait_for_data_disk(&dir, resources.limits()?.min_free_disk, false);
+                // Supervisor::run starts. Wait on the volume the chain data
+                // is written to (the chosen disk when there is one).
+                let floor_dir = chain_data.as_deref().map(std::path::PathBuf::from).unwrap_or_else(|| dir.clone());
+                aether_node::supervisor::wait_for_data_disk(&floor_dir, resources.limits()?.min_free_disk, false);
                 std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
                 // One data directory, one `aether` (red team #12): a second
                 // app's run stops before touching anything, with its own exit
@@ -1044,6 +1104,8 @@ fn main() {
                     dev_peer_dir: dev_peer_dir.map(Into::into),
                     reshare_timeout: reshare_timeout.map(Duration::from_secs),
                     ceremony: ceremony.map(Into::into),
+                    chain_data: chain_data.map(Into::into),
+                    archive,
                 }
                 .run()
             })()
@@ -2793,6 +2855,8 @@ fn run_follow(
     export: Option<aether_node::export::ExportArgs>,
     // Where the RPC server listens (None: loopback, a follower's default).
     bind: Option<IpAddr>,
+    // The wallet-server endpoint key file (`wallet_node_key`).
+    node_key: std::path::PathBuf,
 ) -> Result<(), String> {
     use aether_node::follow::{self, FinalityArchive, Upstream};
     use std::sync::Arc;
@@ -2849,7 +2913,7 @@ fn run_follow(
     // needs that index forever after (audit 7 A7-1). `follow::run` below also
     // refuses to snapshot-jump for the same reason; this gate covers the
     // startup path, that one the falling-behind path.
-    let checkpoint = checkpoint && export.is_none();
+    let (checkpoint, no_jump) = sync_plan(checkpoint, export.is_some());
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -2889,7 +2953,7 @@ fn run_follow(
         // asking the validators. `--from-rpc` followers have no iroh endpoint.
         let mut wallet_ep = None;
         let upstream = Arc::new(if from_rpc.is_empty() {
-            let ep = aether_net::bind(Some(wallet_node_key(std::path::Path::new(&data))?), vec![aether_net::ALPN_RPC.to_vec()])
+            let ep = aether_net::bind(Some(wallet_node_key(&node_key)?), vec![aether_net::ALPN_RPC.to_vec()])
                 .await
                 .map_err(|e| e.to_string())?;
             let client = aether_net::RpcClient::with_endpoint(ep.clone(), nodes.clone());
@@ -2941,7 +3005,7 @@ fn run_follow(
             .as_ref()
             .and_then(|dir| aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(dir)).ok())
             .map(|k| hex::encode(k.validator_key()));
-        let follow_task = tokio::spawn(follow::run(chain.clone(), upstream.clone(), set, archive.clone(), joining, export.is_some()));
+        let follow_task = tokio::spawn(follow::run(chain.clone(), upstream.clone(), set, archive.clone(), joining, no_jump));
         tokio::spawn(async move {
             let result = follow_task.await;
             tracing::error!(?result, "follower task stopped; restarting the node");
@@ -3026,6 +3090,26 @@ fn run_follow(
 /// `aether archive` (roadmap B6): a follower that keeps everything, serves
 /// old eras, and writes every sealed era out as a static, torrent-ready set.
 #[allow(clippy::too_many_arguments)]
+/// `follow --archive-export DIR` (the child `aether run --archive` spawns):
+/// the era export `aether archive` runs, signed with a key kept in the
+/// follower's own data directory, no webseeds or public base (the wallet's
+/// archive serves this Mac, not the world).
+fn follow_export(archive_export: Option<String>, data: &str) -> Option<aether_node::export::ExportArgs> {
+    archive_export.map(|dir| aether_node::export::ExportArgs {
+        dir: std::path::PathBuf::from(dir),
+        webseeds: Vec::new(),
+        https_base: None,
+        sign_key: std::path::Path::new(data).join("archive-export.key"),
+    })
+}
+
+/// How a follower syncs: (start from a certified snapshot, never snapshot-
+/// jump later). An archive (an era export) must own every block from
+/// genesis, so it takes neither shortcut (audit 7 A7-1).
+fn sync_plan(checkpoint: bool, exporting: bool) -> (bool, bool) {
+    (checkpoint && !exporting, exporting)
+}
+
 fn run_archive(
     network: String,
     from_rpc: Vec<String>,
@@ -3058,7 +3142,8 @@ fn run_archive(
         drop_era_files: false,
         max_shards: aether_node::shards::DEFAULT_MAX_SHARDS,
     };
-    run_follow(Some(network), from_rpc, data, rpc_port, 4, None, None, false, None, false, history, resources, Some(export), Some(bind))
+    let node_key = std::path::Path::new(&data).join("wallet-node.key");
+    run_follow(Some(network), from_rpc, data, rpc_port, 4, None, None, false, None, false, history, resources, Some(export), Some(bind), node_key)
 }
 
 fn run_dkg(
@@ -3354,12 +3439,15 @@ fn committee_keys(
     (participants, polynomial, share)
 }
 
-/// This Mac's wallet-server node key: dedicated and persisted (`<data>/wallet-node.key`),
-/// so the DHT record it publishes does not flap with the endpoint other roles
-/// reuse. Regenerating it only changes which node id wallets are pointed at.
-fn wallet_node_key(data: &std::path::Path) -> Result<aether_net::SecretKey, String> {
-    let path = data.join("wallet-node.key");
-    match std::fs::read(&path) {
+/// This Mac's wallet-server node key: dedicated and persisted (`<data>/wallet-node.key`
+/// by default, `--node-key` under `aether run --chain-data/--archive`), so the
+/// DHT record it publishes does not flap with the endpoint other roles reuse.
+/// Regenerating it only changes which node id wallets are pointed at.
+fn wallet_node_key(path: &std::path::Path) -> Result<aether_net::SecretKey, String> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    match std::fs::read(path) {
         Ok(bytes) if bytes.len() == 32 => {
             let mut b = [0u8; 32];
             b.copy_from_slice(&bytes);
@@ -3367,7 +3455,7 @@ fn wallet_node_key(data: &std::path::Path) -> Result<aether_net::SecretKey, Stri
         }
         _ => {
             let key = aether_net::SecretKey::generate();
-            write_secret(&path, &key.to_bytes());
+            write_secret(path, &key.to_bytes());
             Ok(key)
         }
     }
@@ -3684,6 +3772,39 @@ fn print_blocks(v: &Value) {
 
 #[cfg(test)]
 mod tests {
+    /// `aether run --archive` spawns a follower that runs exactly like
+    /// `aether archive`: the era export is on, so it neither starts from a
+    /// snapshot nor jumps to one later (audit 7 A7-1).
+    #[test]
+    fn the_archive_child_never_jumps() {
+        use clap::Parser as _;
+        let argv = aether_node::supervisor::follower_args(
+            std::path::Path::new("/n/network.json"), std::path::Path::new("/n"), Some(std::path::Path::new("/Volumes/E")),
+            true, 18545, true, &[]);
+        let c = super::Cli::try_parse_from(std::iter::once("aether".to_string()).chain(argv)).expect("the child argv parses");
+        let super::Cmd::Follow { data, checkpoint, archive_export, candidate, .. } = c.cmd else { panic!("a follow child") };
+        assert_eq!(data, "/Volumes/E/archive");
+        assert!(candidate, "archive keeps beaconing");
+        let export = super::follow_export(archive_export, &data).expect("archive mode exports eras");
+        assert_eq!(export.dir, std::path::PathBuf::from("/Volumes/E/archive/era"));
+        assert_eq!(export.sign_key, std::path::PathBuf::from("/Volumes/E/archive/archive-export.key"));
+        assert_eq!(super::sync_plan(checkpoint, true), (false, true), "no snapshot start, no snapshot jump");
+
+        // The normal follower keeps both shortcuts.
+        let argv = aether_node::supervisor::follower_args(
+            std::path::Path::new("/n/network.json"), std::path::Path::new("/n"), None, false, 18545, true, &[]);
+        let c = super::Cli::try_parse_from(std::iter::once("aether".to_string()).chain(argv)).unwrap();
+        let super::Cmd::Follow { data, checkpoint, archive_export, .. } = c.cmd else { panic!("a follow child") };
+        assert!(super::follow_export(archive_export, &data).is_none());
+        assert_eq!(super::sync_plan(checkpoint, false), (true, false));
+
+        // `aether run` takes both storage flags.
+        let c = super::Cli::try_parse_from(["aether", "run", "--data", "/n", "--chain-data", "/Volumes/E", "--archive"]).unwrap();
+        let super::Cmd::Run { chain_data, archive, .. } = c.cmd else { panic!("run") };
+        assert_eq!(chain_data.as_deref(), Some("/Volumes/E"));
+        assert!(archive);
+    }
+
     #[test]
     fn validator_liveness_requires_a_peer_ahead_and_a_frozen_local_head() {
         use super::validator_is_stalled;

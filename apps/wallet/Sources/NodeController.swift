@@ -26,7 +26,22 @@ final class NodeController: ObservableObject {
         case failed(String)
     }
 
-    @Published private(set) var state: State = .off
+    @Published private(set) var state: State = .off {
+        didSet { if state != oldValue { refreshStopReason() } }
+    }
+    /// Why the node is not running while its switch is on — the one reason
+    /// the sidebar, the Node page, the menu and the health banner all show
+    /// (nil while it runs normally). See `NodeStopReason`.
+    @Published private(set) var stopReason: NodeStopReason?
+    /// The last stop, as `node-status.log` recorded it (diagnostics).
+    var lastStopLine: String? { UserDefaults.standard.string(forKey: "nodeLastStop") }
+    /// The code last written to `node-status.log` (one line per change).
+    private var lastLoggedCode: String?
+    /// When the watchdog's terminal decision was made (the gate retries the
+    /// recoverable ones after `NodeResume.autoRetryAfter`).
+    private var blockedAt: MonotonicInstant?
+    /// The OS error of the last launch attempt, until one succeeds.
+    private var launchError: String?
     @Published private(set) var height: UInt64 = 0
     /// The wallet is reading through this Mac's node without the remote
     /// cross-check (the view `authenticatedRemoteHeight()` reads could not
@@ -46,7 +61,7 @@ final class NodeController: ObservableObject {
     @AppStorage("nodeEnabled") var enabled = false {
         didSet {
             if enabled {
-                automaticRestartBlocked = false
+                unblock()
                 startIfAllowed()
             } else {
                 stop()
@@ -94,6 +109,22 @@ final class NodeController: ObservableObject {
     @AppStorage("historyStorage") var historyStorage = StorageSetting.defaultChoice {
         didSet { pushStorageSetting() }
     }
+    /// 블록 데이터 위치 (`BlockDataLocation`): the node's `--chain-data`
+    /// folder on a disk the person picked; empty = the default (the node's
+    /// data folder, internal disk). Changed only by `moveBlockData`, which
+    /// copies and verifies first.
+    @AppStorage("nodeChainDataPath") var chainDataPath = ""
+    /// 전체 기록 보관 (아카이브): run the follower as an archive (replays from
+    /// genesis, never jumps, keeps the full history). Applies on restart.
+    @AppStorage("nodeArchive") var archive = false {
+        didSet { if archive != oldValue { restartIfRunning(); unattended?.syncMarker() } }
+    }
+    /// The block data is moving (0…100), or nil.
+    @Published var storageMovePercent: Int?
+    /// The last move's failure, in the person's words, until the next try.
+    @Published var storageMoveError: String?
+    /// That failure is a disk format Disk Utility can fix (exFAT, FAT).
+    @Published var storageMoveOffersDiskUtility = false
     /// What this Mac keeps right now and how it has been checking out
     /// (`aether_shardStats`): the honest line the 역사 보관 setting stands on.
     @Published private(set) var history: HistoryKept?
@@ -188,6 +219,9 @@ final class NodeController: ObservableObject {
         let lag: UInt64?
         /// The last reward received (wei, hex).
         let last_reward: String?
+        /// That reward predates this version's proving (crates/node rpc.rs):
+        /// never shown as the latest.
+        let last_reward_stale: Bool?
     }
 
     /// Run the node only while the Mac is on its power adapter (laptops).
@@ -248,34 +282,210 @@ final class NodeController: ObservableObject {
         applyPower()
     }
 
-    /// Start or pause for the power source; called every 30 s while the switch is on.
-    private func applyPower() {
-        guard enabled else { return }
-        if attached {
-            // Unattended beats the adapter rule (docs/design/29): the daemon's
-            // node keeps a voting Mac alive through restarts, on battery too.
-            state = .running
+    /// The start gate, every 30 s and on every event that can change it
+    /// (power source, wake, a finished data move, a disk mounting): gather
+    /// the facts, let `NodeResume` decide, carry it out, and publish the one
+    /// reason when the node does not run. Nothing else may leave the switch
+    /// on with no node and no reason (the founder's 0.7.0 report).
+    func applyPower() {
+        // The daemon's approval changes outside the app (System Settings):
+        // re-read it on every tick, so its sentence appears and goes by itself.
+        unattended?.refreshStatus()
+        guard enabled else { refreshStopReason(); return }
+        if !attached, process != nil, onlyOnPower, Self.onBattery, !isValidator {
+            // Keep voting until the announced handoff lands (isValidator).
+            stop(keepSwitch: true)
+            state = .waitingForPower
             return
         }
-        if automaticRestartBlocked && watchdog.lastFailure == .diskFull,
-           let attrs = try? FileManager.default.attributesOfFileSystem(forPath: Self.dataDir.path),
-           let free = attrs[.systemFreeSize] as? NSNumber,
-           NodeWatchdog.storageRecovered(freeBytes: free.uint64Value) {
-            automaticRestartBlocked = false
-        }
-        if onlyOnPower && Self.onBattery {
-            // Keep voting until the announced handoff lands. Stopping a seated
-            // Mac before the old quorum signs can stall the whole committee.
-            if isValidator { return }
-            if process != nil { stop(keepSwitch: true) }
-            state = .waitingForPower
-        } else if process == nil, restartTimer == nil, !automaticRestartBlocked {
-            // A watchdog restart already scheduled keeps its backoff.
+        let facts = resumeFacts()
+        switch NodeResume.decide(facts) {
+        case .keepRunning:
+            if attached, state != .running { state = .running }
+        case .start(let detach):
+            if detach {
+                logEvent("detach", "the node this app attached to no longer holds run.lock; starting our own")
+                detachFromGoneNode()
+            }
+            if automaticRestartBlocked {
+                logEvent("retry", "automatic retry after \(facts.blockedForSeconds)s (\(stoppedFailure.map { "\($0)" } ?? "-"))")
+                unblock()
+            }
             start()
+        case .wait(let reason):
+            switch reason {
+            case .onBattery: state = .waitingForPower
+            case .restarting: break   // the watchdog's own line stays
+            default:
+                let title = reason.copy(ko: HealthCheck.korean).title
+                if state != .failed(title) { state = .failed(title) }
+            }
         }
+        refreshStopReason(facts)
+    }
+
+    /// Clear the watchdog's terminal decision (the switch turned on, a retry
+    /// is due, or the person pressed the button).
+    private func unblock() {
+        automaticRestartBlocked = false
+        blockedAt = nil
+        stoppedFailure = nil
+    }
+
+    /// The watchdog stopped restarting: remember why and since when, so the
+    /// gate can say it and retry the recoverable kinds later.
+    private func block(_ failure: NodeWatchdog.Failure) {
+        automaticRestartBlocked = true
+        blockedAt = clock.now
+        stoppedFailure = failure
+    }
+
+    /// The reason's one button.
+    func perform(_ action: NodeStopAction) {
+        switch action {
+        case .turnOn: enabled = true
+        case .runOnBattery: onlyOnPower = false
+        case .showInFinder: InstallLocation.revealInFinder()
+        case .checkForUpdates: onUpgradeNeeded?()
+        case .retryNow:
+            unblock()
+            restartTimer?.invalidate()
+            restartTimer = nil
+            applyPower()
+        case .openStorage:
+            if let url = URL(string: "x-apple.systempreferences:com.apple.settings.Storage") { NSWorkspace.shared.open(url) }
+        case .chooseDisk: chooseDiskRequested = true
+        case .openPrivacySettings:
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders") {
+                NSWorkspace.shared.open(url)
+            }
+        case .copyDiagnostics:
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(statusLogTail(), forType: .string)
+        }
+    }
+    /// The Node page opens the block-data location picker when a stop reason's
+    /// button asks for it.
+    @Published var chooseDiskRequested = false
+
+    /// What the start gate reads, right now.
+    private func resumeFacts() -> NodeResumeFacts {
+        var f = NodeResumeFacts()
+        f.enabled = enabled
+        f.wrongLocation = wrongLocation
+        f.hasBinary = binary != nil
+        f.migrating = DataMigration.Runner.shared.isRunning
+        f.migrationGate = f.migrating ? nil : DataMigration.mayStartNode()
+        f.movingStoragePercent = storageMovePercent
+        f.processRunning = process != nil
+        f.attached = attached
+        f.lockHeldByOther = process == nil && Self.lockHeld(in: Self.dataDir)
+        if !f.lockHeldByOther { lockRefused = false }
+        f.lockRefused = lockRefused
+        if let t = restartTimer, t.isValid {
+            f.restartInSeconds = max(1, Int(t.fireDate.timeIntervalSinceNow.rounded(.up)))
+        }
+        f.onlyOnPower = onlyOnPower
+        f.onBattery = Self.onBattery
+        f.isValidator = isValidator
+        f.blocked = automaticRestartBlocked ? (stoppedFailure ?? .other) : nil
+        f.blockedForSeconds = blockedAt.map { Int(clock.now.elapsed(since: $0)) } ?? 0
+        f.storage = blockDataStorageState()
+        if case .chosen(let volume, let mounted, _) = f.storage {
+            f.volumeName = volume
+            if mounted { f.freeBytes = StorageSetting.freeBytes(atPath: chainDataPath).map { UInt64(max(0, $0)) } }
+        } else {
+            f.freeBytes = StorageSetting.freeBytes(atPath: Self.dataDir.path).map { UInt64(max(0, $0)) }
+        }
+        f.launchError = launchError
+        return f
+    }
+
+    /// Recompute `stopReason` (cheap: syscalls only) and log a change.
+    private func refreshStopReason(_ given: NodeResumeFacts? = nil) {
+        let reason: NodeStopReason?
+        var facts = given
+        if !enabled {
+            reason = .switchedOff
+        } else if process != nil || attached {
+            if diskPaused {
+                // Running, but below the node's write floor: the node waits
+                // for space by itself — say how much, on which disk.
+                let f = facts ?? resumeFacts()
+                facts = f
+                reason = .diskFull(freeBytes: f.freeBytes ?? 0, resumeBytes: NodeResume.resumeBytes, volume: f.volumeName)
+            } else {
+                reason = nil
+            }
+        } else {
+            let f = facts ?? resumeFacts()
+            facts = f
+            switch NodeResume.decide(f) {
+            case .wait(let r): reason = r
+            case .keepRunning: reason = nil
+            case .start: reason = launchError.map { .launchFailed($0) }
+            }
+        }
+        if stopReason != reason { stopReason = reason }
+        record(reason, facts: facts)
+    }
+
+    /// One line in `node-status.log` per change of reason (not per countdown).
+    private func record(_ reason: NodeStopReason?, facts: NodeResumeFacts?) {
+        let code = reason?.code ?? "running"
+        guard code != lastLoggedCode else { return }
+        let first = lastLoggedCode == nil
+        lastLoggedCode = code
+        if first && reason == .switchedOff { return }   // a switched-off app at launch is not news
+        let en = reason?.copy(ko: false)
+        let detail = en.map { "\($0.title). \($0.paragraph)" } ?? "the node runs"
+        let line = NodeStatusLog.line(at: Date(), event: reason == nil ? "running" : "stopped \(code)", detail: detail, facts: facts)
+        NodeStatusLog.append(line, in: Self.dataDir)
+        if reason != nil { UserDefaults.standard.set(line.trimmingCharacters(in: .newlines), forKey: "nodeLastStop") }
+    }
+
+    /// A process event (an exit, a lock exit, an attach) for `node-status.log`.
+    func logEvent(_ event: String, _ detail: String) {
+        NodeStatusLog.append(NodeStatusLog.line(at: Date(), event: event, detail: detail, facts: nil), in: Self.dataDir)
+    }
+
+    /// The last lines of `node-status.log`, for "copy diagnostics".
+    func statusLogTail(lines: Int = 40) -> String {
+        let text = (try? String(contentsOf: Self.dataDir.appendingPathComponent(NodeStatusLog.fileName), encoding: .utf8)) ?? ""
+        return text.split(separator: "\n").suffix(lines).joined(separator: "\n")
+    }
+
+    /// Whether some other process holds `<dir>/run.lock` (an exclusive
+    /// non-blocking flock probe, released at once). Never creates the file.
+    nonisolated static func lockHeld(in dir: URL) -> Bool {
+        let fd = open(dir.appendingPathComponent("run.lock").path, O_RDONLY)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        if flock(fd, LOCK_EX | LOCK_NB) == 0 {
+            flock(fd, LOCK_UN)
+            return false
+        }
+        return errno == EWOULDBLOCK
+    }
+
+    /// The node we were attached to is gone: forget it before starting ours.
+    private func detachFromGoneNode() {
+        attached = false
+        attachMisses = 0
+        poll?.invalidate()
+        poll = nil
+        switched = false
+        networkCheckPending = false
+        if !UserDefaults.standard.bool(forKey: "useDevelopmentNetwork") { useLocalNode(port: nil) }
     }
 
     static let port: UInt16 = 18_545
+    /// crates/node EXIT_CHAIN_DATA_MISSING: the chosen block-data folder is gone.
+    static let chainDataMissingExit: Int32 = 13
+    /// crates/node EXIT_KEYS_ON_CHAIN_DATA: keys found in the block-data folder.
+    static let keysOnChainDataExit: Int32 = 14
+    /// Our last start bounced off a run.lock whose holder does not answer.
+    private var lockRefused = false
 
     func refreshWalletRoute() {
         guard !UserDefaults.standard.bool(forKey: "useDevelopmentNetwork") else { return }
@@ -355,6 +565,10 @@ final class NodeController: ObservableObject {
     /// moment the Mac sleeps. Added once, kept for the app's lifetime.
     private var wakeObservers: [NSObjectProtocol] = []
     private var powerSourceSource: CFRunLoopSource?
+    /// When the app last sent the node its availability wake-up (SIGUSR1).
+    private var lastWakeSignal: Date?
+    /// Disk mount/unmount observers (block data on a chosen disk).
+    var mountObservers: [NSObjectProtocol] = []
 
     /// The node signs and gossips this local request with its registered voting
     /// key. A signal wakes its one-second loop before macOS suspends the process.
@@ -362,6 +576,10 @@ final class NodeController: ObservableObject {
         let file = Self.dataDir.appendingPathComponent("availability-state")
         try? Data((leaving ? "leaving" : "back").utf8).write(to: file, options: .atomic)
         if case .running = state, candidate != nil, let process, process.isRunning {
+            // `aether run` forwards it to its child from this release on; an
+            // older supervisor had no handler and died of it, silently
+            // (2026-10-07T04:39Z). Logged so such a death is never a mystery.
+            lastWakeSignal = Date()
             Darwin.kill(process.processIdentifier, SIGUSR1)
         }
     }
@@ -393,13 +611,19 @@ final class NodeController: ObservableObject {
 
     /// Resume the user's choice at launch.
     func restore() {
-        if enabled { startIfAllowed() }
+        // The gate's timer runs whether or not the switch reads on at launch:
+        // a switch that turns on behind our back (the old app's preferences
+        // copied at the end of the data move — the founder's MacBook) is
+        // picked up within 30 s instead of never.
+        startIfAllowed()
+        watchVolumes()
     }
 
     /// The data move from Aether finished (M1): a start the gate refused
     /// while it ran is retried now rather than at the next 30 s power tick.
     func migrationFinished() {
-        guard enabled, process == nil else { return }
+        logEvent("migration", "the data move finished; the switch reads \(enabled ? "on" : "off")")
+        guard process == nil else { return }
         applyPower()
     }
 
@@ -431,7 +655,8 @@ final class NodeController: ObservableObject {
         do {
             try FileManager.default.createDirectory(at: Self.dataDir, withIntermediateDirectories: true)
         } catch {
-            state = .failed("\(error.localizedDescription)")
+            launchError = error.localizedDescription
+            state = .failed(error.localizedDescription)
             return
         }
         announceAvailability(leaving: Self.onBattery)
@@ -446,7 +671,8 @@ final class NodeController: ObservableObject {
             networkPath: Bundle.main.url(forResource: "network", withExtension: "json")?.path,
             proverFlags: ProverFlags.build(memory: proverMemory, cores: proverCores, battery: proverOnBattery,
                                            activeProcessors: ProcessInfo.processInfo.activeProcessorCount),
-            storageFlag: StorageSetting.flag(shards: storageShards))
+            storageFlag: StorageSetting.flag(shards: storageShards),
+            locationFlags: BlockDataLocation.flags(chainDataPath: chainDataPath, archive: archive))
         args += ["--exit-with-parent"]
         unattended?.nodeSwitchedOn()
         let p = Process()
@@ -470,10 +696,18 @@ final class NodeController: ObservableObject {
         do {
             try p.run()
         } catch {
+            launchError = error.localizedDescription
+            logEvent("launch", "failed: \(error.localizedDescription)")
             state = .failed(error.localizedDescription)
             return
         }
+        launchError = nil
+        lockRefused = false
         process = p
+        // Design 36 N3: the keys never ride a Time Machine backup onto
+        // another Mac (sticky exclusion; idempotent and cheap).
+        let keyDir = Self.dataDir
+        Task.detached { KeySafety.excludeKeysFromBackup(in: keyDir) }
         watchdog.started(clock.now)
         stoppedFailure = nil
         answeredSinceStart = false
@@ -566,6 +800,9 @@ final class NodeController: ObservableObject {
         // Stopped on purpose, or an older process (after a restart) finishing late.
         guard let current = process, current === proc else { return }
         let status = proc.terminationStatus
+        let signaled = proc.terminationReason == .uncaughtSignal
+        let afterWake = signaled && status == SIGUSR1 && (lastWakeSignal.map { Date().timeIntervalSince($0) < 5 } ?? false)
+        logEvent("exit", "status=\(status) signaled=\(signaled)" + (afterWake ? " (died of the app's SIGUSR1 wake-up: an older node without the handler)" : ""))
         if status == 3 || status == 5 {  // UPGRADE REQUIRED / no proof verifier (see `watch_upgrades`, `install_verifier`)
             upgradeRequired = true
             onUpgradeNeeded?()
@@ -587,12 +824,36 @@ final class NodeController: ObservableObject {
                 await MainActor.run {
                     guard self.enabled, self.process == nil, !self.automaticRestartBlocked else { return }
                     if UnattendedDecision.afterLockExit(rpcAlive: alive) == .attach {
+                        self.logEvent("attach", "run.lock is held and the holder answers: attached to it")
                         self.attachToRunningNode()
                     } else {
-                        self.start()
+                        // The holder is dying, or is not a node at all: the
+                        // gate retries in 2 s and says who holds the lock if
+                        // it still does — never a tight spawn loop.
+                        self.logEvent("lock", "run.lock is held and the holder does not answer")
+                        self.lockRefused = true
+                        Timer.scheduledTimer(withTimeInterval: 2, repeats: false) { [weak self] _ in
+                            Task { @MainActor in self?.applyPower() }
+                        }
                     }
                 }
             }
+            return
+        }
+        if status == Self.keysOnChainDataExit {
+            // crates/node EXIT_KEYS_ON_CHAIN_DATA: the block-data folder holds
+            // node keys (design 36 N2). The mover refuses such a folder, so
+            // this means keys were copied there by hand: a person decides.
+            logEvent("storage", "the node refused: node keys found in the block-data folder \(chainDataPath)")
+            block(.storage)
+            state = .failed(NodeWatchdog.Failure.storage.sentence)
+            return
+        }
+        if status == Self.chainDataMissingExit {
+            // The chosen block-data disk went away under the node (exit 13,
+            // crates/node EXIT_CHAIN_DATA_MISSING): not a crash. The gate
+            // says "디스크가 연결되지 않음" and starts it again when it returns.
+            applyPower()
             return
         }
         switch watchdog.exited(clock.now, code: status, signaled: proc.terminationReason == .uncaughtSignal, log: nodeLogTail()) {
@@ -611,8 +872,7 @@ final class NodeController: ObservableObject {
             }
         case .stop(let failure):
             // Too many deaths: stop restarting, one plain sentence (layer 4).
-            automaticRestartBlocked = true
-            stoppedFailure = failure
+            block(failure)
             state = .failed(failure.sentence)
         case .rollback:
             // The updated binary cannot start: back to the previous one —
@@ -633,8 +893,7 @@ final class NodeController: ObservableObject {
                             self.watchdog.restarting()
                             self.start()
                         } else {
-                            self.automaticRestartBlocked = true
-                            self.stoppedFailure = .upgradeNeeded
+                            self.block(.upgradeNeeded)
                             self.state = .failed(NodeWatchdog.Failure.upgradeNeeded.sentence)
                             self.upgradeAsked = true
                             self.onUpgradeNeeded?()
@@ -642,8 +901,7 @@ final class NodeController: ObservableObject {
                     }
                 }
             } else {
-                automaticRestartBlocked = true
-                stoppedFailure = .other
+                block(.other)
                 state = .failed(NodeWatchdog.Failure.other.sentence)
             }
         case .none:
@@ -733,7 +991,10 @@ final class NodeController: ObservableObject {
             watchdog.restarting()
             let timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] t in
                 Task { @MainActor in
-                    guard let self, self.enabled, self.process == nil else { t.invalidate(); return }
+                    guard let self, self.enabled, self.process == nil else { t.invalidate(); self?.restartTimer = nil; return }
+                    // A fired takeover must not stay behind as a "pending
+                    // restart": the gate would wait on it forever.
+                    self.restartTimer = nil
                     if self.attached { self.attached = false }
                     self.start()
                     t.invalidate()
@@ -951,7 +1212,12 @@ final class NodeController: ObservableObject {
                 if self.attached { self.attachMisses = 0 }
                 let answered = status != nil
                 if self.rpcAnswering != answered { self.rpcAnswering = answered }
-                if answered, !self.answeredSinceStart { self.answeredSinceStart = true }
+                if answered, !self.answeredSinceStart {
+                    self.answeredSinceStart = true
+                    // The node answered from its (new) block-data place:
+                    // only now may the old copy of a move go.
+                    if self.process != nil { self.finishBlockDataMove() }
+                }
                 if let mine = (status?["node_protocol"] as? NSNumber)?.uint64Value { self.nodeProtocol = mine }
                 let route = self.watchdog.useLocalNode(
                     local: statusHeight, network: network,

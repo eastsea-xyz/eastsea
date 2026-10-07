@@ -13,11 +13,15 @@ enum UnattendedDecision {
     /// history-storage budget (설정 ▸ 역사 보관, `StorageSetting.flag`),
     /// appended last so the flag order stays stable.
     static func nodeArgv(dataDir: String, rpcPort: UInt16, p2pPort: UInt16,
-                         networkPath: String?, proverFlags: [String], storageFlag: String? = nil) -> [String] {
+                         networkPath: String?, proverFlags: [String], storageFlag: String? = nil,
+                         locationFlags: [String] = []) -> [String] {
         var out = ["run", "--data", dataDir, "--rpc-port", String(rpcPort), "--port", String(p2pPort)]
         if let networkPath { out += ["--network", networkPath] }
         out += proverFlags
         if let storageFlag { out += [storageFlag] }
+        // 블록 데이터 위치 / archive (`BlockDataLocation.flags`): last, so the
+        // order everything above depends on does not move.
+        out += locationFlags
         return out
     }
 

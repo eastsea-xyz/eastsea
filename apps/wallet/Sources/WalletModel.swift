@@ -236,7 +236,13 @@ final class WalletModel: ObservableObject {
             note(acct.isSecureEnclave ? "Secure Enclave key ready. Signing asks for Touch ID / Face ID or your passcode." : "Simulator: software key (no Secure Enclave here). Use a real device for hardware-bound keys.")
         } catch {
             let locked = (error as NSError).code == Int(errSecInteractionNotAllowed)
-            if case EnclaveAccount.KeyError.keyUnavailable = error {
+            if case EnclaveAccount.KeyError.migrationPending = error {
+                // The old handle is still moving (often: waiting for an
+                // unlock, poc-m3 2026-10-07) — not a key failure.
+                let ko = Locale.preferredLanguages.first?.hasPrefix("ko") ?? false
+                keyError = ko ? "지갑을 Aether에서 옮기는 중입니다. Mac 잠금을 풀면 마무리됩니다 — 지갑은 안전합니다."
+                    : "Your wallet is still moving over from Aether. Unlock this Mac to finish — your wallet is safe."
+            } else if case EnclaveAccount.KeyError.keyUnavailable = error {
                 // The wallet exists but cannot be opened yet; retried from `refresh`.
                 keyError = "Unlock this device to open your wallet. Your wallet is safe."
             } else {

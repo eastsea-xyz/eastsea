@@ -62,6 +62,10 @@ enum NodeReleaseIdentity {
         binding(rootPID: rootPID, port: port, expected: expected) != nil
     }
 
+    static func matches(binding attested: Binding, port: UInt16, expected: URL) -> Bool {
+        binding(rootPID: attested.rootPID, port: port, expected: expected) == attested
+    }
+
     static func binding(rootPID: Int32, port: UInt16, expected: URL) -> Binding? {
         guard port > 0, let expectedHash = validatedHash(of: expected),
               matches(pid: rootPID, expected: expected),

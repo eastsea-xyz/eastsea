@@ -84,6 +84,9 @@ check(UnattendedDecision.mayStopForUpdate(ownProcess: false, attached: false, da
 check(UnattendedDecision.mayStopForUpdate(ownProcess: false, attached: false, daemonPresent: false,
           releaseVerified: false, unclaimedRuntimeAbsent: true),
       "R11 positively absent runtime permits installation while holding its lock")
+let nodeSource = try String(contentsOf: sourceRoot.appendingPathComponent("Sources/NodeController.swift"), encoding: .utf8)
+check(nodeSource.contains("NodeReleaseIdentity.matches(binding: attestedBinding"),
+      "R11 shutdown revalidates its exact attested process and listener after actor handoff")
 
 // pmset's actual spelling (`pmset -g` on this Mac, spaces not tabs):
 // " autorestart          1" inside the system-wide section.

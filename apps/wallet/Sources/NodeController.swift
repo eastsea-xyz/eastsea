@@ -329,13 +329,16 @@ final class NodeController: ObservableObject {
         defer { if let reservedFD { close(reservedFD) } }
         let releaseVerified: Bool
         let runtimeAbsent: Bool
+        let attestedBinding: NodeReleaseIdentity.Binding?
         if let rootPID, let expected = Self.helperBinaryURL {
             let sample = await LocalRPC.callVerified(rootPID: rootPID, port: Self.port, expected: expected,
                                                      method: "aether_status", params: [])
             releaseVerified = sample.map { NodeReleaseIdentity.hasWriterLease(status: $0.value) } ?? false
             runtimeAbsent = false
+            attestedBinding = sample?.binding
         } else {
             releaseVerified = false
+            attestedBinding = nil
             // Do not wait for an unrecognized holder to disappear: its old
             // children may still write. Claim an already-free lock at once.
             if await LocalRPC.endpointIsAbsent(port: Self.port) {
@@ -350,6 +353,15 @@ final class NodeController: ObservableObject {
                   unclaimedRuntimeAbsent: runtimeAbsent) else {
             if updatePreparationGeneration == generation { abortUpdatePreparation() }
             return false
+        }
+        if rootPID != nil {
+            // Returning to the main actor can outlive the attested instance.
+            // A reused PID or replaced same-release listener must attest anew.
+            guard let attestedBinding, let expected = Self.helperBinaryURL,
+                  NodeReleaseIdentity.matches(binding: attestedBinding, port: Self.port, expected: expected) else {
+                abortUpdatePreparation()
+                return false
+            }
         }
         stop(keepSwitch: true)
         if let daemonPID { unattended.stopDaemonNode(expectedPID: daemonPID) }

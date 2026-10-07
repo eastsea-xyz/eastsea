@@ -99,6 +99,8 @@ let (oldOwner, stablePort) = try ready(stableReady, process: stable)
 let unchanged = await NodeReleaseIdentity.readVerified(rootPID: stable.processIdentifier, port: stablePort, expected: b,
     operation: { reply(port: stablePort) })
 check(unchanged?.value == "B", "R11 unchanged listener proof brackets a fresh response")
+check(unchanged.map { NodeReleaseIdentity.matches(binding: $0.binding, port: stablePort, expected: b) } == true,
+      "R11 returned binding still authenticates the same live listener")
 let changed = await NodeReleaseIdentity.readVerified(rootPID: stable.processIdentifier, port: stablePort, expected: b,
     operation: {
         let priorReply = reply(port: stablePort)
@@ -112,6 +114,8 @@ let changed = await NodeReleaseIdentity.readVerified(rootPID: stable.processIden
         return nil
     })
 check(changed == nil, "R11 response crossing a same-release listener replacement is refused")
+check(unchanged.map { NodeReleaseIdentity.matches(binding: $0.binding, port: stablePort, expected: b) } == false,
+      "R11 returned binding cannot authorize shutdown of a replacement listener")
 check(NodeReleaseIdentity.hasWriterLease(status: ["writer_lease_protocol": 1]), "R11 live inherited lease capability is accepted")
 let invalidCapabilities: [Any] = [0, 2, true, "1", 1.0, NSNull()]
 for invalid in invalidCapabilities {

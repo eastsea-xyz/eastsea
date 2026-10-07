@@ -991,6 +991,8 @@ fn main() {
             Ok(())
         })(),
         Cmd::Run { data, chain_data, archive, network, ceremony, port, rpc_port, reshare_port, node_args, follow_args, reshare_timeout, dev_peer_dir, exit_with_parent, public_read_only, resources } => {
+            // First: the app's wake signal must never end the supervisor.
+            aether_node::supervisor::install_wake_forwarding();
             if exit_with_parent {
                 exit_with_parent_process();
             }

@@ -446,6 +446,37 @@ pub struct Supervisor {
     pub archive: bool,
 }
 
+/// The child `aether run` forwards SIGUSR1 to (0: none running).
+static WAKE_TARGET: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+/// The Mac app sends SIGUSR1 to `aether run` on every power-source change,
+/// sleep and wake, to wake the beacon loop (`candidate::beacon_loop`). Only
+/// the children handle it; left at its default, the signal killed the
+/// supervisor itself without a log line. Install before anything else in
+/// `aether run`: the handler only forwards the signal to the current child.
+pub fn install_wake_forwarding() {
+    extern "C" fn forward(_: libc::c_int) {
+        // Async-signal-safe: one atomic load and kill(2).
+        let pid = WAKE_TARGET.load(std::sync::atomic::Ordering::Relaxed);
+        if pid > 0 {
+            unsafe { libc::kill(pid, libc::SIGUSR1) };
+        }
+    }
+    unsafe {
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = forward as extern "C" fn(libc::c_int) as libc::sighandler_t;
+        // SA_RESTART: a wake must not fail the supervisor's waits with EINTR.
+        action.sa_flags = libc::SA_RESTART;
+        libc::sigemptyset(&mut action.sa_mask);
+        libc::sigaction(libc::SIGUSR1, &action, std::ptr::null_mut());
+    }
+}
+
+/// The child that receives forwarded wakes (`None`: it exited).
+pub fn set_wake_target(pid: Option<u32>) {
+    WAKE_TARGET.store(pid.map_or(0, |p| p as i32), std::sync::atomic::Ordering::Relaxed);
+}
+
 /// The follower child's data directory: `<chain dir>/follow`, or
 /// `<chain dir>/archive` in archive mode, where the chain dir is
 /// `--chain-data` when set and `--data` otherwise.
@@ -967,7 +998,12 @@ impl Supervisor {
             let role = self.role(me.as_deref())?;
             let started_ms = now_ms();
             let mut child = self.spawn(role, me.as_deref())?;
-            match self.watch(&mut child, role, me.as_deref()) {
+            set_wake_target(Some(child.id()));
+            let watched = self.watch(&mut child, role, me.as_deref());
+            // The child may be reaped already: never signal a pid that can
+            // be reused by an unrelated process.
+            set_wake_target(None);
+            match watched {
                 Watched::Switched => {
                     // The restart is the role change itself, not a crash.
                     me = self.my_key();

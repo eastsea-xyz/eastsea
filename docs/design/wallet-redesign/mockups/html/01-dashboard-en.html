@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Dashboard EN</title>
+<link rel="stylesheet" href="wallet.css">
+<style>
+  .home { display: grid; grid-template-columns: 1fr 268px; gap: 28px; }
+  .plate.big { height: 214px; padding: 26px 28px; }
+  .rail .group { margin-bottom: 18px; }
+  .asset { display: flex; align-items: center; gap: 11px; padding: 10px 14px; position: relative; }
+  .asset + .asset::before { content: ""; position: absolute; top: 0; left: 52px; right: 0; border-top: .5px solid var(--line); }
+  .asset img, .asset .gen { width: 28px; height: 28px; border-radius: 50%; flex: none; }
+  .asset .t { flex: 1; } .asset .t b { display: block; font: 600 13px/1.25 var(--font); } .asset .t span { font-size: 11.5px; color: var(--ink-3); }
+  .asset .v { font: 600 13px/1 var(--font-money); font-variant-numeric: tabular-nums; }
+  .gen { display: grid; place-items: center; background: hsl(200 45% 72%); color: #1d2a36; font: 700 13px/1 var(--font); outline: 1.5px dashed rgba(17,28,41,.45); outline-offset: -1.5px; position: relative; }
+  .gen::after { content: "?"; position: absolute; right: -3px; bottom: -3px; width: 12px; height: 12px; border-radius: 50%; background: var(--surface); color: var(--ink-2); font: 700 9px/12px var(--font); text-align: center; box-shadow: 0 0 0 1px var(--line-2); }
+  .mini h4 { font: 600 12px/1 var(--font); color: var(--ink-3); padding: 14px 14px 4px; }
+  .earn { padding: 4px 14px 14px; }
+  .earn .n { font: 600 26px/1.1 var(--font-money); font-variant-numeric: tabular-nums; }
+  .earn .n small { font-size: 13px; color: var(--ink-3); }
+  .bars { display: flex; gap: 3px; align-items: flex-end; height: 34px; margin-top: 12px; }
+  .bars i { flex: 1; background: var(--gold); opacity: .85; border-radius: 2px 2px 0 0; }
+  .bars i.z { background: var(--line-2); opacity: 1; height: 3px !important; }
+  /* phone */
+  .p-acct { display: flex; justify-content: space-between; align-items: center; padding: 4px 2px 14px; }
+  .p-acct .who { display: flex; align-items: center; gap: 9px; font: 600 15px/1 var(--font); }
+  .avatar { width: 30px; height: 30px; border-radius: 50%; background: conic-gradient(from 200deg, #0F5A75, #0D2135, #E8BF59, #0F5A75); }
+  .plate.ph { height: 186px; padding: 22px; }
+  .plate.ph .amt { font-size: 48px; } .plate.ph .amt small { font-size: 19px; }
+  .plate.ph .coin { width: 150px; height: 150px; right: -30px; }
+</style></head>
+<body>
+<div class="board">
+  <div class="stack">
+    <div class="caption">Mac · Home · light · English</div>
+    <div class="mac light">
+      <aside class="sidebar" data-active="home" data-lang="en" data-pending="1"></aside>
+      <div class="main">
+        <div class="toolbar"><h1>Home</h1><span class="sp"></span>
+          <span class="tbtn"><svg><use href="#i-search"/></svg></span>
+          <span class="tbtn"><svg><use href="#i-qr"/></svg></span>
+        </div>
+        <div class="content">
+          <div class="home">
+            <div>
+              <div class="plate big" data-waves>
+                <img class="coin" src="assets/coin.png" alt="">
+                <div class="acct">Account 1 · <span class="mono">0x5397…E502</span> <svg style="width:12px;height:12px"><use href="#i-copy"/></svg></div>
+                <div class="amt">12.5 <small>DBLN</small></div>
+                <div class="ver"><svg><use href="#i-checkseal"/></svg>Verified on this Mac · just now</div>
+              </div>
+              <div class="actions" style="margin:16px 0 22px">
+                <div class="act primary"><svg><use href="#i-touchid"/></svg>Send</div>
+                <div class="act"><svg><use href="#i-receive"/></svg>Receive</div>
+                <div class="act"><svg><use href="#i-assets"/></svg>Assets</div>
+              </div>
+              <div class="sec-h"><h2>Recent activity</h2><a>See all</a></div>
+              <div class="group">
+                <div class="row">
+                  <div class="ti"><img src="assets/coin-flat.svg"><span class="b wn"><i><svg><use href="#i-send"/></svg></i></span></div>
+                  <div class="t"><b>Sent to Mina</b><span><span class="ring"></span>Confirming · usually under 10 seconds</span></div>
+                  <div class="r"><b>−2.0</b><span>DBLN</span></div>
+                </div>
+                <div class="row">
+                  <div class="ti"><img src="assets/coin-flat.svg"><span class="b in"><i><svg><use href="#i-receive"/></svg></i></span></div>
+                  <div class="t"><b>Node rewards</b><span>Today · 24 rewards from this Mac</span></div>
+                  <div class="r"><b class="in">+1.5</b><span>DBLN</span></div>
+                </div>
+                <div class="row">
+                  <div class="ti"><img src="assets/coin-flat.svg"><span class="b in"><i><svg><use href="#i-receive"/></svg></i></span></div>
+                  <div class="t"><b>Received from 0x8f2a…41c9</b><span>Yesterday, 21:04</span></div>
+                  <div class="r"><b class="in">+10.0</b><span>DBLN</span></div>
+                </div>
+              </div>
+            </div>
+            <div class="rail">
+              <div class="group mini">
+                <h4>Assets</h4>
+                <div class="asset"><img src="assets/coin-flat.svg"><div class="t"><b>Doubloon</b><span>DBLN</span></div><div class="v">12.5</div></div>
+                <div class="asset"><img src="assets/WAETH.png"><div class="t"><b>Wrapped ETH</b><span>WAETH</span></div><div class="v">0.42</div></div>
+                <div class="asset"><span class="gen">M</span><div class="t"><b>MOON</b><span>Unverified · 0x77e1…</span></div><div class="v" style="color:var(--ink-3)">1,000</div></div>
+              </div>
+              <div class="group mini">
+                <h4>Node rewards</h4>
+                <div class="earn">
+                  <div class="n gd">+1.5 <small>DBLN today</small></div>
+                  <div style="font-size:12px;color:var(--ink-3);margin-top:4px">This Mac has been online 6 h</div>
+                  <div class="bars"><i style="height:30%"></i><i style="height:45%"></i><i class="z"></i><i style="height:60%"></i><i style="height:52%"></i><i style="height:70%"></i><i style="height:66%"></i><i style="height:80%"></i><i style="height:58%"></i><i style="height:75%"></i><i style="height:90%"></i><i style="height:84%"></i></div>
+                </div>
+              </div>
+              <div class="note warn"><svg><use href="#i-key"/></svg><div><b>Set up recovery.</b> If this Mac is lost, nobody can bring the funds back. <span class="link">Set up…</span></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="stack">
+    <div class="caption">iPhone · Home · dark · English</div>
+    <div class="phone"><div class="screen dark">
+      <div class="island"></div>
+      <div class="status"><span>9:41</span><span>●●● ▮</span></div>
+      <div class="pbody">
+        <div class="p-acct"><div class="who"><span class="avatar"></span>Account 1</div><svg style="width:22px;height:22px;color:var(--ink-2)"><use href="#i-qr"/></svg></div>
+        <div class="plate ph" data-waves>
+          <img class="coin" src="assets/coin.png" alt="">
+          <div class="lbl">Balance</div>
+          <div class="amt">12.5 <small>DBLN</small></div>
+          <div class="ver"><svg><use href="#i-checkseal"/></svg>Verified on this iPhone</div>
+        </div>
+        <div class="actions" style="margin:14px 0 14px">
+          <div class="act primary"><svg><use href="#i-touchid"/></svg>Send</div>
+          <div class="act"><svg><use href="#i-receive"/></svg>Receive</div>
+          <div class="act"><svg><use href="#i-assets"/></svg>Assets</div>
+        </div>
+        <div class="nodeline"><span class="gdot"></span><span class="sp">Node rewards from your Mac</span><b class="num gd">+1.5 today</b><svg class="chev"><use href="#i-chev"/></svg></div>
+        <div class="sec-h" style="margin-top:20px"><h2>Recent activity</h2><a>See all</a></div>
+        <div class="group">
+          <div class="row"><div class="ti"><img src="assets/coin-flat.svg"><span class="b wn"><i><svg><use href="#i-send"/></svg></i></span></div><div class="t"><b>Sent to Mina</b><span><span class="ring"></span>Confirming…</span></div><div class="r"><b>−2.0</b><span>DBLN</span></div></div>
+          <div class="row"><div class="ti"><img src="assets/coin-flat.svg"><span class="b in"><i><svg><use href="#i-receive"/></svg></i></span></div><div class="t"><b>Received from 0x8f2a…41c9</b><span>Yesterday</span></div><div class="r"><b class="in">+10.0</b><span>DBLN</span></div></div>
+        </div>
+      </div>
+      <div class="tabbar">
+        <div class="tab on"><svg><use href="#i-home"/></svg>Home</div>
+        <div class="tab"><svg><use href="#i-activity"/></svg>Activity</div>
+        <div class="tab"><svg><use href="#i-explore"/></svg>Explore</div>
+        <div class="tab"><svg><use href="#i-gear"/></svg>Settings</div>
+      </div>
+    </div></div>
+  </div>
+</div>
+<script src="shell.js"></script><script src="icons.js"></script>
+</body></html>

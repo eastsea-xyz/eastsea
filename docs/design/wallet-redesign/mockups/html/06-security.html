@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Security</title>
+<link rel="stylesheet" href="wallet.css">
+<style>
+  .wrap { max-width: 680px; margin: 0 auto; }
+  .hero { display: flex; gap: 18px; align-items: center; margin-bottom: 22px; }
+  .seal { width: 64px; height: 64px; border-radius: 18px; background: var(--plate); display: grid; place-items: center; color: #7CC4DC; flex: none; box-shadow: 0 8px 18px rgba(9,21,34,.18); }
+  .seal svg { width: 34px; height: 34px; }
+  .hero h2 { font: 700 20px/1.25 var(--font); letter-spacing: -.01em; }
+  .hero p { font-size: 13px; color: var(--ink-2); margin-top: 4px; line-height: 1.45; }
+  .st { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; flex: none; }
+  .st svg { width: 13px; height: 13px; }
+  .st.ok { background: var(--success-tint); color: var(--success); }
+  .st.todo { background: var(--warn-tint); color: var(--warn); }
+  .gh { font: 600 12px/1 var(--font); color: var(--ink-3); margin: 22px 4px 8px; }
+  .row .ic { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; background: var(--surface-2); color: var(--ink-2); flex: none; }
+  .row .ic svg { width: 17px; height: 17px; }
+  .row + .row::before { left: 58px; }
+  .site { display: flex; align-items: center; gap: 8px; }
+  .fav { width: 18px; height: 18px; border-radius: 5px; display: grid; place-items: center; font: 700 10px/1 var(--font); color: #fff; }
+</style></head>
+<body>
+<div class="board">
+  <div class="stack"><div class="caption">Mac · Security · light</div>
+    <div class="mac light">
+      <aside class="sidebar" data-active="security" data-lang="en" data-secdot="1"></aside>
+      <div class="main">
+        <div class="toolbar"><h1>Security</h1></div>
+        <div class="content" style="padding-top:26px">
+          <div class="wrap">
+            <div class="hero"><div class="seal"><svg><use href="#i-shield"/></svg></div>
+              <div><h2>2 of 3 protections are on</h2><p>Your key lives in this Mac's Secure Enclave and can't be copied out. There is no seed phrase to lose or leak.</p></div></div>
+            <div class="group">
+              <div class="row"><span class="st ok"><svg><use href="#i-check"/></svg></span><div class="t"><b>Every payment asks for Touch ID</b><span>Key made inside this Mac · can never leave it</span></div></div>
+              <div class="row"><span class="st ok"><svg><use href="#i-check"/></svg></span><div class="t"><b>Checks before you send</b><span>Look-alike addresses, first-time recipients, tokens that refuse to move</span></div></div>
+              <div class="row"><span class="st todo"><svg><use href="#i-warn"/></svg></span><div class="t"><b>A way back if this Mac is lost</b><span>Not set up yet — without it, nobody can restore your funds</span></div><span class="btn primary">Set up</span></div>
+            </div>
+            <div class="gh">RECOVERY</div>
+            <div class="group">
+              <div class="row"><span class="ic"><svg><use href="#i-devices"/></svg></span><div class="t"><b>Recovery device</b><span>Your iPhone or another Mac can move the funds to itself after 48 h</span></div><span class="btn">Add…</span></div>
+              <div class="row"><span class="ic"><svg><use href="#i-doc"/></svg></span><div class="t"><b>Recovery words</b><span>24 words on paper, for when every device is gone</span></div><span class="btn">Create…</span></div>
+              <div class="row"><span class="ic"><svg><use href="#i-key"/></svg></span><div class="t"><b>Recover a lost account</b><span>Use this Mac to rescue a wallet that trusted it</span></div><svg class="chev"><use href="#i-chev"/></svg></div>
+            </div>
+            <div class="gh">CONNECTED SITES</div>
+            <div class="group">
+              <div class="row"><span class="ic"><svg><use href="#i-globe"/></svg></span><div class="t"><b class="site">swap.eastsea.xyz</b><span>Can see your address · asks you for every payment</span></div><span class="btn ghost">Disconnect</span></div>
+            </div>
+            <div style="font-size:12px;color:var(--ink-3);margin:14px 4px;line-height:1.5">Balance checks are answered by other EastSea Macs, which see the addresses you look up. With the node on, lookups stay on this Mac.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="stack"><div class="caption">iPhone · Settings · dark · 한국어</div>
+    <div class="phone"><div class="screen dark">
+      <div class="island"></div><div class="status"><span>9:41</span><span>●●● ▮</span></div>
+      <div class="pbody">
+        <h3 style="font:700 30px/1 var(--font);margin:12px 2px 18px">설정</h3>
+        <div class="group" style="padding:4px 0">
+          <div class="row"><span class="st ok"><svg><use href="#i-check"/></svg></span><div class="t"><b>결제마다 Face ID</b><span>키는 이 iPhone 밖으로 나가지 않아요</span></div></div>
+          <div class="row"><span class="st todo"><svg><use href="#i-warn"/></svg></span><div class="t"><b>잃어버렸을 때 되찾는 방법</b><span>아직 없어요</span></div><svg class="chev"><use href="#i-chev"/></svg></div>
+        </div>
+        <div class="gh">복구</div>
+        <div class="group">
+          <div class="row"><span class="ic"><svg><use href="#i-devices"/></svg></span><div class="t"><b>복구 기기</b><span>내 Mac을 복구 기기로</span></div><svg class="chev"><use href="#i-chev"/></svg></div>
+          <div class="row"><span class="ic"><svg><use href="#i-doc"/></svg></span><div class="t"><b>복구 단어 24개</b></div><svg class="chev"><use href="#i-chev"/></svg></div>
+        </div>
+        <div class="gh">앱</div>
+        <div class="group">
+          <div class="row"><span class="ic"><svg><use href="#i-globe"/></svg></span><div class="t"><b>연결된 사이트</b></div><span style="color:var(--ink-3);font-size:13px">1</span><svg class="chev"><use href="#i-chev"/></svg></div>
+          <div class="row"><span class="ic"><svg><use href="#i-refresh"/></svg></span><div class="t"><b>업데이트</b><span>자동 설치 · 방금 확인함</span></div><svg class="chev"><use href="#i-chev"/></svg></div>
+          <div class="row"><span class="ic"><svg><use href="#i-doc"/></svg></span><div class="t"><b>약관과 규칙</b></div><svg class="chev"><use href="#i-chev"/></svg></div>
+          <div class="row"><span class="ic"><svg><use href="#i-gear"/></svg></span><div class="t"><b>개발자 모드</b></div><div class="switch"></div></div>
+        </div>
+      </div>
+      <div class="tabbar">
+        <div class="tab"><svg><use href="#i-home"/></svg>홈</div><div class="tab"><svg><use href="#i-activity"/></svg>활동</div><div class="tab"><svg><use href="#i-explore"/></svg>둘러보기</div><div class="tab on"><svg><use href="#i-gear"/></svg>설정</div>
+      </div>
+    </div></div>
+  </div>
+</div>
+<script src="shell.js"></script><script src="icons.js"></script>
+</body></html>

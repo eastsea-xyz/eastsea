@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Activity</title>
+<link rel="stylesheet" href="wallet.css">
+<style>
+  .split { display: grid; grid-template-columns: 1fr 320px; height: 100%; }
+  .list { overflow: hidden; padding: 18px 24px; border-right: .5px solid var(--line); }
+  .chips { display: flex; gap: 6px; margin-bottom: 6px; }
+  .insp { padding: 22px 22px; background: var(--surface-2); }
+  .dark .insp { background: #0A1522; }
+  .insp .big { font: 600 34px/1 var(--font-money); font-variant-numeric: tabular-nums; margin-top: 14px; }
+  .insp .big small { font-size: 15px; color: var(--ink-3); }
+  .tl { margin: 18px 0; display: grid; gap: 0; }
+  .tl div { display: grid; grid-template-columns: 18px 1fr auto; gap: 10px; font-size: 12.5px; align-items: start; padding-bottom: 14px; position: relative; }
+  .tl div::before { content: ""; position: absolute; left: 8px; top: 14px; bottom: 0; border-left: 1.5px solid var(--line-2); }
+  .tl div:last-child::before { display: none; }
+  .tl i { width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; background: var(--success); color: var(--surface); position: relative; z-index: 1; }
+  .tl i svg { width: 10px; height: 10px; }
+  .tl i.w { background: var(--warn); }
+  .tl span { color: var(--ink-3); font-size: 11.5px; }
+  .tl b { font-weight: 600; display: block; } .tl em { font-style: normal; color: var(--ink-3); font-size: 11.5px; display: block; margin-top: 2px; line-height: 1.4; }
+  .disc { display: flex; justify-content: space-between; align-items: center; font: 500 12.5px/1 var(--font); color: var(--ink-2); padding: 12px 0; border-top: .5px solid var(--line-2); }
+  .disc svg { width: 13px; height: 13px; }
+  .rw { display: inline-flex; gap: 2px; align-items: flex-end; height: 14px; margin-left: 6px; vertical-align: -2px; }
+  .rw i { width: 3px; background: var(--gold); border-radius: 1px; }
+  /* phone resend sheet */
+  .psheet { position: absolute; left: 0; right: 0; bottom: 0; background: var(--bg); border-radius: 22px 22px 0 0; padding: 10px 20px 34px; box-shadow: 0 -10px 40px rgba(0,0,0,.25); }
+  .grab { width: 36px; height: 5px; border-radius: 3px; background: var(--line-2); margin: 0 auto 16px; }
+  .cmp2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 14px; }
+  .cmp2 > div { border-radius: 12px; padding: 12px; background: var(--surface); border: .5px solid var(--line); }
+  .cmp2 .h { font-size: 11.5px; color: var(--ink-3); }
+  .cmp2 .v { font: 600 15px/1.2 var(--font-money); margin-top: 6px; }
+</style></head>
+<body>
+<div class="board">
+  <div class="stack"><div class="caption">Mac · Activity with inspector · light</div>
+    <div class="mac light">
+      <aside class="sidebar" data-active="activity" data-lang="en" data-pending="1"></aside>
+      <div class="main">
+        <div class="toolbar"><h1>Activity</h1><span class="sp"></span><span class="tbtn"><svg><use href="#i-search"/></svg></span><span class="tbtn"><svg><use href="#i-download"/></svg>Export</span></div>
+        <div class="split">
+          <div class="list">
+            <div class="chips"><span class="chip on">All</span><span class="chip">Money in</span><span class="chip">Money out</span><span class="chip">Rewards</span><span class="chip">Security</span></div>
+            <div class="day">TODAY</div>
+            <div class="group">
+              <div class="row sel">
+                <div class="ti"><img src="assets/coin-flat.svg"><span class="b wn"><i><svg><use href="#i-warn"/></svg></i></span></div>
+                <div class="t"><b>Didn't go through · to Mina</b><span class="wn">The network price rose before it was processed. Nothing left your wallet.</span><span style="margin-top:8px"><span class="btn" style="height:27px;font-size:12px;padding:0 10px"><svg style="width:13px;height:13px"><use href="#i-arrowcw"/></svg>Resend at today's price</span></span></div>
+                <div class="r"><b style="color:var(--ink-3);text-decoration:line-through">−2.0</b><span>21:14</span></div>
+              </div>
+              <div class="row">
+                <div class="ti"><img src="assets/coin-flat.svg"><span class="b in"><i><svg><use href="#i-receive"/></svg></i></span></div>
+                <div class="t"><b>Node rewards <span class="rw"><i style="height:6px"></i><i style="height:10px"></i><i style="height:8px"></i><i style="height:13px"></i><i style="height:11px"></i></span></b><span>24 rewards from this Mac</span></div>
+                <div class="r"><b class="in">+1.5</b><span>today</span></div>
+              </div>
+              <div class="row">
+                <div class="ti sym"><svg><use href="#i-agent"/></svg></div>
+                <div class="t"><b>Paid by Claude Code · to Shop</b><span>“API credits” · within your limit of 5 DBLN</span></div>
+                <div class="r"><b>−0.8</b><span>14:02</span></div>
+              </div>
+            </div>
+            <div class="day">YESTERDAY</div>
+            <div class="group">
+              <div class="row">
+                <div class="ti"><img src="assets/coin-flat.svg"><span class="b in"><i><svg><use href="#i-receive"/></svg></i></span></div>
+                <div class="t"><b>Received from 0x8f2a…41c9</b><span>First time from this address</span></div>
+                <div class="r"><b class="in">+10.0</b><span>21:04</span></div>
+              </div>
+              <div class="row">
+                <div class="ti"><img src="assets/WAETH.png"><span class="b"><i><svg><use href="#i-send"/></svg></i></span></div>
+                <div class="t"><b>Sent to Jun</b><span>Wrapped ETH</span></div>
+                <div class="r"><b>−0.10</b><span>WAETH</span></div>
+              </div>
+              <div class="row">
+                <div class="ti sym"><svg><use href="#i-devices"/></svg></div>
+                <div class="t"><b>Recovery device added</b><span>Jay's iPhone can recover this wallet after 48 h</span></div>
+                <div class="r"><span>09:30</span></div>
+              </div>
+            </div>
+          </div>
+          <div class="insp">
+            <span class="pill warn"><svg style="width:12px;height:12px"><use href="#i-warn"/></svg>Didn't go through</span>
+            <div class="big">2.0 <small>DBLN to Mina</small></div>
+            <div style="font-size:12.5px;color:var(--ink-2);margin-top:10px;line-height:1.5">It waited while the network was busy, and the price went above what you approved. It was never processed, so your balance did not change.</div>
+            <div class="tl">
+              <div><i><svg><use href="#i-check"/></svg></i><p><b>Signed with Touch ID</b></p><span>21:14</span></div>
+              <div><i><svg><use href="#i-check"/></svg></i><p><b>Sent to the network</b></p><span>21:14</span></div>
+              <div><i class="w"><svg><use href="#i-x"/></svg></i><p><b>Dropped</b><em>Price at send: up to 0.00002 · now 0.00005 DBLN</em></p><span>21:19</span></div>
+            </div>
+            <span class="btn primary block lg"><svg class="tid"><use href="#i-arrowcw"/></svg>Resend at today's price</span>
+            <div style="font-size:11.5px;color:var(--ink-3);margin:10px 2px 16px;line-height:1.45">Uses the same slot as the dropped one, so at most one of the two can ever go through.</div>
+            <div class="disc">Details for experts<svg><use href="#i-chevdown"/></svg></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="stack"><div class="caption">iPhone · B5 resend sheet · dark · 한국어</div>
+    <div class="phone"><div class="screen dark">
+      <div class="island"></div><div class="status"><span>9:41</span><span>●●● ▮</span></div>
+      <div class="pbody" style="opacity:.35">
+        <h3 style="font:700 30px/1 var(--font);margin:12px 0 16px">활동</h3>
+        <div class="group"><div class="row"><div class="ti"><img src="assets/coin-flat.svg"></div><div class="t"><b>미나에게 보내지 못함</b><span>21:14</span></div></div>
+        <div class="row"><div class="ti"><img src="assets/coin-flat.svg"></div><div class="t"><b>노드 보상</b><span>오늘</span></div></div></div>
+      </div>
+      <div class="psheet">
+        <div class="grab"></div>
+        <h3 style="font:700 20px/1.25 var(--font)">새 가격으로 다시 보내기</h3>
+        <p style="font-size:13.5px;line-height:1.5;color:var(--ink-2);margin-top:8px">네트워크가 붐벼 가격이 올라 처리되지 않았어요. 돈은 그대로 있어요. 같은 송금을 지금 가격으로 다시 보내요.</p>
+        <div class="to" style="display:flex;gap:11px;align-items:center;margin-top:16px;padding:12px 14px;border-radius:12px;background:var(--surface);border:.5px solid var(--line)"><span style="width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,#7CC4DC,#0F5A75);display:grid;place-items:center;font-weight:700;color:#fff">M</span><div style="flex:1"><b style="font-size:14px">미나</b><div class="mono" style="font-size:12px;color:var(--ink-3)">0x41a7…9c03</div></div><b class="num" style="font-size:17px">2.0 DBLN</b></div>
+        <div class="cmp2"><div><div class="h">보낼 때 가격</div><div class="v" style="color:var(--ink-3);text-decoration:line-through">최대 0.00002</div></div><div><div class="h">지금 가격</div><div class="v">최대 0.00005</div></div></div>
+        <div class="note plain" style="margin-top:12px"><svg><use href="#i-info"/></svg><div>처음 송금과 같은 순서 번호를 써요. 둘 중 하나만 처리되니 두 번 나갈 일은 없어요.</div></div>
+        <div style="margin-top:18px"><span class="btn primary lg block"><svg class="tid"><use href="#i-touchid"/></svg>Face ID로 다시 보내기</span></div>
+        <div style="text-align:center;margin-top:12px;font:600 14px/1 var(--font);color:var(--ink-2)">나중에</div>
+      </div>
+    </div></div>
+  </div>
+</div>
+<script src="shell.js"></script><script src="icons.js"></script>
+</body></html>

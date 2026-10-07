@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Node and rewards</title>
+<link rel="stylesheet" href="wallet.css">
+<style>
+  .wrap { max-width: 760px; margin: 0 auto; }
+  .nodehead { display: flex; align-items: center; gap: 16px; padding: 18px 20px; }
+  .mac-ic { width: 46px; height: 46px; border-radius: 12px; background: var(--success-tint); color: var(--success); display: grid; place-items: center; flex: none; }
+  .mac-ic svg { width: 26px; height: 26px; }
+  .nodehead h2 { font: 700 17px/1.2 var(--font); }
+  .nodehead p { font-size: 12.5px; color: var(--ink-3); margin-top: 3px; }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); border-top: .5px solid var(--line); }
+  .stats > div { padding: 14px 20px; } .stats > div + div { border-left: .5px solid var(--line); }
+  .stats .v { font: 600 20px/1 var(--font-money); font-variant-numeric: tabular-nums; }
+  .stats .k { font-size: 11.5px; color: var(--ink-3); margin-top: 6px; }
+  .rew { display: grid; grid-template-columns: 1fr 1.25fr; gap: 0; margin-top: 18px; }
+  .rew .l { padding: 20px; }
+  .rew .lbl { font: 600 11.5px/1 var(--font); color: var(--ink-3); letter-spacing: .06em; text-transform: uppercase; }
+  .rew .tot { font: 600 40px/1 var(--font-money); margin-top: 12px; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+  .rew .tot small { font-size: 16px; color: var(--ink-3); }
+  .rew .today { margin-top: 10px; font: 600 14px/1 var(--font-money); }
+  .chart { padding: 20px 20px 14px; border-left: .5px solid var(--line); }
+  .bars { display: flex; gap: 4px; align-items: flex-end; height: 104px; margin-top: 14px; border-bottom: .5px solid var(--line-2); }
+  .bars i { flex: 1; background: var(--gold); border-radius: 3px 3px 0 0; }
+  .bars i.z { background: var(--line-2); height: 3px !important; }
+  .bars i.now { background: repeating-linear-gradient(135deg, var(--gold) 0 3px, transparent 3px 6px); outline: 1px solid var(--gold); outline-offset: -1px; }
+  .axis { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--ink-3); margin-top: 6px; }
+  .prog { height: 6px; border-radius: 3px; background: var(--surface-2); margin-top: 10px; overflow: hidden; }
+  .prog i { display: block; height: 100%; width: 75%; background: var(--teal); border-radius: 3px; }
+  .gh { font: 600 12px/1 var(--font); color: var(--ink-3); margin: 22px 4px 8px; }
+</style></head>
+<body>
+<div class="board">
+  <div class="stack"><div class="caption">Mac · Node &amp; rewards · dark</div>
+    <div class="mac dark">
+      <aside class="sidebar" data-active="node" data-lang="en"></aside>
+      <div class="main">
+        <div class="toolbar"><h1>Node &amp; rewards</h1><span class="sp"></span><span class="tbtn"><svg><use href="#i-download"/></svg>Export CSV</span></div>
+        <div class="content" style="padding-top:22px">
+          <div class="wrap">
+            <div class="group">
+              <div class="nodehead"><div class="mac-ic"><svg><use href="#i-node"/></svg></div>
+                <div style="flex:1"><h2>This Mac is part of the network</h2><p><span class="live" style="display:inline-block;width:7px;height:7px;margin-right:6px;vertical-align:1px"></span>Verifying every block · stops when you quit EastSea</p></div>
+                <div class="switch big on"></div></div>
+              <div class="stats">
+                <div><div class="v">6 h 12 m</div><div class="k">Online this session</div></div>
+                <div><div class="v">#184,210</div><div class="k">Latest block checked</div></div>
+                <div><div class="v">On power</div><div class="k">Pauses on battery</div></div>
+              </div>
+            </div>
+            <div class="group rew">
+              <div class="l">
+                <div class="lbl">Received so far</div>
+                <div class="tot gd">12.5 <small>DBLN</small></div>
+                <div class="today in">+1.5 today</div>
+                <div style="font-size:12px;color:var(--ink-3);margin-top:16px;line-height:1.5">Paid by the protocol to Macs that stay online. Shared every hour; one operator gets at most 1/16.</div>
+              </div>
+              <div class="chart">
+                <div style="display:flex;justify-content:space-between;align-items:baseline"><b style="font-size:13px">Last 24 hours</b><span style="font-size:11.5px;color:var(--ink-3)">per hour</span></div>
+                <div class="bars"><i class="z"></i><i class="z"></i><i style="height:22%"></i><i style="height:40%"></i><i style="height:36%"></i><i style="height:48%"></i><i style="height:44%"></i><i style="height:55%"></i><i class="z"></i><i style="height:52%"></i><i style="height:60%"></i><i style="height:58%"></i><i style="height:66%"></i><i style="height:62%"></i><i style="height:70%"></i><i style="height:68%"></i><i style="height:74%"></i><i style="height:72%"></i><i style="height:80%"></i><i style="height:78%"></i><i style="height:84%"></i><i style="height:82%"></i><i style="height:90%"></i><i class="now" style="height:40%"></i></div>
+                <div class="axis"><span>22:00</span><span>04:00</span><span>10:00</span><span>16:00</span><span>now</span></div>
+              </div>
+            </div>
+            <div class="gh">VOTING SEAT</div>
+            <div class="group">
+              <div class="row" style="padding:14px 18px;align-items:flex-start">
+                <div class="ti sym" style="background:var(--gold-tint);color:var(--gold-ink)"><svg><use href="#i-checkseal"/></svg></div>
+                <div class="t"><b>Candidate · 18 of 24 hours online</b><span>After 24 hours in a row, this Mac enters the daily draw to sign blocks. 9 Macs registered.</span><div class="prog"><i></i></div></div>
+              </div>
+              <div class="row" style="padding:12px 18px"><div class="t"><b style="font-weight:500">Network reward rules</b></div><svg class="chev"><use href="#i-chevdown"/></svg></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="stack"><div class="caption">Rewards line on Home: states</div>
+    <div class="stack light" style="gap:12px;width:360px;background:var(--bg);padding:20px;border-radius:16px">
+      <div class="anno"><b>Node off</b> — nothing on Home.</div>
+      <div class="anno"><b>Verifying, no reward yet</b></div>
+      <div class="nodeline"><span class="live off"></span><span class="sp">This Mac is checking blocks</span><svg class="chev"><use href="#i-chev"/></svg></div>
+      <div class="anno"><b>Rewards</b> (gold dot; one line, never a hero card)</div>
+      <div class="nodeline"><span class="gdot"></span><span class="sp">Node rewards</span><b class="num gd">+1.5 today</b><svg class="chev"><use href="#i-chev"/></svg></div>
+      <div class="anno"><b>Paused on battery</b></div>
+      <div class="nodeline"><span class="live warn"></span><span class="sp">Node paused on battery</span><span style="font-size:12px;color:var(--ink-3)">resumes on power</span></div>
+      <div class="anno"><b>New reward arrives</b>: the line flashes gold once (0.6 s), the balance rolls with numericText. Confetti only for the first reward ever.</div>
+    </div>
+  </div>
+</div>
+<script src="shell.js"></script><script src="icons.js"></script>
+</body></html>

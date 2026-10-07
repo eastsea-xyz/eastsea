@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Send flow</title>
+<link rel="stylesheet" href="wallet.css">
+<style>
+  .sheet { width: 420px; position: relative; }
+  .hd { display: flex; align-items: center; justify-content: space-between; }
+  .x { width: 26px; height: 26px; border-radius: 50%; background: var(--surface-2); display: grid; place-items: center; color: var(--ink-2); }
+  .x svg { width: 13px; height: 13px; }
+  .assetchip { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px 0 6px; border-radius: 16px; background: var(--surface); border: .5px solid var(--line-2); font: 600 13px/1 var(--font); }
+  .assetchip img { width: 22px; height: 22px; } .assetchip svg { width: 13px; height: 13px; color: var(--ink-3); }
+  .amount { text-align: center; padding: 26px 0 8px; }
+  .amount .n { font: 600 56px/1 var(--font-money); letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+  .amount .n small { font-size: 22px; color: var(--ink-3); margin-left: 6px; }
+  .amount .sub { margin-top: 10px; font-size: 12.5px; color: var(--ink-3); display: flex; justify-content: center; gap: 8px; align-items: center; }
+  .maxchip { height: 22px; padding: 0 9px; border-radius: 11px; background: var(--surface-2); font: 600 11.5px/22px var(--font); color: var(--ink-2); }
+  .to { display: flex; align-items: center; gap: 11px; padding: 12px 14px; border-radius: 12px; background: var(--surface); border: .5px solid var(--line-2); }
+  .to .av { width: 34px; height: 34px; border-radius: 50%; background: linear-gradient(135deg, #7CC4DC, #0F5A75); color: #fff; display: grid; place-items: center; font: 700 14px/1 var(--font); flex: none; }
+  .to .t { flex: 1; } .to .t b { font: 600 14px/1.2 var(--font); display: block; } .to .t span { font-size: 12px; color: var(--ink-3); }
+  .known { font: 500 11.5px/1 var(--font); color: var(--success); display: flex; gap: 4px; align-items: center; margin-top: 5px; }
+  .known svg { width: 12px; height: 12px; }
+  .sum { margin-top: 14px; border-radius: 12px; background: var(--surface); border: .5px solid var(--line); }
+  .addr { font: 500 13px/1.6 var(--font-mono); letter-spacing: .02em; word-break: break-all; }
+  .addr em { font-style: normal; background: var(--warn-tint); color: var(--warn); border-radius: 3px; padding: 0 1px; font-weight: 700; }
+  .addr .dim { color: var(--ink-3); }
+  .cmp { display: grid; grid-template-columns: 74px 1fr; gap: 6px 10px; align-items: baseline; margin-top: 12px; font-size: 12px; color: var(--ink-3); }
+  .check { display: flex; gap: 10px; align-items: flex-start; margin-top: 14px; font-size: 12.5px; line-height: 1.4; }
+  .box { width: 16px; height: 16px; border-radius: 4px; border: 1px solid var(--line-2); background: var(--surface); flex: none; margin-top: 1px; }
+  /* Touch ID system dialog */
+  .sys { width: 300px; margin: 14px auto 0; background: color-mix(in srgb, var(--surface) 92%, transparent); border-radius: 14px; padding: 22px 20px 16px; text-align: center; box-shadow: var(--sheet-shadow); }
+  .sys img { width: 56px; height: 56px; border-radius: 12px; }
+  .sys .fp { width: 58px; height: 58px; color: var(--gold); margin: 14px auto 6px; display: block; }
+  .sys h4 { font: 700 13.5px/1.3 var(--font); margin-top: 10px; }
+  .sys p { font-size: 12px; line-height: 1.4; color: var(--ink-2); margin-top: 6px; }
+  .sys .b2 { display: grid; gap: 8px; margin-top: 16px; }
+  .sys .b2 .btn { height: 28px; font-size: 12.5px; }
+  .done { text-align: center; padding: 18px 0 6px; }
+  .done .ok { width: 64px; height: 64px; border-radius: 50%; background: var(--success-tint); color: var(--success); display: grid; place-items: center; margin: 0 auto 14px; }
+  .done .ok svg { width: 30px; height: 30px; }
+  .done h3 { font-size: 20px; }
+  .steps { margin: 22px 0 6px; display: grid; gap: 12px; }
+  .step { display: flex; gap: 12px; align-items: center; font-size: 13px; }
+  .step i { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; background: var(--success); color: var(--surface); flex: none; }
+  .step i svg { width: 12px; height: 12px; }
+  .step.now i { background: transparent; border: 2px solid color-mix(in srgb, var(--warn) 30%, transparent); border-top-color: var(--warn); }
+  .step span { color: var(--ink-3); margin-left: auto; font-size: 12px; }
+  .foot { display: flex; gap: 10px; margin-top: 20px; }
+  .foot .btn { flex: 1; }
+</style></head>
+<body>
+<div class="board">
+  <div class="stack"><div class="caption">1 · Compose (amount first)</div>
+    <div class="sheet light">
+      <div class="hd"><h3>Send</h3><span class="x"><svg><use href="#i-x"/></svg></span></div>
+      <div style="margin-top:16px;display:flex;justify-content:space-between;align-items:center">
+        <span class="assetchip"><img src="assets/coin-flat.svg">Doubloon <svg><use href="#i-updown"/></svg></span>
+        <span style="font-size:12.5px;color:var(--ink-3)">Available <b class="num" style="color:var(--ink)">12.5</b></span>
+      </div>
+      <div class="amount"><div class="n">2.0<small>DBLN</small></div><div class="sub"><span class="maxchip">Max</span></div></div>
+      <div class="field"><label>To</label>
+        <div class="to"><span class="av">M</span><div class="t"><b>Mina</b><span class="mono">0x41a7…9c03</span><div class="known"><svg><use href="#i-check"/></svg>You sent here 3 times</div></div><svg class="chev"><use href="#i-x"/></svg></div>
+      </div>
+      <div class="sum">
+        <div class="kv"><span class="k">Network fee</span><span class="v num">up to 0.00002 DBLN</span></div>
+        <div class="kv"><span class="k">Mina gets</span><span class="v num">2.0 DBLN</span></div>
+      </div>
+      <div style="margin-top:20px"><span class="btn primary lg block"><svg class="tid"><use href="#i-touchid"/></svg>Send with Touch ID</span></div>
+    </div>
+  </div>
+
+  <div class="stack"><div class="caption">1b · Look-alike address (blocks until checked)</div>
+    <div class="sheet light">
+      <div class="hd"><h3>Send</h3><span class="x"><svg><use href="#i-x"/></svg></span></div>
+      <div class="field"><label>To</label>
+        <div class="input" style="height:auto;padding:10px 12px"><span class="addr"><em>0x41a7</em><span class="dim">2be0d1c4f9a8e6b3c5d7</span><em>9c03</em></span></div>
+      </div>
+      <div class="note warn" style="margin-top:14px"><svg><use href="#i-warn"/></svg><div><b>This only looks like Mina's address.</b> The start and end match, the middle does not. Scammers copy exactly those to catch a quick paste.
+        <div class="cmp"><span>This one</span><span class="addr" style="font-size:11.5px"><em>0x41a7</em><span class="dim">…2be0d1c4…</span><em>9c03</em></span><span>Mina</span><span class="addr" style="font-size:11.5px">0x41a7…<b style="color:var(--ink)">88f12e07</b>…9c03</span></div>
+      </div></div>
+      <div class="check"><span class="box"></span><span>I compared the whole address. This is where I want to send.</span></div>
+      <div class="sum">
+        <div class="kv"><span class="k">Amount</span><span class="v num">2.0 DBLN</span></div>
+        <div class="kv"><span class="k">Network fee</span><span class="v num">up to 0.00002 DBLN</span></div>
+      </div>
+      <div style="margin-top:20px"><span class="btn primary lg block dis"><svg class="tid"><use href="#i-touchid"/></svg>Send with Touch ID</span></div>
+    </div>
+  </div>
+
+  <div class="stack"><div class="caption">2 · Touch ID (system prompt, our reason text)</div>
+    <div class="sheet light" style="height:440px;background:var(--bg)">
+      <div class="hd" style="opacity:.35"><h3>Send</h3><span class="x"><svg><use href="#i-x"/></svg></span></div>
+      <div class="sys">
+        <img src="assets/app-icon.png">
+        <svg class="fp"><use href="#i-touchid"/></svg>
+        <h4>EastSea</h4>
+        <p>EastSea is trying to send 2.0 DBLN to Mina (0x41a7…9c03).</p>
+        <p style="color:var(--ink-3)">Touch ID or enter your password to allow this.</p>
+        <div class="b2"><span class="btn">Use Password…</span><span class="btn">Cancel</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="stack"><div class="caption">3 · Sent (dark)</div>
+    <div class="sheet dark" style="height:440px">
+      <div class="hd"><span></span><span class="x"><svg><use href="#i-x"/></svg></span></div>
+      <div class="done">
+        <div class="ok"><svg><use href="#i-check"/></svg></div>
+        <h3>2.0 DBLN on its way to Mina</h3>
+        <p style="font-size:13px;color:var(--ink-3);margin-top:8px">You can close this. It keeps going in the background.</p>
+      </div>
+      <div class="steps" style="margin-left:40px;margin-right:40px">
+        <div class="step"><i><svg><use href="#i-check"/></svg></i>Signed on this Mac<span>21:14:02</span></div>
+        <div class="step"><i><svg><use href="#i-check"/></svg></i>Sent to the network<span>21:14:02</span></div>
+        <div class="step now"><i></i>Confirming<span>usually under 10 s</span></div>
+      </div>
+      <div class="foot" style="margin-top:34px"><span class="btn">View in Activity</span><span class="btn primary">Done</span></div>
+    </div>
+  </div>
+</div>
+<script src="icons.js"></script>
+</body></html>

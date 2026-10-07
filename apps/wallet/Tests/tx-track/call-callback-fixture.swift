@@ -19,6 +19,7 @@ struct FakeEnclave {
 struct PreparedCall {
     let signingMessage = "fixture-message"
     let envelopeJson = "{}"
+    let nonce: UInt64 = 42
 }
 
 enum Wei {
@@ -31,6 +32,7 @@ enum Short {
 
 struct ActivityItem {
     enum Kind { case sent }
+    var nonce: UInt64? = nil
     init(kind: Kind, title: String, amount: Double?, token: String?) {}
 }
 
@@ -65,6 +67,7 @@ final class WalletModel: @unchecked Sendable {
     let tokenCatalog = TokenCatalog()
     var busy = false
     let outcome: TxTrack.Row
+    var followedNonce: UInt64?
 
     init(outcome: TxTrack.Row, callback: URL) {
         self.outcome = outcome
@@ -73,7 +76,8 @@ final class WalletModel: @unchecked Sendable {
 
     func note(_ message: String) {}
     private func follow(_ hash: String, label: String, item: ActivityItem) async -> TxTrack.Row {
-        outcome
+        await MainActor.run { followedNonce = item.nonce }
+        return outcome
     }
 
     // INSERT_APPROVE_CALL
@@ -107,6 +111,13 @@ final class WalletModel: @unchecked Sendable {
             guard query.first(where: { $0.name == "tx" })?.value == fixtureHash,
                   query.first(where: { $0.name == "request" })?.value == "original" else {
                 fail("contract call callback lost its hash or original request")
+            }
+            guard wallet.followedNonce == 42 else {
+                fail("contract call lost its signed nonce context")
+            }
+            let note = query.first { $0.name == "note" }?.value
+            guard note == (TxTrack.isFinal(outcome) ? nil : TxTrack.notIncludedNote) else {
+                fail("contract call \(outcome.rawValue) callback has the wrong unresolved note")
             }
             print("ok   actual approveCall callback preserves \(outcome.rawValue)")
         }

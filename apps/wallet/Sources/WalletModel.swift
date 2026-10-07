@@ -808,9 +808,16 @@ final class WalletModel: ObservableObject {
                 let sig = try enclave.sign(prepared.signingMessage)
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
                 let title = r.to.isEmpty ? String(localized: "Deployed a contract") : String(localized: "Called \(Short.address(r.to))")
-                let ok = await self.track(h, label: title,
-                                          item: ActivityItem(kind: .sent, title: title, amount: nil, token: token))
-                await MainActor.run { if let cb = r.callback { self.reply(cb, ["tx": h, "status": ok ? "success" : "failed"]) } }
+                var item = ActivityItem(kind: .sent, title: title, amount: nil, token: token)
+                item.nonce = prepared.nonce
+                let outcome = await self.follow(h, label: title, item: item)
+                await MainActor.run {
+                    if let cb = r.callback {
+                        var items = ["tx": h, "status": TxTrack.callbackStatus(outcome)]
+                        if !TxTrack.isFinal(outcome) { items["note"] = TxTrack.notIncludedNote }
+                        self.reply(cb, items)
+                    }
+                }
             } catch { await MainActor.run { self.note("Call failed: \(error)"); self.busy = false } }
         }
     }

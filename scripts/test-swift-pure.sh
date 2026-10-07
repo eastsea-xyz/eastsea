@@ -3,9 +3,16 @@
 # A new Tests/<name> directory must be added to the table below, or scripts/verify.sh will not run it.
 # The Aether 0.6.7 bridge (apps/bridge) has its own Sources/Tests: the `bridge` lines at the end.
 cd "$(dirname "$0")/.."
+mkdir -p tmp/swift-module-cache
+export TMPDIR="$PWD/tmp"
 W=apps/wallet/Sources; T=apps/wallet/Tests; bad=0
 run() { n=$1; shift; files=(); for f in "$@"; do files+=("$W/$f"); done
-  if swiftc -o tmp/sw-$n "${files[@]}" $T/$n/main.swift 2>tmp/sw-$n.err && AETHER_AGENT_TEST_TMP=$PWD/tmp ./tmp/sw-$n > tmp/sw-$n.out 2>&1; then echo "OK   $n"; else echo "FAIL $n :: $(head -c 160 tmp/sw-$n.err | tr '\n' ' ') $(tail -2 tmp/sw-$n.out | tr '\n' ' ')"; bad=$((bad+1)); fi; }
+  if [ -x "$HOME/.claude/playbooks/aether-team/wait-compile.sh" ]; then "$HOME/.claude/playbooks/aether-team/wait-compile.sh"; fi
+  if swiftc -module-cache-path "$PWD/tmp/swift-module-cache" -o tmp/sw-$n "${files[@]}" $T/$n/main.swift 2>tmp/sw-$n.err && AETHER_AGENT_TEST_TMP=$PWD/tmp ./tmp/sw-$n > tmp/sw-$n.out 2>&1; then echo "OK   $n"; else echo "FAIL $n :: $(head -c 160 tmp/sw-$n.err | tr '\n' ' ') $(tail -2 tmp/sw-$n.out | tr '\n' ' ')"; bad=$((bad+1)); fi; }
+run multi-account AccountStore.swift
+run account-data AccountDataStore.swift
+run account-removal EarningsModel.swift TokenAssets.swift AccountRemovalBalance.swift
+run account-operations WalletOperationGate.swift
 run account-history Brand.swift ChainActivity.swift
 run assets EarningsModel.swift TokenAssets.swift
 run balance-sources Brand.swift EarningsModel.swift ChainActivity.swift BalanceBreakdown.swift EarningsExport.swift

@@ -6,6 +6,7 @@ import IOKit.ps
 import IOKit.pwr_mgt
 import ServiceManagement
 import SwiftUI
+import Combine
 import UserNotifications
 
 /// The node inside the app (Transmission-style on/off). On: the bundled `aether`
@@ -85,7 +86,15 @@ final class NodeController: ObservableObject {
     @AppStorage("proveBlocks") var prove = false {
         didSet { restartIfRunning() }
     }
-    @AppStorage("proveAddress") var proveAddress = ""
+    @AppStorage("proveAddress") private var savedProveAddress = ""
+    /// Compatibility for existing proving controls: starting the node from
+    /// another selected wallet cannot silently change its explicit payout.
+    /// New account UI changes it through AccountStore.setPayoutAccount.
+    var proveAddress: String {
+        get { AccountStore.wallet().payoutAddress.isEmpty ? savedProveAddress : AccountStore.wallet().payoutAddress }
+        set { savedProveAddress = AccountStore.wallet().payoutAddress.isEmpty ? newValue : AccountStore.wallet().payoutAddress }
+    }
+    private var payoutSubscription: AnyCancellable?
     /// Settings ▸ 리소스 (docs/ops/resource-limits.md): the prover's memory cap
     /// ("auto" = RAM의 25%, GB, "off"), CPU share ("half"/"all"), and whether it
     /// may run on battery. Passed to the node as flags on (re)start.
@@ -261,6 +270,12 @@ final class NodeController: ObservableObject {
         self.clock = clock
         wrongLocation = !InstallLocation.currentIsRunnable
         if wrongLocation { state = .failed(InstallLocation.moveSentence) }
+        payoutSubscription = AccountStore.wallet().payoutAddressPublisher.removeDuplicates().dropFirst().sink { [weak self] address in
+            guard let self, !address.isEmpty else { return }
+            let changed = self.savedProveAddress.lowercased() != address.lowercased()
+            self.savedProveAddress = address
+            if changed && self.prove { self.restartIfRunning() }
+        }
     }
     private var powerTimer: Timer?
     /// Held while this Mac is a validator (see `applyDuty`).

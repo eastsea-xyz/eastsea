@@ -42,7 +42,7 @@ Rules:
 1. Amounts are decimal AETH strings (`"0.25"`), never wei.
 2. If you are unsure, do a dry run first and tell the user the amount and the limit left.
 3. If a payment is **refused by policy**, do not split it or retry around the limit. Tell the user the limit and that they can change it with `aether-agent policy set --per-tx X --per-day Y`, which asks for their Touch ID.
-4. A payment is done only when the result says `"final": true` and `"success": true`. If it is not final, the result says `"status"`: `"pending"` (still waiting; `why` says for what) or `"dropped"` (not included and nothing was paid; `why` says why). Tell the user `why_ko` or `why`. Do not resend a dropped payment on your own; ask the user first.
+4. A payment is done only when the result says `"final": true` and `"success": true`. If it is not final, the result says `"status"`: `"pending"` (still waiting; `why` says for what) or `"dropped"` (a node dropped it: not on chain yet, which is not a permanent failure — another node may still include it; `why` says why), or `"replaced"` (final: its nonce was used by another transaction, so this one never runs and paid nothing). Tell the user `why_ko` or `why`. Do not resend a dropped payment on your own; ask the user first.
 5. Every payment needs a truthful `purpose`. An unapproved payee is refused and appears as an approval request in the Mac wallet; only the owner may add it with Touch ID. Do not retry or route around the refusal.
 6. The owner can run `aether-agent stop` or use **비서 멈추기** in the Mac wallet to revoke the session. This does not reverse already submitted transactions.
    Token policies also need renewed owner approval after any session replacement (`policy set`, `policy renew`, or `payee add`).

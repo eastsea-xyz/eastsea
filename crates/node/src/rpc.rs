@@ -1164,23 +1164,30 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
         // `reason`). A hash this node never saw, or forgot, stays null.
         "aether_getReceipt" => {
             let h: TxHash = param(p, 0)?;
-            let mut g = chain.lock();
-            if let Some((height, r)) = g.receipts.get(&h) {
-                return Ok(json!({ "height": height, "receipt": r }));
-            }
-            if let Some(tx) = g.mempool.get(&h) {
-                let waiting = crate::chain::pending_reason(&g, tx);
-                return Ok(json!({ "pending": true, "status": "pending", "waiting": waiting }));
-            }
-            Ok(match g.tombstones.get(&h) {
-                Some(reason) => json!({
-                    "pending": false,
-                    "status": "dropped",
-                    "reason": reason,
-                    "resendable": reason.resendable(),
-                }),
-                None => Value::Null,
-            })
+            // Only lookups and a bounded copy under the chain lock (B5 review
+            // round 2, finding 4): a pending tx's facts come from its
+            // sender's index, and its reason is computed after the lock.
+            let facts = {
+                let mut g = chain.lock();
+                if let Some((height, r)) = g.receipts.get(&h) {
+                    return Ok(json!({ "height": height, "receipt": r }));
+                }
+                match g.mempool.get(&h) {
+                    Some(tx) => crate::chain::pending_facts(&g, tx),
+                    None => {
+                        return Ok(match g.tombstones.get(&h) {
+                            Some(reason) => json!({
+                                "pending": false,
+                                "status": "dropped",
+                                "reason": reason,
+                                "resendable": reason.resendable(),
+                            }),
+                            None => Value::Null,
+                        })
+                    }
+                }
+            };
+            Ok(json!({ "pending": true, "status": "pending", "waiting": facts.reason() }))
         }
         "aether_getBlock" => {
             let height: u64 = param(p, 0)?;
@@ -1368,7 +1375,7 @@ mod alias_tests {
             let mut head = (*g.finalized).clone();
             head.excess.state = debt;
             g.finalized = Arc::new(head);
-            g.mempool.insert(pending, tx);
+            g.insert_pending(pending, tx);
         }
         let price = aether_execution::fees::state_base_fee(debt);
         let r = rt.block_on(call(&st, "aether_getReceipt", json!([pending])))["result"].clone();

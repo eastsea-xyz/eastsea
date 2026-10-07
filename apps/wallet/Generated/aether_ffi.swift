@@ -1762,7 +1762,9 @@ public func FfiConverterTypeTxReceipt_lower(_ value: TxReceipt) -> RustBuffer {
  */
 public struct TxStatus: Equatable, Hashable {
     /**
-     * "included", "pending", "dropped" or "unknown" (the node has no record).
+     * "included", "pending", "dropped" (one node removed it: not on chain
+     * yet), "replaced" (its nonce was used on chain by another transaction)
+     * or "unknown" (the nodes asked have no record).
      */
     public var state: String
     /**
@@ -1784,12 +1786,19 @@ public struct TxStatus: Equatable, Hashable {
      */
     public var canResend: Bool
     public var receipt: TxReceipt?
+    /**
+     * A chain fact settled it: `included`, or `replaced`. Anything else can
+     * still change — a later receipt supersedes a drop.
+     */
+    public var isFinal: Bool
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
     public init(
         /**
-         * "included", "pending", "dropped" or "unknown" (the node has no record).
+         * "included", "pending", "dropped" (one node removed it: not on chain
+         * yet), "replaced" (its nonce was used on chain by another transaction)
+         * or "unknown" (the nodes asked have no record).
          */state: String, 
         /**
          * The node's reason (`state_price_above_cap`, `nonce_gap`, `expired`, …):
@@ -1804,13 +1813,18 @@ public struct TxStatus: Equatable, Hashable {
         /**
          * Dropped for a reason that signing again with the same nonce and a
          * fresh fee can fix ("새 가격으로 다시 보내기").
-         */canResend: Bool, receipt: TxReceipt?) {
+         */canResend: Bool, receipt: TxReceipt?, 
+        /**
+         * A chain fact settled it: `included`, or `replaced`. Anything else can
+         * still change — a later receipt supersedes a drop.
+         */isFinal: Bool) {
         self.state = state
         self.reason = reason
         self.message = message
         self.detail = detail
         self.canResend = canResend
         self.receipt = receipt
+        self.isFinal = isFinal
     }
 
     
@@ -1834,7 +1848,8 @@ public struct FfiConverterTypeTxStatus: FfiConverterRustBuffer {
                 message: FfiConverterString.read(from: &buf), 
                 detail: FfiConverterString.read(from: &buf), 
                 canResend: FfiConverterBool.read(from: &buf), 
-                receipt: FfiConverterOptionTypeTxReceipt.read(from: &buf)
+                receipt: FfiConverterOptionTypeTxReceipt.read(from: &buf), 
+                isFinal: FfiConverterBool.read(from: &buf)
         )
     }
 
@@ -1845,6 +1860,7 @@ public struct FfiConverterTypeTxStatus: FfiConverterRustBuffer {
         FfiConverterString.write(value.detail, into: &buf)
         FfiConverterBool.write(value.canResend, into: &buf)
         FfiConverterOptionTypeTxReceipt.write(value.receipt, into: &buf)
+        FfiConverterBool.write(value.isFinal, into: &buf)
     }
 }
 
@@ -2730,6 +2746,20 @@ public func balanceSources(entriesJson: String, balanceWei: String, faucet: Stri
     )
 })
 }
+/**
+ * The send sheet's fee for several recipients paid in ONE batch
+ * transaction (`prepare_batch`): that envelope's maximum, from the same
+ * `draft_fees` the batch is signed with (B5 review round 2, finding 1).
+ * Every recipient may be new, so it is always a maximum.
+ */
+public func batchQuote(payments: [Payment])throws  -> TransferQuote  {
+    return try  FfiConverterTypeTransferQuote_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_batch_quote(
+        FfiConverterSequenceTypePayment.lower(payments),uniffiCallStatus
+    )
+})
+}
 public func chainStatus()throws  -> ChainStatus  {
     return try  FfiConverterTypeChainStatus_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
         uniffiCallStatus in
@@ -3069,10 +3099,12 @@ public func prepareStopSessions(ownerPublicKey: Data, validators: UInt32)throws 
 }
 /**
  * Build a transfer for the Secure Enclave key to sign. `shown_fee_wei` is
- * the fee the send sheet displayed (pre-audit 7, M1): when the same quote
- * computed from the status NOW would cost more, the answer is
- * `FeeChanged` — no signature is prepared until the user re-confirms the
- * new maximum. `None` (nothing was displayed) skips the check.
+ * the fee the send sheet displayed (pre-audit 7, M1): when the envelope
+ * prepared NOW can be charged more than that (its `signed_fee_maximum`;
+ * round 2, finding 1), the answer is `FeeChanged` — no signature is
+ * prepared until the user re-confirms the new maximum. `None` (nothing was
+ * displayed) skips the check. `validators` is kept for the API; only the
+ * quote's recipient lookup uses it.
  */
 public func prepareTransfer(p256PublicKey: Data, to: String, valueWei: String, shownFeeWei: String?, validators: UInt32)throws  -> PreparedTx  {
     return try  FfiConverterTypePreparedTx_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
@@ -3385,14 +3417,33 @@ public func paperKeySign(words: String, message: Data)throws  -> Data  {
 })
 }
 /**
- * Ask the node what became of `tx_hash` (never an error for a hash it
- * does not know: that is `unknown`).
+ * Ask the network what became of `tx_hash`: the validator that admitted it
+ * first (when this process sent it), then the ordinary read path, then a
+ * validator when a follower has no record (finding 2). Never an error for a
+ * hash nobody knows: that is `unknown`. A send this process made is also
+ * reconciled against its nonce (see `tx_status_for`).
  */
 public func txStatus(txHash: String)throws  -> TxStatus  {
     return try  FfiConverterTypeTxStatus_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
         uniffiCallStatus in
     uniffi_aether_ffi_fn_func_tx_status(
         FfiConverterString.lower(txHash),uniffiCallStatus
+    )
+})
+}
+/**
+ * `tx_status` for a send whose sender and nonce the caller kept (a wallet
+ * row after a restart, an agent's pending history): when the chain nonce has
+ * moved past `nonce` and no node has this hash's receipt, another transaction
+ * used the nonce — `replaced`, final. Until then a drop stays not-final.
+ */
+public func txStatusFor(txHash: String, sender: String, nonce: UInt64)throws  -> TxStatus  {
+    return try  FfiConverterTypeTxStatus_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_tx_status_for(
+        FfiConverterString.lower(txHash),
+        FfiConverterString.lower(sender),
+        FfiConverterUInt64.lower(nonce),uniffiCallStatus
     )
 })
 }
@@ -3422,6 +3473,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_balance_sources() != 9870) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_batch_quote() != 59495) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_chain_status() != 33626) {
@@ -3502,7 +3556,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_aether_ffi_checksum_func_prepare_stop_sessions() != 1252) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_aether_ffi_checksum_func_prepare_transfer() != 14406) {
+    if (uniffi_aether_ffi_checksum_func_prepare_transfer() != 63348) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_prepare_transfer_at() != 37031) {
@@ -3580,7 +3634,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_aether_ffi_checksum_func_paper_key_sign() != 17714) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_aether_ffi_checksum_func_tx_status() != 39950) {
+    if (uniffi_aether_ffi_checksum_func_tx_status() != 49413) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_tx_status_for() != 26438) {
         return InitializationResult.apiChecksumMismatch
     }
 

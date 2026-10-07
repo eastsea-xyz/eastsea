@@ -34,6 +34,7 @@ ROOT="$PWD"
 CHAIN=7796            # 0x1e64 — the chain id the toolbox frontends hard-require
 EPOCH_BLOCKS=144
 BLOCK_MS=1000
+FOLLOWER_PORT=8649            # the stress phase's follower (round 2, finding 2)
 RPC="http://127.0.0.1:8645"   # validator 1's JSON-RPC (8545/8601-8604/9101-9104/
                               # 18545/19101 belong to the real testnet — avoided)
 D="$ROOT/tmp/live"            # run outputs (results, logs, shots)
@@ -201,20 +202,37 @@ phase_dapp() {
 
 phase_stress() {
   say "stress: 200 fresh-account transfers + 20 large deploys in a burst"
-  AETHER_RPC="$RPC" AETHER_BIN="$A" OUT="$D/stress.json" node "$SRV/stress.mjs"
+  # A follower of the same chain (B5 review round 2, finding 2): the burst is
+  # also read through it, as a remote wallet's reads are. NO_FOLLOWER=1 skips.
+  local follower_rpc=""
+  if [ "${NO_FOLLOWER:-0}" != 1 ] && port_free "$FOLLOWER_PORT"; then
+    rm -rf "$CG/f1"
+    RUST_LOG=info,commonware=warn nohup "$A" follow --network "$CG/network.json" --from-rpc "$RPC" \
+      --data "$CG/f1" --rpc-port "$FOLLOWER_PORT" > "$D/follower.log" 2>&1 &
+    echo $! > "$D/follower.pid"
+    PIDS+=($!)
+    for _ in $(seq 1 60); do
+      curl -sf -m 2 "http://127.0.0.1:$FOLLOWER_PORT" -H 'content-type: application/json' \
+        -d '{"jsonrpc":"2.0","id":1,"method":"aether_status","params":[]}' >/dev/null 2>&1 && { follower_rpc="http://127.0.0.1:$FOLLOWER_PORT"; break; }
+      sleep 2
+    done
+    [ -n "$follower_rpc" ] && echo "follower: $follower_rpc" || { echo "follower did not answer (see $D/follower.log); stress runs without it"; tail -3 "$D/follower.log" || true; }
+  fi
+  AETHER_RPC="$RPC" AETHER_BIN="$A" AETHER_FOLLOWER_RPC="$follower_rpc" OUT="$D/stress.json" node "$SRV/stress.mjs"
 }
 
 phase_stop() {
   say "stop: halting the validators (results stay in $D)"
   pids=()
   for i in 1 2 3 4; do [ -f "$D/node$i.pid" ] && pids+=("$(cat "$D/node$i.pid")"); done
+  [ -f "$D/follower.pid" ] && pids+=("$(cat "$D/follower.pid")")
   [ ${#pids[@]} -gt 0 ] && kill "${pids[@]}" 2>/dev/null || true
   for _ in $(seq 1 15); do
     alive=0; for p in ${pids[@]+"${pids[@]}"}; do kill -0 "$p" 2>/dev/null && alive=1; done
     [ "$alive" = 0 ] && break; sleep 1
   done
   [ ${#pids[@]} -gt 0 ] && kill -9 "${pids[@]}" 2>/dev/null || true
-  rm -f "$D"/node*.pid
+  rm -f "$D"/node*.pid "$D"/follower.pid
   PIDS=()
   echo "stopped."
 }

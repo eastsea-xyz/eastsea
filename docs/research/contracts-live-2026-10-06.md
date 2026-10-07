@@ -315,16 +315,33 @@ or any refusal has no text.
 
 The same harness ran twice on 2026-10-07: once with the pre-fix binary
 (branch base `fa78208`), where the new silent-loss check fails as it should,
-and once with the fix.
+and once with the fix. Round 2 (`claude/b5-stuck-tx-2`, after the red-team
+review `b5-stuck-review-2026-10-07.md`) reran it with a follower node of the
+same chain, so the burst is also read the way a remote wallet reads.
 
-| What | Run 2 (2026-10-06) | Pre-fix binary, new harness | With the fix (`claude/b5-stuck-tx`) |
-|---|---|---|---|
-| Block production | Never stopped (max stall 0 s), height 3 → 616 | Never stopped (max stall 0 s), height 5 → 706 | Never stopped (max stall 3 s at 2 s sampling), height 5 → 578 |
-| Included | 127: 122 transfers + 5 deploys, 97,147 state units, one block | 57: 52 transfers + 5 deploys, 99,477 units (blocks 19–20) | 57: 52 transfers + 5 deploys, 99,477 units, one block (22), 2.6–2.7 s after submission |
-| Refused at admission, with text | 15 deploys | 13 deploys | 15 deploys (`needs 18689 state units and 75 are available right now; the budget refills 32 per block, retry in about 582 blocks`) |
-| Dropped with a reason | — | 0 | **148 transfers, all `state_price_above_cap`** (cap 2,000,000,000,000, price 13,242,614,489,368 when the TTL expired them) |
-| Accepted, never included, no reason (silent) | **78 transfers** | **150** (148 transfers + 2 deploys) → `STRESS FAIL` | **0** |
-| Mempool after the window | empty | empty | empty |
+| What | Run 2 (2026-10-06) | Pre-fix binary, new harness | With the fix (`claude/b5-stuck-tx`) | Round 2 (`claude/b5-stuck-tx-2`) |
+|---|---|---|---|---|
+| Block production | Never stopped (max stall 0 s), height 3 → 616 | Never stopped (max stall 0 s), height 5 → 706 | Never stopped (max stall 3 s at 2 s sampling), height 5 → 578 | Never stopped (max stall 6.1 s at 2 s sampling), height 5 → 272 |
+| Included | 127: 122 transfers + 5 deploys, 97,147 state units, one block | 57: 52 transfers + 5 deploys, 99,477 units (blocks 19–20) | 57: 52 transfers + 5 deploys, 99,477 units, one block (22), 2.6–2.7 s after submission | 55: 50 transfers + 5 deploys, one block (16) |
+| Refused at admission, with text | 15 deploys | 13 deploys | 15 deploys (`needs 18689 state units and 75 are available right now; the budget refills 32 per block, retry in about 582 blocks`) | 15 deploys (`needs 18689 state units and 115 are available right now; … retry in about 581 blocks`) |
+| Dropped with a reason | — | 0 | **148 transfers, all `state_price_above_cap`** (cap 2,000,000,000,000, price 13,242,614,489,368 when the TTL expired them) | **150 transfers, all `state_price_above_cap`** (cap 2,000,000,000,000, price 28,234,933,841,948–28,307,307,871,816 when the TTL expired them) |
+| Accepted, never included, no reason (silent) | **78 transfers** | **150** (148 transfers + 2 deploys) → `STRESS FAIL` | **0** | **0** |
+| Mempool after the window | empty | empty | empty | empty |
+| Follower's answer for the 150 the validator held (pending, then dropped) | — | — | — | `null` for all 150, both after submission and after the drain |
+| The wallet's routed read (admitting validator → follower → validator) for those 150 | — | — | — | answered all 150 both times (`routedNull` 0; the run fails otherwise) |
+
+**Round 2's follower check.** The follower (`aether follow --from-rpc`,
+port 8649) re-executes every finalized block. It returned all 55 receipts
+once they were included, and `null` for every hash still waiting in or
+dropped from the validator's mempool. A remote wallet that trusted the
+follower's `null` would have marked those 150 as failed or unknown (review
+finding 2). The ffi now asks the validator that admitted the send first,
+and falls back to a validator when a follower has no record. The stress
+driver replays that order over JSON-RPC, and none of the 150 came back
+empty. The same order runs over real QUIC in
+`crates/ffi/tests/wallet_pending_route.rs`. The devnet validators run
+offline over TCP and serve no wallet QUIC endpoint, so the FFI itself was
+not pointed at this devnet.
 
 **Why fewer transfers landed.** EastSeaAccount grew from 15,546 to 17,513
 bytes on lead-merge after run 2 (ERC-1271, `ff6b31a`), so each deploy now
@@ -336,7 +353,9 @@ the floor only after about 1,200 one-second blocks
 (`fees::blocks_until_state_price_at_most`), past the 10-minute TTL. So they
 were still dropped, but every one with its reason, which the wallet turns
 into "네트워크가 붐벼 수수료가 이 거래에 허용한 최대치보다 올라 처리되지
-않았어요. 돈은 빠져나가지 않았어요. 새 가격으로 다시 보낼 수 있어요."
+않았어요 (아직 체인에 기록되지 않음). 새 가격으로 다시 보낼 수 있어요." Since
+round 2 this text no longer claims permanent non-payment, because a drop is
+one node's observation.
 
 Run 1 (single sender, pre-fix binary) instead showed these behaviours:
 
@@ -399,7 +418,37 @@ pricing or state root changed).**
    and refuses one whose nonce sits above a refused or dropped one, so
    nonce N+1 is never queued behind a gap.
 
-**Reproduce:** `scripts/contracts-live.sh reset bin chain stress stop`.
+**Round 2 (`claude/b5-stuck-tx-2`): the six red-team findings.** The review
+(`docs/research/b5-stuck-review-2026-10-07.md`, which has a "Round 2
+resolution" section) found no consensus change or double-spend, but six
+gaps. They are fixed as follows, still with no consensus change:
+
+1. **The shown maximum is the signed maximum.** The quote is now the
+   prepared envelope's own maximum (`draft_fees` + `tx::signed_fee_maximum`):
+   exec cap × gas, state cap × state budget, prove cap × prove budget. The
+   M1 check compares what was shown with that envelope. Transfers, the
+   resend sheet and batches (`batch_quote`) all take this path.
+2. **Pending status follows the admitting node.** The wallet remembers
+   which validator admitted each send and asks it first. If a follower
+   returns `null`, it falls back to a validator. A follower's `null` is
+   never final. The table above shows the case.
+3. **Contiguous queue.** The next nonce is the end of the unbroken run of
+   still-pending sends from the chain nonce. When N drops while N+1 still
+   waits, N+2 is refused.
+4. **Receipt cost.** A sender → pending-nonces index means one receipt read
+   costs that sender's ≤ 64 entries under the chain lock, and the reason is
+   computed after the lock is released.
+5. **A drop is not final.** `dropped` and `unknown` stay open and are worded
+   "처리되지 않았어요 (아직 체인에 기록되지 않음)". The wallet's row state is
+   "Not on chain yet"; the callback says `status=not_included`; the agent's
+   history keeps the payment pending. Only a receipt, or the nonce used by
+   another transaction (`replaced`), settles a transaction.
+6. **CLI zero price.** The CLI signs a zero state cap only on the legacy
+   chain 7780. Elsewhere a 0 or missing price takes the floor, and a
+   malformed price is refused.
+
+**Reproduce:** `scripts/contracts-live.sh reset bin chain stress stop`
+(a follower is started for the stress phase; `NO_FOLLOWER=1` skips it).
 
 ## Wallet-facing findings that are not code bugs here
 

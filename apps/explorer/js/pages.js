@@ -4,7 +4,7 @@
 // which is why every page carries its "read from the node" line.
 
 import { card, copyButton, dot, kv, message, pill, sourceLine, table, h } from './dom.js';
-import { coinTicker, formatAeth, formatInt, formatRate, formatTokenAmount, localTime, notIncludedText, shortHex, timeAgo, toBigInt, txRate } from './format.js';
+import { coinTicker, formatAeth, formatInt, formatRate, formatTokenAmount, localTime, droppedText, notIncludedText, shortHex, timeAgo, toBigInt, txRate } from './format.js';
 import { TRANSFER_TOPIC, decodeApproval, decodeTransfer, revertReason, wordAddress } from './abi.js';
 import { looksLikeOfficial, officialTokens, originBadge, tokenInfo, tokenOrigin, totalSupply } from './erc20.js';
 import { NOT_COMMITTED } from './verify.js';
@@ -262,13 +262,14 @@ export async function txView(ctx, hash) {
         : 'In the mempool — waiting for a block. This page re-checks while it is open.')),
       sourceLine(ctx.node));
   }
-  // Left the mempool without a block (bug #5): say why; nothing was charged.
+  // Left this node's mempool without a block (bug #5): say why. Not final
+  // (round 2, finding 5): a later receipt supersedes it, so keep checking.
   if (r.status === 'dropped') {
-    ctx.pollNow = false;
+    ctx.pollNow = true;
     return h('div', { class: 'stack' },
       h('h2', { class: 'page-title' }, 'Transaction'),
       withCopy(hash),
-      card('Status', dot('failed', `Dropped from the mempool without being included — ${notIncludedText(r.reason) ?? 'no reason given'}. Nothing was charged.`)),
+      card('Status', dot('pending', droppedText(r.reason))),
       sourceLine(ctx.node));
   }
   ctx.pollNow = false;

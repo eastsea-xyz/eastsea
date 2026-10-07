@@ -1216,7 +1216,7 @@ private struct ActivityRow: View {
                         .foregroundStyle(item.state == .failed ? Color.red : Color.warn)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                if item.state == .failed, item.resend != nil {
+                if item.state == .notIncluded || item.state == .failed, item.resend != nil {
                     Button("새 가격으로 다시 보내기") { model.beginResend(item) }
                         .buttonStyle(.borderless)
                         .font(.aeFootnote.weight(.semibold))
@@ -1233,6 +1233,8 @@ private struct ActivityRow: View {
                 case .pending: Text("Confirming…").font(.aeFootnote).foregroundStyle(Color.warn)
                 case .done: Text("Done").font(.aeFootnote).foregroundStyle(.secondary)
                 case .failed: Text("Failed").font(.aeFootnote).foregroundStyle(.red)
+                // A node dropped it, or none has it: not on chain yet, not a failure.
+                case .notIncluded: Text("Not on chain yet").font(.aeFootnote).foregroundStyle(Color.warn)
                 }
             }
         }
@@ -1360,12 +1362,12 @@ private struct SendSheet: View {
     }
 
     /// The most a plain transfer from this sheet can cost in fees (audit 6,
-    /// A6-7): the single recipient's quote when there is one, otherwise the
-    /// status maximum — times the recipient count, since each fresh address
-    /// can add its own account charge.
+    /// A6-7): the maximum of the envelope it will sign (B5 review round 2,
+    /// finding 1) — the recipient's transfer quote, or for several recipients
+    /// the one batch transaction's quote. Without a quote, the status maximum
+    /// times the recipient count (the signature re-check then decides).
     private var maxFee: Double {
-        let each = Double(Wei.format(quote?.feeWei ?? model.status?.transferFeeWei ?? "0")) ?? 0
-        return each * Double(max(recipients.count, 1))
+        Double(Wei.format(shownFeeWei ?? "0")) ?? 0
     }
 
     /// The same maximum in exact wei (pre-audit 7, M1): what this sheet has
@@ -1375,7 +1377,9 @@ private struct SendSheet: View {
     /// native-coin fee was displayed (a token send; no status yet).
     private var shownFeeWei: String? {
         guard token == nil else { return nil }
-        return WeiMath.shownFeeWei(quoteWei: quote?.feeWei, statusWei: model.status?.transferFeeWei, recipients: recipients.count)
+        // A quote is the whole envelope's maximum (one transfer, or one batch).
+        if let q = quote { return q.feeWei }
+        return WeiMath.shownFeeWei(quoteWei: nil, statusWei: model.status?.transferFeeWei, recipients: recipients.count)
     }
 
     private var valid: Bool {
@@ -1477,7 +1481,7 @@ private struct SendSheet: View {
                     if let q = quote, !q.feeIsMaximum {
                         Text("≈ \(Amount.fee(q.feeWei))").monospacedDigit()
                     } else {
-                        Text("≤ \(Amount.fee(quote?.feeWei ?? s.transferFeeWei))").monospacedDigit()
+                        Text("≤ \(Amount.fee(shownFeeWei ?? s.transferFeeWei))").monospacedDigit()
                     }
                 }.font(.aeBody)
             }
@@ -1513,13 +1517,18 @@ private struct SendSheet: View {
         .macMinSize(width: 420)
         .sheetScroll()
         .onChange(of: recipient) { _, _ in ackPoison = false }
-        .task(id: recipients) {
-            guard token == nil, recipients.count == 1, SendSafety.isValidAddress(recipients[0]) else {
-                quote = nil
-                return
-            }
-            quote = try? transferQuote(recipient: recipients[0], validators: model.validators)
+        .task(id: recipients) { quote = freshQuote() }
+    }
+
+    /// The quote of the envelope this sheet will sign (B5 review round 2,
+    /// finding 1): a single transfer, or the batch of several recipients.
+    private func freshQuote() -> TransferQuote? {
+        guard token == nil, !recipients.isEmpty, recipients.allSatisfy(SendSafety.isValidAddress) else { return nil }
+        if recipients.count == 1 {
+            return try? transferQuote(recipient: recipients[0], validators: model.validators)
         }
+        let wei = Wei.from(aeth: model.paymentRequest?.amount ?? model.sendAmount) ?? "1"
+        return try? batchQuote(payments: recipients.map { Payment(to: $0, valueWei: wei) })
     }
 
     private var title: String {
@@ -1653,11 +1662,7 @@ private struct SendSheet: View {
                 // quote refreshes, and the user confirms the new maximum.
                 if let why = await model.send(shownFeeWei: shownFeeWei) {
                     refusal = why
-                    if token == nil, recipients.count == 1, SendSafety.isValidAddress(recipients[0]) {
-                        quote = try? transferQuote(recipient: recipients[0], validators: model.validators)
-                    } else {
-                        quote = nil
-                    }
+                    quote = freshQuote()
                 } else {
                     dismiss()
                 }

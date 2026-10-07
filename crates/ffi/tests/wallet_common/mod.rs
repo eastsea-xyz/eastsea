@@ -15,7 +15,15 @@ use std::time::Duration;
 pub enum Mode {
     Chain(u64),
     Busy,
+    /// An honest devnet validator that admitted the one transaction this
+    /// fixture submits (`HELD_TX`): it accepts the submission and answers
+    /// its receipt as pending — what a follower, which never saw the
+    /// validators' pending gossip, cannot do (B5 review round 2, finding 2).
+    Holding,
 }
+
+/// The hash the `Holding` validator gives the submission it admits.
+pub const HELD_TX: &str = "0x4b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b";
 
 /// A fake follower or validator: where it landed and what it answered.
 pub struct Fake {
@@ -71,8 +79,20 @@ fn answer(mode: &Mode, req: Value, served: &Arc<Mutex<Vec<String>>>) -> Value {
     }
     let chain = match mode {
         Mode::Chain(c) => *c,
+        Mode::Holding => 7_777,
         Mode::Busy => unreachable!("answered above"),
     };
+    if matches!(mode, Mode::Holding) {
+        match method.as_str() {
+            "aether_sendTransaction" => return json!({ "jsonrpc": "2.0", "id": req["id"], "result": { "hash": HELD_TX } }),
+            "aether_getReceipt" if req["params"][0].as_str() == Some(HELD_TX) => {
+                return json!({ "jsonrpc": "2.0", "id": req["id"], "result": {
+                    "pending": true, "status": "pending",
+                    "waiting": { "kind": "state_price_above_cap", "cap": "2000000000000", "price": "43000000000000", "blocks": 1200 } } });
+            }
+            _ => {}
+        }
+    }
     let result = match method.as_str() {
         "aether_status" => json!({
             "chain_id": chain, "height": 6, "state_root": f["state_root"], "mempool": 0,
@@ -84,6 +104,7 @@ fn answer(mode: &Mode, req: Value, served: &Arc<Mutex<Vec<String>>>) -> Value {
             "address": f["address"], "balance": f["balance"], "nonce": 0,
             "height": f["height"], "state_root": f["state_root"], "proof": f["proof"],
         }),
+        "eth_getTransactionCount" => json!("0x0"),
         "aether_accountHistory" => json!({ "entries": [], "next_cursor": null, "history_start": 1, "indexed_height": 6 }),
         // The captured anchor, whatever height is asked (the wallet checks).
         "aether_getFinalized" => json!({
@@ -155,6 +176,11 @@ pub fn server(mode: Option<Mode>) -> Fake {
 /// An honest follower on the devnet chain.
 pub fn follower() -> Fake {
     server(Some(Mode::Chain(7_777)))
+}
+
+/// A validator holding `HELD_TX` in its mempool.
+pub fn holding() -> Fake {
+    server(Some(Mode::Holding))
 }
 
 /// A follower that is over its limits.

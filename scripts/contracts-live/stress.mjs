@@ -33,6 +33,14 @@ const DEPLOYERS = Number(process.env.STRESS_DEPLOYERS || 5);
 // state-budget check.
 const SENDERS = Number(process.env.STRESS_SENDERS || 4);
 const RPC_URL = process.env.AETHER_RPC || 'http://127.0.0.1:8645';
+// Optional (B5 review round 2, finding 2): a follower of the same chain. A
+// remote wallet's reads go to followers first, and a follower never sees the
+// validators' pending transactions. The run asks it about every hash the
+// validator still holds (pending) or dropped, and counts what a follower-first
+// read would have shown, next to the wallet's routing — the admitting
+// validator first, then the follower, then a validator — which must never
+// come back empty for a hash the validator knows.
+const FOLLOWER_RPC = process.env.AETHER_FOLLOWER_RPC || null;
 // EastSeaAccount runtime bytecode from the fixture: a "large deploy" that also
 // creates a state slot per contract. Read from the repo's artifacts copy.
 import { readFileSync } from 'node:fs';
@@ -113,6 +121,34 @@ async function main() {
   log(`deploys: ${subs.filter((s) => s.kind === 'deploy' && s.hash).length}/${DEPLOYS} got a tx hash`);
   const submittedAll = Date.now();
   clearInterval(sampler);
+  const remote = { followerRpc: FOLLOWER_RPC, samples: [] };
+  // The wallet's routing (crates/ffi `receipt_answer`) on plain JSON-RPC:
+  // the admitting validator first, then the follower, then the validator.
+  const routed = async (hash) => {
+    const v = await rpc('aether_getReceipt', [hash]).catch(() => null);
+    if (v) return v;
+    const f = FOLLOWER_RPC ? await rpc('aether_getReceipt', [hash], FOLLOWER_RPC).catch(() => null) : null;
+    return f ?? (await rpc('aether_getReceipt', [hash]).catch(() => null));
+  };
+  const sampleRemote = async (label) => {
+    if (!FOLLOWER_RPC) return;
+    const tally = { label, asked: 0, validatorKnows: 0, followerNull: 0, followerReceipt: 0, routedNull: 0 };
+    for (const s of subs.filter((x) => x.hash)) {
+      const v = await rpc('aether_getReceipt', [s.hash]).catch(() => null);
+      const f = await rpc('aether_getReceipt', [s.hash], FOLLOWER_RPC).catch(() => undefined);
+      if (f === undefined) continue; // follower unreachable this round
+      tally.asked++;
+      if (f && f.receipt) tally.followerReceipt++;
+      if (v && !v.receipt && (v.pending || v.status === 'dropped')) {
+        tally.validatorKnows++;
+        if (f === null) tally.followerNull++;
+        if (!(await routed(s.hash))) tally.routedNull++;
+      }
+    }
+    remote.samples.push(tally);
+    log(`remote ${label}: ${JSON.stringify(tally)}`);
+  };
+  await sampleRemote('after-submit');
 
   // ---------------------------------------------------------------- drain
   // Poll until every submitted hash is included or dropped (the node keeps a
@@ -138,6 +174,7 @@ async function main() {
     samples.push({ t: Date.now(), h: await height().catch(() => null) });
     await sleep(3000);
   }
+  await sampleRemote('after-drain');
   const hFinal = await height();
   const pendingAfterDrain = (await rpc('aether_status').catch(() => ({}))).mempool ?? null;
   const nFinal = await nonceOf(devAddress(1)); // dev1 only (the other senders are in the receipts)
@@ -222,6 +259,7 @@ async function main() {
     nonceBefore: Number(n0), nonceAfter: Number(nFinal),
     submitted: subs.length, withHash: subs.filter((s) => s.hash).length,
     receipts: seen.size, dropped: dropped.size, counts, silentLosses: silent, refusedWithoutText,
+    remote,
     perHeightHistogram: Object.fromEntries(Object.entries(histogram).sort((a, b) => a[0] - b[0])),
     errorTexts: Object.values(errors),
     drainSeconds: Math.round((Date.now() - submittedAll) / 1000),
@@ -237,9 +275,11 @@ async function main() {
   // Queued-but-not-yet-included (B5 refill) and dropped-with-a-reason are
   // designed outcomes; a stalled chain, a tx the node lost without a word
   // (bug #5), or a refusal without text is a failure.
-  const bad = !verdict.blocksNeverStopped || silent > 0 || refusedWithoutText > 0;
+  // The wallet's routing must answer for every hash the validator knows.
+  const routedSilent = remote.samples.reduce((n, t) => n + t.routedNull, 0);
+  const bad = !verdict.blocksNeverStopped || silent > 0 || refusedWithoutText > 0 || routedSilent > 0;
   if (bad) {
-    console.log('STRESS FAIL:', JSON.stringify({ blocksNeverStopped: verdict.blocksNeverStopped, silent, refusedWithoutText, counts }));
+    console.log('STRESS FAIL:', JSON.stringify({ blocksNeverStopped: verdict.blocksNeverStopped, silent, refusedWithoutText, routedSilent, counts }));
     process.exitCode = 1;
   }
 }

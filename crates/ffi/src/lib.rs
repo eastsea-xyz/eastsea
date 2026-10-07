@@ -707,12 +707,6 @@ fn demote_on_failure<T>(read: impl FnOnce() -> R<T>) -> R<T> {
     r
 }
 
-/// The legacy pre-state-fees testnet (crates/node/src/mainnet.rs
-/// `TESTNET_CHAIN_ID`, kept as a literal so this crate need not depend on the
-/// node). Its fee policy has no state price, so a missing `base_fee.state`
-/// there is by design, not an omission.
-const LEGACY_STATELESS_CHAIN_ID: u64 = 7_780;
-
 /// The state price every quote and every signed cap comes from — ONE
 /// snapshot, validated (pre-audit 7, M1). A paid-state genesis charges the
 /// fixed burned price per state unit whatever the base fees do, so a status
@@ -729,18 +723,7 @@ fn validated_state_price(status: &Value) -> R<u128> {
 /// The pure half of `validated_state_price`, testable without touching the
 /// configured chain (tests run in parallel).
 fn state_price_for(chain: u64, status: &Value) -> R<u128> {
-    if chain == LEGACY_STATELESS_CHAIN_ID {
-        return Ok(0);
-    }
-    let reported = status["base_fee"]["state"]
-        .as_str()
-        .and_then(|v| v.parse::<u128>().ok())
-        .ok_or_else(|| {
-            WalletError::Verification(
-                "the network did not report a state price; this chain charges one for persistent data, so no fee can be quoted".into(),
-            )
-        })?;
-    Ok(reported.max(aether_execution::fees::STATE_UNIT_PRICE))
+    aether_execution::tx::wallet_state_price(chain, status["base_fee"]["state"].as_str()).map_err(WalletError::Verification)
 }
 
 /// Fee caps from the node's next base fees, the sender's balance and the
@@ -797,49 +780,56 @@ pub struct TransferQuote {
     pub fee_is_maximum: bool,
 }
 
-/// A 21k-gas transfer runs no bytecode (no prove gas): it pays base + tip per
-/// gas, and nothing while the base fee is 0 — but a recipient without an
-/// account still burns the fixed 100-unit state charge, whatever the base fee
-/// is (audit 6, A6-7). `recipient_exists` unknown (`None`) keeps the charge:
-/// the quote is then a maximum. The state price is the validated one
-/// (pre-audit 7, M1) — 0 on the legacy chain, the fixed unit price (or the
-/// report, if higher) on a paid-state genesis.
-fn transfer_maximum(status: &Value, recipient_exists: Option<bool>, state_price: u128) -> u128 {
-    transfer_maximum_with_gas(status, recipient_exists, state_price, aether_execution::tx::PLAIN_TRANSFER_GAS)
+/// The fees a wallet signs for `call` at one status snapshot — exec gas,
+/// state budget and prove budget, each with its cap, and the tip. The ONE
+/// place both the displayed maximum and the prepared envelope come from (B5
+/// review round 2, finding 1: the quote was a separate formula that priced
+/// exec at base + tip while the envelope signed 2 × base + tip, left prove
+/// out, and counted other state units than the budget the envelope signs).
+fn draft_fees(status: &Value, balance: Option<U256>, state_price: u128, call: &EvmCall) -> (GasVector, FeeVector, u128) {
+    let (max_fee, tip) = fee_caps(status, balance, state_price);
+    let gas = GasVector {
+        exec: call.gas_limit,
+        state: aether_execution::recommended_state_budget(call, balance, max_fee.state),
+        // Every interpreted instruction costs at least 1 gas, so prove steps <= gas_limit.
+        prove: call.gas_limit,
+    };
+    (gas, max_fee, tip)
 }
 
-/// `transfer_maximum` for a transfer signing `gas` exec gas (more than 21,000
-/// when the recipient has code; see `recipient_transfer_gas`).
-fn transfer_maximum_with_gas(status: &Value, recipient_exists: Option<bool>, state_price: u128, gas: u64) -> u128 {
-    const GWEI: u128 = 1_000_000_000;
-    // Canonical wallet plain transfers plus the 128-byte receipt base fit
-    // within 1024 bytes. State growth charges one unit per 32 persisted bytes.
-    const PLAIN_TRANSFER_PERSISTENT_UNITS: u128 = 32;
-    let base = status["base_fee"]["exec"]
-        .as_str()
-        .and_then(|v| v.parse::<u128>().ok())
-        .unwrap_or(0);
-    let exec = if base == 0 { 0 } else { u128::from(gas).saturating_mul(base.saturating_add(GWEI)) };
-    // Priced at the signed state cap, not today's price (bug #5): the
-    // maximum shown is the maximum the signature allows (pre-audit 7, M1).
-    let cap = aether_execution::fees::signed_state_cap(state_price);
-    let account = u128::from(aether_execution::fees::STATE_ACCOUNT_UNITS).saturating_mul(cap);
-    // A recipient without a certified account pays one new account (A6-7).
-    let charge = if recipient_exists == Some(true) { 0 } else { account };
-    // Always reserved: a possible first-use sender account (audit 6, A6-2) and
-    // the persisted transaction/receipt bytes, both upper bounds — so the quote
-    // is always a maximum; the receipt shows the actual charge.
-    let fixed = account.saturating_add(PLAIN_TRANSFER_PERSISTENT_UNITS.saturating_mul(cap));
-    exec.saturating_add(charge).saturating_add(fixed)
+/// The most the sheet will let `call` cost, from the envelope `draft_fees`
+/// gives at this snapshot. The sender's balance is not known yet when a
+/// quote is shown: a funded sender signs the largest envelope (an empty one
+/// signs no state budget, and has nothing to pay with anyway), so the quote
+/// is that envelope's `signed_fee_maximum` — exactly what a funded sender
+/// signs, and never below what any sender signs.
+fn quoted_maximum(status: &Value, state_price: u128, call: &EvmCall) -> u128 {
+    let (gas, max_fee, _tip) = draft_fees(status, Some(U256::from(1u64)), state_price, call);
+    aether_execution::tx::signed_fee_maximum(&gas, &max_fee)
+}
+
+/// A plain transfer of a positive amount to `to` with `gas` exec gas: the
+/// call a send sheet quotes (the amount only matters by being positive — a
+/// positive transfer reserves the recipient's possible new account).
+fn plain_transfer(to: Address, gas: u64) -> EvmCall {
+    EvmCall { to: Some(to), value: U256::from(1u64), input: Bytes::new(), gas_limit: gas, delegate: None }
+}
+
+/// The send sheet's quote for a plain transfer (audit 6, A6-7; round 2,
+/// finding 1): the signed envelope's maximum. `recipient_exists` only says
+/// how much of it a recipient with a certified account will not be charged
+/// (the envelope still reserves it, so the maximum is the same).
+fn quote_from_status_with_gas(status: &Value, recipient_exists: Option<bool>, state_price: u128, gas: u64) -> TransferQuote {
+    quote_for_call(status, recipient_exists, state_price, &plain_transfer(Address::ZERO, gas))
 }
 
 fn quote_from_status(status: &Value, recipient_exists: Option<bool>, state_price: u128) -> TransferQuote {
     quote_from_status_with_gas(status, recipient_exists, state_price, aether_execution::tx::PLAIN_TRANSFER_GAS)
 }
 
-fn quote_from_status_with_gas(status: &Value, recipient_exists: Option<bool>, state_price: u128, gas: u64) -> TransferQuote {
+fn quote_for_call(status: &Value, recipient_exists: Option<bool>, state_price: u128, call: &EvmCall) -> TransferQuote {
     TransferQuote {
-        fee_wei: transfer_maximum_with_gas(status, recipient_exists, state_price, gas).to_string(),
+        fee_wei: quoted_maximum(status, state_price, call).to_string(),
         new_recipient_charge_wei: if recipient_exists == Some(true) {
             "0".into()
         } else {
@@ -886,6 +876,20 @@ pub fn transfer_quote(recipient: String, validators: u32) -> R<TransferQuote> {
     let state_price = validated_state_price(&status)?;
     let exists = certified_recipient_exists(&a.to_checksum(None), validators);
     Ok(quote_from_status_with_gas(&status, exists, state_price, recipient_transfer_gas(&a)))
+}
+
+/// The send sheet's fee for several recipients paid in ONE batch
+/// transaction (`prepare_batch`): that envelope's maximum, from the same
+/// `draft_fees` the batch is signed with (B5 review round 2, finding 1).
+/// Every recipient may be new, so it is always a maximum.
+#[uniffi::export]
+pub fn batch_quote(payments: Vec<Payment>) -> R<TransferQuote> {
+    let calls = batch_calls(&payments)?;
+    let status = call("aether_status", json!([]))?;
+    let state_price = validated_state_price(&status)?;
+    // The batch calls the sender's own account; which account does not
+    // change the envelope's budgets or caps.
+    Ok(quote_for_call(&status, None, state_price, &batch_call(Address::ZERO, &calls)))
 }
 
 /// A U256 the way this chain's JSON may spell it: a decimal string, a 0x-hex
@@ -953,10 +957,17 @@ fn needs_a_validator(method: &str) -> bool {
 }
 
 fn call(method: &str, params: Value) -> R<Value> {
+    call_tracked(method, params).map(|(v, _)| v)
+}
+
+/// `call`, also naming the validator that answered a write (None for a read,
+/// and for this Mac's own node): `submit_signed` remembers who admitted each
+/// transaction (B5 review round 2, finding 2).
+fn call_tracked(method: &str, params: Value) -> R<(Value, Option<aether_net::EndpointId>)> {
     // Copy the setting out first: never hold the lock across a network read.
     let local = *LOCAL_NODE.lock().expect("local node lock");
     if let Some(port) = local {
-        return local_call(port, method, params);
+        return local_call(port, method, params).map(|v| (v, None));
     }
     let n = net()?;
     // The whole read — followers, rotation, validator fallback — runs under
@@ -967,13 +978,19 @@ fn call(method: &str, params: Value) -> R<Value> {
     let v = n.rt.block_on(async {
         tokio::time::timeout(budgets().read, async {
             if needs_a_validator(method) {
-                n.client.call(method, params).await
+                n.client.call_tracked(method, params).await.map(|(id, v)| (v, Some(id)))
             } else {
-                n.read(method, params).await
+                n.read(method, params).await.map(|v| (v, None))
             }
         })
         .await
     });
+    finish_remote(v)
+}
+
+/// A remote call's outcome as the wallet reports it: the deadline, the
+/// network/rejection split, and the connection-health bookkeeping.
+fn finish_remote<T>(v: Result<anyhow::Result<T>, tokio::time::error::Elapsed>) -> R<T> {
     let v = match v {
         Ok(v) => v,
         Err(_) => Err(anyhow::anyhow!(
@@ -999,6 +1016,71 @@ fn call(method: &str, params: Value) -> R<Value> {
         Err(_) => {}
     }
     out
+}
+
+/// `aether_getReceipt` for `h`, asked of whoever can know (B5 review round
+/// 2, finding 2). Followers replay finalized blocks but never see the
+/// validators' pending transactions, so a follower's `null` is not an answer
+/// for a pending send. The order: the validator that admitted it (when this
+/// process sent it), then the ordinary read path (followers first), then a
+/// validator when that came back empty — all under one read deadline. The
+/// first non-null answer wins; `thorough` instead keeps asking until a
+/// receipt turns up (a "replaced" verdict must have checked every path).
+/// This Mac's own node answers alone: it is where the send went. Nothing
+/// here changes what a node serves: the public read gateway still never
+/// forwards upstream.
+pub(crate) fn receipt_answer(h: TxHash, thorough: bool) -> R<Value> {
+    let local = *LOCAL_NODE.lock().expect("local node lock");
+    let params = json!([h]);
+    if let Some(port) = local {
+        return local_call(port, "aether_getReceipt", params);
+    }
+    let n = net()?;
+    let admitter = tx_status::book().admitter_of(&h);
+    let v = n.rt.block_on(async {
+        tokio::time::timeout(budgets().read, async {
+            let mut best: Option<Value> = None;
+            let mut last_err = None;
+            let mut take = |r: anyhow::Result<Value>, best: &mut Option<Value>| -> bool {
+                match r {
+                    Ok(v) if v.get("receipt").is_some() => {
+                        *best = Some(v);
+                        true
+                    }
+                    Ok(v) if !v.is_null() => {
+                        if best.is_none() {
+                            *best = Some(v);
+                        }
+                        !thorough
+                    }
+                    Ok(_) => false,
+                    Err(e) => {
+                        last_err = Some(e);
+                        false
+                    }
+                }
+            };
+            if let Some(id) = admitter {
+                if take(n.client.call_node(id, "aether_getReceipt", params.clone()).await, &mut best) {
+                    return Ok(best.unwrap_or(Value::Null));
+                }
+            }
+            if take(n.read("aether_getReceipt", params.clone()).await, &mut best) {
+                return Ok(best.unwrap_or(Value::Null));
+            }
+            if best.is_none() || thorough {
+                take(n.client.call("aether_getReceipt", params.clone()).await, &mut best);
+            }
+            match (best, last_err) {
+                (Some(v), _) => Ok(v),
+                // Somebody answered null and nobody failed: genuinely unknown.
+                (None, None) => Ok(Value::Null),
+                (None, Some(e)) => Err(e),
+            }
+        })
+        .await
+    });
+    finish_remote(v)
 }
 
 /// How the wallet currently reaches the network (for display).
@@ -1579,10 +1661,12 @@ pub fn verified_block(height: u64) -> R<CertifiedBlock> {
 }
 
 /// Build a transfer for the Secure Enclave key to sign. `shown_fee_wei` is
-/// the fee the send sheet displayed (pre-audit 7, M1): when the same quote
-/// computed from the status NOW would cost more, the answer is
-/// `FeeChanged` — no signature is prepared until the user re-confirms the
-/// new maximum. `None` (nothing was displayed) skips the check.
+/// the fee the send sheet displayed (pre-audit 7, M1): when the envelope
+/// prepared NOW can be charged more than that (its `signed_fee_maximum`;
+/// round 2, finding 1), the answer is `FeeChanged` — no signature is
+/// prepared until the user re-confirms the new maximum. `None` (nothing was
+/// displayed) skips the check. `validators` is kept for the API; only the
+/// quote's recipient lookup uses it.
 #[uniffi::export]
 pub fn prepare_transfer(
     p256_public_key: Vec<u8>,
@@ -1593,15 +1677,10 @@ pub fn prepare_transfer(
 ) -> R<PreparedTx> {
     let to: Address = to.parse().map_err(|_| WalletError::Invalid("recipient address".into()))?;
     let value: U256 = value_wei.parse().map_err(|_| WalletError::Invalid("amount".into()))?;
-    // One lookup feeds both the re-quoted maximum and the signed limit.
+    // One lookup feeds both the quoted maximum and the signed limit.
     let gas = recipient_transfer_gas(&to);
-    prepare(&p256_public_key, shown_fee_wei.as_deref(), |status, state_price| {
-        // The same inputs the displayed quote used: this snapshot and the
-        // recipient's certified existence NOW (a cleared account re-adds the
-        // charge; a newly created one drops it).
-        let exists = certified_recipient_exists(&to.to_checksum(None), validators);
-        Ok(transfer_maximum_with_gas(status, exists, state_price, gas))
-    }, |_| Ok(EvmCall { to: Some(to), value, input: Bytes::new(), gas_limit: gas, delegate: None }))
+    let _ = validators; // the quote's existence lookup; the envelope does not depend on it
+    prepare(&p256_public_key, shown_fee_wei.as_deref(), |_| Ok(EvmCall { to: Some(to), value, input: Bytes::new(), gas_limit: gas, delegate: None }))
 }
 
 /// "새 가격으로 다시 보내기" (contracts-live bug #5): the same transfer
@@ -1620,10 +1699,8 @@ pub fn prepare_transfer_at(
     let to: Address = to.parse().map_err(|_| WalletError::Invalid("recipient address".into()))?;
     let value: U256 = value_wei.parse().map_err(|_| WalletError::Invalid("amount".into()))?;
     let gas = recipient_transfer_gas(&to);
-    prepare_at(&p256_public_key, Some(nonce), shown_fee_wei.as_deref(), |status, state_price| {
-        let exists = certified_recipient_exists(&to.to_checksum(None), validators);
-        Ok(transfer_maximum_with_gas(status, exists, state_price, gas))
-    }, |_| Ok(EvmCall { to: Some(to), value, input: Bytes::new(), gas_limit: gas, delegate: None }))
+    let _ = validators;
+    prepare_at(&p256_public_key, Some(nonce), shown_fee_wei.as_deref(), |_| Ok(EvmCall { to: Some(to), value, input: Bytes::new(), gas_limit: gas, delegate: None }))
 }
 
 /// A contract call or deployment a web page asked for (`aether://call`),
@@ -1637,7 +1714,7 @@ pub fn prepare_call(p256_public_key: Vec<u8>, to: String, value_wei: String, dat
     let value: U256 = if value_wei.is_empty() { U256::ZERO } else { value_wei.parse().map_err(|_| WalletError::Invalid("value".into()))? };
     let input = alloy_primitives::hex::decode(data_hex.trim_start_matches("0x")).map_err(|_| WalletError::Invalid("call data is not hex".into()))?;
     let gas_limit = if gas_limit == 0 { 3_000_000 } else { gas_limit.min(MAX_GAS) };
-    prepare(&p256_public_key, None, |_, _| Ok(0), |_| Ok(EvmCall { to, value, input: input.clone().into(), gas_limit, delegate: None }))
+    prepare(&p256_public_key, None, |_| Ok(EvmCall { to, value, input: input.clone().into(), gas_limit, delegate: None }))
 }
 
 /// One recipient of a batch.
@@ -1654,31 +1731,36 @@ pub struct Payment {
 /// rise before the signature is `FeeChanged`, not a silent spend.
 #[uniffi::export]
 pub fn prepare_batch(p256_public_key: Vec<u8>, payments: Vec<Payment>, shown_fee_wei: Option<String>) -> R<PreparedTx> {
+    let calls = batch_calls(&payments)?;
+    // The shown maximum is `batch_quote`'s: this envelope's own maximum.
+    prepare(&p256_public_key, shown_fee_wei.as_deref(), |from| Ok(batch_call(from, &calls)))
+}
+
+/// A batch's payments as calls (validated).
+fn batch_calls(payments: &[Payment]) -> R<Vec<(Address, U256, Bytes)>> {
     if payments.is_empty() {
         return Err(WalletError::Invalid("no payments".into()));
     }
-    let calls = payments
+    payments
         .iter()
         .map(|p| {
             let to: Address = p.to.parse().map_err(|_| WalletError::Invalid(format!("recipient {}", p.to)))?;
             let v: U256 = p.value_wei.parse().map_err(|_| WalletError::Invalid(format!("amount {}", p.value_wei)))?;
             Ok((to, v, Bytes::new()))
         })
-        .collect::<R<Vec<_>>>()?;
-    let n = calls.len() as u128;
-    prepare(&p256_public_key, shown_fee_wei.as_deref(), |status, state_price| {
-        // What the sheet showed: the per-recipient maximum, times the count
-        // (each fresh address can add its own account charge).
-        Ok(transfer_maximum(status, None, state_price).saturating_mul(n))
-    }, |from| {
-        Ok(EvmCall {
-            to: Some(from),
-            value: U256::ZERO,
-            input: aether_execution::encode_execute(&calls),
-            gas_limit: 60_000 + 40_000 * calls.len() as u64,
-            delegate: Some(aether_execution::AETHER_ACCOUNT),
-        })
-    })
+        .collect()
+}
+
+/// The one transaction a batch signs: the account calls its own `execute`,
+/// delegating to EastSeaAccount (EIP-7702) in the same tx.
+fn batch_call(from: Address, calls: &[(Address, U256, Bytes)]) -> EvmCall {
+    EvmCall {
+        to: Some(from),
+        value: U256::ZERO,
+        input: aether_execution::encode_execute(calls),
+        gas_limit: 60_000 + 40_000 * calls.len() as u64,
+        delegate: Some(aether_execution::AETHER_ACCOUNT),
+    }
 }
 
 fn hex_lower(b: &[u8]) -> String {
@@ -1705,34 +1787,36 @@ fn ensure_shown_fee_covers(current_max: u128, shown_fee_wei: Option<&str>) -> R<
 fn prepare(
     p256_public_key: &[u8],
     shown_fee_wei: Option<&str>,
-    fresh_maximum: impl FnOnce(&Value, u128) -> R<u128>,
     body: impl FnOnce(Address) -> R<EvmCall>,
 ) -> R<PreparedTx> {
-    prepare_at(p256_public_key, None, shown_fee_wei, fresh_maximum, body)
+    prepare_at(p256_public_key, None, shown_fee_wei, body)
 }
 
 /// `prepare` at an explicit `nonce` (a resend of a dropped transaction) or,
-/// with `None`, the sender's next nonce: after this process's newest queued
-/// transaction while it is pending, else the chain's (bug #5, decision 5).
+/// with `None`, the sender's next nonce: the end of this process's unbroken
+/// run of pending sends (bug #5, decision 5; round 2, finding 3). The fees
+/// come from `draft_fees`, and the shown-fee check compares the displayed
+/// fee with this very envelope's `signed_fee_maximum` — every dimension it
+/// can be charged (round 2, finding 1).
 fn prepare_at(
     p256_public_key: &[u8],
     nonce: Option<u64>,
     shown_fee_wei: Option<&str>,
-    fresh_maximum: impl FnOnce(&Value, u128) -> R<u128>,
     body: impl FnOnce(Address) -> R<EvmCall>,
 ) -> R<PreparedTx> {
     let pk = p256_key(p256_public_key)?;
     let from = address_of(&pk).map_err(|e| WalletError::Invalid(e.to_string()))?;
     let status = call("aether_status", json!([]))?;
     let chain_id = expected_chain(&status)?;
-    // One validated snapshot feeds the quote comparison, the caps and the
-    // budget (pre-audit 7, M1).
+    // One validated snapshot feeds the caps, the budgets and the check
+    // against what was shown (pre-audit 7, M1).
     let state_price = validated_state_price(&status)?;
     let balance_hex = call("eth_getBalance", json!([from]))?;
     let balance = balance_hex.as_str().and_then(|h| U256::from_str_radix(h.trim_start_matches("0x"), 16).ok());
-    let (max_fee, tip) = fee_caps(&status, balance, state_price);
     check_paid_state_balance(state_price, balance)?;
-    ensure_shown_fee_covers(fresh_maximum(&status, state_price)?, shown_fee_wei)?;
+    let call_body = body(from)?;
+    let (gas, max_fee, tip) = draft_fees(&status, balance, state_price, &call_body);
+    ensure_shown_fee_covers(aether_execution::tx::signed_fee_maximum(&gas, &max_fee), shown_fee_wei)?;
     let nonce = match nonce {
         None => tx_status::nonce_for(from)?,
         Some(n) => {
@@ -1747,19 +1831,13 @@ fn prepare_at(
             n
         }
     };
-    let call_body = body(from)?;
     let payload = call_body.encode();
     let group = *GROUP.lock().expect("group lock");
     let header = TxHeader {
         chain_id,
         sender: from,
         nonce,
-        // Every interpreted instruction costs at least 1 gas, so prove steps <= gas_limit.
-        gas: GasVector {
-            exec: call_body.gas_limit,
-            state: aether_execution::recommended_state_budget(&call_body, balance, max_fee.state),
-            prove: call_body.gas_limit,
-        },
+        gas,
         max_fee,
         tip,
         payload_commitment: aether_execution::tx::payload_commitment(&payload),
@@ -1875,7 +1953,7 @@ pub fn prepare_register_node(
         });
     }
     let input = aether_execution::registry::encode_register(key, node, beaconer, r, s);
-    prepare(&p256_public_key, None, |_, _| Ok(0), |_| Ok(EvmCall { to: Some(aether_execution::registry::REGISTRY), value: U256::ZERO, input, gas_limit: 400_000, delegate: None }))
+    prepare(&p256_public_key, None, |_| Ok(EvmCall { to: Some(aether_execution::registry::REGISTRY), value: U256::ZERO, input, gas_limit: 400_000, delegate: None }))
 }
 
 /// Ask validators in turn until the one running the registrar answers.
@@ -1916,8 +1994,8 @@ pub fn submit_signed(envelope_json: String, signature: Vec<u8>, p256_public_key:
     // One submit at a time per process, never past a refused or dropped
     // nonce (contracts-live bug #5, decision 5).
     let h = tx_status::submit_in_order(env.header.sender, env.header.nonce, || {
-        let v = call("aether_sendTransaction", json!([env]))?;
-        parse(&v["hash"], "hash")
+        let (v, admitter) = call_tracked("aether_sendTransaction", json!([env]))?;
+        Ok((parse(&v["hash"], "hash")?, admitter))
     })?;
     Ok(format!("{h}"))
 }
@@ -1958,7 +2036,7 @@ fn submit_registration(prepared: Value, signature: Vec<u8>, p256_public_key: Vec
 #[uniffi::export]
 pub fn receipt(tx_hash: String) -> R<Option<TxReceipt>> {
     let h: TxHash = tx_hash.parse().map_err(|_| WalletError::Invalid("tx hash".into()))?;
-    let v = call("aether_getReceipt", json!([h]))?;
+    let v = receipt_answer(h, false)?;
     if v.get("receipt").is_none() {
         return Ok(None);
     }
@@ -2608,17 +2686,19 @@ mod tests {
 
         let paid = json!({ "base_fee": { "exec": "0", "state": "1000000000000", "prove": "0" } });
         let q = quote_from_status(&paid, None, aether_execution::fees::STATE_UNIT_PRICE);
-        // Every state unit at the signed cap, twice the price (bug #5).
-        assert_eq!(fee(&q), 464_000_000_000_000, "recipient 100 + sender 100 + bytes 32 units at the 2x cap");
+        // Every state unit the envelope budgets, at the signed cap, twice the
+        // price (bug #5; round 2, finding 1: the budget the envelope signs).
+        assert_eq!(fee(&q), 432_000_000_000_000, "recipient 100 + sender 100 + bytes 16 units at the 2x cap");
         assert_eq!(q.new_recipient_charge_wei.parse::<u128>().unwrap(), 200_000_000_000_000);
         assert!(q.fee_is_maximum);
         let q = quote_from_status(&paid, Some(true), aether_execution::fees::STATE_UNIT_PRICE);
-        assert_eq!(fee(&q), 264_000_000_000_000, "an existing recipient pays no account charge");
-        assert_eq!(q.new_recipient_charge_wei, "0");
+        assert_eq!(fee(&q), 432_000_000_000_000, "the signature still reserves it: the maximum is the envelope's");
+        assert_eq!(q.new_recipient_charge_wei, "0", "an existing recipient is not charged that part");
         assert!(q.fee_is_maximum, "sender account and bytes stay upper bounds");
 
         let busy = json!({ "base_fee": { "exec": "1000000000", "state": "1000000000000", "prove": "0" } });
-        assert_eq!(fee(&quote_from_status(&busy, Some(false), aether_execution::fees::STATE_UNIT_PRICE)), 42_000_000_000_000 + 464_000_000_000_000);
+        // Exec at the signed cap, 2 × base + 1 gwei tip, not base + tip.
+        assert_eq!(fee(&quote_from_status(&busy, Some(false), aether_execution::fees::STATE_UNIT_PRICE)), 21_000 * 3_000_000_000 + 432_000_000_000_000);
     }
 
     /// Contracts-live bug #5: the wallet signed the state cap at today's
@@ -2632,14 +2712,14 @@ mod tests {
         let (caps, _) = fee_caps(&paid, Some(U256::from(1u64)), STATE_UNIT_PRICE);
         assert_eq!(caps.state, 2 * STATE_UNIT_PRICE, "one doubling of the state price stays includable");
         let shown: u128 = quote_from_status(&paid, None, STATE_UNIT_PRICE).fee_wei.parse().unwrap();
-        assert_eq!(shown, (100 + 100 + 32) * caps.state, "every state unit of the maximum at the signed cap");
+        assert_eq!(shown, (100 + 100 + 16) * caps.state, "every budgeted state unit at the signed cap");
         // A risen price is quoted and capped from the same snapshot.
         let busy = json!({ "base_fee": { "exec": "0", "state": "43000000000000", "prove": "0" } });
         let price = state_price_for(7_777, &busy).unwrap();
         let (caps, _) = fee_caps(&busy, Some(U256::from(1u64)), price);
         assert_eq!(caps.state, 86 * STATE_UNIT_PRICE);
         let shown: u128 = quote_from_status(&busy, None, price).fee_wei.parse().unwrap();
-        assert_eq!(shown, 232 * caps.state);
+        assert_eq!(shown, 216 * caps.state);
     }
 
     /// Live run 2026-10-06: a send to a recipient with code (a contract's
@@ -2656,7 +2736,7 @@ mod tests {
         let plain = quote_from_status_with_gas(&busy, Some(false), price, PLAIN_TRANSFER_GAS);
         assert_eq!(fee(&plain), fee(&quote_from_status(&busy, Some(false), price)), "ordinary recipients unchanged");
         let code = quote_from_status_with_gas(&busy, Some(false), price, CODE_RECIPIENT_TRANSFER_GAS);
-        assert_eq!(fee(&code), 100_000 * 2_000_000_000 + 464_000_000_000_000);
+        assert_eq!(fee(&code), 100_000 * 3_000_000_000 + 432_000_000_000_000);
         // With no exec base fee (today's new genesis) the larger limit costs nothing extra.
         let paid = json!({ "base_fee": { "exec": "0", "state": "1000000000000", "prove": "0" } });
         assert_eq!(
@@ -2714,6 +2794,48 @@ mod tests {
         assert!(matches!(err, WalletError::FeeChanged(_)), "{err:?}");
         assert!(err.to_string().contains("101"), "{err}");
         assert!(ensure_shown_fee_covers(100, Some("1.5")).is_err(), "the shown fee is a wei amount or the check fails closed");
+    }
+
+    /// B5 review round 2, finding 1: the displayed maximum IS the prepared
+    /// envelope's maximum, in every dimension it can be charged — exec cap ×
+    /// gas, state cap × state budget, prove cap × prove budget, the tip inside
+    /// the exec cap — with nonzero exec and prove prices. Before the fix the
+    /// quote priced exec at base + tip, left prove out and counted 232 state
+    /// units against a 216-unit budget: shown 21,485 × 10^12 wei, signed
+    /// 42,495 × 10^12. A rise inside the signed caps never charges more than
+    /// what was shown; a rise past the shown envelope is refused before any
+    /// signature. Batches and the resend sheet go through the same path.
+    #[test]
+    fn the_shown_maximum_is_the_signed_envelope_maximum() {
+        use aether_execution::tx::signed_fee_maximum;
+        let status = json!({ "base_fee": { "exec": "1000000000000", "state": "1000000000000", "prove": "1000000000" } });
+        let price = state_price_for(7_777, &status).unwrap();
+        let to = Address::repeat_byte(0x42);
+        let shown: u128 = quote_from_status(&status, None, price).fee_wei.parse().unwrap();
+        let balance = Some(U256::from(10u128.pow(24)));
+        let (gas, max_fee, tip) = draft_fees(&status, balance, price, &plain_transfer(to, 21_000));
+        assert_eq!(shown, signed_fee_maximum(&gas, &max_fee), "shown max = signed max");
+        assert_eq!(shown, 21_000 * (2_000_000_000_000 + 1_000_000_000) + 216 * 2_000_000_000_000 + 21_000 * 2_000_000_000);
+        // The review's case: the exec base rises 3 % before inclusion, the
+        // state and prove prices sit at their caps. Still within what was shown.
+        let risen_exec = 1_030_000_000_000u128;
+        let charged = 21_000 * (risen_exec + tip).min(max_fee.exec) + u128::from(gas.state) * max_fee.state + u128::from(gas.prove) * max_fee.prove;
+        assert!(charged <= shown, "charged {charged} > shown {shown}");
+        ensure_shown_fee_covers(signed_fee_maximum(&gas, &max_fee), Some(&shown.to_string())).expect("the same envelope passes");
+        // A rise past what was shown: the fresh envelope is refused, unsigned.
+        let higher = json!({ "base_fee": { "exec": "1100000000000", "state": "1000000000000", "prove": "1000000000" } });
+        let (g2, f2, _) = draft_fees(&higher, balance, price, &plain_transfer(to, 21_000));
+        let err = ensure_shown_fee_covers(signed_fee_maximum(&g2, &f2), Some(&shown.to_string())).unwrap_err();
+        assert!(matches!(err, WalletError::FeeChanged(_)), "{err:?}");
+        // A batch's quote is its own envelope's maximum too.
+        let payments: Vec<Payment> = (1..=3u8).map(|i| Payment { to: Address::repeat_byte(i).to_string(), value_wei: "1".into() }).collect();
+        let calls = batch_calls(&payments).unwrap();
+        let quoted: u128 = quote_for_call(&status, None, price, &batch_call(Address::ZERO, &calls)).fee_wei.parse().unwrap();
+        let (gb, fb, _) = draft_fees(&status, balance, price, &batch_call(Address::repeat_byte(0x99), &calls));
+        assert_eq!(quoted, signed_fee_maximum(&gb, &fb), "the batch sheet shows what the batch signs");
+        // A sender with no balance signs no more than the quote (no tip, no state budget).
+        let (g0, f0, _) = draft_fees(&status, Some(U256::ZERO), price, &plain_transfer(to, 21_000));
+        assert!(signed_fee_maximum(&g0, &f0) <= shown);
     }
 
     /// The signed caps must accept the state budget a funded transfer needs
@@ -2938,7 +3060,7 @@ mod release_tests {
 #[uniffi::export]
 pub fn prepare_set_recovery_key(p256_public_key: Vec<u8>, recovery_code: String) -> R<PreparedTx> {
     let (x, y) = parse_code(&recovery_code)?;
-    prepare(&p256_public_key, None, |_, _| Ok(0), |from| {
+    prepare(&p256_public_key, None, |from| {
         Ok(EvmCall {
             to: Some(from),
             value: U256::ZERO,
@@ -2968,7 +3090,7 @@ pub struct RecoveryStatus {
 #[uniffi::export]
 pub fn prepare_add_recovery_key(p256_public_key: Vec<u8>, recovery_code: String) -> R<PreparedTx> {
     let (x, y) = parse_code(&recovery_code)?;
-    prepare(&p256_public_key, None, |_, _| Ok(0), |from| {
+    prepare(&p256_public_key, None, |from| {
         Ok(EvmCall {
             to: Some(from),
             value: U256::ZERO,
@@ -3072,7 +3194,7 @@ pub fn prepare_recovery_submit(p256_public_key: Vec<u8>, request: RecoveryReques
     let sig = normalize_p256(&guardian_signature)?;
     let (r, s): ([u8; 32], [u8; 32]) = (sig[..32].try_into().expect("32"), sig[32..64].try_into().expect("32"));
     let input = acct::encode_propose_recovery(&calls, &[(request.guardian_index, r, s)]);
-    prepare(&p256_public_key, None, |_, _| Ok(0), |_| Ok(EvmCall { to: Some(lost), value: U256::ZERO, input, gas_limit: 400_000, delegate: None }))
+    prepare(&p256_public_key, None, |_| Ok(EvmCall { to: Some(lost), value: U256::ZERO, input, gas_limit: 400_000, delegate: None }))
 }
 
 /// After the delay: run the proposed recovery (anyone may; this device pays the gas).
@@ -3080,13 +3202,13 @@ pub fn prepare_recovery_submit(p256_public_key: Vec<u8>, request: RecoveryReques
 pub fn prepare_finish_recovery(p256_public_key: Vec<u8>, request: RecoveryRequest) -> R<PreparedTx> {
     let (lost, calls) = request_calls(&request)?;
     let input = acct::encode_execute_recovery(&calls);
-    prepare(&p256_public_key, None, |_, _| Ok(0), |_| Ok(EvmCall { to: Some(lost), value: U256::ZERO, input, gas_limit: 300_000, delegate: None }))
+    prepare(&p256_public_key, None, |_| Ok(EvmCall { to: Some(lost), value: U256::ZERO, input, gas_limit: 300_000, delegate: None }))
 }
 
 /// Stop a pending recovery of this account (e.g. one this owner did not ask for).
 #[uniffi::export]
 pub fn prepare_cancel_recovery(p256_public_key: Vec<u8>) -> R<PreparedTx> {
-    prepare(&p256_public_key, None, |_, _| Ok(0), |from| {
+    prepare(&p256_public_key, None, |from| {
         Ok(EvmCall {
             to: Some(from),
             value: U256::ZERO,
@@ -3101,7 +3223,7 @@ pub fn prepare_cancel_recovery(p256_public_key: Vec<u8>) -> R<PreparedTx> {
 /// recovery device was lost or stolen). Trusted keys are then added again.
 #[uniffi::export]
 pub fn prepare_remove_recovery_keys(p256_public_key: Vec<u8>) -> R<PreparedTx> {
-    prepare(&p256_public_key, None, |_, _| Ok(0), |from| {
+    prepare(&p256_public_key, None, |from| {
         Ok(EvmCall {
             to: Some(from),
             value: U256::ZERO,
@@ -3219,7 +3341,7 @@ pub fn prepare_set_session(owner_public_key: Vec<u8>, settings: SessionSettings,
     if !gas.is_zero() {
         calls.push((gas_payer, gas, Bytes::new()));
     }
-    prepare(&owner_public_key, None, |_, _| Ok(0), |from| {
+    prepare(&owner_public_key, None, |from| {
         Ok(EvmCall {
             to: Some(from),
             value: U256::ZERO,
@@ -3238,7 +3360,7 @@ pub fn prepare_stop_sessions(owner_public_key: Vec<u8>, validators: u32) -> R<Pr
     let count = verified_slot(owner, slots::session_count(), &set)?.to::<u64>();
     if count == 0 { return Err(WalletError::Invalid("no active session".into())); }
     let calls: Vec<aether_execution::AccountCall> = (0..count).map(|_| (owner, U256::ZERO, acct::encode_remove_session(0))).collect();
-    prepare(&owner_public_key, None, |_, _| Ok(0), |from| Ok(EvmCall {
+    prepare(&owner_public_key, None, |from| Ok(EvmCall {
         to: Some(from), value: U256::ZERO, input: aether_execution::encode_execute(&calls),
         gas_limit: 200_000 + 70_000 * count, delegate: Some(aether_execution::AETHER_ACCOUNT),
     }))
@@ -3281,7 +3403,7 @@ pub fn prepare_set_session_token(owner_public_key: Vec<u8>, token: String, per_p
     let set = trusted_set(validators)?;
     if verified_slot(owner, slots::session_count(), &set)?.is_zero() { return Err(WalletError::Invalid("no session".into())); }
     let calls = [(owner, U256::ZERO, acct::encode_set_session_token(0, t, p, d))];
-    prepare(&owner_public_key, None, |_, _| Ok(0), |from| Ok(EvmCall { to: Some(from), value: U256::ZERO,
+    prepare(&owner_public_key, None, |from| Ok(EvmCall { to: Some(from), value: U256::ZERO,
         input: aether_execution::encode_execute(&calls), gas_limit: 300_000, delegate: Some(aether_execution::AETHER_ACCOUNT) }))
 }
 
@@ -3331,7 +3453,7 @@ pub fn prepare_session_token_submit(session_public_key: Vec<u8>, request: Sessio
     let calls = [token_call(&request.token, &request.to, &request.amount)?];
     let sig = normalize_p256(&session_signature)?;
     let input = acct::encode_session_execute(&calls, 0, sig[..32].try_into().expect("32"), sig[32..64].try_into().expect("32"));
-    prepare(&session_public_key, None, |_, _| Ok(0), |_| Ok(EvmCall { to: Some(a), value: U256::ZERO, input, gas_limit: 200_000, delegate: None }))
+    prepare(&session_public_key, None, |_| Ok(EvmCall { to: Some(a), value: U256::ZERO, input, gas_limit: 200_000, delegate: None }))
 }
 
 fn session_calls(payments: &[Payment]) -> R<Vec<aether_execution::AccountCall>> {
@@ -3367,5 +3489,5 @@ pub fn prepare_session_submit(session_public_key: Vec<u8>, request: SessionReque
     let sig = normalize_p256(&session_signature)?;
     let input = acct::encode_session_execute(&calls, 0, sig[..32].try_into().expect("32"), sig[32..64].try_into().expect("32"));
     let gas_limit = 120_000 + 40_000 * calls.len() as u64;
-    prepare(&session_public_key, None, |_, _| Ok(0), |_| Ok(EvmCall { to: Some(a), value: U256::ZERO, input, gas_limit, delegate: None }))
+    prepare(&session_public_key, None, |_| Ok(EvmCall { to: Some(a), value: U256::ZERO, input, gas_limit, delegate: None }))
 }

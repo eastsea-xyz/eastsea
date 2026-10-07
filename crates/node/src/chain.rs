@@ -545,6 +545,11 @@ pub struct Inner {
     store: Option<Arc<Store>>,
     /// Pending txs per sender (bounded by `MAX_PER_SENDER`).
     pub pending_by_sender: HashMap<Address, usize>,
+    /// Each pending sender's nonces in the pool, with how many entries hold
+    /// each (B5 review round 2, finding 4): a receipt read finds one
+    /// sender's queue in O(log n + 64) instead of scanning the whole pool
+    /// under the chain lock. Kept in step with `mempool` wherever it changes.
+    nonces_by_sender: HashMap<Address, BTreeMap<u64, u32>>,
     /// The running voting set (validators only; empty on followers).
     pub committee: crate::rotation::Committee,
     /// Committee identity: handoffs must be signed under it (None: devnet dealer keys).
@@ -703,6 +708,7 @@ impl Chain {
             receipts: HashMap::new(),
             mempool: BTreeMap::new(),
             pending_by_sender: HashMap::new(),
+            nonces_by_sender: HashMap::new(),
             arrivals: HashMap::new(),
             sizes: HashMap::new(),
             mempool_bytes: 0,
@@ -2596,6 +2602,7 @@ impl Chain {
             g.free_in_pool += 1;
             g.free_mempool_bytes += size;
         }
+        g.index_nonce(&tx);
         g.mempool.insert(h, tx);
         g.sizes.insert(h, size);
         g.mempool_bytes += size;
@@ -2792,10 +2799,12 @@ impl Chain {
             inner.mempool_bytes -= freed;
         }
         inner.pending_by_sender.clear();
+        inner.nonces_by_sender.clear();
         inner.free_in_pool = 0;
         inner.free_mempool_bytes = 0;
         for (h, t) in inner.mempool.iter() {
             *inner.pending_by_sender.entry(t.header.sender).or_default() += 1;
+            *inner.nonces_by_sender.entry(t.header.sender).or_default().entry(t.header.nonce).or_default() += 1;
             if fees && effective_fee(t, base) == 0 {
                 inner.free_in_pool += 1;
                 inner.free_mempool_bytes += inner.sizes.get(h).copied().unwrap_or_default();
@@ -3099,6 +3108,7 @@ fn evict_for(g: &mut Inner, tx: &TxEnvelope, base: FeeVector, size: usize) -> bo
     // for the newcomer's room.
     for (_, _, h, sender) in candidates.into_iter().take(take) {
         let evicted = g.mempool.remove(&h).expect("a candidate is pending");
+        g.unindex_nonce(&evicted);
         g.tombstones.record(h, DropReason::Evicted);
         let freed = g.sizes.remove(&h).unwrap_or_default();
         g.mempool_bytes -= freed;
@@ -3155,7 +3165,7 @@ fn drop_reason(
     let waited = |d: Duration| arrived.is_some_and(|t| now.saturating_duration_since(t) >= d);
     let below_exec = fees && (tx.header.max_fee.exec < base.exec || tx.header.max_fee.prove < base.prove);
     if waited(MEMPOOL_TTL) {
-        return Some(if let Some(r) = state_price_wait(tx, base, None) {
+        return Some(if let Some(r) = state_price_wait(&tx.header, base, None) {
             r
         } else if let Some(expected) = gap {
             DropReason::NonceGap { expected }
@@ -3177,9 +3187,9 @@ fn drop_reason(
 
 /// `StatePriceAboveCap` when the tx's signed state cap is under the B5
 /// price it would pay now; `excess` (the state debt) adds the refill estimate.
-fn state_price_wait(tx: &TxEnvelope, base: FeeVector, excess: Option<u64>) -> Option<DropReason> {
-    let cap = tx.header.max_fee.state;
-    (base.state != 0 && tx.header.gas.state > 0 && cap < base.state).then(|| DropReason::StatePriceAboveCap {
+fn state_price_wait(header: &aether_types::TxHeader, base: FeeVector, excess: Option<u64>) -> Option<DropReason> {
+    let cap = header.max_fee.state;
+    (base.state != 0 && header.gas.state > 0 && cap < base.state).then(|| DropReason::StatePriceAboveCap {
         cap: cap.to_string(),
         price: base.state.to_string(),
         blocks: excess.and_then(|e| fees::blocks_until_state_price_at_most(e, cap)),
@@ -3205,32 +3215,106 @@ fn first_missing_nonces(pool: &BTreeMap<TxHash, TxEnvelope>, state: &WorldState)
         .collect()
 }
 
+impl Inner {
+    /// Count `tx`'s nonce in its sender's index (before it enters the pool).
+    fn index_nonce(&mut self, tx: &TxEnvelope) {
+        *self.nonces_by_sender.entry(tx.header.sender).or_default().entry(tx.header.nonce).or_default() += 1;
+    }
+
+    /// Uncount `tx`'s nonce (it left the pool).
+    fn unindex_nonce(&mut self, tx: &TxEnvelope) {
+        let sender = tx.header.sender;
+        let Some(nonces) = self.nonces_by_sender.get_mut(&sender) else { return };
+        if let Some(n) = nonces.get_mut(&tx.header.nonce) {
+            *n -= 1;
+            if *n == 0 {
+                nonces.remove(&tx.header.nonce);
+            }
+        }
+        if nonces.is_empty() {
+            self.nonces_by_sender.remove(&sender);
+        }
+    }
+
+    /// Put `tx` in the pool with its index entry, skipping admission (tests
+    /// and fixtures that stage a pool directly).
+    pub fn insert_pending(&mut self, h: TxHash, tx: TxEnvelope) {
+        if let Some(old) = self.mempool.remove(&h) {
+            self.unindex_nonce(&old);
+        }
+        self.index_nonce(&tx);
+        self.mempool.insert(h, tx);
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Pool entries one `pending_facts` call examined (finding 4's check).
+    static PENDING_SCANNED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// What a pending tx's reason depends on, copied out under the chain lock in
+/// O(log n + its sender's ≤ 64 nonces) — the receipt handler then computes
+/// the reason (and the refill estimate) after releasing the lock (B5 review
+/// round 2, finding 4).
+#[derive(Clone, Debug)]
+pub struct PendingFacts {
+    header: aether_types::TxHeader,
+    base: FeeVector,
+    excess: u64,
+    fees: bool,
+    /// The sender's next nonce on chain.
+    chain_nonce: u64,
+    /// The sender's nonces in the pool, from `chain_nonce` up.
+    queued: Vec<u64>,
+}
+
+pub fn pending_facts(g: &Inner, tx: &TxEnvelope) -> PendingFacts {
+    let chain_nonce = g.finalized.state.nonce(&tx.header.sender);
+    let queued: Vec<u64> = g
+        .nonces_by_sender
+        .get(&tx.header.sender)
+        .map(|n| n.range(chain_nonce..).map(|(k, _)| *k).collect())
+        .unwrap_or_default();
+    #[cfg(test)]
+    PENDING_SCANNED.with(|c| c.set(c.get() + queued.len()));
+    PendingFacts {
+        header: tx.header.clone(),
+        base: Chain::next_base_fee(&g.cfg, &g.finalized),
+        excess: g.finalized.excess.state,
+        fees: g.cfg.fees,
+        chain_nonce,
+        queued,
+    }
+}
+
+impl PendingFacts {
+    /// Why it is not in a block yet (see `pending_reason`). No lock needed.
+    pub fn reason(&self) -> Option<DropReason> {
+        if let Some(r) = state_price_wait(&self.header, self.base, Some(self.excess)) {
+            return Some(r);
+        }
+        let mut next = self.chain_nonce;
+        for n in &self.queued {
+            if *n != next {
+                break;
+            }
+            next += 1;
+        }
+        if self.header.nonce > next {
+            return Some(DropReason::NonceGap { expected: next });
+        }
+        (self.fees && (self.header.max_fee.exec < self.base.exec || self.header.max_fee.prove < self.base.prove))
+            .then_some(DropReason::FeeCapBelowBase)
+    }
+}
+
 /// Why a pending tx is not in a block yet, at the next block's prices
 /// (bug #5): its state cap under the B5 price (with the refill estimate), a
 /// nonce gap before it, or exec/prove caps under the base fee. None: nothing
 /// holds it back but its turn.
 pub fn pending_reason(g: &Inner, tx: &TxEnvelope) -> Option<DropReason> {
-    let base = Chain::next_base_fee(&g.cfg, &g.finalized);
-    if let Some(r) = state_price_wait(tx, base, Some(g.finalized.excess.state)) {
-        return Some(r);
-    }
-    let state = &g.finalized.state;
-    let mut next = state.nonce(&tx.header.sender);
-    let mine: std::collections::BTreeSet<u64> = g
-        .mempool
-        .values()
-        .filter(|t| t.header.sender == tx.header.sender)
-        .map(|t| t.header.nonce)
-        .collect();
-    while mine.contains(&next) {
-        next += 1;
-    }
-    if tx.header.nonce > next {
-        return Some(DropReason::NonceGap { expected: next });
-    }
-    let fees = g.cfg.fees;
-    (fees && (tx.header.max_fee.exec < base.exec || tx.header.max_fee.prove < base.prove))
-        .then_some(DropReason::FeeCapBelowBase)
+    pending_facts(g, tx).reason()
 }
 
 /// The payload decodes, the prove budget covers the gas limit, and the sender's
@@ -4201,8 +4285,63 @@ mod pool_tests {
         // Behind a gap: nonce 1 with nonce 0 nowhere.
         let behind = capped(a, 1, price);
         assert_eq!(pending_reason(&g, &behind), Some(DropReason::NonceGap { expected: 0 }));
-        g.mempool.insert(aether_execution::tx_hash(&stuck), stuck.clone());
+        g.insert_pending(aether_execution::tx_hash(&stuck), stuck.clone());
         assert_eq!(pending_reason(&g, &behind), None, "nonce 0 is pending: only its turn holds it");
+    }
+
+    /// B5 review round 2, finding 4: a receipt read for one pending tx looks
+    /// at its own sender's queue (≤ 64 nonces, from an index), not the whole
+    /// pool, under the chain lock — before the fix the gap check scanned all
+    /// 2,001 entries here (up to 50,000 on a full pool). The index follows the
+    /// pool through admission, eviction and finalization, and the answer is
+    /// the same as before.
+    #[test]
+    fn a_pending_lookup_reads_only_its_senders_entries() {
+        let a = Address::repeat_byte(8);
+        let (chain, _) = Chain::new(cfg(vec![(a, U256::from(10u128.pow(22)))]));
+        let mut g = chain.lock();
+        let cap = 2 * fees::STATE_UNIT_PRICE;
+        for i in 0..2_000u64 {
+            let mut b = [0u8; 20];
+            b[12..].copy_from_slice(&(i + 1_000).to_be_bytes());
+            let t = capped(Address::from(b), 0, cap);
+            g.insert_pending(aether_execution::tx_hash(&t), t);
+        }
+        let first = capped(a, 0, cap);
+        g.insert_pending(aether_execution::tx_hash(&first), first);
+        let behind = capped(a, 1, cap);
+        PENDING_SCANNED.with(|c| c.set(0));
+        assert_eq!(pending_reason(&g, &behind), None, "nonce 0 is pending: only its turn holds it");
+        let scanned = PENDING_SCANNED.with(|c| c.get());
+        assert!(scanned <= MAX_PER_SENDER, "one receipt read examined {scanned} pool entries under the chain lock");
+        assert_eq!(pending_reason(&g, &capped(a, 2, cap)), Some(DropReason::NonceGap { expected: 1 }));
+        // The facts are copied out; the reason needs no lock.
+        let facts = pending_facts(&g, &capped(a, 2, cap));
+        drop(g);
+        assert_eq!(facts.reason(), Some(DropReason::NonceGap { expected: 1 }));
+    }
+
+    /// The sender index stays in step with the pool: admitted and finalized
+    /// txs come and go from it exactly as from `mempool`.
+    #[test]
+    fn the_sender_nonce_index_follows_the_pool() {
+        let key = aether_crypto::P256Signer::from_seed(&[9; 32]).unwrap();
+        let a = address_of(&aether_crypto::Signer::public_key(&key)).unwrap();
+        let (chain, genesis) = Chain::new(cfg(vec![(a, U256::from(10u128.pow(22)))]));
+        let parent = chain.get(&genesis.digest()).unwrap();
+        let txs = transfers(&key, 0..3);
+        for t in &txs {
+            assert_eq!(chain.add_to_mempool(t.clone()), Ok(true));
+        }
+        let index = |g: &Inner| g.nonces_by_sender.get(&a).map(|n| n.keys().copied().collect::<Vec<_>>()).unwrap_or_default();
+        assert_eq!(index(&chain.lock()), vec![0, 1, 2]);
+        let (block, _) = build(&chain, &parent, &genesis, vec![txs[0].clone()]);
+        chain.finalize(&block).unwrap();
+        let g = chain.lock();
+        assert_eq!(index(&g), vec![1, 2], "the included nonce left the index with the pool entry");
+        let mut rebuilt: Vec<u64> = g.mempool.values().filter(|t| t.header.sender == a).map(|t| t.header.nonce).collect();
+        rebuilt.sort_unstable();
+        assert_eq!(index(&g), rebuilt);
     }
 
     /// Departures at finalization leave tombstones: a gapped tx past the TTL

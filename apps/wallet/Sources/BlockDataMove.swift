@@ -84,7 +84,7 @@ enum BlockDataMove {
     private static func scan(_ dir: URL, prefix: String, files: inout [String: File]) throws {
         guard identity(dir) != nil else { throw Failure.unavailable }
         for name in try FileManager.default.contentsOfDirectory(atPath: dir.path) {
-            if BlockDataLocation.keepInternal.contains(name) || name == "run.lock" { continue }
+            if BlockDataLocation.keepsInternal(name) || name.lowercased() == "run.lock" { continue }
             let item = dir.appendingPathComponent(name), rel = "\(prefix)/\(name)"
             if identity(item) != nil {
                 try scan(item, prefix: rel, files: &files)
@@ -106,7 +106,7 @@ enum BlockDataMove {
               r.files.keys.allSatisfy({ rel in
                   let parts = rel.split(separator: "/", omittingEmptySubsequences: false)
                   return parts.count > 1 && r.directories.contains(String(parts[0]))
-                      && parts.allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." && !BlockDataLocation.keepInternal.contains(String($0)) }
+                      && parts.allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." && !BlockDataLocation.keepsInternal(String($0)) }
               }) else { throw Failure.invalidRecord }
         return r
     }
@@ -157,8 +157,22 @@ enum BlockDataMove {
                   identity(target) == r.targetID else { throw Failure.invalidRecord }
         } else {
             guard BlockDataLocation.destinationAvailable(target, preservingInternalKeys: preservingInternalKeys) else { throw Failure.occupied }
-            let names = try fm.contentsOfDirectory(atPath: source.path)
-            let dirs = BlockDataLocation.movedDirs.filter { names.contains($0) }
+            var dirs: [String] = []
+            for name in BlockDataLocation.movedDirs {
+                let dir = source.appendingPathComponent(name)
+                var entry = stat()
+                if lstat(dir.path, &entry) != 0 {
+                    // A missing optional namespace is fine; an inaccessible
+                    // one is not evidence that this is an empty source.
+                    guard errno == ENOENT else { throw Failure.unavailable }
+                    continue
+                }
+                // Native lookup recognizes Follow/follow on APFS. lstat
+                // distinguishes a broken or live symlink from absence, and
+                // identity requires a real accessible directory before copy.
+                guard fm.fileExists(atPath: dir.path), identity(dir) != nil else { throw Failure.unavailable }
+                dirs.append(name)
+            }
             var files: [String: File] = [:]
             for d in dirs { try scan(source.appendingPathComponent(d), prefix: d, files: &files) }
             guard identity(source) == sourceID else { throw Failure.unavailable }

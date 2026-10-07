@@ -20,6 +20,9 @@ enum BlockDataLocation {
     /// Files inside those folders that are keys and stay on the internal
     /// disk: the follower's endpoint key (`wallet-node.key`).
     static let keepInternal: Set<String> = ["wallet-node.key"]
+    /// Reserved key names stay internal even when APFS stores a casing alias.
+    /// Folding conservatively also retains an unused alias on a case-sensitive disk.
+    static func keepsInternal(_ name: String) -> Bool { keepInternal.contains(name.lowercased()) }
     /// Formats the node can live on: APFS and Mac OS Extended. exFAT/FAT
     /// lack the locking and the crash safety the database needs; network
     /// shares come and go.
@@ -129,7 +132,7 @@ enum BlockDataLocation {
             if (try? fm.destinationOfSymbolicLink(atPath: dir.path)) != nil { return false }
             guard fm.fileExists(atPath: dir.path) else { continue }
             guard preservingInternalKeys, let entries = try? fm.contentsOfDirectory(atPath: dir.path),
-                  entries.allSatisfy({ keepInternal.contains($0) }) else { return false }
+                  entries.allSatisfy({ keepsInternal($0) }) else { return false }
         }
         return true
     }

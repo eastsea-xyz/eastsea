@@ -579,9 +579,10 @@ enum DataMigration {
         // The old tree's live lock is never copied, and its quarantine
         // directories are recovery copies for a human — not cargo for the
         // new home (they can appear mid-resume, after the copy already ran).
+        let excludedNames = Set(excluding.map { $0.lowercased() })
         func syncable(_ rel: String) -> Bool {
             rel != lockName && !rel.hasPrefix(quarantinePrefix)
-                && !rel.split(separator: "/").contains { excluding.contains(String($0)) }
+                && !rel.split(separator: "/").contains { excludedNames.contains(String($0).lowercased()) }
         }
         // Exclude names before any file is read or copied. Normal identity
         // migration uses the empty default; storage moves keep endpoint keys

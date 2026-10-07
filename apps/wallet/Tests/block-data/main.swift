@@ -140,6 +140,159 @@ let moveFixture = NodeController.dataDir.deletingLastPathComponent()
     .appendingPathComponent("block-data-move-\(UUID().uuidString)")
 try FileManager.default.createDirectory(at: moveFixture, withIntermediateDirectories: true)
 defer { try? FileManager.default.removeItem(at: moveFixture); try? FileManager.default.removeItem(at: NodeController.dataDir) }
+// R07/R03 alias followup. These fixtures use the existing sync/copy APIs.
+// Select key or directories to capture each independent baseline failure.
+let aliasCase = ProcessInfo.processInfo.environment["AETHER_STORAGE_ALIAS_CASE"] ?? "all"
+check(["all", "key", "directories"].contains(aliasCase), "R07 valid alias fixture selector")
+let aliasFixture = moveFixture.appendingPathComponent("r07-name-alias-\(UUID().uuidString)")
+let aliasProbe = aliasFixture.appendingPathComponent("case-probe")
+try FileManager.default.createDirectory(at: aliasProbe, withIntermediateDirectories: true)
+let aliasKey = aliasProbe.appendingPathComponent("Wallet-Node.Key")
+try Data("case-alias-probe".utf8).write(to: aliasKey)
+let lookupKey = aliasProbe.appendingPathComponent("wallet-node.key")
+let caseInsensitiveAliases = FileManager.default.fileExists(atPath: lookupKey.path)
+    && BlockDataMove.identity(aliasKey, directory: false) == BlockDataMove.identity(lookupKey, directory: false)
+func hasEndpointAlias(_ root: URL) -> Bool {
+    guard let entries = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else { return false }
+    return entries.compactMap { $0 as? URL }.contains { $0.lastPathComponent.lowercased() == "wallet-node.key" }
+}
+if caseInsensitiveAliases {
+    if aliasCase == "all" || aliasCase == "key" {
+        let source = aliasFixture.appendingPathComponent("direct-source")
+        let target = aliasFixture.appendingPathComponent("direct-external")
+        try FileManager.default.createDirectory(at: source.appendingPathComponent("nested"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        let state = source.appendingPathComponent("state.db")
+        let key = source.appendingPathComponent("Wallet-Node.Key")
+        let nestedKey = source.appendingPathComponent("nested/WALLET-NODE.KEY")
+        try Data("case-alias-chain-state".utf8).write(to: state)
+        try Data("private-alias-endpoint".utf8).write(to: key)
+        try Data("nested-alias-endpoint".utf8).write(to: nestedKey)
+        var exposureChecks: [Bool] = []
+        let meter = DataMigration.ProgressMeter(reportEvery: 1) { _ in exposureChecks.append(hasEndpointAlias(target)) }
+        let copied = DataMigration.syncTreeVerified(source, target, meter: meter, excluding: BlockDataLocation.keepInternal)
+        check(copied && !hasEndpointAlias(target) && !exposureChecks.isEmpty && exposureChecks.allSatisfy { !$0 },
+              "R07 alias endpoint variants never enter external verified copy")
+        check((try? Data(contentsOf: target.appendingPathComponent("state.db"))) == Data("case-alias-chain-state".utf8),
+              "R07 alias exclusion still copies actual chain data")
+        check((try? Data(contentsOf: key)) == Data("private-alias-endpoint".utf8)
+              && (try? Data(contentsOf: nestedKey)) == Data("nested-alias-endpoint".utf8),
+              "R07 alias exclusion preserves exact source identity bytes")
+    }
+    if aliasCase == "all" || aliasCase == "directories" {
+        let source = aliasFixture.appendingPathComponent("directory-source")
+        let target = aliasFixture.appendingPathComponent("directory-external")
+        let internalRoot = aliasFixture.appendingPathComponent("directory-owner")
+        try FileManager.default.createDirectory(at: source.appendingPathComponent("Follow"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: internalRoot, withIntermediateDirectories: true)
+        let state = source.appendingPathComponent("Follow/state.db")
+        let key = source.appendingPathComponent("Follow/Wallet-Node.Key")
+        try Data("real-follow-alias-history".utf8).write(to: state)
+        try Data("internal-follow-alias-key".utf8).write(to: key)
+        let sourceID = BlockDataMove.identity(source)!
+        let bytes = try BlockDataMove.copy(source: source, target: target, sourceID: sourceID,
+                                          internalRoot: internalRoot, preservingInternalKeys: false,
+                                          meter: DataMigration.ProgressMeter(reportEvery: 1) { _ in })
+        check(bytes == UInt64(Data("real-follow-alias-history".utf8).count)
+              && (try? Data(contentsOf: target.appendingPathComponent("follow/state.db"))) == Data("real-follow-alias-history".utf8),
+              "R03 alias Follow directory must copy actual history before publication")
+        check(!hasEndpointAlias(target) && (try? Data(contentsOf: key)) == Data("internal-follow-alias-key".utf8),
+              "R07 alias Follow copy preserves the internal endpoint and excludes it externally")
+    }
+} else {
+    print("SKIP R07/R03 filename aliases: fixture filesystem is case-sensitive")
+}
+
+if caseInsensitiveAliases && (aliasCase == "all" || aliasCase == "key") {
+    // Copy back beside an existing differently-cased internal endpoint key.
+    let source = aliasFixture.appendingPathComponent("return-source")
+    let target = aliasFixture.appendingPathComponent("return-internal")
+    let internalRoot = aliasFixture.appendingPathComponent("return-owner")
+    try FileManager.default.createDirectory(at: source.appendingPathComponent("follow"), withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: target.appendingPathComponent("Follow"), withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: internalRoot, withIntermediateDirectories: true)
+    let sourceKey = source.appendingPathComponent("follow/Wallet-Node.Key")
+    let targetKey = target.appendingPathComponent("Follow/Wallet-Node.Key")
+    try Data("source-alias-identity".utf8).write(to: sourceKey)
+    try Data("original-internal-alias-identity".utf8).write(to: targetKey)
+    let sourceState = source.appendingPathComponent("follow/state.db")
+    try Data("return-alias-history".utf8).write(to: sourceState)
+    check(BlockDataLocation.destinationAvailable(target, preservingInternalKeys: true),
+          "R07 internal alias-key-only destination remains available")
+    _ = try BlockDataMove.copy(source: source, target: target, sourceID: BlockDataMove.identity(source)!,
+                              internalRoot: internalRoot, preservingInternalKeys: true,
+                              meter: DataMigration.ProgressMeter(reportEvery: 1) { _ in })
+    check((try? Data(contentsOf: targetKey)) == Data("original-internal-alias-identity".utf8)
+          && (try? Data(contentsOf: sourceKey)) == Data("source-alias-identity".utf8),
+          "R07 return copy never replaces or removes either alias identity")
+    check((try? Data(contentsOf: target.appendingPathComponent("follow/state.db"))) == Data("return-alias-history".utf8),
+          "R07 return copy publishes data beside the original alias endpoint")
+    let foreign = source.appendingPathComponent("follow/not-in-copy-manifest.db")
+    try Data("foreign-new-source-history".utf8).write(to: foreign)
+    BlockDataMove.cleanup(confirmedTarget: target, internalRoot: internalRoot)
+    check((try? Data(contentsOf: sourceKey)) == Data("source-alias-identity".utf8)
+          && (try? Data(contentsOf: targetKey)) == Data("original-internal-alias-identity".utf8)
+          && (try? Data(contentsOf: foreign)) == Data("foreign-new-source-history".utf8),
+          "R07 cleanup retains alias identities and unmanifested source data")
+    // A record from the pre-fix writer cannot authorize alias-key cleanup.
+    let recordURL = internalRoot.appendingPathComponent(BlockDataMove.recordName)
+    let prior = try JSONDecoder().decode(BlockDataMove.Record.self, from: Data(contentsOf: recordURL))
+    var unsafeFiles = prior.files
+    unsafeFiles["follow/Wallet-Node.Key"] = BlockDataMove.File(identity: BlockDataMove.identity(sourceKey, directory: false)!,
+                                                          hash: DataMigration.streamSHA256(sourceKey)!)
+    var unsafe = BlockDataMove.Record(source: prior.source, target: prior.target, staging: prior.staging,
+                                     stagingID: prior.stagingID, sourceID: prior.sourceID, targetID: prior.targetID,
+                                     directories: prior.directories, files: unsafeFiles)
+    unsafe.committed = true
+    try JSONEncoder().encode(unsafe).write(to: recordURL, options: .atomic)
+    var rejectedUnsafeRecord = false
+    do { _ = try BlockDataMove.authoritativeRoot(in: internalRoot) } catch { rejectedUnsafeRecord = true }
+    check(rejectedUnsafeRecord, "R07 old alias-key manifests are refused before replay or cleanup hashing")
+    BlockDataMove.cleanup(confirmedTarget: target, internalRoot: internalRoot)
+    check((try? Data(contentsOf: sourceKey)) == Data("source-alias-identity".utf8)
+          && (try? Data(contentsOf: targetKey)) == Data("original-internal-alias-identity".utf8),
+          "R07 invalid legacy alias manifest removes no key data")
+}
+if caseInsensitiveAliases && (aliasCase == "all" || aliasCase == "directories") {
+    for name in ["Follow", "Archive"] {
+        let source = aliasFixture.appendingPathComponent("broken-\(name)-source")
+        let target = aliasFixture.appendingPathComponent("broken-\(name)-target")
+        let internalRoot = aliasFixture.appendingPathComponent("broken-\(name)-owner")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: internalRoot, withIntermediateDirectories: true)
+        let missing = aliasFixture.appendingPathComponent("not-present-\(name)")
+        let link = source.appendingPathComponent(name)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: missing)
+        var rejected = false
+        do {
+            _ = try BlockDataMove.copy(source: source, target: target, sourceID: BlockDataMove.identity(source)!,
+                                      internalRoot: internalRoot, preservingInternalKeys: false,
+                                      meter: DataMigration.ProgressMeter(reportEvery: 1) { _ in })
+        } catch { rejected = true }
+        check(rejected && !FileManager.default.fileExists(atPath: target.path)
+              && !FileManager.default.fileExists(atPath: internalRoot.appendingPathComponent(BlockDataMove.recordName).path),
+              "R03 broken \(name) aliases cannot become successful empty copies")
+        check((try? FileManager.default.destinationOfSymbolicLink(atPath: link.path)) == missing.path,
+              "R03 refusing an alias namespace preserves its original link")
+    }
+    let source = aliasFixture.appendingPathComponent("file-follow-source")
+    let target = aliasFixture.appendingPathComponent("file-follow-target")
+    let internalRoot = aliasFixture.appendingPathComponent("file-follow-owner")
+    try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: internalRoot, withIntermediateDirectories: true)
+    let occupant = source.appendingPathComponent("Follow")
+    try Data("unrelated-follow-occupant".utf8).write(to: occupant)
+    var rejected = false
+    do {
+        _ = try BlockDataMove.copy(source: source, target: target, sourceID: BlockDataMove.identity(source)!,
+                                  internalRoot: internalRoot, preservingInternalKeys: false,
+                                  meter: DataMigration.ProgressMeter(reportEvery: 1) { _ in })
+    } catch { rejected = true }
+    check(rejected && !FileManager.default.fileExists(atPath: target.path)
+          && (try? Data(contentsOf: occupant)) == Data("unrelated-follow-occupant".utf8),
+          "R03 a non-directory namespace is preserved and refused")
+}
+
 let nestedSource = moveFixture.appendingPathComponent("source")
 try FileManager.default.createDirectory(at: nestedSource.appendingPathComponent("follow"), withIntermediateDirectories: true)
 let mover = NodeController()

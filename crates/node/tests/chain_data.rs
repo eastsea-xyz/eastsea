@@ -20,6 +20,59 @@ impl Drop for TmpDir {
     }
 }
 
+fn key_fixture(tag: &str) -> TmpDir {
+    let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let root = TmpDir(workspace.join("tmp").join(format!("aether-key-volume-{tag}-{}-{nonce}", std::process::id())));
+    std::fs::create_dir_all(root.0.join("node")).unwrap();
+    std::fs::create_dir(root.0.join("other")).unwrap();
+    std::fs::write(root.0.join("node/validator.key"), b"fixture key sentinel").unwrap();
+    // Any run that passes the volume check still ends before opening a
+    // network or starting a node; these bytes are deliberately invalid.
+    std::fs::write(root.0.join("invalid-network.json"), b"invalid fixture network").unwrap();
+    root
+}
+
+fn key_fixture_command(root: &TmpDir) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_aether"));
+    command.arg("run").arg("--data").arg(root.0.join("node"))
+        .arg("--network").arg(root.0.join("invalid-network.json"))
+        .arg("--min-free-disk=0")
+        .env_remove("AETHER_TEST_INTERNAL_KEY_DIR");
+    command
+}
+
+#[cfg(all(feature = "test-seam", debug_assertions))]
+#[test]
+fn only_an_exact_fixture_volume_approval_passes_external_key_rejection() {
+    let root = key_fixture("approval");
+    let data = root.0.join("node");
+    if !aether_node::supervisor::volume_is_external(&data) { return; }
+    let denied = key_fixture_command(&root).output().unwrap();
+    assert_eq!(denied.status.code(), Some(aether_node::supervisor::EXIT_KEYS_ON_CHAIN_DATA));
+    let mismatch = key_fixture_command(&root)
+        .env("AETHER_TEST_INTERNAL_KEY_DIR", root.0.join("other")).output().unwrap();
+    assert_eq!(mismatch.status.code(), Some(aether_node::supervisor::EXIT_KEYS_ON_CHAIN_DATA));
+    let allowed = key_fixture_command(&root)
+        .env("AETHER_TEST_INTERNAL_KEY_DIR", &data).output().unwrap();
+    assert_eq!(allowed.status.code(), Some(1), "the invalid fixture never starts a node");
+    assert!(String::from_utf8_lossy(&allowed.stderr).contains("is not a network.json"),
+        "exact fixture approval reaches network validation: {}", String::from_utf8_lossy(&allowed.stderr));
+}
+
+#[test]
+fn fixture_volume_approval_never_allows_keys_in_chain_data() {
+    let root = key_fixture("chain");
+    let chain = root.0.join("chain");
+    std::fs::create_dir(&chain).unwrap();
+    std::fs::write(chain.join("validator.key"), b"chain key sentinel").unwrap();
+    let refused = key_fixture_command(&root).arg("--chain-data").arg(&chain)
+        .env("AETHER_TEST_INTERNAL_KEY_DIR", root.0.join("node")).output().unwrap();
+    assert_eq!(refused.status.code(), Some(aether_node::supervisor::EXIT_KEYS_ON_CHAIN_DATA));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("key files found in the chain data directory"));
+    assert_eq!(std::fs::read(chain.join("validator.key")).unwrap(), b"chain key sentinel");
+}
+
 #[test]
 fn a_missing_chain_data_directory_exits_13_and_creates_nothing() {
     let root = TmpDir(std::env::temp_dir().join(format!("aether-chain-data-{}", std::process::id())));

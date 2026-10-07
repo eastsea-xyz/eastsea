@@ -45,7 +45,7 @@ fi
 # and the AETHER_DEV_* variable names; a test-seam build has set_test_readings.
 if [ "$target" = macos ]; then
   if target/release/aether dev-b3 /dev/null >/dev/null 2>&1 \
-    || strings target/release/aether | grep -qE 'AETHER_DEV_(PROTOCOL|UPGRADE_NOTICE)|set_test_readings'; then
+    || strings target/release/aether | grep -E 'AETHER_DEV_(PROTOCOL|UPGRADE_NOTICE)|set_test_readings|AETHER_TEST_INTERNAL_KEY_DIR' >/dev/null; then
     echo "target/release/aether contains dev-drill or test-seam code — a shipped node must not (crates/node/Cargo.toml [features])" >&2
     exit 1
   fi

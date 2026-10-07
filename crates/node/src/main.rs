@@ -793,6 +793,20 @@ enum Cmd {
     },
 }
 
+// Only the dev-dependency test feature can classify generated fixture keys
+// on the checkout's volume. Ordinary builds have no such runtime exception.
+#[cfg(all(feature = "test-seam", debug_assertions))]
+fn fixture_key_directory_is_internal(data: &std::path::Path, requested: Option<&std::ffi::OsStr>) -> bool {
+    let Some(requested) = requested else { return false };
+    let (Ok(data), Ok(requested)) = (data.canonicalize(), std::path::Path::new(requested).canonicalize()) else { return false };
+    let Some(workspace) = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().and_then(std::path::Path::parent) else { return false };
+    let Ok(root) = workspace.join("tmp").canonicalize() else { return false };
+    if data != requested { return false; }
+    let Ok(relative) = data.strip_prefix(root) else { return false };
+    matches!(relative.components().next(), Some(std::path::Component::Normal(name))
+        if name.to_str().is_some_and(|name| name.starts_with("aether-")))
+}
+
 fn main() {
     // Adopt before CLI dispatch or any unrelated helper can spawn. The guard
     // lives until main exits, including parent death during writer startup.
@@ -1043,7 +1057,10 @@ fn main() {
                         std::process::exit(aether_node::supervisor::EXIT_KEYS_ON_CHAIN_DATA);
                     }
                 }
-                if aether_node::supervisor::keys_on_external_data(&dir, aether_node::supervisor::volume_is_external(&dir)) {
+                let external = aether_node::supervisor::volume_is_external(&dir);
+                #[cfg(all(feature = "test-seam", debug_assertions))]
+                let external = external && !fixture_key_directory_is_internal(&dir, std::env::var_os("AETHER_TEST_INTERNAL_KEY_DIR").as_deref());
+                if aether_node::supervisor::keys_on_external_data(&dir, external) {
                     eprintln!("keys must stay on this Mac: the key directory {} is on a removable or network volume; refusing to start", dir.display());
                     std::process::exit(aether_node::supervisor::EXIT_KEYS_ON_CHAIN_DATA);
                 }
@@ -3797,6 +3814,29 @@ fn print_blocks(v: &Value) {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(all(feature = "test-seam", debug_assertions))]
+    #[test]
+    fn fixture_key_volume_allowance_is_exact_and_confined_to_workspace_tmp() {
+        use std::path::Path;
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let root = workspace.join("tmp").join(format!("aether-key-volume-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(root.join("one")).unwrap();
+        std::fs::create_dir(root.join("two")).unwrap();
+        let data = root.join("one");
+        assert!(super::fixture_key_directory_is_internal(&data, Some(data.as_os_str())));
+        assert!(!super::fixture_key_directory_is_internal(&data, None));
+        assert!(!super::fixture_key_directory_is_internal(&data, Some(root.join("two").as_os_str())));
+        assert!(!super::fixture_key_directory_is_internal(&data, Some(root.join("missing").as_os_str())));
+        assert!(!super::fixture_key_directory_is_internal(workspace, Some(workspace.as_os_str())));
+        #[cfg(unix)] {
+            let alias = root.join("outside");
+            std::os::unix::fs::symlink(workspace, &alias).unwrap();
+            assert!(!super::fixture_key_directory_is_internal(&alias, Some(alias.as_os_str())));
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn r06_explicit_pid1_and_missing_sender_have_distinct_parent_contracts() {
         assert_eq!(super::initial_writer_parent(Some(1), 1), Some(1),

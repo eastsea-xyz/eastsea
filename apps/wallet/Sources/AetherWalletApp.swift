@@ -231,8 +231,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         node.restore()
         // A slow data move finishing in the background (M1) lets the node
         // start at once instead of at the next 30 s power tick.
-        migration.onFinish = { [weak node] _ in
-            MainActor.assumeIsolated { node?.migrationFinished() }
+        migration.onFinish = { [weak node, weak model] outcome in
+            MainActor.assumeIsolated {
+                model?.migrationFinished(outcome)
+                node?.migrationFinished()
+            }
         }
         // An old Aether (<= 0.6.6) beside EastSea opens at login, holds the
         // old data's run.lock and runs a second node (B2): ask once to quit

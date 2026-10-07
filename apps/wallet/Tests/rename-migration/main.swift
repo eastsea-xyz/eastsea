@@ -910,6 +910,60 @@ do {
     cleanup(root, d)
 }
 
+
+// R05. Existing handles must use the same migration gate as new keys.
+// Opaque fixture bytes stand in for device-bound handles; no keychain opens.
+for name in ["enclave-key.dat", "simulator-software-key.dat"] {
+    let (root, d) = makeOldSupport()
+    let fm = FileManager.default
+    let old = root.appending(path: "AetherWallet/\(name)")
+    let new = root.appending(path: "EastSeaWallet/\(name)")
+    if name == "simulator-software-key.dat" {
+        try? fm.removeItem(at: root.appending(path: "AetherWallet/enclave-key.dat"))
+        try? "original-handle-A".write(to: old, atomically: true, encoding: .utf8)
+    }
+    try? fm.createDirectory(at: new.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try? "minted-handle-B".write(to: new, atomically: true, encoding: .utf8)
+    d.set(true, forKey: "renameMigrationDone")
+    expect(DataMigration.mayCreateFreshWalletKey(support: root, defaults: d) != nil,
+           "R05 existing conflicting \(name) waits for the authoritative migrated handle")
+    expect(DataMigration.unmigratedOldData(support: root).contains("AetherWallet/\(name)"),
+           "R05 conflicting \(name) is unfinished migration work despite completion flags")
+    expect(migrate(root, d) == .done, "R05 the original \(name) finishes moving")
+    expect(DataMigration.mayCreateFreshWalletKey(support: root, defaults: d) == nil
+           && DataMigration.fileMatches(old, new),
+           "R05 the wallet opens only after its authoritative \(name) settles")
+    let names = (try? fm.contentsOfDirectory(atPath: new.deletingLastPathComponent().path)) ?? []
+    expect(names.contains { $0.hasPrefix("\(name).eastsea-replaced-")
+           && (try? String(contentsOf: new.deletingLastPathComponent().appending(path: $0), encoding: .utf8)) == "minted-handle-B" },
+           "R05 the displaced \(name) remains recoverable")
+    cleanup(root, d)
+}
+
+// R05. Node-half completion must not hide a conflicting wallet tail.
+do {
+    let (root, d) = makeOldSupport()
+    let fm = FileManager.default
+    let node = root.appending(path: "EastSea/node")
+    try? fm.createDirectory(at: node, withIntermediateDirectories: true)
+    expect(migrate(root, d) == .done, "R05 the node-half fixture completes first")
+    try? "advanced-after-migration".write(to: node.appending(path: "data.db"), atomically: true, encoding: .utf8)
+    let old = root.appending(path: "AetherWallet/enclave-key.dat")
+    let new = root.appending(path: "EastSeaWallet/enclave-key.dat")
+    try? "minted-handle-B".write(to: new, atomically: true, encoding: .utf8)
+    expect(DataMigration.mayCreateFreshWalletKey(support: root, defaults: d) != nil,
+           "R05 a stale done flag cannot open wallet B while original A remains")
+    expect(migrate(root, d) == .done && DataMigration.fileMatches(old, new),
+           "R05 a completed node retries its conflicting wallet tail")
+    expect((try? String(contentsOf: node.appending(path: "data.db"), encoding: .utf8)) == "advanced-after-migration",
+           "R05 restoring wallet A preserves advanced node state")
+    chmod(old.path, 0o000)
+    expect(DataMigration.mayCreateFreshWalletKey(support: root, defaults: d) != nil,
+           "R05 an unreadable original handle cannot certify an existing handle")
+    chmod(old.path, 0o600)
+    cleanup(root, d)
+}
+
 // Test hygiene: this run wrote no preferences plist at all.
 Thread.sleep(forTimeInterval: 1)   // cfprefsd writes asynchronously
 let leftover = ownPlists().subtracting(plistsBefore)

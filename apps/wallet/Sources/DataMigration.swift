@@ -305,7 +305,7 @@ enum DataMigration {
         for name in walletHandleNames {
             let old = support.appending(path: "AetherWallet/\(name)")
             let new = support.appending(path: "EastSeaWallet/\(name)")
-            if fm.fileExists(atPath: old.path) && !fm.fileExists(atPath: new.path) { out.append("AetherWallet/\(name)") }
+            if fm.fileExists(atPath: old.path) && !fileMatches(old, new) { out.append("AetherWallet/\(name)") }
         }
         let oldGuard = support.appending(path: "Aether/node\(identityGuardSuffix)")
         let newGuard = support.appending(path: "EastSea/node\(identityGuardSuffix)")
@@ -341,7 +341,8 @@ enum DataMigration {
     /// Audit 5, A5-7: while an unmigrated old identity exists, making a fresh
     /// one would strand it (a second wallet address; a validator that can
     /// never vote). `nil` = allowed. `loadOrCreate` refuses on a message.
-    /// No done flag can open this gate (B4): only the handle's arrival can.
+    /// Both creation and existing-handle restoration use this gate (R05).
+    /// No done flag can open it: the authoritative handle must match.
     static func mayCreateFreshWalletKey(support: URL? = nil, defaults: UserDefaults = .standard,
                                         runner: Runner? = nil) -> String? {
         if (runner ?? (support == nil ? Runner.shared : nil))?.isRunning == true { return movingSentence }
@@ -349,7 +350,9 @@ enum DataMigration {
         for name in walletHandleNames {
             let old = s.appending(path: "AetherWallet/\(name)")
             let new = s.appending(path: "EastSeaWallet/\(name)")
-            if fm.fileExists(atPath: old.path) && !fm.fileExists(atPath: new.path) {
+            if fm.fileExists(atPath: old.path) && !fileMatches(old, new) {
+                // An existing replacement handle is not settled merely
+                // because a file exists. The original handle is authoritative.
                 return ko
                     ? "이전 Aether 지갑 키를 아직 옮기는 중이에요. 앱을 한 번 더 열어 옮기기를 끝내 주세요(이전 Aether 앱을 종료하라고 하면 먼저 종료해 주세요). 지금 새 키를 만들면 지갑 주소가 둘이 되어 처음 주소를 쓸 수 없게 돼요."
                     : "Your old Aether wallet key has not moved over yet. Open the app once more to finish the move "

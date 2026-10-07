@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["legacy", "crates/*"]
-exclude = ["vendor", "spike", "apps/prover"]
+exclude = ["vendor", "spike", "apps/prover", "tmp", "aether-jolt"]
 
 [workspace.package]
 edition = "2021"

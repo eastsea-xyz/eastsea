@@ -298,9 +298,10 @@ struct UpdateTracker {
         }
     }
 
-    /// The node was seen alive while awaiting the post-update health check
-    /// (starting counts — a catching-up node is a working one).
-    mutating func nodeRunning() {
+    /// The caller confirmed a running, responsive node on the installed
+    /// release. A starting node or unverified daemon does not pass health.
+    mutating func nodeRunning(running: Bool = false, releaseVerified: Bool = false) {
+        guard running && releaseVerified else { return }
         if case .awaitingHealth(let version, let build, _) = state {
             attempts = 0
             lastCause = nil

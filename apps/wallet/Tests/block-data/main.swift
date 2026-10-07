@@ -3,6 +3,138 @@
 // requirements on the archive node's real numbers.
 //   scripts/test-swift-pure.sh   (run block-data)
 import Foundation
+#if os(macOS)
+import AppKit
+
+// Legacy cleanup preferences stay in memory; fixtures never write cfprefsd.
+final class MoveMemoryDefaults: UserDefaults {
+    private let lock = NSLock()
+    private var values: [String: Any] = [:]
+    init() { super.init(suiteName: nil)! }
+    override func object(forKey key: String) -> Any? { lock.lock(); defer { lock.unlock() }; return values[key] }
+    override func set(_ value: Any?, forKey key: String) {
+        lock.lock(); defer { lock.unlock() }
+        if let value { values[key] = value } else { values.removeValue(forKey: key) }
+    }
+    override func set(_ value: Bool, forKey key: String) { set(value as Any?, forKey: key) }
+    override func removeObject(forKey key: String) { set(nil as Any?, forKey: key) }
+}
+
+final class MoveProcessStub {
+    let processIdentifier: Int32
+    init(_ pid: Int32) { processIdentifier = pid }
+}
+
+// Exercise the real mover against fixtures, without starting a node or app.
+@MainActor final class NodeController {
+    nonisolated static let storageMoveLockTimeout: TimeInterval = 0.05
+    nonisolated static let port: UInt16 = 1
+    nonisolated static let helperBinaryURL: URL? = URL(fileURLWithPath: "/fixture/aether")
+    nonisolated static let storageMoveDefaults = MoveMemoryDefaults()
+    nonisolated static let dataDir = URL(fileURLWithPath: ProcessInfo.processInfo.environment["AETHER_AGENT_TEST_TMP"]!)
+        .appendingPathComponent("block-data-internal-\(UUID().uuidString)")
+    var selectionLockChecks: [Bool] = []
+    var chainDataPath = "" {
+        didSet {
+            if stops > 0, chainDataPath != oldValue { selectionLockChecks.append(Self.lockHeld(in: Self.dataDir)) }
+        }
+    }
+    var storageMoveOffersDiskUtility = false
+    var updateInProgress = false
+    var storageMovePercent: Int?
+    var storageMoveError: String?
+    var attached = false
+    var process: MoveProcessStub?
+    var storageLeaseVerified = true
+    var storageBindingMatches = true
+    var storageEndpointAbsent = true
+    var storagePreflightCalls = 0
+    var onStorageStatus: (() -> Void)?
+    var onStorageAbsence: (() -> Void)?
+    var unattended: MoveDaemonStub? = MoveDaemonStub()
+    var archive = false
+    var mountObservers: [NSObjectProtocol] = []
+    var stops = 0
+    var markerAtStops: [Bool] = []
+    init() { LocalRPC.node = self }
+    func stop(keepSwitch: Bool) {
+        markerAtStops.append(unattended?.markerEnabled ?? false)
+        stops += 1
+        process = nil
+        attached = false
+    }
+    func logEvent(_ event: String, _ message: String) {}
+    func applyPower() {}
+    nonisolated static func lockHeld(in dir: URL) -> Bool {
+        let fd = open(dir.appendingPathComponent("run.lock").path, O_RDONLY)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        if flock(fd, LOCK_EX | LOCK_NB) == 0 { flock(fd, LOCK_UN); return false }
+        return errno == EWOULDBLOCK
+    }
+}
+
+// Only RPC and signature observations are doubled. The fixture compiles the
+// production ownership method, including its checks across each suspension.
+@MainActor enum LocalRPC {
+    static weak var node: NodeController?
+    struct VerifiedReply { let value: Any; let binding: Int32 }
+    static func callVerified(rootPID: Int32, port: UInt16, expected: URL,
+                             method: String, params: [Any]) async -> VerifiedReply? {
+        guard let node else { return nil }
+        node.storagePreflightCalls += 1
+        check(port == NodeController.port && expected == NodeController.helperBinaryURL
+              && method == "aether_status" && params.isEmpty, "R06 fresh status preflight uses the current helper")
+        let reply = VerifiedReply(value: node.storageLeaseVerified, binding: rootPID)
+        await Task.yield()
+        node.onStorageStatus?()
+        return reply
+    }
+    static func endpointIsAbsent(port: UInt16) async -> Bool {
+        guard let node else { return false }
+        node.storagePreflightCalls += 1
+        let absent = node.storageEndpointAbsent
+        await Task.yield()
+        node.onStorageAbsence?()
+        return absent
+    }
+}
+@MainActor enum NodeReleaseIdentity {
+    static func hasWriterLease(status: Any?) -> Bool { status as? Bool == true }
+    static func matches(binding: Int32, port: UInt16, expected: URL) -> Bool {
+        LocalRPC.node?.storageBindingMatches == true
+    }
+}
+@MainActor final class MoveDaemonStub {
+    var markerEnabled = true
+    var runningNodePID: Int32?
+    var onStop: (() -> Void)?
+    var suspensionSucceeds = true
+    var suspensions = 0
+    var pauseCalls = 0
+    var resumeCalls = 0
+    var markerAtDaemonStops: [Bool] = []
+    @discardableResult func suspendRespawn() -> Bool {
+        pauseCalls += 1
+        suspensions += 1
+        if suspensionSucceeds { markerEnabled = false }
+        return suspensionSucceeds
+    }
+    func resumeRespawn() {
+        resumeCalls += 1
+        suspensions = max(0, suspensions - 1)
+        syncMarker()
+    }
+    func stopDaemonNode(expectedPID: Int32? = nil) {
+        if let expectedPID, expectedPID != runningNodePID { return }
+        markerAtDaemonStops.append(markerEnabled)
+        onStop?()
+        runningNodePID = nil
+    }
+    func syncMarker() { markerEnabled = suspensions == 0 }
+}
+enum HealthCheck { static let korean = false }
+#endif
 func check(_ c: Bool, _ m: String) { if !c { print("FAIL", m); exit(1) } }
 let GiB: UInt64 = 1_073_741_824
 
@@ -57,6 +189,621 @@ check(argv[2] == "/d", "keys stay in --data (the internal disk)")
 check(BlockDataLocation.movedDirs == ["follow", "archive"], "only the follower's and the archive's state move")
 check(BlockDataLocation.keepInternal.contains("wallet-node.key"), "the follower's endpoint key stays on the internal disk")
 
+#if os(macOS)
+// R01: a real nested destination must be refused before a write or shutdown.
+@MainActor func runMoveFixtureTests() async throws {
+let moveFixture = NodeController.dataDir.deletingLastPathComponent()
+    .appendingPathComponent("block-data-move-\(UUID().uuidString)")
+try FileManager.default.createDirectory(at: moveFixture, withIntermediateDirectories: true)
+defer { try? FileManager.default.removeItem(at: moveFixture); try? FileManager.default.removeItem(at: NodeController.dataDir) }
+// R07/R03 alias followup. These fixtures use the existing sync/copy APIs.
+// Select key or directories to capture each independent baseline failure.
+let aliasCase = ProcessInfo.processInfo.environment["AETHER_STORAGE_ALIAS_CASE"] ?? "all"
+check(["all", "key", "directories"].contains(aliasCase), "R07 valid alias fixture selector")
+let aliasFixture = moveFixture.appendingPathComponent("r07-name-alias-\(UUID().uuidString)")
+let aliasProbe = aliasFixture.appendingPathComponent("case-probe")
+try FileManager.default.createDirectory(at: aliasProbe, withIntermediateDirectories: true)
+let aliasKey = aliasProbe.appendingPathComponent("Wallet-Node.Key")
+try Data("case-alias-probe".utf8).write(to: aliasKey)
+let lookupKey = aliasProbe.appendingPathComponent("wallet-node.key")
+let caseInsensitiveAliases = FileManager.default.fileExists(atPath: lookupKey.path)
+    && BlockDataMove.identity(aliasKey, directory: false) == BlockDataMove.identity(lookupKey, directory: false)
+func hasEndpointAlias(_ root: URL) -> Bool {
+    guard let entries = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else { return false }
+    return entries.compactMap { $0 as? URL }.contains { $0.lastPathComponent.lowercased() == "wallet-node.key" }
+}
+if caseInsensitiveAliases {
+    if aliasCase == "all" || aliasCase == "key" {
+        let source = aliasFixture.appendingPathComponent("direct-source")
+        let target = aliasFixture.appendingPathComponent("direct-external")
+        try FileManager.default.createDirectory(at: source.appendingPathComponent("nested"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        let state = source.appendingPathComponent("state.db")
+        let key = source.appendingPathComponent("Wallet-Node.Key")
+        let nestedKey = source.appendingPathComponent("nested/WALLET-NODE.KEY")
+        try Data("case-alias-chain-state".utf8).write(to: state)
+        try Data("private-alias-endpoint".utf8).write(to: key)
+        try Data("nested-alias-endpoint".utf8).write(to: nestedKey)
+        var exposureChecks: [Bool] = []
+        let meter = DataMigration.ProgressMeter(reportEvery: 1) { _ in exposureChecks.append(hasEndpointAlias(target)) }
+        let copied = DataMigration.syncTreeVerified(source, target, meter: meter, excluding: BlockDataLocation.keepInternal)
+        check(copied && !hasEndpointAlias(target) && !exposureChecks.isEmpty && exposureChecks.allSatisfy { !$0 },
+              "R07 alias endpoint variants never enter external verified copy")
+        check((try? Data(contentsOf: target.appendingPathComponent("state.db"))) == Data("case-alias-chain-state".utf8),
+              "R07 alias exclusion still copies actual chain data")
+        check((try? Data(contentsOf: key)) == Data("private-alias-endpoint".utf8)
+              && (try? Data(contentsOf: nestedKey)) == Data("nested-alias-endpoint".utf8),
+              "R07 alias exclusion preserves exact source identity bytes")
+    }
+    if aliasCase == "all" || aliasCase == "directories" {
+        let source = aliasFixture.appendingPathComponent("directory-source")
+        let target = aliasFixture.appendingPathComponent("directory-external")
+        let internalRoot = aliasFixture.appendingPathComponent("directory-owner")
+        try FileManager.default.createDirectory(at: source.appendingPathComponent("Follow"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: internalRoot, withIntermediateDirectories: true)
+        let state = source.appendingPathComponent("Follow/state.db")
+        let key = source.appendingPathComponent("Follow/Wallet-Node.Key")
+        try Data("real-follow-alias-history".utf8).write(to: state)
+        try Data("internal-follow-alias-key".utf8).write(to: key)
+        let sourceID = BlockDataMove.identity(source)!
+        let bytes = try BlockDataMove.copy(source: source, target: target, sourceID: sourceID,
+                                          internalRoot: internalRoot, preservingInternalKeys: false,
+                                          meter: DataMigration.ProgressMeter(reportEvery: 1) { _ in })
+        check(bytes == UInt64(Data("real-follow-alias-history".utf8).count)
+              && (try? Data(contentsOf: target.appendingPathComponent("follow/state.db"))) == Data("real-follow-alias-history".utf8),
+              "R03 alias Follow directory must copy actual history before publication")
+        check(!hasEndpointAlias(target) && (try? Data(contentsOf: key)) == Data("internal-follow-alias-key".utf8),
+              "R07 alias Follow copy preserves the internal endpoint and excludes it externally")
+    }
+} else {
+    print("SKIP R07/R03 filename aliases: fixture filesystem is case-sensitive")
+}
+
+if caseInsensitiveAliases && (aliasCase == "all" || aliasCase == "key") {
+    // Copy back beside an existing differently-cased internal endpoint key.
+    let source = aliasFixture.appendingPathComponent("return-source")
+    let target = aliasFixture.appendingPathComponent("return-internal")
+    let internalRoot = aliasFixture.appendingPathComponent("return-owner")
+    try FileManager.default.createDirectory(at: source.appendingPathComponent("follow"), withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: target.appendingPathComponent("Follow"), withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: internalRoot, withIntermediateDirectories: true)
+    let sourceKey = source.appendingPathComponent("follow/Wallet-Node.Key")
+    let targetKey = target.appendingPathComponent("Follow/Wallet-Node.Key")
+    try Data("source-alias-identity".utf8).write(to: sourceKey)
+    try Data("original-internal-alias-identity".utf8).write(to: targetKey)
+    let sourceState = source.appendingPathComponent("follow/state.db")
+    try Data("return-alias-history".utf8).write(to: sourceState)
+    check(BlockDataLocation.destinationAvailable(target, preservingInternalKeys: true),
+          "R07 internal alias-key-only destination remains available")
+    _ = try BlockDataMove.copy(source: source, target: target, sourceID: BlockDataMove.identity(source)!,
+                              internalRoot: internalRoot, preservingInternalKeys: true,
+                              meter: DataMigration.ProgressMeter(reportEvery: 1) { _ in })
+    check((try? Data(contentsOf: targetKey)) == Data("original-internal-alias-identity".utf8)
+          && (try? Data(contentsOf: sourceKey)) == Data("source-alias-identity".utf8),
+          "R07 return copy never replaces or removes either alias identity")
+    check((try? Data(contentsOf: target.appendingPathComponent("follow/state.db"))) == Data("return-alias-history".utf8),
+          "R07 return copy publishes data beside the original alias endpoint")
+    let foreign = source.appendingPathComponent("follow/not-in-copy-manifest.db")
+    try Data("foreign-new-source-history".utf8).write(to: foreign)
+    BlockDataMove.cleanup(confirmedTarget: target, internalRoot: internalRoot)
+    check((try? Data(contentsOf: sourceKey)) == Data("source-alias-identity".utf8)
+          && (try? Data(contentsOf: targetKey)) == Data("original-internal-alias-identity".utf8)
+          && (try? Data(contentsOf: foreign)) == Data("foreign-new-source-history".utf8),
+          "R07 cleanup retains alias identities and unmanifested source data")
+    // A record from the pre-fix writer cannot authorize alias-key cleanup.
+    let recordURL = internalRoot.appendingPathComponent(BlockDataMove.recordName)
+    let prior = try JSONDecoder().decode(BlockDataMove.Record.self, from: Data(contentsOf: recordURL))
+    var unsafeFiles = prior.files
+    unsafeFiles["follow/Wallet-Node.Key"] = BlockDataMove.File(identity: BlockDataMove.identity(sourceKey, directory: false)!,
+                                                          hash: DataMigration.streamSHA256(sourceKey)!)
+    var unsafe = BlockDataMove.Record(source: prior.source, target: prior.target, staging: prior.staging,
+                                     stagingID: prior.stagingID, sourceID: prior.sourceID, targetID: prior.targetID,
+                                     directories: prior.directories, files: unsafeFiles)
+    unsafe.committed = true
+    try JSONEncoder().encode(unsafe).write(to: recordURL, options: .atomic)
+    var rejectedUnsafeRecord = false
+    do { _ = try BlockDataMove.authoritativeRoot(in: internalRoot) } catch { rejectedUnsafeRecord = true }
+    check(rejectedUnsafeRecord, "R07 old alias-key manifests are refused before replay or cleanup hashing")
+    BlockDataMove.cleanup(confirmedTarget: target, internalRoot: internalRoot)
+    check((try? Data(contentsOf: sourceKey)) == Data("source-alias-identity".utf8)
+          && (try? Data(contentsOf: targetKey)) == Data("original-internal-alias-identity".utf8),
+          "R07 invalid legacy alias manifest removes no key data")
+}
+if caseInsensitiveAliases && (aliasCase == "all" || aliasCase == "directories") {
+    for name in ["Follow", "Archive"] {
+        let source = aliasFixture.appendingPathComponent("broken-\(name)-source")
+        let target = aliasFixture.appendingPathComponent("broken-\(name)-target")
+        let internalRoot = aliasFixture.appendingPathComponent("broken-\(name)-owner")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: internalRoot, withIntermediateDirectories: true)
+        let missing = aliasFixture.appendingPathComponent("not-present-\(name)")
+        let link = source.appendingPathComponent(name)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: missing)
+        var rejected = false
+        do {
+            _ = try BlockDataMove.copy(source: source, target: target, sourceID: BlockDataMove.identity(source)!,
+                                      internalRoot: internalRoot, preservingInternalKeys: false,
+                                      meter: DataMigration.ProgressMeter(reportEvery: 1) { _ in })
+        } catch { rejected = true }
+        check(rejected && !FileManager.default.fileExists(atPath: target.path)
+              && !FileManager.default.fileExists(atPath: internalRoot.appendingPathComponent(BlockDataMove.recordName).path),
+              "R03 broken \(name) aliases cannot become successful empty copies")
+        check((try? FileManager.default.destinationOfSymbolicLink(atPath: link.path)) == missing.path,
+              "R03 refusing an alias namespace preserves its original link")
+    }
+    let source = aliasFixture.appendingPathComponent("file-follow-source")
+    let target = aliasFixture.appendingPathComponent("file-follow-target")
+    let internalRoot = aliasFixture.appendingPathComponent("file-follow-owner")
+    try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: internalRoot, withIntermediateDirectories: true)
+    let occupant = source.appendingPathComponent("Follow")
+    try Data("unrelated-follow-occupant".utf8).write(to: occupant)
+    var rejected = false
+    do {
+        _ = try BlockDataMove.copy(source: source, target: target, sourceID: BlockDataMove.identity(source)!,
+                                  internalRoot: internalRoot, preservingInternalKeys: false,
+                                  meter: DataMigration.ProgressMeter(reportEvery: 1) { _ in })
+    } catch { rejected = true }
+    check(rejected && !FileManager.default.fileExists(atPath: target.path)
+          && (try? Data(contentsOf: occupant)) == Data("unrelated-follow-occupant".utf8),
+          "R03 a non-directory namespace is preserved and refused")
+}
+
+let nestedSource = moveFixture.appendingPathComponent("source")
+try FileManager.default.createDirectory(at: nestedSource.appendingPathComponent("follow"), withIntermediateDirectories: true)
+let mover = NodeController()
+mover.chainDataPath = nestedSource.path
+check(mover.problem(with: nestedSource.appendingPathComponent("follow")) != nil,
+      "R01 nested destination is rejected before copy and cleanup")
+let alias = moveFixture.appendingPathComponent("source-alias")
+try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: nestedSource)
+check(mover.problem(with: alias.appendingPathComponent("follow")) != nil, "R01 symlink aliases cannot bypass ancestry")
+mover.moveBlockData(to: nestedSource.appendingPathComponent("follow/new"))
+check(mover.storageMovePercent == nil && mover.stops == 0, "R01 direct move rejects nesting before stopping")
+check(!BlockDataLocation.disjoint(nestedSource, nestedSource.deletingLastPathComponent()), "R01 ancestor is rejected")
+check(BlockDataLocation.disjoint(nestedSource, moveFixture.appendingPathComponent("source-sibling")), "R01 siblings remain allowed")
+let authoritative = nestedSource.appendingPathComponent("follow/new")
+try FileManager.default.createDirectory(at: authoritative, withIntermediateDirectories: true)
+let sentinel = authoritative.appendingPathComponent("state.db")
+try Data("authoritative".utf8).write(to: sentinel)
+mover.chainDataPath = authoritative.path
+NodeController.storageMoveDefaults.set(nestedSource.path, forKey: NodeController.cleanupKey)
+mover.finishBlockDataMove()
+try await Task.sleep(nanoseconds: 100_000_000)
+check(FileManager.default.fileExists(atPath: sentinel.path), "R01 cleanup rechecks ancestry")
+
+func waitForMove(_ node: NodeController) async throws {
+    let end = Date().addingTimeInterval(10)
+    while node.storageMovePercent != nil && Date() < end { try await Task.sleep(nanoseconds: 10_000_000) }
+    check(node.storageMovePercent == nil, "fixture move completes within deadline")
+}
+// R02: force a failed copy into somebody else's preexisting chain tree.
+let badSource = moveFixture.appendingPathComponent("bad-source")
+let occupied = moveFixture.appendingPathComponent("occupied")
+try FileManager.default.createDirectory(at: badSource.appendingPathComponent("follow"), withIntermediateDirectories: true)
+try FileManager.default.createDirectory(at: occupied.appendingPathComponent("follow"), withIntermediateDirectories: true)
+try FileManager.default.createSymbolicLink(atPath: badSource.appendingPathComponent("follow/unreadable").path,
+                                         withDestinationPath: moveFixture.appendingPathComponent("missing-file").path)
+let unrelated = occupied.appendingPathComponent("follow/unrelated.db")
+try Data("unrelated-history".utf8).write(to: unrelated)
+let failedMover = NodeController()
+failedMover.chainDataPath = badSource.path
+failedMover.moveBlockData(to: occupied)
+try await waitForMove(failedMover)
+check((try? Data(contentsOf: unrelated)) == Data("unrelated-history".utf8), "R02 failed move preserves preexisting destination data")
+check(failedMover.chainDataPath == badSource.path, "R02 rejected move keeps source authoritative")
+let updatingMover = NodeController()
+updatingMover.chainDataPath = badSource.path
+updatingMover.updateInProgress = true
+updatingMover.moveBlockData(to: moveFixture.appendingPathComponent("during-update"))
+check(updatingMover.stops == 0 && updatingMover.storageMovePercent == nil,
+      "R11 update preparation excludes a new storage move")
+// R03: a disconnected source cannot turn into a successful empty move back.
+try FileManager.default.createDirectory(at: NodeController.dataDir, withIntermediateDirectories: true)
+let oldProbe = NodeController.dataDir.appendingPathComponent(".eastsea-write-check")
+try Data("existing-file".utf8).write(to: oldProbe)
+check(NodeController.canWrite(in: NodeController.dataDir) && (try? Data(contentsOf: oldProbe)) == Data("existing-file".utf8),
+      "R03 disk writability probes preserve preexisting files")
+let missingRoot = moveFixture.appendingPathComponent("offline-disk/data")
+let missingMover = NodeController()
+missingMover.chainDataPath = missingRoot.path
+missingMover.moveBlockData(to: nil)
+try await waitForMove(missingMover)
+check(missingMover.chainDataPath == missingRoot.path && missingMover.storageMoveError != nil,
+      "R03 absent source cannot commit an empty move or authorize cleanup")
+let verifiedSource = moveFixture.appendingPathComponent("verified-source")
+let verifiedTarget = moveFixture.appendingPathComponent("verified-target")
+try FileManager.default.createDirectory(at: verifiedSource.appendingPathComponent("follow"), withIntermediateDirectories: true)
+let copiedFile = verifiedSource.appendingPathComponent("follow/state.db")
+try Data("verified-data".utf8).write(to: copiedFile)
+try FileManager.default.createDirectory(at: verifiedSource.appendingPathComponent("archive"), withIntermediateDirectories: true)
+let archiveFile = verifiedSource.appendingPathComponent("archive/history.db")
+try Data("archive-history".utf8).write(to: archiveFile)
+let goodMover = NodeController()
+goodMover.chainDataPath = verifiedSource.path
+goodMover.moveBlockData(to: verifiedTarget)
+try await waitForMove(goodMover)
+check(goodMover.chainDataPath == verifiedTarget.path, "R03 real verified copy commits")
+check(try BlockDataMove.authoritativeRoot(in: NodeController.dataDir)?.path == verifiedTarget.path,
+      "R03 committed location survives lost preference writes")
+// Replay the verified publication with the preference still at the source.
+let recordURL = NodeController.dataDir.appendingPathComponent(BlockDataMove.recordName)
+var interrupted = try JSONDecoder().decode(BlockDataMove.Record.self, from: Data(contentsOf: recordURL))
+interrupted.committed = false
+try JSONEncoder().encode(interrupted).write(to: recordURL, options: .atomic)
+let replacedStage = verifiedTarget.appendingPathComponent(interrupted.staging)
+try FileManager.default.createDirectory(at: replacedStage, withIntermediateDirectories: true)
+let foreignStageFile = replacedStage.appendingPathComponent("foreign.db")
+try Data("not-created-by-move".utf8).write(to: foreignStageFile)
+goodMover.chainDataPath = verifiedSource.path
+goodMover.moveBlockData(to: verifiedTarget)
+try await waitForMove(goodMover)
+check(goodMover.chainDataPath == verifiedSource.path && (try? Data(contentsOf: foreignStageFile)) == Data("not-created-by-move".utf8),
+      "R03 replaced staging directories never become rollback cargo")
+try FileManager.default.removeItem(at: replacedStage)
+goodMover.moveBlockData(to: verifiedTarget)
+try await waitForMove(goodMover)
+check(goodMover.chainDataPath == verifiedTarget.path, "R03 interrupted publication resumes without re-merging foreign data")
+let oldTarget = moveFixture.appendingPathComponent("temporarily-away")
+try FileManager.default.moveItem(at: verifiedTarget, to: oldTarget)
+try FileManager.default.createDirectory(at: verifiedTarget, withIntermediateDirectories: true)
+check(!BlockDataMove.selectionAvailable(verifiedTarget, internalRoot: NodeController.dataDir),
+      "R03 a replacement root at the same path cannot start a fresh chain")
+try FileManager.default.removeItem(at: verifiedTarget)
+try FileManager.default.moveItem(at: oldTarget, to: verifiedTarget)
+check(BlockDataMove.selectionAvailable(verifiedTarget, internalRoot: NodeController.dataDir), "R03 the original root resumes")
+try FileManager.default.removeItem(at: verifiedTarget.appendingPathComponent("archive/history.db"))
+let lateFile = verifiedSource.appendingPathComponent("follow/new-after-copy.db")
+try Data("new-history".utf8).write(to: lateFile)
+goodMover.finishBlockDataMove()
+try await Task.sleep(nanoseconds: 150_000_000)
+check(!FileManager.default.fileExists(atPath: copiedFile.path), "R03 verified source file can be cleaned")
+check((try? Data(contentsOf: lateFile)) == Data("new-history".utf8), "R03 unmanifested source data survives cleanup")
+check((try? Data(contentsOf: archiveFile)) == Data("archive-history".utf8), "R03 missing destination history retains its only source copy")
+goodMover.finishBlockDataMove()
+try await Task.sleep(nanoseconds: 50_000_000)
+check(FileManager.default.fileExists(atPath: lateFile.path), "R03 cleanup replay is idempotent")
+// A stale unpublished copy must not permanently exclude future safe moves.
+let staleSource = moveFixture.appendingPathComponent("stale-source")
+let staleTarget = moveFixture.appendingPathComponent("stale-target")
+try FileManager.default.createDirectory(at: staleSource.appendingPathComponent("follow"), withIntermediateDirectories: true)
+let staleDB = staleSource.appendingPathComponent("follow/state.db")
+try Data("before-crash".utf8).write(to: staleDB)
+let staleMover = NodeController()
+staleMover.chainDataPath = staleSource.path
+staleMover.moveBlockData(to: staleTarget)
+try await waitForMove(staleMover)
+var staleRecord = try JSONDecoder().decode(BlockDataMove.Record.self, from: Data(contentsOf: recordURL))
+staleRecord.committed = false
+try JSONEncoder().encode(staleRecord).write(to: recordURL, options: .atomic)
+try Data("advanced-source".utf8).write(to: staleDB)
+staleMover.chainDataPath = staleSource.path
+let freshTarget = moveFixture.appendingPathComponent("fresh-target")
+staleMover.moveBlockData(to: freshTarget)
+try await waitForMove(staleMover)
+check(staleMover.chainDataPath == freshTarget.path && (try? Data(contentsOf: freshTarget.appendingPathComponent("follow/state.db"))) == Data("advanced-source".utf8),
+      "R03 an advanced source can safely abandon stale publication and move afresh")
+check((try? Data(contentsOf: staleTarget.appendingPathComponent("follow/state.db"))) == Data("before-crash".utf8),
+      "R03 abandoning a stale move retains its earlier copied cargo")
+
+
+// R06 legacy writer: the parent's stop releases its real lock while an
+// unleased child remains a writer. Attestation must precede even that stop.
+try? FileManager.default.removeItem(at: recordURL)
+let legacySource = moveFixture.appendingPathComponent("r06-legacy-source")
+let legacyTarget = moveFixture.appendingPathComponent("r06-legacy-target")
+try FileManager.default.createDirectory(at: legacySource.appendingPathComponent("follow"), withIntermediateDirectories: true)
+let legacyDB = legacySource.appendingPathComponent("follow/state.db")
+try Data("legacy-writer-data".utf8).write(to: legacyDB)
+var legacyParentFD: Int32? = open(NodeController.dataDir.appendingPathComponent("run.lock").path, O_RDWR | O_CREAT, 0o600)
+check(legacyParentFD != nil && legacyParentFD! >= 0 && flock(legacyParentFD!, LOCK_EX | LOCK_NB) == 0,
+      "R06 legacy fixture holds the parent's lock")
+let legacyMover = NodeController()
+legacyMover.attached = true
+legacyMover.chainDataPath = legacySource.path
+legacyMover.storageLeaseVerified = false
+legacyMover.unattended?.runningNodePID = 54
+legacyMover.unattended?.onStop = {
+    if let fd = legacyParentFD { close(fd); legacyParentFD = nil }
+    // A valid snapshot may still verify even though this child survives.
+    try? Data("legacy-child-survives-parent".utf8).write(to: legacyDB)
+}
+legacyMover.moveBlockData(to: legacyTarget)
+try await waitForMove(legacyMover)
+check(legacyMover.stops == 0 && legacyMover.unattended?.markerAtDaemonStops.isEmpty == true,
+      "R06 unleased daemon is never stopped before live storage preflight")
+check(legacyMover.chainDataPath == legacySource.path && legacyMover.storageMoveError != nil
+      && !FileManager.default.fileExists(atPath: legacyTarget.path)
+      && !FileManager.default.fileExists(atPath: recordURL.path),
+      "R06 legacy writer cannot publish a copy or cleanup authorization")
+if let fd = legacyParentFD { close(fd); legacyParentFD = nil }
+
+// Previous/rollback own process and a replaced attested listener also defer.
+for (tag, lease, binding) in [("previous", false, true), ("listener-replaced", true, false)] {
+    let candidateSource = moveFixture.appendingPathComponent("r06-\(tag)-source")
+    let candidateTarget = moveFixture.appendingPathComponent("r06-\(tag)-target")
+    try FileManager.default.createDirectory(at: candidateSource.appendingPathComponent("follow"), withIntermediateDirectories: true)
+    try Data("owned-history".utf8).write(to: candidateSource.appendingPathComponent("follow/state.db"))
+    let candidateMover = NodeController()
+    candidateMover.process = MoveProcessStub(55)
+    candidateMover.storageLeaseVerified = lease
+    candidateMover.storageBindingMatches = binding
+    candidateMover.chainDataPath = candidateSource.path
+    candidateMover.moveBlockData(to: candidateTarget)
+    try await waitForMove(candidateMover)
+    check(candidateMover.stops == 0 && candidateMover.chainDataPath == candidateSource.path
+          && candidateMover.storageMoveError != nil && !FileManager.default.fileExists(atPath: candidateTarget.path),
+          "R06 \(tag) writer defers without stopping or copying")
+}
+let unknownMover = NodeController()
+unknownMover.chainDataPath = legacySource.path
+unknownMover.storageEndpointAbsent = false
+unknownMover.moveBlockData(to: moveFixture.appendingPathComponent("r06-unknown-target"))
+try await waitForMove(unknownMover)
+check(unknownMover.stops == 0 && unknownMover.chainDataPath == legacySource.path && unknownMover.storageMoveError != nil,
+      "R06 unclaimed live runtime defers before any stop or copy")
+
+// No claimed PID and a refused endpoint must still defer on an unknown
+// held lock; waiting for its parent to exit would not prove child quiescence.
+let unknownHolderFD = open(NodeController.dataDir.appendingPathComponent("run.lock").path, O_RDWR | O_CREAT, 0o600)
+check(unknownHolderFD >= 0 && flock(unknownHolderFD, LOCK_EX | LOCK_NB) == 0,
+      "R06 unknown holder fixture owns the lock without claiming a PID")
+let unknownHolder = NodeController()
+unknownHolder.chainDataPath = legacySource.path
+unknownHolder.storageEndpointAbsent = true
+let unknownHolderTarget = moveFixture.appendingPathComponent("r06-unknown-held-lock-target")
+unknownHolder.moveBlockData(to: unknownHolderTarget)
+try await waitForMove(unknownHolder)
+check(unknownHolder.stops == 0 && unknownHolder.chainDataPath == legacySource.path
+      && unknownHolder.storageMoveError != nil && !FileManager.default.fileExists(atPath: unknownHolderTarget.path)
+      && NodeController.lockHeld(in: NodeController.dataDir),
+      "R06 unknown holder is never stopped or awaited before storage copy")
+close(unknownHolderFD)
+
+// Exercise the production preflight across its RPC suspension, rather than
+// trusting a fixture implementation of the ownership decision.
+let statusChanges: [(String, (NodeController) -> Void)] = [
+    ("own PID", { $0.process = MoveProcessStub(56) }),
+    ("daemon PID", { $0.unattended?.runningNodePID = 56 }),
+    ("attachment", { $0.attached = true }),
+    ("update gate", { $0.updateInProgress = true }),
+    ("move gate", { $0.storageMovePercent = nil }),
+    ("listener binding", { $0.storageBindingMatches = false }),
+]
+for (tag, change) in statusChanges {
+    let node = NodeController()
+    node.process = MoveProcessStub(55)
+    node.storageMovePercent = 0
+    node.onStorageStatus = { change(node) }
+    let ownership = await node.acquireStorageMoveOwnership()
+    if let ownership { close(ownership) }
+    check(ownership == nil && node.stops == 0 && node.storagePreflightCalls == 1,
+          "R06 changed \(tag) after status cannot authorize source shutdown")
+    node.onStorageStatus = nil
+}
+let absenceChanges: [(String, (NodeController) -> Void)] = [
+    ("own PID", { $0.process = MoveProcessStub(57) }),
+    ("daemon PID", { $0.unattended?.runningNodePID = 57 }),
+    ("attachment", { $0.attached = true }),
+    ("update gate", { $0.updateInProgress = true }),
+    ("move gate", { $0.storageMovePercent = nil }),
+]
+for (tag, change) in absenceChanges {
+    let node = NodeController()
+    node.storageMovePercent = 0
+    node.onStorageAbsence = { change(node) }
+    let ownership = await node.acquireStorageMoveOwnership()
+    if let ownership { close(ownership) }
+    check(ownership == nil && node.stops == 0 && node.storagePreflightCalls == 1,
+          "R06 changed \(tag) after endpoint absence cannot authorize ownership")
+    node.onStorageAbsence = nil
+}
+let conflictingParents = NodeController()
+conflictingParents.storageMovePercent = 0
+conflictingParents.process = MoveProcessStub(58)
+conflictingParents.unattended?.runningNodePID = 59
+check(await conflictingParents.acquireStorageMoveOwnership() == nil
+      && conflictingParents.stops == 0 && conflictingParents.storagePreflightCalls == 0,
+      "R06 conflicting parents are refused before RPC or shutdown")
+let unclaimedAttachment = NodeController()
+unclaimedAttachment.storageMovePercent = 0
+unclaimedAttachment.attached = true
+check(await unclaimedAttachment.acquireStorageMoveOwnership() == nil
+      && unclaimedAttachment.stops == 0 && unclaimedAttachment.storagePreflightCalls == 0,
+      "R06 an unclaimed attachment cannot be treated as endpoint absence")
+
+let cancelledPreflight = NodeController()
+cancelledPreflight.storageMovePercent = 0
+cancelledPreflight.process = MoveProcessStub(60)
+var ownershipTask: Task<Int32?, Never>?
+cancelledPreflight.onStorageStatus = { ownershipTask?.cancel() }
+ownershipTask = Task { await cancelledPreflight.acquireStorageMoveOwnership() }
+let cancelledOwnership = await ownershipTask!.value
+if let cancelledOwnership { close(cancelledOwnership) }
+check(cancelledOwnership == nil && cancelledPreflight.stops == 0
+      && cancelledPreflight.storagePreflightCalls == 1,
+      "R06 cancellation after the status read cannot authorize shutdown")
+cancelledPreflight.onStorageStatus = nil
+
+// The lock becomes available after shutdown, but the update gate changes
+// during that wait. The production post-acquisition guard must close its fd.
+let changingGate = NodeController()
+changingGate.storageMovePercent = 0
+changingGate.unattended?.runningNodePID = 61
+let changingGateFD = open(NodeController.dataDir.appendingPathComponent("run.lock").path, O_RDWR | O_CREAT, 0o600)
+check(changingGateFD >= 0 && flock(changingGateFD, LOCK_EX | LOCK_NB) == 0,
+      "R06 changing gate fixture owns the lock before shutdown")
+changingGate.unattended?.onStop = {
+    Task { @MainActor in
+        changingGate.updateInProgress = true
+        close(changingGateFD)
+    }
+}
+let rejectedOwnership = await changingGate.acquireStorageMoveOwnership()
+if let rejectedOwnership { close(rejectedOwnership) }
+check(rejectedOwnership == nil && changingGate.stops == 1
+      && !NodeController.lockHeld(in: NodeController.dataDir),
+      "R06 a changed gate after lock acquisition releases the owned descriptor")
+changingGate.unattended?.onStop = nil
+
+// R06. The actual mover pauses daemon respawn before either node stops and
+// retains ownership during copy, selection publication and commit.
+try? FileManager.default.removeItem(at: recordURL)
+let fencedSource = moveFixture.appendingPathComponent("r06-source")
+let fencedTarget = moveFixture.appendingPathComponent("r06-target")
+try FileManager.default.createDirectory(at: fencedSource.appendingPathComponent("follow"), withIntermediateDirectories: true)
+try Data(repeating: 0x31, count: 256 * 1024).write(to: fencedSource.appendingPathComponent("follow/state.db"))
+let fencedMover = NodeController()
+fencedMover.attached = true
+fencedMover.unattended?.runningNodePID = 42
+fencedMover.chainDataPath = fencedSource.path
+fencedMover.moveBlockData(to: fencedTarget)
+try await waitForMove(fencedMover)
+check(fencedMover.markerAtStops == [false]
+      && fencedMover.unattended?.markerAtDaemonStops == [false],
+      "R06 daemon respawn is suspended before stopping either node")
+check(fencedMover.chainDataPath == fencedTarget.path, "R06 fenced copy commits its destination")
+check(fencedMover.selectionLockChecks == [true],
+      "R06 exclusive run.lock is retained through copy publication and selection commit")
+check(!NodeController.lockHeld(in: NodeController.dataDir)
+      && fencedMover.unattended?.resumeCalls == 1
+      && fencedMover.unattended?.markerEnabled == true,
+      "R06 ownership is released and daemon respawn resumes after commit")
+
+// A live writer that does not exit must time out before any copying or
+// publication; resuming the marker preserves the original source choice.
+try? FileManager.default.removeItem(at: recordURL)
+let timeoutSource = moveFixture.appendingPathComponent("r06-timeout-source")
+let timeoutTarget = moveFixture.appendingPathComponent("r06-timeout-target")
+try FileManager.default.createDirectory(at: timeoutSource.appendingPathComponent("follow"), withIntermediateDirectories: true)
+let timeoutDB = timeoutSource.appendingPathComponent("follow/state.db")
+try Data("writer-owned".utf8).write(to: timeoutDB)
+let busyFD = open(NodeController.dataDir.appendingPathComponent("run.lock").path, O_RDWR | O_CREAT, 0o600)
+check(busyFD >= 0 && flock(busyFD, LOCK_EX | LOCK_NB) == 0, "R06 fixture owns the live writer lock")
+let timeoutMover = NodeController()
+timeoutMover.attached = true
+timeoutMover.unattended?.runningNodePID = 43
+timeoutMover.chainDataPath = timeoutSource.path
+timeoutMover.moveBlockData(to: timeoutTarget)
+try await waitForMove(timeoutMover)
+check(timeoutMover.chainDataPath == timeoutSource.path && timeoutMover.storageMoveError != nil,
+      "R06 lock timeout never switches source selection")
+check(!FileManager.default.fileExists(atPath: timeoutTarget.path)
+      && !FileManager.default.fileExists(atPath: recordURL.path)
+      && (try? Data(contentsOf: timeoutDB)) == Data("writer-owned".utf8),
+      "R06 lock timeout creates no copy or cleanup authorization")
+check(NodeController.lockHeld(in: NodeController.dataDir)
+      && timeoutMover.unattended?.resumeCalls == 1
+      && timeoutMover.unattended?.markerEnabled == true,
+      "R06 timeout keeps the writer lock and resumes the original daemon choice")
+close(busyFD)
+
+// A copy failure still balances suspension and releases only our descriptor.
+let failureSource = moveFixture.appendingPathComponent("r06-failure-source")
+let failureTarget = moveFixture.appendingPathComponent("r06-failure-target")
+try FileManager.default.createDirectory(at: failureSource.appendingPathComponent("follow"), withIntermediateDirectories: true)
+try FileManager.default.createSymbolicLink(at: failureSource.appendingPathComponent("follow/unreadable"),
+                                         withDestinationURL: moveFixture.appendingPathComponent("r06-missing-file"))
+let copyFailureMover = NodeController()
+copyFailureMover.chainDataPath = failureSource.path
+copyFailureMover.moveBlockData(to: failureTarget)
+try await waitForMove(copyFailureMover)
+check(copyFailureMover.chainDataPath == failureSource.path && copyFailureMover.storageMoveError != nil
+      && copyFailureMover.unattended?.resumeCalls == 1
+      && !NodeController.lockHeld(in: NodeController.dataDir),
+      "R06 failed copy preserves source and resumes daemon after releasing ownership")
+
+// If the marker cannot be durably removed, stop nothing and copy nothing.
+let pauseFailureMover = NodeController()
+pauseFailureMover.chainDataPath = timeoutSource.path
+pauseFailureMover.unattended?.suspensionSucceeds = false
+pauseFailureMover.moveBlockData(to: moveFixture.appendingPathComponent("r06-pause-failure-target"))
+try await waitForMove(pauseFailureMover)
+check(pauseFailureMover.stops == 0 && pauseFailureMover.storageMoveError != nil
+      && pauseFailureMover.chainDataPath == timeoutSource.path
+      && pauseFailureMover.unattended?.resumeCalls == 1,
+      "R06 failed marker suspension leaves the running source untouched")
+
+
+// The descriptor used by the R11 installer must close on exec.
+let execFD = await BlockDataMove.holdRunLock(in: NodeController.dataDir, timeout: 0.05)
+check(execFD != nil, "R06 shared lock helper returns owned descriptor")
+if let fd = execFD {
+    check((fcntl(fd, F_GETFD) & FD_CLOEXEC) != 0, "R06 installer children cannot inherit the move lock")
+    close(fd)
+}
+
+
+// R07. A round trip back into the default key-only follow directory must
+// preserve the exact internal endpoint key, never regenerate its identity.
+try? FileManager.default.removeItem(at: recordURL)
+let internalFollow = NodeController.dataDir.appendingPathComponent("follow")
+try FileManager.default.createDirectory(at: internalFollow, withIntermediateDirectories: true)
+let internalKey = internalFollow.appendingPathComponent("wallet-node.key")
+let internalState = internalFollow.appendingPathComponent("state.db")
+let keyBytes = Data("internal-endpoint-key".utf8)
+try keyBytes.write(to: internalKey)
+try Data("round-trip-state".utf8).write(to: internalState)
+let roundTripTarget = moveFixture.appendingPathComponent("r07-round-trip-target")
+let roundTripMover = NodeController()
+roundTripMover.moveBlockData(to: roundTripTarget)
+try await waitForMove(roundTripMover)
+check(roundTripMover.chainDataPath == roundTripTarget.path
+      && (try? Data(contentsOf: internalKey)) == keyBytes,
+      "R07 outward move leaves the endpoint identity on the internal disk")
+roundTripMover.finishBlockDataMove()
+let cleanupEnd = Date().addingTimeInterval(5)
+while FileManager.default.fileExists(atPath: internalState.path) && Date() < cleanupEnd {
+    try await Task.sleep(nanoseconds: 10_000_000)
+}
+check(!FileManager.default.fileExists(atPath: internalState.path),
+      "R07 fixture cleanup leaves the default follow directory key-only")
+roundTripMover.moveBlockData(to: nil)
+try await waitForMove(roundTripMover)
+check(roundTripMover.chainDataPath.isEmpty && (try? Data(contentsOf: internalKey)) == keyBytes,
+      "R07 round trip preserves the preexisting internal endpoint key")
+check((try? Data(contentsOf: internalState)) == Data("round-trip-state".utf8),
+      "R07 round trip returns block data beside the original endpoint key")
+
+// Inspect private staging on synchronous progress, then force source
+// verification to fail. A key must never be copied even temporarily.
+try? FileManager.default.removeItem(at: recordURL)
+let keySource = moveFixture.appendingPathComponent("r07-key-source")
+let keyTarget = moveFixture.appendingPathComponent("r07-key-target")
+let keyFollow = keySource.appendingPathComponent("follow")
+try FileManager.default.createDirectory(at: keyFollow.appendingPathComponent("nested"), withIntermediateDirectories: true)
+let keyDB = keyFollow.appendingPathComponent("state.db")
+try Data("verified-before-fault".utf8).write(to: keyDB)
+try Data("private-endpoint-key".utf8).write(to: keyFollow.appendingPathComponent("wallet-node.key"))
+try Data("nested-private-key".utf8).write(to: keyFollow.appendingPathComponent("nested/wallet-node.key"))
+func containsEndpointKey(_ root: URL) -> Bool {
+    guard let entries = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else { return false }
+    return entries.compactMap { $0 as? URL }.contains { $0.lastPathComponent == "wallet-node.key" }
+}
+var progressHasNoKeys: [Bool] = []
+var faultInjected = false
+let keyMeter = DataMigration.ProgressMeter(reportEvery: 1) { fraction in
+    progressHasNoKeys.append(!containsEndpointKey(keyTarget))
+    if fraction > 0, !faultInjected {
+        faultInjected = true
+        try? Data("changed-after-snapshot".utf8).write(to: keyDB, options: .atomic)
+    }
+}
+let keySourceID = BlockDataMove.identity(keySource)!
+var copyFailed = false
+do {
+    _ = try BlockDataMove.copy(source: keySource, target: keyTarget, sourceID: keySourceID,
+                              internalRoot: NodeController.dataDir, preservingInternalKeys: false, meter: keyMeter)
+} catch { copyFailed = true }
+check(faultInjected && copyFailed, "R07 fixture fails after staging at the verification boundary")
+check(!progressHasNoKeys.isEmpty && progressHasNoKeys.allSatisfy { $0 } && !containsEndpointKey(keyTarget),
+      "R07 progress and failed staging never expose an endpoint key on the external destination")
+check((try? Data(contentsOf: keyFollow.appendingPathComponent("wallet-node.key"))) == Data("private-endpoint-key".utf8),
+      "R07 failed copy retains its source endpoint key")
+
+}
+#endif
+
 // MARK: archive requirements, on measured numbers
 
 check(ArchiveRequirements.bytesPerBlock > 0 && ArchiveRequirements.bytesPerDay > 0, "measured on the archive node, not zero")
@@ -73,4 +820,12 @@ for ko in [true, false] {
 }
 check(req.lines(ko: true)[3].contains("보상은 없어요"), "says plainly there is no reward")
 check(req.lines(ko: true)[2].contains("몇 시간에서 며칠"), "hours to days")
+#if os(macOS)
+Task { @MainActor in
+    do { try await runMoveFixtureTests(); print("OK block-data"); exit(0) }
+    catch { print("FAIL fixture:", error); exit(1) }
+}
+dispatchMain()
+#else
 print("OK block-data")
+#endif

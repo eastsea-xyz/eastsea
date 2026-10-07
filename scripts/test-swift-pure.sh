@@ -25,7 +25,7 @@ run key-exposure KeyExposureNotice.swift
 run legacy-aether Brand.swift LegacyAether.swift
 run network-upgrade Brand.swift NetworkUpgrade.swift
 run node-stop Brand.swift Clock.swift NodeWatchdog.swift NodeStopReason.swift
-run block-data Brand.swift Clock.swift NodeWatchdog.swift NodeStopReason.swift UnattendedDecision.swift ArchiveMeasurement.swift BlockDataLocation.swift
+run block-data Brand.swift Clock.swift NodeWatchdog.swift NodeStopReason.swift UnattendedDecision.swift ArchiveMeasurement.swift BlockDataLocation.swift KeySafety.swift DataMigration.swift BlockDataMove.swift NodeStorageMove.swift
 run prover-menu ProverMenuText.swift
 run key-safety Brand.swift Clock.swift NodeWatchdog.swift NodeStopReason.swift ArchiveMeasurement.swift BlockDataLocation.swift KeySafety.swift
 run release-approval ReleaseApproval.swift
@@ -51,4 +51,15 @@ run history History.swift AgentPolicy.swift
 # The Aether -> EastSea bridge app.
 W=apps/bridge/Sources; T=apps/bridge/Tests
 run bridge-plan BridgePlan.swift
+# Native identity fixtures need signed task-owned executables and arguments.
+if [ "$(uname -s)" = Darwin ]; then
+  for fixture in update-daemon update-listener; do
+    if bash "scripts/test-$fixture.sh" > "tmp/sw-$fixture.out" 2> "tmp/sw-$fixture.err"; then
+      echo "OK   $fixture"
+    else
+      echo "FAIL $fixture :: $(tail -2 "tmp/sw-$fixture.err") $(tail -2 "tmp/sw-$fixture.out")"
+      bad=$((bad+1))
+    fi
+  done
+fi
 exit $bad

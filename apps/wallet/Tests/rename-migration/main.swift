@@ -52,7 +52,7 @@ func makeOldSupport() -> (root: URL, defaults: UserDefaults) {
     try? FileManager.default.createDirectory(at: journal, withIntermediateDirectories: true)
     try? "vote-journal-bytes".write(to: journal.appending(path: "0"), atomically: true, encoding: .utf8)
     try? "dkg-round-0".write(to: node.appending(path: "dkg-agreement-genesis-0.journal"), atomically: true, encoding: .utf8)
-    FileManager.default.createFile(atPath: node.appending(path: "run.lock").path, contents: Data())
+    FileManager.default.createFile(atPath: node.appending(path: "run.lock").path, contents: Data("old-lock-sentinel".utf8))
     // The follower's database and its own endpoint key (release-070 review, L1).
     try? FileManager.default.createDirectory(at: node.appending(path: "follow"), withIntermediateDirectories: true)
     try? "follow-db".write(to: node.appending(path: "follow/state.redb"), atomically: true, encoding: .utf8)
@@ -163,8 +163,14 @@ do {
     expect(doneFlag(d), "done is set after the resumed migration verified every file")
     expect(DataMigration.fileMatches(root.appending(path: "Aether/node/data.db"), newNode.appending(path: "data.db")),
            "the truncated file was replaced with a verified copy")
-    expect(!FileManager.default.fileExists(atPath: newNode.appending(path: "run.lock").path),
-           "run.lock is never copied (a copied lock file is not a lock)")
+    let oldLock = root.appending(path: "Aether/node/run.lock")
+    let newLock = newNode.appending(path: "run.lock")
+    let oldLockInode = (try? FileManager.default.attributesOfItem(atPath: oldLock.path))?[.systemFileNumber] as? NSNumber
+    let newLockInode = (try? FileManager.default.attributesOfItem(atPath: newLock.path))?[.systemFileNumber] as? NSNumber
+    expect(oldLockInode != nil && newLockInode != nil && oldLockInode != newLockInode,
+           "the copied destination owns a separate run.lock")
+    expect((try? Data(contentsOf: newLock)) == Data(),
+           "the old lock contents were not copied into the destination lock")
     expect(FileManager.default.fileExists(atPath: root.appending(path: "Aether/node/run.lock").path),
            "the copy fallback keeps the old tree, lock and all")
     expect(FileManager.default.fileExists(atPath: root.appending(path: "Aether/node/MIGRATED-TO-EASTSEA").path),
@@ -693,7 +699,11 @@ do {
     expect(!fractions.isEmpty && fractions.allSatisfy { $0 > 0 && $0 <= 1 }, "progress was reported as a fraction: \(fractions)")
     expect(FileManager.default.fileExists(atPath: root2.appending(path: "Aether/node/MIGRATED-TO-EASTSEA").path),
            "the copied-from tree stays, marked")
-    expect(!FileManager.default.fileExists(atPath: root2.appending(path: "EastSea/node/run.lock").path), "run.lock was not copied")
+    let copiedLock = root2.appending(path: "EastSea/node/run.lock")
+    let lockFD = open(copiedLock.path, O_RDWR)
+    expect(lockFD >= 0 && flock(lockFD, LOCK_EX | LOCK_NB) == 0,
+           "the copied destination lock is independently usable and released after commit")
+    if lockFD >= 0 { close(lockFD) }
     cleanup(root2, d2)
 }
 
@@ -783,8 +793,12 @@ do {
     if case .deferred = runner.ensureFromMain() { expect(true, "the old app's lock defers the move") }
     else { expect(false, "a held lock must defer") }
     close(fd)
-    expect(runner.ensureFromMain() == .done, "once it quits, an inline run completes the move")
-    expect(reported.count == 2 && reported.last == .done, "the deferral and then the inline settle are each reported once: \(reported)")
+    let resumed = DispatchSemaphore(value: 0)
+    runner.onFinish = { reported.append($0); resumed.signal() }
+    runner.start()
+    expect(resumed.wait(timeout: .now() + 5) == .success && runner.ensureFromMain() == .done,
+           "once it quits, an explicit retry completes the move")
+    expect(reported.count == 2 && reported.last == .done, "the deferral and then the explicit settle are each reported once: \(reported)")
     let settledReport = DispatchSemaphore(value: 0)
     runner.onFinish = { reported.append($0); settledReport.signal() }
     runner.start()
@@ -830,9 +844,237 @@ do {
         expect(false, "28: an inline waitingForUnlock must reach onFinish: \(inline) \(outcomes)")
     }
     chmod(handle.path, 0o644)   // the unlock
-    expect(idle.ensureFromMain() == .done, "29: after the unlock the move completes")
+    let unlocked = DispatchSemaphore(value: 0)
+    idle.onFinish = { outcomes.append($0); unlocked.signal() }
+    idle.start()
+    expect(unlocked.wait(timeout: .now() + 5) == .success && idle.ensureFromMain() == .done,
+           "29: an explicit unlock retry completes the move")
     expect(DataMigration.fileMatches(handle, root.appending(path: "EastSeaWallet/enclave-key.dat")) && doneFlag(d),
            "29: the handle arrived byte for byte, and the move is done")
+    cleanup(root, d)
+}
+
+
+// R04. Proven node completion survives missing preferences. A retry may
+// finish the wallet tail, but must never restore stale node databases.
+do {
+    let (root, d) = makeOldSupport()
+    let node = root.appending(path: "EastSea/node")
+    try? FileManager.default.createDirectory(at: node, withIntermediateDirectories: true)
+    expect(migrate(root, d) == .done, "R04 fixture commits a copied migration")
+    try? "advanced-database".write(to: node.appending(path: "data.db"), atomically: true, encoding: .utf8)
+    try? "advanced-vote-journal".write(to: node.appending(path: "aether-consensus-r1/0"), atomically: true, encoding: .utf8)
+    d.removeObject(forKey: "renameMigrationDone")
+    d.removeObject(forKey: "renameNodeMigrationDone")
+    let fd = open(node.appending(path: "run.lock").path, O_RDWR | O_CREAT, 0o600)
+    expect(fd >= 0 && flock(fd, LOCK_EX | LOCK_NB) == 0, "R04 the advanced destination is running")
+    expect(migrate(root, d) == .done, "R04 a proven node completion retries only the small-file tail")
+    expect((try? String(contentsOf: node.appending(path: "data.db"), encoding: .utf8)) == "advanced-database",
+           "R04 completed retry preserves advanced destination database")
+    expect((try? String(contentsOf: node.appending(path: "aether-consensus-r1/0"), encoding: .utf8)) == "advanced-vote-journal",
+           "R04 completed retry preserves advanced destination consensus journal")
+    if fd >= 0 { close(fd) }
+    cleanup(root, d)
+}
+
+// R04. Unfinished synchronization needs ownership of both node roots.
+do {
+    let (root, d) = makeOldSupport()
+    let fm = FileManager.default
+    let node = root.appending(path: "EastSea/node")
+    try? fm.createDirectory(at: node, withIntermediateDirectories: true)
+    try? "destination-owned-database".write(to: node.appending(path: "data.db"), atomically: true, encoding: .utf8)
+    let fd = open(node.appending(path: "run.lock").path, O_RDWR | O_CREAT, 0o600)
+    expect(fd >= 0 && flock(fd, LOCK_EX | LOCK_NB) == 0, "R04 the unfinished destination lock is held")
+    let outcome = migrate(root, d)
+    if case .deferred = outcome { expect(true, "R04 a live destination defers unfinished synchronization") }
+    else { expect(false, "R04 a live destination defers unfinished synchronization: \(outcome)") }
+    expect((try? String(contentsOf: node.appending(path: "data.db"), encoding: .utf8)) == "destination-owned-database",
+           "R04 a busy destination remains unchanged")
+    expect(fm.fileExists(atPath: root.appending(path: "Aether/node/validator.key").path) && !doneFlag(d),
+           "R04 lock deferral keeps the old signer and completion state untouched")
+    if fd >= 0 { close(fd) }
+    expect(migrate(root, d) == .done, "R04 unfinished synchronization completes after the destination exits")
+    let names = (try? fm.contentsOfDirectory(atPath: node.path)) ?? []
+    let preserved = names.filter { $0.hasPrefix("data.db.eastsea-replaced-") }
+    expect(preserved.contains { (try? String(contentsOf: node.appending(path: $0), encoding: .utf8)) == "destination-owned-database" },
+           "R04 synchronization preserves destination data it did not create")
+    cleanup(root, d)
+}
+
+// R04. A committed source is stale recovery data if the new tree disappears.
+do {
+    let (root, d) = makeOldSupport()
+    let node = root.appending(path: "EastSea/node")
+    try? FileManager.default.createDirectory(at: node, withIntermediateDirectories: true)
+    expect(migrate(root, d) == .done, "R04 lost-destination fixture commits a copied migration")
+    try? FileManager.default.removeItem(at: node)
+    let outcome = migrate(root, d)
+    if case .failed = outcome { expect(true, "R04 a missing committed destination requires recovery") }
+    else { expect(false, "R04 a missing committed destination requires recovery: \(outcome)") }
+    expect(!FileManager.default.fileExists(atPath: node.path)
+           && DataMigration.mayStartNode(support: root, defaults: d) != nil,
+           "R04 disk loss cannot authorize a fresh node or restore stale databases")
+    cleanup(root, d)
+}
+
+
+// R05. Existing handles must use the same migration gate as new keys.
+// Opaque fixture bytes stand in for device-bound handles; no keychain opens.
+for name in ["enclave-key.dat", "simulator-software-key.dat"] {
+    let (root, d) = makeOldSupport()
+    let fm = FileManager.default
+    let old = root.appending(path: "AetherWallet/\(name)")
+    let new = root.appending(path: "EastSeaWallet/\(name)")
+    if name == "simulator-software-key.dat" {
+        try? fm.removeItem(at: root.appending(path: "AetherWallet/enclave-key.dat"))
+        try? "original-handle-A".write(to: old, atomically: true, encoding: .utf8)
+    }
+    try? fm.createDirectory(at: new.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try? "minted-handle-B".write(to: new, atomically: true, encoding: .utf8)
+    d.set(true, forKey: "renameMigrationDone")
+    expect(DataMigration.mayCreateFreshWalletKey(support: root, defaults: d) != nil,
+           "R05 existing conflicting \(name) waits for the authoritative migrated handle")
+    expect(DataMigration.unmigratedOldData(support: root).contains("AetherWallet/\(name)"),
+           "R05 conflicting \(name) is unfinished migration work despite completion flags")
+    expect(migrate(root, d) == .done, "R05 the original \(name) finishes moving")
+    expect(DataMigration.mayCreateFreshWalletKey(support: root, defaults: d) == nil
+           && DataMigration.fileMatches(old, new),
+           "R05 the wallet opens only after its authoritative \(name) settles")
+    let names = (try? fm.contentsOfDirectory(atPath: new.deletingLastPathComponent().path)) ?? []
+    expect(names.contains { $0.hasPrefix("\(name).eastsea-replaced-")
+           && (try? String(contentsOf: new.deletingLastPathComponent().appending(path: $0), encoding: .utf8)) == "minted-handle-B" },
+           "R05 the displaced \(name) remains recoverable")
+    cleanup(root, d)
+}
+
+// R05. Node-half completion must not hide a conflicting wallet tail.
+do {
+    let (root, d) = makeOldSupport()
+    let fm = FileManager.default
+    let node = root.appending(path: "EastSea/node")
+    try? fm.createDirectory(at: node, withIntermediateDirectories: true)
+    expect(migrate(root, d) == .done, "R05 the node-half fixture completes first")
+    try? "advanced-after-migration".write(to: node.appending(path: "data.db"), atomically: true, encoding: .utf8)
+    let old = root.appending(path: "AetherWallet/enclave-key.dat")
+    let new = root.appending(path: "EastSeaWallet/enclave-key.dat")
+    try? "minted-handle-B".write(to: new, atomically: true, encoding: .utf8)
+    expect(DataMigration.mayCreateFreshWalletKey(support: root, defaults: d) != nil,
+           "R05 a stale done flag cannot open wallet B while original A remains")
+    expect(migrate(root, d) == .done && DataMigration.fileMatches(old, new),
+           "R05 a completed node retries its conflicting wallet tail")
+    expect((try? String(contentsOf: node.appending(path: "data.db"), encoding: .utf8)) == "advanced-after-migration",
+           "R05 restoring wallet A preserves advanced node state")
+    chmod(old.path, 0o000)
+    expect(DataMigration.mayCreateFreshWalletKey(support: root, defaults: d) != nil,
+           "R05 an unreadable original handle cannot certify an existing handle")
+    chmod(old.path, 0o600)
+    cleanup(root, d)
+}
+
+
+// R13. A finish callback resolving routine paths must not schedule another
+// attempt at the same nonsettled migration. Exercise every outcome class.
+for problem in ["deferred", "failed", "waitingForUnlock"] {
+    let (root, d) = makeOldSupport()
+    let fm = FileManager.default
+    let node = root.appending(path: "EastSea/node")
+    var oldLockFD: Int32?
+    if problem == "deferred" {
+        let fd = open(root.appending(path: "Aether/node/run.lock").path, O_RDWR)
+        expect(fd >= 0 && flock(fd, LOCK_EX | LOCK_NB) == 0, "R13 deferral fixture holds the old lock")
+        oldLockFD = fd
+    } else if problem == "failed" {
+        let blocked = root.appending(path: "blocked-node")
+        try? fm.createDirectory(at: blocked, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: node.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? fm.createSymbolicLink(at: node, withDestinationURL: blocked)
+    } else {
+        try? fm.createDirectory(at: node, withIntermediateDirectories: true)
+        chmod(root.appending(path: "AetherWallet/enclave-key.dat").path, 0o000)
+    }
+    let runner = DataMigration.Runner(support: root, defaults: d, oldPreferencesDomain: noOldDomain, forceCopy: true)
+    let finished = DispatchSemaphore(value: 0)
+    let unexpectedRetryFinished = DispatchSemaphore(value: 0)
+    let observations = NSLock()
+    var starts = 0
+    var finishes = 0
+    var progressReports = 0
+    var final: DataMigration.Outcome?
+    var reentrant: DataMigration.Outcome?
+    runner.onStart = { observations.lock(); starts += 1; observations.unlock() }
+    runner.onProgress = { _ in observations.lock(); progressReports += 1; observations.unlock() }
+    runner.onFinish = { outcome in
+        observations.lock()
+        finishes += 1
+        let first = finishes == 1
+        observations.unlock()
+        if first {
+            let returned = runner.ensureFromMain()
+            observations.lock(); final = outcome; reentrant = returned; observations.unlock()
+            finished.signal()
+        } else {
+            unexpectedRetryFinished.signal()
+        }
+    }
+    runner.start()
+    expect(finished.wait(timeout: .now() + 10) == .success, "R13 \(problem) background outcome arrives")
+    observations.lock()
+    let cached = final, callbackRead = reentrant, initialStarts = starts
+    observations.unlock()
+    switch cached {
+    case .deferred? where problem == "deferred",
+         .failed? where problem == "failed",
+         .waitingForUnlock? where problem == "waitingForUnlock":
+        expect(true, "R13 fixture produces \(problem)")
+    default:
+        expect(false, "R13 fixture must produce \(problem): \(String(describing: cached))")
+    }
+    expect(callbackRead == cached && initialStarts == 1,
+           "R13 \(problem) completion callback reads its cached outcome without restarting")
+    // On the unfixed code, join the one extra background attempt before
+    // disposing of the fixture. The callback never recursively retries twice.
+    if case .running? = callbackRead {
+        expect(unexpectedRetryFinished.wait(timeout: .now() + 10) == .success,
+               "R13 the unexpected retry is joined before fixture cleanup")
+    }
+    observations.lock(); let beforeRoutineRead = progressReports; observations.unlock()
+    let offMainRead = runner.runNow()
+    observations.lock(); let afterRoutineRead = progressReports; observations.unlock()
+    expect(offMainRead == cached && beforeRoutineRead == afterRoutineRead,
+           "R13 \(problem) routine off-main reads reuse the cached outcome")
+    if let fd = oldLockFD, fd >= 0 { close(fd) }
+    if problem == "waitingForUnlock" { chmod(root.appending(path: "AetherWallet/enclave-key.dat").path, 0o600) }
+    cleanup(root, d)
+}
+
+
+// R13. A bounded retry interval is tested without sleeps or real wall time.
+do {
+    final class TestMigrationClock {
+        private let lock = NSLock()
+        private var value: TimeInterval = 1_000
+        func read() -> TimeInterval { lock.lock(); defer { lock.unlock() }; return value }
+        func advance(_ seconds: TimeInterval) { lock.lock(); value += seconds; lock.unlock() }
+    }
+    let clock = TestMigrationClock()
+    let (root, d) = makeOldSupport()
+    let runner = DataMigration.Runner(support: root, defaults: d, oldPreferencesDomain: noOldDomain,
+                                      retryInterval: 30, now: clock.read)
+    var reported: [DataMigration.Outcome] = []
+    runner.onFinish = { reported.append($0) }
+    let fd = open(root.appending(path: "Aether/node/run.lock").path, O_RDWR)
+    expect(fd >= 0 && flock(fd, LOCK_EX | LOCK_NB) == 0, "R13 timer fixture owns the old lock")
+    let deferred = runner.ensureFromMain()
+    if case .deferred = deferred { expect(true, "R13 timer fixture initially defers") }
+    else { expect(false, "R13 timer fixture must defer: \(deferred)") }
+    if fd >= 0 { close(fd) }
+    clock.advance(29)
+    expect(runner.ensureFromMain() == deferred && runner.runNow() == deferred && reported.count == 1,
+           "R13 routine reads wait for the bounded retry interval")
+    clock.advance(2)
+    expect(runner.ensureFromMain() == .done && reported.count == 2,
+           "R13 the next routine read retries after the bounded interval")
     cleanup(root, d)
 }
 

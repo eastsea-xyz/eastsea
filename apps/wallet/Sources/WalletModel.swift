@@ -228,21 +228,30 @@ final class WalletModel: ObservableObject {
         lastKeyAttempt = Date()
         do {
             let acct = try EnclaveAccount.loadOrCreate(requireUserPresence: true)
+            // Derive every identity value before publishing a replacement.
+            let nextAddress = try accountAddress(p256PublicKey: acct.publicKey)
+            let nextRecoveryCode = try recoveryKeyCode(p256PublicKey: acct.publicKey)
+            if address != nextAddress {
+                networkGeneration &+= 1
+                clearWalletAccountState()
+            }
             enclave = acct
-            address = try accountAddress(p256PublicKey: acct.publicKey)
+            address = nextAddress
+            recoveryCode = nextRecoveryCode
             keyError = nil
             loadSaved()
             outgoingRecovery = PendingRecovery.load()
             loadTokens()
-            recoveryCode = try recoveryKeyCode(p256PublicKey: acct.publicKey)
             keyLabel = acct.isSecureEnclave ? String(localized: "Key in the Secure Enclave") : String(localized: "Simulator: software key (no Secure Enclave)")
             note(acct.isSecureEnclave ? "Secure Enclave key ready. Signing asks for Touch ID / Face ID or your passcode." : "Simulator: software key (no Secure Enclave here). Use a real device for hardware-bound keys.")
         } catch {
+            // A failed reload must not retain a signer whose persisted handle
+            // was replaced by migration.
+            invalidateWalletIdentity()
             let locked = (error as NSError).code == Int(errSecInteractionNotAllowed)
             if case EnclaveAccount.KeyError.migrationPending = error {
                 // The old handle is still moving (often: waiting for an
                 // unlock, poc-m3 2026-10-07) — not a key failure.
-                let ko = Locale.preferredLanguages.first?.hasPrefix("ko") ?? false
                 keyError = String(localized: "Your wallet is still moving over from Aether. Unlock this Mac to finish — your wallet is safe.")
             } else if case EnclaveAccount.KeyError.keyUnavailable = error {
                 // The wallet exists but cannot be opened yet; retried from `refresh`.
@@ -252,6 +261,69 @@ final class WalletModel: ObservableObject {
             }
             note("Key error: \(error.localizedDescription)")
         }
+    }
+
+
+    /// The migration callback and the refresh timer share one identity path.
+    /// Success reloads the authoritative handle; a pending replacement closes
+    /// signing immediately without initiating another migration from here.
+    func migrationFinished(_ outcome: DataMigration.Outcome) {
+        switch outcome {
+        case .done, .noOldData:
+            loadKey()
+            refresh()
+        case .deferred, .failed, .waitingForUnlock, .running:
+            if DataMigration.mayCreateFreshWalletKey() != nil {
+                invalidateWalletIdentity()
+                keyError = String(localized: "Your wallet is still moving over from Aether. Unlock this Mac to finish — your wallet is safe.")
+            }
+        }
+    }
+
+    private func invalidateWalletIdentity() {
+        if enclave != nil || !address.isEmpty {
+            networkGeneration &+= 1
+            clearWalletAccountState()
+        }
+        enclave = nil
+        address = ""
+        recoveryCode = ""
+    }
+
+    /// Account reads in flight use networkGeneration; resetting it together
+    /// with this state prevents the previous wallet's results reappearing.
+    private func clearWalletAccountState() {
+        account = nil
+        verifyError = nil
+        verifyFailingSince = nil
+        history = []
+        activity = []
+        linkedWallets = []
+        incomingRecovery = nil
+        outgoingRecovery = nil
+        tokens = []
+        sendToken = nil
+        paymentRequest = nil
+        callRequest = nil
+        connectRequest = nil
+        resend = nil
+        resendRequest = nil
+        registration = nil
+        paperWords = nil
+        lastActivityHeight = nil
+        activityCursors = [:]
+        activityExhausted = []
+        chainRows = [:]
+        breakdown = nil
+        activityHistoryStart = nil
+        olderActivityAvailable = false
+        historyFailure = nil
+        pendingBalanceRises = []
+        activityLoading = false
+        tokenScanRunning = false
+        tokenChoicesForChain = nil
+        tokensUpdated = nil
+        tokensError = nil
     }
 
     /// Validators' node ids and the committee key, from the bundled network.json

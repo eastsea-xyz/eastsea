@@ -794,6 +794,13 @@ enum Cmd {
 }
 
 fn main() {
+    // Adopt before CLI dispatch or any unrelated helper can spawn. The guard
+    // lives until main exits, including parent death during writer startup.
+    let _writer_lease = aether_node::supervisor::inherited_writer_lease().unwrap_or_else(|e| {
+        eprintln!("refusing invalid supervisor writer lease: {e}");
+        std::process::exit(aether_node::supervisor::EXIT_LOCKED);
+    });
+    std::env::remove_var(aether_node::supervisor::WRITER_LEASE_ENV);
     let cli = Cli::parse();
     let res = match cli.cmd {
         Cmd::Node {
@@ -823,7 +830,7 @@ fn main() {
             resources,
         } => {
             if exit_with_parent {
-                exit_with_parent_process();
+                exit_with_parent_process(_writer_lease.as_ref().map(|lease| lease.expected_parent()));
             }
             // A seated validator whose key file is gone or unreadable stops
             // with its own exit code (red team #5): it must not be replaced by
@@ -972,7 +979,7 @@ fn main() {
         })(),
         Cmd::Follow { network, from_rpc, data, rpc_port, validators, exit_with_parent, candidate, dev_epoch_blocks, keys, checkpoint, dev_storage_fault, public_read_only, archive_export, node_key, history, resources } => {
             if exit_with_parent {
-                exit_with_parent_process();
+                exit_with_parent_process(_writer_lease.as_ref().map(|lease| lease.expected_parent()));
             }
             let keys = candidate.then(|| keys.unwrap_or_else(|| data.clone()));
             let export = follow_export(archive_export, &data);
@@ -1009,7 +1016,7 @@ fn main() {
             // First: the app's wake signal must never end the supervisor.
             aether_node::supervisor::install_wake_forwarding();
             if exit_with_parent {
-                exit_with_parent_process();
+                exit_with_parent_process(_writer_lease.as_ref().map(|lease| lease.expected_parent()));
             }
             tracing_subscriber::fmt()
                 .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,commonware=warn".into()))
@@ -1062,8 +1069,17 @@ fn main() {
                 if let Err(e) = aether_node::candidate::CandidateKeys::load_or_create(&dir) {
                     tracing::error!(%e, "aether run: this Mac's identity cannot be loaded; running as a follower");
                 }
-                bind_incoming_network(&dir, network.as_deref(), ceremony.as_deref())?;
-                aether_node::supervisor::adopt_network(&dir, network.as_deref().map(std::path::Path::new))?;
+                let chain_dir = chain_data.as_deref().map(std::path::Path::new);
+                // A durable adoption already passed preflight. Resume it
+                // before reading a source the interrupted move may have
+                // quarantined; bind_run_to_ceremony still checks the adopted
+                // file before any child starts.
+                if !aether_node::supervisor::resume_network_adoption(&dir, chain_dir)? {
+                    bind_incoming_network(&dir, network.as_deref(), ceremony.as_deref())?;
+                    aether_node::supervisor::adopt_network_with_chain_data(
+                        &dir, chain_dir, network.as_deref().map(std::path::Path::new),
+                    )?;
+                }
                 // A committee install a previous run did not finish (red team
                 // #19): complete it before the ceremony bind or any role decision reads the files.
                 if let Err(e) = aether_node::supervisor::finish_incomplete(&dir) {
@@ -1107,7 +1123,7 @@ fn main() {
                     chain_data: chain_data.map(Into::into),
                     archive,
                 }
-                .run()
+                .run(&_lock)
             })()
         }
         Cmd::CandidateRegister { data, registrar_rpc, rpc, from_dev, device_token, tip } => (|| {
@@ -1189,7 +1205,7 @@ fn main() {
         })(),
         Cmd::Reshare { from, to, epoch_end, epoch_end_hash, stage, via_node, port, data, round, peers, link_base, offline, exit_with_parent } => {
             if exit_with_parent {
-                exit_with_parent_process();
+                exit_with_parent_process(_writer_lease.as_ref().map(|lease| lease.expected_parent()));
             }
             let boundary = match (stage, epoch_end, epoch_end_hash) {
                 (true, _, _) => None,
@@ -2828,13 +2844,22 @@ fn validator_program(network: &str, rpc: Vec<String>, timeout: u64) -> Result<()
 }
 
 /// Leave no orphan: stop when the parent process is gone (reparented to launchd).
-fn exit_with_parent_process() {
-    let parent = std::os::unix::process::parent_id();
+fn initial_writer_parent(expected: Option<u32>, actual: u32) -> Option<u32> {
+    match expected {
+        Some(parent) if parent > 0 && parent == actual => Some(parent),
+        None if actual > 1 => Some(actual),
+        _ => None,
+    }
+}
+
+fn exit_with_parent_process(expected_parent: Option<u32>) {
+    // An explicitly leased PID 1 is valid for container-init supervisors;
+    // never substitute launchd for a sender that disappeared before startup.
+    let Some(parent) = initial_writer_parent(expected_parent, std::os::unix::process::parent_id())
+        else { std::process::exit(0) };
     std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_secs(1));
-        if std::os::unix::process::parent_id() != parent {
-            std::process::exit(0);
-        }
+        if !aether_node::supervisor::expected_parent_is_current(parent) { std::process::exit(0); }
+        std::thread::sleep(Duration::from_millis(100));
     });
 }
 
@@ -3772,6 +3797,19 @@ fn print_blocks(v: &Value) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn r06_explicit_pid1_and_missing_sender_have_distinct_parent_contracts() {
+        assert_eq!(super::initial_writer_parent(Some(1), 1), Some(1),
+            "R06 a validated explicit init supervisor remains supported");
+        assert_eq!(super::initial_writer_parent(None, 1), None,
+            "R06 missing sender never adopts launchd");
+        assert_eq!(super::initial_writer_parent(Some(42), 1), None,
+            "R06 late startup rejects the lost sender");
+        assert_eq!(super::initial_writer_parent(Some(42), 42), Some(42));
+        assert_eq!(super::initial_writer_parent(None, 42), Some(42));
+        assert_eq!(super::initial_writer_parent(Some(0), 0), None);
+    }
+
     /// `aether run --archive` spawns a follower that runs exactly like
     /// `aether archive`: the era export is on, so it neither starts from a
     /// snapshot nor jumps to one later (audit 7 A7-1).

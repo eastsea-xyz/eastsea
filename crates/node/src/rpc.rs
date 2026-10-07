@@ -885,6 +885,7 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                 // protocol than one scheduled looks for its update right away.
                 "protocol": f.next_protocol(),
                 "node_protocol": crate::upgrade::implements(),
+                "writer_lease_protocol": crate::supervisor::writer_lease_protocol(),
                 // Informational only: followers compare this verifier's guest
                 // against their prover before submitting proofs.
                 "prover_program": g.verifier.as_ref().and_then(|v| v.program_id()),
@@ -1315,6 +1316,11 @@ async fn call(st: &RpcState, method: &str, params: Value) -> Value {
 }
 
 #[cfg(test)]
+pub(crate) fn writer_lease_status_for_test() -> Value {
+    dispatch(&bare_state(), "aether_status", &json!([])).expect("fixture status routes")
+}
+
+#[cfg(test)]
 mod alias_tests {
     use super::*;
 
@@ -1551,6 +1557,10 @@ mod alias_tests {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let answer = rt.block_on(call(&st, "aether_status", json!([])));
         assert_eq!(answer["result"]["prover_program"], "validator-program");
+        assert_eq!(answer["result"].get("writer_lease_protocol"), Some(&json!(0)),
+            "R11 unleased status must explicitly report zero writer lease contract");
+        assert_ne!(answer["result"]["writer_lease_protocol"].as_u64(), Some(1),
+            "R11 unknown or unleased status cannot attest writer safety");
         let program = rt.block_on(call(&st, "aether_proverProgram", json!([])));
         assert_eq!(program["result"], "validator-program");
     }

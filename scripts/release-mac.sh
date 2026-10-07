@@ -41,7 +41,52 @@ if [ -n "${AETHER_RELEASE_LOG:-}" ]; then
   export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }--remap-path-prefix=$PWD=/aether-src"
   export OTHER_SWIFT_FLAGS="${OTHER_SWIFT_FLAGS:+$OTHER_SWIFT_FLAGS }-debug-prefix-map $PWD=/aether-src"
 fi
+# A clean build has no old node to retain. Obtain the previous release before
+# building, mount it read only, and pass that explicit input to the packager.
+# The temporary mount is detached before later release traps/publication run.
+rollback_work=""
+rollback_mounted=0
+cleanup_rollback_release() {
+  if [ "$rollback_mounted" = 1 ]; then
+    hdiutil detach -quiet "$rollback_work/mount" || return
+    rollback_mounted=0
+  fi
+  if [ -n "$rollback_work" ]; then rm -rf "${rollback_work:?}"; rollback_work=""; fi
+}
+if [ -z "${AETHER_PREVIOUS_APP:-}" ]; then
+  rollback_work=$(mktemp -d "$PWD/tmp/rollback-release.XXXXXX")
+  trap cleanup_rollback_release EXIT
+  mkdir "$rollback_work/mount"
+  prev_tag=${PREV_RELEASE_TAG:-}
+  previous_download=""
+  if [ -n "$prev_tag" ]; then
+    [ "$prev_tag" != "$tag" ] || { echo "REFUSED: previous release cannot be the release being built" >&2; exit 1; }
+    previous_download=$(mktemp -d "$rollback_work/download.XXXXXX")
+    gh release download "$prev_tag" --repo "$repo" --pattern 'EastSea-*.dmg' --dir "$previous_download"
+  else
+    for previous_tag in $(gh release list --repo "$repo" --exclude-drafts --exclude-pre-releases --limit 30 --json tagName --jq '.[].tagName'); do
+      [ "$previous_tag" = "$tag" ] && continue
+      candidate=$(mktemp -d "$rollback_work/download.XXXXXX")
+      if gh release download "$previous_tag" --repo "$repo" --pattern 'EastSea-*.dmg' --dir "$candidate"; then
+        prev_tag=$previous_tag; previous_download=$candidate; break
+      fi
+    done
+  fi
+  [ -n "$prev_tag" ] && [ -n "$previous_download" ] || { echo "REFUSED: no previous EastSea release found for rollback" >&2; exit 1; }
+  shopt -s nullglob
+  previous_dmgs=("$previous_download"/EastSea-*.dmg)
+  shopt -u nullglob
+  [ "${#previous_dmgs[@]}" -eq 1 ] || { echo "REFUSED: previous release must have exactly one EastSea DMG" >&2; exit 1; }
+  # Set the state before attach so an interrupted/partly successful attach
+  # cannot make cleanup recurse into a still-mounted previous release.
+  rollback_mounted=1
+  hdiutil attach -quiet -readonly -nobrowse -mountpoint "$rollback_work/mount" "${previous_dmgs[0]}"
+  export AETHER_PREVIOUS_APP="$rollback_work/mount/EastSea.app"
+  export PREV_RELEASE_TAG="$prev_tag"
+fi
 AETHER_VERSION="$version" SIGN_IDENTITY="Developer ID Application: Pipln (45WU468FZE)" scripts/package-mac.sh
+cleanup_rollback_release
+trap - EXIT
 # Same app to macOS as the previous release (bundle id, team, designated
 # requirement), and no silent Terms bump: otherwise refuse before anything is
 # signed for Sparkle or published (scripts/release-identity-gate.sh).

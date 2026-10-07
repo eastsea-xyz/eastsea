@@ -20,6 +20,9 @@ enum BlockDataLocation {
     /// Files inside those folders that are keys and stay on the internal
     /// disk: the follower's endpoint key (`wallet-node.key`).
     static let keepInternal: Set<String> = ["wallet-node.key"]
+    /// Reserved key names stay internal even when APFS stores a casing alias.
+    /// Folding conservatively also retains an unused alias on a case-sensitive disk.
+    static func keepsInternal(_ name: String) -> Bool { keepInternal.contains(name.lowercased()) }
     /// Formats the node can live on: APFS and Mac OS Extended. exFAT/FAT
     /// lack the locking and the crash safety the database needs; network
     /// shares come and go.
@@ -100,6 +103,38 @@ enum BlockDataLocation {
     /// already is one is used as is).
     static func chainDir(picked: URL) -> URL {
         picked.lastPathComponent == folderName ? picked : picked.appendingPathComponent(folderName, isDirectory: true)
+    }
+
+    /// Resolve existing ancestors too when the proposed leaf does not exist.
+    static func resolvedRoot(_ url: URL) -> URL {
+        var ancestor = url.standardizedFileURL
+        var suffix: [String] = []
+        while !FileManager.default.fileExists(atPath: ancestor.path), ancestor.pathComponents.count > 1 {
+            suffix.insert(ancestor.lastPathComponent, at: 0)
+            ancestor.deleteLastPathComponent()
+        }
+        return suffix.reduce(ancestor.resolvingSymlinksInPath()) { $0.appendingPathComponent($1) }.standardizedFileURL
+    }
+
+    /// Copy and cleanup roots must never overlap in either direction.
+    static func disjoint(_ a: URL, _ b: URL) -> Bool {
+        let x = resolvedRoot(a).path, y = resolvedRoot(b).path
+        return x != y && !x.hasPrefix(y + "/") && !y.hasPrefix(x + "/") && x != "/" && y != "/"
+    }
+
+    /// Existing chain data is never merged into or made rollback cargo.
+    /// The default home may already contain the endpoint key kept internal.
+    static func destinationAvailable(_ root: URL, preservingInternalKeys: Bool) -> Bool {
+        let fm = FileManager.default
+        guard (try? fm.destinationOfSymbolicLink(atPath: root.path)) == nil else { return false }
+        for name in movedDirs {
+            let dir = root.appendingPathComponent(name)
+            if (try? fm.destinationOfSymbolicLink(atPath: dir.path)) != nil { return false }
+            guard fm.fileExists(atPath: dir.path) else { continue }
+            guard preservingInternalKeys, let entries = try? fm.contentsOfDirectory(atPath: dir.path),
+                  entries.allSatisfy({ keepsInternal($0) }) else { return false }
+        }
+        return true
     }
 
     /// The node flags for the stored choices, appended to the shared argv.

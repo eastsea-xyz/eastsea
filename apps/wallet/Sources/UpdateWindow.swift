@@ -16,8 +16,8 @@ import Foundation
 /// Once N1 lands, the caller passes the node's answer and the slot decides.
 enum UpdateWindow {
     struct Moment: Equatable {
-        /// This Mac's node runs and the chain has it in the active committee.
-        var seated = false
+        /// Fresh membership of the running node; nil means unknown.
+        var seated: Bool? = nil
         /// The chain-assigned restart slot: true inside it, false outside it,
         /// nil while the node does not publish one (N1 not built).
         var inOwnSlot: Bool? = nil
@@ -36,6 +36,7 @@ enum UpdateWindow {
         case signing = "a Touch ID prompt or signing is in flight"
         case migration = "the data migration is running"
         case storageMove = "the block data is moving"
+        case membershipUnknown = "this Mac's current voting membership is unknown"
         case outOfSlot = "this validator is outside its restart slot"
         case seatedNoSlot = "this Mac is in the active committee and the chain publishes no restart slot yet; installing when it leaves the committee, or at quit"
 
@@ -47,13 +48,69 @@ enum UpdateWindow {
         case wait(Reason)
     }
 
+    /// A successful membership read grants permission only briefly. The
+    /// monotonic timestamp is the request start, so a delayed response never
+    /// looks freshly observed. Node lifecycle changes invalidate its generation.
+    struct MembershipSnapshot {
+        static let maxAge: TimeInterval = 15
+        private(set) var generation: UInt64 = 0
+        private var membership: Bool?
+        private var requestedAt: TimeInterval?
+
+        init() {}
+
+        mutating func invalidate() {
+            generation &+= 1
+            membership = nil
+            requestedAt = nil
+        }
+
+        @discardableResult
+        mutating func observe(_ seated: Bool?, requestedAt: TimeInterval, generation: UInt64) -> Bool {
+            guard generation == self.generation else { return false }
+            membership = seated
+            self.requestedAt = seated == nil ? nil : requestedAt
+            return true
+        }
+
+        func value(at now: TimeInterval) -> Bool? {
+            guard let requestedAt, now >= requestedAt,
+                  now - requestedAt <= Self.maxAge else { return nil }
+            return membership
+        }
+    }
+
+    /// Only a complete, valid voting set can confirm this key is absent.
+    /// Followers forward aether_network to a validator. Transport failures,
+    /// null responses and malformed member rows remain unknown.
+    static func votingMembership(network: Any?, validatorKey: String) -> Bool? {
+        func normalizedKey(_ text: String) -> String? {
+            let lower = text.lowercased()
+            let key = lower.hasPrefix("0x") ? String(lower.dropFirst(2)) : lower
+            guard key.utf8.count == 64,
+                  key.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else { return nil }
+            return key
+        }
+        guard let mine = normalizedKey(validatorKey),
+              let object = network as? [String: Any],
+              let members = object["validators"] as? [[String: Any]],
+              !members.isEmpty else { return nil }
+        var keys = Set<String>()
+        for member in members {
+            guard let raw = member["key"] as? String, let key = normalizedKey(raw),
+                  keys.insert(key).inserted else { return nil }
+        }
+        return keys.contains(mine)
+    }
+
     static func decide(_ m: Moment) -> Decision {
         // Whatever the user is doing comes first, validator or not.
         if m.sendSheetOpen { return .wait(.sendSheet) }
         if m.signing { return .wait(.signing) }
         if m.migrating { return .wait(.migration) }
         if m.storageMoving { return .wait(.storageMove) }
-        guard m.seated else { return .installNow }
+        guard let seated = m.seated else { return .wait(.membershipUnknown) }
+        guard seated else { return .installNow }
         switch m.inOwnSlot {
         case true?: return .installNow
         case false?: return .wait(.outOfSlot)

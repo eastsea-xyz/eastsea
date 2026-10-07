@@ -11,6 +11,41 @@ extension NodeController {
     /// UserDefaults: the old chain root to clear once the node runs from the new one.
     static let cleanupKey = "nodeChainDataCleanup"
 
+    /// Claim the storage source only after proving a current writer lease.
+    /// The marker is already suspended; the caller owns the returned fd.
+    func acquireStorageMoveOwnership() async -> Int32? {
+        guard storageMovePercent != nil, !updateInProgress, !Task.isCancelled else { return nil }
+        let ownPID = process?.processIdentifier
+        let daemonPID = unattended?.runningNodePID
+        let wasAttached = attached
+        if let ownPID, let daemonPID, ownPID != daemonPID { return nil }
+        if let rootPID = ownPID ?? daemonPID {
+            guard let expected = Self.helperBinaryURL,
+                  let sample = await LocalRPC.callVerified(rootPID: rootPID, port: Self.port, expected: expected,
+                                                          method: "aether_status", params: []),
+                  NodeReleaseIdentity.hasWriterLease(status: sample.value),
+                  !Task.isCancelled, !updateInProgress, storageMovePercent != nil,
+                  process?.processIdentifier == ownPID, unattended?.runningNodePID == daemonPID,
+                  attached == wasAttached,
+                  NodeReleaseIdentity.matches(binding: sample.binding, port: Self.port, expected: expected) else { return nil }
+            stop(keepSwitch: true)
+            if let daemonPID { unattended?.stopDaemonNode(expectedPID: daemonPID) }
+            guard let fd = await BlockDataMove.holdRunLock(in: Self.dataDir, timeout: Self.storageMoveLockTimeout) else { return nil }
+            guard !Task.isCancelled, !updateInProgress, storageMovePercent != nil else { close(fd); return nil }
+            return fd
+        }
+        // No claimed parent is not proof of absence. Never wait for an
+        // unknown parent to disappear and leave an unleased child writing.
+        guard !wasAttached, await LocalRPC.endpointIsAbsent(port: Self.port),
+              !Task.isCancelled, !updateInProgress, storageMovePercent != nil,
+              process == nil, unattended?.runningNodePID == nil, !attached,
+              let fd = await BlockDataMove.holdRunLock(in: Self.dataDir, timeout: 0) else { return nil }
+        guard !Task.isCancelled, !updateInProgress, storageMovePercent != nil,
+              process == nil, unattended?.runningNodePID == nil, !attached else { close(fd); return nil }
+        stop(keepSwitch: true)
+        return fd
+    }
+
     /// The chain-data root in use: the chosen folder, or the node's data folder.
     var chainRoot: URL {
         chainDataPath.isEmpty ? Self.dataDir : URL(fileURLWithPath: chainDataPath, isDirectory: true)
@@ -20,11 +55,14 @@ extension NodeController {
     /// that is not there means its disk is not connected; the node is never
     /// started at a path that would land on the internal disk.
     func blockDataStorageState() -> NodeStorageState {
-        guard !chainDataPath.isEmpty else { return .standard }
+        let pinned = BlockDataMove.selectionAvailable(BlockDataLocation.resolvedRoot(chainRoot), internalRoot: Self.dataDir)
+        guard !chainDataPath.isEmpty else {
+            return pinned ? .standard : .chosen(volume: String(localized: "Block data"), mounted: false, writable: false)
+        }
         let url = URL(fileURLWithPath: chainDataPath, isDirectory: true)
         let volume = BlockDataLocation.volumeName(ofPath: chainDataPath) ?? url.deletingLastPathComponent().lastPathComponent
         var isDir: ObjCBool = false
-        let mounted = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
+        let mounted = pinned && FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
         return .chosen(volume: volume, mounted: mounted, writable: mounted && Self.canWrite(in: url))
     }
 
@@ -32,8 +70,8 @@ extension NodeController {
     /// The first one on a removable disk is what raises the system's
     /// "EastSea wants to access files on a removable volume" prompt.
     nonisolated static func canWrite(in dir: URL) -> Bool {
-        let probe = dir.appendingPathComponent(".eastsea-write-check")
-        guard FileManager.default.createFile(atPath: probe.path, contents: Data()) else { return false }
+        let probe = dir.appendingPathComponent(".eastsea-write-check-\(UUID().uuidString)")
+        guard (try? Data().write(to: probe, options: .withoutOverwriting)) != nil else { return false }
         try? FileManager.default.removeItem(at: probe)
         return true
     }
@@ -75,8 +113,11 @@ extension NodeController {
     func problem(with picked: URL) -> String? {
         let ko = HealthCheck.korean
         let dest = BlockDataLocation.chainDir(picked: picked)
-        if dest.standardizedFileURL.path == chainRoot.standardizedFileURL.path {
+        if !BlockDataLocation.disjoint(dest, chainRoot) {
             return BlockDataLocation.sentence(.inUse, ko: ko)
+        }
+        guard BlockDataLocation.destinationAvailable(dest, preservingInternalKeys: false) else {
+            return String(localized: "This folder already holds block data. Pick an empty folder; existing data will be kept.")
         }
         guard let v = Self.volume(of: picked) else {
             return String(localized: "This place cannot be read. Pick another folder.")
@@ -103,7 +144,6 @@ extension NodeController {
 
     /// NSOpenPanel → validate → move.
     func chooseBlockDataLocation() {
-        let ko = HealthCheck.korean
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
@@ -122,58 +162,71 @@ extension NodeController {
 
     /// Move the block data to `dest` (nil: back to the default place).
     func moveBlockData(to dest: URL?) {
-        guard storageMovePercent == nil else { return }
-        let source = chainRoot
-        let target = dest ?? Self.dataDir
-        guard source.standardizedFileURL.path != target.standardizedFileURL.path else { return }
-        let ko = HealthCheck.korean
+        guard storageMovePercent == nil, !updateInProgress else { return }
+        let source = BlockDataLocation.resolvedRoot(chainRoot)
+        let target = BlockDataLocation.resolvedRoot(dest ?? Self.dataDir)
+        guard let sourceID = BlockDataMove.identity(source) else {
+            storageMoveError = String(localized: "The source disk is unavailable. Reconnect it before moving the block data.")
+            return
+        }
+        guard BlockDataLocation.disjoint(source, target) else {
+            storageMoveError = String(localized: "Pick a folder outside the current block data. The two locations cannot contain each other.")
+            return
+        }
+        guard BlockDataLocation.destinationAvailable(target, preservingInternalKeys: dest == nil)
+                || BlockDataMove.canResume(source: source, target: target, internalRoot: Self.dataDir) else {
+            storageMoveError = String(localized: "This folder already holds block data. Pick an empty folder; existing data will be kept.")
+            return
+        }
         storageMoveError = nil
         storageMoveOffersDiskUtility = false
         storageMovePercent = 0
         logEvent("storage", "moving block data from \(source.path) to \(target.path)")
-        // Stop whichever node runs on it: ours, or the daemon's we attached to.
-        if attached { unattended?.stopDaemonNode() }
-        stop(keepSwitch: true)
+        // Suspend before shutdown: the daemon may otherwise restart the
+        // source while a large database copy is still working.
+        if let daemon = unattended, !daemon.suspendRespawn() {
+            storageMoveError = String(localized: "The node could not pause automatic restarts. The block data is still where it was.")
+            storageMovePercent = nil
+            daemon.resumeRespawn()
+            return
+        }
         let dataDir = Self.dataDir
-        let creating = dest.map { !FileManager.default.fileExists(atPath: $0.path) } ?? false
-        Task.detached {
-            // The node lets go of run.lock when it has really exited.
-            for _ in 0..<120 where Self.lockHeld(in: dataDir) { try? await Task.sleep(nanoseconds: 500_000_000) }
-            let fm = FileManager.default
-            var ok = (try? fm.createDirectory(at: target, withIntermediateDirectories: dest == nil)) != nil
-                || fm.fileExists(atPath: target.path)
-            let dirs = BlockDataLocation.movedDirs.filter { fm.fileExists(atPath: source.appendingPathComponent($0).path) }
-            let total = dirs.reduce(UInt64(0)) { $0 + Self.treeBytes(source.appendingPathComponent($1)) }
-            let meter = DataMigration.ProgressMeter { f in
-                Task { @MainActor in self.storageMovePercent = min(99, Int(f * 100)) }
+        Task { @MainActor in
+            // A released parent lock cannot prove legacy children are gone.
+            // Fresh signed lease preflight precedes every source shutdown.
+            guard let moveFD = await self.acquireStorageMoveOwnership() else {
+                self.storageMoveError = String(localized: "The running node could not be stopped safely. The move was cancelled; the block data is still where it was.")
+                self.storageMovePercent = nil
+                self.unattended?.resumeRespawn()
+                self.applyPower()
+                return
             }
-            meter.expect(Int64(total) * 3)   // read, hash, hash (DataMigration.copyWork)
-            for d in dirs where ok {
-                ok = DataMigration.syncTreeVerified(source.appendingPathComponent(d), target.appendingPathComponent(d), meter: meter)
-            }
-            if ok {
-                // Keys stay on the internal disk: a copied key is removed.
-                for d in dirs {
-                    for name in BlockDataLocation.keepInternal {
-                        try? fm.removeItem(at: target.appendingPathComponent(d).appendingPathComponent(name))
+            Task.detached {
+                let total = BlockDataLocation.movedDirs.reduce(UInt64(0)) { $0 + Self.treeBytes(source.appendingPathComponent($1)) }
+                let meter = DataMigration.ProgressMeter { f in
+                    Task { @MainActor in
+                        if self.storageMovePercent != nil { self.storageMovePercent = min(99, Int(f * 100)) }
                     }
                 }
-            }
-            await MainActor.run {
-                if ok {
-                    self.chainDataPath = dest?.path ?? ""
-                    UserDefaults.standard.set(source.path, forKey: Self.cleanupKey)
-                    self.logEvent("storage", "copied and verified \(NodeStopReason.gb(total)); the node now uses \(target.path)")
-                } else {
-                    // Nothing switched: the old copy is untouched and stays in use.
-                    for d in dirs where dest != nil { try? fm.removeItem(at: target.appendingPathComponent(d)) }
-                    if creating, let dest { try? fm.removeItem(at: dest) }
-                    self.storageMoveError = String(localized: "The move did not complete: the copy did not verify or space ran out. The block data is still where it was.")
-                    self.logEvent("storage", "move failed; staying on \(source.path)")
+                meter.expect(Int64(total) * 3)
+                let copied = (try? BlockDataMove.copy(source: source, target: target, sourceID: sourceID,
+                                                     internalRoot: dataDir, preservingInternalKeys: dest == nil, meter: meter)) != nil
+                await MainActor.run {
+                    if copied {
+                        self.chainDataPath = dest?.path ?? ""
+                        self.logEvent("storage", "copied and verified \(NodeStopReason.gb(total)); the node now uses \(target.path)")
+                    } else {
+                        // Nothing switched: the old copy is untouched and stays in use.
+                        self.storageMoveError = String(localized: "The move did not complete: the copy did not verify or space ran out. The block data is still where it was.")
+                        self.logEvent("storage", "move failed; staying on \(source.path)")
+                    }
+                    // The durable record and UI selection are settled. Release
+                    // before either daemon or app tries to start the replacement.
+                    close(moveFD)
+                    self.storageMovePercent = nil
+                    self.unattended?.resumeRespawn()
+                    self.applyPower()
                 }
-                self.storageMovePercent = nil
-                self.unattended?.syncMarker()
-                self.applyPower()
             }
         }
     }
@@ -181,27 +234,10 @@ extension NodeController {
     /// The node answered from its new place: only now does the old copy go
     /// (its block-data folders only — never the keys, never anything else).
     func finishBlockDataMove() {
-        guard let old = UserDefaults.standard.string(forKey: Self.cleanupKey) else { return }
-        UserDefaults.standard.removeObject(forKey: Self.cleanupKey)
-        let oldRoot = URL(fileURLWithPath: old, isDirectory: true)
-        guard oldRoot.standardizedFileURL.path != chainRoot.standardizedFileURL.path else { return }
-        logEvent("storage", "the node runs from \(chainRoot.path); removing the old copy at \(old)")
-        Task.detached {
-            let fm = FileManager.default
-            for d in BlockDataLocation.movedDirs {
-                let dir = oldRoot.appendingPathComponent(d)
-                let names = (try? fm.contentsOfDirectory(atPath: dir.path)) ?? []
-                for name in names where !BlockDataLocation.keepInternal.contains(name) {
-                    try? fm.removeItem(at: dir.appendingPathComponent(name))
-                }
-                if ((try? fm.contentsOfDirectory(atPath: dir.path)) ?? []).isEmpty { try? fm.removeItem(at: dir) }
-            }
-            // A chosen folder we made, now empty, goes too.
-            if oldRoot.lastPathComponent == BlockDataLocation.folderName,
-               ((try? fm.contentsOfDirectory(atPath: oldRoot.path)) ?? []).allSatisfy({ $0 == ".DS_Store" }) {
-                try? fm.removeItem(at: oldRoot)
-            }
-        }
+        // Legacy path-only records carry no proof and authorize no deletion.
+        Self.storageMoveDefaults.removeObject(forKey: Self.cleanupKey)
+        let target = BlockDataLocation.resolvedRoot(chainRoot), internalRoot = Self.dataDir
+        Task.detached { BlockDataMove.cleanup(confirmedTarget: target, internalRoot: internalRoot) }
     }
 
     /// Turn archive off: back to a normal follower; the archive's extra

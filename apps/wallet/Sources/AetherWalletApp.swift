@@ -150,6 +150,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var heldInstall: (() -> Void)?
     private var heldVersion = ""
     private var heldReason: UpdateWindow.Reason?
+    private var updateShutdownTask: Task<Void, Never>?
+    private var updateShutdownID: UUID?
+    private var updateShutdownReady = false
     static let updateLog = Logger(subsystem: "com.pipln.eastsea", category: "update")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -200,6 +203,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.model = model
         let check: () -> Void = { [weak self] in self?.updater.updater.checkForUpdatesInBackground() }
         node.onUpgradeNeeded = check
+        node.onUpdateMomentChanged = { [weak self] in self?.installIfSafe() }
         model.onOutdated = check
         pauseWatch = model.$chainPausedSince
             .removeDuplicates { ($0 == nil) == ($1 == nil) }
@@ -231,8 +235,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         node.restore()
         // A slow data move finishing in the background (M1) lets the node
         // start at once instead of at the next 30 s power tick.
-        migration.onFinish = { [weak node] _ in
-            MainActor.assumeIsolated { node?.migrationFinished() }
+        migration.onFinish = { [weak node, weak model] outcome in
+            MainActor.assumeIsolated {
+                model?.migrationFinished(outcome)
+                // Failed node moves stay stopped. A completed node half may
+                // resume while the protected wallet handle waits for unlock.
+                if DataMigration.mayStartNode() == nil { node?.migrationFinished() }
+            }
         }
         // An old Aether (<= 0.6.6) beside EastSea opens at login, holds the
         // old data's run.lock and runs a second node (B2): ask once to quit
@@ -257,13 +266,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         MainActor.assumeIsolated {
             updateTickTimer?.invalidate()
-            // Sparkle installs a held update at termination (no relaunch):
-            // record it, or the next launch would read it as a lost download.
-            if heldInstall != nil {
-                heldInstall = nil
-                Self.updateLog.notice("installing \(self.heldVersion, privacy: .public) at quit")
-                tracker.installing()
-            }
+            // Update termination was approved only after the async shutdown
+            // acquired run.lock. Ordinary quit retains the daemon's behavior.
             node?.stop()
         }
     }
@@ -273,8 +277,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// retry is due. The decisions live in `UpdateTracker`.
     @MainActor private func updateTick() {
         tracker.tick()
-        if let node, node.state == .running || node.state == .starting {
-            tracker.nodeRunning()
+        if let node {
+            tracker.nodeRunning(running: node.state == .running && node.rpcAnswering,
+                                releaseVerified: node.updateReleaseVerified && !node.usePreviousBinary)
         }
         if tracker.retryDue() { updater.updater.checkForUpdatesInBackground() }
         installIfSafe()
@@ -285,19 +290,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Install the held update if this is a safe moment (`UpdateWindow`).
     /// Runs when Sparkle hands over the update and on every 30 s tick.
     @MainActor private func installIfSafe() {
-        guard let install = heldInstall else { return }
+        guard updateShutdownTask == nil, let install = heldInstall else { return }
         // Before `start` the node and wallet are unknown: wait for the tick.
         guard let node, let model else { return }
-        let moment = UpdateWindow.Moment(
-            seated: node.isValidator,
-            // N1 (aether_status.restart) is not built: no chain-assigned slot
-            // yet, so a seated Mac waits until it leaves the committee or quits.
-            inOwnSlot: nil,
-            sendSheetOpen: model.sendSheetOpen,
-            signing: model.busy,
-            migrating: migration.moving,
-            // The block-data move (claude/node-status-storage) wires in here.
-            storageMoving: false)
+        node.refreshUpdateMembership()
+        let moment = updateMoment(node: node, model: model)
         switch UpdateWindow.decide(moment) {
         case .wait(let reason):
             if heldReason != reason {
@@ -305,15 +302,84 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 Self.updateLog.notice("\(reason.logLine, privacy: .public)")
             }
         case .installNow:
-            heldInstall = nil
-            heldReason = nil
-            Self.updateLog.notice("installing \(self.heldVersion, privacy: .public); relaunching without a prompt")
-            // The record must say "installing" before the block runs: the app
-            // can be killed inside it, and the next launch decides by
-            // comparing versions (red team #11).
-            tracker.installing()
-            syncUpdateNotice()
-            install()
+            beginUpdateShutdown(install: install, quit: false)
+        }
+    }
+
+    @MainActor private func updateMoment(node: NodeController, model: WalletModel) -> UpdateWindow.Moment {
+        return UpdateWindow.Moment(
+            seated: node.updateMembership,
+            // N1 (aether_status.restart) is not built: no chain-assigned slot
+            // yet, so a seated Mac waits until it leaves the committee or quits.
+            inOwnSlot: nil,
+            sendSheetOpen: model.sendSheetOpen,
+            signing: model.busy,
+            migrating: migration.moving,
+            // The block-data move (claude/node-status-storage) wires in here.
+            storageMoving: node.storageMovePercent != nil)
+    }
+
+    /// AppKit asks this before willTerminate. A held Sparkle update cannot
+    /// bypass the same storage/signing/membership gate merely because we quit.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        MainActor.assumeIsolated {
+            guard !migration.moving, node?.storageMovePercent == nil, model?.busy != true else {
+                if updateShutdownReady {
+                    updateShutdownReady = false
+                    self.node?.abortUpdatePreparation()
+                    tracker.aborted(networkError: false)
+                    syncUpdateNotice()
+                }
+                return .terminateCancel
+            }
+            if updateShutdownReady {
+                guard let node, let model, UpdateWindow.decide(updateMoment(node: node, model: model)) == .installNow else {
+                    updateShutdownReady = false
+                    self.node?.abortUpdatePreparation()
+                    tracker.aborted(networkError: false)
+                    syncUpdateNotice()
+                    return .terminateCancel
+                }
+                return .terminateNow
+            }
+            guard let install = heldInstall else { return .terminateNow }
+            guard updateShutdownTask == nil, let node, let model,
+                  UpdateWindow.decide(updateMoment(node: node, model: model)) == .installNow else { return .terminateCancel }
+            beginUpdateShutdown(install: install, quit: true)
+            return .terminateLater
+        }
+    }
+
+    @MainActor private func beginUpdateShutdown(install: @escaping () -> Void, quit: Bool) {
+        guard updateShutdownTask == nil, let node else { return }
+        let version = heldVersion
+        let id = UUID()
+        updateShutdownID = id
+        updateShutdownTask = Task { @MainActor [weak self, weak node] in
+            guard let self, let node else { return }
+            let prepared = await node.prepareForUpdate()
+            guard self.updateShutdownID == id else {
+                if quit { NSApp.reply(toApplicationShouldTerminate: false) }
+                return
+            }
+            self.updateShutdownTask = nil
+            self.updateShutdownID = nil
+            guard prepared, !Task.isCancelled, self.heldInstall != nil, self.heldVersion == version,
+                  let model = self.model,
+                  UpdateWindow.decide(self.updateMoment(node: node, model: model)) == .installNow else {
+                node.abortUpdatePreparation()
+                if quit { NSApp.reply(toApplicationShouldTerminate: false) }
+                return
+            }
+            // run.lock remains held, with CLOEXEC, until this process dies.
+            // The root stub is suppressed and the app cannot start a writer.
+            self.updateShutdownReady = true
+            self.heldInstall = nil
+            self.heldReason = nil
+            self.tracker.installing()
+            self.syncUpdateNotice()
+            if quit { NSApp.reply(toApplicationShouldTerminate: true) }
+            else { install() }
         }
     }
 
@@ -386,6 +452,11 @@ extension AppDelegate: SPUUpdaterDelegate {
             guard let self else { return }
             let ns = error as NSError
             guard ns.domain != "AetherReleaseApproval" else { return }
+            self.updateShutdownTask?.cancel()
+            self.updateShutdownTask = nil
+            self.updateShutdownID = nil
+            self.updateShutdownReady = false
+            self.node?.abortUpdatePreparation()
             self.tracker.aborted(networkError: ns.domain == NSURLErrorDomain
                 || ns.underlyingErrors.contains { ($0 as? NSError)?.domain == NSURLErrorDomain })
             self.syncUpdateNotice()

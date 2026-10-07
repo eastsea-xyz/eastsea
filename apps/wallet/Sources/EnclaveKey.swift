@@ -50,8 +50,10 @@ struct EnclaveAccount {
         #if WALLET_SCREENS
         fatalError("the screens renderer never opens the keychain")
         #endif
+        let settledStoreURL = storeURL
+        if let why = DataMigration.mayCreateFreshWalletKey() { throw KeyError.migrationPending(why) }
         #if targetEnvironment(simulator)
-        let url = storeURL.deletingLastPathComponent().appendingPathComponent("simulator-software-key.dat")
+        let url = settledStoreURL.deletingLastPathComponent().appendingPathComponent("simulator-software-key.dat")
         if FileManager.default.fileExists(atPath: url.path) {
             guard let data = try? Data(contentsOf: url), let k = try? P256.Signing.PrivateKey(rawRepresentation: data) else {
                 throw KeyError.keyUnavailable("unreadable simulator key")
@@ -68,9 +70,9 @@ struct EnclaveAccount {
         // now, fail and let the caller retry — never fall through to making a
         // new key, which would overwrite the handle and orphan the address
         // (red team 2026-09-29, self-healing review #8).
-        if FileManager.default.fileExists(atPath: storeURL.path) {
+        if FileManager.default.fileExists(atPath: settledStoreURL.path) {
             let data: Data
-            do { data = try Data(contentsOf: storeURL) } catch { throw KeyError.keyUnavailable(error.localizedDescription) }
+            do { data = try Data(contentsOf: settledStoreURL) } catch { throw KeyError.keyUnavailable(error.localizedDescription) }
             do {
                 let key = try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: data)
                 return EnclaveAccount(key: .enclave(key), requiresUserPresence: requireUserPresence)
@@ -87,7 +89,7 @@ struct EnclaveAccount {
         }
         let key = try SecureEnclave.P256.Signing.PrivateKey(accessControl: access)
         // First key only: refuse to replace a handle that appeared meanwhile.
-        try key.dataRepresentation.write(to: storeURL, options: [.withoutOverwriting, .completeFileProtection])
+        try key.dataRepresentation.write(to: settledStoreURL, options: [.withoutOverwriting, .completeFileProtection])
         return EnclaveAccount(key: .enclave(key), requiresUserPresence: requireUserPresence)
         #endif
     }

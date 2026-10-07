@@ -34,10 +34,10 @@ targets:
         SWIFT_VERSION: "5.0"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: EastSea
-        MARKETING_VERSION: 0.7.0
+        MARKETING_VERSION: 0.7.1
         # Build numbers never repeat across the product line: Aether 0.6.6 shipped
         # build 11 and the Aether 0.6.7 bridge (apps/bridge) ships build 12.
-        CURRENT_PROJECT_VERSION: 13
+        CURRENT_PROJECT_VERSION: 14
         # Sparkle keys (feed URL, EdDSA public key) merged into the generated Info.plist.
         INFOPLIST_FILE: Info-mac.plist
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.finance

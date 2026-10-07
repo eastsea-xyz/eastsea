@@ -2844,11 +2844,19 @@ fn validator_program(network: &str, rpc: Vec<String>, timeout: u64) -> Result<()
 }
 
 /// Leave no orphan: stop when the parent process is gone (reparented to launchd).
+fn initial_writer_parent(expected: Option<u32>, actual: u32) -> Option<u32> {
+    match expected {
+        Some(parent) if parent > 0 && parent == actual => Some(parent),
+        None if actual > 1 => Some(actual),
+        _ => None,
+    }
+}
+
 fn exit_with_parent_process(expected_parent: Option<u32>) {
-    let parent = expected_parent.unwrap_or_else(std::os::unix::process::parent_id);
-    // A child scheduled only after its supervisor died must not accept
-    // launchd (or another reaper) as its intended parent and open databases.
-    if !aether_node::supervisor::expected_parent_is_current(parent) { std::process::exit(0); }
+    // An explicitly leased PID 1 is valid for container-init supervisors;
+    // never substitute launchd for a sender that disappeared before startup.
+    let Some(parent) = initial_writer_parent(expected_parent, std::os::unix::process::parent_id())
+        else { std::process::exit(0) };
     std::thread::spawn(move || loop {
         if !aether_node::supervisor::expected_parent_is_current(parent) { std::process::exit(0); }
         std::thread::sleep(Duration::from_millis(100));
@@ -3789,6 +3797,19 @@ fn print_blocks(v: &Value) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn r06_explicit_pid1_and_missing_sender_have_distinct_parent_contracts() {
+        assert_eq!(super::initial_writer_parent(Some(1), 1), Some(1),
+            "R06 a validated explicit init supervisor remains supported");
+        assert_eq!(super::initial_writer_parent(None, 1), None,
+            "R06 missing sender never adopts launchd");
+        assert_eq!(super::initial_writer_parent(Some(42), 1), None,
+            "R06 late startup rejects the lost sender");
+        assert_eq!(super::initial_writer_parent(Some(42), 42), Some(42));
+        assert_eq!(super::initial_writer_parent(None, 42), Some(42));
+        assert_eq!(super::initial_writer_parent(Some(0), 0), None);
+    }
+
     /// `aether run --archive` spawns a follower that runs exactly like
     /// `aether archive`: the era export is on, so it neither starts from a
     /// snapshot nor jumps to one later (audit 7 A7-1).

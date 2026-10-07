@@ -441,7 +441,7 @@ pub fn inherited_writer_lease() -> Result<Option<WriterLease>, String> {
     let device = fields[2].parse::<u64>().map_err(|_| "writer lease device is invalid")?;
     let inode = fields[3].parse::<u64>().map_err(|_| "writer lease inode is invalid")?;
     let parent = fields[4].parse::<u32>().map_err(|_| "writer lease parent is invalid")?;
-    if parent <= 1 { return Err("writer lease parent is not a supervisor".into()); }
+    if parent == 0 { return Err("writer lease parent is not a supervisor".into()); }
     let mut stat: libc::stat = unsafe { std::mem::zeroed() };
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
     if flags < 0 || unsafe { libc::fstat(fd, &mut stat) } != 0
@@ -467,7 +467,7 @@ pub fn inherited_writer_lease() -> Result<Option<WriterLease>, String> {
 }
 
 pub fn expected_parent_is_current(expected: u32) -> bool {
-    expected > 1 && std::os::unix::process::parent_id() == expected
+    expected > 0 && std::os::unix::process::parent_id() == expected
 }
 
 /// Command and reservation never escape this function. The original File
@@ -2339,7 +2339,31 @@ mod tests {
         let fixture = R06NativeFixture(dir.clone());
         std::fs::create_dir(dir.join("node")).unwrap();
         let script = dir.join("writer.sh");
-        std::fs::write(&script, b"#!/bin/sh\nexport AETHER_R06_ROLE=writer\nexec \"$AETHER_R06_EXE\" --exact supervisor::tests::r06_fixture_writer --nocapture\n").unwrap();
+        std::fs::write(&script, br#"#!/bin/sh
+export AETHER_R06_ROLE=writer
+case "$AETHER_R06_MODE" in
+  pid1)
+    AETHER_SUPERVISOR_WRITER_LEASE="$(printf '%s' "$AETHER_SUPERVISOR_WRITER_LEASE" | /usr/bin/cut -d: -f1-4):1"
+    export AETHER_SUPERVISOR_WRITER_LEASE
+    ;;
+  bad-inode)
+    r06_prefix="$(printf '%s' "$AETHER_SUPERVISOR_WRITER_LEASE" | /usr/bin/cut -d: -f1-3)"
+    r06_inode="$(printf '%s' "$AETHER_SUPERVISOR_WRITER_LEASE" | /usr/bin/cut -d: -f4)"
+    r06_parent="$(printf '%s' "$AETHER_SUPERVISOR_WRITER_LEASE" | /usr/bin/cut -d: -f5)"
+    AETHER_SUPERVISOR_WRITER_LEASE="$r06_prefix:$((r06_inode + 1)):$r06_parent"
+    export AETHER_SUPERVISOR_WRITER_LEASE
+    ;;
+  bad-format)
+    AETHER_SUPERVISOR_WRITER_LEASE=malformed
+    export AETHER_SUPERVISOR_WRITER_LEASE
+    ;;
+  oversized)
+    AETHER_SUPERVISOR_WRITER_LEASE="$(printf '%0130d' 0)"
+    export AETHER_SUPERVISOR_WRITER_LEASE
+    ;;
+esac
+exec "$AETHER_R06_EXE" --exact supervisor::tests::r06_fixture_writer --nocapture
+"#).unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
         let exe = std::env::current_exe().unwrap();
         let parent = Command::new(&exe)
@@ -2381,7 +2405,23 @@ mod tests {
             std::fs::write(dir.join("late-start-ready"), b"waiting").unwrap();
             r06_wait_file(&dir.join("start"));
         }
-        let lease = inherited_writer_lease().expect("the real writer spawn delivers a valid lease");
+        let adoption = inherited_writer_lease();
+        let mode = std::env::var("AETHER_R06_MODE").unwrap_or_default();
+        if ["pid1", "bad-inode", "bad-format", "oversized"].contains(&mode.as_str()) {
+            let accepted = adoption.as_ref().ok().and_then(|lease| lease.as_ref())
+                .is_some_and(|lease| lease.expected_parent() == 1);
+            let outcome = if mode == "pid1" {
+                if accepted { "accepted" } else { "rejected" }
+            } else if adoption.is_err() { "rejected" } else { "accepted" };
+            if let Ok(Some(lease)) = &adoption {
+                let flags = unsafe { libc::fcntl(lease._file.as_raw_fd(), libc::F_GETFD) };
+                assert!(flags >= 0 && flags & libc::FD_CLOEXEC != 0,
+                    "R06 validated fixture lease is protected from unrelated exec");
+            }
+            std::fs::write(dir.join("adoption-result"), outcome).unwrap();
+            return;
+        }
+        let lease = adoption.expect("the real writer spawn delivers a valid lease");
         let lease = lease.expect("every supervisor writer receives its lease");
         let expected = lease.expected_parent();
         if late && !expected_parent_is_current(expected) {
@@ -2399,6 +2439,24 @@ mod tests {
         while dir.exists() && !dir.join("stop").exists() && Instant::now() < deadline {
             let _ = std::fs::write(dir.join("writer-heartbeat"), b"still writing");
             std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn r06_validated_sender_pid1_is_accepted_without_pid_namespace() {
+        let (fixture, _parent) = r06_fixture("pid1");
+        r06_wait_file(&fixture.0.join("adoption-result"));
+        assert_eq!(std::fs::read_to_string(fixture.0.join("adoption-result")).unwrap(), "accepted",
+            "R06 validated inherited writer lease accepts explicit sender PID 1");
+    }
+
+    #[test]
+    fn r06_malformed_or_wrong_inode_payload_never_adopts() {
+        for mode in ["bad-inode", "bad-format", "oversized"] {
+            let (fixture, _parent) = r06_fixture(mode);
+            r06_wait_file(&fixture.0.join("adoption-result"));
+            assert_eq!(std::fs::read_to_string(fixture.0.join("adoption-result")).unwrap(), "rejected",
+                "R06 {mode} payload must not adopt the inherited descriptor");
         }
     }
 

@@ -31,18 +31,30 @@ pub struct Checked {
     pub attested: bool,
 }
 
-/// The voting key's answer to `due`.
+/// The voting key's answer to `due`. Persisted node keys use `sign_bound`;
+/// unbound callers supply an ephemeral development or test key explicitly.
 pub fn sign(key: &ed25519::PrivateKey, chain_id: u64, index: u64, due: &Due, attest: Option<Reattestation>) -> BeaconAnswer {
-    crate::key_binding::check_process();
     let msg = beacons::message(chain_id, due.epoch, due.slot, &due.hash);
     BeaconAnswer { index, slot: due.slot, signature: hex::encode(key.sign(NAMESPACE, &msg).encode()), attest }
 }
 
 /// Sign an immediate leaving/back announcement for the next block.
 pub fn sign_availability(key: &ed25519::PrivateKey, chain_id: u64, index: u64, height: u64, leaving: bool) -> BeaconAnswer {
-    crate::key_binding::check_process();
     let msg = beacons::availability_message(chain_id, height, leaving);
     BeaconAnswer { index, slot: beacons::availability_slot(height, leaving).expect("block height fits a beacon slot"), signature: hex::encode(key.sign(NAMESPACE, &msg).encode()), attest: None }
+}
+
+/// Sign at the explicit instance-bound boundary, including candidate followers
+/// that do not install a process guard. One guard invocation per signature.
+pub fn sign_bound(keys: &crate::roster::LocalKeys, chain_id: u64, index: u64, due: &Due, attest: Option<Reattestation>) -> BeaconAnswer {
+    keys.check_binding();
+    sign(&keys.signer, chain_id, index, due, attest)
+}
+
+/// The instance-bound boundary for a leaving/back signature.
+pub fn sign_availability_bound(keys: &crate::roster::LocalKeys, chain_id: u64, index: u64, height: u64, leaving: bool) -> BeaconAnswer {
+    keys.check_binding();
+    sign_availability(&keys.signer, chain_id, index, height, leaving)
 }
 
 /// The registrar's P-256 key as the registry holds it (SEC1, uncompressed).
@@ -136,6 +148,120 @@ mod tests {
 
     const CHAIN: u64 = 9;
     const EB: u64 = 100;
+
+    const HELPER_CHILD: &str = "AETHER_BEACON_HELPER_CHILD_DIR";
+    const HELPER_DONE: &str = "BEACON_HELPERS_USED_EXPLICIT_SIGNER";
+    const BOUND_CHILD: &str = "AETHER_BEACON_BOUND_CHILD_DIR";
+    const BOUND_KIND: &str = "AETHER_BEACON_BOUND_CHILD_KIND";
+    const BOUND_FIRST: &str = "BOUND_FOLLOWER_BEACON_VERIFIED";
+    const BOUND_AFTER: &str = "BOUND_FOLLOWER_BEACON_AFTER_UUID_CHANGE";
+
+    #[test]
+    fn bound_follower_beacons_refuse_runtime_mismatch_without_process_guard() {
+        for kind in ["answer", "availability"] {
+            let dir = test_dir(kind);
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "beacons::tests::bound_follower_beacon_child",
+                    "--nocapture",
+                ])
+                .env(BOUND_CHILD, &dir)
+                .env(BOUND_KIND, kind)
+                .env("AETHER_TEST_PLATFORM_UUID", "MAC-A")
+                .output()
+                .unwrap();
+            let _ = std::fs::remove_dir_all(&dir);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains(BOUND_FIRST), "{kind}: the first bound signature must verify: {stderr}");
+            assert_eq!(output.status.code(), Some(crate::key_binding::EXIT_KEY_ELSEWHERE), "{kind}: a follower's instance guard must refuse before signing: {stderr}");
+            assert!(!stderr.contains(BOUND_AFTER), "{kind}: no beacon signature after the hardware change: {stderr}");
+        }
+    }
+
+    #[test]
+    fn bound_follower_beacon_child() {
+        let Some(dir) = std::env::var_os(BOUND_CHILD) else { return };
+        let dir = std::path::PathBuf::from(dir);
+        let mut keys = crate::roster::LocalKeys::devnet(1);
+        write_test_binding(&dir, &keys.signer.public_key());
+        keys.binding = Some(crate::key_binding::Guard::for_validator(&dir, &keys.signer.public_key()));
+        // Candidate followers have an instance guard and no process guard.
+        let due = Due { epoch: 1, slot: 0, hash: [8; 32], period: 1, needs_attestation: false };
+        let answer = sign_bound(&keys, CHAIN, 0, &due, None);
+        assert_eq!(answer.signature, hex::encode(keys.signer.sign(NAMESPACE, &beacons::message(CHAIN, due.epoch, due.slot, &due.hash)).encode()));
+        let signal = sign_availability_bound(&keys, CHAIN, 0, 101, true);
+        assert_eq!(signal.signature, hex::encode(keys.signer.sign(NAMESPACE, &beacons::availability_message(CHAIN, 101, true)).encode()));
+        eprintln!("{BOUND_FIRST}");
+        std::env::set_var("AETHER_TEST_PLATFORM_UUID", "MAC-B");
+        match std::env::var(BOUND_KIND).unwrap().as_str() {
+            "answer" => { let _ = sign_bound(&keys, CHAIN, 0, &due, None); }
+            "availability" => { let _ = sign_availability_bound(&keys, CHAIN, 0, 102, false); }
+            _ => panic!("unknown beacon kind"),
+        }
+        eprintln!("{BOUND_AFTER}");
+    }
+
+    #[test]
+    fn beacon_helpers_use_only_the_supplied_signer() {
+        let dir = test_dir("explicit-signer");
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "beacons::tests::beacon_helpers_use_only_the_supplied_signer_child",
+                "--nocapture",
+            ])
+            .env(HELPER_CHILD, &dir)
+            .env("AETHER_TEST_PLATFORM_UUID", "MAC-A")
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "a beacon helper must not repeat an unrelated process guard: {stderr}");
+        assert!(stderr.contains(HELPER_DONE), "both beacon helpers must use the explicit signer: {stderr}");
+    }
+
+    #[test]
+    fn beacon_helpers_use_only_the_supplied_signer_child() {
+        let Some(dir) = std::env::var_os(HELPER_CHILD) else { return };
+        let dir = std::path::PathBuf::from(dir);
+        // A process guard for one identity must not be repeated by a helper
+        // using another explicitly supplied (here, unbound test) signer.
+        let process_key = ed25519::PrivateKey::from_seed(77);
+        write_test_binding(&dir, &process_key.public_key());
+        crate::key_binding::install_process_guard(Some(crate::key_binding::Guard::for_validator(
+            &dir,
+            &process_key.public_key(),
+        )));
+        std::env::set_var("AETHER_TEST_PLATFORM_UUID", "MAC-B");
+        let key = ed25519::PrivateKey::from_seed(1);
+        let due = Due { epoch: 1, slot: 0, hash: [8; 32], period: 1, needs_attestation: false };
+        let answer = sign(&key, CHAIN, 0, &due, None);
+        let signature = ed25519::Signature::decode(hex::decode(answer.signature).unwrap().as_slice()).unwrap();
+        assert!(key.public_key().verify(NAMESPACE, &beacons::message(CHAIN, due.epoch, due.slot, &due.hash), &signature));
+        let signal = sign_availability(&key, CHAIN, 0, 101, true);
+        let signature = ed25519::Signature::decode(hex::decode(signal.signature).unwrap().as_slice()).unwrap();
+        assert!(key.public_key().verify(NAMESPACE, &beacons::availability_message(CHAIN, 101, true), &signature));
+        eprintln!("{HELPER_DONE}");
+    }
+
+    fn test_dir(tag: &str) -> std::path::PathBuf {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = root.join("tmp").join(format!("beacon-binding-{tag}-{}-{unique}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_test_binding(dir: &std::path::Path, public: &ed25519::PublicKey) {
+        use sha2::{Digest as _, Sha256};
+        let hash = Sha256::digest([b"eastsea.bind".as_slice(), b"MAC-A"].concat());
+        std::fs::write(dir.join(crate::key_binding::BINDING_FILE), serde_json::to_vec(&serde_json::json!({
+            "validator_pub": hex::encode(public.as_ref()),
+            "platform_uuid_hash": hex::encode(hash),
+            "created_at": 1,
+        })).unwrap()).unwrap();
+    }
 
     fn registrar() -> P256Signer {
         P256Signer::from_seed(&[7; 32]).unwrap()

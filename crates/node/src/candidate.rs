@@ -261,8 +261,7 @@ async fn answer_slots(chain: &Chain, outbox: &Outbox, keys: &CandidateKeys, st: 
                 }
             }
         };
-        keys.keys.check_binding();
-        let answer = crate::beacons::sign(&keys.keys.signer, chain_id, c.index, &due, attest);
+        let answer = crate::beacons::sign_bound(&keys.keys, chain_id, c.index, &due, attest);
         match outbox.send_answer(chain, answer).await {
             Ok(()) => {
                 st.sent.insert((due.epoch, due.slot));
@@ -287,7 +286,6 @@ pub async fn beacon_loop(chain: Chain, outbox: Outbox, keys: CandidateKeys) {
     #[cfg(unix)]
     let mut wake = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1()).expect("SIGUSR1 handler");
     loop {
-        keys.keys.check_binding();
         // No beacons while catching up — and none before any height is known:
         // one is a claim this Mac is current, and it would be checked against
         // a state this node has not reached (a follower or a validator still
@@ -312,8 +310,7 @@ pub async fn beacon_loop(chain: Chain, outbox: Outbox, keys: CandidateKeys) {
                 if let Some(c) = registry::candidates(&state).into_iter().find(|c| c.validator_key == me) {
                     let on_chain = registry_v3::availability(&state, c.index).is_some_and(|(_, v)| v);
                     if on_chain != leaving {
-                        keys.keys.check_binding();
-                        let signal = crate::beacons::sign_availability(&keys.keys.signer, cfg.chain_id, c.index, height + 1, leaving);
+                        let signal = crate::beacons::sign_availability_bound(&keys.keys, cfg.chain_id, c.index, height + 1, leaving);
                         if let Err(e) = outbox.send_answer(&chain, signal).await {
                             warn!(%e, leaving, "availability announcement not accepted");
                         }

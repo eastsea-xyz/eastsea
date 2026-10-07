@@ -21,6 +21,14 @@ _aether_repro_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 # One timestamp for every artifact of a release: the commit's, so a rebuild by
 # anyone else lands on the same second. No .git (release tarball) -> a fixed
 # date, which is just as reproducible.
+#
+# The proving guest is the exception: its ELF hash is the protocol's program
+# id, which must stay put across commits that do not touch the guest's inputs
+# (scripts/guest-inputs.py). apps/prover/build-guest.sh therefore ignores this
+# value and builds the guest with the constant AETHER_GUEST_SOURCE_DATE_EPOCH
+# (scripts/guest-stage.sh). Path independence (G5) is unchanged: the stage
+# still fixes every path cargo hashes, and the remap list below still keeps the
+# builder's paths out of the host binaries.
 if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
   if SOURCE_DATE_EPOCH=$(git -C "$_aether_repro_root" log -1 --pretty=%ct 2>/dev/null) && [ -n "$SOURCE_DATE_EPOCH" ]; then
     export SOURCE_DATE_EPOCH

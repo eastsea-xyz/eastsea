@@ -241,14 +241,22 @@ final class UnattendedDaemon: ObservableObject {
         return String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
     }
 
+    /// The wrapper's recorded PID, accepted only while its executable is
+    /// still ours. Release verification is an additional check by the caller.
+    var runningNodePID: Int32? {
+        guard let pid = Marker.pid(), Self.processIsOurs(pid) else { return nil }
+        return pid
+    }
+
     /// Stop the daemon's node (the user turned the node off in the app).
     /// Only the wrapper's own pid file, and only a process that still is the
     /// node/wrapper binary — never an arbitrary recycled pid.
-    func stopDaemonNode() {
+    func stopDaemonNode(expectedPID: Int32? = nil) {
         #if WALLET_SCREENS
         return
         #endif
-        guard let pid = Marker.pid(), Self.processIsOurs(pid) else { return }
+        guard let pid = Marker.pid(), expectedPID == nil || expectedPID == pid,
+              Self.processIsOurs(pid) else { return }
         kill(pid, SIGTERM)
     }
 

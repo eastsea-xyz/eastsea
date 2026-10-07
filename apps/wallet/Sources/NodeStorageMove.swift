@@ -127,7 +127,7 @@ extension NodeController {
 
     /// Move the block data to `dest` (nil: back to the default place).
     func moveBlockData(to dest: URL?) {
-        guard storageMovePercent == nil else { return }
+        guard storageMovePercent == nil, !updateInProgress else { return }
         let source = BlockDataLocation.resolvedRoot(chainRoot)
         let target = BlockDataLocation.resolvedRoot(dest ?? Self.dataDir)
         guard let sourceID = BlockDataMove.identity(source) else {

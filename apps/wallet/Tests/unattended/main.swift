@@ -55,10 +55,35 @@ check(UnattendedDecision.effectiveEnabled(userChose: true, current: true, regist
 // What the app does when its start hit the lock: a holder that answers on
 // RPC is the daemon's node — attach, never a second node; a silent holder is
 // dying, so start our own again.
-check(UnattendedDecision.afterLockExit(rpcAlive: true) == .attach, "an answering holder is attached to")
+check(UnattendedDecision.afterLockExit(rpcAlive: true, releaseMatches: true) == .attach, "an answering holder is attached to")
 check(UnattendedDecision.afterLockExit(rpcAlive: false) == .retryOwnStart, "a silent holder means retry our own start")
-check(UnattendedDecision.shouldAttachOnLaunch(rpcAlive: true), "a node already answering at launch is attached to")
+check(UnattendedDecision.shouldAttachOnLaunch(rpcAlive: true, releaseMatches: true), "a node already answering at launch is attached to")
 check(!UnattendedDecision.shouldAttachOnLaunch(rpcAlive: false), "nothing answering at launch means a normal start")
+
+// R11: RPC success does not identify the installed release.
+check(UnattendedDecision.afterLockExit(rpcAlive: true) == .retryOwnStart,
+      "R11 answering daemon with unknown release identity cannot attach")
+check(UnattendedDecision.afterLockExit(rpcAlive: true, releaseMatches: false) == .retryOwnStart,
+      "R11 mismatched release cannot attach")
+check(UnattendedDecision.afterLockExit(rpcAlive: false, releaseMatches: true) == .retryOwnStart,
+      "R11 verified identity does not override absent RPC")
+let sourceRoot = URL(fileURLWithPath: #filePath)
+    .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+let appSource = try String(contentsOf: sourceRoot.appendingPathComponent("Sources/AetherWalletApp.swift"), encoding: .utf8)
+check(appSource.contains("node.prepareForUpdate()") && appSource.contains("applicationShouldTerminate("),
+      "R11 automatic and quit-time installation coordinate node shutdown")
+check(!UnattendedDecision.mayStopForUpdate(ownProcess: false, attached: false, daemonPresent: true,
+          releaseVerified: false, unclaimedRuntimeAbsent: true),
+      "R11 unattached daemon cannot be stopped without its live writer lease")
+check(!UnattendedDecision.mayStopForUpdate(ownProcess: false, attached: false, daemonPresent: false,
+          releaseVerified: false, unclaimedRuntimeAbsent: false),
+      "R11 unknown lock or listener cannot become quiescence permission")
+check(UnattendedDecision.mayStopForUpdate(ownProcess: false, attached: false, daemonPresent: true,
+          releaseVerified: true, unclaimedRuntimeAbsent: false),
+      "R11 an attested unattached daemon can be quiesced")
+check(UnattendedDecision.mayStopForUpdate(ownProcess: false, attached: false, daemonPresent: false,
+          releaseVerified: false, unclaimedRuntimeAbsent: true),
+      "R11 positively absent runtime permits installation while holding its lock")
 
 // pmset's actual spelling (`pmset -g` on this Mac, spaces not tabs):
 // " autorestart          1" inside the system-wide section.

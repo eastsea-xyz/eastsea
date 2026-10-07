@@ -33,6 +33,7 @@ final class MoveMemoryDefaults: UserDefaults {
         }
     }
     var storageMoveOffersDiskUtility = false
+    var updateInProgress = false
     var storageMovePercent: Int?
     var storageMoveError: String?
     var attached = false
@@ -182,6 +183,12 @@ failedMover.moveBlockData(to: occupied)
 try await waitForMove(failedMover)
 check((try? Data(contentsOf: unrelated)) == Data("unrelated-history".utf8), "R02 failed move preserves preexisting destination data")
 check(failedMover.chainDataPath == badSource.path, "R02 rejected move keeps source authoritative")
+let updatingMover = NodeController()
+updatingMover.chainDataPath = badSource.path
+updatingMover.updateInProgress = true
+updatingMover.moveBlockData(to: moveFixture.appendingPathComponent("during-update"))
+check(updatingMover.stops == 0 && updatingMover.storageMovePercent == nil,
+      "R11 update preparation excludes a new storage move")
 // R03: a disconnected source cannot turn into a successful empty move back.
 try FileManager.default.createDirectory(at: NodeController.dataDir, withIntermediateDirectories: true)
 let oldProbe = NodeController.dataDir.appendingPathComponent(".eastsea-write-check")

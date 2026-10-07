@@ -50,13 +50,20 @@ enum UnattendedDecision {
         case retryOwnStart
     }
 
-    static func afterLockExit(rpcAlive: Bool) -> AfterLockExit {
-        rpcAlive ? .attach : .retryOwnStart
+    static func afterLockExit(rpcAlive: Bool, releaseMatches: Bool = false) -> AfterLockExit {
+        rpcAlive && releaseMatches ? .attach : .retryOwnStart
     }
 
     /// What the app does before starting a node at all: a daemon node that
     /// survived the reboot answers on the node's RPC port.
-    static func shouldAttachOnLaunch(rpcAlive: Bool) -> Bool { rpcAlive }
+    static func shouldAttachOnLaunch(rpcAlive: Bool, releaseMatches: Bool = false) -> Bool { rpcAlive && releaseMatches }
+
+    /// Whether shutdown can prove that every writer retains ownership.
+    static func mayStopForUpdate(ownProcess: Bool, attached: Bool, daemonPresent: Bool,
+                                 releaseVerified: Bool, unclaimedRuntimeAbsent: Bool) -> Bool {
+        if ownProcess || attached || daemonPresent { return releaseVerified }
+        return unclaimedRuntimeAbsent
+    }
 
     /// The power facts behind the honest sentences (docs/design/29):
     /// `pmset -g`'s `autorestart` ("start up automatically after a power

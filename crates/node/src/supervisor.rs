@@ -413,6 +413,13 @@ fn voting_paused(data: &Path, round: u64) -> bool {
 /// A writer receives only this bounded descriptor slot and its file identity.
 /// The borrowed parent File stays alive across spawn; no global raw fd exists.
 pub const WRITER_LEASE_ENV: &str = "AETHER_SUPERVISOR_WRITER_LEASE";
+static LIVE_WRITER_LEASES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// A live RPC advertises only its actual validated guard lifetime. The
+/// installed executable's version/path cannot attest an older running image.
+pub fn writer_lease_protocol() -> u64 {
+    if LIVE_WRITER_LEASES.load(std::sync::atomic::Ordering::Acquire) > 0 { 1 } else { 0 }
+}
 const WRITER_LEASE_MIN_FD: i32 = 198;
 const WRITER_LEASE_MAX_FD: i32 = 255;
 
@@ -423,6 +430,12 @@ pub struct WriterLease {
 
 impl WriterLease {
     pub fn expected_parent(&self) -> u32 { self.parent }
+}
+
+impl Drop for WriterLease {
+    fn drop(&mut self) {
+        LIVE_WRITER_LEASES.fetch_sub(1, std::sync::atomic::Ordering::Release);
+    }
 }
 
 /// Adopt once, at process entry before unrelated worker/prover launches.
@@ -463,6 +476,7 @@ pub fn inherited_writer_lease() -> Result<Option<WriterLease>, String> {
     // The validated descriptor is exclusively this process's inherited
     // channel; the startup caller retains this sole Rust owner.
     let file = unsafe { std::fs::File::from_raw_fd(fd) };
+    LIVE_WRITER_LEASES.fetch_add(1, std::sync::atomic::Ordering::Release);
     Ok(Some(WriterLease { _file: file, parent }))
 }
 
@@ -2405,8 +2419,12 @@ exec "$AETHER_R06_EXE" --exact supervisor::tests::r06_fixture_writer --nocapture
             std::fs::write(dir.join("late-start-ready"), b"waiting").unwrap();
             r06_wait_file(&dir.join("start"));
         }
-        let adoption = inherited_writer_lease();
         let mode = std::env::var("AETHER_R06_MODE").unwrap_or_default();
+        if mode == "capability" {
+            assert_eq!(crate::rpc::writer_lease_status_for_test()["writer_lease_protocol"], json!(0),
+                "R11 live status is zero before any valid guard exists");
+        }
+        let adoption = inherited_writer_lease();
         if ["pid1", "bad-inode", "bad-format", "oversized"].contains(&mode.as_str()) {
             let accepted = adoption.as_ref().ok().and_then(|lease| lease.as_ref())
                 .is_some_and(|lease| lease.expected_parent() == 1);
@@ -2418,11 +2436,24 @@ exec "$AETHER_R06_EXE" --exact supervisor::tests::r06_fixture_writer --nocapture
                 assert!(flags >= 0 && flags & libc::FD_CLOEXEC != 0,
                     "R06 validated fixture lease is protected from unrelated exec");
             }
+            if mode != "pid1" {
+                assert_eq!(crate::rpc::writer_lease_status_for_test()["writer_lease_protocol"], json!(0),
+                    "R11 malformed payload cannot attest writer safety");
+            }
             std::fs::write(dir.join("adoption-result"), outcome).unwrap();
             return;
         }
         let lease = adoption.expect("the real writer spawn delivers a valid lease");
         let lease = lease.expect("every supervisor writer receives its lease");
+        if mode == "capability" {
+            assert_eq!(crate::rpc::writer_lease_status_for_test()["writer_lease_protocol"], json!(1),
+                "R11 actual adopted guard attests the live writer contract");
+            drop(lease);
+            assert_eq!(crate::rpc::writer_lease_status_for_test()["writer_lease_protocol"], json!(0),
+                "R11 dropped guard cannot leave a stale safety attestation");
+            std::fs::write(dir.join("capability-result"), b"passed").unwrap();
+            return;
+        }
         let expected = lease.expected_parent();
         if late && !expected_parent_is_current(expected) {
             std::fs::write(dir.join("late-rejected"), b"rejected").unwrap();
@@ -2458,6 +2489,13 @@ exec "$AETHER_R06_EXE" --exact supervisor::tests::r06_fixture_writer --nocapture
             assert_eq!(std::fs::read_to_string(fixture.0.join("adoption-result")).unwrap(), "rejected",
                 "R06 {mode} payload must not adopt the inherited descriptor");
         }
+    }
+
+    #[test]
+    fn r11_rpc_writer_capability_tracks_actual_guard_lifetime() {
+        let (fixture, _parent) = r06_fixture("capability");
+        r06_wait_file(&fixture.0.join("capability-result"));
+        assert_eq!(std::fs::read(fixture.0.join("capability-result")).unwrap(), b"passed");
     }
 
     #[test]

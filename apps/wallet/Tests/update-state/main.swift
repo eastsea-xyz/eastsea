@@ -29,6 +29,22 @@ final class Rig {
     func advance(_ secs: TimeInterval) { clock.now = clock.now.addingTimeInterval(secs) }
 }
 
+// R11: an unverified running-node observation cannot complete update health.
+let unidentified = Rig()
+_ = unidentified.tracker.found(key: "R11", version: "1.2", build: "34")
+unidentified.tracker.downloading()
+unidentified.tracker.verified()
+unidentified.tracker.installing()
+unidentified.tracker.relaunched(runningVersion: "1.2", runningBuild: "34")
+unidentified.tracker.nodeRunning()
+check(unidentified.tracker.state.awaitingHealthVersion == "1.2",
+      "R11 unverified or starting node cannot mark an update healthy")
+
+unidentified.tracker.nodeRunning(running: false, releaseVerified: true)
+check(unidentified.tracker.state.awaitingHealthVersion == "1.2", "R11 starting verified helper still waits for health")
+unidentified.tracker.nodeRunning(running: true, releaseVerified: false)
+check(unidentified.tracker.state.awaitingHealthVersion == "1.2", "R11 running old helper still waits for health")
+
 // A missing record means idle — never a crash, never a stale cycle.
 let missing = Rig()
 check(missing.tracker.state == .idle, "no record: idle")
@@ -52,7 +68,7 @@ check(resumed.tracker.state == .awaitingHealth(version: "1.2", build: "34", star
       "kill during install + relaunch on target: awaiting health, clocked from the relaunch")
 check(resumed.tracker.sentence == "Updated to 1.2. \(Brand.project) is checking that this Mac's node is healthy…",
       "awaitingHealth: one honest sentence naming the version")
-resumed.tracker.nodeRunning()
+resumed.tracker.nodeRunning(running: true, releaseVerified: true)
 check(resumed.tracker.state == .healthy(version: "1.2", build: "34"), "the node came up: healthy")
 check(resumed.tracker.sentence == nil, "healthy: nothing to say")
 resumed.tracker.tick()
@@ -248,7 +264,7 @@ let killHealthy = Rig()
 killHealthy.tracker.found(key: "k1", version: "1.2", build: "34")
 killHealthy.tracker.downloading(); killHealthy.tracker.verified(); killHealthy.tracker.installing()
 killHealthy.tracker.relaunched(runningVersion: "1.2", runningBuild: "34")
-killHealthy.tracker.nodeRunning()
+killHealthy.tracker.nodeRunning(running: true, releaseVerified: true)
 check(killAndResume(killHealthy).tracker.state == .healthy(version: "1.2", build: "34"), "kill at healthy: still healthy")
 
 // A corrupt record is idle, never a crash — and the next event rewrites it.

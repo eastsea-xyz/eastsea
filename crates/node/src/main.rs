@@ -1062,8 +1062,17 @@ fn main() {
                 if let Err(e) = aether_node::candidate::CandidateKeys::load_or_create(&dir) {
                     tracing::error!(%e, "aether run: this Mac's identity cannot be loaded; running as a follower");
                 }
-                bind_incoming_network(&dir, network.as_deref(), ceremony.as_deref())?;
-                aether_node::supervisor::adopt_network(&dir, network.as_deref().map(std::path::Path::new))?;
+                let chain_dir = chain_data.as_deref().map(std::path::Path::new);
+                // A durable adoption already passed preflight. Resume it
+                // before reading a source the interrupted move may have
+                // quarantined; bind_run_to_ceremony still checks the adopted
+                // file before any child starts.
+                if !aether_node::supervisor::resume_network_adoption(&dir, chain_dir)? {
+                    bind_incoming_network(&dir, network.as_deref(), ceremony.as_deref())?;
+                    aether_node::supervisor::adopt_network_with_chain_data(
+                        &dir, chain_dir, network.as_deref().map(std::path::Path::new),
+                    )?;
+                }
                 // A committee install a previous run did not finish (red team
                 // #19): complete it before the ceremony bind or any role decision reads the files.
                 if let Err(e) = aether_node::supervisor::finish_incomplete(&dir) {

@@ -1716,14 +1716,378 @@ fn write_secret(path: &Path, bytes: &[u8]) -> Result<(), String> {
     crate::atomic::replace(path, bytes, 0o600)
 }
 
-/// Keys that identify this Mac; everything else in <data> belongs to one network.
-const KEEP_ACROSS_NETWORKS: [&str; 4] = ["validator.key", "validator.pub.json", "node-account.key", "run.lock"];
+/// This Mac's identities, lock, and authoritative storage choice survive resets.
+const KEEP_ACROSS_NETWORKS: [&str; 6] = [
+    "validator.key", "validator.pub.json", "node-account.key", "wallet-node.key", "run.lock", "block-data-move.json",
+];
+
+const NETWORK_ADOPTION: &str = ".network-adoption.json";
+const ADOPTION_OWNER: &str = ".adoption-owner";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct AdoptionStamp {
+    device: u64,
+    inode: u64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct AdoptionRoot {
+    path: PathBuf,
+    stamp: AdoptionStamp,
+    aside_stamp: AdoptionStamp,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct AdoptionMove {
+    root: usize,
+    relative: PathBuf,
+    stamp: AdoptionStamp,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct AdoptionParent {
+    relative: PathBuf,
+    stamp: AdoptionStamp,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct NetworkAdoption {
+    version: u8,
+    id: String,
+    roots: Vec<AdoptionRoot>,
+    parents: Vec<AdoptionParent>,
+    moves: Vec<AdoptionMove>,
+    old: Vec<u8>,
+    incoming: Vec<u8>,
+}
+
+fn adoption_metadata(path: &Path) -> Result<Option<std::fs::Metadata>, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => Ok(Some(meta)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
+fn adoption_stamp(meta: &std::fs::Metadata) -> AdoptionStamp {
+    use std::os::unix::fs::MetadataExt as _;
+    AdoptionStamp { device: meta.dev(), inode: meta.ino() }
+}
+
+fn adoption_dir(path: &Path) -> Result<AdoptionStamp, String> {
+    let meta = adoption_metadata(path)?.ok_or_else(|| format!("{} is missing; nothing is created", path.display()))?;
+    if !meta.is_dir() || meta.file_type().is_symlink() {
+        return Err(format!("{} is not a real directory", path.display()));
+    }
+    Ok(adoption_stamp(&meta))
+}
+
+fn adoption_sync(path: &Path) -> Result<(), String> {
+    std::fs::File::open(path).and_then(|f| f.sync_all()).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+fn adoption_owner_marker(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    // Unlike atomic::create, this never creates parent directories. The
+    // external disk can disappear after mkdir; its path must stay absent.
+    // This is before the journal and all source moves, so a partial marker
+    // after a crash only leaves an unused, newly created quarantine.
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600)
+        .open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    file.write_all(bytes).and_then(|_| file.sync_all()).map_err(|e| e.to_string())?;
+    adoption_sync(path.parent().ok_or("owner marker has no parent")?)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn adoption_rename(source: &Path, target: &Path) -> Result<(), String> {
+    let source_bytes = std::ffi::CString::new(source.as_os_str().as_encoded_bytes()).map_err(|e| e.to_string())?;
+    let target_bytes = std::ffi::CString::new(target.as_os_str().as_encoded_bytes()).map_err(|e| e.to_string())?;
+    // The live syscall must also reject a destination created after the
+    // metadata probe; an ordinary rename could silently overwrite it.
+    // SAFETY: both C strings remain alive and NUL-terminated for this call.
+    #[cfg(target_os = "macos")]
+    let result = unsafe { libc::renamex_np(source_bytes.as_ptr(), target_bytes.as_ptr(), libc::RENAME_EXCL) };
+    #[cfg(target_os = "linux")]
+    let result = unsafe { libc::renameat2(libc::AT_FDCWD, source_bytes.as_ptr(), libc::AT_FDCWD,
+        target_bytes.as_ptr(), libc::RENAME_NOREPLACE) };
+    if result == 0 { Ok(()) } else { Err(format!("{}: {}", source.display(), std::io::Error::last_os_error())) }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn adoption_rename(_source: &Path, _target: &Path) -> Result<(), String> {
+    Err("exclusive network quarantine rename is unsupported on this platform".into())
+}
+
+fn adoption_roots(data: &Path, chain_data: Option<&Path>) -> Result<Vec<(PathBuf, AdoptionStamp)>, String> {
+    let mut paths = vec![std::fs::canonicalize(data).map_err(|e| format!("{}: {e}", data.display()))?];
+    if let Some(chain) = chain_data {
+        let chain = std::fs::canonicalize(chain).map_err(|e| format!("{}: {e}; the chain data root is never created", chain.display()))?;
+        if chain.starts_with(&paths[0]) || paths[0].starts_with(&chain)
+            || adoption_contains(adoption_dir(&paths[0])?, &chain)?
+            || adoption_contains(adoption_dir(&chain)?, &paths[0])? {
+            return Err("network adoption requires disjoint internal and chain-data roots".into());
+        }
+        paths.push(chain);
+    }
+    let roots: Vec<_> = paths.into_iter().map(|path| adoption_dir(&path).map(|stamp| (path, stamp)))
+        .collect::<Result<_, _>>()?;
+    if let Some((chain, _)) = roots.get(1) {
+        if !keys_in_chain_data(chain).is_empty() {
+            return Err("keys must stay on this Mac; refusing to adopt an external key directory".into());
+        }
+    }
+    Ok(roots)
+}
+
+fn adoption_contains(ancestor: AdoptionStamp, path: &Path) -> Result<bool, String> {
+    // Canonical strings alone may retain casing aliases on APFS. Comparing
+    // actual ancestor identities also catches a differently cased nested
+    // root or two aliases of the same root before any directories are made.
+    for parent in path.ancestors() {
+        if adoption_dir(parent)? == ancestor { return Ok(true); }
+    }
+    Ok(false)
+}
+
+fn adoption_relative(relative: &Path) -> bool {
+    !relative.as_os_str().is_empty() && relative.components().all(|c| matches!(c, std::path::Component::Normal(_)))
+}
+
+fn adoption_move_allowed(root: usize, relative: &Path) -> bool {
+    if !adoption_relative(relative) { return false; }
+    let parts: Vec<_> = relative.iter().collect();
+    let namespace = parts[0].to_string_lossy().to_lowercase();
+    if root == 1 {
+        return parts.len() == 1 && ["follow", "archive"].contains(&namespace.as_str());
+    }
+    if root != 0 { return false; }
+    if parts.len() == 2 {
+        return ["follow", "archive"].contains(&namespace.as_str())
+            && parts[1].to_string_lossy().to_lowercase() != "wallet-node.key";
+    }
+    if parts.len() != 1 { return false; }
+    // ASCII runtime names can have differently cased directory entries on
+    // the case-insensitive APFS volumes the wallet supports.
+    !KEEP_ACROSS_NETWORKS.contains(&namespace.as_str())
+        && !["network.json", NETWORK_ADOPTION, "follow", "archive"].contains(&namespace.as_str())
+        && !namespace.starts_with("stale-")
+}
+
+fn validate_adoption(plan: &NetworkAdoption, roots: &[(PathBuf, AdoptionStamp)]) -> Result<(), String> {
+    if plan.version != 1 || plan.roots.len() != roots.len()
+        || !plan.id.starts_with("stale-") || plan.id.len() > 128
+        || !plan.id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-') {
+        return Err("invalid or incompatible pending network adoption".into());
+    }
+    let _: NetworkFile = serde_json::from_slice(&plan.incoming).map_err(|e| format!("pending network: {e}"))?;
+    let _: NetworkFile = serde_json::from_slice(&plan.old).map_err(|e| format!("pending old network: {e}"))?;
+    for (expected, (path, stamp)) in plan.roots.iter().zip(roots) {
+        // st_dev is a mount identifier, not a durable volume identity. The
+        // original inode + owned quarantine identify the persisted tree; pin
+        // the current device/inode pair for this replay to reject live swaps.
+        if expected.stamp.inode != stamp.inode || adoption_dir(path)? != *stamp
+            || adoption_dir(&expected.path)? != *stamp {
+            return Err(format!("{} is not the storage root that began this adoption", path.display()));
+        }
+        let aside = path.join(&plan.id);
+        let aside_stamp = adoption_dir(&aside)?;
+        if aside_stamp.inode != expected.aside_stamp.inode || aside_stamp.device != stamp.device
+            || expected.aside_stamp.device != expected.stamp.device {
+            return Err("network quarantine was replaced; refusing to continue".into());
+        }
+        let owner = aside.join(ADOPTION_OWNER);
+        let meta = adoption_metadata(&owner)?.ok_or("network quarantine has no owner marker")?;
+        if !meta.is_file() || meta.file_type().is_symlink()
+            || std::fs::read(&owner).map_err(|e| e.to_string())? != plan.id.as_bytes() {
+            return Err("network quarantine does not belong to this adoption".into());
+        }
+    }
+    let saved = roots[0].0.join(&plan.id).join("network.json");
+    if std::fs::read(&saved).map_err(|e| e.to_string())? != plan.old {
+        return Err("the quarantined network backup changed; refusing to continue".into());
+    }
+    let current = std::fs::read(roots[0].0.join("network.json")).map_err(|e| e.to_string())?;
+    if current != plan.old && current != plan.incoming {
+        return Err("the active network changed outside this adoption; refusing to overwrite it".into());
+    }
+    for parent in &plan.parents {
+        let expected_parent = AdoptionStamp { device: roots[0].1.device, inode: parent.stamp.inode };
+        if !adoption_relative(&parent.relative) || parent.relative.components().count() != 1
+            || !["follow", "archive"].contains(&parent.relative.as_os_str().to_string_lossy().to_lowercase().as_str())
+            || parent.stamp.device != plan.roots[0].stamp.device
+            || adoption_dir(&roots[0].0.join(&parent.relative))? != expected_parent {
+            return Err("an internal endpoint-key directory changed during adoption".into());
+        }
+    }
+    for movement in &plan.moves {
+        if movement.root >= roots.len() || !adoption_move_allowed(movement.root, &movement.relative)
+            || movement.stamp.device != plan.roots[movement.root].stamp.device {
+            return Err("pending adoption contains an unapproved move".into());
+        }
+    }
+    Ok(())
+}
+
+fn prepare_adoption(roots: &[(PathBuf, AdoptionStamp)], incoming: Vec<u8>, old: &[u8]) -> Result<NetworkAdoption, String> {
+    let mut moves = Vec::new();
+    let mut parents = Vec::new();
+    for entry in std::fs::read_dir(&roots[0].0).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let relative = PathBuf::from(entry.file_name());
+        if ["follow", "archive"].contains(&relative.as_os_str().to_string_lossy().to_lowercase().as_str()) {
+            let stamp = adoption_dir(&entry.path())?;
+            parents.push(AdoptionParent { relative: relative.clone(), stamp });
+            for child in std::fs::read_dir(entry.path()).map_err(|e| e.to_string())? {
+                let child = child.map_err(|e| e.to_string())?;
+                let child_relative = relative.join(child.file_name());
+                if adoption_move_allowed(0, &child_relative) {
+                    let meta = std::fs::symlink_metadata(child.path()).map_err(|e| e.to_string())?;
+                    moves.push(AdoptionMove { root: 0, relative: child_relative, stamp: adoption_stamp(&meta) });
+                }
+            }
+        } else if adoption_move_allowed(0, &relative) {
+            let meta = std::fs::symlink_metadata(entry.path()).map_err(|e| e.to_string())?;
+            moves.push(AdoptionMove { root: 0, relative, stamp: adoption_stamp(&meta) });
+        }
+    }
+    if roots.len() == 2 {
+        for relative in ["follow", "archive"] {
+            if let Some(meta) = adoption_metadata(&roots[1].0.join(relative))? {
+                if !meta.is_dir() || meta.file_type().is_symlink() {
+                    return Err(format!("external {relative} is not a real chain directory"));
+                }
+                moves.push(AdoptionMove { root: 1, relative: relative.into(), stamp: adoption_stamp(&meta) });
+            }
+        }
+    }
+    moves.sort_by(|a, b| a.root.cmp(&b.root).then_with(|| a.relative.cmp(&b.relative)));
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or_default();
+    let id = format!("stale-{nanos}-{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    let mut prepared_roots = Vec::new();
+    for (path, stamp) in roots {
+        // Exclusive creation reserves ownership. Interrupted preparation
+        // leaves harmless stale-* directories and never changes source data.
+        if adoption_dir(path)? != *stamp { return Err("storage root changed during preparation".into()); }
+        let aside = path.join(&id);
+        std::fs::create_dir(&aside).map_err(|e| format!("{}: {e}", aside.display()))?;
+        adoption_sync(path)?;
+        adoption_owner_marker(&aside.join(ADOPTION_OWNER), id.as_bytes())?;
+        prepared_roots.push(AdoptionRoot { path: path.clone(), stamp: *stamp, aside_stamp: adoption_dir(&aside)? });
+    }
+    let internal_aside = roots[0].0.join(&id);
+    for parent in &parents {
+        std::fs::create_dir(internal_aside.join(&parent.relative)).map_err(|e| e.to_string())?;
+        adoption_sync(&internal_aside)?;
+    }
+    // Keep the active old pointer until the final commit. Replaying a rename
+    // of network.json could otherwise move the newly published network.
+    crate::atomic::create(&internal_aside.join("network.json"), old, 0o644)?;
+    let plan = NetworkAdoption { version: 1, id, roots: prepared_roots, parents, moves, old: old.to_vec(), incoming };
+    validate_adoption(&plan, roots)?;
+    Ok(plan)
+}
+
+fn finish_adoption(
+    plan: &NetworkAdoption,
+    roots: &[(PathBuf, AdoptionStamp)],
+    journal_stamp: AdoptionStamp,
+    checkpoint: &mut impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
+    validate_adoption(plan, roots)?;
+    for movement in &plan.moves {
+        validate_adoption(plan, roots)?;
+        let root = &plan.roots[movement.root].path;
+        let source = root.join(&movement.relative);
+        let target = root.join(&plan.id).join(&movement.relative);
+        let source_parent = source.parent().ok_or("adoption source has no parent")?;
+        let target_parent = target.parent().ok_or("adoption target has no parent")?;
+        adoption_dir(source_parent)?;
+        adoption_dir(target_parent)?;
+        let source_stamp = adoption_metadata(&source)?.as_ref().map(adoption_stamp);
+        let target_stamp = adoption_metadata(&target)?.as_ref().map(adoption_stamp);
+        let expected = AdoptionStamp { device: roots[movement.root].1.device, inode: movement.stamp.inode };
+        match (source_stamp, target_stamp) {
+            (Some(stamp), None) if stamp == expected => {
+                adoption_rename(&source, &target)?;
+            }
+            (None, Some(stamp)) if stamp == expected => {}
+            _ => return Err(format!("network adoption source or quarantine changed: {}", source.display())),
+        }
+        // Also sync already-completed moves: a kill may have happened after
+        // rename but before the previous process synced either directory.
+        adoption_sync(source_parent)?;
+        adoption_sync(target_parent)?;
+        checkpoint()?;
+    }
+    validate_adoption(plan, roots)?;
+    crate::atomic::replace(&roots[0].0.join("network.json"), &plan.incoming, 0o644)?;
+    checkpoint()?;
+    validate_adoption(plan, roots)?;
+    let journal = roots[0].0.join(NETWORK_ADOPTION);
+    if adoption_metadata(&journal)?.as_ref().map(adoption_stamp) != Some(journal_stamp) {
+        return Err("the pending adoption journal was replaced; refusing to remove it".into());
+    }
+    std::fs::remove_file(&journal).map_err(|e| e.to_string())?;
+    // No child starts until this removal is durable. A surviving journal
+    // must never re-quarantine a child's freshly initialized new-genesis data.
+    adoption_sync(&roots[0].0)?;
+    tracing::warn!(quarantine = %plan.id, "a different network: storage roots were moved aside");
+    Ok(())
+}
 
 /// Put `network` in `<data>/network.json`: the first time, or when it is a
 /// different network (a testnet reset: other chain id or committee identity).
-/// The old network's data is moved to `<data>/stale-<time>`, never deleted.
+/// The old network's data is quarantined under `<data>/stale-*`, never deleted.
 /// The same network with newer epochs (written by a reshare) is kept.
 pub fn adopt_network(data: &Path, network: Option<&Path>) -> Result<(), String> {
+    adopt_network_with_chain_data(data, None, network)
+}
+
+/// Adopt both storage roots while preserving the internal identities. The
+/// caller holds the data-directory lock and starts no child until this returns.
+pub fn adopt_network_with_chain_data(data: &Path, chain_data: Option<&Path>, network: Option<&Path>) -> Result<(), String> {
+    adopt_network_with_chain_data_with(data, chain_data, network, || Ok(()))
+}
+
+/// A recorded adoption was already preflighted. Resume it before the CLI
+/// attempts to read an incoming source that the interrupted move may have
+/// quarantined. The CLI still binds the adopted file before spawning a child.
+pub fn resume_network_adoption(data: &Path, chain_data: Option<&Path>) -> Result<bool, String> {
+    let roots = adoption_roots(data, chain_data)?;
+    resume_pending_adoption(&roots, &mut || Ok(()))
+}
+
+fn resume_pending_adoption(
+    roots: &[(PathBuf, AdoptionStamp)],
+    checkpoint: &mut impl FnMut() -> Result<(), String>,
+) -> Result<bool, String> {
+    let journal = roots[0].0.join(NETWORK_ADOPTION);
+    let Some(meta) = adoption_metadata(&journal)? else { return Ok(false) };
+    if !meta.is_file() || meta.file_type().is_symlink() || meta.len() > 16 * 1024 * 1024 {
+        return Err("pending network adoption is not a bounded regular file".into());
+    }
+    let plan: NetworkAdoption = serde_json::from_slice(&std::fs::read(&journal).map_err(|e| e.to_string())?)
+        .map_err(|e| format!("pending network adoption: {e}"))?;
+    finish_adoption(&plan, roots, adoption_stamp(&meta), checkpoint)?;
+    Ok(true)
+}
+
+fn adopt_network_with_chain_data_with(
+    data: &Path,
+    chain_data: Option<&Path>,
+    network: Option<&Path>,
+    mut checkpoint: impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
+    let roots = adoption_roots(data, chain_data)?;
+    let data = &roots[0].0;
+    let journal = data.join(NETWORK_ADOPTION);
+    if resume_pending_adoption(&roots, &mut checkpoint)? {
+        // Replay precedes first-install and same-network decisions, and uses
+        // pinned bytes even if the incoming file disappeared in the crash.
+        return Ok(());
+    }
     let ours = data.join("network.json");
     let Some(src) = network else {
         return if ours.exists() {
@@ -1732,6 +2096,11 @@ pub fn adopt_network(data: &Path, network: Option<&Path>) -> Result<(), String> 
             Err("first run: pass --network <network.json>".into())
         };
     };
+    if let Some(meta) = adoption_metadata(&ours)? {
+        if !meta.is_file() || meta.file_type().is_symlink() {
+            return Err("the local network.json is not a regular file; refusing to change it".into());
+        }
+    }
     let incoming = std::fs::read(src).map_err(|e| format!("{}: {e}", src.display()))?;
     let theirs: NetworkFile = serde_json::from_slice(&incoming)
         .map_err(|e| format!("{} is not a network.json: {e}", src.display()))?;
@@ -1777,29 +2146,36 @@ pub fn adopt_network(data: &Path, network: Option<&Path>) -> Result<(), String> 
             }
             return Ok(());
         }
-        let secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or_default();
-        let aside = data.join(format!("stale-{secs}"));
-        std::fs::create_dir_all(&aside).map_err(|e| e.to_string())?;
-        for e in std::fs::read_dir(data)
-            .map_err(|e| e.to_string())?
-            .flatten()
-        {
-            let name = e.file_name();
-            let n = name.to_string_lossy();
-            if KEEP_ACROSS_NETWORKS.contains(&n.as_ref()) || n.starts_with("stale-") {
-                continue;
-            }
-            std::fs::rename(e.path(), aside.join(&name)).map_err(|e| e.to_string())?;
+        let old = std::fs::read(&ours).map_err(|e| e.to_string())?;
+        let plan = prepare_adoption(&roots, incoming, &old)?;
+        let bytes = serde_json::to_vec(&plan).map_err(|e| e.to_string())?;
+        if bytes.len() > 16 * 1024 * 1024 {
+            return Err("network adoption journal exceeds its size bound".into());
         }
-        tracing::warn!(moved_to = %aside.display(), "a different network: the previous one's data was moved aside");
+        crate::atomic::create(&journal, &bytes, 0o600)?;
+        let meta = adoption_metadata(&journal)?.ok_or("the newly created adoption journal is missing")?;
+        checkpoint()?;
+        return finish_adoption(&plan, &roots, adoption_stamp(&meta), &mut checkpoint);
     }
-    std::fs::copy(src, &ours)
-        .map(|_| ())
-        .map_err(|e| format!("{}: {e}", src.display()))
+    if adoption_metadata(&ours)?.is_some() {
+        return Err("the local network.json is unreadable; refusing to overwrite an unknown network".into());
+    }
+    // A missing internal pointer is not proof that an external old-genesis
+    // store is a new installation. Only the journal can resume that case.
+    if let Some((chain, _)) = roots.get(1) {
+        for mode in ["follow", "archive"] {
+            let path = chain.join(mode);
+            if adoption_metadata(&path)?.is_some() {
+                adoption_dir(&path)?;
+                if std::fs::read_dir(&path).map_err(|e| e.to_string())?.next().transpose().map_err(|e| e.to_string())?.is_some() {
+                    return Err("external chain data exists without a local network binding or adoption journal; refusing to guess".into());
+                }
+            }
+        }
+    }
+    crate::atomic::replace(&ours, &incoming, 0o644)
 }
+
 
 fn path_str(p: &Path) -> String {
     p.to_string_lossy().into_owned()
@@ -2369,8 +2745,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A network reset in the split layout moves nothing between the two
-    /// directories: the keys stay in --data, the chain data is untouched.
+    /// A split-layout reset quarantines chain data on its original disk;
+    /// the keys stay in --data and the old files remain readable.
     #[test]
     fn a_network_reset_keeps_keys_out_of_chain_data() {
         let dir = key_dirs("reset");
@@ -2378,23 +2754,395 @@ mod tests {
         let src = dir.join("source.json");
         let mut net = file(1, "aa");
         std::fs::write(&src, serde_json::to_vec(&net).unwrap()).unwrap();
-        adopt_network(&data, Some(&src)).unwrap();
+        adopt_network_with_chain_data(&data, Some(&chain), Some(&src)).unwrap();
         for k in ["validator.key", "validator.pub.json", "node-account.key"] {
             std::fs::write(data.join(k), b"k").unwrap();
         }
         std::fs::write(chain.join("follow/state.redb"), b"blocks").unwrap();
         net.identity = Some("bb".into());
         std::fs::write(&src, serde_json::to_vec(&net).unwrap()).unwrap();
-        adopt_network(&data, Some(&src)).unwrap();
+        adopt_network_with_chain_data(&data, Some(&chain), Some(&src)).unwrap();
         for k in ["validator.key", "validator.pub.json", "node-account.key"] {
             assert!(data.join(k).exists(), "{k} stays in the key directory");
             assert!(KEEP_ACROSS_NETWORKS.contains(&k));
         }
         assert!(keys_in_chain_data(&chain).is_empty(), "no key moved into chain data");
-        assert_eq!(std::fs::read(chain.join("follow/state.redb")).unwrap(), b"blocks", "chain data untouched");
+        assert!(!chain.join("follow/state.redb").exists(), "old chain data is inactive");
+        assert_eq!(std::fs::read(r08_stale(&chain).join("follow/state.redb")).unwrap(), b"blocks", "old bytes are preserved on their disk");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    struct R08Fixture(PathBuf);
+
+    impl Drop for R08Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn r08_config(chain_id: u64) -> crate::chain::ChainConfig {
+        crate::chain::ChainConfig {
+            chain_id,
+            limits: aether_types::GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
+            alloc: vec![], fees: false, registrar: None, epoch_blocks: 0,
+            min_streak: None, draw_epochs: None, history_v2: false,
+            protocol: 1, node_rewards: false, committee: vec![], reserve: None,
+            group: 0, max_committee: crate::rotation::GROW_UNTIL,
+        }
+    }
+
+    fn r08_seed(path: &Path) {
+        drop(crate::chain::Chain::open(r08_config(1), crate::store::Store::open(path).unwrap()).unwrap());
+    }
+
+    fn r08_fixture(tag: &str) -> (R08Fixture, PathBuf, PathBuf, PathBuf) {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().join("tmp");
+        std::fs::create_dir_all(&root).unwrap();
+        let dir = root.join(format!("r08-{tag}-{}-{}-{}", std::process::id(), now_ms(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+        // The guard only owns a successfully created, unique fixture directory.
+        std::fs::create_dir(&dir).unwrap();
+        let fixture = R08Fixture(dir.clone());
+        let (data, chain, src) = (dir.join("node"), dir.join("chain"), dir.join("incoming.json"));
+        std::fs::create_dir_all(data.join("follow")).unwrap();
+        std::fs::create_dir_all(&chain).unwrap();
+        std::fs::write(&src, serde_json::to_vec(&file(1, "aa")).unwrap()).unwrap();
+        adopt_network(&data, Some(&src)).unwrap();
+        for key in ["validator.key", "validator.pub.json", "node-account.key", "wallet-node.key"] {
+            std::fs::write(data.join(key), b"internal identity").unwrap();
+        }
+        std::fs::write(data.join("follow/wallet-node.key"), b"internal endpoint").unwrap();
+        std::fs::write(data.join("run.lock"), b"lock identity").unwrap();
+        std::fs::write(data.join("block-data-move.json"), b"{\"authoritative\":\"external\",\"root_id\":\"fixture-chain\"}").unwrap();
+        for path in [data.join("state.redb"), data.join("follow/state.redb"),
+            chain.join("follow/state.redb"), chain.join("archive/state.redb")] {
+            r08_seed(&path);
+        }
+        std::fs::write(chain.join("owner-file"), b"unrelated external data").unwrap();
+        std::fs::write(&src, serde_json::to_vec(&file(2, "bb")).unwrap()).unwrap();
+        (fixture, data, chain, src)
+    }
+
+    fn r08_stale(root: &Path) -> PathBuf {
+        std::fs::read_dir(root).unwrap().map(Result::unwrap)
+            .find(|entry| entry.file_name().to_string_lossy().starts_with("stale-"))
+            .expect("the old network has a quarantine directory").path()
+    }
+
+    fn r08_assert_reset(data: &Path, chain_data: &Path) {
+        use crate::chain::{genesis_digest, Chain, GENESIS};
+        use crate::store::Store;
+        let adopted = NetworkFile::load(&data.join("network.json")).unwrap();
+        assert_eq!(adopted.chain_id, 2);
+        // Real Store + Chain opens, rather than fake state bytes, prove that
+        // either follower mode can start on the adopted genesis.
+        for archive in [false, true] {
+            let mode = if archive { "archive" } else { "follow" };
+            let path = follower_dir(data, Some(chain_data), archive).join("state.redb");
+            let (chain, genesis) = Chain::open(r08_config(adopted.chain_id), Store::open(&path).unwrap())
+                .unwrap_or_else(|e| panic!("RED R08: adopted network cannot open external {mode}: {e:?}"));
+            assert_eq!(chain.store().expect("durable chain has a store").meta(GENESIS).unwrap(),
+                Some(genesis_digest(&genesis).to_vec()));
+            drop(chain);
+        }
+        let old_external = r08_stale(chain_data);
+        for mode in ["follow", "archive"] {
+            drop(Chain::open(r08_config(1), Store::open(&old_external.join(mode).join("state.redb")).unwrap()).unwrap());
+        }
+        let old_internal = r08_stale(data);
+        for relative in ["state.redb", "follow/state.redb"] {
+            assert!(!data.join(relative).exists(), "old internal state is inactive: {relative}");
+            drop(Chain::open(r08_config(1), Store::open(&old_internal.join(relative)).unwrap()).unwrap());
+        }
+        assert_eq!(NetworkFile::load(&old_internal.join("network.json")).unwrap().chain_id, 1);
+        for key in ["validator.key", "validator.pub.json", "node-account.key", "wallet-node.key"] {
+            assert_eq!(std::fs::read(data.join(key)).unwrap(), b"internal identity", "{key}");
+        }
+        assert_eq!(std::fs::read(data.join("follow/wallet-node.key")).unwrap(), b"internal endpoint");
+        assert_eq!(std::fs::read(data.join("run.lock")).unwrap(), b"lock identity");
+        assert_eq!(std::fs::read(data.join("block-data-move.json")).unwrap(),
+            b"{\"authoritative\":\"external\",\"root_id\":\"fixture-chain\"}", "the authoritative storage choice is network-independent");
+        assert_eq!(std::fs::read(chain_data.join("owner-file")).unwrap(), b"unrelated external data");
+        assert!(keys_in_chain_data(chain_data).is_empty());
+    }
+
+    #[test]
+    fn r08_split_network_reset_reopens_both_stores_on_the_adopted_genesis() {
+        let (_fixture, data, chain, src) = r08_fixture("split");
+        // Exercise the same split-layout adoption entry point as aether run.
+        adopt_network_with_chain_data(&data, Some(&chain), Some(&src)).unwrap();
+        r08_assert_reset(&data, &chain);
+    }
+    #[test]
+    fn r08_every_durable_interruption_resumes_without_the_incoming_file() {
+        // The fixture has four moves: internal state + follow state, then
+        // both external modes. Stop after the journal, each move, and publish.
+        for stop_at in 0..=5 {
+            let (_fixture, data, chain, src) = r08_fixture(&format!("interruption-{stop_at}"));
+            let mut checkpoint = 0;
+            let result = adopt_network_with_chain_data_with(&data, Some(&chain), Some(&src), || {
+                let observed = checkpoint;
+                checkpoint += 1;
+                if observed == stop_at { Err("simulated interruption".into()) } else { Ok(()) }
+            });
+            assert!(result.is_err(), "the operation must stop at checkpoint {stop_at}");
+            assert_eq!(checkpoint, stop_at + 1);
+            assert!(data.join(NETWORK_ADOPTION).exists());
+            assert_eq!(NetworkFile::load(&data.join("network.json")).unwrap().chain_id,
+                if stop_at == 5 { 2 } else { 1 }, "publish is the final durable step");
+            std::fs::remove_file(&src).unwrap();
+            assert!(resume_network_adoption(&data, Some(&chain)).unwrap());
+            assert!(!data.join(NETWORK_ADOPTION).exists());
+            r08_assert_reset(&data, &chain);
+            // Children have now created new-genesis data. A completed journal
+            // must never reappear and quarantine that state on a later run.
+            assert!(!resume_network_adoption(&data, Some(&chain)).unwrap());
+            adopt_network_with_chain_data(&data, Some(&chain), None).unwrap();
+            r08_assert_reset(&data, &chain);
+        }
+    }
+
+    #[test]
+    fn r08_a_disconnected_disk_stops_replay_without_recreating_its_root() {
+        let (fixture, data, chain, src) = r08_fixture("disk-loss");
+        let mut checkpoint = 0;
+        let result = adopt_network_with_chain_data_with(&data, Some(&chain), Some(&src), || {
+            let observed = checkpoint;
+            checkpoint += 1;
+            if observed == 3 { Err("disk disconnects after one external move".into()) } else { Ok(()) }
+        });
+        assert!(result.is_err());
+        let disconnected = fixture.0.join("disconnected-chain");
+        std::fs::rename(&chain, &disconnected).unwrap();
+        assert!(resume_network_adoption(&data, Some(&chain)).is_err());
+        assert!(!chain.exists(), "a missing storage root must never be recreated");
+        assert_eq!(NetworkFile::load(&data.join("network.json")).unwrap().chain_id, 1);
+        assert!(data.join(NETWORK_ADOPTION).exists());
+        std::fs::rename(&disconnected, &chain).unwrap();
+        assert!(resume_network_adoption(&data, Some(&chain)).unwrap());
+        r08_assert_reset(&data, &chain);
+    }
+
+    #[test]
+    fn r08_a_replacement_disk_at_the_same_path_is_not_modified() {
+        let (fixture, data, chain, src) = r08_fixture("disk-replaced");
+        assert!(adopt_network_with_chain_data_with(&data, Some(&chain), Some(&src),
+            || Err("stop after journal".into())).is_err());
+        let original = fixture.0.join("original-chain");
+        std::fs::rename(&chain, &original).unwrap();
+        std::fs::create_dir(&chain).unwrap();
+        std::fs::write(chain.join("owner-file"), b"replacement disk data").unwrap();
+        assert!(resume_network_adoption(&data, Some(&chain)).is_err());
+        assert_eq!(std::fs::read(chain.join("owner-file")).unwrap(), b"replacement disk data");
+        assert_eq!(std::fs::read_dir(&chain).unwrap().count(), 1, "no quarantine or new chain was created");
+        assert_eq!(NetworkFile::load(&data.join("network.json")).unwrap().chain_id, 1);
+        assert!(data.join(NETWORK_ADOPTION).exists());
+        std::fs::rename(&chain, fixture.0.join("replacement-chain")).unwrap();
+        std::fs::rename(&original, &chain).unwrap();
+        assert!(resume_network_adoption(&data, Some(&chain)).unwrap());
+        r08_assert_reset(&data, &chain);
+    }
+
+    #[test]
+    fn r08_a_quarantine_collision_preserves_both_source_and_occupant() {
+        let (_fixture, data, chain, src) = r08_fixture("collision");
+        assert!(adopt_network_with_chain_data_with(&data, Some(&chain), Some(&src),
+            || Err("stop after journal".into())).is_err());
+        let plan: NetworkAdoption = serde_json::from_slice(&std::fs::read(data.join(NETWORK_ADOPTION)).unwrap()).unwrap();
+        let movement = &plan.moves[0];
+        let root = &plan.roots[movement.root].path;
+        let source = root.join(&movement.relative);
+        let target = root.join(&plan.id).join(&movement.relative);
+        let before = std::fs::read(&source).unwrap();
+        std::fs::write(&target, b"preexisting quarantine occupant").unwrap();
+        assert!(resume_network_adoption(&data, Some(&chain)).is_err());
+        assert_eq!(std::fs::read(&source).unwrap(), before);
+        assert_eq!(std::fs::read(&target).unwrap(), b"preexisting quarantine occupant");
+        assert_eq!(NetworkFile::load(&data.join("network.json")).unwrap().chain_id, 1);
+        assert!(data.join(NETWORK_ADOPTION).exists());
+    }
+
+    #[test]
+    fn r08_a_replaced_source_is_not_moved_by_an_old_journal() {
+        let (fixture, data, chain, src) = r08_fixture("source-replaced");
+        assert!(adopt_network_with_chain_data_with(&data, Some(&chain), Some(&src),
+            || Err("stop after journal".into())).is_err());
+        let plan: NetworkAdoption = serde_json::from_slice(&std::fs::read(data.join(NETWORK_ADOPTION)).unwrap()).unwrap();
+        let movement = &plan.moves[0];
+        let source = plan.roots[movement.root].path.join(&movement.relative);
+        let saved = fixture.0.join("saved-original-state.redb");
+        std::fs::rename(&source, &saved).unwrap();
+        std::fs::write(&source, b"newer source data").unwrap();
+        assert!(resume_network_adoption(&data, Some(&chain)).is_err());
+        assert_eq!(std::fs::read(&source).unwrap(), b"newer source data");
+        drop(crate::chain::Chain::open(r08_config(1), crate::store::Store::open(&saved).unwrap()).unwrap());
+        assert_eq!(NetworkFile::load(&data.join("network.json")).unwrap().chain_id, 1);
+        assert!(data.join(NETWORK_ADOPTION).exists());
+    }
+
+    #[test]
+    fn r08_overlapping_roots_are_rejected_before_network_mutation() {
+        let (_fixture, data, _chain, src) = r08_fixture("overlap");
+        let nested = data.join("nested-chain");
+        std::fs::create_dir(&nested).unwrap();
+        std::fs::write(nested.join("owner-file"), b"nested data").unwrap();
+        assert!(adopt_network_with_chain_data(&data, Some(&nested), Some(&src)).is_err());
+        assert_eq!(NetworkFile::load(&data.join("network.json")).unwrap().chain_id, 1);
+        assert_eq!(std::fs::read(nested.join("owner-file")).unwrap(), b"nested data");
+        assert!(!data.join(NETWORK_ADOPTION).exists());
+        assert!(std::fs::read_dir(&data).unwrap().map(Result::unwrap)
+            .all(|entry| !entry.file_name().to_string_lossy().starts_with("stale-")));
+    }
+
+    #[test]
+    fn r08_a_symlinked_pending_journal_cannot_replace_an_endpoint_key() {
+        let (_fixture, data, chain, _src) = r08_fixture("journal-link");
+        let endpoint = data.join("follow/wallet-node.key");
+        std::os::unix::fs::symlink(&endpoint, data.join(NETWORK_ADOPTION)).unwrap();
+        assert!(resume_network_adoption(&data, Some(&chain)).is_err());
+        assert_eq!(std::fs::read(endpoint).unwrap(), b"internal endpoint");
+        assert_eq!(NetworkFile::load(&data.join("network.json")).unwrap().chain_id, 1);
+    }
+
+    #[test]
+    fn r08_remounted_storage_can_resume_with_changed_device_numbers() {
+        let (_fixture, data, chain, src) = r08_fixture("device-drift");
+        assert!(adopt_network_with_chain_data_with(&data, Some(&chain), Some(&src),
+            || Err("stop after journal".into())).is_err());
+        let journal = data.join(NETWORK_ADOPTION);
+        let mut plan: NetworkAdoption = serde_json::from_slice(&std::fs::read(&journal).unwrap()).unwrap();
+        // Simulate a journal written under a previous mount's st_dev. The
+        // inode identities and operation-owned quarantine remain unchanged.
+        let old_device = plan.roots[1].stamp.device.wrapping_add(1);
+        plan.roots[1].stamp.device = old_device;
+        plan.roots[1].aside_stamp.device = old_device;
+        for movement in &mut plan.moves {
+            if movement.root == 1 { movement.stamp.device = old_device; }
+        }
+        crate::atomic::replace(&journal, &serde_json::to_vec(&plan).unwrap(), 0o600).unwrap();
+        assert!(resume_network_adoption(&data, Some(&chain)).unwrap());
+        r08_assert_reset(&data, &chain);
+    }
+
+    #[test]
+    fn r08_an_incoming_file_inside_data_is_pinned_before_quarantine() {
+        let (_fixture, data, chain, src) = r08_fixture("inside-source");
+        let inside = data.join("incoming.json");
+        std::fs::rename(&src, &inside).unwrap();
+        adopt_network_with_chain_data(&data, Some(&chain), Some(&inside)).unwrap();
+        assert!(!inside.exists(), "the source file was included in the old network's quarantine");
+        r08_assert_reset(&data, &chain);
+    }
+
+    #[test]
+    fn r08_internal_archive_endpoint_identity_stays_on_this_mac() {
+        let (_fixture, data, chain, src) = r08_fixture("archive-endpoint");
+        std::fs::create_dir(data.join("archive")).unwrap();
+        std::fs::write(data.join("archive/wallet-node.key"), b"archive endpoint").unwrap();
+        r08_seed(&data.join("archive/state.redb"));
+        adopt_network_with_chain_data(&data, Some(&chain), Some(&src)).unwrap();
+        r08_assert_reset(&data, &chain);
+        assert_eq!(std::fs::read(data.join("archive/wallet-node.key")).unwrap(), b"archive endpoint");
+        assert!(!data.join("archive/state.redb").exists());
+        drop(crate::chain::Chain::open(r08_config(1), crate::store::Store::open(
+            &r08_stale(&data).join("archive/state.redb")).unwrap()).unwrap());
+    }
+
+    #[test]
+    fn r08_external_data_without_a_local_binding_is_preserved_and_refused() {
+        let (fixture, data, chain, src) = r08_fixture("missing-binding");
+        std::fs::rename(data.join("network.json"), fixture.0.join("saved-network.json")).unwrap();
+        assert!(adopt_network_with_chain_data(&data, Some(&chain), Some(&src)).is_err());
+        assert!(!data.join("network.json").exists());
+        assert!(!data.join(NETWORK_ADOPTION).exists());
+        for mode in ["follow", "archive"] {
+            drop(crate::chain::Chain::open(r08_config(1), crate::store::Store::open(
+                &chain.join(mode).join("state.redb")).unwrap()).unwrap());
+        }
+        assert_eq!(std::fs::read(chain.join("owner-file")).unwrap(), b"unrelated external data");
+    }
+
+    #[test]
+    fn r08_exclusive_rename_never_replaces_a_quarantine_occupant() {
+        let (fixture, _data, _chain, _src) = r08_fixture("exclusive-rename");
+        let source = fixture.0.join("rename-source");
+        let target = fixture.0.join("rename-target");
+        std::fs::write(&source, b"source data").unwrap();
+        std::fs::write(&target, b"unrelated destination data").unwrap();
+        assert!(adoption_rename(&source, &target).is_err());
+        assert_eq!(std::fs::read(source).unwrap(), b"source data");
+        assert_eq!(std::fs::read(target).unwrap(), b"unrelated destination data");
+    }
+
+    #[test]
+    fn r08_a_newer_active_network_is_preserved_instead_of_overwritten_on_replay() {
+        let (_fixture, data, chain, src) = r08_fixture("network-advanced");
+        assert!(adopt_network_with_chain_data_with(&data, Some(&chain), Some(&src),
+            || Err("stop after journal".into())).is_err());
+        let advanced = serde_json::to_vec(&file(3, "cc")).unwrap();
+        crate::atomic::replace(&data.join("network.json"), &advanced, 0o644).unwrap();
+        assert!(resume_network_adoption(&data, Some(&chain)).is_err());
+        assert_eq!(std::fs::read(data.join("network.json")).unwrap(), advanced);
+        assert!(data.join(NETWORK_ADOPTION).exists());
+        for mode in ["follow", "archive"] {
+            drop(crate::chain::Chain::open(r08_config(1), crate::store::Store::open(
+                &chain.join(mode).join("state.redb")).unwrap()).unwrap());
+        }
+    }
+
+    #[test]
+    fn r08_case_insensitive_key_and_follow_aliases_preserve_endpoint_identity() {
+        let (_fixture, data, chain, src) = r08_fixture("case-alias");
+        std::fs::rename(data.join("follow"), data.join("Follow")).unwrap();
+        if !data.join("follow").is_dir() { return; } // This scenario requires a case-insensitive volume.
+        std::fs::rename(data.join("wallet-node.key"), data.join("Wallet-Node.Key")).unwrap();
+        std::fs::rename(data.join("follow/wallet-node.key"), data.join("Follow/Wallet-Node.Key")).unwrap();
+        adopt_network_with_chain_data(&data, Some(&chain), Some(&src)).unwrap();
+        r08_assert_reset(&data, &chain);
+    }
+
+    #[test]
+    fn r08_case_aliases_cannot_bypass_physical_root_disjointness() {
+        let (fixture, data, _chain, src) = r08_fixture("case-nested");
+        let alias = fixture.0.join("Node");
+        if !alias.is_dir() { return; } // Case-insensitive filesystem only.
+        std::fs::create_dir(data.join("nested-chain")).unwrap();
+        let nested_alias = alias.join("nested-chain");
+        assert!(adopt_network_with_chain_data(&data, Some(&nested_alias), Some(&src)).is_err());
+        assert_eq!(NetworkFile::load(&data.join("network.json")).unwrap().chain_id, 1);
+        assert!(!data.join(NETWORK_ADOPTION).exists());
+        assert!(std::fs::read_dir(&data).unwrap().map(Result::unwrap)
+            .all(|entry| !entry.file_name().to_string_lossy().starts_with("stale-")));
+    }
+
+    #[test]
+    fn r08_pending_adoption_resumes_through_case_aliases_of_the_same_roots() {
+        let (fixture, data, chain, src) = r08_fixture("case-resume");
+        let (data_alias, chain_alias) = (fixture.0.join("Node"), fixture.0.join("Chain"));
+        if !data_alias.is_dir() || !chain_alias.is_dir() { return; } // Case-insensitive filesystem only.
+        assert!(adopt_network_with_chain_data_with(&data, Some(&chain), Some(&src),
+            || Err("stop after journal".into())).is_err());
+        assert!(resume_network_adoption(&data_alias, Some(&chain_alias)).unwrap());
+        r08_assert_reset(&data, &chain);
+    }
+
+    #[test]
+    fn r08_owner_marker_never_recreates_a_disconnected_storage_root() {
+        let (fixture, _data, _chain, _src) = r08_fixture("marker-missing-root");
+        let missing = fixture.0.join("disconnected-volume");
+        assert!(adoption_owner_marker(&missing.join("chain/stale-owned/.adoption-owner"), b"owner").is_err());
+        assert!(!missing.exists(), "marker publication must not create any missing parent");
+    }
+
+    #[test]
+    fn r08_owner_marker_never_overwrites_an_existing_file() {
+        let (fixture, _data, _chain, _src) = r08_fixture("marker-collision");
+        let marker = fixture.0.join("foreign-owner-marker");
+        std::fs::write(&marker, b"unrelated metadata").unwrap();
+        assert!(adoption_owner_marker(&marker, b"new owner").is_err());
+        assert_eq!(std::fs::read(marker).unwrap(), b"unrelated metadata");
+    }
     /// The disk floor guards the volume the chain data is written to.
     #[test]
     fn the_disk_floor_watches_the_chain_data_volume() {

@@ -14,12 +14,12 @@
 		02D7FEE4A7CA3444B80FE85C /* BrowserOriginPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97C7694B38BBE822C2A238C5 /* BrowserOriginPolicy.swift */; };
 		07411F0894B725B06CED2894 /* BalanceHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82F0B4CA90E38B66B43592E6 /* BalanceHistory.swift */; };
 		0C3F5D5E82BA80E5FBCEFB6A /* ReleaseUpdateGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D1303552378BB828A2C9D21 /* ReleaseUpdateGate.swift */; };
+		0F89258C2935E77A8BE91724 /* UpdateWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6180DF69697B707E2DA49136 /* UpdateWindow.swift */; };
 		0FAF813471F7AD7680988BEE /* BundledPageScheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 407C3252EC0DD6F886E76AE7 /* BundledPageScheme.swift */; };
 		16504A4054237817545767F0 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B38A846EB23F0C4A52BF8A78 /* ContentView.swift */; };
 		1B66F9FC578D265748C295D1 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = B60F2ADE6BD15611D4BD0811 /* Theme.swift */; };
 		1BA7A78F249B5426DD6B684F /* BalanceHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82F0B4CA90E38B66B43592E6 /* BalanceHistory.swift */; };
 		1CC133C57B599BA2B10B7D4A /* ResendIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 424591AA2690FB9457CF62DA /* ResendIntent.swift */; };
-		5B2E7A1C9D3F4E6A8B0C1D2F /* TxTrack.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B2E7A1C9D3F4E6A8B0C1D2E /* TxTrack.swift */; };
 		1FFA6C892411F8AE3F9469F0 /* BrowserController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7205378BF9586CD3564801A2 /* BrowserController.swift */; };
 		2120D978A2E422529EDEAA37 /* NodeWatchdog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51F3FF6BB1FEAEB9503220A4 /* NodeWatchdog.swift */; };
 		25F80E2C53EE43CAED9D6337 /* UnattendedDaemon.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3A8FA742CB5B69B0DF19B00 /* UnattendedDaemon.swift */; };
@@ -42,6 +42,7 @@
 		5332251E1E361F3DD570B235 /* BrowserOriginPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97C7694B38BBE822C2A238C5 /* BrowserOriginPolicy.swift */; };
 		544B0C84E8331422978F30F7 /* BrowserPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C44DE42286FDA51E768556B /* BrowserPolicy.swift */; };
 		54D6DA47A56D88BD948D15AD /* VerifyBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82B54C28053E7413F40CC695 /* VerifyBridge.swift */; };
+		5517361BF06124B3886E05E5 /* UpdateWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6180DF69697B707E2DA49136 /* UpdateWindow.swift */; };
 		554F88B6BC236C874C2227E1 /* NodeWatchdog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51F3FF6BB1FEAEB9503220A4 /* NodeWatchdog.swift */; };
 		56587DFC41CC801B71FB6D7E /* EarningsExport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C04312C5DE9BE7FCAABC3D93 /* EarningsExport.swift */; };
 		576FB72021E6A746C1A7AF9B /* network.json in Resources */ = {isa = PBXBuildFile; fileRef = AB6E5651AC1948FECDAE69D4 /* network.json */; };
@@ -92,7 +93,6 @@
 		A51800452172EB3E988FBA9D /* ExploreTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99CD9ED9C56D37F24017E7D1 /* ExploreTab.swift */; };
 		A6411E9B1827C2B1B6D286AE /* ProverFlags.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94E4B4A2A4BDBBBBC6A12600 /* ProverFlags.swift */; };
 		A92FEDE9AA150A6ACA8C92A2 /* ResendIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 424591AA2690FB9457CF62DA /* ResendIntent.swift */; };
-		5B2E7A1C9D3F4E6A8B0C1D30 /* TxTrack.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B2E7A1C9D3F4E6A8B0C1D2E /* TxTrack.swift */; };
 		A98EABE0AC6AB4C359623E7E /* BalanceBreakdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1F6F75149EAAFD83802065B /* BalanceBreakdown.swift */; };
 		A9AB518F8F246CB2A0974398 /* Earnings.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6C1B75440E8A6A577BD467E /* Earnings.swift */; };
 		ADEEA18CEEC7A29BDFBB47BB /* NetworkPaused.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B632CFC2DA1179CC9EAD01D /* NetworkPaused.swift */; };
@@ -112,6 +112,7 @@
 		C8D1470136395E0DA8D2FAAA /* UnattendedDecision.swift in Sources */ = {isa = PBXBuildFile; fileRef = 716005AD711FCD432A9A487C /* UnattendedDecision.swift */; };
 		C95F0C486AC46505C63D822B /* AgentWalletPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 020BD968AE07E378627D7EB7 /* AgentWalletPanel.swift */; };
 		C9839F6819F2F86387CC88B7 /* aether_ffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BC12AF79B32D90A48860251 /* aether_ffi.swift */; };
+		CC36CF924592D123B7BE709B /* TxTrack.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05428AB5A1E93D738C571517 /* TxTrack.swift */; };
 		D011EF063EAF0FD0463BB20F /* NetworkUpgrade.swift in Sources */ = {isa = PBXBuildFile; fileRef = BAF12832C2145F7B5553F13A /* NetworkUpgrade.swift */; };
 		D06C6B7937F631DDD73DEEC0 /* StorageSetting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87218A83DA7401CDA0D1E56E /* StorageSetting.swift */; };
 		D229901FC826CDF2C1547675 /* UpdateTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 790C6CEC63EC7A21B28A79CC /* UpdateTracker.swift */; };
@@ -130,6 +131,7 @@
 		E7EE58F00758C26A508577DB /* provider.js in Resources */ = {isa = PBXBuildFile; fileRef = B71962ECF4B1842C77260AF0 /* provider.js */; };
 		E8E7A825FBFD8C349EA8E74A /* ResizeBenchmark.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3A70AF889C5ACB1DDB2AF45 /* ResizeBenchmark.swift */; };
 		ED3E2EB438264E2123EBDBD9 /* DesignPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 260B382C7E1D4499BE9AE870 /* DesignPreview.swift */; };
+		EFF82CBD9A1241C18E17FFE8 /* TxTrack.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05428AB5A1E93D738C571517 /* TxTrack.swift */; };
 		F0B3BB5AE45A3595EC6EB117 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 54084C88C38E2484A2641DE4 /* Assets.xcassets */; };
 		F3667C9BCD3B016F232A69D8 /* ProverMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DEBCE5EA044F272C9EA406C /* ProverMenu.swift */; };
 		F5D803ED94B649009D54712A /* DesignPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 260B382C7E1D4499BE9AE870 /* DesignPreview.swift */; };
@@ -146,6 +148,7 @@
 		020BD968AE07E378627D7EB7 /* AgentWalletPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentWalletPanel.swift; sourceTree = "<group>"; };
 		029F7E592C27EAB302CCE55D /* StorageSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageSettings.swift; sourceTree = "<group>"; };
 		02CE6DC842A323F5843165E1 /* EarningsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EarningsModel.swift; sourceTree = "<group>"; };
+		05428AB5A1E93D738C571517 /* TxTrack.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TxTrack.swift; sourceTree = "<group>"; };
 		0BCD0FCE195D7296CBCA13E9 /* SimpleDashboard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimpleDashboard.swift; sourceTree = "<group>"; };
 		0CA1040C5885E62AF6B0AAC4 /* DataMigration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataMigration.swift; sourceTree = "<group>"; };
 		17F1C13C585683B68AF46003 /* AetherWalletIOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = AetherWalletIOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -162,12 +165,12 @@
 		3CA691B4DF93F089CF5537C7 /* HealthCheck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthCheck.swift; sourceTree = "<group>"; };
 		407C3252EC0DD6F886E76AE7 /* BundledPageScheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BundledPageScheme.swift; sourceTree = "<group>"; };
 		424591AA2690FB9457CF62DA /* ResendIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResendIntent.swift; sourceTree = "<group>"; };
-		5B2E7A1C9D3F4E6A8B0C1D2E /* TxTrack.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TxTrack.swift; sourceTree = "<group>"; };
 		462C807FB20A46B9919AE925 /* Spinners.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Spinners.swift; sourceTree = "<group>"; };
 		4BC12AF79B32D90A48860251 /* aether_ffi.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = aether_ffi.swift; sourceTree = "<group>"; };
 		51F3FF6BB1FEAEB9503220A4 /* NodeWatchdog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeWatchdog.swift; sourceTree = "<group>"; };
 		54084C88C38E2484A2641DE4 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		55E7E86166A7CE6D29E6C709 /* AdaptiveLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdaptiveLayout.swift; sourceTree = "<group>"; };
+		6180DF69697B707E2DA49136 /* UpdateWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateWindow.swift; sourceTree = "<group>"; };
 		64A5EE5BA6294827128D61F5 /* NodeController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeController.swift; sourceTree = "<group>"; };
 		65F2514912728847B547AC0A /* Onboarding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Onboarding.swift; sourceTree = "<group>"; };
 		6CA7F0040DAE7F5B39B01A7D /* MigrationStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MigrationStatus.swift; sourceTree = "<group>"; };
@@ -293,7 +296,6 @@
 				AB4C9843D1CF8E29F627927D /* ReleaseApproval.swift */,
 				9D1303552378BB828A2C9D21 /* ReleaseUpdateGate.swift */,
 				424591AA2690FB9457CF62DA /* ResendIntent.swift */,
-				5B2E7A1C9D3F4E6A8B0C1D2E /* TxTrack.swift */,
 				C3A70AF889C5ACB1DDB2AF45 /* ResizeBenchmark.swift */,
 				C56EEFC753370BDE2960BE52 /* ResourcesSettings.swift */,
 				0BCD0FCE195D7296CBCA13E9 /* SimpleDashboard.swift */,
@@ -307,10 +309,12 @@
 				BA90633BCF8B2E2533B5D308 /* TokenIconSpec.swift */,
 				A704EDECAB63A4DB0D4A9DA8 /* TokenIconView.swift */,
 				FE00FF7FDD47F623CE4B55A0 /* TokenSend.swift */,
+				05428AB5A1E93D738C571517 /* TxTrack.swift */,
 				E3A8FA742CB5B69B0DF19B00 /* UnattendedDaemon.swift */,
 				716005AD711FCD432A9A487C /* UnattendedDecision.swift */,
 				823B0B7411D69BB0EED2CC26 /* UpdateChannel.swift */,
 				790C6CEC63EC7A21B28A79CC /* UpdateTracker.swift */,
+				6180DF69697B707E2DA49136 /* UpdateWindow.swift */,
 				82B54C28053E7413F40CC695 /* VerifyBridge.swift */,
 				016BCAF9063410C1BBD4052D /* WalletModel.swift */,
 			);
@@ -542,7 +546,6 @@
 				A079B1CBD1001C06EF207650 /* ReleaseApproval.swift in Sources */,
 				3A02CDFD35AF42A3DBBCE824 /* ReleaseUpdateGate.swift in Sources */,
 				1CC133C57B599BA2B10B7D4A /* ResendIntent.swift in Sources */,
-				5B2E7A1C9D3F4E6A8B0C1D2F /* TxTrack.swift in Sources */,
 				E8E7A825FBFD8C349EA8E74A /* ResizeBenchmark.swift in Sources */,
 				BCEB55E80C0536BE08E67EE7 /* ResourcesSettings.swift in Sources */,
 				FE6BCD03689259294F5B9945 /* SimpleDashboard.swift in Sources */,
@@ -556,10 +559,12 @@
 				FFC971B49C6FF5C5C88E6924 /* TokenIconSpec.swift in Sources */,
 				D768F17DE8F914D495A2F35C /* TokenIconView.swift in Sources */,
 				8A8690DDB06F0148FD133737 /* TokenSend.swift in Sources */,
+				EFF82CBD9A1241C18E17FFE8 /* TxTrack.swift in Sources */,
 				25F80E2C53EE43CAED9D6337 /* UnattendedDaemon.swift in Sources */,
 				4B1B1B11958DDFA7D45F5C84 /* UnattendedDecision.swift in Sources */,
 				00B15A06DF8BE6EDEE4D93BF /* UpdateChannel.swift in Sources */,
 				D229901FC826CDF2C1547675 /* UpdateTracker.swift in Sources */,
+				5517361BF06124B3886E05E5 /* UpdateWindow.swift in Sources */,
 				54D6DA47A56D88BD948D15AD /* VerifyBridge.swift in Sources */,
 				95004663796AA4EF45771D37 /* WalletModel.swift in Sources */,
 				C9839F6819F2F86387CC88B7 /* aether_ffi.swift in Sources */,
@@ -610,7 +615,6 @@
 				7B0B4C28ED2F1AEF39804016 /* ReleaseApproval.swift in Sources */,
 				0C3F5D5E82BA80E5FBCEFB6A /* ReleaseUpdateGate.swift in Sources */,
 				A92FEDE9AA150A6ACA8C92A2 /* ResendIntent.swift in Sources */,
-				5B2E7A1C9D3F4E6A8B0C1D30 /* TxTrack.swift in Sources */,
 				5EE841156B2F7713648B6E61 /* ResizeBenchmark.swift in Sources */,
 				83AC088B8D445053FDE07957 /* ResourcesSettings.swift in Sources */,
 				BC44AAFBB810E5183CBF737E /* SimpleDashboard.swift in Sources */,
@@ -624,10 +628,12 @@
 				3AC43B5C7DC2040EF4F6C514 /* TokenIconSpec.swift in Sources */,
 				B09AF857DAA27B923B147708 /* TokenIconView.swift in Sources */,
 				8FBC9A5F5A3237EA07862EB6 /* TokenSend.swift in Sources */,
+				CC36CF924592D123B7BE709B /* TxTrack.swift in Sources */,
 				65ECF6F6DE507BD5F38F8C6D /* UnattendedDaemon.swift in Sources */,
 				C8D1470136395E0DA8D2FAAA /* UnattendedDecision.swift in Sources */,
 				96B0CF2E64314DE41CBE24B2 /* UpdateChannel.swift in Sources */,
 				696C62ACB62331AE933D81DC /* UpdateTracker.swift in Sources */,
+				0F89258C2935E77A8BE91724 /* UpdateWindow.swift in Sources */,
 				2C9931B38E29DD692E2360A2 /* VerifyBridge.swift in Sources */,
 				D6DDA80E641E075D1DE236AD /* WalletModel.swift in Sources */,
 				BF69C9639B9D7215C5CE0605 /* aether_ffi.swift in Sources */,
@@ -738,7 +744,7 @@
 				CODE_SIGN_IDENTITY = "Developer ID Application: Pipln (45WU468FZE)";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 13;
+				CURRENT_PROJECT_VERSION = 14;
 				DEVELOPMENT_TEAM = 45WU468FZE;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -751,7 +757,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.7.0;
+				MARKETING_VERSION = 0.7.1;
 				OTHER_LDFLAGS = "-Wl,-reproducible $(SRCROOT)/../../target/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework OpenDirectory -framework IOKit";
 				OTHER_SWIFT_FLAGS = "-file-prefix-map $(SRCROOT)=/aether-node -debug-prefix-map $(SRCROOT)=/aether-node";
 				PRODUCT_BUNDLE_IDENTIFIER = com.pipln.eastsea;
@@ -857,7 +863,7 @@
 				CODE_SIGN_IDENTITY = "Developer ID Application: Pipln (45WU468FZE)";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 13;
+				CURRENT_PROJECT_VERSION = 14;
 				DEVELOPMENT_TEAM = 45WU468FZE;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -870,7 +876,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.7.0;
+				MARKETING_VERSION = 0.7.1;
 				OTHER_LDFLAGS = "-Wl,-reproducible $(SRCROOT)/../../target/release/libaether_ffi.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework OpenDirectory -framework IOKit";
 				OTHER_SWIFT_FLAGS = "-file-prefix-map $(SRCROOT)=/aether-node -debug-prefix-map $(SRCROOT)=/aether-node";
 				PRODUCT_BUNDLE_IDENTIFIER = com.pipln.eastsea;

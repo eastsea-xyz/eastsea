@@ -368,14 +368,14 @@ pub fn stage() -> Option<&'static str> {
     STAGE.lock().ok().and_then(|s| *s)
 }
 
-/// Hash of the chain metadata a block leaves outside the state tree.
-pub fn meta_digest(
+/// Exact preimage of the chain metadata a block leaves outside the state tree.
+pub fn meta_bytes(
     excess: &GasVector,
     handoff: Option<&crate::handoff::Pending>,
     seed: Option<&(u64, aether_light::block::Seed)>,
     schedule: &[crate::upgrade::Activation],
     statement: &Statement,
-) -> B256 {
+) -> Vec<u8> {
     // Protocol-1 encoding until an activation carries a registrar or a statement
     // is recorded: binaries of either protocol agree on protocol-1 blocks.
     let schedule: Vec<Value> = schedule
@@ -385,13 +385,23 @@ pub fn meta_digest(
             Some(r) => serde_json::json!([a.protocol, a.at, r]),
         })
         .collect();
-    let bytes = if *statement == Statement::default() {
+    if *statement == Statement::default() {
         serde_json::to_vec(&(excess, handoff, seed, schedule))
     } else {
         serde_json::to_vec(&(excess, handoff, seed, schedule, statement))
     }
-    .expect("metadata serializes");
-    B256::from(aether_hash::Hasher::hash_bytes(&ChainHasher::new(), &bytes))
+    .expect("metadata serializes")
+}
+
+/// Hash of the chain metadata a block leaves outside the state tree.
+pub fn meta_digest(
+    excess: &GasVector,
+    handoff: Option<&crate::handoff::Pending>,
+    seed: Option<&(u64, aether_light::block::Seed)>,
+    schedule: &[crate::upgrade::Activation],
+    statement: &Statement,
+) -> B256 {
+    aether_light::chain_meta_digest(&meta_bytes(excess, handoff, seed, schedule, statement), 0)
 }
 
 impl Executed {
@@ -445,12 +455,27 @@ pub fn meta_digest_with_archive(
     statement: &Statement,
     archive_excess: u64,
 ) -> B256 {
-    let legacy = meta_digest(excess, handoff, seed, schedule, statement);
-    if archive_excess == 0 {
-        return legacy;
+    aether_light::chain_meta_digest(&meta_bytes(excess, handoff, seed, schedule, statement), archive_excess)
+}
+
+/// Parent metadata authenticated by the finalized head's payload. A restored
+/// checkpoint may not retain its parent yet; no witness is served in that case.
+pub fn upgrade_metadata(g: &Inner) -> Option<Value> {
+    let head = g.recent.back().filter(|b|
+        b.digest() == g.finalized.digest && b.height.get() == g.finalized.height
+    )?;
+    let parent = g.executed.get(&head.parent)?;
+    if parent.height.checked_add(1) != Some(g.finalized.height) {
+        return None;
     }
-    let bytes = serde_json::to_vec(&(legacy, archive_excess)).expect("metadata serializes");
-    B256::from(aether_hash::Hasher::hash_bytes(&ChainHasher::new(), &bytes))
+    let encoded = meta_bytes(
+        &parent.excess, parent.handoff.as_deref(), parent.seed.as_deref(),
+        &parent.schedule, &parent.statement,
+    );
+    Some(serde_json::json!({
+        "height": parent.height, "encoded": aether_light::to_hex(&encoded),
+        "archive_excess": parent.archive_excess,
+    }))
 }
 
 /// A summary's rough share of the history caches: itself plus each tx hash.

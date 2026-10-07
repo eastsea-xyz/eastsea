@@ -19,7 +19,7 @@ final class WalletModel: ObservableObject {
     @Published var status: ChainStatus?
     var scheduledUpgrades: [NetworkUpgrade] {
         guard let status else { return [] }
-        return NetworkUpgrade.parse(status.upgradesJson, height: status.height)
+        return NetworkUpgrade.parse(status.upgradesJson, height: max(status.height, (try? verifiedHeight()) ?? 0))
     }
     @Published var blocks: [BlockInfo] = []
     @Published var verifyError: String?

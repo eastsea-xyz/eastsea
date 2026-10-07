@@ -1225,9 +1225,12 @@ fn upgrade_fields_fit(value: &Value, validators: u32) -> bool {
     let small = |v: &Value, limit: usize| v.as_str().is_some_and(|s| s.len() <= limit);
     let upgrade = &value["upgrade"];
     let Some(releases) = upgrade["releases"].as_array() else { return false };
+    let registrar_fits = upgrade.get("registrar").is_none_or(|value| value.is_null()
+        || value.as_array().is_some_and(|pair| pair.len() == 2 && pair.iter().all(|field| small(field, 66))));
     if !small(&value["signature"], 98)
         || value["signature"].as_str().is_none_or(|s| s.strip_prefix("0x").unwrap_or(s).len() > 96)
         || upgrade.get("notes").is_some_and(|v| !small(v, MAX_UPGRADE_FIELD))
+        || !registrar_fits
         || releases.len() > MAX_UPGRADE_NOTICES
         || releases.iter().any(|r| ["platform", "version", "blake3", "url"].iter().any(|field| !small(&r[*field], MAX_UPGRADE_FIELD))) {
         return false;
@@ -1244,36 +1247,117 @@ fn upgrade_candidates(status: &Value, validators: u32) -> Vec<aether_light::bloc
     let mut seen = std::collections::HashSet::new();
     status["upcoming_upgrades"].as_array().into_iter().flatten().filter_map(|value| {
         if !upgrade_fields_fit(value, validators) { return None; }
-        let signed: aether_light::block::SignedUpgrade = serde_json::from_value(value.clone()).ok()?;
+        // Borrow the JSON so ignored extension fields are never copied.
+        let signed: aether_light::block::SignedUpgrade = serde::Deserialize::deserialize(value).ok()?;
         seen.insert((signed.upgrade.protocol, signed.upgrade.activate_at)).then_some(signed)
     }).take(MAX_UPGRADE_NOTICES).collect()
 }
 
-/// Only show notices signed by the pinned committee and present in the node's
-/// finalized schedule. Status RPC is otherwise an untrusted read.
+type UpgradeKey = (u32, u64, Option<(aether_types::B256, aether_types::B256)>);
+const MAX_UPGRADE_METADATA_BYTES: usize = 256 * 1024;
+
+/// Verify finalized activation membership, including upgrades in certified
+/// descendants. The certificate's tip is the head used for relevance.
+fn certified_upgrade_schedule(status: &Value, proof: &Value, set: &ValidatorSet, chain: u64)
+    -> R<(std::collections::HashSet<UpgradeKey>, u64, u64)> {
+    use commonware_codec::Decode;
+    let invalid = || WalletError::Verification("upgrade metadata or finalized head is invalid".into());
+    let height = status["height"].as_u64().ok_or_else(invalid)?;
+    let witness = &status["upgrade_metadata"];
+    if witness["height"].as_u64().and_then(|h| h.checked_add(1)) != Some(height) {
+        return Err(invalid());
+    }
+    let read_hex = |value: &Value, max: usize| -> R<Vec<u8>> {
+        let text = value.as_str().ok_or_else(invalid)?;
+        if text.strip_prefix("0x").unwrap_or(text).len() > 2 * max { return Err(invalid()); }
+        from_hex(text).map_err(|_| invalid())
+    };
+    let metadata = read_hex(&witness["encoded"], MAX_UPGRADE_METADATA_BYTES)?;
+    let archive_excess = witness["archive_excess"].as_u64().ok_or_else(invalid)?;
+    let block_bytes = read_hex(&proof["block"], aether_light::MAX_BLOCK_BYTES as usize)?;
+    let certificate = read_hex(&proof["finalization"], 4 * 1024)?;
+    let links = match proof.get("links") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(links)) if links.len() <= aether_light::MAX_LINKS =>
+            links.iter().map(|link| read_hex(link, aether_light::MAX_BLOCK_BYTES as usize)).collect::<R<Vec<_>>>()?,
+        _ => return Err(invalid()),
+    };
+    let verified = verify_finalized_chain(set, &block_bytes, &certificate, &links)
+        .map_err(|e| WalletError::Verification(format!("upgrade head certificate: {e}")))?;
+    if verified.height != height { return Err(invalid()); }
+    check_anchor_chain(&block_bytes, &links, chain)?;
+    let decode = |bytes: &[u8]| aether_light::block::Block::decode_cfg(bytes,
+        &aether_light::block::Block::codec_config(aether_light::MAX_BLOCK_BYTES)).map_err(|_| invalid());
+    let block = decode(&block_bytes)?;
+    let payload = block.payload().ok_or_else(invalid)?;
+    if aether_light::chain_meta_digest(&metadata, archive_excess) != payload.parent_meta { return Err(invalid()); }
+    let preimage: Value = serde_json::from_slice(&metadata).map_err(|_| invalid())?;
+    let fields = preimage.as_array().filter(|fields| matches!(fields.len(), 4 | 5)).ok_or_else(invalid)?;
+    let schedule = fields[3].as_array().ok_or_else(invalid)?;
+    let mut membership = std::collections::HashSet::new();
+    for entry in schedule {
+        let fields = entry.as_array().filter(|fields| matches!(fields.len(), 2 | 3)).ok_or_else(invalid)?;
+        let protocol = u32::try_from(fields[0].as_u64().ok_or_else(invalid)?).map_err(|_| invalid())?;
+        let activate_at = fields[1].as_u64().ok_or_else(invalid)?;
+        let registrar = fields.get(2).map(|value| parse(value, "upgrade registrar")).transpose()?;
+        membership.insert((protocol, activate_at, registrar));
+    }
+    let mut head = block;
+    for bytes in std::iter::once(block_bytes.as_slice()).chain(links.iter().map(Vec::as_slice)) {
+        head = decode(bytes)?;
+        if let Some(signed) = head.payload().ok_or_else(invalid)?.upgrade {
+            let upgrade = signed.upgrade;
+            membership.insert((upgrade.protocol, upgrade.activate_at, upgrade.registrar));
+        }
+    }
+    Ok((membership, head.height.get(), head.timestamp))
+}
+
+/// Status only proposes candidates. A fresh certificate proves their finalized
+/// activation schedule, and its tip anchors the notice's deadline.
 fn scheduled_upgrade_json(status: &Value) -> String {
+    scheduled_upgrade_json_at(status, now_ms, |height| call("aether_getFinalized", json!([height])))
+}
+
+fn scheduled_upgrade_json_at(status: &Value, clock: impl Fn() -> u64, finalized: impl FnOnce(u64) -> R<Value>) -> String {
+    let generation = NETWORK_GENERATION.load(std::sync::atomic::Ordering::SeqCst);
     let Ok(chain) = expected_chain(status) else { return "[]".into() };
     let validators = validator_count();
     let candidates = upgrade_candidates(status, validators);
     if candidates.is_empty() { return "[]".into(); }
+    let Some(height) = status["height"].as_u64() else { return "[]".into() };
+    let witness = &status["upgrade_metadata"];
+    // No witness on old nodes or at checkpoint startup: avoid a proof request
+    // and suppress notices until finalized membership can be authenticated.
+    let Some(encoded) = witness["encoded"].as_str() else { return "[]".into() };
+    if encoded.len() > 2 * MAX_UPGRADE_METADATA_BYTES + 2
+        || witness["height"].as_u64().and_then(|h| h.checked_add(1)) != Some(height)
+        || witness["archive_excess"].as_u64().is_none() { return "[]".into(); }
     let Ok(set) = trusted_set(validators) else { return "[]".into() };
-    let Some(schedule) = status["schedule"].as_array() else { return "[]".into() };
-    let membership: std::collections::HashSet<_> = schedule.iter().filter_map(|a| {
-        Some((u32::try_from(a[0].as_u64()?).ok()?, a[1].as_u64()?))
-    }).collect();
+    let Ok(proof) = finalized(height) else { return "[]".into() };
+    let Ok((membership, certified_height, certified_timestamp_ms)) = certified_upgrade_schedule(status, &proof, &set, chain) else { return "[]".into() };
+    let _network = NET.lock().expect("network lock");
+    let now = clock();
+    if generation != NETWORK_GENERATION.load(std::sync::atomic::Ordering::SeqCst)
+        || remember_height(chain, certified_height).is_err()
+        || check_freshness_at(certified_timestamp_ms, now).is_err()
+        || certified_timestamp_ms.saturating_sub(now) > MAX_ANCHOR_AGE_MS
+        || check_lag(chain, certified_height).is_err() { return "[]".into(); }
     let notices = candidates.iter().filter_map(|signed| {
         let u = &signed.upgrade;
-        if u.chain_id != chain || u.activate_at <= status["height"].as_u64()? {
+        if u.chain_id != chain || u.activate_at <= certified_height {
             return None;
         }
-        if !membership.contains(&(u.protocol, u.activate_at)) {
+        if !membership.contains(&(u.protocol, u.activate_at, u.registrar)) {
             return None;
         }
         #[cfg(test)]
         UPGRADE_CHECKS.with(|checks| checks.set(checks.get() + 1));
         aether_light::verify_upgrade(set.identity(), signed).ok()?;
-        Some(json!({ "protocol": u.protocol, "activate_at": u.activate_at, "emergency": u.emergency, "notes": u.notes }))
+        Some(json!({ "protocol": u.protocol, "activate_at": u.activate_at, "emergency": u.emergency, "notes": u.notes,
+            "certified_height": certified_height, "certified_timestamp_ms": certified_timestamp_ms }))
     }).collect::<Vec<_>>();
+    if check_freshness_at(certified_timestamp_ms, clock()).is_err() { return "[]".into(); }
     Value::Array(notices).to_string()
 }
 
@@ -1356,7 +1440,10 @@ fn now_ms() -> u64 {
 /// A valid but old certificate would let a node replay past state (e.g. an old,
 /// looser session that the owner then re-signs): require a recent one.
 fn check_freshness(timestamp_ms: u64) -> R<()> {
-    let now = now_ms();
+    check_freshness_at(timestamp_ms, now_ms())
+}
+
+fn check_freshness_at(timestamp_ms: u64, now: u64) -> R<()> {
     if now.saturating_sub(timestamp_ms) > MAX_ANCHOR_AGE_MS {
         return Err(WalletError::Verification(format!("the node served state from {} s ago; refusing stale data", (now - timestamp_ms) / 1000)));
     }
@@ -2463,6 +2550,150 @@ mod tests {
             "emergency": false, "releases": [], "notes": "test" }, "signature": "00" })
     }
 
+    fn finalized_upgrade_fixture() -> Value {
+        serde_json::from_str(include_str!("../tests/fixtures/upgrade-finalized.json")).unwrap()
+    }
+
+    fn upgrade_notices_at(status: &Value, proof: &Value, now: u64) -> Value {
+        serde_json::from_str(&scheduled_upgrade_json_at(status, || now, |height| {
+            assert_eq!(Some(height), status["height"].as_u64());
+            Ok(proof.clone())
+        })).unwrap()
+    }
+
+    #[test]
+    fn r20_certified_membership_and_deadline_ignore_status_claims() {
+        let _g = config();
+        reset_network();
+        use_devnet_keys();
+        let proof = finalized_upgrade_fixture();
+        let mut status = proof.clone();
+        status["schedule"] = json!([]);
+        status["timestamp_ms"] = json!(u64::MAX);
+        let notices = upgrade_notices_at(&status, &proof, proof["timestamp_ms"].as_u64().unwrap());
+        assert_eq!(notices.as_array().unwrap().len(), 2,
+            "both the finalized parent schedule and the head's own upgrade are authenticated");
+        for notice in notices.as_array().unwrap() {
+            assert_eq!(notice["certified_height"], proof["height"]);
+            assert_eq!(notice["certified_timestamp_ms"], proof["timestamp_ms"]);
+        }
+    }
+
+    #[test]
+    fn r20_certified_descendants_control_relevance_and_the_height_floor() {
+        let _g = config();
+        reset_network();
+        use_devnet_keys();
+        let fixture = finalized_upgrade_fixture();
+        remember_height(7_777, 101).unwrap();
+        let mut status = fixture.clone();
+        status["height"] = json!(100);
+        status["upgrade_metadata"] = fixture["parent_upgrade_metadata"].clone();
+        let mut proof = fixture.clone();
+        proof["block"] = fixture["parent_block"].clone();
+        proof["links"] = json!([fixture["block"]]);
+        let notices = upgrade_notices_at(&status, &proof, fixture["timestamp_ms"].as_u64().unwrap());
+        assert_eq!(notices.as_array().unwrap().len(), 2);
+        assert!(notices.as_array().unwrap().iter().all(|notice| notice["certified_height"] == 101));
+        assert_eq!(verified_height(), 101);
+    }
+
+    #[test]
+    fn r20_missing_tampered_and_mismatched_upgrade_proofs_are_hidden() {
+        let _g = config();
+        let fixture = finalized_upgrade_fixture();
+        let now = fixture["timestamp_ms"].as_u64().unwrap();
+        let mut cases = Vec::new();
+        let mut status = fixture.clone();
+        status["upgrade_metadata"] = Value::Null;
+        cases.push((status, fixture.clone()));
+        let mut status = fixture.clone();
+        status["upgrade_metadata"]["encoded"] = json!("00");
+        cases.push((status, fixture.clone()));
+        let mut status = fixture.clone();
+        status["upgrade_metadata"]["archive_excess"] = json!(0);
+        cases.push((status, fixture.clone()));
+        let mut status = fixture.clone();
+        status["height"] = json!(100);
+        status["upgrade_metadata"] = fixture["parent_upgrade_metadata"].clone();
+        cases.push((status, fixture.clone()));
+        let mut proof = fixture.clone();
+        proof["finalization"] = json!("00");
+        cases.push((fixture.clone(), proof));
+        let mut status = fixture.clone();
+        status["chain_id"] = json!(7_778);
+        cases.push((status, fixture.clone()));
+        for (status, proof) in cases {
+            reset_network();
+            use_devnet_keys();
+            assert_eq!(upgrade_notices_at(&status, &proof, now), json!([]));
+        }
+    }
+
+    #[test]
+    fn r20_stale_or_replayed_certificates_cannot_drive_notices() {
+        let _g = config();
+        reset_network();
+        use_devnet_keys();
+        let fixture = finalized_upgrade_fixture();
+        let now = fixture["timestamp_ms"].as_u64().unwrap();
+        assert_eq!(upgrade_notices_at(&fixture, &fixture, now + MAX_ANCHOR_AGE_MS + 1), json!([]));
+        assert_eq!(upgrade_notices_at(&fixture, &fixture, now - MAX_ANCHOR_AGE_MS - 1), json!([]));
+        remember_height(7_777, 102).unwrap();
+        assert_eq!(upgrade_notices_at(&fixture, &fixture, now), json!([]));
+        assert_eq!(verified_height(), 102, "a replay never lowers the verified floor");
+    }
+
+    #[test]
+    fn r20_freshness_is_checked_after_the_certificate_fetch() {
+        let _g = config();
+        reset_network();
+        use_devnet_keys();
+        let fixture = finalized_upgrade_fixture();
+        let timestamp = fixture["timestamp_ms"].as_u64().unwrap();
+        let fetched = std::cell::Cell::new(false);
+        let notices = scheduled_upgrade_json_at(&fixture,
+            || timestamp + MAX_ANCHOR_AGE_MS + if fetched.get() { 1 } else { 0 },
+            |_| { fetched.set(true); Ok(fixture.clone()) });
+        assert!(fetched.get());
+        assert_eq!(notices, "[]", "R20: a slow proof fetch cannot extend the head's freshness window");
+    }
+
+    #[test]
+    fn r20_signed_but_unfinalized_or_conflicting_notices_are_hidden() {
+        let _g = config();
+        reset_network();
+        use_devnet_keys();
+        let fixture = finalized_upgrade_fixture();
+        let now = fixture["timestamp_ms"].as_u64().unwrap();
+        for field in ["staged_upgrade", "conflicting_upgrade"] {
+            let mut status = fixture.clone();
+            status["upcoming_upgrades"] = json!([fixture[field]]);
+            status["schedule"] = json!([[fixture[field]["upgrade"]["protocol"], fixture[field]["upgrade"]["activate_at"]]]);
+            UPGRADE_CHECKS.with(|checks| checks.set(0));
+            assert_eq!(upgrade_notices_at(&status, &fixture, now), json!([]));
+            assert_eq!(UPGRADE_CHECKS.with(|checks| checks.get()), 0,
+                "unfinalized activations and conflicting registrars are rejected before notice signature work");
+        }
+    }
+
+    #[test]
+    fn r20_an_old_certified_head_cannot_show_a_current_upgrade() {
+        let _g = config();
+        reset_network();
+        use_devnet_keys();
+        let status = finalized_upgrade_fixture();
+        let head = status.clone();
+        let node = http_test::RpcFixture::start(move |request| {
+            assert_eq!(request["method"], "aether_getFinalized");
+            head.clone()
+        });
+        use_local_node(Some(node.port));
+        assert_eq!(scheduled_upgrade_json(&status), "[]",
+            "R20: a stale certified head must not make an old upgrade notice look current");
+        use_local_node(None);
+    }
+
     #[test]
     fn r16_a_confirmed_replacement_survives_poll_order() {
         let _g = config();
@@ -2577,6 +2808,11 @@ mod tests {
         let mut notice = shaped_upgrade(4);
         notice["upgrade"]["notes"] = json!("x".repeat(513));
         oversized.push(notice);
+        for registrar in [json!(["x".repeat(513), "00"]), json!(["00", "x".repeat(513)])] {
+            let mut notice = shaped_upgrade(4);
+            notice["upgrade"]["registrar"] = registrar;
+            oversized.push(notice);
+        }
         let mut notice = shaped_upgrade(4);
         notice["signature"] = json!("00".repeat(49));
         oversized.push(notice);
@@ -2598,6 +2834,7 @@ mod tests {
         }
         for notice in oversized {
             UPGRADE_CHECKS.with(|checks| checks.set(0));
+            assert!(!upgrade_fields_fit(&notice, 4), "R19: oversized fields must be bounded before notice deserialization");
             let status = upgrade_status(vec![notice], vec![json!([4, 100])]);
             assert!(upgrade_candidates(&status, 4).is_empty());
             assert_eq!(scheduled_upgrade_json(&status), "[]");

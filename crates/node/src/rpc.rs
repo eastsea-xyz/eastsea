@@ -893,6 +893,7 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                 // above protocol 1 carries its own at height 0, so `[3, 0]` here
                 // is how a rehearsal knows the rules were on from the start.
                 "schedule": f.schedule.iter().map(|a| json!([a.protocol, a.at])).collect::<Vec<_>>(),
+                "upgrade_metadata": crate::chain::upgrade_metadata(&g),
                 "upcoming_upgrades": g.upgrade_notices,
                 // The free registration lane (G2): wallets see it and register
                 // without needing a balance for a paid contract call.
@@ -1484,6 +1485,58 @@ mod alias_tests {
 
         let unknown = aether_types::B256::repeat_byte(0xee);
         assert_eq!(rt.block_on(call(&st, "aether_getReceipt", json!([unknown])))["result"], Value::Null);
+    }
+
+    #[test]
+    fn status_requires_a_finalized_parent_metadata_witness_for_upgrades() {
+        use commonware_consensus::types::{Round, View};
+        use commonware_cryptography::{ed25519, Digestible, Signer};
+
+        let mut st = bare_state();
+        let (chain, genesis) = Chain::new(st.chain.cfg());
+        st.chain = chain;
+        let parent = st.chain.lock().finalized.clone();
+        let height = genesis.height.next();
+        let context = crate::block::Context {
+            round: Round::new(crate::block::EPOCH, View::new(height.get())),
+            leader: ed25519::PrivateKey::from_seed(1).public_key(),
+            parent: (View::new(0), genesis.digest()),
+        };
+        let skeleton = crate::block::Block::new(
+            context.clone(), genesis.digest(), height, 1_000, bytes::Bytes::new(),
+        );
+        let ctx = Chain::block_context(&st.chain.cfg(), &skeleton, &parent);
+        let (payload, _) = crate::chain::build_payload(
+            &parent, &parent.state, &ctx, vec![], Default::default(),
+        );
+        let block = crate::block::Block::new(
+            context, genesis.digest(), height, 1_000, payload.to_bytes(),
+        );
+        st.chain.execute(&block, &parent).unwrap();
+        st.chain.finalize(&block).unwrap();
+
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let status = rt.block_on(call(&st, "aether_status", json!([])));
+        let witness = &status["result"]["upgrade_metadata"];
+        assert_eq!(witness["height"], 0,
+            "the upgrade schedule is committed in the finalized head's parent metadata");
+        assert_eq!(witness["archive_excess"], 0);
+        let encoded = aether_light::from_hex(witness["encoded"].as_str().unwrap()).unwrap();
+        let digest = aether_types::B256::from(aether_hash::Hasher::hash_bytes(
+            &aether_hash::ChainHasher::new(), &encoded,
+        ));
+        assert_eq!(digest, block.payload().unwrap().parent_meta);
+        let metadata: Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(metadata[3], json!([]), "the exact metadata carries the parent schedule");
+    }
+
+    #[test]
+    fn status_marks_upgrade_metadata_unavailable_at_genesis() {
+        let st = bare_state();
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let status = rt.block_on(call(&st, "aether_status", json!([])));
+        assert_eq!(status["result"].get("upgrade_metadata"), Some(&Value::Null),
+            "no finalized parent means no metadata witness");
     }
 
     #[test]

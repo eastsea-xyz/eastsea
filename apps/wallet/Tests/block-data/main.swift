@@ -22,7 +22,14 @@ check(BlockDataLocation.validate(vol("apfs", ro: true), dataBytes: 1) == .readOn
 check(BlockDataLocation.validate(vol("apfs", free: 26 * GiB), dataBytes: 20 * GiB) == .notEnoughSpace(freeBytes: 26 * GiB, neededBytes: 27 * GiB),
       "the data plus the node's 7 GB resume margin must fit")
 check(BlockDataLocation.validate(vol("apfs", free: 27 * GiB), dataBytes: 20 * GiB) == nil, "exactly enough is enough")
-check(BlockDataLocation.sentence(.unsupportedFormat("exfat"), ko: true).contains("exFAT"), "the format is named")
+check(BlockDataLocation.sentence(.unsupportedFormat("exfat"), ko: true)
+      == "이 디스크는 블록 저장에 안전하지 않은 형식(exFAT)이에요. 디스크 유틸리티에서 APFS로 지우면 쓸 수 있어요 (디스크 안의 파일은 지워져요).",
+      "exFAT: why, and how to fix it in Disk Utility")
+check(BlockDataLocation.sentence(.unsupportedFormat("exfat"), ko: false)
+      == "This disk's format (exFAT) is not safe for block data. Erase it as APFS in Disk Utility to use it (this deletes the files on the disk).",
+      "exFAT in English")
+check(BlockDataLocation.Problem.unsupportedFormat("msdos").fixInDiskUtility && !BlockDataLocation.Problem.readOnly.fixInDiskUtility,
+      "only a format problem offers Disk Utility")
 check(BlockDataLocation.sentence(.notEnoughSpace(freeBytes: 26 * GiB, neededBytes: 27 * GiB), ko: false) == "Not enough space: 26.0 GB free, 27.0 GB needed.",
       "exact numbers")
 for p in [BlockDataLocation.Problem.networkShare, .unsupportedFormat("ntfs"), .readOnly, .notEnoughSpace(freeBytes: 1, neededBytes: 2), .inUse] {

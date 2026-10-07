@@ -43,6 +43,12 @@ enum BlockDataLocation {
         case readOnly
         case notEnoughSpace(freeBytes: UInt64, neededBytes: UInt64)
         case inUse
+
+        /// The fix is erasing the disk as APFS in Disk Utility (one button).
+        var fixInDiskUtility: Bool {
+            if case .unsupportedFormat = self { return true }
+            return false
+        }
     }
 
     /// Whether a disk can hold `dataBytes` of block data with the node's
@@ -75,8 +81,10 @@ enum BlockDataLocation {
             return ko ? "네트워크 공유 폴더에는 둘 수 없어요. 이 Mac에 직접 연결된 디스크를 골라 주세요."
                 : "A network share cannot hold the block data. Pick a disk connected to this Mac."
         case .unsupportedFormat(let f):
-            return ko ? "이 디스크는 \(formatName(f)) 형식이라 쓸 수 없어요. APFS나 Mac OS 확장 형식 디스크를 골라 주세요."
-                : "This disk is formatted \(formatName(f)), which cannot hold the block data. Pick an APFS or Mac OS Extended disk."
+            // Why (exFAT/FAT have no journaling or file locks the database
+            // needs) and the fix, which erases the disk — said plainly.
+            return ko ? "이 디스크는 블록 저장에 안전하지 않은 형식(\(formatName(f)))이에요. 디스크 유틸리티에서 APFS로 지우면 쓸 수 있어요 (디스크 안의 파일은 지워져요)."
+                : "This disk's format (\(formatName(f))) is not safe for block data. Erase it as APFS in Disk Utility to use it (this deletes the files on the disk)."
         case .readOnly:
             return ko ? "이 디스크는 읽기 전용이에요. 쓸 수 있는 디스크를 골라 주세요."
                 : "This disk is read-only. Pick one that can be written to."

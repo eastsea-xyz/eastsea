@@ -87,6 +87,10 @@ struct BlockDataSection: View {
             if let error = node.storageMoveError {
                 Label(error, systemImage: "exclamationmark.triangle").font(.aeFootnote).foregroundStyle(Color.warn)
                     .fixedSize(horizontal: false, vertical: true)
+                if node.storageMoveOffersDiskUtility {
+                    Button(ko ? "디스크 유틸리티 열기" : "Open Disk Utility") { node.openDiskUtility() }
+                        .controlSize(.small)
+                }
             }
             Divider()
             Toggle(isOn: Binding(get: { node.archive }, set: { on in

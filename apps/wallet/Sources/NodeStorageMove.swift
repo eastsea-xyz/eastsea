@@ -91,7 +91,14 @@ extension NodeController {
         let names = ((try? FileManager.default.contentsOfDirectory(atPath: picked.path)) ?? [])
             + ((try? FileManager.default.contentsOfDirectory(atPath: dest.path)) ?? [])
         if let why = KeySafety.keysRefusal(found: KeySafety.keysFound(in: names), ko: ko) { return why }
-        return BlockDataLocation.validate(v, dataBytes: blockDataBytes).map { BlockDataLocation.sentence($0, ko: ko) }
+        let problem = BlockDataLocation.validate(v, dataBytes: blockDataBytes)
+        storageMoveOffersDiskUtility = problem?.fixInDiskUtility == true
+        return problem.map { BlockDataLocation.sentence($0, ko: ko) }
+    }
+
+    /// Disk Utility, where an exFAT/FAT disk is erased as APFS.
+    func openDiskUtility() {
+        NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Disk Utility.app"))
     }
 
     /// NSOpenPanel → validate → move.
@@ -122,6 +129,7 @@ extension NodeController {
         guard source.standardizedFileURL.path != target.standardizedFileURL.path else { return }
         let ko = HealthCheck.korean
         storageMoveError = nil
+        storageMoveOffersDiskUtility = false
         storageMovePercent = 0
         logEvent("storage", "moving block data from \(source.path) to \(target.path)")
         // Stop whichever node runs on it: ours, or the daemon's we attached to.

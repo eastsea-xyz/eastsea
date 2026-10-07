@@ -123,6 +123,8 @@ final class NodeController: ObservableObject {
     @Published var storageMovePercent: Int?
     /// The last move's failure, in the person's words, until the next try.
     @Published var storageMoveError: String?
+    /// That failure is a disk format Disk Utility can fix (exFAT, FAT).
+    @Published var storageMoveOffersDiskUtility = false
     /// What this Mac keeps right now and how it has been checking out
     /// (`aether_shardStats`): the honest line the 역사 보관 setting stands on.
     @Published private(set) var history: HistoryKept?
@@ -480,6 +482,8 @@ final class NodeController: ObservableObject {
     static let port: UInt16 = 18_545
     /// crates/node EXIT_CHAIN_DATA_MISSING: the chosen block-data folder is gone.
     static let chainDataMissingExit: Int32 = 13
+    /// crates/node EXIT_KEYS_ON_CHAIN_DATA: keys found in the block-data folder.
+    static let keysOnChainDataExit: Int32 = 14
     /// Our last start bounced off a run.lock whose holder does not answer.
     private var lockRefused = false
 
@@ -834,6 +838,15 @@ final class NodeController: ObservableObject {
                     }
                 }
             }
+            return
+        }
+        if status == Self.keysOnChainDataExit {
+            // crates/node EXIT_KEYS_ON_CHAIN_DATA: the block-data folder holds
+            // node keys (design 36 N2). The mover refuses such a folder, so
+            // this means keys were copied there by hand: a person decides.
+            logEvent("storage", "the node refused: node keys found in the block-data folder \(chainDataPath)")
+            block(.storage)
+            state = .failed(NodeWatchdog.Failure.storage.sentence)
             return
         }
         if status == Self.chainDataMissingExit {

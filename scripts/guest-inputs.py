@@ -160,9 +160,13 @@ def workspace_tables(text):
 def rustc_vv(root):
     if "AETHER_GUEST_RUSTC_VV" in os.environ:
         return os.environ["AETHER_GUEST_RUSTC_VV"]
+    # The rustup proxy first, as the build scripts put it (PATH="$HOME/.cargo/bin:$PATH"):
+    # a system rustc (Homebrew) earlier on PATH is not what builds the guest.
+    proxy = os.path.join(os.environ.get("CARGO_HOME", os.path.expanduser("~/.cargo")), "bin", "rustc")
+    rustc = proxy if os.access(proxy, os.X_OK) else "rustc"
     try:
         return subprocess.run(
-            ["rustc", "-vV"], cwd=os.path.join(root, "apps/prover"), check=True, capture_output=True, text=True
+            [rustc, "-vV"], cwd=os.path.join(root, "apps/prover"), check=True, capture_output=True, text=True
         ).stdout
     except (OSError, subprocess.CalledProcessError) as e:
         sys.exit(f"guest-inputs: cannot read the guest toolchain (rustc -vV in apps/prover): {e}")

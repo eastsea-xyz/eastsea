@@ -919,13 +919,20 @@ enum DataMigration {
         private var lastReported: Outcome?
         private var running = false
         private var settled = false
+        private var lastOutcome: Outcome?
+        private var retryAt: TimeInterval = -.infinity
+        private let now: () -> TimeInterval
+        private let retryInterval: TimeInterval
 
         init(support: URL, defaults: UserDefaults, oldPreferencesDomain: String = DataMigration.oldAppID,
-             forceCopy: Bool = false) {
+             forceCopy: Bool = false, retryInterval: TimeInterval = 30,
+             now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
             self.support = support
             self.defaults = defaults
             self.oldPreferencesDomain = oldPreferencesDomain
             self.forceCopy = forceCopy
+            self.retryInterval = max(1, retryInterval)
+            self.now = now
         }
 
         /// A migration is working right now (the gates stay shut).
@@ -939,23 +946,40 @@ enum DataMigration {
             return runHoldingLock()
         }
 
-        private func runHoldingLock() -> Outcome {
+        private func runHoldingLock(retrying: Bool = false) -> Outcome {
+            if !retrying, let cached = cachedOutcome() { return cached }
             if isSettled { return .done }
             setRunning(true)
-            defer { setRunning(false) }
             let meter = ProgressMeter { [weak self] in self?.onProgress?($0) }
             let outcome = DataMigration.migrate(support: support, defaults: defaults,
                                                 oldPreferencesDomain: oldPreferencesDomain,
                                                 forceCopy: forceCopy, meter: meter)
-            if outcome == .done || outcome == .noOldData {
-                stateLock.lock(); settled = true; stateLock.unlock()
+            let finishedAt = now()
+            stateLock.lock()
+            lastOutcome = outcome
+            switch outcome {
+            case .done, .noOldData:
+                settled = true
+                retryAt = .infinity
+            case .waitingForUnlock:
+                // Routine path reads cannot make protected files readable.
+                // The unlock observer explicitly starts the next attempt.
+                retryAt = .infinity
+            case .deferred, .failed:
+                retryAt = finishedAt + retryInterval
+            case .running:
+                retryAt = finishedAt
             }
+            // Publish the outcome before clearing the active claim. Finish
+            // callbacks can now read paths without creating another attempt.
+            running = false
+            stateLock.unlock()
             return outcome
         }
 
         /// From the main thread: never blocks on a slow run.
         func ensureFromMain() -> Outcome {
-            if isSettled { return .done }
+            if let cached = cachedOutcome() { return cached }
             if !expectsLongRun() {
                 // Fast path; but if a background run holds the lock, do not wait.
                 guard runLock.try() else { return .running(DataMigration.movingSentence) }
@@ -971,34 +995,53 @@ enum DataMigration {
                 if changed { onFinish?(outcome) }
                 return outcome
             }
-            start()
-            return .running(DataMigration.movingSentence)
+            return start(retrying: false)
         }
 
-        /// Start the background run unless one is already going.
-        func start() {
+        /// Explicit retries (unlock or old-app exit) may bypass the delay.
+        /// Routine ensure() calls pass retrying: false and retain failures.
+        @discardableResult
+        func start(retrying: Bool = true) -> Outcome {
             #if WALLET_SCREENS
-            return
+            return .noOldData
             #endif
+            let instant = now()
             stateLock.lock()
-            let busy = running || settled
-            let alreadySettled = settled
-            if !busy { running = true }   // claimed now: no second start, gates shut at once
-            stateLock.unlock()
-            if alreadySettled {
-                // A caller waiting on this retry (the old app's "quit and
-                // move to Trash") learns the move is already done.
-                DispatchQueue.global(qos: .userInitiated).async { [self] in onFinish?(.done) }
-                return
+            if settled {
+                stateLock.unlock()
+                if retrying {
+                    // The explicit retry's caller still learns it is done.
+                    DispatchQueue.global(qos: .userInitiated).async { [self] in onFinish?(.done) }
+                }
+                return .done
             }
-            guard !busy else { return }
+            if running {
+                stateLock.unlock()
+                return .running(DataMigration.movingSentence)
+            }
+            if !retrying, let cached = lastOutcome, instant < retryAt {
+                stateLock.unlock()
+                return cached
+            }
+            running = true
+            stateLock.unlock()
             onStart?()
             DispatchQueue.global(qos: .userInitiated).async { [self] in
                 runLock.lock()
-                let outcome = runHoldingLock()   // keeps the claim; clears it when done
+                let outcome = runHoldingLock(retrying: retrying)
                 runLock.unlock()
                 onFinish?(outcome)
             }
+            return .running(DataMigration.movingSentence)
+        }
+
+        private func cachedOutcome() -> Outcome? {
+            let instant = now()
+            stateLock.lock()
+            defer { stateLock.unlock() }
+            if settled { return .done }
+            guard !running, let cached = lastOutcome, instant < retryAt else { return nil }
+            return cached
         }
 
         private func setRunning(_ on: Bool) { stateLock.lock(); running = on; stateLock.unlock() }

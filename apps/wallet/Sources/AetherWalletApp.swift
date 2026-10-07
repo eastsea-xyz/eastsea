@@ -237,7 +237,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         migration.onFinish = { [weak node, weak model] outcome in
             MainActor.assumeIsolated {
                 model?.migrationFinished(outcome)
-                node?.migrationFinished()
+                // Failed node moves stay stopped. A completed node half may
+                // resume while the protected wallet handle waits for unlock.
+                if DataMigration.mayStartNode() == nil { node?.migrationFinished() }
             }
         }
         // An old Aether (<= 0.6.6) beside EastSea opens at login, holds the

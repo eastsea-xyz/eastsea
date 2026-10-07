@@ -793,8 +793,12 @@ do {
     if case .deferred = runner.ensureFromMain() { expect(true, "the old app's lock defers the move") }
     else { expect(false, "a held lock must defer") }
     close(fd)
-    expect(runner.ensureFromMain() == .done, "once it quits, an inline run completes the move")
-    expect(reported.count == 2 && reported.last == .done, "the deferral and then the inline settle are each reported once: \(reported)")
+    let resumed = DispatchSemaphore(value: 0)
+    runner.onFinish = { reported.append($0); resumed.signal() }
+    runner.start()
+    expect(resumed.wait(timeout: .now() + 5) == .success && runner.ensureFromMain() == .done,
+           "once it quits, an explicit retry completes the move")
+    expect(reported.count == 2 && reported.last == .done, "the deferral and then the explicit settle are each reported once: \(reported)")
     let settledReport = DispatchSemaphore(value: 0)
     runner.onFinish = { reported.append($0); settledReport.signal() }
     runner.start()
@@ -840,7 +844,11 @@ do {
         expect(false, "28: an inline waitingForUnlock must reach onFinish: \(inline) \(outcomes)")
     }
     chmod(handle.path, 0o644)   // the unlock
-    expect(idle.ensureFromMain() == .done, "29: after the unlock the move completes")
+    let unlocked = DispatchSemaphore(value: 0)
+    idle.onFinish = { outcomes.append($0); unlocked.signal() }
+    idle.start()
+    expect(unlocked.wait(timeout: .now() + 5) == .success && idle.ensureFromMain() == .done,
+           "29: an explicit unlock retry completes the move")
     expect(DataMigration.fileMatches(handle, root.appending(path: "EastSeaWallet/enclave-key.dat")) && doneFlag(d),
            "29: the handle arrived byte for byte, and the move is done")
     cleanup(root, d)
@@ -961,6 +969,112 @@ do {
     expect(DataMigration.mayCreateFreshWalletKey(support: root, defaults: d) != nil,
            "R05 an unreadable original handle cannot certify an existing handle")
     chmod(old.path, 0o600)
+    cleanup(root, d)
+}
+
+
+// R13. A finish callback resolving routine paths must not schedule another
+// attempt at the same nonsettled migration. Exercise every outcome class.
+for problem in ["deferred", "failed", "waitingForUnlock"] {
+    let (root, d) = makeOldSupport()
+    let fm = FileManager.default
+    let node = root.appending(path: "EastSea/node")
+    var oldLockFD: Int32?
+    if problem == "deferred" {
+        let fd = open(root.appending(path: "Aether/node/run.lock").path, O_RDWR)
+        expect(fd >= 0 && flock(fd, LOCK_EX | LOCK_NB) == 0, "R13 deferral fixture holds the old lock")
+        oldLockFD = fd
+    } else if problem == "failed" {
+        let blocked = root.appending(path: "blocked-node")
+        try? fm.createDirectory(at: blocked, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: node.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? fm.createSymbolicLink(at: node, withDestinationURL: blocked)
+    } else {
+        try? fm.createDirectory(at: node, withIntermediateDirectories: true)
+        chmod(root.appending(path: "AetherWallet/enclave-key.dat").path, 0o000)
+    }
+    let runner = DataMigration.Runner(support: root, defaults: d, oldPreferencesDomain: noOldDomain, forceCopy: true)
+    let finished = DispatchSemaphore(value: 0)
+    let unexpectedRetryFinished = DispatchSemaphore(value: 0)
+    let observations = NSLock()
+    var starts = 0
+    var finishes = 0
+    var progressReports = 0
+    var final: DataMigration.Outcome?
+    var reentrant: DataMigration.Outcome?
+    runner.onStart = { observations.lock(); starts += 1; observations.unlock() }
+    runner.onProgress = { _ in observations.lock(); progressReports += 1; observations.unlock() }
+    runner.onFinish = { outcome in
+        observations.lock()
+        finishes += 1
+        let first = finishes == 1
+        observations.unlock()
+        if first {
+            let returned = runner.ensureFromMain()
+            observations.lock(); final = outcome; reentrant = returned; observations.unlock()
+            finished.signal()
+        } else {
+            unexpectedRetryFinished.signal()
+        }
+    }
+    runner.start()
+    expect(finished.wait(timeout: .now() + 10) == .success, "R13 \(problem) background outcome arrives")
+    observations.lock()
+    let cached = final, callbackRead = reentrant, initialStarts = starts
+    observations.unlock()
+    switch cached {
+    case .deferred? where problem == "deferred",
+         .failed? where problem == "failed",
+         .waitingForUnlock? where problem == "waitingForUnlock":
+        expect(true, "R13 fixture produces \(problem)")
+    default:
+        expect(false, "R13 fixture must produce \(problem): \(String(describing: cached))")
+    }
+    expect(callbackRead == cached && initialStarts == 1,
+           "R13 \(problem) completion callback reads its cached outcome without restarting")
+    // On the unfixed code, join the one extra background attempt before
+    // disposing of the fixture. The callback never recursively retries twice.
+    if case .running? = callbackRead {
+        expect(unexpectedRetryFinished.wait(timeout: .now() + 10) == .success,
+               "R13 the unexpected retry is joined before fixture cleanup")
+    }
+    observations.lock(); let beforeRoutineRead = progressReports; observations.unlock()
+    let offMainRead = runner.runNow()
+    observations.lock(); let afterRoutineRead = progressReports; observations.unlock()
+    expect(offMainRead == cached && beforeRoutineRead == afterRoutineRead,
+           "R13 \(problem) routine off-main reads reuse the cached outcome")
+    if let fd = oldLockFD, fd >= 0 { close(fd) }
+    if problem == "waitingForUnlock" { chmod(root.appending(path: "AetherWallet/enclave-key.dat").path, 0o600) }
+    cleanup(root, d)
+}
+
+
+// R13. A bounded retry interval is tested without sleeps or real wall time.
+do {
+    final class TestMigrationClock {
+        private let lock = NSLock()
+        private var value: TimeInterval = 1_000
+        func read() -> TimeInterval { lock.lock(); defer { lock.unlock() }; return value }
+        func advance(_ seconds: TimeInterval) { lock.lock(); value += seconds; lock.unlock() }
+    }
+    let clock = TestMigrationClock()
+    let (root, d) = makeOldSupport()
+    let runner = DataMigration.Runner(support: root, defaults: d, oldPreferencesDomain: noOldDomain,
+                                      retryInterval: 30, now: clock.read)
+    var reported: [DataMigration.Outcome] = []
+    runner.onFinish = { reported.append($0) }
+    let fd = open(root.appending(path: "Aether/node/run.lock").path, O_RDWR)
+    expect(fd >= 0 && flock(fd, LOCK_EX | LOCK_NB) == 0, "R13 timer fixture owns the old lock")
+    let deferred = runner.ensureFromMain()
+    if case .deferred = deferred { expect(true, "R13 timer fixture initially defers") }
+    else { expect(false, "R13 timer fixture must defer: \(deferred)") }
+    if fd >= 0 { close(fd) }
+    clock.advance(29)
+    expect(runner.ensureFromMain() == deferred && runner.runNow() == deferred && reported.count == 1,
+           "R13 routine reads wait for the bounded retry interval")
+    clock.advance(2)
+    expect(runner.ensureFromMain() == .done && reported.count == 2,
+           "R13 the next routine read retries after the bounded interval")
     cleanup(root, d)
 }
 

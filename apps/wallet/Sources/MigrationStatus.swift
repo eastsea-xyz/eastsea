@@ -50,9 +50,9 @@ final class MigrationStatus: ObservableObject {
         // readable again: retry the move then (never a silent stall).
         DistributedNotificationCenter.default().addObserver(forName: Notification.Name("com.apple.screenIsUnlocked"),
                                                             object: nil, queue: .main) { _ in
-            // On the main thread: a no-op once settled, the fast path inline
-            // (reported once), or the background copy.
-            DataMigration.ensure()
+            // Unlock is an explicit retry trigger; routine data-dir reads
+            // keep waiting outcomes cached until this notification.
+            DataMigration.Runner.shared.start()
         }
         runner.onFinish = { [weak self] outcome in
             DispatchQueue.main.async {

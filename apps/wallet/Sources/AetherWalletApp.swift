@@ -300,7 +300,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             signing: model.busy,
             migrating: migration.moving,
             // The block-data move (claude/node-status-storage) wires in here.
-            storageMoving: false)
+            storageMoving: node.storageMovePercent != nil)
         switch UpdateWindow.decide(moment) {
         case .wait(let reason):
             if heldReason != reason {

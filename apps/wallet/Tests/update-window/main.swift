@@ -5,6 +5,14 @@ import Foundation
 var failures = 0
 func check(_ c: Bool, _ m: String) { if !c { print("FAIL", m); failures += 1 } else { print("ok  ", m) } }
 
+// R09: exercise the actual AppDelegate input, not only the pure Boolean gate.
+let delegateURL = URL(fileURLWithPath: #filePath)
+    .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    .appendingPathComponent("Sources/AetherWalletApp.swift")
+let delegateSource = try String(contentsOf: delegateURL, encoding: .utf8)
+check(delegateSource.contains("storageMoving: node.storageMovePercent != nil"),
+      "R09 active storage mover is wired into the update gate")
+
 typealias W = UpdateWindow
 let idle = W.Moment()
 

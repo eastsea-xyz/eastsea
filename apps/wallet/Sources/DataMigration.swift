@@ -121,14 +121,21 @@ enum DataMigration {
         // B4: the flag is a cache of what the disk says, never a substitute.
         // A flag left over from an earlier build (or data moved back by hand)
         // with old data still lacking its new counterpart means: run again.
+        let oldNode = support.appending(path: "Aether/node")
+        let newNode = support.appending(path: "EastSea/node")
+        // Once the source has committed, its databases are recovery copies.
+        // A missing destination must not turn them back into live state.
+        if fm.fileExists(atPath: oldNode.path), !holdsIdentity(oldNode),
+           (defaults.bool(forKey: nodeDoneKey) || fm.fileExists(atPath: oldNode.appending(path: markerName).path)),
+           !fm.fileExists(atPath: newNode.path) {
+            return .failed("The migrated EastSea node data is unavailable. Reconnect its disk or restore the destination; the old recovery copy was left untouched.")
+        }
         let stale = unmigratedOldData(support: support)
         if defaults.bool(forKey: doneKey) {
             if stale.isEmpty { return .done }
             defaults.removeObject(forKey: doneKey)
             if stale.contains(oldNodeItem) { defaults.removeObject(forKey: nodeDoneKey) }
         }
-        let oldNode = support.appending(path: "Aether/node")
-        let newNode = support.appending(path: "EastSea/node")
         let oldHandles = walletHandleNames.map { support.appending(path: "AetherWallet/\($0)") }
         let oldState = support.appending(path: "Aether/update-state.json")
         let oldGuard = support.appending(path: "Aether/node\(identityGuardSuffix)")
@@ -163,13 +170,30 @@ enum DataMigration {
             }
         }
         defer { if let fd = lockFD { close(fd) } }
+        var destinationLockFD: Int32?
+        defer { if let fd = destinationLockFD { close(fd) } }
+        // This evidence is read while the source lock is held. A committed
+        // destination may already have advanced while the wallet tail waited.
+        let nodeHalfFinished = fm.fileExists(atPath: newNode.path)
+            && nodeMigrationComplete(support: support, defaults: defaults)
 
         var problems: [String] = []
         /// Problems that are only "unreadable while locked" (EPERM/EACCES).
         var unreadable: [String] = []
         var oldTreeRemains = false
         if fm.fileExists(atPath: oldNode.path) {
-            if fm.fileExists(atPath: newNode.path) {
+            if nodeHalfFinished {
+                // Retry only marker, wallet and preferences work. Do not hash
+                // or copy the stale node tree into an advanced destination.
+                oldTreeRemains = true
+            } else if fm.fileExists(atPath: newNode.path) {
+                switch tryHoldLock(newNode.appending(path: lockName)) {
+                case .held(let fd): destinationLockFD = fd
+                case .busy:
+                    return .deferred("Quit the EastSea node before finishing this data move. The destination is running; neither node tree was changed.")
+                case .broken(let why):
+                    return .failed("Cannot lock the destination node data (\(why)); neither node tree was changed.")
+                }
                 // A tree already at its new home is the resume path of an
                 // interrupted run (or a cross-volume fallback): a verified
                 // copy — quarantine happens only at the commit point below,
@@ -183,9 +207,11 @@ enum DataMigration {
                 // A missing new tree moves outright on one volume; across
                 // volumes it takes the verified copy, with the same deferred
                 // old-tree shutdown (M2: decided by volume identifiers).
-                switch moveTreeVerified(oldNode, newNode, forceCopy: forceCopy, meter: meter) {
+                switch moveTreeVerified(oldNode, newNode, forceCopy: forceCopy, meter: meter, destinationLockFD: &destinationLockFD) {
                 case .moved: break
                 case .copied: oldTreeRemains = true
+                case .busy:
+                    return .deferred("Quit the EastSea node before finishing this data move. The destination is running; no source data was removed.")
                 case .failed:
                     oldTreeRemains = fm.fileExists(atPath: oldNode.path)
                     problems.append("the node data (identity, share, journal, database) did not move or did not verify")
@@ -498,15 +524,23 @@ enum DataMigration {
     /// A rename that fails anyway (EXDEV from a mount the identifiers did not
     /// show, a destination that appeared meanwhile) moved nothing — rename is
     /// all or nothing — and takes the verified copy too.
-    private enum TreeMove { case moved; case copied; case failed }
+    private enum TreeMove { case moved; case copied; case busy; case failed }
 
-    private static func moveTreeVerified(_ old: URL, _ new: URL, forceCopy: Bool, meter: ProgressMeter?) -> TreeMove {
+    private static func moveTreeVerified(_ old: URL, _ new: URL, forceCopy: Bool, meter: ProgressMeter?, destinationLockFD: inout Int32?) -> TreeMove {
         guard let before = manifest(of: old) else { return .failed }
         do {
             try fm.createDirectory(at: new.deletingLastPathComponent(), withIntermediateDirectories: true)
         } catch { return .failed }
         let oneVolume = !forceCopy && sameVolume(old, new.deletingLastPathComponent()) == true
         guard oneVolume, rename(old.path, new.path) == 0 else {
+            // Copy fallback owns the destination through the caller's commit.
+            // A same-volume rename keeps the source's already-held lock.
+            do { try fm.createDirectory(at: new, withIntermediateDirectories: true) } catch { return .failed }
+            switch tryHoldLock(new.appending(path: lockName)) {
+            case .held(let fd): destinationLockFD = fd
+            case .busy: return .busy
+            case .broken: return .failed
+            }
             meter?.expect(copyWork(before))
             return syncTreeVerified(old, new, meter: meter) ? .copied : .failed
         }
@@ -549,11 +583,10 @@ enum DataMigration {
                 meter?.add(bytes)   // no copy needed
                 continue
             }
-            do {
-                try fm.createDirectory(at: n.deletingLastPathComponent(), withIntermediateDirectories: true)
-                if fm.fileExists(atPath: n.path) { try fm.removeItem(at: n) }   // a partial earlier attempt
-                try fm.copyItem(at: o, to: n)
-            } catch { return false }
+            // Reuse the verified temporary-file replacement: any existing
+            // destination is kept aside, including data created by another
+            // install. A crash leaves the old file or its recovery copy intact.
+            guard copyVerifiedReadable(o, n) else { return false }
             meter?.add(bytes)
             if !fileMatches(o, n, meter: meter) { return false }
         }
@@ -740,8 +773,11 @@ enum DataMigration {
         // B4: an old root that still holds an identity is unmigrated whatever
         // the flags say.
         if oldNodeUnmigrated(support) { return false }
-        if defaults.bool(forKey: doneKey) || defaults.bool(forKey: nodeDoneKey) { return true }
         let oldNode = support.appending(path: "Aether/node")
+        if fm.fileExists(atPath: oldNode.path),
+           (defaults.bool(forKey: nodeDoneKey) || fm.fileExists(atPath: oldNode.appending(path: markerName).path)),
+           !fm.fileExists(atPath: support.appending(path: "EastSea/node").path) { return false }
+        if defaults.bool(forKey: doneKey) || defaults.bool(forKey: nodeDoneKey) { return true }
         guard fm.fileExists(atPath: oldNode.path) else { return true }   // moved away entirely
         guard fm.fileExists(atPath: oldNode.appending(path: markerName).path) else { return false }
         return !holdsIdentity(oldNode)
@@ -961,7 +997,9 @@ enum DataMigration {
             let old = support.appending(path: "Aether/node")
             guard DataMigration.fm.fileExists(atPath: old.path) else { return false }
             let eastSea = support.appending(path: "EastSea")
-            if DataMigration.fm.fileExists(atPath: eastSea.appending(path: "node").path) { return true }
+            if DataMigration.fm.fileExists(atPath: eastSea.appending(path: "node").path) {
+                return !DataMigration.nodeMigrationComplete(support: support, defaults: defaults)
+            }
             let target = DataMigration.fm.fileExists(atPath: eastSea.path) ? eastSea : support
             return forceCopy || DataMigration.sameVolume(old, target) != true
         }

@@ -52,7 +52,7 @@ func makeOldSupport() -> (root: URL, defaults: UserDefaults) {
     try? FileManager.default.createDirectory(at: journal, withIntermediateDirectories: true)
     try? "vote-journal-bytes".write(to: journal.appending(path: "0"), atomically: true, encoding: .utf8)
     try? "dkg-round-0".write(to: node.appending(path: "dkg-agreement-genesis-0.journal"), atomically: true, encoding: .utf8)
-    FileManager.default.createFile(atPath: node.appending(path: "run.lock").path, contents: Data())
+    FileManager.default.createFile(atPath: node.appending(path: "run.lock").path, contents: Data("old-lock-sentinel".utf8))
     // The follower's database and its own endpoint key (release-070 review, L1).
     try? FileManager.default.createDirectory(at: node.appending(path: "follow"), withIntermediateDirectories: true)
     try? "follow-db".write(to: node.appending(path: "follow/state.redb"), atomically: true, encoding: .utf8)
@@ -163,8 +163,14 @@ do {
     expect(doneFlag(d), "done is set after the resumed migration verified every file")
     expect(DataMigration.fileMatches(root.appending(path: "Aether/node/data.db"), newNode.appending(path: "data.db")),
            "the truncated file was replaced with a verified copy")
-    expect(!FileManager.default.fileExists(atPath: newNode.appending(path: "run.lock").path),
-           "run.lock is never copied (a copied lock file is not a lock)")
+    let oldLock = root.appending(path: "Aether/node/run.lock")
+    let newLock = newNode.appending(path: "run.lock")
+    let oldLockInode = (try? FileManager.default.attributesOfItem(atPath: oldLock.path))?[.systemFileNumber] as? NSNumber
+    let newLockInode = (try? FileManager.default.attributesOfItem(atPath: newLock.path))?[.systemFileNumber] as? NSNumber
+    expect(oldLockInode != nil && newLockInode != nil && oldLockInode != newLockInode,
+           "the copied destination owns a separate run.lock")
+    expect((try? Data(contentsOf: newLock)) == Data(),
+           "the old lock contents were not copied into the destination lock")
     expect(FileManager.default.fileExists(atPath: root.appending(path: "Aether/node/run.lock").path),
            "the copy fallback keeps the old tree, lock and all")
     expect(FileManager.default.fileExists(atPath: root.appending(path: "Aether/node/MIGRATED-TO-EASTSEA").path),
@@ -693,7 +699,11 @@ do {
     expect(!fractions.isEmpty && fractions.allSatisfy { $0 > 0 && $0 <= 1 }, "progress was reported as a fraction: \(fractions)")
     expect(FileManager.default.fileExists(atPath: root2.appending(path: "Aether/node/MIGRATED-TO-EASTSEA").path),
            "the copied-from tree stays, marked")
-    expect(!FileManager.default.fileExists(atPath: root2.appending(path: "EastSea/node/run.lock").path), "run.lock was not copied")
+    let copiedLock = root2.appending(path: "EastSea/node/run.lock")
+    let lockFD = open(copiedLock.path, O_RDWR)
+    expect(lockFD >= 0 && flock(lockFD, LOCK_EX | LOCK_NB) == 0,
+           "the copied destination lock is independently usable and released after commit")
+    if lockFD >= 0 { close(lockFD) }
     cleanup(root2, d2)
 }
 
@@ -833,6 +843,70 @@ do {
     expect(idle.ensureFromMain() == .done, "29: after the unlock the move completes")
     expect(DataMigration.fileMatches(handle, root.appending(path: "EastSeaWallet/enclave-key.dat")) && doneFlag(d),
            "29: the handle arrived byte for byte, and the move is done")
+    cleanup(root, d)
+}
+
+
+// R04. Proven node completion survives missing preferences. A retry may
+// finish the wallet tail, but must never restore stale node databases.
+do {
+    let (root, d) = makeOldSupport()
+    let node = root.appending(path: "EastSea/node")
+    try? FileManager.default.createDirectory(at: node, withIntermediateDirectories: true)
+    expect(migrate(root, d) == .done, "R04 fixture commits a copied migration")
+    try? "advanced-database".write(to: node.appending(path: "data.db"), atomically: true, encoding: .utf8)
+    try? "advanced-vote-journal".write(to: node.appending(path: "aether-consensus-r1/0"), atomically: true, encoding: .utf8)
+    d.removeObject(forKey: "renameMigrationDone")
+    d.removeObject(forKey: "renameNodeMigrationDone")
+    let fd = open(node.appending(path: "run.lock").path, O_RDWR | O_CREAT, 0o600)
+    expect(fd >= 0 && flock(fd, LOCK_EX | LOCK_NB) == 0, "R04 the advanced destination is running")
+    expect(migrate(root, d) == .done, "R04 a proven node completion retries only the small-file tail")
+    expect((try? String(contentsOf: node.appending(path: "data.db"), encoding: .utf8)) == "advanced-database",
+           "R04 completed retry preserves advanced destination database")
+    expect((try? String(contentsOf: node.appending(path: "aether-consensus-r1/0"), encoding: .utf8)) == "advanced-vote-journal",
+           "R04 completed retry preserves advanced destination consensus journal")
+    if fd >= 0 { close(fd) }
+    cleanup(root, d)
+}
+
+// R04. Unfinished synchronization needs ownership of both node roots.
+do {
+    let (root, d) = makeOldSupport()
+    let fm = FileManager.default
+    let node = root.appending(path: "EastSea/node")
+    try? fm.createDirectory(at: node, withIntermediateDirectories: true)
+    try? "destination-owned-database".write(to: node.appending(path: "data.db"), atomically: true, encoding: .utf8)
+    let fd = open(node.appending(path: "run.lock").path, O_RDWR | O_CREAT, 0o600)
+    expect(fd >= 0 && flock(fd, LOCK_EX | LOCK_NB) == 0, "R04 the unfinished destination lock is held")
+    let outcome = migrate(root, d)
+    if case .deferred = outcome { expect(true, "R04 a live destination defers unfinished synchronization") }
+    else { expect(false, "R04 a live destination defers unfinished synchronization: \(outcome)") }
+    expect((try? String(contentsOf: node.appending(path: "data.db"), encoding: .utf8)) == "destination-owned-database",
+           "R04 a busy destination remains unchanged")
+    expect(fm.fileExists(atPath: root.appending(path: "Aether/node/validator.key").path) && !doneFlag(d),
+           "R04 lock deferral keeps the old signer and completion state untouched")
+    if fd >= 0 { close(fd) }
+    expect(migrate(root, d) == .done, "R04 unfinished synchronization completes after the destination exits")
+    let names = (try? fm.contentsOfDirectory(atPath: node.path)) ?? []
+    let preserved = names.filter { $0.hasPrefix("data.db.eastsea-replaced-") }
+    expect(preserved.contains { (try? String(contentsOf: node.appending(path: $0), encoding: .utf8)) == "destination-owned-database" },
+           "R04 synchronization preserves destination data it did not create")
+    cleanup(root, d)
+}
+
+// R04. A committed source is stale recovery data if the new tree disappears.
+do {
+    let (root, d) = makeOldSupport()
+    let node = root.appending(path: "EastSea/node")
+    try? FileManager.default.createDirectory(at: node, withIntermediateDirectories: true)
+    expect(migrate(root, d) == .done, "R04 lost-destination fixture commits a copied migration")
+    try? FileManager.default.removeItem(at: node)
+    let outcome = migrate(root, d)
+    if case .failed = outcome { expect(true, "R04 a missing committed destination requires recovery") }
+    else { expect(false, "R04 a missing committed destination requires recovery: \(outcome)") }
+    expect(!FileManager.default.fileExists(atPath: node.path)
+           && DataMigration.mayStartNode(support: root, defaults: d) != nil,
+           "R04 disk loss cannot authorize a fresh node or restore stale databases")
     cleanup(root, d)
 }
 

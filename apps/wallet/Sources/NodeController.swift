@@ -597,6 +597,7 @@ final class NodeController: ObservableObject {
 
     /// The node we were attached to is gone: forget it before starting ours.
     private func detachFromGoneNode() {
+        invalidateUpdateMembership()
         attached = false
         attachMisses = 0
         poll?.invalidate()
@@ -797,6 +798,7 @@ final class NodeController: ObservableObject {
             state = .failed(String(localized: "This build of the app does not include the node."))
             return
         }
+        invalidateUpdateMembership()
         // Audit 5, A5-7: while the old Aether node data (identity, threshold
         // share, chain) waits unmigrated, starting fresh here would strand
         // this Mac's validator identity. The migration itself already ran or
@@ -904,6 +906,7 @@ final class NodeController: ObservableObject {
     }
 
     func stop(keepSwitch: Bool = false) {
+        if !updateInProgress { invalidateUpdateMembership() }
         runningReleaseVerified = false
         if attached {
             // Detach only: the daemon's node is the point of the unattended
@@ -957,6 +960,7 @@ final class NodeController: ObservableObject {
     private func exited(_ proc: Process) {
         // Stopped on purpose, or an older process (after a restart) finishing late.
         guard let current = process, current === proc else { return }
+        invalidateUpdateMembership()
         runningReleaseVerified = false
         let status = proc.terminationStatus
         let signaled = proc.terminationReason == .uncaughtSignal
@@ -1125,6 +1129,96 @@ final class NodeController: ObservableObject {
         return v["ownership"] as? String
     }
 
+    /// Running permission needs a fresh leased status and a membership
+    /// read from the same signed listener. An unclaimed endpoint is unknown.
+    var updateMembership: Bool? {
+        if updateInProgress { return updateMembershipSnapshot.value(at: clock.now.seconds) }
+        guard process != nil || attached else {
+            guard !enabled, !lockRefused, unattended?.runningNodePID == nil,
+                  let at = unclaimedProbeRequestedAt,
+                  clock.now.elapsed(since: at) >= 0, clock.now.elapsed(since: at) <= 15,
+                  unclaimedEndpointAbsent, Self.updateLockIsClear(in: Self.dataDir) else { return nil }
+            return false
+        }
+        guard updateReleaseVerified else { return nil }
+        return updateMembershipSnapshot.value(at: clock.now.seconds)
+    }
+
+    /// Off means positively no endpoint and no lock holder. File-open or
+    /// lock-probe errors are unknown, rather than a fabricated unseated state.
+    private nonisolated static func updateLockIsClear(in dir: URL) -> Bool {
+        let fd = open(dir.appendingPathComponent("run.lock").path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        if fd < 0 { return errno == ENOENT }
+        defer { close(fd) }
+        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else { return false }
+        flock(fd, LOCK_UN)
+        return true
+    }
+
+    var onUpdateMomentChanged: (() -> Void)?
+    private var updateMembershipSnapshot = UpdateWindow.MembershipSnapshot()
+    private var lastUpdateMembershipCheck = MonotonicInstant.distantPast
+    private var updateMembershipTask: Task<Void, Never>?
+    private var unclaimedProbeRequestedAt: MonotonicInstant?
+    private var unclaimedEndpointAbsent = false
+
+    private func invalidateUpdateMembership() {
+        updateMembershipTask?.cancel()
+        updateMembershipTask = nil
+        updateMembershipSnapshot.invalidate()
+        lastUpdateMembershipCheck = .distantPast
+        unclaimedProbeRequestedAt = nil
+        unclaimedEndpointAbsent = false
+    }
+
+    /// Called while a held update waits, including when the node is off and
+    /// has no poll timer. Completion wakes the updater before freshness expires.
+    func refreshUpdateMembership() {
+        guard !updateInProgress, updateMembershipTask == nil,
+              clock.now.elapsed(since: lastUpdateMembershipCheck) > 10 else { return }
+        let generation = updateMembershipSnapshot.generation
+        let requestedAt = clock.now
+        let port = Self.port
+        if process == nil, !attached {
+            guard !enabled, !lockRefused, unattended?.runningNodePID == nil,
+                  Self.updateLockIsClear(in: Self.dataDir) else { return }
+            lastUpdateMembershipCheck = requestedAt
+            updateMembershipTask = Task { [weak self] in
+                let absent = await LocalRPC.endpointIsAbsent(port: port)
+                guard let self, self.updateMembershipSnapshot.generation == generation else { return }
+                self.updateMembershipTask = nil
+                guard !self.updateInProgress, self.process == nil, !self.attached else { return }
+                self.unclaimedProbeRequestedAt = requestedAt
+                self.unclaimedEndpointAbsent = absent
+                let clear = absent && !self.enabled && self.unattended?.runningNodePID == nil
+                    && Self.updateLockIsClear(in: Self.dataDir)
+                self.updateMembershipSnapshot.observe(clear ? false : nil,
+                    requestedAt: requestedAt.seconds, generation: generation)
+                self.onUpdateMomentChanged?()
+            }
+            return
+        }
+        guard updateReleaseVerified, let leasedBinding = verifiedStatusBinding,
+              let key = candidate?.validatorKey, let expected = Self.helperBinaryURL else { return }
+        lastUpdateMembershipCheck = requestedAt
+        updateMembershipTask = Task { [weak self] in
+            let sample = await LocalRPC.callVerified(rootPID: leasedBinding.rootPID, port: port, expected: expected,
+                                                     method: "aether_network", params: [])
+            guard let self, self.updateMembershipSnapshot.generation == generation else { return }
+            self.updateMembershipTask = nil
+            guard !self.updateInProgress else { return }
+            guard self.updateReleaseVerified, self.verifiedStatusBinding == leasedBinding,
+                  sample?.binding == leasedBinding, self.candidate?.validatorKey == key else {
+                self.updateMembershipSnapshot.observe(nil, requestedAt: requestedAt.seconds, generation: generation)
+                self.onUpdateMomentChanged?()
+                return
+            }
+            let membership = UpdateWindow.votingMembership(network: sample?.value, validatorKey: key)
+            self.updateMembershipSnapshot.observe(membership, requestedAt: requestedAt.seconds, generation: generation)
+            self.onUpdateMomentChanged?()
+        }
+    }
+
     private var lastVotingCheck = MonotonicInstant.distantPast
 
     private func refreshVoting() {
@@ -1187,6 +1281,7 @@ final class NodeController: ObservableObject {
     /// DeviceCheck tokens, stall detection — without ever starting a second
     /// node on the same data directory.
     private func attachToRunningNode(releaseVerified: Bool, pid: Int32) {
+        invalidateUpdateMembership()
         guard releaseVerified else { return }
         releaseVerifiedPID = pid
         runningReleaseVerified = true
@@ -1347,6 +1442,7 @@ final class NodeController: ObservableObject {
             nextCandidateRetry = clock.now.advanced(by: 60)
             if let binary { loadCandidate(binary) }
         }
+        refreshUpdateMembership()
         refreshVoting()
         applyDuty()
         refreshProver()
@@ -1383,6 +1479,7 @@ final class NodeController: ObservableObject {
                 guard self.process != nil || self.attached else { return }
                 guard (self.process?.processIdentifier ?? self.unattended?.runningNodePID) == monitoredPID else { return }
                 self.runningReleaseVerified = status != nil && releaseMatches
+                if !releaseMatches { self.invalidateUpdateMembership() }
                 self.releaseVerifiedPID = self.runningReleaseVerified ? monitoredPID : nil
                 self.verifiedStatusBinding = self.runningReleaseVerified ? sample?.binding : nil
                 self.verifiedStatusRequestedAt = self.runningReleaseVerified ? requestedAt : nil
@@ -1467,7 +1564,10 @@ final class NodeController: ObservableObject {
         }
         wakeObservers = [
             center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.announceAvailability(leaving: true) }
+                MainActor.assumeIsolated {
+                    self?.invalidateUpdateMembership()
+                    self?.announceAvailability(leaving: true)
+                }
                 Task { @MainActor in
                     guard let self, self.process != nil else { return }
                     self.watchdog.invalidate()
@@ -1478,7 +1578,10 @@ final class NodeController: ObservableObject {
                 }
             },
             center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.announceAvailability(leaving: Self.onBattery) }
+                MainActor.assumeIsolated {
+                    self?.invalidateUpdateMembership()
+                    self?.announceAvailability(leaving: Self.onBattery)
+                }
                 Task { @MainActor in
                     guard let self, self.process != nil else { return }
                     self.watchdog.invalidate()

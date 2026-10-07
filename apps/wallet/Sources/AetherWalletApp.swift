@@ -203,6 +203,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.model = model
         let check: () -> Void = { [weak self] in self?.updater.updater.checkForUpdatesInBackground() }
         node.onUpgradeNeeded = check
+        node.onUpdateMomentChanged = { [weak self] in self?.installIfSafe() }
         model.onOutdated = check
         pauseWatch = model.$chainPausedSince
             .removeDuplicates { ($0 == nil) == ($1 == nil) }
@@ -292,6 +293,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard updateShutdownTask == nil, let install = heldInstall else { return }
         // Before `start` the node and wallet are unknown: wait for the tick.
         guard let node, let model else { return }
+        node.refreshUpdateMembership()
         let moment = updateMoment(node: node, model: model)
         switch UpdateWindow.decide(moment) {
         case .wait(let reason):
@@ -306,7 +308,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor private func updateMoment(node: NodeController, model: WalletModel) -> UpdateWindow.Moment {
         return UpdateWindow.Moment(
-            seated: node.isValidator,
+            seated: node.updateMembership,
             // N1 (aether_status.restart) is not built: no chain-assigned slot
             // yet, so a seated Mac waits until it leaves the committee or quits.
             inOwnSlot: nil,

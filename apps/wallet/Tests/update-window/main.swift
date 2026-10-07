@@ -14,7 +14,13 @@ check(delegateSource.contains("storageMoving: node.storageMovePercent != nil"),
       "R09 active storage mover is wired into the update gate")
 
 typealias W = UpdateWindow
-let idle = W.Moment()
+// R10: absent membership has no permission to restart without a chain slot.
+check(W.decide(W.Moment()) != .installNow,
+      "R10 unknown membership must wait without a restart slot")
+check(delegateSource.contains("seated: node.updateMembership"),
+      "R10 AppDelegate preserves unknown update membership")
+
+let idle = W.Moment(seated: false)
 
 check(W.decide(idle) == .installNow, "a non-validator with nothing open installs right away")
 
@@ -56,6 +62,54 @@ m.inOwnSlot = false
 check(W.decide(m) == .installNow, "slot data is ignored for a Mac that is not seated")
 
 check(W.Reason.seatedNoSlot.logLine.contains("waiting for safe moment"), "the waiting line says so")
+
+// R10: unknown membership and absent slots never grant permission.
+m = W.Moment()
+check(W.decide(m) == .wait(.membershipUnknown), "R10 unknown membership waits")
+m.inOwnSlot = true
+check(W.decide(m) == .wait(.membershipUnknown), "R10 an unverified slot does not resolve unknown membership")
+m.storageMoving = true
+check(W.decide(m) == .wait(.storageMove), "R10 storage safety still takes priority")
+
+let mine = String(repeating: "a", count: 64)
+let other = String(repeating: "b", count: 64)
+let member: [String: Any] = ["validators": [["key": mine]]]
+let follower: [String: Any] = ["validators": [["key": other]]]
+check(W.votingMembership(network: member, validatorKey: mine) == true, "R10 confirmed seated membership")
+check(W.votingMembership(network: follower, validatorKey: mine) == false, "R10 complete voting set confirms unseated")
+check(W.votingMembership(network: nil, validatorKey: mine) == nil, "R10 failed initial network read remains unknown")
+check(W.votingMembership(network: NSNull(), validatorKey: mine) == nil, "R10 forwarded null remains unknown")
+check(W.votingMembership(network: [:], validatorKey: mine) == nil, "R10 missing validator list remains unknown")
+check(W.votingMembership(network: ["validators": []], validatorKey: mine) == nil, "R10 empty voting set remains unknown")
+check(W.votingMembership(network: ["validators": [["key": other], ["bad": mine]]], validatorKey: mine) == nil,
+      "R10 malformed member row cannot confirm absence")
+check(W.votingMembership(network: ["validators": [["key": other], ["key": "bad"]]], validatorKey: mine) == nil,
+      "R10 malformed member key cannot confirm absence")
+check(W.votingMembership(network: ["validators": [["key": other], ["key": other]]], validatorKey: mine) == nil,
+      "R10 duplicate member keys cannot confirm absence")
+check(W.votingMembership(network: member, validatorKey: "bad") == nil, "R10 unknown candidate identity waits")
+check(W.votingMembership(network: member, validatorKey: "0x" + mine.uppercased()) == true,
+      "R10 canonical public-key spelling identifies the same member")
+
+var membership = W.MembershipSnapshot()
+check(membership.value(at: 100) == nil, "R10 initial membership snapshot is unknown")
+let initialGeneration = membership.generation
+membership.observe(false, requestedAt: 100, generation: initialGeneration)
+m = W.Moment(seated: membership.value(at: 101))
+check(W.decide(m) == .installNow, "R10 freshly confirmed unseated status permits installation")
+m.seated = membership.value(at: 100 + W.MembershipSnapshot.maxAge + 0.01)
+check(W.decide(m) == .wait(.membershipUnknown), "R10 stale unseated status waits")
+check(membership.value(at: 99) == nil, "R10 future-dated membership cannot grant permission")
+membership.observe(nil, requestedAt: 102, generation: initialGeneration)
+check(membership.value(at: 103) == nil, "R10 failed refresh invalidates earlier unseated status")
+membership.observe(false, requestedAt: 104, generation: initialGeneration)
+membership.invalidate()
+check(!membership.observe(false, requestedAt: 105, generation: initialGeneration),
+      "R10 delayed result from an earlier node generation is rejected")
+check(membership.value(at: 106) == nil, "R10 restart or wake requires new membership")
+membership.observe(true, requestedAt: 107, generation: membership.generation)
+m = W.Moment(seated: membership.value(at: 108))
+check(W.decide(m) == .wait(.seatedNoSlot), "R10 fresh seated membership waits without a chain slot")
 
 if failures > 0 { print("\(failures) failed"); exit(1) }
 print("all passed")

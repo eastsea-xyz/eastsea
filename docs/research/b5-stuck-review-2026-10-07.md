@@ -267,3 +267,108 @@ intentional compatibility, not a finding.
 
 Only this report was added. No implementation simplifications or fixes were
 made; the findings remain open.
+
+## Round 2 resolution (branch `claude/b5-stuck-tx-2`)
+
+All six findings were fixed as `.claude/team/b5-stuck-tx-2.md` specifies.
+No consensus rule changed: block validity, `fees.rs` pricing, the state root
+and the builder's inclusion rule are untouched. The new helpers in
+`crates/execution/src/tx.rs` (`signed_fee_maximum`, `wallet_state_price`)
+are wallet policy that no node calls. Each new test was first run against
+the pre-fix code and failed; the commit messages quote those failures.
+
+1. **High, the shown maximum is the signed maximum: fixed.** The send sheet's
+   quote and the prepared envelope now come from one function
+   (`crates/ffi` `draft_fees`). Exec gas, state budget and prove budget, each
+   with its cap, and the tip are built there once. The quote is that
+   envelope's `signed_fee_maximum`: exec cap × gas, plus state cap × state
+   budget, plus prove cap × prove budget. The M1 check in `prepare_at`
+   compares what was shown with the maximum of the envelope it is about to
+   return, never a separate formula. A plain transfer, the resend sheet
+   (`prepare_transfer_at`) and a batch all take this path. Batches now get
+   their own quote (`batch_quote`), and the sheet shows it.
+   Test: `the_shown_maximum_is_the_signed_envelope_maximum`, with nonzero exec
+   and prove prices, a 3 % exec rise, a refused larger rise and a batch.
+   Before the fix it showed 21,485 × 10^12 wei against a signed maximum of
+   42,495 × 10^12. The CLI does not display a maximum, so the CLI is out of
+   scope for this finding.
+2. **High, pending status follows the node that admitted it: fixed.**
+   `submit_signed` records which validator accepted each transaction
+   (`RpcClient::call_tracked`). `aether_getReceipt` reads (`receipt_answer`,
+   used by `tx_status`, `receipt` and the nonce queue) go to that validator
+   first, by id only (`RpcClient::call_node`). After it come the ordinary
+   follower-first read, then a validator if a follower returned null. All of
+   this runs under the one read deadline. A follower's null becomes
+   `unknown`, which is never final. Each send's context (sender, nonce,
+   admitter) is kept in a bounded book (1,024 sends, 16 senders × 64 nonces)
+   until a receipt arrives or the chain nonce passes that nonce. The agent
+   tools use the same FFI route. The public read gateway is unchanged and
+   still never forwards upstream. Test: `crates/ffi/tests/wallet_pending_route.rs`
+   uses a real QUIC follower and validator. The follower answers null and the
+   validator holds the send: before the fix the result was `unknown`; now it
+   is `pending`, and the admitter is asked first, without the follower. The
+   devnet stress run adds a follower and reads every burst hash through it
+   (counts below).
+3. **Medium, contiguous queue: fixed.** `QUEUED` now keeps, for each sender,
+   nonce → hash from the chain nonce up (≤ 64), not only the newest pair.
+   The next nonce is the end of the unbroken run of still-pending sends
+   (`next_in_sequence`). If N dropped while N+1 is still pending, the next send
+   gets N, which fills the gap, and N+2 is refused. Test:
+   `an_older_drop_under_a_pending_successor_holds_the_next_send`. Before the
+   fix the next nonce was 7, and nonce 7 was sent behind the missing 5.
+4. **Medium, receipt cost: fixed.** The node keeps a sender → pending-nonces
+   index (`nonces_by_sender`), updated wherever the pool changes: admission,
+   eviction, and the rebuild at finalization. Under the chain lock, the
+   receipt handler now only does lookups and copies one sender's ≤ 64
+   nonces (`pending_facts`). It computes the reason, including the refill
+   binary search, after releasing the lock. Tests:
+   `a_pending_lookup_reads_only_its_senders_entries` (before the fix, one
+   read examined all 2,001 pool entries) and
+   `the_sender_nonce_index_follows_the_pool`.
+5. **Medium, a drop is not final: fixed.** `TxStatus` gains `is_final`. Only
+   `included` and the new `replaced` are final. `replaced` means the chain
+   nonce passed ours and no path has our receipt; the nonce is read before
+   the receipt, and every path is asked once more first. A node's `dropped`
+   and an `unknown` stay open. Their words are "… 처리되지 않았어요 (아직 체인에
+   기록되지 않음)", with no "cancelled" and no "no money left". The wallet has a
+   separate `notIncluded` row state, labelled "Not on chain yet". The row
+   keeps polling, and a later receipt overrides the drop (`TxTrack`, chain
+   history merge, `reconcileUnresolved` with the stored nonce). A payment-link
+   callback gets `status=not_included` with that note; `failed` is sent only
+   on a chain fact. The agent's history no longer finalizes a drop.
+   `History.markNotIncluded` keeps the pending entry with its sender and
+   nonce, and `aether_history` / `aether_receipt` finalize it only on a
+   receipt or `replaced`. The explorer shows a dropped hash as "not recorded
+   on chain yet" and keeps re-checking it. Tests: agent `Tests/history` (a
+   later receipt now overrides a drop; before the fix the entry stayed
+   `failed`), wallet `Tests/tx-track` (before the fix a drop mapped to
+   `failed`), `a_drop_is_not_final_and_says_not_recorded_yet`, and the
+   explorer `droppedText` test.
+6. **Low, CLI zero price: fixed.** The CLI's `fee_caps` now uses the app's
+   rule (`wallet_state_price`, shared). A zero state cap is allowed only on
+   the legacy stateless chain 7780. On any other chain a reported 0 or a
+   missing price clamps to `2 × STATE_UNIT_PRICE` (the spec's clamp branch:
+   nodes omit the field where state is unpriced, so local test devnets keep
+   sending, and a cap there is harmless). A malformed price, or a status
+   without a chain id, is refused. Test:
+   `cli_state_cap_has_headroom_and_zero_only_on_the_legacy_chain`. Before the
+   fix it signed 0 on paid chain 7796.
+
+**End to end (2026-10-07, `scripts/contracts-live.sh reset bin chain stress
+stop`, with a follower):** 220 submissions, 205 with a hash.
+- 55 included (50 transfers, 5 deploys).
+- 15 deploys refused at admission with text.
+- 150 transfers dropped with `state_price_above_cap`.
+- 0 silent losses, and the mempool was empty after the window.
+- Blocks never stopped (max stall 6.1 s, height 5 → 272).
+
+For the 150 hashes the validator held, the follower answered `null` every
+time, after submission and after the drain. The wallet's routed order
+answered all of them both times (`routedNull` 0). The devnet was stopped
+afterwards.
+
+Remaining limits, as before: tombstones are bounded and kept in memory only.
+`replaced` relies on receipts that the nodes still hold; a node keeps at least
+one sealed era of them. The book of sends lives only for one process: after
+a restart the wallet reconciles through the nonce it stored on the row, and
+the agent through the sender and nonce in its pending history.

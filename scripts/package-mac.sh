@@ -19,6 +19,10 @@ version=${AETHER_VERSION:-$(git describe --tags --always --dirty)}
 WALLET_CLEAN_BUILD=1 scripts/build-wallet.sh macos >/dev/null
 src="apps/wallet/build/Build/Products/Release/EastSea.app"
 [ -d "$src" ] || { echo "build failed: $src missing"; exit 1; }
+# Release gate: the app must prove with the program the bundled network's
+# validators verify, or none of its proofs ever verify (scripts/prover-gate.sh;
+# AETHER_PROVER_GATE_OVERRIDE for a coordinated release, recorded).
+scripts/prover-gate.sh "$src"
 
 stage=$(mktemp -d)
 trap 'rm -rf "${stage:?}"' EXIT

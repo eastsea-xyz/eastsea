@@ -44,3 +44,22 @@ text: missing identity
 text: chain id
 text: Sent \(Wei.format(wei)) \(Brand.networkCoinTicker) (nonce \(prepared.nonce))
 text: Paid \(recipients.count) recipients \(Wei.format(wei)) \(Brand.networkCoinTicker) each with one signature (nonce \(prepared.nonce))
+#
+# From the node-status-storage and silent-install lanes: model files whose
+# sentences are ko/en pairs (copy(ko:), line(_:ko:), lines(ko:)) checked in
+# both languages by their pure tests; the screens pass the app's language.
+file: NodeStopReason.swift      # stop-reason copy (Tests/node-stop-reason)
+file: BlockDataLocation.swift   # storage location and archive copy (Tests)
+file: KeySafety.swift           # key-folder refusals (Tests)
+file: ProverMenuText.swift      # menu-bar prover lines (Tests)
+file: TxTrack.swift             # not-included note as a ko/en pair (Tests/tx-track)
+file: UpdateWindow.swift        # why an install waits: log reasons, never shown
+# Node and migration log lines (node-status.log, migration log), never on screen.
+text: no old data
+text: waiting for unlock (the wallet handle is protected while the Mac is locked)
+text: the node runs
+text: run.lock is held and the holder does not answer
+text: the node refused: node keys found in the block-data folder \(chainDataPath)
+text:  (died of the app's SIGUSR1 wake-up: an older node without the handler)
+text: moving block data from \(source.path) to \(target.path)
+text: Test Doubloon     # Brand.coinName on 7780 (English); Korean screens use networkCoinName (테스트 더블룬)

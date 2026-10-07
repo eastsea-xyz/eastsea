@@ -48,12 +48,16 @@ enum DiagnosticReport {
         var address = ""
         var balanceWei = ""
         var nodeId = ""
+        /// Why the node is not running now (`NodeStopReason.code`), and the
+        /// last stop's code from node-status.log — codes only: no time, no paths.
+        var nodeStop: String?
+        var lastStop: String?
     }
 
     /// The closed failure kinds of §2.4; anything else is counted as `other`.
     static let failureKinds = [
         "proof_rejected", "prover_program_mismatch", "prover_stalled", "disk_floor_pause", "disk_full",
-        "follower_stuck", "rpc_unreachable", "crash_loop", "upgrade_required", "update_unhealthy",
+        "follower_stuck", "rpc_unreachable", "crash_loop", "upgrade_required", "update_unhealthy", "node_stopped",
     ]
 
     /// The text for the clipboard. Keys are layer 2's field names, so a
@@ -77,6 +81,8 @@ enum DiagnosticReport {
             "finalized_age: \(age(s.finalizedAge))",
             "os: macos-\(s.osMajor)",
             "failures: \(failures(s.failures))",
+            "node_stop: \(s.nodeStop ?? "none")",
+            "last_stop: \(s.lastStop ?? "none")",
         ]
         return lines.joined(separator: "\n")
     }

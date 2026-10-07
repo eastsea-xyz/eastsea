@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Receive</title>
+<link rel="stylesheet" href="wallet.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+<style>
+  .qrwrap { position: relative; width: 236px; height: 236px; margin: 22px auto 0; padding: 16px; border-radius: 20px; background: #FDFBF4; box-shadow: 0 0 0 .5px var(--line-2), 0 10px 26px rgba(9,21,34,.10); }
+  .qrwrap svg.q { width: 100%; height: 100%; display: block; }
+  .qrwrap img { position: absolute; left: 50%; top: 50%; width: 52px; height: 52px; transform: translate(-50%,-50%); border-radius: 50%; box-shadow: 0 0 0 6px #FDFBF4; }
+  .grp { font: 500 15px/1.7 var(--font-mono); text-align: center; letter-spacing: .02em; margin-top: 20px; }
+  .grp span { margin: 0 3px; } .grp span:nth-child(odd) { color: var(--ink); } .grp span:nth-child(even) { color: var(--ink-3); }
+  .hint { text-align: center; font-size: 12.5px; color: var(--ink-3); margin-top: 10px; line-height: 1.45; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 20px; }
+  .ask { margin-top: 14px; text-align: center; font: 600 13px/1 var(--font); color: var(--teal); }
+  .seg { display: grid; grid-template-columns: 1fr 1fr; background: var(--surface-2); border-radius: 9px; padding: 2px; margin-top: 14px; }
+  .seg span { text-align: center; font: 600 12.5px/28px var(--font); color: var(--ink-2); border-radius: 7px; }
+  .dark .seg span.on { background: var(--line-2); }
+  .seg span.on { background: var(--surface); color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+</style></head>
+<body>
+<div class="board">
+  <div class="stack"><div class="caption">Mac · Receive sheet · light</div>
+    <div class="mac light small">
+      <aside class="sidebar" data-active="home" data-lang="en"></aside>
+      <div class="main"><div class="toolbar"><h1>Home</h1></div><div class="content"></div>
+        <div class="scrim" style="padding-top:44px"><div class="sheet" style="width:420px">
+          <div style="display:flex;justify-content:space-between;align-items:center"><h3>Receive</h3><span class="tbtn"><svg><use href="#i-x"/></svg></span></div>
+          <div class="seg"><span class="on">Address</span><span>Ask for an amount</span></div>
+          <div class="qrwrap"><div class="qr" data-text="eastsea:0x5397a1c0De4b1b8F6A3cB2d1E0f9C7a6B5d4E502"></div><img src="assets/coin.png"></div>
+          <div class="grp" data-addr="0x5397a1c0De4b1b8F6A3cB2d1E0f9C7a6B5d4E502"></div>
+          <div class="hint">Send only DBLN and EastSea tokens to this address.</div>
+          <div class="row2"><span class="btn"><svg><use href="#i-share"/></svg>Share…</span><span class="btn primary"><svg><use href="#i-copy"/></svg>Copy address</span></div>
+        </div></div>
+      </div>
+    </div>
+  </div>
+  <div class="stack"><div class="caption">iPhone · Receive · dark · 한국어</div>
+    <div class="phone"><div class="screen dark">
+      <div class="island"></div><div class="status"><span>9:41</span><span>●●● ▮</span></div>
+      <div class="pbody" style="padding:6px 22px 0">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px"><h3 style="font:700 22px/1 var(--font)">받기</h3><span class="x" style="width:30px;height:30px;border-radius:50%;background:var(--surface);display:grid;place-items:center"><svg style="width:14px;height:14px"><use href="#i-x"/></svg></span></div>
+        <div class="seg"><span>주소</span><span class="on">금액 요청</span></div>
+        <div style="text-align:center;margin-top:18px"><div class="num" style="font:600 40px/1 var(--font-money)">5.0 <span style="font-size:18px;color:var(--ink-3)">DBLN</span></div><div style="font-size:12px;color:var(--ink-3);margin-top:6px">메모: 저녁값</div></div>
+        <div class="qrwrap" style="width:220px;height:220px;margin-top:16px"><div class="qr" data-text="eastsea:pay?to=0x5397a1c0De4b1b8F6A3cB2d1E0f9C7a6B5d4E502&amount=5&memo=dinner"></div><img src="assets/coin.png" style="width:46px;height:46px"></div>
+        <div class="grp" style="font-size:13.5px" data-addr="0x5397a1c0De4b1b8F6A3cB2d1E0f9C7a6B5d4E502"></div>
+        <div class="hint">상대가 이 코드를 찍으면 금액과 메모가 채워진 보내기 화면이 열려요. 보내는 쪽도 생체 인증으로 확인해요.</div>
+        <div class="row2"><span class="btn lg">링크 복사</span><span class="btn lg primary"><svg><use href="#i-share"/></svg>공유</span></div>
+      </div>
+    </div></div>
+  </div>
+</div>
+<script src="shell.js"></script><script src="icons.js"></script>
+<script>
+document.querySelectorAll('.qr').forEach(el => {
+  let n = 33, dark = () => false;
+  if (window.qrcode) { const q = qrcode(0, 'M'); q.addData(el.dataset.text); q.make(); n = q.getModuleCount(); dark = (r, c) => q.isDark(r, c); }
+  else { let s = 7; dark = () => (s = (s * 9301 + 49297) % 233280) / 233280 > .5; }
+  const c0 = n / 2 - 4.5, c1 = n / 2 + 4.5; let d = '';
+  const finder = (r, c) => (r < 7 && c < 7) || (r < 7 && c >= n - 7) || (r >= n - 7 && c < 7);
+  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) {
+    if (finder(r, c) || (r > c0 && r < c1 && c > c0 && c < c1)) continue;
+    if (dark(r, c)) d += `<circle cx="${c + .5}" cy="${r + .5}" r=".42"/>`;
+  }
+  const f = (x, y) => `<rect x="${x + .5}" y="${y + .5}" width="6" height="6" rx="1.8" fill="none" stroke="#0D2135" stroke-width="1"/><rect x="${x + 2}" y="${y + 2}" width="3" height="3" rx=".9" fill="#B8871E"/>`;
+  el.innerHTML = `<svg class="q" viewBox="0 0 ${n} ${n}"><g fill="#0D2135">${d}</g>${f(0, 0)}${f(n - 7, 0)}${f(0, n - 7)}</svg>`;
+});
+document.querySelectorAll('[data-addr]').forEach(el => {
+  const a = el.dataset.addr.slice(2).match(/.{1,4}/g);
+  el.innerHTML = '<span>0x</span>' + a.map(g => `<span>${g}</span>`).join('');
+  // two lines of five groups
+  el.innerHTML = el.innerHTML.replace(/(<span>[^<]*<\/span>){6}/, m => m + '<br>');
+});
+</script>
+</body></html>

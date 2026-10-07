@@ -119,3 +119,12 @@ export function notIncludedText(why) {
     default: return why.kind.replace(/_/g, ' ');
   }
 }
+
+/// The status line for a hash a node dropped from its mempool (B5 review
+/// round 2, finding 5): one node's observation, not a chain fact — another
+/// node may still include it — so it reads "not on chain yet", never as a
+/// permanent failure.
+export function droppedText(reason) {
+  const why = notIncludedText(reason) ?? 'no reason given';
+  return `Not processed (not recorded on chain yet): this node dropped it from its mempool — ${why}. Another node may still include it; this page re-checks while it is open.`;
+}

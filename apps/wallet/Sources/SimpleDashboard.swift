@@ -54,56 +54,31 @@ struct SimpleDashboard: View {
     }
 
     var body: some View {
+        routing(base)
+    }
+
+    /// The window and its sheets.
+    private var base: some View {
         shell
             .tint(.aether)
             .environmentObject(browser)
             .onAppear { browser.attach(model: model) }
-            .sheet(item: $sheet) { s in
-                VStack(spacing: 0) {
-                    if model.developmentNetwork {
-                        Text("Dev network · 127.0.0.1")
-                            .font(.caption.bold()).frame(maxWidth: .infinity)
-                            .padding(.vertical, 5).background(.orange).foregroundStyle(.black)
-                    }
-                    switch s {
-                    case .send: SendSheet()
-                    case .receive: ReceiveSheet()
-                    case .assets: AssetsSheet(onSend: { t in model.sendToken = t; sheet = .send })
-                    case .call: CallSheet()
-                    case .connect: ConnectSheet()
-                    case .votingInvite:
-                        #if os(macOS)
-                        VotingNodeInvite(join: {
-                            inviteAnswered = true
-                            sheet = nil
-                            if let c = node.candidate { model.registerNode(c, node: node) }
-                        }, later: {
-                            inviteAnswered = true
-                            sheet = nil
-                        })
-                        #else
-                        EmptyView()
-                        #endif
-                    }
-                }
-            }
+            .sheet(item: $sheet) { s in sheetContent(s) }
             #if DEBUG
-            // `-previewSheet assets` / `-previewPage network` (with -designPreview) for screenshots.
-            .onAppear {
-                guard DesignPreview.on else { return }
-                if let p = UserDefaults.standard.string(forKey: "previewPage").flatMap({ Page(rawValue: $0.capitalized) }) { page = p }
-                if let s = UserDefaults.standard.string(forKey: "previewSheet").flatMap(Sheet.init(rawValue:)) { sheet = s }
-                #if os(macOS)
-                if UserDefaults.standard.string(forKey: "previewSidebar") == "hidden" { columns = .detailOnly }
-                #endif
-                if UserDefaults.standard.string(forKey: "previewExplorer") == "open" { browser.openExplorer() }
-            }
+            .onAppear { applyPreview() }
             #endif
+    }
+
+    /// Requests from links, pages and the node open the right sheet or page
+    /// (split from `body` so the type checker stays fast).
+    private func routing<V: View>(_ v: V) -> some View {
+        v
+            .onChange(of: sheet) { _, s in model.sendSheetOpen = Self.isSigningSheet(s) }
             .onChange(of: model.callRequest) { _, r in if r != nil { sheet = .call } }
             .onChange(of: model.connectRequest) { _, r in if r != nil { sheet = .connect } }
             // A payment link (aether://pay?...) opens the send sheet, filled in, for approval.
             .onChange(of: model.paymentRequest) { _, r in if r != nil { model.sendToken = nil; sheet = .send } }
-            // "새 가격으로 다시 보내기": the normal send sheet, filled in (bug #5).
+            // "Send again at the current fee": the normal send sheet, filled in (bug #5).
             .onChange(of: model.resendRequest) { _, r in if r != nil { sheet = .send } }
             .onChange(of: model.agentTransactionHash) { _, hash in if hash != nil { page = .security } }
             #if os(macOS)
@@ -112,6 +87,54 @@ struct SimpleDashboard: View {
             .onChange(of: node.state) { _, _ in inviteIfReady() }
             #endif
     }
+
+    private static func isSigningSheet(_ s: Sheet?) -> Bool {
+        s == .send || s == .call
+    }
+
+    /// The sheet for `s` (kept out of `body` so the type checker stays fast).
+    @ViewBuilder private func sheetContent(_ s: Sheet) -> some View {
+        VStack(spacing: 0) {
+            if model.developmentNetwork {
+                Text("Dev network · 127.0.0.1")
+                    .font(.caption.bold()).frame(maxWidth: .infinity)
+                    .padding(.vertical, 5).background(.orange).foregroundStyle(.black)
+            }
+            switch s {
+            case .send: SendSheet()
+            case .receive: ReceiveSheet()
+            case .assets: AssetsSheet(onSend: { t in model.sendToken = t; sheet = .send })
+            case .call: CallSheet()
+            case .connect: ConnectSheet()
+            case .votingInvite:
+                #if os(macOS)
+                VotingNodeInvite(join: {
+                    inviteAnswered = true
+                    sheet = nil
+                    if let c = node.candidate { model.registerNode(c, node: node) }
+                }, later: {
+                    inviteAnswered = true
+                    sheet = nil
+                })
+                #else
+                EmptyView()
+                #endif
+            }
+        }
+    }
+
+    #if DEBUG
+    /// `-previewSheet assets` / `-previewPage network` (with -designPreview) for screenshots.
+    private func applyPreview() {
+        guard DesignPreview.on else { return }
+        if let p = UserDefaults.standard.string(forKey: "previewPage").flatMap({ Page(rawValue: $0.capitalized) }) { page = p }
+        if let s = UserDefaults.standard.string(forKey: "previewSheet").flatMap(Sheet.init(rawValue:)) { sheet = s }
+        #if os(macOS)
+        if UserDefaults.standard.string(forKey: "previewSidebar") == "hidden" { columns = .detailOnly }
+        #endif
+        if UserDefaults.standard.string(forKey: "previewExplorer") == "open" { browser.openExplorer() }
+    }
+    #endif
 
     #if os(macOS)
     private func inviteIfReady() {
@@ -812,10 +835,19 @@ private struct NodeCard: View {
                     Spacer()
                     Toggle("", isOn: $node.enabled).toggleStyle(.switch).labelsHidden()
                 }
+                if node.enabled, let reason = node.stopReason, reason != .switchedOff {
+                    // Why it is not running, when it resumes, one button —
+                    // the same reason the sidebar, menu and banner show.
+                    Divider()
+                    NodeStopRow(reason: reason)
+                }
+                UnattendedApprovalLine()
                 if node.enabled, let c = node.candidate {
                     Divider()
                     VotingNodeRow(candidate: c)
                 }
+                Divider()
+                BlockDataSection()
             }
         }
     }
@@ -940,7 +972,8 @@ private struct SidebarStatus: View {
             Toggle(isOn: $node.enabled) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Node on this Mac").font(.aeCaption.weight(.semibold))
-                    Text(nodeLine).font(.aeCaption).foregroundStyle(.secondary).lineLimit(2)
+                    Text(nodeLine).font(.aeCaption).foregroundStyle(node.stopReason?.isIncident == true ? Color.warn : Color.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .toggleStyle(.switch)
@@ -974,12 +1007,13 @@ private struct SidebarStatus: View {
     /// Short on purpose: the sidebar is 170–190 pt, and the block number (which
     /// the "Connected" line below already shows) is what got truncated here.
     private var nodeLine: String {
-        if node.wrongLocation { return InstallLocation.moveSentence }
+        // One reason, the same everywhere (NodeStopReason): never a bare "paused".
+        if let reason = node.stopReason { return reason.copy(ko: HealthCheck.korean).title }
         switch node.state {
         case .off: return String(localized: "Off")
         case .starting: return node.height > 0 ? String(localized: "Catching up") : String(localized: "Starting…")
         case .running: return String(localized: "Verifying blocks") + (node.networkCheckPending ? " " + node.pendingRouteNote : "")
-        case .waitingForPower: return String(localized: "Paused on battery")
+        case .waitingForPower: return NodeStopReason.onBattery.copy(ko: HealthCheck.korean).title
         case .failed(let m): return m
         }
     }
@@ -1131,6 +1165,15 @@ private struct VerifiedBadge: View {
     /// L4 (docs/design/32-health-signal.md): while the disk holds this Mac's
     /// node half dead, no badge may look healthy — the balance itself is
     /// still verified through other nodes, and the banner above says what to do.
+    /// The badge's words: the node's own stop reason, the same everywhere.
+    private var pausedBadgeTitle: String {
+        #if os(macOS)
+        return health.pausedBadgeTitle
+        #else
+        return ""
+        #endif
+    }
+
     private var halfDead: Bool {
         #if os(macOS)
         return !health.healthyBadgeAllowed
@@ -1148,7 +1191,7 @@ private struct VerifiedBadge: View {
         } else if let since = model.chainPausedSince {
             NetworkPausedBadge(since: since)
         } else if halfDead {
-            Label("Storage low · node paused", systemImage: "externaldrive.fill.badge.exclamationmark")
+            Label(pausedBadgeTitle, systemImage: "externaldrive.fill.badge.exclamationmark")
                 .font(.aeCaption.weight(.semibold)).foregroundStyle(Color.warn)
                 .padding(.horizontal, 10).padding(.vertical, 4)
                 .background(Color.warn.opacity(0.14), in: Capsule())
@@ -1263,7 +1306,7 @@ private struct ActivityRow: View {
                         .foregroundStyle(item.state == .failed ? Color.red : Color.warn)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                if item.state == .failed, item.resend != nil {
+                if item.state == .notIncluded || item.state == .failed, item.resend != nil {
                     Button("Send again at the current fee") { model.beginResend(item) }
                         .buttonStyle(.borderless)
                         .font(.aeFootnote.weight(.semibold))
@@ -1280,6 +1323,8 @@ private struct ActivityRow: View {
                 case .pending: Text("Confirming…").font(.aeFootnote).foregroundStyle(Color.warn)
                 case .done: Text("Done").font(.aeFootnote).foregroundStyle(.secondary)
                 case .failed: Text("Failed").font(.aeFootnote).foregroundStyle(.red)
+                // A node dropped it, or none has it: not on chain yet, not a failure.
+                case .notIncluded: Text("Not on chain yet").font(.aeFootnote).foregroundStyle(Color.warn)
                 }
             }
         }
@@ -1407,12 +1452,12 @@ struct SendSheet: View {
     }
 
     /// The most a plain transfer from this sheet can cost in fees (audit 6,
-    /// A6-7): the single recipient's quote when there is one, otherwise the
-    /// status maximum — times the recipient count, since each fresh address
-    /// can add its own account charge.
+    /// A6-7): the maximum of the envelope it will sign (B5 review round 2,
+    /// finding 1) — the recipient's transfer quote, or for several recipients
+    /// the one batch transaction's quote. Without a quote, the status maximum
+    /// times the recipient count (the signature re-check then decides).
     private var maxFee: Double {
-        let each = Double(Wei.format(quote?.feeWei ?? model.status?.transferFeeWei ?? "0")) ?? 0
-        return each * Double(max(recipients.count, 1))
+        Double(Wei.format(shownFeeWei ?? "0")) ?? 0
     }
 
     /// The same maximum in exact wei (pre-audit 7, M1): what this sheet has
@@ -1422,7 +1467,9 @@ struct SendSheet: View {
     /// native-coin fee was displayed (a token send; no status yet).
     private var shownFeeWei: String? {
         guard token == nil else { return nil }
-        return WeiMath.shownFeeWei(quoteWei: quote?.feeWei, statusWei: model.status?.transferFeeWei, recipients: recipients.count)
+        // A quote is the whole envelope's maximum (one transfer, or one batch).
+        if let q = quote { return q.feeWei }
+        return WeiMath.shownFeeWei(quoteWei: nil, statusWei: model.status?.transferFeeWei, recipients: recipients.count)
     }
 
     private var valid: Bool {
@@ -1524,7 +1571,7 @@ struct SendSheet: View {
                     if let q = quote, !q.feeIsMaximum {
                         Text("≈ \(Amount.fee(q.feeWei))").monospacedDigit()
                     } else {
-                        Text("≤ \(Amount.fee(quote?.feeWei ?? s.transferFeeWei))").monospacedDigit()
+                        Text("≤ \(Amount.fee(shownFeeWei ?? s.transferFeeWei))").monospacedDigit()
                     }
                 }.font(.aeBody)
             }
@@ -1560,13 +1607,18 @@ struct SendSheet: View {
         .macMinSize(width: 420)
         .sheetScroll()
         .onChange(of: recipient) { _, _ in ackPoison = false }
-        .task(id: recipients) {
-            guard token == nil, recipients.count == 1, SendSafety.isValidAddress(recipients[0]) else {
-                quote = nil
-                return
-            }
-            quote = try? transferQuote(recipient: recipients[0], validators: model.validators)
+        .task(id: recipients) { quote = freshQuote() }
+    }
+
+    /// The quote of the envelope this sheet will sign (B5 review round 2,
+    /// finding 1): a single transfer, or the batch of several recipients.
+    private func freshQuote() -> TransferQuote? {
+        guard token == nil, !recipients.isEmpty, recipients.allSatisfy(SendSafety.isValidAddress) else { return nil }
+        if recipients.count == 1 {
+            return try? transferQuote(recipient: recipients[0], validators: model.validators)
         }
+        let wei = Wei.from(aeth: model.paymentRequest?.amount ?? model.sendAmount) ?? "1"
+        return try? batchQuote(payments: recipients.map { Payment(to: $0, valueWei: wei) })
     }
 
     private var title: String {
@@ -1700,11 +1752,7 @@ struct SendSheet: View {
                 // quote refreshes, and the user confirms the new maximum.
                 if let why = await model.send(shownFeeWei: shownFeeWei) {
                     refusal = why
-                    if token == nil, recipients.count == 1, SendSafety.isValidAddress(recipients[0]) {
-                        quote = try? transferQuote(recipient: recipients[0], validators: model.validators)
-                    } else {
-                        quote = nil
-                    }
+                    quote = freshQuote()
                 } else {
                     dismiss()
                 }

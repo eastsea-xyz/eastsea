@@ -119,6 +119,7 @@ final class HealthMonitor: ObservableObject {
         o.stopped = node.stoppedFailure
         o.upgradeRequired = node.upgradeRequired || model.networkOutdated
         o.rolledBack = node.usePreviousBinary || updateUnhealthy()
+        o.nodeStop = node.stopReason
         return o
     }
 
@@ -145,6 +146,16 @@ final class HealthMonitor: ObservableObject {
 
     // MARK: buttons
 
+    /// The "not healthy" badge's words (dashboard, menu): the node's own
+    /// stop reason, else the disk pause.
+    var pausedBadgeTitle: String {
+        node?.stopReason.map { $0.copy(ko: HealthCheck.korean).title }
+            ?? (String(localized: "Storage low · node resting"))
+    }
+
+    /// The stop reason's own button label (L10's banner shows it).
+    var nodeActionLabel: String? { node?.stopReason?.copy(ko: HealthCheck.korean).actionLabel }
+
     func perform(_ action: HealthCheck.Action) {
         switch action {
         case .checkForUpdates:
@@ -157,6 +168,8 @@ final class HealthMonitor: ObservableObject {
             }
         case .copyDiagnostics:
             copyDiagnostics()
+        case .fixNode:
+            if let action = node?.stopReason?.copy(ko: HealthCheck.korean).action { node?.perform(action) }
         }
     }
 
@@ -181,6 +194,9 @@ final class HealthMonitor: ObservableObject {
         s.finalizedAge = model.blocks.map(\.timestampMs).max().map { Date().timeIntervalSince1970 - TimeInterval($0) / 1000 }
         s.osMajor = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
         s.failures = check.failureCounts()
+        s.nodeStop = node.stopReason?.code
+        // "<time> stopped <code> …" → the code only (no exact time, no paths).
+        s.lastStop = node.lastStopLine.flatMap { $0.split(separator: " ").dropFirst(2).first.map(String.init) }
         // The text drops these (Tests/diagnostic-report proves it).
         s.address = model.address
         s.balanceWei = model.account?.balanceWei ?? ""
@@ -193,10 +209,11 @@ extension HealthCheck.Action {
     /// The banner button's words, in the app's language.
     func label(ko: Bool = HealthCheck.korean) -> String {
         switch self {
-        case .checkForUpdates: return ko ? "업데이트 확인" : "Check for Updates"
-        case .retryConnection: return ko ? "다시 시도" : "Try Again"
-        case .openStorage: return ko ? "저장 공간 관리 열기" : "Open Storage Settings"
-        case .copyDiagnostics: return ko ? "진단 정보 복사" : "Copy Diagnostics"
+        case .checkForUpdates: return String(localized: "Check for Updates")
+        case .retryConnection: return String(localized: "Try Again")
+        case .openStorage: return String(localized: "Open Storage Settings")
+        case .copyDiagnostics: return String(localized: "Copy Diagnostics")
+        case .fixNode: return String(localized: "Fix")
         }
     }
 }
@@ -216,11 +233,11 @@ struct HealthBanner: View {
                         .fixedSize(horizontal: false, vertical: true)
                     HStack(spacing: 12) {
                         if let action = alert.action {
-                            Button(action.label()) { health.perform(action) }
+                            Button(action == .fixNode ? (health.nodeActionLabel ?? action.label()) : action.label()) { health.perform(action) }
                                 .buttonStyle(.borderedProminent).tint(Color.warn)
                         }
                         if alert.action != .copyDiagnostics {
-                            Button(copied ? (HealthCheck.korean ? "복사했어요" : "Copied")
+                            Button(copied ? (String(localized: "Copied"))
                                           : HealthCheck.Action.copyDiagnostics.label()) {
                                 health.copyDiagnostics()
                                 copied = true

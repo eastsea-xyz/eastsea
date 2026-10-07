@@ -47,6 +47,13 @@
 # every link at itself, so it is left alone instead.
 set -euo pipefail
 
+# The guest's build timestamp: a constant, never the commit's time. The program
+# id is a protocol artifact (validators verify against it), so it must not move
+# with a commit that leaves the guest's inputs alone (scripts/guest-inputs.py).
+# Not overridable on purpose: apps/prover/build-guest.sh sets SOURCE_DATE_EPOCH
+# from this whatever the caller exported.
+AETHER_GUEST_SOURCE_DATE_EPOCH=1767225600 # 2026-01-01T00:00:00Z
+
 # Where the stage lives. Fixed and absolute on purpose: a relative or
 # per-checkout path would be hashed into the metadata again.
 aether_guest_stage_path() {
@@ -116,7 +123,8 @@ aether_jolt_cli_check() {
 # stage already holds exactly this commit pair; the commits and their archive
 # hashes are still verified, so a fork that moved is refused either way.
 aether_guest_stage_fork() {
-  local fork="$1" stage dir marker want_j want_a have sum
+  # repo and want are local: the callers (build-guest.sh) have a $repo of their own.
+  local fork="$1" stage dir marker want_j want_a have sum repo want
   stage="$(aether_guest_stage_path)"
   dir="$stage/aether-jolt"
   marker="$dir/.aether-stage-snapshot"

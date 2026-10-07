@@ -1,151 +1,138 @@
-# site/ — EastSea 소개 페이지 (eastsea.xyz)
+# site/: EastSea 소개 페이지 (eastsea.xyz)
 
-공개 원페이지 소개 사이트. **빌드 스텝 없음** — 순수 HTML/CSS/바닐라 JS로 구성되고
-어디에나 그대로 올리면 된다(이후 eastsea.xyz 호스팅 예정). v2(site-v2 브랜치)부터
-실제 코인 렌더 이미지와 Split Horizon 디자인 방향이 적용됐고, 이후 Pretendard(1.5 MB)는
-제거하고 시스템 한국어 스택 + EB Garamond italic(EN h1만)로 정리됐다.
+공개 원페이지 소개 사이트다. 순수 HTML/CSS/바닐라 JS라서 **빌드 단계가 없다.** Cloudflare Pages 프로젝트
+`eastsea-site`가 이 폴더를 그대로 서빙한다. 2026-10-07에 "Dawn almanac" 방향으로 다시 디자인했다.
+벤치마크와 결정 근거는 `docs/design/site-benchmark-2026-10-07.md`, 디자인 시스템은 `design/brand/SYSTEM.md`에 있다.
 
 ## 파일 목록
 
 ```
 site/
-├── index.html              — 전체 콘텐츠 (한국어·영어 동시 포함, CSS display 전환)
-├── privacy.html            — 개인정보 처리방침 (이중 언어)
-├── styles.css              — Tide Tables 팔레트, prefers-color-scheme 라이트/다크
-├── README.md               — 이 문서
+├── index.html              — 전체 콘텐츠 (한국어·영어를 함께 담고 CSS로 하나만 표시)
+├── privacy.html            — 개인정보 처리방침 (이중 언어, 같은 헤더·푸터)
+├── tokens.css              — 생성물: design/brand/tokens.json → design/scripts/build-tokens.mjs (직접 수정 금지)
+├── styles.css              — 레이아웃·컴포넌트. 색·글꼴·간격은 tokens.css 변수만 쓴다
 ├── assets/
-│   ├── coin-1024.webp      — 더블룬 코인 렌더, 알파 컷아웃 (272KB) — 히어로 srcset
-│   ├── coin-512.webp       — 코인 중간 해상도 (96KB)
-│   ├── coin-256.webp       — 코인 저해상도 (32KB)
-│   ├── coin-128.webp       — 코인 썸네일 (12KB)
-│   ├── og-image.png        — OG 소셜 미리보기 (1200×630, 440KB)
-│   ├── favicon-32.png      — 파비콘 (4KB)
-│   └── apple-touch-icon.png— 애플 터치 아이콘 180px (56KB)
-└── fonts/
-    └── EBGaramond-Italic.woff2   — 영어 display h1 italic 400 (21KB, SIL OFL)
+│   ├── coin-{128,256,512,1024}.webp — 더블룬 코인 (design/brand/dbln-coin-1024.png에서 생성)
+│   ├── app-icon-192.webp   — 내려받기 카드의 앱 아이콘 (design/brand/app-icon-1024.png)
+│   ├── og-image.png        — OG 1200×630, design/og/og-image.html을 렌더한 것
+│   ├── favicon.svg / favicon-32.png / apple-touch-icon.png (180)
+└── fonts/  (모두 SIL OFL 1.1, 서브셋, 라이선스 전문 OFL-*.txt)
+    ├── newsreader-latin.woff2   — 디스플레이 세리프 (wght 400–500, opsz 24–72) 59 KB
+    ├── geist-latin.woff2        — 본문·UI 17 KB
+    ├── geist-mono-latin.woff2   — 라벨·숫자·주소 12 KB
+    └── hahmlet-ko-subset.woff2  — 한국어 제목용 세리프, 페이지 제목 글자만 43 KB
 ```
 
-## 코인 에셋 출처 및 저작권 고지
-
-`design/assets/doubloon-master-v1.png` (2048px 원본) 및 파생 webp 파일들은
-이미지 생성 모델(생성일: 2026-10-04)로 제작되었다. 사용한 프롬프트는
-`design/coin.md` §Image Generation Prompts Prompt A에 기록되어 있다.
-
-**⚠️ AI 생성 미술의 저작권 소유자가 누구인지(Pipln, 운영자, 또는 없음)는 현재 법적으로
-불명확하다.** `docs/ops/legal-open-questions.md`의 변호사 질의 목록에 포함되어
-메인넷 출시 전 확인이 필요하다.
-
-## 추가 에셋 (design/assets/)
-
-```
-design/assets/
-├── doubloon-master-v1.png  — 원본 2048px 렌더 (5.7MB, RGB, alpha 없음)
-├── app-icon-1024.png       — macOS 앱 아이콘 후보 (navy rounded-square + coin)
-└── coin-1024.webp … (위와 동일)
-```
-
-## 미리보기
+## 재생성
 
 ```bash
-python3 -m http.server -d site    # http://localhost:8000
+node design/scripts/build-tokens.mjs            # tokens.json → site/tokens.css (--check: 최신인지 확인)
+python3 design/scripts/subset-ko-font.py <Hahmlet[wght].ttf>   # 제목 문구를 바꿨으면 반드시
+node design/og/render-og.cjs                    # OG 이미지 (playwright 필요)
+python3 -m http.server -d site                  # 미리보기 http://localhost:8000
 ```
 
-## 파일 크기 (HTML+CSS+JS)
-
-| 파일 | 크기 |
-|------|------|
-| index.html | 36 KB |
-| styles.css | 17 KB |
-| privacy.html | 14 KB |
-| **HTML+CSS 합계** | **~54 KB** (150 KB 예산 충분) |
-
-폰트·이미지는 별도 파일로 위 예산에 포함되지 않는다.
+**Hahmlet 서브셋 주의:** 한국어 제목(h1–h3, summary, td, blockquote)에 새 글자를 넣으면 서브셋을 다시 만들어야 한다.
+다시 만들지 않으면 그 글자만 시스템 세리프로 떨어진다.
 
 ## 동작 방식
 
-- **언어**: `<head>` 안의 인라인 스크립트가 localStorage → `navigator.language`
-  순으로 `ko`/`en`을 정해 `<html lang>`을 페인트 전에 설정한다.
-  CSS는 `html:lang(ko) .en { display:none }`으로 한쪽만 보여 준다.
-  헤더 토글 버튼이 lang을 뒤집고 localStorage에 저장한다. 네트워크 요청 0회.
-- **다크 모드**: CSS 변수 + `prefers-color-scheme`. 별도 페이지 없음.
-- **코인 이미지**: `<img srcset>` 3단계 (256/512/1024). filter: drop-shadow로 리프트.
-- **타이포그래피**: 시스템 한국어 스택 + EB Garamond italic (EN h1만).
-- **FAQ**: `<details>/<summary>` — JS 없는 아코디언.
-- **모션**: `prefers-reduced-motion: no-preference`일 때만 — 코인 float(4s), glow pulse, light sweep.
+- **언어:** `<head>`의 인라인 스크립트가 localStorage를 먼저 보고, 없으면 `navigator.language`로 `ko`/`en`을 정한다.
+  - 결과는 페인트 전에 `<html lang>`에 들어간다.
+  - CSS `html:lang(ko) .en { display:none }`이 한쪽 언어만 보여 준다. 네트워크 요청은 없다.
+- **다크 모드:** `prefers-color-scheme`를 따른다. tokens.css에는 `[data-theme]` 강제 지정도 들어 있다.
+  - 낮(light)은 종이와 남색, 밤(dark)은 "밤바다"이며 주 버튼이 금색이 된다.
+- **히어로 장면:** 해, 수평선, 판화 물결은 SVG와 CSS로 그린다. 지갑 창은 HTML/CSS 그림이다.
+  - 승인된 지갑 리디자인 목업(`docs/design/wallet-redesign/mockups/01-dashboard-en.png`, `02-dashboard-ko.png`)을 그대로 옮겼다:
+    사이드바, 코인이 든 남색 잔액 판, 같은 행 스타일, 같은 토큰 아이콘(더블룬 flat 마크, WAETH 공식 아트, 점선 링 + "?" 배지의 생성 글리프).
+  - 창 안 문구는 모두 한국어·영어 두 벌이 있다. 체인 용어(블록 번호 등)는 쓰지 않는다 (지갑 스펙 P5).
+  - 금액과 토큰은 예시라고 캡션에 밝혀 둔다.
+  - 창 안은 앱과 같은 Apple 시스템 글꼴(SF Pro, Apple SD Gothic Neo)을 쓴다.
+- **모션:** `prefers-reduced-motion: no-preference`일 때만 켜진다.
+  - 해가 떠오르고, 햇살이 나타나고, 물결이 천천히 흐르고, 창이 떠오르고, 상단 점이 깜박인다.
+- **외부 요청:** 없다 (CDN·분석·쿠키 0).
+- **Lighthouse (2026-10-07, 로컬):**
+  - 모바일: 성능 98, 접근성 100, 권장사항 100, SEO 100
+  - 데스크톱: 성능 100
+  - privacy.html: 성능 95, 접근성 100
 
-## 검증 (2026-10-04, 사실 점검 리비전)
+## 2026-10-07 콘텐츠 개정 (사실 재점검)
 
-`index.html`·`privacy.html`을 360px·1280px × 라이트·다크 × ko·en 조합에서 확인:
+- **내려받기:** 테스트넷 앱 0.7.0이 공개됐으므로 "다운로드 없음·앱 비공개"를 바꿨다.
+  - 링크: https://github.com/eastsea-xyz/eastsea/releases/latest
+  - 표기: Apple 실리콘, macOS 14+, Apple 공증, 테스트넷(체인 7780)
+- **소스 코드:** 공개 저장소에는 릴리스와 DISCLAIMER만 있으므로 "앱 소스 미공개"를 유지한다.
+  - MIT·Apache-2.0 공개는 계획으로 표시한다.
+- **FAQ 테스트넷:** "팀 밖 참여 불가"를 "누구나 0.7.0으로 연결해 테스트 DBLN(faucet)으로 써 볼 수 있음"으로 바꿨다.
+- **AI 에이전트:** "개발 중·미검증"을 "AI 에이전트 결제(aether-agent), 테스트넷 앱에 포함"으로 바꿨다.
+  - 앱에는 Install Command-Line Tools 메뉴가 있다.
+  - 기본 한도: 1회 1 DBLN, 24시간 10 DBLN, 7일.
+  - "속은 에이전트도 한도 안에서는 쓸 수 있다"는 경고는 남겼다.
+- **노드:** "켜 두면 매시간 점호에 응답"(보상은 계획)을 "스위치를 켜면 체인을 따라가며 모든 블록을 재실행"(README 사실)으로 바꿨다. 점호와 보상은 보상 섹션에서 "계획"으로 다룬다.
+- **업데이트:** 오늘 사실은 "서명·Apple 공증 빌드로 자동 업데이트"다. 독립 빌더 2+ 서명은 메인넷 계획으로 명시했다.
+- **보상 규칙 변경 절차:** README 문구에 맞춰 "7일 예고 업그레이드"를 "위원회 서명 업그레이드로만"으로 바꿨다.
+- **툴박스 섹션 신설:** github.com/eastsea-xyz/eastsea-toolbox를 소개한다.
+  - 예제와 테스트, ETH·Solana 호환성 증명과 벤치마크, 네이티브 설계를 담고 있다.
+  - AS IS로 공개하며, Pipln은 배포·운영·호스팅·홍보를 하지 않고 수익·가격을 주장하지 않는다.
+- **탐색기 링크 추가:** https://explorer.eastsea.xyz/
+- **링크 정리:** 푸터 DISCLAIMER는 https://github.com/eastsea-xyz/eastsea/blob/main/DISCLAIMER.md, GitHub는 https://github.com/eastsea-xyz로 연결한다.
+- **privacy.html:** privacy@eastsea.xyz가 동작하므로 TODO-confirm 자리표시자 안내를 삭제했다.
+- **이름 정리:** 보이는 문구에서 Aether와 AETH를 없앴다. 남은 것은 CLI 이름 `aether-agent`뿐이며 사이트 본문에는 쓰지 않는다.
+- **상표 문장:** Apple, Mac, Touch ID 상표 고지를 추가했다.
 
-- 가로 스크롤 없음, 외부 요청 0
-- 컨솔 에러·경고 0
-- EB Garamond italic이 영문 h1에 적용됨 (hero-en-garamond-check.png 참고)
-- 본문 대비: 라이트 ink #16293a / bg #f5f0e8 → 11.4:1, 다크 ink #dce8f0 / bg #0b1622 → 13.1:1 (WCAG AA 초과)
-- 버튼 btn-gold #d4a038 / btn-ink #1b2c3d → 6.2:1 (AA 통과)
-- 사실 점검 리비전(같은 날, glm/site-truth): 상태 블록·계획 규칙 화법·개발 중 배지 반영 후
-  360/1280 × 라이트·다크 재렌더, ko/en 문장쌍 정합 확인, HTML 파스·외부 요청 0 확인.
+## 2026-10-07 리드 리뷰 반영 (2차)
+
+- **언어 섞임 제거:** 히어로 앱 그림과 "작동 방식" 네 개의 작은 화면에 있던 영어 문구를 모두 한국어·영어 두 벌로 바꿨다.
+  - 대상: 계정, 잔액 확인, 보내기·받기·자산, 최근 활동, 노드 스위치, 보내기 확인, 에이전트 한도 등.
+  - 다운로드 카드 제목은 "Mac용 EastSea"로 바꿨다.
+- **지갑 리디자인과 일치:** 히어로 창을 승인된 대시보드 목업(사이드바, 잔액 판, 행, 토큰 아이콘)과 같게 다시 그렸다.
+- **체인 용어 제거 (P5):**
+  - "block #184,233" → "이 Mac에서 확인함 · 방금 / Verified on this Mac · just now"
+  - 증명 카드: "committee signature / state proof / block #" → "네트워크가 합의한 서명 / 장부에서 가져온 증명 / 이 Mac에서 직접 계산"
+  - 02장 본문: "검증자 위원회의 서명·상태 증명" → "네트워크가 합의했다는 서명과 장부의 증명"
+  - 03장 본문: "체인을 따라가며 모든 블록을 다시 실행" → "네트워크의 모든 거래를 직접 다시 계산해 확인"
 
 ## 사실 ↔ 출처 매핑 (리드 검토용)
 
-페이지의 모든 주장은 아래 레포 파일에서 나온다. **그 밖의 사실은 없음.**
-각 주장은 **오늘 사실**(지금 참인 것) 또는 **계획 설계**(메인넷을 위해 정해 둔 규칙·의도)으로 구분한다.
+페이지의 모든 주장은 아래 레포 파일이나 공개 릴리스에서 나온다. **그 밖의 사실은 없다.**
+각 주장은 **오늘 사실**(지금 참인 것)과 **계획 설계**(메인넷을 위해 정해 둔 규칙과 의도) 가운데 하나로 구분한다.
 
 | 페이지 문구(요지) | 상태 | 출처 |
 |---|---|---|
-| 히어로 상태 블록: 시험용 네트워크 운영 중 | 오늘 사실 | `README.md` (체인 7780 운영 중), `docs/launch/teaser-plan.md` |
-| 앱과 소스 코드는 아직 비공개 · 다운로드 없음 | 오늘 사실 | `docs/launch/teaser-plan.md` "말할 수 있는 것", 다운로드 카드는 링크 없음 |
-| 메인넷 미출시 | 오늘 사실 | `README.md` ("Mainnet has not launched yet") |
-| 보안 결함 수정 중(내부 AI 교차 검토에서 Critical/High 발견) | 오늘 사실 | `docs/launch/teaser-plan.md` 결정 4, `docs/design/12-launch-plan.md` §보안 감사 |
-| 공인 외부 보안 업체의 독립 감사 없음 | 오늘 사실 | `README.md`, `docs/design/12-launch-plan.md` §보안 감사, `docs/research/legal-opinion-memo-2026-10-04.md` §3.6 |
-| DBLN 판매 없음 | 오늘 사실 | `README.md`, `DISCLAIMER.md` §2 |
-| 테스트넷 코인 무가치·메인넷 미이관 | 오늘 사실 | `README.md`, `DISCLAIMER.md` §2 |
-| FAQ 테스트넷: 팀 밖에서는 참여 불가(앱 비공개) | 오늘 사실 | `docs/launch/teaser-plan.md` "말하지 않는 것" |
-| 시드 문구 없음 / Secure Enclave + Touch ID / 복구 키 미설정 시 복구 불가 | 오늘 사실 (비공개 빌드의 구현) | `README.md` |
-| 받은 잔액 증명을 맥이 직접 검증("서버에 묻지 않는다" 아님) | 오늘 사실 (비공개 빌드의 구현) | `README.md`, `agents/skills/aether-wallet/SKILL.md` |
-| VPN·포트 없이 집 인터넷으로 참여(DHT·iroh 홀펀칭) | 오늘 사실 (비공개 빌드의 구현) | `README.md` |
-| 지갑 무분석·무개인정보수집 | 오늘 사실 | `DISCLAIMER.md` §4 |
-| 필요 조건: 애플 실리콘 맥 1대 | 오늘 사실 | `README.md` |
-| 확장: Chrome·Edge·Brave·Arc, 키는 브라우저 생성·비밀번호 암호화 | 오늘 사실 (비공개 빌드의 구현) | `README.md` |
-| 운영 주체 Pipln, 등록 서비스 + Apple DeviceCheck, Apple 비후원·비보증 | 오늘 사실 | `README.md`, `AGENTS.md` |
-| 코인 이름 더블룬 Doubloon · DBLN | 오늘 사실 | `apps/wallet/Sources/Brand.swift`, `TRADEMARKS.md` |
-| 오픈소스 MIT·Apache-2.0 **공개 예정**(지금은 저장소 비공개) | 계획 설계 | `README.md`, `LICENSE-MIT`, `LICENSE-APACHE`, `docs/design/12-launch-plan.md` §빠른 메인넷(소스 동시 공개) |
-| 보상 개요: 매시간 분배, 발행 절반은 증명 몫·절반은 노드 몫 | 계획 설계 | `docs/design/15-node-rewards.md` §규칙, `README.md` §Planned mainnet rules |
-| min(1/N, 1/16) 상한, 남는 몫 미발행 | 계획 설계 | 〃 |
-| N=1/4/16+ 분배 표(1/16, 4/16, 전부) | 계획 설계 | 〃 §"운영자 N명이 모였을 때" |
-| "몫은 참여자 수에 따라 정해집니다" + "조기 참여 별도 혜택 없음" | 계획 설계 | 〃 §운영자 N명이 모였을 때(공식 그대로) |
-| 열두 번 예고 없는 점호, 답한 슬롯만큼(꼼수 차단) | 계획 설계 | 〃 §비콘 슬롯 |
-| 워밍업 14일, 정상 몫의 절반에서 시작 | 계획 설계 | 〃 §B |
-| 청구 없이 다음 에포크 첫 블록이 자동 지급 | 계획 설계 | 〃 §지급 시점 |
-| 운영자 = 지갑 주소 단위 / 등록은 DeviceCheck로 맥 1대 1회 | 계획 설계 | 〃 §"16분의 1인지 어떻게 아나" |
-| 출시 뒤 규칙 변경은 최소 7일 온체인 예고 업그레이드로만 | 계획 설계 | 〃 §규칙(604,800블록 예고) |
-| 프리마인·창업자 몫·특별 배분 없음, 코인은 블록 보상로만 발행 | 계획 설계 | `README.md` §Planned mainnet rules, `DISCLAIMER.md` §2 |
-| 메인넷 수도꼭지 없음(테스트 코인 faucet은 테스트넷 전용) | 계획 설계 | `DISCLAIMER.md` §2, `agents/skills/aether-wallet/SKILL.md` (test tokens testnet only) |
-| 업데이트는 독립 빌더 2+(긴급 3) 서명, 발행 기록은 체인에 공개 — "설계" | 계획 설계 | `docs/design/19-release-approval.md` |
-| AI 에이전트 용돈 지갑 — "개발 중", 실제 Touch ID·네트워크 결제 미검증 명시 | 계획 설계 (개발 중) | `AGENTS.md`, `agents/skills/aether-wallet/SKILL.md`, `apps/agent` |
-| 전기요금·세금 본인 부담 | 오늘 사실 | `DISCLAIMER.md`, `docs/design/15-node-rewards.md` |
-| "켜 두면 매시간 점호에 응합니다"·가동 시간 기록(야간 수익 표현 없음) | 계획 설계 | `docs/design/15-node-rewards.md` §비콘 슬롯 |
-| FAQ 토큰 세일: 창업자도 같은 규칙으로 맥을 가동해야 보상 | 계획 설계 | `README.md` §Planned mainnet rules |
-| CTA "작동 방식 읽기"(앵커) — 주장 아님 | — | 페이지 내 #benefits 앵커 |
-| 푸터 법적 문구("조언 아님"·as-is·DISCLAIMER.md 안내) | 오늘 사실 | `DISCLAIMER.md` |
-| privacy.html 전체(수집 항목·목적·보유·Apple 이전·권리) | 오늘 사실(등록 서비스 운영 기준) | `docs/ops/privacy-policy.md`, `docs/design/14-registration.md`, `DISCLAIMER.md` §4 |
-| 푸터 상표 문장(권리 주장·등록 준비 중) | 오늘 사실 | `TRADEMARKS.md` |
+| 상단 바 + 상태 장부: 공개 테스트넷(체인 7780) 운영 중 | 오늘 사실 | `README.md`, `DISCLAIMER.md` §1 |
+| Mac 앱 0.7.0 공개(테스트넷), Apple 실리콘·macOS 14+, 공증, 자동 업데이트 | 오늘 사실 | GitHub 릴리스 `app-v0.7.0` 본문, eastsea-xyz/eastsea README |
+| 앱 소스 코드 미공개(공개 저장소 = 릴리스 + DISCLAIMER) | 오늘 사실 | `gh api repos/eastsea-xyz/eastsea/contents` (README, DISCLAIMER.md만 있음) |
+| 메인넷 미출시 | 오늘 사실 | `README.md`, `DISCLAIMER.md` §1 |
+| 보안 결함 수정 중, 독립 외부 감사 없음 | 오늘 사실 | `README.md`, `DISCLAIMER.md` §1, `docs/design/12-launch-plan.md` |
+| DBLN 판매 없음, 가격·수익 약속 없음 | 오늘 사실 | `README.md`, `DISCLAIMER.md` §2 |
+| 테스트 DBLN 무가치·메인넷 미이관 | 오늘 사실 | `README.md`, `DISCLAIMER.md` §2 |
+| 누구나 0.7.0으로 테스트넷 연결, 테스트 DBLN 받기 | 오늘 사실 | 릴리스 본문, `apps/wallet/Sources/ContentView.swift` ("Get 10 test …") |
+| 시드 문구 없음, Secure Enclave + Touch ID, 복구 키(다른 Apple 기기) 미설정 시 복구 불가 | 오늘 사실 | `README.md` §What it is |
+| 잔액마다 위원회 서명 + 상태 증명을 맥에서 검증 | 오늘 사실 | `README.md` (BLS threshold, EIP-7864) |
+| 노드 스위치: 네트워크의 모든 거래를 다시 계산해 확인(= 체인 추종, 모든 블록 재실행) | 오늘 사실 | eastsea-xyz/eastsea README, `apps/wallet/Sources/NodeController.swift` |
+| VPN·포트 없이 집 인터넷(DHT + QUIC 홀펀칭) | 오늘 사실 | `README.md` |
+| AI 에이전트 결제: 수신인 승인 전 결제 꺼짐, 체인이 한도 집행, 기본 1/10 DBLN·7일 | 오늘 사실(테스트넷) | `README.md` §Wallet for AI agents, `AGENTS.md` |
+| 지갑 무분석, 등록 외 개인정보 수집 없음 | 오늘 사실 | `DISCLAIMER.md` §4 item 5 |
+| 탐색기 explorer.eastsea.xyz | 오늘 사실 | HTTP 200 (2026-10-07) |
+| 툴박스: 예제+테스트, ETH·SOL 호환성 증명·벤치, 네이티브 설계, AS IS·비운영 | 오늘 사실 | eastsea-xyz/eastsea-toolbox README, 툴박스 공개 정책(2026-10-06) |
+| 브라우저 확장(Chrome·Edge·Brave·Arc): 아직 배포 전 | 오늘 사실 | 0.7.0 릴리스 자산에 확장 없음, `README.md` §Browser extension |
+| 운영 주체 Pipln, DeviceCheck 등록, Apple 비후원·비보증 | 오늘 사실 | `README.md`, `AGENTS.md` |
+| 오픈소스 MIT·Apache-2.0 공개 | 계획 설계 | eastsea-xyz/eastsea README §Source code |
+| 보상: 매시간, 절반 증명·절반 노드 몫, 1/16 상한, 남는 몫 미발행, 조기 혜택 없음 | 계획 설계 | `README.md` §Planned mainnet rules, `docs/design/15-node-rewards.md` |
+| 열두 번 예고 없는 점호, 워밍업 2주 절반 | 계획 설계 | `docs/design/15-node-rewards.md` |
+| 청구 없이 다음 시간 첫 블록이 지급 | 계획 설계 | `docs/design/15-node-rewards.md` §지급 시점 |
+| 출시 뒤 규칙 변경은 위원회 서명 업그레이드로만 | 계획 설계 | `README.md` §Planned mainnet rules |
+| 프리마인·창업자 몫·특별 배분 없음, 창업자 맥도 같은 규칙 | 계획 설계 | `README.md`, `DISCLAIMER.md` §2 |
+| 메인넷 faucet 없음 | 계획 설계 | `DISCLAIMER.md` §2 |
+| 독립 빌더 2+(긴급 3) 서명 배포 | 계획 설계 | `docs/design/19-release-approval.md` |
+| 전기요금·세금 본인 부담 | 오늘 사실 | `DISCLAIMER.md` |
+| 푸터 법적 문구(조언 아님, AS IS, 감사 없음, DISCLAIMER 링크) | 오늘 사실 | `DISCLAIMER.md` |
+| 상표 문장 | 오늘 사실 | `TRADEMARKS.md` |
 
-의도적 생략: 보관(sharding)·증명 시장 상세, 예비 키·워밍업 세부 식, 발행 감쇠 곡선
-수치, 감사 라운드 횟수. 소비자 페이지 범위 밖.
-"오늘 사실 (비공개 빌드의 구현)"은 지금 팀 빌드에서 구현돼 있으나 앱이 비공개라
-외부 이용자가 당장 확인할 수 없음을 뜻한다.
+의도적으로 뺀 것: DEX·런치패드(사이트에서 Pipln이 DeFi를 운영한다는 인상을 주지 않도록), iPhone 앱(공개 배포 전), 발행 감쇠 수치.
 
-## 알려진 플레이스홀더
+## 알려진 남은 일
 
-1. **다운로드 없음** — 두 카드 모두 "메인넷 출시와 함께 공개" 배지.
-   출시 시 `#download` 섹션만 교체.
-2. **소스 코드 링크 없음** — 2026-10-04 현재 비공개. "출시와 함께 공개" 평문으로 대체.
-   공개되면 링크로 교체.
-3. **privacy.html 이메일** — `privacy@eastsea.xyz`는 TODO-confirm 자리표시자.
-   실제 수신 주소로 교체 후 공개.
-4. **코인 저작권** — AI 생성 이미지 저작권 귀속 → 변호사 확인 필요(legal-open-questions.md).
-
-## 유지 관리 규칙
-
-- 상태 표시 줄(히어로)이 사실과 어긋나는 순간이 오면 **그 줄을 먼저** 고친다.
-- 새 사실을 넣을 때는 이 매핑 표에 출처를 함께 추가한다(없으면 넣지 않는다).
+1. **브랜드 아트:** coin, favicon, app icon은 Codex 브랜치 `codex/brand-art`의 `design/brand/*`(작성 시점 미커밋)에서 가져왔다. 그 브랜치가 머지되면 원본 경로가 레포에 생긴다.
+2. **코인 저작권:** AI 생성 이미지의 저작권 귀속은 변호사 확인이 필요하다 (`docs/ops/legal-open-questions.md`).

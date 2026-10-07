@@ -4,6 +4,9 @@ import SwiftUI
 /// changes materially, and everyone is asked again.
 enum Terms {
     static let isTestnet: Bool = Brand.networkChainId == Brand.legacyTestnetChainId
+    // Bump only when users' rights or risks change; a wording fix is not a bump.
+    // (scripts/release-identity-gate.sh refuses a release that changes this
+    // line without TERMS_BUMP_REASON.)
     static let version = isTestnet ? 5 : 6
     static let disclaimerURL = URL(string: "https://github.com/eastsea-xyz/eastsea/blob/main/DISCLAIMER.md")!
 }

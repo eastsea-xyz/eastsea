@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>States</title>
+<link rel="stylesheet" href="wallet.css">
+<style>
+  .pane { width: 380px; background: var(--bg); color: var(--ink); border-radius: 18px; padding: 20px; box-shadow: 0 20px 50px rgba(9,21,34,.25); min-height: 600px; }
+  .plate.s { height: 170px; padding: 22px; }
+  .plate.s .amt { font-size: 46px; } .plate.s .amt small { font-size: 18px; }
+  .plate.s .coin { width: 140px; height: 140px; right: -26px; }
+  .empty { text-align: center; padding: 26px 18px 8px; }
+  .empty h4 { font: 700 15px/1.3 var(--font); }
+  .empty p { font-size: 12.5px; color: var(--ink-3); margin-top: 6px; line-height: 1.5; }
+  .banner { display: flex; gap: 10px; align-items: center; padding: 10px 12px; border-radius: 12px; margin-bottom: 12px; font-size: 12.5px; line-height: 1.4; }
+  .banner svg { width: 17px; height: 17px; flex: none; }
+  .banner.warn { background: var(--warn-tint); } .banner.warn svg { color: var(--warn); }
+  .banner.crit { background: var(--crit-tint); } .banner.crit svg { color: var(--critical); }
+  .banner b { font-weight: 600; }
+  .stale { opacity: .55; }
+</style></head>
+<body>
+<div class="board">
+  <div class="stack"><div class="caption">Empty · new wallet</div>
+    <div class="pane light">
+      <div class="plate s" data-waves><img class="coin" src="assets/coin.png"><div class="lbl">Balance</div><div class="amt">0 <small>DBLN</small></div><div class="ver"><svg><use href="#i-checkseal"/></svg>Verified on this Mac</div></div>
+      <div class="actions" style="margin:14px 0"><div class="act primary dis" style="opacity:.4"><svg><use href="#i-touchid"/></svg>Send</div><div class="act"><svg><use href="#i-receive"/></svg>Receive</div><div class="act"><svg><use href="#i-assets"/></svg>Assets</div></div>
+      <div class="group"><div class="empty">
+        <img src="assets/coin-flat.svg" style="width:44px;height:44px;opacity:.9">
+        <h4 style="margin-top:12px">Your first DBLN starts here</h4>
+        <p>Share your address to get paid, or turn on the node — this Mac can receive node rewards while it is online.</p>
+        <div style="display:flex;gap:8px;justify-content:center;margin-top:14px"><span class="btn"><svg><use href="#i-qr"/></svg>Show my address</span><span class="btn ghost">Turn on node</span></div>
+      </div></div>
+    </div>
+  </div>
+  <div class="stack"><div class="caption">Loading · first check</div>
+    <div class="pane light">
+      <div class="plate s" data-waves><img class="coin" src="assets/coin.png" style="opacity:.5"><div class="lbl">Balance</div><div class="skel" style="width:170px;height:44px;margin-top:12px"></div><div class="ver"><span class="ring" style="border-color:rgba(92,203,152,.3);border-top-color:#5CCB98"></span>Checking on this Mac…</div></div>
+      <div class="actions" style="margin:14px 0"><div class="act primary" style="opacity:.4"><svg><use href="#i-touchid"/></svg>Send</div><div class="act"><svg><use href="#i-receive"/></svg>Receive</div><div class="act" style="opacity:.4"><svg><use href="#i-assets"/></svg>Assets</div></div>
+      <div class="group">
+        <div class="row"><div class="skel" style="width:34px;height:34px;border-radius:50%"></div><div class="t"><div class="skel" style="width:60%;height:12px"></div><div class="skel" style="width:35%;height:10px;margin-top:7px"></div></div></div>
+        <div class="row"><div class="skel" style="width:34px;height:34px;border-radius:50%"></div><div class="t"><div class="skel" style="width:50%;height:12px"></div><div class="skel" style="width:30%;height:10px;margin-top:7px"></div></div></div>
+      </div>
+      <div class="anno" style="color:var(--ink-3);margin-top:12px">After 20 s the line becomes “Still checking — the network is slow. Your funds are safe.” Never a spinner alone.</div>
+    </div>
+  </div>
+  <div class="stack"><div class="caption">Offline / network paused · dark</div>
+    <div class="pane dark">
+      <div class="banner warn"><svg><use href="#i-wifioff"/></svg><div><b>Can't reach the network.</b> Showing what this Mac last verified, 4 min ago. Sending waits until it's back.</div></div>
+      <div class="plate s" data-waves><img class="coin" src="assets/coin.png"><div class="lbl">Balance · 4 min ago</div><div class="amt">12.5 <small>DBLN</small></div><div class="ver" style="color:#FFB857"><svg style="color:#FFB857"><use href="#i-pause"/></svg>Last verified 21:10</div></div>
+      <div class="actions" style="margin:14px 0"><div class="act primary" style="opacity:.4"><svg><use href="#i-touchid"/></svg>Send</div><div class="act"><svg><use href="#i-receive"/></svg>Receive</div><div class="act"><svg><use href="#i-assets"/></svg>Assets</div></div>
+      <div class="group stale">
+        <div class="row"><div class="ti"><img src="assets/coin-flat.svg"><span class="b in"><i><svg><use href="#i-receive"/></svg></i></span></div><div class="t"><b>Node rewards</b><span>Today</span></div><div class="r"><b class="in">+1.5</b></div></div>
+      </div>
+      <div class="anno" style="margin-top:12px;color:var(--ink-3)">Paused chain (no new blocks) uses the same pattern: “The network is paused, not your wallet. Nothing is lost.”</div>
+    </div>
+  </div>
+  <div class="stack"><div class="caption">Errors · send refused, update needed</div>
+    <div class="pane light">
+      <div class="banner crit"><svg><use href="#i-warn"/></svg><div><b>Not sent.</b> This token refuses transfers from your address, so it was stopped before Touch ID. Nothing moved.</div></div>
+      <div class="banner warn"><svg><use href="#i-download"/></svg><div><b>An update is needed by Fri.</b> The network moves to a new version. It installs by itself; nothing to do. <span class="link">Details</span></div></div>
+      <div class="banner warn"><svg><use href="#i-warn"/></svg><div><b>Someone started recovering this wallet.</b> If it wasn't you, cancel it before Oct 9, 21:00.</div><span class="btn primary" style="height:28px;font-size:12px">Cancel it</span></div>
+      <div class="anno" style="color:var(--ink-3);margin-top:16px;max-width:none">Rules: one banner at a time on Home (most severe wins; the rest live on their own page). Each says what happened, whether money moved, and the one thing to do. Red only when money is at risk or an action failed; amber for “needs you soon”.</div>
+    </div>
+  </div>
+</div>
+<script src="icons.js"></script>
+</body></html>

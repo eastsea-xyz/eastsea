@@ -2,7 +2,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { coinTicker, formatAeth, formatInt, formatRate, formatTokenAmount, localTime, notIncludedText, shortHex, timeAgo, toBigInt, txRate, weiToAeth } from '../js/format.js';
+import { coinTicker, formatAeth, formatInt, formatRate, formatTokenAmount, localTime, droppedText, notIncludedText, shortHex, timeAgo, toBigInt, txRate, weiToAeth } from '../js/format.js';
 
 test('toBigInt takes hex, decimal, number and bigint; rejects the rest', () => {
   assert.equal(toBigInt('0x1a'), 26n);
@@ -105,4 +105,13 @@ test('notIncludedText says why a transaction is not in a block (bug #5)', () => 
   assert.equal(notIncludedText({ kind: 'something_new' }), 'something new');
   assert.equal(notIncludedText(null), null);
   assert.equal(notIncludedText({}), null);
+});
+
+test('a dropped hash reads "not on chain yet", never a permanent failure (B5 round 2)', () => {
+  const t = droppedText({ kind: 'expired' });
+  assert.match(t, /not recorded on chain yet/);
+  assert.match(t, /may still include it/);
+  assert.match(t, /whole mempool lifetime/);
+  assert.doesNotMatch(t, /Nothing was charged|failed|permanent/i);
+  assert.match(droppedText(null), /no reason given/);
 });

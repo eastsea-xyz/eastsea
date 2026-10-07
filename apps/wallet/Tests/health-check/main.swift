@@ -30,7 +30,7 @@ check(run(&calm, O(), from: 0, to: 600).isEmpty, "a healthy wallet raises nothin
 check(calm.alert(ko: true) == nil && calm.healthyBadgeAllowed, "no banner, the healthy badge may show")
 
 // Every row exists, in the design's numbering.
-check(Set(HealthCheck.Issue.allCases.map(\.row)) == Set((1...9).map { "L\($0)" }), "each of L1–L9 has an issue")
+check(Set(HealthCheck.Issue.allCases.map(\.row)) == Set((1...10).map { "L\($0)" }), "each of L1–L10 has an issue")
 
 // MARK: L1 — proofs rejected / program mismatch
 
@@ -46,8 +46,8 @@ var l1 = HealthCheck()
 var ev = run(&l1, mismatch, from: 0, to: 60)
 check(raises(ev, .programMismatch) == 1 && ev.first?.0 == 0, "L1: a program mismatch is raised at once, once")
 check(raises(ev, .proofsRejected) == 0, "L1: the mismatch is one incident, not also a rejection")
-check(l1.alert(ko: true)?.sentence == "보상 증명이 거절되고 있어요. 고친 버전을 기다리는 중이에요. 그동안 증명을 쉬어 전기를 아낄게요.",
-      "L1 without an update: wait for the fix, proving rests")
+check(l1.alert(ko: true)?.sentence == "이 Mac은 지금 블록 증명을 쉬고 있어요. 네트워크가 이 버전의 증명을 아직 확인하지 못해서예요. 잃는 건 없어요.",
+      "L1 without an update: proving rests, plainly, nothing lost")
 check(l1.alert(ko: true)?.action == .checkForUpdates, "L1: [업데이트 확인]")
 mismatch.updateAvailable = true
 _ = l1.observe(mismatch, at: at(62))
@@ -146,7 +146,7 @@ halfDead.nodeResponsive = true  // the RPC still answers: half dead
 ev = run(&l3, halfDead, from: 32, to: 80)
 check(raises(ev, .diskPaused) == 1, "L3/L4: the pause is raised once")
 check(l3.alert(ko: true)?.issue == .diskPaused, "L4 outranks the warning in the banner")
-check(l3.alert(ko: true)?.sentence == "저장 공간이 부족해 네트워크 참여를 잠시 멈췄어요. 5 GB 이상 비우면 저절로 다시 시작해요.", "L3 pause sentence")
+check(l3.alert(ko: true)?.sentence == "저장 공간이 부족해 네트워크 참여를 잠시 멈췄어요. 남은 공간이 7 GB가 되면 저절로 다시 시작해요.", "L3 pause sentence (the node's 7 GB resume level)")
 check(!l3.healthyBadgeAllowed, "W2: never a healthy badge while L4 holds")
 check(!HealthCheck.healthyBadgeAllowed(halfDead), "W2: disk_low → no Verified/정상 badge, from the observation itself")
 var voter = halfDead
@@ -255,6 +255,57 @@ for issue in HealthCheck.Issue.allCases {
     }
 }
 check(words.sentence(.connectionStuck, ko: false).contains("balance is safe"), "English L2 says the balance is safe")
+
+// L1, the 0.7.0 case (docs .claude/team/prover-070-mismatch.md C): the node
+// cannot even confirm the validators' program (program_unknown) and pauses —
+// no mismatch flag, no failing proofs. That pause is an incident too, with
+// the same plain sentence; program ids never appear outside developer mode.
+var unknownProgram = proving
+unknownProgram.proverPausedForProgram = true
+var l1u = HealthCheck()
+ev = run(&l1u, unknownProgram, from: 0, to: 30)
+check(raises(ev, .programMismatch) == 1, "L1: a pause for an unconfirmed program raises the alert")
+check(l1u.alert(ko: false)?.sentence == "This Mac is resting from proving blocks for now: the network cannot check this version's proofs yet. Nothing is lost.",
+      "L1 unknown in English: \(l1u.alert(ko: false)?.sentence ?? "nil")")
+
+// MARK: L10 — the node is not running, and why (NodeStopReason)
+
+// The founder's 0.7.0 report: the node sat "paused" for hours and nothing
+// said why. Any incident-grade stop reason is raised once, with the reason's
+// own sentence (what happened, what to do, when it resumes) and its button.
+var stoppedNode = O()
+stoppedNode.nodeStop = .otherNodeRunning
+var l10 = HealthCheck()
+ev = run(&l10, stoppedNode, from: 0, to: 60)
+check(raises(ev, .nodeStopped) == 1, "L10: a stopped node is raised once")
+check(l10.alert(ko: true)?.sentence == NodeStopReason.otherNodeRunning.copy(ko: true).paragraph, "L10 speaks the reason's own words")
+check(l10.alert(ko: true)?.action == .fixNode, "L10's button is the reason's")
+ev = run(&l10, O(), from: 62, to: 120)
+check(resolves(ev, .nodeStopped) == 1, "L10 resolves when the node runs again")
+var resting = O()
+resting.nodeStop = .onBattery
+var l10b = HealthCheck()
+check(raises(run(&l10b, resting, from: 0, to: 60), .nodeStopped) == 0, "waiting for power is said, not raised")
+var gone = O()
+gone.nodeStop = .diskMissing(volume: "Archive")
+var l10c = HealthCheck()
+_ = run(&l10c, gone, from: 0, to: 10)
+check(l10c.alert(ko: true)?.sentence.contains("‘Archive’") == false && l10c.alert(ko: true)?.sentence.contains("연결하면 저절로") == true,
+      "a missing disk says it resumes when connected: \(l10c.alert(ko: true)?.sentence ?? "nil")")
+// The crash loop and the disk pause speak the reason's exact words too.
+var looping = O()
+looping.stopped = .other
+looping.nodeStop = .crashLoop(.other, retryInSeconds: 540)
+var l7s = HealthCheck()
+_ = run(&l7s, looping, from: 0, to: 10)
+check(l7s.alert(ko: true)?.issue == .crashLoop && l7s.alert(ko: true)?.sentence.contains("9분 뒤") == true,
+      "L7 says when it retries: \(l7s.alert(ko: true)?.sentence ?? "nil")")
+var low = O()
+low.diskPaused = true
+low.nodeStop = .diskFull(freeBytes: 6 * 1_073_741_824, resumeBytes: 7 * 1_073_741_824, volume: nil)
+var l4s = HealthCheck()
+_ = run(&l4s, low, from: 0, to: 10)
+check(l4s.alert(ko: true)?.sentence.contains("6.0 GB 남음") == true, "L4 gives the exact numbers: \(l4s.alert(ko: true)?.sentence ?? "nil")")
 
 // MARK: one alert per incident
 

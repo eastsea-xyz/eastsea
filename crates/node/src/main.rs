@@ -289,6 +289,21 @@ enum Cmd {
     /// would stop the node for good (red team #3).
     #[command(hide = true)]
     Protocol,
+    /// The proof program the validators of <network> verify with, by their
+    /// `aether_proverProgram` answer (validators that predate it: the program
+    /// compiled in for their chain). Hidden: the release gate
+    /// (scripts/prover-gate.sh) refuses to package an app whose prover differs.
+    #[command(hide = true)]
+    ValidatorProgram {
+        #[arg(long)]
+        network: String,
+        /// Ask these HTTP JSON-RPC endpoints instead of the validators over iroh.
+        #[arg(long)]
+        rpc: Vec<String>,
+        /// Seconds to wait for an answer.
+        #[arg(long, default_value_t = 30)]
+        timeout: u64,
+    },
     /// BLAKE3 of a file, hex (dev-drill feature): scripts/upgrade-drill.sh
     /// hashes its simulated releases with it for the committee upgrade's
     /// releases[] record. No shipped build has this subcommand.
@@ -341,6 +356,17 @@ enum Cmd {
         /// (docs/ops/read-gateway.md). Exposure is a cloudflared tunnel's job.
         #[arg(long)]
         public_read_only: bool,
+        /// Archive mode under `aether run --archive`: keep everything like
+        /// `aether archive` (archive history, no snapshot start, no snapshot
+        /// jump) and write the era file set to this directory. The RPC stays
+        /// on loopback and candidate beacons keep working.
+        #[arg(long)]
+        archive_export: Option<String>,
+        /// This Mac's wallet-server endpoint key (default: <data>/wallet-node.key).
+        /// `aether run` keeps it on the internal disk when the chain data
+        /// lives elsewhere, so the node id never changes with the disk.
+        #[arg(long)]
+        node_key: Option<String>,
         #[command(flatten)]
         history: HistoryArgs,
         #[command(flatten)]
@@ -391,6 +417,19 @@ enum Cmd {
     Run {
         #[arg(long)]
         data: String,
+        /// Where the bulky chain data goes (a secondary disk): the follower's
+        /// `follow` (or `archive`) directory lives in <chain-data>; keys,
+        /// network.json, run.lock and the validator's journals stay in
+        /// <data>. The directory must exist: a missing one (an unplugged
+        /// disk) exits 13 instead of filling the internal disk.
+        #[arg(long)]
+        chain_data: Option<String>,
+        /// Keep the full history like `aether archive`: replay from genesis,
+        /// never a snapshot jump, era files exported, in <chain dir>/archive
+        /// (apart from `follow`, so turning it off returns to a normal
+        /// follower and the archive can be kept or deleted).
+        #[arg(long)]
+        archive: bool,
         /// network.json to start from (copied into <data> the first time).
         #[arg(long)]
         network: Option<String>,
@@ -931,12 +970,20 @@ fn main() {
             println!("signed by the committee: protocol {} at height {} on chain {}", s.upgrade.protocol, s.upgrade.activate_at, s.upgrade.chain_id);
             Ok(())
         })(),
-        Cmd::Follow { network, from_rpc, data, rpc_port, validators, exit_with_parent, candidate, dev_epoch_blocks, keys, checkpoint, dev_storage_fault, public_read_only, history, resources } => {
+        Cmd::Follow { network, from_rpc, data, rpc_port, validators, exit_with_parent, candidate, dev_epoch_blocks, keys, checkpoint, dev_storage_fault, public_read_only, archive_export, node_key, history, resources } => {
             if exit_with_parent {
                 exit_with_parent_process();
             }
             let keys = candidate.then(|| keys.unwrap_or_else(|| data.clone()));
-            run_follow(network, from_rpc, data, rpc_port, validators, keys, dev_epoch_blocks, checkpoint, dev_storage_fault, public_read_only, history, resources, None, None)
+            let export = follow_export(archive_export, &data);
+            if let Some(e) = &export {
+                if let Err(err) = std::fs::create_dir_all(&e.dir) {
+                    eprintln!("{}: {err}", e.dir.display());
+                    std::process::exit(1);
+                }
+            }
+            let node_key = node_key.map(std::path::PathBuf::from).unwrap_or_else(|| std::path::Path::new(&data).join("wallet-node.key"));
+            run_follow(network, from_rpc, data, rpc_port, validators, keys, dev_epoch_blocks, checkpoint, dev_storage_fault, public_read_only, history, resources, export, None, node_key)
         }
         Cmd::Archive { network, from_rpc, data, rpc_port, export_dir, webseed, https_base, bind, export_key, resources } => run_archive(network, from_rpc, data, rpc_port, export_dir, webseed, https_base, bind, export_key, resources),
         Cmd::CandidateInfo { data, operator, chain_id } => (|| {
@@ -958,7 +1005,9 @@ fn main() {
             );
             Ok(())
         })(),
-        Cmd::Run { data, network, ceremony, port, rpc_port, reshare_port, node_args, follow_args, reshare_timeout, dev_peer_dir, exit_with_parent, public_read_only, resources } => {
+        Cmd::Run { data, chain_data, archive, network, ceremony, port, rpc_port, reshare_port, node_args, follow_args, reshare_timeout, dev_peer_dir, exit_with_parent, public_read_only, resources } => {
+            // First: the app's wake signal must never end the supervisor.
+            aether_node::supervisor::install_wake_forwarding();
             if exit_with_parent {
                 exit_with_parent_process();
             }
@@ -967,9 +1016,35 @@ fn main() {
                 .init();
             (|| {
                 let dir = std::path::PathBuf::from(&data);
+                // A chain-data disk that is not connected: stop before any
+                // write at all (never create its /Volumes path — that would
+                // re-sync the chain onto the internal disk).
+                if let Some(chain) = chain_data.as_deref().map(std::path::Path::new) {
+                    if !chain.is_dir() {
+                        eprintln!("the chain data directory {} does not exist (the disk is not connected); stopping without writing anything", chain.display());
+                        std::process::exit(aether_node::supervisor::EXIT_CHAIN_DATA_MISSING);
+                    }
+                }
+                // Keys must stay on this Mac (design 36 §6.2): never read them
+                // from the chain-data disk, and never run with the key
+                // directory itself on a removable or network volume.
+                if let Some(chain) = chain_data.as_deref().map(std::path::Path::new) {
+                    let found = aether_node::supervisor::keys_in_chain_data(chain);
+                    if !found.is_empty() {
+                        eprintln!("keys must stay on this Mac: key files found in the chain data directory ({}); refusing to start",
+                            found.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "));
+                        std::process::exit(aether_node::supervisor::EXIT_KEYS_ON_CHAIN_DATA);
+                    }
+                }
+                if aether_node::supervisor::keys_on_external_data(&dir, aether_node::supervisor::volume_is_external(&dir)) {
+                    eprintln!("keys must stay on this Mac: the key directory {} is on a removable or network volume; refusing to start", dir.display());
+                    std::process::exit(aether_node::supervisor::EXIT_KEYS_ON_CHAIN_DATA);
+                }
                 // The first-run key and network setup below can write before
-                // Supervisor::run starts. Wait on this volume first too.
-                aether_node::supervisor::wait_for_data_disk(&dir, resources.limits()?.min_free_disk, false);
+                // Supervisor::run starts. Wait on the volume the chain data
+                // is written to (the chosen disk when there is one).
+                let floor_dir = chain_data.as_deref().map(std::path::PathBuf::from).unwrap_or_else(|| dir.clone());
+                aether_node::supervisor::wait_for_data_disk(&floor_dir, resources.limits()?.min_free_disk, false);
                 std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
                 // One data directory, one `aether` (red team #12): a second
                 // app's run stops before touching anything, with its own exit
@@ -1029,6 +1104,8 @@ fn main() {
                     dev_peer_dir: dev_peer_dir.map(Into::into),
                     reshare_timeout: reshare_timeout.map(Duration::from_secs),
                     ceremony: ceremony.map(Into::into),
+                    chain_data: chain_data.map(Into::into),
+                    archive,
                 }
                 .run()
             })()
@@ -1103,6 +1180,7 @@ fn main() {
             println!("{}", aether_node::upgrade::implements());
             Ok(())
         })(),
+        Cmd::ValidatorProgram { network, rpc, timeout } => validator_program(&network, rpc, timeout),
         #[cfg(feature = "dev-drill")]
         Cmd::DevB3 { file } => (|| {
             let bytes = std::fs::read(&file).map_err(|e| format!("read {file}: {e}"))?;
@@ -2692,11 +2770,17 @@ fn start_prover(
         status.clone(),
         move || match &network_upstream {
             Some(up) => {
-                let answer = network_handle.block_on(up.first("aether_proverProgram", json!([])))?;
-                answer
-                    .as_str()
-                    .map(str::to_owned)
-                    .ok_or_else(|| "validator does not report its proof program".into())
+                // Validators from before the RPC answer "method not found"; on a
+                // chain whose old program is known that maps to it (a definite
+                // mismatch or match instead of "cannot confirm").
+                let chain_id = network_chain.lock().cfg.chain_id;
+                let answer = network_handle.block_on(up.first("aether_proverProgram", json!([]))).and_then(|answer| {
+                    answer
+                        .as_str()
+                        .map(str::to_owned)
+                        .ok_or_else(|| "validator does not report its proof program".into())
+                });
+                aether_node::prover::network_program(chain_id, answer)
             }
             None => network_chain.lock().verifier.as_ref()
                 .and_then(|v| v.program_id())
@@ -2712,6 +2796,35 @@ fn start_prover(
     );
     tracing::info!(%payout, "proving blocks (rewards to this address)");
     Some(status)
+}
+
+/// `aether validator-program`: what the network's validators verify proofs
+/// with, read the way a follower reads it before proving (`start_prover`).
+fn validator_program(network: &str, rpc: Vec<String>, timeout: u64) -> Result<(), String> {
+    use aether_node::follow::Upstream;
+    let file = aether_node::roster::NetworkFile::load(std::path::Path::new(network))?;
+    let chain_id = file.chain_id;
+    let nodes = aether_node::roster::Roster::from_file(&file)?.nodes;
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(|e| e.to_string())?;
+    let answer = rt.block_on(async move {
+        let up = if rpc.is_empty() {
+            let ep = aether_net::bind(None, vec![aether_net::ALPN_RPC.to_vec()]).await.map_err(|e| e.to_string())?;
+            Upstream::Iroh(aether_net::RpcClient::with_endpoint(ep, nodes), Default::default())
+        } else {
+            Upstream::Http(rpc)
+        };
+        tokio::time::timeout(Duration::from_secs(timeout), up.first("aether_proverProgram", json!([])))
+            .await
+            .map_err(|_| format!("no validator answered aether_proverProgram within {timeout}s"))
+    })?;
+    let answer = answer.and_then(|v| v.as_str().map(str::to_owned).ok_or_else(|| "validator does not report its proof program".to_string()));
+    let predates = matches!(&answer, Err(e) if e.contains("method not found: aether_proverProgram"));
+    let program = aether_node::prover::network_program(chain_id, answer)?;
+    if predates {
+        eprintln!("chain {chain_id}: the validators predate aether_proverProgram; this is the program known for them");
+    }
+    println!("{program}");
+    Ok(())
 }
 
 /// Leave no orphan: stop when the parent process is gone (reparented to launchd).
@@ -2742,6 +2855,8 @@ fn run_follow(
     export: Option<aether_node::export::ExportArgs>,
     // Where the RPC server listens (None: loopback, a follower's default).
     bind: Option<IpAddr>,
+    // The wallet-server endpoint key file (`wallet_node_key`).
+    node_key: std::path::PathBuf,
 ) -> Result<(), String> {
     use aether_node::follow::{self, FinalityArchive, Upstream};
     use std::sync::Arc;
@@ -2798,7 +2913,7 @@ fn run_follow(
     // needs that index forever after (audit 7 A7-1). `follow::run` below also
     // refuses to snapshot-jump for the same reason; this gate covers the
     // startup path, that one the falling-behind path.
-    let checkpoint = checkpoint && export.is_none();
+    let (checkpoint, no_jump) = sync_plan(checkpoint, export.is_some());
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -2838,7 +2953,7 @@ fn run_follow(
         // asking the validators. `--from-rpc` followers have no iroh endpoint.
         let mut wallet_ep = None;
         let upstream = Arc::new(if from_rpc.is_empty() {
-            let ep = aether_net::bind(Some(wallet_node_key(std::path::Path::new(&data))?), vec![aether_net::ALPN_RPC.to_vec()])
+            let ep = aether_net::bind(Some(wallet_node_key(&node_key)?), vec![aether_net::ALPN_RPC.to_vec()])
                 .await
                 .map_err(|e| e.to_string())?;
             let client = aether_net::RpcClient::with_endpoint(ep.clone(), nodes.clone());
@@ -2890,7 +3005,7 @@ fn run_follow(
             .as_ref()
             .and_then(|dir| aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(dir)).ok())
             .map(|k| hex::encode(k.validator_key()));
-        let follow_task = tokio::spawn(follow::run(chain.clone(), upstream.clone(), set, archive.clone(), joining, export.is_some()));
+        let follow_task = tokio::spawn(follow::run(chain.clone(), upstream.clone(), set, archive.clone(), joining, no_jump));
         tokio::spawn(async move {
             let result = follow_task.await;
             tracing::error!(?result, "follower task stopped; restarting the node");
@@ -2975,6 +3090,26 @@ fn run_follow(
 /// `aether archive` (roadmap B6): a follower that keeps everything, serves
 /// old eras, and writes every sealed era out as a static, torrent-ready set.
 #[allow(clippy::too_many_arguments)]
+/// `follow --archive-export DIR` (the child `aether run --archive` spawns):
+/// the era export `aether archive` runs, signed with a key kept in the
+/// follower's own data directory, no webseeds or public base (the wallet's
+/// archive serves this Mac, not the world).
+fn follow_export(archive_export: Option<String>, data: &str) -> Option<aether_node::export::ExportArgs> {
+    archive_export.map(|dir| aether_node::export::ExportArgs {
+        dir: std::path::PathBuf::from(dir),
+        webseeds: Vec::new(),
+        https_base: None,
+        sign_key: std::path::Path::new(data).join("archive-export.key"),
+    })
+}
+
+/// How a follower syncs: (start from a certified snapshot, never snapshot-
+/// jump later). An archive (an era export) must own every block from
+/// genesis, so it takes neither shortcut (audit 7 A7-1).
+fn sync_plan(checkpoint: bool, exporting: bool) -> (bool, bool) {
+    (checkpoint && !exporting, exporting)
+}
+
 fn run_archive(
     network: String,
     from_rpc: Vec<String>,
@@ -3007,7 +3142,8 @@ fn run_archive(
         drop_era_files: false,
         max_shards: aether_node::shards::DEFAULT_MAX_SHARDS,
     };
-    run_follow(Some(network), from_rpc, data, rpc_port, 4, None, None, false, None, false, history, resources, Some(export), Some(bind))
+    let node_key = std::path::Path::new(&data).join("wallet-node.key");
+    run_follow(Some(network), from_rpc, data, rpc_port, 4, None, None, false, None, false, history, resources, Some(export), Some(bind), node_key)
 }
 
 fn run_dkg(
@@ -3303,12 +3439,15 @@ fn committee_keys(
     (participants, polynomial, share)
 }
 
-/// This Mac's wallet-server node key: dedicated and persisted (`<data>/wallet-node.key`),
-/// so the DHT record it publishes does not flap with the endpoint other roles
-/// reuse. Regenerating it only changes which node id wallets are pointed at.
-fn wallet_node_key(data: &std::path::Path) -> Result<aether_net::SecretKey, String> {
-    let path = data.join("wallet-node.key");
-    match std::fs::read(&path) {
+/// This Mac's wallet-server node key: dedicated and persisted (`<data>/wallet-node.key`
+/// by default, `--node-key` under `aether run --chain-data/--archive`), so the
+/// DHT record it publishes does not flap with the endpoint other roles reuse.
+/// Regenerating it only changes which node id wallets are pointed at.
+fn wallet_node_key(path: &std::path::Path) -> Result<aether_net::SecretKey, String> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    match std::fs::read(path) {
         Ok(bytes) if bytes.len() == 32 => {
             let mut b = [0u8; 32];
             b.copy_from_slice(&bytes);
@@ -3316,7 +3455,7 @@ fn wallet_node_key(data: &std::path::Path) -> Result<aether_net::SecretKey, Stri
         }
         _ => {
             let key = aether_net::SecretKey::generate();
-            write_secret(&path, &key.to_bytes());
+            write_secret(path, &key.to_bytes());
             Ok(key)
         }
     }
@@ -3437,7 +3576,9 @@ fn candidate_registration_uses_lane(status: &Value) -> bool {
 /// growth) plus a 1 gwei tip; only the actual base + tip is charged. The
 /// state cap has the same 2x headroom over the B5 price, never under the
 /// floor (contracts-live bug #5: a cap at today's price leaves a queued tx
-/// unincludable after the next burst).
+/// unincludable after the next burst). Only the legacy 7780 chain signs a
+/// zero state cap; elsewhere a 0 or missing price takes the floor, and a
+/// malformed one is refused (round 2, finding 6).
 const TIP: u128 = 1_000_000_000;
 
 fn fee_caps(status: &Value, tip: u128) -> Result<aether_types::FeeVector, String> {
@@ -3447,7 +3588,14 @@ fn fee_caps(status: &Value, tip: u128) -> Result<aether_types::FeeVector, String
             .and_then(|v| v.parse::<u128>().ok())
             .ok_or(format!("status has no base_fee.{k}"))
     };
-    let state_price = status["base_fee"]["state"].as_str().and_then(|v| v.parse().ok()).unwrap_or(0);
+    // The app's rule (B5 review round 2, finding 6): a zero state cap only on
+    // the known stateless legacy chain. Elsewhere a zero or missing report
+    // clamps to the fixed unit price — the spec's "clamp" branch, so a test
+    // devnet whose node omits the field still sends (a cap and budget are
+    // harmless where state is unpriced) — and a malformed one is refused.
+    let chain = status["chain_id"].as_u64().ok_or("status has no chain_id")?;
+    let reported = status["base_fee"].get("state").map_or(Some("0"), Value::as_str);
+    let state_price = aether_execution::tx::wallet_state_price(chain, reported)?;
     Ok(aether_types::FeeVector {
         exec: get("exec")? * 2 + tip,
         state: aether_execution::fees::signed_state_cap(state_price),
@@ -3624,6 +3772,39 @@ fn print_blocks(v: &Value) {
 
 #[cfg(test)]
 mod tests {
+    /// `aether run --archive` spawns a follower that runs exactly like
+    /// `aether archive`: the era export is on, so it neither starts from a
+    /// snapshot nor jumps to one later (audit 7 A7-1).
+    #[test]
+    fn the_archive_child_never_jumps() {
+        use clap::Parser as _;
+        let argv = aether_node::supervisor::follower_args(
+            std::path::Path::new("/n/network.json"), std::path::Path::new("/n"), Some(std::path::Path::new("/Volumes/E")),
+            true, 18545, true, &[]);
+        let c = super::Cli::try_parse_from(std::iter::once("aether".to_string()).chain(argv)).expect("the child argv parses");
+        let super::Cmd::Follow { data, checkpoint, archive_export, candidate, .. } = c.cmd else { panic!("a follow child") };
+        assert_eq!(data, "/Volumes/E/archive");
+        assert!(candidate, "archive keeps beaconing");
+        let export = super::follow_export(archive_export, &data).expect("archive mode exports eras");
+        assert_eq!(export.dir, std::path::PathBuf::from("/Volumes/E/archive/era"));
+        assert_eq!(export.sign_key, std::path::PathBuf::from("/Volumes/E/archive/archive-export.key"));
+        assert_eq!(super::sync_plan(checkpoint, true), (false, true), "no snapshot start, no snapshot jump");
+
+        // The normal follower keeps both shortcuts.
+        let argv = aether_node::supervisor::follower_args(
+            std::path::Path::new("/n/network.json"), std::path::Path::new("/n"), None, false, 18545, true, &[]);
+        let c = super::Cli::try_parse_from(std::iter::once("aether".to_string()).chain(argv)).unwrap();
+        let super::Cmd::Follow { data, checkpoint, archive_export, .. } = c.cmd else { panic!("a follow child") };
+        assert!(super::follow_export(archive_export, &data).is_none());
+        assert_eq!(super::sync_plan(checkpoint, false), (true, false));
+
+        // `aether run` takes both storage flags.
+        let c = super::Cli::try_parse_from(["aether", "run", "--data", "/n", "--chain-data", "/Volumes/E", "--archive"]).unwrap();
+        let super::Cmd::Run { chain_data, archive, .. } = c.cmd else { panic!("run") };
+        assert_eq!(chain_data.as_deref(), Some("/Volumes/E"));
+        assert!(archive);
+    }
+
     #[test]
     fn validator_liveness_requires_a_peer_ahead_and_a_frozen_local_head() {
         use super::validator_is_stalled;
@@ -3636,15 +3817,31 @@ mod tests {
     use super::*;
 
     /// Contracts-live bug #5: `aether send` signed the state cap at the
-    /// current price, so the next burst left it unincludable.
+    /// current price, so the next burst left it unincludable. Round 2,
+    /// finding 6: a zero cap only on the known stateless legacy chain (as the
+    /// app's `state_price_for` decides). On a paid chain a stale or faulty
+    /// "0" or a missing price clamps to the floor — before the fix it signed
+    /// `max_fee.state = 0` and skipped the state budget — and a malformed
+    /// price is refused rather than signed as free.
     #[test]
-    fn cli_state_cap_has_headroom_over_the_state_price() {
+    fn cli_state_cap_has_headroom_and_zero_only_on_the_legacy_chain() {
         use aether_execution::fees::STATE_UNIT_PRICE;
-        let status = |state: &str| json!({ "base_fee": { "exec": "0", "prove": "0", "state": state } });
-        assert_eq!(fee_caps(&status(&STATE_UNIT_PRICE.to_string()), TIP).unwrap().state, 2 * STATE_UNIT_PRICE);
-        assert_eq!(fee_caps(&status(&(43 * STATE_UNIT_PRICE).to_string()), TIP).unwrap().state, 86 * STATE_UNIT_PRICE);
-        assert_eq!(fee_caps(&status("0"), TIP).unwrap().state, 0, "a chain without state pricing");
-        assert_eq!(fee_caps(&json!({ "base_fee": { "exec": "0", "prove": "0" } }), TIP).unwrap().state, 0);
+        let status = |chain: u64, state: Option<&str>| match state {
+            Some(p) => json!({ "chain_id": chain, "base_fee": { "exec": "0", "prove": "0", "state": p } }),
+            None => json!({ "chain_id": chain, "base_fee": { "exec": "0", "prove": "0" } }),
+        };
+        let price = STATE_UNIT_PRICE.to_string();
+        assert_eq!(fee_caps(&status(7796, Some(&price)), TIP).unwrap().state, 2 * STATE_UNIT_PRICE);
+        assert_eq!(fee_caps(&status(7796, Some(&(43 * STATE_UNIT_PRICE).to_string())), TIP).unwrap().state, 86 * STATE_UNIT_PRICE);
+        assert_eq!(fee_caps(&status(7796, Some("0")), TIP).unwrap().state, 2 * STATE_UNIT_PRICE, "a paid chain's zero report clamps to the floor");
+        assert_eq!(fee_caps(&status(7796, None), TIP).unwrap().state, 2 * STATE_UNIT_PRICE, "a missing price takes the floor, never 0");
+        assert!(fee_caps(&status(7796, Some("free")), TIP).is_err(), "a malformed price is not a zero");
+        assert!(fee_caps(&json!({ "chain_id": 7796, "base_fee": { "exec": "0", "prove": "0", "state": 5 } }), TIP).is_err(), "a non-string price is malformed");
+        // The legacy stateless chain keeps its zero cap, whatever is reported.
+        for state in [Some("0"), None, Some("3000000000000")] {
+            assert_eq!(fee_caps(&status(7780, state), TIP).unwrap().state, 0);
+        }
+        assert!(fee_caps(&json!({ "base_fee": { "exec": "0", "prove": "0", "state": "0" } }), TIP).is_err(), "no chain id, no exception");
     }
 
     #[test]

@@ -38,7 +38,14 @@ enum DataMigration {
         /// The verified copy is running in the background (M1): the gates
         /// stay shut until it finishes, and the app shows its progress.
         case running(String)
+        /// Everything that could move did; what is left (the wallet key
+        /// handle, complete file protection) cannot be read while the Mac is
+        /// locked (poc-m3, 2026-10-07). Not settled: retried on unlock.
+        case waitingForUnlock(String)
     }
+
+    static let unlockSentence = "Unlock this Mac to finish moving your wallet. Your node data has already moved; "
+        + "the wallet key file can only be read while the Mac is unlocked. Nothing was deleted."
 
     static let oldAppID = "com.pipln.aether"
     static let doneKey = "renameMigrationDone"
@@ -105,7 +112,12 @@ enum DataMigration {
     /// throwaway suite); `forceCopy` takes the cross-volume path on one
     /// volume; `meter` receives the bytes the verified-copy path works through.
     static func migrate(support: URL, defaults: UserDefaults, oldPreferencesDomain: String = oldAppID,
-                        forceCopy: Bool = false, meter: ProgressMeter? = nil) -> Outcome {
+                        forceCopy: Bool = false, meter: ProgressMeter? = nil,
+                        oldPreferences: [String: Any]? = nil) -> Outcome {
+        let copyPreferences = {
+            if let oldPreferences { copyPreferencesDict(oldPreferences, into: defaults) }
+            else { copyOldPreferences(from: oldPreferencesDomain, into: defaults) }
+        }
         // B4: the flag is a cache of what the disk says, never a substitute.
         // A flag left over from an earlier build (or data moved back by hand)
         // with old data still lacking its new counterpart means: run again.
@@ -125,7 +137,7 @@ enum DataMigration {
             || fm.fileExists(atPath: oldState.path)
             || fm.fileExists(atPath: oldGuard.path)
         if !hasOld {
-            copyOldPreferences(from: oldPreferencesDomain, into: defaults)
+            copyPreferences()
             defaults.set(true, forKey: doneKey)
             return .noOldData
         }
@@ -153,6 +165,8 @@ enum DataMigration {
         defer { if let fd = lockFD { close(fd) } }
 
         var problems: [String] = []
+        /// Problems that are only "unreadable while locked" (EPERM/EACCES).
+        var unreadable: [String] = []
         var oldTreeRemains = false
         if fm.fileExists(atPath: oldNode.path) {
             if fm.fileExists(atPath: newNode.path) {
@@ -192,8 +206,16 @@ enum DataMigration {
              (old: oldGuard, new: support.appending(path: "EastSea/node\(identityGuardSuffix)"), exact: false)]
         for (old, new, exact) in smallFiles where fm.fileExists(atPath: old.path) {
             if !exact && fm.fileExists(atPath: new.path) { continue }
-            if !copyVerified(old, new) { problems.append("\(old.lastPathComponent) did not copy or did not verify") }
+            switch copyVerified(old, new) {
+            case .ok: break
+            case .unreadable(let code):
+                unreadable.append("\(old.lastPathComponent) (errno \(code))")
+                problems.append("\(old.lastPathComponent) cannot be read while the Mac is locked")
+            case .failed:
+                problems.append("\(old.lastPathComponent) did not copy or did not verify")
+            }
         }
+        let nodeProblem = problems.contains { $0.hasPrefix("the node data") }
         if oldTreeRemains && problems.isEmpty {
             // The commit point: the new tree is verified and every fallible
             // copy has landed, so the old tree now stops being a signer.
@@ -205,18 +227,29 @@ enum DataMigration {
             if quarantineOldSigningMaterial(oldNode) {
                 defaults.set(true, forKey: nodeDoneKey)
                 if !markOldTreeMigrated(oldNode) { problems.append("the old tree could not be marked migrated") }
+                // The node's half is done: its preferences may arrive now.
+                copyPreferences()
             } else {
                 problems.append("the old tree's signing material did not move into quarantine "
                     + "(nothing was stranded: the old app still works); the next launch retries")
             }
         }
+        // poc-m3: the preferences (the node switch, the accepted terms) used
+        // to wait for the wallet handle too, so a locked screen left the node
+        // off with no word. They follow the node's half: a moved tree (same
+        // volume) or the copy path's commit point above. Non-overwriting and
+        // idempotent, and every gate still reads the disk.
+        if !nodeProblem && !oldTreeRemains { copyPreferences() }
         guard problems.isEmpty else {
+            if problems.count == unreadable.count {
+                return .waitingForUnlock(unlockSentence)
+            }
             return .failed(ko
                 ? "데이터 옮기기를 끝내지 못했어요. 지운 것은 없고, 다음에 앱을 열 때 다시 시도해요."
                 : "migration incomplete: \(problems.joined(separator: "; ")). "
                 + "Nothing was deleted; the next launch retries.")
         }
-        copyOldPreferences(from: oldPreferencesDomain, into: defaults)
+        copyPreferences()
         defaults.set(true, forKey: doneKey)
         return .done
     }
@@ -539,7 +572,22 @@ enum DataMigration {
     /// migration works in the background) sees no file or the whole file,
     /// never half of one. A different file already in place is set aside
     /// beside it, never deleted.
-    private static func copyVerified(_ old: URL, _ new: URL) -> Bool {
+    enum CopyResult: Equatable { case ok; case unreadable(Int32); case failed }
+
+    /// A verified copy; a source this process may not read right now
+    /// (EPERM under complete file protection while locked, EACCES) is told
+    /// apart from a real failure, so the caller can wait for the unlock.
+    private static func copyVerified(_ old: URL, _ new: URL) -> CopyResult {
+        let fd = open(old.path, O_RDONLY)
+        if fd < 0 {
+            let e = errno
+            return (e == EPERM || e == EACCES) ? .unreadable(e) : .failed
+        }
+        close(fd)
+        return copyVerifiedReadable(old, new) ? .ok : .failed
+    }
+
+    private static func copyVerifiedReadable(_ old: URL, _ new: URL) -> Bool {
         if fileMatches(old, new) { return true }
         let dir = new.deletingLastPathComponent()
         let temp = dir.appending(path: ".\(new.lastPathComponent).migrating-\(UUID().uuidString)")
@@ -742,6 +790,11 @@ enum DataMigration {
     /// The bundle-id change also moves the UserDefaults domain. Copy the old
     /// domain's keys once (the node on/off switch, terms acceptance, mode),
     /// leaving anything the new install has already written in place.
+    /// The same, from a dictionary (tests: never touch cfprefsd).
+    private static func copyPreferencesDict(_ old: [String: Any], into defaults: UserDefaults) {
+        for (key, value) in old where defaults.object(forKey: key) == nil { defaults.set(value, forKey: key) }
+    }
+
     private static func copyOldPreferences(from oldAppID: String, into defaults: UserDefaults) {
         guard let keys = CFPreferencesCopyKeyList(oldAppID as CFString,
                                                   kCFPreferencesCurrentUser,
@@ -810,6 +863,9 @@ enum DataMigration {
 
         private let runLock = NSLock()
         private let stateLock = NSLock()
+        /// The last inline outcome reported (ensure() runs on every data-dir
+        /// read: a deferral must be reported once, not on every call).
+        private var lastReported: Outcome?
         private var running = false
         private var settled = false
 
@@ -852,8 +908,17 @@ enum DataMigration {
             if !expectsLongRun() {
                 // Fast path; but if a background run holds the lock, do not wait.
                 guard runLock.try() else { return .running(DataMigration.movingSentence) }
-                defer { runLock.unlock() }
-                return runHoldingLock()
+                let outcome = runHoldingLock()
+                runLock.unlock()
+                // Every inline outcome reaches the app (the founder's MacBook
+                // and poc-m3, 2026-10-07): a finish starts the node, a
+                // deferral or a lock is shown — once per change.
+                stateLock.lock()
+                let changed = lastReported != outcome
+                lastReported = outcome
+                stateLock.unlock()
+                if changed { onFinish?(outcome) }
+                return outcome
             }
             start()
             return .running(DataMigration.movingSentence)
@@ -866,8 +931,15 @@ enum DataMigration {
             #endif
             stateLock.lock()
             let busy = running || settled
+            let alreadySettled = settled
             if !busy { running = true }   // claimed now: no second start, gates shut at once
             stateLock.unlock()
+            if alreadySettled {
+                // A caller waiting on this retry (the old app's "quit and
+                // move to Trash") learns the move is already done.
+                DispatchQueue.global(qos: .userInitiated).async { [self] in onFinish?(.done) }
+                return
+            }
             guard !busy else { return }
             onStart?()
             DispatchQueue.global(qos: .userInitiated).async { [self] in

@@ -61,11 +61,20 @@ else
   jolt_src="$(cd "$(aether_jolt_source)/jolt" 2>/dev/null && pwd -P || true)"
 fi
 sysroot="$(rustc --print sysroot)"
-# One timestamp and zeroed archive dates, as in the host build
-# (scripts/repro-env.sh): the embedded ELF's hash is the program id, so it must
-# not follow the build time either.
-export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "${repo:-$stage}" log -1 --pretty=%ct 2>/dev/null || echo 1767225600)}"
+# The embedded ELF's hash is the program id: a protocol artifact that may move
+# only when the guest's inputs do (scripts/guest-inputs.py), never with the
+# commit it happens to be built at. So the guest gets one fixed timestamp,
+# whatever the caller exported: the release scripts set SOURCE_DATE_EPOCH to the
+# HEAD commit's time for the app's own artifacts (scripts/repro-env.sh), and
+# inheriting that here would tie the program to every commit, docs-only ones
+# included. Zeroed archive dates for the same reason.
+export SOURCE_DATE_EPOCH="$AETHER_GUEST_SOURCE_DATE_EPOCH"
 export ZERO_AR_DATE=1
+# The inputs the id is a function of, read from the checkout the stage names
+# (a nested run has no checkout of its own: the stage links lead back to it).
+inputs_root="${repo:-$(dirname "$(cd -P "$stage/crates" && pwd -P)")}"
+inputs="$(python3 "$inputs_root/scripts/guest-inputs.py" "$inputs_root")"
+echo "build-guest: inputs $inputs" >&2
 # A nested run has no checkout to remap (repo is empty, above): its sources are
 # already under the stage, which is remapped in both spellings.
 repo_remap=""

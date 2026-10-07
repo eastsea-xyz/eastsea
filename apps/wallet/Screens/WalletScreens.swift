@@ -120,6 +120,16 @@ final class Renderer {
             window("window-explore-narrow", dark, ["previewPage": "explore", "previewExplorer": "open"], width: 420, height: 780) { SimpleDashboard() }
             window("window-explore-nosidebar", dark, ["previewPage": "explore", "previewExplorer": "open", "previewSidebar": "hidden"],
                    width: 1000, height: 780) { SimpleDashboard() }
+            // Every reason the node can stop, as the Node page shows it.
+            page("node-stop-reasons", dark) {
+                VStack(alignment: .leading, spacing: 18) {
+                    ForEach(Array(Self.stopReasons.enumerated()), id: \.offset) { _, r in
+                        NodeStopRow(reason: r)
+                        Divider()
+                    }
+                }
+            }
+            page("sheet-archive", dark, width: 460, pad: false) { ArchiveRequirementsSheet(height: 184_210) {} }
             // Settings and the menu bar.
             page("settings", dark, ["nodeUnattended": true], width: 460, pad: false) { SettingsView() }
             page("settings-developer", dark, ["developerMode": true, "proveBlocks": true], width: 460, pad: false) { SettingsView() }
@@ -188,6 +198,15 @@ final class Renderer {
             }
         }
     }
+
+    static let stopReasons: [NodeStopReason] = [
+        .switchedOff, .onBattery, .wrongLocation, .noHelper, .migrating, .migrationBlocked(DataMigration.movingSentence),
+        .otherNodeRunning, .diskFull(freeBytes: 3_000_000_000, resumeBytes: 7_000_000_000, volume: nil),
+        .diskFull(freeBytes: 3_000_000_000, resumeBytes: 7_000_000_000, volume: "Samsung T7"),
+        .diskMissing(volume: "Samsung T7"), .diskNoAccess(volume: "Samsung T7"), .restarting(inSeconds: 20),
+        .crashLoop(.other, retryInSeconds: 300), .needsAttention(.database), .upgradeNeeded, .identityLost,
+        .launchFailed("posix_spawn failed"), .movingStorage(percent: 42),
+    ]
 
     // MARK: drawing
 

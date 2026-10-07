@@ -10,6 +10,7 @@ struct MenuBarPanel: View {
     /// Layer 1 of the health signal: the menu bar is one of its three places.
     @EnvironmentObject var health: HealthMonitor
     @Environment(\.openWindow) private var openWindow
+    @AppStorage("developerMode") private var developerMode = false
 
     private var balance: String {
         model.account.map { "\(Amount.text(Double(Wei.format($0.balanceWei)) ?? 0)) \(Brand.networkCoinTicker)" } ?? "…"
@@ -37,7 +38,7 @@ struct MenuBarPanel: View {
                 } else if !health.healthyBadgeAllowed {
                     // L4: never "Verified" on a half-dead node (docs/design/32).
                     Image(systemName: "externaldrive.fill.badge.exclamationmark").foregroundStyle(Color.warn)
-                    Text("Storage low · node paused")
+                    Text(health.pausedBadgeTitle).fixedSize(horizontal: false, vertical: true)
                 } else if model.account != nil && model.verifyError == nil {
                     Image(systemName: "checkmark.shield.fill")
                     Text("Verified on this Mac")
@@ -56,49 +57,36 @@ struct MenuBarPanel: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Divider()
-            Toggle("Node on this Mac", isOn: $node.enabled).toggleStyle(.switch).font(.aeBody)
-            if node.enabled {
+            Toggle(String(localized: "Node on this Mac"), isOn: $node.enabled).toggleStyle(.switch).font(.aeBody)
+            if let reason = node.stopReason, reason != .switchedOff {
+                // The same one reason as the sidebar, the Node page and the
+                // banner — wrapped, never cut off with "…".
+                NodeStopRow(reason: reason, compact: true)
+            } else if node.enabled {
                 Text(nodeLine).font(.aeCaption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 EarningsMenuLine()
             }
-            if node.wrongLocation {
-                // Red team #10: one sentence wherever the node would be, plus
-                // a way to get to the bundle to move it.
-                HStack(alignment: .top) {
-                    Text(InstallLocation.moveSentence).font(.aeCaption).foregroundStyle(.orange)
-                    Button {
-                        InstallLocation.revealInFinder()
-                    } label: {
-                        Image(systemName: "folder")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Show in Finder")
-                }
-            }
+            UnattendedApprovalLine(compact: true)
             if node.prove, let p = node.prover {
-                VStack(alignment: .leading, spacing: 2) {
-                    if !p.running { Text("Prover not running").foregroundStyle(.red) }
-                    if let h = p.proving { Text("Proving block #\(String(h))…") }
-                    if let h = p.last_height {
-                        Text("Proved block #\(String(h)) · \(p.last_txs ?? 0) tx · \(Int((p.last_seconds ?? 0).rounded())) s")
+                VStack(alignment: .leading, spacing: 4) {
+                    let facts = ProverFacts(p)
+                    let line = ProverMenuText.line(facts, ko: ko)
+                    Text(line.text)
+                        .foregroundStyle(line.warn ? Color.warn : Color.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let reward = ProverMenuText.reward(facts, ko: ko) {
+                        Text(reward).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    Text(p.lag.map { String(localized: "\(p.proofs ?? 0) proofs this session · \($0) blocks behind") }
-                         ?? String(localized: "\(p.proofs ?? 0) proofs this session"))
-                    if p.proofs_failing == true {
-                        Text(p.program_mismatch == true
-                             ? String(localized: "Proofs failing · this Mac proves with a different program than the network")
-                             : (p.acceptance_rate_percent.map { String(localized: "Proofs failing · \($0)% accepted recently") } ?? String(localized: "Proofs failing")))
-                            .foregroundStyle(.red)
+                    if developerMode, let detail = ProverMenuText.details(facts) {
+                        // Raw node words and program ids: developer mode only.
+                        DisclosureGroup("Details") {
+                            Text(detail).font(.caption.monospaced()).foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
-                    if let paused = p.paused {
-                        // docs/ops/resource-limits.md: the node's own words for why it holds proving.
-                        Text(Self.pausedText(paused, programUnknown: p.program_unknown == true))
-                            .foregroundStyle(.secondary)
-                    }
-                    if let r = p.last_reward {
-                        Text("Last reward \(Wei.format(LocalRPC.decimal(r))) \(Brand.networkCoinTicker)").foregroundStyle(.green)
-                    }
-                    if let e = p.error { Text(e).foregroundStyle(.red).lineLimit(2) }
                 }.font(.aeCaption)
             }
             Divider()
@@ -124,13 +112,15 @@ struct MenuBarPanel: View {
         .frame(width: 300)
     }
 
+    private var ko: Bool { HealthCheck.korean }
+
+    /// A running node in plain words (no block numbers in the menu).
     private var nodeLine: String {
-        if node.wrongLocation { return InstallLocation.moveSentence }
         switch node.state {
         case .off: return String(localized: "Off")
-        case .starting: return node.height > 0 ? String(localized: "Catching up · block #\(String(node.height))") : String(localized: "Starting…")
-        case .running: return String(localized: "Verifying · block #\(String(node.height))")
-        case .waitingForPower: return String(localized: "Paused until the Mac is on power")
+        case .starting: return node.height > 0 ? String(localized: "Catching up with the network") : String(localized: "Starting…")
+        case .running: return String(localized: "Checking every block on this Mac")
+        case .waitingForPower: return NodeStopReason.onBattery.copy(ko: ko).title
         case .failed(let e): return e
         }
     }
@@ -159,6 +149,17 @@ struct MenuBarPanel: View {
                 try? csv.write(to: url, atomically: true, encoding: .utf8)
             }
         }
+    }
+}
+
+extension ProverFacts {
+    /// The node's `aether_proverStatus`, in the menu's terms.
+    init(_ p: NodeController.ProverStatus) {
+        self.init(running: p.running, proving: p.proving != nil, proofs: p.proofs ?? 0, paused: p.paused,
+                  programUnknown: p.program_unknown == true, programMismatch: p.program_mismatch == true,
+                  proofsFailing: p.proofs_failing == true, acceptancePercent: p.acceptance_rate_percent,
+                  lastReward: p.last_reward.map { "\(Wei.format(LocalRPC.decimal($0))) \(Brand.networkCoinTicker)" },
+                  lastRewardStale: p.last_reward_stale == true, error: p.error, networkProgram: p.network_program)
     }
 }
 #endif

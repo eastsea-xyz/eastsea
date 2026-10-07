@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Token icons</title>
+<link rel="stylesheet" href="wallet.css">
+<style>
+  .tile { width: 760px; background: var(--bg); color: var(--ink); border-radius: 18px; padding: 26px 28px; }
+  .tile h3 { font: 700 15px/1 var(--font); margin-bottom: 4px; }
+  .tile .d { font-size: 12px; color: var(--ink-3); margin-bottom: 16px; line-height: 1.45; }
+  .line { display: flex; align-items: flex-end; gap: 26px; margin-bottom: 26px; }
+  .ic { display: flex; flex-direction: column; align-items: center; gap: 8px; font: 500 11px/1.2 var(--font); color: var(--ink-3); text-align: center; }
+  .ic img { border-radius: 50%; display: block; }
+  .gen { border-radius: 50%; display: grid; place-items: center; color: #1d2a36; font-weight: 700; position: relative; }
+  .gen::before { content: ""; position: absolute; inset: 0; border-radius: 50%; border: 1.5px dashed rgba(17,28,41,.5); }
+  .gen .q { position: absolute; right: -2px; bottom: -2px; width: 38%; height: 38%; border-radius: 50%; background: var(--surface); color: var(--ink-2); font-size: 60%; display: grid; place-items: center; box-shadow: 0 0 0 1px var(--line-2); }
+  .rowx { display: flex; align-items: center; gap: 12px; padding: 10px 14px; position: relative; }
+  .rowx + .rowx::before { content: ""; position: absolute; top: 0; left: 54px; right: 0; border-top: .5px solid var(--line); }
+  .rowx b { font: 600 13px/1.2 var(--font); display: block; } .rowx span { font-size: 11.5px; color: var(--ink-3); }
+</style></head>
+<body>
+<div class="board col">
+  <div style="display:flex;gap:32px">
+    <div class="stack"><div class="caption">Token icon family · light</div>
+      <div class="tile light">
+        <h3>1 · The native coin (DBLN)</h3>
+        <div class="d">Engraved art at 48 pt and up (plate, onboarding, assets header). Flat dawn mark below 48 pt (rows, chips, menus) — the same mark as the site favicon.</div>
+        <div class="line">
+          <div class="ic"><img src="assets/coin.png" style="width:96px;height:96px">96 · engraved</div>
+          <div class="ic"><img src="assets/coin.png" style="width:56px;height:56px">56 · engraved</div>
+          <div class="ic"><img src="assets/coin-flat.svg" style="width:40px;height:40px">40 · flat</div>
+          <div class="ic"><img src="assets/coin-flat.svg" style="width:28px;height:28px">28 · flat</div>
+          <div class="ic"><img src="assets/coin-flat.svg" style="width:20px;height:20px">20</div>
+          <div class="ic"><img src="assets/coin-flat.svg" style="width:16px;height:16px">16</div>
+        </div>
+        <h3>2 · Official tokens (shipped trust list only)</h3>
+        <div class="d">Saturated disc, cream glyph, solid edge. Art ships in the app bundle and is chosen by address — never by symbol, never fetched.</div>
+        <div class="line">
+          <div class="ic"><img src="assets/WAETH.png" style="width:56px;height:56px">WAETH</div>
+          <div class="ic"><img src="assets/NEB.png" style="width:56px;height:56px">NEB</div>
+          <div class="ic"><img src="assets/ORB.png" style="width:56px;height:56px">ORB</div>
+          <div class="ic"><img src="assets/CMT.png" style="width:56px;height:56px">CMT</div>
+          <div class="ic"><img src="assets/WAETH.png" style="width:28px;height:28px">28</div>
+          <div class="ic"><img src="assets/NEB.png" style="width:20px;height:20px">20</div>
+        </div>
+        <h3>3 · Everything else (generated)</h3>
+        <div class="d">Pastel from the address hash, dark letter, dashed ring and a “?” badge: differs from official art in shape, not only colour.</div>
+        <div class="line">
+          <div class="ic"><span class="gen" style="width:56px;height:56px;background:hsl(200 45% 72%);font-size:22px">M<span class="q">?</span></span>MOON</div>
+          <div class="ic"><span class="gen" style="width:56px;height:56px;background:hsl(28 55% 74%);font-size:22px">U<span class="q">?</span></span>“USDC”*</div>
+          <div class="ic"><span class="gen" style="width:56px;height:56px;background:hsl(130 35% 72%);font-size:22px">P<span class="q">?</span></span>PEPE2</div>
+          <div class="ic"><span class="gen" style="width:28px;height:28px;background:hsl(200 45% 72%);font-size:12px">M<span class="q">?</span></span>28</div>
+        </div>
+        <div class="d" style="margin:-10px 0 0">* A token calling itself “USDC” on an unknown address still gets a generated glyph.</div>
+      </div>
+    </div>
+    <div class="stack"><div class="caption">In context · dark</div>
+      <div class="tile dark" style="width:420px">
+        <h3>Assets sheet</h3><div class="d">Verified first; unverified collapsed under a disclosure.</div>
+        <div class="group">
+          <div class="rowx"><img src="assets/coin-flat.svg" style="width:32px"><div style="flex:1"><b>Doubloon</b><span>DBLN · native</span></div><b class="num">12.5</b></div>
+          <div class="rowx"><img src="assets/WAETH.png" style="width:32px;border-radius:50%"><div style="flex:1"><b>Wrapped ETH</b><span>WAETH · verified</span></div><b class="num">0.42</b></div>
+          <div class="rowx"><img src="assets/ORB.png" style="width:32px;border-radius:50%"><div style="flex:1"><b>Orbit</b><span>ORB · verified</span></div><b class="num">120</b></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--ink-3);margin:16px 4px 8px"><span>UNVERIFIED (2)</span><span>Hide all</span></div>
+        <div class="group">
+          <div class="rowx"><span class="gen" style="width:32px;height:32px;background:hsl(200 45% 72%);font-size:13px">M<span class="q">?</span></span><div style="flex:1"><b>MOON</b><span class="mono">0x77e1…a40b</span></div><b class="num" style="color:var(--ink-3)">1,000</b></div>
+          <div class="rowx"><span class="gen" style="width:32px;height:32px;background:hsl(28 55% 74%);font-size:13px">U<span class="q">?</span></span><div style="flex:1"><b>USDC</b><span class="mono">0x0d4c…19e2 · not the real USDC</span></div><b class="num" style="color:var(--ink-3)">5,000</b></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="icons.js"></script>
+</body></html>

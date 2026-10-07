@@ -1045,9 +1045,15 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                 // How far proving trails the chain, and the last reward received.
                 let head = chain.finalized_height();
                 v["lag"] = json!(status.last_height.map(|h| head.saturating_sub(h)));
-                v["last_reward"] = status.payout
-                    .map(|a| last_proof_reward(chain.rewards(&a)))
-                    .unwrap_or(Value::Null);
+                // The newest proof reward, with the block it paid for, and
+                // whether it predates this run's first proof: the app must
+                // not present an old program's reward as current.
+                let (amount, height, stale) = status.payout
+                    .map(|a| proof_reward_view(chain.rewards(&a), status.first_height))
+                    .unwrap_or((Value::Null, Value::Null, false));
+                v["last_reward"] = amount;
+                v["last_reward_height"] = height;
+                v["last_reward_stale"] = json!(stale);
                 v
             }
             None => json!({ "running": false }),
@@ -1164,23 +1170,30 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
         // `reason`). A hash this node never saw, or forgot, stays null.
         "aether_getReceipt" => {
             let h: TxHash = param(p, 0)?;
-            let mut g = chain.lock();
-            if let Some((height, r)) = g.receipts.get(&h) {
-                return Ok(json!({ "height": height, "receipt": r }));
-            }
-            if let Some(tx) = g.mempool.get(&h) {
-                let waiting = crate::chain::pending_reason(&g, tx);
-                return Ok(json!({ "pending": true, "status": "pending", "waiting": waiting }));
-            }
-            Ok(match g.tombstones.get(&h) {
-                Some(reason) => json!({
-                    "pending": false,
-                    "status": "dropped",
-                    "reason": reason,
-                    "resendable": reason.resendable(),
-                }),
-                None => Value::Null,
-            })
+            // Only lookups and a bounded copy under the chain lock (B5 review
+            // round 2, finding 4): a pending tx's facts come from its
+            // sender's index, and its reason is computed after the lock.
+            let facts = {
+                let mut g = chain.lock();
+                if let Some((height, r)) = g.receipts.get(&h) {
+                    return Ok(json!({ "height": height, "receipt": r }));
+                }
+                match g.mempool.get(&h) {
+                    Some(tx) => crate::chain::pending_facts(&g, tx),
+                    None => {
+                        return Ok(match g.tombstones.get(&h) {
+                            Some(reason) => json!({
+                                "pending": false,
+                                "status": "dropped",
+                                "reason": reason,
+                                "resendable": reason.resendable(),
+                            }),
+                            None => Value::Null,
+                        })
+                    }
+                }
+            };
+            Ok(json!({ "pending": true, "status": "pending", "waiting": facts.reason() }))
         }
         "aether_getBlock" => {
             let height: u64 = param(p, 0)?;
@@ -1217,6 +1230,21 @@ fn last_proof_reward(rows: Vec<Value>) -> Value {
         .find(|r| r["kind"] == "proof")
         .and_then(|r| r.get("amount").cloned())
         .unwrap_or(Value::Null)
+}
+
+/// (amount, proven block, stale) of the newest proof reward. Stale: this run
+/// has proved nothing yet, or the reward paid for a block before this run's
+/// first proof — it was earned by an earlier run or program.
+fn proof_reward_view(rows: Vec<Value>, first_proven: Option<u64>) -> (Value, Value, bool) {
+    let Some(row) = rows.into_iter().rev().find(|r| r["kind"] == "proof") else {
+        return (Value::Null, Value::Null, false);
+    };
+    let proven = row.get("proven").or_else(|| row.get("height")).and_then(Value::as_u64);
+    let stale = match (first_proven, proven) {
+        (Some(first), Some(p)) => p < first,
+        _ => true,
+    };
+    (row.get("amount").cloned().unwrap_or(Value::Null), proven.map_or(Value::Null, |p| json!(p)), stale)
 }
 
 fn release_entries(state: &aether_execution::WorldState, address: Address, start: u64, limit: u64, height: u64) -> Value {
@@ -1368,7 +1396,7 @@ mod alias_tests {
             let mut head = (*g.finalized).clone();
             head.excess.state = debt;
             g.finalized = Arc::new(head);
-            g.mempool.insert(pending, tx);
+            g.insert_pending(pending, tx);
         }
         let price = aether_execution::fees::state_base_fee(debt);
         let r = rt.block_on(call(&st, "aether_getReceipt", json!([pending])))["result"].clone();
@@ -1418,6 +1446,24 @@ mod alias_tests {
             json!({"kind": "node", "amount": "0x20"}),
         ];
         assert_eq!(last_proof_reward(rows), "0x10");
+    }
+
+    /// `aether_proverStatus` never passes an earlier run's reward off as
+    /// current (0.7.0: a program mismatch showed a pre-update reward as
+    /// "Last reward" while every new proof was refused).
+    #[test]
+    fn an_old_proof_reward_is_marked_stale() {
+        let rows = || vec![
+            json!({"kind": "proof", "proven": 480_000u64, "height": 480_004u64, "amount": "0x10"}),
+            json!({"kind": "node", "proven": 490_000u64, "height": 490_000u64, "amount": "0x20"}),
+        ];
+        assert_eq!(proof_reward_view(rows(), Some(483_963)), (json!("0x10"), json!(480_000u64), true),
+            "a reward for a block before this run's first proof is stale");
+        assert_eq!(proof_reward_view(rows(), None), (json!("0x10"), json!(480_000u64), true),
+            "nothing proved this run: any reward is from before");
+        assert_eq!(proof_reward_view(rows(), Some(479_990)), (json!("0x10"), json!(480_000u64), false),
+            "a reward for this run's proof is current");
+        assert_eq!(proof_reward_view(vec![json!({"kind": "node", "amount": "0x20"})], Some(1)), (Value::Null, Value::Null, false));
     }
 
     #[test]

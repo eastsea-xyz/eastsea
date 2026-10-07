@@ -63,6 +63,43 @@ pub fn recommended_state_budget(call: &EvmCall, balance: Option<U256>, state_pri
     (call.gas_limit / 200).saturating_add(crate::fees::STATE_ACCOUNT_UNITS).saturating_add(persisted).min(crate::fees::MAX_STATE_UNITS_PER_BLOCK)
 }
 
+/// The most a signed envelope can ever be charged in fees, whatever the base
+/// fees and state price do before it lands — wallet policy for what a send
+/// sheet shows (pre-audit 7, M1; B5 review round 2, finding 1), not a
+/// consensus rule. Each dimension is bounded by what the envelope signs:
+/// exec pays `min(base + tip, max_fee.exec)` per gas for at most `gas.exec`
+/// gas; state pays the state price, which admission and execution refuse
+/// above `max_fee.state`, for at most `gas.state` units; prove pays the prove
+/// base fee, refused above `max_fee.prove`, for at most `gas.prove` steps.
+/// The tip is inside the exec cap. Saturates instead of overflowing.
+pub fn signed_fee_maximum(gas: &GasVector, max_fee: &FeeVector) -> u128 {
+    u128::from(gas.exec)
+        .saturating_mul(max_fee.exec)
+        .saturating_add(u128::from(gas.state).saturating_mul(max_fee.state))
+        .saturating_add(u128::from(gas.prove).saturating_mul(max_fee.prove))
+}
+
+/// The legacy pre-state-fees testnet's chain id (crates/node/src/mainnet.rs
+/// `TESTNET_CHAIN_ID`): its fee policy has no state price, by design.
+pub const LEGACY_STATELESS_CHAIN_ID: u64 = 7_780;
+
+/// The state price a wallet signs against, from a node's reported
+/// `base_fee.state` (wallet policy, shared by the app and the CLI — B5
+/// review round 2, finding 6). Only the known stateless legacy chain prices
+/// state at 0, whatever a node there reports. On any other chain the
+/// mandatory state burn exists, so a missing or malformed report cannot be
+/// quoted (an error), and a report under the fixed unit price — 0 included —
+/// is stale or lying and takes the floor.
+pub fn wallet_state_price(chain_id: u64, reported: Option<&str>) -> Result<u128, String> {
+    if chain_id == LEGACY_STATELESS_CHAIN_ID {
+        return Ok(0);
+    }
+    let price = reported.and_then(|v| v.parse::<u128>().ok()).ok_or_else(|| {
+        "the network did not report a state price; this chain charges one for persistent data, so no fee can be quoted".to_string()
+    })?;
+    Ok(price.max(crate::fees::STATE_UNIT_PRICE))
+}
+
 /// Payload trailer tag for `delegate` (absent = no change, keeps old encodings valid).
 const DELEGATE_TAG: u8 = 0xd7;
 

@@ -1,0 +1,92 @@
+/* EastSea wallet — mockup tokens. Values come from design/brand/tokens.json
+   (site-redesign lane, v1.0.0, 2026-10-07). Variable names here are the
+   mockups' shorthand; spec.md §7 maps each to its tokens.json name.
+   Wallet-only additions (not yet in tokens.json) are marked WALLET. */
+
+@font-face { font-family: "NY"; src: url("file:///System/Library/Fonts/NewYorkItalic.ttf"); font-style: italic; }
+@font-face { font-family: "NY"; src: url("file:///System/Library/Fonts/NewYork.ttf"); font-style: normal; }
+
+:root, .light {
+  --bg:        #F4EFE6;   /* bg */
+  --surface:   #FBF8F2;   /* surface */
+  --surface-2: #ECE5D8;   /* surface-sunken */
+  --ink:       #0D2135;   /* text */
+  --ink-2:     #4B5B6B;   /* text-muted */
+  --ink-3:     #5F6E7D;   /* WALLET text-subtle (4.6:1 on bg) */
+  --line:      #D8CEBB;   /* line */
+  --line-2:    #C9BFAA;   /* WALLET control border at rest (line-strong #A99F8C on focus/hover) */
+  --line-strong: #A99F8C; /* line-strong */
+
+  --gold:      #E8BF59;   /* gold (fills only) */
+  --gold-ink:  #7E5A0E;   /* gold-text */
+  --teal:      #0F5A75;   /* accent: links, selection, tint (name kept for the mockup CSS) */
+  --success:   #1E7A52;   /* success: received, verified, confirmed */
+  --warn:      #AD6100;   /* warn */
+  --critical:  #B42318;   /* danger */
+  --dawn:      #D9673F;   /* dawn: at most one small accent per view */
+
+  --plate:     #0D2135;   /* sea */
+  --plate-2:   #091A2B;
+  --plate-ink: #F4EFE6;   /* text-inverse */
+  --plate-soft:#A9B7C4;
+
+  --primary-bg: #0D2135;  /* accent-fill */
+  --primary-fg: #F4EFE6;  /* on-accent-fill */
+  --primary-glyph: #E8BF59;
+
+  --shadow: 0 1px 2px rgba(13,33,53,.06), 0 2px 8px rgba(13,33,53,.05);           /* shadow.light.sm */
+  --sheet-shadow: 0 0 0 1px rgba(13,33,53,.10), 0 30px 80px -20px rgba(3,11,20,.45), 0 12px 24px -12px rgba(3,11,20,.30); /* window */
+  color-scheme: light;
+}
+
+.dark {
+  --bg:        #071320;
+  --surface:   #0D1C2C;
+  --surface-2: #0A1826;
+  --ink:       #ECE6D9;
+  --ink-2:     #94A4B5;
+  --ink-3:     #7D8EA0;   /* WALLET text-subtle (5.6:1 on bg) */
+  --line:      #1F3347;
+  --line-2:    #2C4258;
+  --line-strong: #4A6178;
+
+  --gold:      #E8BF59;
+  --gold-ink:  #E8BF59;
+  --teal:      #7CC4DC;
+  --success:   #5CCB98;
+  --warn:      #FFB857;
+  --critical:  #FF8A7A;
+  --dawn:      #F08F6C;
+
+  --plate:     #10263C;
+  --plate-2:   #0A1A2B;
+  --plate-ink: #ECE6D9;
+  --plate-soft:#94A4B5;
+
+  --primary-bg: #E8BF59;  /* gold at night */
+  --primary-fg: #0D2135;
+  --primary-glyph: #0D2135;
+
+  --shadow: 0 1px 2px rgba(0,0,0,.4);
+  --sheet-shadow: 0 0 0 1px rgba(236,230,217,.10), 0 30px 80px -20px rgba(0,0,0,.8), 0 12px 24px -12px rgba(0,0,0,.6);
+  color-scheme: dark;
+}
+
+/* WALLET tints: 12-14% of the meaning colour over the surface (SwiftUI: .opacity(0.12)). */
+:root, .light, .dark {
+  --gold-tint: color-mix(in srgb, var(--gold) 22%, var(--surface));
+  --teal-tint: color-mix(in srgb, var(--teal) 12%, var(--surface));
+  --success-tint: color-mix(in srgb, var(--success) 14%, var(--surface));
+  --warn-tint: color-mix(in srgb, var(--warn) 14%, var(--surface));
+  --crit-tint: color-mix(in srgb, var(--critical) 13%, var(--surface));
+}
+
+/* Type (tokens.json font.family .apple): SF Pro text; amounts in SF Pro with
+   tabular digits (rounded is retired); New York serif for display; SF Mono for
+   addresses and uppercase labels. Korean falls to Apple SD Gothic Neo. */
+:root {
+  --font: -apple-system, "SF Pro Text", "SF Pro", "Apple SD Gothic Neo", system-ui, sans-serif;
+  --font-money: "SF Pro Display", -apple-system, "Apple SD Gothic Neo", sans-serif;
+  --font-serif: "NY", "New York", Georgia, serif;
+  --font-mono: "SF Mono", ui-monospace, Menlo, monospace;
+}

@@ -11,6 +11,16 @@
         }
       }
     },
+    " EastSea retries by itself; nothing was deleted." : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : " 동해가 알아서 다시 시도해요. 지운 것은 없어요."
+          }
+        }
+      }
+    },
     "#%@" : {
       "localizations" : {
         "ko" : {
@@ -459,16 +469,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "이번 세션 증명 %llu개"
-          }
-        }
-      }
-    },
-    "%llu proofs this session · %llu blocks behind" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "이번 세션 증명 %llu개 · %llu블록 뒤처짐"
           }
         }
       }
@@ -1193,6 +1193,16 @@
         }
       }
     },
+    "Block data location" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "블록 데이터 위치"
+          }
+        }
+      }
+    },
     "Block explorer" : {
       "localizations" : {
         "ko" : {
@@ -1363,22 +1373,22 @@
         }
       }
     },
+    "Catching up with the network" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "네트워크를 따라잡는 중"
+          }
+        }
+      }
+    },
     "Catching up with the network · block #%@" : {
       "localizations" : {
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "네트워크를 따라잡는 중 · 블록 #%@"
-          }
-        }
-      }
-    },
-    "Catching up · block #%@" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "따라잡는 중 · 블록 #%@"
           }
         }
       }
@@ -1409,6 +1419,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "금액을 확인해 주세요. 보낼 수 있는 숫자가 아니에요."
+          }
+        }
+      }
+    },
+    "Checking every block on this Mac" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "블록을 이 Mac에서 직접 확인하는 중"
           }
         }
       }
@@ -1449,6 +1469,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "보내기 전 확인"
+          }
+        }
+      }
+    },
+    "Choose Location…" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "다른 위치 선택…"
           }
         }
       }
@@ -1653,6 +1683,16 @@
         }
       }
     },
+    "Copy Diagnostics" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "진단 정보 복사"
+          }
+        }
+      }
+    },
     "Copy Token Address" : {
       "localizations" : {
         "ko" : {
@@ -1669,6 +1709,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "주소 복사"
+          }
+        }
+      }
+    },
+    "Copying and checking · %lld%%" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "옮기고 확인하는 중 · %lld%%"
           }
         }
       }
@@ -1763,6 +1813,16 @@
         }
       }
     },
+    "Default (this Mac's internal disk)" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "기본 위치 (이 Mac의 내장 디스크)"
+          }
+        }
+      }
+    },
     "Deploy a contract (%lld bytes)" : {
       "localizations" : {
         "ko" : {
@@ -1789,6 +1849,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "컨트랙트 %@ 배포"
+          }
+        }
+      }
+    },
+    "Details" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "자세히"
           }
         }
       }
@@ -2094,6 +2164,16 @@
         }
       }
     },
+    "Fix" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "해결하기"
+          }
+        }
+      }
+    },
     "Found the Macs that sign blocks. Your balance is checked on this device against their signature." : {
       "localizations" : {
         "ko" : {
@@ -2324,6 +2404,26 @@
         }
       }
     },
+    "Keep full history (archive)" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "전체 기록 보관 (아카이브)"
+          }
+        }
+      }
+    },
+    "Keep the full history?" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "전체 기록 보관을 켤까요?"
+          }
+        }
+      }
+    },
     "Keep this Mac's node running after restarts" : {
       "localizations" : {
         "ko" : {
@@ -2390,16 +2490,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "마지막 보상"
-          }
-        }
-      }
-    },
-    "Last reward %@ %@" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "마지막 보상 %@ %@"
           }
         }
       }
@@ -2600,6 +2690,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "공식 토큰을 흉내 내요"
+          }
+        }
+      }
+    },
+    "Move Back to Default" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "기본 위치로 되돌리기"
           }
         }
       }
@@ -2865,6 +2965,16 @@
         }
       }
     },
+    "Not on chain yet" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "아직 체인에 기록 안 됨"
+          }
+        }
+      }
+    },
     "Not opened." : {
       "localizations" : {
         "ko" : {
@@ -2965,6 +3075,16 @@
         }
       }
     },
+    "Off, the node fetches the recent state and catches up fast. On, it re-checks every block from the first and keeps the whole history." : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "꺼 두면 최근 상태만 받아 빠르게 따라가요. 켜면 처음 블록부터 전부 다시 확인하고 모든 기록을 보관해요."
+          }
+        }
+      }
+    },
     "Off: proving pauses on battery and resumes five minutes after the power adapter returns." : {
       "localizations" : {
         "ko" : {
@@ -3055,6 +3175,16 @@
         }
       }
     },
+    "Only the block data moves; the keys and the node's identity stay on this Mac. APFS or Mac OS Extended disks only." : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "블록 데이터만 옮겨요. 키와 노드 신원은 이 Mac에 그대로 남아요. APFS 또는 Mac OS 확장 형식의 디스크만 쓸 수 있어요."
+          }
+        }
+      }
+    },
     "Only while on the power adapter" : {
       "localizations" : {
         "ko" : {
@@ -3105,12 +3235,42 @@
         }
       }
     },
+    "Open Disk Utility" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "디스크 유틸리티 열기"
+          }
+        }
+      }
+    },
+    "Open Login Items" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "로그인 항목 열기"
+          }
+        }
+      }
+    },
     "Open Site" : {
       "localizations" : {
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "사이트 열기"
+          }
+        }
+      }
+    },
+    "Open Storage Settings" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "저장 공간 관리 열기"
           }
         }
       }
@@ -3235,32 +3395,12 @@
         }
       }
     },
-    "Paused on battery" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "배터리 사용 중 멈춤"
-          }
-        }
-      }
-    },
     "Paused on battery. It resumes on the power adapter." : {
       "localizations" : {
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "배터리 사용 중이라 멈췄어요. 전원 어댑터를 연결하면 다시 시작해요."
-          }
-        }
-      }
-    },
-    "Paused until the Mac is on power" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "전원에 연결할 때까지 멈춤"
           }
         }
       }
@@ -3385,6 +3525,16 @@
         }
       }
     },
+    "Pick a folder for the block data. A “%@” folder is made inside it. The keys stay on this Mac." : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "블록 데이터를 둘 폴더를 고르세요. 그 안에 ‘%@’ 폴더를 만들어요. 키는 이 Mac에 그대로 남아요."
+          }
+        }
+      }
+    },
     "Picked by the network for its long uptime. Keep the node on: stopping hands the seat to the next Mac." : {
       "localizations" : {
         "ko" : {
@@ -3465,26 +3615,6 @@
         }
       }
     },
-    "Proofs failing · %u%% accepted recently" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "증명 실패 중 · 최근 %u%%만 받아들여짐"
-          }
-        }
-      }
-    },
-    "Proofs failing · this Mac proves with a different program than the network" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "증명 실패 중 · 이 Mac이 네트워크와 다른 프로그램으로 증명해요"
-          }
-        }
-      }
-    },
     "Proofs, state roots, raw logs and blocks." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -3556,52 +3686,12 @@
         }
       }
     },
-    "Proved block #%@ · %lld tx · %lld s" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "블록 #%@ 증명 · 거래 %lld건 · %lld초"
-          }
-        }
-      }
-    },
-    "Prover not running" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "증명 프로그램이 실행되지 않음"
-          }
-        }
-      }
-    },
     "Proving also runs at a lower scheduler priority, so the node and this Mac's work come first." : {
       "localizations" : {
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "증명은 낮은 우선순위로 돌아가서 노드와 이 Mac의 다른 작업이 먼저예요."
-          }
-        }
-      }
-    },
-    "Proving block #%@…" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "블록 #%@ 증명하는 중…"
-          }
-        }
-      }
-    },
-    "Proving is paused: this Mac cannot confirm which proving program the network uses." : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "증명을 멈췄어요: 네트워크가 쓰는 증명 프로그램을 이 Mac이 확인하지 못했어요."
           }
         }
       }
@@ -4416,12 +4506,12 @@
         }
       }
     },
-    "Storage low · node paused" : {
+    "Storage low · node resting" : {
       "localizations" : {
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "저장 공간 부족 · 노드 멈춤"
+            "value" : "저장 공간 부족 · 노드 쉬는 중"
           }
         }
       }
@@ -4432,6 +4522,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "보관 보상은 아직 켜져 있지 않아요. 나중에 네트워크 업그레이드로 켜지며, 약속된 금액은 없어요."
+          }
+        }
+      }
+    },
+    "Store Here" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "여기에 저장"
           }
         }
       }
@@ -4526,6 +4626,16 @@
         }
       }
     },
+    "The block data is on an external disk, so after a restart the node starts when the app opens." : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "블록 데이터가 외장 디스크에 있어서, 재시동 뒤에는 앱을 열 때 노드가 시작돼요."
+          }
+        }
+      }
+    },
     "The block explorer below is part of the app and reads this Mac's own node. Pages you open can connect to your wallet — every request asks first, and Security lists the sites you allowed." : {
       "localizations" : {
         "ko" : {
@@ -4562,6 +4672,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "방금 노드에서 내역을 읽지 못해서 이 목록이 오래됐거나 빠진 게 있을 수 있어요."
+          }
+        }
+      }
+    },
+    "The move did not complete: the copy did not verify or space ran out. The block data is still where it was." : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "옮기지 못했어요. 복사한 내용이 원본과 맞지 않거나 공간이 모자라요. 블록 데이터는 원래 자리에 그대로 있어요."
           }
         }
       }
@@ -4632,6 +4752,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "노드에는 보상이 %lld개 있고 그중 %lld개를 읽었어요. 여기 숫자는 읽은 것만 담고 있어요."
+          }
+        }
+      }
+    },
+    "The node did not start after the update, so the previous version is running again." : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "업데이트 뒤 노드가 시작되지 않아 이전 버전으로 되돌렸어요."
+          }
+        }
+      }
+    },
+    "The node goes back to normal. Keep the history and turning it on again picks up where it left off." : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "일반 노드로 돌아가요. 보관한 기록을 남겨 두면 다시 켤 때 이어서 써요."
           }
         }
       }
@@ -4822,6 +4962,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "이 Mac이 블록을 증명하는 중 · 아직 보상 없음"
+          }
+        }
+      }
+    },
+    "This Mac is resting from proving blocks for now: the network cannot check this version's proofs yet. Nothing is lost." : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이 Mac은 지금 블록 증명을 쉬고 있어요. 네트워크가 이 버전의 증명을 아직 확인하지 못해서예요. 잃는 건 없어요."
           }
         }
       }
@@ -5056,6 +5206,16 @@
         }
       }
     },
+    "This place cannot be read. Pick another folder." : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이 위치를 읽을 수 없어요. 다른 폴더를 골라 주세요."
+          }
+        }
+      }
+    },
     "This resends the payment that did not go through (number %llu) at the current fee. Both share that number, so only one of them can go through." : {
       "localizations" : {
         "ko" : {
@@ -5206,6 +5366,16 @@
         }
       }
     },
+    "To keep the node running while the Mac is locked or after a restart, turn on “Allow in the Background”. Until then it runs inside the app." : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mac이 잠겨 있거나 재시동해도 노드를 계속 돌리려면 ‘백그라운드 허용’을 켜 주세요. 그때까지는 앱 안에서 돌아요."
+          }
+        }
+      }
+    },
     "To: %@" : {
       "localizations" : {
         "ko" : {
@@ -5344,6 +5514,16 @@
         }
       }
     },
+    "Try Again" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "다시 시도"
+          }
+        }
+      }
+    },
     "Try again" : {
       "localizations" : {
         "ko" : {
@@ -5354,12 +5534,62 @@
         }
       }
     },
+    "Turn Off and Delete the History" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "끄고 보관한 기록 지우기"
+          }
+        }
+      }
+    },
+    "Turn Off, Keep the History" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "끄고 보관한 기록은 남겨 두기"
+          }
+        }
+      }
+    },
+    "Turn On" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "켜기"
+          }
+        }
+      }
+    },
+    "Turn off full history?" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "전체 기록 보관을 끌까요?"
+          }
+        }
+      }
+    },
     "Txs" : {
       "localizations" : {
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "거래 수"
+          }
+        }
+      }
+    },
+    "Unlock this Mac to finish moving your wallet" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "지갑을 마저 옮기려면 이 Mac의 잠금을 풀어 주세요"
           }
         }
       }
@@ -5574,16 +5804,6 @@
         }
       }
     },
-    "Verifying · block #%@" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "검증하는 중 · 블록 #%@"
-          }
-        }
-      }
-    },
     "Verifying…" : {
       "localizations" : {
         "ko" : {
@@ -5742,6 +5962,16 @@
         }
       }
     },
+    "Wrapped test DBLN" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "래핑된 테스트 DBLN"
+          }
+        }
+      }
+    },
     "Write them on paper, in order. Do not photograph or store them on this device." : {
       "localizations" : {
         "ko" : {
@@ -5862,12 +6092,12 @@
         }
       }
     },
-    "Your data has not moved yet" : {
+    "Your data has not finished moving" : {
       "localizations" : {
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "데이터를 아직 옮기지 못했어요"
+            "value" : "데이터 이동이 아직 끝나지 않았어요"
           }
         }
       }
@@ -5898,6 +6128,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "키는 Secure Enclave 안에서 만들어져 절대 밖으로 복사할 수 없어요. 결제할 때마다 Touch ID나 암호를 물어봐요. 기기를 모두 잃어버리고 복구를 설정해 두지 않았다면 아무도 돈을 되찾아 줄 수 없어요."
+          }
+        }
+      }
+    },
+    "Your node data has already moved to EastSea. Your wallet key file can only be read while this Mac is unlocked, so it has not moved yet. Unlock the Mac and EastSea finishes by itself within a few seconds. Nothing was deleted; your wallet is safe." : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "노드 데이터는 이미 동해로 옮겼어요. 지갑 키 파일은 Mac 잠금이 풀려 있을 때만 읽을 수 있어서 아직 옮기지 못했어요. 잠금을 풀면 몇 초 안에 동해가 알아서 마쳐요. 지운 것은 없고 지갑은 안전해요."
           }
         }
       }
@@ -5938,6 +6178,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "지갑과 노드 데이터를 한 바이트씩 복사하고 확인하고 있어요. 몇 분 걸릴 수 있어요. %@를 열어 두세요. 닫더라도 다음에 열면 멈춘 곳부터 이어서 옮겨요."
+          }
+        }
+      }
+    },
+    "Your wallet is still moving over from Aether. Unlock this Mac to finish — your wallet is safe." : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "지갑을 Aether에서 옮기는 중이에요. Mac 잠금을 풀면 마무리돼요 — 지갑은 안전해요."
           }
         }
       }
@@ -6292,6 +6542,16 @@
         }
       }
     },
+    "· via this Mac's node; network check pending" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "· 이 Mac의 노드 사용 (네트워크 확인 대기)"
+          }
+        }
+      }
+    },
     "– %@" : {
       "localizations" : {
         "ko" : {
@@ -6308,6 +6568,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "—"
+          }
+        }
+      }
+    },
+    "•" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "•"
           }
         }
       }

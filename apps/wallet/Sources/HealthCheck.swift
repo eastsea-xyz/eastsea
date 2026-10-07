@@ -32,6 +32,10 @@ struct HealthCheck {
         case upgradeRequired
         /// L7: three deaths in ten minutes stopped the restarts.
         case crashLoop
+        /// L10: the switch is on and no node runs, for a reason worth telling
+        /// (`NodeStopReason.isIncident`) that L4/L7/L8 do not already cover —
+        /// the founder's 0.7.0 report ("왜 멈췄는지 왜 설명을 안해줌?").
+        case nodeStopped
         /// L3 (paused) and L4: below the disk floor, or a write hit ENOSPC.
         /// The node may still answer RPC — "half dead" — which is exactly
         /// why no healthy badge may show meanwhile (the 2026-10-06 incident).
@@ -69,6 +73,7 @@ struct HealthCheck {
             case .crashLoop: return "L7"
             case .upgradeRequired: return "L8"
             case .updateRolledBack: return "L9"
+            case .nodeStopped: return "L10"
             }
         }
 
@@ -86,6 +91,7 @@ struct HealthCheck {
             case .crashLoop: return "crash_loop"
             case .upgradeRequired: return "upgrade_required"
             case .updateRolledBack: return "update_unhealthy"
+            case .nodeStopped: return "node_stopped"
             }
         }
     }
@@ -96,6 +102,8 @@ struct HealthCheck {
         case retryConnection
         case openStorage
         case copyDiagnostics
+        /// The stop reason's own button (`NodeStopReason.copy(ko:).action`).
+        case fixNode
     }
 
     /// What the monitor should do after an observation.
@@ -159,6 +167,9 @@ struct HealthCheck {
         /// The node runs the previous binary after an update failed its
         /// health check, or the update tracker recorded the health failure.
         var rolledBack = false
+        /// Why the node is not running (nil while it runs): the one reason
+        /// the sidebar, the Node page and the menu show too.
+        var nodeStop: NodeStopReason?
     }
 
     /// A banner: the issue, its sentence and its one button.
@@ -352,7 +363,10 @@ struct HealthCheck {
         case .diskPaused:
             return Self.halfDead(o)
         case .programMismatch:
-            return o.proving && o.programMismatch
+            // A mismatch, or a pause because the node cannot confirm the
+            // validators' program at all (0.7.0 on validators without
+            // aether_proverProgram): either way proving rests.
+            return o.proving && (o.programMismatch || o.proverPausedForProgram)
         case .proofsRejected:
             guard o.proving, !o.programMismatch else { return false }
             if o.proofsFailing { return true }
@@ -370,6 +384,11 @@ struct HealthCheck {
             return o.proverLag > since
         case .updateRolledBack:
             return o.rolledBack
+        case .nodeStopped:
+            guard let r = o.nodeStop, r.isIncident, o.stopped == nil, !o.upgradeRequired else { return false }
+            if case .diskFull = r { return false }   // L4 says it, with the same numbers
+            if case .upgradeNeeded = r { return false }   // L8
+            return true
         case .followerStuck:
             return stallRestarts.last.map { at.elapsed(since: $0) < Self.stallQuiet } ?? false
         case .nodeUnresponsive:
@@ -419,7 +438,9 @@ struct HealthCheck {
         case .programMismatch, .proofsRejected, .upgradeRequired: return .checkForUpdates
         case .connectionStuck: return last.internetReachable == false ? nil : .retryConnection
         case .diskAlmostFull, .diskPaused: return .openStorage
-        case .crashLoop, .proverStalled: return .copyDiagnostics
+        case .crashLoop: return last.nodeStop?.copy(ko: false).action == nil ? .copyDiagnostics : .fixNode
+        case .nodeStopped: return last.nodeStop?.copy(ko: false).action == nil ? nil : .fixNode
+        case .proverStalled: return .copyDiagnostics
         case .followerStuck, .nodeUnresponsive, .updateRolledBack: return nil
         }
     }
@@ -435,8 +456,8 @@ struct HealthCheck {
                     : "Your reward proofs are being rejected. Updating the app fixes it."
             }
             if o.proverPausedForProgram {
-                return ko ? "보상 증명이 거절되고 있어요. 고친 버전을 기다리는 중이에요. 그동안 증명을 쉬어 전기를 아낄게요."
-                    : "Your reward proofs are being rejected. A fixed version is on its way; until then proving rests to save power."
+                return ko ? "이 Mac은 지금 블록 증명을 쉬고 있어요. 네트워크가 이 버전의 증명을 아직 확인하지 못해서예요. 잃는 건 없어요."
+                    : "This Mac is resting from proving blocks for now: the network cannot check this version's proofs yet. Nothing is lost."
             }
             return ko ? "보상 증명이 거절되고 있어요. 고친 버전이 나오면 업데이트를 알려 드릴게요."
                 : "Your reward proofs are being rejected. You will be told as soon as a fixed version is out."
@@ -454,8 +475,9 @@ struct HealthCheck {
             return ko ? "저장 공간이 곧 부족해요. 3 GB쯤 비워 주세요."
                 : "This Mac is almost out of storage. Please free about 3 GB."
         case .diskPaused:
-            let base = ko ? "저장 공간이 부족해 네트워크 참여를 잠시 멈췄어요. 5 GB 이상 비우면 저절로 다시 시작해요."
-                : "Storage is low, so this Mac paused its part in the network. Free 5 GB or more and it restarts by itself."
+            var base = ko ? "저장 공간이 부족해 네트워크 참여를 잠시 멈췄어요. 남은 공간이 7 GB가 되면 저절로 다시 시작해요."
+                : "Storage is low, so this Mac paused its part in the network. It restarts by itself once 7 GB is free."
+            if let r = o.nodeStop, case .diskFull = r { base = r.copy(ko: ko).paragraph }
             guard o.voting else { return base }
             return base + (ko ? " 투표 노드라서 다른 검증자들이 기다리고 있어요."
                 : " This Mac is a voting node, so the other validators are waiting for it.")
@@ -470,8 +492,12 @@ struct HealthCheck {
             return ko ? "이 Mac의 노드가 응답하지 않아 다시 시작할게요."
                 : "This Mac's node stopped answering, so it is being restarted."
         case .crashLoop:
-            // Layer 4's sentence for the last failure, reused as designed.
+            // The stop reason says when it retries; else layer 4's sentence.
+            if let r = o.nodeStop, r.isIncident { return r.copy(ko: ko).paragraph }
             return (o.stopped ?? .other).sentence
+        case .nodeStopped:
+            return o.nodeStop?.copy(ko: ko).paragraph
+                ?? (ko ? "이 Mac의 노드가 멈춰 있어요. 잔액은 다른 노드로 계속 확인해요." : "This Mac's node is not running. Your balance is still checked through other nodes.")
         case .upgradeRequired:
             return ko ? "네트워크 규칙이 바뀌어 업데이트가 필요해요. 업데이트 전까지 잔액은 다른 노드로 확인해요."
                 : "The network's rules changed, so this app needs an update. Until then your balance is checked through other nodes."
@@ -496,7 +522,7 @@ struct HealthCheck {
             return ko ? "해결됐어요. 이 Mac이 네트워크를 다시 따라가고 있어요." : "Resolved: this Mac is keeping up with the network again."
         case .nodeUnresponsive:
             return ko ? "해결됐어요. 이 Mac의 노드가 다시 응답해요." : "Resolved: this Mac's node is answering again."
-        case .crashLoop:
+        case .crashLoop, .nodeStopped:
             return ko ? "해결됐어요. 노드가 다시 돌고 있어요." : "Resolved: the node is running again."
         case .upgradeRequired:
             return ko ? "해결됐어요. 앱이 네트워크 규칙에 맞게 업데이트됐어요." : "Resolved: the app is updated to the network's rules."

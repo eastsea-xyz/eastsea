@@ -40,6 +40,8 @@ final class WalletModel: ObservableObject {
     /// Voting-node registration in progress or failed (nil: idle or done).
     @Published var registration: RegistrationState?
     @Published var busy = false
+    /// The send or contract-call sheet is open: a quiet update waits (UpdateWindow).
+    var sendSheetOpen = false
     @Published var log: [String] = []
     @Published var sendTo = ""
     @Published var sendAmount = "1"
@@ -236,7 +238,12 @@ final class WalletModel: ObservableObject {
             note(acct.isSecureEnclave ? "Secure Enclave key ready. Signing asks for Touch ID / Face ID or your passcode." : "Simulator: software key (no Secure Enclave here). Use a real device for hardware-bound keys.")
         } catch {
             let locked = (error as NSError).code == Int(errSecInteractionNotAllowed)
-            if case EnclaveAccount.KeyError.keyUnavailable = error {
+            if case EnclaveAccount.KeyError.migrationPending = error {
+                // The old handle is still moving (often: waiting for an
+                // unlock, poc-m3 2026-10-07) — not a key failure.
+                let ko = Locale.preferredLanguages.first?.hasPrefix("ko") ?? false
+                keyError = String(localized: "Your wallet is still moving over from Aether. Unlock this Mac to finish — your wallet is safe.")
+            } else if case EnclaveAccount.KeyError.keyUnavailable = error {
                 // The wallet exists but cannot be opened yet; retried from `refresh`.
                 keyError = String(localized: "Unlock this device to open your wallet. Your wallet is safe.")
             } else {
@@ -520,6 +527,7 @@ final class WalletModel: ObservableObject {
         if enclave == nil, Date().timeIntervalSince(lastKeyAttempt) > 5 { loadKey() }
         let addr = address, n = validators, generation = networkGeneration
         refreshes += 1
+        reconcileUnresolved()
         // Recovery status needs several proofs; every 30 s is enough to warn within the delay.
         let checkRecovery = refreshes % 15 == 1 && !addr.isEmpty
         Task.detached {
@@ -875,6 +883,7 @@ final class WalletModel: ObservableObject {
                                                 shownFeeWei: shownFeeWei)
                     label = "Paid \(recipients.count) recipients \(Wei.format(wei)) \(Brand.networkCoinTicker) each with one signature (nonce \(prepared.nonce))"
                 }
+                item.nonce = prepared.nonce
                 let sig = try enclave.sign(prepared.signingMessage)   // Secure Enclave, may prompt
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
                 // Submitted: the sheet closes now and the activity row follows
@@ -883,10 +892,14 @@ final class WalletModel: ObservableObject {
                 let tracked = item
                 Task.detached { [weak self] in
                     guard let self else { return }
-                    let ok = await self.track(h, label: label, item: tracked)
-                    // A web page that asked for this payment hears back (https only).
+                    let outcome = await self.follow(h, label: label, item: tracked)
+                    // A web page that asked for this payment hears back (https
+                    // only). "failed" only on a chain fact; a drop is
+                    // "not_included", worded as not recorded yet (round 2).
                     if let back = callback, var c = URLComponents(url: back, resolvingAgainstBaseURL: false) {
-                        c.queryItems = (c.queryItems ?? []) + [URLQueryItem(name: "tx", value: h), URLQueryItem(name: "status", value: ok ? "success" : "failed")]
+                        var query = [URLQueryItem(name: "tx", value: h), URLQueryItem(name: "status", value: TxTrack.callbackStatus(outcome))]
+                        if !TxTrack.isFinal(outcome) { query.append(URLQueryItem(name: "note", value: TxTrack.notIncludedNote)) }
+                        c.queryItems = (c.queryItems ?? []) + query
                         #if os(macOS)
                         if let u = c.url { await MainActor.run { _ = NSWorkspace.shared.open(u) } }
                         #endif
@@ -946,7 +959,9 @@ final class WalletModel: ObservableObject {
                 let prepared = try prepareCall(p256PublicKey: pk, to: intent.token.address, valueWei: "0", dataHex: data, gasLimit: 100_000)
                 let sig = try enclave.sign(prepared.signingMessage)   // Secure Enclave, may prompt
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
-                await self.track(h, label: "Sent \(shown) \(symbol) to \(TokenLabel.short(intent.recipient)) (nonce \(prepared.nonce))", item: item)
+                var sent = item
+                sent.nonce = prepared.nonce
+                await self.track(h, label: "Sent \(shown) \(symbol) to \(TokenLabel.short(intent.recipient)) (nonce \(prepared.nonce))", item: sent)
                 await MainActor.run { self.refreshTokens(force: true) }
             } catch { await MainActor.run { self.note("Token send failed: \(error)"); self.busy = false } }
         }
@@ -983,20 +998,30 @@ final class WalletModel: ObservableObject {
         case WalletError.Verification(let m):
             return AppLanguage.korean ? "이 기기에서 확인하지 못했어요. 잠시 뒤 다시 해 주세요." : m
         case WalletError.FeeChanged(let m):
-            return AppLanguage.korean
+            return (AppLanguage.korean
                 ? "네트워크 수수료가 바뀌었어요. 보내지 않았으니 새 수수료를 확인하고 다시 보내 주세요."
-                : "The network fee changed — \(m). Nothing was sent; check the new fee and send again."
+                : "The network fee changed — \(m). Nothing was sent; check the new fee and send again.")
         default:
             return (e as? LocalizedError)?.errorDescription ?? "\(e)"
         }
     }
 
-    /// Wait for finality; returns whether the tx succeeded. While it is not
-    /// in a block the row says why, in plain words (contracts-live bug #5):
-    /// what a pending tx waits for, or why the network dropped it — never a
-    /// silent "Failed". Waits out the network's 10-minute mempool lifetime.
+    /// Wait for finality; returns whether the tx succeeded (see `follow`).
     @discardableResult
     private func track(_ hash: String, label: String, item: ActivityItem) async -> Bool {
+        await follow(hash, label: label, item: item) == .done
+    }
+
+    /// Follow a submitted transaction until a chain fact settles it. While it
+    /// is not in a block the row says why, in plain words (contracts-live bug
+    /// #5): what a pending tx waits for, or why a node dropped it. A drop, or
+    /// a node that never heard of the hash, is one node's view — another node
+    /// may still include it (B5 review round 2, finding 5) — so the row then
+    /// reads "not on chain yet" and keeps its context; only a receipt, or the
+    /// nonce used by another transaction, makes it done or failed. A later
+    /// receipt supersedes a drop: polling continues, and the chain-history
+    /// refresh and `reconcileUnresolved` pick it up after this returns.
+    private func follow(_ hash: String, label: String, item: ActivityItem) async -> TxTrack.Row {
         await MainActor.run {
             self.note("\(label) submitted \(hash.prefix(14))…")
             self.activity.insert(item.with(state: .pending).with(hash: hash), at: 0)
@@ -1005,53 +1030,88 @@ final class WalletModel: ObservableObject {
         let start = Date()
         var shownWhy: String?
         var unknownSince: Date?
+        var last: TxStatus?
+        var lastRow = TxTrack.Row.pending
         while Date().timeIntervalSince(start) < Self.trackLimit {
             let st = try? txStatus(txHash: hash)
-            switch st?.state {
-            case "included":
-                guard let st, let r = st.receipt else { break }
+            if st == nil || st?.state == "unknown" { unknownSince = unknownSince ?? Date() } else { unknownSince = nil }
+            let row = TxTrack.row(state: st?.state, success: st?.receipt?.success,
+                                  unknownFor: unknownSince.map { Date().timeIntervalSince($0) } ?? 0)
+            if let st { last = st }
+            switch row {
+            case .done, .failed:
                 await MainActor.run {
-                    self.settle(item.id, state: r.success ? .done : .failed, why: r.success ? nil : TxStatusText.sentence(st))
-                    self.note("\(label) finalized in block \(r.height) (\(r.success ? "success" : "failed"), gas \(r.gasUsed)\(r.stateFeeWei != "0" ? ", state fee \(Amount.fee(r.stateFeeWei))" : ""))")
+                    self.settle(item.id, state: row == .done ? .done : .failed, why: row == .done ? nil : st.map(TxStatusText.sentence))
+                    if let r = st?.receipt {
+                        self.note("\(label) finalized in block \(r.height) (\(r.success ? "success" : "failed"), gas \(r.gasUsed)\(r.stateFeeWei != "0" ? ", state fee \(Amount.fee(r.stateFeeWei))" : ""))")
+                    } else {
+                        self.note("\(label): \(st?.detail ?? "settled on chain")")
+                    }
                     self.busy = false
                     self.refresh()
                 }
-                return r.success
-            case "dropped":
-                guard let st else { break }
-                await MainActor.run {
-                    self.settle(item.id, state: .failed, why: TxStatusText.sentence(st), canResend: st.canResend)
-                    self.note("\(label): not included — \(st.detail)")
-                    self.busy = false
+                return row
+            case .notIncluded:
+                if let st, lastRow != .notIncluded || TxStatusText.sentence(st) != shownWhy {
+                    shownWhy = TxStatusText.sentence(st)
+                    await MainActor.run {
+                        self.settle(item.id, state: .notIncluded, why: TxStatusText.sentence(st), canResend: st.canResend)
+                        self.note("\(label): not included yet — \(st.detail)")
+                        self.busy = false
+                    }
                 }
-                return false
-            case "pending":
-                unknownSince = nil
-                if let st, st.reason != nil, TxStatusText.sentence(st) != shownWhy {
-                    let why = TxStatusText.sentence(st)
-                    shownWhy = why
-                    await MainActor.run { self.explain(item.id, why: why); self.note("\(label): \(st.detail)") }
-                }
-            default:
-                // A node that has not heard of it yet, or a read that failed.
-                unknownSince = unknownSince ?? Date()
-                if let since = unknownSince, Date().timeIntervalSince(since) > 60 {
-                    let why = st.map(TxStatusText.sentence) ?? TxStatusText.unknown()
-                    await MainActor.run { self.settle(item.id, state: .failed, why: why); self.note("\(label): \(st?.detail ?? "no answer from the network")"); self.busy = false }
-                    return false
+            case .pending:
+                if let st, st.state == "pending", st.reason != nil || lastRow == .notIncluded, TxStatusText.sentence(st) != shownWhy {
+                    shownWhy = TxStatusText.sentence(st)
+                    await MainActor.run { self.explain(item.id, why: TxStatusText.sentence(st)); self.note("\(label): \(st.detail)") }
                 }
             }
+            lastRow = row
             let waited = Date().timeIntervalSince(start)
             if waited > 30 { await MainActor.run { self.busy = false } }
             try? await Task.sleep(nanoseconds: waited < 30 ? 500_000_000 : 3_000_000_000)
         }
+        // Out of time without a chain fact: not on chain yet — never "failed".
         await MainActor.run {
-            self.settle(item.id, state: .failed, why: shownWhy ?? TxStatusText.timedOut())
-            self.note("\(label): not finalized after \(Int(Self.trackLimit / 60)) minutes")
+            self.settle(item.id, state: .notIncluded, why: last.map(TxStatusText.sentence) ?? TxTrack.notIncludedNote,
+                        canResend: last?.canResend ?? false)
+            self.note("\(label): not on chain after \(Int(Self.trackLimit / 60)) minutes; it stays open until the chain settles it")
             self.busy = false
         }
-        return false
+        return .notIncluded
     }
+
+    /// Rows a past session left not-included or pending (bug #5, round 2):
+    /// asked again — with the sender and nonce they were signed at, when the
+    /// row kept them — and settled only on a chain fact. A few per refresh.
+    private func reconcileUnresolved() {
+        let own = address
+        guard !own.isEmpty, Date().timeIntervalSince(lastReconcile) > 30 else { return }
+        lastReconcile = Date()
+        let open = activity.filter {
+            ($0.state == .notIncluded || ($0.state == .pending && Date().timeIntervalSince($0.date) > Self.trackLimit))
+                && $0.hash?.hasPrefix("0x") == true
+        }.prefix(8).map { ($0.id, $0.hash!, $0.nonce) }
+        guard !open.isEmpty else { return }
+        Task.detached { [weak self] in
+            for (id, hash, nonce) in open {
+                let st = nonce.map { try? txStatusFor(txHash: hash, sender: own, nonce: $0) } ?? (try? txStatus(txHash: hash))
+                guard let st else { continue }
+                let row = TxTrack.row(state: st.state, success: st.receipt?.success, unknownFor: 0)
+                await MainActor.run {
+                    guard let self else { return }
+                    switch row {
+                    case .done, .failed: self.settle(id, state: row == .done ? .done : .failed, why: row == .done ? nil : TxStatusText.sentence(st))
+                    case .notIncluded: self.settle(id, state: .notIncluded, why: TxStatusText.sentence(st), canResend: st.canResend)
+                    case .pending: self.explain(id, why: TxStatusText.sentence(st))
+                    }
+                }
+            }
+        }
+    }
+
+    /// When `reconcileUnresolved` last asked (at most every 30 s).
+    private var lastReconcile = Date.distantPast
 
     /// How long `track` follows a transaction: the node's mempool lifetime
     /// (10 minutes) plus a minute, so a drop is seen with its reason.
@@ -1061,7 +1121,7 @@ final class WalletModel: ObservableObject {
     /// transfer, so it goes through the normal quote and confirmation and is
     /// signed at the same nonce with a fresh fee. Never re-signs by itself.
     func beginResend(_ item: ActivityItem) {
-        guard let r = item.resend, item.state == .failed else { return }
+        guard let r = item.resend, item.state == .notIncluded || item.state == .failed else { return }
         paymentRequest = nil
         sendToken = nil
         sendTo = r.to
@@ -1300,7 +1360,7 @@ final class WalletModel: ObservableObject {
             var settled = activity[i].with(state: state)
             settled.why = why
             // Only a drop a fresh fee can fix keeps what a resend needs.
-            if !(state == .failed && canResend) { settled.resend = nil }
+            if !(state == .notIncluded && canResend) { settled.resend = nil }
             activity[i] = settled
             save()
         }
@@ -1308,7 +1368,9 @@ final class WalletModel: ObservableObject {
 
     /// A pending row's current reason (it is still waiting).
     private func explain(_ id: UUID, why: String) {
-        if let i = activity.firstIndex(where: { $0.id == id }), activity[i].state == .pending {
+        if let i = activity.firstIndex(where: { $0.id == id }), activity[i].state == .pending || activity[i].state == .notIncluded {
+            // Pending again somewhere (another node holds it): no longer not-included.
+            activity[i].state = .pending
             activity[i].why = why
             save()
         }
@@ -1317,7 +1379,9 @@ final class WalletModel: ObservableObject {
 
 struct ActivityItem: Codable, Identifiable, Equatable {
     enum Kind: String, Codable { case sent, received, security }
-    enum State: String, Codable { case pending, done, failed }
+    /// `notIncluded`: a node dropped it or none has a record — not on chain
+    /// yet, and not a failure (B5 review round 2, finding 5).
+    enum State: String, Codable { case pending, done, failed, notIncluded }
     var id = UUID()
     var date = Date()
     let kind: Kind
@@ -1340,6 +1404,9 @@ struct ActivityItem: Codable, Identifiable, Equatable {
     /// What a "새 가격으로 다시 보내기" needs: a plain transfer's recipient,
     /// exact amount and nonce. Kept only while the drop can be fixed by a resend.
     var resend: Resend? = nil
+    /// The nonce it was signed at (our own sends): with the account, what
+    /// reconciles a not-included row after a restart.
+    var nonce: UInt64? = nil
 
     typealias Resend = ResendIntent
 

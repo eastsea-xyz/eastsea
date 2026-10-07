@@ -4,6 +4,9 @@
 <dict>
 	<!-- Sparkle: signed appcast on the GitHub release feed (EdDSA public key). EastSea has its own
 	     feed; appcast.xml is the legacy one Aether <= 0.6.6 reads, which lists the Aether bridge. -->
+	<!-- 블록 데이터 위치: the node's chain data may live on an external disk the person picks. -->
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>EastSea keeps the node's block data on the disk you chose. Your keys stay on this Mac.</string>
 	<key>SUFeedURL</key>
 	<string>https://github.com/eastsea-xyz/eastsea/releases/latest/download/eastsea-appcast.xml</string>
 	<key>SUPublicEDKey</key>

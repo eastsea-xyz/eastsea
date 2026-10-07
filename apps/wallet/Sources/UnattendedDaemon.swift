@@ -64,16 +64,42 @@ final class UnattendedDaemon: ObservableObject {
     /// register/unregister — the user approves outside the app, so the state
     /// changes while we are not looking).
     func refreshStatus() {
-        guard enabled else {
+        let before = status
+        if !enabled {
             status = .off
-            return
+        } else {
+            switch service.status {
+            case .enabled: status = .approved
+            case .requiresApproval, .notRegistered: status = .needsApproval
+            case .notFound: status = .failed(String(localized: "This build of the app cannot keep the node running after restarts."))
+            default: status = .off
+            }
         }
-        switch service.status {
-        case .enabled: status = .approved
-        case .requiresApproval, .notRegistered: status = .needsApproval
-        case .notFound: status = .failed(String(localized: "This build of the app cannot keep the node running after restarts."))
-        default: status = .off
+        // Every change of the daemon's state goes to node-status.log: the app
+        // node keeps running whatever this says (it never hands over to a
+        // daemon that is not answering — the app only attaches to a node
+        // that already holds run.lock and answers), and a remote diagnosis
+        // must be able to tell the two apart.
+        if status != before {
+            NodeStatusLog.append(NodeStatusLog.line(at: Date(), event: "unattended", detail: "\(before) -> \(status)", facts: nil),
+                                 in: NodeController.dataDir)
         }
+    }
+
+    /// The block data lives on a disk the daemon cannot open.
+    var blockDataOnExternalDisk: Bool {
+        (UserDefaults.standard.string(forKey: "nodeChainDataPath") ?? "").hasPrefix("/Volumes/")
+    }
+
+    /// The one sentence (and the Login Items button) while the daemon waits
+    /// for the person's approval; nil otherwise. The node keeps running in
+    /// the app meanwhile.
+    var approvalSentence: String? {
+        if enabled, blockDataOnExternalDisk {
+            return String(localized: "The block data is on an external disk, so after a restart the node starts when the app opens.")
+        }
+        guard enabled, status == .needsApproval else { return nil }
+        return String(localized: "To keep the node running while the Mac is locked or after a restart, turn on “Allow in the Background”. Until then it runs inside the app.")
     }
 
     /// The system-settings pane where the user approves the daemon.
@@ -129,6 +155,13 @@ final class UnattendedDaemon: ObservableObject {
             Marker.remove()
             return
         }
+        // A launchd daemon cannot reach /Volumes (TCC, exit 78 on the
+        // testnet Macs): with the block data on a chosen external disk the
+        // node runs inside the app only, and Settings says so.
+        if blockDataOnExternalDisk {
+            Marker.remove()
+            return
+        }
         Marker.write(binary: NodeController.helperBinaryURL,
                      argv: UnattendedDecision.nodeArgv(
                         dataDir: NodeController.dataDir.path,
@@ -139,7 +172,10 @@ final class UnattendedDaemon: ObservableObject {
                                                        cores: UserDefaults.standard.string(forKey: "proverCores") ?? "half",
                                                        battery: UserDefaults.standard.bool(forKey: "proverOnBattery"),
                                                        activeProcessors: ProcessInfo.processInfo.activeProcessorCount),
-                                                       storageFlag: StorageSetting.flag(shards: storageShards ?? StorageSetting.defaultShards)),
+                                                       storageFlag: StorageSetting.flag(shards: storageShards ?? StorageSetting.defaultShards),
+                        locationFlags: BlockDataLocation.flags(
+                            chainDataPath: UserDefaults.standard.string(forKey: "nodeChainDataPath") ?? "",
+                            archive: UserDefaults.standard.bool(forKey: "nodeArchive"))),
                      proveAddress: UserDefaults.standard.string(forKey: "proveAddress"))
     }
 

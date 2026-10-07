@@ -777,8 +777,10 @@ final class Earnings: ObservableObject {
     /// What the node is doing, for the views.
     func work(_ node: NodeController, canProve: Bool) -> NodeWork {
         var w = NodeWork(phase: phase(node))
-        if node.prover?.program_unknown == true && node.prover?.paused == "program" {
-            w.phase = .paused(String(localized: "Proving is paused: this Mac cannot confirm which proving program the network uses."))
+        if node.prover?.paused == "program" {
+            // Plain words (prover-070-mismatch.md C): no program ids, no
+            // "validator proof program" — those stay in developer mode.
+            w.phase = .paused(String(localized: "This Mac is resting from proving blocks for now: the network cannot check this version's proofs yet. Nothing is lost."))
         }
         w.height = node.height
         w.blocksVerified = firstHeight.map { node.height > $0 ? node.height - $0 : 0 } ?? 0
@@ -800,12 +802,16 @@ final class Earnings: ObservableObject {
     }
 
     private func phase(_ node: NodeController) -> NodeWork.Phase {
+        // The one stop reason, the same as the sidebar and the menu.
+        if let reason = node.stopReason, node.state != .running, node.state != .starting {
+            return .paused(reason.copy(ko: HealthCheck.korean).paragraph)
+        }
         switch node.state {
-        case .running: node.prove ? .proving : .verifying
-        case .starting: .starting
-        case .waitingForPower: .paused(String(localized: "Paused on battery. It resumes on the power adapter."))
-        case .off: .paused(String(localized: "The node is off."))
-        case .failed(let why): .paused(why)
+        case .running: return node.prove ? .proving : .verifying
+        case .starting: return .starting
+        case .waitingForPower: return .paused(String(localized: "Paused on battery. It resumes on the power adapter."))
+        case .off: return .paused(String(localized: "The node is off."))
+        case .failed(let why): return .paused(why)
         }
     }
 

@@ -1,6 +1,7 @@
 import SwiftUI
 #if os(macOS)
 import Combine
+import os
 import Sparkle
 #endif
 
@@ -90,7 +91,7 @@ struct AetherWalletApp: App {
         }
         // Always in the menu bar: balance, node and prover at a glance; the window opens from here.
         MenuBarExtra {
-            MenuBarPanel().environmentObject(model).environmentObject(node).environmentObject(earnings)
+            MenuBarPanel().environmentObject(model).environmentObject(node).environmentObject(earnings).environmentObject(unattended)
                 .environmentObject(appDelegate.health)
                 .onAppear {
                     appDelegate.start(node: node, model: model, unattended: unattended)
@@ -144,6 +145,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var tracker = UpdateTracker()
     /// 30 s: the post-update health window and the scheduled retries.
     private var updateTickTimer: Timer?
+    /// Sparkle's install-and-relaunch block for a downloaded, verified update,
+    /// held until `UpdateWindow` says now (docs/design/34 §3.2, W1).
+    private var heldInstall: (() -> Void)?
+    private var heldVersion = ""
+    private var heldReason: UpdateWindow.Reason?
+    static let updateLog = Logger(subsystem: "com.pipln.eastsea", category: "update")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         MainActor.assumeIsolated {
@@ -154,6 +161,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             tracker.relaunched(runningVersion: (info?["CFBundleShortVersionString"] as? String) ?? "",
                                runningBuild: (info?["CFBundleVersion"] as? String) ?? "")
             updates.installNotice = tracker.sentence
+            if case .awaitingHealth(let version, let build, _) = tracker.state {
+                Self.updateLog.notice("relaunched as \(version, privacy: .public) (\(build, privacy: .public)); the node starts through the normal start path")
+            }
         }
         #if DEBUG
         if DesignPreview.on { return }
@@ -247,6 +257,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         MainActor.assumeIsolated {
             updateTickTimer?.invalidate()
+            // Sparkle installs a held update at termination (no relaunch):
+            // record it, or the next launch would read it as a lost download.
+            if heldInstall != nil {
+                heldInstall = nil
+                Self.updateLog.notice("installing \(self.heldVersion, privacy: .public) at quit")
+                tracker.installing()
+            }
             node?.stop()
         }
     }
@@ -260,8 +277,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             tracker.nodeRunning()
         }
         if tracker.retryDue() { updater.updater.checkForUpdatesInBackground() }
+        installIfSafe()
         let notice = tracker.sentence
         if updates.installNotice != notice { updates.installNotice = notice }
+    }
+
+    /// Install the held update if this is a safe moment (`UpdateWindow`).
+    /// Runs when Sparkle hands over the update and on every 30 s tick.
+    @MainActor private func installIfSafe() {
+        guard let install = heldInstall else { return }
+        // Before `start` the node and wallet are unknown: wait for the tick.
+        guard let node, let model else { return }
+        let moment = UpdateWindow.Moment(
+            seated: node.isValidator,
+            // N1 (aether_status.restart) is not built: no chain-assigned slot
+            // yet, so a seated Mac waits until it leaves the committee or quits.
+            inOwnSlot: nil,
+            sendSheetOpen: model.sendSheetOpen,
+            signing: model.busy,
+            migrating: migration.moving,
+            // The block-data move (claude/node-status-storage) wires in here.
+            storageMoving: false)
+        switch UpdateWindow.decide(moment) {
+        case .wait(let reason):
+            if heldReason != reason {
+                heldReason = reason
+                Self.updateLog.notice("\(reason.logLine, privacy: .public)")
+            }
+        case .installNow:
+            heldInstall = nil
+            heldReason = nil
+            Self.updateLog.notice("installing \(self.heldVersion, privacy: .public); relaunching without a prompt")
+            // The record must say "installing" before the block runs: the app
+            // can be killed inside it, and the next launch decides by
+            // comparing versions (red team #11).
+            tracker.installing()
+            syncUpdateNotice()
+            install()
+        }
     }
 
     @MainActor private func syncUpdateNotice() {
@@ -339,20 +392,23 @@ extension AppDelegate: SPUUpdaterDelegate {
         }
     }
 
-    /// Sparkle installs a downloaded update when the app quits, but Aether stays
-    /// in the menu bar with its node for days. Install now instead: the app
-    /// relaunches on the new version and the node restarts with it, so a Mac
-    /// that never quits still follows protocol upgrades.
+    /// Sparkle installs a downloaded update when the app quits, but EastSea
+    /// stays in the menu bar with its node for days. Take the install over
+    /// (return true: no Sparkle reminder or prompt) and run it at the first
+    /// safe moment (`UpdateWindow`): the app relaunches on the new version and
+    /// the node restarts with it. The gate (`shouldProceedWithUpdate`) and
+    /// Sparkle's EdDSA check already passed for this item; nothing here
+    /// weakens them. If no safe moment comes, Sparkle still installs at quit.
     func updater(_ updater: SPUUpdater, willInstallUpdateOnQuit item: SUAppcastItem, immediateInstallationBlock: @escaping () -> Void) -> Bool {
-        // The record must say "installing" before the block runs: the app can
-        // be killed inside it, and the next launch decides by comparing
-        // versions (red team #11).
         MainActor.assumeIsolated {
             tracker.verified()
-            tracker.installing()
             syncUpdateNotice()
+            heldVersion = "\((item.displayVersionString as String?) ?? "") (\(item.versionString))"
+            Self.updateLog.notice("update downloaded: \(self.heldVersion, privacy: .public), verified")
+            heldInstall = immediateInstallationBlock
+            heldReason = nil
+            installIfSafe()
         }
-        immediateInstallationBlock()
         return true
     }
 }

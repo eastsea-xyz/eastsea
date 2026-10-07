@@ -29,6 +29,19 @@ try History.submit(PendingPayment(date: Date(), to: payment.to, totalWei: "200",
                                   purpose: "retry", payeeNames: ["Bookshop"], asset: "AETH", amount: "0.0000000000000002"))
 try History.finalize(hash: "0xdef", success: false)
 precondition(History.load().first?.status == "failed")
+// B5 review round 2, finding 5: a node-local drop is not final history; the
+// pending entry keeps its reconciliation context, and a later receipt wins.
+try History.submit(PendingPayment(date: Date(), to: payment.to, totalWei: "300", hash: "0x5d",
+                                  purpose: "late", payeeNames: ["Bookshop"], asset: "AETH", amount: "0.0000000000000003",
+                                  sender: "0x00000000000000000000000000000000000000aa", nonce: 3))
+try History.markNotIncluded(hash: "0x5D", why: "처리되지 않았어요 (아직 체인에 기록되지 않음)")
+precondition(History.load().first { $0.hash == "0x5d" } == nil, "a drop must not be written as final history")
+let kept = History.pending().first { $0.hash == "0x5d" }
+precondition(kept?.nonce == 3 && kept?.sender != nil, "the reconciliation context stays")
+precondition(kept?.notIncluded?.contains("아직 체인에 기록되지 않음") == true)
+try History.finalize(hash: "0x5d", success: true)    // the receipt another node later gave
+precondition(History.load().first { $0.hash == "0x5d" }?.status == "confirmed", "a later receipt must supersede a node-local drop")
+precondition(History.pending().first { $0.hash == "0x5d" } == nil)
 try Payees.request(address: payment.to[0], purpose: "first purchase", amount: "1", asset: "AETH")
 precondition(Payees.requests().count == 1)
 precondition(Payees.requests().first?.amount == "1")

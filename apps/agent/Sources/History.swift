@@ -1,6 +1,9 @@
 import Foundation
 
-/// Finalized payments only. Pending context is held separately until finality.
+/// Finalized payments only. Pending context is held separately until finality:
+/// a receipt, or the payment's nonce used by another transaction. A node-local
+/// drop is not finality (B5 review round 2, finding 5) — another node may still
+/// include the same transaction — so it only annotates the pending entry.
 struct HistoryEntry: Codable {
     let date: Date
     let to: [String]
@@ -23,6 +26,13 @@ struct PendingPayment: Codable {
     let payeeNames: [String]
     let asset: String
     let amount: String
+    /// Who signed it and at which nonce: what reconciles it later (the nonce
+    /// used on chain without this hash's receipt means another tx took it).
+    /// Absent in entries written before round 2.
+    var sender: String? = nil
+    var nonce: UInt64? = nil
+    /// The last node-local drop reason, while it is not on chain yet.
+    var notIncluded: String? = nil
 }
 
 enum History {
@@ -44,6 +54,19 @@ enum History {
 
     static func submit(_ item: PendingPayment) throws {
         try write(Array(([item] + pending()).prefix(1_000)), to: Paths.pending)
+    }
+
+    /// A node said it dropped the payment: keep it pending (with the reason),
+    /// so a later receipt — from that node or another — still finalizes it.
+    static func markNotIncluded(hash: String, why: String) throws {
+        let items = pending()
+        guard items.contains(where: { $0.hash.caseInsensitiveCompare(hash) == .orderedSame }) else { return }
+        try write(items.map { item -> PendingPayment in
+            guard item.hash.caseInsensitiveCompare(hash) == .orderedSame else { return item }
+            var noted = item
+            noted.notIncluded = why
+            return noted
+        }, to: Paths.pending)
     }
 
     static func finalize(hash: String, success: Bool) throws {

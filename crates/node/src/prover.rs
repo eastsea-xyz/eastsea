@@ -21,6 +21,36 @@ use std::sync::{Arc, Mutex};
 /// (`AETHER_PROVER_PROGRAM`); unset in development builds (any program).
 pub const PROGRAM: Option<&str> = option_env!("AETHER_PROVER_PROGRAM");
 
+/// The verifier program of each chain whose validators predate the
+/// `aether_proverProgram` RPC (added 10-05), so a follower can still tell a
+/// definite mismatch from "cannot confirm". The validators' own answer wins
+/// whenever they give one; this only names what an old validator that answers
+/// "method not found" verifies with.
+///
+/// - 7780 (testnet): the validators built on 2026-09-29 (`aether-prover info`
+///   on all four, and the program their logs report as `proof verifier ready`).
+pub const KNOWN_VERIFIER_PROGRAMS: &[(u64, &str)] =
+    &[(7_780, "3e9c897628c91fc1bbbf977a1a05d6b5d53ae4cd69038fad5abe7106b989b1ec")];
+
+/// The compiled-in verifier program for `chain_id`, if its validators predate the RPC.
+pub fn known_verifier_program(chain_id: u64) -> Option<&'static str> {
+    KNOWN_VERIFIER_PROGRAMS.iter().find(|(id, _)| *id == chain_id).map(|(_, program)| *program)
+}
+
+/// The validators' proof program from their answer to `aether_proverProgram`.
+/// A validator that does not know the method is from before it existed; on a
+/// chain whose old verifier program is known, that answer *is* the program.
+/// Every other error (transport, timeouts, an unknown chain) stays unknown, and
+/// a real answer is never overridden.
+pub fn network_program(chain_id: u64, answer: Result<String, String>) -> Result<String, String> {
+    match answer {
+        Err(e) if e.contains("method not found: aether_proverProgram") => {
+            known_verifier_program(chain_id).map(str::to_owned).ok_or(e)
+        }
+        other => other,
+    }
+}
+
 /// The sidecar binary: `$AETHER_PROVER`, next to this executable (the app's
 /// Helpers), or the development build in apps/prover.
 pub fn find_binary() -> Option<PathBuf> {
@@ -472,6 +502,9 @@ pub struct Status {
     /// The block being proven now.
     pub proving: Option<u64>,
     pub last_height: Option<u64>,
+    /// The first block this run proved: a reward for an older proof was
+    /// earned by an earlier run (or an earlier program) and is not news.
+    pub first_height: Option<u64>,
     pub last_txs: usize,
     pub last_seconds: f64,
     pub proofs: u64,
@@ -939,6 +972,7 @@ pub fn spawn_service(
                         s.proving = None;
                         s.paused = None;
                         s.last_height = Some(height);
+                        if s.first_height.is_none() { s.first_height = Some(height); }
                         s.last_txs = txs;
                         s.last_seconds = seconds;
                         s.proofs += 1;
@@ -1111,6 +1145,43 @@ mod tests {
         assert!(program_health(&mut status, Ok("local".into())));
         assert_eq!(status.paused, None);
         assert!(!status.proofs_failing);
+
+        // A 7780 validator from before aether_proverProgram: its "method not
+        // found" names the 9-29 program, so the pause is a definite mismatch.
+        let old = || Err::<String, _>("method not found: aether_proverProgram".to_string());
+        let pinned = known_verifier_program(7_780).expect("7780 is pinned");
+        assert!(!program_health(&mut status, network_program(7_780, old())));
+        assert_eq!(status.paused.as_deref(), Some("program"));
+        assert!(status.program_mismatch, "a known old program is a mismatch, not unknown");
+        assert!(!status.program_unknown);
+        assert!(status.proofs_failing);
+        assert_eq!(status.network_program.as_deref(), Some(pinned));
+        assert!(status.error.as_deref().is_some_and(|e| e.contains(pinned)));
+        // The same answer from a chain with no pin stays unknown.
+        assert!(!program_health(&mut status, network_program(1, old())));
+        assert!(status.program_unknown);
+        assert!(!status.program_mismatch);
+        // A prover whose program is the old one is compatible with the old validators.
+        let mut old_prover = Status { program: pinned.into(), running: true, ..Status::default() };
+        assert!(program_health(&mut old_prover, network_program(7_780, old())));
+        assert_eq!(old_prover.paused, None);
+    }
+
+    #[test]
+    fn the_validators_answer_wins_over_the_known_program() {
+        let pinned = known_verifier_program(7_780).unwrap();
+        // An upgraded validator that answers is the source of truth.
+        assert_eq!(network_program(7_780, Ok("new".into())), Ok("new".into()));
+        // Only "method not found" for this method maps to the pin: a transport
+        // failure or another method's refusal says nothing about the program.
+        for e in ["connect abc: timed out", "no upstream", "method not found: aether_status"] {
+            assert_eq!(network_program(7_780, Err(e.into())), Err(e.into()));
+        }
+        // An HTTP follower relays the JSON-RPC error object as its text.
+        let http = r#"{"code":-32601,"message":"method not found: aether_proverProgram"}"#;
+        assert_eq!(network_program(7_780, Err(http.into())), Ok(pinned.to_string()));
+        assert_eq!(network_program(1, Err(http.into())), Err(http.into()));
+        assert!(KNOWN_VERIFIER_PROGRAMS.iter().all(|(_, p)| p.len() == 64 && p.bytes().all(|b| b.is_ascii_hexdigit())));
     }
 
     /// A fake prover that speaks the sidecar handshake and then balloons past

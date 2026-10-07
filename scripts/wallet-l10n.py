@@ -231,7 +231,7 @@ INTERP = re.compile(r"\\\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\)")
 SKIP_CALL = re.compile(r"\b(note|print|NSLog|debugPrint|fatalError|precondition|preconditionFailure|assert|assertionFailure|"
                        r"ProviderError|logger\.\w+|os_log|Logger|URL|URLRequest|setValue|appendingPathComponent|"
                        r"appending|UserDefaults|forKey|DispatchQueue|beginActivity|SleepGuard|IOPM\w*|contains|hasPrefix|"
-                       r"hasSuffix|range)\s*\(|\bmessage:\s*\"|\blabel:\s*\"")
+                       r"hasSuffix|range|logEvent|NodeStatusLog\.\w+|\w+Log\.(?:notice|info|debug|error|fault|log))\s*\(|\bmessage:\s*\"|\blabel:\s*\"|privacy:")
 
 
 def strip_interp(s):

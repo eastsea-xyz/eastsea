@@ -92,7 +92,7 @@ check(BlockDataLocation.keepInternal.contains("wallet-node.key"), "the follower'
 
 #if os(macOS)
 // R01: a real nested destination must be refused before a write or shutdown.
-try MainActor.assumeIsolated {
+@MainActor func runMoveFixtureTests() async throws {
 let moveFixture = NodeController.dataDir.deletingLastPathComponent()
     .appendingPathComponent("block-data-move-\(UUID().uuidString)")
 try FileManager.default.createDirectory(at: moveFixture, withIntermediateDirectories: true)
@@ -117,8 +117,29 @@ try Data("authoritative".utf8).write(to: sentinel)
 mover.chainDataPath = authoritative.path
 UserDefaults.standard.set(nestedSource.path, forKey: NodeController.cleanupKey)
 mover.finishBlockDataMove()
-RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+try await Task.sleep(nanoseconds: 100_000_000)
 check(FileManager.default.fileExists(atPath: sentinel.path), "R01 cleanup rechecks ancestry")
+
+func waitForMove(_ node: NodeController) async throws {
+    let end = Date().addingTimeInterval(10)
+    while node.storageMovePercent != nil && Date() < end { try await Task.sleep(nanoseconds: 10_000_000) }
+    check(node.storageMovePercent == nil, "fixture move completes within deadline")
+}
+// R02: force a failed copy into somebody else's preexisting chain tree.
+let badSource = moveFixture.appendingPathComponent("bad-source")
+let occupied = moveFixture.appendingPathComponent("occupied")
+try FileManager.default.createDirectory(at: badSource.appendingPathComponent("follow"), withIntermediateDirectories: true)
+try FileManager.default.createDirectory(at: occupied.appendingPathComponent("follow"), withIntermediateDirectories: true)
+try FileManager.default.createSymbolicLink(atPath: badSource.appendingPathComponent("follow/unreadable").path,
+                                         withDestinationPath: moveFixture.appendingPathComponent("missing-file").path)
+let unrelated = occupied.appendingPathComponent("follow/unrelated.db")
+try Data("unrelated-history".utf8).write(to: unrelated)
+let failedMover = NodeController()
+failedMover.chainDataPath = badSource.path
+failedMover.moveBlockData(to: occupied)
+try await waitForMove(failedMover)
+check((try? Data(contentsOf: unrelated)) == Data("unrelated-history".utf8), "R02 failed move preserves preexisting destination data")
+check(failedMover.chainDataPath == badSource.path, "R02 rejected move keeps source authoritative")
 }
 #endif
 
@@ -138,4 +159,12 @@ for ko in [true, false] {
 }
 check(req.lines(ko: true)[3].contains("보상은 없어요"), "says plainly there is no reward")
 check(req.lines(ko: true)[2].contains("몇 시간에서 며칠"), "hours to days")
+#if os(macOS)
+Task { @MainActor in
+    do { try await runMoveFixtureTests(); print("OK block-data"); exit(0) }
+    catch { print("FAIL fixture:", error); exit(1) }
+}
+dispatchMain()
+#else
 print("OK block-data")
+#endif

@@ -119,6 +119,21 @@ enum BlockDataLocation {
         return x != y && !x.hasPrefix(y + "/") && !y.hasPrefix(x + "/") && x != "/" && y != "/"
     }
 
+    /// Existing chain data is never merged into or made rollback cargo.
+    /// The default home may already contain the endpoint key kept internal.
+    static func destinationAvailable(_ root: URL, preservingInternalKeys: Bool) -> Bool {
+        let fm = FileManager.default
+        guard (try? fm.destinationOfSymbolicLink(atPath: root.path)) == nil else { return false }
+        for name in movedDirs {
+            let dir = root.appendingPathComponent(name)
+            if (try? fm.destinationOfSymbolicLink(atPath: dir.path)) != nil { return false }
+            guard fm.fileExists(atPath: dir.path) else { continue }
+            guard preservingInternalKeys, let entries = try? fm.contentsOfDirectory(atPath: dir.path),
+                  entries.allSatisfy({ keepInternal.contains($0) }) else { return false }
+        }
+        return true
+    }
+
     /// The node flags for the stored choices, appended to the shared argv.
     static func flags(chainDataPath: String, archive: Bool) -> [String] {
         var out: [String] = []

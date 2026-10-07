@@ -8,6 +8,25 @@ pub const BINDING_FILE: &str = "key-binding.json";
 pub const EXIT_KEY_ELSEWHERE: i32 = 15;
 const REFUSAL: &str = "key binding refused:";
 
+#[derive(Debug)]
+enum BindingError {
+    Mismatch(String),
+    Invalid(String),
+    Unavailable(String),
+    Storage(String),
+}
+
+impl std::fmt::Display for BindingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Mismatch(reason) => write!(f, "{REFUSAL} This node's keys came from another Mac. Voting and signing are stopped. {reason}"),
+            Self::Invalid(reason) => write!(f, "key binding invalid: restore this node's original keys and binding. {reason}"),
+            Self::Unavailable(reason) => write!(f, "waiting to confirm this Mac: signing is paused. {reason}"),
+            Self::Storage(reason) => write!(f, "key binding storage error: {reason}"),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Guard {
     dir: std::path::PathBuf,
@@ -23,10 +42,14 @@ impl Guard {
     }
 
     pub fn check_or_exit(&self) {
-        if let Err(error) = platform_uuid()
-            .and_then(|uuid| check_existing_with_uuid(&self.dir, &self.public, &uuid))
-        {
-            refuse(&error);
+        if let Err(error) = wait_for_confirmation(|| platform_uuid()
+            .and_then(|uuid| check_existing_with_uuid(&self.dir, &self.public, &uuid))) {
+            eprintln!("error: {error}");
+            std::process::exit(match error {
+                BindingError::Mismatch(_) => EXIT_KEY_ELSEWHERE,
+                BindingError::Storage(_) => crate::store::EXIT_STORAGE,
+                _ => crate::candidate::EXIT_IDENTITY,
+            });
         }
     }
 }
@@ -63,25 +86,60 @@ fn refuse(error: &str) -> ! {
     std::process::exit(EXIT_KEY_ELSEWHERE);
 }
 
-fn error(reason: impl std::fmt::Display) -> String {
-    format!("{REFUSAL} This node's keys came from another Mac or their binding cannot be verified. Voting and signing are stopped. {reason}")
+fn error(reason: impl std::fmt::Display) -> BindingError {
+    BindingError::Invalid(reason.to_string())
+}
+
+fn unavailable(reason: impl std::fmt::Display) -> BindingError {
+    BindingError::Unavailable(reason.to_string())
+}
+
+fn storage(reason: impl std::fmt::Display) -> BindingError {
+    BindingError::Storage(reason.to_string())
+}
+
+fn wait_for_confirmation<T>(read: impl FnMut() -> Result<T, BindingError>) -> Result<T, BindingError> {
+    retry_confirmation(read, std::thread::sleep)
+}
+
+fn retry_confirmation<T>(mut read: impl FnMut() -> Result<T, BindingError>, mut sleep: impl FnMut(std::time::Duration)) -> Result<T, BindingError> {
+    let mut backoff = std::time::Duration::from_millis(250);
+    let mut waited = false;
+    loop {
+        match read() {
+            Err(e @ BindingError::Unavailable(_)) => {
+                eprintln!("warning: {e}; retrying in {} ms", backoff.as_millis());
+                waited = true;
+                sleep(backoff);
+                backoff = (backoff * 2).min(std::time::Duration::from_secs(30));
+            }
+            result => {
+                if waited && result.is_ok() { eprintln!("Mac key binding confirmed; signing can resume"); }
+                return result;
+            }
+        }
+    }
 }
 
 pub fn check(dir: &Path, public: &crate::block::PublicKey) -> Result<Checked, String> {
     let public = public.as_ref().try_into().expect("Ed25519 public key");
-    check_with_uuid(dir, &public, &platform_uuid()?)
+    let checked = wait_for_confirmation(|| check_with_uuid(dir, &public, &platform_uuid()?))
+        .map_err(|e| e.to_string())?;
+    // Startup/legacy-load marker also clears a stale wait in an appended log.
+    eprintln!("Mac key binding confirmed");
+    Ok(checked)
 }
 
-fn platform_uuid() -> Result<String, String> {
+fn platform_uuid() -> Result<String, BindingError> {
     #[cfg(all(feature = "test-seam", debug_assertions))]
     if let Ok(uuid) = std::env::var("AETHER_TEST_PLATFORM_UUID") {
         return if uuid.is_empty() {
-            Err(error("empty test platform UUID"))
+            Err(unavailable("empty test platform UUID"))
         } else {
             Ok(uuid)
         };
     }
-    hardware_uuid().map_err(error)
+    hardware_uuid().map_err(unavailable)
 }
 
 #[cfg(target_os = "macos")]
@@ -209,7 +267,7 @@ fn read_binding(path: &Path) -> Result<Vec<u8>, std::io::Error> {
     Ok(bytes)
 }
 
-fn validate(path: &Path, bytes: &[u8], public: &[u8; 32], uuid: &str) -> Result<(), String> {
+fn validate(path: &Path, bytes: &[u8], public: &[u8; 32], uuid: &str) -> Result<(), BindingError> {
     if bytes.len() > 4_096 {
         return Err(error(format!("{} is too large", path.display())));
     }
@@ -225,32 +283,38 @@ fn validate(path: &Path, bytes: &[u8], public: &[u8; 32], uuid: &str) -> Result<
             path.display()
         )));
     }
-    if saved_public.as_slice() != public.as_slice()
-        || saved_hash.as_slice() != uuid_hash(uuid).as_slice()
-    {
+    if saved_public.as_slice() != public.as_slice() {
         return Err(error(format!(
-            "{} does not match this Mac and validator key",
+            "{} does not match the validator key",
             path.display()
         )));
+    }
+    if saved_hash.as_slice() != uuid_hash(uuid).as_slice() {
+        return Err(BindingError::Mismatch(format!("{} does not match this Mac", path.display())));
     }
     Ok(())
 }
 
-fn check_existing_with_uuid(dir: &Path, public: &[u8; 32], uuid: &str) -> Result<(), String> {
+fn check_existing_with_uuid(dir: &Path, public: &[u8; 32], uuid: &str) -> Result<(), BindingError> {
     let path = dir.join(BINDING_FILE);
-    let bytes = read_binding(&path).map_err(|e| error(format!("{}: {e}", path.display())))?;
+    let bytes = read_binding(&path).map_err(|e| {
+        let reason = format!("{}: {e}", path.display());
+        if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidData) {
+            error(reason)
+        } else { unavailable(reason) }
+    })?;
     validate(&path, &bytes, public, uuid)
 }
 
-fn check_with_uuid(dir: &Path, public: &[u8; 32], uuid: &str) -> Result<Checked, String> {
+fn check_with_uuid(dir: &Path, public: &[u8; 32], uuid: &str) -> Result<Checked, BindingError> {
     if uuid.is_empty() {
-        return Err(error("platform UUID is empty"));
+        return Err(unavailable("platform UUID is empty"));
     }
     let path = dir.join(BINDING_FILE);
     match read_binding(&path) {
         Ok(bytes) => {
             validate(&path, &bytes, public, uuid)?;
-            crate::atomic::sync_parent(&path).map_err(error)?;
+            crate::atomic::sync_parent(&path).map_err(storage)?;
             Ok(Checked::Existing)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -259,24 +323,25 @@ fn check_with_uuid(dir: &Path, public: &[u8; 32], uuid: &str) -> Result<Checked,
                 platform_uuid_hash: hex::encode(uuid_hash(uuid)),
                 created_at: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .map_err(error)?
+                    .map_err(storage)?
                     .as_secs(),
             };
-            let bytes = serde_json::to_vec_pretty(&record).map_err(error)?;
+            let bytes = serde_json::to_vec_pretty(&record).map_err(storage)?;
             match crate::atomic::create_once(&path, &bytes, 0o600) {
                 Ok(()) => Ok(Checked::Created),
                 // Another creator may have won. Accept only its matching
                 // binding, never overwrite it or ignore a mismatching winner.
                 Err(crate::atomic::CreateError::AlreadyExists) => {
-                    let saved = read_binding(&path).map_err(error)?;
+                    let saved = read_binding(&path).map_err(unavailable)?;
                     validate(&path, &saved, public, uuid)?;
-                    crate::atomic::sync_parent(&path).map_err(error)?;
+                    crate::atomic::sync_parent(&path).map_err(storage)?;
                     Ok(Checked::Existing)
                 }
-                Err(write) => Err(error(write)),
+                Err(write) => Err(storage(write)),
             }
         }
-        Err(e) => Err(error(format!("{}: {e}", path.display()))),
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => Err(error(format!("{}: {e}", path.display()))),
+        Err(e) => Err(unavailable(format!("{}: {e}", path.display()))),
     }
 }
 
@@ -328,6 +393,30 @@ mod tests {
         crate::atomic::fail_sync_for_test(None);
         assert!(dir.0.join(BINDING_FILE).exists(), "the fault is after publication");
         assert!(result.is_err(), "a visible record must not mask failed durable publication");
+    }
+
+    #[test]
+    fn unavailable_confirmation_retries_with_bounded_backoff_without_authorizing_signing() {
+        let mut attempts = 0;
+        let mut delays = Vec::new();
+        let result = retry_confirmation(|| {
+            attempts += 1;
+            if attempts <= 12 { Err(unavailable("IOKit denied this read")) } else { Ok("confirmed") }
+        }, |delay| delays.push(delay));
+        assert_eq!(result.unwrap(), "confirmed");
+        assert_eq!(attempts, 13);
+        assert_eq!(delays[0], std::time::Duration::from_millis(250));
+        assert!(delays.iter().all(|d| *d <= std::time::Duration::from_secs(30)));
+        assert_eq!(delays.last(), Some(&std::time::Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn only_a_successfully_read_different_hardware_hash_is_exit_15() {
+        let dir = Dir::new("typed-outcomes");
+        binding(&dir.0, &[1; 32], "MAC-A");
+        assert!(matches!(check_with_uuid(&dir.0, &[1; 32], ""), Err(BindingError::Unavailable(_))));
+        assert!(matches!(check_with_uuid(&dir.0, &[2; 32], "MAC-A"), Err(BindingError::Invalid(_))));
+        assert!(matches!(check_with_uuid(&dir.0, &[1; 32], "MAC-B"), Err(BindingError::Mismatch(_))));
     }
 
     #[test]

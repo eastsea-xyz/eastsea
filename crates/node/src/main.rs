@@ -830,23 +830,13 @@ fn main() {
             // a devnet stand-in or a fresh identity.
             {
                 let dir = std::path::Path::new(&data);
-                if dir.join(aether_node::roster::KEY_FILE).exists() {
+                if dir.join(aether_node::roster::KEY_FILE).exists()
+                    || (network.is_some() && dir.join("threshold.json").exists()) {
                     if let Err(e) = load_signing_keys(dir) {
                         aether_node::key_binding::exit_if_refusal(&e);
+                        eprintln!("this Mac's validator key cannot be read: {e}. Restore {}/{} from a backup; no new identity is generated", dir.display(), aether_node::roster::KEY_FILE);
+                        std::process::exit(aether_node::candidate::EXIT_IDENTITY);
                     }
-                }
-                if network.is_some()
-                    && dir.join("threshold.json").exists()
-                    && aether_node::roster::LocalKeys::load(dir).is_err()
-                {
-                    eprintln!(
-                        "this Mac's validator key cannot be read but it holds a committee \
-                         share: no new identity is generated. Restore {}/{} from a backup, or \
-                         unregister this Mac and register a new one on purpose",
-                        dir.display(),
-                        aether_node::roster::KEY_FILE
-                    );
-                    std::process::exit(aether_node::candidate::EXIT_IDENTITY);
                 }
             }
             let with_file = network.is_some();

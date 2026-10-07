@@ -483,8 +483,9 @@ mod tests {
         std::fs::write(data.join("node-account.key"), account).unwrap();
         assert_eq!(CandidateKeys::load_or_create(&data).unwrap().validator_key(), identity, "the original backup works");
         std::fs::remove_file(data.join(crate::roster::KEY_FILE)).unwrap();
-        assert!(crate::key_binding::is_refusal(&crate::roster::LocalKeys::generate().save(&data).unwrap_err()),
-            "a surviving binding must also prevent minting a replacement key");
+        let refusal = crate::roster::LocalKeys::generate().save(&data).unwrap_err();
+        assert!(refusal.starts_with("key binding invalid:"),
+            "a different key on the same Mac is invalid identity, not proven hardware mismatch: {refusal}");
         assert!(!data.join(crate::roster::KEY_FILE).exists());
         // Restore a different backup with its own matching hardware binding:
         // the sibling identity marker must still reject it on the same Mac.

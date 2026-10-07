@@ -181,3 +181,31 @@ fn key_binding_legacy_key_is_bound_once_and_logged() {
         "{output}"
     );
 }
+
+#[test]
+fn unavailable_hardware_read_keeps_the_real_node_running_without_votes() {
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+    let root = Dir(workspace.join("tmp").join(format!("aether-key-binding-unavailable-{}", std::process::id())));
+    let data = root.0.join("node");
+    aether_node::roster::LocalKeys::devnet(1).save(&data).unwrap();
+    let key_before = std::fs::read(data.join("validator.key")).unwrap();
+    let binding_before = std::fs::read(data.join("key-binding.json")).unwrap();
+    let log_path = root.0.join("unavailable.log");
+    let log = std::fs::File::create(&log_path).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_aether"))
+        .args(["node", "--offline", "--port", "0", "--rpc-port", "0"])
+        .arg("--data").arg(&data)
+        .arg("--network").arg(data.join("network.json"))
+        .env("AETHER_TEST_PLATFORM_UUID", "")
+        .stdout(Stdio::from(log.try_clone().unwrap())).stderr(Stdio::from(log))
+        .spawn().unwrap();
+    std::thread::sleep(Duration::from_secs(2));
+    let status = child.try_wait().unwrap();
+    if status.is_none() { child.kill().unwrap(); child.wait().unwrap(); }
+    let output = std::fs::read_to_string(log_path).unwrap();
+    assert!(status.is_none(), "unavailable hardware reads must keep the node alive, got {status:?}: {output}");
+    assert!(output.contains("waiting to confirm this Mac"), "{output}");
+    assert!(!data.join("vote-epoch-0.seen").exists(), "unknown identity must never authorize a vote");
+    assert_eq!(std::fs::read(data.join("validator.key")).unwrap(), key_before);
+    assert_eq!(std::fs::read(data.join("key-binding.json")).unwrap(), binding_before);
+}

@@ -2836,6 +2836,41 @@
         }
       }
     },
+    "Account %lld" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Account %lld"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "アカウント %lld"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "계정 %lld"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "账户 %lld"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "帳戶 %lld"
+          }
+        }
+      }
+    },
     "Account 1" : {
       "localizations" : {
         "en" : {
@@ -5706,6 +5741,76 @@
         }
       }
     },
+    "Choose a valid payout address." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choose a valid payout address."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "有効な報酬の受取アドレスを選んでください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "올바른 보상 수령 주소를 선택해 주세요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请选择有效的奖励接收地址。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "請選擇有效的獎勵接收地址。"
+          }
+        }
+      }
+    },
+    "Choose another payout account before removing this one." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choose another payout account before removing this one."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "このアカウントを削除する前に、別の報酬の受取アカウントを選んでください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이 계정을 삭제하기 전에 다른 보상 수령 계정을 선택해 주세요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请先选择其他奖励接收账户，再删除此账户。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "請先選擇其他獎勵接收帳戶，再刪除此帳戶。"
+          }
+        }
+      }
+    },
     "Command-line tools installed" : {
       "localizations" : {
         "en" : {
@@ -8545,6 +8650,41 @@
         }
       }
     },
+    "Finish the pending wallet operation before changing accounts." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Finish the pending wallet operation before changing accounts."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "進行中のウォレットの操作を完了してから、アカウントを切り替えてください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "진행 중인 지갑 작업을 마친 뒤 계정을 변경해 주세요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请先完成正在进行的钱包操作，再切换账户。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "請先完成進行中的錢包操作，再切換帳戶。"
+          }
+        }
+      }
+    },
     "First time sending to this address. Double-check it with whoever gave it to you." : {
       "localizations" : {
         "en" : {
@@ -8813,6 +8953,41 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "將此代碼交給想以此裝置作為復原裝置的人。"
+          }
+        }
+      }
+    },
+    "Give this account a name." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Give this account a name."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "アカウントの名前を入力してください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "계정 이름을 입력해 주세요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请输入账户名称。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "請輸入帳戶名稱。"
           }
         }
       }
@@ -9811,6 +9986,41 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "請讓 %@ 保持執行。簽署區塊的 Mac 離線後，其席位會交給下一部 Mac。這會使用一些網路、處理器與電力。"
+          }
+        }
+      }
+    },
+    "Keep at least one visible account." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Keep at least one visible account."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "表示するアカウントを少なくとも1つ残してください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "표시되는 계정을 하나 이상 남겨 주세요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请至少保留一个可见账户。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "請至少保留一個可見帳戶。"
           }
         }
       }
@@ -10971,6 +11181,41 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "請將 EastSea 移至應用程式資料夾後執行。"
+          }
+        }
+      }
+    },
+    "Move all funds before removing or hiding this account." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Move all funds before removing or hiding this account."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "このアカウントを削除または非表示にする前に、すべての資金を移してください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "계정을 삭제하거나 숨기기 전에 모든 자산을 옮겨 주세요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请先转移所有资金，再删除或隐藏此账户。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "請先移轉所有資金，再刪除或隱藏此帳戶。"
           }
         }
       }
@@ -19224,6 +19469,76 @@
         }
       }
     },
+    "The account index cannot be read. The wallet keys have been kept." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The account index cannot be read. The wallet keys have been kept."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "アカウント一覧を読み取れませんでした。ウォレットのキーは保管されています。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "계정 목록을 읽을 수 없어요. 지갑 키는 안전하게 보관되어 있어요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法读取账户列表。钱包密钥已保留。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "無法讀取帳戶清單。錢包金鑰已保留。"
+          }
+        }
+      }
+    },
+    "The balance could not be checked. The account has been kept." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The balance could not be checked. The account has been kept."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "残高を確認できませんでした。アカウントはそのまま保管されています。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "잔액을 확인하지 못했어요. 계정은 그대로 보관되어 있어요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法检查余额。账户已保留。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "無法確認餘額。帳戶已保留。"
+          }
+        }
+      }
+    },
     "The balance was too low when this payment was checked. This payment is not recorded on chain yet." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -21616,6 +21931,41 @@
         }
       }
     },
+    "The order must include each visible account exactly once." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The order must include each visible account exactly once."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "表示されるすべてのアカウントを1回ずつ含めて、順序を指定してください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "표시되는 모든 계정을 한 번씩 포함해 순서를 정해 주세요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请将所有可见账户各包含一次来设置顺序。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "請將所有可見帳戶各包含一次來設定順序。"
+          }
+        }
+      }
+    },
     "The prover stopped answering; it is restarting." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -21920,6 +22270,41 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "更新已完成，但此 Mac 的節點未及時恢復正常。%@ 已記錄此情況，節點仍會繼續自動復原。"
+          }
+        }
+      }
+    },
+    "The wallet handle does not match its account. The keys have been kept." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The wallet handle does not match its account. The keys have been kept."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ウォレットのキーファイルがアカウントと一致しません。キーは保管されています。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "지갑 키 파일이 계정과 일치하지 않아요. 키는 안전하게 보관되어 있어요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "钱包密钥文件与账户不匹配。密钥已保留。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "錢包金鑰檔案與帳戶不符。金鑰已保留。"
           }
         }
       }
@@ -22747,6 +23132,41 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "此 Mac 的節點停止回應，正在重新啟動。"
+          }
+        }
+      }
+    },
+    "This account is not available." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This account is not available."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "このアカウントは利用できません。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이 계정을 사용할 수 없어요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此账户不可用。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此帳戶無法使用。"
           }
         }
       }

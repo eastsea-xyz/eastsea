@@ -5,7 +5,7 @@
 set -uo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
-mkdir -p "$root/tmp"
+mkdir -p "$root/tmp/swift-module-cache"
 export TMPDIR="$root/tmp"
 localizations="$root/tmp/wallet-languages/WalletLocalizations.bundle"
 /usr/bin/python3 scripts/wallet-l10n.py prepare-tests --out "$localizations" || exit 1
@@ -22,7 +22,7 @@ run() {
   fi
   : > "tmp/sw-$n.err"
   : > "tmp/sw-$n.out"
-  if swiftc -o "tmp/sw-$n" "${files[@]}" "$T/$n/main.swift" 2>"tmp/sw-$n.err" \
+  if swiftc -module-cache-path "$root/tmp/swift-module-cache" -o "tmp/sw-$n" "${files[@]}" "$T/$n/main.swift" 2>"tmp/sw-$n.err" \
       && AETHER_AGENT_TEST_TMP="$root/tmp" WALLET_TEST_BUNDLE="$localizations" "./tmp/sw-$n" >"tmp/sw-$n.out" 2>&1; then
     echo "OK   $n"
   else
@@ -30,6 +30,10 @@ run() {
     bad=$((bad+1))
   fi
 }
+run multi-account AccountStore.swift
+run account-data AccountDataStore.swift
+run account-removal EarningsModel.swift TokenAssets.swift AccountRemovalBalance.swift
+run account-operations WalletOperationGate.swift
 run account-history Brand.swift ChainActivity.swift
 run assets EarningsModel.swift TokenAssets.swift
 run balance-sources Brand.swift EarningsModel.swift ChainActivity.swift BalanceBreakdown.swift EarningsExport.swift

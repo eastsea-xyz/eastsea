@@ -1189,30 +1189,66 @@ pub fn chain_status() -> R<ChainStatus> {
     })
 }
 
-/// Only show notices signed by the pinned committee and present in the node's
-/// finalized schedule. Status RPC is otherwise an untrusted read.
 #[cfg(test)]
 thread_local! {
     static UPGRADE_CHECKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+const MAX_UPGRADE_NOTICES: usize = 16;
+const MAX_UPGRADE_FIELD: usize = 512;
+
+/// Bound strings and collections before cloning or decoding signed fields.
+fn upgrade_fields_fit(value: &Value, validators: u32) -> bool {
+    let small = |v: &Value, limit: usize| v.as_str().is_some_and(|s| s.len() <= limit);
+    let upgrade = &value["upgrade"];
+    let Some(releases) = upgrade["releases"].as_array() else { return false };
+    if !small(&value["signature"], 98)
+        || value["signature"].as_str().is_none_or(|s| s.strip_prefix("0x").unwrap_or(s).len() > 96)
+        || upgrade.get("notes").is_some_and(|v| !small(v, MAX_UPGRADE_FIELD))
+        || releases.len() > MAX_UPGRADE_NOTICES
+        || releases.iter().any(|r| ["platform", "version", "blake3", "url"].iter().any(|field| !small(&r[*field], MAX_UPGRADE_FIELD))) {
+        return false;
+    }
+    value.get("emergency_approvals").is_none_or(|v| v.as_array().is_some_and(|approvals| {
+        approvals.len() <= validators as usize
+            && approvals.iter().all(|a| a.as_array().is_some_and(|pair| pair.len() == 2
+                && small(&pair[0], 64) && small(&pair[1], 128)))
+    }))
+}
+
+/// Deduplicate and finish selecting the bounded work list before verification.
+fn upgrade_candidates(status: &Value, validators: u32) -> Vec<aether_light::block::SignedUpgrade> {
+    let mut seen = std::collections::HashSet::new();
+    status["upcoming_upgrades"].as_array().into_iter().flatten().filter_map(|value| {
+        if !upgrade_fields_fit(value, validators) { return None; }
+        let signed: aether_light::block::SignedUpgrade = serde_json::from_value(value.clone()).ok()?;
+        seen.insert((signed.upgrade.protocol, signed.upgrade.activate_at)).then_some(signed)
+    }).take(MAX_UPGRADE_NOTICES).collect()
+}
+
+/// Only show notices signed by the pinned committee and present in the node's
+/// finalized schedule. Status RPC is otherwise an untrusted read.
 fn scheduled_upgrade_json(status: &Value) -> String {
     let Ok(chain) = expected_chain(status) else { return "[]".into() };
-    let validators = NODES.lock().expect("nodes lock").as_ref().map_or(4, |n| n.len() as u32);
+    let validators = validator_count();
+    let candidates = upgrade_candidates(status, validators);
+    if candidates.is_empty() { return "[]".into(); }
     let Ok(set) = trusted_set(validators) else { return "[]".into() };
     let Some(schedule) = status["schedule"].as_array() else { return "[]".into() };
-    let notices = status["upcoming_upgrades"].as_array().into_iter().flatten().filter_map(|value| {
-        let signed: aether_light::block::SignedUpgrade = serde_json::from_value(value.clone()).ok()?;
+    let membership: std::collections::HashSet<_> = schedule.iter().filter_map(|a| {
+        Some((u32::try_from(a[0].as_u64()?).ok()?, a[1].as_u64()?))
+    }).collect();
+    let notices = candidates.iter().filter_map(|signed| {
         let u = &signed.upgrade;
         if u.chain_id != chain || u.activate_at <= status["height"].as_u64()? {
             return None;
         }
-        if !schedule.iter().any(|a| a[0].as_u64() == Some(u.protocol as u64) && a[1].as_u64() == Some(u.activate_at)) {
+        if !membership.contains(&(u.protocol, u.activate_at)) {
             return None;
         }
         #[cfg(test)]
         UPGRADE_CHECKS.with(|checks| checks.set(checks.get() + 1));
-        aether_light::verify_upgrade(set.identity(), &signed).ok()?;
+        aether_light::verify_upgrade(set.identity(), signed).ok()?;
         Some(json!({ "protocol": u.protocol, "activate_at": u.activate_at, "emergency": u.emergency, "notes": u.notes }))
     }).collect::<Vec<_>>();
     Value::Array(notices).to_string()
@@ -2411,6 +2447,7 @@ mod tests {
         use_devnet_keys();
         UPGRADE_CHECKS.with(|checks| checks.set(0));
         let status = upgrade_status(vec![shaped_upgrade(4); 32], vec![json!([4, 100])]);
+        assert_eq!(upgrade_candidates(&status, 4).len(), 1);
         assert_eq!(scheduled_upgrade_json(&status), "[]");
         assert!(UPGRADE_CHECKS.with(|checks| checks.get()) <= 1,
             "R19: duplicate notices repeated signature verification {} times",
@@ -2425,6 +2462,7 @@ mod tests {
         UPGRADE_CHECKS.with(|checks| checks.set(0));
         let status = upgrade_status((4..36).map(shaped_upgrade).collect(),
             (4..36).map(|protocol| json!([protocol, 100])).collect());
+        assert_eq!(upgrade_candidates(&status, 4).len(), 16);
         assert_eq!(scheduled_upgrade_json(&status), "[]");
         assert!(UPGRADE_CHECKS.with(|checks| checks.get()) <= 16,
             "R19: one status reply exceeded the 16-notice verification budget");
@@ -2435,12 +2473,39 @@ mod tests {
         let _g = config();
         reset_network();
         use_devnet_keys();
+        let release = json!({ "platform": "macos-arm64-dmg", "version": "1.0",
+            "blake3": "00".repeat(32), "url": "https://example.invalid/release" });
+        let mut oversized = Vec::new();
         let mut notice = shaped_upgrade(4);
         notice["upgrade"]["notes"] = json!("x".repeat(513));
-        UPGRADE_CHECKS.with(|checks| checks.set(0));
-        assert_eq!(scheduled_upgrade_json(&upgrade_status(vec![notice], vec![json!([4, 100])])), "[]");
-        assert_eq!(UPGRADE_CHECKS.with(|checks| checks.get()), 0,
-            "R19: oversized signed fields reached signature verification");
+        oversized.push(notice);
+        let mut notice = shaped_upgrade(4);
+        notice["signature"] = json!("00".repeat(49));
+        oversized.push(notice);
+        let mut notice = shaped_upgrade(4);
+        notice["upgrade"]["releases"] = json!(vec![release.clone(); 17]);
+        oversized.push(notice);
+        for field in ["platform", "version", "blake3", "url"] {
+            let mut big_release = release.clone();
+            big_release[field] = json!("x".repeat(513));
+            let mut notice = shaped_upgrade(4);
+            notice["upgrade"]["releases"] = json!([big_release]);
+            oversized.push(notice);
+        }
+        for approvals in [json!([["x".repeat(65), "00"]]), json!([["00", "x".repeat(129)]]),
+            json!(vec![("00", "00"); 5])] {
+            let mut notice = shaped_upgrade(4);
+            notice["emergency_approvals"] = approvals;
+            oversized.push(notice);
+        }
+        for notice in oversized {
+            UPGRADE_CHECKS.with(|checks| checks.set(0));
+            let status = upgrade_status(vec![notice], vec![json!([4, 100])]);
+            assert!(upgrade_candidates(&status, 4).is_empty());
+            assert_eq!(scheduled_upgrade_json(&status), "[]");
+            assert_eq!(UPGRADE_CHECKS.with(|checks| checks.get()), 0,
+                "R19: oversized signed fields reached signature verification");
+        }
     }
 
     /// A validator that never answers: TEST-NET-1 (packets go nowhere), so

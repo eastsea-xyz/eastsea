@@ -179,6 +179,7 @@ final class WalletModel: ObservableObject {
     }
 
     private var refreshes = 0
+    private var refreshInFlight = false
     private var networkGeneration: UInt64 = 0
     private var lastHeight: UInt64?
     private var heightChangedAt: Date?
@@ -524,6 +525,8 @@ final class WalletModel: ObservableObject {
     }
 
     func refresh() {
+        guard !refreshInFlight else { return }
+        refreshInFlight = true
         if enclave == nil, Date().timeIntervalSince(lastKeyAttempt) > 5 { loadKey() }
         let addr = address, n = validators, generation = networkGeneration
         refreshes += 1
@@ -545,6 +548,7 @@ final class WalletModel: ObservableObject {
             }
             let verified = acc, readError = err
             await MainActor.run {
+                self.refreshInFlight = false
                 guard self.networkGeneration == generation else { return }
                 // Published only when something actually changed: an unchanged set
                 // would still invalidate every view watching this model (the whole

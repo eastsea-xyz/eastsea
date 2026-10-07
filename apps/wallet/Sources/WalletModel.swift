@@ -40,6 +40,8 @@ final class WalletModel: ObservableObject {
     /// Voting-node registration in progress or failed (nil: idle or done).
     @Published var registration: RegistrationState?
     @Published var busy = false
+    /// The send or contract-call sheet is open: a quiet update waits (UpdateWindow).
+    var sendSheetOpen = false
     @Published var log: [String] = []
     @Published var sendTo = ""
     @Published var sendAmount = "1"

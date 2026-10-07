@@ -38,6 +38,7 @@ run token-send Brand.swift TokenSend.swift TokenAssets.swift EarningsModel.swift
 run unattended UnattendedDecision.swift
 run update-channel UpdateChannel.swift
 run update-state Brand.swift DataMigration.swift UpdateTracker.swift
+run update-window UpdateWindow.swift
 run watchdog Brand.swift Clock.swift NodeWatchdog.swift
 # The agent's payment history (aether-agent): pending context, drops, receipts.
 W=apps/agent/Sources; T=apps/agent/Tests

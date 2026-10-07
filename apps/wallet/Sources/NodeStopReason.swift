@@ -42,6 +42,8 @@ enum NodeStopReason: Equatable {
     case upgradeNeeded
     /// This Mac's node key cannot be read.
     case identityLost
+    /// This Mac cannot verify the node keys' hardware binding.
+    case keyElsewhere
     /// The process could not even be launched (an OS error).
     case launchFailed(String)
     /// The block data is moving to another disk (0…100).
@@ -65,6 +67,7 @@ enum NodeStopReason: Equatable {
         case .needsAttention: return "needs_attention"
         case .upgradeNeeded: return "upgrade_needed"
         case .identityLost: return "identity_lost"
+        case .keyElsewhere: return "key_elsewhere"
         case .launchFailed: return "launch_failed"
         case .movingStorage: return "moving_storage"
         }
@@ -214,6 +217,11 @@ extension NodeStopReason {
             return NodeStopCopy(title: ko ? "노드 키를 읽을 수 없음" : "Node key unreadable",
                                 detail: NodeWatchdog.Failure.identityLost.sentence,
                                 resume: "", action: .copyDiagnostics, actionLabel: ko ? "진단 정보 복사" : "Copy Diagnostics")
+        case .keyElsewhere:
+            return NodeStopCopy(title: ko ? "다른 Mac의 노드 키" : "Node keys from another Mac",
+                                detail: ko ? "이 노드의 키가 다른 Mac에서 옮겨 왔어요. 원래 Mac에서 실행하거나 이 Mac에 새 노드를 등록해 주세요."
+                                    : "This node's keys came from another Mac. Use the original Mac or register a new node on this Mac.",
+                                resume: "", action: .copyDiagnostics, actionLabel: ko ? "진단 정보 복사" : "Copy Diagnostics")
         case .launchFailed(let why):
             return NodeStopCopy(title: ko ? "노드를 시작하지 못함" : "The node could not start",
                                 detail: (ko ? "macOS가 노드 실행을 거부했어요: " : "macOS refused to launch the node: ") + why,
@@ -337,6 +345,7 @@ enum NodeResume {
                     : .wait(.diskFull(freeBytes: free, resumeBytes: resumeBytes, volume: f.volumeName))
             case .upgradeNeeded: return .wait(.upgradeNeeded)
             case .identityLost: return .wait(.identityLost)
+            case .keyElsewhere: return .wait(.keyElsewhere)
             case .database, .handoff, .storage: return .wait(.needsAttention(failure))
             case .alreadyRunning:
                 return f.lockHeldByOther ? .wait(.otherNodeRunning) : .start(detach: false)

@@ -60,6 +60,7 @@ pub fn registered_identity(dir: &Path) -> bool {
         crate::roster::KEY_FILE,
         crate::roster::PUBLIC_FILE,
         ACCOUNT_FILE,
+        crate::key_binding::BINDING_FILE,
         "network.json",
         "threshold.json",
     ];
@@ -113,7 +114,7 @@ impl CandidateKeys {
                 }
                 let k = LocalKeys::generate();
                 k.save(dir)?;
-                (k, true)
+                (LocalKeys::load(dir)?, true)
             }
         };
         let account_path = dir.join(ACCOUNT_FILE);
@@ -158,12 +159,14 @@ impl CandidateKeys {
 
     /// The voting key's signature asking the registrar to register it for `operator`.
     pub fn ownership(&self, chain_id: u64, operator: Address) -> Vec<u8> {
+        self.keys.check_binding();
         let msg = registry::attestation_message(chain_id, operator, self.validator_key(), self.node_id(), self.beaconer());
         self.keys.signer.sign(crate::devicecheck::OWNERSHIP_NAMESPACE, &msg).encode().to_vec()
     }
 
     /// The voting key's request to be re-attested for `period`.
     pub fn reattest_request(&self, chain_id: u64, period: u64) -> Vec<u8> {
+        self.keys.check_binding();
         let msg = beacons::reattest_message(chain_id, &self.validator_key(), period);
         self.keys.signer.sign(crate::devicecheck::OWNERSHIP_NAMESPACE, &msg).encode().to_vec()
     }
@@ -271,6 +274,7 @@ async fn answer_slots(chain: &Chain, outbox: &Outbox, keys: &CandidateKeys, st: 
                 }
             }
         };
+        keys.keys.check_binding();
         let answer = crate::beacons::sign(&keys.keys.signer, chain_id, c.index, &due, attest);
         match outbox.send_answer(chain, answer).await {
             Ok(()) => {
@@ -296,6 +300,7 @@ pub async fn beacon_loop(chain: Chain, outbox: Outbox, keys: CandidateKeys) {
     #[cfg(unix)]
     let mut wake = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1()).expect("SIGUSR1 handler");
     loop {
+        keys.keys.check_binding();
         // No beacons while catching up — and none before any height is known:
         // one is a claim this Mac is current, and it would be checked against
         // a state this node has not reached (a follower or a validator still
@@ -320,6 +325,7 @@ pub async fn beacon_loop(chain: Chain, outbox: Outbox, keys: CandidateKeys) {
                 if let Some(c) = registry::candidates(&state).into_iter().find(|c| c.validator_key == me) {
                     let on_chain = registry_v3::availability(&state, c.index).is_some_and(|(_, v)| v);
                     if on_chain != leaving {
+                        keys.keys.check_binding();
                         let signal = crate::beacons::sign_availability(&keys.keys.signer, cfg.chain_id, c.index, height + 1, leaving);
                         if let Err(e) = outbox.send_answer(&chain, signal).await {
                             warn!(%e, leaving, "availability announcement not accepted");
@@ -477,7 +483,16 @@ mod tests {
         std::fs::write(data.join("node-account.key"), account).unwrap();
         assert_eq!(CandidateKeys::load_or_create(&data).unwrap().validator_key(), identity, "the original backup works");
         std::fs::remove_file(data.join(crate::roster::KEY_FILE)).unwrap();
-        crate::roster::LocalKeys::generate().save(&data).unwrap();
+        assert!(crate::key_binding::is_refusal(&crate::roster::LocalKeys::generate().save(&data).unwrap_err()),
+            "a surviving binding must also prevent minting a replacement key");
+        assert!(!data.join(crate::roster::KEY_FILE).exists());
+        // Restore a different backup with its own matching hardware binding:
+        // the sibling identity marker must still reject it on the same Mac.
+        let other = parent.join("another-identity");
+        crate::roster::LocalKeys::generate().save(&other).unwrap();
+        for name in [crate::roster::KEY_FILE, crate::key_binding::BINDING_FILE] {
+            std::fs::copy(other.join(name), data.join(name)).unwrap();
+        }
         let err = CandidateKeys::load_or_create(&data).expect_err("a different restored key is not the original");
         assert!(err.contains("original identity"), "{err}");
         let _ = std::fs::remove_dir_all(&parent);

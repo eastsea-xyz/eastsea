@@ -57,6 +57,16 @@ pub const EXIT_CHAIN_DATA_MISSING: i32 = 13;
 /// key directory) on a removable or network volume. "keys must stay on this
 /// Mac": the node refuses to start and never reads keys from there.
 pub const EXIT_KEYS_ON_CHAIN_DATA: i32 = 14;
+pub use crate::key_binding::EXIT_KEY_ELSEWHERE;
+
+/// Publish the hardware binding before the key, so a newly copied key cannot
+/// arrive without its binding. Legacy keys are bound once when loaded.
+pub fn create_key_binding(data: &Path, public: &crate::block::PublicKey) -> Result<(), String> {
+    if crate::key_binding::check(data, public)? == crate::key_binding::Checked::Created {
+        tracing::info!(path = %data.join(crate::key_binding::BINDING_FILE).display(), "created node key hardware binding");
+    }
+    Ok(())
+}
 
 /// Files that are this Mac's identity: they live in `--data` (the key
 /// directory, the internal disk) and nowhere else.
@@ -84,6 +94,14 @@ pub fn keys_on_external_data(data: &Path, external: bool) -> bool {
 
 /// macOS: a path under /Volumes/ or on a volume statfs does not call local.
 pub fn volume_is_external(path: &Path) -> bool {
+    // Integration fixtures live under the workspace's ./tmp even when that
+    // workspace is mounted under /Volumes. Only an explicitly selected test
+    // subtree may simulate the internal key volume; shipped binaries ignore it.
+    #[cfg(all(feature = "test-seam", debug_assertions))]
+    if let Some(dir) = std::env::var_os("AETHER_TEST_INTERNAL_KEY_DIR") {
+        let dir = PathBuf::from(dir);
+        if dir.is_absolute() && path.starts_with(dir) { return false; }
+    }
     if path.starts_with("/Volumes/") { return true; }
     let Ok(c) = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()) else { return false };
     let mut st: libc::statfs = unsafe { std::mem::zeroed() };
@@ -667,7 +685,7 @@ const MAX_BACKOFF_MS: u64 = 60_000;
 pub fn next_restart(exits: &[ExitNote], now_ms: u64) -> Next {
     let Some(last) = exits.last() else { return Next::Again(Duration::from_millis(FIRST_BACKOFF_MS)) };
     match last.code {
-        Some(code @ (EXIT_UPGRADE_REQUIRED | crate::store::EXIT_STORAGE | EXIT_NO_VERIFIER | crate::candidate::EXIT_IDENTITY | EXIT_LOCKED)) => {
+        Some(code @ (EXIT_UPGRADE_REQUIRED | crate::store::EXIT_STORAGE | EXIT_NO_VERIFIER | crate::candidate::EXIT_IDENTITY | EXIT_LOCKED | EXIT_KEY_ELSEWHERE)) => {
             return Next::Stop(code);
         }
         _ => {}
@@ -846,6 +864,7 @@ impl Supervisor {
         match crate::candidate::CandidateKeys::load_or_create(&self.data) {
             Ok(keys) => Some(hex::encode(keys.validator_key())),
             Err(e) => {
+                crate::key_binding::exit_if_refusal(&e);
                 tracing::error!(
                     %e,
                     role = "follower",
@@ -1126,10 +1145,14 @@ impl Supervisor {
                 stop(&mut reshare);
                 return Watched::Exited(status);
             }
-            if role == Role::Keyless
-                && crate::candidate::CandidateKeys::load_or_create(&self.data).is_ok() {
-                tracing::info!("aether run: restored identity is readable; re-evaluating the role");
-                return Watched::Switched;
+            if role == Role::Keyless {
+                match crate::candidate::CandidateKeys::load_or_create(&self.data) {
+                    Ok(_) => {
+                        tracing::info!("aether run: restored identity is readable; re-evaluating the role");
+                        return Watched::Switched;
+                    }
+                    Err(e) => crate::key_binding::exit_if_refusal(&e),
+                }
             }
             // 1. A proposed voting set: reshare to it in the background, once per finalized draw.
             if reshare.is_none() {
@@ -1717,7 +1740,7 @@ fn write_secret(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 /// Keys that identify this Mac; everything else in <data> belongs to one network.
-const KEEP_ACROSS_NETWORKS: [&str; 4] = ["validator.key", "validator.pub.json", "node-account.key", "run.lock"];
+const KEEP_ACROSS_NETWORKS: [&str; 5] = ["validator.key", "validator.pub.json", "node-account.key", "key-binding.json", "run.lock"];
 
 /// Put `network` in `<data>/network.json`: the first time, or when it is a
 /// different network (a testnet reset: other chain id or committee identity).

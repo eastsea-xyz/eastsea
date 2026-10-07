@@ -40,6 +40,13 @@ check(!NodeWatchdog.storageRecovered(freeBytes: NodeWatchdog.diskResumeBytes - 1
 check(NodeWatchdog.storageRecovered(freeBytes: NodeWatchdog.diskResumeBytes), "the node's 7 GB resume level permits a restart")
 check(NodeWatchdog.diskResumeBytes == NodeResumeBytesFromNode, "the app resumes at the node's level, not its own")
 check(NodeWatchdog.classify(code: 12, signaled: false, log: "") == .diskFull, "exit 12 (EXIT_DISK_LOW) is a full disk")
+check(NodeWatchdog.classify(code: 15, signaled: false, log: "ENOSPC") == .keyElsewhere, "hardware-binding refusal takes priority over stale log text")
+var elsewhere = NodeWatchdog()
+elsewhere.started(t0)
+check(elsewhere.exited(t0.advanced(by: 3), code: 15) == .stop(.keyElsewhere), "copied node keys stop immediately without an automatic retry")
+var terminated = NodeWatchdog()
+terminated.started(t0)
+check(terminated.exited(t0.advanced(by: 3), code: 15, signaled: true) == .restart(after: 1), "SIGTERM is not the hardware-binding exit code")
 if case let .stop(f) = stopped {
     check(f.sentence.contains("7 GB"), "the sentence says what to do (free space, at the node's 7 GB)")
 }

@@ -77,6 +77,7 @@ pub fn peer_addresses(a: &P2pArgs) -> Map<PublicKey, PeerAddress> {
 
 /// Commonware p2p configuration for validator `a.index` under `namespace_suffix`.
 pub fn config(a: &P2pArgs, namespace_suffix: &[u8]) -> lookup::Config<ed25519::PrivateKey> {
+    a.keys.check_binding();
     let signer = a.keys.signer.clone();
     let max_peers = authenticated::peer_set_limit(&a.validators(), &signer.public_key());
     // Validators listen on loopback; the outside world reaches them only via iroh
@@ -98,6 +99,7 @@ pub fn config(a: &P2pArgs, namespace_suffix: &[u8]) -> lookup::Config<ed25519::P
 /// publish the node id ourselves and accept on `local`. Links are authenticated
 /// by the p2p handshake (validator keys), not by the iroh id.
 pub async fn open_reshare(a: &P2pArgs, via_node: bool, local: SocketAddr) -> Option<(aether_net::Endpoint, Option<aether_net::Router>)> {
+    a.keys.check_binding();
     if a.offline {
         return None;
     }
@@ -120,6 +122,7 @@ pub async fn open_reshare(a: &P2pArgs, via_node: bool, local: SocketAddr) -> Opt
 /// Bind the public iroh endpoint (published to the DHT) and open links to every
 /// other validator. Returns None when offline.
 pub async fn open_public(a: &P2pArgs) -> Option<aether_net::Endpoint> {
+    a.keys.check_binding();
     if a.offline {
         return None;
     }

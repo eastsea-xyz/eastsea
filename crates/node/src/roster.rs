@@ -610,6 +610,7 @@ impl Roster {
 pub struct LocalKeys {
     pub signer: ed25519::PrivateKey,
     pub node_secret: SecretKey,
+    pub binding: Option<crate::key_binding::Guard>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -623,6 +624,7 @@ impl LocalKeys {
         LocalKeys {
             signer: aether_light::devnet_validator_key(i),
             node_secret: aether_net::devnet_node_secret(i),
+            binding: None,
         }
     }
 
@@ -632,6 +634,7 @@ impl LocalKeys {
         LocalKeys {
             signer,
             node_secret: SecretKey::from_bytes(&rand::random()),
+            binding: None,
         }
     }
 
@@ -661,9 +664,16 @@ impl LocalKeys {
             .map_err(|e| e.to_string())?
             .try_into()
             .map_err(|_| "node key length".to_string())?;
+        if crate::key_binding::check(dir, &signer.public_key())? == crate::key_binding::Checked::Created {
+            // CLI preflight runs before a tracing subscriber is installed.
+            // Stderr reaches the supervisor/app log even during that preflight.
+            eprintln!("warning: created missing hardware binding for an existing node key on this Mac: {}", dir.join(crate::key_binding::BINDING_FILE).display());
+        }
+        let binding = Some(crate::key_binding::Guard::for_validator(dir, &signer.public_key()));
         Ok(LocalKeys {
             signer,
             node_secret: SecretKey::from_bytes(&n),
+            binding,
         })
     }
 
@@ -674,6 +684,7 @@ impl LocalKeys {
         if path.exists() {
             return Err(format!("{} exists (keys are never overwritten)", path.display()));
         }
+        crate::supervisor::create_key_binding(dir, &self.signer.public_key())?;
         let j = KeyFileJson {
             consensus: hex::encode(self.signer.encode()),
             node: hex::encode(self.node_secret.to_bytes()),
@@ -687,6 +698,10 @@ impl LocalKeys {
             0o644,
         )?;
         Ok(())
+    }
+
+    pub fn check_binding(&self) {
+        if let Some(guard) = &self.binding { guard.check_or_exit(); }
     }
 }
 

@@ -23,7 +23,7 @@ pub enum Finality {
     Archive(std::sync::Arc<crate::follow::FinalityArchive>),
 }
 
-pub type Marshal = commonware_consensus::marshal::core::Mailbox<aether_light::Scheme, commonware_consensus::marshal::standard::Standard<crate::block::Block>>;
+pub type Marshal = commonware_consensus::marshal::core::Mailbox<crate::key_binding::signing::Scheme, commonware_consensus::marshal::standard::Standard<crate::block::Block>>;
 
 #[derive(Clone)]
 pub struct RpcState {

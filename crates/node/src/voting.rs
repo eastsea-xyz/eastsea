@@ -19,7 +19,7 @@
 //!    hold the block on disk and can serve it after a crash or restart.
 
 use crate::block::{Block, PublicKey};
-use aether_light::Scheme;
+use crate::key_binding::signing::Scheme;
 use commonware_actor::Feedback;
 use commonware_consensus::{
     marshal::{

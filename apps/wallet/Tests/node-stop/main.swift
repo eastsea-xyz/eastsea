@@ -99,6 +99,10 @@ f = NodeResumeFacts(); f.blocked = .upgradeNeeded
 check(NodeResume.decide(f) == .wait(.upgradeNeeded), "upgrade")
 f = NodeResumeFacts(); f.blocked = .identityLost
 check(NodeResume.decide(f) == .wait(.identityLost), "identity")
+f = NodeResumeFacts(); f.blocked = .keyElsewhere; f.blockedForSeconds = 86_400
+check(NodeResume.decide(f) == .wait(.keyElsewhere), "hardware binding needs attention even after the crash retry window")
+check(NodeStopReason.keyElsewhere.copy(ko: true).detail.contains("이 노드의 키가 다른 Mac에서 옮겨 왔어요"), "copied-key reason explains the stop in Korean")
+check(NodeStopReason.keyElsewhere.copy(ko: false).detail.contains("This node's keys came from another Mac"), "copied-key reason explains the stop in English")
 for bad in [NodeWatchdog.Failure.database, .handoff, .storage] {
     f = NodeResumeFacts(); f.blocked = bad; f.blockedForSeconds = 100_000
     check(NodeResume.decide(f) == .wait(.needsAttention(bad)), "\(bad) needs a person, even after hours")

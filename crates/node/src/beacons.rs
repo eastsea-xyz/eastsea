@@ -33,12 +33,14 @@ pub struct Checked {
 
 /// The voting key's answer to `due`.
 pub fn sign(key: &ed25519::PrivateKey, chain_id: u64, index: u64, due: &Due, attest: Option<Reattestation>) -> BeaconAnswer {
+    crate::key_binding::check_process();
     let msg = beacons::message(chain_id, due.epoch, due.slot, &due.hash);
     BeaconAnswer { index, slot: due.slot, signature: hex::encode(key.sign(NAMESPACE, &msg).encode()), attest }
 }
 
 /// Sign an immediate leaving/back announcement for the next block.
 pub fn sign_availability(key: &ed25519::PrivateKey, chain_id: u64, index: u64, height: u64, leaving: bool) -> BeaconAnswer {
+    crate::key_binding::check_process();
     let msg = beacons::availability_message(chain_id, height, leaving);
     BeaconAnswer { index, slot: beacons::availability_slot(height, leaving).expect("block height fits a beacon slot"), signature: hex::encode(key.sign(NAMESPACE, &msg).encode()), attest: None }
 }

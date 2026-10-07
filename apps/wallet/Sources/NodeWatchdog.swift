@@ -73,6 +73,8 @@ struct NodeWatchdog {
         /// This Mac's node key is gone or unreadable: the node refuses to mint
         /// a new identity, and so must the app — a person restores the key.
         case identityLost
+        /// Copied keys or a hardware binding this Mac cannot verify (exit 15).
+        case keyElsewhere
         /// Another Aether already runs this node's data directory.
         case alreadyRunning
 
@@ -107,6 +109,9 @@ struct NodeWatchdog {
             case .identityLost:
                 return ko ? "이 Mac의 노드 키를 읽을 수 없어요. 백업에서 키를 되찾으면 노드가 다시 투표합니다."
                     : "This Mac's node key cannot be read. Restore it from a backup and the node votes again."
+            case .keyElsewhere:
+                return ko ? "이 노드의 키가 다른 Mac에서 옮겨 왔어요. 투표와 서명을 멈췄어요."
+                    : "This node's keys came from another Mac. Voting and signing have stopped."
             case .alreadyRunning:
                 return ko ? "다른 \(Brand.projectKo)가 이미 이 노드를 실행하고 있어요. 그 앱에서 노드를 켜 주세요."
                     : "Another \(Brand.project) is already running this node. Please use that app instead."
@@ -134,7 +139,7 @@ struct NodeWatchdog {
     /// Exit codes no restart can change: the node's own supervisor exits with
     /// them instead of restarting (3 upgrade required, 5 no proof verifier,
     /// 6 identity lost, 7 data directory locked), and the app does the same.
-    static let unrestartable: [Int32] = [3, 5, 6, 7]
+    static let unrestartable: [Int32] = [3, 5, 6, 7, 15]
 
     /// The node's recent deaths (sliding `crashWindow`), oldest first.
     private(set) var exits: [MonotonicInstant] = []
@@ -268,7 +273,7 @@ struct NodeWatchdog {
         if lastFailure == .storage { return .stop(.storage) }
         // A restart cannot fix these (red team #1): the update, the key or the
         // other app is the fix. Not even the rollback path may take them.
-        if Self.unrestartable.contains(code) {
+        if !signaled && Self.unrestartable.contains(code) {
             return .stop(lastFailure)
         }
         if let startedAt, at.elapsed(since: startedAt) < Self.quickExit {
@@ -379,6 +384,7 @@ struct NodeWatchdog {
         // over memory. Any other signal (SIGTERM, the SIGUSR1 a 0.7.0
         // supervisor died of) is not a memory problem.
         if (signaled && code == 9) || code == 137 { return .memory }
+        if !signaled && code == 15 { return .keyElsewhere }
         let tail = log.suffix(8_192).lowercased()
         // 12 is the node's own "the disk is below its floor" exit
         // (supervisor.rs EXIT_DISK_LOW): a full disk, whatever the log says.

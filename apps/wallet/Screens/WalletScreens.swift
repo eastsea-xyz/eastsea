@@ -254,6 +254,7 @@ final class Renderer {
         settle(0.4)
         guard let view = a.window.contentView else { failed += 1; return }
         write(view, name: name, dark: dark)
+        writeText(view, name: name, dark: dark)
         a.window.orderOut(nil)
     }
 
@@ -282,6 +283,7 @@ final class Renderer {
         } else {
             write(host, name: name, dark: dark)
         }
+        writeText(win.contentView, name: name, dark: dark)
         win.orderOut(nil)
         win.contentView = nil
     }
@@ -298,6 +300,30 @@ final class Renderer {
         let fn = unsafeBitCast(sym, to: Fn.self)
         // .optionIncludingWindow = 1 << 3, .boundsIgnoreFraming = 1 << 0, .bestResolution = 1 << 3
         return fn(.null, 1 << 3, UInt32(win.windowNumber), (1 << 0) | (1 << 3))?.takeRetainedValue()
+    }
+
+    /// Every string the view shows, read back through accessibility (what
+    /// VoiceOver would say): written next to the PNG, so
+    /// scripts/check-wallet-screens-language.py can check the language of
+    /// each render without reading pixels.
+    private func writeText(_ root: Any?, name: String, dark: Bool) {
+        var lines: [String] = []
+        var seen = Set<ObjectIdentifier>()
+        func walk(_ any: Any?, depth: Int) {
+            guard depth < 60, let el = any as? NSObject else { return }
+            guard seen.insert(ObjectIdentifier(el)).inserted else { return }
+            if let e = el as? NSAccessibilityProtocol {
+                for t in [e.accessibilityLabel(), e.accessibilityValue() as? String, e.accessibilityTitle()] {
+                    if let t, !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { lines.append(t) }
+                }
+                for c in e.accessibilityChildren() ?? [] { walk(c, depth: depth + 1) }
+            }
+            if let v = el as? NSView { for c in v.subviews { walk(c, depth: depth + 1) } }
+            if let t = el as? NSTextField { lines.append(t.stringValue) }
+        }
+        walk(root, depth: 0)
+        let url = file(name, dark).deletingPathExtension().appendingPathExtension("txt")
+        try? lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
     }
 
     private func writeImage(_ image: CGImage, name: String, dark: Bool) {

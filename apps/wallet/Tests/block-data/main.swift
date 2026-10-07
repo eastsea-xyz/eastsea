@@ -3,6 +3,39 @@
 // requirements on the archive node's real numbers.
 //   scripts/test-swift-pure.sh   (run block-data)
 import Foundation
+#if os(macOS)
+import AppKit
+
+// Exercise the real mover against fixtures, without starting a node or app.
+@MainActor final class NodeController {
+    nonisolated static let dataDir = URL(fileURLWithPath: ProcessInfo.processInfo.environment["AETHER_AGENT_TEST_TMP"]!)
+        .appendingPathComponent("block-data-internal-\(UUID().uuidString)")
+    var chainDataPath = ""
+    var storageMoveOffersDiskUtility = false
+    var storageMovePercent: Int?
+    var storageMoveError: String?
+    var attached = false
+    var unattended: MoveDaemonStub? = MoveDaemonStub()
+    var archive = false
+    var mountObservers: [NSObjectProtocol] = []
+    var stops = 0
+    func stop(keepSwitch: Bool) { stops += 1 }
+    func logEvent(_ event: String, _ message: String) {}
+    func applyPower() {}
+    nonisolated static func lockHeld(in dir: URL) -> Bool {
+        let fd = open(dir.appendingPathComponent("run.lock").path, O_RDONLY)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        if flock(fd, LOCK_EX | LOCK_NB) == 0 { flock(fd, LOCK_UN); return false }
+        return errno == EWOULDBLOCK
+    }
+}
+@MainActor final class MoveDaemonStub {
+    func stopDaemonNode() {}
+    func syncMarker() {}
+}
+enum HealthCheck { static let korean = false }
+#endif
 func check(_ c: Bool, _ m: String) { if !c { print("FAIL", m); exit(1) } }
 let GiB: UInt64 = 1_073_741_824
 
@@ -56,6 +89,38 @@ check(argv == ["run", "--data", "/d", "--rpc-port", "1", "--port", "2", "--max-s
 check(argv[2] == "/d", "keys stay in --data (the internal disk)")
 check(BlockDataLocation.movedDirs == ["follow", "archive"], "only the follower's and the archive's state move")
 check(BlockDataLocation.keepInternal.contains("wallet-node.key"), "the follower's endpoint key stays on the internal disk")
+
+#if os(macOS)
+// R01: a real nested destination must be refused before a write or shutdown.
+try MainActor.assumeIsolated {
+let moveFixture = NodeController.dataDir.deletingLastPathComponent()
+    .appendingPathComponent("block-data-move-\(UUID().uuidString)")
+try FileManager.default.createDirectory(at: moveFixture, withIntermediateDirectories: true)
+defer { try? FileManager.default.removeItem(at: moveFixture); try? FileManager.default.removeItem(at: NodeController.dataDir) }
+let nestedSource = moveFixture.appendingPathComponent("source")
+try FileManager.default.createDirectory(at: nestedSource.appendingPathComponent("follow"), withIntermediateDirectories: true)
+let mover = NodeController()
+mover.chainDataPath = nestedSource.path
+check(mover.problem(with: nestedSource.appendingPathComponent("follow")) != nil,
+      "R01 nested destination is rejected before copy and cleanup")
+let alias = moveFixture.appendingPathComponent("source-alias")
+try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: nestedSource)
+check(mover.problem(with: alias.appendingPathComponent("follow")) != nil, "R01 symlink aliases cannot bypass ancestry")
+mover.moveBlockData(to: nestedSource.appendingPathComponent("follow/new"))
+check(mover.storageMovePercent == nil && mover.stops == 0, "R01 direct move rejects nesting before stopping")
+check(!BlockDataLocation.disjoint(nestedSource, nestedSource.deletingLastPathComponent()), "R01 ancestor is rejected")
+check(BlockDataLocation.disjoint(nestedSource, moveFixture.appendingPathComponent("source-sibling")), "R01 siblings remain allowed")
+let authoritative = nestedSource.appendingPathComponent("follow/new")
+try FileManager.default.createDirectory(at: authoritative, withIntermediateDirectories: true)
+let sentinel = authoritative.appendingPathComponent("state.db")
+try Data("authoritative".utf8).write(to: sentinel)
+mover.chainDataPath = authoritative.path
+UserDefaults.standard.set(nestedSource.path, forKey: NodeController.cleanupKey)
+mover.finishBlockDataMove()
+RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+check(FileManager.default.fileExists(atPath: sentinel.path), "R01 cleanup rechecks ancestry")
+}
+#endif
 
 // MARK: archive requirements, on measured numbers
 

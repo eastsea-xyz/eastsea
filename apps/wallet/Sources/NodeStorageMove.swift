@@ -75,7 +75,7 @@ extension NodeController {
     func problem(with picked: URL) -> String? {
         let ko = HealthCheck.korean
         let dest = BlockDataLocation.chainDir(picked: picked)
-        if dest.standardizedFileURL.path == chainRoot.standardizedFileURL.path {
+        if !BlockDataLocation.disjoint(dest, chainRoot) {
             return BlockDataLocation.sentence(.inUse, ko: ko)
         }
         guard let v = Self.volume(of: picked) else {
@@ -125,7 +125,10 @@ extension NodeController {
         guard storageMovePercent == nil else { return }
         let source = chainRoot
         let target = dest ?? Self.dataDir
-        guard source.standardizedFileURL.path != target.standardizedFileURL.path else { return }
+        guard BlockDataLocation.disjoint(source, target) else {
+            storageMoveError = String(localized: "Pick a folder outside the current block data. The two locations cannot contain each other.")
+            return
+        }
         let ko = HealthCheck.korean
         storageMoveError = nil
         storageMoveOffersDiskUtility = false
@@ -184,7 +187,7 @@ extension NodeController {
         guard let old = UserDefaults.standard.string(forKey: Self.cleanupKey) else { return }
         UserDefaults.standard.removeObject(forKey: Self.cleanupKey)
         let oldRoot = URL(fileURLWithPath: old, isDirectory: true)
-        guard oldRoot.standardizedFileURL.path != chainRoot.standardizedFileURL.path else { return }
+        guard BlockDataLocation.disjoint(oldRoot, chainRoot) else { return }
         logEvent("storage", "the node runs from \(chainRoot.path); removing the old copy at \(old)")
         Task.detached {
             let fm = FileManager.default

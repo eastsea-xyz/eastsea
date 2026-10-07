@@ -102,6 +102,23 @@ enum BlockDataLocation {
         picked.lastPathComponent == folderName ? picked : picked.appendingPathComponent(folderName, isDirectory: true)
     }
 
+    /// Resolve existing ancestors too when the proposed leaf does not exist.
+    static func resolvedRoot(_ url: URL) -> URL {
+        var ancestor = url.standardizedFileURL
+        var suffix: [String] = []
+        while !FileManager.default.fileExists(atPath: ancestor.path), ancestor.pathComponents.count > 1 {
+            suffix.insert(ancestor.lastPathComponent, at: 0)
+            ancestor.deleteLastPathComponent()
+        }
+        return suffix.reduce(ancestor.resolvingSymlinksInPath()) { $0.appendingPathComponent($1) }.standardizedFileURL
+    }
+
+    /// Copy and cleanup roots must never overlap in either direction.
+    static func disjoint(_ a: URL, _ b: URL) -> Bool {
+        let x = resolvedRoot(a).path, y = resolvedRoot(b).path
+        return x != y && !x.hasPrefix(y + "/") && !y.hasPrefix(x + "/") && x != "/" && y != "/"
+    }
+
     /// The node flags for the stored choices, appended to the shared argv.
     static func flags(chainDataPath: String, archive: Bool) -> [String] {
         var out: [String] = []

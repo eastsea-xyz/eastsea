@@ -8,8 +8,10 @@
 <title>개인정보 처리방침 · Privacy policy — EastSea</title>
 <meta name="theme-color" content="#f5f0e8" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0b1622" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
 <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png">
 <link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png">
+<link rel="stylesheet" href="tokens.css">
 <link rel="stylesheet" href="styles.css">
 <script>
 /* Language: stored choice first (try/catch — storage can be blocked), then navigator.language.
@@ -30,36 +32,61 @@
   <span class="en" lang="en">Skip to content</span>
 </a>
 
+<div class="notice" role="note">
+  <div class="wrap notice-row">
+    <span class="dot" aria-hidden="true"></span>
+    <p>
+      <span class="ko" lang="ko"><strong>테스트넷 전용.</strong> 메인넷은 아직 출시되지 않았고, 테스트 DBLN에는 가치가 없습니다. 토큰 판매는 없습니다.</span>
+      <span class="en" lang="en"><strong>Testnet only.</strong> Mainnet has not launched, and test DBLN has no value. There is no token sale.</span>
+    </p>
+  </div>
+</div>
+
 <header class="site-header">
-  <div class="container header-row">
-    <a class="brand" href="index.html">
-      <svg class="brand-mark" viewBox="0 0 64 64" role="img" aria-label="EastSea doubloon mark" focusable="false">
-        <circle cx="32" cy="32" r="28" fill="var(--gold)" stroke="var(--coin-rim)" stroke-width="3"/>
-        <path d="M15 34q7-9 14 0t14 0" fill="none" stroke="var(--navy-deep)" stroke-width="4.5" stroke-linecap="round"/>
-        <path d="M20 44q5-6 10 0t10 0" fill="none" stroke="var(--navy-deep)" stroke-width="3.5" stroke-linecap="round" opacity=".55"/>
+  <div class="wrap header-row">
+    <a class="brand" href="index.html" aria-label="EastSea 동해">
+      <svg class="mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+        <circle cx="16" cy="16" r="14.5" fill="#E8BF59"/>
+        <g fill="#0D2135">
+          <path d="M9 17C9.2 8.5 22.8 8.5 23 18.5 18 18.5 14.3 14.8 9 17Z"/>
+          <path d="M5 21C8.8 15.8 12.8 17 17 19c3.6 1.7 6.7 2.6 10 0-2 5.9-5.2 6.2-9.6 4.1C12.6 20.9 9.6 19.1 5 21Z"/>
+          <path d="M8.5 26c3.2-3 5.5-2.2 8.5-.8 2.4 1.1 4.6 1 7-.4-2.2 4-4.6 4.3-8.6 2.6C12.9 26.3 11.4 25 8.5 26Z"/>
+        </g>
+        <path d="M16 5.8v2.6M8.6 8.8l1.8 1.8M23.4 8.8l-1.8 1.8" stroke="#0D2135" stroke-width="2.2" stroke-linecap="round"/>
       </svg>
-      <span class="brand-name">동해<em>EastSea</em></span>
+      <span class="brand-ko">동해</span><span class="brand-en">EastSea</span>
     </a>
-    <button id="lang-toggle" type="button" aria-label="한국어 · English">
-      <span class="ko" lang="ko">EN</span>
-      <span class="en" lang="en">한글</span>
-    </button>
+    <nav class="nav" aria-label="Sections">
+      <a href="index.html#how"><span class="ko" lang="ko">작동 방식</span><span class="en" lang="en">How it works</span></a>
+      <a href="index.html#rewards"><span class="ko" lang="ko">노드 보상</span><span class="en" lang="en">Rewards</span></a>
+      <a href="index.html#safety"><span class="ko" lang="ko">안전</span><span class="en" lang="en">Safety</span></a>
+      <a href="index.html#toolbox"><span class="ko" lang="ko">툴박스</span><span class="en" lang="en">Toolbox</span></a>
+      <a href="index.html#faq">FAQ</a>
+    </nav>
+    <div class="header-actions">
+      <button id="lang-toggle" class="lang" type="button">
+        <span class="ko" lang="ko"><span class="sr-only">언어 바꾸기: </span>EN</span><span class="en" lang="en"><span class="sr-only">Language: </span>한국어</span>
+      </button>
+      <a class="btn btn-sm btn-primary" href="https://github.com/eastsea-xyz/eastsea/releases/latest">
+        <span class="ko" lang="ko">내려받기</span><span class="en" lang="en">Download</span>
+      </a>
+    </div>
   </div>
 </header>
 
 <main id="main">
 
-  <section class="section" aria-labelledby="privacy-title">
-    <div class="container">
-      <p class="kicker">
+  <section class="section doc" aria-labelledby="privacy-title">
+    <div class="wrap doc-body">
+      <p class="label">
         <span class="ko" lang="ko">개인정보</span>
         <span class="en" lang="en">Privacy</span>
       </p>
-      <h1 id="privacy-title">
+      <h1 id="privacy-title" class="h2">
         <span class="ko" lang="ko">개인정보 처리방침</span>
         <span class="en" lang="en">Privacy policy</span>
       </h1>
-      <p class="lede">
+      <p class="lead">
         <span class="ko" lang="ko">주식회사 핀(Pipln, 이하 "회사")은 동해(EastSea) 네트워크의 투표 노드 등록 서비스를 제공하기 위해 최소한의 개인정보만 처리합니다. 이 방침은 무엇을 수집하고, 왜, 얼마나 보관하는지, Apple(미국)으로의 이전, 그리고 이용자의 권리를 설명합니다. 시행일: 2026년 10월 4일.</span>
         <span class="en" lang="en">Pipln Inc. (the "company") processes the minimum personal data needed to run the registration service for EastSea voting nodes. This policy explains what is collected and why, how long it is kept, the transfer to Apple (USA), and your rights. Effective October 4, 2026.</span>
       </p>
@@ -81,7 +108,7 @@
         <span class="ko" lang="ko">투표 노드 등록 요청 시, 등록 서비스는 다음을 받습니다:</span>
         <span class="en" lang="en">When you register a voting node, the registration service receives:</span>
       </p>
-      <ul class="check-list">
+      <ul class="doc-list">
         <li>
           <span class="ko" lang="ko"><strong>네트워크 IP 주소</strong> — 등록 요청 시점의 접속 주소</span>
           <span class="en" lang="en"><strong>Your network IP address</strong> — the connection address at the moment of registration</span>
@@ -113,7 +140,7 @@
         <span class="ko" lang="ko">4. 보유 및 파기</span>
         <span class="en" lang="en">4. Retention and destruction</span>
       </h2>
-      <ul class="check-list">
+      <ul class="doc-list">
         <li>
           <span class="ko" lang="ko"><strong>Apple DeviceCheck 토큰</strong> — 검증 즉시 파기되며 서버에 저장되지 않습니다.</span>
           <span class="en" lang="en"><strong>Apple DeviceCheck token</strong> — destroyed immediately after verification; never stored on our servers.</span>
@@ -132,7 +159,7 @@
         <span class="ko" lang="ko">5. 개인정보의 국외 이전 (Apple)</span>
         <span class="en" lang="en">5. Cross-border transfer (Apple)</span>
       </h2>
-      <div class="table-wrap">
+      <div class="doc-table">
         <table>
           <caption>
             <span class="ko" lang="ko">Apple로의 이전 내역</span>
@@ -180,12 +207,6 @@
         <span class="ko" lang="ko">개인정보 보호책임자: Pipln 개인정보 보호담당자 — <a href="mailto:privacy@eastsea.xyz">privacy@eastsea.xyz</a></span>
         <span class="en" lang="en">Privacy officer: Pipln privacy officer — <a href="mailto:privacy@eastsea.xyz">privacy@eastsea.xyz</a></span>
       </p>
-      <aside class="honest-box">
-        <p>
-          <span class="ko" lang="ko">※ 위 이메일 주소는 확정 전 자리표시자입니다(TODO-confirm). 서비스 공개 전 실제 수신 주소로 확정해야 합니다.</span>
-          <span class="en" lang="en">Note: the address above is a placeholder (TODO-confirm). It must be replaced with a working mailbox before public launch.</span>
-        </p>
-      </aside>
 
       <h2>
         <span class="ko" lang="ko">8. 방침의 변경</span>
@@ -201,34 +222,34 @@
 </main>
 
 <footer class="site-footer">
-  <div class="container">
-    <p class="legal">
-      <span class="ko" lang="ko">동해는 투자·법률·세무 조언이 아닙니다. 전체 고지와 이용 약관은 저장소의 DISCLAIMER.md에 있습니다.</span>
-      <span class="en" lang="en">EastSea is not investment, legal or tax advice. The full disclaimer and terms live in DISCLAIMER.md in the repository.</span>
-    </p>
-    <p class="copyright">© 2026 Pipln ·
-      <span class="ko" lang="ko">코드는 MIT · Apache-2.0으로 공개됩니다.</span>
-      <span class="en" lang="en">code released under MIT and Apache-2.0.</span>
-    </p>
-    <p class="back-top"><a href="index.html">
-      <span class="ko" lang="ko">← 소개 페이지로</span>
-      <span class="en" lang="en">← Back to the main page</span>
-    </a></p>
+  <div class="wrap">
+    <div class="footer-top">
+      <p class="wordmark" aria-hidden="true"><span class="wm-ko">동해</span><span class="wm-en">EastSea</span></p>
+      <ul class="footer-links">
+        <li><a href="https://github.com/eastsea-xyz/eastsea/releases/latest"><span class="ko" lang="ko">내려받기</span><span class="en" lang="en">Download</span></a></li>
+        <li><a href="https://explorer.eastsea.xyz/"><span class="ko" lang="ko">탐색기</span><span class="en" lang="en">Explorer</span></a></li>
+        <li><a href="https://github.com/eastsea-xyz">GitHub</a></li>
+        <li><a href="https://github.com/eastsea-xyz/eastsea/blob/main/DISCLAIMER.md"><span class="ko" lang="ko">고지 및 이용 약관</span><span class="en" lang="en">Disclaimer and terms</span></a></li>
+        <li><a href="privacy.html"><span class="ko" lang="ko">개인정보 처리방침</span><span class="en" lang="en">Privacy policy</span></a></li>
+      </ul>
+    </div>
+    <div class="footer-legal">
+      <p><span class="ko" lang="ko">동해는 투자·법률·세무 조언이 아닙니다. 지금 운영되는 네트워크는 테스트넷이며 테스트 DBLN에는 가치가 없습니다. 메인넷은 출시되지 않았고, DBLN 판매는 없으며, 가격이나 수익을 약속하지 않습니다. 소프트웨어는 '있는 그대로(AS IS)' 제공되며 독립 보안 감사를 받지 않았습니다. 전체 고지와 이용 약관은 <a href="https://github.com/eastsea-xyz/eastsea/blob/main/DISCLAIMER.md">DISCLAIMER.md</a>에 있습니다.</span><span class="en" lang="en">EastSea is not investment, legal or tax advice. The network running today is the testnet, and test DBLN has no value. Mainnet has not launched, there is no DBLN sale, and nothing here promises a price or a return. The software is provided "AS IS" and has not had an independent security audit. The full disclaimer and terms are in <a href="https://github.com/eastsea-xyz/eastsea/blob/main/DISCLAIMER.md">DISCLAIMER.md</a>.</span></p>
+      <p><span class="ko" lang="ko">EastSea(동해)와 Doubloon(더블룬)은 Pipln이 권리를 주장하는 상표이며, 등록을 준비 중입니다. Apple, Mac, Touch ID는 Apple Inc.의 상표입니다.</span><span class="en" lang="en">EastSea and Doubloon are claimed marks of Pipln; registration is being prepared. Apple, Mac and Touch ID are trademarks of Apple Inc.</span></p>
+      <p class="mono">© 2026 Pipln</p>
+    </div>
   </div>
 </footer>
 
 <script>
-/* Language toggle. Remembers the choice in localStorage (try/catch: storage can be
-   blocked in private modes). No cookies, no network. */
+/* Language toggle. Remembers the choice (storage can be blocked). No cookies, no network. */
 (function () {
   var root = document.documentElement;
-  var btn = document.getElementById("lang-toggle");
-  function apply() {
+  document.getElementById("lang-toggle").addEventListener("click", function () {
     var lang = root.lang === "ko" ? "en" : "ko";
     root.lang = lang;
     try { localStorage.setItem("eastsea-lang", lang); } catch (e) { /* storage unavailable */ }
-  }
-  btn.addEventListener("click", apply);
+  });
 })();
 </script>
 </body>

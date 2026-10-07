@@ -4,26 +4,32 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<meta name="description" content="EastSea (동해) is a Mac-first blockchain project: a wallet and a node in one Mac app. Touch ID instead of a seed phrase, and your Mac verifies the balance proofs it receives. A test network runs today; the app and source are not public yet; mainnet has not launched; security fixes are in progress; no DBLN sale; testnet coins have no value; not investment advice.">
 <title>EastSea — a wallet and a node on your Mac</title>
+<meta name="description" content="EastSea (동해) is a wallet and a node in one Mac app. Touch ID instead of a seed phrase, and your Mac verifies the balance proofs it receives. Testnet only: mainnet has not launched, test DBLN has no value, and there is no token sale.">
 <meta property="og:title" content="EastSea — a wallet and a node on your Mac">
-<meta property="og:description" content="A wallet and a node that live on your Mac. Touch ID instead of a seed phrase, and your Mac verifies the balance proofs it receives. A test network runs today; the app is not public yet; no DBLN sale; testnet coins have no value.">
+<meta property="og:description" content="Touch ID instead of a seed phrase, and your Mac verifies the balance proofs it receives. Testnet only: mainnet has not launched, test DBLN has no value, no token sale.">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="EastSea">
 <meta property="og:url" content="https://eastsea.xyz/">
 <meta property="og:locale" content="en_US">
 <meta property="og:locale:alternate" content="ko_KR">
-<meta name="theme-color" content="#f5f0e8" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#0b1622" media="(prefers-color-scheme: dark)">
-<meta property="og:image" content="assets/og-image.png">
+<meta property="og:image" content="https://eastsea.xyz/assets/og-image.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="The EastSea doubloon: a rising sun over waves, in gold">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#F4EFE6" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#071320" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
 <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png">
 <link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png">
+<link rel="preload" href="fonts/newsreader-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/geist-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="tokens.css">
 <link rel="stylesheet" href="styles.css">
 <script>
-/* Language: stored choice first (try/catch — storage can be blocked), then navigator.language.
-   Runs before <body> so the right language paints immediately. No network, no cookies. */
+/* Language: stored choice first (storage can be blocked), then navigator.language.
+   Runs before <body> so the right language paints first. No network, no cookies. */
 (function () {
   var saved = null;
   try { saved = localStorage.getItem("eastsea-lang"); } catch (e) { /* storage unavailable */ }
@@ -35,494 +41,474 @@
 </script>
 </head>
 <body>
-<a class="skip" href="#main">
-  <span class="ko" lang="ko">본문으로 건너뛰기</span>
-  <span class="en" lang="en">Skip to content</span>
-</a>
+<a class="skip" href="#main"><span class="ko" lang="ko">본문으로 건너뛰기</span><span class="en" lang="en">Skip to content</span></a>
+
+<!-- Honest notice: always visible, first thing on the page -->
+<div class="notice" role="note">
+  <div class="wrap notice-row">
+    <span class="dot" aria-hidden="true"></span>
+    <p>
+      <span class="ko" lang="ko"><strong>테스트넷 전용.</strong> 메인넷은 아직 출시되지 않았고, 테스트 DBLN에는 가치가 없습니다. 토큰 판매는 없습니다.</span>
+      <span class="en" lang="en"><strong>Testnet only.</strong> Mainnet has not launched, and test DBLN has no value. There is no token sale.</span>
+    </p>
+  </div>
+</div>
 
 <header class="site-header">
-  <div class="container header-row">
-    <a class="brand" href="#top">
-      <svg class="brand-mark" viewBox="0 0 64 64" role="img" aria-label="EastSea doubloon mark" focusable="false">
-        <circle cx="32" cy="32" r="28" fill="var(--gold)" stroke="var(--coin-rim)" stroke-width="3"/>
-        <path d="M15 34q7-9 14 0t14 0" fill="none" stroke="var(--navy-deep)" stroke-width="4.5" stroke-linecap="round"/>
-        <path d="M20 44q5-6 10 0t10 0" fill="none" stroke="var(--navy-deep)" stroke-width="3.5" stroke-linecap="round" opacity=".55"/>
+  <div class="wrap header-row">
+    <a class="brand" href="#top" aria-label="EastSea 동해">
+      <svg class="mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+        <circle cx="16" cy="16" r="14.5" fill="#E8BF59"/>
+        <g fill="#0D2135">
+          <path d="M9 17C9.2 8.5 22.8 8.5 23 18.5 18 18.5 14.3 14.8 9 17Z"/>
+          <path d="M5 21C8.8 15.8 12.8 17 17 19c3.6 1.7 6.7 2.6 10 0-2 5.9-5.2 6.2-9.6 4.1C12.6 20.9 9.6 19.1 5 21Z"/>
+          <path d="M8.5 26c3.2-3 5.5-2.2 8.5-.8 2.4 1.1 4.6 1 7-.4-2.2 4-4.6 4.3-8.6 2.6C12.9 26.3 11.4 25 8.5 26Z"/>
+        </g>
+        <path d="M16 5.8v2.6M8.6 8.8l1.8 1.8M23.4 8.8l-1.8 1.8" stroke="#0D2135" stroke-width="2.2" stroke-linecap="round"/>
       </svg>
-      <span class="brand-name">동해<em>EastSea</em></span>
+      <span class="brand-ko">동해</span><span class="brand-en">EastSea</span>
     </a>
-    <button id="lang-toggle" type="button" aria-label="한국어 · English">
-      <span class="ko" lang="ko">EN</span>
-      <span class="en" lang="en">한글</span>
-    </button>
+    <nav class="nav" aria-label="Sections">
+      <a href="#how"><span class="ko" lang="ko">작동 방식</span><span class="en" lang="en">How it works</span></a>
+      <a href="#rewards"><span class="ko" lang="ko">노드 보상</span><span class="en" lang="en">Rewards</span></a>
+      <a href="#safety"><span class="ko" lang="ko">안전</span><span class="en" lang="en">Safety</span></a>
+      <a href="#toolbox"><span class="ko" lang="ko">툴박스</span><span class="en" lang="en">Toolbox</span></a>
+      <a href="#faq">FAQ</a>
+    </nav>
+    <div class="header-actions">
+      <button id="lang-toggle" class="lang" type="button">
+        <span class="ko" lang="ko"><span class="sr-only">언어 바꾸기: </span>EN</span><span class="en" lang="en"><span class="sr-only">Language: </span>한국어</span>
+      </button>
+      <a class="btn btn-sm btn-primary" href="https://github.com/eastsea-xyz/eastsea/releases/latest">
+        <span class="ko" lang="ko">내려받기</span><span class="en" lang="en">Download</span>
+      </a>
+    </div>
   </div>
 </header>
 
 <main id="main">
 
-  <!-- 1 · Hero -->
-  <section class="hero" id="top" aria-labelledby="hero-title">
-    <div class="container hero-grid">
-      <div class="hero-copy">
-        <p class="hero-kicker">
-          <span class="ko" lang="ko">맥에서 도는 블록체인 · 코인은 더블룬 DBLN</span>
-          <span class="en" lang="en">A blockchain that runs on your Mac · coin: Doubloon DBLN</span>
-        </p>
-        <h1 id="hero-title">
-          <span class="ko" lang="ko">지갑도 노드도 내 맥 안에.<br>내 돈은 내 맥이 직접 확인합니다.</span>
-          <span class="en" lang="en">A wallet and a node,<br>both living on your Mac — and your Mac checks your money itself.</span>
-        </h1>
-        <p class="hero-lead">
-          <span class="ko" lang="ko">동해(EastSea)는 맥 한 대에서 시작하는 블록체인입니다. 시드 문구는 없고, 잔액은 받은 증명을 내 맥이 직접 검증합니다. 스위치 하나로 내 맥이 네트워크의 일원이 되어 검증에 참여하도록 설계했어요.</span>
-          <span class="en" lang="en">EastSea is a blockchain that starts with a single Mac. No seed phrase, and your Mac verifies the balance proofs it receives. Flip one switch and your Mac joins the network and takes part in validating it.</span>
-        </p>
-        <p class="hero-status">
-          <span class="ko" lang="ko">상태: 시험용 네트워크 운영 중 · 앱과 소스 코드는 아직 비공개 · 메인넷 미출시 · 보안 결함 수정 중 · DBLN 판매 없음 · 테스트넷 코인은 가치가 없고 메인넷으로 이전되지 않습니다</span>
-          <span class="en" lang="en">Status: test network running · app and source not public yet · mainnet not launched · security fixes in progress · no DBLN sale · testnet coins have no value and do not carry over to mainnet</span>
-        </p>
-        <p class="hero-cta">
-          <a class="btn btn-primary" href="#benefits">
-            <span class="ko" lang="ko">작동 방식 읽기</span>
-            <span class="en" lang="en">Read how it works</span>
-          </a>
-          <a class="btn btn-ghost" href="#earn">
-            <span class="ko" lang="ko">노드 보상 규칙</span>
-            <span class="en" lang="en">Node reward rules</span>
-          </a>
-        </p>
+<!-- 1 · Hero -->
+<section class="hero" id="top" aria-labelledby="hero-title">
+  <div class="wrap hero-copy">
+    <p class="label">
+      <span class="ko" lang="ko">맥용 지갑 · 노드 — 테스트넷 0.7.0</span>
+      <span class="en" lang="en">Wallet and node for Mac — testnet 0.7.0</span>
+    </p>
+    <h1 id="hero-title" class="display">
+      <span class="ko" lang="ko">내 돈은<br>내 맥이 직접 확인합니다.</span>
+      <span class="en" lang="en">Your money,<br>checked by your own Mac.</span>
+    </h1>
+    <div class="hero-sub">
+      <p class="lead">
+        <span class="ko" lang="ko">동해(EastSea)는 지갑과 노드가 한 앱에 든 맥용 블록체인입니다. 시드 문구 대신 Touch ID를 쓰고, 받은 잔액 증명은 내 맥이 직접 검증합니다. 스위치 하나면 내 맥이 네트워크에 참여합니다.</span>
+        <span class="en" lang="en">EastSea is a blockchain with the wallet and the node in one Mac app. Touch ID replaces the seed phrase, and your Mac verifies every balance proof it receives. One switch, and your Mac joins the network.</span>
+      </p>
+      <div class="cta">
+        <a class="btn btn-primary" href="https://github.com/eastsea-xyz/eastsea/releases/latest">
+          <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 2v8m0 0L4.5 6.5M8 10l3.5-3.5M3 13h10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="ko" lang="ko">Mac용 내려받기</span><span class="en" lang="en">Download for Mac</span>
+        </a>
+        <a class="btn btn-quiet" href="#how"><span class="ko" lang="ko">작동 방식</span><span class="en" lang="en">How it works</span> <span aria-hidden="true">→</span></a>
       </div>
-      <div class="hero-art" aria-hidden="true">
-        <div class="coin-glow"></div>
-        <img class="coin-img"
-             src="assets/coin-512.webp"
-             srcset="assets/coin-256.webp 256w, assets/coin-512.webp 512w, assets/coin-1024.webp 1024w"
-             sizes="(max-width: 640px) 78vw, (max-width: 900px) 52vw, 38vw"
-             width="512" height="512"
-             alt="EastSea Doubloon (DBLN) — gold coin, dawn over waves motif"
-             loading="eager"
-             decoding="async">
-      </div>
+      <p class="fine">
+        <span class="ko" lang="ko">EastSea 0.7.0 · Apple 실리콘 · macOS 14 이상 · Apple 공증 · 테스트넷(체인 7780) 연결</span>
+        <span class="en" lang="en">EastSea 0.7.0 · Apple silicon · macOS 14 or later · notarized by Apple · connects to the testnet (chain 7780)</span>
+      </p>
     </div>
-    <svg class="hero-waves" viewBox="0 0 1440 140" preserveAspectRatio="none" aria-hidden="true" focusable="false">
-      <path class="w1" d="M0,64 C120,24 240,104 360,64 C480,24 600,104 720,64 C840,24 960,104 1080,64 C1200,24 1320,104 1440,64 L1440,140 L0,140 Z"/>
-      <path class="w2" d="M0,96 C120,66 240,126 360,96 C480,66 600,126 720,96 C840,66 960,126 1080,96 C1200,66 1320,126 1440,96 L1440,140 L0,140 Z"/>
-    </svg>
-  </section>
+  </div>
 
-  <!-- 2 · Benefits -->
-  <section class="section" id="benefits" aria-labelledby="benefits-title">
-    <div class="container">
-      <p class="kicker">
-        <span class="ko" lang="ko">혜택</span>
-        <span class="en" lang="en">What you get</span>
-      </p>
-      <h2 id="benefits-title">
-        <span class="ko" lang="ko">사람이 얻는 것</span>
-        <span class="en" lang="en">What you get</span>
-      </h2>
-      <div class="benefit-grid">
-        <article class="benefit">
-          <!-- Touch ID / fingerprint arcs -->
-          <svg class="icon" viewBox="0 0 32 32" aria-hidden="true" focusable="false" fill="none" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M11 10.5a7 7 0 0 1 10 0" stroke="var(--teal)" stroke-width="1.5"/>
-            <path d="M13.5 13a4 4 0 0 1 5 0" stroke="var(--teal)" stroke-width="1.5"/>
-            <path d="M16 15.5v7" stroke="var(--teal)" stroke-width="1.5"/>
-            <path d="M8 7.8A11.5 11.5 0 0 1 24 7.8" stroke="var(--teal)" stroke-width="1.5" opacity=".4"/>
-            <path d="M13 22.5q3 1.8 6 0" stroke="var(--gold)" stroke-width="1.5"/>
-          </svg>
-          <h3>
-            <span class="ko" lang="ko">엄지 하나면 충분합니다</span>
-            <span class="en" lang="en">Your thumb is the key</span>
-          </h3>
-          <p>
-            <span class="ko" lang="ko">12단어짜리 시드 문구는 없습니다. 키는 맥의 Secure Enclave 안에서 태어나 밖으로 나오지 않고, 결제할 때마다 Touch ID로 확인합니다. 적어 둘 종이도, 잃어버릴 종이도 없어요. 다만 분명히 짚어 둘 제약이 있습니다: 맥을 잃기 전에 복구 키를 미리 설정해 두어야만 계정을 되찾을 수 있어요.</span>
-            <span class="en" lang="en">There is no 12-word seed phrase. Your key is born inside your Mac's Secure Enclave and never leaves it; every payment asks for Touch ID. No paper to write down, no paper to lose. One plain limit, though: you must set up a recovery key before you need it — without one, nobody can restore the account.</span>
-          </p>
-        </article>
-        <article class="benefit">
-          <!-- Ledger + check: document rows with gold checkmark -->
-          <svg class="icon" viewBox="0 0 32 32" aria-hidden="true" focusable="false" fill="none" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="7" y="5.5" width="18" height="21" rx="2.5" stroke="var(--teal)" stroke-width="1.5"/>
-            <path d="M11 11.5h10M11 15.5h7" stroke="var(--teal)" stroke-width="1.5"/>
-            <path d="M11 20l3.2 3.5 6.3-7" stroke="var(--gold)" stroke-width="1.5"/>
-          </svg>
-          <h3>
-            <span class="ko" lang="ko">잔액은 내 맥이 직접 확인합니다</span>
-            <span class="en" lang="en">Your Mac checks your balance itself</span>
-          </h3>
-          <p>
-            <span class="ko" lang="ko">지갑은 받은 잔액 증명을 내 맥 안에서 직접 검증하도록 설계됐습니다. 네트워크가 합의했다는 서명과 장부 증명을 하나씩 검사해요 — 화면에 뜬 숫자를 믿는 게 아니라, 장부를 직접 읽는 겁니다.</span>
-            <span class="en" lang="en">The wallet is designed to verify the balance proofs it receives right on your Mac. It checks the network's agreed signature and the ledger proof itself — reading the books instead of trusting a screen.</span>
-          </p>
-        </article>
-        <article class="benefit">
-          <!-- Network node: centre dot + dashed orbit + 4 spokes -->
-          <svg class="icon" viewBox="0 0 32 32" aria-hidden="true" focusable="false" fill="none" stroke-linecap="round">
-            <circle cx="16" cy="16" r="3" fill="var(--gold)" stroke="var(--gold)" stroke-width="1"/>
-            <circle cx="16" cy="16" r="8" stroke="var(--teal)" stroke-width="1.5" stroke-dasharray="2.2 2.8"/>
-            <path d="M16 4.5v4M16 23.5v4M4.5 16h4M23.5 16h4" stroke="var(--teal)" stroke-width="1.5"/>
-            <circle cx="16" cy="4.5" r="1.5" fill="var(--teal)"/>
-            <circle cx="16" cy="27.5" r="1.5" fill="var(--teal)"/>
-            <circle cx="4.5" cy="16" r="1.5" fill="var(--teal)"/>
-            <circle cx="27.5" cy="16" r="1.5" fill="var(--teal)"/>
-          </svg>
-          <h3>
-            <span class="ko" lang="ko">켜 두면 매시간 점호에 응합니다</span>
-            <span class="en" lang="en">Leave it on and it answers the hourly roll-call</span>
-          </h3>
-          <p>
-            <span class="ko" lang="ko">노드 스위치를 켜면 끝입니다. VPN도, 열어 둔 포트도 없이 — 집 인터넷 그대로 참여해요. 켜 있는 동안 내 맥이 네트워크 검증에 참여하고, 켜 있던 시간이 기록됩니다. 계획된 규칙은 바로 아래에 있습니다.</span>
-            <span class="en" lang="en">Turn on the node switch and you're done. No VPN and no open ports — it joins over your home internet as it is. While it stays on, your Mac takes part in validating the network, and the hours it stays online are recorded. The planned rules are just below.</span>
-          </p>
-        </article>
-        <article class="benefit">
-          <!-- AI agent wallet: robot face + coin accent -->
-          <svg class="icon" viewBox="0 0 32 32" aria-hidden="true" focusable="false" fill="none" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="7" y="10" width="18" height="14" rx="3" stroke="var(--teal)" stroke-width="1.5"/>
-            <path d="M12.5 7.5v3M19.5 7.5v3" stroke="var(--teal)" stroke-width="1.5"/>
-            <path d="M16 7.5v2.8" stroke="var(--teal)" stroke-width="1.5" opacity=".4"/>
-            <circle cx="12.5" cy="16" r="1.6" fill="var(--gold)"/>
-            <circle cx="19.5" cy="16" r="1.6" fill="var(--gold)"/>
-            <path d="M13.5 21q2.5 1.5 5 0" stroke="var(--teal)" stroke-width="1.5"/>
-          </svg>
-          <h3>
-            <span class="ko" lang="ko">AI 비서에게도 용돈 지갑을</span>
-            <span class="en" lang="en">An allowance wallet for your AI agent</span>
-          </h3>
-          <p>
-            <span class="ko" lang="ko">Claude Code, Codex 같은 AI 에이전트에 지갑을 쥐여 주는 기능을 개발 중입니다. 계획대로 완성되면 한도·수신인·기한은 당신이 Touch ID로 정하고, 그 약속은 체인이 지킵니다. 실제 Touch ID 승인과 네트워크 결제는 아직 검증되지 않았습니다.</span>
-            <span class="en" lang="en">We are building a wallet you can hand to Claude Code, Codex and other MCP agents. As designed, you set the caps, the recipients and the expiry with Touch ID — and the chain enforces the promise. Real Touch ID approvals and network payments have not been verified yet.</span>
-          </p>
-          <p class="badge">
-            <span class="ko" lang="ko">개발 중인 기능입니다</span>
-            <span class="en" lang="en">In development</span>
-          </p>
-        </article>
+  <!-- Scene: dawn over the East Sea, with the app on the water -->
+  <div class="scene">
+    <div class="sky" aria-hidden="true">
+      <svg class="sun" viewBox="0 0 400 200" focusable="false">
+        <g class="rays" stroke="var(--c-gold)" stroke-width="2" stroke-linecap="round">
+          <path d="M200 8v34M110 32l17 29M290 32l-17 29M44 92l29 17M356 92l-29 17"/>
+        </g>
+        <path d="M60 200a140 140 0 0 1 280 0Z" fill="var(--c-gold)"/>
+      </svg>
+    </div>
+    <div class="sea" aria-hidden="true"></div>
+
+    <figure class="shot wrap">
+      <div class="window" role="img" aria-labelledby="shot-cap">
+        <div class="titlebar">
+          <span class="lights"><i></i><i></i><i></i></span>
+          <span class="title">EastSea</span>
+          <span class="chip chip-warn">Testnet</span>
+        </div>
+        <div class="win-body">
+          <div class="pane-main">
+            <p class="w-label">Account 1</p>
+            <p class="w-balance"><span class="num">1,284.50</span> <span class="unit">DBLN</span></p>
+            <p class="w-verified"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>Verified on this Mac · block #184,233</p>
+            <div class="w-actions"><span class="w-btn w-btn-primary">Send</span><span class="w-btn">Receive</span></div>
+            <svg class="w-chart" viewBox="0 0 300 64" preserveAspectRatio="none" aria-hidden="true">
+              <path d="M0 52 L30 50 L60 51 L90 44 L120 45 L150 38 L180 39 L210 30 L240 31 L270 22 L300 18" fill="none" stroke="var(--c-accent)" stroke-width="1.6"/>
+              <path d="M0 52 L30 50 L60 51 L90 44 L120 45 L150 38 L180 39 L210 30 L240 31 L270 22 L300 18 L300 64 L0 64Z" fill="var(--c-accent)" opacity=".08"/>
+            </svg>
+            <p class="w-h">Recent activity</p>
+            <ul class="w-list">
+              <li><span class="coin-dot" aria-hidden="true"></span><span class="w-what">Node rewards<small>block #184,180</small></span><span class="w-amt pos">+0.42 DBLN</span></li>
+              <li><span class="coin-dot" aria-hidden="true"></span><span class="w-what">Received<small>from 0x8f3e…a21c</small></span><span class="w-amt pos">+25.00 DBLN</span></li>
+              <li><span class="coin-dot" aria-hidden="true"></span><span class="w-what">Sent<small>to 0x41b0…9d07</small></span><span class="w-amt">−8.00 DBLN</span></li>
+            </ul>
+          </div>
+          <div class="pane-side">
+            <div class="w-card">
+              <p class="w-card-h">Node on this Mac</p>
+              <span class="switch on" aria-hidden="true"><i></i></span>
+              <p class="w-card-p">Following the chain. Every block is re-executed here.</p>
+            </div>
+            <div class="w-card">
+              <p class="w-card-h">Protected by this device</p>
+              <svg class="touch" viewBox="0 0 32 32" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M6 10a12 12 0 0 1 20 0"/><path d="M8.5 13.5a7.5 7.5 0 0 1 15 0v3"/><path d="M11.5 14a4.5 4.5 0 0 1 9 0v4.5c0 2.5-1 4.5-2.5 6"/><path d="M16 14v5c0 3-1 5.5-3 7.5"/><path d="M8.5 17v1.5c0 2.5-.6 4.3-1.5 5.5"/><path d="M23.5 20c0 2.5-.6 4.5-1.6 6.2"/></g></svg>
+              <p class="w-card-p">Secure Enclave key · Touch ID</p>
+            </div>
+          </div>
+        </div>
       </div>
-      <!-- Pull-quote: approved copy, Garamond italic in EN -->
-      <blockquote class="pull-quote container">
-        <span class="ko" lang="ko">받은 잔액 증명을 내 맥이 직접 검증합니다.</span>
-        <span class="en" lang="en">Your Mac verifies the balance proofs it receives.</span>
-      </blockquote>
-    </div>
-  </section>
+      <figcaption id="shot-cap" class="caption">
+        <span class="ko" lang="ko">EastSea 앱을 그린 그림입니다. 테스트넷 화면이며, 표시된 금액은 예시이고 테스트 DBLN에는 가치가 없습니다.</span>
+        <span class="en" lang="en">An illustration of the EastSea app on the testnet. The amounts are examples; test DBLN has no value.</span>
+      </figcaption>
+    </figure>
+  </div>
+</section>
 
-  <!-- 3 · How the Mac earns -->
-  <section class="section section-tint" id="earn" aria-labelledby="earn-title">
-    <div class="container">
-      <p class="kicker">
-        <span class="ko" lang="ko">노드 보상</span>
-        <span class="en" lang="en">Node rewards</span>
-      </p>
-      <h2 id="earn-title">
-        <span class="ko" lang="ko">노드 보상 분배 규칙</span>
-        <span class="en" lang="en">How node rewards are split</span>
+<!-- 2 · Where things stand (true today vs planned) -->
+<section class="section status" aria-labelledby="status-title">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="label"><span class="ko" lang="ko">현재 상태</span><span class="en" lang="en">Status</span></p>
+      <h2 id="status-title" class="h2">
+        <span class="ko" lang="ko">지금 되는 것과, 계획인 것.</span>
+        <span class="en" lang="en">What is true today, and what is planned.</span>
       </h2>
-      <p class="lede">
-        <span class="ko" lang="ko">아래는 메인넷을 위해 정해 둔 계획 규칙입니다. 동해의 코인은 더블룬(Doubloon · DBLN)이고, 블록이 만들어질 때 새로 발행됩니다. 발행량의 절반은 블록을 증명한 맥들에게, 나머지 절반은 노드 몫 — 등록된 맥들이 매시간 나눠 갖는 몫입니다. 접어 둔 맥이 살아 있다고 신호를 보내면 그 한 시간의 노드 몫을 나눠 받아요. 청구 버튼은 없습니다. 다음 시간의 첫 블록이 지갑에 자동으로 더해 주니까요.</span>
-        <span class="en" lang="en">These are the planned rules for mainnet. EastSea's coin is the Doubloon (DBLN), created as blocks are made. Half of each new coin goes to the Macs that prove blocks; the other half is the node share — split every hour by the registered Macs that are awake. Signal that you're online and you take your slice of that hour's pool. There is no claim button: the next hour's first block adds it to your wallet automatically.</span>
-      </p>
-      <ul class="rule-list">
-        <li>
-          <h3>
-            <span class="ko" lang="ko">한 사람은 최대 16분의 1</span>
-            <span class="en" lang="en">One operator, at most 1/16</span>
-          </h3>
-          <p>
-            <span class="ko" lang="ko">노드 몫의 최대 16분의 1까지만 받습니다. 운영자가 16명보다 적으면 남는 몫은 아예 발행되지 않아요. 미리 찍어 두는 사람도, 남의 몫을 가져가는 사람도 없습니다.</span>
-            <span class="en" lang="en">You receive at most 1/16 of the node share. With fewer than 16 operators the unclaimed share is simply never created — nobody prints it in advance, nobody pockets the rest.</span>
-          </p>
-        </li>
-        <li>
-          <h3>
-            <span class="ko" lang="ko">몫은 참여자 수에 따라 정해집니다</span>
-            <span class="en" lang="en">The share follows the number of operators</span>
-          </h3>
-          <p>
-            <span class="ko" lang="ko">사람이 적을 때는 한 사람이 16분의 1을 통째로 받지만, 16명을 넘으면 한 사람 몫이 1/N으로 줄어듭니다. 이미 정해진 분배 공식일 뿐, 먼저 참여한 사람에게 주어지는 별도의 혜택은 없습니다.</span>
-            <span class="en" lang="en">While operators are few, each takes a full 1/16 per hour; once there are more than 16, each share shrinks to 1/N. That is the fixed distribution formula — there is no extra benefit for joining early.</span>
-          </p>
-        </li>
-        <li>
-          <h3>
-            <span class="ko" lang="ko">정직한 점호</span>
-            <span class="en" lang="en">Honest roll-calls</span>
-          </h3>
-          <p>
-            <span class="ko" lang="ko">매시간 예고 없는 점호가 열두 번 있습니다. 켜 있던 시간만큼만 받아요 — 한 시간만 슬쩍 켜는 꼼수는 통하지 않습니다. 새 맥은 처음 2주가 워밍업이라 정상 몫의 절반에서 시작해 조금씩 올라갑니다.</span>
-            <span class="en" lang="en">Twelve unannounced roll-calls every hour; you earn for the slots you actually answer, so switching on for a minute doesn't cheat. A brand-new Mac warms up too — half a normal share at first, stepping up over two weeks.</span>
-          </p>
-        </li>
-      </ul>
-      <div class="table-wrap">
-        <table>
-          <caption>
-            <span class="ko" lang="ko">한 시간 노드 몫의 분배</span>
-            <span class="en" lang="en">How one hour's node share is split</span>
-          </caption>
-          <thead>
-            <tr>
-              <th scope="col"><span class="ko" lang="ko">등록된 운영자 수</span><span class="en" lang="en">Registered operators</span></th>
-              <th scope="col"><span class="ko" lang="ko">한 사람 몫</span><span class="en" lang="en">One operator gets</span></th>
-              <th scope="col"><span class="ko" lang="ko">실제로 발행되는 몫</span><span class="en" lang="en">Actually created</span></th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr><th scope="row">1</th><td>1/16</td><td><span class="ko" lang="ko">1/16</span><span class="en" lang="en">1/16</span></td></tr>
-            <tr><th scope="row">4</th><td>1/16</td><td><span class="ko" lang="ko">4/16</span><span class="en" lang="en">4/16</span></td></tr>
-            <tr><th scope="row"><span class="ko" lang="ko">16 이상</span><span class="en" lang="en">16 or more</span></th><td>1/N</td><td><span class="ko" lang="ko">전부</span><span class="en" lang="en">All of it</span></td></tr>
-          </tbody>
-        </table>
+    </div>
+    <div class="ledger">
+      <div class="ledger-col">
+        <h3 class="ledger-h"><span class="tag tag-today"><span class="ko" lang="ko">오늘</span><span class="en" lang="en">Today</span></span></h3>
+        <ul>
+          <li><span class="ko" lang="ko">공개 테스트넷(체인 7780)이 운영 중입니다.</span><span class="en" lang="en">The public testnet (chain 7780) is running.</span></li>
+          <li><span class="ko" lang="ko">Mac 앱 0.7.0을 내려받아 테스트넷에서 쓸 수 있습니다.</span><span class="en" lang="en">The Mac app 0.7.0 is available for the testnet.</span></li>
+          <li><span class="ko" lang="ko">메인넷은 아직 출시되지 않았습니다.</span><span class="en" lang="en">Mainnet has not launched.</span></li>
+          <li><span class="ko" lang="ko">테스트 DBLN에는 가치가 없고 메인넷으로 넘어가지 않습니다.</span><span class="en" lang="en">Test DBLN has no value and does not carry over to mainnet.</span></li>
+          <li><span class="ko" lang="ko">DBLN 판매는 없습니다.</span><span class="en" lang="en">There is no DBLN sale.</span></li>
+          <li><span class="ko" lang="ko">독립 보안 감사는 아직 받지 않았고, 보안 결함을 고치는 중입니다.</span><span class="en" lang="en">No independent security audit yet, and security fixes are in progress.</span></li>
+          <li><span class="ko" lang="ko">앱의 소스 코드는 아직 공개되지 않았습니다.</span><span class="en" lang="en">The app's source code is not published yet.</span></li>
+        </ul>
       </div>
-      <aside class="honest-box">
-        <p>
-          <span class="ko" lang="ko">분명히 적어 둡니다. 이 보상 규칙은 메인넷 계획이며 출시 전에 바뀔 수 있고, 출시 뒤에는 체인에 최소 7일 미리 예고된 업그레이드로만 바뀝니다. 보상은 실제 가동 시간에 달려 있습니다. 지금 테스트넷에서 받는 코인은 가치가 없고 메인넷으로 넘어가지 않습니다. 전기요금과 세금은 몫에서 나갑니다.</span>
-          <span class="en" lang="en">Written plainly: these are the planned mainnet rules — they may change before launch, and after it only through an upgrade announced on the chain at least 7 days ahead. Rewards track real uptime. Testnet coins have no value and do not carry over. Electricity and taxes come out of your share.</span>
-        </p>
-      </aside>
-    </div>
-  </section>
-
-  <!-- 4 · Safety (design intent + honest status) -->
-  <section class="section" id="safety" aria-labelledby="safety-title">
-    <div class="container">
-      <p class="kicker">
-        <span class="ko" lang="ko">안전</span>
-        <span class="en" lang="en">Safety</span>
-      </p>
-      <h2 id="safety-title">
-        <span class="ko" lang="ko">안전을 향해 설계, 지금은 고치는 중</span>
-        <span class="en" lang="en">Designed for safety — fixes still in progress</span>
-      </h2>
-      <ul class="check-list">
-        <li>
-          <span class="ko" lang="ko"><strong>오픈소스로 공개할 예정입니다</strong> — 라이선스는 MIT와 Apache-2.0. 지금은 저장소가 비공개라 코드를 직접 읽을 수는 없습니다.</span>
-          <span class="en" lang="en"><strong>Open source at launch</strong> under MIT and Apache-2.0 — the repository is private today, so the code cannot be read yet.</span>
-        </li>
-        <li>
-          <span class="ko" lang="ko"><strong>DBLN 판매는 없습니다.</strong> 프리마인·창업자 몫·특별 배분 없음은 메인넷을 위해 정해 둔 계획 규칙이고, 코인은 블록 보상으로만 생기도록 설계했습니다.</span>
-          <span class="en" lang="en"><strong>There is no DBLN sale.</strong> No premine, no founder allocation and no special distribution are planned mainnet rules — the design mints coins only as block rewards.</span>
-        </li>
-        <li>
-          <span class="ko" lang="ko"><strong>메인넷에는 수도꼭지를 두지 않을 계획입니다.</strong> 테스트 코인을 나눠 주는 faucet은 테스트넷에만 있어요.</span>
-          <span class="en" lang="en"><strong>No faucet is planned on mainnet</strong> — the test-coin tap exists only on the testnet.</span>
-        </li>
-        <li>
-          <span class="ko" lang="ko"><strong>업데이트는 독립 빌더들의 서명이 모여야 배포되도록 설계했습니다.</strong> 보통은 둘 이상, 긴급할 때는 셋 모두. 한 곳이 몰래 바꾸지 못하도록 막는 구조이고, 기록은 체인에 공개로 남습니다.</span>
-          <span class="en" lang="en"><strong>Updates are designed to ship only when independent builders sign them</strong> — normally two or more, all three for emergencies. The design stops any single party from sneaking a change in, and the record stays public on the chain.</span>
-        </li>
-        <li>
-          <span class="ko" lang="ko"><strong>내부 AI 교차 검토를 여러 라운드 진행하고 있고, 지금도 Critical·High 수준의 결함이 발견되어 수정 중입니다.</strong> 서로 다른 모델이 우리 코드를 서로 점검하는 방식이며, 공인된 외부 보안 업체의 독립 감사는 아직 받지 않았습니다.</span>
-          <span class="en" lang="en"><strong>We keep running internal AI cross-review rounds, and they still surface Critical- and High-severity findings that we are fixing.</strong> Separate models check our own code; no external independent security audit has been done yet.</span>
-        </li>
-        <li>
-          <span class="ko" lang="ko"><strong>지갑에는 분석 도구도 개인정보 수집도 없습니다.</strong></span>
-          <span class="en" lang="en"><strong>No analytics, no personal-data collection</strong> in the wallet.</span>
-        </li>
-      </ul>
-      <!-- Pull-quote: approved copy -->
-      <blockquote class="pull-quote">
-        <span class="ko" lang="ko">DBLN 판매는 없습니다 — 프리마인·창업자 몫 없음은 메인넷 계획 규칙입니다.</span>
-        <span class="en" lang="en">There is no DBLN sale — no premine and no founder allocation are planned mainnet rules.</span>
-      </blockquote>
-    </div>
-  </section>
-
-  <!-- 5 · Downloads -->
-  <section class="section section-tint" id="download" aria-labelledby="download-title">
-    <div class="container">
-      <p class="kicker">
-        <span class="ko" lang="ko">출시 계획</span>
-        <span class="en" lang="en">Launch</span>
-      </p>
-      <h2 id="download-title">
-        <span class="ko" lang="ko">내려받기</span>
-        <span class="en" lang="en">Get it</span>
-      </h2>
-      <div class="platform-grid">
-        <article class="platform">
-          <svg class="icon" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
-            <rect x="5" y="6.5" width="22" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.9"/>
-            <path d="M11 25h10" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
-            <path d="M14 21.5v3.5M18 21.5v3.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-            <path d="M12.5 14q3.5-4.5 7 0" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-          </svg>
-          <h3>
-            <span class="ko" lang="ko">Mac 앱</span>
-            <span class="en" lang="en">Mac app</span>
-          </h3>
-          <p class="platform-tag">macOS · <span class="ko" lang="ko">애플 실리콘</span><span class="en" lang="en">Apple silicon</span></p>
-          <p>
-            <span class="ko" lang="ko">지갑과 노드가 한 앱에 들어 있습니다. Touch ID 결제, 잔액 그래프, 보상 스위치까지.</span>
-            <span class="en" lang="en">Wallet and node in one app: Touch ID payments, a balance chart, and the rewards switch.</span>
-          </p>
-          <p class="badge">
-            <span class="ko" lang="ko">메인넷 출시와 함께 공개</span>
-            <span class="en" lang="en">Coming at mainnet launch</span>
-          </p>
-        </article>
-        <article class="platform">
-          <svg class="icon" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
-            <path d="M16 5.5c-6 0-10.5 4.4-10.5 10.5 0 6 4.5 10.5 10.5 10.5 1.9 0 3-.6 3-1.8 0-.8-.5-1.4-1.3-1.9-.6-.4-.9-.8-.9-1.4 0-1.1 1-1.9 2.6-1.9h2.1c3.3 0 6-2.6 6-6C27.5 9.6 22.5 5.5 16 5.5z" fill="none" stroke="currentColor" stroke-width="1.9"/>
-            <circle cx="11.5" cy="14" r="1.7" fill="currentColor"/>
-            <circle cx="16" cy="11" r="1.7" fill="currentColor"/>
-            <circle cx="20.5" cy="14" r="1.7" fill="currentColor"/>
-          </svg>
-          <h3>
-            <span class="ko" lang="ko">브라우저 확장</span>
-            <span class="en" lang="en">Browser extension</span>
-          </h3>
-          <p class="platform-tag">Chrome · Edge · Brave · Arc</p>
-          <p>
-            <span class="ko" lang="ko">웹을 위한 지갑. 키는 브라우저 안에서 만들어 비밀번호로 암호화됩니다.</span>
-            <span class="en" lang="en">A wallet for the web: the key is made in your browser and encrypted with your password.</span>
-          </p>
-          <p class="badge">
-            <span class="ko" lang="ko">메인넷 출시와 함께 공개</span>
-            <span class="en" lang="en">Coming at mainnet launch</span>
-          </p>
-        </article>
-      </div>
-      <p class="source-note">
-        <span class="ko" lang="ko">소스 코드: 출시와 함께 공개됩니다. 지금 내려받을 수 있는 빌드는 없습니다 — 이 페이지 위쪽 상태 표시가 바뀌면 여기도 바뀝니다.</span>
-        <span class="en" lang="en">Source code: published at launch. There is no downloadable build yet — when the status line above changes, this section changes with it.</span>
-      </p>
-    </div>
-  </section>
-
-  <!-- 6 · FAQ -->
-  <section class="section" id="faq" aria-labelledby="faq-title">
-    <div class="container">
-      <p class="kicker">
-        <span class="ko" lang="ko">FAQ</span>
-        <span class="en" lang="en">FAQ</span>
-      </p>
-      <h2 id="faq-title">
-        <span class="ko" lang="ko">자주 묻는 질문</span>
-        <span class="en" lang="en">Questions, asked often</span>
-      </h2>
-      <div class="faq">
-        <details>
-          <summary><h3>
-            <span class="ko" lang="ko">동해가 뭐죠?</span>
-            <span class="en" lang="en">What is EastSea?</span>
-          </h3></summary>
-          <p>
-            <span class="ko" lang="ko">맥에서 바로 도는 블록체인입니다. 앱 하나를 설치하면 지갑과 노드가 같이 돌아가서, 잔액 확인·송금·(스위치를 켜면) 보상까지 내 맥 안에서 이뤄집니다. 코인 이름은 더블룬(DBLN)이에요.</span>
-            <span class="en" lang="en">A blockchain that runs right on your Mac. One app installs both a wallet and a node, so balances, payments and (with the switch on) rewards all happen on your own machine. The coin is called Doubloon (DBLN).</span>
-          </p>
-        </details>
-        <details>
-          <summary><h3>
-            <span class="ko" lang="ko">뭐가 필요한가요?</span>
-            <span class="en" lang="en">What do I need?</span>
-          </h3></summary>
-          <p>
-            <span class="ko" lang="ko">애플 실리콘 맥 한 대면 충분합니다. 서버도, VPN도, 포트 설정도 없습니다.</span>
-            <span class="en" lang="en">One Apple silicon Mac. No server, no VPN, no port configuration.</span>
-          </p>
-        </details>
-        <details>
-          <summary><h3>
-            <span class="ko" lang="ko">토큰 세일이 있나요?</span>
-            <span class="en" lang="en">Is there a token sale?</span>
-          </h3></summary>
-          <p>
-            <span class="ko" lang="ko">지금 판매는 없고, DBLN을 파는 계획도 없습니다. 메인넷 계획 규칙에 프리마인·창업자 몫·특별 배분은 없고, 코인은 블록 보상으로만 생기도록 설계했습니다. 창업자도 다른 이용자와 같은 규칙으로 맥을 가동해야 보상을 받습니다.</span>
-            <span class="en" lang="en">No — there is no sale today and no plan to sell DBLN. The planned mainnet rules have no premine, no founder allocation and no special distribution: coins are designed to be created only as block rewards, and the founder has to run Macs under the same rules as everyone else to receive any.</span>
-          </p>
-        </details>
-        <details>
-          <summary><h3>
-            <span class="ko" lang="ko">테스트넷이 뭐예요?</span>
-            <span class="en" lang="en">What is the testnet?</span>
-          </h3></summary>
-          <p>
-            <span class="ko" lang="ko">팀이 시험 삼아 운영 중인 네트워크입니다. 앱과 소스가 아직 비공개라 팀 밖에서는 참여할 수 없어요. 테스트넷 코인에는 가치가 없고 잔액은 메인넷으로 넘어가지 않습니다.</span>
-            <span class="en" lang="en">It's the test network the team runs today. The app and source are not public yet, so nobody outside the team can join. Testnet coins have no value and balances do not carry over to mainnet.</span>
-          </p>
-        </details>
-        <details>
-          <summary><h3>
-            <span class="ko" lang="ko">16분의 1 규칙이 뭐예요?</span>
-            <span class="en" lang="en">What is the 1/16 rule?</span>
-          </h3></summary>
-          <p>
-            <span class="ko" lang="ko">메인넷 계획 규칙입니다. 한 운영자(한 지갑 주소)가 한 시간 노드 몫의 최대 16분의 1까지만 받는다는 뜻이에요. 참여자가 16명 미만이면 남는 몫은 발행하지 않습니다. 아무도 초기 발행을 독차지하지 못하게 하는 장치입니다.</span>
-            <span class="en" lang="en">It is a planned mainnet rule: one operator (one wallet address) receives at most 1/16 of an hour's node share. With fewer than 16 operators, the remainder is never created. It is designed to keep anyone from pocketing the early supply.</span>
-          </p>
-        </details>
-        <details>
-          <summary><h3>
-            <span class="ko" lang="ko">누가 운영하나요?</span>
-            <span class="en" lang="en">Who runs it?</span>
-          </h3></summary>
-          <p>
-            <span class="ko" lang="ko">작은 팀 '핀(Pipln)'이 만드는 프로젝트입니다. 소스 코드는 오픈소스(MIT·Apache-2.0)로 공개할 예정이지만 지금은 비공개입니다. 네트워크 자체는 등록된 맥들이 — 그러니까 참여자들이 — 함께 굴리며, 창업자의 맥도 같은 규칙을 따릅니다. 맥 등록은 Pipln이 운영하는 등록 서비스가 Apple의 기기 확인(DeviceCheck)을 거쳐 처리하고, Apple이 이 프로젝트를 후원하거나 보증하지는 않습니다.</span>
-            <span class="en" lang="en">A project built by a small team, Pipln. The source will be released as open source (MIT and Apache-2.0), but the repository is private today. The network itself is run by the registered Macs — the participants — and the founder's own Macs follow the same rules. Registration goes through a service run by Pipln that checks the Mac with Apple's DeviceCheck; Apple does not sponsor or endorse EastSea.</span>
-          </p>
-        </details>
-        <details>
-          <summary><h3>
-            <span class="ko" lang="ko">업데이트는 어떻게 되나요?</span>
-            <span class="en" lang="en">How do updates work?</span>
-          </h3></summary>
-          <p>
-            <span class="ko" lang="ko">앱은 보통의 맥 앱처럼 알아서 업데이트되도록 설계했어요. 배포되는 업데이트는 서로 독립된 빌더 둘 이상의 서명이 모여야 하고, 무엇이 배포됐는지는 체인에 공개 기록으로 남습니다. 배포 서버가 중간에 바꿔치기해도 앱이 걸러 내도록 설계했습니다.</span>
-            <span class="en" lang="en">The app is designed to update itself like any Mac app, but an update ships only with signatures from at least two independent builders, and what was published is recorded on the chain — designed so that even a tampered download server can't sneak a change past your Mac.</span>
-          </p>
-        </details>
-        <details>
-          <summary><h3>
-            <span class="ko" lang="ko">맥을 잃어버리면 어떻게 되나요?</span>
-            <span class="en" lang="en">What if I lose my Mac?</span>
-          </h3></summary>
-          <p>
-            <span class="ko" lang="ko">솔직히 말씀드릴게요. 미리 복구 키를 등록해 두지 않았다면 누구도 — 만든 우리도 — 계정을 되찾아 줄 수 없습니다. Apple 기기 한 대를 복구 키로 등록해 둘 수 있으니, 값을 옮기기 전에 꼭 설정해 두세요.</span>
-            <span class="en" lang="en">Honestly: if you never set up a recovery key, nobody — including us — can restore the account. You can register a second Apple device as your recovery key; do set that up before moving any value.</span>
-          </p>
-        </details>
+      <div class="ledger-col">
+        <h3 class="ledger-h"><span class="tag tag-planned"><span class="ko" lang="ko">메인넷 계획</span><span class="en" lang="en">Planned for mainnet</span></span></h3>
+        <ul>
+          <li><span class="ko" lang="ko">프리마인·창업자 몫·특별 배분 없이, 코인은 블록 보상으로만 생깁니다.</span><span class="en" lang="en">No premine, founder allocation or special distribution: coins come only from block rewards.</span></li>
+          <li><span class="ko" lang="ko">켜 둔 맥들이 매시간 노드 몫을 나눕니다. 한 운영자는 최대 16분의 1.</span><span class="en" lang="en">Macs that stay online share the node pool every hour, at most 1/16 per operator.</span></li>
+          <li><span class="ko" lang="ko">메인넷에는 테스트 코인 수도꼭지(faucet)가 없습니다.</span><span class="en" lang="en">No faucet on mainnet.</span></li>
+          <li><span class="ko" lang="ko">업데이트는 독립 빌더들의 서명이 모여야 배포됩니다.</span><span class="en" lang="en">Updates ship only when independent builders sign them.</span></li>
+          <li><span class="ko" lang="ko">소스 코드를 MIT·Apache-2.0으로 공개합니다.</span><span class="en" lang="en">Source code published under MIT and Apache-2.0.</span></li>
+        </ul>
       </div>
     </div>
-  </section>
+  </div>
+</section>
+
+<!-- 3 · How it works: four numbered chapters, each with its own UI vignette -->
+<section class="section how" id="how" aria-labelledby="how-title">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="label"><span class="ko" lang="ko">작동 방식</span><span class="en" lang="en">How it works</span></p>
+      <h2 id="how-title" class="h2">
+        <span class="ko" lang="ko">기술은 맥 안에 두고, 답만 보여 드립니다.</span>
+        <span class="en" lang="en">The machinery stays inside your Mac. You get the answer.</span>
+      </h2>
+    </div>
+
+    <article class="chapter">
+      <p class="chapter-no">01</p>
+      <div class="chapter-text">
+        <h3 class="h3"><span class="ko" lang="ko">엄지 하나가 열쇠입니다</span><span class="en" lang="en">Your thumb is the key</span></h3>
+        <p><span class="ko" lang="ko">12단어 시드 문구는 없습니다. 키는 맥의 Secure Enclave에서 만들어져 밖으로 나오지 않고, 결제할 때마다 Touch ID로 확인합니다. 분명한 제약도 하나 있습니다. 맥을 잃기 전에 다른 Apple 기기를 복구 키로 등록해 두지 않으면, 누구도 계정을 되찾아 줄 수 없습니다.</span><span class="en" lang="en">There is no 12-word seed phrase. Your key is made inside your Mac's Secure Enclave and never leaves it, and every payment asks for Touch ID. One plain limit: register another Apple device as your recovery key before you need it. Without one, nobody can restore the account.</span></p>
+      </div>
+      <div class="vignette" aria-hidden="true">
+        <div class="v-sheet">
+          <p class="v-k">Confirm the send</p>
+          <p class="v-amt">25.00 <span>DBLN</span></p>
+          <p class="v-row"><span>To</span><span class="mono">0x8f3e…a21c</span></p>
+          <p class="v-row"><span>Network fee</span><span class="mono">≤ 0.0004 DBLN</span></p>
+          <div class="v-touch"><svg viewBox="0 0 32 32"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M6 10a12 12 0 0 1 20 0"/><path d="M8.5 13.5a7.5 7.5 0 0 1 15 0v3"/><path d="M11.5 14a4.5 4.5 0 0 1 9 0v4.5c0 2.5-1 4.5-2.5 6"/><path d="M16 14v5c0 3-1 5.5-3 7.5"/><path d="M8.5 17v1.5c0 2.5-.6 4.3-1.5 5.5"/><path d="M23.5 20c0 2.5-.6 4.5-1.6 6.2"/></g></svg><span>Touch ID to pay</span></div>
+        </div>
+      </div>
+    </article>
+
+    <article class="chapter">
+      <p class="chapter-no">02</p>
+      <div class="chapter-text">
+        <h3 class="h3"><span class="ko" lang="ko">화면을 믿지 않고, 장부를 직접 읽습니다</span><span class="en" lang="en">It reads the books instead of trusting a screen</span></h3>
+        <p><span class="ko" lang="ko">지갑은 잔액마다 검증자 위원회의 서명과 장부 증명을 내 맥에서 검사합니다. 답해 준 노드가 느리거나 오래된 값을 줄 수는 있어도, 틀린 값을 통과시키지는 않습니다.</span><span class="en" lang="en">For every balance, the wallet checks the validator committee's signature and a state proof on your Mac. A serving node can be slow or stale, but it cannot slip a wrong number past your Mac.</span></p>
+      </div>
+      <div class="vignette" aria-hidden="true">
+        <div class="v-proof mono">
+          <p><span class="ok">✓</span> committee signature <span class="dim">BLS threshold</span></p>
+          <p><span class="ok">✓</span> state proof <span class="dim">EIP-7864</span></p>
+          <p><span class="ok">✓</span> block <span class="dim">#184,233</span></p>
+          <p class="v-proof-total">balance verified on this Mac</p>
+        </div>
+      </div>
+    </article>
+
+    <article class="chapter">
+      <p class="chapter-no">03</p>
+      <div class="chapter-text">
+        <h3 class="h3"><span class="ko" lang="ko">스위치 하나로 노드가 됩니다</span><span class="en" lang="en">One switch makes it a node</span></h3>
+        <p><span class="ko" lang="ko">노드 스위치를 켜면 내 맥이 체인을 따라가며 모든 블록을 직접 다시 실행합니다. VPN도, 열어 둘 포트도 필요 없이 집 인터넷 그대로 연결됩니다.</span><span class="en" lang="en">Turn on the node switch and your Mac follows the chain, re-executing every block itself. No VPN and no open ports: it connects over your home internet as it is.</span></p>
+      </div>
+      <div class="vignette" aria-hidden="true">
+        <div class="v-node">
+          <div class="v-node-row"><span>Run a node on this Mac</span><span class="switch on"><i></i></span></div>
+          <div class="v-node-meta mono"><span>No VPN</span><span>No open ports</span><span>Home internet</span></div>
+        </div>
+      </div>
+    </article>
+
+    <article class="chapter">
+      <p class="chapter-no">04</p>
+      <div class="chapter-text">
+        <h3 class="h3"><span class="ko" lang="ko">AI 에이전트 결제</span><span class="en" lang="en">AI agent payments</span></h3>
+        <p><span class="ko" lang="ko">Claude Code, Codex 같은 MCP 에이전트에 한도가 정해진 지갑을 줄 수 있습니다. 결제는 당신이 Touch ID로 수신인을 승인하기 전까지 꺼져 있고, 한도·수신인·기한은 계정 계약이 체인에서 지킵니다. 속은 에이전트도 정해 둔 한도 안에서는 돈을 쓸 수 있다는 점은 기억해 두세요.</span><span class="en" lang="en">Give Claude Code, Codex or any MCP agent a wallet with limits. Payments stay off until you approve a payee with Touch ID, and the account contract enforces the caps, payees and expiry on chain. Keep in mind that a tricked agent can still spend within the limits you set.</span></p>
+        <p class="tag tag-today"><span class="ko" lang="ko">테스트넷 앱에 포함</span><span class="en" lang="en">In the testnet app</span></p>
+      </div>
+      <div class="vignette" aria-hidden="true">
+        <div class="v-agent">
+          <p class="v-k">Agent session</p>
+          <p class="v-row"><span>Per payment</span><span class="mono">1 DBLN</span></p>
+          <p class="v-row"><span>Per 24 hours</span><span class="mono">10 DBLN</span></p>
+          <p class="v-row"><span>Payees</span><span class="mono">Shop</span></p>
+          <p class="v-row"><span>Expires</span><span class="mono">in 7 days</span></p>
+        </div>
+      </div>
+    </article>
+  </div>
+</section>
+
+<!-- 4 · Rewards: the tide table -->
+<section class="section rewards" id="rewards" aria-labelledby="rewards-title">
+  <div class="wrap">
+    <div class="rewards-head">
+      <div>
+        <p class="label"><span class="ko" lang="ko">노드 보상 · 메인넷 계획</span><span class="en" lang="en">Node rewards · planned for mainnet</span></p>
+        <h2 id="rewards-title" class="h2">
+          <span class="ko" lang="ko">켜 둔 맥들이<br>한 시간씩 나눠 받습니다.</span>
+          <span class="en" lang="en">Macs that stay on<br>share it, hour by hour.</span>
+        </h2>
+      </div>
+      <img class="rewards-coin" src="assets/coin-512.webp" srcset="assets/coin-256.webp 256w, assets/coin-512.webp 512w" sizes="(max-width: 720px) 40vw, 280px" width="512" height="512" alt="" loading="lazy" decoding="async">
+    </div>
+    <p class="lead">
+      <span class="ko" lang="ko">동해의 코인은 더블룬(Doubloon · DBLN)이고, 블록이 만들어질 때 새로 발행됩니다. 발행량의 절반은 블록을 증명한 맥들에게, 나머지 절반은 노드 몫으로 그 시간 켜 있던 등록된 맥들이 나눕니다. 청구 버튼은 없습니다. 다음 시간의 첫 블록이 지갑에 자동으로 더해 줍니다.</span>
+      <span class="en" lang="en">EastSea's coin is the Doubloon (DBLN), created as blocks are made. Half of each reward goes to the Macs that prove blocks; the other half is the node share, split every hour among the registered Macs that were online. There is no claim button: the next hour's first block adds it to your wallet.</span>
+    </p>
+
+    <div class="tide">
+      <table>
+        <caption><span class="ko" lang="ko">한 시간 노드 몫의 분배</span><span class="en" lang="en">How one hour's node share is split</span></caption>
+        <thead>
+          <tr>
+            <th scope="col"><span class="ko" lang="ko">등록된 운영자</span><span class="en" lang="en">Registered operators</span></th>
+            <th scope="col"><span class="ko" lang="ko">한 사람 몫</span><span class="en" lang="en">Each operator gets</span></th>
+            <th scope="col"><span class="ko" lang="ko">실제로 발행되는 몫</span><span class="en" lang="en">Actually created</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><th scope="row">1</th><td>1/16</td><td>1/16</td></tr>
+          <tr><th scope="row">4</th><td>1/16</td><td>4/16</td></tr>
+          <tr><th scope="row">16+</th><td>1/N</td><td><span class="ko" lang="ko">전부</span><span class="en" lang="en">All of it</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <ol class="rules">
+      <li>
+        <h3><span class="ko" lang="ko">한 운영자는 최대 16분의 1</span><span class="en" lang="en">One operator, at most 1/16</span></h3>
+        <p><span class="ko" lang="ko">운영자가 16명보다 적으면 남는 몫은 아예 발행되지 않습니다. 미리 찍어 두는 사람도, 남는 몫을 가져가는 사람도 없습니다.</span><span class="en" lang="en">With fewer than 16 operators the rest is never created. Nobody prints it in advance and nobody pockets the remainder.</span></p>
+      </li>
+      <li>
+        <h3><span class="ko" lang="ko">먼저 온 사람의 혜택은 없습니다</span><span class="en" lang="en">No early-joiner bonus</span></h3>
+        <p><span class="ko" lang="ko">16명을 넘으면 한 사람 몫은 1/N로 줄어듭니다. 정해진 공식일 뿐, 일찍 참여한 사람에게 따로 주는 몫은 없습니다.</span><span class="en" lang="en">Past 16 operators each share becomes 1/N. That is the fixed formula; there is no extra share for joining early.</span></p>
+      </li>
+      <li>
+        <h3><span class="ko" lang="ko">정직한 점호</span><span class="en" lang="en">Honest roll-calls</span></h3>
+        <p><span class="ko" lang="ko">매시간 예고 없는 점호가 열두 번 있고, 응답한 만큼만 받습니다. 새 맥은 처음 2주 동안 정상 몫의 절반에서 시작해 조금씩 올라갑니다.</span><span class="en" lang="en">Twelve unannounced roll-calls every hour; you earn for the ones you answer. A new Mac starts at half a share and steps up over two weeks.</span></p>
+      </li>
+    </ol>
+
+    <aside class="plain">
+      <p><span class="ko" lang="ko">분명히 적어 둡니다. 이 규칙은 메인넷 계획이며 출시 전에 바뀔 수 있고, 출시 뒤에는 위원회가 서명한 업그레이드로만 바뀝니다. 보상은 실제 가동 시간에 달려 있습니다. 가격이나 수익, 현금화 방법은 약속하지 않습니다. 테스트넷에서 받는 코인은 가치가 없고 메인넷으로 넘어가지 않습니다. 전기요금과 세금은 본인 부담입니다.</span><span class="en" lang="en">Written plainly: these are planned mainnet rules. They may change before launch, and after it only through a committee-signed upgrade. Rewards track real uptime. Nothing here promises a price, a return or a way to cash out. Testnet coins have no value and do not carry over. Electricity and taxes are yours.</span></p>
+    </aside>
+  </div>
+</section>
+
+<!-- 5 · Safety -->
+<section class="section safety" id="safety" aria-labelledby="safety-title">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="label"><span class="ko" lang="ko">안전</span><span class="en" lang="en">Safety</span></p>
+      <h2 id="safety-title" class="h2">
+        <span class="ko" lang="ko">안전하도록 설계했고,<br>지금도 고치는 중입니다.</span>
+        <span class="en" lang="en">Designed for safety.<br>Fixes still in progress.</span>
+      </h2>
+    </div>
+    <blockquote class="quote">
+      <p><span class="ko" lang="ko">DBLN 판매는 없습니다.</span><span class="en" lang="en">There is no DBLN sale.</span></p>
+      <footer><span class="ko" lang="ko">프리마인·창업자 몫 없음은 메인넷 계획 규칙이며, 창업자의 맥도 같은 규칙을 따릅니다.</span><span class="en" lang="en">No premine and no founder allocation are planned mainnet rules, and the founder's Macs follow them too.</span></footer>
+    </blockquote>
+    <dl class="facts">
+      <div>
+        <dt><span class="ko" lang="ko">보안 검토</span><span class="en" lang="en">Security review</span></dt>
+        <dd><span class="ko" lang="ko">내부에서 서로 다른 AI 모델로 교차 검토를 계속하고 있고, 아직도 Critical·High 등급의 결함이 나와 고치는 중입니다. 독립 외부 감사는 아직 받지 않았습니다.</span><span class="en" lang="en">We keep running internal cross-reviews with separate AI models, and they still surface Critical and High findings that we are fixing. No independent external audit has been done yet.</span></dd>
+      </div>
+      <div>
+        <dt><span class="ko" lang="ko">업데이트</span><span class="en" lang="en">Updates</span></dt>
+        <dd><span class="ko" lang="ko">앱은 Apple 공증을 받은 서명된 빌드로 스스로 업데이트됩니다. 독립 빌더 둘 이상(긴급 시 셋 모두)의 서명이 모여야 배포되는 구조는 메인넷 계획입니다.</span><span class="en" lang="en">The app updates itself with signed, Apple-notarized builds. Requiring signatures from two or more independent builders (all three for emergencies) is planned for mainnet.</span></dd>
+      </div>
+      <div>
+        <dt><span class="ko" lang="ko">개인정보</span><span class="en" lang="en">Privacy</span></dt>
+        <dd><span class="ko" lang="ko">지갑에는 분석 도구가 없습니다. 맥 등록에 필요한 정보 외에는 개인정보를 수집하지 않습니다.</span><span class="en" lang="en">The wallet has no analytics. Apart from what Mac registration needs, it collects no personal data.</span> <a href="privacy.html"><span class="ko" lang="ko">개인정보 처리방침</span><span class="en" lang="en">Privacy policy</span></a></dd>
+      </div>
+      <div>
+        <dt><span class="ko" lang="ko">소스 코드</span><span class="en" lang="en">Source code</span></dt>
+        <dd><span class="ko" lang="ko">MIT·Apache-2.0으로 공개할 예정이며, 지금은 공개 저장소에 릴리스와 고지문만 있습니다.</span><span class="en" lang="en">To be published under MIT and Apache-2.0. Today the public repository holds the releases and the disclaimer.</span></dd>
+      </div>
+    </dl>
+  </div>
+</section>
+
+<!-- 6 · Get it -->
+<section class="section get" id="download" aria-labelledby="get-title">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="label"><span class="ko" lang="ko">내려받기</span><span class="en" lang="en">Download</span></p>
+      <h2 id="get-title" class="h2">
+        <span class="ko" lang="ko">테스트넷에서 먼저 써 보세요.</span>
+        <span class="en" lang="en">Try it on the testnet first.</span>
+      </h2>
+    </div>
+    <div class="get-grid">
+      <article class="get-main">
+        <img class="app-icon" src="assets/app-icon-192.webp" width="96" height="96" alt="">
+        <div>
+          <h3 class="h3">EastSea for Mac</h3>
+          <p class="mono get-meta">0.7.0 · Apple silicon · macOS 14+</p>
+          <p><span class="ko" lang="ko">지갑과 노드가 한 앱에. Touch ID 결제, 잔액 그래프, 노드 스위치, 테스트 DBLN 받기까지 들어 있습니다.</span><span class="en" lang="en">Wallet and node in one app: Touch ID payments, a balance chart, the node switch, and free test DBLN to try it with.</span></p>
+          <a class="btn btn-primary" href="https://github.com/eastsea-xyz/eastsea/releases/latest"><span class="ko" lang="ko">GitHub에서 내려받기</span><span class="en" lang="en">Download from GitHub</span></a>
+          <p class="fine"><span class="ko" lang="ko">테스트넷 전용 빌드입니다. 테스트 DBLN에는 가치가 없습니다.</span><span class="en" lang="en">Testnet build. Test DBLN has no value.</span></p>
+        </div>
+      </article>
+      <article class="get-side">
+        <h3 class="h3"><span class="ko" lang="ko">브라우저 확장</span><span class="en" lang="en">Browser extension</span></h3>
+        <p class="mono get-meta">Chrome · Edge · Brave · Arc</p>
+        <p><span class="ko" lang="ko">웹을 위한 지갑. 키는 브라우저 안에서 만들어 비밀번호로 암호화합니다.</span><span class="en" lang="en">A wallet for the web. The key is made in your browser and encrypted with your password.</span></p>
+        <p class="tag tag-planned"><span class="ko" lang="ko">아직 배포 전</span><span class="en" lang="en">Not released yet</span></p>
+      </article>
+      <article class="get-side">
+        <h3 class="h3"><span class="ko" lang="ko">탐색기</span><span class="en" lang="en">Explorer</span></h3>
+        <p class="mono get-meta">explorer.eastsea.xyz</p>
+        <p><span class="ko" lang="ko">테스트넷의 블록과 거래를 누구나 볼 수 있습니다.</span><span class="en" lang="en">Anyone can browse the testnet's blocks and transactions.</span></p>
+        <a class="link" href="https://explorer.eastsea.xyz/"><span class="ko" lang="ko">탐색기 열기</span><span class="en" lang="en">Open the explorer</span> <span aria-hidden="true">↗</span></a>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- 7 · Toolbox -->
+<section class="section toolbox" id="toolbox" aria-labelledby="toolbox-title">
+  <div class="wrap toolbox-grid">
+    <div>
+      <p class="label"><span class="ko" lang="ko">개발자용 · 공개 저장소</span><span class="en" lang="en">For developers · public repository</span></p>
+      <h2 id="toolbox-title" class="h2">
+        <span class="ko" lang="ko">컨트랙트 툴박스</span>
+        <span class="en" lang="en">The contract toolbox</span>
+      </h2>
+      <p><span class="ko" lang="ko">EastSea에서 컨트랙트를 만들려는 사람을 위한 공개 저장소입니다. 테스트가 딸린 스마트 컨트랙트 예제, 이더리움·솔라나의 널리 쓰이는 계약이 EastSea에서 도는지 확인한 호환성 증명과 벤치마크, 그리고 EastSea 구조에 맞춘 네이티브 설계가 들어 있습니다.</span><span class="en" lang="en">A public repository for people building contracts on EastSea: smart-contract examples with tests, compatibility proofs and benchmarks showing whether widely used Ethereum and Solana contracts run on EastSea, and native designs built for EastSea's structure.</span></p>
+      <a class="link" href="https://github.com/eastsea-xyz/eastsea-toolbox">github.com/eastsea-xyz/eastsea-toolbox <span aria-hidden="true">↗</span></a>
+    </div>
+    <aside class="plain">
+      <p><span class="ko" lang="ko"><strong>있는 그대로(AS IS) 공개합니다.</strong> Pipln은 코드를 공개하고 테스트·평가·벤치마크만 합니다. 예제를 배포하거나 운영·호스팅·홍보하지 않고, 수익이나 가격도 약속하지 않습니다. 감사받지 않은 코드이며, 배포와 사용의 책임은 배포자와 사용자에게 있습니다.</span><span class="en" lang="en"><strong>Published AS IS.</strong> Pipln publishes the code and only tests, evaluates and benchmarks it. We do not deploy, run, host or promote any example, and make no yield or price claims. The code is unaudited; whoever deploys or uses it is responsible for that.</span></p>
+    </aside>
+  </div>
+</section>
+
+<!-- 8 · FAQ -->
+<section class="section faq" id="faq" aria-labelledby="faq-title">
+  <div class="wrap faq-grid">
+    <div class="faq-head">
+      <p class="label">FAQ</p>
+      <h2 id="faq-title" class="h2"><span class="ko" lang="ko">자주 묻는 질문</span><span class="en" lang="en">Questions, answered</span></h2>
+    </div>
+    <div class="faq-list">
+      <details>
+        <summary><span class="ko" lang="ko">동해가 뭐죠?</span><span class="en" lang="en">What is EastSea?</span></summary>
+        <p><span class="ko" lang="ko">맥에서 바로 도는 블록체인입니다. 앱 하나에 지갑과 노드가 같이 들어 있어서 잔액 확인, 송금, (스위치를 켜면) 네트워크 참여까지 내 맥 안에서 이뤄집니다. 코인 이름은 더블룬(DBLN)입니다.</span><span class="en" lang="en">A blockchain that runs on your Mac. One app holds both a wallet and a node, so balances, payments and (with the switch on) taking part in the network all happen on your own machine. The coin is the Doubloon (DBLN).</span></p>
+      </details>
+      <details>
+        <summary><span class="ko" lang="ko">뭐가 필요한가요?</span><span class="en" lang="en">What do I need?</span></summary>
+        <p><span class="ko" lang="ko">macOS 14 이상의 애플 실리콘 맥 한 대면 됩니다. 서버도, VPN도, 포트 설정도 없습니다.</span><span class="en" lang="en">One Apple silicon Mac on macOS 14 or later. No server, no VPN, no port configuration.</span></p>
+      </details>
+      <details>
+        <summary><span class="ko" lang="ko">토큰 세일이 있나요?</span><span class="en" lang="en">Is there a token sale?</span></summary>
+        <p><span class="ko" lang="ko">없습니다. 지금 판매는 없고 DBLN을 팔 계획도 없습니다. 메인넷 계획 규칙에는 프리마인·창업자 몫·특별 배분이 없고, 코인은 블록 보상으로만 생깁니다. 창업자도 다른 사람과 같은 규칙으로 맥을 가동해야 보상을 받습니다.</span><span class="en" lang="en">No. There is no sale today and no plan to sell DBLN. The planned mainnet rules have no premine, no founder allocation and no special distribution: coins come only from block rewards, and the founder has to run Macs under the same rules as everyone else to receive any.</span></p>
+      </details>
+      <details>
+        <summary><span class="ko" lang="ko">테스트넷이 뭐예요?</span><span class="en" lang="en">What is the testnet?</span></summary>
+        <p><span class="ko" lang="ko">지금 운영 중인 공개 시험 네트워크(체인 7780)입니다. Mac 앱 0.7.0으로 누구나 연결해 테스트 DBLN을 받아 써 볼 수 있습니다. 테스트 DBLN에는 가치가 없고, 잔액은 메인넷으로 넘어가지 않습니다. 메인넷은 새 제네시스로 시작하는 새 네트워크입니다.</span><span class="en" lang="en">The public test network running today (chain 7780). Anyone can connect with the Mac app 0.7.0 and try it with free test DBLN. Test DBLN has no value and balances do not carry over: mainnet will be a new network with a new genesis.</span></p>
+      </details>
+      <details>
+        <summary><span class="ko" lang="ko">16분의 1 규칙이 뭐예요?</span><span class="en" lang="en">What is the 1/16 rule?</span></summary>
+        <p><span class="ko" lang="ko">메인넷 계획 규칙입니다. 한 운영자(한 지갑 주소)는 한 시간 노드 몫의 최대 16분의 1까지만 받습니다. 참여자가 16명보다 적으면 남는 몫은 발행하지 않습니다. 누구도 초기 발행을 독차지하지 못하게 하는 장치입니다.</span><span class="en" lang="en">A planned mainnet rule: one operator (one wallet address) receives at most 1/16 of an hour's node share. With fewer than 16 operators, the remainder is never created. It keeps anyone from pocketing the early supply.</span></p>
+      </details>
+      <details>
+        <summary><span class="ko" lang="ko">누가 만드나요?</span><span class="en" lang="en">Who makes it?</span></summary>
+        <p><span class="ko" lang="ko">작은 팀 Pipln이 만듭니다. 네트워크는 등록된 맥들, 곧 참여자들이 함께 굴리고 창업자의 맥도 같은 규칙을 따릅니다. 맥 등록은 Pipln이 운영하는 등록 서비스가 Apple의 기기 확인(DeviceCheck)을 거쳐 처리합니다. Apple은 이 프로젝트를 후원하거나 보증하지 않습니다.</span><span class="en" lang="en">A small team, Pipln. The network is run by the registered Macs, the participants, and the founder's Macs follow the same rules. Registration goes through a service run by Pipln that checks the Mac with Apple's DeviceCheck. Apple does not sponsor or endorse EastSea.</span></p>
+      </details>
+      <details>
+        <summary><span class="ko" lang="ko">맥을 잃어버리면요?</span><span class="en" lang="en">What if I lose my Mac?</span></summary>
+        <p><span class="ko" lang="ko">솔직히 말씀드립니다. 복구 키를 미리 등록해 두지 않았다면 누구도, 만든 우리도 계정을 되찾아 줄 수 없습니다. 다른 Apple 기기 한 대를 복구 키로 등록할 수 있으니, 값을 옮기기 전에 꼭 설정해 두세요.</span><span class="en" lang="en">Honestly: if you never set up a recovery key, nobody, including us, can restore the account. You can register another Apple device as your recovery key. Do that before you move anything of value.</span></p>
+      </details>
+    </div>
+  </div>
+</section>
 
 </main>
 
 <footer class="site-footer">
-  <div class="container">
-    <p class="legal">
-      <span class="ko" lang="ko">동해는 투자·법률·세무 조언이 아닙니다. 지금 운영되는 네트워크는 시험용 네트워크(테스트넷)이며 테스트넷 코인에는 가치가 없습니다. 소프트웨어는 '있는 그대로' 제공되며, 전체 고지와 이용 약관은 저장소의 DISCLAIMER.md에 있습니다.</span>
-      <span class="en" lang="en">EastSea is not investment, legal or tax advice. The network running today is the test network, and testnet coins have no value. The software is provided "as is"; the full disclaimer and terms live in DISCLAIMER.md in the repository.</span>
-    </p>
-    <p class="footer-links">
-      <a href="privacy.html"><span class="ko" lang="ko">개인정보 처리방침</span><span class="en" lang="en">Privacy policy</span></a>
-    </p>
-    <p class="trademark">
-      <span class="ko" lang="ko">EastSea(동해)와 Doubloon은 Pipln이 권리를 주장하는 상표이며, 상표 등록을 준비 중입니다.</span>
-      <span class="en" lang="en">EastSea and Doubloon are claimed marks of Pipln; registration is being prepared.</span>
-    </p>
-    <p class="copyright">© 2026 Pipln ·
-      <span class="ko" lang="ko">코드는 MIT · Apache-2.0으로 공개됩니다.</span>
-      <span class="en" lang="en">code released under MIT and Apache-2.0.</span>
-    </p>
-    <p class="back-top"><a href="#top">
-      <span class="ko" lang="ko">맨 위로 ↑</span>
-      <span class="en" lang="en">Back to top ↑</span>
-    </a></p>
+  <div class="wrap">
+    <div class="footer-top">
+      <p class="wordmark" aria-hidden="true"><span class="wm-ko">동해</span><span class="wm-en">EastSea</span></p>
+      <ul class="footer-links">
+        <li><a href="https://github.com/eastsea-xyz/eastsea/releases/latest"><span class="ko" lang="ko">내려받기</span><span class="en" lang="en">Download</span></a></li>
+        <li><a href="https://explorer.eastsea.xyz/"><span class="ko" lang="ko">탐색기</span><span class="en" lang="en">Explorer</span></a></li>
+        <li><a href="https://github.com/eastsea-xyz">GitHub</a></li>
+        <li><a href="https://github.com/eastsea-xyz/eastsea/blob/main/DISCLAIMER.md"><span class="ko" lang="ko">고지 및 이용 약관</span><span class="en" lang="en">Disclaimer and terms</span></a></li>
+        <li><a href="privacy.html"><span class="ko" lang="ko">개인정보 처리방침</span><span class="en" lang="en">Privacy policy</span></a></li>
+      </ul>
+    </div>
+    <div class="footer-legal">
+      <p><span class="ko" lang="ko">동해는 투자·법률·세무 조언이 아닙니다. 지금 운영되는 네트워크는 테스트넷이며 테스트 DBLN에는 가치가 없습니다. 메인넷은 출시되지 않았고, DBLN 판매는 없으며, 가격이나 수익을 약속하지 않습니다. 소프트웨어는 '있는 그대로(AS IS)' 제공되며 독립 보안 감사를 받지 않았습니다. 전체 고지와 이용 약관은 <a href="https://github.com/eastsea-xyz/eastsea/blob/main/DISCLAIMER.md">DISCLAIMER.md</a>에 있습니다.</span><span class="en" lang="en">EastSea is not investment, legal or tax advice. The network running today is the testnet, and test DBLN has no value. Mainnet has not launched, there is no DBLN sale, and nothing here promises a price or a return. The software is provided "AS IS" and has not had an independent security audit. The full disclaimer and terms are in <a href="https://github.com/eastsea-xyz/eastsea/blob/main/DISCLAIMER.md">DISCLAIMER.md</a>.</span></p>
+      <p><span class="ko" lang="ko">EastSea(동해)와 Doubloon(더블룬)은 Pipln이 권리를 주장하는 상표이며, 등록을 준비 중입니다. Apple, Mac, Touch ID는 Apple Inc.의 상표입니다.</span><span class="en" lang="en">EastSea and Doubloon are claimed marks of Pipln; registration is being prepared. Apple, Mac and Touch ID are trademarks of Apple Inc.</span></p>
+      <p class="mono">© 2026 Pipln</p>
+    </div>
   </div>
 </footer>
 
 <script>
-/* Language toggle. Remembers the choice in localStorage (try/catch: storage can be
-   blocked in private modes). No cookies, no network. */
+/* Language toggle. Remembers the choice (storage can be blocked). No cookies, no network. */
 (function () {
   var root = document.documentElement;
-  var btn = document.getElementById("lang-toggle");
-  function apply() {
+  document.getElementById("lang-toggle").addEventListener("click", function () {
     var lang = root.lang === "ko" ? "en" : "ko";
     root.lang = lang;
     try { localStorage.setItem("eastsea-lang", lang); } catch (e) { /* storage unavailable */ }
-  }
-  btn.addEventListener("click", apply);
+  });
 })();
 </script>
 </body>

@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<!-- Source of site/assets/og-image.png (1200x630). Render with:
+     node design/og/render-og.cjs  (needs playwright; serves nothing, loads files directly) -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../../site/tokens.css">
+<style>
+  @font-face { font-family: "Newsreader"; src: url("../../site/fonts/newsreader-latin.woff2") format("woff2"); font-weight: 400 500; }
+  @font-face { font-family: "Geist Mono"; src: url("../../site/fonts/geist-mono-latin.woff2") format("woff2"); font-weight: 400 500; }
+  @font-face { font-family: "Hahmlet"; src: url("../../site/fonts/hahmlet-ko-subset.woff2") format("woff2"); font-weight: 400 600; }
+  html, body { margin: 0; width: 1200px; height: 630px; overflow: hidden; }
+  body { position: relative; background: linear-gradient(to bottom, #F4EFE6 0, #F4EFE6 200px, #F0DCC0 420px); font-family: "Newsreader", serif; color: #0D2135; }
+  .sea { position: absolute; left: 0; right: 0; top: 420px; bottom: 0; background-color: #0D2135;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='22'%3E%3Cpath d='M0 11 Q20 3 40 11 T80 11 T120 11 T160 11' fill='none' stroke='%23E8BF59' stroke-opacity='.3' stroke-width='1'/%3E%3C/svg%3E"); }
+  .sea::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 1px; background: #E8BF59; opacity: .6; }
+  .coin { position: absolute; right: 90px; top: 112px; width: 400px; height: 400px; clip-path: inset(0 0 23% 0); }
+  .label { position: absolute; left: 72px; top: 64px; font: 500 18px/1 "Geist Mono", monospace; letter-spacing: .1em; text-transform: uppercase; color: #4B5B6B; }
+  .label b { font-family: "Hahmlet", serif; font-weight: 600; letter-spacing: 0; color: #0D2135; font-size: 22px; margin-right: 10px; }
+  h1 { position: absolute; left: 68px; top: 120px; margin: 0; font-weight: 400; font-size: 92px; line-height: .98; letter-spacing: -0.035em; width: 700px; }
+  .foot { position: absolute; left: 72px; bottom: 56px; font: 500 18px/1.4 "Geist Mono", monospace; color: #ECE6D9; letter-spacing: .02em; }
+  .foot span { color: #FFB857; }
+</style>
+</head>
+<body>
+  <div class="sea"></div>
+  <img class="coin" src="../../site/assets/coin-1024.webp" alt="">
+  <p class="label"><b>동해</b>EastSea</p>
+  <h1>Your money, checked by your own Mac.</h1>
+  <p class="foot"><span>Testnet only</span> · test DBLN has no value · no token sale</p>
+</body>
+</html>

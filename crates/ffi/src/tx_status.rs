@@ -22,7 +22,7 @@
 //! finding 3).
 
 use crate::{call, TxReceipt, WalletError, R};
-use aether_types::{Address, TxHash, U256};
+use aether_types::{Address, TxEnvelope, TxHash, TxPayload, U256};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Mutex;
@@ -249,6 +249,8 @@ const MAX_QUEUED: usize = 64;
 pub(crate) struct Sent {
     pub sender: Address,
     pub nonce: u64,
+    /// The transaction nonce plus any self-delegation authorization nonce.
+    pub nonce_consumption: u64,
     /// The validator that accepted it (None: this Mac's own node, or unknown).
     pub admitter: Option<aether_net::EndpointId>,
 }
@@ -260,7 +262,7 @@ pub(crate) struct Sent {
 pub(crate) struct Book {
     pub sent: HashMap<TxHash, Sent>,
     order: VecDeque<TxHash>,
-    queued: BTreeMap<Address, BTreeMap<u64, TxHash>>,
+    queued: BTreeMap<Address, BTreeMap<u64, (TxHash, u64)>>,
 }
 
 impl Book {
@@ -281,7 +283,7 @@ impl Book {
             }
         }
         let q = self.queued.entry(sent.sender).or_default();
-        q.insert(sent.nonce, h);
+        q.insert(sent.nonce, (h, sent.nonce_consumption));
         while q.len() > MAX_QUEUED {
             q.pop_first();
         }
@@ -292,7 +294,7 @@ impl Book {
         if let Some(s) = self.sent.remove(h) {
             self.order.retain(|o| o != h);
             if let Some(q) = self.queued.get_mut(&s.sender) {
-                if q.get(&s.nonce) == Some(h) {
+                if q.get(&s.nonce).is_some_and(|(queued, _)| queued == h) {
                     q.remove(&s.nonce);
                 }
             }
@@ -300,7 +302,7 @@ impl Book {
     }
 
     /// `sender`'s queue from `chain_nonce` up (lower nonces are on chain).
-    pub fn queue_from(&mut self, sender: Address, chain_nonce: u64) -> BTreeMap<u64, TxHash> {
+    pub fn queue_from(&mut self, sender: Address, chain_nonce: u64) -> BTreeMap<u64, (TxHash, u64)> {
         let Some(q) = self.queued.get_mut(&sender) else { return BTreeMap::new() };
         *q = q.split_off(&chain_nonce);
         q.clone()
@@ -344,13 +346,14 @@ static SUBMIT: Mutex<()> = Mutex::new(());
 /// of this process's queued sends that are still pending, starting at the
 /// chain's next nonce. An older send that dropped ends the run there, even
 /// while a younger one still waits (it waits behind that very gap).
-pub(crate) fn next_in_sequence(chain_nonce: u64, queued: &BTreeMap<u64, TxHash>, mut pending: impl FnMut(&TxHash) -> bool) -> u64 {
+pub(crate) fn next_in_sequence(chain_nonce: u64, queued: &BTreeMap<u64, (TxHash, u64)>, mut pending: impl FnMut(&TxHash) -> bool) -> u64 {
     let mut next = chain_nonce;
-    while let Some(h) = queued.get(&next) {
+    while let Some((h, consumed)) = queued.get(&next) {
         if !pending(h) {
             break;
         }
-        next += 1;
+        let Some(after) = next.checked_add(*consumed) else { return u64::MAX };
+        next = after;
     }
     next
 }
@@ -388,18 +391,32 @@ pub(crate) fn nonce_for(from: Address) -> R<u64> {
 /// the unbroken pending run; on success the hash, its nonce and the
 /// validator that admitted it are remembered until a chain fact settles it.
 pub(crate) fn submit_in_order(
-    from: Address,
-    nonce: u64,
+    env: &TxEnvelope,
     send: impl FnOnce() -> R<(TxHash, Option<aether_net::EndpointId>)>,
 ) -> R<TxHash> {
+    let (from, nonce) = (env.header.sender, env.header.nonce);
+    let nonce_consumption = nonce_consumption(&env.payload)?;
+    if nonce.checked_add(nonce_consumption).is_none() {
+        return Err(WalletError::Invalid("transaction exhausts the account nonce range".into()));
+    }
     let _serial = SUBMIT.lock().unwrap_or_else(|p| p.into_inner());
     let next = nonce_for(from)?;
     if let Some(why) = gap_refusal(nonce, next) {
         return Err(WalletError::Rejected(why));
     }
     let (h, admitter) = send()?;
-    book().record(h, Sent { sender: from, nonce, admitter });
+    book().record(h, Sent { sender: from, nonce, nonce_consumption, admitter });
     Ok(h)
+}
+
+/// Execution applies a self-authorization at `nonce + 1`, even when the
+/// call reuses or clears an existing delegation. Read the signed payload.
+fn nonce_consumption(payload: &TxPayload) -> R<u64> {
+    let TxPayload::Plain(bytes) = payload else {
+        return Err(WalletError::Invalid("encrypted transaction payload not supported".into()));
+    };
+    let call = aether_execution::EvmCall::decode(bytes).map_err(|e| WalletError::Invalid(format!("transaction payload: {e:?}")))?;
+    Ok(1 + u64::from(call.delegate.is_some()))
 }
 
 #[cfg(test)]
@@ -477,7 +494,7 @@ mod tests {
     #[test]
     fn an_older_drop_under_a_pending_successor_holds_the_next_send() {
         let (h5, h6) = (TxHash::repeat_byte(5), TxHash::repeat_byte(6));
-        let queue: BTreeMap<u64, TxHash> = [(5, h5), (6, h6)].into_iter().collect();
+        let queue: BTreeMap<u64, (TxHash, u64)> = [(5, (h5, 1)), (6, (h6, 1))].into_iter().collect();
         let next = next_in_sequence(5, &queue, |h| *h == h6);
         assert_eq!(next, 5, "nonce 5 dropped: the run ends there");
         assert!(gap_refusal(7, next).is_some(), "N+2 would wait behind the missing N");
@@ -488,12 +505,37 @@ mod tests {
         assert_eq!(next_in_sequence(7, &queue, |_| true), 7);
     }
 
+    /// R15: a self-delegating batch consumes the transaction nonce and the
+    /// authorization nonce before its successor can execute.
+    #[test]
+    fn pending_delegated_batch_reserves_its_authorization_nonce() {
+        let sender = Address::repeat_byte(0xa1);
+        let batch = crate::batch_call(sender, &[(Address::repeat_byte(0xb2), U256::from(1), Default::default())]);
+        assert!(batch.delegate.is_some(), "the fixture must self-authorize delegation");
+        let mut b = Book::default();
+        let consumed = nonce_consumption(&TxPayload::Plain(batch.encode().into())).unwrap();
+        b.record(TxHash::repeat_byte(5), Sent { sender, nonce: 5, nonce_consumption: consumed, admitter: None });
+        let queue = b.queue_from(sender, 5);
+        assert_eq!(
+            next_in_sequence(5, &queue, |_| true),
+            7,
+            "R15: a pending delegated batch reserves both nonce 5 and its authorization nonce 6"
+        );
+        assert_eq!(next_in_sequence(5, &queue, |_| false), 5, "a dropped batch reserves neither nonce");
+        b.record(TxHash::repeat_byte(7), Sent { sender, nonce: 7, nonce_consumption: 1, admitter: None });
+        assert_eq!(next_in_sequence(5, &b.queue_from(sender, 5), |_| true), 8, "ordinary sends continue after both batch nonces");
+        // Re-signing at the batch's starting nonce replaces the entire queued
+        // envelope; a normal transfer no longer reserves its authorization.
+        b.record(TxHash::repeat_byte(6), Sent { sender, nonce: 5, nonce_consumption: 1, admitter: None });
+        assert_eq!(next_in_sequence(5, &b.queue_from(sender, 5), |_| true), 6);
+    }
+
     /// Bug #5 decision 5 (kept): nonces follow this process's queued txs, and
     /// a submit that would sit behind a refused or dropped nonce is refused.
     #[test]
     fn submits_never_queue_behind_a_gap() {
         let h = TxHash::repeat_byte(1);
-        let one: BTreeMap<u64, TxHash> = [(5, h)].into_iter().collect();
+        let one: BTreeMap<u64, (TxHash, u64)> = [(5, (h, 1))].into_iter().collect();
         assert_eq!(next_in_sequence(5, &BTreeMap::new(), |_| true), 5);
         assert_eq!(next_in_sequence(5, &one, |_| true), 6, "nonce 5 is queued: the next send takes 6");
         assert_eq!(next_in_sequence(5, &one, |_| false), 5, "nonce 5 was dropped: take it again");
@@ -512,7 +554,7 @@ mod tests {
         for n in 0..(MAX_QUEUED as u64 + 10) {
             let mut bytes = [0u8; 32];
             bytes[..8].copy_from_slice(&n.to_be_bytes());
-            b.record(TxHash::from(bytes), Sent { sender: a, nonce: n, admitter: None });
+            b.record(TxHash::from(bytes), Sent { sender: a, nonce: n, nonce_consumption: 1, admitter: None });
         }
         assert_eq!(b.queue_from(a, 0).len(), MAX_QUEUED, "one sender's queue stays within the node's per-sender limit");
         assert_eq!(b.queue_from(a, 70).len(), 4, "nonces below the chain nonce are on chain");
@@ -521,11 +563,11 @@ mod tests {
             bytes[..8].copy_from_slice(&i.to_be_bytes());
             let mut sender = [0u8; 20];
             sender[0] = (i % 40) as u8;
-            b.record(TxHash::from(bytes), Sent { sender: Address::from(sender), nonce: i, admitter: None });
+            b.record(TxHash::from(bytes), Sent { sender: Address::from(sender), nonce: i, nonce_consumption: 1, admitter: None });
         }
         assert!(b.sent.len() <= MAX_SENT && b.queued.len() <= MAX_SENDERS, "{} sends, {} senders", b.sent.len(), b.queued.len());
         let h = TxHash::repeat_byte(0x77);
-        b.record(h, Sent { sender: a, nonce: 200, admitter: None });
+        b.record(h, Sent { sender: a, nonce: 200, nonce_consumption: 1, admitter: None });
         assert!(b.sent.contains_key(&h));
         b.settled(&h);
         assert!(!b.sent.contains_key(&h) && b.admitter_of(&h).is_none());

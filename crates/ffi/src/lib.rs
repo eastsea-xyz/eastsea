@@ -1191,6 +1191,11 @@ pub fn chain_status() -> R<ChainStatus> {
 
 /// Only show notices signed by the pinned committee and present in the node's
 /// finalized schedule. Status RPC is otherwise an untrusted read.
+#[cfg(test)]
+thread_local! {
+    static UPGRADE_CHECKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn scheduled_upgrade_json(status: &Value) -> String {
     let Ok(chain) = expected_chain(status) else { return "[]".into() };
     let validators = NODES.lock().expect("nodes lock").as_ref().map_or(4, |n| n.len() as u32);
@@ -1205,6 +1210,8 @@ fn scheduled_upgrade_json(status: &Value) -> String {
         if !schedule.iter().any(|a| a[0].as_u64() == Some(u.protocol as u64) && a[1].as_u64() == Some(u.activate_at)) {
             return None;
         }
+        #[cfg(test)]
+        UPGRADE_CHECKS.with(|checks| checks.set(checks.get() + 1));
         aether_light::verify_upgrade(set.identity(), &signed).ok()?;
         Some(json!({ "protocol": u.protocol, "activate_at": u.activate_at, "emergency": u.emergency, "notes": u.notes }))
     }).collect::<Vec<_>>();
@@ -1993,7 +2000,7 @@ pub fn submit_signed(envelope_json: String, signature: Vec<u8>, p256_public_key:
     env.signature = Bytes::from(bytes);
     // One submit at a time per process, never past a refused or dropped
     // nonce (contracts-live bug #5, decision 5).
-    let h = tx_status::submit_in_order(env.header.sender, env.header.nonce, || {
+    let h = tx_status::submit_in_order(&env, || {
         let (v, admitter) = call_tracked("aether_sendTransaction", json!([env]))?;
         Ok((parse(&v["hash"], "hash")?, admitter))
     })?;
@@ -2386,6 +2393,54 @@ mod tests {
         *LAST_REBUILD.lock().expect("rebuild lock") = None;
         REBUILDS.store(0, std::sync::atomic::Ordering::Relaxed);
         *BUDGETS.lock().expect("budgets lock") = None;
+    }
+
+    fn upgrade_status(notices: Vec<Value>, schedule: Vec<Value>) -> Value {
+        json!({ "chain_id": 7_777, "height": 1, "schedule": schedule, "upcoming_upgrades": notices })
+    }
+
+    fn shaped_upgrade(protocol: u32) -> Value {
+        json!({ "upgrade": { "chain_id": 7_777, "protocol": protocol, "activate_at": 100,
+            "emergency": false, "releases": [], "notes": "test" }, "signature": "00" })
+    }
+
+    #[test]
+    fn r19_duplicate_upgrade_notices_are_checked_once() {
+        let _g = config();
+        reset_network();
+        use_devnet_keys();
+        UPGRADE_CHECKS.with(|checks| checks.set(0));
+        let status = upgrade_status(vec![shaped_upgrade(4); 32], vec![json!([4, 100])]);
+        assert_eq!(scheduled_upgrade_json(&status), "[]");
+        assert!(UPGRADE_CHECKS.with(|checks| checks.get()) <= 1,
+            "R19: duplicate notices repeated signature verification {} times",
+            UPGRADE_CHECKS.with(|checks| checks.get()));
+    }
+
+    #[test]
+    fn r19_upgrade_verification_has_an_entry_budget() {
+        let _g = config();
+        reset_network();
+        use_devnet_keys();
+        UPGRADE_CHECKS.with(|checks| checks.set(0));
+        let status = upgrade_status((4..36).map(shaped_upgrade).collect(),
+            (4..36).map(|protocol| json!([protocol, 100])).collect());
+        assert_eq!(scheduled_upgrade_json(&status), "[]");
+        assert!(UPGRADE_CHECKS.with(|checks| checks.get()) <= 16,
+            "R19: one status reply exceeded the 16-notice verification budget");
+    }
+
+    #[test]
+    fn r19_oversized_upgrade_fields_never_reach_verification() {
+        let _g = config();
+        reset_network();
+        use_devnet_keys();
+        let mut notice = shaped_upgrade(4);
+        notice["upgrade"]["notes"] = json!("x".repeat(513));
+        UPGRADE_CHECKS.with(|checks| checks.set(0));
+        assert_eq!(scheduled_upgrade_json(&upgrade_status(vec![notice], vec![json!([4, 100])])), "[]");
+        assert_eq!(UPGRADE_CHECKS.with(|checks| checks.get()), 0,
+            "R19: oversized signed fields reached signature verification");
     }
 
     /// A validator that never answers: TEST-NET-1 (packets go nowhere), so

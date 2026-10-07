@@ -4219,6 +4219,67 @@ mod pool_tests {
         t
     }
 
+    #[test]
+    fn r14_a_state_price_rise_keeps_a_signed_budget_affordable_tx_pending() {
+        let a = Address::repeat_byte(4);
+        let cap = 2 * fees::STATE_UNIT_PRICE;
+        let mut t = capped(a, 0, cap);
+        t.header.max_fee.prove = GWEI;
+        let signed_budget = u128::from(t.header.gas.exec) * t.header.max_fee.exec
+            + u128::from(t.header.gas.prove) * t.header.max_fee.prove
+            + u128::from(t.header.gas.state) * cap
+            + 1;
+        let state = funded(a, signed_budget);
+        let paid = FeeVector { exec: GWEI, state: cap, prove: GWEI };
+        assert!(admissible(&t, &state, paid).is_ok(), "the complete signed maximum is affordable");
+        let price = fees::state_base_fee(97_147);
+        assert!(price > cap);
+        let high = FeeVector { state: price, ..paid };
+        let t0 = Instant::now();
+        assert_eq!(
+            drop_reason(&t, Some(t0), t0 + MEMPOOL_TTL / 2, &state, high, true, None),
+            None,
+            "R14: an unchargeable state price must not drop a signed-budget-affordable transaction"
+        );
+        assert_eq!(drop_reason(&t, Some(t0), t0 + MEMPOOL_TTL / 2, &state, paid, true, None), None,
+            "the transaction is retained when the price refills to its cap");
+        assert_eq!(
+            drop_reason(&t, Some(t0), t0 + MEMPOOL_TTL, &state, high, true, None),
+            Some(DropReason::StatePriceAboveCap { cap: cap.to_string(), price: price.to_string(), blocks: None }),
+            "the existing TTL still applies to fee-cap waiting"
+        );
+        assert_eq!(
+            drop_reason(&t, Some(t0), t0, &funded(a, signed_budget - 1), high, true, None),
+            Some(DropReason::Unaffordable),
+            "a real balance loss is still detected while the state price is high"
+        );
+    }
+
+    #[test]
+    fn r14_a_prove_price_rise_keeps_a_signed_budget_affordable_tx_pending() {
+        let a = Address::repeat_byte(4);
+        let mut t = tx(a, 0, 1);
+        t.header.max_fee.prove = GWEI;
+        let signed_budget = u128::from(t.header.gas.exec) * t.header.max_fee.exec
+            + u128::from(t.header.gas.prove) * t.header.max_fee.prove
+            + 1;
+        let state = funded(a, signed_budget);
+        let paid = FeeVector { exec: GWEI, state: 0, prove: GWEI };
+        assert!(admissible(&t, &state, paid).is_ok());
+        let high = FeeVector { prove: 2 * GWEI, ..paid };
+        let t0 = Instant::now();
+        assert_eq!(
+            drop_reason(&t, Some(t0), t0, &state, high, true, None),
+            None,
+            "R14: an unchargeable prove price must not drop a signed-budget-affordable transaction"
+        );
+        assert_eq!(
+            drop_reason(&t, Some(t0), t0 + MEMPOOL_FEE_WAIT, &state, high, true, None),
+            Some(DropReason::FeeCapBelowBase),
+            "the existing exec/prove fee waiting limit still applies"
+        );
+    }
+
     /// Contracts-live bug #5: the stress run's 78 transfers sat under the
     /// risen B5 price until the TTL and vanished with no reason anywhere.
     /// The rule that drops them is unchanged; the reason is now named.

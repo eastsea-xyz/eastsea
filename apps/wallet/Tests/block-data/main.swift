@@ -28,6 +28,8 @@ final class MoveProcessStub {
 // Exercise the real mover against fixtures, without starting a node or app.
 @MainActor final class NodeController {
     nonisolated static let storageMoveLockTimeout: TimeInterval = 0.05
+    nonisolated static let port: UInt16 = 1
+    nonisolated static let helperBinaryURL: URL? = URL(fileURLWithPath: "/fixture/aether")
     nonisolated static let storageMoveDefaults = MoveMemoryDefaults()
     nonisolated static let dataDir = URL(fileURLWithPath: ProcessInfo.processInfo.environment["AETHER_AGENT_TEST_TMP"]!)
         .appendingPathComponent("block-data-internal-\(UUID().uuidString)")
@@ -47,36 +49,19 @@ final class MoveProcessStub {
     var storageBindingMatches = true
     var storageEndpointAbsent = true
     var storagePreflightCalls = 0
+    var onStorageStatus: (() -> Void)?
+    var onStorageAbsence: (() -> Void)?
     var unattended: MoveDaemonStub? = MoveDaemonStub()
     var archive = false
     var mountObservers: [NSObjectProtocol] = []
     var stops = 0
     var markerAtStops: [Bool] = []
+    init() { LocalRPC.node = self }
     func stop(keepSwitch: Bool) {
         markerAtStops.append(unattended?.markerEnabled ?? false)
         stops += 1
         process = nil
         attached = false
-    }
-    // The real mover must request this seam before stopping any parent.
-    // Production uses signed fresh RPC/binding checks; fixture controls only
-    // their attested outcome and real owned descriptor lifetime.
-    func acquireStorageMoveOwnership() async -> Int32? {
-        storagePreflightCalls += 1
-        let ownPID = process?.processIdentifier
-        let daemonPID = unattended?.runningNodePID
-        if let ownPID, let daemonPID, ownPID != daemonPID { return nil }
-        if ownPID != nil || daemonPID != nil || attached {
-            guard storageLeaseVerified, storageBindingMatches,
-                  ownPID != nil || daemonPID != nil else { return nil }
-            stop(keepSwitch: true)
-            if let daemonPID { unattended?.stopDaemonNode(expectedPID: daemonPID) }
-            return await BlockDataMove.holdRunLock(in: Self.dataDir, timeout: Self.storageMoveLockTimeout)
-        }
-        guard storageEndpointAbsent else { return nil }
-        guard let fd = await BlockDataMove.holdRunLock(in: Self.dataDir, timeout: 0) else { return nil }
-        stop(keepSwitch: true)
-        return fd
     }
     func logEvent(_ event: String, _ message: String) {}
     func applyPower() {}
@@ -86,6 +71,38 @@ final class MoveProcessStub {
         defer { close(fd) }
         if flock(fd, LOCK_EX | LOCK_NB) == 0 { flock(fd, LOCK_UN); return false }
         return errno == EWOULDBLOCK
+    }
+}
+
+// Only RPC and signature observations are doubled. The fixture compiles the
+// production ownership method, including its checks across each suspension.
+@MainActor enum LocalRPC {
+    static weak var node: NodeController?
+    struct VerifiedReply { let value: Any; let binding: Int32 }
+    static func callVerified(rootPID: Int32, port: UInt16, expected: URL,
+                             method: String, params: [Any]) async -> VerifiedReply? {
+        guard let node else { return nil }
+        node.storagePreflightCalls += 1
+        check(port == NodeController.port && expected == NodeController.helperBinaryURL
+              && method == "aether_status" && params.isEmpty, "R06 fresh status preflight uses the current helper")
+        let reply = VerifiedReply(value: node.storageLeaseVerified, binding: rootPID)
+        await Task.yield()
+        node.onStorageStatus?()
+        return reply
+    }
+    static func endpointIsAbsent(port: UInt16) async -> Bool {
+        guard let node else { return false }
+        node.storagePreflightCalls += 1
+        let absent = node.storageEndpointAbsent
+        await Task.yield()
+        node.onStorageAbsence?()
+        return absent
+    }
+}
+@MainActor enum NodeReleaseIdentity {
+    static func hasWriterLease(status: Any?) -> Bool { status as? Bool == true }
+    static func matches(binding: Int32, port: UInt16, expected: URL) -> Bool {
+        LocalRPC.node?.storageBindingMatches == true
     }
 }
 @MainActor final class MoveDaemonStub {
@@ -542,6 +559,92 @@ check(unknownHolder.stops == 0 && unknownHolder.chainDataPath == legacySource.pa
       && NodeController.lockHeld(in: NodeController.dataDir),
       "R06 unknown holder is never stopped or awaited before storage copy")
 close(unknownHolderFD)
+
+// Exercise the production preflight across its RPC suspension, rather than
+// trusting a fixture implementation of the ownership decision.
+let statusChanges: [(String, (NodeController) -> Void)] = [
+    ("own PID", { $0.process = MoveProcessStub(56) }),
+    ("daemon PID", { $0.unattended?.runningNodePID = 56 }),
+    ("attachment", { $0.attached = true }),
+    ("update gate", { $0.updateInProgress = true }),
+    ("move gate", { $0.storageMovePercent = nil }),
+    ("listener binding", { $0.storageBindingMatches = false }),
+]
+for (tag, change) in statusChanges {
+    let node = NodeController()
+    node.process = MoveProcessStub(55)
+    node.storageMovePercent = 0
+    node.onStorageStatus = { change(node) }
+    let ownership = await node.acquireStorageMoveOwnership()
+    if let ownership { close(ownership) }
+    check(ownership == nil && node.stops == 0 && node.storagePreflightCalls == 1,
+          "R06 changed \(tag) after status cannot authorize source shutdown")
+    node.onStorageStatus = nil
+}
+let absenceChanges: [(String, (NodeController) -> Void)] = [
+    ("own PID", { $0.process = MoveProcessStub(57) }),
+    ("daemon PID", { $0.unattended?.runningNodePID = 57 }),
+    ("attachment", { $0.attached = true }),
+    ("update gate", { $0.updateInProgress = true }),
+    ("move gate", { $0.storageMovePercent = nil }),
+]
+for (tag, change) in absenceChanges {
+    let node = NodeController()
+    node.storageMovePercent = 0
+    node.onStorageAbsence = { change(node) }
+    let ownership = await node.acquireStorageMoveOwnership()
+    if let ownership { close(ownership) }
+    check(ownership == nil && node.stops == 0 && node.storagePreflightCalls == 1,
+          "R06 changed \(tag) after endpoint absence cannot authorize ownership")
+    node.onStorageAbsence = nil
+}
+let conflictingParents = NodeController()
+conflictingParents.storageMovePercent = 0
+conflictingParents.process = MoveProcessStub(58)
+conflictingParents.unattended?.runningNodePID = 59
+check(await conflictingParents.acquireStorageMoveOwnership() == nil
+      && conflictingParents.stops == 0 && conflictingParents.storagePreflightCalls == 0,
+      "R06 conflicting parents are refused before RPC or shutdown")
+let unclaimedAttachment = NodeController()
+unclaimedAttachment.storageMovePercent = 0
+unclaimedAttachment.attached = true
+check(await unclaimedAttachment.acquireStorageMoveOwnership() == nil
+      && unclaimedAttachment.stops == 0 && unclaimedAttachment.storagePreflightCalls == 0,
+      "R06 an unclaimed attachment cannot be treated as endpoint absence")
+
+let cancelledPreflight = NodeController()
+cancelledPreflight.storageMovePercent = 0
+cancelledPreflight.process = MoveProcessStub(60)
+var ownershipTask: Task<Int32?, Never>?
+cancelledPreflight.onStorageStatus = { ownershipTask?.cancel() }
+ownershipTask = Task { await cancelledPreflight.acquireStorageMoveOwnership() }
+let cancelledOwnership = await ownershipTask!.value
+if let cancelledOwnership { close(cancelledOwnership) }
+check(cancelledOwnership == nil && cancelledPreflight.stops == 0
+      && cancelledPreflight.storagePreflightCalls == 1,
+      "R06 cancellation after the status read cannot authorize shutdown")
+cancelledPreflight.onStorageStatus = nil
+
+// The lock becomes available after shutdown, but the update gate changes
+// during that wait. The production post-acquisition guard must close its fd.
+let changingGate = NodeController()
+changingGate.storageMovePercent = 0
+changingGate.unattended?.runningNodePID = 61
+let changingGateFD = open(NodeController.dataDir.appendingPathComponent("run.lock").path, O_RDWR | O_CREAT, 0o600)
+check(changingGateFD >= 0 && flock(changingGateFD, LOCK_EX | LOCK_NB) == 0,
+      "R06 changing gate fixture owns the lock before shutdown")
+changingGate.unattended?.onStop = {
+    Task { @MainActor in
+        changingGate.updateInProgress = true
+        close(changingGateFD)
+    }
+}
+let rejectedOwnership = await changingGate.acquireStorageMoveOwnership()
+if let rejectedOwnership { close(rejectedOwnership) }
+check(rejectedOwnership == nil && changingGate.stops == 1
+      && !NodeController.lockHeld(in: NodeController.dataDir),
+      "R06 a changed gate after lock acquisition releases the owned descriptor")
+changingGate.unattended?.onStop = nil
 
 // R06. The actual mover pauses daemon respawn before either node stops and
 // retains ownership during copy, selection publication and commit.

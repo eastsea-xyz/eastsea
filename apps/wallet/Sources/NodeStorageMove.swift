@@ -11,6 +11,41 @@ extension NodeController {
     /// UserDefaults: the old chain root to clear once the node runs from the new one.
     static let cleanupKey = "nodeChainDataCleanup"
 
+    /// Claim the storage source only after proving a current writer lease.
+    /// The marker is already suspended; the caller owns the returned fd.
+    func acquireStorageMoveOwnership() async -> Int32? {
+        guard storageMovePercent != nil, !updateInProgress, !Task.isCancelled else { return nil }
+        let ownPID = process?.processIdentifier
+        let daemonPID = unattended?.runningNodePID
+        let wasAttached = attached
+        if let ownPID, let daemonPID, ownPID != daemonPID { return nil }
+        if let rootPID = ownPID ?? daemonPID {
+            guard let expected = Self.helperBinaryURL,
+                  let sample = await LocalRPC.callVerified(rootPID: rootPID, port: Self.port, expected: expected,
+                                                          method: "aether_status", params: []),
+                  NodeReleaseIdentity.hasWriterLease(status: sample.value),
+                  !Task.isCancelled, !updateInProgress, storageMovePercent != nil,
+                  process?.processIdentifier == ownPID, unattended?.runningNodePID == daemonPID,
+                  attached == wasAttached,
+                  NodeReleaseIdentity.matches(binding: sample.binding, port: Self.port, expected: expected) else { return nil }
+            stop(keepSwitch: true)
+            if let daemonPID { unattended?.stopDaemonNode(expectedPID: daemonPID) }
+            guard let fd = await BlockDataMove.holdRunLock(in: Self.dataDir, timeout: Self.storageMoveLockTimeout) else { return nil }
+            guard !Task.isCancelled, !updateInProgress, storageMovePercent != nil else { close(fd); return nil }
+            return fd
+        }
+        // No claimed parent is not proof of absence. Never wait for an
+        // unknown parent to disappear and leave an unleased child writing.
+        guard !wasAttached, await LocalRPC.endpointIsAbsent(port: Self.port),
+              !Task.isCancelled, !updateInProgress, storageMovePercent != nil,
+              process == nil, unattended?.runningNodePID == nil, !attached,
+              let fd = await BlockDataMove.holdRunLock(in: Self.dataDir, timeout: 0) else { return nil }
+        guard !Task.isCancelled, !updateInProgress, storageMovePercent != nil,
+              process == nil, unattended?.runningNodePID == nil, !attached else { close(fd); return nil }
+        stop(keepSwitch: true)
+        return fd
+    }
+
     /// The chain-data root in use: the chosen folder, or the node's data folder.
     var chainRoot: URL {
         chainDataPath.isEmpty ? Self.dataDir : URL(fileURLWithPath: chainDataPath, isDirectory: true)

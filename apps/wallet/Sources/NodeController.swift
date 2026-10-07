@@ -261,6 +261,16 @@ final class NodeController: ObservableObject {
         self.clock = clock
         wrongLocation = !InstallLocation.currentIsRunnable
         if wrongLocation { state = .failed(InstallLocation.moveSentence) }
+        do {
+            if let root = try BlockDataMove.authoritativeRoot(in: Self.dataDir) {
+                chainDataPath = root.path == BlockDataLocation.resolvedRoot(Self.dataDir).path ? "" : root.path
+            }
+        } catch {
+            // An unreadable transaction record must never select an older
+            // preference and start writing a second chain store.
+            storageMoveError = String(localized: "The block-data move record could not be read. Keep both copies and retry after reconnecting the disk.")
+            storageMovePercent = 0
+        }
     }
     private var powerTimer: Timer?
     /// Held while this Mac is a validator (see `applyDuty`).

@@ -386,7 +386,7 @@ enum DataMigration {
     /// size limit and never the whole file in memory — the chain database
     /// is gigabytes. `nil` on any read error: a digest of "whatever we
     /// managed to read" would be a false match waiting to happen.
-    private static func streamSHA256(_ url: URL, meter: ProgressMeter? = nil) -> String? {
+    static func streamSHA256(_ url: URL, meter: ProgressMeter? = nil) -> String? {
         var sha = SHA256()
         do {
             let fh = try FileHandle(forReadingFrom: url)

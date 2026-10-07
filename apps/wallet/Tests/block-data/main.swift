@@ -140,6 +140,93 @@ failedMover.moveBlockData(to: occupied)
 try await waitForMove(failedMover)
 check((try? Data(contentsOf: unrelated)) == Data("unrelated-history".utf8), "R02 failed move preserves preexisting destination data")
 check(failedMover.chainDataPath == badSource.path, "R02 rejected move keeps source authoritative")
+// R03: a disconnected source cannot turn into a successful empty move back.
+try FileManager.default.createDirectory(at: NodeController.dataDir, withIntermediateDirectories: true)
+let oldProbe = NodeController.dataDir.appendingPathComponent(".eastsea-write-check")
+try Data("existing-file".utf8).write(to: oldProbe)
+check(NodeController.canWrite(in: NodeController.dataDir) && (try? Data(contentsOf: oldProbe)) == Data("existing-file".utf8),
+      "R03 disk writability probes preserve preexisting files")
+let missingRoot = moveFixture.appendingPathComponent("offline-disk/data")
+let missingMover = NodeController()
+missingMover.chainDataPath = missingRoot.path
+missingMover.moveBlockData(to: nil)
+try await waitForMove(missingMover)
+check(missingMover.chainDataPath == missingRoot.path && missingMover.storageMoveError != nil,
+      "R03 absent source cannot commit an empty move or authorize cleanup")
+let verifiedSource = moveFixture.appendingPathComponent("verified-source")
+let verifiedTarget = moveFixture.appendingPathComponent("verified-target")
+try FileManager.default.createDirectory(at: verifiedSource.appendingPathComponent("follow"), withIntermediateDirectories: true)
+let copiedFile = verifiedSource.appendingPathComponent("follow/state.db")
+try Data("verified-data".utf8).write(to: copiedFile)
+try FileManager.default.createDirectory(at: verifiedSource.appendingPathComponent("archive"), withIntermediateDirectories: true)
+let archiveFile = verifiedSource.appendingPathComponent("archive/history.db")
+try Data("archive-history".utf8).write(to: archiveFile)
+let goodMover = NodeController()
+goodMover.chainDataPath = verifiedSource.path
+goodMover.moveBlockData(to: verifiedTarget)
+try await waitForMove(goodMover)
+check(goodMover.chainDataPath == verifiedTarget.path, "R03 real verified copy commits")
+check(try BlockDataMove.authoritativeRoot(in: NodeController.dataDir)?.path == verifiedTarget.path,
+      "R03 committed location survives lost preference writes")
+// Replay the verified publication with the preference still at the source.
+let recordURL = NodeController.dataDir.appendingPathComponent(BlockDataMove.recordName)
+var interrupted = try JSONDecoder().decode(BlockDataMove.Record.self, from: Data(contentsOf: recordURL))
+interrupted.committed = false
+try JSONEncoder().encode(interrupted).write(to: recordURL, options: .atomic)
+let replacedStage = verifiedTarget.appendingPathComponent(interrupted.staging)
+try FileManager.default.createDirectory(at: replacedStage, withIntermediateDirectories: true)
+let foreignStageFile = replacedStage.appendingPathComponent("foreign.db")
+try Data("not-created-by-move".utf8).write(to: foreignStageFile)
+goodMover.chainDataPath = verifiedSource.path
+goodMover.moveBlockData(to: verifiedTarget)
+try await waitForMove(goodMover)
+check(goodMover.chainDataPath == verifiedSource.path && (try? Data(contentsOf: foreignStageFile)) == Data("not-created-by-move".utf8),
+      "R03 replaced staging directories never become rollback cargo")
+try FileManager.default.removeItem(at: replacedStage)
+goodMover.moveBlockData(to: verifiedTarget)
+try await waitForMove(goodMover)
+check(goodMover.chainDataPath == verifiedTarget.path, "R03 interrupted publication resumes without re-merging foreign data")
+let oldTarget = moveFixture.appendingPathComponent("temporarily-away")
+try FileManager.default.moveItem(at: verifiedTarget, to: oldTarget)
+try FileManager.default.createDirectory(at: verifiedTarget, withIntermediateDirectories: true)
+check(!BlockDataMove.selectionAvailable(verifiedTarget, internalRoot: NodeController.dataDir),
+      "R03 a replacement root at the same path cannot start a fresh chain")
+try FileManager.default.removeItem(at: verifiedTarget)
+try FileManager.default.moveItem(at: oldTarget, to: verifiedTarget)
+check(BlockDataMove.selectionAvailable(verifiedTarget, internalRoot: NodeController.dataDir), "R03 the original root resumes")
+try FileManager.default.removeItem(at: verifiedTarget.appendingPathComponent("archive/history.db"))
+let lateFile = verifiedSource.appendingPathComponent("follow/new-after-copy.db")
+try Data("new-history".utf8).write(to: lateFile)
+goodMover.finishBlockDataMove()
+try await Task.sleep(nanoseconds: 150_000_000)
+check(!FileManager.default.fileExists(atPath: copiedFile.path), "R03 verified source file can be cleaned")
+check((try? Data(contentsOf: lateFile)) == Data("new-history".utf8), "R03 unmanifested source data survives cleanup")
+check((try? Data(contentsOf: archiveFile)) == Data("archive-history".utf8), "R03 missing destination history retains its only source copy")
+goodMover.finishBlockDataMove()
+try await Task.sleep(nanoseconds: 50_000_000)
+check(FileManager.default.fileExists(atPath: lateFile.path), "R03 cleanup replay is idempotent")
+// A stale unpublished copy must not permanently exclude future safe moves.
+let staleSource = moveFixture.appendingPathComponent("stale-source")
+let staleTarget = moveFixture.appendingPathComponent("stale-target")
+try FileManager.default.createDirectory(at: staleSource.appendingPathComponent("follow"), withIntermediateDirectories: true)
+let staleDB = staleSource.appendingPathComponent("follow/state.db")
+try Data("before-crash".utf8).write(to: staleDB)
+let staleMover = NodeController()
+staleMover.chainDataPath = staleSource.path
+staleMover.moveBlockData(to: staleTarget)
+try await waitForMove(staleMover)
+var staleRecord = try JSONDecoder().decode(BlockDataMove.Record.self, from: Data(contentsOf: recordURL))
+staleRecord.committed = false
+try JSONEncoder().encode(staleRecord).write(to: recordURL, options: .atomic)
+try Data("advanced-source".utf8).write(to: staleDB)
+staleMover.chainDataPath = staleSource.path
+let freshTarget = moveFixture.appendingPathComponent("fresh-target")
+staleMover.moveBlockData(to: freshTarget)
+try await waitForMove(staleMover)
+check(staleMover.chainDataPath == freshTarget.path && (try? Data(contentsOf: freshTarget.appendingPathComponent("follow/state.db"))) == Data("advanced-source".utf8),
+      "R03 an advanced source can safely abandon stale publication and move afresh")
+check((try? Data(contentsOf: staleTarget.appendingPathComponent("follow/state.db"))) == Data("before-crash".utf8),
+      "R03 abandoning a stale move retains its earlier copied cargo")
 }
 #endif
 

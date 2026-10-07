@@ -20,11 +20,14 @@ extension NodeController {
     /// that is not there means its disk is not connected; the node is never
     /// started at a path that would land on the internal disk.
     func blockDataStorageState() -> NodeStorageState {
-        guard !chainDataPath.isEmpty else { return .standard }
+        let pinned = BlockDataMove.selectionAvailable(BlockDataLocation.resolvedRoot(chainRoot), internalRoot: Self.dataDir)
+        guard !chainDataPath.isEmpty else {
+            return pinned ? .standard : .chosen(volume: String(localized: "Block data"), mounted: false, writable: false)
+        }
         let url = URL(fileURLWithPath: chainDataPath, isDirectory: true)
         let volume = BlockDataLocation.volumeName(ofPath: chainDataPath) ?? url.deletingLastPathComponent().lastPathComponent
         var isDir: ObjCBool = false
-        let mounted = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
+        let mounted = pinned && FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
         return .chosen(volume: volume, mounted: mounted, writable: mounted && Self.canWrite(in: url))
     }
 
@@ -32,8 +35,8 @@ extension NodeController {
     /// The first one on a removable disk is what raises the system's
     /// "EastSea wants to access files on a removable volume" prompt.
     nonisolated static func canWrite(in dir: URL) -> Bool {
-        let probe = dir.appendingPathComponent(".eastsea-write-check")
-        guard FileManager.default.createFile(atPath: probe.path, contents: Data()) else { return false }
+        let probe = dir.appendingPathComponent(".eastsea-write-check-\(UUID().uuidString)")
+        guard (try? Data().write(to: probe, options: .withoutOverwriting)) != nil else { return false }
         try? FileManager.default.removeItem(at: probe)
         return true
     }
@@ -106,7 +109,6 @@ extension NodeController {
 
     /// NSOpenPanel → validate → move.
     func chooseBlockDataLocation() {
-        let ko = HealthCheck.korean
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
@@ -126,13 +128,18 @@ extension NodeController {
     /// Move the block data to `dest` (nil: back to the default place).
     func moveBlockData(to dest: URL?) {
         guard storageMovePercent == nil else { return }
-        let source = chainRoot
-        let target = dest ?? Self.dataDir
+        let source = BlockDataLocation.resolvedRoot(chainRoot)
+        let target = BlockDataLocation.resolvedRoot(dest ?? Self.dataDir)
+        guard let sourceID = BlockDataMove.identity(source) else {
+            storageMoveError = String(localized: "The source disk is unavailable. Reconnect it before moving the block data.")
+            return
+        }
         guard BlockDataLocation.disjoint(source, target) else {
             storageMoveError = String(localized: "Pick a folder outside the current block data. The two locations cannot contain each other.")
             return
         }
-        guard BlockDataLocation.destinationAvailable(target, preservingInternalKeys: dest == nil) else {
+        guard BlockDataLocation.destinationAvailable(target, preservingInternalKeys: dest == nil)
+                || BlockDataMove.canResume(source: source, target: target, internalRoot: Self.dataDir) else {
             storageMoveError = String(localized: "This folder already holds block data. Pick an empty folder; existing data will be kept.")
             return
         }
@@ -147,61 +154,18 @@ extension NodeController {
         Task.detached {
             // The node lets go of run.lock when it has really exited.
             for _ in 0..<120 where Self.lockHeld(in: dataDir) { try? await Task.sleep(nanoseconds: 500_000_000) }
-            let fm = FileManager.default
-            var ok = (try? fm.createDirectory(at: target, withIntermediateDirectories: dest == nil)) != nil
-                || fm.fileExists(atPath: target.path)
-            let staging = target.appendingPathComponent(".eastsea-storage-move-\(UUID().uuidString)")
-            let ownsStaging = ok && (try? fm.createDirectory(at: staging, withIntermediateDirectories: false)) != nil
-            ok = ownsStaging
-            var published: [URL] = []
-            let dirs = BlockDataLocation.movedDirs.filter { fm.fileExists(atPath: source.appendingPathComponent($0).path) }
-            let total = dirs.reduce(UInt64(0)) { $0 + Self.treeBytes(source.appendingPathComponent($1)) }
+            let total = BlockDataLocation.movedDirs.reduce(UInt64(0)) { $0 + Self.treeBytes(source.appendingPathComponent($1)) }
             let meter = DataMigration.ProgressMeter { f in
-                Task { @MainActor in self.storageMovePercent = min(99, Int(f * 100)) }
-            }
-            meter.expect(Int64(total) * 3)   // read, hash, hash (DataMigration.copyWork)
-            for d in dirs where ok {
-                let staged = staging.appendingPathComponent(d)
-                ok = (try? fm.createDirectory(at: staged, withIntermediateDirectories: false)) != nil
-                    && DataMigration.syncTreeVerified(source.appendingPathComponent(d), staged, meter: meter)
-            }
-            // Only verified, operation-owned entries are published. A disk
-            // fault before this leaves every destination chain tree alone.
-            for d in dirs where ok {
-                let staged = staging.appendingPathComponent(d), final = target.appendingPathComponent(d)
-                do {
-                    if fm.fileExists(atPath: final.path) {
-                        guard dest == nil, BlockDataLocation.destinationAvailable(target, preservingInternalKeys: true) else { ok = false; break }
-                        for name in try fm.contentsOfDirectory(atPath: staged.path) {
-                            let entry = final.appendingPathComponent(name)
-                            guard !fm.fileExists(atPath: entry.path) else { ok = false; break }
-                            try fm.moveItem(at: staged.appendingPathComponent(name), to: entry)
-                            published.append(entry)
-                        }
-                    } else {
-                        try fm.moveItem(at: staged, to: final)
-                        published.append(final)
-                    }
-                } catch { ok = false }
-            }
-            if ok {
-                // Keys stay on the internal disk: a copied key is removed.
-                for d in dirs {
-                    for name in BlockDataLocation.keepInternal {
-                        try? fm.removeItem(at: target.appendingPathComponent(d).appendingPathComponent(name))
-                    }
+                Task { @MainActor in
+                    if self.storageMovePercent != nil { self.storageMovePercent = min(99, Int(f * 100)) }
                 }
             }
-            if !ok {
-                // Never remove preexisting folders or keys, even on rollback.
-                for entry in published.reversed() { try? fm.removeItem(at: entry) }
-            }
-            if ownsStaging { try? fm.removeItem(at: staging) }
-            let copied = ok
+            meter.expect(Int64(total) * 3)
+            let copied = (try? BlockDataMove.copy(source: source, target: target, sourceID: sourceID,
+                                                 internalRoot: dataDir, preservingInternalKeys: dest == nil, meter: meter)) != nil
             await MainActor.run {
                 if copied {
                     self.chainDataPath = dest?.path ?? ""
-                    UserDefaults.standard.set(source.path, forKey: Self.cleanupKey)
                     self.logEvent("storage", "copied and verified \(NodeStopReason.gb(total)); the node now uses \(target.path)")
                 } else {
                     // Nothing switched: the old copy is untouched and stays in use.
@@ -218,27 +182,10 @@ extension NodeController {
     /// The node answered from its new place: only now does the old copy go
     /// (its block-data folders only — never the keys, never anything else).
     func finishBlockDataMove() {
-        guard let old = UserDefaults.standard.string(forKey: Self.cleanupKey) else { return }
+        // Legacy path-only records carry no proof and authorize no deletion.
         UserDefaults.standard.removeObject(forKey: Self.cleanupKey)
-        let oldRoot = URL(fileURLWithPath: old, isDirectory: true)
-        guard BlockDataLocation.disjoint(oldRoot, chainRoot) else { return }
-        logEvent("storage", "the node runs from \(chainRoot.path); removing the old copy at \(old)")
-        Task.detached {
-            let fm = FileManager.default
-            for d in BlockDataLocation.movedDirs {
-                let dir = oldRoot.appendingPathComponent(d)
-                let names = (try? fm.contentsOfDirectory(atPath: dir.path)) ?? []
-                for name in names where !BlockDataLocation.keepInternal.contains(name) {
-                    try? fm.removeItem(at: dir.appendingPathComponent(name))
-                }
-                if ((try? fm.contentsOfDirectory(atPath: dir.path)) ?? []).isEmpty { try? fm.removeItem(at: dir) }
-            }
-            // A chosen folder we made, now empty, goes too.
-            if oldRoot.lastPathComponent == BlockDataLocation.folderName,
-               ((try? fm.contentsOfDirectory(atPath: oldRoot.path)) ?? []).allSatisfy({ $0 == ".DS_Store" }) {
-                try? fm.removeItem(at: oldRoot)
-            }
-        }
+        let target = BlockDataLocation.resolvedRoot(chainRoot), internalRoot = Self.dataDir
+        Task.detached { BlockDataMove.cleanup(confirmedTarget: target, internalRoot: internalRoot) }
     }
 
     /// Turn archive off: back to a normal follower; the archive's extra

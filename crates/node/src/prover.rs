@@ -472,6 +472,9 @@ pub struct Status {
     /// The block being proven now.
     pub proving: Option<u64>,
     pub last_height: Option<u64>,
+    /// The first block this run proved: a reward for an older proof was
+    /// earned by an earlier run (or an earlier program) and is not news.
+    pub first_height: Option<u64>,
     pub last_txs: usize,
     pub last_seconds: f64,
     pub proofs: u64,
@@ -939,6 +942,7 @@ pub fn spawn_service(
                         s.proving = None;
                         s.paused = None;
                         s.last_height = Some(height);
+                        if s.first_height.is_none() { s.first_height = Some(height); }
                         s.last_txs = txs;
                         s.last_seconds = seconds;
                         s.proofs += 1;

@@ -46,6 +46,50 @@ pub const EXIT_REBUILDABLE_CACHE: i32 = 10;
 /// Data-volume floor reached: the supervisor waits for free space before
 /// restarting the child. No consensus journal writes happen while it waits.
 pub const EXIT_DISK_LOW: i32 = 12;
+/// `--chain-data` names a directory that does not exist (an unplugged disk
+/// leaves its /Volumes path missing). The node never creates it: doing so
+/// would quietly re-sync the whole chain onto the internal disk under a
+/// /Volumes name. The app shows "the disk is not connected" and starts the
+/// node again when the volume returns.
+pub const EXIT_CHAIN_DATA_MISSING: i32 = 13;
+/// Keys found where they must never be: in the chain-data directory (a
+/// secondary disk that can be unplugged, lost or shared), or `--data` (the
+/// key directory) on a removable or network volume. "keys must stay on this
+/// Mac": the node refuses to start and never reads keys from there.
+pub const EXIT_KEYS_ON_CHAIN_DATA: i32 = 14;
+
+/// Files that are this Mac's identity: they live in `--data` (the key
+/// directory, the internal disk) and nowhere else.
+pub const KEY_FILES: [&str; 6] = [
+    "validator.key", "validator.pub.json", "node-account.key", "threshold.json", "wallet-node.key", "key-binding.json",
+];
+
+/// Key files at the top level of the chain-data directory or of its
+/// `follow`/`archive` subdirectories.
+pub fn keys_in_chain_data(chain: &Path) -> Vec<PathBuf> {
+    ["", "follow", "archive"]
+        .iter()
+        .map(|sub| if sub.is_empty() { chain.to_path_buf() } else { chain.join(sub) })
+        .flat_map(|dir| KEY_FILES.iter().map(move |k| dir.join(k)))
+        .filter(|p| p.exists())
+        .collect()
+}
+
+/// Whether `--data` holding keys sits on a volume keys must not live on.
+/// `external` is the volume test (`volume_is_external`), passed in so the
+/// rule is a unit test.
+pub fn keys_on_external_data(data: &Path, external: bool) -> bool {
+    external && KEY_FILES.iter().any(|k| data.join(k).exists())
+}
+
+/// macOS: a path under /Volumes/ or on a volume statfs does not call local.
+pub fn volume_is_external(path: &Path) -> bool {
+    if path.starts_with("/Volumes/") { return true; }
+    let Ok(c) = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()) else { return false };
+    let mut st: libc::statfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statfs(c.as_ptr(), &mut st) } != 0 { return false; }
+    (st.f_flags as u64 & libc::MNT_LOCAL as u64) == 0
+}
 pub const CACHE_REPAIR_REQUEST: &str = "cache-repair-request";
 
 fn rebuildable_panic(message: &str) -> Option<&str> {
@@ -391,6 +435,71 @@ pub struct Supervisor {
     /// None falls back to `<data>/ceremony-check.json`, where verify-local
     /// stores it.
     pub ceremony: Option<PathBuf>,
+    /// Where the bulky chain data lives (`--chain-data`, a secondary disk):
+    /// the follower's `follow` (or `archive`) directory goes there; keys,
+    /// threshold, network.json, run.lock, run-state.json and the validator's
+    /// journals stay in `data`. None: everything in `data`.
+    pub chain_data: Option<PathBuf>,
+    /// `--archive`: the follower child keeps the full history like `aether
+    /// archive` (replay from genesis, never a snapshot jump, era export),
+    /// in `<chain dir>/archive`, apart from the normal `follow` directory.
+    pub archive: bool,
+}
+
+/// The follower child's data directory: `<chain dir>/follow`, or
+/// `<chain dir>/archive` in archive mode, where the chain dir is
+/// `--chain-data` when set and `--data` otherwise.
+pub fn follower_dir(data: &Path, chain_data: Option<&Path>, archive: bool) -> PathBuf {
+    chain_data.unwrap_or(data).join(if archive { "archive" } else { "follow" })
+}
+
+/// The follower child's argv after the binary (`aether follow ...`), one
+/// pure function so every mode is a unit test:
+/// - default: `follow --exit-with-parent --network N --data <data>/follow
+///   --rpc-port P --checkpoint [--keys <data> --candidate] <follow args>`;
+/// - `--chain-data C`: the same with `--data C/follow`;
+/// - `--archive`: `--data <chain dir>/archive`, no `--checkpoint`, and
+///   `--archive-export <chain dir>/archive/era` (follow then runs exactly as
+///   `aether archive` does: archive history mode, no snapshot start, no
+///   snapshot jump, era files exported).
+pub fn follower_args(
+    network: &Path,
+    data: &Path,
+    chain_data: Option<&Path>,
+    archive: bool,
+    rpc_port: u16,
+    candidate: bool,
+    follow_args: &[String],
+) -> Vec<String> {
+    let dir = follower_dir(data, chain_data, archive);
+    let mut out: Vec<String> = vec![
+        "follow".into(),
+        "--exit-with-parent".into(),
+        "--network".into(),
+        path_str(network),
+        "--data".into(),
+        path_str(&dir),
+        "--rpc-port".into(),
+        rpc_port.to_string(),
+    ];
+    if archive {
+        // No `--checkpoint`: an archive owns every block from genesis.
+        out.extend(["--archive-export".into(), path_str(&dir.join("era"))]);
+    } else {
+        out.push("--checkpoint".into());
+    }
+    if chain_data.is_some() || archive {
+        // The wallet endpoint key stays exactly where it always was, on the
+        // internal disk: the node id must not change with the chain's disk.
+        out.extend(["--node-key".into(), path_str(&data.join("follow").join("wallet-node.key"))]);
+    }
+    if candidate {
+        // The candidate's beacon keys are the Mac's own; the keyless
+        // follower has none to send.
+        out.extend(["--keys".into(), path_str(data), "--candidate".into()]);
+    }
+    out.extend(follow_args.iter().cloned());
+    out
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -629,7 +738,7 @@ impl Supervisor {
 
     fn disk_low(&self) -> bool {
         let min = self.min_free_disk();
-        min > 0 && crate::resources::free_disk(&self.data).is_none_or(|free| free < min)
+        min > 0 && crate::resources::free_disk(self.disk_dir()).is_none_or(|free| free < min)
     }
 
     fn log_disk_low(&self) -> bool {
@@ -654,7 +763,34 @@ impl Supervisor {
     }
 
     fn wait_for_disk(&self, recovering: bool) {
-        wait_for_data_disk(&self.data, self.min_free_disk(), recovering);
+        self.exit_if_chain_data_missing();
+        wait_for_data_disk(self.disk_dir(), self.min_free_disk(), recovering);
+    }
+
+    /// The volume the disk floor guards: the chain data's when it lives on
+    /// a disk of its own, else the data directory's.
+    pub fn disk_dir(&self) -> &Path {
+        self.chain_data.as_deref().unwrap_or(&self.data)
+    }
+
+    /// `--chain-data` is set and does not exist (the disk is unplugged).
+    pub fn chain_data_missing(&self) -> bool {
+        self.chain_data.as_deref().is_some_and(|c| !c.is_dir())
+    }
+
+    /// An unplugged chain disk ends the run with its own code: waiting on
+    /// a path that is gone would look like a full disk, and creating it
+    /// would fill the internal one.
+    fn exit_if_chain_data_missing(&self) {
+        if self.chain_data_missing() {
+            tracing::error!(chain_data = %self.disk_dir().display(), "the chain data disk is not connected; stopping (nothing written)");
+            std::process::exit(EXIT_CHAIN_DATA_MISSING);
+        }
+    }
+
+    /// The follower child's directory (see `follower_dir`).
+    pub fn follow_dir(&self) -> PathBuf {
+        follower_dir(&self.data, self.chain_data.as_deref(), self.archive)
     }
 
     fn network_path(&self) -> PathBuf {
@@ -764,21 +900,15 @@ impl Supervisor {
                 cmd.args(&self.node_args);
             }
             Role::Candidate | Role::Paused | Role::Keyless => {
-                cmd.args([
-                    "follow",
-                    "--exit-with-parent",
-                    "--network",
-                    &path_str(&net),
-                    "--data",
-                    &path_str(&self.data.join("follow")),
-                ])
-                .args(["--rpc-port", &self.rpc_port.to_string(), "--checkpoint"]);
-                if role == Role::Candidate {
-                    // The candidate's beacon keys are the Mac's own; the keyless
-                    // follower has none to send.
-                    cmd.args(["--keys", &path_str(&self.data), "--candidate"]);
-                }
-                cmd.args(&self.follow_args);
+                cmd.args(follower_args(
+                    &net,
+                    &self.data,
+                    self.chain_data.as_deref(),
+                    self.archive,
+                    self.rpc_port,
+                    role == Role::Candidate,
+                    &self.follow_args,
+                ));
             }
         }
         tracing::info!(?role, "aether run: starting");
@@ -1395,7 +1525,7 @@ impl Supervisor {
             }
         }
         std::fs::copy(
-            self.data.join("follow").join("state.redb"),
+            self.follow_dir().join("state.redb"),
             self.data.join("state.redb"),
         )
         .map_err(|e| format!("follower state: {e}"))?;
@@ -2122,6 +2252,130 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The follower child's argv in each storage mode (wallet ▸ 블록 데이터
+    /// 위치 / 전체 기록 보관): where its data goes, and whether it may take
+    /// the snapshot shortcuts.
+    #[test]
+    fn the_follower_child_argv_follows_the_storage_mode() {
+        let net = Path::new("/int/node/network.json");
+        let data = Path::new("/int/node");
+        let ext = Path::new("/Volumes/Ext/EastSea");
+        let extra = vec!["--max-shards=8".to_string()];
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+
+        assert_eq!(
+            follower_args(net, data, None, false, 18545, true, &extra),
+            s(&["follow", "--exit-with-parent", "--network", "/int/node/network.json", "--data", "/int/node/follow",
+                "--rpc-port", "18545", "--checkpoint", "--keys", "/int/node", "--candidate", "--max-shards=8"]),
+            "default: everything under --data"
+        );
+        assert_eq!(
+            follower_args(net, data, Some(ext), false, 18545, true, &extra),
+            s(&["follow", "--exit-with-parent", "--network", "/int/node/network.json", "--data", "/Volumes/Ext/EastSea/follow",
+                "--rpc-port", "18545", "--checkpoint", "--node-key", "/int/node/follow/wallet-node.key",
+                "--keys", "/int/node", "--candidate", "--max-shards=8"]),
+            "chain data on the chosen disk; the keys stay on the internal one"
+        );
+        assert_eq!(
+            follower_args(net, data, None, true, 18545, false, &[]),
+            s(&["follow", "--exit-with-parent", "--network", "/int/node/network.json", "--data", "/int/node/archive",
+                "--rpc-port", "18545", "--archive-export", "/int/node/archive/era",
+                "--node-key", "/int/node/follow/wallet-node.key"]),
+            "archive: its own directory, no snapshot start, era export on"
+        );
+        assert_eq!(
+            follower_args(net, data, Some(ext), true, 18545, true, &[]),
+            s(&["follow", "--exit-with-parent", "--network", "/int/node/network.json", "--data", "/Volumes/Ext/EastSea/archive",
+                "--rpc-port", "18545", "--archive-export", "/Volumes/Ext/EastSea/archive/era",
+                "--node-key", "/int/node/follow/wallet-node.key", "--keys", "/int/node", "--candidate"]),
+            "archive on the chosen disk, still a candidate"
+        );
+        assert_eq!(follower_dir(data, Some(ext), false), ext.join("follow"));
+        assert_eq!(follower_dir(data, None, true), data.join("archive"));
+    }
+
+    fn key_dirs(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("aether-keyguard-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("chain/follow")).unwrap();
+        std::fs::create_dir_all(dir.join("node")).unwrap();
+        dir
+    }
+
+    /// "keys must stay on this Mac": a key file in the chain-data directory
+    /// (or its follow/archive top level) refuses the start.
+    #[test]
+    fn keys_in_chain_data_are_found() {
+        let dir = key_dirs("chain");
+        let chain = dir.join("chain");
+        std::fs::write(chain.join("follow/state.redb"), b"blocks").unwrap();
+        assert!(keys_in_chain_data(&chain).is_empty(), "block data alone is fine");
+        std::fs::write(chain.join("follow/wallet-node.key"), [0u8; 32]).unwrap();
+        assert_eq!(keys_in_chain_data(&chain), vec![chain.join("follow/wallet-node.key")]);
+        std::fs::create_dir_all(chain.join("archive")).unwrap();
+        std::fs::write(chain.join("archive/threshold.json"), b"{}").unwrap();
+        std::fs::write(chain.join("validator.key"), b"k").unwrap();
+        assert_eq!(keys_in_chain_data(&chain).len(), 3, "the top level, follow and archive");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The key directory on a removable or network volume, with keys in it,
+    /// refuses; without keys (nothing to lose) or on the internal disk it runs.
+    #[test]
+    fn keys_on_an_external_key_dir_are_refused() {
+        let dir = key_dirs("ext");
+        let data = dir.join("node");
+        assert!(!keys_on_external_data(&data, true), "no keys yet: nothing to protect");
+        std::fs::write(data.join("validator.key"), b"k").unwrap();
+        assert!(keys_on_external_data(&data, true));
+        assert!(!keys_on_external_data(&data, false), "the internal disk is where keys belong");
+        assert!(volume_is_external(Path::new("/Volumes/Backup/EastSea")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A network reset in the split layout moves nothing between the two
+    /// directories: the keys stay in --data, the chain data is untouched.
+    #[test]
+    fn a_network_reset_keeps_keys_out_of_chain_data() {
+        let dir = key_dirs("reset");
+        let (data, chain) = (dir.join("node"), dir.join("chain"));
+        let src = dir.join("source.json");
+        let mut net = file(1, "aa");
+        std::fs::write(&src, serde_json::to_vec(&net).unwrap()).unwrap();
+        adopt_network(&data, Some(&src)).unwrap();
+        for k in ["validator.key", "validator.pub.json", "node-account.key"] {
+            std::fs::write(data.join(k), b"k").unwrap();
+        }
+        std::fs::write(chain.join("follow/state.redb"), b"blocks").unwrap();
+        net.identity = Some("bb".into());
+        std::fs::write(&src, serde_json::to_vec(&net).unwrap()).unwrap();
+        adopt_network(&data, Some(&src)).unwrap();
+        for k in ["validator.key", "validator.pub.json", "node-account.key"] {
+            assert!(data.join(k).exists(), "{k} stays in the key directory");
+            assert!(KEEP_ACROSS_NETWORKS.contains(&k));
+        }
+        assert!(keys_in_chain_data(&chain).is_empty(), "no key moved into chain data");
+        assert_eq!(std::fs::read(chain.join("follow/state.redb")).unwrap(), b"blocks", "chain data untouched");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The disk floor guards the volume the chain data is written to.
+    #[test]
+    fn the_disk_floor_watches_the_chain_data_volume() {
+        let dir = std::env::temp_dir().join(format!("aether-chain-floor-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = sup(&dir);
+        assert_eq!(s.disk_dir(), dir.as_path());
+        let ext = dir.join("ext");
+        s.chain_data = Some(ext.clone());
+        assert_eq!(s.disk_dir(), ext.as_path());
+        assert!(s.chain_data_missing(), "a chain dir that does not exist is a missing disk");
+        std::fs::create_dir_all(&ext).unwrap();
+        assert!(!s.chain_data_missing());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn sup(dir: &Path) -> Supervisor {
         Supervisor {
             exe: std::env::current_exe().unwrap(),
@@ -2134,6 +2388,8 @@ mod tests {
             dev_peer_dir: None,
             reshare_timeout: Some(Duration::from_secs(1)),
             ceremony: None,
+            chain_data: None,
+            archive: false,
         }
     }
 

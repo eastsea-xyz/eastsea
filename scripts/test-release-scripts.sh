@@ -3,6 +3,8 @@
 # docs/research/release-070-migration-2026-10-07.md B3).
 #
 #   scripts/test-release-scripts.sh
+#   AETHER_TEST_PACKAGE_MAC=<file> scripts/test-release-scripts.sh
+#       Run the same clean-build rollback regression against an older packager.
 #
 # 1. Every release script runs under macOS's /bin/bash 3.2 with `set -u`, where
 #    "${arr[@]}" of an EMPTY array is an "unbound variable" error. An array that
@@ -20,11 +22,14 @@
 #    wrong bundle id, a wrong team (new or previous), a changed designated
 #    requirement, and a Terms.version change without TERMS_BUMP_REASON; each
 #    check is shown failing once on a fake input.
+# 5. A clean package contains a verified previous node and its adjacent prover;
+#    invalid signatures, dependencies or platform compatibility refuse packaging.
 set -eu
 cd "$(dirname "$0")/.."
 bad=0
+good=0
 fail() { echo "FAIL: $*" >&2; bad=$((bad + 1)); }
-pass() { echo "ok: $*"; }
+pass() { echo "ok: $*"; good=$((good + 1)); }
 
 echo "=== [1/5] empty arrays under bash 3.2 set -u ==="
 for f in scripts/build-wallet.sh scripts/package-mac.sh scripts/release-mac.sh scripts/build-bridge.sh scripts/release-bridge.sh; do
@@ -149,7 +154,7 @@ mkdir -p "$PWD/tmp"
 rollback_test=$(mktemp -d "$PWD/tmp/package-rollback-test.XXXXXX")
 trap 'rm -rf "${rollback_test:?}"' EXIT
 mkdir -p "$rollback_test/scripts" "$rollback_test/bin" "$rollback_test/tmp" "$rollback_test/out"
-cp scripts/package-mac.sh "$rollback_test/scripts/"
+cp "${AETHER_TEST_PACKAGE_MAC:-scripts/package-mac.sh}" "$rollback_test/scripts/package-mac.sh"
 if [ -f scripts/package-rollback.sh ]; then cp scripts/package-rollback.sh "$rollback_test/scripts/"; fi
 python3 - "$rollback_test" <<'PY'
 import pathlib, plistlib, sys
@@ -361,6 +366,35 @@ PY
   fi
 else
   fail "R12 fixture packaging failed before the rollback assertion: $(cat "$rollback_test/clean.log")"
+fi
+
+# The packaging doubles cannot validate Apple's nested-code sealing rules.
+# Check the same bundle layout with real, task-owned ad-hoc code as well.
+native_app="$rollback_test/native.app"
+native_rollback="$native_app/Contents/Helpers/NodeRollback.bundle"
+mkdir -p "$native_app/Contents/MacOS" "$native_rollback/Contents/MacOS"
+cp /usr/bin/true "$native_app/Contents/MacOS/EastSea"
+cp /usr/bin/true "$native_rollback/Contents/MacOS/aether.prev"
+cp /usr/bin/true "$native_rollback/Contents/MacOS/aether-prover"
+python3 - "$native_app" "$native_rollback" <<'PY'
+from pathlib import Path
+import plistlib, sys
+for directory, identifier, executable, kind in (
+    (sys.argv[1], 'com.pipln.eastsea', 'EastSea', 'APPL'),
+    (sys.argv[2], 'com.pipln.eastsea.node-rollback', 'aether.prev', 'BNDL'),
+):
+    with (Path(directory) / 'Contents/Info.plist').open('wb') as stream:
+        plistlib.dump({'CFBundleIdentifier': identifier, 'CFBundleExecutable': executable,
+                      'CFBundlePackageType': kind, 'CFBundleVersion': '1'}, stream)
+PY
+if /usr/bin/codesign --force --options runtime --timestamp=none --sign - "$native_rollback/Contents/MacOS/aether.prev" \
+    && /usr/bin/codesign --force --options runtime --timestamp=none --sign - "$native_rollback/Contents/MacOS/aether-prover" \
+    && /usr/bin/codesign --force --options runtime --timestamp=none --preserve-metadata=entitlements,flags --sign - "$native_rollback" \
+    && /usr/bin/codesign --force --options runtime --timestamp=none --sign - "$native_app" \
+    && /usr/bin/codesign --verify --deep --strict "$native_app"; then
+  pass "R12 nested rollback bundle passes real macOS deep strict signature verification"
+else
+  fail "R12 nested rollback bundle fails real macOS deep strict signature verification"
 fi
 refuse_package() {
   local name=$1 previous_app=$2 reason=$3
@@ -596,4 +630,5 @@ else
   fail "R12 release fixture failed: $(cat "$rollback_test/release.log")"
 fi
 
+printf 'release script checks: %s passed, %s failed\n' "$good" "$bad"
 exit "$bad"

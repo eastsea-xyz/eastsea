@@ -71,7 +71,7 @@ enum Dex {
             if let t = cache[a] { return t }
             let t: Token
             if a == dep.waeth {
-                t = Token(address: a, symbol: "AETH", name: "Aether (wrapped)", decimals: 18, native: false)
+                t = Token(address: a, symbol: Coin.ticker(dep.chainId), name: "Wrapped \(Coin.testName(dep.chainId))", decimals: 18, native: false)
             } else {
                 let sym = (try? ABI.string(read(a, ABI.call(Sel.symbol)))) ?? "???"
                 let name = (try? ABI.string(read(a, ABI.call(Sel.name)))) ?? ""

@@ -35,9 +35,9 @@ enum KnownTokens {
     /// denomination table is complete). The app always shows the native amount
     /// at 18 decimals, independent of any node answer.
     static let native: [UInt64: KnownToken] = [
-        // The chain's own record of its coin (kept in step with the extension's
-        // list): the screens label it DBLN (Brand), this stays what it is.
-        7780: KnownToken(symbol: "AETH", name: "Test AETH", decimals: 18),
+        // The native coin has no on-chain symbol: its record is the label
+        // every screen shows (Brand), as in the extension's list.
+        7780: KnownToken(symbol: Brand.coinTicker(chainId: 7780), name: Brand.coinName(chainId: 7780), decimals: 18),
     ]
 
     /// Known ERC-20 tokens, by chain id and lowercase address. Chain 7780
@@ -53,6 +53,15 @@ enum KnownTokens {
             "0xc91367bac92c6de822de8afd0f34ff19fd8f7670": KnownToken(symbol: "CMT", name: "Test Comet", decimals: 18),
         ],
     ]
+
+    /// What a person reads for a token whose on-chain name still carries the
+    /// retired AETH label (WAETH's contract says "Wrapped AETH"). The
+    /// contract's symbol and name stay what they are — the denomination
+    /// checks compare against them; only the display changes.
+    static func displayName(chainId: UInt64, address: String, name: String) -> String {
+        chainId == 7780 && address.lowercased() == "0xa2521982a17474cb2f8741c85de653b5282d72b0"
+            ? String(localized: "Wrapped test DBLN") : name
+    }
 
     /// The shipped entry for `address` on `chainId`, or nil (address matched
     /// case-insensitively; lookups never throw).

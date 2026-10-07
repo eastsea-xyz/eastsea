@@ -17,7 +17,7 @@ import Foundation
 /// The kind of mark a token carries: bundled art for the official few, a
 /// deterministic generated glyph for everything else.
 enum TokenIconKind: Equatable {
-    /// The chain's native coin (DBLN on new-genesis chains, test AETH on the
+    /// The chain's native coin (DBLN on every chain; formerly test AETH on the
     /// legacy 7780 testnet): a gold doubloon either way.
     case nativeCoin(ticker: String)
     /// A token on the shipped trust list. The symbol is the LIST's (the

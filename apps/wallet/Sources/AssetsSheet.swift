@@ -114,7 +114,8 @@ private struct TokenHoldingRow: View {
             HStack(spacing: 12) {
                 TokenIcon(chainId: chainId, address: holding.token.address, symbol: holding.token.symbol, size: 40)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(holding.token.name.isEmpty ? holding.token.symbol : holding.token.name).font(.aeBody.weight(.semibold)).lineLimit(1)
+                    Text(holding.token.name.isEmpty ? holding.token.symbol
+                         : KnownTokens.displayName(chainId: chainId, address: holding.token.address, name: holding.token.name)).font(.aeBody.weight(.semibold)).lineLimit(1)
                     // Never the symbol alone: anyone can deploy another "USDT".
                     Text(TokenLabel.row(holding.token)).font(.aeCaption.monospaced()).foregroundStyle(.secondary)
                     TokenBadges(holding: holding, official: official, chainId: chainId)

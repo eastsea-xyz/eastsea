@@ -4,7 +4,7 @@
 // which is why every page carries its "read from the node" line.
 
 import { card, copyButton, dot, kv, message, pill, sourceLine, table, h } from './dom.js';
-import { coinTicker, formatAeth, formatInt, formatRate, formatTokenAmount, localTime, droppedText, notIncludedText, shortHex, timeAgo, toBigInt, txRate } from './format.js';
+import { coinTicker, displayTokenName, formatAeth, formatInt, formatRate, formatTokenAmount, localTime, droppedText, notIncludedText, shortHex, timeAgo, toBigInt, txRate } from './format.js';
 import { TRANSFER_TOPIC, decodeApproval, decodeTransfer, revertReason, wordAddress } from './abi.js';
 import { looksLikeOfficial, officialTokens, originBadge, tokenInfo, tokenOrigin, totalSupply } from './erc20.js';
 import { NOT_COMMITTED } from './verify.js';
@@ -452,11 +452,11 @@ export async function tokenView(ctx, address) {
 
   return h('div', { class: 'stack' },
     h('div', { class: 'row spread wrap' },
-      h('div', { class: 'hero' }, h('div', { class: 'tile-value big' }, info.symbol === '???' ? '?' : info.symbol), h('div', { class: 'tile-sub' }, info.name || a)),
+      h('div', { class: 'hero' }, h('div', { class: 'tile-value big' }, info.symbol === '???' ? '?' : info.symbol), h('div', { class: 'tile-sub' }, displayTokenName(a, info.name) || a)),
       badges),
     withCopy(a),
     card('Metadata', kv([
-      ['Name', info.name || '—'],
+      ['Name', displayTokenName(a, info.name) || '—'],
       ['Symbol', info.symbol],
       ['Decimals', formatInt(info.decimals)],
       ['Total supply', supply != null ? `${formatTokenAmount(supply, info.decimals)} ${info.symbol === '???' ? '' : info.symbol}` : '—'],

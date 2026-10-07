@@ -1,5 +1,5 @@
 // The three projects together, in Chromium with this extension: DEX (swap, create a
-// token, approve + add AETH liquidity) and the launchpad (launch, buy on the curve),
+// token, approve + add DBLN liquidity) and the launchpad (launch, buy on the curve),
 // all through their own UIs and confirmed on the testnet.
 //   DEX:       cd ../aether-dex && node scripts/serve.mjs                 (:8080)
 //   launchpad: cd ../aether-launchpad-demo && python3 script/serve.py --port 8081
@@ -52,14 +52,14 @@ try {
   await dex.goto('http://localhost:8080/'); await dex.waitForTimeout(3500);
   await dex.locator('#connectBtn').click();
   await waitToast(dex, /Wallet connected/, 'dex connect');
-  // swap AETH -> NEB so we hold NEB
+  // swap DBLN -> NEB so we hold NEB
   await dex.locator('#pickFrom').click();
-  await dex.locator('.tokrow', { has: dex.locator('.s', { hasText: /^AETH$/ }) }).first().click();
+  await dex.locator('.tokrow', { has: dex.locator('.s', { hasText: /^DBLN$/ }) }).first().click();
   await dex.locator('#pickTo').click();
   await dex.locator('.tokrow', { has: dex.locator('.s', { hasText: /^NEB$/ }) }).first().click();
   await dex.locator('#amtIn').fill('1'); await dex.waitForTimeout(1500);
   await dex.locator('#swapBtn').click();
-  await waitToast(dex, /Swap 1 AETH → NEB confirmed/, 'dex swap AETH->NEB');
+  await waitToast(dex, /Swap 1 DBLN → NEB confirmed/, 'dex swap DBLN->NEB');
   // create a token
   await dex.locator('button[data-view=create]').click();
   await dex.locator('[data-k=name]').fill('E2E Token'); await dex.locator('[data-k=symbol]').fill('E2ET');
@@ -67,11 +67,11 @@ try {
   await waitToast(dex, /Create E2ET[^|]*confirmed/, 'dex create token');
   await dex.waitForTimeout(1000);
   console.log('dex toasts:', (await toastsOf(dex)).slice(0, 300));
-  // add liquidity to NEB/AETH
+  // add liquidity to NEB/DBLN
   await dex.locator('button[data-view=pools]').click(); await dex.waitForTimeout(2500);
-  const card = dex.locator('.card.pool', { hasText: /NEB\s*\/\s*AETH|AETH\s*\/\s*NEB/ }).first();
+  const card = dex.locator('.card.pool', { hasText: /NEB\s*\/\s*DBLN|DBLN\s*\/\s*NEB/ }).first();
   await card.locator('[data-add]').click();
-  await dex.locator('[data-x]').fill(/AETH/.test(await dex.locator('[data-pa]').innerText()) ? '0.05' : '5'); await dex.waitForTimeout(1500);
+  await dex.locator('[data-x]').fill(/DBLN/.test(await dex.locator('[data-pa]').innerText()) ? '0.05' : '5'); await dex.waitForTimeout(1500);
   console.log('add liq: A', await dex.locator('[data-pa]').innerText(), 'B', await dex.locator('[data-pb]').innerText(), 'y', await dex.locator('[data-y]').inputValue());
   for (let step = 0; step < 3; step += 1) {
     const label = (await dex.locator('[data-go]').innerText()).trim();

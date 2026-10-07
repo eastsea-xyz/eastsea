@@ -12,10 +12,10 @@ enum Brand {
     static let coinName = "Doubloon"
     static let coinTicker = "DBLN"
 
-    /// The legacy 7780 testnet. Its coin was labeled AETH until the 0.7.1
-    /// wallet: the app now shows Doubloon/DBLN on every chain, so no screen
-    /// carries the old brand (founder review of 0.7.0, 2026-10-07). The
-    /// agent CLI and the token list still accept "AETH" as an alias.
+    /// The legacy 7780 testnet. The native coin has no on-chain symbol, so
+    /// its label is display only: DBLN, "Test Doubloon" / 테스트 더블룬 here
+    /// (the old AETH label is retired). The look-alike list and the agent
+    /// still treat "AETH" as a name of the native coin.
     static let legacyTestnetChainId: UInt64 = 7780
 
     /// The chain this app build runs on, read from the bundled network.json.
@@ -32,8 +32,9 @@ enum Brand {
     /// The coin's ticker as the wallet shows it on `chainId`: DBLN everywhere.
     static func coinTicker(chainId: UInt64) -> String { coinTicker }
 
-    /// The coin's name as listed next to its ticker on `chainId`.
-    static func coinName(chainId: UInt64) -> String { coinName }
+    /// The coin's name as listed next to its ticker on `chainId`: "Test
+    /// Doubloon" on the legacy testnet, Doubloon on new-genesis chains.
+    static func coinName(chainId: UInt64) -> String { chainId == legacyTestnetChainId ? "Test Doubloon" : coinName }
 
     /// The coin's label on the network this build runs on.
     static var networkCoinTicker: String { coinTicker(chainId: networkChainId) }
@@ -41,7 +42,8 @@ enum Brand {
     /// The coin's name on the network this build runs on, in the app's
     /// language (더블룬 in Korean).
     static var networkCoinName: String {
-        (Bundle.main.preferredLocalizations.first?.hasPrefix("ko") ?? false) ? coinNameKo : coinName(chainId: networkChainId)
+        guard Bundle.main.preferredLocalizations.first?.hasPrefix("ko") ?? false else { return coinName(chainId: networkChainId) }
+        return networkChainId == legacyTestnetChainId ? "테스트 더블룬" : coinNameKo
     }
     static let coinNameKo = "더블룬"
 }

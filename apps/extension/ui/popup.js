@@ -10,6 +10,7 @@ import { addressRisk, looksLikeOfficial, tokenLabel, tokenShort } from '../src/l
 import { nextPauseState, pausedLine, PAUSE_HELP } from '../src/lib/pause.js';
 import { TERMS_VERSION, DISCLAIMER_URL, noticePoints } from '../src/lib/terms.js';
 import { mergeHistory } from '../src/lib/history.js';
+import { displayTokenName } from '../src/lib/knownTokens.js';
 
 const params = new URLSearchParams(location.search);
 const approveId = params.get('approve');
@@ -365,7 +366,7 @@ function holdingRow(x, officialSymbols, { onHide, onShow } = {}) {
   return h('div', { class: 'item', title: x.token.address },
     h('span', { class: 'avatar', 'aria-hidden': 'true' }, (x.token.symbol[0] || '?').toUpperCase()),
     h('div', { class: 'grow' },
-      h('div', {}, x.token.name || x.token.symbol),
+      h('div', {}, displayTokenName(defaultChainId, x.token.address, x.token.name) || x.token.symbol),
       h('div', { class: 'small muted mono' }, tokenLabel(x.token)),
       badges.length ? h('div', { class: 'row', style: 'gap:4px;margin-top:2px;flex-wrap:wrap' }, ...badges) : null),
     act,

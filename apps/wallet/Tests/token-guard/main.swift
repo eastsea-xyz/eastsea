@@ -44,16 +44,20 @@ for (chain, table) in KnownTokens.tokens {
     }
 }
 check(KnownTokens.native[7780]?.decimals == 18, "the native entry is 18 decimals")
-check(KnownTokens.native[7780]?.symbol == "AETH" && KnownTokens.native[7780]?.name == "Test AETH",
-      "the legacy 7780 testnet's own coin record is unchanged (the extension's list matches it)")
-check(Brand.coinTicker(chainId: 7780) == "DBLN" && Brand.coinName(chainId: 7780) == "Doubloon",
+check(KnownTokens.native[7780]?.symbol == "DBLN" && KnownTokens.native[7780]?.name == "Test Doubloon",
+      "the legacy 7780 testnet's coin reads DBLN / Test Doubloon (the extension's list matches it)")
+check(Brand.coinTicker(chainId: 7780) == "DBLN" && Brand.coinName(chainId: 7780) == "Test Doubloon",
       "the brand labels the legacy testnet DBLN")
 check(Brand.coinTicker(chainId: 0) == "DBLN" && Brand.coinName(chainId: 0) == "Doubloon",
       "a new-genesis chain is labeled DBLN/Doubloon")
-// The record keeps the chain's own symbol (the extension's list matches it);
-// what the wallet's screens call the coin is Brand's label, DBLN everywhere.
-check(KnownTokens.native[7780]?.symbol == "AETH" && Brand.coinTicker(chainId: 7780) == "DBLN",
-      "the native record stays the chain's own; the display label is DBLN")
+check(KnownTokens.native[7780]?.symbol == Brand.coinTicker(chainId: 7780),
+      "the native entry follows the per-chain label, not the node")
+// WAETH keeps the symbol its contract answers; only its display name changes.
+check(KnownTokens.tokens[7780]?["0xa2521982a17474cb2f8741c85de653b5282d72b0"]?.symbol == "WAETH", "WAETH keeps its contract symbol")
+check(KnownTokens.displayName(chainId: 7780, address: "0xA2521982A17474CB2F8741C85DE653B5282D72B0", name: "Wrapped AETH") == "Wrapped test DBLN",
+      "WAETH reads as wrapped test DBLN")
+check(KnownTokens.displayName(chainId: 7780, address: "0x6bc5ded76ccbdc8df35e7cd28b68fed245a74416", name: "Test Nebula") == "Test Nebula",
+      "other names pass through")
 
 // ---- 2. lookups ignore case and stay per chain ----
 let waethEntry = KnownTokens.knownToken(chainId: 7780, address: waeth)
@@ -121,9 +125,7 @@ for m in nativeMatches {
     let decimals = Int(ns.substring(with: m.range(at: 4)))!
     check(KnownTokens.native[chain] == KnownToken(symbol: ns.substring(with: m.range(at: 2)), name: ns.substring(with: m.range(at: 3)), decimals: decimals),
           "native entry for chain \(chain) matches the extension's")
-    // The legacy 7780 testnet is the one exception: the wallet's screens say
-    // DBLN (no old brand on screen), the chain record and the extension keep AETH.
-    check(KnownTokens.native[chain]?.symbol == Brand.coinTicker(chainId: chain) || chain == Brand.legacyTestnetChainId,
+    check(KnownTokens.native[chain]?.symbol == Brand.coinTicker(chainId: chain),
           "the extension's native label for chain \(chain) follows the per-chain brand")
 }
 

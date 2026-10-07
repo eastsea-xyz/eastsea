@@ -1,10 +1,21 @@
 // Amounts, numbers and times. BigInt inside, exact decimals at the edges —
 // the same rules as apps/extension/src/lib/units.js (test/format.test.mjs).
 
-/** The coin's ticker on a chain: the legacy 7780 testnet kept AETH, every
- * other (new-genesis) chain shows DBLN (docs/design/25-rename.md). */
-export function coinTicker(chainId) {
-  return Number(chainId) === 7780 ? 'AETH' : 'DBLN';
+/** The coin's ticker on a chain: DBLN everywhere. The native coin has no
+ * on-chain symbol, and the old "AETH" label is retired (docs/design/25-rename.md). */
+export function coinTicker(_chainId) {
+  return 'DBLN';
+}
+
+/** Display names for tokens whose on-chain name still says AETH: the
+ * contract keeps its own name; a person reads this one. */
+const DISPLAY_NAMES = Object.freeze({
+  '0xa2521982a17474cb2f8741c85de653b5282d72b0': 'Wrapped test DBLN',
+});
+
+/** The token name to show (`name` is what the contract answers). */
+export function displayTokenName(address, name) {
+  return DISPLAY_NAMES[String(address || '').toLowerCase()] ?? name;
 }
 
 const AETH_DECIMALS = 18n;

@@ -1170,6 +1170,17 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
         // `reason`). A hash this node never saw, or forgot, stays null.
         "aether_getReceipt" => {
             let h: TxHash = param(p, 0)?;
+            let cached = chain.lock().receipts.get(&h).cloned();
+            if let Some((height, receipt)) = cached {
+                return Ok(json!({ "height": height, "receipt": receipt }));
+            }
+            // Disk I/O stays outside the chain lock. A missing cache entry
+            // must not hide a durable receipt, even behind a local tombstone.
+            if let Some(store) = chain.store() {
+                if let Some((height, receipt)) = store.receipt(&h).map_err(|e| (-32000, e.to_string()))? {
+                    return Ok(json!({ "height": height, "receipt": receipt }));
+                }
+            }
             // Only lookups and a bounded copy under the chain lock (B5 review
             // round 2, finding 4): a pending tx's facts come from its
             // sender's index, and its reason is computed after the lock.

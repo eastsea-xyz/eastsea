@@ -11,6 +11,9 @@ uniffi::setup_scaffolding!();
 mod atomic_swap;
 mod paper;
 mod tx_status;
+#[cfg(test)]
+#[path = "../tests/common/http.rs"]
+mod http_test;
 use aether_crypto::{address_of, PublicKey};
 use aether_execution::EvmCall;
 use aether_light::{from_hex, verify_account, verify_finalized_chain, ValidatorSet, VerifiedBlock};
@@ -923,15 +926,28 @@ pub fn local_node_height(port: u16) -> Option<u64> {
 
 /// JSON-RPC over plain HTTP/1.1 to the local node (loopback only).
 fn local_call(port: u16, method: &str, params: Value) -> R<Value> {
+    local_call_until(port, method, params, std::time::Instant::now() + Duration::from_secs(30))
+}
+
+fn local_call_until(port: u16, method: &str, params: Value, deadline: std::time::Instant) -> R<Value> {
     use std::io::{Read, Write};
+    let remaining = || deadline.checked_duration_since(std::time::Instant::now())
+        .filter(|left| !left.is_zero()).ok_or_else(|| WalletError::Network("local node: read deadline elapsed".into()));
     let body = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params }).to_string();
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-    let mut s = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)).map_err(|e| WalletError::Network(format!("local node: {e}")))?;
-    s.set_read_timeout(Some(Duration::from_secs(30))).ok();
+    let mut s = std::net::TcpStream::connect_timeout(&addr, remaining()?.min(Duration::from_secs(2))).map_err(|e| WalletError::Network(format!("local node: {e}")))?;
+    s.set_write_timeout(Some(remaining()?)).map_err(|e| WalletError::Network(format!("local node: {e}")))?;
     write!(s, "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
         .map_err(|e| WalletError::Network(format!("local node: {e}")))?;
     let mut resp = Vec::new();
-    s.take(64 * 1024 * 1024).read_to_end(&mut resp).map_err(|e| WalletError::Network(format!("local node: {e}")))?;
+    let mut chunk = [0u8; 8_192];
+    while resp.len() < 64 * 1024 * 1024 {
+        s.set_read_timeout(Some(remaining()?)).map_err(|e| WalletError::Network(format!("local node: {e}")))?;
+        let limit = chunk.len().min(64 * 1024 * 1024 - resp.len());
+        let count = s.read(&mut chunk[..limit]).map_err(|e| WalletError::Network(format!("local node: {e}")))?;
+        if count == 0 { break; }
+        resp.extend_from_slice(&chunk[..count]);
+    }
     let split = resp.windows(4).position(|w| w == b"\r\n\r\n").ok_or_else(|| WalletError::Network("local node: bad response".into()))?;
     let v: Value = serde_json::from_slice(&resp[split + 4..]).map_err(|e| WalletError::Network(format!("local node: {e}")))?;
     match v.get("error") {
@@ -1030,15 +1046,22 @@ fn finish_remote<T>(v: Result<anyhow::Result<T>, tokio::time::error::Elapsed>) -
 /// here changes what a node serves: the public read gateway still never
 /// forwards upstream.
 pub(crate) fn receipt_answer(h: TxHash, thorough: bool) -> R<Value> {
+    receipt_answer_until(h, thorough, std::time::Instant::now() + budgets().read)
+}
+
+pub(crate) fn receipt_answer_until(h: TxHash, thorough: bool, deadline: std::time::Instant) -> R<Value> {
+    if std::time::Instant::now() >= deadline {
+        return Err(WalletError::Network("receipt read deadline elapsed".into()));
+    }
     let local = *LOCAL_NODE.lock().expect("local node lock");
     let params = json!([h]);
     if let Some(port) = local {
-        return local_call(port, "aether_getReceipt", params);
+        return local_call_until(port, "aether_getReceipt", params, deadline);
     }
     let n = net()?;
     let admitter = tx_status::book().admitter_of(&h);
     let v = n.rt.block_on(async {
-        tokio::time::timeout(budgets().read, async {
+        tokio::time::timeout(deadline.saturating_duration_since(std::time::Instant::now()), async {
             let mut best: Option<Value> = None;
             let mut last_err = None;
             let mut take = |r: anyhow::Result<Value>, best: &mut Option<Value>| -> bool {
@@ -2438,6 +2461,81 @@ mod tests {
     fn shaped_upgrade(protocol: u32) -> Value {
         json!({ "upgrade": { "chain_id": 7_777, "protocol": protocol, "activate_at": 100,
             "emergency": false, "releases": [], "notes": "test" }, "signature": "00" })
+    }
+
+    #[test]
+    fn r16_a_confirmed_replacement_survives_poll_order() {
+        let _g = config();
+        reset_network();
+        *tx_status::book() = Default::default();
+        let sender = Address::repeat_byte(0x21);
+        let original = TxHash::repeat_byte(0x15);
+        let replacement = TxHash::repeat_byte(0x16);
+        for hash in [original, replacement] {
+            tx_status::book().record(hash, tx_status::Sent { sender, nonce: 7, nonce_consumption: 1, admitter: None });
+        }
+        let node = http_test::RpcFixture::start(move |request| match request["method"].as_str().unwrap() {
+            "eth_getTransactionCount" => json!("0x8"),
+            "aether_getReceipt" if request["params"][0] == json!(replacement) => json!({ "height": 12,
+                "receipt": { "tx_hash": replacement, "success": true, "gas_used": 21_000, "state_fee": "0" } }),
+            "aether_getReceipt" => Value::Null,
+            method => panic!("unexpected fixture method: {method}"),
+        });
+        use_local_node(Some(node.port));
+        assert_eq!(tx_status_for(format!("{replacement:#x}"), format!("{sender:#x}"), 7).unwrap().state, "included");
+        let status = tx_status_for(format!("{original:#x}"), format!("{sender:#x}"), 7).unwrap();
+        assert_eq!(status.state, "replaced", "R16: polling the included replacement first must not forget its chain evidence");
+        assert!(status.is_final && !status.can_resend);
+        use_local_node(None);
+        *tx_status::book() = Default::default();
+    }
+
+    #[test]
+    fn r16_replacement_probes_share_one_read_budget() {
+        let _g = config();
+        reset_network();
+        *tx_status::book() = Default::default();
+        *BUDGETS.lock().unwrap() = Some(Budgets {
+            read: Duration::from_millis(100), net_build: Duration::from_secs(5),
+            remote_check: Duration::from_millis(100), rebuild_after: u32::MAX,
+            rebuild_every: Duration::from_secs(30),
+        });
+        let sender = Address::repeat_byte(0x21);
+        let original = TxHash::repeat_byte(0x15);
+        for hash in std::iter::once(original).chain((0x20..0x30).map(TxHash::repeat_byte)) {
+            tx_status::book().record(hash, tx_status::Sent { sender, nonce: 7, nonce_consumption: 1, admitter: None });
+        }
+        let node = http_test::RpcFixture::start(move |request| match request["method"].as_str().unwrap() {
+            "eth_getTransactionCount" => json!("0x8"),
+            "aether_getReceipt" => {
+                if request["params"][0] != json!(original) { std::thread::sleep(Duration::from_millis(40)); }
+                Value::Null
+            }
+            method => panic!("unexpected fixture method: {method}"),
+        });
+        use_local_node(Some(node.port));
+        let started = std::time::Instant::now();
+        let status = tx_status_for(format!("{original:#x}"), format!("{sender:#x}"), 7).unwrap();
+        assert!(!status.is_final);
+        assert!(started.elapsed() < Duration::from_millis(500), "R16: each replacement probe restarted the read budget: {:?}", started.elapsed());
+        use_local_node(None);
+        *tx_status::book() = Default::default();
+    }
+
+    #[test]
+    fn r16_a_receipt_for_a_different_hash_stays_unresolved() {
+        let _g = config();
+        reset_network();
+        let node = http_test::RpcFixture::start(|request| match request["method"].as_str().unwrap() {
+            "eth_getTransactionCount" => json!("0x8"),
+            "aether_getReceipt" => json!({ "height": 12, "receipt": {
+                "tx_hash": TxHash::repeat_byte(0x16), "success": true, "gas_used": 21_000, "state_fee": "0" } }),
+            method => panic!("unexpected fixture method: {method}"),
+        });
+        use_local_node(Some(node.port));
+        let status = tx_status_for(format!("{:#x}", TxHash::repeat_byte(0x15)), format!("{:#x}", Address::repeat_byte(0x21)), 7).unwrap();
+        assert!(!status.is_final && status.receipt.is_none(), "R16: a receipt for a different hash cannot settle this payment");
+        use_local_node(None);
     }
 
     #[test]

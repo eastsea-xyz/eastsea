@@ -3178,7 +3178,14 @@ fn drop_reason(
     if below_exec && waited(MEMPOOL_FEE_WAIT) {
         return Some(DropReason::FeeCapBelowBase);
     }
-    if (!fees && base.state == 0) || affordable(tx, state, base).is_ok() {
+    // A retained envelope waits when a price exceeds its signed cap. That
+    // unchargeable price cannot turn a covered budget into a balance loss.
+    let payable = FeeVector {
+        prove: base.prove.min(tx.header.max_fee.prove),
+        state: base.state.min(tx.header.max_fee.state),
+        ..base
+    };
+    if (!fees && base.state == 0) || affordable(tx, state, payable).is_ok() {
         None
     } else {
         Some(DropReason::Unaffordable)

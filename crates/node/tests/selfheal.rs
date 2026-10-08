@@ -369,7 +369,9 @@ fn a_disk_that_never_heals_exits_with_the_storage_code() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let mut src = chain_on(devnet(), Store::open(&dir_src.join("state.redb")).unwrap());
     run_to(&mut src, 10);
-    let (url, _calls) = serve(&rpc_state(&src), &rt, Duration::ZERO);
+    let (first, _calls) = serve(&rpc_state(&src), &rt, Duration::ZERO);
+    let (second, _corroborating_calls) = serve(&rpc_state(&src), &rt, Duration::ZERO);
+    let url = format!("{first},{second}");
 
     // A loopback port for the child's own RPC.
     let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();

@@ -36,7 +36,7 @@ use rand::seq::SliceRandom as _;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::net::IpAddr;
 use std::pin::Pin;
@@ -259,6 +259,10 @@ fn transport_config() -> iroh::endpoint::QuicTransportConfig {
 /// Bind an endpoint that resolves peers through the Mainline DHT. With a
 /// `secret`, it also publishes its own addresses there (direct + relay).
 pub async fn bind(secret: Option<SecretKey>, alpns: Vec<Vec<u8>>) -> Result<Endpoint> {
+    bind_with_selector(secret, alpns, Arc::new(paths::PublicPathSelector), 0).await
+}
+
+async fn bind_with_selector(secret: Option<SecretKey>, alpns: Vec<Vec<u8>>, selector: Arc<dyn iroh::endpoint::transports::PathSelector>, route: u8) -> Result<Endpoint> {
     let publish = secret.is_some();
     let mut dht = DhtAddressLookup::builder().addr_filter(public_addr_filter());
     if !publish {
@@ -267,12 +271,14 @@ pub async fn bind(secret: Option<SecretKey>, alpns: Vec<Vec<u8>>) -> Result<Endp
     // Minimal preset: discovery comes only from the Mainline DHT (no n0 DNS);
     // public relays are kept as the NAT fallback.
     let mut b = Endpoint::builder(presets::Minimal)
-        .relay_mode(iroh::RelayMode::Default)
+        .relay_mode(configured_relays()?)
         .alpns(alpns)
         .addr_filter(public_addr_filter())
         .transport_config(transport_config())
-        .path_selector(Arc::new(paths::PublicPathSelector))
+        .path_selector(selector)
         .address_lookup(dht);
+    if route == 1 { b = b.clear_relay_transports(); }
+    if route == 2 { b = b.clear_ip_transports(); }
     if let Some(s) = secret {
         b = b.secret_key(s);
     }
@@ -607,6 +613,89 @@ const CONNECT_ATTEMPT: Duration = Duration::from_secs(20);
 const CONNECT_SCAN: Duration = Duration::from_secs(20);
 
 /// A client talking to any of a set of known nodes, located via the DHT.
+/// Measured application-data path. Relay operator names come from the owner's
+/// explicit AETHER_RELAYS map; unconfigured relays share one unknown domain.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum RpcPath {
+    Direct,
+    Relay(String),
+    Unknown,
+}
+
+pub struct RpcObservation {
+    pub peer: EndpointId,
+    pub index: usize,
+    pub value: Value,
+    pub path: RpcPath,
+    route: u8,
+}
+
+const PEER_POOL: usize = 8;
+const PEER_ROTATION: Duration = Duration::from_secs(60);
+/// A responsive connection must answer a probe within one second. Connection
+/// establishment has its existing, separate bounded attempt budget.
+const PROBE_RESPONSE: Duration = Duration::from_secs(1);
+
+type Connections = Arc<tokio::sync::Mutex<HashMap<EndpointId, Connection>>>;
+type Probe<'a> = Option<Pin<Box<dyn Future<Output = Option<RpcObservation>> + Send + 'a>>>;
+
+fn distinct_nodes(nodes: Vec<EndpointAddr>) -> Vec<EndpointAddr> {
+    let mut seen = HashSet::new();
+    nodes.into_iter().filter(|a| seen.insert(a.id)).collect()
+}
+
+/// Optional operator-controlled relay inventory. Different URLs alone are not
+/// independent operators. Invalid or empty inventories fail startup explicitly.
+fn relay_inventory() -> Result<HashMap<String, String>> {
+    let Some(raw) = std::env::var_os("AETHER_RELAYS") else { return Ok(HashMap::new()) };
+    let raw = raw.to_str().ok_or_else(|| anyhow!("AETHER_RELAYS is not UTF-8"))?;
+    let inventory: HashMap<String, String> = serde_json::from_str(raw).context("AETHER_RELAYS must map HTTPS relay URLs to operator names")?;
+    if inventory.is_empty() || inventory.len() > 16 { return Err(anyhow!("AETHER_RELAYS requires 1..=16 relays")); }
+    for (url, operator) in &inventory {
+        let parsed: iroh::RelayUrl = url.parse().context("invalid relay URL")?;
+        if !parsed.to_string().starts_with("https://") || operator.trim().is_empty() {
+            return Err(anyhow!("relay inventory requires HTTPS and nonempty operator names"));
+        }
+    }
+    Ok(inventory)
+}
+
+fn configured_relays() -> Result<iroh::RelayMode> {
+    let inventory = relay_inventory()?;
+    if inventory.is_empty() { return Ok(iroh::RelayMode::Default) }
+    let urls = inventory.keys().map(|s| s.parse::<iroh::RelayUrl>()).collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(iroh::RelayMode::custom(urls))
+}
+
+fn selected_path(conn: &Connection, operators: &HashMap<String, String>) -> RpcPath {
+    let paths = conn.paths();
+    let Some(p) = paths.iter().find(|p| p.is_selected()) else { return RpcPath::Unknown };
+    match p.remote_addr() {
+        TransportAddr::Ip(_) => RpcPath::Direct,
+        TransportAddr::Relay(url) => {
+            let url = url.to_string();
+            // Normalize trailing slash differences in configured URL spelling.
+            let operator = operators.iter().find(|(k, _)| k.trim_end_matches('/') == url.trim_end_matches('/'))
+                .map(|(_, v)| v.clone()).unwrap_or_else(|| "unknown".into());
+            RpcPath::Relay(operator)
+        }
+        _ => RpcPath::Unknown,
+    }
+}
+
+async fn pooled_connection(endpoint: &Endpoint, pool: &Connections, addr: &EndpointAddr, attempt: Duration) -> Result<Connection> {
+    if let Some(c) = pool.lock().await.get(&addr.id).filter(|c| c.close_reason().is_none()).cloned() {
+        return Ok(c);
+    }
+    let conn = connect_rpc(endpoint, addr, attempt).await?;
+    let mut cache = pool.lock().await;
+    if cache.len() >= PEER_POOL && !cache.contains_key(&addr.id) {
+        if let Some(oldest) = cache.keys().copied().next() { cache.remove(&oldest); }
+    }
+    cache.insert(addr.id, conn.clone());
+    Ok(conn)
+}
+
 pub struct RpcClient {
     endpoint: Endpoint,
     nodes: Vec<EndpointAddr>,
@@ -616,6 +705,14 @@ pub struct RpcClient {
     /// One attempt's and one scan's budget (tests shrink both).
     attempt: Duration,
     scan: Duration,
+    pool: Connections,
+    relay_pool: Connections,
+    relay_endpoint: Option<Endpoint>,
+    direct_endpoint: Option<Endpoint>,
+    direct_pool: Connections,
+    connecting: Arc<tokio::sync::Mutex<HashSet<(u8, EndpointId)>>>,
+    relay_operators: HashMap<String, String>,
+    rotated: Mutex<Instant>,
 }
 
 impl RpcClient {
@@ -629,11 +726,19 @@ impl RpcClient {
     pub fn with_endpoint(endpoint: Endpoint, nodes: Vec<EndpointId>) -> Self {
         RpcClient {
             endpoint,
-            nodes: nodes.into_iter().map(EndpointAddr::from).collect(),
+            nodes: distinct_nodes(nodes.into_iter().map(EndpointAddr::from).collect()),
             current: tokio::sync::Mutex::new(None),
             start: std::sync::atomic::AtomicUsize::new(0),
             attempt: CONNECT_ATTEMPT,
             scan: CONNECT_SCAN,
+            pool: Default::default(),
+            relay_pool: Default::default(),
+            relay_endpoint: None,
+            direct_endpoint: None,
+            direct_pool: Default::default(),
+            connecting: Default::default(),
+            relay_operators: HashMap::new(),
+            rotated: Mutex::new(Instant::now()),
         }
     }
 
@@ -641,11 +746,19 @@ impl RpcClient {
     pub async fn with_addrs(addrs: Vec<EndpointAddr>) -> Result<Self> {
         Ok(RpcClient {
             endpoint: bind(None, vec![]).await?,
-            nodes: addrs,
+            nodes: distinct_nodes(addrs),
             current: tokio::sync::Mutex::new(None),
             start: std::sync::atomic::AtomicUsize::new(0),
             attempt: CONNECT_ATTEMPT,
             scan: CONNECT_SCAN,
+            pool: Default::default(),
+            relay_pool: Default::default(),
+            relay_endpoint: None,
+            direct_endpoint: None,
+            direct_pool: Default::default(),
+            connecting: Default::default(),
+            relay_operators: HashMap::new(),
+            rotated: Mutex::new(Instant::now()),
         })
     }
 
@@ -692,26 +805,121 @@ impl RpcClient {
     /// it already has. The current node is not touched, so a corroborated
     /// answer never disturbs a connection other reads are using.
     pub async fn ask_others(&self, method: &str, params: Value) -> Vec<(usize, Value)> {
-        let skip = self
-            .current
-            .lock()
-            .await
-            .as_ref()
-            .and_then(|(id, _)| self.nodes.iter().position(|a| a.id == *id));
-        let mut out = Vec::new();
-        for (i, addr) in self.nodes.iter().enumerate() {
-            if Some(i) == skip {
-                continue;
-            }
-            let connected = match tokio::time::timeout(self.attempt, self.endpoint.connect(addr.clone(), ALPN_RPC)).await {
-                Ok(Ok(c)) => c,
-                _ => continue,
-            };
-            if let Ok(v) = rpc_call(&connected, method, params.clone()).await {
-                out.push((i, v));
+        let skip = self.current.lock().await.as_ref().map(|(id, _)| *id);
+        self.observe_all(method, params).await.into_iter()
+            .filter(|o| Some(o.peer) != skip).map(|o| (o.index, o.value)).collect()
+    }
+
+    /// Followers keep a relay-preferring endpoint alongside the public direct
+    /// endpoint. Each head probe exercises both paths; only the path actually
+    /// selected for a successful reply counts toward diversity.
+    pub async fn with_relay_diversity(mut self) -> Result<Self> {
+        self.relay_operators = relay_inventory()?;
+        self.direct_endpoint = Some(bind_with_selector(None, vec![], Arc::new(paths::PublicPathSelector), 1).await?);
+        self.relay_endpoint = Some(bind_with_selector(None, vec![], Arc::new(paths::RelayPathSelector), 2).await?);
+        Ok(self)
+    }
+
+    fn route(&self, route: u8) -> Option<(Endpoint, Connections)> {
+        match route {
+            0 => Some((self.endpoint.clone(), self.pool.clone())),
+            1 => Some((self.direct_endpoint.as_ref()?.clone(), self.direct_pool.clone())),
+            2 => Some((self.relay_endpoint.as_ref()?.clone(), self.relay_pool.clone())),
+            _ => None,
+        }
+    }
+
+    /// A bounded warm-up runs independently of head polling. A slow DHT/NAT
+    /// handshake cannot consume the one-second response budget or be restarted
+    /// on every poll; at most one attempt per sampled peer and route exists.
+    async fn warm(&self, index: usize, route: u8) {
+        let Some((endpoint, pool)) = self.route(route) else { return };
+        let addr = self.nodes[index].clone();
+        if pool.lock().await.get(&addr.id).is_some_and(|c| c.close_reason().is_none()) { return }
+        let key = (route, addr.id);
+        let connecting = self.connecting.clone();
+        {
+            let mut attempts = connecting.lock().await;
+            if attempts.len() >= 2 * PEER_POOL || !attempts.insert(key) { return }
+        }
+        let attempt = self.attempt;
+        tokio::spawn(async move {
+            let _ = pooled_connection(&endpoint, &pool, &addr, attempt).await;
+            connecting.lock().await.remove(&key);
+        });
+    }
+
+    async fn probe(&self, index: usize, route: u8, method: &str, params: Value) -> Option<RpcObservation> {
+        let (endpoint, pool) = self.route(route)?;
+        let addr = &self.nodes[index];
+        let conn = if route == 0 {
+            pooled_connection(&endpoint, &pool, addr, self.attempt).await.ok()?
+        } else {
+            pool.lock().await.get(&addr.id).filter(|c| c.close_reason().is_none()).cloned()?
+        };
+        let value = tokio::time::timeout(PROBE_RESPONSE, rpc_call(&conn, method, params)).await.ok()?.ok()?;
+        Some(RpcObservation {peer:addr.id, index, value, path:selected_path(&conn, &self.relay_operators), route})
+    }
+
+    /// Fetch on the same strict transport that supplied a status hint. Both
+    /// certificate rounds reuse authenticated, measured live connections.
+    pub async fn observe_source(&self, source: &RpcObservation, method: &str, params: Value) -> Option<RpcObservation> {
+        self.probe(source.index, source.route, method, params).await
+    }
+
+    /// Probe a rotating, bounded pool concurrently and retain live QUIC
+    /// connections. Node ids are deduplicated at construction. Strict direct
+    /// and relay endpoints cannot receive application data on the other path.
+    pub async fn observe_all(&self, method: &str, params: Value) -> Vec<RpcObservation> {
+        {
+            let mut rotated = self.rotated.lock().expect("peer rotation");
+            if rotated.elapsed() >= PEER_ROTATION {
+                self.start.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                *rotated = Instant::now();
             }
         }
-        out
+        let n = self.nodes.len();
+        if n == 0 { return Vec::new() }
+        let start = self.start.load(std::sync::atomic::Ordering::Relaxed) % n;
+        let chosen: Vec<_> = (0..n.min(PEER_POOL)).map(|i| (start+i)%n).collect();
+        let ids: HashSet<_> = chosen.iter().map(|i| self.nodes[*i].id).collect();
+        for pool in [&self.pool, &self.direct_pool, &self.relay_pool] {
+            pool.lock().await.retain(|id, c| ids.contains(id) && c.close_reason().is_none());
+        }
+        let routes = if self.direct_endpoint.is_some() { vec![1, 2] } else { vec![0] };
+        for &index in &chosen {
+            for &route in &routes {
+                if route != 0 { self.warm(index, route).await; }
+            }
+        }
+        // Scoped futures avoid detaching a probe on cancellation; cold-path
+        // warm-ups are the separate, strictly bounded tasks above.
+        let mut jobs: Vec<Probe<'_>> = Vec::new();
+        for index in chosen {
+            for &route in &routes {
+                jobs.push(Some(Box::pin(self.probe(index, route, method, params.clone()))));
+            }
+        }
+        let mut answers = Vec::new();
+        // No futures dependency needed: poll all independent conversations in
+        // one pass; finish when each replied or exhausted its own deadline.
+        std::future::poll_fn(|cx| {
+            let mut pending = false;
+            for job in &mut jobs {
+                if let Some(future) = job {
+                    match future.as_mut().poll(cx) {
+                        std::task::Poll::Ready(answer) => {
+                            if let Some(answer) = answer { answers.push(answer); }
+                            *job = None;
+                        }
+                        std::task::Poll::Pending => pending = true,
+                    }
+                }
+            }
+            if pending { std::task::Poll::Pending } else { std::task::Poll::Ready(()) }
+        }).await;
+        answers.sort_by_key(|a| a.index);
+        answers
     }
 
     /// A live connection, scanning `nodes` when the cached one is gone. The
@@ -739,7 +947,7 @@ impl RpcClient {
             }
             let addr = &self.nodes[(start + i) % n];
             tried = i + 1;
-            match tokio::time::timeout(self.attempt.min(left), self.endpoint.connect(addr.clone(), ALPN_RPC)).await {
+            match tokio::time::timeout(self.attempt.min(left), pooled_connection(&self.endpoint, &self.pool, addr, self.attempt.min(left))).await {
                 Ok(Ok(c)) => {
                     self.start.store((start + i) % n, std::sync::atomic::Ordering::Relaxed);
                     *cur = Some((addr.id, c.clone()));
@@ -803,7 +1011,7 @@ impl RpcClient {
                     .iter()
                     .find(|a| a.id == id)
                     .ok_or_else(|| anyhow!("node {} is not one of this client's nodes", id.fmt_short()))?;
-                tokio::time::timeout(self.attempt, self.endpoint.connect(addr.clone(), ALPN_RPC))
+                tokio::time::timeout(self.attempt, pooled_connection(&self.endpoint, &self.pool, addr, self.attempt))
                     .await
                     .map_err(|_| anyhow!("connect {}: timed out", id.fmt_short()))?
                     .map_err(|e| anyhow!("connect {}: {e}", id.fmt_short()))?
@@ -844,6 +1052,36 @@ impl RpcClient {
 mod tests {
     use super::*;
     use std::net::{Ipv4Addr, SocketAddr};
+
+    #[tokio::test]
+    async fn rel24_peer_pool_deduplicates_and_probes_in_parallel() {
+        let mut addresses = Vec::new();
+        let mut routers = Vec::new();
+        for _ in 0..3 {
+            let server = Endpoint::builder(presets::Minimal)
+                .relay_mode(iroh::RelayMode::Disabled)
+                .alpns(vec![ALPN_RPC.to_vec()]).bind().await.unwrap();
+            let addr = EndpointAddr::from_parts(server.id(),
+                [TransportAddr::Ip(SocketAddr::from((Ipv4Addr::LOCALHOST,
+                    server.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap().port())))]);
+            routers.push(serve_rpc(server, |req: Value| async move {
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                serde_json::json!({"jsonrpc":"2.0", "id":req["id"], "result":true})
+            }));
+            addresses.push(addr);
+        }
+        addresses.push(addresses[0].clone());
+        let client = RpcClient::with_addrs(addresses).await.unwrap();
+        let started = Instant::now();
+        let answers = client.ask_others("aether_status", serde_json::json!([])).await;
+        assert_eq!(answers.len(), 3, "one pinned node may never count as multiple peers");
+        assert!(started.elapsed() < Duration::from_millis(500), "independent peer probes share one latency budget");
+        let (first, _) = client.call_tracked("aether_status", serde_json::json!([])).await.unwrap();
+        client.rotate().await;
+        let (second, _) = client.call_tracked("aether_status", serde_json::json!([])).await.unwrap();
+        assert_ne!(first, second, "rotation changes the responding peer");
+        for router in routers { router.shutdown().await.unwrap(); }
+    }
 
     #[test]
     fn a_token_bucket_bursts_then_refills_by_elapsed_time() {

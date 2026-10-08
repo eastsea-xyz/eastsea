@@ -479,12 +479,12 @@ pub fn upgrade_metadata(g: &Inner) -> Option<Value> {
 }
 
 /// A summary's rough share of the history caches: itself plus each tx hash.
-fn summary_bytes(s: &BlockSummary) -> u64 {
+pub(crate) fn summary_bytes(s: &BlockSummary) -> u64 {
     (std::mem::size_of::<BlockSummary>() + s.txs.len() * std::mem::size_of::<TxHash>()) as u64
 }
 
 /// A receipt's rough share: itself, its return data, and its events.
-fn receipt_bytes(r: &Receipt) -> u64 {
+pub(crate) fn receipt_bytes(r: &Receipt) -> u64 {
     let events: usize = r
         .events
         .iter()
@@ -493,19 +493,81 @@ fn receipt_bytes(r: &Receipt) -> u64 {
     (std::mem::size_of::<Receipt>() + r.output.len() + events) as u64
 }
 
+/// A free-lane registration's derived confirmation. Its registry state is
+/// durable; this notification does not claim transaction receipt inclusion.
+fn registration_receipt(hash: TxHash) -> Receipt {
+    Receipt {
+        tx_hash: hash,
+        success: true,
+        gas_used: 0,
+        prove_gas: 0,
+        state_gas: 0,
+        state_fee: U256::ZERO,
+        contract_address: None,
+        logs: 0,
+        output: Default::default(),
+        events: vec![],
+    }
+}
+
 /// The history caches' estimated bytes: kept summaries plus kept receipts.
 fn caches_bytes_of(blocks: &BTreeMap<u64, BlockSummary>, receipts: &HashMap<TxHash, (u64, Receipt)>) -> u64 {
     blocks.values().map(summary_bytes).sum::<u64>() + receipts.values().map(|(_, r)| receipt_bytes(r)).sum::<u64>()
 }
 
-/// Bring the history caches inside `budget`: drop the oldest cached era's
-/// summaries and receipts, one era at a time, when its era file is on disk to
-/// back them. History v2 only — a network without era files (7780) would lose
-/// the heights for good. Never the open era, never an unsealed one: without
-/// the file, `old_block` and `era_leaves` could not serve what went.
+/// Legacy networks keep their archive in redb; their memory copy never grows
+/// beyond this ceiling, including when no resource monitor is installed.
+const LEGACY_HISTORY_CACHE_BYTES: u64 = 64 << 20;
+
+pub(crate) fn legacy_cache_budget() -> u64 {
+    crate::resources::monitor().map_or(LEGACY_HISTORY_CACHE_BYTES, |m| {
+        m.limits.max_memory.min(LEGACY_HISTORY_CACHE_BYTES)
+    })
+}
+
+/// Bring caches inside `budget` while retaining the finalized head summary.
+/// Legacy rows stay in redb; history v2 still evicts only complete sealed eras
+/// so its existing era-backed RPC and proof paths remain available.
 fn trim_caches(g: &mut Inner, budget: u64) {
     use aether_state::mmr::ERA_LEN;
-    if !g.cfg.history_v2 || g.caches_bytes <= budget {
+    if g.caches_bytes <= budget {
+        return;
+    }
+    if !g.cfg.history_v2 {
+        if g.store.is_none() {
+            return; // a memory-only chain has no durable archive to back eviction
+        }
+        let head = g.finalized.height;
+        let mut floor = g.cache_below;
+        while g.caches_bytes > budget {
+            let Some((&height, _)) = g.blocks.first_key_value() else { break };
+            if height >= head {
+                break;
+            }
+            let (_, summary) = g.blocks.pop_first().expect("first cached summary");
+            g.caches_bytes = g.caches_bytes.saturating_sub(summary_bytes(&summary));
+            for hash in &summary.txs {
+                if let Some((_, receipt)) = g.receipts.remove(hash) {
+                    g.caches_bytes = g.caches_bytes.saturating_sub(receipt_bytes(&receipt));
+                }
+            }
+            floor = height + 1;
+        }
+        if g.cfg.node_rewards {
+            // Registration confirmations are derived receipts whose ids are
+            // not in the block's transaction list. Their cache expires too.
+            g.receipts.retain(|_, (h, _)| *h >= floor);
+            g.caches_bytes = caches_bytes_of(&g.blocks, &g.receipts);
+        }
+        if g.caches_bytes > budget {
+            // A single block's receipt set may exceed the budget too. The
+            // head's state/summary remain; receipt RPC reads durable rows.
+            g.receipts.clear();
+            g.caches_bytes = caches_bytes_of(&g.blocks, &g.receipts);
+        }
+        g.cache_below = g.cache_below.max(floor);
+        tracing::debug!(floor, bytes = g.caches_bytes, budget,
+            "evicted legacy history cache rows; archival rows remain in redb");
         return;
     }
     let Some(era_dir) = g.store.as_ref().map(|s| s.era_dir()) else { return };
@@ -635,8 +697,8 @@ pub struct Inner {
     /// Pruning (roadmap B4): first height whose summary and receipts are kept.
     pub pruned_below: u64,
     /// The history caches' memory budget (`--max-memory`): first height still
-    /// cached after eviction. History v2 only — an evicted era's file is on
-    /// disk, so its blocks keep being served (`old_block`, `era_leaves`).
+    /// cached after eviction. Legacy rows remain in redb; history v2's
+    /// evicted eras remain in files (`old_block`, `era_leaves`).
     pub cache_below: u64,
     /// Estimated bytes of the kept block summaries and receipts.
     caches_bytes: u64,
@@ -793,6 +855,7 @@ impl Chain {
     /// Open with durable state: resume from the stored checkpoint, or start at
     /// genesis and persist it.
     pub fn open(cfg: ChainConfig, store: Store) -> Result<(Self, Block), StoreError> {
+        let cache_budget = (!cfg.history_v2).then(legacy_cache_budget);
         let (chain, genesis) = Self::new(cfg);
         // The store belongs to one genesis: refuse data of another instead of diverging from it.
         let ours = genesis_digest(&genesis);
@@ -804,7 +867,11 @@ impl Chain {
             None => return Err(StoreError::OtherGenesis),
         }
         let store = Arc::new(store);
-        match store.load()? {
+        let checkpoint = match cache_budget {
+            Some(budget) => store.load_with_cache_budget(budget)?,
+            None => store.load()?,
+        };
+        match checkpoint {
             Some(cp) => {
                 use commonware_codec::DecodeExt;
                 let digest = Digest::decode(cp.digest.as_slice())
@@ -839,8 +906,12 @@ impl Chain {
                 g.executed.insert(digest, exec.clone());
                 // History proofs need every block from genesis; a checkpoint-started node has none before it.
                 // A pruned store keeps the roots of the eras it dropped instead (roadmap B4).
-                g.history_index = rebuild_history_index(&cp.blocks, &cp.era_roots, cp.pruned_below, exec.height, &exec.history).map(Arc::new);
+                g.history_index = match cache_budget {
+                    Some(_) => rebuild_history_index_from_store(&store, &cp.era_roots, cp.pruned_below, exec.height, &exec.history),
+                    None => rebuild_history_index(&cp.blocks, &cp.era_roots, cp.pruned_below, exec.height, &exec.history),
+                }.map(Arc::new);
                 g.pruned_below = cp.pruned_below;
+                g.cache_below = cp.blocks.keys().next().copied().unwrap_or(cp.height);
                 g.finalized = exec;
                 g.upgrade_notices = cp.upgrade_notices;
                 g.blocks = cp.blocks;
@@ -1731,9 +1802,8 @@ impl Chain {
         let hash = if e < open {
             eras.get(&e).map(|(_, hashes)| hashes[(height % ERA_LEN) as usize])
         } else {
-            self.lock()
-                .blocks
-                .get(&height)
+            self.block_summary(height)
+                .map_err(|e| e.to_string())?
                 .and_then(|b| hex::decode(&b.hash).ok())
                 .and_then(|d| d.try_into().ok())
         }
@@ -1760,17 +1830,21 @@ impl Chain {
     > {
         use aether_state::mmr::ERA_LEN;
         let h = ChainHasher::new();
-        let (index, kept, from_file, store) = {
+        let (index, kept, from_file, from_store, store) = {
             let g = self.lock();
             let index = g
                 .history_index
                 .clone()
                 .ok_or("this node started from a checkpoint and keeps no early history")?;
             let open = index.eras.len() as u64;
-            let (mut kept, mut from_file) = (BTreeMap::new(), Vec::new());
+            let (mut kept, mut from_file, mut from_store) = (BTreeMap::new(), Vec::new(), Vec::new());
             for &e in wanted.iter().filter(|e| **e < open) {
                 if e * ERA_LEN < g.pruned_below.max(g.cache_below) {
-                    from_file.push(e);
+                    if !g.cfg.history_v2 && e * ERA_LEN >= g.pruned_below {
+                        from_store.push(e);
+                    } else {
+                        from_file.push(e);
+                    }
                     continue;
                 }
                 let hashes: Option<Vec<[u8; 32]>> = g
@@ -1780,7 +1854,7 @@ impl Chain {
                     .collect();
                 kept.insert(e, hashes.ok_or("bad block hash")?);
             }
-            (index, kept, from_file, g.store.clone())
+            (index, kept, from_file, from_store, g.store.clone())
         };
         let mut out = BTreeMap::new();
         for (e, hashes) in kept {
@@ -1799,6 +1873,16 @@ impl Chain {
                 .enumerate()
                 .map(|(i, d)| aether_state::mmr::leaf(&h, e * ERA_LEN + i as u64, d))
                 .collect();
+            out.insert(e, (leaves, hashes));
+        }
+        for e in from_store {
+            let store = store.as_ref().ok_or("no archival store")?;
+            let hashes = store.block_hashes(e * ERA_LEN..(e + 1) * ERA_LEN).map_err(|e| e.to_string())?;
+            let leaves: Vec<_> = hashes.iter().enumerate()
+                .map(|(i, d)| aether_state::mmr::leaf(&h, e * ERA_LEN + i as u64, d)).collect();
+            if aether_state::mmr::subtree_root(&h, &leaves) != index.eras[e as usize] {
+                return Err("archival summaries do not match the retained era root".into());
+            }
             out.insert(e, (leaves, hashes));
         }
         Ok((index, out))
@@ -1901,12 +1985,82 @@ impl Chain {
         Ok(report)
     }
 
-    /// Trim the history caches under the installed monitor's `--max-memory`
-    /// budget (no monitor installed: nothing happens).
+    /// Trim history under the monitor's memory budget. Durable legacy chains
+    /// also have a 64 MiB ceiling when no monitor is installed.
     pub fn trim_history_caches(&self) {
-        if let Some(budget) = crate::resources::monitor().map(|m| m.limits.max_memory) {
-            trim_caches(&mut self.lock(), budget);
+        let mut g = self.lock();
+        let budget = if g.cfg.history_v2 {
+            crate::resources::monitor().map(|m| m.limits.max_memory)
+        } else {
+            Some(legacy_cache_budget())
+        };
+        if let Some(budget) = budget {
+            trim_caches(&mut g, budget);
         }
+    }
+
+    /// A finalized summary, using durable rows on a cache miss. Disk I/O is
+    /// outside the chain lock and reads never repopulate the history cache.
+    pub fn block_summary(&self, height: u64) -> Result<Option<BlockSummary>, StoreError> {
+        let store = {
+            let g = self.lock();
+            if let Some(summary) = g.blocks.get(&height) {
+                return Ok(Some(summary.clone()));
+            }
+            g.store.clone()
+        };
+        match store {
+            Some(store) => store.block_summary(height),
+            None => Ok(None),
+        }
+    }
+
+    /// A finalized receipt after eviction, without growing the cache.
+    pub fn receipt(&self, hash: &TxHash) -> Result<Option<(u64, Receipt)>, StoreError> {
+        let store = {
+            let g = self.lock();
+            if let Some(receipt) = g.receipts.get(hash) {
+                return Ok(Some(receipt.clone()));
+            }
+            // A tiny budget may evict the pseudo-receipt map entry, but the
+            // finalized head's bounded ids still prove its confirmation.
+            if g.finalized.registration_ids.contains(hash) {
+                return Ok(Some((g.finalized.height, registration_receipt(*hash))));
+            }
+            g.store.clone()
+        };
+        match store {
+            Some(store) => store.receipt(hash),
+            None => Ok(None),
+        }
+    }
+
+    /// Finalized summaries in a caller-bounded inclusive range. One read
+    /// transaction backs archived ranges; memory-only chains use their maps.
+    pub fn block_summaries(&self, from: u64, to: u64) -> Result<Vec<BlockSummary>, StoreError> {
+        if from > to {
+            return Ok(Vec::new());
+        }
+        let store = {
+            let g = self.lock();
+            match &g.store {
+                Some(store) => store.clone(),
+                None => return Ok(g.blocks.range(from..=to).map(|(_, b)| b.clone()).collect()),
+            }
+        };
+        store.block_summaries(from..=to)
+    }
+
+    /// The newest finalized summaries, newest first, including evicted rows.
+    pub fn recent_block_summaries(&self, limit: usize) -> Result<Vec<BlockSummary>, StoreError> {
+        let limit = limit.min(100);
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let head = self.finalized_height();
+        let mut summaries = self.block_summaries(head.saturating_sub(limit as u64 - 1), head)?;
+        summaries.reverse();
+        Ok(summaries)
     }
 
     /// The history caches' estimated bytes (summaries plus receipts).
@@ -2642,16 +2796,18 @@ impl Chain {
         // store's re-opens tick too, so a healing node never reads as stuck.
         tick();
         let height = block.height().get();
-        {
+        let already_finalized = {
             let g = self.lock();
-            if height <= g.finalized.height && height != 0 {
-                // At-least-once delivery, or already restored from disk: must be the same block.
-                let ours = g.blocks.get(&height).map(|b| b.hash.clone());
-                if ours.is_some_and(|h| h != format!("{}", block.digest())) {
-                    return Err(ChainError::ConflictingFinality { height });
-                }
-                return Ok(());
+            height <= g.finalized.height && height != 0
+        };
+        if already_finalized {
+            // At-least-once delivery must still match the durable hash after
+            // its memory copy was evicted.
+            let ours = self.block_summary(height).map_err(|e| ChainError::Store(e.to_string()))?;
+            if ours.is_some_and(|b| b.hash != format!("{}", block.digest())) {
+                return Err(ChainError::ConflictingFinality { height });
             }
+            return Ok(());
         }
         let exec = match self.get(&block.digest()) {
             Some(e) => e,
@@ -3010,18 +3166,10 @@ impl Chain {
         // expired leave the pool.
         if !exec.registration_ids.is_empty() {
             for id in &exec.registration_ids {
-                g.receipts.insert(*id, (exec.height, Receipt {
-                    tx_hash: *id,
-                    success: true,
-                    gas_used: 0,
-                    prove_gas: 0,
-                    state_gas: 0,
-                    state_fee: U256::ZERO,
-                    contract_address: None,
-                    logs: 0,
-                    output: Default::default(),
-                    events: vec![],
-                }));
+                let receipt = registration_receipt(*id);
+                let bytes = receipt_bytes(&receipt);
+                let old = g.receipts.insert(*id, (exec.height, receipt)).map(|(_, r)| receipt_bytes(&r));
+                g.caches_bytes = g.caches_bytes.saturating_add(bytes).saturating_sub(old.unwrap_or(0));
             }
         }
         if !g.registration_pool.is_empty() {
@@ -3036,7 +3184,12 @@ impl Chain {
         reserve_step(&mut g, &previous, &exec);
         // Last: keep the history caches inside their memory budget (a no-op
         // when nothing is over or no monitor was installed).
-        if let Some(budget) = crate::resources::monitor().map(|m| m.limits.max_memory) {
+        let cache_budget = if g.cfg.history_v2 {
+            crate::resources::monitor().map(|m| m.limits.max_memory)
+        } else {
+            Some(legacy_cache_budget())
+        };
+        if let Some(budget) = cache_budget {
             trim_caches(&mut g, budget);
         }
         Ok(())
@@ -3414,6 +3567,43 @@ fn rebuild_history_index(
         return None;
     }
     Some(idx)
+}
+
+/// Rebuild the compact history index with at most one era of hashes in
+/// memory, so an archival legacy database does not become a giant cache
+/// during restart. Missing or inconsistent rows disable history proofs.
+fn rebuild_history_index_from_store(
+    store: &Store,
+    era_roots: &[[u8; 32]],
+    pruned_below: u64,
+    head: u64,
+    history: &aether_state::mmr::Mmr,
+) -> Option<aether_state::mmr::EraIndex> {
+    use aether_state::mmr::ERA_LEN;
+    let h = ChainHasher::new();
+    let pruned_eras = pruned_below / ERA_LEN;
+    if !pruned_below.is_multiple_of(ERA_LEN) || (era_roots.len() as u64) < pruned_eras {
+        return None;
+    }
+    let mut index = aether_state::mmr::EraIndex {
+        eras: era_roots[..pruned_eras as usize].to_vec(),
+        open: Vec::new(),
+    };
+    let end = head.checked_add(1)?;
+    let mut from = pruned_below;
+    while from < end {
+        let to = from.saturating_add(ERA_LEN).min(end);
+        let hashes = store.block_hashes(from..to).ok()?;
+        for (offset, hash) in hashes.iter().enumerate() {
+            index.push(&h, aether_state::mmr::leaf(&h, from + offset as u64, hash));
+        }
+        from = to;
+    }
+    if index.mmr(&h) != *history {
+        tracing::warn!("archival summaries do not match the committed history; history proofs are off");
+        return None;
+    }
+    Some(index)
 }
 
 fn summary(block: &Block, e: &Executed, parent_state_root: B256) -> BlockSummary {

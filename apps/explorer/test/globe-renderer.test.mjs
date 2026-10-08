@@ -6,6 +6,7 @@ import { readFile } from 'node:fs/promises';
 import { createGlobe } from '../live-globe/globe.js';
 import { mountLiveGlobe } from '../live-globe/live-globe.js';
 import { summarizeQuality, qualityMean, qualityColor } from '../live-globe/quality.js';
+import { installWalletHost } from '../../wallet/Resources/LiveGlobe/wallet-host.js';
 
 const today = JSON.parse(await readFile(new URL('../live-globe/fixture.json', import.meta.url)));
 const example = JSON.parse(await readFile(new URL('./fixtures/presence-example.json', import.meta.url)));
@@ -25,15 +26,18 @@ class Events {
 
 function browserHost({ reduced = false, webgl = true, width = 600, height = 600, labelDimensions, intersection = false } = {}) {
   let now = 0, id = 0;
-  const frames = new Map(), timers = new Map(), uploads = [];
+  const frames = new Map(), timers = new Map(), uploads = [], renders = [], blends = [];
   const intersections = [];
   const motion = Object.assign(new Events(), { matches: reduced });
-  const context = new Proxy({}, { get: (target, key) => target[key] ?? (() => {}) });
+  const context = new Proxy({ clearRect: () => renders.push('map') }, { get: (target, key) => target[key] ?? (() => {}) });
   const gl = new Proxy({
     createShader: () => ({}), createProgram: () => ({}), createBuffer: () => ({}),
     getShaderParameter: () => true, getProgramParameter: () => true,
     getAttribLocation: (_program, name) => name, getUniformLocation: (_program, name) => name,
     getParameter: () => [1, 64], bufferData: (_target, data) => uploads.push(Array.from(data)),
+    clear: () => renders.push('webgl'),
+    blendFunc: (...factors) => blends.push({ method: 'blendFunc', factors }),
+    blendFuncSeparate: (...factors) => blends.push({ method: 'blendFuncSeparate', factors }),
   }, { get: (target, key) => target[key] ?? (key === key.toUpperCase() ? key : () => {}) });
   const win = Object.assign(new Events(), {
     devicePixelRatio: 1, performance: { now: () => now },
@@ -87,6 +91,7 @@ function browserHost({ reduced = false, webgl = true, width = 600, height = 600,
   doc.createElementNS = (_namespace, tag) => new Element(tag);
   doc.createTextNode = text => Object.assign(new Element('#text'), { textContent: text });
   doc.documentElement = new Element('html');
+  doc.body = new Element('body');
   const root = new Element('div'), stage = new Element('div'), canvas = new Element('canvas');
   stage.append(canvas); root.append(stage);
   const descendants = element => [element, ...element.children.flatMap(descendants)];
@@ -97,7 +102,7 @@ function browserHost({ reduced = false, webgl = true, width = 600, height = 600,
     const pending = [...frames.values()]; frames.clear();
     for (const callback of pending) callback(now);
   }
-  return { root, stage, canvas, doc, motion, frame, find, descendants, frames, timers, uploads, intersections };
+  return { root, stage, canvas, doc, motion, frame, find, descendants, frames, timers, uploads, renders, blends, intersections };
 }
 
 test('largest-region opening centers its labeled marker, regardless of hemisphere', () => {
@@ -113,6 +118,18 @@ test('largest-region opening centers its labeled marker, regardless of hemispher
     assert.equal(marker.children[1].textContent, `${continent} 4`);
     globe.destroy();
   }
+});
+
+test('WebGL stores source-over alpha rather than squared alpha for premultiplied canvas composition', () => {
+  const host = browserHost();
+  const globe = createGlobe(host.canvas, { seed: 'alpha' });
+  globe.update(today);
+  assert.ok(host.blends.length > 0);
+  for (const blend of host.blends) {
+    assert.equal(blend.method, 'blendFuncSeparate');
+    assert.deepEqual(blend.factors, ['SRC_ALPHA', 'ONE_MINUS_SRC_ALPHA', 'ONE', 'ONE_MINUS_SRC_ALPHA']);
+  }
+  globe.destroy();
 });
 
 test('every populated region has a front marker or an explicit list-only visibility state', () => {
@@ -383,4 +400,248 @@ test('country keyboard focus and button identity survive language changes and li
   assert.equal(host.doc.activeElement, button);
   assert.ok(host.descendants(host.root).includes(button));
   component.destroy();
+});
+
+test('native host never fetches or polls, including fixtures, visibility changes and endpoint input', async () => {
+  for (const fixture of [false, true]) {
+    const host = browserHost({ intersection: true });
+    let calls = 0;
+    const component = mountLiveGlobe(host.root, {
+      host: true, fixture, endpoint: 'https://rpc.example.invalid', seed: 'offline',
+      fetch: () => { calls++; throw new Error('Native host must never fetch'); },
+    });
+    assert.equal(host.find('lg-status').dataset.state, 'loading');
+    assert.equal(component.update(today), true);
+    for (const observer of host.intersections) observer.setVisible(true);
+    host.frame(30_000);
+    host.doc.hidden = true; host.doc.dispatch('visibilitychange');
+    for (const observer of host.intersections) observer.setVisible(false);
+    host.doc.hidden = false; host.doc.dispatch('visibilitychange');
+    for (const observer of host.intersections) observer.setVisible(true);
+    component.configure({ state: 'stale', fixture: false });
+    host.frame(30_000);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(calls, 0);
+    assert.equal(host.timers.size, 0);
+    component.destroy();
+    assert.equal(host.frames.size, 0);
+  }
+});
+
+test('native states distinguish unavailable from a retained stale snapshot and recover on valid update', () => {
+  const host = browserHost();
+  const component = mountLiveGlobe(host.root, { host: true, seed: 'states' });
+  assert.equal(host.find('lg-total').textContent, '—');
+  component.configure({ state: 'stale' });
+  assert.equal(host.find('lg-status').dataset.state, 'unavailable');
+  assert.equal(component.update({ total: -1, secret: 'never show this RPC error' }), false);
+  assert.equal(host.find('lg-status').textContent, 'Live counts are unavailable from this Mac’s node.');
+  assert.equal(component.update(today), true);
+  assert.equal(host.find('lg-status').dataset.state, 'live');
+  assert.equal(host.find('lg-total').textContent, '4');
+  assert.ok(host.find('lg-role-summary').textContent.includes('Candidate nodes 0 · Follower nodes 0'));
+  component.configure({ state: 'stale' });
+  assert.equal(host.find('lg-status').dataset.state, 'stale');
+  assert.equal(host.find('lg-total').textContent, '4');
+  assert.equal(component.update({ ...today, total: 99 }), false);
+  assert.equal(host.find('lg-total').textContent, '4');
+  assert.equal(component.update(today), true);
+  assert.equal(host.find('lg-status').dataset.state, 'live');
+  assert.ok(!host.find('lg-status').textContent.includes('10 seconds'));
+  component.destroy();
+  assert.equal(component.update(today), false);
+  assert.equal(component.configure({ paused: true }), false);
+});
+
+test('native reset removes the previous network snapshot and selection before accepting a fresh network', () => {
+  const host = browserHost();
+  let calls = 0;
+  const component = mountLiveGlobe(host.root, {
+    host: true, seed: 'network-switch', fetch: () => { calls++; },
+  });
+  component.update(example);
+  host.find('lg-country', 'asia:KR').dispatch('click');
+  assert.equal(host.find('lg-country', 'asia:KR').dataset.active, 'true');
+  assert.equal(host.find('lg-total').textContent, '24');
+  host.doc.hidden = true; host.doc.dispatch('visibilitychange');
+  assert.equal(component.reset(), true);
+  assert.equal(host.find('lg-status').dataset.state, 'loading');
+  assert.equal(host.find('lg-total').textContent, '—');
+  assert.equal(host.find('lg-role-summary').hidden, true);
+  assert.equal(host.find('lg-role-summary').textContent, '');
+  assert.equal(host.find('lg-country', 'asia:KR'), undefined);
+  assert.equal(host.find('lg-country', 'europe:DE'), undefined);
+  assert.equal(host.find('lg-marker', 'asia:KR'), undefined);
+  for (const element of host.descendants(host.root)) {
+    if (element.className === 'lg-region') {
+      assert.equal(element.dataset.count, '');
+      assert.equal(element.dataset.quality, '');
+      assert.equal(element.dataset.populated, 'false');
+      assert.equal(element.dataset.active, 'false');
+      assert.equal(element.dataset.visibility, 'empty');
+      assert.equal(element.children[1].textContent, '—');
+      assert.equal(element.children[2].hidden, true);
+      const strip = element.children[3];
+      assert.equal(strip.hidden, true);
+      assert.equal(strip.getAttribute('aria-label'), null);
+      assert.equal(strip.children[0].style.maskImage, '');
+      assert.equal(strip.children[1].style.left, '');
+    }
+    if (element.className === 'lg-marker') {
+      assert.equal(element.hidden, true);
+      assert.equal(element.dataset.count, '0');
+      assert.equal(element.dataset.active, 'false');
+    }
+  }
+  component.configure({ state: 'unavailable' });
+  assert.equal(host.find('lg-total').textContent, '—');
+  host.doc.hidden = false; host.doc.dispatch('visibilitychange');
+  component.update({ ...today, regions: [{ continent: 'north_america', count: 4, quality: summarizeQuality([.1, .2, .3, .4]) }] });
+  assert.equal(host.find('lg-status').dataset.state, 'live');
+  assert.equal(host.find('lg-total').textContent, '4');
+  assert.equal(host.find('lg-marker', 'north_america').hidden, false);
+  assert.equal(host.find('lg-marker', 'north_america').style.transform, 'translate3d(300.00px,300.00px,0)', 'a new network gets a new opening region');
+  assert.equal(host.find('lg-region', 'asia').dataset.populated, 'false');
+  assert.equal(calls, 0);
+  assert.equal(host.timers.size, 0);
+  component.destroy();
+  assert.equal(component.reset(), false);
+});
+
+test('native capture draws one still frame while hidden and offscreen without restarting animation', () => {
+  for (const options of [{}, { reduced: true }, { webgl: false }]) {
+    const host = browserHost({ ...options, intersection: true });
+    let calls = 0;
+    const component = mountLiveGlobe(host.root, {
+      host: true, seed: 'capture', fetch: () => { calls++; },
+    });
+    component.configure({ paused: true });
+    for (const observer of host.intersections) observer.setVisible(false);
+    host.doc.hidden = true; host.doc.dispatch('visibilitychange');
+    assert.equal(component.update(example), true);
+    assert.equal(host.frames.size, 0);
+    host.renders.length = 0;
+    assert.equal(component.captureFrame(), true);
+    assert.deepEqual(host.renders, [options.reduced || options.webgl === false ? 'map' : 'webgl']);
+    assert.equal(host.find('lg-total').textContent, '24');
+    assert.equal(host.find('lg-region', 'asia').dataset.count, '9');
+    assert.equal(host.find('lg-pause').getAttribute('aria-pressed'), 'true');
+    assert.equal(host.find('lg-markers').dataset.animated, 'false');
+    assert.equal(host.doc.hidden, true);
+    assert.equal(host.frames.size, 0);
+    assert.equal(host.timers.size, 0);
+    host.frame(30_000);
+    assert.equal(host.renders.length, 1, 'capture never schedules another rendering frame');
+    assert.equal(calls, 0);
+    component.destroy();
+    assert.equal(component.captureFrame(), false);
+  }
+});
+
+test('native aggregate updates strip identities and fold countries below k=3 before rendering', () => {
+  const host = browserHost();
+  const component = mountLiveGlobe(host.root, { host: true, seed: 'boundary' });
+  const payload = {
+    ...today, total: 2, versions: { '0.7.4': 2 },
+    roles: { validator: { count: 2 }, wallet: { count: 1 }, candidate: { count: 0 }, follower: { count: 0 } },
+    regions: [{ continent: 'asia', country: 'KR', count: 2, quality: summarizeQuality([.1, .2]), address: '<private-address>' }],
+    peer_ids: ['<private-peer>'], rpc_url: 'https://private-node.invalid',
+  };
+  assert.equal(component.update(payload), true);
+  assert.equal(host.find('lg-marker', 'asia:KR'), undefined);
+  assert.equal(host.find('lg-country', 'asia:KR'), undefined);
+  assert.equal(host.find('lg-region', 'asia').dataset.count, '2');
+  const content = JSON.stringify(host.descendants(host.root).map(el => ({
+    text: el.textContent, dataset: el.dataset, attributes: [...el.attributes],
+  })));
+  assert.ok(!/private-address|private-peer|private-node|"country":"KR"/.test(content));
+  let invoked = false;
+  const bad = { ...today };
+  Object.defineProperty(bad, 'roles', { get() { invoked = true; return today.roles; } });
+  assert.equal(component.update(bad), false);
+  assert.equal(invoked, false, 'the bridge does not execute response getters');
+  assert.equal(host.find('lg-total').textContent, '2');
+  component.destroy();
+});
+
+test('native pause and Reduce Motion settings stop frames and pulses, preserving system preferences', () => {
+  const host = browserHost();
+  const component = mountLiveGlobe(host.root, { host: true, seed: 'settings' });
+  component.update(today);
+  assert.equal(host.frames.size, 1);
+  assert.equal(component.configure({ paused: true }), true);
+  assert.equal(host.frames.size, 0);
+  assert.equal(host.find('lg-markers').dataset.animated, 'false');
+  host.find('lg-pause').dispatch('click');
+  assert.equal(host.frames.size, 0, 'a user control cannot override the host pause');
+  component.configure({ paused: false, reducedMotion: true });
+  assert.equal(host.frames.size, 0);
+  assert.equal(host.root.dataset.reducedMotion, 'true');
+  assert.equal(host.find('lg-canvas').dataset.renderer, 'map');
+  component.configure({ reducedMotion: false });
+  assert.equal(host.frames.size, 1);
+  host.motion.matches = true; host.motion.dispatch('change');
+  component.configure({ reducedMotion: false });
+  assert.equal(host.frames.size, 0, 'native settings cannot override the system Reduce Motion preference');
+  host.motion.matches = false; host.motion.dispatch('change');
+  assert.equal(host.frames.size, 1);
+  component.configure({ theme: 'dark' });
+  assert.equal(host.doc.documentElement.dataset.theme, 'dark');
+  component.configure({ theme: 'light' });
+  assert.equal(host.doc.documentElement.dataset.theme, 'light');
+  assert.equal(component.configure({ paused: 'false', theme: 'remote-theme' }), false);
+  assert.equal(host.frames.size, 1);
+  component.destroy();
+});
+
+test('native missing quality evidence remains neutral and explicitly unavailable in all five languages', () => {
+  const host = browserHost();
+  const component = mountLiveGlobe(host.root, { host: true, seed: 'evidence' });
+  component.update(today);
+  component.configure({ evidenceAvailable: false });
+  assert.ok(!host.find('lg-role-summary').textContent.includes('Reserve keys'));
+  for (const lang of ['en', 'ko', 'ja', 'zh-Hans', 'es']) {
+    assert.equal(component.configure({ lang }), true);
+    assert.equal(host.root.lang, lang);
+    assert.equal(host.find('lg-art-legend').hidden, true);
+    assert.equal(host.find('lg-quality-status').hidden, false);
+    assert.ok(host.find('lg-quality-status').textContent.length > 20);
+    assert.equal(host.find('lg-region', 'asia').children[3].hidden, true);
+    assert.ok(!host.find('lg-marker', 'asia').getAttribute('aria-label').includes('/ 100'));
+    assert.ok(!host.find('lg-region-button', 'asia').getAttribute('aria-label').includes('/ 100'));
+    assert.equal(host.find('lg-marker', 'asia').style['--marker-color'], '#94A4B5');
+    assert.equal(host.find('lg-total').textContent, '4');
+  }
+  component.configure({ evidenceAvailable: true, lang: 'en' });
+  assert.ok(host.find('lg-role-summary').textContent.includes('Reserve keys 3 (standby 3 / seated 0)'));
+  assert.equal(host.find('lg-art-legend').hidden, false);
+  assert.equal(host.find('lg-quality-status').hidden, true);
+  assert.equal(host.find('lg-region', 'asia').children[3].hidden, false);
+  assert.ok(host.find('lg-marker', 'asia').getAttribute('aria-label').includes('/ 100'));
+  component.configure({ fixture: true });
+  assert.equal(host.find('lg-status').dataset.state, 'fixture');
+  assert.equal(host.find('lg-status').textContent, 'Screenshot fixture · not live');
+  assert.equal(host.find('lg-snapshot-date').hidden, true);
+  component.destroy();
+});
+
+test('wallet entry offers a ready inbound-only API with measured height and localized title', () => {
+  const host = browserHost({ reduced: true });
+  const api = installWalletHost(host.root);
+  assert.deepEqual(Object.keys(api).sort(), ['captureFrame', 'configure', 'height', 'ready', 'reset', 'update']);
+  assert.equal(api.ready, true);
+  assert.equal(host.root.dataset.ready, 'true');
+  assert.equal(Object.isFrozen(api), true);
+  assert.equal(api.height(), 600);
+  assert.equal(api.configure({ lang: 'ko', theme: 'dark', fixture: true }), true);
+  assert.equal(host.doc.title, '네트워크 · EastSea');
+  assert.equal(host.doc.documentElement.lang, 'ko');
+  assert.equal(api.update(today), true);
+  assert.equal(host.find('lg-status').dataset.state, 'fixture');
+  assert.equal(api.captureFrame(), true);
+  assert.equal(api.reset(), true);
+  assert.equal(host.find('lg-status').dataset.state, 'loading');
+  assert.equal(host.find('lg-total').textContent, '—');
+  assert.equal(host.timers.size, 0);
+  assert.equal(host.frames.size, 0);
 });

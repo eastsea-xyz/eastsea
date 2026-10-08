@@ -51,6 +51,7 @@ enum DesignPreview {
 
 extension WalletModel {
     func loadPreview() {
+        loadPreviewGlobe()
         let v = DesignPreview.variant, empty = v == "empty"
         address = "0x5397a1c0De4b1b8F6A3cB2d1E0f9C7a6B5d4E502"
         let now = Date()

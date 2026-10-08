@@ -3,6 +3,17 @@
 # A new Tests/<name> directory must be added to the table below, or scripts/verify.sh will not run it.
 # The Aether 0.6.7 bridge (apps/bridge) has its own Sources/Tests: the `bridge` lines at the end.
 cd "$(dirname "$0")/.."
+mkdir -p "$PWD/tmp"
+export TMPDIR="$PWD/tmp"
+# Honor the local Mac's compile lane for each compiler call, including the
+# native-identity fixture scripts launched below. Other hosts need no lane gate.
+swiftc() {
+  if [ -x "$HOME/.claude/playbooks/aether-team/wait-compile.sh" ]; then
+    "$HOME/.claude/playbooks/aether-team/wait-compile.sh"
+  fi
+  command swiftc "$@"
+}
+export -f swiftc
 W=apps/wallet/Sources; T=apps/wallet/Tests; bad=0
 run() { n=$1; shift; files=(); for f in "$@"; do files+=("$W/$f"); done
   if swiftc -o tmp/sw-$n "${files[@]}" $T/$n/main.swift 2>tmp/sw-$n.err && AETHER_AGENT_TEST_TMP=$PWD/tmp ./tmp/sw-$n > tmp/sw-$n.out 2>&1; then echo "OK   $n"; else echo "FAIL $n :: $(head -c 160 tmp/sw-$n.err | tr '\n' ' ') $(tail -2 tmp/sw-$n.out | tr '\n' ' ')"; bad=$((bad+1)); fi; }
@@ -24,6 +35,8 @@ run install-location Brand.swift InstallLocation.swift
 run key-exposure KeyExposureNotice.swift
 run legacy-aether Brand.swift LegacyAether.swift
 run live-presence LivePresence.swift UnattendedDecision.swift
+run live-globe LivePresence.swift LiveGlobePresence.swift
+run live-globe-bundle LiveGlobeBundlePolicy.swift
 run network-upgrade Brand.swift NetworkUpgrade.swift
 run node-stop Brand.swift Clock.swift NodeWatchdog.swift NodeStopReason.swift
 run block-data Brand.swift Clock.swift NodeWatchdog.swift NodeStopReason.swift UnattendedDecision.swift ArchiveMeasurement.swift BlockDataLocation.swift KeySafety.swift DataMigration.swift BlockDataMove.swift NodeStorageMove.swift

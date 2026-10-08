@@ -1,0 +1,19 @@
+html, body { margin: 0; min-height: 0; background: transparent; }
+body { padding: 12px 20px 20px; color: var(--c-text); }
+.live-globe { gap: 24px; align-items: start; }
+.lg-stage { max-height: 440px; }
+.lg-caption { font-size: 16px; }
+.lg-total { font-size: 48px; }
+.lg-role-summary { font-size: 12px; }
+.lg-region-button, .lg-country-button { min-height: 32px; }
+.lg-art-caption, .lg-privacy, .lg-interaction { font-size: 12px; }
+.lg-pause { min-height: 32px; padding: 4px 10px; }
+.lg-privacy { margin-top: 16px; }
+@media (min-width: 640px) {
+  .live-globe { grid-template-columns: minmax(0, 1.1fr) minmax(240px, 1fr); }
+}
+@media (max-width: 639px) {
+  body { padding-inline: 12px; }
+  .live-globe { grid-template-columns: 1fr; }
+  .lg-stage { max-height: 360px; }
+}

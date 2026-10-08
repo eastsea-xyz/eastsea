@@ -8,6 +8,7 @@ struct ContentView: View {
     @EnvironmentObject var model: WalletModel
     #if os(macOS)
     @EnvironmentObject var node: NodeController
+    @AppStorage("presenceCountryNoticeSeen") private var countryNoticeSeen = false
     #endif
     @AppStorage("developerMode") private var developerMode = false
     /// The terms version this user accepted (0: none yet).
@@ -34,6 +35,11 @@ struct ContentView: View {
             .sheet(isPresented: Binding(get: { Self.needsTerms(acceptedTerms) }, set: { _ in })) {
                 TermsSheet { acceptedTerms = Terms.version }
             }
+            #if os(macOS)
+            .sheet(isPresented: Binding(get: { developerCountryNotice }, set: { _ in })) {
+                CountryNotice { PresenceCountry.markNoticeSeen() }
+            }
+            #endif
     }
 
     /// Design previews skip the gate: screenshots need the dashboard, not terms.
@@ -44,6 +50,16 @@ struct ContentView: View {
         #endif
         return true
     }
+
+    #if os(macOS)
+    private var developerCountryNotice: Bool {
+        #if DEBUG
+        guard !DesignPreview.on else { return false }
+        #endif
+        return developerMode && acceptedTerms >= Terms.version && !countryNoticeSeen
+            && PresenceCountry.shouldShowNotice()
+    }
+    #endif
 
     @ViewBuilder private var page: some View {
         if developerMode {

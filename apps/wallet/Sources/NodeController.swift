@@ -104,9 +104,8 @@ final class NodeController: ObservableObject {
     @AppStorage("presenceShareCountry") var presenceShareCountry = true {
         didSet { if presenceShareCountry != oldValue { pushPresenceCountry() } }
     }
-    @AppStorage("presenceCountryCode") var presenceCountryCode = PresenceCountry.regionCode {
-        didSet { if presenceCountryCode != oldValue { pushPresenceCountry() } }
-    }
+    @Published private(set) var presenceCountryCode = PresenceCountry.regionCode
+    private var presenceCountryLocaleObserver: NSObjectProtocol?
     private var presenceCountryNeedsSync = true
     private var presenceCountryRestartPending = false
     private var presenceCountrySyncInFlight = false
@@ -194,6 +193,13 @@ final class NodeController: ObservableObject {
         restartPresenceCountryIfNeeded()
     }
 
+    private func refreshPresenceCountryRegion() {
+        let region = PresenceCountry.regionCode
+        guard region != presenceCountryCode else { return }
+        presenceCountryCode = region
+        if presenceShareCountry { pushPresenceCountry() }
+    }
+
     private func restartPresenceCountryIfNeeded() {
         guard presenceCountryRestartPending, !updateInProgress, storageMovePercent == nil,
               restartTimer == nil, process != nil || attached else { return }
@@ -208,7 +214,7 @@ final class NodeController: ObservableObject {
               process != nil || attached, Date().timeIntervalSince(lastPresenceCountryAttempt) >= 10 else { return }
         presenceCountrySyncInFlight = true
         lastPresenceCountryAttempt = Date()
-        let country = PresenceCountry.shared(sharing: presenceShareCountry, country: presenceCountryCode)
+        let country = PresenceCountry.shared(sharing: presenceShareCountry, country: PresenceCountry.regionCode)
         let pid = process?.processIdentifier ?? unattended?.runningNodePID
         let params: [Any] = [country.map { $0 as Any } ?? NSNull()]
         Task {
@@ -216,7 +222,7 @@ final class NodeController: ObservableObject {
             presenceCountrySyncInFlight = false
             guard process != nil || attached,
                   (process?.processIdentifier ?? unattended?.runningNodePID) == pid else { return }
-            let latest = PresenceCountry.shared(sharing: presenceShareCountry, country: presenceCountryCode)
+            let latest = PresenceCountry.shared(sharing: presenceShareCountry, country: PresenceCountry.regionCode)
             if latest != country {
                 lastPresenceCountryAttempt = .distantPast
                 syncPresenceCountry()
@@ -327,6 +333,11 @@ final class NodeController: ObservableObject {
             // preference and start writing a second chain store.
             storageMoveError = String(localized: "The block-data move record could not be read. Keep both copies and retry after reconnecting the disk.")
             storageMovePercent = 0
+        }
+        presenceCountryLocaleObserver = NotificationCenter.default.addObserver(
+            forName: NSLocale.currentLocaleDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.refreshPresenceCountryRegion() }
         }
     }
     /// The update owns the node's startup gate and run.lock until this
@@ -903,7 +914,7 @@ final class NodeController: ObservableObject {
                                            activeProcessors: ProcessInfo.processInfo.activeProcessorCount),
             storageFlag: StorageSetting.flag(shards: storageShards),
             locationFlags: BlockDataLocation.flags(chainDataPath: chainDataPath, archive: archive),
-            presenceFlags: PresenceCountry.flags(sharing: presenceShareCountry, country: presenceCountryCode))
+            presenceFlags: PresenceCountry.flags(sharing: presenceShareCountry, country: PresenceCountry.regionCode))
         args += ["--exit-with-parent"]
         unattended?.nodeSwitchedOn()
         let p = Process()
@@ -1517,6 +1528,7 @@ final class NodeController: ObservableObject {
     }
 
     private func check() {
+        refreshPresenceCountryRegion()
         restartPresenceCountryIfNeeded()
         if candidate == nil, clock.now >= nextCandidateRetry {
             nextCandidateRetry = clock.now.advanced(by: 60)

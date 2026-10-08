@@ -19,6 +19,11 @@ final class WalletModel: ObservableObject {
     @Published var status: ChainStatus?
     /// Recent presence as seen by this Mac's node; nil when it cannot answer.
     @Published private(set) var livePresence: LivePresence?
+    /// Privacy-projected presence for the bundled globe; never individual pings.
+    @Published private(set) var liveGlobePresence: LiveGlobePresence?
+    @Published private(set) var liveGlobeState: LiveGlobePresenceState = .loading
+    /// A menu-bar action can request Network before its window is created.
+    @Published var networkRequested = false
     var scheduledUpgrades: [NetworkUpgrade] {
         guard let status else { return [] }
         return NetworkUpgrade.parse(status.upgradesJson, height: max(status.height, (try? verifiedHeight()) ?? 0))
@@ -183,7 +188,7 @@ final class WalletModel: ObservableObject {
     private var refreshes = 0
     private var refreshInFlight = false
     #if os(macOS)
-    private var presenceRefreshInFlight = false
+    private var presenceRefreshRequest: UUID?
     private var lastPresenceAttempt = Date.distantPast
     #endif
     private var networkGeneration: UInt64 = 0
@@ -391,7 +396,10 @@ final class WalletModel: ObservableObject {
         pinCommittee()
         status = nil
         livePresence = nil
+        liveGlobePresence = nil
+        liveGlobeState = .loading
         #if os(macOS)
+        presenceRefreshRequest = nil
         lastPresenceAttempt = .distantPast
         #endif
         account = nil
@@ -671,16 +679,23 @@ final class WalletModel: ObservableObject {
     /// The existing 2 s refresh drives this separate 10 s read. A slow
     /// verified balance read never holds up the live observation, or vice versa.
     private func refreshPresence() {
-        guard !presenceRefreshInFlight, Date().timeIntervalSince(lastPresenceAttempt) >= 10 else { return }
-        presenceRefreshInFlight = true
+        guard presenceRefreshRequest == nil, Date().timeIntervalSince(lastPresenceAttempt) >= 10 else { return }
+        let request = UUID()
+        presenceRefreshRequest = request
         lastPresenceAttempt = Date()
         let port = nodeRpcPort, generation = networkGeneration
         Task {
             let result = await LocalRPC.call(port: port, method: "aether_presence", params: [])
-            presenceRefreshInFlight = false
+            // A network switch may already have started its own read. The old
+            // completion cannot publish data or clear the new request's guard.
+            guard presenceRefreshRequest == request else { return }
+            presenceRefreshRequest = nil
             guard networkGeneration == generation, nodeRpcPort == port else { return }
             let value = LivePresence.parse(result)
             if livePresence != value { livePresence = value }
+            let reading = LiveGlobePresence.read(result, retaining: liveGlobePresence)
+            if liveGlobePresence != reading.presence { liveGlobePresence = reading.presence }
+            if liveGlobeState != reading.state { liveGlobeState = reading.state }
         }
     }
     #endif
@@ -1677,9 +1692,24 @@ struct ConnectRequest: Equatable {
 
 #if DEBUG
 extension WalletModel {
+    /// Screenshot-only fixture, shared byte-for-byte with the web regression data.
+    func loadPreviewGlobe() {
+        guard let url = Bundle.main.url(forResource: "presence-example", withExtension: "json", subdirectory: "LiveGlobe"),
+              let data = try? Data(contentsOf: url),
+              let value = try? JSONSerialization.jsonObject(with: data) else {
+            liveGlobePresence = nil
+            liveGlobeState = .unavailable
+            return
+        }
+        let reading = LiveGlobePresence.read(value, retaining: nil)
+        liveGlobePresence = reading.presence
+        liveGlobeState = reading.state
+    }
+
     /// Design preview only (DesignPreview.loadPreview): the sample state whose
     /// setters are private to this file.
     func loadPreviewExtras() {
+        loadPreviewGlobe()
         breakdown = try? BalanceBreakdown.decode("""
             {"proof_rewards_wei":"2500000000000000000","node_rewards_wei":"0","faucet_wei":"10000000000000000000",
              "received_wei":"0","unwrapped_wei":"0","sent_wei":"0","fees_wei":"42000000000000",

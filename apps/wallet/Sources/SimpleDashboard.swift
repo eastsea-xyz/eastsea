@@ -49,7 +49,7 @@ struct SimpleDashboard: View {
     }
 
     enum Sheet: String, Identifiable {
-        case send, receive, assets, call, connect, votingInvite
+        case send, receive, assets, call, connect, votingInvite, countryNotice
         var id: String { rawValue }
     }
 
@@ -82,6 +82,10 @@ struct SimpleDashboard: View {
             .onChange(of: model.resendRequest) { _, r in if r != nil { sheet = .send } }
             .onChange(of: model.agentTransactionHash) { _, hash in if hash != nil { page = .security } }
             #if os(macOS)
+            .onAppear { offerCountryNotice(); openRequestedNetwork() }
+            .onChange(of: acceptedTerms) { _, _ in offerCountryNotice() }
+            .onChange(of: sheet) { _, s in if s == nil { offerCountryNotice(); inviteIfReady() } }
+            .onChange(of: model.networkRequested) { _, _ in openRequestedNetwork() }
             // Once the node has caught up and this Mac is not registered, ask once.
             .onChange(of: node.voting) { _, _ in inviteIfReady() }
             .onChange(of: node.state) { _, _ in inviteIfReady() }
@@ -106,6 +110,15 @@ struct SimpleDashboard: View {
             case .assets: AssetsSheet(onSend: { t in model.sendToken = t; sheet = .send })
             case .call: CallSheet()
             case .connect: ConnectSheet()
+            case .countryNotice:
+                #if os(macOS)
+                CountryNotice {
+                    PresenceCountry.markNoticeSeen()
+                    sheet = nil
+                }
+                #else
+                EmptyView()
+                #endif
             case .votingInvite:
                 #if os(macOS)
                 VotingNodeInvite(join: {
@@ -137,8 +150,23 @@ struct SimpleDashboard: View {
     #endif
 
     #if os(macOS)
+    private func openRequestedNetwork() {
+        guard model.networkRequested else { return }
+        page = .network
+        model.networkRequested = false
+    }
+
+    private func offerCountryNotice() {
+        #if DEBUG
+        guard !DesignPreview.on else { return }
+        #endif
+        guard acceptedTerms >= Terms.version, sheet == nil, PresenceCountry.shouldShowNotice() else { return }
+        sheet = .countryNotice
+    }
+
     private func inviteIfReady() {
         guard !inviteAnswered, acceptedTerms >= Terms.version, sheet == nil, node.state == .running,
+              !PresenceCountry.shouldShowNotice(),
               node.candidate != nil, node.voting?.registered == false, model.registration == nil else { return }
         sheet = .votingInvite
     }
@@ -597,6 +625,9 @@ struct NetworkPage: View {
 
     var body: some View {
         VStack(spacing: 16) {
+            #if os(macOS)
+            LiveGlobeView()
+            #endif
             ForEach(model.scheduledUpgrades) { upgrade in
                 UpgradeNoticeCard(upgrade: upgrade)
             }

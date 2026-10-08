@@ -22,6 +22,10 @@ targets:
       - path: Sources
         excludes: ["**/.omc/**", ".omc/**"]
       - path: Resources
+        excludes: ["LiveGlobe"]
+        buildPhase: resources
+      - path: Resources/LiveGlobe
+        type: folder
         buildPhase: resources
       - Assets.xcassets
       - path: Generated/aether_ffi.swift
@@ -120,7 +124,7 @@ targets:
           set -euo pipefail
           DEST="$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/Explorer"
           mkdir -p "$DEST"
-          rsync -a --delete --exclude test/ --exclude package.json --exclude README.md \
+          /usr/bin/rsync -a --delete --exclude test/ --exclude package.json --exclude README.md \
             "$SRCROOT/../../apps/explorer/" "$DEST/"
   AetherWalletIOS:
     type: application
@@ -129,6 +133,10 @@ targets:
       - path: Sources
         excludes: ["**/.omc/**", ".omc/**"]
       - path: Resources
+        excludes: ["LiveGlobe"]
+        buildPhase: resources
+      - path: Resources/LiveGlobe
+        type: folder
         buildPhase: resources
       - Assets.xcassets
       - path: Generated/aether_ffi.swift
@@ -169,7 +177,7 @@ targets:
           set -euo pipefail
           DEST="$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/Explorer"
           mkdir -p "$DEST"
-          rsync -a --delete --exclude test/ --exclude package.json --exclude README.md \
+          /usr/bin/rsync -a --delete --exclude test/ --exclude package.json --exclude README.md \
             "$SRCROOT/../../apps/explorer/" "$DEST/"
   # The product QA renderer (scripts/wallet-screens.sh): every screen and sheet
   # to PNG with the design-preview sample data. Its own app and bundle id; built
@@ -184,6 +192,10 @@ targets:
       - path: Sources
         excludes: ["**/.omc/**", ".omc/**", "AetherWalletApp.swift"]
       - path: Resources
+        excludes: ["LiveGlobe"]
+        buildPhase: resources
+      - path: Resources/LiveGlobe
+        type: folder
         buildPhase: resources
       - Assets.xcassets
       - path: Generated/aether_ffi.swift

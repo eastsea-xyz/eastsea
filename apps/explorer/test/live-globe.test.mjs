@@ -7,14 +7,17 @@ import { normalizePresence } from '../live-globe/data.js';
 
 const source = new URL('../live-globe/', import.meta.url);
 const site = new URL('../../../site/live-globe/', import.meta.url);
+const wallet = new URL('../../../apps/wallet/Resources/LiveGlobe/live-globe/', import.meta.url);
 const root = new URL('../../../', import.meta.url);
 
-test('site and explorer deploy the identical self-contained globe without a build', async () => {
+test('site, explorer and wallet deploy the identical self-contained globe without a build', async () => {
   const names = (await readdir(source)).sort();
-  assert.deepEqual((await readdir(site)).sort(), names);
-  for (const name of names) {
-    const [a, b] = await Promise.all([readFile(new URL(name, source)), readFile(new URL(name, site))]);
-    assert.ok(a.equals(b), `${name}: run node scripts/sync-live-globe.mjs`);
+  for (const destination of [site, wallet]) {
+    assert.deepEqual((await readdir(destination)).sort(), names);
+    for (const name of names) {
+      const [a, b] = await Promise.all([readFile(new URL(name, source)), readFile(new URL(name, destination))]);
+      assert.ok(a.equals(b), `${destination.pathname}${name}: run node scripts/sync-live-globe.mjs`);
+    }
   }
   assert.ok((await readFile(new URL('tokens.css', source))).equals(await readFile(new URL('site/tokens.css', root))));
 });
@@ -63,12 +66,29 @@ test('today’s actual snapshot preserves Mac, overlapping role and standby-key 
   for (const key of ['bg', 'accent', 'success']) assert.ok(css.includes(brand.color.dark[key].value));
 });
 
-test('the old 24-Mac illustrative example is retained only in the test tree', async () => {
+test('the 24-Mac illustrative example is bundled only for explicit screenshot fixtures', async () => {
   const example = JSON.parse(await readFile(new URL('fixtures/presence-example.json', import.meta.url), 'utf8'));
   const clean = normalizePresence(example);
   assert.equal(clean.total, 24);
   assert.equal(new Set(clean.regions.map(region => region.continent)).size, 6);
   assert.ok(!(await readdir(source)).includes('presence-example.json'));
+  const bundled = await readFile(new URL('apps/wallet/Resources/LiveGlobe/presence-example.json', root));
+  assert.ok(bundled.equals(await readFile(new URL('fixtures/presence-example.json', import.meta.url))));
+});
+
+test('wallet entry CSP denies connections and includes only local styles and ES modules', async () => {
+  const html = await readFile(new URL('apps/wallet/Resources/LiveGlobe/index.html', root), 'utf8');
+  assert.ok(html.includes("default-src 'none'"));
+  assert.ok(html.includes("connect-src 'none'"));
+  assert.ok(html.includes("script-src 'self'"));
+  assert.ok(html.includes("script-src-attr 'none'"));
+  assert.ok(html.includes("style-src 'self'"));
+  assert.ok(html.includes('type="module" src="./wallet-host.js"'));
+  const references = [...html.matchAll(/(?:src|href)="([^"]+)"/g)].map(match => match[1]);
+  assert.deepEqual(references, ['./live-globe/tokens.css', './live-globe/globe.css', './wallet.css', './wallet-host.js']);
+  assert.ok(!/<script[^>]*>(?!\s*<\/script>)/.test(html));
+  const entry = await readFile(new URL('apps/wallet/Resources/LiveGlobe/wallet-host.js', root), 'utf8');
+  assert.ok(!/fetch\s*\(|XMLHttpRequest|messageHandlers|webkit\.|location\.|localStorage|sessionStorage|cookie/.test(entry));
 });
 
 

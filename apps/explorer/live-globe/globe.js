@@ -18,6 +18,7 @@ const IDLE_DELAY = 10_000;
 const COLORS = {
   sphere: '#071320', land: '#7CC4DC', coast: '#B7E2EF',
   'quality-start': '#7CC4DC', 'quality-end': '#5CCB98',
+  'quality-unknown': '#94A4B5',
 };
 
 function vector(longitude, latitude) {
@@ -180,7 +181,10 @@ function readColor(element, name) {
 
 function clamp(value, min, max) { return Math.max(min, Math.min(max, value)); }
 
-export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = () => {} } = {}) {
+export function createGlobe(canvas, {
+  seed, onSelect = () => {}, onVisibility = () => {},
+  paused: initiallyPaused = false, reducedMotion = false,
+} = {}) {
   const document = canvas.ownerDocument;
   const window = document.defaultView;
   const stage = canvas.parentElement || canvas;
@@ -248,7 +252,8 @@ export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = 
   let homeYaw = yaw, homePitch = pitch, centered = false, idleUntil = 0;
   let labels = { continents: {}, regions: {}, quality: 'Operator quality' }, visibilityKey = '';
   let unknownCount = 0;
-  let frame = 0, lastFrame = 0, paused = false, visible = true, destroyed = false;
+  let frame = 0, lastFrame = 0, paused = Boolean(initiallyPaused), visible = true, destroyed = false;
+  let hostReducedMotion = Boolean(reducedMotion);
   let staticMode = true, pointer = null;
 
   function releaseResources() {
@@ -322,8 +327,9 @@ export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = 
 
   function reconcile() {
     if (destroyed) return;
-    if (!motion.matches && !contextLost) ensureGL();
-    staticMode = motion.matches || contextLost || !resources;
+    const reduced = motion.matches || hostReducedMotion;
+    if (!reduced && !contextLost) ensureGL();
+    staticMode = reduced || contextLost || !resources;
     canvas.hidden = staticMode;
     map.hidden = !staticMode;
     canvas.style.display = staticMode ? 'none' : original.display;
@@ -336,15 +342,17 @@ export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = 
     if (active()) frame = window.requestAnimationFrame(animate);
   }
 
-  function drawWebGL() {
-    if (!resources || contextLost || destroyed || !visible || document.hidden) return;
+  function drawWebGL(force = false) {
+    if (!resources || contextLost || destroyed || (!force && (!visible || document.hidden))) return false;
     const cy = Math.cos(yaw), sy = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
     rotation[0] = cy; rotation[1] = sp * sy; rotation[2] = -cp * sy;
     rotation[3] = 0; rotation[4] = cp; rotation[5] = sp;
     rotation[6] = sy; rotation[7] = -sp * cy; rotation[8] = cp * cy;
     gl.viewport(0, 0, canvas.width, canvas.height);
     gl.clear(gl.COLOR_BUFFER_BIT);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    // Shaders emit straight RGB; retain source-over coverage alpha so the
+    // canvas compositor receives valid premultiplied pixels, not alpha squared.
+    gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     const sphere = resources.sphere;
     gl.useProgram(sphere.handle);
     gl.uniform2fv(sphere.u_scale, scale);
@@ -405,10 +413,12 @@ export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = 
     }
 
     positionMarkers();
+    if (force) gl.flush();
+    return true;
   }
 
-  function drawMap() {
-    if (!context || destroyed || !visible || document.hidden) return;
+  function drawMap(force = false) {
+    if (!context || destroyed || (!force && (!visible || document.hidden))) return false;
     const mapWidth = Math.min(width * 0.92, height * 1.5);
     const mapHeight = mapWidth / 2;
     const left = (width - mapWidth) / 2, top = (height - mapHeight) / 2;
@@ -462,6 +472,7 @@ export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = 
     context.stroke();
     context.globalAlpha = 1;
     positionMarkers();
+    return true;
   }
 
   function positionMarkers() {
@@ -539,7 +550,9 @@ export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = 
       const name = labels.regions?.[marker.key] || labels.continents[marker.continent] || marker.continent;
       const text = `${name} ${marker.count.toLocaleString()}`;
       marker.label.textContent = text;
-      marker.button.setAttribute('aria-label', `${text} · ${labels.quality} ${(marker.score * 100).toFixed(1)} / 100`);
+      const quality = labels.qualityAvailable === false ? labels.qualityUnavailable
+        : `${labels.quality} ${(marker.score * 100).toFixed(1)} / 100`;
+      marker.button.setAttribute('aria-label', `${text} · ${quality}`);
     }
     measureLabels();
   }
@@ -557,10 +570,10 @@ export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = 
     }
   }
 
-  function draw() { if (staticMode) drawMap(); else drawWebGL(); }
+  function draw(force = false) { return staticMode ? drawMap(force) : drawWebGL(force); }
 
-  function resize() {
-    if (destroyed) return;
+  function resize({ force = false } = {}) {
+    if (destroyed) return false;
     const bounds = (staticMode ? map : canvas).getBoundingClientRect();
     width = Math.max(1, bounds.width || stage.clientWidth || 1);
     height = Math.max(1, bounds.height || stage.clientHeight || width);
@@ -575,12 +588,13 @@ export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = 
     colors = { sphere: readColor(canvas, 'sphere'), land: readColor(canvas, 'land'), coast: readColor(canvas, 'coast') };
     const start = readColor(canvas, 'quality-start').css;
     const end = readColor(canvas, 'quality-end').css;
+    const unknown = readColor(canvas, 'quality-unknown').css;
     for (const marker of markers) {
-      marker.button.style.setProperty('--marker-color', qualityColor(marker.score, start, end));
-      marker.button.style.setProperty('--marker-intensity', String(.65 + .35 * marker.score));
+      marker.button.style.setProperty('--marker-color', labels.qualityAvailable === false ? unknown : qualityColor(marker.score, start, end));
+      marker.button.style.setProperty('--marker-intensity', String(labels.qualityAvailable === false ? .8 : .65 + .35 * marker.score));
     }
     measureLabels();
-    draw();
+    return draw(force);
   }
 
   function writeArcPoint(offset, from, to, angle, denominator, progress, phase) {
@@ -593,9 +607,18 @@ export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = 
     arcData[offset + 3] = progress; arcData[offset + 4] = phase;
   }
 
-  function update(model) {
+  function update(model, { reset = false } = {}) {
     if (destroyed) return;
     const clean = normalizePresence(model);
+    if (reset) {
+      yaw = homeYaw = INITIAL_YAW;
+      pitch = homePitch = INITIAL_PITCH;
+      centered = false;
+      time = lastFrame = idleUntil = 0;
+      visibilityKey = '';
+      if (pointer && canvas.hasPointerCapture(pointer.id)) canvas.releasePointerCapture(pointer.id);
+      pointer = null;
+    }
     const activeKeys = new Set(clean.regions.map(regionKey));
     for (let i = markers.length - 1; i >= 0; i--) {
       const marker = markers[i];
@@ -625,6 +648,7 @@ export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = 
       centered = true;
     }
     for (const marker of markers) {
+      if (!marker.count) marker.button.hidden = true;
       marker.button.style.setProperty('--marker-size', `${Math.min(60, 16 + Math.sqrt(marker.count) * 8)}px`);
       marker.button.dataset.count = String(marker.count);
       marker.button.dataset.quality = String(marker.score);
@@ -719,13 +743,17 @@ export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = 
 
   return {
     update,
-    setLabels(next) { labels = next; labelMarkers(); draw(); },
+    setLabels(next) { labels = next; labelMarkers(); resize(); },
     setHighlight(code, { interaction = true } = {}) {
       if (interaction) interact();
       for (const marker of markers) marker.button.dataset.active = String(marker.key === code || marker.continent === code);
     },
     setPaused(value) { paused = Boolean(value); reconcile(); },
+    setReducedMotion(value) { hostReducedMotion = Boolean(value); reconcile(); },
     resize,
+    // Screenshot fixtures can draw one still frame without changing lifecycle
+    // state. This does not start animation or make an offscreen view visible.
+    captureFrame() { return resize({ force: true }); },
     destroy() {
       if (destroyed) return;
       destroyed = true;

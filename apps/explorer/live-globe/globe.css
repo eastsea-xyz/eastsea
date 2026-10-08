@@ -5,6 +5,7 @@
   --lg-coast: #C9EDFA;
   --lg-quality-start: #7CC4DC;
   --lg-quality-end: #5CCB98;
+  --lg-quality-unknown: #94A4B5;
   --lg-marker-text: #F1F7F8;
   color: var(--c-text);
   font: 400 16px/1.6 var(--font-text, system-ui);
@@ -109,6 +110,7 @@
 .lg-art-caption { margin: 12px 0 0; max-width: 65ch; }
 .lg-art-caption-line, .lg-art-legend { margin: 0; }
 .lg-art-legend { margin-top: 12px; max-width: 360px; }
+.lg-quality-status { margin: 12px 0 0; }
 .lg-quality-gradient, .lg-quality-density { display: block; height: 8px; background: linear-gradient(to right, var(--lg-quality-start), var(--lg-quality-end)); }
 .lg-quality-gradient { border: 1px solid var(--c-line-strong); }
 .lg-quality-labels { display: flex; justify-content: space-between; gap: 16px; margin: 4px 0 0; font-size: 12px; }
@@ -167,4 +169,7 @@
   .lg-canvas { cursor: default; }
   .lg-marker-orb { animation: none; }
 }
+.live-globe[data-reduced-motion="true"] .lg-stage { aspect-ratio: 1.8; }
+.live-globe[data-reduced-motion="true"] .lg-marker-orb { animation: none; }
 .lg-stage[data-crowded-map="true"] { aspect-ratio: 1; }
+.live-globe[data-reduced-motion="true"] .lg-stage[data-crowded-map="true"] { aspect-ratio: 1; }

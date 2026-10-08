@@ -1,5 +1,5 @@
 import { CONTINENTS, continentTotals, normalizePresence, regionKey, requestPresence } from './data.js';
-import { qualityMean, qualityDensity, QUALITY_BINS } from './quality.js';
+import { qualityMean, qualityDensity, QUALITY_BINS, QUALITY_VERSION } from './quality.js';
 import { createGlobe } from './globe.js';
 
 const COPY = {
@@ -15,7 +15,14 @@ const COPY = {
     artwork: 'Dot size = Macs connected; countries at 3 Macs, otherwise continents',
     qualityNew: 'New', qualitySteady: 'Long, steady operation',
     quality: 'Operation quality', spread: 'spread',
+    qualityUnavailable: 'Operation quality unavailable · this node does not provide measured quality evidence yet.',
+    canvasUnavailable: 'Globe of country and continent groups. Complete counts are in the list beside it. Operation quality is unavailable.',
     validators: 'Validators', wallet: 'Wallet nodes',
+    candidates: 'Candidate nodes', followers: 'Follower nodes',
+    hostLive: 'Live snapshot · from your Mac’s node',
+    hostFixture: 'Screenshot fixture · not live',
+    hostUnavailable: 'Live counts are unavailable from this Mac’s node.',
+    hostStale: 'Last received snapshot · your node’s latest refresh failed.',
     reserve: 'Reserve keys', standby: 'standby', seated: 'seated',
     visibility: { front: 'Front side of globe', back: 'Far side of globe · highlighted here', unknown: 'Continent unknown · list only', empty: '' },
     drag: 'Drag horizontally or use arrow keys to rotate.',
@@ -38,7 +45,14 @@ const COPY = {
     artwork: '점 크기 = 연결된 Mac 수, 3대 이상은 국가별 · 나머지는 대륙별',
     qualityNew: '새로 합류', qualitySteady: '오래·성실하게 운영',
     quality: '운영 품질', spread: '분포',
+    qualityUnavailable: '운영 품질 미상 · 이 노드가 아직 측정된 품질 근거를 제공하지 않습니다.',
+    canvasUnavailable: '국가와 대륙별 연결 수를 표시한 지구본. 모든 수치는 옆 목록에서 확인할 수 있습니다. 운영 품질은 제공되지 않습니다.',
     validators: '검증자', wallet: '지갑 노드',
+    candidates: '후보 노드', followers: '팔로어 노드',
+    hostLive: '실시간 현황 · 이 Mac의 노드에서 제공',
+    hostFixture: '스크린샷 예시 데이터 · 실시간 아님',
+    hostUnavailable: '이 Mac의 노드에서 연결 수를 불러올 수 없습니다.',
+    hostStale: '마지막으로 받은 현황 · 노드의 새로고침에 실패했습니다.',
     reserve: '예비 키', standby: '대기', seated: '참여',
     visibility: { front: '지구본 앞면', back: '지구본 뒷면 · 목록에서 확인', unknown: '대륙 미상 · 목록에서만 표시', empty: '' },
     drag: '가로로 끌거나 방향키로 지구본을 돌려 보세요.',
@@ -49,7 +63,101 @@ const COPY = {
     continents: ['아프리카', '아시아', '유럽', '북아메리카', '남아메리카', '오세아니아', '남극', '지역 미상'],
     country: 'Mac의 지역 설정에서 가져온 국가',
   },
+  ja: {
+    caption: 'このノードから見えるMac',
+    loading: '接続状況を読み込み中…',
+    live: 'ライブ状況 · 10秒ごとに更新',
+    fixture: '今日の実際の構成（ライブではありません）',
+    unavailable: '接続数を取得できません。このノードはまだ接続状況に対応していない可能性があります。10秒ごとに再試行します。',
+    stale: '最後に受信した状況 · 更新に失敗しました。10秒ごとに再試行します。',
+    empty: 'このノードから見えるMacは現在ありません。',
+    privacy: '大陸はホームリレーに基づきます。国はMacの地域設定から取得し、初回起動時に通知して既定で共有します。設定でオフにできます。同じ国のMacが3台以上のときに国を表示します。',
+    artwork: '点の大きさ = 接続されたMacの数。3台以上は国別、それ以外は大陸別',
+    qualityNew: '新規参加', qualitySteady: '長期の安定した運用',
+    quality: '運用品質', spread: '分布',
+    qualityUnavailable: '運用品質は不明 · このノードは測定された品質の根拠をまだ提供していません。',
+    canvasUnavailable: '国と大陸ごとの接続数を表示する地球儀。すべての数値は隣の一覧にあります。運用品質は利用できません。',
+    validators: '検証者', wallet: 'ウォレットノード',
+    candidates: '候補ノード', followers: '追従ノード',
+    hostLive: 'ライブ状況 · このMacのノードから取得',
+    hostFixture: 'スクリーンショット用のサンプル · ライブではありません',
+    hostUnavailable: 'このMacのノードから接続数を取得できません。',
+    hostStale: '最後に受信した状況 · ノードの更新に失敗しました。',
+    reserve: '予備キー', standby: '待機', seated: '参加',
+    visibility: { front: '地球儀の手前側', back: '地球儀の裏側 · 一覧に表示', unknown: '大陸不明 · 一覧のみ', empty: '' },
+    drag: '横にドラッグするか、矢印キーで回転できます。',
+    map: '静止地図 · 視差効果を減らす設定またはWebGL非対応',
+    pause: '地球儀を停止', resume: '地球儀を再開',
+    canvas: '国と大陸ごとの接続数を運用品質の色で表示する地球儀。すべての数値と品質分布は隣の一覧にあります。',
+    list: '国と大陸ごとのMac数',
+    continents: ['アフリカ', 'アジア', 'ヨーロッパ', '北アメリカ', '南アメリカ', 'オセアニア', '南極', '地域不明'],
+    country: 'Macの地域設定から取得した国',
+  },
+  'zh-Hans': {
+    caption: '此节点可见的Mac',
+    loading: '正在读取连接情况…',
+    live: '实时快照 · 每10秒刷新',
+    fixture: '今天的实际配置（非实时）',
+    unavailable: '无法获取实时数量。此节点可能尚不支持连接情况。每10秒重试。',
+    stale: '上次收到的快照 · 最新刷新失败。每10秒重试。',
+    empty: '此节点目前看不到任何Mac。',
+    privacy: '大洲由所属中继决定。国家来自Mac的地区设置，默认开启，并在首次启动时告知。可在设置中关闭。同一国家至少有3台Mac时才显示国家。',
+    artwork: '点的大小 = 已连接的Mac数量；至少3台按国家显示，其余按大洲显示',
+    qualityNew: '新加入', qualitySteady: '长期稳定运行',
+    quality: '运行质量', spread: '分布',
+    qualityUnavailable: '运行质量不可用 · 此节点尚未提供测量的质量依据。',
+    canvasUnavailable: '按国家和大洲显示连接数量的地球仪。完整数量见旁边的列表。运行质量不可用。',
+    validators: '验证者', wallet: '钱包节点',
+    candidates: '候选节点', followers: '跟随节点',
+    hostLive: '实时快照 · 来自此Mac的节点',
+    hostFixture: '截图示例数据 · 非实时',
+    hostUnavailable: '无法从此Mac的节点获取实时数量。',
+    hostStale: '上次收到的快照 · 节点的最新刷新失败。',
+    reserve: '备用密钥', standby: '待命', seated: '参与',
+    visibility: { front: '地球仪正面', back: '地球仪背面 · 已在列表中标示', unknown: '大洲未知 · 仅在列表中显示', empty: '' },
+    drag: '水平拖动或使用方向键旋转。',
+    map: '静态地图 · 已启用减少动态效果或不支持WebGL',
+    pause: '暂停地球仪', resume: '继续地球仪',
+    canvas: '按运行质量着色的国家和大洲地球仪。完整数量和质量分布见旁边的列表。',
+    list: '各国家和大洲的Mac数量',
+    continents: ['非洲', '亚洲', '欧洲', '北美洲', '南美洲', '大洋洲', '南极洲', '地区未知'],
+    country: '来自Mac地区设置的国家',
+  },
+  es: {
+    caption: 'Macs que este nodo puede ver',
+    loading: 'Buscando una instantánea en directo…',
+    live: 'Instantánea en directo · se actualiza cada 10 segundos',
+    fixture: 'Configuración real de hoy (no está en directo)',
+    unavailable: 'Los recuentos en directo no están disponibles. Puede que este nodo aún no admita presencia. Se reintenta cada 10 segundos.',
+    stale: 'Última instantánea recibida · falló la última actualización. Se reintenta cada 10 segundos.',
+    empty: 'Este nodo no ve ningún Mac en este momento.',
+    privacy: 'Los continentes siguen el relé de origen. El país se obtiene de la región del Mac, se comparte por defecto y se avisa en el primer inicio. Se puede desactivar en Ajustes. Solo se muestran países con 3 Macs o más.',
+    artwork: 'Tamaño del punto = Macs conectados; por país a partir de 3 Macs, por continente en los demás casos',
+    qualityNew: 'Nuevo', qualitySteady: 'Funcionamiento prolongado y estable',
+    quality: 'Calidad de funcionamiento', spread: 'distribución',
+    qualityUnavailable: 'Calidad no disponible · este nodo aún no proporciona datos de calidad medidos.',
+    canvasUnavailable: 'Globo de grupos por país y continente. La lista contigua muestra todos los recuentos. La calidad no está disponible.',
+    validators: 'Validadores', wallet: 'Nodos de cartera',
+    candidates: 'Nodos candidatos', followers: 'Nodos seguidores',
+    hostLive: 'Instantánea en directo · desde el nodo de tu Mac',
+    hostFixture: 'Datos de ejemplo para capturas · no están en directo',
+    hostUnavailable: 'Los recuentos en directo del nodo de este Mac no están disponibles.',
+    hostStale: 'Última instantánea recibida · falló la última actualización del nodo.',
+    reserve: 'Claves de reserva', standby: 'en espera', seated: 'activas',
+    visibility: { front: 'Cara visible del globo', back: 'Cara oculta del globo · destacada en la lista', unknown: 'Continente desconocido · solo en la lista', empty: '' },
+    drag: 'Arrastra horizontalmente o usa las flechas para girar.',
+    map: 'Mapa estático · movimiento reducido o WebGL no disponible',
+    pause: 'Pausar el globo', resume: 'Reanudar el globo',
+    canvas: 'Globo de grupos por país y continente, coloreados según la calidad de funcionamiento. La lista contigua muestra todos los recuentos y distribuciones de calidad.',
+    list: 'Macs por país y continente',
+    continents: ['África', 'Asia', 'Europa', 'América del Norte', 'América del Sur', 'Oceanía', 'Antártida', 'Región desconocida'],
+    country: 'País de la región del Mac',
+  },
 };
+
+function supportedLanguage(value) {
+  return typeof value === 'string' && Object.hasOwn(COPY, value) ? value : 'en';
+}
 
 function element(doc, tag, className, text) {
   const el = doc.createElement(tag);
@@ -70,14 +178,18 @@ function ephemeralSeed() {
 /** A shared, dependency-free view. No untrusted response is placed in HTML. */
 export function mountLiveGlobe(root, {
   endpoint, fixture = false, lang = 'en', seed = ephemeralSeed(),
+  host = false, paused: initiallyPaused = false, reducedMotion = false,
   fetch = (...args) => globalThis.fetch(...args),
 } = {}) {
   const doc = root.ownerDocument;
   const win = doc.defaultView;
-  let language = lang === 'ko' ? 'ko' : 'en';
+  let language = supportedLanguage(lang);
   let model = null;
   let state = 'loading';
   let paused = false;
+  let hostPaused = Boolean(initiallyPaused);
+  let hostReducedMotion = Boolean(reducedMotion);
+  let evidenceAvailable = true;
   let destroyed = false;
   let timer = null;
   let controller = null;
@@ -107,9 +219,10 @@ export function mountLiveGlobe(root, {
   const legendLabels = element(doc, 'p', 'lg-quality-labels');
   const newLabel = element(doc, 'span');
   const steadyLabel = element(doc, 'span');
+  const qualityStatus = element(doc, 'p', 'lg-quality-status');
   legendLabels.append(newLabel, steadyLabel);
   legend.append(gradient, legendLabels);
-  artCaption.append(artwork, legend);
+  artCaption.append(artwork, legend, qualityStatus);
   figure.append(stage, controls, artCaption);
 
   const summary = element(doc, 'div', 'lg-summary');
@@ -174,7 +287,10 @@ export function mountLiveGlobe(root, {
   summary.append(caption, count, status, date, roleSummary, list, privacy);
   root.replaceChildren(figure, summary);
   let globe;
-  globe = createGlobe(canvas, { seed, onSelect: highlight, onVisibility: updateVisibility });
+  globe = createGlobe(canvas, {
+    seed, onSelect: highlight, onVisibility: updateVisibility,
+    paused: hostPaused, reducedMotion: hostReducedMotion,
+  });
 
   function qualityStrip(tag = 'dd') {
     const strip = element(doc, tag, 'lg-quality-strip');
@@ -186,8 +302,13 @@ export function mountLiveGlobe(root, {
   }
 
   function updateStrip(strip, region) {
-    strip.hidden = !region?.count;
-    if (!region?.count) return;
+    strip.hidden = !evidenceAvailable || !region?.count;
+    if (strip.hidden) {
+      strip.removeAttribute('aria-label');
+      strip.children[0].style.maskImage = '';
+      strip.children[1].style.left = '';
+      return;
+    }
     const mean = qualityMean(region.quality, region.count);
     const bins = region.quality.histogram;
     const lower = bins.findIndex(value => value > 0) / QUALITY_BINS * 100;
@@ -226,8 +347,10 @@ export function mountLiveGlobe(root, {
     if (model) {
       const numbers = new Intl.NumberFormat(language);
       const amount = numbers.format(Number(item.row.dataset.count));
-      const population = language === 'ko' ? `Mac ${amount}대` : `${amount} Macs`;
-      item.button.setAttribute('aria-label', `${item.button.textContent}, ${population}, ${copy.quality} ${(Number(item.row.dataset.quality) * 100).toFixed(1)} / 100${position === 'empty' ? '' : `, ${copy.visibility[position]}`}`);
+      const population = language === 'ko' ? `Mac ${amount}대` : language === 'ja' ? `Mac ${amount}台`
+        : language === 'zh-Hans' ? `${amount}台Mac` : `${amount} Macs`;
+      const quality = evidenceAvailable ? `${copy.quality} ${(Number(item.row.dataset.quality) * 100).toFixed(1)} / 100` : copy.qualityUnavailable;
+      item.button.setAttribute('aria-label', `${item.button.textContent}, ${population}, ${quality}${position === 'empty' ? '' : `, ${copy.visibility[position]}`}`);
     } else item.button.removeAttribute('aria-label');
   }
 
@@ -244,27 +367,38 @@ export function mountLiveGlobe(root, {
     const copy = COPY[language];
     const numbers = new Intl.NumberFormat(language);
     root.lang = language;
+    root.dataset.host = String(host);
+    root.dataset.reducedMotion = String(motion.matches || hostReducedMotion);
+    root.dataset.evidenceAvailable = String(evidenceAvailable);
     caption.textContent = copy.caption;
-    canvas.setAttribute('aria-label', copy.canvas);
+    canvas.setAttribute('aria-label', evidenceAvailable ? copy.canvas : copy.canvasUnavailable);
     list.setAttribute('aria-label', copy.list);
     privacy.textContent = copy.privacy;
     artwork.textContent = copy.artwork;
     newLabel.textContent = copy.qualityNew;
     steadyLabel.textContent = copy.qualitySteady;
-    pause.textContent = paused ? copy.resume : copy.pause;
-    pause.setAttribute('aria-pressed', String(paused));
-    const isMap = motion.matches || canvas.dataset.renderer === 'map';
+    legend.hidden = !evidenceAvailable;
+    qualityStatus.hidden = evidenceAvailable;
+    qualityStatus.textContent = copy.qualityUnavailable;
+    pause.textContent = paused || hostPaused ? copy.resume : copy.pause;
+    pause.setAttribute('aria-pressed', String(paused || hostPaused));
+    pause.disabled = hostPaused;
+    const isMap = motion.matches || hostReducedMotion || canvas.dataset.renderer === 'map';
     pause.hidden = isMap;
     interaction.textContent = isMap ? copy.map : copy.drag;
-    status.textContent = copy[state];
+    status.textContent = host && ['live', 'fixture', 'unavailable', 'stale'].includes(state)
+      ? copy[`host${state[0].toUpperCase()}${state.slice(1)}`] : copy[state];
     status.dataset.state = state;
-    date.hidden = state !== 'fixture';
+    date.hidden = state !== 'fixture' || host;
     count.textContent = model ? numbers.format(model.total) : '—';
     roleSummary.hidden = !model;
+    roleSummary.textContent = '';
     if (model) {
       const role = (label, item) => `${label} ${numbers.format(item.count)}`;
       const reserve = model.reserve_keys;
-      roleSummary.textContent = `${role(copy.validators, model.roles.validator)} · ${role(copy.wallet, model.roles.wallet)} · ${copy.reserve} ${numbers.format(reserve.standby + reserve.seated)} (${copy.standby} ${numbers.format(reserve.standby)} / ${copy.seated} ${numbers.format(reserve.seated)})`;
+      const extraRoles = host ? ` · ${role(copy.candidates, model.roles.candidate)} · ${role(copy.followers, model.roles.follower)}` : '';
+      const reserveSummary = host && !evidenceAvailable ? '' : ` · ${copy.reserve} ${numbers.format(reserve.standby + reserve.seated)} (${copy.standby} ${numbers.format(reserve.standby)} / ${copy.seated} ${numbers.format(reserve.seated)})`;
+      roleSummary.textContent = `${role(copy.validators, model.roles.validator)} · ${role(copy.wallet, model.roles.wallet)}${extraRoles}${reserveSummary}`;
     }
     const totals = new Map((model ? continentTotals(model) : []).map(item => [item.continent, item]));
     let countries;
@@ -329,6 +463,8 @@ export function mountLiveGlobe(root, {
       continents: Object.fromEntries(CONTINENTS.map((code, index) => [code, copy.continents[index]])),
       regions: regionLabels,
       quality: copy.quality,
+      qualityAvailable: evidenceAvailable,
+      qualityUnavailable: copy.qualityUnavailable,
     });
   }
 
@@ -347,7 +483,8 @@ export function mountLiveGlobe(root, {
     controller = null;
   }
 
-  function canPoll() { return !destroyed && !doc.hidden && visible; }
+  // A native host owns its RPC lifecycle. Even fixture mode must not fetch.
+  function canPoll() { return !host && !destroyed && !doc.hidden && visible; }
 
   async function poll() {
     if (!canPoll() || controller) return;
@@ -387,8 +524,9 @@ export function mountLiveGlobe(root, {
     if (canPoll() && (!fixture || !model)) void poll();
   }
   pause.addEventListener('click', () => {
+    if (hostPaused) return;
     paused = !paused;
-    globe.setPaused(paused);
+    globe.setPaused(paused || hostPaused);
     text();
   });
   const onMotion = () => text();
@@ -405,10 +543,75 @@ export function mountLiveGlobe(root, {
     intersection.observe(root);
   }
   text();
-  if (visible) void poll();
+  if (!host && visible) void poll();
 
   return {
-    setLanguage(next) { language = next === 'ko' ? 'ko' : 'en'; text(); },
+    setLanguage(next) { if (!destroyed) { language = supportedLanguage(next); text(); } },
+    /** The native bridge sends only aggregate presence, never RPC URLs or records. */
+    update(snapshot) {
+      if (!host || destroyed) return false;
+      try { apply(snapshot); return true; }
+      catch { state = model ? 'stale' : 'unavailable'; text(); return false; }
+    },
+    reset() {
+      if (!host || destroyed) return false;
+      stop();
+      model = null;
+      state = 'loading';
+      highlighted = null;
+      visibility.clear();
+      for (const code of CONTINENTS) visibility.set(code, 'empty');
+      // A valid zero aggregate clears renderer geometry without presenting an
+      // empty network as a received snapshot. The displayed model stays null.
+      globe.update({
+        schema_version: 3, scope: 'node', quality_version: QUALITY_VERSION,
+        total: 0, roles: {
+          validator: { count: 0 }, wallet: { count: 0 },
+          candidate: { count: 0 }, follower: { count: 0 },
+        },
+        versions: {}, reserve_keys: { standby: 0, seated: 0 },
+        regions: [], recent_blocks: [],
+      }, { reset: true });
+      text();
+      return true;
+    },
+    captureFrame() {
+      return host && !destroyed ? globe.captureFrame() : false;
+    },
+    configure(next = {}) {
+      if (!host || destroyed || !next || typeof next !== 'object' || Array.isArray(next)) return false;
+      const values = {};
+      for (const key of ['paused', 'reducedMotion', 'theme', 'lang', 'state', 'fixture', 'evidenceAvailable']) {
+        const field = Object.getOwnPropertyDescriptor(next, key);
+        if (!field) continue;
+        if (!Object.hasOwn(field, 'value')) return false;
+        values[key] = field.value;
+      }
+      for (const key of ['paused', 'reducedMotion', 'fixture', 'evidenceAvailable']) {
+        if (Object.hasOwn(values, key) && typeof values[key] !== 'boolean') return false;
+      }
+      if (Object.hasOwn(values, 'theme') && !['light', 'dark'].includes(values.theme)) return false;
+      if (Object.hasOwn(values, 'lang') && !Object.hasOwn(COPY, values.lang)) return false;
+      if (Object.hasOwn(values, 'state') && !['loading', 'unavailable', 'stale'].includes(values.state)) return false;
+      if (Object.hasOwn(values, 'paused')) hostPaused = values.paused;
+      if (Object.hasOwn(values, 'reducedMotion')) hostReducedMotion = values.reducedMotion;
+      if (Object.hasOwn(values, 'lang')) language = values.lang;
+      if (Object.hasOwn(values, 'evidenceAvailable')) evidenceAvailable = values.evidenceAvailable;
+      if (Object.hasOwn(values, 'fixture')) {
+        fixture = values.fixture;
+        if (model) state = fixture ? 'fixture' : model.total === 0 ? 'empty' : 'live';
+      }
+      if (Object.hasOwn(values, 'state')) state = values.state === 'stale' && !model ? 'unavailable' : values.state;
+      if (Object.hasOwn(values, 'theme')) {
+        doc.documentElement.dataset.theme = values.theme;
+        doc.documentElement.style.colorScheme = values.theme;
+      }
+      globe.setPaused(paused || hostPaused);
+      globe.setReducedMotion(hostReducedMotion);
+      globe.resize();
+      text();
+      return true;
+    },
     destroy() {
       destroyed = true;
       stop();

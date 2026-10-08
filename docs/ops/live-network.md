@@ -2,7 +2,8 @@
 
 `aether_presence` answers how many distinct node keys this node has heard from
 recently. The explorer polls it every 10 seconds; a wallet with a local node
-uses the same read for its network line. The UI says **what this node can see**.
+uses the same read for its Network globe and menu-panel count. The UI says
+**what this node can see**.
 This is an observation, independent of consensus, validator votes and hourly
 candidate beacons. It makes no chain writes and uses no central counting service.
 
@@ -97,6 +98,15 @@ public read gateway cannot change it. Settings refreshes unattended arguments
 and restarts the supervisor so a later role change cannot restore an old opt-in.
 Already propagated country records can remain visible until replaced or their
 180-second TTL expires.
+
+The wallet's globe receives only the native aggregate projection: schema-1
+individual fields stay outside WebKit, and countries are disclosed only at k≥3
+within a relay continent. Schema-1 quality and reserve seating are unavailable;
+the wallet displays their absence instead of estimating them from signed pings.
+Validated schema-3 quality summaries enable the shared gradient and region strips.
+The globe page itself cannot connect to any RPC or external asset. See
+`docs/design/38-live-globe.md` for the bundled origin, country notice and fixture
+renderer contract.
 
 The binary advertises marketing version `0.7.4`; release builders can override
 it with compile-time `AETHER_VERSION`. Keep that value aligned with the release.

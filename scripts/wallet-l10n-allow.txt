@@ -42,6 +42,7 @@ text: a new contract
 text: local devnet keys
 text: missing identity
 text: chain id
+text: what this node can see     # Exact presence schema-1 wire scope, never user-facing copy
 text: Sent \(Wei.format(wei)) \(Brand.networkCoinTicker) (nonce \(prepared.nonce))
 text: Paid \(recipients.count) recipients \(Wei.format(wei)) \(Brand.networkCoinTicker) each with one signature (nonce \(prepared.nonce))
 #

@@ -3,6 +3,7 @@ import AppKit
 import Darwin
 import Sparkle
 import SwiftUI
+import WebKit
 
 /// The product QA renderer (scripts/wallet-screens.sh): every screen and sheet
 /// of the Mac wallet drawn to PNG with the design-preview sample data, in the
@@ -154,6 +155,7 @@ final class Renderer {
             }) { ConnectSheet() }
             page("sheet-terms", dark, width: 460, pad: false) { TermsSheet(accept: {}).frame(height: 900) }
             page("sheet-voting-invite", dark, width: 440, pad: false) { VotingNodeInvite(join: {}, later: {}) }
+            page("sheet-country-notice", dark, width: 440, pad: false) { CountryNotice(onDone: {}) }
             stagePage("sheet-site-warning", dark, width: 460, pad: false) { s in
                 SiteWarningSheet(warning: .init(url: URL(string: "https://eastsea-wallet.xyz")!, host: "eastsea-wallet.xyz",
                                                 lookalike: "eastsea.xyz", punycode: true), browser: s.browser)
@@ -210,7 +212,9 @@ final class Renderer {
 
     // MARK: drawing
 
-    private func wanted(_ name: String) -> Bool { only.map { name.hasPrefix($0) } ?? true }
+    private func wanted(_ name: String) -> Bool {
+        only.map { $0.split(separator: ",").contains { name.hasPrefix(String($0)) } } ?? true
+    }
 
     private func file(_ name: String, _ dark: Bool) -> URL {
         out.appendingPathComponent("\(name)-\(lang)-\(dark ? "dark" : "light").png")
@@ -275,6 +279,19 @@ final class Renderer {
             win.setContentSize(NSSize(width: width, height: min(max(fit.height, 40), 6_000)))
             settle(0.3)
         }
+        // WebKit composites outside NSView.cacheDisplay. Wait for the actual
+        // bundled ES modules and native fixture update before taking its image.
+        guard waitForGlobe(in: host) else {
+            print("globe fixture did not become ready: \(name)")
+            failed += 1
+            win.orderOut(nil)
+            win.contentView = nil
+            return
+        }
+        if height == nil {
+            win.setContentSize(NSSize(width: width, height: min(max(host.fittingSize.height, 40), 6_000)))
+            settle(0.2)
+        }
         // A whole window (sidebar, toolbar, materials) is composited by the
         // window server, which a view's own cacheDisplay cannot draw: ask
         // the server for this process's own window. Pages draw themselves.
@@ -290,6 +307,29 @@ final class Renderer {
 
     private func settle(_ seconds: TimeInterval) {
         RunLoop.main.run(until: Date().addingTimeInterval(seconds))
+    }
+
+    private func globes(in view: NSView) -> [LiveGlobeWebView] {
+        (view as? LiveGlobeWebView).map { [$0] } ?? view.subviews.flatMap { globes(in: $0) }
+    }
+
+    private func waitForGlobe(in root: NSView) -> Bool {
+        for globe in globes(in: root) {
+            var ready = false
+            let deadline = Date().addingTimeInterval(12)
+            while !ready && Date() < deadline {
+                var answered = false
+                globe.evaluateJavaScript("Boolean(globalThis.eastseaGlobe?.ready && document.querySelector('.lg-total')?.textContent.includes('24') && eastseaGlobe.captureFrame())") { result, _ in
+                    ready = result as? Bool == true
+                    answered = true
+                }
+                while !answered && Date() < deadline { settle(0.05) }
+                if !ready { settle(0.1) }
+            }
+            guard ready else { return false }
+            settle(0.15)
+        }
+        return true
     }
 
     /// CGWindowListCreateImage, looked up at run time (the SDK marks it
@@ -322,6 +362,17 @@ final class Renderer {
             if let t = el as? NSTextField { lines.append(t.stringValue) }
         }
         walk(root, depth: 0)
+        if let view = root as? NSView {
+            for globe in globes(in: view) {
+                var answered = false
+                let deadline = Date().addingTimeInterval(3)
+                globe.evaluateJavaScript("document.body.innerText") { value, _ in
+                    if let text = value as? String { lines.append(text) }
+                    answered = true
+                }
+                while !answered && Date() < deadline { settle(0.05) }
+            }
+        }
         let url = file(name, dark).deletingPathExtension().appendingPathExtension("txt")
         try? lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
     }
@@ -336,7 +387,41 @@ final class Renderer {
         view.layoutSubtreeIfNeeded()
         guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { failed += 1; return }
         view.cacheDisplay(in: view.bounds, to: rep)
-        guard let png = rep.representation(using: .png, properties: [:]) else { failed += 1; return }
+        guard let base = rep.cgImage else { failed += 1; return }
+        guard let context = CGContext(data: nil, width: base.width, height: base.height,
+            bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { failed += 1; return }
+        context.draw(base, in: CGRect(x: 0, y: 0, width: base.width, height: base.height))
+        for globe in globes(in: view) {
+            var rendered = false
+            var drawAnswered = false
+            let drawDeadline = Date().addingTimeInterval(3)
+            globe.evaluateJavaScript("Boolean(globalThis.eastseaGlobe?.captureFrame())") { value, _ in
+                rendered = value as? Bool == true
+                drawAnswered = true
+            }
+            while !drawAnswered && Date() < drawDeadline { settle(0.05) }
+            guard rendered else { print("could not draw bundled globe: \(name)"); failed += 1; return }
+            let configuration = WKSnapshotConfiguration()
+            configuration.rect = globe.bounds
+            var snapshot: NSImage?
+            var answered = false
+            let deadline = Date().addingTimeInterval(8)
+            globe.takeSnapshot(with: configuration) { image, _ in snapshot = image; answered = true }
+            while !answered && Date() < deadline { settle(0.05) }
+            guard let image = snapshot?.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+                print("could not snapshot bundled globe: \(name)")
+                failed += 1
+                return
+            }
+            let bounds = view.convert(globe.bounds, from: globe)
+            let sx = CGFloat(base.width) / view.bounds.width
+            let sy = CGFloat(base.height) / view.bounds.height
+            let y = view.isFlipped ? view.bounds.height - bounds.maxY : bounds.minY
+            context.draw(image, in: CGRect(x: bounds.minX * sx, y: y * sy, width: bounds.width * sx, height: bounds.height * sy))
+        }
+        guard let image = context.makeImage(),
+              let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { failed += 1; return }
         do {
             try png.write(to: file(name, dark))
             written += 1

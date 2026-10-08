@@ -87,7 +87,8 @@ page. The locally bundled view is `?globe=fixture#/network`: the supplied
 is never an automatic fallback for a failed live RPC. The globe opens on the
 largest region, labels founder/independent shares, and links pulses to list rows.
 The canonical small ES modules in `live-globe/` are also copied byte-for-byte
-into `site/live-globe/` by `node scripts/sync-live-globe.mjs` at the repo root.
+into `site/live-globe/` and `apps/wallet/Resources/LiveGlobe/live-globe/` by
+`node scripts/sync-live-globe.mjs` at the repo root.
 Deployments still require no build. There are no CDN/map/tracker calls.
 
 ## CORS and the node's endpoint

@@ -57,6 +57,35 @@ struct MenuBarPanel: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Divider()
+            Button(action: openNetwork) {
+                HStack(spacing: 12) {
+                    Image(systemName: "globe.europe.africa.fill")
+                        .font(.system(size: 34)).foregroundStyle(Color.aether)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Macs this node can see")
+                            .font(.aeCaption).foregroundStyle(.secondary)
+                        if let presence = model.liveGlobePresence {
+                            Text("\(Int64(presence.total)) Macs online now")
+                                .font(.aeBody.weight(.semibold)).monospacedDigit()
+                            if model.liveGlobeState == .stale {
+                                Text("Last available count").font(.aeCaption).foregroundStyle(.secondary)
+                            }
+                        } else {
+                            Text("Live network unavailable").font(.aeBody).foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Open Network")
+            .accessibilityElement(children: .combine)
+            .accessibilityHint("Open Network")
+            Divider()
             Toggle(String(localized: "Node on this Mac"), isOn: $node.enabled).toggleStyle(.switch).font(.aeBody)
             if let reason = node.stopReason, reason != .switchedOff {
                 // The same one reason as the sidebar, the Node page and the
@@ -113,6 +142,14 @@ struct MenuBarPanel: View {
     }
 
     private var ko: Bool { HealthCheck.korean }
+
+    private func openNetwork() {
+        developerMode = false
+        model.networkRequested = true
+        NSApp.setActivationPolicy(.regular)
+        openWindow(id: "main")
+        NSApp.activate(ignoringOtherApps: true)
+    }
 
     /// A running node in plain words (no block numbers in the menu).
     private var nodeLine: String {

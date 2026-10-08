@@ -95,13 +95,37 @@ struct LivePresence: Decodable, Equatable, Sendable {
 /// region codes must never produce an argument that prevents node startup.
 enum PresenceCountry {
     static let sharingKey = "presenceShareCountry"
-    static let countryKey = "presenceCountryCode"
+    static let noticeSeenKey = "presenceCountryNoticeSeen"
 
     static var regionCode: String { normalize(Locale.current.region?.identifier ?? "") ?? "" }
 
     static func enabled(defaults: UserDefaults = .standard) -> Bool {
         defaults.object(forKey: sharingKey) as? Bool ?? true
     }
+
+    /// Resolve against the current Mac region on every read. Older wallets
+    /// saved a manual country code; that value is deliberately no longer used.
+    static func shared(defaults: UserDefaults = .standard,
+                       region: String? = Locale.current.region?.identifier) -> String? {
+        shared(sharing: enabled(defaults: defaults), country: region ?? "")
+    }
+
+    static func flags(defaults: UserDefaults = .standard,
+                      region: String? = Locale.current.region?.identifier) -> [String] {
+        flags(sharing: enabled(defaults: defaults), country: region ?? "")
+    }
+
+    /// Do not describe a country as shown when sharing is off or the Mac's
+    /// region is not a valid node country. Queuing a sheet never marks it seen.
+    static func shouldShowNotice(defaults: UserDefaults = .standard,
+                                 region: String? = Locale.current.region?.identifier) -> Bool {
+        !defaults.bool(forKey: noticeSeenKey) && shared(defaults: defaults, region: region) != nil
+    }
+
+    static func markNoticeSeen(defaults: UserDefaults = .standard) {
+        defaults.set(true, forKey: noticeSeenKey)
+    }
+
     // Keep in sync with crates/node/src/presence.rs::validate_country.
     static let codes = """
         AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ

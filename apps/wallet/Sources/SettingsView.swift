@@ -91,14 +91,15 @@ struct PresencePrivacySection: View {
         Section("Live network privacy") {
             Toggle("Share this Mac's country", isOn: $node.presenceShareCountry)
             if node.presenceShareCountry {
-                Picker("Country", selection: $node.presenceCountryCode) {
-                    Text("Choose a country").tag("")
-                    ForEach(PresenceCountry.codes, id: \.self) { code in
-                        Text(verbatim: countryLocale.localizedString(forRegionCode: code) ?? code).tag(code)
+                LabeledContent("Mac region") {
+                    if node.presenceCountryCode.isEmpty {
+                        Text("Region unavailable")
+                    } else {
+                        Text(verbatim: countryLocale.localizedString(forRegionCode: node.presenceCountryCode) ?? node.presenceCountryCode)
                     }
                 }
             }
-            Text("Your relay's continent is shared automatically. Country sharing is off by default and uses only the country you choose. No IP address, city or coordinates are shared.")
+            Text("Country comes from this Mac's region setting. Turning it off keeps this Mac in its continent. The globe receives no IP addresses, cities or coordinates.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }

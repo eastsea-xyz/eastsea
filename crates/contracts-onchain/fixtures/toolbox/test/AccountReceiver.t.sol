@@ -21,6 +21,10 @@ contract ReceiverNft is ERC721 {
     function mint(address to, uint256 id) external {
         _mint(to, id);
     }
+
+    function safeMint(address to, uint256 id) external {
+        _safeMint(to, id);
+    }
 }
 
 contract ReceiverTokens is ERC1155 {
@@ -62,6 +66,13 @@ contract AccountReceiverTest {
         nft.safeTransferFrom(address(this), address(a), 7);
         require(nft.ownerOf(7) == address(a), "the account owns the token");
         require(a.supportsInterface(0x150b7a02), "ERC-165 advertises the ERC-721 hook");
+    }
+
+    function testOpenZeppelinErc721SafeMintDeliversToThePinnedAccount() public {
+        ReceiverNft nft = new ReceiverNft();
+        IEastSeaAccountReceiver a = account();
+        nft.safeMint(address(a), 9);
+        require(nft.ownerOf(9) == address(a), "OpenZeppelin safe mint reaches the account hook");
     }
 
     function testErc1155SafeTransferDeliversToTheDelegatedAccount() public {

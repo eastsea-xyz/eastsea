@@ -31,6 +31,9 @@ run() {
   fi
 }
 run multi-account AccountStore.swift
+run account-selection AccountStore.swift AccountDataStore.swift AccountControls.swift
+run account-isolation AccountStore.swift AccountDataStore.swift AccountControls.swift
+run account-retire-guard AccountStore.swift AccountDataStore.swift AccountControls.swift
 run account-data AccountDataStore.swift
 run account-removal EarningsModel.swift TokenAssets.swift AccountRemovalBalance.swift
 run account-operations WalletOperationGate.swift

@@ -3,6 +3,7 @@
 # languages in light mode, plus English/Korean dark mode. Each PNG has visible
 # text from Vision OCR next to it for check-wallet-screens-language.py.
 #   scripts/wallet-screens.sh [screen-prefix]
+# Account states: switcher, two-accounts, retire-blocked, menubar-qr.
 # Never launches EastSea.app or reads its real data, node, or keychain.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -42,7 +43,7 @@ for lang in en ko ja zh-Hans zh-Hant; do
   [ -n "$only" ] && args+=(-only "$only")
   # CoreFoundation/NSHomeDirectory/UserDefaults use the throwaway home;
   # HOME itself is not reassigned. WALLET_SCREENS compiles out real-data work.
-  CFFIXED_USER_HOME="$fixture_home" "$bin" "${args[@]}"
+  WALLET_SCREEN_FIXTURE_ROOT="$fixture_home" CFFIXED_USER_HOME="$fixture_home" "$bin" "${args[@]}"
 done
 cd "$root"
 check_args=(--out "$out")

@@ -24,6 +24,7 @@ struct SettingsView: View {
                     .font(.caption.bold()).foregroundStyle(.orange)
             }
             Toggle("Run a node on this Mac", isOn: $node.enabled)
+            AccountPayoutSettings(store: model.accountStore)
             Toggle("Only while on the power adapter", isOn: $node.onlyOnPower)
                 .help("On a laptop, pause the node on battery and resume on power.")
             Label(node.awakeNote, systemImage: node.keepsAwake ? "sun.max.fill" : "moon.zzz")
@@ -89,6 +90,34 @@ struct SettingsView: View {
         let settings = URL(string: "x-apple.systempreferences:com.apple.Localization-Settings.extension")!
         if !workspace.open(settings) {
             workspace.open(URL(fileURLWithPath: "/System/Library/PreferencePanes/Localization.prefPane"))
+        }
+    }
+}
+
+@MainActor
+private struct AccountPayoutSettings: View {
+    @ObservedObject var store: AccountStore
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Picker("Node payout account", selection: Binding(get: {
+                store.list().first { $0.address == store.payoutAddress }?.id ?? -1
+            }, set: { id in
+                do { try store.setPayoutAccount(id); error = nil }
+                catch { self.error = error.localizedDescription }
+            })) {
+                if !store.payoutAddress.isEmpty && !store.list().contains(where: { $0.address == store.payoutAddress }) {
+                    Text("Current payout address").tag(-1)
+                }
+                ForEach(store.list()) { account in
+                    Text(verbatim: "\(account.name) · \(Short.address(account.address))").tag(account.id)
+                }
+            }
+            .disabled(store.state != .ready)
+            Text("Choose where node rewards are received. Switching your wallet account does not change this.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if let error { Text(error).font(.caption).foregroundStyle(.orange) }
         }
     }
 }

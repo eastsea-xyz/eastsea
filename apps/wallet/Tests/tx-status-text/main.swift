@@ -41,8 +41,8 @@ for reason in ["state_price_above_cap", "fee_cap_below_base", "nonce_gap", "expi
     check(en.contains("not recorded") && en.contains("yet"), "a local drop says it is not recorded yet: \(reason): \(en)")
     check(!finalClaims.contains { en.lowercased().contains($0) }, "local drop copy does not promise a final outcome: \(reason): \(en)")
     let unresolvedKo = "이 거래는 아직 체인에 기록되지 않았어요."
-    check(TxStatusText.sentence(state: "dropped", reason: reason, success: nil, message: unresolvedKo, locale: walletTestLocale("ko"), bundle: walletTestBundle("ko")) == unresolvedKo,
-          "Korean local-drop copy keeps the core's unresolved sentence: \(reason)")
+    check(TxStatusText.sentence(state: "dropped", reason: reason, success: nil, message: unresolvedKo, locale: walletTestLocale("ko"), bundle: walletTestBundle("ko")).contains(unresolvedKo),
+          "Korean catalog copy keeps the unresolved chain outcome: \(reason)")
 }
 let localReplacement = TxStatusText.sentence(state: "dropped", reason: "replaced", success: nil, message: ko, locale: walletTestLocale("en"), bundle: walletTestBundle("en"))
 check(!localReplacement.contains("went through instead") && !localReplacement.contains("used on chain"),
@@ -69,8 +69,8 @@ check(!["no money", "nothing was spent", "nothing left"].contains { confirmedRep
       "a proven replacement does not make a broader no-spend promise")
 let confirmedReplacementKoText = TxStatusText.sentence(state: "replaced", reason: "nonce_used", success: nil,
                                                       message: confirmedReplacementKo, locale: walletTestLocale("ko"), bundle: walletTestBundle("ko"))
-check(confirmedReplacementKoText == "보낸 계정의 같은 순서 번호를 다른 거래가 체인에서 사용했어요. 이 거래는 더 이상 처리될 수 없어요.",
-      "Korean proven-replacement copy preserves the core's chain fact")
+check(confirmedReplacementKoText.contains("체인에 기록") && confirmedReplacementKoText.contains("처리될 수 없"),
+      "Korean catalog copy preserves the proven chain replacement")
 check(localReplacement.contains("yet") && localReplacement != confirmedReplacementEn,
       "local dropped/replaced remains unresolved and distinct from proven replacement")
 for language in ["en", "ko", "ja", "zh-Hans", "zh-Hant"] {

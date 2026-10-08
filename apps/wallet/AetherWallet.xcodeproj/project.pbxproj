@@ -38,6 +38,7 @@
 		1D5293BFA154B0BB1DFD72F7 /* NodeStorageMove.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCCF1F47D93BC537C786731A /* NodeStorageMove.swift */; };
 		1FFA6C892411F8AE3F9469F0 /* BrowserController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7205378BF9586CD3564801A2 /* BrowserController.swift */; };
 		2120D978A2E422529EDEAA37 /* NodeWatchdog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51F3FF6BB1FEAEB9503220A4 /* NodeWatchdog.swift */; };
+		21B558D88EA20F2E0BB3A6F3 /* AccountControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A1714FACE19C00FCADD017B /* AccountControls.swift */; };
 		25B328456450E3F758070176 /* UnattendedDaemon.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3A8FA742CB5B69B0DF19B00 /* UnattendedDaemon.swift */; };
 		25F80E2C53EE43CAED9D6337 /* UnattendedDaemon.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3A8FA742CB5B69B0DF19B00 /* UnattendedDaemon.swift */; };
 		262A7234688C47EF43A52B41 /* token-sources.json in Resources */ = {isa = PBXBuildFile; fileRef = 2928FB2C0B82AF8C35E97D99 /* token-sources.json */; };
@@ -47,9 +48,11 @@
 		28FEE5A732380289C440D407 /* UpdateWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6180DF69697B707E2DA49136 /* UpdateWindow.swift */; };
 		2B800E563DE4354B9E682BCC /* UpdateChannel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 823B0B7411D69BB0EED2CC26 /* UpdateChannel.swift */; };
 		2C9931B38E29DD692E2360A2 /* VerifyBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82B54C28053E7413F40CC695 /* VerifyBridge.swift */; };
+		2DC88EF363713BF5F05BE9D3 /* ReceiveAddressView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 366F9021403DE8EF3505FEEC /* ReceiveAddressView.swift */; };
 		2DF59873BBB5501454A597DA /* InstallLocation.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD1FD85FD2537EBDD04207CB /* InstallLocation.swift */; };
 		2ECB8DB6B22924E4D146ED97 /* ProverMenuText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F793BE9B59364FAC536170E /* ProverMenuText.swift */; };
 		30A0FCB264FA775313D832BD /* AppLanguage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D0345A892236AF981D15AE5 /* AppLanguage.swift */; };
+		31CE7E2ABA0245424CB2DA08 /* AccountSwitcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 438B8B50643D1EB72B8512EA /* AccountSwitcher.swift */; };
 		330327025068CB02AE1C1566 /* TxTrack.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05428AB5A1E93D738C571517 /* TxTrack.swift */; };
 		35AC6542997CA5B650E8F422 /* NodeReleaseIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83EC4FD42C1350C11F06ECC4 /* NodeReleaseIdentity.swift */; };
 		3A02CDFD35AF42A3DBBCE824 /* ReleaseUpdateGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D1303552378BB828A2C9D21 /* ReleaseUpdateGate.swift */; };
@@ -71,6 +74,7 @@
 		4329071376B23BBEA4F822FC /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 1CE6D5383F2F77113AF8FDEC /* Sparkle */; };
 		4358E786C3A100F61BA034C0 /* TxStatusText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F9EB86757EDFB724E358439 /* TxStatusText.swift */; };
 		44100BFA372DAC2216F2E74C /* Earnings.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6C1B75440E8A6A577BD467E /* Earnings.swift */; };
+		45172FDDBC4CD6AB9B73F3FC /* AccountControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A1714FACE19C00FCADD017B /* AccountControls.swift */; };
 		46B3C20C350C2C7C2986ADD2 /* MigrationStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CA7F0040DAE7F5B39B01A7D /* MigrationStatus.swift */; };
 		4879A3E96C3973F455334C7E /* ResizeBenchmark.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3A70AF889C5ACB1DDB2AF45 /* ResizeBenchmark.swift */; };
 		492E9B1554722509A920F26E /* AccountDataStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BC328F6F3F09C3855B960B4 /* AccountDataStore.swift */; };
@@ -190,6 +194,7 @@
 		BBE8E5793C14A3014583A9FC /* ArchiveMeasurement.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D1813435521FA2D771CBF4D /* ArchiveMeasurement.swift */; };
 		BC44AAFBB810E5183CBF737E /* SimpleDashboard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BCD0FCE195D7296CBCA13E9 /* SimpleDashboard.swift */; };
 		BCEB55E80C0536BE08E67EE7 /* ResourcesSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = C56EEFC753370BDE2960BE52 /* ResourcesSettings.swift */; };
+		BD5A385048E913C39DFA004F /* AccountSwitcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 438B8B50643D1EB72B8512EA /* AccountSwitcher.swift */; };
 		BD73509462322EA695D98A0D /* NetworkUpgrade.swift in Sources */ = {isa = PBXBuildFile; fileRef = BAF12832C2145F7B5553F13A /* NetworkUpgrade.swift */; };
 		BEA2BCC8D0758D6B16FEA050 /* BalanceBreakdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1F6F75149EAAFD83802065B /* BalanceBreakdown.swift */; };
 		BF69C9639B9D7215C5CE0605 /* aether_ffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BC12AF79B32D90A48860251 /* aether_ffi.swift */; };
@@ -202,6 +207,7 @@
 		C427798F3F676DC6A4D7416C /* WalletScreens.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF2FCB108BF603558C0364F5 /* WalletScreens.swift */; };
 		C45FFD044088BB85C2D842D2 /* AssetsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39DB57D9689E71FFECC579BA /* AssetsSheet.swift */; };
 		C63E6091EA5E649B2FF1ADB6 /* NodeStopReason.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90A10B34BB5FE4E8349FA51D /* NodeStopReason.swift */; };
+		C7BB621DD98E6D4E2FBAF7FA /* AccountSwitcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 438B8B50643D1EB72B8512EA /* AccountSwitcher.swift */; };
 		C8D1470136395E0DA8D2FAAA /* UnattendedDecision.swift in Sources */ = {isa = PBXBuildFile; fileRef = 716005AD711FCD432A9A487C /* UnattendedDecision.swift */; };
 		C95F0C486AC46505C63D822B /* AgentWalletPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 020BD968AE07E378627D7EB7 /* AgentWalletPanel.swift */; };
 		C9839F6819F2F86387CC88B7 /* aether_ffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BC12AF79B32D90A48860251 /* aether_ffi.swift */; };
@@ -229,6 +235,7 @@
 		DEDF8CB8AC01C837B4A54A80 /* StorageSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 029F7E592C27EAB302CCE55D /* StorageSettings.swift */; };
 		E079A96A7F6CAAB46E4B9D8B /* NetworkPaused.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B632CFC2DA1179CC9EAD01D /* NetworkPaused.swift */; };
 		E202B9DDD9BDC75A9D6CA697 /* Onboarding.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65F2514912728847B547AC0A /* Onboarding.swift */; };
+		E4402B93BE03DDB8A0AA67EE /* ReceiveAddressView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 366F9021403DE8EF3505FEEC /* ReceiveAddressView.swift */; };
 		E4B5084F019A2D559E9C4758 /* DataMigration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CA1040C5885E62AF6B0AAC4 /* DataMigration.swift */; };
 		E5EBCFC648FC784DB287530F /* LiveResize.swift in Sources */ = {isa = PBXBuildFile; fileRef = 745EAC0E04873F8FD0F29BC2 /* LiveResize.swift */; };
 		E7EE58F00758C26A508577DB /* provider.js in Resources */ = {isa = PBXBuildFile; fileRef = B71962ECF4B1842C77260AF0 /* provider.js */; };
@@ -236,6 +243,7 @@
 		E8E7A825FBFD8C349EA8E74A /* ResizeBenchmark.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3A70AF889C5ACB1DDB2AF45 /* ResizeBenchmark.swift */; };
 		EA821BA6F24CC2C570019369 /* TokenAssets.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5D7C676A4030F20E37C58E7 /* TokenAssets.swift */; };
 		EABBD7ACDDEE78CCB5D2EA4D /* AssetsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39DB57D9689E71FFECC579BA /* AssetsSheet.swift */; };
+		EBFD12A16F18B2E0F8BD146D /* ReceiveAddressView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 366F9021403DE8EF3505FEEC /* ReceiveAddressView.swift */; };
 		EC7449482B9CDB8C3EC04158 /* glossary.md in Resources */ = {isa = PBXBuildFile; fileRef = F6F83F1B96641D43A20AA2B6 /* glossary.md */; };
 		ED3E2EB438264E2123EBDBD9 /* DesignPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 260B382C7E1D4499BE9AE870 /* DesignPreview.swift */; };
 		ED976FD8F8425231C3E3E594 /* EnclaveKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 317D79B15C7F9E75B1A1F4FC /* EnclaveKey.swift */; };
@@ -254,6 +262,7 @@
 		F838114788C0EABD8CAE8571 /* glossary.md in Resources */ = {isa = PBXBuildFile; fileRef = F6F83F1B96641D43A20AA2B6 /* glossary.md */; };
 		F94514AB9C803644B61A44B7 /* ProverMenuText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F793BE9B59364FAC536170E /* ProverMenuText.swift */; };
 		F9D2A177F2CFE05346206EDB /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 54084C88C38E2484A2641DE4 /* Assets.xcassets */; };
+		FA4BA024CE45F78E1920E29D /* AccountControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A1714FACE19C00FCADD017B /* AccountControls.swift */; };
 		FB69E3F4F0852FC7B88629BC /* DesignPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 260B382C7E1D4499BE9AE870 /* DesignPreview.swift */; };
 		FBA5F0AE23E74B4B0BCF057E /* AdaptiveLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55E7E86166A7CE6D29E6C709 /* AdaptiveLayout.swift */; };
 		FBF2AFCCA60DD0A51BE65A33 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BE4C50E424D36BBF919BC45 /* SettingsView.swift */; };
@@ -286,13 +295,16 @@
 		2F793BE9B59364FAC536170E /* ProverMenuText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProverMenuText.swift; sourceTree = "<group>"; };
 		317D79B15C7F9E75B1A1F4FC /* EnclaveKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnclaveKey.swift; sourceTree = "<group>"; };
 		32CECEE6B3B88424FB7E6774 /* Brand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Brand.swift; sourceTree = "<group>"; };
+		366F9021403DE8EF3505FEEC /* ReceiveAddressView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReceiveAddressView.swift; sourceTree = "<group>"; };
 		39176493D3D105EBB072F17C /* AetherWalletApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AetherWalletApp.swift; sourceTree = "<group>"; };
 		39DB57D9689E71FFECC579BA /* AssetsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssetsSheet.swift; sourceTree = "<group>"; };
 		3C192196B8C44174CC74F27E /* Clock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Clock.swift; sourceTree = "<group>"; };
 		3CA691B4DF93F089CF5537C7 /* HealthCheck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthCheck.swift; sourceTree = "<group>"; };
 		407C3252EC0DD6F886E76AE7 /* BundledPageScheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BundledPageScheme.swift; sourceTree = "<group>"; };
 		424591AA2690FB9457CF62DA /* ResendIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResendIntent.swift; sourceTree = "<group>"; };
+		438B8B50643D1EB72B8512EA /* AccountSwitcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountSwitcher.swift; sourceTree = "<group>"; };
 		462C807FB20A46B9919AE925 /* Spinners.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Spinners.swift; sourceTree = "<group>"; };
+		4A1714FACE19C00FCADD017B /* AccountControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountControls.swift; sourceTree = "<group>"; };
 		4BC12AF79B32D90A48860251 /* aether_ffi.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = aether_ffi.swift; sourceTree = "<group>"; };
 		505372A92760BD0CAF282CEE /* NodeStatusViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeStatusViews.swift; sourceTree = "<group>"; };
 		51F3FF6BB1FEAEB9503220A4 /* NodeWatchdog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeWatchdog.swift; sourceTree = "<group>"; };
@@ -411,9 +423,11 @@
 		58892B03383F48BA9FD5EB14 /* Sources */ = {
 			isa = PBXGroup;
 			children = (
+				4A1714FACE19C00FCADD017B /* AccountControls.swift */,
 				6BC328F6F3F09C3855B960B4 /* AccountDataStore.swift */,
 				689809A042F3C0489F1ABAB7 /* AccountRemovalBalance.swift */,
 				CA13E722CBD1C5DF66502A8F /* AccountStore.swift */,
+				438B8B50643D1EB72B8512EA /* AccountSwitcher.swift */,
 				55E7E86166A7CE6D29E6C709 /* AdaptiveLayout.swift */,
 				39176493D3D105EBB072F17C /* AetherWalletApp.swift */,
 				020BD968AE07E378627D7EB7 /* AgentWalletPanel.swift */,
@@ -462,6 +476,7 @@
 				94E4B4A2A4BDBBBBC6A12600 /* ProverFlags.swift */,
 				9DEBCE5EA044F272C9EA406C /* ProverMenu.swift */,
 				2F793BE9B59364FAC536170E /* ProverMenuText.swift */,
+				366F9021403DE8EF3505FEEC /* ReceiveAddressView.swift */,
 				AB4C9843D1CF8E29F627927D /* ReleaseApproval.swift */,
 				9D1303552378BB828A2C9D21 /* ReleaseUpdateGate.swift */,
 				424591AA2690FB9457CF62DA /* ResendIntent.swift */,
@@ -754,9 +769,11 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FA4BA024CE45F78E1920E29D /* AccountControls.swift in Sources */,
 				50B93A8ED68AE764408C1426 /* AccountDataStore.swift in Sources */,
 				54062937CE93BAE0320B6E39 /* AccountRemovalBalance.swift in Sources */,
 				B80F54971A831CA8A4B19E5F /* AccountStore.swift in Sources */,
+				31CE7E2ABA0245424CB2DA08 /* AccountSwitcher.swift in Sources */,
 				9BB3B88FC64A1C7001C851D2 /* AdaptiveLayout.swift in Sources */,
 				3EFB40E8AE60667378C4B952 /* AetherWalletApp.swift in Sources */,
 				958D55CCC1C206CD0EDE08CA /* AgentWalletPanel.swift in Sources */,
@@ -805,6 +822,7 @@
 				A6411E9B1827C2B1B6D286AE /* ProverFlags.swift in Sources */,
 				5D11F92088FEABAA0085ADCD /* ProverMenu.swift in Sources */,
 				F94514AB9C803644B61A44B7 /* ProverMenuText.swift in Sources */,
+				2DC88EF363713BF5F05BE9D3 /* ReceiveAddressView.swift in Sources */,
 				A079B1CBD1001C06EF207650 /* ReleaseApproval.swift in Sources */,
 				3A02CDFD35AF42A3DBBCE824 /* ReleaseUpdateGate.swift in Sources */,
 				1CC133C57B599BA2B10B7D4A /* ResendIntent.swift in Sources */,
@@ -840,9 +858,11 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				45172FDDBC4CD6AB9B73F3FC /* AccountControls.swift in Sources */,
 				492E9B1554722509A920F26E /* AccountDataStore.swift in Sources */,
 				50910D32B57CDB7190103867 /* AccountRemovalBalance.swift in Sources */,
 				FD5E76B8673DD255AE042BFC /* AccountStore.swift in Sources */,
+				BD5A385048E913C39DFA004F /* AccountSwitcher.swift in Sources */,
 				FBA5F0AE23E74B4B0BCF057E /* AdaptiveLayout.swift in Sources */,
 				4A1BC0267AD8EA1988D71E68 /* AgentWalletPanel.swift in Sources */,
 				D81EA3A5FE3D158E62F9429D /* AppLanguage.swift in Sources */,
@@ -890,6 +910,7 @@
 				F29C55BEDA6F3D5563CC763F /* ProverFlags.swift in Sources */,
 				AD1A6990DBD4FC69E9F3E958 /* ProverMenu.swift in Sources */,
 				2ECB8DB6B22924E4D146ED97 /* ProverMenuText.swift in Sources */,
+				EBFD12A16F18B2E0F8BD146D /* ReceiveAddressView.swift in Sources */,
 				7B7EBC3EFD0B5F25E2C8CF67 /* ReleaseApproval.swift in Sources */,
 				1A01BCF495388CB4F912A2C2 /* ReleaseUpdateGate.swift in Sources */,
 				08B1577287B0B8BA0FD673CA /* ResendIntent.swift in Sources */,
@@ -926,9 +947,11 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				21B558D88EA20F2E0BB3A6F3 /* AccountControls.swift in Sources */,
 				3A4DB6255671EEC0FFE2D2A0 /* AccountDataStore.swift in Sources */,
 				C06A8FA4AD9099E9D27147CB /* AccountRemovalBalance.swift in Sources */,
 				62C0EB42A22A219AA8C899E8 /* AccountStore.swift in Sources */,
+				C7BB621DD98E6D4E2FBAF7FA /* AccountSwitcher.swift in Sources */,
 				4C04104159BE32A1EE7E6BA3 /* AdaptiveLayout.swift in Sources */,
 				3A048B1773EDB624E715846E /* AetherWalletApp.swift in Sources */,
 				C95F0C486AC46505C63D822B /* AgentWalletPanel.swift in Sources */,
@@ -977,6 +1000,7 @@
 				B6002ECF68746BC997F245B2 /* ProverFlags.swift in Sources */,
 				F3667C9BCD3B016F232A69D8 /* ProverMenu.swift in Sources */,
 				119884C0924E5CF71D15D2B9 /* ProverMenuText.swift in Sources */,
+				E4402B93BE03DDB8A0AA67EE /* ReceiveAddressView.swift in Sources */,
 				7B0B4C28ED2F1AEF39804016 /* ReleaseApproval.swift in Sources */,
 				0C3F5D5E82BA80E5FBCEFB6A /* ReleaseUpdateGate.swift in Sources */,
 				A92FEDE9AA150A6ACA8C92A2 /* ResendIntent.swift in Sources */,

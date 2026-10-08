@@ -293,6 +293,9 @@ final class WalletModel: ObservableObject {
     }
 
     private func activateAccount() {
+        #if DEBUG
+        if DesignPreview.on { loadPreview(); return }
+        #endif
         guard let selected = accountStore.activeAccount else { return }
         if !address.isEmpty { save() }
         networkGeneration &+= 1
@@ -1349,9 +1352,10 @@ final class WalletModel: ObservableObject {
     private func loadSaved() {
         guard !address.isEmpty else { return }
         let d = UserDefaults.standard
-        dataStore.migrateLegacy(isPrimary: accountStore.activeAccount?.id == 1)
-        history = d.data(forKey: historyKey).flatMap { try? JSONDecoder().decode([BalancePoint].self, from: $0) } ?? []
-        activity = d.data(forKey: activityKey).flatMap { try? JSONDecoder().decode([ActivityItem].self, from: $0) } ?? []
+        let selected = accountStore.activeDataStore(chainID: networkChainId) ?? dataStore
+        selected.migrateLegacy(isPrimary: accountStore.activeAccount?.id == 1)
+        history = selected.load(.balanceHistory, as: [BalancePoint].self) ?? []
+        activity = selected.load(.activity, as: [ActivityItem].self) ?? []
         // Backups from the 7780 chain carry reward times as seconds where the
         // feed wants milliseconds ("last one 56y ago"): scale those back up so
         // the day a payment happened is the day it happened.
@@ -1359,9 +1363,9 @@ final class WalletModel: ObservableObject {
             let ts = item.date.timeIntervalSince1970
             return (ts > 0 && ts < Double(Timestamp.secondsEraBound) / 1_000) ? item.with(date: Date(timeIntervalSince1970: ts * 1_000)) : item
         }
-        linkedWallets = d.stringArray(forKey: linkedKey) ?? []
-        contacts = dataStore.load(.contacts, as: [WalletContact].self) ?? []
-        outgoingRecovery = PendingRecovery.load(store: dataStore)
+        linkedWallets = selected.object(.linkedWallets) as? [String] ?? []
+        contacts = selected.load(.contacts, as: [WalletContact].self) ?? []
+        outgoingRecovery = PendingRecovery.load(store: selected)
         _ = sitePermissions.load(defaults: d)
     }
 
@@ -1776,12 +1780,23 @@ extension WalletModel {
     /// Design preview only (DesignPreview.loadPreview): the sample state whose
     /// setters are private to this file.
     func loadPreviewExtras() {
-        breakdown = try? BalanceBreakdown.decode("""
+        let secondary = accountStore.activeAccount?.id == 2
+        let primaryBreakdown = """
             {"proof_rewards_wei":"2500000000000000000","node_rewards_wei":"0","faucet_wei":"10000000000000000000",
              "received_wei":"0","unwrapped_wei":"0","sent_wei":"0","fees_wei":"42000000000000",
              "total_in_wei":"12500000000000000000","total_out_wei":"42000000000000","balance_wei":"12500000000000000000",
              "difference_wei":"42000000000000","itemizes_completely":false,"rows":5}
-            """)
+            """
+        let secondaryBreakdown = """
+            {"proof_rewards_wei":"0","node_rewards_wei":"0","faucet_wei":"0",
+             "received_wei":"3250000000000000000","unwrapped_wei":"0","sent_wei":"0","fees_wei":"0",
+             "total_in_wei":"3250000000000000000","total_out_wei":"0","balance_wei":"3250000000000000000",
+             "difference_wei":"0","itemizes_completely":true,"rows":1}
+            """
+        breakdown = DesignPreview.variant == "empty" ? nil : (try? BalanceBreakdown.decode(secondary ? secondaryBreakdown : primaryBreakdown))
+        contacts = [WalletContact(name: secondary ? String(localized: "Account \(1)") : String(localized: "Account \(2)"),
+                                  address: secondary ? DesignPreview.primaryAddress : DesignPreview.secondaryAddress)]
+        incomingRecovery = nil
         sitePermissions.grant(origin: "https://eastsea.xyz", address: address)
         if UserDefaults.standard.string(forKey: "previewIncomingRecovery") == "1" {
             incomingRecovery = RecoveryStatus(guardians: 1, threshold: 1, delaySeconds: 172_800, pending: true,

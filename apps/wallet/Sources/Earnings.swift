@@ -768,6 +768,8 @@ final class Earnings: ObservableObject {
         // A new proof or reward on the prover: look now instead of waiting for the timer.
         node.$prover.map { $0?.last_reward }.removeDuplicates().dropFirst()
             .sink { [weak self] _ in self?.refreshSoon() }.store(in: &subscriptions)
+        AccountStore.wallet().payoutAddressPublisher.removeDuplicates().dropFirst()
+            .sink { [weak self] _ in self?.refresh() }.store(in: &subscriptions)
         timer = Timer.scheduledTimer(withTimeInterval: Self.pollSeconds, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
@@ -841,14 +843,19 @@ final class Earnings: ObservableObject {
     }
 
     func refresh() {
-        refreshStatus()
-        guard let node, node.state == .running, !node.proveAddress.isEmpty, !fetching else { return }
+        guard let node else { return }
         if node.proveAddress != address {
             address = node.proveAddress
             loaded = false
             summary = .empty
             entries = []
+            totalOnChain = nil
+            status = nil
+            celebration = nil
         }
+        guard node.state == .running else { return }
+        refreshStatus()
+        guard !address.isEmpty, !fetching else { return }
         fetching = true
         let addr = address
         Task { @MainActor in
@@ -857,7 +864,8 @@ final class Earnings: ObservableObject {
             // and a history longer than that cap would silently lose its tail
             // (the founder's 2,583 rewards ran past the default page size).
             let (rows, total) = await NodeController.allRewards(port: NodeController.port, address: addr)
-            guard addr == address, !rows.isEmpty || (total ?? 0) == 0 else { return }
+            guard addr == address, addr == node.proveAddress else { refreshSoon(); return }
+            guard !rows.isEmpty || (total ?? 0) == 0 else { return }
             let list = rows.compactMap(RewardEntry.init(json:))
             entries = list
             totalOnChain = total
@@ -875,6 +883,8 @@ final class Earnings: ObservableObject {
         Task { @MainActor in
             defer { statusFetching = false }
             if let json = await LocalRPC.call(port: NodeController.port, method: "aether_rewardStatus", params: [op]) as? [String: Any] {
+                let current = node.proveAddress.isEmpty ? operatorAddress() : node.proveAddress
+                guard op == current else { refreshSoon(); return }
                 let fresh = RewardStatus(json: json)
                 if fresh != status { status = fresh }
             }
@@ -901,7 +911,7 @@ struct NodeEarningsCard: View {
     var body: some View {
         if node.enabled {
             VStack(spacing: 12) {
-                EarningsHero(summary: earnings.summary, work: earnings.work(node, canProve: !model.address.isEmpty),
+                EarningsHero(summary: earnings.summary, work: earnings.work(node, canProve: !model.payoutAddress.isEmpty),
                              celebration: earnings.celebration, onProve: proveOn)
                 RewardStandingCard(status: earnings.status)
                 EarningsExportCard()
@@ -910,7 +920,7 @@ struct NodeEarningsCard: View {
     }
 
     private func proveOn() {
-        node.proveAddress = model.address
+        node.proveAddress = model.payoutAddress
         node.prove = true
     }
 }
@@ -997,18 +1007,18 @@ struct HomeEarnings: View {
 
     var body: some View {
         if node.enabled {
-            let work = earnings.work(node, canProve: !model.address.isEmpty)
+            let work = earnings.work(node, canProve: !model.payoutAddress.isEmpty)
             if earnings.summary.count > 0, earnings.summary.totalWei != "0" {
                 HomeEarningsCard(summary: earnings.summary, work: work, celebration: earnings.celebration, open: open)
             } else {
-                NodeStatusLine(work: work, action: open, onProve: node.prove || model.address.isEmpty ? nil : proveOn)
+                NodeStatusLine(work: work, action: open, onProve: node.prove || model.payoutAddress.isEmpty ? nil : proveOn)
             }
         }
     }
 
     /// Same as the Settings toggle "Prove blocks with Metal".
     private func proveOn() {
-        node.proveAddress = model.address
+        node.proveAddress = model.payoutAddress
         node.prove = true
     }
 }

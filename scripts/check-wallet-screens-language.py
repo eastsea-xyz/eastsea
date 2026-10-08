@@ -47,7 +47,7 @@ DATA_RE = re.compile(r"(?:https?://[^\s]+|(?:[A-Za-z0-9-]+\.)+(?:xyz|com|org|net
 # Human supplied data is not app copy. Exceptions are confined to the screens
 # that actually show these exact fixtures (DesignPreview / WalletScreens).
 TOKEN_NAME_SCREENS = {"home", "home-empty", "home-paused", "home-verifying", "home-alerts", "home-narrow",
-                      "window", "window-network", "window-narrow", "sheet-assets", "sheet-send-token", "developer"}
+                      "window", "window-network", "window-narrow", "two-accounts", "sheet-assets", "sheet-send-token", "developer"}
 TOKEN_NAMES = ("Test Nebula", "Test Orbit", "Test Comet", "Test Dollar", "Doubloon Cash", "Wrapped AETH")
 MEMOS = {"sheet-send-link": ("Coffee beans · order 1042",), "sheet-call": ("Swap on the EastSea DEX",)}
 # The legacy-app alert displays this path as data, not instructions.
@@ -55,6 +55,17 @@ FIXTURE_DATA = {"alert-legacy-aether": ("/Applications/Aether.app",),
                 "developer": ("Shop", "localhost", "127.0.0.1")}
 NATIVE_NAMES = {"en": "English", "ko": "한국어", "ja": "日本語", "zh-Hans": "简体中文", "zh-Hant": "繁體中文"}
 LEGAL_SCREENS = {"sheet-terms"}
+# These are the nonsecret address fixtures DesignPreview places in each real
+# AccountStore. QR payloads come from Vision decoding the exact saved pixels.
+RECEIVE_ADDRESSES = {"sheet-receive": "0x5397a1c0de4b1b8f6a3cb2d1e0f9c7a6b5d4e502",
+                     "menubar-qr": "0x71b4000000000000000000000000000000002a2b"}
+FEATURE_COPY = {
+    "switcher": ("Accounts", "Create account", "A small one-time fee on first use"),
+    "retire-blocked": ("Retire account", "Check balance again",
+                       "This account still has funds. Move its balance and tokens before retiring it so you can keep using them."),
+    "menubar-qr": ("Receive", "Copy address", "Share"),
+}
+FEATURE_ACCOUNTS = {"switcher": (1, 2), "two-accounts": (2,), "retire-blocked": (2,), "menubar-qr": (2,)}
 
 
 def normalize(value):
@@ -189,6 +200,27 @@ def renderer_screens(path):
     return set(re.findall(r'\b(?:page|stagePage|window|alert)\(\s*"([^"\n]+)"', text))
 
 
+def feature_problems(payload, screen, language, catalog):
+    visible = [line.get("text", "") if isinstance(line, dict) else line for line in payload.get("lines", [])]
+    joined = normalize(" ".join(text for text in visible if isinstance(text, str)))
+    problems = []
+    for key in FEATURE_COPY.get(screen, ()):
+        translated = units(catalog["strings"].get(key, {}), language) or ([key] if language == "en" else [])
+        if not translated or normalize(translated[0]) not in joined:
+            problems.append(f"missing visible translated {key!r}")
+    for account_id in FEATURE_ACCOUNTS.get(screen, ()):
+        key = "Account %lld"
+        translated = units(catalog["strings"].get(key, {}), language) or ([key] if language == "en" else [])
+        labels = [re.sub(r"%(?:\d+\$)?lld", str(account_id), value) for value in translated]
+        if not labels or not any(normalize(label) in joined for label in labels):
+            problems.append(f"missing visible selected/listed account {account_id}")
+    if screen in RECEIVE_ADDRESSES:
+        observed = payload.get("qrPayloads", [])
+        if observed != [RECEIVE_ADDRESSES[screen]]:
+            problems.append("receive QR does not decode to the fixture's selected account address")
+    return problems
+
+
 def run(args):
     catalog = json.loads(args.catalog.read_text(encoding="utf-8"))
     problems = []
@@ -243,6 +275,7 @@ def run(args):
                     reasons = text_problems(text, screen, language, legal, foreign[language])
                     if reasons:
                         problems.append(f"{stem}: {'; '.join(reasons)}: {text!r}")
+                problems += [f"{stem}: {problem}" for problem in feature_problems(payload, screen, language, catalog)]
                 if screen == "sheet-terms" and language in ("ja", "zh-Hans", "zh-Hant"):
                     notice = catalog["strings"].get("This translation is for reference; the English text governs.", {})
                     values = units(notice, language)

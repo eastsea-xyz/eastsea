@@ -10,13 +10,37 @@ struct MenuBarPanel: View {
     /// Layer 1 of the health signal: the menu bar is one of its three places.
     @EnvironmentObject var health: HealthMonitor
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("developerMode") private var developerMode = false
+    @State private var showReceive: Bool
+
+    init(showReceive: Bool = false) {
+        _showReceive = State(initialValue: showReceive)
+    }
 
     private var balance: String {
         model.account.map { "\(Amount.text(Double(Wei.format($0.balanceWei)) ?? 0)) \(Brand.networkCoinTicker)" } ?? "…"
     }
 
     var body: some View {
+        ZStack(alignment: .topLeading) {
+            if showReceive {
+                receivePage.transition(reduceMotion ? .opacity : .asymmetric(
+                    insertion: .move(edge: .trailing).combined(with: .opacity),
+                    removal: .move(edge: .trailing).combined(with: .opacity)))
+            } else {
+                statusPage.transition(reduceMotion ? .opacity : .asymmetric(
+                    insertion: .move(edge: .leading).combined(with: .opacity),
+                    removal: .move(edge: .leading).combined(with: .opacity)))
+            }
+        }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: showReceive)
+        .padding(16)
+        .frame(width: 300)
+        .clipped()
+    }
+
+    private var statusPage: some View {
         VStack(alignment: .leading, spacing: 12) {
             if model.developmentNetwork {
                 Text("Dev network · 127.0.0.1")
@@ -25,8 +49,8 @@ struct MenuBarPanel: View {
             HStack {
                 Text(Brand.name).font(.headline)
                 Spacer()
-                Text(Short.address(model.address)).font(.caption.monospaced()).foregroundStyle(.secondary)
             }
+            AccountSwitcherButton(store: model.accountStore, compact: true)
             Text(balance).font(.aeTitle).monospacedDigit()
             HStack(spacing: 6) {
                 if let since = model.chainPausedSince {
@@ -96,10 +120,8 @@ struct MenuBarPanel: View {
                     openWindow(id: "main")
                     NSApp.activate(ignoringOtherApps: true)
                 }
-                Button("Copy Address") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(model.address, forType: .string)
-                }
+                Button { showReceive = true } label: { Label("Receive", systemImage: "qrcode") }
+                    .disabled(model.address.isEmpty)
                 Spacer()
                 Menu {
                     if node.prove { Button("Export Reward Records…") { exportRewards() } }
@@ -108,8 +130,20 @@ struct MenuBarPanel: View {
                     .menuStyle(.borderlessButton).fixedSize()
             }
         }
-        .padding(16)
-        .frame(width: 300)
+    }
+
+    private var receivePage: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Button { showReceive = false } label: { Label("Back", systemImage: "chevron.left") }
+                    .buttonStyle(.plain)
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Text("Receive").font(.headline)
+            }
+            AccountSwitcherButton(store: model.accountStore, compact: true)
+            ReceiveAddressView(address: model.address, compact: true)
+        }
     }
 
 

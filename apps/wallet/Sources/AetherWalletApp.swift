@@ -32,7 +32,7 @@ struct AetherWalletApp: App {
                 .environmentObject(earnings)
                 .onAppear {
                     appDelegate.start(node: node, model: model, unattended: unattended)
-                    earnings.attach(node, operatorAddress: { model.address })
+                    earnings.attach(node, operatorAddress: { model.payoutAddress })
                     NSApp.setActivationPolicy(.regular)
                     #if DEBUG
                     if ResizeBenchmark.on { ResizeBenchmark.run() }
@@ -95,7 +95,7 @@ struct AetherWalletApp: App {
                 .environmentObject(appDelegate.health)
                 .onAppear {
                     appDelegate.start(node: node, model: model, unattended: unattended)
-                    earnings.attach(node, operatorAddress: { model.address })
+                    earnings.attach(node, operatorAddress: { model.payoutAddress })
                 }
         } label: {
             Image(systemName: node.prover?.proving != nil ? "cube.transparent.fill" : "cube.transparent")

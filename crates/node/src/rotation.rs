@@ -996,6 +996,18 @@ mod tests {
     }
 
     #[test]
+    fn a_full_four_seat_committee_never_grows_even_for_a_risky_night() {
+        let r = reserve();
+        let pool: Vec<_> = (1..=4).map(mac).collect();
+        let running = Committee { members: pool.clone() };
+        // Adding all three correlated keys could improve the probability,
+        // but would turn the founder Mac into a 5-of-7 quorum halt point.
+        let hours = |k: &str| Some([if k == "m3" || k == "m4" { SCALE / 2 } else { SCALE }; DAY_EPOCHS as usize]);
+        assert!(with_reserve(None, &pool, &seed(8), ops_of, &r, &running, hours).is_none());
+        assert_eq!(r.members.len(), 3, "standby membership is retained");
+    }
+
+    #[test]
     fn seated_reserve_keys_step_down_as_the_committee_fills() {
         // A committee that once carried every reserve key keeps fewer as other
         // seats stand, and none once four seats stand without them.

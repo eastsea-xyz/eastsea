@@ -1161,17 +1161,11 @@ fn open_voting_nodes_take_over_the_chain_by_themselves() {
     assert!(bal.contains("balance   11 wei") && bal.contains("verified  ✓"), "{bal}");
 }
 
-/// Founder reserve keys run as `aether run` like any Mac (docs/ops/reserve-keys.md):
-/// three keys that are not in the genesis voting set and never register follow
-/// the chain. With the genesis set holding four seats, not one of them joins —
-/// reserve keys only fill a committee that is short of four seats, because
-/// growing four to seven would put three seats on the founder's one Mac and let
-/// its outage stall the quorum. They stay followers with no share and no vote,
-/// and the chain never stops.
-#[test]
-fn founder_reserve_keys_stay_followers_over_a_full_committee() {
-    let _serial = serial();
-    let dir = std::env::temp_dir().join(format!("aether-devnet-test-{}-reserve", std::process::id()));
+/// Four genesis voters and three unseated reserves, all supervised by `run`.
+/// The mainnet variant uses the free registration lane and registry-v3 uptime.
+fn founder_reserve_net(tag: &str, epoch_blocks: u64, mainnet: bool) -> Net {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tmp")
+        .join(format!("aether-devnet-test-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let d = |name: &str| dir.join(name).to_str().unwrap().to_string();
@@ -1180,13 +1174,16 @@ fn founder_reserve_keys_stay_followers_over_a_full_committee() {
     for k in genesis_set.iter().chain(reserve.iter()) {
         run_ok(&["keygen", "--data", &d(k)]);
     }
-    let reg = run_ok(&["registrar-key", "--data", &d("reg")]);
-    let registrar = reg.split_whitespace().nth(2).unwrap().to_string();
     let founder = "0x00000000000000000000000000000000000000f0";
-    let mut args: Vec<String> = ["network", "--epoch-blocks", "40", "--min-streak", "0", "--draw-epochs", "1", "--node-rewards", "--registrar", &registrar, "--reserve-operator", founder]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let mut args = vec!["network".into(), "--epoch-blocks".into(), epoch_blocks.to_string(),
+        "--min-streak".into(), "0".into(), "--draw-epochs".into(), "1".into(),
+        "--node-rewards".into(), "--reserve-operator".into(), founder.into()];
+    if mainnet {
+        args.extend(["--dev-registrar", "--history", "2", "--protocol", "3"].map(str::to_string));
+    } else {
+        let reg = run_ok(&["registrar-key", "--data", &d("reg")]);
+        args.extend(["--registrar".to_string(), reg.split_whitespace().nth(2).unwrap().to_string()]);
+    }
     for r in reserve {
         args.extend(["--reserve".to_string(), format!("{}/validator.pub.json", d(r))]);
     }
@@ -1230,7 +1227,7 @@ fn founder_reserve_keys_stay_followers_over_a_full_committee() {
     net.logs = names.iter().map(|name| dir.join(format!("{name}.log"))).collect();
     for (k, name) in names.iter().enumerate() {
         let others: Vec<String> = (0..n).filter(|j| *j != k).map(|j| format!("http://127.0.0.1:{}", rpc[j])).collect();
-        let a: Vec<String> = vec![
+        let mut a: Vec<String> = vec![
             "run".into(),
             "--data".into(),
             d(name),
@@ -1251,13 +1248,35 @@ fn founder_reserve_keys_stay_followers_over_a_full_committee() {
             "--reshare-timeout".into(),
             "120".into(),
         ];
+        if mainnet && k == 0 {
+            a.push("--node-arg=--dev-registrar".into());
+        }
         let log = std::fs::File::create(dir.join(format!("{name}.log"))).unwrap();
         let child = Command::new(BIN).args(&a).env("RUST_LOG", "info,commonware=warn")
             .env("AETHER_TEST_INTERNAL_KEY_DIR", d(name))
+            .env("TMPDIR", &dir)
             .stdout(log.try_clone().unwrap()).stderr(log).spawn().expect("spawn run");
         net.procs[k] = Some(child);
     }
     net.wait_height(0, 3, 90);
+    net
+}
+
+/// Founder reserve keys run as `aether run` like any Mac (docs/ops/reserve-keys.md):
+/// three keys that are not in the genesis voting set and never register follow
+/// the chain. With the genesis set holding four seats, not one of them joins —
+/// reserve keys only fill a committee that is short of four seats, because
+/// growing four to seven would put three seats on the founder's one Mac and let
+/// its outage stall the quorum. They stay followers with no share and no vote,
+/// and the chain never stops.
+#[test]
+fn founder_reserve_keys_stay_followers_over_a_full_committee() {
+    let _serial = serial();
+    let net = founder_reserve_net("reserve", 40, false);
+    let dir = &net.dir;
+    let d = |name: &str| dir.join(name).to_str().unwrap().to_string();
+    let reserve = ["r1", "r2", "r3"];
+    let n = net.procs.len();
     let reserve_keys: Vec<String> = reserve.iter().map(|r| keys_of(&d(r))).collect();
     // The reserve keys follow (no share, not voting), and stay that way.
 
@@ -1289,6 +1308,177 @@ fn founder_reserve_keys_stay_followers_over_a_full_committee() {
         .collect();
     assert!(!proposers.is_empty());
     assert!(reserve_keys.iter().all(|k| !proposers.contains(k)), "a reserve key proposed: {proposers:?}");
+}
+
+/// A consistent RPC snapshot lets this black-box test read the same public
+/// eligibility and silence records as rotation, without duplicating slot tags.
+fn devnet_state(net: &Net, node: usize) -> Option<(u64, aether_execution::WorldState)> {
+    let manifest = net.rpc(node, "aether_snapshot", json!([]))?;
+    let height = manifest["height"].as_u64()?;
+    let size = manifest["size"].as_u64()?;
+    let chunk = manifest["chunk"].as_u64()?;
+    let mut bytes = Vec::new();
+    for index in 0..size.div_ceil(chunk) {
+        let part = net.rpc(node, "aether_snapshotChunk", json!([height, index]))?;
+        bytes.extend(hex::decode(part["data"].as_str()?).ok()?);
+    }
+    assert_eq!(bytes.len() as u64, size, "snapshot length");
+    assert_eq!(blake3::hash(&bytes).to_hex().to_string(), manifest["blake3"].as_str()?, "snapshot digest");
+    let snapshot = aether_node::snapshot::Snapshot::from_bytes(&bytes).expect("decode snapshot");
+    assert_eq!(snapshot.summary.height, height);
+    let root = snapshot.summary.state_root;
+    let state = aether_execution::WorldState::from_parts(snapshot.entries, snapshot.codes.into_iter().collect());
+    assert_eq!(state.root(), root, "snapshot state root");
+    Some((height, state))
+}
+
+/// Mainnet standby + auto-join, with real supervised nodes and a real reshare.
+/// About 20–25 minutes at the mainnet one-second block floor; run separately:
+/// cargo test -p aether-node --test devnet founder_reserve_fills_one_silent_seat_without_halting -- --ignored --nocapture
+#[test]
+#[ignore = "seven supervised processes, registry-v3 warmup and two silent epochs"]
+fn founder_reserve_fills_one_silent_seat_without_halting() {
+    let _serial = serial();
+    // The 64-block handoff delay alone exceeds the old fixture's 40-block
+    // epoch. This leaves room for the offline dealer's quorum-log wait too.
+    const E: u64 = 192;
+    let mut net = founder_reserve_net("reserve-autojoin", E, true);
+    let dir = net.dir.clone();
+    let d = |name: &str| dir.join(name).to_str().unwrap().to_string();
+    let operators = ["g1", "g2", "g3", "g4"];
+    let reserves = ["r1", "r2", "r3"];
+    let operator_keys: Vec<String> = operators.iter().map(|name| keys_of(&d(name))).collect();
+    let reserve_keys: Vec<String> = reserves.iter().map(|name| keys_of(&d(name))).collect();
+    let expected: std::collections::BTreeSet<String> = operator_keys.iter().cloned().collect();
+    let initial: Value = serde_json::from_slice(&std::fs::read(d("A-final.json")).unwrap()).unwrap();
+    assert_eq!(net.rpc(0, "aether_status", json!([])).unwrap()["free_registration"], true);
+    for (i, name) in operators.iter().enumerate() {
+        net.cli(&["candidate-register", "--data", &d(name), "--registrar-rpc", &net.url(0),
+            "--rpc", &net.url(0), "--from-dev", &(i + 1).to_string()]);
+    }
+    eprintln!("reserve devnet: four operators registered; waiting for registry-v3 qualification ({E}-block epochs)");
+
+    let mut last_height = net.height(0);
+    let mut progressed = Instant::now();
+    let mut observe = |net: &Net| {
+        let h = net.height(0);
+        if h > last_height {
+            last_height = h;
+            progressed = Instant::now();
+        }
+        assert!(progressed.elapsed() < Duration::from_secs(30),
+            "finalization stalled at {last_height} (see {}/*.log){}", dir.display(), net.log_tail(0));
+        h
+    };
+    // Registry v3 needs three good full epochs, not merely four registrations.
+    // Read at a boundary, before this epoch's answers replace last_epoch.
+    let end = Instant::now() + Duration::from_secs(8 * E + 240);
+    let mut checked_epoch = 0;
+    let (ready_height, state) = loop {
+        let h = observe(&net);
+        let epoch = h / E;
+        if h >= 4 * E && epoch != checked_epoch && h % E <= 1 {
+            if let Some((at, state)) = devnet_state(&net, 0) {
+                checked_epoch = epoch;
+                let reserve = aether_node::chain::Reserve::of(&state).expect("registered reserves");
+                let pool = aether_node::rotation::eligible(&state, at / E, 0);
+                let ops = aether_node::rotation::operators(&state);
+                let keys: std::collections::BTreeSet<String> = pool.iter().map(|(k, _)| k.clone()).collect();
+                if keys == expected && aether_node::rotation::independent(&pool, |k| ops.get(k).cloned(), &reserve) == 4 {
+                    break (at, state);
+                }
+            }
+        }
+        assert!(Instant::now() < end, "four independent operators never qualified (see {}/*.log)", dir.display());
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    let candidates = aether_execution::registry::candidates(&state);
+    assert_eq!(candidates.len(), 4);
+    assert_eq!(candidates.iter().map(|c| c.operator).collect::<std::collections::BTreeSet<_>>().len(), 4);
+    let reserve = aether_node::chain::Reserve::of(&state).unwrap();
+    assert_eq!(reserve.members.len(), 3, "four operators keep the reserve set registered");
+    assert_eq!(aether_rewards::committee(&state).iter().map(|(k, _)| k.clone()).collect::<std::collections::BTreeSet<_>>(), expected);
+    assert!(net.rpc(0, "aether_handoff", json!([])).is_some_and(|v| v.is_null()), "no reserve joins a full four-seat committee");
+    for name in reserves {
+        assert!(!dir.join(name).join("threshold.json").exists(), "{name} waits without a voting share");
+    }
+    eprintln!("reserve devnet: four independent operators qualified at height {ready_height}; all reserves are followers");
+    assert_agree(&net, &(0..7).collect::<Vec<_>>(), ready_height);
+    let dead_key = &operator_keys[3];
+    let dead_index = candidates.iter().find(|c| hex::encode(c.validator_key) == *dead_key).unwrap().index;
+
+    // No departure announcement, hand-made reshare or intervention: kill g4's
+    // supervisor; its leased node child exits with it. The other three still
+    // have the old 3-of-4 quorum throughout the automatic replacement.
+    net.kill(3);
+    let stopped = Instant::now() + Duration::from_secs(15);
+    while net.rpc(3, "aether_status", json!([])).is_some() {
+        observe(&net);
+        assert!(Instant::now() < stopped, "the stopped operator's node child is still running");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let down_epoch = net.height(0) / E;
+    eprintln!("reserve devnet: g4 stopped in epoch {down_epoch}; waiting for two confirmed silent epochs");
+    let end = Instant::now() + Duration::from_secs(4 * E + 240);
+    let mut checked_epoch = down_epoch;
+    let mut confirmed_boundary = None;
+    let handoff = loop {
+        let h = observe(&net);
+        if confirmed_boundary.is_none() && h / E >= down_epoch + 2 && h / E != checked_epoch {
+            if let Some((at, state)) = devnet_state(&net, 0) {
+                if at / E == h / E {
+                    checked_epoch = at / E;
+                    if let Some((epoch, last, prev)) = aether_rewards::beacons::recent(&state, dead_index) {
+                        if epoch + 1 == at / E && last < aether_node::rotation::SILENT_BELOW && prev < aether_node::rotation::SILENT_BELOW {
+                            confirmed_boundary = Some((epoch + 1) * E);
+                            eprintln!("reserve devnet: two silent epochs confirmed at boundary {} (answers {prev}, {last})", (epoch + 1) * E);
+                        }
+                    }
+                }
+            }
+        }
+        if let (Some(boundary), Some(handoff)) = (confirmed_boundary,
+            net.rpc(0, "aether_handoff", json!([])).filter(|v| !v.is_null())) {
+            assert!(handoff["at"].as_u64().unwrap() >= boundary, "no replacement before two confirmed silent epochs");
+            assert!(handoff["switch"].as_u64().unwrap() <= boundary + E, "the reserve takes the missing seat within one epoch");
+            break handoff;
+        }
+        if let Some(boundary) = confirmed_boundary {
+            assert!(h <= boundary + E, "no automatic reserve handoff within one epoch (see {}/*.log)", dir.display());
+        }
+        assert!(Instant::now() < end, "no automatic reserve handoff (see {}/*.log)", dir.display());
+        std::thread::sleep(Duration::from_millis(250));
+    };
+    let members: std::collections::BTreeSet<String> = handoff["members"].as_array().unwrap().iter()
+        .map(|m| m["key"].as_str().unwrap().to_string()).collect();
+    assert_eq!(members.len(), 4, "fill only the missing seat, never grow four to seven");
+    assert!(!members.contains(dead_key), "the silent operator's seat is replaced");
+    assert!(operator_keys[..3].iter().all(|k| members.contains(k)), "all surviving operators retain their seats");
+    let joined: Vec<usize> = reserve_keys.iter().enumerate().filter_map(|(i, k)| members.contains(k).then_some(i)).collect();
+    assert_eq!(joined.len(), 1, "exactly one standby reserve joins");
+    let j = 4 + joined[0];
+    let round = handoff["round"].as_u64().unwrap();
+    let switch = handoff["switch"].as_u64().unwrap();
+    let target = switch + 12;
+    eprintln!("reserve devnet: one reserve joins in round {round} at switch {switch}; checking local installation and height {target}");
+    let installed = || {
+        let read = |file: &str| std::fs::read(dir.join(reserves[j - 4]).join(file)).ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+        let (Some(network), Some(threshold)) = (read("network.json"), read("threshold.json")) else { return false };
+        network["round"].as_u64() == Some(round) && threshold["round"].as_u64() == Some(round)
+            && network["output"] == handoff["output"] && threshold["output"] == handoff["output"]
+            && network["identity"] == initial["identity"]
+    };
+    let end = Instant::now() + Duration::from_secs(E + 180);
+    while !installed() || [0, 1, 2, 4, 5, 6].iter().any(|&i| net.height(i) < target) {
+        observe(&net);
+        assert!(Instant::now() < end, "the automatic reserve did not install and finalize (see {}/*.log)", dir.display());
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    assert_agree(&net, &[0, 1, 2, 4, 5, 6], target);
+    for (i, name) in reserves.iter().enumerate() {
+        assert_eq!(dir.join(name).join("threshold.json").exists(), i == joined[0], "only the seated reserve receives a share");
+    }
 }
 
 fn keys_of(dir: &str) -> String {

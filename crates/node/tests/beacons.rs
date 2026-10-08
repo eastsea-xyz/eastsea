@@ -2,8 +2,8 @@
 //! chain (docs/design/15-node-rewards.md, docs/design/12-launch-plan.md).
 //! Five Macs: two answer every slot, one answers half of them, one tries to
 //! fake answers, one never re-attests. Founder reserve keys fill only the
-//! seats a committee is short of four and leave once four independent
-//! operators qualify.
+//! seats a committee is short of four and return to registered standby when
+//! qualified Macs cover those seats.
 
 mod common;
 
@@ -134,7 +134,7 @@ fn reserve_members() -> Vec<(String, String)> {
 }
 
 #[test]
-fn founder_reserve_keys_fill_only_a_short_committee_and_leave_at_four() {
+fn founder_reserve_keys_fill_only_a_short_committee_and_keep_standby_at_four() {
     // Mac 4 is the founder's own registered Mac: not independent.
     let founder = common::addr(&aether_crypto::P256Signer::from_seed(&common::seed(5)).unwrap());
     let reserve = Reserve { operator: founder, members: reserve_members() };
@@ -181,7 +181,7 @@ fn founder_reserve_keys_fill_only_a_short_committee_and_leave_at_four() {
     n.step_with(vec![reg], None, vec![], vec![]);
     n.run_to(5 * E);
     assert!(aether_rewards::next_roster(&n.parent.state).is_none(), "already the rule's seat count");
-    // A fourth: every reserve key leaves at the next epoch.
+    // A fourth: qualified Macs cover every seat, so reserves return to standby.
     let reg = n.register(3);
     n.step_with(vec![reg], None, vec![], vec![]);
     n.run_to(6 * E);
@@ -191,6 +191,7 @@ fn founder_reserve_keys_fill_only_a_short_committee_and_leave_at_four() {
     assert_eq!(leave.len(), 4, "qualifying Macs fill the seats");
     assert!([common::mac_entry(0), common::mac_entry(1), common::mac_entry(4)].iter().all(|m| leave.contains(m)));
     assert!(leave.contains(&common::mac_entry(2)) || leave.contains(&common::mac_entry(3)), "a qualifying Mac takes the freed seat");
+    assert_eq!(Reserve::of(&n.parent.state).unwrap().members, reserve.members, "every reserve remains registered and eligible");
     // They earned nothing: not candidates, no beacons.
     assert!(registry::candidates(&n.parent.state).iter().all(|c| !reserve.members.iter().any(|(k, _)| *k == hex::encode(c.validator_key))));
 }

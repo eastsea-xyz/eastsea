@@ -986,6 +986,19 @@ fn past_two_overdue_epochs_the_service_credit_stops() {
 }
 
 #[test]
+fn unseating_and_credit_expiry_keep_every_reserve_key_registered() {
+    let mut s = reserve_net(0);
+    let registered = reserve(&s).unwrap();
+    switch(&mut s, EB, true);
+    set_overdue(&mut s, 2, RESERVE_GRACE_EPOCHS + 1);
+    assert!(reserve_served(&s, 2).is_none(), "expiry stops only service credit");
+    assert_eq!(reserve(&s), Some(registered.clone()));
+    switch(&mut s, 3 * EB, false);
+    assert_eq!(seated(&s), (0, 0));
+    assert_eq!(reserve(&s), Some(registered), "unseated keys remain eligible standby");
+}
+
+#[test]
 fn the_recent_word_keeps_the_last_two_epochs() {
     let mut s = network();
     register(&mut s, 0, operator(0), 0);

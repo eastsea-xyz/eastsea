@@ -2,7 +2,7 @@
 // #11): every transition, the retry schedule per cause, resume after a kill in
 // each state, a corrupt record, and a clock that goes backwards. Pure logic,
 // no Sparkle, no app:
-//   swiftc -o ./tmp/update-state-check apps/wallet/Sources/Brand.swift apps/wallet/Sources/UpdateTracker.swift apps/wallet/Tests/update-state/main.swift && ./tmp/update-state-check
+//   scripts/test-swift-pure.sh   (run update-state)
 import Foundation
 func check(_ c: Bool, _ m: String) { if !c { print("FAIL", m); exit(1) } }
 
@@ -27,6 +27,137 @@ final class Rig {
         tracker = UpdateTracker(recordURL: record, now: { [clock] in clock.now })
     }
     func advance(_ secs: TimeInterval) { clock.now = clock.now.addingTimeInterval(secs) }
+}
+
+// A named regression can also run alone to verify its failure before the fix.
+func regression(_ name: String, _ body: () throws -> Void) rethrows {
+    let selected = CommandLine.arguments.dropFirst().first
+    guard selected == nil || selected == name else { return }
+    try body()
+    print("update-state: \(name) passed")
+    if selected == name { exit(0) }
+}
+
+try regression("no-update") {
+    let current = Rig()
+    let noUpdate = NSError(domain: "SUSparkleErrorDomain", code: 1001) // SUNoUpdateError
+    for _ in 0..<50 { current.tracker.aborted(error: noUpdate) }
+    check(current.tracker.state == .idle, "50 no-update checks leave the tracker idle")
+    let record = try JSONSerialization.jsonObject(with: Data(contentsOf: current.tracker.recordURLForTesting!)) as! [String: Any]
+    check(record["attempts"] as? Int == 0, "50 no-update checks persist zero attempts")
+    check(record["lastCause"] == nil && record["nextRetryAt"] == nil, "no-update clears the failure and retry")
+    check(!current.tracker.retryDue() && current.tracker.sentence == nil, "up to date has no retry or failure notice")
+    check(Rig(resuming: current.tracker.recordURLForTesting!, from: t0).tracker.state == .idle,
+          "no-update remains idle after relaunch")
+
+    let recovering = Rig()
+    recovering.tracker.aborted(error: NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut))
+    recovering.tracker.aborted(error: noUpdate)
+    check(recovering.tracker.state == .idle, "a successful current feed clears an earlier URL failure")
+    recovering.tracker.aborted(error: NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut))
+    check(recovering.tracker.state.failedAttempts == 1, "the next URL failure starts at attempt one")
+
+    for code in [4007, 4008] { // SUInstallationCanceledError, SUInstallationAuthorizeLaterError
+        let cancelled = Rig()
+        cancelled.tracker.found(key: "k1", version: "1.2", build: "34")
+        cancelled.tracker.downloading(); cancelled.tracker.verified(); cancelled.tracker.installing()
+        cancelled.tracker.aborted(error: NSError(domain: "SUSparkleErrorDomain", code: code))
+        check(cancelled.tracker.state == .idle, "user cancellation/deferral \(code) returns to idle")
+        let record = try JSONSerialization.jsonObject(with: Data(contentsOf: cancelled.tracker.recordURLForTesting!)) as! [String: Any]
+        check(record["attempts"] as? Int == 0, "user cancellation/deferral \(code) clears attempts")
+    }
+
+    let refused = Rig()
+    refused.tracker.found(key: "k1", version: "1.2", build: "34")
+    refused.tracker.refused()
+    refused.tracker.aborted(error: noUpdate)
+    check(refused.tracker.state == .idle, "no-update clears the notice for a refused item")
+    check(!refused.tracker.found(key: "k1", version: "1.2", build: "34"), "no-update cannot unblock a refused item")
+    let refusedResume = Rig(resuming: refused.tracker.recordURLForTesting!, from: t0)
+    check(!refusedResume.tracker.found(key: "k1", version: "1.2", build: "34"), "the refusal survives idle and relaunch")
+    check(refusedResume.tracker.found(key: "k2", version: "1.3", build: "40"), "a different item is still allowed")
+
+    let exhausted = Rig()
+    for _ in 0..<3 {
+        exhausted.tracker.found(key: "k1", version: "1.2", build: "34")
+        exhausted.tracker.downloading(); exhausted.tracker.verified(); exhausted.tracker.installing()
+        exhausted.tracker.aborted(networkError: false)
+    }
+    exhausted.tracker.aborted(error: noUpdate)
+    check(!exhausted.tracker.found(key: "k1", version: "1.2", build: "34"), "no-update cannot restart an exhausted install")
+
+    let health = Rig()
+    health.tracker.found(key: "k1", version: "1.2", build: "34")
+    health.tracker.downloading(); health.tracker.verified(); health.tracker.installing()
+    health.tracker.relaunched(runningVersion: "1.2", runningBuild: "34")
+    let awaiting = health.tracker.state
+    health.tracker.aborted(error: noUpdate)
+    check(health.tracker.state == awaiting, "a current feed cannot erase an ongoing health check")
+    health.advance(UpdateTracker.healthWindow)
+    health.tracker.tick()
+    let failedHealth = health.tracker.state
+    health.tracker.aborted(error: noUpdate)
+    check(health.tracker.state == failedHealth, "a current feed cannot erase a recorded health failure")
+}
+
+regression("network-cap") {
+    let feed = Rig()
+    let timeout = NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut)
+    for attempt in 1...50 {
+        feed.tracker.aborted(error: timeout)
+        guard case .failed(let cause, let count, let next?) = feed.tracker.state else {
+            check(false, "a real URL failure counts as network attempt \(attempt)")
+            return
+        }
+        check(cause == .network && count == attempt, "a real URL failure counts as network attempt \(attempt)")
+        check(next.timeIntervalSince(feed.now) == min(60 * pow(2, Double(attempt - 1)), 3600),
+              "URL failure \(attempt) backs off exponentially within one hour")
+    }
+    check(!feed.tracker.retryDue(), "a fresh URL failure waits for backoff")
+    feed.advance(3599)
+    check(!feed.tracker.retryDue(), "the capped backoff waits until its deadline")
+    feed.advance(1)
+    check(feed.tracker.retryDue(), "the capped backoff is due at one hour")
+
+    let wrapped = Rig()
+    wrapped.tracker.aborted(error: NSError(domain: "SUSparkleErrorDomain", code: 2001,
+        userInfo: [NSUnderlyingErrorKey: timeout]))
+    check(wrapped.tracker.state == .failed(cause: .network, attempts: 1, nextRetryAt: t0.addingTimeInterval(60)),
+          "a Sparkle error wrapping a URL failure still backs off")
+    let parse = Rig()
+    parse.tracker.aborted(error: NSError(domain: "SUSparkleErrorDomain", code: 1000))
+    check(parse.tracker.state == .idle, "a feed parse error creates no network retry or gate refusal")
+    let installing = Rig()
+    installing.tracker.found(key: "k1", version: "1.2", build: "34")
+    installing.tracker.downloading(); installing.tracker.verified(); installing.tracker.installing()
+    installing.tracker.aborted(networkError: false)
+    let installFailure = installing.tracker.state
+    installing.tracker.aborted(error: NSError(domain: "SUSparkleErrorDomain", code: 1000))
+    check(installing.tracker.state == installFailure, "a feed parse error preserves the previous install outcome")
+    let foreign = Rig()
+    foreign.tracker.aborted(error: NSError(domain: NSURLErrorDomain, code: 1001))
+    check(foreign.tracker.state.failedCause == .network, "a no-update code in another domain is not benign")
+}
+
+try regression("found-after-backoff") {
+    // A 0.7.1 record can carry a six-hour feed backoff with no item at all.
+    let record = freshRecord()
+    try JSONSerialization.data(withJSONObject: ["v": 1, "phase": "failed", "lastCause": "network", "attempts": 30,
+        "nextRetryAt": t0.addingTimeInterval(6 * 3600).timeIntervalSinceReferenceDate]).write(to: record)
+    let legacy = Rig(resuming: record, from: t0)
+    check(legacy.tracker.retryDue(), "an obsolete six-hour backoff cannot delay a fresh feed check")
+    check(legacy.tracker.found(key: "k2", version: "1.3", build: "40"), "a newer item after the old backoff proceeds")
+    check(legacy.tracker.state == .found(version: "1.3", build: "40"), "the newer item replaces the failed feed state")
+    check(!legacy.tracker.retryDue(), "finding the newer item clears the scheduled retry")
+    legacy.tracker.downloading()
+    check(legacy.tracker.state == .downloading(version: "1.3", build: "40"), "the gate can proceed with the newer item")
+
+    let pending = Rig()
+    pending.tracker.aborted(error: NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut))
+    check(!pending.tracker.retryDue(), "the current backoff has not expired")
+    check(pending.tracker.found(key: "k2", version: "1.3", build: "40"), "a successful newer feed overrides backoff immediately")
+    pending.tracker.downloading()
+    check(pending.tracker.state == .downloading(version: "1.3", build: "40"), "no pending retry delays an available update")
 }
 
 // R11: an unverified running-node observation cannot complete update health.

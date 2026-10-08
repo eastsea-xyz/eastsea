@@ -48,18 +48,19 @@ test('today’s actual snapshot preserves Mac, overlapping role and standby-key 
   const fixture = JSON.parse(await readFile(new URL('fixture.json', source), 'utf8'));
   assert.deepEqual(normalizePresence(fixture), normalizePresence(normalizePresence(fixture)));
   assert.equal(fixture.total, 4);
-  assert.equal(fixture.founder_operated, 4);
-  assert.deepEqual(fixture.roles.validator, { count: 4, founder_operated: 4 });
-  assert.deepEqual(fixture.roles.wallet, { count: 3, founder_operated: 2 });
+  assert.equal(fixture.quality_version, 1);
+  assert.ok(!/founder/i.test(JSON.stringify(fixture)));
+  assert.deepEqual(fixture.roles.validator, { count: 4 });
+  assert.deepEqual(fixture.roles.wallet, { count: 3 });
   assert.deepEqual(fixture.reserve_keys, { standby: 3, seated: 0 });
-  assert.deepEqual(fixture.regions, [
-    { continent: 'asia', country: 'KR', count: 3, founder_operated: 3 },
-    { continent: 'asia', count: 1, founder_operated: 1 },
+  assert.deepEqual(fixture.regions.map(({ continent, country, count }) => ({ continent, ...(country && { country }), count })), [
+    { continent: 'asia', country: 'KR', count: 3 }, { continent: 'asia', count: 1 },
   ]);
+  assert.equal(fixture.regions.reduce((sum, region) => sum + region.quality.score_sum, 0), 162053);
   assert.deepEqual(fixture.recent_blocks, [], 'today snapshot never invents traffic');
   const brand = JSON.parse(await readFile(new URL('design/brand/tokens.json', root), 'utf8'));
   const css = await readFile(new URL('globe.css', source), 'utf8');
-  for (const key of ['bg', 'accent', 'gold']) assert.ok(css.includes(brand.color.dark[key].value));
+  for (const key of ['bg', 'accent', 'success']) assert.ok(css.includes(brand.color.dark[key].value));
 });
 
 test('the old 24-Mac illustrative example is retained only in the test tree', async () => {
@@ -68,4 +69,21 @@ test('the old 24-Mac illustrative example is retained only in the test tree', as
   assert.equal(clean.total, 24);
   assert.equal(new Set(clean.regions.map(region => region.continent)).size, 6);
   assert.ok(!(await readdir(source)).includes('presence-example.json'));
+});
+
+
+test('both surfaces retain the bilingual same-rules FAQ disclosure', async () => {
+  const html = await readFile(new URL('site/index.html', root), 'utf8');
+  assert.ok(html.includes('창업자도 다른 사람과 같은 규칙으로 맥을 가동해야 보상을 받습니다.'));
+  assert.ok(html.includes('the founder has to run Macs under the same rules as everyone else to receive any.'));
+});
+
+test('globe assets have no founder UI, discrete tier names or golden quality endpoints', async () => {
+  for (const name of ['data.js', 'live-globe.js', 'globe.js', 'globe.css', 'fixture.json']) {
+    const text = await readFile(new URL(name, source), 'utf8');
+    assert.ok(!/founder|창업자|founderOperated|founder_operated/i.test(text), name);
+    assert.ok(!/bronze|silver|platinum|legend-tier|tier-count/i.test(text), name);
+  }
+  const css = await readFile(new URL('globe.css', source), 'utf8');
+  assert.ok(!css.includes('--lg-pulse'));
 });

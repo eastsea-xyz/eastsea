@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createGlobe } from '../live-globe/globe.js';
 import { mountLiveGlobe } from '../live-globe/live-globe.js';
+import { summarizeQuality, qualityMean, qualityColor } from '../live-globe/quality.js';
 
 const today = JSON.parse(await readFile(new URL('../live-globe/fixture.json', import.meta.url)));
 const example = JSON.parse(await readFile(new URL('./fixtures/presence-example.json', import.meta.url)));
@@ -89,7 +90,7 @@ function browserHost({ reduced = false, webgl = true, width = 600, height = 600,
   const root = new Element('div'), stage = new Element('div'), canvas = new Element('canvas');
   stage.append(canvas); root.append(stage);
   const descendants = element => [element, ...element.children.flatMap(descendants)];
-  const find = (className, continent) => descendants(root).find(el => el.className?.split(' ').includes(className) && (!continent || el.dataset.continent === continent));
+  const find = (className, continent) => descendants(root).find(el => el.className?.split(' ').includes(className) && (!continent || (continent.includes(':') ? el.dataset.region === continent : el.dataset.continent === continent)));
   function frame(milliseconds = 16) {
     now += milliseconds;
     for (const [key, timer] of [...timers]) if (timer.at <= now) { timers.delete(key); timer.callback(); }
@@ -103,13 +104,13 @@ test('largest-region opening centers its labeled marker, regardless of hemispher
   for (const continent of ['asia', 'north_america', 'oceania', 'europe']) {
     const host = browserHost();
     const globe = createGlobe(host.canvas, { seed: 'test-session' });
-    globe.setLabels({ continents: { [continent]: continent }, founder: 'Founder', independent: 'Independent' });
-    globe.update({ ...today, regions: [{ continent, count: 4, founder_operated: 4 }] });
+    globe.setLabels({ continents: { [continent]: continent }, quality: 'Quality' });
+    globe.update({ ...today, regions: [{ continent, count: 4, quality: summarizeQuality([.1, .2, .3, .4]) }] });
     const marker = host.find('lg-marker', continent);
     assert.equal(marker.hidden, false);
     assert.equal(marker.style.transform, 'translate3d(300.00px,300.00px,0)');
     assert.equal(host.find('lg-marker-label', undefined).tagName, 'span');
-    assert.equal(marker.children[1].textContent, `${continent} 4 · Founder 4`);
+    assert.equal(marker.children[1].textContent, `${continent} 4`);
     globe.destroy();
   }
 });
@@ -120,13 +121,13 @@ test('every populated region has a front marker or an explicit list-only visibil
     let visibility;
     const globe = createGlobe(host.canvas, { seed: 'coverage', onVisibility: entries => { visibility = entries; } });
     const snapshot = { ...example, total: 27, versions: { '0.7.4': 27 }, regions: [
-      ...example.regions, { continent: 'africa', count: 2, founder_operated: 0 },
-      { continent: 'antarctica', count: 1, founder_operated: 0 },
+      ...example.regions, { continent: 'africa', count: 2, quality: summarizeQuality([.3, .4]) },
+      { continent: 'antarctica', count: 1, quality: summarizeQuality([.2]) },
     ] };
     globe.update(snapshot);
     for (let angle = 0; angle < 25; angle++) {
-      for (const { continent, visibility: state } of visibility) {
-        const marker = host.find('lg-marker', continent);
+      for (const { key, continent, visibility: state } of visibility) {
+        const marker = host.find('lg-marker', key);
         if (state === 'front') assert.equal(marker?.hidden, false, continent);
         else {
           assert.ok(['back', 'unknown'].includes(state), continent);
@@ -139,16 +140,21 @@ test('every populated region has a front marker or an explicit list-only visibil
   }
 });
 
-test('gold core area and independent ring follow explicit founder share; pulse diameter uses sqrt count', () => {
+test('pulse mean color/intensity varies continuously, with identical cores and sqrt population size', () => {
   const host = browserHost();
   const globe = createGlobe(host.canvas, { seed: 1 });
-  globe.update(example);
+  const regions = [
+    { continent: 'asia', count: 9, quality: summarizeQuality(Array(9).fill(.413)) },
+    { continent: 'europe', count: 6, quality: summarizeQuality(Array(6).fill(.417)) },
+  ];
+  globe.update({ ...today, total: 15, roles: { validator: { count: 4 }, wallet: { count: 3 }, candidate: { count: 0 }, follower: { count: 0 } }, versions: { '0.7.4': 15 }, regions });
   const asia = host.find('lg-marker', 'asia'), europe = host.find('lg-marker', 'europe');
-  const core = asia.children[0].children[1], ring = asia.children[0].children[2];
-  assert.ok(Math.abs(Number(core.getAttribute('r')) ** 2 / 225 - 4 / 9) < 1e-10);
-  assert.ok(Math.abs(Number(ring.getAttribute('stroke-dasharray').split(' ')[0]) / 100 - 5 / 9) < 1e-10);
-  assert.equal(europe.children[0].children[1].getAttribute('r'), '0');
-  assert.equal(europe.children[0].children[2].getAttribute('stroke-dasharray'), '100 100');
+  assert.equal(asia.children[0].children[1].getAttribute('r'), '15');
+  assert.equal(europe.children[0].children[1].getAttribute('r'), '15');
+  assert.equal(asia.children[0].children[2].getAttribute('stroke-dasharray'), null);
+  assert.equal(asia.style['--marker-color'], qualityColor(.413));
+  assert.equal(europe.style['--marker-color'], qualityColor(.417));
+  assert.notEqual(asia.style['--marker-intensity'], europe.style['--marker-intensity']);
   assert.equal(asia.style['--marker-size'], '40px');
   assert.ok(parseFloat(europe.style['--marker-size']) < 40);
   globe.destroy();
@@ -158,8 +164,8 @@ test('all-region mobile static-map labels remain inside the stage without overla
   const host = browserHost({ reduced: true, width: 350, height: 350, labelDimensions: { width: 150, height: 36 } });
   const globe = createGlobe(host.canvas, { seed: 'mobile-map' });
   const snapshot = { ...example, total: 27, versions: { '0.7.4': 27 }, regions: [
-    ...example.regions, { continent: 'africa', count: 2, founder_operated: 0 },
-    { continent: 'antarctica', count: 1, founder_operated: 0 },
+    ...example.regions, { continent: 'africa', count: 2, quality: summarizeQuality([.3, .4]) },
+    { continent: 'antarctica', count: 1, quality: summarizeQuality([.2]) },
   ] };
   globe.update(snapshot);
   const labels = host.descendants(host.root).filter(el => el.className === 'lg-marker' && !el.hidden).map(marker => {
@@ -167,7 +173,7 @@ test('all-region mobile static-map labels remain inside the stage without overla
     const label = marker.children[1];
     return { x: x - 22 + parseFloat(label.style.left), y: y - 22 + parseFloat(label.style.top), w: 150, h: 36, code: marker.dataset.continent };
   });
-  assert.equal(labels.length, 7);
+  assert.equal(labels.length, 9);
   for (const rect of labels) {
     assert.ok(rect.x >= 3.99 && rect.x + rect.w <= 346.01, rect.code);
     assert.ok(rect.y >= 3.99 && rect.y + rect.h <= 346.01, rect.code);
@@ -233,7 +239,8 @@ test('WebGL context loss shows the static map and recovers with labels/counts in
   host.canvas.dispatch('webglcontextrestored');
   assert.equal(host.canvas.dataset.renderer, 'webgl');
   assert.equal(host.frames.size, 1);
-  assert.equal(host.find('lg-marker', 'asia').dataset.count, '4');
+  assert.equal(host.find('lg-marker', 'asia').dataset.count, '1');
+  assert.equal(host.find('lg-marker', 'asia:KR').dataset.count, '3');
   globe.destroy();
 });
 
@@ -245,17 +252,18 @@ test('component links pulse hover and full-row taps, and discloses today’s exa
   });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(host.find('lg-status').textContent, '오늘 기준 실제 구성 (실시간 아님)');
-  assert.equal(host.find('lg-role-summary').textContent, '검증자 4 (창업자 운영 4) · 지갑 노드 3 (창업자 운영 2) · 예비 키 3 (대기 3 / 참여 0)');
+  assert.equal(host.find('lg-role-summary').textContent, '검증자 4 · 지갑 노드 3 · 예비 키 3 (대기 3 / 참여 0)');
   const pulse = host.find('lg-marker', 'asia'), row = host.find('lg-region', 'asia');
   pulse.dispatch('pointerenter'); assert.equal(row.dataset.active, 'true');
   pulse.dispatch('pointerleave'); assert.equal(row.dataset.active, 'false');
   row.dispatch('click'); assert.equal(pulse.dataset.active, 'true');
   assert.equal(row.dataset.count, '4');
-  assert.equal(row.dataset.founderOperated, '4');
-  assert.equal(host.find('lg-country').textContent, '대한민국 · 3');
+  assert.equal(Number(row.dataset.quality), 162053 / 4 / 1_000_000);
+  assert.equal(host.find('lg-country').children[0].textContent, '대한민국');
+  assert.equal(host.find('lg-country').children[1].textContent, '3');
   component.setLanguage('en');
   assert.equal(host.find('lg-status').textContent, 'Today’s actual setup (not live)');
-  assert.equal(pulse.children[1].textContent, 'Asia 4 · founder 4');
+  assert.equal(pulse.children[1].textContent, 'Asia 1');
   component.destroy(); assert.equal(host.frames.size, 0); assert.equal(host.timers.size, 0);
 });
 
@@ -296,4 +304,83 @@ test('offscreen observer stops polling, GPU frames and CSS pulses; visibility re
   component.destroy();
   assert.equal(host.frames.size, 0); assert.equal(host.timers.size, 0);
   assert.ok(host.intersections.every(observer => observer.disconnected));
+});
+
+
+test('country k=3 pulses are centroid-based and disjoint; smaller countries fold into continent pulses', () => {
+  const host = browserHost({ reduced: true });
+  const globe = createGlobe(host.canvas, { seed: 'countries' });
+  globe.update(today);
+  const country = host.find('lg-marker', 'asia:KR');
+  const continent = host.find('lg-marker', 'asia');
+  assert.equal(country.dataset.count, '3');
+  assert.equal(continent.dataset.count, '1');
+  assert.equal(country.hidden, false);
+  assert.notEqual(country.style.transform, continent.style.transform);
+  assert.equal(Number(country.dataset.quality), qualityMean(today.regions[0].quality, 3));
+  globe.update({ ...today, total: 2, roles: { validator: { count: 2 }, wallet: { count: 0 }, candidate: { count: 0 }, follower: { count: 0 } }, versions: { '0.7.4': 2 }, regions: [{ ...today.regions[0], count: 2, quality: summarizeQuality([.1, .2]) }] });
+  assert.equal(host.find('lg-marker', 'asia:KR'), undefined, 'a disappearing country leaves no hidden country DOM identifier');
+  assert.equal(host.find('lg-marker', 'asia').dataset.count, '2');
+  globe.destroy();
+});
+
+test('component has one two-end gradient and smooth region strips with no founder/tier fields', async () => {
+  const host = browserHost({ reduced: true });
+  const component = mountLiveGlobe(host.root, { fixture: true, seed: 'gradient', fetch: async () => ({ ok: true, json: async () => today }) });
+  await new Promise(resolve => setImmediate(resolve));
+  const legend = host.find('lg-quality-labels');
+  assert.deepEqual(legend.children.map(el => el.textContent), ['New', 'Long, steady operation']);
+  assert.equal(host.descendants(host.root).filter(el => el.className === 'lg-quality-gradient').length, 1);
+  const strip = host.find('lg-region', 'asia').children[3];
+  assert.ok(strip.children[0].style.maskImage.includes('linear-gradient'));
+  assert.ok(strip.getAttribute('aria-label').includes('spread'));
+  const country = host.find('lg-country', 'asia:KR');
+  const pulse = host.find('lg-marker', 'asia:KR');
+  pulse.dispatch('pointerenter'); assert.equal(country.dataset.active, 'true');
+  country.dispatch('click'); assert.equal(pulse.dataset.active, 'true');
+  for (const el of host.descendants(host.root)) {
+    assert.ok(!/founder|창업자|tier/i.test(JSON.stringify({ text: el.textContent, dataset: el.dataset, attributes: [...el.attributes] })));
+  }
+  component.setLanguage('ko');
+  assert.deepEqual(legend.children.map(el => el.textContent), ['새로 합류', '오래·성실하게 운영']);
+  component.destroy();
+});
+
+test('refreshing the component preserves selection without postponing idle rotation', async () => {
+  const host = browserHost();
+  const component = mountLiveGlobe(host.root, { fixture: true, seed: 'refresh', fetch: async () => ({ ok: true, json: async () => today }) });
+  await new Promise(resolve => setImmediate(resolve));
+  host.frame();
+  const row = host.find('lg-region', 'asia');
+  row.dispatch('click');
+  host.frame(9_900);
+  component.setLanguage('ko');
+  const marker = host.find('lg-marker', 'asia');
+  const held = marker.style.transform;
+  host.frame(200);
+  assert.notEqual(marker.style.transform, held);
+  assert.equal(row.dataset.active, 'true');
+  component.destroy();
+});
+
+test('country keyboard focus and button identity survive language changes and live refreshes', async () => {
+  const host = browserHost();
+  let requests = 0;
+  const component = mountLiveGlobe(host.root, {
+    endpoint: 'https://rpc.example.invalid', seed: 'focus',
+    fetch: async () => { requests++; return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: today }) }; },
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  const country = host.find('lg-country', 'asia:KR');
+  const button = country.children[0];
+  button.focus();
+  component.setLanguage('ko');
+  host.frame(10_000);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(requests, 2);
+  assert.equal(host.find('lg-country', 'asia:KR'), country);
+  assert.equal(country.children[0], button);
+  assert.equal(host.doc.activeElement, button);
+  assert.ok(host.descendants(host.root).includes(button));
+  component.destroy();
 });

@@ -2,279 +2,156 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import {
-  CONTINENTS, normalizePresence, continentTotals, sessionJitter, requestPresence,
-} from '../live-globe/data.js';
+import { CONTINENTS, normalizePresence, continentTotals, sessionJitter, requestPresence } from '../live-globe/data.js';
+import { summarizeQuality, qualityMean, qualityScore } from '../live-globe/quality.js';
+import { COUNTRY_CENTROIDS } from '../live-globe/countries.js';
 
+const zeroQuality = count => ({ score_sum: 0, histogram: [count, ...Array(19).fill(0)] });
+const region = (continent, count, extra = {}) => ({ continent, count, quality: zeroQuality(count), ...extra });
 function presence(regions = [], extras = {}) {
-  regions = regions.map((region) => ({ founder_operated: 0, ...region }));
-  const total = regions.reduce((sum, region) => sum + region.count, 0);
-  const founder_operated = regions.reduce((sum, region) => sum + region.founder_operated, 0);
+  regions = regions.map(r => region(r.continent, r.count, r));
+  const total = regions.reduce((sum, r) => sum + r.count, 0);
   return {
-    schema_version: 2, scope: 'node', total, founder_operated,
-    roles: {
-      validator: { count: total, founder_operated },
-      wallet: { count: 0, founder_operated: 0 },
-      candidate: { count: 0, founder_operated: 0 },
-      follower: { count: 0, founder_operated: 0 },
-    },
-    versions: { '0.7.4': total }, reserve_keys: { standby: 0, seated: 0 }, regions,
-    ...extras,
+    schema_version: 3, scope: 'node', quality_version: 1, total,
+    roles: { validator: { count: total }, wallet: { count: 0 }, candidate: { count: 0 }, follower: { count: 0 } },
+    versions: { '0.7.4': total }, reserve_keys: { standby: 0, seated: 0 }, regions, ...extras,
   };
 }
+const response = result => ({ ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result }) });
+const genericDataError = error => error.message === 'Invalid presence data.';
+const genericRequestError = error => error.message === 'Live presence is unavailable.';
 
-const response = (result) => ({ ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result }) });
-const genericDataError = (error) => error.message === 'Invalid presence data.';
-const genericRequestError = (error) => error.message === 'Live presence is unavailable.';
-
-test('today snapshot counts four founder Macs, overlapping wallets and separate reserve keys', async () => {
+test('today snapshot has four Macs, separate validators, and scores from the supplied streaks', async () => {
   const fixture = JSON.parse(await readFile(new URL('../live-globe/fixture.json', import.meta.url), 'utf8'));
-  assert.deepEqual(fixture, {
-    schema_version: 2, scope: 'node', total: 4, founder_operated: 4,
-    roles: {
-      validator: { count: 4, founder_operated: 4 },
-      wallet: { count: 3, founder_operated: 2 },
-      candidate: { count: 0, founder_operated: 0 },
-      follower: { count: 0, founder_operated: 0 },
-    },
-    versions: { '0.7.4': 4 }, reserve_keys: { standby: 3, seated: 0 },
-    regions: [
-      { continent: 'asia', country: 'KR', count: 3, founder_operated: 3 },
-      { continent: 'asia', count: 1, founder_operated: 1 },
-    ],
-    recent_blocks: [],
-  });
   const model = normalizePresence(fixture);
   assert.equal(model.total, 4);
-  assert.equal(model.founder_operated, 4);
+  assert.deepEqual(model.roles.validator, { count: 4 });
+  assert.deepEqual(model.roles.wallet, { count: 3 });
   assert.equal(Object.values(model.roles).reduce((sum, role) => sum + role.count, 0), 7);
-  assert.equal(Object.values(model.roles).reduce((sum, role) => sum + role.founder_operated, 0), 6);
-  assert.deepEqual(continentTotals(model).find((region) => region.continent === 'asia'), {
-    continent: 'asia', count: 4, founder_operated: 4,
-  });
+  assert.deepEqual(model.reserve_keys, { standby: 3, seated: 0 });
+  const scores = [152, 24, 10, 9].map(streakHours => qualityScore({ streakHours }));
+  assert.deepEqual(model.regions, [
+    region('asia', 1, { quality: summarizeQuality(scores.slice(3)) }),
+    region('asia', 3, { country: 'KR', quality: summarizeQuality(scores.slice(0, 3)) }),
+  ]);
+  assert.deepEqual(continentTotals(model).find(r => r.continent === 'asia'), region('asia', 4, { quality: summarizeQuality(scores) }));
   assert.deepEqual(model.recent_blocks, []);
+  assert.ok(!/founder/i.test(JSON.stringify(model)));
 });
 
-test('the former 24 Mac geography is preserved only as an illustrative test fixture', async () => {
-  // These founder counts and block events are synthetic, not live observations.
+test('the former 24-Mac geography is an illustrative test fixture with aggregate quality only', async () => {
   const fixture = JSON.parse(await readFile(new URL('./fixtures/presence-example.json', import.meta.url), 'utf8'));
   const model = normalizePresence(fixture);
   assert.equal(model.total, 24);
-  assert.equal(model.founder_operated, 4);
-  assert.deepEqual(continentTotals(model), [
-    { continent: 'africa', count: 0, founder_operated: 0 },
-    { continent: 'asia', count: 9, founder_operated: 4 },
-    { continent: 'europe', count: 6, founder_operated: 0 },
-    { continent: 'north_america', count: 6, founder_operated: 0 },
-    { continent: 'south_america', count: 1, founder_operated: 0 },
-    { continent: 'oceania', count: 1, founder_operated: 0 },
-    { continent: 'antarctica', count: 0, founder_operated: 0 },
-    { continent: 'unknown', count: 1, founder_operated: 0 },
+  assert.deepEqual(continentTotals(model).map(({ continent, count }) => ({ continent, count })), [
+    { continent: 'africa', count: 0 }, { continent: 'asia', count: 9 }, { continent: 'europe', count: 6 },
+    { continent: 'north_america', count: 6 }, { continent: 'south_america', count: 1 },
+    { continent: 'oceania', count: 1 }, { continent: 'antarctica', count: 0 }, { continent: 'unknown', count: 1 },
   ]);
+  assert.ok(!/founder/i.test(JSON.stringify(fixture)));
 });
 
-test('country thresholds 0, 1, 2 and 3 fold without losing any Macs', () => {
+test('country thresholds 0, 1, 2 and 3 fold counts and quality together', () => {
   for (const count of [0, 1, 2, 3]) {
-    const model = normalizePresence(presence([{ continent: 'asia', country: 'KR', count }]));
+    const model = normalizePresence(presence([region('asia', count, { country: 'KR' })]));
+    assert.deepEqual(model.regions, count === 0 ? [] : [region('asia', count, count < 3 ? {} : { country: 'KR' })]);
     assert.equal(model.total, count);
-    assert.deepEqual(model.regions, count === 0 ? [] : count < 3
-      ? [{ continent: 'asia', count, founder_operated: 0 }]
-      : [{ continent: 'asia', country: 'KR', count, founder_operated: 0 }]);
-    assert.equal(model.regions.reduce((sum, region) => sum + region.count, 0), count);
     if (count < 3) assert.ok(!JSON.stringify(model).includes('KR'));
   }
 });
 
-test('duplicate buckets merge before k=3 and null countries fold into continents', () => {
+test('duplicate country buckets merge before k=3, preserving the full quality distribution', () => {
   const input = presence([
-    { continent: 'asia', country: 'KR', count: 1, founder_operated: 1 },
-    { continent: 'asia', country: 'KR', count: 2, founder_operated: 1 },
-    { continent: 'asia', country: 'JP', count: 1, founder_operated: 1 },
-    { continent: 'asia', country: 'JP', count: 1, founder_operated: 0 },
-    { continent: 'asia', count: 2 },
-    { continent: 'asia', country: null, count: 1 },
-    { continent: 'unknown', count: 1 },
+    region('asia', 1, { country: 'KR', quality: summarizeQuality([.2]) }),
+    region('asia', 2, { country: 'KR', quality: summarizeQuality([.4, .7]) }),
+    region('asia', 2, { country: 'JP', quality: summarizeQuality([.1, .8]) }),
+    region('asia', 2, { quality: summarizeQuality([.3, .6]) }),
+    region('asia', 1, { country: null, quality: summarizeQuality([.5]) }),
+    region('unknown', 1),
   ]);
   const model = normalizePresence(input);
   assert.deepEqual(model.regions, [
-    { continent: 'asia', count: 5, founder_operated: 1 },
-    { continent: 'asia', country: 'KR', count: 3, founder_operated: 2 },
-    { continent: 'unknown', count: 1, founder_operated: 0 },
+    region('asia', 5, { quality: summarizeQuality([.1, .8, .3, .6, .5]) }),
+    region('asia', 3, { country: 'KR', quality: summarizeQuality([.2, .4, .7]) }),
+    region('unknown', 1),
   ]);
   assert.equal(model.total, 9);
-  assert.equal(model.founder_operated, 3);
-  assert.equal(model.regions.reduce((sum, region) => sum + region.founder_operated, 0), 3);
+  assert.ok(!JSON.stringify(model).includes('JP'));
   assert.deepEqual(normalizePresence({ ...input, regions: [...input.regions].reverse() }), model);
   assert.deepEqual(normalizePresence(model), model);
-  assert.ok(!JSON.stringify(model).includes('JP'));
+  assert.ok(Math.abs(qualityMean(continentTotals(model).find(r => r.continent === 'asia').quality, 8) - .45) < 1e-12);
 });
 
-test('the threshold never releases a small cross-continent country bucket', () => {
-  const model = normalizePresence(presence([
-    { continent: 'asia', country: 'KR', count: 2 },
-    { continent: 'europe', country: 'KR', count: 1 },
-  ]));
-  assert.deepEqual(model.regions, [
-    { continent: 'asia', count: 2, founder_operated: 0 },
-    { continent: 'europe', count: 1, founder_operated: 0 },
-  ]);
+test('countries never combine across continents to pass k=3', () => {
+  const model = normalizePresence(presence([region('asia', 2, { country: 'KR' }), region('europe', 1, { country: 'KR' })]));
+  assert.deepEqual(model.regions, [region('asia', 2), region('europe', 1)]);
 });
 
-test('versions and regions preserve Mac totals while roles may overlap', () => {
-  const model = normalizePresence(presence([
-    { continent: 'africa', count: 2, founder_operated: 1 },
-    { continent: 'europe', country: 'DE', count: 4, founder_operated: 2 },
-    { continent: 'oceania', count: 1 },
-  ], {
-    roles: {
-      validator: { count: 2, founder_operated: 1 },
-      wallet: { count: 5, founder_operated: 2 },
-      candidate: { count: 4, founder_operated: 2 },
-      follower: { count: 1, founder_operated: 0 },
-    },
+test('roles overlap without inflating Mac totals and reserve keys stay separate', () => {
+  const model = normalizePresence(presence([region('africa', 2), region('europe', 4, { country: 'DE' }), region('oceania', 1)], {
+    roles: { validator: { count: 2 }, wallet: { count: 5 }, candidate: { count: 4 }, follower: { count: 1 } },
     versions: { '0.7.4': 4, '0.7.3': 2, '0.7.5-rc.1+build.2': 1 },
+    reserve_keys: { standby: 3, seated: 2 },
   }));
-  for (const parts of [Object.values(model.versions), model.regions.map((r) => r.count)]) {
-    assert.equal(parts.reduce((sum, count) => sum + count, 0), model.total);
-  }
+  assert.equal(model.total, 7);
   assert.equal(Object.values(model.roles).reduce((sum, role) => sum + role.count, 0), 12);
-  assert.equal(Object.values(model.roles).reduce((sum, role) => sum + role.founder_operated, 0), 5);
-  assert.equal(model.founder_operated, 3);
-  assert.deepEqual(continentTotals(model), [
-    { continent: 'africa', count: 2, founder_operated: 1 },
-    { continent: 'asia', count: 0, founder_operated: 0 },
-    { continent: 'europe', count: 4, founder_operated: 2 },
-    { continent: 'north_america', count: 0, founder_operated: 0 },
-    { continent: 'south_america', count: 0, founder_operated: 0 },
-    { continent: 'oceania', count: 1, founder_operated: 0 },
-    { continent: 'antarctica', count: 0, founder_operated: 0 },
-    { continent: 'unknown', count: 0, founder_operated: 0 },
-  ]);
-  assert.deepEqual(continentTotals(normalizePresence(presence())).map((r) => r.continent), CONTINENTS);
-});
-
-test('roles need not exhaust the Mac total and all four roles have explicit founder counts', () => {
-  const input = presence([{ continent: 'unknown', count: 3, founder_operated: 1 }], {
-    roles: {
-      validator: { count: 1, founder_operated: 1 },
-      wallet: { count: 0, founder_operated: 0 },
-      candidate: { count: 0, founder_operated: 0 },
-      follower: { count: 0, founder_operated: 0 },
-    },
-  });
-  assert.deepEqual(normalizePresence(input).roles, input.roles);
-  for (const role of Object.keys(input.roles)) {
-    assert.throws(() => normalizePresence({
-      ...input, roles: { ...input.roles, [role]: { count: 4, founder_operated: 0 } },
-    }), genericDataError);
-    assert.throws(() => normalizePresence({
-      ...input, roles: { ...input.roles, [role]: { count: 1, founder_operated: 2 } },
-    }), genericDataError);
-    const roles = { ...input.roles };
-    delete roles[role];
-    assert.throws(() => normalizePresence({ ...input, roles }), genericDataError);
+  assert.equal(Object.values(model.versions).reduce((sum, count) => sum + count, 0), 7);
+  assert.equal(continentTotals(model).reduce((sum, r) => sum + r.count, 0), 7);
+  assert.deepEqual(continentTotals(presence()).map(r => r.continent), CONTINENTS);
+  for (const role of Object.keys(model.roles)) {
+    const roles = { ...model.roles }; delete roles[role];
+    assert.throws(() => normalizePresence({ ...model, roles }), genericDataError);
+    assert.throws(() => normalizePresence({ ...model, roles: { ...model.roles, [role]: { count: 8 } } }), genericDataError);
+  }
+  assert.throws(() => normalizePresence({ ...model, reserve_keys: { standby: Number.MAX_SAFE_INTEGER, seated: 1 } }), genericDataError);
+  for (const key of ['standby', 'seated']) for (const count of [undefined, null, true, '3', NaN, Infinity, -1, .5]) {
+    assert.throws(() => normalizePresence({ ...model, reserve_keys: { ...model.reserve_keys, [key]: count } }), genericDataError);
   }
 });
 
-test('missing, malformed and inconsistent founder counts never imply independent Macs', () => {
-  const base = presence([{ continent: 'asia', count: 3, founder_operated: 2 }]);
-  for (const founder_operated of [undefined, null, true, false, '2', NaN, Infinity, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, 4]) {
-    assert.throws(() => normalizePresence({ ...base, founder_operated }), genericDataError);
-    assert.throws(() => normalizePresence({
-      ...base, regions: [{ ...base.regions[0], founder_operated }],
-    }), genericDataError);
-    assert.throws(() => normalizePresence({
-      ...base, roles: { ...base.roles, validator: { count: 3, founder_operated } },
-    }), genericDataError);
-  }
-  for (const founder_operated of [0, 1, 3]) {
-    assert.throws(() => normalizePresence({ ...base, founder_operated }), genericDataError);
-  }
-  const missingTotal = { ...base };
-  delete missingTotal.founder_operated;
-  const missingRegion = { ...base.regions[0] };
-  delete missingRegion.founder_operated;
-  const missingRole = { ...base.roles.validator };
-  delete missingRole.founder_operated;
-  for (const input of [
-    missingTotal,
-    { ...base, regions: [missingRegion] },
-    { ...base, roles: { ...base.roles, validator: missingRole } },
-    { ...base, schema_version: 1 },
-  ]) assert.throws(() => normalizePresence(input), genericDataError);
+test('schema v3 requires valid continuous quality aggregates, never silently inventing them', () => {
+  const base = presence([region('asia', 3)]);
+  for (const quality of [undefined, null, [], 1,
+    { score_sum: -1, histogram: zeroQuality(3).histogram },
+    { score_sum: .5, histogram: zeroQuality(3).histogram },
+    { score_sum: 3_000_001, histogram: zeroQuality(3).histogram },
+    { score_sum: 0, histogram: [3] },
+    { score_sum: 0, histogram: zeroQuality(2).histogram },
+    { score_sum: 0, histogram: [1.5, 1.5, ...Array(18).fill(0)] },
+    { score_sum: 0, histogram: [0, 3, ...Array(18).fill(0)] },
+  ]) assert.throws(() => normalizePresence({ ...base, regions: [{ ...base.regions[0], quality }] }), genericDataError);
+  for (const version of [undefined, 0, 2, '1']) assert.throws(() => normalizePresence({ ...base, quality_version: version }), genericDataError);
+  for (const version of [undefined, 1, 2]) assert.throws(() => normalizePresence({ ...base, schema_version: version }), genericDataError);
 });
 
-test('founder attribution is copied from aggregates without interpreting operator hints', () => {
-  const input = presence([{
-    continent: 'asia', country: 'KR', count: 3, founder_operated: 0,
-    operator_id: 'founder', genesis_validator: true,
-  }], { founder_operator_id: 'founder', genesis_validators: ['founder'] });
-  const model = normalizePresence(input);
-  assert.equal(model.founder_operated, 0);
-  assert.equal(model.regions[0].founder_operated, 0);
-  assert.equal(model.roles.validator.founder_operated, 0);
-  assert.ok(!JSON.stringify(model).includes('operator_id'));
-  assert.ok(!JSON.stringify(model).includes('genesis'));
-});
-
-test('reserve keys are separate from observed Macs, founder Macs and active role totals', () => {
-  const input = presence([], { reserve_keys: { standby: 3, seated: 2 } });
-  const model = normalizePresence(input);
-  assert.equal(model.total, 0);
-  assert.equal(model.founder_operated, 0);
-  assert.deepEqual(model.reserve_keys, { standby: 3, seated: 2 });
-  assert.ok(Object.values(model.roles).every((role) => role.count === 0 && role.founder_operated === 0));
-  assert.ok(continentTotals(model).every((region) => region.count === 0 && region.founder_operated === 0));
-  for (const value of [undefined, null, [], 3, '3']) {
-    assert.throws(() => normalizePresence({ ...input, reserve_keys: value }), genericDataError);
-  }
-  for (const key of ['standby', 'seated']) {
-    for (const value of [undefined, null, true, '3', NaN, Infinity, -1, 0.5, Number.MAX_SAFE_INTEGER + 1]) {
-      assert.throws(() => normalizePresence({
-        ...input, reserve_keys: { ...input.reserve_keys, [key]: value },
-      }), genericDataError);
-    }
-  }
-  assert.throws(() => normalizePresence({
-    ...input, reserve_keys: { standby: Number.MAX_SAFE_INTEGER, seated: 1 },
-  }), genericDataError);
-});
-
-test('unknown, sensitive and coordinate fields never enter the output model', () => {
+test('founder, self-asserted quality, identifiers and locations never enter the public model', () => {
   const sensitive = {
-    ip: '192.0.2.80', city: 'Seoul', coordinates: [37.5, 127],
+    founder_operated: 3, founder_operator_id: 'founder', operator_id: 'private-operator',
+    quality_score: 1, tier: 'best', ip: '192.0.2.80', city: 'Seoul', coordinates: [37.5, 127],
     lat: 37.5, lon: 127, node_id: 'private-node', relay_url: 'https://private.invalid',
   };
-  const model = normalizePresence(presence([
-    { continent: 'asia', country: 'KR', count: 3, founder_operated: 2, ...sensitive },
-  ], {
-    ...sensitive,
-    roles: {
-      validator: { count: 3, founder_operated: 2, ...sensitive },
-      wallet: { count: 0, founder_operated: 0 },
-      candidate: { count: 0, founder_operated: 0 },
-      follower: { count: 0, founder_operated: 0 },
-      ...sensitive,
-    },
+  const input = presence([region('asia', 3, { country: 'KR', ...sensitive, quality: { ...zeroQuality(3), ...sensitive } })], {
+    ...sensitive, roles: { validator: { count: 3, ...sensitive }, wallet: { count: 0 }, candidate: { count: 0 }, follower: { count: 0 } },
     reserve_keys: { standby: 3, seated: 1, ...sensitive },
     recent_blocks: [{ height: 7, continent: 'unknown', country: 'KR', ...sensitive }],
-  }));
-  assert.deepEqual(model, {
-    schema_version: 2, scope: 'node', total: 3, founder_operated: 2,
-    roles: {
-      validator: { count: 3, founder_operated: 2 },
-      wallet: { count: 0, founder_operated: 0 },
-      candidate: { count: 0, founder_operated: 0 },
-      follower: { count: 0, founder_operated: 0 },
-    },
-    versions: { '0.7.4': 3 }, reserve_keys: { standby: 3, seated: 1 },
-    regions: [{ continent: 'asia', country: 'KR', count: 3, founder_operated: 2 }],
-    recent_blocks: [{ height: 7, continent: 'unknown' }],
   });
-  const output = JSON.stringify(model);
-  for (const key of Object.keys(sensitive)) assert.ok(!output.includes(key));
-  for (const word of ['192.0.2.80', 'Seoul', 'private-node', 'private.invalid']) assert.ok(!output.includes(word));
-  assert.deepEqual(continentTotals(model).flatMap(Object.keys), Array(8).fill(['continent', 'count', 'founder_operated']).flat());
+  const model = normalizePresence(input);
+  assert.deepEqual(model, { ...presence([region('asia', 3, { country: 'KR' })]), reserve_keys: { standby: 3, seated: 1 }, recent_blocks: [{ height: 7, continent: 'unknown' }] });
+  for (const key of Object.keys(sensitive)) assert.ok(!JSON.stringify(model).includes(key), key);
+  assert.deepEqual(continentTotals(model).flatMap(Object.keys), Array(8).fill(['continent', 'count', 'quality']).flat());
+});
+
+test('bundled country centroids cover all current ISO codes without location data requests', () => {
+  assert.equal(Object.keys(COUNTRY_CENTROIDS).length, 249);
+  for (const [country, point] of Object.entries(COUNTRY_CENTROIDS)) {
+    assert.deepEqual(normalizePresence(presence([region('asia', 3, { country })])).regions[0].country, country);
+    assert.ok(point.every(Number.isFinite));
+    assert.ok(Math.abs(point[0]) <= 180 && Math.abs(point[1]) <= 90);
+    assert.ok(Object.isFrozen(point));
+    const jitter = sessionJitter(`asia:${country}`, 'session');
+    assert.ok(jitter.every(n => Math.abs(n) <= .035));
+  }
+  assert.notDeepEqual(sessionJitter('asia:KR', 'session'), sessionJitter('asia', 'session'));
 });
 
 test('malformed schema, codes, labels and totals are rejected with generic errors', () => {
@@ -283,9 +160,9 @@ test('malformed schema, codes, labels and totals are rejected with generic error
     null, [], 'private-node',
     { ...base, schema_version: 1 }, { ...base, scope: 'individual' },
     { ...base, total: 4 }, { ...base, total: -1 }, { ...base, total: '3' },
-    { ...base, roles: { ...base.roles, validator: { count: 4, founder_operated: 0 } } },
+    { ...base, roles: { ...base.roles, validator: { count: 4} } },
     { ...base, roles: { validator: base.roles.validator, candidate: base.roles.candidate } },
-    { ...base, roles: { ...base.roles, validator: { count: 1.5, founder_operated: 0 } } },
+    { ...base, roles: { ...base.roles, validator: { count: 1.5} } },
     { ...base, roles: { validator: 3, wallet: 0, candidate: 0, follower: 0 } },
     { ...base, versions: { '0.7.4': 2 } },
     { ...base, versions: { '192.0.2.1-private-node': 3 } },
@@ -293,13 +170,13 @@ test('malformed schema, codes, labels and totals are rejected with generic error
     { ...base, versions: { '0.7.4-01': 3 } },
     { ...base, versions: { '00.7.4': 3 } },
     { ...base, versions: { [`0.7.4-${'a'.repeat(65)}`]: 3 } },
-    { ...base, regions: [{ continent: 'Seoul', count: 3, founder_operated: 0 }] },
-    ...['kr', 'KOR', 'XX', '12', ''].map((country) => ({ ...base, regions: [{ continent: 'asia', country, count: 3, founder_operated: 0 }] })),
-    { ...base, regions: [{ continent: 'asia', count: '3', founder_operated: 0 }] },
-    { ...base, regions: [{ continent: 'asia', count: NaN, founder_operated: 0 }] },
-    { ...base, regions: [{ continent: 'asia', count: Infinity, founder_operated: 0 }] },
-    { ...base, regions: [{ continent: 'asia', count: -3, founder_operated: 0 }] },
-    { ...base, regions: [{ continent: 'asia', count: Number.MAX_SAFE_INTEGER + 1, founder_operated: 0 }] },
+    { ...base, regions: [{ continent: 'Seoul', count: 3}] },
+    ...['kr', 'KOR', 'XX', '12', ''].map((country) => ({ ...base, regions: [{ continent: 'asia', country, count: 3}] })),
+    { ...base, regions: [{ continent: 'asia', count: '3'}] },
+    { ...base, regions: [{ continent: 'asia', count: NaN}] },
+    { ...base, regions: [{ continent: 'asia', count: Infinity}] },
+    { ...base, regions: [{ continent: 'asia', count: -3}] },
+    { ...base, regions: [{ continent: 'asia', count: Number.MAX_SAFE_INTEGER + 1}] },
     { ...base, recent_blocks: null },
     { ...base, recent_blocks: [{ height: -1, continent: 'asia' }] },
     { ...base, recent_blocks: [{ height: 1, continent: 'private-node' }] },
@@ -323,7 +200,7 @@ test('collection caps and unsafe cumulative counts are rejected', () => {
   // Summing overlapping roles would overflow, but each role fits the Mac total.
   const overlapping = normalizePresence(presence([{ continent: 'asia', count: size }], {
     roles: Object.fromEntries(['validator', 'wallet', 'candidate', 'follower'].map((role) => [
-      role, { count: size, founder_operated: 0 },
+      role, { count: size},
     ])),
   }));
   assert.equal(overlapping.total, size);
@@ -336,7 +213,7 @@ test('prototype tricks, inherited fields and getters cannot populate the model',
   const injected = JSON.parse('{"__proto__":{"node_id":"private-node"}}');
   const getter = { ...base };
   Object.defineProperty(getter, 'regions', { get() { throw new Error('private-node'); } });
-  const regionGetter = { continent: 'asia', count: 3, founder_operated: 0 };
+  const regionGetter = { continent: 'asia', count: 3};
   Object.defineProperty(regionGetter, 'country', { get() { throw new Error('Seoul'); } });
   const arrayHole = [ , ];
   for (const input of [
@@ -349,28 +226,26 @@ test('prototype tricks, inherited fields and getters cannot populate the model',
   assert.deepEqual(normalizePresence(Object.assign(Object.create(null), base)), normalizePresence(base));
 });
 
-test('nested founder and reserve fields reject prototypes and getters without reading them', () => {
-  const base = presence([{ continent: 'asia', count: 3, founder_operated: 2 }]);
+test('nested quality, role and reserve fields reject getters without reading them', () => {
+  const base = presence([{ continent: 'asia', count: 3 }]);
   let calls = 0;
-  const getter = () => { calls++; throw new Error('private-founder'); };
-  const topGetter = { ...base };
-  Object.defineProperty(topGetter, 'founder_operated', { get: getter });
-  const regionGetter = { ...base.regions[0] };
-  Object.defineProperty(regionGetter, 'founder_operated', { get: getter });
-  const roleGetter = { ...base.roles.validator };
-  Object.defineProperty(roleGetter, 'founder_operated', { get: getter });
-  const reserveGetter = { ...base.reserve_keys };
-  Object.defineProperty(reserveGetter, 'standby', { get: getter });
-  const injected = JSON.parse('{"__proto__":{"operator_id":"private-founder"}}');
+  const getter = () => { calls++; throw new Error('private-node'); };
+  const summary = { ...base.regions[0].quality };
+  Object.defineProperty(summary, 'score_sum', { get: getter });
+  const histogram = [...base.regions[0].quality.histogram];
+  Object.defineProperty(histogram, '0', { get: getter });
+  const role = { ...base.roles.validator };
+  Object.defineProperty(role, 'count', { get: getter });
+  const reserve = { ...base.reserve_keys };
+  Object.defineProperty(reserve, 'standby', { get: getter });
   for (const input of [
-    topGetter,
-    { ...base, regions: [regionGetter] },
-    { ...base, roles: { ...base.roles, validator: roleGetter } },
-    { ...base, reserve_keys: reserveGetter },
+    { ...base, regions: [{ ...base.regions[0], quality: summary }] },
+    { ...base, regions: [{ ...base.regions[0], quality: { ...base.regions[0].quality, histogram } }] },
+    { ...base, roles: { ...base.roles, validator: role } },
+    { ...base, reserve_keys: reserve },
+    { ...base, regions: [{ ...base.regions[0], quality: Object.create(base.regions[0].quality) }] },
     { ...base, roles: { ...base.roles, validator: Object.create(base.roles.validator) } },
-    { ...base, roles: { ...base.roles, validator: { ...base.roles.validator, ...injected } } },
     { ...base, reserve_keys: Object.create(base.reserve_keys) },
-    { ...base, reserve_keys: { ...base.reserve_keys, ...injected } },
   ]) assert.throws(() => normalizePresence(input), genericDataError);
   assert.equal(calls, 0);
 });

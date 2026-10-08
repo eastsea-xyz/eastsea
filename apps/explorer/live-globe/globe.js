@@ -1,4 +1,6 @@
-import { continentTotals, sessionJitter } from './data.js';
+import { normalizePresence, regionKey, sessionJitter } from './data.js';
+import { qualityMean, qualityColor } from './quality.js';
+import { COUNTRY_CENTROIDS } from './countries.js';
 import { LAND_POINTS, COASTLINE_POINTS } from './land.js';
 
 // These are bundled artwork anchors, never locations supplied by a node.
@@ -13,7 +15,10 @@ const MAX_ARCS = 7;
 const INITIAL_YAW = -92 * RADIANS;
 const INITIAL_PITCH = 35 * RADIANS;
 const IDLE_DELAY = 10_000;
-const COLORS = { sphere: '#071320', land: '#7CC4DC', coast: '#B7E2EF', pulse: '#E8BF59' };
+const COLORS = {
+  sphere: '#071320', land: '#7CC4DC', coast: '#B7E2EF',
+  'quality-start': '#7CC4DC', 'quality-end': '#5CCB98',
+};
 
 function vector(longitude, latitude) {
   return [Math.cos(latitude) * Math.sin(longitude), Math.sin(latitude), Math.cos(latitude) * Math.cos(longitude)];
@@ -198,32 +203,37 @@ export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = 
     for (const [name, value] of Object.entries(attributes)) el.setAttribute(name, String(value));
     return el;
   };
-  const markers = Object.entries(CENTROIDS).map(([continent, anchor], index) => {
-    const jitter = sessionJitter(continent, sessionSeed);
+  function makeMarker(region, anchor) {
+    const key = regionKey(region);
+    const jitter = sessionJitter(key, sessionSeed);
     const longitude = anchor[0] * RADIANS + clamp(Number(jitter[0]) || 0, -0.06, 0.06);
     const latitude = anchor[1] * RADIANS + clamp(Number(jitter[1]) || 0, -0.06, 0.06);
     const button = document.createElement('button');
-    button.type = 'button'; button.className = 'lg-marker'; button.dataset.continent = continent;
+    button.type = 'button'; button.className = 'lg-marker'; button.dataset.continent = region.continent;
+    button.dataset.region = key;
+    if (region.country) button.dataset.country = region.country;
     button.hidden = true;
     const orb = svgElement('svg', { viewBox: '-22 -22 44 44', 'aria-hidden': 'true' });
     orb.classList.add('lg-marker-orb');
-    const core = svgElement('circle', { cx: 0, cy: 0, r: 0, class: 'lg-marker-core' });
-    const ring = svgElement('circle', { cx: 0, cy: 0, r: 18, fill: 'none', 'stroke-width': 3, pathLength: 100, transform: 'rotate(-90)', class: 'lg-marker-ring' });
+    const core = svgElement('circle', { cx: 0, cy: 0, r: 15, class: 'lg-marker-core' });
+    const ring = svgElement('circle', { cx: 0, cy: 0, r: 18, fill: 'none', 'stroke-width': 2, class: 'lg-marker-ring' });
     const outline = svgElement('circle', { cx: 0, cy: 0, r: 21, fill: 'none', 'stroke-width': 1, class: 'lg-marker-outline' });
     orb.append(outline, core, ring);
     const label = document.createElement('span'); label.className = 'lg-marker-label';
     label.style.right = 'auto'; label.style.transform = 'none';
     button.append(orb, label); overlay.append(button);
-    const select = () => { interact(); onSelect(continent); };
+    const select = () => { interact(); onSelect(key); };
     const deselect = () => { if (document.activeElement !== button) onSelect(null); };
     button.addEventListener('pointerenter', select); button.addEventListener('pointerleave', deselect);
     button.addEventListener('focus', select); button.addEventListener('blur', () => onSelect(null));
     button.addEventListener('click', select);
     return {
-      continent, count: 0, founder_operated: 0, phase: index / 7, button, core, ring, label,
+      ...region, key, count: 0, score: 0, button, core, ring, label,
       position: new Float32Array([Math.cos(latitude) * Math.sin(longitude), Math.sin(latitude), Math.cos(latitude) * Math.cos(longitude)]),
     };
-  });
+  }
+  const markers = Object.entries(CENTROIDS).map(([continent, anchor]) => makeMarker({ continent }, anchor));
+  const byRegion = new Map(markers.map(marker => [marker.key, marker]));
   const byContinent = new Map(markers.map(marker => [marker.continent, marker]));
   const land = new Float32Array(LAND_POINTS);
   const coast = new Float32Array(COASTLINE_POINTS);
@@ -236,7 +246,7 @@ export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = 
   let width = 1, height = 1, dpr = 1, radius = 1;
   let yaw = INITIAL_YAW, pitch = INITIAL_PITCH, time = 0;
   let homeYaw = yaw, homePitch = pitch, centered = false, idleUntil = 0;
-  let labels = { continents: {}, founder: 'Founder', independent: 'Independent' }, visibilityKey = '';
+  let labels = { continents: {}, regions: {}, quality: 'Operator quality' }, visibilityKey = '';
   let unknownCount = 0;
   let frame = 0, lastFrame = 0, paused = false, visible = true, destroyed = false;
   let staticMode = true, pointer = null;
@@ -462,7 +472,7 @@ export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = 
       const p = marker.position;
       const facing = rotation[2] * p[0] + rotation[5] * p[1] + rotation[8] * p[2];
       const visibility = !marker.count ? 'empty' : staticMode || facing >= 0.10 ? 'front' : 'back';
-      states.push({ continent: marker.continent, visibility });
+      states.push({ key: marker.key, continent: marker.continent, country: marker.country, visibility });
       marker.button.hidden = visibility !== 'front';
       if (visibility !== 'front') continue;
       const x = staticMode ? left + (Math.atan2(p[0], p[2]) / (2 * Math.PI) + 0.5) * mapWidth : width / 2 + radius * (rotation[0] * p[0] + rotation[3] * p[1] + rotation[6] * p[2]);
@@ -471,10 +481,11 @@ export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = 
       marker.button.dataset.labelSide = x > width * 0.58 ? 'left' : 'right';
       front.push({ marker, x, y });
     }
-    // At most seven labels. Cache text metrics outside animation, then choose
+    // Cache text metrics outside animation, then choose
     // the closest in-bounds position that doesn't collide with another label.
-    // Markers themselves stay anchored to their continent centroids.
+    // Markers themselves stay anchored to their bundled region centroids.
     const occupied = [];
+    let crowded = false;
     const overlaps = (a, b) => a.x < b.x + b.w + 4 && a.x + a.w + 4 > b.x && a.y < b.y + b.h + 4 && a.y + a.h + 4 > b.y;
     front.sort((a, b) => a.y - b.y || a.x - b.x);
     for (const { marker, x, y } of front) {
@@ -482,30 +493,53 @@ export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = 
       const gap = parseFloat(marker.button.style.getPropertyValue('--marker-size')) / 2 + 8;
       const sides = marker.button.dataset.labelSide === 'left' ? [-1, 1] : [1, -1];
       let placement;
-      for (const shift of [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5]) {
-        for (const side of sides) {
-          const candidate = { x: clamp(side === 1 ? x + gap : x - gap - w, 4, Math.max(4, width - w - 4)), y: y - h / 2 + shift * (h + 5), w, h };
+      const rightEdge = Math.max(4, width - w - 4);
+      const candidates = [...sides.map(side => clamp(side === 1 ? x + gap : x - gap - w, 4, rightEdge)), 4, rightEdge];
+      for (let step = 0; step <= Math.ceil(height / (h + 5)) * 2; step++) {
+        const shift = step ? Math.ceil(step / 2) * (step % 2 ? 1 : -1) : 0;
+        for (const labelX of candidates) {
+          const candidate = { x: labelX, y: y - h / 2 + shift * (h + 5), w, h };
           if (candidate.y < 4 || candidate.y + h > height - 4 || occupied.some(rect => overlaps(candidate, rect))) continue;
           placement = candidate; break;
         }
         if (placement) break;
       }
-      placement ||= { x: clamp(x + gap, 4, Math.max(4, width - w - 4)), y: clamp(y - h / 2, 4, Math.max(4, height - h - 4)), w, h };
+      if (!placement) {
+        crowded = true;
+        placement = { x: clamp(x + gap, 4, Math.max(4, width - w - 4)), y: clamp(y - h / 2, 4, Math.max(4, height - h - 4)), w, h };
+      }
       occupied.push(placement);
       marker.label.style.left = `${(placement.x - x + 22).toFixed(2)}px`;
       marker.label.style.top = `${(placement.y - y + 22).toFixed(2)}px`;
     }
-    states.push({ continent: 'unknown', visibility: unknownCount ? 'unknown' : 'empty' });
-    const key = states.map(region => region.visibility).join(',');
+    // Greedy nearest-anchor placement can fragment the remaining space. When
+    // that happens, pack the visible labels into an in-bounds grid instead of
+    // silently overlapping them. Geographic pulses keep their exact anchors.
+    if (crowded && front.length) {
+      const w = Math.max(...front.map(({ marker }) => marker.labelWidth));
+      const h = Math.max(...front.map(({ marker }) => marker.labelHeight));
+      const columns = Math.max(1, Math.min(front.length, Math.floor((width - 3) / (w + 5))));
+      const rows = Math.ceil(front.length / columns);
+      if (rows * (h + 5) - 5 <= height - 8) {
+        const top = (height - rows * (h + 5) + 5) / 2;
+        front.forEach(({ marker, x, y }, i) => {
+          const left = columns === 1 ? (width - w) / 2 : 4 + i % columns * (width - w - 8) / (columns - 1);
+          marker.label.style.left = `${(left - x + 22).toFixed(2)}px`;
+          marker.label.style.top = `${(top + Math.floor(i / columns) * (h + 5) - y + 22).toFixed(2)}px`;
+        });
+      }
+    }
+    states.push({ key: 'unknown', continent: 'unknown', visibility: unknownCount ? 'unknown' : 'empty' });
+    const key = states.map(region => `${region.key}:${region.visibility}`).join(',');
     if (key !== visibilityKey) { visibilityKey = key; onVisibility(states); }
   }
 
   function labelMarkers() {
     for (const marker of markers) {
-      const name = labels.continents[marker.continent] || marker.continent;
-      const text = `${name} ${marker.count.toLocaleString()} · ${labels.founder} ${marker.founder_operated.toLocaleString()}`;
+      const name = labels.regions?.[marker.key] || labels.continents[marker.continent] || marker.continent;
+      const text = `${name} ${marker.count.toLocaleString()}`;
       marker.label.textContent = text;
-      marker.button.setAttribute('aria-label', `${text} · ${labels.independent} ${(marker.count - marker.founder_operated).toLocaleString()}`);
+      marker.button.setAttribute('aria-label', `${text} · ${labels.quality} ${(marker.score * 100).toFixed(1)} / 100`);
     }
     measureLabels();
   }
@@ -538,7 +572,13 @@ export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = 
       if (surface.width !== pixelWidth) surface.width = pixelWidth;
       if (surface.height !== pixelHeight) surface.height = pixelHeight;
     }
-    colors = { sphere: readColor(canvas, 'sphere'), land: readColor(canvas, 'land'), coast: readColor(canvas, 'coast'), pulse: readColor(canvas, 'pulse') };
+    colors = { sphere: readColor(canvas, 'sphere'), land: readColor(canvas, 'land'), coast: readColor(canvas, 'coast') };
+    const start = readColor(canvas, 'quality-start').css;
+    const end = readColor(canvas, 'quality-end').css;
+    for (const marker of markers) {
+      marker.button.style.setProperty('--marker-color', qualityColor(marker.score, start, end));
+      marker.button.style.setProperty('--marker-intensity', String(.65 + .35 * marker.score));
+    }
     measureLabels();
     draw();
   }
@@ -555,30 +595,43 @@ export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = 
 
   function update(model) {
     if (destroyed) return;
-    for (const marker of markers) { marker.count = 0; marker.founder_operated = 0; }
+    const clean = normalizePresence(model);
+    const activeKeys = new Set(clean.regions.map(regionKey));
+    for (let i = markers.length - 1; i >= 0; i--) {
+      const marker = markers[i];
+      if (marker.country && !activeKeys.has(marker.key)) {
+        marker.button.remove(); byRegion.delete(marker.key); markers.splice(i, 1);
+      } else { marker.count = 0; marker.score = 0; }
+    }
     unknownCount = 0;
-    for (const region of continentTotals(model)) {
-      const marker = byContinent.get(region.continent);
-      if (marker) { marker.count = region.count; marker.founder_operated = region.founder_operated; }
+    for (const region of clean.regions) {
+      const key = regionKey(region);
+      let marker = byRegion.get(key);
+      if (!marker && region.country) {
+        marker = makeMarker(region, COUNTRY_CENTROIDS[region.country]);
+        markers.push(marker); byRegion.set(key, marker);
+      }
+      if (marker) { marker.count = region.count; marker.score = qualityMean(region.quality, region.count); }
       else if (region.continent === 'unknown') unknownCount = region.count;
     }
-    const largest = markers.reduce((best, marker) => marker.count > (best?.count || 0) ? marker : best, null);
+    const totals = new Map();
+    for (const region of clean.regions) totals.set(region.continent, (totals.get(region.continent) || 0) + region.count);
+    const home = [...totals.keys()].reduce((best, code) =>
+      markers.some(marker => marker.continent === code && marker.count) && totals.get(code) > (totals.get(best) || 0) ? code : best, null);
+    const largest = markers.reduce((best, marker) => marker.continent === home && marker.count > (best?.count || 0) ? marker : best, null);
     if (!centered && largest) {
       yaw = homeYaw = -Math.atan2(largest.position[0], largest.position[2]);
       pitch = homePitch = Math.asin(largest.position[1]);
       centered = true;
     }
     for (const marker of markers) {
-      const share = marker.count ? marker.founder_operated / marker.count : 0;
       marker.button.style.setProperty('--marker-size', `${Math.min(60, 16 + Math.sqrt(marker.count) * 8)}px`);
-      marker.core.setAttribute('r', String(15 * Math.sqrt(share)));
-      marker.ring.setAttribute('stroke-dasharray', `${(1 - share) * 100} 100`);
-      marker.button.dataset.founderOperated = String(marker.founder_operated);
       marker.button.dataset.count = String(marker.count);
+      marker.button.dataset.quality = String(marker.score);
     }
     labelMarkers();
     arcCount = 0;
-    const blocks = Array.isArray(model?.recent_blocks) ? model.recent_blocks : [];
+    const blocks = clean.recent_blocks;
     for (let i = 1; i < Math.min(blocks.length, MAX_ARCS + 1); i++) {
       const from = byContinent.get(blocks[i - 1].continent), to = byContinent.get(blocks[i].continent);
       if (!from || !to || from === to) continue;
@@ -667,9 +720,9 @@ export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = 
   return {
     update,
     setLabels(next) { labels = next; labelMarkers(); draw(); },
-    setHighlight(code) {
-      interact();
-      for (const marker of markers) marker.button.dataset.active = String(marker.continent === code);
+    setHighlight(code, { interaction = true } = {}) {
+      if (interaction) interact();
+      for (const marker of markers) marker.button.dataset.active = String(marker.key === code || marker.continent === code);
     },
     setPaused(value) { paused = Boolean(value); reconcile(); },
     resize,

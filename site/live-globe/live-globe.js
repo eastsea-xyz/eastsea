@@ -1,4 +1,5 @@
-import { CONTINENTS, continentTotals, normalizePresence, requestPresence } from './data.js';
+import { CONTINENTS, continentTotals, normalizePresence, regionKey, requestPresence } from './data.js';
+import { qualityMean, qualityDensity, QUALITY_BINS } from './quality.js';
 import { createGlobe } from './globe.js';
 
 const COPY = {
@@ -10,21 +11,20 @@ const COPY = {
     unavailable: 'Live counts are unavailable. This node may not support presence yet. Retrying every 10 seconds.',
     stale: 'Last received snapshot · the latest refresh failed. Retrying every 10 seconds.',
     empty: 'This node currently sees no Macs.',
-    privacy: 'Grouped by home relay continent, not a Mac’s location. Countries appear only by opt-in, with at least 3 Macs.',
-    artwork: 'Dot size = Macs connected; placed per continent',
-    founderLegend: 'Gold = founder-operated nodes',
-    independentLegend: 'Ring = independent nodes',
-    founder: 'founder', independent: 'independent',
-    validators: 'Validators', wallet: 'Wallet nodes', founderRun: 'founder-run',
+    privacy: 'Continents follow the home relay. Country comes from the Mac’s region setting, on by default with a first-launch notice; it can be turned off in Settings. Country groups appear at 3 Macs or more.',
+    artwork: 'Dot size = Macs connected; countries at 3 Macs, otherwise continents',
+    qualityNew: 'New', qualitySteady: 'Long, steady operation',
+    quality: 'Operation quality', spread: 'spread',
+    validators: 'Validators', wallet: 'Wallet nodes',
     reserve: 'Reserve keys', standby: 'standby', seated: 'seated',
     visibility: { front: 'Front side of globe', back: 'Far side of globe · highlighted here', unknown: 'Continent unknown · list only', empty: '' },
     drag: 'Drag horizontally or use arrow keys to rotate.',
     map: 'Static map · reduced motion or WebGL unavailable',
     pause: 'Pause globe', resume: 'Resume globe',
-    canvas: 'Globe of continent totals. The complete counts are in the list beside it.',
-    list: 'Macs by continent',
+    canvas: 'Globe of country and continent groups, colored by operation quality. Complete counts and quality spreads are in the list beside it.',
+    list: 'Macs by country and continent',
     continents: ['Africa', 'Asia', 'Europe', 'North America', 'South America', 'Oceania', 'Antarctica', 'Region unknown'],
-    country: 'Country shared by opt-in',
+    country: 'Country from the Mac’s region setting',
   },
   ko: {
     caption: '이 노드가 보고 있는 Mac들',
@@ -34,21 +34,20 @@ const COPY = {
     unavailable: '연결 수를 불러올 수 없습니다. 이 노드가 아직 현황을 제공하지 않을 수 있습니다. 10초마다 다시 확인합니다.',
     stale: '마지막으로 받은 현황 · 새로고침에 실패했습니다. 10초마다 다시 확인합니다.',
     empty: '지금 이 노드가 보고 있는 Mac은 없습니다.',
-    privacy: 'Mac의 위치가 아닌 홈 릴레이의 대륙별 집계입니다. 국가는 직접 동의한 Mac이 3대 이상일 때만 표시합니다.',
-    artwork: '점 크기 = 연결된 Mac 수, 위치는 대륙 단위',
-    founderLegend: '금색 = 창업자 운영 노드',
-    independentLegend: '바깥 고리 = 독립 운영 노드',
-    founder: '창업자', independent: '독립 운영',
-    validators: '검증자', wallet: '지갑 노드', founderRun: '창업자 운영',
+    privacy: '대륙은 홈 릴레이를 따릅니다. 국가는 Mac의 지역 설정에서 가져오며, 처음 실행할 때 안내하고 기본으로 켭니다. 설정에서 끌 수 있고, 같은 국가의 Mac이 3대 이상일 때만 표시합니다.',
+    artwork: '점 크기 = 연결된 Mac 수, 3대 이상은 국가별 · 나머지는 대륙별',
+    qualityNew: '새로 합류', qualitySteady: '오래·성실하게 운영',
+    quality: '운영 품질', spread: '분포',
+    validators: '검증자', wallet: '지갑 노드',
     reserve: '예비 키', standby: '대기', seated: '참여',
     visibility: { front: '지구본 앞면', back: '지구본 뒷면 · 목록에서 확인', unknown: '대륙 미상 · 목록에서만 표시', empty: '' },
     drag: '가로로 끌거나 방향키로 지구본을 돌려 보세요.',
     map: '정적인 지도 · 동작 줄이기 또는 WebGL 미지원',
     pause: '지구본 멈추기', resume: '지구본 다시 돌리기',
-    canvas: '대륙별 연결 수를 표시한 지구본. 모든 수치는 옆 목록에서 확인할 수 있습니다.',
-    list: '대륙별 Mac 수',
+    canvas: '국가와 대륙별 연결 수를 운영 품질의 색으로 표시한 지구본. 모든 수치와 품질 분포는 옆 목록에서 확인할 수 있습니다.',
+    list: '국가·대륙별 Mac 수',
     continents: ['아프리카', '아시아', '유럽', '북아메리카', '남아메리카', '오세아니아', '남극', '지역 미상'],
-    country: '동의한 국가 정보',
+    country: 'Mac의 지역 설정에서 가져온 국가',
   },
 };
 
@@ -102,10 +101,14 @@ export function mountLiveGlobe(root, {
   controls.append(pause, interaction);
   const artCaption = element(doc, 'figcaption', 'lg-art-caption');
   const artwork = element(doc, 'p', 'lg-art-caption-line');
-  const legend = element(doc, 'p', 'lg-art-legend');
-  const founderLegend = element(doc, 'span', 'lg-legend-founders');
-  const independentLegend = element(doc, 'span', 'lg-legend-independent');
-  legend.append(founderLegend, doc.createTextNode(' · '), independentLegend);
+  const legend = element(doc, 'div', 'lg-art-legend');
+  const gradient = element(doc, 'span', 'lg-quality-gradient');
+  gradient.setAttribute('aria-hidden', 'true');
+  const legendLabels = element(doc, 'p', 'lg-quality-labels');
+  const newLabel = element(doc, 'span');
+  const steadyLabel = element(doc, 'span');
+  legendLabels.append(newLabel, steadyLabel);
+  legend.append(gradient, legendLabels);
   artCaption.append(artwork, legend);
   figure.append(stage, controls, artCaption);
 
@@ -136,10 +139,11 @@ export function mountLiveGlobe(root, {
     name.append(button);
     const value = element(doc, 'dd', 'lg-region-value', '—');
     const position = element(doc, 'dd', 'lg-region-position');
+    const strip = qualityStrip();
     const countries = element(doc, 'dd', 'lg-countries');
-    row.append(name, value, position, countries);
+    row.append(name, value, position, strip, countries);
     list.append(row);
-    rows.set(code, { row, button, value, position, countries });
+    rows.set(code, { row, button, value, position, strip, countries });
     row.addEventListener('pointerenter', () => highlight(code));
     row.addEventListener('pointerleave', () => {
       if (highlighted === code && doc.activeElement !== button) highlight(null);
@@ -148,7 +152,9 @@ export function mountLiveGlobe(root, {
     button.addEventListener('blur', () => {
       if (highlighted === code) highlight(null);
     });
-    row.addEventListener('click', () => highlight(code));
+    row.addEventListener('click', event => {
+      if (!event.target?.closest('.lg-country')) highlight(code);
+    });
     button.addEventListener('keydown', event => {
       if (event.key === 'Escape') {
         highlight(null);
@@ -170,19 +176,49 @@ export function mountLiveGlobe(root, {
   let globe;
   globe = createGlobe(canvas, { seed, onSelect: highlight, onVisibility: updateVisibility });
 
-  function highlight(code) {
+  function qualityStrip(tag = 'dd') {
+    const strip = element(doc, tag, 'lg-quality-strip');
+    const density = element(doc, 'span', 'lg-quality-density');
+    const mean = element(doc, 'span', 'lg-quality-mean');
+    strip.setAttribute('role', 'img');
+    strip.append(density, mean);
+    return strip;
+  }
+
+  function updateStrip(strip, region) {
+    strip.hidden = !region?.count;
+    if (!region?.count) return;
+    const mean = qualityMean(region.quality, region.count);
+    const bins = region.quality.histogram;
+    const lower = bins.findIndex(value => value > 0) / QUALITY_BINS * 100;
+    const upper = (bins.findLastIndex(value => value > 0) + 1) / QUALITY_BINS * 100;
+    const density = qualityDensity(region.quality).map((value, i) => `rgba(0,0,0,${(.16 + .84 * value).toFixed(3)}) ${i * 100 / QUALITY_BINS}%`).join(',');
+    strip.children[0].style.maskImage = `linear-gradient(to right,${density})`;
+    strip.children[1].style.left = `${mean * 100}%`;
+    strip.setAttribute('aria-label', `${COPY[language].quality} ${(mean * 100).toFixed(1)} / 100 · ${COPY[language].spread} ${lower}–${upper} / 100`);
+  }
+
+  function highlight(code, interaction = true) {
     highlighted = rows.has(code) && !rows.get(code).button.disabled ? code : null;
     for (const [continent, item] of rows) {
-      const active = continent === highlighted;
+      const active = Boolean(continent === highlighted || (highlighted?.includes(':') && continent === highlighted.split(':')[0]));
       item.row.dataset.active = String(active);
       item.button.setAttribute('aria-pressed', String(active));
     }
-    globe?.setHighlight(highlighted);
+    globe?.setHighlight(highlighted, { interaction });
   }
 
   function rowPosition(code) {
     const item = rows.get(code);
-    const position = visibility.get(code);
+    if (!item) return;
+    let position = visibility.get(code) || 'empty';
+    if (!code.includes(':') && model) {
+      const states = model.regions.filter(region => region.continent === code)
+        .map(region => visibility.get(regionKey(region)) || 'empty');
+      if (states.includes('front')) position = 'front';
+      else if (states.includes('back')) position = 'back';
+      else if (code === 'unknown' && states.length) position = 'unknown';
+    }
     const copy = COPY[language];
     item.row.dataset.visibility = position;
     item.position.textContent = copy.visibility[position];
@@ -190,16 +226,16 @@ export function mountLiveGlobe(root, {
     if (model) {
       const numbers = new Intl.NumberFormat(language);
       const amount = numbers.format(Number(item.row.dataset.count));
-      const founder = numbers.format(Number(item.row.dataset.founderOperated));
       const population = language === 'ko' ? `Mac ${amount}대` : `${amount} Macs`;
-      item.button.setAttribute('aria-label', `${item.button.textContent}, ${population}, ${copy.founder} ${founder}${position === 'empty' ? '' : `, ${copy.visibility[position]}`}`);
+      item.button.setAttribute('aria-label', `${item.button.textContent}, ${population}, ${copy.quality} ${(Number(item.row.dataset.quality) * 100).toFixed(1)} / 100${position === 'empty' ? '' : `, ${copy.visibility[position]}`}`);
     } else item.button.removeAttribute('aria-label');
   }
 
   function updateVisibility(entries) {
     for (const entry of entries) {
-      if (!rows.has(entry.continent) || !Object.hasOwn(COPY.en.visibility, entry.visibility)) continue;
-      visibility.set(entry.continent, entry.visibility);
+      if (!Object.hasOwn(COPY.en.visibility, entry.visibility)) continue;
+      visibility.set(entry.key, entry.visibility);
+      rowPosition(entry.key);
       rowPosition(entry.continent);
     }
   }
@@ -213,8 +249,8 @@ export function mountLiveGlobe(root, {
     list.setAttribute('aria-label', copy.list);
     privacy.textContent = copy.privacy;
     artwork.textContent = copy.artwork;
-    founderLegend.textContent = copy.founderLegend;
-    independentLegend.textContent = copy.independentLegend;
+    newLabel.textContent = copy.qualityNew;
+    steadyLabel.textContent = copy.qualitySteady;
     pause.textContent = paused ? copy.resume : copy.pause;
     pause.setAttribute('aria-pressed', String(paused));
     const isMap = motion.matches || canvas.dataset.renderer === 'map';
@@ -226,13 +262,18 @@ export function mountLiveGlobe(root, {
     count.textContent = model ? numbers.format(model.total) : '—';
     roleSummary.hidden = !model;
     if (model) {
-      const role = (label, item) => `${label} ${numbers.format(item.count)} (${copy.founderRun} ${numbers.format(item.founder_operated)})`;
+      const role = (label, item) => `${label} ${numbers.format(item.count)}`;
       const reserve = model.reserve_keys;
       roleSummary.textContent = `${role(copy.validators, model.roles.validator)} · ${role(copy.wallet, model.roles.wallet)} · ${copy.reserve} ${numbers.format(reserve.standby + reserve.seated)} (${copy.standby} ${numbers.format(reserve.standby)} / ${copy.seated} ${numbers.format(reserve.seated)})`;
     }
     const totals = new Map((model ? continentTotals(model) : []).map(item => [item.continent, item]));
     let countries;
     try { countries = new Intl.DisplayNames([language], { type: 'region' }); } catch { /* older browsers use ISO codes */ }
+    const regionLabels = {};
+    const countryKeys = new Set((model?.regions || []).filter(region => region.country).map(regionKey));
+    for (const [key, item] of rows) if (key.includes(':') && !countryKeys.has(key)) {
+      item.row.remove(); rows.delete(key); visibility.delete(key);
+    }
     CONTINENTS.forEach((code, index) => {
       const row = rows.get(code);
       const total = totals.get(code);
@@ -240,27 +281,54 @@ export function mountLiveGlobe(root, {
       row.button.disabled = !total?.count;
       row.row.dataset.populated = String(Boolean(total?.count));
       row.row.dataset.count = total ? String(total.count) : '';
-      row.row.dataset.founderOperated = total ? String(total.founder_operated) : '';
-      row.value.textContent = total ? total.count
-        ? `${numbers.format(total.count)} · ${copy.founder} ${numbers.format(total.founder_operated)}`
-        : '0' : '—';
+      row.row.dataset.quality = total ? String(qualityMean(total.quality, total.count)) : '';
+      row.value.textContent = total ? numbers.format(total.count) : '—';
+      updateStrip(row.strip, total);
       if (!total?.count) visibility.set(code, 'empty');
       else if (code === 'unknown') visibility.set(code, 'unknown');
       rowPosition(code);
-      row.countries.replaceChildren();
       for (const region of model?.regions || []) {
         if (region.continent !== code || !region.country) continue;
-        const label = element(doc, 'span', 'lg-country', `${countries?.of(region.country) || region.country} · ${numbers.format(region.count)}`);
-        label.title = copy.country;
-        row.countries.append(label);
+        const key = regionKey(region);
+        const label = countries?.of(region.country) || region.country;
+        regionLabels[key] = label;
+        let country = rows.get(key);
+        if (!country) {
+          const countryRow = element(doc, 'div', 'lg-country');
+          countryRow.dataset.region = key;
+          countryRow.dataset.continent = code;
+          countryRow.dataset.country = region.country;
+          const button = element(doc, 'button', 'lg-country-button');
+          button.type = 'button';
+          const value = element(doc, 'span', 'lg-region-value');
+          const position = element(doc, 'span', 'lg-region-position');
+          const strip = qualityStrip('span');
+          countryRow.append(button, value, position, strip);
+          country = { row: countryRow, button, value, position, strip };
+          rows.set(key, country);
+          row.countries.append(countryRow);
+          countryRow.addEventListener('pointerenter', () => highlight(key));
+          countryRow.addEventListener('pointerleave', () => { if (doc.activeElement !== button) highlight(null); });
+          countryRow.addEventListener('click', event => { event.stopPropagation?.(); highlight(key); });
+          button.addEventListener('focus', () => highlight(key));
+          button.addEventListener('blur', () => highlight(null));
+          button.addEventListener('keydown', event => { if (event.key === 'Escape') highlight(null); });
+        }
+        country.row.dataset.count = String(region.count);
+        country.row.dataset.quality = String(qualityMean(region.quality, region.count));
+        country.button.textContent = label;
+        country.button.title = copy.country;
+        country.value.textContent = numbers.format(region.count);
+        updateStrip(country.strip, region);
+        rowPosition(key);
       }
       row.countries.hidden = !row.countries.childElementCount;
     });
-    if (highlighted && rows.get(highlighted).button.disabled) highlight(null);
+    highlight(highlighted, false);
     globe.setLabels({
       continents: Object.fromEntries(CONTINENTS.map((code, index) => [code, copy.continents[index]])),
-      founder: copy.founder,
-      independent: copy.independent,
+      regions: regionLabels,
+      quality: copy.quality,
     });
   }
 

@@ -1,5 +1,7 @@
 // The only boundary between an RPC response and the public globe model.
 // Artwork and session jitter live locally; this model never contains positions.
+import { QUALITY_VERSION, QUALITY_BINS, qualityMean } from './quality.js';
+
 export const CONTINENTS = Object.freeze([
   'africa', 'asia', 'europe', 'north_america', 'south_america',
   'oceania', 'antarctica', 'unknown',
@@ -63,15 +65,28 @@ function count(value) {
 
 function add(a, b) { return count(a + b); }
 
-function founderCount(value, size) {
-  const founder = count(value);
-  if (founder > size) invalid();
-  return founder;
+function emptyQuality() {
+  return { score_sum: 0, histogram: Array(QUALITY_BINS).fill(0) };
 }
 
-function mergeCounts(target, size, founder) {
+function quality(value, size) {
+  const source = record(value);
+  const bins = collection(field(source, 'histogram'), QUALITY_BINS);
+  if (bins.length !== QUALITY_BINS) invalid();
+  const result = {
+    score_sum: count(field(source, 'score_sum')),
+    histogram: Array.from({ length: QUALITY_BINS }, (_, i) => count(field(bins, String(i)))),
+  };
+  qualityMean(result, size);
+  return result;
+}
+
+function mergeCounts(target, size, summary) {
   target.count = add(target.count, size);
-  target.founder_operated = add(target.founder_operated, founder);
+  target.quality.score_sum = add(target.quality.score_sum, summary.score_sum);
+  for (let i = 0; i < QUALITY_BINS; i++) {
+    target.quality.histogram[i] = add(target.quality.histogram[i], summary.histogram[i]);
+  }
 }
 
 function continent(value) {
@@ -81,10 +96,9 @@ function continent(value) {
 
 function normalized(payload) {
   const source = record(payload);
-  if (field(source, 'schema_version') !== 2 || field(source, 'scope') !== 'node') invalid();
+  if (field(source, 'schema_version') !== 3 || field(source, 'scope') !== 'node'
+    || field(source, 'quality_version') !== QUALITY_VERSION) invalid();
   const total = count(field(source, 'total'));
-  // Required producer attribution; identifiers never determine founder counts.
-  const founder_operated = founderCount(field(source, 'founder_operated'), total);
 
   const roleSource = record(field(source, 'roles'));
   const roles = {};
@@ -92,10 +106,7 @@ function normalized(payload) {
     const roleData = record(field(roleSource, role));
     const size = count(field(roleData, 'count'));
     if (size > total) invalid();
-    roles[role] = {
-      count: size,
-      founder_operated: founderCount(field(roleData, 'founder_operated'), size),
-    };
+    roles[role] = { count: size };
   }
 
   // Roles can overlap on a Mac; reserve validator keys are a separate count.
@@ -118,43 +129,41 @@ function normalized(payload) {
   }
   if (versionTotal !== total) invalid();
 
-  // Merge before testing k, so duplicate opted-in buckets cannot either evade
+  // Merge before testing k, so duplicate country buckets cannot either evade
   // the threshold or cause an already anonymous country to be discarded.
   const buckets = new Map(CONTINENTS.map((code) => [code, {
-    count: 0, founder_operated: 0, countries: new Map(),
+    count: 0, quality: emptyQuality(), countries: new Map(),
   }]));
   const regionSource = collection(field(source, 'regions'), MAX_REGIONS);
   let regionTotal = 0;
-  let regionFounderTotal = 0;
   for (let i = 0; i < regionSource.length; i++) {
     const region = record(field(regionSource, String(i)));
     const code = continent(field(region, 'continent'));
     const size = count(field(region, 'count'));
-    const founder = founderCount(field(region, 'founder_operated'), size);
+    const summary = quality(field(region, 'quality'), size);
     const country = field(region, 'country');
     if (country != null && !COUNTRY_CODES.has(country)) invalid();
     regionTotal = add(regionTotal, size);
-    regionFounderTotal = add(regionFounderTotal, founder);
     const bucket = buckets.get(code);
-    if (country == null) mergeCounts(bucket, size, founder);
+    if (country == null) mergeCounts(bucket, size, summary);
     else {
-      const countryBucket = bucket.countries.get(country) || { count: 0, founder_operated: 0 };
-      mergeCounts(countryBucket, size, founder);
+      const countryBucket = bucket.countries.get(country) || { count: 0, quality: emptyQuality() };
+      mergeCounts(countryBucket, size, summary);
       bucket.countries.set(country, countryBucket);
     }
   }
-  if (regionTotal !== total || regionFounderTotal !== founder_operated) invalid();
+  if (regionTotal !== total) invalid();
 
   const regions = [];
   for (const code of CONTINENTS) {
     const bucket = buckets.get(code);
     const countries = [];
     for (const [country, countryBucket] of [...bucket.countries].sort(([a], [b]) => a.localeCompare(b))) {
-      if (countryBucket.count < 3) mergeCounts(bucket, countryBucket.count, countryBucket.founder_operated);
+      if (countryBucket.count < 3) mergeCounts(bucket, countryBucket.count, countryBucket.quality);
       else countries.push({ continent: code, country, ...countryBucket });
     }
     if (bucket.count) regions.push({
-      continent: code, count: bucket.count, founder_operated: bucket.founder_operated,
+      continent: code, count: bucket.count, quality: bucket.quality,
     });
     regions.push(...countries);
   }
@@ -172,7 +181,7 @@ function normalized(payload) {
     }
   }
 
-  return { schema_version: 2, scope: 'node', total, founder_operated, roles, versions, reserve_keys, regions, recent_blocks };
+  return { schema_version: 3, scope: 'node', quality_version: QUALITY_VERSION, total, roles, versions, reserve_keys, regions, recent_blocks };
 }
 
 /** Reject malformed responses; copy only the explicitly public aggregate data. */
@@ -184,11 +193,16 @@ export function normalizePresence(payload) {
 /** A stable, accessible list, including continents with no observed Macs. */
 export function continentTotals(model) {
   const clean = normalizePresence(model);
-  const totals = new Map(CONTINENTS.map((code) => [code, { count: 0, founder_operated: 0 }]));
+  const totals = new Map(CONTINENTS.map((code) => [code, { count: 0, quality: emptyQuality() }]));
   for (const region of clean.regions) {
-    mergeCounts(totals.get(region.continent), region.count, region.founder_operated);
+    mergeCounts(totals.get(region.continent), region.count, region.quality);
   }
   return CONTINENTS.map((code) => ({ continent: code, ...totals.get(code) }));
+}
+
+/** Disjoint pulse/row key; the same country on different relays stays separate. */
+export function regionKey(region) {
+  return region.country ? `${region.continent}:${region.country}` : region.continent;
 }
 
 function hash(text) {
@@ -203,7 +217,9 @@ function hash(text) {
 
 /** Local angular offsets; callers keep the page-session seed in memory only. */
 export function sessionJitter(code, seed) {
-  continent(code);
+  const [region, country, extra] = typeof code === 'string' ? code.split(':') : [];
+  continent(region);
+  if (extra !== undefined || (country !== undefined && !COUNTRY_CODES.has(country))) invalid();
   if (!(typeof seed === 'string' || (typeof seed === 'number' && Number.isFinite(seed)))) invalid();
   if (typeof seed === 'string' && seed.length > 256) invalid();
   const input = `${code}\0${seed}`;

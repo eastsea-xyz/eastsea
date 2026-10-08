@@ -2,7 +2,6 @@
 // Real-browser offline smoke. Uses existing Playwright tooling, no app deps.
 // PLAYWRIGHT_MODULE=/absolute/path/to/playwright node scripts/test-live-globe.mjs
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { resolve, extname, sep } from 'node:path';
@@ -13,18 +12,11 @@ const out = resolve(root, process.env.GLOBE_SCREENSHOTS || 'tmp/live-globe');
 await mkdir(out, { recursive: true });
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const fixture = JSON.parse(await readFile(resolve(root, 'apps/explorer/live-globe/fixture.json'), 'utf8'));
+const example = JSON.parse(await readFile(resolve(root, 'apps/explorer/test/fixtures/presence-example.json'), 'utf8'));
 const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.png': 'image/png', '.webp': 'image/webp' };
-const server = createServer(async (request, response) => {
-  const path = decodeURIComponent(new URL(request.url, 'http://test.invalid').pathname);
-  const file = resolve(root, '.' + (path.endsWith('/') ? path + 'index.html' : path));
-  if (!file.startsWith(root + sep)) { response.writeHead(403).end(); return; }
-  try {
-    response.writeHead(200, { 'Content-Type': mime[extname(file)] || 'application/octet-stream' });
-    response.end(await readFile(file));
-  } catch { response.writeHead(404).end(); }
-});
-await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-const origin = `http://127.0.0.1:${server.address().port}`;
+// Fulfill local assets directly so this works in sandboxes that forbid listen().
+// No server, outbound request, or port is needed for the browser checks.
+const origin = 'http://globe.test.invalid';
 const browser = await chromium.launch({ headless: true, channel: process.env.GLOBE_BROWSER_CHANNEL || 'chrome' });
 const report = { screenshots: [], checks: [], frameRate: null, environment: `${process.platform}/${process.arch}` };
 
@@ -36,7 +28,13 @@ async function context(options = {}, envelope = () => ({ jsonrpc: '2.0', id: 1, 
   await ctx.route('**/*', async route => {
     const request = route.request();
     const url = request.url();
-    if (url.startsWith(origin + '/')) return route.continue();
+    if (url.startsWith(origin + '/')) {
+      const path = decodeURIComponent(new URL(url).pathname);
+      const file = resolve(root, '.' + (path.endsWith('/') ? path + 'index.html' : path));
+      if (!file.startsWith(root + sep)) return route.fulfill({ status: 403, body: '' });
+      try { return await route.fulfill({ contentType: mime[extname(file)] || 'application/octet-stream', body: await readFile(file) }); }
+      catch { return route.fulfill({ status: 404, body: '' }); }
+    }
     assert.equal(url, 'https://rpc.eastsea.xyz/', 'no external scripts/maps/trackers/loopback');
     assert.equal(request.method(), 'POST');
     const body = request.postDataJSON();
@@ -48,13 +46,46 @@ async function context(options = {}, envelope = () => ({ jsonrpc: '2.0', id: 1, 
 }
 
 async function verifyPage(page) {
-  await page.locator('.lg-total').filter({ hasText: '24' }).waitFor();
+  await page.locator('.lg-total').filter({ hasText: /^4$/ }).waitFor();
   await page.evaluate(() => document.fonts.ready);
   assert.equal(await page.locator('.lg-region').count(), 8);
-  assert.equal(await page.locator('.lg-country').count(), 2);
+  assert.equal(await page.locator('.lg-country').count(), 1);
+  assert.equal(await page.locator('.lg-marker[data-continent="asia"]:visible').count(), 1, 'opening view shows the largest region');
+  assert.ok((await page.locator('.lg-role-summary').innerText()).includes('4'));
+  await verifyRepresentation(page, fixture);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, 'mobile overflow');
   const content = await page.locator('body').innerText();
   assert.equal(/(?:\d{1,3}\.){3}\d{1,3}|latitude|longitude|node[_ -]?id|peer[_ -]?id/i.test(content), false, 'no precise/identifying location text');
+}
+
+// User-visible evidence: a geographic marker or an explicit highlighted list
+// entry represents every populated region. Inspect the rendered DOM, not source.
+async function verifyRepresentation(page, snapshot) {
+  const rows = await page.locator('.lg-region').evaluateAll(elements => elements.map(row => {
+    const code = row.dataset.continent;
+    const marker = row.closest('.live-globe').querySelector(`.lg-marker[data-continent="${code}"]`);
+    return {
+      code, count: Number(row.dataset.count), founder: Number(row.dataset.founderOperated), visibility: row.dataset.visibility,
+      markerVisible: Boolean(marker && !marker.hidden && marker.getBoundingClientRect().width),
+      markerCount: Number(marker?.dataset.count), markerFounder: Number(marker?.dataset.founderOperated),
+      position: row.querySelector('.lg-region-position').textContent,
+      background: getComputedStyle(row).backgroundColor,
+    };
+  }));
+  assert.equal(rows.reduce((sum, row) => sum + row.count, 0), snapshot.total);
+  assert.equal(rows.reduce((sum, row) => sum + row.founder, 0), snapshot.founder_operated);
+  for (const row of rows.filter(row => row.count)) {
+    if (row.visibility === 'front') {
+      assert.ok(row.markerVisible, `${row.code}: populated front region has a visible marker`);
+      assert.equal(row.markerCount, row.count);
+      assert.equal(row.markerFounder, row.founder);
+    } else {
+      assert.ok(['back', 'unknown'].includes(row.visibility), `${row.code}: honest off-globe state`);
+      assert.ok(!row.markerVisible, `${row.code}: off-globe marker stays hidden`);
+      assert.ok(row.position.length > 0, `${row.code}: list explains location/visibility`);
+      assert.ok(!['rgba(0, 0, 0, 0)', 'transparent'].includes(row.background), `${row.code}: off-globe list row is highlighted`);
+    }
+  }
 }
 
 try {
@@ -83,6 +114,10 @@ try {
     await verifyPage(page);
     await page.screenshot({ path: resolve(out, `explorer-mobile-${theme}.png`), fullPage: true });
     report.screenshots.push(`explorer-mobile-${theme}.png`);
+    await page.locator('.lg-marker[data-continent="asia"]').tap();
+    assert.equal(await page.locator('.lg-region[data-continent="asia"]').getAttribute('data-active'), 'true', 'mobile pulse tap selects list row');
+    await page.locator('.lg-region[data-continent="asia"] .lg-region-value').tap();
+    assert.equal(await page.locator('.lg-marker[data-continent="asia"]').getAttribute('data-active'), 'true', 'mobile count-cell tap selects pulse');
     assert.deepEqual(errors, []);
     await ctx.close();
     const mobileSite = await context({ viewport: { width: 390, height: 844 }, colorScheme: theme, locale: 'en-US', isMobile: true, hasTouch: true });
@@ -109,6 +144,77 @@ try {
   assert.deepEqual(reduced.errors, []);
   await reduced.ctx.close();
   report.checks.push('fixture light/dark desktop + mobile, local-only requests, static reduced-motion map');
+
+  // The historical example covers multiple continents; additionally populate
+  // Africa and Antarctica to exercise every known anchor plus unknown.
+  const allRegions = { ...example, total: 27, versions: { '0.7.4': 27 }, regions: [
+    ...example.regions, { continent: 'africa', count: 2, founder_operated: 0 },
+    { continent: 'antarctica', count: 1, founder_operated: 0 },
+  ] };
+  for (const reducedMotion of ['no-preference', 'reduce']) {
+    const coverage = await context({ reducedMotion, ...(reducedMotion === 'reduce' ? { viewport: { width: 390, height: 844 } } : {}) }, () => ({ jsonrpc: '2.0', id: 1, result: allRegions }));
+    const coveragePage = await coverage.ctx.newPage();
+    await coveragePage.goto(origin + '/apps/explorer/#/network');
+    await coveragePage.locator('.lg-total').filter({ hasText: /^27$/ }).waitFor();
+    await verifyRepresentation(coveragePage, allRegions);
+    const asia = coveragePage.locator('.lg-marker[data-continent="asia"]');
+    await asia.hover();
+    assert.equal(await coveragePage.locator('.lg-region[data-continent="asia"]').getAttribute('data-active'), 'true', 'pulse hover selects list row');
+    await coveragePage.locator('.lg-region[data-continent="asia"]').hover();
+    assert.equal(await asia.getAttribute('data-active'), 'true', 'list hover selects pulse');
+    await coveragePage.locator('.lg-region[data-continent="north_america"] button').click();
+    assert.equal(await coveragePage.locator('.lg-region[data-continent="north_america"]').getAttribute('data-active'), 'true', 'list tap/click selects region');
+    if (reducedMotion === 'no-preference') {
+      const rotatable = coveragePage.locator('canvas[data-renderer="webgl"]');
+      await rotatable.focus();
+      for (let step = 0; step < 24; step++) await coveragePage.keyboard.press('ArrowRight');
+      await verifyRepresentation(coveragePage, allRegions);
+    } else {
+      assert.equal(await coveragePage.locator('.lg-marker:visible').count(), 7, 'static map shows every known continent');
+      const boxes = await coveragePage.locator('.lg-marker:visible .lg-marker-label').evaluateAll(labels => labels.map(label => {
+        const rect = label.getBoundingClientRect();
+        const stage = label.closest('.lg-stage').getBoundingClientRect();
+        return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, stage: { x: stage.x, y: stage.y, right: stage.right, bottom: stage.bottom } };
+      }));
+      for (const rect of boxes) {
+        assert.ok(rect.x >= rect.stage.x && rect.x + rect.width <= rect.stage.right + 1, 'map label fits horizontal bounds');
+        assert.ok(rect.y >= rect.stage.y && rect.y + rect.height <= rect.stage.bottom + 1, 'map label fits vertical bounds');
+        for (const other of boxes) if (rect !== other) assert.ok(rect.x + rect.width <= other.x || other.x + other.width <= rect.x || rect.y + rect.height <= other.y || other.y + other.height <= rect.y, 'mobile map labels do not overlap');
+      }
+    }
+    assert.deepEqual(coverage.errors, []);
+    await coverage.ctx.close();
+  }
+  report.checks.push('every populated region has a visible marker or highlighted list entry; hover/click links both surfaces');
+
+  const idle = await context();
+  const idlePage = await idle.ctx.newPage();
+  await idlePage.clock.install();
+  await idlePage.goto(origin + '/apps/explorer/?globe=fixture#/network');
+  await verifyPage(idlePage);
+  const idleCanvas = idlePage.locator('canvas[data-renderer="webgl"]');
+  await idleCanvas.focus();
+  await idlePage.keyboard.press('Home');
+  await idlePage.mouse.move(1, 1);
+  const rotationPosition = () => idlePage.locator('.lg-marker[data-continent="asia"]').getAttribute('style');
+  const idlePosition = await rotationPosition();
+  await idlePage.clock.runFor(9_900);
+  assert.equal(await rotationPosition(), idlePosition, 'interaction holds rotation through 9.9s idle');
+  await idlePage.clock.runFor(600);
+  assert.notEqual(await rotationPosition(), idlePosition, 'auto-rotation resumes after 10s idle');
+  await idlePage.locator('.lg-region[data-continent="asia"] button').click();
+  const selectedPosition = await rotationPosition();
+  await idlePage.clock.runFor(9_900);
+  assert.equal(await rotationPosition(), selectedPosition, 'row selection pauses auto-rotation');
+  await idlePage.clock.runFor(600);
+  assert.notEqual(await rotationPosition(), selectedPosition, 'retained selection resumes after 10s idle');
+  await idlePage.getByRole('button', { name: 'Pause globe' }).click();
+  const held = await rotationPosition();
+  await idlePage.clock.runFor(12_000);
+  assert.equal(await rotationPosition(), held, 'manual pause remains paused beyond the idle delay');
+  assert.deepEqual(idle.errors, []);
+  await idle.ctx.close();
+  report.checks.push('largest-region opening, 10s idle rotation delay, manual pause persists');
 
   // Exercise real polling against intercepted RPC envelopes (never a live node).
   const live = await context();
@@ -177,7 +283,7 @@ try {
   assert.ok(!(await statePage.locator('body').innerText()).includes('Sensitive server details'));
   await statePage.screenshot({ path: resolve(out, 'explorer-unavailable.png'), fullPage: true });
   report.screenshots.push('explorer-unavailable.png');
-  answer = { jsonrpc: '2.0', id: 1, result: { ...fixture, total: 0, roles: { validator: 0, candidate: 0, follower: 0 }, versions: {}, regions: [], recent_blocks: [] } };
+  answer = { jsonrpc: '2.0', id: 1, result: { ...fixture, total: 0, founder_operated: 0, roles: Object.fromEntries(Object.keys(fixture.roles).map(role => [role, { count: 0, founder_operated: 0 }])), versions: {}, regions: [], recent_blocks: [] } };
   await statePage.reload();
   await statePage.locator('.lg-status[data-state="empty"]').waitFor();
   assert.equal(await statePage.locator('.lg-total').innerText(), '0');
@@ -187,7 +293,7 @@ try {
   answer = { jsonrpc: '2.0', id: 1, error: { code: -32601, message: 'Unavailable' } };
   await statePage.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
   await statePage.locator('.lg-status[data-state="stale"]').waitFor();
-  assert.equal(await statePage.locator('.lg-total').innerText(), '24', 'stale counts carry an honest label');
+  assert.equal(await statePage.locator('.lg-total').innerText(), '4', 'stale counts carry an honest label');
   await statePage.screenshot({ path: resolve(out, 'explorer-stale.png'), fullPage: true });
   report.screenshots.push('explorer-stale.png');
   assert.deepEqual(states.errors, []);
@@ -196,14 +302,6 @@ try {
 
   const remount = await context();
   const session = await remount.ctx.newPage();
-  await session.addInitScript(() => {
-    const upload = WebGLRenderingContext.prototype.bufferSubData;
-    window.__markerUploads = [];
-    WebGLRenderingContext.prototype.bufferSubData = function (target, offset, data) {
-      if (data?.length === 35) window.__markerUploads.push(Array.from(data));
-      return upload.call(this, target, offset, data);
-    };
-  });
   await session.goto(origin + '/apps/explorer/#/network');
   await verifyPage(session);
   await session.evaluate(async snapshot => {
@@ -212,15 +310,22 @@ try {
     document.body.replaceChildren(host);
     const options = { endpoint: 'https://rpc.eastsea.xyz', fetch: async () => ({ ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: snapshot }) }) };
     const first = mountLiveGlobe(host, options);
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await new Promise(resolve => setTimeout(resolve, 180));
+    host.querySelector('.lg-pause').click();
+    host.querySelector('canvas').dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
+    const position = () => host.querySelector('.lg-marker[data-continent="asia"]').style.transform;
+    window.__markerPositions = [position()];
     first.destroy();
     const second = mountLiveGlobe(host, options);
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await new Promise(resolve => setTimeout(resolve, 180));
+    host.querySelector('.lg-pause').click();
+    host.querySelector('canvas').dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
+    window.__markerPositions.push(position());
     second.destroy();
   }, fixture);
-  const uploaded = await session.evaluate(() => window.__markerUploads);
-  assert.ok(uploaded.length >= 3);
-  assert.deepEqual(uploaded.at(-1), uploaded.at(-2), 'jitter is stable across component mounts within one page session');
+  const positions = await session.evaluate(() => window.__markerPositions);
+  assert.equal(positions.length, 2);
+  assert.equal(positions[0], positions[1], 'jitter is stable across component mounts within one page session');
   assert.deepEqual(remount.errors, []);
   await remount.ctx.close();
   report.checks.push('same-page component remount preserves deterministic region jitter');
@@ -229,5 +334,4 @@ try {
   console.log(JSON.stringify(report, null, 2));
 } finally {
   await browser.close();
-  await new Promise(resolve => server.close(resolve));
 }

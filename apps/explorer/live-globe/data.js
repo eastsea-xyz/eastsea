@@ -6,7 +6,7 @@ export const CONTINENTS = Object.freeze([
 ]);
 
 const CONTINENT_CODES = new Set(CONTINENTS);
-const ROLES = ['validator', 'candidate', 'follower'];
+const ROLES = ['validator', 'wallet', 'candidate', 'follower'];
 const MAX_REGIONS = 1024;
 const MAX_VERSIONS = 128;
 const MAX_RECENT_BLOCKS = 8;
@@ -63,6 +63,17 @@ function count(value) {
 
 function add(a, b) { return count(a + b); }
 
+function founderCount(value, size) {
+  const founder = count(value);
+  if (founder > size) invalid();
+  return founder;
+}
+
+function mergeCounts(target, size, founder) {
+  target.count = add(target.count, size);
+  target.founder_operated = add(target.founder_operated, founder);
+}
+
 function continent(value) {
   if (!CONTINENT_CODES.has(value)) invalid();
   return value;
@@ -70,17 +81,30 @@ function continent(value) {
 
 function normalized(payload) {
   const source = record(payload);
-  if (field(source, 'schema_version') !== 1 || field(source, 'scope') !== 'node') invalid();
+  if (field(source, 'schema_version') !== 2 || field(source, 'scope') !== 'node') invalid();
   const total = count(field(source, 'total'));
+  // Required producer attribution; identifiers never determine founder counts.
+  const founder_operated = founderCount(field(source, 'founder_operated'), total);
 
   const roleSource = record(field(source, 'roles'));
   const roles = {};
-  let roleTotal = 0;
   for (const role of ROLES) {
-    roles[role] = count(field(roleSource, role));
-    roleTotal = add(roleTotal, roles[role]);
+    const roleData = record(field(roleSource, role));
+    const size = count(field(roleData, 'count'));
+    if (size > total) invalid();
+    roles[role] = {
+      count: size,
+      founder_operated: founderCount(field(roleData, 'founder_operated'), size),
+    };
   }
-  if (roleTotal !== total) invalid();
+
+  // Roles can overlap on a Mac; reserve validator keys are a separate count.
+  const reserveSource = record(field(source, 'reserve_keys'));
+  const reserve_keys = {
+    standby: count(field(reserveSource, 'standby')),
+    seated: count(field(reserveSource, 'seated')),
+  };
+  add(reserve_keys.standby, reserve_keys.seated);
 
   const versionSource = record(field(source, 'versions'));
   const releases = Object.keys(versionSource).sort();
@@ -96,31 +120,42 @@ function normalized(payload) {
 
   // Merge before testing k, so duplicate opted-in buckets cannot either evade
   // the threshold or cause an already anonymous country to be discarded.
-  const buckets = new Map(CONTINENTS.map((code) => [code, { count: 0, countries: new Map() }]));
+  const buckets = new Map(CONTINENTS.map((code) => [code, {
+    count: 0, founder_operated: 0, countries: new Map(),
+  }]));
   const regionSource = collection(field(source, 'regions'), MAX_REGIONS);
   let regionTotal = 0;
+  let regionFounderTotal = 0;
   for (let i = 0; i < regionSource.length; i++) {
     const region = record(field(regionSource, String(i)));
     const code = continent(field(region, 'continent'));
     const size = count(field(region, 'count'));
+    const founder = founderCount(field(region, 'founder_operated'), size);
     const country = field(region, 'country');
     if (country != null && !COUNTRY_CODES.has(country)) invalid();
     regionTotal = add(regionTotal, size);
+    regionFounderTotal = add(regionFounderTotal, founder);
     const bucket = buckets.get(code);
-    if (country == null) bucket.count = add(bucket.count, size);
-    else bucket.countries.set(country, add(bucket.countries.get(country) || 0, size));
+    if (country == null) mergeCounts(bucket, size, founder);
+    else {
+      const countryBucket = bucket.countries.get(country) || { count: 0, founder_operated: 0 };
+      mergeCounts(countryBucket, size, founder);
+      bucket.countries.set(country, countryBucket);
+    }
   }
-  if (regionTotal !== total) invalid();
+  if (regionTotal !== total || regionFounderTotal !== founder_operated) invalid();
 
   const regions = [];
   for (const code of CONTINENTS) {
     const bucket = buckets.get(code);
     const countries = [];
-    for (const [country, size] of [...bucket.countries].sort(([a], [b]) => a.localeCompare(b))) {
-      if (size < 3) bucket.count = add(bucket.count, size);
-      else countries.push({ continent: code, country, count: size });
+    for (const [country, countryBucket] of [...bucket.countries].sort(([a], [b]) => a.localeCompare(b))) {
+      if (countryBucket.count < 3) mergeCounts(bucket, countryBucket.count, countryBucket.founder_operated);
+      else countries.push({ continent: code, country, ...countryBucket });
     }
-    if (bucket.count) regions.push({ continent: code, count: bucket.count });
+    if (bucket.count) regions.push({
+      continent: code, count: bucket.count, founder_operated: bucket.founder_operated,
+    });
     regions.push(...countries);
   }
 
@@ -137,7 +172,7 @@ function normalized(payload) {
     }
   }
 
-  return { schema_version: 1, scope: 'node', total, roles, versions, regions, recent_blocks };
+  return { schema_version: 2, scope: 'node', total, founder_operated, roles, versions, reserve_keys, regions, recent_blocks };
 }
 
 /** Reject malformed responses; copy only the explicitly public aggregate data. */
@@ -149,11 +184,11 @@ export function normalizePresence(payload) {
 /** A stable, accessible list, including continents with no observed Macs. */
 export function continentTotals(model) {
   const clean = normalizePresence(model);
-  const totals = new Map(CONTINENTS.map((code) => [code, 0]));
+  const totals = new Map(CONTINENTS.map((code) => [code, { count: 0, founder_operated: 0 }]));
   for (const region of clean.regions) {
-    totals.set(region.continent, add(totals.get(region.continent), region.count));
+    mergeCounts(totals.get(region.continent), region.count, region.founder_operated);
   }
-  return CONTINENTS.map((code) => ({ continent: code, count: totals.get(code) }));
+  return CONTINENTS.map((code) => ({ continent: code, ...totals.get(code) }));
 }
 
 function hash(text) {

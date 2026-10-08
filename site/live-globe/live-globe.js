@@ -6,12 +6,18 @@ const COPY = {
     caption: 'Macs this node can see',
     loading: 'Looking for a live snapshot…',
     live: 'Live snapshot · refreshes every 10 seconds',
-    fixture: 'Illustrative snapshot · these are example counts',
+    fixture: 'Today’s actual setup (not live)',
     unavailable: 'Live counts are unavailable. This node may not support presence yet. Retrying every 10 seconds.',
     stale: 'Last received snapshot · the latest refresh failed. Retrying every 10 seconds.',
     empty: 'This node currently sees no Macs.',
     privacy: 'Grouped by home relay continent, not a Mac’s location. Countries appear only by opt-in, with at least 3 Macs.',
-    artwork: 'Dots show continent totals. Arcs show successive validator regions, not peer connections.',
+    artwork: 'Dot size = Macs connected; placed per continent',
+    founderLegend: 'Gold = founder-operated nodes',
+    independentLegend: 'Ring = independent nodes',
+    founder: 'founder', independent: 'independent',
+    validators: 'Validators', wallet: 'Wallet nodes', founderRun: 'founder-run',
+    reserve: 'Reserve keys', standby: 'standby', seated: 'seated',
+    visibility: { front: 'Front side of globe', back: 'Far side of globe · highlighted here', unknown: 'Continent unknown · list only', empty: '' },
     drag: 'Drag horizontally or use arrow keys to rotate.',
     map: 'Static map · reduced motion or WebGL unavailable',
     pause: 'Pause globe', resume: 'Resume globe',
@@ -24,12 +30,18 @@ const COPY = {
     caption: '이 노드가 보고 있는 Mac들',
     loading: '연결 현황을 불러오는 중…',
     live: '실시간 현황 · 10초마다 새로고침',
-    fixture: '예시 화면 · 실제 연결 수가 아닙니다',
+    fixture: '오늘 기준 실제 구성 (실시간 아님)',
     unavailable: '연결 수를 불러올 수 없습니다. 이 노드가 아직 현황을 제공하지 않을 수 있습니다. 10초마다 다시 확인합니다.',
     stale: '마지막으로 받은 현황 · 새로고침에 실패했습니다. 10초마다 다시 확인합니다.',
     empty: '지금 이 노드가 보고 있는 Mac은 없습니다.',
     privacy: 'Mac의 위치가 아닌 홈 릴레이의 대륙별 집계입니다. 국가는 직접 동의한 Mac이 3대 이상일 때만 표시합니다.',
-    artwork: '점은 대륙별 연결 수입니다. 곡선은 최근 블록의 검증자 지역 순서이며, Mac 사이의 연결 경로가 아닙니다.',
+    artwork: '점 크기 = 연결된 Mac 수, 위치는 대륙 단위',
+    founderLegend: '금색 = 창업자 운영 노드',
+    independentLegend: '바깥 고리 = 독립 운영 노드',
+    founder: '창업자', independent: '독립 운영',
+    validators: '검증자', wallet: '지갑 노드', founderRun: '창업자 운영',
+    reserve: '예비 키', standby: '대기', seated: '참여',
+    visibility: { front: '지구본 앞면', back: '지구본 뒷면 · 목록에서 확인', unknown: '대륙 미상 · 목록에서만 표시', empty: '' },
     drag: '가로로 끌거나 방향키로 지구본을 돌려 보세요.',
     map: '정적인 지도 · 동작 줄이기 또는 WebGL 미지원',
     pause: '지구본 멈추기', resume: '지구본 다시 돌리기',
@@ -72,6 +84,7 @@ export function mountLiveGlobe(root, {
   let controller = null;
   let visible = !('IntersectionObserver' in win);
   let generation = 0;
+  let highlighted = null;
   const motion = win.matchMedia('(prefers-reduced-motion: reduce)');
 
   root.classList.add('live-globe');
@@ -88,6 +101,12 @@ export function mountLiveGlobe(root, {
   const interaction = element(doc, 'span', 'lg-interaction');
   controls.append(pause, interaction);
   const artCaption = element(doc, 'figcaption', 'lg-art-caption');
+  const artwork = element(doc, 'p', 'lg-art-caption-line');
+  const legend = element(doc, 'p', 'lg-art-legend');
+  const founderLegend = element(doc, 'span', 'lg-legend-founders');
+  const independentLegend = element(doc, 'span', 'lg-legend-independent');
+  legend.append(founderLegend, doc.createTextNode(' · '), independentLegend);
+  artCaption.append(artwork, legend);
   figure.append(stage, controls, artCaption);
 
   const summary = element(doc, 'div', 'lg-summary');
@@ -97,21 +116,93 @@ export function mountLiveGlobe(root, {
   status.setAttribute('role', 'status');
   status.setAttribute('aria-live', 'polite');
   status.setAttribute('aria-atomic', 'true');
+  const date = element(doc, 'time', 'lg-snapshot-date', '2026-10-08');
+  date.dateTime = '2026-10-08';
+  const roleSummary = element(doc, 'p', 'lg-role-summary');
   const list = element(doc, 'dl', 'lg-regions');
   const rows = new Map();
+  const visibility = new Map(CONTINENTS.map(code => [code, 'empty']));
   for (const code of CONTINENTS) {
     const row = element(doc, 'div', 'lg-region');
+    row.dataset.continent = code;
+    row.dataset.populated = 'false';
+    row.dataset.visibility = 'empty';
     const name = element(doc, 'dt', 'lg-region-name');
+    const button = element(doc, 'button', 'lg-region-button');
+    button.type = 'button';
+    button.disabled = true;
+    button.dataset.continent = code;
+    button.setAttribute('aria-pressed', 'false');
+    name.append(button);
     const value = element(doc, 'dd', 'lg-region-value', '—');
+    const position = element(doc, 'dd', 'lg-region-position');
     const countries = element(doc, 'dd', 'lg-countries');
-    row.append(name, value, countries);
+    row.append(name, value, position, countries);
     list.append(row);
-    rows.set(code, { name, value, countries });
+    rows.set(code, { row, button, value, position, countries });
+    row.addEventListener('pointerenter', () => highlight(code));
+    row.addEventListener('pointerleave', () => {
+      if (highlighted === code && doc.activeElement !== button) highlight(null);
+    });
+    button.addEventListener('focus', () => highlight(code));
+    button.addEventListener('blur', () => {
+      if (highlighted === code) highlight(null);
+    });
+    row.addEventListener('click', () => highlight(code));
+    button.addEventListener('keydown', event => {
+      if (event.key === 'Escape') {
+        highlight(null);
+        return;
+      }
+      if (!['ArrowDown', 'ArrowUp', 'ArrowRight', 'ArrowLeft', 'Home', 'End'].includes(event.key)) return;
+      const available = [...rows.values()].filter(item => !item.button.disabled);
+      const current = available.findIndex(item => item.button === button);
+      const step = ['ArrowDown', 'ArrowRight'].includes(event.key) ? 1 : -1;
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? available.length - 1
+        : (current + step + available.length) % available.length;
+      event.preventDefault();
+      available[next]?.button.focus();
+    });
   }
   const privacy = element(doc, 'p', 'lg-privacy');
-  summary.append(caption, count, status, list, privacy);
+  summary.append(caption, count, status, date, roleSummary, list, privacy);
   root.replaceChildren(figure, summary);
-  const globe = createGlobe(canvas, { seed });
+  let globe;
+  globe = createGlobe(canvas, { seed, onSelect: highlight, onVisibility: updateVisibility });
+
+  function highlight(code) {
+    highlighted = rows.has(code) && !rows.get(code).button.disabled ? code : null;
+    for (const [continent, item] of rows) {
+      const active = continent === highlighted;
+      item.row.dataset.active = String(active);
+      item.button.setAttribute('aria-pressed', String(active));
+    }
+    globe?.setHighlight(highlighted);
+  }
+
+  function rowPosition(code) {
+    const item = rows.get(code);
+    const position = visibility.get(code);
+    const copy = COPY[language];
+    item.row.dataset.visibility = position;
+    item.position.textContent = copy.visibility[position];
+    item.position.hidden = position === 'empty';
+    if (model) {
+      const numbers = new Intl.NumberFormat(language);
+      const amount = numbers.format(Number(item.row.dataset.count));
+      const founder = numbers.format(Number(item.row.dataset.founderOperated));
+      const population = language === 'ko' ? `Mac ${amount}대` : `${amount} Macs`;
+      item.button.setAttribute('aria-label', `${item.button.textContent}, ${population}, ${copy.founder} ${founder}${position === 'empty' ? '' : `, ${copy.visibility[position]}`}`);
+    } else item.button.removeAttribute('aria-label');
+  }
+
+  function updateVisibility(entries) {
+    for (const entry of entries) {
+      if (!rows.has(entry.continent) || !Object.hasOwn(COPY.en.visibility, entry.visibility)) continue;
+      visibility.set(entry.continent, entry.visibility);
+      rowPosition(entry.continent);
+    }
+  }
 
   function text() {
     const copy = COPY[language];
@@ -121,7 +212,9 @@ export function mountLiveGlobe(root, {
     canvas.setAttribute('aria-label', copy.canvas);
     list.setAttribute('aria-label', copy.list);
     privacy.textContent = copy.privacy;
-    artCaption.textContent = copy.artwork;
+    artwork.textContent = copy.artwork;
+    founderLegend.textContent = copy.founderLegend;
+    independentLegend.textContent = copy.independentLegend;
     pause.textContent = paused ? copy.resume : copy.pause;
     pause.setAttribute('aria-pressed', String(paused));
     const isMap = motion.matches || canvas.dataset.renderer === 'map';
@@ -129,14 +222,31 @@ export function mountLiveGlobe(root, {
     interaction.textContent = isMap ? copy.map : copy.drag;
     status.textContent = copy[state];
     status.dataset.state = state;
+    date.hidden = state !== 'fixture';
     count.textContent = model ? numbers.format(model.total) : '—';
-    const totals = model ? continentTotals(model) : [];
+    roleSummary.hidden = !model;
+    if (model) {
+      const role = (label, item) => `${label} ${numbers.format(item.count)} (${copy.founderRun} ${numbers.format(item.founder_operated)})`;
+      const reserve = model.reserve_keys;
+      roleSummary.textContent = `${role(copy.validators, model.roles.validator)} · ${role(copy.wallet, model.roles.wallet)} · ${copy.reserve} ${numbers.format(reserve.standby + reserve.seated)} (${copy.standby} ${numbers.format(reserve.standby)} / ${copy.seated} ${numbers.format(reserve.seated)})`;
+    }
+    const totals = new Map((model ? continentTotals(model) : []).map(item => [item.continent, item]));
     let countries;
     try { countries = new Intl.DisplayNames([language], { type: 'region' }); } catch { /* older browsers use ISO codes */ }
     CONTINENTS.forEach((code, index) => {
       const row = rows.get(code);
-      row.name.textContent = copy.continents[index];
-      row.value.textContent = model ? numbers.format(totals[index].count) : '—';
+      const total = totals.get(code);
+      row.button.textContent = copy.continents[index];
+      row.button.disabled = !total?.count;
+      row.row.dataset.populated = String(Boolean(total?.count));
+      row.row.dataset.count = total ? String(total.count) : '';
+      row.row.dataset.founderOperated = total ? String(total.founder_operated) : '';
+      row.value.textContent = total ? total.count
+        ? `${numbers.format(total.count)} · ${copy.founder} ${numbers.format(total.founder_operated)}`
+        : '0' : '—';
+      if (!total?.count) visibility.set(code, 'empty');
+      else if (code === 'unknown') visibility.set(code, 'unknown');
+      rowPosition(code);
       row.countries.replaceChildren();
       for (const region of model?.regions || []) {
         if (region.continent !== code || !region.country) continue;
@@ -145,6 +255,12 @@ export function mountLiveGlobe(root, {
         row.countries.append(label);
       }
       row.countries.hidden = !row.countries.childElementCount;
+    });
+    if (highlighted && rows.get(highlighted).button.disabled) highlight(null);
+    globe.setLabels({
+      continents: Object.fromEntries(CONTINENTS.map((code, index) => [code, copy.continents[index]])),
+      founder: copy.founder,
+      independent: copy.independent,
     });
   }
 

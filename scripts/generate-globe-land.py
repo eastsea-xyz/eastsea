@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Generate bundled sphere artwork from Natural Earth 110m land, with no packages.
 
-Download the public-domain source archive into the workspace tmp/ first:
-  curl -fsSL https://naciscdn.org/naturalearth/110m/physical/ne_110m_land.zip -o tmp/ne_110m_land.zip
+Place the pinned public-domain source archive in the workspace tmp/ first:
   python3 scripts/generate-globe-land.py tmp/ne_110m_land.zip
 The browser never downloads this archive or receives node locations.
 """
@@ -16,7 +15,9 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "apps/explorer/live-globe/land.js"
-SAMPLES = 9000
+SOURCE_SHA256 = "1926c621afd6ac67c3f36639bb1236134a48d82226dc675d3e3df53d02d2a3de"
+SAMPLES = 36000
+MAX_COASTLINE_ARC = math.radians(2)
 
 
 def polygons(raw):
@@ -46,9 +47,51 @@ def contains(x, y, ring):
     return inside
 
 
+def sphere_point(lon, lat):
+    lon, lat = math.radians(lon), math.radians(lat)
+    radius = math.cos(lat)
+    return radius * math.sin(lon), math.sin(lat), radius * math.cos(lon)
+
+
+def coastline(rings):
+    """Closed-ring coastline segments, with endpoints on the unit sphere."""
+    values = []
+    for _, ring in rings:
+        for start, end in zip(ring, ring[1:] + ring[:1]):
+            # Natural Earth splits polygons at the dateline. Those meridian
+            # closures (including Antarctica's pole edges) are not coastline.
+            if all(abs(abs(lon) - 180) < 1e-6 for lon, _ in (start, end)):
+                continue
+            a, b = sphere_point(*start), sphere_point(*end)
+            angle = math.acos(max(-1, min(1, sum(x * y for x, y in zip(a, b)))))
+            if angle < 1e-10:
+                continue
+            steps = math.ceil(angle / MAX_COASTLINE_ARC)
+            previous = a
+            for step in range(1, steps + 1):
+                if step == steps:
+                    point = b
+                else:
+                    fraction = step / steps
+                    weight_a = math.sin((1 - fraction) * angle) / math.sin(angle)
+                    weight_b = math.sin(fraction * angle) / math.sin(angle)
+                    point = tuple(weight_a * x + weight_b * y for x, y in zip(a, b))
+                values.extend(previous)
+                values.extend(point)
+                previous = point
+    return values
+
+
+def js_points(name, values):
+    rows = [",".join(f"{n:.5f}" for n in values[i:i + 18]) for i in range(0, len(values), 18)]
+    return f"export const {name} = [\n" + ",\n".join(rows) + "\n];\n"
+
+
 def main():
     archive = Path(sys.argv[1])
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    if digest != SOURCE_SHA256:
+        raise ValueError("Natural Earth archive does not match the pinned SHA-256")
     with zipfile.ZipFile(archive) as source:
         rings = list(polygons(source.read("ne_110m_land.shp")))
     values = []
@@ -67,15 +110,18 @@ def main():
             r = math.sqrt(1 - y * y)
             angle = math.radians(lon)
             values.extend((r * math.sin(angle), y, r * math.cos(angle)))
-    rows = [",".join(f"{n:.5f}" for n in values[i:i + 18]) for i in range(0, len(values), 18)]
+    coast = coastline(rings)
     OUT.write_text(
         "// Generated artwork: Natural Earth 110m land (public domain).\n"
         "// Source: https://www.naturalearthdata.com/downloads/110m-physical-vectors/110m-land/\n"
         f"// Archive SHA-256: {digest}\n"
         "// Regenerate with scripts/generate-globe-land.py; no node location data.\n"
-        "export const LAND_POINTS = [\n" + ",\n".join(rows) + "\n];\n"
+        + js_points("LAND_POINTS", values)
+        + "// Consecutive segment endpoints; each segment contains two unit xyz points.\n"
+        + js_points("COASTLINE_POINTS", coast)
     )
-    print(f"Bundled {len(values) // 3} land dots ({OUT.stat().st_size} bytes); source SHA-256 {digest}")
+    print(f"Bundled {len(values) // 3} land dots and {len(coast) // 6} coastline segments "
+          f"({OUT.stat().st_size} bytes); source SHA-256 {digest}")
 
 
 if __name__ == "__main__":

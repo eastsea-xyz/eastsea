@@ -1,0 +1,29 @@
+{
+  "schema_version": 2,
+  "scope": "node",
+  "total": 24,
+  "founder_operated": 4,
+  "roles": {
+    "validator": { "count": 6, "founder_operated": 4 },
+    "wallet": { "count": 0, "founder_operated": 0 },
+    "candidate": { "count": 3, "founder_operated": 0 },
+    "follower": { "count": 15, "founder_operated": 0 }
+  },
+  "versions": { "0.7.4": 21, "0.7.3": 3 },
+  "reserve_keys": { "standby": 0, "seated": 0 },
+  "regions": [
+    { "continent": "asia", "country": "KR", "count": 6, "founder_operated": 3 },
+    { "continent": "asia", "count": 3, "founder_operated": 1 },
+    { "continent": "europe", "country": "DE", "count": 3, "founder_operated": 0 },
+    { "continent": "europe", "count": 3, "founder_operated": 0 },
+    { "continent": "north_america", "count": 6, "founder_operated": 0 },
+    { "continent": "south_america", "count": 1, "founder_operated": 0 },
+    { "continent": "oceania", "count": 1, "founder_operated": 0 },
+    { "continent": "unknown", "count": 1, "founder_operated": 0 }
+  ],
+  "recent_blocks": [
+    { "height": 184231, "continent": "asia" },
+    { "height": 184232, "continent": "europe" },
+    { "height": 184233, "continent": "north_america" }
+  ]
+}

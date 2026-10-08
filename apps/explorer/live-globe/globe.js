@@ -1,5 +1,5 @@
 import { continentTotals, sessionJitter } from './data.js';
-import { LAND_POINTS } from './land.js';
+import { LAND_POINTS, COASTLINE_POINTS } from './land.js';
 
 // These are bundled artwork anchors, never locations supplied by a node.
 const CENTROIDS = {
@@ -10,9 +10,26 @@ const CENTROIDS = {
 const RADIANS = Math.PI / 180;
 const ARC_STEPS = 48;
 const MAX_ARCS = 7;
-const INITIAL_YAW = -1.08;
-const INITIAL_PITCH = 0.19;
-const COLORS = { sphere: '#071320', land: '#7CC4DC', pulse: '#E8BF59' };
+const INITIAL_YAW = -92 * RADIANS;
+const INITIAL_PITCH = 35 * RADIANS;
+const IDLE_DELAY = 10_000;
+const COLORS = { sphere: '#071320', land: '#7CC4DC', coast: '#B7E2EF', pulse: '#E8BF59' };
+
+function vector(longitude, latitude) {
+  return [Math.cos(latitude) * Math.sin(longitude), Math.sin(latitude), Math.cos(latitude) * Math.cos(longitude)];
+}
+
+// Faint, locally generated 30-degree graticule. No network location input.
+function graticule() {
+  const points = [];
+  for (let lon = -180; lon < 180; lon += 30) {
+    for (let lat = -90; lat < 90; lat += 2) points.push(...vector(lon * RADIANS, lat * RADIANS), ...vector(lon * RADIANS, (lat + 2) * RADIANS));
+  }
+  for (let lat = -60; lat <= 60; lat += 30) {
+    for (let lon = -180; lon < 180; lon += 2) points.push(...vector(lon * RADIANS, lat * RADIANS), ...vector((lon + 2) * RADIANS, lat * RADIANS));
+  }
+  return new Float32Array(points);
+}
 
 const SPHERE_VERTEX = `
 attribute vec2 a_position;
@@ -31,59 +48,60 @@ void main() {
   float r = length(v_position);
   if (r > 1.12) discard;
   if (r > 1.0) {
-    float halo = exp(-(r - 1.0) * 38.0) * 0.12;
+    float halo = exp(-(r - 1.0) * 38.0) * 0.24;
     gl_FragColor = vec4(u_land, halo * (1.0 - smoothstep(1.04, 1.12, r)));
     return;
   }
   vec3 normal = vec3(v_position, sqrt(max(0.0, 1.0 - r * r)));
   float light = max(0.0, dot(normal, normalize(vec3(-0.6, 0.7, 0.8))));
   vec3 color = u_color * (0.7 + light * 1.25);
-  color += u_land * pow(r, 8.0) * 0.045;
+  color += u_land * pow(r, 16.0) * 0.15;
   gl_FragColor = vec4(color, 1.0 - smoothstep(0.994, 1.0, r));
 }`;
 const POINT_VERTEX = `
 attribute vec3 a_position;
-attribute float a_size;
-attribute float a_phase;
 uniform mat3 u_rotation;
 uniform vec2 u_scale;
 uniform float u_dpr;
 uniform float u_point_cap;
 uniform float u_land_size;
-uniform mediump float u_marker;
 varying float v_facing;
-varying float v_phase;
 void main() {
   vec3 position = u_rotation * a_position;
   v_facing = position.z;
-  v_phase = a_phase;
   gl_Position = vec4(position.xy * u_scale, 0.0, 1.0);
-  float size = mix(u_land_size, a_size, u_marker);
-  gl_PointSize = min(u_point_cap, size * u_dpr);
+  gl_PointSize = min(u_point_cap, u_land_size * u_dpr);
 }`;
 const POINT_FRAGMENT = `
 precision mediump float;
 uniform vec3 u_color;
-uniform mediump float u_marker;
-uniform float u_time;
 varying float v_facing;
-varying float v_phase;
 void main() {
   if (v_facing < 0.025) discard;
   float r = length(gl_PointCoord - 0.5);
   if (r > 0.5) discard;
   float edge = smoothstep(0.025, 0.22, v_facing);
-  if (u_marker < 0.5) {
-    float alpha = (1.0 - smoothstep(0.25, 0.5, r)) * (0.4 + v_facing * 0.45);
-    gl_FragColor = vec4(u_color, alpha * edge);
-    return;
-  }
-  float phase = fract(u_time * 0.32 + v_phase);
-  float ring = 1.0 - smoothstep(0.014, 0.038, abs(r - (0.16 + phase * 0.3)));
-  float alpha = exp(-r * r * 24.0) * 0.24;
-  alpha += ring * (1.0 - phase) * 0.4;
-  alpha += (1.0 - smoothstep(0.055, 0.105, r)) * 0.92;
+  float alpha = (1.0 - smoothstep(0.32, 0.5, r)) * (0.65 + v_facing * 0.30);
   gl_FragColor = vec4(u_color, alpha * edge);
+}`;
+const LINE_VERTEX = `
+attribute vec3 a_position;
+uniform mat3 u_rotation;
+uniform vec2 u_scale;
+varying float v_facing;
+void main() {
+  vec3 position = u_rotation * a_position;
+  v_facing = position.z;
+  gl_Position = vec4(position.xy * u_scale, 0.0, 1.0);
+}`;
+const LINE_FRAGMENT = `
+precision mediump float;
+uniform vec3 u_color;
+uniform float u_alpha;
+varying float v_facing;
+void main() {
+  if (v_facing < 0.0) discard;
+  gl_FragColor = vec4(u_color, u_alpha * smoothstep(0.0, 0.12, v_facing));
 }`;
 const ARC_VERTEX = `
 attribute vec3 a_position;
@@ -157,7 +175,7 @@ function readColor(element, name) {
 
 function clamp(value, min, max) { return Math.max(min, Math.min(max, value)); }
 
-export function createGlobe(canvas, { seed } = {}) {
+export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = () => {} } = {}) {
   const document = canvas.ownerDocument;
   const window = document.defaultView;
   const stage = canvas.parentElement || canvas;
@@ -172,25 +190,54 @@ export function createGlobe(canvas, { seed } = {}) {
   canvas.after(map);
   canvas.style.touchAction = 'pan-y';
   const context = map.getContext('2d');
+  const overlay = document.createElement('div');
+  overlay.className = 'lg-markers';
+  stage.append(overlay);
+  const svgElement = (tag, attributes) => {
+    const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    for (const [name, value] of Object.entries(attributes)) el.setAttribute(name, String(value));
+    return el;
+  };
   const markers = Object.entries(CENTROIDS).map(([continent, anchor], index) => {
     const jitter = sessionJitter(continent, sessionSeed);
     const longitude = anchor[0] * RADIANS + clamp(Number(jitter[0]) || 0, -0.06, 0.06);
     const latitude = anchor[1] * RADIANS + clamp(Number(jitter[1]) || 0, -0.06, 0.06);
+    const button = document.createElement('button');
+    button.type = 'button'; button.className = 'lg-marker'; button.dataset.continent = continent;
+    button.hidden = true;
+    const orb = svgElement('svg', { viewBox: '-22 -22 44 44', 'aria-hidden': 'true' });
+    orb.classList.add('lg-marker-orb');
+    const core = svgElement('circle', { cx: 0, cy: 0, r: 0, class: 'lg-marker-core' });
+    const ring = svgElement('circle', { cx: 0, cy: 0, r: 18, fill: 'none', 'stroke-width': 3, pathLength: 100, transform: 'rotate(-90)', class: 'lg-marker-ring' });
+    const outline = svgElement('circle', { cx: 0, cy: 0, r: 21, fill: 'none', 'stroke-width': 1, class: 'lg-marker-outline' });
+    orb.append(outline, core, ring);
+    const label = document.createElement('span'); label.className = 'lg-marker-label';
+    label.style.right = 'auto'; label.style.transform = 'none';
+    button.append(orb, label); overlay.append(button);
+    const select = () => { interact(); onSelect(continent); };
+    const deselect = () => { if (document.activeElement !== button) onSelect(null); };
+    button.addEventListener('pointerenter', select); button.addEventListener('pointerleave', deselect);
+    button.addEventListener('focus', select); button.addEventListener('blur', () => onSelect(null));
+    button.addEventListener('click', select);
     return {
-      continent, count: 0, phase: index / 7,
+      continent, count: 0, founder_operated: 0, phase: index / 7, button, core, ring, label,
       position: new Float32Array([Math.cos(latitude) * Math.sin(longitude), Math.sin(latitude), Math.cos(latitude) * Math.cos(longitude)]),
     };
   });
   const byContinent = new Map(markers.map(marker => [marker.continent, marker]));
   const land = new Float32Array(LAND_POINTS);
-  const markerData = new Float32Array(markers.length * 5);
+  const coast = new Float32Array(COASTLINE_POINTS);
+  const grid = graticule();
   const arcData = new Float32Array(MAX_ARCS * ARC_STEPS * 2 * 5);
   const rotation = new Float32Array(9);
   const scale = new Float32Array(2);
   let colors, gl, resources, glAttempted = false, contextLost = false;
-  let markerCount = 0, arcCount = 0;
+  let arcCount = 0;
   let width = 1, height = 1, dpr = 1, radius = 1;
   let yaw = INITIAL_YAW, pitch = INITIAL_PITCH, time = 0;
+  let homeYaw = yaw, homePitch = pitch, centered = false, idleUntil = 0;
+  let labels = { continents: {}, founder: 'Founder', independent: 'Independent' }, visibilityKey = '';
+  let unknownCount = 0;
   let frame = 0, lastFrame = 0, paused = false, visible = true, destroyed = false;
   let staticMode = true, pointer = null;
 
@@ -222,12 +269,14 @@ export function createGlobe(canvas, { seed } = {}) {
         return buffer;
       };
       resources.sphere = makeProgram(SPHERE_VERTEX, SPHERE_FRAGMENT, ['a_position'], ['u_scale', 'u_color', 'u_land']);
-      resources.points = makeProgram(POINT_VERTEX, POINT_FRAGMENT, ['a_position', 'a_size', 'a_phase'],
-        ['u_rotation', 'u_scale', 'u_dpr', 'u_point_cap', 'u_land_size', 'u_marker', 'u_color', 'u_time']);
+      resources.points = makeProgram(POINT_VERTEX, POINT_FRAGMENT, ['a_position'],
+        ['u_rotation', 'u_scale', 'u_dpr', 'u_point_cap', 'u_land_size', 'u_color']);
+      resources.outlines = makeProgram(LINE_VERTEX, LINE_FRAGMENT, ['a_position'], ['u_rotation', 'u_scale', 'u_color', 'u_alpha']);
       resources.arcs = makeProgram(ARC_VERTEX, ARC_FRAGMENT, ['a_position', 'a_progress', 'a_phase'], ['u_rotation', 'u_scale', 'u_color', 'u_time']);
       resources.quad = makeBuffer(new Float32Array([-1.12, -1.12, 1.12, -1.12, -1.12, 1.12, -1.12, 1.12, 1.12, -1.12, 1.12, 1.12]), gl.STATIC_DRAW);
       resources.land = makeBuffer(land, gl.STATIC_DRAW);
-      resources.markers = makeBuffer(markerData, gl.DYNAMIC_DRAW);
+      resources.coast = makeBuffer(coast, gl.STATIC_DRAW);
+      resources.grid = makeBuffer(grid, gl.STATIC_DRAW);
       resources.lines = makeBuffer(arcData, gl.DYNAMIC_DRAW);
       resources.pointCap = gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE)[1];
       gl.disable(gl.DEPTH_TEST);
@@ -248,13 +297,15 @@ export function createGlobe(canvas, { seed } = {}) {
     return !destroyed && !paused && !staticMode && visible && !document.hidden;
   }
 
+  function interact() { idleUntil = window.performance.now() + IDLE_DELAY; }
+
   function animate(now) {
     frame = 0;
     if (!active()) { lastFrame = 0; return; }
     const delta = lastFrame ? Math.min((now - lastFrame) / 1000, 0.05) : 0;
     lastFrame = now;
     time += delta;
-    if (!pointer) yaw += delta * 0.035;
+    if (!pointer && now >= idleUntil) yaw += delta * 0.025;
     drawWebGL();
     frame = window.requestAnimationFrame(animate);
   }
@@ -268,6 +319,8 @@ export function createGlobe(canvas, { seed } = {}) {
     canvas.style.display = staticMode ? 'none' : original.display;
     map.style.display = staticMode ? '' : 'none';
     canvas.dataset.renderer = staticMode ? 'map' : 'webgl';
+    stage.dataset.crowdedMap = String(staticMode && markers.filter(marker => marker.count).length > 2);
+    overlay.dataset.animated = String(active());
     stopFrame();
     resize();
     if (active()) frame = window.requestAnimationFrame(animate);
@@ -299,17 +352,27 @@ export function createGlobe(canvas, { seed } = {}) {
     gl.uniform2fv(points.u_scale, scale);
     gl.uniform1f(points.u_dpr, dpr);
     gl.uniform1f(points.u_point_cap, resources.pointCap);
-    gl.uniform1f(points.u_land_size, clamp(radius / 160, 1.2, 2));
-    gl.uniform1f(points.u_time, time);
-    gl.uniform1f(points.u_marker, 0);
+    gl.uniform1f(points.u_land_size, clamp(radius / 185, 1.25, 1.85));
     gl.uniform3fv(points.u_color, colors.land.rgb);
     gl.bindBuffer(gl.ARRAY_BUFFER, resources.land);
     gl.enableVertexAttribArray(points.a_position);
     gl.vertexAttribPointer(points.a_position, 3, gl.FLOAT, false, 0, 0);
-    gl.vertexAttrib1f(points.a_size, 1);
-    gl.vertexAttrib1f(points.a_phase, 0);
     gl.drawArrays(gl.POINTS, 0, land.length / 3);
     gl.disableVertexAttribArray(points.a_position);
+
+    const outlines = resources.outlines;
+    gl.useProgram(outlines.handle);
+    gl.uniformMatrix3fv(outlines.u_rotation, false, rotation);
+    gl.uniform2fv(outlines.u_scale, scale);
+    gl.enableVertexAttribArray(outlines.a_position);
+    for (const [buffer, count, color, alpha] of [[resources.grid, grid.length / 3, colors.land.rgb, 0.16], [resources.coast, coast.length / 3, colors.coast.rgb, 0.8]]) {
+      gl.uniform3fv(outlines.u_color, color);
+      gl.uniform1f(outlines.u_alpha, alpha);
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+      gl.vertexAttribPointer(outlines.a_position, 3, gl.FLOAT, false, 0, 0);
+      gl.drawArrays(gl.LINES, 0, count);
+    }
+    gl.disableVertexAttribArray(outlines.a_position);
 
     if (arcCount) {
       const arcs = resources.arcs;
@@ -331,23 +394,7 @@ export function createGlobe(canvas, { seed } = {}) {
       gl.disableVertexAttribArray(arcs.a_phase);
     }
 
-    if (markerCount) {
-      gl.useProgram(points.handle);
-      gl.uniform1f(points.u_marker, 1);
-      gl.uniform3fv(points.u_color, colors.pulse.rgb);
-      gl.bindBuffer(gl.ARRAY_BUFFER, resources.markers);
-      gl.enableVertexAttribArray(points.a_position);
-      gl.enableVertexAttribArray(points.a_size);
-      gl.enableVertexAttribArray(points.a_phase);
-      gl.vertexAttribPointer(points.a_position, 3, gl.FLOAT, false, 20, 0);
-      gl.vertexAttribPointer(points.a_size, 1, gl.FLOAT, false, 20, 12);
-      gl.vertexAttribPointer(points.a_phase, 1, gl.FLOAT, false, 20, 16);
-      gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
-      gl.drawArrays(gl.POINTS, 0, markerCount);
-      gl.disableVertexAttribArray(points.a_position);
-      gl.disableVertexAttribArray(points.a_size);
-      gl.disableVertexAttribArray(points.a_phase);
-    }
+    positionMarkers();
   }
 
   function drawMap() {
@@ -362,7 +409,7 @@ export function createGlobe(canvas, { seed } = {}) {
     context.fillStyle = colors.sphere.css;
     context.fillRect(left - 12, top - 12, mapWidth + 24, mapHeight + 24);
     context.strokeStyle = colors.land.css;
-    context.globalAlpha = 0.09;
+    context.globalAlpha = 0.16;
     context.lineWidth = 1;
     context.beginPath();
     for (let column = 1; column < 12; column++) {
@@ -375,13 +422,23 @@ export function createGlobe(canvas, { seed } = {}) {
     }
     context.stroke();
     context.fillStyle = colors.land.css;
-    context.globalAlpha = 0.65;
+    context.globalAlpha = 0.85;
     context.beginPath();
     for (let i = 0; i < land.length; i += 3) {
       const x = toX(land[i], land[i + 2]), y = toY(land[i + 1]);
       context.moveTo(x + 0.8, y); context.arc(x, y, 0.8, 0, Math.PI * 2);
     }
     context.fill();
+    context.strokeStyle = colors.coast.css;
+    context.globalAlpha = 0.9;
+    context.beginPath();
+    for (let i = 0; i < coast.length; i += 6) {
+      const x1 = toX(coast[i], coast[i + 2]), x2 = toX(coast[i + 3], coast[i + 5]);
+      if (Math.abs(x1 - x2) > mapWidth / 2) continue;
+      context.moveTo(x1, toY(coast[i + 1])); context.lineTo(x2, toY(coast[i + 4]));
+    }
+    context.stroke();
+    context.strokeStyle = colors.land.css;
     context.globalAlpha = 0.62;
     context.beginPath();
     for (let i = 0; i < arcCount * 5; i += 10) {
@@ -394,15 +451,75 @@ export function createGlobe(canvas, { seed } = {}) {
     }
     context.stroke();
     context.globalAlpha = 1;
-    for (let i = 0; i < markerCount * 5; i += 5) {
-      const x = toX(markerData[i], markerData[i + 2]), y = toY(markerData[i + 1]);
-      const size = markerData[i + 3] / 2;
-      const glow = context.createRadialGradient(x, y, 1, x, y, size);
-      glow.addColorStop(0, colors.pulse.css); glow.addColorStop(1, `${colors.pulse.css}00`);
-      context.fillStyle = glow;
-      context.beginPath(); context.arc(x, y, size, 0, Math.PI * 2); context.fill();
-      context.fillStyle = colors.pulse.css;
-      context.beginPath(); context.arc(x, y, 2.4, 0, Math.PI * 2); context.fill();
+    positionMarkers();
+  }
+
+  function positionMarkers() {
+    const states = [], front = [];
+    const mapWidth = Math.min(width * 0.92, height * 1.5), mapHeight = mapWidth / 2;
+    const left = (width - mapWidth) / 2, top = (height - mapHeight) / 2;
+    for (const marker of markers) {
+      const p = marker.position;
+      const facing = rotation[2] * p[0] + rotation[5] * p[1] + rotation[8] * p[2];
+      const visibility = !marker.count ? 'empty' : staticMode || facing >= 0.10 ? 'front' : 'back';
+      states.push({ continent: marker.continent, visibility });
+      marker.button.hidden = visibility !== 'front';
+      if (visibility !== 'front') continue;
+      const x = staticMode ? left + (Math.atan2(p[0], p[2]) / (2 * Math.PI) + 0.5) * mapWidth : width / 2 + radius * (rotation[0] * p[0] + rotation[3] * p[1] + rotation[6] * p[2]);
+      const y = staticMode ? top + (0.5 - Math.asin(clamp(p[1], -1, 1)) / Math.PI) * mapHeight : height / 2 - radius * (rotation[1] * p[0] + rotation[4] * p[1] + rotation[7] * p[2]);
+      marker.button.style.transform = `translate3d(${x.toFixed(2)}px,${y.toFixed(2)}px,0)`;
+      marker.button.dataset.labelSide = x > width * 0.58 ? 'left' : 'right';
+      front.push({ marker, x, y });
+    }
+    // At most seven labels. Cache text metrics outside animation, then choose
+    // the closest in-bounds position that doesn't collide with another label.
+    // Markers themselves stay anchored to their continent centroids.
+    const occupied = [];
+    const overlaps = (a, b) => a.x < b.x + b.w + 4 && a.x + a.w + 4 > b.x && a.y < b.y + b.h + 4 && a.y + a.h + 4 > b.y;
+    front.sort((a, b) => a.y - b.y || a.x - b.x);
+    for (const { marker, x, y } of front) {
+      const w = marker.labelWidth, h = marker.labelHeight;
+      const gap = parseFloat(marker.button.style.getPropertyValue('--marker-size')) / 2 + 8;
+      const sides = marker.button.dataset.labelSide === 'left' ? [-1, 1] : [1, -1];
+      let placement;
+      for (const shift of [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5]) {
+        for (const side of sides) {
+          const candidate = { x: clamp(side === 1 ? x + gap : x - gap - w, 4, Math.max(4, width - w - 4)), y: y - h / 2 + shift * (h + 5), w, h };
+          if (candidate.y < 4 || candidate.y + h > height - 4 || occupied.some(rect => overlaps(candidate, rect))) continue;
+          placement = candidate; break;
+        }
+        if (placement) break;
+      }
+      placement ||= { x: clamp(x + gap, 4, Math.max(4, width - w - 4)), y: clamp(y - h / 2, 4, Math.max(4, height - h - 4)), w, h };
+      occupied.push(placement);
+      marker.label.style.left = `${(placement.x - x + 22).toFixed(2)}px`;
+      marker.label.style.top = `${(placement.y - y + 22).toFixed(2)}px`;
+    }
+    states.push({ continent: 'unknown', visibility: unknownCount ? 'unknown' : 'empty' });
+    const key = states.map(region => region.visibility).join(',');
+    if (key !== visibilityKey) { visibilityKey = key; onVisibility(states); }
+  }
+
+  function labelMarkers() {
+    for (const marker of markers) {
+      const name = labels.continents[marker.continent] || marker.continent;
+      const text = `${name} ${marker.count.toLocaleString()} · ${labels.founder} ${marker.founder_operated.toLocaleString()}`;
+      marker.label.textContent = text;
+      marker.button.setAttribute('aria-label', `${text} · ${labels.independent} ${(marker.count - marker.founder_operated).toLocaleString()}`);
+    }
+    measureLabels();
+  }
+
+  function measureLabels() {
+    for (const marker of markers) {
+      const hidden = marker.button.hidden;
+      marker.button.hidden = false;
+      const compact = width <= 680;
+      const maxWidth = compact ? 150 : 190;
+      const measured = [...marker.label.textContent].reduce((sum, character) => sum + (character.charCodeAt(0) > 127 ? 13 : 7), 14);
+      marker.labelWidth = marker.label.offsetWidth || Math.min(maxWidth, measured);
+      marker.labelHeight = marker.label.offsetHeight || Math.ceil(measured / maxWidth) * (compact ? 17 : 19) + 8;
+      marker.button.hidden = hidden;
     }
   }
 
@@ -421,7 +538,8 @@ export function createGlobe(canvas, { seed } = {}) {
       if (surface.width !== pixelWidth) surface.width = pixelWidth;
       if (surface.height !== pixelHeight) surface.height = pixelHeight;
     }
-    colors = { sphere: readColor(canvas, 'sphere'), land: readColor(canvas, 'land'), pulse: readColor(canvas, 'pulse') };
+    colors = { sphere: readColor(canvas, 'sphere'), land: readColor(canvas, 'land'), coast: readColor(canvas, 'coast'), pulse: readColor(canvas, 'pulse') };
+    measureLabels();
     draw();
   }
 
@@ -437,19 +555,28 @@ export function createGlobe(canvas, { seed } = {}) {
 
   function update(model) {
     if (destroyed) return;
-    for (const marker of markers) marker.count = 0;
+    for (const marker of markers) { marker.count = 0; marker.founder_operated = 0; }
+    unknownCount = 0;
     for (const region of continentTotals(model)) {
       const marker = byContinent.get(region.continent);
-      if (marker && Number.isFinite(region.count)) marker.count = Math.max(0, region.count);
+      if (marker) { marker.count = region.count; marker.founder_operated = region.founder_operated; }
+      else if (region.continent === 'unknown') unknownCount = region.count;
     }
-    markerCount = 0;
+    const largest = markers.reduce((best, marker) => marker.count > (best?.count || 0) ? marker : best, null);
+    if (!centered && largest) {
+      yaw = homeYaw = -Math.atan2(largest.position[0], largest.position[2]);
+      pitch = homePitch = Math.asin(largest.position[1]);
+      centered = true;
+    }
     for (const marker of markers) {
-      if (!marker.count) continue;
-      const offset = markerCount++ * 5;
-      markerData.set(marker.position, offset);
-      markerData[offset + 3] = 30 + Math.min(28, Math.sqrt(marker.count) * 4);
-      markerData[offset + 4] = marker.phase;
+      const share = marker.count ? marker.founder_operated / marker.count : 0;
+      marker.button.style.setProperty('--marker-size', `${Math.min(60, 16 + Math.sqrt(marker.count) * 8)}px`);
+      marker.core.setAttribute('r', String(15 * Math.sqrt(share)));
+      marker.ring.setAttribute('stroke-dasharray', `${(1 - share) * 100} 100`);
+      marker.button.dataset.founderOperated = String(marker.founder_operated);
+      marker.button.dataset.count = String(marker.count);
     }
+    labelMarkers();
     arcCount = 0;
     const blocks = Array.isArray(model?.recent_blocks) ? model.recent_blocks : [];
     for (let i = 1; i < Math.min(blocks.length, MAX_ARCS + 1); i++) {
@@ -464,18 +591,20 @@ export function createGlobe(canvas, { seed } = {}) {
       }
     }
     if (resources && !contextLost) {
-      gl.bindBuffer(gl.ARRAY_BUFFER, resources.markers); gl.bufferSubData(gl.ARRAY_BUFFER, 0, markerData);
       gl.bindBuffer(gl.ARRAY_BUFFER, resources.lines); gl.bufferSubData(gl.ARRAY_BUFFER, 0, arcData);
     }
-    draw();
+    stage.dataset.crowdedMap = String(staticMode && markers.filter(marker => marker.count).length > 2);
+    resize();
   }
 
   function pointerDown(event) {
     if (staticMode || event.button !== 0 || event.isPrimary === false) return;
+    interact();
     pointer = { id: event.pointerId, x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY, touch: event.pointerType === 'touch', dragging: false };
     if (!pointer.touch) canvas.setPointerCapture(event.pointerId);
   }
   function pointerMove(event) {
+    interact();
     if (!pointer || event.pointerId !== pointer.id) return;
     if (!pointer.dragging) {
       const x = event.clientX - pointer.startX, y = event.clientY - pointer.startY;
@@ -491,6 +620,7 @@ export function createGlobe(canvas, { seed } = {}) {
   }
   function pointerEnd(event) {
     if (!pointer || event.pointerId !== pointer.id) return;
+    interact();
     if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
     pointer = null;
   }
@@ -500,9 +630,10 @@ export function createGlobe(canvas, { seed } = {}) {
     else if (event.key === 'ArrowRight') yaw += 0.13;
     else if (event.key === 'ArrowUp') pitch = clamp(pitch + 0.1, -1.1, 1.1);
     else if (event.key === 'ArrowDown') pitch = clamp(pitch - 0.1, -1.1, 1.1);
-    else if (event.key === 'Home') { yaw = INITIAL_YAW; pitch = INITIAL_PITCH; }
+    else if (event.key === 'Home') { yaw = homeYaw; pitch = homePitch; }
     else return;
     event.preventDefault();
+    interact();
     draw();
   }
   function lost(event) { event.preventDefault(); contextLost = true; reconcile(); }
@@ -531,9 +662,15 @@ export function createGlobe(canvas, { seed } = {}) {
   const theming = window.MutationObserver ? new window.MutationObserver(resize) : null;
   theming?.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] });
   reconcile();
+  void document.fonts?.ready.then(resize);
 
   return {
     update,
+    setLabels(next) { labels = next; labelMarkers(); draw(); },
+    setHighlight(code) {
+      interact();
+      for (const marker of markers) marker.button.dataset.active = String(marker.continent === code);
+    },
     setPaused(value) { paused = Boolean(value); reconcile(); },
     resize,
     destroy() {
@@ -556,6 +693,7 @@ export function createGlobe(canvas, { seed } = {}) {
       if (pointer && canvas.hasPointerCapture(pointer.id)) canvas.releasePointerCapture(pointer.id);
       pointer = null;
       releaseResources();
+      overlay.remove();
       map.remove();
       canvas.hidden = original.hidden;
       canvas.style.display = original.display;

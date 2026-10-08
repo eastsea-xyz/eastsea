@@ -1,201 +1,239 @@
-# Live network globe — 0.7.4
+# Readable live network globe — 0.7.4
 
 Owner: `codex/live-globe`. Presence producer: sibling `codex/live-peers`.
-This is the shared RPC contract; the presence lane should read this file from
-the live-globe worktree before implementing `aether_presence`.
+This is the public aggregate contract. The producer must adopt v2 before the
+lead enables live data. This lane changes only web code, fixtures, tests and
+documentation. It performs no deployment or installed-app/testnet changes.
 
-## RPC contract (v1)
+## Readability and disclosure
+
+The opening hemisphere centers on the continent with the most observed Macs,
+including session jitter; today's snapshot opens on Asia. Thin Natural Earth
+coastlines, 10,385 high-contrast land dots, a faint 30-degree graticule and an
+atmosphere rim add geographic context to the silhouette. The globe rotates slowly at
+0.025 radians/second. Dragging, keyboard input, pulse selection and list
+interaction hold rotation until 10 seconds of inactivity. A retained selection
+does not prevent the idle timeout; manual pause persists until resumed.
+
+Each populated known continent gets one pulse at its bundled centroid, with
+bounded session jitter. Pulse diameter uses a square-root count scale. A gold
+core's area represents the founder-operated share; the cyan outer arc represents
+the independent share. A count label, such as **아시아 4 · 창업자 4**, and its
+accessible name state the counts explicitly. There are no per-node markers.
+Behind-the-globe pulses are hidden and their list rows remain highlighted with
+**지구본 뒷면 · 목록에서 확인** / **Far side of globe · highlighted here**.
+Unknown regions stay in the list and never receive an invented position.
+Hovering/tapping either a pulse or its full list row highlights both. Keyboard
+users can focus continent buttons, move among populated rows and rotate the
+canvas. Labels are measured outside the animation loop, clamped to the stage
+and spaced to avoid collisions. Crowded static maps use a taller stage.
+
+The bilingual legend is:
+
+- **점 크기 = 연결된 Mac 수, 위치는 대륙 단위** /
+  **Dot size = Macs connected; placed per continent**
+- **금색 = 창업자 운영 노드** / **Gold = founder-operated nodes**;
+  the accompanying ring key identifies independent nodes.
+
+The supplied snapshot is dated **2026-10-08** and labeled
+**오늘 기준 실제 구성 (실시간 아님)** / **Today’s actual setup (not live)**:
+Asia **4 Macs**, Korea **3**; validators **4 (founder-run 4)**;
+wallet nodes **3 (founder-run 2)**; reserve keys **3 standby, 0 seated**.
+There are no fabricated recent block events. The former 24-Mac example lives
+only in `apps/explorer/test/fixtures/presence-example.json` for regression
+coverage; historical screenshots below show the earlier implementation.
+A failed live request never substitutes fixture counts.
+
+## RPC contract (v2)
 
 Request: `{"jsonrpc":"2.0","id":1,"method":"aether_presence","params":[]}`.
 The configured public read gateway must allowlist this read-only method.
-The JSON-RPC `result` is exactly:
+Today's aggregate `result` illustrates the exact shape:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "scope": "node",
-  "total": 24,
-  "roles": { "validator": 6, "candidate": 3, "follower": 15 },
-  "versions": { "0.7.4": 21, "0.7.3": 3 },
+  "total": 4,
+  "founder_operated": 4,
+  "roles": {
+    "validator": { "count": 4, "founder_operated": 4 },
+    "wallet": { "count": 3, "founder_operated": 2 },
+    "candidate": { "count": 0, "founder_operated": 0 },
+    "follower": { "count": 0, "founder_operated": 0 }
+  },
+  "versions": { "0.7.4": 4 },
+  "reserve_keys": { "standby": 3, "seated": 0 },
   "regions": [
-    { "continent": "asia", "country": "KR", "count": 6 },
-    { "continent": "asia", "count": 3 },
-    { "continent": "europe", "country": "DE", "count": 3 },
-    { "continent": "europe", "count": 3 },
-    { "continent": "north_america", "count": 6 },
-    { "continent": "south_america", "count": 1 },
-    { "continent": "oceania", "count": 1 },
-    { "continent": "unknown", "count": 1 }
+    { "continent": "asia", "country": "KR", "count": 3, "founder_operated": 3 },
+    { "continent": "asia", "count": 1, "founder_operated": 1 }
   ],
-  "recent_blocks": [
-    { "height": 184231, "continent": "asia" },
-    { "height": 184232, "continent": "europe" },
-    { "height": 184233, "continent": "north_america" }
-  ]
+  "recent_blocks": []
 }
 ```
 
-- All counts/heights are nonnegative safe JSON integers. `total` is the sum of
-  the disjoint `regions` buckets. Global `roles` and `versions` totals each equal
-  `total`; they are not cross-tabulated with countries. Roles are `validator`,
-  `candidate`, and `follower` (the presence lane's native roles; zero allowed).
-  Versions are semver release strings, at most 64 characters. The browser caps
-  raw region buckets at 1,024, versions at 128, recent blocks at 8.
+- All counts and heights are nonnegative safe JSON integers. Region buckets
+  are disjoint. Their `count` sum equals `total`; their `founder_operated` sum
+  equals the top-level founder count. Every founder count is at most its
+  corresponding count. Versions sum to `total`, use semver release strings
+  of at most 64 characters, and contain no arbitrary server messages.
+- Role counts describe participation on connected Macs. Validator and wallet
+  roles may overlap on the same Mac, so roles are **not summed to get total**.
+  Each role's count is at most `total`; each role's founder count is at most
+  its own count. Founder attribution is independent for each hosted role;
+  wallet participation can use an independently operated wallet on a
+  founder-operated Mac. Role founder counts are not summed against the Mac
+  founder total. `validator`, `wallet`, `candidate`, `follower` are required.
+- `reserve_keys.standby` and `.seated` count configured reserve validator keys
+  in those states, not connected Macs or extra wallet nodes. Their sum must
+  also be a safe integer. Standby keys do not inflate active validators. A
+  seated reserve key's host is counted through the normal active Mac/role
+  aggregation, never by adding reserve keys to the Mac total.
+- **Producer attribution only:** match internal genesis/reserve keys and the
+  configured founder operator address against the explicit founder-owned set.
+  Assign `founder_operated` separately per region and role during aggregation.
+  Never infer another operator's identity or infer founder status from geography,
+  version, counts or behavior. The browser consumes explicit counts and never
+  receives keys, addresses or a founder identity lookup table. The founder
+  consented to this disclosure; no extra founder privacy step is required.
 - `continent` is one of `africa`, `asia`, `europe`, `north_america`,
-  `south_america`, `oceania`, `antarctica`, `unknown`. It comes from the node's
-  **home iroh relay**, never IP geolocation; it approximates relay placement,
-  not the person's physical location. Unmapped/no relay is `unknown`.
-- `country` is an OPTIONAL uppercase ISO 3166-1 alpha-2 code, present only for
-  explicit opt-in. Absence/null means continent-only. Before publishing, combine
-  a country's opted-in entries; with fewer than **3**, omit that country's code
-  and fold its count into its continent-only bucket. The browser repeats this
-  folding defensively before rendering. Country codes below the threshold must
-  never leave the RPC producer. Country totals are never split by role/version.
-- `recent_blocks` is OPTIONAL (default `[]`), at most 8 entries, oldest first.
-  Entries describe recent finalized validators' **continents only**, with no
-  country, validator identifier, block hash, timestamp or peer edge. Omit an
-  entry when its region is unavailable. Empty is honest; never synthesize arcs
-  for a live response. Arcs join consecutive known validator continents and
-  show a sequence of block regions, **not** measured node-to-node traffic.
-- Do not return IPs, relay URLs, cities, coordinates, peer/node identifiers,
-  wallet addresses or individual presence records. Do not include arbitrary
-  strings/errors from presence records. JSON-RPC errors use the usual envelope.
+  `south_america`, `oceania`, `antarctica`, `unknown`. Live continents come
+  from a node's **home iroh relay**, never IP geolocation. They approximate
+  relay placement, not the person's physical location. Unmapped/no relay is
+  `unknown`. The dated manual snapshot is supplied configuration, not a claim
+  that a live relay was queried.
+- `country` is optional uppercase ISO 3166-1 alpha-2, only by explicit opt-in.
+  Merge a country's opted-in entries within its continent before testing
+  **k=3**. Below 3 Macs, omit the country code and fold **both counts** into
+  its continent-only bucket before transmission. The browser repeats this
+  folding defensively. Do not cross-tabulate countries by role/version.
+  Other operators remain anonymous regional aggregates; no precise locations
+  or individual records are added by founder disclosure.
+- `recent_blocks` is optional (default `[]`), at most 8 entries, oldest first.
+  Each entry is `{ "height": safeInteger, "continent": continentCode }`.
+  Omit unavailable regions; never synthesize arcs for a live or manual snapshot.
+  Arcs join consecutive known validator continents and show block-region
+  sequence, not measured node-to-node traffic.
+- Browser limits: 1,024 raw region buckets, 128 versions, 8 recent blocks.
+  No IPs, relay URLs, cities, coordinates, peer/node identifiers, wallet
+  addresses, timestamps, hashes, arbitrary strings or individual presence
+  records are part of the public model. JSON-RPC errors use the usual envelope;
+  the page never echoes their contents.
 
-### Presence-lane integration gate
+### Producer integration gate
 
-The interim `codex/live-peers` implementation inspected on 2026-10-08 returns
-`nodes` and `observer` identifiers from `aether_presence`; its `by_country`
-includes singleton countries. **That interim response must not be served to
-this page.** The public method must adopt the v1 aggregate result above and
-enforce k=3 on the producer before exposing it through the gateway. Internal
-signed presence/gossip records can remain internal. Consumer count panels in
-the presence lane should read the new aggregate fields. The globe never calls
-the peer/individual-record method or derives regions from an individual list.
-The strict consumer rejects the interim schema; this is a coordinated producer
-handoff, not a claim that client-side filtering can remove already-transmitted
-identifiers. Verify this contract before the lead enables live public data.
+The interim presence response previously returned `nodes`, `observer`
+identifiers and singleton `by_country` entries. It must not be served to this
+page. The public producer must emit v2 aggregates and enforce country k=3
+before exposure. Internal signed presence/gossip records remain internal.
+The consumer rejects both interim individual schemas and v1 aggregates
+without founder disclosure; missing attribution is not silently interpreted
+as independent. This is a producer handoff, not a claim that browser filtering
+can retract identifiers already transmitted.
 
-## Shared component and privacy boundary
+## Shared module and runtime
 
-Canonical plain ES modules live in `apps/explorer/live-globe/`; the byte-identical
-`site/live-globe/` bundle is copied by `scripts/sync-live-globe.mjs`. Both surfaces
-serve committed static assets without a compile or CDN. Fixture values are
-illustrative and explicitly labeled; a failed live request never falls back to
-fixture counts. The wallet is deliberately outside this lane.
+Canonical ES modules live in `apps/explorer/live-globe/`; byte-identical site
+copies are generated by `scripts/sync-live-globe.mjs`. Both surfaces serve
+committed local assets without a build or CDN. Explorer uses `#/network`,
+caption **Macs this node can see**, and the Settings public read gateway.
+The site's Korean/English section and `site/live-network.json` remain intact.
+Only `aether_presence` is polled, every 10 seconds, without credentials or
+referrers; no peer/committee/individual method is called.
 
-Each globe pulse represents a **continent total** and is anchored to its
-fixed, locally defined continent centroid, with small deterministic jitter from
-an ephemeral per-page-session seed and the continent code. No per-node markers
-exist. Opted-in countries with at least 3 Macs may appear only in the text list;
-they do not add finer positions on the globe. Unknown contributes to the honest
-total/list and never receives an invented geographic marker.
+Centroids, coastlines and graticules are internal bundled artwork, never
+positions supplied by the presence API. Session jitter remains bounded to
+0.035 radians per axis, in memory only and stable across mounts in one page.
+Opted-in countries appear only in text. No new dependency or external asset
+request is introduced.
 
-The normalized public model contains only codes, counts, release strings and
-block heights. Globe geometry and centroid vectors are internal bundled artwork,
-never network parameters, DOM attributes, or location data about a node. The
-session seed stays in memory and is never transmitted or stored.
+Reduced motion and WebGL failure use the static map with the same labeled
+pulses and text equivalent. GPU context loss switches to the map; restoration
+rebuilds buffers without losing counts. Animation, CSS pulses and polling stop
+in hidden tabs or outside the viewport. Resuming visibility requests fresh
+presence. Loading, unavailable, stale and empty counts remain explicit.
 
-Land artwork is sampled locally from [Natural Earth 110m land](https://www.naturalearthdata.com/downloads/110m-physical-vectors/110m-land/),
-whose data is [public domain](https://www.naturalearthdata.com/about/terms-of-use/).
-`scripts/generate-globe-land.py` uses only Python's standard library to read the
-shapefile archive and create 2,594 equal-area land dots. The pinned downloaded
-archive SHA-256 is
+Artwork is generated from the bundled public-domain
+[Natural Earth 110m land](https://www.naturalearthdata.com/downloads/110m-physical-vectors/110m-land/)
+archive, SHA-256
 `1926c621afd6ac67c3f36639bb1236134a48d82226dc675d3e3df53d02d2a3de`.
-The source archive stays in `tmp/`; committed `land.js` contains only static
-unit-sphere artwork. This geography is not derived from any presence record.
+`scripts/generate-globe-land.py` uses the standard library, verifies this digest,
+samples 36,000 equal-area sphere positions and retains 10,385 land dots.
+It exports 5,057 coastline segments, subdivided below 2 degrees, omitting
+artificial dateline closure edges. The archive stays in `tmp/`; committed
+`land.js` contains only finite unit-sphere artwork.
 
-## Surface behavior
+## Verification
 
-- Explorer: `#/network`, caption **Macs this node can see**, public read gateway
-  configured in Settings. This route only polls `aether_presence` every 10 s;
-  it does not fetch peer lists, committees or node status.
-- Site: **지금 동해를 돌리는 Mac** / **Macs running EastSea right now**, caption
-  **이 노드가 보고 있는 Mac들** / **Macs this node can see**. There were no live
-  widgets in the lane base; `site/live-network.json` configures the public RPC.
-- Count and per-continent/country list accompany the canvas. Loading, unavailable,
-  stale and zero results are explicit. Reduced motion uses a static map. Drag
-  rotates the globe, with keyboard controls and pause available.
-- Rotation/pulses stop outside the viewport and in hidden tabs. Hidden tabs also
-  stop/abort polling; resuming requests a fresh snapshot. No third-party trackers,
-  fonts, map requests or CDN scripts are added.
+The offline unit suite passes **95/95 tests** and includes privacy/schema-v2 validation, today's exact
+counts, overlapping roles, reserve keys, founder bounds, identifier stripping,
+k=3 folding, local request rules, synchronized copies and the gzip budget.
+`test/globe-renderer.test.mjs` drives the real renderer and component against a
+deterministic browser host. It verifies centering on multiple hemispheres;
+every populated known continent's marker or explicit off-globe list state;
+unknown handling; founder core area/ring share and square-root sizing; crowded
+mobile map label bounds/collisions; linked pulse/full-row selection;
+10-second idle resumption including retained selection; manual pause;
+hidden/reduced-motion scheduling; and GPU context loss/restoration.
+These are behavior/geometry tests, not browser raster or GPU performance proof.
 
-## Verification and screenshots
+The canonical JavaScript, including artwork, is **173,668 bytes gzipped**,
+within the **300,000-byte** budget. The Impeccable mechanical detector returned
+no findings. No dependencies were added. Run from the repository root:
 
-The ordinary offline explorer suite passes **77/77 tests** and includes `test/globe-presence.test.mjs`
-(k=3, merging, totals, unknown fields, invalid counts/schema/codes, safe requests,
-deterministic and bounded session jitter) and `test/live-globe.test.mjs`
-(fixture, identical deployment copies, unit-sphere artwork, gzip budget).
+```sh
+node scripts/sync-live-globe.mjs --check
+npm --prefix apps/explorer test
+```
 
-`scripts/test-live-globe.mjs` is a real headless Chromium smoke using installed
-Google Chrome and existing Playwright tooling. All public RPC calls are
-intercepted with aggregate fixture envelopes; it never contacts a live node.
-Normal fixture mode makes no external calls. It checks light/dark desktop and
-mobile layouts, local assets only, language switching, country/continent lists,
-WebGL, static reduced motion, mouse drag, arrow keys, pause, request whitelist,
-10-second cadence, unavailable/zero/stale states and no raw server error echoes.
+### Browser verification is pending
 
-Measured on **Apple M1 Max**, macOS arm64, headless installed Google Chrome:
-**60 fps over a 2-second visible sampling window**. Hidden-tab lifecycle was
-explicitly dispatched for deterministic headless testing; during a 10.5-second
-hidden interval the runner recorded **zero animation frames and zero polls**.
-Resuming requested a fresh snapshot, then the next request followed at 10 s.
-This proves animation/poll scheduling stops; whole-machine idle CPU percentage
-and long thermal/battery runs were not measured. Real GPU context-loss and
-restoration were also checked: static fallback then WebGL recovery, no page
-errors. Canonical JS, including map artwork, is **39,148 bytes gzipped**;
-the unit test enforces the requested 300 KB
-ceiling. The browser also verifies that mounting the component again within the
-same page preserves marker jitter. No three.js or dependency
-was added; no Rust/Swift compile, installed app changes or deployment occurred.
+This session's sandbox rejected a local HTTP listener with `listen EPERM` and
+aborted installed headless Chrome with `SIGABRT`; browser-skill also had no
+reachable daemon. The updated browser runner fulfills workspace files directly
+through Playwright interception, avoiding the listener and all external calls,
+but Chrome still cannot launch here. **The new renderer has no fresh screenshots,
+visual-verdict pass, accessibility raster review or measured 60-fps result yet.**
+The previous renderer's 60-fps result from commit `1332e22` does not verify this
+change. The 60-fps target is retained; the runner's portable smoke floor is
+30 fps, and its recorded frame rate must be reviewed against the 60-fps target
+on the reference M1 Max. The mock host does not compile or rasterize shaders.
 
-Run from the repository root (artifacts stay in `tmp/live-globe/`):
+The prepared offline runner covers 11 screenshots plus multi-continent marker
+coverage, mobile label bounds/collisions, linked hover/tap, timed idle rotation,
+local-only assets, language switching, WebGL/reduced motion, polling cadence,
+hidden-tab lifecycle, stale/empty/unavailable responses, and session jitter.
+Run it in a host that permits headless Chrome, then copy the successful output
+into `docs/design/live-globe/` and replace the pending cells below:
 
 ```sh
 mkdir -p tmp
-node scripts/sync-live-globe.mjs --check
-npm --prefix apps/explorer test
-TMPDIR="$(git rev-parse --show-toplevel)/tmp" PLAYWRIGHT_MODULE=/path/to/playwright node scripts/test-live-globe.mjs
+TMPDIR="$(git -C . rev-parse --show-toplevel)/tmp" \
+PLAYWRIGHT_MODULE=/path/to/existing/playwright \
+node scripts/test-live-globe.mjs
 ```
 
-The title inherits the site's serif typography. A local 1,408-byte Hahmlet
-supplement supplies `돌` (U+B3CC), absent from the incumbent subset, without
-changing that shared font; the existing OFL license covers it. Only the new
-section/mount, its stylesheet link and small style rules touch the site shell,
-so the lead can retain them when merging the redesign lane.
+The existing `docs/design/live-globe/` images are still the **previous renderer**,
+not evidence for the new implementation. Preserved baseline copies are in
+`docs/design/live-globe-before/`. Never substitute synthetic mock-host renders
+for browser screenshots.
 
-### Fixture screenshots
+## Before / after review matrix
 
-These counts and block-region arcs are explicitly illustrative. All map/font
-assets are local; no private node was queried for the images.
+The baseline is the 24-Mac illustrative setup at `1332e22`; the after render
+will use the dated four-Mac actual setup. All eleven after images remain pending
+because of the browser restriction above.
 
-Explorer — light:
-
-![Live network explorer, light fixture](live-globe/explorer-light.png)
-
-Explorer — dark:
-
-![Live network explorer, dark fixture](live-globe/explorer-dark.png)
-
-Site — Korean light:
-
-![EastSea live network section, Korean light fixture](live-globe/site-light.png)
-
-Site — Korean dark:
-
-![EastSea live network section, Korean dark fixture](live-globe/site-dark.png)
-
-Mobile: [explorer light](live-globe/explorer-mobile-light.png),
-[explorer dark](live-globe/explorer-mobile-dark.png),
-[English site light](live-globe/site-mobile-light.png),
-[English site dark](live-globe/site-mobile-dark.png).
-
-Static alternative: [reduced-motion map](live-globe/explorer-reduced-motion.png).
-Error states: [unavailable, no fake count](live-globe/explorer-unavailable.png),
-[stale, explicitly labeled last snapshot](live-globe/explorer-stale.png).
-
-Independent finish review: **94/100, pass**. All reviewed palette, status-text
-contrast and control-border findings are resolved. Light status text measures
-5.46:1 against the paper surface; the pause control border measures 6.10:1 in
-light and 7.33:1 in dark. No open visual findings. Assistive-technology behavior
-was not separately tested with a screen reader; the semantic text list provides
-the data equivalent to the canvas.
+| Surface/state | Before (`1332e22`) | After (new renderer) |
+| --- | --- | --- |
+| Site Korean, light | ![Before, site light](live-globe-before/site-light.png) | Pending browser render |
+| Site Korean, dark | ![Before, site dark](live-globe-before/site-dark.png) | Pending browser render |
+| Explorer, light | ![Before, explorer light](live-globe-before/explorer-light.png) | Pending browser render |
+| Explorer, dark | ![Before, explorer dark](live-globe-before/explorer-dark.png) | Pending browser render |
+| Explorer mobile, light | ![Before, explorer mobile light](live-globe-before/explorer-mobile-light.png) | Pending browser render |
+| Explorer mobile, dark | ![Before, explorer mobile dark](live-globe-before/explorer-mobile-dark.png) | Pending browser render |
+| Site English mobile, light | ![Before, site mobile light](live-globe-before/site-mobile-light.png) | Pending browser render |
+| Site English mobile, dark | ![Before, site mobile dark](live-globe-before/site-mobile-dark.png) | Pending browser render |
+| Reduced-motion map | ![Before, reduced motion](live-globe-before/explorer-reduced-motion.png) | Pending browser render |
+| Unavailable | ![Before, unavailable](live-globe-before/explorer-unavailable.png) | Pending browser render |
+| Stale snapshot | ![Before, stale](live-globe-before/explorer-stale.png) | Pending browser render |

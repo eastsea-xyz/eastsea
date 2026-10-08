@@ -78,11 +78,14 @@ continents, not IP geolocation. No node markers exist; unknown regions remain in
 the count/list. Failed reads show unavailable or an explicitly stale snapshot.
 An older/unsafe response is rejected, never turned into invented zeroes.
 
-The producer must implement the aggregate-only contract and k=3 country folding
+The producer must implement the v2 aggregate-only contract, explicit founder
+counts per region/role, and k=3 country folding
 in [docs/design/38-live-globe.md](../../docs/design/38-live-globe.md) before public
 live use. Its interim individual-record response is not appropriate for this
-page. The locally bundled illustrative view is `?globe=fixture#/network`; the
-fixture is labeled and is never an automatic fallback for a failed live RPC.
+page. The locally bundled view is `?globe=fixture#/network`: the supplied
+2026-10-08 actual setup (4 Asia Macs), explicitly labeled as not live. The fixture
+is never an automatic fallback for a failed live RPC. The globe opens on the
+largest region, labels founder/independent shares, and links pulses to list rows.
 The canonical small ES modules in `live-globe/` are also copied byte-for-byte
 into `site/live-globe/` by `node scripts/sync-live-globe.mjs` at the repo root.
 Deployments still require no build. There are no CDN/map/tracker calls.

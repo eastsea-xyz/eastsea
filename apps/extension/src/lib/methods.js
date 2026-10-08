@@ -10,6 +10,7 @@ export const READ_METHODS = new Set([
 
 export const ACCOUNT_METHODS = new Set(['eth_requestAccounts', 'aether_requestAccounts', 'eth_accounts', 'aether_accounts']);
 export const SEND_METHODS = new Set(['eth_sendTransaction', 'aether_sendTransaction']);
+export const TYPED_METHODS = new Set(['eth_signTypedData_v4']);
 export const MAX_GAS = 10_000_000;
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;

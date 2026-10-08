@@ -2,7 +2,10 @@
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 pub struct RpcFixture {
     pub port: u16,
@@ -12,15 +15,26 @@ pub struct RpcFixture {
 
 impl RpcFixture {
     pub fn start(answer: impl Fn(Value) -> Value + Send + 'static) -> Self {
+        Self::start_reply(move |request| Ok(answer(request)))
+    }
+
+    /// Return actual JSON-RPC error envelopes as well as successful results.
+    pub fn start_reply(
+        answer: impl Fn(Value) -> Result<Value, (i64, String)> + Send + 'static,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let stop = Arc::new(AtomicBool::new(false));
         let stopping = stop.clone();
         let thread = std::thread::spawn(move || {
             for stream in listener.incoming() {
-                if stopping.load(Ordering::Acquire) { break; }
+                if stopping.load(Ordering::Acquire) {
+                    break;
+                }
                 let mut stream = stream.unwrap();
-                stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
                 let mut head = Vec::new();
                 let mut byte = [0];
                 while !head.ends_with(b"\r\n\r\n") {
@@ -28,17 +42,32 @@ impl RpcFixture {
                     head.push(byte[0]);
                 }
                 let headers = String::from_utf8(head).unwrap();
-                let len: usize = headers.lines().find(|line| line.to_ascii_lowercase().starts_with("content-length:"))
-                    .unwrap().split_once(':').unwrap().1.trim().parse().unwrap();
+                let len: usize = headers
+                    .lines()
+                    .find(|line| line.to_ascii_lowercase().starts_with("content-length:"))
+                    .unwrap()
+                    .split_once(':')
+                    .unwrap()
+                    .1
+                    .trim()
+                    .parse()
+                    .unwrap();
                 let mut body = vec![0; len];
                 stream.read_exact(&mut body).unwrap();
                 let request: Value = serde_json::from_slice(&body).unwrap();
                 let id = request["id"].clone();
-                let body = json!({ "jsonrpc": "2.0", "id": id, "result": answer(request) }).to_string();
+                let body = match answer(request) {
+                    Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+                    Err((code, message)) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } }),
+                }.to_string();
                 let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
             }
         });
-        Self { port, stop, thread: Some(thread) }
+        Self {
+            port,
+            stop,
+            thread: Some(thread),
+        }
     }
 }
 

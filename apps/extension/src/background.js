@@ -4,12 +4,14 @@ import { Brand, coinTicker, coinName } from './lib/brand.js';
 // The origin of a page request always comes from Chrome (the port's sender),
 // never from the page.
 
-import init, { accountAddress, prepareTx, attachSignature, publicKeyFromSecret, verifyAccount } from '../wasm/aether_wasm.js';
+import init, * as wasm from '../wasm/aether_wasm.js';
 import { Vault, DEFAULT_LOCK_MINUTES } from './lib/vault.js';
 import { Rpc, RpcError, DEFAULT_RPCS } from './lib/rpc.js';
 import { networkSettings } from './lib/network.js';
 import { Wallet } from './lib/wallet.js';
-import { READ_METHODS, SEND_METHODS, normalizeTx, withTransferGas, describeCall, originAllowed } from './lib/methods.js';
+import { READ_METHODS, SEND_METHODS, TYPED_METHODS, normalizeTx, withTransferGas, describeCall, originAllowed } from './lib/methods.js';
+import { DappSigning } from './lib/dappSigning.js';
+import { t } from './lib/i18n.js';
 import { weiToAeth } from './lib/units.js';
 import { parseTokenSources, scanTokens, formatTokenAmount, call, SEL, wordAddress, uintAt, emptyCatalog } from './lib/tokens.js';
 import { sameTokenMetadata, pinnedTokenInfo, foldObserved, acceptChanged, catalogWithPins, denominationOf } from './lib/tokenPin.js';
@@ -21,6 +23,7 @@ import { TERMS_VERSION } from './lib/terms.js';
 import { linkedAddress, describeHistory, mergeHistory } from './lib/history.js';
 
 const ready = init({ module_or_path: chrome.runtime.getURL('wasm/aether_wasm_bg.wasm') });
+const { accountAddress, prepareTx, attachSignature, publicKeyFromSecret, verifyAccount } = wasm;
 const area = (a) => ({
   get: async (k) => (await a.get(k))[k],
   set: (k, v) => a.set({ [k]: v }),
@@ -34,6 +37,13 @@ const rpc = new Rpc(DEFAULT_RPCS, {
   floorStore: { get: (key) => local.get(key), set: (key, value) => local.set(key, value) },
 });
 const wallet = new Wallet({ wasm: { prepareTx, attachSignature }, rpc, vault });
+// A permission that was revoked and regranted is a new permission even when
+// its address is identical. Keep this revision outside the approval map so
+// it also invalidates requests already claimed for asynchronous signing.
+const permissionRevisions = new Map();
+const permissionGeneration = (origin) => permissionRevisions.get(origin) || 0;
+function advancePermission(origin) { permissionRevisions.set(origin, permissionGeneration(origin) + 1); }
+const dappSigning = new DappSigning({ rpc, vault, wasm, connectedAddress, metadata: simulationMetadata, permissionGeneration });
 // All metadata-pin writes go through one serialized, generation-counted store
 // (audit R2-5): a scan and a review accepted while it ran merge instead of
 // overwriting each other, and the send path can tell when the pins behind an
@@ -69,21 +79,39 @@ async function applySettings() {
     rpcs: (await local.get('rpcs')) || [],
   });
   const switched = activeNetwork && activeNetwork.chainId !== next.chainId;
+  const changed = activeNetwork && JSON.stringify(activeNetwork) !== JSON.stringify(next);
+  const first = !activeNetwork;
   activeNetwork = next;
-  rpc.setChain(next.chainId, next.urls);
-  rpc.setVerifier(next.development ? null : defaultNetwork);
-  if (switched) {
+  if (first || changed) {
+    rpc.setChain(next.chainId, next.urls);
+    rpc.setVerifier(next.development ? null : defaultNetwork);
+  }
+  if (changed) {
     wallet.lastNonce = null;
     for (const [id, pending] of approvals) {
       approvals.delete(id);
-      pending.reject(err(4901, 'The wallet network changed. Please try again.'));
+      pending.reject(err(4901, t('requestChanged')));
     }
     publishApprovals();
-    broadcast(null, 'chainChanged', `0x${next.chainId.toString(16)}`);
+    if (switched) broadcast(null, 'chainChanged', `0x${next.chainId.toString(16)}`);
   }
 }
 chrome.storage.onChanged.addListener((c, a) => {
   if (a === 'local' && ['rpcs', 'developerMode', 'developmentNetwork', 'developmentPort'].some((key) => c[key])) configured.then(applySettings);
+  if (a === 'local' && (c.vault || c.sites)) {
+    if (c.sites) {
+      const before = c.sites.oldValue || {}, after = c.sites.newValue || {};
+      for (const origin of new Set([...Object.keys(before), ...Object.keys(after)])) {
+        if (JSON.stringify(before[origin]) !== JSON.stringify(after[origin])) advancePermission(origin);
+      }
+    }
+    for (const [id, pending] of approvals) {
+      if (c.vault || (pending.kind !== 'connect' && (permissionGeneration(pending.origin) !== pending.context.permissionGeneration
+        || c.sites?.newValue?.[pending.origin]?.address?.toLowerCase() !== pending.context?.account.toLowerCase()))) {
+        settle(id, (x) => x.reject(err(4100, t(c.vault ? 'requestChanged' : 'notConnected'))));
+      }
+    }
+  }
 });
 const activityKey = () => `activity.${rpc.chainId}`;
 const assetsKey = () => `assets.${rpc.chainId}`;
@@ -98,9 +126,14 @@ async function connectedAddress(origin) {
   return info && s[origin] && s[origin].address === info.address ? info.address : null;
 }
 async function setSite(origin, entry) {
+  // Record the user's permission change before the first storage await:
+  // a consumed approval must not race past a revoke still being persisted.
+  advancePermission(origin);
   const s = { ...(await sites()) };
   if (entry) s[origin] = entry; else delete s[origin];
   await local.set('sites', s);
+  for (const [id, pending] of approvals) if (pending.origin === origin && pending.kind !== 'connect' && (permissionGeneration(origin) !== pending.context.permissionGeneration
+    || !entry || entry.address.toLowerCase() !== pending.context.account.toLowerCase())) settle(id, (x) => x.reject(err(4100, t(entry ? 'requestChanged' : 'notConnected'))));
   const address = entry ? entry.address : null;
   broadcast(origin, 'accountsChanged', address ? [address] : []);
 }
@@ -151,17 +184,21 @@ async function track(hash, base) {
 // ---- approvals ----
 
 async function publishApprovals() {
-  const list = [...approvals.entries()].map(([id, a]) => ({ id, origin: a.origin, kind: a.kind, tx: a.tx, what: a.tx ? describeCall(a.tx, { ticker: coinTicker(a.status?.chain_id ?? rpc.chainId) }) : null, value: a.tx ? weiToAeth(a.tx.value_wei) : null }));
+  const list = [...approvals.entries()].map(([id, a]) => ({ id, origin: a.origin, kind: a.kind, tx: a.tx,
+    account: a.context?.account, chainId: a.context?.chainId ?? rpc.chainId, previewId: a.previewId,
+    simulation: a.simulation || null, previewError: a.previewError || null,
+    fields: a.fields, domainFields: a.domainFields, primaryType: a.typed_data?.primaryType,
+    what: a.tx ? describeCall(a.tx, { ticker: coinTicker(a.status?.chain_id ?? rpc.chainId) }) : null, value: a.tx ? weiToAeth(a.tx.value_wei) : null }));
   await session.set('approvals', list);
 }
 
-function askUser(origin, kind, tx) {
+function askUser(origin, kind, details = {}) {
   const mine = [...approvals.values()].filter((a) => a.origin === origin);
   if (kind === 'connect' && mine.some((a) => a.kind === 'connect')) return Promise.reject(err(-32002, 'A connection request from this site is already waiting.'));
   if (mine.length >= MAX_PENDING_PER_ORIGIN) return Promise.reject(err(-32002, 'Too many requests from this site are waiting for approval.'));
   return new Promise((resolve, reject) => {
     const id = crypto.randomUUID();
-    approvals.set(id, { origin, kind, tx, resolve, reject });
+    approvals.set(id, { ...details, origin, kind, resolve, reject });
     publishApprovals();
     chrome.windows.create({ url: `ui/popup.html?approve=${id}`, type: 'popup', width: 380, height: 640, focused: true }, (w) => {
       const a = approvals.get(id);
@@ -201,28 +238,62 @@ async function sizedTransfer(tx) {
 }
 
 async function quote(id) {
-  const a = approvals.get(id);
-  if (!a || a.kind !== 'send') throw new Error('This request is no longer waiting.');
-  a.status = await rpc.call('aether_status', []);
-  return Wallet.maxFee(a.status, a.tx.gas || (a.tx.data === '0x' ? 21_000 : 3_000_000)).toString();
+  return (await preview(id)).fee;
 }
 
-async function approve(id) {
+async function simulationMetadata(address) {
+  const known = knownToken(rpc.chainId, address);
+  if (known) return { ...known, trusted: true };
+  const pins = await pinsStore.read(rpc.chainId);
+  if (pins.changed[address]) return null;
+  const pin = pins.tokens[address];
+  if (pin) return { ...pin, trusted: false };
+  const single = (to, data) => rpc.call('eth_call', [{ to, data }, 'latest']);
+  const agreed = rpc.urls.length >= 2 ? (to, data) => rpc.callAgreed('eth_call', [{ to, data }, 'latest']) : null;
+  const read = await pinnedTokenInfo(address, { single, agreed });
+  return read.info ? { ...read.info, trusted: false } : null;
+}
+
+async function preview(id) {
+  const a = approvals.get(id);
+  if (!a || a.kind !== 'send') throw new Error('This request is no longer waiting.');
+  const turn = (a.previewTurn || 0) + 1;
+  a.previewTurn = turn;
+  delete a.status; delete a.simulation; delete a.previewId; delete a.previewError;
+  try {
+    const fresh = await dappSigning.refreshTransaction(a);
+    if (approvals.get(id) !== a || a.previewTurn !== turn) throw err(4901, t('requestChanged'));
+    Object.assign(a, fresh);
+    await publishApprovals();
+    return { fee: Wallet.maxFee(a.status, a.tx.gas || (a.tx.data === '0x' ? 21_000 : 3_000_000)).toString(), simulation: a.simulation, previewId: a.previewId, account: a.context.account, chainId: a.context.chainId };
+  } catch (e) {
+    if (approvals.get(id) === a && a.previewTurn === turn) { a.previewError = e.message; await publishApprovals(); }
+    throw e;
+  }
+}
+
+async function approve(id, confirmation = {}) {
   const a = approvals.get(id);
   if (!a) throw new Error('This request is no longer waiting.');
-  if (!(await vault.unlocked())) throw new Error('Unlock first.');
-  if (a.kind === 'send' && !a.status) throw new Error('The network fee is still loading. Try again in a moment.');
+  if (a.kind === 'send' && (!a.status || !a.simulation || confirmation.previewId !== a.previewId)) throw err(-32603, t('previewChanged'));
   // Claim it before any await, so a second click cannot send it twice.
   approvals.delete(id);
   publishApprovals();
   try {
+    if (!(await vault.unlocked())) throw new Error('Unlock first.');
     const info = await vault.info();
     if (a.kind === 'connect') {
       await setSite(a.origin, { address: info.address, at: Date.now() });
       a.resolve([info.address]);
       return { address: info.address };
     }
-    const hash = await wallet.send(a.tx, { status: a.status });
+    if (a.kind === 'typed') {
+      const signature = await dappSigning.signTyped(a, confirmation);
+      a.resolve(signature);
+      return { signed: true };
+    }
+    const hash = await wallet.send(a.tx, { status: a.status,
+      beforeSign: () => dappSigning.confirmTransaction(a, confirmation), afterSign: () => dappSigning.assertContext(a) });
     a.resolve(hash);
     const what = describeCall(a.tx, { ticker: coinTicker(a.status?.chain_id ?? rpc.chainId) });
     // A token approval moves that token: it counts as this wallet's own action
@@ -232,9 +303,12 @@ async function approve(id) {
     return { hash };
   } catch (e) {
     // Put it back so the user can retry (after refreshing the fee) or reject.
-    delete a.status;
-    approvals.set(id, a);
-    publishApprovals();
+    if (['requestChanged', 'notConnected'].includes(e.key)) a.reject(e);
+    else {
+      if (a.kind === 'send') { delete a.status; delete a.simulation; delete a.previewId; }
+      approvals.set(id, a);
+      publishApprovals();
+    }
     throw e;
   }
 }
@@ -264,8 +338,9 @@ async function pageRequest(origin, method, params = []) {
     let tx;
     try { tx = normalizeTx(raw); } catch (e) { throw err(-32602, e.message); }
     tx = await sizedTransfer(tx);
-    return askUser(origin, 'send', tx);
+    return askUser(origin, 'send', await dappSigning.transactionRequest(origin, tx));
   }
+  if (TYPED_METHODS.has(method)) return askUser(origin, 'typed', await dappSigning.prepareTyped(origin, params));
   if (READ_METHODS.has(method)) return rpc.call(method, params);
   throw err(4200, `${Brand.project} Wallet does not support ${method}.`);
 }
@@ -461,7 +536,7 @@ const ui = {
   importKey: ({ secret, password }) => vault.importSecret(secret, password, publicKeyFromSecret),
   unlock: ({ password }) => vault.unlock(password),
   lock: () => vault.lock(),
-  approve: ({ id }) => approve(id),
+  approve: ({ id, previewId, confirmRevert }) => approve(id, { previewId, confirmRevert }),
   reject: ({ id }) => { settle(id, (x) => x.reject(err(4001, 'The user rejected the request.'))); return true; },
   account: async () => {
     const info = await vault.info();
@@ -578,6 +653,7 @@ const ui = {
     return { hash };
   },
   quote: ({ id }) => quote(id),
+  preview: ({ id }) => preview(id),
   activity: async () => (await activityPage()).items,
   activityPage: ({ cursors } = {}) => activityPage(cursors || null),
   linkedWallets: async () => (await local.get('linkedWallets')) || [],

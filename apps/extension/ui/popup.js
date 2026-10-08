@@ -11,10 +11,13 @@ import { nextPauseState, pausedLine, PAUSE_HELP } from '../src/lib/pause.js';
 import { TERMS_VERSION, DISCLAIMER_URL, noticePoints } from '../src/lib/terms.js';
 import { mergeHistory } from '../src/lib/history.js';
 import { displayTokenName } from '../src/lib/knownTokens.js';
+import { t, language } from '../src/lib/i18n.js';
 
 const params = new URLSearchParams(location.search);
 const approveId = params.get('approve');
 if (approveId) document.body.classList.add('window');
+if (approveId) document.documentElement.lang = language();
+let approvalBusy = false;
 const app = document.getElementById('app');
 let tab = 'home';
 let developmentNetwork = false;
@@ -124,42 +127,116 @@ function unlockView(address) {
 
 // ---- approval window ----
 
+function readableField(field, domain = false) {
+  const labels = { name: 'domainName', chainId: 'chainId', verifyingContract: 'verifyingContract', version: 'domainVersion' };
+  const value = field.displayKey ? t(field.displayKey) : field.byteLength != null ? t('byteCount', { count: field.byteLength }) : field.value;
+  return h('div', { class: 'signing-field' }, h('div', { class: 'small muted' }, domain && labels[field.path] ? t(labels[field.path]) : field.path),
+    h('div', { class: field.type === 'address' ? 'mono' : 'signing-value', dir: 'auto' }, value),
+    field.detail ? h('details', {}, h('summary', { class: 'small muted' }, t('callData')), h('div', { class: 'mono' }, field.detail)) : null);
+}
+
+function simulatedEffects(simulation) {
+  const body = [message(simulation.success ? 'ok' : 'error', t(simulation.success ? 'simulationPassed' : 'simulationReverted'))];
+  if (!simulation.success) body.push(h('div', { class: 'kv' }, h('span', {}, t('failureReason')), h('strong', {}, simulation.failureReason)));
+  if (simulation.success) {
+    body.push(h('h2', {}, t('balanceChanges')));
+    if (!simulation.tokenCoverageComplete) body.push(h('div', { class: 'small warn' }, t('incompleteTokenCoverage')));
+    if (!simulation.balanceChanges.length) body.push(h('p', { class: 'small muted' }, t('noBalanceChanges')));
+    for (const change of simulation.balanceChanges) {
+      const sign = BigInt(change.delta) > 0n ? '+' : '';
+      const amount = change.baseUnits ? t('baseUnits', { amount: `${sign}${change.amount}` }) : `${sign}${change.amount}${change.kind === 'native' ? ` ${change.symbol}` : ''}`;
+      body.push(h('div', { class: 'signing-effect' },
+        h('div', { class: 'row' }, h('strong', { class: 'grow' }, change.kind === 'nft' ? t('nftLabel', { id: change.tokenId }) : change.symbol || t('token')), h('strong', { class: BigInt(change.delta) < 0n ? 'warn' : 'positive' }, amount)),
+        change.kind !== 'native' ? h('div', { class: 'mono muted' }, change.address) : null,
+        change.kind === 'erc20' && !change.trusted ? h('div', { class: 'small warn' }, t('unverifiedUnits')) : null,
+        change.source === 'log' ? h('div', { class: 'small warn' }, t('reportedByContract')) : null));
+    }
+    body.push(h('h2', {}, t('approvalsGranted')));
+    if (!simulation.approvals.length) body.push(h('p', { class: 'small muted' }, t('noApprovals')));
+    for (const grant of simulation.approvals) {
+      const amount = grant.revoked ? t('approvalRevoke') : grant.kind === 'all' ? t('approvalAll') : grant.kind === 'nft' ? t('approvalNFT', { id: grant.tokenId }) : grant.unlimited ? t('allowanceUnlimited') : grant.baseUnits ? t('baseUnits', { amount: grant.amount }) : `${grant.amount} ${grant.symbol || ''}`;
+      body.push(h('div', { class: 'signing-effect' }, h('strong', { class: grant.revoked ? '' : 'warn' }, amount),
+        h('div', { class: 'small muted' }, t('token')), h('div', { class: 'mono' }, grant.address),
+        h('div', { class: 'small muted' }, t('spender')), h('div', { class: 'mono' }, grant.spender),
+        grant.kind === 'erc20' && !grant.trusted ? h('div', { class: 'small warn' }, t('unverifiedUnits')) : null));
+    }
+    if (simulation.unrecognizedLogs) body.push(h('div', { class: 'small warn' }, t('unrecognizedLogs')));
+    body.push(h('p', { class: 'small muted' }, t('effectsNotice')));
+  }
+  body.push(h('p', { class: 'small muted' }, t('simulationNotice')));
+  return body;
+}
+
 async function approvalView(s) {
   const a = s.approvals.find((x) => x.id === approveId);
   if (!a) {
-    render(header(), h('div', { class: 'card' }, h('p', {}, 'This request was already answered or has expired.'), h('button', { onclick: () => window.close() }, 'Close')));
+    render(header(), h('div', { class: 'card' }, h('p', {}, t('expired')), h('button', { onclick: () => window.close() }, t('close'))));
     return;
   }
   const out = h('div');
-  let retryFee = null;
-  const yes = h('button', { class: 'primary' }, a.kind === 'connect' ? 'Connect' : 'Approve');
-  const no = h('button', {}, 'Reject');
-  const body = [h('div', { class: 'small muted' }, a.kind === 'connect' ? 'This site asks to see your address' : 'This site asks you to send a transaction'), h('div', { class: 'origin' }, a.origin)];
+  let shownPreview = null, loading = a.kind === 'send', submitting = false;
+  const yes = h('button', { class: 'primary' }, t(a.kind === 'connect' ? 'connect' : a.kind === 'typed' ? 'signMessage' : 'approve'));
+  const no = h('button', {}, t('reject'));
+  const extraConfirm = h('input', { type: 'checkbox' });
+  const confirmation = h('label', { class: 'confirm-check', hidden: true }, extraConfirm, h('span', {}, t('revertAck')));
+  const syncButton = () => { yes.disabled = submitting || (a.kind === 'send' && (loading || !shownPreview || (!shownPreview.simulation.success && !extraConfirm.checked))); };
+  extraConfirm.addEventListener('change', syncButton);
+  const body = [h('div', { class: 'small muted' }, t(a.kind === 'connect' ? 'connectRequest' : a.kind === 'typed' ? 'typedRequest' : 'sendRequest')), h('div', { class: 'origin' }, a.origin)];
+  let loadPreview = null;
   if (a.kind === 'connect') {
     body.push(h('p', { class: 'small muted' }, 'It will see your address and balance, and can ask for transactions. Every transaction still needs your approval.'),
-      h('div', { class: 'kv' }, h('span', {}, 'Account'), h('span', { class: 'mono' }, s.address)));
+      h('div', { class: 'kv' }, h('span', {}, t('account')), h('span', { class: 'mono' }, s.address)));
+  } else if (a.kind === 'typed') {
+    body.push(h('div', { class: 'kv' }, h('span', {}, t('account')), h('span', { class: 'mono' }, a.account)),
+      ...a.domainFields.map((field) => readableField(field, true)),
+      !a.domainFields.some((field) => field.path === 'verifyingContract') ? h('div', { class: 'warn' }, t('noVerifyingContract')) : null,
+      h('p', { class: 'small muted' }, t('domainNotice')),
+      h('h2', {}, `${t('messageFields')} · ${a.primaryType}`), ...a.fields.map((field) => readableField(field)),
+      h('div', { class: 'warn' }, t('typedWarning')));
   } else {
     const fee = h('span', { class: 'muted' }, '…');
-    // The same status snapshot is used for signing, so this is the cap that gets signed.
-    const loadFee = () => op('quote', { id: approveId }).then((w) => fee.replaceChildren(`up to ${formatAeth(w, 6)} ${coinTicker(defaultChainId)}`)).catch((e) => fee.replaceChildren(`unknown (${e.message})`));
-    loadFee();
-    retryFee = loadFee;
+    const previewBox = h('div', { class: 'list', role: 'status' }, t('simulationRunning'));
+    const retry = h('button', { class: 'link small' }, t('retryPreview'));
+    loadPreview = async () => {
+      if (submitting) return;
+      loading = true; shownPreview = null; extraConfirm.checked = false; confirmation.hidden = true; retry.disabled = true; syncButton();
+      previewBox.replaceChildren(t('simulationRunning'));
+      try {
+        const fresh = await op('preview', { id: approveId });
+        shownPreview = fresh;
+        fee.replaceChildren(t('maxFee', { amount: formatAeth(fresh.fee, 6), symbol: coinTicker(fresh.chainId) }));
+        previewBox.replaceChildren(...simulatedEffects(fresh.simulation));
+        confirmation.hidden = fresh.simulation.success;
+      } catch (e) {
+        fee.replaceChildren('—');
+        previewBox.replaceChildren(message('error', e.message || t('simulationUnavailable')));
+      } finally { loading = false; retry.disabled = false; syncButton(); }
+    };
+    retry.addEventListener('click', () => loadPreview());
     body.push(h('div', { class: 'kv' },
-      h('span', {}, 'Action'), h('strong', {}, a.what),
-      h('span', {}, 'To'), h('span', { class: 'mono' }, a.tx.to || '(new contract)'),
-      h('span', {}, 'Sends'), h('strong', {}, `${a.value} ${coinTicker(defaultChainId)}`),
-      h('span', {}, 'Network fee'), fee,
-      h('span', {}, 'From'), h('span', { class: 'mono' }, s.address)));
-    if (a.tx.data !== '0x') body.push(h('details', {}, h('summary', { class: 'small muted' }, 'Call data'), h('div', { class: 'mono muted', style: 'max-height:120px;overflow:auto' }, a.tx.data)));
-    if (a.what.startsWith('Token approval')) body.push(h('div', { class: 'warn' }, 'An approval lets the contract move your tokens later. Approve only contracts you trust.'));
+      h('span', {}, t('contractCalled')), h('span', { class: 'mono' }, a.tx.to || t('contractCreation')),
+      h('span', {}, t('intendedValue')), h('strong', {}, `${a.value} ${coinTicker(a.chainId)}`),
+      h('span', {}, t('networkFee')), fee,
+      h('span', {}, t('from')), h('span', { class: 'mono' }, a.account)),
+      h('h2', {}, t('simulationTitle')), previewBox, retry, confirmation);
+    if (a.tx.data !== '0x') body.push(h('details', {}, h('summary', { class: 'small muted' }, t('callData')), h('div', { class: 'mono muted', style: 'max-height:120px;overflow:auto' }, a.tx.data)));
   }
-  yes.addEventListener('click', action(yes, out, async () => {
-    const r = await op('approve', { id: approveId }).catch((e) => { retryFee?.(); throw e; });
-    render(header(), h('div', { class: 'card' }, message('ok', r.hash ? `Sent. Transaction ${shortAddress(r.hash)}` : 'Connected.'), r.hash ? h('div', { class: 'mono muted' }, r.hash) : null));
-    setTimeout(() => window.close(), r.hash ? 1400 : 600);
-  }));
+  yes.addEventListener('click', async () => {
+    submitting = true; approvalBusy = true; no.disabled = true; syncButton(); out.replaceChildren();
+    try {
+      const r = await op('approve', { id: approveId, previewId: shownPreview?.previewId || a.previewId, confirmRevert: extraConfirm.checked });
+      render(header(), h('div', { class: 'card' }, message('ok', t(r.hash ? 'transactionSent' : r.signed ? 'signatureSigned' : 'connected')), r.hash ? h('div', { class: 'mono muted' }, r.hash) : null));
+      setTimeout(() => window.close(), r.hash ? 1400 : 600);
+    } catch (e) {
+      out.replaceChildren(message('error', e.message || String(e)));
+      submitting = false;
+      if (loadPreview) await loadPreview();
+    } finally { submitting = false; approvalBusy = false; no.disabled = false; syncButton(); }
+  });
   no.addEventListener('click', action(no, out, async () => { await op('reject', { id: approveId }); window.close(); }));
-  render(header(h('span', { class: 'pill' }, developmentNetwork ? 'Dev network' : `Chain ${defaultChainId}`)), h('div', { class: 'card' }, ...body), h('div', { class: 'row' }, h('div', { class: 'grow' }), no, yes), out);
+  render(header(h('span', { class: 'pill' }, t('chainLabel', { chain: a.chainId }))), h('div', { class: 'card' }, ...body), h('div', { class: 'row' }, h('div', { class: 'grow' }), no, yes), out);
+  syncButton();
+  loadPreview?.();
 }
 
 // ---- main popup ----
@@ -575,5 +652,11 @@ async function refresh() {
   const views = { home, assets: assetsView, activity, sites: sitesView, settings: settingsView };
   render(header(lock), nav(), pendingNote, ...(await views[tab](s)));
 }
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (!approveId || approvalBusy) return;
+  if ((area === 'session' && changes.approvals && !(changes.approvals.newValue || []).some((a) => a.id === approveId))
+    || (area === 'session' && changes.unlocked) || (area === 'local' && changes.vault)) refresh();
+});
 
 refresh();

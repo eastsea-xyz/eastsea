@@ -78,3 +78,10 @@ a { color: var(--accent); }
 .origin { font-weight: 700; font-size: 16px; overflow-wrap: anywhere; }
 .warn { color: var(--warn); font-size: 12px; }
 h2 { font-size: 13px; margin: 0; }
+.signing-field, .signing-effect { border-top: 1px solid var(--line); padding-top: 10px; display: flex; flex-direction: column; gap: 5px; }
+.signing-effect .row { flex-wrap: wrap; }
+.signing-effect .row > strong { max-width: 100%; overflow-wrap: anywhere; }
+.signing-value { overflow-wrap: anywhere; white-space: pre-wrap; unicode-bidi: plaintext; }
+.positive { color: var(--good); }
+.confirm-check { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 8px; padding: 10px; border: 1px solid var(--warn); border-radius: 10px; color: var(--warn); }
+.confirm-check input { width: auto; margin-top: 3px; }

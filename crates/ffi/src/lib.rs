@@ -11,6 +11,10 @@ uniffi::setup_scaffolding!();
 mod atomic_swap;
 mod paper;
 mod tx_status;
+mod typed_data;
+mod typed_wallet;
+#[cfg(test)]
+mod typed_data_tests;
 #[cfg(test)]
 #[path = "../tests/common/http.rs"]
 mod http_test;
@@ -22,6 +26,7 @@ use aether_types::{Address, Bytes, FeeVector, GasVector, SignerScheme, TxEnvelop
 pub use atomic_swap::*;
 pub use paper::*;
 pub use tx_status::*;
+pub use typed_wallet::*;
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -2520,6 +2525,280 @@ mod tests {
     fn config() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         LOCK.lock().expect("test lock")
+    }
+
+    #[test]
+    fn native_typed_message_requires_current_delegation_and_deployed_v2_runtime() {
+        use p256::ecdsa::signature::Signer as _;
+        let _g = config();
+        reset_network();
+        *CHAIN_ID.lock().unwrap() = 1;
+        let key = p256::ecdsa::SigningKey::from_slice(&[7u8;32]).unwrap();
+        let public = key.verifying_key().to_sec1_point(true).as_bytes().to_vec();
+        let account = account_address(public.clone()).unwrap();
+        let owner = account.clone();
+        let delegated = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let has_delegation = delegated.clone();
+        let modern = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let has_modern_runtime = modern.clone();
+        let foreign = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let foreign_code = foreign.clone();
+        let node = http_test::RpcFixture::start(move |request| match request["method"].as_str().unwrap() {
+            "aether_status" => json!({"chain_id":1,"base_fee":{"exec":"0","state":"1000000000000","prove":"0"}}),
+            "eth_getBalance" => json!("0xde0b6b3a7640000"),
+            "eth_getTransactionCount" => json!("0x3"),
+            "eth_getCode" if request["params"][0] == json!(owner) => {
+                if foreign_code.load(std::sync::atomic::Ordering::Relaxed) { json!("0xef01000000000000000000000000000000000000000001") }
+                else if has_delegation.load(std::sync::atomic::Ordering::Relaxed) {
+                    json!(alloy_primitives::hex::encode_prefixed([&[0xef,0x01,0x00][..],aether_execution::AETHER_ACCOUNT.as_slice()].concat()))
+                } else { json!("0x") }
+            }
+            "eth_getCode" if request["params"][0] == json!(aether_execution::AETHER_ACCOUNT) => {
+                let code = if has_modern_runtime.load(std::sync::atomic::Ordering::Relaxed) {
+                    aether_execution::aether_account_code_v2()
+                } else { aether_execution::aether_account_code() };
+                json!(alloy_primitives::hex::encode_prefixed(code))
+            }
+            method => panic!("unexpected typed fixture method: {method}"),
+        });
+        use_local_node(Some(node.port));
+        let data = typed_data_tests::mail().to_string();
+        assert!(!account_signing_support(account.clone()).unwrap());
+        assert!(prepare_typed_message(public.clone(), data.clone()).is_err());
+        let migration = prepare_account_redelegation(public.clone()).unwrap();
+        let envelope: TxEnvelope = serde_json::from_str(&migration.envelope_json).unwrap();
+        let TxPayload::Plain(payload) = envelope.payload else { panic!("plain migration"); };
+        let body = EvmCall::decode(&payload).unwrap();
+        assert_eq!(body.to, Some(envelope.header.sender));
+        assert_eq!(body.delegate, Some(aether_execution::AETHER_ACCOUNT));
+        assert!(body.input.is_empty());
+        delegated.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(account_signing_support(account.clone()).unwrap());
+        let prepared = prepare_typed_message(public.clone(), data.clone()).unwrap();
+        assert_eq!(prepared.account, account);
+        assert_eq!(prepared.typed_data_json, typed_data_tests::mail().to_string());
+        let signature: p256::ecdsa::Signature = key.sign(&prepared.signing_message);
+        let packed = attach_typed_signature(data.clone(), 1, account.clone(), signature.to_bytes().to_vec(), public.clone()).unwrap();
+        assert_eq!(alloy_primitives::hex::decode(packed).unwrap().len(), 128);
+        assert!(prepare_account_redelegation(public.clone()).is_ok());
+        foreign.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(!account_signing_support(account.clone()).unwrap());
+        assert!(prepare_account_redelegation(public.clone()).is_err());
+        foreign.store(false, std::sync::atomic::Ordering::Relaxed);
+        modern.store(false, std::sync::atomic::Ordering::Relaxed);
+        assert!(!account_signing_support(account.clone()).unwrap());
+        assert!(prepare_account_redelegation(public.clone()).is_err());
+        assert!(attach_typed_signature(data, 1, account, signature.to_bytes().to_vec(), public).is_err());
+        use_local_node(None);
+        reset_network();
+    }
+
+    #[test]
+    fn dapp_transaction_preserves_the_simulated_gas_and_reconfirms_quoted_fees() {
+        let _g = config();
+        reset_network();
+        let key = p256::ecdsa::SigningKey::from_slice(&[7u8;32]).unwrap();
+        let public = key.verifying_key().to_sec1_point(true).as_bytes().to_vec();
+        let busy = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let node_busy = busy.clone();
+        let node = http_test::RpcFixture::start(move |request| match request["method"].as_str().unwrap() {
+            "aether_status" => json!({"chain_id":7777,"base_fee":{
+                "exec":if node_busy.load(std::sync::atomic::Ordering::Relaxed) { "2000000000" } else { "0" },
+                "state":"0","prove":"0"}}),
+            "eth_getBalance" => json!("0xde0b6b3a7640000"),
+            "eth_getTransactionCount" => json!("0x3"),
+            method => panic!("unexpected dapp fixture method: {method}"),
+        });
+        use_local_node(Some(node.port));
+        let to = Address::repeat_byte(0x42).to_checksum(None);
+        let quote = dapp_transaction_quote(to.clone(), "0".into(), "0x".into(), 70_000).unwrap();
+        let prepared = prepare_dapp_transaction(public.clone(), to.clone(), "0".into(), "0x".into(), 70_000, Some(quote.fee_wei.clone())).unwrap();
+        let envelope: TxEnvelope = serde_json::from_str(&prepared.envelope_json).unwrap();
+        assert_eq!(envelope.header.gas.exec, 70_000);
+        let TxPayload::Plain(payload) = envelope.payload else { panic!("plain dapp transaction"); };
+        assert_eq!(EvmCall::decode(&payload).unwrap().gas_limit, 70_000);
+        busy.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(matches!(prepare_dapp_transaction(public.clone(), to.clone(), "0".into(), "0x".into(), 70_000, Some(quote.fee_wei)), Err(WalletError::FeeChanged(_))));
+        let current = dapp_transaction_quote(to.clone(), "0".into(), "0x".into(), 70_000).unwrap();
+        assert!(prepare_dapp_transaction(public.clone(), to.clone(), "0".into(), "0x".into(), 70_000, Some(current.fee_wei)).is_ok());
+        assert!(prepare_dapp_transaction(public, to, "0".into(), "0x".into(), 10_000_001, None).is_err());
+        use_local_node(None);
+        reset_network();
+    }
+
+    #[test]
+    fn account_redelegation_pins_the_runtime_and_preserves_the_account() {
+        let account = Address::repeat_byte(0x42);
+        let implementation =
+            alloy_primitives::hex::encode_prefixed(aether_execution::aether_account_code_v2());
+        let call = typed_wallet::redelegation_call(account, 7801, "0x", &implementation).unwrap();
+        assert_eq!(call.to, Some(account));
+        assert_eq!(call.delegate, Some(aether_execution::AETHER_ACCOUNT));
+        assert_eq!(call.value, U256::ZERO);
+        assert!(call.input.is_empty());
+        assert_eq!(call.gas_limit, 100_000);
+        assert!(typed_wallet::redelegation_call(account, 7780, "0x", &implementation).is_err());
+        assert!(typed_wallet::redelegation_call(account, 7801, "0x", "0x6000").is_err());
+        assert!(typed_wallet::redelegation_call(account, 7801, "0x6000", &implementation).is_err());
+        assert!(typed_wallet::redelegation_call(
+            account,
+            7801,
+            "0xef01000000000000000000000000000000000000000001",
+            &implementation
+        )
+        .is_err());
+        let canonical = alloy_primitives::hex::encode_prefixed(
+            [
+                &[0xef, 0x01, 0x00][..],
+                aether_execution::AETHER_ACCOUNT.as_slice(),
+            ]
+            .concat(),
+        );
+        assert!(typed_wallet::redelegation_call(account, 7801, &canonical, &implementation).is_ok());
+    }
+
+    fn simulation_reply(success: bool, gas: u64) -> Value {
+        json!({"success":success,"gasUsed":format!("0x{gas:x}"),"output":"0x",
+            "failureReason":if success { Value::Null } else { json!("Execution reverted.") },
+            "nativeChanges":[],"tokenChanges":[],"measuredTokens":[],"tokenCoverageComplete":true,"logs":[]})
+    }
+
+    #[test]
+    fn dapp_simulation_uses_wallet_transport_sender_value_and_exact_resolved_gas() {
+        let _g = config();
+        reset_network();
+        let key = p256::ecdsa::SigningKey::from_slice(&[7u8;32]).unwrap();
+        let public = key.verifying_key().to_sec1_point(true).as_bytes().to_vec();
+        let from: Address = account_address(public.clone()).unwrap().parse().unwrap();
+        let recipient = Address::repeat_byte(0x42);
+        let code = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let has_code = code.clone();
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = requests.clone();
+        let node = http_test::RpcFixture::start(move |request| {
+            seen.lock().unwrap().push(request.clone());
+            let method = request["method"].as_str().unwrap();
+            match method {
+                "aether_status" => json!({"chain_id":7777}),
+                "eth_getCode" => json!(if has_code.load(std::sync::atomic::Ordering::Relaxed) { "0x6000" } else { "0x" }),
+                "eth_call" => json!("0x"),
+                "eth_estimateGas" => request["params"][0]["gas"].clone(),
+                "aether_simulateTransaction" => {
+                    let gas = u64::from_str_radix(request["params"][0]["gas"].as_str().unwrap().trim_start_matches("0x"),16).unwrap();
+                    simulation_reply(true,gas)
+                }
+                method => panic!("unexpected simulation fixture method: {method}"),
+            }
+        });
+        use_local_node(Some(node.port));
+        let result = simulate_dapp_transaction(public.clone(), recipient.to_checksum(None), "17".into(), "0x".into(), 0).unwrap();
+        assert_eq!(result.gas_limit,21_000);
+        assert_eq!(serde_json::from_str::<Value>(&result.result_json).unwrap()["success"],true);
+        code.store(true,std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(simulate_dapp_transaction(public.clone(), recipient.to_checksum(None), "17".into(), "0x".into(), 0).unwrap().gas_limit,100_000);
+        assert_eq!(simulate_dapp_transaction(public.clone(), recipient.to_checksum(None), "17".into(), "0x".into(), 70_000).unwrap().gas_limit,70_000);
+        assert_eq!(simulate_dapp_transaction(public.clone(), "".into(), "17".into(), "0x6000".into(), 0).unwrap().gas_limit,3_000_000);
+        assert!(simulate_dapp_transaction(public.clone(), recipient.to_checksum(None), "17".into(), "0x".into(), 10_000_001).is_err());
+        assert!(simulate_dapp_transaction(public, recipient.to_checksum(None), "17".into(), format!("0x{}","00".repeat(65_537)),21_000).is_err());
+        let seen = requests.lock().unwrap();
+        assert_eq!(seen.iter().filter(|request| request["method"] == "eth_getCode").count(),2);
+        for request in seen.iter().filter(|request| matches!(request["method"].as_str(),Some("eth_call"|"eth_estimateGas"|"aether_simulateTransaction"))) {
+            let body = &request["params"][0];
+            assert_eq!(body["from"].as_str().unwrap().parse::<Address>().unwrap(),from);
+            assert_eq!(body["value"],"0x11");
+            assert!(matches!(body["gas"].as_str().unwrap(),"0x5208"|"0x186a0"|"0x11170"|"0x2dc6c0"));
+            if body["gas"] == "0x2dc6c0" {
+                assert!(body.get("to").is_none());
+                assert_eq!(body["data"],"0x6000");
+            } else {
+                assert_eq!(body["to"].as_str().unwrap().parse::<Address>().unwrap(),recipient);
+                assert_eq!(body["data"],"0x");
+            }
+            assert_eq!(request["params"][1],"latest");
+        }
+        use_local_node(None);
+        reset_network();
+    }
+
+    #[test]
+    fn dapp_simulation_separates_revert_from_malformed_transport_and_inconsistent_results() {
+        let _g = config();
+        reset_network();
+        let key = p256::ecdsa::SigningKey::from_slice(&[7u8;32]).unwrap();
+        let public = key.verifying_key().to_sec1_point(true).as_bytes().to_vec();
+        let mode = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
+        let scenario = mode.clone();
+        let node = http_test::RpcFixture::start_reply(move |request| {
+            let mode = scenario.load(std::sync::atomic::Ordering::Relaxed);
+            match request["method"].as_str().unwrap() {
+                "aether_status" => Ok(json!({"chain_id":7777})),
+                "eth_getCode" if mode == 8 => Ok(json!("not bytecode")),
+                "eth_getCode" => Ok(json!("0x6000")),
+                "eth_call" if mode == 1 => Err((3,"execution reverted: 0x".into())),
+                "eth_call" if mode == 2 => Err((-32602,"from is not an address".into())),
+                "eth_call" if mode == 3 => Ok(json!(123)),
+                "eth_call" if mode == 4 => Err((3,"execution reverted: broken".into())),
+                "eth_call" if mode == 9 => Err((-32002,"server busy; retry shortly".into())),
+                "eth_call" => Ok(json!("0x")),
+                "aether_simulateTransaction" if mode == 10 => Ok(json!({"success":true})),
+                "aether_simulateTransaction" if mode == 11 => Ok(simulation_reply(true,80_000)),
+                "aether_simulateTransaction" => Ok(simulation_reply(mode != 1 && mode != 5,21_000)),
+                "eth_estimateGas" if mode == 1 => Err((3,"Execution reverted.".into())),
+                "eth_estimateGas" if mode == 6 => Ok(json!("0x186a1")),
+                "eth_estimateGas" if mode == 7 => Err((-32602,"invalid call parameters".into())),
+                "eth_estimateGas" => Ok(json!("0x5208")),
+                method => panic!("unexpected simulation scenario method: {method}"),
+            }
+        });
+        let port = node.port;
+        use_local_node(Some(port));
+        let to = Address::repeat_byte(0x42).to_checksum(None);
+        assert!(simulate_dapp_transaction(public.clone(),to.clone(),"0".into(),"0x".into(),0).is_ok());
+        mode.store(1,std::sync::atomic::Ordering::Relaxed);
+        let reverted = simulate_dapp_transaction(public.clone(),to.clone(),"0".into(),"0x".into(),0).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&reverted.result_json).unwrap()["success"],false);
+        for scenario in [2,3,4,5,6,7,8,9,10] {
+            mode.store(scenario,std::sync::atomic::Ordering::Relaxed);
+            assert!(simulate_dapp_transaction(public.clone(),to.clone(),"0".into(),"0x".into(),0).is_err(),"scenario {scenario} must not become an overridable revert");
+        }
+        mode.store(11,std::sync::atomic::Ordering::Relaxed);
+        assert!(simulate_dapp_transaction(public.clone(),to.clone(),"0".into(),"0x".into(),0).is_ok(),"estimated gas is advisory for gasleft-dependent contracts");
+        drop(node);
+        assert!(matches!(simulate_dapp_transaction(public,to,"0".into(),"0x".into(),0),Err(WalletError::Network(_))));
+        use_local_node(None);
+        reset_network();
+    }
+
+    #[test]
+    fn dapp_simulation_refuses_wrong_chain_and_changed_network_context() {
+        let _g = config();
+        reset_network();
+        let key = p256::ecdsa::SigningKey::from_slice(&[7u8;32]).unwrap();
+        let public = key.verifying_key().to_sec1_point(true).as_bytes().to_vec();
+        let chain = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(7777));
+        let reported = chain.clone();
+        let change = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let changed_context = change.clone();
+        let node = http_test::RpcFixture::start(move |request| match request["method"].as_str().unwrap() {
+            "aether_status" => json!({"chain_id":reported.load(std::sync::atomic::Ordering::Relaxed)}),
+            "eth_call" => json!("0x"),
+            "eth_estimateGas" => json!("0x5208"),
+            "aether_simulateTransaction" => {
+                if changed_context.load(std::sync::atomic::Ordering::Relaxed) { NETWORK_GENERATION.fetch_add(1,std::sync::atomic::Ordering::SeqCst); }
+                simulation_reply(true,21_000)
+            }
+            method => panic!("unexpected simulation context method: {method}"),
+        });
+        use_local_node(Some(node.port));
+        let to = Address::repeat_byte(0x42).to_checksum(None);
+        assert!(simulate_dapp_transaction(public.clone(),to.clone(),"0".into(),"0x".into(),21_000).is_ok());
+        chain.store(7778,std::sync::atomic::Ordering::Relaxed);
+        assert!(matches!(simulate_dapp_transaction(public.clone(),to.clone(),"0".into(),"0x".into(),21_000),Err(WalletError::Verification(_))));
+        chain.store(7777,std::sync::atomic::Ordering::Relaxed);
+        change.store(true,std::sync::atomic::Ordering::Relaxed);
+        assert!(matches!(simulate_dapp_transaction(public,to,"0".into(),"0x".into(),21_000),Err(WalletError::Verification(_))));
+        use_local_node(None);
+        reset_network();
     }
 
     fn reset_network() {

@@ -484,6 +484,8 @@ async fn single(st: &RpcState, req: Value) -> Value {
     let result = match &*method {
         "aether_getFinalized" => finalized(st, &params).await,
         "eth_call" => eth_call(st, &params, if st.public_read_only { PUBLIC_CALL_GAS } else { PRIVATE_CALL_GAS }).await,
+        "eth_estimateGas" => execute_rpc_call(st, &params, PRIVATE_CALL_GAS, CallMode::Estimate).await,
+        "aether_simulateTransaction" => execute_rpc_call(st, &params, PRIVATE_CALL_GAS, CallMode::Simulation).await,
         "aether_getReceiptProof" => receipt_proof(st, &params).await,
         "aether_historyProof" => history_proof(st, &params).await,
         "aether_eraProof" => era_proof(st, &params).await,
@@ -1318,6 +1320,318 @@ async fn call(st: &RpcState, method: &str, params: Value) -> Value {
 #[cfg(test)]
 pub(crate) fn writer_lease_status_for_test() -> Value {
     dispatch(&bare_state(), "aether_status", &json!([])).expect("fixture status routes")
+}
+
+#[cfg(test)]
+mod wallet_simulation_tests {
+    use super::*;
+
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+    }
+
+    fn fixture(code: &[u8]) -> (RpcState, Address, Address, Address) {
+        let st = bare_state();
+        let sender = Address::repeat_byte(0x11);
+        let contract = Address::repeat_byte(0x22);
+        let recipient = Address::repeat_byte(0x33);
+        {
+            let mut g = st.chain.lock();
+            let state = &mut Arc::make_mut(&mut g.finalized).state;
+            state.set_balance(sender, U256::from(100)).unwrap();
+            state.set_code(contract, code.to_vec().into()).unwrap();
+        }
+        (st, sender, contract, recipient)
+    }
+
+    fn request(sender: Address, to: Address, value: u64, gas: u64) -> Value {
+        json!([{
+            "from": format!("{sender:#x}"), "to": format!("{to:#x}"),
+            "value": format!("0x{value:x}"), "data": "0x", "gas": format!("0x{gas:x}")
+        }, "latest"])
+    }
+
+    fn delta(result: &Value, address: Address) -> Option<&str> {
+        result["nativeChanges"].as_array()?.iter()
+            .find(|change| change["address"] == format!("{address:#x}"))?["deltaWei"].as_str()
+    }
+
+    fn revert_code(payload: Vec<u8>) -> Vec<u8> {
+        let len = u8::try_from(payload.len()).unwrap();
+        let mut code = vec![0x60, len, 0x60, 12, 0x60, 0, 0x39, 0x60, len, 0x60, 0, 0xfd];
+        code.extend(payload);
+        code
+    }
+
+    #[test]
+    fn native_transfer_is_simulated_without_committing() {
+        let rt = runtime();
+        let (st, sender, _, recipient) = fixture(&[]);
+        let before = st.chain.lock().finalized.state.root();
+        let answer = rt.block_on(call(&st, "aether_simulateTransaction", request(sender, recipient, 7, 21_000)));
+        let result = &answer["result"];
+        assert_eq!(result["success"], true, "{answer}");
+        assert_eq!(result["gasUsed"], "0x5208");
+        assert_eq!(result["output"], "0x");
+        assert!(result["failureReason"].is_null());
+        assert_eq!(delta(result, sender), Some("-7"));
+        assert_eq!(delta(result, recipient), Some("7"));
+        assert_eq!(result["logs"], json!([]));
+        let g = st.chain.lock();
+        assert_eq!(g.finalized.state.root(), before);
+        assert_eq!(g.finalized.state.balance(&sender), U256::from(100));
+        assert_eq!(g.finalized.state.balance(&recipient), U256::ZERO);
+        assert_eq!(g.finalized.state.nonce(&sender), 0);
+    }
+
+    #[test]
+    fn contract_logs_and_return_value_are_simulated_without_storage_writes() {
+        // Store 42 in slot zero, emit topic 7, and return 42.
+        let code = hex::decode("602a600055600760006000a1602a60005260206000f3").unwrap();
+        let rt = runtime();
+        let (st, sender, contract, _) = fixture(&code);
+        let before = st.chain.lock().finalized.state.root();
+        let answer = rt.block_on(call(&st, "aether_simulateTransaction", request(sender, contract, 0, 100_000)));
+        let result = &answer["result"];
+        assert_eq!(result["success"], true, "{answer}");
+        assert_eq!(U256::from_str_radix(result["output"].as_str().unwrap().trim_start_matches("0x"), 16).unwrap(), U256::from(42));
+        assert_eq!(result["logs"], json!([{
+            "address": format!("{contract:#x}"),
+            "topics": [format!("0x{:064x}", 7)], "data": "0x"
+        }]));
+        let g = st.chain.lock();
+        assert_eq!(g.finalized.state.root(), before);
+        assert_eq!(g.finalized.state.storage(&contract, U256::ZERO), U256::ZERO);
+    }
+
+    #[test]
+    fn internal_native_transfers_appear_in_the_balance_changes() {
+        let recipient = Address::repeat_byte(0x33);
+        let mut code = hex::decode("6000600060006000600373").unwrap();
+        code.extend_from_slice(recipient.as_slice());
+        code.extend(hex::decode("612710f15000").unwrap());
+        let rt = runtime();
+        let (st, sender, contract, _) = fixture(&code);
+        let answer = rt.block_on(call(&st, "aether_simulateTransaction", request(sender, contract, 5, 100_000)));
+        let result = &answer["result"];
+        assert_eq!(result["success"], true, "{answer}");
+        assert_eq!(delta(result, sender), Some("-5"));
+        assert_eq!(delta(result, contract), Some("2"));
+        assert_eq!(delta(result, recipient), Some("3"));
+    }
+
+    #[test]
+    fn an_unchanged_token_balance_is_still_marked_as_measured() {
+        let rt = runtime();
+        let (st, sender, token, _) = fixture(&hex::decode("600060005260206000f3").unwrap());
+        let answer = rt.block_on(call(&st, "aether_simulateTransaction", request(sender, token, 0, 100_000)));
+        assert_eq!(answer["result"]["measuredTokens"], json!([format!("{token:#x}")]), "{answer}");
+        assert_eq!(answer["result"]["tokenChanges"], json!([]));
+        assert_eq!(answer["result"]["tokenCoverageComplete"], true);
+    }
+
+    #[test]
+    fn unreadable_token_balances_are_marked_as_incomplete() {
+        let rt = runtime();
+        let (st, sender, contract, _) = fixture(&[0x00]);
+        let answer = rt.block_on(call(&st, "aether_simulateTransaction", request(sender, contract, 0, 100_000)));
+        assert_eq!(answer["result"]["tokenCoverageComplete"], false, "{answer}");
+        assert_eq!(answer["result"]["measuredTokens"], json!([]));
+        assert_eq!(answer["result"]["tokenChanges"], json!([]));
+        assert_eq!(answer["result"]["success"], true);
+    }
+
+    #[test]
+    fn token_candidate_cap_is_reported_without_hiding_unmeasured_emitters() {
+        let rt = runtime();
+        let (st, sender, router, _) = fixture(&[]);
+        let token_code = hex::decode("60006000a0600060005260206000f3").unwrap();
+        let mut router_code = Vec::new();
+        {
+            let mut g = st.chain.lock();
+            let state = &mut Arc::make_mut(&mut g.finalized).state;
+            for byte in 0x50..=0x60 {
+                let token = Address::repeat_byte(byte);
+                state.set_code(token, token_code.clone().into()).unwrap();
+                router_code.extend(hex::decode("6000600060006000600073").unwrap());
+                router_code.extend_from_slice(token.as_slice());
+                router_code.extend(hex::decode("611388f150").unwrap());
+            }
+            router_code.extend(hex::decode("600060005260206000f3").unwrap());
+            state.set_code(router, router_code.into()).unwrap();
+        }
+        let answer = rt.block_on(call(&st, "aether_simulateTransaction", request(sender, router, 0, 300_000)));
+        assert_eq!(answer["result"]["tokenCoverageComplete"], false, "{answer}");
+        assert_eq!(answer["result"]["measuredTokens"].as_array().unwrap().len(), 16);
+        assert_eq!(answer["result"]["logs"].as_array().unwrap().len(), 17);
+        assert_eq!(answer["result"]["tokenChanges"], json!([]));
+    }
+
+    fn token_fixture(emit_transfer: bool) -> (RpcState, Address, Address) {
+        // An empty transaction writes a token balance of 93; balanceOf returns
+        // slot zero. Its Transfer event intentionally reports 9, not the true 7.
+        let mut code = hex::decode("3660001460125760005460005260206000f35b605d600055").unwrap();
+        if emit_transfer {
+            code.extend(hex::decode("6009600052").unwrap());
+            code.push(0x73);
+            code.extend_from_slice(Address::repeat_byte(0x33).as_slice());
+            code.push(0x73);
+            code.extend_from_slice(Address::repeat_byte(0x11).as_slice());
+            code.push(0x7f);
+            code.extend(hex::decode("ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef").unwrap());
+            code.extend(hex::decode("60206000a3").unwrap());
+        }
+        code.push(0x00);
+        let (st, sender, token, _) = fixture(&code);
+        {
+            let mut g = st.chain.lock();
+            Arc::make_mut(&mut g.finalized).state.set_storage(token, U256::ZERO, U256::from(100));
+        }
+        (st, sender, token)
+    }
+
+    #[test]
+    fn token_deltas_use_actual_simulated_balances_instead_of_event_amounts() {
+        let rt = runtime();
+        let (st, sender, token) = token_fixture(true);
+        let before = st.chain.lock().finalized.state.root();
+        let answer = rt.block_on(call(&st, "aether_simulateTransaction", request(sender, token, 0, 100_000)));
+        assert_eq!(answer["result"]["success"], true, "{answer}");
+        assert_eq!(answer["result"]["tokenChanges"], json!([{"token": format!("{token:#x}"), "delta": "-7"}]));
+        assert_eq!(answer["result"]["logs"][0]["data"], format!("0x{:064x}", 9));
+        let g = st.chain.lock();
+        assert_eq!(g.finalized.state.root(), before);
+        assert_eq!(g.finalized.state.storage(&token, U256::ZERO), U256::from(100));
+    }
+
+    #[test]
+    fn destination_token_balance_is_checked_without_a_transfer_event() {
+        let rt = runtime();
+        let (st, sender, token) = token_fixture(false);
+        let answer = rt.block_on(call(&st, "aether_simulateTransaction", request(sender, token, 0, 100_000)));
+        assert_eq!(answer["result"]["success"], true, "{answer}");
+        assert_eq!(answer["result"]["tokenChanges"], json!([{"token": format!("{token:#x}"), "delta": "-7"}]));
+        assert_eq!(answer["result"]["logs"], json!([]));
+    }
+
+    #[test]
+    fn an_internal_token_without_events_is_found_from_changed_storage() {
+        let rt = runtime();
+        let (st, sender, token) = token_fixture(false);
+        let router = Address::repeat_byte(0x44);
+        let mut code = hex::decode("6000600060006000600073").unwrap();
+        code.extend_from_slice(token.as_slice());
+        code.extend(hex::decode("61c350f15000").unwrap());
+        {
+            let mut g = st.chain.lock();
+            Arc::make_mut(&mut g.finalized).state.set_code(router, code.into()).unwrap();
+        }
+        let before = st.chain.lock().finalized.state.root();
+        let answer = rt.block_on(call(&st, "aether_simulateTransaction", request(sender, router, 0, 150_000)));
+        assert_eq!(answer["result"]["success"], true, "{answer}");
+        assert_eq!(answer["result"]["tokenChanges"], json!([{"token": format!("{token:#x}"), "delta": "-7"}]));
+        assert_eq!(answer["result"]["logs"], json!([]));
+        assert_eq!(st.chain.lock().finalized.state.root(), before);
+    }
+
+    #[test]
+    fn standard_revert_reason_is_readable_and_has_no_balance_changes() {
+        let reason = "Not enough tokens";
+        let mut payload = hex::decode("08c379a0").unwrap();
+        payload.extend_from_slice(&U256::from(32).to_be_bytes::<32>());
+        payload.extend_from_slice(&U256::from(reason.len()).to_be_bytes::<32>());
+        payload.extend_from_slice(reason.as_bytes());
+        payload.resize(100, 0);
+        let rt = runtime();
+        let (st, sender, contract, _) = fixture(&revert_code(payload.clone()));
+        let answer = rt.block_on(call(&st, "aether_simulateTransaction", request(sender, contract, 7, 100_000)));
+        let result = &answer["result"];
+        assert_eq!(result["success"], false, "{answer}");
+        assert!(result["failureReason"].as_str().unwrap().contains(reason), "{answer}");
+        assert_eq!(result["output"], format!("0x{}", hex::encode(&payload)));
+        assert_eq!(result["nativeChanges"], json!([]));
+        assert_eq!(result["logs"], json!([]));
+        let answer = rt.block_on(call(&st, "eth_call", request(sender, contract, 7, 100_000)));
+        assert_eq!(answer["error"]["code"], 3);
+        assert_eq!(answer["error"]["message"], format!("execution reverted: 0x{}", hex::encode(&payload)), "{answer}");
+    }
+
+    #[test]
+    fn panic_reason_is_readable() {
+        let mut payload = hex::decode("4e487b71").unwrap();
+        payload.extend_from_slice(&U256::from(0x12).to_be_bytes::<32>());
+        let rt = runtime();
+        let (st, sender, contract, _) = fixture(&revert_code(payload));
+        let answer = rt.block_on(call(&st, "aether_simulateTransaction", request(sender, contract, 0, 100_000)));
+        assert_eq!(answer["result"]["success"], false, "{answer}");
+        assert!(answer["result"]["failureReason"].as_str().unwrap().contains("division by zero"), "{answer}");
+    }
+
+    #[test]
+    fn simulation_respects_the_requested_gas_and_explains_a_halt() {
+        let rt = runtime();
+        let (st, sender, contract, _) = fixture(&[0x5b, 0x60, 0, 0x56]);
+        let answer = rt.block_on(call(&st, "aether_simulateTransaction", request(sender, contract, 0, 22_000)));
+        assert_eq!(answer["result"]["success"], false, "{answer}");
+        assert!(answer["result"]["failureReason"].as_str().unwrap().to_lowercase().contains("gas"), "{answer}");
+        assert_eq!(answer["result"]["gasUsed"], "0x55f0");
+    }
+
+    #[test]
+    fn eth_call_respects_the_requested_gas() {
+        let rt = runtime();
+        let (st, sender, contract, _) = fixture(&hex::decode("602a60005500").unwrap());
+        let answer = rt.block_on(call(&st, "eth_call", request(sender, contract, 0, 21_000)));
+        assert_eq!(answer["error"]["code"], 3, "{answer}");
+        let answer = rt.block_on(call(&st, "eth_call", request(sender, contract, 0, 100_000)));
+        assert_eq!(answer["result"], "0x", "{answer}");
+    }
+
+    #[test]
+    fn gas_estimate_is_executable_and_does_not_commit() {
+        let rt = runtime();
+        let (st, sender, contract, recipient) = fixture(&hex::decode("602a60005500").unwrap());
+        let before = st.chain.lock().finalized.state.root();
+        let answer = rt.block_on(call(&st, "eth_estimateGas", request(sender, recipient, 7, 100_000)));
+        assert_eq!(answer["result"], "0x5208", "{answer}");
+        let answer = rt.block_on(call(&st, "eth_estimateGas", request(sender, contract, 0, 100_000)));
+        let estimate = u64::from_str_radix(answer["result"].as_str().expect("estimate succeeds").trim_start_matches("0x"), 16).unwrap();
+        assert!(estimate > 21_000 && estimate <= 100_000);
+        let answer = rt.block_on(call(&st, "eth_call", request(sender, contract, 0, estimate)));
+        assert_eq!(answer["result"], "0x", "{answer}");
+        let answer = rt.block_on(call(&st, "eth_estimateGas", request(sender, contract, 0, 21_000)));
+        assert_eq!(answer["error"]["code"], 3, "{answer}");
+        assert_eq!(st.chain.lock().finalized.state.root(), before);
+    }
+
+    #[test]
+    fn malformed_simulation_fields_and_unavailable_block_tags_are_refused() {
+        let rt = runtime();
+        let (st, sender, contract, _) = fixture(&[]);
+        for (field, value) in [("gas", json!("bad")), ("gas", json!(true)), ("from", json!(7)), ("value", json!("not money")), ("data", json!(7))] {
+            let mut ask = request(sender, contract, 0, 100_000);
+            ask[0][field] = value;
+            let answer = rt.block_on(call(&st, "aether_simulateTransaction", ask));
+            assert_eq!(answer["error"]["code"], -32602, "{field}: {answer}");
+        }
+        let mut ask = request(sender, contract, 0, 100_000);
+        ask[1] = json!("earliest");
+        let answer = rt.block_on(call(&st, "aether_simulateTransaction", ask));
+        assert_eq!(answer["error"]["code"], -32602, "{answer}");
+    }
+
+    #[test]
+    fn transaction_simulation_is_private_only() {
+        let rt = runtime();
+        let (mut st, sender, _, recipient) = fixture(&[]);
+        let ask = request(sender, recipient, 0, 21_000);
+        let answer = rt.block_on(call(&st, "aether_simulateTransaction", ask.clone()));
+        assert_eq!(answer["result"]["success"], true, "{answer}");
+        st.public_read_only = true;
+        let answer = rt.block_on(call(&st, "aether_simulateTransaction", ask));
+        assert_eq!(answer["error"]["code"], -32601, "{answer}");
+        assert!(answer["error"]["message"].as_str().unwrap().contains("public read-only gateway"));
+    }
 }
 
 #[cfg(test)]
@@ -2570,7 +2884,7 @@ fn hex_arg(v: &Value, k: &str) -> Result<Option<Vec<u8>>, (i64, String)> {
     }
 }
 
-/// Gas a private `eth_call` may run: the block gas limit.
+/// Private call gas cap, further bounded by the configured block gas limit.
 const PRIVATE_CALL_GAS: u64 = 1 << 24;
 
 /// Concurrent public eth_call executions (pre-audit 7 PA7-05): the gas cap
@@ -2607,16 +2921,46 @@ fn history_slot(st: &RpcState) -> Result<BudgetSlot, (i64, String)> {
 /// (pre-audit 7 PA7-05: the old path copied the whole WorldState under the
 /// chain mutex for every call, cheap EVM or not).
 async fn eth_call(st: &RpcState, p: &Value, gas: u64) -> RpcResult {
-    let c = p.get(0).ok_or((-32602, "missing call object".to_string()))?;
+    execute_rpc_call(st, p, gas, CallMode::Output).await
+}
+
+#[derive(Clone, Copy)]
+enum CallMode { Output, Estimate, Simulation }
+
+/// The private wallet preview and estimate use the identical immutable snapshot,
+/// input validation and caller gas limit as eth_call. Neither enters admission.
+async fn execute_rpc_call(st: &RpcState, p: &Value, gas_cap: u64, mode: CallMode) -> RpcResult {
+    let c = p.get(0).filter(|c| c.is_object()).ok_or((-32602, "missing call object".to_string()))?;
+    match p.get(1) {
+        None | Some(Value::Null) => {},
+        Some(Value::String(tag)) if matches!(tag.as_str(), "latest" | "finalized" | "safe") => {},
+        _ => return Err((-32602, "calls are supported on the latest finalized state; historical and pending state are unavailable".into())),
+    }
     let addr = |k: &str| -> Result<Option<Address>, (i64, String)> {
-        c.get(k).and_then(Value::as_str).map(|s| s.parse().map_err(|_| (-32602, format!("{k} is not an address")))).transpose()
+        match c.get(k) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(s)) => s.parse().map(Some).map_err(|_| (-32602, format!("{k} is not an address"))),
+            _ => Err((-32602, format!("{k} is not an address"))),
+        }
     };
     let to = addr("to")?;
     let from = addr("from")?.unwrap_or(Address::ZERO);
-    let data = hex_arg(c, "data")?.or(hex_arg(c, "input")?).unwrap_or_default();
-    let value = match c.get("value").and_then(Value::as_str) {
-        Some(v) => U256::from_str_radix(v.trim_start_matches("0x"), 16).map_err(|_| (-32602, "value".to_string()))?,
-        None => U256::ZERO,
+    for k in ["data", "input"] {
+        if c.get(k).is_some_and(|value| !value.is_null() && !value.is_string()) {
+            return Err((-32602, format!("{k} is not hex")));
+        }
+    }
+    let data = hex_arg(c, "data")?;
+    let input = hex_arg(c, "input")?;
+    if data.as_ref().zip(input.as_ref()).is_some_and(|(data, input)| data != input) {
+        return Err((-32602, "data and input describe different calls".into()));
+    }
+    let data = data.or(input).unwrap_or_default();
+    let value = match c.get("value") {
+        None | Some(Value::Null) => U256::ZERO,
+        Some(Value::String(v)) => v.strip_prefix("0x").filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_hexdigit()))
+            .and_then(|v| U256::from_str_radix(v, 16).ok()).ok_or((-32602, "value is not a hex quantity".into()))?,
+        _ => return Err((-32602, "value is not a hex quantity".into())),
     };
     // The finalized snapshot by Arc, and the small config — the lock is held
     // for two pointer-ish clones, not a walk of the state tree.
@@ -2624,6 +2968,17 @@ async fn eth_call(st: &RpcState, p: &Value, gas: u64) -> RpcResult {
         let g = st.chain.lock();
         (g.finalized.clone(), g.cfg.clone())
     };
+    let gas_cap = gas_cap.min(cfg.limits.exec);
+    let gas = match c.get("gas") {
+        None | Some(Value::Null) => gas_cap,
+        Some(Value::String(v)) => v.strip_prefix("0x").filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_hexdigit()))
+            .and_then(|v| u64::from_str_radix(v, 16).ok()).ok_or((-32602, "gas is not a hex quantity".into()))?,
+        Some(Value::Number(v)) => v.as_u64().ok_or((-32602, "gas is not a nonnegative quantity".into()))?,
+        _ => return Err((-32602, "gas is not a hex quantity".into())),
+    };
+    if gas > gas_cap {
+        return Err((-32602, format!("gas exceeds the available execution limit of {gas_cap}")));
+    }
     let ctx = aether_execution::BlockContext {
         chain_id: cfg.chain_id,
         number: exec.height + 1,
@@ -2640,23 +2995,64 @@ async fn eth_call(st: &RpcState, p: &Value, gas: u64) -> RpcResult {
     // and is given back only when the execution ends. A stranger arriving
     // while it is full is told to retry.
     let budget = if st.public_read_only {
-        BudgetSlot::acquire(&PUBLIC_CALLS, MAX_PUBLIC_CALLS)
-            .ok_or((-32002, "public read-only gateway: too many concurrent eth_call executions; retry shortly".to_string()))?
+        Some(BudgetSlot::acquire(&PUBLIC_CALLS, MAX_PUBLIC_CALLS)
+            .ok_or((-32002, "public read-only gateway: too many concurrent eth_call executions; retry shortly".to_string()))?)
     } else {
-        BudgetSlot::acquire(&PUBLIC_CALLS, usize::MAX).expect("usize::MAX budget never refuses")
+        None
     };
-    let r = tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || -> RpcResult {
         let _held = budget;
-        aether_execution::call(&exec.state, &ctx, from, to, data.into(), value, gas)
+        let data: aether_types::Bytes = data.into();
+        let r = match mode {
+            CallMode::Simulation => aether_execution::simulate(&exec.state, &ctx, from, to, data.clone(), value, gas),
+            _ => aether_execution::call(&exec.state, &ctx, from, to, data.clone(), value, gas),
+        }.map_err(|e| (-32000, e))?;
+        if matches!(mode, CallMode::Simulation) {
+            return Ok(json!({
+                "success": r.success, "gasUsed": format!("0x{:x}", r.gas_used),
+                "output": format!("0x{}", hex::encode(&r.output)), "failureReason": r.failure_reason,
+                "nativeChanges": r.native_changes.iter().map(|change| json!({
+                    "address": format!("{:#x}", change.address), "deltaWei": change.delta_wei
+                })).collect::<Vec<_>>(),
+                "tokenChanges": r.token_changes.iter().map(|change| json!({
+                    "token": format!("{:#x}", change.token), "delta": change.delta
+                })).collect::<Vec<_>>(),
+                "measuredTokens": r.measured_tokens.iter().map(|token| format!("{token:#x}")).collect::<Vec<_>>(),
+                "tokenCoverageComplete": r.token_coverage_complete,
+                "logs": r.events.iter().map(|event| json!({
+                    "address": format!("{:#x}", event.address),
+                    "topics": event.topics.iter().map(|topic| format!("{topic:#x}")).collect::<Vec<_>>(),
+                    "data": format!("0x{}", hex::encode(&event.data))
+                })).collect::<Vec<_>>()
+            }));
+        }
+        if !r.success {
+            if matches!(mode, CallMode::Output) {
+                return Err((3, format!("execution reverted: 0x{}", hex::encode(&r.output))));
+            }
+            return Err((3, r.failure_reason.unwrap_or_else(|| "Execution reverted.".into())));
+        }
+        if matches!(mode, CallMode::Estimate) {
+            // gasUsed alone can be below an executable limit (refunds and the
+            // CALL 63/64 rule). Search a successful upper bound instead.
+            let mut upper = gas;
+            let mut lower = r.gas_used.saturating_sub(1);
+            while upper.saturating_sub(lower) > 1 {
+                let middle = lower + (upper - lower) / 2;
+                match aether_execution::call(&exec.state, &ctx, from, to, data.clone(), value, middle) {
+                    Ok(result) if result.success => upper = middle,
+                    Ok(_) => lower = middle,
+                    Err(reason) if reason.contains("gas limit") || reason.contains("gas floor") => lower = middle,
+                    Err(reason) => return Err((-32000, reason)),
+                }
+            }
+            Ok(json!(format!("0x{upper:x}")))
+        } else {
+            Ok(json!(format!("0x{}", hex::encode(&r.output))))
+        }
     })
     .await
     .map_err(|e| (-32000, e.to_string()))?
-    .map_err(|e| (-32000, e))?;
-    if r.success {
-        Ok(json!(format!("0x{}", hex::encode(&r.output))))
-    } else {
-        Err((3, format!("execution reverted: 0x{}", hex::encode(&r.output))))
-    }
 }
 
 /// An `eth_getLogs` block parameter: "latest"/"finalized"/"safe"/"pending" or

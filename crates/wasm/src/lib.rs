@@ -12,6 +12,13 @@ use commonware_codec::Decode;
 use serde_json::{json, Value};
 use wasm_bindgen::prelude::*;
 
+#[path = "../../ffi/src/typed_data.rs"]
+mod typed_data;
+
+#[cfg(test)]
+#[path = "../../ffi/src/typed_data_tests.rs"]
+mod typed_data_tests;
+
 const GWEI: u128 = 1_000_000_000;
 /// Same cap as the app wallet (`aether-ffi::prepare_call`).
 const MAX_GAS: u64 = 10_000_000;
@@ -289,6 +296,71 @@ pub fn verify_receipt_js(network_json: &str, status_json: &str, receipt_json: &s
     Ok(verified_receipt(&network, &status, &receipt, &finalized, minimum_height, now_ms).map_err(err)?.to_string())
 }
 
+/// Prepare the owner's account-bound ERC-1271 message for an EIP-712 v4 request.
+/// The caller checks current account/implementation code with
+/// `accountSigningSupport` before asking WebCrypto to sign.
+pub fn prepare_typed_message(
+    public_key: &[u8],
+    typed_json: &str,
+    expected_chain: u64,
+) -> Result<Value, String> {
+    let account = address_of(&p256_key(public_key)?).map_err(|e| e.to_string())?;
+    let prepared = typed_data::prepare(typed_json, expected_chain, account)?;
+    Ok(json!({
+        "chain_id": prepared.chain_id,
+        "account": prepared.account.to_checksum(None),
+        "signing_message": alloy_primitives::hex::encode_prefixed(prepared.signing_message),
+        "digest_hex": prepared.digest.to_string(),
+        "typed_data": prepared.typed_data,
+    }))
+}
+
+pub fn attach_typed_signature(
+    typed_json: &str,
+    expected_chain: u64,
+    account: &str,
+    signature: &[u8],
+    public_key: &[u8],
+) -> Result<String, String> {
+    let account = account
+        .parse()
+        .map_err(|_| "invalid signing account address")?;
+    typed_data::attach(typed_json, expected_chain, account, signature, public_key)
+}
+
+pub fn account_signing_support(account_code: &str, implementation_code: &str) -> bool {
+    typed_data::supports(account_code, implementation_code)
+}
+
+#[wasm_bindgen(js_name = prepareTypedMessage)]
+pub fn prepare_typed_message_js(
+    public_key: &[u8],
+    typed_json: &str,
+    expected_chain: u64,
+) -> Result<String, JsError> {
+    Ok(
+        prepare_typed_message(public_key, typed_json, expected_chain)
+            .map_err(err)?
+            .to_string(),
+    )
+}
+
+#[wasm_bindgen(js_name = attachTypedSignature)]
+pub fn attach_typed_signature_js(
+    typed_json: &str,
+    expected_chain: u64,
+    account: &str,
+    signature: &[u8],
+    public_key: &[u8],
+) -> Result<String, JsError> {
+    attach_typed_signature(typed_json, expected_chain, account, signature, public_key).map_err(err)
+}
+
+#[wasm_bindgen(js_name = accountSigningSupport)]
+pub fn account_signing_support_js(account_code: &str, implementation_code: &str) -> bool {
+    account_signing_support(account_code, implementation_code)
+}
+
 /// Checksummed account address for a P-256 public key (raw SEC1 bytes).
 #[wasm_bindgen(js_name = accountAddress)]
 pub fn account_address_js(public_key: &[u8]) -> Result<String, JsError> {
@@ -331,6 +403,21 @@ mod tests {
 
     fn key() -> SigningKey {
         SigningKey::from_slice(&[7u8; 32]).unwrap()
+    }
+
+    #[test]
+    fn browser_typed_message_adapter_returns_contract_ready_values() {
+        let k = key();
+        let public = pubkey(&k);
+        let data = crate::typed_data_tests::mail().to_string();
+        let prepared = prepare_typed_message(&public, &data, 1).unwrap();
+        assert_eq!(prepared["chain_id"], 1);
+        assert_eq!(prepared["account"], address_for(&public).unwrap());
+        assert_eq!(prepared["typed_data"], crate::typed_data_tests::mail());
+        let bytes = alloy_primitives::hex::decode(prepared["signing_message"].as_str().unwrap()).unwrap();
+        let signature: p256::ecdsa::Signature = k.sign(&bytes);
+        let packed = attach_typed_signature(&data, 1, prepared["account"].as_str().unwrap(), &signature.to_bytes(), &public).unwrap();
+        assert_eq!(alloy_primitives::hex::decode(packed).unwrap().len(), 128);
     }
 
     #[test]

@@ -773,6 +773,7 @@ struct SecurityPage: View {
             Card { AgentWalletPanel() }
             #endif
             ConnectedSitesSection()
+            AccountMigrationPanel()
             Card { RecoveryPanel() }
         }
     }
@@ -1479,7 +1480,11 @@ struct SendSheet: View {
                   let units = TokenAmount.parse(model.sendAmount, decimals: decimals),
                   units != "0", WeiMath.compare(units, t.balance) <= 0 else { return false }
         } else {
-            guard !recipient.isEmpty, (amount ?? 0) > 0, (amount ?? 0) + maxFee <= balance else { return false }
+            guard !recipients.isEmpty,
+                  let valueWei = Wei.from(aeth: model.paymentRequest?.amount ?? model.sendAmount), valueWei != "0",
+                  let balanceWei = model.account?.balanceWei, let feeWei = shownFeeWei else { return false }
+            let total = recipients.reduce("0") { sum, _ in WeiMath.add(sum, valueWei) }
+            guard WeiMath.compare(WeiMath.add(total, feeWei), balanceWei) <= 0 else { return false }
         }
         return true
     }
@@ -1648,7 +1653,8 @@ struct SendSheet: View {
             // What can actually leave: the balance minus the fee a plain
             // transfer burns (audit 6, A6-7) — the possible new-recipient
             // charge included, so a full send is never rejected for it.
-            model.sendAmount = Amount.text(max(0, balance - maxFee))
+            guard let balanceWei = model.account?.balanceWei, let feeWei = shownFeeWei else { return }
+            model.sendAmount = Wei.exact(WeiMath.subtract(balanceWei, feeWei))
         }
     }
 

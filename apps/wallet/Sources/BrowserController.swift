@@ -17,6 +17,10 @@ final class BrowserController: NSObject, ObservableObject {
     @Published var warning: SiteWarning?
     /// The confirmation sheet a page's request opened (one at a time).
     @Published var ask: PendingAsk?
+    @Published private(set) var simulation: SimulatedPageTransaction?
+    @Published private(set) var approvalNotice: String?
+    @Published private(set) var approvalBusy = false
+    @Published private(set) var simulationLoading = false
     /// Whether the last read this tab answered was certificate-verified.
     @Published private(set) var lastReadVerified = true
     /// Bumped whenever the WebView had to be rebuilt (a store switch).
@@ -43,10 +47,25 @@ final class BrowserController: NSObject, ObservableObject {
             /// eth_sendTransaction: origin, the parsed transaction, and the
             /// fee snapshot the sheet displays (nil: the status maximum).
             case send(origin: String, host: String, tx: PageTransaction, feeWei: String?)
+            case typed(origin: String, host: String, prepared: PreparedTypedMessage, fields: TypedMessageFields)
         }
         let id: String
         let kind: Kind
         let reply: (Result<Any?, ProviderError>) -> Void
+        var context: DappRequestContext? = nil
+
+        init(id: String, kind: Kind, reply: @escaping (Result<Any?, ProviderError>) -> Void,
+             context: DappRequestContext? = nil) {
+            self.id = id
+            self.kind = kind
+            self.context = context
+            var answered = false
+            self.reply = { result in
+                guard !answered else { return }
+                answered = true
+                reply(result)
+            }
+        }
     }
 
     private(set) weak var model: WalletModel?
@@ -55,6 +74,8 @@ final class BrowserController: NSObject, ObservableObject {
     /// The external host the current non-persistent WebView belongs to.
     private var externalHost: String?
     private var askQueue: [PendingAsk] = []
+    private var preparingAsks: [String: Int] = [:]
+    private var busyAskId: String?
     /// The URL a just-acknowledged warning may load (one shot, so the same
     /// warning cannot loop).
     private var approvedURL: URL?
@@ -180,45 +201,132 @@ final class BrowserController: NSObject, ObservableObject {
     /// The user approved the sheet: the site may see this address, or the
     /// transaction goes to the send flow. The next queued request, if any,
     /// opens its sheet right after.
-    func approveAsk() {
-        guard let pending = ask else { return }
-        ask = nil
+    func approveAsk(extraConfirmation: Bool = false) {
+        guard let pending = ask, let model, !approvalBusy, !model.exploreLocked else { return }
         switch pending.kind {
         case .connect(let origin, _):
-            if let model = model, !model.address.isEmpty {
+            if let context = pending.context, model.isCurrentDappContext(context) {
                 model.grantSitePermission(origin: origin, address: model.address)
-                pending.reply(.success([model.address]))
+                finish(pending, .success([model.address]))
             } else {
-                pending.reply(.failure(ProviderError(code: ProviderErrorCode.internalError,
-                                                      message: "The wallet is not ready.")))
+                finish(pending, .failure(ProviderError(code: ProviderErrorCode.locked,
+                                                      message: String(localized: "This approval is no longer valid. Ask the site to try again."))))
             }
         case .send(let origin, _, let tx, let feeWei):
-            if let model {
-                let shown = tx.isPlainTransfer ? feeWei ?? model.status?.transferFeeWei : nil
-                Task {
-                    let (hash, refusal) = await model.sendPageTransaction(tx, origin: origin,
-                                                                          title: origin, shownFeeWei: shown)
-                    if let hash {
-                        pending.reply(.success(hash))
-                    } else {
-                        pending.reply(.failure(ProviderError(code: ProviderErrorCode.internalError,
-                                                              message: refusal ?? "The send failed.")))
+            guard let reviewed = simulation, reviewed.context == pending.context,
+                  reviewed.transaction.to == tx.to, reviewed.transaction.valueWei == tx.valueWei,
+                  reviewed.transaction.data == tx.data, tx.gas == 0 || reviewed.transaction.gas == tx.gas,
+                  reviewed.result.canSign(extraConfirmation: extraConfirmation), !model.busy else { return }
+            approvalBusy = true
+            busyAskId = pending.id
+            Task {
+                defer { endApproval(pending) }
+                do {
+                    let latest = try await model.simulatePageTransaction(reviewed.transaction, context: reviewed.context)
+                    guard ask?.id == pending.id else { return }
+                    guard model.isCurrentDappContext(reviewed.context, origin: origin) else {
+                        finish(pending, .failure(ProviderError(code: ProviderErrorCode.locked,
+                                                             message: String(localized: "This approval is no longer valid. Ask the site to try again."))))
+                        return
                     }
+                    guard latest == reviewed else {
+                        simulation = latest
+                        approvalNotice = String(localized: "The simulation changed. Review the new result before signing.")
+                        return
+                    }
+                    let (hash, refusal) = await model.sendPageTransaction(latest.transaction, origin: origin, title: origin,
+                                                                        shownFeeWei: feeWei, simulation: latest,
+                                                                        extraConfirmation: extraConfirmation,
+                                                                        stillApproved: { self.ask?.id == pending.id })
+                    finish(pending, hash.map { .success($0) } ?? .failure(ProviderError(code: ProviderErrorCode.internalError,
+                                                                                    message: refusal ?? String(localized: "The send failed."))))
+                } catch {
+                    guard ask?.id == pending.id else { return }
+                    if let error = error as? ProviderError, error.code == 4901 {
+                        finish(pending, .failure(error))
+                        return
+                    }
+                    simulation = nil
+                    approvalNotice = String(localized: "The node could not simulate this transaction.")
                 }
-            } else {
-                pending.reply(.failure(ProviderError(code: ProviderErrorCode.internalError,
-                                                      message: "The wallet is not ready.")))
+            }
+        case .typed(let origin, _, let prepared, _):
+            guard let context = pending.context else { return }
+            approvalBusy = true
+            busyAskId = pending.id
+            Task {
+                defer { endApproval(pending) }
+                do {
+                    let signature = try await model.signPageTypedMessage(prepared, origin: origin, context: context,
+                                                                         stillApproved: { self.ask?.id == pending.id })
+                    finish(pending, .success(signature))
+                } catch let error as ProviderError { finish(pending, .failure(error)) }
+                catch { finish(pending, .failure(ProviderError(code: ProviderErrorCode.params, message: WalletModel.ffiMessage(error)))) }
             }
         }
+    }
+
+    func simulateAsk(_ pending: PendingAsk) async {
+        guard let model, case .send(_, _, let tx, _) = pending.kind, ask?.id == pending.id,
+              let context = pending.context else { return }
+        simulation = nil
+        approvalNotice = nil
+        simulationLoading = true
+        defer { if ask?.id == pending.id { simulationLoading = false } }
+        do {
+            let result = try await model.simulatePageTransaction(tx, context: context)
+            guard ask?.id == pending.id else { return }
+            guard model.isCurrentDappContext(context) else {
+                finish(pending, .failure(ProviderError(code: ProviderErrorCode.locked,
+                                                      message: String(localized: "This approval is no longer valid. Ask the site to try again."))))
+                return
+            }
+            simulation = result
+        } catch {
+            guard ask?.id == pending.id else { return }
+            if let error = error as? ProviderError, error.code == 4901 {
+                finish(pending, .failure(error))
+                return
+            }
+            approvalNotice = String(localized: "The node could not simulate this transaction.")
+        }
+    }
+
+    private func finish(_ pending: PendingAsk, _ result: Result<Any?, ProviderError>) {
+        guard ask?.id == pending.id else { return }
+        endApproval(pending)
+        ask = nil
+        simulation = nil
+        approvalNotice = nil
+        simulationLoading = false
+        pending.reply(result)
         drainAskQueue()
+    }
+
+    private func endApproval(_ pending: PendingAsk) {
+        guard busyAskId == pending.id else { return }
+        busyAskId = nil
+        approvalBusy = false
     }
 
     /// The user refused the sheet (or dismissed it): 4001, nothing signed.
     func refuseAsk() {
         guard let pending = ask else { return }
-        ask = nil
-        pending.reply(.failure(ProviderError(code: ProviderErrorCode.denied, message: "The user rejected the request.")))
-        drainAskQueue()
+        finish(pending, .failure(ProviderError(code: ProviderErrorCode.denied, message: "The user rejected the request.")))
+    }
+
+    func dismissAsk(_ pending: PendingAsk) {
+        if ask?.id == pending.id { refuseAsk() }
+        else {
+            if ask == nil {
+                endApproval(pending)
+                simulation = nil
+                approvalNotice = nil
+                simulationLoading = false
+            }
+            pending.reply(.failure(ProviderError(code: ProviderErrorCode.denied, message: "The user rejected the request.")))
+            drainAskQueue()
+        }
     }
 
     /// One sheet at a time: whatever queued while one was open comes next.
@@ -280,10 +388,11 @@ final class BrowserController: NSObject, ObservableObject {
             switch a.kind {
             case .connect(let o, _): return o
             case .send(let o, _, _, _): return o
+            case .typed(let o, _, _, _): return o
             }
         }
         let pendingForOrigin = askQueue.filter { originOf($0) == key }.count
-            + (ask.flatMap(originOf) == key ? 1 : 0)
+            + (ask.flatMap(originOf) == key ? 1 : 0) + preparingAsks[key, default: 0]
         if pendingForOrigin >= ProviderRouter.maxPendingPerOrigin {
             reply(.failure(ProviderError(code: ProviderErrorCode.timeout,
                                          message: "Too many requests from this site are already waiting.")))
@@ -315,16 +424,45 @@ final class BrowserController: NSObject, ObservableObject {
             }
             switch PageTransaction.parse(params.first, from: connected) {
             case .success(let tx):
-                let feeWei: String?
-                if tx.isPlainTransfer {
-                    feeWei = (try? transferQuote(recipient: tx.to, validators: model.validators))?.feeWei
-                        ?? model.status?.transferFeeWei
-                } else {
-                    feeWei = nil
+                guard let context = model.dappContext else {
+                    reply(.failure(ProviderError(code: ProviderErrorCode.locked, message: String(localized: "This approval is no longer valid. Ask the site to try again."))))
+                    return
                 }
-                enqueue(.send(origin: key, host: origin.host, tx: tx, feeWei: feeWei), id: body["id"], reply: reply)
+                let gas = tx.gas == 0 ? (tx.isPlainTransfer ? UInt64(100_000) : UInt64(3_000_000)) : tx.gas
+                let host = origin.host
+                preparingAsks[key, default: 0] += 1
+                Task {
+                    defer { preparingAsks[key, default: 0] -= 1 }
+                    let feeWei = await Task.detached { (try? dappTransactionQuote(to: tx.to, valueWei: tx.valueWei, dataHex: tx.data, gasLimit: gas))?.feeWei }.value
+                    guard model.isCurrentDappContext(context, origin: key) else {
+                        reply(.failure(ProviderError(code: ProviderErrorCode.locked, message: String(localized: "This approval is no longer valid. Ask the site to try again."))))
+                        return
+                    }
+                    enqueue(.send(origin: key, host: host, tx: tx, feeWei: feeWei), id: nil, reply: reply, context: context)
+                }
             case .failure(let e):
                 reply(.failure(e))
+            }
+        case .typed:
+            guard let context = model.dappContext, model.connectedSiteAddress(origin: key) != nil else {
+                reply(.failure(ProviderError(code: ProviderErrorCode.locked, message: String(localized: "This approval is no longer valid. Ask the site to try again."))))
+                return
+            }
+            let host = origin.host
+            preparingAsks[key, default: 0] += 1
+            Task {
+                defer { preparingAsks[key, default: 0] -= 1 }
+                do {
+                    let json = try TypedMessageRequest.parse(params, context: context)
+                    let prepared = try await model.preparePageTypedMessage(json)
+                    let fields = try TypedMessageFields.parse(prepared.typedDataJson)
+                    guard model.isCurrentDappContext(context, origin: key) else {
+                        reply(.failure(ProviderError(code: ProviderErrorCode.locked, message: String(localized: "This approval is no longer valid. Ask the site to try again."))))
+                        return
+                    }
+                    enqueue(.typed(origin: key, host: host, prepared: prepared, fields: fields), id: nil, reply: reply, context: context)
+                } catch let error as ProviderError { reply(.failure(error)) }
+                catch { reply(.failure(ProviderError(code: ProviderErrorCode.params, message: WalletModel.ffiMessage(error)))) }
             }
         case .read(let verified):
             lastReadVerified = verified
@@ -432,9 +570,10 @@ final class BrowserController: NSObject, ObservableObject {
         }
     }
 
-    private func enqueue(_ kind: PendingAsk.Kind, id: Any?, reply: @escaping (Result<Any?, ProviderError>) -> Void) {
-        let pending = PendingAsk(id: (id as? String).map { "ask-\($0)" } ?? UUID().uuidString,
-                                 kind: kind, reply: reply)
+    private func enqueue(_ kind: PendingAsk.Kind, id: Any?, reply: @escaping (Result<Any?, ProviderError>) -> Void,
+                         context: DappRequestContext? = nil) {
+        let pending = PendingAsk(id: UUID().uuidString,
+                                 kind: kind, reply: reply, context: context ?? model?.dappContext)
         if ask == nil { ask = pending } else { askQueue.append(pending) }
     }
 

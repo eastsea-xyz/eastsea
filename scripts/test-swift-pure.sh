@@ -13,6 +13,7 @@ run balance-history BalanceHistory.swift
 run browser-origin BrowserOriginPolicy.swift
 run browser-permissions SitePermissions.swift
 run browser-routing Brand.swift BrowserPolicy.swift
+run dapp-signing Brand.swift BrowserPolicy.swift EarningsModel.swift DappSigning.swift
 run browser-verify Brand.swift BrowserOriginPolicy.swift BrowserPolicy.swift VerifyBridge.swift
 run diagnostic-report Brand.swift Clock.swift NodeWatchdog.swift NodeStopReason.swift HealthCheck.swift DiagnosticReport.swift
 run earnings EarningsModel.swift

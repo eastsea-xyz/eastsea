@@ -112,6 +112,31 @@ final class WalletModel: ObservableObject {
     /// its own port). The Explore tab's unverified reads go here.
     var nodeRpcPort: UInt16 { developmentNetwork ? developmentPort : 18545 }
 
+    var dappContext: DappRequestContext? {
+        guard !exploreLocked, !address.isEmpty, let chain = try? configuredChainId() else { return nil }
+        return .init(account: address, chainId: chain, port: nodeRpcPort, generation: networkGeneration,
+                     permissionGeneration: dappPermissionGeneration)
+    }
+
+    func isCurrentDappContext(_ context: DappRequestContext, origin: String? = nil) -> Bool {
+        guard let now = dappContext,
+              context.matches(account: now.account, chainId: now.chainId, port: now.port, generation: now.generation,
+                              permissionGeneration: now.permissionGeneration) else { return false }
+        return origin.map { connectedSiteAddress(origin: $0)?.lowercased() == context.account.lowercased() } ?? true
+    }
+
+    func simulatePageTransaction(_ tx: PageTransaction, context: DappRequestContext) async throws -> SimulatedPageTransaction {
+        guard let enclave, isCurrentDappContext(context) else {
+            throw ProviderError(code: ProviderErrorCode.locked,
+                                message: String(localized: "This approval is no longer valid. Ask the site to try again."))
+        }
+        let result = try await DappRPC.simulate(tx, context: context, publicKey: enclave.publicKey)
+        guard isCurrentDappContext(context) else {
+            throw ProviderError(code: 4901, message: String(localized: "The wallet network changed. Ask the site to try again."))
+        }
+        return result
+    }
+
     /// The address a site may see, nil unless this exact origin was granted
     /// the account the wallet holds right now (a switched account disconnects
     /// every site — the grant names an address, not "whatever is active").
@@ -122,18 +147,21 @@ final class WalletModel: ObservableObject {
 
     /// Remember (or replace) a site's grant after the user approved the sheet.
     func grantSitePermission(origin: String, address: String) {
+        dappPermissionGeneration &+= 1
         sitePermissions.grant(origin: origin, address: address)
         sitePermissions.save()
     }
 
     /// Forget one site's grant (the site's next request asks again).
     func revokeSitePermission(origin: String) {
+        dappPermissionGeneration &+= 1
         sitePermissions.revoke(origin: origin)
         sitePermissions.save()
     }
 
     /// Forget every site (Security's "Disconnect all").
     func revokeAllSitePermissions() {
+        dappPermissionGeneration &+= 1
         sitePermissions.revokeAll()
         sitePermissions.save()
     }
@@ -146,27 +174,32 @@ final class WalletModel: ObservableObject {
     /// Returns the tx hash once submitted (the page watches it with
     /// aether_getReceipt); a refusal comes back as text and nothing is signed.
     func sendPageTransaction(_ tx: PageTransaction, origin: String, title: String,
-                             shownFeeWei: String?) async -> (hash: String?, refusal: String?) {
+                             shownFeeWei: String?, simulation: SimulatedPageTransaction,
+                             extraConfirmation: Bool, stillApproved: () -> Bool) async -> (hash: String?, refusal: String?) {
         guard let enclave else { return (nil, String(localized: "The wallet key is not ready yet.")) }
+        guard !busy, stillApproved(), simulation.transaction == tx,
+              isCurrentDappContext(simulation.context, origin: origin),
+              simulation.result.canSign(extraConfirmation: extraConfirmation) else {
+            return (nil, String(localized: "Review the simulation before signing this transaction."))
+        }
         let pk = enclave.publicKey
-        let validatorsNow = validators
-        let action = CallDescribe.action(to: tx.to, data: tx.data)
+        let action = CallDescribe.action(to: tx.to, data: tx.data, ticker: Brand.coinTicker(chainId: simulation.context.chainId))
         let who = tx.to.isEmpty ? "a new contract" : Short.address(tx.to)
         let item = ActivityItem(kind: .sent, title: "\(action) at \(origin)",
                                 amount: Double(Wei.format(tx.valueWei)).map { -$0 },
                                 recipients: tx.to.isEmpty ? [] : [tx.to.lowercased()])
         do {
-            let prepared: PreparedTx
-            if tx.isPlainTransfer {
-                prepared = try prepareTransfer(p256PublicKey: pk, to: tx.to, valueWei: tx.valueWei,
-                                               shownFeeWei: shownFeeWei, validators: validatorsNow)
-            } else {
-                let gas: UInt64 = tx.gas == 0 ? 3_000_000 : tx.gas
-                prepared = try prepareCall(p256PublicKey: pk, to: tx.to, valueWei: tx.valueWei,
-                                           dataHex: tx.data, gasLimit: gas)
+            busy = true
+            defer { busy = false }
+            let prepared = try await Task.detached {
+                try prepareDappTransaction(p256PublicKey: pk, to: tx.to, valueWei: tx.valueWei,
+                                           dataHex: tx.data, gasLimit: tx.gas, shownFeeWei: shownFeeWei)
+            }.value
+            guard stillApproved(), isCurrentDappContext(simulation.context, origin: origin) else {
+                return (nil, String(localized: "The wallet network changed. Ask the site to try again."))
             }
             let sig = try enclave.sign(prepared.signingMessage)   // Secure Enclave, may prompt
-            let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
+            let h = try await Task.detached { try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk) }.value
             note("\(title): \(action) to \(who) submitted \(h.prefix(14))…")
             // The page gets its hash now; finality lands in the activity feed.
             Task.detached { await self.track(h, label: "\(title): \(action) to \(who)", item: item) }
@@ -178,9 +211,73 @@ final class WalletModel: ObservableObject {
         }
     }
 
+    /// Only canonical, schema-checked typed data enters the owner signing flow.
+    func signPageTypedMessage(_ reviewed: PreparedTypedMessage, origin: String,
+                              context: DappRequestContext, stillApproved: () -> Bool) async throws -> String {
+        guard let enclave, !busy, stillApproved(), isCurrentDappContext(context, origin: origin) else {
+            throw ProviderError(code: ProviderErrorCode.locked, message: String(localized: "This approval is no longer valid. Ask the site to try again."))
+        }
+        busy = true
+        defer { busy = false }
+        let publicKey = enclave.publicKey
+        let prepared = try await Task.detached { try prepareTypedMessage(p256PublicKey: publicKey, typedDataJson: reviewed.typedDataJson) }.value
+        guard prepared.account.lowercased() == context.account.lowercased(), prepared.chainId == context.chainId,
+              prepared.signingMessage == reviewed.signingMessage, prepared.typedDataJson == reviewed.typedDataJson,
+              stillApproved(), isCurrentDappContext(context, origin: origin) else {
+            throw ProviderError(code: 4901, message: String(localized: "The wallet network changed. Ask the site to try again."))
+        }
+        let signature = try enclave.sign(prepared.signingMessage)
+        let result = try await Task.detached {
+            try attachTypedSignature(typedDataJson: prepared.typedDataJson, expectedChain: context.chainId,
+                                     account: context.account, signature: signature, p256PublicKey: publicKey)
+        }.value
+        guard stillApproved(), isCurrentDappContext(context, origin: origin) else {
+            throw ProviderError(code: ProviderErrorCode.denied, message: String(localized: "This approval is no longer valid. Ask the site to try again."))
+        }
+        return result
+    }
+
+    func preparePageTypedMessage(_ json: String) async throws -> PreparedTypedMessage {
+        guard let enclave else {
+            throw ProviderError(code: ProviderErrorCode.locked, message: String(localized: "The wallet key is not ready yet."))
+        }
+        let publicKey = enclave.publicKey
+        let owner = address
+        return try await Task.detached {
+            guard try accountSigningSupport(address: owner) else {
+                throw ProviderError(code: ProviderErrorCode.unsupported,
+                                    message: String(localized: "This account cannot sign messages yet. Open Security for account upgrade options."))
+            }
+            return try prepareTypedMessage(p256PublicKey: publicKey, typedDataJson: json)
+        }.value
+    }
+
+    /// Redelegation installs only the pinned account implementation. It never
+    /// promises to revoke an original signer that may have been stolen.
+    func redelegateAccount(context: DappRequestContext, stillApproved: () -> Bool) async -> (hash: String?, refusal: String?) {
+        guard let enclave, !busy, stillApproved(), isCurrentDappContext(context) else {
+            return (nil, String(localized: "This approval is no longer valid. Ask the site to try again."))
+        }
+        busy = true
+        defer { busy = false }
+        do {
+            let publicKey = enclave.publicKey
+            let prepared = try await Task.detached { try prepareAccountRedelegation(p256PublicKey: publicKey) }.value
+            guard stillApproved(), isCurrentDappContext(context) else {
+                return (nil, String(localized: "The wallet network changed. Ask the site to try again."))
+            }
+            let signature = try enclave.sign(prepared.signingMessage)
+            let hash = try await Task.detached { try submitSigned(envelopeJson: prepared.envelopeJson, signature: signature, p256PublicKey: publicKey) }.value
+            Task.detached { await self.track(hash, label: String(localized: "Account upgrade"),
+                                             item: ActivityItem(kind: .sent, title: String(localized: "Account upgrade"), amount: nil, recipients: [])) }
+            return (hash, nil)
+        } catch { return (nil, WalletModel.ffiMessage(error)) }
+    }
+
     private var refreshes = 0
     private var refreshInFlight = false
     private var networkGeneration: UInt64 = 0
+    private var dappPermissionGeneration: UInt64 = 0
     private var lastHeight: UInt64?
     private var heightChangedAt: Date?
     private var tokenScanRunning = false

@@ -1003,6 +1003,246 @@ fn a_candidate_registers_once_and_beacons_every_epoch() {
     eprintln!("candidate observability replay: height={checkpoint} unchanged state_root={root}");
 }
 
+/// Restart all four voters with a finalized rotation still pending. Their
+/// background reshares must use listeners separate from the consecutive
+/// consensus ports, finish while the old committee votes, and seat a candidate.
+#[test]
+fn background_reshare_survives_mid_epoch_validator_restarts() {
+    use commonware_codec::Encode as _;
+    use commonware_cryptography::bls12381::primitives::variant::MinSig;
+
+    let _serial = serial();
+    let dir = std::env::temp_dir().join(format!("aether-devnet-test-{}-reshare-bind", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let d = |i: usize| dir.join(i.to_string()).to_str().unwrap().to_string();
+    let path = |name: &str| dir.join(name).to_str().unwrap().to_string();
+    for i in 1..=5 {
+        run_ok(&["keygen", "--data", &d(i)]);
+    }
+    let faucet = run_ok(&["faucet-key", "--data", &d(1)]);
+    let faucet_addr = faucet.split_whitespace().nth(2).unwrap().to_string();
+    let mut args: Vec<String> = vec![
+        "network".into(), "--chain-id".into(), "7777".into(),
+        "--faucet".into(), faucet_addr, "--dev-registrar".into(),
+        "--epoch-blocks".into(), "40".into(), "--min-streak".into(), "0".into(),
+        "--draw-epochs".into(), "1".into(),
+    ];
+    args.extend((1..=4).map(|i| format!("{}/validator.pub.json", d(i))));
+    std::fs::write(path("A.json"), run_ok(&args.iter().map(String::as_str).collect::<Vec<_>>())).unwrap();
+
+    let ceremony_ports: Vec<Port> = (0..4).map(|_| Port::reserve().expect("reserve ceremony port")).collect();
+    let ceremony: Vec<TestChild> = (0..4).map(|i| spawn_quiet(&[
+        "dkg".into(), "--network".into(), path("A.json"),
+        "--port".into(), ceremony_ports[i].to_string(), "--data".into(), d(i + 1),
+        "--peers".into(), tcp_peers(&ceremony_ports, i), "--offline".into(),
+    ])).collect();
+    for child in ceremony {
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success(), "dkg failed: {}", String::from_utf8_lossy(&out.stderr));
+    }
+    std::fs::copy(format!("{}/network.json", d(1)), path("A-final.json")).unwrap();
+    let initial: Value = serde_json::from_slice(&std::fs::read(path("A-final.json")).unwrap()).unwrap();
+    let identity = initial["identity"].as_str().unwrap().to_string();
+    let old_round = initial["round"].as_u64().unwrap();
+    let record = coordinator_check(&path("A-final.json"));
+    for i in 1..=4 {
+        verify_local(&path("A-final.json"), &d(i), &record);
+    }
+
+    // On 0.7.3 each omitted --reshare-port resolves to the next node's live
+    // consensus port. Lease both this block and the repaired default +10000
+    // block below the ephemeral TCP range; keep every lease through cleanup.
+    let start = std::process::id() % 8_995;
+    let (p2p, _reshare_ports) = (0..8_995).find_map(|offset| {
+        let base = 30_000 + ((start + offset) % 8_995) as u16;
+        let p2p = (0..5).map(|i| Port::reserve_at(base + i))
+            .collect::<std::io::Result<Vec<_>>>().ok()?;
+        let reshare = (0..5).map(|i| Port::reserve_at(base + 10_000 + i))
+            .collect::<std::io::Result<Vec<_>>>().ok()?;
+        Some((p2p, reshare))
+    }).expect("reserve consecutive consensus and reshare ports");
+    let rpc: Vec<Port> = (0..5).map(|_| Port::reserve().expect("reserve RPC port")).collect();
+    let mut net = Net::prepared(dir.clone(), p2p, rpc, vec![vec![]; 5]);
+    for i in 0..4 {
+        let mut cmd = Command::new(BIN);
+        cmd.args([
+            "node", "--network", &path("A-final.json"), "--ceremony", &record,
+            "--data", &d(i + 1), "--port", &net.p2p[i].to_string(),
+            "--rpc-port", &net.rpc[i].to_string(), "--block-time-ms", "500",
+            "--peers", &tcp_peers(&net.p2p[..4], i), "--offline", "--min-free-disk", "0",
+        ]).env("RUST_LOG", "info,commonware=warn");
+        if i == 0 {
+            cmd.args(["--dev-registrar", "--faucet-key", &format!("{}/faucet.key", d(1))]);
+        }
+        net.procs[i] = Some(TestChild::spawn(cmd, &net.logs[i]).expect("spawn initial voter"));
+    }
+    for i in 0..4 {
+        net.wait_height(i, 3, 90);
+    }
+    // A direct follower has the same keys/follow layout the supervisor will
+    // reopen, but neither direct child starts an automatic reshare yet.
+    let upstream = (0..4).map(|i| net.url(i)).collect::<Vec<_>>().join(",");
+    let mut cmd = Command::new(BIN);
+    cmd.args([
+        "follow", "--network", &path("A-final.json"), "--data", &format!("{}/follow", d(5)),
+        "--keys", &d(5), "--candidate", "--checkpoint", "--from-rpc", &upstream,
+        "--rpc-port", &net.rpc[4].to_string(), "--min-free-disk", "0",
+    ]).env("RUST_LOG", "info,commonware=warn");
+    net.procs[4] = Some(TestChild::spawn(cmd, &net.logs[4]).expect("spawn initial candidate"));
+    net.wait_height(4, 3, 90);
+    for dev in 1..=5 {
+        faucet_grant(&net, 0, &dev_address(dev));
+    }
+    let aa = "0x00000000000000000000000000000000000000aa";
+    net.cli(&["send", "--rpc", &net.url(0), "--from-dev", "1", "--to", aa, "--value", "11", "--wait"]);
+    let payment_height = net.height(0);
+    // Four eligible keys are needed for this draw. Register three current
+    // voters and the candidate with separate owners: voter four must leave.
+    for (operator, node) in [1, 2, 3, 5].into_iter().enumerate() {
+        let out = net.cli(&[
+            "candidate-register", "--data", &d(node), "--registrar-rpc", &net.url(0),
+            "--rpc", &net.url(0), "--from-dev", &(operator + 2).to_string(),
+        ]);
+        assert!(out.contains("success=true"), "{out}");
+    }
+    let expected_keys: std::collections::BTreeSet<String> = [1, 2, 3, 5].map(|i| keys_of(&d(i))).into_iter().collect();
+    let end = Instant::now() + Duration::from_secs(180);
+    let proposal = loop {
+        if let Some(rot) = net.rpc(0, "aether_rotation", json!([])).filter(|v| !v.is_null()) {
+            let offset = rot["height"].as_u64().unwrap() % 40;
+            // Leave room for all four persisted heads to be inside the epoch.
+            if (4..=30).contains(&offset) {
+                assert!(net.rpc(0, "aether_handoff", json!([])).unwrap().is_null());
+                break rot;
+            }
+        }
+        assert!(Instant::now() < end, "no pending mid-epoch rotation{}", net.log_tail(0));
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    let proposed_keys: std::collections::BTreeSet<String> = proposal["next"].as_array().unwrap().iter()
+        .map(|member| member["key"].as_str().unwrap().to_string()).collect();
+    assert_eq!(proposed_keys, expected_keys);
+    let restart_height = proposal["height"].as_u64().unwrap();
+    let expected_round = old_round + 2 * proposal["epoch"].as_u64().unwrap() + 1;
+    for i in 0..4 {
+        net.wait_height(i, restart_height, 30);
+        assert!(net.rpc(i, "aether_handoff", json!([])).unwrap().is_null());
+    }
+    for i in 0..5 {
+        net.kill(i);
+    }
+    for i in 1..=4 {
+        let head = run_ok(&["head", "--data", &d(i)]);
+        let height = head.split_whitespace().next().unwrap().parse::<u64>().unwrap();
+        assert_ne!(height % 40, 0, "voter {i} must restart mid-epoch, at {height}");
+    }
+    // Give every restarting node TCP peers even before the other supervisors
+    // publish. Each supervisor replaces its own placeholder reshare field
+    // with the resolved port before starting its child and watching the draw.
+    std::fs::create_dir_all(path("peers")).unwrap();
+    for i in 0..5 {
+        std::fs::write(
+            dir.join("peers").join(keys_of(&d(i + 1))),
+            format!("{} {}", net.p2p[i], net.p2p[i].port() + 1),
+        ).unwrap();
+    }
+    let offsets: Vec<usize> = net.logs.iter().map(|log| std::fs::metadata(log).unwrap().len() as usize).collect();
+    for i in 0..5 {
+        let others = (0..5).filter(|j| *j != i).map(|j| net.url(j)).collect::<Vec<_>>().join(",");
+        let mut cmd = Command::new(BIN);
+        cmd.args([
+            "run", "--data", &d(i + 1), "--network", &path("A-final.json"), "--ceremony", &record,
+            "--port", &net.p2p[i].to_string(), "--rpc-port", &net.rpc[i].to_string(),
+            "--dev-peer-dir", &path("peers"), "--min-free-disk", "0", "--node-arg=--block-time-ms=500",
+            &format!("--follow-arg=--from-rpc={others}"),
+        ]).env("RUST_LOG", "info,commonware=warn").env("AETHER_TEST_INTERNAL_KEY_DIR", d(i + 1));
+        if i == 0 {
+            cmd.args(["--node-arg=--dev-registrar", &format!("--node-arg=--faucet-key={}/faucet.key", d(1))]);
+        }
+        let child = TestChild::spawn(cmd, &net.logs[i]).expect("restart with supervisor");
+        // A background bind failure is the regression, not an external
+        // startup port race the harness should hide with another restart.
+        child.mark_started();
+        net.procs[i] = Some(child);
+    }
+    let check_reshare = || {
+        let logs: Vec<String> = net.logs.iter().zip(&offsets).map(|(path, offset)| {
+            std::fs::read_to_string(path).unwrap()[*offset..].to_string()
+        }).collect();
+        for (i, log) in logs.iter().enumerate() {
+            assert!(
+                !log.contains("BindFailed") && !log.contains("p2p closed") && !log.contains("reshare failed:"),
+                "background reshare failed after voter restart on node {}:\n{}", i + 1, log,
+            );
+        }
+        logs
+    };
+    let end = Instant::now() + Duration::from_secs(90);
+    loop {
+        let logs = check_reshare();
+        if logs[..4].iter().all(|log| log.contains("reshare: started")) {
+            break;
+        }
+        assert!(Instant::now() < end, "not all restarted voters started their background reshare: {logs:?}");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let end = Instant::now() + Duration::from_secs(300);
+    let mut last_height = restart_height;
+    let mut progressed = Instant::now();
+    let handoff = loop {
+        check_reshare();
+        let height = net.height(0);
+        if height > last_height {
+            last_height = height;
+            progressed = Instant::now();
+        }
+        assert!(progressed.elapsed() < Duration::from_secs(30), "old committee stopped during DKG at {height}{}", net.log_tail(0));
+        if let Some(handoff) = net.rpc(0, "aether_handoff", json!([])).filter(|v| !v.is_null()) {
+            assert!(height >= restart_height + 3, "the old committee must advance during background DKG");
+            break handoff;
+        }
+        assert!(Instant::now() < end, "no handoff after restarted background reshares{}", net.log_tail(0));
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    assert_eq!(handoff["round"], json!(expected_round));
+    let members: std::collections::BTreeSet<String> = handoff["members"].as_array().unwrap().iter()
+        .map(|member| member["key"].as_str().unwrap().to_string()).collect();
+    assert_eq!(members, expected_keys, "the candidate replaces the fourth founder");
+    let switch = handoff["switch"].as_u64().unwrap();
+    let end = Instant::now() + Duration::from_secs(120);
+    for i in [0, 1, 2, 4] {
+        loop {
+            check_reshare();
+            let network = std::fs::read(net.data(i).join("network.json")).ok().and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+            let threshold = std::fs::read(net.data(i).join("threshold.json")).ok().and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+            let installed = network.as_ref().zip(threshold.as_ref()).is_some_and(|(network, threshold)| {
+                network["round"] == handoff["round"] && threshold["round"] == handoff["round"]
+                    && network["output"] == handoff["output"] && threshold["output"] == handoff["output"]
+                    && network["identity"] == identity && threshold["identity"] == identity
+            });
+            if installed && !net.data(i).join("no-vote").exists()
+                && net.rpc(i, "aether_network", json!([])).is_some_and(|network| network["round"] == handoff["round"])
+            {
+                let key: aether_node::dkg::KeyFile = serde_json::from_value(threshold.unwrap()).unwrap();
+                let (output, share) = key.decode(4).expect("installed share decodes");
+                assert_eq!(hex::encode(output.players().get(usize::from(share.index)).unwrap().encode()), keys_of(&d(i + 1)));
+                assert_eq!(output.public().partial_public(share.index).ok(), Some(share.public::<MinSig>()), "installed share signs for its seat");
+                break;
+            }
+            assert!(Instant::now() < end, "new voter {} did not install its matching share{}", i + 1, net.log_tail(i));
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+    for height in [payment_height, restart_height, switch - 1, switch, switch + 10] {
+        assert_agree(&net, &[0, 1, 2, 4, 3], height);
+    }
+    check_reshare();
+    let balance = net.cli(&["balance", aa, "--rpc", &net.url(4), "--identity", &identity]);
+    assert!(balance.contains("balance   11 wei") && balance.contains("verified  ✓"), "{balance}");
+    eprintln!("restarted background reshare: height={restart_height} round={expected_round} switch={switch} identity unchanged");
+}
+
 /// Open voting nodes: nobody runs a ceremony by hand. Four Macs run `aether
 /// run` as the genesis voting set, four more as candidates. Once candidates are
 /// registered and alive, the chain draws a new voting set with the committee's

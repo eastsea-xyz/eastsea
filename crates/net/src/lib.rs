@@ -975,6 +975,58 @@ mod tests {
     use super::*;
     use std::net::{Ipv4Addr, SocketAddr};
 
+    #[tokio::test]
+    async fn reshare_tunnels_reach_the_configured_listener() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let consensus = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let consensus_addr = consensus.local_addr().unwrap();
+        let (reshare, reshare_addr) = loop {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            if Some(addr.port()) != consensus_addr.port().checked_add(1) {
+                break (listener, addr);
+            }
+        };
+        let targets = [
+            (consensus, b"consensus".as_slice()),
+            (reshare, b"reshare".as_slice()),
+        ];
+        for (listener, reply) in targets {
+            tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut ping = [0; 4];
+                stream.read_exact(&mut ping).await.unwrap();
+                assert_eq!(&ping, b"ping");
+                stream.write_all(reply).await.unwrap();
+                stream.shutdown().await.unwrap();
+            });
+        }
+        let server = Endpoint::builder(presets::Minimal)
+            .relay_mode(iroh::RelayMode::Disabled)
+            .alpns(vec![ALPN_P2P.to_vec(), ALPN_RESHARE.to_vec()])
+            .bind().await.unwrap();
+        let port = server.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap().port();
+        let addr = EndpointAddr::from_parts(server.id(), [TransportAddr::Ip(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::LOCALHOST), port,
+        ))]);
+        let router = serve(server, |_req| async move { unreachable!() }, Some(consensus_addr), None);
+        let client = Endpoint::builder(presets::Minimal)
+            .relay_mode(iroh::RelayMode::Disabled).bind().await.unwrap();
+        for (alpn, expected) in [(ALPN_P2P, b"consensus".as_slice()), (ALPN_RESHARE, b"reshare".as_slice())] {
+            let reply = tokio::time::timeout(Duration::from_secs(5), async {
+                let conn = client.connect(addr.clone(), alpn).await.unwrap();
+                let (mut send, mut recv) = conn.open_bi().await.unwrap();
+                send.write_all(b"ping").await.unwrap();
+                send.finish().unwrap();
+                recv.read_to_end(32).await.unwrap()
+            }).await.expect("tunnel must reach its configured TCP listener");
+            assert_eq!(reply, expected, "ALPN {} routed to the wrong listener", String::from_utf8_lossy(alpn));
+        }
+        client.close().await;
+        router.shutdown().await.unwrap();
+    }
+
     #[test]
     fn a_busy_answer_carries_a_retry_hint_old_text_first() {
         let a = busy_answer(Duration::from_millis(31));

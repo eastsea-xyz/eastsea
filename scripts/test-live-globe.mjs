@@ -6,7 +6,7 @@ import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { resolve, extname, sep } from 'node:path';
 import { createRequire } from 'node:module';
-import { normalizePresence, regionKey } from '../apps/explorer/live-globe/data.js';
+import { continentTotals, normalizePresence, regionKey } from '../apps/explorer/live-globe/data.js';
 import { qualityMean, summarizeQuality } from '../apps/explorer/live-globe/quality.js';
 
 const root = resolve(fileURLToPath(new URL('../', import.meta.url)));
@@ -65,10 +65,11 @@ async function verifyPage(page) {
   assert.equal(/(?:\d{1,3}\.){3}\d{1,3}|latitude|longitude|node[_ -]?id|peer[_ -]?id/i.test(content), false, 'no precise/identifying location text');
 }
 
-// User-visible evidence: a geographic marker or an explicit highlighted list
-// entry represents every populated region. Inspect the rendered DOM, not source.
+// Every populated region has a pulse or an ordinary list entry. Continent
+// counts include their countries; these markers are deliberately hierarchical.
 async function verifyRepresentation(page, snapshot) {
   const model = normalizePresence(snapshot);
+  const byContinent = new Map(continentTotals(model).map(region => [region.continent, region]));
   const totals = await page.locator('.lg-region').evaluateAll(elements => elements.map(row => Number(row.dataset.count)));
   assert.equal(totals.reduce((sum, count) => sum + count, 0), model.total);
   const shown = await page.locator('.live-globe').evaluate(root => {
@@ -76,8 +77,7 @@ async function verifyRepresentation(page, snapshot) {
       count: Number(marker.dataset.count), quality: Number(marker.dataset.quality), visible: !marker.hidden,
     }]));
     const rows = Object.fromEntries([...root.querySelectorAll('.lg-region, .lg-country')].map(row => [row.dataset.region || row.dataset.continent, {
-      count: Number(row.dataset.count), position: row.querySelector('.lg-region-position').textContent,
-      background: getComputedStyle(row).backgroundColor,
+      count: Number(row.dataset.count), visible: !row.hidden,
     }]));
     return { markers, rows };
   });
@@ -87,10 +87,11 @@ async function verifyRepresentation(page, snapshot) {
     assert.ok(row, `${key}: a populated region has a list entry`);
     if (region.country) assert.equal(row.count, region.count);
     if (marker) {
-      assert.equal(marker.count, region.count);
-      assert.equal(marker.quality, qualityMean(region.quality, region.count));
-      located += marker.count;
-      if (!marker.visible) assert.ok(row.position.length, `${key}: off-globe counts remain explained in the list`);
+      const expected = region.country ? region : byContinent.get(region.continent);
+      assert.equal(marker.count, expected.count);
+      assert.equal(marker.quality, qualityMean(expected.quality, expected.count));
+      located += region.count;
+      if (!marker.visible) assert.ok(row.visible && row.count > 0, `${key}: far-side counts remain in the list`);
     } else assert.equal(region.continent, 'unknown');
   }
   assert.equal(located, model.total - model.regions.filter(r => r.continent === 'unknown' && !r.country).reduce((sum, r) => sum + r.count, 0));
@@ -122,6 +123,9 @@ try {
     await verifyPage(page);
     await page.screenshot({ path: resolve(out, `explorer-mobile-${theme}.png`), fullPage: true });
     report.screenshots.push(`explorer-mobile-${theme}.png`);
+    // Playwright waits for a stationary target before tapping. Pause through
+    // the real control so idle rotation cannot make this touch check flaky.
+    await page.getByRole('button', { name: 'Pause globe', exact: true }).click();
     await page.locator('.lg-marker[data-region="asia"]').tap();
     assert.equal(await page.locator('.lg-region[data-continent="asia"]').getAttribute('data-active'), 'true', 'mobile pulse tap selects list row');
     await page.locator('.lg-region[data-continent="asia"] > .lg-region-value').tap();
@@ -136,7 +140,7 @@ try {
     await sitePage.locator('#live-network').screenshot({ path: resolve(out, `site-mobile-${theme}.png`) });
     report.screenshots.push(`site-mobile-${theme}.png`);
     await sitePage.getByRole('button', { name: '한국어' }).click();
-    assert.equal(await sitePage.locator('.lg-caption').innerText(), '이 노드가 보고 있는 Mac들');
+    assert.equal(await sitePage.locator('.lg-caption').innerText(), '지금 연결된 맥 4대');
     assert.deepEqual(mobileSite.errors, []);
     await mobileSite.ctx.close();
   }
@@ -165,6 +169,7 @@ try {
     await coveragePage.goto(origin + '/apps/explorer/#/network');
     await coveragePage.locator('.lg-total').filter({ hasText: /^27$/ }).waitFor();
     await verifyRepresentation(coveragePage, allRegions);
+    if (reducedMotion === 'no-preference') await coveragePage.getByRole('button', { name: 'Pause globe', exact: true }).click();
     const asia = coveragePage.locator('.lg-marker[data-region="asia"]');
     await asia.hover();
     assert.equal(await coveragePage.locator('.lg-region[data-continent="asia"]').getAttribute('data-active'), 'true', 'pulse hover selects list row');

@@ -191,6 +191,10 @@ test('all-region mobile static-map labels remain inside the stage without overla
     return { x: x - 22 + parseFloat(label.style.left), y: y - 22 + parseFloat(label.style.top), w: 150, h: 36, code: marker.dataset.continent };
   });
   assert.equal(labels.length, 9);
+  const pulses = host.descendants(host.root).filter(el => el.className === 'lg-marker' && !el.hidden).map(marker => {
+    const [x, y] = marker.style.transform.match(/[\d.-]+(?=px)/g).map(Number);
+    return { x, y, radius: parseFloat(marker.style['--marker-size']) / 2 * 1.035 + 5, key: marker.dataset.region };
+  });
   for (const rect of labels) {
     assert.ok(rect.x >= 3.99 && rect.x + rect.w <= 346.01, rect.code);
     assert.ok(rect.y >= 3.99 && rect.y + rect.h <= 346.01, rect.code);
@@ -198,6 +202,67 @@ test('all-region mobile static-map labels remain inside the stage without overla
       if (rect === other) continue;
       assert.ok(rect.x + rect.w <= other.x || other.x + other.w <= rect.x || rect.y + rect.h <= other.y || other.y + other.h <= rect.y, `${rect.code} overlaps ${other.code}`);
     }
+    for (const pulse of pulses) {
+      const dx = pulse.x - Math.max(rect.x, Math.min(pulse.x, rect.x + rect.w));
+      const dy = pulse.y - Math.max(rect.y, Math.min(pulse.y, rect.y + rect.h));
+      assert.ok(Math.hypot(dx, dy) >= pulse.radius - .02, `${rect.code} label covers ${pulse.key} pulse`);
+    }
+  }
+  globe.destroy();
+});
+
+test('globe continents include their countries, including a continent with only a country bucket', () => {
+  const host = browserHost({ reduced: true });
+  const globe = createGlobe(host.canvas, { seed: 'continent-totals' });
+  globe.setLabels({ continents: { asia: 'Asia', europe: 'Europe' }, regions: { 'asia:KR': 'South Korea' } });
+  globe.update(example);
+  assert.equal(host.find('lg-marker', 'asia').dataset.count, '9');
+  assert.equal(host.find('lg-marker', 'asia').children[1].textContent, 'Asia 9');
+  assert.equal(host.find('lg-marker', 'asia:KR').dataset.count, '6');
+  assert.equal(host.find('lg-marker', 'europe').dataset.count, '6');
+  const countryOnly = { ...today, total: 3,
+    roles: { validator: { count: 3 }, wallet: { count: 0 }, candidate: { count: 0 }, follower: { count: 0 } },
+    versions: { '0.7.4': 3 }, regions: [today.regions[0]],
+  };
+  globe.update(countryOnly);
+  assert.equal(host.find('lg-marker', 'asia').dataset.count, '3');
+  assert.equal(host.find('lg-marker', 'asia').hidden, false);
+  assert.equal(host.find('lg-marker', 'asia:KR').dataset.count, '3');
+  globe.destroy();
+});
+
+test('headline gives the connected Mac count in all five languages and hides zero roles', () => {
+  const host = browserHost();
+  const component = mountLiveGlobe(host.root, { host: true, seed: 'answer-first' });
+  component.update(example);
+  const answers = { en: '24 Macs connected now', ko: '지금 연결된 맥 24대', ja: '現在接続中のMac 24台', 'zh-Hans': '当前连接的Mac：24台', es: '24 Macs conectados ahora' };
+  for (const [lang, expected] of Object.entries(answers)) {
+    component.setLanguage(lang);
+    const headline = host.find('lg-caption');
+    assert.equal(headline.children.map(el => el.textContent).join(''), expected);
+    assert.ok(!host.find('lg-role-summary').textContent.includes(' 0'));
+  }
+  assert.equal(host.find('lg-region', 'asia').dataset.count, '9');
+  assert.equal(host.find('lg-marker', 'asia').children[1].textContent, 'Asia 9');
+  const classes = host.descendants(host.root).map(el => el.className);
+  assert.ok(!classes.includes('lg-region-position'));
+  assert.ok(!classes.includes('lg-quality-strip'));
+  component.destroy();
+});
+
+test('a tiny dense view hides labels that cannot fit while retaining accessible selectable pulses', () => {
+  const host = browserHost({ reduced: true, width: 150, height: 90, labelDimensions: { width: 150, height: 36 } });
+  let selected;
+  const globe = createGlobe(host.canvas, { seed: 'tiny-labels', onSelect: key => { selected = key; } });
+  globe.update(example);
+  const markers = host.descendants(host.root).filter(el => el.className === 'lg-marker' && !el.hidden);
+  assert.ok(markers.length > 0);
+  for (const marker of markers) {
+    assert.equal(marker.children[1].hidden, true, 'no label can fit the padded stage');
+    assert.equal(marker.children[2].hidden, true, 'no orphaned leader');
+    assert.ok(marker.getAttribute('aria-label').includes(marker.dataset.count));
+    marker.dispatch('click');
+    assert.equal(selected, marker.dataset.region);
   }
   globe.destroy();
 });
@@ -256,7 +321,7 @@ test('WebGL context loss shows the static map and recovers with labels/counts in
   host.canvas.dispatch('webglcontextrestored');
   assert.equal(host.canvas.dataset.renderer, 'webgl');
   assert.equal(host.frames.size, 1);
-  assert.equal(host.find('lg-marker', 'asia').dataset.count, '1');
+  assert.equal(host.find('lg-marker', 'asia').dataset.count, '4');
   assert.equal(host.find('lg-marker', 'asia:KR').dataset.count, '3');
   globe.destroy();
 });
@@ -269,7 +334,7 @@ test('component links pulse hover and full-row taps, and discloses today’s exa
   });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(host.find('lg-status').textContent, '오늘 기준 실제 구성 (실시간 아님)');
-  assert.equal(host.find('lg-role-summary').textContent, '검증자 4 · 지갑 노드 3 · 예비 키 3 (대기 3 / 참여 0)');
+  assert.equal(host.find('lg-role-summary').textContent, '검증자 4 · 지갑 노드 3 · 예비 키 3');
   const pulse = host.find('lg-marker', 'asia'), row = host.find('lg-region', 'asia');
   pulse.dispatch('pointerenter'); assert.equal(row.dataset.active, 'true');
   pulse.dispatch('pointerleave'); assert.equal(row.dataset.active, 'false');
@@ -280,22 +345,25 @@ test('component links pulse hover and full-row taps, and discloses today’s exa
   assert.equal(host.find('lg-country').children[1].textContent, '3');
   component.setLanguage('en');
   assert.equal(host.find('lg-status').textContent, 'Today’s actual setup (not live)');
-  assert.equal(pulse.children[1].textContent, 'Asia 1');
+  assert.equal(pulse.children[1].textContent, 'Asia 4');
   component.destroy(); assert.equal(host.frames.size, 0); assert.equal(host.timers.size, 0);
 });
 
-test('off-globe list entry remains labeled while its pulse is hidden, including unknown', async () => {
+test('far-side and unknown regions keep plain counts and highlight on selection', async () => {
   const host = browserHost();
   const component = mountLiveGlobe(host.root, { fixture: true, seed: 'integration', fetch: async () => ({ ok: true, json: async () => example }) });
   await new Promise(resolve => setImmediate(resolve));
   const north = host.find('lg-region', 'north_america'), unknown = host.find('lg-region', 'unknown');
   assert.equal(north.dataset.visibility, 'back');
   assert.equal(host.find('lg-marker', 'north_america').hidden, true);
-  assert.ok(north.children[2].textContent.includes('Far side'));
+  assert.equal(north.children[0].children[0].textContent, 'North America');
+  assert.equal(north.children[1].textContent, '6');
+  assert.equal(north.dataset.active, 'false');
   north.dispatch('click'); assert.equal(north.dataset.active, 'true');
   assert.equal(host.find('lg-marker', 'north_america').hidden, true);
   assert.equal(unknown.dataset.visibility, 'unknown');
-  assert.ok(unknown.children[2].textContent.includes('list only'));
+  assert.equal(unknown.children[0].children[0].textContent, 'Region unknown');
+  assert.equal(unknown.children[1].textContent, '1');
   assert.equal(host.find('lg-marker', 'unknown'), undefined);
   component.destroy();
 });
@@ -324,14 +392,14 @@ test('offscreen observer stops polling, GPU frames and CSS pulses; visibility re
 });
 
 
-test('country k=3 pulses are centroid-based and disjoint; smaller countries fold into continent pulses', () => {
+test('country k=3 pulses retain their anchors inside continent totals; smaller countries fold into continents', () => {
   const host = browserHost({ reduced: true });
   const globe = createGlobe(host.canvas, { seed: 'countries' });
   globe.update(today);
   const country = host.find('lg-marker', 'asia:KR');
   const continent = host.find('lg-marker', 'asia');
   assert.equal(country.dataset.count, '3');
-  assert.equal(continent.dataset.count, '1');
+  assert.equal(continent.dataset.count, '4');
   assert.equal(country.hidden, false);
   assert.notEqual(country.style.transform, continent.style.transform);
   assert.equal(Number(country.dataset.quality), qualityMean(today.regions[0].quality, 3));
@@ -341,16 +409,15 @@ test('country k=3 pulses are centroid-based and disjoint; smaller countries fold
   globe.destroy();
 });
 
-test('component has one two-end gradient and smooth region strips with no founder/tier fields', async () => {
+test('component keeps a single quality legend with no per-row bars or founder/tier fields', async () => {
   const host = browserHost({ reduced: true });
   const component = mountLiveGlobe(host.root, { fixture: true, seed: 'gradient', fetch: async () => ({ ok: true, json: async () => today }) });
   await new Promise(resolve => setImmediate(resolve));
   const legend = host.find('lg-quality-labels');
   assert.deepEqual(legend.children.map(el => el.textContent), ['New', 'Long, steady operation']);
   assert.equal(host.descendants(host.root).filter(el => el.className === 'lg-quality-gradient').length, 1);
-  const strip = host.find('lg-region', 'asia').children[3];
-  assert.ok(strip.children[0].style.maskImage.includes('linear-gradient'));
-  assert.ok(strip.getAttribute('aria-label').includes('spread'));
+  assert.equal(host.find('lg-quality-strip'), undefined);
+  assert.equal(host.find('lg-region-position'), undefined);
   const country = host.find('lg-country', 'asia:KR');
   const pulse = host.find('lg-marker', 'asia:KR');
   pulse.dispatch('pointerenter'); assert.equal(country.dataset.active, 'true');
@@ -439,7 +506,7 @@ test('native states distinguish unavailable from a retained stale snapshot and r
   assert.equal(component.update(today), true);
   assert.equal(host.find('lg-status').dataset.state, 'live');
   assert.equal(host.find('lg-total').textContent, '4');
-  assert.ok(host.find('lg-role-summary').textContent.includes('Candidate nodes 0 · Follower nodes 0'));
+  assert.ok(!host.find('lg-role-summary').textContent.includes(' 0'));
   component.configure({ state: 'stale' });
   assert.equal(host.find('lg-status').dataset.state, 'stale');
   assert.equal(host.find('lg-total').textContent, '4');
@@ -481,11 +548,6 @@ test('native reset removes the previous network snapshot and selection before ac
       assert.equal(element.dataset.visibility, 'empty');
       assert.equal(element.children[1].textContent, '—');
       assert.equal(element.children[2].hidden, true);
-      const strip = element.children[3];
-      assert.equal(strip.hidden, true);
-      assert.equal(strip.getAttribute('aria-label'), null);
-      assert.equal(strip.children[0].style.maskImage, '');
-      assert.equal(strip.children[1].style.left, '');
     }
     if (element.className === 'lg-marker') {
       assert.equal(element.hidden, true);
@@ -606,17 +668,17 @@ test('native missing quality evidence remains neutral and explicitly unavailable
     assert.equal(host.find('lg-art-legend').hidden, true);
     assert.equal(host.find('lg-quality-status').hidden, false);
     assert.ok(host.find('lg-quality-status').textContent.length > 20);
-    assert.equal(host.find('lg-region', 'asia').children[3].hidden, true);
+    assert.equal(host.find('lg-quality-strip'), undefined);
     assert.ok(!host.find('lg-marker', 'asia').getAttribute('aria-label').includes('/ 100'));
     assert.ok(!host.find('lg-region-button', 'asia').getAttribute('aria-label').includes('/ 100'));
     assert.equal(host.find('lg-marker', 'asia').style['--marker-color'], '#94A4B5');
     assert.equal(host.find('lg-total').textContent, '4');
   }
   component.configure({ evidenceAvailable: true, lang: 'en' });
-  assert.ok(host.find('lg-role-summary').textContent.includes('Reserve keys 3 (standby 3 / seated 0)'));
+  assert.ok(host.find('lg-role-summary').textContent.includes('Reserve keys 3'));
   assert.equal(host.find('lg-art-legend').hidden, false);
   assert.equal(host.find('lg-quality-status').hidden, true);
-  assert.equal(host.find('lg-region', 'asia').children[3].hidden, false);
+  assert.equal(host.find('lg-quality-strip'), undefined);
   assert.ok(host.find('lg-marker', 'asia').getAttribute('aria-label').includes('/ 100'));
   component.configure({ fixture: true });
   assert.equal(host.find('lg-status').dataset.state, 'fixture');

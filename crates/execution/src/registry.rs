@@ -193,6 +193,7 @@ fn count_registration(state: &mut WorldState, epoch: u64) -> Result<(), String> 
 /// lane: domain-separated (chain, registry), over the whole registered content
 /// plus the one-shot nonce and expiry. A relay carrying someone else's
 /// attestation fails this check.
+#[allow(clippy::too_many_arguments)] // the signed message is exactly these fields
 pub fn relay_message(
     chain_id: u64,
     operator: Address,

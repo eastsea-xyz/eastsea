@@ -902,7 +902,7 @@ private struct VotingNodeRow: View {
                 Text(title).font(.aeHeadline)
                 Text(detail).font(.aeBody).foregroundStyle(.secondary)
                 if node.state == .running, node.voting?.registered == true, node.voting?.voting == false,
-                   let line = CandidateEligibilityText.line(node.candidateEligibility, ko: AppLanguage.korean) {
+                   let line = CandidateEligibilityText.line(node.candidateEligibility, locale: AppLanguage.locale, bundle: AppLanguage.bundle(for: AppLanguage.identifier)) {
                     Text(line).font(.aeFootnote).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }

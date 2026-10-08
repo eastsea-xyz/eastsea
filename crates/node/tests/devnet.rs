@@ -984,16 +984,15 @@ fn a_candidate_registers_once_and_beacons_every_epoch() {
     let root = block(&net, 0, checkpoint)["state_root"].clone();
     assert!(!root.is_null());
     for _ in 0..8 { mine(&net); }
-    let port = free_port();
+    let port = Port::reserve().expect("reserve test port");
     let data = net.dir.join("candidate-replay");
     let log_path = net.dir.join("candidate-replay.log");
-    let log = std::fs::File::create(&log_path).unwrap();
     let args = vec![
         "follow".into(), "--from-rpc".into(), net.url(0),
         "--data".into(), data.to_str().unwrap().into(),
-        "--rpc-port".into(), port.to_string(), epoch[0].clone(), epoch[1].clone(),
+        "--rpc-port".into(), port.port().to_string(), epoch[0].clone(), epoch[1].clone(),
     ];
-    net.procs.push(Some(spawn_logged(log, &args)));
+    net.procs.push(Some(spawn_logged(&log_path, &args)));
     net.rpc.push(port);
     net.logs.push(log_path);
     let replay = net.rpc.len() - 1;

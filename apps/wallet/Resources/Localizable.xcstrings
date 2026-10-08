@@ -27721,6 +27721,210 @@
         }
       }
     },
+    "Validator candidate: eligible in about %@ h" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Validator candidate: eligible in about %@ h"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "검증자 후보: 자격까지 약 %@시간"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "バリデーター候補：資格まであと約%@時間"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "验证者候选：约 %@ 小时后符合资格"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "驗證者候選：約 %@ 小時後符合資格"
+          }
+        }
+      }
+    },
+    "Validator candidate: eligible, waiting for the next draw" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Validator candidate: eligible, waiting for the next draw"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "검증자 후보: 자격을 갖췄어요. 다음 추첨을 기다려요"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "バリデーター候補：資格があります。次の抽選を待っています"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "验证者候选：已符合资格，正在等待下一次抽选"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "驗證者候選：已符合資格，正在等待下一次抽選"
+          }
+        }
+      }
+    },
+    "Validator candidate: needs more time online" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Validator candidate: needs more time online"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "검증자 후보: 온라인 상태를 더 오래 유지해야 해요"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "バリデーター候補：もう少し長くオンラインでいる必要があります"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "验证者候选：需要保持在线更长时间"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "驗證者候選：需要保持上線更長時間"
+          }
+        }
+      }
+    },
+    "Validator candidate: needs more time online after missed check-ins" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Validator candidate: needs more time online after missed check-ins"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "검증자 후보: 놓친 온라인 확인을 만회할 시간이 필요해요"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "バリデーター候補：確認を逃した分、もう少しオンラインでいる必要があります"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "验证者候选：错过了在线确认，需要更多在线时间来弥补"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "驗證者候選：錯過了上線確認，需要更多上線時間來彌補"
+          }
+        }
+      }
+    },
+    "Validator candidate: needs more time to show stable online activity" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Validator candidate: needs more time to show stable online activity"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "검증자 후보: 안정적인 온라인 활동을 더 확인해야 해요"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "バリデーター候補：安定したオンライン状態をもう少し確認する必要があります"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "验证者候选：需要更多时间确认稳定的在线状态"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "驗證者候選：需要更多時間確認穩定的上線狀態"
+          }
+        }
+      }
+    },
+    "Validator candidate: waiting for the latest online check-in" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Validator candidate: waiting for the latest online check-in"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "검증자 후보: 최근 온라인 확인을 기다리고 있어요"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "バリデーター候補：最新のオンライン確認を待っています"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "验证者候选：正在等待最新的在线确认"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "驗證者候選：正在等待最新的上線確認"
+          }
+        }
+      }
+    },
     "Verified" : {
       "localizations" : {
         "en" : {

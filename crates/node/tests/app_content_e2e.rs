@@ -564,6 +564,7 @@ async fn run_page_harness(scratch: &Path, fixture: Value) {
     let mut child = Command::new(executable)
         .args(["--fixture"])
         .arg(&fixture_path)
+        .current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
         .env("TMPDIR", scratch)
         .stdout(Stdio::from(std::fs::File::create(&stdout).unwrap()))
         .stderr(Stdio::from(std::fs::File::create(&stderr).unwrap()))

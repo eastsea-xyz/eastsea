@@ -98,9 +98,12 @@ button:disabled { opacity: .5; cursor: default; }
 
 .card { display: flex; flex-direction: column; min-width: 0; gap: var(--space-4); padding: var(--space-6); border: 1px solid var(--c-line); border-radius: var(--radius-lg); background: var(--c-surface); }
 .card > h2 { margin: 0; color: var(--c-text); font-family: var(--font-display); font-size: var(--text-title-3-size); line-height: var(--text-title-3-line); letter-spacing: var(--text-title-3-tracking); font-weight: var(--weight-regular); }
-.kv { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: var(--space-3) var(--space-6); font-size: var(--text-footnote-size); line-height: var(--text-footnote-line); }
+.kv { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: var(--space-3) var(--space-6); margin: 0; font-size: var(--text-footnote-size); line-height: var(--text-footnote-line); }
+.kv dt, .kv dd { margin: 0; }
 .kv > :nth-child(odd) { color: var(--c-text-muted); }
 .kv > :nth-child(even) { min-width: 0; overflow-wrap: anywhere; }
+.kv .row { flex-wrap: wrap; align-items: baseline; }
+.kv .row a { flex: none; white-space: nowrap; }
 
 /* One plate, with the supporting node metrics laid out as a ledger. */
 .tiles { display: grid; grid-template-columns: minmax(240px, 1.3fr) repeat(3, minmax(0, 1fr)); column-gap: var(--space-6); }
@@ -116,6 +119,10 @@ button:disabled { opacity: .5; cursor: default; }
 .tile-sub { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; color: var(--c-text-muted); font-size: var(--text-caption-size); line-height: var(--text-footnote-line); }
 .tile.big .tile-value, .tile-value.big { font-size: var(--text-amount-lg-size); line-height: var(--text-amount-lg-line); letter-spacing: var(--text-amount-lg-tracking); }
 .hero { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+.account-balance { display: flex; flex-direction: column; gap: var(--space-5); padding: var(--space-6); }
+.account-balance p { margin: 0; }
+.account-balance .tile-label { color: var(--c-plate-soft); }
+.account-balance .tile-value { font-size: var(--text-amount-lg-size); line-height: var(--text-amount-lg-line); }
 
 /* Tables carry the detail; numbers stay aligned as they refresh. */
 .tablewrap { overflow-x: auto; scrollbar-color: var(--c-line-control) var(--c-surface); }
@@ -141,9 +148,9 @@ details { min-width: 0; }
 details summary { cursor: pointer; color: var(--c-text-muted); font-size: var(--text-caption-size); line-height: var(--text-footnote-line); }
 details > *:not(summary) { margin-top: var(--space-2); }
 
-/* The only repeated motion is a loading indicator while a read is pending. */
+/* A read gets one finite acknowledgement, then a quiet static indicator. */
 .loading { display: flex; align-items: center; gap: var(--space-3); color: var(--c-text-muted); padding: var(--space-8) 0; }
-.spin { width: 16px; height: 16px; flex: none; border: 2px solid var(--c-line); border-top-color: var(--c-accent); border-radius: 50%; animation: spin var(--dur-scene) linear infinite; }
+.spin { width: 16px; height: 16px; flex: none; border: 2px solid var(--c-line); border-top-color: var(--c-accent); border-radius: 50%; animation: spin var(--dur-slow) var(--ease-standard) 1; }
 @keyframes spin { to { transform: rotate(360deg); } }
 #foot { margin-top: var(--space-6); color: var(--c-text-muted); border-top: 1px solid var(--c-line); }
 #foot p { margin: 0; max-width: 90ch; }
@@ -179,6 +186,9 @@ details > *:not(summary) { margin-top: var(--space-2); }
   .tile.major .tile-sub { grid-column: 1; }
   .tile-value { font-size: var(--text-body-lg-size); line-height: var(--text-title-3-line); }
   .card { padding: var(--space-4); }
+  .account-balance { padding: var(--space-5); }
+  .account-balance .tile-value { font-size: var(--text-amount-md-size); line-height: var(--text-amount-md-line); }
+  .settings-body { position: fixed; inset: calc(var(--space-4) + var(--space-10) + var(--space-2)) var(--space-4) auto; width: auto; max-height: calc(100dvh - var(--space-24)); overflow-y: auto; }
   .kv { grid-template-columns: 96px minmax(0, 1fr); gap: var(--space-3); }
   th, td { padding-right: var(--space-3); }
 }

@@ -161,8 +161,8 @@ export async function blockView(ctx, height) {
   const next = h('a', { href: `#/block/${height + 1}` }, `${formatInt(height + 1)} →`);
 
   return h('div', { class: 'stack' },
-    h('div', { class: 'row spread' },
-      h('h2', { class: 'page-title' }, `Block ${formatInt(height)}`),
+    h('div', { class: 'page-heading' },
+      h('h1', { class: 'page-title' }, `Block ${formatInt(height)}`),
       h('nav', { class: 'row tight', 'aria-label': 'Neighbour blocks' }, height > 0 ? prev : null, next)),
     block.pruned
       ? message('warn', `Pruned on this node: it keeps summaries from height ${(await ctx.node.call('aether_history')).pruned_below} up, this one only as a record (era ${Math.floor(height / 8192)}).`)
@@ -195,7 +195,7 @@ async function unknownBlock(ctx, height) {
   ]);
   const ahead = status && height > status.height;
   return h('div', { class: 'stack' },
-    h('h2', { class: 'page-title' }, `Block ${formatInt(height)}`),
+    h('h1', { class: 'page-title' }, `Block ${formatInt(height)}`),
     message('warn', ahead
       ? `Not built yet: this node's finalized height is ${formatInt(status.height)}.`
       : `This node knows no block at height ${formatInt(height)}${history && height < history.pruned_below ? ` — it keeps blocks from ${formatInt(history.pruned_below)} up` : ''}.`),
@@ -255,7 +255,7 @@ export async function txView(ctx, hash) {
   const r = await ctx.node.call('aether_getReceipt', [hash]);
   if (r == null) {
     return h('div', { class: 'stack' },
-      h('h2', { class: 'page-title' }, 'Transaction'),
+      h('h1', { class: 'page-title' }, 'Transaction'),
       withCopy(hash),
       message('warn', 'No transaction with this hash is known to this node — it may never have existed, belong to another chain, or be older than what this node keeps receipts for.'),
       sourceLine(ctx.node));
@@ -264,7 +264,7 @@ export async function txView(ctx, hash) {
     ctx.pollNow = true;
     const why = notIncludedText(r.waiting);
     return h('div', { class: 'stack' },
-      h('h2', { class: 'page-title' }, 'Transaction'),
+      h('h1', { class: 'page-title' }, 'Transaction'),
       withCopy(hash),
       card('Status', dot('pending', why
         ? `In the mempool — not in a block yet: ${why}. This page re-checks while it is open.`
@@ -276,7 +276,7 @@ export async function txView(ctx, hash) {
   if (r.status === 'dropped') {
     ctx.pollNow = true;
     return h('div', { class: 'stack' },
-      h('h2', { class: 'page-title' }, 'Transaction'),
+      h('h1', { class: 'page-title' }, 'Transaction'),
       withCopy(hash),
       card('Status', dot('pending', droppedText(r.reason))),
       sourceLine(ctx.node));
@@ -290,7 +290,7 @@ export async function txView(ctx, hash) {
   const proof = await ctx.verifier?.receipt(ctx.node, hash);
 
   return h('div', { class: 'stack' },
-    h('h2', { class: 'page-title' }, 'Transaction'),
+    h('h1', { class: 'page-title' }, 'Transaction'),
     withCopy(hash),
     card('Receipt', kv([
       ['Status', receipt.success ? dot('done', 'success') : dot('failed', `failed${failedWhy}`)],
@@ -354,12 +354,14 @@ export async function accountView(ctx, address) {
   const certificate = await ctx.verifier?.account(ctx.node, a);
 
   const els = h('div', { class: 'stack' },
-    h('h2', { class: 'page-title' }, account.code_size > 0 ? 'Contract' : 'Account'),
+    h('h1', { class: 'page-title' }, account.code_size > 0 ? 'Contract' : 'Account'),
     withCopy(a),
     account.code_size > 0 ? pill(`code · ${formatInt(account.code_size)} bytes`, 'plain') : null,
     token ? h('p', { class: 'small' }, h('a', { href: `#/token/${a}` }, `ERC-20 token ${token.symbol} · view the token page →`)) : null,
+    h('section', { class: 'account-balance es-plate', 'aria-label': 'Balance' },
+      h('p', { class: 'tile-label' }, 'Balance'),
+      h('p', { class: 'tile-value es-amount' }, `${formatAeth(account.balance)} ${coinTicker(ctx.chainId)}`)),
     card('State (finalized)', kv([
-      ['Balance', `${formatAeth(account.balance)} ${coinTicker(ctx.chainId)}`],
       ['Raw balance', `${toBigInt(account.balance).toString()} wei`],
       ['Nonce', formatInt(account.nonce)],
       ['Code', account.code_size > 0 ? `${formatInt(account.code_size)} bytes` : 'none'],
@@ -446,7 +448,7 @@ export async function tokenView(ctx, address) {
   const info = await tokenInfo(a, ctx.read);
   if (!info) {
     return h('div', { class: 'stack' },
-      h('h2', { class: 'page-title' }, 'Token'),
+      h('h1', { class: 'page-title' }, 'Token'),
       withCopy(a),
       message('warn', 'This address does not answer ERC-20 metadata calls — not a token, or not readable through this node.'),
       h('p', {}, h('a', { href: `#/account/${a}` }, 'View it as an account →')),
@@ -461,7 +463,7 @@ export async function tokenView(ctx, address) {
 
   return h('div', { class: 'stack' },
     h('div', { class: 'row spread wrap' },
-      h('div', { class: 'hero' }, h('div', { class: 'tile-value big' }, info.symbol === '???' ? '?' : info.symbol), h('div', { class: 'tile-sub' }, displayTokenName(a, info.name) || a)),
+      h('div', { class: 'hero' }, h('h1', { class: 'page-title' }, info.symbol === '???' ? '?' : info.symbol), h('div', { class: 'tile-sub' }, displayTokenName(a, info.name) || a)),
       badges),
     withCopy(a),
     card('Metadata', kv([
@@ -532,7 +534,7 @@ async function tokenTransfers(ctx, token) {
 
 export function notFoundView(ctx, what) {
   return h('div', { class: 'stack' },
-    h('h2', { class: 'page-title' }, 'Not found'),
+    h('h1', { class: 'page-title' }, 'Not found'),
     message('warn', what || 'No such page.'),
     h('p', {}, h('a', { href: '#/' }, '← Home')),
     sourceLine(ctx.node));
@@ -541,7 +543,7 @@ export function notFoundView(ctx, what) {
 /** What a failed fetch looks like on any page. */
 export function errorView(ctx, err) {
   return h('div', { class: 'stack' },
-    h('h2', { class: 'page-title' }, 'No source answered'),
+    h('h1', { class: 'page-title' }, 'No source answered'),
     message('error', err?.message || String(err)),
     message('plain', 'This page reads your own node at 127.0.0.1:18545 first, then the public gateway (Settings). Install the EastSea app so your node runs, allow local network access when Chrome asks, or check the gateway address.'),
     sourceLine(ctx.node));

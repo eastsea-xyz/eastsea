@@ -11,6 +11,7 @@ site/
 ├── index.html              — 전체 콘텐츠 (한국어·영어를 함께 담고 CSS로 하나만 표시)
 ├── privacy.html            — 개인정보 처리방침 (이중 언어, 같은 헤더·푸터)
 ├── tokens.css              — 생성물: design/brand/tokens.json → design/scripts/build-tokens.mjs (직접 수정 금지)
+├── design-components.css   — 생성물: design/brand/components.css의 공통 판·컨트롤·상태 스타일 (직접 수정 금지)
 ├── styles.css              — 레이아웃·컴포넌트. 색·글꼴·간격은 tokens.css 변수만 쓴다
 ├── assets/
 │   ├── coin-{128,256,512,1024}.webp — 더블룬 코인 (design/brand/dbln-coin-1024.png에서 생성)
@@ -27,7 +28,7 @@ site/
 ## 재생성
 
 ```bash
-node design/scripts/build-tokens.mjs            # tokens.json → site/tokens.css (--check: 최신인지 확인)
+python3 scripts/gen-design-tokens.py            # 토큰·공통 컴포넌트 → 모든 플랫폼 (--check: 읽기 전용 최신 여부 확인)
 python3 design/scripts/subset-ko-font.py <Hahmlet[wght].ttf>   # 제목 문구를 바꿨으면 반드시
 node design/og/render-og.cjs                    # OG 이미지 (playwright 필요)
 python3 -m http.server -d site                  # 미리보기 http://localhost:8000
@@ -50,7 +51,9 @@ python3 -m http.server -d site                  # 미리보기 http://localhost:
   - 금액과 토큰은 예시라고 캡션에 밝혀 둔다.
   - 창 안은 앱과 같은 Apple 시스템 글꼴(SF Pro, Apple SD Gothic Neo)을 쓴다.
 - **모션:** `prefers-reduced-motion: no-preference`일 때만 켜진다.
-  - 해가 떠오르고, 햇살이 나타나고, 물결이 천천히 흐르고, 창이 떠오르고, 상단 점이 깜박인다.
+  - 페이지 진입 때 해와 햇살, 창이 한 번 나타나고 끝난다. 물결과 테스트넷 안내 점은 정지해 있다.
+  - `prefers-reduced-transparency: reduce`에서는 헤더가 불투명해지고 잔액 판의 장식·합성 효과를 끈다.
+  - 두 페이지가 공통 `design-components.css`를 읽고 남색 판·금액·컨트롤을 같은 컴포넌트로 표시한다.
 - **외부 요청:** 없다 (CDN·분석·쿠키 0).
 - **Lighthouse (2026-10-07, 로컬):**
   - 모바일: 성능 98, 접근성 100, 권장사항 100, SEO 100

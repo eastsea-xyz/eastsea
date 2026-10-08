@@ -119,7 +119,9 @@ in a minimal DOM stub — it is deliberately not part of `npm test`.
 
 ```
 index.html          the shell (header, notice, view, footer)
-explorer.css        the extension's palette, stretched over a page
+design-tokens.css   generated EastSea tokens (scripts/gen-design-tokens.py)
+design-components.css generated shared plate, control and status primitives
+explorer.css        paper/navy reading surface, quiet rows and responsive layout
 token-sources.json  copy of the wallet's token sources (keep in sync)
 network.json        copy of the extension's pinned committees (verify.js)
 wasm/               the wallet wasm (build product; scripts/build-extension.sh)
@@ -136,5 +138,10 @@ test/*.test.mjs     units (npm test)
 test/live.mjs       live smoke (manual)
 ```
 
-Mobile-friendly (tables scroll, tiles wrap), dark/light (follows the system;
-the ◐ button cycles auto → dark → light).
+Mobile-friendly (tables scroll, detail values wrap and Settings stays within
+the viewport), dark/light (follows the system; the theme button cycles
+auto → dark → light). Every route uses the shared dawn mark and generated
+tokens. Account balances use the shared navy plate; metadata uses semantic
+label/value lists. A read gets one finite loading acknowledgement, and Reduce
+Motion leaves a static indicator. The existing RPC reads and polling remain
+owned by the model; the presentation adds no reads or network sources.

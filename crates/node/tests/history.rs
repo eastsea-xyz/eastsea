@@ -222,7 +222,7 @@ async fn account_history_indexes_finalized_sends_receives_and_rpc_cursor() {
     let st = RpcState {
         chain: n.chain.clone(), finality: Finality::Archive(Arc::new(aether_node::follow::FinalityArchive::new(None))),
         gossip: tokio::sync::mpsc::unbounded_channel().0, faucet: None, registrar: None,
-        network: None, upstream: None, handoff: None, snapshot: Default::default(), prover: None, shards: None, presence: None, public_read_only: false,
+        network: None, upstream: None, handoff: None, snapshot: Default::default(), prover: None, shards: None, presence: None, app_bundles: None, public_read_only: false,
     };
     let answer = rpc::handle_value(&st, json!({"jsonrpc":"2.0","id":1,"method":"aether_accountHistory","params":[receiver,null,200]})).await;
     assert_eq!(answer["result"]["entries"].as_array().unwrap().len(), 2);

@@ -180,7 +180,7 @@ struct ConnectedSitesSection: View {
                     VStack(alignment: .leading, spacing: DesignTokens.Space.s3) {
                         HStack {
                             VStack(alignment: .leading, spacing: DesignTokens.Space.s1) {
-                                Text(site.origin).font(.aeBody.monospaced())
+                                Text(site.displayOrigin ?? site.origin).font(.aeBody.monospaced())
                                     .fixedSize(horizontal: false, vertical: true)
                                 Text("may see \(Short.address(site.address)) · connected \(site.grantedAt, style: .date)")
                                     .font(.aeCaption).foregroundStyle(DesignTokens.Palette.textMuted.color)

@@ -43,6 +43,15 @@ final class BrowserController: NSObject, ObservableObject {
     @Published private(set) var downloadPrompt: DownloadPrompt?
     /// nil until something was loaded: while nil the curated home shows.
     @Published private(set) var currentURL: URL?
+    @Published private(set) var appIdentity: AppBrowserIdentity?
+    @Published private(set) var contentLoading = false
+    private var appBundle: AppBundle?
+    private var appViewKey: String?
+    private var contentTask: Task<Void, Never>?
+    private var navigationID = UUID()
+
+    /// Native display labels never expose the internal app permission key.
+    var displayOrigin: String { appIdentity?.displayOrigin ?? canonicalOrigin }
 
     let isPrivate: Bool
     /// The session owns account-scoped persistence; a private tab never calls
@@ -98,19 +107,22 @@ final class BrowserController: NSObject, ObservableObject {
         }
         let id: String
         let kind: Kind
+        let chainID: UInt64
         let reply: (Result<Any?, ProviderError>) -> Void
         let accountID: Int?
         let accountAddress: String
         let documentGeneration: UInt64
 
         init(id: String, kind: Kind, reply: @escaping (Result<Any?, ProviderError>) -> Void,
-             accountID: Int? = nil, accountAddress: String = "", documentGeneration: UInt64 = 0) {
+             accountID: Int? = nil, accountAddress: String = "", documentGeneration: UInt64 = 0,
+             chainID: UInt64 = 0) {
             self.id = id
             self.kind = kind
             self.reply = reply
             self.accountID = accountID
             self.accountAddress = accountAddress
             self.documentGeneration = documentGeneration
+            self.chainID = chainID
         }
 
         var origin: String {
@@ -216,13 +228,10 @@ final class BrowserController: NSObject, ObservableObject {
             .sink { [weak self] _ in self?.accountDidChange() }.store(in: &modelSubscriptions)
         model.$networkChainId.removeDuplicates()
             .sink { [weak self] _ in self?.accountDidChange() }.store(in: &modelSubscriptions)
-        model.$address.removeDuplicates().sink { [weak self] _ in
+        model.$address.removeDuplicates().dropFirst().sink { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                if let pending = self.ask, pending.accountAddress != self.model?.address.lowercased() {
-                    self.cancelPendingAsks()
-                }
-                self.refreshSitePermissions()
+                self.accountDidChange()
             }
         }.store(in: &modelSubscriptions)
         model.$sitePermissions.sink { [weak self] _ in
@@ -234,6 +243,8 @@ final class BrowserController: NSObject, ObservableObject {
 
     func accountDidChange() {
         guard !closed else { return }
+        let hadApp = appIdentity != nil || contentLoading
+        cancelContentResolution()
         pendingNavigation = nil
         interruptedNavigation = nil
         discardActiveNavigation()
@@ -244,16 +255,29 @@ final class BrowserController: NSObject, ObservableObject {
         warning = nil
         approvedURL = nil
         invalidateDocument()
+        if hadApp {
+            releaseWebView()
+            appIdentity = nil
+            appBundle = nil
+            currentURL = nil
+            addressField = ""
+            title = ""
+            canonicalOrigin = ""
+            isSecureOrigin = false
+            notice = String(localized: "The wallet context changed. Open the app again.")
+            onHome?()
+        }
         privatePermissions.removeAll()
         allowances.removeAll()
         requestedTokenAllowances.removeAll()
-        committedOrigin = currentURL.flatMap(BrowserCanonicalOrigin.string(for:))
+        committedOrigin = webView?.url.flatMap(browserOrigin(for:))
         refreshSitePermissions()
     }
 
     func suspend() {
         guard !suspended else { return }
         if !closed { interruptedNavigation = pendingNavigation }
+        cancelContentResolution()
         pendingNavigation = nil
         discardActiveNavigation()
         acceptsNavigationCallbacks = false
@@ -273,7 +297,7 @@ final class BrowserController: NSObject, ObservableObject {
         let interrupted = suspended ? interruptedNavigation : nil
         interruptedNavigation = nil
         suspended = false
-        committedOrigin = currentURL.flatMap(BrowserCanonicalOrigin.string(for:))
+        committedOrigin = webView?.url.flatMap(browserOrigin(for:))
         refreshSitePermissions()
         guard let interrupted,
               interrupted.accountID == model?.accountStore.activeAccount?.id,
@@ -298,6 +322,8 @@ final class BrowserController: NSObject, ObservableObject {
         activeDownloads.removeAll()
         downloadViews.removeAll()
         releaseWebView()
+        appIdentity = nil
+        appBundle = nil
         currentURL = nil
         privatePermissions.removeAll()
         privateAcknowledged.removeAll()
@@ -311,31 +337,47 @@ final class BrowserController: NSObject, ObservableObject {
     /// time the host changes, so no site's cookies or storage meet another's.
     func webViewFor(url: URL?) -> WKWebView {
         let classification = url.map(BrowserOriginPolicy.classify)
+        let wantApp = url?.scheme == AppBrowserIdentity.scheme ? appIdentity : nil
+        let wantAppKey = wantApp.map { "\($0.permissionKey)/\(appBundle?.bundleHash ?? "")" }
         let wantExternal: String?
         if case .external(let host, _, _)? = classification { wantExternal = host.lowercased() } else { wantExternal = nil }
 
         if let view = webView {
-            if wantExternal == nil && externalHost == nil { return view }
-            if let host = wantExternal, let current = externalHost, host == current { return view }
+            if let key = wantAppKey, key == appViewKey { return view }
+            if wantAppKey == nil && appViewKey == nil {
+                if wantExternal == nil && externalHost == nil { return view }
+                if let host = wantExternal, let current = externalHost, host == current { return view }
+            }
         }
         releaseWebView()
         let config = WKWebViewConfiguration()
         config.setURLSchemeHandler(BundledPageScheme(root: BundledPageScheme.defaultRoot()
             ?? URL(fileURLWithPath: "/nonexistent")), forURLScheme: BrowserOriginPolicy.bundledScheme)
+        if let identity = wantApp, let bundle = appBundle,
+           let scheme = try? AppBundleScheme(bundle: bundle, appKey: identity.appKey,
+                                            allowUnverifiedDeveloperContent: identity.isDeveloper) {
+            config.setURLSchemeHandler(scheme, forURLScheme: AppBrowserIdentity.scheme)
+            config.websiteDataStore = WKWebsiteDataStore(forIdentifier: identity.storeID)
+        }
         let ucc = config.userContentController
+        let world = wantApp == nil ? WKContentWorld.page : WKContentWorld.world(name: AppProviderBridge.worldName)
         if let providerURL = Bundle.main.url(forResource: "provider", withExtension: "js"),
            let provider = try? String(contentsOf: providerURL, encoding: .utf8) {
-            ucc.addUserScript(WKUserScript(source: provider, injectionTime: .atDocumentStart,
+            if wantApp != nil {
+                ucc.addUserScript(WKUserScript(source: AppProviderBridge.relay, injectionTime: .atDocumentStart,
+                                               forMainFrameOnly: true, in: world))
+            }
+            ucc.addUserScript(WKUserScript(source: wantApp == nil ? provider : AppProviderBridge.facade(provider: provider), injectionTime: .atDocumentStart,
                                            forMainFrameOnly: true))
         }
         // The bundled explorer reads the app's own node: point its saved
         // endpoint at whatever port this Mac's node is on before it boots.
-        if let port = model?.nodeRpcPort {
+        if wantApp == nil, url?.scheme == BrowserOriginPolicy.bundledScheme, let port = model?.nodeRpcPort {
             ucc.addUserScript(WKUserScript(source: Self.explorerBootstrap(port: port),
                                            injectionTime: .atDocumentStart, forMainFrameOnly: true))
         }
-        ucc.addScriptMessageHandler(WeakReplyBridge(controller: self, route: Self.providerRoute), contentWorld: .page, name: "aether")
-        ucc.addScriptMessageHandler(WeakReplyBridge(controller: self, route: Self.verifyRoute), contentWorld: .page, name: "eastsea")
+        ucc.addScriptMessageHandler(WeakReplyBridge(controller: self, route: Self.providerRoute), contentWorld: world, name: "aether")
+        ucc.addScriptMessageHandler(WeakReplyBridge(controller: self, route: Self.verifyRoute), contentWorld: world, name: "eastsea")
         // Pages cannot forge this handler: both it and the trusted-click
         // listener live in WebKit's isolated client world.
         ucc.add(WeakBrowserActionBridge(controller: self), contentWorld: .defaultClient, name: "browserAction")
@@ -348,6 +390,7 @@ final class BrowserController: NSObject, ObservableObject {
             externalHost = nil
             if isPrivate { config.websiteDataStore = .nonPersistent() }
         }
+        appViewKey = wantAppKey
         let view = BrowserHistoryWebView(frame: .zero, configuration: config)
         view.backAvailable = { [weak self] in self?.canGoBack == true }
         view.forwardAvailable = { [weak self] in self?.canGoForward == true }
@@ -372,6 +415,7 @@ final class BrowserController: NSObject, ObservableObject {
         webView?.configuration.userContentController.removeAllScriptMessageHandlers()
         webView = nil
         externalHost = nil
+        appViewKey = nil
     }
 
     private func observe(_ view: WKWebView) {
@@ -381,8 +425,8 @@ final class BrowserController: NSObject, ObservableObject {
                 self.isLoading = view.isLoading
                 self.estimatedProgress = view.estimatedProgress
                 guard self.committedOrigin != nil else { return }
-                if let url = view.url, !view.isLoading, url != self.currentURL,
-                   BrowserCanonicalOrigin.string(for: url) == self.committedOrigin {
+                if let url = view.url, !view.isLoading, self.displayURL(for: url) != self.currentURL,
+                   self.browserOrigin(for: url) == self.committedOrigin {
                     self.commitURL(url, in: view)
                 }
                 self.updateTitle(view.title)
@@ -422,16 +466,90 @@ final class BrowserController: NSObject, ObservableObject {
 
     // MARK: - Navigation
 
-    /// The address bar's Go: scheme-less text is treated as a host.
+    /// sea:// names and https pages share the native address bar.
     func open(_ text: String) {
-        let raw = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !raw.isEmpty else { return }
-        let withScheme = raw.contains("://") ? raw : "https://\(raw)"
-        guard let url = URL(string: withScheme) else {
-            notice = String(localized: "That is not a web address.")
-            return
+        guard !closed else { return }
+        interruptedNavigation = nil
+        resume()
+        openInput(text, historyTarget: nil)
+    }
+
+    private func openInput(_ text: String, historyTarget: UUID?) {
+        cancelContentResolution()
+        do {
+            switch try SeaURL.browserInput(text, chainID: model?.networkChainId ?? Brand.networkChainId) {
+            case .name(let link):
+                navigationTarget = historyTarget
+                guard let url = URL(string: link.canonicalURL), confirmSeaName(url) else { return }
+                openName(link, historyTarget: historyTarget)
+            case .web(let url): performLoad(url, historyTarget: historyTarget)
+            case .action(_, let raw):
+                model?.open(link: raw)
+            }
+        } catch {
+            notice = SeaNameText.message(error)
         }
-        load(url)
+    }
+
+    private func openName(_ link: SeaURL.NameLink, historyTarget: UUID?) {
+        guard !suspended, !closed else { return }
+        cancelContentResolution()
+        discardActiveNavigation()
+        invalidateDocument()
+        let requestID = navigationID
+        let chain = model?.networkChainId ?? Brand.networkChainId
+        let port = model?.nodeRpcPort ?? 18545
+        let accountID = model?.accountStore.activeAccount?.id
+        let accountAddress = model?.address.lowercased() ?? ""
+        let pins = SeaRegistrySources.bundled(chainID: chain)
+        releaseWebView()
+        appIdentity = nil
+        appBundle = nil
+        notice = nil
+        warning = nil
+        navigationTarget = historyTarget
+        let url = URL(string: link.canonicalURL)!
+        rememberPendingNavigation(url, historyTarget: historyTarget)
+        acceptsNavigationCallbacks = false
+        currentURL = url
+        addressField = link.canonicalURL
+        canonicalOrigin = BrowserCanonicalOrigin.string(for: url) ?? ""
+        title = link.name
+        isSecureOrigin = false
+        isLoading = false
+        estimatedProgress = 0
+        refreshSitePermissions()
+        contentLoading = true
+        contentTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let record = try await SeaRegistryReader.resolve(link, chainID: chain, port: port, sources: pins)
+                let source = try await NodeAppContentSource(app: record.app, endpoint: URL(string: "http://127.0.0.1:\(port)/")!)
+                guard try await source.page(for: record.app, at: link) != nil else { throw AppContentError.unverifiedContent }
+                // A release/name change during transfer cannot quietly open a
+                // bundle that is no longer the name's active release.
+                let latest = try await SeaRegistryReader.resolve(link, chainID: chain, port: port, sources: pins)
+                guard latest == record else { throw SeaNameResolver.Failure.unstable }
+                try Task.checkCancellation()
+                guard !self.suspended, !self.closed, self.navigationID == requestID,
+                      self.model?.networkChainId == chain, self.model?.nodeRpcPort == port,
+                      self.model?.accountStore.activeAccount?.id == accountID,
+                      self.model?.address.lowercased() == accountAddress,
+                      let registry = pins?.apps.address else { return }
+                let identity = try AppBrowserIdentity(appID: record.app.appID, name: link.name, chainID: chain, registry: registry)
+                self.contentLoading = false
+                try self.openAppBundle(source.bundle, identity: identity, path: link.path, query: link.query)
+            } catch is CancellationError {
+                return
+            } catch {
+                guard self.navigationID == requestID else { return }
+                self.contentLoading = false
+                self.contentTask = nil
+                self.pendingNavigation = nil
+                self.navigationTarget = nil
+                self.notice = error is AppContentError ? error.localizedDescription : SeaNameText.message(error)
+            }
+        }
     }
 
     /// Load a URL through the same rules a link goes through. Address input is
@@ -447,15 +565,20 @@ final class BrowserController: NSObject, ObservableObject {
 
     private func performLoad(_ url: URL, historyTarget: UUID?) {
         guard !suspended, !closed else { return }
+        cancelContentResolution()
         navigationTarget = historyTarget
         notice = nil
         if Self.isActionLink(url) {
-            handleActionLink(url, hasUserGesture: true)
+            openInput(url.absoluteString, historyTarget: historyTarget)
             return
         }
         guard navigationAllowed(url) else { return }
         discardActiveNavigation()
         invalidateDocument()
+        if url.scheme?.lowercased() != AppBrowserIdentity.scheme {
+            appIdentity = nil
+            appBundle = nil
+        }
         rememberPendingNavigation(url, historyTarget: historyTarget)
         acceptsNavigationCallbacks = true
         isLoading = true
@@ -477,6 +600,14 @@ final class BrowserController: NSObject, ObservableObject {
     }
 
     private func navigationAllowed(_ url: URL) -> Bool {
+        if url.scheme?.lowercased() == AppBrowserIdentity.scheme {
+            guard browserOrigin(for: url) != nil,
+                  appBundle?.documentPath(for: url, appKey: appIdentity?.appKey ?? "") != nil else {
+                notice = String(localized: "This app has not been verified. Open its sea:// name first.")
+                return false
+            }
+            return true
+        }
         guard BrowserCanonicalOrigin.string(for: url) != nil else {
             notice = String(localized: "That is not a web address.")
             return false
@@ -519,6 +650,10 @@ final class BrowserController: NSObject, ObservableObject {
             showHome(historyTarget: item.id)
             return
         }
+        if Self.isActionLink(url) {
+            performLoad(url, historyTarget: item.id)
+            return
+        }
         guard navigationAllowed(url) else { return }
         // Retain WebKit's live document whenever the correct host's view has
         // this entry. Cross-host history still works after a store rebuild.
@@ -548,12 +683,15 @@ final class BrowserController: NSObject, ObservableObject {
 
     private func showHome(historyTarget: UUID?) {
         guard !suspended, !closed else { return }
+        cancelContentResolution()
         pendingNavigation = nil
         interruptedNavigation = nil
         discardActiveNavigation()
         acceptsNavigationCallbacks = false
         invalidateDocument()
         releaseWebView()
+        appIdentity = nil
+        appBundle = nil
         currentURL = nil
         addressField = ""
         title = String(localized: "Start page")
@@ -571,18 +709,25 @@ final class BrowserController: NSObject, ObservableObject {
 
     func reload() {
         guard !suspended, !closed, let url = currentURL else { return }
+        guard let view = webView, let documentURL = view.url else {
+            performLoad(url, historyTarget: nil)
+            return
+        }
+        guard navigationAllowed(documentURL) else { return }
+        cancelContentResolution()
         interruptedNavigation = nil
         navigationTarget = nil
         discardActiveNavigation()
         invalidateDocument()
-        rememberPendingNavigation(url, historyTarget: nil)
+        rememberPendingNavigation(documentURL, historyTarget: nil)
         acceptsNavigationCallbacks = true
         isLoading = true
         controllerPolicyPending = true
-        activeNavigation = webView?.reload()
+        activeNavigation = view.reload()
     }
 
     func stop() {
+        cancelContentResolution()
         pendingNavigation = nil
         interruptedNavigation = nil
         discardActiveNavigation()
@@ -590,8 +735,8 @@ final class BrowserController: NSObject, ObservableObject {
         invalidateDocument()
         webView?.stopLoading()
         isLoading = false
-        if let view = webView, view.url == currentURL {
-            committedOrigin = currentURL.flatMap(BrowserCanonicalOrigin.string(for:))
+        if let view = webView, let url = view.url, displayURL(for: url) == currentURL {
+            committedOrigin = browserOrigin(for: url)
             refreshSitePermissions()
         }
     }
@@ -625,7 +770,72 @@ final class BrowserController: NSObject, ObservableObject {
         if navigationItems.indices.contains(navigationIndex), navigationItems[navigationIndex].url == url {
             navigationItems[navigationIndex].title = title
         }
-        if changed, notify, !isPrivate { onTitleChange?(url, title) }
+        if changed, notify, !isPrivate, appIdentity?.isDeveloper != true { onTitleChange?(url, title) }
+    }
+
+    /// Install only an immutable fully checked bundle (or an explicitly
+    /// selected developer folder). The app never receives a filesystem URL.
+    func openAppBundle(_ bundle: AppBundle, identity: AppBrowserIdentity, path: String = "/", query: String? = nil) throws {
+        guard !closed, !suspended, identity.chainID == model?.networkChainId,
+              bundle.isVerified || (identity.isDeveloper && developerModeEnabled) else {
+            throw AppBrowserIdentity.Failure.invalidIdentity
+        }
+        _ = try AppBundleScheme(bundle: bundle, appKey: identity.appKey,
+                                allowUnverifiedDeveloperContent: identity.isDeveloper)
+        let url = try bundle.pageURL(appKey: identity.appKey, path: path, query: query)
+        cancelContentResolution()
+        appIdentity = identity
+        appBundle = bundle
+        notice = nil
+        performLoad(url, historyTarget: navigationTarget)
+    }
+
+    private var developerModeEnabled: Bool { UserDefaults.standard.bool(forKey: "developerMode") }
+
+    #if os(macOS)
+    func openLocalAppFolder() {
+        guard developerModeEnabled, !closed, !suspended else { return }
+        let requestID = navigationID
+        let accountID = model?.accountStore.activeAccount?.id
+        let accountAddress = model?.address.lowercased() ?? ""
+        let chainID = model?.networkChainId
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = String(localized: "Open a local app folder")
+        panel.begin { [weak self] response in
+            guard response == .OK, let folder = panel.url else { return }
+            Task { @MainActor in
+                guard let self, self.developerModeEnabled, !self.closed, !self.suspended,
+                      self.navigationID == requestID,
+                      self.model?.accountStore.activeAccount?.id == accountID,
+                      self.model?.address.lowercased() == accountAddress,
+                      self.model?.networkChainId == chainID else { return }
+                do {
+                    let bundle = try LocalAppFolder.load(from: folder, developerModeEnabled: true)
+                    let identity = AppBrowserIdentity(developerSession: UUID(), chainID: self.model?.networkChainId ?? 0)
+                    try self.openAppBundle(bundle, identity: identity)
+                } catch {
+                    self.notice = error.localizedDescription
+                }
+            }
+        }
+    }
+    #endif
+
+    /// Account, network, lock and developer-mode changes invalidate an app's
+    /// provider and outstanding sheets before another request can be accepted.
+    func environmentDidChange() {
+        accountDidChange()
+    }
+
+    private func cancelContentResolution() {
+        if contentLoading { pendingNavigation = nil }
+        contentTask?.cancel()
+        contentTask = nil
+        contentLoading = false
+        navigationID = UUID()
     }
 
     /// The user acknowledged the warning: remember the host (once per site,
@@ -693,35 +903,40 @@ final class BrowserController: NSObject, ObservableObject {
         zoomFactor = min(3, max(0.5, factor))
         webView?.pageZoom = CGFloat(zoomFactor)
         if isPrivate { privateZoom[canonicalOrigin] = zoomFactor }
-        else { onZoomChange?(canonicalOrigin, zoomFactor) }
+        else if appIdentity?.isDeveloper != true { onZoomChange?(zoomOrigin, zoomFactor) }
+    }
+
+    private var zoomOrigin: String {
+        currentURL.flatMap(BrowserCanonicalOrigin.string(for:)) ?? canonicalOrigin
     }
 
     private func restoreZoom() {
-        let factor = privateZoom[canonicalOrigin] ?? zoomProvider?(canonicalOrigin) ?? 1
+        let factor = privateZoom[canonicalOrigin] ?? zoomProvider?(zoomOrigin) ?? 1
         zoomFactor = factor.isFinite ? min(3, max(0.5, factor)) : 1
         webView?.pageZoom = CGFloat(zoomFactor)
     }
 
     private func commitURL(_ url: URL, in view: WKWebView) {
-        guard let origin = BrowserCanonicalOrigin.string(for: url) else { return }
+        guard let origin = browserOrigin(for: url) else { return }
+        let displayedURL = displayURL(for: url)
         pendingNavigation?.url = url
-        currentURL = url
+        currentURL = displayedURL
         committedOrigin = origin
         canonicalOrigin = origin
-        // A sea label alone never establishes a secure origin. The resolver
-        // seam currently only loads verified output at its real HTTPS URL.
         isSecureOrigin = url.scheme?.lowercased() == "https"
+            || (appIdentity?.isDeveloper == false && appBundle?.isVerified == true)
         addressField = urlBarText(url)
         lastReadVerified = true
         updateTitle(view.title, notify: false)
-        recordNavigation(url: url, title: title)
+        recordNavigation(url: displayedURL, title: title)
         restoreZoom()
         refreshSitePermissions()
-        if !isPrivate { onCommit?(url, title) }
+        if !isPrivate, appIdentity?.isDeveloper != true { onCommit?(displayedURL, title) }
     }
 
     private func invalidateDocument() {
         documentGeneration &+= 1
+        navigationID = UUID()
         committedOrigin = nil
         findRequest = UUID()
         findFound = nil
@@ -738,7 +953,7 @@ final class BrowserController: NSObject, ObservableObject {
             return
         }
         if let onSeaLink { onSeaLink(url) }
-        else { notice = String(localized: "Sea names are not available yet.") }
+        else { open(url.absoluteString) }
     }
 
     fileprivate func handleTrustedAction(_ message: WKScriptMessage) {
@@ -748,13 +963,49 @@ final class BrowserController: NSObject, ObservableObject {
     }
 
     private func validatedBridgeOrigin(_ message: WKScriptMessage) -> String? {
-        guard !suspended, message.frameInfo.isMainFrame,
+        guard !suspended, !closed, message.frameInfo.isMainFrame,
               let view = message.webView, view === webView,
               let url = view.url, let expected = committedOrigin,
-              BrowserCanonicalOrigin.string(for: url) == expected else { return nil }
+              browserOrigin(for: url) == expected else { return nil }
         let actual = message.frameInfo.securityOrigin
+        if let identity = appIdentity {
+            guard identity.accepts(scheme: actual.protocol, host: actual.host, port: Int(actual.port),
+                                   mainFrame: true, currentChainID: model?.networkChainId ?? 0,
+                                   developerMode: developerModeEnabled) else { return nil }
+            return identity.permissionKey == expected ? expected : nil
+        }
         let key = BrowserCanonicalOrigin.string(scheme: actual.protocol, host: actual.host, port: Int(actual.port))
         return key == expected ? key : nil
+    }
+
+    private func browserOrigin(for url: URL) -> String? {
+        guard url.scheme?.lowercased() == AppBrowserIdentity.scheme else {
+            return BrowserCanonicalOrigin.string(for: url)
+        }
+        guard let identity = appIdentity, let bundle = appBundle,
+              bundle.documentPath(for: url, appKey: identity.appKey) != nil,
+              bundle.isVerified || (identity.isDeveloper && developerModeEnabled),
+              identity.accepts(scheme: url.scheme ?? "", host: url.host ?? "", port: url.port ?? 0,
+                               mainFrame: true, currentChainID: model?.networkChainId ?? 0,
+                               developerMode: developerModeEnabled) else { return nil }
+        return identity.permissionKey
+    }
+
+    /// Reopening a history entry resolves its name again; a raw app authority
+    /// never becomes a bookmark or a transferable claim of certification.
+    private func displayURL(for url: URL) -> URL {
+        guard let identity = appIdentity, !identity.isDeveloper,
+              url.scheme?.lowercased() == AppBrowserIdentity.scheme,
+              var parts = URLComponents(string: identity.displayOrigin),
+              let document = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
+        parts.percentEncodedPath = url.path == "/\(appBundle?.entryPoint ?? "index.html")" ? "/" : document.percentEncodedPath
+        parts.percentEncodedQuery = document.percentEncodedQuery
+        return parts.url ?? url
+    }
+
+    private func bridgeContext(_ message: WKScriptMessage) -> (key: String, displayOrigin: String)? {
+        guard let key = validatedBridgeOrigin(message) else { return nil }
+        return (key, appIdentity?.displayOrigin ?? message.frameInfo.securityOrigin.host)
     }
 
     private func connectedAddress(origin: String) -> String? {
@@ -804,27 +1055,34 @@ final class BrowserController: NSObject, ObservableObject {
             return
         }
         switch pending.kind {
-        case .connect(let origin, _):
+        case .connect(let origin, let displayOrigin):
             if let model = model, !model.address.isEmpty {
                 if isPrivate { privatePermissions[origin] = pending.accountAddress }
-                else { model.grantSitePermission(origin: origin, address: pending.accountAddress) }
+                else { model.grantSitePermission(origin: origin, address: pending.accountAddress, displayOrigin: displayOrigin) }
                 pending.reply(.success([pending.accountAddress]))
                 refreshSitePermissions()
             } else {
                 pending.reply(.failure(ProviderError(code: ProviderErrorCode.internalError,
                                                       message: "The wallet is not ready.")))
             }
-        case .send(let origin, _, let tx, let feeWei):
+        case .send(let origin, let host, let tx, let feeWei):
+            guard appIdentity?.permitsSigning(developerMode: developerModeEnabled) != false else {
+                pending.reply(.failure(ProviderError(code: ProviderErrorCode.denied,
+                                                     message: "Local app files can sign only on the development network.")))
+                drainAskQueue()
+                return
+            }
             if let model, connectedAddress(origin: origin)?.lowercased() == pending.accountAddress {
                 let shown = tx.isPlainTransfer ? feeWei ?? model.status?.transferFeeWei : nil
                 Task { [weak self] in
                     guard let self, self.approvalIsCurrent(pending),
+                          self.appIdentity?.permitsSigning(developerMode: self.developerModeEnabled) != false,
                           self.connectedAddress(origin: origin)?.lowercased() == pending.accountAddress else {
                         pending.reply(.failure(Self.changedPageError()))
                         return
                     }
                     let (hash, refusal) = await model.sendPageTransaction(tx, origin: origin,
-                                                                          title: origin, shownFeeWei: shown)
+                                                                          title: host, shownFeeWei: shown)
                     if let hash {
                         pending.reply(.success(hash))
                     } else {
@@ -841,14 +1099,15 @@ final class BrowserController: NSObject, ObservableObject {
     }
 
     private func approvalIsCurrent(_ pending: PendingAsk) -> Bool {
-        guard !suspended, let model, !model.exploreLocked,
+        guard !suspended, !closed, let model, !model.exploreLocked,
               !pending.accountAddress.isEmpty,
               model.accountStore.activeAccount?.id == pending.accountID,
               model.address.lowercased() == pending.accountAddress,
+              model.networkChainId == pending.chainID,
               documentGeneration == pending.documentGeneration,
               committedOrigin == pending.origin,
               let url = webView?.url,
-              BrowserCanonicalOrigin.string(for: url) == pending.origin else { return false }
+              browserOrigin(for: url) == pending.origin else { return false }
         return true
     }
 
@@ -907,7 +1166,7 @@ final class BrowserController: NSObject, ObservableObject {
         }
         // The provider lives in the main frame only; a subframe asking is a
         // page trying to look like its parent.
-        guard message.frameInfo.isMainFrame else {
+        guard message.frameInfo.isMainFrame, message.webView === webView else {
             reply(.failure(ProviderError(code: ProviderErrorCode.locked,
                                          message: "This frame cannot talk to the EastSea wallet provider.")))
             return
@@ -916,11 +1175,11 @@ final class BrowserController: NSObject, ObservableObject {
             reply(.failure(ProviderError(code: ProviderErrorCode.notAString, message: "method must be a string")))
             return
         }
-        guard let key = validatedBridgeOrigin(message) else {
+        guard let context = bridgeContext(message) else {
             reply(.failure(staleRequestError()))
             return
         }
-        let origin = message.frameInfo.securityOrigin
+        let key = context.key
         let params = (body["params"] as? [Any]) ?? []
 
         // Locked: nothing is answered, reads included.
@@ -964,12 +1223,17 @@ final class BrowserController: NSObject, ObservableObject {
             if let addr = connectedAddress(origin: key) {
                 reply(.success([addr]))
             } else {
-                enqueue(.connect(origin: key, host: origin.host), id: body["id"], reply: reply)
+                enqueue(.connect(origin: key, host: context.displayOrigin), id: body["id"], reply: reply)
             }
         case .disconnect:
             disconnect(origin: key)
             reply(.success(NSNull()))
         case .send:
+            guard appIdentity?.permitsSigning(developerMode: developerModeEnabled) != false else {
+                reply(.failure(ProviderError(code: ProviderErrorCode.denied,
+                                             message: "Local app files can sign only on the development network.")))
+                return
+            }
             guard let connected = connectedAddress(origin: key) else {
                 reply(.failure(ProviderError(code: ProviderErrorCode.locked,
                                              message: "This site is not connected to an account.")))
@@ -995,7 +1259,7 @@ final class BrowserController: NSObject, ObservableObject {
                 } else {
                     feeWei = nil
                 }
-                enqueue(.send(origin: key, host: origin.host, tx: tx, feeWei: feeWei), id: body["id"], reply: reply)
+                enqueue(.send(origin: key, host: context.displayOrigin, tx: tx, feeWei: feeWei), id: body["id"], reply: reply)
             case .failure(let e):
                 reply(.failure(e))
             }
@@ -1054,7 +1318,7 @@ final class BrowserController: NSObject, ObservableObject {
         }
         // The provider lives in the main frame only; a subframe asking is a
         // page trying to look like its parent.
-        guard message.frameInfo.isMainFrame else {
+        guard message.frameInfo.isMainFrame, message.webView === webView else {
             reply(.failure(ProviderError(code: ProviderErrorCode.locked,
                                          message: "This frame cannot talk to the EastSea wallet provider.")))
             return
@@ -1075,7 +1339,7 @@ final class BrowserController: NSObject, ObservableObject {
             return
         }
         let origin = message.frameInfo.securityOrigin
-        guard VerifyBridge.allows(scheme: origin.protocol, connected: connectedAddress(origin: key) != nil) else {
+        guard appIdentity != nil || VerifyBridge.allows(scheme: origin.protocol, connected: connectedAddress(origin: key) != nil) else {
             reply(.failure(ProviderError(code: ProviderErrorCode.unsupported,
                                          message: "This page cannot use EastSea verification.")))
             return
@@ -1113,7 +1377,8 @@ final class BrowserController: NSObject, ObservableObject {
     private func enqueue(_ kind: PendingAsk.Kind, id _: Any?, reply: @escaping (Result<Any?, ProviderError>) -> Void) {
         let pending = PendingAsk(id: UUID().uuidString,
                                  kind: kind, reply: reply, accountID: model?.accountStore.activeAccount?.id,
-                                 accountAddress: model?.address.lowercased() ?? "", documentGeneration: documentGeneration)
+                                 accountAddress: model?.address.lowercased() ?? "", documentGeneration: documentGeneration,
+                                 chainID: model?.networkChainId ?? 0)
         if ask == nil { ask = pending } else { askQueue.append(pending) }
     }
 
@@ -1487,9 +1752,21 @@ extension BrowserController: WKNavigationDelegate, WKUIDelegate, WKDownloadDeleg
             handleActionLink(url, hasUserGesture: false)
             return .cancel
         }
+        let mainFrame = navigationAction.targetFrame?.isMainFrame ?? true
+        if appIdentity != nil {
+            if url.scheme?.lowercased() == AppBrowserIdentity.scheme {
+                guard navigationAllowed(url), !navigationAction.shouldPerformDownload else { return .cancel }
+                if !mainFrame { return .allow }
+            } else {
+                guard mainFrame else { return .cancel }
+                // Leaving an app also leaves its isolated store/content world,
+                // even when the destination is the bundled explorer.
+                restartNavigation(url, from: webView)
+                return .cancel
+            }
+        }
         if navigationAction.shouldPerformDownload, downloadOrigin(for: url) != nil,
            url.scheme?.lowercased() == "blob" { return .download }
-        let mainFrame = navigationAction.targetFrame?.isMainFrame ?? true
         if !mainFrame {
             // A subframe may neither replace the main frame's store nor
             // raise a native permission/warning on its behalf.
@@ -1512,7 +1789,7 @@ extension BrowserController: WKNavigationDelegate, WKUIDelegate, WKDownloadDeleg
             return .download
         }
         if navigationAction.navigationType == .backForward, navigationTarget == nil {
-            let matches = navigationItems.filter { $0.url == url }
+            let matches = navigationItems.filter { $0.url == displayURL(for: url) }
             // Page-script history traversals expose only a URL on older SDKs.
             // An ambiguous URL cannot identify a controller history entry.
             if matches.count == 1 { navigationTarget = matches[0].id }
@@ -1549,15 +1826,20 @@ extension BrowserController: WKNavigationDelegate, WKUIDelegate, WKDownloadDeleg
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse) async -> WKNavigationResponsePolicy {
         guard webView === self.webView, !suspended, let url = navigationResponse.response.url else { return .cancel }
         if navigationResponse.isForMainFrame {
-            switch BrowserOriginPolicy.classify(url) {
-            case .blocked(let why): notice = why; return .cancel
-            case .external(let host, _, _) where externalHost != host.lowercased():
-                // A redirect cannot silently bring another host into this
-                // store. Restart it in a newly isolated WebView.
-                restartNavigation(url, from: webView)
-                return .cancel
-            case .bundled where externalHost != nil: return .cancel
-            default: break
+            if url.scheme?.lowercased() == AppBrowserIdentity.scheme {
+                guard navigationAllowed(url) else { return .cancel }
+            } else {
+                guard appIdentity == nil else { return .cancel }
+                switch BrowserOriginPolicy.classify(url) {
+                case .blocked(let why): notice = why; return .cancel
+                case .external(let host, _, _) where externalHost != host.lowercased():
+                    // A redirect cannot silently bring another host into this
+                    // store. Restart it in a newly isolated WebView.
+                    restartNavigation(url, from: webView)
+                    return .cancel
+                case .bundled where externalHost != nil: return .cancel
+                default: break
+                }
             }
         }
         let attachment = (navigationResponse.response as? HTTPURLResponse)?
@@ -1633,8 +1915,8 @@ extension BrowserController: WKNavigationDelegate, WKUIDelegate, WKDownloadDeleg
         }
         // A failed provisional load can leave the previous document visible;
         // bind the bridge back to its real URL, never the failed request URL.
-        if let url = view.url, currentURL == url {
-            committedOrigin = BrowserCanonicalOrigin.string(for: url)
+        if let url = view.url, currentURL == displayURL(for: url) {
+            committedOrigin = browserOrigin(for: url)
             refreshSitePermissions()
         }
     }
@@ -1706,6 +1988,12 @@ extension BrowserController: WKNavigationDelegate, WKUIDelegate, WKDownloadDeleg
     /// What the bar shows for a loaded page: the page's own URL, without a
     /// trailing slash theater.
     private func urlBarText(_ url: URL) -> String {
+        if let identity = appIdentity, url.scheme == AppBrowserIdentity.scheme {
+            var text = identity.displayOrigin
+            if url.path != "/\(appBundle?.entryPoint ?? "index.html")" { text += url.path }
+            if let query = url.query { text += "?\(query)" }
+            return text
+        }
         if url.scheme?.lowercased() == BrowserOriginPolicy.bundledScheme {
             return url.host == "explorer" ? String(localized: "Block explorer") : (url.host ?? "")
         }

@@ -10,6 +10,7 @@ import UIKit
 struct BrowserWorkspace: View {
     @ObservedObject var session: BrowserSession
     @ObservedObject var browser: BrowserController
+    @AppStorage("developerMode") private var developerMode = false
     var goHome: (() -> Void)?
     @FocusState private var addressFocused: Bool
     @State private var showLibrary = false
@@ -23,6 +24,17 @@ struct BrowserWorkspace: View {
         VStack(spacing: 0) {
             BrowserTabStrip(session: session)
             chrome
+            if browser.appIdentity?.isDeveloper == true {
+                Label("In development · not verified", systemImage: "exclamationmark.triangle.fill")
+                    .font(.aeFootnote.bold()).foregroundStyle(DesignTokens.Palette.danger.color)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, DesignTokens.Space.s4).padding(.vertical, DesignTokens.Space.s2)
+                    .background(DesignTokens.Palette.danger.color.opacity(0.12))
+            }
+            if browser.contentLoading {
+                ProgressView("Fetching and verifying app files…")
+                    .font(.aeFootnote).padding(DesignTokens.Space.s2)
+            }
             if browser.isLoading {
                 ProgressView(value: browser.estimatedProgress).progressViewStyle(.linear).frame(height: 2)
             }
@@ -129,11 +141,11 @@ struct BrowserWorkspace: View {
                 .onLongPressGesture { showForwardHistory = true }
                 .popover(isPresented: $showForwardHistory) { navigationHistory(browser.forwardHistory) }
                 .contextMenu { historyButtons(browser.forwardHistory) }
-            Button { browser.isLoading ? browser.stop() : browser.reload() } label: {
-                Image(systemName: browser.isLoading ? "xmark" : "arrow.clockwise")
-            }.disabled(browser.webView == nil)
-                .help(browser.isLoading ? String(localized: "Stop loading") : String(localized: "Reload"))
-                .accessibilityLabel(browser.isLoading ? String(localized: "Stop loading") : String(localized: "Reload"))
+            Button { browser.isLoading || browser.contentLoading ? browser.stop() : browser.reload() } label: {
+                Image(systemName: browser.isLoading || browser.contentLoading ? "xmark" : "arrow.clockwise")
+            }.disabled(browser.webView == nil && browser.currentURL == nil)
+                .help(browser.isLoading || browser.contentLoading ? String(localized: "Stop loading") : String(localized: "Reload"))
+                .accessibilityLabel(browser.isLoading || browser.contentLoading ? String(localized: "Stop loading") : String(localized: "Reload"))
             Button { session.goHome() } label: { Image(systemName: "square.grid.2x2") }
                 .help("Start page").accessibilityLabel("Start page")
         }.buttonStyle(.plain).fixedSize()
@@ -163,7 +175,8 @@ struct BrowserWorkspace: View {
     private var address: some View {
         HStack(spacing: 8) {
             Button { showPermissions.toggle() } label: {
-                Image(systemName: browser.connectedAccount != nil ? "link.circle.fill" : (browser.isSecureOrigin ? "lock.fill" : "globe"))
+                Image(systemName: browser.appIdentity?.isDeveloper == true ? "exclamationmark.triangle" :
+                    (browser.connectedAccount != nil ? "link.circle.fill" : (browser.isSecureOrigin ? "lock.fill" : "globe")))
                     .foregroundStyle(browser.connectedAccount != nil ? Color.accentColor : Color.secondary)
             }.buttonStyle(.plain).accessibilityLabel("Site permissions").help("Site permissions")
                 .disabled(browser.currentURL == nil)
@@ -171,10 +184,10 @@ struct BrowserWorkspace: View {
                     BrowserSitePermissionsPanel(browser: browser).frame(idealWidth: 360)
                 }
             VStack(alignment: .leading, spacing: 2) {
-                if let url = browser.currentURL, let origin = BrowserCanonicalOrigin.string(for: url) {
+                if !browser.displayOrigin.isEmpty {
                     HStack(spacing: 5) {
                         if browser.connectedAccount != nil { Text("Connected").foregroundStyle(Color.accentColor) }
-                        Text(verbatim: origin).textSelection(.enabled).truncationMode(.middle)
+                        Text(verbatim: browser.displayOrigin).textSelection(.enabled).truncationMode(.middle)
                     }.font(.aeCaption).lineLimit(1)
                 }
                 TextField("Search or enter a URL or sea name", text: $browser.addressField)
@@ -199,6 +212,12 @@ struct BrowserWorkspace: View {
 
     private var pageTools: some View {
         HStack(spacing: 12) {
+            #if os(macOS)
+            if developerMode {
+                Button { browser.openLocalAppFolder() } label: { Image(systemName: "folder") }
+                    .help("Open a local app folder").accessibilityLabel("Open a local app folder")
+            }
+            #endif
             Button { session.toggleBookmark() } label: {
                 Image(systemName: session.currentBookmark == nil ? "star" : "star.fill")
             }.disabled(browser.currentURL == nil)
@@ -228,8 +247,18 @@ struct BrowserWorkspace: View {
     }
 
     @ViewBuilder private var content: some View {
-        if let webView = browser.webView {
+        if browser.contentLoading {
+            Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let webView = browser.webView {
             WebViewHolder(webView: webView).id(browser.webViewGeneration)
+        } else if let url = browser.currentURL, url.scheme?.lowercased() == "sea" {
+            ContentUnavailableView {
+                Label("Not opened.", systemImage: "exclamationmark.triangle")
+            } description: {
+                Text(verbatim: url.absoluteString)
+            } actions: {
+                Button("Reload") { browser.reload() }.buttonStyle(EastSeaPrimaryButtonStyle())
+            }
         } else {
             BrowserStartPage(session: session)
         }
@@ -318,7 +347,7 @@ struct BrowserStartPage: View {
                     Text("EastSea apps").font(.aeHeadline)
                     Text("The app list will update when the registry is available.").font(.aeFootnote).foregroundStyle(.secondary)
                     ForEach(session.registry.apps) { app in
-                        siteRow(title: app.title, url: app.url, icon: "square.grid.2x2") { session.open(app.url.absoluteString) }
+                        siteRow(title: app.title, url: app.url, icon: "square.grid.2x2", detail: app.detail) { session.open(app.url.absoluteString) }
                     }
                 }
             }
@@ -327,12 +356,15 @@ struct BrowserStartPage: View {
         }
     }
 
-    private func siteRow(title: String, url: URL, icon: String, action: @escaping () -> Void) -> some View {
+    private func siteRow(title: String, url: URL, icon: String, detail: String? = nil, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 12) {
                 Image(systemName: icon).font(.body).foregroundStyle(Color.accentColor).frame(width: 24)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title.isEmpty ? (url.host ?? url.absoluteString) : title).font(.aeBody).lineLimit(1)
+                    if let detail, !detail.isEmpty {
+                        Text(verbatim: detail).font(.aeFootnote).foregroundStyle(.secondary)
+                    }
                     Text(verbatim: BrowserCanonicalOrigin.string(for: url) ?? url.absoluteString)
                         .font(.aeCaption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                 }
@@ -377,7 +409,7 @@ struct BrowserSitePermissionsPanel: View {
     var account: String? = nil
     var allowances: [String]? = nil
 
-    private var displayedOrigin: String { origin ?? browser.canonicalOrigin }
+    private var displayedOrigin: String { origin ?? browser.displayOrigin }
     private var displayedAccount: String? { account ?? browser.connectedAccount }
 
     var body: some View {

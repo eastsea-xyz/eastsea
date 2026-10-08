@@ -10,6 +10,7 @@ export TMPDIR="$root/tmp"
 localizations="$root/tmp/wallet-languages/WalletLocalizations.bundle"
 /usr/bin/python3 scripts/wallet-l10n.py prepare-tests --out "$localizations" || exit 1
 compile_gate="$HOME/.claude/playbooks/aether-team/wait-compile.sh"
+compile_gate="$PWD/scripts/compile-gate.sh"
 W=apps/wallet/Sources; T=apps/wallet/Tests; bad=0
 run() {
   n=$1; shift
@@ -55,6 +56,10 @@ run account-retire-guard AccountStore.swift AccountDataStore.swift AccountContro
 run account-data AccountDataStore.swift
 run account-removal EarningsModel.swift TokenAssets.swift AccountRemovalBalance.swift
 run account-operations WalletOperationGate.swift
+run app-content AppContent.swift
+run app-identity AppBrowserIdentity.swift
+run sea-url SeaURL.swift
+run sea-resolution SeaURL.swift SeaNameResolver.swift
 run account-history Brand.swift ChainActivity.swift
 run assets EarningsModel.swift TokenAssets.swift
 run balance-sources Brand.swift EarningsModel.swift ChainActivity.swift BalanceBreakdown.swift EarningsExport.swift

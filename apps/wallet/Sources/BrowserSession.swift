@@ -43,21 +43,17 @@ final class BrowserSession: ObservableObject {
     @Published private(set) var activeTabID: UUID = UUID()
     @Published private(set) var profile = BrowserProfile()
     let registry: any BrowserAppRegistry
-    var seaResolver: any SeaNameResolving
     private let defaults: UserDefaults
     private weak var model: WalletModel?
     private var store: BrowserProfileStore?
     private var accountSubscription: AnyCancellable?
     private var defaultsSubscription: AnyCancellable?
     private var tabSubscriptions: [UUID: AnyCancellable] = [:]
-    private var resolutionTask: Task<Void, Never>?
 
     init(defaults: UserDefaults = .standard,
-         registry: any BrowserAppRegistry = PlaceholderBrowserAppRegistry(),
-         seaResolver: any SeaNameResolving = UnresolvedSeaNameResolver()) {
+         registry: any BrowserAppRegistry = PlaceholderBrowserAppRegistry()) {
         self.defaults = defaults
         self.registry = registry
-        self.seaResolver = seaResolver
         let tab = BrowserTab()
         tabs = [tab]
         activeTabID = tab.id
@@ -88,7 +84,6 @@ final class BrowserSession: ObservableObject {
 
     private func activate(_ account: WalletAccount?) {
         persist()
-        resolutionTask?.cancel()
         tabs.forEach { $0.controller.close() }
         tabSubscriptions.removeAll()
         store = account.map { BrowserProfileStore(accountID: $0.id, address: $0.address, defaults: defaults) }
@@ -146,7 +141,6 @@ final class BrowserSession: ObservableObject {
     }
 
     func addTab(isPrivate: Bool = false, url: URL? = nil) {
-        resolutionTask?.cancel()
         controller.suspend()
         let tab = BrowserTab(isPrivate: isPrivate, url: url)
         tabs.append(tab)
@@ -158,7 +152,6 @@ final class BrowserSession: ObservableObject {
 
     func selectTab(_ id: UUID) {
         guard tabs.contains(where: { $0.id == id }), activeTabID != id else { return }
-        resolutionTask?.cancel()
         controller.suspend()
         activeTabID = id
         controller.resume()
@@ -179,7 +172,6 @@ final class BrowserSession: ObservableObject {
             configure(tab)
         }
         if activeTabID == closingID {
-            resolutionTask?.cancel()
             activeTabID = tabs[min(index, tabs.count - 1)].id
             controller.resume()
             loadSelectedIfNeeded()
@@ -197,7 +189,6 @@ final class BrowserSession: ObservableObject {
     }
 
     func goHome() {
-        resolutionTask?.cancel()
         selectedTab.savedURL = nil
         selectedTab.savedTitle = ""
         controller.goHome()
@@ -205,43 +196,36 @@ final class BrowserSession: ObservableObject {
     }
 
     func open(_ input: String) {
-        resolutionTask?.cancel()
         let tab = selectedTab
+        let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let scheme = URL(string: text)?.scheme?.lowercased() ?? ""
+        let host = text.prefix { !"/?#".contains($0) }
+        if ["sea", "eastsea", "aether"].contains(scheme)
+            || (!text.contains("://") && (host.hasSuffix(".sea") || host.hasSuffix(".aeth"))) {
+            tab.hasLoaded = true
+            tab.controller.open(text)
+            return
+        }
         do {
             switch try BrowserInput.normalize(input, engine: profile.searchEngine) {
             case .url(let url), .search(let url, _):
                 tab.hasLoaded = true
                 tab.controller.load(url)
             case .sea(let request):
-                guard tab.controller.confirmSeaName(request.url) else { return }
-                let resolver = seaResolver
-                resolutionTask = Task { [weak self, weak tab] in
-                    do {
-                        let resolution = try await resolver.resolve(request)
-                        guard !Task.isCancelled, let self, let tab, self.selectedTab.id == tab.id else { return }
-                        guard let resolution else {
-                            tab.controller.notice = String(localized: "This sea name is not available yet.")
-                            return
-                        }
-                        // The parser seam must produce a verified HTTPS destination;
-                        // a name alone never changes the native signing origin.
-                        guard resolution.isVerified, resolution.url.scheme?.lowercased() == "https" else {
-                            tab.controller.notice = String(localized: "This sea name could not be verified.")
-                            return
-                        }
-                        tab.hasLoaded = true
-                        tab.controller.load(resolution.url)
-                    } catch {
-                        guard !Task.isCancelled else { return }
-                        tab?.controller.notice = String(localized: "This sea name could not be verified.")
-                    }
-                }
+                tab.hasLoaded = true
+                tab.controller.open(request.url.absoluteString)
             }
         } catch let error as BrowserInput.Failure {
             controller.notice = error.localizedDescription
         } catch {
             controller.notice = String(localized: "Enter a URL, a sea name, or search terms.")
         }
+    }
+
+    /// A hidden tab must not retain a provider or a pending content fetch
+    /// after the host changes its network, lock or developer context.
+    func environmentDidChange() {
+        tabs.forEach { $0.controller.environmentDidChange() }
     }
 
     func suggestions(for query: String) -> [BrowserSuggestion] {

@@ -180,6 +180,7 @@ fn rpc_state(node: &Node) -> RpcState {
         shards: None,
         presence: None,
         public_read_only: false,
+        app_bundles: None,
     }
 }
 

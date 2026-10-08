@@ -175,7 +175,48 @@ impl PresenceArgs {
 }
 
 #[derive(Subcommand)]
+enum AppBundleCmd {
+    /// Build a deterministic static-app archive; prints its index SHA-256.
+    Build {
+        #[arg(long)]
+        folder: std::path::PathBuf,
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
+    /// Verify and pin an archive in an owned node's app cache.
+    Pin {
+        #[arg(long)]
+        data: std::path::PathBuf,
+        #[arg(long)]
+        archive: std::path::PathBuf,
+        #[arg(long)]
+        hash: Option<String>,
+    },
+    /// Remove an app's eviction pin without deleting its verified content.
+    Unpin {
+        #[arg(long)]
+        data: std::path::PathBuf,
+        #[arg(long)]
+        hash: String,
+    },
+    /// Set cache/download opt-out and peer seeding (default off). Restart the node to apply.
+    Configure {
+        #[arg(long)]
+        data: std::path::PathBuf,
+        #[arg(long, action = clap::ArgAction::Set)]
+        enabled: Option<bool>,
+        #[arg(long, action = clap::ArgAction::Set)]
+        seed: Option<bool>,
+    },
+}
+
+#[derive(Subcommand)]
 enum Cmd {
+    /// Build, verify, pin, or configure hash-addressed app content.
+    AppBundle {
+        #[command(subcommand)]
+        command: AppBundleCmd,
+    },
     /// Run a validator.
     Node {
         /// Devnet: this validator's index (1-based). With --network, derived from the local key.
@@ -868,6 +909,43 @@ fn fixture_key_directory_is_internal(data: &std::path::Path, requested: Option<&
         if name.to_str().is_some_and(|name| name.starts_with("aether-")))
 }
 
+fn app_bundle_command(command: AppBundleCmd) -> Result<(), String> {
+    use aether_node::app_bundle::{self, Bundle, Cache};
+    match command {
+        AppBundleCmd::Build { folder, out } => {
+            let bundle = Bundle::from_folder(&folder)?;
+            aether_node::atomic::replace(&out, bundle.archive(), 0o644)?;
+            println!("{}", json!({ "bundleHash": bundle.hash(), "archive": out, "size": bundle.archive().len() }));
+        }
+        AppBundleCmd::Pin { data, archive, hash } => {
+            let cache = Cache::open(&data)?;
+            let bundle_hash = cache.import(&archive, hash.as_deref(), true)?;
+            println!("{}", json!({ "bundleHash": bundle_hash, "pinned": true }));
+        }
+        AppBundleCmd::Unpin { data, hash } => {
+            Cache::open(&data)?.pin(&hash, false)?;
+            println!("{}", json!({ "bundleHash": app_bundle::normalize_hash(&hash)?, "pinned": false }));
+        }
+        AppBundleCmd::Configure { data, enabled, seed } => {
+            let mut config = app_bundle::configuration(&data)?;
+            if let Some(enabled) = enabled { config.enabled = enabled; }
+            if let Some(seed) = seed { config.seed = seed; }
+            app_bundle::configure(&data, config.clone())?;
+            println!("{}", serde_json::to_string(&config).map_err(|e| e.to_string())?);
+        }
+    }
+    Ok(())
+}
+
+fn app_bundle_service(data: &str, endpoint: Option<aether_net::Endpoint>, nodes: Vec<aether_net::EndpointId>) -> Option<std::sync::Arc<aether_node::app_bundle::Service>> {
+    match aether_node::app_bundle::Cache::open(std::path::Path::new(data)) {
+        Ok(cache) => Some(std::sync::Arc::new(aether_node::app_bundle::Service::new(
+            std::sync::Arc::new(cache), endpoint, nodes.into_iter().map(aether_net::EndpointAddr::from).collect(),
+        ))),
+        Err(error) => { tracing::warn!(%error, "app content cache unavailable"); None }
+    }
+}
+
 #[derive(Subcommand)]
 enum KeysCmd {
     /// Bind existing validator keys to this Mac after an intentional move.
@@ -888,6 +966,7 @@ fn main() {
     std::env::remove_var(aether_node::supervisor::WRITER_LEASE_ENV);
     let cli = Cli::parse();
     let res = match cli.cmd {
+        Cmd::AppBundle { command } => app_bundle_command(command),
         Cmd::Node {
             index,
             validators,
@@ -2357,6 +2436,7 @@ fn run_node(a: NodeArgs) {
         if links && endpoint.is_none() {
             panic!("iroh transport needs the public endpoint");
         }
+        let app_bundles = app_bundle_service(&data, endpoint.clone(), p2p.roster.nodes.clone());
 
         let (mut network, mut oracle) = lookup::Network::new(context.child("network"), p2p_cfg);
         oracle.track(0, peers);
@@ -2425,6 +2505,7 @@ fn run_node(a: NodeArgs) {
         ));
         let served_state = std::sync::Arc::new(std::sync::RwLock::new(rpc::RpcState {
             chain: chain.clone(),
+            app_bundles: app_bundles.clone(),
             finality: rpc::Finality::Archive(std::sync::Arc::new(aether_node::follow::FinalityArchive::new(chain.store()))),
             gossip: gossip_tx.clone(),
             faucet: faucet_service.clone(),
@@ -2448,7 +2529,7 @@ fn run_node(a: NodeArgs) {
             let st = served_state.clone();
             let registry = aether_node::announce::checker(st.read().expect("served state").chain.clone());
             let p2p_target = links.then(|| loopback(port));
-            aether_net::serve_with_presence(
+            aether_net::serve_with_services(
                 ep,
                 move |req| {
                     let st = st.read().expect("served state").clone();
@@ -2457,6 +2538,7 @@ fn run_node(a: NodeArgs) {
                 p2p_target,
                 Some(registry),
                 presence.as_ref().map(|p| p.callback()),
+                app_bundles.as_ref().map(|service| service.handler()),
             )
         });
         if let Some(p) = &presence { p.start(presence_args.seeds(&p2p.roster.nodes)); }
@@ -2731,6 +2813,7 @@ fn run_node(a: NodeArgs) {
         let prover = start_prover(&chain, &data, None);
         let rpc_state = RpcState {
             chain,
+            app_bundles,
             finality: aether_node::rpc::Finality::Marshal(marshal_mailbox),
             gossip: gossip_tx,
             faucet: faucet_service,
@@ -3108,7 +3191,11 @@ fn run_follow(
         // data is never moved aside or written — the node stops with the
         // update-required exit code, which the supervisor and the app already
         // turn into "install the newer release" (`is_too_new_error`).
+        #[cfg(test)]
+        let mut test_store = tests::RESTORE_DISK_TEST_STORE.with(|store| store.borrow_mut().take());
         let opened = match dev_storage_fault {
+            #[cfg(test)]
+            _ if test_store.is_some() => Ok((test_store.take().expect("test store present"), false)),
             Some(ms) => {
                 tracing::warn!(ms, "--dev-storage-fault: this disk fails from now on (self-healing test)");
                 follow::open_store_with(
@@ -3143,7 +3230,7 @@ fn run_follow(
             Some(if let Some(addr) = presence_args.dev_presence_bind {
                 aether_net::bind_local(secret, addr, peer_tracker.clone()).await
             } else {
-                aether_net::bind_tracked(Some(secret), vec![aether_net::ALPN_RPC.to_vec()], peer_tracker.clone()).await
+                aether_net::bind_tracked(Some(secret), vec![aether_net::ALPN_RPC.to_vec(), aether_net::ALPN_APPS.to_vec()], peer_tracker.clone()).await
             }.map_err(|e| e.to_string())?)
         } else { None };
         let upstream = Arc::new(if from_rpc.is_empty() {
@@ -3151,6 +3238,7 @@ fn run_follow(
         } else {
             Upstream::Http(from_rpc)
         });
+        let app_bundles = app_bundle_service(&data, wallet_ep.clone(), nodes.clone());
         let role = if announce_keys.is_some() { aether_node::presence::Role::Candidate } else { aether_node::presence::Role::Follower };
         let identity = announce_keys.as_ref().map(|keys| keys.keys.node_secret.clone()).or_else(|| {
             presence_args.presence_identity.as_deref()
@@ -3171,7 +3259,7 @@ fn run_follow(
         let served_state = Arc::new(std::sync::RwLock::new(None::<RpcState>));
         let _wallet_router = wallet_ep.clone().map(|ep| {
             let state = served_state.clone();
-            aether_net::serve_with_presence(ep, move |req: Value| {
+            aether_net::serve_with_services(ep, move |req: Value| {
                 let st = state.read().expect("follower served state").clone();
                 async move {
                     match st {
@@ -3179,7 +3267,7 @@ fn run_follow(
                         None => json!({"jsonrpc":"2.0","id":req.get("id").cloned().unwrap_or(Value::Null),"error":{"code":-32000,"message":"node is starting; try again after checkpoint sync"}}),
                     }
                 }
-            }, None, None, presence.as_ref().map(|p| p.callback()))
+            }, None, None, presence.as_ref().map(|p| p.callback()), app_bundles.as_ref().map(|service| service.handler()))
         });
         if let Some(p) = &presence { p.start(presence_args.seeds(&nodes)); }
         // A new Mac starts from a certified snapshot instead of replaying history.
@@ -3190,6 +3278,13 @@ fn run_follow(
                 tracing::warn!(%e, "checkpoint sync failed; replaying history from genesis");
             }
         }
+        let restore_error = |e: aether_node::store::StoreError| {
+            if e.is_disk() {
+                eprintln!("error: restore state: {e}");
+                std::process::exit(aether_node::store::EXIT_STORAGE);
+            }
+            format!("restore state (delete the data dir to resync): {e}")
+        };
         let (chain, _) = match Chain::open(cfg.clone(), store) {
             Ok(opened) => opened,
             // Bad data only the full check catches (the rebuilt state does not
@@ -3203,9 +3298,9 @@ fn run_follow(
                         tracing::warn!(%e, "checkpoint sync failed; replaying history from genesis");
                     }
                 }
-                Chain::open(cfg, store).map_err(|e| format!("restore state (delete the data dir to resync): {e}"))?
+                Chain::open(cfg, store).map_err(restore_error)?
             }
-            Err(e) => return Err(format!("restore state (delete the data dir to resync): {e}")),
+            Err(e) => return Err(restore_error(e)),
         };
         install_verifier(&chain, &data, true);
         let archive = Arc::new(FinalityArchive::new(chain.store()));
@@ -3252,6 +3347,7 @@ fn run_follow(
         let prover = if export.is_none() { start_prover(&chain, &data, Some(upstream.clone())) } else { None };
         let st = RpcState {
             chain,
+            app_bundles,
             finality: aether_node::rpc::Finality::Archive(archive),
             gossip,
             faucet: None,
@@ -4108,6 +4204,69 @@ mod tests {
         assert!(super::check_registration_anchor_chain(&correct, &[], 7781).is_ok());
         assert!(super::check_registration_anchor_chain(&other, &[], 7781).is_err());
         assert!(super::check_registration_anchor_chain(&correct, &[other], 7781).is_err());
+    }
+
+    std::thread_local! {
+        pub(super) static RESTORE_DISK_TEST_STORE: std::cell::RefCell<Option<aether_node::store::Store>> = const { std::cell::RefCell::new(None) };
+    }
+
+    #[test]
+    fn restore_disk_failure_exits_with_storage_code() {
+        const CHILD: &str = "AETHER_TEST_RESTORE_DISK_CHILD";
+        if let Some(data) = std::env::var_os(CHILD) {
+            use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
+            let data = std::path::PathBuf::from(data);
+            let full = Arc::new(AtomicBool::new(false));
+            let fault = full.clone();
+            let store = aether_node::store::Store::open_with(&data.join("state.redb"), Arc::new(move |path| {
+                let fault = fault.clone();
+                aether_node::store::open_on_a_full_disk(path, Arc::new(move || fault.load(Ordering::Acquire)))
+            })).expect("open the store before filling the disk");
+            full.store(true, Ordering::Release);
+            RESTORE_DISK_TEST_STORE.with(|slot| *slot.borrow_mut() = Some(store));
+            let result = super::run_follow(
+                None, vec!["http://127.0.0.1:1".into()], data.to_str().unwrap().into(), 0, 4,
+                None, None, false, None, true,
+                super::HistoryArgs {
+                    history: Some("archive".into()), retain_days: aether_node::prune::DEFAULT_RETAIN_DAYS,
+                    drop_era_files: false, max_shards: aether_node::shards::DEFAULT_MAX_SHARDS,
+                },
+                super::ResourceArgs { min_free_disk: Some("0".into()), ..Default::default() },
+                None, None, data.join("wallet-node-key"), super::PresenceArgs::default(),
+            );
+            // The same fallback main uses when follower startup returns an error.
+            if let Err(error) = result {
+                eprintln!("error: {error}");
+                std::process::exit(1);
+            }
+            std::process::exit(0);
+        }
+        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let data = workspace.join("tmp").join(format!("restore-disk-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&data).unwrap();
+        let log = std::fs::File::create(data.join("node.log")).unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::restore_disk_failure_exits_with_storage_code", "--nocapture"])
+            .env(CHILD, &data)
+            .stdout(log.try_clone().unwrap()).stderr(log).spawn().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() { break status; }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("restore fixture never exited: {}", std::fs::read_to_string(data.join("node.log")).unwrap_or_default());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        let log = std::fs::read_to_string(data.join("node.log")).unwrap();
+        assert!(data.join("state.redb").is_file(), "a disk failure preserves the database");
+        assert!(!std::fs::read_dir(&data).unwrap().any(|entry| entry.unwrap().file_name().to_string_lossy().starts_with("corrupt-")),
+            "a disk failure must not quarantine the database");
+        assert_eq!(status.code(), Some(aether_node::store::EXIT_STORAGE), "restore disk failure must exit with the storage code: {log}");
+        assert!(log.contains("No space left on device"), "the fixture must exercise restore ENOSPC: {log}");
+        std::fs::remove_dir_all(data).unwrap();
     }
 
     #[cfg(all(feature = "test-seam", debug_assertions))]

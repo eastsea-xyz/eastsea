@@ -168,7 +168,7 @@ pub async fn open_public_tracked(a: &P2pArgs, peers: aether_net::peers::PeerTrac
     if a.offline {
         return None;
     }
-    let alpns = vec![aether_net::ALPN_RPC.to_vec(), aether_net::ALPN_P2P.to_vec(), aether_net::ALPN_RESHARE.to_vec()];
+    let alpns = vec![aether_net::ALPN_RPC.to_vec(), aether_net::ALPN_P2P.to_vec(), aether_net::ALPN_RESHARE.to_vec(), aether_net::ALPN_APPS.to_vec()];
     let ep = match aether_net::bind_tracked(Some(a.keys.node_secret.clone()), alpns, peers).await {
         Ok(ep) => ep,
         Err(e) => {

@@ -10,6 +10,7 @@
 			<string>com.pipln.eastsea.pay</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
+				<string>sea</string>
 				<string>eastsea</string>
 				<string>aether</string>
 			</array>

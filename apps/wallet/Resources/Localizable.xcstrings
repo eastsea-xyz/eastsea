@@ -2804,6 +2804,17 @@
         }
       }
     },
+    "A required app file is missing. The app was not opened." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "필요한 파일이 없어 앱을 열지 않았습니다."
+          }
+        }
+      }
+    },
     "AI agent payments" : {
       "localizations" : {
         "en" : {
@@ -10996,6 +11007,17 @@
         }
       }
     },
+    "Fetching and verifying app files…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "앱 파일을 받아 검증하는 중…"
+          }
+        }
+      }
+    },
     "Finalized blocks" : {
       "localizations" : {
         "en" : {
@@ -12055,6 +12077,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "若遺失此裝置，你信任的另一部裝置（自己的其他 Mac 或 iPhone）可將資金移至該裝置。"
+          }
+        }
+      }
+    },
+    "In development · not verified" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "개발 중 · 검증 안 됨"
           }
         }
       }
@@ -13574,6 +13607,41 @@
         }
       }
     },
+    "Legacy .aeth names are only available on testnet 7780." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Legacy .aeth names are only available on testnet 7780."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Los nombres .aeth antiguos solo están disponibles en la red de prueba 7780."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "旧 .aeth 名はテストネット 7780 でのみ利用できます。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : ".aeth 이름은 테스트넷 7780에서만 쓸 수 있어요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "旧 .aeth 名称仅可用于测试网 7780。"
+          }
+        }
+      }
+    },
     "Linked wallets" : {
       "localizations" : {
         "en" : {
@@ -14710,6 +14778,41 @@
         }
       }
     },
+    "Name registry is not available on this network." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Name registry is not available on this network."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "El registro de nombres no está disponible en esta red."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "このネットワークでは名前レジストリを利用できません。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이 네트워크에는 이름 레지스트리가 아직 없어요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此网络尚无名称注册表。"
+          }
+        }
+      }
+    },
     "Network" : {
       "localizations" : {
         "en" : {
@@ -15193,6 +15296,41 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "尚無代理付款。"
+          }
+        }
+      }
+    },
+    "No app is linked to this name." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No app is linked to this name."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No hay ninguna aplicación vinculada a este nombre."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "この名前にリンクされたアプリはありません。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이 이름에 연결된 앱이 없어요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此名称未关联应用。"
           }
         }
       }
@@ -17771,6 +17909,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "在 Safari 中開啟"
+          }
+        }
+      }
+    },
+    "Open a local app folder" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "로컬 앱 폴더 열기"
           }
         }
       }
@@ -25373,6 +25522,41 @@
         }
       }
     },
+    "That is not a valid .sea name." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "That is not a valid .sea name."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No es un nombre .sea válido."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "有効な .sea の名前ではありません。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "올바른 .sea 이름이 아니에요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这不是有效的 .sea 名称。"
+          }
+        }
+      }
+    },
     "That is not a web address." : {
       "localizations" : {
         "en" : {
@@ -25787,6 +25971,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "正在將區塊資料複製至新位置並確認，錢包仍可使用。"
+          }
+        }
+      }
+    },
+    "The app could not be fetched from the node. Check that this Mac's node is running and connected." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "노드에서 앱을 받지 못했습니다. 이 Mac의 노드가 실행 중이고 연결되어 있는지 확인해 주세요."
           }
         }
       }
@@ -26515,6 +26710,41 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "目前找不到網路，正在重試。你的餘額很安全。"
+          }
+        }
+      }
+    },
+    "The name registry could not be read." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The name registry could not be read."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se pudo leer el registro de nombres."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "名前レジストリを読み取れませんでした。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이름 레지스트리를 읽지 못했어요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法读取名称注册表。"
           }
         }
       }
@@ -28080,6 +28310,17 @@
         }
       }
     },
+    "The node returned an invalid app bundle. The app was not opened." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "노드에서 받은 앱 번들이 올바르지 않아 열지 않았습니다."
+          }
+        }
+      }
+    },
     "The node stopped. Copy Diagnostics on Home shows why." : {
       "localizations" : {
         "en" : {
@@ -28424,6 +28665,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "證明程式停止回應，正在重新啟動。"
+          }
+        }
+      }
+    },
+    "The received files differ from the registered app. The app was not opened." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "받은 파일이 등록된 앱과 달라 열지 않았습니다."
           }
         }
       }
@@ -28802,6 +29054,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "錢包金鑰檔案與帳戶不符。金鑰已保留。"
+          }
+        }
+      }
+    },
+    "The wallet context changed. Open the app again." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "지갑 상태가 바뀌었습니다. 앱을 다시 열어 주세요."
           }
         }
       }
@@ -29874,6 +30137,85 @@
         }
       }
     },
+    "This app contains an unsupported file or an unsafe path. The app was not opened." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "지원하지 않는 파일이나 안전하지 않은 경로가 있어 앱을 열지 않았습니다."
+          }
+        }
+      }
+    },
+    "This app exceeds the bundle size limit. The app was not opened." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "번들 크기 상한을 초과해 앱을 열지 않았습니다."
+          }
+        }
+      }
+    },
+    "This app has not been verified. Open its sea:// name first." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이 앱은 검증되지 않았습니다. 먼저 sea:// 이름으로 열어 주세요."
+          }
+        }
+      }
+    },
+    "This app has not been verified. The app was not opened." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "앱이 검증되지 않아 열지 않았습니다."
+          }
+        }
+      }
+    },
+    "This app is no longer listed." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This app is no longer listed."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Esta aplicación ya no está registrada."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "このアプリの登録は解除されています。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이 앱은 더 이상 등재되어 있지 않아요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此应用已取消登记。"
+          }
+        }
+      }
+    },
     "This app is out of date · updating" : {
       "localizations" : {
         "en" : {
@@ -29904,6 +30246,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "此應用程式版本較舊 · 正在更新"
+          }
+        }
+      }
+    },
+    "This app's bundle index is invalid. The app was not opened." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "앱의 번들 목록이 올바르지 않아 열지 않았습니다."
           }
         }
       }
@@ -30420,6 +30773,111 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "此容量超出可用空間，須始終保留 20 GB。請選擇較小的容量。"
+          }
+        }
+      }
+    },
+    "This name has expired." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This name has expired."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Este nombre ha caducado."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "この名前は有効期限が切れています。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이 이름은 만료됐어요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此名称已过期。"
+          }
+        }
+      }
+    },
+    "This name is not registered." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This name is not registered."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Este nombre no está registrado."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "この名前は登録されていません。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "등록되지 않은 이름이에요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此名称尚未注册。"
+          }
+        }
+      }
+    },
+    "This name is reserved for a wallet action." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This name is reserved for a wallet action."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Este nombre está reservado para una acción de la cartera."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "この名前はウォレットの操作用に予約されています。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "지갑 동작을 위해 예약된 이름이에요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此名称已保留供钱包操作使用。"
           }
         }
       }
@@ -32240,6 +32698,17 @@
         }
       }
     },
+    "Turn on developer mode to open a local app folder." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "로컬 앱 폴더를 열려면 개발자 모드를 켜 주세요."
+          }
+        }
+      }
+    },
     "Txs" : {
       "localizations" : {
         "en" : {
@@ -33955,6 +34424,41 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "網址"
+          }
+        }
+      }
+    },
+    "Web addresses (.com, etc.) aren't EastSea names. Open them with https://." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Web addresses (.com, etc.) aren't EastSea names. Open them with https://."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Las direcciones web (.com, etc.) no son nombres de EastSea. Ábrelas con https://."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ウェブアドレス（.com など）は EastSea の名前ではありません。https:// で開いてください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "웹 주소(.com 등)는 동해 이름이 아니에요. https://로 여세요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "网页地址（.com 等）不是 EastSea 名称。请使用 https:// 打开。"
           }
         }
       }

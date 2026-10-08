@@ -51,6 +51,8 @@ pub mod tunnel;
 pub use presence::{presence_exchange, PresenceCallback, PresenceProtocol, ALPN_PRESENCE, MAX_PRESENCE_MESSAGE};
 
 pub const ALPN_RPC: &[u8] = b"aether/rpc/1";
+/// Hash-addressed static app archives, separate from wallet RPC.
+pub const ALPN_APPS: &[u8] = b"aether/apps/1";
 pub const ALPN_P2P: &[u8] = b"aether/p2p/1";
 /// Background committee reshare (`aether run`): a validator's node forwards it
 /// to the reshare running next to it, so both share one public node id.
@@ -344,6 +346,74 @@ async fn bind_inner(secret: Option<SecretKey>, alpns: Vec<Vec<u8>>, peers: Optio
 
 type Handler = Arc<dyn Fn(Value) -> Pin<Box<dyn Future<Output = Value> + Send>> + Send + Sync>;
 
+/// The node verifies and supplies archive bytes; the transport owns bounds,
+/// deadlines and admission. One small JSON request, then status byte 0 +
+/// archive, or status byte 1 + a bounded UTF-8 error, followed by stream FIN.
+pub type AppsHandler = Arc<dyn Fn(Vec<u8>) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send>> + Send + Sync>;
+const MAX_APP_ARCHIVE: usize = 20_000_000;
+
+#[derive(Clone)]
+struct AppsProtocol { handler: AppsHandler, gate: Arc<RpcGate> }
+
+impl std::fmt::Debug for AppsProtocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str("AppsProtocol") }
+}
+
+impl ProtocolHandler for AppsProtocol {
+    async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+        let peer = self.gate.peer(conn.remote_id());
+        while let Ok((mut send, mut recv)) = conn.accept_bi().await {
+            let this = self.clone();
+            let peer = peer.clone();
+            tokio::spawn(async move {
+                let _guard = this.gate.enter(&peer);
+                let result = if _guard.is_err() {
+                    Err("app transfer budget busy; retry shortly".into())
+                } else {
+                    match tokio::time::timeout(RPC_IO, async {
+                        let request = recv.read_to_end(1024).await.map_err(|e| e.to_string())?;
+                        (this.handler)(request).await
+                    }).await {
+                        Ok(answer) => answer,
+                        Err(_) => Err("app content request timed out".into()),
+                    }
+                };
+                let (status, bytes) = match result {
+                    Ok(bytes) if bytes.len() <= MAX_APP_ARCHIVE => (0u8, bytes),
+                    Ok(_) => (1, b"app archive exceeds 20 MB".to_vec()),
+                    Err(error) => (1, error.as_bytes()[..error.len().min(1024)].to_vec()),
+                };
+                let _ = tokio::time::timeout(RPC_IO, async {
+                    send.write_all(&[status]).await?;
+                    send.write_all(&bytes).await?;
+                    send.finish().map_err(anyhow::Error::from)
+                }).await;
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Fetch one app archive over an authenticated iroh connection. Sources are
+/// untrusted: the caller must check the index and every file before storing.
+pub async fn app_call(endpoint: &Endpoint, addr: &EndpointAddr, request: &[u8], within: Duration) -> Result<Vec<u8>> {
+    if request.len() > 1024 { return Err(anyhow!("app request exceeds 1 KiB")); }
+    tokio::time::timeout(within, async {
+        let conn = tokio::time::timeout(Duration::from_secs(3).min(within), endpoint.connect(addr.clone(), ALPN_APPS))
+            .await.map_err(|_| anyhow!("app peer connection timed out"))?
+            .context("connect app content peer")?;
+        let (mut send, mut recv) = conn.open_bi().await.context("open app stream")?;
+        send.write_all(request).await.context("write app request")?;
+        send.finish().context("finish app request")?;
+        let mut bytes = recv.read_to_end(MAX_APP_ARCHIVE + 1).await.context("read app archive")?;
+        match bytes.first().copied() {
+            Some(0) => { bytes.remove(0); Ok(bytes) }
+            Some(1) if bytes.len() <= 1025 => Err(anyhow!("app peer: {}", String::from_utf8_lossy(&bytes[1..]))),
+            _ => Err(anyhow!("invalid app content response")),
+        }
+    }).await.map_err(|_| anyhow!("app content peer timed out"))?
+}
+
 /// One peer's request budget: `burst` requests at once, then `per_sec` a
 /// second. Integral refill: whole tokens for the elapsed whole milliseconds.
 struct TokenBucket {
@@ -556,17 +626,37 @@ where
     F: Fn(Value) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Value> + Send + 'static,
 {
-    serve_with_presence(endpoint, handler, p2p_target, registered, None)
+    serve_with_services(endpoint, handler, p2p_target, registered, None, None)
 }
 
-/// Serve the existing RPC/tunnel protocols and optionally the versioned,
-/// bounded live-presence protocol. Old callers retain their original ALPNs.
+/// Serve optional presence alongside the existing public transports.
 pub fn serve_with_presence<F, Fut>(
+    endpoint: Endpoint, handler: F, p2p_target: Option<std::net::SocketAddr>,
+    registered: Option<RegisteredCandidate>, presence: Option<PresenceCallback>,
+) -> Router
+where F: Fn(Value) -> Fut + Send + Sync + 'static, Fut: Future<Output = Value> + Send + 'static,
+{
+    serve_with_services(endpoint, handler, p2p_target, registered, presence, None)
+}
+
+/// Serve optional content seeding alongside the existing public transports.
+pub fn serve_with_apps<F, Fut>(
+    endpoint: Endpoint, handler: F, p2p_target: Option<std::net::SocketAddr>,
+    registered: Option<RegisteredCandidate>, apps: Option<AppsHandler>,
+) -> Router
+where F: Fn(Value) -> Fut + Send + Sync + 'static, Fut: Future<Output = Value> + Send + 'static,
+{
+    serve_with_services(endpoint, handler, p2p_target, registered, None, apps)
+}
+
+/// A single router owns both optional protocols and their independent budgets.
+pub fn serve_with_services<F, Fut>(
     endpoint: Endpoint,
     handler: F,
     p2p_target: Option<std::net::SocketAddr>,
     registered: Option<RegisteredCandidate>,
     presence: Option<PresenceCallback>,
+    apps: Option<AppsHandler>,
 ) -> Router
 where
     F: Fn(Value) -> Fut + Send + Sync + 'static,
@@ -590,6 +680,9 @@ where
     }
     if let Some(callback) = presence {
         r = r.accept(ALPN_PRESENCE, PresenceProtocol::new(callback));
+    }
+    if let Some(handler) = apps {
+        r = r.accept(ALPN_APPS, AppsProtocol { handler, gate: Arc::new(RpcGate::new(4, 2, 8, 2)) });
     }
     r.spawn()
 }

@@ -31,8 +31,9 @@ pub const PLAIN_TRANSFER_GAS: u64 = 21_000;
 /// delegate and running its receive cost more than the intrinsic 21,000.
 /// Found live (docs/research/contracts-live-2026-10-06.md): 21,000 to such a
 /// recipient is included, fails out of gas and still pays its fee. Unused gas
-/// is not charged; the quote stays a maximum.
-pub const CODE_RECIPIENT_TRANSFER_GAS: u64 = 100_000;
+/// is not charged; the quote stays a maximum. Six fresh receive() storage
+/// writes need more than 100,000 gas, so reserve 300,000 for code recipients.
+pub const CODE_RECIPIENT_TRANSFER_GAS: u64 = 300_000;
 
 /// The exec gas limit for a plain transfer, from the recipient's code as the
 /// node reports it (`eth_getCode`; empty for an ordinary account).
@@ -54,7 +55,10 @@ pub fn recommended_state_budget(call: &EvmCall, balance: Option<U256>, state_pri
     // Covers the signed envelope (including a P-256 signature) and a receipt.
     // Calldata is added separately because zero bytes use only 4 execution gas.
     let persisted = (call.input.len() as u64).saturating_add(512).div_ceil(crate::fees::RECEIPT_BYTES_PER_STATE_UNIT);
-    if call.to.is_some() && call.input.is_empty() && call.delegate.is_none() {
+    if call.to.is_some() && call.input.is_empty() && call.delegate.is_none() && call.gas_limit == PLAIN_TRANSFER_GAS {
+        // Only the 21,000-gas no-code path is a plain transfer. A contract's
+        // receive() or an existing 7702 delegation can run with a larger
+        // limit even when calldata is empty, so use the execution estimate.
         // Reserve for the sender's first account and, for a positive transfer,
         // a recipient that has not existed before this transaction.
         return persisted.saturating_add(crate::fees::STATE_ACCOUNT_UNITS)

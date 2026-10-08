@@ -848,14 +848,13 @@ fn quote_for_call(status: &Value, recipient_exists: Option<bool>, state_price: u
 /// more when the node reports code there (a contract's receive(), or an
 /// account 7702-delegated by this wallet's own batch/guardian features —
 /// 21,000 there is included, fails out of gas and is still charged; live
-/// run 2026-10-06). An unreachable lookup keeps 21,000, the old behaviour.
+/// run 2026-10-06). Only a valid empty-code response selects 21,000; an
+/// unavailable or malformed lookup reserves the code-recipient allowance.
 fn recipient_transfer_gas(to: &Address) -> u64 {
-    let code = call("eth_getCode", json!([to.to_checksum(None), "latest"]))
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_owned))
-        .and_then(|h| alloy_primitives::hex::decode(h.trim_start_matches("0x")).ok())
-        .unwrap_or_default();
-    aether_execution::plain_transfer_gas_limit(&code)
+    match call("eth_getCode", json!([to.to_checksum(None), "latest"])) {
+        Ok(code) if code.as_str() == Some("0x") => aether_execution::tx::PLAIN_TRANSFER_GAS,
+        _ => aether_execution::tx::CODE_RECIPIENT_TRANSFER_GAS,
+    }
 }
 
 /// Whether `address` holds a non-empty account in certified state (empty
@@ -3191,13 +3190,23 @@ mod tests {
         let plain = quote_from_status_with_gas(&busy, Some(false), price, PLAIN_TRANSFER_GAS);
         assert_eq!(fee(&plain), fee(&quote_from_status(&busy, Some(false), price)), "ordinary recipients unchanged");
         let code = quote_from_status_with_gas(&busy, Some(false), price, CODE_RECIPIENT_TRANSFER_GAS);
-        assert_eq!(fee(&code), 100_000 * 3_000_000_000 + 432_000_000_000_000);
-        // With no exec base fee (today's new genesis) the larger limit costs nothing extra.
+        let call = plain_transfer(Address::repeat_byte(0x42), CODE_RECIPIENT_TRANSFER_GAS);
+        let (gas, caps, _) = draft_fees(&busy, Some(U256::from(1u64)), price, &call);
+        let expected_state = CODE_RECIPIENT_TRANSFER_GAS / 200 + aether_execution::fees::STATE_ACCOUNT_UNITS + 16;
+        assert_eq!(gas.state, expected_state, "empty calldata must reserve contract state growth");
+        assert_eq!(fee(&code), u128::from(CODE_RECIPIENT_TRANSFER_GAS) * 3_000_000_000 + u128::from(expected_state) * caps.state);
+        assert_eq!(fee(&code), aether_execution::tx::signed_fee_maximum(&gas, &caps));
+        assert!(ensure_shown_fee_covers(fee(&code), Some(&plain.fee_wei)).is_err(), "an old EOA quote cannot authorize the larger contract budget");
+        let mut delegated = vec![0xef, 0x01, 0x00];
+        delegated.extend_from_slice(Address::repeat_byte(0x77).as_slice());
+        assert_eq!(aether_execution::plain_transfer_gas_limit(&delegated), CODE_RECIPIENT_TRANSFER_GAS);
+        // Even with no exec base fee, a contract needs a larger state budget.
         let paid = json!({ "base_fee": { "exec": "0", "state": "1000000000000", "prove": "0" } });
         assert_eq!(
             fee(&quote_from_status_with_gas(&paid, None, price, CODE_RECIPIENT_TRANSFER_GAS)),
-            fee(&quote_from_status(&paid, None, price))
+            u128::from(expected_state) * aether_execution::fees::signed_state_cap(price)
         );
+        assert!(fee(&quote_from_status_with_gas(&paid, None, price, CODE_RECIPIENT_TRANSFER_GAS)) > fee(&quote_from_status(&paid, None, price)));
         // The signed envelope still fits the persisted-byte quote at the larger limit.
         use aether_types::Canonical;
         let signer = aether_crypto::P256Signer::from_seed(&[7u8; 32]).unwrap();

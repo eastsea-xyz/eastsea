@@ -950,6 +950,14 @@ fn a_candidate_registers_once_and_beacons_every_epoch() {
     let c = mine(&net);
     assert_eq!(c["candidates"].as_array().unwrap().len(), 1, "{c}");
     assert_eq!(c["candidates"][0]["operator"].as_str().unwrap().to_lowercase(), dev_address(4).to_lowercase());
+    let current_epoch = c["epoch"].as_u64().unwrap();
+    assert_eq!(c["next_draw_epoch"], (current_epoch / 24 + 1) * 24, "{c}");
+    assert_eq!(c["open_seats"], 1, "a four-validator draw has one seat: {c}");
+    let candidate = &c["candidates"][0];
+    assert!(candidate["missed"].is_u64(), "missed epochs must be visible: {c}");
+    assert_eq!(candidate["eligible_next_draw"], false, "this Mac is still warming up: {c}");
+    assert_eq!(candidate["why_not"], "streak", "{c}");
+    assert!(candidate["hours_to_eligible"].as_f64().is_some_and(|h| h > 0.0), "a live devnet has a measured ETA: {c}");
     // Registering the same Mac again is refused by the registry.
     assert!(!net
         .cli_fails(&["candidate-register", "--data", data.to_str().unwrap(), "--registrar-rpc", &net.url(0), "--rpc", &net.url(0), "--from-dev", "4"])
@@ -969,6 +977,31 @@ fn a_candidate_registers_once_and_beacons_every_epoch() {
         assert!(Instant::now() < end, "no beacons: {c}");
         std::thread::sleep(Duration::from_millis(500));
     }
+
+    // The new diagnostics are reads. Keep an already-finalized root, poll the
+    // candidate view, then replay from genesis in a fresh follower directory.
+    let checkpoint = net.height(0);
+    let root = block(&net, 0, checkpoint)["state_root"].clone();
+    assert!(!root.is_null());
+    for _ in 0..8 { mine(&net); }
+    let port = free_port();
+    let data = net.dir.join("candidate-replay");
+    let log_path = net.dir.join("candidate-replay.log");
+    let log = std::fs::File::create(&log_path).unwrap();
+    let args = vec![
+        "follow".into(), "--from-rpc".into(), net.url(0),
+        "--data".into(), data.to_str().unwrap().into(),
+        "--rpc-port".into(), port.to_string(), epoch[0].clone(), epoch[1].clone(),
+    ];
+    net.procs.push(Some(spawn_logged(log, &args)));
+    net.rpc.push(port);
+    net.logs.push(log_path);
+    let replay = net.rpc.len() - 1;
+    net.wait_height(replay, checkpoint + 2, 120);
+    assert!(!block(&net, replay, 1).is_null(), "the fresh follower replayed history instead of snapshot-jumping");
+    assert_eq!(block(&net, replay, checkpoint)["state_root"], root, "candidate reads do not change the state root on devnet replay");
+    for h in [checkpoint, checkpoint + 1, checkpoint + 2] { assert_agree(&net, &[0, 1, 2, 3, replay], h); }
+    eprintln!("candidate observability replay: height={checkpoint} unchanged state_root={root}");
 }
 
 /// Open voting nodes: nobody runs a ceremony by hand. Four Macs run `aether

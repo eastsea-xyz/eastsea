@@ -30,7 +30,10 @@ final class NodeController: ObservableObject {
     }
 
     @Published private(set) var state: State = .off {
-        didSet { if state != oldValue { refreshStopReason() } }
+        didSet {
+            if state != oldValue { refreshStopReason() }
+            if state != .running { candidateEligibility = nil }
+        }
     }
     /// Why the node is not running while its switch is on — the one reason
     /// the sidebar, the Node page, the menu and the health banner all show
@@ -63,6 +66,8 @@ final class NodeController: ObservableObject {
     @Published private(set) var candidate: Candidate?
     /// The registry's view of this Mac (refreshed while the node runs).
     @Published private(set) var voting: VotingNodeStatus?
+    /// The local node's current eligibility verdict (nil on old or failed RPCs).
+    @Published private(set) var candidateEligibility: CandidateEligibility?
 
     struct Candidate: Equatable, Sendable {
         let validatorKey: String
@@ -1398,6 +1403,7 @@ final class NodeController: ObservableObject {
     private func refreshVoting() {
         guard let key = candidate?.validatorKey, clock.now.elapsed(since: lastVotingCheck) > 10 else { return }
         lastVotingCheck = clock.now
+        let port = Self.port
         Task.detached {
             let status = try? votingNodeStatus(validatorKey: key)
             await MainActor.run {
@@ -1411,6 +1417,12 @@ final class NodeController: ObservableObject {
                     self.unattended?.storageShards = self.storageShards
                 }
                 self.applyDuty()
+            }
+            let response = await LocalRPC.call(port: port, method: "aether_candidates", params: [])
+            let eligibility = CandidateEligibility.fromRPC(response, validatorKey: key)
+            await MainActor.run {
+                if self.state == .running, self.candidate?.validatorKey == key,
+                   self.candidateEligibility != eligibility { self.candidateEligibility = eligibility }
             }
         }
     }

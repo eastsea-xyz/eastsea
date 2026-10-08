@@ -67,6 +67,106 @@ pub fn eligible(state: &WorldState, epoch: u64, min_streak: u64) -> Vec<(String,
         .collect()
 }
 
+/// Current qualification for the next scheduled draw, assuming continued
+/// beaconing. The current epoch may still be in progress, so recency accepts
+/// its answers and those of the last completed epoch. V3 stability comes from
+/// that completed history; its hour profile is checked at the upcoming draw.
+/// Display only: neither a frozen pool nor an input to a state transition.
+#[derive(Debug, PartialEq)]
+pub(crate) struct Eligibility {
+    pub eligible_next_draw: bool,
+    pub why_not: &'static str,
+    pub hours_to_eligible: Option<f64>,
+}
+
+pub(crate) fn eligibility_verdict(
+    state: &WorldState,
+    candidate: &registry::Candidate,
+    draw_epoch: u64,
+    min_streak: u64,
+    current_epoch: u64,
+    hours_per_epoch: Option<f64>,
+) -> Eligibility {
+    let c = candidate;
+    let free = registry_v3::is_v3(state) && aether_rewards::enabled(state);
+    let recent = (current_epoch.saturating_sub(1)..=current_epoch).contains(&c.last_epoch);
+    let valid_node = aether_net::EndpointId::from_bytes(&c.node_id).is_ok();
+    let stable = if free {
+        let (up, no_drop) = beacons::stability(state, c.index, current_epoch);
+        let at_hour = beacons::profile(state, c.index).at(draw_epoch % DAY_EPOCHS)
+            .is_none_or(|p| p >= beacons::PROB_SCALE / 2);
+        up >= 3 && no_drop && at_hour
+            && !registry_v3::availability(state, c.index).is_some_and(|(_, leaving)| leaving)
+    } else {
+        true
+    };
+    // Recovery counts only future successful beacons. No estimate when
+    // liveness/stability is unknown or the epoch's duration was not measured.
+    let hours = |remaining: Option<u64>| {
+        remaining.zip(hours_per_epoch)
+            .filter(|(_, h)| recent && stable && valid_node && h.is_finite() && *h > 0.0)
+            .map(|(n, h)| n as f64 * h)
+            .filter(|h| h.is_finite())
+    };
+    let blocked = |why_not, hours_to_eligible| Eligibility { eligible_next_draw: false, why_not, hours_to_eligible };
+    if !free {
+        let recovery = c.missed.checked_mul(20)
+            .map(|uptime| min_streak.max(uptime).saturating_sub(c.streak));
+        if c.streak < min_streak {
+            return blocked("streak", hours(recovery));
+        }
+        if c.missed.saturating_mul(20) > c.streak {
+            return blocked("uptime", hours(recovery));
+        }
+    } else if c.registered_epoch.saturating_add(min_streak) > current_epoch {
+        let recovery = c.registered_epoch.checked_add(min_streak)
+            .map(|age| age.saturating_sub(current_epoch));
+        return blocked("streak", hours(recovery));
+    }
+    if !recent {
+        return blocked("last_epoch", None);
+    }
+    if !stable || !valid_node {
+        return blocked("v3_stability", None);
+    }
+    Eligibility { eligible_next_draw: true, why_not: "none", hours_to_eligible: Some(0.0) }
+}
+
+/// The draw's upper bound on incoming seats, including replacements at the
+/// ceiling. Operator caps, quorum availability and the actual pool can lower it.
+pub(crate) fn open_seats(running: usize, protocol: u32, max: usize) -> usize {
+    if running == 0 { return 0; }
+    let budget = (running.saturating_sub(1) / 3).max(1);
+    let max = max.max(MIN_OPEN_COMMITTEE);
+    if protocol >= 3 && running < max { budget.min(max - running) } else { budget }
+}
+
+/// Derive the roster at `height` from finalized records, also on followers.
+/// A carried handoff already fixes its switch and members; it is safe to use
+/// for a future draw that occurs after that switch.
+pub(crate) fn open_seats_at(g: &crate::chain::Inner, height: u64) -> usize {
+    let f = &g.finalized;
+    let running = f.handoff.as_ref().filter(|p| p.switch <= height)
+        .map(|p| p.handoff.members.len())
+        .unwrap_or_else(|| {
+            if aether_rewards::enabled(&f.state) { aether_rewards::committee(&f.state).len() }
+            else if !g.committee.members.is_empty() { g.committee.members.len() }
+            // A pending legacy handoff can hide the preceding roster on a
+            // follower; its genesis count is no longer an authoritative size.
+            else if f.handoff.is_some() { 0 }
+            else { g.cfg.committee.len() }
+        });
+    open_seats(running, crate::upgrade::protocol_at(&f.schedule, height), g.cfg.max_committee)
+}
+
+pub(crate) fn log_draw_pool(draw: u64, pool: usize, open_seats: usize) {
+    if pool == 0 {
+        tracing::info!(draw, pool_size = pool, open_seats, "draw freezes an empty candidate pool");
+    } else if pool < open_seats {
+        tracing::info!(draw, pool_size = pool, open_seats, "draw freezes fewer candidates than open seats");
+    }
+}
+
 /// Registered voting keys (hex) and their operators (the address that registered them).
 pub fn operators(state: &WorldState) -> std::collections::HashMap<String, String> {
     registry::candidates(state).iter().map(|c| (hex::encode(c.validator_key), format!("{:#x}", c.operator))).collect()
@@ -740,6 +840,176 @@ mod tests {
     use aether_types::{Address, GasVector, U256};
 
     const E: u64 = 10;
+
+    fn observed_candidate(v3: bool) -> (WorldState, registry::Candidate) {
+        let mut state = WorldState::default();
+        registry::predeploy(&mut state, ([1; 32], [2; 32]), registry::Params::default()).unwrap();
+        if v3 {
+            registry_v3::genesis(&mut state).unwrap();
+            aether_rewards::enable(&mut state);
+        }
+        let c = registry::Candidate {
+            index: 0, operator: Address::repeat_byte(1), validator_key: [1; 32],
+            node_id: node(1), beaconer: Address::repeat_byte(1),
+            registered_epoch: 100, last_epoch: if v3 { 142 } else { 143 }, streak: 122, missed: 0,
+        };
+        aether_rewards::put_candidate(&mut state, &c);
+        (state, c)
+    }
+
+    fn verdict(state: &WorldState, c: &registry::Candidate) -> Eligibility {
+        eligibility_verdict(state, c, 144, 24, 143, Some(1.0))
+    }
+
+    #[test]
+    fn observability_streak_explains_the_full_recoverable_shortfall() {
+        let (mut state, mut c) = observed_candidate(false);
+        c.streak = 10;
+        c.missed = 2;
+        aether_rewards::put_candidate(&mut state, &c);
+        assert_eq!(verdict(&state, &c), Eligibility { eligible_next_draw: false, why_not: "streak", hours_to_eligible: Some(30.0) });
+    }
+
+    #[test]
+    fn observability_uptime_explains_the_investigated_candidate() {
+        let (mut state, mut c) = observed_candidate(false);
+        c.missed = 7;
+        aether_rewards::put_candidate(&mut state, &c);
+        assert_eq!(verdict(&state, &c), Eligibility { eligible_next_draw: false, why_not: "uptime", hours_to_eligible: Some(18.0) });
+        registry_v3::genesis(&mut state).unwrap();
+        assert_eq!(verdict(&state, &c).why_not, "uptime", "v3 bytecode alone does not enable the rewards-based eligibility rule");
+    }
+
+    #[test]
+    fn observability_last_epoch_requires_recent_online_history() {
+        let (mut state, mut c) = observed_candidate(false);
+        c.last_epoch = 141;
+        aether_rewards::put_candidate(&mut state, &c);
+        assert_eq!(verdict(&state, &c), Eligibility { eligible_next_draw: false, why_not: "last_epoch", hours_to_eligible: None });
+        c.streak = 1;
+        c.last_epoch = 100;
+        aether_rewards::put_candidate(&mut state, &c);
+        assert_eq!(verdict(&state, &c).hours_to_eligible, None, "stale streaks have no reliable ETA");
+    }
+
+    #[test]
+    fn observability_v3_warmup_uses_registration_age() {
+        let (mut state, mut c) = observed_candidate(true);
+        c.registered_epoch = 138;
+        c.streak = 4;
+        aether_rewards::put_candidate(&mut state, &c);
+        for epoch in 139..143 { beacons::note(&mut state, c.index, epoch, SLOTS, true); }
+        assert_eq!(verdict(&state, &c), Eligibility { eligible_next_draw: false, why_not: "streak", hours_to_eligible: Some(19.0) });
+        registry_v3::set_availability(&mut state, c.index, 142 * 3_600, true);
+        assert_eq!(verdict(&state, &c).hours_to_eligible, None, "age alone cannot estimate eligibility for a leaving Mac");
+    }
+
+    #[test]
+    fn observability_v3_stability_reports_each_existing_gate() {
+        let (mut state, c) = observed_candidate(true);
+        let blocked = Eligibility { eligible_next_draw: false, why_not: "v3_stability", hours_to_eligible: None };
+        assert_eq!(verdict(&state, &c), blocked, "no recorded stability");
+        for epoch in 141..143 { beacons::note(&mut state, c.index, epoch, SLOTS, true); }
+        assert_eq!(verdict(&state, &c), blocked, "two good epochs do not satisfy the three-of-four rule");
+        state = observed_candidate(true).0;
+        for epoch in 137..143 { beacons::note(&mut state, c.index, epoch, SLOTS, true); }
+        assert_eq!(verdict(&state, &c).why_not, "none");
+        let stable = state.clone();
+        registry_v3::set_availability(&mut state, c.index, 142 * 3_600, true);
+        assert_eq!(verdict(&state, &c), blocked, "announced departure");
+        state = stable.clone();
+        beacons::note(&mut state, c.index, 142, 0, true);
+        assert_eq!(verdict(&state, &c), blocked, "unannounced drop");
+        state = observed_candidate(true).0;
+        // The future draw's hour has a measured availability below 50%,
+        // even though the latest completed epochs have all been healthy.
+        beacons::note(&mut state, c.index, 120, 0, true);
+        for epoch in 137..143 { beacons::note(&mut state, c.index, epoch, SLOTS, true); }
+        assert_eq!(verdict(&state, &c), blocked, "low availability at the draw's hour");
+    }
+
+    #[test]
+    fn observability_none_matches_the_consensus_pool_without_writing_state() {
+        for v3 in [false, true] {
+            let (mut state, mut c) = observed_candidate(v3);
+            if v3 {
+                // V3 does not use the legacy streak or missed counters.
+                c.streak = 7;
+                c.missed = 1;
+                aether_rewards::put_candidate(&mut state, &c);
+                for epoch in 137..143 { beacons::note(&mut state, c.index, epoch, SLOTS, true); }
+            }
+            let root = state.root();
+            assert_eq!(verdict(&state, &c), Eligibility { eligible_next_draw: true, why_not: "none", hours_to_eligible: Some(0.0) });
+            assert_eq!(verdict(&state, &c).eligible_next_draw, !eligible(&state, if v3 { 143 } else { 144 }, 24).is_empty());
+            assert_eq!(state.root(), root, "a verdict is a read, not a transition");
+        }
+    }
+
+    #[test]
+    fn observability_v3_stays_eligible_after_a_current_epoch_beacon() {
+        let (mut state, mut c) = observed_candidate(true);
+        for epoch in 137..143 { beacons::note(&mut state, c.index, epoch, SLOTS, true); }
+        let ready = Eligibility { eligible_next_draw: true, why_not: "none", hours_to_eligible: Some(0.0) };
+        assert_eq!(verdict(&state, &c), ready, "completed-epoch history qualifies before this epoch's answer");
+        c.last_epoch = 143;
+        aether_rewards::put_candidate(&mut state, &c);
+        assert_eq!(verdict(&state, &c), ready, "a newer verified answer must not make a healthy Mac ineligible");
+        c.last_epoch = 144;
+        aether_rewards::put_candidate(&mut state, &c);
+        assert_eq!(verdict(&state, &c).why_not, "last_epoch", "future observations are not counted as current liveness");
+    }
+
+    #[test]
+    fn observability_estimates_use_measured_epoch_duration_only() {
+        let (mut state, mut c) = observed_candidate(false);
+        c.streak = 23;
+        aether_rewards::put_candidate(&mut state, &c);
+        assert_eq!(eligibility_verdict(&state, &c, 144, 24, 143, Some(0.5)).hours_to_eligible, Some(0.5));
+        assert_eq!(eligibility_verdict(&state, &c, 144, 24, 143, None).hours_to_eligible, None);
+        c.missed = u64::MAX;
+        aether_rewards::put_candidate(&mut state, &c);
+        assert_eq!(eligibility_verdict(&state, &c, 144, 24, 143, Some(1.0)).hours_to_eligible, None, "an overflowing recovery time is unknown");
+    }
+
+    #[test]
+    fn observability_open_seats_matches_the_draw_budget_and_growth_ceiling() {
+        assert_eq!(open_seats(4, 3, 16), 1);
+        assert_eq!(open_seats(10, 3, 16), 3);
+        assert_eq!(open_seats(15, 3, 16), 1);
+        assert_eq!(open_seats(16, 3, 16), 5, "at the ceiling, seats can still be replaced");
+        assert_eq!(open_seats(10, 2, 16), 3);
+        assert_eq!(open_seats(0, 3, 16), 0);
+    }
+
+    #[test]
+    fn observability_logs_empty_and_underfilled_draws_at_info() {
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+        #[derive(Clone)]
+        struct Log(Arc<Mutex<Vec<u8>>>);
+        impl Write for Log {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        let bytes = Arc::new(Mutex::new(vec![]));
+        let writer = Log(bytes.clone());
+        let subscriber = tracing_subscriber::fmt().with_ansi(false).without_time()
+            .with_max_level(tracing::Level::INFO).with_writer(move || writer.clone()).finish();
+        tracing::subscriber::with_default(subscriber, || {
+            log_draw_pool(7, 0, 1);
+            log_draw_pool(8, 2, 3);
+            log_draw_pool(9, 3, 3);
+        });
+        let log = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert!(log.contains("empty candidate pool"), "an empty draw must be visible at INFO: {log}");
+        assert!(log.contains("fewer candidates than open seats"), "an underfilled draw must be visible at INFO: {log}");
+        assert!(log.contains("INFO") && log.contains("draw=7") && log.contains("open_seats=3"), "{log}");
+        assert!(!log.contains("draw=9"), "full pools stay quiet: {log}");
+    }
 
     fn seed(b: u8) -> [u8; 32] {
         let mut s = [0u8; 32];

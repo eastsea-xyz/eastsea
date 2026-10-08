@@ -37,6 +37,7 @@
 		1BA7A78F249B5426DD6B684F /* BalanceHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82F0B4CA90E38B66B43592E6 /* BalanceHistory.swift */; };
 		1CC133C57B599BA2B10B7D4A /* ResendIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 424591AA2690FB9457CF62DA /* ResendIntent.swift */; };
 		1D5293BFA154B0BB1DFD72F7 /* NodeStorageMove.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCCF1F47D93BC537C786731A /* NodeStorageMove.swift */; };
+		1DEAD3BC4669A9A5768A9F9C /* CandidateEligibilityText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8AF1E81B7EA1D00430D5D6BB /* CandidateEligibilityText.swift */; };
 		1FFA6C892411F8AE3F9469F0 /* BrowserController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7205378BF9586CD3564801A2 /* BrowserController.swift */; };
 		2120D978A2E422529EDEAA37 /* NodeWatchdog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51F3FF6BB1FEAEB9503220A4 /* NodeWatchdog.swift */; };
 		21B558D88EA20F2E0BB3A6F3 /* AccountControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A1714FACE19C00FCADD017B /* AccountControls.swift */; };
@@ -53,6 +54,7 @@
 		2DF59873BBB5501454A597DA /* InstallLocation.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD1FD85FD2537EBDD04207CB /* InstallLocation.swift */; };
 		2ECB8DB6B22924E4D146ED97 /* ProverMenuText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F793BE9B59364FAC536170E /* ProverMenuText.swift */; };
 		30A0FCB264FA775313D832BD /* AppLanguage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D0345A892236AF981D15AE5 /* AppLanguage.swift */; };
+		31BEE39CD9C49733D2A9627C /* CandidateEligibilityText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8AF1E81B7EA1D00430D5D6BB /* CandidateEligibilityText.swift */; };
 		31CE7E2ABA0245424CB2DA08 /* AccountSwitcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 438B8B50643D1EB72B8512EA /* AccountSwitcher.swift */; };
 		330327025068CB02AE1C1566 /* TxTrack.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05428AB5A1E93D738C571517 /* TxTrack.swift */; };
 		35AC6542997CA5B650E8F422 /* NodeReleaseIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83EC4FD42C1350C11F06ECC4 /* NodeReleaseIdentity.swift */; };
@@ -146,6 +148,7 @@
 		8A8690DDB06F0148FD133737 /* TokenSend.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE00FF7FDD47F623CE4B55A0 /* TokenSend.swift */; };
 		8C21512BBE06AA542E27EBA1 /* NodeController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64A5EE5BA6294827128D61F5 /* NodeController.swift */; };
 		8C28BCFEF72360666AC1D1FB /* Brand.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32CECEE6B3B88424FB7E6774 /* Brand.swift */; };
+		8C6464DAC3BE51BF1C16CB04 /* CandidateEligibilityText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8AF1E81B7EA1D00430D5D6BB /* CandidateEligibilityText.swift */; };
 		8D89EA85510A1EA5C62A23C6 /* EarningsExport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C04312C5DE9BE7FCAABC3D93 /* EarningsExport.swift */; };
 		8F39B9B1308D1AD3DCFA4437 /* HistoryFailure.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00DD67BEC1D35753ED7EDE91 /* HistoryFailure.swift */; };
 		8FBC9A5F5A3237EA07862EB6 /* TokenSend.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE00FF7FDD47F623CE4B55A0 /* TokenSend.swift */; };
@@ -335,6 +338,7 @@
 		83EC4FD42C1350C11F06ECC4 /* NodeReleaseIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeReleaseIdentity.swift; sourceTree = "<group>"; };
 		87218A83DA7401CDA0D1E56E /* StorageSetting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageSetting.swift; sourceTree = "<group>"; };
 		87BD832EE8990B2380C0EF86 /* ChainActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChainActivity.swift; sourceTree = "<group>"; };
+		8AF1E81B7EA1D00430D5D6BB /* CandidateEligibilityText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CandidateEligibilityText.swift; sourceTree = "<group>"; };
 		8D0345A892236AF981D15AE5 /* AppLanguage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLanguage.swift; sourceTree = "<group>"; };
 		90A10B34BB5FE4E8349FA51D /* NodeStopReason.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeStopReason.swift; sourceTree = "<group>"; };
 		9446703A9798114839D82558 /* NodeKeyRebindCommand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeKeyRebindCommand.swift; sourceTree = "<group>"; };
@@ -448,6 +452,7 @@
 				97C7694B38BBE822C2A238C5 /* BrowserOriginPolicy.swift */,
 				1C44DE42286FDA51E768556B /* BrowserPolicy.swift */,
 				407C3252EC0DD6F886E76AE7 /* BundledPageScheme.swift */,
+				8AF1E81B7EA1D00430D5D6BB /* CandidateEligibilityText.swift */,
 				87BD832EE8990B2380C0EF86 /* ChainActivity.swift */,
 				3C192196B8C44174CC74F27E /* Clock.swift */,
 				B38A846EB23F0C4A52BF8A78 /* ContentView.swift */,
@@ -795,6 +800,7 @@
 				02D7FEE4A7CA3444B80FE85C /* BrowserOriginPolicy.swift in Sources */,
 				544B0C84E8331422978F30F7 /* BrowserPolicy.swift in Sources */,
 				277DEB11DFE5D619E8464655 /* BundledPageScheme.swift in Sources */,
+				31BEE39CD9C49733D2A9627C /* CandidateEligibilityText.swift in Sources */,
 				3EF6E8CB8686359FE5CEA244 /* ChainActivity.swift in Sources */,
 				5FC931C5B50114A80F16DF82 /* Clock.swift in Sources */,
 				16504A4054237817545767F0 /* ContentView.swift in Sources */,
@@ -884,6 +890,7 @@
 				EECEE1D2217D98DE4E937E6D /* BrowserOriginPolicy.swift in Sources */,
 				14B0E1B289006CBD2AD4A8E8 /* BrowserPolicy.swift in Sources */,
 				D93D51A6DF41C50870291DF8 /* BundledPageScheme.swift in Sources */,
+				1DEAD3BC4669A9A5768A9F9C /* CandidateEligibilityText.swift in Sources */,
 				5CEBF6505C021AB256CB40C0 /* ChainActivity.swift in Sources */,
 				2812D5A852BB453B534FD54D /* Clock.swift in Sources */,
 				91AC8DF6060514CA9725F73F /* ContentView.swift in Sources */,
@@ -975,6 +982,7 @@
 				5332251E1E361F3DD570B235 /* BrowserOriginPolicy.swift in Sources */,
 				5BF78A429424406DFCEFA964 /* BrowserPolicy.swift in Sources */,
 				0FAF813471F7AD7680988BEE /* BundledPageScheme.swift in Sources */,
+				8C6464DAC3BE51BF1C16CB04 /* CandidateEligibilityText.swift in Sources */,
 				5A2FF36B2D89573A00075F88 /* ChainActivity.swift in Sources */,
 				00F35CE007D35B5FB3793AD6 /* Clock.swift in Sources */,
 				3C5180BEE4BF629CA69AF4CE /* ContentView.swift in Sources */,

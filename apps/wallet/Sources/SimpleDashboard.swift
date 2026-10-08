@@ -901,6 +901,11 @@ private struct VotingNodeRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(title).font(.aeHeadline)
                 Text(detail).font(.aeBody).foregroundStyle(.secondary)
+                if node.state == .running, node.voting?.registered == true, node.voting?.voting == false,
+                   let line = CandidateEligibilityText.line(node.candidateEligibility, ko: AppLanguage.korean) {
+                    Text(line).font(.aeFootnote).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 switch model.registration {
                 case .working?:
                     HStack(spacing: 7) { OrbitSpinner().frame(width: 14, height: 14); Text("Registering… confirm with Touch ID.") }.font(.aeBody)

@@ -1,0 +1,184 @@
+{
+  "renderer": "Playwright with installed Chrome; gstack binary lacked its headless Chromium executable",
+  "synthetic_data": true,
+  "browser_error_count": 0,
+  "horizontal_page_overflow_count": 0,
+  "renders": [
+    {
+      "file": "docs/design/wallet-redesign/mockups/menubar-dark-en.png",
+      "pixels": [
+        928,
+        1322
+      ],
+      "sha256": "6c0978dac1aa667ce9a97791d7ca25cce6abc6bce731f402f9e21b3127ae8700"
+    },
+    {
+      "file": "docs/design/wallet-redesign/mockups/menubar-dark-ko.png",
+      "pixels": [
+        928,
+        1322
+      ],
+      "sha256": "3f8dc6d15af2637f9f5f22f43297de88347b6d588f300eb72438181e8b765b54"
+    },
+    {
+      "file": "docs/design/wallet-redesign/mockups/menubar-light-en.png",
+      "pixels": [
+        928,
+        1322
+      ],
+      "sha256": "467b5b70cc4e1fd17057050797d0683d6b987e7ed1f6f57f6bba212db2e95411"
+    },
+    {
+      "file": "docs/design/wallet-redesign/mockups/menubar-light-ko.png",
+      "pixels": [
+        928,
+        1322
+      ],
+      "sha256": "bdaf734de2e17a2809c8e57a5fbc7b349f10fedd9e027f161a4a9078eff099c2"
+    },
+    {
+      "file": "docs/design/wallet-redesign/mockups/extension-assets-dark.png",
+      "pixels": [
+        720,
+        1532
+      ],
+      "sha256": "19f367aa7a4a0ad003c3bb3caf6fff837e26320867e91a04a9f3ba68df1dd7ec"
+    },
+    {
+      "file": "docs/design/wallet-redesign/mockups/extension-assets-light.png",
+      "pixels": [
+        720,
+        1532
+      ],
+      "sha256": "70643855c323cd8185a783ff3949c5a4e67f0d4b55a68141a8e4dd04818befc2"
+    },
+    {
+      "file": "docs/design/wallet-redesign/mockups/extension-dark.png",
+      "pixels": [
+        720,
+        1440
+      ],
+      "sha256": "b6af628d404df614f3afab6dfbe834d9f8ce4aaa69baab3b8b7706423f08a9a9"
+    },
+    {
+      "file": "docs/design/wallet-redesign/mockups/extension-light.png",
+      "pixels": [
+        720,
+        1440
+      ],
+      "sha256": "2866fd08891e1f7644dc9a20e5627743e88dae2ab62b24406fc72c692f57431c"
+    },
+    {
+      "file": "docs/design/wallet-redesign/mockups/extension-unverified-dark.png",
+      "pixels": [
+        720,
+        1918
+      ],
+      "sha256": "7f33eea646c8dce113bbaccf650ba3fd3d47e2098388402ab085fad5f2343254"
+    },
+    {
+      "file": "docs/design/wallet-redesign/mockups/extension-unverified-light.png",
+      "pixels": [
+        720,
+        1918
+      ],
+      "sha256": "39c1272905096da2bf57c679633353c9cc37fa4f4cb957a54f156f82cced0e1f"
+    },
+    {
+      "file": "docs/design/wallet-redesign/mockups/explorer-dark.png",
+      "pixels": [
+        2880,
+        2674
+      ],
+      "sha256": "7b8b83e46b571f55b09fba19c535703190b4ea5df713871e4c4bbb06de9f8e08"
+    },
+    {
+      "file": "docs/design/wallet-redesign/mockups/explorer-light.png",
+      "pixels": [
+        2880,
+        2674
+      ],
+      "sha256": "335537c445be33aab704da0a1d8e144a76b1d922b800839ee8b17b1d248bdd6c"
+    },
+    {
+      "file": "docs/design/wallet-redesign/mockups/explorer-mobile-dark.png",
+      "pixels": [
+        780,
+        3504
+      ],
+      "sha256": "8cff68529f5fb7fe36fd1b5dcbdd45d77eeee8c5fa32ef1d7c03d566b2a15cc0"
+    },
+    {
+      "file": "docs/design/wallet-redesign/mockups/explorer-mobile-ledger-dark.png",
+      "pixels": [
+        648,
+        658
+      ],
+      "sha256": "dcfe7ebaebddf35338a5da78a81f2db3d0960f27aed6cb9490f3f10fc4e82e5f"
+    },
+    {
+      "file": "docs/design/wallet-redesign/mockups/explorer-mobile-ledger-light.png",
+      "pixels": [
+        648,
+        658
+      ],
+      "sha256": "580ee665f6d5e91983c59590769742204cfafdfa73031117f0870c104374ed6b"
+    },
+    {
+      "file": "docs/design/wallet-redesign/mockups/explorer-mobile-light.png",
+      "pixels": [
+        780,
+        3504
+      ],
+      "sha256": "3ebf7b5af8aaa64ef2e2c4fdac8a020c1f01515e57bc9ce8c6d6de531b7e225e"
+    },
+    {
+      "file": "docs/design/wallet-redesign/mockups/toolbox-dark.png",
+      "pixels": [
+        2880,
+        2700
+      ],
+      "sha256": "a676487a4e5e7e4acd39771ba0900a432b2466cb0a516c0a64505d1369bc4b3e"
+    },
+    {
+      "file": "docs/design/wallet-redesign/mockups/toolbox-light.png",
+      "pixels": [
+        2880,
+        2700
+      ],
+      "sha256": "4bd1ade12d29281e0a6f861b693a08308ad501a81ab32ee6b96e31ed28932d25"
+    },
+    {
+      "file": "docs/design/wallet-redesign/mockups/toolbox-mobile-dark.png",
+      "pixels": [
+        780,
+        2796
+      ],
+      "sha256": "f087d8fdce65a44aa3e0a68c140dde0db30c8a8e2df5de2d69387ff20df3d427"
+    },
+    {
+      "file": "docs/design/wallet-redesign/mockups/toolbox-mobile-light.png",
+      "pixels": [
+        780,
+        2796
+      ],
+      "sha256": "5ba7caad4c8dcc23da6fa4cafe587f5587ea94039b03483b699c6296390eae05"
+    },
+    {
+      "file": "docs/design/wallet-redesign/mockups/toolbox-token-dark.png",
+      "pixels": [
+        2880,
+        3278
+      ],
+      "sha256": "217382b43f9aaa65bb4ea641af374608a3cc41580b7e81da9314d79ca8f19227"
+    },
+    {
+      "file": "docs/design/wallet-redesign/mockups/toolbox-token-light.png",
+      "pixels": [
+        2880,
+        3278
+      ],
+      "sha256": "32bf54354a38b1f6bfaa0fa2790175c145092689f70af95b0595457969c049ca"
+    }
+  ]
+}

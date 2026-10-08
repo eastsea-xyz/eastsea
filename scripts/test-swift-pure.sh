@@ -9,6 +9,7 @@ mkdir -p "$root/tmp/swift-module-cache"
 export TMPDIR="$root/tmp"
 localizations="$root/tmp/wallet-languages/WalletLocalizations.bundle"
 /usr/bin/python3 scripts/wallet-l10n.py prepare-tests --out "$localizations" || exit 1
+compile_gate="$HOME/.claude/playbooks/aether-team/wait-compile.sh"
 W=apps/wallet/Sources; T=apps/wallet/Tests; bad=0
 run() {
   n=$1; shift
@@ -28,6 +29,7 @@ run() {
     # Optimize that code while keeping Swift assertions and preconditions on.
     compiler_flags=(-O -assert-config Debug)
   fi
+  if [ -x "$compile_gate" ]; then "$compile_gate" || return 1; fi
   if swiftc "${compiler_flags[@]}" -module-cache-path "$root/tmp/swift-module-cache" -o "tmp/sw-$n" "${files[@]}" "$T/$n/main.swift" 2>"tmp/sw-$n.err" \
       && AETHER_AGENT_TEST_TMP="$root/tmp" WALLET_TEST_BUNDLE="$localizations" "./tmp/sw-$n" >"tmp/sw-$n.out" 2>&1; then
     echo "OK   $n"
@@ -53,6 +55,7 @@ run browser-routing Brand.swift BrowserPolicy.swift
 run browser-verify Brand.swift BrowserOriginPolicy.swift BrowserPolicy.swift VerifyBridge.swift
 run candidate-eligibility CandidateEligibilityText.swift
 run diagnostic-report Brand.swift Clock.swift NodeWatchdog.swift NodeStopReason.swift HealthCheck.swift DiagnosticReport.swift
+run design-effects DesignTokens.swift Design/DesignEffects.swift Design/DesignEventEffect.swift Design/BalanceCountUp.swift Design/RewardShine.swift Design/PresentationMotion.swift Design/NavyPlateDepth.swift Design/SuccessFeedback.swift Design/NodeStatusPulse.swift Design/DesignSurface.swift Design/MenuBarPanel.swift
 run earnings EarningsModel.swift
 run earnings-export Brand.swift EarningsModel.swift ChainActivity.swift EarningsExport.swift
 run fee-confirm EarningsModel.swift

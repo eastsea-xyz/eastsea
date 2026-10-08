@@ -20,6 +20,14 @@ const top = document.getElementById('top');
 const foot = document.getElementById('foot');
 const notice = document.getElementById('notice');
 
+// The explorer uses hashes for routes; focusing the main content must not
+// change the route to #view.
+document.querySelector('.skip')?.addEventListener('click', (event) => {
+  event.preventDefault();
+  view.focus();
+  view.scrollIntoView({ block: 'start' });
+});
+
 // ---- the context every view reads through ----
 
 const ctx = {
@@ -59,19 +67,19 @@ const ctx = {
 
 // ---- header ----
 
-const searchInput = h('input', { id: 'q', type: 'search', placeholder: 'Height, 0x address or tx hash', 'aria-label': 'Search' });
+const searchInput = h('input', { id: 'q', class: 'es-control', type: 'search', placeholder: 'Height, address or transaction hash', 'aria-label': 'Search blocks, addresses and transactions' });
 const searchMsg = h('span', { id: 'search-msg', class: 'small' });
-const nodeInput = h('input', { id: 'node-url', type: 'url', spellcheck: 'false', 'aria-label': 'Node JSON-RPC endpoint' });
-const gatewayInput = h('input', { id: 'gateway-url', type: 'url', spellcheck: 'false', placeholder: DEFAULT_GATEWAY, 'aria-label': 'Public read gateway' });
+const nodeInput = h('input', { id: 'node-url', class: 'es-control', type: 'url', spellcheck: 'false', 'aria-label': 'Node JSON-RPC endpoint' });
+const gatewayInput = h('input', { id: 'gateway-url', class: 'es-control', type: 'url', spellcheck: 'false', placeholder: DEFAULT_GATEWAY, 'aria-label': 'Public read gateway' });
 const nodeMsg = h('span', { class: 'small' });
-const chainPill = h('span', { class: 'pill', id: 'chain' }, 'connecting…');
-const sourcePill = h('span', { class: 'pill plain', id: 'source', title: 'Where this page reads from; changes when a source does not answer' });
-const themeButton = h('button', { class: 'ghost', title: 'Switch theme', onclick: cycleTheme }, '◐');
+const chainPill = h('span', { class: 'pill es-status', id: 'chain' }, 'connecting…');
+const sourcePill = h('span', { class: 'pill es-status plain', id: 'source', title: 'Where this page reads from; changes when a source does not answer' });
+const themeButton = h('button', { class: 'ghost es-control', type: 'button', title: 'Switch theme', 'aria-label': 'Switch theme', onclick: cycleTheme });
 
 /** The header badge: which source answered the last read. */
 function updateSourcePill(n) {
   const kind = n.kind === 'node' ? 'good' : n.kind === 'gateway' ? 'warn' : 'plain';
-  sourcePill.className = `pill ${kind}`;
+  sourcePill.className = `pill es-status ${kind}`;
   sourcePill.title = n.source.url;
   sourcePill.replaceChildren(sourceLabel(n.source));
 }
@@ -90,11 +98,13 @@ function onSourceChange(n, { from, to } = {}) {
 }
 
 top.append(
-  h('a', { class: 'brand', href: '#/' },
-    h('span', { class: 'logo', 'aria-hidden': 'true' }),
-    h('span', { class: 'brand-name' }, 'EastSea Explorer')),
-  chainPill,
-  sourcePill,
+  h('div', { class: 'header-inner' },
+  h('div', { class: 'header-identity' },
+    h('a', { class: 'brand', href: '#/', 'aria-label': 'EastSea Explorer home' },
+      h('img', { class: 'logo', src: 'assets/dawn.svg', width: 32, height: 32, alt: '' }),
+      h('span', { class: 'brand-name' }, h('span', { class: 'es-wordmark' }, 'EastSea'),
+        h('span', { class: 'brand-surface' }, 'Explorer')))),
+  h('div', { class: 'header-source' }, chainPill, sourcePill),
   h('form', {
     id: 'search',
     role: 'search',
@@ -110,7 +120,7 @@ top.append(
       searchInput.value = '';
       location.hash = `#/${route.page}/${route.page === 'block' ? route.height : (route.hash || route.address)}`;
     },
-  }, searchInput, h('button', { type: 'submit' }, 'Search'), searchMsg),
+  }, searchInput, h('button', { type: 'submit', class: 'es-control' }, 'Search'), searchMsg),
   h('details', { id: 'settings' },
     h('summary', {}, 'Settings'),
     h('div', { class: 'settings-body' },
@@ -139,7 +149,7 @@ top.append(
         nodeMsg),
       h('p', { class: 'small muted' }, 'An EastSea node serves JSON-RPC on this Mac at 127.0.0.1:18545 while it runs; when this browser cannot reach it, reads fall back to the public gateway — honest but unverified, and never a write. Empty the gateway field to read from your node only.'))),
   themeButton,
-);
+));
 
 foot.append(
   h('p', { class: 'small muted' },
@@ -230,8 +240,32 @@ function applyTheme() {
   const pref = themePref();
   if (pref) document.documentElement.dataset.theme = pref;
   else delete document.documentElement.dataset.theme;
-  themeButton.textContent = { dark: '☾', light: '☀' }[pref] || '◐';
+  themeButton.replaceChildren(themeIcon(pref));
   themeButton.title = `Theme: ${pref || 'auto'}`;
+  themeButton.setAttribute('aria-label', `Theme: ${pref || 'auto'}. Switch theme`);
+}
+
+/** The same 18 px stroke language in all three theme states. */
+function themeIcon(pref) {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  const part = (tag, attrs) => {
+    const el = document.createElementNS(ns, tag);
+    for (const [key, value] of Object.entries(attrs)) el.setAttribute(key, value);
+    svg.append(el);
+  };
+  if (pref === 'dark') {
+    part('path', { d: 'M20 14.4A8.5 8.5 0 0 1 9.6 4 8.5 8.5 0 1 0 20 14.4Z' });
+  } else if (pref === 'light') {
+    part('circle', { cx: 12, cy: 12, r: 4 });
+    part('path', { d: 'M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5' });
+  } else {
+    part('circle', { cx: 12, cy: 12, r: 8 });
+    part('path', { d: 'M12 4a8 8 0 0 1 0 16Z', fill: 'currentColor', stroke: 'none' });
+  }
+  return svg;
 }
 
 function cycleTheme() {

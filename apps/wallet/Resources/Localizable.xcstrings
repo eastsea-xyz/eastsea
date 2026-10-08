@@ -2734,6 +2734,17 @@
         }
       }
     },
+    "A required app file is missing. The app was not opened." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "필요한 파일이 없어 앱을 열지 않았습니다."
+          }
+        }
+      }
+    },
     "A secondary disk (an external SSD, say) with at least %@ free is recommended. Pick it under Block data location above." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -2800,17 +2811,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "首次使用時收取少量一次性手續費"
-          }
-        }
-      }
-    },
-    "A required app file is missing. The app was not opened." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "필요한 파일이 없어 앱을 열지 않았습니다."
           }
         }
       }
@@ -3224,6 +3224,40 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "網路活動"
+          }
+        }
+      }
+    },
+    "Activity signal unavailable" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Activity signal unavailable"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Indicador de actividad no disponible"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "利用状況の指標を取得できません"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "활동 지표를 확인할 수 없음"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "活动指标不可用"
           }
         }
       }
@@ -4470,6 +4504,40 @@
         }
       }
     },
+    "App address" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "App address"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dirección de la app"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "アプリのアドレス"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "앱 주소"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "应用地址"
+          }
+        }
+      }
+    },
     "Approve" : {
       "localizations" : {
         "en" : {
@@ -4670,6 +4738,40 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "已批准代幣 %@ 供 %@ 使用"
+          }
+        }
+      }
+    },
+    "Apps and names recorded on chain" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apps and names recorded on chain"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apps y nombres registrados en la cadena"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "チェーンに記録されたアプリと名前"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "체인에 기록된 앱과 이름"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "链上记录的应用和名称"
           }
         }
       }
@@ -4979,6 +5081,40 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "返回"
+          }
+        }
+      }
+    },
+    "Back to Explore" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Back to Explore"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Volver a Explorar"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "探索に戻る"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "둘러보기로 돌아가기"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "返回探索"
           }
         }
       }
@@ -6247,6 +6383,40 @@
         }
       }
     },
+    "Category" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Category"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Categoría"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "カテゴリ"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "분류"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "类别"
+          }
+        }
+      }
+    },
     "Change in System Settings…" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -7076,6 +7246,40 @@
         }
       }
     },
+    "Close" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Close"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cerrar"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "閉じる"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "닫기"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "关闭"
+          }
+        }
+      }
+    },
     "Close find bar" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -7723,6 +7927,74 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "聯絡人"
+          }
+        }
+      }
+    },
+    "Content hash not recorded" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Content hash not recorded"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hash de contenido sin registrar"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "コンテンツハッシュ記録なし"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "콘텐츠 해시 기록 없음"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未记录内容哈希"
+          }
+        }
+      }
+    },
+    "Content hash present" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Content hash present"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hash de contenido registrado"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "コンテンツハッシュ記録あり"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "콘텐츠 해시 기록됨"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已记录内容哈希"
           }
         }
       }
@@ -9480,6 +9752,40 @@
         }
       }
     },
+    "Distinct callers in the last 7 days" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Distinct callers in the last 7 days"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Direcciones distintas que llamaron en los últimos 7 días"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "過去7日間に呼び出した異なるアドレス数"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "최근 7일간 호출한 서로 다른 주소 수"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "过去7天内调用的不同地址数"
+          }
+        }
+      }
+    },
     "Don't share country" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -10972,6 +11278,17 @@
         }
       }
     },
+    "Fetching and verifying app files…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "앱 파일을 받아 검증하는 중…"
+          }
+        }
+      }
+    },
     "FileVault is on. After a power cut this Mac waits at the unlock screen; unlock it once and the node comes back by itself. macOS update restarts come back unlocked." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -11007,17 +11324,6 @@
         }
       }
     },
-    "Fetching and verifying app files…" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "앱 파일을 받아 검증하는 중…"
-          }
-        }
-      }
-    },
     "Finalized blocks" : {
       "localizations" : {
         "en" : {
@@ -11048,6 +11354,40 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "已確定的區塊"
+          }
+        }
+      }
+    },
+    "Find apps and .sea names using your own node." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Find apps and .sea names using your own node."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Encuentra apps y nombres .sea usando tu propio nodo."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自分のノードでアプリや .sea 名を検索します。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "내 노드로 앱과 .sea 이름을 찾아보세요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "通过自己的节点查找应用和 .sea 名称。"
           }
         }
       }
@@ -11838,6 +12178,40 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "首頁"
+          }
+        }
+      }
+    },
+    "How results are ordered" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "How results are ordered"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cómo se ordenan los resultados"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "検索結果の並び順"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "검색 결과 정렬 방식"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "结果如何排序"
           }
         }
       }
@@ -13951,6 +14325,40 @@
         }
       }
     },
+    "Lookalike warning" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lookalike warning"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aviso de nombre similar"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "類似名の警告"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "유사 이름 경고"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "相似名称警告"
+          }
+        }
+      }
+    },
     "Looking for the network…" : {
       "localizations" : {
         "en" : {
@@ -15538,6 +15946,40 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "沒有相符內容"
+          }
+        }
+      }
+    },
+    "No matching apps or names." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No matching apps or names."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No hay apps ni nombres que coincidan."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "一致するアプリや名前はありません。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "일치하는 앱이나 이름이 없어요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有匹配的应用或名称。"
           }
         }
       }
@@ -17878,6 +18320,17 @@
         }
       }
     },
+    "Open a local app folder" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "로컬 앱 폴더 열기"
+          }
+        }
+      }
+    },
     "Open in Safari" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -17909,17 +18362,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "在 Safari 中開啟"
-          }
-        }
-      }
-    },
-    "Open a local app folder" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "로컬 앱 폴더 열기"
           }
         }
       }
@@ -20118,6 +20560,40 @@
         }
       }
     },
+    "Publisher" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Publisher"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Publicador"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "公開者"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "게시자"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "发布者"
+          }
+        }
+      }
+    },
     "Purpose: %@" : {
       "localizations" : {
         "en" : {
@@ -21594,6 +22070,40 @@
         }
       }
     },
+    "Registered" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Registered"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fecha de registro"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "登録日"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "등록일"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "注册日期"
+          }
+        }
+      }
+    },
     "Registered a voting node" : {
       "localizations" : {
         "en" : {
@@ -22668,6 +23178,40 @@
         }
       }
     },
+    "Results for %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Results for %@"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Resultados de %@"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ の検索結果"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 검색 결과"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 的搜索结果"
+          }
+        }
+      }
+    },
     "Retire account" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -23323,6 +23867,142 @@
         }
       }
     },
+    "Search" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Search"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Buscar"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "検索"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "검색"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "搜索"
+          }
+        }
+      }
+    },
+    "Search apps and names, or enter an https address" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Search apps and names, or enter an https address"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Busca apps y nombres, o escribe una dirección https"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "アプリや名前を検索するか、https アドレスを入力"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "앱과 이름을 검색하거나 https 주소를 입력하세요"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "搜索应用和名称，或输入 https 地址"
+          }
+        }
+      }
+    },
+    "Search by app name, .sea name or description." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Search by app name, .sea name or description."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Busca por nombre de app, nombre .sea o descripción."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "アプリ名、.sea 名、説明で検索できます。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "앱 이름, .sea 이름 또는 설명으로 검색하세요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "按应用名称、.sea 名称或描述搜索。"
+          }
+        }
+      }
+    },
+    "Search could not be read from your node. Try again when the node is running." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Search could not be read from your node. Try again when the node is running."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se pudo leer la búsqueda de tu nodo. Inténtalo cuando el nodo esté funcionando."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自分のノードから検索結果を読み取れませんでした。ノードが動作しているときに再試行してください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "내 노드에서 검색 결과를 읽지 못했어요. 노드가 실행 중일 때 다시 시도하세요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法从自己的节点读取搜索结果。请在节点运行时重试。"
+          }
+        }
+      }
+    },
     "Search engine" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -23393,6 +24073,40 @@
         }
       }
     },
+    "Search index status unavailable. Results may be incomplete." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Search index status unavailable. Results may be incomplete."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se conoce el estado del índice de búsqueda. Los resultados podrían estar incompletos."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "検索インデックスの状態を取得できません。結果が不完全な可能性があります。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "검색 색인 상태를 확인할 수 없어요. 검색 결과가 완전하지 않을 수 있어요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法获取搜索索引状态，结果可能不完整。"
+          }
+        }
+      }
+    },
     "Search or enter a URL or sea name" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -23424,6 +24138,108 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "搜尋或輸入網址、sea:// 名稱"
+          }
+        }
+      }
+    },
+    "Search reads your own node. Exact names come first, then prefixes and title or description tokens, then distinct contract callers in the last 7 days, then older records. There are no paid placements, publisher boosts or hidden blocklists." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Search reads your own node. Exact names come first, then prefixes and title or description tokens, then distinct contract callers in the last 7 days, then older records. There are no paid placements, publisher boosts or hidden blocklists."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La búsqueda lee tu propio nodo. Primero aparecen los nombres exactos, luego los prefijos y las palabras del título o la descripción, después las direcciones distintas que llamaron a los contratos en los últimos 7 días y, por último, los registros más antiguos. No hay posiciones pagadas, ventajas para publicadores ni listas de bloqueo ocultas."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "検索は自分のノードを読み取ります。名前の完全一致、前方一致、タイトルや説明の単語の一致の順に並び、その後は過去7日間にコントラクトを呼び出した異なるアドレス数、古い記録の順になります。有料掲載、公開者の優遇、非公開のブロックリストはありません。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "검색은 내 노드를 읽어요. 이름이 정확히 일치하는 결과, 이름의 앞부분이 일치하는 결과, 제목이나 설명의 단어가 일치하는 결과 순으로 정렬해요. 그다음에는 최근 7일간 컨트랙트를 호출한 서로 다른 주소 수, 오래된 기록 순으로 정렬해요. 유료 노출, 게시자 우대, 숨겨진 차단 목록은 없어요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "搜索读取自己的节点。先按名称完全匹配、前缀匹配、标题或描述中的词匹配排序，再按过去7天内调用合约的不同地址数及记录从旧到新的顺序排序。没有付费排名、发布者优待或隐藏的屏蔽列表。"
+          }
+        }
+      }
+    },
+    "Search record" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Search record"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Registro de búsqueda"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "検索レコード"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "검색 기록 정보"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "搜索记录详情"
+          }
+        }
+      }
+    },
+    "Searching the chain…" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Searching the chain…"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Buscando en la cadena…"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "チェーンを検索中…"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "체인에서 검색 중…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在搜索链上记录…"
           }
         }
       }
@@ -25626,6 +26442,40 @@
         }
       }
     },
+    "That search is too long. Use a shorter name or phrase." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "That search is too long. Use a shorter name or phrase."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La búsqueda es demasiado larga. Usa un nombre o una frase más corta."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "検索文字列が長すぎます。短い名前や語句を入力してください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "검색어가 너무 길어요. 더 짧은 이름이나 문구를 입력하세요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "搜索内容过长，请使用较短的名称或短语。"
+          }
+        }
+      }
+    },
     "The %@ website." : {
       "localizations" : {
         "en" : {
@@ -25761,6 +26611,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "無法讀取帳戶清單。錢包金鑰已保留。"
+          }
+        }
+      }
+    },
+    "The app could not be fetched from the node. Check that this Mac's node is running and connected." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "노드에서 앱을 받지 못했습니다. 이 Mac의 노드가 실행 중이고 연결되어 있는지 확인해 주세요."
           }
         }
       }
@@ -25971,17 +26832,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "正在將區塊資料複製至新位置並確認，錢包仍可使用。"
-          }
-        }
-      }
-    },
-    "The app could not be fetched from the node. Check that this Mac's node is running and connected." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "노드에서 앱을 받지 못했습니다. 이 Mac의 노드가 실행 중이고 연결되어 있는지 확인해 주세요."
           }
         }
       }
@@ -26258,6 +27108,40 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "確認的金額不是有效的基本單位數。"
+          }
+        }
+      }
+    },
+    "The content hash label only reports that a hash is recorded on chain. It does not establish the publisher's identity or the app's safety." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The content hash label only reports that a hash is recorded on chain. It does not establish the publisher's identity or the app's safety."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La etiqueta de hash de contenido solo indica que hay un hash registrado en la cadena. No acredita la identidad del publicador ni la seguridad de la app."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "コンテンツハッシュの表示は、チェーンにハッシュが記録されていることだけを示します。公開者の身元やアプリの安全性を証明するものではありません。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "콘텐츠 해시 표시는 체인에 해시가 기록되어 있다는 뜻이에요. 게시자의 신원이나 앱의 안전성을 확인한 표시는 아니에요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "内容哈希标签仅表示链上记录了哈希，不证明发布者身份或应用安全性。"
           }
         }
       }
@@ -26679,41 +27563,6 @@
         }
       }
     },
-    "The network cannot be found right now. Trying again. Your balance is safe." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "The network cannot be found right now. Trying again. Your balance is safe."
-          }
-        },
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "今はネットワークが見つかりません。再試行しています。残高は安全です。"
-          }
-        },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "네트워크를 찾지 못하고 있어요. 다시 시도해 볼게요. 잔액은 안전해요."
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "暂时找不到网络，正在重试。你的余额是安全的。"
-          }
-        },
-        "zh-Hant" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "目前找不到網路，正在重試。你的餘額很安全。"
-          }
-        }
-      }
-    },
     "The name registry could not be read." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -26745,6 +27594,41 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "无法读取名称注册表。"
+          }
+        }
+      }
+    },
+    "The network cannot be found right now. Trying again. Your balance is safe." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The network cannot be found right now. Trying again. Your balance is safe."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "今はネットワークが見つかりません。再試行しています。残高は安全です。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "네트워크를 찾지 못하고 있어요. 다시 시도해 볼게요. 잔액은 안전해요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂时找不到网络，正在重试。你的余额是安全的。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "目前找不到網路，正在重試。你的餘額很安全。"
           }
         }
       }
@@ -28100,6 +28984,51 @@
         }
       }
     },
+    "The node returned an invalid app bundle. The app was not opened." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "노드에서 받은 앱 번들이 올바르지 않아 열지 않았습니다."
+          }
+        }
+      }
+    },
+    "The node returned an unreadable search response." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The node returned an unreadable search response."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "El nodo devolvió una respuesta de búsqueda ilegible."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ノードから読み取れない検索応答が返されました。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "노드가 읽을 수 없는 검색 응답을 보내왔어요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "节点返回了无法读取的搜索响应。"
+          }
+        }
+      }
+    },
     "The node starts after the block data move." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -28306,17 +29235,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "節點已停止，正在重新啟動。"
-          }
-        }
-      }
-    },
-    "The node returned an invalid app bundle. The app was not opened." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "노드에서 받은 앱 번들이 올바르지 않아 열지 않았습니다."
           }
         }
       }
@@ -29023,6 +29941,17 @@
         }
       }
     },
+    "The wallet context changed. Open the app again." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "지갑 상태가 바뀌었습니다. 앱을 다시 열어 주세요."
+          }
+        }
+      }
+    },
     "The wallet handle does not match its account. The keys have been kept." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -29054,17 +29983,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "錢包金鑰檔案與帳戶不符。金鑰已保留。"
-          }
-        }
-      }
-    },
-    "The wallet context changed. Open the app again." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "지갑 상태가 바뀌었습니다. 앱을 다시 열어 주세요."
           }
         }
       }
@@ -30882,6 +31800,40 @@
         }
       }
     },
+    "This name resembles %@. It may be a phishing attempt. Check the name and publisher." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This name resembles %@. It may be a phishing attempt. Check the name and publisher."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Este nombre se parece a %@. Podría ser un intento de phishing. Comprueba el nombre y el publicador."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "この名前は %@ に似ています。フィッシングの可能性があります。名前と公開者を確認してください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이 이름은 %@와 비슷해요. 피싱 시도일 수 있어요. 이름과 게시자를 확인하세요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此名称与 %@ 相似，可能存在钓鱼风险。请核对名称和发布者。"
+          }
+        }
+      }
+    },
     "This node cannot show your full history yet. Update the node or switch to another node." : {
       "localizations" : {
         "en" : {
@@ -30912,6 +31864,74 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "此節點尚無法顯示完整紀錄，請更新節點或改用另一個節點。"
+          }
+        }
+      }
+    },
+    "This node does not support app search yet. Update the node." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This node does not support app search yet. Update the node."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Este nodo aún no admite la búsqueda de apps. Actualiza el nodo."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "このノードはまだアプリ検索に対応していません。ノードを更新してください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이 노드는 아직 앱 검색을 지원하지 않아요. 노드를 업데이트하세요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此节点尚不支持应用搜索，请更新节点。"
+          }
+        }
+      }
+    },
+    "This node has no app or name registry sources configured." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This node has no app or name registry sources configured."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Este nodo no tiene configuradas fuentes del registro de apps o nombres."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "このノードにはアプリまたは名前のレジストリソースが設定されていません。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이 노드에는 앱 또는 이름 레지스트리 소스가 설정되어 있지 않아요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此节点尚未配置应用或名称注册表来源。"
           }
         }
       }
@@ -31050,6 +32070,40 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "此節點保留的紀錄從區塊 #%@ 開始。"
+          }
+        }
+      }
+    },
+    "This node's search index is incomplete. Some chain records may be missing from these results." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This node's search index is incomplete. Some chain records may be missing from these results."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "El índice de búsqueda de este nodo está incompleto. Algunos registros de la cadena podrían faltar en estos resultados."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "このノードの検索インデックスは不完全です。結果に一部のチェーン記録が含まれない可能性があります。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이 노드의 검색 색인이 완전하지 않아요. 일부 체인 기록이 검색 결과에 없을 수 있어요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此节点的搜索索引不完整，结果中可能缺少部分链上记录。"
           }
         }
       }
@@ -32420,6 +33474,12 @@
             "state" : "translated",
             "value" : "再試一次"
           }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Intentar de nuevo"
+          }
         }
       }
     },
@@ -32663,6 +33723,17 @@
         }
       }
     },
+    "Turn on developer mode to open a local app folder." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "로컬 앱 폴더를 열려면 개발자 모드를 켜 주세요."
+          }
+        }
+      }
+    },
     "Turn on “Removable Volumes” for EastSea in System Settings › Privacy & Security › Files and Folders." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -32694,17 +33765,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "請在「系統設定」›「隱私權與安全性」›「檔案與資料夾」中，開啟 EastSea 的「卸除式卷宗」。"
-          }
-        }
-      }
-    },
-    "Turn on developer mode to open a local app folder." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "로컬 앱 폴더를 열려면 개발자 모드를 켜 주세요."
           }
         }
       }

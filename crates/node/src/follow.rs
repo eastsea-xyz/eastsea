@@ -1457,6 +1457,7 @@ fn rollback(chain: &Chain, cp: crate::store::Checkpoint) {
         timestamp: summary.timestamp_ms,
         state,
         receipts: vec![],
+        call_targets: vec![],
         tx_hashes: summary.txs.clone(),
         gas: Default::default(),
         new_slots: 0,

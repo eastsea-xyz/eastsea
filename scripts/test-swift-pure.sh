@@ -9,7 +9,6 @@ mkdir -p "$root/tmp/swift-module-cache"
 export TMPDIR="$root/tmp"
 localizations="$root/tmp/wallet-languages/WalletLocalizations.bundle"
 /usr/bin/python3 scripts/wallet-l10n.py prepare-tests --out "$localizations" || exit 1
-compile_gate="$HOME/.claude/playbooks/aether-team/wait-compile.sh"
 compile_gate="$PWD/scripts/compile-gate.sh"
 W=apps/wallet/Sources; T=apps/wallet/Tests; bad=0
 run() {
@@ -62,6 +61,7 @@ run sea-url SeaURL.swift
 run sea-resolution SeaURL.swift SeaNameResolver.swift
 run account-history Brand.swift ChainActivity.swift
 run assets EarningsModel.swift TokenAssets.swift
+run app-search AppSearch.swift BrowserOriginPolicy.swift
 run balance-sources Brand.swift EarningsModel.swift ChainActivity.swift BalanceBreakdown.swift EarningsExport.swift
 run balance-history BalanceHistory.swift
 run browser-origin BrowserOriginPolicy.swift
@@ -122,6 +122,7 @@ if [ "$(uname -s)" = Darwin ]; then
     bad=$((bad+1))
   fi
   for fixture in update-daemon update-listener; do
+    "$HOME/.claude/playbooks/aether-team/wait-compile.sh" || exit 1
     if bash "scripts/test-$fixture.sh" > "tmp/sw-$fixture.out" 2> "tmp/sw-$fixture.err"; then
       echo "OK   $fixture"
     else

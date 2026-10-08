@@ -45,6 +45,18 @@ final class BrowserController: NSObject, ObservableObject {
     @Published private(set) var currentURL: URL?
     @Published private(set) var appIdentity: AppBrowserIdentity?
     @Published private(set) var contentLoading = false
+    /// Search stays native and preserves the node's record order and coverage.
+    @Published private(set) var searchQuery: String?
+    @Published private(set) var searchResults: [AppSearchResult] = []
+    @Published private(set) var searchBusy = false
+    @Published private(set) var searchFailure: String?
+    @Published private(set) var searchInfo: AppSearchInfo?
+    @Published private(set) var searchSuggestions: [AppSearchResult] = []
+    @Published private(set) var suggestionsBusy = false
+    @Published private(set) var suggestionsFailure: String?
+    @Published private(set) var suggestionsInfo: AppSearchInfo?
+    @Published var searchRecord: AppSearchResult?
+    @Published private(set) var searchRecordInfo: AppSearchInfo?
     private var appBundle: AppBundle?
     private var appViewKey: String?
     private var contentTask: Task<Void, Never>?
@@ -141,6 +153,11 @@ final class BrowserController: NSObject, ObservableObject {
     /// The URL a just-acknowledged warning may load (one shot, so the same
     /// warning cannot loop).
     private var approvedURL: URL?
+    private var searchTask: Task<Void, Never>?
+    private var suggestionTask: Task<Void, Never>?
+    private var searchRequestID = UUID()
+    private var suggestionRequestID = UUID()
+    private var searchNeedsRefresh = false
     private var observations: [NSKeyValueObservation] = []
     private var modelSubscriptions: Set<AnyCancellable> = []
     private var documentGeneration: UInt64 = 0
@@ -243,6 +260,14 @@ final class BrowserController: NSObject, ObservableObject {
 
     func accountDidChange() {
         guard !closed else { return }
+        cancelSearchRead()
+        dismissSuggestions()
+        searchRecord = nil
+        searchRecordInfo = nil
+        searchResults = []
+        searchFailure = nil
+        searchInfo = nil
+        searchNeedsRefresh = searchQuery != nil
         let hadApp = appIdentity != nil || contentLoading
         cancelContentResolution()
         pendingNavigation = nil
@@ -270,12 +295,17 @@ final class BrowserController: NSObject, ObservableObject {
         privatePermissions.removeAll()
         allowances.removeAll()
         requestedTokenAllowances.removeAll()
-        committedOrigin = webView?.url.flatMap(browserOrigin(for:))
+        committedOrigin = searchQuery == nil ? webView?.url.flatMap(browserOrigin(for:)) : nil
         refreshSitePermissions()
     }
 
     func suspend() {
         guard !suspended else { return }
+        if searchBusy { searchNeedsRefresh = true }
+        cancelSearchRead()
+        dismissSuggestions()
+        searchRecord = nil
+        searchRecordInfo = nil
         if !closed { interruptedNavigation = pendingNavigation }
         cancelContentResolution()
         pendingNavigation = nil
@@ -297,7 +327,12 @@ final class BrowserController: NSObject, ObservableObject {
         let interrupted = suspended ? interruptedNavigation : nil
         interruptedNavigation = nil
         suspended = false
-        committedOrigin = webView?.url.flatMap(browserOrigin(for:))
+        if let query = searchQuery, searchNeedsRefresh {
+            searchNeedsRefresh = false
+            search(query)
+            return
+        }
+        committedOrigin = searchQuery == nil ? webView?.url.flatMap(browserOrigin(for:)) : nil
         refreshSitePermissions()
         guard let interrupted,
               interrupted.accountID == model?.accountStore.activeAccount?.id,
@@ -552,6 +587,185 @@ final class BrowserController: NSObject, ObservableObject {
         }
     }
 
+    /// Search is a native surface. The retained page cannot ask the wallet
+    /// or navigate underneath it while results are being displayed.
+    func search(_ text: String = "") {
+        guard !closed, !suspended else { return }
+        cancelSearchRead()
+        dismissSuggestions()
+        searchRecord = nil
+        searchRecordInfo = nil
+        cancelContentResolution()
+        pendingNavigation = nil
+        interruptedNavigation = nil
+        discardActiveNavigation()
+        acceptsNavigationCallbacks = false
+        invalidateDocument()
+        webView?.stopLoading()
+        isLoading = false
+        warning = nil
+        approvedURL = nil
+        navigationTarget = nil
+        refusePendingDownloads()
+        refreshSitePermissions()
+        notice = nil
+        let query = AppSearchInput.seaName(in: text) ?? text.trimmingCharacters(in: .whitespacesAndNewlines)
+        searchQuery = query
+        canGoBack = true
+        addressField = query
+        searchResults = []
+        searchFailure = nil
+        searchInfo = nil
+        searchNeedsRefresh = false
+        guard !query.isEmpty else { return }
+        let request: AppSearchRequest
+        do { request = try AppSearchRequest(query: query) }
+        catch { searchFailure = AppSearchFailure.queryTooLong.message; return }
+        guard let port = model?.nodeRpcPort else {
+            searchFailure = AppSearchFailure.unavailable.message
+            return
+        }
+        let requestID = searchRequestID
+        let generation = documentGeneration
+        let accountID = model?.accountStore.activeAccount?.id
+        let address = model?.address.lowercased()
+        let chainID = model?.networkChainId
+        searchBusy = true
+        searchTask = Task { [weak self] in
+            let result = await Self.readSearch(port: port, request: request)
+            guard !Task.isCancelled, let self, !self.closed, !self.suspended,
+                  self.searchRequestID == requestID, self.documentGeneration == generation,
+                  self.searchQuery == query, self.model?.nodeRpcPort == port,
+                  self.model?.accountStore.activeAccount?.id == accountID,
+                  self.model?.address.lowercased() == address,
+                  self.model?.networkChainId == chainID else { return }
+            self.searchTask = nil
+            self.searchBusy = false
+            switch result {
+            case .success(let response):
+                self.searchResults = response.records
+                self.searchInfo = response.info
+            case .failure(let failure): self.searchFailure = failure.message
+            }
+        }
+    }
+
+    /// Editing, leaving the address field, suspension and navigation each
+    /// invalidate the read, including repeated queries with different epochs.
+    func suggest(_ text: String) {
+        dismissSuggestions()
+        guard !closed, !suspended, case .search(let query) = AppSearchInput.destination(for: text),
+              !query.isEmpty else { return }
+        let request: AppSearchRequest
+        do { request = try AppSearchRequest(query: query, limit: 5) }
+        catch { suggestionsFailure = AppSearchFailure.queryTooLong.message; return }
+        guard let port = model?.nodeRpcPort else { return }
+        let requestID = suggestionRequestID
+        let accountID = model?.accountStore.activeAccount?.id
+        let address = model?.address.lowercased()
+        let chainID = model?.networkChainId
+        suggestionTask = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: 300_000_000) }
+            catch { return }
+            guard !Task.isCancelled, let self, !self.closed, !self.suspended,
+                  self.suggestionRequestID == requestID else { return }
+            self.suggestionsBusy = true
+            let result = await Self.readSearch(port: port, request: request)
+            guard !Task.isCancelled, !self.closed, !self.suspended,
+                  self.suggestionRequestID == requestID, self.model?.nodeRpcPort == port,
+                  self.model?.accountStore.activeAccount?.id == accountID,
+                  self.model?.address.lowercased() == address,
+                  self.model?.networkChainId == chainID,
+                  AppSearchInput.destination(for: self.addressField) == .search(query) else { return }
+            self.suggestionTask = nil
+            self.suggestionsBusy = false
+            switch result {
+            case .success(let response):
+                self.searchSuggestions = response.records
+                self.suggestionsInfo = response.info
+            case .failure(let failure): self.suggestionsFailure = failure.message
+            }
+        }
+    }
+
+    func dismissSuggestions() {
+        suggestionTask?.cancel()
+        suggestionTask = nil
+        suggestionRequestID = UUID()
+        searchSuggestions = []
+        suggestionsBusy = false
+        suggestionsFailure = nil
+        suggestionsInfo = nil
+    }
+
+    func showSearchRecord(_ record: AppSearchResult) {
+        guard !closed, !suspended else { return }
+        cancelPendingAsks()
+        refusePendingDownloads()
+        warning = nil
+        approvedURL = nil
+        searchRecordInfo = suggestionsInfo
+        dismissSuggestions()
+        searchRecord = record
+    }
+
+    func dismissSearch() {
+        let wasSearching = searchQuery != nil
+        cancelSearchRead()
+        dismissSuggestions()
+        searchRecord = nil
+        searchRecordInfo = nil
+        searchQuery = nil
+        canGoBack = navigationIndex > 0
+        searchResults = []
+        searchFailure = nil
+        searchInfo = nil
+        searchNeedsRefresh = false
+        guard wasSearching else { return }
+        addressField = webView?.url.map { urlBarText($0) } ?? currentURL?.absoluteString ?? ""
+        if !closed, !suspended {
+            committedOrigin = webView?.url.flatMap(browserOrigin(for:))
+            refreshSitePermissions()
+        }
+    }
+
+    func refreshSearchForNode() {
+        searchRecord = nil
+        searchRecordInfo = nil
+        if let query = searchQuery {
+            if suspended { searchNeedsRefresh = true }
+            else { search(query) }
+        } else { dismissSuggestions() }
+    }
+
+    private func cancelSearchRead() {
+        searchTask?.cancel()
+        searchTask = nil
+        searchRequestID = UUID()
+        searchBusy = false
+    }
+
+    private struct SearchResponse: Sendable {
+        let records: [AppSearchResult]
+        let info: AppSearchInfo?
+    }
+
+    nonisolated private static func readSearch(port: UInt16, request: AppSearchRequest) async -> Result<SearchResponse, AppSearchFailure> {
+        async let recordsRead = nodeCall(port: port, method: AppSearchRequest.method, params: request.params)
+        async let infoRead = nodeCall(port: port, method: "aether_searchInfo", params: [])
+        let (recordsReply, infoReply) = await (recordsRead, infoRead)
+        switch recordsReply {
+        case .success(let value):
+            let info: AppSearchInfo?
+            if case .success(let value) = infoReply { info = try? AppSearchInfo.decode(from: value) }
+            else { info = nil }
+            do { return .success(SearchResponse(records: try request.results(from: value), info: info)) }
+            catch { return .failure(.malformedResponse) }
+        case .failure(let error):
+            return .failure(error.code == -32601 ? .unsupported : .unavailable)
+        }
+    }
+
     /// Load a URL through the same rules a link goes through. Address input is
     /// normalized by BrowserSession; every URL is still checked here.
     func load(_ url: URL) {
@@ -565,6 +779,7 @@ final class BrowserController: NSObject, ObservableObject {
 
     private func performLoad(_ url: URL, historyTarget: UUID?) {
         guard !suspended, !closed else { return }
+        dismissSearch()
         cancelContentResolution()
         navigationTarget = historyTarget
         notice = nil
@@ -634,6 +849,7 @@ final class BrowserController: NSObject, ObservableObject {
     }
 
     func goBack() {
+        if searchQuery != nil { dismissSearch(); return }
         guard navigationIndex > 0 else { return }
         navigate(to: navigationItems[navigationIndex - 1])
     }
@@ -645,6 +861,7 @@ final class BrowserController: NSObject, ObservableObject {
 
     func navigate(to item: NavigationItem) {
         guard !suspended, navigationItems.contains(where: { $0.id == item.id }) else { return }
+        dismissSearch()
         navigationTarget = item.id
         guard let url = item.url else {
             showHome(historyTarget: item.id)
@@ -683,6 +900,7 @@ final class BrowserController: NSObject, ObservableObject {
 
     private func showHome(historyTarget: UUID?) {
         guard !suspended, !closed else { return }
+        dismissSearch()
         cancelContentResolution()
         pendingNavigation = nil
         interruptedNavigation = nil
@@ -708,6 +926,7 @@ final class BrowserController: NSObject, ObservableObject {
     }
 
     func reload() {
+        if let query = searchQuery { search(query); return }
         guard !suspended, !closed, let url = currentURL else { return }
         guard let view = webView, let documentURL = view.url else {
             performLoad(url, historyTarget: nil)
@@ -727,6 +946,7 @@ final class BrowserController: NSObject, ObservableObject {
     }
 
     func stop() {
+        if searchQuery != nil { dismissSearch(); return }
         cancelContentResolution()
         pendingNavigation = nil
         interruptedNavigation = nil
@@ -828,6 +1048,7 @@ final class BrowserController: NSObject, ObservableObject {
     /// provider and outstanding sheets before another request can be accepted.
     func environmentDidChange() {
         accountDidChange()
+        refreshSearchForNode()
     }
 
     private func cancelContentResolution() {
@@ -963,7 +1184,7 @@ final class BrowserController: NSObject, ObservableObject {
     }
 
     private func validatedBridgeOrigin(_ message: WKScriptMessage) -> String? {
-        guard !suspended, !closed, message.frameInfo.isMainFrame,
+        guard !suspended, !closed, searchQuery == nil, searchRecord == nil, message.frameInfo.isMainFrame,
               let view = message.webView, view === webView,
               let url = view.url, let expected = committedOrigin,
               browserOrigin(for: url) == expected else { return nil }
@@ -1099,7 +1320,7 @@ final class BrowserController: NSObject, ObservableObject {
     }
 
     private func approvalIsCurrent(_ pending: PendingAsk) -> Bool {
-        guard !suspended, !closed, let model, !model.exploreLocked,
+        guard !suspended, !closed, searchQuery == nil, searchRecord == nil, let model, !model.exploreLocked,
               !pending.accountAddress.isEmpty,
               model.accountStore.activeAccount?.id == pending.accountID,
               model.address.lowercased() == pending.accountAddress,
@@ -1745,7 +1966,8 @@ extension BrowserController: WKNavigationDelegate, WKUIDelegate, WKDownloadDeleg
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  preferences: WKWebpagePreferences) async -> WKNavigationActionPolicy {
-        guard webView === self.webView, !suspended, let url = navigationAction.request.url else { return .cancel }
+        guard webView === self.webView, !suspended, searchQuery == nil, searchRecord == nil,
+              let url = navigationAction.request.url else { return .cancel }
         if Self.isActionLink(url) {
             // Trusted anchor clicks are intercepted in an isolated world.
             // Reaching this delegate means an automatic/scripted action.
@@ -1824,7 +2046,8 @@ extension BrowserController: WKNavigationDelegate, WKUIDelegate, WKDownloadDeleg
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse) async -> WKNavigationResponsePolicy {
-        guard webView === self.webView, !suspended, let url = navigationResponse.response.url else { return .cancel }
+        guard webView === self.webView, !suspended, searchQuery == nil, searchRecord == nil,
+              let url = navigationResponse.response.url else { return .cancel }
         if navigationResponse.isForMainFrame {
             if url.scheme?.lowercased() == AppBrowserIdentity.scheme {
                 guard navigationAllowed(url) else { return .cancel }
@@ -1944,7 +2167,7 @@ extension BrowserController: WKNavigationDelegate, WKUIDelegate, WKDownloadDeleg
 
     func download(_ download: WKDownload, decideDestinationUsing response: URLResponse,
                   suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
-        guard !suspended, pendingDownloads.count < 3,
+        guard !suspended, searchQuery == nil, searchRecord == nil, pendingDownloads.count < 3,
               let url = response.url ?? download.originalRequest?.url,
               let origin = downloadOrigin(for: url) else {
             completionHandler(nil)
@@ -2005,7 +2228,8 @@ extension BrowserController: WKNavigationDelegate, WKUIDelegate, WKDownloadDeleg
     /// No popups, no new windows: everything stays in this tab.
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                  for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        guard webView === self.webView, !suspended, navigationAction.sourceFrame.isMainFrame else { return nil }
+        guard webView === self.webView, !suspended, searchQuery == nil, searchRecord == nil,
+              navigationAction.sourceFrame.isMainFrame else { return nil }
         if navigationAction.targetFrame == nil, let url = navigationAction.request.url, Self.isActionLink(url) {
             handleActionLink(url, hasUserGesture: false)
         } else if navigationAction.targetFrame == nil, let url = navigationAction.request.url {

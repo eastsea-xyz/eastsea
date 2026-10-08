@@ -24,7 +24,7 @@ struct BrowserWorkspace: View {
         VStack(spacing: 0) {
             BrowserTabStrip(session: session)
             chrome
-            if browser.appIdentity?.isDeveloper == true {
+            if browser.searchQuery == nil, browser.appIdentity?.isDeveloper == true {
                 Label("In development · not verified", systemImage: "exclamationmark.triangle.fill")
                     .font(.aeFootnote.bold()).foregroundStyle(DesignTokens.Palette.danger.color)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -38,7 +38,7 @@ struct BrowserWorkspace: View {
             if browser.isLoading {
                 ProgressView(value: browser.estimatedProgress).progressViewStyle(.linear).frame(height: 2)
             }
-            if showFind { BrowserFindBar(browser: browser) { closeFind() } }
+            if showFind, browser.searchQuery == nil { BrowserFindBar(browser: browser) { closeFind() } }
             if let notice = browser.notice {
                 Text(notice).font(.aeFootnote).foregroundStyle(Color.warn)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -51,6 +51,13 @@ struct BrowserWorkspace: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear { browser.resume() }
         .onDisappear { browser.suspend() }
+        .onChange(of: browser.addressField) { _, text in
+            if addressFocused { browser.suggest(text) }
+        }
+        .onChange(of: addressFocused) { _, focused in
+            if focused { browser.suggest(browser.addressField) }
+            else { browser.dismissSuggestions() }
+        }
         .sheet(item: warningBinding) { warning in
             SiteWarningSheet(warning: warning, browser: browser).frame(idealWidth: 460)
         }
@@ -59,6 +66,9 @@ struct BrowserWorkspace: View {
         }
         .sheet(item: downloadBinding) { prompt in
             BrowserDownloadSheet(prompt: prompt, browser: browser)
+        }
+        .sheet(item: searchRecordBinding) { record in
+            AppSearchRecordSheet(record: record, info: browser.searchRecordInfo) { browser.searchRecord = nil }
         }
         .sheet(isPresented: $showLibrary) { BrowserLibraryPanel(session: session).frame(idealWidth: 540, idealHeight: 580) }
         .sheet(isPresented: $editingFavorite) { BrowserBookmarkEditor(session: session) }
@@ -87,6 +97,13 @@ struct BrowserWorkspace: View {
         let presentedID = browser.downloadPrompt?.id
         return Binding(get: { browser.downloadPrompt }, set: { value in
             if value == nil, browser.downloadPrompt?.id == presentedID { browser.refuseDownload(id: presentedID) }
+        })
+    }
+
+    private var searchRecordBinding: Binding<AppSearchResult?> {
+        let presentedID = browser.searchRecord?.id
+        return Binding(get: { browser.searchRecord }, set: { value in
+            if value == nil, browser.searchRecord?.id == presentedID { browser.searchRecord = nil }
         })
     }
 
@@ -119,6 +136,11 @@ struct BrowserWorkspace: View {
                         }
                     }
                 }
+                if browser.suggestionsBusy || !browser.searchSuggestions.isEmpty || browser.suggestionsFailure != nil
+                    || browser.suggestionsInfo?.incomplete == true || browser.suggestionsInfo?.usageComplete == false
+                    || browser.suggestionsInfo?.sourcesConfigured == false {
+                    appSuggestions
+                }
             }
         }
         .padding(.horizontal, 12).padding(.vertical, 10)
@@ -132,7 +154,7 @@ struct BrowserWorkspace: View {
                     .help("Back to Home").accessibilityLabel("Back to Home")
             }
             Button { browser.goBack() } label: { Image(systemName: "chevron.left") }
-                .disabled(!browser.canGoBack).help("Back").accessibilityLabel("Back")
+                .disabled(!browser.canGoBack && browser.searchQuery == nil).help("Back").accessibilityLabel("Back")
                 .onLongPressGesture { showBackHistory = true }
                 .popover(isPresented: $showBackHistory) { navigationHistory(browser.backHistory) }
                 .contextMenu { historyButtons(browser.backHistory) }
@@ -141,14 +163,47 @@ struct BrowserWorkspace: View {
                 .onLongPressGesture { showForwardHistory = true }
                 .popover(isPresented: $showForwardHistory) { navigationHistory(browser.forwardHistory) }
                 .contextMenu { historyButtons(browser.forwardHistory) }
-            Button { browser.isLoading || browser.contentLoading ? browser.stop() : browser.reload() } label: {
-                Image(systemName: browser.isLoading || browser.contentLoading ? "xmark" : "arrow.clockwise")
-            }.disabled(browser.webView == nil && browser.currentURL == nil)
-                .help(browser.isLoading || browser.contentLoading ? String(localized: "Stop loading") : String(localized: "Reload"))
-                .accessibilityLabel(browser.isLoading || browser.contentLoading ? String(localized: "Stop loading") : String(localized: "Reload"))
+            Button { browser.isLoading || browser.contentLoading || browser.searchBusy ? browser.stop() : browser.reload() } label: {
+                Image(systemName: browser.isLoading || browser.contentLoading || browser.searchBusy ? "xmark" : "arrow.clockwise")
+            }.disabled(browser.webView == nil && browser.currentURL == nil && browser.searchQuery == nil)
+                .help(browser.isLoading || browser.contentLoading || browser.searchBusy ? String(localized: "Stop loading") : String(localized: "Reload"))
+                .accessibilityLabel(browser.isLoading || browser.contentLoading || browser.searchBusy ? String(localized: "Stop loading") : String(localized: "Reload"))
             Button { session.goHome() } label: { Image(systemName: "square.grid.2x2") }
                 .help("Start page").accessibilityLabel("Start page")
         }.buttonStyle(.plain).fixedSize()
+    }
+
+    private var appSuggestions: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: DesignTokens.Space.s2) {
+                if browser.suggestionsBusy {
+                    ProgressView(String(localized: "Searching the chain…")).controlSize(.small)
+                }
+                if let failure = browser.suggestionsFailure {
+                    Text(failure).font(.aeFootnote).foregroundStyle(Color.warn)
+                }
+                if !browser.suggestionsBusy {
+                    AppSearchIndexNotice(info: browser.suggestionsInfo)
+                }
+                ForEach(Array(browser.searchSuggestions.enumerated()), id: \.offset) { _, record in
+                    Button {
+                        browser.showSearchRecord(record)
+                        addressFocused = false
+                    } label: {
+                        VStack(alignment: .leading, spacing: DesignTokens.Space.s1) {
+                            Text(verbatim: record.name).font(.aeHeadline)
+                            if !record.title.isEmpty && record.title != record.name {
+                                Text(verbatim: record.title).font(.aeFootnote).foregroundStyle(.secondary)
+                            }
+                            AppSearchHashLabel(present: record.verified)
+                            AppSearchLookalikeWarning(name: record.lookalike)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                    }.buttonStyle(.plain)
+                    Divider()
+                }
+            }.padding(.vertical, DesignTokens.Space.s2)
+        }.frame(maxHeight: 240)
     }
 
     private func navigationHistory(_ items: [BrowserController.NavigationItem]) -> some View {
@@ -179,12 +234,12 @@ struct BrowserWorkspace: View {
                     (browser.connectedAccount != nil ? "link.circle.fill" : (browser.isSecureOrigin ? "lock.fill" : "globe")))
                     .foregroundStyle(browser.connectedAccount != nil ? Color.accentColor : Color.secondary)
             }.buttonStyle(.plain).accessibilityLabel("Site permissions").help("Site permissions")
-                .disabled(browser.currentURL == nil)
+                .disabled(browser.currentURL == nil || browser.searchQuery != nil)
                 .popover(isPresented: $showPermissions) {
                     BrowserSitePermissionsPanel(browser: browser).frame(idealWidth: 360)
                 }
             VStack(alignment: .leading, spacing: 2) {
-                if !browser.displayOrigin.isEmpty {
+                if browser.searchQuery == nil, !browser.displayOrigin.isEmpty {
                     HStack(spacing: 5) {
                         if browser.connectedAccount != nil { Text("Connected").foregroundStyle(Color.accentColor) }
                         Text(verbatim: browser.displayOrigin).textSelection(.enabled).truncationMode(.middle)
@@ -212,6 +267,12 @@ struct BrowserWorkspace: View {
 
     private var pageTools: some View {
         HStack(spacing: 12) {
+            Button {
+                addressFocused = false
+                if case .search(let query) = AppSearchInput.destination(for: browser.addressField) { browser.search(query) }
+                else { browser.search() }
+            } label: { Image(systemName: "magnifyingglass") }
+                .help("Search").accessibilityLabel("Search")
             #if os(macOS)
             if developerMode {
                 Button { browser.openLocalAppFolder() } label: { Image(systemName: "folder") }
@@ -220,17 +281,17 @@ struct BrowserWorkspace: View {
             #endif
             Button { session.toggleBookmark() } label: {
                 Image(systemName: session.currentBookmark == nil ? "star" : "star.fill")
-            }.disabled(browser.currentURL == nil)
+            }.disabled(browser.currentURL == nil || browser.searchQuery != nil)
                 .help("Favorite this page").accessibilityLabel("Favorite this page")
             Button { showLibrary = true } label: { Image(systemName: "book") }
                 .help("Bookmarks and history").accessibilityLabel("Bookmarks and history")
             Menu {
-                Button("Find in page", systemImage: "magnifyingglass") { showFind = true }.disabled(browser.webView == nil)
-                Button("Zoom in", systemImage: "plus.magnifyingglass") { browser.zoomIn() }.disabled(browser.webView == nil)
-                Button("Zoom out", systemImage: "minus.magnifyingglass") { browser.zoomOut() }.disabled(browser.webView == nil)
-                Button("Reset zoom", systemImage: "1.magnifyingglass") { browser.resetZoom() }.disabled(browser.webView == nil)
+                Button("Find in page", systemImage: "magnifyingglass") { showFind = true }.disabled(browser.webView == nil || browser.searchQuery != nil)
+                Button("Zoom in", systemImage: "plus.magnifyingglass") { browser.zoomIn() }.disabled(browser.webView == nil || browser.searchQuery != nil)
+                Button("Zoom out", systemImage: "minus.magnifyingglass") { browser.zoomOut() }.disabled(browser.webView == nil || browser.searchQuery != nil)
+                Button("Reset zoom", systemImage: "1.magnifyingglass") { browser.resetZoom() }.disabled(browser.webView == nil || browser.searchQuery != nil)
                 Divider()
-                if let url = browser.currentURL {
+                if browser.searchQuery == nil, let url = browser.currentURL {
                     ShareLink(item: url) { Label("Share", systemImage: "square.and.arrow.up") }
                     Button("Open in Safari", systemImage: "safari") { BrowserExternal.openInSafari(url) }
                         .disabled(!["https", "http"].contains(url.scheme?.lowercased() ?? ""))
@@ -247,7 +308,9 @@ struct BrowserWorkspace: View {
     }
 
     @ViewBuilder private var content: some View {
-        if browser.contentLoading {
+        if browser.searchQuery != nil {
+            AppSearchPage(browser: browser)
+        } else if browser.contentLoading {
             Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let webView = browser.webView {
             WebViewHolder(webView: webView).id(browser.webViewGeneration)
@@ -344,6 +407,14 @@ struct BrowserStartPage: View {
                     }
                 }
                 VStack(alignment: .leading, spacing: 12) {
+                    Button { session.controller.search() } label: {
+                        VStack(alignment: .leading, spacing: DesignTokens.Space.s1) {
+                            Label("Search", systemImage: "magnifyingglass").font(.aeHeadline)
+                            Text("Find apps and .sea names using your own node.")
+                                .font(.aeBody).foregroundStyle(.secondary)
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }.buttonStyle(.plain)
+                    Divider()
                     Text("EastSea apps").font(.aeHeadline)
                     Text("The app list will update when the registry is available.").font(.aeFootnote).foregroundStyle(.secondary)
                     ForEach(session.registry.apps) { app in

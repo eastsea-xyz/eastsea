@@ -140,6 +140,8 @@
 		554F88B6BC236C874C2227E1 /* NodeWatchdog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51F3FF6BB1FEAEB9503220A4 /* NodeWatchdog.swift */; };
 		56587DFC41CC801B71FB6D7E /* EarningsExport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C04312C5DE9BE7FCAABC3D93 /* EarningsExport.swift */; };
 		576FB72021E6A746C1A7AF9B /* network.json in Resources */ = {isa = PBXBuildFile; fileRef = AB6E5651AC1948FECDAE69D4 /* network.json */; };
+		57E8068817E0AF33E5608FCE /* AppSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E3B7F604578982BBC93716C /* AppSearch.swift */; };
+		59149DE56DC628DE68269C20 /* AppSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E3B7F604578982BBC93716C /* AppSearch.swift */; };
 		5970796674AC21082538B046 /* BrowserDefaultIgnorables-15.1.txt in Resources */ = {isa = PBXBuildFile; fileRef = CE00E926CE750F9212BB58CF /* BrowserDefaultIgnorables-15.1.txt */; };
 		5A2FF36B2D89573A00075F88 /* ChainActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87BD832EE8990B2380C0EF86 /* ChainActivity.swift */; };
 		5A8E3A6F215377EFC84FCBA8 /* TxStatusText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F9EB86757EDFB724E358439 /* TxStatusText.swift */; };
@@ -178,6 +180,7 @@
 		75F66F94438EF25449852272 /* Brand.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32CECEE6B3B88424FB7E6774 /* Brand.swift */; };
 		779619E3B3CA9DBA0E64BDF2 /* LiveGlobePresence.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6EF58CE162A676154BCD846 /* LiveGlobePresence.swift */; };
 		78F7EAB34432E58DC6020678 /* SitePermissions.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA1AC5002239A0EB65FCB064 /* SitePermissions.swift */; };
+		7AC7BF8BE68CF9F993F4F325 /* AppSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E3B7F604578982BBC93716C /* AppSearch.swift */; };
 		7B0B4C28ED2F1AEF39804016 /* ReleaseApproval.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4C9843D1CF8E29F627927D /* ReleaseApproval.swift */; };
 		7B671A67F7775803FEC08A8C /* StorageSetting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87218A83DA7401CDA0D1E56E /* StorageSetting.swift */; };
 		7B7EBC3EFD0B5F25E2C8CF67 /* ReleaseApproval.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4C9843D1CF8E29F627927D /* ReleaseApproval.swift */; };
@@ -389,6 +392,7 @@
 		05428AB5A1E93D738C571517 /* TxTrack.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TxTrack.swift; sourceTree = "<group>"; };
 		0BCD0FCE195D7296CBCA13E9 /* SimpleDashboard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimpleDashboard.swift; sourceTree = "<group>"; };
 		0CA1040C5885E62AF6B0AAC4 /* DataMigration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataMigration.swift; sourceTree = "<group>"; };
+		0E3B7F604578982BBC93716C /* AppSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSearch.swift; sourceTree = "<group>"; };
 		0ECC44BEB2065B50CF9A9B03 /* SeaURL.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SeaURL.swift; sourceTree = "<group>"; };
 		17F1C13C585683B68AF46003 /* AetherWalletIOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = AetherWalletIOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		1C44DE42286FDA51E768556B /* BrowserPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserPolicy.swift; sourceTree = "<group>"; };
@@ -576,6 +580,7 @@
 				44F57DF5F2AD51FE144201F5 /* AppBundleScheme.swift */,
 				628E95D48E775AC34CBD8773 /* AppContent.swift */,
 				8D0345A892236AF981D15AE5 /* AppLanguage.swift */,
+				0E3B7F604578982BBC93716C /* AppSearch.swift */,
 				A9F8352713841D74C3B7B7DD /* AppUpdates.swift */,
 				6D1813435521FA2D771CBF4D /* ArchiveMeasurement.swift */,
 				39DB57D9689E71FFECC579BA /* AssetsSheet.swift */,
@@ -980,6 +985,7 @@
 				7D3F22CB4415ED626EF6ECC4 /* AppBundleScheme.swift in Sources */,
 				8F7C72D5196D71BDE880D360 /* AppContent.swift in Sources */,
 				F77A93613D9CB470B7B09934 /* AppLanguage.swift in Sources */,
+				59149DE56DC628DE68269C20 /* AppSearch.swift in Sources */,
 				F0EBF114C19ABC51D41E7C2A /* AppUpdates.swift in Sources */,
 				8337EC742A6F23A28C543F63 /* ArchiveMeasurement.swift in Sources */,
 				C45FFD044088BB85C2D842D2 /* AssetsSheet.swift in Sources */,
@@ -1098,6 +1104,7 @@
 				AFD5F3932639404E7F3411C8 /* AppBundleScheme.swift in Sources */,
 				072E37578A0B5F821FA7FE23 /* AppContent.swift in Sources */,
 				D81EA3A5FE3D158E62F9429D /* AppLanguage.swift in Sources */,
+				57E8068817E0AF33E5608FCE /* AppSearch.swift in Sources */,
 				E8D6782103FB2F13FB8A6A7F /* AppUpdates.swift in Sources */,
 				BBE8E5793C14A3014583A9FC /* ArchiveMeasurement.swift in Sources */,
 				EABBD7ACDDEE78CCB5D2EA4D /* AssetsSheet.swift in Sources */,
@@ -1218,6 +1225,7 @@
 				A3B705F8811447CBBB8ACF75 /* AppBundleScheme.swift in Sources */,
 				940F21150D9C1441A0284067 /* AppContent.swift in Sources */,
 				30A0FCB264FA775313D832BD /* AppLanguage.swift in Sources */,
+				7AC7BF8BE68CF9F993F4F325 /* AppSearch.swift in Sources */,
 				AD97D867CB4F4FEDFD63D46D /* AppUpdates.swift in Sources */,
 				3F707DEF24C59D9E94295F10 /* ArchiveMeasurement.swift in Sources */,
 				92B6DC24FA22759641E59512 /* AssetsSheet.swift in Sources */,

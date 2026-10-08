@@ -201,24 +201,26 @@ final class BrowserSession: ObservableObject {
         let scheme = URL(string: text)?.scheme?.lowercased() ?? ""
         let host = text.prefix { !"/?#".contains($0) }
         if ["sea", "eastsea", "aether"].contains(scheme)
-            || (!text.contains("://") && (host.hasSuffix(".sea") || host.hasSuffix(".aeth"))) {
+            || (!text.contains("://") && host.hasSuffix(".aeth")) {
             tab.hasLoaded = true
             tab.controller.open(text)
             return
         }
-        do {
-            switch try BrowserInput.normalize(input, engine: profile.searchEngine) {
-            case .url(let url), .search(let url, _):
-                tab.hasLoaded = true
-                tab.controller.load(url)
-            case .sea(let request):
-                tab.hasLoaded = true
-                tab.controller.open(request.url.absoluteString)
+        switch AppSearchInput.destination(for: input) {
+        case .empty: return
+        case .search(let query):
+            tab.hasLoaded = true
+            tab.controller.resume()
+            tab.controller.search(query)
+        case .web(let url):
+            guard let canonical = BrowserInput.canonicalURL(url) else {
+                controller.notice = BrowserInput.Failure.invalidAddress.localizedDescription
+                return
             }
-        } catch let error as BrowserInput.Failure {
-            controller.notice = error.localizedDescription
-        } catch {
-            controller.notice = String(localized: "Enter a URL, a sea name, or search terms.")
+            tab.hasLoaded = true
+            tab.controller.load(canonical)
+        case .invalid:
+            controller.notice = String(localized: "That is not a web address.")
         }
     }
 

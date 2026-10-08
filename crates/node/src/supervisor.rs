@@ -3065,6 +3065,7 @@ exec "$AETHER_R06_EXE" --exact supervisor::tests::r06_fixture_writer --nocapture
             max_committee: None,
             genesis_validators: Some(vec![]),
             release: None,
+            search: None,
         }
     }
 

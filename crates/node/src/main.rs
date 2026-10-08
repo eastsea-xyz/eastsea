@@ -2145,6 +2145,7 @@ fn assemble_network(
         group,
         max_committee,
         release,
+        search: None,
     };
     aether_node::roster::Roster::from_file(&file)?;
     file.genesis()?;
@@ -2319,6 +2320,8 @@ fn run_node(a: NodeArgs) {
         "resource limits on"
     );
     let faucet = genesis.faucet;
+    let search_sources = aether_node::search_sources::SearchSources::from_network(network_file.as_ref().unwrap_or(&Value::Null))
+        .unwrap_or_else(|e| { eprintln!("error: {e}"); std::process::exit(2) });
     let registry = || {
         aether_node::devicecheck::Registry::open(
             std::path::Path::new(&data).join("registrations.json"),
@@ -2470,11 +2473,11 @@ fn run_node(a: NodeArgs) {
             }
             Err(e) => panic!("open state store: {e}"),
         };
-        let (chain, genesis) = match Chain::open(cfg.clone(), store) {
+        let (chain, genesis) = match Chain::open_with_search_sources(cfg.clone(), store, search_sources.clone()) {
             Ok(opened) => opened,
             Err(e) if aether_node::follow::is_corruption(&e) => {
                 let store = aether_node::follow::reset_store(std::path::Path::new(&data), &e).expect("move a corrupt database aside");
-                Chain::open(cfg.clone(), store).expect("restore state after moving a corrupt database aside")
+                Chain::open_with_search_sources(cfg.clone(), store, search_sources.clone()).expect("restore state after moving a corrupt database aside")
             }
             Err(e) => panic!("restore state (delete the data dir to resync): {e:?}"),
         };
@@ -3135,6 +3138,14 @@ fn run_follow(
     aether_node::resources::install(resources.limits()?, std::path::Path::new(&data).to_path_buf());
     // A network.json with no faucet funds nobody (mainnet: 사전 발행 0).
     let dev_alloc = network.is_none();
+    let search_sources = match network.as_ref() {
+        Some(path) => {
+            let value: Value = serde_json::from_slice(&std::fs::read(path).map_err(|e| format!("network.search: {e}"))?)
+                .map_err(|e| format!("network.search: {e}"))?;
+            aether_node::search_sources::SearchSources::from_network(&value)?
+        }
+        None => Default::default(),
+    };
     let (chain_id, genesis, set, nodes) = match network {
         Some(path) => {
             let file = aether_node::roster::NetworkFile::load(std::path::Path::new(&path))?;
@@ -3285,7 +3296,7 @@ fn run_follow(
             }
             format!("restore state (delete the data dir to resync): {e}")
         };
-        let (chain, _) = match Chain::open(cfg.clone(), store) {
+        let (chain, _) = match Chain::open_with_search_sources(cfg.clone(), store, search_sources.clone()) {
             Ok(opened) => opened,
             // Bad data only the full check catches (the rebuilt state does not
             // match the checkpoint): the same recovery as at open — move the
@@ -3298,7 +3309,7 @@ fn run_follow(
                         tracing::warn!(%e, "checkpoint sync failed; replaying history from genesis");
                     }
                 }
-                Chain::open(cfg, store).map_err(restore_error)?
+                Chain::open_with_search_sources(cfg, store, search_sources.clone()).map_err(restore_error)?
             }
             Err(e) => return Err(restore_error(e)),
         };
@@ -4444,6 +4455,7 @@ mod tests {
             max_committee: None,
             genesis_validators: Some(vec![Member { key: "01".into(), node: "node".into() }]),
             release: None,
+            search: None,
         };
         let dir = std::env::temp_dir().join(format!("aether-runbind-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -4610,6 +4622,7 @@ mod tests {
             max_committee: None,
             genesis_validators: genesis.then_some(vec![Member { key: "11".repeat(32), node: aether_net::devnet_node_id(1).to_string() }]),
             release: None,
+            search: None,
         };
         let dir = std::env::temp_dir().join(format!("aether-gate-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

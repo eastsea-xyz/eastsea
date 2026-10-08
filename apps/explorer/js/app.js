@@ -10,7 +10,9 @@ import {
   orderedSources, sourceLabel, localBlockedText,
 } from './rpc.js';
 import { parseTokenSources, tokenInfo, tokenOrigin } from './erc20.js';
-import { resolveSearch } from './search.js';
+import { resolveSearch, searchRoute, decodeSearchQuery } from './search.js';
+import { appSearchView } from './app-search.js';
+import { resolveSearchLocale, searchText } from './search-catalog.js';
 import { accountView, blockView, errorView, homeView, notFoundView, tokenView, txView } from './pages.js';
 import { detectVerifier } from './verify.js';
 import { h, loading, message } from './dom.js';
@@ -34,6 +36,7 @@ document.querySelector('.skip')?.addEventListener('click', (event) => {
 
 const ctx = {
   node: null,
+  locale: resolveSearchLocale(navigator.languages || navigator.language),
   chainId: null, // set once the node answers aether_status
   verifier: null, // set once at boot: {kind, block, account, receipt} (verify.js)
   pollNow: false, // the current page asked to be re-checked (a pending tx)
@@ -69,7 +72,7 @@ const ctx = {
 
 // ---- header ----
 
-const searchInput = h('input', { id: 'q', class: 'es-control', type: 'search', placeholder: 'Height, address or transaction hash', 'aria-label': 'Search blocks, addresses and transactions' });
+const searchInput = h('input', { id: 'q', class: 'es-control', type: 'search', placeholder: searchText(ctx.locale, 'placeholder'), 'aria-label': searchText(ctx.locale, 'search') });
 const searchMsg = h('span', { id: 'search-msg', class: 'small' });
 const nodeInput = h('input', { id: 'node-url', class: 'es-control', type: 'url', spellcheck: 'false', 'aria-label': 'Node JSON-RPC endpoint' });
 const gatewayInput = h('input', { id: 'gateway-url', class: 'es-control', type: 'url', spellcheck: 'false', placeholder: DEFAULT_GATEWAY, 'aria-label': 'Public read gateway' });
@@ -114,19 +117,20 @@ top.append(
   h('form', {
     id: 'search',
     role: 'search',
+    lang: ctx.locale,
     onsubmit: async (e) => {
       e.preventDefault();
       searchMsg.replaceChildren();
       if (!String(searchInput.value).trim()) return;
       const route = await resolveSearch(searchInput.value, ctx.node);
       if (!route) {
-        searchMsg.append(message('error', `Nothing this node knows matches "${String(searchInput.value).trim().slice(0, 80)}" — try a height, a 0x… address or a tx hash.`));
+        searchMsg.append(message('error', searchText(ctx.locale, 'notFound', { query: String(searchInput.value).trim().slice(0, 80) })));
         return;
       }
       searchInput.value = '';
-      location.hash = `#/${route.page}/${route.page === 'block' ? route.height : (route.hash || route.address)}`;
+      location.hash = searchRoute(route);
     },
-  }, searchInput, h('button', { type: 'submit', class: 'es-control' }, 'Search'), searchMsg),
+  }, searchInput, h('button', { type: 'submit', class: 'es-control' }, searchText(ctx.locale, 'search')), searchMsg),
   h('details', { id: 'settings' },
     h('summary', { class: 'es-control' }, 'Settings'),
     h('div', { class: 'settings-body' },
@@ -208,6 +212,7 @@ const routes = [
   [/^#\/tx\/((?:0x)?[0-9a-fA-F]{64})$/, (m) => txView(ctx, m[1].toLowerCase().replace(/^0x/, '').replace(/^/, '0x'))],
   [/^#\/account\/(0x[0-9a-fA-F]{40})$/, (m) => accountView(ctx, m[1].toLowerCase())],
   [/^#\/token\/(0x[0-9a-fA-F]{40})$/, (m) => tokenView(ctx, m[1].toLowerCase())],
+  [/^#\/search\/(.*)$/, (m) => appSearchView(ctx, decodeSearchQuery(m[1]))],
 ];
 
 // A slow page never overwrites a newer one: only the newest render may paint.
@@ -266,7 +271,7 @@ async function render() {
   if (!nodeViewReady) { void bootNodeView(); return; }
   if (!ctx.node) { connect(); return; }
   const hash = location.hash || '#/';
-  view.replaceChildren(loading());
+  view.replaceChildren(loading(hash.startsWith('#/search/') ? searchText(ctx.locale, 'loading') : undefined));
   let out;
   try {
     const hit = routes.find(([re]) => re.test(hash));

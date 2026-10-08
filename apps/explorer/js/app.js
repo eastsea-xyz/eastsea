@@ -15,6 +15,7 @@ import { accountView, blockView, errorView, homeView, notFoundView, tokenView, t
 import { detectVerifier } from './verify.js';
 import { h, loading, message } from './dom.js';
 import { mountLiveGlobe } from '../live-globe/live-globe.js';
+import { pollCurrentPage } from './polling.js';
 
 const view = document.getElementById('view');
 const top = document.getElementById('top');
@@ -268,11 +269,9 @@ window.addEventListener('hashchange', render);
 
 // Keep the home page and a pending transaction current while someone watches;
 // a hidden tab or any other page (open disclosure blocks included) is left alone.
-setInterval(() => {
-  if (document.hidden) return;
-  const h0 = location.hash || '#/';
-  if (h0 === '#' || h0 === '#/' || ctx.pollNow) render();
-}, 12_000);
+pollCurrentPage(render, {
+  getState: () => ({ hidden: document.hidden, hash: location.hash, pending: ctx.pollNow }),
+});
 
 // ---- theme ----
 

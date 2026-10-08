@@ -104,6 +104,7 @@
 		68BD6F1D675475333C3E15E7 /* aether_ffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BC12AF79B32D90A48860251 /* aether_ffi.swift */; };
 		68C02116FA3214FB9535A952 /* EarningsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02CE6DC842A323F5843165E1 /* EarningsModel.swift */; };
 		6911A71C489CFE413F30C9A2 /* EnclaveKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 317D79B15C7F9E75B1A1F4FC /* EnclaveKey.swift */; };
+		692758B4285608287A0A3C38 /* LivePresence.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17A071ACD9986B05B82CAA6 /* LivePresence.swift */; };
 		696C62ACB62331AE933D81DC /* UpdateTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 790C6CEC63EC7A21B28A79CC /* UpdateTracker.swift */; };
 		6A4D0AE3E781BCB4B4332FFE /* TxStatusText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F9EB86757EDFB724E358439 /* TxStatusText.swift */; };
 		6A7C70FCDEDD0E0F9EC58BD8 /* provider.js in Resources */ = {isa = PBXBuildFile; fileRef = B71962ECF4B1842C77260AF0 /* provider.js */; };
@@ -204,6 +205,7 @@
 		D35E3E06705EC147E0155308 /* token-sources.json in Resources */ = {isa = PBXBuildFile; fileRef = 2928FB2C0B82AF8C35E97D99 /* token-sources.json */; };
 		D42A398A83223BE1055DEF3B /* TokenGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA017029CBA36810DE47F6DE /* TokenGuard.swift */; };
 		D5D5175A07BBD815A0B3350B /* DiagnosticReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9B4EF5C90AED22256BDEE5A /* DiagnosticReport.swift */; };
+		D6288E56A101C19BB07F391A /* LivePresence.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17A071ACD9986B05B82CAA6 /* LivePresence.swift */; };
 		D698A807A32DB54565251585 /* StorageSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 029F7E592C27EAB302CCE55D /* StorageSettings.swift */; };
 		D6DDA80E641E075D1DE236AD /* WalletModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 016BCAF9063410C1BBD4052D /* WalletModel.swift */; };
 		D768F17DE8F914D495A2F35C /* TokenIconView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A704EDECAB63A4DB0D4A9DA8 /* TokenIconView.swift */; };
@@ -225,6 +227,7 @@
 		EA821BA6F24CC2C570019369 /* TokenAssets.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5D7C676A4030F20E37C58E7 /* TokenAssets.swift */; };
 		EABBD7ACDDEE78CCB5D2EA4D /* AssetsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39DB57D9689E71FFECC579BA /* AssetsSheet.swift */; };
 		ED3E2EB438264E2123EBDBD9 /* DesignPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 260B382C7E1D4499BE9AE870 /* DesignPreview.swift */; };
+		ED6A4ED4EC85382A2676244A /* LivePresence.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17A071ACD9986B05B82CAA6 /* LivePresence.swift */; };
 		ED976FD8F8425231C3E3E594 /* EnclaveKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 317D79B15C7F9E75B1A1F4FC /* EnclaveKey.swift */; };
 		EECEE1D2217D98DE4E937E6D /* BrowserOriginPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97C7694B38BBE822C2A238C5 /* BrowserOriginPolicy.swift */; };
 		EF1BFBB9C4BDEA241F77D924 /* UnattendedDecision.swift in Sources */ = {isa = PBXBuildFile; fileRef = 716005AD711FCD432A9A487C /* UnattendedDecision.swift */; };
@@ -310,6 +313,7 @@
 		9D1303552378BB828A2C9D21 /* ReleaseUpdateGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReleaseUpdateGate.swift; sourceTree = "<group>"; };
 		9DEBCE5EA044F272C9EA406C /* ProverMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProverMenu.swift; sourceTree = "<group>"; };
 		9F9EB86757EDFB724E358439 /* TxStatusText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TxStatusText.swift; sourceTree = "<group>"; };
+		A17A071ACD9986B05B82CAA6 /* LivePresence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LivePresence.swift; sourceTree = "<group>"; };
 		A3F0D8C24FB04C8F14C379CF /* KeyExposureNotice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyExposureNotice.swift; sourceTree = "<group>"; };
 		A704EDECAB63A4DB0D4A9DA8 /* TokenIconView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenIconView.swift; sourceTree = "<group>"; };
 		A9F8352713841D74C3B7B7DD /* AppUpdates.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdates.swift; sourceTree = "<group>"; };
@@ -425,6 +429,7 @@
 				A3F0D8C24FB04C8F14C379CF /* KeyExposureNotice.swift */,
 				7A1A174CAEF159DF7B4AB951 /* KeySafety.swift */,
 				D4FCD5C102108D57C735EB29 /* LegacyAether.swift */,
+				A17A071ACD9986B05B82CAA6 /* LivePresence.swift */,
 				745EAC0E04873F8FD0F29BC2 /* LiveResize.swift */,
 				6CA7F0040DAE7F5B39B01A7D /* MigrationStatus.swift */,
 				2B632CFC2DA1179CC9EAD01D /* NetworkPaused.swift */,
@@ -581,7 +586,10 @@
 			knownRegions = (
 				Base,
 				en,
+				es,
+				ja,
 				ko,
+				"zh-Hans",
 			);
 			mainGroup = 37242AD39FAC0B3294315674;
 			minimizedProjectReferenceProxies = 1;
@@ -757,6 +765,7 @@
 				3D01E58CDF2270BE5A32BD72 /* KeyExposureNotice.swift in Sources */,
 				FCADF664A882A1649E15665D /* KeySafety.swift in Sources */,
 				70F6C8ECC3BF1C0417A68F22 /* LegacyAether.swift in Sources */,
+				692758B4285608287A0A3C38 /* LivePresence.swift in Sources */,
 				0155654A1EB68833738F6615 /* LiveResize.swift in Sources */,
 				B13D7EAF6140AAD7327799F6 /* MigrationStatus.swift in Sources */,
 				ADEEA18CEEC7A29BDFBB47BB /* NetworkPaused.swift in Sources */,
@@ -838,6 +847,7 @@
 				037254A6BE290FDF80723752 /* KeyExposureNotice.swift in Sources */,
 				AE2F7826E3B12C37653E58CB /* KeySafety.swift in Sources */,
 				080D6455DE32D1F1AE9DDF3A /* LegacyAether.swift in Sources */,
+				ED6A4ED4EC85382A2676244A /* LivePresence.swift in Sources */,
 				C3D2C03EA5D3E019B5A60363 /* LiveResize.swift in Sources */,
 				46B3C20C350C2C7C2986ADD2 /* MigrationStatus.swift in Sources */,
 				DA429408650B5094A0A6C844 /* NetworkPaused.swift in Sources */,
@@ -921,6 +931,7 @@
 				A2A5F0B2C7CAB05F6D6A44A8 /* KeyExposureNotice.swift in Sources */,
 				4256682DEEB2A87B5215DBF5 /* KeySafety.swift in Sources */,
 				B27CF1ADEDE50A70BC71AEDD /* LegacyAether.swift in Sources */,
+				D6288E56A101C19BB07F391A /* LivePresence.swift in Sources */,
 				E5EBCFC648FC784DB287530F /* LiveResize.swift in Sources */,
 				F7FF2B4A81D1B0E7CCBC9D98 /* MigrationStatus.swift in Sources */,
 				E079A96A7F6CAAB46E4B9D8B /* NetworkPaused.swift in Sources */,

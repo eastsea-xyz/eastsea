@@ -41,8 +41,8 @@ never a write. Clear the gateway field in Settings to read your node only.
 
 | Page | What it shows |
 |---|---|
-| Home | finalized height (hero), tx rate over the newest 30 blocks, committee (registry candidates + epoch), protocol (with node/scheduled versions and an update pill), mempool, base fee, prover status, latest blocks, chain facts |
-| Live network (`#/network`) | privacy-safe continent totals on a draggable WebGL globe, opted-in countries only at k ≥ 3, accessible list, static reduced-motion map; public gateway presence only, separate from account/peer reads |
+| Home | finalized height (hero), tx rate over the newest 30 blocks, committee (registry candidates + epoch), protocol (with node/scheduled versions and an update pill), mempool, base fee, prover status, Live network (Macs by role, version and home-relay continent), latest blocks, chain facts |
+| Live network (`#/network`) | privacy-safe continent totals on a draggable WebGL globe, countries from Mac region settings, only at k ≥ 3, accessible list, static reduced-motion map; public gateway presence only, separate from account/peer reads |
 | Block | every header field the RPC serves, neighbor links, this node's prover view of the block's proof, the transactions with their receipts (a pruned block shows what the era record still carries) |
 | Transaction | receipt (status, gas, contract creation, output), events decoded as ERC-20 `Transfer`/`Approval` with symbol and amount, raw logs for anything else |
 | Account | balance/nonce/code with a committee-certificate badge (`verified by committee certificate` only when the wallet's own wasm check passed — `js/verify.js`), token detection, latest rewards (`aether_rewards`), ERC-20 transfers to/from the address in the node's log window |
@@ -133,8 +133,9 @@ node test/live.mjs    # renders every page against a real node (default 127.0.0.
 The unit tests cover the pure helpers: ABI word parsing and `Transfer`/
 `Approval` decoding, revert-reason decoding, amount/time formatting, the token
 metadata and origin scans (against a mock reader), the badge rules, the search
-classifier and resolver, and the JSON-RPC client (injected `fetch`, endpoint
-persistence, error and timeout paths). `test/live.mjs` is a manual smoke test
+classifier and resolver, the live presence shape and unavailable states,
+continent breakdowns and ten-second polling, and the JSON-RPC client (injected
+`fetch`, endpoint persistence, error and timeout paths). `test/live.mjs` is a manual smoke test
 in a minimal DOM stub — it is deliberately not part of `npm test`.
 
 Globe tests cover country folding/duplicate buckets, sanitized output, stable
@@ -167,6 +168,8 @@ js/format.js        amounts, numbers, times (BigInt-exact)
 js/abi.js           ABI words, selectors, ERC-20 event decoding, revert reasons
 js/erc20.js         token metadata, origin scan, badges, impersonation check
 js/search.js        search classification and hash resolution
+js/presence.js      versioned live presence reads, roles and relay regions
+js/polling.js       visible home and pending-transaction polling (10 seconds)
 js/pages.js         the five views
 js/app.js           router, header (source badge), settings, theme, polling
 test/*.test.mjs     units (npm test)

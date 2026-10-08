@@ -193,7 +193,10 @@ final class UnattendedDaemon: ObservableObject {
                                                        storageFlag: StorageSetting.flag(shards: storageShards ?? StorageSetting.defaultShards),
                         locationFlags: BlockDataLocation.flags(
                             chainDataPath: UserDefaults.standard.string(forKey: "nodeChainDataPath") ?? "",
-                            archive: UserDefaults.standard.bool(forKey: "nodeArchive"))),
+                            archive: UserDefaults.standard.bool(forKey: "nodeArchive")),
+                        presenceFlags: PresenceCountry.flags(
+                            sharing: PresenceCountry.enabled(),
+                            country: UserDefaults.standard.string(forKey: PresenceCountry.countryKey) ?? PresenceCountry.regionCode)),
                      proveAddress: UserDefaults.standard.string(forKey: "proveAddress"))
     }
 

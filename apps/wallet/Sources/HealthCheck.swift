@@ -102,7 +102,7 @@ struct HealthCheck {
         case retryConnection
         case openStorage
         case copyDiagnostics
-        /// The stop reason's own button (`NodeStopReason.copy(ko:).action`).
+        /// The stop reason's own button (`NodeStopReason.copy(locale:bundle:).action`).
         case fixNode
     }
 
@@ -419,9 +419,9 @@ struct HealthCheck {
     // MARK: words
 
     /// The banner for the most urgent active issue, nil when all is well.
-    func alert(ko: Bool = HealthCheck.korean) -> Alert? {
+    func alert(locale: Locale = .current, bundle: Bundle = .main) -> Alert? {
         guard let top = Issue.allCases.first(where: { active.contains($0) }) else { return nil }
-        return Alert(issue: top, sentence: sentence(top, ko: ko), action: action(top))
+        return Alert(issue: top, sentence: sentence(top, locale: locale, bundle: bundle), action: action(top))
     }
 
     /// The failure kinds raised over the last 24 hours, with their counts
@@ -430,16 +430,13 @@ struct HealthCheck {
         raised.reduce(into: [:]) { $0[$1.kind, default: 0] += 1 }
     }
 
-    /// The app's language, as `NodeWatchdog.Failure.sentence` decides it.
-    static var korean: Bool { Bundle.main.preferredLocalizations.first?.hasPrefix("ko") ?? false }
-
     func action(_ issue: Issue) -> Action? {
         switch issue {
         case .programMismatch, .proofsRejected, .upgradeRequired: return .checkForUpdates
         case .connectionStuck: return last.internetReachable == false ? nil : .retryConnection
         case .diskAlmostFull, .diskPaused: return .openStorage
-        case .crashLoop: return last.nodeStop?.copy(ko: false).action == nil ? .copyDiagnostics : .fixNode
-        case .nodeStopped: return last.nodeStop?.copy(ko: false).action == nil ? nil : .fixNode
+        case .crashLoop: return last.nodeStop?.copy().action == nil ? .copyDiagnostics : .fixNode
+        case .nodeStopped: return last.nodeStop?.copy().action == nil ? nil : .fixNode
         case .proverStalled: return .copyDiagnostics
         case .followerStuck, .nodeUnresponsive, .updateRolledBack: return nil
         }
@@ -447,87 +444,73 @@ struct HealthCheck {
 
     /// What happened + what to do + whether the money is safe (design §4.2),
     /// with no jargon: guest, ENOSPC and RPC stay in developer mode.
-    func sentence(_ issue: Issue, ko: Bool = HealthCheck.korean) -> String {
+    func sentence(_ issue: Issue, locale: Locale = .current, bundle: Bundle = .main) -> String {
         let o = last
         switch issue {
         case .programMismatch, .proofsRejected:
             if o.updateAvailable {
-                return ko ? "보상 증명이 거절되고 있어요. 앱을 업데이트하면 해결돼요."
-                    : "Your reward proofs are being rejected. Updating the app fixes it."
+                return String(localized: "Your reward proofs are being rejected. Updating the app fixes it.", bundle: bundle, locale: locale)
             }
             if o.proverPausedForProgram {
-                return ko ? "이 Mac은 지금 블록 증명을 쉬고 있어요. 네트워크가 이 버전의 증명을 아직 확인하지 못해서예요. 잃는 건 없어요."
-                    : "This Mac is resting from proving blocks for now: the network cannot check this version's proofs yet. Nothing is lost."
+                return String(localized: "This Mac is resting from proving blocks for now: the network cannot check this version's proofs yet. Nothing is lost.", bundle: bundle, locale: locale)
             }
-            return ko ? "보상 증명이 거절되고 있어요. 고친 버전이 나오면 업데이트를 알려 드릴게요."
-                : "Your reward proofs are being rejected. You will be told as soon as a fixed version is out."
+            return String(localized: "Your reward proofs are being rejected. You will be told as soon as a fixed version is out.", bundle: bundle, locale: locale)
         case .proverStalled:
-            return ko ? "보상 증명이 멈춰 있어요. 이 Mac이 저절로 다시 시도하고 있어요. 오래 계속되면 앱을 다시 열어 주세요."
-                : "Reward proofs have stopped. This Mac is retrying by itself; if it keeps up, please reopen the app."
+            return String(localized: "Reward proofs have stopped. This Mac is retrying by itself; if it keeps up, please reopen the app.", bundle: bundle, locale: locale)
         case .connectionStuck:
             if o.internetReachable == false {
-                return ko ? "인터넷에 연결되지 않았어요. 연결되면 저절로 이어져요."
-                    : "This Mac is not connected to the internet. It reconnects by itself once it is."
+                return String(localized: "This Mac is not connected to the internet. It reconnects by itself once it is.", bundle: bundle, locale: locale)
             }
-            return ko ? "네트워크를 찾지 못하고 있어요. 다시 시도해 볼게요. 잔액은 안전해요."
-                : "The network cannot be found right now. Trying again. Your balance is safe."
+            return String(localized: "The network cannot be found right now. Trying again. Your balance is safe.", bundle: bundle, locale: locale)
         case .diskAlmostFull:
-            return ko ? "저장 공간이 곧 부족해요. 3 GB쯤 비워 주세요."
-                : "This Mac is almost out of storage. Please free about 3 GB."
+            return String(localized: "This Mac is almost out of storage. Please free about 3 GB.", bundle: bundle, locale: locale)
         case .diskPaused:
-            var base = ko ? "저장 공간이 부족해 네트워크 참여를 잠시 멈췄어요. 남은 공간이 7 GB가 되면 저절로 다시 시작해요."
-                : "Storage is low, so this Mac paused its part in the network. It restarts by itself once 7 GB is free."
-            if let r = o.nodeStop, case .diskFull = r { base = r.copy(ko: ko).paragraph }
+            var base = String(localized: "Storage is low, so this Mac paused its part in the network. It restarts by itself once 7 GB is free.", bundle: bundle, locale: locale)
+            if let r = o.nodeStop, case .diskFull = r { base = r.copy(locale: locale, bundle: bundle).paragraph }
             guard o.voting else { return base }
-            return base + (ko ? " 투표 노드라서 다른 검증자들이 기다리고 있어요."
-                : " This Mac is a voting node, so the other validators are waiting for it.")
+            return base + String(localized: " This Mac is a voting node, so the other validators are waiting for it.", bundle: bundle, locale: locale)
         case .followerStuck:
             if stallRestarts.count >= 2 {
-                return ko ? "계속 멈춰요. 앱을 업데이트하거나 Mac을 재시동해 주세요. 그동안 잔액은 다른 노드로 확인해요."
-                    : "The node keeps stalling. Update the app or restart the Mac. Meanwhile your balance is checked through other nodes."
+                return String(localized: "The node keeps stalling. Update the app or restart the Mac. Meanwhile your balance is checked through other nodes.", bundle: bundle, locale: locale)
             }
-            return ko ? "이 Mac이 네트워크를 따라가지 못해 다시 시작했어요."
-                : "This Mac fell behind the network, so its node was restarted."
+            return String(localized: "This Mac fell behind the network, so its node was restarted.", bundle: bundle, locale: locale)
         case .nodeUnresponsive:
-            return ko ? "이 Mac의 노드가 응답하지 않아 다시 시작할게요."
-                : "This Mac's node stopped answering, so it is being restarted."
+            return String(localized: "This Mac's node stopped answering, so it is being restarted.", bundle: bundle, locale: locale)
         case .crashLoop:
             // The stop reason says when it retries; else layer 4's sentence.
-            if let r = o.nodeStop, r.isIncident { return r.copy(ko: ko).paragraph }
-            return (o.stopped ?? .other).sentence
+            if let r = o.nodeStop, r.isIncident { return r.copy(locale: locale, bundle: bundle).paragraph }
+            return (o.stopped ?? .other).sentence(locale: locale, bundle: bundle)
         case .nodeStopped:
-            return o.nodeStop?.copy(ko: ko).paragraph
-                ?? (ko ? "이 Mac의 노드가 멈춰 있어요. 잔액은 다른 노드로 계속 확인해요." : "This Mac's node is not running. Your balance is still checked through other nodes.")
+            return o.nodeStop?.copy(locale: locale, bundle: bundle).paragraph
+                ?? String(localized: "This Mac's node is not running. Your balance is still checked through other nodes.", bundle: bundle, locale: locale)
         case .upgradeRequired:
-            return ko ? "네트워크 규칙이 바뀌어 업데이트가 필요해요. 업데이트 전까지 잔액은 다른 노드로 확인해요."
-                : "The network's rules changed, so this app needs an update. Until then your balance is checked through other nodes."
+            return String(localized: "The network's rules changed, so this app needs an update. Until then your balance is checked through other nodes.", bundle: bundle, locale: locale)
         case .updateRolledBack:
-            return ko ? "새 버전에서 노드가 잘 돌지 않아 이전 버전으로 돌아갔어요. 고친 버전이 오면 저절로 받아요."
-                : "The node did not run well on the new version, so it went back to the previous one. The fixed version installs by itself when it arrives."
+            return String(localized: "The node did not run well on the new version, so it went back to the previous one. The fixed version installs by itself when it arrives.", bundle: bundle, locale: locale)
         }
     }
 
     /// The one "해결됐어요" each incident earns when it ends.
-    static func resolvedSentence(_ issue: Issue, ko: Bool = HealthCheck.korean) -> String {
+    static func resolvedSentence(_ issue: Issue, locale: Locale = .current, bundle: Bundle = .main) -> String {
         switch issue {
         case .programMismatch, .proofsRejected:
-            return ko ? "해결됐어요. 보상 증명이 다시 받아들여지고 있어요." : "Resolved: reward proofs are being accepted again."
+            return String(localized: "Resolved: reward proofs are being accepted again.", bundle: bundle, locale: locale)
         case .proverStalled:
-            return ko ? "해결됐어요. 보상 증명이 다시 만들어지고 있어요." : "Resolved: reward proofs are being made again."
+            return String(localized: "Resolved: reward proofs are being made again.", bundle: bundle, locale: locale)
         case .connectionStuck:
-            return ko ? "해결됐어요. 네트워크에 다시 연결됐어요." : "Resolved: connected to the network again."
+            return String(localized: "Resolved: connected to the network again.", bundle: bundle, locale: locale)
         case .diskAlmostFull, .diskPaused:
-            return ko ? "해결됐어요. 저장 공간이 다시 충분해요." : "Resolved: there is enough storage again."
+            return String(localized: "Resolved: there is enough storage again.", bundle: bundle, locale: locale)
         case .followerStuck:
-            return ko ? "해결됐어요. 이 Mac이 네트워크를 다시 따라가고 있어요." : "Resolved: this Mac is keeping up with the network again."
+            return String(localized: "Resolved: this Mac is keeping up with the network again.", bundle: bundle, locale: locale)
         case .nodeUnresponsive:
-            return ko ? "해결됐어요. 이 Mac의 노드가 다시 응답해요." : "Resolved: this Mac's node is answering again."
+            return String(localized: "Resolved: this Mac's node is answering again.", bundle: bundle, locale: locale)
         case .crashLoop, .nodeStopped:
-            return ko ? "해결됐어요. 노드가 다시 돌고 있어요." : "Resolved: the node is running again."
+            return String(localized: "Resolved: the node is running again.", bundle: bundle, locale: locale)
         case .upgradeRequired:
-            return ko ? "해결됐어요. 앱이 네트워크 규칙에 맞게 업데이트됐어요." : "Resolved: the app is updated to the network's rules."
+            return String(localized: "Resolved: the app is updated to the network's rules.", bundle: bundle, locale: locale)
         case .updateRolledBack:
-            return ko ? "해결됐어요. 고친 버전으로 업데이트됐어요." : "Resolved: the fixed version is installed."
+            return String(localized: "Resolved: the fixed version is installed.", bundle: bundle, locale: locale)
         }
     }
 }

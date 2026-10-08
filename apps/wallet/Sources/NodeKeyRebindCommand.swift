@@ -13,11 +13,11 @@ enum NodeKeyRebindCommand {
 
     static func run(binary: URL, dataDirectory: URL, approval: NodeKeyRebind.Approval) throws -> String {
         guard approval.dataDirectory == dataDirectory.path else {
-            throw Failure(detail: "Owner approval names a different node data directory.")
+            throw Failure(detail: String(localized: "Owner approval names a different node data directory."))
         }
         var master: Int32 = -1, slave: Int32 = -1
         guard openpty(&master, &slave, nil, nil, nil) == 0 else {
-            throw Failure(detail: "The confirmation terminal could not be opened: \(String(cString: strerror(errno)))")
+            throw Failure(detail: String(localized: "The confirmation terminal could not be opened: \(String(cString: strerror(errno)))"))
         }
         let input = FileHandle(fileDescriptor: master, closeOnDealloc: true)
         let terminal = FileHandle(fileDescriptor: slave, closeOnDealloc: true)
@@ -46,14 +46,14 @@ enum NodeKeyRebindCommand {
             } else if count == 0 || errno == EIO {
                 break
             } else if errno != EINTR {
-                throw Failure(detail: "The confirmation terminal could not be read: \(String(cString: strerror(errno)))")
+                throw Failure(detail: String(localized: "The confirmation terminal could not be read: \(String(cString: strerror(errno)))"))
             }
         }
         command.waitUntilExit()
         let text = String(decoding: output, as: UTF8.self)
             .replacingOccurrences(of: "\r", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard command.terminationReason == .exit, command.terminationStatus == 0 else {
-            throw Failure(detail: text.isEmpty ? "The node keys were not rebound." : text)
+            throw Failure(detail: text.isEmpty ? String(localized: "The node keys were not rebound.") : text)
         }
         return text
     }

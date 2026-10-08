@@ -55,9 +55,12 @@ check(!InstallLocation.isRunnableLocation(bundlePath: "~/Downloads/EastSea.app",
 
 // The sentence (layer 4): one plain line, in the app's language, naming the
 // app — and no path or jargon in it.
-check(InstallLocation.moveSentence.contains(Brand.project) || InstallLocation.moveSentence.contains(Brand.projectKo),
+check(InstallLocation.moveSentence.contains(Brand.name),
       "the move sentence names the app")
 check(!InstallLocation.moveSentence.contains("/"), "the move sentence has no paths")
 check(!InstallLocation.moveSentence.isEmpty, "the move sentence says something")
 
+check(InstallLocation.moveSentence(locale: walletTestLocale("en"), bundle: walletTestBundle("en")) == "Move EastSea to your Applications folder to run it.", "the reviewed English install sentence")
+check(InstallLocation.moveSentence(locale: walletTestLocale("ko"), bundle: walletTestBundle("ko")) == "동해를 응용 프로그램 폴더로 옮긴 뒤 실행해 주세요.", "the reviewed Korean install sentence")
+check(InstallLocation.moveSentence(locale: walletTestLocale("ja"), bundle: walletTestBundle("ja")) == "EastSeaをアプリケーションフォルダに移してから起動してください。", "the Japanese install sentence")
 print("install-location: all checks passed")

@@ -1,5 +1,4 @@
 import Charts
-import CoreImage.CIFilterBuiltins
 import SwiftUI
 
 /// Everyday wallet, modeled on Phantom (centered balance, round actions, token
@@ -149,6 +148,7 @@ struct SimpleDashboard: View {
                 Label(p.title, systemImage: p.icon).tag(p)
             }
             .navigationSplitViewColumnWidth(min: 170, ideal: 190)
+            .safeAreaInset(edge: .top) { AccountSwitcherButton(store: model.accountStore, compact: true).padding(12) }
             .safeAreaInset(edge: .bottom) { SidebarStatus().padding(12) }
             .toolbar(removing: compact ? .sidebarToggle : nil)
         } detail: {
@@ -176,6 +176,7 @@ struct SimpleDashboard: View {
             // a narrow window, or a wide one with the sidebar collapsed
             // (founder report on 0.7.0: no way back to Home from Explore).
             .toolbar {
+                ToolbarItem(placement: .primaryAction) { AccountSwitcherButton(store: model.accountStore, compact: true) }
                 if compact || columns == .detailOnly {
                     ToolbarItem(placement: .principal) { pagePicker }
                 }
@@ -215,6 +216,9 @@ struct SimpleDashboard: View {
                     }
                     .measuringNarrowLayout()
                     .navigationTitle(p == .home ? "" : p.title)
+                    .toolbar {
+                        ToolbarItem(placement: .primaryAction) { AccountSwitcherButton(store: model.accountStore, compact: true) }
+                    }
                 }
                 // The tab bar stays solid over Explore's web view: it is the way back.
                 .toolbarBackground(.visible, for: .tabBar)
@@ -305,21 +309,7 @@ struct HomePage: View {
     }
 
     private var accountButton: some View {
-        Button {
-            Clipboard.copy(model.address)
-        } label: {
-            HStack(spacing: 6) {
-                Circle().fill(LinearGradient(colors: [.aether, .pink], startPoint: .topLeading, endPoint: .bottomTrailing)).frame(width: 20, height: 20)
-                Text("Account 1").font(.aeFootnote.weight(.semibold)).lineLimit(1)
-                Text(Short.address(model.address)).font(.aeFootnote.monospaced()).foregroundStyle(.secondary)
-                    .lineLimit(1).truncationMode(.middle)
-                Image(systemName: "doc.on.doc").font(.aeCaption).foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 12).padding(.vertical, 6)
-            .background(.background.secondary, in: Capsule())
-        }
-        .buttonStyle(.plain)
-        .help("Copy address")
+        AccountSwitcherButton(store: model.accountStore)
     }
 
     @ViewBuilder private var balanceText: some View {
@@ -1008,12 +998,12 @@ private struct SidebarStatus: View {
     /// the "Connected" line below already shows) is what got truncated here.
     private var nodeLine: String {
         // One reason, the same everywhere (NodeStopReason): never a bare "paused".
-        if let reason = node.stopReason { return reason.copy(ko: HealthCheck.korean).title }
+        if let reason = node.stopReason { return reason.copy().title }
         switch node.state {
         case .off: return String(localized: "Off")
         case .starting: return node.height > 0 ? String(localized: "Catching up") : String(localized: "Starting…")
         case .running: return String(localized: "Verifying blocks") + (node.networkCheckPending ? " " + node.pendingRouteNote : "")
-        case .waitingForPower: return NodeStopReason.onBattery.copy(ko: HealthCheck.korean).title
+        case .waitingForPower: return NodeStopReason.onBattery.copy().title
         case .failed(let m): return m
         }
     }
@@ -1526,7 +1516,18 @@ struct SendSheet: View {
             } else {
                 assetPicker
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("To").font(.aeFootnote).foregroundStyle(.secondary)
+                    HStack {
+                        Text("To").font(.aeFootnote).foregroundStyle(.secondary)
+                        Spacer()
+                        if !model.contacts.isEmpty {
+                            Menu("Contacts") {
+                                ForEach(model.contacts) { contact in
+                                    Button(contact.name) { model.sendTo = contact.address }
+                                }
+                            }
+                            .font(.aeFootnote)
+                        }
+                    }
                     TextField(token == nil ? String(localized: "0x… (several: separate with commas)") : "0x…", text: $model.sendTo)
                         .textFieldStyle(.roundedBorder).font(.aeBody.monospaced())
                 }
@@ -1729,7 +1730,7 @@ struct SendSheet: View {
                 refusal = e.errorDescription
                 return
             } catch {
-                refusal = "\(error)"
+                refusal = WalletModel.ffiMessage(error)
                 return
             }
         }
@@ -1740,7 +1741,8 @@ struct SendSheet: View {
             let outcome = dry ? await WalletModel.dryRun(from: model.address, to: callTo, valueWei: value, data: data) : .unchecked
             checking = false
             if case .reverted(let why) = outcome {
-                refusal = why
+                model.note("Dry run refused: \(why)")
+                refusal = String(localized: "This transaction could not run. Nothing was sent.")
                 return
             }
             if let frozen {
@@ -1917,22 +1919,12 @@ struct ConnectSheet: View {
 struct ReceiveSheet: View {
     @EnvironmentObject var model: WalletModel
     @Environment(\.dismiss) private var dismiss
-    @State private var copied = false
 
     var body: some View {
         VStack(spacing: 16) {
             Text("Receive \(Brand.networkCoinTicker)").font(.aeTitle)
-            QRCode(text: model.address).frame(maxWidth: 200, maxHeight: 200).aspectRatio(1, contentMode: .fit)
-            Text(model.address).font(.aeBody.monospaced()).multilineTextAlignment(.center).textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack {
-                Button {
-                    Clipboard.copy(model.address)
-                    copied = true
-                } label: { Label(copied ? String(localized: "Copied") : String(localized: "Copy address"), systemImage: copied ? "checkmark" : "doc.on.doc") }
-                    .buttonStyle(.borderedProminent)
-                Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
-            }
+            ReceiveAddressView(address: model.address)
+            Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
         }
         .padding(24)
         .macMinSize(width: 380)
@@ -2003,27 +1995,6 @@ private struct RecoveryPanel: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-    }
-}
-
-private struct QRCode: View {
-    let text: String
-
-    var body: some View {
-        if let img = Self.render(text) {
-            Image(decorative: img, scale: 1).interpolation(.none).resizable().scaledToFit()
-        } else {
-            Image(systemName: "qrcode").resizable().scaledToFit().foregroundStyle(.tertiary)
-        }
-    }
-
-    static func render(_ s: String) -> CGImage? {
-        guard !s.isEmpty else { return nil }
-        let f = CIFilter.qrCodeGenerator()
-        f.message = Data(s.utf8)
-        f.correctionLevel = "M"
-        guard let out = f.outputImage?.transformed(by: CGAffineTransform(scaleX: 8, y: 8)) else { return nil }
-        return CIContext().createCGImage(out, from: out.extent)
     }
 }
 

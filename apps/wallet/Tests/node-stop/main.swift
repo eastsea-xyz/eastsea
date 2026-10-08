@@ -4,7 +4,16 @@
 // forever on a state it could recover from by itself.
 //   scripts/test-swift-pure.sh   (run node-stop)
 import Foundation
+
+// A system error is a diagnostic, not app-language copy.
+for language in ["en", "ko", "ja", "zh-Hans", "zh-Hant"] {
+    let copy = NodeStopReason.launchFailed("raw English launch error").copy(
+        locale: walletTestLocale(language), bundle: walletTestBundle(language))
+    check(!copy.detail.contains("raw English"), "launch diagnostics stay out of the \(language) screen")
+}
 func check(_ c: Bool, _ m: String) { if !c { print("FAIL", m); exit(1) } }
+let enLocale = walletTestLocale("en"), enBundle = walletTestBundle("en")
+let koLocale = walletTestLocale("ko"), koBundle = walletTestBundle("ko")
 let GiB: UInt64 = 1_073_741_824
 
 // MARK: the founder's MacBook (2026-10-07)
@@ -51,13 +60,13 @@ check(NodeResume.decide(f) == .wait(.diskFull(freeBytes: f.freeBytes!, resumeByt
       "below the resume level: wait with the exact numbers")
 f.freeBytes = 7 * GiB
 check(NodeResume.decide(f) == .start(detach: false), "at the node's own resume level (7 GB): start")
-let disk = NodeStopReason.diskFull(freeBytes: UInt64(6.1 * Double(GiB)), resumeBytes: 7 * GiB, volume: nil).copy(ko: true)
+let disk = NodeStopReason.diskFull(freeBytes: UInt64(6.1 * Double(GiB)), resumeBytes: 7 * GiB, volume: nil).copy(locale: koLocale, bundle: koBundle)
 check(disk.detail == "저장 공간 6.1 GB 남음. 약 0.9 GB만 더 비워 주세요.", "ko disk detail: \(disk.detail)")
 check(disk.resume == "7.0 GB가 되면 저절로 다시 시작해요.", "ko disk resume: \(disk.resume)")
 check(disk.action == .openStorage, "the disk reason's button opens storage")
 check(NodeStopReason.need(free: 3 * GiB, resume: 7 * GiB) == "4 GB", "whole gigabytes above 1 GB")
 check(NodeStopReason.need(free: UInt64(6.95 * Double(GiB)), resume: 7 * GiB) == "0.1 GB", "never says 0.0")
-let ext = NodeStopReason.diskFull(freeBytes: 2 * GiB, resumeBytes: 7 * GiB, volume: "외장 SSD").copy(ko: true)
+let ext = NodeStopReason.diskFull(freeBytes: 2 * GiB, resumeBytes: 7 * GiB, volume: "외장 SSD").copy(locale: koLocale, bundle: koBundle)
 check(ext.detail.hasPrefix("‘외장 SSD’ 저장 공간 2.0 GB 남음"), "the chosen volume is named: \(ext.detail)")
 
 // MARK: the chosen block-data disk
@@ -69,9 +78,9 @@ f.storage = .chosen(volume: "Archive", mounted: true, writable: false)
 check(NodeResume.decide(f) == .wait(.diskNoAccess(volume: "Archive")), "no permission: say where to allow it")
 f.storage = .chosen(volume: "Archive", mounted: true, writable: true)
 check(NodeResume.decide(f) == .start(detach: false), "disk back: start")
-let missing = NodeStopReason.diskMissing(volume: "Archive").copy(ko: false)
+let missing = NodeStopReason.diskMissing(volume: "Archive").copy(locale: enLocale, bundle: enBundle)
 check(missing.title == "Disk “Archive” not connected" && missing.action == .chooseDisk, "missing-disk copy")
-check(NodeStopReason.diskMissing(volume: "외장").copy(ko: true).title == "‘외장’ 디스크가 연결되지 않음", "ko missing-disk title")
+check(NodeStopReason.diskMissing(volume: "외장").copy(locale: koLocale, bundle: koBundle).title == "‘외장’ 디스크가 연결되지 않음", "ko missing-disk title")
 
 // MARK: every other path, in order
 
@@ -101,22 +110,27 @@ f = NodeResumeFacts(); f.blocked = .identityLost
 check(NodeResume.decide(f) == .wait(.identityLost), "identity")
 f = NodeResumeFacts(); f.blocked = .keyElsewhere; f.blockedForSeconds = 86_400
 check(NodeResume.decide(f) == .wait(.keyElsewhere), "hardware binding needs attention even after the crash retry window")
-check(NodeStopReason.keyElsewhere.copy(ko: true).detail.contains("이 노드의 키가 다른 Mac에서 옮겨 왔어요"), "copied-key reason explains the stop in Korean")
-check(NodeStopReason.keyElsewhere.copy(ko: false).detail.contains("This node's keys came from another Mac"), "copied-key reason explains the stop in English")
-check(NodeStopReason.keyElsewhere.copy(ko: false).detail.contains("Restore") && NodeStopReason.keyElsewhere.copy(ko: false).detail.contains("rebind"), "confirmed mismatch offers restore or explicit rebind, preserving the identity")
-check(NodeStopReason.keyElsewhere.copy(ko: true).detail.contains("복원") && NodeStopReason.keyElsewhere.copy(ko: true).detail.contains("다시 연결"), "confirmed mismatch offers restore or explicit rebind in Korean")
+check(NodeStopReason.keyElsewhere.copy(locale: koLocale, bundle: koBundle).detail.contains("이 노드의 키가 다른 Mac에서 옮겨 왔어요"), "copied-key reason explains the stop in Korean")
+check(NodeStopReason.keyElsewhere.copy(locale: enLocale, bundle: enBundle).detail.contains("This node's keys came from another Mac"), "copied-key reason explains the stop in English")
+check(NodeStopReason.keyElsewhere.copy(locale: enLocale, bundle: enBundle).detail.contains("Restore") && NodeStopReason.keyElsewhere.copy(locale: enLocale, bundle: enBundle).detail.contains("rebind"), "confirmed mismatch offers restore or explicit rebind, preserving the identity")
+check(NodeStopReason.keyElsewhere.copy(locale: koLocale, bundle: koBundle).detail.contains("복원") && NodeStopReason.keyElsewhere.copy(locale: koLocale, bundle: koBundle).detail.contains("다시 연결"), "confirmed mismatch offers restore or explicit rebind in Korean")
 
 // An unavailable read is a live node waiting, never a proven mismatch or a
 // request to change identities. Its log markers recover without a restart.
-for ko in [false, true] {
-    let waiting = NodeStopReason.waitingForMacConfirmation.copy(ko: ko)
+for (language, title, automaticRetry, otherMac) in [
+    ("en", "Waiting to confirm this Mac", "by itself", "another Mac"),
+    ("ko", "이 Mac 확인 대기", "저절로", "다른 Mac"),
+    ("ja", "このMacの確認を待っています", "自動", "別のMac"),
+    ("zh-Hans", "等待确认此 Mac", "自动", "另一台 Mac"),
+    ("zh-Hant", "等待確認此 Mac", "自動", "另一台 Mac")
+] {
+    let waiting = NodeStopReason.waitingForMacConfirmation.copy(locale: walletTestLocale(language), bundle: walletTestBundle(language))
     check(!NodeStopReason.waitingForMacConfirmation.isIncident, "Mac confirmation is a calm waiting state")
     check(waiting.action == nil && waiting.actionLabel == nil, "an unavailable read has no owner recovery action")
-    check(!waiting.detail.contains("another Mac") && !waiting.detail.contains("다른 Mac"), "unknown verification does not assert another Mac")
-    check(waiting.resume.contains(ko ? "저절로" : "by itself"), "Mac confirmation says it retries by itself")
+    check(!waiting.detail.contains(otherMac), "unknown verification does not assert another Mac in \(language)")
+    check(waiting.resume.contains(automaticRetry), "Mac confirmation says it retries by itself in \(language)")
+    check(waiting.title == title, "unavailable-read \(language) title")
 }
-check(NodeStopReason.waitingForMacConfirmation.copy(ko: false).title == "Waiting to confirm this Mac", "unavailable-read English title")
-check(NodeStopReason.waitingForMacConfirmation.copy(ko: true).title == "이 Mac 확인 대기", "unavailable-read Korean title")
 check(NodeMacConfirmation.waiting(in: "waiting to confirm this Mac: IOKit lookup unavailable"), "an unavailable hardware read enters the waiting state")
 check(NodeMacConfirmation.waiting(in: "still working", previously: true), "unrelated logs preserve a pending confirmation")
 check(!NodeMacConfirmation.waiting(in: "waiting to confirm this Mac\nMac key binding confirmed"), "a successful retry clears the waiting state")
@@ -162,8 +176,8 @@ do {
 
 // Rebinding is limited to a confirmed stop screen, and the CLI approval does
 // not exist unless the typed identity matches and owner authentication succeeds.
-check(NodeStopReason.keyElsewhere.copy(ko: false).action == .rebindKeys, "the confirmed mismatch exposes owner rebind")
-check(NodeStopReason.keyElsewhere.copy(ko: false).actionLabel == "Rebind Node Keys…", "confirmed mismatch names the owner recovery action")
+check(NodeStopReason.keyElsewhere.copy(locale: enLocale, bundle: enBundle).action == .rebindKeys, "the confirmed mismatch exposes owner rebind")
+check(NodeStopReason.keyElsewhere.copy(locale: enLocale, bundle: enBundle).actionLabel == "Rebind Node Keys…", "confirmed mismatch names the owner recovery action")
 check(NodeKeyRebind.canOffer(reason: .keyElsewhere, processRunning: false, attached: false, lockHeld: false), "a stopped mismatched node can request owner recovery")
 for reason in [NodeStopReason.waitingForMacConfirmation, .identityLost, .switchedOff, .needsAttention(.storage)] {
     check(!NodeKeyRebind.canOffer(reason: reason, processRunning: false, attached: false, lockHeld: false), "\(reason.code) cannot offer rebind")
@@ -172,8 +186,38 @@ check(!NodeKeyRebind.canOffer(reason: nil, processRunning: false, attached: fals
 check(!NodeKeyRebind.canOffer(reason: .keyElsewhere, processRunning: true, attached: false, lockHeld: false), "an owned running process refuses rebind")
 check(!NodeKeyRebind.canOffer(reason: .keyElsewhere, processRunning: false, attached: true, lockHeld: false), "an attached running node refuses rebind")
 check(!NodeKeyRebind.canOffer(reason: .keyElsewhere, processRunning: false, attached: false, lockHeld: true), "another process holding run.lock refuses rebind")
-check(NodeKeyRebind.warning(ko: false) == "Only do this if you moved this Mac's node on purpose; running the same keys on two Macs gets the validator slashed.", "the owner sees the full slashing warning")
-check(NodeKeyRebind.warning(ko: true).contains("의도적으로") && NodeKeyRebind.warning(ko: true).contains("슬래싱"), "Korean warning explains intentional moves and slashing")
+check(NodeKeyRebind.warning(locale: enLocale, bundle: enBundle) == "Only do this if you moved this Mac's node on purpose; running the same keys on two Macs gets the validator slashed.", "the owner sees the full slashing warning")
+check(NodeKeyRebind.warning(locale: koLocale, bundle: koBundle).contains("의도적으로") && NodeKeyRebind.warning(locale: koLocale, bundle: koBundle).contains("슬래싱"), "Korean warning explains intentional moves and slashing")
+for (language, restore, rebind, intentional, slashing) in [
+    ("en", "Restore", "rebind", "on purpose", "slashed"),
+    ("ko", "복원", "다시 연결", "의도적으로", "슬래싱"),
+    ("ja", "復元", "再関連付け", "意図的", "スラッシング"),
+    ("zh-Hans", "恢复", "重新绑定", "有意", "罚没"),
+    ("zh-Hant", "還原", "重新綁定", "刻意", "罰沒")
+] {
+    let locale = walletTestLocale(language), bundle = walletTestBundle(language)
+    let mismatch = NodeStopReason.keyElsewhere.copy(locale: locale, bundle: bundle)
+    check(mismatch.detail.contains(restore) && mismatch.detail.contains(rebind), "\(language) mismatch offers restore or deliberate rebind")
+    check(mismatch.action == .rebindKeys && mismatch.actionLabel?.contains(rebind.capitalized) == true,
+          "\(language) mismatch exposes the translated owner recovery action")
+    let warning = NodeKeyRebind.warning(locale: locale, bundle: bundle)
+    check(warning.contains(intentional) && warning.contains(slashing), "\(language) warning explains intentional moves and slashing")
+    let refusalKeys: [(NodeKeyRebind.Refusal, String)] = [
+        (.invalidValidatorAddress, "The validator address cannot be read. Restore the keys and try again."),
+        (.confirmationDidNotMatch, "The typed validator address did not match. The keys were not changed."),
+        (.ownerKeyUnavailable, "Owner authentication is unavailable. Try again when the wallet key is ready."),
+        (.nodeRunning, "The node is running. Wait for it to stop completely and try again.")
+    ]
+    for (refusal, key) in refusalKeys {
+        let text = refusal.sentence(locale: locale, bundle: bundle)
+        check(text == walletExpectedTranslation(key, language: language), "\(language) owner refusal uses the selected language bundle")
+        check(language == "en" || text != key, "\(language) owner refusal is translated")
+    }
+    let failureKey = "This node's keys came from another Mac. Voting and signing have stopped."
+    let failure = NodeWatchdog.Failure.keyElsewhere.sentence(locale: locale, bundle: bundle)
+    check(failure == walletExpectedTranslation(failureKey, language: language), "\(language) watchdog mismatch uses the selected language bundle")
+    check(language == "en" || failure != failureKey, "\(language) watchdog mismatch is translated")
+}
 let validator = String(repeating: "ab", count: 32)
 let publicEntry = Data(("{\"key\":\"" + validator + "\",\"node\":\"public-node\"}").utf8)
 check((try? NodeKeyRebind.validatorAddress(in: publicEntry)) == validator, "rebind reads the validator identity from the public entry")
@@ -220,7 +264,7 @@ check(NodeResume.decide(f) == .start(detach: false), "the holder let go: start")
 f = NodeResumeFacts(); f.launchError = "Permission denied"
 check(NodeResume.decide(f) == .start(detach: false), "a launch error is retried every tick")
 
-// MARK: copy: every reason, both languages, says something and never truncates to nothing
+// MARK: copy: every reason, all five languages, says something and never truncates to nothing
 
 let all: [NodeStopReason] = [.switchedOff, .onBattery, .wrongLocation, .noHelper, .migrating, .migrationBlocked("m"),
                              .otherNodeRunning, .diskFull(freeBytes: GiB, resumeBytes: 7 * GiB, volume: nil),
@@ -230,20 +274,20 @@ let all: [NodeStopReason] = [.switchedOff, .onBattery, .wrongLocation, .noHelper
 var codes = Set<String>()
 for r in all {
     codes.insert(r.code)
-    for ko in [true, false] {
-        let c = r.copy(ko: ko)
-        check(!c.title.isEmpty && !c.detail.isEmpty, "\(r.code) has a title and a detail (ko=\(ko))")
+    for language in ["en", "ko", "ja", "zh-Hans", "zh-Hant"] {
+        let c = r.copy(locale: walletTestLocale(language), bundle: walletTestBundle(language))
+        check(!c.title.isEmpty && !c.detail.isEmpty, "\(r.code) has a title and a detail (language=\(language))")
         check(c.title.count <= 40, "\(r.code) title fits the sidebar: \(c.title)")
         check((c.action == nil) == (c.actionLabel == nil), "\(r.code) button has a label")
         check(!c.paragraph.lowercased().contains("rpc") && !c.paragraph.contains("exit "), "\(r.code) has no jargon")
         if r.isIncident && r != .identityLost && r != .keyElsewhere && r != .wrongLocation && r != .noHelper {
-            check(!c.resume.isEmpty, "\(r.code) says when it resumes (ko=\(ko))")
+            check(!c.resume.isEmpty, "\(r.code) says when it resumes (language=\(language))")
         }
     }
 }
 check(codes.count == all.count, "codes are unique")
-check(NodeStopReason.crashLoop(.other, retryInSeconds: 540).copy(ko: true).resume == "9분 뒤 저절로 다시 시도해요.", "minutes")
-check(NodeStopReason.restarting(inSeconds: 4).copy(ko: false).resume == "Starting in 4 s.", "seconds")
+check(NodeStopReason.crashLoop(.other, retryInSeconds: 540).copy(locale: koLocale, bundle: koBundle).resume == "9분 뒤 저절로 다시 시도해요.", "minutes")
+check(NodeStopReason.restarting(inSeconds: 4).copy(locale: enLocale, bundle: enBundle).resume == "Starting in 4 s.", "seconds")
 check(!NodeStopReason.onBattery.isIncident && NodeStopReason.otherNodeRunning.isIncident, "incident flags")
 
 // MARK: node-status.log

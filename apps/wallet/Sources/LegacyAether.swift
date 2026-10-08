@@ -42,16 +42,17 @@ enum LegacyAether {
     }
 
     /// What the user is asked, in their language.
-    static func question(ko: Bool) -> (title: String, body: String, confirm: String, later: String) {
-        ko ? ("이전 Aether 앱이 아직 이 Mac에 있어요",
-              "\(Brand.projectKo)가 Aether를 대신해요. Aether가 남아 있으면 로그인할 때 열려서 이전 데이터를 붙잡고 노드를 하나 더 돌려요. "
-                + "Aether를 종료하고 휴지통으로 옮길까요? 데이터는 지우지 않아요. 지갑과 노드 데이터는 \(Brand.projectKo)가 옮겨 둬요.",
-              "Aether 종료 후 휴지통으로", "나중에")
-           : ("The old Aether app is still on this Mac",
-              "\(Brand.project) replaces Aether. While Aether is installed it opens at login, holds on to the old data "
-                + "and runs a second node. Quit Aether and move it to the Trash? No data is deleted — "
-                + "\(Brand.project) moves your wallet and node data over.",
-              "Quit Aether and Move to Trash", "Not Now")
+    static func question(locale: Locale = .current, bundle: Bundle = .main) -> (title: String, body: String, confirm: String, later: String) {
+        (
+            String(localized: "The old Aether app is still on this Mac", bundle: bundle, locale: locale),
+            String(localized: "EastSea replaces Aether. While Aether is installed it opens at login, holds on to the old data and runs a second node. Quit Aether and move it to the Trash? No data is deleted — EastSea moves your wallet and node data over.", bundle: bundle, locale: locale),
+            String(localized: "Quit Aether and Move to Trash", bundle: bundle, locale: locale),
+            String(localized: "Not Now", bundle: bundle, locale: locale),
+        )
+    }
+
+    static func removalFailure(locale: Locale = .current, bundle: Bundle = .main) -> String {
+        String(localized: "Aether could not be moved to the Trash. Move it there in Finder, then reopen EastSea.", bundle: bundle, locale: locale)
     }
 
     #if os(macOS)
@@ -85,7 +86,7 @@ enum LegacyAether {
         #endif
         let copies = nodeRunningCopies()
         guard !copies.isEmpty else { return }
-        let q = question(ko: Bundle.main.preferredLocalizations.first?.hasPrefix("ko") ?? false)
+        let q = question()
         let alert = NSAlert()
         alert.messageText = q.title
         alert.informativeText = q.body + "\n\n" + copies.map { $0.url.path }.joined(separator: "\n")
@@ -100,7 +101,8 @@ enum LegacyAether {
                     if let error {
                         let fail = NSAlert()
                         fail.messageText = q.title
-                        fail.informativeText = error.localizedDescription
+                        NSLog("could not move Aether to the Trash: %@", error.localizedDescription)
+                        fail.informativeText = removalFailure()
                         fail.runModal()
                     }
                     done()

@@ -4,7 +4,7 @@
 import Foundation
 let NodeResumeBytesFromNode: UInt64 = 7 * 1_073_741_824  // crates/node resources.rs min_free_disk + DISK_RESUME
 func check(_ c: Bool, _ m: String) { if !c { print("FAIL", m); exit(1) } }
-check(Brand.project == "EastSea" && Brand.projectKo == "동해", "project names are localized")
+check(Brand.project == "EastSea", "the stable project name")
 check(Brand.coinName == "Doubloon" && Brand.coinTicker == "DBLN", "coin name is the current brand")
 check(["EastSea", "동해"].contains { NodeWatchdog.Failure.alreadyRunning.sentence.contains($0) },
       "another running app is named by the current brand")
@@ -321,3 +321,22 @@ for secs in stride(from: 402.0, through: 458, by: 2) {
 check(pendingWake.useLocalNode(local: 700, network: nil, responsive: true, currentlyLocal: true, at: t0.advanced(by: 462)) == .remote, "and 60 genuinely frozen seconds still step back to remote")
 
 print("watchdog: all checks passed")
+
+// Lock the reviewed language pairs before removing the Boolean switch.
+let localizedFailures: [(NodeWatchdog.Failure, String, String)] = [
+    (.diskFull, "Storage is full. The node restarts by itself once 7 GB is free.", "저장 공간이 부족해요. 남은 공간이 7 GB가 되면 노드가 저절로 다시 시작해요."),
+    (.database, "The node's data keeps getting damaged. Restore it from a backup or contact support.", "노드 데이터가 계속 손상돼요. 백업에서 복원하거나 지원에 문의해 주세요."),
+    (.handoff, "The node's handoff data cannot be recovered. Restore it from a backup.", "노드 인계 데이터를 복구할 수 없어요. 백업에서 복원해 주세요."),
+    (.storage, "The node cannot open its storage. Check the disk, then turn the node on again.", "노드 저장소를 열 수 없어요. 디스크 상태를 확인한 뒤 노드를 다시 켜 주세요."),
+    (.memory, "The Mac is low on memory. Close a few other apps.", "메모리가 부족해요. 다른 앱을 몇 개 닫아 주세요."),
+    (.network, "No network connection. Please check the internet.", "네트워크에 연결할 수 없어요. 인터넷 연결을 확인해 주세요."),
+    (.other, "The node keeps stopping. Please restart the app.", "노드가 계속 멈춰요. 앱을 다시 실행해 주세요."),
+    (.upgradeNeeded, "This version can no longer run the chain. Please update the app.", "이 버전으로는 체인을 실행할 수 없어요. 앱을 업데이트해 주세요."),
+    (.identityLost, "This Mac's node key cannot be read. Restore it from a backup and the node votes again.", "이 Mac의 노드 키를 읽을 수 없어요. 백업에서 키를 되찾으면 노드가 다시 투표해요."),
+    (.alreadyRunning, "Another EastSea is already running this node. Please use that app instead.", "다른 동해가 이미 이 노드를 실행하고 있어요. 그 앱에서 노드를 켜 주세요."),
+]
+for (failure, english, korean) in localizedFailures {
+    for (language, expected) in [("en", english), ("ko", korean)] {
+        check(failure.sentence(locale: walletTestLocale(language), bundle: walletTestBundle(language)) == expected, "watchdog \(failure) in \(language)")
+    }
+}

@@ -21,11 +21,11 @@ struct ResourcesSection: View {
     var body: some View {
         Section("Resources") {
             Toggle("Prove blocks on this Mac", isOn: Binding(get: { node.prove }, set: {
-                if $0 { node.proveAddress = model.address }
+                if $0 { node.proveAddress = model.payoutAddress }
                 node.prove = $0
             }))
-            .disabled(model.address.isEmpty)
-            .help("Your node proves recent blocks with Metal. The first valid proof of a block gets a test \(Brand.networkCoinTicker) reward in this wallet.")
+            .disabled(model.payoutAddress.isEmpty)
+            .help("Your node proves recent blocks with Metal. The first valid proof of a block gets a test \(Brand.networkCoinTicker) reward in your chosen node payout account.")
             if developerMode {
                 Picker("Memory limit", selection: $node.proverMemory) {
                     Text("Automatic (25% of memory)").tag("auto")

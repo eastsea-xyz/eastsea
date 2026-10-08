@@ -5,6 +5,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:$PATH"
+mkdir -p "$PWD/tmp"
+export TMPDIR="$PWD/tmp"
 # The agent ships inside the app bundle: same bytes wherever the checkout lives.
 . scripts/repro-env.sh
 aether_repro_rustflags

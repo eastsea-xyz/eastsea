@@ -79,42 +79,32 @@ struct NodeWatchdog {
         case alreadyRunning
 
         /// One sentence, in the app's language: what happened and what to do.
-        var sentence: String {
-            let ko = Bundle.main.preferredLocalizations.first?.hasPrefix("ko") ?? false
+        var sentence: String { sentence() }
+
+        func sentence(locale: Locale = .current, bundle: Bundle = .main) -> String {
             switch self {
             case .diskFull:
-                return ko ? "저장 공간이 부족해요. 남은 공간이 7 GB가 되면 노드가 저절로 다시 시작해요."
-                    : "Storage is full. The node restarts by itself once 7 GB is free."
+                return String(localized: "Storage is full. The node restarts by itself once 7 GB is free.", bundle: bundle, locale: locale)
             case .database:
-                return ko ? "노드 데이터가 계속 손상돼요. 백업에서 복원하거나 지원에 문의해 주세요."
-                    : "The node's data keeps getting damaged. Restore it from a backup or contact support."
+                return String(localized: "The node's data keeps getting damaged. Restore it from a backup or contact support.", bundle: bundle, locale: locale)
             case .handoff:
-                return ko ? "노드 인계 데이터를 복구할 수 없어요. 백업에서 복원해 주세요."
-                    : "The node's handoff data cannot be recovered. Restore it from a backup."
+                return String(localized: "The node's handoff data cannot be recovered. Restore it from a backup.", bundle: bundle, locale: locale)
             case .storage:
-                return ko ? "노드 저장소를 열 수 없어요. 디스크 상태를 확인한 뒤 노드를 다시 켜 주세요."
-                    : "The node cannot open its storage. Check the disk, then turn the node on again."
+                return String(localized: "The node cannot open its storage. Check the disk, then turn the node on again.", bundle: bundle, locale: locale)
             case .memory:
-                return ko ? "메모리가 부족해요. 다른 앱을 몇 개 닫아 주세요."
-                    : "The Mac is low on memory. Close a few other apps."
+                return String(localized: "The Mac is low on memory. Close a few other apps.", bundle: bundle, locale: locale)
             case .network:
-                return ko ? "네트워크에 연결할 수 없어요. 인터넷 연결을 확인해 주세요."
-                    : "No network connection. Please check the internet."
+                return String(localized: "No network connection. Please check the internet.", bundle: bundle, locale: locale)
             case .other:
-                return ko ? "노드가 계속 멈춰요. 앱을 다시 실행해 주세요."
-                    : "The node keeps stopping. Please restart the app."
+                return String(localized: "The node keeps stopping. Please restart the app.", bundle: bundle, locale: locale)
             case .upgradeNeeded:
-                return ko ? "이 버전으로는 체인을 실행할 수 없어요. 앱을 업데이트해 주세요."
-                    : "This version can no longer run the chain. Please update the app."
+                return String(localized: "This version can no longer run the chain. Please update the app.", bundle: bundle, locale: locale)
             case .identityLost:
-                return ko ? "이 Mac의 노드 키를 읽을 수 없어요. 백업에서 키를 되찾으면 노드가 다시 투표해요."
-                    : "This Mac's node key cannot be read. Restore it from a backup and the node votes again."
+                return String(localized: "This Mac's node key cannot be read. Restore it from a backup and the node votes again.", bundle: bundle, locale: locale)
             case .keyElsewhere:
-                return ko ? "이 노드의 키가 다른 Mac에서 옮겨 왔어요. 투표와 서명을 멈췄어요."
-                    : "This node's keys came from another Mac. Voting and signing have stopped."
+                return String(localized: "This node's keys came from another Mac. Voting and signing have stopped.", bundle: bundle, locale: locale)
             case .alreadyRunning:
-                return ko ? "다른 \(Brand.projectKo)가 이미 이 노드를 실행하고 있어요. 그 앱에서 노드를 켜 주세요."
-                    : "Another \(Brand.project) is already running this node. Please use that app instead."
+                return String(localized: "Another \(Brand.localizedName(locale: locale, bundle: bundle)) is already running this node. Please use that app instead.", bundle: bundle, locale: locale)
             }
         }
     }

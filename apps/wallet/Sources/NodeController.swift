@@ -6,6 +6,7 @@ import IOKit.ps
 import IOKit.pwr_mgt
 import ServiceManagement
 import SwiftUI
+import Combine
 import UserNotifications
 
 /// The node inside the app (Transmission-style on/off). On: the bundled `aether`
@@ -95,7 +96,15 @@ final class NodeController: ObservableObject {
     @AppStorage("proveBlocks") var prove = false {
         didSet { restartIfRunning() }
     }
-    @AppStorage("proveAddress") var proveAddress = ""
+    @AppStorage("proveAddress") private var savedProveAddress = ""
+    /// Compatibility for existing proving controls: starting the node from
+    /// another selected wallet cannot silently change its explicit payout.
+    /// New account UI changes it through AccountStore.setPayoutAccount.
+    var proveAddress: String {
+        get { AccountStore.wallet().payoutAddress.isEmpty ? savedProveAddress : AccountStore.wallet().payoutAddress }
+        set { savedProveAddress = AccountStore.wallet().payoutAddress.isEmpty ? newValue : AccountStore.wallet().payoutAddress }
+    }
+    private var payoutSubscription: AnyCancellable?
     /// Settings ▸ 리소스 (docs/ops/resource-limits.md): the prover's memory cap
     /// ("auto" = RAM의 25%, GB, "off"), CPU share ("half"/"all"), and whether it
     /// may run on battery. Passed to the node as flags on (re)start.
@@ -208,6 +217,7 @@ final class NodeController: ObservableObject {
 
     struct ProverStatus: Decodable, Equatable, Sendable {
         let running: Bool
+        let stale: Bool?
         let proving: UInt64?
         let last_height: UInt64?
         let last_txs: Int?
@@ -251,7 +261,8 @@ final class NodeController: ObservableObject {
             do {
                 if newValue { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
             } catch {
-                state = .failed(String(localized: "Could not change Open at Login: \(error.localizedDescription)"))
+                logEvent("login", "failed: \(error.localizedDescription)")
+                state = .failed(String(localized: "Could not change Open at Login. Please try again."))
             }
             objectWillChange.send()
         }
@@ -280,6 +291,12 @@ final class NodeController: ObservableObject {
             // preference and start writing a second chain store.
             storageMoveError = String(localized: "The block-data move record could not be read. Keep both copies and retry after reconnecting the disk.")
             storageMovePercent = 0
+        }
+        payoutSubscription = AccountStore.wallet().payoutAddressPublisher.removeDuplicates().dropFirst().sink { [weak self] address in
+            guard let self, !address.isEmpty else { return }
+            let changed = self.savedProveAddress.lowercased() != address.lowercased()
+            self.savedProveAddress = address
+            if changed && self.prove { self.restartIfRunning() }
         }
     }
     /// The update owns the node's startup gate and run.lock until this
@@ -469,7 +486,7 @@ final class NodeController: ObservableObject {
             case .onBattery: state = .waitingForPower
             case .restarting: break   // the watchdog's own line stays
             default:
-                let title = reason.copy(ko: HealthCheck.korean).title
+                let title = reason.copy().title
                 if state != .failed(title) { state = .failed(title) }
             }
         }
@@ -507,7 +524,7 @@ final class NodeController: ObservableObject {
         }
         confirmingMac = false
         if stoppedFailure != .keyElsewhere || !automaticRestartBlocked { block(.keyElsewhere) }
-        let title = NodeStopReason.keyElsewhere.copy(ko: HealthCheck.korean).title
+        let title = NodeStopReason.keyElsewhere.copy().title
         if state != .failed(title) { state = .failed(title) }
         applyDuty()
         refreshStopReason()
@@ -547,22 +564,22 @@ final class NodeController: ObservableObject {
         guard !keyRebindInProgress,
               NodeKeyRebind.canOffer(reason: stopReason, processRunning: process != nil,
                                      attached: attached, lockHeld: Self.lockHeld(in: Self.dataDir)) else { return }
-        let ko = HealthCheck.korean, dir = Self.dataDir
+        let dir = Self.dataDir
         keyRebindError = nil
         do {
             guard let binary, let authenticate = authorizeKeyRebind else { throw NodeKeyRebind.Refusal.ownerKeyUnavailable }
             let address = try NodeKeyRebind.validatorAddress(in: Data(contentsOf: dir.appendingPathComponent("validator.pub.json")))
             let alert = NSAlert()
             alert.alertStyle = .warning
-            alert.messageText = ko ? "이 Mac에 노드 키를 다시 연결할까요?" : "Rebind these node keys to this Mac?"
-            alert.informativeText = NodeKeyRebind.warning(ko: ko) + "\n\n"
-                + (ko ? "확인하려면 다음 검증인 주소를 직접 입력해 주세요:\n" : "Type this validator address to confirm:\n") + address
-            alert.addButton(withTitle: ko ? "소유자 인증 후 다시 연결" : "Authenticate Owner and Rebind")
-            alert.addButton(withTitle: ko ? "취소" : "Cancel")
+            alert.messageText = String(localized: "Rebind these node keys to this Mac?")
+            alert.informativeText = NodeKeyRebind.warning() + "\n\n"
+                + String(localized: "Type this validator address to confirm:\n") + address
+            alert.addButton(withTitle: String(localized: "Authenticate Owner and Rebind"))
+            alert.addButton(withTitle: String(localized: "Cancel"))
             let field = NSTextField(string: "")
             field.frame = NSRect(x: 0, y: 0, width: 540, height: 24)
             field.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-            field.placeholderString = ko ? "검증인 주소 입력" : "Type the validator address"
+            field.placeholderString = String(localized: "Type the validator address")
             alert.accessoryView = field
             alert.window.initialFirstResponder = field
             guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -675,7 +692,7 @@ final class NodeController: ObservableObject {
         let first = lastLoggedCode == nil
         lastLoggedCode = code
         if first && reason == .switchedOff { return }   // a switched-off app at launch is not news
-        let en = reason?.copy(ko: false)
+        let en = reason?.copy(locale: Locale(identifier: "en"), bundle: AppLanguage.bundle(for: "en"))
         let detail = en.map { "\($0.title). \($0.paragraph)" } ?? "the node runs"
         let line = NodeStatusLog.line(at: Date(), event: reason == nil ? "running" : "stopped \(code)", detail: detail, facts: facts)
         NodeStatusLog.append(line, in: Self.dataDir)
@@ -792,7 +809,7 @@ final class NodeController: ObservableObject {
         voting = VotingNodeStatus(registered: true, streak: 5, lastEpoch: 7_675, epoch: 7_676, voting: false, candidates: 3)
         history = HistoryKept(bytes: 12_884_901_888, shards: 12, windowDays: 7, passPercent: 98)
         if prove {
-            prover = ProverStatus(running: true, proving: 184_211, last_height: 184_209, last_txs: 3, last_seconds: 41.6,
+            prover = ProverStatus(running: true, stale: false, proving: 184_211, last_height: 184_209, last_txs: 3, last_seconds: 41.6,
                                   proofs: 57, proofs_failing: false, acceptance_rate_percent: 100, program_unknown: false,
                                   program_mismatch: false, network_program: nil, error: nil, paused: nil,
                                   memory_bytes: 5_690_000_000, memory_cap: 6_442_450_944, lag: 2,
@@ -929,7 +946,8 @@ final class NodeController: ObservableObject {
             try FileManager.default.createDirectory(at: Self.dataDir, withIntermediateDirectories: true)
         } catch {
             launchError = error.localizedDescription
-            state = .failed(error.localizedDescription)
+            logEvent("launch", "failed: \(error.localizedDescription)")
+            state = .failed(NodeStopReason.launchFailed(error.localizedDescription).copy().detail)
             return
         }
         announceAvailability(leaving: Self.onBattery)
@@ -970,7 +988,7 @@ final class NodeController: ObservableObject {
         } catch {
             launchError = error.localizedDescription
             logEvent("launch", "failed: \(error.localizedDescription)")
-            state = .failed(error.localizedDescription)
+            state = .failed(NodeStopReason.launchFailed(error.localizedDescription).copy().detail)
             return
         }
         launchError = nil

@@ -109,6 +109,15 @@ a { color: var(--accent); }
 .tile-sub { font-size: 11px; color: var(--muted); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .hero { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 
+/* ---- live network: counts observed through this node's home relays ---- */
+.live-total { margin: 0; font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.live-breakdowns { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 20px; }
+.live-breakdown { min-width: 0; }
+.live-breakdown h3 { margin: 0 0 8px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.live-counts { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; margin: 0; font-size: 13px; }
+.live-counts dt { overflow-wrap: anywhere; }
+.live-counts dd { margin: 0; font-variant-numeric: tabular-nums; }
+
 /* ---- tables ---- */
 .tablewrap { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }

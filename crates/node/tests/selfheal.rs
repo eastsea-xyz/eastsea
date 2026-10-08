@@ -178,6 +178,7 @@ fn rpc_state(node: &Node) -> RpcState {
         snapshot: Default::default(),
         prover: None,
         shards: None,
+        presence: None,
         public_read_only: false,
     }
 }

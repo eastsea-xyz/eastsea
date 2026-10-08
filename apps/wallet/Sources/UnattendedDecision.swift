@@ -14,7 +14,7 @@ enum UnattendedDecision {
     /// appended last so the flag order stays stable.
     static func nodeArgv(dataDir: String, rpcPort: UInt16, p2pPort: UInt16,
                          networkPath: String?, proverFlags: [String], storageFlag: String? = nil,
-                         locationFlags: [String] = []) -> [String] {
+                         locationFlags: [String] = [], presenceFlags: [String] = []) -> [String] {
         var out = ["run", "--data", dataDir, "--rpc-port", String(rpcPort), "--port", String(p2pPort)]
         if let networkPath { out += ["--network", networkPath] }
         out += proverFlags
@@ -22,6 +22,7 @@ enum UnattendedDecision {
         // 블록 데이터 위치 / archive (`BlockDataLocation.flags`): last, so the
         // order everything above depends on does not move.
         out += locationFlags
+        out += presenceFlags
         return out
     }
 

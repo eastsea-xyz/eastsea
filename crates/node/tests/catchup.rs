@@ -329,6 +329,7 @@ fn rpc_state(node: &Node, registrar: Option<Arc<aether_node::devicecheck::Regist
         snapshot: Default::default(),
         prover: None,
         shards: None,
+        presence: None,
         public_read_only: false,
     }
 }

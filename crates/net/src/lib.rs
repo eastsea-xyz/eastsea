@@ -30,7 +30,7 @@ use iroh::endpoint::presets;
 pub use iroh::endpoint::Connection;
 pub use iroh::protocol::Router;
 use iroh::protocol::{AcceptError, ProtocolHandler};
-pub use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey, TransportAddr};
+pub use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey, Signature, TransportAddr};
 use iroh_mainline_address_lookup::DhtAddressLookup;
 use rand::seq::SliceRandom as _;
 use serde_json::Value;
@@ -44,7 +44,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub mod paths;
+pub mod peers;
+pub mod presence;
 pub mod tunnel;
+
+pub use presence::{presence_exchange, PresenceCallback, PresenceProtocol, ALPN_PRESENCE, MAX_PRESENCE_MESSAGE};
 
 pub const ALPN_RPC: &[u8] = b"aether/rpc/1";
 pub const ALPN_P2P: &[u8] = b"aether/p2p/1";
@@ -289,6 +293,32 @@ fn transport_config() -> iroh::endpoint::QuicTransportConfig {
 /// Bind an endpoint that resolves peers through the Mainline DHT. With a
 /// `secret`, it also publishes its own addresses there (direct + relay).
 pub async fn bind(secret: Option<SecretKey>, alpns: Vec<Vec<u8>>) -> Result<Endpoint> {
+    bind_inner(secret, alpns, None).await
+}
+
+/// Bind with observation of every incoming and outgoing protocol connection.
+pub async fn bind_tracked(secret: Option<SecretKey>, alpns: Vec<Vec<u8>>, peers: peers::PeerTracker) -> Result<Endpoint> {
+    bind_inner(secret, alpns, Some(peers)).await
+}
+
+/// Isolated devnet transport: loopback only, with no relay or DHT traffic.
+pub async fn bind_local(secret: SecretKey, addr: std::net::SocketAddr, peers: peers::PeerTracker) -> Result<Endpoint> {
+    if !addr.ip().is_loopback() {
+        anyhow::bail!("local presence endpoint must bind a loopback address");
+    }
+    Endpoint::builder(presets::Minimal)
+        .relay_mode(iroh::RelayMode::Disabled)
+        .clear_ip_transports()
+        .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
+        .net_report_config(iroh::endpoint::NetReportConfig::minimal())
+        .secret_key(secret)
+        .transport_config(transport_config())
+        .hooks(peers)
+        .bind_addr(addr).map_err(|e| anyhow!("bind local presence address: {e}"))?
+        .bind().await.map_err(|e| anyhow!("bind local presence endpoint: {e}"))
+}
+
+async fn bind_inner(secret: Option<SecretKey>, alpns: Vec<Vec<u8>>, peers: Option<peers::PeerTracker>) -> Result<Endpoint> {
     let publish = secret.is_some();
     let mut dht = DhtAddressLookup::builder().addr_filter(public_addr_filter());
     if !publish {
@@ -305,6 +335,9 @@ pub async fn bind(secret: Option<SecretKey>, alpns: Vec<Vec<u8>>) -> Result<Endp
         .address_lookup(dht);
     if let Some(s) = secret {
         b = b.secret_key(s);
+    }
+    if let Some(peers) = peers {
+        b = b.hooks(peers);
     }
     b.bind().await.map_err(|e| anyhow!("bind endpoint: {e}"))
 }
@@ -523,6 +556,22 @@ where
     F: Fn(Value) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Value> + Send + 'static,
 {
+    serve_with_presence(endpoint, handler, p2p_target, registered, None)
+}
+
+/// Serve the existing RPC/tunnel protocols and optionally the versioned,
+/// bounded live-presence protocol. Old callers retain their original ALPNs.
+pub fn serve_with_presence<F, Fut>(
+    endpoint: Endpoint,
+    handler: F,
+    p2p_target: Option<std::net::SocketAddr>,
+    registered: Option<RegisteredCandidate>,
+    presence: Option<PresenceCallback>,
+) -> Router
+where
+    F: Fn(Value) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Value> + Send + 'static,
+{
     let h: Handler = Arc::new(move |v| Box::pin(handler(v)));
     let gate = Arc::new(RpcGate::new(MAX_RPC_STREAMS, RPC_STREAMS_PER_PEER, RPC_BURST, RPC_RATE_PER_SEC));
     let mut r = Router::builder(endpoint).accept(
@@ -538,6 +587,9 @@ where
         // The background reshare listens on the next port.
         let reshare = std::net::SocketAddr::new(target.ip(), target.port() + 1);
         r = r.accept(ALPN_RESHARE, tunnel::Inbound { target: reshare });
+    }
+    if let Some(callback) = presence {
+        r = r.accept(ALPN_PRESENCE, PresenceProtocol::new(callback));
     }
     r.spawn()
 }

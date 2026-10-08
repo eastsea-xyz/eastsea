@@ -131,6 +131,49 @@ impl ResourceArgs {
     }
 }
 
+/// Optional country disclosure; default off. The hidden loopback-only overlay
+/// permits a devnet test without DHT publishing, relays or real node data.
+#[derive(clap::Args, Clone, Debug, Default)]
+struct PresenceArgs {
+    #[arg(long, value_parser = parse_presence_country)]
+    presence_country: Option<String>,
+    /// Existing logical node key directory; never creates or changes keys.
+    #[arg(long, hide = true)]
+    presence_identity: Option<String>,
+    #[arg(long, hide = true, value_parser = parse_presence_bind)]
+    dev_presence_bind: Option<SocketAddr>,
+    #[arg(long, hide = true, requires = "dev_presence_bind", value_parser = parse_presence_peer)]
+    dev_presence_peer: Vec<aether_net::EndpointAddr>,
+}
+
+fn parse_presence_country(s: &str) -> Result<String, String> {
+    aether_node::presence::validate_country(Some(s))?;
+    Ok(s.into())
+}
+
+fn parse_presence_bind(s: &str) -> Result<SocketAddr, String> {
+    let addr: SocketAddr = s.parse().map_err(|_| "presence bind must be a loopback socket address")?;
+    if !addr.ip().is_loopback() { return Err("dev presence binds must be loopback".into()); }
+    Ok(addr)
+}
+
+fn parse_presence_peer(s: &str) -> Result<aether_net::EndpointAddr, String> {
+    let (id, addr) = s.split_once('@').ok_or("dev presence peer must be node-id@loopback:port")?;
+    let id: aether_net::EndpointId = id.parse().map_err(|_| "invalid presence peer node id")?;
+    Ok(aether_net::EndpointAddr::from_parts(id, [aether_net::TransportAddr::Ip(parse_presence_bind(addr)?)]))
+}
+
+impl PresenceArgs {
+    fn seeds(&self, nodes: &[aether_net::EndpointId]) -> Vec<aether_net::EndpointAddr> {
+        if self.dev_presence_bind.is_some() { self.dev_presence_peer.clone() }
+        else { nodes.iter().copied().map(aether_net::EndpointAddr::from).collect() }
+    }
+
+    fn forward(&self) -> Vec<String> {
+        self.presence_country.as_ref().map(|c| vec![format!("--presence-country={c}")]).unwrap_or_default()
+    }
+}
+
 #[derive(Subcommand)]
 enum Cmd {
     /// Run a validator.
@@ -209,6 +252,8 @@ enum Cmd {
         public_read_only: bool,
         #[command(flatten)]
         history: HistoryArgs,
+        #[command(flatten)]
+        presence: PresenceArgs,
         #[command(flatten)]
         resources: ResourceArgs,
     },
@@ -373,6 +418,8 @@ enum Cmd {
         #[arg(long)]
         node_key: Option<String>,
         #[command(flatten)]
+        presence: PresenceArgs,
+        #[command(flatten)]
         history: HistoryArgs,
         #[command(flatten)]
         resources: ResourceArgs,
@@ -470,6 +517,8 @@ enum Cmd {
         /// on loopback, behind a cloudflared tunnel (docs/ops/read-gateway.md).
         #[arg(long)]
         public_read_only: bool,
+        #[command(flatten)]
+        presence: PresenceArgs,
         #[command(flatten)]
         resources: ResourceArgs,
     },
@@ -856,8 +905,15 @@ fn main() {
             exit_with_parent,
             public_read_only,
             history,
+            presence,
             resources,
         } => {
+            if presence.dev_presence_bind.is_some() && (!offline || peers.iter().any(|peer| {
+                peer.split_once('@').and_then(|(_, addr)| addr.parse::<SocketAddr>().ok()).is_none_or(|addr| !addr.ip().is_loopback())
+            })) {
+                eprintln!("--dev-presence-bind needs --offline and loopback TCP peers");
+                std::process::exit(2);
+            }
             if exit_with_parent {
                 exit_with_parent_process(_writer_lease.as_ref().map(|lease| lease.expected_parent()));
             }
@@ -950,6 +1006,7 @@ fn main() {
                         dev_registrar,
                         network_file,
                         public_read_only,
+                        presence,
                         resources,
                     });
                 })
@@ -1006,7 +1063,7 @@ fn main() {
             println!("signed by the committee: protocol {} at height {} on chain {}", s.upgrade.protocol, s.upgrade.activate_at, s.upgrade.chain_id);
             Ok(())
         })(),
-        Cmd::Follow { network, from_rpc, data, rpc_port, validators, exit_with_parent, candidate, dev_epoch_blocks, keys, checkpoint, dev_storage_fault, public_read_only, archive_export, node_key, history, resources } => {
+        Cmd::Follow { network, from_rpc, data, rpc_port, validators, exit_with_parent, candidate, dev_epoch_blocks, keys, checkpoint, dev_storage_fault, public_read_only, archive_export, node_key, history, presence, resources } => {
             if exit_with_parent {
                 exit_with_parent_process(_writer_lease.as_ref().map(|lease| lease.expected_parent()));
             }
@@ -1023,7 +1080,7 @@ fn main() {
                 }
             }
             let node_key = node_key.map(std::path::PathBuf::from).unwrap_or_else(|| std::path::Path::new(&data).join("wallet-node.key"));
-            run_follow(network, from_rpc, data, rpc_port, validators, keys, dev_epoch_blocks, checkpoint, dev_storage_fault, public_read_only, history, resources, export, None, node_key)
+            run_follow(network, from_rpc, data, rpc_port, validators, keys, dev_epoch_blocks, checkpoint, dev_storage_fault, public_read_only, history, resources, export, None, node_key, presence)
         }
         Cmd::Archive { network, from_rpc, data, rpc_port, export_dir, webseed, https_base, bind, export_key, resources } => run_archive(network, from_rpc, data, rpc_port, export_dir, webseed, https_base, bind, export_key, resources),
         Cmd::CandidateInfo { data, operator, chain_id } => (|| {
@@ -1046,7 +1103,7 @@ fn main() {
             );
             Ok(())
         })(),
-        Cmd::Run { data, chain_data, archive, network, ceremony, port, rpc_port, reshare_port, node_args, follow_args, reshare_timeout, dev_peer_dir, exit_with_parent, public_read_only, resources } => {
+        Cmd::Run { data, chain_data, archive, network, ceremony, port, rpc_port, reshare_port, node_args, follow_args, reshare_timeout, dev_peer_dir, exit_with_parent, public_read_only, presence, resources } => {
             // First: the app's wake signal must never end the supervisor.
             aether_node::supervisor::install_wake_forwarding();
             if exit_with_parent {
@@ -1138,10 +1195,15 @@ fn main() {
                 };
                 // The same resource limits for whichever child runs (the
                 // supervisor adds them to both `aether node` and `aether follow`).
-                let forwarded = resources.forward();
+                let mut forwarded = resources.forward();
+                forwarded.extend(presence.forward());
                 let (mut node_args, mut follow_args) = (node_args, follow_args);
                 node_args.extend(forwarded.iter().cloned());
                 follow_args.extend(forwarded);
+                // Keep signed presence identity through all follower roles,
+                // including paused/keyless-beacon states. RPC transport keeps
+                // its separate key so candidate resharing owns its node id.
+                follow_args.push(format!("--presence-identity={data}"));
                 // The gateway role carries to whichever child runs.
                 if public_read_only {
                     node_args.push("--public-read-only".into());
@@ -2020,6 +2082,7 @@ struct NodeArgs {
     public_read_only: bool,
     /// Memory, CPU and disk limits (docs/ops/resource-limits.md).
     resources: ResourceArgs,
+    presence: PresenceArgs,
 }
 
 /// The open-file limit a node asks for when its hard limit allows it.
@@ -2137,6 +2200,7 @@ fn run_node(a: NodeArgs) {
         max_shards,
         public_read_only,
         resources,
+        presence: presence_args,
     } = a;
     aether_node::supervisor::install_fatal_watch(std::path::PathBuf::from(&data));
     // Resource limits (docs/ops/resource-limits.md), before the chain opens:
@@ -2255,14 +2319,20 @@ fn run_node(a: NodeArgs) {
         .map(|(k, n)| (hex::encode(k.as_ref()), n.to_string()))
         .collect();
     let peers = aether_node::p2p::peer_addresses(&p2p);
-    let p2p_cfg = aether_node::p2p::config(&p2p, b"_P2P");
+    let mut p2p_cfg = aether_node::p2p::config(&p2p, b"_P2P");
+    if presence_args.dev_presence_bind.is_some() { p2p_cfg.listen = loopback(port); }
     let links = matches!(p2p.transport, Transport::Iroh { .. });
     let executor = cw_tokio::Runner::new(cw_tokio::Config::new().with_storage_directory(&data));
     let cfg = chain_config(chain_id, &genesis, network_file.is_none());
 
     executor.start(async move |context| {
         // Public endpoint first: validator links and wallet RPC share it.
-        let endpoint = aether_node::p2p::open_public(&p2p).await;
+        let peer_tracker = aether_net::peers::PeerTracker::new();
+        let endpoint = if let Some(addr) = presence_args.dev_presence_bind {
+            Some(aether_net::bind_local(p2p.keys.node_secret.clone(), addr, peer_tracker.clone()).await.expect("bind local presence endpoint"))
+        } else {
+            aether_node::p2p::open_public_tracked(&p2p, peer_tracker.clone()).await
+        };
         if links && endpoint.is_none() {
             panic!("iroh transport needs the public endpoint");
         }
@@ -2328,6 +2398,10 @@ fn run_node(a: NodeArgs) {
         // answers, handoff signing, prover, shards) once voting starts.
         let (gossip_tx, mut gossip_rx) = tokio::sync::mpsc::unbounded_channel::<TxEnvelope>();
         let served_snapshot: rpc::SnapshotCache = Default::default();
+        let presence = endpoint.clone().map(|ep| aether_node::presence::Presence::new(
+            ep, peer_tracker, aether_node::presence::Role::Validator, p2p.roster.nodes.clone(),
+            format!("{}:{}", chain_id, cfg.group), presence_args.presence_country.clone(),
+        ));
         let served_state = std::sync::Arc::new(std::sync::RwLock::new(rpc::RpcState {
             chain: chain.clone(),
             finality: rpc::Finality::Archive(std::sync::Arc::new(aether_node::follow::FinalityArchive::new(chain.store()))),
@@ -2341,6 +2415,7 @@ fn run_node(a: NodeArgs) {
             prover: None,
             shards: None,
             public_read_only,
+            presence: presence.clone(),
         }));
         // Public access: iroh endpoint published to the BitTorrent Mainline DHT.
         // Wallets find this node by its id alone and verify everything they get;
@@ -2352,16 +2427,18 @@ fn run_node(a: NodeArgs) {
             let st = served_state.clone();
             let registry = aether_node::announce::checker(st.read().expect("served state").chain.clone());
             let p2p_target = links.then(|| loopback(port));
-            aether_net::serve(
+            aether_net::serve_with_presence(
                 ep,
                 move |req| {
                     let st = st.read().expect("served state").clone();
-                    async move { rpc::handle_value(&st, req).await }
+                    async move { rpc::handle_remote_value(&st, req).await }
                 },
                 p2p_target,
                 Some(registry),
+                presence.as_ref().map(|p| p.callback()),
             )
         });
+        if let Some(p) = &presence { p.start(presence_args.seeds(&p2p.roster.nodes)); }
         // Catch up before voting: a committee member that slept must not
         // propose or vote on views it cannot execute (the committee treats it
         // as offline until then). Follow the network with the follower
@@ -2644,6 +2721,7 @@ fn run_node(a: NodeArgs) {
             prover,
             shards,
             public_read_only,
+            presence: presence.clone(),
         };
         // Voting machinery is up: swap the endpoint's served state for the
         // full one (marshal-backed finality answers, handoff signing, prover
@@ -2931,9 +3009,17 @@ fn run_follow(
     bind: Option<IpAddr>,
     // The wallet-server endpoint key file (`wallet_node_key`).
     node_key: std::path::PathBuf,
+    presence_args: PresenceArgs,
 ) -> Result<(), String> {
     use aether_node::follow::{self, FinalityArchive, Upstream};
     use std::sync::Arc;
+    if presence_args.dev_presence_bind.is_some() && (from_rpc.is_empty() || from_rpc.iter().any(|url| {
+        reqwest::Url::parse(url).ok().is_none_or(|url| {
+            url.scheme() != "http" || url.host_str().and_then(|host| host.parse::<IpAddr>().ok()).is_none_or(|ip| !ip.is_loopback())
+        })
+    })) {
+        return Err("--dev-presence-bind followers need explicit loopback HTTP --from-rpc sources".into());
+    }
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -3025,17 +3111,56 @@ fn run_follow(
         // review 2026-09-29): a public endpoint under its own persisted node
         // id, so phones spread their reads over follower Macs instead of
         // asking the validators. `--from-rpc` followers have no iroh endpoint.
-        let mut wallet_ep = None;
+        let peer_tracker = aether_net::peers::PeerTracker::new();
+        // Signed presence uses the Mac's stable node key, while wallet RPC
+        // keeps its separate transport key (resharing publishes the node key).
+        let announce_keys = candidate_keys.as_ref()
+            .map(|dir| aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(dir)))
+            .transpose()?.map(Arc::new);
+        let mut wallet_ep = if from_rpc.is_empty() || presence_args.dev_presence_bind.is_some() {
+            let secret = wallet_node_key(&node_key)?;
+            Some(if let Some(addr) = presence_args.dev_presence_bind {
+                aether_net::bind_local(secret, addr, peer_tracker.clone()).await
+            } else {
+                aether_net::bind_tracked(Some(secret), vec![aether_net::ALPN_RPC.to_vec()], peer_tracker.clone()).await
+            }.map_err(|e| e.to_string())?)
+        } else { None };
         let upstream = Arc::new(if from_rpc.is_empty() {
-            let ep = aether_net::bind(Some(wallet_node_key(&node_key)?), vec![aether_net::ALPN_RPC.to_vec()])
-                .await
-                .map_err(|e| e.to_string())?;
-            let client = aether_net::RpcClient::with_endpoint(ep.clone(), nodes.clone());
-            wallet_ep = Some(ep);
-            Upstream::Iroh(client, Default::default())
+            Upstream::Iroh(aether_net::RpcClient::with_endpoint(wallet_ep.as_ref().expect("iroh follower endpoint").clone(), nodes.clone()), Default::default())
         } else {
             Upstream::Http(from_rpc)
         });
+        let role = if announce_keys.is_some() { aether_node::presence::Role::Candidate } else { aether_node::presence::Role::Follower };
+        let identity = announce_keys.as_ref().map(|keys| keys.keys.node_secret.clone()).or_else(|| {
+            presence_args.presence_identity.as_deref()
+                .and_then(|dir| aether_node::roster::LocalKeys::load(std::path::Path::new(dir)).ok())
+                .map(|keys| keys.node_secret)
+        });
+        let presence = wallet_ep.clone().map(|ep| {
+            let identity = identity.unwrap_or_else(|| ep.secret_key().clone());
+            aether_node::presence::Presence::with_identity(
+                ep, peer_tracker, identity, role, nodes.clone(), format!("{}:{}", chain_id, cfg.group), presence_args.presence_country.clone(),
+            )
+        });
+        if bind.is_some_and(|ip| !ip.is_loopback()) {
+            if let Some(p) = &presence { p.disable_country_settings(); }
+        }
+        // Presence works during a long checkpoint sync, before chain RPC is
+        // ready. The same router later reads the verified served state.
+        let served_state = Arc::new(std::sync::RwLock::new(None::<RpcState>));
+        let _wallet_router = wallet_ep.clone().map(|ep| {
+            let state = served_state.clone();
+            aether_net::serve_with_presence(ep, move |req: Value| {
+                let st = state.read().expect("follower served state").clone();
+                async move {
+                    match st {
+                        Some(st) => rpc::handle_remote_value(&st, req).await,
+                        None => json!({"jsonrpc":"2.0","id":req.get("id").cloned().unwrap_or(Value::Null),"error":{"code":-32000,"message":"node is starting; try again after checkpoint sync"}}),
+                    }
+                }
+            }, None, None, presence.as_ref().map(|p| p.callback()))
+        });
+        if let Some(p) = &presence { p.start(presence_args.seeds(&nodes)); }
         // A new Mac starts from a certified snapshot instead of replaying history.
         if checkpoint && store.head().map_err(|e| e.to_string())?.is_none() {
             // Without a usable snapshot, replay from genesis instead of failing to start.
@@ -3117,6 +3242,7 @@ fn run_follow(
             prover,
             shards,
             public_read_only,
+            presence: presence.clone(),
         };
         // Serve wallets over the public endpoint (the same answers the loopback
         // HTTP server gives; every one is verified by the reader), and announce
@@ -3125,19 +3251,10 @@ fn run_follow(
         // list the announcement only then; red-team 2026-09-29 §3). The
         // router owns the endpoint, so it is bound to outlive this setup —
         // like the validators' `_router`, it must never drop while running.
-        let announce_keys = candidate_keys
-            .as_ref()
-            .map(|dir| aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(dir)))
-            .transpose()?
-            .map(std::sync::Arc::new);
-        let _wallet_router = wallet_ep.map(|ep| {
+        *served_state.write().expect("follower served state") = Some(st.clone());
+        if let Some(ep) = wallet_ep.take() {
             tracing::info!(node_id = %ep.id(), "serving wallets over iroh; announced to the validators every minute");
             let endpoint_id = ep.id();
-            let st = st.clone();
-            let router = aether_net::serve_rpc(ep, move |req| {
-                let st = st.clone();
-                async move { rpc::handle_value(&st, req).await }
-            });
             let (announcer, keys) = (upstream.clone(), announce_keys.clone());
             tokio::spawn(async move {
                 if keys.is_none() {
@@ -3153,8 +3270,7 @@ fn run_follow(
                     tokio::time::sleep(Duration::from_secs(60)).await;
                 }
             });
-            router
-        });
+        }
         let listen = bind.unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST));
         let result = rpc::serve(SocketAddr::new(listen, rpc_port), st).await;
         tracing::error!(?result, "follower RPC server stopped; restarting the node");
@@ -3218,7 +3334,7 @@ fn run_archive(
         max_shards: aether_node::shards::DEFAULT_MAX_SHARDS,
     };
     let node_key = std::path::Path::new(&data).join("wallet-node.key");
-    run_follow(Some(network), from_rpc, data, rpc_port, 4, None, None, false, None, false, history, resources, Some(export), Some(bind), node_key)
+    run_follow(Some(network), from_rpc, data, rpc_port, 4, None, None, false, None, false, history, resources, Some(export), Some(bind), node_key, PresenceArgs::default())
 }
 
 fn run_dkg(

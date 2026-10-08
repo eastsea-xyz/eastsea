@@ -68,6 +68,8 @@ final class WalletModel: ObservableObject {
     @Published var address = ""
     @Published var account: VerifiedAccount?
     @Published var status: ChainStatus?
+    /// Recent presence as seen by this Mac's node; nil when it cannot answer.
+    @Published private(set) var livePresence: LivePresence?
     var scheduledUpgrades: [NetworkUpgrade] {
         guard let status else { return [] }
         return NetworkUpgrade.parse(status.upgradesJson, height: max(status.height, (try? verifiedHeight()) ?? 0))
@@ -233,6 +235,10 @@ final class WalletModel: ObservableObject {
 
     private var refreshes = 0
     private var refreshInFlight = false
+    #if os(macOS)
+    private var presenceRefreshInFlight = false
+    private var lastPresenceAttempt = Date.distantPast
+    #endif
     private var networkGeneration: UInt64 = 0
     private var lastHeight: UInt64?
     private var heightChangedAt: Date?
@@ -475,6 +481,10 @@ final class WalletModel: ObservableObject {
         if development { UserDefaults.standard.set(Int(port), forKey: "developmentNetworkPort") }
         pinCommittee()
         status = nil
+        livePresence = nil
+        #if os(macOS)
+        lastPresenceAttempt = .distantPast
+        #endif
         account = nil
         blocks = []
         verifyError = nil
@@ -717,6 +727,9 @@ final class WalletModel: ObservableObject {
     }
 
     func refresh() {
+        #if os(macOS)
+        refreshPresence()
+        #endif
         guard !refreshInFlight else { return }
         refreshInFlight = true
         if enclave == nil, Date().timeIntervalSince(lastKeyAttempt) > 5 { loadKey() }
@@ -773,6 +786,24 @@ final class WalletModel: ObservableObject {
             }
         }
     }
+
+    #if os(macOS)
+    /// The existing 2 s refresh drives this separate 10 s read. A slow
+    /// verified balance read never holds up the live observation, or vice versa.
+    private func refreshPresence() {
+        guard !presenceRefreshInFlight, Date().timeIntervalSince(lastPresenceAttempt) >= 10 else { return }
+        presenceRefreshInFlight = true
+        lastPresenceAttempt = Date()
+        let port = nodeRpcPort, generation = networkGeneration
+        Task {
+            let result = await LocalRPC.call(port: port, method: "aether_presence", params: [])
+            presenceRefreshInFlight = false
+            guard networkGeneration == generation, nodeRpcPort == port else { return }
+            let value = LivePresence.parse(result)
+            if livePresence != value { livePresence = value }
+        }
+    }
+    #endif
 
     /// The chain is paused when its height has not moved for `pauseAfter`, or its
     /// newest block is that old (while the height is not moving here either, so a

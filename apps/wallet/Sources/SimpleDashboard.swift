@@ -609,6 +609,13 @@ struct NetworkPage: View {
                 Tile(value: model.status.map { Amount.fee($0.transferFeeWei) } ?? "—", label: "Transfer fee (max)", icon: "flame")
                 Tile(value: model.status.map { "\($0.mempool)" } ?? "—", label: "Waiting transactions", icon: "tray.full")
             }
+            if let presence = model.livePresence {
+                Label(presence.line, systemImage: "network")
+                    .font(.aeCaption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .help("Live count: what this node can see. Regions come from relays, not a Mac's location.")
+            }
             NetworkCard()
             #if os(macOS)
             // The full earnings card lives here; Home shows it only once there is a reward.

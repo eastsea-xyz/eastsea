@@ -122,6 +122,17 @@ final class NodeController: ObservableObject {
     @AppStorage("proverOnBattery") var proverOnBattery = false {
         didSet { restartIfRunning() }
     }
+    /// Default off; only a country the owner explicitly selects may be shared.
+    @AppStorage("presenceShareCountry") var presenceShareCountry = false {
+        didSet { if presenceShareCountry != oldValue { pushPresenceCountry() } }
+    }
+    @AppStorage("presenceCountryCode") var presenceCountryCode = "" {
+        didSet { if presenceCountryCode != oldValue { pushPresenceCountry() } }
+    }
+    private var presenceCountryNeedsSync = true
+    private var presenceCountryRestartPending = false
+    private var presenceCountrySyncInFlight = false
+    private var lastPresenceCountryAttempt = Date.distantPast
     /// What the prover did last (from the node's `aether_proverStatus`).
     @Published private(set) var prover: ProverStatus?
     /// 설정 ▸ 역사 보관 (docs/design/15-node-rewards.md "C. 보관"): how much
@@ -191,6 +202,50 @@ final class NodeController: ObservableObject {
     private func pushStorageSetting() {
         unattended?.storageShards = storageShards
         unattended?.syncMarker()
+    }
+
+    private func pushPresenceCountry() {
+        unattended?.syncMarker()
+        presenceCountryNeedsSync = true
+        presenceCountryRestartPending = true
+        lastPresenceCountryAttempt = .distantPast
+        syncPresenceCountry()
+        // The RPC changes only the child's RAM. Rebuild the supervisor's
+        // argv too, so its next role rotation cannot restore an old country.
+        // The marker above ensures daemon restarts use the same preference.
+        restartPresenceCountryIfNeeded()
+    }
+
+    private func restartPresenceCountryIfNeeded() {
+        guard presenceCountryRestartPending, !updateInProgress, storageMovePercent == nil,
+              restartTimer == nil, process != nil || attached else { return }
+        presenceCountryRestartPending = false
+        restartIfRunning()
+    }
+
+    /// Serialize changes so a rapid on/off never lets an older opt-in arrive
+    /// after the opt-out. Retry an unavailable node on the normal poll cadence.
+    private func syncPresenceCountry() {
+        guard presenceCountryNeedsSync, !presenceCountrySyncInFlight,
+              process != nil || attached, Date().timeIntervalSince(lastPresenceCountryAttempt) >= 10 else { return }
+        presenceCountrySyncInFlight = true
+        lastPresenceCountryAttempt = Date()
+        let country = PresenceCountry.shared(sharing: presenceShareCountry, country: presenceCountryCode)
+        let pid = process?.processIdentifier ?? unattended?.runningNodePID
+        let params: [Any] = [country.map { $0 as Any } ?? NSNull()]
+        Task {
+            let result = await LocalRPC.call(port: Self.port, method: "aether_setPresenceCountry", params: params)
+            presenceCountrySyncInFlight = false
+            guard process != nil || attached,
+                  (process?.processIdentifier ?? unattended?.runningNodePID) == pid else { return }
+            let latest = PresenceCountry.shared(sharing: presenceShareCountry, country: presenceCountryCode)
+            if latest != country {
+                lastPresenceCountryAttempt = .distantPast
+                syncPresenceCountry()
+            } else {
+                presenceCountryNeedsSync = result == nil
+            }
+        }
     }
     /// The node's data volume is below its free-space floor (`aether_status`):
     /// no new era files or shards, proving paused — shown as "디스크 공간 부족".
@@ -969,7 +1024,8 @@ final class NodeController: ObservableObject {
             proverFlags: ProverFlags.build(memory: proverMemory, cores: proverCores, battery: proverOnBattery,
                                            activeProcessors: ProcessInfo.processInfo.activeProcessorCount),
             storageFlag: StorageSetting.flag(shards: storageShards),
-            locationFlags: BlockDataLocation.flags(chainDataPath: chainDataPath, archive: archive))
+            locationFlags: BlockDataLocation.flags(chainDataPath: chainDataPath, archive: archive),
+            presenceFlags: PresenceCountry.flags(sharing: presenceShareCountry, country: presenceCountryCode))
         args += ["--exit-with-parent"]
         unattended?.nodeSwitchedOn()
         let p = Process()
@@ -1002,6 +1058,10 @@ final class NodeController: ObservableObject {
         lockRefused = false
         process = p
         confirmingMac = false
+        // This supervisor was launched with the latest persisted preference.
+        presenceCountryRestartPending = false
+        presenceCountryNeedsSync = true
+        lastPresenceCountryAttempt = .distantPast
         // Design 36 N3: the keys never ride a Time Machine backup onto
         // another Mac (sticky exclusion; idempotent and cheap).
         let keyDir = Self.dataDir
@@ -1474,6 +1534,8 @@ final class NodeController: ObservableObject {
         runningReleaseVerified = true
         if refusePersistedBindingMismatch() { return }
         attached = true
+        presenceCountryNeedsSync = true
+        lastPresenceCountryAttempt = .distantPast
         attachMisses = 0
         switched = false
         state = .running
@@ -1623,6 +1685,7 @@ final class NodeController: ObservableObject {
     }
 
     private func check() {
+        restartPresenceCountryIfNeeded()
         if refusePersistedBindingMismatch() { return }
         refreshMacConfirmation()
         // The node owns verification retries. Restarting it while a read is
@@ -1642,6 +1705,7 @@ final class NodeController: ObservableObject {
         refreshHistoryKept()
         refreshUpgrade()
         refreshDisk()
+        syncPresenceCountry()
         guard !checkInFlight else { return }
         checkInFlight = true
         let port = Self.port, switched = self.switched

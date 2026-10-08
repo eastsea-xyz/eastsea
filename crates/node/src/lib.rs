@@ -23,6 +23,7 @@ pub mod mainnet;
 pub mod inclusion;
 pub mod key_binding;
 pub mod p2p;
+pub mod presence;
 pub mod prover;
 pub mod prover_input;
 pub mod prune;

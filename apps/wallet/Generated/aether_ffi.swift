@@ -3433,9 +3433,9 @@ public func txStatus(txHash: String)throws  -> TxStatus  {
 }
 /**
  * `tx_status` for a send whose sender and nonce the caller kept (a wallet
- * row after a restart, an agent's pending history): when the chain nonce has
- * moved past `nonce` and no node has this hash's receipt, another transaction
- * used the nonce — `replaced`, final. Until then a drop stays not-final.
+ * row after a restart, an agent's pending history). A consumed nonce without
+ * a receipt leaves its result unresolved; replacement needs a receipt for
+ * a different envelope this process recorded using that nonce.
  */
 public func txStatusFor(txHash: String, sender: String, nonce: UInt64)throws  -> TxStatus  {
     return try  FfiConverterTypeTxStatus_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
@@ -3637,7 +3637,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_aether_ffi_checksum_func_tx_status() != 49413) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_aether_ffi_checksum_func_tx_status_for() != 26438) {
+    if (uniffi_aether_ffi_checksum_func_tx_status_for() != 2727) {
         return InitializationResult.apiChecksumMismatch
     }
 

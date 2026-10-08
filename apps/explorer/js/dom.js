@@ -18,12 +18,12 @@ export function h(tag, props = {}, ...children) {
 
 /** A card: the box every section of a page sits in. */
 export function card(title, ...children) {
-  return h('section', { class: 'card' }, title ? h('h2', {}, title) : null, ...children);
+  return h('section', { class: 'card' }, title ? h('h2', { class: 'es-section-title' }, title) : null, ...children);
 }
 
 /** Status pill. `kind`: good | warn | bad | plain. Never color alone — always text. */
 export function pill(text, kind = 'plain') {
-  return h('span', { class: `pill ${kind}` }, text);
+  return h('span', { class: `pill es-status ${kind}` }, text);
 }
 
 /** A status dot with a text label beside it. */
@@ -56,7 +56,7 @@ export function message(kind, text) {
 /** Copy button for a full hash/address. Clipboard needs a secure context
  * (localhost or https); on failure it says so instead of pretending. */
 export function copyButton(text) {
-  const b = h('button', { class: 'copy', title: 'Copy', 'aria-label': 'Copy to clipboard' }, 'copy');
+  const b = h('button', { class: 'copy es-control', title: 'Copy', 'aria-label': 'Copy to clipboard' }, 'copy');
   b.addEventListener('click', async () => {
     try {
       await navigator.clipboard.writeText(text);

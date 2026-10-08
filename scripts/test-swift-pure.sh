@@ -3,8 +3,12 @@
 # A new Tests/<name> directory must be added to the table below, or scripts/verify.sh will not run it.
 # The Aether 0.6.7 bridge (apps/bridge) has its own Sources/Tests: the `bridge` lines at the end.
 cd "$(dirname "$0")/.."
+mkdir -p tmp
+export TMPDIR="$PWD/tmp"
+compile_gate="$HOME/.claude/playbooks/aether-team/wait-compile.sh"
 W=apps/wallet/Sources; T=apps/wallet/Tests; bad=0
 run() { n=$1; shift; files=(); for f in "$@"; do files+=("$W/$f"); done
+  if [ -x "$compile_gate" ]; then "$compile_gate"; fi
   if swiftc -o tmp/sw-$n "${files[@]}" $T/$n/main.swift 2>tmp/sw-$n.err && AETHER_AGENT_TEST_TMP=$PWD/tmp ./tmp/sw-$n > tmp/sw-$n.out 2>&1; then echo "OK   $n"; else echo "FAIL $n :: $(head -c 160 tmp/sw-$n.err | tr '\n' ' ') $(tail -2 tmp/sw-$n.out | tr '\n' ' ')"; bad=$((bad+1)); fi; }
 run account-history Brand.swift ChainActivity.swift
 run assets EarningsModel.swift TokenAssets.swift
@@ -15,6 +19,7 @@ run browser-permissions SitePermissions.swift
 run browser-routing Brand.swift BrowserPolicy.swift
 run browser-verify Brand.swift BrowserOriginPolicy.swift BrowserPolicy.swift VerifyBridge.swift
 run diagnostic-report Brand.swift Clock.swift NodeWatchdog.swift NodeStopReason.swift HealthCheck.swift DiagnosticReport.swift
+run design-effects DesignTokens.swift Design/DesignEffects.swift Design/DesignEventEffect.swift Design/BalanceCountUp.swift Design/RewardShine.swift Design/PresentationMotion.swift Design/NavyPlateDepth.swift Design/SuccessFeedback.swift Design/NodeStatusPulse.swift Design/DesignSurface.swift Design/MenuBarPanel.swift
 run earnings EarningsModel.swift
 run earnings-export Brand.swift EarningsModel.swift ChainActivity.swift EarningsExport.swift
 run fee-confirm EarningsModel.swift

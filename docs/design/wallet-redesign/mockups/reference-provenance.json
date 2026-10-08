@@ -1,0 +1,52 @@
+{
+  "references": [
+    {
+      "file": "reference-apple-cash-wallet.jpg",
+      "product": "Apple Cash / Wallet",
+      "page": "https://www.apple.com/apple-cash/",
+      "asset": "https://www.apple.com/v/apple-cash/g/images/overview/wallet_phone__gbyfg0jzu4ia_large.jpg",
+      "context": "Official Wallet section phone and Apple Watch product image. Cash balance is printed on the branded card.",
+      "dimensions": [
+        409,
+        663
+      ],
+      "captured": "2026-10-08",
+      "transformation": "None; original official image downloaded without visual changes.",
+      "sha256": "fbfc4bd30b9080b31e7fbad56353965260a5991354bcb63b5e319e66b68e97ec",
+      "bytes": 64667,
+      "use": "Internal design benchmark only; original product branding remains attributable. Not an EastSea asset."
+    },
+    {
+      "file": "reference-mercury-accounts.jpg",
+      "product": "Mercury",
+      "page": "https://mercury.com/business-banking",
+      "asset": "https://www.datocms-assets.com/115132/1754700122-2025-07-22_fem_bank-accounts-hero_4x5.webp?ar64=NDo1&auto=format&fit=crop",
+      "context": "Official Business Banking Accounts dashboard marketing image. This is an art-directed product crop, not a live account capture. Origin URL negotiates JPEG.",
+      "dimensions": [
+        1600,
+        2000
+      ],
+      "captured": "2026-10-08",
+      "transformation": "None; original official image downloaded without visual changes.",
+      "sha256": "19b5372858b46b72c73acdf68d008847868a2cd47111e7361c2307436f2ae262",
+      "bytes": 153974,
+      "use": "Internal design benchmark only; original product branding remains attributable. Not an EastSea asset."
+    },
+    {
+      "file": "reference-things-today.png",
+      "product": "Things 3 / Cultured Code",
+      "page": "https://culturedcode.com/things/features/",
+      "asset": "https://static.culturedcode.com/things/videos/2017-05-18-website-videos/2-today-mac.png",
+      "context": "Official Today and This Evening Mac UI image, originally published for Things 3.0 and still used on the features page. Historical craft reference, not a claim about the latest app version.",
+      "dimensions": [
+        1000,
+        1500
+      ],
+      "captured": "2026-10-08",
+      "transformation": "None; original official image downloaded without visual changes.",
+      "sha256": "9827400d01800517af8d7cddcb86fb3a1d50c1e79b6904082fc5f6b14a55fbe6",
+      "bytes": 51887,
+      "use": "Internal design benchmark only; original product branding remains attributable. Not an EastSea asset."
+    }
+  ]
+}

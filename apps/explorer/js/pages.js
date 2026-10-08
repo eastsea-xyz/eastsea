@@ -92,7 +92,7 @@ export async function homeView(ctx) {
   const outdated = status.node_protocol < status.newest_scheduled;
 
   const tiles = h('div', { class: 'tiles' },
-    tile('Finalized height', blockLink(status.height), `${timeAgo(status.timestamp_ms)} · finalized`, 'major'),
+    tile('Finalized height', blockLink(status.height), `${timeAgo(status.timestamp_ms)} · finalized`, 'major es-plate'),
     tile('Transaction rate', `${formatRate(rate?.perSec)} tx/s`, rate ? `${formatInt(rate.txs)} txs across ${blocks.length} blocks` : `${blocks.length} block${blocks.length === 1 ? '' : 's'} in view`),
     tile('Committee', candidates ? `${candidates.candidates.length} candidates` : '—', candidates ? `registry epoch ${formatInt(candidates.epoch)}` : 'registry unreadable'),
     tile('Protocol', `${status.protocol}`, [
@@ -122,14 +122,18 @@ export async function homeView(ctx) {
       timeAgo(b.timestamp_ms),
     ])));
 
+  const source = sourceLine(ctx.node, `chain ${status.chain_id} · finalized height ${formatInt(status.height)}`);
+  source.classList.add('home-source');
   return h('div', { class: 'stack' },
-    sourceLine(ctx.node, `chain ${status.chain_id} · finalized height ${formatInt(status.height)}`),
-    tiles, list, chain);
+    h('div', { class: 'page-heading' },
+      h('h1', { class: 'page-title' }, 'Network overview'),
+      h('p', {}, 'Finalized blocks, committee and node state.')),
+    source, tiles, list, chain);
 }
 
 function tile(label, value, sub, extra = '') {
   return h('div', { class: `tile ${extra}` }, h('div', { class: 'tile-label' }, label),
-    h('div', { class: 'tile-value' }, value), h('div', { class: 'tile-sub' }, sub));
+    h('div', { class: 'tile-value es-amount' }, value), h('div', { class: 'tile-sub' }, sub));
 }
 
 function proverTile(prover) {

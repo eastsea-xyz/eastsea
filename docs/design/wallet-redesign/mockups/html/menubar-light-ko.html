@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>EastSea menu bar · Light · 한국어</title>
+<link rel="icon" type="image/svg+xml" href="../../../../../design/brand/dawn-flat.svg">
+<link rel="stylesheet" href="../../../../../site/tokens.css">
+<link rel="stylesheet" href="menubar-panel.css">
+</head>
+<body>
+<!--
+THESIS: The EastSea balance plate becomes a compact Mac control panel.
+OWN-WORLD: Warm paper, deep navy, gold dawn, calm grouped rows and a native switch.
+STORY: Read the balance, see whether this Mac is connected, receive, or open EastSea.
+FIRST VIEWPORT: A 336 pt popover with a 128 pt mini plate, one node line, 104 pt QR,
+  and a 40 pt primary action. Samples are labelled outside the consumer surface.
+FORM: Pinned menu-bar layout; the established EastSea site system is the authority.
+FINISH: Four theme/language renders, true QR validation, and SwiftUI parity handoff.
+-->
+<main class="board">
+  <p class="caption">Mac menu bar · Light · 한국어</p>
+  <div class="menu-strip" aria-hidden="true">
+    <img src="../../../../../design/brand/dawn-flat.svg" alt="">
+    <span class="clock">10:08</span>
+  </div>
+  <section class="panel" aria-label="동해">
+    <header class="panel-header">
+      <div class="brand"><img src="../../../../../design/brand/dawn-flat.svg" alt=""><span>동해</span></div>
+      <span class="account">계정 1</span>
+    </header>
+    <section class="balance-plate" aria-label="잔액">
+      <svg class="plate-waves" viewBox="0 0 900 220" preserveAspectRatio="none" aria-hidden="true">
+        <path d="M0 40 Q30 34 60 40 T120 40 T180 40 T240 40 T300 40 T360 40 T420 40 T480 40 T540 40 T600 40 T660 40 T720 40 T780 40 T840 40 T900 40"/>
+        <path d="M0 91 Q39 83 78 91 T156 91 T234 91 T312 91 T390 91 T468 91 T546 91 T624 91 T702 91 T780 91 T858 91 T936 91"/>
+        <path d="M0 143 Q48 133 96 143 T192 143 T288 143 T384 143 T480 143 T576 143 T672 143 T768 143 T864 143 T960 143"/>
+        <path d="M0 194 Q57 182 114 194 T228 194 T342 194 T456 194 T570 194 T684 194 T798 194 T912 194"/>
+      </svg>
+      <p class="balance-label">잔액</p>
+      <p class="balance-amount">12.5 <span>DBLN</span></p>
+      <div class="verified"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>방금 확인했어요</div>
+    </section>
+    <div class="node-row" data-running="true">
+      <div class="node-copy">
+        <p class="node-title">이 Mac의 노드</p>
+        <p class="node-status"><span class="status-dot" aria-hidden="true"></span><span class="status-text">연결됨 · 방금 확인했어요</span></p>
+      </div>
+      <button class="node-switch" type="button" role="switch" aria-checked="true" aria-label="이 Mac의 노드"></button>
+    </div>
+    <section class="receive-row" aria-label="받기">
+      <div class="receive-copy">
+        <h2>받기</h2>
+        <p class="receive-hint">코드를 찍어 DBLN과<br>동해 토큰을 보내세요.</p>
+        <div class="address-row">
+          <span class="address" data-address="0x5397a1c0De4b1b8F6A3cB2d1E0f9C7a6B5d4E502">0x5397…E502</span>
+          <button class="copy-address" type="button" aria-label="주소 복사"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="12" rx="2"/><path d="M15 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2"/></svg></button>
+        </div>
+      </div>
+      <img class="receive-qr" src="menubar-receive-qr.svg" width="104" height="104" alt="동해 주소를 받는 QR 코드 0x5397a1c0De4b1b8F6A3cB2d1E0f9C7a6B5d4E502">
+    </section>
+    <button class="open-wallet" type="button">동해 열기<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg></button>
+  </section>
+  <p class="sample-caption">샘플 데이터 · 12.5 DBLN · 계정 1<code>QR: 0x5397a1c0De4b1b8F6A3cB2d1E0f9C7a6B5d4E502</code></p>
+  <p class="prototype-action" aria-live="polite"></p>
+</main>
+<script src="menubar-panel.js"></script>
+</body>
+</html>

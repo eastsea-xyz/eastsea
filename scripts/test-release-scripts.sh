@@ -4,7 +4,7 @@
 #
 #   scripts/test-release-scripts.sh
 #   AETHER_TEST_PACKAGE_MAC=<file> scripts/test-release-scripts.sh
-#       Run the same clean-build rollback regression against an older packager.
+#       Run the rollback and installer regressions against an older packager.
 #
 # 1. Every release script runs under macOS's /bin/bash 3.2 with `set -u`, where
 #    "${arr[@]}" of an EMPTY array is an "unbound variable" error. An array that
@@ -24,8 +24,12 @@
 #    check is shown failing once on a fake input.
 # 5. A clean package contains a verified previous node and its adjacent prover;
 #    invalid signatures, dependencies or platform compatibility refuse packaging.
+#    Its installer background, Finder layout and Applications shortcut survive
+#    writable mounting and conversion to the final compressed DMG.
 set -eu
 cd "$(dirname "$0")/.."
+mkdir -p "$PWD/tmp"
+export TMPDIR="$PWD/tmp"
 bad=0
 good=0
 fail() { echo "FAIL: $*" >&2; bad=$((bad + 1)); }
@@ -179,6 +183,14 @@ else
   pass "release contamination matcher accepts ordinary code"
 fi
 cp "${AETHER_TEST_PACKAGE_MAC:-scripts/package-mac.sh}" "$rollback_test/scripts/package-mac.sh"
+# Intercept Finder without opening an installed app or changing the desktop.
+# Only the command path changes; the JavaScript renderer still uses AppKit.
+python3 - "$rollback_test/scripts/package-mac.sh" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+path.write_text(path.read_text().replace('/usr/bin/osascript', 'osascript'))
+PY
 if [ -f scripts/package-rollback.sh ]; then cp scripts/package-rollback.sh "$rollback_test/scripts/"; fi
 python3 - "$rollback_test" <<'PY'
 import pathlib, plistlib, sys
@@ -323,27 +335,105 @@ SH
 cat > "$rollback_test/bin/hdiutil" <<'SH'
 #!/bin/bash
 set -eu
-[ "$1" = create ]
+command=$1; shift
 dmg=${!#}
-src=""
+source="" mount="" format="" output="" readonly=0 readwrite=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    -srcfolder) src=$2; shift 2 ;;
+    -srcfolder) source=$2; shift 2 ;;
+    -mountpoint) mount=$2; shift 2 ;;
+    -format) format=$2; shift 2 ;;
+    -o) output=$2; shift 2 ;;
+    -readonly) readonly=1; shift ;;
+    -readwrite) readwrite=1; shift ;;
     *) shift ;;
   esac
 done
-[ -d "$src/EastSea.app" ]
-cp -R "$src" "$R12_OUTPUT"
-printf 'fixture DMG\n' > "$dmg"
+case "$command" in
+  create)
+    [ -d "$source/EastSea.app" ]
+    case "$format" in UDRW|UDZO) : ;; *) exit 1 ;; esac
+    cp -R "$source" "$dmg.contents"
+    printf '%s\n' "$format" > "$dmg.format"
+    printf 'fixture DMG\n' > "$dmg"
+    printf 'create:%s\n' "$format" >> "$R12_DMG_LOG"
+    # Keep the previous one-step packager usable as the regression control.
+    if [ "$format" = UDZO ]; then cp -R "$dmg.contents" "$R12_OUTPUT"; fi ;;
+  attach)
+    [ -d "$mount" ] && [ -f "$dmg" ] && [ "$((readonly + readwrite))" = 1 ] || exit 1
+    case "$dmg" in
+      */EastSea-previous.dmg)
+        [ "$readonly" = 1 ] || { echo "fixture refuses a writable previous-release mount" >&2; exit 1; }
+        cp -R "$R12_PREVIOUS_APP" "$mount/EastSea.app"
+        printf 'previous-readonly-mount\n' >> "$R12_EVENTS" ;;
+      *)
+        if [ "$readwrite" = 1 ]; then
+          [ "$(cat "$dmg.format")" = UDRW ]
+          [ ! -e "$dmg.mount" ]
+          printf '%s\n' "$mount" > "$dmg.mount"
+        fi
+        cp -R "$dmg.contents/." "$mount/" ;;
+    esac
+    if [ "$readwrite" = 1 ]; then mode="readwrite"; else mode="readonly"; fi
+    printf '%s\n%s\n' "$mode" "$dmg" > "$mount.fixture-image"
+    printf 'attach:%s\n' "$mode" >> "$R12_DMG_LOG" ;;
+  detach)
+    mount=$dmg
+    mode=$(sed -n '1p' "$mount.fixture-image")
+    image=$(sed -n '2p' "$mount.fixture-image")
+    if [ "$mode" = readwrite ]; then
+      rm -rf "$image.contents"
+      cp -R "$mount" "$image.contents"
+      cp -R "$mount" "$R12_OUTPUT.mounted"
+      rm "$image.mount"
+    fi
+    case "$image" in */EastSea-previous.dmg) printf 'previous-detach\n' >> "$R12_EVENTS" ;; esac
+    printf 'detach:%s\n' "$mode" >> "$R12_DMG_LOG"
+    rm -rf "${mount:?}" "$mount.fixture-image"
+    mkdir "$mount" ;;
+  convert)
+    [ "$format" = UDZO ] && [ "$(cat "$dmg.format")" = UDRW ] && [ ! -e "$dmg.mount" ] || exit 1
+    [ -n "$output" ] && [ -d "$dmg.contents" ] || exit 1
+    cp -R "$dmg.contents" "$output.contents"
+    cp -R "$output.contents" "$R12_OUTPUT"
+    printf '%s\n' "$format" > "$output.format"
+    printf 'fixture compressed DMG\n' > "$output"
+    printf 'convert:%s\n' "$format" >> "$R12_DMG_LOG" ;;
+  *) echo "unexpected fixture hdiutil command: $command" >&2; exit 1 ;;
+esac
+SH
+cat > "$rollback_test/bin/getconf" <<'SH'
+#!/bin/bash
+set -eu
+[ "$#" -eq 1 ] && [ "$1" = DARWIN_USER_TEMP_DIR ] || exit 1
+# The doubles need no real mount, so every temporary artifact stays in tmp/.
+printf '%s/\n' "$TMPDIR"
+SH
+cat > "$rollback_test/bin/osascript" <<'SH'
+#!/bin/bash
+set -eu
+if [ "$1" = -l ]; then
+  [ "$2" = JavaScript ]
+  exec /usr/bin/osascript "$@"
+fi
+[ "$#" -eq 2 ] && [ "$1" = - ] && [ -d "$2/EastSea.app" ] || exit 1
+[ "$(sed -n '1p' "$2.fixture-image")" = readwrite ]
+image=$(sed -n '2p' "$2.fixture-image")
+[ "$(cat "$image.mount")" = "$2" ]
+# Synthetic Finder metadata records the requested layout, then travels through
+# the same mount/detach/convert copies as the actual image and Applications link.
+cat > "$2/.DS_Store"
+printf 'finder-layout\n' >> "$R12_DMG_LOG"
 SH
 chmod +x "$rollback_test/scripts/"*.sh "$rollback_test/bin/"*
 package_fixture() {
   # A distinct captured output for each invocation; the old app is read only.
   local name=$1 previous=$2
   (cd "$rollback_test" && PATH="$rollback_test/bin:$PATH" TMPDIR="$rollback_test/tmp" \
-    AETHER_VERSION="$name" SIGN_IDENTITY="Fixture signing identity" \
+    AETHER_VERSION="$name" SIGN_IDENTITY="Fixture signing identity" NOTARY_PROFILE='' APP_STORE_CONNECT_API_KEY_ID='' \
     AETHER_PREVIOUS_APP="$previous" R12_OUTPUT="$rollback_test/out/$name" \
     R12_GATE_LOG="$rollback_test/gates.log" R12_TRUST_LOG="$rollback_test/$name.trust.log" \
+    R12_DMG_LOG="$rollback_test/$name.dmg.log" \
     /bin/bash scripts/package-mac.sh) \
     > "$rollback_test/$name.log" 2>&1
 }
@@ -390,6 +480,78 @@ PY
   fi
 else
   fail "R12 fixture packaging failed before the rollback assertion: $(cat "$rollback_test/clean.log")"
+fi
+
+# Each installer check also runs against the older packager selected above.
+# Inspect the converted payload, not merely the source or pre-mount staging tree.
+if python3 - "$rollback_test/clean.dmg.log" <<'PY'
+from pathlib import Path
+import sys
+assert Path(sys.argv[1]).read_text().splitlines() == [
+    'create:UDRW', 'attach:readwrite', 'finder-layout', 'detach:readwrite', 'convert:UDZO',
+]
+PY
+then
+  pass "DMG saves the Finder layout on a writable image before detaching and converting to UDZO"
+else
+  fail "DMG must create UDRW, attach writable, save Finder layout, detach and convert to UDZO"
+fi
+if python3 - "$rollback_test/out/clean" <<'PY'
+from pathlib import Path
+import re, subprocess, sys
+payload = Path(sys.argv[1])
+background = payload / '.background/installer.tiff'
+assert background.is_file(), 'converted DMG is missing the installer background'
+result = subprocess.run(['/usr/bin/tiffutil', '-info', str(background)], capture_output=True, text=True, check=True)
+info = result.stdout + result.stderr
+assert re.findall(r'Image Width: (\d+) Image Length: (\d+)', info) == [('640', '440'), ('1280', '880')], info
+assert re.findall(r'Resolution: (\d+), (\d+)', info) == [('72', '72'), ('144', '144')], info
+layout = re.sub(r'\(\*.*?\*\)|--[^\n]*', '', (payload / '.DS_Store').read_text(), flags=re.S)
+assert 'set background picture of icon view options of installerWindow to (POSIX file (volumePath & "/.background/installer.tiff") as alias)' in {line.strip() for line in layout.splitlines()}
+PY
+then
+  pass "DMG preserves the selected 640x440/1280x880 installer background at 72/144 dpi"
+else
+  fail "DMG must preserve and select the Retina installer background"
+fi
+if python3 - "$rollback_test/out/clean/.DS_Store" <<'PY'
+from pathlib import Path
+import re, sys
+layout = re.sub(r'\(\*.*?\*\)|--[^\n]*', '', Path(sys.argv[1]).read_text(), flags=re.S)
+settings = {line.strip() for line in layout.splitlines()}
+for setting in (
+    'set current view of installerWindow to icon view',
+    'set bounds of installerWindow to {160, 120, 800, 588}',
+    'set arrangement of icon view options of installerWindow to not arranged',
+    'set icon size of icon view options of installerWindow to 96',
+    'set text size of icon view options of installerWindow to 13',
+    'set label position of icon view options of installerWindow to bottom',
+    'set shows item info of icon view options of installerWindow to false',
+    'set position of item "EastSea.app" of installerFolder to {168, 212}',
+    'set position of item "Applications" of installerFolder to {472, 212}',
+    'update installerFolder without registering applications',
+    'close installerWindow',
+):
+    assert setting in settings, setting
+for bar in ('toolbar', 'statusbar', 'pathbar'):
+    assert f'set {bar} visible of installerWindow to false' in settings, bar
+PY
+then
+  pass "DMG preserves the approved Finder window and EastSea (168,212)/Applications (472,212) icon positions"
+else
+  fail "DMG must preserve the approved Finder window and icon positions"
+fi
+if python3 - "$rollback_test/out/clean" <<'PY'
+from pathlib import Path
+import os, sys
+for directory in (Path(sys.argv[1] + '.mounted'), Path(sys.argv[1])):
+    link = directory / 'Applications'
+    assert link.is_symlink() and os.readlink(link) == '/Applications', f'missing Applications shortcut in {directory}'
+PY
+then
+  pass "DMG retains the /Applications shortcut through writable mounting and conversion"
+else
+  fail "DMG must retain the /Applications shortcut through writable mounting and conversion"
 fi
 
 # The packaging doubles cannot validate Apple's nested-code sealing rules.
@@ -587,39 +749,6 @@ case "$1/$2" in
   *) echo "unexpected fixture gh command" >&2; exit 1 ;;
 esac
 SH
-cat > "$rollback_test/bin/hdiutil" <<'SH'
-#!/bin/bash
-set -eu
-command=$1
-dmg=${!#}
-source="" mount="" readonly=0
-while [ $# -gt 0 ]; do
-  case "$1" in
-    -srcfolder) source=$2; shift 2 ;;
-    -mountpoint) mount=$2; shift 2 ;;
-    -readonly) readonly=1; shift ;;
-    *) shift ;;
-  esac
-done
-case "$command" in
-  create)
-    cp -R "$source" "$R12_OUTPUT"
-    printf 'fixture DMG\n' > "$dmg" ;;
-  attach)
-    [ "$readonly" = 1 ] || { echo "fixture refuses writable mounts" >&2; exit 1; }
-    case "$dmg" in
-      */EastSea-previous.dmg)
-        cp -R "$R12_PREVIOUS_APP" "$mount/EastSea.app"
-        printf 'previous-readonly-mount\n' >> "$R12_EVENTS" ;;
-      *) cp -R "$R12_OUTPUT/EastSea.app" "$mount/EastSea.app" ;;
-    esac ;;
-  detach)
-    case "$dmg" in
-      */rollback-release.*/mount) printf 'previous-detach\n' >> "$R12_EVENTS" ;;
-    esac ;;
-  *) echo "unexpected fixture hdiutil command" >&2; exit 1 ;;
-esac
-SH
 # The fixture's build command records when the clean replacement starts.
 python3 - "$rollback_test/scripts/build-wallet.sh" <<'PY'
 from pathlib import Path
@@ -629,10 +758,12 @@ p.write_text(p.read_text().replace('set -eu\n', 'set -eu\nprintf \'clean-build\\
 PY
 chmod +x "$rollback_test/scripts/"* "$rollback_test/bin/"* \
   "$rollback_test/apps/wallet/build/SourcePackages/artifacts/sparkle/Sparkle/bin/sign_update"
-if (cd "$rollback_test" && PATH="$rollback_test/bin:$PATH" AETHER_PREVIOUS_APP='' PREV_RELEASE_TAG='' \
+if (cd "$rollback_test" && PATH="$rollback_test/bin:$PATH" TMPDIR="$rollback_test/tmp" AETHER_PREVIOUS_APP='' PREV_RELEASE_TAG='' \
+  NOTARY_PROFILE='' APP_STORE_CONNECT_API_KEY_ID='' \
   AETHER_RELEASE_LOG="$rollback_test/chain-release.json" AETHER_RELEASE_CHAIN_ID=7780 \
   R12_OUTPUT="$rollback_test/out/release" R12_GATE_LOG="$rollback_test/release-gates.log" \
   R12_TRUST_LOG="$rollback_test/release.trust.log" \
+  R12_DMG_LOG="$rollback_test/release.dmg.log" \
   R12_EVENTS="$rollback_test/events.log" R12_PREVIOUS_APP="$previous" \
   /bin/bash scripts/release-mac.sh --prepare) > "$rollback_test/release.log" 2>&1; then
   if python3 - "$rollback_test/events.log" <<'PY'

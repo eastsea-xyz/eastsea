@@ -1323,11 +1323,10 @@ fn main() {
             // Like the wallet (ffi `prepare_transfer`): a recipient with code —
             // a contract's receive() or a 7702-delegated account — needs more
             // than the intrinsic 21,000, or the transfer fails and still pays.
-            let code = call(&rpc, "eth_getCode", json!([to, "latest"]))
-                .ok()
-                .and_then(|v| v.as_str().and_then(|h| alloy_primitives::hex::decode(h.trim_start_matches("0x")).ok()))
-                .unwrap_or_default();
-            let gas_limit = aether_execution::plain_transfer_gas_limit(&code);
+            let gas_limit = match call(&rpc, "eth_getCode", json!([to, "latest"])) {
+                Ok(code) if code.as_str() == Some("0x") => aether_execution::tx::PLAIN_TRANSFER_GAS,
+                _ => aether_execution::tx::CODE_RECIPIENT_TRANSFER_GAS,
+            };
             submit(&rpc, from_dev, nonce, EvmCall { to: Some(to), value, input: Bytes::new(), gas_limit, delegate: None }, wait).map(|_| ())
         }
         Cmd::Batch { rpc, from_dev, to, value, wait } => (|| {

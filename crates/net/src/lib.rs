@@ -44,7 +44,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub mod paths;
+pub mod public_read;
+pub mod contact;
 pub mod tunnel;
+pub use public_read::{serve_with_public_read, PublicRead, ReadBudget, Reservation, ALPN_READ};
 
 pub const ALPN_RPC: &[u8] = b"aether/rpc/1";
 pub const ALPN_P2P: &[u8] = b"aether/p2p/1";
@@ -238,9 +241,28 @@ pub fn is_overlay_or_local(ip: IpAddr) -> bool {
     }
 }
 
+/// Public advertisement policy is stricter than native path selection: a NAT's
+/// LAN interface may carry a public connection but is never a DHT dial hint.
+pub fn is_public_ip(ip: IpAddr) -> bool {
+    if is_overlay_or_local(ip) { return false; }
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            !(v4.is_private() || v4.is_multicast() || v4.is_broadcast() || v4.is_documentation()
+                || o[0] == 0 || o[0] >= 240 || (o[0] == 198 && (o[1] == 18 || o[1] == 19))
+                || (o[0] == 192 && o[1] == 0 && o[2] == 0))
+        }
+        IpAddr::V6(v6) => {
+            let s = v6.segments();
+            !(v6.is_multicast() || (s[0] & 0xfe00) == 0xfc00 || (s[0] == 0x2001 && s[1] == 0xdb8)
+                || v6.to_ipv4_mapped().is_some_and(|ip| !is_public_ip(IpAddr::V4(ip))))
+        }
+    }
+}
+
 /// Publish relay and real network addresses only.
 pub fn public_addr_filter() -> AddrFilter {
-    AddrFilter::new(|addrs| Cow::Owned(addrs.iter().filter(|a| !matches!(a, TransportAddr::Ip(sa) if is_overlay_or_local(sa.ip()))).cloned().collect()))
+    AddrFilter::new(|addrs| Cow::Owned(addrs.iter().filter(|a| !matches!(a, TransportAddr::Ip(sa) if !is_public_ip(sa.ip()))).cloned().collect()))
 }
 
 /// Detect a dead peer (e.g. a restarted validator) within seconds, not the
@@ -266,13 +288,26 @@ pub async fn bind(secret: Option<SecretKey>, alpns: Vec<Vec<u8>>) -> Result<Endp
     }
     // Minimal preset: discovery comes only from the Mainline DHT (no n0 DNS);
     // public relays are kept as the NAT fallback.
+    let relay_mode = match std::env::var("AETHER_IROH_RELAY_URL") {
+        Ok(url) => {
+            let url = url.parse::<iroh::RelayUrl>().map_err(|e| anyhow!("AETHER_IROH_RELAY_URL: {e}"))?;
+            if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() || !url.username().is_empty() || url.password().is_some() {
+                return Err(anyhow!("AETHER_IROH_RELAY_URL must be an HTTP(S) relay URL without credentials"));
+            }
+            iroh::RelayMode::custom([url])
+        }
+        Err(std::env::VarError::NotPresent) => iroh::RelayMode::Default,
+        Err(e) => return Err(anyhow!("AETHER_IROH_RELAY_URL: {e}")),
+    };
     let mut b = Endpoint::builder(presets::Minimal)
-        .relay_mode(iroh::RelayMode::Default)
+        .relay_mode(relay_mode)
         .alpns(alpns)
         .addr_filter(public_addr_filter())
         .transport_config(transport_config())
-        .path_selector(Arc::new(paths::PublicPathSelector))
-        .address_lookup(dht);
+        .path_selector(Arc::new(paths::PublicPathSelector));
+    if std::env::var("AETHER_IROH_NO_DHT").as_deref() != Ok("1") {
+        b = b.address_lookup(dht);
+    }
     if let Some(s) = secret {
         b = b.secret_key(s);
     }
@@ -295,14 +330,23 @@ impl TokenBucket {
         TokenBucket { tokens: burst, burst, per_sec, last: Instant::now() }
     }
 
-    /// Take one token if the bucket holds one after refilling for `now - last`.
-    fn take(&mut self, now: Instant) -> bool {
+    fn refill(&mut self, now: Instant) {
         let elapsed_ms = now.saturating_duration_since(self.last).as_millis() as u64;
-        let refill = (elapsed_ms * self.per_sec as u64 / 1000).min(self.burst as u64);
+        let refill = (elapsed_ms.saturating_mul(self.per_sec as u64) / 1000).min(self.burst as u64);
         if refill > 0 {
             self.tokens = self.tokens.saturating_add(refill as u32).min(self.burst);
             self.last = now;
         }
+    }
+
+    fn is_full(&mut self, now: Instant) -> bool {
+        self.refill(now);
+        self.tokens == self.burst
+    }
+
+    /// Take one token if the bucket holds one after refilling for `now - last`.
+    fn take(&mut self, now: Instant) -> bool {
+        self.refill(now);
         if self.tokens == 0 {
             return false;
         }
@@ -312,7 +356,7 @@ impl TokenBucket {
 }
 
 /// What one peer (one node id) is limited by: a concurrency semaphore and a
-/// token bucket. Arc'd so permits stay valid even if the peer is forgotten.
+/// token bucket. Live owners and in-flight permits prevent eviction.
 struct PeerLimit {
     inflight: Arc<tokio::sync::Semaphore>,
     bucket: Mutex<TokenBucket>,
@@ -325,6 +369,9 @@ struct PeerLimit {
 struct RpcGate {
     global: Arc<tokio::sync::Semaphore>,
     peers: Mutex<HashMap<EndpointId, Arc<PeerLimit>>>,
+    /// New identities get no work permits while every retained entry is live
+    /// or still owes tokens. Sharing this refusal avoids unbounded map growth.
+    denied: Arc<PeerLimit>,
     per_peer: usize,
     burst: u32,
     per_sec: u32,
@@ -341,23 +388,37 @@ impl RpcGate {
         RpcGate {
             global: Arc::new(tokio::sync::Semaphore::new(global)),
             peers: Mutex::new(HashMap::new()),
+            denied: Arc::new(PeerLimit {
+                inflight: Arc::new(tokio::sync::Semaphore::new(0)),
+                bucket: Mutex::new(TokenBucket::new(0, 0)),
+            }),
             per_peer,
             burst,
             per_sec,
         }
     }
 
-    /// The limits of `id`, remembered for the next stream (bounded: a
-    /// remembered peer beyond the cap is dropped, its in-flight permits are
-    /// unaffected and a fresh entry is made on its next request).
+    /// One limiter for every live identity, including work outliving its
+    /// connection. Eviction is safe only after owners/permits are gone and its
+    /// rate bucket is full: reconnecting then gains no extra burst. If none is
+    /// safe to forget, the returned refusal limiter admits no request.
     fn peer(&self, id: EndpointId) -> Arc<PeerLimit> {
         let mut peers = self.peers.lock().expect("rpc peer map");
         if let Some(p) = peers.get(&id) {
             return p.clone();
         }
         if peers.len() >= MAX_RPC_PEERS {
-            if let Some(forgotten) = peers.keys().next().copied() {
+            let now = Instant::now();
+            let forgotten = peers.iter().find_map(|(id, peer)| {
+                (Arc::strong_count(peer) == 1
+                    && peer.inflight.available_permits() == self.per_peer
+                    && peer.bucket.lock().expect("rpc token bucket").is_full(now))
+                    .then_some(*id)
+            });
+            if let Some(forgotten) = forgotten {
                 peers.remove(&forgotten);
+            } else {
+                return self.denied.clone();
             }
         }
         let p = Arc::new(PeerLimit {
@@ -389,6 +450,8 @@ struct RpcProtocol {
     /// announce to (any node serving `aether/rpc/1`): with the registry
     /// check, announcements are verified and listed; without it, refused.
     wallets: Option<Arc<WalletServers>>,
+    /// Unregistered public clients share the read service's operator cap.
+    public_read: Option<PublicRead>,
 }
 
 impl std::fmt::Debug for RpcProtocol {
@@ -412,6 +475,7 @@ impl ProtocolHandler for RpcProtocol {
             };
             let this = self.clone();
             let peer = peer.clone();
+            let budget = this.public_read.as_ref().and_then(|read| read.rpc_budget(remote));
             tokio::spawn(async move {
                 // Limits first, before reading anything: an over-limit request
                 // costs one small error answer, not a 16 MiB read and a handler.
@@ -420,15 +484,26 @@ impl ProtocolHandler for RpcProtocol {
                         "jsonrpc": "2.0", "id": null,
                         "error": { "code": -32000, "message": "server busy: rpc concurrency or rate limit reached, retry later" }
                     });
-                    answer(&mut send, &busy).await;
+                    if let Some(budget) = &budget {
+                        let _ = public_read::read_request(&mut recv, MAX_MESSAGE, Some(budget)).await;
+                        let _ = recv.stop(iroh::endpoint::VarInt::from_u32(1));
+                        public_read::answer_capped(&mut send, &busy, Some(budget)).await;
+                    } else { answer(&mut send, &busy).await; }
                     return;
                 };
                 // A peer that stalls mid-request (or never reads its answer)
                 // must not hold its permits forever: the connection's idle
                 // timeout does not fire while its other streams carry traffic.
-                let bytes = match tokio::time::timeout(RPC_IO, recv.read_to_end(MAX_MESSAGE)).await {
-                    Ok(Ok(bytes)) => bytes,
-                    _ => return,
+                let bytes = if let Some(budget) = &budget {
+                    match public_read::read_request(&mut recv, MAX_MESSAGE, Some(budget)).await {
+                        Ok(bytes) => bytes,
+                        Err(_) => { let _ = recv.stop(iroh::endpoint::VarInt::from_u32(1)); return; }
+                    }
+                } else {
+                    match tokio::time::timeout(RPC_IO, recv.read_to_end(MAX_MESSAGE)).await {
+                        Ok(Ok(bytes)) => bytes,
+                        _ => return,
+                    }
                 };
                 let resp = match serde_json::from_slice::<Value>(&bytes) {
                     Ok(req) => match (req["method"].as_str(), this.wallets.as_ref()) {
@@ -470,7 +545,8 @@ impl ProtocolHandler for RpcProtocol {
                         serde_json::json!({ "jsonrpc": "2.0", "id": null, "error": { "code": -32700, "message": e.to_string() } })
                     }
                 };
-                answer(&mut send, &resp).await;
+                if budget.is_some() { public_read::answer_capped(&mut send, &resp, budget.as_ref()).await; }
+                else { answer(&mut send, &resp).await; }
             });
         }
         Ok(())
@@ -500,6 +576,7 @@ where
             handler: h,
             gate,
             wallets: Some(Arc::new(WalletServers::new(registered))),
+            public_read: None,
         },
     );
     if let Some(target) = p2p_target {
@@ -896,6 +973,65 @@ mod tests {
     }
 
     #[test]
+    fn full_peer_map_preserves_live_limiters_and_work_after_disconnect() {
+        let gate = RpcGate::new(8, 1, 2, 1);
+        let id = SecretKey::generate().public();
+        let connected = gate.peer(id);
+        let held = gate.enter(&connected).expect("first request is in flight");
+        let live: Vec<_> = (1..MAX_RPC_PEERS).map(|_| gate.peer(SecretKey::generate().public())).collect();
+        let unknown_id = SecretKey::generate().public();
+        let refused = gate.peer(unknown_id);
+        assert!(gate.enter(&refused).is_none(), "a full map must not evict a live connection's limiter");
+        let reconnected = gate.peer(id);
+        assert!(Arc::ptr_eq(&connected, &reconnected), "both connections share one identity's limiter");
+        assert!(gate.enter(&reconnected).is_none(), "reconnect cannot split the concurrency cap");
+        drop(connected);
+        drop(reconnected);
+        // ReadProtocol's task retains permits without retaining PeerLimit.
+        // Even then the live request must prevent replacement of its entry.
+        let refused = gate.peer(unknown_id);
+        assert!(gate.enter(&refused).is_none(), "work outliving a connection still protects its limiter");
+        let reconnected = gate.peer(id);
+        assert!(gate.enter(&reconnected).is_none());
+        drop(held);
+        assert!(gate.enter(&reconnected).is_some(), "the original limiter recovers its released permit");
+        assert_eq!(gate.peers.lock().unwrap().len(), MAX_RPC_PEERS);
+        drop(live);
+    }
+
+    #[test]
+    fn full_peer_map_preserves_depleted_buckets_until_they_refill() {
+        let gate = RpcGate::new(8, 1, 1, 1);
+        let ids: Vec<_> = (0..MAX_RPC_PEERS).map(|_| SecretKey::generate().public()).collect();
+        for id in &ids {
+            let peer = gate.peer(*id);
+            drop(gate.enter(&peer).expect("spend this identity's burst"));
+        }
+        // Pin accounting after key generation so the test needs no sleep and
+        // cannot accidentally refill early on a contended test machine.
+        let now = Instant::now();
+        for peer in gate.peers.lock().unwrap().values() { peer.bucket.lock().unwrap().last = now + Duration::from_secs(3600); }
+        let reconnected = gate.peer(ids[0]);
+        assert!(gate.enter(&reconnected).is_none(), "reconnect cannot earn a new request burst");
+        drop(reconnected);
+        let new_id = SecretKey::generate().public();
+        assert!(gate.enter(&gate.peer(new_id)).is_none(), "idle but depleted entries remain remembered");
+        assert!(gate.peers.lock().unwrap().contains_key(&ids[0]));
+        // Exactly one idle entry can now refill fully; only that entry may be
+        // evicted for a new identity, without changing any live/depleted entry.
+        {
+            let peers = gate.peers.lock().unwrap();
+            peers[&ids[0]].bucket.lock().unwrap().last = now - Duration::from_secs(2);
+        }
+        let admitted = gate.peer(new_id);
+        assert!(gate.enter(&admitted).is_some(), "fully refilled idle entry makes room");
+        let peers = gate.peers.lock().unwrap();
+        assert_eq!(peers.len(), MAX_RPC_PEERS);
+        assert!(!peers.contains_key(&ids[0]));
+        assert!(ids[1..].iter().all(|id| peers.contains_key(id)));
+    }
+
+    #[test]
     fn wallet_servers_expire_and_stay_bounded() {
         let id = |i| {
             SecretKey::from_bytes(&{
@@ -1069,6 +1205,7 @@ mod tests {
                     handler,
                     gate: Arc::new(RpcGate::new(4, 1, u32::MAX, u32::MAX)),
                     wallets: None,
+                    public_read: None,
                 },
             )
             .spawn();

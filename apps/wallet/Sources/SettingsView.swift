@@ -25,6 +25,7 @@ struct SettingsView: View {
                 .fixedSize(horizontal: false, vertical: true)
             Toggle("Open \(Brand.name) at login", isOn: Binding(get: { node.startAtLogin }, set: { node.startAtLogin = $0 }))
             UnattendedSection()
+            PublicReadSection()
             HistoryStorageSection()
             ResourcesSection()
             Text("Your node verifies every block itself and your wallet asks it instead of the network. Quitting \(Brand.name) stops it.")
@@ -76,6 +77,93 @@ struct SettingsView: View {
         }
         .padding(20)
         .frame(width: 420)
+    }
+}
+
+/// The same preference file controls the app's follower and the unattended
+/// node. Changes are atomic and the public-read service reloads each request.
+struct PublicReadSection: View {
+    @State private var settings = PublicReadSettings.defaultValue
+    @State private var needsRepair = false
+    @State private var saveFailed = false
+
+    private let offeredLimits: [UInt64] = [64, 128, 256, 512, 1024]
+        .map { $0 * PublicReadSettings.bytesPerMiB }
+
+    private var enabled: Binding<Bool> {
+        Binding(get: { settings.enabled }, set: { value in
+            var next = settings
+            next.enabled = value
+            apply(next)
+        })
+    }
+
+    private var dailyBytes: Binding<UInt64> {
+        Binding(get: { settings.dailyBytes }, set: { value in
+            var next = settings
+            next.dailyBytes = value
+            apply(next)
+        })
+    }
+
+    private func limitInMiB(_ bytes: UInt64) -> String {
+        if bytes.isMultiple(of: PublicReadSettings.bytesPerMiB) {
+            return String(bytes / PublicReadSettings.bytesPerMiB)
+        }
+        return String(format: "%.2f", locale: Locale.current,
+                      Double(bytes) / Double(PublicReadSettings.bytesPerMiB))
+    }
+
+    var body: some View {
+        Section("Share chain data") {
+            Toggle("Help browsers read the chain", isOn: enabled)
+            Picker("Daily sharing limit", selection: dailyBytes) {
+                ForEach(offeredLimits, id: \.self) { bytes in
+                    Text("\(limitInMiB(bytes)) MiB").tag(bytes)
+                }
+                // Preserve a limit chosen outside the app, including zero;
+                // opening Settings must never silently replace that budget.
+                if !offeredLimits.contains(settings.dailyBytes) {
+                    Text("\(limitInMiB(settings.dailyBytes)) MiB").tag(settings.dailyBytes)
+                }
+            }
+            .disabled(!settings.enabled)
+            Text("Your Mac shares finalized blocks with browsers while its node is running. Sharing is read-only and stops at your daily limit.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("Changes apply immediately. The limit resets at midnight UTC.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if needsRepair {
+                Label("Sharing is paused because its saved settings could not be read. Turn sharing on to save them again.",
+                      systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if saveFailed {
+                Label("Could not save sharing settings. Change the setting to try again.",
+                      systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .onAppear {
+            let read = PublicReadSettings.read(in: NodeController.dataDir)
+            settings = read.settings
+            needsRepair = read.needsRepair
+            saveFailed = false
+        }
+    }
+
+    private func apply(_ next: PublicReadSettings) {
+        do {
+            try next.write(in: NodeController.dataDir)
+            settings = next
+            needsRepair = false
+            saveFailed = false
+        } catch {
+            saveFailed = true
+        }
     }
 }
 

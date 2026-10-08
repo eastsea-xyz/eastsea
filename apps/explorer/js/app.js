@@ -1,8 +1,7 @@
 // Entry point: the header (search, sources, theme), the hash router and the
 // polling that keeps the home page and a pending transaction current. Reads go
-// through an ordered list of sources — the visitor's own node first, then the
-// public read-only gateway (docs/ops/read-gateway.md) — and the header badge
-// always says which one answered.
+// from the visitor's node first, then verified public peers. The header badge
+// always says which source answered; a personal HTTP gateway is optional.
 
 import {
   DEFAULT_ENDPOINT, DEFAULT_GATEWAY, FailoverNode,
@@ -13,6 +12,7 @@ import { parseTokenSources, tokenInfo, tokenOrigin } from './erc20.js';
 import { resolveSearch } from './search.js';
 import { accountView, blockView, errorView, homeView, notFoundView, tokenView, txView } from './pages.js';
 import { detectVerifier } from './verify.js';
+import { loadPublicPeerPool } from './peers.js';
 import { h, loading, message } from './dom.js';
 
 const view = document.getElementById('view');
@@ -26,6 +26,7 @@ const ctx = {
   node: null,
   chainId: null, // set once the node answers aether_status
   verifier: null, // set once at boot: {kind, block, account, receipt} (verify.js)
+  peerPool: null,
   pollNow: false, // the current page asked to be re-checked (a pending tx)
   tokenCache: new Map(),
   originCache: new Map(),
@@ -62,7 +63,8 @@ const ctx = {
 const searchInput = h('input', { id: 'q', type: 'search', placeholder: 'Height, 0x address or tx hash', 'aria-label': 'Search' });
 const searchMsg = h('span', { id: 'search-msg', class: 'small' });
 const nodeInput = h('input', { id: 'node-url', type: 'url', spellcheck: 'false', 'aria-label': 'Node JSON-RPC endpoint' });
-const gatewayInput = h('input', { id: 'gateway-url', type: 'url', spellcheck: 'false', placeholder: DEFAULT_GATEWAY, 'aria-label': 'Public read gateway' });
+const gatewayInput = h('input', { id: 'gateway-url', type: 'url', spellcheck: 'false', placeholder: 'https://your-gateway.example (optional)', 'aria-label': 'Your optional read gateway' });
+const relayInput = h('input', { id: 'relay-urls', type: 'text', spellcheck: 'false', placeholder: 'n0 public relays (default)', 'aria-label': 'WebSocket relay URLs, comma separated' });
 const nodeMsg = h('span', { class: 'small' });
 const chainPill = h('span', { class: 'pill', id: 'chain' }, 'connecting…');
 const sourcePill = h('span', { class: 'pill plain', id: 'source', title: 'Where this page reads from; changes when a source does not answer' });
@@ -70,7 +72,7 @@ const themeButton = h('button', { class: 'ghost', title: 'Switch theme', onclick
 
 /** The header badge: which source answered the last read. */
 function updateSourcePill(n) {
-  const kind = n.kind === 'node' ? 'good' : n.kind === 'gateway' ? 'warn' : 'plain';
+  const kind = ['node', 'peers'].includes(n.kind) ? 'good' : n.kind === 'gateway' ? 'warn' : 'plain';
   sourcePill.className = `pill ${kind}`;
   sourcePill.title = n.source.url;
   sourcePill.replaceChildren(sourceLabel(n.source));
@@ -86,7 +88,7 @@ function showLocalNotice(show) {
 /** FailoverNode hands us ({from, to}) whenever the source in use changes. */
 function onSourceChange(n, { from, to } = {}) {
   updateSourcePill(n);
-  showLocalNotice(from === 'node' && to === 'gateway');
+  showLocalNotice(to === 'peers' || (from === 'node' && to === 'gateway'));
 }
 
 top.append(
@@ -115,37 +117,47 @@ top.append(
     h('summary', {}, 'Settings'),
     h('div', { class: 'settings-body' },
       h('label', {}, 'Node JSON-RPC endpoint', nodeInput),
-      h('label', {}, 'Public read gateway (tried after the node)', gatewayInput),
+      h('label', {}, 'Your read gateway (optional, after public peers)', gatewayInput),
+      h('label', {}, 'WebSocket relays (comma separated; empty uses n0)', relayInput),
       h('div', { class: 'row tight' },
         h('button', {
-          onclick: () => {
+          onclick: async () => {
             try {
               const nodeUrl = saveEndpoint(nodeInput.value, store);
               const gatewayUrl = saveGateway(gatewayInput.value, store);
+              const relays = String(relayInput.value).split(',').map((s) => s.trim()).filter(Boolean);
+              for (const relay of relays) {
+                const u = new URL(relay);
+                if (!['https:', 'http:'].includes(u.protocol)) throw new Error('relays must use http:// or https://');
+              }
+              store?.setItem('aether-explorer.relays', JSON.stringify(relays));
+              await setupPeers(relays);
               connect();
-              nodeMsg.replaceChildren(message('ok', `Reading ${nodeUrl}${gatewayUrl ? ` then ${gatewayUrl}` : ' (no gateway fallback)'}.`));
+              nodeMsg.replaceChildren(message('ok', `Reading ${nodeUrl}, then verified peers${gatewayUrl ? `, then ${gatewayUrl}` : ''}.`));
             } catch (e) {
               nodeMsg.replaceChildren(message('error', e.message));
             }
           },
         }, 'Save'),
         h('button', {
-          onclick: () => {
+          onclick: async () => {
             saveEndpoint(DEFAULT_ENDPOINT, store);
             saveGateway(DEFAULT_GATEWAY, store);
+            store?.removeItem('aether-explorer.relays');
+            await setupPeers([]);
             connect();
           },
         }, 'Reset'),
         nodeMsg),
-      h('p', { class: 'small muted' }, 'An EastSea node serves JSON-RPC on this Mac at 127.0.0.1:18545 while it runs; when this browser cannot reach it, reads fall back to the public gateway — honest but unverified, and never a write. Empty the gateway field to read from your node only.'))),
+      h('p', { class: 'small muted' }, 'Your node at 127.0.0.1:18545 is tried first. Public peers serve certificate-verified blocks and state proofs over n0 relays. A personal gateway is optional. Token calls and node metrics need your own node.'))),
   themeButton,
 );
 
 foot.append(
   h('p', { class: 'small muted' },
-    'Reads go to your own node first, then to the public gateway (Settings). What a committee certificate vouches for is ',
-    h('em', {}, 'marked on the page'), '; everything else is node-read and unverified. ',
-    'No analytics, no external requests, no prices.'),
+    'Reads go to your own node first, then to verified public peers over WebSocket relays. ',
+    'Committee certificates and Merkle proofs verify public chain data. Uncommitted metrics are unavailable on public peers. ',
+    'No analytics, no prices.'),
 );
 
 // A storage handle that is null when the browser denies access outright; every
@@ -154,12 +166,23 @@ const store = (() => { try { return localStorage; } catch { return null; } })();
 
 // ---- sources, chain pill ----
 
+async function setupPeers(relays = []) {
+  ctx.peerPool?.close();
+  ctx.peerPool = null;
+  relayInput.value = relays.join(', ');
+  try {
+    ctx.peerPool = await loadPublicPeerPool({ env: ctx.verifier?.env, relays });
+  } catch (e) {
+    nodeMsg.replaceChildren(message('warn', `Public peer reads are unavailable: ${e?.message || e}`));
+  }
+}
+
 function connect() {
   const nodeUrl = loadEndpoint(store);
   const gatewayUrl = loadGateway(store);
   nodeInput.value = nodeUrl;
   gatewayInput.value = gatewayUrl || '';
-  ctx.node = new FailoverNode(orderedSources(nodeUrl, gatewayUrl), { onSource: onSourceChange });
+  ctx.node = new FailoverNode(orderedSources(nodeUrl, gatewayUrl), { onSource: onSourceChange, peerPool: ctx.peerPool });
   ctx.chainId = null;
   ctx.tokenCache.clear();
   ctx.originCache.clear();
@@ -254,4 +277,13 @@ try {
 // Explore tab, else the wasm module when this deployment carries it, else
 // none — pages then badge what was actually verified.
 ctx.verifier = await detectVerifier(window);
+let savedRelays = [];
+try {
+  const v = JSON.parse(store?.getItem('aether-explorer.relays') || '[]');
+  if (Array.isArray(v) && v.every((u) => typeof u === 'string')) savedRelays = v;
+} catch { /* use public relays */ }
+await setupPeers(savedRelays);
+window.addEventListener('pagehide', () => ctx.peerPool?.close());
+// Bounded diagnostics for the devnet browser measurement; no telemetry.
+window.aetherReadDiagnostics = () => ({ source: ctx.node?.source, livePeers: ctx.peerPool?.livePeers || [], metrics: ctx.peerPool?.metrics || null });
 connect();

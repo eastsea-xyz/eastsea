@@ -123,7 +123,7 @@ pub async fn open_public(a: &P2pArgs) -> Option<aether_net::Endpoint> {
     if a.offline {
         return None;
     }
-    let alpns = vec![aether_net::ALPN_RPC.to_vec(), aether_net::ALPN_P2P.to_vec(), aether_net::ALPN_RESHARE.to_vec()];
+    let alpns = vec![aether_net::ALPN_RPC.to_vec(), aether_net::ALPN_READ.to_vec(), aether_net::ALPN_P2P.to_vec(), aether_net::ALPN_RESHARE.to_vec()];
     let ep = match aether_net::bind(Some(a.keys.node_secret.clone()), alpns).await {
         Ok(ep) => ep,
         Err(e) => {

@@ -516,16 +516,20 @@ function settingsView(s) {
   networkFields.hidden = !developerMode.checked;
   developerMode.addEventListener('change', () => { networkFields.hidden = !developerMode.checked; });
   const rpcs = h('textarea', { placeholder: 'https://node.example (one per line)', spellcheck: 'false' }, s.rpcs.join('\n'));
+  const readRelays = h('textarea', { placeholder: 'n0 public relays (default)', spellcheck: 'false' }, (s.readRelays || []).join('\n'));
   const save = h('button', { type: 'submit' }, 'Save');
   const form = h('form', { class: 'card' }, h('h2', {}, 'Settings'), h('label', {}, 'Lock after (minutes)', minutes),
-    h('label', {}, 'Extra default-network nodes', rpcs), h('p', { class: 'small muted' }, `Default: the ${Brand.project} app\'s node on this computer (127.0.0.1:18545).`),
+    h('label', {}, 'Extra default-network nodes', rpcs), h('p', { class: 'small muted' }, `Reads try the ${Brand.project} app's node (127.0.0.1:18545), then verified public peers. Sending needs your own HTTP node.`),
+    h('label', {}, 'Public read WebSocket relay URLs (one per line)', readRelays),
     h('label', {}, developerMode, ' Developer mode'), networkFields, save);
   form.addEventListener('submit', action(save, out, async () => {
     const list = rpcs.value.split(/\s+/).filter(Boolean);
     if (network.value === 'development' && !developerMode.checked) throw new Error('Turn on Developer mode to use a local development network.');
     const extra = list.filter((u) => !/^http:\/\/(127\.0\.0\.1|localhost)[:/]/.test(u));
     if (extra.length && !(await chrome.permissions.request({ origins: extra.map((u) => `${new URL(u).origin}/*`) }))) throw new Error('The browser did not allow those nodes.');
-    await op('settings', { lockMinutes: minutes.value, rpcs: list, developerMode: developerMode.checked,
+    const relays = readRelays.value.split(/\s+/).filter(Boolean);
+    for (const u of relays) if (!['http:', 'https:'].includes(new URL(u).protocol)) throw new Error('Relays must use http:// or https://.');
+    await op('settings', { lockMinutes: minutes.value, rpcs: list, readRelays: relays, developerMode: developerMode.checked,
       developmentNetwork: network.value === 'development', developmentPort: Number(port.value) });
     out.replaceChildren(message('ok', 'Saved.'));
     if (developerMode.checked !== s.developerMode || (network.value === 'development') !== s.developmentNetwork) refresh();

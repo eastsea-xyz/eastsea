@@ -24,6 +24,7 @@ pub mod p2p;
 pub mod prover;
 pub mod prover_input;
 pub mod prune;
+pub mod public_read;
 pub mod registrar_signer;
 pub mod registrations;
 pub mod resources;

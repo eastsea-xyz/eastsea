@@ -249,6 +249,9 @@
 		FF361C80FF7E5900898C7CF8 /* HistoryFailure.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00DD67BEC1D35753ED7EDE91 /* HistoryFailure.swift */; };
 		FFC971B49C6FF5C5C88E6924 /* TokenIconSpec.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA90633BCF8B2E2533B5D308 /* TokenIconSpec.swift */; };
 		FFDCEE5B772023FE8F16964B /* DiagnosticReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9B4EF5C90AED22256BDEE5A /* DiagnosticReport.swift */; };
+		3D5D8BADB1A2EE691CF9BBF3 /* PublicReadSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBDAB6AB8F3EFA05E7AEF813 /* PublicReadSettings.swift */; };
+		E794BBB6BF3B4B26944216D8 /* PublicReadSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBDAB6AB8F3EFA05E7AEF813 /* PublicReadSettings.swift */; };
+		7259D327618538045E4D222A /* PublicReadSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBDAB6AB8F3EFA05E7AEF813 /* PublicReadSettings.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -336,6 +339,7 @@
 		E5D7C676A4030F20E37C58E7 /* TokenAssets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenAssets.swift; sourceTree = "<group>"; };
 		FE00FF7FDD47F623CE4B55A0 /* TokenSend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenSend.swift; sourceTree = "<group>"; };
 		FF2FCB108BF603558C0364F5 /* WalletScreens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletScreens.swift; sourceTree = "<group>"; };
+		DBDAB6AB8F3EFA05E7AEF813 /* PublicReadSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PublicReadSettings.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -439,6 +443,7 @@
 				94E4B4A2A4BDBBBBC6A12600 /* ProverFlags.swift */,
 				9DEBCE5EA044F272C9EA406C /* ProverMenu.swift */,
 				2F793BE9B59364FAC536170E /* ProverMenuText.swift */,
+				DBDAB6AB8F3EFA05E7AEF813 /* PublicReadSettings.swift */,
 				AB4C9843D1CF8E29F627927D /* ReleaseApproval.swift */,
 				9D1303552378BB828A2C9D21 /* ReleaseUpdateGate.swift */,
 				424591AA2690FB9457CF62DA /* ResendIntent.swift */,
@@ -771,6 +776,7 @@
 				A6411E9B1827C2B1B6D286AE /* ProverFlags.swift in Sources */,
 				5D11F92088FEABAA0085ADCD /* ProverMenu.swift in Sources */,
 				F94514AB9C803644B61A44B7 /* ProverMenuText.swift in Sources */,
+				3D5D8BADB1A2EE691CF9BBF3 /* PublicReadSettings.swift in Sources */,
 				A079B1CBD1001C06EF207650 /* ReleaseApproval.swift in Sources */,
 				3A02CDFD35AF42A3DBBCE824 /* ReleaseUpdateGate.swift in Sources */,
 				1CC133C57B599BA2B10B7D4A /* ResendIntent.swift in Sources */,
@@ -852,6 +858,7 @@
 				F29C55BEDA6F3D5563CC763F /* ProverFlags.swift in Sources */,
 				AD1A6990DBD4FC69E9F3E958 /* ProverMenu.swift in Sources */,
 				2ECB8DB6B22924E4D146ED97 /* ProverMenuText.swift in Sources */,
+				E794BBB6BF3B4B26944216D8 /* PublicReadSettings.swift in Sources */,
 				7B7EBC3EFD0B5F25E2C8CF67 /* ReleaseApproval.swift in Sources */,
 				1A01BCF495388CB4F912A2C2 /* ReleaseUpdateGate.swift in Sources */,
 				08B1577287B0B8BA0FD673CA /* ResendIntent.swift in Sources */,
@@ -935,6 +942,7 @@
 				B6002ECF68746BC997F245B2 /* ProverFlags.swift in Sources */,
 				F3667C9BCD3B016F232A69D8 /* ProverMenu.swift in Sources */,
 				119884C0924E5CF71D15D2B9 /* ProverMenuText.swift in Sources */,
+				7259D327618538045E4D222A /* PublicReadSettings.swift in Sources */,
 				7B0B4C28ED2F1AEF39804016 /* ReleaseApproval.swift in Sources */,
 				0C3F5D5E82BA80E5FBCEFB6A /* ReleaseUpdateGate.swift in Sources */,
 				A92FEDE9AA150A6ACA8C92A2 /* ResendIntent.swift in Sources */,

@@ -16,6 +16,9 @@
 .omx/
 .gstack/
 /crates/*/target
+/apps/explorer/wasm/
+/apps/extension/wasm/
+/site/explorer/
 
 # Local only: PDCA snapshots; the secret-scan rules hold our hosts IPs.
 docs/.pdca-snapshots/

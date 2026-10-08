@@ -71,6 +71,16 @@
         }
       }
     },
+    "%@ MiB" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ MiB"
+          }
+        }
+      }
+    },
     "%@ Wallet" : {
       "localizations" : {
         "ko" : {
@@ -1403,6 +1413,16 @@
         }
       }
     },
+    "Changes apply immediately. The limit resets at midnight UTC." : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "변경 사항은 바로 적용돼요. 하루 한도는 UTC 자정에 초기화돼요."
+          }
+        }
+      }
+    },
     "Check for Updates" : {
       "localizations" : {
         "ko" : {
@@ -1773,6 +1793,16 @@
         }
       }
     },
+    "Could not save sharing settings. Change the setting to try again." : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "공유 설정을 저장하지 못했어요. 설정을 변경해 다시 시도해 주세요."
+          }
+        }
+      }
+    },
     "Create a token" : {
       "localizations" : {
         "ko" : {
@@ -1799,6 +1829,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "토큰 만들기"
+          }
+        }
+      }
+    },
+    "Daily sharing limit" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "하루 공유 한도"
           }
         }
       }
@@ -2260,6 +2300,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "절반"
+          }
+        }
+      }
+    },
+    "Help browsers read the chain" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "브라우저의 체인 조회 돕기"
           }
         }
       }
@@ -4376,6 +4426,26 @@
         }
       }
     },
+    "Share chain data" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "체인 데이터 공유"
+          }
+        }
+      }
+    },
+    "Sharing is paused because its saved settings could not be read. Turn sharing on to save them again." : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "저장된 설정을 읽을 수 없어 공유를 멈췄어요. 공유를 켜면 설정을 다시 저장해요."
+          }
+        }
+      }
+    },
     "Show in Finder" : {
       "localizations" : {
         "ko" : {
@@ -6148,6 +6218,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Mac이 매시간 켜져 있음을 증명해요. %llu시간 연속으로 켜져 있으면 블록 서명에 뽑힐 수 있어요."
+          }
+        }
+      }
+    },
+    "Your Mac shares finalized blocks with browsers while its node is running. Sharing is read-only and stops at your daily limit." : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "노드가 실행 중일 때 이 Mac이 확정된 블록을 브라우저에 공유해요. 조회용 데이터만 공유하며, 하루 한도에 도달하면 멈춰요."
           }
         }
       }

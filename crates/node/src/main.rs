@@ -2322,9 +2322,18 @@ fn run_node(a: NodeArgs) {
         let _router = endpoint.clone().map(|ep| {
             tracing::info!(node_id = %ep.id(), "public endpoint on iroh; address published to Mainline DHT (serving read-only answers while catching up)");
             let st = served_state.clone();
+            let read_state = served_state.clone();
             let registry = aether_node::announce::checker(st.read().expect("served state").chain.clone());
             let p2p_target = links.then(|| loopback(port));
-            aether_net::serve(
+            let read = aether_node::public_read::service(
+                &ep,
+                std::path::Path::new(&data),
+                p2p.roster.nodes.clone(),
+                p2p.roster.nodes.clone(),
+                move || read_state.read().expect("served state").clone(),
+            );
+            aether_node::public_read::publish_contact(ep.clone(), std::path::Path::new(&data), chain.clone(), polynomial_identity);
+            aether_net::serve_with_public_read(
                 ep,
                 move |req| {
                     let st = st.read().expect("served state").clone();
@@ -2332,6 +2341,7 @@ fn run_node(a: NodeArgs) {
                 },
                 p2p_target,
                 Some(registry),
+                read,
             )
         });
         // Catch up before voting: a committee member that slept must not
@@ -2992,14 +3002,13 @@ fn run_follow(
         // Following over iroh, this Mac also serves wallets directly (capacity
         // review 2026-09-29): a public endpoint under its own persisted node
         // id, so phones spread their reads over follower Macs instead of
-        // asking the validators. `--from-rpc` followers have no iroh endpoint.
-        let mut wallet_ep = None;
+        // asking the validators. HTTP-upstream followers publish reads too;
+        // their transport for fetching blocks does not disable serving peers.
+        let ep = aether_net::bind(Some(wallet_node_key(&node_key)?), vec![aether_net::ALPN_RPC.to_vec(), aether_net::ALPN_READ.to_vec()])
+            .await.map_err(|e| e.to_string())?;
+        let wallet_ep = Some(ep.clone());
         let upstream = Arc::new(if from_rpc.is_empty() {
-            let ep = aether_net::bind(Some(wallet_node_key(&node_key)?), vec![aether_net::ALPN_RPC.to_vec()])
-                .await
-                .map_err(|e| e.to_string())?;
             let client = aether_net::RpcClient::with_endpoint(ep.clone(), nodes.clone());
-            wallet_ep = Some(ep);
             Upstream::Iroh(client, Default::default())
         } else {
             Upstream::Http(from_rpc)
@@ -3101,10 +3110,16 @@ fn run_follow(
             tracing::info!(node_id = %ep.id(), "serving wallets over iroh; announced to the validators every minute");
             let endpoint_id = ep.id();
             let st = st.clone();
-            let router = aether_net::serve_rpc(ep, move |req| {
+            let read_state = st.clone();
+            let read = aether_node::public_read::service(&ep, std::path::Path::new(&data), nodes.clone(), vec![], move || read_state.clone());
+            let identity = st.chain.lock().identity;
+            if let Some(identity) = identity {
+                aether_node::public_read::publish_contact(ep.clone(), std::path::Path::new(&data), st.chain.clone(), &identity);
+            }
+            let router = aether_net::serve_with_public_read(ep, move |req| {
                 let st = st.clone();
                 async move { rpc::handle_value(&st, req).await }
-            });
+            }, None, None, read);
             let (announcer, keys) = (upstream.clone(), announce_keys.clone());
             tokio::spawn(async move {
                 if keys.is_none() {

@@ -1,3 +1,5 @@
+import { readVerdict, readSource } from './peers.js';
+
 // DOM helpers. Everything renders through `h`, whose children are set as text
 // nodes only — nothing from the chain is ever interpreted as HTML.
 
@@ -70,8 +72,12 @@ export function copyButton(text) {
 }
 
 /** The line every page carries: where its data came from. */
-export function sourceLine(node, extra) {
-  return h('p', { class: 'small muted source' }, 'Data read from the node at ', h('span', { class: 'mono' }, node.url), extra ? ` · ${extra}` : null, '. Not light-client verified.');
+export function sourceLine(node, extra, displayed) {
+  if (readVerdict(displayed)) {
+    return h('p', { class: 'small muted source' }, 'Public chain data verified with committee certificates and Merkle proofs',
+      extra ? ` · ${extra}` : null, '. Uncommitted metrics unavailable.');
+  }
+  return h('p', { class: 'small muted source' }, 'Data read from the node at ', h('span', { class: 'mono' }, readSource(displayed)?.url || node.url), extra ? ` · ${extra}` : null, '. Not light-client verified.');
 }
 
 /** Placeholder while a page fetches. */

@@ -27,6 +27,7 @@ run network-upgrade Brand.swift NetworkUpgrade.swift
 run node-stop Brand.swift Clock.swift NodeWatchdog.swift NodeStopReason.swift
 run block-data Brand.swift Clock.swift NodeWatchdog.swift NodeStopReason.swift UnattendedDecision.swift ArchiveMeasurement.swift BlockDataLocation.swift KeySafety.swift DataMigration.swift BlockDataMove.swift NodeStorageMove.swift
 run prover-menu ProverMenuText.swift
+run public-read PublicReadSettings.swift
 run key-safety Brand.swift Clock.swift NodeWatchdog.swift NodeStopReason.swift ArchiveMeasurement.swift BlockDataLocation.swift KeySafety.swift
 run release-approval ReleaseApproval.swift
 run rename-migration DataMigration.swift

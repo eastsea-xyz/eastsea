@@ -68,8 +68,13 @@ const PUBLIC_READ_METHODS: &[&str] = &[
     "aether_proverStatus",
     "aether_getBlock",
     "aether_getReceipt",
+    "aether_getReceiptProof",
     "aether_getAccount",
+    "aether_getStorage",
+    "aether_getCodeHash",
     "aether_getFinalized",
+    "aether_readPeers",
+    "aether_presence",
     "aether_history",
     "aether_historyProof",
     "aether_eraInfo",
@@ -470,6 +475,37 @@ pub async fn handle_value(st: &RpcState, req: Value) -> Value {
     single(st, req).await
 }
 
+/// Dedicated public-read entry point: every call, including batches and aliases,
+/// applies the existing public cost gate. Peer hints are limited to the node's
+/// configured network, supplied by its caller, never an open advertisement list.
+pub async fn handle_public_value(st: &RpcState, req: Value, peers: &[aether_net::EndpointId]) -> Value {
+    let mut st = st.clone();
+    st.public_read_only = true;
+    if let Value::Array(entries) = &req {
+        if entries.is_empty() || entries.len() > PUBLIC_MAX_BATCH {
+            return json!({"jsonrpc":"2.0", "id":null, "error":{"code":-32002,"message":format!("public read-only gateway: batches need 1..={PUBLIC_MAX_BATCH} calls")}});
+        }
+        let mut answers = Vec::with_capacity(entries.len());
+        for entry in entries { answers.push(public_single(&st, entry.clone(), peers).await); }
+        return json!(answers);
+    }
+    public_single(&st, req, peers).await
+}
+
+async fn public_single(st: &RpcState, req: Value, peers: &[aether_net::EndpointId]) -> Value {
+    if normalize_method(req.get("method").and_then(Value::as_str).unwrap_or_default()) == "aether_readPeers" {
+        let id = req.get("id").cloned().unwrap_or(Value::Null);
+        let params = req.get("params").cloned().unwrap_or_else(|| json!([]));
+        let limit = params.get(0).and_then(Value::as_u64).unwrap_or(32);
+        if limit > 32 {
+            return json!({"jsonrpc":"2.0", "id":id, "error":{"code":-32002,"message":"public read peer list is capped at 32 ids"}});
+        }
+        let ids: Vec<String> = peers.iter().take(limit as usize).map(ToString::to_string).collect();
+        return json!({"jsonrpc":"2.0", "id":id, "result":ids});
+    }
+    single(st, req).await
+}
+
 async fn single(st: &RpcState, req: Value) -> Value {
     let id = req.get("id").cloned().unwrap_or(Value::Null);
     let method = normalize_method(req.get("method").and_then(Value::as_str).unwrap_or_default());
@@ -533,6 +569,7 @@ type RpcResult = Result<Value, (i64, String)>;
 async fn receipt_proof(st: &RpcState, p: &Value) -> RpcResult {
     use commonware_codec::Decode;
     let hash: TxHash = param(p, 0)?;
+    let _slot = history_slot(st)?;
     let (height, index, receipt, receipts) = {
         let g = st.chain.lock();
         let Some((height, receipt)) = g.receipts.get(&hash) else {
@@ -849,6 +886,7 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
     match method {
         "aether_status" => {
             let resources = crate::resources::monitor().map(|m| m.status_value()).unwrap_or(Value::Null);
+            let public_read = crate::public_read::status();
             let g = chain.lock();
             let f = &g.finalized;
             let base = Chain::next_base_fee(&g.cfg, f);
@@ -864,6 +902,7 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                 "base_fee": base_fee,
                 "prover_escrow": f.state.balance(&aether_execution::PROVER_ESCROW),
                 "chain_id": g.cfg.chain_id,
+                "public_read": public_read,
                 "height": f.height,
                 "hash": format!("{}", f.digest),
                 "state_root": f.state.root(),
@@ -909,6 +948,12 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                 "faucet": st.faucet.as_ref().map(|f| json!(f.address)).unwrap_or(Value::Null),
             }))
         }
+        "aether_readPeers" => Ok(json!([])),
+        "aether_presence" => Ok(json!({
+            "available": false,
+            "peers": null,
+            "reason": "live presence aggregates are not enabled on this node",
+        })),
         // The next relay nonce a free-lane registration of `operator` must
         // carry (`[operator]`): the count the chain has spent of its items.
         "aether_registrationNonce" => {
@@ -1715,6 +1760,51 @@ mod public_read_tests {
         v.get("error").and_then(|e| e["message"].as_str()).is_some_and(|m| m.contains("public read-only gateway"))
     }
 
+    #[test]
+    fn public_light_proof_getters_reach_their_handlers() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let st = public_state();
+        let address = "0x0000000000000000000000000000000000000001";
+        let hash = "0x0000000000000000000000000000000000000000000000000000000000000001";
+        for (method, params) in [
+            ("aether_getReceiptProof", json!([hash])),
+            ("aether_getStorage", json!([address, "0x0"])),
+            ("aether_getCodeHash", json!([address])),
+            ("eastsea_getReceiptProof", json!([hash])),
+            ("eastsea_getStorage", json!([address, "0x0"])),
+        ] {
+            let answer = rt.block_on(call(&st, method, params));
+            assert!(!gate_error(&answer), "proof read {method} was refused: {answer}");
+        }
+    }
+
+    #[test]
+    fn public_presence_is_an_explicit_unavailable_aggregate() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let answer = rt.block_on(call(&public_state(), "aether_presence", json!([])));
+        assert_eq!(answer["result"]["available"], false, "absence of live-peer aggregates is explicit: {answer}");
+        assert!(answer["result"]["peers"].is_null());
+    }
+
+    #[test]
+    fn dedicated_public_service_enforces_gates_for_private_state_and_peer_batches() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let st = bare_state();
+        let peers: Vec<_> = (1..=40).map(aether_net::devnet_node_id).collect();
+        let answer = rt.block_on(handle_public_value(&st, json!([
+            {"id":1,"method":"aether_readPeers","params":[]},
+            {"id":2,"method":"eastsea_sendTransaction","params":["00"]},
+            {"id":3,"method":"aether_snapshot","params":[]},
+        ]), &peers));
+        assert_eq!(answer[0]["result"].as_array().unwrap().len(), 32);
+        assert_eq!(answer[1]["error"]["code"], -32601);
+        assert_eq!(answer[2]["error"]["code"], -32601);
+        let oversized = rt.block_on(handle_public_value(&st, json!({"id":4,"method":"eastsea_readPeers","params":[33]}), &peers));
+        assert_eq!(oversized["error"]["code"], -32002);
+        let batch = rt.block_on(handle_public_value(&st, json!(vec![json!({"id":1,"method":"aether_presence"}); PUBLIC_MAX_BATCH + 1]), &peers));
+        assert_eq!(batch["error"]["code"], -32002);
+    }
+
     /// Tests that fire a real eth_call share PUBLIC_CALLS — a process-global
     /// budget — with the test that fills it on purpose. Claim this lock for
     /// the whole test so the two cannot flake on each other.
@@ -1762,9 +1852,6 @@ mod public_read_tests {
             ("aether_registrationNonce", json!(["0x0000000000000000000000000000000000000001"])),
             ("aether_rewardStatus", json!([])),
             ("aether_rewardsPage", json!(["0x0000000000000000000000000000000000000001"])),
-            ("aether_getReceiptProof", json!(["0x0000000000000000000000000000000000000000000000000000000000000001"])),
-            ("aether_getStorage", json!(["0x0000000000000000000000000000000000000001", "0x0"])),
-            ("aether_getCodeHash", json!(["0x0000000000000000000000000000000000000001"])),
             ("aether_releaseEntries", json!(["0x0000000000000000000000000000000000000001"])),
             ("eth_chainId", json!([])),
             ("eth_getBalance", json!(["0x0000000000000000000000000000000000000001"])),
@@ -1798,6 +1885,11 @@ mod public_read_tests {
             ("aether_getReceipt", json!(["0x0000000000000000000000000000000000000000000000000000000000000001"])),
             ("aether_getAccount", json!(["0x0000000000000000000000000000000000000001"])),
             ("aether_getFinalized", json!([0])),
+            ("aether_getReceiptProof", json!(["0x0000000000000000000000000000000000000000000000000000000000000001"])),
+            ("aether_getStorage", json!(["0x0000000000000000000000000000000000000001", "0x0"])),
+            ("aether_getCodeHash", json!(["0x0000000000000000000000000000000000000001"])),
+            ("aether_presence", json!([])),
+            ("aether_readPeers", json!([])),
             ("aether_history", json!([])),
             ("aether_historyProof", json!([0, 0])),
             ("aether_eraInfo", json!([0])),

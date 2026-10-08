@@ -1,6 +1,6 @@
 # site/: EastSea 소개 페이지 (eastsea.xyz)
 
-공개 원페이지 소개 사이트다. 순수 HTML/CSS/바닐라 JS라서 **빌드 단계가 없다.** Cloudflare Pages 프로젝트
+공개 원페이지 소개 사이트다. 소개 페이지는 순수 HTML/CSS/바닐라 JS다. 같은 사이트의 `/explorer/`는 `scripts/build-extension.sh`와 `scripts/package-public-reader.sh`가 공유 검증기·공개 노드 읽기 리소스를 패키징한다 (자세히: `docs/ops/public-peer-reads.md`). Cloudflare Pages 프로젝트
 `eastsea-site`가 이 폴더를 그대로 서빙한다. 2026-10-07에 "Dawn almanac" 방향으로 다시 디자인했다.
 벤치마크와 결정 근거는 `docs/design/site-benchmark-2026-10-07.md`, 디자인 시스템은 `design/brand/SYSTEM.md`에 있다.
 
@@ -51,7 +51,7 @@ python3 -m http.server -d site                  # 미리보기 http://localhost:
   - 창 안은 앱과 같은 Apple 시스템 글꼴(SF Pro, Apple SD Gothic Neo)을 쓴다.
 - **모션:** `prefers-reduced-motion: no-preference`일 때만 켜진다.
   - 해가 떠오르고, 햇살이 나타나고, 물결이 천천히 흐르고, 창이 떠오르고, 상단 점이 깜박인다.
-- **외부 요청:** 없다 (CDN·분석·쿠키 0).
+- **외부 요청:** 소개 페이지는 없다 (CDN·분석·쿠키 0). `/explorer/`를 열면 내 노드를 먼저 시도한 뒤 공개 iroh 노드와 교체 가능한 WebSocket/pkarr 경로로 검증된 체인을 읽는다. 기본 HTTP 게이트웨이는 없다.
 - **Lighthouse (2026-10-07, 로컬):**
   - 모바일: 성능 98, 접근성 100, 권장사항 100, SEO 100
   - 데스크톱: 성능 100

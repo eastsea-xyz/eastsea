@@ -21,6 +21,8 @@ if [ "$old" != "$new" ]; then
   printf '{"version": "%s"}\n' "$new" > site/release.json
 fi
 grep -c "$new" site/index.html >/dev/null
+node scripts/refresh-read-seeds.mjs
+bash scripts/package-public-reader.sh
 CLOUDFLARE_ACCOUNT_ID=41629a6d8d7dd09287249a57f1f604c4 \
   wrangler pages deploy site --project-name eastsea-site --branch main --commit-dirty=true >/dev/null
 echo "eastsea.xyz now says $new (was $old)"

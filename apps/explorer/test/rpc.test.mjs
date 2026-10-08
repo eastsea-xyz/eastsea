@@ -87,28 +87,29 @@ test('endpoints persist when storage works and default when it does not', () => 
 // ---- the ordered sources: the visitor's node, then the public gateway ----
 
 test('ordered sources: the visitor node first, the gateway after, none when off', () => {
-  assert.deepEqual(orderedSources(DEFAULT_ENDPOINT, DEFAULT_GATEWAY), [
+  assert.deepEqual(orderedSources(DEFAULT_ENDPOINT, 'https://gateway.example'), [
     { kind: 'node', url: 'http://127.0.0.1:18545' },
-    { kind: 'gateway', url: 'https://rpc.eastsea.xyz' },
+    { kind: 'gateway', url: 'https://gateway.example' },
   ]);
   assert.deepEqual(orderedSources('http://192.168.1.4:18545', null), [
     { kind: 'custom', url: 'http://192.168.1.4:18545' },
   ]);
   assert.equal(sourceLabel({ kind: 'node' }), "Your Mac's node");
-  assert.equal(sourceLabel({ kind: 'gateway' }), 'Public gateway · not verified');
+  assert.equal(sourceLabel({ kind: 'gateway' }), 'Your gateway · not verified');
   assert.equal(sourceLabel({ kind: 'custom' }), 'Your node');
 });
 
 test('the gateway persists, defaults, and turns off with an empty value', () => {
   const s = storage();
-  assert.equal(loadGateway(s), DEFAULT_GATEWAY);
+  assert.equal(DEFAULT_GATEWAY, '');
+  assert.equal(loadGateway(s), null);
   saveGateway('https://gw.example.com/', s);
   assert.equal(loadGateway(s), 'https://gw.example.com');
   saveGateway('', s); // the visitor asked for node-only reads
   assert.equal(loadGateway(s), null);
   assert.throws(() => saveGateway('ftp://x', s), /http/);
   const broken = { getItem: () => { throw new Error('denied'); } };
-  assert.equal(loadGateway(broken), DEFAULT_GATEWAY);
+  assert.equal(loadGateway(broken), null);
 });
 
 test('the loopback help names the browser reasons and the ways out', () => {
@@ -126,7 +127,7 @@ test('failover moves to the gateway only when the node cannot be reached', async
   const node = new FailoverNode(
     [
       { kind: 'node', url: 'http://127.0.0.1:18545' },
-      { kind: 'gateway', url: 'https://rpc.eastsea.xyz' },
+      { kind: 'gateway', url: 'https://gateway.example' },
     ],
     {
       now: () => clock.t,
@@ -144,15 +145,15 @@ test('failover moves to the gateway only when the node cannot be reached', async
   // The node is unreachable (the Chrome/Safari case): one transport failure,
   // then the gateway answers, and the badge hears about the switch.
   assert.equal(await node.call('aether_status'), 'from-gateway');
-  assert.deepEqual(asked, ['http://127.0.0.1:18545', 'https://rpc.eastsea.xyz']);
+  assert.deepEqual(asked, ['http://127.0.0.1:18545', 'https://gateway.example']);
   assert.deepEqual(changes, [{ from: 'node', to: 'gateway' }]);
   assert.equal(node.kind, 'gateway');
-  assert.equal(node.url, 'https://rpc.eastsea.xyz');
+  assert.equal(node.url, 'https://gateway.example');
 
   // While the failure is fresh the loopback is skipped: no second wait on it.
   asked.length = 0;
   assert.equal(await node.call('aether_status'), 'from-gateway');
-  assert.deepEqual(asked, ['https://rpc.eastsea.xyz']);
+  assert.deepEqual(asked, ['https://gateway.example']);
 
   // A minute later the node is tried again, and preferred once it answers.
   wire.loopbackUp = true;
@@ -168,7 +169,7 @@ test('an answered error is that source’s answer — not routed around', async 
   const node = new FailoverNode(
     [
       { kind: 'node', url: 'http://127.0.0.1:18545' },
-      { kind: 'gateway', url: 'https://rpc.eastsea.xyz' },
+      { kind: 'gateway', url: 'https://gateway.example' },
     ],
     {
       now: () => 0,
@@ -184,7 +185,7 @@ test('with every source down the call fails honestly', async () => {
   const node = new FailoverNode(
     [
       { kind: 'node', url: 'http://127.0.0.1:18545' },
-      { kind: 'gateway', url: 'https://rpc.eastsea.xyz' },
+      { kind: 'gateway', url: 'https://gateway.example' },
     ],
     { now: () => 0, fetch: async () => { throw new Error('down'); } },
   );

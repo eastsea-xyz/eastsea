@@ -4,10 +4,11 @@ import { Brand, coinTicker, coinName } from './lib/brand.js';
 // The origin of a page request always comes from Chrome (the port's sender),
 // never from the page.
 
-import init, { accountAddress, prepareTx, attachSignature, publicKeyFromSecret, verifyAccount } from '../wasm/aether_wasm.js';
+import init, { accountAddress, prepareTx, attachSignature, publicKeyFromSecret, verifyAccount, verifyBlock, verifyReceipt, PublicReadTransport } from '../wasm/aether_wasm.js';
 import { Vault, DEFAULT_LOCK_MINUTES } from './lib/vault.js';
 import { Rpc, RpcError, DEFAULT_RPCS } from './lib/rpc.js';
 import { networkSettings } from './lib/network.js';
+import { createPublicPeerPool } from './lib/peers.js';
 import { Wallet } from './lib/wallet.js';
 import { READ_METHODS, SEND_METHODS, normalizeTx, withTransferGas, describeCall, originAllowed } from './lib/methods.js';
 import { weiToAeth } from './lib/units.js';
@@ -51,9 +52,13 @@ session.set('approvals', []);
 const MAX_PENDING_PER_ORIGIN = 3;
 
 let defaultNetwork;
+let releasePeers = null;
 let activeNetwork;
+let settingsEpoch = 0;
 const configured = (async () => {
   defaultNetwork = await (await fetch(chrome.runtime.getURL('network.json'))).json();
+  try { releasePeers = await (await fetch(chrome.runtime.getURL('public-read-peers.json'))).json(); }
+  catch { /* bundled validator node IDs remain the discovery seeds */ }
   for (const key of ['activity', 'assets']) {
     const old = await local.get(key);
     if (old !== undefined && await local.get(`${key}.7780`) === undefined) await local.set(`${key}.7780`, old);
@@ -62,16 +67,30 @@ const configured = (async () => {
   await applySettings();
 })();
 async function applySettings() {
+  const epoch = ++settingsEpoch;
   const next = networkSettings(defaultNetwork, {
     developerMode: await local.get('developerMode'),
     developmentNetwork: await local.get('developmentNetwork'),
     developmentPort: (await local.get('developmentPort')) || 18546,
     rpcs: (await local.get('rpcs')) || [],
   });
+  if (epoch !== settingsEpoch) return;
   const switched = activeNetwork && activeNetwork.chainId !== next.chainId;
   activeNetwork = next;
   rpc.setChain(next.chainId, next.urls);
   rpc.setVerifier(next.development ? null : defaultNetwork);
+  let peers = null;
+  if (!next.development) {
+    try {
+      await ready;
+      peers = await createPublicPeerPool({ network: defaultNetwork,
+        mod: { PublicReadTransport, verifyBlock, verifyAccount, verifyReceipt },
+        floorStore: { get: (key) => local.get(key), set: (key, value) => local.set(key, value) } },
+      { release: releasePeers, relays: (await local.get('readRelays')) || [] });
+    } catch { /* HTTP still works; absent peer verification cannot pass a read */ }
+  }
+  if (epoch !== settingsEpoch) { peers?.close(); return; }
+  rpc.setPeerPool(peers);
   if (switched) {
     wallet.lastNonce = null;
     for (const [id, pending] of approvals) {
@@ -83,7 +102,7 @@ async function applySettings() {
   }
 }
 chrome.storage.onChanged.addListener((c, a) => {
-  if (a === 'local' && ['rpcs', 'developerMode', 'developmentNetwork', 'developmentPort'].some((key) => c[key])) configured.then(applySettings);
+  if (a === 'local' && ['rpcs', 'readRelays', 'developerMode', 'developmentNetwork', 'developmentPort'].some((key) => c[key])) configured.then(applySettings);
 });
 const activityKey = () => `activity.${rpc.chainId}`;
 const assetsKey = () => `assets.${rpc.chainId}`;
@@ -451,6 +470,7 @@ async function state() {
     chainId: rpc.chainId,
     defaultChainId: Number(defaultNetwork.chain_id),
     rpcs: (await local.get('rpcs')) || [],
+    readRelays: (await local.get('readRelays')) || [],
     terms: (await local.get('termsVersion')) || 0,
   };
 }
@@ -596,7 +616,7 @@ const ui = {
   },
   sites: async () => sites(),
   disconnect: ({ origin }) => setSite(origin, null),
-  settings: async ({ lockMinutes, rpcs, developerMode, developmentNetwork, developmentPort }) => {
+  settings: async ({ lockMinutes, rpcs, readRelays, developerMode, developmentNetwork, developmentPort }) => {
     if (developmentNetwork && developerMode === false) throw new Error('Turn on Developer mode first.');
     if (developmentNetwork) networkSettings(defaultNetwork, { developerMode: true, developmentNetwork, developmentPort });
     if (lockMinutes !== undefined) await local.set('lockMinutes', Math.min(Math.max(Number(lockMinutes) || DEFAULT_LOCK_MINUTES, 1), 24 * 60));
@@ -607,6 +627,12 @@ const ui = {
     if (rpcs !== undefined) {
       const list = rpcs.filter((u) => { try { return ['http:', 'https:'].includes(new URL(u).protocol); } catch { return false; } });
       await local.set('rpcs', list);
+    }
+    if (readRelays !== undefined) {
+      if (!Array.isArray(readRelays) || readRelays.some((u) => {
+        try { return !['http:', 'https:'].includes(new URL(u).protocol); } catch { return true; }
+      })) throw new Error('Relay URLs must use http:// or https://.');
+      await local.set('readRelays', readRelays);
     }
     await applySettings();
     return state();

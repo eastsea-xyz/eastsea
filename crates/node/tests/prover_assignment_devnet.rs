@@ -353,26 +353,19 @@ fn only_verified_competing_proofs_cancel_and_lost_jobs_never_reopen() {
 }
 
 #[test]
-fn an_expired_grace_job_retains_its_parent_past_the_old_32_block_limit() {
+fn an_expired_grace_job_replays_its_compact_input_past_the_state_cache() {
     let config = Config::default();
     let peers = peers(&config, 80);
     let outsider = Address::repeat_byte(0xf0);
     let now_ms = peers[0].last.timestamp;
 
     for peer in &peers {
-        let job = peer
-            .chain
-            .provable_for(outsider, &config, now_ms)
-            .expect("oldest fallback remains locally replayable");
-        assert_eq!(
-            job.0.height, 1,
-            "unregistered fallback selects the oldest expired block"
-        );
-        assert_eq!(
-            job.1.height, 0,
-            "the retained window includes its oldest block's parent"
-        );
-        assert!(peer.parent.height - job.0.height > 32);
-        replay_claim(peer, &job, outsider);
+        let (height, _, input) = peer.chain.proving_input_for(outsider, &config, now_ms)
+            .expect("compact input decodes").expect("oldest grace rescue remains replayable");
+        assert_eq!(height, 1);
+        assert!(peer.parent.height - height > 64);
+        let replay = aether_proving::block::execute(&input).expect("compact witness executes");
+        assert_eq!(aether_proving::block::output(&input).unwrap(), aether_proving::block::claim(replay.commitment(), outsider));
+
     }
 }

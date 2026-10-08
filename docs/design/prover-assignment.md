@@ -17,9 +17,14 @@ Inside the last W finalized unproven statements, take the oldest designated job
 first. When there are no designated jobs, take the oldest job whose age strictly
 exceeds T. Age is wall-clock time minus the block's finalized timestamp, clamped
 to zero for a timestamp in the future. Quiet blocks that record no statement
-do not occupy the window. The local execution cache pins the parent state of
-each retained statement, so a 60-second rescue remains replayable after the
-ordinary 64-height execution cache has moved on.
+do not occupy the window. Only an enabled proving service retains statements. It stores compact encoded
+stateless inputs, so a grace rescue can replay after the ordinary 64-height
+execution cache has moved on. Statements and parents never pin full states.
+Full states, compact inputs, their containers, summaries, and receipts count
+toward `--max-memory`, with 25% reserved for working allocations. Optional old
+states leave first, then the oldest inputs if necessary. The finalized head,
+its immediate parent, and history without a durable backing remain mandatory;
+a budget smaller than that working set cannot be satisfied through eviction.
 
 Node-local environment settings:
 
@@ -27,7 +32,7 @@ Node-local environment settings:
 | --- | ---: | --- |
 | `AETHER_PROVER_ASSIGNMENT_K` | 3 | Designated unique operators per height (1–4096) |
 | `AETHER_PROVER_GRACE_SECS` | 60 | Seconds before any operator may start a rescue |
-| `AETHER_PROVER_WINDOW` | 128 | Retained unproven inputs, with their parent states (1–4096) |
+| `AETHER_PROVER_WINDOW` | 128 | Maximum compact unproven inputs, also limited by bytes (1–4096) |
 
 Malformed settings leave the prover stopped with an error in its status. These
 settings do not affect proof validity, block execution, reward issuance, genesis,
@@ -53,8 +58,7 @@ delivery and process exit. It is distinct from network propagation or proof
 verification latency.
 
 A finite window and finite proving capacity have limits: if more than W open
-inputs accumulate, the oldest input leaves local retention. Increasing W costs
-memory. At one new provable block per second, two 20-second provers have capacity
+inputs accumulate, the oldest input leaves local retention. The byte budget can shorten W; increasing W cannot bypass it. At one new provable block per second, two 20-second provers have capacity
 for at most 0.1 unique proofs per second, even with perfect assignment. Grace
 provides eligibility, not additional GPU capacity; it cannot guarantee every
 block finishes by T plus proof time under overload or an arbitrarily long outage.
@@ -69,3 +73,5 @@ restart latency. The devnet uses padded commitment-echo proofs to exercise
 inclusion without GPU proving; it is not a live network or a GPU benchmark.
 
 See [simulation results and assumptions](prover-assignment-simulation.md).
+
+H04 review follow-up and verification status: [retention qualification](prover-assignment-h04.md).

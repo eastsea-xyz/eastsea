@@ -881,6 +881,11 @@ pub fn spawn_service_with_config(
     network_program: impl Fn() -> Result<String, String> + Send + 'static,
     submit: impl Fn(ProofClaim) -> Result<(), String> + Send + 'static,
 ) {
+    if crate::resources::monitor().is_some_and(|m| m.limits.prover_max_memory == 0) {
+        chain.set_prover_window(0);
+        status.lock().map(|mut s| s.paused = Some("disabled".into())).ok();
+        return;
+    }
     chain.set_prover_window(config.window);
     let notices = chain.observe_proofs();
     let program = sidecar.program.clone();
@@ -1167,7 +1172,10 @@ fn now_ms() -> u64 {
 }
 
 fn next_job_with_config(chain: &Chain, prover: Address, config: &crate::prover_assignment::Config, now_ms: u64) -> Result<Option<Job>, (u64, String)> {
-    let Some((exec, parent, block)) = chain.provable_for(prover, config, now_ms) else { return Ok(None) };
+    chain.proving_input_for(prover, config, now_ms)
+}
+
+pub(crate) fn input_for(chain: &Chain, exec: &crate::chain::Executed, parent: &crate::chain::Executed, block: &crate::block::Block, prover: Address) -> Result<aether_proving::block::BlockInput, (u64, String)> {
     let height = exec.height;
     let payload = block.payload().ok_or((height, "block payload does not decode".to_string()))?;
     let (pre, _) = chain
@@ -1180,7 +1188,7 @@ fn next_job_with_config(chain: &Chain, prover: Address, config: &crate::prover_a
     if statement.commitment() != exec.statement.commitment {
         return Err((height, "the prover input does not restate the block's recorded statement".to_string()));
     }
-    Ok(Some((height, payload.txs.len(), input)))
+    Ok(input)
 }
 
 /// Initialize the macOS network runtime before either spawn path's smoke test.
@@ -1808,6 +1816,7 @@ mod service_fault_tests {
     /// of them a provable job for the service.
     fn proving_chain(n: u64) -> Chain {
         let (chain, genesis) = Chain::new(config());
+        chain.set_prover_window(crate::prover_assignment::Config::default().window);
         {
             let (_, sharing, _) = aether_light::devnet_threshold(4);
             let mut g = chain.lock();
